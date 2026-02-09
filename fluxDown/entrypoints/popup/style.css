@@ -409,6 +409,15 @@ select:focus {
   border-color: var(--accent);
 }
 
+/* ===== Mode Hint ===== */
+.mode-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 2px 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
 /* ===== Tags ===== */
 .tags-container {
   display: flex;

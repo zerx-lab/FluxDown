@@ -69,6 +69,15 @@
     <section class="section">
       <div class="section-title">快捷设置</div>
       <div class="row">
+        <span class="label">拦截模式</span>
+        <select id="interceptModeSelect">
+          <option value="smart">智能模式</option>
+          <option value="extension">仅扩展名</option>
+          <option value="all">拦截所有</option>
+        </select>
+      </div>
+      <div class="mode-hint" id="modeHint">综合文件名、类型、大小智能判断</div>
+      <div class="row">
         <span class="label">最小文件大小</span>
         <select id="minSizeSelect">
           <option value="0">不限</option>

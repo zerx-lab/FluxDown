@@ -1,117 +1,175 @@
-# PROJECT KNOWLEDGE BASE
+# FluxDown — 项目知识库
 
-**Generated:** 2026-02-08
-**Branch:** master (initial, no commits)
+**应用名称**: FluxDown（类迅雷多协议下载工具）
+**技术栈**: Flutter (GUI) + Rust (下载引擎) + WXT 浏览器扩展
+**FFI 框架**: [Rinf 8.9](https://rinf.cunarist.org)（Dart↔Rust 信号通信，bincode 序列化）
 
-## OVERVIEW
+## 命令速查
 
-类迅雷的多协议下载工具。Flutter 负责 GUI（任务管理、进度展示），Rust 负责高性能下载引擎（多线程分片、协议解析、断点续传），通过 [Rinf](https://rinf.cunarist.org) 框架实现 Dart↔Rust FFI 通信。
+```bash
+# 开发运行
+flutter run -d windows              # 运行桌面应用,禁止运行这个命令
+rinf gen                             # 修改 Rust 信号后必须执行，生成 Dart 绑定
 
-## STRUCTURE
+# 构建与检查
+cargo build                          # 构建 Rust 后端
+cargo clippy                         # Rust lint（deny 级别，见下方规则）
+flutter analyze                      # Dart 静态分析
+flutter build windows                # 构建 Windows 发行版
+
+# 测试
+flutter test                         # 全部 Dart 测试
+flutter test test/widget_test.dart   # 运行单个测试文件
+cargo test -p hub                    # 运行 Rust 单元测试（segment_advisor 模块有测试）
+cargo test -p hub -- segment_advisor # 运行特定 Rust 测试模块
+
+# 依赖
+flutter pub get                      # Dart 依赖安装
+cargo install rinf_cli               # Rinf CLI（首次安装）
+
+# 浏览器扩展（fluxDown/ 目录下）
+npm run dev                          # 开发模式（Chrome）
+npm run build                        # 构建生产版
+```
+
+## 项目结构
 
 ```
 x_down/
-├── lib/
-│   ├── main.dart                  # Flutter 入口 (MyApp widget)
-│   └── src/bindings/              # ⚠️ 自动生成 — 勿手动编辑
-│       ├── signals/               # Rust↔Dart 信号类型 (由 rinf gen 生成)
-│       ├── serde/                 # 序列化工具
-│       └── bincode/               # 二进制编码
-├── native/hub/                    # Rust 后端 crate
+├── lib/                               # Flutter 前端
+│   ├── main.dart                      # 应用入口（多窗口分发、初始化流程）
 │   └── src/
-│       ├── lib.rs                 # Rust 入口 (tokio async main)
-│       ├── signals/mod.rs         # 信号结构体定义 (DartSignal/RustSignal)
-│       └── actors/                # Actor 模型：消息传递式并发
-│           ├── mod.rs             # Actor 创建与编排
-│           ├── first.rs           # FirstActor: 监听 Dart 信号 + 定时器
-│           └── second.rs          # SecondActor: 跨 Actor 请求-响应
-├── android/ ios/ macos/ linux/ windows/ web/  # 平台壳
-├── pubspec.yaml                   # Flutter 依赖
-├── Cargo.toml                     # Rust workspace
-└── test/widget_test.dart          # 唯一测试文件
+│       ├── models/                    # 数据模型与状态管理
+│       │   ├── download_task.dart     # DownloadTask/TaskStatus/FileCategory/SegmentData
+│       │   ├── download_controller.dart # 核心状态枢纽（ChangeNotifier）
+│       │   └── settings_provider.dart # 全局配置状态
+│       ├── pages/                     # 页面
+│       │   ├── home_page.dart         # 主页面布局（Sidebar+Header+TaskList+DetailPanel）
+│       │   └── settings_page.dart     # 设置页面
+│       ├── services/                  # 服务层
+│       │   ├── external_download_service.dart  # 浏览器扩展下载请求处理
+│       │   └── tray_service.dart      # 系统托盘
+│       ├── theme/                     # 主题系统
+│       │   ├── app_theme.dart         # ShadThemeData 构建/缓存
+│       │   ├── app_colors.dart        # 主题感知色板 AppColors.of(context)
+│       │   └── theme_provider.dart    # 主题模式/配色持久化
+│       ├── widgets/                   # UI 组件
+│       │   ├── header_bar.dart        # 顶部工具栏 + 窗口控制
+│       │   ├── sidebar.dart           # 左侧文件类型导航
+│       │   ├── task_tab_bar.dart      # 状态筛选 Tab
+│       │   ├── task_list.dart         # 任务列表容器
+│       │   ├── task_list_item.dart    # 单个任务行 + 右键菜单
+│       │   ├── detail_panel.dart      # 详情面板 + IDM 分片可视化（CustomPainter）
+│       │   ├── new_download_dialog.dart  # 新建下载对话框
+│       │   ├── context_menu.dart      # 通用 Overlay 右键菜单
+│       │   ├── status_bar.dart        # 底部状态栏
+│       │   └── title_drag_area.dart   # 自定义标题栏拖拽区域
+│       ├── windows/
+│       │   └── quick_download_window.dart  # 浏览器扩展快速下载确认子窗口
+│       └── bindings/                  # ⚠️ 自动生成 — 勿手动编辑
+├── native/hub/                        # Rust 下载引擎 crate
+│   └── src/
+│       ├── lib.rs                     # 入口（tokio current_thread runtime）
+│       ├── signals/mod.rs             # 信号结构体定义（DartSignal/RustSignal）
+│       ├── actors/
+│       │   ├── mod.rs                 # create_actors() 入口
+│       │   └── download_actor.rs      # 核心事件循环（tokio::select!）
+│       ├── download_manager.rs        # 并发管理/任务生命周期/进度报告
+│       ├── downloader.rs              # HTTP/HTTPS 下载引擎（分片/断点续传）
+│       ├── ftp_downloader.rs          # FTP 下载引擎（suppaftp 同步 API）
+│       ├── db.rs                      # SQLite 数据层（tasks/task_segments/config 三表）
+│       ├── speed_limiter.rs           # Token bucket 全局速度限制器
+│       ├── segment_advisor.rs         # 动态分段计算（文件大小+CPU+带宽）
+│       └── native_messaging.rs        # 本地 HTTP 服务器（localhost:19527）
+├── fluxDown/                          # WXT 浏览器扩展（Chrome MV3）
+│   ├── entrypoints/
+│   │   ├── background.ts             # Service Worker（下载拦截/右键菜单）
+│   │   └── popup/                     # Popup UI（状态/设置/统计）
+│   └── utils/
+│       ├── native-messaging.ts        # HTTP 通信（fetch → localhost:19527）
+│       └── settings.ts               # 扩展设置管理（拦截模式/扩展名/域名）
+├── Cargo.toml                         # Rust workspace（resolver = "3"）
+└── pubspec.yaml                       # Flutter 依赖
 ```
 
-## WHERE TO LOOK
+## 架构概览
 
-| 任务 | 位置 | 说明 |
-|------|------|------|
-| 添加新页面/Widget | `lib/main.dart` | 当前单文件，需自行拆分 |
-| 定义新的 Dart↔Rust 信号 | `native/hub/src/signals/mod.rs` | 修改后必须运行 `rinf gen` |
-| 添加新 Actor | `native/hub/src/actors/` | 参考 `first.rs` 模式 |
-| Actor 注册 | `native/hub/src/actors/mod.rs` | `create_actors()` 中 spawn |
-| 查看生成的 Dart 绑定 | `lib/src/bindings/signals/` | 只读参考，勿编辑 |
-| 平台特定配置 | `android/` `ios/` `windows/` 等 | 标准 Flutter 平台壳 |
+```
+[Dart UI (shadcn_ui)] ←Rinf FFI→ [download_actor (tokio::select! 事件循环)]
+                                          │
+                          ┌───────────────┼──────────────────┐
+                    [DownloadManager]    [Db]          [native_messaging]
+                     │          │      (SQLite)       (HTTP :19527)
+               [downloader]  [ftp_downloader]              ↑
+               (HTTP/HTTPS)     (FTP)              [WXT 浏览器扩展]
+                     │
+            [SpeedLimiter] + [segment_advisor]
+```
 
-## CONVENTIONS
+**信号协议**: `DartSignal`(Dart→Rust), `RustSignal`(Rust→Dart), `SignalPiece`(嵌套类型)
+**状态管理**: ChangeNotifier（DownloadController / SettingsProvider / ThemeProvider）
+**并发模型**: 每个下载 spawn 独立 tokio task，CancellationToken 控制生命周期
+
+## 代码风格与规范
 
 ### Rust 端
 
-- **错误处理**：禁止 `.unwrap()` 和 `.expect()`（Clippy deny），必须用 `?` 或 `match`
-- **导入**：禁止通配符导入 `use module::*`（Clippy deny），必须显式导入
-- **异步**：始终使用非阻塞 async 函数；阻塞操作用 `tokio::task::spawn_blocking`
-- **Actor 模式**：通过 `messages` crate 实现 Actor，避免共享内存，使用消息传递
-- **信号定义**：`DartSignal` = Dart→Rust, `RustSignal` = Rust→Dart, `SignalPiece` = 嵌套片段
-- **Crate 名**：`hub` 不可更改（Rinf 框架硬编码依赖）
-- **Edition**：Rust 2024
+- **Edition**: 2024，Clippy deny 级别: `unwrap_used`, `expect_used`, `wildcard_imports`
+- **错误处理**: 必须用 `?` 或 `match`，禁止 `.unwrap()` / `.expect()`（编译失败）
+- **导入**: 禁止 `use foo::*`，必须显式导入每个符号
+- **异步**: 始终用 async 非阻塞；同步阻塞操作用 `tokio::task::spawn_blocking`
+- **错误类型**: 使用 `thiserror` 派生 `DownloadError` 枚举
+- **命名**: snake_case 函数/变量，PascalCase 类型，SCREAMING_SNAKE_CASE 常量
+- **Crate 名**: `hub` 不可更改（Rinf 硬编码依赖）
+- **FTP**: 使用 `suppaftp` 同步 API + `spawn_blocking` + mpsc channel（因异步 FTP 与 tokio 冲突）
 
-### Dart 端
+### Dart/Flutter 端
 
-- 使用 `flutter_lints` 推荐规则集
-- `lib/src/bindings/` 全部为自动生成，头部有 `// ignore_for_file: type=lint`
-- **UI 组件库**：全程使用 [shadcn_ui](https://flutter-shadcn-ui.mariuti.com/)（`^0.45.2`），禁止使用原生 Material/Cupertino 组件
+- **Lint**: `flutter_lints` 推荐规则集（analysis_options.yaml）
+- **UI 框架**: 全程使用 **shadcn_ui**，禁止原生 Material/Cupertino 组件
+- **字体**: MiSans 自定义字体族
+- **统一导入**: `import 'package:shadcn_ui/shadcn_ui.dart';`（含 LucideIcons、flutter_animate）
+- **根组件**: 使用 `ShadApp`（或手动组合 `ShadTheme` + `WidgetsApp`），禁止 `MaterialApp`
+- **主题访问**: `ShadTheme.of(context)`，禁止 `Theme.of(context)`
+- **对话框**: `showShadDialog()`，禁止 `showDialog()`
+- **图标**: `LucideIcons.xxx`
+- **颜色**: 通过 `AppColors.of(context)` 获取主题感知色板
+- **配色方案**: Slate/Zinc/Blue/Gray/Green/Neutral/Orange/Red/Rose/Stone/Violet/Yellow
+- **状态管理**: ChangeNotifier + ListenableBuilder，无 Provider/Riverpod/Bloc
+- **文件命名**: snake_case.dart
 
-### shadcn_ui 规范
+### 浏览器扩展（fluxDown/）
 
-- **统一导入**：`import 'package:shadcn_ui/shadcn_ui.dart';`（单入口，含 LucideIcons、flutter_animate 等）
-- **App 根组件**：使用 `ShadApp` 替代 `MaterialApp`；若需 Material 互操作用 `ShadApp.custom` + `ShadAppBuilder`
-- **主题**：通过 `ShadThemeData` + `ShadXxxColorScheme.light()/.dark()` 配置，支持 `ThemeMode.system` 自动明暗切换
-- **主题访问**：`ShadTheme.of(context)` 获取主题数据，不用 `Theme.of(context)`（除 Material 互操作场景）
-- **图标**：使用 `LucideIcons.xxx`（已内置，无需额外导入）
-- **按钮变体**：`ShadButton()`、`ShadButton.secondary()`、`ShadButton.destructive()`、`ShadButton.outline()`、`ShadButton.ghost()`、`ShadButton.link()`
-- **表单**：使用 `ShadForm` + `ShadXxxFormField`（如 `ShadInputFormField`、`ShadSelectFormField`），通过 `GlobalKey<ShadFormState>` 管理状态
-- **对话框**：使用 `showShadDialog()` 而非 `showDialog()`
-- **表格**：使用 `ShadTable.list()` 而非 `DataTable`
-- **可用颜色方案**：Slate / Zinc / Blue / Gray / Green / Neutral / Orange / Red / Rose / Stone / Violet / Yellow
-- **组件命名映射**：Popover（替代 HoverCard）、ContextMenu（替代 DropdownMenu）、Sonner（Toast 通知）
+- **框架**: WXT 0.20+，TypeScript
+- **通信方式**: HTTP fetch → localhost:19527（非 Native Messaging 协议）
+- **存储**: chrome.storage.sync（设置）+ chrome.storage.local（统计/主题）
 
-### 通用
-
-- Web 支持已预留但注释掉（见 `tokio_with_wasm` 注释）
-
-## ANTI-PATTERNS
+## 禁止事项（Anti-Patterns）
 
 | 禁止 | 原因 |
 |------|------|
-| 手动编辑 `lib/src/bindings/**` | 会被 `rinf gen` 覆盖 |
-| Rust 中使用 `.unwrap()` / `.expect()` | Clippy deny，编译失败 |
-| Rust 中使用 `use foo::*` | Clippy deny，编译失败 |
-| 更改 crate name `hub` | Rinf 框架依赖此名称 |
-| 在 async 上下文中使用阻塞 I/O | 会阻塞 tokio 单线程 runtime |
-| 使用原生 Material/Cupertino 组件 | 全程使用 shadcn_ui 组件库 |
-| `MaterialApp` 作为根组件 | 使用 `ShadApp`（或 `ShadApp.custom` 互操作） |
-| `showDialog()` | 使用 `showShadDialog()` |
-| `Theme.of(context)` 获取主题 | 使用 `ShadTheme.of(context)` |
-| 手动创建 `ThemeData(...)` | ShadApp 自动生成，Material 互操作时用 `Theme.of(context)` |
+| 编辑 `lib/src/bindings/**` | 自动生成，`rinf gen` 会覆盖 |
+| Rust `.unwrap()` / `.expect()` | Clippy deny，编译失败 |
+| Rust `use foo::*` | Clippy deny，编译失败 |
+| 改 crate name `hub` | Rinf 框架硬编码此名称 |
+| async 中阻塞 I/O | tokio current_thread runtime 会死锁 |
+| `MaterialApp` / `showDialog()` / `Theme.of()` | 全程 shadcn_ui 体系 |
+| Material/Cupertino 原生组件 | 统一使用 shadcn_ui 组件 |
 
-## COMMANDS
+## 关键开发流程
 
-```bash
-# 开发
-flutter run                    # 运行应用
-flutter run -d windows         # 指定 Windows 平台
+### 添加新的 Dart ↔ Rust 信号
+1. 在 `native/hub/src/signals/mod.rs` 定义结构体（标注 `DartSignal`/`RustSignal`/`SignalPiece`）
+2. 运行 `rinf gen` 生成 Dart 绑定
+3. Rust 端在 `download_actor.rs` 的 `tokio::select!` 中添加监听分支
+4. Dart 端通过 `XxxSignal.rustSignalStream` 监听或 `.sendSignalToRust()` 发送
 
-# 信号绑定生成（修改 Rust 信号后必须执行）
-rinf gen
+### 添加新页面/功能
+1. 在 `lib/src/` 对应目录创建文件（pages/widgets/models/services）
+2. 状态管理用 ChangeNotifier，通过 ListenableBuilder 绑定 UI
+3. 使用 shadcn_ui 组件，颜色通过 `AppColors.of(context)` 获取
 
-# Rust
-cargo build                    # 构建 Rust 后端
-cargo clippy                   # Lint 检查（严格模式）
-
-# 测试
-flutter test                   # Dart widget 测试
-flutter analyze                # Dart 静态分析
-
-# 依赖
-flutter pub get                # Dart 依赖
-cargo install rinf_cli         # Rinf CLI 工具（首次）
-```
+### Rust 模块开发
+- 参考 `downloader.rs`（HTTP）和 `ftp_downloader.rs`（FTP）的对称设计模式
+- 新模块在 `lib.rs` 中声明 `mod xxx;`
+- DB 操作统一通过 `db.rs` 的 `Db` 结构体，所有 rusqlite 调用在 `spawn_blocking` 中

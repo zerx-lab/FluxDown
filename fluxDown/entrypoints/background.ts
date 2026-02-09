@@ -12,6 +12,7 @@
 import { sendDownloadRequest, checkFluxDownAvailable } from '@/utils/native-messaging';
 import type { DownloadRequest } from '@/utils/native-messaging';
 import { loadSettings, shouldIntercept } from '@/utils/settings';
+import type { DownloadItemInfo } from '@/utils/settings';
 
 // ===== 统计相关 =====
 interface DailyStats {
@@ -104,10 +105,24 @@ export default defineBackground(() => {
     // 跳过 blob 和 data URL
     if (url.startsWith('blob:') || url.startsWith('data:')) return;
 
-    // 判断是否需要拦截
-    if (!shouldIntercept(url, fileSize, settings)) return;
+    // 构建下载项信息，供综合判断
+    const itemInfo: DownloadItemInfo = {
+      url,
+      fileSize,
+      mime: downloadItem.mime || undefined,
+      filename: downloadItem.filename || undefined,
+    };
 
-    console.log('[FluxDown] Intercepting download:', url);
+    // 判断是否需要拦截
+    if (!shouldIntercept(itemInfo, settings)) return;
+
+    console.log('[FluxDown] Intercepting download:', {
+      url,
+      mime: downloadItem.mime,
+      filename: downloadItem.filename,
+      fileSize,
+      mode: settings.interceptMode,
+    });
 
     // 统计：拦截
     await incrementStat('intercepted');
@@ -121,7 +136,13 @@ export default defineBackground(() => {
     }
 
     // 发送到 FluxDown
-    await sendToFluxDown(url, downloadItem.referrer, downloadItem.filename, fileSize, downloadItem.mime);
+    await sendToFluxDown(
+      url,
+      downloadItem.referrer,
+      downloadItem.filename,
+      fileSize,
+      downloadItem.mime,
+    );
   });
 
   // ===== Popup 消息处理 =====
@@ -184,6 +205,13 @@ export default defineBackground(() => {
         });
         updateIcon(newEnabled);
         return { enabled: newEnabled };
+      }
+
+      case 'updateSettings': {
+        const currentSettings = await loadSettings();
+        const merged = { ...currentSettings, ...message.settings };
+        await chrome.storage.sync.set({ settings: merged });
+        return { success: true, settings: merged };
       }
 
       case 'checkConnection': {

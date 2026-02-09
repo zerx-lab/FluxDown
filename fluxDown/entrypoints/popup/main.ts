@@ -18,6 +18,8 @@ const statusBadge = $('#statusBadge')!;
 const statusText = statusBadge.querySelector('.status-text')!;
 const enableToggle = $<HTMLInputElement>('#enableToggle');
 const enableHint = $('#enableHint')!;
+const interceptModeSelect = $<HTMLSelectElement>('#interceptModeSelect');
+const modeHint = $('#modeHint')!;
 const minSizeSelect = $<HTMLSelectElement>('#minSizeSelect');
 const notifyToggle = $<HTMLInputElement>('#notifyToggle');
 const themeBtn = $<HTMLButtonElement>('#themeBtn');
@@ -264,6 +266,8 @@ async function init() {
     const s = response.settings;
     enableToggle.checked = s.enabled;
     updateEnableHint(s.enabled);
+    interceptModeSelect.value = s.interceptMode || 'smart';
+    updateModeHint(s.interceptMode || 'smart');
     minSizeSelect.value = String(s.minFileSize);
     notifyToggle.checked = s.showNotification;
 
@@ -282,6 +286,16 @@ function updateEnableHint(enabled: boolean) {
   enableHint.textContent = enabled ? '已开启' : '已关闭';
 }
 
+const MODE_HINTS: Record<string, string> = {
+  smart: '综合文件名、类型、大小智能判断',
+  extension: '仅按 URL/文件名扩展名拦截',
+  all: '拦截所有下载（除排除域名外）',
+};
+
+function updateModeHint(mode: string) {
+  modeHint.textContent = MODE_HINTS[mode] || '';
+}
+
 // ===== 事件绑定 =====
 
 // 主题切换
@@ -291,6 +305,13 @@ themeBtn.addEventListener('click', toggleTheme);
 enableToggle.addEventListener('change', async () => {
   const res = await chrome.runtime.sendMessage({ action: 'toggleEnabled' });
   updateEnableHint(res.enabled);
+});
+
+// 拦截模式
+interceptModeSelect.addEventListener('change', async () => {
+  const mode = interceptModeSelect.value;
+  updateModeHint(mode);
+  await chrome.runtime.sendMessage({ action: 'updateSettings', settings: { interceptMode: mode } });
 });
 
 // 最小文件大小
