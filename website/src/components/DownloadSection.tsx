@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Monitor, Apple, Terminal, Download, Check, Loader2, ChevronDown } from "lucide-react";
+import { Monitor, Apple, Terminal, Download, Check, Loader2, ChevronDown, Chrome, Puzzle } from "lucide-react";
 import { LampEffect } from "@/components/ui/lamp-effect";
 import { useLocale } from "@/lib/i18n";
 
@@ -24,6 +24,7 @@ interface ReleaseInfo {
   assets: {
     setup: ReleaseAsset | null;
     portable: ReleaseAsset | null;
+    extension: ReleaseAsset | null;
   };
 }
 
@@ -180,6 +181,54 @@ export default function DownloadSection() {
                 </motion.div>
               );
             })}
+          </motion.div>
+
+          {/* Browser Extension */}
+          <motion.div
+            className="max-w-4xl mx-auto mb-16"
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+          >
+            <div className="relative rounded-xl border border-dark-border bg-dark-surface1 p-6 flex flex-col sm:flex-row items-center gap-5">
+              <div className="flex items-center gap-4 flex-1 min-w-0">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-brand-blue/20 to-brand-cyan/20 border border-brand-blue/20 flex items-center justify-center flex-shrink-0">
+                  <Puzzle className="w-6 h-6 text-brand-blue" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-dark-text">{t("dl.extensionTitle")}</h3>
+                  <p className="text-xs text-dark-text-muted mt-0.5">{t("dl.extensionDesc")}</p>
+                  {release?.assets.extension && (
+                    <p className="text-[10px] text-dark-text-muted mt-1">
+                      {t("dl.version", { version: release.version })}
+                      <span className="ml-1.5">({formatSize(release.assets.extension.size)})</span>
+                      <span className="ml-1.5">· Chrome + Firefox</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {loading ? (
+                  <div className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-blue/50 px-5 py-2.5 text-xs font-semibold text-white/70 cursor-wait">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    {t("dl.loading")}
+                  </div>
+                ) : release?.assets.extension ? (
+                  <a
+                    href={release.assets.extension.download_url}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-brand-blue/30 bg-brand-blue/10 px-5 py-2.5 text-xs font-semibold text-brand-blue hover:bg-brand-blue/20 transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    {t("dl.downloadExtension")}
+                  </a>
+                ) : (
+                  <div className="inline-flex items-center justify-center gap-2 rounded-lg border border-dark-border px-5 py-2.5 text-xs font-medium text-dark-text-muted">
+                    {t("dl.comingSoon")}
+                  </div>
+                )}
+              </div>
+            </div>
           </motion.div>
 
           {/* Tech stack */}

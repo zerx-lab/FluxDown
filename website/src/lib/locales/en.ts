@@ -118,6 +118,9 @@ const en = {
   "dl.loading": "Loading...",
   "dl.installPkg": "Installer",
   "dl.portablePkg": "Portable",
+  "dl.extensionTitle": "Browser Extension",
+  "dl.extensionDesc": "Intercept browser downloads and send them to FluxDown. Supports Chrome and Firefox.",
+  "dl.downloadExtension": "Download Extension",
 
   // Footer
   "footer.desc": "A modern multi-protocol download manager powered by Rust. Fast, reliable, and free to use.",

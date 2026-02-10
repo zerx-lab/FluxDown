@@ -98,5 +98,5 @@ jobs:
           files: |
             build/installer/FluxDown-*.exe
             build/installer/FluxDown-*-portable.zip
-          draft: true
+          draft: false
           generate_release_notes: true

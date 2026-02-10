@@ -68,5 +68,8 @@ fluxDown/.output/
 fluxDown/.wxt/
 fluxDown/dist/
 
+# Vercel
+website/.vercel/
+
 # Sisyphus
 .sisyphus/

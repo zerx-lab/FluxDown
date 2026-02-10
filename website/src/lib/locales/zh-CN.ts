@@ -120,6 +120,9 @@ const zhCN: Messages = {
   "dl.loading": "加载中...",
   "dl.installPkg": "安装包",
   "dl.portablePkg": "便携版",
+  "dl.extensionTitle": "浏览器扩展",
+  "dl.extensionDesc": "拦截浏览器下载并发送到 FluxDown，支持 Chrome 和 Firefox。",
+  "dl.downloadExtension": "下载扩展",
 
   // Footer
   "footer.desc": "由 Rust 驱动的现代多协议下载管理器。高速、可靠、完全免费。",

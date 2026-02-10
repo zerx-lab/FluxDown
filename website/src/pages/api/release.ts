@@ -11,6 +11,7 @@
  *   assets: {
  *     setup: { name, size, download_url },
  *     portable: { name, size, download_url },
+ *     extension: { name, size, download_url },
  *   }
  * }
  */
@@ -99,6 +100,7 @@ export const GET: APIRoute = async () => {
     // 匹配资产文件
     const setupAsset = latest.assets.find((a) => a.name.endsWith("-windows-setup.exe"));
     const portableAsset = latest.assets.find((a) => a.name.endsWith("-windows-portable.zip"));
+    const extensionAsset = latest.assets.find((a) => a.name.endsWith("-extension.zip"));
 
     const formatAsset = (asset: GitHubAsset | undefined) => {
       if (!asset) return null;
@@ -117,6 +119,7 @@ export const GET: APIRoute = async () => {
       assets: {
         setup: formatAsset(setupAsset),
         portable: formatAsset(portableAsset),
+        extension: formatAsset(extensionAsset),
       },
     };
 
