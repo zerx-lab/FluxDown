@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../i18n/locale_provider.dart';
 import 'log_service.dart';
 
 const _tag = 'TrayService';
@@ -48,14 +49,29 @@ class TrayService with TrayListener {
 
     final menu = Menu(
       items: [
-        MenuItem(key: 'show_window', label: '显示主窗口'),
+        MenuItem(key: 'show_window', label: currentS.trayShowWindow),
         MenuItem.separator(),
-        MenuItem(key: 'exit_app', label: '退出'),
+        MenuItem(key: 'exit_app', label: currentS.trayExit),
       ],
     );
     await trayManager.setContextMenu(menu);
     trayManager.addListener(this);
     logInfo(_tag, 'init done');
+  }
+
+  /// 刷新托盘菜单文字（语言切换后调用）
+  Future<void> refreshMenu() async {
+    if (!_initialized) return;
+    logInfo(_tag, 'refreshMenu called');
+    final menu = Menu(
+      items: [
+        MenuItem(key: 'show_window', label: currentS.trayShowWindow),
+        MenuItem.separator(),
+        MenuItem(key: 'exit_app', label: currentS.trayExit),
+      ],
+    );
+    await trayManager.setContextMenu(menu);
+    logInfo(_tag, 'refreshMenu done');
   }
 
   /// 销毁托盘图标

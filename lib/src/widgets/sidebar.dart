@@ -3,6 +3,8 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:window_manager/window_manager.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
+import '../services/update_service.dart';
+import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 
 class Sidebar extends StatelessWidget {
@@ -39,7 +41,7 @@ class Sidebar extends StatelessWidget {
             children: [
               _buildLogo(c),
               const SizedBox(height: 12),
-              _buildSection('分类', c, [
+              _buildSection(LocaleScope.of(context).sidebarCategory, c, [
                 for (final cat in FileCategory.values)
                   _NavItem(
                     icon: _categoryIcon(cat),
@@ -130,21 +132,7 @@ class Sidebar extends StatelessWidget {
   }
 
   Widget _buildFooter(AppColors c) {
-    const version = String.fromEnvironment('APP_VERSION', defaultValue: 'dev');
-    return Container(
-      height: 28,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: BoxDecoration(
-        border: Border(top: BorderSide(color: c.border, width: 1)),
-      ),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Text(
-          version == 'dev' ? 'dev' : 'v$version',
-          style: TextStyle(fontSize: 10.5, color: c.textMuted),
-        ),
-      ),
-    );
+    return const _UpdateFooter();
   }
 }
 
@@ -221,6 +209,181 @@ class _NavItemState extends State<_NavItem> {
                 ),
               ],
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// Sidebar footer: version display + update UI
+// ─────────────────────────────────────────────
+
+class _UpdateFooter extends StatelessWidget {
+  const _UpdateFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: UpdateService.instance,
+      builder: (context, _) {
+        final svc = UpdateService.instance;
+        final c = AppColors.of(context);
+        final status = svc.status;
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Progress bar — shown during download, spans full sidebar width
+            if (status == UpdateStatus.downloading) _buildProgressBar(svc, c),
+            // Footer row
+            Container(
+              height: 32,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                border: Border(top: BorderSide(color: c.border, width: 1)),
+              ),
+              child: Row(
+                children: [
+                  // Version text
+                  Text(
+                    _versionText(svc),
+                    style: TextStyle(fontSize: 10.5, color: c.textMuted),
+                  ),
+                  const Spacer(),
+                  // Action button based on state
+                  _buildAction(context, svc, c, status),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _versionText(UpdateService svc) {
+    final v = svc.currentVersion;
+    final label = v == 'dev' ? 'dev' : 'v$v';
+    if (svc.status == UpdateStatus.available ||
+        svc.status == UpdateStatus.downloading ||
+        svc.status == UpdateStatus.readyToInstall) {
+      return '$label -> v${svc.checkResult?.latestVersion ?? ''}';
+    }
+    return label;
+  }
+
+  Widget _buildAction(
+    BuildContext context,
+    UpdateService svc,
+    AppColors c,
+    UpdateStatus status,
+  ) {
+    switch (status) {
+      case UpdateStatus.available:
+        return _UpdateActionButton(
+          icon: LucideIcons.download,
+          tooltip: LocaleScope.of(
+            context,
+          ).downloadUpdateVersion(svc.checkResult?.latestVersion ?? ''),
+          color: AppColors.red,
+          onTap: svc.downloadUpdate,
+        );
+      case UpdateStatus.downloading:
+        final p = svc.progress;
+        final pct = (p != null && p.totalBytes > 0)
+            ? '${(p.downloadedBytes / p.totalBytes * 100).toStringAsFixed(0)}%'
+            : '...';
+        return Text(
+          pct,
+          style: TextStyle(
+            fontSize: 10,
+            color: c.accent,
+            fontWeight: FontWeight.w600,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        );
+      case UpdateStatus.readyToInstall:
+        return _UpdateActionButton(
+          icon: LucideIcons.rotateCcw,
+          tooltip: LocaleScope.of(context).installAndRestart,
+          color: AppColors.green,
+          onTap: svc.installUpdate,
+        );
+      case UpdateStatus.checking:
+        return SizedBox(
+          width: 12,
+          height: 12,
+          child: CircularProgressIndicator(
+            strokeWidth: 1.5,
+            color: c.textMuted,
+          ),
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  Widget _buildProgressBar(UpdateService svc, AppColors c) {
+    final p = svc.progress;
+    final fraction = (p != null && p.totalBytes > 0)
+        ? (p.downloadedBytes / p.totalBytes).clamp(0.0, 1.0)
+        : 0.0;
+
+    return SizedBox(
+      height: 3,
+      child: LinearProgressIndicator(
+        value: fraction,
+        backgroundColor: c.surface2,
+        valueColor: AlwaysStoppedAnimation<Color>(c.accent),
+        minHeight: 3,
+      ),
+    );
+  }
+}
+
+class _UpdateActionButton extends StatefulWidget {
+  final IconData icon;
+  final String tooltip;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _UpdateActionButton({
+    required this.icon,
+    required this.tooltip,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  State<_UpdateActionButton> createState() => _UpdateActionButtonState();
+}
+
+class _UpdateActionButtonState extends State<_UpdateActionButton> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return ShadTooltip(
+      builder: (_) => Text(widget.tooltip),
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              color: _isHovered
+                  ? widget.color.withValues(alpha: 0.15)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Icon(widget.icon, size: 13, color: widget.color),
           ),
         ),
       ),

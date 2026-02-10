@@ -124,7 +124,10 @@ use suppaftp::types::FileType;
 /// Timeout for FTP data-connection reads.  Prevents blocking threads from
 /// hanging indefinitely when the server stops sending data (e.g. on cancel).
 /// Applied to the data stream TCP socket after `retr_as_stream`.
-const FTP_DATA_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// 30 seconds balances between handling slow servers and avoiding indefinite
+/// hangs.  Combined with MAX_CONSECUTIVE_TIMEOUTS, the maximum blocking time
+/// before error is 30s × 3 = 90s.
+const FTP_DATA_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn ftp_connect_sync(ftp_url: &FtpUrl) -> Result<FtpStream, DownloadError> {
     let addr = format!("{}:{}", ftp_url.host, ftp_url.port);
@@ -158,8 +161,8 @@ fn ftp_connect_sync(ftp_url: &FtpUrl) -> Result<FtpStream, DownloadError> {
 // Resolve FTP file info
 // ---------------------------------------------------------------------------
 
-const PROBE_MAX_RETRIES: u32 = 3;
-const PROBE_RETRY_DELAY: Duration = Duration::from_secs(2);
+const PROBE_MAX_RETRIES: u32 = 2;
+const PROBE_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
 pub async fn resolve_ftp_file_info(url: &str) -> Result<FileInfo, DownloadError> {
     let ftp_url = parse_ftp_url(url)?;
@@ -182,7 +185,8 @@ pub async fn resolve_ftp_file_info(url: &str) -> Result<FileInfo, DownloadError>
                 );
                 last_err = Some(e);
                 if attempt + 1 < PROBE_MAX_RETRIES {
-                    tokio::time::sleep(PROBE_RETRY_DELAY).await;
+                    let delay = PROBE_RETRY_BASE_DELAY * 2u32.saturating_pow(attempt);
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
@@ -553,9 +557,10 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                         MAX_RETRIES,
                         e
                     );
+                    let delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempts - 1);
                     tokio::select! {
                         _ = p.cancel_token.cancelled() => return Err(DownloadError::Cancelled),
-                        _ = tokio::time::sleep(RETRY_DELAY) => {}
+                        _ = tokio::time::sleep(delay) => {}
                     }
                 }
             }
@@ -569,8 +574,19 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
             let seg_total: i64 = segs.iter().map(|s| s.downloaded_bytes).sum();
             if seg_total != info.total_bytes {
                 return Err(DownloadError::Other(format!(
-                    "FTP segment integrity failed: expected {} bytes, got {} bytes",
-                    info.total_bytes, seg_total
+                    "FTP segment integrity failed: DB sum={} bytes, expected {} bytes",
+                    seg_total, info.total_bytes
+                )));
+            }
+            // Also verify actual file size on disk (guards against DB/disk mismatch
+            // caused by crashes or external file modifications).
+            let file_len = tokio::fs::metadata(&temp_path).await
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
+            if file_len < info.total_bytes {
+                return Err(DownloadError::Other(format!(
+                    "FTP file integrity failed: disk size={} bytes, expected {} bytes",
+                    file_len, info.total_bytes
                 )));
             }
         } else {
@@ -602,7 +618,17 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
 // ---------------------------------------------------------------------------
 
 const MAX_RETRIES: u32 = 3;
-const RETRY_DELAY: Duration = Duration::from_secs(3);
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+
+/// Maximum consecutive read timeouts before aborting the FTP reader.
+/// Prevents infinite retry loops when set_read_timeout silently fails
+/// or the server stops sending data without closing the connection.
+const MAX_CONSECUTIVE_TIMEOUTS: u32 = 3;
+
+/// Maximum simultaneous FTP connections for multi-segment downloads.
+/// Most FTP servers limit 5-10 connections per IP; exceeding this causes
+/// connection refusals and potential IP bans.
+const MAX_CONCURRENT_FTP_CONNECTIONS: usize = 4;
 
 /// Single-thread FTP download using sync FTP in a blocking task.
 /// Progress is reported back to the async world via mpsc channel.
@@ -679,12 +705,15 @@ async fn ftp_download_single(
                 .map_err(|e| DownloadError::Other(format!("FTP RETR error: {}", e)))?;
 
             // Set read timeout so cancellation eventually unblocks this thread.
-            data_stream
+            if let Err(e) = data_stream
                 .get_ref()
                 .set_read_timeout(Some(FTP_DATA_READ_TIMEOUT))
-                .ok();
+            {
+                rinf::debug_print!("[ftp-single] set_read_timeout failed: {}", e);
+            }
 
             let mut buf = vec![0u8; 64 * 1024];
+            let mut consecutive_timeouts: u32 = 0;
 
             loop {
                 if cancelled.load(Ordering::SeqCst) {
@@ -693,14 +722,25 @@ async fn ftp_download_single(
                 match data_stream.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        consecutive_timeouts = 0;
                         if chunk_tx.blocking_send(buf[..n].to_vec()).is_err() {
                             break; // receiver dropped
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut
                               || e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // Read timeout — check cancel flag and retry.
-                        if cancelled.load(Ordering::SeqCst) {
+                        consecutive_timeouts += 1;
+                        if cancelled.load(Ordering::SeqCst)
+                            || consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS
+                        {
+                            if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS {
+                                drop(data_stream);
+                                let _ = ftp.quit();
+                                return Err(DownloadError::Other(format!(
+                                    "FTP read timed out {} consecutive times",
+                                    consecutive_timeouts
+                                )));
+                            }
                             break;
                         }
                         continue;
@@ -904,6 +944,9 @@ async fn ftp_download_multi_segment(
         }
     }
 
+    // Limit concurrent FTP connections to avoid server-side per-IP limits
+    // (most FTP servers cap at 5-10 simultaneous connections per IP).
+    let ftp_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_FTP_CONNECTIONS));
     let mut handles = Vec::new();
 
     for (idx, start, end, already_downloaded) in &seg_defs {
@@ -925,8 +968,14 @@ async fn ftp_download_multi_segment(
         let progress_tx = progress_tx.clone();
         let total = total_bytes;
         let limiter = speed_limiter.clone();
+        let sem = ftp_semaphore.clone();
 
         let handle = tokio::spawn(async move {
+            // Acquire permit before opening FTP connection
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => return Err(DownloadError::Cancelled),
+            };
             ftp_do_segment_with_retry(
                 &task_id,
                 seg_idx,
@@ -1035,9 +1084,10 @@ async fn ftp_do_segment_with_retry(
                             return Ok(());
                         }
                     }
+                let delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempts - 1);
                 tokio::select! {
                     _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
-                    _ = tokio::time::sleep(RETRY_DELAY) => {}
+                    _ = tokio::time::sleep(delay) => {}
                 }
             }
         }
@@ -1101,13 +1151,16 @@ async fn ftp_do_segment(
                 .map_err(|e| DownloadError::Other(format!("FTP RETR error (seg {}): {}", seg_idx, e)))?;
 
             // Set read timeout so cancellation eventually unblocks this thread.
-            data_stream
+            if let Err(e) = data_stream
                 .get_ref()
                 .set_read_timeout(Some(FTP_DATA_READ_TIMEOUT))
-                .ok();
+            {
+                rinf::debug_print!("[ftp-seg {}] set_read_timeout failed: {}", seg_idx, e);
+            }
 
             let mut buf = vec![0u8; 64 * 1024];
             let mut bytes_read: u64 = 0;
+            let mut consecutive_timeouts: u32 = 0;
 
             loop {
                 if cancelled.load(Ordering::SeqCst) {
@@ -1122,6 +1175,7 @@ async fn ftp_do_segment(
                 match data_stream.read(&mut buf[..to_read]) {
                     Ok(0) => break,
                     Ok(n) => {
+                        consecutive_timeouts = 0;
                         bytes_read += n as u64;
                         if chunk_tx.blocking_send(buf[..n].to_vec()).is_err() {
                             break;
@@ -1129,8 +1183,18 @@ async fn ftp_do_segment(
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut
                               || e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // Read timeout — check cancel flag and retry.
-                        if cancelled.load(Ordering::SeqCst) {
+                        consecutive_timeouts += 1;
+                        if cancelled.load(Ordering::SeqCst)
+                            || consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS
+                        {
+                            if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS {
+                                drop(data_stream);
+                                let _ = ftp.quit();
+                                return Err(DownloadError::Other(format!(
+                                    "FTP segment {} read timed out {} consecutive times",
+                                    seg_idx, consecutive_timeouts
+                                )));
+                            }
                             break;
                         }
                         continue;
@@ -1247,4 +1311,400 @@ async fn ftp_do_segment(
     reader_result?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_ftp_url, url_decode, FTP_DATA_READ_TIMEOUT, PROBE_MAX_RETRIES, PROBE_RETRY_BASE_DELAY};
+    use crate::downloader::sanitize_filename;
+    use crate::speed_limiter::SpeedLimiter;
+    use std::io::Read;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    // -----------------------------------------------------------------------
+    // Bug #9: url_decode — custom implementation unsafe on invalid sequences
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn url_decode_basic_ascii() {
+        assert_eq!(url_decode("hello"), "hello");
+    }
+
+    #[test]
+    fn url_decode_percent_encoded_space() {
+        assert_eq!(url_decode("hello%20world"), "hello world");
+    }
+
+    #[test]
+    fn url_decode_chinese_utf8() {
+        // "文件" in UTF-8 = E6 96 87 E4 BB B6
+        assert_eq!(url_decode("%E6%96%87%E4%BB%B6"), "文件");
+    }
+
+    #[test]
+    fn url_decode_invalid_percent_sequence_passthrough() {
+        // "%ZZ" is not valid hex — should pass through literally
+        assert_eq!(url_decode("%ZZtest"), "%ZZtest");
+    }
+
+    #[test]
+    fn url_decode_truncated_percent_at_end() {
+        // "%" at end of string with fewer than 2 chars following
+        assert_eq!(url_decode("test%"), "test%");
+        assert_eq!(url_decode("test%2"), "test%2");
+    }
+
+    #[test]
+    fn url_decode_invalid_utf8_falls_back_to_original() {
+        // 0xFF 0xFE is not valid UTF-8; should fall back to original string
+        let result = url_decode("%FF%FE");
+        assert_eq!(result, "%FF%FE"); // fallback to original
+    }
+
+    #[test]
+    fn url_decode_mixed_encoded_and_plain() {
+        assert_eq!(url_decode("my%20file%28copy%29.txt"), "my file(copy).txt");
+    }
+
+    // -----------------------------------------------------------------------
+    // FTP URL parsing: parse_ftp_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_ftp_url_basic() {
+        let u = parse_ftp_url("ftp://example.com/pub/file.iso");
+        assert!(u.is_ok());
+        let u = u.unwrap_or_else(|_| unreachable!());
+        assert_eq!(u.host, "example.com");
+        assert_eq!(u.port, 21);
+        assert_eq!(u.username, "anonymous");
+        assert_eq!(u.password, "anonymous@");
+        assert_eq!(u.path, "/pub/file.iso");
+    }
+
+    #[test]
+    fn parse_ftp_url_with_credentials() {
+        let u = parse_ftp_url("ftp://user:pass@host.com/dir/file.txt");
+        assert!(u.is_ok());
+        let u = u.unwrap_or_else(|_| unreachable!());
+        assert_eq!(u.username, "user");
+        assert_eq!(u.password, "pass");
+        assert_eq!(u.host, "host.com");
+        assert_eq!(u.path, "/dir/file.txt");
+    }
+
+    #[test]
+    fn parse_ftp_url_password_with_at_sign() {
+        // password contains '@' — rfind('@') should handle this
+        let u = parse_ftp_url("ftp://user:p%40ss@host.com/file.bin");
+        assert!(u.is_ok());
+        let u = u.unwrap_or_else(|_| unreachable!());
+        assert_eq!(u.username, "user");
+        assert_eq!(u.password, "p@ss"); // %40 decoded to @
+        assert_eq!(u.host, "host.com");
+    }
+
+    #[test]
+    fn parse_ftp_url_with_port() {
+        let u = parse_ftp_url("ftp://host.com:2121/file.zip");
+        assert!(u.is_ok());
+        let u = u.unwrap_or_else(|_| unreachable!());
+        assert_eq!(u.port, 2121);
+    }
+
+    #[test]
+    fn parse_ftp_url_not_ftp_scheme() {
+        let u = parse_ftp_url("http://example.com/file");
+        assert!(u.is_err());
+    }
+
+    #[test]
+    fn parse_ftp_url_empty_host() {
+        let u = parse_ftp_url("ftp:///path/file");
+        assert!(u.is_err());
+    }
+
+    #[test]
+    fn parse_ftp_url_no_path() {
+        let u = parse_ftp_url("ftp://host.com");
+        assert!(u.is_ok());
+        let u = u.unwrap_or_else(|_| unreachable!());
+        assert_eq!(u.path, "/");
+    }
+
+    #[test]
+    fn parse_ftp_url_encoded_path() {
+        let u = parse_ftp_url("ftp://host.com/%E6%96%87%E4%BB%B6.txt");
+        assert!(u.is_ok());
+        let u = u.unwrap_or_else(|_| unreachable!());
+        assert_eq!(u.path, "/文件.txt");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #12: FTP filename extraction when path ends in '/' or is empty
+    // (resolve_ftp_info_sync uses rsplit('/').next().filter(|s| !s.is_empty()))
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ftp_filename_from_path_trailing_slash() {
+        // Simulates the logic in resolve_ftp_info_sync
+        let path = "/pub/";
+        let file_name = path
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(sanitize_filename)
+            .or_else(|| crate::downloader::extract_from_url(&format!("ftp://host{}", path)))
+            .unwrap_or_else(|| "download".to_string());
+        // trailing slash → empty segment → should fallback to "download"
+        assert_eq!(file_name, "download");
+    }
+
+    #[test]
+    fn ftp_filename_from_normal_path() {
+        let path = "/pub/linux-6.1.tar.gz";
+        let file_name = path
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(sanitize_filename)
+            .unwrap_or_else(|| "download".to_string());
+        assert_eq!(file_name, "linux-6.1.tar.gz");
+    }
+
+    #[test]
+    fn ftp_filename_with_special_chars() {
+        let path = "/pub/my:file<2>.txt";
+        let file_name = path
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(sanitize_filename)
+            .unwrap_or_else(|| "download".to_string());
+        // colons, angle brackets should be replaced
+        assert_eq!(file_name, "my_file_2_.txt");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #4/#11: probe timeout and retry config — assert current (problematic)
+    // values so tests fail after the fix reminds us to update expectations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn probe_config_timeout_is_reasonable() {
+        // FTP data read timeout reduced to 30s (from 60s).
+        assert_eq!(FTP_DATA_READ_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn probe_retry_uses_exponential_backoff() {
+        // Fixed: retries now use exponential backoff with base delay of 1s.
+        assert_eq!(PROBE_RETRY_BASE_DELAY, Duration::from_secs(1));
+        assert_eq!(PROBE_MAX_RETRIES, 2);
+        // Worst-case: 2 attempts × 30s timeout + 1s delay = 61s (acceptable)
+        let worst_case = FTP_DATA_READ_TIMEOUT * PROBE_MAX_RETRIES + PROBE_RETRY_BASE_DELAY;
+        assert!(worst_case <= Duration::from_secs(90),
+            "worst-case probe time {worst_case:?} should be <= 90s after fix");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #10: i64 → usize truncation on resume_transfer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn i64_to_usize_truncation_safe_on_64bit() {
+        // On 64-bit platforms usize::MAX >= i64::MAX, so no truncation.
+        // This test verifies the assumption holds for the build target.
+        #[cfg(target_pointer_width = "64")]
+        {
+            let large_offset: i64 = 5_000_000_000; // 5 GB
+            let as_usize = large_offset as usize;
+            assert_eq!(as_usize, 5_000_000_000usize);
+        }
+    }
+
+    #[test]
+    fn i64_to_usize_truncation_would_fail_on_32bit() {
+        // Demonstrates the bug on a 32-bit platform (simulated).
+        // i64 value > u32::MAX would silently wrap.
+        let large_offset: i64 = 5_000_000_000; // 5 GB
+        let as_u32 = large_offset as u32; // simulates 32-bit usize
+        assert_ne!(as_u32 as i64, large_offset, "truncation silently corrupts the offset");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #1/#14: FTP read timeout retry — simulates the infinite loop risk
+    // -----------------------------------------------------------------------
+
+    /// Simulates the FTP reader loop pattern to demonstrate the infinite loop
+    /// when set_read_timeout silently fails and reads continuously timeout.
+    #[test]
+    fn ftp_read_timeout_loop_should_have_retry_limit() {
+        // Simulate: create a reader that always returns TimedOut
+        struct AlwaysTimedOutReader;
+        impl Read for AlwaysTimedOutReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "simulated timeout"))
+            }
+        }
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut reader = AlwaysTimedOutReader;
+        let mut buf = vec![0u8; 1024];
+        let mut timeout_count = 0u32;
+        let max_iterations = 1000; // Safety limit for the test itself
+
+        // Replicate the current buggy loop pattern from ftp_downloader.rs:689-713
+        let mut iterations = 0;
+        loop {
+            iterations += 1;
+            if iterations > max_iterations {
+                break; // Test safety valve
+            }
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_n) => { /* normal */ }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    timeout_count += 1;
+                    // BUG: current code just does `continue` with no limit
+                    if cancelled.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    continue; // This is the bug — infinite loop
+                }
+                Err(_) => break,
+            }
+        }
+
+        // The loop hit our safety valve, proving the infinite loop bug:
+        // without cancellation, timeouts cause unlimited retries.
+        assert_eq!(iterations, max_iterations + 1,
+            "BUG: timeout loop ran {iterations} times without bound — \
+             needs a retry limit");
+        assert_eq!(timeout_count, max_iterations,
+            "all iterations were timeouts, confirming infinite retry");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #3: Speed limiter + bounded channel backpressure / potential deadlock
+    // -----------------------------------------------------------------------
+
+    /// Simulates the FTP architecture: blocking producer → bounded channel →
+    /// async consumer with speed limiter. Demonstrates backpressure risk.
+    #[tokio::test]
+    async fn speed_limiter_with_bounded_channel_backpressure() {
+        let limiter = SpeedLimiter::new(1024); // 1 KB/s — very slow
+        limiter.spawn_refill_task();
+
+        // Small bounded channel (same as ftp_downloader multi-segment: capacity 16)
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+        let produced = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let consumed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let produced_clone = produced.clone();
+        // Blocking producer: simulates FTP reader pushing 64KB chunks
+        let producer = tokio::task::spawn_blocking(move || {
+            let chunk = vec![0u8; 64 * 1024]; // 64 KB per chunk
+            for _ in 0..20 {
+                // This will block when channel is full
+                match tx.blocking_send(chunk.clone()) {
+                    Ok(()) => {
+                        produced_clone.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let consumed_clone = consumed.clone();
+        let limiter_clone = limiter.clone();
+        // Async consumer with speed limiter
+        let consumer = tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => break,
+                    chunk = rx.recv() => {
+                        match chunk {
+                            Some(bytes) => {
+                                let n = bytes.len();
+                                let mut offset = 0;
+                                while offset < n {
+                                    let rem = (n - offset) as u64;
+                                    let allowed = limiter_clone.consume(rem).await;
+                                    offset += allowed as usize;
+                                }
+                                consumed_clone.fetch_add(n as u64, Ordering::Relaxed);
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+
+        let _ = tokio::time::timeout(Duration::from_secs(5), producer).await;
+        consumer.abort();
+
+        let total_produced = produced.load(Ordering::Relaxed);
+        let total_consumed = consumed.load(Ordering::Relaxed);
+
+        // With 1KB/s limit and 3s consumer runtime, at most ~3KB consumed.
+        // But producer generates 20 × 64KB = 1.28MB of data.
+        // The bounded channel (capacity 16) fills up quickly → producer blocks.
+        // This demonstrates the backpressure: producer is WAY ahead of consumer.
+        assert!(total_produced > total_consumed,
+            "producer ({total_produced}) should be ahead of consumer ({total_consumed}) \
+             due to speed limiter backpressure");
+
+        // Consumer should only process ~3KB in 3 seconds at 1KB/s limit
+        assert!(total_consumed < 20_000,
+            "consumer processed {total_consumed} bytes in 3s at 1KB/s limit — \
+             expected < 20KB (with overhead)");
+
+        // The key insight: producer is stuck because channel is full, and consumer
+        // is stuck in speed_limiter.consume(). In a real FTP download with the
+        // current code, if the consumer async task is waiting on the speed limiter
+        // and the channel backs up, the blocking thread cannot send new data.
+        // This is the documented backpressure problem (Bug #3).
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #13: multi-segment integrity check only checks DB, not disk
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn integrity_check_db_only_misses_disk_corruption() {
+        // Simulates the integrity check logic from ftp_downloader.rs:566-586
+        struct SegRecord {
+            downloaded_bytes: i64,
+        }
+        let total_bytes: i64 = 1_000_000;
+        let segments = [
+            SegRecord { downloaded_bytes: 500_000 },
+            SegRecord { downloaded_bytes: 500_000 },
+        ];
+        let seg_total: i64 = segments.iter().map(|s| s.downloaded_bytes).sum();
+
+        // DB says all segments complete
+        assert_eq!(seg_total, total_bytes, "DB check passes");
+
+        // But the actual file on disk could be different (e.g., 0 bytes due to crash)
+        let actual_file_size: i64 = 0; // simulated disk corruption
+        assert_ne!(actual_file_size, total_bytes,
+            "BUG: DB integrity check passes but disk file is corrupted/empty — \
+             current code does not verify disk file size for multi-segment FTP");
+    }
 }

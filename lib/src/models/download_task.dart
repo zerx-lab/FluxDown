@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../bindings/bindings.dart';
+import '../i18n/locale_provider.dart';
 
 /// 任务状态 — 与 Rust 端状态码对应
 /// 0=pending, 1=downloading, 2=paused, 3=completed, 4=error, 5=preparing
@@ -25,15 +26,18 @@ enum FileCategory {
   archive,
   other;
 
-  String get label => switch (this) {
-    FileCategory.all => '全部文件',
-    FileCategory.video => '视频',
-    FileCategory.audio => '音频',
-    FileCategory.document => '文档',
-    FileCategory.image => '图片',
-    FileCategory.archive => '压缩包',
-    FileCategory.other => '其他',
-  };
+  String get label {
+    final s = currentS;
+    return switch (this) {
+      FileCategory.all => s.categoryAll,
+      FileCategory.video => s.categoryVideo,
+      FileCategory.audio => s.categoryAudio,
+      FileCategory.document => s.categoryDocument,
+      FileCategory.image => s.categoryImage,
+      FileCategory.archive => s.categoryArchive,
+      FileCategory.other => s.categoryOther,
+    };
+  }
 
   static const _videoExts = {
     'mp4',
@@ -171,11 +175,12 @@ class DownloadTask {
   final int speed; // bytes per second
   final String errorMessage;
   final bool isSelected;
+  final DateTime createdAt;
 
   /// Per-segment progress data (null if no segment info received yet)
   final List<SegmentData>? segments;
 
-  const DownloadTask({
+  DownloadTask({
     required this.id,
     required this.url,
     required this.fileName,
@@ -187,19 +192,24 @@ class DownloadTask {
     this.errorMessage = '',
     this.isSelected = false,
     this.segments,
-  });
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
 
   /// 从 AllTasks 信号中的 TaskInfo 构建
   factory DownloadTask.fromTaskInfo(TaskInfo info) {
+    final seconds = int.tryParse(info.createdAt) ?? 0;
     return DownloadTask(
       id: info.taskId,
       url: info.url,
-      fileName: info.fileName.isEmpty ? '未知文件' : info.fileName,
+      fileName: info.fileName.isEmpty ? currentS.unknownFile : info.fileName,
       saveDir: info.saveDir,
       status: taskStatusFromInt(info.status),
       downloadedBytes: info.downloadedBytes,
       totalBytes: info.totalBytes,
       errorMessage: info.errorMessage,
+      createdAt: seconds > 0
+          ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000)
+          : DateTime.now(),
     );
   }
 
@@ -215,6 +225,7 @@ class DownloadTask {
     String? errorMessage,
     bool? isSelected,
     List<SegmentData>? segments,
+    DateTime? createdAt,
   }) {
     return DownloadTask(
       id: id ?? this.id,
@@ -228,6 +239,7 @@ class DownloadTask {
       errorMessage: errorMessage ?? this.errorMessage,
       isSelected: isSelected ?? this.isSelected,
       segments: segments ?? this.segments,
+      createdAt: createdAt ?? this.createdAt,
     );
   }
 
@@ -281,7 +293,7 @@ class DownloadTask {
 
   /// 格式化文件大小
   String get sizeText {
-    if (totalBytes <= 0) return '未知大小';
+    if (totalBytes <= 0) return currentS.unknownSize;
     return formatBytes(totalBytes);
   }
 
@@ -296,34 +308,36 @@ class DownloadTask {
 
   /// 副标题信息
   String get subtitle {
+    final s = currentS;
     switch (status) {
       case TaskStatus.downloading:
         return 'HTTP · $sizeText · $speedText';
       case TaskStatus.paused:
-        return 'HTTP · $sizeText · 已暂停';
+        return 'HTTP · $sizeText · ${s.subtitlePaused}';
       case TaskStatus.completed:
         return 'HTTP · $sizeText';
       case TaskStatus.error:
-        return 'HTTP · $sizeText · ${errorMessage.isEmpty ? '出错' : errorMessage}';
+        return 'HTTP · $sizeText · ${errorMessage.isEmpty ? s.subtitleError : errorMessage}';
       case TaskStatus.pending:
-        return 'HTTP · 等待中...';
+        return 'HTTP · ${s.subtitlePending}';
       case TaskStatus.preparing:
-        return 'HTTP · 准备中...';
+        return 'HTTP · ${s.subtitlePreparing}';
       case TaskStatus.resuming:
-        return 'HTTP · $sizeText · 恢复中...';
+        return 'HTTP · $sizeText · ${s.subtitleResuming}';
     }
   }
 
   /// 状态文本
   String get statusText {
+    final s = currentS;
     return switch (status) {
-      TaskStatus.pending => '等待中',
-      TaskStatus.downloading => '下载中',
-      TaskStatus.paused => '已暂停',
-      TaskStatus.completed => '已完成',
-      TaskStatus.error => '出错',
-      TaskStatus.preparing => '准备中',
-      TaskStatus.resuming => '恢复中',
+      TaskStatus.pending => s.statusPending,
+      TaskStatus.downloading => s.statusDownloading,
+      TaskStatus.paused => s.statusPaused,
+      TaskStatus.completed => s.statusCompleted,
+      TaskStatus.error => s.statusError,
+      TaskStatus.preparing => s.statusPreparing,
+      TaskStatus.resuming => s.statusResuming,
     };
   }
 
@@ -334,9 +348,10 @@ class DownloadTask {
     }
     final remaining = totalBytes - downloadedBytes;
     final seconds = remaining / speed;
-    if (seconds < 60) return '${seconds.toInt()} 秒';
-    if (seconds < 3600) return '${(seconds / 60).toInt()} 分钟';
-    return '${(seconds / 3600).toStringAsFixed(1)} 小时';
+    final s = currentS;
+    if (seconds < 60) return s.etaSeconds(seconds.toInt());
+    if (seconds < 3600) return s.etaMinutes((seconds / 60).toInt());
+    return s.etaHours((seconds / 3600).toStringAsFixed(1));
   }
 
   // ---------------------------------------------------------------------------
@@ -350,4 +365,51 @@ class DownloadTask {
     final value = bytes / pow(1024, i);
     return '${value.toStringAsFixed(value >= 100 ? 0 : 1)} ${units[i]}';
   }
+}
+
+// =============================================================================
+// 时间分组
+// =============================================================================
+
+/// 时间分组类型 — 按创建时间将任务分入不同组
+enum TimeGroup {
+  today,
+  yesterday,
+  thisWeek,
+  thisMonth,
+  older;
+
+  String get label {
+    final s = currentS;
+    return switch (this) {
+      TimeGroup.today => s.today,
+      TimeGroup.yesterday => s.yesterday,
+      TimeGroup.thisWeek => s.thisWeek,
+      TimeGroup.thisMonth => s.thisMonth,
+      TimeGroup.older => s.older,
+    };
+  }
+
+  /// 根据创建时间判断属于哪个分组
+  static TimeGroup fromDateTime(DateTime createdAt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final weekAgo = today.subtract(const Duration(days: 7));
+    final monthAgo = DateTime(now.year, now.month - 1, now.day);
+
+    if (createdAt.isAfter(today)) return TimeGroup.today;
+    if (createdAt.isAfter(yesterday)) return TimeGroup.yesterday;
+    if (createdAt.isAfter(weekAgo)) return TimeGroup.thisWeek;
+    if (createdAt.isAfter(monthAgo)) return TimeGroup.thisMonth;
+    return TimeGroup.older;
+  }
+}
+
+/// 任务分组数据
+class TaskGroup {
+  final TimeGroup group;
+  final List<DownloadTask> tasks;
+
+  const TaskGroup({required this.group, required this.tasks});
 }

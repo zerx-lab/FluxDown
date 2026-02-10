@@ -7,9 +7,11 @@ use crate::db::Db;
 use crate::download_manager::{self, DownloadManager, TaskDone};
 use crate::native_messaging::{self};
 use crate::signals::{
-    ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask, CreateTask,
-    ExternalDownloadRequest, RequestAllTasks, RequestConfig, SaveConfig,
+    CheckForUpdate, ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask, CreateTask,
+    DownloadUpdate, ExternalDownloadRequest, InstallUpdate, RequestAllTasks, RequestConfig,
+    SaveConfig,
 };
+use crate::updater;
 
 /// Compute default save directory (platform-dependent).
 fn default_save_dir() -> String {
@@ -95,6 +97,9 @@ pub async fn run(db_dir: PathBuf) {
     let config_save_recv = SaveConfig::get_dart_signal_receiver();
     let config_req_recv = RequestConfig::get_dart_signal_receiver();
     let confirm_ext_recv = ConfirmExternalDownload::get_dart_signal_receiver();
+    let check_update_recv = CheckForUpdate::get_dart_signal_receiver();
+    let download_update_recv = DownloadUpdate::get_dart_signal_receiver();
+    let install_update_recv = InstallUpdate::get_dart_signal_receiver();
 
     // Spawn the Native Messaging listener (reads from stdin in a blocking thread).
     // When the browser extension sends a download request, it arrives on this channel.
@@ -191,6 +196,28 @@ pub async fn run(db_dir: PathBuf) {
             }
             Some(done) = done_rx.recv() => {
                 manager.on_task_done(&done.task_id, done.generation).await;
+            }
+            // --- Auto-update signals ---
+            Some(signal) = check_update_recv.recv() => {
+                let version = signal.message.current_version;
+                tokio::spawn(async move {
+                    updater::check(&version).await;
+                });
+            }
+            Some(signal) = download_update_recv.recv() => {
+                let url = signal.message.url;
+                let version = signal.message.version;
+                tokio::spawn(async move {
+                    updater::download(&url, &version).await;
+                });
+            }
+            Some(signal) = install_update_recv.recv() => {
+                let path = signal.message.installer_path;
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = updater::install(&path) {
+                        rinf::debug_print!("[updater] install error: {}", e);
+                    }
+                });
             }
         }
     }

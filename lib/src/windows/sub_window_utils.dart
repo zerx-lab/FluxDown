@@ -9,7 +9,8 @@ import 'package:ffi/ffi.dart';
 /// 因此通过 dart:ffi 直接调用 Win32 API 来控制子窗口。
 /// 这是 Flutter Windows 桌面开发中处理平台原生能力的标准做法。
 
-// --- Win32 constants ---
+// --- Win32 constants (names follow Win32 API convention) ---
+// ignore_for_file: constant_identifier_names
 const int _SWP_NOZORDER = 0x0004;
 const int _SWP_NOMOVE = 0x0002;
 const int _SWP_NOSIZE = 0x0001;

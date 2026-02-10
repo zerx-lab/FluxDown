@@ -15,12 +15,18 @@ import 'src/services/external_download_service.dart';
 import 'src/services/log_service.dart';
 import 'src/services/notification_service.dart';
 import 'src/services/tray_service.dart';
+import 'src/i18n/locale_provider.dart';
+import 'src/services/update_service.dart';
 import 'src/theme/app_theme.dart';
 import 'src/theme/theme_provider.dart';
 import 'src/windows/download_complete_window.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 初始化 i18n — 创建 LocaleNotifier 并从 SharedPreferences 恢复语言偏好
+  localeNotifier = LocaleNotifier();
+  await localeNotifier.init();
 
   // desktop_multi_window 子窗口入口：
   // 当子窗口被创建时，同一个 main() 会再次调用，args 包含 ['multi_window', windowId, argument]
@@ -118,13 +124,20 @@ Future<void> main(List<String> args) async {
   logInfo('main', 'initializing Rust runtime...');
   await initializeRust(assignRustSignal);
   logInfo('main', 'Rust runtime initialized, calling runApp...');
-  runApp(FluxDownApp(themeProvider: themeProvider));
+  runApp(
+    FluxDownApp(themeProvider: themeProvider, localeNotifier: localeNotifier),
+  );
 }
 
 class FluxDownApp extends StatefulWidget {
   final ThemeProvider themeProvider;
+  final LocaleNotifier localeNotifier;
 
-  const FluxDownApp({super.key, required this.themeProvider});
+  const FluxDownApp({
+    super.key,
+    required this.themeProvider,
+    required this.localeNotifier,
+  });
 
   /// 允许子组件通过 context 访问 ThemeProvider
   static ThemeProvider of(BuildContext context) {
@@ -138,6 +151,7 @@ class FluxDownApp extends StatefulWidget {
 
 class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
   late final ThemeProvider themeProvider;
+  late final LocaleNotifier _localeNotifier;
   final _navigatorKey = GlobalKey<NavigatorState>();
   final _settingsForExternal = SettingsProvider();
 
@@ -149,7 +163,9 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     super.initState();
     logInfo('FluxDownApp', 'initState');
     themeProvider = widget.themeProvider;
+    _localeNotifier = widget.localeNotifier;
     themeProvider.addListener(_onThemeChanged);
+    _localeNotifier.addListener(_onLocaleChanged);
     windowManager.addListener(this);
     // 阻止默认关闭行为，由 onWindowClose 接管
     windowManager.setPreventClose(true);
@@ -167,6 +183,18 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     );
     // 请求加载配置，确保 settingsProvider 有默认保存目录等数据
     _settingsForExternal.requestConfig();
+
+    // 延迟 5 秒后台静默检查更新（避免阻塞启动流程）
+    Future.delayed(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      if (!_settingsForExternal.autoCheckUpdate) {
+        logInfo('FluxDownApp', 'auto check for updates skipped (disabled)');
+        return;
+      }
+      logInfo('FluxDownApp', 'auto check for updates');
+      UpdateService.instance.checkForUpdate();
+    });
+
     logInfo('FluxDownApp', 'initState done');
   }
 
@@ -177,6 +205,7 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     ExternalDownloadService.shutdown();
     _settingsForExternal.dispose();
     windowManager.removeListener(this);
+    _localeNotifier.removeListener(_onLocaleChanged);
     themeProvider.removeListener(_onThemeChanged);
     themeProvider.dispose();
     super.dispose();
@@ -186,6 +215,13 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
   void _onThemeChanged() {
     logInfo('FluxDownApp', 'themeChanged, mounted=$mounted');
     if (mounted) setState(() {});
+  }
+
+  void _onLocaleChanged() {
+    logInfo('FluxDownApp', 'localeChanged to $currentLocale, mounted=$mounted');
+    if (mounted) setState(() {});
+    // 语言变更后刷新托盘菜单
+    TrayService.instance.refreshMenu();
   }
 
   /// 优雅退出 — 等待待处理通知完成 → 销毁托盘 → 销毁窗口。
@@ -276,29 +312,32 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     // - AnimatedTheme（200ms Material 主题动画）
     // - materialTheme() 每帧重建 ThemeData + applyGoogleFontToTextTheme
     final theme = _resolveTheme(context);
-    return ShadTheme(
-      data: theme,
-      child: Directionality(
-        textDirection: TextDirection.ltr,
-        child: DefaultTextStyle(
-          style: theme.textTheme.p.copyWith(
-            color: theme.colorScheme.foreground,
-          ),
-          child: ShadToaster(
-            child: ShadSonner(
-              child: ExcludeSemantics(
-                child: WidgetsApp(
-                  navigatorKey: _navigatorKey,
-                  color: theme.colorScheme.primary,
-                  debugShowCheckedModeBanner: false,
-                  home: const HomePage(),
-                  pageRouteBuilder:
-                      <T>(RouteSettings settings, WidgetBuilder builder) {
-                        return MaterialPageRoute<T>(
-                          settings: settings,
-                          builder: builder,
-                        );
-                      },
+    return LocaleScope(
+      s: _localeNotifier.s,
+      child: ShadTheme(
+        data: theme,
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: DefaultTextStyle(
+            style: theme.textTheme.p.copyWith(
+              color: theme.colorScheme.foreground,
+            ),
+            child: ShadToaster(
+              child: ShadSonner(
+                child: ExcludeSemantics(
+                  child: WidgetsApp(
+                    navigatorKey: _navigatorKey,
+                    color: theme.colorScheme.primary,
+                    debugShowCheckedModeBanner: false,
+                    home: const HomePage(),
+                    pageRouteBuilder:
+                        <T>(RouteSettings settings, WidgetBuilder builder) {
+                          return MaterialPageRoute<T>(
+                            settings: settings,
+                            builder: builder,
+                          );
+                        },
+                  ),
                 ),
               ),
             ),

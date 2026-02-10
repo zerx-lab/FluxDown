@@ -23,14 +23,13 @@ export interface FluxDownSettings {
   interceptMimeTypes: string[];
   /** 排除的域名列表 */
   excludeDomains: string[];
-  /** 是否显示通知 */
-  showNotification: boolean;
+
 }
 
 const DEFAULT_SETTINGS: FluxDownSettings = {
   enabled: true,
   interceptMode: 'smart',
-  minFileSize: 1024 * 1024, // 1MB
+  minFileSize: 0, // 不限
   interceptExtensions: [
     // 压缩文件
     '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz',
@@ -84,7 +83,6 @@ const DEFAULT_SETTINGS: FluxDownSettings = {
     'application/x-bittorrent',
   ],
   excludeDomains: [],
-  showNotification: true,
 };
 
 /**

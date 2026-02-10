@@ -7,6 +7,7 @@ import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../pages/settings_page.dart';
 import '../services/log_service.dart';
+import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 import 'title_drag_area.dart';
 
@@ -154,7 +155,10 @@ class HeaderBarState extends State<HeaderBar> {
           SearchResult(
             type: SearchResultType.settings,
             title: item.label,
-            subtitle: '设置 · ${item.category.label} · ${item.description}',
+            subtitle: currentS.settingsSearchSubtitle(
+              item.category.localizedLabel,
+              item.description,
+            ),
             icon: item.icon,
             settingsCategory: item.category,
           ),
@@ -245,14 +249,14 @@ class HeaderBarState extends State<HeaderBar> {
               onPressed: widget.onNewDownload,
               backgroundColor: c.accent,
               hoverBackgroundColor: c.accentHover,
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(LucideIcons.plus, size: 14, color: Colors.white),
-                  SizedBox(width: 6),
+                  const Icon(LucideIcons.plus, size: 14, color: Colors.white),
+                  const SizedBox(width: 6),
                   Text(
-                    '新建下载',
-                    style: TextStyle(
+                    LocaleScope.of(context).newDownload,
+                    style: const TextStyle(
                       fontSize: 13,
                       color: Colors.white,
                       fontWeight: FontWeight.w500,
@@ -276,7 +280,9 @@ class HeaderBarState extends State<HeaderBar> {
                       key: _searchBoxKey,
                       controller: _searchController,
                       focusNode: _focusNode,
-                      placeholder: const Text('搜索任务或设置...'),
+                      placeholder: Text(
+                        LocaleScope.of(context).searchPlaceholder,
+                      ),
                       padding: const EdgeInsets.symmetric(
                         horizontal: 10,
                         vertical: 4,
@@ -412,7 +418,10 @@ class _SearchResultsPanel extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (taskResults.isNotEmpty) ...[
-                _SectionLabel(label: '下载任务', colors: c),
+                _SectionLabel(
+                  label: LocaleScope.of(context).searchGroupTasks,
+                  colors: c,
+                ),
                 for (final r in taskResults)
                   _SearchResultItem(
                     result: r,
@@ -428,7 +437,10 @@ class _SearchResultsPanel extends StatelessWidget {
                   child: Divider(height: 1, color: c.border),
                 ),
               if (settingsResults.isNotEmpty) ...[
-                _SectionLabel(label: '设置', colors: c),
+                _SectionLabel(
+                  label: LocaleScope.of(context).searchGroupSettings,
+                  colors: c,
+                ),
                 for (final r in settingsResults)
                   _SearchResultItem(
                     result: r,
@@ -580,21 +592,21 @@ class WindowControls extends StatelessWidget {
           // 全部暂停
           _ToolButton(
             icon: LucideIcons.circlePause,
-            tooltip: '全部暂停',
+            tooltip: LocaleScope.of(context).pauseAll,
             onPressed: () => controller.pauseAll(),
             iconSize: 16,
           ),
           // 全部恢复
           _ToolButton(
             icon: LucideIcons.circlePlay,
-            tooltip: '全部恢复',
+            tooltip: LocaleScope.of(context).resumeAll,
             onPressed: () => controller.resumeAll(),
             iconSize: 16,
           ),
           // 设置按钮
           _ToolButton(
             icon: LucideIcons.settings,
-            tooltip: '设置',
+            tooltip: LocaleScope.of(context).settings,
             onPressed: () => onSettings?.call(),
             iconSize: 16,
             isActive: isSettingsActive,
@@ -604,7 +616,9 @@ class WindowControls extends StatelessWidget {
             icon: themeProvider.isDark(context)
                 ? LucideIcons.sun
                 : LucideIcons.moon,
-            tooltip: themeProvider.isDark(context) ? '切换到亮色模式' : '切换到暗色模式',
+            tooltip: themeProvider.isDark(context)
+                ? LocaleScope.of(context).toggleToLight
+                : LocaleScope.of(context).toggleToDark,
             onPressed: () => themeProvider.toggleTheme(context),
             iconSize: 15,
           ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
+import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 
 class StatusBar extends StatelessWidget {
@@ -12,6 +13,7 @@ class StatusBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
@@ -38,7 +40,7 @@ class StatusBar extends StatelessWidget {
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    active > 0 ? '下载中' : '空闲',
+                    active > 0 ? s.statusDownloadingLabel : s.statusIdle,
                     style: TextStyle(fontSize: 10.5, color: c.textMuted),
                   ),
                 ],
@@ -64,7 +66,7 @@ class StatusBar extends StatelessWidget {
               ),
               const SizedBox(width: 20),
               Text(
-                '$active 活跃 · $paused 暂停 · $total 总计',
+                s.statusSummary(active, paused, total),
                 style: TextStyle(fontSize: 10.5, color: c.textMuted),
               ),
               const Spacer(),

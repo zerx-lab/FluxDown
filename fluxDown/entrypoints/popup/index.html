@@ -78,20 +78,13 @@
       <div class="row">
         <span class="label" data-i18n="settings.minFileSize">Min File Size</span>
         <select id="minSizeSelect">
-          <option value="0" data-i18n="settings.sizeNoLimit">No limit</option>
+          <option value="0" selected data-i18n="settings.sizeNoLimit">No limit</option>
           <option value="102400">100 KB</option>
           <option value="524288">512 KB</option>
-          <option value="1048576" selected>1 MB</option>
+          <option value="1048576">1 MB</option>
           <option value="5242880">5 MB</option>
           <option value="10485760">10 MB</option>
         </select>
-      </div>
-      <div class="row">
-        <span class="label" data-i18n="settings.notification">Notifications</span>
-        <label class="toggle">
-          <input type="checkbox" id="notifyToggle" checked>
-          <span class="slider"></span>
-        </label>
       </div>
     </section>
 
@@ -120,12 +113,22 @@
     <section class="section">
       <div class="section-header">
         <span class="section-title" data-i18n="domain.title">Excluded Domains</span>
-        <button class="btn-small accent" id="addCurrentDomainBtn" title="">
-          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-          <span data-i18n="domain.currentSite">Current Site</span>
-        </button>
+        <div class="section-header-actions">
+          <button class="icon-btn small" id="addDomainManualBtn" data-i18n-title="domain.addTitle">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+          <button class="btn-small accent" id="addCurrentDomainBtn" title="">
+            <span data-i18n="domain.currentSite">Current Site</span>
+          </button>
+        </div>
+      </div>
+      <!-- Domain input (hidden by default) -->
+      <div class="ext-input-row hidden" id="domainInputRow">
+        <input type="text" id="domainInput" data-i18n-placeholder="domain.placeholder" placeholder="Enter domain, e.g. example.com" autocomplete="off">
+        <button class="btn-small confirm" id="domainConfirmBtn" data-i18n="fileType.add">Add</button>
+        <button class="btn-small cancel" id="domainCancelBtn" data-i18n="fileType.cancel">Cancel</button>
       </div>
       <div class="domain-list" id="domainList">
         <div class="empty-hint" id="domainEmptyHint" data-i18n="domain.empty">No excluded domains</div>

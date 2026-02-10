@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../theme/app_colors.dart';
 import 'task_list_item.dart';
@@ -9,17 +10,18 @@ class TaskTabBar extends StatelessWidget {
 
   const TaskTabBar({super.key, required this.controller});
 
-  static const _tabs = [
-    (StatusTab.all, '全部'),
-    (StatusTab.downloading, '下载中'),
-    (StatusTab.completed, '已完成'),
-    (StatusTab.paused, '已暂停'),
-    (StatusTab.error, '出错'),
+  static List<(StatusTab, String)> _tabs(S s) => [
+    (StatusTab.all, s.tabAll),
+    (StatusTab.downloading, s.tabDownloading),
+    (StatusTab.completed, s.tabCompleted),
+    (StatusTab.paused, s.tabPaused),
+    (StatusTab.error, s.tabError),
   ];
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
@@ -27,11 +29,12 @@ class TaskTabBar extends StatelessWidget {
 
         // 管理模式 → 显示操作栏
         if (ctrl.isManageMode) {
-          return _buildManageBar(context, c, ctrl);
+          return _buildManageBar(context, c, ctrl, s);
         }
 
         // 普通模式 → 显示 Tab 栏
         final selected = ctrl.statusTab;
+        final tabs = _tabs(s);
         return Container(
           height: 40,
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -41,7 +44,7 @@ class TaskTabBar extends StatelessWidget {
           ),
           child: Row(
             children: [
-              for (final (tab, label) in _tabs) ...[
+              for (final (tab, label) in tabs) ...[
                 _Tab(
                   label: '$label (${ctrl.filteredCountForStatus(tab)})',
                   isSelected: selected == tab,
@@ -60,6 +63,7 @@ class TaskTabBar extends StatelessWidget {
     BuildContext context,
     AppColors c,
     DownloadController ctrl,
+    S s,
   ) {
     final checkedCount = ctrl.checkedCount;
     final allChecked = ctrl.isAllFilteredChecked;
@@ -76,7 +80,7 @@ class TaskTabBar extends StatelessWidget {
           // 全选/取消全选按钮
           _ManageButton(
             icon: allChecked ? LucideIcons.checkCheck : LucideIcons.squareCheck,
-            label: allChecked ? '取消全选' : '全选',
+            label: allChecked ? s.deselectAll : s.selectAll,
             color: c.textPrimary,
             onTap: () {
               if (allChecked) {
@@ -98,7 +102,7 @@ class TaskTabBar extends StatelessWidget {
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
-              '已选 $checkedCount 项',
+              s.selectedCount(checkedCount),
               style: TextStyle(
                 fontSize: 12,
                 color: checkedCount > 0 ? c.accent : c.textMuted,
@@ -112,7 +116,7 @@ class TaskTabBar extends StatelessWidget {
           // 删除任务按钮
           _ManageButton(
             icon: LucideIcons.trash2,
-            label: '删除任务',
+            label: s.deleteTask,
             color: checkedCount > 0 ? c.textPrimary : c.textMuted,
             onTap: checkedCount > 0
                 ? () => showBatchDeleteConfirmDialog(
@@ -129,7 +133,7 @@ class TaskTabBar extends StatelessWidget {
           // 删除任务和文件按钮
           _ManageButton(
             icon: LucideIcons.fileX,
-            label: '删除任务和文件',
+            label: s.deleteTaskAndFile,
             color: checkedCount > 0 ? AppColors.red : c.textMuted,
             onTap: checkedCount > 0
                 ? () => showBatchDeleteConfirmDialog(
@@ -145,7 +149,7 @@ class TaskTabBar extends StatelessWidget {
           // 退出管理模式
           _ManageButton(
             icon: LucideIcons.x,
-            label: '取消',
+            label: s.cancel,
             color: c.textSecondary,
             onTap: () => ctrl.exitManageMode(),
           ),

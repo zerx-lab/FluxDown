@@ -22,7 +22,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 tokio = { version = "1.45.0", features = ["rt", "macros", "time", "sync", "fs"] }
 async-trait = "0.1.87"
 messages = "0.3.1"
-reqwest = { version = "0.12", features = ["stream", "rustls-tls", "cookies", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "cookies", "gzip", "brotli", "deflate", "json"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }

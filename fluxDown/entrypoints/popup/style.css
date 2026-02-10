@@ -273,6 +273,12 @@ body::-webkit-scrollbar-thumb {
   margin-bottom: 0;
 }
 
+.section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .row {
   display: flex;
   align-items: center;

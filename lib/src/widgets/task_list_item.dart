@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../i18n/locale_provider.dart';
 import '../models/download_task.dart';
 import '../theme/app_colors.dart';
 import 'context_menu.dart';
@@ -267,6 +268,7 @@ void showTaskContextMenu(
   required void Function({required bool deleteFiles}) onDelete,
 }) {
   final c = AppColors.of(context);
+  final s = LocaleScope.of(context);
   final items = <ContextMenuItem>[];
   final dividers = <int>{};
 
@@ -279,7 +281,7 @@ void showTaskContextMenu(
       items.add(
         ContextMenuItem(
           icon: LucideIcons.pause,
-          label: '暂停',
+          label: s.pause,
           color: c.textPrimary,
           action: onPause,
         ),
@@ -289,7 +291,7 @@ void showTaskContextMenu(
       items.add(
         ContextMenuItem(
           icon: LucideIcons.play,
-          label: '继续',
+          label: s.resume,
           color: c.textPrimary,
           action: onResume,
         ),
@@ -310,7 +312,7 @@ void showTaskContextMenu(
     items.add(
       ContextMenuItem(
         icon: LucideIcons.externalLink,
-        label: '打开文件',
+        label: s.openFile,
         color: c.textPrimary,
         action: () => _openFile(filePath),
       ),
@@ -319,7 +321,7 @@ void showTaskContextMenu(
   items.add(
     ContextMenuItem(
       icon: LucideIcons.folderOpen,
-      label: '打开所在文件夹',
+      label: s.openFolder,
       color: c.textPrimary,
       action: () => _openFolder(filePath),
     ),
@@ -330,14 +332,14 @@ void showTaskContextMenu(
   items.add(
     ContextMenuItem(
       icon: LucideIcons.copy,
-      label: '复制下载地址',
+      label: s.copyUrl,
       color: c.textPrimary,
       action: () {
         Clipboard.setData(ClipboardData(text: task.url));
         ShadSonner.of(context).show(
-          const ShadToast(
-            title: Text('已复制下载地址'),
-            duration: Duration(seconds: 2),
+          ShadToast(
+            title: Text(s.urlCopied),
+            duration: const Duration(seconds: 2),
           ),
         );
       },
@@ -349,7 +351,7 @@ void showTaskContextMenu(
   items.add(
     ContextMenuItem(
       icon: LucideIcons.trash2,
-      label: '删除任务',
+      label: s.deleteTask,
       color: c.textPrimary,
       action: () => showDeleteConfirmDialog(
         context,
@@ -362,7 +364,7 @@ void showTaskContextMenu(
   items.add(
     ContextMenuItem(
       icon: LucideIcons.fileX,
-      label: '删除任务和文件',
+      label: s.deleteTaskAndFile,
       color: AppColors.red,
       action: () => showDeleteConfirmDialog(
         context,
@@ -432,11 +434,15 @@ void showDeleteConfirmDialog(
 }) {
   if (!context.mounted) return;
   final c = AppColors.of(context);
+  final s = LocaleScope.of(context);
   showShadDialog(
     context: context,
+    barrierColor: const Color(0x1A000000),
+    animateIn: const [],
+    animateOut: const [],
     builder: (ctx) => ShadDialog(
       title: Text(
-        deleteFiles ? '删除任务和文件' : '删除任务',
+        s.deleteConfirmTitle(deleteFiles),
         style: TextStyle(
           fontSize: 16,
           fontWeight: FontWeight.w600,
@@ -444,16 +450,14 @@ void showDeleteConfirmDialog(
         ),
       ),
       description: Text(
-        deleteFiles
-            ? '确定要删除任务「${task.fileName}」并删除已下载的文件吗？此操作不可撤销。'
-            : '确定要删除任务「${task.fileName}」吗？已下载的文件将保留在磁盘上。',
+        s.deleteConfirmDesc(task.fileName, deleteFiles),
         style: TextStyle(fontSize: 13, color: c.textSecondary),
       ),
       actions: [
         ShadButton.outline(
           onPressed: () => Navigator.of(ctx).pop(),
           child: Text(
-            '取消',
+            s.cancel,
             style: TextStyle(fontSize: 13, color: c.textPrimary),
           ),
         ),
@@ -463,7 +467,7 @@ void showDeleteConfirmDialog(
             onConfirm();
           },
           child: Text(
-            deleteFiles ? '删除任务和文件' : '删除任务',
+            s.deleteConfirmTitle(deleteFiles),
             style: const TextStyle(fontSize: 13, color: Colors.white),
           ),
         ),
@@ -484,11 +488,15 @@ void showBatchDeleteConfirmDialog(
 }) {
   if (!context.mounted) return;
   final c = AppColors.of(context);
+  final s = LocaleScope.of(context);
   showShadDialog(
     context: context,
+    barrierColor: const Color(0x1A000000),
+    animateIn: const [],
+    animateOut: const [],
     builder: (ctx) => ShadDialog(
       title: Text(
-        deleteFiles ? '批量删除任务和文件' : '批量删除任务',
+        s.batchDeleteConfirmTitle(deleteFiles),
         style: TextStyle(
           fontSize: 16,
           fontWeight: FontWeight.w600,
@@ -496,16 +504,14 @@ void showBatchDeleteConfirmDialog(
         ),
       ),
       description: Text(
-        deleteFiles
-            ? '确定要删除选中的 $count 个任务并删除已下载的文件吗？此操作不可撤销。'
-            : '确定要删除选中的 $count 个任务吗？已下载的文件将保留在磁盘上。',
+        s.batchDeleteConfirmDesc(count, deleteFiles),
         style: TextStyle(fontSize: 13, color: c.textSecondary),
       ),
       actions: [
         ShadButton.outline(
           onPressed: () => Navigator.of(ctx).pop(),
           child: Text(
-            '取消',
+            s.cancel,
             style: TextStyle(fontSize: 13, color: c.textPrimary),
           ),
         ),
@@ -515,7 +521,7 @@ void showBatchDeleteConfirmDialog(
             onConfirm();
           },
           child: Text(
-            deleteFiles ? '删除任务和文件' : '删除任务',
+            s.batchDeleteConfirmTitle(deleteFiles),
             style: const TextStyle(fontSize: 13, color: Colors.white),
           ),
         ),

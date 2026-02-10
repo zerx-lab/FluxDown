@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/settings_provider.dart';
 import '../theme/app_colors.dart';
@@ -13,6 +14,9 @@ void showNewDownloadDialog(
 ) {
   showShadDialog(
     context: context,
+    barrierColor: const Color(0x1A000000),
+    animateIn: const [],
+    animateOut: const [],
     builder: (context) => _NewDownloadDialogContent(
       controller: controller,
       settingsProvider: settingsProvider,
@@ -74,7 +78,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   Future<void> _pickSaveDir() async {
     final result = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择保存目录',
+      dialogTitle: currentS.selectSaveDir,
       initialDirectory: _saveDirController.text.trim().isNotEmpty
           ? _saveDirController.text.trim()
           : null,
@@ -94,7 +98,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     final rename = _renameController.text.trim();
 
     final segments = switch (selectedThreads) {
-      '自动' => 0,
+      'auto' => 0,
       '4' => 4,
       '8' => 8,
       '16' => 16,
@@ -129,14 +133,14 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             child: Icon(LucideIcons.download, size: 14, color: c.accent),
           ),
           const SizedBox(width: 10),
-          const Text('新建下载'),
+          Text(LocaleScope.of(context).newDownload),
         ],
       ),
-      description: const Text('添加新的下载任务'),
+      description: Text(LocaleScope.of(context).addDownloadTask),
       actions: [
         ShadButton.outline(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
+          child: Text(LocaleScope.of(context).cancel),
         ),
         ShadButton(
           onPressed: _startDownload,
@@ -145,7 +149,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             children: [
               const Icon(LucideIcons.download, size: 13, color: Colors.white),
               const SizedBox(width: 6),
-              const Text('开始下载', style: TextStyle(color: Colors.white)),
+              Text(
+                LocaleScope.of(context).startDownload,
+                style: const TextStyle(color: Colors.white),
+              ),
             ],
           ),
         ),
@@ -156,11 +163,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _SectionLabel(text: '下载链接', c: c),
+            _SectionLabel(text: LocaleScope.of(context).downloadUrl, c: c),
             const SizedBox(height: 6),
             ShadInput(
               controller: _urlController,
-              placeholder: const Text('HTTP / HTTPS / FTP 链接'),
+              placeholder: Text(LocaleScope.of(context).urlPlaceholder),
             ),
             const SizedBox(height: 14),
             Row(
@@ -170,14 +177,19 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _SectionLabel(text: '保存目录', c: c),
+                      _SectionLabel(
+                        text: LocaleScope.of(context).saveDir,
+                        c: c,
+                      ),
                       const SizedBox(height: 6),
                       GestureDetector(
                         onTap: _pickSaveDir,
                         child: AbsorbPointer(
                           child: ShadInput(
                             controller: _saveDirController,
-                            placeholder: const Text('选择保存目录'),
+                            placeholder: Text(
+                              LocaleScope.of(context).selectSaveDir,
+                            ),
                             readOnly: true,
                             trailing: Padding(
                               padding: const EdgeInsets.only(right: 4),
@@ -199,14 +211,24 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _SectionLabel(text: '线程数', c: c),
+                      _SectionLabel(
+                        text: LocaleScope.of(context).threads,
+                        c: c,
+                      ),
                       const SizedBox(height: 6),
                       ShadSelect<String>(
-                        placeholder: const Text('自动'),
-                        options: ['自动', '4', '8', '16', '32', '64']
-                            .map((e) => ShadOption(value: e, child: Text(e)))
-                            .toList(),
-                        selectedOptionBuilder: (context, value) => Text(value),
+                        placeholder: Text(LocaleScope.of(context).auto),
+                        options: ['auto', '4', '8', '16', '32', '64'].map((v) {
+                          final s = LocaleScope.of(context);
+                          return ShadOption(
+                            value: v,
+                            child: Text(v == 'auto' ? s.auto : v),
+                          );
+                        }).toList(),
+                        selectedOptionBuilder: (context, value) {
+                          final s = LocaleScope.of(context);
+                          return Text(value == 'auto' ? s.auto : value);
+                        },
                         onChanged: (v) => setState(() => selectedThreads = v),
                       ),
                     ],
@@ -215,11 +237,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ],
             ),
             const SizedBox(height: 14),
-            _SectionLabel(text: '重命名（可选，留空自动识别）', c: c),
+            _SectionLabel(text: LocaleScope.of(context).renameOptional, c: c),
             const SizedBox(height: 6),
             ShadInput(
               controller: _renameController,
-              placeholder: const Text('自动识别文件名'),
+              placeholder: Text(LocaleScope.of(context).autoDetectFilename),
             ),
           ],
         ),

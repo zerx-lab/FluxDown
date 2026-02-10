@@ -164,7 +164,7 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
             let mut stmt = conn.prepare(
-                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message
+                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at
                  FROM tasks ORDER BY created_at DESC",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -177,6 +177,7 @@ impl Db {
                     downloaded_bytes: row.get(5)?,
                     total_bytes: row.get(6)?,
                     error_message: row.get(7)?,
+                    created_at: row.get(8)?,
                 })
             })?;
             let mut tasks = Vec::new();
@@ -194,7 +195,7 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
             match conn.query_row(
-                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message
+                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at
                  FROM tasks WHERE id = ?1",
                 params![id],
                 |row| {
@@ -207,6 +208,7 @@ impl Db {
                         downloaded_bytes: row.get(5)?,
                         total_bytes: row.get(6)?,
                         error_message: row.get(7)?,
+                        created_at: row.get(8)?,
                     })
                 },
             ) {
@@ -375,7 +377,10 @@ impl Db {
                     ('default_segments', '0'),
                     ('max_concurrent_tasks', '5'),
                     ('speed_limit_bytes', '0'),
-                    ('auto_resume_on_start', 'false');",
+                    ('auto_resume_on_start', 'false'),
+                    ('close_to_tray', 'true'),
+                    ('auto_startup', 'false'),
+                    ('auto_check_update', 'true');",
                 default_save_dir.replace('\'', "''")
             ))?;
             Ok(())

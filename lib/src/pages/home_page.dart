@@ -54,6 +54,8 @@ class _HomePageState extends State<HomePage> {
     // 监听下载完成事件 → 发送系统通知
     _controller.onTaskCompleted =
         NotificationService.instance.showDownloadComplete;
+    // 监听 controller 变化 — 选中任务被删除时自动关闭详情面板
+    _controller.addListener(_onControllerChanged);
     // 全局键盘快捷键
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
   }
@@ -62,11 +64,20 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     logInfo('HomePage', 'dispose');
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
+    _controller.removeListener(_onControllerChanged);
     _controller.onTaskCompleted = null;
     _controller.dispose();
     _settingsProvider.dispose();
     super.dispose();
     logInfo('HomePage', 'dispose done');
+  }
+
+  /// 当选中任务被删除后，controller.selectedTask 变为 null，
+  /// 此时自动关闭详情面板。
+  void _onControllerChanged() {
+    if (_isDetailOpen && _controller.selectedTask == null) {
+      setState(() => _isDetailOpen = false);
+    }
   }
 
   /// 全局快捷键处理 — 不依赖焦点树
@@ -81,13 +92,24 @@ class _HomePageState extends State<HomePage> {
     return false;
   }
 
-  void _openDetail() {
-    if (!_isDetailOpen) {
+  /// 点击任务行：
+  /// - 点击未选中的任务 → 选中并打开详情面板
+  /// - 再次点击同一任务 → 取消选中并关闭详情面板
+  void _toggleDetail(String taskId) {
+    final isSame = _controller.selectedTaskId == taskId;
+    if (isSame && _isDetailOpen) {
+      // 再次点击同一任务 → 关闭面板并取消选中
+      _controller.selectTask(null);
+      setState(() => _isDetailOpen = false);
+    } else {
+      // 点击新任务或面板未打开 → 选中并打开
+      _controller.selectTask(taskId);
       setState(() => _isDetailOpen = true);
     }
   }
 
   void _closeDetail() {
+    _controller.selectTask(null);
     setState(() => _isDetailOpen = false);
   }
 
@@ -216,7 +238,7 @@ class _HomePageState extends State<HomePage> {
                         Expanded(
                           child: TaskList(
                             controller: _controller,
-                            onTaskTap: (_) => _openDetail(),
+                            onTaskTap: _toggleDetail,
                             onNewDownload: () => showNewDownloadDialog(
                               context,
                               _controller,

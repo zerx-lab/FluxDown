@@ -1,25 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../i18n/locale_provider.dart';
 import 'app_theme.dart';
 
 /// 支持的主题色方案
 enum AppColorScheme {
-  blue('蓝色', Color(0xFF3B82F6)),
-  green('绿色', Color(0xFF22C55E)),
-  violet('紫色', Color(0xFF8B5CF6)),
-  rose('玫红', Color(0xFFF43F5E)),
-  orange('橙色', Color(0xFFF97316)),
-  red('红色', Color(0xFFEF4444)),
-  yellow('黄色', Color(0xFFEAB308)),
-  slate('石板灰', Color(0xFF64748B)),
-  zinc('锌灰', Color(0xFF71717A)),
-  gray('灰色', Color(0xFF6B7280)),
-  neutral('中性', Color(0xFF737373)),
-  stone('石色', Color(0xFF78716C));
+  blue(Color(0xFF3B82F6)),
+  green(Color(0xFF22C55E)),
+  violet(Color(0xFF8B5CF6)),
+  rose(Color(0xFFF43F5E)),
+  orange(Color(0xFFF97316)),
+  red(Color(0xFFEF4444)),
+  yellow(Color(0xFFEAB308)),
+  slate(Color(0xFF64748B)),
+  zinc(Color(0xFF71717A)),
+  gray(Color(0xFF6B7280)),
+  neutral(Color(0xFF737373)),
+  stone(Color(0xFF78716C));
 
-  final String label;
   final Color previewColor;
-  const AppColorScheme(this.label, this.previewColor);
+  const AppColorScheme(this.previewColor);
+}
+
+/// 国际化颜色名称
+extension AppColorSchemeI18n on AppColorScheme {
+  String get label {
+    final s = currentS;
+    return switch (this) {
+      AppColorScheme.blue => s.colorBlue,
+      AppColorScheme.green => s.colorGreen,
+      AppColorScheme.violet => s.colorViolet,
+      AppColorScheme.rose => s.colorRose,
+      AppColorScheme.orange => s.colorOrange,
+      AppColorScheme.red => s.colorRed,
+      AppColorScheme.yellow => s.colorYellow,
+      AppColorScheme.slate => s.colorSlate,
+      AppColorScheme.zinc => s.colorZinc,
+      AppColorScheme.gray => s.colorGray,
+      AppColorScheme.neutral => s.colorNeutral,
+      AppColorScheme.stone => s.colorStone,
+    };
+  }
 }
 
 /// SharedPreferences 存储 key

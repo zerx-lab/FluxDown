@@ -24,7 +24,6 @@ const enableHint = $('#enableHint')!;
 const interceptModeSelect = $<HTMLSelectElement>('#interceptModeSelect');
 const modeHint = $('#modeHint')!;
 const minSizeSelect = $<HTMLSelectElement>('#minSizeSelect');
-const notifyToggle = $<HTMLInputElement>('#notifyToggle');
 const themeBtn = $<HTMLButtonElement>('#themeBtn');
 const langBtn = $<HTMLButtonElement>('#langBtn');
 const langLabel = langBtn.querySelector('.lang-label')!;
@@ -43,7 +42,12 @@ const extCancelBtn = $<HTMLButtonElement>('#extCancelBtn');
 const extTagsContainer = $('#extTagsContainer')!;
 
 // 域名管理
+const addDomainManualBtn = $<HTMLButtonElement>('#addDomainManualBtn');
 const addCurrentDomainBtn = $<HTMLButtonElement>('#addCurrentDomainBtn');
+const domainInputRow = $('#domainInputRow')!;
+const domainInput = $<HTMLInputElement>('#domainInput');
+const domainConfirmBtn = $<HTMLButtonElement>('#domainConfirmBtn');
+const domainCancelBtn = $<HTMLButtonElement>('#domainCancelBtn');
 const domainList = $('#domainList')!;
 const domainEmptyHint = $('#domainEmptyHint')!;
 
@@ -276,7 +280,6 @@ async function init() {
     interceptModeSelect.value = s.interceptMode || 'smart';
     updateModeHint(s.interceptMode || 'smart');
     minSizeSelect.value = String(s.minFileSize);
-    notifyToggle.checked = s.showNotification;
 
     // 渲染扩展名标签
     renderExtTags(s.interceptExtensions || []);
@@ -355,14 +358,6 @@ minSizeSelect.addEventListener('change', async () => {
   await chrome.storage.sync.set({ settings });
 });
 
-// 通知开关
-notifyToggle.addEventListener('change', async () => {
-  const result = await chrome.storage.sync.get('settings');
-  const settings = result.settings || {};
-  settings.showNotification = notifyToggle.checked;
-  await chrome.storage.sync.set({ settings });
-});
-
 // 扩展名 - 显示输入框
 addExtBtn.addEventListener('click', () => {
   extInputRow.classList.remove('hidden');
@@ -389,6 +384,34 @@ extCancelBtn.addEventListener('click', () => {
 extInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') extConfirmBtn.click();
   if (e.key === 'Escape') extCancelBtn.click();
+});
+
+// 域名 - 显示手动输入框
+addDomainManualBtn.addEventListener('click', () => {
+  domainInputRow.classList.remove('hidden');
+  domainInput.focus();
+});
+
+// 域名 - 确认手动添加
+domainConfirmBtn.addEventListener('click', async () => {
+  const val = domainInput.value.trim();
+  if (val) {
+    await addDomain(val);
+    domainInput.value = '';
+  }
+  domainInputRow.classList.add('hidden');
+});
+
+// 域名 - 取消
+domainCancelBtn.addEventListener('click', () => {
+  domainInput.value = '';
+  domainInputRow.classList.add('hidden');
+});
+
+// 域名 - Enter 确认
+domainInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') domainConfirmBtn.click();
+  if (e.key === 'Escape') domainCancelBtn.click();
 });
 
 // 添加当前域名

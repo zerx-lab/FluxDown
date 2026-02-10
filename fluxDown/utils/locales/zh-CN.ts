@@ -31,7 +31,7 @@ const zhCN = {
   'settings.hintAll': '拦截所有下载（除排除域名外）',
   'settings.minFileSize': '最小文件大小',
   'settings.sizeNoLimit': '不限',
-  'settings.notification': '桌面通知',
+
 
   // File type management
   'fileType.title': '拦截文件类型',
@@ -46,6 +46,8 @@ const zhCN = {
 
   // Domain exclusion
   'domain.title': '排除域名',
+  'domain.addTitle': '手动添加域名',
+  'domain.placeholder': '输入域名，如 example.com',
   'domain.currentSite': '当前站点',
   'domain.empty': '暂无排除域名',
   'domain.removed': '已移除 {domain}',

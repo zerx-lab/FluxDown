@@ -5,6 +5,7 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
+import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
@@ -177,7 +178,7 @@ class _DownloadCompleteWindowState extends State<DownloadCompleteWindow>
                   ),
                   const SizedBox(width: 7),
                   Text(
-                    '下载完成',
+                    currentS.downloadCompleted,
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -269,7 +270,7 @@ class _DownloadCompleteWindowState extends State<DownloadCompleteWindow>
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            '打开文件夹',
+                            currentS.openFileFolder,
                             style: TextStyle(
                               fontSize: 12,
                               color: c.textPrimary,
@@ -284,18 +285,21 @@ class _DownloadCompleteWindowState extends State<DownloadCompleteWindow>
                     child: ShadButton(
                       size: ShadButtonSize.sm,
                       onPressed: _openFile,
-                      child: const Row(
+                      child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
+                          const Icon(
                             LucideIcons.externalLink,
                             size: 13,
                             color: Colors.white,
                           ),
-                          SizedBox(width: 6),
+                          const SizedBox(width: 6),
                           Text(
-                            '打开文件',
-                            style: TextStyle(fontSize: 12, color: Colors.white),
+                            currentS.openFile,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.white,
+                            ),
                           ),
                         ],
                       ),

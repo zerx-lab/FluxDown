@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
+import '../models/download_task.dart';
 import '../theme/app_colors.dart';
 import 'context_menu.dart';
 import 'task_list_item.dart';
@@ -19,13 +21,14 @@ class TaskList extends StatelessWidget {
 
   void _showBlankAreaMenu(BuildContext context, TapDownDetails details) {
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
     final hasActive = controller.activeCount > 0;
     final hasPausedOrError = controller.pausedCount + controller.errorCount > 0;
 
     final items = <ContextMenuItem>[
       ContextMenuItem(
         icon: LucideIcons.plus,
-        label: '新建下载',
+        label: s.newDownload,
         color: c.textPrimary,
         action: () => onNewDownload?.call(),
       ),
@@ -38,7 +41,7 @@ class TaskList extends StatelessWidget {
         items.add(
           ContextMenuItem(
             icon: LucideIcons.pause,
-            label: '全部暂停',
+            label: s.pauseAll,
             color: c.textPrimary,
             action: () => controller.pauseAll(),
           ),
@@ -48,7 +51,7 @@ class TaskList extends StatelessWidget {
         items.add(
           ContextMenuItem(
             icon: LucideIcons.play,
-            label: '全部开始',
+            label: s.startAll,
             color: c.textPrimary,
             action: () => controller.resumeAll(),
           ),
@@ -93,28 +96,40 @@ class TaskList extends StatelessWidget {
   /// 列表 + 列表下方空白区域均支持右键菜单
   Widget _buildListWithBlankArea(BuildContext context, List tasks) {
     final isManage = controller.isManageMode;
+    final groups = controller.groupedTasks;
+
     return CustomScrollView(
       slivers: [
-        SliverList(
-          delegate: SliverChildBuilderDelegate((context, index) {
-            final task = tasks[index];
-            return TaskListItem(
-              task: task,
-              isSelected: task.id == controller.selectedTaskId,
-              onTap: () {
-                controller.selectTask(task.id);
-                onTaskTap?.call(task.id);
-              },
-              onPause: () => controller.pauseTask(task.id),
-              onResume: () => controller.resumeTask(task.id),
-              onDelete: ({required bool deleteFiles}) =>
-                  controller.deleteTask(task.id, deleteFiles: deleteFiles),
-              isManageMode: isManage,
-              isChecked: controller.checkedTaskIds.contains(task.id),
-              onToggleChecked: () => controller.toggleTaskChecked(task.id),
-            );
-          }, childCount: tasks.length),
-        ),
+        for (final group in groups) ...[
+          // 分组头
+          SliverToBoxAdapter(
+            child: _GroupHeader(
+              group: group.group,
+              taskCount: group.tasks.length,
+              isCollapsed: controller.isGroupCollapsed(group.group),
+              onToggle: () => controller.toggleGroupCollapsed(group.group),
+            ),
+          ),
+          // 分组内的任务列表（折叠时不渲染）
+          if (!controller.isGroupCollapsed(group.group))
+            SliverList(
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final task = group.tasks[index];
+                return TaskListItem(
+                  task: task,
+                  isSelected: task.id == controller.selectedTaskId,
+                  onTap: () => onTaskTap?.call(task.id),
+                  onPause: () => controller.pauseTask(task.id),
+                  onResume: () => controller.resumeTask(task.id),
+                  onDelete: ({required bool deleteFiles}) =>
+                      controller.deleteTask(task.id, deleteFiles: deleteFiles),
+                  isManageMode: isManage,
+                  isChecked: controller.checkedTaskIds.contains(task.id),
+                  onToggleChecked: () => controller.toggleTaskChecked(task.id),
+                );
+              }, childCount: group.tasks.length),
+            ),
+        ],
         // 填满剩余空间的空白区域，仅此区域响应右键
         SliverFillRemaining(
           hasScrollBody: false,
@@ -132,6 +147,7 @@ class TaskList extends StatelessWidget {
 
   Widget _buildEmpty(BuildContext context) {
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
     return GestureDetector(
       onSecondaryTapDown: (details) => _showBlankAreaMenu(context, details),
       behavior: HitTestBehavior.opaque,
@@ -141,10 +157,13 @@ class TaskList extends StatelessWidget {
           children: [
             Icon(LucideIcons.download, size: 48, color: c.textMuted),
             const SizedBox(height: 12),
-            Text('暂无下载任务', style: TextStyle(fontSize: 14, color: c.textMuted)),
+            Text(
+              s.emptyTitle,
+              style: TextStyle(fontSize: 14, color: c.textMuted),
+            ),
             const SizedBox(height: 4),
             Text(
-              '点击「新建下载」或右键开始',
+              s.emptySubtitle,
               style: TextStyle(fontSize: 12, color: c.textMuted),
             ),
           ],
@@ -155,6 +174,7 @@ class TaskList extends StatelessWidget {
 
   Widget _buildHeader(BuildContext context) {
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
     final isManage = controller.isManageMode;
     final hasTasks = controller.filteredTasks.isNotEmpty;
 
@@ -174,7 +194,7 @@ class TaskList extends StatelessWidget {
           ],
           Expanded(
             child: Text(
-              '文件名',
+              s.colFileName,
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
@@ -186,7 +206,7 @@ class TaskList extends StatelessWidget {
             width: 150,
             child: Center(
               child: Text(
-                '进度',
+                s.colProgress,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
@@ -199,7 +219,7 @@ class TaskList extends StatelessWidget {
             width: 100,
             child: Center(
               child: Text(
-                '速度',
+                s.colSpeed,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
@@ -211,7 +231,7 @@ class TaskList extends StatelessWidget {
           SizedBox(
             width: 60,
             child: Text(
-              '状态',
+              s.colStatus,
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
@@ -298,6 +318,7 @@ class _ManageToggleButtonState extends State<_ManageToggleButton> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
@@ -322,11 +343,85 @@ class _ManageToggleButtonState extends State<_ManageToggleButton> {
               ),
               const SizedBox(width: 3),
               Text(
-                '管理',
+                s.manage,
                 style: TextStyle(
                   fontSize: 11,
                   color: _isHovered ? c.textPrimary : c.textMuted,
                 ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// 时间分组头部
+// =============================================================================
+
+class _GroupHeader extends StatefulWidget {
+  final TimeGroup group;
+  final int taskCount;
+  final bool isCollapsed;
+  final VoidCallback onToggle;
+
+  const _GroupHeader({
+    required this.group,
+    required this.taskCount,
+    required this.isCollapsed,
+    required this.onToggle,
+  });
+
+  @override
+  State<_GroupHeader> createState() => _GroupHeaderState();
+}
+
+class _GroupHeaderState extends State<_GroupHeader> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onToggle,
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: _isHovered ? c.hoverBg : c.surface1,
+            border: Border(bottom: BorderSide(color: c.border, width: 1)),
+          ),
+          child: Row(
+            children: [
+              AnimatedRotation(
+                turns: widget.isCollapsed ? -0.25 : 0,
+                duration: const Duration(milliseconds: 150),
+                child: Icon(
+                  LucideIcons.chevronDown,
+                  size: 14,
+                  color: c.textMuted,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                widget.group.label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: c.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${widget.taskCount}',
+                style: TextStyle(fontSize: 11, color: c.textMuted),
               ),
             ],
           ),

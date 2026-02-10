@@ -20,6 +20,7 @@ class SettingsProvider extends ChangeNotifier {
   bool _autoResumeOnStart = false;
   bool _closeToTray = true; // 默认关闭到托盘
   bool _autoStartup = false; // 默认不开机启动
+  bool _autoCheckUpdate = true; // 默认启动时自动检查更新
 
   /// 配置是否已从 Rust 端加载完成
   bool _loaded = false;
@@ -52,6 +53,7 @@ class SettingsProvider extends ChangeNotifier {
   bool get autoResumeOnStart => _autoResumeOnStart;
   bool get closeToTray => _closeToTray;
   bool get autoStartup => _autoStartup;
+  bool get autoCheckUpdate => _autoCheckUpdate;
 
   // ---------------------------------------------------------------------------
   // Setters — 修改值 + 通知 Rust 持久化
@@ -97,6 +99,13 @@ class SettingsProvider extends ChangeNotifier {
     _closeToTray = value;
     notifyListeners();
     _saveToRust('close_to_tray', value.toString());
+  }
+
+  void setAutoCheckUpdate(bool value) {
+    if (_autoCheckUpdate == value) return;
+    _autoCheckUpdate = value;
+    notifyListeners();
+    _saveToRust('auto_check_update', value.toString());
   }
 
   /// 设置开机自启动，返回是否成功。
@@ -171,6 +180,8 @@ class SettingsProvider extends ChangeNotifier {
           _closeToTray = entry.value == 'true';
         case 'auto_startup':
           _autoStartup = entry.value == 'true';
+        case 'auto_check_update':
+          _autoCheckUpdate = entry.value == 'true';
       }
     }
     _loaded = true;

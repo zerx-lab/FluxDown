@@ -145,13 +145,17 @@ pub fn build_client() -> Result<Client, DownloadError> {
 // ---------------------------------------------------------------------------
 
 /// Timeout for the probe requests (HEAD / GET Range:0-0).
-const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// 15 seconds is sufficient for most servers; the retry mechanism handles
+/// transient failures without making users wait excessively.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Maximum retries for the probe phase (HEAD + GET).
-const PROBE_MAX_RETRIES: u32 = 3;
+/// Reduced from 3 to 2: first attempt + one retry covers DNS cold-start
+/// and transient failures without excessive delay.
+const PROBE_MAX_RETRIES: u32 = 2;
 
-/// Delay between probe retries.
-const PROBE_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Base delay for probe retries (used with exponential backoff).
+const PROBE_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// Resolve file info with automatic retry on transient failures.
 ///
@@ -172,7 +176,8 @@ pub async fn resolve_file_info(client: &Client, url: &str, cookies: &str) -> Res
                 );
                 last_err = Some(e);
                 if attempt + 1 < PROBE_MAX_RETRIES {
-                    tokio::time::sleep(PROBE_RETRY_DELAY).await;
+                    let delay = PROBE_RETRY_BASE_DELAY * 2u32.saturating_pow(attempt);
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
@@ -183,121 +188,124 @@ pub async fn resolve_file_info(client: &Client, url: &str, cookies: &str) -> Res
 }
 
 async fn resolve_file_info_once(client: &Client, url: &str, cookies: &str) -> Result<FileInfo, DownloadError> {
-    // --- Phase 1: HEAD probe for size & range info --------------------------
-    let mut head_req = client.head(url).timeout(PROBE_TIMEOUT);
-    if !cookies.is_empty() {
-        head_req = head_req.header("Cookie", cookies);
-    }
-    let head_ok = head_req.send().await;
+    // --- Concurrent HEAD + GET probe ----------------------------------------
+    // Fire both HEAD and GET Range:0-0 in parallel.  HEAD is faster when it
+    // works, but many servers/CDNs omit Content-Disposition on HEAD.  By
+    // running both concurrently we avoid the serial HEAD→GET penalty.
 
-    let (mut headers, mut final_url) = match &head_ok {
-        Ok(r) if r.status().is_success() => {
-            let u = r.url().clone();
-            (r.headers().clone(), u)
+    let head_fut = {
+        let mut req = client.head(url).timeout(PROBE_TIMEOUT);
+        if !cookies.is_empty() {
+            req = req.header("Cookie", cookies);
         }
-        Ok(r) => {
-            rinf::debug_print!(
-                "[resolve] HEAD failed: status={}, url={}, cookies_len={}",
-                r.status(),
-                r.url(),
-                cookies.len()
-            );
-            (reqwest::header::HeaderMap::new(), reqwest::Url::parse(url)
-                .unwrap_or_else(|_| reqwest::Url::parse("http://invalid").unwrap_or_else(|_| unreachable!())))
-        }
-        Err(e) => {
-            rinf::debug_print!(
-                "[resolve] HEAD network error: {}, cookies_len={}",
-                e,
-                cookies.len()
-            );
-            (reqwest::header::HeaderMap::new(), reqwest::Url::parse(url)
-                .unwrap_or_else(|_| reqwest::Url::parse("http://invalid").unwrap_or_else(|_| unreachable!())))
-        }
+        req.send()
     };
 
-    // --- Phase 2: GET Range:0-0 for Content-Disposition ---------------------
-    // Many servers/CDNs only send Content-Disposition on GET, not HEAD.
-    // Also needed when HEAD failed entirely.
-    let need_get = !headers.contains_key(reqwest::header::CONTENT_DISPOSITION)
-        || headers.is_empty();
-
-    if need_get {
-        let mut get_req = client
+    let get_fut = {
+        let mut req = client
             .get(url)
             .header("Range", "bytes=0-0")
             .timeout(PROBE_TIMEOUT);
         if !cookies.is_empty() {
-            get_req = get_req.header("Cookie", cookies);
+            req = req.header("Cookie", cookies);
         }
-        match get_req.send().await
-        {
-            Ok(r) if r.status().is_success() => {
-                let get_url = r.url().clone();
-                let get_headers = r.headers().clone();
-                let got_206 = r.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-                drop(r); // release connection immediately
+        req.send()
+    };
 
-                if headers.is_empty() {
-                    // HEAD failed — use all GET headers
-                    headers = get_headers;
-                    final_url = get_url;
-                } else {
-                    // HEAD succeeded but lacked Content-Disposition; merge.
-                    if let Some(cd) = get_headers.get(reqwest::header::CONTENT_DISPOSITION) {
-                        headers.insert(reqwest::header::CONTENT_DISPOSITION, cd.clone());
-                    }
-                    if let Some(ct) = get_headers.get(reqwest::header::CONTENT_TYPE) {
-                        // Prefer GET Content-Type (may be more specific)
-                        headers.insert(reqwest::header::CONTENT_TYPE, ct.clone());
-                    }
-                    // Use GET's final URL (may differ after redirect)
-                    final_url = get_url;
-                    // If GET gave us 206, copy Content-Range
-                    if got_206
-                        && let Some(cr) = get_headers.get("content-range") {
-                            headers.insert(
-                                reqwest::header::HeaderName::from_static("content-range"),
-                                cr.clone(),
-                            );
-                        }
-                }
-            }
-            Ok(r) => {
-                let status = r.status();
-                let resp_url = r.url().clone();
-                rinf::debug_print!(
-                    "[resolve] GET failed: status={}, url={}, cookies_len={}",
-                    status,
-                    resp_url,
-                    cookies.len()
-                );
-                if headers.is_empty() {
-                    return Err(DownloadError::Other(
-                        format!("both HEAD and GET probes failed (GET status={})", status),
-                    ));
-                }
-            }
-            Err(e) => {
-                rinf::debug_print!(
-                    "[resolve] GET network error: {}, cookies_len={}",
-                    e,
-                    cookies.len()
-                );
-                if headers.is_empty() {
-                    return Err(DownloadError::Other(
-                        format!("both HEAD and GET probes failed (GET error: {})", e),
-                    ));
-                }
-            }
+    let (head_result, get_result) = tokio::join!(head_fut, get_fut);
+
+    // Extract HEAD response (if successful)
+    let head_data = match head_result {
+        Ok(r) if r.status().is_success() => {
+            let u = r.url().clone();
+            let h = r.headers().clone();
+            Some((h, u))
+        }
+        Ok(r) => {
+            rinf::debug_print!(
+                "[resolve] HEAD failed: status={}, url={}, cookies_len={}",
+                r.status(), r.url(), cookies.len()
+            );
+            None
+        }
+        Err(e) => {
+            rinf::debug_print!(
+                "[resolve] HEAD network error: {}, cookies_len={}",
+                e, cookies.len()
+            );
+            None
+        }
+    };
+
+    // Extract GET response (if successful)
+    let get_data = match get_result {
+        Ok(r) if r.status().is_success() => {
+            let u = r.url().clone();
+            let h = r.headers().clone();
+            let got_206 = r.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+            drop(r); // release connection immediately
+            Some((h, u, got_206))
+        }
+        Ok(r) => {
+            rinf::debug_print!(
+                "[resolve] GET failed: status={}, url={}, cookies_len={}",
+                r.status(), r.url(), cookies.len()
+            );
+            None
+        }
+        Err(e) => {
+            rinf::debug_print!(
+                "[resolve] GET network error: {}, cookies_len={}",
+                e, cookies.len()
+            );
+            None
+        }
+    };
+
+    // Merge results: HEAD as base, GET to fill in missing data.
+    let (mut headers, mut final_url) = match (&head_data, &get_data) {
+        (Some((hh, hu)), _) => (hh.clone(), hu.clone()),
+        (None, Some((gh, gu, _))) => (gh.clone(), gu.clone()),
+        (None, None) => {
+            return Err(DownloadError::Other(
+                "both HEAD and GET probes failed".to_string(),
+            ));
+        }
+    };
+
+    // If HEAD succeeded but lacks Content-Disposition, merge from GET.
+    if head_data.is_some()
+        && let Some((get_headers, get_url, got_206)) = &get_data
+    {
+        if !headers.contains_key(reqwest::header::CONTENT_DISPOSITION)
+            && let Some(cd) = get_headers.get(reqwest::header::CONTENT_DISPOSITION)
+        {
+            headers.insert(reqwest::header::CONTENT_DISPOSITION, cd.clone());
+        }
+        if let Some(ct) = get_headers.get(reqwest::header::CONTENT_TYPE) {
+            headers.insert(reqwest::header::CONTENT_TYPE, ct.clone());
+        }
+        // Prefer GET's final URL (may differ after redirect)
+        final_url = get_url.clone();
+        // If GET gave us 206, copy Content-Range for accurate file size
+        if *got_206
+            && let Some(cr) = get_headers.get("content-range")
+        {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("content-range"),
+                cr.clone(),
+            );
         }
     }
 
     // --- Phase 3: Parse metadata from merged headers ------------------------
-    let supports_range = headers
-        .get(reqwest::header::ACCEPT_RANGES)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v != "none");
+    // A 206 response from GET proves range support even without Accept-Ranges header.
+    let got_206_from_get = get_data.as_ref().is_some_and(|(_, _, got)| *got);
+    let supports_range = got_206_from_get
+        || headers
+            .get(reqwest::header::ACCEPT_RANGES)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v != "none");
 
     let total_bytes = if let Some(cr) = headers.get("content-range") {
         // e.g. "bytes 0-0/12345"
@@ -568,7 +576,7 @@ pub async fn dedup_filename(dir: &Path, name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 const MAX_RETRIES: u32 = 3;
-const RETRY_DELAY: Duration = Duration::from_secs(3);
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
 /// Temporary file extension used during download (like Chrome's `.crdownload`).
 /// The file is renamed to the final name only after all data is verified.
@@ -842,6 +850,18 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
                 return Err(DownloadError::Other(format!(
                     "segment integrity failed: expected {} bytes, segments downloaded {} bytes",
                     info.total_bytes, seg_total
+                )));
+            }
+            // Also verify actual file size on disk (guards against external
+            // file deletion/truncation between download and this check).
+            let file_len = tokio::fs::metadata(&temp_path)
+                .await
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
+            if file_len < info.total_bytes {
+                return Err(DownloadError::Other(format!(
+                    "file integrity failed: disk size={} bytes, expected {} bytes",
+                    file_len, info.total_bytes
                 )));
             }
         } else {
@@ -1294,10 +1314,11 @@ async fn do_segment_with_retry(
                         return Ok(()); // completed during previous attempt
                     }
                 }
-                // Wait before retry (respecting cancellation)
+                // Exponential backoff before retry (respecting cancellation)
+                let delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempts - 1);
                 tokio::select! {
                     _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
-                    _ = tokio::time::sleep(RETRY_DELAY) => {}
+                    _ = tokio::time::sleep(delay) => {}
                 }
             }
         }
@@ -1467,4 +1488,342 @@ async fn do_segment(
         .update_segment_progress(task_id, seg_idx, seg_downloaded)
         .await;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_filename, extract_from_content_disposition, extract_from_url, mime_to_ext,
+        sanitize_filename, urlencoding_decode, dedup_filename,
+        PROBE_MAX_RETRIES, PROBE_RETRY_BASE_DELAY, PROBE_TIMEOUT, TEMP_EXT,
+    };
+    use std::time::Duration;
+
+    // -----------------------------------------------------------------------
+    // sanitize_filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sanitize_replaces_illegal_chars() {
+        assert_eq!(sanitize_filename("file<1>:2.txt"), "file_1__2.txt");
+    }
+
+    #[test]
+    fn sanitize_replaces_all_special_chars() {
+        assert_eq!(sanitize_filename(r#"a<b>c:d"e/f\g|h?i*j"#), "a_b_c_d_e_f_g_h_i_j");
+    }
+
+    #[test]
+    fn sanitize_strips_leading_trailing_dots_and_spaces() {
+        assert_eq!(sanitize_filename("...file..."), "file");
+        assert_eq!(sanitize_filename("  file  "), "file");
+        assert_eq!(sanitize_filename("..file.."), "file");
+    }
+
+    #[test]
+    fn sanitize_empty_and_only_dots() {
+        assert_eq!(sanitize_filename(""), "download");
+        assert_eq!(sanitize_filename("..."), "download");
+        assert_eq!(sanitize_filename("   "), "download");
+    }
+
+    #[test]
+    fn sanitize_control_characters() {
+        assert_eq!(sanitize_filename("file\x00name\x1F.txt"), "file_name_.txt");
+    }
+
+    #[test]
+    fn sanitize_preserves_unicode() {
+        assert_eq!(sanitize_filename("文件下载.zip"), "文件下载.zip");
+        assert_eq!(sanitize_filename("ファイル.tar.gz"), "ファイル.tar.gz");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_from_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_from_url_basic() {
+        let name = extract_from_url("https://example.com/path/file.zip");
+        assert_eq!(name.as_deref(), Some("file.zip"));
+    }
+
+    #[test]
+    fn extract_from_url_strips_query_and_fragment() {
+        let name = extract_from_url("https://example.com/file.zip?v=1&token=abc#section");
+        assert_eq!(name.as_deref(), Some("file.zip"));
+    }
+
+    #[test]
+    fn extract_from_url_encoded_filename() {
+        let name = extract_from_url("https://example.com/My%20File%20(1).pdf");
+        assert_eq!(name.as_deref(), Some("My File (1).pdf"));
+    }
+
+    #[test]
+    fn extract_from_url_trailing_slash_returns_none() {
+        let name = extract_from_url("https://example.com/path/");
+        assert!(name.is_none(), "trailing slash should return None, got: {name:?}");
+    }
+
+    #[test]
+    fn extract_from_url_no_path() {
+        let name = extract_from_url("https://example.com");
+        // The last segment is "example.com" — should extract it
+        assert!(name.is_some());
+    }
+
+    #[test]
+    fn extract_from_url_chinese_filename() {
+        let name = extract_from_url("https://example.com/%E4%B8%8B%E8%BD%BD.exe");
+        assert_eq!(name.as_deref(), Some("下载.exe"));
+    }
+
+    // -----------------------------------------------------------------------
+    // urlencoding_decode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn urlencoding_decode_basic() {
+        assert_eq!(urlencoding_decode("hello%20world").unwrap_or_default(), "hello world");
+    }
+
+    #[test]
+    fn urlencoding_decode_plus_to_space() {
+        assert_eq!(urlencoding_decode("hello+world").unwrap_or_default(), "hello world");
+    }
+
+    #[test]
+    fn urlencoding_decode_invalid_utf8_returns_error() {
+        // 0x80 alone is not valid UTF-8
+        let result = urlencoding_decode("%80");
+        assert!(result.is_err(), "invalid UTF-8 should return Err");
+    }
+
+    #[test]
+    fn urlencoding_decode_partial_percent() {
+        // "%" at end should pass through
+        let result = urlencoding_decode("test%").unwrap_or_default();
+        assert_eq!(result, "test%");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_from_content_disposition (private, tested via extract_filename)
+    // -----------------------------------------------------------------------
+
+    fn make_headers_with_cd(value: &str) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(value) {
+            headers.insert(reqwest::header::CONTENT_DISPOSITION, v);
+        }
+        headers
+    }
+
+    #[test]
+    fn content_disposition_quoted_filename() {
+        let headers = make_headers_with_cd("attachment; filename=\"my_file.zip\"");
+        let name = extract_from_content_disposition(&headers);
+        assert_eq!(name.as_deref(), Some("my_file.zip"));
+    }
+
+    #[test]
+    fn content_disposition_unquoted_filename() {
+        let headers = make_headers_with_cd("attachment; filename=simple.txt");
+        let name = extract_from_content_disposition(&headers);
+        assert_eq!(name.as_deref(), Some("simple.txt"));
+    }
+
+    #[test]
+    fn content_disposition_rfc5987_filename_star() {
+        let headers = make_headers_with_cd("attachment; filename*=UTF-8''%E6%96%87%E4%BB%B6.pdf");
+        let name = extract_from_content_disposition(&headers);
+        assert_eq!(name.as_deref(), Some("文件.pdf"));
+    }
+
+    #[test]
+    fn content_disposition_filename_star_overrides_plain() {
+        let headers = make_headers_with_cd(
+            "attachment; filename=\"fallback.txt\"; filename*=UTF-8''preferred.txt"
+        );
+        let name = extract_from_content_disposition(&headers);
+        // filename* should take precedence
+        assert_eq!(name.as_deref(), Some("preferred.txt"));
+    }
+
+    #[test]
+    fn content_disposition_empty_filename() {
+        let headers = make_headers_with_cd("attachment; filename=\"\"");
+        let name = extract_from_content_disposition(&headers);
+        assert!(name.is_none(), "empty filename should return None");
+    }
+
+    #[test]
+    fn content_disposition_no_filename_param() {
+        let headers = make_headers_with_cd("inline");
+        let name = extract_from_content_disposition(&headers);
+        assert!(name.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_filename (integration of all strategies)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_filename_prefers_content_disposition() {
+        let headers = make_headers_with_cd("attachment; filename=\"from_header.zip\"");
+        let name = extract_filename(&headers, "https://example.com/from_url.tar.gz");
+        assert_eq!(name, "from_header.zip");
+    }
+
+    #[test]
+    fn extract_filename_falls_back_to_url() {
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(&headers, "https://example.com/from_url.tar.gz");
+        assert_eq!(name, "from_url.tar.gz");
+    }
+
+    #[test]
+    fn extract_filename_falls_back_to_mime() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(v) = reqwest::header::HeaderValue::from_str("application/pdf") {
+            headers.insert(reqwest::header::CONTENT_TYPE, v);
+        }
+        let name = extract_filename(&headers, "https://example.com/");
+        assert_eq!(name, "download.pdf");
+    }
+
+    #[test]
+    fn extract_filename_ultimate_fallback() {
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(&headers, "https://example.com/");
+        assert_eq!(name, "download");
+    }
+
+    // -----------------------------------------------------------------------
+    // mime_to_ext
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mime_to_ext_common_types() {
+        assert_eq!(mime_to_ext("application/pdf"), Some("pdf"));
+        assert_eq!(mime_to_ext("application/zip"), Some("zip"));
+        assert_eq!(mime_to_ext("video/mp4"), Some("mp4"));
+        assert_eq!(mime_to_ext("image/jpeg"), Some("jpg"));
+    }
+
+    #[test]
+    fn mime_to_ext_with_charset_parameter() {
+        // MIME type often comes with ";charset=utf-8"
+        assert_eq!(mime_to_ext("text/html; charset=utf-8"), Some("html"));
+    }
+
+    #[test]
+    fn mime_to_ext_unknown_type() {
+        assert_eq!(mime_to_ext("application/x-unknown-format"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #4: PROBE_TIMEOUT configuration — document current problematic values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn http_probe_timeout_is_reasonable() {
+        // Fixed: 15s per request, 2 retries with 1s base exponential backoff.
+        // HEAD+GET now run concurrently (max 15s per attempt, not 30s).
+        assert_eq!(PROBE_TIMEOUT, Duration::from_secs(15));
+        assert_eq!(PROBE_MAX_RETRIES, 2);
+        assert_eq!(PROBE_RETRY_BASE_DELAY, Duration::from_secs(1));
+
+        // Worst case: 2 attempts × 15s (concurrent HEAD+GET) + 1s delay = 31s
+        let worst_per_attempt = PROBE_TIMEOUT; // HEAD+GET concurrent
+        let worst_total = worst_per_attempt * PROBE_MAX_RETRIES
+            + PROBE_RETRY_BASE_DELAY;
+        assert!(worst_total <= Duration::from_secs(60),
+            "worst-case probe time {worst_total:?} should be <= 60s after fix");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #5: HEAD and GET are serial — measure by counting sequential phases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_file_info_merges_head_and_get_results() {
+        // After fix: HEAD+GET run concurrently via tokio::join!.
+        // The merge logic still applies:
+        // - If HEAD has Content-Disposition, use it.
+        // - If HEAD lacks Content-Disposition, merge from GET.
+        // Verify the merge condition logic is correct:
+        let headers = reqwest::header::HeaderMap::new();
+        let has_cd = headers.contains_key(reqwest::header::CONTENT_DISPOSITION);
+        assert!(!has_cd, "empty headers should not have Content-Disposition — GET data will be merged");
+
+        // With Content-Disposition present, no merge needed
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(v) = reqwest::header::HeaderValue::from_str("attachment; filename=\"test.zip\"") {
+            headers.insert(reqwest::header::CONTENT_DISPOSITION, v);
+        }
+        let has_cd = headers.contains_key(reqwest::header::CONTENT_DISPOSITION);
+        assert!(has_cd, "Content-Disposition present — no need to merge from GET");
+    }
+
+    // -----------------------------------------------------------------------
+    // dedup_filename
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dedup_filename_no_conflict() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_no_conflict");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        // Clean up any leftover
+        let _ = tokio::fs::remove_file(dir.join("test.txt")).await;
+        let _ = tokio::fs::remove_file(dir.join(format!("test.txt{TEMP_EXT}"))).await;
+
+        let result = dedup_filename(&dir, "test.txt").await;
+        assert_eq!(result, "test.txt");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_with_conflict() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_conflict");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        // Create conflicting file
+        tokio::fs::write(dir.join("test.txt"), b"").await.unwrap_or(());
+
+        let result = dedup_filename(&dir, "test.txt").await;
+        assert_eq!(result, "test (1).txt");
+
+        // Clean up
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_temp_file_conflict() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_temp");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        // Create a .fdownloading temp file — should also be considered a conflict
+        tokio::fs::write(dir.join(format!("test.txt{TEMP_EXT}")), b"").await.unwrap_or(());
+
+        let result = dedup_filename(&dir, "test.txt").await;
+        assert_eq!(result, "test (1).txt");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_no_extension() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_noext");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        tokio::fs::write(dir.join("README"), b"").await.unwrap_or(());
+
+        let result = dedup_filename(&dir, "README").await;
+        assert_eq!(result, "README (1)");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 }

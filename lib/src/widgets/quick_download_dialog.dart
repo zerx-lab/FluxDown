@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../bindings/bindings.dart';
+import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 
 /// 浏览器扩展下载请求的快速确认对话框。
@@ -20,6 +21,9 @@ void showQuickDownloadDialog(
 }) {
   showShadDialog(
     context: context,
+    barrierColor: const Color(0x1A000000),
+    animateIn: const [],
+    animateOut: const [],
     builder: (context) => _QuickDownloadDialogContent(
       url: url,
       filename: filename,
@@ -77,7 +81,7 @@ class _QuickDownloadDialogContentState
 
   Future<void> _pickSaveDir() async {
     final result = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择保存目录',
+      dialogTitle: currentS.selectSaveDir,
       initialDirectory: _saveDirController.text.trim().isNotEmpty
           ? _saveDirController.text.trim()
           : null,
@@ -93,7 +97,7 @@ class _QuickDownloadDialogContentState
 
     final rename = _renameController.text.trim();
     final segments = switch (selectedThreads) {
-      '自动' => 0,
+      'auto' => 0,
       '4' => 4,
       '8' => 8,
       '16' => 16,
@@ -115,7 +119,7 @@ class _QuickDownloadDialogContentState
   }
 
   String _formatFileSize(int bytes) {
-    if (bytes <= 0) return '未知大小';
+    if (bytes <= 0) return currentS.unknownSize;
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     int unitIndex = 0;
     double size = bytes.toDouble();
@@ -143,7 +147,7 @@ class _QuickDownloadDialogContentState
             child: Icon(LucideIcons.download, size: 14, color: c.accent),
           ),
           const SizedBox(width: 10),
-          const Text('新建下载'),
+          Text(LocaleScope.of(context).newDownload),
           const SizedBox(width: 8),
           if (widget.fileSize > 0)
             _InfoTag(text: _formatFileSize(widget.fileSize), c: c),
@@ -152,20 +156,23 @@ class _QuickDownloadDialogContentState
           if (widget.mimeType.isNotEmpty) _InfoTag(text: widget.mimeType, c: c),
         ],
       ),
-      description: const Text('来自浏览器扩展的下载请求'),
+      description: Text(LocaleScope.of(context).fromBrowserExtension),
       actions: [
         ShadButton.outline(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
+          child: Text(LocaleScope.of(context).cancel),
         ),
         ShadButton(
           onPressed: _startDownload,
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(LucideIcons.download, size: 13, color: Colors.white),
-              SizedBox(width: 6),
-              Text('开始下载', style: TextStyle(color: Colors.white)),
+              const Icon(LucideIcons.download, size: 13, color: Colors.white),
+              const SizedBox(width: 6),
+              Text(
+                LocaleScope.of(context).startDownload,
+                style: const TextStyle(color: Colors.white),
+              ),
             ],
           ),
         ),
@@ -177,7 +184,7 @@ class _QuickDownloadDialogContentState
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // URL 显示
-            _SectionLabel(text: '下载链接', c: c),
+            _SectionLabel(text: LocaleScope.of(context).downloadUrl, c: c),
             const SizedBox(height: 6),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -208,14 +215,19 @@ class _QuickDownloadDialogContentState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _SectionLabel(text: '保存目录', c: c),
+                      _SectionLabel(
+                        text: LocaleScope.of(context).saveDir,
+                        c: c,
+                      ),
                       const SizedBox(height: 6),
                       GestureDetector(
                         onTap: _pickSaveDir,
                         child: AbsorbPointer(
                           child: ShadInput(
                             controller: _saveDirController,
-                            placeholder: const Text('选择保存目录'),
+                            placeholder: Text(
+                              LocaleScope.of(context).selectSaveDir,
+                            ),
                             readOnly: true,
                             trailing: Padding(
                               padding: const EdgeInsets.only(right: 4),
@@ -237,14 +249,24 @@ class _QuickDownloadDialogContentState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _SectionLabel(text: '线程数', c: c),
+                      _SectionLabel(
+                        text: LocaleScope.of(context).threads,
+                        c: c,
+                      ),
                       const SizedBox(height: 6),
                       ShadSelect<String>(
-                        placeholder: const Text('自动'),
-                        options: ['自动', '4', '8', '16', '32', '64']
-                            .map((e) => ShadOption(value: e, child: Text(e)))
-                            .toList(),
-                        selectedOptionBuilder: (context, value) => Text(value),
+                        placeholder: Text(LocaleScope.of(context).auto),
+                        options: ['auto', '4', '8', '16', '32', '64'].map((v) {
+                          final s = LocaleScope.of(context);
+                          return ShadOption(
+                            value: v,
+                            child: Text(v == 'auto' ? s.auto : v),
+                          );
+                        }).toList(),
+                        selectedOptionBuilder: (context, value) {
+                          final s = LocaleScope.of(context);
+                          return Text(value == 'auto' ? s.auto : value);
+                        },
                         onChanged: (v) => setState(() => selectedThreads = v),
                       ),
                     ],
@@ -256,11 +278,11 @@ class _QuickDownloadDialogContentState
             const SizedBox(height: 14),
 
             // 文件名
-            _SectionLabel(text: '文件名（留空自动识别）', c: c),
+            _SectionLabel(text: LocaleScope.of(context).filenameOptional, c: c),
             const SizedBox(height: 6),
             ShadInput(
               controller: _renameController,
-              placeholder: const Text('自动识别文件名'),
+              placeholder: Text(LocaleScope.of(context).autoDetectFilename),
             ),
           ],
         ),

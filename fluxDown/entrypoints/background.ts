@@ -140,57 +140,105 @@ export default defineBackground(() => {
   });
 
   // ===== 下载拦截 =====
-  chrome.downloads.onCreated.addListener(async (downloadItem) => {
-    const settings = await loadSettings();
+  // 缓存 onCreated 中的 downloadItem 信息（mime/fileSize/referrer 等），
+  // 供 onDeterminingFilename 使用（后者的参数中信息较少）。
+  const downloadItemCache = new Map<number, chrome.downloads.DownloadItem>();
 
-    if (!settings.enabled) return;
+  // 记录已由 onDeterminingFilename 拦截的下载 ID，避免 onCreated 重复处理
+  const interceptedIds = new Set<number>();
 
-    const url = downloadItem.url;
-    const fileSize = downloadItem.fileSize > 0 ? downloadItem.fileSize : undefined;
+  chrome.downloads.onCreated.addListener((downloadItem) => {
+    // 缓存 downloadItem 信息，onDeterminingFilename 会用到
+    downloadItemCache.set(downloadItem.id, downloadItem);
 
-    // 跳过 blob 和 data URL
-    if (url.startsWith('blob:') || url.startsWith('data:')) return;
-
-    // 构建下载项信息，供综合判断
-    const itemInfo: DownloadItemInfo = {
-      url,
-      fileSize,
-      mime: downloadItem.mime || undefined,
-      filename: downloadItem.filename || undefined,
-    };
-
-    // 判断是否需要拦截
-    if (!shouldIntercept(itemInfo, settings)) return;
-
-    console.log('[FluxDown] Intercepting download:', {
-      url,
-      mime: downloadItem.mime,
-      filename: downloadItem.filename,
-      fileSize,
-      mode: settings.interceptMode,
-    });
-
-    // 取消浏览器的下载
-    try {
-      await chrome.downloads.cancel(downloadItem.id);
-      chrome.downloads.erase({ id: downloadItem.id });
-    } catch (e) {
-      console.warn('[FluxDown] Failed to cancel download:', e);
-    }
-
-    // 发送到 FluxDown
-    // downloadItem.filename 是浏览器本地保存路径（如 C:\Users\xxx\Downloads\file.zip），
-    // 需要提取纯文件名部分；如果看起来不像真实文件名就传空，让 Rust 引擎通过
-    // HTTP Content-Disposition 自动探测真实文件名。
-    const cleanFilename = extractCleanFilename(downloadItem.filename, url);
-    await sendToFluxDown(
-      url,
-      downloadItem.referrer,
-      cleanFilename,
-      fileSize,
-      downloadItem.mime,
-    );
+    // 30 秒后自动清理（正常情况下 onDeterminingFilename 会很快触发）
+    setTimeout(() => {
+      downloadItemCache.delete(downloadItem.id);
+      interceptedIds.delete(downloadItem.id);
+    }, 30_000);
   });
+
+  // onDeterminingFilename 在浏览器弹出「另存为」对话框 **之前** 触发，
+  // 调用 suggest({ cancel: true }) 可以在不弹出任何浏览器下载 UI 的情况下直接取消下载。
+  // 这是拦截下载最可靠的时机。
+  chrome.downloads.onDeterminingFilename.addListener(
+    (downloadItem, suggest) => {
+      // 同步部分：先做快速判断，决定是否需要拦截。
+      // 注意：此回调必须同步调用 suggest()，或返回 true 表示异步调用 suggest()。
+      const url = downloadItem.url;
+
+      // 跳过 blob 和 data URL
+      if (url.startsWith('blob:') || url.startsWith('data:')) {
+        suggest({ filename: downloadItem.filename });
+        return;
+      }
+
+      // 返回 true 表示我们会异步调用 suggest()
+      // 在异步逻辑中完成拦截判断
+      (async () => {
+        try {
+          const settings = await loadSettings();
+          if (!settings.enabled) {
+            suggest({ filename: downloadItem.filename });
+            return;
+          }
+
+          // 合并 onCreated 缓存的额外信息（如 referrer、fileSize、mime）
+          const cached = downloadItemCache.get(downloadItem.id);
+          const mime = downloadItem.mime || cached?.mime || undefined;
+          const fileSize = (downloadItem.fileSize > 0 ? downloadItem.fileSize : undefined)
+            ?? (cached && cached.fileSize > 0 ? cached.fileSize : undefined);
+          const referrer = cached?.referrer || undefined;
+
+          const itemInfo: DownloadItemInfo = {
+            url,
+            fileSize,
+            mime,
+            filename: downloadItem.filename || undefined,
+          };
+
+          if (!shouldIntercept(itemInfo, settings)) {
+            suggest({ filename: downloadItem.filename });
+            return;
+          }
+
+          console.log('[FluxDown] Intercepting download (onDeterminingFilename):', {
+            url,
+            mime,
+            filename: downloadItem.filename,
+            fileSize,
+            mode: settings.interceptMode,
+          });
+
+          // 标记该下载已被拦截
+          interceptedIds.add(downloadItem.id);
+
+          // 关键：取消浏览器下载，不会弹出「另存为」对话框
+          suggest({ cancel: true });
+
+          // 清理下载记录
+          try {
+            chrome.downloads.erase({ id: downloadItem.id });
+          } catch (e) {
+            console.warn('[FluxDown] Failed to erase download:', e);
+          }
+
+          // 发送到 FluxDown
+          const cleanFilename = extractCleanFilename(downloadItem.filename, url);
+          await sendToFluxDown(url, referrer, cleanFilename, fileSize, mime);
+        } catch (e) {
+          console.error('[FluxDown] Error in onDeterminingFilename handler:', e);
+          // 出错时放行下载，不阻塞用户
+          suggest({ filename: downloadItem.filename });
+        } finally {
+          downloadItemCache.delete(downloadItem.id);
+        }
+      })();
+
+      // 返回 true 表示 suggest 将被异步调用
+      return true;
+    },
+  );
 
   // ===== Popup 消息处理 =====
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -206,8 +254,6 @@ export default defineBackground(() => {
     fileSize?: number,
     mimeType?: string,
   ) {
-    const settings = await loadSettings();
-
     // === 提取认证信息（Cookie / Authorization 等） ===
     // 策略 1：从 webRequest 缓存获取（最可靠 — 浏览器真正发出的请求头）
     let cookieString = '';
@@ -249,13 +295,6 @@ export default defineBackground(() => {
     if (response.success) {
       // 统计：接管成功
       await incrementStat('sent');
-
-      if (settings.showNotification) {
-        notify(
-          t('notify.downloadSent'),
-          t('notify.sentToFluxDown', { name: request.filename || url }),
-        );
-      }
     } else {
       // 统计：接管失败
       await incrementStat('failed');

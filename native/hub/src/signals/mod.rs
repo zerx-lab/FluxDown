@@ -129,4 +129,51 @@ pub struct TaskInfo {
     pub downloaded_bytes: i64,
     pub total_bytes: i64,
     pub error_message: String,
+    pub created_at: String, // Unix seconds timestamp
+}
+
+// ========== Auto-update signals ==========
+
+/// Check for application updates (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct CheckForUpdate {
+    pub current_version: String,
+}
+
+/// Update check result (Rust → Dart)
+#[derive(Serialize, RustSignal)]
+pub struct UpdateCheckResult {
+    pub has_update: bool,
+    pub latest_version: String,
+    pub current_version: String,
+    pub download_url: String,
+    pub file_size: i64,
+    pub published_at: String,
+    pub error_message: String,
+}
+
+/// Start downloading an update (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct DownloadUpdate {
+    pub url: String,
+    pub version: String,
+}
+
+/// Update download progress (Rust → Dart)
+#[derive(Serialize, RustSignal)]
+pub struct UpdateDownloadProgress {
+    pub version: String,
+    pub downloaded_bytes: i64,
+    pub total_bytes: i64,
+    pub speed: i64,
+    /// 0=downloading, 1=completed, 2=error
+    pub status: i32,
+    pub installer_path: String,
+    pub error_message: String,
+}
+
+/// Install a downloaded update (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct InstallUpdate {
+    pub installer_path: String,
 }

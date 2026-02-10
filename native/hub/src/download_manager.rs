@@ -700,6 +700,33 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
             // instead of the current update's segment_details, because
             // rate-limiting may cause the current update to lack details.
             if let Some(ref segs) = state.cached_segments {
+                // When task is completed (status==3), fix up each segment's
+                // downloaded_bytes to its full size so the detail panel
+                // displays 100% even if the last segment update was stale
+                // (e.g. download finished too fast for an intermediate update).
+                let final_segs: Vec<SegmentDetail> = if update.status == 3 {
+                    segs.iter()
+                        .map(|s| {
+                            let full_size = s.end_byte - s.start_byte + 1;
+                            SegmentDetail {
+                                index: s.index,
+                                start_byte: s.start_byte,
+                                end_byte: s.end_byte,
+                                downloaded_bytes: full_size,
+                            }
+                        })
+                        .collect()
+                } else {
+                    segs.iter()
+                        .map(|s| SegmentDetail {
+                            index: s.index,
+                            start_byte: s.start_byte,
+                            end_byte: s.end_byte,
+                            downloaded_bytes: s.downloaded_bytes,
+                        })
+                        .collect()
+                };
+
                 rinf::debug_print!(
                     "[seg-vis] sending SegmentProgress for task {}, {} segments, total_bytes={}",
                     update.task_id,
@@ -710,15 +737,7 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
                     task_id: update.task_id.clone(),
                     total_bytes: update.total_bytes,
                     segment_count: segs.len() as i32,
-                    segments: segs
-                        .iter()
-                        .map(|s| SegmentDetail {
-                            index: s.index,
-                            start_byte: s.start_byte,
-                            end_byte: s.end_byte,
-                            downloaded_bytes: s.downloaded_bytes,
-                        })
-                        .collect(),
+                    segments: final_segs,
                 }
                 .send_signal_to_dart();
             } else {

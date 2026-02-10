@@ -24,6 +24,9 @@ class DownloadController extends ChangeNotifier {
   bool _isManageMode = false;
   final Set<String> _checkedTaskIds = {};
 
+  // 时间分组折叠状态（key 为 TimeGroup，value 为是否折叠）
+  final Map<TimeGroup, bool> _collapsedGroups = {};
+
   /// 下载完成回调 — 当任务状态从非 completed 变为 completed 时触发
   void Function(DownloadTask task)? onTaskCompleted;
 
@@ -94,6 +97,34 @@ class DownloadController extends ChangeNotifier {
       StatusTab.error =>
         byCategory.where((t) => t.status == TaskStatus.error).toList(),
     };
+  }
+
+  /// 将 filteredTasks 按时间分组（保持组内顺序不变）
+  List<TaskGroup> get groupedTasks {
+    final tasks = filteredTasks;
+    final Map<TimeGroup, List<DownloadTask>> map = {};
+    for (final task in tasks) {
+      final group = TimeGroup.fromDateTime(task.createdAt);
+      (map[group] ??= []).add(task);
+    }
+    // 按 TimeGroup 枚举顺序排列（today → older）
+    final result = <TaskGroup>[];
+    for (final g in TimeGroup.values) {
+      final list = map[g];
+      if (list != null && list.isNotEmpty) {
+        result.add(TaskGroup(group: g, tasks: list));
+      }
+    }
+    return result;
+  }
+
+  /// 某个时间分组是否折叠
+  bool isGroupCollapsed(TimeGroup group) => _collapsedGroups[group] ?? false;
+
+  /// 切换某个时间分组的折叠状态
+  void toggleGroupCollapsed(TimeGroup group) {
+    _collapsedGroups[group] = !isGroupCollapsed(group);
+    _safeNotifyListeners();
   }
 
   /// 在当前文件类型筛选下，各状态的任务数量（用于 Tab 显示计数）

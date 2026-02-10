@@ -33,7 +33,7 @@ const en: Record<MessageKey, string> = {
   'settings.hintAll': 'Intercept all downloads (except excluded domains)',
   'settings.minFileSize': 'Min File Size',
   'settings.sizeNoLimit': 'No limit',
-  'settings.notification': 'Notifications',
+
 
   // File type management
   'fileType.title': 'Intercept File Types',
@@ -48,6 +48,8 @@ const en: Record<MessageKey, string> = {
 
   // Domain exclusion
   'domain.title': 'Excluded Domains',
+  'domain.addTitle': 'Add domain manually',
+  'domain.placeholder': 'Enter domain, e.g. example.com',
   'domain.currentSite': 'Current Site',
   'domain.empty': 'No excluded domains',
   'domain.removed': 'Removed {domain}',

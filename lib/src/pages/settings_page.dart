@@ -2,7 +2,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../../main.dart';
+import '../i18n/locale_provider.dart';
 import '../models/settings_provider.dart';
+import '../services/update_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/title_drag_area.dart';
@@ -12,19 +14,36 @@ import '../widgets/title_drag_area.dart';
 // ─────────────────────────────────────────────
 
 enum SettingsCategory {
-  general(icon: LucideIcons.settings2, label: '通用', desc: '基本行为设置'),
-  appearance(icon: LucideIcons.palette, label: '外观', desc: '主题与配色'),
-  download(icon: LucideIcons.download, label: '下载', desc: '下载引擎配置');
+  general(icon: LucideIcons.settings2),
+  appearance(icon: LucideIcons.palette),
+  download(icon: LucideIcons.download),
+  about(icon: LucideIcons.info);
 
   final IconData icon;
-  final String label;
-  final String desc;
 
-  const SettingsCategory({
-    required this.icon,
-    required this.label,
-    required this.desc,
-  });
+  const SettingsCategory({required this.icon});
+}
+
+extension SettingsCategoryI18n on SettingsCategory {
+  String get localizedLabel {
+    final s = currentS;
+    return switch (this) {
+      SettingsCategory.general => s.settingsCatGeneral,
+      SettingsCategory.appearance => s.settingsCatAppearance,
+      SettingsCategory.download => s.settingsCatDownload,
+      SettingsCategory.about => s.settingsCatAbout,
+    };
+  }
+
+  String get localizedDesc {
+    final s = currentS;
+    return switch (this) {
+      SettingsCategory.general => s.settingsCatGeneralDesc,
+      SettingsCategory.appearance => s.settingsCatAppearanceDesc,
+      SettingsCategory.download => s.settingsCatDownloadDesc,
+      SettingsCategory.about => s.settingsCatAboutDesc,
+    };
+  }
 }
 
 /// 设置项搜索元数据 — 每个设置项对应的分类 + 搜索关键词
@@ -35,7 +54,7 @@ class SettingsSearchItem {
   final List<String> keywords;
   final IconData icon;
 
-  const SettingsSearchItem({
+  SettingsSearchItem({
     required this.category,
     required this.label,
     required this.description,
@@ -45,64 +64,81 @@ class SettingsSearchItem {
 }
 
 /// 所有可搜索的设置项列表
-const List<SettingsSearchItem> settingsSearchItems = [
-  SettingsSearchItem(
-    category: SettingsCategory.general,
-    label: '开机自启动',
-    description: '系统启动时自动运行 FluxDown',
-    keywords: ['开机', '自启动', '启动', 'startup', 'auto', 'boot'],
-    icon: LucideIcons.power,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.general,
-    label: '关闭时最小化到托盘',
-    description: '点击关闭按钮时隐藏到系统托盘',
-    keywords: ['关闭', '托盘', '最小化', 'tray', 'close', 'minimize'],
-    icon: LucideIcons.panelBottomClose,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.appearance,
-    label: '主题模式',
-    description: '选择亮色、暗色或跟随系统',
-    keywords: ['主题', '亮色', '暗色', '深色', '模式', 'theme', 'dark', 'light'],
-    icon: LucideIcons.sunMoon,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.appearance,
-    label: '主题色',
-    description: '选择应用的主色调',
-    keywords: ['主题色', '颜色', '配色', '色调', 'color', 'scheme', 'accent'],
-    icon: LucideIcons.palette,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.download,
-    label: '默认保存目录',
-    description: '新建下载任务时的默认保存位置',
-    keywords: ['保存', '目录', '路径', '文件夹', 'save', 'directory', 'path', 'folder'],
-    icon: LucideIcons.folderOpen,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.download,
-    label: '默认线程数',
-    description: '每个下载任务的默认分片数量',
-    keywords: ['线程', '分片', '并行', 'segment', 'thread'],
-    icon: LucideIcons.layers,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.download,
-    label: '最大同时下载数',
-    description: '同时进行的最大下载任务数量',
-    keywords: ['同时', '并发', '并行', '数量', 'concurrent', 'parallel', 'max'],
-    icon: LucideIcons.listOrdered,
-  ),
-  SettingsSearchItem(
-    category: SettingsCategory.download,
-    label: '速度限制',
-    description: '限制全局下载速度',
-    keywords: ['速度', '限速', '限制', 'speed', 'limit', '带宽', 'bandwidth'],
-    icon: LucideIcons.gauge,
-  ),
-];
+List<SettingsSearchItem> get settingsSearchItems {
+  final s = currentS;
+  return [
+    SettingsSearchItem(
+      category: SettingsCategory.general,
+      label: s.autoStartup,
+      description: s.autoStartupDesc,
+      keywords: s.searchKeywordsAutoStartup,
+      icon: LucideIcons.power,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.general,
+      label: s.closeToTray,
+      description: s.closeToTrayDesc,
+      keywords: s.searchKeywordsCloseToTray,
+      icon: LucideIcons.panelBottomClose,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.appearance,
+      label: s.language,
+      description: s.languageDesc,
+      keywords: s.searchKeywordsLanguage,
+      icon: LucideIcons.languages,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.appearance,
+      label: s.themeMode,
+      description: s.themeModeDesc,
+      keywords: s.searchKeywordsThemeMode,
+      icon: LucideIcons.sunMoon,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.appearance,
+      label: s.themeColor,
+      description: s.themeColorDesc,
+      keywords: s.searchKeywordsThemeColor,
+      icon: LucideIcons.palette,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.defaultSaveDir,
+      description: s.defaultSaveDirDesc,
+      keywords: s.searchKeywordsSaveDir,
+      icon: LucideIcons.folderOpen,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.defaultThreads,
+      description: s.defaultThreadsDesc,
+      keywords: s.searchKeywordsThreads,
+      icon: LucideIcons.layers,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.maxConcurrent,
+      description: s.maxConcurrentDesc,
+      keywords: s.searchKeywordsConcurrent,
+      icon: LucideIcons.listOrdered,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.speedLimit,
+      description: s.speedLimitDesc,
+      keywords: s.searchKeywordsSpeedLimit,
+      icon: LucideIcons.gauge,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.about,
+      label: s.checkUpdate,
+      description: s.checkUpdateDesc,
+      keywords: s.searchKeywordsUpdate,
+      icon: LucideIcons.refreshCw,
+    ),
+  ];
+}
 
 // ─────────────────────────────────────────────
 // 设置页面（带侧边栏导航）
@@ -162,7 +198,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        '返回',
+                        LocaleScope.of(context).back,
                         style: TextStyle(fontSize: 13, color: c.textSecondary),
                       ),
                     ],
@@ -170,7 +206,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  '设置',
+                  LocaleScope.of(context).settings,
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
@@ -231,7 +267,7 @@ class _SettingsSidebar extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(
-              '设置',
+              LocaleScope.of(context).settings,
               style: TextStyle(
                 fontSize: 10.5,
                 fontWeight: FontWeight.w500,
@@ -244,8 +280,8 @@ class _SettingsSidebar extends StatelessWidget {
           for (final cat in SettingsCategory.values)
             _SettingsNavItem(
               icon: cat.icon,
-              label: cat.label,
-              description: cat.desc,
+              label: cat.localizedLabel,
+              description: cat.localizedDesc,
               isSelected: selected == cat,
               onTap: () => onSelect(cat),
             ),
@@ -379,10 +415,7 @@ class _SettingsContent extends StatelessWidget {
                 layoutBuilder: (currentChild, previousChildren) {
                   return Stack(
                     alignment: Alignment.topCenter,
-                    children: [
-                      ...previousChildren,
-                      if (currentChild != null) currentChild,
-                    ],
+                    children: [...previousChildren, ?currentChild],
                   );
                 },
                 child: switch (category) {
@@ -395,6 +428,10 @@ class _SettingsContent extends StatelessWidget {
                   ),
                   SettingsCategory.download => _DownloadContent(
                     key: ValueKey('download'),
+                    settingsProvider: settingsProvider,
+                  ),
+                  SettingsCategory.about => _AboutContent(
+                    key: const ValueKey('about'),
                     settingsProvider: settingsProvider,
                   ),
                 },
@@ -427,7 +464,7 @@ class _SectionHeader extends StatelessWidget {
             Icon(category.icon, size: 18, color: c.accent),
             const SizedBox(width: 10),
             Text(
-              category.label,
+              category.localizedLabel,
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
@@ -437,7 +474,10 @@ class _SectionHeader extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 4),
-        Text(category.desc, style: TextStyle(fontSize: 13, color: c.textMuted)),
+        Text(
+          category.localizedDesc,
+          style: TextStyle(fontSize: 13, color: c.textMuted),
+        ),
         const SizedBox(height: 16),
         Divider(height: 1, color: c.border),
       ],
@@ -540,8 +580,8 @@ class _GeneralContent extends StatelessWidget {
         return Column(
           children: [
             _SettingCard(
-              label: '开机自启动',
-              description: '系统启动时自动运行 FluxDown',
+              label: LocaleScope.of(context).autoStartup,
+              description: LocaleScope.of(context).autoStartupDesc,
               child: ShadSwitch(
                 value: settingsProvider.autoStartup,
                 onChanged: (v) async {
@@ -549,12 +589,17 @@ class _GeneralContent extends StatelessWidget {
                   if (!ok && context.mounted) {
                     showShadDialog(
                       context: context,
+                      barrierColor: const Color(0x1A000000),
+                      animateIn: const [],
+                      animateOut: const [],
                       builder: (ctx) => ShadDialog.alert(
-                        title: const Text('设置失败'),
-                        description: const Text('无法修改开机自启动设置，请检查系统权限。'),
+                        title: Text(LocaleScope.of(ctx).settingFailed),
+                        description: Text(
+                          LocaleScope.of(ctx).autoStartupFailedDesc,
+                        ),
                         actions: [
                           ShadButton(
-                            child: const Text('确定'),
+                            child: Text(LocaleScope.of(ctx).confirm),
                             onPressed: () => Navigator.of(ctx).pop(),
                           ),
                         ],
@@ -566,8 +611,8 @@ class _GeneralContent extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             _SettingCard(
-              label: '关闭时最小化到托盘',
-              description: '点击关闭按钮时隐藏到系统托盘，而非退出应用',
+              label: LocaleScope.of(context).closeToTray,
+              description: LocaleScope.of(context).closeToTrayDesc,
               child: ShadSwitch(
                 value: settingsProvider.closeToTray,
                 onChanged: (v) => settingsProvider.setCloseToTray(v),
@@ -593,15 +638,22 @@ class _AppearanceContent extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _SettingCard(
-          label: '主题模式',
-          description: '选择亮色、暗色或跟随系统',
+          label: LocaleScope.of(context).language,
+          description: LocaleScope.of(context).languageDesc,
+          vertical: true,
+          child: const _LanguageSelector(),
+        ),
+        const SizedBox(height: 12),
+        _SettingCard(
+          label: LocaleScope.of(context).themeMode,
+          description: LocaleScope.of(context).themeModeDesc,
           vertical: true,
           child: const _ThemeModeSelector(),
         ),
         const SizedBox(height: 12),
         _SettingCard(
-          label: '主题色',
-          description: '选择应用的主色调',
+          label: LocaleScope.of(context).themeColor,
+          description: LocaleScope.of(context).themeColorDesc,
           vertical: true,
           child: const _ColorSchemeSelector(),
         ),
@@ -627,27 +679,27 @@ class _DownloadContent extends StatelessWidget {
         return Column(
           children: [
             _SettingCard(
-              label: '默认保存目录',
-              description: '新建下载任务时的默认保存位置',
+              label: LocaleScope.of(context).defaultSaveDir,
+              description: LocaleScope.of(context).defaultSaveDirDesc,
               vertical: true,
               child: _SaveDirPicker(settingsProvider: settingsProvider),
             ),
             const SizedBox(height: 12),
             _SettingCard(
-              label: '默认线程数',
-              description: '每个下载任务的默认分片数量',
+              label: LocaleScope.of(context).defaultThreads,
+              description: LocaleScope.of(context).defaultThreadsDesc,
               child: _SegmentSelector(settingsProvider: settingsProvider),
             ),
             const SizedBox(height: 12),
             _SettingCard(
-              label: '最大同时下载数',
-              description: '同时进行的最大下载任务数量',
+              label: LocaleScope.of(context).maxConcurrent,
+              description: LocaleScope.of(context).maxConcurrentDesc,
               child: _ConcurrentSelector(settingsProvider: settingsProvider),
             ),
             const SizedBox(height: 12),
             _SettingCard(
-              label: '速度限制',
-              description: '限制全局下载速度（0 表示不限制）',
+              label: LocaleScope.of(context).speedLimit,
+              description: LocaleScope.of(context).speedLimitDesc,
               vertical: true,
               child: _SpeedLimitInput(settingsProvider: settingsProvider),
             ),
@@ -669,7 +721,7 @@ class _SaveDirPicker extends StatelessWidget {
 
   Future<void> _pickDir(BuildContext context) async {
     final result = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择默认保存目录',
+      dialogTitle: currentS.selectDefaultSaveDir,
       initialDirectory: settingsProvider.defaultSaveDir,
     );
     if (result != null) {
@@ -703,7 +755,7 @@ class _SaveDirPicker extends StatelessWidget {
         ShadButton.outline(
           size: ShadButtonSize.sm,
           onPressed: () => _pickDir(context),
-          child: const Text('浏览'),
+          child: Text(currentS.browse),
         ),
       ],
     );
@@ -718,13 +770,13 @@ class _SegmentSelector extends StatelessWidget {
   // 0 = 自动（由 Rust segment_advisor 动态计算最优值）
   static const _options = [0, 4, 8, 16, 32, 64];
 
-  static String _label(int n) => n == 0 ? '自动' : '$n 线程';
+  static String _label(int n) => n == 0 ? currentS.auto : currentS.nThreads(n);
 
   @override
   Widget build(BuildContext context) {
     final current = settingsProvider.defaultSegments;
     return ShadSelect<int>(
-      placeholder: const Text('自动'),
+      placeholder: Text(currentS.auto),
       initialValue: current,
       options: _options
           .map((n) => ShadOption(value: n, child: Text(_label(n))))
@@ -753,7 +805,7 @@ class _ConcurrentSelector extends StatelessWidget {
       options: _options
           .map((n) => ShadOption(value: n, child: Text('$n')))
           .toList(),
-      selectedOptionBuilder: (context, value) => Text('$value 个任务'),
+      selectedOptionBuilder: (context, value) => Text(currentS.nTasks(value)),
       onChanged: (v) {
         if (v != null) settingsProvider.setMaxConcurrentTasks(v);
       },
@@ -817,9 +869,45 @@ class _SpeedLimitInputState extends State<_SpeedLimitInput> {
         ),
         const SizedBox(width: 8),
         Text(
-          'KB/s（0 = 不限制）',
+          currentS.speedLimitUnit,
           style: TextStyle(fontSize: 12, color: c.textMuted),
         ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 语言选择器（跟随系统 / 中文 / English）
+// ─────────────────────────────────────────────
+
+class _LanguageSelector extends StatelessWidget {
+  const _LanguageSelector();
+
+  @override
+  Widget build(BuildContext context) {
+    final current = localeNotifier.preference;
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+
+    final options = [
+      (pref: kLocaleSystem, label: s.languageSystem, icon: LucideIcons.monitor),
+      (pref: kLocaleZh, label: s.languageChinese, icon: LucideIcons.languages),
+      (pref: kLocaleEn, label: s.languageEnglish, icon: LucideIcons.languages),
+    ];
+
+    return Row(
+      children: [
+        for (final item in options) ...[
+          _ThemeModeCard(
+            icon: item.icon,
+            label: item.label,
+            selected: current == item.pref,
+            colors: c,
+            onTap: () => localeNotifier.setLocale(item.pref),
+          ),
+          if (item != options.last) const SizedBox(width: 10),
+        ],
       ],
     );
   }
@@ -832,21 +920,26 @@ class _SpeedLimitInputState extends State<_SpeedLimitInput> {
 class _ThemeModeSelector extends StatelessWidget {
   const _ThemeModeSelector();
 
-  static const _modes = [
-    (mode: ThemeMode.system, label: '跟随系统', icon: LucideIcons.monitor),
-    (mode: ThemeMode.light, label: '亮色', icon: LucideIcons.sun),
-    (mode: ThemeMode.dark, label: '暗色', icon: LucideIcons.moon),
-  ];
-
   @override
   Widget build(BuildContext context) {
     final provider = FluxDownApp.of(context);
     final current = provider.themeMode;
     final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+
+    final modes = [
+      (
+        mode: ThemeMode.system,
+        label: s.themeModeSystem,
+        icon: LucideIcons.monitor,
+      ),
+      (mode: ThemeMode.light, label: s.themeModeLight, icon: LucideIcons.sun),
+      (mode: ThemeMode.dark, label: s.themeModeDark, icon: LucideIcons.moon),
+    ];
 
     return Row(
       children: [
-        for (final item in _modes) ...[
+        for (final item in modes) ...[
           _ThemeModeCard(
             icon: item.icon,
             label: item.label,
@@ -854,7 +947,7 @@ class _ThemeModeSelector extends StatelessWidget {
             colors: c,
             onTap: () => provider.setThemeMode(item.mode),
           ),
-          if (item != _modes.last) const SizedBox(width: 10),
+          if (item != modes.last) const SizedBox(width: 10),
         ],
       ],
     );
@@ -1033,5 +1126,354 @@ class _ColorDotState extends State<_ColorDot> {
         ),
       ),
     );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 关于页面
+// ─────────────────────────────────────────────
+
+class _AboutContent extends StatelessWidget {
+  const _AboutContent({super.key, required this.settingsProvider});
+
+  final SettingsProvider settingsProvider;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return ListenableBuilder(
+      listenable: Listenable.merge([UpdateService.instance, settingsProvider]),
+      builder: (context, _) {
+        final svc = UpdateService.instance;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // App info card
+            _SettingCard(
+              label: 'FluxDown',
+              description: LocaleScope.of(context).appDescription,
+              vertical: true,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _infoRow(
+                    c,
+                    LocaleScope.of(context).currentVersion,
+                    svc.currentVersion == 'dev'
+                        ? 'dev'
+                        : 'v${svc.currentVersion}',
+                  ),
+                  if (svc.checkResult != null && svc.checkResult!.hasUpdate)
+                    _infoRow(
+                      c,
+                      LocaleScope.of(context).latestVersion,
+                      'v${svc.checkResult!.latestVersion}',
+                    ),
+                  if (svc.checkResult != null && svc.checkResult!.hasUpdate)
+                    _infoRow(
+                      c,
+                      LocaleScope.of(context).publishDate,
+                      _formatDate(svc.checkResult!.publishedAt),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // Update card
+            _SettingCard(
+              label: LocaleScope.of(context).softwareUpdate,
+              description: LocaleScope.of(context).checkUpdateDesc,
+              vertical: true,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              LocaleScope.of(context).autoCheckUpdate,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: c.textPrimary,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              LocaleScope.of(context).autoCheckUpdateDesc,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: c.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ShadSwitch(
+                        value: settingsProvider.autoCheckUpdate,
+                        onChanged: (v) =>
+                            settingsProvider.setAutoCheckUpdate(v),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _buildUpdateSection(context, svc, c),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _infoRow(AppColors c, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 72,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, color: c.textMuted),
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              color: c.textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUpdateSection(
+    BuildContext context,
+    UpdateService svc,
+    AppColors c,
+  ) {
+    final status = svc.status;
+    final s = LocaleScope.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Status message
+        if (status == UpdateStatus.upToDate)
+          _statusRow(c, LucideIcons.circleCheck, AppColors.green, s.upToDate),
+        if (status == UpdateStatus.error)
+          _statusRow(
+            c,
+            LucideIcons.circleAlert,
+            AppColors.red,
+            svc.errorMessage,
+          ),
+        if (status == UpdateStatus.available)
+          _statusRow(
+            c,
+            LucideIcons.circleArrowDown,
+            AppColors.amber,
+            s.newVersionFound(svc.checkResult?.latestVersion ?? ''),
+          ),
+        if (status == UpdateStatus.readyToInstall)
+          _statusRow(
+            c,
+            LucideIcons.circleCheck,
+            AppColors.green,
+            s.downloadComplete,
+          ),
+
+        // Download progress
+        if (status == UpdateStatus.downloading) ...[
+          _statusRow(c, LucideIcons.download, c.accent, s.downloadingUpdate),
+          const SizedBox(height: 10),
+          _buildProgressSection(svc, c),
+        ],
+
+        const SizedBox(height: 14),
+
+        // Action buttons
+        Row(
+          children: [
+            if (status == UpdateStatus.idle ||
+                status == UpdateStatus.upToDate ||
+                status == UpdateStatus.error)
+              ShadButton.outline(
+                size: ShadButtonSize.sm,
+                enabled: status != UpdateStatus.checking,
+                onPressed: svc.checkForUpdate,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (status == UpdateStatus.checking) ...[
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: c.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(s.checking),
+                    ] else ...[
+                      Icon(
+                        LucideIcons.refreshCw,
+                        size: 13,
+                        color: c.textSecondary,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(s.checkUpdate),
+                    ],
+                  ],
+                ),
+              ),
+            if (status == UpdateStatus.checking)
+              ShadButton.outline(
+                size: ShadButtonSize.sm,
+                enabled: false,
+                onPressed: () {},
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: c.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(s.checking),
+                  ],
+                ),
+              ),
+            if (status == UpdateStatus.available) ...[
+              ShadButton(
+                size: ShadButtonSize.sm,
+                onPressed: svc.downloadUpdate,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      LucideIcons.download,
+                      size: 13,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      s.downloadUpdate(
+                        UpdateService.formatBytes(
+                          svc.checkResult?.fileSize ?? 0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              ShadButton.outline(
+                size: ShadButtonSize.sm,
+                onPressed: svc.checkForUpdate,
+                child: Text(s.recheck),
+              ),
+            ],
+            if (status == UpdateStatus.readyToInstall) ...[
+              ShadButton(
+                size: ShadButtonSize.sm,
+                onPressed: svc.installUpdate,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      LucideIcons.rotateCcw,
+                      size: 13,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(s.installAndRestart),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _statusRow(AppColors c, IconData icon, Color color, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(fontSize: 12, color: c.textPrimary),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProgressSection(UpdateService svc, AppColors c) {
+    final p = svc.progress;
+    if (p == null) return const SizedBox.shrink();
+
+    final fraction = p.totalBytes > 0
+        ? (p.downloadedBytes / p.totalBytes).clamp(0.0, 1.0)
+        : 0.0;
+    final pctText = '${(fraction * 100).toStringAsFixed(1)}%';
+    final sizeText =
+        '${UpdateService.formatBytes(p.downloadedBytes)} / ${UpdateService.formatBytes(p.totalBytes)}';
+    final speedText = UpdateService.formatSpeed(p.speed);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(2),
+          child: LinearProgressIndicator(
+            value: fraction,
+            backgroundColor: c.surface2,
+            valueColor: AlwaysStoppedAnimation<Color>(c.accent),
+            minHeight: 6,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Text(
+              '$pctText  $sizeText',
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            ),
+            const Spacer(),
+            Text(speedText, style: TextStyle(fontSize: 11, color: c.textMuted)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  String _formatDate(String isoDate) {
+    if (isoDate.isEmpty) return '';
+    final dt = DateTime.tryParse(isoDate);
+    if (dt == null) return isoDate;
+    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 }

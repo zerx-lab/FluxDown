@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
+import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 
 /// IDM 风格分片配色 — 最多 16 色循环
@@ -104,7 +105,7 @@ class DetailPanel extends StatelessWidget {
       child: Row(
         children: [
           Text(
-            '详情',
+            currentS.detail,
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
@@ -128,7 +129,7 @@ class DetailPanel extends StatelessWidget {
   Widget _buildNoSelection(AppColors c) {
     return Center(
       child: Text(
-        '选择一个任务查看详情',
+        currentS.selectTaskHint,
         style: TextStyle(fontSize: 12, color: c.textMuted),
       ),
     );
@@ -174,13 +175,34 @@ class DetailPanel extends StatelessWidget {
   // ---------------------------------------------------------------------------
 
   Widget _buildProgress(AppColors c, DownloadTask task) {
-    final segs = task.segments;
-    final hasSegs = segs != null && segs.isNotEmpty && task.totalBytes > 0;
+    final rawSegs = task.segments;
+    final hasSegs =
+        rawSegs != null && rawSegs.isNotEmpty && task.totalBytes > 0;
 
-    // 百分比：有分片数据时用分片累加，否则 fallback
+    // 当任务已完成时，修正分片数据使每个分片的 downloadedBytes 等于其完整大小，
+    // 避免因下载太快导致最后一次分片进度没来得及更新而显示不完整的进度。
+    final List<SegmentData>? segs;
+    if (hasSegs && task.status == TaskStatus.completed) {
+      segs = rawSegs
+          .map(
+            (s) => SegmentData(
+              index: s.index,
+              startByte: s.startByte,
+              endByte: s.endByte,
+              downloadedBytes: s.endByte - s.startByte + 1,
+            ),
+          )
+          .toList();
+    } else {
+      segs = rawSegs;
+    }
+
+    // 百分比：已完成任务直接 100%，有分片数据时用分片累加，否则 fallback
     final double pctValue;
-    if (hasSegs) {
-      final dlSum = segs.fold<int>(0, (s, seg) => s + seg.downloadedBytes);
+    if (task.status == TaskStatus.completed) {
+      pctValue = 1.0;
+    } else if (hasSegs) {
+      final dlSum = segs!.fold<int>(0, (s, seg) => s + seg.downloadedBytes);
       pctValue = (dlSum / task.totalBytes).clamp(0.0, 1.0);
     } else {
       pctValue = task.progress;
@@ -204,18 +226,18 @@ class DetailPanel extends StatelessWidget {
 
         // 分段进度条
         if (hasSegs)
-          _buildSegmentedBar(c, segs, task.totalBytes)
+          _buildSegmentedBar(c, segs!, task.totalBytes)
         else
           _buildSimpleBar(c, pctValue),
 
         // IDM 网格可视化
         if (hasSegs) ...[
           const SizedBox(height: 16),
-          _buildSegmentGrid(c, segs, task.totalBytes),
+          _buildSegmentGrid(c, segs!, task.totalBytes),
         ],
 
         // 分片图例
-        if (hasSegs && segs.length > 1) ...[
+        if (hasSegs && segs!.length > 1) ...[
           const SizedBox(height: 12),
           _buildSegmentLegend(c, segs),
         ],
@@ -277,7 +299,7 @@ class DetailPanel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '下载分布',
+          currentS.downloadDistribution,
           style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w500,
@@ -370,16 +392,17 @@ class DetailPanel extends StatelessWidget {
 
     return Column(
       children: [
-        _buildInfoRow('大小', task.sizeText, c),
-        _buildInfoRow('已下载', task.downloadedText, c),
-        _buildInfoRow('速度', task.speedText, c),
-        _buildInfoRow('剩余', task.etaText, c),
-        _buildInfoRow('状态', task.statusText, c),
-        if (segCount != null) _buildInfoRow('线程', '$segCount 线程（动态分配）', c),
-        _buildInfoRow('路径', task.saveDir, c),
+        _buildInfoRow(currentS.infoSize, task.sizeText, c),
+        _buildInfoRow(currentS.infoDownloaded, task.downloadedText, c),
+        _buildInfoRow(currentS.infoSpeed, task.speedText, c),
+        _buildInfoRow(currentS.infoRemaining, task.etaText, c),
+        _buildInfoRow(currentS.infoStatus, task.statusText, c),
+        if (segCount != null)
+          _buildInfoRow(currentS.threads, currentS.infoThreads(segCount), c),
+        _buildInfoRow(currentS.infoPath, task.saveDir, c),
         _buildUrlRow(c, task.url),
         if (task.errorMessage.isNotEmpty)
-          _buildInfoRow('错误', task.errorMessage, c),
+          _buildInfoRow(currentS.infoError, task.errorMessage, c),
       ],
     );
   }
@@ -421,7 +444,7 @@ class DetailPanel extends StatelessWidget {
           SizedBox(
             width: 60,
             child: Text(
-              '地址',
+              currentS.infoUrl,
               style: TextStyle(fontSize: 11, color: c.textMuted),
             ),
           ),
@@ -466,9 +489,9 @@ class DetailPanel extends StatelessWidget {
                 onPressed: () => controller.pauseTask(task.id),
                 backgroundColor: c.accent,
                 hoverBackgroundColor: c.accentHover,
-                child: const Text(
-                  '暂停',
-                  style: TextStyle(
+                child: Text(
+                  currentS.pause,
+                  style: const TextStyle(
                     fontSize: 13,
                     color: Colors.white,
                     fontWeight: FontWeight.w500,
@@ -495,9 +518,9 @@ class DetailPanel extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Text(
-                      '恢复中...（点击暂停）',
-                      style: TextStyle(
+                    Text(
+                      currentS.resumingClickPause,
+                      style: const TextStyle(
                         fontSize: 13,
                         color: Colors.white,
                         fontWeight: FontWeight.w500,
@@ -515,9 +538,9 @@ class DetailPanel extends StatelessWidget {
                 onPressed: () => controller.resumeTask(task.id),
                 backgroundColor: c.accent,
                 hoverBackgroundColor: c.accentHover,
-                child: const Text(
-                  '继续',
-                  style: TextStyle(
+                child: Text(
+                  currentS.resume,
+                  style: const TextStyle(
                     fontSize: 13,
                     color: Colors.white,
                     fontWeight: FontWeight.w500,
@@ -531,9 +554,9 @@ class DetailPanel extends StatelessWidget {
             child: ShadButton.destructive(
               onPressed: () =>
                   controller.deleteTask(task.id, deleteFiles: true),
-              child: const Text(
-                '删除任务和文件',
-                style: TextStyle(fontSize: 13, color: Colors.white),
+              child: Text(
+                currentS.deleteTaskAndFile,
+                style: const TextStyle(fontSize: 13, color: Colors.white),
               ),
             ),
           ),
@@ -704,7 +727,10 @@ class _CopyUrlButtonState extends State<_CopyUrlButton> {
     if (!mounted) return;
     setState(() => _copied = true);
     ShadSonner.of(context).show(
-      const ShadToast(title: Text('已复制下载地址'), duration: Duration(seconds: 2)),
+      ShadToast(
+        title: Text(currentS.urlCopied),
+        duration: const Duration(seconds: 2),
+      ),
     );
     await Future<void>.delayed(const Duration(seconds: 2));
     if (mounted) setState(() => _copied = false);
