@@ -34,16 +34,23 @@ export function detectLocale(): Locale {
 
 /** 从 localStorage 加载或自动检测 */
 export function loadLocale(): Locale {
-  if (typeof localStorage === "undefined") return detectLocale();
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved === "en" || saved === "zh") return saved;
+  if (typeof window === "undefined") return detectLocale();
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved === "en" || saved === "zh") return saved;
+  } catch {
+    // localStorage 不可用（SSR / 隐私模式）
+  }
   return detectLocale();
 }
 
 /** 持久化语言选择 */
 export function saveLocale(locale: Locale): void {
-  if (typeof localStorage !== "undefined") {
+  if (typeof window === "undefined") return;
+  try {
     localStorage.setItem(STORAGE_KEY, locale);
+  } catch {
+    // localStorage 不可用
   }
 }
 
@@ -68,15 +75,8 @@ export function t(messages: Messages, key: keyof Messages, params?: Record<strin
  * 每个 React island 独立管理 locale 状态，通过 CustomEvent 同步切换
  */
 export function useLocale() {
-  const [locale, setLocaleState] = useState<Locale>("en");
-  const [messages, setMessages] = useState<Messages>(en);
-
-  // 初始化：检测/加载语言
-  useEffect(() => {
-    const detected = loadLocale();
-    setLocaleState(detected);
-    setMessages(getMessages(detected));
-  }, []);
+  const [locale, setLocaleState] = useState<Locale>(() => loadLocale());
+  const [messages, setMessages] = useState<Messages>(() => getMessages(loadLocale()));
 
   // 监听其他 island 的语言切换事件
   useEffect(() => {

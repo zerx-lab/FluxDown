@@ -192,6 +192,8 @@ const en = {
   "issueDetail.noComments": "No replies yet.",
   "issueDetail.notFound": "Issue not found.",
   "issueDetail.error": "Failed to load issue details.",
+  "issueDetail.anonymous": "User",
+  "issueDetail.developer": "Developer",
   "issueDetail.meta.typeLabel": "Type:",
   "issueDetail.meta.type.feature": "Feature Request",
   "issueDetail.meta.type.bug": "Bug Report",

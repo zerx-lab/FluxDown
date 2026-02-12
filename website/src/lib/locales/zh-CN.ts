@@ -211,6 +211,8 @@ const zhCN: Messages = {
   "issueDetail.notFound": "未找到该反馈。",
   "issueDetail.error": "加载反馈详情失败。",
   "issueDetail.viewOnGithub": "在 GitHub 上查看",
+  "issueDetail.anonymous": "用户",
+  "issueDetail.developer": "开发者",
   "issueDetail.meta.typeLabel": "类型：",
   "issueDetail.meta.type.feature": "功能建议",
   "issueDetail.meta.type.bug": "Bug 报告",

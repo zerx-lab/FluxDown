@@ -16,6 +16,7 @@ import {
   Eye,
   Calendar,
   Mail,
+  User,
 } from "lucide-react";
 import { useLocale } from "@/lib/i18n";
 
@@ -433,15 +434,6 @@ export default function IssueDetailModal({ issueNumber, onClose }: IssueDetailMo
                     {/* Meta */}
                     <div className="flex items-center gap-3 text-[11px] text-dark-text-muted">
                       <span className="flex items-center gap-1">
-                        <img
-                          src={data.issue.user.avatar_url}
-                          alt={data.issue.user.login}
-                          className="w-4 h-4 rounded-full"
-                          loading="lazy"
-                        />
-                        {data.issue.user.login}
-                      </span>
-                      <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
                         {formatDate(data.issue.created_at, locale)}
                       </span>
@@ -458,14 +450,11 @@ export default function IssueDetailModal({ issueNumber, onClose }: IssueDetailMo
                   <div className="rounded-lg border border-dark-border bg-dark-surface1 overflow-hidden mb-6">
                     {/* Author header */}
                     <div className="flex items-center gap-2 px-4 py-2.5 bg-dark-surface2/50 border-b border-dark-border">
-                      <img
-                        src={data.issue.user.avatar_url}
-                        alt={data.issue.user.login}
-                        className="w-5 h-5 rounded-full"
-                        loading="lazy"
-                      />
+                      <div className="w-5 h-5 rounded-full bg-dark-surface3 flex items-center justify-center">
+                        <User className="w-3 h-3 text-dark-text-muted" />
+                      </div>
                       <span className="text-xs font-medium text-dark-text">
-                        {data.issue.user.login}
+                        {t("issueDetail.anonymous")}
                       </span>
                       <span className="text-[11px] text-dark-text-muted">
                         {formatTimeAgo(data.issue.created_at, locale)}
@@ -496,7 +485,9 @@ export default function IssueDetailModal({ issueNumber, onClose }: IssueDetailMo
                         {t("issueDetail.commentsTitle").replace("{count}", String(data.comments.length))}
                       </h3>
 
-                      {data.comments.map((comment) => (
+                      {data.comments.map((comment) => {
+                        const isDeveloper = comment.user.login !== data.issue.user.login;
+                        return (
                         <motion.div
                           key={comment.id}
                           initial={{ opacity: 0, y: 8 }}
@@ -505,14 +496,11 @@ export default function IssueDetailModal({ issueNumber, onClose }: IssueDetailMo
                         >
                           {/* Comment header */}
                           <div className="flex items-center gap-2 px-4 py-2.5 bg-dark-surface2/50 border-b border-dark-border">
-                            <img
-                              src={comment.user.avatar_url}
-                              alt={comment.user.login}
-                              className="w-5 h-5 rounded-full"
-                              loading="lazy"
-                            />
+                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isDeveloper ? "bg-brand-blue/20" : "bg-dark-surface3"}`}>
+                              <User className={`w-3 h-3 ${isDeveloper ? "text-brand-blue" : "text-dark-text-muted"}`} />
+                            </div>
                             <span className="text-xs font-medium text-dark-text">
-                              {comment.user.login}
+                              {isDeveloper ? t("issueDetail.developer") : t("issueDetail.anonymous")}
                             </span>
                             <span className="text-[11px] text-dark-text-muted">
                               {formatTimeAgo(comment.created_at, locale)}
@@ -529,7 +517,8 @@ export default function IssueDetailModal({ issueNumber, onClose }: IssueDetailMo
 
                           <ReactionsBar reactions={comment.reactions} />
                         </motion.div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
 
