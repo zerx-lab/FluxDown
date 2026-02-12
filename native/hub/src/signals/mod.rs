@@ -16,6 +16,10 @@ pub struct CreateTask {
     /// When non-empty, this takes priority over `url` for BT downloads.
     #[serde(default)]
     pub torrent_file_bytes: Vec<u8>,
+    /// Per-task proxy URL override (e.g. "socks5://user:pass@host:port").
+    /// Empty = use global proxy setting.
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 /// Batch create multiple download tasks at once
@@ -24,6 +28,10 @@ pub struct BatchCreateTask {
     pub urls: Vec<String>, // list of URLs (http/https/ftp/magnet)
     pub save_dir: String,
     pub segments: i32, // 0 = auto, shared across all tasks
+    /// Per-task proxy URL override (shared for all tasks in batch).
+    /// Empty = use global proxy setting.
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 /// Control an existing task (pause/resume/cancel/delete)
@@ -102,6 +110,10 @@ pub struct ConfirmExternalDownload {
     pub segments: i32,     // 0 = auto
     #[serde(default)]
     pub cookies: String, // browser cookies for authenticated downloads
+    /// Per-task proxy URL override.
+    /// Empty = use global proxy setting.
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 // ========== Config signals ==========
@@ -142,6 +154,8 @@ pub struct TaskInfo {
     pub total_bytes: i64,
     pub error_message: String,
     pub created_at: String, // Unix seconds timestamp
+    /// Per-task proxy URL (empty = global proxy).
+    pub proxy_url: String,
 }
 
 /// Notification that a dynamic segment split occurred (IDM-style coordinator).
@@ -209,6 +223,47 @@ pub struct UpdateDownloadProgress {
 #[derive(Deserialize, DartSignal)]
 pub struct InstallUpdate {
     pub installer_path: String,
+}
+
+// ========== Proxy test signals ==========
+
+/// Test proxy connectivity (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct TestProxyConnection {
+    pub proxy_type: String, // "http" | "https" | "socks4" | "socks5"
+    pub proxy_host: String,
+    pub proxy_port: String,
+    pub proxy_username: String,
+    pub proxy_password: String,
+}
+
+/// Proxy test result (Rust → Dart)
+#[derive(Serialize, RustSignal)]
+pub struct ProxyTestResult {
+    pub success: bool,
+    pub latency_ms: i64,
+    pub error_message: String,
+}
+
+// ========== System proxy detection signals ==========
+
+/// Request system proxy detection (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct DetectSystemProxy {}
+
+/// System proxy detection result (Rust → Dart)
+#[derive(Serialize, RustSignal)]
+pub struct SystemProxyInfo {
+    /// Whether a system proxy was detected
+    pub detected: bool,
+    /// Proxy type: "http" | "https" | "socks4" | "socks5"
+    pub proxy_type: String,
+    /// Proxy host
+    pub host: String,
+    /// Proxy port
+    pub port: String,
+    /// Bypass / no-proxy list (comma-separated)
+    pub no_proxy_list: String,
 }
 
 // ========== File association signals ==========

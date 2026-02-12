@@ -46,6 +46,7 @@ dependencies:
   desktop_multi_window: ^0.3.0
   ffi: ^2.1.5
 
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

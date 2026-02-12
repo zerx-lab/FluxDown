@@ -80,7 +80,31 @@ void _ensureCache(AppColorScheme scheme) {
   if (_cachedScheme == scheme) return;
   _cachedScheme = scheme;
 
-  final darkColorScheme = _darkColorScheme(scheme);
+  // Override shadcn's blue-tinted dark palette with neutral Apple-style grays.
+  // Default shadcn dark schemes (e.g. ShadBlueColorScheme.dark) use dark blues
+  // like 0xff020817 / 0xff1e293b which look "dirty" against our neutral gray
+  // surfaces.  We keep `primary` and `primaryForeground` from the original
+  // scheme so accent colors still reflect the user's chosen theme color.
+  const bg = Color(0xFF1C1C1E);
+  const fg = Color(0xFFF5F5F7);
+  final darkColorScheme = _darkColorScheme(scheme).copyWith(
+    background: bg,
+    foreground: fg,
+    card: _darkSurface1,
+    cardForeground: fg,
+    popover: _darkSurface1,
+    popoverForeground: fg,
+    secondary: const Color(0xFF3A3A3C),
+    secondaryForeground: fg,
+    muted: const Color(0xFF3A3A3C),
+    mutedForeground: const Color(0xFFA1A1A6),
+    accent: const Color(0xFF3A3A3C),
+    accentForeground: fg,
+    border: _darkBorder,
+    input: _darkBorder,
+    ring: _darkColorScheme(scheme).primary,
+    selection: const Color(0xFF48484A),
+  );
 
   _cachedLight = ShadThemeData(
     brightness: Brightness.light,

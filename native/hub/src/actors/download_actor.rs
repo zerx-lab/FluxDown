@@ -8,11 +8,13 @@ use crate::db::Db;
 use crate::download_manager::{self, DownloadManager, TaskDone};
 use crate::native_messaging::{self};
 use crate::file_association;
+use crate::proxy_config::ProxyConfig;
 use crate::signals::{
     BatchCreateTask, CheckFileAssociation, CheckForUpdate, ConfigEntry, ConfigLoaded,
-    ConfirmExternalDownload, ControlTask, CreateTask, DownloadUpdate, ExternalDownloadRequest,
-    FileAssociationStatus, InstallUpdate, RequestAllTasks, RequestConfig, SaveConfig,
-    SetFileAssociation, UpdateCheckResult,
+    ConfirmExternalDownload, ControlTask, CreateTask, DetectSystemProxy, DownloadUpdate,
+    ExternalDownloadRequest, FileAssociationStatus, InstallUpdate, ProxyTestResult,
+    RequestAllTasks, RequestConfig, SaveConfig, SetFileAssociation, SystemProxyInfo,
+    TestProxyConnection, UpdateCheckResult,
 };
 use crate::updater;
 
@@ -34,7 +36,7 @@ fn default_save_dir() -> String {
 }
 
 /// Read initial config values from DB to pass to DownloadManager.
-async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig) {
+async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig, ProxyConfig) {
     let config = db.get_all_config().await.unwrap_or_default();
 
     let max_concurrent = config
@@ -75,7 +77,9 @@ async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig) {
             .unwrap_or_default(),
     };
 
-    (max_concurrent, speed_limit_bytes, save_dir, bt_config)
+    let proxy_config = ProxyConfig::from_config_map(&config);
+
+    (max_concurrent, speed_limit_bytes, save_dir, bt_config, proxy_config)
 }
 
 pub async fn run(db_dir: PathBuf) {
@@ -93,7 +97,14 @@ pub async fn run(db_dir: PathBuf) {
     }
 
     // Load persisted config to initialize the manager with correct limits.
-    let (max_concurrent, speed_limit_bps, save_dir, mut bt_config) = load_initial_config(&db).await;
+    let (max_concurrent, speed_limit_bps, save_dir, mut bt_config, proxy_config) = load_initial_config(&db).await;
+    rinf::debug_print!(
+        "[actor] proxy config: mode={}, type={}, host={}, port={}",
+        proxy_config.mode.as_str(),
+        proxy_config.proxy_type.as_str(),
+        proxy_config.host,
+        proxy_config.port,
+    );
 
     // Populate default tracker list on first launch (when DB value is empty).
     if bt_config.custom_trackers.trim().is_empty() {
@@ -112,7 +123,7 @@ pub async fn run(db_dir: PathBuf) {
     );
 
     let app_data_dir = db_dir.to_string_lossy().into_owned();
-    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, app_data_dir, bt_config) {
+    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, app_data_dir, bt_config, proxy_config) {
         Ok(m) => m,
         Err(e) => {
             rinf::debug_print!("Failed to create download manager: {}", e);
@@ -146,6 +157,8 @@ pub async fn run(db_dir: PathBuf) {
     let install_update_recv = InstallUpdate::get_dart_signal_receiver();
     let set_file_assoc_recv = SetFileAssociation::get_dart_signal_receiver();
     let check_file_assoc_recv = CheckFileAssociation::get_dart_signal_receiver();
+    let test_proxy_recv = TestProxyConnection::get_dart_signal_receiver();
+    let detect_sys_proxy_recv = DetectSystemProxy::get_dart_signal_receiver();
 
     // Spawn the Native Messaging listener (reads from stdin in a blocking thread).
     // When the browser extension sends a download request, it arrives on this channel.
@@ -156,7 +169,7 @@ pub async fn run(db_dir: PathBuf) {
             Some(signal) = create_recv.recv() => {
                 let msg = signal.message;
                 manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.torrent_file_bytes)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.torrent_file_bytes, msg.proxy_url)
                     .await;
             }
             Some(signal) = batch_create_recv.recv() => {
@@ -167,7 +180,7 @@ pub async fn run(db_dir: PathBuf) {
                 );
                 for url in msg.urls {
                     manager
-                        .create_task(url, msg.save_dir.clone(), String::new(), msg.segments, String::new(), Vec::new())
+                        .create_task(url, msg.save_dir.clone(), String::new(), msg.segments, String::new(), Vec::new(), msg.proxy_url.clone())
                         .await;
                 }
             }
@@ -243,6 +256,17 @@ pub async fn run(db_dir: PathBuf) {
                         // re-created with the new config on next BT download.
                         manager.invalidate_bt_session().await;
                     }
+                    // Proxy config keys — reload full proxy config from DB
+                    // and rebuild the HTTP client.
+                    "proxy_mode" | "proxy_type" | "proxy_host" | "proxy_port"
+                    | "proxy_username" | "proxy_password" | "proxy_no_list" => {
+                        rinf::debug_print!("[actor] proxy config changed: {}={}", msg.key, msg.value);
+                        let all_cfg = db.get_all_config().await.unwrap_or_default();
+                        let new_proxy = ProxyConfig::from_config_map(&all_cfg);
+                        if let Err(e) = manager.set_proxy_config(new_proxy) {
+                            rinf::debug_print!("[actor] failed to apply proxy config: {}", e);
+                        }
+                    }
                     _ => {} // other config keys — no runtime action needed
                 }
             }
@@ -287,7 +311,7 @@ pub async fn run(db_dir: PathBuf) {
                     msg.cookies.len()
                 );
                 manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, Vec::new())
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, Vec::new(), msg.proxy_url)
                     .await;
             }
             Some(done) = done_rx.recv() => {
@@ -355,6 +379,74 @@ pub async fn run(db_dir: PathBuf) {
                         is_associated: file_association::is_associated(),
                     }
                     .send_signal_to_dart();
+                });
+            }
+            // --- System proxy detection ---
+            Some(_) = detect_sys_proxy_recv.recv() => {
+                tokio::task::spawn_blocking(|| {
+                    match crate::proxy_config::detect_system_proxy() {
+                        Ok(Some(cfg)) => {
+                            SystemProxyInfo {
+                                detected: true,
+                                proxy_type: cfg.proxy_type.as_str().to_owned(),
+                                host: cfg.host,
+                                port: cfg.port.to_string(),
+                                no_proxy_list: cfg.no_proxy_list,
+                            }.send_signal_to_dart();
+                        }
+                        Ok(None) => {
+                            SystemProxyInfo {
+                                detected: false,
+                                proxy_type: String::new(),
+                                host: String::new(),
+                                port: String::new(),
+                                no_proxy_list: String::new(),
+                            }.send_signal_to_dart();
+                        }
+                        Err(e) => {
+                            rinf::debug_print!("[actor] system proxy detection error: {}", e);
+                            SystemProxyInfo {
+                                detected: false,
+                                proxy_type: String::new(),
+                                host: String::new(),
+                                port: String::new(),
+                                no_proxy_list: String::new(),
+                            }.send_signal_to_dart();
+                        }
+                    }
+                });
+            }
+            // --- Proxy connectivity test ---
+            Some(signal) = test_proxy_recv.recv() => {
+                let msg = signal.message;
+                rinf::debug_print!(
+                    "[actor] proxy test: type={}, host={}, port={}",
+                    msg.proxy_type, msg.proxy_host, msg.proxy_port,
+                );
+                tokio::spawn(async move {
+                    let result = crate::proxy_config::test_proxy_connection(
+                        &msg.proxy_type,
+                        &msg.proxy_host,
+                        &msg.proxy_port,
+                        &msg.proxy_username,
+                        &msg.proxy_password,
+                    ).await;
+                    match result {
+                        Ok(latency_ms) => {
+                            ProxyTestResult {
+                                success: true,
+                                latency_ms,
+                                error_message: String::new(),
+                            }.send_signal_to_dart();
+                        }
+                        Err(e) => {
+                            ProxyTestResult {
+                                success: false,
+                                latency_ms: 0,
+                                error_message: e.to_string(),
+                            }.send_signal_to_dart();
+                        }
+                    }
                 });
             }
         }

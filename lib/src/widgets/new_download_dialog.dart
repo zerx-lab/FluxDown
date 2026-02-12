@@ -57,7 +57,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   final _urlFocusNode = FocusNode();
   final _saveDirController = TextEditingController();
   final _renameController = TextEditingController();
+  final _proxyUrlController = TextEditingController();
   String? selectedThreads;
+
+  /// 是否展开高级选项（含任务代理）
+  bool _showAdvanced = false;
 
   /// 解析出的有效 URL 数量（实时计算）
   int _urlCount = 0;
@@ -136,6 +140,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     _urlFocusNode.dispose();
     _saveDirController.dispose();
     _renameController.dispose();
+    _proxyUrlController.dispose();
     super.dispose();
   }
 
@@ -196,12 +201,15 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     final saveDir = _saveDirController.text.trim();
     if (saveDir.isEmpty) return;
 
+    final proxyUrl = _proxyUrlController.text.trim();
+
     // Handle .torrent file downloads
     if (_hasTorrentFiles) {
       for (final path in _torrentFilePaths) {
         widget.controller.createTaskFromTorrentFile(
           torrentFilePath: path,
           saveDir: saveDir,
+          proxyUrl: proxyUrl,
         );
       }
       Navigator.of(context).pop();
@@ -229,6 +237,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         saveDir: saveDir,
         fileName: rename,
         segments: segments,
+        proxyUrl: proxyUrl,
       );
     } else {
       // 多条 — 使用 BatchCreateTask
@@ -236,6 +245,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         urls: urls,
         saveDir: saveDir,
         segments: segments,
+        proxyUrl: proxyUrl,
       );
     }
 
@@ -541,6 +551,67 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ShadInput(
                 controller: _renameController,
                 placeholder: Text(s.autoDetectFilename),
+              ),
+            ],
+
+            // 高级选项 — 可折叠，含任务独立代理
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () => setState(() => _showAdvanced = !_showAdvanced),
+              child: Row(
+                children: [
+                  Icon(
+                    _showAdvanced
+                        ? LucideIcons.chevronDown
+                        : LucideIcons.chevronRight,
+                    size: 14,
+                    color: c.textMuted,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    s.taskProxyAdvanced,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      color: c.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (_showAdvanced) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _SectionLabel(text: s.taskProxy, c: c),
+                  const SizedBox(width: 4),
+                  ShadTooltip(
+                    waitDuration: const Duration(milliseconds: 200),
+                    showDuration: Duration.zero,
+                    builder: (_) => Text(
+                      s.taskProxyFormatHint,
+                      style: const TextStyle(fontSize: 12, height: 1.5),
+                    ),
+                    child: ShadGestureDetector(
+                      cursor: SystemMouseCursors.help,
+                      child: Icon(
+                        LucideIcons.circleAlert,
+                        size: 13,
+                        color: c.textMuted,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                s.taskProxyDesc,
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+              const SizedBox(height: 6),
+              ShadInput(
+                controller: _proxyUrlController,
+                placeholder: Text(s.taskProxyPlaceholder),
               ),
             ],
           ],

@@ -76,3 +76,4 @@ website/.vercel/
 
 # Memory debug output
 .mem_debug/
+/videos

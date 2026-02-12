@@ -14,6 +14,7 @@ use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession, To
 use crate::db::Db;
 use crate::downloader::{self, DownloadParams, ProgressUpdate, SegmentProgressInfo};
 use crate::ftp_downloader;
+use crate::proxy_config::ProxyConfig;
 use crate::signals::{AllTasks, SegmentDetail, SegmentProgress, TaskProgress};
 use crate::speed_limiter::SpeedLimiter;
 
@@ -111,11 +112,16 @@ struct QueuedTask {
     cookies: String,
     /// Raw .torrent file bytes (empty for magnet/HTTP/FTP tasks).
     torrent_file_bytes: Vec<u8>,
+    /// Per-task proxy URL override (e.g. "socks5://user:pass@host:port").
+    /// Empty = use global proxy setting.
+    proxy_url: String,
 }
 
 pub struct DownloadManager {
     db: Db,
     client: Client,
+    /// Current proxy configuration — used to rebuild Client on config change.
+    proxy_config: ProxyConfig,
     active_tokens: HashMap<String, (CancellationToken, u64)>,
     /// JoinHandles for spawned download tasks — used by `delete_task` to await
     /// task exit, ensuring file handles and network connections are released
@@ -163,8 +169,9 @@ impl DownloadManager {
         default_save_dir: String,
         app_data_dir: String,
         bt_config: BtConfig,
+        proxy_config: ProxyConfig,
     ) -> Result<Self, downloader::DownloadError> {
-        let client = downloader::build_client()?;
+        let client = downloader::build_client(&proxy_config)?;
         let (tx, rx) = mpsc::channel(256);
         let (done_tx, done_rx) = mpsc::channel(64);
         let limiter = SpeedLimiter::new(speed_limit_bps);
@@ -172,6 +179,7 @@ impl DownloadManager {
         Ok(Self {
             db,
             client,
+            proxy_config,
             active_tokens: HashMap::new(),
             active_handles: HashMap::new(),
             generation: 0,
@@ -229,6 +237,31 @@ impl DownloadManager {
         if let Some(ref bt) = self.bt_session {
             bt.set_speed_limit(bps);
         }
+    }
+
+    /// Update proxy configuration.  Rebuilds the shared HTTP client so that
+    /// all **new** downloads use the updated proxy settings.  Already-running
+    /// downloads keep their existing client and are unaffected.
+    ///
+    /// Returns `Err` if the new client cannot be built (e.g. invalid SOCKS URL).
+    pub fn set_proxy_config(&mut self, config: ProxyConfig) -> Result<(), downloader::DownloadError> {
+        rinf::debug_print!(
+            "[manager] updating proxy config: mode={}, type={}, host={}, port={}",
+            config.mode.as_str(),
+            config.proxy_type.as_str(),
+            config.host,
+            config.port,
+        );
+        let new_client = downloader::build_client(&config)?;
+        self.client = new_client;
+        self.proxy_config = config;
+        Ok(())
+    }
+
+    /// Get a reference to the current proxy configuration.
+    #[allow(dead_code)]
+    pub fn proxy_config(&self) -> &ProxyConfig {
+        &self.proxy_config
     }
 
     // -----------------------------------------------------------------------
@@ -407,6 +440,7 @@ impl DownloadManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_task(
         &mut self,
         url: String,
@@ -415,6 +449,7 @@ impl DownloadManager {
         segments: i32,
         cookies: String,
         torrent_file_bytes: Vec<u8>,
+        proxy_url: String,
     ) {
         let task_id = Uuid::new_v4().to_string();
         // When segments <= 0 ("auto"), store 0 in DB and let the downloader
@@ -432,7 +467,7 @@ impl DownloadManager {
 
         if let Err(e) = self
             .db
-            .insert_task(&task_id, &db_url, &file_name, &save_dir, seg, 0)
+            .insert_task(&task_id, &db_url, &file_name, &save_dir, seg, 0, &proxy_url)
             .await
         {
             rinf::debug_print!("insert_task error: {}", e);
@@ -471,6 +506,7 @@ impl DownloadManager {
             is_resume: false,
             cookies,
             torrent_file_bytes,
+            proxy_url,
         };
         if is_bt || self.has_capacity() {
             self.do_start_task(queued).await;
@@ -499,6 +535,7 @@ impl DownloadManager {
             is_resume: _,
             cookies,
             torrent_file_bytes,
+            proxy_url,
         } = queued;
         self.generation += 1;
         let spawn_gen = self.generation;
@@ -579,6 +616,26 @@ impl DownloadManager {
                 let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
             })
         } else {
+            // Resolve proxy: per-task proxy_url overrides global config.
+            // `.resolve()` expands System mode into a concrete Manual config
+            // so that FTP downloader (which reads host/port directly) works.
+            let (task_client, task_proxy) = if proxy_url.is_empty() {
+                (self.client.clone(), self.proxy_config.resolve())
+            } else {
+                let pc = ProxyConfig::from_proxy_url(&proxy_url);
+                match downloader::build_client(&pc) {
+                    Ok(c) => (c, pc),
+                    Err(e) => {
+                        rinf::debug_print!(
+                            "[manager] failed to build per-task proxy client: {}",
+                            e
+                        );
+                        // Fallback to global
+                        (self.client.clone(), self.proxy_config.resolve())
+                    }
+                }
+            };
+
             let params = DownloadParams {
                 task_id: task_id.clone(),
                 url,
@@ -587,11 +644,12 @@ impl DownloadManager {
                 segment_count: segments,
                 is_resume: false,
                 db: self.db.clone(),
-                client: self.client.clone(),
+                client: task_client,
                 progress_tx: self.progress_tx.clone(),
                 cancel_token,
                 speed_limiter: self.speed_limiter.clone(),
                 cookies,
+                proxy_config: task_proxy,
             };
 
             tokio::spawn(async move {
@@ -717,6 +775,7 @@ impl DownloadManager {
                     is_resume: true,
                     cookies: String::new(), // cookies not available for resume from DB
                     torrent_file_bytes: Vec::new(), // loaded from DB in do_resume_task
+                    proxy_url: t.proxy_url,
                 });
             }
         }
@@ -859,6 +918,25 @@ impl DownloadManager {
                 let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
             })
         } else {
+            // Resolve proxy: per-task proxy_url overrides global config.
+            // `.resolve()` expands System mode into a concrete Manual config
+            // so that FTP downloader (which reads host/port directly) works.
+            let (task_client, task_proxy) = if task.proxy_url.is_empty() {
+                (self.client.clone(), self.proxy_config.resolve())
+            } else {
+                let pc = ProxyConfig::from_proxy_url(&task.proxy_url);
+                match downloader::build_client(&pc) {
+                    Ok(c) => (c, pc),
+                    Err(e) => {
+                        rinf::debug_print!(
+                            "[manager] failed to build per-task proxy client on resume: {}",
+                            e
+                        );
+                        (self.client.clone(), self.proxy_config.resolve())
+                    }
+                }
+            };
+
             let params = DownloadParams {
                 task_id: tid.clone(),
                 url: task.url,
@@ -867,11 +945,12 @@ impl DownloadManager {
                 segment_count: seg_count,
                 is_resume: true,
                 db: self.db.clone(),
-                client: self.client.clone(),
+                client: task_client,
                 progress_tx: self.progress_tx.clone(),
                 cancel_token,
                 speed_limiter: self.speed_limiter.clone(),
                 cookies: String::new(),
+                proxy_config: task_proxy,
             };
 
             tokio::spawn(async move {

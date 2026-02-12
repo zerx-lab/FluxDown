@@ -275,6 +275,10 @@ class S {
   String get settingsCatDownload => _t('下载', 'Download');
   String get settingsCatDownloadDesc =>
       _t('下载引擎配置', 'Download engine settings');
+  String get settingsCatBt => _t('BitTorrent', 'BitTorrent');
+  String get settingsCatBtDesc => _t('BT 下载设置', 'BitTorrent settings');
+  String get settingsCatProxy => _t('代理', 'Proxy');
+  String get settingsCatProxyDesc => _t('网络代理配置', 'Network proxy settings');
   String get settingsCatAbout => _t('关于', 'About');
   String get settingsCatAboutDesc => _t('版本信息与更新', 'Version info & Updates');
 
@@ -300,6 +304,11 @@ class S {
   String get torrentAssocDialogDesc => _t(
     '是否将 FluxDown 设为 .torrent 文件的默认打开方式？\n双击种子文件即可直接开始下载。',
     'Set FluxDown as the default app for .torrent files?\nDouble-click a torrent file to start downloading directly.',
+  );
+  String get analyticsEnabled => _t('数据分析', 'Analytics');
+  String get analyticsEnabledDesc => _t(
+    '发送匿名使用数据以帮助改进应用，不包含任何个人信息',
+    'Send anonymous usage data to help improve the app. No personal information is collected',
   );
   String get settingFailed => _t('设置失败', 'Setting Failed');
   String get autoStartupFailedDesc => _t(
@@ -364,6 +373,86 @@ class S {
   String get speedLimitUnit => _t('KB/s（0 = 不限制）', 'KB/s (0 = unlimited)');
   String nThreads(int n) => _t('$n 线程', '$n threads');
   String nTasks(int n) => _t('$n 个任务', '$n tasks');
+
+  // ─────────────────────────────────────────────
+  // Settings — 代理
+  // ─────────────────────────────────────────────
+
+  String get proxySettings => _t('代理设置', 'Proxy Settings');
+  String get proxySettingsDesc => _t(
+    '配置 HTTP/FTP 下载的网络代理',
+    'Configure network proxy for HTTP/FTP downloads',
+  );
+  String get proxyModeNone => _t('不使用代理', 'No Proxy');
+  String get proxyModeNoneDesc => _t('直接连接', 'Direct connection');
+  String get proxyModeSystem => _t('系统代理', 'System Proxy');
+  String get proxyModeSystemDesc => _t('从系统设置读取', 'Read from system settings');
+  String get proxyModeManual => _t('手动配置', 'Manual');
+  String get proxyModeManualDesc => _t('自定义代理服务器', 'Custom proxy server');
+  String get proxyType => _t('代理类型', 'Proxy Type');
+  String get proxyHost => _t('服务器地址', 'Server Address');
+  String get proxyHostPlaceholder => _t('例如 127.0.0.1', 'e.g. 127.0.0.1');
+  String get proxyPort => _t('端口', 'Port');
+  String get proxyPortPlaceholder => _t('例如 1080', 'e.g. 1080');
+  String get proxyUsername => _t('用户名', 'Username');
+  String get proxyUsernamePlaceholder => _t('选填', 'Optional');
+  String get proxyPassword => _t('密码', 'Password');
+  String get proxyPasswordPlaceholder => _t('选填', 'Optional');
+  String get proxyNoList => _t('排除列表', 'Bypass List');
+  String get proxyNoListDesc =>
+      _t('不通过代理的地址，逗号分隔', 'Addresses that bypass proxy, comma separated');
+  String get proxyNoListPlaceholder =>
+      _t('例如 localhost,192.168.*', 'e.g. localhost,192.168.*');
+  String get proxyBtNote =>
+      _t('BT 下载不支持代理', 'Proxy is not supported for BitTorrent downloads');
+  String get proxySystemDetecting =>
+      _t('正在检测系统代理...', 'Detecting system proxy...');
+  String get proxySystemNotConfigured =>
+      _t('系统未配置代理', 'No system proxy configured');
+  String get proxySystemDetected =>
+      _t('已检测到系统代理配置（只读）', 'System proxy detected (read-only)');
+  String get proxyTestConnection => _t('测试连接', 'Test Connection');
+  String get proxyTesting => _t('测试中...', 'Testing...');
+  String proxyTestSuccess(int ms) =>
+      _t('连接成功，延迟 $ms ms', 'Connected, latency $ms ms');
+  String proxyTestFailed(String error) =>
+      _t('连接失败: $error', 'Connection failed: $error');
+
+  // Per-task proxy (新建下载对话框)
+  String get taskProxy => _t('任务代理', 'Task Proxy');
+  String get taskProxyDesc => _t(
+    '为此任务使用独立代理（留空则使用全局设置）',
+    'Use a separate proxy for this task (empty = use global)',
+  );
+  String get taskProxyPlaceholder =>
+      _t('例如 socks5://127.0.0.1:1080', 'e.g. socks5://127.0.0.1:1080');
+  String get taskProxyAdvanced => _t('高级选项', 'Advanced Options');
+  String get taskProxyFormatHint => _t(
+    '支持的代理格式：\n'
+        '\n'
+        '不带认证：\n'
+        '  http://host:port\n'
+        '  socks5://host:port\n'
+        '\n'
+        '带用户名密码：\n'
+        '  http://user:pass@host:port\n'
+        '  socks5://user:pass@host:port\n'
+        '\n'
+        '支持类型：http / https / socks4 / socks5\n'
+        '留空则使用全局代理设置',
+    'Supported proxy formats:\n'
+        '\n'
+        'Without auth:\n'
+        '  http://host:port\n'
+        '  socks5://host:port\n'
+        '\n'
+        'With username & password:\n'
+        '  http://user:pass@host:port\n'
+        '  socks5://user:pass@host:port\n'
+        '\n'
+        'Supported types: http / https / socks4 / socks5\n'
+        'Leave empty to use global proxy settings',
+  );
 
   // ─────────────────────────────────────────────
   // Settings — BT 下载
@@ -472,10 +561,18 @@ class S {
     '文件关联,种子,torrent,关联,默认程序',
     'file,association,torrent,default,open',
   ).split(',')..addAll(['torrent', 'association', 'file']);
+  List<String> get searchKeywordsAnalytics => _t(
+    '数据,分析,统计,匿名,隐私,遥测',
+    'analytics,data,statistics,anonymous,privacy,telemetry',
+  ).split(',')..addAll(['analytics', 'telemetry', 'privacy']);
   List<String> get searchKeywordsBtSettings => _t(
     'BT,BitTorrent,种子,磁力,Tracker,DHT,UPnP,端口',
     'BT,BitTorrent,torrent,magnet,tracker,DHT,UPnP,port',
   ).split(',')..addAll(['bt', 'torrent', 'tracker', 'dht', 'peer']);
+  List<String> get searchKeywordsProxy => _t(
+    '代理,HTTP,SOCKS,SOCKS5,SOCKS4,网络代理,代理服务器',
+    'proxy,HTTP,SOCKS,SOCKS5,SOCKS4,network,server',
+  ).split(',')..addAll(['proxy', 'socks', 'http']);
 
   // ─────────────────────────────────────────────
   // TrayService

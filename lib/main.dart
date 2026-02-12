@@ -15,6 +15,7 @@ import 'src/models/download_controller.dart';
 import 'src/models/settings_provider.dart';
 import 'src/pages/home_page.dart';
 import 'src/services/external_download_service.dart';
+import 'src/services/analytics_service.dart';
 import 'src/services/log_service.dart';
 import 'src/services/notification_service.dart';
 import 'src/services/tray_service.dart';
@@ -86,6 +87,11 @@ Future<void> main(List<String> args) async {
       details.exception,
       details.stack,
     );
+    AnalyticsService.instance.logException(
+      details.exceptionAsString(),
+      true,
+      stackTrace: details.stack,
+    );
   };
 
   // 设置全局异常捕获 — Dart 未捕获异步异常
@@ -93,6 +99,11 @@ Future<void> main(List<String> args) async {
   // 避免 Zone mismatch（ensureInitialized 和 runApp 必须在同一 Zone）
   PlatformDispatcher.instance.onError = (error, stack) {
     logError('PlatformError', 'Uncaught async error', error, stack);
+    AnalyticsService.instance.logException(
+      error.toString(),
+      true,
+      stackTrace: stack,
+    );
     return true; // 已处理，不再向上传播
   };
 
@@ -134,7 +145,14 @@ Future<void> main(List<String> args) async {
 
   logInfo('main', 'initializing Rust runtime...');
   await initializeRust(assignRustSignal);
-  logInfo('main', 'Rust runtime initialized, calling runApp...');
+  logInfo('main', 'Rust runtime initialized');
+
+  // 初始化数据分析服务（异步，不阻塞启动）
+  // 此时 SettingsProvider 尚未加载配置，先以默认值(true)启动。
+  // _FluxDownAppState.initState 中 SettingsProvider 配置加载后会同步实际状态。
+  AnalyticsService.instance.init(enabled: true);
+  logInfo('main', 'analytics init dispatched, calling runApp...');
+
   runApp(
     FluxDownApp(
       themeProvider: themeProvider,
@@ -208,6 +226,9 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     // 请求加载配置，确保 settingsProvider 有默认保存目录等数据
     _settingsForExternal.requestConfig();
 
+    // 配置加载完成后，同步 analytics 的实际同意状态
+    _syncAnalyticsAfterConfigLoad();
+
     // 延迟 5 秒后台静默检查更新（避免阻塞启动流程）
     Future.delayed(const Duration(seconds: 5), () {
       if (!mounted) return;
@@ -264,6 +285,37 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     if (mounted) setState(() {});
     // 语言变更后刷新托盘菜单
     TrayService.instance.refreshMenu();
+  }
+
+  /// 等配置从 Rust 加载完成后，同步 analytics 的真实同意状态。
+  /// 如果用户之前关闭了分析，这里会及时撤销同意。
+  void _syncAnalyticsAfterConfigLoad() {
+    void applyConsent() {
+      AnalyticsService.instance.setEnabled(
+        _settingsForExternal.analyticsEnabled,
+      );
+    }
+
+    if (_settingsForExternal.loaded) {
+      applyConsent();
+      return;
+    }
+    late final void Function() listener;
+    Timer? timeout;
+    void cleanup() {
+      timeout?.cancel();
+      _settingsForExternal.removeListener(listener);
+    }
+
+    listener = () {
+      if (_settingsForExternal.loaded) {
+        cleanup();
+        applyConsent();
+      }
+    };
+    _settingsForExternal.addListener(listener);
+    // 兜底：10 秒后仍未加载则以默认值（enabled=true）继续
+    timeout = Timer(const Duration(seconds: 10), cleanup);
   }
 
   /// Wait for SettingsProvider to finish loading config from Rust, then handle
@@ -420,6 +472,9 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
       await NotificationService.instance.waitForPending();
       logInfo('FluxDownApp', 'destroying tray...');
       await TrayService.instance.destroy();
+
+      logInfo('FluxDownApp', 'disposing analytics...');
+      await AnalyticsService.instance.dispose();
 
       logInfo('FluxDownApp', 'destroying window...');
       await LogService.instance.dispose();

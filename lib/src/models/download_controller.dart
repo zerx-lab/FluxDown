@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
 
 import '../bindings/bindings.dart';
+import '../services/analytics_service.dart';
 import '../services/log_service.dart';
 import 'download_task.dart';
 
@@ -64,6 +65,44 @@ class DownloadController extends ChangeNotifier {
   /// "A DownloadController was used after being disposed" 异常
   void _safeNotifyListeners() {
     if (!_disposed) notifyListeners();
+  }
+
+  /// 从 URL 推断下载协议（用于分析埋点）
+  static String _inferProtocol(String url) {
+    if (url.isEmpty) return 'bt';
+    final lower = url.toLowerCase();
+    if (lower.startsWith('ftp')) return 'ftp';
+    if (lower.startsWith('magnet:')) return 'bt';
+    return 'http';
+  }
+
+  /// 将错误消息分类为匿名类别，避免将 URL/路径等敏感信息发送到分析服务。
+  static String _classifyError(String msg) {
+    if (msg.isEmpty) return 'unknown';
+    final lower = msg.toLowerCase();
+    if (lower.contains('timeout') || lower.contains('timed out')) {
+      return 'timeout';
+    }
+    if (lower.contains('connection') || lower.contains('network')) {
+      return 'network';
+    }
+    if (lower.contains('disk') ||
+        lower.contains('space') ||
+        lower.contains('permission') ||
+        lower.contains('access')) {
+      return 'disk';
+    }
+    if (lower.contains('404') || lower.contains('not found')) {
+      return 'not_found';
+    }
+    if (lower.contains('403') || lower.contains('forbidden')) {
+      return 'forbidden';
+    }
+    if (lower.contains('ssl') || lower.contains('certificate')) {
+      return 'ssl';
+    }
+    if (lower.contains('cancel')) return 'cancelled';
+    return 'other';
   }
 
   // ---------------------------------------------------------------------------
@@ -281,6 +320,7 @@ class DownloadController extends ChangeNotifier {
     int segments = 0,
     String cookies = '',
     Uint8List? torrentFileBytes,
+    String proxyUrl = '',
   }) {
     logInfo(
       _tag,
@@ -293,19 +333,26 @@ class DownloadController extends ChangeNotifier {
       segments: segments,
       cookies: cookies,
       torrentFileBytes: torrentFileBytes ?? Uint8List(0),
+      proxyUrl: proxyUrl,
     ).sendSignalToRust();
+    // 分析埋点
+    final protocol = (torrentFileBytes != null && torrentFileBytes.isNotEmpty)
+        ? 'bt'
+        : _inferProtocol(url);
+    AnalyticsService.instance.trackDownloadCreated(protocol);
   }
 
   /// Create a download task from a .torrent file on disk.
   Future<void> createTaskFromTorrentFile({
     required String torrentFilePath,
     required String saveDir,
+    String proxyUrl = '',
   }) async {
     logInfo(
       _tag,
       'createTaskFromTorrentFile: path=$torrentFilePath, dir=$saveDir',
     );
-    await sendTorrentFileSignal(torrentFilePath, saveDir);
+    await sendTorrentFileSignal(torrentFilePath, saveDir, proxyUrl: proxyUrl);
   }
 
   /// Read a .torrent file from disk and send a [CreateTask] signal to Rust.
@@ -315,8 +362,9 @@ class DownloadController extends ChangeNotifier {
   /// controller instance at startup).
   static Future<void> sendTorrentFileSignal(
     String torrentFilePath,
-    String saveDir,
-  ) async {
+    String saveDir, {
+    String proxyUrl = '',
+  }) async {
     try {
       final file = File(torrentFilePath);
       final bytes = await file.readAsBytes();
@@ -337,7 +385,9 @@ class DownloadController extends ChangeNotifier {
         segments: 0,
         cookies: '',
         torrentFileBytes: bytes,
+        proxyUrl: proxyUrl,
       ).sendSignalToRust();
+      AnalyticsService.instance.trackDownloadCreated('bt');
     } catch (e) {
       logInfo(_tag, 'failed to read torrent file: $e');
     }
@@ -348,6 +398,7 @@ class DownloadController extends ChangeNotifier {
     required List<String> urls,
     required String saveDir,
     int segments = 0,
+    String proxyUrl = '',
   }) {
     logInfo(
       _tag,
@@ -357,7 +408,12 @@ class DownloadController extends ChangeNotifier {
       urls: urls,
       saveDir: saveDir,
       segments: segments,
+      proxyUrl: proxyUrl,
     ).sendSignalToRust();
+    for (final url in urls) {
+      final protocol = url.toLowerCase().startsWith('ftp') ? 'ftp' : 'http';
+      AnalyticsService.instance.trackDownloadCreated(protocol);
+    }
   }
 
   void pauseTask(String taskId) {
@@ -502,6 +558,15 @@ class DownloadController extends ChangeNotifier {
           newStatus == TaskStatus.completed) {
         logInfo(_tag, 'task completed: ${p.taskId} (${p.fileName})');
         onTaskCompleted?.call(_tasks[idx]);
+        final proto = _inferProtocol(_tasks[idx].url);
+        AnalyticsService.instance.trackDownloadCompleted(proto, p.totalBytes);
+      }
+      // 检测下载失败：从非 error 状态变为 error
+      if (oldStatus != TaskStatus.error && newStatus == TaskStatus.error) {
+        AnalyticsService.instance.trackDownloadFailed(
+          _inferProtocol(_tasks[idx].url),
+          _classifyError(p.errorMessage),
+        );
       }
     } else {
       // 新任务（刚刚创建的）

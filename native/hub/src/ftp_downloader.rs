@@ -26,6 +26,7 @@ use crate::downloader::{
     dedup_filename, extract_from_url, sanitize_filename, DownloadError, DownloadParams, FileInfo,
     ProgressUpdate, SegmentProgressInfo, BUF_WRITER_CAPACITY, DB_SAVE_INTERVAL_SECS, TEMP_EXT,
 };
+use crate::proxy_config::{self, ProxyConfig};
 use crate::speed_limiter::SpeedLimiter;
 
 // ---------------------------------------------------------------------------
@@ -129,22 +130,79 @@ use suppaftp::types::FileType;
 /// before error is 30s × 3 = 90s.
 const FTP_DATA_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn ftp_connect_sync(ftp_url: &FtpUrl) -> Result<FtpStream, DownloadError> {
-    let addr = format!("{}:{}", ftp_url.host, ftp_url.port);
+/// Connect to an FTP server, optionally through a proxy.
+///
+/// Proxy modes:
+/// - `None` / `ProxyMode::None` → direct connection
+/// - SOCKS4/SOCKS5 → tunnel control connection through SOCKS proxy, also sets
+///   `passive_stream_builder` so data connections go through the same proxy
+/// - HTTP/HTTPS → tunnel via HTTP CONNECT (control only; data connections
+///   in passive mode also go through HTTP CONNECT)
+fn ftp_connect_sync_with_proxy(
+    ftp_url: &FtpUrl,
+    proxy: Option<&ProxyConfig>,
+) -> Result<FtpStream, DownloadError> {
+    let timeout = Duration::from_secs(30);
 
-    let sock_addr: std::net::SocketAddr = addr
-        .parse()
-        .or_else(|_| {
-            // hostname — resolve via DNS
-            use std::net::ToSocketAddrs;
-            addr.to_socket_addrs()
-                .map_err(|e| DownloadError::Other(format!("DNS resolve error: {}", e)))?
-                .next()
-                .ok_or_else(|| DownloadError::Other("DNS returned no addresses".to_string()))
-        })?;
+    let should_proxy = proxy
+        .map(|p| p.is_active() && !p.host.is_empty() && p.port > 0)
+        .unwrap_or(false);
 
-    let mut stream = FtpStream::connect_timeout(sock_addr, Duration::from_secs(30))
-        .map_err(|e| DownloadError::Other(format!("FTP connect error: {}", e)))?;
+    let default_proxy = ProxyConfig::default();
+    let mut stream = if should_proxy {
+        let proxy = proxy.unwrap_or(&default_proxy);
+        rinf::debug_print!(
+            "[ftp-connect] using {} proxy {}:{} for {}:{}",
+            proxy.proxy_type.as_str(),
+            proxy.host,
+            proxy.port,
+            ftp_url.host,
+            ftp_url.port,
+        );
+
+        // Establish a TCP connection through the proxy
+        let tcp = proxy_config::proxy_connect_sync(
+            proxy,
+            &ftp_url.host,
+            ftp_url.port,
+            timeout,
+        )?;
+
+        // Build FtpStream from the pre-established (proxied) TCP connection
+        let mut ftp = FtpStream::connect_with_stream(tcp)
+            .map_err(|e| DownloadError::Other(format!("FTP connect_with_stream error: {}", e)))?;
+
+        // Set passive_stream_builder so data connections also go through the proxy.
+        // In passive mode, the FTP server tells us the data endpoint address.
+        // We need to connect to that address through the proxy too.
+        let proxy_clone = proxy.clone();
+        ftp = ftp.passive_stream_builder(move |data_addr: std::net::SocketAddr| {
+            let host = data_addr.ip().to_string();
+            let port = data_addr.port();
+            proxy_config::proxy_connect_sync(&proxy_clone, &host, port, Duration::from_secs(30))
+                .map_err(|e| suppaftp::FtpError::ConnectionError(
+                    std::io::Error::other(e.to_string())
+                ))
+        });
+
+        ftp
+    } else {
+        // Direct connection (no proxy)
+        let addr = format!("{}:{}", ftp_url.host, ftp_url.port);
+
+        let sock_addr: std::net::SocketAddr = addr
+            .parse()
+            .or_else(|_| {
+                use std::net::ToSocketAddrs;
+                addr.to_socket_addrs()
+                    .map_err(|e| DownloadError::Other(format!("DNS resolve error: {}", e)))?
+                    .next()
+                    .ok_or_else(|| DownloadError::Other("DNS returned no addresses".to_string()))
+            })?;
+
+        FtpStream::connect_timeout(sock_addr, timeout)
+            .map_err(|e| DownloadError::Other(format!("FTP connect error: {}", e)))?
+    };
 
     stream
         .login(&ftp_url.username, &ftp_url.password)
@@ -164,13 +222,14 @@ fn ftp_connect_sync(ftp_url: &FtpUrl) -> Result<FtpStream, DownloadError> {
 const PROBE_MAX_RETRIES: u32 = 2;
 const PROBE_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
-pub async fn resolve_ftp_file_info(url: &str) -> Result<FileInfo, DownloadError> {
+pub async fn resolve_ftp_file_info(url: &str, proxy: &ProxyConfig) -> Result<FileInfo, DownloadError> {
     let ftp_url = parse_ftp_url(url)?;
 
     let mut last_err = None;
     for attempt in 0..PROBE_MAX_RETRIES {
         let fu = ftp_url.clone();
-        let result = tokio::task::spawn_blocking(move || resolve_ftp_info_sync(&fu))
+        let px = proxy.clone();
+        let result = tokio::task::spawn_blocking(move || resolve_ftp_info_sync(&fu, &px))
             .await
             .map_err(|e| DownloadError::Other(format!("spawn_blocking join error: {}", e)))?;
 
@@ -194,8 +253,9 @@ pub async fn resolve_ftp_file_info(url: &str) -> Result<FileInfo, DownloadError>
     Err(last_err.unwrap_or_else(|| DownloadError::Other("FTP probe failed".to_string())))
 }
 
-fn resolve_ftp_info_sync(ftp_url: &FtpUrl) -> Result<FileInfo, DownloadError> {
-    let mut ftp = ftp_connect_sync(ftp_url)?;
+fn resolve_ftp_info_sync(ftp_url: &FtpUrl, proxy: &ProxyConfig) -> Result<FileInfo, DownloadError> {
+    let proxy_opt = if proxy.is_active() { Some(proxy) } else { None };
+    let mut ftp = ftp_connect_sync_with_proxy(ftp_url, proxy_opt)?;
 
     let total_bytes = match ftp.size(&ftp_url.path) {
         Ok(size) => size as i64,
@@ -240,6 +300,7 @@ fn resolve_ftp_info_sync(ftp_url: &FtpUrl) -> Result<FileInfo, DownloadError> {
 pub async fn probe_ftp_bandwidth(
     url: &str,
     cancel_token: &CancellationToken,
+    proxy: &ProxyConfig,
 ) -> Option<f64> {
     const PROBE_BYTES: u64 = 512 * 1024;
 
@@ -261,8 +322,10 @@ pub async fn probe_ftp_bandwidth(
         })
     };
 
+    let proxy_clone = proxy.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let mut ftp = match ftp_connect_sync(&ftp_url) {
+        let proxy_opt = if proxy_clone.is_active() { Some(&proxy_clone) } else { None };
+        let mut ftp = match ftp_connect_sync_with_proxy(&ftp_url, proxy_opt) {
             Ok(f) => f,
             Err(_) => return None,
         };
@@ -396,7 +459,7 @@ async fn compute_ftp_segments(p: &DownloadParams, info: &FileInfo) -> i32 {
     );
 
     let result = if static_advice.segments > 1 {
-        match probe_ftp_bandwidth(&p.url, &p.cancel_token).await {
+        match probe_ftp_bandwidth(&p.url, &p.cancel_token, &p.proxy_config).await {
             Some(bw) => {
                 let bw_advice = advise_with_bandwidth(&advisor_input, bw);
                 rinf::debug_print!(
@@ -442,7 +505,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         })
         .await;
 
-    let info = resolve_ftp_file_info(&p.url).await?;
+    let info = resolve_ftp_file_info(&p.url, &p.proxy_config).await?;
     rinf::debug_print!(
         "[ftp-download] task {} resolved: name={}, size={}, range={}",
         p.task_id,
@@ -522,6 +585,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
             &p.progress_tx,
             &p.cancel_token,
             &p.speed_limiter,
+            &p.proxy_config,
         )
         .await?;
     } else {
@@ -540,6 +604,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                 &p.progress_tx,
                 &p.cancel_token,
                 &p.speed_limiter,
+                &p.proxy_config,
             )
             .await
             {
@@ -643,6 +708,7 @@ async fn ftp_download_single(
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
+    proxy_config: &ProxyConfig,
 ) -> Result<(), DownloadError> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -691,9 +757,11 @@ async fn ftp_download_single(
         let ftp_url = ftp_url.clone();
         let cancelled = cancelled.clone();
         let resume_offset = if resume { existing_len } else { 0 };
+        let proxy = proxy_config.clone();
 
         tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
-            let mut ftp = ftp_connect_sync(&ftp_url)?;
+            let proxy_opt = if proxy.is_active() { Some(&proxy) } else { None };
+            let mut ftp = ftp_connect_sync_with_proxy(&ftp_url, proxy_opt)?;
 
             if resume_offset > 0 {
                 ftp.resume_transfer(resume_offset as usize)
@@ -863,6 +931,7 @@ async fn ftp_download_multi_segment(
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     cancel_token: &CancellationToken,
     speed_limiter: &SpeedLimiter,
+    proxy_config: &ProxyConfig,
 ) -> Result<(), DownloadError> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -969,6 +1038,7 @@ async fn ftp_download_multi_segment(
         let total = total_bytes;
         let limiter = speed_limiter.clone();
         let sem = ftp_semaphore.clone();
+        let proxy = proxy_config.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire permit before opening FTP connection
@@ -991,6 +1061,7 @@ async fn ftp_download_multi_segment(
                 &progress_tx,
                 &seg_states,
                 &limiter,
+                &proxy,
             )
             .await
         });
@@ -1048,6 +1119,7 @@ async fn ftp_do_segment_with_retry(
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
     speed_limiter: &SpeedLimiter,
+    proxy_config: &ProxyConfig,
 ) -> Result<(), DownloadError> {
     let mut attempts = 0u32;
 
@@ -1067,6 +1139,7 @@ async fn ftp_do_segment_with_retry(
             progress_tx,
             seg_states,
             speed_limiter,
+            proxy_config,
         )
         .await
         {
@@ -1116,6 +1189,7 @@ async fn ftp_do_segment(
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
     speed_limiter: &SpeedLimiter,
+    proxy_config: &ProxyConfig,
 ) -> Result<(), DownloadError> {
     let bytes_needed = (seg_end - actual_start + 1) as u64;
 
@@ -1139,9 +1213,11 @@ async fn ftp_do_segment(
         let ftp_url = ftp_url.clone();
         let cancelled = cancelled.clone();
         let seg_bytes_needed = bytes_needed;
+        let proxy = proxy_config.clone();
 
         tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
-            let mut ftp = ftp_connect_sync(&ftp_url)?;
+            let proxy_opt = if proxy.is_active() { Some(&proxy) } else { None };
+            let mut ftp = ftp_connect_sync_with_proxy(&ftp_url, proxy_opt)?;
 
             ftp.resume_transfer(actual_start as usize)
                 .map_err(|e| DownloadError::Other(format!("FTP REST error (seg {}): {}", seg_idx, e)))?;

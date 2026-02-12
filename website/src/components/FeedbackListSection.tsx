@@ -115,7 +115,7 @@ export default function FeedbackListSection({ onIssueClick }: FeedbackListSectio
   const [issues, setIssues] = useState<IssueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+  const [stateFilter, setStateFilter] = useState<StateFilter>("open");
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("");
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -203,7 +203,7 @@ export default function FeedbackListSection({ onIssueClick }: FeedbackListSectio
         >
           {/* State tabs */}
           <div className="flex items-center gap-1 p-1 rounded-lg bg-dark-surface1 border border-dark-border">
-            {(["all", "open", "closed"] as StateFilter[]).map((state) => (
+            {(["open", "closed", "all"] as StateFilter[]).map((state) => (
               <button
                 key={state}
                 onClick={() => handleStateChange(state)}

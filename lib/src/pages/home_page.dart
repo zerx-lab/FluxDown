@@ -6,6 +6,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/settings_provider.dart';
+import '../services/analytics_service.dart';
 import '../services/log_service.dart';
 import '../services/notification_service.dart';
 import '../theme/app_colors.dart';
@@ -62,6 +63,8 @@ class _HomePageState extends State<HomePage> {
     _controller.addListener(_onControllerChanged);
     // 全局键盘快捷键
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
+    // 视图追踪
+    AnalyticsService.instance.trackView('HomePage');
     // 首次启动 .torrent 文件关联提示（仅 Windows）
     if (Platform.isWindows) {
       _settingsProvider.addListener(_onSettingsLoadedForAssocPrompt);
@@ -209,6 +212,7 @@ class _HomePageState extends State<HomePage> {
               onBack: () => setState(() {
                 _showSettings = false;
                 _initialSettingsCategory = null;
+                AnalyticsService.instance.trackView('HomePage');
               }),
               settingsProvider: _settingsProvider,
               initialCategory: _initialSettingsCategory,
@@ -223,6 +227,7 @@ class _HomePageState extends State<HomePage> {
               onSettings: () => setState(() {
                 _showSettings = false;
                 _initialSettingsCategory = null;
+                AnalyticsService.instance.trackView('HomePage');
               }),
               isSettingsActive: true,
             ),
@@ -293,6 +298,9 @@ class _HomePageState extends State<HomePage> {
                             setState(() {
                               _initialSettingsCategory = category;
                               _showSettings = true;
+                              AnalyticsService.instance.trackView(
+                                'SettingsPage',
+                              );
                             });
                           },
                         ),
@@ -342,7 +350,10 @@ class _HomePageState extends State<HomePage> {
               right: 0,
               child: WindowControls(
                 controller: _controller,
-                onSettings: () => setState(() => _showSettings = true),
+                onSettings: () => setState(() {
+                  _showSettings = true;
+                  AnalyticsService.instance.trackView('SettingsPage');
+                }),
               ),
             ),
           ],

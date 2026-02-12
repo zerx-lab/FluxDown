@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../../main.dart';
+import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../models/settings_provider.dart';
 import '../services/update_service.dart';
@@ -18,6 +22,8 @@ enum SettingsCategory {
   general(icon: LucideIcons.settings2),
   appearance(icon: LucideIcons.palette),
   download(icon: LucideIcons.download),
+  bt(icon: LucideIcons.magnet),
+  proxy(icon: LucideIcons.globe),
   about(icon: LucideIcons.info);
 
   final IconData icon;
@@ -32,6 +38,8 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.general => s.settingsCatGeneral,
       SettingsCategory.appearance => s.settingsCatAppearance,
       SettingsCategory.download => s.settingsCatDownload,
+      SettingsCategory.bt => s.settingsCatBt,
+      SettingsCategory.proxy => s.settingsCatProxy,
       SettingsCategory.about => s.settingsCatAbout,
     };
   }
@@ -42,6 +50,8 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.general => s.settingsCatGeneralDesc,
       SettingsCategory.appearance => s.settingsCatAppearanceDesc,
       SettingsCategory.download => s.settingsCatDownloadDesc,
+      SettingsCategory.bt => s.settingsCatBtDesc,
+      SettingsCategory.proxy => s.settingsCatProxyDesc,
       SettingsCategory.about => s.settingsCatAboutDesc,
     };
   }
@@ -88,6 +98,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       description: s.torrentFileAssociationDesc,
       keywords: s.searchKeywordsFileAssoc,
       icon: LucideIcons.fileType,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.general,
+      label: s.analyticsEnabled,
+      description: s.analyticsEnabledDesc,
+      keywords: s.searchKeywordsAnalytics,
+      icon: LucideIcons.chartLine,
     ),
     SettingsSearchItem(
       category: SettingsCategory.appearance,
@@ -146,11 +163,18 @@ List<SettingsSearchItem> get settingsSearchItems {
       icon: LucideIcons.refreshCw,
     ),
     SettingsSearchItem(
-      category: SettingsCategory.download,
+      category: SettingsCategory.bt,
       label: s.btSettings,
       description: s.btSettingsDesc,
       keywords: s.searchKeywordsBtSettings,
       icon: LucideIcons.magnet,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.proxy,
+      label: s.proxySettings,
+      description: s.proxySettingsDesc,
+      keywords: s.searchKeywordsProxy,
+      icon: LucideIcons.globe,
     ),
   ];
 }
@@ -416,6 +440,14 @@ class _SettingsContent extends StatelessWidget {
                     key: ValueKey('download'),
                     settingsProvider: settingsProvider,
                   ),
+                  SettingsCategory.bt => _BtContent(
+                    key: const ValueKey('bt'),
+                    settingsProvider: settingsProvider,
+                  ),
+                  SettingsCategory.proxy => _ProxyContent(
+                    key: const ValueKey('proxy'),
+                    settingsProvider: settingsProvider,
+                  ),
                   SettingsCategory.about => _AboutContent(
                     key: const ValueKey('about'),
                     settingsProvider: settingsProvider,
@@ -611,6 +643,15 @@ class _GeneralContent extends StatelessWidget {
                 },
               ),
             ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).analyticsEnabled,
+              description: LocaleScope.of(context).analyticsEnabledDesc,
+              child: ShadSwitch(
+                value: settingsProvider.analyticsEnabled,
+                onChanged: (v) => settingsProvider.setAnalyticsEnabled(v),
+              ),
+            ),
           ],
         );
       },
@@ -696,13 +737,29 @@ class _DownloadContent extends StatelessWidget {
               vertical: true,
               child: _SpeedLimitInput(settingsProvider: settingsProvider),
             ),
-            const SizedBox(height: 24),
-            // BT 设置分区标题
-            _SubSectionHeader(
-              label: LocaleScope.of(context).btSettings,
-              description: LocaleScope.of(context).btSettingsDesc,
-            ),
-            const SizedBox(height: 10),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// BT 设置
+// ─────────────────────────────────────────────
+
+class _BtContent extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtContent({super.key, required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: settingsProvider,
+      builder: (context, _) {
+        return Column(
+          children: [
             _SettingCard(
               label: LocaleScope.of(context).btTrackerList,
               description: LocaleScope.of(context).btTrackerListDesc,
@@ -734,6 +791,28 @@ class _DownloadContent extends StatelessWidget {
               ),
             ),
           ],
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 代理设置
+// ─────────────────────────────────────────────
+
+class _ProxyContent extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _ProxyContent({super.key, required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: settingsProvider,
+      builder: (context, _) {
+        return Column(
+          children: [_ProxySettingsCard(settingsProvider: settingsProvider)],
         );
       },
     );
@@ -900,6 +979,644 @@ class _SpeedLimitInputState extends State<_SpeedLimitInput> {
 }
 
 // ─────────────────────────────────────────────
+// 代理设置子组件
+// ─────────────────────────────────────────────
+
+/// 代理设置卡片（模式选择 + 手动配置表单）
+class _ProxySettingsCard extends StatefulWidget {
+  final SettingsProvider settingsProvider;
+
+  const _ProxySettingsCard({required this.settingsProvider});
+
+  @override
+  State<_ProxySettingsCard> createState() => _ProxySettingsCardState();
+}
+
+class _ProxySettingsCardState extends State<_ProxySettingsCard> {
+  late TextEditingController _hostController;
+  late TextEditingController _portController;
+  late TextEditingController _usernameController;
+  late TextEditingController _passwordController;
+  late TextEditingController _noListController;
+
+  // 代理测试状态: null=未测试, true=成功, false=失败
+  bool? _testResult;
+  bool _isTesting = false;
+  int _testLatencyMs = 0;
+  String _testError = '';
+  StreamSubscription<RustSignalPack<ProxyTestResult>>? _testSub;
+
+  // 系统代理检测状态
+  bool _sysProxyDetecting = false;
+  bool _sysProxyDetected = false;
+  String _sysProxyType = '';
+  String _sysProxyHost = '';
+  String _sysProxyPort = '';
+  String _sysProxyNoList = '';
+  StreamSubscription<RustSignalPack<SystemProxyInfo>>? _sysProxySub;
+
+  @override
+  void initState() {
+    super.initState();
+    final sp = widget.settingsProvider;
+    _hostController = TextEditingController(text: sp.proxyHost);
+    _portController = TextEditingController(text: sp.proxyPort);
+    _usernameController = TextEditingController(text: sp.proxyUsername);
+    _passwordController = TextEditingController(text: sp.proxyPassword);
+    _noListController = TextEditingController(text: sp.proxyNoList);
+    _testSub = ProxyTestResult.rustSignalStream.listen(_onTestResult);
+    _sysProxySub = SystemProxyInfo.rustSignalStream.listen(_onSysProxyResult);
+    // 如果当前就是系统代理模式，立即请求检测
+    if (sp.proxyMode == 'system') {
+      _requestDetectSystemProxy();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_ProxySettingsCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final sp = widget.settingsProvider;
+    // 仅在外部值变化时同步（例如从 Rust 端加载初始值）
+    if (sp.proxyHost != _hostController.text) {
+      _hostController.text = sp.proxyHost;
+    }
+    if (sp.proxyPort != _portController.text) {
+      _portController.text = sp.proxyPort;
+    }
+    if (sp.proxyUsername != _usernameController.text) {
+      _usernameController.text = sp.proxyUsername;
+    }
+    if (sp.proxyPassword != _passwordController.text) {
+      _passwordController.text = sp.proxyPassword;
+    }
+    if (sp.proxyNoList != _noListController.text) {
+      _noListController.text = sp.proxyNoList;
+    }
+  }
+
+  void _onTestResult(RustSignalPack<ProxyTestResult> pack) {
+    if (!mounted) return;
+    final msg = pack.message;
+    setState(() {
+      _isTesting = false;
+      _testResult = msg.success;
+      _testLatencyMs = msg.latencyMs.toInt();
+      _testError = msg.errorMessage;
+    });
+  }
+
+  void _testProxy() {
+    final sp = widget.settingsProvider;
+    if (sp.proxyHost.isEmpty || sp.proxyPort.isEmpty) return;
+    setState(() {
+      _isTesting = true;
+      _testResult = null;
+    });
+    TestProxyConnection(
+      proxyType: sp.proxyType,
+      proxyHost: sp.proxyHost,
+      proxyPort: sp.proxyPort,
+      proxyUsername: sp.proxyUsername,
+      proxyPassword: sp.proxyPassword,
+    ).sendSignalToRust();
+  }
+
+  void _requestDetectSystemProxy() {
+    setState(() {
+      _sysProxyDetecting = true;
+      _sysProxyDetected = false;
+    });
+    DetectSystemProxy().sendSignalToRust();
+  }
+
+  void _onSysProxyResult(RustSignalPack<SystemProxyInfo> pack) {
+    if (!mounted) return;
+    final msg = pack.message;
+    setState(() {
+      _sysProxyDetecting = false;
+      _sysProxyDetected = msg.detected;
+      _sysProxyType = msg.proxyType;
+      _sysProxyHost = msg.host;
+      _sysProxyPort = msg.port;
+      _sysProxyNoList = msg.noProxyList;
+    });
+  }
+
+  @override
+  void dispose() {
+    _testSub?.cancel();
+    _sysProxySub?.cancel();
+    _hostController.dispose();
+    _portController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    _noListController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    final sp = widget.settingsProvider;
+    final isManual = sp.proxyMode == 'manual';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: c.surface1,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: c.border.withValues(alpha: 0.6), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 代理模式选择
+          Text(
+            s.proxySettings,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: c.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            s.proxyBtNote,
+            style: TextStyle(fontSize: 11.5, color: c.textMuted),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _ProxyModeOption(
+                icon: LucideIcons.unplug,
+                label: s.proxyModeNone,
+                selected: sp.proxyMode == 'none',
+                colors: c,
+                onTap: () => sp.setProxyMode('none'),
+              ),
+              _ProxyModeOption(
+                icon: LucideIcons.monitor,
+                label: s.proxyModeSystem,
+                selected: sp.proxyMode == 'system',
+                colors: c,
+                onTap: () {
+                  sp.setProxyMode('system');
+                  _requestDetectSystemProxy();
+                },
+              ),
+              _ProxyModeOption(
+                icon: LucideIcons.settings2,
+                label: s.proxyModeManual,
+                selected: sp.proxyMode == 'manual',
+                colors: c,
+                onTap: () => sp.setProxyMode('manual'),
+              ),
+            ],
+          ),
+          // 系统代理只读展示
+          if (sp.proxyMode == 'system') ...[
+            const SizedBox(height: 16),
+            Divider(height: 1, color: c.border.withValues(alpha: 0.4)),
+            const SizedBox(height: 14),
+            if (_sysProxyDetecting)
+              Row(
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: c.textMuted,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    s.proxySystemDetecting,
+                    style: TextStyle(fontSize: 12, color: c.textMuted),
+                  ),
+                ],
+              )
+            else if (!_sysProxyDetected)
+              Row(
+                children: [
+                  Icon(LucideIcons.info, size: 14, color: c.textMuted),
+                  const SizedBox(width: 8),
+                  Text(
+                    s.proxySystemNotConfigured,
+                    style: TextStyle(fontSize: 12, color: c.textMuted),
+                  ),
+                ],
+              )
+            else ...[
+              Text(
+                s.proxySystemDetected,
+                style: TextStyle(fontSize: 11.5, color: c.textMuted),
+              ),
+              const SizedBox(height: 10),
+              // 代理类型
+              _ReadOnlyProxyField(
+                label: s.proxyType,
+                value: _sysProxyType.toUpperCase(),
+                colors: c,
+              ),
+              const SizedBox(height: 8),
+              // 地址 + 端口（与手动配置表单布局一致）
+              Row(
+                children: [
+                  SizedBox(
+                    width: 80,
+                    child: Text(
+                      s.proxyHost,
+                      style: TextStyle(fontSize: 12, color: c.textSecondary),
+                    ),
+                  ),
+                  Expanded(
+                    child: _ReadOnlyValueBox(value: _sysProxyHost, colors: c),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 48,
+                    child: Text(
+                      s.proxyPort,
+                      style: TextStyle(fontSize: 12, color: c.textSecondary),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    child: _ReadOnlyValueBox(value: _sysProxyPort, colors: c),
+                  ),
+                ],
+              ),
+              if (_sysProxyNoList.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _ReadOnlyProxyField(
+                  label: s.proxyNoList,
+                  value: _sysProxyNoList,
+                  colors: c,
+                ),
+              ],
+            ],
+          ],
+          // 手动配置表单
+          if (isManual) ...[
+            const SizedBox(height: 16),
+            Divider(height: 1, color: c.border.withValues(alpha: 0.4)),
+            const SizedBox(height: 14),
+            // 代理类型
+            Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    s.proxyType,
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                  ),
+                ),
+                Expanded(
+                  child: ShadSelect<String>(
+                    initialValue: sp.proxyType,
+                    options: const [
+                      ShadOption(value: 'http', child: Text('HTTP')),
+                      ShadOption(value: 'https', child: Text('HTTPS')),
+                      ShadOption(value: 'socks4', child: Text('SOCKS4')),
+                      ShadOption(value: 'socks5', child: Text('SOCKS5')),
+                    ],
+                    selectedOptionBuilder: (context, value) =>
+                        Text(value.toUpperCase()),
+                    onChanged: (v) {
+                      if (v != null) sp.setProxyType(v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // 地址 + 端口
+            Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    s.proxyHost,
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                  ),
+                ),
+                Expanded(
+                  child: ShadInput(
+                    controller: _hostController,
+                    placeholder: Text(s.proxyHostPlaceholder),
+                    onChanged: (v) => sp.setProxyHost(v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 48,
+                  child: Text(
+                    s.proxyPort,
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                SizedBox(
+                  width: 90,
+                  child: ShadInput(
+                    controller: _portController,
+                    placeholder: Text(s.proxyPortPlaceholder),
+                    onChanged: (v) => sp.setProxyPort(v),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // 用户名 + 密码
+            Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    s.proxyUsername,
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                  ),
+                ),
+                Expanded(
+                  child: ShadInput(
+                    controller: _usernameController,
+                    placeholder: Text(s.proxyUsernamePlaceholder),
+                    onChanged: (v) => sp.setProxyUsername(v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 70,
+                  child: Text(
+                    s.proxyPassword,
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                Expanded(
+                  child: ShadInput(
+                    controller: _passwordController,
+                    placeholder: Text(s.proxyPasswordPlaceholder),
+                    obscureText: true,
+                    onChanged: (v) => sp.setProxyPassword(v),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // 排除列表
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      s.proxyNoList,
+                      style: TextStyle(fontSize: 12, color: c.textSecondary),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ShadInput(
+                        controller: _noListController,
+                        placeholder: Text(s.proxyNoListPlaceholder),
+                        onChanged: (v) => sp.setProxyNoList(v),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        s.proxyNoListDesc,
+                        style: TextStyle(fontSize: 10.5, color: c.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            // 测试连接按钮 + 结果
+            Row(
+              children: [
+                ShadButton.outline(
+                  size: ShadButtonSize.sm,
+                  enabled:
+                      !_isTesting &&
+                      sp.proxyHost.isNotEmpty &&
+                      sp.proxyPort.isNotEmpty,
+                  onPressed: _testProxy,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_isTesting)
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: c.textSecondary,
+                          ),
+                        )
+                      else
+                        Icon(
+                          LucideIcons.plugZap,
+                          size: 13,
+                          color: c.textSecondary,
+                        ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _isTesting ? s.proxyTesting : s.proxyTestConnection,
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                if (_testResult != null)
+                  Expanded(
+                    child: Text(
+                      _testResult!
+                          ? s.proxyTestSuccess(_testLatencyMs)
+                          : s.proxyTestFailed(_testError),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: _testResult!
+                            ? const Color(0xFF22C55E)
+                            : const Color(0xFFEF4444),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 代理模式选项卡片（复用 _ThemeModeCard 的视觉风格）
+class _ProxyModeOption extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final AppColors colors;
+  final VoidCallback onTap;
+
+  const _ProxyModeOption({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.colors,
+    required this.onTap,
+  });
+
+  @override
+  State<_ProxyModeOption> createState() => _ProxyModeOptionState();
+}
+
+class _ProxyModeOptionState extends State<_ProxyModeOption> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = ShadTheme.of(context);
+    final c = widget.colors;
+    final selected = widget.selected;
+    final borderColor = selected ? theme.colorScheme.primary : c.border;
+    final bgColor = selected
+        ? theme.colorScheme.primary.withValues(alpha: 0.08)
+        : _isHovered
+        ? c.hoverBg
+        : c.bg;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                widget.icon,
+                size: 14,
+                color: selected ? theme.colorScheme.primary : c.textSecondary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  color: selected ? theme.colorScheme.primary : c.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 只读代理信息展示字段
+class _ReadOnlyProxyField extends StatelessWidget {
+  final String label;
+  final String value;
+  final AppColors colors;
+
+  const _ReadOnlyProxyField({
+    required this.label,
+    required this.value,
+    required this.colors,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 80,
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: colors.textSecondary),
+          ),
+        ),
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: colors.surface1,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: colors.border.withValues(alpha: 0.4),
+                width: 1,
+              ),
+            ),
+            child: Text(
+              value.isEmpty ? '—' : value,
+              style: TextStyle(
+                fontSize: 12,
+                color: value.isEmpty ? colors.textMuted : colors.textPrimary,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 只读代理值展示框（不带 label，用于 Row 内嵌布局）
+class _ReadOnlyValueBox extends StatelessWidget {
+  final String value;
+  final AppColors colors;
+
+  const _ReadOnlyValueBox({required this.value, required this.colors});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: colors.surface1,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: colors.border.withValues(alpha: 0.4),
+          width: 1,
+        ),
+      ),
+      child: Text(
+        value.isEmpty ? '—' : value,
+        style: TextStyle(
+          fontSize: 12,
+          color: value.isEmpty ? colors.textMuted : colors.textPrimary,
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
 // BT 设置子组件
 // ─────────────────────────────────────────────
 
@@ -907,8 +1624,13 @@ class _SpeedLimitInputState extends State<_SpeedLimitInput> {
 class _SubSectionHeader extends StatelessWidget {
   final String label;
   final String description;
+  final IconData icon;
 
-  const _SubSectionHeader({required this.label, required this.description});
+  const _SubSectionHeader({
+    required this.label,
+    required this.description,
+    this.icon = LucideIcons.magnet,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -920,7 +1642,7 @@ class _SubSectionHeader extends StatelessWidget {
         const SizedBox(height: 14),
         Row(
           children: [
-            Icon(LucideIcons.magnet, size: 14, color: c.accent),
+            Icon(icon, size: 14, color: c.accent),
             const SizedBox(width: 8),
             Text(
               label,

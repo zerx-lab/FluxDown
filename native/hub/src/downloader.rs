@@ -81,6 +81,9 @@ pub struct DownloadParams {
     /// Browser cookies for authenticated downloads (e.g. GitHub private repos).
     /// Format: "name1=val1; name2=val2"
     pub cookies: String,
+    /// Proxy configuration — used by FTP downloader for SOCKS/HTTP CONNECT tunneling.
+    /// HTTP downloads use the proxy via the `client` field (already configured).
+    pub proxy_config: crate::proxy_config::ProxyConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -88,8 +91,15 @@ pub struct DownloadParams {
 // ---------------------------------------------------------------------------
 
 /// Build a properly configured HTTP client that mirrors Chrome's capabilities.
-pub fn build_client() -> Result<Client, DownloadError> {
-    let client = Client::builder()
+///
+/// When `proxy_config` specifies a proxy, it is injected into the client builder.
+/// - `ProxyMode::None`   → explicit `no_proxy()` to disable env-var proxies
+/// - `ProxyMode::System`  → auto-detect from Windows registry / environment
+/// - `ProxyMode::Manual`  → user-specified proxy URL (HTTP/HTTPS/SOCKS4/SOCKS5)
+pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig) -> Result<Client, DownloadError> {
+    use crate::proxy_config::{ProxyMode, detect_system_proxy};
+
+    let mut builder = Client::builder()
         .user_agent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -126,8 +136,87 @@ pub fn build_client() -> Result<Client, DownloadError> {
                 HeaderValue::from_static("identity"),
             );
             h
-        })
-        .build()?;
+        });
+
+    // --- Proxy injection ---
+    match proxy_config.mode {
+        ProxyMode::None => {
+            // Explicitly disable proxy so env vars (HTTP_PROXY etc.) are ignored.
+            builder = builder.no_proxy();
+        }
+        ProxyMode::System => {
+            // Read Windows registry / env vars for system proxy.
+            match detect_system_proxy() {
+                Ok(Some(sys_proxy)) => {
+                    if let Some(url) = sys_proxy.to_proxy_url() {
+                        rinf::debug_print!("[build_client] system proxy detected: {}", url);
+                        match reqwest::Proxy::all(&url) {
+                            Ok(mut proxy) => {
+                                if !sys_proxy.username.is_empty() {
+                                    proxy = proxy.basic_auth(
+                                        &sys_proxy.username,
+                                        &sys_proxy.password,
+                                    );
+                                }
+                                if !sys_proxy.no_proxy_list.is_empty() {
+                                    proxy = proxy.no_proxy(
+                                        reqwest::NoProxy::from_string(&sys_proxy.no_proxy_list),
+                                    );
+                                }
+                                builder = builder.proxy(proxy);
+                            }
+                            Err(e) => {
+                                rinf::debug_print!(
+                                    "[build_client] failed to parse system proxy URL: {}",
+                                    e
+                                );
+                            }
+                        }
+                    } else {
+                        rinf::debug_print!("[build_client] system proxy enabled but no URL resolved");
+                    }
+                }
+                Ok(None) => {
+                    rinf::debug_print!("[build_client] system proxy: not configured");
+                }
+                Err(e) => {
+                    rinf::debug_print!("[build_client] system proxy detection error: {}", e);
+                }
+            }
+        }
+        ProxyMode::Manual => {
+            if let Some(url) = proxy_config.to_proxy_url() {
+                rinf::debug_print!("[build_client] manual proxy: {}", url);
+                match reqwest::Proxy::all(&url) {
+                    Ok(mut proxy) => {
+                        if !proxy_config.username.is_empty() {
+                            proxy = proxy.basic_auth(
+                                &proxy_config.username,
+                                &proxy_config.password,
+                            );
+                        }
+                        if !proxy_config.no_proxy_list.is_empty() {
+                            proxy = proxy.no_proxy(
+                                reqwest::NoProxy::from_string(&proxy_config.no_proxy_list),
+                            );
+                        }
+                        builder = builder.proxy(proxy);
+                    }
+                    Err(e) => {
+                        rinf::debug_print!(
+                            "[build_client] failed to create proxy from URL: {}",
+                            e
+                        );
+                    }
+                }
+            } else {
+                rinf::debug_print!("[build_client] manual proxy: incomplete config, using direct");
+                builder = builder.no_proxy();
+            }
+        }
+    }
+
+    let client = builder.build()?;
     Ok(client)
 }
 

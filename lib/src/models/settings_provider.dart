@@ -6,6 +6,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:rinf/rinf.dart';
 
 import '../bindings/bindings.dart';
+import '../services/analytics_service.dart';
 import '../services/log_service.dart';
 
 /// 下载引擎相关配置（持久化在 Rust SQLite 中）
@@ -21,10 +22,20 @@ class SettingsProvider extends ChangeNotifier {
   bool _closeToTray = true; // 默认关闭到托盘
   bool _autoStartup = false; // 默认不开机启动
   bool _autoCheckUpdate = true; // 默认启动时自动检查更新
+  bool _analyticsEnabled = true; // 默认启用匿名数据分析
 
   // 文件关联
   bool _torrentAssocPrompted = false; // 是否已弹窗提示过文件关联
   bool _torrentAssociated = false; // .torrent 文件是否已关联到 FluxDown
+
+  // 代理设置
+  String _proxyMode = 'none'; // none / system / manual
+  String _proxyType = 'http'; // http / https / socks4 / socks5
+  String _proxyHost = '';
+  String _proxyPort = '';
+  String _proxyUsername = '';
+  String _proxyPassword = '';
+  String _proxyNoList = ''; // 逗号分隔的排除列表
 
   // BT 设置
   bool _btEnableDht = true; // DHT 分布式哈希表
@@ -78,10 +89,20 @@ class SettingsProvider extends ChangeNotifier {
   bool get closeToTray => _closeToTray;
   bool get autoStartup => _autoStartup;
   bool get autoCheckUpdate => _autoCheckUpdate;
+  bool get analyticsEnabled => _analyticsEnabled;
 
   // 文件关联 Getters
   bool get torrentAssocPrompted => _torrentAssocPrompted;
   bool get torrentAssociated => _torrentAssociated;
+
+  // 代理设置 Getters
+  String get proxyMode => _proxyMode;
+  String get proxyType => _proxyType;
+  String get proxyHost => _proxyHost;
+  String get proxyPort => _proxyPort;
+  String get proxyUsername => _proxyUsername;
+  String get proxyPassword => _proxyPassword;
+  String get proxyNoList => _proxyNoList;
 
   // BT 设置 Getters
   bool get btEnableDht => _btEnableDht;
@@ -141,6 +162,65 @@ class SettingsProvider extends ChangeNotifier {
     _autoCheckUpdate = value;
     notifyListeners();
     _saveToRust('auto_check_update', value.toString());
+  }
+
+  void setAnalyticsEnabled(bool value) {
+    if (_analyticsEnabled == value) return;
+    _analyticsEnabled = value;
+    notifyListeners();
+    _saveToRust('analytics_enabled', value.toString());
+    AnalyticsService.instance.setEnabled(value);
+  }
+
+  // 代理设置 Setters
+
+  void setProxyMode(String value) {
+    if (_proxyMode == value) return;
+    _proxyMode = value;
+    notifyListeners();
+    _saveToRust('proxy_mode', value);
+  }
+
+  void setProxyType(String value) {
+    if (_proxyType == value) return;
+    _proxyType = value;
+    notifyListeners();
+    _saveToRust('proxy_type', value);
+  }
+
+  void setProxyHost(String value) {
+    if (_proxyHost == value) return;
+    _proxyHost = value;
+    notifyListeners();
+    _saveToRust('proxy_host', value);
+  }
+
+  void setProxyPort(String value) {
+    if (_proxyPort == value) return;
+    _proxyPort = value;
+    notifyListeners();
+    _saveToRust('proxy_port', value);
+  }
+
+  void setProxyUsername(String value) {
+    if (_proxyUsername == value) return;
+    _proxyUsername = value;
+    notifyListeners();
+    _saveToRust('proxy_username', value);
+  }
+
+  void setProxyPassword(String value) {
+    if (_proxyPassword == value) return;
+    _proxyPassword = value;
+    notifyListeners();
+    _saveToRust('proxy_password', value);
+  }
+
+  void setProxyNoList(String value) {
+    if (_proxyNoList == value) return;
+    _proxyNoList = value;
+    notifyListeners();
+    _saveToRust('proxy_no_list', value);
   }
 
   // BT 设置 Setters
@@ -304,6 +384,22 @@ class SettingsProvider extends ChangeNotifier {
           _btCustomTrackers = entry.value;
         case 'torrent_assoc_prompted':
           _torrentAssocPrompted = entry.value == 'true';
+        case 'analytics_enabled':
+          _analyticsEnabled = entry.value != 'false'; // 默认 true
+        case 'proxy_mode':
+          _proxyMode = entry.value;
+        case 'proxy_type':
+          _proxyType = entry.value;
+        case 'proxy_host':
+          _proxyHost = entry.value;
+        case 'proxy_port':
+          _proxyPort = entry.value;
+        case 'proxy_username':
+          _proxyUsername = entry.value;
+        case 'proxy_password':
+          _proxyPassword = entry.value;
+        case 'proxy_no_list':
+          _proxyNoList = entry.value;
       }
     }
     _loaded = true;

@@ -66,11 +66,22 @@ impl Db {
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );",
         )?;
+
+        // --- Schema migrations (safe to re-run) ---
+
+        // Phase 2: per-task proxy URL column
+        // ALTER TABLE … ADD COLUMN fails with "duplicate column" if already exists,
+        // so we silently ignore that specific error.
+        let _ = conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN proxy_url TEXT NOT NULL DEFAULT '';"
+        );
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_task(
         &self,
         id: &str,
@@ -79,19 +90,21 @@ impl Db {
         save_dir: &str,
         segments: i32,
         total_bytes: i64,
+        proxy_url: &str,
     ) -> Result<(), DbError> {
         let conn = self.conn.clone();
         let id = id.to_owned();
         let url = url.to_owned();
         let file_name = file_name.to_owned();
         let save_dir = save_dir.to_owned();
+        let proxy_url = proxy_url.to_owned();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
             let now = chrono_now();
             conn.execute(
-                "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, created_at)
-                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7)",
-                params![id, url, file_name, save_dir, segments, total_bytes, now],
+                "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, created_at, proxy_url)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8)",
+                params![id, url, file_name, save_dir, segments, total_bytes, now, proxy_url],
             )?;
             Ok(())
         })
@@ -176,7 +189,7 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
             let mut stmt = conn.prepare(
-                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at
+                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url
                  FROM tasks ORDER BY created_at DESC",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -190,6 +203,7 @@ impl Db {
                     total_bytes: row.get(6)?,
                     error_message: row.get(7)?,
                     created_at: row.get(8)?,
+                    proxy_url: row.get::<_, String>(9).unwrap_or_default(),
                 })
             })?;
             let mut tasks = Vec::new();
@@ -207,7 +221,7 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
             match conn.query_row(
-                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at
+                "SELECT id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url
                  FROM tasks WHERE id = ?1",
                 params![id],
                 |row| {
@@ -221,6 +235,7 @@ impl Db {
                         total_bytes: row.get(6)?,
                         error_message: row.get(7)?,
                         created_at: row.get(8)?,
+                        proxy_url: row.get::<_, String>(9).unwrap_or_default(),
                     })
                 },
             ) {
@@ -446,7 +461,14 @@ impl Db {
                     ('bt_port_start', '6881'),
                     ('bt_port_end', '6891'),
                     ('bt_custom_trackers', ''),
-                    ('torrent_assoc_prompted', 'false');",
+                    ('torrent_assoc_prompted', 'false'),
+                    ('proxy_mode', 'none'),
+                    ('proxy_type', 'http'),
+                    ('proxy_host', ''),
+                    ('proxy_port', ''),
+                    ('proxy_username', ''),
+                    ('proxy_password', ''),
+                    ('proxy_no_list', '');",
                 default_save_dir.replace('\'', "''")
             ))?;
             Ok(())
