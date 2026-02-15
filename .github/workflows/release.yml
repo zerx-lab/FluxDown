@@ -36,8 +36,6 @@ jobs:
       # ── Rust toolchain ──
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || '' }}
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -98,8 +96,21 @@ jobs:
       # ── Build ──
       - name: Build Flutter Windows app
         env:
-          CFLAGS: ${{ matrix.arch == 'arm64' && '/std:c11' || '' }}
+          CFLAGS: ${{ matrix.arch == 'arm64' && '/std:c11 /experimental:c11atomics' || '' }}
+          AWS_LC_SYS_CMAKE_BUILDER: ${{ matrix.arch == 'arm64' && '1' || '' }}
+          AWS_LC_SYS_NO_ASM: ${{ matrix.arch == 'arm64' && '1' || '' }}
         run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+
+      # ── ARM64: Flutter 在 ARM64 runner 上以 x64 仿真运行，输出到 build\windows\x64
+      #    但后续步骤（Inno Setup / portable zip）需要 build\windows\arm64 ──
+      - name: Normalize build output path for ARM64
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if ((Test-Path "build\windows\x64") -and -not (Test-Path "build\windows\arm64")) {
+            Rename-Item -Path "build\windows\x64" -NewName "arm64"
+            Write-Host "Renamed build\windows\x64 -> build\windows\arm64"
+          }
 
       # ── Inno Setup installer ──
       - name: Ensure Inno Setup is installed

@@ -203,6 +203,15 @@ const en = {
   "issueDetail.meta.type.bug": "Bug Report",
   "issueDetail.meta.type.other": "Feedback",
 
+  // Issue Reply
+  "issueDetail.replyPlaceholder": "Write your reply...",
+  "issueDetail.replySend": "Send",
+  "issueDetail.replySending": "Sending...",
+  "issueDetail.replySuccess": "Reply sent",
+  "issueDetail.replyError": "Failed to send reply. Please try again.",
+  "issueDetail.replyRateLimited": "Too many replies. Please try again later.",
+  "issueDetail.replyCharCount": "{count}/2000",
+
   // 404
   "notFound.title": "Page not found",
   "notFound.desc": "The page you're looking for doesn't exist or has been moved.",

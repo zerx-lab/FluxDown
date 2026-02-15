@@ -224,6 +224,14 @@ const zhCN: Messages = {
   "issueDetail.meta.type.bug": "Bug 报告",
   "issueDetail.meta.type.other": "反馈",
 
+  "issueDetail.replyPlaceholder": "写下你的回复...",
+  "issueDetail.replySend": "发送",
+  "issueDetail.replySending": "发送中...",
+  "issueDetail.replySuccess": "回复已发送",
+  "issueDetail.replyError": "发送回复失败，请重试。",
+  "issueDetail.replyRateLimited": "回复过于频繁，请稍后再试。",
+  "issueDetail.replyCharCount": "{count}/2000",
+
   // 404
   "notFound.title": "页面未找到",
   "notFound.desc": "你访问的页面不存在或已被移动。",

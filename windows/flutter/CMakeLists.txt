@@ -11,14 +11,8 @@ include(${EPHEMERAL_DIR}/generated_config.cmake)
 set(WRAPPER_ROOT "${EPHEMERAL_DIR}/cpp_client_wrapper")
 
 # Set fallback configurations for older versions of the flutter tool.
-# Detect ARM64 Windows even when the Flutter tool runs under x64 emulation.
-# PROCESSOR_ARCHITEW6432 is set by Windows when an x64 process runs on ARM64.
 if (NOT DEFINED FLUTTER_TARGET_PLATFORM)
-  if ("$ENV{PROCESSOR_ARCHITECTURE}" STREQUAL "ARM64" OR "$ENV{PROCESSOR_ARCHITEW6432}" STREQUAL "ARM64")
-    set(FLUTTER_TARGET_PLATFORM "windows-arm64")
-  else()
-    set(FLUTTER_TARGET_PLATFORM "windows-x64")
-  endif()
+  set(FLUTTER_TARGET_PLATFORM "windows-x64")
 endif()
 
 # === Flutter Library ===
