@@ -524,6 +524,19 @@ class S {
   String get recheck => _t('重新检查', 'Recheck');
 
   // ─────────────────────────────────────────────
+  // 更新日志弹窗
+  // ─────────────────────────────────────────────
+
+  String get changelogTitle => _t('发现新版本', 'New Version Available');
+  String changelogSubtitle(String v) => _t(
+    'FluxDown v$v 已发布，以下是更新内容：',
+    'FluxDown v$v is out. Here\'s what\'s new:',
+  );
+  String get changelogUpdateNow => _t('立即更新', 'Update Now');
+  String get changelogLater => _t('稍后', 'Later');
+  String changelogVersionCount(int n) => _t('跨越 $n 个版本', '$n versions behind');
+
+  // ─────────────────────────────────────────────
   // Settings — 搜索关键词
   // ─────────────────────────────────────────────
 

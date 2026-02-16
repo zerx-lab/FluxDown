@@ -24,6 +24,7 @@ import 'src/i18n/locale_provider.dart';
 import 'src/services/update_service.dart';
 import 'src/theme/app_theme.dart';
 import 'src/theme/theme_provider.dart';
+import 'src/widgets/update_changelog_dialog.dart';
 import 'src/windows/download_complete_window.dart';
 
 Future<void> main(List<String> args) async {
@@ -255,6 +256,9 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
       _waitForConfigAndHandleTorrentFiles();
     }
 
+    // 监听更新服务 — changelog 就绪后自动弹出更新日志弹窗
+    UpdateService.instance.addListener(_onUpdateServiceChanged);
+
     // Listen for args from second instances (single-instance enforcement).
     // When a second instance is launched (e.g. double-clicking a .torrent
     // file while the app is already running), the native C++ layer sends
@@ -267,6 +271,7 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
   @override
   void dispose() {
     logInfo('FluxDownApp', 'dispose called');
+    UpdateService.instance.removeListener(_onUpdateServiceChanged);
     _singleInstanceChannel.setMethodCallHandler(null);
     TrayService.instance.onExitApp = null;
     HlsQualityService.shutdown();
@@ -290,6 +295,30 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     if (mounted) setState(() {});
     // 语言变更后刷新托盘菜单
     TrayService.instance.refreshMenu();
+  }
+
+  /// 当 UpdateService 状态变化时，检查是否应该弹出更新日志弹窗。
+  void _onUpdateServiceChanged() {
+    final svc = UpdateService.instance;
+    if (!svc.shouldShowChangelog) return;
+    if (!mounted) return;
+
+    final ctx = _navigatorKey.currentContext;
+    if (ctx == null) return;
+
+    logInfo('FluxDownApp', 'showing update changelog dialog');
+    svc.markChangelogShown();
+
+    showUpdateChangelogDialog(
+      ctx,
+      releases: svc.changelogReleases,
+      latestVersion: svc.checkResult?.latestVersion ?? '',
+      currentVersion: svc.currentVersion,
+      onUpdate: () => svc.downloadUpdate(),
+      onLater: () {
+        // No-op — dialog already dismissed, changelog marked as shown.
+      },
+    );
   }
 
   /// 等配置从 Rust 加载完成后，同步 analytics 的真实同意状态。
