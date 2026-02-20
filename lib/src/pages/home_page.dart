@@ -261,49 +261,40 @@ class _HomePageState extends State<HomePage> {
               height: 48,
               child: TitleDragArea(child: ColoredBox(color: c.surface1)),
             ),
-            // 主布局
-            ColoredBox(
-              color: c.bg,
-              child: Row(
-                children: [
-                  // Sidebar
-                  SizedBox(
-                    width: _sidebarWidth,
-                    child: Sidebar(controller: _controller),
-                  ),
-                  _ResizeHandle(
-                    color: c.border,
-                    onDrag: (dx) {
-                      setState(() {
-                        _sidebarWidth = (_sidebarWidth + dx).clamp(
-                          _sidebarMinWidth,
-                          _sidebarMax(totalWidth),
-                        );
-                      });
-                    },
-                  ),
-                  // Main content
-                  Expanded(
+            // 内容区 — 全部从 titlebar 下方开始
+            Row(
+              children: [
+                // Sidebar（全高 — 自带 logo 区对齐 titlebar）
+                SizedBox(
+                  width: _sidebarWidth,
+                  child: Sidebar(controller: _controller),
+                ),
+                // Sidebar resize handle — 从 titlebar 下方开始
+                Column(
+                  children: [
+                    const SizedBox(height: 48),
+                    Expanded(
+                      child: _ResizeHandle(
+                        color: c.border,
+                        onDrag: (dx) {
+                          setState(() {
+                            _sidebarWidth = (_sidebarWidth + dx).clamp(
+                              _sidebarMinWidth,
+                              _sidebarMax(totalWidth),
+                            );
+                          });
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                // Main content — 从 titlebar 下方开始
+                Expanded(
+                  child: ColoredBox(
+                    color: c.bg,
                     child: Column(
                       children: [
-                        HeaderBar(
-                          key: _headerBarKey,
-                          controller: _controller,
-                          onNewDownload: () => showNewDownloadDialog(
-                            context,
-                            _controller,
-                            _settingsProvider,
-                          ),
-                          onNavigateToSettings: (category) {
-                            setState(() {
-                              _initialSettingsCategory = category;
-                              _showSettings = true;
-                              AnalyticsService.instance.trackView(
-                                'SettingsPage',
-                              );
-                            });
-                          },
-                        ),
+                        const SizedBox(height: 48),
                         TaskTabBar(controller: _controller),
                         Expanded(
                           child: TaskList(
@@ -320,28 +311,65 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
                   ),
-                  // Detail panel (conditional)
-                  if (_isDetailOpen) ...[
-                    _ResizeHandle(
-                      color: c.border,
-                      onDrag: (dx) {
-                        setState(() {
-                          _detailWidth = (_detailWidth - dx).clamp(
-                            _detailMinWidth,
-                            _detailMax(totalWidth),
-                          );
-                        });
-                      },
-                    ),
-                    SizedBox(
-                      width: _detailWidth,
-                      child: DetailPanel(
-                        controller: _controller,
-                        onClose: _closeDetail,
+                ),
+                // Detail panel — 从 titlebar 下方开始
+                if (_isDetailOpen) ...[
+                  Column(
+                    children: [
+                      const SizedBox(height: 48),
+                      Expanded(
+                        child: _ResizeHandle(
+                          color: c.border,
+                          onDrag: (dx) {
+                            setState(() {
+                              _detailWidth = (_detailWidth - dx).clamp(
+                                _detailMinWidth,
+                                _detailMax(totalWidth),
+                              );
+                            });
+                          },
+                        ),
                       ),
+                    ],
+                  ),
+                  SizedBox(
+                    width: _detailWidth,
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 48),
+                        Expanded(
+                          child: DetailPanel(
+                            controller: _controller,
+                            onClose: _closeDetail,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ],
+              ],
+            ),
+            // HeaderBar — 独立于内容区，不受 DetailPanel 宽度影响
+            Positioned(
+              top: 0,
+              left: _sidebarWidth,
+              right: 0,
+              height: 48,
+              child: HeaderBar(
+                key: _headerBarKey,
+                controller: _controller,
+                onNewDownload: () => showNewDownloadDialog(
+                  context,
+                  _controller,
+                  _settingsProvider,
+                ),
+                onNavigateToSettings: (category) {
+                  setState(() {
+                    _initialSettingsCategory = category;
+                    _showSettings = true;
+                    AnalyticsService.instance.trackView('SettingsPage');
+                  });
+                },
               ),
             ),
             // 窗口控制按钮 — 始终固定在窗口右上角
@@ -392,7 +420,7 @@ class _ResizeHandleState extends State<_ResizeHandle> {
         onHorizontalDragEnd: (_) => setState(() => _isDragging = false),
         child: Container(
           width: isActive ? 3 : 1,
-          color: isActive ? c.accent.withValues(alpha: 0.6) : widget.color,
+          color: isActive ? c.accent : widget.color,
         ),
       ),
     );

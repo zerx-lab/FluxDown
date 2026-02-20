@@ -55,18 +55,6 @@ class DetailPanel extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 顶部占位，与 titlebar 齐平
-              SizedBox(
-                height: 48,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border(
-                      bottom: BorderSide(color: c.border, width: 1),
-                    ),
-                  ),
-                  child: const SizedBox.expand(),
-                ),
-              ),
               _buildHeader(c),
               if (task == null)
                 Expanded(child: _buildNoSelection(c))
