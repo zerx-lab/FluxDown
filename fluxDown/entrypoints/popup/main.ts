@@ -13,6 +13,8 @@
  */
 
 import { initI18n, applyI18nToDOM, t, getLocale, saveLocale } from '@/utils/i18n';
+import { checkFluxDownAvailable } from '@/utils/native-messaging';
+import { loadSettings } from '@/utils/settings';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -69,7 +71,7 @@ function applyTheme(mode: ThemeMode) {
 }
 
 async function initTheme() {
-  const result = await chrome.storage.local.get('theme');
+  const result = await chrome.storage.local.get('theme') ?? {};
   const saved: ThemeMode = result.theme || 'system';
   applyTheme(saved);
 }
@@ -88,7 +90,7 @@ async function toggleTheme() {
 }
 
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', async () => {
-  const result = await chrome.storage.local.get('theme');
+  const result = await chrome.storage.local.get('theme') ?? {};
   if (!result.theme || result.theme === 'system') {
     applyTheme('system');
   }
@@ -127,7 +129,7 @@ function renderExtTags(extensions: string[]) {
 }
 
 async function removeExtension(ext: string) {
-  const result = await chrome.storage.sync.get('settings');
+  const result = await chrome.storage.sync.get('settings') ?? {};
   const settings = result.settings || {};
   const exts: string[] = settings.interceptExtensions || [];
   const idx = exts.indexOf(ext);
@@ -151,7 +153,7 @@ async function addExtension(ext: string) {
     return;
   }
 
-  const result = await chrome.storage.sync.get('settings');
+  const result = await chrome.storage.sync.get('settings') ?? {};
   const settings = result.settings || {};
   const exts: string[] = settings.interceptExtensions || [];
 
@@ -199,7 +201,7 @@ function renderDomainList(domains: string[]) {
 }
 
 async function removeDomain(domain: string) {
-  const result = await chrome.storage.sync.get('settings');
+  const result = await chrome.storage.sync.get('settings') ?? {};
   const settings = result.settings || {};
   const domains: string[] = settings.excludeDomains || [];
   const idx = domains.indexOf(domain);
@@ -216,7 +218,7 @@ async function addDomain(domain: string) {
   domain = domain.trim().toLowerCase();
   if (!domain) return;
 
-  const result = await chrome.storage.sync.get('settings');
+  const result = await chrome.storage.sync.get('settings') ?? {};
   const settings = result.settings || {};
   const domains: string[] = settings.excludeDomains || [];
 
@@ -234,7 +236,7 @@ async function addDomain(domain: string) {
 
 // ===== 统计 =====
 async function loadStats() {
-  const result = await chrome.storage.local.get('stats');
+  const result = await chrome.storage.local.get('stats') ?? {};
   const stats = result.stats || { sent: 0, failed: 0, date: '' };
 
   // 检查是否是今天的统计
@@ -261,11 +263,16 @@ async function init() {
 
   await initTheme();
 
-  // 获取连接状态和设置
-  const response = await chrome.runtime.sendMessage({ action: 'getStatus' });
+  // 直接查询连接状态和加载设置，不经过 background sendMessage。
+  // 原因：Firefox MV2 中 WXT 框架会注册自己的 onMessage 监听器（用于 HMR），
+  // 它先于我们的监听器返回 undefined，导致 popup 的 sendMessage 始终收到 undefined。
+  const [available, settings] = await Promise.all([
+    checkFluxDownAvailable(),
+    loadSettings(),
+  ]);
 
   // 更新连接状态
-  if (response.connected) {
+  if (available) {
     statusBadge.className = 'status-badge connected';
     statusText.textContent = t('header.connected');
   } else {
@@ -274,23 +281,16 @@ async function init() {
   }
 
   // 更新设置 UI
-  if (response.settings) {
-    const s = response.settings;
-    enableToggle.checked = s.enabled;
-    updateEnableHint(s.enabled);
-    interceptModeSelect.value = s.interceptMode || 'smart';
-    updateModeHint(s.interceptMode || 'smart');
-    minSizeSelect.value = String(s.minFileSize);
-
-    // 渲染扩展名标签
-    renderExtTags(s.interceptExtensions || []);
-
-    // 渲染排除域名
-    renderDomainList(s.excludeDomains || []);
-  }
+  enableToggle.checked = settings.enabled;
+  updateEnableHint(settings.enabled);
+  interceptModeSelect.value = settings.interceptMode || 'smart';
+  updateModeHint(settings.interceptMode || 'smart');
+  minSizeSelect.value = String(settings.minFileSize);
+  renderExtTags(settings.interceptExtensions || []);
+  renderDomainList(settings.excludeDomains || []);
 
   // 悬浮球可见状态（未设置时默认显示）
-  const dotVisResult = await chrome.storage.local.get('fluxdown_dot_visible');
+  const dotVisResult = await chrome.storage.local.get('fluxdown_dot_visible') ?? {};
   dotVisibleToggle.checked = dotVisResult['fluxdown_dot_visible'] !== false;
 
   // 加载统计
@@ -362,7 +362,7 @@ interceptModeSelect.addEventListener('change', async () => {
 
 // 最小文件大小
 minSizeSelect.addEventListener('change', async () => {
-  const result = await chrome.storage.sync.get('settings');
+  const result = await chrome.storage.sync.get('settings') ?? {};
   const settings = result.settings || {};
   settings.minFileSize = parseInt(minSizeSelect.value, 10);
   await chrome.storage.sync.set({ settings });

@@ -5,7 +5,6 @@ export default defineConfig({
     name: "__MSG_extensionName__",
     description: "__MSG_extensionDescription__",
     default_locale: "en",
-    version: "0.1.3",
     permissions: [
       "downloads",
       "cookies",
@@ -16,7 +15,7 @@ export default defineConfig({
       "tabs",
       "scripting",
     ],
-    host_permissions: ["<all_urls>", "http://localhost/*"],
+    host_permissions: ["<all_urls>", "http://127.0.0.1/*", "http://localhost/*"],
     web_accessible_resources: [
       {
         resources: ["/fetch-interceptor.js"],

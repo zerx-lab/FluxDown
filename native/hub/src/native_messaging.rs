@@ -215,151 +215,182 @@ async fn send_json_response(
 // HTTP server
 // ---------------------------------------------------------------------------
 
+/// Handle a single HTTP connection: parse the request and dispatch to a route.
+async fn handle_connection(
+    mut stream: tokio::net::TcpStream,
+    addr: std::net::SocketAddr,
+    tx: mpsc::Sender<DownloadRequest>,
+) {
+    let req = match parse_http_request(&mut stream).await {
+        Ok(r) => r,
+        Err(e) => {
+            rinf::debug_print!("[http-bridge] parse error from {}: {}", addr, e);
+            send_json_response(
+                &mut stream,
+                400,
+                "Bad Request",
+                &ApiResponse {
+                    success: false,
+                    message: Some(format!("parse error: {}", e)),
+                    task_id: None,
+                },
+            )
+            .await;
+            return;
+        }
+    };
+
+    // Route: OPTIONS (CORS preflight)
+    if req.method == "OPTIONS" {
+        send_http_response(&mut stream, 204, "No Content", b"").await;
+        return;
+    }
+
+    // Route: GET /ping
+    if req.method == "GET" && req.path == "/ping" {
+        rinf::debug_print!("[http-bridge] ping from {}", addr);
+        send_json_response(
+            &mut stream,
+            200,
+            "OK",
+            &ApiResponse {
+                success: true,
+                message: Some("pong".to_string()),
+                task_id: None,
+            },
+        )
+        .await;
+        return;
+    }
+
+    // Route: POST /download
+    if req.method == "POST" && req.path == "/download" {
+        match serde_json::from_slice::<DownloadRequest>(&req.body) {
+            Ok(download_req) => {
+                rinf::debug_print!(
+                    "[http-bridge] download request from {}: url={}",
+                    addr,
+                    download_req.url
+                );
+                // Respond immediately so the extension doesn't timeout.
+                send_json_response(
+                    &mut stream,
+                    200,
+                    "OK",
+                    &ApiResponse {
+                        success: true,
+                        message: Some("download accepted".to_string()),
+                        task_id: None,
+                    },
+                )
+                .await;
+                // Forward to the download actor.
+                let _ = tx.send(download_req).await;
+            }
+            Err(e) => {
+                rinf::debug_print!("[http-bridge] JSON parse error: {}", e);
+                send_json_response(
+                    &mut stream,
+                    400,
+                    "Bad Request",
+                    &ApiResponse {
+                        success: false,
+                        message: Some(format!("invalid JSON: {}", e)),
+                        task_id: None,
+                    },
+                )
+                .await;
+            }
+        }
+        return;
+    }
+
+    // Route: not found
+    send_json_response(
+        &mut stream,
+        404,
+        "Not Found",
+        &ApiResponse {
+            success: false,
+            message: Some(format!("unknown route: {} {}", req.method, req.path)),
+            task_id: None,
+        },
+    )
+    .await;
+}
+
+/// Accept loop for a single listener — forwards each connection to `handle_connection`.
+async fn run_accept_loop(listener: TcpListener, tx: mpsc::Sender<DownloadRequest>) {
+    loop {
+        let (stream, addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                rinf::debug_print!("[http-bridge] accept error: {}", e);
+                continue;
+            }
+        };
+        tokio::spawn(handle_connection(stream, addr, tx.clone()));
+    }
+}
+
 /// Spawn the HTTP server that listens for incoming browser extension requests.
 ///
 /// Returns a receiver that yields `DownloadRequest` items whenever the
 /// browser extension sends a download request via HTTP POST.
 /// Ping requests are handled internally (immediate pong response).
 ///
-/// The server binds to `127.0.0.1:LISTEN_PORT`.
+/// Binds both `127.0.0.1:LISTEN_PORT` (IPv4) and `[::1]:LISTEN_PORT` (IPv6)
+/// so that `localhost` works regardless of whether the browser resolves it
+/// to an IPv4 or IPv6 address.  IPv6 binding is best-effort: if the OS has
+/// IPv6 disabled the error is logged and the server continues on IPv4 only.
 pub fn spawn_native_messaging_listener() -> mpsc::Receiver<DownloadRequest> {
     let (tx, rx) = mpsc::channel::<DownloadRequest>(64);
 
     tokio::spawn(async move {
-        let listener = match TcpListener::bind(("127.0.0.1", LISTEN_PORT)).await {
+        let mut bound = false;
+
+        // IPv4 loopback — primary
+        match TcpListener::bind(("127.0.0.1", LISTEN_PORT)).await {
             Ok(l) => {
                 rinf::debug_print!(
-                    "[http-bridge] server listening on http://127.0.0.1:{}",
+                    "[http-bridge] IPv4 listening on http://127.0.0.1:{}",
                     LISTEN_PORT
                 );
-                l
+                tokio::spawn(run_accept_loop(l, tx.clone()));
+                bound = true;
             }
             Err(e) => {
                 rinf::debug_print!(
-                    "[http-bridge] failed to bind port {}: {}",
+                    "[http-bridge] IPv4 bind failed on port {}: {}",
                     LISTEN_PORT,
                     e
                 );
-                return;
             }
-        };
+        }
 
-        loop {
-            let (mut stream, addr) = match listener.accept().await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    rinf::debug_print!("[http-bridge] accept error: {}", e);
-                    continue;
-                }
-            };
+        // IPv6 loopback — optional (Firefox may resolve localhost → ::1)
+        match TcpListener::bind(("::1", LISTEN_PORT)).await {
+            Ok(l) => {
+                rinf::debug_print!(
+                    "[http-bridge] IPv6 listening on http://[::1]:{}",
+                    LISTEN_PORT
+                );
+                tokio::spawn(run_accept_loop(l, tx.clone()));
+                bound = true;
+            }
+            Err(e) => {
+                rinf::debug_print!(
+                    "[http-bridge] IPv6 not available (ok if disabled): {}",
+                    e
+                );
+            }
+        }
 
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                // Parse HTTP request.
-                let req = match parse_http_request(&mut stream).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        rinf::debug_print!(
-                            "[http-bridge] parse error from {}: {}",
-                            addr,
-                            e
-                        );
-                        send_json_response(
-                            &mut stream,
-                            400,
-                            "Bad Request",
-                            &ApiResponse {
-                                success: false,
-                                message: Some(format!("parse error: {}", e)),
-                                task_id: None,
-                            },
-                        )
-                        .await;
-                        return;
-                    }
-                };
-
-                // Route: OPTIONS (CORS preflight)
-                if req.method == "OPTIONS" {
-                    send_http_response(&mut stream, 204, "No Content", b"").await;
-                    return;
-                }
-
-                // Route: GET /ping
-                if req.method == "GET" && req.path == "/ping" {
-                    rinf::debug_print!("[http-bridge] ping from {}", addr);
-                    send_json_response(
-                        &mut stream,
-                        200,
-                        "OK",
-                        &ApiResponse {
-                            success: true,
-                            message: Some("pong".to_string()),
-                            task_id: None,
-                        },
-                    )
-                    .await;
-                    return;
-                }
-
-                // Route: POST /download
-                if req.method == "POST" && req.path == "/download" {
-                    match serde_json::from_slice::<DownloadRequest>(&req.body) {
-                        Ok(download_req) => {
-                            rinf::debug_print!(
-                                "[http-bridge] download request from {}: url={}",
-                                addr,
-                                download_req.url
-                            );
-                            // Respond immediately so the extension doesn't timeout.
-                            send_json_response(
-                                &mut stream,
-                                200,
-                                "OK",
-                                &ApiResponse {
-                                    success: true,
-                                    message: Some("download accepted".to_string()),
-                                    task_id: None,
-                                },
-                            )
-                            .await;
-                            // Forward to the download actor.
-                            let _ = tx.send(download_req).await;
-                        }
-                        Err(e) => {
-                            rinf::debug_print!(
-                                "[http-bridge] JSON parse error: {}",
-                                e
-                            );
-                            send_json_response(
-                                &mut stream,
-                                400,
-                                "Bad Request",
-                                &ApiResponse {
-                                    success: false,
-                                    message: Some(format!("invalid JSON: {}", e)),
-                                    task_id: None,
-                                },
-                            )
-                            .await;
-                        }
-                    }
-                    return;
-                }
-
-                // Route: not found
-                send_json_response(
-                    &mut stream,
-                    404,
-                    "Not Found",
-                    &ApiResponse {
-                        success: false,
-                        message: Some(format!("unknown route: {} {}", req.method, req.path)),
-                        task_id: None,
-                    },
-                )
-                .await;
-            });
+        if !bound {
+            rinf::debug_print!(
+                "[http-bridge] no address could be bound on port {}",
+                LISTEN_PORT
+            );
         }
     });
 

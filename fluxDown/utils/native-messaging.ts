@@ -2,13 +2,9 @@
  * HTTP 通信模块
  * 负责与 FluxDown 桌面应用通过本地 HTTP 服务器通信
  *
- * FluxDown 桌面应用在 localhost:19527 启动 HTTP 服务器，
- * 浏览器扩展直接通过 fetch() 发送请求，无需 Native Messaging。
- *
- * 使用 localhost 而非 127.0.0.1：Firefox 遵循 W3C Secure Context 规范，
- * 只将 localhost 主机名视为可信回环地址，127.0.0.1 IP 不在其中，
- * 导致从 moz-extension:// 安全上下文向 127.0.0.1 发起的 HTTP 请求
- * 被 Firefox 当作混合内容阻断。Chrome 对此更宽松，故两者均正常。
+ * FluxDown 桌面应用在 localhost:19527 启动 HTTP 服务器，同时绑定
+ * 127.0.0.1（IPv4）和 ::1（IPv6），因此使用 localhost 主机名可兼容
+ * Chrome（Happy Eyeballs 优先 IPv4）和 Firefox（可能优先 ::1 IPv6）。
  *
  * 当应用未运行时，通过 fluxdown:// 协议唤起应用后重试 HTTP。
  */
@@ -96,13 +92,22 @@ async function launchViaProtocol(): Promise<void> {
   }
 }
 
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 async function httpPost(body: string): Promise<Response> {
-  return fetch(`${FLUXDOWN_BASE_URL}/download`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-    signal: AbortSignal.timeout(3000),
-  });
+  return fetchWithTimeout(
+    `${FLUXDOWN_BASE_URL}/download`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    },
+    3000,
+  );
 }
 
 async function sendWithAutoLaunch(body: string): Promise<ApiResponse> {
@@ -152,10 +157,7 @@ export async function sendBatchDownloadRequest(items: BatchDownloadItem[]): Prom
 
 export async function checkFluxDownAvailable(): Promise<boolean> {
   try {
-    const response = await fetch(`${FLUXDOWN_BASE_URL}/ping`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(3000),
-    });
+    const response = await fetchWithTimeout(`${FLUXDOWN_BASE_URL}/ping`, { method: 'GET' }, 3000);
     const data = (await response.json()) as ApiResponse;
     return data.success === true;
   } catch {

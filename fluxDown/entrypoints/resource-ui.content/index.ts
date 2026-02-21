@@ -436,7 +436,8 @@ export default defineContentScript({
 
       try {
         chrome.storage.local.get([STORAGE_KEY, DOT_VISIBLE_KEY]).then((r) => {
-          const pos = r[STORAGE_KEY];
+          const safeR = r ?? {};
+          const pos = safeR[STORAGE_KEY];
           if (pos && typeof pos === 'object') {
             const y = typeof pos.y === 'number' && pos.y > 0
               ? Math.min(pos.y, window.innerHeight - 56)
@@ -450,7 +451,7 @@ export default defineContentScript({
           }
           applySideClass();
           // 未设置时默认显示，明确为 false 时隐藏
-          if (r[DOT_VISIBLE_KEY] === false) {
+          if (safeR[DOT_VISIBLE_KEY] === false) {
             dotEl.classList.add('hidden');
           }
           dotEl.style.visibility = '';

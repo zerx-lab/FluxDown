@@ -105,7 +105,7 @@ const DEFAULT_SETTINGS: FluxDownSettings = {
  * 加载设置
  */
 export async function loadSettings(): Promise<FluxDownSettings> {
-  const result = await chrome.storage.sync.get('settings');
+  const result = await chrome.storage.sync.get('settings') ?? {};
   if (result.settings) {
     return { ...DEFAULT_SETTINGS, ...result.settings };
   }

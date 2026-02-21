@@ -172,10 +172,8 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
           sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
-          sed -i "s/version: '.*'/version: '$VERSION'/" wxt.config.ts
           echo "Updated extension version to $VERSION"
           grep '"version"' package.json
-          grep 'version:' wxt.config.ts
 
       - name: Install dependencies
         run: npm ci

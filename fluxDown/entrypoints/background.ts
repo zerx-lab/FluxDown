@@ -54,7 +54,7 @@ interface DailyStats {
 
 async function getTodayStats(): Promise<DailyStats> {
   const today = new Date().toDateString();
-  const result = await chrome.storage.local.get('stats');
+  const result = await chrome.storage.local.get('stats') ?? {};
   const stats: DailyStats = result.stats || { sent: 0, failed: 0, date: '' };
 
   // 跨天自动重置
@@ -334,6 +334,8 @@ export default defineBackground(() => {
     const downloadId = downloadItem.id;
     const url = downloadItem.url;
 
+    console.log('[FluxDown] onCreated:', { id: downloadId, url, mime: downloadItem.mime, filename: downloadItem.filename });
+
     // 缓存 downloadItem 信息，onDeterminingFilename 会用到
     downloadItemCache.set(downloadId, downloadItem);
 
@@ -371,6 +373,8 @@ export default defineBackground(() => {
   async function startFallbackInterception(downloadId: number, originalItem: chrome.downloads.DownloadItem) {
     const url = originalItem.url;
 
+    console.log('[FluxDown] startFallbackInterception:', { id: downloadId, url, cacheHit: responseDownloadCache.has(url), cacheKeys: [...responseDownloadCache.keys()] });
+
     // === 路径 A：检查 HTTP 响应缓存（即时判断，不等待） ===
     const responseCached = responseDownloadCache.get(url);
     if (responseCached) {
@@ -405,7 +409,9 @@ export default defineBackground(() => {
         return;
       }
 
-      if (!shouldIntercept(itemInfo, settings)) return;
+      const interceptA = shouldIntercept(itemInfo, settings);
+      console.log('[FluxDown] Path A shouldIntercept:', interceptA, itemInfo);
+      if (!interceptA) return;
 
       await executeFallbackIntercept(downloadId, url, originalItem.referrer, itemInfo);
       responseDownloadCache.delete(url);
@@ -414,24 +420,85 @@ export default defineBackground(() => {
 
     // === 路径 B：响应缓存未命中 — 等待后查询最新元数据 ===
     // 有 onDeterminingFilename 时等 150ms 让它优先处理；
-    // Firefox 无此 API，兜底是唯一路径，等 300ms 让浏览器充分填充元数据
+    // Firefox 无此 API，兜底是唯一路径，等 300ms 让浏览器充分填充元数据。
+    // 注意：Firefox 中 onCreated 先于 onHeadersReceived 触发，等待后需再次检查缓存。
     await sleep(hasDeterminingFilename ? 150 : 300);
-    if (handledDownloads.has(downloadId)) return;
+    if (handledDownloads.has(downloadId)) {
+      console.log('[FluxDown] Path B: already handled after sleep, skip');
+      return;
+    }
+
+    // Firefox 时序补偿：onCreated 先于 onHeadersReceived 触发，sleep 期间缓存可能已被填充
+    const responseCachedLate = responseDownloadCache.get(url);
+    if (responseCachedLate) {
+      console.log('[FluxDown] Path B: late cache hit for', url);
+      const settings = await loadSettings();
+      if (!settings.enabled) return;
+
+      const itemInfo: DownloadItemInfo = {
+        url,
+        fileSize: responseCachedLate.contentLength > 0 ? responseCachedLate.contentLength : undefined,
+        mime: responseCachedLate.contentType || undefined,
+        filename: responseCachedLate.dispositionFilename || originalItem.filename || undefined,
+      };
+
+      const bypassLate = bypassTokens.get(url);
+      if (bypassLate && bypassLate > Date.now()) {
+        bypassTokens.delete(url);
+        return;
+      }
+
+      const interceptLate = shouldIntercept(itemInfo, settings);
+      console.log('[FluxDown] Path B late shouldIntercept:', interceptLate, itemInfo);
+      if (!interceptLate) return;
+      if (handledDownloads.has(downloadId)) return;
+
+      await executeFallbackIntercept(downloadId, url, originalItem.referrer, itemInfo);
+      responseDownloadCache.delete(url);
+      return;
+    }
 
     // 用 chrome.downloads.search 查询最新状态（此时浏览器可能已解析了响应头）
     let freshItems: chrome.downloads.DownloadItem[];
     try {
-      freshItems = await chrome.downloads.search({ id: downloadId });
-    } catch {
-      return; // 下载可能已被删除
+      freshItems = (await chrome.downloads.search({ id: downloadId })) ?? [];
+    } catch (e) {
+      console.warn('[FluxDown] Path B: downloads.search threw:', e);
+      return;
     }
 
-    if (freshItems.length === 0) return; // 下载已不存在
-    if (handledDownloads.has(downloadId)) return; // 检查期间被 onDeterminingFilename 处理了
+    if (freshItems.length === 0) {
+      console.warn('[FluxDown] Path B: freshItems empty for id:', downloadId, '(download erased or search failed)');
+      // 兜底：使用 originalItem 数据直接判断（Firefox search 可能返回空）
+      const settingsFallback = await loadSettings();
+      if (!settingsFallback.enabled) return;
+      const itemInfoFallback: DownloadItemInfo = {
+        url,
+        fileSize: originalItem.fileSize > 0 ? originalItem.fileSize : undefined,
+        mime: originalItem.mime || undefined,
+        filename: originalItem.filename || undefined,
+      };
+      const bypassFallback = bypassTokens.get(url);
+      if (bypassFallback && bypassFallback > Date.now()) { bypassTokens.delete(url); return; }
+      const interceptFallback = shouldIntercept(itemInfoFallback, settingsFallback);
+      console.log('[FluxDown] Path B fallback shouldIntercept:', interceptFallback, itemInfoFallback);
+      if (!interceptFallback) return;
+      if (handledDownloads.has(downloadId)) return;
+      await executeFallbackIntercept(downloadId, url, originalItem.referrer, itemInfoFallback);
+      return;
+    }
+
+    if (handledDownloads.has(downloadId)) {
+      console.log('[FluxDown] Path B: already handled after search, skip');
+      return;
+    }
 
     const freshItem = freshItems[0];
+    console.log('[FluxDown] Path B freshItem:', { state: freshItem.state, mime: freshItem.mime, filename: freshItem.filename, fileSize: freshItem.fileSize });
+
     // 如果下载已经完成或被取消了，不处理
     if (freshItem.state === 'complete' || (freshItem as any).state === 'interrupted') {
+      console.log('[FluxDown] Path B: download already complete/interrupted, skip');
       return;
     }
 
@@ -457,7 +524,9 @@ export default defineBackground(() => {
       return;
     }
 
-    if (!shouldIntercept(itemInfo, settings)) return;
+    const interceptB = shouldIntercept(itemInfo, settings);
+    console.log('[FluxDown] Path B shouldIntercept:', interceptB, itemInfo);
+    if (!interceptB) return;
 
     // 最后一次检查——避免和 onDeterminingFilename 竞态
     if (handledDownloads.has(downloadId)) return;
@@ -612,9 +681,16 @@ export default defineBackground(() => {
   );
 
   // ===== 消息处理（Popup + Content Script） =====
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    handleMessage(message, sender).then(sendResponse);
-    return true; // 保持消息通道开放（异步响应）
+  //
+  // 直接返回 Promise，而非 sendResponse + return true。
+  //
+  // 原因：Firefox MV2 中 "return true + 异步 sendResponse" 模式不可靠——
+  // sendResponse 被调用后响应值经常被丢弃，popup 收到 undefined。
+  // 返回 Promise 是 Firefox 原生支持的正确方式，Chrome 99+（含 MV3）同样支持。
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  chrome.runtime.onMessage.addListener((message, sender, _sendResponse) => {
+    return handleMessage(message, sender).catch((_err) => ({ error: String(_err) })) as any;
   });
 
   // ===== 下载此页面所有链接 =====
