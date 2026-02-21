@@ -65,7 +65,7 @@ class S {
   String get statusDownloading => _t('下载中', 'Downloading');
   String get statusPaused => _t('已暂停', 'Paused');
   String get statusCompleted => _t('已完成', 'Completed');
-  String get statusError => _t('出错', 'Error');
+  String get statusError => _t('失败', 'Error');
   String get statusPreparing => _t('准备中', 'Preparing');
   String get statusResuming => _t('恢复中', 'Resuming');
 
@@ -74,7 +74,7 @@ class S {
   // ─────────────────────────────────────────────
 
   String get subtitlePaused => _t('已暂停', 'Paused');
-  String get subtitleError => _t('出错', 'Error');
+  String get subtitleError => _t('下载失败', 'Download Failed');
   String get subtitlePending => _t('等待中...', 'Pending...');
   String get subtitlePreparing => _t('准备中...', 'Preparing...');
   String get subtitleResuming => _t('恢复中...', 'Resuming...');
@@ -122,7 +122,7 @@ class S {
   String get tabDownloading => _t('下载中', 'Downloading');
   String get tabCompleted => _t('已完成', 'Completed');
   String get tabPaused => _t('已暂停', 'Paused');
-  String get tabError => _t('出错', 'Error');
+  String get tabError => _t('失败', 'Failed');
   String get selectAll => _t('全选', 'Select All');
   String get deselectAll => _t('取消全选', 'Deselect All');
   String selectedCount(int n) => _t('已选 $n 项', '$n selected');
