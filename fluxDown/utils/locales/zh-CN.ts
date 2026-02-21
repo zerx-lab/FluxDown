@@ -31,7 +31,8 @@ const zhCN = {
   'settings.hintAll': '拦截所有下载（除排除域名外）',
   'settings.minFileSize': '最小文件大小',
   'settings.sizeNoLimit': '不限',
-
+  'settings.altClickHint': '按住 Alt 键点击下载链接，跳过拦截使用浏览器直接下载',
+  'settings.dotVisible': '悬浮球',
 
   // File type management
   'fileType.title': '拦截文件类型',
@@ -54,11 +55,6 @@ const zhCN = {
   'domain.exists': '{domain} 已在排除列表中',
   'domain.excluded': '已排除 {domain}',
   'domain.cannotGetDomain': '无法获取当前页面域名',
-
-  // Context menus
-  'contextMenu.downloadLink': '使用 FluxDown 下载链接',
-  'contextMenu.downloadMedia': '使用 FluxDown 下载媒体',
-  'contextMenu.downloadPage': '使用 FluxDown 下载此页面所有链接',
 
   // Notifications
   'notify.batchNoLinks': '未找到链接',
@@ -90,6 +86,7 @@ const zhCN = {
   'panel.empty': '暂未检测到可下载资源',
   'panel.collapse': '收起',
   'panel.more': '其他 {count} 项',
+  'panel.hideDot': '隐藏悬浮球',
   'panel.download': '下载',
   'panel.floatDL': '下载',
   'panel.tabAll': '全部',

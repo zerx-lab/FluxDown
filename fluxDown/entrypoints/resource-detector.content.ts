@@ -99,6 +99,29 @@ export default defineContentScript({
       document.removeEventListener('fluxdown-resource-detected', handleFetchEvent);
     });
 
+    // ===== 5. Alt+Click 绕过拦截 =====
+    // 用户按住 Alt 键点击下载链接时，将 URL 写入 Background 的绕过令牌表，
+    // 使本次下载跳过 FluxDown 拦截，由浏览器原生处理。
+    // 监听 mousedown（早于 click），确保令牌在浏览器发起请求前写入。
+    const handleAltMousedown = (e: MouseEvent) => {
+      if (!e.altKey) return;
+      const link = (e.target as Element).closest('a[href]') as HTMLAnchorElement | null;
+      if (!link) return;
+      const href = link.href;
+      if (!href
+        || href.startsWith('javascript:')
+        || href.startsWith('#')
+        || href.startsWith('blob:')
+        || href.startsWith('data:')
+      ) return;
+      if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('ftp://')) return;
+      chrome.runtime.sendMessage({ action: 'addBypassToken', url: href }).catch(() => {});
+    };
+    document.addEventListener('mousedown', handleAltMousedown, true);
+    ctx.onInvalidated(() => {
+      document.removeEventListener('mousedown', handleAltMousedown, true);
+    });
+
     // ===== 扫描函数 =====
 
     function scanPageResources(): ResourceMessagePayload[] {

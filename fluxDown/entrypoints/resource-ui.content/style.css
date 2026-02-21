@@ -88,6 +88,11 @@
   box-shadow: 0 2px 20px rgba(59, 130, 246, 0.4);
 }
 
+/* 隐藏悬浮球 */
+.fluxdown-dot.hidden {
+  display: none !important;
+}
+
 /* 拖拽中 — 禁用所有过渡，全程跟手 */
 .fluxdown-dot.dragging {
   transition: none !important;

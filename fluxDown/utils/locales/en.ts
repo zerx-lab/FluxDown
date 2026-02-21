@@ -33,7 +33,8 @@ const en: Record<MessageKey, string> = {
   'settings.hintAll': 'Intercept all downloads (except excluded domains)',
   'settings.minFileSize': 'Min File Size',
   'settings.sizeNoLimit': 'No limit',
-
+  'settings.altClickHint': 'Hold Alt and click a download link to skip interception',
+  'settings.dotVisible': 'Floating Ball',
 
   // File type management
   'fileType.title': 'Intercept File Types',
@@ -56,11 +57,6 @@ const en: Record<MessageKey, string> = {
   'domain.exists': '{domain} already in exclusion list',
   'domain.excluded': 'Excluded {domain}',
   'domain.cannotGetDomain': 'Cannot get current page domain',
-
-  // Context menus
-  'contextMenu.downloadLink': 'Download link with FluxDown',
-  'contextMenu.downloadMedia': 'Download media with FluxDown',
-  'contextMenu.downloadPage': 'Download all links on this page with FluxDown',
 
   // Notifications
   'notify.batchNoLinks': 'No Links Found',
@@ -92,6 +88,7 @@ const en: Record<MessageKey, string> = {
   'panel.empty': 'No downloadable resources detected',
   'panel.collapse': 'Collapse',
   'panel.more': '{count} more',
+  'panel.hideDot': 'Hide dot',
   'panel.download': 'Download',
   'panel.floatDL': 'DL',
   'panel.tabAll': 'All',

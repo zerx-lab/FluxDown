@@ -10,18 +10,13 @@ export default defineConfig({
       "downloads",
       "cookies",
       "webRequest",
-      "contextMenus",
       "storage",
       "notifications",
       "activeTab",
       "tabs",
       "scripting",
     ],
-    host_permissions: [
-      "<all_urls>",
-      "http://localhost/*",
-      "http://127.0.0.1/*",
-    ],
+    host_permissions: ["<all_urls>", "http://localhost/*"],
     web_accessible_resources: [
       {
         resources: ["/fetch-interceptor.js"],

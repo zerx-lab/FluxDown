@@ -34,8 +34,10 @@ const SVG_DOWNLOAD = '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><poly
 const SVG_CLOSE = '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>';
 const SVG_LOGO = '<path d="M12 3v11M8 10l4 4 4-4"/><path d="M5 17h14"/>';
 const SVG_EMPTY = '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/>';
+const SVG_EYE_OFF = '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>';
 
 const STORAGE_KEY = 'fluxdown_dot_pos';
+const DOT_VISIBLE_KEY = 'fluxdown_dot_visible';
 
 function svg(inner: string, cls = ''): string {
   return `<svg viewBox="0 0 24 24"${cls ? ` class="${cls}"` : ''} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
@@ -98,13 +100,17 @@ export default defineContentScript({
 
     /* ========== 语言变化监听 ========== */
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes['fluxdown_locale']) {
+      if (area !== 'local') return;
+      if (changes['fluxdown_locale']) {
         const newLocale = changes['fluxdown_locale'].newValue;
         if (newLocale) {
           setLocale(newLocale);
           refreshStaticTexts();
           render();
         }
+      }
+      if (DOT_VISIBLE_KEY in changes) {
+        applyDotVisibility(changes[DOT_VISIBLE_KEY].newValue !== false);
       }
     });
 
@@ -272,6 +278,15 @@ export default defineContentScript({
       `;
       countEl = header.querySelector('.resource-count') as HTMLElement;
 
+      const hideBtn = h('button', 'btn-close');
+      hideBtn.title = t('panel.hideDot');
+      hideBtn.innerHTML = svg(SVG_EYE_OFF);
+      hideBtn.addEventListener('click', () => {
+        chrome.storage.local.set({ [DOT_VISIBLE_KEY]: false });
+        if (panelOpen) togglePanel();
+      });
+      header.appendChild(hideBtn);
+
       const closeBtn = h('button', 'btn-close');
       closeBtn.innerHTML = svg(SVG_CLOSE);
       closeBtn.addEventListener('click', () => { togglePanel(); });
@@ -398,6 +413,15 @@ export default defineContentScript({
       }
     }
 
+    function applyDotVisibility(visible: boolean): void {
+      if (visible) {
+        dotEl.classList.remove('hidden');
+      } else {
+        dotEl.classList.add('hidden');
+        if (panelOpen) togglePanel();
+      }
+    }
+
     function restoreDotPosition(): void {
       // 禁用过渡，避免初始定位时有动画
       dotEl.classList.add('dragging');
@@ -411,7 +435,7 @@ export default defineContentScript({
       };
 
       try {
-        chrome.storage.local.get(STORAGE_KEY).then((r) => {
+        chrome.storage.local.get([STORAGE_KEY, DOT_VISIBLE_KEY]).then((r) => {
           const pos = r[STORAGE_KEY];
           if (pos && typeof pos === 'object') {
             const y = typeof pos.y === 'number' && pos.y > 0
@@ -425,6 +449,10 @@ export default defineContentScript({
             dotEl.style.top = `${Math.round(window.innerHeight * 0.4)}px`;
           }
           applySideClass();
+          // 未设置时默认显示，明确为 false 时隐藏
+          if (r[DOT_VISIBLE_KEY] === false) {
+            dotEl.classList.add('hidden');
+          }
           dotEl.style.visibility = '';
           requestAnimationFrame(() => { dotEl.classList.remove('dragging'); });
         }).catch(() => { applyDefaults(); });

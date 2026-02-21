@@ -316,61 +316,14 @@ export default defineBackground(() => {
     }
   }
 
-  // ===== 右键菜单 =====
-  chrome.runtime.onInstalled.addListener(async () => {
-    // 确保 i18n 已初始化
-    await initI18n();
-
-    chrome.contextMenus.create({
-      id: 'fluxdown-download-link',
-      title: t('contextMenu.downloadLink'),
-      contexts: ['link'],
-    });
-
-    chrome.contextMenus.create({
-      id: 'fluxdown-download-media',
-      title: t('contextMenu.downloadMedia'),
-      contexts: ['image', 'video', 'audio'],
-    });
-
-    chrome.contextMenus.create({
-      id: 'fluxdown-download-page',
-      title: t('contextMenu.downloadPage'),
-      contexts: ['page'],
-    });
-
-    console.log('[FluxDown] Context menus created');
-  });
-
-  // ===== 右键菜单点击处理 =====
-  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    let url: string | undefined;
-
-    switch (info.menuItemId) {
-      case 'fluxdown-download-link':
-        url = info.linkUrl;
-        break;
-      case 'fluxdown-download-media':
-        url = info.srcUrl;
-        break;
-      case 'fluxdown-download-page':
-        if (tab?.id) {
-          await handleDownloadPageLinks(tab.id, tab.url);
-        }
-        return;
-    }
-
-    if (url) {
-      await sendToFluxDown(url, tab?.url);
-    }
-  });
-
   // ==========================================
   // 第二层 + 第三层：下载事件拦截
   // ==========================================
 
   const downloadItemCache = new Map<number, chrome.downloads.DownloadItem>();
   const handledDownloads = new Map<number, 'primary' | 'fallback'>();
+  // Alt+Click 绕过令牌：URL → 过期时间戳，15 秒内有效
+  const bypassTokens = new Map<string, number>();
 
   // Firefox 不支持 onDeterminingFilename，兜底层是唯一拦截路径，
   // 需要更长等待让浏览器填充 downloadItem 元数据
@@ -445,6 +398,13 @@ export default defineBackground(() => {
         filename: responseCached.dispositionFilename || originalItem.filename || undefined,
       };
 
+      // 检查 Alt+Click 绕过令牌（路径 A）
+      const bypassA = bypassTokens.get(url);
+      if (bypassA && bypassA > Date.now()) {
+        bypassTokens.delete(url);
+        return;
+      }
+
       if (!shouldIntercept(itemInfo, settings)) return;
 
       await executeFallbackIntercept(downloadId, url, originalItem.referrer, itemInfo);
@@ -489,6 +449,13 @@ export default defineBackground(() => {
       mime,
       filename,
     };
+
+    // 检查 Alt+Click 绕过令牌（路径 B）
+    const bypassB = bypassTokens.get(url);
+    if (bypassB && bypassB > Date.now()) {
+      bypassTokens.delete(url);
+      return;
+    }
 
     if (!shouldIntercept(itemInfo, settings)) return;
 
@@ -571,6 +538,16 @@ export default defineBackground(() => {
             return;
           }
 
+          // 检查 Alt+Click 绕过令牌
+          const bypass = bypassTokens.get(url);
+          if (bypass && bypass > Date.now()) {
+            bypassTokens.delete(url);
+            // 必须标记为已处理，否则兜底层（onCreated）会在令牌消费后再次拦截，导致双重下载
+            handledDownloads.set(downloadItem.id, 'primary');
+            suggest({ filename: downloadItem.filename });
+            return;
+          }
+
           // 合并 onCreated 缓存的额外信息
           const cached = downloadItemCache.get(downloadItem.id);
           const mime = downloadItem.mime || cached?.mime || undefined;
@@ -641,66 +618,6 @@ export default defineBackground(() => {
   });
 
   // ===== 下载此页面所有链接 =====
-  async function handleDownloadPageLinks(tabId: number, pageUrl?: string) {
-    try {
-      const allLinks: string[] = await extractPageLinks(tabId);
-      if (allLinks.length === 0) {
-        notify(t('notify.batchNoLinks'), t('notify.batchNoLinksDetail'));
-        return;
-      }
-
-      // 过滤出可下载的链接（排除页面导航链接）
-      const downloadableExts = [
-        '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz',
-        '.exe', '.msi', '.dmg', '.deb', '.rpm', '.appimage',
-        '.iso', '.img',
-        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
-        '.mp3', '.flac', '.wav', '.aac', '.ogg',
-        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-        '.bin', '.apk', '.ipa', '.torrent',
-      ];
-
-      const downloadLinks = allLinks.filter((link) => {
-        try {
-          const pathname = new URL(link).pathname.toLowerCase();
-          return downloadableExts.some((ext) => pathname.endsWith(ext));
-        } catch {
-          return false;
-        }
-      });
-
-      if (downloadLinks.length === 0) {
-        notify(t('notify.batchNoLinks'), t('notify.batchNoDownloadableLinks'));
-        return;
-      }
-
-      // 批量发送到 FluxDown
-      let sentCount = 0;
-      let failedCount = 0;
-
-      for (const link of downloadLinks) {
-        try {
-          await sendToFluxDown(link, pageUrl);
-          sentCount++;
-        } catch {
-          failedCount++;
-        }
-      }
-
-      notify(
-        t('notify.batchComplete'),
-        t('notify.batchResult', {
-          total: String(downloadLinks.length),
-          sent: String(sentCount),
-          failed: String(failedCount),
-        }),
-      );
-    } catch (e) {
-      console.error('[FluxDown] Failed to extract page links:', e);
-      notify(t('notify.sendFailed'), t('notify.batchExtractFailed'));
-    }
-  }
-
   // ===== 核心：发送下载请求到 FluxDown App =====
   async function sendToFluxDown(
     url: string,
@@ -791,6 +708,15 @@ export default defineBackground(() => {
       case 'checkConnection': {
         const isAvailable = await checkFluxDownAvailable();
         return { connected: isAvailable };
+      }
+
+      // --- Alt+Click 绕过令牌写入 ---
+      case 'addBypassToken': {
+        const bypassUrl = message.url as string;
+        if (bypassUrl) {
+          bypassTokens.set(bypassUrl, Date.now() + 15_000);
+        }
+        return { success: true };
       }
 
       // --- Content Script: 资源检测上报 ---
@@ -902,40 +828,6 @@ export default defineBackground(() => {
   }
 
   // ===== 工具函数 =====
-
-  async function extractPageLinks(tabId: number): Promise<string[]> {
-    const extractFn = () => {
-      const links = new Set<string>();
-      for (const a of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-        const href = a.href;
-        if (href && (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('ftp://'))) {
-          links.add(href);
-        }
-      }
-      for (const el of document.querySelectorAll<HTMLMediaElement | HTMLSourceElement>('video[src], audio[src], source[src]')) {
-        const src = el.src;
-        if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
-          links.add(src);
-        }
-      }
-      return Array.from(links);
-    };
-
-    if (chrome.scripting?.executeScript) {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: extractFn,
-      });
-      return results?.[0]?.result || [];
-    }
-
-    // Firefox MV2 fallback
-    const code = `(${extractFn.toString()})()`;
-    const results = await new Promise<any[]>((resolve) => {
-      (chrome as any).tabs.executeScript(tabId, { code }, (res: any[]) => resolve(res || []));
-    });
-    return results?.[0] || [];
-  }
 
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));

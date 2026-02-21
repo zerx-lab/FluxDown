@@ -21,6 +21,7 @@ const statusBadge = $('#statusBadge')!;
 const statusText = statusBadge.querySelector('.status-text')!;
 const enableToggle = $<HTMLInputElement>('#enableToggle');
 const enableHint = $('#enableHint')!;
+const dotVisibleToggle = $<HTMLInputElement>('#dotVisibleToggle');
 const interceptModeSelect = $<HTMLSelectElement>('#interceptModeSelect');
 const modeHint = $('#modeHint')!;
 const minSizeSelect = $<HTMLSelectElement>('#minSizeSelect');
@@ -288,6 +289,10 @@ async function init() {
     renderDomainList(s.excludeDomains || []);
   }
 
+  // 悬浮球可见状态（未设置时默认显示）
+  const dotVisResult = await chrome.storage.local.get('fluxdown_dot_visible');
+  dotVisibleToggle.checked = dotVisResult['fluxdown_dot_visible'] !== false;
+
   // 加载统计
   await loadStats();
 }
@@ -336,6 +341,11 @@ langBtn.addEventListener('click', toggleLang);
 
 // 主题切换
 themeBtn.addEventListener('click', toggleTheme);
+
+// 悬浮球显示/隐藏
+dotVisibleToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ fluxdown_dot_visible: dotVisibleToggle.checked });
+});
 
 // 启用/禁用开关
 enableToggle.addEventListener('change', async () => {
