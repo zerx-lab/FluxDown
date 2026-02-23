@@ -198,30 +198,28 @@ jobs:
       - name: Install web-ext
         run: npm install -g web-ext
 
-      # ── listed 单步签名 + 上架：--approval-timeout=0 在自动签名完成后立即返回已签名 XPI，
-      #    同时将版本提交到 AMO 公开市场审核队列，无需等待人工审核。
-      #    这避免了 unlisted 先占版本号导致 listed 提交冲突的问题。
-      #    兜底逻辑：
-      #      - "already exists"：CI 重跑同版本时，从 AMO API 下载已签名 XPI
-      #      - "was uploaded before and deleted"：版本已被永久删除，输出明确错误信息
-      - name: Sign & submit Firefox extension to AMO marketplace
+      # ── Firefox 签名与上架分两步：
+      #    Step A: unlisted 签名 → 立即返回已签名 XPI（用于 GitHub Release 直接安装）
+      #    Step B: AMO PATCH API → 将版本从 unlisted 升级为 listed（进入公开市场审核队列）
+      #    原因：--channel=listed --approval-timeout=0 仅提交不下载 XPI；
+      #          --channel=unlisted 可立即签名，再通过 PATCH is_listed:true 完成上架，
+      #          避免了两次提交同版本号的冲突。
+      - name: Sign Firefox extension (unlisted) and promote to AMO marketplace
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
           mkdir -p build/extension
 
+          # ── Step A: unlisted 签名，立即取得已签名 XPI ──
           web-ext sign \
             --source-dir fluxDown/.output/firefox-mv2 \
-            --channel=listed \
+            --channel=unlisted \
             --api-key=${{ secrets.AMO_JWT_ISSUER }} \
             --api-secret=${{ secrets.AMO_JWT_SECRET }} \
-            --approval-timeout=0 \
             --artifacts-dir build/extension/ 2>&1 | tee /tmp/amo_sign.log
-          # PIPESTATUS[0] 取 web-ext 的退出码，而非 tee 的退出码
+          # 用 PIPESTATUS[0] 获取 web-ext 真实退出码，而非 tee 的退出码
           if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-
             if grep -q "already exists" /tmp/amo_sign.log; then
               echo "::warning::Version $VERSION already on AMO (CI re-run). Downloading existing signed XPI..."
-              # 用 bash + openssl + curl + python3 生成 JWT 并下载已签名 XPI，避免 heredoc 的 YAML 缩进冲突
               _amo_jwt() {
                 local iat exp header payload sig
                 iat=$(date +%s); exp=$((iat + 300))
@@ -232,19 +230,14 @@ jobs:
                   | openssl dgst -sha256 -hmac "$AMO_SECRET" -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
                 printf '%s.%s.%s' "$header" "$payload" "$sig"
               }
-              VERSION_DATA=$(curl -sf \
-                -H "Authorization: JWT $(_amo_jwt)" \
+              VERS_DATA=$(curl -sf -H "Authorization: JWT $(_amo_jwt)" \
                 "https://addons.mozilla.org/api/v5/addons/addon/fluxdown%40fluxdown.app/versions/?filter=all_with_unlisted")
-              XPI_URL=$(echo "$VERSION_DATA" | python3 -c "import sys,json;d=json.load(sys.stdin);v=next((x for x in(d.get('results')or[])if x.get('version')=='$VERSION'),None);sys.exit('Version $VERSION not found on AMO') if not(v and(v.get('file')or{}).get('url')) else print(v['file']['url'])")
+              XPI_URL=$(echo "$VERS_DATA" | python3 -c "import sys,json;d=json.load(sys.stdin);v=next((x for x in(d.get('results')or[])if x.get('version')=='$VERSION'),None);sys.exit('not found') if not(v and(v.get('file')or{}).get('url')) else print(v['file']['url'])")
               curl -sf -L -H "Authorization: JWT $(_amo_jwt)" \
                 -o "build/extension/${VERSION}.xpi" "$XPI_URL"
-              echo "Downloaded existing XPI: $(stat -c%s "build/extension/${VERSION}.xpi") bytes"
-
             elif grep -q "was uploaded before and deleted" /tmp/amo_sign.log; then
-              echo "::error::Version $VERSION was previously deleted from AMO and cannot be resubmitted."
-              echo "::error::Please use a different version number."
+              echo "::error::Version $VERSION was deleted from AMO and cannot be resubmitted. Please use a new version number."
               exit 1
-
             else
               cat /tmp/amo_sign.log
               exit 1
@@ -256,8 +249,35 @@ jobs:
             mv "$XPI_FILE" "build/extension/FluxDown-${VERSION}-firefox.xpi"
             echo "Firefox XPI ready: build/extension/FluxDown-${VERSION}-firefox.xpi"
           else
-            echo "::error::No signed XPI found after signing/download."
+            echo "::error::No signed XPI found."
             exit 1
+          fi
+
+          # ── Step B: 通过 AMO PATCH API 将版本升级为 listed（公开上架） ──
+          # continue-on-error: 上架失败不阻塞 Release 发布，XPI 已在上一步产出
+          _amo_jwt() {
+            local iat exp header payload sig
+            iat=$(date +%s); exp=$((iat + 300))
+            header=$(printf '{"alg":"HS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            payload=$(printf '{"iss":"%s","jti":"%s","iat":%s,"exp":%s}' \
+              "$AMO_ISSUER" "$iat" "$iat" "$exp" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            sig=$(printf '%s.%s' "$header" "$payload" \
+              | openssl dgst -sha256 -hmac "$AMO_SECRET" -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            printf '%s.%s.%s' "$header" "$payload" "$sig"
+          }
+          VERS_DATA=$(curl -sf -H "Authorization: JWT $(_amo_jwt)" \
+            "https://addons.mozilla.org/api/v5/addons/addon/fluxdown%40fluxdown.app/versions/?filter=all_with_unlisted")
+          VERS_ID=$(echo "$VERS_DATA" | python3 -c "import sys,json;d=json.load(sys.stdin);v=next((x for x in(d.get('results')or[])if x.get('version')=='$VERSION'),None);print(v['id']) if v else sys.exit('version id not found')")
+          HTTP_CODE=$(curl -s -o /tmp/amo_patch.log -w "%{http_code}" -X PATCH \
+            -H "Authorization: JWT $(_amo_jwt)" \
+            -H "Content-Type: application/json" \
+            -d '{"is_listed":true}' \
+            "https://addons.mozilla.org/api/v5/addons/addon/fluxdown%40fluxdown.app/versions/${VERS_ID}/")
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "AMO marketplace promote succeeded (HTTP $HTTP_CODE)"
+          else
+            echo "::warning::AMO promote to listed returned HTTP $HTTP_CODE (non-fatal):"
+            cat /tmp/amo_patch.log
           fi
         env:
           AMO_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
