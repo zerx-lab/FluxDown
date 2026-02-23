@@ -550,7 +550,11 @@ pub(crate) fn extract_filename(headers: &reqwest::header::HeaderMap, url: &str) 
 
 fn extract_from_content_disposition(headers: &reqwest::header::HeaderMap) -> Option<String> {
     let disposition = headers.get(reqwest::header::CONTENT_DISPOSITION)?;
-    let value = disposition.to_str().ok()?;
+    // Use from_utf8 instead of to_str(): the http crate's to_str() rejects any byte > 0x7E,
+    // but some servers (e.g. z-lib CDN) embed raw UTF-8 characters (Chinese, Japanese, etc.)
+    // directly in the filename="" parameter.  Those bytes are valid UTF-8 even though they
+    // are not ASCII, so from_utf8 succeeds where to_str would silently return None.
+    let value = std::str::from_utf8(disposition.as_bytes()).ok()?;
 
     // Prefer filename*= (RFC 5987 / RFC 6266) over filename=
     for part in value.split(';') {
@@ -1700,4 +1704,80 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
+
+    // -----------------------------------------------------------------------
+    // Bug: HeaderValue::to_str() rejects raw UTF-8 bytes (non-ASCII)
+    // z-lib CDN sends Content-Disposition with unencoded Chinese chars in
+    // filename="", causing the current disposition.to_str().ok()? to silently
+    // return None and lose the filename entirely.
+    // Fix: use std::str::from_utf8(hv.as_bytes()) which accepts any valid UTF-8.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn header_value_to_str_fails_for_raw_utf8_chinese() {
+        // z-lib CDN sends:  filename="三体 (刘慈欣).epub"  as raw UTF-8 bytes
+        // 三体  = \xe4\xb8\x89\xe4\xbd\x93
+        // 刘慈欣 = \xe5\x88\x98\xe6\x85\x88\xe6\xac\xa3
+        let raw: &[u8] = b"attachment; filename=\"\xe4\xb8\x89\xe4\xbd\x93 (\xe5\x88\x98\xe6\x85\x88\xe6\xac\xa3).epub\"; filename*=UTF-8''%E4%B8%89%E4%BD%93%20(%E5%88%98%E6%85%88%E6%AC%A3).epub";
+
+        // reqwest / http crate accepts arbitrary bytes in HeaderValue::from_bytes.
+        let hv = reqwest::header::HeaderValue::from_bytes(raw)
+            .expect("HeaderValue::from_bytes must accept arbitrary bytes");
+
+        // to_str() requires every byte to be visible ASCII (0x20-0x7E).
+        // Chinese UTF-8 bytes are > 0x7E, so this MUST return Err.
+        let to_str_result = hv.to_str();
+        assert!(
+            to_str_result.is_err(),
+            "to_str() should fail for headers containing raw non-ASCII UTF-8 bytes"
+        );
+
+        // std::str::from_utf8 only requires valid UTF-8, so it MUST succeed.
+        let from_utf8_result = std::str::from_utf8(hv.as_bytes());
+        assert!(
+            from_utf8_result.is_ok(),
+            "from_utf8() should succeed for valid UTF-8 bytes; got Err({:?})",
+            from_utf8_result.err()
+        );
+
+        let value = from_utf8_result.unwrap();
+        // The decoded string must contain the Chinese characters.
+        assert!(
+            value.contains('\u{4e09}'),   // first char of 三
+            "decoded header must contain Chinese chars from 三体; got: {value:?}"
+        );
+        assert!(
+            value.contains("filename*="),
+            "decoded header must still contain filename*= parameter; got: {value:?}"
+        );
+        // Prove the raw bytes really are non-ASCII (>0x7E)
+        assert!(
+            raw.iter().any(|&b| b > 0x7e),
+            "test data must contain non-ASCII bytes"
+        );
+    }
+
+    #[test]
+    fn content_disposition_raw_utf8_chinese_filename_extracted_correctly() {
+        // Regression test for z-lib CDN: server sends raw UTF-8 bytes in filename="".
+        // Before the fix (to_str) this returned None and callers fell back to the URL,
+        // producing garbage like "redirection" or a hash string as the task name.
+        // After the fix (from_utf8) the correct Chinese filename is extracted via
+        // the filename*= parameter (RFC 5987 percent-encoding).
+        let raw: &[u8] = b"attachment; filename=\"\xe4\xb8\x89\xe4\xbd\x93 (\xe5\x88\x98\xe6\x85\x88\xe6\xac\xa3).epub\"; filename*=UTF-8''%E4%B8%89%E4%BD%93%20(%E5%88%98%E6%85%88%E6%AC%A3).epub";
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        let hv = reqwest::header::HeaderValue::from_bytes(raw)
+            .expect("HeaderValue::from_bytes must accept arbitrary bytes");
+        headers.insert(reqwest::header::CONTENT_DISPOSITION, hv);
+
+        let name = extract_from_content_disposition(&headers);
+        // filename*= (RFC 5987) takes priority and decodes to the correct Chinese name.
+        assert_eq!(
+            name.as_deref(),
+            Some("三体 (刘慈欣).epub"),
+            "raw UTF-8 bytes in filename= must not prevent filename*= from being parsed"
+        );
+    }
+
 }
