@@ -432,6 +432,32 @@ impl Db {
         .await?
     }
 
+    /// Flush final downloaded_bytes for all segments in a single transaction.
+    /// Used by the coordinator after download completes to ensure DB reflects
+    /// the authoritative in-memory state (capped to segment size, no overshoot).
+    pub async fn flush_segments_progress(
+        &self,
+        task_id: &str,
+        updates: Vec<(i32, i64)>,  // (segment_index, downloaded_bytes)
+    ) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            let tx = conn.transaction()?;
+            for (seg_idx, dl_bytes) in &updates {
+                tx.execute(
+                    "UPDATE task_segments SET downloaded_bytes = ?1
+                     WHERE task_id = ?2 AND segment_index = ?3",
+                    params![dl_bytes, task_id, seg_idx],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await?
+    }
+
     // -----------------------------------------------------------------------
     // Config KV store
     // -----------------------------------------------------------------------

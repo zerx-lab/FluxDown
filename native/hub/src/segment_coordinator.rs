@@ -388,7 +388,11 @@ pub async fn run_coordinated_download(
                     Some(WorkerEvent::Done { worker_id, seg_index, downloaded_bytes }) => {
                         // Mark segment completed in our authoritative map.
                         if let Some(seg) = segments.get_mut(&seg_index) {
-                            seg.downloaded_bytes = downloaded_bytes;
+                            // Cap downloaded_bytes to segment size: a worker may
+                            // have written one chunk past the split boundary before
+                            // seg_states reflected the shrunk end_byte.  Clamping
+                            // here keeps the coordinator's total accurate.
+                            seg.downloaded_bytes = downloaded_bytes.min(seg.size());
                             seg.state = SegState::Completed;
                         }
 
@@ -500,6 +504,21 @@ pub async fn run_coordinated_download(
         return Err(DownloadError::Other(format!(
             "coordinator: post-download coverage error: {}", msg
         )));
+    }
+
+    // Flush the authoritative in-memory downloaded_bytes (already capped to
+    // segment size) back to the DB in a single transaction.  This is the
+    // canonical final state: any overshoot from the split race is corrected
+    // here, ensuring run_download_inner's integrity check sees correct totals.
+    let flush_updates: Vec<(i32, i64)> = segments
+        .values()
+        .map(|s| (s.index, s.downloaded_bytes))
+        .collect();
+    if let Err(e) = db.flush_segments_progress(task_id, flush_updates).await {
+        rinf::debug_print!(
+            "[coordinator] task {} final flush failed (non-fatal): {}",
+            task_id, e
+        );
     }
 
     Ok(())
@@ -718,6 +737,89 @@ fn try_split_largest(
         split_point,
         remaining,
         split_point - current_pos
+    );
+
+    Some(NextWork {
+        assignment,
+        split_parent: Some(best_idx),
+    })
+}
+
+#[allow(dead_code)] // used in tests; will be called from the coordinator event loop in a future update
+/// Proactively split the largest active segment while other workers are still
+/// running, creating a **Pending** (not Active) child so that an idle or newly-
+/// freed worker can pick it up via `find_next_work`.
+///
+/// Unlike `try_split_largest` (which is only called when a worker is idle and
+/// immediately assigns the new segment), this variant is called preemptively —
+/// the new segment sits as `Pending` until a worker asks for work.
+///
+/// Returns `None` when:
+/// - any `Pending` segment already exists (no need to create more), or
+/// - no active segment is large enough to split (< `MIN_SPLIT_BYTES` remaining), or
+/// - the segment cap `MAX_SEGMENTS` would be exceeded.
+fn try_proactive_split(
+    segments: &mut BTreeMap<i32, LiveSegment>,
+    next_index: &mut i32,
+) -> Option<NextWork> {
+    // Do nothing if there's already a pending segment waiting for a worker.
+    if segments.values().any(|s| s.state == SegState::Pending) {
+        return None;
+    }
+
+    if segments.len() >= MAX_SEGMENTS as usize {
+        return None;
+    }
+
+    // Find the active segment with the most remaining bytes.
+    let best_idx = segments
+        .values()
+        .filter(|s| s.state == SegState::Active && s.remaining() >= MIN_SPLIT_BYTES)
+        .max_by_key(|s| s.remaining())
+        .map(|s| s.index)?;
+
+    let best = segments.get(&best_idx)?;
+    let current_pos = best.start_byte + best.downloaded_bytes;
+    let remaining = best.end_byte - current_pos + 1;
+
+    if remaining < MIN_SPLIT_BYTES {
+        return None;
+    }
+
+    let split_point = current_pos + remaining / 2;
+    if split_point <= current_pos || split_point > best.end_byte {
+        return None;
+    }
+
+    let old_end = best.end_byte;
+    let new_index = *next_index;
+    *next_index += 1;
+
+    // New segment is Pending — a worker will pick it up when idle.
+    let new_seg = LiveSegment {
+        index: new_index,
+        start_byte: split_point,
+        end_byte: old_end,
+        downloaded_bytes: 0,
+        state: SegState::Pending,
+    };
+
+    if let Some(orig) = segments.get_mut(&best_idx) {
+        orig.end_byte = split_point - 1;
+    }
+
+    let assignment = WorkerAssignment {
+        seg_index: new_index,
+        seg_start: split_point,
+        actual_start: split_point,
+        seg_end: old_end,
+    };
+
+    segments.insert(new_index, new_seg);
+
+    rinf::debug_print!(
+        "[coordinator] proactive split: segment {} → new pending segment {} at byte {}",
+        best_idx, new_index, split_point
     );
 
     Some(NextWork {

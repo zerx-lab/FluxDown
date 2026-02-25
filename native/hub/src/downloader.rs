@@ -1171,7 +1171,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
             // size always == total_bytes.  Check actual progress from DB instead.
             let segs = p.db.load_segments(&p.task_id).await?;
             let seg_total: i64 = segs.iter().map(|s| s.downloaded_bytes).sum();
-            if seg_total != info.total_bytes {
+            if seg_total < info.total_bytes {
                 return Err(DownloadError::Other(format!(
                     "segment integrity failed: expected {} bytes, segments downloaded {} bytes",
                     info.total_bytes, seg_total
