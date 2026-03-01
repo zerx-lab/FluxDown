@@ -432,8 +432,9 @@ export default function DownloadSection() {
             viewport={{ once: true }}
             transition={{ duration: 0.5, delay: 0.2 }}
           >
-            <div className="relative rounded-xl border border-dark-border bg-dark-surface1 p-6 flex flex-col sm:flex-row items-center gap-5">
-              <div className="flex items-center gap-4 flex-1 min-w-0">
+            <div className="relative rounded-xl border border-dark-border bg-dark-surface1 p-6 flex flex-col gap-4">
+              {/* 标题行 */}
+              <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-brand-blue/20 to-brand-cyan/20 border border-brand-blue/20 flex items-center justify-center flex-shrink-0">
                   <Puzzle className="w-6 h-6 text-brand-blue" />
                 </div>
@@ -445,16 +446,29 @@ export default function DownloadSection() {
                       {t("dl.version", { version: release.version })}
                     </p>
                   )}
-                  <p className="text-[10px] text-dark-text-muted/70 mt-1">{t("dl.extensionOtherNote")}</p>
+                  <p className="text-[10px] text-dark-text-muted/70 mt-0.5">{t("dl.extensionOtherNote")}</p>
                 </div>
               </div>
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-shrink-0">
+              {/* 按钮行 — flex-wrap 自动换行 */}
+              <div className="flex flex-wrap gap-2">
+                {/* Chrome 官方商店按钮 */}
+                <a
+                  href="https://chromewebstore.google.com/detail/fluxdown/meleenglfggcmcajknpeeeiobnpfmahc"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-brand-blue/30 bg-brand-blue/10 px-4 py-2 text-xs font-semibold text-brand-blue hover:bg-brand-blue/20 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 0C8.21 0 4.831 1.757 2.632 4.501l3.953 6.848A5.454 5.454 0 0 1 12 6.545h10.691A12 12 0 0 0 12 0zM1.931 5.47A11.943 11.943 0 0 0 0 12c0 6.012 4.42 10.991 10.189 11.864l3.953-6.847a5.45 5.45 0 0 1-6.865-2.29zm13.342 2.166a5.446 5.446 0 0 1 1.45 7.09l.002.001h-.002l-5.344 9.257c.206.01.413.016.621.016 6.627 0 12-5.373 12-12 0-1.54-.29-3.011-.818-4.364zM12 16.364a4.364 4.364 0 1 1 0-8.728 4.364 4.364 0 0 1 0 8.728z"/>
+                  </svg>
+                  {t("dl.extensionChromeStore")}
+                </a>
                 {/* Firefox 官方商店按钮 */}
                 <a
                   href="https://addons.mozilla.org/zh-CN/firefox/addon/fluxdown"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#ff7139]/30 bg-[#ff7139]/10 px-4 py-2.5 text-xs font-semibold text-[#ff7139] hover:bg-[#ff7139]/20 transition-colors"
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#ff7139]/30 bg-[#ff7139]/10 px-4 py-2 text-xs font-semibold text-[#ff7139] hover:bg-[#ff7139]/20 transition-colors"
                 >
                   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 16.43c-.195.334-.413.65-.655.948-.494.61-1.07 1.084-1.7 1.41-.646.336-1.347.506-2.069.506-.723 0-1.424-.17-2.07-.506-.63-.326-1.205-.8-1.699-1.41-.242-.298-.46-.614-.655-.948C8.456 15.3 8 13.697 8 12c0-1.698.456-3.3 1.046-4.43.195-.334.413-.65.655-.948.494-.61 1.07-1.084 1.7-1.41C12.047 4.876 12.748 4.706 13.47 4.706c.722 0 1.423.17 2.069.506.63.326 1.206.8 1.7 1.41.242.298.46.614.655.948C18.484 8.7 19 10.303 19 12c0 1.697-.516 3.3-1.106 4.43z"/>
@@ -465,7 +479,7 @@ export default function DownloadSection() {
                 {!loading && release?.assets.firefox_extension && (
                   <a
                     href={release.assets.firefox_extension.download_url}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#ff7139]/30 bg-[#ff7139]/10 px-4 py-2.5 text-xs font-semibold text-[#ff7139] hover:bg-[#ff7139]/20 transition-colors"
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#ff7139]/30 bg-[#ff7139]/10 px-4 py-2 text-xs font-semibold text-[#ff7139] hover:bg-[#ff7139]/20 transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
                     Firefox XPI ({formatSize(release.assets.firefox_extension.size)})
@@ -473,7 +487,7 @@ export default function DownloadSection() {
                 )}
                 {/* Chrome 离线包按钮 */}
                 {loading ? (
-                  <div className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-blue/50 px-4 py-2.5 text-xs font-semibold text-white/70 cursor-wait">
+                  <div className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-blue/50 px-4 py-2 text-xs font-semibold text-white/70 cursor-wait">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     {t("dl.loading")}
                   </div>
@@ -481,13 +495,13 @@ export default function DownloadSection() {
                   <a
                     href={release.assets.extension.download_url}
                     title={t("dl.extensionOtherNote")}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-brand-blue/30 bg-brand-blue/10 px-4 py-2.5 text-xs font-semibold text-brand-blue hover:bg-brand-blue/20 transition-colors"
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-brand-blue/30 bg-brand-blue/10 px-4 py-2 text-xs font-semibold text-brand-blue hover:bg-brand-blue/20 transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
                     {t("dl.extensionOffline")} ({formatSize(release.assets.extension.size)})
                   </a>
                 ) : (
-                  <div className="inline-flex items-center justify-center gap-2 rounded-lg border border-dark-border px-4 py-2.5 text-xs font-medium text-dark-text-muted">
+                  <div className="inline-flex items-center justify-center gap-2 rounded-lg border border-dark-border px-4 py-2 text-xs font-medium text-dark-text-muted">
                     {t("dl.extensionOffline")}
                   </div>
                 )}

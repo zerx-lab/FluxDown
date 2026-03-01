@@ -63,7 +63,7 @@ const zhCN: Messages = {
   "hero.title2": "全面加速。",
   "hero.subtitle":
     "Rust 驱动的多协议下载管理器，支持 HTTP/FTP/BitTorrent 磁力链接及 HLS/DASH 流媒体，智能多线程加速与浏览器无缝集成。精美界面，极致性能，永久免费，零广告。",
-  "hero.cta": "下载 Windows 版",
+  "hero.cta": "下载",
   "hero.stat1.value": "10x",
   "hero.stat1.label": "极速下载",
   "hero.stat2.value": "零",
@@ -192,8 +192,9 @@ const zhCN: Messages = {
   "dl.portablePkg": "便携版",
   "dl.extensionTitle": "浏览器扩展",
   "dl.extensionDesc":
-    "拦截浏览器下载并发送到 FluxDown，支持 Chrome 和 Firefox。Firefox 扩展已在官方商店上架。",
+    "拦截浏览器下载并发送到 FluxDown，支持 Chrome 和 Firefox。Chrome 与 Firefox 扩展均已在官方商店上架。",
   "dl.extensionFirefox": "Firefox 官方商店",
+  "dl.extensionChromeStore": "Chrome 网上应用店",
   "dl.extensionOffline": "Chrome 离线包",
   "dl.extensionOtherNote": "适用于 Chrome、Edge、Brave 等 Chromium 内核浏览器",
   "dl.downloadExtension": "下载扩展",
