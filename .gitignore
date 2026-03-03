@@ -80,3 +80,13 @@ website/.vercel/
 
 # Arch package build output
 /arch_pkg/
+
+# Claude Code / claude-flow
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+
+# Test files
+test/batch_delete_scale_test.dart
+test/resume_all_test.dart
