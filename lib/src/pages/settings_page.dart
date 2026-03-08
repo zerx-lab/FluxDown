@@ -2173,47 +2173,57 @@ class _ThemeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = FluxDownApp.of(context);
-    final c = AppColors.of(context);
-    final s = LocaleScope.of(context);
-    final dark = provider.isDark(context);
+    // ListenableBuilder 监听 ThemeProvider，确保导入/删除主题后立即 rebuild
+    return ListenableBuilder(
+      listenable: provider,
+      builder: (context, _) {
+        final c = AppColors.of(context);
+        final s = LocaleScope.of(context);
+        final dark = provider.isDark(context);
 
-    final darkThemes = builtinThemes
-        .where((e) => e.appearance == Brightness.dark)
-        .toList();
-    final lightThemes = builtinThemes
-        .where((e) => e.appearance == Brightness.light)
-        .toList();
+        final darkThemes = builtinThemes
+            .where((e) => e.appearance == Brightness.dark)
+            .toList();
+        final lightThemes = builtinThemes
+            .where((e) => e.appearance == Brightness.light)
+            .toList();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 仅显示当前生效模式（亮/暗）对应的主题列表
-        _ThemeGroupLabel(
-          label: dark ? s.themeDarkTheme : s.themeLightTheme,
-          colors: c,
-        ),
-        const SizedBox(height: 6),
-        _ThemeCardRow(
-          themes: dark ? darkThemes : lightThemes,
-          selectedId: dark
-              ? provider.selectedDarkTheme
-              : provider.selectedLightTheme,
-          colors: c,
-          onSelect: (id) =>
-              dark ? provider.setDarkTheme(id) : provider.setLightTheme(id),
-          customTokens: dark
-              ? provider.customDarkTokens
-              : provider.customLightTokens,
-          isCustomActive: dark
-              ? provider.customDarkTokens != null
-              : provider.customLightTokens != null,
-          onClearCustom: () => provider.clearCustomTheme(dark: dark),
-          onSelectCustom: () => provider.activateCustomTheme(dark: dark),
-        ),
-        const SizedBox(height: 14),
-        // ── 导入 / 导出按钮 ──
-        _ThemeActions(colors: c),
-      ],
+        final appearance = dark ? Brightness.dark : Brightness.light;
+        final importedForMode = provider.importedThemesFor(appearance);
+        final selectedCustomId = dark
+            ? provider.selectedCustomDarkId
+            : provider.selectedCustomLightId;
+        final isCustomActive = dark
+            ? provider.isCustomDarkActive
+            : provider.isCustomLightActive;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _ThemeGroupLabel(
+              label: dark ? s.themeDarkTheme : s.themeLightTheme,
+              colors: c,
+            ),
+            const SizedBox(height: 6),
+            _ThemeCardRow(
+              themes: dark ? darkThemes : lightThemes,
+              selectedId: dark
+                  ? provider.selectedDarkTheme
+                  : provider.selectedLightTheme,
+              colors: c,
+              isCustomActive: isCustomActive,
+              onSelect: (id) =>
+                  dark ? provider.setDarkTheme(id) : provider.setLightTheme(id),
+              importedThemes: importedForMode,
+              selectedCustomId: selectedCustomId,
+              onSelectImported: (id) => provider.selectImportedTheme(id),
+              onRemoveImported: (id) => provider.removeImportedTheme(id),
+            ),
+            const SizedBox(height: 14),
+            _ThemeActions(colors: c),
+          ],
+        );
+      },
     );
   }
 }
@@ -2241,13 +2251,7 @@ class _ThemeActions extends StatelessWidget {
       final file = File(path);
       final content = await file.readAsString();
       final tokens = provider.importThemeJson(content);
-
-      // 根据主题的 appearance 放入对应位置
-      if (tokens.appearance == Brightness.dark) {
-        provider.setCustomTheme(dark: tokens);
-      } else {
-        provider.setCustomTheme(light: tokens);
-      }
+      provider.addImportedTheme(tokens);
 
       if (!context.mounted) return;
       ShadSonner.of(context).show(
@@ -2408,21 +2412,23 @@ class _ThemeCardRow extends StatelessWidget {
   final List<BuiltinThemeEntry> themes;
   final BuiltinThemeId selectedId;
   final AppColors colors;
-  final ValueChanged<BuiltinThemeId> onSelect;
-  final FluxThemeTokens? customTokens;
   final bool isCustomActive;
-  final VoidCallback? onClearCustom;
-  final VoidCallback? onSelectCustom;
+  final ValueChanged<BuiltinThemeId> onSelect;
+  final List<ImportedThemeEntry> importedThemes;
+  final String? selectedCustomId;
+  final ValueChanged<String> onSelectImported;
+  final ValueChanged<String> onRemoveImported;
 
   const _ThemeCardRow({
     required this.themes,
     required this.selectedId,
     required this.colors,
+    required this.isCustomActive,
     required this.onSelect,
-    this.customTokens,
-    this.isCustomActive = false,
-    this.onClearCustom,
-    this.onSelectCustom,
+    required this.importedThemes,
+    required this.selectedCustomId,
+    required this.onSelectImported,
+    required this.onRemoveImported,
   });
 
   @override
@@ -2438,14 +2444,13 @@ class _ThemeCardRow extends StatelessWidget {
             colors: colors,
             onTap: () => onSelect(entry.id),
           ),
-        // 自定义主题卡片（仅在有导入的自定义主题时显示）
-        if (customTokens != null)
+        for (final imported in importedThemes)
           _CustomThemeCard(
-            tokens: customTokens!,
-            selected: isCustomActive,
+            tokens: imported.tokens,
+            selected: selectedCustomId == imported.id,
             colors: colors,
-            onTap: onSelectCustom ?? () {},
-            onClear: onClearCustom,
+            onTap: () => onSelectImported(imported.id),
+            onClear: () => onRemoveImported(imported.id),
           ),
       ],
     );
@@ -2474,6 +2479,20 @@ class _CustomThemeCard extends StatefulWidget {
 
 class _CustomThemeCardState extends State<_CustomThemeCard> {
   bool _isHovered = false;
+  bool _deleteRequested = false;
+
+  void _handleTap() {
+    if (_deleteRequested) {
+      _deleteRequested = false;
+      return;
+    }
+    widget.onTap();
+  }
+
+  void _handleDelete() {
+    _deleteRequested = true;
+    widget.onClear?.call();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2490,7 +2509,7 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
         onExit: (_) => setState(() => _isHovered = false),
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
-          onTap: widget.onTap,
+          onTap: _handleTap,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             width: 120,
@@ -2643,14 +2662,24 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
                         LucideIcons.check,
                         size: 12,
                         color: theme.colorScheme.primary,
-                      )
-                    else if (_isHovered && widget.onClear != null)
-                      GestureDetector(
-                        onTap: widget.onClear,
-                        child: Icon(
-                          LucideIcons.x,
-                          size: 12,
-                          color: c.textMuted,
+                      ),
+                    if (_isHovered && widget.onClear != null)
+                      Padding(
+                        padding: EdgeInsets.only(left: selected ? 4 : 0),
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: Listener(
+                            behavior: HitTestBehavior.opaque,
+                            onPointerDown: (_) => _handleDelete(),
+                            child: Padding(
+                              padding: const EdgeInsets.all(2),
+                              child: Icon(
+                                LucideIcons.x,
+                                size: 12,
+                                color: c.textMuted,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                   ],

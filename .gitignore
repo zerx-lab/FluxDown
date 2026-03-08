@@ -86,6 +86,8 @@ website/.vercel/
 .claude-flow/
 .swarm/
 .mcp.json
+.agents/
+skills-lock.json
 
 # Test files
 test/batch_delete_scale_test.dart

@@ -2333,7 +2333,12 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
                 state.speed_warmup_remaining = 1;
             } else if state.speed_warmup_remaining > 0 {
                 state.speed_warmup_remaining -= 1;
-            } else if dt > 0.01 {
+            } else if dt > 0.01 && delta_i64 > 0 {
+                // Only update EMA when there is actual progress.  When delta == 0
+                // (no new bytes in this tick), hold the last known speed instead
+                // of decaying towards zero.  This prevents ETA from ballooning
+                // near completion when segments finish and no new data arrives
+                // while the task is still in downloading state.
                 let instant_speed = delta_i64 as f64 / dt;
                 state.ema_speed =
                     EMA_ALPHA * instant_speed + (1.0 - EMA_ALPHA) * state.ema_speed;

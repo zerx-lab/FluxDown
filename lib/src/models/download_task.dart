@@ -416,7 +416,11 @@ class DownloadTask {
       return '—';
     }
     final remaining = totalBytes - downloadedBytes;
+    // 已下载超过或等于总大小，即将完成（等待写盘/校验）
+    if (remaining <= 0) return '—';
     final seconds = remaining / speed;
+    // ETA 超过 24 小时视为不可靠，不显示
+    if (seconds > 86400) return '—';
     final s = currentS;
     if (seconds < 60) return s.etaSeconds(seconds.toInt());
     if (seconds < 3600) return s.etaMinutes((seconds / 60).toInt());

@@ -92,6 +92,55 @@ body {
   display: none;
 }
 
+/* Theme Builder scrollbar */
+.tb-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tb-scroll-thumb, var(--color-dark-surface3))
+    var(--tb-scroll-track, transparent);
+}
+
+.tb-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.tb-scrollbar::-webkit-scrollbar-track {
+  background: var(--tb-scroll-track, transparent);
+  border-radius: 999px;
+}
+
+.tb-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--tb-scroll-thumb, var(--color-dark-surface3));
+  border-radius: 999px;
+}
+
+.tb-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--tb-scroll-thumb-hover, var(--color-dark-text-muted));
+}
+
+/* Clickable cursor consistency */
+a[href],
+button:not(:disabled),
+summary,
+label[for],
+select:not(:disabled),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled),
+input[type="button"]:not(:disabled),
+input[type="submit"]:not(:disabled),
+input[type="reset"]:not(:disabled),
+input[type="color"]:not(:disabled),
+input[type="range"]:not(:disabled),
+[onclick],
+[role="button"] {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled {
+  cursor: not-allowed;
+}
+
 /* ===== Changelog code block ===== */
 .changelog-pre {
   position: relative;

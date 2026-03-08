@@ -1,0 +1,17 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { FloatingNavbar } from "../components/ui/floating-navbar";
+import ThemeBuilderPage from "../components/ThemeBuilderPage";
+import Footer from "../components/Footer";
+---
+
+<Layout
+  title="Theme Builder - FluxDown"
+  description="Build and preview FluxDown UI themes in the browser. Edit token values, inspect mappings by right-click, and import/export theme JSON."
+>
+  <FloatingNavbar client:load />
+  <main class="relative">
+    <ThemeBuilderPage client:load />
+  </main>
+  <Footer client:load />
+</Layout>

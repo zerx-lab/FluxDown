@@ -63,6 +63,7 @@ export default function Footer() {
                 { href: "/#extension", label: t("footer.browserExtension") },
                 { href: "/#download", label: t("footer.download") },
                 { href: "/changelog", label: t("footer.changelog") },
+                { href: "/theme-builder", label: t("footer.themeBuilder") },
               ].map(({ href, label }) => (
                 <li key={href}>
                   <a

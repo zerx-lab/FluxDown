@@ -128,6 +128,31 @@ extension BuiltinThemeI18n on BuiltinThemeId {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  导入的自定义主题条目
+// ═══════════════════════════════════════════════════════════
+
+class ImportedThemeEntry {
+  final String id;
+  final FluxThemeTokens tokens;
+
+  const ImportedThemeEntry({required this.id, required this.tokens});
+
+  Brightness get appearance => tokens.appearance;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'tokens': tokens.toJson(),
+      };
+
+  factory ImportedThemeEntry.fromJson(Map<String, dynamic> json) {
+    return ImportedThemeEntry(
+      id: json['id'] as String,
+      tokens: FluxThemeTokens.fromJson(json['tokens'] as Map<String, dynamic>),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 //  SharedPreferences 存储 key
 // ═══════════════════════════════════════════════════════════
 
@@ -135,8 +160,13 @@ const _kThemeMode = 'theme_mode';
 const _kSelectedTheme = 'selected_theme';
 const _kColorScheme = 'color_scheme';
 const _kCustomColor = 'custom_color';
-const _kCustomThemeDark = 'custom_theme_dark_json';
-const _kCustomThemeLight = 'custom_theme_light_json';
+const _kImportedThemes = 'imported_themes_v2';
+const _kSelectedCustomDark = 'selected_custom_dark_id';
+const _kSelectedCustomLight = 'selected_custom_light_id';
+
+// 旧版 key（迁移用）
+const _kLegacyCustomThemeDark = 'custom_theme_dark_json';
+const _kLegacyCustomThemeLight = 'custom_theme_light_json';
 
 // ═══════════════════════════════════════════════════════════
 //  ThemeProvider
@@ -146,17 +176,17 @@ const _kCustomThemeLight = 'custom_theme_light_json';
 ///
 /// 主题选择逻辑：
 /// - [themeMode] = system 时，根据系统亮/暗自动选对应主题
-///   - 暗色 → [selectedDarkTheme]
-///   - 亮色 → [selectedLightTheme]
+///   - 暗色 → [selectedDarkTheme] 或 [_selectedCustomDarkId]
+///   - 亮色 → [selectedLightTheme] 或 [_selectedCustomLightId]
 /// - [themeMode] = light/dark 时，强制使用对应主题
 ///
 /// 主题来源优先级：
-/// 1. 完整自定义主题 ([_customDarkTokens] / [_customLightTokens])
+/// 1. 选中的导入主题（[_selectedCustomDarkId] / [_selectedCustomLightId]）
 /// 2. 内置主题 + 强调色覆盖
 class ThemeProvider extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
 
-  /// 用户选择的暗色主题和亮色主题
+  /// 用户选择的暗色主题和亮色主题（内置）
   BuiltinThemeId _selectedDarkTheme = BuiltinThemeId.defaultDark;
   BuiltinThemeId _selectedLightTheme = BuiltinThemeId.defaultLight;
 
@@ -164,9 +194,12 @@ class ThemeProvider extends ChangeNotifier {
   AppColorScheme _colorScheme = AppColorScheme.blue;
   Color _customColor = const Color(0xFF6366F1);
 
-  /// 完整自定义主题
-  FluxThemeTokens? _customDarkTokens;
-  FluxThemeTokens? _customLightTokens;
+  /// 导入的自定义主题列表
+  final List<ImportedThemeEntry> _importedThemes = [];
+
+  /// 当前选中的自定义主题 ID（null = 使用内置主题）
+  String? _selectedCustomDarkId;
+  String? _selectedCustomLightId;
 
   /// 缓存
   FluxThemeTokens? _cachedTokens;
@@ -180,14 +213,37 @@ class ThemeProvider extends ChangeNotifier {
   AppColorScheme get colorScheme => _colorScheme;
   Color get customColor => _customColor;
 
-  FluxThemeTokens? get customDarkTokens => _customDarkTokens;
-  FluxThemeTokens? get customLightTokens => _customLightTokens;
+  List<ImportedThemeEntry> get importedThemes =>
+      List.unmodifiable(_importedThemes);
 
-  bool get hasCustomTheme =>
-      _customDarkTokens != null || _customLightTokens != null;
+  List<ImportedThemeEntry> importedThemesFor(Brightness appearance) =>
+      _importedThemes.where((e) => e.appearance == appearance).toList();
 
+  String? get selectedCustomDarkId => _selectedCustomDarkId;
+  String? get selectedCustomLightId => _selectedCustomLightId;
+
+  bool get isCustomDarkActive => _selectedCustomDarkId != null &&
+      _importedThemes.any((e) => e.id == _selectedCustomDarkId);
+  bool get isCustomLightActive => _selectedCustomLightId != null &&
+      _importedThemes.any((e) => e.id == _selectedCustomLightId);
+
+  ImportedThemeEntry? get activeCustomDark => _selectedCustomDarkId == null
+      ? null
+      : _importedThemes
+          .where((e) => e.id == _selectedCustomDarkId)
+          .firstOrNull;
+  ImportedThemeEntry? get activeCustomLight => _selectedCustomLightId == null
+      ? null
+      : _importedThemes
+          .where((e) => e.id == _selectedCustomLightId)
+          .firstOrNull;
+
+  // 向后兼容旧 API
+  FluxThemeTokens? get customDarkTokens => activeCustomDark?.tokens;
+  FluxThemeTokens? get customLightTokens => activeCustomLight?.tokens;
+  bool get hasCustomTheme => _importedThemes.isNotEmpty;
   String? get customThemeName =>
-      _customDarkTokens?.name ?? _customLightTokens?.name;
+      activeCustomDark?.tokens.name ?? activeCustomLight?.tokens.name;
 
   Color get activePreviewColor => _colorScheme == AppColorScheme.custom
       ? _customColor
@@ -208,9 +264,13 @@ class ThemeProvider extends ChangeNotifier {
   }
 
   FluxThemeTokens _computeTokens(bool dark) {
-    // 优先级 1：完整自定义主题
-    if (dark && _customDarkTokens != null) return _customDarkTokens!;
-    if (!dark && _customLightTokens != null) return _customLightTokens!;
+    // 优先级 1：选中的导入主题
+    final customId = dark ? _selectedCustomDarkId : _selectedCustomLightId;
+    if (customId != null) {
+      final entry =
+          _importedThemes.where((e) => e.id == customId).firstOrNull;
+      if (entry != null) return entry.tokens;
+    }
 
     // 优先级 2：内置主题 + 强调色覆盖
     final themeId = dark ? _selectedDarkTheme : _selectedLightTheme;
@@ -263,9 +323,59 @@ class ThemeProvider extends ChangeNotifier {
       if (parsed != null) _customColor = Color(parsed);
     }
 
-    // 完整自定义主题 JSON
-    _customDarkTokens = _loadTokensFromPrefs(prefs, _kCustomThemeDark);
-    _customLightTokens = _loadTokensFromPrefs(prefs, _kCustomThemeLight);
+    // 导入的主题列表
+    _loadImportedThemes(prefs);
+
+    // 迁移旧版单主题数据
+    _migrateV1(prefs);
+
+    // 选中的自定义主题 ID
+    _selectedCustomDarkId = prefs.getString(_kSelectedCustomDark);
+    _selectedCustomLightId = prefs.getString(_kSelectedCustomLight);
+  }
+
+  /// 迁移旧版存储（单个 custom_theme_dark_json / custom_theme_light_json）
+  void _migrateV1(SharedPreferences prefs) {
+    var migrated = false;
+    final darkJson = prefs.getString(_kLegacyCustomThemeDark);
+    if (darkJson != null) {
+      try {
+        final tokens = FluxThemeTokens.fromJson(
+          jsonDecode(darkJson) as Map<String, dynamic>,
+        );
+        final id = _generateId();
+        _importedThemes.add(ImportedThemeEntry(id: id, tokens: tokens));
+        _selectedCustomDarkId = id;
+        migrated = true;
+      } catch (_) {}
+      prefs.remove(_kLegacyCustomThemeDark);
+    }
+    final lightJson = prefs.getString(_kLegacyCustomThemeLight);
+    if (lightJson != null) {
+      try {
+        final tokens = FluxThemeTokens.fromJson(
+          jsonDecode(lightJson) as Map<String, dynamic>,
+        );
+        final id = _generateId();
+        _importedThemes.add(ImportedThemeEntry(id: id, tokens: tokens));
+        _selectedCustomLightId = id;
+        migrated = true;
+      } catch (_) {}
+      prefs.remove(_kLegacyCustomThemeLight);
+    }
+    // 清除旧的 use_custom 标志
+    prefs.remove('use_custom_dark');
+    prefs.remove('use_custom_light');
+
+    if (migrated) {
+      _persistImportedThemes();
+      if (_selectedCustomDarkId != null) {
+        _persist(_kSelectedCustomDark, _selectedCustomDarkId!);
+      }
+      if (_selectedCustomLightId != null) {
+        _persist(_kSelectedCustomLight, _selectedCustomLightId!);
+      }
+    }
   }
 
   // ── 主题模式 ──
@@ -282,10 +392,11 @@ class ThemeProvider extends ChangeNotifier {
 
   /// 选择暗色主题（从内置主题中选）
   void setDarkTheme(BuiltinThemeId id) {
-    if (_selectedDarkTheme == id) return;
+    final changed = _selectedDarkTheme != id || _selectedCustomDarkId != null;
+    if (!changed) return;
     _selectedDarkTheme = id;
-    _customDarkTokens = null; // 清除自定义覆盖
-    _persistRemove(_kCustomThemeDark);
+    _selectedCustomDarkId = null; // 取消自定义主题选择
+    _persistRemove(_kSelectedCustomDark);
     _invalidateCache();
     notifyListeners();
     _persistSelectedThemes();
@@ -293,10 +404,11 @@ class ThemeProvider extends ChangeNotifier {
 
   /// 选择亮色主题（从内置主题中选）
   void setLightTheme(BuiltinThemeId id) {
-    if (_selectedLightTheme == id) return;
+    final changed = _selectedLightTheme != id || _selectedCustomLightId != null;
+    if (!changed) return;
     _selectedLightTheme = id;
-    _customLightTokens = null;
-    _persistRemove(_kCustomThemeLight);
+    _selectedCustomLightId = null;
+    _persistRemove(_kSelectedCustomLight);
     _invalidateCache();
     notifyListeners();
     _persistSelectedThemes();
@@ -344,45 +456,87 @@ class ThemeProvider extends ChangeNotifier {
   }
 
   // ═══════════════════════════════════════════════════════════
-  //  完整自定义主题管理
+  //  导入主题管理（多主题）
   // ═══════════════════════════════════════════════════════════
 
-  /// 设置自定义主题。传入的参数会覆盖对应侧，null 值不会清除（用 clearCustomTheme）。
+  /// 添加导入的主题并自动选中
+  String addImportedTheme(FluxThemeTokens tokens) {
+    final id = _generateId();
+    _importedThemes.add(ImportedThemeEntry(id: id, tokens: tokens));
+
+    // 自动选中
+    if (tokens.appearance == Brightness.dark) {
+      _selectedCustomDarkId = id;
+      _persist(_kSelectedCustomDark, id);
+    } else {
+      _selectedCustomLightId = id;
+      _persist(_kSelectedCustomLight, id);
+    }
+
+    _persistImportedThemes();
+    _invalidateCache();
+    notifyListeners();
+    return id;
+  }
+
+  /// 删除导入的主题
+  void removeImportedTheme(String id) {
+    _importedThemes.removeWhere((e) => e.id == id);
+
+    // 如果删除的是当前选中的，回退到内置
+    if (_selectedCustomDarkId == id) {
+      _selectedCustomDarkId = null;
+      _persistRemove(_kSelectedCustomDark);
+    }
+    if (_selectedCustomLightId == id) {
+      _selectedCustomLightId = null;
+      _persistRemove(_kSelectedCustomLight);
+    }
+
+    _persistImportedThemes();
+    _invalidateCache();
+    notifyListeners();
+  }
+
+  /// 选中某个导入的主题
+  void selectImportedTheme(String id) {
+    final entry = _importedThemes.where((e) => e.id == id).firstOrNull;
+    if (entry == null) return;
+
+    if (entry.appearance == Brightness.dark) {
+      if (_selectedCustomDarkId == id) return;
+      _selectedCustomDarkId = id;
+      _persist(_kSelectedCustomDark, id);
+    } else {
+      if (_selectedCustomLightId == id) return;
+      _selectedCustomLightId = id;
+      _persist(_kSelectedCustomLight, id);
+    }
+
+    _invalidateCache();
+    notifyListeners();
+  }
+
+  // 向后兼容旧 API — setCustomTheme / clearCustomTheme / activateCustomTheme
+
+  /// 设置自定义主题（向后兼容，内部转为 addImportedTheme）
   void setCustomTheme({
     FluxThemeTokens? dark,
     FluxThemeTokens? light,
   }) {
-    if (dark != null) {
-      _customDarkTokens = dark;
-      _persistTokens(_kCustomThemeDark, dark);
-    }
-    if (light != null) {
-      _customLightTokens = light;
-      _persistTokens(_kCustomThemeLight, light);
-    }
-    _invalidateCache();
-    notifyListeners();
+    if (dark != null) addImportedTheme(dark);
+    if (light != null) addImportedTheme(light);
   }
 
-  /// 清除某侧的自定义主题（回到内置主题）
+  /// 清除某侧的自定义主题（删除当前选中的导入主题）
   void clearCustomTheme({required bool dark}) {
-    if (dark) {
-      _customDarkTokens = null;
-      _persistRemove(_kCustomThemeDark);
-    } else {
-      _customLightTokens = null;
-      _persistRemove(_kCustomThemeLight);
-    }
-    _invalidateCache();
-    notifyListeners();
+    final id = dark ? _selectedCustomDarkId : _selectedCustomLightId;
+    if (id != null) removeImportedTheme(id);
   }
 
-  /// 激活自定义主题（当用户点击自定义主题卡片时）
-  /// 确保自定义主题生效 — 实际上 _computeTokens 中自定义主题优先级最高，
-  /// 只要存在就会生效，所以这里只需 invalidate 并通知。
+  /// 激活自定义主题（向后兼容）
   void activateCustomTheme({required bool dark}) {
-    _invalidateCache();
-    notifyListeners();
+    // 已经选中了就不用处理
   }
 
   void updateToken({
@@ -391,37 +545,61 @@ class ThemeProvider extends ChangeNotifier {
   }) {
     final accent = _resolveAccentColor();
     if (dark) {
+      // 如果当前选中了导入主题，更新它
+      final customId = _selectedCustomDarkId;
+      if (customId != null) {
+        final idx = _importedThemes.indexWhere((e) => e.id == customId);
+        if (idx >= 0) {
+          final updated = updater(_importedThemes[idx].tokens);
+          _importedThemes[idx] =
+              ImportedThemeEntry(id: customId, tokens: updated);
+          _persistImportedThemes();
+          _invalidateCache();
+          notifyListeners();
+          return;
+        }
+      }
+      // 否则基于内置主题创建新的导入主题
       final themeEntry = builtinThemes.firstWhere(
         (e) => e.id == _selectedDarkTheme,
       );
-      _customDarkTokens = updater(
-        _customDarkTokens ?? themeEntry.build(accent: accent),
-      );
-      _persistTokens(_kCustomThemeDark, _customDarkTokens);
+      final base = themeEntry.build(accent: accent);
+      addImportedTheme(updater(base));
     } else {
+      final customId = _selectedCustomLightId;
+      if (customId != null) {
+        final idx = _importedThemes.indexWhere((e) => e.id == customId);
+        if (idx >= 0) {
+          final updated = updater(_importedThemes[idx].tokens);
+          _importedThemes[idx] =
+              ImportedThemeEntry(id: customId, tokens: updated);
+          _persistImportedThemes();
+          _invalidateCache();
+          notifyListeners();
+          return;
+        }
+      }
       final themeEntry = builtinThemes.firstWhere(
         (e) => e.id == _selectedLightTheme,
       );
-      _customLightTokens = updater(
-        _customLightTokens ?? themeEntry.build(accent: accent),
-      );
-      _persistTokens(_kCustomThemeLight, _customLightTokens);
+      final base = themeEntry.build(accent: accent);
+      addImportedTheme(updater(base));
     }
-    _invalidateCache();
-    notifyListeners();
   }
 
   void resetToDefault() {
-    _customDarkTokens = null;
-    _customLightTokens = null;
+    _importedThemes.clear();
+    _selectedCustomDarkId = null;
+    _selectedCustomLightId = null;
     _selectedDarkTheme = BuiltinThemeId.defaultDark;
     _selectedLightTheme = BuiltinThemeId.defaultLight;
     _colorScheme = AppColorScheme.blue;
     _invalidateCache();
     notifyListeners();
     _persist(_kColorScheme, AppColorScheme.blue.name);
-    _persistRemove(_kCustomThemeDark);
-    _persistRemove(_kCustomThemeLight);
+    _persistRemove(_kImportedThemes);
+    _persistRemove(_kSelectedCustomDark);
+    _persistRemove(_kSelectedCustomLight);
     _persistSelectedThemes();
   }
 
@@ -472,23 +650,26 @@ class ThemeProvider extends ChangeNotifier {
     }
   }
 
-  FluxThemeTokens? _loadTokensFromPrefs(SharedPreferences prefs, String key) {
-    final jsonStr = prefs.getString(key);
-    if (jsonStr == null) return null;
+  void _loadImportedThemes(SharedPreferences prefs) {
+    final jsonStr = prefs.getString(_kImportedThemes);
+    if (jsonStr == null) return;
     try {
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      return FluxThemeTokens.fromJson(json);
-    } catch (_) {
-      return null;
-    }
+      final list = jsonDecode(jsonStr) as List<dynamic>;
+      for (final item in list) {
+        if (item is Map<String, dynamic>) {
+          _importedThemes.add(ImportedThemeEntry.fromJson(item));
+        }
+      }
+    } catch (_) {}
   }
 
-  Future<void> _persistTokens(String key, FluxThemeTokens? tokens) async {
-    if (tokens == null) {
-      _persistRemove(key);
-      return;
-    }
-    _persist(key, jsonEncode(tokens.toJson()));
+  void _persistImportedThemes() {
+    final json = jsonEncode(_importedThemes.map((e) => e.toJson()).toList());
+    _persist(_kImportedThemes, json);
+  }
+
+  String _generateId() {
+    return '${DateTime.now().millisecondsSinceEpoch}_${_importedThemes.length}';
   }
 
   Future<void> _persist(String key, String value) async {

@@ -29,6 +29,7 @@ export function FloatingNavbar({
     { name: t("nav.announcements"), link: "/announcements" },
     { name: t("nav.feedback"), link: "/feedback" },
     { name: t("nav.changelog"), link: "/changelog" },
+    { name: t("nav.themeBuilder"), link: "/theme-builder" },
   ];
 
   useEffect(() => {
