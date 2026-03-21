@@ -266,6 +266,10 @@ class S {
   String get saveDir => _t('保存目录', 'Save Directory');
   String get selectSaveDir => _t('选择保存目录', 'Select save directory');
   String get threads => _t('线程数', 'Threads');
+  String get customThreads => _t('自定义', 'Custom');
+  String get customThreadsHint => _t('输入 1-64', 'Enter 1-64');
+  String get threadsInvalidRange =>
+      _t('线程数须在 1-64 之间', 'Threads must be between 1 and 64');
   String get renameOptional =>
       _t('重命名（可选，留空自动识别）', 'Rename (optional, auto-detect if empty)');
   String get autoDetectFilename => _t('自动识别文件名', 'Auto-detect filename');

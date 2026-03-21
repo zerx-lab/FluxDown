@@ -18,6 +18,7 @@ import '../theme/app_colors.dart';
 import '../theme/flux_theme_tokens.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/dir_picker_field.dart';
+import '../widgets/thread_selector.dart';
 import '../widgets/title_drag_area.dart';
 
 // ─────────────────────────────────────────────
@@ -1098,23 +1099,17 @@ class _SegmentSelector extends StatelessWidget {
 
   const _SegmentSelector({required this.settingsProvider});
 
-  // 0 = 自动（由 Rust segment_advisor 动态计算最优值）
-  static const _options = [0, 4, 8, 16, 32, 64];
-
-  static String _label(int n) => n == 0 ? currentS.auto : currentS.nThreads(n);
-
   @override
   Widget build(BuildContext context) {
     final current = settingsProvider.defaultSegments;
-    return ShadSelect<int>(
-      placeholder: Text(currentS.auto),
-      initialValue: current,
-      options: _options
-          .map((n) => ShadOption(value: n, child: Text(_label(n))))
-          .toList(),
-      selectedOptionBuilder: (context, value) => Text(_label(value)),
+    // SettingsProvider: 0 = 自动; ThreadSelector: null = 自动
+    final value = current > 0 ? current.toString() : null;
+
+    return ThreadSelector(
+      value: value,
       onChanged: (v) {
-        if (v != null) settingsProvider.setDefaultSegments(v);
+        final n = int.tryParse(v ?? '') ?? 0;
+        settingsProvider.setDefaultSegments(n.clamp(0, 64));
       },
     );
   }

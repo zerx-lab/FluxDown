@@ -21,6 +21,7 @@ import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
 import '../theme/app_colors.dart';
 import 'dir_picker_field.dart';
+import 'thread_selector.dart';
 
 /// UA 预设映射（key → UA 字符串）
 const _kUaPresets = {
@@ -271,15 +272,8 @@ class _QuickDownloadDialogContentState
     final proxyUrl = _proxyUrlController.text.trim();
     final userAgent = _userAgentController.text.trim();
 
-    final segments = switch (selectedThreads) {
-      'auto' => 0,
-      '4' => 4,
-      '8' => 8,
-      '16' => 16,
-      '32' => 32,
-      '64' => 64,
-      _ => 0,
-    };
+    final parsedSeg = int.tryParse(selectedThreads ?? '') ?? 0;
+    final segments = parsedSeg > 0 ? parsedSeg.clamp(1, 64) : 0;
 
     if (entries.length == 1) {
       // 单条 — 使用 ConfirmExternalDownload，支持重命名和 cookies
@@ -488,25 +482,15 @@ class _QuickDownloadDialogContentState
                 ),
                 const SizedBox(width: 12),
                 SizedBox(
-                  width: 100,
+                  width: 110,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _SectionLabel(text: s.threads, c: c),
                       const SizedBox(height: 6),
-                      ShadSelect<String>(
-                        key: ValueKey('threads_$_threadsSelectVersion'),
-                        placeholder: Text(s.auto),
-                        initialValue: selectedThreads,
-                        options: ['auto', '4', '8', '16', '32', '64'].map((v) {
-                          return ShadOption(
-                            value: v,
-                            child: Text(v == 'auto' ? s.auto : v),
-                          );
-                        }).toList(),
-                        selectedOptionBuilder: (context, value) {
-                          return Text(value == 'auto' ? s.auto : value);
-                        },
+                      ThreadSelector(
+                        value: selectedThreads,
+                        version: _threadsSelectVersion,
                         onChanged: (v) => setState(() {
                           selectedThreads = v;
                           _threadsUserModified = true;

@@ -24,6 +24,7 @@ import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
 import '../theme/app_colors.dart';
 import 'dir_picker_field.dart';
+import 'thread_selector.dart';
 
 void showNewDownloadDialog(
   BuildContext context,
@@ -389,15 +390,8 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     final entries = _parseEntries(_urlController.text);
     if (entries.isEmpty) return;
 
-    final segments = switch (selectedThreads) {
-      'auto' => 0,
-      '4' => 4,
-      '8' => 8,
-      '16' => 16,
-      '32' => 32,
-      '64' => 64,
-      _ => 0,
-    };
+    final parsed = int.tryParse(selectedThreads ?? '') ?? 0;
+    final segments = parsed > 0 ? parsed.clamp(1, 64) : 0;
 
     if (entries.length == 1) {
       // 单条 — 使用 CreateTask，支持重命名
@@ -734,27 +728,15 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                 if (!_allMagnet && !_hasTorrentFiles) ...[
                   const SizedBox(width: 12),
                   SizedBox(
-                    width: 100,
+                    width: 110,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         _SectionLabel(text: s.threads, c: c),
                         const SizedBox(height: 6),
-                        ShadSelect<String>(
-                          key: ValueKey('threads_$_threadsSelectVersion'),
-                          placeholder: Text(s.auto),
-                          initialValue: selectedThreads,
-                          options: ['auto', '4', '8', '16', '32', '64'].map((
-                            v,
-                          ) {
-                            return ShadOption(
-                              value: v,
-                              child: Text(v == 'auto' ? s.auto : v),
-                            );
-                          }).toList(),
-                          selectedOptionBuilder: (context, value) {
-                            return Text(value == 'auto' ? s.auto : value);
-                          },
+                        ThreadSelector(
+                          value: selectedThreads,
+                          version: _threadsSelectVersion,
                           onChanged: (v) => setState(() {
                             selectedThreads = v;
                             _threadsUserModified = true;
