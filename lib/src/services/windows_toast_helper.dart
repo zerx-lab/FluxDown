@@ -1,8 +1,30 @@
+import 'dart:convert';
 import 'dart:io';
+
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'log_service.dart';
 
 const _tag = 'WinToast';
+
+/// SharedPreferences key：存储已验证的快捷方式 AUMID，避免每次启动重复跑 PowerShell。
+/// 值格式：已成功创建并验证的 aumid 字符串；空字符串或不存在表示需要重新检查。
+const _kVerifiedAumid = 'win_toast_shortcut_verified_aumid';
+
+/// 便携版标记文件名，与 Rust 侧 PORTABLE_MARKER 保持一致。
+const _portableMarker = 'portable';
+
+/// 检测当前是否为便携版（可执行文件同目录存在 `portable` 文件）。
+bool _isPortableMode() {
+  try {
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    return File(
+      '$exeDir${Platform.pathSeparator}$_portableMarker',
+    ).existsSync();
+  } catch (_) {
+    return false;
+  }
+}
 
 /// Windows 10 Toast notification shortcut helper.
 ///
@@ -26,18 +48,35 @@ const _tag = 'WinToast';
 ///
 /// Windows 11 does NOT require this shortcut — COM activation alone suffices.
 /// However, having the shortcut is harmless on Win11, so we always create it.
+///
+/// ## 便携版行为
+///
+/// 便携版（可执行文件同目录存在 `portable` 文件）不需要开始菜单快捷方式，
+/// 直接跳过整个流程。
+///
+/// ## 缓存机制
+///
+/// 首次成功创建/验证快捷方式后，将 AUMID 写入 SharedPreferences。
+/// 后续启动若缓存命中且快捷方式文件仍存在，则跳过 PowerShell 进程，
+/// 避免每次启动的额外开销。
 
 /// Ensures a Start Menu shortcut with a valid AUMID exists for Toast
 /// notifications.
 ///
-/// Idempotent: if the shortcut exists AND has the correct AUMID, skips
-/// creation. If the shortcut exists but AUMID is missing/wrong, recreates it.
+/// 幂等：快捷方式存在且 AUMID 正确时跳过创建。
+/// 便携版直接跳过，不在开始菜单创建任何文件。
 Future<void> ensureWindowsToastShortcut({
   required String appName,
   required String aumid,
   required String clsid,
 }) async {
   if (!Platform.isWindows) return;
+
+  // 便携版不需要开始菜单快捷方式，直接跳过
+  if (_isPortableMode()) {
+    logInfo(_tag, 'portable mode detected, skipping shortcut creation');
+    return;
+  }
 
   final appData = Platform.environment['APPDATA'];
   if (appData == null) {
@@ -48,11 +87,33 @@ Future<void> ensureWindowsToastShortcut({
   final lnkPath =
       '$appData\\Microsoft\\Windows\\Start Menu\\Programs\\$appName.lnk';
 
-  // Check if shortcut exists AND has valid AUMID
+  // 快速路径：检查 SharedPreferences 缓存，若已验证且文件仍存在则跳过 PowerShell
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final cachedAumid = prefs.getString(_kVerifiedAumid) ?? '';
+    if (cachedAumid == aumid && File(lnkPath).existsSync()) {
+      logInfo(_tag, 'shortcut cache hit, skipping PowerShell check');
+      return;
+    }
+    // 缓存失效（AUMID 变更或文件被删除），清除缓存重新验证
+    if (cachedAumid.isNotEmpty) {
+      await prefs.remove(_kVerifiedAumid);
+      logInfo(
+        _tag,
+        'shortcut cache invalidated (cached=$cachedAumid, expected=$aumid)',
+      );
+    }
+  } catch (e) {
+    logInfo(_tag, 'prefs read failed, proceeding with full check: $e');
+  }
+
+  // 快捷方式存在时，通过 PowerShell 读取 AUMID 进行验证
   if (File(lnkPath).existsSync()) {
     final existingAumid = await _readAumid(lnkPath);
     if (existingAumid == aumid) {
       logInfo(_tag, 'shortcut valid (aumid=$existingAumid): $lnkPath');
+      // 写入缓存，下次启动跳过 PowerShell
+      await _cacheVerifiedAumid(aumid);
       return;
     }
     logInfo(
@@ -60,7 +121,7 @@ Future<void> ensureWindowsToastShortcut({
       'shortcut exists but aumid mismatch '
       '(expected=$aumid, got=$existingAumid), recreating...',
     );
-    // Delete the broken shortcut so we can recreate it
+    // 删除 AUMID 不匹配的旧快捷方式
     try {
       File(lnkPath).deleteSync();
     } catch (e) {
@@ -87,21 +148,32 @@ Future<void> ensureWindowsToastShortcut({
   );
 
   try {
-    await tempFile.writeAsString(script);
-    final result = await Process.run('powershell', [
-      '-ExecutionPolicy',
-      'Bypass',
-      '-NoProfile',
-      '-NonInteractive',
-      '-File',
-      tempFile.path,
+    // 以 UTF-8 BOM 写入，PowerShell 默认按 BOM 识别编码，避免中文路径乱码
+    await tempFile.writeAsBytes([
+      ...utf8.encode('\uFEFF'),
+      ...utf8.encode(script),
     ]);
+    final result = await Process.run(
+      'powershell',
+      [
+        '-ExecutionPolicy',
+        'Bypass',
+        '-NoProfile',
+        '-NonInteractive',
+        '-File',
+        tempFile.path,
+      ],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
 
     final stdout = (result.stdout as String).trim();
     final stderr = (result.stderr as String).trim();
 
     if (result.exitCode == 0 && stdout.contains('SUCCESS')) {
       logInfo(_tag, 'shortcut created: $lnkPath ($stdout)');
+      // 创建成功，写入缓存
+      await _cacheVerifiedAumid(aumid);
     } else {
       logError(
         _tag,
@@ -118,6 +190,17 @@ Future<void> ensureWindowsToastShortcut({
   }
 }
 
+/// 将已验证的 AUMID 写入 SharedPreferences 缓存。
+Future<void> _cacheVerifiedAumid(String aumid) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kVerifiedAumid, aumid);
+    logInfo(_tag, 'shortcut verified aumid cached');
+  } catch (e) {
+    logInfo(_tag, 'failed to cache verified aumid: $e');
+  }
+}
+
 /// Reads the AUMID from an existing .lnk shortcut via IShellLink COM chain.
 /// Returns the AUMID string, or empty string if not set / on error.
 Future<String> _readAumid(String lnkPath) async {
@@ -127,15 +210,24 @@ Future<String> _readAumid(String lnkPath) async {
   );
 
   try {
-    await tempFile.writeAsString(script);
-    final result = await Process.run('powershell', [
-      '-ExecutionPolicy',
-      'Bypass',
-      '-NoProfile',
-      '-NonInteractive',
-      '-File',
-      tempFile.path,
+    // 以 UTF-8 BOM 写入，PowerShell 默认按 BOM 识别编码，避免中文路径乱码
+    await tempFile.writeAsBytes([
+      ...utf8.encode('\uFEFF'),
+      ...utf8.encode(script),
     ]);
+    final result = await Process.run(
+      'powershell',
+      [
+        '-ExecutionPolicy',
+        'Bypass',
+        '-NoProfile',
+        '-NonInteractive',
+        '-File',
+        tempFile.path,
+      ],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
 
     if (result.exitCode == 0) {
       final output = (result.stdout as String).trim();
