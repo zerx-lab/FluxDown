@@ -10,7 +10,7 @@
  */
 
 import type { APIRoute } from "astro";
-import { GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
+import { GITHUB_TOKEN, GITHUB_REPO, CF_R2_PUBLIC_URL } from "astro:env/server";
 
 export const prerender = false;
 
@@ -68,6 +68,31 @@ async function fetchLatestRelease(): Promise<GitHubRelease | null> {
 
   const releases: GitHubRelease[] = await res.json();
   return releases.find((r) => !r.draft && !r.prerelease) ?? null;
+}
+
+/**
+ * 检查 R2 上是否存在对应文件，存在则返回公开 URL，否则返回 null。
+ * 文件路径格式: {tag}/{filename}，例如: v0.3.0/FluxDown-0.3.0-windows-x64-setup.exe
+ */
+async function resolveR2Url(tag: string, filename: string): Promise<string | null> {
+  if (!CF_R2_PUBLIC_URL) {
+    return null;
+  }
+
+  const key = `${tag}/${filename}`;
+  const publicUrl = `${CF_R2_PUBLIC_URL.replace(/\/$/, "")}/${key}`;
+
+  try {
+    // 用 HEAD 请求验证文件确实存在于 R2（防止 404 重定向）
+    const res = await fetch(publicUrl, { method: "HEAD" });
+    if (res.ok) {
+      return publicUrl;
+    }
+  } catch {
+    // R2 不可达时静默降级到 GitHub CDN
+  }
+
+  return null;
 }
 
 /**
@@ -150,7 +175,20 @@ export const GET: APIRoute = async ({ params, url }) => {
       );
     }
 
-    // ── 3. 解析带签名的 CDN 下载 URL ──
+    // ── 3. 优先尝试 R2 镜像 URL（中国大陆友好，Cloudflare CDN 加速）──
+    const r2Url = await resolveR2Url(release.tag_name, filename);
+    if (r2Url) {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: r2Url,
+          "Cache-Control": "private, no-cache",
+          "X-Download-Source": "r2",
+        },
+      });
+    }
+
+    // ── 4. Fallback：解析 GitHub CDN 带签名 URL ──
     const downloadUrl = await resolveAssetDownloadUrl(asset.url);
 
     if (!downloadUrl) {
@@ -160,12 +198,13 @@ export const GET: APIRoute = async ({ params, url }) => {
       );
     }
 
-    // ── 4. 302 重定向到 GitHub CDN 临时签名 URL ──
+    // ── 5. 302 重定向到 GitHub CDN 临时签名 URL ──
     return new Response(null, {
       status: 302,
       headers: {
         Location: downloadUrl,
         "Cache-Control": "private, no-cache",
+        "X-Download-Source": "github",
       },
     });
   } catch (err) {

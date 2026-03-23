@@ -703,6 +703,35 @@ jobs:
       - name: List release assets
         run: ls -la release-assets/
 
+      # ── 同步所有 Release 文件到 Cloudflare R2（改善中国大陆下载速度）──
+      # 文件路径格式: {tag_name}/{filename}，例如: v0.3.0/FluxDown-0.3.0-windows-x64-setup.exe
+      # 公开访问 URL: https://dw-fluxdown.zerx.dev/v0.3.0/FluxDown-0.3.0-windows-x64-setup.exe
+      - name: Sync release assets to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          echo "Syncing release assets to R2 under prefix: ${TAG_NAME}/"
+
+          # 安装 AWS CLI（ubuntu-latest 已预装，此处保险起见确认可用）
+          aws --version
+
+          # 批量上传所有 release 文件到 R2（按 tag 分目录存放）
+          for file in release-assets/*; do
+            filename=$(basename "$file")
+            echo "  Uploading: ${filename}"
+            aws s3 cp "$file" \
+              "s3://${R2_BUCKET}/${TAG_NAME}/${filename}" \
+              --endpoint-url "${R2_ENDPOINT}" \
+              --no-progress
+          done
+
+          echo "R2 sync complete. Files available at: ${{ secrets.CF_R2_PUBLIC_URL }}/${TAG_NAME}/"
+
       # ── 创建 Release 并上传所有文件 ──
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

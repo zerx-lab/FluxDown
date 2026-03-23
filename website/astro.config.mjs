@@ -70,6 +70,33 @@ export default defineConfig({
         access: "secret",
         optional: true,
       }),
+
+      // ── 可选：Cloudflare R2 对象存储（下载加速，改善中国大陆速度）──
+      CF_R2_ACCESS_KEY_ID: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      CF_R2_SECRET_ACCESS_KEY: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      CF_R2_ENDPOINT: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      CF_R2_BUCKET: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      CF_R2_PUBLIC_URL: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
     },
   },
 });

@@ -12,6 +12,7 @@
     "@astrojs/node": "^9.2.1",
     "@astrojs/react": "^4.4.2",
     "@astrojs/sitemap": "^3.7.0",
+    "@aws-sdk/client-s3": "^3.1014.0",
     "@icons-pack/react-simple-icons": "^13.11.2",
     "@radix-ui/react-slot": "^1.2.4",
     "@tailwindcss/vite": "^4.1.18",
