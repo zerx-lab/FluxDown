@@ -520,7 +520,7 @@ pub async fn run_coordinated_download(
                     struct FileAllocInfo {
                         allocation_size: i64,
                     }
-                    let handle = std_file.as_raw_handle() as isize;
+                    let handle = std_file.as_raw_handle();
                     // Step 1: 预分配 NTFS 物理簇——立即保留磁盘空间（连续簇优先），
                     // 磁盘不足时提前报错（等效 Linux fallocate 的 ENOSPC 检测），
                     // 减少多段随机写时的 NTFS 碎片化。
