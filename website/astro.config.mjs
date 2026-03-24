@@ -97,6 +97,16 @@ export default defineConfig({
         access: "secret",
         optional: true,
       }),
+
+      // ── 可选：Cloudflare Analytics API（用于查询 R2 下载统计）──
+      // Account ID 自动从 CF_R2_ENDPOINT 解析（格式: https://<account_id>.r2.cloudflarestorage.com）
+      // 创建地址: https://dash.cloudflare.com/profile/api-tokens
+      // 权限: Account Analytics:Read
+      CF_API_TOKEN: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
     },
   },
 });

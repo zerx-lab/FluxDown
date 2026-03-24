@@ -1280,7 +1280,7 @@ dependencies = [
  "ts2mp4",
  "url",
  "uuid",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
  "winreg",
 ]
 

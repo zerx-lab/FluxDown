@@ -50,7 +50,8 @@ winreg = "0.55"
 reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "json", "socks"] }
 librqbit = { version = "8", default-features = false, features = ["default-tls"] }
 # 系统调用：SetFileInformationByHandle（文件预分配真正保留 NTFS 物理簇）
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+# 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # Linux/macOS 用 rustls（纯 Rust，无系统 TLS 依赖）
