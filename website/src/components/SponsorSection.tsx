@@ -23,7 +23,7 @@ import type { Messages } from "@/lib/locales";
    - Graceful degradation when API unavailable
    ============================================================ */
 
-const AFDIAN_URL = "https://afdian.com/a/zerx-lab";
+const AFDIAN_URL = "https://ifdian.net/u/7b862392211611f1942a52540025c377";
 
 // ── Types ──────────────────────────────────────────────────
 
