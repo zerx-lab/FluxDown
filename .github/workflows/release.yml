@@ -687,11 +687,142 @@ jobs:
           path: build/installer/FluxDown-*-linux-x64.tar.gz
           if-no-files-found: error
 
+  # ── 并行 Job 4: 构建 macOS DMG + tar.gz（Intel x64 + Apple Silicon arm64）──
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-13 # Intel runner
+            flutter_target: macos
+            rust_target: x86_64-apple-darwin
+          - arch: arm64
+            runner: macos-15 # Apple Silicon runner
+            flutter_target: macos
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      # ── Rust toolchain ──
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Cache Rinf CLI
+        id: cache-rinf
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/rinf
+          key: rinf-cli-${{ runner.os }}-${{ matrix.arch }}-8.9.0
+
+      # ── Flutter SDK ──
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter precache & version info
+        run: |
+          flutter --version
+          flutter precache --macos
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      # ── Rinf code generation ──
+      - name: Install Rinf CLI
+        if: steps.cache-rinf.outputs.cache-hit != 'true'
+        run: cargo install rinf_cli@8.9.0
+
+      - name: Generate Rinf bindings
+        run: rinf gen
+
+      # ── Build ──
+      - name: Build Flutter macOS app
+        run: |
+          flutter build macos --release \
+            --build-name=${{ steps.version.outputs.VERSION }} \
+            --build-number=1 \
+            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+
+      # ── Package tar.gz portable ──
+      - name: Create portable tar.gz
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          APP_PATH="build/macos/Build/Products/Release/flux_down.app"
+          mkdir -p build/installer
+          DIST_DIR="FluxDown-${VERSION}-macos-${{ matrix.arch }}"
+          mkdir -p "$DIST_DIR"
+          cp -R "$APP_PATH" "$DIST_DIR/"
+          tar -czf "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.tar.gz" "$DIST_DIR"
+          rm -rf "$DIST_DIR"
+
+      # ── Package DMG ──
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          APP_PATH="build/macos/Build/Products/Release/flux_down.app"
+          mkdir -p build/installer
+
+          create-dmg \
+            --volname "FluxDown ${VERSION}" \
+            --volicon "assets/logo/fluxdown_logo.icns" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 100 \
+            --icon "flux_down.app" 160 185 \
+            --hide-extension "flux_down.app" \
+            --app-drop-link 500 185 \
+            --no-internet-enable \
+            "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.dmg" \
+            "$APP_PATH" || \
+          hdiutil create \
+            -volname "FluxDown ${VERSION}" \
+            -srcfolder "$APP_PATH" \
+            -ov -format UDZO \
+            "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.dmg"
+
+      # ── Upload artifacts（供 release job 使用）──
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-${{ matrix.arch }}
+          path: build/installer/FluxDown-*-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+      - name: Upload macOS portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-portable-${{ matrix.arch }}
+          path: build/installer/FluxDown-*-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
   # ── 最终 Job: 等待所有构建完成后统一发布 Release ──
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-windows, build-extension, build-linux]
+    needs: [build-windows, build-extension, build-linux, build-macos]
 
     steps:
       - name: Checkout repository
@@ -750,6 +881,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: linux-*
+          path: release-assets/
+          merge-multiple: true
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
           path: release-assets/
           merge-multiple: true
 
