@@ -1,5 +1,14 @@
 import type { APIRoute } from "astro";
-import { GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
+import {
+  GITHUB_TOKEN,
+  GITHUB_REPO,
+  CF_R2_ACCESS_KEY_ID,
+  CF_R2_SECRET_ACCESS_KEY,
+  CF_R2_ENDPOINT,
+  CF_R2_BUCKET,
+  CF_R2_PUBLIC_URL,
+} from "astro:env/server";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 export const prerender = false;
 
@@ -45,8 +54,8 @@ const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg", ".webp"]);
 const MAX_SUBMITTER_NAME_LENGTH = 50;
 const MAX_DESCRIPTION_LENGTH = 200;
 
-// GitHub Contents API — upload path inside the repo
-const UPLOAD_DIR = "website/public/logos";
+// R2 key prefix for logo uploads
+const LOGO_KEY_PREFIX = "logos";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function ghHeaders(): Record<string, string> {
@@ -74,73 +83,49 @@ function sanitizeFilename(original: string): string {
   return base + ext;
 }
 
-/** Convert Uint8Array → base64 string without spread (avoids stack overflow). */
-function uint8ToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 8192;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    for (let j = 0; j < chunk.length; j++) {
-      binary += String.fromCharCode(chunk[j]);
-    }
+// ── R2 client (lazy singleton) ────────────────────────────────────────────────
+let _r2Client: S3Client | null = null;
+
+function getR2Client(): S3Client {
+  if (!_r2Client) {
+    _r2Client = new S3Client({
+      region: "auto",
+      endpoint: CF_R2_ENDPOINT,
+      credentials: {
+        accessKeyId: CF_R2_ACCESS_KEY_ID!,
+        secretAccessKey: CF_R2_SECRET_ACCESS_KEY!,
+      },
+    });
   }
-  return btoa(binary);
+  return _r2Client;
 }
 
 /**
- * Upload a file to the GitHub repo via Contents API.
- * Returns the raw URL of the uploaded file, or throws on failure.
+ * Upload a file to Cloudflare R2.
+ * Returns the permanent public URL, or throws on failure.
  */
-async function uploadFileToRepo(params: {
-  path: string; // repo-relative path, e.g. "website/public/logos/foo.png"
-  base64Content: string;
-  commitMessage: string;
-}): Promise<{ downloadUrl: string; htmlUrl: string }> {
-  const { path, base64Content, commitMessage } = params;
-
-  const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${encodeURIComponent(path)}`;
-
-  // Check if file already exists (to get its SHA for update)
-  let sha: string | undefined;
-  try {
-    const checkRes = await fetch(url, { headers: ghHeaders() });
-    if (checkRes.ok) {
-      const existing = await checkRes.json();
-      sha = existing.sha;
-    }
-  } catch {
-    // ignore — file doesn't exist, that's fine
-  }
-
-  const body: Record<string, string> = {
-    message: commitMessage,
-    content: base64Content,
-  };
-  if (sha) body.sha = sha;
-
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: ghHeaders(),
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GitHub Contents API ${res.status}: ${text}`);
-  }
-
-  const data = await res.json();
-  return {
-    downloadUrl: data.content?.download_url ?? "",
-    htmlUrl: data.content?.html_url ?? "",
-  };
+async function uploadFileToR2(params: {
+  key: string; // object key, e.g. "logos/timestamp_filename.png"
+  body: Uint8Array;
+  contentType: string;
+}): Promise<string> {
+  await getR2Client().send(
+    new PutObjectCommand({
+      Bucket: CF_R2_BUCKET,
+      Key: params.key,
+      Body: params.body,
+      ContentType: params.contentType,
+    }),
+  );
+  const publicBase = CF_R2_PUBLIC_URL!.replace(/\/$/, "");
+  return `${publicBase}/${params.key}`;
 }
 
-/** Build GitHub Issue body — only metadata + image URL, no base64. */
+/** Build GitHub Issue body — only metadata + image URL, no binary data. */
 function buildIssueBody(params: {
   filename: string;
   mimeType: string;
-  repoPath: string;
+  r2Key: string;
   imageUrl: string;
   submitterName: string;
   description: string;
@@ -149,7 +134,7 @@ function buildIssueBody(params: {
   const {
     filename,
     mimeType,
-    repoPath,
+    r2Key,
     imageUrl,
     submitterName,
     description,
@@ -160,7 +145,7 @@ function buildIssueBody(params: {
     {
       filename,
       mimeType,
-      repoPath,
+      r2Key,
       imageUrl,
       submitterName,
       description,
@@ -194,6 +179,16 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
 
   if (!GITHUB_TOKEN) {
     return json({ error: "Server misconfigured" }, 500);
+  }
+
+  if (
+    !CF_R2_ACCESS_KEY_ID ||
+    !CF_R2_SECRET_ACCESS_KEY ||
+    !CF_R2_ENDPOINT ||
+    !CF_R2_BUCKET ||
+    !CF_R2_PUBLIC_URL
+  ) {
+    return json({ error: "Server misconfigured: storage unavailable" }, 500);
   }
 
   if (isSubmitRateLimited(ip)) {
@@ -267,53 +262,49 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
     .slice(0, MAX_SUBMITTER_NAME_LENGTH);
   const description = rawDescription.trim().slice(0, MAX_DESCRIPTION_LENGTH);
 
-  // ── Convert file to base64 ─────────────────────────────────────────────────
-  let base64: string;
+  // ── Read file bytes ────────────────────────────────────────────────────────
+  let fileBytes: Uint8Array;
   try {
-    const arrayBuffer = await file.arrayBuffer();
-    base64 = uint8ToBase64(new Uint8Array(arrayBuffer));
+    fileBytes = new Uint8Array(await file.arrayBuffer());
   } catch (err) {
-    console.error("[logo-submit] base64 conversion failed:", err);
+    console.error("[logo-submit] Failed to read file bytes:", err);
     return json({ error: "Failed to process uploaded file." }, 500);
   }
 
-  // ── Upload image to repo via GitHub Contents API ───────────────────────────
+  // ── Upload image to Cloudflare R2 ──────────────────────────────────────────
   const uploadedAt = new Date().toISOString();
-  // Use timestamp prefix to avoid collisions
   const timestamp = Date.now();
   const safeFilename = sanitizeFilename(file.name);
-  const repoFilename = `${timestamp}_${safeFilename}`;
-  const repoPath = `${UPLOAD_DIR}/${repoFilename}`;
+  const r2Filename = `${timestamp}_${safeFilename}`;
+  const r2Key = `${LOGO_KEY_PREFIX}/${r2Filename}`;
 
   let imageUrl: string;
   try {
-    const uploaded = await uploadFileToRepo({
-      path: repoPath,
-      base64Content: base64,
-      commitMessage: `feat: add community logo ${repoFilename}`,
+    imageUrl = await uploadFileToR2({
+      key: r2Key,
+      body: fileBytes,
+      contentType: reportedMime,
     });
-    // Prefer raw download URL; fall back to html URL
-    imageUrl = uploaded.downloadUrl || uploaded.htmlUrl;
   } catch (err) {
-    console.error("[logo-submit] Failed to upload image to repo:", err);
+    console.error("[logo-submit] Failed to upload image to R2:", err);
     return json(
       { error: "Failed to upload image. Please try again later." },
       502,
     );
   }
 
-  // ── Create GitHub Issue (metadata only, no base64) ─────────────────────────
+  // ── Create GitHub Issue (metadata only) ───────────────────────────────────
   const issueBody = buildIssueBody({
-    filename: repoFilename,
+    filename: r2Filename,
     mimeType: reportedMime,
-    repoPath,
+    r2Key,
     imageUrl,
     submitterName: submitterName || "Anonymous",
     description,
     uploadedAt,
   });
 
-  const issueTitle = `${LOGO_ISSUE_TITLE_PREFIX} ${repoFilename} — ${submitterName || "Anonymous"}`;
+  const issueTitle = `${LOGO_ISSUE_TITLE_PREFIX} ${r2Filename} — ${submitterName || "Anonymous"}`;
 
   try {
     const createRes = await fetch(

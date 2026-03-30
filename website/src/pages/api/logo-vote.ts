@@ -25,11 +25,6 @@ const BUILTIN_LOGOS: BuiltinLogo[] = [
     description: "Community logo design #2",
   },
   {
-    id: "builtin-25F5FE428D6A31E4350AF43F49052822",
-    filename: "25F5FE428D6A31E4350AF43F49052822.jpg",
-    description: "Community logo design #3",
-  },
-  {
     id: "builtin-59EA0193A911CF1FB3C3DA6A7CD10579",
     filename: "59EA0193A911CF1FB3C3DA6A7CD10579.png",
     description: "Community logo design #4",

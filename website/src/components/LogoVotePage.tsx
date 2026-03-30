@@ -513,7 +513,7 @@ export default function LogoVotePage() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
-      if (submitName.trim()) formData.append("name", submitName.trim());
+      if (submitName.trim()) formData.append("submitterName", submitName.trim());
       if (submitDesc.trim()) formData.append("description", submitDesc.trim());
 
       const res = await fetch("/api/logo-submit", {
