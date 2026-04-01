@@ -85,13 +85,26 @@ jobs:
             Similar topics are NOT duplicates (e.g. two different download bugs are not the same unless the root cause is identical).
 
             === STEP 3A: IF DUPLICATE ===
-            - Add label:
-                gh issue edit ${{ github.event.issue.number }} --repo ${{ github.repository }} --add-label duplicate
-            - Comment in Chinese referencing the original:
-                gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "..."
-            - Close ONLY IF keep_open=false:
+            First, decide which issue to KEEP and which to CLOSE based on description quality:
+            - Fetch the existing duplicate's body: gh issue view <existing_number> --repo ${{ github.repository }} --json body,title
+            - Compare both issues on: completeness of description, reproduction steps, version info, screenshots/logs attached, clarity
+            - The issue with MORE complete and accurate information should be KEPT (stays open)
+            - The issue with LESS information should be CLOSED
+
+            Case A — New issue (#${{ github.event.issue.number }}) is LESS complete (close it):
+              gh issue edit ${{ github.event.issue.number }} --repo ${{ github.repository }} --add-label duplicate
+              gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "..."
+              Close ONLY IF keep_open=false:
                 gh issue close ${{ github.event.issue.number }} --repo ${{ github.repository }} --reason "not planned"
-              If keep_open=true: skip closing, mention in the comment that [keep-open] was detected so the issue stays open.
+
+            Case B — Existing issue is LESS complete (close it, keep new):
+              gh issue edit <existing_number> --repo ${{ github.repository }} --add-label duplicate
+              gh issue comment <existing_number> --repo ${{ github.repository }} --body "与 #${{ github.event.issue.number }} 重复，且描述不如新 issue 完整，已关闭。"
+              gh issue close <existing_number> --repo ${{ github.repository }} --reason "not planned"
+              Also comment on new issue explaining it was kept as the more complete report.
+
+            In both cases: mention in comments which issue is being kept and why.
+            [keep-open] override: if the issue to be closed has [keep-open] in its body, skip closing it and note this in the comment.
 
             === STEP 3B: IF NOT DUPLICATE — Add to Project Board ===
             Use PROJECT_TOKEN env var for all GraphQL project operations.
