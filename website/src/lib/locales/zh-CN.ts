@@ -632,7 +632,7 @@ const zhCN: Messages = {
   "footer.builtWith": "Astro + React + Rust",
 
   // Project Board（看板视图）
-  "board.tabLabel": "进度看板",
+  "board.tabLabel": "反馈追踪",
   "board.loading": "加载看板数据...",
   "board.error": "加载看板失败，请稍后重试。",
   "board.noToken": "暂未配置看板访问权限。",

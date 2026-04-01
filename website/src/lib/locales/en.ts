@@ -660,7 +660,7 @@ const en = {
   "sponsor.beFirst": "Become the first sponsor!",
 
   // Project Board
-  "board.tabLabel": "Roadmap",
+  "board.tabLabel": "Issue Tracker",
   "board.loading": "Loading board...",
   "board.error": "Failed to load board. Please try again.",
   "board.noToken": "Board access not configured.",
