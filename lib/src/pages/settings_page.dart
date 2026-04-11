@@ -933,10 +933,10 @@ class _CustomCategoryManager extends StatelessWidget {
               context, s, c,
               existing: categories[i],
             ),
-            onDelete: categories[i].isBuiltin
+            onDelete: categories[i].builtinType == 'all'
                 ? null
                 : () => _confirmDelete(context, s, c, categories[i]),
-            onReset: categories[i].isBuiltin
+            onReset: (categories[i].isBuiltin && categories[i].builtinType != 'all')
                 ? () => settingsProvider
                     .resetBuiltinCategory(categories[i].builtinType!)
                 : null,
@@ -970,6 +970,9 @@ class _CustomCategoryManager extends StatelessWidget {
           settingsProvider.addCustomCategory(category);
         }
       },
+      onDelete: (existing != null && existing.builtinType != 'all')
+          ? () => settingsProvider.removeCustomCategory(existing.id)
+          : null,
     );
   }
 
@@ -1188,9 +1191,8 @@ class _CategoryTileState extends State<_CategoryTile> {
                 onTap: widget.onToggleVisible,
               ),
               const SizedBox(width: 2),
-              // 内置分类: 非 all/other 可编辑; 自定义分类: 总是可编辑
-              if (!cat.isBuiltin ||
-                  (cat.builtinType != 'all' && cat.builtinType != 'other')) ...[
+              // 内置分类: 非 all 可编辑（含"其他"）; 自定义分类: 总是可编辑
+              if (!cat.isBuiltin || cat.builtinType != 'all') ...[
                 _TileAction(
                   icon: LucideIcons.pencil,
                   color: c.textSecondary,
@@ -1198,10 +1200,8 @@ class _CategoryTileState extends State<_CategoryTile> {
                 ),
                 const SizedBox(width: 2),
               ],
-              // 内置: 重置按钮; 自定义: 删除按钮
-              if (widget.onReset != null &&
-                  cat.builtinType != 'all' &&
-                  cat.builtinType != 'other')
+              // 内置: 重置按钮（"全部文件"除外）; 自定义: 删除按钮
+              if (widget.onReset != null && cat.builtinType != 'all')
                 _TileAction(
                   icon: LucideIcons.rotateCcw,
                   color: c.textMuted,

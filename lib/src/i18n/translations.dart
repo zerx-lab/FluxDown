@@ -429,8 +429,8 @@ class S {
   String get editCategory => _t('编辑分类', 'Edit Category');
   String get deleteCategory => _t('删除分类', 'Delete Category');
   String get deleteCategoryConfirm => _t(
-    '确定要删除此自定义分类吗？已下载的文件不受影响。',
-    'Are you sure you want to delete this custom category? Downloaded files are not affected.',
+    '确定要删除此分类吗？已下载的文件不受影响。',
+    'Are you sure you want to delete this category? Downloaded files are not affected.',
   );
   String get categoryName => _t('分类名称', 'Category Name');
   String get categoryNameHint => _t('例如：电子书', 'e.g. eBooks');
@@ -445,6 +445,9 @@ class S {
   String get regexInvalid => _t('正则表达式无效', 'Invalid regex pattern');
   String get categoryNameRequired => _t('请输入分类名称', 'Category name is required');
   String get extensionsRequired => _t('请输入至少一个扩展名', 'Enter at least one extension');
+  String get categorySaveDir => _t('分类保存目录', 'Category Save Directory');
+  String get categorySaveDirDesc => _t('留空则使用全局默认目录', 'Leave empty to use global default');
+  String get restoreDefaultPath => _t('恢复默认', 'Restore Default');
   String get nCustomCategories => _t('个自定义分类', ' custom categories');
   String get resetBuiltinCategories => _t('恢复默认', 'Reset Defaults');
   String get resetAllCategoriesConfirm => _t(

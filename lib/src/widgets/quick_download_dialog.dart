@@ -16,6 +16,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
+
 import '../models/download_controller.dart';
 import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
@@ -125,6 +126,9 @@ class _QuickDownloadDialogContentState
   /// 防止重复打开文件选择器
   bool _isPicking = false;
 
+  /// 用户是否手动通过文件选择器修改过保存目录
+  bool _saveDirUserModified = false;
+
   /// 根据队列 ID 计算有效的线程数选项字符串。
   ///
   /// 优先级：自定义队列的 defaultSegments → 全局 defaultSegments → null（Auto）
@@ -152,6 +156,8 @@ class _QuickDownloadDialogContentState
     _urlController.addListener(_onUrlChanged);
     // 根据队列/全局设置初始化默认线程数
     selectedThreads = _effectiveSegmentsOption(_selectedQueueId);
+    // 根据已知文件名自动匹配分类保存目录
+    _tryAutoApplySaveDir(widget.filename);
     // 初始化时计算一次
     _onUrlChanged();
   }
@@ -240,6 +246,7 @@ class _QuickDownloadDialogContentState
       );
       if (result != null && mounted) {
         _saveDirController.text = result;
+        _saveDirUserModified = true;
       }
     } on FilePickerException catch (e) {
       if (mounted) _showPickerError(e);
@@ -261,6 +268,40 @@ class _QuickDownloadDialogContentState
   }
 
   bool get _isBatch => _urlCount > 1;
+
+  /// 根据文件名尝试自动匹配分类的保存目录。
+  void _tryAutoApplySaveDir(String fileName) {
+    if (fileName.isEmpty || _saveDirUserModified) return;
+    final settings = SettingsProvider.globalInstance;
+    if (settings == null) return;
+    final categories = settings.customCategories
+        .where((c) => c.visible)
+        .toList()
+      ..sort((a, b) => a.position.compareTo(b.position));
+
+    // 先查普通分类（非 all / other）
+    for (final cat in categories) {
+      if (cat.builtinType == 'all' || cat.builtinType == 'other') continue;
+      if (cat.saveDir.isNotEmpty && cat.matches(fileName)) {
+        _saveDirController.text = cat.saveDir;
+        return;
+      }
+    }
+
+    // 再查 other 分类
+    final normals = categories
+        .where((c) => c.builtinType != 'all' && c.builtinType != 'other')
+        .toList();
+    final otherCat = categories
+        .where((c) => c.builtinType == 'other')
+        .firstOrNull;
+    if (otherCat != null && otherCat.saveDir.isNotEmpty) {
+      final matchesAny = normals.any((c) => c.matches(fileName));
+      if (!matchesAny) {
+        _saveDirController.text = otherCat.saveDir;
+      }
+    }
+  }
 
   void _startDownload() {
     final saveDir = _saveDirController.text.trim();

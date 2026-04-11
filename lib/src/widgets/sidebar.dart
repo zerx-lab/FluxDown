@@ -451,8 +451,8 @@ class _SidebarState extends State<Sidebar> {
     AppColors c,
     CustomCategory cat,
   ) {
-    // "全部文件" 和 "其他" 只能隐藏
-    final isSpecial = cat.builtinType == 'all' || cat.builtinType == 'other';
+    // 只有 "全部文件" 才完全锁定（无法编辑/重置）；"其他" 与普通内置分类一样可编辑
+    final isSpecial = cat.builtinType == 'all';
 
     showContextMenu(
       context,
@@ -468,6 +468,9 @@ class _SidebarState extends State<Sidebar> {
               context,
               existing: cat,
               onSave: (updated) => widget.settingsProvider.updateCustomCategory(updated),
+              onDelete: cat.builtinType == 'all'
+                  ? null
+                  : () => widget.settingsProvider.removeCustomCategory(cat.id),
             ),
           ),
         // 隐藏
@@ -479,7 +482,7 @@ class _SidebarState extends State<Sidebar> {
             cat.copyWith(visible: false),
           ),
         ),
-        // 内置分类: 重置; 自定义分类: 删除
+        // 内置分类(非all): 重置选项
         if (cat.isBuiltin && !isSpecial)
           ContextMenuItem(
             icon: LucideIcons.rotateCcw,
@@ -487,7 +490,8 @@ class _SidebarState extends State<Sidebar> {
             color: c.textMuted,
             action: () => widget.settingsProvider.resetBuiltinCategory(cat.builtinType!),
           ),
-        if (!cat.isBuiltin)
+        // 非"全部文件"的所有分类（含内置视频/音频等）均可删除
+        if (cat.builtinType != 'all')
           ContextMenuItem(
             icon: LucideIcons.trash2,
             label: s.deleteCategory,

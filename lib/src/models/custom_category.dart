@@ -64,6 +64,9 @@ class CustomCategory {
   /// 自定义分类此值为 null
   final String? builtinType;
 
+  /// 绑定的保存目录，空字符串表示使用全局默认目录
+  final String saveDir;
+
   const CustomCategory({
     required this.id,
     required this.name,
@@ -75,6 +78,7 @@ class CustomCategory {
     this.visible = true,
     this.isBuiltin = false,
     this.builtinType,
+    this.saveDir = '',
   });
 
   /// 检测文件名是否匹配此分类
@@ -111,6 +115,7 @@ class CustomCategory {
     bool? visible,
     bool? isBuiltin,
     String? builtinType,
+    String? saveDir,
   }) {
     return CustomCategory(
       id: id ?? this.id,
@@ -123,6 +128,7 @@ class CustomCategory {
       visible: visible ?? this.visible,
       isBuiltin: isBuiltin ?? this.isBuiltin,
       builtinType: builtinType ?? this.builtinType,
+      saveDir: saveDir ?? this.saveDir,
     );
   }
 
@@ -137,6 +143,7 @@ class CustomCategory {
     'visible': visible,
     'isBuiltin': isBuiltin,
     'builtinType': builtinType,
+    'saveDir': saveDir,
   };
 
   factory CustomCategory.fromJson(Map<String, dynamic> json) {
@@ -160,6 +167,7 @@ class CustomCategory {
       visible: json['visible'] as bool? ?? true,
       isBuiltin: json['isBuiltin'] as bool? ?? false,
       builtinType: json['builtinType'] as String?,
+      saveDir: json['saveDir'] as String? ?? '',
     );
   }
 

@@ -21,6 +21,7 @@ import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
+
 import '../models/download_controller.dart';
 import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
@@ -98,6 +99,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   /// 防止重复打开文件选择器
   bool _isPicking = false;
+
+  /// 用户是否手动通过文件选择器修改过保存目录（是则不再自动覆盖）
+  bool _saveDirUserModified = false;
 
   // ── torrent 文件预解析状态 ──────────────────────────────────────────────────
 
@@ -227,6 +231,12 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         _urlCount = count;
         _allMagnet = allMagnet;
       });
+    }
+    // 自动从 URL 提取文件名并匹配分类保存目录
+    if (entries.isNotEmpty &&
+        !entries.first.url.toLowerCase().startsWith('magnet:')) {
+      final fileName = _extractFilenameFromUrl(entries.first.url);
+      _tryAutoApplySaveDir(fileName);
     }
   }
 
@@ -480,6 +490,53 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     }
   }
 
+  /// 根据文件名尝试自动匹配分类的保存目录。
+  /// 只在用户未手动修改过保存目录时生效。
+  void _tryAutoApplySaveDir(String fileName) {
+    if (fileName.isEmpty || _saveDirUserModified) return;
+    final categories =
+        widget.settingsProvider.customCategories
+            .where((c) => c.visible)
+            .toList()
+          ..sort((a, b) => a.position.compareTo(b.position));
+
+    // 先查普通分类（非 all / other）
+    for (final cat in categories) {
+      if (cat.builtinType == 'all' || cat.builtinType == 'other') continue;
+      if (cat.saveDir.isNotEmpty && cat.matches(fileName)) {
+        _saveDirController.text = cat.saveDir;
+        return;
+      }
+    }
+
+    // 再查 other 分类
+    final normals = categories
+        .where((c) => c.builtinType != 'all' && c.builtinType != 'other')
+        .toList();
+    final otherCat = categories
+        .where((c) => c.builtinType == 'other')
+        .firstOrNull;
+    if (otherCat != null && otherCat.saveDir.isNotEmpty) {
+      final matchesAny = normals.any((c) => c.matches(fileName));
+      if (!matchesAny) {
+        _saveDirController.text = otherCat.saveDir;
+      }
+    }
+  }
+
+  /// 从 URL 中提取文件名（取最后一段路径，必须包含 '.'）
+  static String _extractFilenameFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url.trim());
+      final segments = uri.pathSegments;
+      if (segments.isNotEmpty) {
+        final last = Uri.decodeComponent(segments.last);
+        if (last.contains('.')) return last;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   Future<void> _pickSaveDir() async {
     if (_isPicking) return;
     setState(() => _isPicking = true);
@@ -492,6 +549,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       );
       if (result != null && mounted) {
         _saveDirController.text = result;
+        _saveDirUserModified = true;
       }
     } on FilePickerException catch (e) {
       if (mounted) _showPickerError(e);

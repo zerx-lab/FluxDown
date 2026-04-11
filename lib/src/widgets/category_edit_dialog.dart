@@ -2,13 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../models/custom_category.dart';
+import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
+import 'dir_picker_field.dart';
 
 /// 显示分类编辑对话框（新建或编辑）
 void showCategoryEditDialog(
   BuildContext context, {
   CustomCategory? existing,
   required ValueChanged<CustomCategory> onSave,
+  /// 仅自定义分类（非内置）传入；调用后直接执行删除，对话框内会先弹确认
+  VoidCallback? onDelete,
 }) {
   final s = LocaleScope.of(context);
   final c = AppColors.of(context);
@@ -22,6 +26,7 @@ void showCategoryEditDialog(
       c: c,
       existing: existing,
       onSave: onSave,
+      onDelete: onDelete,
     ),
   );
 }
@@ -33,12 +38,16 @@ class CategoryEditDialog extends StatefulWidget {
   final CustomCategory? existing;
   final ValueChanged<CustomCategory> onSave;
 
+  /// 非空时对话框底部显示"删除分类"按钮（仅自定义分类）
+  final VoidCallback? onDelete;
+
   const CategoryEditDialog({
     super.key,
     required this.s,
     required this.c,
     this.existing,
     required this.onSave,
+    this.onDelete,
   });
 
   @override
@@ -52,7 +61,13 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
   late MatchMode _matchMode;
   late CategoryIcon _selectedIcon;
   String? _error;
+  late final TextEditingController _saveDirCtrl;
+  bool _isDirPicking = false;
 
+  /// 是否隐藏"匹配规则"区域。
+  /// - 'all'：完全锁定，不可编辑。
+  /// - 'other'：用排除逻辑匹配，无显式规则，仍隐藏此区域；
+  ///            但允许编辑名称、图标和保存路径（sidebar 已解除限制）。
   bool get _isSpecialBuiltin =>
       widget.existing?.isBuiltin == true &&
       (widget.existing?.builtinType == 'all' ||
@@ -69,6 +84,8 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
     _regexCtrl = TextEditingController(text: e?.regexPattern ?? '');
     _matchMode = e?.matchMode ?? MatchMode.extension;
     _selectedIcon = e?.icon ?? CategoryIcon.file;
+    _saveDirCtrl = TextEditingController(text: e?.saveDir ?? '');
+    _saveDirCtrl.addListener(() => setState(() {}));
   }
 
   @override
@@ -76,7 +93,31 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
     _nameCtrl.dispose();
     _extCtrl.dispose();
     _regexCtrl.dispose();
+    _saveDirCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickSaveDir() async {
+    if (_isDirPicking) return;
+    setState(() => _isDirPicking = true);
+    try {
+      final result = await FilePickerService.pickDirectory(
+        dialogTitle: widget.s.categorySaveDir,
+        initialDirectory: _saveDirCtrl.text.trim().isNotEmpty
+            ? _saveDirCtrl.text.trim()
+            : null,
+      );
+      if (result != null && mounted) {
+        setState(() => _saveDirCtrl.text = result);
+      }
+    } on FilePickerException catch (_) {
+      // FilePickerService 返回 null 表示用户取消，异常仅在真正错误时抛出
+      // 静默忽略，避免打扰用户
+    } catch (_) {
+      // 忽略其他错误
+    } finally {
+      if (mounted) setState(() => _isDirPicking = false);
+    }
   }
 
   void _save() {
@@ -127,10 +168,42 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
       visible: widget.existing?.visible ?? true,
       isBuiltin: widget.existing?.isBuiltin ?? false,
       builtinType: widget.existing?.builtinType,
+      saveDir: _saveDirCtrl.text.trim(),
     );
 
     Navigator.of(context).pop();
     widget.onSave(category);
+  }
+
+  /// 弹出二次确认后删除分类，确认后同时关闭本对话框。
+  void _deleteWithConfirm() {
+    final s = widget.s;
+    final c = widget.c;
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.deleteCategory),
+        description: Text(s.deleteCategoryConfirm),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.cancel),
+          ),
+          ShadButton.destructive(
+            onPressed: () {
+              Navigator.of(ctx).pop(); // 关闭确认对话框
+              if (!context.mounted) return;
+              Navigator.of(context).pop(); // 关闭编辑对话框
+              widget.onDelete?.call();
+            },
+            child: Text(s.deleteCategory),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -141,6 +214,12 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
     return ShadDialog(
       title: Text(widget.existing != null ? s.editCategory : s.addCategory),
       actions: [
+        // 自定义分类才显示删除按钮，放在最左侧
+        if (widget.onDelete != null)
+          ShadButton.destructive(
+            onPressed: _deleteWithConfirm,
+            child: Text(s.deleteCategory),
+          ),
         ShadButton.outline(
           onPressed: () => Navigator.of(context).pop(),
           child: Text(s.cancel),
@@ -249,6 +328,65 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
                   placeholder: Text(s.regexHint),
                 ),
               ],
+            ],
+            // 分类保存目录（"全部" 分类不显示，因其等同于全局默认）
+            if (widget.existing?.builtinType != 'all') ...[
+              const SizedBox(height: 12),
+              Text(
+                s.categorySaveDir,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w500,
+                  color: c.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                s.categorySaveDirDesc,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: c.textMuted,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: DirPickerField(
+                      path: _saveDirCtrl.text,
+                      placeholder: s.selectSaveDir,
+                      enabled: !_isDirPicking,
+                      onTap: _pickSaveDir,
+                    ),
+                  ),
+                  if (_saveDirCtrl.text.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () => setState(() => _saveDirCtrl.text = ''),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(5),
+                            border: Border.all(color: c.border),
+                          ),
+                          child: Text(
+                            s.restoreDefaultPath,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: c.textSecondary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ],
             if (_error != null) ...[
               const SizedBox(height: 8),
