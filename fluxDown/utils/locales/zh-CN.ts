@@ -31,8 +31,7 @@ const zhCN = {
   "settings.hintAll": "拦截所有下载（除排除域名外）",
   "settings.minFileSize": "最小文件大小",
   "settings.sizeNoLimit": "不限",
-  "settings.altClickHint":
-    "按住 Alt 键点击下载链接，跳过拦截使用浏览器直接下载",
+  "settings.altClickHint": "按 Alt+Shift+D 快捷键可快速切换下载拦截开关",
   "settings.dotVisible": "悬浮球",
 
   // File type management
@@ -102,6 +101,17 @@ const zhCN = {
   "panel.tabSubtitle": "字幕",
   "panel.tabMagnet": "磁力",
   "panel.tabOther": "其他",
+
+  // Shortcut toggle
+  "shortcut.toggleTitle": "拦截切换",
+  "shortcut.interceptOn": "下载拦截已开启",
+  "shortcut.interceptOff": "下载拦截已关闭",
+
+  // Context menu
+  "contextMenu.sendToFluxDown": "使用 FluxDown 下载此链接",
+  "contextMenu.sendImageToFluxDown": "使用 FluxDown 下载此图片",
+  "contextMenu.sendVideoToFluxDown": "使用 FluxDown 下载此视频/音频",
+  "contextMenu.sendPageToFluxDown": "使用 FluxDown 下载此页面",
 
   // Manifest
   "manifest.description":

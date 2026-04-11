@@ -46,6 +46,7 @@ export default defineConfig({
       "activeTab",
       "tabs",
       "nativeMessaging",
+      "contextMenus",
     ],
     host_permissions: ["<all_urls>"],
     web_accessible_resources: [
@@ -75,6 +76,17 @@ export default defineConfig({
         data_collection_permissions: {
           required: ["none"],
         },
+      },
+    },
+    commands: {
+      "toggle-intercept": {
+        suggested_key: {
+          default: "Alt+Shift+D",
+        },
+        description:
+          browser === "chrome"
+            ? "__MSG_extensionName__: Toggle download interception"
+            : "Toggle download interception",
       },
     },
   }),

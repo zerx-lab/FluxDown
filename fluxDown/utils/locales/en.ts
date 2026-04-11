@@ -34,7 +34,7 @@ const en: Record<MessageKey, string> = {
   "settings.minFileSize": "Min File Size",
   "settings.sizeNoLimit": "No limit",
   "settings.altClickHint":
-    "Hold Alt and click a download link to skip interception",
+    "Press Alt+Shift+D to quickly toggle download interception",
   "settings.dotVisible": "Floating Ball",
 
   // File type management
@@ -109,6 +109,17 @@ const en: Record<MessageKey, string> = {
   "panel.tabSubtitle": "Subtitle",
   "panel.tabMagnet": "Magnet",
   "panel.tabOther": "Other",
+
+  // Shortcut toggle
+  "shortcut.toggleTitle": "Intercept Toggle",
+  "shortcut.interceptOn": "Download interception enabled",
+  "shortcut.interceptOff": "Download interception disabled",
+
+  // Context menu
+  "contextMenu.sendToFluxDown": "Download this link with FluxDown",
+  "contextMenu.sendImageToFluxDown": "Download this image with FluxDown",
+  "contextMenu.sendVideoToFluxDown": "Download this video/audio with FluxDown",
+  "contextMenu.sendPageToFluxDown": "Download this page with FluxDown",
 
   // Manifest
   "manifest.description":

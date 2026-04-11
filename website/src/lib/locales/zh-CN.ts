@@ -74,10 +74,13 @@ const zhCN: Messages = {
 
   // Logo Vote
   "logoVote.badge": "社区投票",
+  "logoVote.endedBadge": "投票已结束",
   "logoVote.title": "为 FluxDown ",
   "logoVote.titleHighlight": "Logo 投票",
   "logoVote.subtitle":
     "为你最喜欢的 Logo 方案投票，或提交你的原创设计。FluxDown 的新面貌，由社区共同决定！",
+  "logoVote.endedSubtitle":
+    "Logo 投票已结束，感谢所有参与者！以下是最终投票结果。",
   "logoVote.loading": "正在加载 Logo...",
   "logoVote.loadError": "加载失败，请刷新重试",
   "logoVote.votes": "{n} 票",

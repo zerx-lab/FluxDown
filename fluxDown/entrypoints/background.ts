@@ -192,6 +192,8 @@ export default defineBackground(() => {
   initI18n()
     .then(() => {
       console.log("[FluxDown] i18n initialized");
+      // i18n 就绪后创建右键菜单（菜单标题需要翻译）
+      createContextMenus();
     })
     .catch((e) => {
       console.warn("[FluxDown] i18n init failed (non-fatal):", e);
@@ -199,6 +201,126 @@ export default defineBackground(() => {
 
   // 初始化 tab 生命周期监听器（自动清理关闭/导航的 tab 资源）
   initTabLifecycleListeners();
+
+  // ===== 右键菜单：即使关闭自动拦截也可以手动发送链接到 FluxDown 下载 =====
+
+  /**
+   * 创建右键菜单项（需在 i18n 初始化后调用以获取正确的翻译文本）
+   *
+   * 设计要点：
+   * - 右键菜单不受"下载拦截开关"影响，关闭自动拦截时仍可手动右键发送
+   * - 覆盖 link / image / video+audio / page 四种上下文
+   * - MV3 下 contextMenus 在 Service Worker 重启后仍持久保留，
+   *   但每次启动重建可确保翻译文本跟随语言切换更新
+   */
+  function createContextMenus() {
+    if (!browser.contextMenus) {
+      console.warn("[FluxDown] contextMenus API not available");
+      return;
+    }
+    browser.contextMenus
+      .removeAll()
+      .then(() => {
+        browser.contextMenus.create({
+          id: "fluxdown-send-link",
+          title: t("contextMenu.sendToFluxDown"),
+          contexts: ["link"],
+        });
+        browser.contextMenus.create({
+          id: "fluxdown-send-image",
+          title: t("contextMenu.sendImageToFluxDown"),
+          contexts: ["image"],
+        });
+        browser.contextMenus.create({
+          id: "fluxdown-send-video",
+          title: t("contextMenu.sendVideoToFluxDown"),
+          contexts: ["video", "audio"],
+        });
+        browser.contextMenus.create({
+          id: "fluxdown-send-page",
+          title: t("contextMenu.sendPageToFluxDown"),
+          contexts: ["page"],
+        });
+        console.log("[FluxDown] Context menus created");
+      })
+      .catch((e: unknown) => {
+        console.warn("[FluxDown] Failed to create context menus:", e);
+      });
+  }
+
+  // 右键菜单点击处理（同步注册，MV3 要求事件监听器在 Service Worker 首次执行时注册）
+  if (browser.contextMenus?.onClicked) {
+    browser.contextMenus.onClicked.addListener(
+      async (info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => {
+        let downloadUrl: string | undefined;
+
+        switch (info.menuItemId) {
+          case "fluxdown-send-link":
+            downloadUrl = info.linkUrl;
+            break;
+          case "fluxdown-send-image":
+          case "fluxdown-send-video":
+            downloadUrl = info.srcUrl;
+            break;
+          case "fluxdown-send-page":
+            downloadUrl = info.pageUrl;
+            break;
+          default:
+            return; // 非 FluxDown 菜单项，忽略
+        }
+
+        if (!downloadUrl) return;
+
+        // 过滤非 HTTP(S)/FTP 协议（javascript: / mailto: / data: 等不可下载）
+        try {
+          const protocol = new URL(downloadUrl).protocol;
+          if (!["http:", "https:", "ftp:"].includes(protocol)) return;
+        } catch {
+          return;
+        }
+
+        const referrer = tab?.url || info.pageUrl || "";
+
+        console.log(
+          "[FluxDown] Context menu download:",
+          info.menuItemId,
+          downloadUrl,
+        );
+
+        const sendOk = await sendToFluxDown(downloadUrl, referrer);
+        if (sendOk) {
+          const filename = extractCleanFilename(downloadUrl);
+          notify(
+            t("notify.downloadSent"),
+            t("notify.sentToFluxDown", {
+              name: filename || downloadUrl,
+            }),
+          );
+        } else {
+          await fallbackAfterSendFailure(downloadUrl);
+        }
+      },
+    );
+  }
+
+  // ===== 快捷键切换拦截开关 =====
+  // 用户按 Alt+Shift+D 切换拦截状态，替代原来的 Alt+Click 绕过机制
+  browser.commands.onCommand.addListener(async (command) => {
+    if (command !== "toggle-intercept") return;
+    const settings = await loadSettings();
+    const newEnabled = !settings.enabled;
+    await browser.storage.sync.set({
+      settings: { ...settings, enabled: newEnabled },
+    });
+    updateIcon(newEnabled);
+    syncDownloadShelfState(newEnabled);
+    // 通知用户当前状态
+    notify(
+      t("shortcut.toggleTitle"),
+      newEnabled ? t("shortcut.interceptOn") : t("shortcut.interceptOff"),
+    );
+    console.log("[FluxDown] Intercept toggled via shortcut:", newEnabled);
+  });
 
   // ==========================================
   // 第一层：HTTP 响应感知（webRequest 缓存）
@@ -1145,14 +1267,22 @@ export default defineBackground(() => {
               if (bypass && bypass > Date.now()) {
                 bypassTokens.delete(url);
                 handledDownloads.delete(downloadItem.id);
-                await fallbackToBrowserDownload(downloadUrl, undefined, true).catch(() => {});
+                await fallbackToBrowserDownload(
+                  downloadUrl,
+                  undefined,
+                  true,
+                ).catch(() => {});
                 return;
               }
 
               // 拦截未启用 → 回退让浏览器重新下载
               if (!settings.enabled) {
                 handledDownloads.delete(downloadItem.id);
-                await fallbackToBrowserDownload(downloadUrl, undefined, true).catch(() => {});
+                await fallbackToBrowserDownload(
+                  downloadUrl,
+                  undefined,
+                  true,
+                ).catch(() => {});
                 return;
               }
 
@@ -1740,7 +1870,7 @@ export default defineBackground(() => {
         return { connected: isAvailable };
       }
 
-      // --- Alt+Click 绕过令牌写入 ---
+      // --- Alt+Click 绕过令牌写入（保留向后兼容） ---
       case "addBypassToken": {
         const bypassUrl = message.url as string;
         if (bypassUrl) {

@@ -80,6 +80,9 @@ const en = {
 
   // Logo Vote
   "logoVote.badge": "Community Vote",
+  "logoVote.endedBadge": "Voting Ended",
+  "logoVote.endedSubtitle":
+    "The logo vote has ended. Thank you to everyone who participated! Results are shown below.",
   "logoVote.title": "Vote for ",
   "logoVote.titleHighlight": "FluxDown Logo",
   "logoVote.subtitle":

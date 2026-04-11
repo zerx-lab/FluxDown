@@ -288,11 +288,6 @@ export function FloatingNavbar({ className }: { className?: string }) {
         link: "/announcements",
         icon: icons.announcements,
       },
-      {
-        name: t("nav.logoVote"),
-        link: "/logo-vote",
-        icon: icons.logoVote,
-      },
       { name: t("nav.feedback"), link: "/feedback", icon: icons.feedback },
     ],
   };

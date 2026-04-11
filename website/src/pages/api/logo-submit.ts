@@ -174,7 +174,17 @@ function buildIssueBody(params: {
 }
 
 // ── POST /api/logo-submit ──────────────────────────────────────────────────────
+/** Voting has ended — reject all new submissions */
+const VOTE_ENDED = true;
+
 export const POST: APIRoute = async ({ request, clientAddress }) => {
+  if (VOTE_ENDED) {
+    return json(
+      { error: "Logo voting has ended. Submissions are no longer accepted." },
+      403,
+    );
+  }
+
   const ip = clientAddress || "unknown";
 
   if (!GITHUB_TOKEN) {

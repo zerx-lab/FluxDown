@@ -478,7 +478,14 @@ export const GET: APIRoute = async () => {
 // ─────────────────────────────────────────────
 // POST /api/logo-vote  — vote or unvote
 // ─────────────────────────────────────────────
+// Logo vote has ended — reject all write operations
+const VOTE_ENDED = true;
+
 export const POST: APIRoute = async ({ request, clientAddress }) => {
+  if (VOTE_ENDED) {
+    return json({ error: "Voting has ended" }, 403);
+  }
+
   const ip = clientAddress || "unknown";
 
   if (!GITHUB_TOKEN) {
