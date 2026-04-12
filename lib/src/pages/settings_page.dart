@@ -4394,7 +4394,7 @@ class _AboutContent extends StatelessWidget {
         if (status == UpdateStatus.downloading) ...[
           _statusRow(c, LucideIcons.download, c.accent, s.downloadingUpdate),
           const SizedBox(height: 10),
-          _buildProgressSection(svc, c),
+          _buildProgressSection(context, svc, c),
         ],
 
         const SizedBox(height: 14),
@@ -4553,10 +4553,11 @@ class _AboutContent extends StatelessWidget {
     );
   }
 
-  Widget _buildProgressSection(UpdateService svc, AppColors c) {
+  Widget _buildProgressSection(BuildContext context, UpdateService svc, AppColors c) {
     final p = svc.progress;
     if (p == null) return const SizedBox.shrink();
 
+    final s = LocaleScope.of(context);
     final fraction = p.totalBytes > 0
         ? (p.downloadedBytes / p.totalBytes).clamp(0.0, 1.0)
         : 0.0;
@@ -4564,6 +4565,8 @@ class _AboutContent extends StatelessWidget {
     final sizeText =
         '${UpdateService.formatBytes(p.downloadedBytes)} / ${UpdateService.formatBytes(p.totalBytes)}';
     final speedText = UpdateService.formatSpeed(p.speed);
+    final segments = p.segments;
+    final activeSegments = p.activeSegments;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -4585,6 +4588,22 @@ class _AboutContent extends StatelessWidget {
               style: TextStyle(fontSize: 11, color: c.textMuted),
             ),
             const Spacer(),
+            if (segments > 1) ...[
+              Icon(
+                LucideIcons.layers,
+                size: 11,
+                color: c.accent.withValues(alpha: 0.7),
+              ),
+              const SizedBox(width: 3),
+              Text(
+                s.segmentsDownloading(activeSegments, segments),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: c.accent.withValues(alpha: 0.7),
+                ),
+              ),
+              const SizedBox(width: 10),
+            ],
             Text(speedText, style: TextStyle(fontSize: 11, color: c.textMuted)),
           ],
         ),

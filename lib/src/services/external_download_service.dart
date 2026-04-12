@@ -26,6 +26,9 @@ const _tag = 'ExtDownSvc';
 class ExternalDownloadService {
   static ExternalDownloadService? _instance;
 
+  /// HomePage 注册此回调，收到外部下载请求时自动从设置页切回首页。
+  static VoidCallback? onNavigateToHome;
+
   final SettingsProvider settingsProvider;
   final GlobalKey<NavigatorState> navigatorKey;
   StreamSubscription<RustSignalPack<ExternalDownloadRequest>>? _sub;
@@ -102,6 +105,9 @@ class ExternalDownloadService {
     AnalyticsService.instance.trackExternalDownload();
 
     try {
+      // 如果当前在设置页，先切回首页
+      onNavigateToHome?.call();
+
       // 确保主窗口可见并强制前台激活
       await _bringWindowToFront();
 

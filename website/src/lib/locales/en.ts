@@ -472,7 +472,7 @@ const en = {
     "FluxDown uses multi-threaded downloading with intelligent segmentation. It splits files into multiple parts and downloads them simultaneously, similar to how IDM works. The Rust-powered engine ensures maximum throughput with minimal resource usage.",
   "faq.items.2.q": "Is FluxDown safe to use?",
   "faq.items.2.a":
-    "Absolutely. FluxDown is built with Rust, which guarantees memory safety. The browser extension communicates only via localhost (127.0.0.1:19527) — no data is ever sent to external servers. All your download data stays on your machine.",
+    "Absolutely. FluxDown is built with Rust, which guarantees memory safety. The browser extension communicates with the app via Native Messaging Host (NMH) — a secure, browser-native protocol that uses local IPC (Named Pipe on Windows, Unix socket on macOS/Linux). No data is ever sent to external servers. All your download data stays on your machine.",
   "faq.items.3.q": "Which browsers are supported?",
   "faq.items.3.a":
     "The browser extension supports Chrome, Edge, and other Chromium-based browsers. Firefox support is also available. The extension automatically intercepts downloads and sends them to FluxDown for accelerated downloading.",
@@ -484,10 +484,14 @@ const en = {
     "Yes, FluxDown has full breakpoint resume support. All download progress is persisted to a local SQLite database. You can safely close the app or restart your computer without losing any progress.",
   "faq.items.6.q": "Which platforms are supported?",
   "faq.items.6.a":
-    "Windows (10 or later, x64/ARM64) and Linux (x64) are fully supported right now. macOS support is planned and coming soon. Windows 7/8/8.1 are not supported.",
+    "Windows (10 or later, x64/ARM64), macOS (Apple Silicon & Intel), and Linux (x64) are fully supported. Windows 7/8/8.1 are not supported. On macOS, you may encounter a 'damaged app' warning — see our macOS Gatekeeper guide for a quick fix.",
   "faq.items.7.q": "How do I install the browser extension?",
   "faq.items.7.a":
-    "Download the extension zip from the Download section, extract it, then open your browser's extension management page (chrome://extensions), enable Developer Mode, and click 'Load unpacked' to select the extracted folder.",
+    "The easiest way is to install directly from the Chrome Web Store or Firefox Add-ons Store — just search 'FluxDown' and click install. Alternatively, you can download the offline extension zip from our Download page, extract it, open chrome://extensions, enable Developer Mode, and click 'Load unpacked' to select the extracted folder.",
+  "faq.items.8.q":
+    "macOS says FluxDown is 'damaged' or from an 'unidentified developer'. What should I do?",
+  "faq.items.8.a":
+    "This happens because FluxDown is not yet signed with an Apple developer certificate. It does not mean the app is actually damaged. You can fix it in most cases by running a single Terminal command. Visit our macOS Gatekeeper guide at /macos-gatekeeper for step-by-step instructions.",
 
   // Changelog
   "changelog.badge": "Changelog",

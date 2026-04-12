@@ -727,6 +727,8 @@ class S {
   String get downloadComplete =>
       _t('下载完成，可以安装', 'Download complete, ready to install');
   String get downloadingUpdate => _t('正在下载更新...', 'Downloading update...');
+  String segmentsDownloading(int active, int total) =>
+      _t('$active/$total 线程并发下载', '$active/$total segments');
   String get checking => _t('检查中...', 'Checking...');
   String get checkUpdate => _t('检查更新', 'Check for Updates');
   String downloadUpdate(String size) => _t('下载更新 ($size)', 'Download ($size)');

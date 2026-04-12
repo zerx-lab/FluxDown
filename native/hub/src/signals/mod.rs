@@ -288,6 +288,9 @@ pub struct UpdateCheckResult {
 pub struct DownloadUpdate {
     pub url: String,
     pub version: String,
+    /// Known file size from the check phase (bytes). Avoids relying on HEAD
+    /// probes that may fail through API proxies / CDN redirects.
+    pub file_size: i64,
 }
 
 /// Update download progress (Rust → Dart)
@@ -301,6 +304,10 @@ pub struct UpdateDownloadProgress {
     pub status: i32,
     pub installer_path: String,
     pub error_message: String,
+    /// Number of concurrent download segments (0 = single-threaded fallback).
+    pub segments: i32,
+    /// Number of segments currently actively downloading.
+    pub active_segments: i32,
 }
 
 /// Install a downloaded update (Dart → Rust)

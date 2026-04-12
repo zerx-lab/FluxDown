@@ -192,6 +192,7 @@ class UpdateService extends ChangeNotifier {
     DownloadUpdate(
       url: result.downloadUrl,
       version: result.latestVersion,
+      fileSize: result.fileSize,
     ).sendSignalToRust();
   }
 

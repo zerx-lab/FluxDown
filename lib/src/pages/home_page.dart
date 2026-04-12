@@ -9,6 +9,7 @@ import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../models/settings_provider.dart';
 import '../services/analytics_service.dart';
+import '../services/external_download_service.dart';
 import '../services/log_service.dart';
 import '../services/notification_service.dart';
 import '../theme/app_colors.dart';
@@ -81,6 +82,8 @@ class _HomePageState extends State<HomePage> {
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
     // macOS 菜单栏回调
     _registerMenuCallbacks();
+    // 浏览器扩展下载请求时自动切回首页
+    ExternalDownloadService.onNavigateToHome = _navigateToHomeFromExternal;
     // 视图追踪
     AnalyticsService.instance.trackView('HomePage');
     // 监听侧边栏区块可见性变化
@@ -91,9 +94,22 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// 浏览器扩展触发下载时，若当前在设置页则自动切回首页。
+  void _navigateToHomeFromExternal() {
+    if (!mounted) return;
+    if (_showSettings) {
+      setState(() {
+        _showSettings = false;
+        _initialSettingsCategory = null;
+        AnalyticsService.instance.trackView('HomePage');
+      });
+    }
+  }
+
   @override
   void dispose() {
     logInfo('HomePage', 'dispose');
+    ExternalDownloadService.onNavigateToHome = null;
     _clearMenuCallbacks();
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _settingsProvider.removeListener(_checkSidebarVisibility);

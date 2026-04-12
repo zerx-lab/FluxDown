@@ -456,7 +456,7 @@ const zhCN: Messages = {
     "FluxDown 使用多线程下载和智能分段技术。它将文件拆分为多个部分并同时下载，原理类似 IDM。基于 Rust 的引擎确保了最大吞吐量和最低的资源占用。",
   "faq.items.2.q": "FluxDown 安全吗？",
   "faq.items.2.a":
-    "完全安全。FluxDown 使用 Rust 构建，保证内存安全。浏览器扩展仅通过本地地址 (127.0.0.1:19527) 通信——不会向外部服务器发送任何数据。所有下载数据都保留在你的设备上。",
+    "完全安全。FluxDown 使用 Rust 构建，保证内存安全。浏览器扩展通过 Native Messaging Host（NMH）与应用通信——这是一种浏览器原生的安全协议，使用本地 IPC 通道（Windows 上为命名管道，macOS/Linux 上为 Unix socket）。不会向外部服务器发送任何数据，所有下载数据都保留在你的设备上。",
   "faq.items.3.q": "支持哪些浏览器？",
   "faq.items.3.a":
     "浏览器扩展支持 Chrome、Edge 及其他基于 Chromium 的浏览器，同时也支持 Firefox。扩展会自动拦截下载并发送到 FluxDown 进行加速下载。",
@@ -468,10 +468,14 @@ const zhCN: Messages = {
     "支持。FluxDown 具备完整的断点续传功能。所有下载进度都持久化到本地 SQLite 数据库中。你可以安全地关闭应用或重启电脑，不会丢失任何进度。",
   "faq.items.6.q": "支持哪些操作系统？",
   "faq.items.6.a":
-    "目前完整支持 Windows（10 及以上，x64/ARM64）和 Linux（x64）。macOS 支持已在规划中，即将推出。不支持 Windows 7/8/8.1。",
+    "目前完整支持 Windows（10 及以上，x64/ARM64）、macOS（Apple Silicon 与 Intel）和 Linux（x64）。不支持 Windows 7/8/8.1。macOS 用户可能会遇到「应用已损坏」的提示，请参阅我们的 macOS Gatekeeper 指南快速解决。",
   "faq.items.7.q": "如何安装浏览器扩展？",
   "faq.items.7.a":
-    "从下载区域下载扩展 zip 文件，解压后打开浏览器的扩展管理页面（chrome://extensions），开启开发者模式，点击「加载已解压的扩展程序」选择解压后的文件夹即可。",
+    "最简单的方式是直接从 Chrome 应用商店或 Firefox 附加组件商店安装——搜索「FluxDown」点击安装即可。你也可以从下载页面下载离线扩展 zip 文件，解压后打开 chrome://extensions，开启开发者模式，点击「加载已解压的扩展程序」选择解压后的文件夹。",
+  "faq.items.8.q":
+    "macOS 提示 FluxDown「已损坏」或来自「身份不明的开发者」怎么办？",
+  "faq.items.8.a":
+    "这是因为 FluxDown 暂未使用 Apple 开发者证书签名，并不意味着应用真的已损坏。大多数情况下只需在终端执行一条命令即可解决。请访问我们的 macOS Gatekeeper 指南（/macos-gatekeeper）查看详细步骤。",
 
   // Changelog
   "changelog.badge": "更新日志",

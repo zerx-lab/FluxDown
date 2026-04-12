@@ -519,8 +519,9 @@ pub async fn run(db_dir: PathBuf) {
             Some(signal) = download_update_recv.recv() => {
                 let url = signal.message.url;
                 let version = signal.message.version;
+                let file_size = signal.message.file_size;
                 tokio::spawn(async move {
-                    updater::download(&url, &version).await;
+                    updater::download(&url, &version, file_size).await;
                 });
             }
             Some(signal) = install_update_recv.recv() => {
@@ -538,6 +539,8 @@ pub async fn run(db_dir: PathBuf) {
                             status: 2, // error
                             installer_path: path,
                             error_message: e.to_string(),
+                            segments: 0,
+                            active_segments: 0,
                         }
                         .send_signal_to_dart();
                     }

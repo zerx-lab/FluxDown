@@ -5,9 +5,15 @@ import { useLocale } from "@/lib/i18n";
 import type { Messages } from "@/lib/locales";
 
 /** FAQ keys stored in locale files as faq.items.0.q / faq.items.0.a etc. */
-const FAQ_COUNT = 8;
+const FAQ_COUNT = 9;
 
-function FaqItem({ index, t }: { index: number; t: (key: keyof Messages) => string }) {
+function FaqItem({
+  index,
+  t,
+}: {
+  index: number;
+  t: (key: keyof Messages) => string;
+}) {
   const [open, setOpen] = useState(false);
   const toggle = useCallback(() => setOpen((o) => !o), []);
 

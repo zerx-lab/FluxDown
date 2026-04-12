@@ -1,5 +1,5 @@
-//! Auto-update module: version check via website API proxy, download update
-//! package, and launch installation.
+//! Auto-update module: version check via website API proxy, multi-segment
+//! concurrent download of update packages, and launch installation.
 //!
 //! Platform strategies – all delegate waiting and file work to the compiled
 //! `fluxdown_updater` helper binary that ships alongside the application:
@@ -32,6 +32,8 @@
 #[cfg(target_os = "windows")]
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -39,9 +41,18 @@ use reqwest::Client;
 use rinf::RustSignal;
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
+use crate::logger::log_info;
 use crate::signals::{UpdateCheckResult, UpdateDownloadProgress};
+
+/// Number of concurrent segments for update downloads.
+/// Kept modest — update files are typically 10-30 MB and served from CDN.
+const UPDATE_SEGMENTS: i32 = 8;
+
+/// Minimum file size (bytes) to use multi-segment download. Below this
+/// threshold the overhead of multiple connections is not worth it.
+const MIN_SIZE_FOR_MULTI_SEGMENT: i64 = 2 * 1024 * 1024; // 2 MB
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -334,8 +345,12 @@ async fn check_inner(current_version: &str) -> Result<(), UpdateError> {
 
 /// Download the update installer to a temp directory.
 /// Sends periodic `UpdateDownloadProgress` signals to Dart.
-pub async fn download(url: &str, version: &str) {
-    let result = download_inner(url, version).await;
+///
+/// Uses multi-segment concurrent downloading (like the main download engine)
+/// to maximise throughput and showcase the product's core capability.
+/// Falls back to single-stream when the server does not support Range requests.
+pub async fn download(url: &str, version: &str, file_size: i64) {
+    let result = download_inner(url, version, file_size).await;
     if let Err(e) = result {
         UpdateDownloadProgress {
             version: version.to_string(),
@@ -345,6 +360,8 @@ pub async fn download(url: &str, version: &str) {
             status: 2, // error
             installer_path: String::new(),
             error_message: e.to_string(),
+            segments: 0,
+            active_segments: 0,
         }
         .send_signal_to_dart();
     }
@@ -382,23 +399,44 @@ fn sanitize_filename(raw: &str) -> String {
     }
 }
 
-async fn download_inner(url: &str, version: &str) -> Result<(), UpdateError> {
-    let client = Client::new();
+async fn download_inner(url: &str, version: &str, hint_file_size: i64) -> Result<(), UpdateError> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()?;
 
-    let resp = client
-        .get(url)
-        .timeout(Duration::from_secs(600)) // 10 min max for large installer
-        .send()
-        .await?;
+    // ── Phase 1: Probe Range support via GET Range:0-0 ──────────────────
+    // We already know the file size from the check phase (`hint_file_size`).
+    // HEAD requests often fail through API proxies / CDN redirects (returning
+    // 0 Content-Length), so we probe Range support with a tiny GET instead.
+    let mut supports_range = false;
+    let mut total_bytes = hint_file_size;
 
-    if !resp.status().is_success() {
-        return Err(UpdateError::Other(format!(
-            "Download returned status {}",
-            resp.status()
-        )));
+    let probe_resp = client.get(url).header("Range", "bytes=0-0").send().await;
+
+    if let Ok(resp) = probe_resp {
+        if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            supports_range = true;
+            // Try to extract total size from Content-Range: bytes 0-0/<total>
+            if let Some(cr) = resp.headers().get("content-range")
+                && let Ok(cr_str) = cr.to_str()
+                && let Some(slash_pos) = cr_str.rfind('/')
+                && let Ok(size) = cr_str[slash_pos + 1..].parse::<i64>()
+                && size > 0
+            {
+                total_bytes = size;
+            }
+        } else if resp.status().is_success() {
+            // Server ignored Range, returned 200 OK — no Range support.
+            // Try to get Content-Length as fallback for total_bytes.
+            if total_bytes <= 0 {
+                total_bytes = resp.content_length().unwrap_or(0) as i64;
+            }
+        }
     }
 
-    let total_bytes = resp.content_length().unwrap_or(0) as i64;
+    // If we still don't know the size, it's not critical — progress will
+    // show as indeterminate. But we can't do multi-segment without knowing it.
+
     let raw_name = url
         .rsplit('/')
         .next()
@@ -408,7 +446,65 @@ async fn download_inner(url: &str, version: &str) -> Result<(), UpdateError> {
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join(&file_name);
 
-    let mut file = tokio::fs::File::create(&file_path).await?;
+    let use_multi = supports_range
+        && total_bytes > 0
+        && total_bytes >= MIN_SIZE_FOR_MULTI_SEGMENT
+        && UPDATE_SEGMENTS > 1;
+
+    log_info!(
+        "[updater] download {} total_bytes={} (hint={}) supports_range={} multi={}",
+        file_name,
+        total_bytes,
+        hint_file_size,
+        supports_range,
+        use_multi
+    );
+
+    if use_multi {
+        download_multi_segment(url, version, &file_path, total_bytes, &client).await?;
+    } else {
+        download_single_stream(url, version, &file_path, total_bytes, &client).await?;
+    }
+
+    let installer_path = file_path.to_string_lossy().to_string();
+
+    // Send completion signal
+    UpdateDownloadProgress {
+        version: version.to_string(),
+        downloaded_bytes: total_bytes,
+        total_bytes,
+        speed: 0,
+        status: 1, // completed
+        installer_path,
+        error_message: String::new(),
+        segments: if use_multi { UPDATE_SEGMENTS } else { 1 },
+        active_segments: 0,
+    }
+    .send_signal_to_dart();
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Single-stream fallback (original behaviour)
+// ---------------------------------------------------------------------------
+
+async fn download_single_stream(
+    url: &str,
+    version: &str,
+    file_path: &PathBuf,
+    total_bytes: i64,
+    client: &Client,
+) -> Result<(), UpdateError> {
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(UpdateError::Other(format!(
+            "Download returned status {}",
+            resp.status()
+        )));
+    }
+
+    let mut file = tokio::fs::File::create(file_path).await?;
     let mut stream = resp.bytes_stream();
 
     let mut downloaded: i64 = 0;
@@ -438,9 +534,11 @@ async fn download_inner(url: &str, version: &str) -> Result<(), UpdateError> {
                 downloaded_bytes: downloaded,
                 total_bytes,
                 speed,
-                status: 0, // downloading
+                status: 0,
                 installer_path: String::new(),
                 error_message: String::new(),
+                segments: 1,
+                active_segments: 1,
             }
             .send_signal_to_dart();
 
@@ -449,21 +547,202 @@ async fn download_inner(url: &str, version: &str) -> Result<(), UpdateError> {
     }
 
     file.flush().await?;
-    drop(file);
+    Ok(())
+}
 
-    let installer_path = file_path.to_string_lossy().to_string();
+// ---------------------------------------------------------------------------
+// Multi-segment concurrent download
+// ---------------------------------------------------------------------------
 
-    // Send completion signal
-    UpdateDownloadProgress {
-        version: version.to_string(),
-        downloaded_bytes: downloaded,
-        total_bytes,
-        speed: 0,
-        status: 1, // completed
-        installer_path,
-        error_message: String::new(),
+/// Per-segment byte range [start, end] (inclusive).
+struct SegmentRange {
+    start: i64,
+    end: i64,
+}
+
+async fn download_multi_segment(
+    url: &str,
+    version: &str,
+    file_path: &PathBuf,
+    total_bytes: i64,
+    client: &Client,
+) -> Result<(), UpdateError> {
+    let seg_count = UPDATE_SEGMENTS as i64;
+
+    // Compute byte ranges for each segment
+    let seg_size = total_bytes / seg_count;
+    let mut ranges: Vec<SegmentRange> = Vec::with_capacity(seg_count as usize);
+    for i in 0..seg_count {
+        let start = i * seg_size;
+        let end = if i == seg_count - 1 {
+            total_bytes - 1
+        } else {
+            (i + 1) * seg_size - 1
+        };
+        ranges.push(SegmentRange { start, end });
     }
-    .send_signal_to_dart();
+
+    // Pre-allocate the output file to the full size
+    {
+        let file = tokio::fs::File::create(file_path).await?;
+        file.set_len(total_bytes as u64).await?;
+    }
+
+    // Shared progress counters — each segment atomically increments its own
+    // counter so the reporter task can sum them lock-free.
+    let segment_progress: Arc<Vec<AtomicI64>> =
+        Arc::new((0..seg_count).map(|_| AtomicI64::new(0)).collect());
+    let active_count = Arc::new(AtomicI64::new(seg_count));
+
+    // Spawn a progress reporter task
+    let ver = version.to_string();
+    let prog = Arc::clone(&segment_progress);
+    let active = Arc::clone(&active_count);
+    let reporter = tokio::spawn(async move {
+        let report_interval = Duration::from_millis(200);
+        let mut last_total: i64 = 0;
+        let mut last_time = std::time::Instant::now();
+
+        loop {
+            tokio::time::sleep(report_interval).await;
+
+            let downloaded: i64 = prog.iter().map(|a| a.load(Ordering::Relaxed)).sum();
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(last_time).as_secs_f64();
+            let speed = if elapsed > 0.0 {
+                ((downloaded - last_total) as f64 / elapsed) as i64
+            } else {
+                0
+            };
+            last_total = downloaded;
+            last_time = now;
+
+            let cur_active = active.load(Ordering::Relaxed) as i32;
+
+            UpdateDownloadProgress {
+                version: ver.clone(),
+                downloaded_bytes: downloaded,
+                total_bytes,
+                speed,
+                status: 0,
+                installer_path: String::new(),
+                error_message: String::new(),
+                segments: UPDATE_SEGMENTS,
+                active_segments: cur_active,
+            }
+            .send_signal_to_dart();
+
+            // All bytes received — stop reporting
+            if downloaded >= total_bytes {
+                break;
+            }
+        }
+    });
+
+    // Spawn one task per segment
+    let mut handles = Vec::with_capacity(seg_count as usize);
+    for (idx, range) in ranges.into_iter().enumerate() {
+        let client = client.clone();
+        let url = url.to_string();
+        let file_path = file_path.clone();
+        let seg_prog = Arc::clone(&segment_progress);
+        let active_cnt = Arc::clone(&active_count);
+
+        let handle = tokio::spawn(async move {
+            let result = download_segment(&client, &url, &file_path, idx, &range, &seg_prog).await;
+            active_cnt.fetch_sub(1, Ordering::Relaxed);
+            result
+        });
+        handles.push(handle);
+    }
+
+    // Await all segment tasks and collect errors
+    let mut first_error: Option<UpdateError> = None;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+            Err(join_err) => {
+                if first_error.is_none() {
+                    first_error = Some(UpdateError::Other(format!(
+                        "segment task panicked: {join_err}"
+                    )));
+                }
+            }
+        }
+    }
+
+    // Stop the reporter
+    reporter.abort();
+    let _ = reporter.await;
+
+    if let Some(e) = first_error {
+        // Clean up partial file on error
+        let _ = tokio::fs::remove_file(file_path).await;
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Download a single byte-range segment, writing directly to the correct
+/// offset in the pre-allocated file.
+async fn download_segment(
+    client: &Client,
+    url: &str,
+    file_path: &PathBuf,
+    idx: usize,
+    range: &SegmentRange,
+    progress: &Arc<Vec<AtomicI64>>,
+) -> Result<(), UpdateError> {
+    let range_header = format!("bytes={}-{}", range.start, range.end);
+
+    let resp = client
+        .get(url)
+        .header("Range", &range_header)
+        .send()
+        .await?;
+
+    // Accept both 206 Partial Content and 200 OK (some CDNs ignore Range for
+    // small files).  For 200 OK we must NOT write — only segment 0 would be
+    // valid.  Return an error so the caller can fall back.
+    if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(UpdateError::Other(format!(
+            "segment {idx} expected 206 Partial Content, got {}",
+            resp.status()
+        )));
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(file_path)
+        .await?;
+    file.seek(std::io::SeekFrom::Start(range.start as u64))
+        .await?;
+
+    let mut stream = resp.bytes_stream();
+    let mut written: i64 = 0;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(UpdateError::Http)?;
+        file.write_all(&chunk).await?;
+        written += chunk.len() as i64;
+        progress[idx].store(written, Ordering::Relaxed);
+    }
+
+    file.flush().await?;
+
+    log_info!(
+        "[updater] segment {} finished: {}-{} ({} bytes written)",
+        idx,
+        range.start,
+        range.end,
+        written
+    );
 
     Ok(())
 }

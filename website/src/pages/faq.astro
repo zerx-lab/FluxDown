@@ -7,7 +7,7 @@ import CommunityFloat from "../components/CommunityFloat";
 import en from "../lib/locales/en";
 
 // Build FAQPage JSON-LD at SSG time from English locale
-const faqItems = Array.from({ length: 8 }, (_, i) => ({
+const faqItems = Array.from({ length: 9 }, (_, i) => ({
   "@type": "Question" as const,
   name: en[`faq.items.${i}.q` as keyof typeof en],
   acceptedAnswer: {
