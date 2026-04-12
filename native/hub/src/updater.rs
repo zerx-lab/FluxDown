@@ -1,19 +1,37 @@
 //! Auto-update module: version check via website API proxy, download update
 //! package, and launch installation.
 //!
-//! Platform strategies:
-//!   Windows setup  (.exe)         → Inno Setup silent install
-//!   Windows portable (.zip)       → bat script: wait, extract, copy, restart
-//!   Linux AppImage (.AppImage)    → sh script: wait, mv replace, chmod, restart
-//!   Linux deb (.deb)              → pkexec dpkg -i  (GUI password dialog)
-//!   Linux arch (.pkg.tar.zst)     → pkexec pacman -U (GUI password dialog)
-//!   Linux portable (.tar.gz)      → sh script: wait, tar extract, copy, restart
+//! Platform strategies – all delegate waiting and file work to the compiled
+//! `fluxdown_updater` helper binary that ships alongside the application:
+//!
+//!   Windows setup  (.exe)   → updater: unblocks MOTW, runs NSIS silently
+//!   Windows portable (.zip) → updater: WaitForSingleObject, extracts ZIP, copies, restarts
+//!   Linux AppImage          → updater: polls /proc/<pid>, atomic mv + chmod, restarts
+//!   Linux deb (.deb)        → updater: polls /proc/<pid>, pkexec dpkg -i, restarts
+//!   Linux arch (.pkg.zst)   → updater: polls /proc/<pid>, pkexec pacman -U, restarts
+//!   Linux portable (.tar.gz)→ updater: polls /proc/<pid>, extracts tar.gz, copies, restarts
+//!   macOS (.tar.gz/.app)    → updater: kill(pid,0) poll, extracts tar.gz, replaces .app, open
+//!
+//! Cold-start migration: users upgrading from a version that pre-dates
+//! `fluxdown_updater` do not have the helper binary in their install directory.
+//! `find_updater_bin` falls back to `bootstrap_updater_from_zip`, which extracts
+//! the helper from the already-downloaded update ZIP and places a temporary copy
+//! in the OS temp directory for this one update cycle.  Subsequent updates will
+//! find the helper binary in the install directory (it was written there by the
+//! first update).
+//!
+//! Using a compiled native helper instead of PowerShell/bat/sh scripts avoids:
+//!   • PowerShell execution-policy and Smart App Control blocks on Windows 11
+//!   • Mark-of-the-Web (MOTW/Zone.Identifier) interference on downloaded scripts
+//!   • %VAR% expansion surprises and cmd.exe quoting pitfalls in batch files
+//!   • Shell injection and escaping edge-cases in POSIX shell scripts
 //!
 //! All HTTP requests go through the website API (`/api/release`, `/api/download/:fn`)
 //! so that GITHUB_TOKEN stays server-side — the client never touches GitHub directly.
 
 #[cfg(target_os = "windows")]
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -74,7 +92,7 @@ struct ReleaseAssets {
     setup_arm64: Option<AssetInfo>,
     #[allow(dead_code)]
     portable_arm64: Option<AssetInfo>,
-    // Linux (unused on Windows but must be present for serde deserialization)
+    // Linux (unused on Windows/macOS but must be present for serde deserialization)
     #[allow(dead_code)]
     linux_appimage: Option<AssetInfo>,
     #[allow(dead_code)]
@@ -83,6 +101,11 @@ struct ReleaseAssets {
     linux_arch: Option<AssetInfo>,
     #[allow(dead_code)]
     linux_tarball: Option<AssetInfo>,
+    // macOS (unused on Windows/Linux but must be present for serde deserialization)
+    #[allow(dead_code)]
+    macos_tarball: Option<AssetInfo>,
+    #[allow(dead_code)]
+    macos_arm64_tarball: Option<AssetInfo>,
 }
 
 #[derive(Deserialize)]
@@ -107,7 +130,7 @@ fn is_portable() -> bool {
     false
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn is_arm64() -> bool {
     std::env::consts::ARCH == "aarch64"
 }
@@ -193,7 +216,18 @@ fn select_asset(assets: &ReleaseAssets) -> Option<&AssetInfo> {
         }
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        // Always use the tar.gz distribution for programmatic in-app updates.
+        // DMG is for first-time manual installs only.
+        if is_arm64() {
+            assets.macos_arm64_tarball.as_ref()
+        } else {
+            assets.macos_tarball.as_ref()
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         None
     }
@@ -321,10 +355,20 @@ pub async fn download(url: &str, version: &str) {
 // ---------------------------------------------------------------------------
 
 /// Sanitize a filename extracted from a URL to prevent path-traversal attacks.
-/// Strips directory components, `..` sequences, and NUL bytes; falls back to a
-/// safe default if the result is empty.
+/// Strips directory components, `..` sequences, NUL bytes, and URL query
+/// strings (`?…`) that would produce OS-invalid filenames on Windows.
+/// Falls back to a safe default if the result is empty.
 fn sanitize_filename(raw: &str) -> String {
-    let name = raw
+    // Strip query string and fragment before extracting the filename.
+    let without_query = raw
+        .split_once('?')
+        .map(|(base, _)| base)
+        .unwrap_or(raw)
+        .split_once('#')
+        .map(|(base, _)| base)
+        .unwrap_or(raw);
+
+    let name = without_query
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or("")
@@ -336,40 +380,6 @@ fn sanitize_filename(raw: &str) -> String {
     } else {
         name.to_string()
     }
-}
-
-/// Sanitize a path string for safe interpolation into a Windows batch script.
-/// Strips characters that could break `set "VAR=value"` quoting or enable
-/// command injection.
-#[cfg(target_os = "windows")]
-fn sanitize_for_batch(s: &str) -> String {
-    s.chars()
-        .filter(|c| {
-            !matches!(
-                c,
-                '"' | '%' | '!' | '^' | '&' | '|' | '<' | '>' | '\n' | '\r' | '\0'
-            )
-        })
-        .collect()
-}
-
-/// Sanitize a path string for safe interpolation into a POSIX shell script
-/// inside double-quoted strings.  Escapes shell-special characters with a
-/// backslash and strips NUL/newline bytes.
-#[cfg(target_os = "linux")]
-fn sanitize_for_shell(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 16);
-    for c in s.chars() {
-        match c {
-            '\0' | '\n' | '\r' => {}
-            '"' | '$' | '`' | '\\' | '!' => {
-                out.push('\\');
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 async fn download_inner(url: &str, version: &str) -> Result<(), UpdateError> {
@@ -492,7 +502,13 @@ pub fn install(installer_path: &str) -> Result<(), UpdateError> {
         }
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        // macOS always receives a tar.gz containing the new FluxDown.app bundle.
+        install_macos_app(installer_path)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = installer_path;
         Err(UpdateError::Other(
@@ -502,30 +518,206 @@ pub fn install(installer_path: &str) -> Result<(), UpdateError> {
 }
 
 // ---------------------------------------------------------------------------
+// Windows ZIP bootstrap (uses `zip` crate, Windows-only dependency)
+// ---------------------------------------------------------------------------
+// See `bootstrap_updater_from_zip` and `find_or_bootstrap_updater` below,
+// defined together with the rest of the helper-location logic.
+
+// ---------------------------------------------------------------------------
+// macOS installer
+// ---------------------------------------------------------------------------
+
+/// macOS update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater polls `kill(pid, 0)` until this process exits, then:
+///   1. Extracts the tar.gz to a temp directory.
+///   2. Removes the Gatekeeper quarantine attribute from the new .app bundle.
+///   3. Replaces the existing .app (atomic `rename` when possible, `cp -a` fallback).
+///   4. Relaunches the updated bundle via `open`.
+///
+/// The updater binary lives at `FluxDown.app/Contents/MacOS/fluxdown_updater`,
+/// which is the same directory as the main executable — `find_updater_bin()`
+/// finds it automatically via `current_exe().parent()`.
+#[cfg(target_os = "macos")]
+fn install_macos_app(tarball_path: &str) -> Result<(), UpdateError> {
+    let exe = std::env::current_exe().map_err(UpdateError::Io)?;
+
+    // FluxDown.app/Contents/MacOS/flux_down
+    //              ↑ parent  ↑ parent  ↑ parent  →  FluxDown.app
+    let app_bundle = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| UpdateError::Other("cannot locate .app bundle".to_string()))?;
+
+    // Parent of FluxDown.app  →  /Applications (or wherever the user placed it)
+    let install_dir = app_bundle
+        .parent()
+        .ok_or_else(|| UpdateError::Other("cannot locate install directory".to_string()))?;
+
+    let app_name = app_bundle
+        .file_name()
+        .ok_or_else(|| UpdateError::Other("cannot determine .app bundle name".to_string()))?
+        .to_string_lossy();
+
+    let updater = find_updater_bin()?;
+    let pid = std::process::id();
+
+    std::process::Command::new(&updater)
+        .args([
+            "--pid",
+            &pid.to_string(),
+            "--tarball",
+            tarball_path,
+            "--app-bundle",
+            &app_name,
+            "--install-dir",
+            &install_dir.to_string_lossy(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(UpdateError::Io)?;
+
+    std::process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Updater helper binary location & cold-start bootstrap
+// ---------------------------------------------------------------------------
+
+/// Locate the `fluxdown_updater[.exe]` helper binary that is shipped alongside
+/// the main application in the same directory as the running executable.
+///
+/// Returns `Err` when the binary is absent (e.g. the user is upgrading from a
+/// version that pre-dates the helper).  Callers should fall back to
+/// `bootstrap_updater_from_zip` in that case.
+fn find_updater_bin() -> Result<PathBuf, UpdateError> {
+    let exe = std::env::current_exe().map_err(UpdateError::Io)?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| UpdateError::Other("cannot determine app directory".to_string()))?;
+
+    #[cfg(target_os = "windows")]
+    let name = "fluxdown_updater.exe";
+    #[cfg(not(target_os = "windows"))]
+    let name = "fluxdown_updater";
+
+    let updater = dir.join(name);
+    if updater.exists() {
+        Ok(updater)
+    } else {
+        Err(UpdateError::Other(format!(
+            "updater helper not found: {}",
+            updater.display()
+        )))
+    }
+}
+
+/// Bootstrap the updater helper for users upgrading from a version that did
+/// not ship `fluxdown_updater[.exe]`.
+///
+/// Scans the already-downloaded update ZIP for the helper binary, extracts it
+/// to a private temp file (named with the current PID to avoid collisions),
+/// and returns that path.  The next full update will write the helper into the
+/// install directory, so this bootstrap path is only needed once.
+#[cfg(target_os = "windows")]
+fn bootstrap_updater_from_zip(zip_path: &str) -> Result<PathBuf, UpdateError> {
+    use std::io;
+
+    const HELPER_NAME: &str = "fluxdown_updater.exe";
+
+    let file = std::fs::File::open(zip_path).map_err(UpdateError::Io)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| UpdateError::Other(e.to_string()))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| UpdateError::Other(e.to_string()))?;
+
+        // Match the bare filename regardless of directory nesting inside the ZIP.
+        let entry_name = entry.name().to_string();
+        let file_name = entry_name.rsplit('/').next().unwrap_or(entry_name.as_str());
+
+        if file_name.eq_ignore_ascii_case(HELPER_NAME) {
+            let dest = std::env::temp_dir()
+                .join(format!("fluxdown_updater_boot_{}.exe", std::process::id()));
+            let mut out = std::fs::File::create(&dest).map_err(UpdateError::Io)?;
+            io::copy(&mut entry, &mut out).map_err(UpdateError::Io)?;
+            return Ok(dest);
+        }
+    }
+
+    Err(UpdateError::Other(format!(
+        "{HELPER_NAME} was not found inside the downloaded archive. \
+         The package may be from an older release. \
+         Please download and extract the new version manually from https://fluxdown.app"
+    )))
+}
+
+/// Resolve the updater binary path, bootstrapping from the ZIP on first run
+/// after migration from a version that did not ship the helper.
+#[cfg(target_os = "windows")]
+fn find_or_bootstrap_updater(zip_path: &str) -> Result<PathBuf, UpdateError> {
+    find_updater_bin().or_else(|_| bootstrap_updater_from_zip(zip_path))
+}
+
+/// On non-Windows platforms the helper is always expected to be present.
+#[cfg(not(target_os = "windows"))]
+fn find_or_bootstrap_updater(_zip_path: &str) -> Result<PathBuf, UpdateError> {
+    find_updater_bin()
+}
+
+// ---------------------------------------------------------------------------
 // Windows installers
 // ---------------------------------------------------------------------------
 
+/// Windows setup update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater waits for this process to exit via `WaitForSingleObject`, then
+/// removes the Mark-of-the-Web `Zone.Identifier` alternate data stream from
+/// the downloaded installer (equivalent to "Unblock" in Explorer) so that
+/// Windows 11 Smart App Control does not block it, and finally runs the NSIS
+/// installer silently.  Because the updater binary is already installed and
+/// trusted, the unblock operation succeeds even with SAC enabled.
 #[cfg(target_os = "windows")]
 fn install_setup(installer_path: &str) -> Result<(), UpdateError> {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    std::process::Command::new(installer_path)
-        .args(["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+    let updater = find_updater_bin()?;
+    let pid = std::process::id();
+
+    std::process::Command::new(&updater)
+        .args(["--pid", &pid.to_string(), "--installer", installer_path])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(UpdateError::Io)?;
 
-    std::thread::sleep(Duration::from_millis(500));
     std::process::exit(0);
 }
 
-/// Portable upgrade: write a bat script that waits for the app to close,
-/// extracts the zip over the app directory via PowerShell, then restarts.
+/// Windows portable update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater uses `WaitForSingleObject` for precise OS-level process-exit
+/// detection (no polling, no tasklist), then:
+///   1. Renames itself aside so the ZIP can overwrite `fluxdown_updater.exe`.
+///   2. Extracts the ZIP to a private temp directory.
+///   3. Copies files into the app directory with exponential-backoff retry
+///      for files transiently locked by antivirus scanners.
+///   4. Deletes the stale self-copy and the downloaded ZIP.
+///   5. Restarts the application.
+///
+/// No PowerShell, cmd.exe, or script interpreters are involved.
+///
+/// Cold-start migration: if `fluxdown_updater.exe` is absent (upgrade from an
+/// older version), the helper is bootstrapped directly from the downloaded ZIP
+/// and run from the OS temp directory for this one cycle.
 #[cfg(target_os = "windows")]
 fn install_portable(zip_path: &str) -> Result<(), UpdateError> {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let exe = std::env::current_exe().map_err(UpdateError::Io)?;
     let app_dir = exe
@@ -536,41 +728,26 @@ fn install_portable(zip_path: &str) -> Result<(), UpdateError> {
         .ok_or_else(|| UpdateError::Other("cannot determine exe name".to_string()))?
         .to_string_lossy();
 
-    let script = format!(
-        r#"@echo off
-chcp 65001 >nul 2>&1
-set "ZIP={zip}"
-set "DIR={dir}"
-set "EXE={exe}"
-:loop
-timeout /t 1 /nobreak >nul
-tasklist /fi "imagename eq %EXE%" 2>nul | find /i "%EXE%" >nul && goto loop
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$tmp = Join-Path $env:TEMP ('fluxdown_upd_' + (Get-Random));" ^
-  "Expand-Archive -LiteralPath '%ZIP%' -DestinationPath $tmp -Force;" ^
-  "$items = @(Get-ChildItem $tmp);" ^
-  "if ($items.Count -eq 1 -and $items[0].PSIsContainer) {{ $src = $items[0].FullName }} else {{ $src = $tmp }};" ^
-  "Copy-Item -Path (Join-Path $src '*') -Destination '%DIR%' -Recurse -Force;" ^
-  "Remove-Item $tmp -Recurse -Force"
-del "%ZIP%" 2>nul
-start "" "%DIR%\%EXE%"
-(goto) 2>nul & del "%~f0"
-"#,
-        zip = sanitize_for_batch(zip_path),
-        dir = sanitize_for_batch(&app_dir.to_string_lossy()),
-        exe = sanitize_for_batch(&exe_name),
-    );
+    // Fall back to bootstrapping the helper from the ZIP when upgrading from
+    // an older version that did not ship fluxdown_updater.exe.
+    let updater = find_or_bootstrap_updater(zip_path)?;
+    let pid = std::process::id();
 
-    let script_path = std::env::temp_dir().join("fluxdown_update.bat");
-    std::fs::write(&script_path, &script).map_err(UpdateError::Io)?;
-
-    std::process::Command::new("cmd")
-        .args(["/c", &script_path.to_string_lossy()])
+    std::process::Command::new(&updater)
+        .args([
+            "--pid",
+            &pid.to_string(),
+            "--zip",
+            zip_path,
+            "--dir",
+            &app_dir.to_string_lossy(),
+            "--exe",
+            &exe_name,
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(UpdateError::Io)?;
 
-    std::thread::sleep(Duration::from_millis(500));
     std::process::exit(0);
 }
 
@@ -578,98 +755,85 @@ start "" "%DIR%\%EXE%"
 // Linux installers
 // ---------------------------------------------------------------------------
 
-/// AppImage self-update: write a shell script that waits for this process to
-/// exit, then atomically replaces the old AppImage with the new one and
-/// relaunches it.  No root privileges required.
+/// Linux AppImage update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater polls `/proc/<pid>` until this process exits, then atomically
+/// replaces the running AppImage file with the new one (`mv -f`), sets the
+/// executable bit, and restarts the application.  No root required.
 #[cfg(target_os = "linux")]
 fn install_appimage(new_appimage_path: &str) -> Result<(), UpdateError> {
-    // $APPIMAGE is set by the AppImage runtime to the absolute path of the
-    // currently-running squashfs image.
     let current_appimage = std::env::var("APPIMAGE").map_err(|_| {
         UpdateError::Other(
             "$APPIMAGE not set; cannot determine the current AppImage path".to_string(),
         )
     })?;
 
+    let updater = find_updater_bin()?;
     let pid = std::process::id();
 
-    let script = format!(
-        r#"#!/bin/sh
-NEW="{new}"
-OLD="{old}"
-PID={pid}
-# Wait for the app process to exit.
-while kill -0 "$PID" 2>/dev/null; do
-    sleep 1
-done
-# Replace the AppImage atomically.
-chmod +x "$NEW"
-mv -f "$NEW" "$OLD"
-# Relaunch the updated AppImage detached from this shell.
-nohup "$OLD" >/dev/null 2>&1 &
-# Self-delete this script.
-rm -- "$0"
-"#,
-        new = sanitize_for_shell(new_appimage_path),
-        old = sanitize_for_shell(&current_appimage),
-        pid = pid,
-    );
+    std::process::Command::new(&updater)
+        .args([
+            "--pid",
+            &pid.to_string(),
+            "--appimage-src",
+            new_appimage_path,
+            "--appimage-dst",
+            &current_appimage,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(UpdateError::Io)?;
 
-    write_and_run_sh_script(&script, "fluxdown_update_appimage.sh")?;
-
-    std::thread::sleep(Duration::from_millis(500));
     std::process::exit(0);
 }
 
-/// Deb package update via pkexec: triggers a native GUI password dialog on
-/// GNOME/KDE/XFCE through the Polkit authentication agent.
+/// Linux deb update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater polls `/proc/<pid>`, then runs `pkexec dpkg -i` (which shows
+/// the distro's native password dialog), and restarts the application.
 #[cfg(target_os = "linux")]
 fn install_deb(deb_path: &str) -> Result<(), UpdateError> {
-    check_pkexec_available()?;
+    let updater = find_updater_bin()?;
+    let pid = std::process::id();
 
-    let status = std::process::Command::new("pkexec")
-        .args(["dpkg", "-i", deb_path])
-        .status()
+    std::process::Command::new(&updater)
+        .args(["--pid", &pid.to_string(), "--package-deb", deb_path])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .map_err(UpdateError::Io)?;
 
-    if !status.success() {
-        // User cancelled pkexec or dpkg failed.
-        return Err(UpdateError::Other(format!(
-            "dpkg install failed (exit code {}). \
-             If you cancelled the password prompt, click Install & Restart to try again.",
-            status.code().unwrap_or(-1)
-        )));
-    }
-
-    // dpkg replaced the binary in-place; restart the new version.
-    restart_app()
+    std::process::exit(0);
 }
 
-/// Arch package update via pkexec + pacman: triggers a native GUI password
-/// dialog through the Polkit authentication agent.
+/// Linux Arch update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater polls `/proc/<pid>`, then runs `pkexec pacman -U` (which shows
+/// the distro's native password dialog), and restarts the application.
 #[cfg(target_os = "linux")]
 fn install_arch(pkg_path: &str) -> Result<(), UpdateError> {
-    check_pkexec_available()?;
+    let updater = find_updater_bin()?;
+    let pid = std::process::id();
 
-    let status = std::process::Command::new("pkexec")
-        .args(["pacman", "-U", "--noconfirm", pkg_path])
-        .status()
+    std::process::Command::new(&updater)
+        .args(["--pid", &pid.to_string(), "--package-arch", pkg_path])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .map_err(UpdateError::Io)?;
 
-    if !status.success() {
-        return Err(UpdateError::Other(format!(
-            "pacman install failed (exit code {}). \
-             If you cancelled the password prompt, click Install & Restart to try again.",
-            status.code().unwrap_or(-1)
-        )));
-    }
-
-    restart_app()
+    std::process::exit(0);
 }
 
-/// Portable tar.gz self-update: write a shell script that waits for this
-/// process to exit, extracts the new archive over the app directory, then
-/// relaunches the app.  No root privileges required.
+/// Linux portable tar.gz update: spawn `fluxdown_updater` and exit immediately.
+///
+/// The updater polls `/proc/<pid>`, extracts the tarball to a temp directory,
+/// unwraps single-folder archives, copies files into the app directory with
+/// retry, cleans up, and restarts the application.  No root required.
 #[cfg(target_os = "linux")]
 fn install_portable_tarball(tarball_path: &str) -> Result<(), UpdateError> {
     let exe = std::env::current_exe().map_err(UpdateError::Io)?;
@@ -682,109 +846,25 @@ fn install_portable_tarball(tarball_path: &str) -> Result<(), UpdateError> {
         .to_string_lossy()
         .into_owned();
 
+    let updater = find_updater_bin()?;
     let pid = std::process::id();
 
-    let script = format!(
-        r#"#!/bin/sh
-TAR="{tar}"
-DIR="{dir}"
-EXE="{exe}"
-PID={pid}
-# Wait for the app process to exit.
-while kill -0 "$PID" 2>/dev/null; do
-    sleep 1
-done
-# Extract the tarball into a temp directory.
-TMP=$(mktemp -d)
-tar xzf "$TAR" -C "$TMP"
-# Handle single top-level directory (e.g. FluxDown-x.y.z-linux-x64/).
-COUNT=$(ls "$TMP" | wc -l)
-FIRST=$(ls "$TMP" | head -n 1)
-if [ "$COUNT" -eq 1 ] && [ -d "$TMP/$FIRST" ]; then
-    SRC="$TMP/$FIRST"
-else
-    SRC="$TMP"
-fi
-# Overwrite the app directory.
-cp -a "$SRC/." "$DIR/"
-# Cleanup.
-rm -rf "$TMP"
-rm -f "$TAR"
-# Relaunch the updated binary detached from this shell.
-nohup "$DIR/$EXE" >/dev/null 2>&1 &
-# Self-delete this script.
-rm -- "$0"
-"#,
-        tar = sanitize_for_shell(tarball_path),
-        dir = sanitize_for_shell(&app_dir.to_string_lossy()),
-        exe = sanitize_for_shell(&exe_name),
-        pid = pid,
-    );
-
-    write_and_run_sh_script(&script, "fluxdown_update_portable.sh")?;
-
-    std::thread::sleep(Duration::from_millis(500));
-    std::process::exit(0);
-}
-
-// ---------------------------------------------------------------------------
-// Linux helpers
-// ---------------------------------------------------------------------------
-
-/// Write `content` to a temp shell script, make it executable, and spawn it
-/// detached.  Returns before the script does anything (the script waits for
-/// our PID to exit).
-#[cfg(target_os = "linux")]
-fn write_and_run_sh_script(content: &str, name: &str) -> Result<(), UpdateError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let script_path = std::env::temp_dir().join(name);
-    std::fs::write(&script_path, content).map_err(UpdateError::Io)?;
-    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-        .map_err(UpdateError::Io)?;
-
-    std::process::Command::new("sh")
-        .arg(&script_path)
+    std::process::Command::new(&updater)
+        .args([
+            "--pid",
+            &pid.to_string(),
+            "--tarball",
+            tarball_path,
+            "--dir",
+            &app_dir.to_string_lossy(),
+            "--exe",
+            &exe_name,
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(UpdateError::Io)?;
 
-    Ok(())
-}
-
-/// Verify that `pkexec` is available on PATH before attempting a privileged
-/// install.  Returns a clear error if it is not found.
-#[cfg(target_os = "linux")]
-fn check_pkexec_available() -> Result<(), UpdateError> {
-    let found = std::process::Command::new("pkexec")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if found {
-        Ok(())
-    } else {
-        Err(UpdateError::Other(
-            "pkexec not found. Please install the update manually using your package manager."
-                .to_string(),
-        ))
-    }
-}
-
-/// Spawn the current executable path and exit, effectively restarting the app.
-#[cfg(target_os = "linux")]
-fn restart_app() -> Result<(), UpdateError> {
-    let exe = std::env::current_exe().map_err(UpdateError::Io)?;
-    std::process::Command::new(&exe)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(UpdateError::Io)?;
     std::process::exit(0);
 }

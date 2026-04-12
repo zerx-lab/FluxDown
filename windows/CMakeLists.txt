@@ -128,3 +128,18 @@ install(PROGRAMS "${_NMH_WORKSPACE_DIR}/target/release/fluxdown_nmh.exe"
   DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime
 )
+
+# === fluxdown_updater: auto-update helper binary ===
+# Build the updater helper binary alongside the app so that
+# update_service can find it next to flux_down.exe.
+add_custom_target(fluxdown_updater ALL
+  COMMAND cargo build -p fluxdown_updater --release
+  WORKING_DIRECTORY "${_NMH_WORKSPACE_DIR}"
+  COMMENT "Building fluxdown_updater helper binary"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} fluxdown_updater)
+install(PROGRAMS "${_NMH_WORKSPACE_DIR}/target/release/fluxdown_updater.exe"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime
+)

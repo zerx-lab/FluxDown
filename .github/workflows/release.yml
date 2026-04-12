@@ -163,6 +163,8 @@ jobs:
           }
 
       # ── Inno Setup installer ──
+      # NOTE: fluxdown_nmh.exe and fluxdown_updater.exe are built automatically
+      # by CMake custom targets defined in windows/CMakeLists.txt during flutter build.
       - name: Ensure Inno Setup is installed
         if: matrix.arch == 'arm64'
         shell: pwsh
@@ -471,17 +473,8 @@ jobs:
       - name: Build Flutter Linux app
         run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
-      # ── 构建 NMH relay 二进制（浏览器扩展通信必需）──
-      # fluxdown_nmh 是浏览器通过 Native Messaging 协议启动的中继程序，
-      # 负责将扩展消息转发到主进程的 Unix socket。
-      # 必须与 flux_down 主程序一起打包，否则浏览器扩展无法工作。
-      - name: Build NMH relay binary
-        run: cargo build --release -p fluxdown_nmh
-
-      - name: Copy NMH binary to Flutter bundle
-        run: |
-          cp target/release/fluxdown_nmh build/linux/x64/release/bundle/
-          chmod +x build/linux/x64/release/bundle/fluxdown_nmh
+      # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
+      # by CMake custom targets defined in linux/CMakeLists.txt during flutter build.
 
       # ── Package tar.gz（命名目录后压缩，解压得 FluxDown-x.y.z-linux-x64/）──
       - name: Create portable tar.gz
@@ -762,6 +755,9 @@ jobs:
             --build-name=${{ steps.version.outputs.VERSION }} \
             --build-number=1 \
             --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+
+      # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
+      # by Xcode shell script build phases defined in macos/Runner.xcodeproj during flutter build.
 
       # ── Package tar.gz portable ──
       - name: Create portable tar.gz

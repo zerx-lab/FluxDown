@@ -31,6 +31,12 @@ pub enum DownloadError {
     Cancelled,
     #[error("checksum mismatch: {0}")]
     ChecksumMismatch(String),
+    /// Server does not honour `Range` requests — returned the enclosed HTTP
+    /// status (e.g. `200 OK`) instead of `206 Partial Content`.
+    /// Multi-segment assembly is impossible; the caller should fall back to
+    /// single-stream mode.
+    #[error("server does not support Range requests (returned {0} instead of 206 Partial Content)")]
+    RangeNotSupported(String),
     #[error("{0}")]
     Other(String),
 }
@@ -1701,8 +1707,12 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         dest_path.display()
     );
 
+    // Tracks whether we actually used multi-segment for the integrity check
+    // below.  Flipped to false when the server doesn't support Range requests
+    // and we auto-fall back to single-stream within this attempt.
+    let mut actual_use_segments = use_segments;
     let single_result: Option<SingleDownloadResult> = if use_segments {
-        download_multi_segment(
+        match download_multi_segment(
             &p.task_id,
             &p.url,
             &temp_path,
@@ -1719,8 +1729,55 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
             &info.etag,
             &info.last_modified,
         )
-        .await?;
-        None
+        .await
+        {
+            Ok(()) => None,
+            Err(DownloadError::RangeNotSupported(status)) => {
+                // The server ignored the Range header (returned `status` instead
+                // of 206).  Observed with FnOS NAS `multiple-download?token=…`
+                // endpoints and some other local servers that accept Range
+                // syntax but always reply 200 + full content.
+                //
+                // Auto-fall back to single-stream so the download succeeds on
+                // this attempt without requiring a manual retry.  The host was
+                // already recorded in the single-conn cache by do_segment, so
+                // future tasks for the same host start single-stream from the
+                // very beginning.
+                log_info!(
+                    "[download] task {} Range not supported (server returned {}); \
+                     auto-falling back to single-stream",
+                    p.task_id,
+                    status
+                );
+                actual_use_segments = false;
+                // Remove stale segment rows that belong to the failed
+                // multi-segment attempt; they would confuse a future resume.
+                let _ = p.db.delete_segments(&p.task_id).await;
+                // Remove the pre-allocated temp file.  Workers may have written
+                // data at incorrect offsets (full-file content at each segment's
+                // start position), so the file content is corrupt.  Starting
+                // clean is the only safe option.
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                let result = download_single(
+                    &p.task_id,
+                    &p.url,
+                    &temp_path,
+                    effective_total_bytes,
+                    false, // server doesn't support Range — never attempt it
+                    client,
+                    &p.db,
+                    &p.progress_tx,
+                    &p.cancel_token,
+                    &p.speed_limiter,
+                    &p.cookies,
+                    &p.referrer,
+                    &p.extra_headers,
+                )
+                .await?;
+                Some(result)
+            }
+            Err(e) => return Err(e),
+        }
     } else {
         let result = download_single(
             &p.task_id,
@@ -1743,7 +1800,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
 
     // Integrity check — verify download completeness.
     if effective_total_bytes > 0 {
-        if use_segments {
+        if actual_use_segments {
             // Multi-segment: file is pre-allocated via set_len() so metadata
             // size always == total_bytes.  Check actual progress from DB instead.
             let segs = p.db.load_segments(&p.task_id).await?;

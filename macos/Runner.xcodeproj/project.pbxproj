@@ -24,6 +24,7 @@
 		331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C80D7294CF71000263BE5 /* RunnerTests.swift */; };
 		335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */; };
 		FD01000000000001 /* fluxdown_nmh in CopyFiles */ = {isa = PBXBuildFile; fileRef = FD01000000000002 /* fluxdown_nmh */; settings = {ATTRIBUTES = (); }; };
+		FD02000000000001 /* fluxdown_updater in CopyFiles */ = {isa = PBXBuildFile; fileRef = FD02000000000002 /* fluxdown_updater */; settings = {ATTRIBUTES = (); }; };
 		FDLAL00000000001 /* LaunchAtLogin in Frameworks */ = {isa = PBXBuildFile; productRef = FDLAL00000000002 /* LaunchAtLogin */; };
 		33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC10F02044A3C60003C045 /* AppDelegate.swift */; };
 		33CC10F32044A3C60003C045 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F22044A3C60003C045 /* Assets.xcassets */; };
@@ -72,6 +73,17 @@
 			name = "Copy NMH to Bundle";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FD02000000000003 /* Copy Updater to Bundle */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				FD02000000000001 /* fluxdown_updater in CopyFiles */,
+			);
+			name = "Copy Updater to Bundle";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -87,6 +99,7 @@
 		33CC10F52044A3C60003C045 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.xib; name = Base; path = Base.lproj/MainMenu.xib; sourceTree = "<group>"; };
 		33CC10F72044A3C60003C045 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = Runner/Info.plist; sourceTree = "<group>"; };
 		FD01000000000002 /* fluxdown_nmh */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = fluxdown_nmh; path = "../target/release/fluxdown_nmh"; sourceTree = SOURCE_ROOT; };
+		FD02000000000002 /* fluxdown_updater */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = fluxdown_updater; path = "../target/release/fluxdown_updater"; sourceTree = SOURCE_ROOT; };
 		33CC11122044BFA00003C045 /* MainFlutterWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainFlutterWindow.swift; sourceTree = "<group>"; };
 		33CEB47222A05771004F2AC0 /* Flutter-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Debug.xcconfig"; sourceTree = "<group>"; };
 		33CEB47422A05771004F2AC0 /* Flutter-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Release.xcconfig"; sourceTree = "<group>"; };
@@ -161,6 +174,7 @@
 			isa = PBXGroup;
 			children = (
 				FD01000000000002 /* fluxdown_nmh */,
+				FD02000000000002 /* fluxdown_updater */,
 			);
 			name = NMH;
 			sourceTree = "<group>";
@@ -266,6 +280,8 @@
 				3399D490228B24CF009A79C7 /* ShellScript */,
 				FD01000000000005 /* Build fluxdown_nmh */,
 				FD01000000000003 /* Copy NMH to Bundle */,
+				FD02000000000005 /* Build fluxdown_updater */,
+				FD02000000000003 /* Copy Updater to Bundle */,
 				EE0F816DB1BAF1F9CF6EB570 /* [CP] Embed Pods Frameworks */,
 				FDLAL00000000004 /* Copy Launch at Login Helper */,
 			);
@@ -392,6 +408,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${BUILT_PRODUCTS_DIR}/LaunchAtLogin_LaunchAtLogin.bundle/Contents/Resources/copy-helper-swiftpm.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		FD02000000000005 /* Build fluxdown_updater */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build fluxdown_updater";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/../target/release/fluxdown_updater",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\ncd \"$SRCROOT/..\"\ncargo build -p fluxdown_updater --release\ncodesign --force --sign - \"$SRCROOT/../target/release/fluxdown_updater\"\n";
 			showEnvVarsInLog = 0;
 		};
 		FD01000000000005 /* Build fluxdown_nmh */ = {

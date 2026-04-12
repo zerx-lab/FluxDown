@@ -155,6 +155,29 @@ install(PROGRAMS "${_NMH_WORKSPACE_DIR}/target/${_NMH_PROFILE}/fluxdown_nmh"
   COMPONENT Runtime
 )
 
+# === fluxdown_updater: auto-update helper binary ===
+# Build the updater helper binary alongside the app so that
+# update_service can find it next to flux_down.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(_UPDATER_CARGO_ARGS "-p" "fluxdown_updater")
+  set(_UPDATER_PROFILE "debug")
+else()
+  set(_UPDATER_CARGO_ARGS "-p" "fluxdown_updater" "--release")
+  set(_UPDATER_PROFILE "release")
+endif()
+
+add_custom_target(fluxdown_updater ALL
+  COMMAND cargo build ${_UPDATER_CARGO_ARGS}
+  WORKING_DIRECTORY "${_NMH_WORKSPACE_DIR}"
+  COMMENT "Building fluxdown_updater helper binary (${_UPDATER_PROFILE})"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} fluxdown_updater)
+install(PROGRAMS "${_NMH_WORKSPACE_DIR}/target/${_UPDATER_PROFILE}/fluxdown_updater"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime
+)
+
 # Install application icon and .desktop file for XDG integration.
 # These allow Wayland compositors (e.g. KDE Plasma) to resolve the app icon
 # by its application ID (com.fluxdown.app) instead of showing the generic

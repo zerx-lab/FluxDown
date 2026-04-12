@@ -49,10 +49,20 @@ UninstallDisplayName={#MyAppName}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
+[CustomMessages]
+english.OtherTasks=Other:
+chinesesimplified.OtherTasks=其他：
+english.FileAssociations=File associations:
+chinesesimplified.FileAssociations=文件关联：
+english.LaunchOnStartup=Launch at system startup
+chinesesimplified.LaunchOnStartup=开机时自动启动
+english.TorrentAssoc=Associate .torrent files with FluxDown
+chinesesimplified.TorrentAssoc=将 .torrent 文件关联到 FluxDown
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "launchonstartup"; Description: "Launch at system startup"; GroupDescription: "Other:"; Flags: unchecked
-Name: "torrentassoc"; Description: "Associate .torrent files with FluxDown"; GroupDescription: "File associations:"; Flags: unchecked
+Name: "launchonstartup"; Description: "{cm:LaunchOnStartup}"; GroupDescription: "{cm:OtherTasks}"; Flags: unchecked
+Name: "torrentassoc"; Description: "{cm:TorrentAssoc}"; GroupDescription: "{cm:FileAssociations}"; Flags: unchecked
 
 [Files]
 ; Install all files from the Flutter build output

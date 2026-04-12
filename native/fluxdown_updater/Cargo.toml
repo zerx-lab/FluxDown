@@ -1,0 +1,34 @@
+[package]
+name = "fluxdown_updater"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "fluxdown_updater"
+path = "src/main.rs"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+wildcard_imports = "deny"
+
+[dependencies]
+# ZIP extraction – use default features which include deflate support.
+zip = "2"
+thiserror = "2.0"
+
+[target.'cfg(windows)'.dependencies]
+# WaitForSingleObject + OpenProcess for reliable process-exit detection.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# tar.gz extraction for Linux/macOS portable builds (pure-Rust backend, no system libs needed).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# kill(pid, 0) for reliable process-exit detection on macOS.
+libc = "0.2"

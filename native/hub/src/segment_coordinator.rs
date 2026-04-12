@@ -147,6 +147,12 @@ const MAX_SEGMENTS: i32 = 64;
 /// 进度报告/DB 持久化）。尾部微拆分在 FluxDown 架构下以极小改动覆盖了 90%+
 /// 的尾延迟场景：段 remaining ≥ 128KB 时拆成两半各 ≥64KB，两个 worker 各发
 /// 独立 Range 请求并行完成。
+///
+/// **瀑布防护**：尾部微拆分仅在最大剩余分段 ≥ 2 × TAIL_MIN_SPLIT_BYTES（即
+/// 128KB）时才激活，确保只救援真正的"落后分段"而非均等小分段。若所有分段
+/// 剩余量均接近 TAIL_MIN_SPLIT_BYTES（例如下载最后 1% 时大量分段均为 ~66KB），
+/// 继续拆分只会产生更多 HTTP 请求开销并导致 worker 集体退出——活跃 worker 数
+/// 从 ~48 骤降至 ~16，引发 UI 速度指示器的"99% 速度下降"现象。
 const TAIL_MIN_SPLIT_BYTES: i64 = 64 * 1024; // 64 KB
 
 /// Proactive split 定时器间隔（秒）。
@@ -935,11 +941,26 @@ pub async fn run_coordinated_download(
                     )
                     .or_else(|| {
                         if current_min_split > TAIL_MIN_SPLIT_BYTES {
-                            try_proactive_split(
-                                &mut segments,
-                                &mut next_index,
-                                TAIL_MIN_SPLIT_BYTES,
-                            )
+                            // Mirror the straggler guard from find_next_work Strategy 3:
+                            // only pre-create a pending micro-segment when there is a
+                            // genuine outlier (largest active segment ≥ 2 × TAIL_MIN_SPLIT_BYTES).
+                            // Pre-splitting equally-small segments would prime idle workers
+                            // to cascade-split the tail and retire en-masse at 99%.
+                            let max_remaining = segments
+                                .values()
+                                .filter(|s| s.state == SegState::Active)
+                                .map(|s| s.remaining())
+                                .max()
+                                .unwrap_or(0);
+                            if max_remaining >= 2 * TAIL_MIN_SPLIT_BYTES {
+                                try_proactive_split(
+                                    &mut segments,
+                                    &mut next_index,
+                                    TAIL_MIN_SPLIT_BYTES,
+                                )
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -1154,12 +1175,36 @@ fn find_next_work(
     // idle while 1 slow worker finishes.  With tail micro-split, the 1.5 MB is
     // split into 750 KB + 750 KB, and an idle worker helps finish it 2× faster.
     //
-    // Guard: only activate when the normal threshold is above the tail threshold;
+    // Guard A: only activate when the normal threshold is above the tail threshold;
     // if dynamic_min_split already returned 512 KB (low speed), and 512 KB >
     // 64 KB, we retry at 64 KB.  If min_split is already <= 64 KB, there's
     // nothing smaller to try.
+    //
+    // Guard B: "straggler" check — only micro-split when the largest remaining
+    // active segment is ≥ 2 × TAIL_MIN_SPLIT_BYTES (128 KB), indicating a
+    // genuine imbalance worth rescuing.
+    //
+    // Without Guard B, when all remaining segments are equally small (all ~66 KB
+    // at the tail of a 50 MB download with 48 workers), workers cascade-split
+    // them into ~33 KB pieces.  Workers finishing those micro-segments find
+    // nothing more to split and retire en-masse, dropping active worker count
+    // from ~48 → ~16 and causing the visible "99% speed drop" in the UI.
+    //
+    // With Guard B, the cascade stops naturally: a worker finishing a 33 KB
+    // segment finds no straggler (max_remaining ≈ 66 KB < 128 KB) and retires
+    // gracefully instead of further subdividing already-tiny peers.
     if min_split > TAIL_MIN_SPLIT_BYTES {
-        try_split_largest(segments, next_index, TAIL_MIN_SPLIT_BYTES)
+        let max_remaining = segments
+            .values()
+            .filter(|s| s.state == SegState::Active)
+            .map(|s| s.remaining())
+            .max()
+            .unwrap_or(0);
+        if max_remaining >= 2 * TAIL_MIN_SPLIT_BYTES {
+            try_split_largest(segments, next_index, TAIL_MIN_SPLIT_BYTES)
+        } else {
+            None
+        }
     } else {
         None
     }
@@ -1711,6 +1756,12 @@ async fn do_segment_with_retry(
         {
             Ok(dl) => return Ok(dl),
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
+            // RangeNotSupported is a permanent server property — retrying would
+            // get the same 200-instead-of-206 response every time.  Return
+            // immediately so the coordinator can cancel all workers and trigger
+            // the single-stream fallback without burning 3× exponential-backoff
+            // delays (up to 14 s for the first worker alone).
+            Err(e @ DownloadError::RangeNotSupported(_)) => return Err(e),
             Err(e) => {
                 // 403/429 是服务器明确拒绝多连接，重试毫无意义——
                 // 立即返回让 coordinator 进行降级处理。
@@ -1791,6 +1842,28 @@ async fn do_segment(
     }
     req = crate::downloader::apply_extra_headers(req, extra_headers);
     let resp = req.send().await?.error_for_status()?;
+
+    // --- Range support verification ----------------------------------------
+    // We sent a `Range: bytes=X-Y` header; the server MUST respond with 206
+    // Partial Content if it honours Range requests.  A 200 OK response means
+    // the server ignored the Range header and is streaming the full file from
+    // byte 0 — writing that body at `actual_start` would overwrite adjacent
+    // segments and silently corrupt the assembled output file.
+    //
+    // Observed with FnOS NAS "multiple-download?token=..." endpoints: the
+    // server accepts the Range header syntactically but always replies 200 +
+    // full content, making multi-segment assembly impossible.
+    //
+    // Fix: record the host so future tasks automatically use single-stream
+    // mode (24 h TTL via the existing single-conn cache); return an error so
+    // the coordinator cancels all workers for the current attempt.  On retry
+    // the cached policy kicks in and the download proceeds in single-stream.
+    if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        // Record the host so future tasks for the same server start in
+        // single-stream mode immediately (24 h TTL in-process cache).
+        record_single_conn_domain(url);
+        return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
+    }
 
     // --- ETag / Last-Modified consistency check -----------------------------
     // Verify that this segment's response comes from the same file version as

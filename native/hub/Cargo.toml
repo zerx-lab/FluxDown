@@ -53,6 +53,8 @@ librqbit = { version = "8", default-features = false, features = ["default-tls"]
 # 系统调用：SetFileInformationByHandle（文件预分配真正保留 NTFS 物理簇）
 # 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+# ZIP 解析：用于 bootstrap fluxdown_updater.exe（从下载的 ZIP 中提取，兼容从旧版升级的用户）
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # Linux/macOS 用 rustls（纯 Rust，无系统 TLS 依赖）
