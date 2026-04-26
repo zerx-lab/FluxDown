@@ -293,7 +293,7 @@ async fn run_dash_download_inner(
     let actual_name = if p.is_resume {
         auto_name.clone()
     } else {
-        dedup_filename(&save_dir, &auto_name).await
+        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
     };
 
     p.db.update_task_file_info(&p.task_id, &actual_name, 0)

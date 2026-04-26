@@ -546,7 +546,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
     let actual_name = if p.is_resume {
         auto_name.clone()
     } else {
-        dedup_filename(&save_dir, &auto_name).await
+        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
     };
 
     p.db.update_task_file_info(&p.task_id, &actual_name, info.total_bytes)

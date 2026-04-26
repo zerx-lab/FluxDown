@@ -135,12 +135,74 @@ fn is_safe_file_name(name: &str) -> bool {
             .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
 }
 
+/// Synchronous version of `dedup_filename` for use in the manager's
+/// synchronous section (before `tokio::spawn`).
+///
+/// Checks both the on-disk state and the `reserved` in-flight set so that
+/// the chosen name does not collide with files already being downloaded by
+/// sibling tasks in the same batch.
+///
+/// Unlike the async version, this uses `std::path::Path::exists()` for the
+/// fast-path disk check — acceptable here because we are on the
+/// `current_thread` runtime in a synchronous (non-`.await`) section and the
+/// result only needs to be "good enough" at the moment of reservation.
+fn dedup_filename_sync(
+    dir: &std::path::Path,
+    name: &str,
+    reserved: &HashSet<std::path::PathBuf>,
+) -> String {
+    use std::ffi::OsStr;
+
+    let temp_ext = downloader::TEMP_EXT;
+
+    // Phase 1: fast probe.
+    let candidate = dir.join(name);
+    let temp_candidate = PathBuf::from(format!("{}{}", candidate.display(), temp_ext));
+    if !reserved.contains(&temp_candidate) && !candidate.exists() && !temp_candidate.exists() {
+        return name.to_string();
+    }
+
+    // Phase 2: conflict — scan directory once into a set.
+    let existing: HashSet<std::ffi::OsString> = std::fs::read_dir(dir)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.file_name())).collect())
+        .unwrap_or_default();
+
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|s| s.to_str());
+
+    for i in 1..=9999 {
+        let new_name = if let Some(ext) = ext {
+            format!("{} ({}).{}", stem, i, ext)
+        } else {
+            format!("{} ({})", stem, i)
+        };
+        let temp_name = format!("{}{}", new_name, temp_ext);
+        let temp_path = dir.join(&temp_name);
+        if !reserved.contains(&temp_path)
+            && !existing.contains(OsStr::new(&new_name))
+            && !existing.contains(OsStr::new(&temp_name))
+        {
+            return new_name;
+        }
+    }
+    name.to_string()
+}
+
 /// Notification sent from a spawned download task when it finishes.
 pub struct TaskDone {
     pub task_id: String,
     /// Generation counter — must match `active_tokens` entry to allow cleanup.
     /// Prevents a stale TaskDone from an old spawn removing a newer token.
     pub generation: u64,
+    /// 本次任务在 `do_start_task` 中预订的临时文件路径（`.fdownloading`）。
+    /// `on_task_done` 收到后从 `reserved_temp_paths` 中移除，释放预订。
+    /// BT 任务、file_name 为空（probe 后确定）的任务此字段为 `None`。
+    pub reserved_temp_path: Option<std::path::PathBuf>,
 }
 
 /// Per-task state tracked by the progress reporter for fixed-window speed
@@ -303,6 +365,20 @@ pub struct DownloadManager {
     retry_tx: mpsc::Sender<String>,
     /// 延迟重试通道接收端（仅取一次，交给 actor loop）。
     retry_rx: Option<mpsc::Receiver<String>>,
+    /// 当前正在下载（或排队准备启动）的任务已预订的临时文件路径集合。
+    ///
+    /// 用于解决 `dedup_filename` 的 TOCTOU 竞态：多个并发任务同时调用
+    /// `dedup_filename` 时，都可能看到磁盘上同名文件不存在，进而选出相同
+    /// 文件名并相互覆盖对方的 `.fdownloading` 临时文件，导致文件内容丢失。
+    ///
+    /// 修复策略：在 `do_start_task` 的同步段（`spawn` 之前）将该任务的
+    /// 临时文件路径（`save_dir/file_name.fdownloading`）原子性地插入此集合，
+    /// 并在 `on_task_done` / `cancel_task` / `delete_task` 时移除。
+    /// `dedup_filename` 接收此集合的快照，在检查文件名冲突时同时排除
+    /// 已被其他 in-flight 任务预订的路径，彻底消除批量下载中的文件名竞态。
+    ///
+    /// 由于整个 manager 运行在 `tokio::current_thread` 上，此字段无需加锁。
+    reserved_temp_paths: HashSet<std::path::PathBuf>,
 }
 
 /// Configuration parameters for [`DownloadManager::new`].
@@ -361,6 +437,7 @@ impl DownloadManager {
             auto_retry_counts: HashMap::new(),
             retry_tx,
             retry_rx: Some(retry_rx),
+            reserved_temp_paths: HashSet::new(),
         })
     }
 
@@ -735,12 +812,22 @@ impl DownloadManager {
     /// Remove a finished task from active_tokens (called by actor loop).
     /// Only removes the entry if the generation matches, preventing a stale
     /// `TaskDone` from an old spawn from accidentally removing a newer token.
-    pub async fn on_task_done(&mut self, task_id: &str, generation: u64) {
+    pub async fn on_task_done(&mut self, done: &TaskDone) {
+        let task_id = done.task_id.as_str();
+        let generation = done.generation;
+
         let generation_matched = self
             .active_tasks
             .get(task_id)
             .map(|e| e.generation == generation)
             .unwrap_or(false);
+
+        // Release the file-name reservation unconditionally (success, error,
+        // or cancel) so the slot is freed for the next task that picks the
+        // same filename.
+        if let Some(ref path) = done.reserved_temp_path {
+            self.reserved_temp_paths.remove(path);
+        }
 
         if generation_matched {
             self.active_tasks.remove(task_id);
@@ -1271,7 +1358,7 @@ impl DownloadManager {
             task_id,
             url,
             save_dir,
-            file_name,
+            mut file_name,
             segments,
             is_resume: _,
             cookies,
@@ -1451,6 +1538,7 @@ impl DownloadManager {
                     .send(TaskDone {
                         task_id: panic_task_id,
                         generation: spawn_gen,
+                        reserved_temp_path: None, // BT 任务不使用文件名预订机制
                     })
                     .await;
             })
@@ -1505,6 +1593,60 @@ impl DownloadManager {
                 None
             };
 
+            // ---------------------------------------------------------------
+            // Pre-spawn file-name reservation (TOCTOU fix for batch downloads)
+            //
+            // Problem: `dedup_filename` is called inside each spawned task.
+            // When multiple tasks start simultaneously (batch download or when
+            // the queue drains multiple slots at once), all of them call
+            // `dedup_filename` concurrently.  Because no `.fdownloading` file
+            // exists yet, every task sees "no conflict" and chooses the same
+            // filename.  They then race to write the same temp file, causing
+            // later writers to silently overwrite earlier ones → file loss.
+            //
+            // Fix: Before spawning, synchronously (no `.await`) compute the
+            // deduplicated filename using the current disk state PLUS the set
+            // of paths already reserved by other in-flight tasks.  Insert the
+            // chosen temp path into `reserved_temp_paths` atomically (since
+            // we are on the single current_thread runtime and haven't yielded).
+            // The spawned task uses the already-resolved `file_name` and
+            // receives a snapshot of `reserved_temp_paths` so that even
+            // probe-after-start tasks (empty `file_name`) can still see their
+            // siblings' reservations.
+            //
+            // Reservation is released in `on_task_done` via the
+            // `reserved_temp_path` field on `TaskDone`.
+            // ---------------------------------------------------------------
+            let save_path = std::path::PathBuf::from(&save_dir);
+
+            // Only pre-reserve when we already know the file name.
+            // When file_name is empty, the probe inside run_download_inner
+            // will resolve the name; the snapshot passed via
+            // reserved_filenames_snapshot still lets it avoid siblings'
+            // already-reserved paths.
+            // Pre-reserve only when the file name is already known.  BT tasks
+            // never reach this branch (they are handled by the `if use_bt`
+            // block above).  FTP and HLS are handled identically to HTTP here
+            // because they all write via the same temp-file + rename pattern.
+            let reserved_temp_path: Option<std::path::PathBuf> = if !file_name.is_empty() {
+                // Synchronous dedup: check disk + reserved set without .await.
+                // Safe because we are in the synchronous section before spawn.
+                let deduped =
+                    dedup_filename_sync(&save_path, &file_name, &self.reserved_temp_paths);
+                // Update file_name to the deduped version so the spawned task
+                // uses it directly (skip a second dedup in run_download_inner).
+                file_name = deduped.clone();
+                let temp = save_path.join(format!("{}{}", deduped, downloader::TEMP_EXT));
+                self.reserved_temp_paths.insert(temp.clone());
+                Some(temp)
+            } else {
+                None
+            };
+
+            // Snapshot for the spawned task — lets probe-resolved names also
+            // avoid their siblings' reserved paths inside dedup_filename.
+            let reserved_snapshot = self.reserved_temp_paths.clone();
+
             let params = DownloadParams {
                 task_id: task_id.clone(),
                 url,
@@ -1524,6 +1666,7 @@ impl DownloadManager {
                 hls_quality_rx,
                 checksum,
                 extra_headers,
+                reserved_filenames_snapshot: reserved_snapshot,
             };
 
             tokio::spawn(async move {
@@ -1554,6 +1697,7 @@ impl DownloadManager {
                     .send(TaskDone {
                         task_id: panic_task_id,
                         generation: spawn_gen,
+                        reserved_temp_path,
                     })
                     .await;
             })
@@ -1986,6 +2130,7 @@ impl DownloadManager {
                     .send(TaskDone {
                         task_id: panic_task_id,
                         generation: spawn_gen,
+                        reserved_temp_path: None, // BT 任务不使用文件名预订机制
                     })
                     .await;
             })
@@ -2039,6 +2184,8 @@ impl DownloadManager {
                 hls_quality_rx,
                 checksum: task.checksum,
                 extra_headers: std::collections::HashMap::new(), // 恢复任务无额外请求头
+                // Resume 任务跳过 dedup（文件已存在磁盘），无需预订快照。
+                reserved_filenames_snapshot: std::collections::HashSet::new(),
             };
 
             tokio::spawn(async move {
@@ -2069,6 +2216,7 @@ impl DownloadManager {
                     .send(TaskDone {
                         task_id: panic_task_id,
                         generation: spawn_gen,
+                        reserved_temp_path: None, // resume 任务不预订文件名
                     })
                     .await;
             })

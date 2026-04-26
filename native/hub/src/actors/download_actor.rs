@@ -482,7 +482,7 @@ pub async fn run(db_dir: PathBuf) {
                 manager.send_all_queues().await;
             }
             Some(done) = done_rx.recv() => {
-                manager.on_task_done(&done.task_id, done.generation).await;
+                manager.on_task_done(&done).await;
             }
             // --- Auto-retry for stalled/failed tasks ---
             Some(task_id) = retry_rx.recv() => {

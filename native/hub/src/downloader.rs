@@ -148,6 +148,15 @@ pub struct DownloadParams {
     /// 浏览器扩展捕获的额外 HTTP 请求头（如 Authorization）。
     /// 在发起 HTTP 请求时附加到请求头中。
     pub extra_headers: std::collections::HashMap<String, String>,
+    /// `DownloadManager::reserved_temp_paths` 在 `do_start_task` 同步段的快照。
+    ///
+    /// 传入 `dedup_filename` 以防止批量下载时多个并发任务选出相同文件名：
+    /// 每个任务在检查文件名冲突时，除磁盘现有文件外，还会排除此快照中
+    /// 已被兄弟任务预订的临时路径（`.fdownloading`）。
+    ///
+    /// 对于 resume 任务（`is_resume = true`），此字段无意义（dedup 被跳过）；
+    /// 对于 BT 任务，此字段为空集合（BT 有自己的文件名管理机制）。
+    pub reserved_filenames_snapshot: std::collections::HashSet<std::path::PathBuf>,
 }
 
 /// 将浏览器扩展捕获的额外 HTTP 头应用到请求构建器上。
@@ -1073,13 +1082,43 @@ fn urlencoding_decode(s: &str) -> Result<String, String> {
 // Dedup file name: "file.txt" → "file (1).txt" etc.
 // ---------------------------------------------------------------------------
 
-pub async fn dedup_filename(dir: &Path, name: &str) -> String {
+/// Deduplicate a filename so it does not collide with any existing file in
+/// `dir` **nor** with any in-flight download that has already reserved the
+/// same temporary path.
+///
+/// # Parameters
+/// - `dir`      – target save directory.
+/// - `name`     – desired filename (e.g. `"video.mp4"`).
+/// - `reserved` – snapshot of `DownloadManager::reserved_temp_paths`;
+///   contains the `.fdownloading` paths that concurrent tasks have already
+///   claimed.  Pass an empty set when the caller has no reserved paths to
+///   check (e.g. resume tasks, which skip dedup entirely).
+///
+/// # Why `reserved` is needed
+/// `dedup_filename` is called from inside a spawned tokio task, well after
+/// the manager's synchronous section has finished.  Multiple tasks spawned
+/// in the same batch can all enter `dedup_filename` concurrently; each sees
+/// the same on-disk state (no `.fdownloading` file yet) and all independently
+/// choose the same filename.  They then race to write the same temp file,
+/// causing the last writer to silently overwrite the earlier ones.
+///
+/// By consulting `reserved` — a snapshot taken **before** spawning, in the
+/// manager's synchronous section — each task can see which names its siblings
+/// have already claimed and avoid them.
+pub async fn dedup_filename(
+    dir: &Path,
+    name: &str,
+    reserved: &std::collections::HashSet<std::path::PathBuf>,
+) -> String {
     use std::ffi::OsStr;
 
     // Phase 1: fast probe — most of the time there is no conflict.
     let candidate = dir.join(name);
     let temp_candidate = PathBuf::from(format!("{}{}", candidate.display(), TEMP_EXT));
-    if !tokio::fs::try_exists(&candidate).await.unwrap_or(false)
+    // Also check the in-flight reservation set BEFORE the async disk probes
+    // so that two tasks starting simultaneously both see each other's claim.
+    if !reserved.contains(&temp_candidate)
+        && !tokio::fs::try_exists(&candidate).await.unwrap_or(false)
         && !tokio::fs::try_exists(&temp_candidate)
             .await
             .unwrap_or(false)
@@ -1112,8 +1151,12 @@ pub async fn dedup_filename(dir: &Path, name: &str) -> String {
             format!("{} ({})", stem, i)
         };
         let temp_name = format!("{}{}", new_name, TEMP_EXT);
-        // Check both the final and in-progress file names.
-        if !existing.contains(OsStr::new(&new_name)) && !existing.contains(OsStr::new(&temp_name)) {
+        let temp_path = dir.join(&temp_name);
+        // Check both the final/in-progress disk files AND the in-flight set.
+        if !reserved.contains(&temp_path)
+            && !existing.contains(OsStr::new(&new_name))
+            && !existing.contains(OsStr::new(&temp_name))
+        {
             return new_name;
         }
     }
@@ -1554,10 +1597,14 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
 
     // When resuming, the file on disk belongs to *this* task — skip dedup.
     // For new downloads, dedup to avoid overwriting unrelated files.
+    // Pass the reserved_filenames_snapshot so that sibling tasks started in
+    // the same batch are also excluded from the candidate set, preventing the
+    // TOCTOU race where two concurrent tasks both see "no conflict" and choose
+    // the same filename, then overwrite each other's .fdownloading temp file.
     let actual_name = if p.is_resume {
         auto_name.clone()
     } else {
-        dedup_filename(&save_dir, &auto_name).await
+        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
     };
 
     // For resume tasks we must NOT blindly overwrite total_bytes with the
@@ -2584,7 +2631,7 @@ mod tests {
         let _ = tokio::fs::remove_file(dir.join("test.txt")).await;
         let _ = tokio::fs::remove_file(dir.join(format!("test.txt{TEMP_EXT}"))).await;
 
-        let result = dedup_filename(&dir, "test.txt").await;
+        let result = dedup_filename(&dir, "test.txt", &std::collections::HashSet::new()).await;
         assert_eq!(result, "test.txt");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -2599,7 +2646,7 @@ mod tests {
             .await
             .unwrap_or(());
 
-        let result = dedup_filename(&dir, "test.txt").await;
+        let result = dedup_filename(&dir, "test.txt", &std::collections::HashSet::new()).await;
         assert_eq!(result, "test (1).txt");
 
         // Clean up
@@ -2615,7 +2662,7 @@ mod tests {
             .await
             .unwrap_or(());
 
-        let result = dedup_filename(&dir, "test.txt").await;
+        let result = dedup_filename(&dir, "test.txt", &std::collections::HashSet::new()).await;
         assert_eq!(result, "test (1).txt");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -2629,8 +2676,49 @@ mod tests {
             .await
             .unwrap_or(());
 
-        let result = dedup_filename(&dir, "README").await;
+        let result = dedup_filename(&dir, "README", &std::collections::HashSet::new()).await;
         assert_eq!(result, "README (1)");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // dedup_filename: reserved set prevents TOCTOU races in batch downloads
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dedup_filename_reserved_set_avoids_collision() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_reserved");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        // No file exists on disk, but the temp path is already reserved
+        // by a sibling task (simulating a batch download in progress).
+        let reserved_temp = dir.join(format!("video.mp4{TEMP_EXT}"));
+        let mut reserved = std::collections::HashSet::new();
+        reserved.insert(reserved_temp.clone());
+
+        // Should NOT return "video.mp4" because its .fdownloading path is reserved.
+        let result = dedup_filename(&dir, "video.mp4", &reserved).await;
+        assert_eq!(result, "video (1).mp4");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_reserved_set_phase2_collision() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_reserved_p2");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        // video.mp4 exists on disk AND video (1).mp4.fdownloading is reserved.
+        tokio::fs::write(dir.join("video.mp4"), b"")
+            .await
+            .unwrap_or(());
+        let reserved_temp1 = dir.join(format!("video (1).mp4{TEMP_EXT}"));
+        let mut reserved = std::collections::HashSet::new();
+        reserved.insert(reserved_temp1);
+
+        // "video.mp4" conflicts (on disk), "video (1).mp4" conflicts (reserved),
+        // so should fall through to "video (2).mp4".
+        let result = dedup_filename(&dir, "video.mp4", &reserved).await;
+        assert_eq!(result, "video (2).mp4");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

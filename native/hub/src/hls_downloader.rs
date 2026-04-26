@@ -649,7 +649,7 @@ async fn run_hls_download_inner(
     let actual_name = if p.is_resume {
         auto_name.clone()
     } else {
-        dedup_filename(&save_dir, &auto_name).await
+        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
     };
 
     // total_bytes is unknown for HLS until we download all segments
@@ -981,7 +981,8 @@ async fn remux_ts_to_mp4(ts_path: &std::path::Path, task_id: &str) -> Option<Pat
     let parent = ts_path.parent()?;
     let stem = ts_path.file_stem().and_then(|s| s.to_str())?;
     let desired_name = format!("{}.mp4", stem);
-    let unique_name = dedup_filename(parent, &desired_name).await;
+    let unique_name =
+        dedup_filename(parent, &desired_name, &std::collections::HashSet::new()).await;
     let mp4_path = parent.join(&unique_name);
 
     let ts_owned = ts_path.to_owned();
