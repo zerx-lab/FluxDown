@@ -14,9 +14,12 @@
  *     logo.png (600×600)
  *     tray_iconTemplate.png (36×36, macOS 2x 菜单栏模板图标)
  *     tray_iconTemplate@1x.png (18×18, macOS 1x 菜单栏模板图标)
+ *     logo_on_dark.png (64×64, 暗色主题侧边栏专用: 蓝色箭头 + 透明背景)
  *
  *   windows/runner/resources/
  *     app_icon.ico (16,32,48,64,256 多分辨率 ICO)
+ *     tray_win_dark.ico (16,32 — 深色模式白色箭头托盘图标)
+ *     tray_win_light.ico (16,32 — 浅色模式深蓝色箭头托盘图标)
  *
  *   macos/Runner/Assets.xcassets/AppIcon.appiconset/
  *     app_icon_{16,32,64,128,256,512,1024}.png
@@ -164,6 +167,51 @@ async function renderTrayTemplate(size: number): Promise<Buffer> {
 }
 
 /**
+ * 生成 Windows 系统托盘专用箭头图标（透明背景，纯色箭头）
+ *
+ * 与应用图标不同，托盘图标不带圆角矩形背景，仅保留下载箭头形状。
+ * - 深色模式（深色任务栏）→ 白色箭头 (#FFFFFF)
+ * - 浅色模式（浅色任务栏）→ 深蓝色箭头 (#1e3a8a)
+ *
+ * viewBox "106 105 300 300" 以 300×300 正方形裁剪原始箭头路径：
+ *   箭头 x:[149,363] y:[119,390]，中心 (256,255)，各边留约 15% 边距
+ */
+async function renderWindowsTrayArrow(
+  size: number,
+  color: string,
+): Promise<Buffer> {
+  const svg = `<svg width="512" height="512" viewBox="106 105 300 300" xmlns="http://www.w3.org/2000/svg">
+    <path d="
+      M 226 131
+      Q 226 119 238 119
+      L 274 119
+      Q 286 119 286 131
+      L 286 296
+      L 331 251
+      Q 340 242 349 251
+      L 363 265
+      Q 372 274 363 283
+      L 265 381
+      Q 256 390 247 381
+      L 149 283
+      Q 140 274 149 265
+      L 163 251
+      Q 172 242 181 251
+      L 226 296
+      Z
+    " fill="${color}"/>
+  </svg>`;
+  return sharp(Buffer.from(svg), { density: 300 })
+    .resize(size, size, {
+      kernel: sharp.kernel.lanczos3,
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+}
+
+/**
  * 手动构建 ICO 文件（多分辨率，PNG 压缩帧）
  *
  * ICO 布局:
@@ -255,7 +303,12 @@ async function main() {
     const tray18 = await renderTrayTemplate(18);
     await saveFile("assets/logo/tray_iconTemplate@1x.png", tray18);
 
-    totalCount += 4;
+    // 暗色主题侧边栏 logo — 蓝色箭头 (#3B82F6) + 透明背景，64px 保证高 DPI 清晰度
+    // 不含圆角矩形背景，直接在深色 surface1 上显示
+    const logoDark = await renderWindowsTrayArrow(64, "#3B82F6");
+    await saveFile("assets/logo/logo_on_dark.png", logoDark);
+
+    totalCount += 5;
   }
 
   // ──────────────────────────────────────────
@@ -275,6 +328,43 @@ async function main() {
       `     (包含分辨率: ${icoSizes.map((s) => `${s}×${s}`).join(", ")})`,
     );
     totalCount += 1;
+  }
+
+  // ──────────────────────────────────────────
+  // 2b. Windows 托盘图标 — 深/浅色模式各一套
+  //     仅含箭头形状，透明背景，适配任务栏颜色
+  // ──────────────────────────────────────────
+  console.log("\n📁 windows/runner/resources/ (tray icons)");
+  {
+    const traySizes = [16, 32];
+
+    // 深色模式托盘图标（白色箭头，用于深色任务栏）
+    const darkFrames: { size: number; data: Buffer }[] = [];
+    for (const size of traySizes) {
+      darkFrames.push({
+        size,
+        data: await renderWindowsTrayArrow(size, "#FFFFFF"),
+      });
+    }
+    const trayDarkIco = buildIco(darkFrames);
+    await saveFile("windows/runner/resources/tray_win_dark.ico", trayDarkIco);
+
+    // 浅色模式托盘图标（深蓝色箭头，用于浅色任务栏）
+    const lightFrames: { size: number; data: Buffer }[] = [];
+    for (const size of traySizes) {
+      lightFrames.push({
+        size,
+        data: await renderWindowsTrayArrow(size, "#1e3a8a"),
+      });
+    }
+    const trayLightIco = buildIco(lightFrames);
+    await saveFile(
+      "windows/runner/resources/tray_win_light.ico",
+      trayLightIco,
+    );
+
+    console.log(`     (含分辨率: ${traySizes.map((s) => `${s}×${s}`).join(", ")})`);
+    totalCount += 2;
   }
 
   // ──────────────────────────────────────────

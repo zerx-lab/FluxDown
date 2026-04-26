@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
@@ -19,6 +20,12 @@ class TrayService with TrayListener {
   /// 是否正在退出过程中 — 防止重入和退出期间操作窗口
   bool _isExiting = false;
 
+  // Windows 系统托盘图标路径（深/浅色任务栏各一套）
+  String? _winTrayDarkPath; // 白色箭头 — 适配深色任务栏
+  String? _winTrayLightPath; // 深蓝色箭头 — 适配浅色任务栏
+  // 当前有效的深/浅色状态，初始值跟随系统，后续由 setIsDark() 驱动
+  bool _isDark = false;
+
   /// 应用退出回调 — 由外部（如 _FluxDownAppState）设置以实现优雅退出。
   /// 回调中应等待待处理通知、销毁托盘、再销毁窗口。
   Future<void> Function()? onExitApp;
@@ -30,12 +37,22 @@ class TrayService with TrayListener {
     _initialized = true;
 
     // 图标路径：Windows/Linux 使用绝对文件系统路径，macOS 使用 Flutter asset key
-    // CMakeLists.txt 已配置将 app_icon.ico 复制到 exe 同级目录
+    // CMakeLists.txt 已配置将图标文件复制到 exe 同级目录
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final String iconPath;
     final bool isTemplate;
     if (Platform.isWindows) {
-      iconPath = p.join(exeDir, 'app_icon.ico');
+      // Windows: 根据系统亮暗模式选择初始托盘图标
+      //   tray_win_dark.ico  = 白色箭头（深色任务栏）
+      //   tray_win_light.ico = 深蓝色箭头（浅色任务栏）
+      // CMakeLists.txt 已将两个文件复制到 exe 同级目录
+      // 初始值使用系统亮度；启动后由 _FluxDownAppState 通过 setIsDark() 修正为 app 主题
+      _winTrayDarkPath = p.join(exeDir, 'tray_win_dark.ico');
+      _winTrayLightPath = p.join(exeDir, 'tray_win_light.ico');
+      _isDark =
+          WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+          Brightness.dark;
+      iconPath = _windowsTrayIconPath();
       isTemplate = false;
     } else if (Platform.isMacOS) {
       // macOS: tray_manager 使用 rootBundle.load() 加载，需要 Flutter asset key
@@ -96,6 +113,31 @@ class TrayService with TrayListener {
     await trayManager.destroy();
     _initialized = false;
     logInfo(_tag, 'destroy done');
+  }
+
+  // ─────────────────────────────────────────────
+  // Windows 深/浅色模式托盘图标切换
+  // ─────────────────────────────────────────────
+
+  /// 返回当前 _isDark 对应的 Windows 托盘图标路径
+  String _windowsTrayIconPath() {
+    return _isDark ? (_winTrayDarkPath ?? '') : (_winTrayLightPath ?? '');
+  }
+
+  /// 由外部（_FluxDownAppState）在应用主题或系统亮度变化时调用，
+  /// 将托盘图标切换为与 app 当前生效主题一致的深/浅色版本。
+  Future<void> setIsDark(bool isDark) async {
+    if (!Platform.isWindows) return;
+    if (_isDark == isDark) return; // 无变化，跳过
+    _isDark = isDark;
+    if (!_initialized || _isExiting) return;
+    final newPath = _windowsTrayIconPath();
+    logInfo(_tag, 'setIsDark($isDark) → $newPath');
+    try {
+      await trayManager.setIcon(newPath, isTemplate: false);
+    } catch (e, stack) {
+      logError(_tag, 'setIsDark: failed to update tray icon', e, stack);
+    }
   }
 
   /// 显示窗口并聚焦

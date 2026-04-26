@@ -112,6 +112,15 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/app_icon.ico"
   DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
+# Copy dark/light mode tray icons (arrow-only, transparent background).
+# tray_service.dart switches between them based on system brightness.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/tray_win_dark.ico"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/tray_win_light.ico"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+
 # === fluxdown_nmh: NMH relay binary ===
 # Build the Native Messaging Host relay binary alongside the app so that
 # nmh_registry::find_nmh_exe() always finds it next to flux_down.exe

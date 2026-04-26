@@ -166,6 +166,24 @@ Future<void> main(List<String> args) async {
   await TrayService.instance.init();
   logInfo('main', 'tray initialized');
 
+  // themeProvider 已加载完毕，立即将托盘图标修正为 app 当前生效主题
+  // （init() 默认使用系统亮度作为初始值，这里覆盖为 app 的显式设置）
+  if (Platform.isWindows) {
+    final mode = themeProvider.themeMode;
+    final bool trayIsDark;
+    if (mode == ThemeMode.dark) {
+      trayIsDark = true;
+    } else if (mode == ThemeMode.light) {
+      trayIsDark = false;
+    } else {
+      trayIsDark =
+          WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+          Brightness.dark;
+    }
+    await TrayService.instance.setIsDark(trayIsDark);
+    logInfo('main', 'tray isDark=$trayIsDark (from app theme: $mode)');
+  }
+
   logInfo('main', 'initializing Rust runtime...');
   await initializeRust(assignRustSignal);
   logInfo('main', 'Rust runtime initialized');
@@ -221,7 +239,8 @@ class FluxDownApp extends StatefulWidget {
   State<FluxDownApp> createState() => _FluxDownAppState();
 }
 
-class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
+class _FluxDownAppState extends State<FluxDownApp>
+    with WindowListener, WidgetsBindingObserver {
   late final ThemeProvider themeProvider;
   late final LocaleNotifier _localeNotifier;
   final _navigatorKey = GlobalKey<NavigatorState>();
@@ -244,6 +263,7 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     themeProvider.addListener(_onThemeChanged);
     _localeNotifier.addListener(_onLocaleChanged);
     windowManager.addListener(this);
+    WidgetsBinding.instance.addObserver(this);
     // 阻止默认关闭行为，由 onWindowClose 接管
     windowManager.setPreventClose(true);
 
@@ -316,6 +336,7 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     ExternalDownloadService.shutdown();
     _settingsForExternal.dispose();
     WindowStateService.instance.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     _localeNotifier.removeListener(_onLocaleChanged);
     themeProvider.removeListener(_onThemeChanged);
@@ -326,7 +347,36 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
 
   void _onThemeChanged() {
     logInfo('FluxDownApp', 'themeChanged, mounted=$mounted');
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      _updateTrayTheme();
+    }
+  }
+
+  /// 系统亮度变化（深/浅色模式切换）时触发
+  /// 仅当 app 主题设为「跟随系统」时才会实际影响托盘图标
+  @override
+  void didChangePlatformBrightness() {
+    _updateTrayTheme();
+  }
+
+  /// 根据 app 当前生效主题更新 Windows 托盘图标
+  /// 优先级：app 显式设置 > 系统亮度（仅 ThemeMode.system 时回退到系统）
+  void _updateTrayTheme() {
+    if (!Platform.isWindows) return;
+    final mode = themeProvider.themeMode;
+    final bool isDark;
+    if (mode == ThemeMode.dark) {
+      isDark = true;
+    } else if (mode == ThemeMode.light) {
+      isDark = false;
+    } else {
+      // ThemeMode.system → 跟随系统亮度
+      isDark =
+          WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+          Brightness.dark;
+    }
+    TrayService.instance.setIsDark(isDark);
   }
 
   void _onLocaleChanged() {

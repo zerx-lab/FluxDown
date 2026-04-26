@@ -1960,7 +1960,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         if !db_file_name.is_empty() && db_file_name != actual_name {
             // Dedup in case the better name collides with an existing file that
             // was created between probe and now.
-            let deduped = dedup_filename(&save_dir, &db_file_name).await;
+            let deduped =
+                dedup_filename(&save_dir, &db_file_name, &p.reserved_filenames_snapshot).await;
             if deduped != db_file_name {
                 // Dedup changed the name — keep DB and reality in sync.
                 let _ = p.db.update_task_file_name(&p.task_id, &deduped).await;

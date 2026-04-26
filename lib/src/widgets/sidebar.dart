@@ -18,15 +18,17 @@ class Sidebar extends StatefulWidget {
   final DownloadController controller;
   final SettingsProvider settingsProvider;
 
-  const Sidebar({super.key, required this.controller, required this.settingsProvider});
+  const Sidebar({
+    super.key,
+    required this.controller,
+    required this.settingsProvider,
+  });
 
   @override
   State<Sidebar> createState() => _SidebarState();
 }
 
 class _SidebarState extends State<Sidebar> {
-
-
   // ─────────────────────────────────────────────
   // 图标映射
   // ─────────────────────────────────────────────
@@ -64,7 +66,10 @@ class _SidebarState extends State<Sidebar> {
           // Only the data-driven sections rebuild on controller changes.
           Expanded(
             child: ListenableBuilder(
-              listenable: Listenable.merge([widget.controller, widget.settingsProvider]),
+              listenable: Listenable.merge([
+                widget.controller,
+                widget.settingsProvider,
+              ]),
               builder: (context, _) {
                 final ctrl = widget.controller;
                 final sp = widget.settingsProvider;
@@ -102,12 +107,7 @@ class _SidebarState extends State<Sidebar> {
   Widget _buildLogo(AppColors c) {
     // macOS: traffic light 按钮已在左上角，logo/名称隐藏，只保留拖拽区占位
     if (Platform.isMacOS) {
-      return DragToMoveArea(
-        child: Container(
-          height: 48,
-          color: c.surface1,
-        ),
-      );
+      return DragToMoveArea(child: Container(height: 48, color: c.surface1));
     }
     return DragToMoveArea(
       child: Container(
@@ -117,15 +117,25 @@ class _SidebarState extends State<Sidebar> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(5),
-              child: Image.asset(
-                'assets/logo/fluxdown_logo.png',
+            // 暗色主题：蓝色箭头 + 透明背景（无白色圆角矩形，避免在深色侧边栏上显得突兀）
+            // 亮色主题：完整圆角图标（白底 + 蓝色箭头）
+            if (c.tokens.appearance == Brightness.dark)
+              Image.asset(
+                'assets/logo/logo_on_dark.png',
                 width: 22,
                 height: 22,
                 filterQuality: FilterQuality.medium,
+              )
+            else
+              ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: Image.asset(
+                  'assets/logo/fluxdown_logo.png',
+                  width: 22,
+                  height: 22,
+                  filterQuality: FilterQuality.medium,
+                ),
               ),
-            ),
             const SizedBox(width: 9),
             Text.rich(
               TextSpan(
@@ -168,7 +178,9 @@ class _SidebarState extends State<Sidebar> {
       children: [
         GestureDetector(
           onSecondaryTapUp: (d) => _showSectionContextMenu(
-            context, d.globalPosition, s,
+            context,
+            d.globalPosition,
+            s,
             onHide: () => widget.settingsProvider.setShowSidebarStatus(false),
           ),
           child: _SectionHeader(title: s.sidebarStatus, c: c),
@@ -200,14 +212,18 @@ class _SidebarState extends State<Sidebar> {
       children: [
         GestureDetector(
           onSecondaryTapUp: (d) => _showSectionContextMenu(
-            context, d.globalPosition, s,
+            context,
+            d.globalPosition,
+            s,
             onHide: () => widget.settingsProvider.setShowSidebarQueues(false),
           ),
           child: _CollapsibleSectionHeader(
             title: s.sidebarQueues,
             expanded: widget.settingsProvider.sidebarQueuesExpanded,
             c: c,
-            onToggle: () => widget.settingsProvider.setSidebarQueuesExpanded(!widget.settingsProvider.sidebarQueuesExpanded),
+            onToggle: () => widget.settingsProvider.setSidebarQueuesExpanded(
+              !widget.settingsProvider.sidebarQueuesExpanded,
+            ),
             trailing: _QueueAddButton(
               c: c,
               onTap: () => _showCreateQueueDialog(context, ctrl, s, c),
@@ -387,15 +403,18 @@ class _SidebarState extends State<Sidebar> {
       children: [
         GestureDetector(
           onSecondaryTapUp: (d) => _showSectionContextMenu(
-            context, d.globalPosition, s,
+            context,
+            d.globalPosition,
+            s,
             onHide: () => widget.settingsProvider.setShowSidebarCategory(false),
           ),
           child: _CollapsibleSectionHeader(
             title: s.sidebarCategory,
             expanded: widget.settingsProvider.sidebarCategoryExpanded,
             c: c,
-            onToggle: () =>
-                widget.settingsProvider.setSidebarCategoryExpanded(!widget.settingsProvider.sidebarCategoryExpanded),
+            onToggle: () => widget.settingsProvider.setSidebarCategoryExpanded(
+              !widget.settingsProvider.sidebarCategoryExpanded,
+            ),
           ),
         ),
         if (widget.settingsProvider.sidebarCategoryExpanded) ...[
@@ -403,7 +422,11 @@ class _SidebarState extends State<Sidebar> {
           for (final cat in visibleCategories)
             GestureDetector(
               onSecondaryTapUp: (d) => _showCategoryItemContextMenu(
-                context, d.globalPosition, s, c, cat,
+                context,
+                d.globalPosition,
+                s,
+                c,
+                cat,
               ),
               child: _NavItem(
                 icon: categoryIconData(cat.icon),
@@ -467,7 +490,8 @@ class _SidebarState extends State<Sidebar> {
             action: () => showCategoryEditDialog(
               context,
               existing: cat,
-              onSave: (updated) => widget.settingsProvider.updateCustomCategory(updated),
+              onSave: (updated) =>
+                  widget.settingsProvider.updateCustomCategory(updated),
               onDelete: cat.builtinType == 'all'
                   ? null
                   : () => widget.settingsProvider.removeCustomCategory(cat.id),
@@ -488,7 +512,8 @@ class _SidebarState extends State<Sidebar> {
             icon: LucideIcons.rotateCcw,
             label: s.resetBuiltinCategories,
             color: c.textMuted,
-            action: () => widget.settingsProvider.resetBuiltinCategory(cat.builtinType!),
+            action: () =>
+                widget.settingsProvider.resetBuiltinCategory(cat.builtinType!),
           ),
         // 非"全部文件"的所有分类（含内置视频/音频等）均可删除
         if (cat.builtinType != 'all')
@@ -1162,8 +1187,9 @@ class _QueueDialogState extends State<_QueueDialog> {
                         child: ShadSelect<String>(
                           initialValue: _selectedSegments,
                           onChanged: (v) {
-                            if (v != null)
+                            if (v != null) {
                               setState(() => _selectedSegments = v);
+                            }
                           },
                           options: _segmentOptions
                               .map(
