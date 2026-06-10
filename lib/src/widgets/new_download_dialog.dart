@@ -182,8 +182,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     // 优先使用侧边栏队列筛选，否则使用设置中的默认队列
     final qf = widget.controller.queueFilter;
     _selectedQueueId = qf ?? widget.settingsProvider.defaultQueueId;
-    // 根据队列/全局设置初始化默认线程数
-    selectedThreads = _effectiveSegmentsOption(_selectedQueueId);
+    // 优先沿用上次用户选择的线程数，其次根据队列/全局设置初始化
+    final lastThreads = widget.settingsProvider.lastDialogThreads;
+    selectedThreads = lastThreads.isNotEmpty
+        ? (lastThreads == 'auto' ? null : lastThreads)
+        : _effectiveSegmentsOption(_selectedQueueId);
     // 订阅 torrent meta 解析结果（.torrent 文件预解析）
     _metaSub = TorrentMetaResult.rustSignalStream.listen(_onTorrentMetaResult);
   }
@@ -867,7 +870,14 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     if (entries.isEmpty) return;
 
     final parsed = int.tryParse(selectedThreads ?? '') ?? 0;
-    final segments = parsed > 0 ? parsed.clamp(1, 64) : 0;
+    final segments = parsed > 0 ? parsed.clamp(1, 256) : 0;
+
+    // 记住用户本次选择的线程数，下次新建时沿用
+    if (_threadsUserModified) {
+      widget.settingsProvider.setLastDialogThreads(
+        segments > 0 ? segments.toString() : 'auto',
+      );
+    }
 
     // 单条磁力链接：对话框保持打开，转入 loading 阶段等待文件列表
     if (entries.length == 1 &&

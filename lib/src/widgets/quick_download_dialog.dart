@@ -154,8 +154,11 @@ class _QuickDownloadDialogContentState
       _renameController.text = widget.filename;
     }
     _urlController.addListener(_onUrlChanged);
-    // 根据队列/全局设置初始化默认线程数
-    selectedThreads = _effectiveSegmentsOption(_selectedQueueId);
+    // 优先沿用上次用户选择的线程数，其次根据队列/全局设置初始化
+    final lastThreads = SettingsProvider.globalInstance?.lastDialogThreads ?? '';
+    selectedThreads = lastThreads.isNotEmpty
+        ? (lastThreads == 'auto' ? null : lastThreads)
+        : _effectiveSegmentsOption(_selectedQueueId);
     // 根据已知文件名自动匹配分类保存目录
     _tryAutoApplySaveDir(widget.filename);
     // 初始化时计算一次
@@ -314,7 +317,14 @@ class _QuickDownloadDialogContentState
     final userAgent = _userAgentController.text.trim();
 
     final parsedSeg = int.tryParse(selectedThreads ?? '') ?? 0;
-    final segments = parsedSeg > 0 ? parsedSeg.clamp(1, 64) : 0;
+    final segments = parsedSeg > 0 ? parsedSeg.clamp(1, 256) : 0;
+
+    // 记住用户本次选择的线程数，下次新建时沿用
+    if (_threadsUserModified) {
+      SettingsProvider.globalInstance?.setLastDialogThreads(
+        segments > 0 ? segments.toString() : 'auto',
+      );
+    }
 
     if (entries.length == 1) {
       // 单条 — 使用 ConfirmExternalDownload，支持重命名和 cookies

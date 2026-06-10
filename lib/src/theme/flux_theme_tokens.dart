@@ -127,7 +127,8 @@ class FluxThemeTokens {
     this.segmentPalette = defaultSegmentPalette,
   });
 
-  // ── 默认分片调色板（与 detail_panel.dart 硬编码一致）──
+  // ── 默认分片调色板（自定义主题未提供 segmentPalette 时的占位值；
+  //    运行时由 SegmentPalette 基于 accent 动态生成 256 色）──
   static const defaultSegmentPalette = <Color>[
     Color(0xFF22C55E),
     Color(0xFFF59E0B),

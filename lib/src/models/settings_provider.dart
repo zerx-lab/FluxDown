@@ -75,6 +75,9 @@ class SettingsProvider extends ChangeNotifier {
   // 默认队列设置
   String _defaultQueueId = ''; // 空字符串 = 默认队列
 
+  // 新建下载对话框上次选择的线程数（'' = 未记录，'auto' = 自动，数字串 = 固定）
+  String _lastDialogThreads = '';
+
   // 文件管理器自定义命令模板（空 = 用平台默认行为）
   // {path} = 完整文件路径；{dir} = 目录路径；占位符在 Rust 端做 shell 转义
   String _revealFileCmd = '';
@@ -178,6 +181,9 @@ class SettingsProvider extends ChangeNotifier {
   // 默认队列 Getter
   String get defaultQueueId => _defaultQueueId;
 
+  // 新建下载对话框上次选择的线程数 Getter
+  String get lastDialogThreads => _lastDialogThreads;
+
   // 文件管理器命令 Getters
   String get revealFileCmd => _revealFileCmd;
   String get openDirCmd => _openDirCmd;
@@ -198,6 +204,14 @@ class SettingsProvider extends ChangeNotifier {
     _defaultSegments = value;
     notifyListeners();
     _saveToRust('default_segments', value.toString());
+  }
+
+  /// 记住新建下载对话框中用户选择的线程数（'auto' 或数字字符串）
+  void setLastDialogThreads(String value) {
+    if (_lastDialogThreads == value) return;
+    _lastDialogThreads = value;
+    notifyListeners();
+    _saveToRust('last_dialog_threads', value);
   }
 
   void setMaxConcurrentTasks(int value) {
@@ -661,6 +675,8 @@ class SettingsProvider extends ChangeNotifier {
           _globalUserAgent = entry.value;
         case 'default_queue_id':
           _defaultQueueId = entry.value;
+        case 'last_dialog_threads':
+          _lastDialogThreads = entry.value;
         case 'reveal_file_cmd':
           _revealFileCmd = entry.value;
         case 'open_dir_cmd':

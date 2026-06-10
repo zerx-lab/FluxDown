@@ -7,31 +7,7 @@ import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
-
-/// IDM 风格分片配色 — 最多 16 色循环
-/// 第一个颜色跟随主题色（accent），其余固定
-const _segmentColorsFixed = [
-  Color(0xFF22C55E), // 绿
-  Color(0xFFF59E0B), // 橙
-  Color(0xFFA855F7), // 紫
-  Color(0xFF06B6D4), // 青
-  Color(0xFFEC4899), // 粉
-  Color(0xFF14B8A6), // 碧
-  Color(0xFFEF4444), // 红
-  Color(0xFF8B5CF6), // 靛
-  Color(0xFFF97316), // 深橙
-  Color(0xFF10B981), // 翠
-  Color(0xFFE11D48), // 玫红
-  Color(0xFF0EA5E9), // 天蓝
-  Color(0xFFD946EF), // 品红
-  Color(0xFF84CC16), // 黄绿
-  Color(0xFF64748B), // 灰蓝
-];
-
-Color _colorForSegment(int index, Color accent) {
-  if (index % (_segmentColorsFixed.length + 1) == 0) return accent;
-  return _segmentColorsFixed[(index - 1) % _segmentColorsFixed.length];
-}
+import '../theme/segment_palette.dart';
 
 class DetailPanel extends StatelessWidget {
   final DownloadController controller;
@@ -274,7 +250,7 @@ class DetailPanel extends StatelessWidget {
             segments: segs,
             totalBytes: totalBytes,
             emptyColor: c.surface3,
-            accent: c.accent,
+            palette: SegmentPalette.of(c),
           ),
         ),
       ),
@@ -330,7 +306,7 @@ class DetailPanel extends StatelessWidget {
                     cellGap: cellGap,
                     emptyColor: c.surface3,
                     isDark: c.bg.computeLuminance() < 0.5,
-                    accent: c.accent,
+                    palette: SegmentPalette.of(c),
                   ),
                 ),
               );
@@ -343,6 +319,7 @@ class DetailPanel extends StatelessWidget {
 
   /// 分片图例 — 每个分片一行，显示颜色块 + 序号 + 进度
   Widget _buildSegmentLegend(AppColors c, List<SegmentData> segs) {
+    final palette = SegmentPalette.of(c);
     return Wrap(
       spacing: 12,
       runSpacing: 6,
@@ -355,7 +332,7 @@ class DetailPanel extends StatelessWidget {
                 width: 8,
                 height: 8,
                 decoration: BoxDecoration(
-                  color: _colorForSegment(seg.index, c.accent),
+                  color: SegmentPalette.colorFor(palette, seg.index),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -636,13 +613,13 @@ class _SegmentBarPainter extends CustomPainter {
   final List<SegmentData> segments;
   final int totalBytes;
   final Color emptyColor;
-  final Color accent;
+  final List<Color> palette;
 
   _SegmentBarPainter({
     required this.segments,
     required this.totalBytes,
     required this.emptyColor,
-    required this.accent,
+    required this.palette,
   });
 
   @override
@@ -668,7 +645,7 @@ class _SegmentBarPainter extends CustomPainter {
         final rect = Rect.fromLTWH(xStart, 0, fillWidth, size.height);
         canvas.drawRect(
           rect,
-          Paint()..color = _colorForSegment(seg.index, accent),
+          Paint()..color = SegmentPalette.colorFor(palette, seg.index),
         );
       }
     }
@@ -679,7 +656,7 @@ class _SegmentBarPainter extends CustomPainter {
       !identical(segments, old.segments) ||
       totalBytes != old.totalBytes ||
       emptyColor != old.emptyColor ||
-      accent != old.accent;
+      !identical(palette, old.palette);
 }
 
 // =============================================================================
@@ -695,7 +672,7 @@ class _SegmentGridPainter extends CustomPainter {
   final double cellGap;
   final Color emptyColor;
   final bool isDark;
-  final Color accent;
+  final List<Color> palette;
 
   _SegmentGridPainter({
     required this.segments,
@@ -706,7 +683,7 @@ class _SegmentGridPainter extends CustomPainter {
     required this.cellGap,
     required this.emptyColor,
     required this.isDark,
-    required this.accent,
+    required this.palette,
   });
 
   @override
@@ -751,16 +728,16 @@ class _SegmentGridPainter extends CustomPainter {
       if (isDownloaded) {
         canvas.drawRRect(
           rect,
-          Paint()..color = _colorForSegment(owner.index, accent),
+          Paint()..color = SegmentPalette.colorFor(palette, owner.index),
         );
       } else {
         // 未下载：分片色半透明
         canvas.drawRRect(
           rect,
           Paint()
-            ..color = _colorForSegment(
+            ..color = SegmentPalette.colorFor(
+              palette,
               owner.index,
-              accent,
             ).withValues(alpha: isDark ? 0.12 : 0.15),
         );
       }
@@ -777,7 +754,7 @@ class _SegmentGridPainter extends CustomPainter {
       cellGap != old.cellGap ||
       emptyColor != old.emptyColor ||
       isDark != old.isDark ||
-      accent != old.accent;
+      !identical(palette, old.palette);
 }
 
 // =============================================================================

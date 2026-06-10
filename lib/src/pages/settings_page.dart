@@ -1744,7 +1744,7 @@ class _SegmentSelector extends StatelessWidget {
       value: value,
       onChanged: (v) {
         final n = int.tryParse(v ?? '') ?? 0;
-        settingsProvider.setDefaultSegments(n.clamp(0, 64));
+        settingsProvider.setDefaultSegments(n.clamp(0, 256));
       },
     );
   }

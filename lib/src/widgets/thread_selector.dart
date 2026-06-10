@@ -1,4 +1,4 @@
-/// 线程数选择器 — 支持预设选项 + 自定义输入 (1-64)
+/// 线程数选择器 — 支持预设选项 + 自定义输入 (1-256)
 ///
 /// 默认显示为 [ShadSelect] 下拉选择器（Auto / 4 / 8 / 16 / 32 / 64 / 自定义）。
 /// 选择「自定义」后，同一位置原地变为可编辑输入框；右侧下拉箭头可切回预设选择。
@@ -136,10 +136,20 @@ class _ThreadSelectorState extends State<ThreadSelector> {
     widget.onChanged(null);
   }
 
-  /// 自定义输入变化时校验 1-64 范围
+  /// 自定义输入变化时校验 1-256 范围；超出上限时自动回调整为 256
   void _onInputChanged(String text) {
     final n = int.tryParse(text);
-    widget.onChanged((n != null && n >= 1 && n <= 64) ? text : null);
+    if (n == null || n < 1) {
+      widget.onChanged(null);
+      return;
+    }
+    if (n > 256) {
+      _ctrl.text = '256';
+      _ctrl.selection = const TextSelection.collapsed(offset: 3);
+      widget.onChanged('256');
+      return;
+    }
+    widget.onChanged(text);
   }
 
   // ─────────────────────────────────────────────
@@ -226,7 +236,7 @@ class _ThreadSelectorState extends State<ThreadSelector> {
                     ),
                     inputFormatters: [
                       FilteringTextInputFormatter.digitsOnly,
-                      LengthLimitingTextInputFormatter(2),
+                      LengthLimitingTextInputFormatter(3),
                     ],
                     textInputAction: TextInputAction.done,
                     onChanged: _onInputChanged,
