@@ -96,3 +96,21 @@ test/resume_all_test.dart
 website/fluxdown-website-latest.tar
 design/mobile/
 docs/
+
+# ── 敏感信息（开源清理，严禁入库）──
+SENSITIVE_INFO.md
+OPENSOURCE_CLEANUP.md
+.env
+.env.*
+!.env.example
+credentials.txt
+client_secret*.json
+*.apps.googleusercontent.com.json
+scripts/notify_config.json
+scripts/.send_progress
+scripts/filter_repo_replacements.txt
+fluxDown/stats.html
+android/local.properties
+**/flutter/ephemeral/
+**/Flutter/ephemeral/
+website/.vscode/launch.json

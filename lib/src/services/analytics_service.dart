@@ -26,10 +26,10 @@ class AnalyticsService {
   bool _enabled = true;
 
   static const _serverUrl = 'https://countly.zerx.dev';
-  static const _appKey = String.fromEnvironment(
-    'ANALYTICS_APP_KEY',
-    defaultValue: '***REMOVED***',
-  );
+
+  /// Countly App Key，构建期通过 --dart-define=ANALYTICS_APP_KEY=xxx 注入。
+  /// 未注入（本地开发/第三方构建）时为空，分析功能自动禁用。
+  static const _appKey = String.fromEnvironment('ANALYTICS_APP_KEY');
 
   /// 失败请求重试队列上限
   static const _maxRetryQueue = 20;
@@ -95,7 +95,8 @@ class AnalyticsService {
     if (_initCompleter != null) return _initCompleter!.future;
 
     _initCompleter = Completer<void>();
-    _enabled = enabled;
+    // 未注入 App Key（本地开发/第三方构建）时强制禁用
+    _enabled = enabled && _appKey.isNotEmpty;
 
     try {
       _deviceId = await _getOrCreateDeviceId();

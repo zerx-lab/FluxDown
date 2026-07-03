@@ -160,7 +160,7 @@ jobs:
 
       - name: Build Flutter Windows app
         # Windows 使用 native-tls（Schannel），无需 aws-lc-sys，无需任何额外 TLS 环境变量
-        run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+        run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
 
       # ── ARM64: Flutter 在 ARM64 runner 上以 x64 仿真运行，输出到 build\windows\x64
       #    但后续步骤（Inno Setup / portable zip）需要 build\windows\arm64 ──
@@ -543,7 +543,7 @@ jobs:
 
       # ── Build ──
       - name: Build Flutter Linux app
-        run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+        run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by CMake custom targets defined in linux/CMakeLists.txt during flutter build.
@@ -836,7 +836,8 @@ jobs:
           flutter build macos --release \
             --build-name=${{ steps.version.outputs.VERSION }} \
             --build-number=1 \
-            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} \
+            --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by Xcode shell script build phases defined in macos/Runner.xcodeproj during flutter build.

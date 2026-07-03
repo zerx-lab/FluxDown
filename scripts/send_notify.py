@@ -11,6 +11,7 @@ FluxDown 平台发布通知脚本
 
 import argparse
 import json
+import os
 import smtplib
 import ssl
 import sys
@@ -20,10 +21,13 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 # ── SMTP 配置 ────────────────────────────────────────────────────────────────
-SMTP_HOST = "smtp.163.com"
-SMTP_PORT = 465
-SMTP_USER = "***REMOVED***"
-SMTP_PASS = "***REMOVED***"
+# 凭据一律来自环境变量，禁止硬编码：
+#   FLUXDOWN_SMTP_USER  发件邮箱
+#   FLUXDOWN_SMTP_PASS  SMTP 授权码
+SMTP_HOST = os.environ.get("FLUXDOWN_SMTP_HOST", "smtp.163.com")
+SMTP_PORT = int(os.environ.get("FLUXDOWN_SMTP_PORT", "465"))
+SMTP_USER = os.environ.get("FLUXDOWN_SMTP_USER", "")
+SMTP_PASS = os.environ.get("FLUXDOWN_SMTP_PASS", "")
 SENDER_NAME = "FluxDown"
 
 # ── 发送策略 ─────────────────────────────────────────────────────────────────
@@ -113,6 +117,12 @@ def build_message(
 
 def new_smtp_conn() -> smtplib.SMTP_SSL:
     """建立并登录一个新的 SMTP_SSL 连接"""
+    if not SMTP_USER or not SMTP_PASS:
+        print(
+            "[错误] 未设置 FLUXDOWN_SMTP_USER / FLUXDOWN_SMTP_PASS 环境变量",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     ctx = ssl.create_default_context()
     smtp = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx)
     smtp.login(SMTP_USER, SMTP_PASS)
