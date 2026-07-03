@@ -33,8 +33,10 @@ flutter test                         # 全部 Dart 测试
 flutter test test/widget_test.dart   # 运行单个 Dart 测试文件
 cargo test -p fluxdown_engine        # 运行下载引擎全部单元测试（native/engine，下载协议/分段/DB 等核心逻辑）
 cargo test -p hub                    # 运行 hub 适配层全部单元测试（native/hub，Rinf FFI/信号桥接）
+cargo test -p fluxdown_api           # 运行本机 API 服务全部测试（native/api，axum HTTP API/aria2 兼容）
 cargo test -p fluxdown_engine -- segment_advisor # 运行特定 Rust 测试模块
 cargo test -p fluxdown_engine -- test_name       # 运行单个 Rust 测试函数
+cargo run -p fluxdown_api --example gen_openapi > website/public/openapi.json  # 改动 API 后重新生成 OpenAPI 规范（官网 /api-docs 渲染）
 
 # 依赖
 flutter pub get                      # Dart 依赖安装
@@ -57,7 +59,7 @@ python scripts/release_tag.py v0.x.x --model opus --lang both --push --github-re
 python scripts/release_tag.py v0.x.x --dry-run  # 仅预览
 
 # 图标生成（修改 assets/logo/fluxdown_logo.svg 后执行）
-bun scripts/gen_icons.ts               # 全平台图标一键生成（51 个文件，覆盖所有平台）
+bun scripts/gen_icons.ts               # 全平台图标一键生成（50 个文件，覆盖所有平台）
 ```
 
 ## 项目结构
@@ -84,7 +86,6 @@ x_down/
 │       │   ├── tray_service.dart               # 系统托盘
 │       │   ├── notification_service.dart       # 下载完成通知（800ms 防抖合批，Win: Win32 悬浮窗 / Linux/mac: 系统通知）
 │       │   ├── update_service.dart             # 自动更新（GitHub Releases）
-│       │   ├── analytics_service.dart          # 匿名数据分析（GA4）
 │       │   ├── feedback_service.dart           # 反馈提交（GitHub Issues）
 │       │   ├── log_service.dart                # 日志管理（2MB 分卷，总量默认 10MB 超量清理，保留 7 天）
 │       │   ├── open_folder.dart                # 打开文件夹（跨平台）
@@ -118,6 +119,15 @@ x_down/
 │       └── tracker_subscription.rs    # BT tracker 订阅列表抓取/去重
 │   ├── examples/headless_download.rs  # CLI 式同进程直接调用证明（不依赖 hub/rinf）
 │   └── tests/                         # realtest.rs / corruption_test.rs（迁移自 hub，确定性/真实网络回归）
+├── native/api/                        # `fluxdown_api` crate（本机 HTTP API，axum，零 rinf 依赖）
+│   └── src/
+│       ├── types.rs                   # wire JSON 契约（TaskDto/CreateTaskRequest/DownloadRequest，camelCase）
+│       ├── routes.rs                  # 路径常量（/api/v1/*，server 与 Rust 客户端共用）
+│       ├── service.rs                 # `ApiHost` trait —— 宿主能力契约（桌面 App / 未来 server 各自实现）
+│       ├── server.rs                  # axum 服务器（/ping、脚本接管、aria2 兼容、管理 API；仅 127.0.0.1）
+│       ├── jsonrpc.rs                 # aria2 JSON-RPC 兼容垫片（addUri/getVersion/multicall/…）
+│       ├── takeover.rs                # 脚本接管批量请求解析
+│       └── auth.rs                    # 鉴权（常量时间比较/Client 头门禁/管理 API 强制 token）
 ├── native/hub/                        # Rinf FFI 适配层 crate（`hub`，edition 2024，crate 名不可改）
 │   └── src/
 │       ├── lib.rs                     # 入口（tokio current_thread runtime）
@@ -129,7 +139,7 @@ x_down/
 │       ├── protocol_registry.rs       # fluxdown:// 自定义协议注册（Windows）
 │       ├── file_association.rs        # .torrent 文件关联注册（Windows）
 │       ├── native_messaging.rs        # Windows: Named Pipe `\\.\pipe\fluxdown`；Linux: Unix socket 服务端
-│       ├── http_takeover.rs           # 本地 HTTP 接管服务（Tampermonkey userscripts）
+│       ├── api_host.rs                # `fluxdown_api::ApiHost` 实现（读直查 Db，写经 ApiCommand+oneshot 进 actor）
 │       ├── nmh_registry.rs            # NMH 清单注册（Linux: 写入 Chrome/Firefox NMH JSON）
 │       ├── reveal_file.rs             # 在文件管理器中定位文件/打开目录
 │       └── updater.rs                 # 自动更新器（GitHub Releases API）
@@ -190,7 +200,7 @@ x_down/
 | 文件 | 功能描述 |
 |------|---------|
 | `pages/home_page.dart` | 主页面。三栏布局（侧边栏 180-320px / 任务列表 / 详情面板 240-420px），全局快捷键（Ctrl+F/A/Esc/Del），Boost 优先下载 Banner |
-| `pages/settings_page.dart` | 设置页面。侧边栏导航 6 个分类：通用（开机启动/关闭到托盘/torrent关联/匿名分析）、外观（语言/主题/颜色）、下载（目录/线程/并发/速度/UA/队列）、BT（自定义 Tracker）、代理（无/系统/手动 + 代理测试）、关于（版本更新） |
+| `pages/settings_page.dart` | 设置页面。侧边栏导航 6 个分类：通用（开机启动/关闭到托盘/torrent关联）、外观（语言/主题/颜色）、下载（目录/线程/并发/速度/UA/队列）、BT（自定义 Tracker）、代理（无/系统/手动 + 代理测试）、关于（版本更新） |
 
 ### 核心布局组件
 
@@ -298,7 +308,7 @@ CREATE TABLE queues (
 
 > 以下模块均已迁移到 `native/engine`（`fluxdown_engine` crate）。`native/hub/src/logger.rs`
 > 是转发 `pub use fluxdown_engine::logger::*;` 的 shim，保留 `crate::logger::*` 路径供
-> hub 内 App-shell 专属文件（`native_messaging.rs`/`http_takeover.rs`/`updater.rs`/…）零改动继续使用。
+> hub 内 App-shell 专属文件（`native_messaging.rs`/`api_host.rs`/`updater.rs`/…）零改动继续使用。
 
 ### segment_advisor.rs — 动态分段计算
 - 文件 < 1MB → 1线程；1-10MB → 4；10-100MB → 8；100MB-1GB → 16；> 1GB → 32
@@ -337,6 +347,34 @@ CREATE TABLE queues (
 - 启动时自动清理 7 天前的日志文件
 - 提供 `#[macro_export]` 的 `log_info!` / `log_error!` 宏（`$crate` 前缀保证跨 crate 调用正确解析），用法同 `format!()`
 - hub 侧使用前需在文件顶部 `use crate::logger::log_info;`（经 `native/hub/src/logger.rs` shim 转发）
+
+## 本机 API 服务（native/api，`fluxdown_api` crate）
+
+一个端口（默认 17800，仅监听 127.0.0.1）、一个 axum 服务器，三组按配置独立启停的路由；
+`local_server_*` 配置变更时 actor 热重启监听（优雅停机 + 重绑，无需重启应用）。
+
+|路由组|端点|开关|鉴权|
+|---|---|---|---|
+|探活|`GET /ping`|总开关|无|
+|脚本接管|`POST /download`、`/download/batch`|`local_server_takeover_enabled`|`X-FluxDown-Client` 头 + 可选 token|
+|aria2 兼容|`POST /jsonrpc`（addUri/getVersion/getGlobalStat/multicall/listMethods）|`local_server_jsonrpc_enabled`|可选 token（`X-FluxDown-Token` 头或 `params[0]="token:xxx"`）|
+|管理 API|`GET /api/v1/info`、`GET/POST /api/v1/tasks`、`GET/DELETE /api/v1/tasks/{id}`、`PUT /api/v1/tasks/{id}/pause\|continue`、`PUT /api/v1/tasks/pause\|continue`、`GET /api/v1/queues`|`local_server_api_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`）|
+|API 文档|`GET /api/v1/openapi.json`（OpenAPI 3.1）|`local_server_api_enabled`|无（纯接口描述，不含数据）|
+
+**架构**：`fluxdown_api` 零 rinf 依赖，只定义 wire 契约（`types.rs`，camelCase JSON）+ 路径常量
+（`routes.rs`）+ 宿主契约（`service.rs` 的 `ApiHost` trait）+ axum 服务器（`server.rs`）。
+桌面 App 在 `native/hub/src/api_host.rs` 实现 `ApiHost`：读操作直查 `Db`（Clone），
+写操作打包 `ApiCommand` + oneshot 经 mpsc 进 `download_actor` 事件循环串行执行。
+未来 headless server / 手机端复用同一 crate，只需另写一个 `ApiHost` 实现；
+MCP server 等 Rust 客户端直接 import `types` + `routes`。
+
+**语义区分**：接管/aria2 入口 → 外部下载流程（弹快速下载确认框）；管理 API `POST /api/v1/tasks`
+→ 直接创建任务（自动化客户端受信任，无弹框）。
+
+**OpenAPI 文档**：spec 由 utoipa 从 handler 注解（`#[utoipa::path]`）与 `ToSchema` 派生
+（`openapi.rs`，含漂移守卫测试——路由常量与注解不同步会跑挂）。改动 API 后执行
+`cargo run -p fluxdown_api --example gen_openapi > website/public/openapi.json` 重新生成，
+官网 `/api-docs` 页用 Scalar（CDN）渲染该文件。
 
 ## 浏览器扩展（fluxDown/）
 
@@ -388,7 +426,6 @@ NMH 注册：
 | 行为 | `closeToTray` | 关闭到系统托盘 |
 | 行为 | `autoStartup` | 开机启动 |
 | 行为 | `autoCheckUpdate` | 自动检查更新 |
-| 行为 | `analyticsEnabled` | 匿名数据分析（GA4） |
 | BT | `btEnableDht` | 启用 DHT |
 | BT | `btEnableUpnp` | 启用 UPnP |
 | BT | `btPortStart/End` | 端口范围 |
@@ -400,6 +437,12 @@ NMH 注册：
 | 代理 | `proxyNoList` | 排除列表 |
 | 文件关联 | `torrentAssocPrompted` | 是否已提示过 torrent 关联 |
 | 文件关联 | `torrentAssociated` | 是否已关联 .torrent 文件 |
+| API 服务 | `local_server_enabled` | 本机 API 服务总开关（默认开） |
+| API 服务 | `local_server_port` | 监听端口（默认 17800，仅 127.0.0.1） |
+| API 服务 | `local_server_token` | 访问令牌（管理 API 强制要求非空） |
+| API 服务 | `local_server_takeover_enabled` | 浏览器脚本接管子开关（默认开） |
+| API 服务 | `local_server_jsonrpc_enabled` | aria2 RPC 兼容子开关（默认开） |
+| API 服务 | `local_server_api_enabled` | 管理 API 子开关（默认关，开启时 Dart 侧自动生成 token） |
 
 ## 主题系统
 
@@ -421,7 +464,6 @@ NMH 注册：
 | `tray_service.dart` | 系统托盘图标+菜单（多语言），菜单项：显示窗口/新建下载/暂停恢复/退出 |
 | `notification_service.dart` | 下载完成通知。800ms 防抖合批（3s 最长等待），Windows → Win32ToastWindow 主显示器右下角悬浮窗（无论主窗口可见性），Linux/macOS → 系统通知带"打开文件夹/打开文件"动作按钮（Linux D-Bus actions / macOS UNNotificationCategory；Wayland 禁止全局坐标定位，D-Bus 通知是唯一正确做法） |
 | `update_service.dart` | GitHub Releases 检查，启动后 5s 静默检查，弹窗展示 changelog |
-| `analytics_service.dart` | GA4 匿名埋点：启动/退出/创建/完成/失败/视图切换 |
 | `feedback_service.dart` | POST GitHub Issues API 提交反馈（含 OS/版本/语言系统信息） |
 | `log_service.dart` | 按日期写入 `fluxdown_YYYY-MM-DD.log`，启动时清理 7 天前日志，提供 `logInfo()`/`logError()` 全局函数 |
 | `open_folder.dart` | 跨平台打开文件夹（调用系统文件管理器） |

@@ -1406,6 +1406,7 @@ impl DownloadManager {
         }
     }
 
+    /// 创建下载任务，返回新任务 ID；仅在 DB 插入失败时返回 `None`。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_task(
         &mut self,
@@ -1425,8 +1426,9 @@ impl DownloadManager {
         selected_file_indices: Vec<i32>,
         method: Option<String>,
         body: Option<downloader::CapturedRequestBody>,
-    ) {
+    ) -> Option<String> {
         let task_id = Uuid::new_v4().to_string();
+        let created_id = task_id.clone();
         // ED2K 链接自带文件名/大小/root hash：调用方未显式给名时从链接回填，
         // 并把 hint_file_size 设为链接声明的大小（run_ed2k_download 以链接为准）。
         let (file_name, hint_file_size) = if crate::ed2k::link::is_ed2k_url(&url) {
@@ -1465,7 +1467,7 @@ impl DownloadManager {
             .await
         {
             log_info!("insert_task error: {}", e);
-            return;
+            return None;
         }
 
         // Persist .torrent file bytes to DB for resume after restart.
@@ -1572,6 +1574,7 @@ impl DownloadManager {
                 }
             });
         }
+        Some(created_id)
     }
 
     /// Internal: actually spawn the download task (no concurrency check).

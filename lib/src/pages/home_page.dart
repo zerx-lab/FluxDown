@@ -8,7 +8,6 @@ import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../models/settings_provider.dart';
-import '../services/analytics_service.dart';
 import '../services/external_download_service.dart';
 import '../services/log_service.dart';
 import '../services/notification_service.dart';
@@ -84,8 +83,6 @@ class _HomePageState extends State<HomePage> {
     _registerMenuCallbacks();
     // 浏览器扩展下载请求时自动切回首页
     ExternalDownloadService.onNavigateToHome = _navigateToHomeFromExternal;
-    // 视图追踪
-    AnalyticsService.instance.trackView('HomePage');
     // 监听侧边栏区块可见性变化
     _settingsProvider.addListener(_checkSidebarVisibility);
     // 下载期间阻止系统睡眠/息屏（按设置项）
@@ -104,7 +101,6 @@ class _HomePageState extends State<HomePage> {
         _showSettings = false;
         _initialSettingsCategory = null;
         _initialSettingsHighlight = null;
-        AnalyticsService.instance.trackView('HomePage');
       });
     }
   }
@@ -136,7 +132,6 @@ class _HomePageState extends State<HomePage> {
       if (!mounted || _showSettings) return;
       setState(() {
         _showSettings = true;
-        AnalyticsService.instance.trackView('SettingsPage');
       });
     };
     AppMenuCallbacks.find = () {
@@ -347,7 +342,6 @@ class _HomePageState extends State<HomePage> {
                 _showSettings = false;
                 _initialSettingsCategory = null;
                 _initialSettingsHighlight = null;
-                AnalyticsService.instance.trackView('HomePage');
               }),
               settingsProvider: _settingsProvider,
               downloadController: _controller,
@@ -366,7 +360,6 @@ class _HomePageState extends State<HomePage> {
                 _showSettings = false;
                 _initialSettingsCategory = null;
                 _initialSettingsHighlight = null;
-                AnalyticsService.instance.trackView('HomePage');
               }),
               isSettingsActive: true,
             ),
@@ -539,20 +532,13 @@ class _HomePageState extends State<HomePage> {
                     _initialSettingsCategory = item.category;
                     _initialSettingsHighlight = item;
                     _showSettings = true;
-                    AnalyticsService.instance.trackView('SettingsPage');
                   });
                 },
-                onSettings: () => setState(() {
-                  _initialSettingsHighlight = null;
-                  _showSettings = true;
-                  AnalyticsService.instance.trackView('SettingsPage');
-                }),
               ),
             ),
 
-            // 窗口控制按钮 — 右上角
-            // macOS：showToolButtons=true，工具按钮通过 Positioned 渲染，紧贴右边缘（与设置页一致）
-            // Windows/Linux：showToolButtons=false，工具按钮已在 HeaderBar 内
+            // 窗口控制按钮 + 工具按钮 — 右上角覆盖层（与设置页一致），
+            // 隐藏的工具按钮自动紧凑合并，HeaderBar 侧按可见按钮数预留空间
             Positioned(
               top: 0,
               right: 0,
@@ -561,9 +547,7 @@ class _HomePageState extends State<HomePage> {
                 onSettings: () => setState(() {
                   _initialSettingsHighlight = null;
                   _showSettings = true;
-                  AnalyticsService.instance.trackView('SettingsPage');
                 }),
-                showToolButtons: Platform.isMacOS,
               ),
             ),
             // 批量删除进度覆盖层（带平滑动画）

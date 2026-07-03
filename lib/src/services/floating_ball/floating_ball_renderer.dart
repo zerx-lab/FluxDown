@@ -37,20 +37,28 @@ String? _loadedLogoKey;
 /// 应用图标切换后再次调用即重载为新来源。
 ///
 /// 来源跟随「设置-外观-应用图标」：自定义图标启用且预览 PNG 存在时用预览
-/// （256px），否则用内置 asset logo。
+/// （256px），内置「闪电」启用时用其打包资源，否则用内置 asset logo。
 Future<void> ensureBallLogoLoaded() async {
   final iconSvc = AppIconService.instance;
   final customPath = iconSvc.isCustom ? iconSvc.previewPngPath : null;
-  final key = customPath == null
-      ? 'asset'
-      : 'custom#${iconSvc.previewRevision}';
+  final String key;
+  if (iconSvc.isBolt) {
+    key = 'bolt';
+  } else if (customPath != null) {
+    key = 'custom#${iconSvc.previewRevision}';
+  } else {
+    key = 'asset';
+  }
   if (ballLogoImage != null && _loadedLogoKey == key) return;
   try {
     final Uint8List bytes;
     if (customPath != null) {
       bytes = await File(customPath).readAsBytes();
     } else {
-      final data = await rootBundle.load('assets/logo/fluxdown_logo.png');
+      final asset = iconSvc.isBolt
+          ? AppIconService.builtinBoltAsset
+          : 'assets/logo/fluxdown_logo.png';
+      final data = await rootBundle.load(asset);
       bytes = data.buffer.asUint8List();
     }
     final codec = await ui.instantiateImageCodec(

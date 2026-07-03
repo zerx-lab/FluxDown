@@ -1,6 +1,6 @@
 mod actors;
+mod api_host;
 mod file_association;
-mod http_takeover;
 mod logger;
 mod native_messaging;
 mod nmh_registry;

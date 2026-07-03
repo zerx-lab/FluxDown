@@ -5,13 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
 
 import '../bindings/bindings.dart';
-import '../services/analytics_service.dart';
 import '../services/log_service.dart';
 import '../i18n/locale_provider.dart';
 import 'custom_category.dart';
 import 'download_queue.dart';
 import 'download_task.dart';
-
 
 const _tag = 'DownloadCtrl';
 
@@ -26,6 +24,7 @@ class DownloadController extends ChangeNotifier {
   String? _selectedTaskId;
   FileCategory _categoryFilter = FileCategory.all;
   CustomCategory? _customCategoryFilter;
+
   /// 当前可见的非特殊分类列表（用于计算 "other" 排除逻辑）
   List<CustomCategory> _visibleNormalCategories = [];
   StatusTab _statusTab = StatusTab.all;
@@ -137,45 +136,6 @@ class DownloadController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  /// 从 URL 推断下载协议（用于分析埋点）
-  static String _inferProtocol(String url) {
-    if (url.isEmpty) return 'bt';
-    final lower = url.toLowerCase();
-    if (lower.startsWith('ftp')) return 'ftp';
-    if (lower.startsWith('magnet:')) return 'bt';
-    if (lower.startsWith('ed2k://')) return 'ed2k';
-    return 'http';
-  }
-
-  /// 将错误消息分类为匿名类别，避免将 URL/路径等敏感信息发送到分析服务。
-  static String _classifyError(String msg) {
-    if (msg.isEmpty) return 'unknown';
-    final lower = msg.toLowerCase();
-    if (lower.contains('timeout') || lower.contains('timed out')) {
-      return 'timeout';
-    }
-    if (lower.contains('connection') || lower.contains('network')) {
-      return 'network';
-    }
-    if (lower.contains('disk') ||
-        lower.contains('space') ||
-        lower.contains('permission') ||
-        lower.contains('access')) {
-      return 'disk';
-    }
-    if (lower.contains('404') || lower.contains('not found')) {
-      return 'not_found';
-    }
-    if (lower.contains('403') || lower.contains('forbidden')) {
-      return 'forbidden';
-    }
-    if (lower.contains('ssl') || lower.contains('certificate')) {
-      return 'ssl';
-    }
-    if (lower.contains('cancel')) return 'cancelled';
-    return 'other';
-  }
-
   // ---------------------------------------------------------------------------
   // Public getters
   // ---------------------------------------------------------------------------
@@ -216,7 +176,9 @@ class DownloadController extends ChangeNotifier {
     // "其他" — 不匹配任何可见的正常分类
     if (filter.builtinType == 'other') {
       return byQueue
-          .where((t) => !_visibleNormalCategories.any((c) => c.matches(t.fileName)))
+          .where(
+            (t) => !_visibleNormalCategories.any((c) => c.matches(t.fileName)),
+          )
           .toList();
     }
     // 正常分类（内置或自定义）
@@ -355,14 +317,19 @@ class DownloadController extends ChangeNotifier {
   }
 
   /// 统一分类的任务数量（支持 all/other/normal）
-  int countForUnifiedCategory(CustomCategory category, List<CustomCategory> allVisible) {
+  int countForUnifiedCategory(
+    CustomCategory category,
+    List<CustomCategory> allVisible,
+  ) {
     final base = _queueFiltered;
     if (category.builtinType == 'all') return base.length;
     if (category.builtinType == 'other') {
       final normals = allVisible
           .where((c) => c.builtinType != 'all' && c.builtinType != 'other')
           .toList();
-      return base.where((t) => !normals.any((c) => c.matches(t.fileName))).length;
+      return base
+          .where((t) => !normals.any((c) => c.matches(t.fileName)))
+          .length;
     }
     return base.where((t) => category.matches(t.fileName)).length;
   }
@@ -575,11 +542,6 @@ class DownloadController extends ChangeNotifier {
       extraHeaders: extraHeaders,
       selectedFileIndices: selectedFileIndices,
     ).sendSignalToRust();
-    // 分析埋点
-    final protocol = (torrentFileBytes != null && torrentFileBytes.isNotEmpty)
-        ? 'bt'
-        : _inferProtocol(url);
-    AnalyticsService.instance.trackDownloadCreated(protocol);
   }
 
   /// Create a BT download task from already-read torrent bytes, with optional
@@ -614,7 +576,6 @@ class DownloadController extends ChangeNotifier {
       extraHeaders: const {},
       selectedFileIndices: selectedFileIndices,
     ).sendSignalToRust();
-    AnalyticsService.instance.trackDownloadCreated('bt');
   }
 
   /// Create a download task from a .torrent file on disk.
@@ -678,7 +639,6 @@ class DownloadController extends ChangeNotifier {
         extraHeaders: const {},
         selectedFileIndices: selectedFileIndices,
       ).sendSignalToRust();
-      AnalyticsService.instance.trackDownloadCreated('bt');
     } catch (e) {
       logInfo(_tag, 'failed to read torrent file: $e');
     }
@@ -709,12 +669,6 @@ class DownloadController extends ChangeNotifier {
       cookies: cookies,
       referrer: referrer,
     ).sendSignalToRust();
-    for (final entry in entries) {
-      final protocol = entry.url.toLowerCase().startsWith('ftp')
-          ? 'ftp'
-          : 'http';
-      AnalyticsService.instance.trackDownloadCreated(protocol);
-    }
   }
 
   void pauseTask(String taskId) {
@@ -785,7 +739,10 @@ class DownloadController extends ChangeNotifier {
 
   /// 设置统一分类筛选（内置或自定义均走此方法）。
   /// [allVisible] 当前可见的全部分类列表，用于计算 "other" 排除逻辑。
-  void setCustomCategoryFilter(CustomCategory? category, {List<CustomCategory> allVisible = const []}) {
+  void setCustomCategoryFilter(
+    CustomCategory? category, {
+    List<CustomCategory> allVisible = const [],
+  }) {
     if (category == null && _customCategoryFilter == null) return;
     if (category != null && _customCategoryFilter?.id == category.id) return;
     _customCategoryFilter = category;
@@ -1133,17 +1090,11 @@ class DownloadController extends ChangeNotifier {
           newStatus == TaskStatus.completed) {
         logInfo(_tag, 'task completed: ${p.taskId} (${p.fileName})');
         onTaskCompleted?.call(_tasks[idx]);
-        final proto = _inferProtocol(_tasks[idx].url);
-        AnalyticsService.instance.trackDownloadCompleted(proto, p.totalBytes);
         // 释放槽位，从延迟队列恢复下一个任务
         _resumeNextDeferred();
       }
       // 检测下载失败：从非 error 状态变为 error
       if (oldStatus != TaskStatus.error && newStatus == TaskStatus.error) {
-        AnalyticsService.instance.trackDownloadFailed(
-          _inferProtocol(_tasks[idx].url),
-          _classifyError(p.errorMessage),
-        );
         // 释放槽位，从延迟队列恢复下一个任务
         _resumeNextDeferred();
       }

@@ -21,7 +21,6 @@ import 'src/services/floating_ball/wayland_degradation_service.dart';
 import 'src/services/hls_quality_service.dart';
 import 'src/services/bt_file_selection_service.dart';
 import 'src/services/app_icon_service.dart';
-import 'src/services/analytics_service.dart';
 import 'src/services/log_service.dart';
 import 'src/services/notification_service.dart';
 import 'src/services/power_service.dart';
@@ -70,11 +69,6 @@ Future<void> main(List<String> args) async {
       details.exception,
       details.stack,
     );
-    AnalyticsService.instance.logException(
-      details.exceptionAsString(),
-      true,
-      stackTrace: details.stack,
-    );
   };
 
   // 设置全局异常捕获 — Dart 未捕获异步异常
@@ -82,11 +76,6 @@ Future<void> main(List<String> args) async {
   // 避免 Zone mismatch（ensureInitialized 和 runApp 必须在同一 Zone）
   PlatformDispatcher.instance.onError = (error, stack) {
     logError('PlatformError', 'Uncaught async error', error, stack);
-    AnalyticsService.instance.logException(
-      error.toString(),
-      true,
-      stackTrace: stack,
-    );
     return true; // 已处理，不再向上传播
   };
 
@@ -197,11 +186,7 @@ Future<void> main(List<String> args) async {
   await initializeRust(assignRustSignal);
   logInfo('main', 'Rust runtime initialized');
 
-  // 初始化数据分析服务（异步，不阻塞启动）
-  // 此时 SettingsProvider 尚未加载配置，先以默认值(true)启动。
-  // _FluxDownAppState.initState 中 SettingsProvider 配置加载后会同步实际状态。
-  AnalyticsService.instance.init(enabled: true);
-  logInfo('main', 'analytics init dispatched, calling runApp...');
+  logInfo('main', 'calling runApp...');
 
   runApp(
     FluxDownApp(
@@ -296,9 +281,6 @@ class _FluxDownAppState extends State<FluxDownApp>
     BtFileSelectionService.init(navigatorKey: _navigatorKey);
     // 请求加载配置，确保 settingsProvider 有默认保存目录等数据
     _settingsForExternal.requestConfig();
-
-    // 配置加载完成后，同步 analytics 的实际同意状态
-    _syncAnalyticsAfterConfigLoad();
 
     // 悬浮球服务 — 配置加载完成后初始化（S0.5 初始化钩子）
     _initFloatingBallAfterConfigLoad();
@@ -455,8 +437,7 @@ class _FluxDownAppState extends State<FluxDownApp>
         ),
         actions: [
           ShadButton.outline(
-            onPressed: () =>
-                launchUrl(Uri.parse('https://fluxdown.app')),
+            onPressed: () => launchUrl(Uri.parse('https://fluxdown.app')),
             child: Text(s.updateFailedOpenSite),
           ),
           ShadButton(
@@ -466,37 +447,6 @@ class _FluxDownAppState extends State<FluxDownApp>
         ],
       ),
     );
-  }
-
-  /// 等配置从 Rust 加载完成后，同步 analytics 的真实同意状态。
-  /// 如果用户之前关闭了分析，这里会及时撤销同意。
-  void _syncAnalyticsAfterConfigLoad() {
-    void applyConsent() {
-      AnalyticsService.instance.setEnabled(
-        _settingsForExternal.analyticsEnabled,
-      );
-    }
-
-    if (_settingsForExternal.loaded) {
-      applyConsent();
-      return;
-    }
-    late final void Function() listener;
-    Timer? timeout;
-    void cleanup() {
-      timeout?.cancel();
-      _settingsForExternal.removeListener(listener);
-    }
-
-    listener = () {
-      if (_settingsForExternal.loaded) {
-        cleanup();
-        applyConsent();
-      }
-    };
-    _settingsForExternal.addListener(listener);
-    // 兜底：10 秒后仍未加载则以默认值（enabled=true）继续
-    timeout = Timer(const Duration(seconds: 10), cleanup);
   }
 
   /// Wait for SettingsProvider to finish loading config from Rust, then handle
@@ -699,9 +649,6 @@ class _FluxDownAppState extends State<FluxDownApp>
       logInfo('FluxDownApp', 'destroying tray...');
       await TrayService.instance.destroy();
 
-      logInfo('FluxDownApp', 'disposing analytics...');
-      await AnalyticsService.instance.dispose();
-
       logInfo('FluxDownApp', 'destroying window...');
       await LogService.instance.dispose();
       await windowManager.destroy();
@@ -744,9 +691,7 @@ class _FluxDownAppState extends State<FluxDownApp>
   void onWindowFocus() {
     logInfo('FluxDownApp', 'onWindowFocus');
     // Wayland 降级形态③：主窗获焦时读一次剪贴板（失焦读取被协议门控）
-    unawaited(
-      WaylandDegradationService.instance.checkClipboardOnRestore(),
-    );
+    unawaited(WaylandDegradationService.instance.checkClipboardOnRestore());
   }
 
   @override

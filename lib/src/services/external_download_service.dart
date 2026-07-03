@@ -10,7 +10,6 @@ import 'package:window_manager/window_manager.dart';
 import '../bindings/bindings.dart';
 import '../models/settings_provider.dart';
 import '../widgets/quick_download_dialog.dart';
-import 'analytics_service.dart';
 import 'log_service.dart';
 
 const _tag = 'ExtDownSvc';
@@ -102,7 +101,6 @@ class ExternalDownloadService {
     }
 
     _dialogOpen = true;
-    AnalyticsService.instance.trackExternalDownload();
 
     try {
       // 如果当前在设置页，先切回首页
@@ -131,7 +129,7 @@ class ExternalDownloadService {
         mimeType: req.mimeType,
         cookies: req.cookies,
         referrer: req.referrer,
-        defaultSaveDir: effectiveSettings.defaultSaveDir,
+        defaultSaveDir: effectiveSettings.effectiveDefaultSaveDir,
         defaultQueueId: effectiveSettings.defaultQueueId,
       );
       logInfo(_tag, 'dialog shown');

@@ -7,10 +7,12 @@ import 'package:window_manager/window_manager.dart';
 import '../../main.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
+import '../models/settings_provider.dart';
 import '../pages/settings_page.dart';
 import '../services/log_service.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import 'context_menu.dart';
 import 'title_drag_area.dart';
 
 // ─────────────────────────────────────────────
@@ -49,14 +51,12 @@ class HeaderBar extends StatefulWidget {
   final VoidCallback onNewDownload;
   final DownloadController controller;
   final void Function(SettingsSearchItem item) onNavigateToSettings;
-  final VoidCallback? onSettings;
 
   const HeaderBar({
     super.key,
     required this.onNewDownload,
     required this.controller,
     required this.onNavigateToSettings,
-    this.onSettings,
   });
 
   @override
@@ -239,7 +239,6 @@ class HeaderBarState extends State<HeaderBar> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
-    final themeProvider = FluxDownApp.of(context);
     return TitleDragArea(
       child: Container(
         height: 40,
@@ -353,45 +352,10 @@ class HeaderBarState extends State<HeaderBar> {
               ),
             ),
             const Spacer(),
-            // macOS：工具按钮由外层 Positioned(right:0) WindowControls 渲染，紧贴右边缘
-            // Windows/Linux：工具按钮内嵌在 HeaderBar Row 里
-            if (!Platform.isMacOS) ...[
-              _ToolButton(
-                icon: LucideIcons.circlePause,
-                tooltip: s.pauseAll,
-                onPressed: () => widget.controller.pauseAll(),
-                iconSize: 16,
-              ),
-              _ToolButton(
-                icon: LucideIcons.circlePlay,
-                tooltip: s.resumeAll,
-                onPressed: () => widget.controller.resumeAll(),
-                iconSize: 16,
-              ),
-              _ToolButton(
-                icon: LucideIcons.settings,
-                tooltip: s.settings,
-                onPressed: () => widget.onSettings?.call(),
-                iconSize: 16,
-              ),
-              _ToolButton(
-                icon: themeProvider.isDark(context)
-                    ? LucideIcons.sun
-                    : LucideIcons.moon,
-                tooltip: themeProvider.isDark(context)
-                    ? s.toggleToLight
-                    : s.toggleToDark,
-                onPressed: () => themeProvider.toggleTheme(context),
-                iconSize: 15,
-              ),
-              // Windows/Linux：工具按钮与窗口控制按钮之间的分隔线 + 占位宽度
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Container(width: 1, height: 16, color: c.border),
-              ),
-              // 为 3 个窗口控制按钮（各 40px）预留空间，防止内容被遮挡
-              const SizedBox(width: 120),
-            ],
+            // 工具按钮与窗口控制按钮统一由右上角 Positioned(right:0) 覆盖层
+            // [WindowControls] 渲染，隐藏按钮后自动紧凑合并；
+            // Windows/Linux：此处按可见按钮数动态预留空间，防止内容被遮挡
+            if (!Platform.isMacOS) const _TitlebarOverlayReservation(),
           ],
         ),
       ),
@@ -662,91 +626,29 @@ class WindowControls extends StatelessWidget {
   }
 
   Widget _buildToolButtons(BuildContext context) {
-    final themeProvider = FluxDownApp.of(context);
     return SizedBox(
       height: 40,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _ToolButton(
-            icon: LucideIcons.circlePause,
-            tooltip: LocaleScope.of(context).pauseAll,
-            onPressed: () => controller.pauseAll(),
-            iconSize: 16,
-          ),
-          _ToolButton(
-            icon: LucideIcons.circlePlay,
-            tooltip: LocaleScope.of(context).resumeAll,
-            onPressed: () => controller.resumeAll(),
-            iconSize: 16,
-          ),
-          _ToolButton(
-            icon: LucideIcons.settings,
-            tooltip: LocaleScope.of(context).settings,
-            onPressed: () => onSettings?.call(),
-            iconSize: 16,
-            isActive: isSettingsActive,
-          ),
-          _ToolButton(
-            icon: themeProvider.isDark(context)
-                ? LucideIcons.sun
-                : LucideIcons.moon,
-            tooltip: themeProvider.isDark(context)
-                ? LocaleScope.of(context).toggleToLight
-                : LocaleScope.of(context).toggleToDark,
-            onPressed: () => themeProvider.toggleTheme(context),
-            iconSize: 15,
-          ),
-
-        ],
+      child: _TitlebarToolButtons(
+        controller: controller,
+        onSettings: onSettings,
+        isSettingsActive: isSettingsActive,
       ),
     );
   }
 
   Widget _buildWindowsControls(BuildContext context) {
     final c = AppColors.of(context);
-    final themeProvider = FluxDownApp.of(context);
     return SizedBox(
       height: 40,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (showToolButtons) ...[
-            // 全部暂停
-            _ToolButton(
-              icon: LucideIcons.circlePause,
-              tooltip: LocaleScope.of(context).pauseAll,
-              onPressed: () => controller.pauseAll(),
-              iconSize: 16,
+          if (showToolButtons)
+            _TitlebarToolButtons(
+              controller: controller,
+              onSettings: onSettings,
+              isSettingsActive: isSettingsActive,
             ),
-            // 全部恢复
-            _ToolButton(
-              icon: LucideIcons.circlePlay,
-              tooltip: LocaleScope.of(context).resumeAll,
-              onPressed: () => controller.resumeAll(),
-              iconSize: 16,
-            ),
-            // 设置按钮
-            _ToolButton(
-              icon: LucideIcons.settings,
-              tooltip: LocaleScope.of(context).settings,
-              onPressed: () => onSettings?.call(),
-              iconSize: 16,
-              isActive: isSettingsActive,
-            ),
-            // 主题切换按钮
-            _ToolButton(
-              icon: themeProvider.isDark(context)
-                  ? LucideIcons.sun
-                  : LucideIcons.moon,
-              tooltip: themeProvider.isDark(context)
-                  ? LocaleScope.of(context).toggleToLight
-                  : LocaleScope.of(context).toggleToDark,
-              onPressed: () => themeProvider.toggleTheme(context),
-              iconSize: 15,
-            ),
-
-          ],
           // 窗口控制按钮
           _WindowButton(
             icon: LucideIcons.minus,
@@ -837,6 +739,162 @@ class _WindowButtonState extends State<_WindowButton> {
   }
 }
 
+/// 标题栏工具按钮组（全部暂停/全部恢复/设置/主题切换）。
+///
+/// 每个按钮可在「设置 → 通用 → 标题栏按钮」中开关显示，
+/// 也可右键按钮通过上下文菜单直接隐藏。
+class _TitlebarToolButtons extends StatelessWidget {
+  final DownloadController controller;
+  final VoidCallback? onSettings;
+  final bool isSettingsActive;
+
+
+  const _TitlebarToolButtons({
+    required this.controller,
+    this.onSettings,
+    this.isSettingsActive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsProvider.globalInstance;
+    if (settings == null) return _buildRow(context, null);
+    return ListenableBuilder(
+      listenable: settings,
+      builder: (context, _) => _buildRow(context, settings),
+    );
+  }
+
+  void _showHideMenu(
+    BuildContext context,
+    Offset position,
+    VoidCallback onHide,
+  ) {
+    final c = AppColors.of(context);
+    showContextMenu(
+      context,
+      position,
+      items: [
+        ContextMenuItem(
+          icon: LucideIcons.eyeOff,
+          label: LocaleScope.of(context).hideButton,
+          color: c.textSecondary,
+          action: onHide,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRow(BuildContext context, SettingsProvider? settings) {
+    final s = LocaleScope.of(context);
+    final themeProvider = FluxDownApp.of(context);
+    final showPause = settings?.showTitlebarPauseAll ?? true;
+    final showResume = settings?.showTitlebarResumeAll ?? true;
+    final showSettings = settings?.showTitlebarSettings ?? true;
+    final showTheme = settings?.showTitlebarTheme ?? true;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (showPause)
+          _ToolButton(
+            icon: LucideIcons.circlePause,
+            tooltip: s.pauseAll,
+            onPressed: () => controller.pauseAll(),
+            iconSize: 16,
+            onSecondaryTapUp: settings == null
+                ? null
+                : (d) => _showHideMenu(
+                    context,
+                    d.globalPosition,
+                    () => settings.setShowTitlebarPauseAll(false),
+                  ),
+          ),
+        if (showResume)
+          _ToolButton(
+            icon: LucideIcons.circlePlay,
+            tooltip: s.resumeAll,
+            onPressed: () => controller.resumeAll(),
+            iconSize: 16,
+            onSecondaryTapUp: settings == null
+                ? null
+                : (d) => _showHideMenu(
+                    context,
+                    d.globalPosition,
+                    () => settings.setShowTitlebarResumeAll(false),
+                  ),
+          ),
+        if (showSettings)
+          _ToolButton(
+            icon: LucideIcons.settings,
+            tooltip: s.settings,
+            onPressed: () => onSettings?.call(),
+            iconSize: 16,
+            isActive: isSettingsActive,
+            onSecondaryTapUp: settings == null
+                ? null
+                : (d) => _showHideMenu(
+                    context,
+                    d.globalPosition,
+                    () => settings.setShowTitlebarSettings(false),
+                  ),
+          ),
+        if (showTheme)
+          _ToolButton(
+            icon: themeProvider.isDark(context)
+                ? LucideIcons.sun
+                : LucideIcons.moon,
+            tooltip: themeProvider.isDark(context)
+                ? s.toggleToLight
+                : s.toggleToDark,
+            onPressed: () => themeProvider.toggleTheme(context),
+            iconSize: 15,
+            onSecondaryTapUp: settings == null
+                ? null
+                : (d) => _showHideMenu(
+                    context,
+                    d.globalPosition,
+                    () => settings.setShowTitlebarTheme(false),
+                  ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Windows/Linux：HeaderBar 尾部占位，宽度 = 可见工具按钮数 × 40 +
+/// 3 个窗口控制按钮（各 40px），与右上角覆盖层 [WindowControls] 严格对齐。
+class _TitlebarOverlayReservation extends StatelessWidget {
+  const _TitlebarOverlayReservation();
+
+  /// 窗口控制按钮（最小化/最大化/关闭）总宽度
+  static const double _windowButtonsWidth = 120;
+
+  /// 单个工具按钮宽度
+  static const double _toolButtonWidth = 40;
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsProvider.globalInstance;
+    if (settings == null) {
+      return const SizedBox(width: _windowButtonsWidth + _toolButtonWidth * 4);
+    }
+    return ListenableBuilder(
+      listenable: settings,
+      builder: (context, _) {
+        final visibleTools = [
+          settings.showTitlebarPauseAll,
+          settings.showTitlebarResumeAll,
+          settings.showTitlebarSettings,
+          settings.showTitlebarTheme,
+        ].where((v) => v).length;
+        return SizedBox(
+          width: _windowButtonsWidth + _toolButtonWidth * visibleTools,
+        );
+      },
+    );
+  }
+}
+
 /// 工具栏按钮（暂停、恢复、设置、主题切换等），与窗口控制按钮同组，hover 效果一致
 class _ToolButton extends StatefulWidget {
   final IconData icon;
@@ -844,6 +902,7 @@ class _ToolButton extends StatefulWidget {
   final double iconSize;
   final String? tooltip;
   final bool isActive;
+  final GestureTapUpCallback? onSecondaryTapUp;
 
   const _ToolButton({
     required this.icon,
@@ -851,6 +910,7 @@ class _ToolButton extends StatefulWidget {
     this.iconSize = 16,
     this.tooltip,
     this.isActive = false,
+    this.onSecondaryTapUp,
   });
 
   @override
@@ -869,6 +929,7 @@ class _ToolButtonState extends State<_ToolButton> {
       onExit: (_) => setState(() => _isHovered = false),
       child: GestureDetector(
         onTap: widget.onPressed,
+        onSecondaryTapUp: widget.onSecondaryTapUp,
         child: Container(
           width: 40,
           height: 40,

@@ -617,13 +617,29 @@ class Win32BallWindow {
     }
   }
 
+  /// Shell 自身的整屏无边框窗口 — 点击桌面/开始菜单/任务视图时会短暂成为
+  /// 前台窗口，尺寸覆盖整屏且无 WS_CAPTION，但并非真正的全屏应用。
+  static const _shellClassNames = <String>{
+    'Progman', // 桌面（点击桌面空白处/图标）
+    'WorkerW', // 桌面壁纸宿主（SHELLDLL_DefView 被挪入时）
+    'Shell_TrayWnd', // 主任务栏
+    'Shell_SecondaryTrayWnd', // 副屏任务栏
+    'Windows.UI.Core.CoreWindow', // 开始菜单/搜索（Win10）
+    'XamlExplorerHostIslandWindow', // 任务视图/Alt-Tab（Win11）
+    'MultitaskingViewFrame', // 任务视图（Win10）
+    'ForegroundStaging', // Alt-Tab 过渡占位窗口
+    'TaskListThumbnailWnd', // 任务栏缩略图预览
+  };
+
   /// 前台窗口是否在球所在显示器上独占全屏。
   ///
-  /// 判定四条件（rev3 R1/F1/F2 修订）：
+  /// 判定条件（rev3 R1/F1/F2 修订 + Shell/cloak 排除）：
   /// 1. 前台窗口非本进程；
-  /// 2. 与球在同一 HMONITOR；
-  /// 3. 窗口矩形 = 该屏全分辨率（rcMonitor 非 rcWork）；
-  /// 4. 窗口 style 缺 WS_CAPTION|WS_THICKFRAME（排除普通最大化窗口）。
+  /// 2. 类名不属于 Shell 整屏窗口（点桌面时 Progman/WorkerW 会成为前台）；
+  /// 3. 未被 DWM cloak（虚拟桌面切换/UWP 过渡态窗口不可见但可为前台）；
+  /// 4. 与球在同一 HMONITOR；
+  /// 5. 窗口矩形 = 该屏全分辨率（rcMonitor 非 rcWork）；
+  /// 6. 窗口 style 缺 WS_CAPTION|WS_THICKFRAME（排除普通最大化窗口）。
   bool _isForegroundFullscreenOnBallMonitor() {
     final fg = getForegroundWindow();
     if (fg == 0 || fg == _hwnd) return false;
@@ -637,12 +653,37 @@ class Win32BallWindow {
       calloc.free(pidPtr);
     }
 
-    // 条件 2：同一显示器
+    // 条件 2：排除 Shell 整屏窗口（点击桌面 → Progman/WorkerW 成为前台，
+    // 整屏 + 无边框，四条件全中 → 球被误隐藏）
+    final clsBuf = calloc<Uint16>(64);
+    try {
+      final n = getClassNameW(fg, clsBuf.cast(), 64);
+      if (n > 0) {
+        final cls = clsBuf.cast<Utf16>().toDartString(length: n);
+        if (_shellClassNames.contains(cls)) return false;
+      }
+    } finally {
+      calloc.free(clsBuf);
+    }
+
+    // 条件 3：排除 DWM cloaked 窗口（其他虚拟桌面/UWP 挂起窗口，
+    // 不可见但可短暂持有前台）
+    final cloaked = calloc<Uint32>();
+    try {
+      if (dwmGetWindowAttribute(fg, DWMWA_CLOAKED, cloaked.cast(), 4) == 0 &&
+          cloaked.value != 0) {
+        return false;
+      }
+    } finally {
+      calloc.free(cloaked);
+    }
+
+    // 条件 4：同一显示器
     final fgMonitor = monitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
     final ballMonitor = monitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST);
     if (fgMonitor != ballMonitor) return false;
 
-    // 条件 3：尺寸 = 全屏分辨率
+    // 条件 5：尺寸 = 全屏分辨率
     final rect = calloc<RECT>();
     final mi = calloc<MONITORINFO>();
     try {
@@ -662,7 +703,7 @@ class Win32BallWindow {
       calloc.free(mi);
     }
 
-    // 条件 4：无边框（缺 CAPTION|THICKFRAME）
+    // 条件 6：无边框（缺 CAPTION|THICKFRAME）
     final style = getWindowLongPtrW(fg, GWL_STYLE);
     if ((style & WS_CAPTION) == WS_CAPTION ||
         (style & WS_THICKFRAME) == WS_THICKFRAME) {

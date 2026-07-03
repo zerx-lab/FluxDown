@@ -4,57 +4,12 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "同步到 R2 的版本 tag（如 v0.1.28）"
-        required: true
-        type: string
 
 permissions:
   contents: write
   actions: write # 允许在 release job 末尾删除旧 artifact（避免 500MB 配额耗尽）
 
 jobs:
-  # ── 手动触发时：仅同步指定版本文件到 R2，跳过构建 ──
-  sync-r2-only:
-    name: Sync Release to R2
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download release assets from GitHub
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.inputs.tag }}"
-          echo "Downloading assets for ${TAG}..."
-          mkdir -p release-assets
-          gh release download "${TAG}" \
-            --repo ${{ github.repository }} \
-            --dir release-assets
-          echo "Downloaded files:"
-          ls -lh release-assets/
-
-      - name: Sync to Cloudflare R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
-        run: |
-          TAG="${{ github.event.inputs.tag }}"
-          echo "Syncing to R2 under prefix: ${TAG}/"
-          for file in release-assets/*; do
-            filename=$(basename "$file")
-            echo "  Uploading: ${filename}"
-            aws s3 cp "$file" \
-              "s3://${R2_BUCKET}/${TAG}/${filename}" \
-              --endpoint-url "${R2_ENDPOINT}" \
-              --no-progress
-          done
-          echo "✅ R2 sync complete: ${{ secrets.CF_R2_PUBLIC_URL }}/${TAG}/"
-
   # ── 并行 Job 1: 构建 Windows 安装包（x64 + ARM64）──
   build-windows:
     name: Build Windows (${{ matrix.arch }})
@@ -160,7 +115,7 @@ jobs:
 
       - name: Build Flutter Windows app
         # Windows 使用 native-tls（Schannel），无需 aws-lc-sys，无需任何额外 TLS 环境变量
-        run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
+        run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
       # ── ARM64: Flutter 在 ARM64 runner 上以 x64 仿真运行，输出到 build\windows\x64
       #    但后续步骤（Inno Setup / portable zip）需要 build\windows\arm64 ──
@@ -543,7 +498,7 @@ jobs:
 
       # ── Build ──
       - name: Build Flutter Linux app
-        run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
+        run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by CMake custom targets defined in linux/CMakeLists.txt during flutter build.
@@ -836,8 +791,7 @@ jobs:
           flutter build macos --release \
             --build-name=${{ steps.version.outputs.VERSION }} \
             --build-number=1 \
-            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} \
-            --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
+            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by Xcode shell script build phases defined in macos/Runner.xcodeproj during flutter build.
@@ -976,85 +930,9 @@ jobs:
           generate_release_notes: false
           draft: false
 
-      # ── 同步所有 Release 文件到 Cloudflare R2（改善中国大陆下载速度）──
-      # 在 GitHub Release 发布成功后执行
-      # 文件路径格式: {tag_name}/{filename}，例如: v0.3.0/FluxDown-0.3.0-windows-x64-setup.exe
-      # 公开访问 URL: https://dw-fluxdown.zerx.dev/v0.3.0/FluxDown-0.3.0-windows-x64-setup.exe
-      - name: Sync release assets to Cloudflare R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
-        run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          echo "Syncing release assets to R2 under prefix: ${TAG_NAME}/"
-
-          # 安装 AWS CLI（ubuntu-latest 已预装，此处保险起见确认可用）
-          aws --version
-
-          # 批量上传所有 release 文件到 R2（按 tag 分目录存放）
-          for file in release-assets/*; do
-            filename=$(basename "$file")
-            echo "  Uploading: ${filename}"
-            aws s3 cp "$file" \
-              "s3://${R2_BUCKET}/${TAG_NAME}/${filename}" \
-              --endpoint-url "${R2_ENDPOINT}" \
-              --no-progress
-          done
-
-          echo "R2 sync complete. Files available at: ${{ secrets.CF_R2_PUBLIC_URL }}/${TAG_NAME}/"
-
-      # ── 清理 R2 旧版本，仅保留最近 20 个版本（免费额度 10GB）──
-      - name: Cleanup old versions from R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
-        run: |
-          KEEP_VERSIONS=20
-          echo "🧹 R2 cleanup: keeping latest ${KEEP_VERSIONS} versions"
-
-          # 列出 R2 中所有 v* 前缀目录，提取唯一的版本 tag
-          ALL_VERSIONS=$(aws s3 ls "s3://${R2_BUCKET}/" \
-            --endpoint-url "${R2_ENDPOINT}" \
-            | grep 'PRE v' \
-            | awk '{print $2}' \
-            | sed 's|/||' \
-            | sort -t. -k1,1n -k2,2n -k3,3n \
-          )
-
-          TOTAL=$(echo "$ALL_VERSIONS" | grep -c . || true)
-          echo "Found ${TOTAL} versions in R2"
-
-          if [ "$TOTAL" -le "$KEEP_VERSIONS" ]; then
-            echo "✅ Only ${TOTAL} versions exist, nothing to clean up"
-            exit 0
-          fi
-
-          # 计算需要删除的版本数
-          DELETE_COUNT=$((TOTAL - KEEP_VERSIONS))
-          TO_DELETE=$(echo "$ALL_VERSIONS" | head -n "$DELETE_COUNT")
-
-          echo "Will delete ${DELETE_COUNT} old version(s):"
-          echo "$TO_DELETE"
-
-          for ver in $TO_DELETE; do
-            echo "  🗑️  Deleting ${ver}/ ..."
-            aws s3 rm "s3://${R2_BUCKET}/${ver}/" \
-              --endpoint-url "${R2_ENDPOINT}" \
-              --recursive \
-              --no-progress
-          done
-
-          echo "✅ Cleanup complete. Kept latest ${KEEP_VERSIONS} versions."
-
       # ── 清理 GitHub Actions Artifact，仅保留当前 tag 这一组 ──
       # 原因：Free 账号 artifact 配额仅 500MB，每次 release 会上传 ~400MB
-      # Release 资产已独立存储在 GitHub Release + R2，artifact 只是 CI 中间产物可安全清理
+      # Release 资产已独立存储在 GitHub Release，artifact 只是 CI 中间产物可安全清理
       # 此 step 在 release 创建成功后执行，失败不阻断流程（continue-on-error）
       - name: Cleanup GitHub Actions artifacts (keep current tag only)
         if: always() && success()

@@ -119,7 +119,7 @@ class WaylandDegradationService {
         fileSize: 0,
         mimeType: '',
         cookies: '',
-        defaultSaveDir: settings.defaultSaveDir,
+        defaultSaveDir: settings.effectiveDefaultSaveDir,
         defaultQueueId: settings.defaultQueueId,
       );
     } catch (e, stack) {

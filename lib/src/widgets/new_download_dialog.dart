@@ -186,7 +186,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   @override
   void initState() {
     super.initState();
-    _saveDirController.text = widget.settingsProvider.defaultSaveDir;
+    _saveDirController.text = widget.settingsProvider.effectiveDefaultSaveDir;
     _urlController.addListener(_onUrlChanged);
     _pasteUrlFromClipboard();
     // 优先使用侧边栏队列筛选，否则使用设置中的默认队列
@@ -908,12 +908,16 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
           );
         }
       }
+      widget.settingsProvider.recordLastSaveDir(saveDir);
       if (mounted) Navigator.of(context).pop();
       return;
     }
 
     final entries = _parseEntries(_urlController.text);
     if (entries.isEmpty) return;
+
+    // 记录本次保存位置，供"跟随上次保存位置"开关使用
+    widget.settingsProvider.recordLastSaveDir(saveDir);
 
     final parsed = int.tryParse(selectedThreads ?? '') ?? 0;
     final segments = parsed > 0 ? parsed.clamp(1, 256) : 0;

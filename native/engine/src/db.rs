@@ -965,12 +965,16 @@ impl Db {
                 ("proxy_password", ""),
                 ("proxy_no_list", ""),
                 ("global_user_agent", ""),
-                // 本地 HTTP 接管服务（供油猴脚本通过 GM_xmlhttpRequest 发送下载）。
-                // 仅监听 127.0.0.1；token 为空表示不鉴权（仍受自定义请求头门禁 +
-                // 下载确认弹框保护）。详见 native/hub/src/http_takeover.rs。
+                // 本机 API 服务器（axum，见 native/api）：探活 / 脚本接管 /
+                // aria2 兼容 / 管理 API。仅监听 127.0.0.1；token 为空表示
+                // 接管/aria2 端点不鉴权（仍受自定义请求头门禁 + 下载确认弹框
+                // 保护），管理 API 则强制要求 token。
                 ("local_server_enabled", "true"),
                 ("local_server_port", "17800"),
                 ("local_server_token", ""),
+                ("local_server_takeover_enabled", "true"),
+                ("local_server_jsonrpc_enabled", "true"),
+                ("local_server_api_enabled", "false"),
                 // eD2K 服务器列表（逗号分隔 host:port）—— 用户手填/覆盖用。
                 // 公共服务器高频轮换；订阅缓存（ed2k_server_sub_cache）是主要来源，
                 // 二者在找源时合并。以下为写作时常见的长期在线服务器。

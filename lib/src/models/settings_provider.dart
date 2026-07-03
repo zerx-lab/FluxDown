@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:rinf/rinf.dart';
 
 import '../bindings/bindings.dart';
-import '../services/analytics_service.dart';
 import '../services/log_service.dart';
 import 'custom_category.dart';
 
@@ -25,7 +25,6 @@ class SettingsProvider extends ChangeNotifier {
   bool _closeToTray = true; // 默认关闭到托盘
   bool _autoStartup = false; // 默认不开机启动
   bool _autoCheckUpdate = true; // 默认启动时自动检查更新
-  bool _analyticsEnabled = true; // 默认启用匿名数据分析
   bool _notifyOnComplete = true; // 默认任务完成时弹出通知
   bool _keepAwakeWhileDownloading = false; // 默认不阻止睡眠/息屏
   int _logMaxSizeMb = 10; // 日志总大小上限（MB），超出自动清理
@@ -37,12 +36,18 @@ class SettingsProvider extends ChangeNotifier {
   bool _clipboardWatchEnabled = false; // 仅 Linux Wayland 降级分支展示
 
   // 侧边栏区块显示设置
-  bool _showSidebarStatus = true;    // 显示状态区块
-  bool _showSidebarQueues = true;    // 显示队列区块
-  bool _showSidebarCategory = true;  // 显示分类区块
+  bool _showSidebarStatus = true; // 显示状态区块
+  bool _showSidebarQueues = true; // 显示队列区块
+  bool _showSidebarCategory = true; // 显示分类区块
+
+  // 标题栏工具按钮显示设置
+  bool _showTitlebarPauseAll = true; // 全部暂停按钮
+  bool _showTitlebarResumeAll = true; // 全部恢复按钮
+  bool _showTitlebarSettings = true; // 设置按钮
+  bool _showTitlebarTheme = true; // 主题切换按钮
 
   // 侧边栏折叠状态（持久化）
-  bool _sidebarQueuesExpanded = true;    // 队列区块展开
+  bool _sidebarQueuesExpanded = true; // 队列区块展开
   bool _sidebarCategoryExpanded = false; // 分类区块展开（默认折叠）
 
   // 自定义分类
@@ -94,10 +99,13 @@ class SettingsProvider extends ChangeNotifier {
   bool _ed2kEnableUpnp = true; // UPnP 端口映射争取 HighID
   int _ed2kListenPort = 0; // TCP/UDP 监听端口（0=OS 选）
 
-  // 本地下载服务（油猴脚本接管）
+  // 本地 API 服务（浏览器脚本接管 / aria2 RPC 兼容 / 管理 API）
   bool _localServerEnabled = true;
   int _localServerPort = 17800;
   String _localServerToken = '';
+  bool _localServerTakeoverEnabled = true;
+  bool _localServerJsonrpcEnabled = true;
+  bool _localServerApiEnabled = false;
 
   // UA 设置
   String _globalUserAgent = ''; // 空字符串 = 使用内置 Chrome UA
@@ -107,6 +115,12 @@ class SettingsProvider extends ChangeNotifier {
 
   // 新建下载对话框上次选择的线程数（'' = 未记录，'auto' = 自动，数字串 = 固定）
   String _lastDialogThreads = '';
+
+  // 下载位置自动使用上次保存的位置（开启后新建下载默认目录跟随上次下载的目录）
+  bool _rememberLastSaveDir = false;
+
+  // 上次下载确认时使用的保存目录（'' = 未记录）
+  String _lastSaveDir = '';
 
   // 文件管理器自定义命令模板（空 = 用平台默认行为）
   // {path} = 完整文件路径；{dir} = 目录路径；占位符在 Rust 端做 shell 转义
@@ -165,7 +179,6 @@ class SettingsProvider extends ChangeNotifier {
   bool get closeToTray => _closeToTray;
   bool get autoStartup => _autoStartup;
   bool get autoCheckUpdate => _autoCheckUpdate;
-  bool get analyticsEnabled => _analyticsEnabled;
   bool get notifyOnComplete => _notifyOnComplete;
   bool get keepAwakeWhileDownloading => _keepAwakeWhileDownloading;
   int get logMaxSizeMb => _logMaxSizeMb;
@@ -181,11 +194,18 @@ class SettingsProvider extends ChangeNotifier {
   bool get showSidebarQueues => _showSidebarQueues;
   bool get showSidebarCategory => _showSidebarCategory;
 
+  // 标题栏工具按钮 Getters
+  bool get showTitlebarPauseAll => _showTitlebarPauseAll;
+  bool get showTitlebarResumeAll => _showTitlebarResumeAll;
+  bool get showTitlebarSettings => _showTitlebarSettings;
+  bool get showTitlebarTheme => _showTitlebarTheme;
+
   bool get sidebarQueuesExpanded => _sidebarQueuesExpanded;
   bool get sidebarCategoryExpanded => _sidebarCategoryExpanded;
 
   // 自定义分类 Getter
-  List<CustomCategory> get customCategories => List.unmodifiable(_customCategories);
+  List<CustomCategory> get customCategories =>
+      List.unmodifiable(_customCategories);
 
   /// 可见的分类（排序后），供侧边栏使用
   List<CustomCategory> get visibleCategories =>
@@ -234,10 +254,13 @@ class SettingsProvider extends ChangeNotifier {
   bool get ed2kEnableUpnp => _ed2kEnableUpnp;
   int get ed2kListenPort => _ed2kListenPort;
 
-  // 本地下载服务 Getters
+  // 本地 API 服务 Getters
   bool get localServerEnabled => _localServerEnabled;
   int get localServerPort => _localServerPort;
   String get localServerToken => _localServerToken;
+  bool get localServerTakeoverEnabled => _localServerTakeoverEnabled;
+  bool get localServerJsonrpcEnabled => _localServerJsonrpcEnabled;
+  bool get localServerApiEnabled => _localServerApiEnabled;
 
   // UA 设置 Getter
   String get globalUserAgent => _globalUserAgent;
@@ -247,6 +270,16 @@ class SettingsProvider extends ChangeNotifier {
 
   // 新建下载对话框上次选择的线程数 Getter
   String get lastDialogThreads => _lastDialogThreads;
+
+  // 记住上次保存位置 Getters
+  bool get rememberLastSaveDir => _rememberLastSaveDir;
+  String get lastSaveDir => _lastSaveDir;
+
+  /// 生效的默认保存目录：开关开启且已有记录时返回上次保存位置，否则返回固定默认目录
+  String get effectiveDefaultSaveDir =>
+      _rememberLastSaveDir && _lastSaveDir.isNotEmpty
+      ? _lastSaveDir
+      : _defaultSaveDir;
 
   // 文件管理器命令 Getters
   String get revealFileCmd => _revealFileCmd;
@@ -276,6 +309,21 @@ class SettingsProvider extends ChangeNotifier {
     _lastDialogThreads = value;
     notifyListeners();
     _saveToRust('last_dialog_threads', value);
+  }
+
+  void setRememberLastSaveDir(bool value) {
+    if (_rememberLastSaveDir == value) return;
+    _rememberLastSaveDir = value;
+    notifyListeners();
+    _saveToRust('remember_last_save_dir', value.toString());
+  }
+
+  /// 记录下载确认时使用的保存目录（无条件记录，开关开启后立即生效）
+  void recordLastSaveDir(String dir) {
+    if (dir.isEmpty || _lastSaveDir == dir) return;
+    _lastSaveDir = dir;
+    if (_rememberLastSaveDir) notifyListeners();
+    _saveToRust('last_save_dir', dir);
   }
 
   void setMaxConcurrentTasks(int value) {
@@ -327,23 +375,11 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('auto_check_update', value.toString());
   }
 
-  void setAnalyticsEnabled(bool value) {
-    if (_analyticsEnabled == value) return;
-    _analyticsEnabled = value;
-    notifyListeners();
-    _saveToRust('analytics_enabled', value.toString());
-    AnalyticsService.instance.setEnabled(value);
-  }
-
   void setFloatingBallEnabled(bool value) {
     if (_floatingBallEnabled == value) return;
     _floatingBallEnabled = value;
     notifyListeners();
     _saveToRust('floating_ball_enabled', value.toString());
-    AnalyticsService.instance.trackEvent(
-      'floating_ball_toggled',
-      segmentation: {'enabled': value.toString()},
-    );
   }
 
   /// 保存悬浮球坐标（绝对像素）。拖动结束时调用，不触发 UI 重建。
@@ -408,6 +444,36 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('show_sidebar_category', value.toString());
   }
 
+  // 标题栏工具按钮 Setters
+
+  void setShowTitlebarPauseAll(bool value) {
+    if (_showTitlebarPauseAll == value) return;
+    _showTitlebarPauseAll = value;
+    notifyListeners();
+    _saveToRust('show_titlebar_pause_all', value.toString());
+  }
+
+  void setShowTitlebarResumeAll(bool value) {
+    if (_showTitlebarResumeAll == value) return;
+    _showTitlebarResumeAll = value;
+    notifyListeners();
+    _saveToRust('show_titlebar_resume_all', value.toString());
+  }
+
+  void setShowTitlebarSettings(bool value) {
+    if (_showTitlebarSettings == value) return;
+    _showTitlebarSettings = value;
+    notifyListeners();
+    _saveToRust('show_titlebar_settings', value.toString());
+  }
+
+  void setShowTitlebarTheme(bool value) {
+    if (_showTitlebarTheme == value) return;
+    _showTitlebarTheme = value;
+    notifyListeners();
+    _saveToRust('show_titlebar_theme', value.toString());
+  }
+
   void setSidebarQueuesExpanded(bool value) {
     if (_sidebarQueuesExpanded == value) return;
     _sidebarQueuesExpanded = value;
@@ -427,13 +493,19 @@ class SettingsProvider extends ChangeNotifier {
   void setCustomCategories(List<CustomCategory> categories) {
     _customCategories = List.of(categories);
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   void addCustomCategory(CustomCategory category) {
     _customCategories.add(category);
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   void updateCustomCategory(CustomCategory updated) {
@@ -441,13 +513,19 @@ class SettingsProvider extends ChangeNotifier {
     if (idx < 0) return;
     _customCategories[idx] = updated;
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   void removeCustomCategory(String id) {
     _customCategories.removeWhere((c) => c.id == id);
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   void reorderCustomCategories(int oldIndex, int newIndex) {
@@ -459,27 +537,42 @@ class SettingsProvider extends ChangeNotifier {
       _customCategories[i] = _customCategories[i].copyWith(position: i);
     }
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   /// 重置某个内置分类到默认状态
   void resetBuiltinCategory(String builtinType) {
     final defaults = CustomCategory.defaultCategories();
-    final defaultCat = defaults.where((c) => c.builtinType == builtinType).firstOrNull;
+    final defaultCat = defaults
+        .where((c) => c.builtinType == builtinType)
+        .firstOrNull;
     if (defaultCat == null) return;
-    final idx = _customCategories.indexWhere((c) => c.builtinType == builtinType);
+    final idx = _customCategories.indexWhere(
+      (c) => c.builtinType == builtinType,
+    );
     if (idx >= 0) {
-      _customCategories[idx] = defaultCat.copyWith(position: _customCategories[idx].position);
+      _customCategories[idx] = defaultCat.copyWith(
+        position: _customCategories[idx].position,
+      );
     }
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   /// 重置所有分类为默认状态（删除自定义分类，恢复内置分类）
   void resetAllCategories() {
     _customCategories = CustomCategory.defaultCategories();
     notifyListeners();
-    _saveToRust('custom_categories', CustomCategory.encodeList(_customCategories));
+    _saveToRust(
+      'custom_categories',
+      CustomCategory.encodeList(_customCategories),
+    );
   }
 
   // 代理设置 Setters
@@ -654,7 +747,7 @@ class SettingsProvider extends ChangeNotifier {
     const UpdateEd2kServerSubscription().sendSignalToRust();
   }
 
-  // 本地下载服务 Setters
+  // 本地 API 服务 Setters
 
   void setLocalServerEnabled(bool value) {
     if (_localServerEnabled == value) return;
@@ -664,7 +757,7 @@ class SettingsProvider extends ChangeNotifier {
   }
 
   void setLocalServerPort(int value) {
-    if (value < 1 || value > 65535) return;
+    if (value < 1024 || value > 65535) return;
     if (_localServerPort == value) return;
     _localServerPort = value;
     notifyListeners();
@@ -676,6 +769,41 @@ class SettingsProvider extends ChangeNotifier {
     _localServerToken = value;
     notifyListeners();
     _saveToRust('local_server_token', value);
+  }
+
+  void setLocalServerTakeoverEnabled(bool value) {
+    if (_localServerTakeoverEnabled == value) return;
+    _localServerTakeoverEnabled = value;
+    notifyListeners();
+    _saveToRust('local_server_takeover_enabled', value.toString());
+  }
+
+  void setLocalServerJsonrpcEnabled(bool value) {
+    if (_localServerJsonrpcEnabled == value) return;
+    _localServerJsonrpcEnabled = value;
+    notifyListeners();
+    _saveToRust('local_server_jsonrpc_enabled', value.toString());
+  }
+
+  /// 管理 API 强制鉴权：从关到开且当前 token 为空时，自动生成 32 位 hex token 并一并保存
+  void setLocalServerApiEnabled(bool value) {
+    if (_localServerApiEnabled == value) return;
+    _localServerApiEnabled = value;
+    if (value && _localServerToken.isEmpty) {
+      _localServerToken = _generateHexToken();
+      _saveToRust('local_server_token', _localServerToken);
+    }
+    notifyListeners();
+    _saveToRust('local_server_api_enabled', value.toString());
+  }
+
+  /// 生成 32 位随机 hex token（管理 API 自动鉴权 / UI 手动重新生成共用）
+  static String _generateHexToken() {
+    final r = Random.secure();
+    return List<int>.generate(
+      16,
+      (_) => r.nextInt(256),
+    ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
   // UA 设置 Setter
@@ -815,7 +943,9 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _onEd2kServerSubResult(RustSignalPack<Ed2kServerSubscriptionResult> pack) {
+  void _onEd2kServerSubResult(
+    RustSignalPack<Ed2kServerSubscriptionResult> pack,
+  ) {
     final msg = pack.message;
     logInfo(
       'Settings',
@@ -895,8 +1025,9 @@ class SettingsProvider extends ChangeNotifier {
           _ed2kServerSubUrls = entry.value;
         case 'ed2k_server_sub_cache':
           final ed2kCache = entry.value.trim();
-          _ed2kServerSubCount =
-              ed2kCache.isEmpty ? 0 : ed2kCache.split(',').length;
+          _ed2kServerSubCount = ed2kCache.isEmpty
+              ? 0
+              : ed2kCache.split(',').length;
         case 'ed2k_server_sub_updated_at':
           _ed2kServerSubUpdatedAt = int.tryParse(entry.value) ?? 0;
         case 'ed2k_enable_kad':
@@ -907,8 +1038,6 @@ class SettingsProvider extends ChangeNotifier {
           _ed2kListenPort = int.tryParse(entry.value) ?? 0;
         case 'torrent_assoc_prompted':
           _torrentAssocPrompted = entry.value == 'true';
-        case 'analytics_enabled':
-          _analyticsEnabled = entry.value != 'false'; // 默认 true
         case 'notify_on_complete':
           _notifyOnComplete = entry.value != 'false'; // 默认 true
         case 'keep_awake_while_downloading':
@@ -944,12 +1073,22 @@ class SettingsProvider extends ChangeNotifier {
           _localServerPort = int.tryParse(entry.value) ?? 17800;
         case 'local_server_token':
           _localServerToken = entry.value;
+        case 'local_server_takeover_enabled':
+          _localServerTakeoverEnabled = entry.value == 'true';
+        case 'local_server_jsonrpc_enabled':
+          _localServerJsonrpcEnabled = entry.value == 'true';
+        case 'local_server_api_enabled':
+          _localServerApiEnabled = entry.value == 'true';
         case 'global_user_agent':
           _globalUserAgent = entry.value;
         case 'default_queue_id':
           _defaultQueueId = entry.value;
         case 'last_dialog_threads':
           _lastDialogThreads = entry.value;
+        case 'remember_last_save_dir':
+          _rememberLastSaveDir = entry.value == 'true';
+        case 'last_save_dir':
+          _lastSaveDir = entry.value;
         case 'reveal_file_cmd':
           _revealFileCmd = entry.value;
         case 'open_dir_cmd':
@@ -960,6 +1099,14 @@ class SettingsProvider extends ChangeNotifier {
           _showSidebarQueues = entry.value != 'false';
         case 'show_sidebar_category':
           _showSidebarCategory = entry.value != 'false';
+        case 'show_titlebar_pause_all':
+          _showTitlebarPauseAll = entry.value != 'false';
+        case 'show_titlebar_resume_all':
+          _showTitlebarResumeAll = entry.value != 'false';
+        case 'show_titlebar_settings':
+          _showTitlebarSettings = entry.value != 'false';
+        case 'show_titlebar_theme':
+          _showTitlebarTheme = entry.value != 'false';
         case 'sidebar_queues_expanded':
           _sidebarQueuesExpanded = entry.value != 'false';
         case 'sidebar_category_expanded':

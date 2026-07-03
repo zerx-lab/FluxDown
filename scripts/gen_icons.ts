@@ -11,6 +11,7 @@
  *
  *   assets/logo/
  *     fluxdown_logo.png (600×600)
+ *     fluxdown_bolt.png (512×512, 内置备选应用图标「闪电」)
  *     logo.png (600×600)
  *     tray_iconTemplate.png (36×36, macOS 2x 菜单栏模板图标)
  *     tray_iconTemplate@1x.png (18×18, macOS 1x 菜单栏模板图标)
@@ -32,10 +33,6 @@
  *
  *   android/app/src/main/res/
  *     mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png
- *
- *   web/
- *     favicon.png (32×32)
- *     icons/Icon-{192,512}.png  icons/Icon-maskable-{192,512}.png
  *
  *   fluxDown/public/icon/
  *     {16,32,48,128}.png  {16,32,48,128}-disabled.png
@@ -63,6 +60,8 @@ const REPO_ROOT = resolve(
 const ROOT = resolve(REPO_ROOT, "..");
 
 const SVG_SRC = join(ROOT, "assets", "logo", "fluxdown_logo.svg");
+// 内置备选图标「闪电」源 SVG（可选 — 不存在时跳过生成）
+const BOLT_SVG_SRC = join(ROOT, "assets", "logo", "fluxdown_bolt.svg");
 
 if (!existsSync(SVG_SRC)) {
   console.error(`❌ 源文件不存在: ${SVG_SRC}`);
@@ -82,7 +81,12 @@ function ensureDir(filePath: string): void {
 async function renderPng(size: number): Promise<Buffer> {
   // 使用高 density 渲染，确保清晰度（SVG viewBox 3508×3508）
   // density=72 → 原始尺寸, 我们用 resize 缩放以获得最佳质量
-  return sharp(SVG_SRC, { density: 300 })
+  return renderPngFrom(SVG_SRC, size);
+}
+
+/** 从任意 SVG 源渲染出指定尺寸的 RGBA PNG Buffer */
+async function renderPngFrom(src: string, size: number): Promise<Buffer> {
+  return sharp(src, { density: 300 })
     .resize(size, size, {
       kernel: sharp.kernel.lanczos3,
       fit: "contain",
@@ -345,6 +349,13 @@ async function main() {
     const logoDark = await renderWindowsTrayArrow(64, "#3B82F6");
     await saveFile("assets/logo/logo_on_dark.png", logoDark);
 
+    // 内置备选应用图标「闪电」— 512px，运行时由 AppIconService 转 ICO
+    if (existsSync(BOLT_SVG_SRC)) {
+      const bolt = await renderPngFrom(BOLT_SVG_SRC, 512);
+      await saveFile("assets/logo/fluxdown_bolt.png", bolt);
+      totalCount += 1;
+    }
+
     totalCount += 5;
   }
 
@@ -456,25 +467,7 @@ async function main() {
   }
 
   // ──────────────────────────────────────────
-  // 6. Web — favicon + PWA 图标
-  // ──────────────────────────────────────────
-  console.log("\n📁 web/");
-  {
-    const favicon = await getCachedPng(32);
-    await saveFile("web/favicon.png", favicon);
-
-    const icon192 = await getCachedPng(192);
-    const icon512 = await getCachedPng(512);
-    await saveFile("web/icons/Icon-192.png", icon192);
-    await saveFile("web/icons/Icon-512.png", icon512);
-    await saveFile("web/icons/Icon-maskable-192.png", icon192);
-    await saveFile("web/icons/Icon-maskable-512.png", icon512);
-
-    totalCount += 5;
-  }
-
-  // ──────────────────────────────────────────
-  // 7. 浏览器扩展图标 — 正常 + disabled + logo
+  // 6. 浏览器扩展图标 — 正常 + disabled + logo
   // ──────────────────────────────────────────
   console.log("\n📁 fluxDown/public/icon/");
   {
@@ -504,7 +497,7 @@ async function main() {
   }
 
   // ──────────────────────────────────────────
-  // 8. 官网 — favicon + logo
+  // 7. 官网 — favicon + logo
   // ──────────────────────────────────────────
   console.log("\n📁 website/public/");
   {

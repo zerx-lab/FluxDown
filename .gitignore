@@ -94,7 +94,6 @@ skills-lock.json
 test/batch_delete_scale_test.dart
 test/resume_all_test.dart
 website/fluxdown-website-latest.tar
-design/mobile/
 docs/
 
 # ── 敏感信息（开源清理，严禁入库）──
@@ -114,3 +113,4 @@ android/local.properties
 **/flutter/ephemeral/
 **/Flutter/ephemeral/
 website/.vscode/launch.json
+design/

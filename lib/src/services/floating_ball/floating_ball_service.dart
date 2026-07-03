@@ -24,7 +24,6 @@ import '../../models/download_controller.dart';
 import '../../models/settings_provider.dart';
 import '../../theme/theme_provider.dart';
 import '../../widgets/quick_download_dialog.dart';
-import '../analytics_service.dart';
 import '../app_icon_service.dart';
 import '../log_service.dart';
 import '../tray_service.dart';
@@ -364,7 +363,6 @@ class FloatingBallService {
   bool _dragHover = false;
 
   void _onBallClicked() {
-    AnalyticsService.instance.trackEvent('floating_ball_click_restore');
     unawaited(_restoreMainWindow());
   }
 
@@ -475,20 +473,22 @@ class FloatingBallService {
         // macOS/Linux：原生检测到右键 → Dart 组装 i18n 菜单 → 原生弹出
         final s = currentS;
         unawaited(
-          _channel.invokeMethod('showContextMenu', {
-            'items': [
-              {'id': 1, 'label': s.resumeAll},
-              {'id': 2, 'label': s.pauseAll},
-              {'id': 0, 'label': ''},
-              {'id': 3, 'label': s.trayShowWindow},
-              {'id': 4, 'label': s.hideFloatingBall},
-              {'id': 0, 'label': ''},
-              {'id': 5, 'label': s.trayExit},
-            ],
-          }).catchError((Object e) {
-            logError(_tag, 'showContextMenu failed', e);
-            return null;
-          }),
+          _channel
+              .invokeMethod('showContextMenu', {
+                'items': [
+                  {'id': 1, 'label': s.resumeAll},
+                  {'id': 2, 'label': s.pauseAll},
+                  {'id': 0, 'label': ''},
+                  {'id': 3, 'label': s.trayShowWindow},
+                  {'id': 4, 'label': s.hideFloatingBall},
+                  {'id': 0, 'label': ''},
+                  {'id': 5, 'label': s.trayExit},
+                ],
+              })
+              .catchError((Object e) {
+                logError(_tag, 'showContextMenu failed', e);
+                return null;
+              }),
         );
       case 'onMenuAction':
         final args = (call.arguments as Map).cast<String, dynamic>();
@@ -541,7 +541,7 @@ class FloatingBallService {
       var accepted = 0;
       for (final path in values) {
         if (path.toLowerCase().endsWith('.torrent')) {
-          final saveDir = _effectiveSettings?.defaultSaveDir ?? '';
+          final saveDir = _effectiveSettings?.effectiveDefaultSaveDir ?? '';
           if (saveDir.isEmpty) {
             logError(_tag, 'drop torrent: defaultSaveDir empty, skip');
             continue;
@@ -554,10 +554,6 @@ class FloatingBallService {
         }
       }
       if (accepted > 0) {
-        AnalyticsService.instance.trackEvent(
-          'floating_ball_drop_create',
-          segmentation: {'kind': 'torrent', 'count': accepted},
-        );
         unawaited(_restoreMainWindow());
       }
       return;
@@ -572,10 +568,6 @@ class FloatingBallService {
       logInfo(_tag, 'drop text contained no URL, ignored');
       return;
     }
-    AnalyticsService.instance.trackEvent(
-      'floating_ball_drop_create',
-      segmentation: {'kind': 'url', 'count': urls.length},
-    );
     unawaited(_showQuickDialogWithUrls(urls));
   }
 
@@ -594,7 +586,7 @@ class FloatingBallService {
       fileSize: 0,
       mimeType: '',
       cookies: '',
-      defaultSaveDir: settings.defaultSaveDir,
+      defaultSaveDir: settings.effectiveDefaultSaveDir,
       defaultQueueId: settings.defaultQueueId,
     );
   }

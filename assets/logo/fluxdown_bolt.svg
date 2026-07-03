@@ -1,0 +1,23 @@
+<svg width="512" height="512" viewBox="0 0 512 512" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>FluxDown bolt icon</title>
+  <desc>White rounded square with a blue gradient download triangle and a glassy lightning bolt</desc>
+  <defs>
+    <linearGradient id="tri" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#45C6F7"/>
+      <stop offset=".5" stop-color="#2196F3"/>
+      <stop offset="1" stop-color="#1B5FE0"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9FEBFF" stop-opacity=".55"/>
+      <stop offset=".34" stop-color="#DFF7FF" stop-opacity=".78"/>
+      <stop offset=".52" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <filter id="boltShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#0B4FA8" flood-opacity=".3"/>
+    </filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#FFFFFF"/>
+  <path d="M122 192 H390 L256 424 Z" fill="url(#tri)" stroke="url(#tri)" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M226 100 L298 100 L256 222 L330 222 L206 424 L242 268 L182 268 Z" fill="url(#bolt)" filter="url(#boltShadow)"/>
+</svg>

@@ -12,6 +12,7 @@ use fluxdown_engine::{Engine, EngineConfig};
 use rinf::{DartSignal, RustSignal};
 use tokio::sync::mpsc;
 
+use crate::api_host::{ApiCommand, HubApiHost};
 use crate::file_association;
 use crate::logger::log_info;
 use crate::native_messaging::{self};
@@ -22,15 +23,15 @@ use crate::signals::{
     BatchControlTask, BatchCreateTask, CheckFileAssociation, CheckForUpdate, CheckUrlProtocol,
     ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask, CreateQueue, CreateTask,
     DeleteQueue, DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult,
-    ExternalDownloadRequest, FileAssociationStatus,
-    InstallUpdate, MoveTaskToQueue, ProbeTorrentMeta, ProxyTestResult, RequestAllQueues,
-    RequestAllTasks, RequestConfig, RequestUpdateFailureMarker, RevealFile, SaveConfig,
-    SelectBtFiles, SelectHlsQuality, SetFileAssociation, SetPriorityTask, SetUrlProtocol,
-    SystemProxyInfo, TestProxyConnection, TrackerSubscriptionResult, UpdateCheckResult,
-    UpdateFailureMarker, UpdateQueue, UpdateEd2kServerSubscription, UpdateTrackerSubscription,
-    UrlProtocolStatus,
+    ExternalDownloadRequest, FileAssociationStatus, InstallUpdate, MoveTaskToQueue,
+    ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
+    RequestUpdateFailureMarker, RevealFile, SaveConfig, SelectBtFiles, SelectHlsQuality,
+    SetFileAssociation, SetPriorityTask, SetUrlProtocol, SystemProxyInfo, TestProxyConnection,
+    TrackerSubscriptionResult, UpdateCheckResult, UpdateEd2kServerSubscription,
+    UpdateFailureMarker, UpdateQueue, UpdateTrackerSubscription, UrlProtocolStatus,
 };
 use crate::updater;
+use fluxdown_api::server::{ApiServerConfig, spawn_api_server};
 
 /// Compute default save directory (platform-dependent).
 fn default_save_dir() -> String {
@@ -129,9 +130,10 @@ fn spawn_ed2k_server_sub_refresh(
 ) {
     tokio::spawn(async move {
         let cfg = db.get_all_config().await.unwrap_or_default();
-        let urls = cfg.get("ed2k_server_sub_urls").cloned().unwrap_or_else(
-            fluxdown_engine::ed2k::server_subscription::default_server_met_urls,
-        );
+        let urls = cfg
+            .get("ed2k_server_sub_urls")
+            .cloned()
+            .unwrap_or_else(fluxdown_engine::ed2k::server_subscription::default_server_met_urls);
         let outcome =
             fluxdown_engine::ed2k::server_subscription::fetch_server_subscriptions(&urls).await;
         if outcome.is_success() {
@@ -155,7 +157,10 @@ fn spawn_ed2k_server_sub_refresh(
                 )
                 .await
             {
-                log_info!("[actor] failed to save ed2k server sub cache version: {}", e);
+                log_info!(
+                    "[actor] failed to save ed2k server sub cache version: {}",
+                    e
+                );
             }
         }
         let _ = tx.send(outcome).await;
@@ -174,10 +179,7 @@ fn spawn_ed2k_nodes_dat_refresh(db: Db) {
     tokio::spawn(async move {
         use base64::Engine as _;
         let cfg = db.get_all_config().await.unwrap_or_default();
-        let url = cfg
-            .get("ed2k_nodes_dat_url")
-            .cloned()
-            .unwrap_or_default();
+        let url = cfg.get("ed2k_nodes_dat_url").cloned().unwrap_or_default();
         if url.is_empty() {
             return;
         }
@@ -504,24 +506,31 @@ pub async fn run(db_dir: PathBuf) {
     }
 
     // Shared channel for external download requests. Both the Native Messaging
-    // listener (browser extension via the NMH relay) and the local HTTP takeover
-    // server (Tampermonkey userscripts via GM_xmlhttpRequest) push
+    // listener (browser extension via the NMH relay) and the local API server's
+    // takeover / aria2-compat endpoints (Tampermonkey userscripts) push
     // `DownloadRequest`s into this channel; the `native_msg_rx` select! branch
     // below handles both transports with identical logic.
-    let (ext_dl_tx, mut native_msg_rx) = mpsc::channel::<native_messaging::DownloadRequest>(64);
+    let (ext_dl_tx, mut native_msg_rx) = mpsc::channel::<fluxdown_api::types::DownloadRequest>(64);
 
     // Native Messaging listener (reads from the Named Pipe / Unix socket).
     native_messaging::spawn_native_messaging_listener_with(ext_dl_tx.clone());
 
-    // Local HTTP takeover server for userscripts. Bound to 127.0.0.1 only;
-    // disabled / port / token are read from config and applied at startup
-    // (changes require an app restart — see the SaveConfig handler below).
-    {
-        let http_cfg = crate::http_takeover::HttpTakeoverConfig::from_config_map(
+    // 本机 API 服务器（127.0.0.1）：探活 / 脚本接管 / aria2 兼容 / 管理 API。
+    // 写操作经 api_cmd_rx 回到本事件循环串行执行；local_server_* 配置变更时
+    // 热重启（见下方 SaveConfig 分支），无需重启应用。
+    let (api_cmd_tx, mut api_cmd_rx) = mpsc::channel::<ApiCommand>(32);
+    let api_host: Arc<dyn fluxdown_api::service::ApiHost> = Arc::new(HubApiHost::new(
+        engine.db.clone(),
+        api_cmd_tx,
+        ext_dl_tx.clone(),
+    ));
+    let mut api_server_handle = {
+        let cfg = ApiServerConfig::from_config_map(
             &engine.db.get_all_config().await.unwrap_or_default(),
+            env!("CARGO_PKG_VERSION"),
         );
-        crate::http_takeover::spawn_http_takeover_server(ext_dl_tx.clone(), http_cfg);
-    }
+        spawn_api_server(api_host.clone(), cfg)
+    };
 
     // Auto-register fluxdown:// URL protocol on startup (idempotent).
     tokio::task::spawn_blocking(|| {
@@ -552,7 +561,7 @@ pub async fn run(db_dir: PathBuf) {
     struct ExtRequestCtx {
         headers: HashMap<String, String>,
         method: Option<String>,
-        body: Option<crate::native_messaging::RequestBody>,
+        body: Option<fluxdown_api::types::RequestBody>,
     }
     let mut ext_request_cache: HashMap<String, ExtRequestCtx> = HashMap::new();
 
@@ -714,13 +723,19 @@ pub async fn run(db_dir: PathBuf) {
                             engine.manager.set_auto_retry_delay_secs(v);
                         }
                     }
-                    // 本地 HTTP 接管服务的启停/端口/token 在启动时绑定，
-                    // 运行时变更仅写入 DB，需重启应用才能生效。
-                    "local_server_enabled" | "local_server_port" | "local_server_token" => {
+                    // 本机 API 服务器配置变更 → 热重启监听（优雅停机旧实例
+                    // 后按最新配置重启，含端口/token/子功能开关，无需重启应用）。
+                    k if k.starts_with("local_server_") => {
                         log_info!(
-                            "[actor] local_server config '{}' changed, restart required to take effect",
+                            "[actor] api server config '{}' changed, restarting server",
                             msg.key
                         );
+                        api_server_handle.shutdown();
+                        let cfg = ApiServerConfig::from_config_map(
+                            &engine.db.get_all_config().await.unwrap_or_default(),
+                            env!("CARGO_PKG_VERSION"),
+                        );
+                        api_server_handle = spawn_api_server(api_host.clone(), cfg);
                     }
                     _ => {} // other config keys — no runtime action needed
                 }
@@ -738,6 +753,10 @@ pub async fn run(db_dir: PathBuf) {
                         log_info!("Failed to load config: {}", e);
                     }
                 }
+            }
+            // --- 管理 API 写命令（本机 API 服务器 /api/v1，见 api_host.rs）---
+            Some(cmd) = api_cmd_rx.recv() => {
+                handle_api_command(cmd, &mut engine).await;
             }
             // --- Native Messaging: browser extension download requests ---
             Some(req) = native_msg_rx.recv() => {
@@ -1143,17 +1162,110 @@ pub async fn run(db_dir: PathBuf) {
     }
 }
 
+/// 处理管理 API 写命令：在 actor 事件循环内串行执行，完成后经 oneshot 回执。
+/// 回执接收端掉线（HTTP 请求已中止）无影响，`send` 失败直接忽略。
+async fn handle_api_command(cmd: ApiCommand, engine: &mut Engine) {
+    match cmd {
+        ApiCommand::CreateTask { req, ack } => {
+            let req = *req;
+            // 空 save_dir → 全局默认目录（config 表）→ 平台默认下载目录。
+            let mut save_dir = req.save_dir;
+            if save_dir.trim().is_empty() {
+                save_dir = engine
+                    .db
+                    .get_config("default_save_dir")
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+            }
+            if save_dir.trim().is_empty() {
+                save_dir = default_save_dir();
+            }
+            log_info!("[actor] api create task: url={}", req.url);
+            let task_id = engine
+                .manager
+                .create_task(
+                    req.url,
+                    save_dir,
+                    req.file_name,
+                    req.segments,
+                    req.cookies,
+                    req.referrer,
+                    0,
+                    Vec::new(),
+                    req.proxy_url,
+                    req.user_agent,
+                    req.queue_id,
+                    req.checksum,
+                    req.headers.unwrap_or_default(),
+                    Vec::new(),
+                    None,
+                    None,
+                )
+                .await;
+            // 与 Dart 创建路径一致：立即推送 AllTasks 同步 queue_id 到 UI。
+            engine.manager.load_and_send_all_tasks().await;
+            let _ = ack.send(task_id);
+        }
+        ApiCommand::PauseTask { task_id, ack } => {
+            engine.manager.pause_task(&task_id).await;
+            let _ = ack.send(());
+        }
+        ApiCommand::ContinueTask { task_id, ack } => {
+            engine.manager.resume_task(&task_id).await;
+            let _ = ack.send(());
+        }
+        ApiCommand::DeleteTask {
+            task_id,
+            delete_files,
+            ack,
+        } => {
+            engine.manager.delete_task(&task_id, delete_files).await;
+            let _ = ack.send(());
+        }
+        ApiCommand::PauseAll { ack } => {
+            // pending(0) / downloading(1) / preparing(5) 均可暂停。
+            let ids = task_ids_by_status(&engine.db, &[0, 1, 5]).await;
+            engine.manager.batch_pause(&ids).await;
+            let _ = ack.send(());
+        }
+        ApiCommand::ContinueAll { ack } => {
+            // 仅恢复 paused(2)；error(4) 留给显式的单任务 continue。
+            let ids = task_ids_by_status(&engine.db, &[2]).await;
+            engine.manager.batch_resume(&ids).await;
+            let _ = ack.send(());
+        }
+    }
+}
+
+/// 按状态码过滤任务 ID（管理 API 的全局暂停/恢复用）。
+async fn task_ids_by_status(db: &Db, statuses: &[i32]) -> Vec<String> {
+    match db.load_all_tasks().await {
+        Ok(tasks) => tasks
+            .into_iter()
+            .filter(|t| statuses.contains(&t.status))
+            .map(|t| t.task_id)
+            .collect(),
+        Err(e) => {
+            log_info!("[actor] load_all_tasks error: {}", e);
+            Vec::new()
+        }
+    }
+}
+
 /// 把浏览器扩展/Native Messaging 的 wire-format `RequestBody` 转换为引擎侧
 /// 传输无关的 `CapturedRequestBody`——两者字段形状一致，仅类型来源不同
-/// (native_messaging 是 hub 的 NM 协议 DTO，engine 侧不感知 NM)。
+/// (fluxdown_api 是对外 wire 契约，engine 侧不感知传输层)。
 fn nm_body_to_captured(
-    body: crate::native_messaging::RequestBody,
+    body: fluxdown_api::types::RequestBody,
 ) -> fluxdown_engine::downloader::CapturedRequestBody {
+    use fluxdown_api::types::RequestBody;
     use fluxdown_engine::downloader::CapturedRequestBody as Captured;
     match body {
-        native_messaging::RequestBody::FormData { fields } => Captured::FormData { fields },
-        native_messaging::RequestBody::Urlencoded { raw } => Captured::Urlencoded { raw },
-        native_messaging::RequestBody::Raw {
+        RequestBody::FormData { fields } => Captured::FormData { fields },
+        RequestBody::Urlencoded { raw } => Captured::Urlencoded { raw },
+        RequestBody::Raw {
             bytes_b64,
             content_type,
         } => Captured::Raw {

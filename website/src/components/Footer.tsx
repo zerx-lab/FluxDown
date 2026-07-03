@@ -85,6 +85,7 @@ export default function Footer() {
             <ul className="space-y-2.5">
               {[
                 { href: "/faq", label: t("footer.faq") },
+                { href: "/api-docs", label: t("footer.documentation") },
                 { href: "/feedback", label: t("footer.feedback") },
                 { href: "/feedback", label: t("footer.contact") },
                 { href: "/sponsor", label: t("footer.sponsor") },

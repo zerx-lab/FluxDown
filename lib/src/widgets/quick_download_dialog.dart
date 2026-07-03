@@ -313,6 +313,9 @@ class _QuickDownloadDialogContentState
     final entries = _parseEntries(_urlController.text);
     if (entries.isEmpty) return;
 
+    // 记录本次保存位置，供"跟随上次保存位置"开关使用
+    SettingsProvider.globalInstance?.recordLastSaveDir(saveDir);
+
     final proxyUrl = _proxyUrlController.text.trim();
     final userAgent = _userAgentController.text.trim();
 

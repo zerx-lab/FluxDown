@@ -49,6 +49,7 @@ base64 = "0.22"
 # 用于在 URL/Content-Disposition 文件名解码失败时回退到 GBK（中文老站点常用）
 encoding_rs = "0.8"
 fluxdown_engine = { version = "0.1.0", path = "../engine" }
+fluxdown_api = { version = "0.1.0", path = "../api" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

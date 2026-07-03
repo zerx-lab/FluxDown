@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
@@ -14,10 +15,24 @@ import 'tray_service.dart';
 
 const _tag = 'AppIconService';
 
+/// 应用图标选择。
+enum AppIconChoice {
+  /// 默认图标（exe 资源 / app_icon.ico）。
+  defaultIcon,
+
+  /// 内置备选图标「闪电」（assets/logo/fluxdown_bolt.png）。
+  bolt,
+
+  /// 用户导入的自定义图标。
+  custom,
+}
+
 /// 动态应用图标服务（仅 Windows 生效）。
 ///
-/// 管理窗口/任务栏/托盘图标在「默认」与「自定义」之间的切换：
+/// 管理窗口/任务栏/托盘图标在「默认」「内置闪电」「自定义」之间的切换：
 /// - 默认图标来自 exe 资源与 CMake install 的 `app_icon.ico`；
+/// - 内置「闪电」图标由打包资源 [builtinBoltAsset] 在应用时渲染为多尺寸
+///   PNG 压缩 ICO，缓存在数据目录 `icons/bolt_icon.ico`；
 /// - 自定义图标由用户选择的图片（png/jpg/webp/bmp/ico）转换为多尺寸
 ///   PNG 压缩 ICO，持久化在数据目录 `icons/custom_icon.ico`；
 /// - 运行时通过 `window_manager.setIcon`（WM_SETICON）替换窗口与任务栏
@@ -31,23 +46,34 @@ class AppIconService extends ChangeNotifier {
   AppIconService._();
   static final AppIconService instance = AppIconService._();
 
-  static const _kCustomEnabled = 'app_icon_custom';
+  static const _kCustomEnabled = 'app_icon_custom'; // 旧版 bool 键（迁移用）
+  static const _kChoiceKey = 'app_icon_choice';
+
+  /// 内置备选图标「闪电」的打包资源路径（UI 预览也直接引用）。
+  static const builtinBoltAsset = 'assets/logo/fluxdown_bolt.png';
 
   /// 生成 ICO 时渲染的正方形尺寸集合。
   static const _iconSizes = [16, 24, 32, 48, 64, 128, 256];
 
-  bool _customEnabled = false;
+  AppIconChoice _choice = AppIconChoice.defaultIcon;
 
   /// 预览文件内容版本号 — 每次导入自增，供 UI 作为 Image key 破除缓存。
   int _previewRevision = 0;
 
+  /// 当前的图标选择。
+  AppIconChoice get choice => _choice;
+
   /// 当前是否启用自定义图标。
-  bool get isCustom => _customEnabled;
+  bool get isCustom => _choice == AppIconChoice.custom;
+
+  /// 当前是否启用内置「闪电」图标。
+  bool get isBolt => _choice == AppIconChoice.bolt;
 
   int get previewRevision => _previewRevision;
 
   String get _iconsDir => p.join(resolveDataDir(), 'icons');
   String get _customIcoPath => p.join(_iconsDir, 'custom_icon.ico');
+  String get _boltIcoPath => p.join(_iconsDir, 'bolt_icon.ico');
   String get _previewPath => p.join(_iconsDir, 'custom_icon_preview.png');
 
   /// 自定义图标文件是否已存在（曾成功导入过）。
@@ -68,21 +94,48 @@ class AppIconService extends ChangeNotifier {
     if (!Platform.isWindows) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      var custom = prefs.getBool(_kCustomEnabled) ?? false;
-      if (custom && !hasCustomIcon) {
-        custom = false;
-        await prefs.setBool(_kCustomEnabled, false);
+      var choice = _readChoice(prefs);
+      if (choice == AppIconChoice.custom && !hasCustomIcon) {
+        choice = AppIconChoice.defaultIcon;
+        await prefs.setString(_kChoiceKey, _choiceTag(choice));
         logInfo(_tag, 'custom icon file missing, falling back to default');
       }
-      _customEnabled = custom;
-      if (custom) {
-        await _applyCustom();
-        logInfo(_tag, 'restored custom app icon: $_customIcoPath');
+      _choice = choice;
+      switch (choice) {
+        case AppIconChoice.defaultIcon:
+          break;
+        case AppIconChoice.bolt:
+          await _buildBoltIco();
+          await _applyIco(_boltIcoPath);
+          logInfo(_tag, 'restored bolt app icon: $_boltIcoPath');
+        case AppIconChoice.custom:
+          await _applyIco(_customIcoPath);
+          logInfo(_tag, 'restored custom app icon: $_customIcoPath');
       }
     } catch (e, stack) {
       logError(_tag, 'init failed', e, stack);
     }
   }
+
+  /// 读取持久化选择；无新键时从旧版 bool 键迁移。
+  AppIconChoice _readChoice(SharedPreferences prefs) {
+    final tag = prefs.getString(_kChoiceKey);
+    if (tag != null) {
+      return AppIconChoice.values.firstWhere(
+        (c) => _choiceTag(c) == tag,
+        orElse: () => AppIconChoice.defaultIcon,
+      );
+    }
+    // 旧版本仅有 bool 键：true=自定义
+    final legacyCustom = prefs.getBool(_kCustomEnabled) ?? false;
+    return legacyCustom ? AppIconChoice.custom : AppIconChoice.defaultIcon;
+  }
+
+  static String _choiceTag(AppIconChoice c) => switch (c) {
+    AppIconChoice.defaultIcon => 'default',
+    AppIconChoice.bolt => 'bolt',
+    AppIconChoice.custom => 'custom',
+  };
 
   /// 切回默认应用图标。
   Future<void> useDefault() async {
@@ -94,8 +147,23 @@ class AppIconService extends ChangeNotifier {
       // 应用失败不阻塞持久化：图标文件有效时下次启动仍可生效
       logError(_tag, 'useDefault: failed to apply icon', e, stack);
     }
-    _customEnabled = false;
-    await _persist(false);
+    _choice = AppIconChoice.defaultIcon;
+    await _persist();
+    notifyListeners();
+  }
+
+  /// 切换到内置「闪电」图标。ICO 每次应用时从打包资源重建，
+  /// 保证应用升级后资源更新不会残留旧缓存。
+  Future<void> useBolt() async {
+    if (!Platform.isWindows) return;
+    try {
+      await _buildBoltIco();
+      await _applyIco(_boltIcoPath);
+    } catch (e, stack) {
+      logError(_tag, 'useBolt: failed to apply icon', e, stack);
+    }
+    _choice = AppIconChoice.bolt;
+    await _persist();
     notifyListeners();
   }
 
@@ -103,12 +171,12 @@ class AppIconService extends ChangeNotifier {
   Future<void> useCustom() async {
     if (!Platform.isWindows || !hasCustomIcon) return;
     try {
-      await _applyCustom();
+      await _applyIco(_customIcoPath);
     } catch (e, stack) {
       logError(_tag, 'useCustom: failed to apply icon', e, stack);
     }
-    _customEnabled = true;
-    await _persist(true);
+    _choice = AppIconChoice.custom;
+    await _persist();
     notifyListeners();
   }
 
@@ -158,15 +226,34 @@ class AppIconService extends ChangeNotifier {
     await useCustom();
   }
 
-  Future<void> _applyCustom() async {
-    await windowManager.setIcon(_customIcoPath);
-    await TrayService.instance.setCustomIcon(_customIcoPath);
+  Future<void> _applyIco(String path) async {
+    await windowManager.setIcon(path);
+    await TrayService.instance.setCustomIcon(path);
   }
 
-  Future<void> _persist(bool custom) async {
+  /// 从打包资源渲染「闪电」ICO 并原子写入 [_boltIcoPath]。
+  Future<void> _buildBoltIco() async {
+    final data = await rootBundle.load(builtinBoltAsset);
+    final bytes = data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    );
+    final rendered = await _renderIcoPngs(bytes);
+    final ico = buildIcoFromPngs(rendered);
+    await Directory(_iconsDir).create(recursive: true);
+    final tmp = File('$_boltIcoPath.tmp');
+    await tmp.writeAsBytes(ico, flush: true);
+    final dest = File(_boltIcoPath);
+    if (await dest.exists()) {
+      await dest.delete();
+    }
+    await tmp.rename(_boltIcoPath);
+  }
+
+  Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kCustomEnabled, custom);
+      await prefs.setString(_kChoiceKey, _choiceTag(_choice));
     } catch (e, stack) {
       logError(_tag, 'failed to persist app icon setting', e, stack);
     }

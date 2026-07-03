@@ -1,0 +1,1082 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FluxDown API",
+    "description": "FluxDown 桌面应用的本机 HTTP API。仅监听 `127.0.0.1`（默认端口 17800，可在 设置 → API 服务 中修改）。\n\n- **takeover**（脚本接管）：油猴脚本提交下载，进入快速下载确认流程；需 `X-FluxDown-Client` 头\n- **aria2**：aria2 JSON-RPC 兼容垫片，「发送到 aria2」类脚本与 AriaNg 可直接对接\n- **management**（管理 API）：任务查询/创建/暂停/恢复/删除与队列查询，供 MCP/自动化客户端使用；强制要求 token（`Authorization: Bearer <token>` 或 `X-FluxDown-Token` 头）",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:17800",
+      "description": "本机 API 服务（默认端口）"
+    }
+  ],
+  "paths": {
+    "/api/v1/info": {
+      "get": {
+        "tags": [
+          "management"
+        ],
+        "summary": "应用信息（名称与版本号）。",
+        "operationId": "api_info",
+        "responses": {
+          "200": {
+            "description": "应用信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "服务端未配置 token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/queues": {
+      "get": {
+        "tags": [
+          "management"
+        ],
+        "summary": "列出全部命名队列。",
+        "operationId": "api_list_queues",
+        "responses": {
+          "200": {
+            "description": "队列列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QueueDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "management"
+        ],
+        "summary": "列出全部任务，可按状态过滤。",
+        "operationId": "api_list_tasks",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "path",
+            "description": "按状态过滤：0=pending, 1=downloading, 2=paused, 3=completed, 4=error, 5=preparing",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "management"
+        ],
+        "summary": "直接创建下载任务（不弹确认框），返回新任务 ID。",
+        "operationId": "api_create_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedTask"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法或缺少 url",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "应用关闭中",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/continue": {
+      "put": {
+        "tags": [
+          "management"
+        ],
+        "summary": "恢复全部已暂停任务。",
+        "operationId": "api_continue_all",
+        "responses": {
+          "200": {
+            "description": "已全部恢复",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/pause": {
+      "put": {
+        "tags": [
+          "management"
+        ],
+        "summary": "暂停全部活跃任务（pending / downloading / preparing）。",
+        "operationId": "api_pause_all",
+        "responses": {
+          "200": {
+            "description": "已全部暂停",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": [
+          "management"
+        ],
+        "summary": "按 ID 查询单个任务。",
+        "operationId": "api_get_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "management"
+        ],
+        "summary": "删除任务，可选同时删除磁盘文件。",
+        "operationId": "api_delete_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deleteFiles",
+            "in": "path",
+            "description": "true = 同时删除磁盘文件。默认 false（仅删记录）。",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已删除",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{id}/continue": {
+      "put": {
+        "tags": [
+          "management"
+        ],
+        "summary": "恢复单个任务。",
+        "operationId": "api_continue_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已恢复",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{id}/pause": {
+      "put": {
+        "tags": [
+          "management"
+        ],
+        "summary": "暂停单个任务。",
+        "operationId": "api_pause_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已暂停",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/download": {
+      "post": {
+        "tags": [
+          "takeover"
+        ],
+        "summary": "提交单个外部下载请求。用 `Bytes` 而非 `Json` 提取：油猴脚本可能不带\n`application/json` Content-Type（保留旧实现的宽容行为）。",
+        "operationId": "takeover_download",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "已受理，进入快速下载确认流程",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法或缺少 url",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "缺少 X-FluxDown-Client 头",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/download/batch": {
+      "post": {
+        "tags": [
+          "takeover"
+        ],
+        "summary": "批量提交外部下载请求。支持 `{\"urls\":[...]}` 与 `{\"items\":[{...}]}` 两种形态，\n合并为单次确认。鉴权与 `/download` 相同。",
+        "operationId": "takeover_download_batch",
+        "responses": {
+          "200": {
+            "description": "已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/jsonrpc": {
+      "post": {
+        "tags": [
+          "aria2"
+        ],
+        "summary": "aria2 客户端约定：HTTP 层始终 200，错误在 JSON-RPC envelope 内表达。",
+        "operationId": "jsonrpc",
+        "responses": {
+          "200": {
+            "description": "JSON-RPC 响应（错误在 envelope 内表达）。支持方法：aria2.addUri / aria2.getVersion / aria2.getGlobalStat / system.multicall / system.listMethods；token 可经 X-FluxDown-Token 头或 params[0]=\"token:xxx\" 传递"
+          }
+        },
+        "security": [
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/ping": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "探活。返回应用名、版本号与 `pong`。无鉴权。",
+        "operationId": "ping",
+        "responses": {
+          "200": {
+            "description": "应用存活，返回 app/version/message"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiInfo": {
+        "type": "object",
+        "description": "应用信息（`GET /api/v1/info` 响应）。",
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "description": "创建任务请求（`POST /api/v1/tasks`）。\n\n与外部下载请求 [`DownloadRequest`] 不同：本请求**直接创建任务**，\n不经过快速下载确认弹框（管理 API 的调用方是受信任的自动化客户端）。\n\n# Examples\n\n```\nuse fluxdown_api::types::CreateTaskRequest;\n\nlet req: CreateTaskRequest =\n    serde_json::from_str(r#\"{\"url\":\"https://example.com/f.zip\",\"segments\":8}\"#).unwrap();\nassert_eq!(req.url, \"https://example.com/f.zip\");\nassert_eq!(req.segments, 8);\nassert!(req.save_dir.is_empty()); // 空 = 使用全局默认保存目录\n```",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "checksum": {
+            "type": "string",
+            "description": "Checksum spec，格式 `algo=hexhash`（空 = 跳过校验）。"
+          },
+          "cookies": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string",
+            "description": "空 = 从 URL / Content-Disposition 推断。"
+          },
+          "headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "附加 HTTP 请求头。",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "proxyUrl": {
+            "type": "string",
+            "description": "单任务代理 URL（空 = 使用全局代理）。"
+          },
+          "queueId": {
+            "type": "string",
+            "description": "命名队列 ID（空 = 默认队列）。"
+          },
+          "referrer": {
+            "type": "string"
+          },
+          "saveDir": {
+            "type": "string",
+            "description": "空 = 使用全局默认保存目录。"
+          },
+          "segments": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 = 由 segment_advisor 按文件大小动态决定。"
+          },
+          "url": {
+            "type": "string"
+          },
+          "userAgent": {
+            "type": "string",
+            "description": "空 = 使用全局 User-Agent。"
+          }
+        }
+      },
+      "CreatedTask": {
+        "type": "object",
+        "description": "创建任务响应（`POST /api/v1/tasks`）。",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string"
+          }
+        }
+      },
+      "DownloadRequest": {
+        "type": "object",
+        "description": "外部下载请求载荷（浏览器扩展 / 油猴脚本 / aria2 兼容层）。\n\n由宿主的「外部下载」通道消费：缓存请求事务 → 弹出快速下载确认框 →\n用户确认后创建任务。与管理 API 的 [`CreateTaskRequest`]（直接建任务、\n无确认框）语义不同。\n\n# Examples\n\n```\nuse fluxdown_api::types::DownloadRequest;\n\nlet req: DownloadRequest =\n    serde_json::from_str(r#\"{\"url\":\"https://example.com/f.zip\"}\"#).unwrap();\nassert_eq!(req.url, \"https://example.com/f.zip\");\nassert!(req.filename.is_empty());\n```",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "body": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RequestBody",
+                "description": "浏览器原始请求体（仅在非 GET 时有意义）。"
+              }
+            ]
+          },
+          "cookies": {
+            "type": "string"
+          },
+          "fileSize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "文件大小提示（字节）。\n  - `>0` = 已知大小，跳过 probe\n  - `-1` = 大小未知但确认是下载资源（webRequest 嗅探），跳过 probe\n  - `0` / `None` = 正常 probe"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "浏览器请求中捕获的额外 HTTP 头（如 Authorization）。\n由下载引擎在发起请求时附加到请求头中。",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "浏览器原始请求方法（\"GET\" / \"POST\" / ...）。\n缺省 = \"GET\"。POST/PUT/PATCH 类请求由 `body` 携带请求体。"
+          },
+          "mimeType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referrer": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "QueueDto": {
+        "type": "object",
+        "description": "命名队列信息（`GET /api/v1/queues` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::QueueDto;\nuse fluxdown_engine::model::QueueInfo;\n\nlet q = QueueInfo {\n    queue_id: \"q1\".to_string(),\n    name: \"工作\".to_string(),\n    speed_limit_kbps: 0,\n    max_concurrent: 3,\n    default_save_dir: String::new(),\n    position: 0,\n    default_segments: 0,\n    default_user_agent: String::new(),\n};\nlet dto = QueueDto::from(q);\nassert_eq!(dto.queue_id, \"q1\");\n```",
+        "required": [
+          "queueId",
+          "name",
+          "speedLimitKbps",
+          "maxConcurrent",
+          "defaultSaveDir",
+          "position",
+          "defaultSegments",
+          "defaultUserAgent"
+        ],
+        "properties": {
+          "defaultSaveDir": {
+            "type": "string"
+          },
+          "defaultSegments": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "defaultUserAgent": {
+            "type": "string"
+          },
+          "maxConcurrent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "队列并发上限，0 = 跟随全局。"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "queueId": {
+            "type": "string"
+          },
+          "speedLimitKbps": {
+            "type": "integer",
+            "format": "int64",
+            "description": "队列限速（KB/s），0 = 不限速。"
+          }
+        }
+      },
+      "RequestBody": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "fields",
+              "kind"
+            ],
+            "properties": {
+              "fields": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "formData"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "raw",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "urlencoded"
+                ]
+              },
+              "raw": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "bytesB64",
+              "kind"
+            ],
+            "properties": {
+              "bytesB64": {
+                "type": "string"
+              },
+              "contentType": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "raw"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "浏览器原始请求体（form POST / XHR raw body 等）。\n\n当用户在 form-submit 触发的下载中点击下载按钮时，浏览器实际发起的是\nPOST 请求并携带表单数据；扩展通过 `webRequest.onBeforeRequest` 抓到 method\n与 body 后透传到此字段。宿主端按 `kind` 重建请求体。\n\n协议字段：\n- `formData`：来自 `requestBody.formData`，宿主用 `reqwest::form()` 编码为\n  `application/x-www-form-urlencoded`\n- `urlencoded`：扩展端已序列化好的 url-encoded 字符串（直接作为 body 发送）\n- `raw`：base64 编码的二进制 body（XHR / fetch 直接发送 ArrayBuffer 的场景）"
+      },
+      "ResultMessage": {
+        "type": "object",
+        "description": "通用结果响应（接管端点应答 / 各端点错误响应统一格式）。",
+        "required": [
+          "success",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TaskDto": {
+        "type": "object",
+        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
+        "required": [
+          "taskId",
+          "url",
+          "fileName",
+          "saveDir",
+          "status",
+          "downloadedBytes",
+          "totalBytes",
+          "errorMessage",
+          "createdAt",
+          "proxyUrl",
+          "queueId",
+          "checksum"
+        ],
+        "properties": {
+          "checksum": {
+            "type": "string",
+            "description": "Checksum spec，格式 `algo=hexhash`（空 = 跳过校验）。"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Unix 秒级时间戳（字符串）。"
+          },
+          "downloadedBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "errorMessage": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "proxyUrl": {
+            "type": "string",
+            "description": "单任务代理 URL（空 = 使用全局代理）。"
+          },
+          "queueId": {
+            "type": "string",
+            "description": "命名队列 ID（空 = 默认队列）。"
+          },
+          "saveDir": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0=pending, 1=downloading, 2=paused, 3=completed, 4=error, 5=preparing"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "tokenHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-FluxDown-Token"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "探活与基础信息"
+    },
+    {
+      "name": "takeover",
+      "description": "浏览器脚本接管（Tampermonkey / Violentmonkey）"
+    },
+    {
+      "name": "aria2",
+      "description": "aria2 JSON-RPC 兼容"
+    },
+    {
+      "name": "management",
+      "description": "管理 API（强制 token）"
+    }
+  ]
+}

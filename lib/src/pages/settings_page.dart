@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -41,7 +40,7 @@ enum SettingsCategory {
   bt(icon: LucideIcons.magnet),
   ed2k(icon: LucideIcons.share2),
   proxy(icon: LucideIcons.globe),
-  localServer(icon: LucideIcons.server),
+  apiService(icon: LucideIcons.server),
   about(icon: LucideIcons.info);
 
   final IconData icon;
@@ -59,7 +58,7 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.bt => s.settingsCatBt,
       SettingsCategory.ed2k => s.settingsCatEd2k,
       SettingsCategory.proxy => s.settingsCatProxy,
-      SettingsCategory.localServer => s.settingsCatLocalServer,
+      SettingsCategory.apiService => s.settingsCatApiService,
       SettingsCategory.about => s.settingsCatAbout,
     };
   }
@@ -73,7 +72,7 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.bt => s.settingsCatBtDesc,
       SettingsCategory.ed2k => s.settingsCatEd2kDesc,
       SettingsCategory.proxy => s.settingsCatProxyDesc,
-      SettingsCategory.localServer => s.settingsCatLocalServerDesc,
+      SettingsCategory.apiService => s.settingsCatApiServiceDesc,
       SettingsCategory.about => s.settingsCatAboutDesc,
     };
   }
@@ -144,13 +143,6 @@ List<SettingsSearchItem> get settingsSearchItems {
     ),
     SettingsSearchItem(
       category: SettingsCategory.general,
-      label: s.analyticsEnabled,
-      description: s.analyticsEnabledDesc,
-      keywords: s.searchKeywordsAnalytics,
-      icon: LucideIcons.chartLine,
-    ),
-    SettingsSearchItem(
-      category: SettingsCategory.general,
       label: s.notifyOnComplete,
       description: s.notifyOnCompleteDesc,
       keywords: s.searchKeywordsNotifyOnComplete,
@@ -169,6 +161,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       description: s.sidebarVisibilityDesc,
       keywords: s.searchKeywordsSidebarVisibility,
       icon: LucideIcons.panelLeft,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.general,
+      label: s.titlebarButtons,
+      description: s.titlebarButtonsDesc,
+      keywords: s.searchKeywordsTitlebarButtons,
+      icon: LucideIcons.panelTop,
     ),
     SettingsSearchItem(
       category: SettingsCategory.general,
@@ -219,6 +218,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       description: s.defaultSaveDirDesc,
       keywords: s.searchKeywordsSaveDir,
       icon: LucideIcons.folderOpen,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.rememberLastSaveDir,
+      description: s.rememberLastSaveDirDesc,
+      keywords: s.searchKeywordsSaveDir,
+      icon: LucideIcons.history,
     ),
     SettingsSearchItem(
       category: SettingsCategory.download,
@@ -277,10 +283,10 @@ List<SettingsSearchItem> get settingsSearchItems {
       icon: LucideIcons.globe,
     ),
     SettingsSearchItem(
-      category: SettingsCategory.localServer,
-      label: s.localServerEnable,
-      description: s.localServerEnableDesc,
-      keywords: s.searchKeywordsLocalServer,
+      category: SettingsCategory.apiService,
+      label: s.apiServiceEnable,
+      description: s.apiServiceEnableDesc,
+      keywords: s.searchKeywordsApiService,
       icon: LucideIcons.server,
     ),
     SettingsSearchItem(
@@ -334,7 +340,8 @@ class SettingsHighlightRequest {
 
   /// 卡片是否为本请求的目标（标签或描述与搜索元数据一致即命中）。
   bool targets(String cardLabel, String cardDescription) =>
-      cardLabel == label || (description.isNotEmpty && cardDescription == description);
+      cardLabel == label ||
+      (description.isNotEmpty && cardDescription == description);
 }
 
 /// 向下传递当前高亮请求；_SettingCard 据此自行滚动定位 + 闪烁。
@@ -367,7 +374,8 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     final hl = widget.initialHighlight;
-    _selected = hl?.category ?? widget.initialCategory ?? SettingsCategory.general;
+    _selected =
+        hl?.category ?? widget.initialCategory ?? SettingsCategory.general;
     if (hl != null) {
       _highlight = SettingsHighlightRequest(
         seq: ++_highlightSeq,
@@ -637,14 +645,8 @@ class _SettingsSidebarState extends State<_SettingsSidebar> {
                   s.settingsSearchHint,
                   style: const TextStyle(fontSize: 12),
                 ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 4,
-                ),
-                constraints: const BoxConstraints(
-                  minHeight: 28,
-                  maxHeight: 28,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                constraints: const BoxConstraints(minHeight: 28, maxHeight: 28),
                 gap: 5,
                 leading: Icon(
                   LucideIcons.search,
@@ -898,8 +900,8 @@ class _SettingsContent extends StatelessWidget {
                     key: const ValueKey('proxy'),
                     settingsProvider: settingsProvider,
                   ),
-                  SettingsCategory.localServer => _LocalServerContent(
-                    key: const ValueKey('localServer'),
+                  SettingsCategory.apiService => _ApiServiceContent(
+                    key: const ValueKey('apiService'),
                     settingsProvider: settingsProvider,
                   ),
                   SettingsCategory.about => _AboutContent(
@@ -1203,8 +1205,7 @@ class _GeneralContent extends StatelessWidget {
             const SizedBox(height: 10),
             _SettingCard(
               label: LocaleScope.of(context).floatingBall,
-              description:
-                  FloatingBallService.instance.isDegraded
+              description: FloatingBallService.instance.isDegraded
                   ? LocaleScope.of(context).floatingBallWaylandUnsupported
                   : LocaleScope.of(context).floatingBallDesc,
               child: ShadSwitch(
@@ -1241,15 +1242,6 @@ class _GeneralContent extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             _SettingCard(
-              label: LocaleScope.of(context).analyticsEnabled,
-              description: LocaleScope.of(context).analyticsEnabledDesc,
-              child: ShadSwitch(
-                value: settingsProvider.analyticsEnabled,
-                onChanged: (v) => settingsProvider.setAnalyticsEnabled(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
               label: LocaleScope.of(context).notifyOnComplete,
               description: LocaleScope.of(context).notifyOnCompleteDesc,
               child: ShadSwitch(
@@ -1260,10 +1252,13 @@ class _GeneralContent extends StatelessWidget {
             const SizedBox(height: 10),
             _SettingCard(
               label: LocaleScope.of(context).keepAwakeWhileDownloading,
-              description: LocaleScope.of(context).keepAwakeWhileDownloadingDesc,
+              description: LocaleScope.of(
+                context,
+              ).keepAwakeWhileDownloadingDesc,
               child: ShadSwitch(
                 value: settingsProvider.keepAwakeWhileDownloading,
-                onChanged: (v) => settingsProvider.setKeepAwakeWhileDownloading(v),
+                onChanged: (v) =>
+                    settingsProvider.setKeepAwakeWhileDownloading(v),
               ),
             ),
             const SizedBox(height: 20),
@@ -1323,6 +1318,71 @@ class _GeneralContent extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
+            // 标题栏按钮设置 — 小标题（支持搜索定位高亮）
+            _HighlightRegion(
+              label: LocaleScope.of(context).titlebarButtons,
+              description: LocaleScope.of(context).titlebarButtonsDesc,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      LocaleScope.of(context).titlebarButtons,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.of(context).textPrimary,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    LocaleScope.of(context).titlebarButtonsDesc,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: AppColors.of(context).textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showTitlebarPauseAll,
+              description: LocaleScope.of(context).showTitlebarPauseAllDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showTitlebarPauseAll,
+                onChanged: (v) => settingsProvider.setShowTitlebarPauseAll(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showTitlebarResumeAll,
+              description: LocaleScope.of(context).showTitlebarResumeAllDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showTitlebarResumeAll,
+                onChanged: (v) => settingsProvider.setShowTitlebarResumeAll(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showTitlebarSettings,
+              description: LocaleScope.of(context).showTitlebarSettingsDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showTitlebarSettings,
+                onChanged: (v) => settingsProvider.setShowTitlebarSettings(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showTitlebarTheme,
+              description: LocaleScope.of(context).showTitlebarThemeDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showTitlebarTheme,
+                onChanged: (v) => settingsProvider.setShowTitlebarTheme(v),
+              ),
+            ),
+            const SizedBox(height: 20),
             // 自定义分类管理（支持搜索定位高亮）
             _HighlightRegion(
               label: LocaleScope.of(context).customCategories,
@@ -1346,16 +1406,17 @@ class _CustomCategoryManager extends StatelessWidget {
   const _CustomCategoryManager({required this.settingsProvider});
 
   /// 内置分类的 i18n 名称
-  static String _builtinLabel(S s, String? builtinType) => switch (builtinType) {
-    'all' => s.categoryAll,
-    'video' => s.categoryVideo,
-    'audio' => s.categoryAudio,
-    'document' => s.categoryDocument,
-    'image' => s.categoryImage,
-    'archive' => s.categoryArchive,
-    'other' => s.categoryOther,
-    _ => '',
-  };
+  static String _builtinLabel(S s, String? builtinType) =>
+      switch (builtinType) {
+        'all' => s.categoryAll,
+        'video' => s.categoryVideo,
+        'audio' => s.categoryAudio,
+        'document' => s.categoryDocument,
+        'image' => s.categoryImage,
+        'archive' => s.categoryArchive,
+        'other' => s.categoryOther,
+        _ => '',
+      };
 
   /// 获取分类显示名称（内置用 i18n，自定义用用户设置的名称）
   static String displayName(S s, CustomCategory cat) {
@@ -1436,16 +1497,16 @@ class _CustomCategoryManager extends StatelessWidget {
             total: categories.length,
             c: c,
             s: s,
-            onEdit: () => _showCategoryDialog(
-              context, s, c,
-              existing: categories[i],
-            ),
+            onEdit: () =>
+                _showCategoryDialog(context, s, c, existing: categories[i]),
             onDelete: categories[i].builtinType == 'all'
                 ? null
                 : () => _confirmDelete(context, s, c, categories[i]),
-            onReset: (categories[i].isBuiltin && categories[i].builtinType != 'all')
-                ? () => settingsProvider
-                    .resetBuiltinCategory(categories[i].builtinType!)
+            onReset:
+                (categories[i].isBuiltin && categories[i].builtinType != 'all')
+                ? () => settingsProvider.resetBuiltinCategory(
+                    categories[i].builtinType!,
+                  )
                 : null,
             onToggleVisible: () => settingsProvider.updateCustomCategory(
               categories[i].copyWith(visible: !categories[i].visible),
@@ -1484,7 +1545,11 @@ class _CustomCategoryManager extends StatelessWidget {
   }
 
   void _confirmDelete(
-      BuildContext context, S s, AppColors c, CustomCategory cat) {
+    BuildContext context,
+    S s,
+    AppColors c,
+    CustomCategory cat,
+  ) {
     showShadDialog(
       context: context,
       barrierColor: c.dialogBarrier,
@@ -1943,19 +2008,8 @@ class _AppIconSelector extends StatefulWidget {
 class _AppIconSelectorState extends State<_AppIconSelector> {
   bool _busy = false;
 
-  /// 「自定义」点击逻辑：
-  /// - 未启用但曾导入过 → 直接切回上次的自定义图标；
-  /// - 已启用自定义 → 重新选图（更换）；
-  /// - 从未导入 → 选图。
-  Future<void> _onCustomTap() async {
-    final svc = AppIconService.instance;
-    if (!svc.isCustom && svc.hasCustomIcon) {
-      await svc.useCustom();
-    } else {
-      await _pickImage();
-    }
-  }
-
+  /// 「自定义」点击 → 一律打开文件选择器（取消则保持当前图标不变）。
+  /// 曾导入过也重新选图，避免「点了没反应」的切回旧图标歧义。
   Future<void> _pickImage() async {
     final s = LocaleScope.of(context);
     setState(() => _busy = true);
@@ -1982,8 +2036,8 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
     }
   }
 
-  /// 弹窗放大查看自定义图标（预览源为 256px PNG）
-  void _showPreviewDialog(String path, int revision) {
+  /// 弹窗放大查看图标（自定义预览源为 256px PNG；内置闪电为打包资源）
+  void _showPreviewDialog(ImageProvider image, int revision) {
     final s = LocaleScope.of(context);
     final c = AppColors.of(context);
     showShadDialog(
@@ -2001,7 +2055,36 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
         ],
         child: Padding(
           padding: const EdgeInsets.only(top: 16),
-          child: _IconZoomPreview(path: path, revision: revision),
+          child: _IconZoomPreview(image: image, revision: revision),
+        ),
+      ),
+    );
+  }
+
+  /// 可点击放大的小尺寸图标缩略图。
+  Widget _iconThumb(AppColors c, ImageProvider image, int revision) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () => _showPreviewDialog(image, revision),
+        child: Container(
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: c.border.withValues(alpha: 0.5)),
+            color: c.surface1,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(5),
+            child: Image(
+              key: ValueKey(revision),
+              image: image,
+              width: 34,
+              height: 34,
+              filterQuality: FilterQuality.medium,
+              gaplessPlayback: true,
+            ),
+          ),
         ),
       ),
     );
@@ -2020,11 +2103,21 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
           children: [
             _UiScaleChip(
               label: s.appIconDefault,
-              selected: !svc.isCustom,
+              selected: svc.choice == AppIconChoice.defaultIcon,
               isDefault: true,
               colors: c,
               onTap: () {
                 if (!_busy) svc.useDefault();
+              },
+            ),
+            const SizedBox(width: 6),
+            _UiScaleChip(
+              label: s.appIconBolt,
+              selected: svc.isBolt,
+              isDefault: false,
+              colors: c,
+              onTap: () {
+                if (!_busy) svc.useBolt();
               },
             ),
             const SizedBox(width: 6),
@@ -2034,39 +2127,19 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
               isDefault: false,
               colors: c,
               onTap: () {
-                if (!_busy) _onCustomTap();
+                if (!_busy) _pickImage();
               },
             ),
-            if (previewPath != null) ...[
+            if (svc.isBolt) ...[
               const SizedBox(width: 12),
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  onTap: () =>
-                      _showPreviewDialog(previewPath, svc.previewRevision),
-                  child: Container(
-                    padding: const EdgeInsets.all(3),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: c.border.withValues(alpha: 0.5),
-                      ),
-                      color: c.surface1,
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(5),
-                      child: Image(
-                        key: ValueKey(svc.previewRevision),
-                        image: FileImage(File(previewPath)),
-                        width: 34,
-                        height: 34,
-                        filterQuality: FilterQuality.medium,
-                        gaplessPlayback: true,
-                      ),
-                    ),
-                  ),
-                ),
+              _iconThumb(
+                c,
+                const AssetImage(AppIconService.builtinBoltAsset),
+                0,
               ),
+            ] else if (svc.isCustom && previewPath != null) ...[
+              const SizedBox(width: 12),
+              _iconThumb(c, FileImage(File(previewPath)), svc.previewRevision),
             ],
           ],
         );
@@ -2080,10 +2153,10 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
 /// 悬停在视口上滚动滚轮即可放大/缩小，图标按当前尺寸自适应渲染；
 /// 大倍率下切换为最近邻采样，保留像素边缘便于检查图标细节。
 class _IconZoomPreview extends StatefulWidget {
-  final String path;
+  final ImageProvider image;
   final int revision;
 
-  const _IconZoomPreview({required this.path, required this.revision});
+  const _IconZoomPreview({required this.image, required this.revision});
 
   @override
   State<_IconZoomPreview> createState() => _IconZoomPreviewState();
@@ -2128,12 +2201,13 @@ class _IconZoomPreviewState extends State<_IconZoomPreview> {
               child: Center(
                 child: Image(
                   key: ValueKey(widget.revision),
-                  image: FileImage(File(widget.path)),
+                  image: widget.image,
                   width: side,
                   height: side,
                   fit: BoxFit.contain,
-                  filterQuality:
-                      _scale > 2 ? FilterQuality.none : FilterQuality.high,
+                  filterQuality: _scale > 2
+                      ? FilterQuality.none
+                      : FilterQuality.high,
                   gaplessPlayback: true,
                 ),
               ),
@@ -2184,6 +2258,15 @@ class _DownloadContent extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             _SettingCard(
+              label: s.rememberLastSaveDir,
+              description: s.rememberLastSaveDirDesc,
+              child: ShadSwitch(
+                value: settingsProvider.rememberLastSaveDir,
+                onChanged: (v) => settingsProvider.setRememberLastSaveDir(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
               label: s.defaultThreads,
               description: s.defaultThreadsDesc,
               child: _SegmentSelector(settingsProvider: settingsProvider),
@@ -2205,7 +2288,9 @@ class _DownloadContent extends StatelessWidget {
             _SettingCard(
               label: s.autoRetryCount,
               description: s.autoRetryCountDesc,
-              child: _AutoRetryCountSelector(settingsProvider: settingsProvider),
+              child: _AutoRetryCountSelector(
+                settingsProvider: settingsProvider,
+              ),
             ),
             const SizedBox(height: 10),
             _SettingCard(
@@ -3600,131 +3685,338 @@ class _ReadOnlyValueBox extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-// 本地下载服务子组件
+// API 服务子组件
 // ─────────────────────────────────────────────
 
-class _LocalServerContent extends StatelessWidget {
+class _ApiServiceContent extends StatefulWidget {
   final SettingsProvider settingsProvider;
 
-  const _LocalServerContent({super.key, required this.settingsProvider});
+  const _ApiServiceContent({super.key, required this.settingsProvider});
+
+  @override
+  State<_ApiServiceContent> createState() => _ApiServiceContentState();
+}
+
+class _ApiServiceContentState extends State<_ApiServiceContent> {
+  late TextEditingController _portController;
+  late FocusNode _portFocusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _portController = TextEditingController(
+      text: widget.settingsProvider.localServerPort.toString(),
+    );
+    _portFocusNode = FocusNode()..addListener(_onPortFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _portFocusNode.removeListener(_onPortFocusChange);
+    _portFocusNode.dispose();
+    _portController.dispose();
+    super.dispose();
+  }
+
+  void _onPortFocusChange() {
+    if (!_portFocusNode.hasFocus) _commitPort();
+  }
+
+  /// 端口失焦/提交时校验 1024-65535；非法则回退为当前生效值
+  void _commitPort() {
+    final sp = widget.settingsProvider;
+    final value = int.tryParse(_portController.text.trim());
+    if (value == null || value < 1024 || value > 65535) {
+      setState(() => _portController.text = sp.localServerPort.toString());
+      ShadSonner.of(context).show(
+        ShadToast.destructive(
+          title: Text(LocaleScope.of(context).apiServicePortInvalid),
+        ),
+      );
+      return;
+    }
+    sp.setLocalServerPort(value);
+  }
+
+  /// 生成 32 位随机 hex token
+  String _generateHexToken() {
+    final r = Random.secure();
+    return List<int>.generate(
+      16,
+      (_) => r.nextInt(256),
+    ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  Future<void> _copyToken() async {
+    await Clipboard.setData(
+      ClipboardData(text: widget.settingsProvider.localServerToken),
+    );
+    if (!mounted) return;
+    ShadSonner.of(context).show(
+      ShadToast(
+        title: Text(LocaleScope.of(context).apiServiceCopied),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: settingsProvider,
+      listenable: widget.settingsProvider,
       builder: (context, _) {
+        final c = AppColors.of(context);
+        final s = LocaleScope.of(context);
+        final sp = widget.settingsProvider;
+        final enabled = sp.localServerEnabled;
+        final committedPortText = sp.localServerPort.toString();
+        // 未获焦时随外部配置变化同步（如首次加载配置完成）
+        if (!_portFocusNode.hasFocus &&
+            _portController.text != committedPortText) {
+          _portController.text = committedPortText;
+        }
+        // 地址预览随端口输入框实时更新，不等待失焦提交
+        final typedPort = _portController.text.trim();
+        final livePort = typedPort.isEmpty ? committedPortText : typedPort;
+
         return Column(
-          children: [_LocalServerCard(settingsProvider: settingsProvider)],
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: c.surface1,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: c.border.withValues(alpha: 0.6),
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 标题 + 描述
+                  Text(
+                    s.apiServiceEnable,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: c.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.apiServiceEnableDesc,
+                    style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  // 总开关
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          s.apiServiceEnable,
+                          style: TextStyle(fontSize: 13, color: c.textPrimary),
+                        ),
+                      ),
+                      ShadSwitch(
+                        value: enabled,
+                        onChanged: (v) => sp.setLocalServerEnabled(v),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Divider(height: 1, color: c.border.withValues(alpha: 0.4)),
+                  const SizedBox(height: 14),
+                  // 端口行
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              s.apiServicePort,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: enabled ? c.textPrimary : c.textDisabled,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              s.apiServicePortDesc,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: enabled ? c.textMuted : c.textDisabled,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 120,
+                        child: ShadInput(
+                          controller: _portController,
+                          focusNode: _portFocusNode,
+                          enabled: enabled,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => setState(() {}),
+                          onSubmitted: (_) => _commitPort(),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  // Token 行
+                  Text(
+                    s.apiServiceToken,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: enabled ? c.textPrimary : c.textDisabled,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.apiServiceTokenDesc,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: enabled ? c.textMuted : c.textDisabled,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    spacing: 8,
+                    children: [
+                      Expanded(
+                        child: _ReadOnlyValueBox(
+                          value: sp.localServerToken,
+                          colors: c,
+                        ),
+                      ),
+                      ShadButton.outline(
+                        size: ShadButtonSize.sm,
+                        enabled: enabled,
+                        onPressed: () =>
+                            sp.setLocalServerToken(_generateHexToken()),
+                        child: Text(s.apiServiceTokenGenerate),
+                      ),
+                      ShadButton.outline(
+                        size: ShadButtonSize.sm,
+                        enabled: enabled && sp.localServerToken.isNotEmpty,
+                        onPressed: _copyToken,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(LucideIcons.copy, size: 13),
+                            const SizedBox(width: 4),
+                            Text(s.apiServiceCopy),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            _HighlightRegion(
+              label: s.apiServiceFeaturesTitle,
+              description: s.apiServiceFeaturesDesc,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      s.apiServiceFeaturesTitle,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: c.textPrimary,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    s.apiServiceFeaturesDesc,
+                    style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            _ApiSubFeatureCard(
+              masterEnabled: enabled,
+              label: s.apiServiceTakeover,
+              description: s.apiServiceTakeoverDesc,
+              value: sp.localServerTakeoverEnabled,
+              onChanged: (v) => sp.setLocalServerTakeoverEnabled(v),
+              address: 'http://127.0.0.1:$livePort',
+              extra: _CopyUserscriptButton(enabled: enabled),
+            ),
+            const SizedBox(height: 10),
+            _ApiSubFeatureCard(
+              masterEnabled: enabled,
+              label: s.apiServiceJsonrpc,
+              description: s.apiServiceJsonrpcDesc,
+              value: sp.localServerJsonrpcEnabled,
+              onChanged: (v) => sp.setLocalServerJsonrpcEnabled(v),
+              address: 'http://127.0.0.1:$livePort/jsonrpc',
+            ),
+            const SizedBox(height: 10),
+            _ApiSubFeatureCard(
+              masterEnabled: enabled,
+              label: s.apiServiceApi,
+              description: s.apiServiceApiDesc,
+              value: sp.localServerApiEnabled,
+              onChanged: (v) => sp.setLocalServerApiEnabled(v),
+              address: 'http://127.0.0.1:$livePort/api/v1',
+            ),
+          ],
         );
       },
     );
   }
 }
 
-class _LocalServerCard extends StatefulWidget {
-  final SettingsProvider settingsProvider;
+/// 「功能开关」分组下的单个子功能卡片：标题+描述+开关 与 只读地址+复制 两行。
+/// [masterEnabled] 为 false 时整卡禁用置灰（跟随总开关，无需重启提示）。
+class _ApiSubFeatureCard extends StatelessWidget {
+  final bool masterEnabled;
+  final String label;
+  final String description;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final String address;
+  final Widget? extra;
 
-  const _LocalServerCard({required this.settingsProvider});
+  const _ApiSubFeatureCard({
+    required this.masterEnabled,
+    required this.label,
+    required this.description,
+    required this.value,
+    required this.onChanged,
+    required this.address,
+    this.extra,
+  });
 
-  @override
-  State<_LocalServerCard> createState() => _LocalServerCardState();
-}
-
-class _LocalServerCardState extends State<_LocalServerCard> {
-  late TextEditingController _portController;
-  late TextEditingController _tokenController;
-
-  /// 本次应用会话启动时的开关值（跨卡片重建保留，用于判断是否待重启生效）
-  static bool? _sessionInitialEnabled;
-
-  @override
-  void initState() {
-    super.initState();
-    final sp = widget.settingsProvider;
-    _sessionInitialEnabled ??= sp.localServerEnabled;
-    _portController = TextEditingController(text: sp.localServerPort.toString());
-    _tokenController = TextEditingController(text: sp.localServerToken);
-  }
-
-  @override
-  void didUpdateWidget(_LocalServerCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final sp = widget.settingsProvider;
-    if (sp.localServerPort.toString() != _portController.text) {
-      _portController.text = sp.localServerPort.toString();
-    }
-    if (sp.localServerToken != _tokenController.text) {
-      _tokenController.text = sp.localServerToken;
-    }
-  }
-
-  @override
-  void dispose() {
-    _portController.dispose();
-    _tokenController.dispose();
-    super.dispose();
-  }
-
-  String _generateToken() {
-    final r = Random.secure();
-    return base64Url
-        .encode(List.generate(24, (_) => r.nextInt(256)))
-        .replaceAll('=', '');
-  }
-
-  Future<void> _copyToken() async {
-    final token = widget.settingsProvider.localServerToken;
-    await Clipboard.setData(ClipboardData(text: token));
-    if (!mounted) return;
+  Future<void> _copyAddress(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: address));
+    if (!context.mounted) return;
     ShadSonner.of(context).show(
       ShadToast(
-        title: Text(LocaleScope.of(context).localServerTokenCopied),
+        title: Text(LocaleScope.of(context).apiServiceCopied),
         duration: const Duration(seconds: 2),
       ),
     );
-  }
-
-  Future<void> _copyRpcAddress() async {
-    final url =
-        'http://127.0.0.1:${widget.settingsProvider.localServerPort}/jsonrpc';
-    await Clipboard.setData(ClipboardData(text: url));
-    if (!mounted) return;
-    ShadSonner.of(context).show(
-      ShadToast(
-        title: Text(LocaleScope.of(context).localServerAddressCopied),
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
-  Future<void> _copyScript() async {
-    try {
-      final script = await rootBundle.loadString('userscript/fluxdown.user.js');
-      await Clipboard.setData(ClipboardData(text: script));
-      if (!mounted) return;
-      ShadSonner.of(context).show(
-        ShadToast(
-          title: Text(LocaleScope.of(context).localServerScriptCopied),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ShadSonner.of(context).show(
-        ShadToast.destructive(
-          title: Text('Error: $e'),
-        ),
-      );
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
-    final sp = widget.settingsProvider;
-    final enabled = sp.localServerEnabled;
-
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
@@ -3735,205 +4027,116 @@ class _LocalServerCardState extends State<_LocalServerCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 标题 + 描述
-          Text(
-            s.localServerEnable,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: c.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            s.localServerEnableDesc,
-            style: TextStyle(fontSize: 11.5, color: c.textMuted),
-          ),
-          const SizedBox(height: 12),
-          // 启用开关
           Row(
             children: [
               Expanded(
-                child: Text(
-                  s.localServerEnable,
-                  style: TextStyle(fontSize: 13, color: c.textPrimary),
-                ),
-              ),
-              ShadSwitch(
-                value: enabled,
-                onChanged: (v) => sp.setLocalServerEnabled(v),
-              ),
-            ],
-          ),
-          if (_sessionInitialEnabled != null &&
-              enabled != _sessionInitialEnabled) ...[
-            const SizedBox(height: 10),
-            // 待重启警示条
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: c.statusWarning.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                  color: c.statusWarning.withValues(alpha: 0.35),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    LucideIcons.triangleAlert,
-                    size: 14,
-                    color: c.statusWarning,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      s.localServerToggleRestartHint,
-                      style: TextStyle(fontSize: 12, color: c.textSecondary),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          if (enabled) ...[
-            const SizedBox(height: 14),
-            // 端口行
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        s.localServerPort,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: c.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        s.localServerRestartHint,
-                        style: TextStyle(fontSize: 11.5, color: c.textMuted),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 120,
-                  child: ShadInput(
-                    controller: _portController,
-                    onChanged: (v) {
-                      final port = int.tryParse(v);
-                      if (port != null) sp.setLocalServerPort(port);
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            // Token 行
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  s.localServerToken,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: c.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  s.localServerTokenDesc,
-                  style: TextStyle(fontSize: 11.5, color: c.textMuted),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  spacing: 8,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: ShadInput(
-                        controller: _tokenController,
-                        onChanged: (v) => sp.setLocalServerToken(v),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: masterEnabled ? c.textPrimary : c.textDisabled,
                       ),
                     ),
-                    ShadButton.outline(
-                      size: ShadButtonSize.sm,
-                      onPressed: () {
-                        final token = _generateToken();
-                        sp.setLocalServerToken(token);
-                        _tokenController.text = token;
-                      },
-                      child: Text(s.localServerTokenGenerate),
-                    ),
-                    ShadButton.outline(
-                      size: ShadButtonSize.sm,
-                      onPressed: _copyToken,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(LucideIcons.copy, size: 13),
-                          const SizedBox(width: 4),
-                          Text(s.localServerTokenCopy),
-                        ],
+                    const SizedBox(height: 2),
+                    Text(
+                      description,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: masterEnabled ? c.textMuted : c.textDisabled,
                       ),
                     ),
                   ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            // 复制油猴脚本按钮
-            ShadButton(
-              onPressed: _copyScript,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(LucideIcons.code, size: 14),
-                  const SizedBox(width: 6),
-                  Text(s.localServerCopyScript),
-                ],
               ),
-            ),
-            const SizedBox(height: 14),
-            // RPC 地址只读预览 + 快速复制（aria2 兼容端点 /jsonrpc）
-            Row(
-              children: [
-                SizedBox(
-                  width: 80,
-                  child: Text(
-                    s.localServerAddress,
-                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+              const SizedBox(width: 16),
+              ShadSwitch(
+                value: value,
+                enabled: masterEnabled,
+                onChanged: onChanged,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              SizedBox(
+                width: 56,
+                child: Text(
+                  s.apiServiceAddress,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: masterEnabled ? c.textSecondary : c.textDisabled,
                   ),
                 ),
-                Expanded(
-                  child: _ReadOnlyValueBox(
-                    value: 'http://127.0.0.1:${sp.localServerPort}/jsonrpc',
-                    colors: c,
-                  ),
+              ),
+              Expanded(
+                child: _ReadOnlyValueBox(value: address, colors: c),
+              ),
+              const SizedBox(width: 8),
+              ShadButton.outline(
+                size: ShadButtonSize.sm,
+                enabled: masterEnabled,
+                onPressed: () => _copyAddress(context),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(LucideIcons.copy, size: 13),
+                    const SizedBox(width: 4),
+                    Text(s.apiServiceCopy),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                ShadButton.outline(
-                  size: ShadButtonSize.sm,
-                  onPressed: _copyRpcAddress,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(LucideIcons.copy, size: 13),
-                      const SizedBox(width: 4),
-                      Text(s.localServerTokenCopy),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
+          if (extra != null) ...[const SizedBox(height: 10), extra!],
+        ],
+      ),
+    );
+  }
+}
+
+/// 复制内置油猴脚本到剪贴板（浏览器脚本接管子功能的便捷入口）
+class _CopyUserscriptButton extends StatelessWidget {
+  final bool enabled;
+
+  const _CopyUserscriptButton({required this.enabled});
+
+  Future<void> _copy(BuildContext context) async {
+    final s = LocaleScope.of(context);
+    try {
+      final script = await rootBundle.loadString('userscript/fluxdown.user.js');
+      await Clipboard.setData(ClipboardData(text: script));
+      if (!context.mounted) return;
+      ShadSonner.of(context).show(
+        ShadToast(
+          title: Text(s.apiServiceScriptCopied),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ShadSonner.of(
+        context,
+      ).show(ShadToast.destructive(title: Text('Error: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ShadButton.outline(
+      size: ShadButtonSize.sm,
+      enabled: enabled,
+      onPressed: () => _copy(context),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(LucideIcons.code, size: 13),
+          const SizedBox(width: 4),
+          Text(LocaleScope.of(context).apiServiceCopyScript),
         ],
       ),
     );
@@ -3989,7 +4192,11 @@ class _BtPortRangeEditorState extends State<_BtPortRangeEditor> {
   }
 
   bool _isValid(int start, int end) {
-    return start >= 1024 && start <= 65535 && end >= 1024 && end <= 65535 && start <= end;
+    return start >= 1024 &&
+        start <= 65535 &&
+        end >= 1024 &&
+        end <= 65535 &&
+        start <= end;
   }
 
   void _tryCommit() {
@@ -4044,10 +4251,7 @@ class _BtPortRangeEditorState extends State<_BtPortRangeEditor> {
         ),
         if (_error != null) ...[
           const SizedBox(height: 6),
-          Text(
-            _error!,
-            style: TextStyle(fontSize: 11.5, color: c.statusError),
-          ),
+          Text(_error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
         ],
       ],
     );
@@ -4071,7 +4275,9 @@ class _Ed2kListenPortEditorState extends State<_Ed2kListenPortEditor> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: '${widget.settingsProvider.ed2kListenPort}');
+    _controller = TextEditingController(
+      text: '${widget.settingsProvider.ed2kListenPort}',
+    );
   }
 
   @override
@@ -4120,10 +4326,7 @@ class _Ed2kListenPortEditorState extends State<_Ed2kListenPortEditor> {
         ),
         if (_error != null) ...[
           const SizedBox(height: 6),
-          Text(
-            _error!,
-            style: TextStyle(fontSize: 11.5, color: c.statusError),
-          ),
+          Text(_error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
         ],
       ],
     );
@@ -4669,10 +4872,7 @@ class _BtTrackerSubEditorState extends State<_BtTrackerSubEditor> {
                       const SizedBox(width: 4),
                       Text(
                         s.btResetTrackers,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: c.textSecondary,
-                        ),
+                        style: TextStyle(fontSize: 11, color: c.textSecondary),
                       ),
                     ],
                   ),
@@ -4735,7 +4935,9 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: _toLines(widget.settingsProvider.ed2kServerList));
+    _controller = TextEditingController(
+      text: _toLines(widget.settingsProvider.ed2kServerList),
+    );
   }
 
   @override
@@ -4754,11 +4956,8 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
   }
 
   /// 逗号分隔 → 每行一个（编辑展示）。
-  static String _toLines(String csv) => csv
-      .split(',')
-      .map((s) => s.trim())
-      .where((s) => s.isNotEmpty)
-      .join('\n');
+  static String _toLines(String csv) =>
+      csv.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).join('\n');
 
   void _save() {
     // 清洗 + 去重（按 trim 后的小写形式判重），存储为逗号分隔。
@@ -4776,7 +4975,10 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
   int get _serverCount {
     final text = _controller.text.trim();
     if (text.isEmpty) return 0;
-    return text.split(RegExp(r'[\n,]')).where((l) => l.trim().isNotEmpty).length;
+    return text
+        .split(RegExp(r'[\n,]'))
+        .where((l) => l.trim().isNotEmpty)
+        .length;
   }
 
   void _resetToDefault() {
@@ -4798,7 +5000,9 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
             onPressed: () {
               Navigator.of(ctx).pop();
               _controller.text = _kDefaultEd2kServers.join('\n');
-              widget.settingsProvider.setEd2kServerList(_kDefaultEd2kServers.join(','));
+              widget.settingsProvider.setEd2kServerList(
+                _kDefaultEd2kServers.join(','),
+              );
               setState(() {});
             },
           ),
@@ -4844,7 +5048,9 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    _isExpanded ? LucideIcons.chevronUp : LucideIcons.chevronDown,
+                    _isExpanded
+                        ? LucideIcons.chevronUp
+                        : LucideIcons.chevronDown,
                     size: 14,
                     color: c.textSecondary,
                   ),
@@ -4950,13 +5156,16 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.settingsProvider.ed2kServerSubUrls);
+    _controller = TextEditingController(
+      text: widget.settingsProvider.ed2kServerSubUrls,
+    );
   }
 
   @override
   void didUpdateWidget(_Ed2kServerSubEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.settingsProvider.ed2kServerSubUrls != _controller.text && !_isExpanded) {
+    if (widget.settingsProvider.ed2kServerSubUrls != _controller.text &&
+        !_isExpanded) {
       _controller.text = widget.settingsProvider.ed2kServerSubUrls;
     }
   }
@@ -5083,7 +5292,11 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
                         ),
                       )
                     else
-                      Icon(LucideIcons.refreshCw, size: 12, color: c.textSecondary),
+                      Icon(
+                        LucideIcons.refreshCw,
+                        size: 12,
+                        color: c.textSecondary,
+                      ),
                     const SizedBox(width: 4),
                     Text(
                       sp.ed2kServerSubRefreshing
@@ -5102,7 +5315,9 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      _isExpanded ? LucideIcons.chevronUp : LucideIcons.chevronDown,
+                      _isExpanded
+                          ? LucideIcons.chevronUp
+                          : LucideIcons.chevronDown,
                       size: 14,
                       color: c.textSecondary,
                     ),
@@ -5181,7 +5396,11 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(LucideIcons.rotateCcw, size: 12, color: c.textSecondary),
+                      Icon(
+                        LucideIcons.rotateCcw,
+                        size: 12,
+                        color: c.textSecondary,
+                      ),
                       const SizedBox(width: 4),
                       Text(
                         s.ed2kResetServers,
@@ -6934,7 +7153,11 @@ class _AboutContent extends StatelessWidget {
     );
   }
 
-  Widget _buildProgressSection(BuildContext context, UpdateService svc, AppColors c) {
+  Widget _buildProgressSection(
+    BuildContext context,
+    UpdateService svc,
+    AppColors c,
+  ) {
     final p = svc.progress;
     if (p == null) return const SizedBox.shrink();
 

@@ -115,11 +115,22 @@ class _SidebarState extends State<Sidebar> {
         height: 40,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         alignment: Alignment.centerLeft,
-        // 跟随「设置-外观-应用图标」切换：自定义图标启用时显示其预览
+        // 跟随「设置-外观-应用图标」切换：内置闪电/自定义图标启用时显示其预览
         child: ListenableBuilder(
           listenable: AppIconService.instance,
           builder: (context, _) {
             final svc = AppIconService.instance;
+            if (svc.isBolt) {
+              return ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: Image.asset(
+                  AppIconService.builtinBoltAsset,
+                  width: 22,
+                  height: 22,
+                  filterQuality: FilterQuality.medium,
+                ),
+              );
+            }
             final customPreview = svc.isCustom ? svc.previewPngPath : null;
             if (customPreview != null) {
               return ClipRRect(

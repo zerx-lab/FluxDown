@@ -103,19 +103,6 @@ const ogImageUrl = `${SITE_URL}/logo.png`;
     <title>{title}</title>
     <slot name="head" />
 
-    <!-- OpenPanel Analytics -->
-    <script is:inline>
-      window.op=window.op||function(){var n=[];return new Proxy(function(){arguments.length&&n.push([].slice.call(arguments))},{get:function(t,r){return"q"===r?n:function(){n.push([r].concat([].slice.call(arguments)))}},has:function(t,r){return"q"===r}});}();
-      window.op('init', {
-        apiUrl: 'https://openpanel-api.zerx.dev',
-        clientId: 'b2edd504-f890-48b6-8d0a-c31f4303f572',
-        trackScreenViews: true,
-        trackOutgoingLinks: true,
-        trackAttributes: true,
-      });
-    </script>
-    <script src="https://openpanel.dev/op1.js" defer async></script>
-
     <!--
       Critical: Prevent FOUC by applying theme + locale BEFORE first paint.
       This script runs synchronously and blocks rendering to avoid any flash.

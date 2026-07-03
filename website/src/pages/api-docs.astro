@@ -1,0 +1,49 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const SCALAR_CDN = "https://cdn.jsdelivr.net/npm/@scalar/api-reference";
+---
+
+<Layout
+  title="API Reference - FluxDown"
+  description="Interactive HTTP API reference for the FluxDown download manager — aria2 JSON-RPC compatible endpoints, task/queue management, and browser-extension takeover API. Generated from OpenAPI 3.1, rendered with Scalar."
+>
+  <a
+    href="/"
+    aria-label="Back to FluxDown"
+    style="position:fixed;bottom:1.25rem;right:1.25rem;z-index:9999;display:inline-flex;align-items:center;gap:0.375rem;border-radius:9999px;border:1px solid rgba(56,189,248,0.25);background:rgba(10,10,11,0.72);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:0.375rem 0.875rem;font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;font-size:0.75rem;font-weight:500;color:#a1a1aa;text-decoration:none;transition:color 0.2s ease,border-color 0.2s ease;"
+    onmouseover="this.style.color='#38bdf8';this.style.borderColor='rgba(56,189,248,0.6)';"
+    onmouseout="this.style.color='#a1a1aa';this.style.borderColor='rgba(56,189,248,0.25)';"
+  >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg>
+    FluxDown
+  </a>
+
+  <div id="app"></div>
+
+  <script is:inline src={SCALAR_CDN}></script>
+  <script is:inline>
+    (function () {
+      var isLight = document.documentElement.classList.contains("light");
+
+      Scalar.createApiReference("#app", {
+        url: "/openapi.json",
+        theme: "none",
+        layout: "modern",
+        darkMode: !isLight,
+        hideDarkModeToggle: true,
+        withDefaultFonts: false,
+        metaData: {
+          title: "FluxDown API Reference",
+          description:
+            "HTTP API reference for the FluxDown download manager: takeover, aria2 JSON-RPC shim, and management endpoints.",
+        },
+        customCss:
+          ":root{--scalar-font:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;--scalar-font-code:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}" +
+          ".light-mode{--scalar-color-1:#09090b;--scalar-color-2:#71717a;--scalar-color-3:#a1a1aa;--scalar-color-accent:#3b82f6;--scalar-background-1:#F8F9FA;--scalar-background-2:#FFFFFF;--scalar-background-3:#F1F3F5;--scalar-background-accent:#38bdf822;--scalar-border-color:#E4E4E7;}" +
+          ".dark-mode{--scalar-color-1:#fafafa;--scalar-color-2:#a1a1aa;--scalar-color-3:#52525b;--scalar-color-accent:#38bdf8;--scalar-background-1:#0a0a0b;--scalar-background-2:#111113;--scalar-background-3:#1a1a1d;--scalar-background-accent:#38bdf81f;--scalar-border-color:#27272a;}" +
+          ".light-mode .sidebar,.dark-mode .sidebar{--scalar-sidebar-background-1:var(--scalar-background-1);--scalar-sidebar-border-color:var(--scalar-border-color);--scalar-sidebar-color-1:var(--scalar-color-1);--scalar-sidebar-color-2:var(--scalar-color-2);}",
+      });
+    })();
+  </script>
+</Layout>

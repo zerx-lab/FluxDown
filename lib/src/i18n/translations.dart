@@ -370,12 +370,15 @@ class S {
   String get settingsCatBt => _t('BitTorrent', 'BitTorrent');
   String get settingsCatBtDesc => _t('BT 下载设置', 'BitTorrent settings');
   String get settingsCatEd2k => _t('eD2K', 'eD2K');
-  String get settingsCatEd2kDesc => _t('电驴 / eMule 下载设置', 'eD2K / eMule settings');
+  String get settingsCatEd2kDesc =>
+      _t('电驴 / eMule 下载设置', 'eD2K / eMule settings');
   String get settingsCatProxy => _t('代理', 'Proxy');
   String get settingsCatProxyDesc => _t('网络代理配置', 'Network proxy settings');
-  String get settingsCatLocalServer => _t('RPC', 'RPC');
-  String get settingsCatLocalServerDesc =>
-      _t('油猴脚本接管浏览器下载', 'Capture browser downloads via userscript');
+  String get settingsCatApiService => _t('API 服务', 'API Service');
+  String get settingsCatApiServiceDesc => _t(
+    '浏览器脚本接管、aria2 RPC 兼容与管理 API',
+    'Browser takeover, aria2 RPC compatibility & management API',
+  );
   String get settingsCatAbout => _t('关于', 'About');
   String get settingsCatAboutDesc => _t('版本信息与更新', 'Version info & Updates');
 
@@ -405,7 +408,8 @@ class S {
     '主窗口隐藏时监测剪贴板中的下载链接并通知（仅部分桌面环境可用）',
     'Watch the clipboard for download URLs while the main window is hidden (availability depends on desktop environment)',
   );
-  String get clipboardUrlDetectedTitle => _t('检测到下载链接', 'Download link detected');
+  String get clipboardUrlDetectedTitle =>
+      _t('检测到下载链接', 'Download link detected');
   String get clipboardUrlDetectedBody =>
       _t('点击创建下载任务', 'Click to create a download task');
   String get trayShowFloatingBall => _t('显示悬浮球', 'Show Floating Ball');
@@ -421,17 +425,13 @@ class S {
     '是否将 FluxDown 设为 .torrent 文件的默认打开方式？\n双击种子文件即可直接开始下载。',
     'Set FluxDown as the default app for .torrent files?\nDouble-click a torrent file to start downloading directly.',
   );
-  String get analyticsEnabled => _t('数据分析', 'Analytics');
-  String get analyticsEnabledDesc => _t(
-    '发送匿名使用数据以帮助改进应用，不包含任何个人信息',
-    'Send anonymous usage data to help improve the app. No personal information is collected',
-  );
   String get notifyOnComplete => _t('完成通知', 'Completion Notifications');
   String get notifyOnCompleteDesc => _t(
     '任务完成时弹出系统通知，关闭后所有任务完成将不再通知',
     'Show a system notification when a task completes. When disabled, no completion notifications will be shown',
   );
-  String get keepAwakeWhileDownloading => _t('下载时保持唤醒', 'Keep Awake While Downloading');
+  String get keepAwakeWhileDownloading =>
+      _t('下载时保持唤醒', 'Keep Awake While Downloading');
   String get keepAwakeWhileDownloadingDesc => _t(
     '有任务下载时阻止系统睡眠和息屏，任务完成后自动恢复',
     'Prevent the system from sleeping or turning off the display while downloads are active. Restores automatically when done',
@@ -451,6 +451,26 @@ class S {
   String get showSidebarCategoryDesc =>
       _t('在侧边栏显示分类区块', 'Show category section in sidebar');
   String get hideSection => _t('隐藏此区块', 'Hide this section');
+
+  // 标题栏按钮
+  String get titlebarButtons => _t('标题栏按钮', 'Titlebar Buttons');
+  String get titlebarButtonsDesc => _t(
+    '选择在标题栏显示哪些工具按钮，也可右键按钮直接隐藏',
+    'Choose which tool buttons to show in the titlebar; right-click a button to hide it',
+  );
+  String get showTitlebarPauseAll => _t('全部暂停按钮', 'Pause All Button');
+  String get showTitlebarPauseAllDesc =>
+      _t('在标题栏显示全部暂停按钮', 'Show pause all button in the titlebar');
+  String get showTitlebarResumeAll => _t('全部恢复按钮', 'Resume All Button');
+  String get showTitlebarResumeAllDesc =>
+      _t('在标题栏显示全部恢复按钮', 'Show resume all button in the titlebar');
+  String get showTitlebarSettings => _t('设置按钮', 'Settings Button');
+  String get showTitlebarSettingsDesc =>
+      _t('在标题栏显示设置按钮', 'Show settings button in the titlebar');
+  String get showTitlebarTheme => _t('主题切换按钮', 'Theme Toggle Button');
+  String get showTitlebarThemeDesc =>
+      _t('在标题栏显示主题切换按钮', 'Show theme toggle button in the titlebar');
+  String get hideButton => _t('隐藏此按钮', 'Hide this button');
 
   // ─────────────────────────────────────────────
   // 自定义分类
@@ -475,14 +495,18 @@ class S {
   String get matchByExtension => _t('按扩展名', 'By Extension');
   String get matchByRegex => _t('按正则表达式', 'By Regex');
   String get extensionsLabel => _t('扩展名', 'Extensions');
-  String get extensionsHint => _t('逗号分隔，如：epub, mobi, azw3', 'Comma separated, e.g. epub, mobi, azw3');
+  String get extensionsHint =>
+      _t('逗号分隔，如：epub, mobi, azw3', 'Comma separated, e.g. epub, mobi, azw3');
   String get regexLabel => _t('正则表达式', 'Regex Pattern');
-  String get regexHint => _t(r'匹配文件名，如：.*\.(epub|mobi)$', r'Match filename, e.g. .*\.(epub|mobi)$');
+  String get regexHint =>
+      _t(r'匹配文件名，如：.*\.(epub|mobi)$', r'Match filename, e.g. .*\.(epub|mobi)$');
   String get regexInvalid => _t('正则表达式无效', 'Invalid regex pattern');
   String get categoryNameRequired => _t('请输入分类名称', 'Category name is required');
-  String get extensionsRequired => _t('请输入至少一个扩展名', 'Enter at least one extension');
+  String get extensionsRequired =>
+      _t('请输入至少一个扩展名', 'Enter at least one extension');
   String get categorySaveDir => _t('分类保存目录', 'Category Save Directory');
-  String get categorySaveDirDesc => _t('留空则使用全局默认目录', 'Leave empty to use global default');
+  String get categorySaveDirDesc =>
+      _t('留空则使用全局默认目录', 'Leave empty to use global default');
   String get restoreDefaultPath => _t('恢复默认', 'Restore Default');
   String get nCustomCategories => _t('个自定义分类', ' custom categories');
   String get resetBuiltinCategories => _t('恢复默认', 'Reset Defaults');
@@ -536,9 +560,9 @@ class S {
   );
   String get appIconDefault => _t('默认', 'Default');
   String get appIconCustom => _t('自定义', 'Custom');
+  String get appIconBolt => _t('闪电', 'Bolt');
   String get appIconChooseImage => _t('选择图片…', 'Choose Image…');
-  String get appIconApplyFailed =>
-      _t('设置应用图标失败', 'Failed to set app icon');
+  String get appIconApplyFailed => _t('设置应用图标失败', 'Failed to set app icon');
   String get appIconZoomHint => _t('滚轮缩放', 'Scroll to zoom');
 
   // ─────────────────────────────────────────────
@@ -577,6 +601,11 @@ class S {
       _t('新建下载任务时的默认保存位置', 'Default save location for new downloads');
   String get selectDefaultSaveDir =>
       _t('选择默认保存目录', 'Select default save directory');
+  String get rememberLastSaveDir => _t('跟随上次保存位置', 'Remember Last Save Location');
+  String get rememberLastSaveDirDesc => _t(
+    '开启后新建下载默认使用上次下载的保存位置，而非固定的默认目录',
+    'Use the last download location as the default for new downloads instead of the fixed directory',
+  );
   String get defaultThreads => _t('默认线程数', 'Default Threads');
   String get defaultThreadsDesc =>
       _t('每个下载任务的默认分片数量', 'Default segment count per download task');
@@ -680,10 +709,8 @@ class S {
     '用于定位下载文件的第三方命令模板。占位符 {path} = 文件路径，{dir} = 父目录。留空则使用平台默认（Windows 资源管理器 / Finder / Nautilus 等）。',
     'Custom command to reveal a downloaded file. Placeholders: {path} = file path, {dir} = parent dir. Leave empty to use the platform default (Explorer / Finder / Nautilus, etc.).',
   );
-  String get revealFileCmdPlaceholder => _t(
-    '例如：nautilus --select {path}',
-    'e.g. nautilus --select {path}',
-  );
+  String get revealFileCmdPlaceholder =>
+      _t('例如：nautilus --select {path}', 'e.g. nautilus --select {path}');
   String get openDirCmdLabel => _t('"打开目录"命令', '"Open Folder" command');
   String get openDirCmdDesc => _t(
     '用于打开目录的第三方命令模板。占位符 {dir} = 目录路径。留空则使用平台默认。',
@@ -749,8 +776,7 @@ class S {
     '下载完成后校验文件完整性（留空则跳过）',
     'Verify file integrity after download (empty = skip)',
   );
-  String get taskChecksumPlaceholder =>
-      _t('粘贴哈希值', 'Paste the hash value');
+  String get taskChecksumPlaceholder => _t('粘贴哈希值', 'Paste the hash value');
 
   // 任务自定义请求头（新建下载对话框高级选项，#347）
   String get taskHeaders => _t('自定义请求头', 'Custom Headers');
@@ -763,42 +789,65 @@ class S {
   String get taskHeadersAdd => _t('添加请求头', 'Add header');
 
   // ─────────────────────────────────────────────
-  // Settings — RPC
+  // Settings — API 服务
   // ─────────────────────────────────────────────
 
-  String get localServerEnable => _t('启用 RPC 服务', 'Enable RPC Service');
-  String get localServerEnableDesc => _t(
-    '启动本地 RPC 服务（仅 127.0.0.1），供 FluxDown 油猴脚本接管浏览器下载',
-    'Start a local RPC service (127.0.0.1 only) for the FluxDown userscript to capture downloads',
+  String get apiServiceEnable => _t('启用 API 服务', 'Enable API Service');
+  String get apiServiceEnableDesc => _t(
+    '启动本机 HTTP API 服务（仅监听 127.0.0.1），供下方各功能模块使用',
+    'Start the local HTTP API service (127.0.0.1 only) used by the feature toggles below',
   );
-  String get localServerPort => _t('RPC 监听端口', 'RPC Listen Port');
-  String get localServerPortDesc =>
-      _t('默认 17800，修改后需重启应用生效', 'Default 17800; restart required to apply');
-  String get localServerToken => _t('RPC 授权密钥（可选）', 'RPC Secret (optional)');
-  String get localServerTokenDesc => _t(
-    '留空则免鉴权（仍受确认弹框保护）；填写后需在油猴脚本菜单中填入相同 Token',
-    'Leave empty for no auth (still protected by the confirm dialog); if set, enter the same token in the userscript menu',
+
+  String get apiServicePort => _t('监听端口', 'Listen Port');
+  String get apiServicePortDesc =>
+      _t('默认 17800，范围 1024-65535', 'Default 17800, range 1024-65535');
+  String get apiServicePortInvalid =>
+      _t('端口需在 1024-65535 之间', 'Port must be between 1024 and 65535');
+
+  String get apiServiceToken => _t('访问令牌', 'Access Token');
+  String get apiServiceTokenDesc => _t(
+    '用于校验 API 请求的访问令牌；启用管理 API 时强制要求设置',
+    'Access token used to authenticate API requests; required once the management API is enabled',
   );
-  String get localServerTokenGenerate => _t('重新生成', 'Regenerate');
-  String get localServerTokenCopy => _t('复制', 'Copy');
-  String get localServerTokenCopied => _t('Token 已复制', 'Token copied');
-  String get localServerCopyScript => _t('复制油猴脚本', 'Copy Userscript');
-  String get localServerScriptCopied => _t(
+  String get apiServiceTokenGenerate => _t('生成', 'Generate');
+  String get apiServiceCopy => _t('复制', 'Copy');
+  String get apiServiceCopied => _t('已复制', 'Copied');
+
+  String get apiServiceFeaturesTitle => _t('功能开关', 'Feature Toggles');
+  String get apiServiceFeaturesDesc => _t(
+    '独立控制每个 API 功能模块的开放范围（总开关关闭时整组禁用）',
+    'Control which API surface each module exposes (disabled when the master switch is off)',
+  );
+
+  String get apiServiceTakeover => _t('浏览器脚本接管', 'Browser Script Takeover');
+  String get apiServiceTakeoverDesc => _t(
+    '供 FluxDown 油猴脚本接管浏览器下载',
+    'Lets the FluxDown userscript take over browser downloads',
+  );
+  String get apiServiceCopyScript => _t('复制油猴脚本', 'Copy Userscript');
+  String get apiServiceScriptCopied => _t(
     '脚本已复制，请在 Tampermonkey 新建脚本粘贴',
     'Script copied; paste it into a new Tampermonkey script',
   );
-  String get localServerAddress => _t('RPC 地址', 'RPC URL');
-  String get localServerAddressCopied => _t('RPC 地址已复制', 'RPC URL copied');
-  String get localServerRestartHint =>
-      _t('修改端口后需重启应用生效', 'Restart the app after changing the port');
-  String get localServerToggleRestartHint => _t(
-    '此更改需重启应用后生效',
-    'Restart the app for this change to take effect',
+
+  String get apiServiceJsonrpc => _t('aria2 RPC 兼容', 'aria2 RPC Compatible');
+  String get apiServiceJsonrpcDesc => _t(
+    '兼容 aria2 JSON-RPC 协议，供"发送到 aria2"类脚本或 AriaNg 等客户端使用',
+    'Implements the aria2 JSON-RPC protocol for "send to aria2" scripts or clients like AriaNg',
   );
-  List<String> get searchKeywordsLocalServer => _t(
-    'rpc,油猴,脚本,接管,本地,服务,端口,token,密钥,浏览器',
-    'rpc,userscript,tampermonkey,capture,local,server,port,token,secret,browser',
-  ).split(',')..addAll(['rpc', 'userscript', 'tampermonkey']);
+
+  String get apiServiceApi => _t('管理 API', 'Management API');
+  String get apiServiceApiDesc => _t(
+    '提供任务查询与控制的 HTTP API，供 MCP、自动化脚本等外部程序调用（强制鉴权）',
+    'HTTP API for querying and controlling tasks, for MCP servers and automation scripts (authentication required)',
+  );
+
+  String get apiServiceAddress => _t('地址', 'Address');
+
+  List<String> get searchKeywordsApiService => _t(
+    'api,服务,rpc,油猴,脚本,接管,浏览器,aria2,ariang,令牌,token,端口,mcp,自动化,管理',
+    'api,service,rpc,userscript,tampermonkey,capture,browser,aria2,ariang,token,port,mcp,automation,management',
+  ).split(',');
 
   // ─────────────────────────────────────────────
   // Settings — BT 下载
@@ -852,10 +901,8 @@ class S {
     '每行一个订阅地址，例如：\nhttps://trackerslist.com/best.txt\nhttps://ngosang.github.io/trackerslist/trackers_best.txt',
     'One subscription URL per line, e.g.:\nhttps://trackerslist.com/best.txt\nhttps://ngosang.github.io/trackerslist/trackers_best.txt',
   );
-  String get btTrackerSubResetConfirm => _t(
-    '确定要恢复默认的订阅地址吗？',
-    'Reset subscription URLs to defaults?',
-  );
+  String get btTrackerSubResetConfirm =>
+      _t('确定要恢复默认的订阅地址吗？', 'Reset subscription URLs to defaults?');
   String get btPortInvalid => _t(
     '端口范围无效（1024-65535，起始 ≤ 结束）',
     'Invalid port range (1024-65535, start ≤ end)',
@@ -865,8 +912,10 @@ class S {
   // eD2K 服务器设置
   // ─────────────────────────────────────────────
   String get ed2kSettings => _t('eD2K 服务器', 'eD2K Servers');
-  String get ed2kSettingsDesc =>
-      _t('配置电驴服务器与 server.met 订阅', 'Configure eD2K servers and server.met subscription');
+  String get ed2kSettingsDesc => _t(
+    '配置电驴服务器与 server.met 订阅',
+    'Configure eD2K servers and server.met subscription',
+  );
   String get ed2kServerList => _t('服务器列表', 'Server List');
   String get ed2kServerListDesc => _t(
     '手动填写的电驴服务器（用于找源），与订阅列表自动合并去重',
@@ -1016,8 +1065,7 @@ class S {
       _t('关闭,托盘,最小化', 'close,tray,minimize').split(',')
         ..addAll(['tray', 'close', 'minimize']);
   List<String> get searchKeywordsFloatingBall =>
-      _t('悬浮球,悬浮窗,桌面,挂件,速度球', 'floating,ball,widget,overlay,desktop')
-          .split(',')
+      _t('悬浮球,悬浮窗,桌面,挂件,速度球', 'floating,ball,widget,overlay,desktop').split(',')
         ..addAll(['floating', 'ball', 'widget', 'overlay']);
   List<String> get searchKeywordsClipboardWatch =>
       _t('剪贴板,监听,链接,复制', 'clipboard,watch,monitor,link,copy').split(',')
@@ -1035,8 +1083,7 @@ class S {
       _t('缩放,界面,比例,放大,缩小,DPI', 'scale,zoom,interface,size,DPI').split(',')
         ..addAll(['scale', 'zoom', 'size', 'dpi']);
   List<String> get searchKeywordsAppIcon =>
-      _t('应用图标,图标,任务栏,托盘,自定义', 'app icon,icon,taskbar,tray,custom')
-          .split(',')
+      _t('应用图标,图标,任务栏,托盘,自定义', 'app icon,icon,taskbar,tray,custom').split(',')
         ..addAll(['icon', 'logo', 'taskbar', 'tray']);
   List<String> get searchKeywordsSaveDir =>
       _t('保存,目录,路径,文件夹', 'save,directory,path,folder').split(',')
@@ -1057,10 +1104,6 @@ class S {
     '文件关联,种子,torrent,关联,默认程序',
     'file,association,torrent,default,open',
   ).split(',')..addAll(['torrent', 'association', 'file']);
-  List<String> get searchKeywordsAnalytics => _t(
-    '数据,分析,统计,匿名,隐私,遥测',
-    'analytics,data,statistics,anonymous,privacy,telemetry',
-  ).split(',')..addAll(['analytics', 'telemetry', 'privacy']);
   List<String> get searchKeywordsNotifyOnComplete => _t(
     '通知,完成,提醒,弹窗,系统通知',
     'notification,complete,alert,popup,system,toast',
@@ -1088,6 +1131,10 @@ class S {
   List<String> get searchKeywordsSidebarVisibility => _t(
     '侧边栏,显示,隐藏,区块,状态,队列,分类',
     'sidebar,show,hide,section,status,queue,category',
+  ).split(',');
+  List<String> get searchKeywordsTitlebarButtons => _t(
+    '标题栏,按钮,显示,隐藏,暂停,恢复,设置,主题',
+    'titlebar,button,show,hide,pause,resume,settings,theme',
   ).split(',');
   List<String> get searchKeywordsCustomCategories => _t(
     '自定义,分类,扩展名,正则,文件类型,筛选',

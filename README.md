@@ -157,7 +157,6 @@ cargo test -p hub                    # FFI adapter tests
 
 - **Bug reports / feature requests** — [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) or the in-app feedback dialog
 - **QQ Group** — [832143651](https://fluxdown.zerx.dev/qq-group)
-- **Vote on features** — [fluxdown.zerx.dev/vote](https://fluxdown.zerx.dev/vote)
 
 Pull requests are welcome! Before submitting, please make sure:
 

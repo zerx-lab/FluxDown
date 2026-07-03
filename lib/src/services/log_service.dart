@@ -376,7 +376,9 @@ class LogService {
     }
     final c = ma.group(1)!.compareTo(mb.group(1)!);
     if (c != 0) return c;
-    return int.parse(ma.group(2) ?? '0').compareTo(int.parse(mb.group(2) ?? '0'));
+    return int.parse(
+      ma.group(2) ?? '0',
+    ).compareTo(int.parse(mb.group(2) ?? '0'));
   }
 
   /// 解析日志目录：委托 platform_utils.resolveDataDir()，加 /logs 后缀。
@@ -581,7 +583,6 @@ Uint8List _buildZip(List<File> files, {bool sanitize = false}) {
 ///   5. 代理用户名/密码字段
 ///   6. Linux 用户主目录路径
 ///   7. Windows 用户目录路径
-///   8. Analytics 设备 ID（UUID）
 final _kSanitizeRules = <({RegExp pattern, String Function(Match m) replace})>[
   // 1. URL 内嵌认证凭证：scheme://user:pass@host → scheme://***@host
   //    覆盖：ftp://user:pass@host/path、http://admin:secret@proxy:8080
@@ -638,16 +639,6 @@ final _kSanitizeRules = <({RegExp pattern, String Function(Match m) replace})>[
   (
     pattern: RegExp(r'([A-Za-z]:\\[Uu]sers\\)[^\\\s]+\\'),
     replace: (m) => '${m[1]}***\\',
-  ),
-
-  // 8. Analytics 设备 ID：deviceId=xxxxxxxx-... → deviceId=[REDACTED]
-  //    覆盖：[Analytics] initialized, consent=true, deviceId=35e2c0fd-...
-  (
-    pattern: RegExp(
-      r'(deviceId=)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
-      caseSensitive: false,
-    ),
-    replace: (m) => '${m[1]}[REDACTED]',
   ),
 ];
 

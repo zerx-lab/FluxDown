@@ -157,7 +157,6 @@ cargo test -p hub                    # FFI 适配层测试
 
 - **Bug 反馈 / 功能建议** —— [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) 或应用内反馈对话框
 - **QQ 群** —— [832143651](https://fluxdown.zerx.dev/qq-group)
-- **功能投票** —— [fluxdown.zerx.dev/vote](https://fluxdown.zerx.dev/vote)
 
 欢迎提交 Pull Request！提交前请确保通过：
 

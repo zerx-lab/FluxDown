@@ -9,6 +9,7 @@
 //!   - `{"action":"ping","msg_id":N}`     → `{"success":true,"message":"pong","msg_id":N}`
 //!   - `{"action":"download","msg_id":N, ...}` → `{"success":true,"message":"download accepted","msg_id":N}`
 
+use fluxdown_api::types::DownloadRequest;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -18,73 +19,6 @@ const PIPE_NAME: &str = r"\\.\pipe\fluxdown";
 
 /// Maximum message size: 1 MB.
 const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
-
-// ---------------------------------------------------------------------------
-// Message types matching the browser extension protocol
-// ---------------------------------------------------------------------------
-
-/// 浏览器原始请求体（form POST / XHR raw body 等）。
-///
-/// 当用户在 form-submit 触发的下载中点击下载按钮时，浏览器实际发起的是
-/// POST 请求并携带表单数据；扩展通过 `webRequest.onBeforeRequest` 抓到 method
-/// 与 body 后透传到此字段。Rust 端按 `kind` 重建请求体。
-///
-/// 协议字段：
-/// - `formData`：来自 `requestBody.formData`，Rust 端用 `reqwest::form()` 编码为
-///   `application/x-www-form-urlencoded`
-/// - `urlencoded`：扩展端已序列化好的 url-encoded 字符串（直接作为 body 发送）
-/// - `raw`：base64 编码的二进制 body（XHR / fetch 直接发送 ArrayBuffer 的场景）
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum RequestBody {
-    FormData {
-        fields: std::collections::HashMap<String, Vec<String>>,
-    },
-    Urlencoded {
-        raw: String,
-    },
-    Raw {
-        #[serde(rename = "bytesB64")]
-        bytes_b64: String,
-        #[serde(rename = "contentType", default)]
-        content_type: Option<String>,
-    },
-}
-
-/// Download request payload from the browser extension.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DownloadRequest {
-    pub url: String,
-    #[serde(default)]
-    pub filename: String,
-    #[serde(default)]
-    pub referrer: String,
-    #[serde(default)]
-    pub cookies: String,
-    /// 浏览器请求中捕获的额外 HTTP 头（如 Authorization）。
-    /// 由 Rust 下载引擎在发起请求时附加到请求头中。
-    #[serde(default)]
-    pub headers: Option<std::collections::HashMap<String, String>>,
-    /// 文件大小提示（字节）。
-    ///   - `>0` = 已知大小，跳过 probe
-    ///   - `-1` = 大小未知但确认是下载资源（webRequest 嗅探），跳过 probe
-    ///   - `0` / `None` = 正常 probe
-    #[serde(rename = "fileSize")]
-    #[serde(default)]
-    pub file_size: Option<i64>,
-    #[serde(rename = "mimeType")]
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// 浏览器原始请求方法（"GET" / "POST" / ...）。
-    /// 缺省 = "GET"。POST/PUT/PATCH 类请求由 `body` 携带请求体。
-    /// 这是修复 uupdump.net 等 form-POST 触发下载场景的关键字段——
-    /// 没有它，FluxDown 会用 GET 重发拿到 HTML 页面而非真实文件。
-    #[serde(default)]
-    pub method: Option<String>,
-    /// 浏览器原始请求体（仅在非 GET 时有意义）。
-    #[serde(default)]
-    pub body: Option<RequestBody>,
-}
 
 /// Incoming pipe message with action routing.
 #[derive(Debug, Deserialize)]
@@ -574,84 +508,5 @@ pub fn spawn_native_messaging_listener() -> mpsc::Receiver<DownloadRequest> {
     rx
 }
 
-#[cfg(test)]
-mod tests {
-    use super::DownloadRequest;
-
-    #[test]
-    fn deserialize_download_request_with_headers() {
-        let json = r#"{
-            "url": "https://example.com/file.zip",
-            "filename": "file.zip",
-            "referrer": "https://example.com/",
-            "cookies": "session=abc123",
-            "headers": {
-                "Authorization": "Bearer token123",
-                "X-Custom": "value"
-            },
-            "fileSize": 1024,
-            "mimeType": "application/zip"
-        }"#;
-        let req: DownloadRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.url, "https://example.com/file.zip");
-        assert_eq!(req.filename, "file.zip");
-        assert_eq!(req.referrer, "https://example.com/");
-        assert_eq!(req.cookies, "session=abc123");
-        let headers = req.headers.unwrap();
-        assert_eq!(headers.get("Authorization").unwrap(), "Bearer token123");
-        assert_eq!(headers.get("X-Custom").unwrap(), "value");
-        assert_eq!(req.file_size, Some(1024));
-        assert_eq!(req.mime_type.as_deref(), Some("application/zip"));
-    }
-
-    #[test]
-    fn deserialize_download_request_without_headers() {
-        let json = r#"{
-            "url": "https://example.com/file.zip"
-        }"#;
-        let req: DownloadRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.url, "https://example.com/file.zip");
-        assert!(req.headers.is_none());
-        assert_eq!(req.cookies, "");
-        assert_eq!(req.referrer, "");
-    }
-
-    #[test]
-    fn deserialize_download_request_empty_headers() {
-        let json = r#"{
-            "url": "https://example.com/file.zip",
-            "headers": {}
-        }"#;
-        let req: DownloadRequest = serde_json::from_str(json).unwrap();
-        let headers = req.headers.unwrap();
-        assert!(headers.is_empty());
-    }
-
-    #[test]
-    fn deserialize_download_request_skip_probe_hint() {
-        // fileSize: -1 表示"跳过 probe"（资源面板触发的下载，大小未知但确认可下载）
-        let json = r#"{
-            "url": "https://example.com/bulletinPDF/abc?u_atoken=xxx",
-            "cookies": "session=abc",
-            "fileSize": -1
-        }"#;
-        let req: DownloadRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.file_size, Some(-1));
-        assert_eq!(req.cookies, "session=abc");
-    }
-
-    #[test]
-    fn deserialize_batch_url_with_newlines() {
-        // 验证批量下载用换行符拼接的 URL 可以正确反序列化
-        let json = r#"{
-            "url": "https://a.com/1.zip\nhttps://b.com/2.zip",
-            "cookies": "session=abc",
-            "referrer": "https://example.com/"
-        }"#;
-        let req: DownloadRequest = serde_json::from_str(json).unwrap();
-        let urls: Vec<&str> = req.url.split('\n').collect();
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0], "https://a.com/1.zip");
-        assert_eq!(urls[1], "https://b.com/2.zip");
-    }
-}
+// wire 类型（DownloadRequest/RequestBody）的反序列化测试随类型迁移至
+// fluxdown_api crate（native/api/src/types.rs 的所有者测试）。

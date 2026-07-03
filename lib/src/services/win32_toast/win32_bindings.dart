@@ -615,3 +615,36 @@ final setForegroundWindow = _user32
     .lookupFunction<_SetForegroundWindow_Native, _SetForegroundWindow_Dart>(
       'SetForegroundWindow',
     );
+
+// =============================================================================
+// 悬浮球全屏避让补充绑定（排除 Shell 窗口 / DWM cloaked 窗口误判）
+// =============================================================================
+
+// GetClassNameW
+typedef _GetClassNameW_Native =
+    Int32 Function(IntPtr hWnd, Pointer<Utf16> lpClassName, Int32 nMaxCount);
+typedef _GetClassNameW_Dart =
+    int Function(int hWnd, Pointer<Utf16> lpClassName, int nMaxCount);
+final getClassNameW = _user32
+    .lookupFunction<_GetClassNameW_Native, _GetClassNameW_Dart>(
+      'GetClassNameW',
+    );
+
+// DwmGetWindowAttribute — DWMWA_CLOAKED 检测（虚拟桌面/UWP 过渡窗口）
+const int DWMWA_CLOAKED = 14;
+
+final _dwmapi = DynamicLibrary.open('dwmapi.dll');
+
+typedef _DwmGetWindowAttribute_Native =
+    Int32 Function(
+      IntPtr hwnd,
+      Uint32 dwAttribute,
+      Pointer<Void> pvAttribute,
+      Uint32 cbAttribute,
+    );
+typedef _DwmGetWindowAttribute_Dart =
+    int Function(int hwnd, int dwAttribute, Pointer<Void> pvAttribute, int cb);
+final dwmGetWindowAttribute = _dwmapi
+    .lookupFunction<_DwmGetWindowAttribute_Native, _DwmGetWindowAttribute_Dart>(
+      'DwmGetWindowAttribute',
+    );
