@@ -981,11 +981,20 @@ class SettingsProvider extends ChangeNotifier {
     }
   }
 
+  /// 日志用值截断：压平换行并限制长度，避免 tracker 列表 / base64 缓存
+  /// （如 ed2k_nodes_dat_cache ~8KB）把日志文件撑爆。
+  static String _truncateForLog(String value) {
+    const maxLen = 120;
+    final flat = value.replaceAll('\r\n', r'\n').replaceAll('\n', r'\n');
+    if (flat.length <= maxLen) return flat;
+    return '${flat.substring(0, maxLen)}…(${value.length} chars)';
+  }
+
   void _onConfigLoaded(RustSignalPack<ConfigLoaded> pack) {
     final entries = pack.message.entries;
     logInfo('Settings', '_onConfigLoaded: ${entries.length} entries');
     for (final entry in entries) {
-      logInfo('Settings', '  config: ${entry.key}=${entry.value}');
+      logInfo('Settings', '  config: ${entry.key}=${_truncateForLog(entry.value)}');
       switch (entry.key) {
         case 'default_save_dir':
           _defaultSaveDir = entry.value;

@@ -287,11 +287,17 @@ pub async fn run(db_dir: PathBuf) {
         bt_config.custom_trackers = defaults;
     }
     log_info!(
-        "[actor] init config: max_concurrent={}, speed_limit_bps={}, save_dir={}, bt_config={:?}",
+        "[actor] init config: max_concurrent={}, speed_limit_bps={}, save_dir={}, \
+         bt: dht={}, upnp={}, ports={}-{}, custom_trackers={} lines, subscription_trackers={} lines",
         max_concurrent,
         speed_limit_bps,
         save_dir,
-        bt_config,
+        bt_config.enable_dht,
+        bt_config.enable_upnp,
+        bt_config.port_start,
+        bt_config.port_end,
+        bt_config.custom_trackers.lines().count(),
+        bt_config.subscription_trackers.lines().count(),
     );
 
     let app_data_dir = db_dir.to_string_lossy().into_owned();
