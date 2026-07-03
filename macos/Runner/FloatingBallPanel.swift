@@ -45,7 +45,7 @@ private let kDockAnimDuration: TimeInterval = 0.16
 final class FloatingBallPanel: NSObject {
     static let shared = FloatingBallPanel()
 
-    private init() {}
+    override private init() {}
 
     private var panel: NSPanel?
     private var contentView: BallContentView?

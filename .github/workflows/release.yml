@@ -199,12 +199,13 @@ jobs:
             echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
           }
 
-      - name: Download Inno Setup Chinese Simplified language file
+      # 语言文件已 vendor 进仓库（上游 issrc main 分支移除了 Unofficial 目录，
+      # 原 raw.githubusercontent.com 下载地址 404），直接复制到 Inno Setup 目录
+      - name: Install Inno Setup Chinese Simplified language file
         shell: pwsh
         run: |
           $issLangDir = "C:\Program Files (x86)\Inno Setup 6\Languages"
-          $url = "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl"
-          Invoke-WebRequest -Uri $url -OutFile "$issLangDir\ChineseSimplified.isl"
+          Copy-Item "installer\windows\ChineseSimplified.isl" -Destination "$issLangDir\ChineseSimplified.isl" -Force
 
       - name: Build installer with Inno Setup
         run: |
