@@ -26,7 +26,9 @@ import io.flutter.plugin.common.MethodChannel
  */
 class MainActivity : FlutterActivity() {
     private var pendingResult: MethodChannel.Result? = null
-
+    private var shareChannel: MethodChannel? = null
+    /** 冷启动时暂存的分享内容，等 Dart 侧首次 getInitialShare 时取走。 */
+    private var pendingShare: String? = null
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
@@ -47,6 +49,23 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        shareChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            SHARE_CHANNEL,
+        ).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // Dart 侧就绪后主动拉取冷启动分享（取走即清空）
+                    "getInitialShare" -> {
+                        result.success(pendingShare)
+                        pendingShare = null
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        // 冷启动：configureFlutterEngine 时 Dart 尚未注册 handler，先暂存
+        pendingShare = extractShared(intent)
     }
 
     // ── 目录选择（SAF） ──
@@ -156,8 +175,35 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /** 热启动（singleTop）：应用已在前台/后台，新分享 intent 到达。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val shared = extractShared(intent) ?: return
+        // Dart 侧已就绪，直接推送；channel 未建成则暂存兜底
+        shareChannel?.invokeMethod("onShare", shared) ?: run { pendingShare = shared }
+    }
+
+    /**
+     * 从 intent 提取可下载的 URL / magnet。
+     * - ACTION_SEND：取 EXTRA_TEXT（浏览器"分享链接"）
+     * - ACTION_VIEW：取 data（magnet: 直链等）
+     * 返回 null 表示无可用内容（如首页 LAUNCHER 启动）。
+     */
+    private fun extractShared(intent: Intent?): String? {
+        if (intent == null) return null
+        return when (intent.action) {
+            Intent.ACTION_SEND ->
+                intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()?.ifEmpty { null }
+            Intent.ACTION_VIEW ->
+                intent.dataString?.trim()?.ifEmpty { null }
+            else -> null
+        }
+    }
+
     companion object {
         private const val CHANNEL = "com.fluxdown/storage"
+        private const val SHARE_CHANNEL = "com.fluxdown/share"
         private const val REQUEST_PICK_DIR = 0x4D01
         private const val REQUEST_WRITE_PERM = 0x4D02
     }

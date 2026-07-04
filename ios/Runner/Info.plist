@@ -53,5 +53,17 @@
 	<array>
 		<string>fetch</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.fluxdown</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>fluxdown</string>
+				<string>magnet</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -84,6 +84,7 @@ IconData mobileCategoryIcon(FileCategory category) {
 void showMobileToast(BuildContext context, String message) {
   ShadSonner.of(context).show(
     ShadToast(
+      alignment: Alignment.topCenter,
       title: Text(message, maxLines: 2, overflow: TextOverflow.ellipsis),
       duration: const Duration(milliseconds: 2000),
     ),

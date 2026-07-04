@@ -11,6 +11,8 @@ import 'screens/mobile_settings_screen.dart';
 import 'services/mobile_storage_service.dart';
 import '../services/foreground_service.dart';
 import 'screens/mobile_tasks_screen.dart';
+import 'services/share_intent_service.dart';
+import 'sheets/mobile_new_download_sheet.dart';
 
 /// 移动端根壳：任务列表 / 设置 两屏切换 + 悬浮玻璃 Dock
 class MobileShell extends StatefulWidget {
@@ -31,6 +33,7 @@ class _MobileShellState extends State<MobileShell> {
   final _controller = DownloadController();
   final _settings = SettingsProvider(enableFileAssoc: false);
   int _tab = 0;
+  bool _sheetOpen = false;
 
   @override
   void initState() {
@@ -43,10 +46,30 @@ class _MobileShellState extends State<MobileShell> {
       widget.localeNotifier.s,
     );
     widget.localeNotifier.addListener(_onLocaleChanged);
+    // 系统分享 / URL scheme 接入：收到链接切到下载页并弹新建下载弹层
+    ShareIntentService.init(_onShared);
   }
 
   void _onLocaleChanged() {
     ForegroundServiceManager.instance.updateStrings(widget.localeNotifier.s);
+  }
+
+  /// 收到系统分享 / URL scheme 唤起的链接：切到下载页，弹新建下载弹层
+  /// 并预填 URL。已有弹层打开时忽略，避免叠层。
+  Future<void> _onShared(String url) async {
+    if (!mounted || _sheetOpen) return;
+    setState(() => _tab = 0);
+    _sheetOpen = true;
+    try {
+      await showMobileNewDownloadSheet(
+        context,
+        controller: _controller,
+        settings: _settings,
+        initialUrl: url,
+      );
+    } finally {
+      _sheetOpen = false;
+    }
   }
 
   /// Android：让 framework 创建应用专属外部下载目录
@@ -64,6 +87,7 @@ class _MobileShellState extends State<MobileShell> {
 
   @override
   void dispose() {
+    ShareIntentService.shutdown();
     widget.localeNotifier.removeListener(_onLocaleChanged);
     ForegroundServiceManager.instance.stop();
     _controller.dispose();

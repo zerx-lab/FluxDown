@@ -79,6 +79,13 @@ class _FluxDownMobileAppState extends State<FluxDownMobileApp> {
               ),
               child: ShadToaster(
                 child: ShadSonner(
+                  alignment: Alignment.topCenter,
+                  padding: EdgeInsets.only(
+                    top: MediaQuery.of(context).padding.top + 12,
+                    left: 16,
+                    right: 16,
+                    bottom: 16,
+                  ),
                   child: WidgetsApp(
                     navigatorKey: _navigatorKey,
                     color: theme.colorScheme.primary,
