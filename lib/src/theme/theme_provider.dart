@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../i18n/locale_provider.dart';
+import '../services/log_service.dart';
 import 'flux_theme_tokens.dart';
 
 // ═══════════════════════════════════════════════════════════
@@ -159,6 +160,7 @@ const _kUiScale = 'ui_scale';
 // 旧版 key（迁移用）
 const _kLegacyCustomThemeDark = 'custom_theme_dark_json';
 const _kLegacyCustomThemeLight = 'custom_theme_light_json';
+const _kPrefsInitTimeout = Duration(seconds: 3);
 
 // ═══════════════════════════════════════════════════════════
 //  ThemeProvider
@@ -288,57 +290,64 @@ class ThemeProvider extends ChangeNotifier {
   //  初始化 & 持久化
   // ═══════════════════════════════════════════════════════════
 
+// 失败时直接使用默认主题配置，不再阻塞进入 UI
   Future<void> init() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    // 主题模式
-    final modeStr = prefs.getString(_kThemeMode);
-    if (modeStr != null) {
-      _themeMode = ThemeMode.values.firstWhere(
-        (m) => m.name == modeStr,
-        orElse: () => ThemeMode.system,
+    try {
+      final prefs = await SharedPreferences.getInstance().timeout(
+        _kPrefsInitTimeout,
       );
-    }
 
-    // 选中的主题
-    final themeStr = prefs.getString(_kSelectedTheme);
-    if (themeStr != null) {
-      _loadSelectedThemes(themeStr);
-    }
-
-    // 强调色方案
-    final schemeStr = prefs.getString(_kColorScheme);
-    if (schemeStr != null) {
-      _colorScheme = AppColorScheme.values.firstWhere(
-        (s) => s.name == schemeStr,
-        orElse: () => AppColorScheme.blue,
-      );
-    }
-
-    // 自定义颜色
-    final customHex = prefs.getString(_kCustomColor);
-    if (customHex != null) {
-      final parsed = int.tryParse(customHex, radix: 16);
-      if (parsed != null) _customColor = Color(parsed);
-    }
-
-    // 导入的主题列表
-    _loadImportedThemes(prefs);
-
-    // 迁移旧版单主题数据
-    _migrateV1(prefs);
-
-    // 选中的自定义主题 ID
-    _selectedCustomDarkId = prefs.getString(_kSelectedCustomDark);
-    _selectedCustomLightId = prefs.getString(_kSelectedCustomLight);
-
-    // 界面缩放
-    final scaleStr = prefs.getString(_kUiScale);
-    if (scaleStr != null) {
-      final parsed = double.tryParse(scaleStr);
-      if (parsed != null && parsed >= 0.8 && parsed <= 1.5) {
-        _uiScale = parsed;
+      // 主题模式
+      final modeStr = prefs.getString(_kThemeMode);
+      if (modeStr != null) {
+        _themeMode = ThemeMode.values.firstWhere(
+          (m) => m.name == modeStr,
+          orElse: () => ThemeMode.system,
+        );
       }
+
+      // 选中的主题
+      final themeStr = prefs.getString(_kSelectedTheme);
+      if (themeStr != null) {
+        _loadSelectedThemes(themeStr);
+      }
+
+      // 强调色方案
+      final schemeStr = prefs.getString(_kColorScheme);
+      if (schemeStr != null) {
+        _colorScheme = AppColorScheme.values.firstWhere(
+          (s) => s.name == schemeStr,
+          orElse: () => AppColorScheme.blue,
+        );
+      }
+
+      // 自定义颜色
+      final customHex = prefs.getString(_kCustomColor);
+      if (customHex != null) {
+        final parsed = int.tryParse(customHex, radix: 16);
+        if (parsed != null) _customColor = Color(parsed);
+      }
+
+      // 导入的主题列表
+      _loadImportedThemes(prefs);
+
+      // 迁移旧版单主题数据
+      _migrateV1(prefs);
+
+      // 选中的自定义主题 ID
+      _selectedCustomDarkId = prefs.getString(_kSelectedCustomDark);
+      _selectedCustomLightId = prefs.getString(_kSelectedCustomLight);
+
+      // 界面缩放
+      final scaleStr = prefs.getString(_kUiScale);
+      if (scaleStr != null) {
+        final parsed = double.tryParse(scaleStr);
+        if (parsed != null && parsed >= 0.8 && parsed <= 1.5) {
+          _uiScale = parsed;
+        }
+      }
+    } catch (e, stack) {
+      logError('ThemeProvider', 'init failed, using defaults', e, stack);
     }
   }
 
