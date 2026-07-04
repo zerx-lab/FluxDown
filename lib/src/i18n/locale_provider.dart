@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/log_service.dart';
 export 'translations.dart';
 import 'translations.dart';
 
@@ -12,6 +13,7 @@ const _kAppLocale = 'app_locale';
 const kLocaleSystem = 'system';
 const kLocaleZh = 'zh';
 const kLocaleEn = 'en';
+const _kPrefsInitTimeout = Duration(seconds: 3); // 新增了3秒超时
 
 /// 获取系统语言并决定使用的 locale。
 /// 支持 zh（中文）和 en（英文），其他语言默认使用英文。
@@ -43,12 +45,21 @@ class LocaleNotifier extends ChangeNotifier {
   S get s => currentS;
 
   /// 启动时调用，从 SharedPreferences 恢复语言偏好。
+  /// 给 LocaleNotifier.init() 里的 SharedPreferences.getInstance() 加了 3 秒超时， 超时或异常时记录日志，并回退到系统语言，而不是一直卡住启动。
   Future<void> init() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(_kAppLocale);
-    if (saved != null &&
-        (saved == kLocaleSystem || saved == kLocaleZh || saved == kLocaleEn)) {
-      _preference = saved;
+    try {
+      final prefs = await SharedPreferences.getInstance().timeout(
+        _kPrefsInitTimeout,
+      );
+      final saved = prefs.getString(_kAppLocale);
+      if (saved != null &&
+          (saved == kLocaleSystem ||
+              saved == kLocaleZh ||
+              saved == kLocaleEn)) {
+        _preference = saved;
+      }
+    } catch (e, stack) {
+      logError('LocaleNotifier', 'init failed, using system locale', e, stack);
     }
     _applyLocale();
     // 静默加载，不触发 rebuild（main.dart 会在 init 完成后才 runApp）
