@@ -14,6 +14,7 @@ import 'platform_utils.dart';
 import 'tray_service.dart';
 
 const _tag = 'AppIconService';
+const _kPrefsInitTimeout = Duration(seconds: 3);
 
 /// 应用图标选择。
 enum AppIconChoice {
@@ -93,7 +94,9 @@ class AppIconService extends ChangeNotifier {
   Future<void> init() async {
     if (!Platform.isWindows) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance().timeout(
+        _kPrefsInitTimeout,
+      ); // 给启动时恢复自定义图标配置的 SharedPreferences.getInstance() 加了 3 秒超时，失败时跳过图标恢复，应用照常启动。
       var choice = _readChoice(prefs);
       if (choice == AppIconChoice.custom && !hasCustomIcon) {
         choice = AppIconChoice.defaultIcon;
@@ -267,7 +270,9 @@ class AppIconService extends ChangeNotifier {
     try {
       final out = <IcoPngEntry>[];
       for (final size in _iconSizes) {
-        out.add(IcoPngEntry(size: size, png: await _renderSquarePng(src, size)));
+        out.add(
+          IcoPngEntry(size: size, png: await _renderSquarePng(src, size)),
+        );
       }
       return out;
     } finally {
@@ -281,9 +286,7 @@ class AppIconService extends ChangeNotifier {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
     final side = size.toDouble();
-    final scale = src.width > src.height
-        ? side / src.width
-        : side / src.height;
+    final scale = src.width > src.height ? side / src.width : side / src.height;
     final w = src.width * scale;
     final h = src.height * scale;
     canvas.drawImageRect(
