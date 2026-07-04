@@ -51,6 +51,7 @@
 
 pub mod auth;
 mod jsonrpc;
+mod mcp;
 pub mod openapi;
 pub mod routes;
 pub mod server;

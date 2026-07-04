@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth::{check_management_auth, check_takeover_auth, header_token_ok};
 use crate::jsonrpc::handle_jsonrpc;
+use crate::mcp::handle_mcp;
 use crate::routes;
 use crate::service::{ApiError, ApiHost};
 use crate::takeover::parse_batch;
@@ -74,6 +75,9 @@ pub struct ApiServerConfig {
     pub jsonrpc_enabled: bool,
     /// 管理 API 子开关（`local_server_api_enabled`，默认 false）。
     pub management_enabled: bool,
+    /// MCP 端点子开关（`local_server_mcp_enabled`，默认 false）。
+    /// 与管理 API 共用 token 鉴权（Bearer / X-FluxDown-Token）。
+    pub mcp_enabled: bool,
     /// 宿主应用版本号（`/ping`、`/api/v1/info` 返回）。
     pub app_version: String,
 }
@@ -95,6 +99,7 @@ impl ApiServerConfig {
             takeover_enabled: flag("local_server_takeover_enabled", true),
             jsonrpc_enabled: flag("local_server_jsonrpc_enabled", true),
             management_enabled: flag("local_server_api_enabled", false),
+            mcp_enabled: flag("local_server_mcp_enabled", false),
             app_version: app_version.to_string(),
         }
     }
@@ -212,6 +217,9 @@ fn register_core(state: AppState) -> Router<AppState> {
     }
     if state.config.jsonrpc_enabled {
         router = router.route(routes::JSONRPC, post(jsonrpc));
+    }
+    if state.config.mcp_enabled {
+        router = router.route(routes::MCP, post(mcp));
     }
     if state.config.management_enabled {
         router = router
@@ -418,6 +426,36 @@ pub(crate) async fn jsonrpc(
     let token_ok = header_token_ok(&headers, &state.config.token);
     let resp = handle_jsonrpc(state.host.as_ref(), &state.config.token, token_ok, &body).await;
     ([(header::CACHE_CONTROL, "no-store")], Json(resp)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// MCP 兼容端点
+// ---------------------------------------------------------------------------
+
+/// MCP（Model Context Protocol）端点。强制 token 鉴权（Bearer /
+/// X-FluxDown-Token，复用管理 API 门禁）。请求返回 `200 application/json`
+/// JSON-RPC 响应；通知（无 `id`）返回 `202 Accepted` 空体。
+#[utoipa::path(post, path = "/mcp", tag = "mcp",
+    responses(
+        (status = 200, description = "JSON-RPC 响应（initialize / tools/list / tools/call / ping）"),
+        (status = 202, description = "通知已接受（无响应体）"),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+        (status = 403, description = "服务端未配置 token", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn mcp(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err((code, msg)) = check_management_auth(&headers, &state.config.token) {
+        return result_response(status_from(code), false, msg);
+    }
+    match handle_mcp(state.host.as_ref(), &state.config.app_version, &body).await {
+        Some(resp) => ([(header::CACHE_CONTROL, "no-store")], Json(resp)).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------

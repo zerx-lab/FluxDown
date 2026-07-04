@@ -21,6 +21,8 @@ pub const DOWNLOAD: &str = "/download";
 pub const DOWNLOAD_BATCH: &str = "/download/batch";
 /// aria2 JSON-RPC 兼容端点。
 pub const JSONRPC: &str = "/jsonrpc";
+/// MCP（Model Context Protocol）兼容端点。
+pub const MCP: &str = "/mcp";
 
 /// 管理 API 版本前缀。
 pub const API_PREFIX: &str = "/api/v1";

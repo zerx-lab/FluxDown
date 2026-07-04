@@ -391,6 +391,7 @@ CREATE TABLE queues (
 |脚本接管|`POST /download`、`/download/batch`|`local_server_takeover_enabled`|`X-FluxDown-Client` 头 + 可选 token|
 |aria2 兼容|`POST /jsonrpc`（addUri/getVersion/getGlobalStat/multicall/listMethods）|`local_server_jsonrpc_enabled`|可选 token（`X-FluxDown-Token` 头或 `params[0]="token:xxx"`）|
 |管理 API|`GET /api/v1/info`、`GET/POST /api/v1/tasks`、`GET/DELETE /api/v1/tasks/{id}`、`PUT /api/v1/tasks/{id}/pause\|continue`、`PUT /api/v1/tasks/pause\|continue`、`GET /api/v1/queues`|`local_server_api_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`）|
+|MCP|`POST /mcp`（initialize / tools/list / tools/call / ping；9 个下载管理工具）|`local_server_mcp_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`，与管理 API 共用）|
 |API 文档|`GET /api/v1/openapi.json`（OpenAPI 3.1）|`local_server_api_enabled`|无（纯接口描述，不含数据）|
 
 **架构**：`fluxdown_api` 零 rinf 依赖，只定义 wire 契约（`types.rs`，camelCase JSON）+ 路径常量
@@ -407,6 +408,22 @@ MCP server 等 Rust 客户端直接 import `types` + `routes`。
 （`openapi.rs`，含漂移守卫测试——路由常量与注解不同步会跑挂）。改动 API 后执行
 `cargo run -p fluxdown_api --example gen_openapi > website/public/openapi.json` 重新生成，
 官网 `/api-docs` 页用 Scalar（CDN）渲染该文件。
+
+**MCP（Model Context Protocol）**：`native/api/src/mcp.rs` 是与 `jsonrpc.rs` 同构的薄派发层
+（JSON-RPC 2.0 over 单 `POST /mcp`），全走 `ApiHost` trait，零新依赖。采用 Streamable HTTP
+无状态子集：请求返回 `application/json`，通知（无 `id`）返回 `202`，不维护 `Mcp-Session-Id`。
+鉴权复用 `check_management_auth`（Bearer / `X-FluxDown-Token`，规范允许内部部署用静态 token
+代替 OAuth 2.1）。暴露 9 个工具（`download_add`/`download_list`/`download_get`/`download_pause`/
+`download_resume`/`download_pause_all`/`download_resume_all`/`download_remove`/`queue_list`），
+直接映射 `ApiHost` 方法。桌面 App 与 headless server 经同一 `register_core` 自动获得 `/mcp`；
+AI 客户端（Claude Desktop/Cursor/Cline）配置 `{"url":".../mcp","headers":{"Authorization":"Bearer <token>"}}` 即可接入。
+
+**CLI 方案（规划中，未实现）**：`fluxdown_cli`（拟 `native/cli`）双模式——(A) 控制面复用
+`fluxdown_api` 的 `routes`+`types` 做 typed HTTP client 提交给运行中的 App/server；
+(B) App 未运行时直接内嵌 `fluxdown_engine::Engine`（参照 `examples/headless_download.rs`）
+本地下载。命令集对齐 aria2 能力：`get`/`add`/`list`/`status`/`pause`/`resume`/`rm`/`boost`/
+`queue`/`config`/`stats`/`watch`/`ping`；抄 aria2 的 exit code 表 + `K/M` 单位后缀 + `-i` 输入文件；
+token 经 `FLUXDOWN_TOKEN` 环境变量。放弃 Metalink/XML-RPC/saveSession（SQLite 已覆盖）。
 
 ## 浏览器扩展（fluxDown/）
 
@@ -476,6 +493,7 @@ NMH 注册：
 | API 服务 | `local_server_takeover_enabled` | 浏览器脚本接管子开关（默认开） |
 | API 服务 | `local_server_jsonrpc_enabled` | aria2 RPC 兼容子开关（默认开） |
 | API 服务 | `local_server_api_enabled` | 管理 API 子开关（默认关，开启时 Dart 侧自动生成 token） |
+| API 服务 | `local_server_mcp_enabled` | MCP 端点子开关（默认关；headless server 默认开）。与管理 API 共用 token |
 
 ## 主题系统
 

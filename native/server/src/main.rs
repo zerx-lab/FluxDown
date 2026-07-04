@@ -148,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_cfg = ApiServerConfig {
         token: token.clone(),
         management_enabled: true,
+        mcp_enabled: true,
         ..api_cfg
     };
     let host: Arc<dyn fluxdown_api::service::ApiHost> = Arc::new(ServerApiHost::new(
