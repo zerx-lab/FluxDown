@@ -26,7 +26,6 @@ import 'src/services/bt_file_selection_service.dart';
 import 'src/services/app_icon_service.dart';
 import 'src/services/log_service.dart';
 import 'src/services/notification_service.dart';
-import 'src/services/foreground_service.dart';
 import 'src/services/power_service.dart';
 import 'src/services/tray_service.dart';
 import 'src/i18n/locale_provider.dart';
@@ -36,6 +35,28 @@ import 'src/theme/flux_theme_tokens.dart';
 import 'src/theme/theme_provider.dart';
 import 'src/widgets/feedback_dialog.dart';
 import 'src/widgets/update_changelog_dialog.dart';
+
+// 防止整个应用卡死在白屏
+// 新增 _runStartupStep(...)，启动阶段的非关键步骤统一加超时保护和日志。
+Future<void> _runStartupStep(
+  String name,
+  Future<void> Function() action, {
+  Duration timeout = const Duration(seconds: 3),
+}) async {
+  final sw = Stopwatch()..start();
+  logInfo('startup', 'starting $name');
+  try {
+    await action().timeout(timeout);
+    logInfo('startup', 'completed $name in ${sw.elapsedMilliseconds}ms');
+  } catch (e, stack) {
+    logError(
+      'startup',
+      '$name failed after ${sw.elapsedMilliseconds}ms, continuing with defaults',
+      e,
+      stack,
+    );
+  }
+}
 
 Future<void> main(List<String> args) async {
   // 独立快速下载小窗引擎入口：原生宿主以 --quick-popup 参数启动第二引擎。
@@ -48,9 +69,15 @@ Future<void> main(List<String> args) async {
 
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 初始化日志服务 — 必须尽早执行。
+  // 预览版 Windows 上若 SharedPreferences / 插件初始化卡住，
+  // 需要保证这些启动前故障也能写入日志，而不是只剩白屏。
+  LogService.instance.init();
+  logInfo('main', 'bootstrap start, args=$args');
+
   // 初始化 i18n — 创建 LocaleNotifier 并从 SharedPreferences 恢复语言偏好
   localeNotifier = LocaleNotifier();
-  await localeNotifier.init();
+  await _runStartupStep('locale init', () => localeNotifier.init());
 
   // 注：已移除 desktop_multi_window 子窗口入口。
   // 下载完成通知现在通过主窗口内 OverlayEntry 实现，
@@ -66,8 +93,6 @@ Future<void> main(List<String> args) async {
       .where((a) => a.toLowerCase().endsWith('.torrent'))
       .toList();
 
-  // 初始化日志服务 — 最先初始化，以捕获后续所有日志
-  LogService.instance.init();
   logInfo(
     'main',
     'FluxDown starting, args=$args, torrentFiles=${torrentFilePaths.length}',
@@ -94,14 +119,12 @@ Future<void> main(List<String> args) async {
   logInfo('main', 'initializing theme...');
   // 在 runApp 之前恢复主题设置，避免启动时主题闪烁
   final themeProvider = ThemeProvider();
-  await themeProvider.init();
-  logInfo('main', 'theme initialized');
+  await _runStartupStep('theme init', () => themeProvider.init());
+  logInfo('main', 'theme init step finished');
 
   // ===== 移动端启动流程 =====
   // Android / iOS 走精简初始化：无窗口管理、托盘、开机启动等桌面服务。
   if (Platform.isAndroid || Platform.isIOS) {
-    // 前台服务 ↔ 主 isolate 通信端口（必须在 runApp 之前）
-    ForegroundServiceManager.initCommunicationPort();
     logInfo('main', 'initializing Rust runtime (mobile)...');
     await initializeRust(assignRustSignal);
     logInfo('main', 'starting mobile shell');
@@ -119,7 +142,10 @@ Future<void> main(List<String> args) async {
 
   // 从 SharedPreferences 读取上次保存的窗口状态（纯读取，不调用 windowManager API）
   logInfo('main', 'loading saved window state...');
-  await WindowStateService.instance.loadState();
+  await _runStartupStep(
+    'load saved window state',
+    () => WindowStateService.instance.loadState(),
+  );
 
   // 不使用 waitUntilReadyToShow —— 它的回调参数类型是 VoidCallback，
   // async 回调中的 await 全部变成 fire-and-forget，与原生层 first_frame_cb
@@ -140,8 +166,11 @@ Future<void> main(List<String> args) async {
     await windowManager.setBackgroundColor(const Color(0xFFE5E5E5));
   }
   await windowManager.setMinimumSize(const Size(900, 500));
-  await WindowStateService.instance.applyState();
-  logInfo('main', 'window state applied before runApp');
+  await _runStartupStep(
+    'apply saved window state',
+    () => WindowStateService.instance.applyState(),
+  );
+  logInfo('main', 'window state apply step finished before runApp');
 
   // 初始化开机启动支持（注册时附带 --silentStart 参数，开机自启免打扰）
   // Windows 下路径加引号，防止含空格的安装路径（如 C:\Program Files\...）被 CreateProcess 截断解析失败。
@@ -185,8 +214,12 @@ Future<void> main(List<String> args) async {
 
   // 初始化系统托盘
   logInfo('main', 'initializing tray...');
-  await TrayService.instance.init();
-  logInfo('main', 'tray initialized');
+  await _runStartupStep(
+    'tray init',
+    () => TrayService.instance.init(),
+    timeout: const Duration(seconds: 5),
+  );
+  logInfo('main', 'tray init step finished');
 
   // themeProvider 已加载完毕，立即将托盘图标修正为 app 当前生效主题
   // （init() 默认使用系统亮度作为初始值，这里覆盖为 app 的显式设置）
@@ -202,14 +235,21 @@ Future<void> main(List<String> args) async {
           WidgetsBinding.instance.platformDispatcher.platformBrightness ==
           Brightness.dark;
     }
-    await TrayService.instance.setIsDark(trayIsDark);
+    await _runStartupStep(
+      'tray theme sync',
+      () => TrayService.instance.setIsDark(trayIsDark),
+    );
     logInfo('main', 'tray isDark=$trayIsDark (from app theme: $mode)');
   }
 
   // 恢复用户自定义的应用图标（窗口/任务栏/托盘）。
   // WM_SETICON 仅对当前进程生效，需每次启动重新应用；默认图标来自 exe 资源，无需处理。
-  await AppIconService.instance.init();
-  logInfo('main', 'app icon service initialized');
+  await _runStartupStep(
+    'app icon init',
+    () => AppIconService.instance.init(),
+    timeout: const Duration(seconds: 5),
+  );
+  logInfo('main', 'app icon init step finished');
 
   logInfo('main', 'initializing Rust runtime...');
   await initializeRust(assignRustSignal);
