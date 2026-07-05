@@ -96,7 +96,7 @@ class AppIconService extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance().timeout(
         _kPrefsInitTimeout,
-      ); // 给启动时恢复自定义图标配置的 SharedPreferences.getInstance() 加了 3 秒超时，失败时跳过图标恢复，应用照常启动。
+      );
       var choice = _readChoice(prefs);
       if (choice == AppIconChoice.custom && !hasCustomIcon) {
         choice = AppIconChoice.defaultIcon;

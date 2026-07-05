@@ -36,8 +36,8 @@ import 'src/theme/theme_provider.dart';
 import 'src/widgets/feedback_dialog.dart';
 import 'src/widgets/update_changelog_dialog.dart';
 
-// 防止整个应用卡死在白屏
-// 新增 _runStartupStep(...)，启动阶段的非关键步骤统一加超时保护和日志。
+/// 启动阶段的非关键步骤统一加超时保护和日志，
+/// 防止某一步卡住导致整个应用白屏。
 Future<void> _runStartupStep(
   String name,
   Future<void> Function() action, {

@@ -13,7 +13,7 @@ const _kAppLocale = 'app_locale';
 const kLocaleSystem = 'system';
 const kLocaleZh = 'zh';
 const kLocaleEn = 'en';
-const _kPrefsInitTimeout = Duration(seconds: 3); // 新增了3秒超时
+const _kPrefsInitTimeout = Duration(seconds: 3);
 
 /// 获取系统语言并决定使用的 locale。
 /// 支持 zh（中文）和 en（英文），其他语言默认使用英文。
@@ -45,7 +45,7 @@ class LocaleNotifier extends ChangeNotifier {
   S get s => currentS;
 
   /// 启动时调用，从 SharedPreferences 恢复语言偏好。
-  /// 给 LocaleNotifier.init() 里的 SharedPreferences.getInstance() 加了 3 秒超时， 超时或异常时记录日志，并回退到系统语言，而不是一直卡住启动。
+  /// 读取加 3 秒超时；超时或异常时记录日志并回退系统语言，避免卡住启动。
   Future<void> init() async {
     try {
       final prefs = await SharedPreferences.getInstance().timeout(

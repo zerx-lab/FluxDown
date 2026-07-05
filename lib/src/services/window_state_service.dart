@@ -128,37 +128,11 @@ class WindowStateService {
   ///
   /// 纯读取操作，不调用任何 windowManager API。
   /// 应在 `windowManager.ensureInitialized()` 之后调用。
-  /// 新增3秒超时
   Future<void> loadState() async {
     try {
       final prefs = await SharedPreferences.getInstance().timeout(
         _kPrefsInitTimeout,
       );
-// 针对您的 132 行到 136 行这段代码，以下是AI给出的结论：
-// 1. WindowStateService.loadState() 是在应用真正进入 UI 之前执行的。
-//      你可以看 /abs/path/C:/Users/TianLang Hacker/Videos/FluxDown/lib/main.dart:143，启动时会先调它，再继续后面的窗口初始
-//      化和 runApp()。
-
-//   2. 如果 SharedPreferences.getInstance() 在某些 Windows 预览版环境里卡住，这里就会把整个启动链堵死。
-//      结果就是：
-//       - 窗口已经建出来了
-//       - Flutter 主界面还没真正跑起来
-//       - 用户看到的就是白屏
-
-//   3. 窗口状态恢复本身不是“必须成功”的操作。
-//      这个服务本来就已经有默认回退逻辑：
-//       - 没有保存尺寸就用默认 1280x720：/abs/path/C:/Users/TianLang Hacker/Videos/FluxDown/lib/src/services/
-//         window_state_service.dart:175
-
-//       - 没有保存位置就居中：/abs/path/C:/Users/TianLang Hacker/Videos/FluxDown/lib/src/services/
-//         window_state_service.dart:203
-
-//      所以这里最合理的策略不是“死等到拿到配置”，而是“3 秒拿不到就放弃恢复，直接用默认窗口启动”。
-
-//   4. 这属于典型的启动期降级设计。
-//      “恢复上次窗口位置失败”是可接受的；
-//      “整个应用永远白屏进不去”是不可接受的。
-
       _savedX = prefs.getDouble(_kWindowX);
       _savedY = prefs.getDouble(_kWindowY);
       _savedWidth = prefs.getDouble(_kWindowWidth);
