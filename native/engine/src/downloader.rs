@@ -38,6 +38,15 @@ pub enum DownloadError {
     /// single-stream mode.
     #[error("server does not support Range requests (returned {0} instead of 206 Partial Content)")]
     RangeNotSupported(String),
+    /// 服务器在 probe 与分段/续传请求之间【更换了文件】：客户端发了 `If-Range`
+    /// 条件请求，但服务器的 validator（ETag/Last-Modified）与 probe 时不一致，于是
+    /// 【忽略 Range 返回 200 全量当前文件】。与 [`RangeNotSupported`] 严格区分：后者
+    /// 是服务器根本不支持 Range（回退单流续下同一文件即可）；本变体意味着旧数据已
+    /// 作废，必须【清空临时文件 + 重新下载新版本】，绝不能把旧字节当可续传（否则
+    /// 产出新旧版本混合的损坏文件）。也【绝不】记录主机单连接缓存（文件变化与服务器
+    /// Range 能力无关）。
+    #[error("file changed on server during download (validator mismatch, server returned {0})")]
+    VersionChanged(String),
     #[error("ed2k error: {0}")]
     Ed2k(String),
     /// ED2K 协议完整性违规：hashset 投毒 / 块 MD4 不匹配 / SENDINGPART 越界 /
@@ -2372,31 +2381,26 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
         .await
         {
             Ok(()) => None,
-            Err(DownloadError::RangeNotSupported(status)) => {
-                // The server ignored the Range header (returned `status` instead
-                // of 206).  Observed with FnOS NAS `multiple-download?token=…`
-                // endpoints and some other local servers that accept Range
-                // syntax but always reply 200 + full content.
-                //
-                // Auto-fall back to single-stream so the download succeeds on
-                // this attempt without requiring a manual retry.  The host was
-                // already recorded in the single-conn cache by do_segment, so
-                // future tasks for the same host start single-stream from the
-                // very beginning.
+            Err(DownloadError::RangeNotSupported(status))
+            | Err(DownloadError::VersionChanged(status)) => {
+                // 多段尝试中止，回退单流。两种触发：
+                //   • RangeNotSupported：服务器无视 Range（返回 200 全量，如 FnOS NAS）。
+                //   • VersionChanged：文件在 probe 与分段请求间变了（If-Range validator
+                //     不匹配 → 200 全量新版本），旧数据作废需重下。
+                // 注意：有已下数据的【瞬时 200】不会走到这里——coordinator 已在串行降级
+                // 路径就地完成下载，不返回这两个错误，故此处 remove_file 永远不会误删
+                // 有效的多段进度（历史 0kb bug 的根因已在 coordinator 侧消除）。
                 log_info!(
-                    "[download] task {} Range not supported (server returned {}); \
-                     auto-falling back to single-stream",
+                    "[download] task {} multi-segment aborted (server returned {}; no-Range or \
+                     mid-download file change) — clearing stale data, redownloading single-stream",
                     p.task_id,
                     status
                 );
                 actual_use_segments = false;
-                // Remove stale segment rows that belong to the failed
-                // multi-segment attempt; they would confuse a future resume.
+                // 清空多段残留：删 DB segment 行 + 删预分配临时文件。对两种触发都正确：
+                //   • 真·无 Range：预分配文件全零、无有效数据；
+                //   • 版本变化：已完成段是【旧版本】字节，整体作废，必须删以重下新版本。
                 let _ = p.db.delete_segments(&p.task_id).await;
-                // Remove the pre-allocated temp file.  Workers may have written
-                // data at incorrect offsets (full-file content at each segment's
-                // start position), so the file content is corrupt.  Starting
-                // clean is the only safe option.
                 let _ = tokio::fs::remove_file(&temp_path).await;
                 let result = download_single(
                     &p.task_id,

@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -793,6 +793,22 @@ pub async fn run_coordinated_download(
         .collect();
     let mut assign_iter = pending_assignments.drain(..);
 
+    // 协调器专属【子令牌】：所有 workers 监听它，而非任务主令牌 cancel_token。
+    // 关键不变式——协调器遇致命错误（Path B）时只 cancel 这个子令牌来停掉 workers，
+    // 【绝不】cancel 主令牌：run_download_inner 捕获 RangeNotSupported 后要用【存活的
+    // 主令牌】回退 download_single 单流下载；若主令牌被 cancel，单流回退会瞬间命中
+    // cancelled() 一个字节都下不了 → 任务永久卡死（历史致命 BUG）。用户主动取消时
+    // cancel 主令牌，子令牌作为其 child 自动级联取消，workers 照常停止，语义不变。
+    let worker_cancel = cancel_token.child_token();
+
+    // 连接敏感 latch：workers 一旦观察到服务器对 Range 请求返回非 206（瞬时/持续 200），
+    // 置位此标志。coordinator 据此停止【主动拆分】（见下方 proactive 定时分支）以降低
+    // 连接 churn——每次拆分最终=一次新连接，激进预拆分会推高连接建立速率，从而诱发
+    // alist 代理迅雷/光鸭云盘等连接受限后端的瞬时 200。按需的 reactive 拆分（空闲
+    // worker 抢救尾段）仍保留，故不引入尾段停滞。仅在观察到敏感行为后生效——正常
+    // 服务器永不置位，行为与优化前完全一致（零回归）。
+    let conn_sensitive = Arc::new(AtomicBool::new(false));
+
     for worker_id in 0..initial_workers {
         let (assign_tx, assign_rx) = mpsc::channel::<WorkerAssignment>(4);
         let evt_tx = event_tx.clone();
@@ -816,7 +832,8 @@ pub async fn run_coordinated_download(
             dest.to_path_buf(),
             effective_total_bytes,
             client.clone(),
-            cancel_token.clone(),
+            worker_cancel.clone(),
+            conn_sensitive.clone(),
             total_downloaded.clone(),
             seg_states.clone(),
             db.clone(),
@@ -981,26 +998,49 @@ pub async fn run_coordinated_download(
                     }
 
                     Some(WorkerEvent::Failed { worker_id, seg_index, error }) => {
-                        // 检测服务器是否拒绝多连接（403/429）。
-                        // 判定条件：错误为 403/429 且存在其他正常工作的分段
-                        // （证明 URL 本身有效，只是并发连接被拒绝）。
+                        // 失败处置分三类：
+                        //   (1) 403/429 服务器拒绝多连接 + 有其它段在工作；
+                        //   (2) 瞬时 RangeNotSupported——已下载过数据（any_data，证明
+                        //       Range 工作过），本次却收到 200 全量响应（alist 代理迅雷/
+                        //       光鸭云盘在连接压力下偶发）；
+                        //   (3) 真·无 Range（从未拿到 206）或其它致命错误。
+                        // (1)(2) 走串行降级：保数据、退休失败 worker、保活其它 worker、
+                        // 不 cancel、不清文件；(3) 走 Path B：仅停 workers 并上报错误。
+                        let is_range_err =
+                            matches!(error, DownloadError::RangeNotSupported(_));
+                        // 是否已有任意段真正拿到过 206 并写入数据（含 resume 起始进度）。
+                        let any_data = total_downloaded.load(Ordering::Relaxed) > 0;
                         let other_working = segments.values().any(|s| {
                             s.index != seg_index
                                 && matches!(s.state, SegState::Active | SegState::Completed)
                         });
 
-                        if is_server_rejection(&error) && other_working {
+                        // 瞬时 200：Range 工作过（any_data）却收到 RangeNotSupported。
+                        // 绝不能当永久错误（取消任务 + 删数据 + 投毒主机）处理。
+                        let transient_range = is_range_err && any_data;
+                        let server_rejection = is_server_rejection(&error);
+
+                        if (server_rejection && other_working) || transient_range {
                             // ---- 自动降级为串行模式 ----
                             if !serial_mode {
                                 log_info!(
-                                    "[coordinator] task {} 检测到服务器拒绝多连接 (seg {}), \
-                                     降级为串行模式",
+                                    "[coordinator] task {} seg {} 降级为串行模式 (reason={})",
                                     task_id,
-                                    seg_index
+                                    seg_index,
+                                    if transient_range {
+                                        "transient-200"
+                                    } else {
+                                        "server-rejection"
+                                    }
                                 );
                                 serial_mode = true;
-                                // 记录域名，后续同域名任务自动单线程
-                                record_single_conn_domain(url);
+                                // 仅 403/429（真·连接数限制）记录域名单连接缓存。瞬时 200
+                                // 【绝不】记录——服务器明确支持 Range（已服务过半 206），
+                                // 一次偶发 200 不应把整个主机打成单连接 24h、阻断续传与
+                                // 多段吞吐（BUG-COORD-TRANSIENT-200-POISONS-HOST）。
+                                if server_rejection {
+                                    record_single_conn_domain(url);
+                                }
                             }
 
                             // 将失败分段标记为 Pending，等待串行下载
@@ -1029,8 +1069,14 @@ pub async fn run_coordinated_download(
                             // 继续下载。当它们完成后，Done 事件会触发串行分配剩余
                             // Pending 分段。
                         } else {
-                            // 非连接限制错误，或 URL 本身无效 → 原有行为：全部取消。
-                            cancel_token.cancel();
+                            // Path B：真·无 Range 或其它致命错误。
+                            // 只 cancel【子令牌】停 workers，【绝不】cancel 主令牌——
+                            // run_download_inner 捕获 RangeNotSupported 后要用【存活的
+                            // 主令牌】回退 download_single 单流；cancel 主令牌会让回退
+                            // 瞬间命中 cancelled() 一个字节都下不了 → 任务永久卡死
+                            // （历史致命 BUG）。真·无 Range 时 do_segment 已按
+                            // any_data==0 记录主机单连接缓存，此处无需再记。
+                            worker_cancel.cancel();
                             if let Some(seg) = segments.get_mut(&seg_index) {
                                 seg.state = SegState::Pending;
                             }
@@ -1057,7 +1103,9 @@ pub async fn run_coordinated_download(
             // find_next_work → Strategy 1 (Pending), skipping the expensive
             // split + DB-persist that would otherwise block the Done handler.
             _ = proactive_interval.tick() => {
-                if !serial_mode && !all_done(&segments) {
+                // conn_sensitive：一旦观察到服务器对 Range 返回非 206（见 do_segment 置位处），
+                // 停止【主动拆分】以降低连接 churn（reactive 拆分仍保留做尾段抢救）。
+                if !serial_mode && !conn_sensitive.load(Ordering::Relaxed) && !all_done(&segments) {
                     sync_downloaded_from_shared(&mut segments, &seg_states);
                     // Try proactive split at the normal threshold first; if that fails
                     // (last segment has < current_min_split but >= TAIL_MIN_SPLIT_BYTES
@@ -1783,6 +1831,7 @@ fn spawn_worker(
     total_bytes: i64,
     client: Client,
     cancel_token: CancellationToken,
+    conn_sensitive: Arc<AtomicBool>,
     total_downloaded: Arc<AtomicI64>,
     seg_states: Arc<StdMutex<Vec<SegmentProgressInfo>>>,
     db: Db,
@@ -1810,6 +1859,7 @@ fn spawn_worker(
                 assignment.seg_end,
                 &client,
                 &cancel_token,
+                &conn_sensitive,
                 &total_downloaded,
                 total_bytes,
                 &db,
@@ -1869,6 +1919,7 @@ async fn do_segment_with_retry(
     mut seg_end: i64,
     client: &Client,
     cancel: &CancellationToken,
+    conn_sensitive: &AtomicBool,
     total_downloaded: &AtomicI64,
     total_bytes: i64,
     db: &Db,
@@ -1893,6 +1944,7 @@ async fn do_segment_with_retry(
             seg_end,
             client,
             cancel,
+            conn_sensitive,
             total_downloaded,
             total_bytes,
             db,
@@ -1908,12 +1960,22 @@ async fn do_segment_with_retry(
         {
             Ok(dl) => return Ok(dl),
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-            // RangeNotSupported is a permanent server property — retrying would
-            // get the same 200-instead-of-206 response every time.  Return
-            // immediately so the coordinator can cancel all workers and trigger
-            // the single-stream fallback without burning 3× exponential-backoff
-            // delays (up to 14 s for the first worker alone).
-            Err(e @ DownloadError::RangeNotSupported(_)) => return Err(e),
+            // 文件版本变化：重试必然拿到同样的 200（validator 永不再匹配），且旧数据
+            // 已作废。立即返回，让 coordinator 走 Path B → run_download_inner 清空临时
+            // 文件 + 重下新版本；绝不当瞬时错误退避重试（那会空烧退避并误入串行降级
+            // 死循环，最终以误导性的"服务器拒绝所有连接"报错）。
+            Err(e @ DownloadError::VersionChanged(_)) => return Err(e),
+            // RangeNotSupported 的两义性处理：
+            //   • total_downloaded==0：从未有任何段拿到过 206 → 服务器真的无视 Range
+            //     （如 FnOS NAS）。立即返回让 coordinator 快速回退单流，不空烧退避。
+            //   • total_downloaded>0：Range 明确工作过，本次 200 是瞬时的（alist 代理
+            //     云盘在连接压力下偶发全量响应）。落入下方通用 Err(e) 分支像普通瞬时
+            //     错误一样带退避重试——换连接重发多数即恢复 206，对标 aria2 --max-tries。
+            Err(e @ DownloadError::RangeNotSupported(_))
+                if total_downloaded.load(Ordering::Relaxed) == 0 =>
+            {
+                return Err(e);
+            }
             Err(e) => {
                 // 403/429 是服务器明确拒绝多连接，重试毫无意义——
                 // 立即返回让 coordinator 进行降级处理。
@@ -1967,6 +2029,7 @@ async fn do_segment(
     seg_end: i64,
     client: &Client,
     cancel: &CancellationToken,
+    conn_sensitive: &AtomicBool,
     total_downloaded: &AtomicI64,
     total_bytes: i64,
     db: &Db,
@@ -2051,8 +2114,34 @@ async fn do_segment(
                 || (!expected_last_modified.is_empty()
                     && !resp_lm.is_empty()
                     && resp_lm != expected_last_modified));
-        if !version_changed {
-            // 真·服务器无视 Range → 记录主机，后续任务直接单流（24h TTL）。
+        // 分两类 non-206 处理：
+        //   • version_changed：文件在 probe 与本段请求之间变了（If-Range validator 不
+        //     匹配 → 服务器忽略 Range 回 200 全量新版本）。返回 VersionChanged，让上层
+        //     清空旧数据重下新版本；【绝不】记录主机单连接缓存（与 Range 能力无关）
+        //     （BUG-COORD-IFRANGE-200-POISONS-HOST）。
+        if version_changed {
+            return Err(DownloadError::VersionChanged(resp.status().to_string()));
+        }
+        // 连接敏感信号：服务器对 Range 请求返回了非 206（且非版本变化）——典型于 alist
+        // 代理云盘在连接压力下偶发全量响应。置位后 coordinator 衰减【主动拆分】以降低连接
+        // churn，减少后续瞬时 200 的发生（保留 reactive 拆分做尾段抢救）。一次性 latch，
+        // 仅首次置位打日志。
+        if !conn_sensitive.swap(true, Ordering::Relaxed) {
+            log_info!(
+                "[coordinator] task {} 检测到连接敏感（服务器对 Range 请求返回 {}），\
+                 停止主动拆分以降低连接 churn",
+                task_id,
+                resp.status()
+            );
+        }
+        //   • 非版本变化的 200：仅当【从未下载到任何数据】(total_downloaded==0，从头到尾
+        //     没有一个段拿到过 206) 才记录主机——这是真·服务器无视 Range（如 FnOS NAS）。
+        //     若已下载过数据（Range 明确工作过），本次 200 是【瞬时】的（alist 代理迅雷/
+        //     光鸭云盘在连接压力下偶发全量响应），绝不能因一次瞬时 200 把整个主机打成
+        //     单连接 24h、阻断续传与多段吞吐（BUG-COORD-TRANSIENT-200-POISONS-HOST）。
+        //     判定与 coordinator transient_range 一致，均以 total_downloaded>0 为
+        //     "Range 工作过"的证据。
+        if total_downloaded.load(Ordering::Relaxed) == 0 {
             record_single_conn_domain(url);
         }
         return Err(DownloadError::RangeNotSupported(resp.status().to_string()));

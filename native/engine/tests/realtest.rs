@@ -78,6 +78,13 @@ struct ServerState {
     disable_close_full: std::sync::atomic::AtomicBool,
     /// 206 响应是否携带 ETag/Last-Modified。false=剥离（模拟 CDN 边缘节点行为）。
     emit_validators_on_range: bool,
+    /// 钩子 A（永久型）：对所有「分段」range GET（区间长度 end-start+1 > 1）强制
+    /// 返回 200 全量，保留 probe 的 `bytes=0-0`（长度 1）走 206——复现“服务器支持
+    /// Range，但对分段请求持续返回 200”（alist 代理迅雷/光鸭云盘真实行为）。
+    force_full_on_segment_range: bool,
+    /// 钩子 B（一次性）：置为 true 后，下一次「分段」range GET 强制返回一次 200
+    /// 全量（消费后自动复位为 false，其余请求照常 206）——复现“瞬时 200”。
+    force_full_range_get_once: std::sync::atomic::AtomicBool,
 
     // --- 计数器（断言用）---
     head_count: AtomicUsize,
@@ -105,6 +112,8 @@ impl ServerState {
             close_full_after: None,
             disable_close_full: std::sync::atomic::AtomicBool::new(false),
             emit_validators_on_range: true,
+            force_full_on_segment_range: false,
+            force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
             head_count: AtomicUsize::new(0),
             full_get_count: AtomicUsize::new(0),
             range_get_count: AtomicUsize::new(0),
@@ -307,6 +316,23 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         Some(v) => v == &format!("\"{}\"", etag) || v == &st.last_modified,
     };
     let wants_range = req.range.is_some() && st.support_range && if_range_matches;
+
+    // 区间长度：probe 用 `bytes=0-0`（长度 1）；真实分段请求远大于 1。用这个
+    // 区分，让下面两个故障注入钩子只作用于“分段” range GET，不影响 probe——
+    // probe 仍需 206 才能让客户端判定“服务器支持 Range”从而选择多段下载。
+    let is_segment_range_get = wants_range
+        && req
+            .range
+            .map(|(s, e)| e.unwrap_or(total - 1).min(total - 1) - s + 1 > 1)
+            .unwrap_or(false);
+    // 钩子 A（永久型）：所有分段 range GET 强制走 200 全量分支（保留 probe 走 206），
+    // 复现“服务器支持 Range，但对分段请求偶发/持续返回 200”（alist 代理云盘行为）。
+    // 钩子 B（一次性）：消费一次「武装」标志，让下一次分段 range GET 强制返回一次
+    // 200（随后自动复位、恢复 206），模拟“瞬时 200”。
+    let force_full = is_segment_range_get
+        && (st.force_full_on_segment_range
+            || st.force_full_range_get_once.swap(false, Ordering::SeqCst));
+    let wants_range = wants_range && !force_full;
 
     if !wants_range {
         // 200 全量
@@ -1418,5 +1444,183 @@ async fn multiseg_etag_stripped_must_not_silently_splice() {
             "❌ 多段下载在 CDN 剥离 etag 且文件变化时静默拼接：最终 SHA 既非 v1 也非 v2"
         );
     }
+    drop(server);
+}
+
+// ===========================================================================
+// 回归测试：alist 代理迅雷/光鸭云盘——分段 Range 请求偶发/持续返回 200 而非 206
+// （瞬时 200 卡住下载 + .fdownloading 变 0kb + 强制单线程，已在 src/ 修复）
+// ===========================================================================
+
+/// 服务器广播支持 Range（probe 的 `bytes=0-0` 正常 206），但每一个真实分段的
+/// range GET 都被钩子 A 强制返回 200 全量。coordinator 因此从未拿到任何 206
+/// 数据（total_downloaded 始终为 0），必须快速回退单流下载——且**必须用存活
+/// 的主令牌**（而非被 Path B 误 cancel 的令牌）完成，产出字节完整的文件。
+///
+/// 修复前：coordinator 的 Path B 会 cancel 主令牌，run_download_inner 拿同一个
+/// 已取消的令牌调用 download_single → 瞬间命中 cancelled()，一个字节都下不了；
+/// 回退前的 remove_file 还会删掉预分配的临时文件。本测试的两个断言（status==3、
+/// SHA 字节完整）在修复前都会失败（status 非 3，且文件缺失/为空）。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn range_advertised_but_all_segments_get_200_falls_back_single_stream() {
+    let work_dir = unique_dir("force200");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let size = 5_000_011usize; // ~5MB 素数大小
+    let body = Arc::new(gen_body(size, 200));
+    let expected = sha256_bytes(&body);
+
+    let mut s = ServerState::new(body.clone(), "etag-force200");
+    // support_range 保持默认 true：probe（0-0）与 HEAD 都表现为“服务器支持 Range”。
+    s.force_full_on_segment_range = true; // 但所有真实分段请求强制返回 200。
+    let st = Arc::new(s);
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "f200", &url, "out.bin", 8, size as i64).await;
+
+    // hint_file_size=0：走真实 probe 路径（不是浏览器扩展 hint 旁路）——
+    // 这正是复现“probe 判定支持 Range → 选多段 → 每段却拿到 200”的关键。
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir, &db, "f200", &url, "out.bin", 8, 0, false, "", &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        status, 3,
+        "❌ 分段全部返回 200 时应回退单流并成功（status=3），实得 {status}——\
+         很可能是 BUG 1 复现：主令牌被 Path B 误 cancel，单流回退瞬间 cancelled()"
+    );
+    assert!(dest.exists(), "❌ 下载“成功”却没有产物文件");
+    let got = sha256_file(&dest).await;
+    assert_eq!(
+        got, expected,
+        "❌ 单流回退产出的文件不是字节完整的原文件（可能是 BUG 2：回退前误删已下载数据，\
+         download_single 只写出了空/截断文件）"
+    );
+    drop(server);
+}
+
+/// 复现“下载过半后瞬时 200”：直接构造一个“已下载过半”的续传起点——按引擎真实的
+/// 均匀切分方案手写 DB 段行（1 个段已过半完成、其余段全新未开始）+ 预写磁盘上
+/// 对应字节，而不是靠真实网络下载 + 短延时 cancel 来竞速产生部分进度（本地回环
+/// 服务器 write_all 到内核 socket buffer 几乎瞬时完成，与客户端限速下的实际写盘
+/// 速度不同步，短延时 cancel 无法可靠留下部分状态）。
+///
+/// 单程 `run_coordinated_download`（模拟续传）时，钩子 B 对其中一个分段的
+/// range GET 强制返回一次 200（随后自动恢复 206）。根据 do_segment_with_retry
+/// 的两义性处理，total_downloaded>0（段 0 已有过半进度）时收到的
+/// RangeNotSupported 不会立即失败，而是像普通瞬时错误一样带退避重试——换一次
+/// 请求即恢复 206，最终文件字节完整，coordinator 返回 Ok（证明修复 3：瞬时 200
+/// 不再被灾难化处理、不丢数据）。
+///
+/// 注意：命中退避的首次等待为 RETRY_BASE_DELAY（2s），本测试因此至少耗时 ~2s，
+/// 属预期行为。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn transient_200_on_resume_is_absorbed_byte_exact() {
+    let work_dir = unique_dir("transient200");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let segs_count = 8i32;
+    let size = 8_000_003i64; // ~8MB 素数
+    let body = Arc::new(gen_body(size as usize, 909));
+    let expected = sha256_bytes(&body);
+    let st = Arc::new(ServerState::new(body.clone(), "etag-transient"));
+    let server = start_server(st.clone()).await;
+    let url = server.url("/file");
+
+    let task_id = "transient-task";
+    let dest = work_dir.join(format!("{task_id}.bin"));
+    let client = test_client();
+    let db = Db::open(&work_dir).await.expect("db");
+    db.insert_task(
+        task_id,
+        &url,
+        &dest.file_name().unwrap().to_string_lossy(),
+        &work_dir.to_string_lossy(),
+        segs_count,
+        size,
+        "",
+        "",
+        "",
+    )
+    .await
+    .unwrap();
+
+    // ---- 直接构造"下载过半"的续传起点：DB 段进度 + 预写磁盘内容 ----
+    // 与 coordinator 的 build_fresh_segments 完全相同的均匀切分方案
+    // （chunk = total/count，末段兜底余数），确保与 run_coordinated_download
+    // 对已存在 DB 段的 resume 分支假设一致。
+    let chunk = size / segs_count as i64;
+    let mut db_segs = Vec::with_capacity(segs_count as usize);
+    for i in 0..segs_count {
+        let start = i as i64 * chunk;
+        let end = if i == segs_count - 1 {
+            size - 1
+        } else {
+            (i as i64 + 1) * chunk - 1
+        };
+        db_segs.push((i, start, end));
+    }
+    db.insert_segments(task_id, &db_segs).await.unwrap();
+
+    // 段 0 已下载过半（模拟真实下载进行到一半）；其余段全新未开始。
+    let seg0_done = chunk / 2;
+    db.update_segment_progress(task_id, 0, seg0_done)
+        .await
+        .unwrap();
+
+    // 预写磁盘：段 0 的 [0, seg0_done) 写入真实字节；文件其余部分按引擎真实
+    // 预分配行为延伸到完整大小（sparse tail，与 fallocate/set_len 语义一致，
+    // coordinator 自身的预分配步骤 truncate(false) 不会破坏这里预写的内容）。
+    {
+        let mut f = tokio::fs::File::create(&dest).await.unwrap();
+        f.write_all(&body[0..seg0_done as usize]).await.unwrap();
+        f.set_len(size as u64).await.unwrap();
+    }
+
+    // ---- 武装钩子 B：唯一一程 run_coordinated_download（即"续传"）里，
+    // 对某个分段的 range GET 注入一次瞬时 200 ----
+    st.force_full_range_get_once.store(true, Ordering::SeqCst);
+
+    let speed_limiter = SpeedLimiter::new(0);
+    let (tx, rx) = mpsc::channel::<ProgressUpdate>(256);
+    let dh = drain(rx);
+    let spec = RequestSpec::empty_get();
+    let sink = NoopTestSink;
+    let cancel = CancellationToken::new();
+    let result = run_coordinated_download(
+        task_id,
+        &url,
+        &dest,
+        size,
+        segs_count,
+        &client,
+        &db,
+        &tx,
+        &cancel,
+        &speed_limiter,
+        &spec,
+        &sink,
+        "",
+        "",
+    )
+    .await;
+    drop(tx);
+    let _ = dh.await;
+
+    result.expect("瞬时 200 应被 do_segment_with_retry 退避重试吸收，续传应成功");
+
+    let got_sha = sha256_file(&dest).await;
+    assert_eq!(
+        got_sha, expected,
+        "❌ 瞬时 200 吸收后文件 SHA 不完整——数据丢失/损坏"
+    );
     drop(server);
 }
