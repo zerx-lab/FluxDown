@@ -685,6 +685,10 @@ const en = {
   "footer.privacy": "Privacy",
   "footer.terms": "Terms",
   "footer.sponsor": "Sponsor",
+  "footer.community": "Community",
+  "footer.announcements": "Announcements",
+  "footer.logoVote": "Logo Vote",
+  "footer.macosGatekeeper": "macOS Fix",
   "footer.copyright": "© {year} FluxDown. All rights reserved.",
   "footer.builtWith": "Astro + React + Rust",
 

@@ -685,6 +685,10 @@ const zhCN: Messages = {
   "footer.legal": "法律",
   "footer.privacy": "隐私政策",
   "footer.terms": "服务条款",
+  "footer.community": "社区",
+  "footer.announcements": "公告动态",
+  "footer.logoVote": "Logo 投票",
+  "footer.macosGatekeeper": "macOS 修复",
   "footer.copyright": "© {year} FluxDown. 保留所有权利。",
   "footer.builtWith": "Astro + React + Rust",
 

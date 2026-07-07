@@ -15,12 +15,21 @@ const SITE_URL = "https://fluxdown.zerx.dev";
 const {
   title = "FluxDown - Modern Multi-Protocol Download Manager",
   description = "A blazing fast, multi-protocol download manager with browser extension. Powered by Rust engine with HTTP/HTTPS/FTP support, intelligent segmentation, and speed optimization.",
-  canonicalUrl = Astro.url.pathname === "/" ? SITE_URL : `${SITE_URL}${Astro.url.pathname}`,
+  canonicalUrl,
   lang = "en",
   ogLocale = "en_US",
   alternates,
   noindex = false,
 } = Astro.props;
+
+// canonical 统一带尾斜杠(与 sitemap / Astro 默认输出一致),消除 /faq 与 /faq/ 的信号分裂。
+// 显式传入的 canonicalUrl 优先;否则由 pathname 规范化推导。
+const normalizedPath =
+  Astro.url.pathname === "/"
+    ? "/"
+    : Astro.url.pathname.replace(/\/$/, "") + "/";
+const resolvedCanonical =
+  canonicalUrl ?? (normalizedPath === "/" ? SITE_URL + "/" : `${SITE_URL}${normalizedPath}`);
 
 // lang 是否由调用方显式传入(区分默认值与显式指定,决定是否输出 data-fixed-lang)
 const isLangExplicit = Astro.props.lang !== undefined;
@@ -40,16 +49,16 @@ const ogImageUrl = `${SITE_URL}/logo.png`;
     <meta name="description" content={description} />
     <meta name="theme-color" content="#0a0a0b" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#F8F9FA" media="(prefers-color-scheme: light)" />
-    <link rel="canonical" href={canonicalUrl} />
+    <link rel="canonical" href={resolvedCanonical} />
     {noindex && <meta name="robots" content="noindex" />}
 
     <!-- Hreflang: i18n SEO -->
     {
       alternates === undefined ? (
         <>
-          <link rel="alternate" hreflang="en" href={canonicalUrl} />
-          <link rel="alternate" hreflang="zh-Hans" href={canonicalUrl} />
-          <link rel="alternate" hreflang="x-default" href={canonicalUrl} />
+          <link rel="alternate" hreflang="en" href={resolvedCanonical} />
+          <link rel="alternate" hreflang="zh-Hans" href={resolvedCanonical} />
+          <link rel="alternate" hreflang="x-default" href={resolvedCanonical} />
         </>
       ) : (
         alternates.map((a) => (
@@ -62,7 +71,7 @@ const ogImageUrl = `${SITE_URL}/logo.png`;
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
-    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:url" content={resolvedCanonical} />
     <meta property="og:site_name" content="FluxDown" />
     <meta property="og:image" content={ogImageUrl} />
     <meta property="og:image:width" content="512" />

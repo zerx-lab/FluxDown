@@ -21,7 +21,7 @@ export default function Footer() {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-14 sm:pt-16 pb-8">
         <div className="grid grid-cols-2 gap-10 sm:grid-cols-6 lg:grid-cols-12">
           {/* Brand column */}
-          <div className="col-span-2 sm:col-span-6 lg:col-span-5">
+          <div className="col-span-2 sm:col-span-6 lg:col-span-4">
             <a href="/" className="inline-flex items-center gap-2.5 group">
               <img
                 src="/logo.svg"
@@ -82,8 +82,8 @@ export default function Footer() {
                 { href: "/#features", label: t("footer.features") },
                 { href: "/#extension", label: t("footer.browserExtension") },
                 { href: "/#download", label: t("footer.download") },
-                { href: "/changelog", label: t("footer.changelog") },
-                { href: "/theme-builder", label: t("footer.themeBuilder") },
+                { href: "/changelog/", label: t("footer.changelog") },
+                { href: "/theme-builder/", label: t("footer.themeBuilder") },
               ].map(({ href, label }) => (
                 <li key={href}>
                   <a
@@ -104,11 +104,11 @@ export default function Footer() {
             </h3>
             <ul className="space-y-2.5">
               {[
-                { href: "/faq", label: t("footer.faq") },
-                { href: "/api-docs", label: t("footer.documentation") },
-                { href: "/feedback", label: t("footer.feedback") },
-                { href: "/feedback", label: t("footer.contact") },
-                { href: "/sponsor", label: t("footer.sponsor") },
+                { href: "/faq/", label: t("footer.faq") },
+                { href: "/api-docs/", label: t("footer.documentation") },
+                { href: "/feedback/", label: t("footer.feedback") },
+                { href: "/feedback/", label: t("footer.contact") },
+                { href: "/sponsor/", label: t("footer.sponsor") },
               ].map(({ href, label }, i) => (
                 <li key={`${href}-${i}`}>
                   <a
@@ -122,15 +122,38 @@ export default function Footer() {
             </ul>
           </div>
 
+          {/* Community column */}
+          <div className="col-span-1 sm:col-span-2 lg:col-span-2">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-dark-text-muted mb-4">
+              {t("footer.community")}
+            </h3>
+            <ul className="space-y-2.5">
+              {[
+                { href: "/announcements/", label: t("footer.announcements") },
+                { href: "/logo-vote/", label: t("footer.logoVote") },
+                { href: "/macos-gatekeeper/", label: t("footer.macosGatekeeper") },
+              ].map(({ href, label }) => (
+                <li key={href}>
+                  <a
+                    href={href}
+                    className="text-[13px] text-dark-text-secondary hover:text-brand-sky transition-colors duration-200"
+                  >
+                    {label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+
           {/* Legal column */}
-          <div className="col-span-1 sm:col-span-2 lg:col-span-2 lg:col-start-11">
+          <div className="col-span-1 sm:col-span-2 lg:col-span-2">
             <h3 className="text-xs font-semibold uppercase tracking-widest text-dark-text-muted mb-4">
               {t("footer.legal")}
             </h3>
             <ul className="space-y-2.5">
               {[
-                { href: "/privacy", label: t("footer.privacy") },
-                { href: "/terms", label: t("footer.terms") },
+                { href: "/privacy/", label: t("footer.privacy") },
+                { href: "/terms/", label: t("footer.terms") },
               ].map(({ href, label }) => (
                 <li key={href}>
                   <a

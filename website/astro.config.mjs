@@ -10,6 +10,10 @@ import { getFallbackPathnames } from "./src/lib/docs-fallback.ts";
 // 文档回退页(en 有 zh 缺):noindex,不进 sitemap(设计决策 D4,单一判定源 docs-fallback.ts)
 const docsFallbackPathnames = getFallbackPathnames();
 
+// 纯社群入口页(内容单薄、与外部邀请链接重复):noindex 且不进 sitemap,
+// 避免与主内容页争夺抓取预算(与 Layout noindex prop 保持一致)。
+const noindexPathnames = new Set(["/qq-group", "/telegram-group"]);
+
 // https://astro.com/docs/en/guides/environment-variables/
 export default defineConfig({
   site: "https://fluxdown.zerx.dev",
@@ -17,7 +21,10 @@ export default defineConfig({
   integrations: [
     react(),
     sitemap({
-      filter: (page) => !docsFallbackPathnames.has(new URL(page).pathname.replace(/\/$/, "")),
+      filter: (page) => {
+        const path = new URL(page).pathname.replace(/\/$/, "");
+        return !docsFallbackPathnames.has(path) && !noindexPathnames.has(path);
+      },
     }),
   ],
 
