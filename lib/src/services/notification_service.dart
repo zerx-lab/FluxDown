@@ -225,7 +225,7 @@ class NotificationService {
     final body = isBatch
         ? '${task.fileName} ${s.andMoreFiles(batch.length - 1)}'
         : task.fileName;
-    final filePath = _resolveFilePath(task);
+    final filePath = task.filePath;
 
     try {
       final details = NotificationDetails(
@@ -352,10 +352,6 @@ class NotificationService {
 
   String _buildPayload({required String action, required String filePath}) {
     return '$action|$filePath';
-  }
-
-  String _resolveFilePath(DownloadTask task) {
-    return '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
   }
 
   void _onSystemNotificationResponse(NotificationResponse response) {

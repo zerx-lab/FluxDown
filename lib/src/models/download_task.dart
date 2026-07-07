@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math';
 
 import '../bindings/bindings.dart';
@@ -365,6 +366,32 @@ class DownloadTask {
 
   /// 文件类型分类
   FileCategory get fileCategory => FileCategory.fromExtension(fileExtension);
+
+  /// 任务目标文件的完整路径（`saveDir` + 分隔符 + `fileName`）。
+  ///
+  /// 拼接时去重 `saveDir` 末尾可能存在的路径分隔符，避免产生重复分隔符；
+  /// `saveDir` 为空时退回裸文件名。作为文件路径拼接的单一事实来源，替代散落
+  /// 各处的手写 `'${saveDir}${sep}${fileName}'`。
+  String get filePath {
+    if (saveDir.isEmpty) return fileName;
+    final separator = Platform.pathSeparator;
+    final dir = saveDir.endsWith(separator)
+        ? saveDir.substring(0, saveDir.length - separator.length)
+        : saveDir;
+    return '$dir$separator$fileName';
+  }
+
+  /// 「打开所在文件夹」应传给原生层的路径。
+  ///
+  /// 已完成且文件存在时返回完整文件路径，便于文件管理器定位并选中文件；下载中、
+  /// 暂停、失败、排队、准备中、文件丢失等状态下最终文件可能尚未落盘，改为返回
+  /// 保存目录 [saveDir]，避免原生层将不存在的文件路径误判后打不开任何位置。
+  /// [saveDir] 为空时退回文件路径。
+  String get revealFolderPath {
+    if (status == TaskStatus.completed && !fileMissing) return filePath;
+    if (saveDir.isNotEmpty) return saveDir;
+    return filePath;
+  }
 
   /// 格式化文件大小
   String get sizeText {

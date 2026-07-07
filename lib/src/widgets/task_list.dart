@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
@@ -73,8 +71,7 @@ class _TaskListState extends State<TaskList> {
         widget.controller.resumeTask(task.id);
       case TaskStatus.completed:
         if (task.fileMissing) return;
-        final filePath =
-            '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
+        final filePath = task.filePath;
         openFile(filePath);
     }
   }

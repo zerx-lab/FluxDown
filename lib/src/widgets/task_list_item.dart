@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -464,8 +462,8 @@ void showTaskContextMenu(
   }
 
   // --- 打开文件 / 打开所在文件夹 ---
-  final filePath = _taskFilePath(task);
-  final folderPath = _taskFolderRevealPath(task, filePath);
+  final filePath = task.filePath;
+  final folderPath = task.revealFolderPath;
 
   if (task.status == TaskStatus.completed && !task.fileMissing) {
     items.add(
@@ -549,27 +547,6 @@ void showTaskContextMenu(
 Future<void> _openFile(String filePath) => openFile(filePath);
 
 Future<void> _openFolder(String filePath) => openFolder(filePath);
-
-String _taskFilePath(DownloadTask task) {
-  if (task.saveDir.isEmpty) return task.fileName;
-  final separator = Platform.pathSeparator;
-  final saveDir = task.saveDir.endsWith(separator)
-      ? task.saveDir.substring(0, task.saveDir.length - separator.length)
-      : task.saveDir;
-  return '$saveDir$separator${task.fileName}';
-}
-
-String _taskFolderRevealPath(DownloadTask task, String filePath) {
-  if (task.status == TaskStatus.completed && !task.fileMissing) {
-    return filePath;
-  }
-
-  if (task.saveDir.isNotEmpty) {
-    return task.saveDir;
-  }
-
-  return filePath;
-}
 
 // =============================================================================
 // 单任务删除确认对话框（原有，保留兼容性）

@@ -301,7 +301,7 @@ Future<void> _createToastWindow(_ToastBatch batch) async {
     final y = waBottom - scaledH - margin;
 
     // ── 5. 构建状态 + DIB 资源 ────────────────────────────────────────────
-    final filePath = '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
+    final filePath = task.filePath;
     final state = _ToastState(
       filePath: filePath,
       onOpenFile: () => openFile(filePath),
