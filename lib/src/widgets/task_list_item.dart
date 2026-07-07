@@ -464,7 +464,8 @@ void showTaskContextMenu(
   }
 
   // --- 打开文件 / 打开所在文件夹 ---
-  final filePath = '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
+  final filePath = _taskFilePath(task);
+  final folderPath = _taskFolderRevealPath(task, filePath);
 
   if (task.status == TaskStatus.completed && !task.fileMissing) {
     items.add(
@@ -481,7 +482,7 @@ void showTaskContextMenu(
       icon: LucideIcons.folderOpen,
       label: s.openFolder,
       color: c.textPrimary,
-      action: () => _openFolder(filePath),
+      action: () => _openFolder(folderPath),
     ),
   );
   dividers.add(items.length - 1); // 文件操作组后加分隔线
@@ -548,6 +549,27 @@ void showTaskContextMenu(
 Future<void> _openFile(String filePath) => openFile(filePath);
 
 Future<void> _openFolder(String filePath) => openFolder(filePath);
+
+String _taskFilePath(DownloadTask task) {
+  if (task.saveDir.isEmpty) return task.fileName;
+  final separator = Platform.pathSeparator;
+  final saveDir = task.saveDir.endsWith(separator)
+      ? task.saveDir.substring(0, task.saveDir.length - separator.length)
+      : task.saveDir;
+  return '$saveDir$separator${task.fileName}';
+}
+
+String _taskFolderRevealPath(DownloadTask task, String filePath) {
+  if (task.status == TaskStatus.completed && !task.fileMissing) {
+    return filePath;
+  }
+
+  if (task.saveDir.isNotEmpty) {
+    return task.saveDir;
+  }
+
+  return filePath;
+}
 
 // =============================================================================
 // 单任务删除确认对话框（原有，保留兼容性）
