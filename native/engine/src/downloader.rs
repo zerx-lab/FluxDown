@@ -226,6 +226,10 @@ pub struct DownloadParams {
 ///   - `host` — must match the actual request target, not the browser's.
 ///   - `content-length` — meaningless on a GET; can confuse intermediaries.
 ///   - `connection` — hop-by-hop header managed by the HTTP stack.
+///   - `range` / `if-range` — 分段/续传维度由下载引擎独占管理。浏览器播放
+///     媒体时对 `.m4s`/流分段发的 `Range: bytes=<seek偏移>-` 若被透传到整轨
+///     或整段 GET，会与引擎自己的 Range 冲突：偏移越界即触发 416 Range Not
+///     Satisfiable（B站 DASH 音频轨实测），或悄悄只下回一小片导致文件损坏。
 pub(crate) fn apply_extra_headers(
     req: reqwest::RequestBuilder,
     extra_headers: &std::collections::HashMap<String, String>,
@@ -243,6 +247,8 @@ pub(crate) fn apply_extra_headers(
         "host",
         "content-length",
         "connection",
+        "range",
+        "if-range",
     ];
 
     let mut map = reqwest::header::HeaderMap::with_capacity(extra_headers.len());
@@ -4094,6 +4100,8 @@ mod tests {
         headers.insert("Host".to_string(), "evil.com".to_string());
         headers.insert("Content-Length".to_string(), "999".to_string());
         headers.insert("Connection".to_string(), "keep-alive".to_string());
+        headers.insert("Range".to_string(), "bytes=1200000-".to_string());
+        headers.insert("If-Range".to_string(), "\"abc\"".to_string());
         // This one should pass through
         headers.insert("Authorization".to_string(), "Bearer ok".to_string());
         let req = client.get("https://example.com/file.zip");
@@ -4105,6 +4113,8 @@ mod tests {
         assert!(built.headers().get("Host").is_none());
         assert!(built.headers().get("Content-Length").is_none());
         assert!(built.headers().get("Connection").is_none());
+        assert!(built.headers().get("Range").is_none());
+        assert!(built.headers().get("If-Range").is_none());
         assert_eq!(
             built
                 .headers()

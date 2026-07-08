@@ -601,6 +601,8 @@ export default defineBackground(() => {
     "connection", // HTTP 连接管理，reqwest 自动处理
     "content-length", // 请求体相关，GET 请求无需
     "accept-encoding", // reqwest 自动处理压缩（gzip/deflate/brotli），传了会重复解压
+    "range", // 播放器 seek 产生的分段 Range，透传会与下载引擎自管的分段/续传冲突（B站 .m4s 音频轨 416）
+    "if-range", // 与 Range 配套的条件头，同样不应透传
   ]);
 
   /**
