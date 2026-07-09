@@ -1979,21 +1979,29 @@ class _UiScaleSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     final tp = FluxDownApp.of(context);
     final c = AppColors.of(context);
-    final current = tp.uiScale;
-    return Row(
-      children: _options.map((v) {
-        final selected = (v - current).abs() < 0.01;
-        return Padding(
-          padding: const EdgeInsets.only(right: 6),
-          child: _UiScaleChip(
-            label: _label(v),
-            selected: selected,
-            isDefault: v == 1.0,
-            colors: c,
-            onTap: () => tp.setUiScale(v),
-          ),
+    // FluxDownApp.of 走 findAncestorStateOfType，不建立响应式依赖；
+    // 本组件又以 const 挂载，父级重建会被 const 同一性跳过。
+    // 必须显式监听 ThemeProvider，否则点击后高亮停留在上一次的值。
+    return ListenableBuilder(
+      listenable: tp,
+      builder: (context, _) {
+        final current = tp.uiScale;
+        return Row(
+          children: _options.map((v) {
+            final selected = (v - current).abs() < 0.01;
+            return Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: _UiScaleChip(
+                label: _label(v),
+                selected: selected,
+                isDefault: v == 1.0,
+                colors: c,
+                onTap: () => tp.setUiScale(v),
+              ),
+            );
+          }).toList(),
         );
-      }).toList(),
+      },
     );
   }
 }

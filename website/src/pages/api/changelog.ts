@@ -25,11 +25,13 @@
 
 import type { APIRoute } from "astro";
 import { GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
+import { getCached, setCached } from "../../lib/api-cache";
 
 export const prerender = false;
 
 // ── 全量缓存：拉取 GitHub 所有 release 后缓存，分页在返回时切片 ──
-let allCache: { releases: FilteredRelease[]; timestamp: number } | null = null;
+// （5 分钟 TTL；release webhook 会主动清除）
+const CACHE_KEY = "changelog";
 const CACHE_TTL = 300_000; // 5 分钟
 
 interface GitHubAsset {
@@ -163,12 +165,13 @@ async function fetchAllGitHubReleases(): Promise<GitHubRelease[]> {
 
 /** 获取经过过滤和排序的全量 release 列表（带缓存） */
 async function getCachedReleases(since: string): Promise<FilteredRelease[]> {
-  if (!allCache || Date.now() - allCache.timestamp > CACHE_TTL) {
+  let all = getCached<FilteredRelease[]>(CACHE_KEY, CACHE_TTL);
+  if (!all) {
     const raw = await fetchAllGitHubReleases();
 
     // 只保留 v* 客户端 release；extension-v* / website-v* 组件 release
     // 不属于 App 更新日志（且其 tag 无法按 semver 解析）
-    const filtered = raw
+    all = raw
       .filter((r) => !r.draft && !r.prerelease && /^v\d/.test(r.tag_name))
       .sort(
         (a, b) =>
@@ -190,10 +193,10 @@ async function getCachedReleases(since: string): Promise<FilteredRelease[]> {
           })),
       }));
 
-    allCache = { releases: filtered, timestamp: Date.now() };
+    setCached(CACHE_KEY, all);
   }
 
-  let releases = allCache.releases;
+  let releases = all;
 
   if (since) {
     const sinceVer = parseVersion(since);

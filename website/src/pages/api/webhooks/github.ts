@@ -24,6 +24,7 @@ import {
   SMTP_USER,
   SMTP_PASS,
 } from "astro:env/server";
+import { bustApiCaches } from "../../../lib/api-cache";
 
 export const prerender = false;
 
@@ -204,6 +205,33 @@ export const POST: APIRoute = async ({ request }) => {
 
   // 3. 检查事件类型
   const event = request.headers.get("x-github-event");
+
+  // release 事件：发版后立即清除 /api/release 与 /api/changelog 的进程内缓存，
+  // 保证官网下载地址即时指向新版本（配合 GitHub Actions 发版流程）
+  if (event === "release") {
+    let action = "";
+    try {
+      action = (JSON.parse(rawBody) as { action?: string }).action ?? "";
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (action === "published" || action === "edited" || action === "deleted") {
+      bustApiCaches();
+      console.log(`[webhook] Release ${action}, API caches busted`);
+      return new Response(JSON.stringify({ ok: true, busted: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, skipped: action }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   if (event !== "issue_comment") {
     // 非评论事件，静默接受
     return new Response(

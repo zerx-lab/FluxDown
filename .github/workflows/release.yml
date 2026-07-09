@@ -1516,7 +1516,7 @@ jobs:
           path: release-assets/
           merge-multiple: true
 
-      # 生成校验和（供用户校验 + Scoop autoupdate 的 hash.url 引用）
+      # 生成校验和（供用户校验）
       - name: Generate SHA256 checksums
         working-directory: release-assets
         run: sha256sum * > SHA256SUMS.txt
@@ -2047,73 +2047,6 @@ jobs:
           generate_release_notes: false
           draft: false
           make_latest: "false"
-
-  # ── Release 后置 Job: 自动更新自托管 Scoop bucket manifest（bucket/fluxdown.json）──
-  # 桌面客户端 release 成功后，用本次版本号 + 真实 SHA256 刷新 manifest 并回推默认分支，
-  # 使 `scoop bucket add fluxdown https://github.com/zerx-lab/FluxDown` 的用户始终装到最新版。
-  # 官方 bucket（ScoopInstaller/Extras）另有 excavator 机器人按 autoupdate 段自动更新，无需此 job。
-  update-scoop-bucket:
-    name: Update Scoop Bucket
-    runs-on: ubuntu-latest
-    needs: release-app
-    permissions:
-      contents: write
-
-    steps:
-      # 检出默认分支（非 tag 的 detached HEAD），以便 commit 回推
-      - name: Checkout default branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
-
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-
-      # 从已发布的 release 资产下载 Windows 便携版，计算真实 SHA256 并写入 manifest
-      - name: Update manifest (version + url + hash)
-        env:
-          VERSION: ${{ steps.version.outputs.VERSION }}
-        run: |
-          set -euo pipefail
-          BASE="https://github.com/${{ github.repository }}/releases/download/v${VERSION}"
-          X64_ZIP="FluxDown-${VERSION}-windows-x64-portable.zip"
-          ARM_ZIP="FluxDown-${VERSION}-windows-arm64-portable.zip"
-          curl -fsSL -o x64.zip "${BASE}/${X64_ZIP}"
-          curl -fsSL -o arm.zip "${BASE}/${ARM_ZIP}"
-          X64_HASH=$(sha256sum x64.zip | awk '{print $1}')
-          ARM_HASH=$(sha256sum arm.zip | awk '{print $1}')
-          rm -f x64.zip arm.zip
-          python3 - <<PY
-          import json
-          p = "bucket/fluxdown.json"
-          m = json.load(open(p))
-          v = "${VERSION}"
-          base = "${BASE}"
-          m["version"] = v
-          m["architecture"]["64bit"]["url"] = f"{base}/${X64_ZIP}"
-          m["architecture"]["64bit"]["hash"] = "${X64_HASH}"
-          m["architecture"]["arm64"]["url"] = f"{base}/${ARM_ZIP}"
-          m["architecture"]["arm64"]["hash"] = "${ARM_HASH}"
-          json.dump(m, open(p, "w"), indent=4, ensure_ascii=False)
-          open(p, "a").write("\n")
-          PY
-          echo "── Updated bucket/fluxdown.json ──"
-          cat bucket/fluxdown.json
-
-      - name: Commit & push manifest
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- bucket/fluxdown.json; then
-            echo "Manifest already up to date — nothing to commit"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bucket/fluxdown.json
-          git commit -m "chore(scoop): bump manifest to v${{ steps.version.outputs.VERSION }} [skip ci]"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
 
   # ── 最终 Job: 清理 GitHub Actions Artifact，仅保留当前 tag 这一组 ──
   # 原因：Free 账号 artifact 配额仅 500MB，每次 release 会上传 ~400MB

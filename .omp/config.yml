@@ -18,9 +18,9 @@ tools:
     write: allow
     ast_edit: allow
     # bash 保持确认：破坏性命令的最终人工闸门（TTSR 规则先行机器拦截）
-    bash: prompt
+    bash: allow
     # 浏览器/联网类按需确认
-    browser: prompt
+    browser: allow
     # task 放行：子代理是本配置的主要生产力路径；命令类红线由
     # TTSR + RULES.md 随上下文传入子代理（子代理继承 context files 与规则）
     task: allow

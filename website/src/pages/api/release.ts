@@ -34,11 +34,12 @@
 
 import type { APIRoute } from "astro";
 import { GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
+import { getCached, setCached } from "../../lib/api-cache";
 
 export const prerender = false;
 
-// ── 缓存：避免每次请求都打 GitHub API（12 小时）──
-let cache: { data: unknown; timestamp: number } | null = null;
+// ── 缓存：避免每次请求都打 GitHub API（12 小时；release webhook 会主动清除）──
+const CACHE_KEY = "release";
 const CACHE_TTL = 12 * 60 * 60 * 1000;
 
 // ── 历史基础下载量 ──
@@ -66,12 +67,13 @@ interface GitHubRelease {
 
 export const GET: APIRoute = async () => {
   // 检查缓存
-  if (cache && Date.now() - cache.timestamp < CACHE_TTL) {
-    return new Response(JSON.stringify(cache.data), {
+  const cached = getCached<unknown>(CACHE_KEY, CACHE_TTL);
+  if (cached) {
+    return new Response(JSON.stringify(cached), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
-        "Cache-Control": "public, s-maxage=43200, stale-while-revalidate=3600",
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
       },
     });
   }
@@ -374,13 +376,13 @@ export const GET: APIRoute = async () => {
     };
 
     // 更新缓存
-    cache = { data, timestamp: Date.now() };
+    setCached(CACHE_KEY, data);
 
     return new Response(JSON.stringify(data), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
-        "Cache-Control": "public, s-maxage=43200, stale-while-revalidate=3600",
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
       },
     });
   } catch (err) {
