@@ -395,6 +395,9 @@ pub async fn run_coordinated_download(
     url: &str,
     dest: &Path,
     total_bytes: i64,
+    // `total_bytes` 是否为【未经 probe 验证的估计值】（fresh hint 模式）。透传至
+    // do_segment 决定 Content-Range 分母的扩容容差（估计值→零容差）。
+    size_is_estimate: bool,
     initial_segment_count: i32,
     client: &Client,
     db: &Db,
@@ -831,6 +834,7 @@ pub async fn run_coordinated_download(
             url.to_string(),
             dest.to_path_buf(),
             effective_total_bytes,
+            size_is_estimate,
             client.clone(),
             worker_cancel.clone(),
             conn_sensitive.clone(),
@@ -1829,6 +1833,7 @@ fn spawn_worker(
     url: String,
     dest: PathBuf,
     total_bytes: i64,
+    size_is_estimate: bool,
     client: Client,
     cancel_token: CancellationToken,
     conn_sensitive: Arc<AtomicBool>,
@@ -1862,6 +1867,7 @@ fn spawn_worker(
                 &conn_sensitive,
                 &total_downloaded,
                 total_bytes,
+                size_is_estimate,
                 &db,
                 &progress_tx,
                 &seg_states,
@@ -1922,6 +1928,7 @@ async fn do_segment_with_retry(
     conn_sensitive: &AtomicBool,
     total_downloaded: &AtomicI64,
     total_bytes: i64,
+    size_is_estimate: bool,
     db: &Db,
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
@@ -1947,6 +1954,7 @@ async fn do_segment_with_retry(
             conn_sensitive,
             total_downloaded,
             total_bytes,
+            size_is_estimate,
             db,
             progress_tx,
             seg_states,
@@ -1970,6 +1978,10 @@ async fn do_segment_with_retry(
             // 的数据是错位垃圾。立即返回让 coordinator 走 Path B → run_download_inner
             // 清空临时文件 + 回退单流；绝不当瞬时错误退避重试。
             Err(e @ DownloadError::RangeMisaligned(_)) => return Err(e),
+            // 服务器自报真实大小明显大于规划：系统性错误（重试必然拿到同样的
+            // Content-Range 分母），且需要上层以真实大小整体重规划、下满整文件。
+            // 立即返回，绝不当瞬时错误退避重试（BUG-HTTP-HINT-UNDERSIZED）。
+            Err(e @ DownloadError::TrueSizeLarger(_)) => return Err(e),
             // RangeNotSupported 的两义性处理：
             //   • total_downloaded==0：从未有任何段拿到过 206 → 服务器真的无视 Range
             //     （如 FnOS NAS）。立即返回让 coordinator 快速回退单流，不空烧退避。
@@ -2037,6 +2049,9 @@ async fn do_segment(
     conn_sensitive: &AtomicBool,
     total_downloaded: &AtomicI64,
     total_bytes: i64,
+    // `total_bytes` 是否为【未经 probe 验证的估计值】（fresh hint 模式）。true 时
+    // Content-Range 分母才是权威真实大小，扩容检查采零容差；见下方 size-check 注释。
+    size_is_estimate: bool,
     db: &Db,
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
@@ -2184,6 +2199,11 @@ async fn do_segment(
     // we're downloading — the resulting file would be a corrupt splice of two
     // different versions.
     //
+    // 版本一致性守卫【先于】下方的“真实大小 > 规划”扩容检查执行：文件在下载中途被
+    // 替换应被判定为【版本变化】（fail-fast），而不是先触发一次整体扩容重下、再在
+    // 陈旧 validator 上失败。（fresh hint 模式下 expected_etag 为空 → 守卫被跳过，此
+    // 次序调整只影响 probe 验证过的下载。）
+    //
     // Only check when the probe returned a non-empty value AND the segment
     // response also provides the header.  Many CDN edge servers strip these
     // headers on Range responses, so a missing header is not an error.
@@ -2210,6 +2230,45 @@ async fn do_segment(
              The file may have changed on the server during download.",
             seg_idx, expected_last_modified, resp_lm_str
         )));
+    }
+
+    // --- 服务器自报真实总大小 > 规划总大小 → 规划偏小，继续会静默截断 -------------
+    // 合法 206 的 `Content-Range: bytes X-Y/<total>` 分母是服务器【自报的真实总大小】。
+    // 当它大于本次规划的 total_bytes 时，规划区间 [0, total_bytes) 只覆盖了文件前缀——
+    // 典型：浏览器扩展在 <video> Range 流式播放【渐进上传中】的视频时抓到【当时的部分
+    // 大小】并作为 hint 传入，hint 模式跳过 probe 把偏小 hint 当权威总大小
+    // （BUG-HTTP-HINT-UNDERSIZED）。返回 TrueSizeLarger 让 run_download_inner 以真实
+    // 大小重新规划下满整文件。
+    //
+    // 漂移容差取决于 total_bytes 的【来源可信度】（size_is_estimate）：
+    //   • size_is_estimate=true（fresh hint 模式）：total_bytes 只是扩展抓到的、未经
+    //     probe 验证的猜测值，而 Content-Range 分母才是服务器自报的【权威真实大小】。
+    //     故【零容差】——只要 true_total > total_bytes（精确）即触发扩容。任何非零容差
+    //     都会重新打开静默截断窗口（例：hint 2_985_000 vs 真实 3_000_000，缺口 15_000
+    //     < 1% 容差 29_850 → 尾部 15 KB 被静默丢弃）。
+    //   • size_is_estimate=false（resume/probe 路径）：total_bytes 已被 probe/DB 校准，
+    //     与磁盘上的分段边界一致。沿用 resume 端一致的 CDN 漂移容差（1%，上限 1MB），
+    //     仅在真实大小【明显】更大时才触发，避免与 resume 的“trust DB segments”小漂移
+    //     决策相互打架；正常多段（规划值==真实大小，分母相等）永不触发，不影响吞吐。
+    if let Some(true_total) = crate::downloader::parse_content_range_total(resp.headers()) {
+        let drift_tolerance = if size_is_estimate {
+            0
+        } else {
+            (total_bytes / 100).clamp(1, 1_048_576)
+        };
+        if true_total > total_bytes + drift_tolerance {
+            log_info!(
+                "[coordinator] task {} seg {} 服务器自报真实大小 {} > 规划总大小 {}（漂移容差 \
+                 {}，size_is_estimate={}），hint 偏小/文件增长——以真实大小重新规划下满整文件",
+                task_id,
+                seg_idx,
+                true_total,
+                total_bytes,
+                drift_tolerance,
+                size_is_estimate
+            );
+            return Err(DownloadError::TrueSizeLarger(true_total));
+        }
     }
 
     // Safety net: if a Range response carries Content-Encoding, the raw
