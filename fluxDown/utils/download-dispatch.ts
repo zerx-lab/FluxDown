@@ -31,7 +31,7 @@
  * 收集并行——插入一次 loadSettings() 的 await 会拖慢这一时序，在默认的
  * "off" 模式下也会引入原版没有的延迟，不满足"remoteMode=off 时行为与改动前
  * 完全一致"的验收要求。缓存未命中（Service Worker 刚冷启动，尚未发生过
- * 任何设置读取）时按 "off" 保守处理——无条件同步调用 nmh.warmupNativeHost()，
+ * 任何设置读取）时按 "off" 保守处理——无条件同步调用 nmh.nmhWarmupNativeHost()，
  * 与原版行为完全一致；随后异步补一次缓存填充，供后续调用使用真实值。
  */
 
@@ -98,6 +98,11 @@ interface RoutingConfig {
   remote: RemoteServerConfig;
 }
 
+/** 给路由结果盖上实际处理通道的戳（供上层按通道分流通知等行为） */
+function stamp(response: ApiResponse, channel: "local" | "remote"): ApiResponse {
+  return { ...response, channel };
+}
+
 function toRoutingConfig(settings: FluxDownSettings): RoutingConfig {
   return {
     mode: settings.remoteMode,
@@ -120,19 +125,21 @@ export async function sendDownloadRequest(
   const mode = effectiveMode(cfg);
 
   if (mode === "off") {
-    return nmh.sendDownloadRequest(request);
+    return stamp(await nmh.nmhSendDownloadRequest(request), "local");
   }
   if (mode === "always") {
-    return remoteSendDownloadRequest(request, cfg.remote);
+    return stamp(await remoteSendDownloadRequest(request, cfg.remote), "remote");
   }
 
   // fallback：先 NMH，仅"不可达"或抛异常时改投远程。
   try {
-    const result = await nmh.sendDownloadRequest(request);
-    if (result.success || !isNmhUnreachable(result)) return result;
-    return remoteSendDownloadRequest(request, cfg.remote);
+    const result = await nmh.nmhSendDownloadRequest(request);
+    if (result.success || !isNmhUnreachable(result)) {
+      return stamp(result, "local");
+    }
+    return stamp(await remoteSendDownloadRequest(request, cfg.remote), "remote");
   } catch {
-    return remoteSendDownloadRequest(request, cfg.remote);
+    return stamp(await remoteSendDownloadRequest(request, cfg.remote), "remote");
   }
 }
 
@@ -143,18 +150,29 @@ export async function sendBatchDownloadRequest(
   const mode = effectiveMode(cfg);
 
   if (mode === "off") {
-    return nmh.sendBatchDownloadRequest(items);
+    return stamp(await nmh.nmhSendBatchDownloadRequest(items), "local");
   }
   if (mode === "always") {
-    return remoteSendBatchDownloadRequest(items, cfg.remote);
+    return stamp(
+      await remoteSendBatchDownloadRequest(items, cfg.remote),
+      "remote",
+    );
   }
 
   try {
-    const result = await nmh.sendBatchDownloadRequest(items);
-    if (result.success || !isNmhUnreachable(result)) return result;
-    return remoteSendBatchDownloadRequest(items, cfg.remote);
+    const result = await nmh.nmhSendBatchDownloadRequest(items);
+    if (result.success || !isNmhUnreachable(result)) {
+      return stamp(result, "local");
+    }
+    return stamp(
+      await remoteSendBatchDownloadRequest(items, cfg.remote),
+      "remote",
+    );
   } catch {
-    return remoteSendBatchDownloadRequest(items, cfg.remote);
+    return stamp(
+      await remoteSendBatchDownloadRequest(items, cfg.remote),
+      "remote",
+    );
   }
 }
 
@@ -167,7 +185,7 @@ export function warmupNativeHost(): void {
   const cfg = _settingsCache ? toRoutingConfig(_settingsCache) : null;
   if (cfg && effectiveMode(cfg) === "always") return;
 
-  nmh.warmupNativeHost();
+  nmh.nmhWarmupNativeHost();
 
   // 缓存尚未填充（SW 冷启动后首次调用）时顺带异步预热一次，不阻塞本次调用，
   // 让后续调用（以及本函数下次调用）尽快用上真实设置值。
@@ -179,7 +197,7 @@ export async function checkFluxDownAvailable(): Promise<boolean> {
   const mode = effectiveMode(cfg);
 
   if (mode === "off") {
-    return nmh.checkFluxDownAvailable();
+    return nmh.nmhCheckFluxDownAvailable();
   }
   if (mode === "always") {
     const result = await remotePing(cfg.remote);
@@ -188,7 +206,7 @@ export async function checkFluxDownAvailable(): Promise<boolean> {
 
   // fallback：NMH 或 remote 任一可达即视为可用。
   const [nmhUp, remoteUp] = await Promise.all([
-    nmh.checkFluxDownAvailable().catch(() => false),
+    nmh.nmhCheckFluxDownAvailable().catch(() => false),
     remotePing(cfg.remote)
       .then((r) => r.success === true)
       .catch(() => false),
@@ -205,7 +223,7 @@ export async function checkFluxDownAvailableWithRetry(): Promise<boolean> {
   const mode = effectiveMode(cfg);
 
   if (mode === "off") {
-    return nmh.checkFluxDownAvailableWithRetry();
+    return nmh.nmhCheckFluxDownAvailableWithRetry();
   }
   if (mode === "always") {
     const result = await remotePing(cfg.remote);
@@ -213,7 +231,7 @@ export async function checkFluxDownAvailableWithRetry(): Promise<boolean> {
   }
 
   const [nmhUp, remoteUp] = await Promise.all([
-    nmh.checkFluxDownAvailableWithRetry().catch(() => false),
+    nmh.nmhCheckFluxDownAvailableWithRetry().catch(() => false),
     remotePing(cfg.remote)
       .then((r) => r.success === true)
       .catch(() => false),

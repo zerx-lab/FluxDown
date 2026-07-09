@@ -10,6 +10,8 @@
  *  右侧停靠 = left: calc(100% - Npx)
  */
 
+import { browser } from 'wxt/browser';
+import { defineContentScript } from 'wxt/utils/define-content-script';
 import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
 import { formatFileSize, getResourceTypeIcon, groupTrackPairs } from '@/utils/resource-types';
 import type { DashManifest } from '@/utils/dash-manifest';

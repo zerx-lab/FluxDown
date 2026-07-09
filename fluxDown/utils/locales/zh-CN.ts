@@ -52,6 +52,56 @@ const zhCN = {
   "remote.testUnreachable": "无法连接到服务器，请检查地址和网络",
   "remote.testNotConfigured": "请先填写服务器地址",
   "remote.testFailed": "连接测试失败：{message}",
+  "remote.verifyRequired": "远程模式需先在配置页测试连接通过后才能选择",
+  "remote.openOptions": "配置服务器",
+
+  // Options page
+  "options.title": "FluxDown 设置",
+  "options.remoteDesc":
+    "配置 fluxdown_server 的地址与访问令牌，测试连接通过后即可在弹出窗中选择远程模式",
+  "options.verifiedState": "状态：已通过连接验证",
+  "options.unverifiedState": "状态：未验证（远程模式不可用）",
+  "options.navSettings": "设置",
+  "options.nav.general": "通用",
+  "options.nav.remote": "远程服务器",
+  "options.general.languageTitle": "界面语言",
+  "options.general.languageDesc": "选择扩展界面的语言，独立于浏览器语言",
+  "options.general.languageAuto": "自动（跟随浏览器）",
+  "options.general.themeTitle": "外观",
+  "options.general.themeDesc": "扩展界面的主题",
+  "options.theme.system": "跟随系统",
+  "options.theme.light": "浅色",
+  "options.theme.dark": "深色",
+  "options.tokenDesc": "服务端首次启动时生成的管理令牌",
+  "footer.settings": "选项",
+
+  // 任务发送通知开关
+  "options.general.notifyLocalTitle": "本地任务通知",
+  "options.general.notifyLocalDesc":
+    "任务发送到本地桌面应用时弹出桌面通知（创建成功/失败）",
+  "options.general.notifyRemoteTitle": "远程任务通知",
+  "options.general.notifyRemoteDesc":
+    "任务发送到远程服务器时弹出桌面通知（创建成功/失败）",
+
+  // 拦截规则配置
+  "options.nav.rules": "拦截规则",
+  "options.rules.extTitle": "文件扩展名",
+  "options.rules.extDesc":
+    "命中这些扩展名的下载会被拦截（智能模式下作为正向匹配）。可在下方追加自定义扩展名；内置项不可删除",
+  "options.rules.extPlaceholder": "如 .epub",
+  "options.rules.add": "添加",
+  "options.rules.builtinExts": "内置扩展名列表",
+  "options.rules.extEmpty": "暂无自定义扩展名",
+  "options.rules.extInvalid": "格式无效，示例：.epub",
+  "options.rules.extExists": "{ext} 已在列表中",
+  "options.rules.extAdded": "已添加 {ext}",
+  "options.rules.mimeTitle": "MIME 类型",
+  "options.rules.mimeDesc":
+    "智能模式下命中这些 MIME 类型的响应会被拦截。以斜杠结尾表示匹配整个类别（如 video/）",
+  "options.rules.mimePlaceholder": "如 application/epub+zip 或 video/",
+  "options.rules.mimeInvalid": "格式无效，示例：application/epub+zip 或 video/",
+  "options.rules.resetMime": "恢复默认",
+  "options.rules.mimeResetDone": "已恢复默认 MIME 列表",
 
 
   // Domain exclusion
@@ -76,6 +126,7 @@ const zhCN = {
   "notify.batchExtractFailed": "提取页面链接失败，请检查页面权限",
   "notify.downloadSent": "下载已发送",
   "notify.sentToFluxDown": "{name} 已发送到 FluxDown",
+  "notify.batchSentDetail": "{count} 个任务已发送到 FluxDown",
   "notify.sendFailed": "发送失败",
   "notify.connectionFailed": "无法连接到 FluxDown 应用: {message}",
   "notify.fallbackBrowser": "已回退到浏览器下载",

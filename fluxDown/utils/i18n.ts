@@ -97,6 +97,30 @@ export async function saveLocale(locale: string): Promise<void> {
 }
 
 /**
+ * 清除用户手动选择的语言，恢复跟随浏览器语言。
+ */
+export async function clearLocale(): Promise<void> {
+  try {
+    await browser.storage.local.remove(STORAGE_KEY);
+  } catch {
+    // 非扩展环境忽略
+  }
+  setLocale(detectBrowserLocale());
+}
+
+/**
+ * 读取用户手动保存的语言；未手动选择过（跟随浏览器）时返回 null。
+ */
+export async function getSavedLocale(): Promise<string | null> {
+  try {
+    const result = await browser.storage.local.get(STORAGE_KEY);
+    return result[STORAGE_KEY] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 获取当前语言
  */
 export function getLocale(): string {

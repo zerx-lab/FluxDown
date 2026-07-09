@@ -1,0 +1,237 @@
+/* options 页在整页 tab 中展示：覆盖 popup 的固定 360px 宽度约束 */
+body {
+  width: auto;
+  max-height: none;
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+/* ===== 侧边栏 + 内容双栏布局 ===== */
+.opt-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.opt-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  flex-shrink: 0;
+  padding: 20px 12px 16px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  box-sizing: border-box;
+}
+
+.opt-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 18px;
+}
+
+.opt-logo .title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.opt-nav-group {
+  padding: 0 8px 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.opt-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.opt-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.opt-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.opt-nav-item.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.opt-sidebar-footer {
+  margin-top: auto;
+  padding: 12px 8px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* ===== 内容区 ===== */
+.opt-content {
+  flex: 1;
+  min-width: 0;
+  padding: 28px 40px 60px;
+}
+
+.opt-panel {
+  max-width: 760px;
+}
+
+.opt-panel-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* 设置行：左侧标题+说明，右侧控件（参考沉浸式翻译设置页布局） */
+.opt-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.opt-row-info {
+  flex: 0 1 320px;
+}
+
+.opt-row-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.opt-row-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.opt-row-control {
+  flex: 1 1 320px;
+  max-width: 380px;
+}
+
+.opt-row-control select,
+.opt-row-control input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.opt-row-control-inline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.opt-row-control-inline .hint {
+  text-align: right;
+}
+
+.opt-row-control input {
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.opt-row-control input:focus {
+  border-color: var(--accent);
+}
+
+.opt-row-control input::placeholder {
+  color: var(--input-placeholder);
+}
+
+.opt-row-control select {
+  padding: 6px 10px;
+}
+
+/* ===== 拦截规则面板 ===== */
+/* 堆叠行：说明在上、编辑器在下（列表内容宽，不适合左右分栏） */
+.opt-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.opt-row-stack .opt-row-info {
+  flex: none;
+  max-width: none;
+}
+
+.opt-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.opt-rule-editor .ext-input-row {
+  margin-bottom: 0;
+  max-width: 380px;
+}
+
+.opt-rule-editor .ext-input-row input {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.opt-rule-editor .ext-input-row input:focus {
+  border-color: var(--accent);
+}
+
+/* 配置页空间充裕，放开 popup 的标签容器高度限制 */
+.opt-tags {
+  max-height: none;
+}
+
+.opt-tags:empty::after {
+  content: attr(data-empty);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.opt-builtin summary {
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.opt-builtin[open] summary {
+  margin-bottom: 6px;
+}
+
+.opt-rule-actions {
+  display: flex;
+  justify-content: flex-end;
+}

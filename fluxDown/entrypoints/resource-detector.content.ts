@@ -10,6 +10,8 @@
  * 4. 将检测到的资源通过 runtime.sendMessage 转发给 Background
  */
 
+import { browser } from 'wxt/browser';
+import { defineContentScript } from 'wxt/utils/define-content-script';
 import type {
   ResourceMessagePayload,
   FetchInterceptDetail,

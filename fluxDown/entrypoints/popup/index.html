@@ -33,6 +33,8 @@
       </div>
     </header>
 
+    <!-- 中部滚动区：header/footer 固定，仅此区域滚动 -->
+    <div class="popup-body">
     <!-- Main switch -->
     <section class="section switch-section">
       <div class="row">
@@ -100,29 +102,19 @@
     <section class="section">
       <div class="section-title" data-i18n="remote.title">Remote Download Source</div>
       <div class="row">
-        <span class="label" data-i18n="remote.mode">Mode</span>
+        <span class="label-help">
+          <span class="label" data-i18n="remote.mode">Mode</span>
+          <span class="help-icon" id="remoteModeHelp" tabindex="0">?</span>
+        </span>
         <select id="remoteModeSelect">
           <option value="off" data-i18n="remote.modeOff">Desktop Only</option>
           <option value="fallback" data-i18n="remote.modeFallback">Desktop First</option>
           <option value="always" data-i18n="remote.modeAlways">Remote Only</option>
         </select>
       </div>
-      <div class="mode-hint" id="remoteModeHint" data-i18n="remote.modeHintOff">Send downloads to the desktop app via Native Messaging only</div>
       <div class="row">
-        <span class="label" data-i18n="remote.serverUrl">Server Address</span>
-      </div>
-      <div class="ext-input-row">
-        <input type="text" id="remoteUrlInput" data-i18n-placeholder="remote.serverUrlPlaceholder" placeholder="e.g. http://192.168.1.10:17800" autocomplete="off">
-      </div>
-      <div class="row">
-        <span class="label" data-i18n="remote.token">Access Token</span>
-      </div>
-      <div class="ext-input-row">
-        <input type="password" id="remoteTokenInput" data-i18n-placeholder="remote.tokenPlaceholder" placeholder="Enter access token" autocomplete="off">
-      </div>
-      <div class="row">
-        <span class="hint" id="remoteTestResult"></span>
-        <button class="btn-small accent" id="remoteTestBtn" data-i18n="remote.testConnection">Test Connection</button>
+        <span class="hint" id="remoteServerSummary"></span>
+        <button class="btn-small accent" id="openOptionsBtn" data-i18n="remote.openOptions">Configure Server</button>
       </div>
     </section>
     <!-- Excluded domains -->
@@ -151,11 +143,20 @@
         <!-- Dynamically generated -->
       </div>
     </section>
+    </div>
 
     <!-- Footer -->
     <footer class="footer">
-      <span id="versionLabel">v&hellip;</span>
-      <button class="link-btn" id="resetStatsBtn" data-i18n="stats.reset">Reset Stats</button>
+      <button class="link-btn footer-settings" id="openSettingsBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span data-i18n="footer.settings">Options</span>
+      </button>
+      <div class="footer-right">
+        <span id="versionLabel">v&hellip;</span>
+        <button class="link-btn" id="resetStatsBtn" data-i18n="stats.reset">Reset Stats</button>
+      </div>
     </footer>
   </div>
 

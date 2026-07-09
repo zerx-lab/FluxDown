@@ -12,10 +12,10 @@
  * - 多语言支持（中/英）
  */
 
+import { browser } from 'wxt/browser';
 import { initI18n, applyI18nToDOM, t, getLocale, saveLocale } from '@/utils/i18n';
 import { checkFluxDownAvailable } from '@/utils/download-dispatch';
 import { loadSettings, saveSettings } from '@/utils/settings';
-import { remotePing } from '@/utils/remote-server';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -29,13 +29,12 @@ const interceptModeSelect = $<HTMLSelectElement>('#interceptModeSelect');
 const modeHint = $('#modeHint')!;
 const minSizeSelect = $<HTMLSelectElement>('#minSizeSelect');
 
-// 远程下载源
+// 远程下载源（url/token/测试连接已迁移到 options 配置页）
 const remoteModeSelect = $<HTMLSelectElement>('#remoteModeSelect');
-const remoteModeHint = $('#remoteModeHint')!;
-const remoteUrlInput = $<HTMLInputElement>('#remoteUrlInput');
-const remoteTokenInput = $<HTMLInputElement>('#remoteTokenInput');
-const remoteTestBtn = $<HTMLButtonElement>('#remoteTestBtn');
-const remoteTestResult = $('#remoteTestResult')!;
+const remoteModeHelp = $('#remoteModeHelp')!;
+const remoteServerSummary = $('#remoteServerSummary')!;
+const openOptionsBtn = $<HTMLButtonElement>('#openOptionsBtn');
+const openSettingsBtn = $<HTMLButtonElement>('#openSettingsBtn');
 const themeBtn = $<HTMLButtonElement>('#themeBtn');
 const langBtn = $<HTMLButtonElement>('#langBtn');
 const langLabel = langBtn.querySelector('.lang-label')!;
@@ -74,11 +73,6 @@ function applyTheme(mode: ThemeMode) {
   }
 }
 
-async function initTheme() {
-  const result = await browser.storage.local.get('theme') ?? {};
-  const saved: ThemeMode = result.theme || 'system';
-  applyTheme(saved);
-}
 
 async function toggleTheme() {
   const root = document.documentElement;
@@ -173,18 +167,23 @@ async function addDomain(domain: string) {
 }
 
 // ===== 统计 =====
-async function loadStats() {
-  const result = await browser.storage.local.get('stats') ?? {};
-  const stats = result.stats || { sent: 0, failed: 0, date: '' };
+async function loadStats(preloaded?: { sent?: number; failed?: number; date?: string }) {
+  const stats =
+    preloaded ??
+    ((await browser.storage.local.get('stats'))?.stats as
+      | { sent?: number; failed?: number; date?: string }
+      | undefined) ??
+    { sent: 0, failed: 0, date: '' };
 
   // 检查是否是今天的统计
   const today = new Date().toDateString();
   if (stats.date !== today) {
-    // 新的一天，重置
-    const resetStats = { sent: 0, failed: 0, date: today };
-    await browser.storage.local.set({ stats: resetStats });
+    // 新的一天，重置（先渲染再写盘，不阻塞 UI）
     statSent.textContent = '0';
     statFailed.textContent = '0';
+    void browser.storage.local.set({
+      stats: { sent: 0, failed: 0, date: today },
+    });
     return;
   }
 
@@ -225,25 +224,25 @@ async function refreshConnectionStatus(): Promise<void> {
 }
 
 // ===== 初始化 =====
+// 性能关键路径：popup 弹出到首次完整渲染。
+// 1. 所有 storage 读取合并为一轮并行（i18n / 主题+悬浮球+统计 / 设置）；
+// 2. 探活（refreshConnectionStatus）不再阻塞 UI 回显——off 模式下它要
+//    connectNative 冷启动 NMH 进程、always 模式下 remotePing 超时可达 4s，
+//    此前与 loadSettings 绑在同一个 Promise.all 里是弹出卡顿的主因；
+//    徽标静态 HTML 默认即"检测中"，探活结果异步落格。
 async function init() {
-  // 初始化 i18n（必须先于 UI 渲染）
-  await initI18n();
+  const [, localState, settings] = await Promise.all([
+    initI18n(),
+    browser.storage.local.get(['theme', 'fluxdown_dot_visible', 'stats']),
+    loadSettings(),
+  ]);
+
   applyI18nToDOM();
   updateLangButton();
-
-  await initTheme();
+  applyTheme((localState?.theme as ThemeMode) || 'system');
 
   // 从 manifest 动态读取版本号（CI 构建时由 git tag 写入）
   versionLabel.textContent = `v${browser.runtime.getManifest().version}`;
-
-  // 直接查询连接状态和加载设置，不经过 background sendMessage。
-  // 原因：Firefox MV2 中 WXT 框架会注册自己的 onMessage 监听器（用于 HMR），
-  // 它先于我们的监听器返回 undefined，导致 popup 的 sendMessage 始终收到 undefined。
-  // 探活走 download-dispatch：按 remoteMode 适配桌面（NMH）/ 远程 / 两者任一。
-  const [, settings] = await Promise.all([
-    refreshConnectionStatus(),
-    loadSettings(),
-  ]);
 
   // 更新设置 UI
   enableToggle.checked = settings.enabled;
@@ -255,16 +254,20 @@ async function init() {
 
   // 远程下载源设置
   remoteModeSelect.value = settings.remoteMode || 'off';
-  updateRemoteModeHint(settings.remoteMode || 'off');
-  remoteUrlInput.value = settings.remoteUrl || '';
-  remoteTokenInput.value = settings.remoteToken || '';
+  refreshRemoteHelpTooltip();
+  updateRemoteModeGate(settings.remoteVerified === true, settings.remoteUrl || '');
 
   // 悬浮球可见状态（未设置时默认显示）
-  const dotVisResult = await browser.storage.local.get('fluxdown_dot_visible') ?? {};
-  dotVisibleToggle.checked = dotVisResult['fluxdown_dot_visible'] !== false;
+  dotVisibleToggle.checked = localState?.['fluxdown_dot_visible'] !== false;
 
-  // 加载统计
-  await loadStats();
+  // 统计（数据已随批量读取取回）
+  await loadStats(localState?.stats);
+
+  // 连接探活：fire-and-forget，结果异步更新徽标，不阻塞弹出渲染。
+  // 直接查询而不经过 background sendMessage（Firefox MV2 下 WXT 的 HMR
+  // onMessage 监听器会抢答 undefined）；探活走 download-dispatch，
+  // 按 remoteMode 适配桌面（NMH）/ 远程 / 两者任一。
+  void refreshConnectionStatus().catch(() => {});
 }
 
 function updateEnableHint(enabled: boolean) {
@@ -294,17 +297,30 @@ const REMOTE_MODE_HINT_KEYS: Record<string, RemoteModeHintKey> = {
   always: 'remote.modeHintAlways',
 };
 
-function updateRemoteModeHint(mode: string) {
-  const key = REMOTE_MODE_HINT_KEYS[mode];
-  remoteModeHint.textContent = key ? t(key) : '';
+// 提示合并到「?」图标的悬浮 tooltip（title），不再占用面板空间。
+// 两个来源：当前模式说明 + 未验证时的解锁指引，各自更新后统一拼装。
+let _remoteHelpVerified = true;
+
+function refreshRemoteHelpTooltip() {
+  const key = REMOTE_MODE_HINT_KEYS[remoteModeSelect.value];
+  const parts = [key ? t(key) : ''];
+  if (!_remoteHelpVerified) parts.push(t('remote.verifyRequired'));
+  remoteModeHelp.setAttribute('title', parts.filter(Boolean).join('\n'));
 }
 
-/** 把 remote-server.ts 返回的稳定 message 前缀映射为本地化的测试连接错误文案 */
-function remoteTestErrorMessage(message?: string): string {
-  if (message === 'remote_auth_failed') return t('remote.testAuthFailed');
-  if (message === 'remote_not_configured') return t('remote.testNotConfigured');
-  if (message && message.startsWith('remote_unreachable')) return t('remote.testUnreachable');
-  return t('remote.testFailed', { message: message || 'unknown' });
+/**
+ * 远程模式门禁：仅当远程配置已在配置页通过「测试连接」（含 token 校验）时，
+ * 才允许选择 fallback/always；未验证时禁用这两个选项，解锁指引并入 tooltip。
+ */
+function updateRemoteModeGate(verified: boolean, remoteUrl: string) {
+  for (const opt of remoteModeSelect.options) {
+    if (opt.value !== 'off') opt.disabled = !verified;
+  }
+  _remoteHelpVerified = verified;
+  refreshRemoteHelpTooltip();
+  remoteServerSummary.textContent = remoteUrl
+    ? remoteUrl.replace(/^https?:\/\//, '')
+    : '';
 }
 
 // ===== 语言切换 =====
@@ -362,58 +378,22 @@ minSizeSelect.addEventListener('change', async () => {
 // 远程下载源 - 模式
 remoteModeSelect.addEventListener('change', async () => {
   const mode = remoteModeSelect.value as 'off' | 'fallback' | 'always';
-  updateRemoteModeHint(mode);
+  refreshRemoteHelpTooltip();
   await saveSettings({ remoteMode: mode });
   await refreshConnectionStatus(); // 模式切换影响探活目标，立即刷新徽标
 });
 
-// 远程下载源 - 服务器地址（失焦保存；saveSettings 内部会去除尾部斜杠，
-// 保存后读回以保持输入框显示与实际存储值一致）
-remoteUrlInput.addEventListener('change', async () => {
-  await saveSettings({ remoteUrl: remoteUrlInput.value.trim() });
-  const current = await loadSettings();
-  remoteUrlInput.value = current.remoteUrl;
-  await refreshConnectionStatus();
+// 打开 options 配置页（url/token/测试连接在配置页维护）
+// 远程区块入口：直达远程服务器面板（hash 导航）
+openOptionsBtn.addEventListener('click', () => {
+  browser.tabs.create({ url: browser.runtime.getURL('/options.html#remote') });
+  window.close();
 });
 
-// 远程下载源 - Token
-remoteTokenInput.addEventListener('change', async () => {
-  await saveSettings({ remoteToken: remoteTokenInput.value });
-  await refreshConnectionStatus();
-});
-
-// 远程下载源 - 测试连接
-remoteTestBtn.addEventListener('click', async () => {
-  const remoteUrl = remoteUrlInput.value.trim().replace(/\/+$/, '');
-  if (!remoteUrl) {
-    remoteTestResult.textContent = t('remote.testNotConfigured');
-    showToast(t('remote.testNotConfigured'), 'error');
-    return;
-  }
-  remoteTestBtn.disabled = true;
-  remoteTestResult.textContent = t('remote.testing');
-  try {
-    const result = await remotePing({ remoteUrl, remoteToken: remoteTokenInput.value });
-    if (result.success) {
-      const msg = t('remote.testSuccess', {
-        app: result.app || 'FluxDown',
-        version: result.version || '',
-      });
-      remoteTestResult.textContent = msg;
-      showToast(msg, 'success');
-    } else {
-      const msg = remoteTestErrorMessage(result.message);
-      remoteTestResult.textContent = msg;
-      showToast(msg, 'error');
-    }
-  } catch (e) {
-    const msg = t('remote.testFailed', { message: String(e) });
-    remoteTestResult.textContent = msg;
-    showToast(msg, 'error');
-  } finally {
-    remoteTestBtn.disabled = false;
-  }
-  await refreshConnectionStatus(); // 测试结果直接反映到头部徽标
+// 左下角"选项"入口：打开配置页默认面板
+openSettingsBtn.addEventListener('click', () => {
+  browser.runtime.openOptionsPage();
+  window.close();
 });
 // 域名 - 显示手动输入框
 addDomainManualBtn.addEventListener('click', () => {

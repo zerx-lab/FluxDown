@@ -1,6 +1,10 @@
 import { defineConfig } from "wxt";
 
 export default defineConfig({
+  // 关闭 unimport 自动导入：utils/ 下 download-dispatch 与 native-messaging
+  // 曾因同名导出触发 "Duplicated imports" 警告；全项目已改为显式导入
+  // （browser 来自 wxt/browser，define* 来自 wxt/utils/*），不再需要魔法全局。
+  imports: false,
   zip: {
     excludeSources: ["*.zip", "*.html", "stats.html"],
   },

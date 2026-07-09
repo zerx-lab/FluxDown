@@ -161,3 +161,35 @@ export async function remotePing(
     version: typeof data?.version === "string" ? data.version : undefined,
   };
 }
+
+/**
+ * 连接验证：/ping 探活 + 带 token 请求 `GET {remoteUrl}/api/v1/info` 校验鉴权。
+ *
+ * /ping 无鉴权，token 填错也会 200——只用它做「测试连接」会误报成功。
+ * fluxdown_server 的管理 API 恒开且强制 token，/api/v1/info 是最轻量的
+ * 鉴权校验端点：401/403 → token 错误。404（指向管理 API 关闭的桌面端等
+ * 无法校验 token 的宿主）不视为失败，退化为 ping 结果。
+ * 用于 popup/options 的「测试连接」与远程模式解锁（settings.remoteVerified）。
+ */
+export async function remoteVerify(
+  cfg: RemoteServerConfig,
+): Promise<RemotePingResult> {
+  const ping = await remotePing(cfg);
+  if (!ping.success) return ping;
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${cfg.remoteUrl}/api/v1/info`, {
+      method: "GET",
+      headers: buildHeaders(cfg),
+      signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+    });
+  } catch (err) {
+    return { success: false, message: `remote_unreachable: ${String(err)}` };
+  }
+
+  if (resp.status === 401 || resp.status === 403) {
+    return { success: false, message: "remote_auth_failed" };
+  }
+  return ping;
+}

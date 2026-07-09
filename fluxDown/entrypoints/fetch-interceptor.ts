@@ -9,6 +9,7 @@
 
 // cat-catch(GPL-3.0) 嗅探思路的复用：JSON 内嵌媒体 URL 深扫见 utils/media-sniff.ts 归属说明。
 // 本文件新增的响应体流式部分读取为 FluxDown 自研，非 cat-catch 代码移植。
+import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import {
   isHttpUrl,
   isSkippableCt,

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="manifest.open_in_tab" content="true">
+  <title>FluxDown Settings</title>
+  <link rel="stylesheet" href="../popup/style.css">
+  <link rel="stylesheet" href="./options.css">
+</head>
+<body>
+  <div class="opt-layout">
+    <!-- Sidebar -->
+    <aside class="opt-sidebar">
+      <div class="logo opt-logo">
+        <img src="/icon/fluxdown_logo.png" alt="FluxDown" width="24" height="24">
+        <span class="title">FluxDown</span>
+      </div>
+
+      <div class="opt-nav-group" data-i18n="options.navSettings">Settings</div>
+      <nav class="opt-nav">
+        <button class="opt-nav-item active" data-panel="general">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+          </svg>
+          <span data-i18n="options.nav.general">General</span>
+        </button>
+        <button class="opt-nav-item" data-panel="remote">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+          <span data-i18n="options.nav.remote">Remote Server</span>
+        </button>
+        <button class="opt-nav-item" data-panel="rules">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+          </svg>
+          <span data-i18n="options.nav.rules">Intercept Rules</span>
+        </button>
+      </nav>
+
+      <div class="opt-sidebar-footer">
+        <span id="versionLabel"></span>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <main class="opt-content">
+      <!-- General panel -->
+      <div class="opt-panel" id="panel-general">
+        <h1 class="opt-panel-title" data-i18n="options.nav.general">General</h1>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="options.general.languageTitle">Interface Language</div>
+            <div class="opt-row-desc" data-i18n="options.general.languageDesc">Choose the extension UI language, independent of the browser language.</div>
+          </div>
+          <div class="opt-row-control">
+            <select id="languageSelect">
+              <option value="auto" data-i18n="options.general.languageAuto">Auto (follow browser)</option>
+              <option value="zh-CN">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="options.general.themeTitle">Appearance</div>
+            <div class="opt-row-desc" data-i18n="options.general.themeDesc">Theme of the extension UI.</div>
+          </div>
+          <div class="opt-row-control">
+            <select id="themeSelect">
+              <option value="system" data-i18n="options.theme.system">Follow System</option>
+              <option value="light" data-i18n="options.theme.light">Light</option>
+              <option value="dark" data-i18n="options.theme.dark">Dark</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="options.general.notifyLocalTitle">Local Task Notifications</div>
+            <div class="opt-row-desc" data-i18n="options.general.notifyLocalDesc">Show a desktop notification when a task is sent to the local desktop app (created / failed).</div>
+          </div>
+          <div class="opt-row-control opt-row-control-inline">
+            <label class="toggle">
+              <input type="checkbox" id="notifyLocalToggle" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="options.general.notifyRemoteTitle">Remote Task Notifications</div>
+            <div class="opt-row-desc" data-i18n="options.general.notifyRemoteDesc">Show a desktop notification when a task is sent to the remote server (created / failed).</div>
+          </div>
+          <div class="opt-row-control opt-row-control-inline">
+            <label class="toggle">
+              <input type="checkbox" id="notifyRemoteToggle" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Remote server panel -->
+      <div class="opt-panel hidden" id="panel-remote">
+        <h1 class="opt-panel-title" data-i18n="options.nav.remote">Remote Server</h1>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="remote.serverUrl">Server Address</div>
+            <div class="opt-row-desc" data-i18n="options.remoteDesc">Configure the fluxdown_server address and access token. Remote modes unlock after the connection test passes.</div>
+          </div>
+          <div class="opt-row-control">
+            <input type="text" id="remoteUrlInput" data-i18n-placeholder="remote.serverUrlPlaceholder" placeholder="e.g. http://192.168.1.10:17800" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="remote.token">Access Token</div>
+            <div class="opt-row-desc" data-i18n="options.tokenDesc">Management token generated by the server on first start.</div>
+          </div>
+          <div class="opt-row-control">
+            <input type="password" id="remoteTokenInput" data-i18n-placeholder="remote.tokenPlaceholder" placeholder="Enter access token" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="remote.testConnection">Test Connection</div>
+            <div class="opt-row-desc" id="verifyStateHint"></div>
+          </div>
+          <div class="opt-row-control opt-row-control-inline">
+            <span class="hint" id="remoteTestResult"></span>
+            <button class="btn-small accent" id="remoteTestBtn" data-i18n="remote.testConnection">Test Connection</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Intercept rules panel -->
+      <div class="opt-panel hidden" id="panel-rules">
+        <h1 class="opt-panel-title" data-i18n="options.nav.rules">Intercept Rules</h1>
+
+        <div class="opt-row opt-row-stack">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="options.rules.extTitle">File Extensions</div>
+            <div class="opt-row-desc" data-i18n="options.rules.extDesc">Downloads matching these extensions are intercepted (Smart / Extension modes). Add your own below; built-in entries cannot be removed.</div>
+          </div>
+          <div class="opt-rule-editor">
+            <div class="ext-input-row">
+              <input type="text" id="extInput" data-i18n-placeholder="options.rules.extPlaceholder" placeholder="e.g. .epub" autocomplete="off">
+              <button class="btn-small accent" id="extAddBtn" data-i18n="options.rules.add">Add</button>
+            </div>
+            <div class="tags-container opt-tags" id="customExtList"></div>
+            <details class="opt-builtin">
+              <summary data-i18n="options.rules.builtinExts">Built-in extensions</summary>
+              <div class="tags-container opt-tags" id="builtinExtList"></div>
+            </details>
+          </div>
+        </div>
+
+        <div class="opt-row opt-row-stack">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="options.rules.mimeTitle">MIME Types</div>
+            <div class="opt-row-desc" data-i18n="options.rules.mimeDesc">Responses matching these MIME types are intercepted in Smart mode. A trailing slash matches the whole family (e.g. video/).</div>
+          </div>
+          <div class="opt-rule-editor">
+            <div class="ext-input-row">
+              <input type="text" id="mimeInput" data-i18n-placeholder="options.rules.mimePlaceholder" placeholder="e.g. application/epub+zip or video/" autocomplete="off">
+              <button class="btn-small accent" id="mimeAddBtn" data-i18n="options.rules.add">Add</button>
+            </div>
+            <div class="tags-container opt-tags" id="mimeList"></div>
+            <div class="opt-rule-actions">
+              <button class="btn-small" id="mimeResetBtn" data-i18n="options.rules.resetMime">Restore Defaults</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="./main.ts" type="module"></script>
+</body>
+</html>

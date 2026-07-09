@@ -73,6 +73,12 @@ export interface ApiResponse {
   success: boolean;
   message?: string;
   taskId?: string;
+  /**
+   * 实际处理本次请求的通道，由 download-dispatch 路由层回填：
+   * "local"=桌面 App（NMH），"remote"=远程 fluxdown_server。
+   * 直接调用 native-messaging/remote-server 时不设置。
+   */
+  channel?: "local" | "remote";
 }
 
 export interface BatchDownloadItem {
@@ -254,13 +260,13 @@ async function sendWithRetry(
 // 导出接口（与原 HTTP 版本完全兼容）
 // ──────────────────────────────────────────────────────────────
 
-export async function sendDownloadRequest(
+export async function nmhSendDownloadRequest(
   request: DownloadRequest,
 ): Promise<ApiResponse> {
   return sendWithRetry("download", request as Record<string, any>);
 }
 
-export async function sendBatchDownloadRequest(
+export async function nmhSendBatchDownloadRequest(
   items: BatchDownloadItem[],
 ): Promise<ApiResponse> {
   if (items.length === 0) {
@@ -273,7 +279,7 @@ export async function sendBatchDownloadRequest(
   // newline-joining URLs discards all per-item auth metadata.
   const results = await Promise.allSettled(
     items.map((item) =>
-      sendDownloadRequest({
+      nmhSendDownloadRequest({
         url: item.url,
         filename: item.filename || "",
         referrer: item.referrer || "",
@@ -329,7 +335,7 @@ let _warmupInFlight: Promise<ApiResponse> | null = null;
  * 旧版 NMH 会把 warmup 当普通消息转发给 App（App 回 unknown action），
  * 但转发前同样会 auto-launch——预热效果不变。
  */
-export function warmupNativeHost(): void {
+export function nmhWarmupNativeHost(): void {
   if (_warmupInFlight) return;
   _warmupInFlight = sendMessage("warmup").finally(() => {
     _warmupInFlight = null;
@@ -338,7 +344,7 @@ export function warmupNativeHost(): void {
   _warmupInFlight.catch(() => {});
 }
 
-export async function checkFluxDownAvailable(): Promise<boolean> {
+export async function nmhCheckFluxDownAvailable(): Promise<boolean> {
   const result = await sendMessage("ping");
   return result.success === true;
 }
@@ -346,12 +352,12 @@ export async function checkFluxDownAvailable(): Promise<boolean> {
 /**
  * 带一次重连重试的可用性探测。
  *
- * 与 checkFluxDownAvailable 的区别：首次 ping 失败（超时/端口断开/app_not_running）时，
+ * 与 nmhCheckFluxDownAvailable 的区别：首次 ping 失败（超时/端口断开/app_not_running）时，
  * 断开旧端口并以全新 NMH 进程再 ping 一次。用于"是否要熔断"这类需排除瞬态失败的判定：
  * App 冷启动（NMH 拉起 App 最多 ~7.5s）或瞬时繁忙时，单次 ping 可能误报不可达，
  * 重连重试给 App 第二次机会，避免把已安装但临时不可达的 App 误判为不可用（review 发现 #3）。
  */
-export async function checkFluxDownAvailableWithRetry(): Promise<boolean> {
+export async function nmhCheckFluxDownAvailableWithRetry(): Promise<boolean> {
   // 用短超时（PING_TIMEOUT_MS）做重连重试探测：最坏 ~2×4s，而非 2×12s，
   // 既保留对瞬时断连/陈旧端口的重连第二次机会，又不显著拖慢回退（review #3/#5）。
   const result = await sendWithRetry("ping", {}, PING_TIMEOUT_MS);

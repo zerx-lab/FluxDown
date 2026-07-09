@@ -27,10 +27,19 @@ export interface FluxDownSettings {
   interceptMode: InterceptMode;
   /** 最小文件大小（字节），小于此值的文件不拦截 */
   minFileSize: number;
-  /** 拦截的 MIME 类型前缀列表（smart 模式下生效） */
+  /** 拦截的 MIME 类型前缀列表（smart 模式下生效，可在配置页增删/恢复默认） */
   interceptMimeTypes: string[];
+  /** 用户自定义追加的可拦截扩展名（含点，小写，如 ".epub"；与内置列表合并生效） */
+  customExtensions: string[];
   /** 排除的域名列表 */
   excludeDomains: string[];
+
+  // === 任务发送通知 ===
+
+  /** 发送到本地桌面 App 的任务通知（创建成功/失败） */
+  notifyLocalTask: boolean;
+  /** 发送到远程服务器的任务通知（创建成功/失败） */
+  notifyRemoteTask: boolean;
 
   // === 资源嗅探 & 页面内 UI 设置 ===
 
@@ -51,13 +60,20 @@ export interface FluxDownSettings {
   remoteUrl: string;
   /** 远程 fluxdown_server 鉴权 token */
   remoteToken: string;
+  /**
+   * 远程配置是否已通过「测试连接」验证（含 token 鉴权校验）。
+   * 仅验证通过后 UI 才允许选择 fallback/always 模式；
+   * remoteUrl/remoteToken 任一变更时自动复位为 false。
+   */
+  remoteVerified: boolean;
 }
 
 /**
- * 内置的可拦截文件扩展名列表（用户不可编辑）。
- * smart 模式作为已知下载类型的正向匹配；extension 模式的唯一来源。
+ * 内置的可拦截文件扩展名列表（不可删除的基线）。
+ * smart 模式作为已知下载类型的正向匹配；extension 模式与
+ * `settings.customExtensions` 合并后为唯一来源（见 effectiveExtensions）。
  */
-const BUILTIN_EXTENSIONS: string[] = [
+export const BUILTIN_EXTENSIONS: string[] = [
   // 压缩文件
   ".zip",
   ".rar",
@@ -105,6 +121,24 @@ const BUILTIN_EXTENSIONS: string[] = [
   ".torrent",
 ];
 
+/**
+ * 归一化用户输入的自定义扩展名：去空白、转小写、补前导点。
+ * 非法输入（空 / 含非法字符 / 过长）返回 null。
+ */
+export function normalizeExtension(input: string): string | null {
+  let s = input.trim().toLowerCase();
+  if (!s) return null;
+  if (!s.startsWith(".")) s = `.${s}`;
+  // 允许多段后缀（如 .tar.zst）；总长限制防误粘贴整个文件名
+  return /^\.[a-z0-9][a-z0-9.]{0,15}$/.test(s) && !s.endsWith(".") ? s : null;
+}
+
+/** 内置 + 用户自定义合并后的生效扩展名列表（去重，内置在前） */
+export function effectiveExtensions(settings: FluxDownSettings): string[] {
+  if (!settings.customExtensions?.length) return BUILTIN_EXTENSIONS;
+  return [...new Set([...BUILTIN_EXTENSIONS, ...settings.customExtensions])];
+}
+
 const DEFAULT_SETTINGS: FluxDownSettings = {
   enabled: true,
   interceptMode: "smart",
@@ -145,7 +179,12 @@ const DEFAULT_SETTINGS: FluxDownSettings = {
     // torrent
     "application/x-bittorrent",
   ],
+  customExtensions: [],
   excludeDomains: [],
+
+  // 任务发送通知
+  notifyLocalTask: true,
+  notifyRemoteTask: true,
 
   // 资源嗅探 & 页面内 UI
   resourceSniffing: true,
@@ -157,6 +196,7 @@ const DEFAULT_SETTINGS: FluxDownSettings = {
   remoteMode: "off",
   remoteUrl: "",
   remoteToken: "",
+  remoteVerified: false,
 };
 
 /**
@@ -187,6 +227,13 @@ export async function saveSettings(
   // remoteUrl 保存时去除尾部斜杠，避免拼接 `/download` 等路径时出现 `//`。
   if (merged.remoteUrl) {
     merged.remoteUrl = merged.remoteUrl.replace(/\/+$/, "");
+  }
+  // 远程连接信息变更 → 旧的验证结论失效，除非本次调用显式给出新结论。
+  const remoteChanged =
+    merged.remoteUrl !== current.remoteUrl ||
+    merged.remoteToken !== current.remoteToken;
+  if (remoteChanged && !("remoteVerified" in settings)) {
+    merged.remoteVerified = false;
   }
   await browser.storage.sync.set({ settings: merged });
 }
@@ -248,12 +295,12 @@ export function shouldIntercept(
 
   if (settings.interceptMode === "extension") {
     // "仅扩展名"模式：只看 URL 路径或 filename 的扩展名
-    return matchByExtension(url, filename, BUILTIN_EXTENSIONS);
+    return matchByExtension(url, filename, effectiveExtensions(settings));
   }
 
   // === smart 模式（默认）===
   // 1. 先看扩展名匹配（URL 路径或 filename）
-  if (matchByExtension(url, filename, BUILTIN_EXTENSIONS)) {
+  if (matchByExtension(url, filename, effectiveExtensions(settings))) {
     return true;
   }
 

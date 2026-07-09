@@ -28,6 +28,8 @@
  *   - 利用第一层缓存的 HTTP 响应信息来补全 downloadItem 中缺失的元数据
  */
 
+import { browser } from 'wxt/browser';
+import { defineBackground } from 'wxt/utils/define-background';
 import {
   sendDownloadRequest,
   sendBatchDownloadRequest,
@@ -304,15 +306,8 @@ export default defineBackground(() => {
         );
 
         const sendOk = await sendToFluxDown(downloadUrl, referrer);
-        if (sendOk) {
-          const filename = extractCleanFilename(downloadUrl);
-          notify(
-            t("notify.downloadSent"),
-            t("notify.sentToFluxDown", {
-              name: filename || downloadUrl,
-            }),
-          );
-        } else {
+        // 成功提示已收敛到 sendToFluxDown 内部统一发送，此处只处理失败回退。
+        if (!sendOk) {
           await fallbackAfterSendFailure(downloadUrl);
         }
       },
@@ -2238,11 +2233,21 @@ export default defineBackground(() => {
     console.log("[FluxDown] Sending to FluxDown app:", request);
 
     const response = await sendDownloadRequest(request);
+    const notifyOk = await shouldNotifyChannel(response.channel);
 
     if (response.success) {
       // 发送成功 → App 在线，立即解除可用性熔断。
       markAppUp();
       await incrementStat("sent");
+      // 任务已创建提示（本地 NMH / 远程 server 分别受配置页两个开关控制；
+      // notify 内置 5s 同文去重，密集拦截同一文件不会弹窗风暴）。
+      if (notifyOk) {
+        const shownName = filename || extractCleanFilename(url) || url;
+        notify(
+          t("notify.downloadSent"),
+          t("notify.sentToFluxDown", { name: shownName }),
+        );
+      }
       return true;
     } else {
       await incrementStat("failed");
@@ -2252,8 +2257,38 @@ export default defineBackground(() => {
         "url:",
         url,
       );
+      if (notifyOk) {
+        notify(t("notify.sendFailed"), describeSendError(response.message));
+      }
       return false;
     }
+  }
+
+  /**
+   * 把发送失败的原始 message 转成用户可读文案：
+   * 远程通道的稳定前缀（remote_*）映射到与 popup「测试连接」一致的 i18n 文案，
+   * 其余（NMH 超时/端口断开/服务端业务错误）原样带入通用连接失败模板。
+   */
+  function describeSendError(message?: string): string {
+    if (message === "remote_auth_failed") return t("remote.testAuthFailed");
+    if (message === "remote_not_configured")
+      return t("remote.testNotConfigured");
+    if (message?.startsWith("remote_unreachable"))
+      return t("remote.testUnreachable");
+    return t("notify.connectionFailed", { message: message || "unknown" });
+  }
+
+  /**
+   * 任务发送通知的按通道开关（配置页「通用」分类）：
+   * "remote" → notifyRemoteTask，"local"/未标记（直连 NMH 旧路径）→ notifyLocalTask。
+   */
+  async function shouldNotifyChannel(
+    channel?: "local" | "remote",
+  ): Promise<boolean> {
+    const settings = await loadSettings();
+    return channel === "remote"
+      ? settings.notifyRemoteTask !== false
+      : settings.notifyLocalTask !== false;
   }
 
   /**
@@ -2566,10 +2601,20 @@ export default defineBackground(() => {
 
         // 单次 HTTP POST 发送所有 URL（用换行符连接）
         const response = await sendBatchDownloadRequest(batchItems);
+        const batchNotifyOk = await shouldNotifyChannel(response.channel);
         if (response.success) {
           await incrementStat("sent");
+          if (batchNotifyOk) {
+            notify(
+              t("notify.downloadSent"),
+              t("notify.batchSentDetail", { count: String(items.length) }),
+            );
+          }
         } else {
           await incrementStat("failed");
+          if (batchNotifyOk) {
+            notify(t("notify.sendFailed"), describeSendError(response.message));
+          }
         }
         return { success: response.success, sent: items.length };
       }
