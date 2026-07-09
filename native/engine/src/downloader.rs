@@ -62,6 +62,23 @@ pub enum DownloadError {
         "server returned a misaligned Range response (206 but Content-Range does not match the requested offset: {0})"
     )]
     RangeMisaligned(String),
+    /// 多段下载时，服务器在 206 响应的 `Content-Range: bytes X-Y/<total>` 里【自报的
+    /// 真实总大小】明显【大于】本次规划的总大小。典型成因（BUG-HTTP-HINT-UNDERSIZED）：
+    /// 浏览器扩展在 `<video>` Range 流式播放一段【仍在渐进上传】的视频时，抓到的是
+    /// 【当时的部分大小】并作为 `hint_file_size` 传入；hint 模式为保护一次性签名 URL 而
+    /// 跳过 probe，把这个偏小的 hint 当作权威总大小，多段只请求 `[0, hint)` → 拿满即
+    /// 完成 → 落盘的是完整文件的【前缀】（静默截断，无 checksum 时无从察觉）。
+    ///
+    /// 与 [`RangeMisaligned`]（206 但区间【错位】、数据错位）严格区分：本变体区间
+    /// 【对齐】、已下字节【正确】，只是规划的总量偏小。携带值为服务器自报的真实总
+    /// 大小。coordinator 捕获后【就地扩容】（延长预分配 + 追加尾段，已下数据零丢弃，
+    /// 见 `segment_coordinator` 的 `MAX_SIZE_EXPANSIONS`）；仅当扩容配额耗尽（文件
+    /// 持续增长/病态分母膨胀）或扩容无法执行时才冒泡到 `run_download_inner`，以
+    /// status=4 显式终止——DB 段行与临时文件保留，重试时 resume 重新 probe 续下。
+    /// 绝不记录主机单连接缓存（与 Range 能力无关），也绝不当瞬时错误退避重试
+    /// （重试只会拿到同样的分母）。
+    #[error("server reports a larger true size than planned (Content-Range total: {0})")]
+    TrueSizeLarger(i64),
     #[error("ed2k error: {0}")]
     Ed2k(String),
     /// ED2K 协议完整性违规：hashset 投毒 / 块 MD4 不匹配 / SENDINGPART 越界 /
@@ -569,6 +586,19 @@ pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Opt
     }
 }
 
+/// 大小写不敏感地剥离 `Content-Range` 值的 `bytes ` 单位前缀。
+///
+/// RFC 9110 §14.1 规定 range-unit 比较【不区分大小写】——个别服务器/代理会发
+/// `Bytes 0-1/100`。前 6 字节 ASCII 相等才剥离，故返回的切片起点必在字符边界上。
+fn strip_bytes_unit_prefix(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    let prefix = trimmed.as_bytes().get(..6)?;
+    if !prefix.eq_ignore_ascii_case(b"bytes ") {
+        return None;
+    }
+    Some(&trimmed[6..])
+}
+
 /// 从 `Content-Range` 响应头解析【起始字节】。
 ///
 /// `Content-Range` 形如 `bytes <start>-<end>/<total>`（RFC 9110 §14.4）。多段下载
@@ -578,18 +608,37 @@ pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Opt
 ///
 /// 以下情形一律返回 `None`（交由 [`is_range_response_misaligned`] 按"起点未知"裁决）：
 ///   - 头缺失或非 ASCII；
-///   - 值不以 `bytes ` 前缀开头；
+///   - 值不以 `bytes ` 前缀开头（大小写不敏感，见 [`strip_bytes_unit_prefix`]）；
 ///   - unsatisfied-range 形式 `bytes */<total>`（`*` 非法数字）；
 ///   - `<start>` 解析失败。
 pub(crate) fn parse_content_range_start(headers: &reqwest::header::HeaderMap) -> Option<i64> {
     let raw = headers.get("content-range")?.to_str().ok()?;
     // "bytes 100-199/1234" → 去前缀 → "100-199/1234"
-    let rest = raw.trim().strip_prefix("bytes ")?;
+    let rest = strip_bytes_unit_prefix(raw)?;
     // 取 '/' 前的区间部分："100-199"（unsatisfied 时为 "*"）
     let range_part = rest.split('/').next()?;
     // 取 '-' 前的起点："100"（unsatisfied 时为 "*"，parse 失败 → None）
     let start_str = range_part.split('-').next()?;
     start_str.trim().parse::<i64>().ok()
+}
+
+/// 从 `Content-Range` 响应头解析【文件总大小】（斜杠后的分母）。
+///
+/// `Content-Range` 形如 `bytes <start>-<end>/<total>`（RFC 9110 §14.4）。多段下载据此
+/// 发现服务器【自报的真实总大小】——当它明显大于当前规划的总大小（如浏览器扩展给的
+/// hint 偏小、或文件仍在上传中增长）时，规划区间 `[0, planned)` 只覆盖了文件前缀，继续
+/// 下去会静默截断。coordinator 据此【就地扩容】（追加尾段）下满整文件。
+///
+/// 以下情形返回 `None`（总大小未知，调用方【不据此扩容】，避免误判）：
+///   - 头缺失或非 ASCII；
+///   - 值不以 `bytes ` 前缀开头（大小写不敏感，见 [`strip_bytes_unit_prefix`]）；
+///   - `<total>` 为 `*`（unsatisfied/未知）或整体缺失/解析失败。
+pub(crate) fn parse_content_range_total(headers: &reqwest::header::HeaderMap) -> Option<i64> {
+    let raw = headers.get("content-range")?.to_str().ok()?;
+    // "bytes 100-199/1234" → 去前缀 → "100-199/1234" → 取 '/' 后 → "1234"
+    let rest = strip_bytes_unit_prefix(raw)?;
+    let total_str = rest.split('/').nth(1)?;
+    total_str.trim().parse::<i64>().ok()
 }
 
 /// 判定一个 206 响应的 `Content-Range` 起点（由 [`parse_content_range_start`] 解析）
@@ -2388,6 +2437,17 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     // Chrome-style: write to a temporary file during download, rename on success.
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
 
+    // `size_is_estimate`：本次规划的 total 是否为【未经 probe 验证的估计值】。仅
+    // fresh 的 hint 模式下 total 直接取自浏览器扩展 hint——一个可能偏小的猜测；
+    // 此时服务器在 206 `Content-Range` 分母里自报的真实大小才是权威值，coordinator
+    // 的扩容检查须采【零容差】（见 segment_coordinator::do_segment）。probe 路径的
+    // total 已被校准，保留 CDN 漂移容差。
+    //
+    // `!p.is_resume` 是防御性冗余：resume 入口（download_manager 三处）恒传
+    // hint_file_size=0 并重新 probe，故 resume 时本表达式左项已为 false；保留该项
+    // 仅为杜绝未来调用方在 resume 时误传 hint 导致零容差误触。
+    let size_is_estimate = p.hint_file_size > 0 && !p.is_resume;
+
     // Dynamic segment calculation when user chose "auto" (segment_count <= 0).
     let segments = if p.segment_count <= 0 {
         // When resuming, check if DB already has segment rows from a previous
@@ -2453,11 +2513,23 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     // and we auto-fall back to single-stream within this attempt.
     let mut actual_use_segments = use_segments;
     let single_result: Option<SingleDownloadResult> = if use_segments {
-        match download_multi_segment(
+        // 多段下载：若服务器在 206 响应的 `Content-Range: bytes X-Y/<total>` 分母里
+        // 自报的真实总大小大于规划（hint 偏小/文件仍在上传中增长），coordinator 会
+        // 【就地扩容】——延长预分配 + 追加尾段 + 更新共享 planned_total，已下数据零
+        // 丢弃（修复 BUG-HTTP-HINT-UNDERSIZED：绝不把完整文件的前缀静默当作完成）。
+        // 成功返回值是【最终有效总大小】，据此校准 effective_total_bytes，供下方完整
+        // 性检查与完成信号使用。
+        //
+        // 扩容配额（segment_coordinator::MAX_SIZE_EXPANSIONS）耗尽（文件持续增长/
+        // 病态分母膨胀）时 TrueSizeLarger 才会冒泡到此处，落入下方通用 Err 分支以
+        // status=4 显式终止——DB 段行与临时文件【保留】，用户重试时 resume 重新
+        // probe 真实大小接着下（fail-loud 且不丢进度）。
+        let ms_outcome = download_multi_segment(
             &p.task_id,
             &p.url,
             &temp_path,
             effective_total_bytes,
+            size_is_estimate,
             segments,
             client,
             &p.db,
@@ -2469,9 +2541,22 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
             &resume_etag,
             &resume_last_modified,
         )
-        .await
-        {
-            Ok(()) => None,
+        .await;
+
+        match ms_outcome {
+            Ok(final_total) => {
+                if final_total != effective_total_bytes {
+                    log_info!(
+                        "[download] task {} 多段结束后总大小由 coordinator 校准: {} -> {}\
+                         （就地扩容/resume 漂移吸附），完整性检查以校准值为准",
+                        p.task_id,
+                        effective_total_bytes,
+                        final_total
+                    );
+                    effective_total_bytes = final_total;
+                }
+                None
+            }
             Err(DownloadError::RangeNotSupported(status))
             | Err(DownloadError::VersionChanged(status))
             | Err(DownloadError::RangeMisaligned(status)) => {
@@ -2639,24 +2724,25 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
                     // Update DB so the stored total_bytes reflects reality.
                     let _ = p.db.update_task_total_bytes(&p.task_id, file_len).await;
                     effective_total_bytes = file_len;
-                } else if resp_cl <= 0
-                    && file_len > 0
-                    && (file_len >= effective_total_bytes || p.hint_file_size > 0)
-                {
+                } else if resp_cl <= 0 && file_len > 0 && file_len >= effective_total_bytes {
                     // Server didn't send Content-Length (chunked / connection-close
-                    // framing) but the stream ended cleanly.  Trust the actual file
-                    // ONLY when either:
-                    //   (a) we received at least the expected size (no truncation), or
-                    //   (b) the expected size was a mere browser hint (unreliable —
-                    //       servers regenerate PDFs / dynamic tokens shift the size),
-                    //       so a smaller-but-clean result is plausibly the real file.
+                    // framing) but the stream ended cleanly, and we received AT LEAST
+                    // the expected size — no truncation is possible, so trust the file.
                     //
-                    // The dangerous case excluded here (BUG-HTTP-NO-CL-TRUNCATION):
-                    // a *probe-derived* (reliable) total of N, no Content-Length on
-                    // the download, and a clean connection close after K < N bytes.
-                    // Without this guard the truncated K-byte file would be accepted
-                    // as a complete download — silent data loss.  That case now falls
-                    // through to the size-mismatch error below so the user can retry.
+                    // Two dangerous cases are deliberately excluded (both fall through
+                    // to the size-mismatch error below so the user can retry):
+                    //   • BUG-HTTP-NO-CL-TRUNCATION: a probe-derived (reliable) total of
+                    //     N, no Content-Length, clean close after K < N bytes.
+                    //   • BUG-HTTP-HINT-UNDERSIZED (single-stream面): a browser *hint* of
+                    //     N with no Content-Length and a clean close after K < N.  The
+                    //     old `|| hint_file_size > 0` escape treated a hint as "unreliable,
+                    //     may shrink" and accepted the K-byte prefix — but a no-CL stream
+                    //     cannot tell a legitimately smaller file from a truncated one, so
+                    //     silently keeping K bytes was data loss.  A genuinely regenerated
+                    //     *larger* file still satisfies `file_len >= effective_total_bytes`
+                    //     and is accepted; a regenerated smaller file that carries a real
+                    //     Content-Length is already handled by the `resp_cl > 0` branch
+                    //     above.  Only the ambiguous no-CL-and-shorter case now errors.
                     log_info!(
                         "[download] task {} no response content-length, trusting \
                          actual file size: expected={}, file={} (stream completed normally)",
@@ -3207,12 +3293,17 @@ async fn download_single(
 // Multi-segment download (delegates to SegmentCoordinator)
 // ---------------------------------------------------------------------------
 
+/// 成功时返回本次下载的【最终有效总大小】（就地扩容 / resume 漂移吸附后可能不同
+/// 于入参 `total_bytes`），见 `run_coordinated_download` 的返回值文档。
 #[allow(clippy::too_many_arguments)]
 async fn download_multi_segment(
     task_id: &str,
     url: &str,
     dest: &Path,
     total_bytes: i64,
+    // `total_bytes` 是否为【未经 probe 验证的估计值】（fresh hint 模式）。透传至
+    // coordinator → do_segment，决定 Content-Range 分母扩容检查的漂移容差。
+    size_is_estimate: bool,
     segment_count: i32,
     client: &Client,
     db: &Db,
@@ -3223,7 +3314,7 @@ async fn download_multi_segment(
     sink: &dyn EventSink,
     etag: &str,
     last_modified: &str,
-) -> Result<(), DownloadError> {
+) -> Result<i64, DownloadError> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -3246,6 +3337,7 @@ async fn download_multi_segment(
         url,
         dest,
         total_bytes,
+        size_is_estimate,
         segment_count,
         client,
         db,
@@ -4395,6 +4487,77 @@ mod tests {
         );
         let cr_start = super::parse_content_range_start(&headers);
         assert!(super::is_range_response_misaligned(cr_start, 508073519));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_content_range_total（BUG-HTTP-HINT-UNDERSIZED）
+    // -----------------------------------------------------------------------
+
+    fn cr_headers(value: &'static str) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static(value),
+        );
+        h
+    }
+
+    #[test]
+    fn parse_content_range_total_reads_denominator() {
+        // 规划总大小偏小（hint=2585179）而服务器自报真实大小 4747867——
+        // 分母正是发现“规划只覆盖了前缀”的唯一权威来源。
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("bytes 0-1292589/4747867")),
+            Some(4747867)
+        );
+    }
+
+    #[test]
+    fn parse_content_range_total_unknown_star_is_none() {
+        // 未知总大小（`*`）不可据此扩容，返回 None。
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("bytes 0-1023/*")),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_content_range_total_missing_header_is_none() {
+        assert_eq!(
+            super::parse_content_range_total(&reqwest::header::HeaderMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_content_range_prefix_is_case_insensitive() {
+        // RFC 9110 §14.1：range-unit 比较不区分大小写。个别服务器/代理发
+        // `Bytes`/`BYTES` 前缀——漏检会退回旧的静默截断行为。
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("Bytes 0-1023/4096")),
+            Some(4096)
+        );
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("BYTES 0-1023/4096")),
+            Some(4096)
+        );
+        assert_eq!(
+            super::parse_content_range_start(&cr_headers("Bytes 100-199/4096")),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn parse_content_range_non_bytes_unit_is_none() {
+        // 非 bytes 单位（如自定义 range unit）不可解析为字节区间。
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("items 0-10/42")),
+            None
+        );
+        assert_eq!(
+            super::parse_content_range_start(&cr_headers("items 0-10/42")),
+            None
+        );
     }
 
     // -----------------------------------------------------------------------

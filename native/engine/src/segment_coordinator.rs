@@ -48,6 +48,19 @@ use crate::logger::log_info;
 use crate::speed_limiter::SpeedLimiter;
 
 // ---------------------------------------------------------------------------
+// 就地扩容（BUG-HTTP-HINT-UNDERSIZED）
+// ---------------------------------------------------------------------------
+
+/// 多段下载途中，服务器在 206 `Content-Range` 分母里自报的真实总大小大于当前
+/// 规划时（[`DownloadError::TrueSizeLarger`]），coordinator【就地扩容】：延长
+/// 预分配、追加尾段 Pending、更新共享 planned_total——已下数据零丢弃。本常量是
+/// 单次下载内接受的最大扩容次数：防御【仍在渐进上传】的文件持续增长（或病态
+/// 服务器无限膨胀分母）导致永不收敛。超限则任务以 TrueSizeLarger 显式失败
+/// （status=4）——DB 段行与临时文件【保留】，用户重试时 resume 会重新 probe
+/// 真实大小接着下，进度不丢。3 次足以覆盖"上传恰好在下载期间收尾"的常见情形。
+const MAX_SIZE_EXPANSIONS: u32 = 3;
+
+// ---------------------------------------------------------------------------
 // 域名单连接策略缓存
 // ---------------------------------------------------------------------------
 // 当 coordinator 检测到某域名的服务器拒绝多连接（403/429），将该域名记录
@@ -385,6 +398,11 @@ struct NextWork {
 // ---------------------------------------------------------------------------
 
 /// Run the dynamic segment coordinator.
+/// 成功时返回本次下载的【最终有效总大小】：当途中发生就地扩容（服务器 206
+/// `Content-Range` 分母自报真实大小 > 规划，见 [`DownloadError::TrueSizeLarger`]）
+/// 或 resume 漂移吸附时，可能不同于入参 `total_bytes`——调用方
+/// （`run_download_inner`）须以返回值校准完整性检查与完成信号。
+///
 ///
 /// This replaces the old "spawn N tasks and join" logic in
 /// `download_multi_segment`.  The function signature is intentionally close to
@@ -395,6 +413,9 @@ pub async fn run_coordinated_download(
     url: &str,
     dest: &Path,
     total_bytes: i64,
+    // `total_bytes` 是否为【未经 probe 验证的估计值】（fresh hint 模式）。透传至
+    // do_segment 决定 Content-Range 分母的扩容容差（估计值→零容差）。
+    size_is_estimate: bool,
     initial_segment_count: i32,
     client: &Client,
     db: &Db,
@@ -405,7 +426,7 @@ pub async fn run_coordinated_download(
     sink: &dyn EventSink,
     etag: &str,
     last_modified: &str,
-) -> Result<(), DownloadError> {
+) -> Result<i64, DownloadError> {
     // ----- 0. Defensive checks ------------------------------------------------
     if total_bytes <= 0 {
         return Err(DownloadError::Other(format!(
@@ -503,7 +524,7 @@ pub async fn run_coordinated_download(
     //   1 % of db_total, capped at 1 MiB, floor 1 byte.
     // Keeping both thresholds in sync ensures the two layers never disagree
     // about whether a size change is "real".
-    let effective_total_bytes = if !existing.is_empty() {
+    let mut effective_total_bytes = if !existing.is_empty() {
         // segments is non-empty here; max() will always return Some.
         let db_total = segments
             .values()
@@ -651,105 +672,23 @@ pub async fn run_coordinated_download(
     }
 
     // ----- 2. Pre-allocate file to full size --------------------------------
-    //
-    // Linux:   fallocate(2) 分配真实磁盘块（不写零，近乎瞬时），避免
-    //          set_len()/ftruncate 创建稀疏文件导致的碎片化和延迟 ENOSPC。
-    // Windows: SetFileInformationByHandle(FileAllocationInfo) 预分配 NTFS
-    //          物理簇（连续优先），提前检测磁盘空间不足，减少碎片化；
-    //          再 SetEndOfFile 设置逻辑大小。
-    // macOS 等: 回退到 set_len()。
-    {
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(dest)
-            .await?;
-        let current_len = file.metadata().await?.len();
-        let target_len = effective_total_bytes as u64;
-        if current_len < target_len {
-            #[cfg(target_os = "linux")]
-            {
-                let std_file = file.into_std().await;
-                tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
-                    use std::os::unix::io::AsRawFd;
-                    let fd = std_file.as_raw_fd();
-                    // fallocate(fd, 0, 0, len): 预分配 [0, len) 范围的磁盘块，
-                    // 不写零，ext4/XFS/Btrfs 均支持，耗时 O(1)。
-                    // mode=0 同时将文件大小设为 max(当前大小, offset+len)。
-                    let ret = unsafe { libc::fallocate(fd, 0, 0, target_len as libc::off_t) };
-                    if ret == 0 {
-                        return Ok(());
-                    }
-                    // fallocate 失败 — 检查是否为文件系统不支持
-                    let err = std::io::Error::last_os_error();
-                    let raw = err.raw_os_error().unwrap_or(0);
-                    if raw == libc::EOPNOTSUPP || raw == libc::ENOSYS {
-                        // tmpfs/NFS 等不支持 fallocate 的文件系统，回退到 ftruncate
-                        log_info!(
-                            "[coordinator] fallocate 不支持 (errno={}), 回退到 ftruncate",
-                            raw
-                        );
-                        std_file.set_len(target_len)?;
-                        Ok(())
-                    } else {
-                        // ENOSPC 等真实错误，直接上报（提前检测磁盘空间不足）
-                        Err(err.into())
-                    }
-                })
-                .await
-                .map_err(|e| DownloadError::Other(format!("fallocate task panicked: {e}")))??;
-            }
-            #[cfg(target_os = "windows")]
-            {
-                let std_file = file.into_std().await;
-                tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
-                    use std::os::windows::io::AsRawHandle;
-                    // FILE_ALLOCATION_INFO: 单字段 AllocationSize (LARGE_INTEGER = i64)
-                    #[repr(C)]
-                    struct FileAllocInfo {
-                        allocation_size: i64,
-                    }
-                    let handle = std_file.as_raw_handle();
-                    // Step 1: 预分配 NTFS 物理簇——立即保留磁盘空间（连续簇优先），
-                    // 磁盘不足时提前报错（等效 Linux fallocate 的 ENOSPC 检测），
-                    // 减少多段随机写时的 NTFS 碎片化。
-                    let info = FileAllocInfo {
-                        allocation_size: target_len as i64,
-                    };
-                    let ret = unsafe {
-                        windows_sys::Win32::Storage::FileSystem::SetFileInformationByHandle(
-                            handle,
-                            windows_sys::Win32::Storage::FileSystem::FileAllocationInfo,
-                            &info as *const _ as *const core::ffi::c_void,
-                            std::mem::size_of::<FileAllocInfo>() as u32,
-                        )
-                    };
-                    if ret == 0 {
-                        // FAT32/exFAT/网络驱动器等不支持时仅记录日志，不中断
-                        log_info!(
-                            "[coordinator] SetFileInformationByHandle(FileAllocationInfo) 失败: {}",
-                            std::io::Error::last_os_error()
-                        );
-                    }
-                    // Step 2: 设置逻辑 EOF——后续 seek+write 依赖此值
-                    std_file.set_len(target_len)?;
-                    Ok(())
-                })
-                .await
-                .map_err(|e| DownloadError::Other(format!("prealloc task panicked: {e}")))??;
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-            {
-                file.set_len(target_len).await?;
-            }
-        }
-    }
+    // 平台策略（fallocate / SetFileInformationByHandle / set_len 回退）见
+    // preallocate_file_len——就地扩容（TrueSizeLarger）复用同一助手延长文件。
+    preallocate_file_len(dest, effective_total_bytes as u64).await?;
 
     // ----- 3. Shared state for progress reporting ---------------------------
     let total_downloaded = Arc::new(AtomicI64::new(
         segments.values().map(|s| s.downloaded_bytes).sum::<i64>(),
     ));
+
+    // 规划总大小的【共享可变】视图。worker 栈上的 i64 拷贝会在就地扩容后过期
+    // （尾段 worker 拿旧值 → 对同一分母反复误报 TrueSizeLarger / 进度上报错误
+    // 总量），故经 Arc<AtomicI64> 共享，仅由 coordinator 在扩容时单点更新。
+    let planned_total = Arc::new(AtomicI64::new(effective_total_bytes));
+
+    // hint 模式（无 probe 基线）的跨段版本一致性基线：第一个 206 响应携带的
+    // (ETag, Last-Modified)。见 do_segment 内的 latch 守卫。
+    let first_validators: Arc<StdMutex<Option<(String, String)>>> = Arc::new(StdMutex::new(None));
 
     // The shared segment-progress vector mirrors the `segments` map and is
     // updated by workers via std::sync::Mutex (cheap, no async).
@@ -830,7 +769,9 @@ pub async fn run_coordinated_download(
             task_id.to_string(),
             url.to_string(),
             dest.to_path_buf(),
-            effective_total_bytes,
+            planned_total.clone(),
+            size_is_estimate,
+            first_validators.clone(),
             client.clone(),
             worker_cancel.clone(),
             conn_sensitive.clone(),
@@ -864,7 +805,7 @@ pub async fn run_coordinated_download(
                 let _ = h.await;
             }
         }
-        return Ok(());
+        return Ok(effective_total_bytes);
     }
 
     // ----- 6. Coordinator event loop ----------------------------------------
@@ -873,6 +814,8 @@ pub async fn run_coordinated_download(
     // 避免并发连接触发服务器的反多线程机制。
     let mut serial_mode = false;
     let mut final_error: Option<DownloadError> = None;
+    // 本次下载已执行的就地扩容次数（TrueSizeLarger 分支，上限 MAX_SIZE_EXPANSIONS）。
+    let mut expansions: u32 = 0;
 
     // 吞吐量跟踪：用于动态调整 MIN_SPLIT_BYTES
     let mut last_throughput_bytes = total_downloaded.load(Ordering::Relaxed);
@@ -998,6 +941,154 @@ pub async fn run_coordinated_download(
                     }
 
                     Some(WorkerEvent::Failed { worker_id, seg_index, error }) => {
+                        // --- 就地扩容：服务器自报真实大小 > 当前规划 ----------
+                        // （BUG-HTTP-HINT-UNDERSIZED）hint 偏小/文件在下载中增长。
+                        // 处理方式是【就地扩容】而非清空重下：延长预分配 → 追加
+                        // 尾段 [旧 total, 真实 total) → 更新共享 planned_total →
+                        // 给仍存活的 worker 重新派工。已下数据全部保留（区间对齐、
+                        // 版本一致由 do_segment 守卫），代价与文件体积无关。
+                        //
+                        // 并发重复报告：两个 worker 的 206 可能同时携带同一个更大
+                        // 分母，第二个 Failed 到达时扩容已完成（reported <=
+                        // effective）——按 stale 处理：不烧配额、不进致命分支，
+                        // 仅把失败段回 Pending 并重新派工（worker 重试时会从共享
+                        // planned_total 读到新值，不再误报）。
+                        if let DownloadError::TrueSizeLarger(reported) = &error {
+                            let reported_total = *reported;
+                            if reported_total > effective_total_bytes {
+                                if expansions >= MAX_SIZE_EXPANSIONS {
+                                    // 配额耗尽：文件仍在增长/病态分母膨胀。显式
+                                    // 失败（fail-loud），但【不清数据】——DB 段行
+                                    // 与临时文件保留，重试时 resume 重新 probe。
+                                    log_info!(
+                                        "[coordinator] task {} 就地扩容已达上限 {}（服务器仍自报更大 \
+                                         {} > {}），文件持续增长/分母异常，任务显式失败（数据保留可续）",
+                                        task_id,
+                                        MAX_SIZE_EXPANSIONS,
+                                        reported_total,
+                                        effective_total_bytes
+                                    );
+                                    worker_cancel.cancel();
+                                    if let Some(seg) = segments.get_mut(&seg_index) {
+                                        seg.state = SegState::Pending;
+                                    }
+                                    for tx in &mut worker_assign_txs {
+                                        *tx = None;
+                                    }
+                                    final_error =
+                                        Some(DownloadError::TrueSizeLarger(reported_total));
+                                    break;
+                                }
+                                // 物理扩容临时文件（逻辑 EOF + 尽量物理分配）。
+                                // 失败（如 ENOSPC）是致命错误：停 workers 上报。
+                                if let Err(e) =
+                                    preallocate_file_len(dest, reported_total as u64).await
+                                {
+                                    log_info!(
+                                        "[coordinator] task {} 就地扩容预分配失败: {}",
+                                        task_id,
+                                        e
+                                    );
+                                    worker_cancel.cancel();
+                                    if let Some(seg) = segments.get_mut(&seg_index) {
+                                        seg.state = SegState::Pending;
+                                    }
+                                    for tx in &mut worker_assign_txs {
+                                        *tx = None;
+                                    }
+                                    final_error = Some(e);
+                                    break;
+                                }
+                                expansions += 1;
+                                let old_total = effective_total_bytes;
+                                let tail_idx = next_index;
+                                next_index += 1;
+                                segments.insert(
+                                    tail_idx,
+                                    LiveSegment {
+                                        index: tail_idx,
+                                        start_byte: old_total,
+                                        end_byte: reported_total - 1,
+                                        downloaded_bytes: 0,
+                                        state: SegState::Pending,
+                                    },
+                                );
+                                effective_total_bytes = reported_total;
+                                planned_total.store(reported_total, Ordering::Relaxed);
+                                persist_segment_change(
+                                    db, task_id, &segments, tail_idx, None,
+                                ).await;
+                                let _ = db
+                                    .update_task_total_bytes(task_id, reported_total)
+                                    .await;
+                                rebuild_seg_states(&segments, &seg_states);
+                                log_info!(
+                                    "[coordinator] task {} 就地扩容（第 {}/{} 次）：规划 {} -> 服务器自报 \
+                                     {}，追加尾段 #{} [{}, {}]，已下数据零丢弃",
+                                    task_id,
+                                    expansions,
+                                    MAX_SIZE_EXPANSIONS,
+                                    old_total,
+                                    reported_total,
+                                    tail_idx,
+                                    old_total,
+                                    reported_total - 1
+                                );
+                            } else {
+                                log_info!(
+                                    "[coordinator] task {} seg {} 滞后的 TrueSizeLarger（{} <= 已扩容 \
+                                     {}），按 stale 重派",
+                                    task_id,
+                                    seg_index,
+                                    reported_total,
+                                    effective_total_bytes
+                                );
+                            }
+                            // 失败段回 Pending，并给仍存活的 worker 重新派工
+                            // （worker 对 TrueSizeLarger 保活等待新 assignment）。
+                            if let Some(seg) = segments.get_mut(&seg_index) {
+                                seg.state = SegState::Pending;
+                            }
+                            let next_work = if serial_mode {
+                                let other_active = segments.values()
+                                    .any(|s| s.state == SegState::Active);
+                                if other_active {
+                                    None
+                                } else {
+                                    find_next_pending_only(&mut segments)
+                                }
+                            } else {
+                                find_next_work(
+                                    &mut segments,
+                                    &mut next_index,
+                                    effective_total_bytes,
+                                    current_min_split,
+                                )
+                            };
+                            if let Some(next) = next_work {
+                                let new_seg_idx = next.assignment.seg_index;
+                                persist_segment_change(
+                                    db, task_id, &segments,
+                                    new_seg_idx, next.split_parent,
+                                ).await;
+                                if let Some(parent_idx) = next.split_parent {
+                                    send_split_event(
+                                        sink, task_id, parent_idx, new_seg_idx,
+                                        &segments, false,
+                                    );
+                                }
+                                rebuild_seg_states(&segments, &seg_states);
+                                if let Some(Some(tx)) = worker_assign_txs.get(worker_id)
+                                    && tx.send(next.assignment).await.is_err()
+                                    && let Some(seg) = segments.get_mut(&new_seg_idx)
+                                {
+                                    seg.state = SegState::Pending;
+                                }
+                            } else if let Some(slot) = worker_assign_txs.get_mut(worker_id) {
+                                *slot = None;
+                            }
+                            continue;
+                        }
                         // 失败处置分三类：
                         //   (1) 403/429 服务器拒绝多连接 + 有其它段在工作；
                         //   (2) 瞬时 RangeNotSupported——已下载过数据（any_data，证明
@@ -1209,7 +1300,146 @@ pub async fn run_coordinated_download(
         );
     }
 
+    Ok(effective_total_bytes)
+}
+
+/// 把 `dest` 预分配/扩容到至少 `target_len` 字节（逻辑 EOF + 尽量物理分配）。
+/// 已 `>= target_len` 时为 no-op。两处使用：
+///   1. 下载启动时的整文件预分配（coordinator 第 2 步）；
+///   2. 就地扩容（[`DownloadError::TrueSizeLarger`]）时延长临时文件——此时其它
+///      worker 可能正持有各自句柄在低偏移写入：Windows 默认共享模式允许并发
+///      SetEndOfFile 扩展，Linux fallocate 同理，均不影响进行中的写。
+///
+/// 平台策略：
+/// - Linux:   fallocate(2) 分配真实磁盘块（不写零，近乎瞬时），避免
+///   set_len()/ftruncate 稀疏文件导致的碎片化和延迟 ENOSPC。
+/// - Windows: SetFileInformationByHandle(FileAllocationInfo) 预分配 NTFS 物理簇
+///   （连续优先），提前检测磁盘空间不足；再 SetEndOfFile 设置逻辑大小。
+/// - 其它:    回退 set_len()。
+async fn preallocate_file_len(dest: &Path, target_len: u64) -> Result<(), DownloadError> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dest)
+        .await?;
+    let current_len = file.metadata().await?.len();
+    if current_len >= target_len {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let std_file = file.into_std().await;
+        tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
+            use std::os::unix::io::AsRawFd;
+            let fd = std_file.as_raw_fd();
+            // fallocate(fd, 0, 0, len): 预分配 [0, len) 范围的磁盘块，
+            // 不写零，ext4/XFS/Btrfs 均支持，耗时 O(1)。
+            // mode=0 同时将文件大小设为 max(当前大小, offset+len)。
+            let ret = unsafe { libc::fallocate(fd, 0, 0, target_len as libc::off_t) };
+            if ret == 0 {
+                return Ok(());
+            }
+            // fallocate 失败 — 检查是否为文件系统不支持
+            let err = std::io::Error::last_os_error();
+            let raw = err.raw_os_error().unwrap_or(0);
+            if raw == libc::EOPNOTSUPP || raw == libc::ENOSYS {
+                // tmpfs/NFS 等不支持 fallocate 的文件系统，回退到 ftruncate
+                log_info!(
+                    "[coordinator] fallocate 不支持 (errno={}), 回退到 ftruncate",
+                    raw
+                );
+                std_file.set_len(target_len)?;
+                Ok(())
+            } else {
+                // ENOSPC 等真实错误，直接上报（提前检测磁盘空间不足）
+                Err(err.into())
+            }
+        })
+        .await
+        .map_err(|e| DownloadError::Other(format!("fallocate task panicked: {e}")))??;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let std_file = file.into_std().await;
+        tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
+            use std::os::windows::io::AsRawHandle;
+            // FILE_ALLOCATION_INFO: 单字段 AllocationSize (LARGE_INTEGER = i64)
+            #[repr(C)]
+            struct FileAllocInfo {
+                allocation_size: i64,
+            }
+            let handle = std_file.as_raw_handle();
+            // Step 1: 预分配 NTFS 物理簇——立即保留磁盘空间（连续簇优先），
+            // 磁盘不足时提前报错（等效 Linux fallocate 的 ENOSPC 检测），
+            // 减少多段随机写时的 NTFS 碎片化。
+            let info = FileAllocInfo {
+                allocation_size: target_len as i64,
+            };
+            let ret = unsafe {
+                windows_sys::Win32::Storage::FileSystem::SetFileInformationByHandle(
+                    handle,
+                    windows_sys::Win32::Storage::FileSystem::FileAllocationInfo,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<FileAllocInfo>() as u32,
+                )
+            };
+            if ret == 0 {
+                // FAT32/exFAT/网络驱动器等不支持时仅记录日志，不中断
+                log_info!(
+                    "[coordinator] SetFileInformationByHandle(FileAllocationInfo) 失败: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            // Step 2: 设置逻辑 EOF——后续 seek+write 依赖此值
+            std_file.set_len(target_len)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| DownloadError::Other(format!("prealloc task panicked: {e}")))??;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        file.set_len(target_len).await?;
+    }
     Ok(())
+}
+
+/// hint 模式（无 probe 基线）的跨段版本一致性检查。
+///
+/// probe 被跳过时（浏览器扩展 hint 保护一次性签名 URL），`expected_etag` /
+/// `expected_last_modified` 均为空，do_segment 的常规版本守卫恒不生效——多段间
+/// 没有任何版本一致性保障：文件在下载中途被【替换】会拼出新旧混合的损坏文件。
+/// 本函数以【第一个 206 响应】携带的 (ETag, Last-Modified) 为基线（latch），后续
+/// 所有段（含就地扩容追加的尾段）与之比较。
+///
+/// 比较策略与 probe 路径一致（缺失容忍）：仅当基线与响应【双方均非空】且不等时
+/// 判为漂移，返回 `Err(基线)`；CDN 在 206 上剥离 validator（空串）永不比较。
+fn check_cross_segment_validators(
+    first_validators: &StdMutex<Option<(String, String)>>,
+    resp_etag: &str,
+    resp_lm: &str,
+) -> Result<(), (String, String)> {
+    let mut guard = match first_validators.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match guard.as_ref() {
+        None => {
+            *guard = Some((resp_etag.to_string(), resp_lm.to_string()));
+            Ok(())
+        }
+        Some((base_etag, base_lm)) => {
+            let etag_mismatch =
+                !base_etag.is_empty() && !resp_etag.is_empty() && base_etag != resp_etag;
+            let lm_mismatch = !base_lm.is_empty() && !resp_lm.is_empty() && base_lm != resp_lm;
+            if etag_mismatch || lm_mismatch {
+                Err((base_etag.clone(), base_lm.clone()))
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1828,7 +2058,9 @@ fn spawn_worker(
     task_id: String,
     url: String,
     dest: PathBuf,
-    total_bytes: i64,
+    planned_total: Arc<AtomicI64>,
+    size_is_estimate: bool,
+    first_validators: Arc<StdMutex<Option<(String, String)>>>,
     client: Client,
     cancel_token: CancellationToken,
     conn_sensitive: Arc<AtomicBool>,
@@ -1861,7 +2093,9 @@ fn spawn_worker(
                 &cancel_token,
                 &conn_sensitive,
                 &total_downloaded,
-                total_bytes,
+                &planned_total,
+                size_is_estimate,
+                &first_validators,
                 &db,
                 &progress_tx,
                 &seg_states,
@@ -1888,6 +2122,12 @@ fn spawn_worker(
                     break;
                 }
                 Err(e) => {
+                    // TrueSizeLarger 是【可恢复的协调级事件】而非 worker 致命错误：
+                    // coordinator 就地扩容后会立刻给本 worker 重新派工，故报告后
+                    // 【保活】等待下一个 assignment（coordinator 退休本 worker 或
+                    // 结束时关闭 channel，recv 返回 None 自然退出）。其余错误维持
+                    // 原语义：报告后退出。
+                    let recoverable = matches!(e, DownloadError::TrueSizeLarger(_));
                     let _ = event_tx
                         .send(WorkerEvent::Failed {
                             worker_id,
@@ -1895,7 +2135,9 @@ fn spawn_worker(
                             error: e,
                         })
                         .await;
-                    break;
+                    if !recoverable {
+                        break;
+                    }
                 }
             }
         }
@@ -1921,7 +2163,9 @@ async fn do_segment_with_retry(
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
     total_downloaded: &AtomicI64,
-    total_bytes: i64,
+    planned_total: &AtomicI64,
+    size_is_estimate: bool,
+    first_validators: &StdMutex<Option<(String, String)>>,
     db: &Db,
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
@@ -1946,7 +2190,9 @@ async fn do_segment_with_retry(
             cancel,
             conn_sensitive,
             total_downloaded,
-            total_bytes,
+            planned_total,
+            size_is_estimate,
+            first_validators,
             db,
             progress_tx,
             seg_states,
@@ -1970,6 +2216,11 @@ async fn do_segment_with_retry(
             // 的数据是错位垃圾。立即返回让 coordinator 走 Path B → run_download_inner
             // 清空临时文件 + 回退单流；绝不当瞬时错误退避重试。
             Err(e @ DownloadError::RangeMisaligned(_)) => return Err(e),
+            // 服务器自报真实大小明显大于规划：系统性错误（重试必然拿到同样的
+            // Content-Range 分母），需要 coordinator 就地扩容（延长预分配 + 追加
+            // 尾段）后重新派工。
+            // 立即返回，绝不当瞬时错误退避重试（BUG-HTTP-HINT-UNDERSIZED）。
+            Err(e @ DownloadError::TrueSizeLarger(_)) => return Err(e),
             // RangeNotSupported 的两义性处理：
             //   • total_downloaded==0：从未有任何段拿到过 206 → 服务器真的无视 Range
             //     （如 FnOS NAS）。立即返回让 coordinator 快速回退单流，不空烧退避。
@@ -2036,7 +2287,14 @@ async fn do_segment(
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
     total_downloaded: &AtomicI64,
-    total_bytes: i64,
+    // 当前规划总大小的共享视图（coordinator 就地扩容时更新，见 planned_total 注释）。
+    planned_total: &AtomicI64,
+    // `planned_total` 是否为【未经 probe 验证的估计值】（fresh hint 模式）。true 时
+    // Content-Range 分母才是权威真实大小，扩容检查采零容差；见下方 size-check 注释。
+    size_is_estimate: bool,
+    // hint 模式跨段版本一致性基线（首个 206 的 validator latch），见
+    // check_cross_segment_validators。
+    first_validators: &StdMutex<Option<(String, String)>>,
     db: &Db,
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
@@ -2184,6 +2442,11 @@ async fn do_segment(
     // we're downloading — the resulting file would be a corrupt splice of two
     // different versions.
     //
+    // 版本一致性守卫【先于】下方的“真实大小 > 规划”扩容检查执行：文件在下载中途被
+    // 替换应被判定为【版本变化】（fail-fast），而不是先触发一次整体扩容重下、再在
+    // 陈旧 validator 上失败。（fresh hint 模式下 expected_etag 为空 → 守卫被跳过，此
+    // 次序调整只影响 probe 验证过的下载。）
+    //
     // Only check when the probe returned a non-empty value AND the segment
     // response also provides the header.  Many CDN edge servers strip these
     // headers on Range responses, so a missing header is not an error.
@@ -2210,6 +2473,88 @@ async fn do_segment(
              The file may have changed on the server during download.",
             seg_idx, expected_last_modified, resp_lm_str
         )));
+    }
+
+    // --- hint 模式（无 probe 基线）的跨段版本一致性 latch --------------------
+    // probe 被跳过时 expected_etag/expected_last_modified 均为空，上方两个守卫恒
+    // 不生效——多段之间没有任何版本一致性保障：文件在下载中途被【替换】会拼出
+    // 新旧混合的静默损坏文件（含就地扩容追加的尾段与前缀不同版本的情形）。这里
+    // 以第一个 206 响应携带的 validator 为基线，之后所有段与之比较；漂移 →
+    // VersionChanged（Path B 清空回退单流，重下新版本）。比较策略与 probe 路径
+    // 一致：双方非空才比较，CDN 剥离 validator 时永不误报。
+    if expected_etag.is_empty() && expected_last_modified.is_empty() {
+        let resp_etag = resp
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let resp_lm = resp
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if let Err((base_etag, base_lm)) =
+            check_cross_segment_validators(first_validators, resp_etag, resp_lm)
+        {
+            log_info!(
+                "[coordinator] task {} seg {} 跨段 validator 漂移（基线 etag=\"{}\" lm=\"{}\"，\
+                 本段 etag=\"{}\" lm=\"{}\"）——文件在下载中被替换，回退重下",
+                task_id,
+                seg_idx,
+                base_etag,
+                base_lm,
+                resp_etag,
+                resp_lm
+            );
+            return Err(DownloadError::VersionChanged(format!(
+                "segment {seg_idx}: validators drifted across segment responses \
+                 (baseline etag=\"{base_etag}\" lm=\"{base_lm}\", \
+                 got etag=\"{resp_etag}\" lm=\"{resp_lm}\")"
+            )));
+        }
+    }
+
+    // --- 服务器自报真实总大小 > 规划总大小 → 规划偏小，继续会静默截断 -------------
+    // 合法 206 的 `Content-Range: bytes X-Y/<total>` 分母是服务器【自报的真实总大小】。
+    // 当它大于当前规划的 planned_total 时，规划区间 [0, planned) 只覆盖了文件前缀——
+    // 典型：浏览器扩展在 <video> Range 流式播放【渐进上传中】的视频时抓到【当时的部分
+    // 大小】并作为 hint 传入，hint 模式跳过 probe 把偏小 hint 当权威总大小
+    // （BUG-HTTP-HINT-UNDERSIZED）。返回 TrueSizeLarger 让 coordinator【就地扩容】
+    // （延长预分配 + 追加尾段，已下数据零丢弃）后重新派工，下满整文件。
+    //
+    // planned 必须从共享 planned_total【实时读取】：扩容后 coordinator 已更新该值，
+    // 若用 worker 启动时的栈上拷贝，尾段会对同一分母反复误报、永不收敛。
+    //
+    // 漂移容差取决于 planned 的【来源可信度】（size_is_estimate）：
+    //   • size_is_estimate=true（fresh hint 模式）：planned 只是扩展抓到的、未经
+    //     probe 验证的猜测值，而 Content-Range 分母才是服务器自报的【权威真实大小】。
+    //     故【零容差】——只要 true_total > planned（精确）即触发扩容。任何非零容差
+    //     都会重新打开静默截断窗口（例：hint 2_985_000 vs 真实 3_000_000，缺口 15_000
+    //     < 1% 容差 29_850 → 尾部 15 KB 被静默丢弃）。
+    //   • size_is_estimate=false（resume/probe 路径）：planned 已被 probe/DB 校准，
+    //     与磁盘上的分段边界一致。沿用 resume 端一致的 CDN 漂移容差（1%，上限 1MB），
+    //     仅在真实大小【明显】更大时才触发，避免与 resume 的“trust DB segments”小漂移
+    //     决策相互打架；正常多段（规划值==真实大小，分母相等）永不触发，不影响吞吐。
+    if let Some(true_total) = crate::downloader::parse_content_range_total(resp.headers()) {
+        let planned = planned_total.load(Ordering::Relaxed);
+        let drift_tolerance = if size_is_estimate {
+            0
+        } else {
+            (planned / 100).clamp(1, 1_048_576)
+        };
+        if true_total > planned + drift_tolerance {
+            log_info!(
+                "[coordinator] task {} seg {} 服务器自报真实大小 {} > 规划总大小 {}（漂移容差 \
+                 {}，size_is_estimate={}），hint 偏小/文件增长——就地扩容下满整文件",
+                task_id,
+                seg_idx,
+                true_total,
+                planned,
+                drift_tolerance,
+                size_is_estimate
+            );
+            return Err(DownloadError::TrueSizeLarger(true_total));
+        }
     }
 
     // Safety net: if a Range response carries Content-Encoding, the raw
@@ -2381,7 +2726,7 @@ async fn do_segment(
                                 .send(ProgressUpdate {
                                     task_id: task_id.to_string(),
                                     downloaded_bytes: current_total,
-                                    total_bytes,
+                                    total_bytes: planned_total.load(Ordering::Relaxed),
                                     status: 1,
                                     error_message: String::new(),
                                     file_name: String::new(),
@@ -2550,10 +2895,10 @@ fn update_seg_state(
 mod tests {
     use super::{
         FileSyncGate, LiveSegment, MAX_SEGMENTS, MIN_SPLIT_BYTES, MIN_SYNC_GAP, SegState,
-        TAIL_MIN_SPLIT_BYTES, all_done, build_seg_state_vec, dynamic_min_split_bytes, extract_host,
-        find_next_pending_only, find_next_work, is_single_conn_domain, rebuild_seg_states,
-        record_single_conn_domain, single_conn_cache, try_proactive_split, try_split_largest,
-        validate_coverage,
+        TAIL_MIN_SPLIT_BYTES, all_done, build_seg_state_vec, check_cross_segment_validators,
+        dynamic_min_split_bytes, extract_host, find_next_pending_only, find_next_work,
+        is_single_conn_domain, rebuild_seg_states, record_single_conn_domain, single_conn_cache,
+        try_proactive_split, try_split_largest, validate_coverage,
     };
     use crate::downloader::{DownloadError, SegmentProgressInfo, is_server_rejection};
     use std::collections::BTreeMap;
@@ -2567,6 +2912,49 @@ mod tests {
             downloaded_bytes: downloaded,
             state,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // check_cross_segment_validators（hint 模式跨段版本一致性 latch）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cross_segment_validators_latch_first_then_accept_same() {
+        let latch = StdMutex::new(None);
+        // 第一个 206：建立基线。
+        assert!(check_cross_segment_validators(&latch, "\"e1\"", "Mon, 01 Jan 2024").is_ok());
+        // 后续段同版本：通过。
+        assert!(check_cross_segment_validators(&latch, "\"e1\"", "Mon, 01 Jan 2024").is_ok());
+    }
+
+    #[test]
+    fn cross_segment_validators_detect_etag_drift() {
+        let latch = StdMutex::new(None);
+        assert!(check_cross_segment_validators(&latch, "\"e1\"", "").is_ok());
+        // 文件中途被替换：ETag 漂移必须报错（否则拼出新旧混合的损坏文件）。
+        let err = check_cross_segment_validators(&latch, "\"e2\"", "");
+        assert_eq!(err, Err(("\"e1\"".to_string(), String::new())));
+    }
+
+    #[test]
+    fn cross_segment_validators_detect_last_modified_drift() {
+        let latch = StdMutex::new(None);
+        assert!(check_cross_segment_validators(&latch, "", "Mon, 01 Jan 2024").is_ok());
+        let err = check_cross_segment_validators(&latch, "", "Tue, 02 Jan 2024");
+        assert_eq!(err, Err((String::new(), "Mon, 01 Jan 2024".to_string())));
+    }
+
+    #[test]
+    fn cross_segment_validators_tolerate_stripped_headers() {
+        // CDN 在 206 上剥离 validator：基线为空串 → 永不比较（缺失容忍，
+        // 与 probe 路径策略一致）。
+        let latch = StdMutex::new(None);
+        assert!(check_cross_segment_validators(&latch, "", "").is_ok());
+        assert!(check_cross_segment_validators(&latch, "\"e9\"", "any").is_ok());
+        // 反向：基线有值、响应剥离 → 同样容忍。
+        let latch2 = StdMutex::new(None);
+        assert!(check_cross_segment_validators(&latch2, "\"e1\"", "lm1").is_ok());
+        assert!(check_cross_segment_validators(&latch2, "", "").is_ok());
     }
 
     // -----------------------------------------------------------------------

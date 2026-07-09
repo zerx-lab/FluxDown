@@ -87,6 +87,11 @@ struct ServerState {
     /// 钩子 B（一次性）：置为 true 后，下一次「分段」range GET 强制返回一次 200
     /// 全量（消费后自动复位为 false，其余请求照常 206）——复现“瞬时 200”。
     force_full_range_get_once: std::sync::atomic::AtomicBool,
+    /// 206 `Content-Range` 分母（服务器自报总大小）注入序列：每个 206 依次弹出
+    /// 一个值作为分母（body 照常按真实区间发送）；序列耗尽后回落为诚实的 body
+    /// 长度。模拟【渐进上传中文件不断增长】/病态分母膨胀（BUG-HTTP-HINT-UNDERSIZED
+    /// 的扩容配额路径）。注意：注入值必须 >= 请求区间末尾+1 才自洽。
+    range_total_sequence: std::sync::Mutex<Vec<i64>>,
 
     // --- 计数器（断言用）---
     head_count: AtomicUsize,
@@ -116,6 +121,7 @@ impl ServerState {
             emit_validators_on_range: true,
             force_full_on_segment_range: false,
             force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
+            range_total_sequence: std::sync::Mutex::new(Vec::new()),
             head_count: AtomicUsize::new(0),
             full_get_count: AtomicUsize::new(0),
             range_get_count: AtomicUsize::new(0),
@@ -406,9 +412,17 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     let mut h = String::new();
     h.push_str("HTTP/1.1 206 Partial Content\r\n");
     h.push_str(&format!("Content-Length: {}\r\n", len));
+    // 分母注入：序列非空时弹出首个值伪造服务器自报总大小（模拟文件仍在增长）。
+    let reported_total = {
+        let mut seq = st
+            .range_total_sequence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if seq.is_empty() { total } else { seq.remove(0) }
+    };
     h.push_str(&format!(
         "Content-Range: bytes {}-{}/{}\r\n",
-        start, end, total
+        start, end, reported_total
     ));
     h.push_str("Accept-Ranges: bytes\r\n");
     if st.emit_validators_on_range {
@@ -562,6 +576,7 @@ async fn run_coord(
         url,
         &dest,
         total,
+        false,
         segments,
         &client,
         &db,
@@ -576,7 +591,7 @@ async fn run_coord(
     .await;
     drop(tx);
     let _ = dh.await;
-    (res, dest)
+    (res.map(|_| ()), dest)
 }
 
 // ===========================================================================
@@ -869,6 +884,7 @@ async fn resume_after_cancel_is_byte_exact() {
         &url,
         &dest,
         size as i64,
+        false,
         8,
         &client,
         &db,
@@ -906,6 +922,7 @@ async fn resume_after_cancel_is_byte_exact() {
         &url,
         &dest,
         size as i64,
+        false,
         8,
         &client,
         &db,
@@ -1323,6 +1340,420 @@ async fn no_content_length_truncation_must_not_be_accepted() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-HTTP-HINT-UNDERSIZED（真正根因）：扩展 hint 小于服务器真实大小 →
+// 多段只请求 [0, hint) 区间，拿满即判完成 → 静默截断
+// ---------------------------------------------------------------------------
+//
+// 这是用户实证「视频反复下载不完整」的**真实根因**（由 downloader 真实日志坐实，
+// 推翻了最初的“无 CL 断流”猜测）。关键日志：
+//   [ExtDownSvc] received request: ... size=2585179          ← 扩展抓到的大小
+//   [download] using hint: size=2585179 (probe skipped, hint=2585179)
+//   [download] static advice: segments=2, reason=file=2585179 bytes
+//   [download] hint mode: skipping bandwidth probe
+//   [download] mode=multi-segment, segments=2
+//   [download] completed, total=2585179 bytes               ← 0.17s「完成」
+// 文件真实大小是 4747867（次日、以及另一下载器同期都拿到完整文件，SHA 一致；
+// 已下载的 2585179 字节经逐字节比对是完整文件的**干净前缀**，零损坏）。
+//
+// 因果链：这是一段仍在**渐进上传**的生成视频，扩展在 <video> Range 流式播放时
+// 抓到的是**当时的部分大小** 2585179。downloader 的 hint 模式为「保护一次性签名
+// URL」而**完全跳过 probe**，于是把这个偏小的 hint 当作权威总大小，多段只请求
+// [0, hint) 区间，拿满即完成——**从不校验服务器自己在 206 响应
+// `Content-Range: bytes X-Y/<total>` 分母里给出的真实总大小**。hint 偏小 → 静默
+// 截断。两次都截在完全相同的 2585179，正因为那不是网络断流、而**就是 hint 本身**。
+// 另一下载器免疫是因为它下载时自己 probe 拿到当时真实大小。
+//
+// 正确行为：hint 只应作为「跳过 probe 的乐观下限」；一旦下载响应（206 的
+// Content-Range 分母、或 200 的 Content-Length）暴露出更大的真实总大小，必须据此
+// 下满整文件，而不是停在 hint。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn hint_smaller_than_true_server_size_must_not_truncate() {
+    let work_dir = unique_dir("hintunder");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    // 服务器真实文件 3_000_000；扩展 hint 只有 1_400_000（模拟渐进上传中途的部分大小）。
+    let full = gen_body(3_000_000, 6063);
+    let expected = sha256_bytes(&full);
+    let hint = 1_400_000i64; // > 1MB → 触发多段（复现日志里的 segments=2 路径）
+
+    // 诚实服务器：支持 Range，每个 206 都带 Content-Range .../3000000 暴露真实总大小。
+    let st = Arc::new(ServerState::new(Arc::new(full.clone()), "etu"));
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "hu", &url, "out.mp4", 2, hint).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir, &db, "hu", &url, "out.mp4", 2, hint, false, "", &cancel,
+    )
+    .await;
+
+    let dlen = if dest.exists() {
+        tokio::fs::metadata(&dest)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let got = if dest.exists() {
+        sha256_file(&dest).await
+    } else {
+        "<missing>".into()
+    };
+    eprintln!(
+        "[hintunder] status={status} len={} (hint={}, 服务器真实={})",
+        dlen,
+        hint,
+        full.len()
+    );
+    // 正确行为：即便扩展 hint 偏小，服务器在 206 里暴露了真实总大小 → 必须下满整文件。
+    // 断言【无条件】：status 必须为 3（完成）。若回归成 fail-instead-of-complete
+    // （status=4）本测试必须变红，绝不可因 `if status == 3` 的旧写法被静默跳过。
+    assert_eq!(
+        status,
+        3,
+        "❌ hint({}) < 真实({})：必须以真实大小下满整文件并完成，而非报错跳过（status={}）",
+        hint,
+        full.len(),
+        status
+    );
+    assert_eq!(
+        dlen as usize,
+        full.len(),
+        "❌ hint({}) < 真实({})：只下 {} 字节就判完成——静默截断（复现用户视频不完整）",
+        hint,
+        full.len(),
+        dlen
+    );
+    assert_eq!(got, expected, "内容应与完整文件一致");
+    // 就地扩容（而非清空重规划）的结构性证据：最终 DB 段行里存在起点恰为原 hint
+    // 边界的尾段 [1_400_000, ...]。清空重下会以真实大小重建均匀切分
+    // （3_000_000/2 → 边界 1_500_000），绝不会出现 1_400_000 这个边界——回归成
+    // 清空版（丢弃已下数据整体重下）时本断言变红。
+    let segs = db.load_segments("hu").await.expect("load segments");
+    assert!(
+        segs.iter().any(|s| s.start_byte == hint),
+        "❌ 应就地扩容追加尾段 [hint={}, 真实)（保留已下数据），而非清空重规划；实际段边界: {:?}",
+        hint,
+        segs.iter()
+            .map(|s| (s.start_byte, s.end_byte))
+            .collect::<Vec<_>>()
+    );
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HTTP-HINT-UNDERSIZED 容差窗口回归：hint 偏小的缺口【落在旧的 1% 漂移容差内】
+// ---------------------------------------------------------------------------
+//
+// 修复前，do_segment 对 Content-Range 分母（服务器自报真实大小）一律套用 resume 端
+// 的 CDN 漂移容差（1%，上限 1MB），仅当 true_total > total_bytes + 容差 才触发扩容。
+// 这为 hint 模式重新打开了一条静默截断窗口：若 hint 的缺口【小于】容差，尾部数据会
+// 被静默丢弃。本例：真实 3_000_000、hint 2_985_000，缺口 15_000 < 1% 容差 29_850 →
+// 修复前会停在 2_985_000 判完成（截掉尾部 15 KB），且字节数校验通过、无从察觉。
+//
+// 修复：fresh hint 模式（size_is_estimate=true）对权威的 Content-Range 分母采【零容
+// 差】——true_total > total_bytes（精确）即扩容。本测试证明该窗口已关闭：必须下满
+// 整 3_000_000 字节且 SHA 一致。（resume 路径仍保留漂移容差，不受影响。）
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn hint_undersized_within_old_drift_tolerance_must_not_truncate() {
+    let work_dir = unique_dir("hintdrift");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    // 服务器真实文件 3_000_000；hint 2_985_000：缺口 15_000 落在旧 1% 容差(29_850)【内】。
+    let full = gen_body(3_000_000, 9271);
+    let expected = sha256_bytes(&full);
+    let hint = 2_985_000i64; // > 1MB → 多段路径；缺口 < 旧容差 → 修复前会静默截断
+
+    // 诚实服务器：支持 Range，每个 206 都带 Content-Range .../3000000 暴露真实总大小。
+    let st = Arc::new(ServerState::new(Arc::new(full.clone()), "etd"));
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "hw", &url, "out.mp4", 2, hint).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir, &db, "hw", &url, "out.mp4", 2, hint, false, "", &cancel,
+    )
+    .await;
+
+    let dlen = if dest.exists() {
+        tokio::fs::metadata(&dest)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let got = if dest.exists() {
+        sha256_file(&dest).await
+    } else {
+        "<missing>".into()
+    };
+    eprintln!(
+        "[hintdrift] status={status} len={} (hint={}, 服务器真实={})",
+        dlen,
+        hint,
+        full.len()
+    );
+    // 断言【无条件】：缺口虽落在旧容差内，仍必须以真实大小下满整文件并完成。
+    assert_eq!(
+        status,
+        3,
+        "❌ hint({}) 缺口 {} 落在旧 1% 容差内：必须扩容下满整文件并完成，而非报错跳过（status={}）",
+        hint,
+        full.len() as i64 - hint,
+        status
+    );
+    assert_eq!(
+        dlen as usize,
+        full.len(),
+        "❌ 缺口({})落在旧 1% 容差内被静默丢弃：只下 {} 字节就判完成——尾部截断",
+        full.len() as i64 - hint,
+        dlen
+    );
+    assert_eq!(got, expected, "内容应与完整文件一致");
+    // 同上：缺口 15_000 落在旧容差内也必须走就地扩容——尾段起点恰为 hint 边界。
+    let segs = db.load_segments("hw").await.expect("load segments");
+    assert!(
+        segs.iter().any(|s| s.start_byte == hint),
+        "❌ 应就地扩容追加尾段 [hint={}, 真实)，而非清空重规划；实际段边界: {:?}",
+        hint,
+        segs.iter()
+            .map(|s| (s.start_byte, s.end_byte))
+            .collect::<Vec<_>>()
+    );
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HTTP-HINT-UNDERSIZED 扩容配额：分母持续膨胀（文件不停增长/病态服务器）
+// ---------------------------------------------------------------------------
+//
+// 每个 206 的 Content-Range 分母都比引擎当前规划更大（注入严格递增序列，模拟
+// 一段【始终在渐进上传】的文件或无限膨胀分母的病态服务器）。正确行为：
+//   1. coordinator 就地扩容至多 MAX_SIZE_EXPANSIONS（3）次；
+//   2. 仍在膨胀 → 以 TrueSizeLarger 显式失败（status=4），绝不静默把某一时刻的
+//      前缀当完成（fail-loud）；
+//   3. 失败时【不清数据】——DB 段行保留，用户重试时 resume 重新 probe 续下
+//      （对照：清空版实现失败即全丢）。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn hint_expansion_quota_exhausted_fails_loud_and_keeps_data() {
+    let work_dir = unique_dir("hintquota");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    // 真实 body 足够大，注入的分母序列全部 <= body 长度，服务器能自洽地服务
+    // 任何落在注入分母之内的区间请求。
+    let full = gen_body(4_000_000, 7177);
+    let hint = 1_100_000i64; // > 1MB → 多段路径
+
+    let s = ServerState::new(Arc::new(full.clone()), "etq");
+    // 严格递增的分母序列：每个 206 都自报比引擎当前规划更大的总大小 →
+    // 每次都触发扩容检查；3 次配额烧完后第 4 次触发必须 fail-loud。
+    // 序列长度给足（40 个），耗尽后回落诚实 body 长度（4_000_000）仍大于
+    // 任何中间规划值，兜底保证触发。
+    {
+        let mut seq = s.range_total_sequence.lock().unwrap();
+        let mut v = hint;
+        for _ in 0..40 {
+            v += 60_000;
+            seq.push(v.min(full.len() as i64));
+        }
+    }
+    let st = Arc::new(s);
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "hq", &url, "out.mp4", 2, hint).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir, &db, "hq", &url, "out.mp4", 2, hint, false, "", &cancel,
+    )
+    .await;
+
+    eprintln!("[hintquota] status={status} dest_exists={}", dest.exists());
+    // 1) fail-loud：绝不能把某个中间规划的前缀当完成。
+    assert_eq!(
+        status, 4,
+        "❌ 分母持续膨胀应在扩容配额耗尽后显式失败（status=4），而非报完成/其它（status={status}）"
+    );
+    assert!(
+        !dest.exists(),
+        "❌ 失败任务绝不能产出最终成品文件（finalize 泄漏）"
+    );
+    // 2) 数据保留：DB 段行仍在（resume 重新 probe 后可续），绝不清空。
+    let segs = db.load_segments("hq").await.expect("load segments");
+    assert!(
+        !segs.is_empty(),
+        "❌ 配额耗尽失败时必须保留 DB 段行（进度可续），实际被清空"
+    );
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HTTP-HINT-NO-CL-TRUNCATION（相邻空子，非本次事故成因）：hint 模式下，下载
+// 响应无 Content-Length + 中途断流 → 干净 EOF 的截断文件被 downloader.rs 的
+//   resp_cl <= 0 && file_len > 0 && (file_len >= total || hint_file_size > 0)
+// 中 `|| hint_file_size > 0` 分支当成完成。这是调查上面那个真实事故时**顺带发现**
+// 的另一处静默截断入口——用户本次事故不是它造成的（本次下载响应带的是分段 206，
+// 非无 CL 断流），但它同样能把截断文件判成功，值得单独留一道回归防线。
+// 本测试用 segment_count=1 强制单流，精确命中该空子（无多段协调器干扰）。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn hint_no_content_length_truncation_single_stream_must_not_be_accepted() {
+    let work_dir = unique_dir("hintnocl");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let full = gen_body(500_000, 4041); // 模拟一段视频
+    let truncated_at = 137_000usize; // CDN 中途断流处
+
+    let mut s = ServerState::new(Arc::new(full.clone()), "etv");
+    s.support_range = false; // 单流
+    s.advertise_accept_ranges = false;
+    s.omit_content_length_full = true; // 下载响应不发 Content-Length（连接关闭定界）
+    s.close_full_after = Some(truncated_at); // 只发前 137000 字节就断
+    let st = Arc::new(s);
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    // hint_file_size = full.len()：扩展抓包看到的可信大小；segment_count=1 强制单流。
+    insert_simple_task(&db, &work_dir, "hv", &url, "out.mp4", 1, full.len() as i64).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir,
+        &db,
+        "hv",
+        &url,
+        "out.mp4",
+        1,                 // segment_count=1 → 单流
+        full.len() as i64, // hint_file_size > 0 → 跳过 probe，走 hint 旁路
+        false,
+        "",
+        &cancel,
+    )
+    .await;
+
+    let dlen = if dest.exists() {
+        tokio::fs::metadata(&dest)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    eprintln!(
+        "[hintnocl-single] status={status} dest_exists={} len={} (hint/期望完整 {})",
+        dest.exists(),
+        dlen,
+        full.len()
+    );
+    // 正确行为：hint 可信总大小 + 截断 + 无 CL → 必须判失败，绝不能把截断文件当完成。
+    // 断言【无条件】：截断的无 CL 单流必须被拒绝（status=4 错误），绝不能报完成（status=3）。
+    assert_ne!(
+        status,
+        3,
+        "❌ hint 旁路截断视频（{}/{}）被当作成功完成——截断的无 CL 单流必须判失败而非完成",
+        dlen,
+        full.len()
+    );
+    // 失败任务绝不能产出最终成品文件（.fluxdown 临时文件允许残留）。
+    assert!(
+        !dest.exists(),
+        "❌ 截断的无 CL 单流被 finalize 成了成品文件"
+    );
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HTTP-HINT-NO-CL-TRUNCATION（多段回退面）：扩展 hint + 自动多段，CDN 对
+// 分段请求不回 206（无视 Range）→ 回退单流 → 无 CL + 断流 → 截断被当成功
+// ---------------------------------------------------------------------------
+//
+// 更贴近用户真实链路：扩展给了 hint 大小，视频 > 1MB，downloader 乐观假设支持
+// Range 并发起多段下载；但 CDN 对真实分段 GET 不回 206（返回 200 全量，
+// alist/签名回源常见），触发 `RangeNotSupported` → 回退单流。回退后的单流 GET
+// 无 Content-Length 且中途断流，最终仍命中同一 `|| hint_file_size > 0` 空子被
+// 当成完成。验证该空子在「多段→单流回退」路径上同样存在，回退不该丢掉完整性兜底。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn hint_no_content_length_truncation_via_range_fallback_must_not_be_accepted() {
+    let work_dir = unique_dir("hintnoclms");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let full = gen_body(3_000_000, 5052); // > 1MB → 触发多段
+    let truncated_at = 900_000usize;
+
+    let mut s = ServerState::new(Arc::new(full.clone()), "etv2");
+    s.support_range = false; // 对所有 Range 请求回 200 全量 → 触发 RangeNotSupported 回退单流
+    s.advertise_accept_ranges = false;
+    s.omit_content_length_full = true; // 下载响应无 Content-Length
+    s.close_full_after = Some(truncated_at); // 中途断流
+    let st = Arc::new(s);
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "hm", &url, "out.mp4", 4, full.len() as i64).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir,
+        &db,
+        "hm",
+        &url,
+        "out.mp4",
+        4,                 // segment_count=4 → 乐观走多段（随后因 CDN 无视 Range 回退单流）
+        full.len() as i64, // hint_file_size > 0 → 跳过 probe
+        false,
+        "",
+        &cancel,
+    )
+    .await;
+
+    let dlen = if dest.exists() {
+        tokio::fs::metadata(&dest)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    eprintln!(
+        "[hintnocl-multi] status={status} dest_exists={} len={} (hint/期望完整 {})",
+        dest.exists(),
+        dlen,
+        full.len()
+    );
+    // 正确行为：多段回退单流后，hint 可信大小 + 截断 + 无 CL → 必须判失败。
+    // 断言【无条件】：截断的无 CL 流必须被拒绝（status=4 错误），绝不能报完成（status=3）。
+    assert_ne!(
+        status,
+        3,
+        "❌ 多段回退单流后截断视频（{}/{}）被当作成功完成——截断的无 CL 流必须判失败而非完成",
+        dlen,
+        full.len()
+    );
+    // 失败任务绝不能产出最终成品文件（.fluxdown 临时文件允许残留）。
+    assert!(
+        !dest.exists(),
+        "❌ 多段回退单流后截断文件被 finalize 成了成品文件"
+    );
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
 // BUG-HTTP-SINGLE-RESUME-SPLICE：单流续传不带 If-Range，文件中途变化 → 新旧拼接
 // ---------------------------------------------------------------------------
 #[tokio::test(flavor = "current_thread")]
@@ -1599,6 +2030,7 @@ async fn transient_200_on_resume_is_absorbed_byte_exact() {
         &url,
         &dest,
         size,
+        false,
         segs_count,
         &client,
         &db,

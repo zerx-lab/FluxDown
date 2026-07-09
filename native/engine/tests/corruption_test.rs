@@ -189,6 +189,7 @@ async fn run_one_real_download(
         TEST_URL,
         &dest,
         total_bytes,
+        false,
         INITIAL_SEGMENTS,
         &client,
         &db,
