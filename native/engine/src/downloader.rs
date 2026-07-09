@@ -71,7 +71,10 @@ pub enum DownloadError {
     ///
     /// 与 [`RangeMisaligned`]（206 但区间【错位】、数据错位）严格区分：本变体区间
     /// 【对齐】、已下字节【正确】，只是规划的总量偏小。携带值为服务器自报的真实总
-    /// 大小，调用方据此【以真实大小重新规划、下满整文件】而非停在 hint。
+    /// 大小。coordinator 捕获后【就地扩容】（延长预分配 + 追加尾段，已下数据零丢弃，
+    /// 见 `segment_coordinator` 的 `MAX_SIZE_EXPANSIONS`）；仅当扩容配额耗尽（文件
+    /// 持续增长/病态分母膨胀）或扩容无法执行时才冒泡到 `run_download_inner`，以
+    /// status=4 显式终止——DB 段行与临时文件保留，重试时 resume 重新 probe 续下。
     /// 绝不记录主机单连接缓存（与 Range 能力无关），也绝不当瞬时错误退避重试
     /// （重试只会拿到同样的分母）。
     #[error("server reports a larger true size than planned (Content-Range total: {0})")]
@@ -583,6 +586,19 @@ pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Opt
     }
 }
 
+/// 大小写不敏感地剥离 `Content-Range` 值的 `bytes ` 单位前缀。
+///
+/// RFC 9110 §14.1 规定 range-unit 比较【不区分大小写】——个别服务器/代理会发
+/// `Bytes 0-1/100`。前 6 字节 ASCII 相等才剥离，故返回的切片起点必在字符边界上。
+fn strip_bytes_unit_prefix(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    let prefix = trimmed.as_bytes().get(..6)?;
+    if !prefix.eq_ignore_ascii_case(b"bytes ") {
+        return None;
+    }
+    Some(&trimmed[6..])
+}
+
 /// 从 `Content-Range` 响应头解析【起始字节】。
 ///
 /// `Content-Range` 形如 `bytes <start>-<end>/<total>`（RFC 9110 §14.4）。多段下载
@@ -592,13 +608,13 @@ pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Opt
 ///
 /// 以下情形一律返回 `None`（交由 [`is_range_response_misaligned`] 按"起点未知"裁决）：
 ///   - 头缺失或非 ASCII；
-///   - 值不以 `bytes ` 前缀开头；
+///   - 值不以 `bytes ` 前缀开头（大小写不敏感，见 [`strip_bytes_unit_prefix`]）；
 ///   - unsatisfied-range 形式 `bytes */<total>`（`*` 非法数字）；
 ///   - `<start>` 解析失败。
 pub(crate) fn parse_content_range_start(headers: &reqwest::header::HeaderMap) -> Option<i64> {
     let raw = headers.get("content-range")?.to_str().ok()?;
     // "bytes 100-199/1234" → 去前缀 → "100-199/1234"
-    let rest = raw.trim().strip_prefix("bytes ")?;
+    let rest = strip_bytes_unit_prefix(raw)?;
     // 取 '/' 前的区间部分："100-199"（unsatisfied 时为 "*"）
     let range_part = rest.split('/').next()?;
     // 取 '-' 前的起点："100"（unsatisfied 时为 "*"，parse 失败 → None）
@@ -609,18 +625,18 @@ pub(crate) fn parse_content_range_start(headers: &reqwest::header::HeaderMap) ->
 /// 从 `Content-Range` 响应头解析【文件总大小】（斜杠后的分母）。
 ///
 /// `Content-Range` 形如 `bytes <start>-<end>/<total>`（RFC 9110 §14.4）。多段下载据此
-/// 发现服务器【自报的真实总大小】——当它明显大于本次规划的总大小（如浏览器扩展给的
+/// 发现服务器【自报的真实总大小】——当它明显大于当前规划的总大小（如浏览器扩展给的
 /// hint 偏小、或文件仍在上传中增长）时，规划区间 `[0, planned)` 只覆盖了文件前缀，继续
-/// 下去会静默截断。调用方据此以服务器值为准重新规划、下满整文件。
+/// 下去会静默截断。coordinator 据此【就地扩容】（追加尾段）下满整文件。
 ///
 /// 以下情形返回 `None`（总大小未知，调用方【不据此扩容】，避免误判）：
 ///   - 头缺失或非 ASCII；
-///   - 值不以 `bytes ` 前缀开头；
+///   - 值不以 `bytes ` 前缀开头（大小写不敏感，见 [`strip_bytes_unit_prefix`]）；
 ///   - `<total>` 为 `*`（unsatisfied/未知）或整体缺失/解析失败。
 pub(crate) fn parse_content_range_total(headers: &reqwest::header::HeaderMap) -> Option<i64> {
     let raw = headers.get("content-range")?.to_str().ok()?;
     // "bytes 100-199/1234" → 去前缀 → "100-199/1234" → 取 '/' 后 → "1234"
-    let rest = raw.trim().strip_prefix("bytes ")?;
+    let rest = strip_bytes_unit_prefix(raw)?;
     let total_str = rest.split('/').nth(1)?;
     total_str.trim().parse::<i64>().ok()
 }
@@ -2123,13 +2139,6 @@ async fn compute_segments_with_advisor(p: &DownloadParams, info: &FileInfo) -> i
     result
 }
 
-/// 多段下载时若服务器自报真实总大小大于规划值（[`DownloadError::TrueSizeLarger`]），
-/// 以真实大小清空重规划后重跑的最大次数。设上限是为了防御【仍在渐进上传】的文件
-/// 持续增长导致无限重规划——超过上限仍在增长则让任务以错误终止（status=4），由用户
-/// 稍后重试，而非静默把某一时刻的前缀当完成。3 次足以覆盖“上传刚好在下载期间收尾”
-/// 的常见情形。
-const MAX_SIZE_EXPANSIONS: u32 = 3;
-
 /// 返回 `(actual_total, finalize_renamed)`:`finalize_renamed` 仅当 finalize
 /// 阶段因目标名被占用而改名时为 `Some(新名)`,调用方须经完成信号上报
 /// (progress_reporter 对非空 file_name 锁存,空串 = 不变)。
@@ -2428,15 +2437,19 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     // Chrome-style: write to a temporary file during download, rename on success.
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
 
-    // `size_is_estimate`：本次规划的 total 是否为【未经 probe 验证的估计值】。仅当
-    // fresh（非 resume）的 hint 模式下 total 直接取自浏览器扩展 hint——一个可能偏小
-    // 的猜测；此时服务器在 206 `Content-Range` 分母里自报的真实大小才是权威值，扩容
-    // 检查须采【零容差】（见 segment_coordinator::do_segment）。resume 路径的 total
-    // 已被 probe/DB 校准，保留 CDN 漂移容差。
+    // `size_is_estimate`：本次规划的 total 是否为【未经 probe 验证的估计值】。仅
+    // fresh 的 hint 模式下 total 直接取自浏览器扩展 hint——一个可能偏小的猜测；
+    // 此时服务器在 206 `Content-Range` 分母里自报的真实大小才是权威值，coordinator
+    // 的扩容检查须采【零容差】（见 segment_coordinator::do_segment）。probe 路径的
+    // total 已被校准，保留 CDN 漂移容差。
+    //
+    // `!p.is_resume` 是防御性冗余：resume 入口（download_manager 三处）恒传
+    // hint_file_size=0 并重新 probe，故 resume 时本表达式左项已为 false；保留该项
+    // 仅为杜绝未来调用方在 resume 时误传 hint 导致零容差误触。
     let size_is_estimate = p.hint_file_size > 0 && !p.is_resume;
 
     // Dynamic segment calculation when user chose "auto" (segment_count <= 0).
-    let mut segments = if p.segment_count <= 0 {
+    let segments = if p.segment_count <= 0 {
         // When resuming, check if DB already has segment rows from a previous
         // run.  If so, reuse that count — avoids a redundant bandwidth probe
         // and guarantees segment definitions stay consistent with what's on disk.
@@ -2500,96 +2513,50 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     // and we auto-fall back to single-stream within this attempt.
     let mut actual_use_segments = use_segments;
     let single_result: Option<SingleDownloadResult> = if use_segments {
-        // 多段下载：若服务器在 206 响应的 `Content-Range: bytes X-Y/<total>` 分母里自报
-        // 的真实总大小大于本次规划总大小（hint 偏小/文件仍在上传中增长），coordinator
-        // 返回 `TrueSizeLarger(真实大小)`。此处以真实大小【清空重规划】后重跑，最多
-        // MAX_SIZE_EXPANSIONS 次（防渐进上传持续增长导致无限重规划）。修复
-        // BUG-HTTP-HINT-UNDERSIZED：绝不把完整文件的前缀静默当作完成。
+        // 多段下载：若服务器在 206 响应的 `Content-Range: bytes X-Y/<total>` 分母里
+        // 自报的真实总大小大于规划（hint 偏小/文件仍在上传中增长），coordinator 会
+        // 【就地扩容】——延长预分配 + 追加尾段 + 更新共享 planned_total，已下数据零
+        // 丢弃（修复 BUG-HTTP-HINT-UNDERSIZED：绝不把完整文件的前缀静默当作完成）。
+        // 成功返回值是【最终有效总大小】，据此校准 effective_total_bytes，供下方完整
+        // 性检查与完成信号使用。
         //
-        // 【为何是“清空重下”而非“尾部增量续接”——刻意决策（finding #4）】
-        // 扩容命中时删除全部段行 + 删除临时文件 + 进度归零，从干净状态以真实大小重规划，
-        // 而非只补 [旧 total, 真实 total) 的尾段。理由：
-        //   (a) 目标场景是【渐进上传中的小体积媒体】，整体重规划仅耗时毫秒级，代价可忽略；
-        //   (b) 尾部增量续接必须让【新规划】与磁盘上按旧 total 写入的【陈旧 DB 段行】相互
-        //       对账——这正是历史上最易出 bug 的 resume 路径，换来的收益却很有限；
-        //   (c) MAX_SIZE_EXPANSIONS 兜底最坏情形：文件在 3 次重规划后仍在增长则【显式
-        //       报错终止】（status=4）并可由用户重试，这是正确的 fail-loud 行为，绝不
-        //       静默把某一时刻的前缀当完成。
-        // （与上文 no-Content-Length 分支已记录的 fail-safe 决策同源。）
-        let mut ms_outcome;
-        let mut expansions = 0u32;
-        loop {
-            ms_outcome = download_multi_segment(
-                &p.task_id,
-                &p.url,
-                &temp_path,
-                effective_total_bytes,
-                size_is_estimate,
-                segments,
-                client,
-                &p.db,
-                &p.progress_tx,
-                &p.cancel_token,
-                &p.speed_limiter,
-                &p.spec,
-                p.sink.as_ref(),
-                &resume_etag,
-                &resume_last_modified,
-            )
-            .await;
-
-            match &ms_outcome {
-                Err(DownloadError::TrueSizeLarger(true_total))
-                    if *true_total > effective_total_bytes && expansions < MAX_SIZE_EXPANSIONS =>
-                {
-                    expansions += 1;
-                    log_info!(
-                        "[download] task {} 规划总大小 {} < 服务器自报真实大小 {}（hint 偏小/\
-                         文件增长），以真实大小重新规划下满整文件（第 {}/{} 次）",
-                        p.task_id,
-                        effective_total_bytes,
-                        true_total,
-                        expansions,
-                        MAX_SIZE_EXPANSIONS
-                    );
-                    effective_total_bytes = *true_total;
-                    // 清空偏小规划的残留（预分配临时文件 + DB segment 行 + 进度），
-                    // 以真实大小从干净状态重规划重下。
-                    let _ =
-                        p.db.update_task_total_bytes(&p.task_id, effective_total_bytes)
-                            .await;
-                    let _ = p.db.delete_segments(&p.task_id).await;
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                    let _ = p.db.update_task_progress(&p.task_id, 0).await;
-                    // 重算段数（finding #7）：初始 segments 由偏小 hint 算出，若沿用会让
-                    // 现在更大的文件欠并行。仅在用户选择 auto（segment_count<=0）时按扩容
-                    // 后的真实大小复用同一 advisor 逻辑重算；用户显式指定段数则原样尊重。
-                    if p.segment_count <= 0 {
-                        let expanded_info = FileInfo {
-                            file_name: info.file_name.clone(),
-                            total_bytes: effective_total_bytes,
-                            supports_range: info.supports_range,
-                            content_type: info.content_type.clone(),
-                            etag: info.etag.clone(),
-                            last_modified: info.last_modified.clone(),
-                            content_encoding_compressed: info.content_encoding_compressed,
-                        };
-                        segments = compute_segments_with_advisor(p, &expanded_info).await;
-                        log_info!(
-                            "[download] task {} 扩容后按真实大小 {} 重算段数={}",
-                            p.task_id,
-                            effective_total_bytes,
-                            segments
-                        );
-                    }
-                    // 继续循环，以新的 effective_total_bytes 重跑多段下载。
-                }
-                _ => break,
-            }
-        }
+        // 扩容配额（segment_coordinator::MAX_SIZE_EXPANSIONS）耗尽（文件持续增长/
+        // 病态分母膨胀）时 TrueSizeLarger 才会冒泡到此处，落入下方通用 Err 分支以
+        // status=4 显式终止——DB 段行与临时文件【保留】，用户重试时 resume 重新
+        // probe 真实大小接着下（fail-loud 且不丢进度）。
+        let ms_outcome = download_multi_segment(
+            &p.task_id,
+            &p.url,
+            &temp_path,
+            effective_total_bytes,
+            size_is_estimate,
+            segments,
+            client,
+            &p.db,
+            &p.progress_tx,
+            &p.cancel_token,
+            &p.speed_limiter,
+            &p.spec,
+            p.sink.as_ref(),
+            &resume_etag,
+            &resume_last_modified,
+        )
+        .await;
 
         match ms_outcome {
-            Ok(()) => None,
+            Ok(final_total) => {
+                if final_total != effective_total_bytes {
+                    log_info!(
+                        "[download] task {} 多段结束后总大小由 coordinator 校准: {} -> {}\
+                         （就地扩容/resume 漂移吸附），完整性检查以校准值为准",
+                        p.task_id,
+                        effective_total_bytes,
+                        final_total
+                    );
+                    effective_total_bytes = final_total;
+                }
+                None
+            }
             Err(DownloadError::RangeNotSupported(status))
             | Err(DownloadError::VersionChanged(status))
             | Err(DownloadError::RangeMisaligned(status)) => {
@@ -3326,6 +3293,8 @@ async fn download_single(
 // Multi-segment download (delegates to SegmentCoordinator)
 // ---------------------------------------------------------------------------
 
+/// 成功时返回本次下载的【最终有效总大小】（就地扩容 / resume 漂移吸附后可能不同
+/// 于入参 `total_bytes`），见 `run_coordinated_download` 的返回值文档。
 #[allow(clippy::too_many_arguments)]
 async fn download_multi_segment(
     task_id: &str,
@@ -3345,7 +3314,7 @@ async fn download_multi_segment(
     sink: &dyn EventSink,
     etag: &str,
     last_modified: &str,
-) -> Result<(), DownloadError> {
+) -> Result<i64, DownloadError> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -4556,6 +4525,37 @@ mod tests {
     fn parse_content_range_total_missing_header_is_none() {
         assert_eq!(
             super::parse_content_range_total(&reqwest::header::HeaderMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_content_range_prefix_is_case_insensitive() {
+        // RFC 9110 §14.1：range-unit 比较不区分大小写。个别服务器/代理发
+        // `Bytes`/`BYTES` 前缀——漏检会退回旧的静默截断行为。
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("Bytes 0-1023/4096")),
+            Some(4096)
+        );
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("BYTES 0-1023/4096")),
+            Some(4096)
+        );
+        assert_eq!(
+            super::parse_content_range_start(&cr_headers("Bytes 100-199/4096")),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn parse_content_range_non_bytes_unit_is_none() {
+        // 非 bytes 单位（如自定义 range unit）不可解析为字节区间。
+        assert_eq!(
+            super::parse_content_range_total(&cr_headers("items 0-10/42")),
+            None
+        );
+        assert_eq!(
+            super::parse_content_range_start(&cr_headers("items 0-10/42")),
             None
         );
     }

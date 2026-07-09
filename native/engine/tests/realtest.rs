@@ -87,6 +87,11 @@ struct ServerState {
     /// 钩子 B（一次性）：置为 true 后，下一次「分段」range GET 强制返回一次 200
     /// 全量（消费后自动复位为 false，其余请求照常 206）——复现“瞬时 200”。
     force_full_range_get_once: std::sync::atomic::AtomicBool,
+    /// 206 `Content-Range` 分母（服务器自报总大小）注入序列：每个 206 依次弹出
+    /// 一个值作为分母（body 照常按真实区间发送）；序列耗尽后回落为诚实的 body
+    /// 长度。模拟【渐进上传中文件不断增长】/病态分母膨胀（BUG-HTTP-HINT-UNDERSIZED
+    /// 的扩容配额路径）。注意：注入值必须 >= 请求区间末尾+1 才自洽。
+    range_total_sequence: std::sync::Mutex<Vec<i64>>,
 
     // --- 计数器（断言用）---
     head_count: AtomicUsize,
@@ -116,6 +121,7 @@ impl ServerState {
             emit_validators_on_range: true,
             force_full_on_segment_range: false,
             force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
+            range_total_sequence: std::sync::Mutex::new(Vec::new()),
             head_count: AtomicUsize::new(0),
             full_get_count: AtomicUsize::new(0),
             range_get_count: AtomicUsize::new(0),
@@ -406,9 +412,17 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     let mut h = String::new();
     h.push_str("HTTP/1.1 206 Partial Content\r\n");
     h.push_str(&format!("Content-Length: {}\r\n", len));
+    // 分母注入：序列非空时弹出首个值伪造服务器自报总大小（模拟文件仍在增长）。
+    let reported_total = {
+        let mut seq = st
+            .range_total_sequence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if seq.is_empty() { total } else { seq.remove(0) }
+    };
     h.push_str(&format!(
         "Content-Range: bytes {}-{}/{}\r\n",
-        start, end, total
+        start, end, reported_total
     ));
     h.push_str("Accept-Ranges: bytes\r\n");
     if st.emit_validators_on_range {
@@ -577,7 +591,7 @@ async fn run_coord(
     .await;
     drop(tx);
     let _ = dh.await;
-    (res, dest)
+    (res.map(|_| ()), dest)
 }
 
 // ===========================================================================
@@ -1416,6 +1430,19 @@ async fn hint_smaller_than_true_server_size_must_not_truncate() {
         dlen
     );
     assert_eq!(got, expected, "内容应与完整文件一致");
+    // 就地扩容（而非清空重规划）的结构性证据：最终 DB 段行里存在起点恰为原 hint
+    // 边界的尾段 [1_400_000, ...]。清空重下会以真实大小重建均匀切分
+    // （3_000_000/2 → 边界 1_500_000），绝不会出现 1_400_000 这个边界——回归成
+    // 清空版（丢弃已下数据整体重下）时本断言变红。
+    let segs = db.load_segments("hu").await.expect("load segments");
+    assert!(
+        segs.iter().any(|s| s.start_byte == hint),
+        "❌ 应就地扩容追加尾段 [hint={}, 真实)（保留已下数据），而非清空重规划；实际段边界: {:?}",
+        hint,
+        segs.iter()
+            .map(|s| (s.start_byte, s.end_byte))
+            .collect::<Vec<_>>()
+    );
     drop(server);
 }
 
@@ -1493,6 +1520,83 @@ async fn hint_undersized_within_old_drift_tolerance_must_not_truncate() {
         dlen
     );
     assert_eq!(got, expected, "内容应与完整文件一致");
+    // 同上：缺口 15_000 落在旧容差内也必须走就地扩容——尾段起点恰为 hint 边界。
+    let segs = db.load_segments("hw").await.expect("load segments");
+    assert!(
+        segs.iter().any(|s| s.start_byte == hint),
+        "❌ 应就地扩容追加尾段 [hint={}, 真实)，而非清空重规划；实际段边界: {:?}",
+        hint,
+        segs.iter()
+            .map(|s| (s.start_byte, s.end_byte))
+            .collect::<Vec<_>>()
+    );
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HTTP-HINT-UNDERSIZED 扩容配额：分母持续膨胀（文件不停增长/病态服务器）
+// ---------------------------------------------------------------------------
+//
+// 每个 206 的 Content-Range 分母都比引擎当前规划更大（注入严格递增序列，模拟
+// 一段【始终在渐进上传】的文件或无限膨胀分母的病态服务器）。正确行为：
+//   1. coordinator 就地扩容至多 MAX_SIZE_EXPANSIONS（3）次；
+//   2. 仍在膨胀 → 以 TrueSizeLarger 显式失败（status=4），绝不静默把某一时刻的
+//      前缀当完成（fail-loud）；
+//   3. 失败时【不清数据】——DB 段行保留，用户重试时 resume 重新 probe 续下
+//      （对照：清空版实现失败即全丢）。
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn hint_expansion_quota_exhausted_fails_loud_and_keeps_data() {
+    let work_dir = unique_dir("hintquota");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    // 真实 body 足够大，注入的分母序列全部 <= body 长度，服务器能自洽地服务
+    // 任何落在注入分母之内的区间请求。
+    let full = gen_body(4_000_000, 7177);
+    let hint = 1_100_000i64; // > 1MB → 多段路径
+
+    let s = ServerState::new(Arc::new(full.clone()), "etq");
+    // 严格递增的分母序列：每个 206 都自报比引擎当前规划更大的总大小 →
+    // 每次都触发扩容检查；3 次配额烧完后第 4 次触发必须 fail-loud。
+    // 序列长度给足（40 个），耗尽后回落诚实 body 长度（4_000_000）仍大于
+    // 任何中间规划值，兜底保证触发。
+    {
+        let mut seq = s.range_total_sequence.lock().unwrap();
+        let mut v = hint;
+        for _ in 0..40 {
+            v += 60_000;
+            seq.push(v.min(full.len() as i64));
+        }
+    }
+    let st = Arc::new(s);
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "hq", &url, "out.mp4", 2, hint).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(
+        &work_dir, &db, "hq", &url, "out.mp4", 2, hint, false, "", &cancel,
+    )
+    .await;
+
+    eprintln!("[hintquota] status={status} dest_exists={}", dest.exists());
+    // 1) fail-loud：绝不能把某个中间规划的前缀当完成。
+    assert_eq!(
+        status, 4,
+        "❌ 分母持续膨胀应在扩容配额耗尽后显式失败（status=4），而非报完成/其它（status={status}）"
+    );
+    assert!(
+        !dest.exists(),
+        "❌ 失败任务绝不能产出最终成品文件（finalize 泄漏）"
+    );
+    // 2) 数据保留：DB 段行仍在（resume 重新 probe 后可续），绝不清空。
+    let segs = db.load_segments("hq").await.expect("load segments");
+    assert!(
+        !segs.is_empty(),
+        "❌ 配额耗尽失败时必须保留 DB 段行（进度可续），实际被清空"
+    );
     drop(server);
 }
 
@@ -1563,6 +1667,11 @@ async fn hint_no_content_length_truncation_single_stream_must_not_be_accepted() 
         "❌ hint 旁路截断视频（{}/{}）被当作成功完成——截断的无 CL 单流必须判失败而非完成",
         dlen,
         full.len()
+    );
+    // 失败任务绝不能产出最终成品文件（.fluxdown 临时文件允许残留）。
+    assert!(
+        !dest.exists(),
+        "❌ 截断的无 CL 单流被 finalize 成了成品文件"
     );
     drop(server);
 }
@@ -1635,6 +1744,11 @@ async fn hint_no_content_length_truncation_via_range_fallback_must_not_be_accept
         "❌ 多段回退单流后截断视频（{}/{}）被当作成功完成——截断的无 CL 流必须判失败而非完成",
         dlen,
         full.len()
+    );
+    // 失败任务绝不能产出最终成品文件（.fluxdown 临时文件允许残留）。
+    assert!(
+        !dest.exists(),
+        "❌ 多段回退单流后截断文件被 finalize 成了成品文件"
     );
     drop(server);
 }
