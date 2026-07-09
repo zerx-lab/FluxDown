@@ -1,5 +1,5 @@
 /**
- * GET /api/download/:filename?tag=v1.2.3[&source=github|mirror|r2]
+ * GET /api/download/:filename?tag=v1.2.3[&source=github|mirror]
  *
  * Release 资产的地域感知下载路由（仓库已开源，asset 可公开直连）。
  * - 若提供 ?tag= 参数，则在对应 tag 的 release 中查找 asset
@@ -7,7 +7,7 @@
  *
  * 路由策略（302 重定向，本服务不中转下载流量）：
  * - 中国大陆用户（Cloudflare `CF-IPCountry: CN`，无该头时降级用
- *   Accept-Language 含 zh-CN 判断）：GitHub 加速镜像 → R2 → GitHub 直连。
+ *   Accept-Language 含 zh-CN 判断）：GitHub 加速镜像 → GitHub 直连。
  *   镜像做服务端 HEAD 健康检查，结果按镜像缓存 10 分钟，失效自动切下一个。
  * - 其他地区：GitHub 直连（官方 CDN 全球最快）。
  * - ?source= 可显式指定来源，用于调试与前端手动切换。
@@ -22,7 +22,6 @@ import type { APIRoute } from "astro";
 import {
   GITHUB_TOKEN,
   GITHUB_REPO,
-  CF_R2_PUBLIC_URL,
   DOWNLOAD_MIRRORS,
 } from "astro:env/server";
 
@@ -51,20 +50,21 @@ const GITHUB_HEADERS: Record<string, string> = {
 
 /**
  * 中国大陆常用的 GitHub 下载加速镜像（前缀完整 GitHub URL 使用）。
- * 均为社区公益服务，可用性随时间变化，且可能被 Google Safe Browsing 拉黑
- * （如 ghfast.top，Chrome 会弹全屏"危险网站"警告）——入选前须人工核查
+ * 默认使用 ghproxy.net（hunshcn/gh-proxy 公共实例，release/archive 走
+ * Cloudflare 加速）——遵守 `<镜像>/<完整GitHub直链>` 前缀契约，实测本仓
+ * Release 资产可正常代理（200 + content-length 一致）。Google Safe
+ * Browsing 透明度报告状态为 5（安全，无危险标志），Chrome 不会弹红。
+ * 可用性随时间变化，且可能被 Safe Browsing 拉黑（Chrome 会弹全屏
+ * "危险网站"警告）——入选前须人工核查
  * https://transparencyreport.google.com/safe-browsing/search?url=<域名>。
  * 按顺序健康检查、自动降级，也可通过 DOWNLOAD_MIRRORS 环境变量
  * （逗号分隔）覆盖，无需改代码。
  *
- * 注意 ghproxy.link 之类"最新地址发布页"不是代理本体，前缀 URL 只会
- * 落到 HTML 公告页——健康检查校验 content-length 恰好防住这类假镜像。
+ * 注意 github.akams.cn / ghproxy.link 之类靠页面 JS 生成节点或"地址发布页"
+ * 的站点不是前缀代理本体，前缀 URL 会落到 404 / HTML 公告页——健康检查
+ * 校验 content-length 恰好防住这类不兼容镜像。
  */
-const DEFAULT_MIRRORS = [
-  "https://gh-proxy.com",
-  "https://ghproxy.net",
-  "https://gh-proxy.org",
-];
+const DEFAULT_MIRRORS = ["https://ghproxy.net"];
 
 function mirrorList(): string[] {
   const raw = DOWNLOAD_MIRRORS?.trim();
@@ -84,7 +84,7 @@ const MIRROR_PROBE_TIMEOUT_MS = 3000;
  * 按配置顺序找到第一个健康的镜像，返回镜像化的下载 URL。
  * 健康标准：HEAD 2xx 且 content-length 与 GitHub asset 大小一致——
  * 只看状态码会被"200 + HTML 公告页"的假镜像骗过。
- * 全部不可用时返回 null（调用方降级到 R2 / GitHub 直连）。
+ * 全部不可用时返回 null（调用方降级到 GitHub 直连）。
  */
 async function resolveMirrorUrl(
   directUrl: string,
@@ -181,31 +181,6 @@ async function fetchLatestReleaseWithAsset(
   );
 }
 
-/**
- * 检查 R2 上是否存在对应文件，存在则返回公开 URL，否则返回 null。
- * 文件路径格式: {tag}/{filename}，例如: v0.3.0/FluxDown-0.3.0-windows-x64-setup.exe
- */
-async function resolveR2Url(tag: string, filename: string): Promise<string | null> {
-  if (!CF_R2_PUBLIC_URL) {
-    return null;
-  }
-
-  const key = `${tag}/${filename}`;
-  const publicUrl = `${CF_R2_PUBLIC_URL.replace(/\/$/, "")}/${key}`;
-
-  try {
-    // 用 HEAD 请求验证文件确实存在于 R2（防止 404 重定向）
-    const res = await fetch(publicUrl, { method: "HEAD" });
-    if (res.ok) {
-      return publicUrl;
-    }
-  } catch {
-    // R2 不可达时静默降级
-  }
-
-  return null;
-}
-
 /** 302 到最终下载地址；X-Download-Source 标记来源便于观测。 */
 function redirectTo(location: string, source: string): Response {
   return new Response(null, {
@@ -283,22 +258,14 @@ export const GET: APIRoute = async ({ params, url, request }) => {
     if (source === "github") {
       return redirectTo(directUrl, "github");
     }
-    if (source === "r2") {
-      const r2Url = await resolveR2Url(release.tag_name, filename);
-      if (r2Url) return redirectTo(r2Url, "r2");
-      return redirectTo(directUrl, "github");
-    }
 
     // ── 4. 地域路由 ──
     const preferMirror = source === "mirror" || isMainlandChina(request);
 
     if (preferMirror) {
-      // 中国大陆：加速镜像 → R2 → GitHub 直连
+      // 中国大陆：加速镜像 → GitHub 直连
       const mirrorUrl = await resolveMirrorUrl(directUrl, asset.size);
       if (mirrorUrl) return redirectTo(mirrorUrl, "mirror");
-
-      const r2Url = await resolveR2Url(release.tag_name, filename);
-      if (r2Url) return redirectTo(r2Url, "r2");
     }
 
     // ── 5. 其他地区（或大陆全链路降级）：GitHub 官方 CDN 直连 ──

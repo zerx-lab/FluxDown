@@ -35,11 +35,13 @@ class _PendingRequest {
   final int requestId;
   final String referrer;
   final int fileSize;
+  final String audioUrl;
 
   const _PendingRequest({
     required this.requestId,
     required this.referrer,
     required this.fileSize,
+    this.audioUrl = '',
   });
 }
 
@@ -130,6 +132,7 @@ class PopupWindowService {
           requestId: payload.requestId,
           referrer: req.referrer,
           fileSize: req.fileSize,
+          audioUrl: req.audioUrl,
         );
         logInfo(_tag, 'popup shown, requestId=${payload.requestId}');
       } else {
@@ -180,6 +183,7 @@ class PopupWindowService {
           result: result.form,
           referrer: pending.referrer,
           hintFileSize: pending.fileSize,
+          audioUrlOverride: pending.audioUrl,
         );
       case 'onClosed':
         logInfo(_tag, 'popup closed by user');

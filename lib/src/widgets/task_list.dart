@@ -5,6 +5,7 @@ import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../services/open_folder.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'context_menu.dart';
 import 'task_list_item.dart';
 
@@ -420,6 +421,7 @@ class _ManageToggleButtonState extends State<_ManageToggleButton> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return ShadTooltip(
       waitDuration: const Duration(milliseconds: 500),
@@ -440,7 +442,7 @@ class _ManageToggleButtonState extends State<_ManageToggleButton> {
           padding: const EdgeInsets.symmetric(horizontal: 6),
           decoration: BoxDecoration(
             color: _isHovered ? c.surface3 : c.surface2,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: m.brSm,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -534,6 +536,7 @@ class _PauseAllButtonState extends State<_PauseAllButton> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
@@ -546,7 +549,7 @@ class _PauseAllButtonState extends State<_PauseAllButton> {
           padding: const EdgeInsets.symmetric(horizontal: 6),
           decoration: BoxDecoration(
             color: _isHovered ? c.hoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: m.brSm,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -665,6 +668,7 @@ class _ScrollToTopButtonState extends State<_ScrollToTopButton> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
@@ -677,7 +681,7 @@ class _ScrollToTopButtonState extends State<_ScrollToTopButton> {
           height: 36,
           decoration: BoxDecoration(
             color: _isHovered ? c.surface3 : c.surface2,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: m.brBadge,
             border: Border.all(color: c.border, width: 1),
           ),
           child: Center(

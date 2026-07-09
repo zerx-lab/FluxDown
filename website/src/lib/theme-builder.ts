@@ -1,5 +1,75 @@
 export type FluxThemeAppearance = "dark" | "light";
 
+export interface FluxMetricJson {
+  radius: {
+    progress: number;
+    xs: number;
+    segmentCell: number;
+    sm: number;
+    md: number;
+    input: number;
+    card: number;
+    iconTile: number;
+    dialog: number;
+    fieldMobile: number;
+    chipLg: number;
+    chipXl: number;
+    badge: number;
+    pill: number;
+    sheet: number;
+  };
+  stroke: {
+    thin: number;
+    thick: number;
+  };
+  spacing: {
+    xs: number;
+    sm: number;
+    md: number;
+    lg: number;
+    xl: number;
+  };
+  button: {
+    heightSm: number;
+    heightMd: number;
+    heightLg: number;
+  };
+  alpha: {
+    subtle: number;
+    soft: number;
+    muted: number;
+    mutedStrong: number;
+    active: number;
+    selectedBorder: number;
+    scrim: number;
+    border: number;
+    borderStrong: number;
+    disabled: number;
+    glass: number;
+    focusRing: number;
+    shadowStrong: number;
+    shadowSoft: number;
+    shadowFaint: number;
+    faint: number;
+    textSelection: number;
+    borderSubtle: number;
+    borderFaint: number;
+    borderMedium: number;
+    emphasis: number;
+    glassSubtle: number;
+  };
+  mobile: {
+    pageMargin: number;
+    cardRadius: number;
+    cardGap: number;
+    appBarHeight: number;
+    tabsHeight: number;
+    dockBottomGap: number;
+    fabSize: number;
+    scrollBottomPadding: number;
+  };
+}
+
 export interface FluxThemeJson {
   name: string;
   author?: string;
@@ -54,6 +124,8 @@ export interface FluxThemeJson {
     };
     segmentPalette: string[];
   };
+  metrics?: FluxMetricJson;
+  schemaVersion?: number;
 }
 
 export type TokenGroupKey =
@@ -67,12 +139,60 @@ export type TokenGroupKey =
   | "switch"
   | "status"
   | "shadow"
-  | "segment";
+  | "segment"
+  | "radius"
+  | "spacing"
+  | "stroke"
+  | "button"
+  | "alpha"
+  | "mobile";
+
+export type PreviewArea = "downloads" | "settings";
 
 export interface TokenDescriptor {
   path: string;
   label: string;
   groupKey: TokenGroupKey;
+  /** "color"（默认，省略即视为 color）| "number"（Layer1 圆角/间距/描边/按钮/透明度/移动几何） */
+  kind?: "color" | "number";
+  /** kind === "number" 时的单位提示：px（默认）| alpha（0-1 无量纲） */
+  unit?: "px" | "alpha";
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+/** 该 token 在预览里被承载的主视图（供「区域徽标」与「聚焦自动切换预览视图」用）。
+ * 与实际客户端页面对应：downloads = 主下载窗口；settings = 设置页。
+ * 多处出现的 token 取最能体现其效果的主视图。 */
+const SETTINGS_METRIC_PATHS = new Set<string>([
+  "metrics.radius.progress",
+  "metrics.radius.xs",
+  "metrics.radius.sm",
+  "metrics.radius.chipLg",
+  "metrics.radius.chipXl",
+  "metrics.radius.pill",
+  "metrics.radius.dialog",
+  "metrics.stroke.thin",
+  "metrics.stroke.thick",
+  "metrics.spacing.xs",
+  "metrics.spacing.sm",
+  "metrics.spacing.md",
+  "metrics.spacing.lg",
+  "metrics.spacing.xl",
+  "metrics.button.heightSm",
+  "metrics.button.heightMd",
+  "metrics.button.heightLg",
+]);
+
+export function tokenArea(path: string): PreviewArea {
+  if (SETTINGS_METRIC_PATHS.has(path)) return "settings";
+  if (path.startsWith("metrics.alpha.")) {
+    return path === "metrics.alpha.shadowStrong" ? "downloads" : "settings";
+  }
+  if (path.startsWith("colors.switch.")) return "settings";
+  if (path.startsWith("colors.dialog.")) return "settings";
+  return "downloads";
 }
 
 const DEFAULT_SEGMENT_PALETTE = [
@@ -94,6 +214,77 @@ const DEFAULT_SEGMENT_PALETTE = [
   "ff3b82f6",
 ];
 
+/** 与 Dart `FluxMetricTokens` 默认值逐字段对齐（亮/暗主题共用，不区分明暗）。 */
+export const DEFAULT_METRICS: FluxMetricJson = {
+  radius: {
+    progress: 1.5,
+    xs: 2,
+    segmentCell: 2.5,
+    sm: 4,
+    md: 6,
+    input: 8,
+    card: 8,
+    iconTile: 9,
+    dialog: 10,
+    fieldMobile: 11,
+    chipLg: 12,
+    chipXl: 14,
+    badge: 18,
+    pill: 999,
+    sheet: 26,
+  },
+  stroke: {
+    thin: 1,
+    thick: 1.5,
+  },
+  spacing: {
+    xs: 4,
+    sm: 8,
+    md: 12,
+    lg: 16,
+    xl: 24,
+  },
+  button: {
+    heightSm: 28,
+    heightMd: 32,
+    heightLg: 36,
+  },
+  alpha: {
+    subtle: 0.08,
+    soft: 0.1,
+    muted: 0.12,
+    mutedStrong: 0.14,
+    active: 0.18,
+    selectedBorder: 0.35,
+    scrim: 0.45,
+    border: 0.5,
+    borderStrong: 0.8,
+    disabled: 0.5,
+    glass: 0.72,
+    focusRing: 0.6,
+    shadowStrong: 0.25,
+    shadowSoft: 0.16,
+    shadowFaint: 0.08,
+    faint: 0.06,
+    textSelection: 0.25,
+    borderSubtle: 0.3,
+    borderFaint: 0.4,
+    borderMedium: 0.6,
+    emphasis: 0.7,
+    glassSubtle: 0.55,
+  },
+  mobile: {
+    pageMargin: 16,
+    cardRadius: 12,
+    cardGap: 10,
+    appBarHeight: 56,
+    tabsHeight: 44,
+    dockBottomGap: 16,
+    fabSize: 46,
+    scrollBottomPadding: 120,
+  },
+};
+
 export const TOKEN_GROUPS: ReadonlyArray<{ key: TokenGroupKey; labelKey: string }> = [
   { key: "surface", labelKey: "tb.groups.surface" },
   { key: "element", labelKey: "tb.groups.element" },
@@ -106,6 +297,11 @@ export const TOKEN_GROUPS: ReadonlyArray<{ key: TokenGroupKey; labelKey: string 
   { key: "status", labelKey: "tb.groups.status" },
   { key: "shadow", labelKey: "tb.groups.shadow" },
   { key: "segment", labelKey: "tb.groups.segment" },
+  { key: "radius", labelKey: "tb.groups.radius" },
+  { key: "spacing", labelKey: "tb.groups.spacing" },
+  { key: "stroke", labelKey: "tb.groups.stroke" },
+  { key: "button", labelKey: "tb.groups.button" },
+  { key: "alpha", labelKey: "tb.groups.alpha" },
 ];
 
 const STATIC_TOKEN_DESCRIPTORS: ReadonlyArray<TokenDescriptor> = [
@@ -147,6 +343,58 @@ const STATIC_TOKEN_DESCRIPTORS: ReadonlyArray<TokenDescriptor> = [
   { path: "colors.status.error", label: "Error", groupKey: "status" },
 
   { path: "colors.shadow", label: "Shadow", groupKey: "shadow" },
+];
+
+export const METRIC_TOKEN_DESCRIPTORS: ReadonlyArray<TokenDescriptor> = [
+  { path: "metrics.radius.progress", label: "Progress", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.xs", label: "Extra Small", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.segmentCell", label: "Segment Cell", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.sm", label: "Small", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.md", label: "Medium", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.input", label: "Input", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.card", label: "Card", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.iconTile", label: "Icon Tile", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.dialog", label: "Dialog", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.chipLg", label: "Chip Large", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.chipXl", label: "Chip Extra Large", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.badge", label: "Badge", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
+  { path: "metrics.radius.pill", label: "Pill", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+
+  { path: "metrics.stroke.thin", label: "Thin", groupKey: "stroke", kind: "number", unit: "px", min: 0, max: 8, step: 0.5 },
+  { path: "metrics.stroke.thick", label: "Thick", groupKey: "stroke", kind: "number", unit: "px", min: 0, max: 8, step: 0.5 },
+
+  { path: "metrics.spacing.xs", label: "Extra Small", groupKey: "spacing", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+  { path: "metrics.spacing.sm", label: "Small", groupKey: "spacing", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+  { path: "metrics.spacing.md", label: "Medium", groupKey: "spacing", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+  { path: "metrics.spacing.lg", label: "Large", groupKey: "spacing", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+  { path: "metrics.spacing.xl", label: "Extra Large", groupKey: "spacing", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+
+  { path: "metrics.button.heightSm", label: "Height Small", groupKey: "button", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+  { path: "metrics.button.heightMd", label: "Height Medium", groupKey: "button", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+  { path: "metrics.button.heightLg", label: "Height Large", groupKey: "button", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
+
+  { path: "metrics.alpha.subtle", label: "Subtle", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.soft", label: "Soft", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.muted", label: "Muted", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.mutedStrong", label: "Muted Strong", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.active", label: "Active", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.selectedBorder", label: "Selected Border", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.scrim", label: "Scrim", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.border", label: "Border", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.borderStrong", label: "Border Strong", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.disabled", label: "Disabled", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.glass", label: "Glass", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.focusRing", label: "Focus Ring", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.shadowStrong", label: "Shadow Strong", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.shadowSoft", label: "Shadow Soft", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.shadowFaint", label: "Shadow Faint", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.faint", label: "Faint", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.textSelection", label: "Text Selection", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.borderSubtle", label: "Border Subtle", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.borderFaint", label: "Border Faint", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.borderMedium", label: "Border Medium", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.emphasis", label: "Emphasis", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
+  { path: "metrics.alpha.glassSubtle", label: "Glass Subtle", groupKey: "alpha", kind: "number", unit: "alpha", min: 0, max: 1, step: 0.01 },
 ];
 
 export const defaultDarkTheme: FluxThemeJson = {
@@ -202,6 +450,8 @@ export const defaultDarkTheme: FluxThemeJson = {
     },
     segmentPalette: DEFAULT_SEGMENT_PALETTE,
   },
+  metrics: DEFAULT_METRICS,
+  schemaVersion: 2,
 };
 
 export const defaultLightTheme: FluxThemeJson = {
@@ -257,6 +507,8 @@ export const defaultLightTheme: FluxThemeJson = {
     },
     segmentPalette: DEFAULT_SEGMENT_PALETTE,
   },
+  metrics: DEFAULT_METRICS,
+  schemaVersion: 2,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -315,7 +567,7 @@ export function getTokenDescriptors(theme: FluxThemeJson): TokenDescriptor[] {
     label: `Segment ${index + 1}`,
     groupKey: "segment" as const,
   }));
-  return [...STATIC_TOKEN_DESCRIPTORS, ...segmentDescriptors];
+  return [...STATIC_TOKEN_DESCRIPTORS, ...METRIC_TOKEN_DESCRIPTORS, ...segmentDescriptors];
 }
 
 export function getPathValue(root: unknown, path: string): unknown {
@@ -340,7 +592,7 @@ export function getPathValue(root: unknown, path: string): unknown {
 export function setPathValue(
   theme: FluxThemeJson,
   path: string,
-  value: string | string[],
+  value: string | string[] | number,
 ): FluxThemeJson {
   const next = deepCloneTheme(theme);
   const parts = path.split(".");
@@ -475,6 +727,18 @@ export function normalizeFluxThemeJson(raw: unknown): FluxThemeJson {
       .map((value) => normalizeHex8(value));
     if (normalizedPalette.length > 0) {
       next = setPathValue(next, "colors.segmentPalette", normalizedPalette);
+    }
+  }
+
+  const metrics = isRecord(raw.metrics) ? raw.metrics : undefined;
+  if (metrics) {
+    for (const descriptor of METRIC_TOKEN_DESCRIPTORS) {
+      const value = getPathValue({ metrics }, descriptor.path);
+      if (typeof value !== "number" || Number.isNaN(value)) continue;
+      const min = descriptor.min ?? 0;
+      const max = descriptor.max ?? Number.POSITIVE_INFINITY;
+      const clamped = Math.min(max, Math.max(min, value));
+      next = setPathValue(next, descriptor.path, clamped);
     }
   }
 

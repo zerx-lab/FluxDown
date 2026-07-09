@@ -46,6 +46,8 @@ class MainActivity : FlutterActivity() {
                 // （Android/data 层禁止应用自建子树），Rust std::fs 才能直写。
                 "getExternalDownloadDir" ->
                     result.success(getExternalFilesDir("Download")?.absolutePath)
+                // 应用内更新：唤起系统安装器安装下载好的 APK
+                "installApk" -> installApk(call.argument<String>("path"), result)
                 else -> result.notImplemented()
             }
         }
@@ -172,6 +174,41 @@ class MainActivity : FlutterActivity() {
                 arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
                 REQUEST_WRITE_PERM,
             )
+        }
+    }
+
+    // ── 应用内更新：APK 安装唤起 ──
+
+    /**
+     * 经 FileProvider 把 cache 目录下的 APK 交给系统安装器。
+     * Android 8+ 首次会引导用户开启"允许安装未知应用"，随后重入安装流程。
+     * 返回 true=已发出安装 intent；错误经 result.error 报回 Dart。
+     */
+    private fun installApk(path: String?, result: MethodChannel.Result) {
+        if (path.isNullOrEmpty()) {
+            result.error("bad_args", "path is required", null)
+            return
+        }
+        val file = java.io.File(path)
+        if (!file.exists()) {
+            result.error("not_found", "APK not found: $path", null)
+            return
+        }
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                file,
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("install_failed", e.message, null)
         }
     }
 

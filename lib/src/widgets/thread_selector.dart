@@ -18,6 +18,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 /// 预设选项值（与下拉列表顺序一致）
 const _kPresets = ['auto', '4', '8', '16', '32', '64'];
@@ -195,6 +196,7 @@ class _ThreadSelectorState extends State<ThreadSelector> {
   Widget _buildInput(BuildContext context) {
     final s = LocaleScope.of(context);
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final borderColor = _isFocused ? c.inputFocusBorder : c.inputBorder;
     final bgColor = _isFocused ? c.inputFocusBg : c.inputBg;
 
@@ -203,7 +205,7 @@ class _ThreadSelectorState extends State<ThreadSelector> {
       child: Container(
         height: 36,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: m.brInput,
           border: Border.all(color: borderColor),
           color: bgColor,
         ),

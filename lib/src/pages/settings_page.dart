@@ -22,6 +22,7 @@ import '../services/floating_ball/floating_ball_service.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import '../theme/flux_theme_tokens.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/category_edit_dialog.dart';
@@ -618,6 +619,7 @@ class _SettingsSidebarState extends State<_SettingsSidebar> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final searching = _query.isNotEmpty;
     final results = _results;
@@ -634,11 +636,11 @@ class _SettingsSidebarState extends State<_SettingsSidebar> {
             margin: const EdgeInsets.only(bottom: 10),
             decoration: BoxDecoration(
               color: c.bg,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: m.brInput,
               border: Border.all(
                 color: searching
-                    ? c.accent.withValues(alpha: 0.6)
-                    : c.border.withValues(alpha: 0.5),
+                    ? m.focusRing(c.accent)
+                    : m.borderFade(c.border),
                 width: 1,
               ),
             ),
@@ -720,6 +722,7 @@ class _SearchResultItemState extends State<_SearchResultItem> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
@@ -731,7 +734,7 @@ class _SearchResultItemState extends State<_SearchResultItem> {
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
             color: _isHovered ? c.hoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
           ),
           child: Row(
             children: [
@@ -791,6 +794,7 @@ class _SettingsNavItemState extends State<_SettingsNavItem> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final selected = widget.isSelected;
 
     return MouseRegion(
@@ -809,7 +813,7 @@ class _SettingsNavItemState extends State<_SettingsNavItem> {
                 : _isHovered
                 ? c.hoverBg
                 : c.hoverBg.withValues(alpha: 0),
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: m.brMd,
           ),
           child: Row(
             children: [
@@ -835,7 +839,7 @@ class _SettingsNavItemState extends State<_SettingsNavItem> {
                   height: 14,
                   decoration: BoxDecoration(
                     color: c.accent,
-                    borderRadius: BorderRadius.circular(2),
+                    borderRadius: m.brXs,
                   ),
                 ),
             ],
@@ -964,6 +968,7 @@ class _SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -981,7 +986,7 @@ class _SectionHeader extends StatelessWidget {
           style: TextStyle(fontSize: 12, color: c.textMuted),
         ),
         const SizedBox(height: 14),
-        Divider(height: 1, color: c.border.withValues(alpha: 0.5)),
+        Divider(height: 1, color: m.borderFade(c.border)),
       ],
     );
   }
@@ -1095,12 +1100,13 @@ class _HighlightRegionState extends State<_HighlightRegion>
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
       decoration: BoxDecoration(
-        color: flashing ? c.accent.withValues(alpha: 0.08) : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
+        color: flashing ? m.subtle(c.accent) : Colors.transparent,
+        borderRadius: m.brDialog,
       ),
       child: widget.child,
     );
@@ -1116,17 +1122,18 @@ class _SettingCardState extends State<_SettingCard> with _HighlightConsumer {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: _flashing ? c.accent.withValues(alpha: 0.08) : c.surface1,
-        borderRadius: BorderRadius.circular(10),
+        color: _flashing ? m.subtle(c.accent) : c.surface1,
+        borderRadius: m.brDialog,
         border: Border.all(
           color: _flashing
-              ? c.accent.withValues(alpha: 0.7)
-              : c.border.withValues(alpha: 0.6),
+              ? m.emphasis(c.accent)
+              : m.borderMedium(c.border),
           width: 1,
         ),
       ),
@@ -1704,6 +1711,7 @@ class _CategoryTileState extends State<_CategoryTile> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final cat = widget.category;
     final c = widget.c;
     final s = widget.s;
@@ -1717,7 +1725,7 @@ class _CategoryTileState extends State<_CategoryTile> {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: _isHovered ? c.hoverBg : c.surface1,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: m.brCard,
           border: Border.all(color: c.border),
         ),
         child: Row(
@@ -1768,8 +1776,8 @@ class _CategoryTileState extends State<_CategoryTile> {
                             vertical: 1,
                           ),
                           decoration: BoxDecoration(
-                            color: c.accent.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(3),
+                            color: m.soft(c.accent),
+                            borderRadius: m.brSm,
                           ),
                           child: Text(
                             s.builtinCategory,
@@ -1863,6 +1871,7 @@ class _TileActionState extends State<_TileAction> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
@@ -1875,9 +1884,9 @@ class _TileActionState extends State<_TileAction> {
           height: 22,
           decoration: BoxDecoration(
             color: _hover
-                ? widget.color.withValues(alpha: 0.1)
+                ? m.soft(widget.color)
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: m.brSm,
           ),
           child: Icon(widget.icon, size: 12, color: widget.color),
         ),
@@ -2006,14 +2015,15 @@ class _UiScaleChipState extends State<_UiScaleChip> {
   @override
   Widget build(BuildContext context) {
     final c = widget.colors;
+    final m = AppMetrics.of(context);
     final bg = widget.selected
-        ? c.accent.withValues(alpha: 0.15)
+        ? m.active(c.accent)
         : _isHovered
         ? c.surface2
         : c.surface1;
     final border = widget.selected
-        ? c.accent.withValues(alpha: 0.5)
-        : c.border.withValues(alpha: 0.5);
+        ? m.borderFade(c.accent)
+        : m.borderFade(c.border);
     final textColor = widget.selected ? c.accent : c.textPrimary;
 
     return MouseRegion(
@@ -2027,7 +2037,7 @@ class _UiScaleChipState extends State<_UiScaleChip> {
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
             color: bg,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
             border: Border.all(color: border, width: 1),
           ),
           child: Text(
@@ -2113,6 +2123,7 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
 
   /// 可点击放大的小尺寸图标缩略图。
   Widget _iconThumb(AppColors c, ImageProvider image, int revision) {
+    final m = AppMetrics.of(context);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
@@ -2120,12 +2131,12 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
         child: Container(
           padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: c.border.withValues(alpha: 0.5)),
+            borderRadius: m.brCard,
+            border: Border.all(color: m.borderFade(c.border)),
             color: c.surface1,
           ),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(5),
+            borderRadius: m.brMd,
             child: Image(
               key: ValueKey(revision),
               image: image,
@@ -2232,6 +2243,7 @@ class _IconZoomPreviewState extends State<_IconZoomPreview> {
   Widget build(BuildContext context) {
     final s = LocaleScope.of(context);
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final side = _baseSide * _scale;
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2243,11 +2255,11 @@ class _IconZoomPreviewState extends State<_IconZoomPreview> {
             height: 320,
             decoration: BoxDecoration(
               color: c.surface1,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: c.border.withValues(alpha: 0.4)),
+              borderRadius: m.brDialog,
+              border: Border.all(color: m.borderFaint(c.border)),
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: m.brDialog,
               child: Center(
                 child: Image(
                   key: ValueKey(widget.revision),
@@ -3217,6 +3229,7 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final sp = widget.settingsProvider;
     final isManual = sp.proxyMode == 'manual';
@@ -3225,8 +3238,8 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
         color: c.surface1,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: c.border.withValues(alpha: 0.6), width: 1),
+        borderRadius: m.brDialog,
+        border: Border.all(color: m.borderMedium(c.border), width: 1),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3284,7 +3297,7 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
           // 系统代理只读展示
           if (sp.proxyMode == 'system') ...[
             const SizedBox(height: 16),
-            Divider(height: 1, color: c.border.withValues(alpha: 0.4)),
+            Divider(height: 1, color: m.borderFaint(c.border)),
             const SizedBox(height: 14),
             if (_sysProxyDetecting)
               Row(
@@ -3369,7 +3382,7 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
           // 手动配置表单
           if (isManual) ...[
             const SizedBox(height: 16),
-            Divider(height: 1, color: c.border.withValues(alpha: 0.4)),
+            Divider(height: 1, color: m.borderFaint(c.border)),
             const SizedBox(height: 14),
             // 代理类型
             Row(
@@ -3596,10 +3609,11 @@ class _ProxyModeOptionState extends State<_ProxyModeOption> {
   Widget build(BuildContext context) {
     final theme = ShadTheme.of(context);
     final c = widget.colors;
+    final m = AppMetrics.of(context);
     final selected = widget.selected;
     final borderColor = selected ? theme.colorScheme.primary : c.border;
     final bgColor = selected
-        ? theme.colorScheme.primary.withValues(alpha: 0.08)
+        ? m.subtle(theme.colorScheme.primary)
         : _isHovered
         ? c.hoverBg
         : c.bg;
@@ -3615,7 +3629,7 @@ class _ProxyModeOptionState extends State<_ProxyModeOption> {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
             color: bgColor,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: m.brCard,
             border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
           ),
           child: Row(
@@ -3657,6 +3671,7 @@ class _ReadOnlyProxyField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Row(
       children: [
         SizedBox(
@@ -3671,7 +3686,7 @@ class _ReadOnlyProxyField extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             decoration: BoxDecoration(
               color: colors.surface1,
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: m.brMd,
               border: Border.all(
                 color: colors.border.withValues(alpha: 0.4),
                 width: 1,
@@ -3700,11 +3715,12 @@ class _ReadOnlyValueBox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: colors.surface1,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: m.brMd,
         border: Border.all(
           color: colors.border.withValues(alpha: 0.4),
           width: 1,
@@ -3737,6 +3753,8 @@ class _ApiServiceContent extends StatefulWidget {
 class _ApiServiceContentState extends State<_ApiServiceContent> {
   late TextEditingController _portController;
   late FocusNode _portFocusNode;
+  late TextEditingController _tokenController;
+  late FocusNode _tokenFocusNode;
 
   @override
   void initState() {
@@ -3745,6 +3763,10 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
       text: widget.settingsProvider.localServerPort.toString(),
     );
     _portFocusNode = FocusNode()..addListener(_onPortFocusChange);
+    _tokenController = TextEditingController(
+      text: widget.settingsProvider.localServerToken,
+    );
+    _tokenFocusNode = FocusNode()..addListener(_onTokenFocusChange);
   }
 
   @override
@@ -3752,6 +3774,9 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
     _portFocusNode.removeListener(_onPortFocusChange);
     _portFocusNode.dispose();
     _portController.dispose();
+    _tokenFocusNode.removeListener(_onTokenFocusChange);
+    _tokenFocusNode.dispose();
+    _tokenController.dispose();
     super.dispose();
   }
 
@@ -3773,6 +3798,18 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
       return;
     }
     sp.setLocalServerPort(value);
+  }
+
+  void _onTokenFocusChange() {
+    if (!_tokenFocusNode.hasFocus) _commitToken();
+  }
+
+  /// token 失焦提交：允许自定义任意值（含清空），去除首尾空白后持久化。
+  void _commitToken() {
+    final sp = widget.settingsProvider;
+    final value = _tokenController.text.trim();
+    if (value != _tokenController.text) _tokenController.text = value;
+    if (value != sp.localServerToken) sp.setLocalServerToken(value);
   }
 
   /// 生成 32 位随机 hex token
@@ -3850,6 +3887,7 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
       listenable: widget.settingsProvider,
       builder: (context, _) {
         final c = AppColors.of(context);
+        final m = AppMetrics.of(context);
         final s = LocaleScope.of(context);
         final sp = widget.settingsProvider;
         final enabled = sp.localServerEnabled;
@@ -3858,6 +3896,11 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
         if (!_portFocusNode.hasFocus &&
             _portController.text != committedPortText) {
           _portController.text = committedPortText;
+        }
+        // token 未获焦时随外部配置变化同步（生成/清空/首次加载配置）
+        if (!_tokenFocusNode.hasFocus &&
+            _tokenController.text != sp.localServerToken) {
+          _tokenController.text = sp.localServerToken;
         }
         // 地址预览随端口输入框实时更新，不等待失焦提交
         final typedPort = _portController.text.trim();
@@ -3870,9 +3913,9 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               decoration: BoxDecoration(
                 color: c.surface1,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: m.brDialog,
                 border: Border.all(
-                  color: c.border.withValues(alpha: 0.6),
+                  color: m.borderMedium(c.border),
                   width: 1,
                 ),
               ),
@@ -3910,7 +3953,7 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
                     ],
                   ),
                   const SizedBox(height: 14),
-                  Divider(height: 1, color: c.border.withValues(alpha: 0.4)),
+                  Divider(height: 1, color: m.borderFaint(c.border)),
                   const SizedBox(height: 14),
                   // 端口行
                   Row(
@@ -3975,16 +4018,21 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
                     spacing: 8,
                     children: [
                       Expanded(
-                        child: _ReadOnlyValueBox(
-                          value: sp.localServerToken,
-                          colors: c,
+                        child: ShadInput(
+                          controller: _tokenController,
+                          focusNode: _tokenFocusNode,
+                          enabled: enabled,
+                          onSubmitted: (_) => _commitToken(),
                         ),
                       ),
                       ShadButton.outline(
                         size: ShadButtonSize.sm,
                         enabled: enabled,
-                        onPressed: () =>
-                            sp.setLocalServerToken(_generateHexToken()),
+                        onPressed: () {
+                          final t = _generateHexToken();
+                          _tokenController.text = t;
+                          sp.setLocalServerToken(t);
+                        },
                         child: Text(s.apiServiceTokenGenerate),
                       ),
                       ShadButton.outline(
@@ -4125,13 +4173,14 @@ class _ApiSubFeatureCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
         color: c.surface1,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: c.border.withValues(alpha: 0.6), width: 1),
+        borderRadius: m.brDialog,
+        border: Border.all(color: m.borderMedium(c.border), width: 1),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4570,6 +4619,7 @@ class _BtTrackerEditorState extends State<_BtTrackerEditor> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4636,7 +4686,7 @@ class _BtTrackerEditorState extends State<_BtTrackerEditor> {
                 type: MaterialType.transparency,
                 child: TextSelectionTheme(
                   data: TextSelectionThemeData(
-                    selectionColor: c.accent.withValues(alpha: 0.25),
+                    selectionColor: m.textSelection(c.accent),
                     cursorColor: c.accent,
                     selectionHandleColor: c.accent,
                   ),
@@ -4661,15 +4711,15 @@ class _BtTrackerEditorState extends State<_BtTrackerEditor> {
                       fillColor: c.inputBg,
                       hoverColor: Colors.transparent,
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         borderSide: BorderSide(color: c.inputBorder),
                       ),
                       enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         borderSide: BorderSide(color: c.inputBorder),
                       ),
                       focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         borderSide: BorderSide(color: c.inputFocusBorder),
                       ),
                     ),
@@ -4801,6 +4851,7 @@ class _BtTrackerSubEditorState extends State<_BtTrackerSubEditor> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final sp = widget.settingsProvider;
 
@@ -4922,7 +4973,7 @@ class _BtTrackerSubEditorState extends State<_BtTrackerSubEditor> {
                   type: MaterialType.transparency,
                   child: TextSelectionTheme(
                     data: TextSelectionThemeData(
-                      selectionColor: c.accent.withValues(alpha: 0.25),
+                      selectionColor: m.textSelection(c.accent),
                       cursorColor: c.accent,
                       selectionHandleColor: c.accent,
                     ),
@@ -4947,15 +4998,15 @@ class _BtTrackerSubEditorState extends State<_BtTrackerSubEditor> {
                         fillColor: c.inputBg,
                         hoverColor: Colors.transparent,
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: m.brInput,
                           borderSide: BorderSide(color: c.inputBorder),
                         ),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: m.brInput,
                           borderSide: BorderSide(color: c.inputBorder),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: m.brInput,
                           borderSide: BorderSide(color: c.inputFocusBorder),
                         ),
                       ),
@@ -5123,6 +5174,7 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -5187,7 +5239,7 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
                 type: MaterialType.transparency,
                 child: TextSelectionTheme(
                   data: TextSelectionThemeData(
-                    selectionColor: c.accent.withValues(alpha: 0.25),
+                    selectionColor: m.textSelection(c.accent),
                     cursorColor: c.accent,
                     selectionHandleColor: c.accent,
                   ),
@@ -5212,15 +5264,15 @@ class _Ed2kServerEditorState extends State<_Ed2kServerEditor> {
                       fillColor: c.inputBg,
                       hoverColor: Colors.transparent,
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         borderSide: BorderSide(color: c.inputBorder),
                       ),
                       enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         borderSide: BorderSide(color: c.inputBorder),
                       ),
                       focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         borderSide: BorderSide(color: c.inputFocusBorder),
                       ),
                     ),
@@ -5338,6 +5390,7 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final sp = widget.settingsProvider;
 
@@ -5454,7 +5507,7 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
                   type: MaterialType.transparency,
                   child: TextSelectionTheme(
                     data: TextSelectionThemeData(
-                      selectionColor: c.accent.withValues(alpha: 0.25),
+                      selectionColor: m.textSelection(c.accent),
                       cursorColor: c.accent,
                       selectionHandleColor: c.accent,
                     ),
@@ -5479,15 +5532,15 @@ class _Ed2kServerSubEditorState extends State<_Ed2kServerSubEditor> {
                         fillColor: c.inputBg,
                         hoverColor: Colors.transparent,
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: m.brInput,
                           borderSide: BorderSide(color: c.inputBorder),
                         ),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: m.brInput,
                           borderSide: BorderSide(color: c.inputBorder),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: m.brInput,
                           borderSide: BorderSide(color: c.inputFocusBorder),
                         ),
                       ),
@@ -5805,6 +5858,7 @@ class _SmallActionButtonState extends State<_SmallActionButton> {
   @override
   Widget build(BuildContext context) {
     final c = widget.colors;
+    final m = AppMetrics.of(context);
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
@@ -5816,7 +5870,7 @@ class _SmallActionButtonState extends State<_SmallActionButton> {
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
             color: _isHovered ? c.hoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
             border: Border.all(color: c.border, width: 1),
           ),
           child: Row(
@@ -5945,7 +5999,11 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
   Widget build(BuildContext context) {
     final theme = ShadTheme.of(context);
     final c = widget.colors;
+    final m = AppMetrics.of(context);
     final tokens = widget.tokens;
+    // 迷你预览内部用「被预览主题自身」的 metric（圆角/透明度随被预览主题变化），
+    // 而非当前生效 App 的 m（那是外层卡片 chrome 用的）。
+    final tm = AppMetrics.fromTokens(tokens);
     final selected = widget.selected;
     final borderColor = selected ? theme.colorScheme.primary : c.border;
 
@@ -5963,7 +6021,7 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
               color: _isHovered && !selected ? c.hoverBg : c.bg,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: m.brDialog,
               border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
               boxShadow: selected
                   ? [
@@ -5984,10 +6042,9 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
                   height: 52,
                   decoration: BoxDecoration(
                     color: tokens.background,
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: tm.brMd,
                     border: Border.all(
-                      color: tokens.border.withValues(alpha: 0.5),
-                      width: 0.5,
+                      color: tm.borderFade(tokens.border),
                     ),
                   ),
                   child: Row(
@@ -6010,7 +6067,7 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
                               margin: const EdgeInsets.only(bottom: 3),
                               decoration: BoxDecoration(
                                 color: tokens.accent,
-                                borderRadius: BorderRadius.circular(1.5),
+                                borderRadius: tm.brProgress,
                               ),
                             ),
                             Container(
@@ -6018,16 +6075,16 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
                               height: 3,
                               margin: const EdgeInsets.only(bottom: 3),
                               decoration: BoxDecoration(
-                                color: tokens.textMuted.withValues(alpha: 0.3),
-                                borderRadius: BorderRadius.circular(1.5),
+                                color: tm.borderSubtle(tokens.textMuted),
+                                borderRadius: tm.brProgress,
                               ),
                             ),
                             Container(
                               width: 16,
                               height: 3,
                               decoration: BoxDecoration(
-                                color: tokens.textMuted.withValues(alpha: 0.3),
-                                borderRadius: BorderRadius.circular(1.5),
+                                color: tm.borderSubtle(tokens.textMuted),
+                                borderRadius: tm.brProgress,
                               ),
                             ),
                           ],
@@ -6043,27 +6100,26 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
                                 height: 3,
                                 margin: const EdgeInsets.only(bottom: 3),
                                 decoration: BoxDecoration(
-                                  color: tokens.textPrimary.withValues(
-                                    alpha: 0.4,
-                                  ),
-                                  borderRadius: BorderRadius.circular(1.5),
+                                  color: tm.borderFaint(tokens.textPrimary),
+                                  borderRadius: tm.brProgress,
                                 ),
                               ),
                               Container(
                                 height: 3,
                                 margin: const EdgeInsets.only(bottom: 3),
                                 decoration: BoxDecoration(
+                                  // 刻意保留：迷你预览次级文本条示意，固定装饰透明度。
                                   color: tokens.textMuted.withValues(
                                     alpha: 0.2,
                                   ),
-                                  borderRadius: BorderRadius.circular(1.5),
+                                  borderRadius: tm.brProgress,
                                 ),
                               ),
                               Container(
                                 height: 4,
                                 decoration: BoxDecoration(
                                   color: tokens.surface3,
-                                  borderRadius: BorderRadius.circular(2),
+                                  borderRadius: tm.brXs,
                                 ),
                                 child: Align(
                                   alignment: Alignment.centerLeft,
@@ -6072,7 +6128,7 @@ class _CustomThemeCardState extends State<_CustomThemeCard> {
                                     child: Container(
                                       decoration: BoxDecoration(
                                         color: tokens.accent,
-                                        borderRadius: BorderRadius.circular(2),
+                                        borderRadius: tm.brXs,
                                       ),
                                     ),
                                   ),
@@ -6162,6 +6218,7 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final theme = ShadTheme.of(context);
     final c = widget.colors;
     final entry = widget.entry;
@@ -6169,6 +6226,8 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
 
     // 预览主题的色值
     final tokens = entry.build();
+    // 迷你预览内部用被预览主题自身的 metric（见 _CustomThemeCard 注释）。
+    final tm = AppMetrics.fromTokens(tokens);
     final borderColor = selected ? theme.colorScheme.primary : c.border;
 
     return ShadTooltip(
@@ -6185,7 +6244,7 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
               color: _isHovered && !selected ? c.hoverBg : c.bg,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: m.brDialog,
               border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
               boxShadow: selected
                   ? [
@@ -6206,10 +6265,9 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
                   height: 52,
                   decoration: BoxDecoration(
                     color: tokens.background,
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: tm.brMd,
                     border: Border.all(
-                      color: tokens.border.withValues(alpha: 0.5),
-                      width: 0.5,
+                      color: tm.borderFade(tokens.border),
                     ),
                   ),
                   child: Row(
@@ -6233,7 +6291,7 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
                               margin: const EdgeInsets.only(bottom: 3),
                               decoration: BoxDecoration(
                                 color: tokens.accent,
-                                borderRadius: BorderRadius.circular(1.5),
+                                borderRadius: tm.brProgress,
                               ),
                             ),
                             Container(
@@ -6241,16 +6299,16 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
                               height: 3,
                               margin: const EdgeInsets.only(bottom: 3),
                               decoration: BoxDecoration(
-                                color: tokens.textMuted.withValues(alpha: 0.3),
-                                borderRadius: BorderRadius.circular(1.5),
+                                color: tm.borderSubtle(tokens.textMuted),
+                                borderRadius: tm.brProgress,
                               ),
                             ),
                             Container(
                               width: 16,
                               height: 3,
                               decoration: BoxDecoration(
-                                color: tokens.textMuted.withValues(alpha: 0.3),
-                                borderRadius: BorderRadius.circular(1.5),
+                                color: tm.borderSubtle(tokens.textMuted),
+                                borderRadius: tm.brProgress,
                               ),
                             ),
                           ],
@@ -6267,20 +6325,19 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
                                 height: 3,
                                 margin: const EdgeInsets.only(bottom: 3),
                                 decoration: BoxDecoration(
-                                  color: tokens.textPrimary.withValues(
-                                    alpha: 0.4,
-                                  ),
-                                  borderRadius: BorderRadius.circular(1.5),
+                                  color: tm.borderFaint(tokens.textPrimary),
+                                  borderRadius: tm.brProgress,
                                 ),
                               ),
                               Container(
                                 height: 3,
                                 margin: const EdgeInsets.only(bottom: 3),
                                 decoration: BoxDecoration(
+                                  // 刻意保留：迷你预览次级文本条示意，固定装饰透明度。
                                   color: tokens.textMuted.withValues(
                                     alpha: 0.2,
                                   ),
-                                  borderRadius: BorderRadius.circular(1.5),
+                                  borderRadius: tm.brProgress,
                                 ),
                               ),
                               // 进度条预览
@@ -6288,7 +6345,7 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
                                 height: 4,
                                 decoration: BoxDecoration(
                                   color: tokens.surface3,
-                                  borderRadius: BorderRadius.circular(2),
+                                  borderRadius: tm.brXs,
                                 ),
                                 child: Align(
                                   alignment: Alignment.centerLeft,
@@ -6297,7 +6354,7 @@ class _ThemePreviewCardState extends State<_ThemePreviewCard> {
                                     child: Container(
                                       decoration: BoxDecoration(
                                         color: tokens.accent,
-                                        borderRadius: BorderRadius.circular(2),
+                                        borderRadius: tm.brXs,
                                       ),
                                     ),
                                   ),
@@ -6411,12 +6468,13 @@ class _ThemeModeCardState extends State<_ThemeModeCard> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final theme = ShadTheme.of(context);
     final c = widget.colors;
     final selected = widget.selected;
     final borderColor = selected ? theme.colorScheme.primary : c.border;
     final bgColor = selected
-        ? theme.colorScheme.primary.withValues(alpha: 0.08)
+        ? m.subtle(theme.colorScheme.primary)
         : _isHovered
         ? c.hoverBg
         : c.bg;
@@ -6432,7 +6490,7 @@ class _ThemeModeCardState extends State<_ThemeModeCard> {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
             color: bgColor,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: m.brCard,
             border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
           ),
           child: Row(
@@ -6554,6 +6612,7 @@ class _ColorDotState extends State<_ColorDot> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final selected = widget.selected;
     final showIcon = selected || widget.icon != null;
     return ShadTooltip(
@@ -6575,7 +6634,7 @@ class _ColorDotState extends State<_ColorDot> {
                 color: selected
                     ? widget.colors.textPrimary
                     : _isHovered
-                    ? widget.colors.textSecondary.withValues(alpha: 0.6)
+                    ? m.borderMedium(widget.colors.textSecondary)
                     : widget.color,
                 width: selected
                     ? 2.5
@@ -6586,7 +6645,7 @@ class _ColorDotState extends State<_ColorDot> {
               boxShadow: _isHovered || selected
                   ? [
                       BoxShadow(
-                        color: widget.color.withValues(alpha: 0.25),
+                        color: m.shadowStrong(widget.color),
                         blurRadius: 6,
                         spreadRadius: 0,
                       ),
@@ -6794,6 +6853,7 @@ class _HueSlider extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -6810,7 +6870,7 @@ class _HueSlider extends StatelessWidget {
                 Container(
                   height: 14,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(7),
+                    borderRadius: m.brMd,
                     gradient: const LinearGradient(
                       colors: [
                         Color(0xFFFF0000), // 0°   Red
@@ -6823,7 +6883,7 @@ class _HueSlider extends StatelessWidget {
                       ],
                     ),
                     border: Border.all(
-                      color: c.border.withValues(alpha: 0.3),
+                      color: m.borderSubtle(c.border),
                       width: 0.5,
                     ),
                   ),
@@ -6882,6 +6942,7 @@ class _GradientSlider extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -6898,10 +6959,10 @@ class _GradientSlider extends StatelessWidget {
                 Container(
                   height: 14,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(7),
+                    borderRadius: m.brMd,
                     gradient: LinearGradient(colors: [leftColor, rightColor]),
                     border: Border.all(
-                      color: c.border.withValues(alpha: 0.3),
+                      color: m.borderSubtle(c.border),
                       width: 0.5,
                     ),
                   ),
@@ -7270,6 +7331,7 @@ class _AboutContent extends StatelessWidget {
     final p = svc.progress;
     if (p == null) return const SizedBox.shrink();
 
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final fraction = p.totalBytes > 0
         ? (p.downloadedBytes / p.totalBytes).clamp(0.0, 1.0)
@@ -7285,7 +7347,7 @@ class _AboutContent extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(2),
+          borderRadius: m.brXs,
           child: LinearProgressIndicator(
             value: fraction,
             backgroundColor: c.surface2,
@@ -7305,14 +7367,14 @@ class _AboutContent extends StatelessWidget {
               Icon(
                 LucideIcons.layers,
                 size: 11,
-                color: c.accent.withValues(alpha: 0.7),
+                color: m.emphasis(c.accent),
               ),
               const SizedBox(width: 3),
               Text(
                 s.segmentsDownloading(activeSegments, segments),
                 style: TextStyle(
                   fontSize: 11,
-                  color: c.accent.withValues(alpha: 0.7),
+                  color: m.emphasis(c.accent),
                 ),
               ),
               const SizedBox(width: 10),

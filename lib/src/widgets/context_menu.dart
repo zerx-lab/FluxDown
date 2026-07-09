@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 /// 菜单项数据
 class ContextMenuItem {
@@ -108,13 +109,14 @@ class _ContextMenuOverlay extends StatelessWidget {
           ),
         ),
         // 菜单面板
-        Positioned(left: left, top: top, child: _buildMenu()),
+        Positioned(left: left, top: top, child: _buildMenu(context)),
       ],
     );
   }
 
-  Widget _buildMenu() {
+  Widget _buildMenu(BuildContext context) {
     final children = <Widget>[];
+    final m = AppMetrics.of(context);
     for (var i = 0; i < items.length; i++) {
       children.add(
         _ContextMenuItemWidget(
@@ -144,11 +146,11 @@ class _ContextMenuOverlay extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(
         color: colors.surface1,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: m.brCard,
         border: Border.all(color: colors.border, width: 1),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.12),
+            color: m.muted(Colors.black),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -185,6 +187,7 @@ class _ContextMenuItemWidgetState extends State<_ContextMenuItemWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final enabled = widget.item.enabled;
     final color = enabled ? widget.item.color : widget.colors.textMuted;
     return MouseRegion(
@@ -201,7 +204,7 @@ class _ContextMenuItemWidgetState extends State<_ContextMenuItemWidget> {
             color: enabled && _isHovered
                 ? widget.colors.hoverBg
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: m.brSm,
           ),
           child: Row(
             children: [

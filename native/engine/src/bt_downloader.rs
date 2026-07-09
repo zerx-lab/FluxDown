@@ -3962,6 +3962,7 @@ pub fn probe_torrent_meta(probe_id: String, torrent_bytes: Vec<u8>) -> TorrentMe
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::compute_bt_display_progress;
     use std::collections::{HashMap, HashSet};
@@ -4580,12 +4581,12 @@ mod tests {
             expected_len: 13,
         };
         let resolved =
-            super::resolve_completion_verify_path(src.clone(), &[completion_move.clone()], true);
+            super::resolve_completion_verify_path(src.clone(), std::slice::from_ref(&completion_move), true);
         assert_eq!(resolved, src);
 
         let _ = std::fs::remove_file(&src);
         let resolved =
-            super::resolve_completion_verify_path(src.clone(), &[completion_move.clone()], true);
+            super::resolve_completion_verify_path(src.clone(), std::slice::from_ref(&completion_move), true);
         assert_eq!(resolved, dst);
 
         let no_retry =

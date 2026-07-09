@@ -595,7 +595,7 @@ pub async fn run(db_dir: PathBuf) {
             Some(signal) = create_recv.recv() => {
                 let msg = signal.message;
                 engine.manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, String::new(), 0, msg.torrent_file_bytes, msg.proxy_url, msg.user_agent, msg.queue_id, msg.checksum, msg.extra_headers, msg.selected_file_indices, None, None)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, String::new(), 0, msg.torrent_file_bytes, msg.proxy_url, msg.user_agent, msg.queue_id, msg.checksum, msg.extra_headers, msg.selected_file_indices, None, None, None)
                     .await;
                 // 立即推送 AllTasks，确保 Dart 端在收到 TaskProgress 之前
                 // 已通过 AllTasks 获得正确的 queue_id，防止新任务被错误归入默认队列。
@@ -609,7 +609,7 @@ pub async fn run(db_dir: PathBuf) {
                 );
                 for entry in msg.entries {
                     engine.manager
-                        .create_task(entry.url, msg.save_dir.clone(), entry.file_name, msg.segments, msg.cookies.clone(), msg.referrer.clone(), 0, Vec::new(), msg.proxy_url.clone(), msg.user_agent.clone(), msg.queue_id.clone(), entry.checksum, HashMap::new(), Vec::new(), None, None)
+                        .create_task(entry.url, msg.save_dir.clone(), entry.file_name, msg.segments, msg.cookies.clone(), msg.referrer.clone(), 0, Vec::new(), msg.proxy_url.clone(), msg.user_agent.clone(), msg.queue_id.clone(), entry.checksum, HashMap::new(), Vec::new(), None, None, if entry.audio_url.is_empty() { None } else { Some(entry.audio_url) })
                         .await;
                 }
                 // 批量创建完成后统一推送一次 AllTasks，同步 queue_id 到 Dart。
@@ -822,6 +822,7 @@ pub async fn run(db_dir: PathBuf) {
                     file_size: req.file_size.unwrap_or(0),
                     mime_type: req.mime_type.unwrap_or_default(),
                     cookies: req.cookies,
+                    audio_url: req.audio_url.unwrap_or_default(),
                 }
                 .send_signal_to_dart();
             }
@@ -844,7 +845,7 @@ pub async fn run(db_dir: PathBuf) {
                     body.is_some(),
                 );
                 engine.manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.referrer, msg.hint_file_size, Vec::new(), msg.proxy_url, msg.user_agent, msg.queue_id, String::new(), extra_headers, Vec::new(), method, body)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.referrer, msg.hint_file_size, Vec::new(), msg.proxy_url, msg.user_agent, msg.queue_id, String::new(), extra_headers, Vec::new(), method, body, if msg.audio_url.is_empty() { None } else { Some(msg.audio_url) })
                     .await;
                 // 推送 AllTasks 确保 Dart 端获得正确 queue_id。
                 engine.manager.load_and_send_all_tasks().await;
@@ -1231,6 +1232,7 @@ async fn handle_api_command(cmd: ApiCommand, engine: &mut Engine) {
                     req.checksum,
                     req.headers.unwrap_or_default(),
                     Vec::new(),
+                    None,
                     None,
                     None,
                 )

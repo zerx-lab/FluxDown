@@ -41,6 +41,9 @@ export default defineConfig({
       "downloads.shelf", // setShelfEnabled 隐藏下载栏
       "cookies",
       "webRequest",
+      // Firefox MV3 仍支持 blocking webRequest：用 onHeadersReceived {cancel:true}
+      // 从源头拦截下载，避免残留"已取消"记录（issue #21）。Chrome MV3 已弃用，故仅 Firefox 加。
+      ...(browser === "firefox" ? ["webRequestBlocking"] : []),
       "storage",
       "notifications",
       "activeTab",

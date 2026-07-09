@@ -8,6 +8,7 @@ import '../../i18n/locale_provider.dart';
 import '../../models/download_controller.dart';
 import '../../models/download_task.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_metrics.dart';
 import '../mobile_ui.dart';
 import '../sheets/mobile_task_action_sheet.dart';
 
@@ -76,6 +77,7 @@ class _MobileTaskDetailPageState extends State<MobileTaskDetailPage> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final topInset = MediaQuery.paddingOf(context).top;
     final task = _task;
@@ -91,9 +93,9 @@ class _MobileTaskDetailPageState extends State<MobileTaskDetailPage> {
           Positioned.fill(
             child: ListView(
               padding: EdgeInsets.fromLTRB(
-                MobileDims.pageMargin,
-                topInset + MobileDims.appBarHeight + 8,
-                MobileDims.pageMargin,
+                m.mobilePageMargin,
+                topInset + m.mobileAppBarHeight + 8,
+                m.mobilePageMargin,
                 40,
               ),
               children: [
@@ -123,7 +125,7 @@ class _MobileTaskDetailPageState extends State<MobileTaskDetailPage> {
                   color: c.bg.withValues(alpha: 0.72),
                   padding: EdgeInsets.only(top: topInset),
                   child: SizedBox(
-                    height: MobileDims.appBarHeight,
+                    height: m.mobileAppBarHeight,
                     child: Row(
                       children: [
                         const SizedBox(width: 8),
@@ -143,7 +145,7 @@ class _MobileTaskDetailPageState extends State<MobileTaskDetailPage> {
                           ),
                         ),
                         MobileIconButton(
-                          icon: LucideIcons.settings,
+                          icon: LucideIcons.ellipsisVertical,
                           onTap: () => showMobileTaskActionSheet(
                             context,
                             widget.controller,
@@ -177,6 +179,7 @@ class _FileHeaderCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final boosted = controller.priorityTaskId == task.id;
 
     final (Color pillBg, Color pillFg) = switch (task.status) {
@@ -200,7 +203,7 @@ class _FileHeaderCard extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: mobileCardDecoration(c),
+      decoration: mobileCardDecoration(c, m),
       child: Row(
         children: [
           Container(
@@ -295,6 +298,7 @@ class _ProgressCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final active = task.status == TaskStatus.downloading;
     final pct = (task.progress * 100).toStringAsFixed(1);
@@ -308,7 +312,7 @@ class _ProgressCard extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: mobileCardDecoration(c),
+      decoration: mobileCardDecoration(c, m),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -389,6 +393,7 @@ class _SegmentsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final active = task.status == TaskStatus.downloading;
     final fills = _cellFills();
@@ -407,7 +412,7 @@ class _SegmentsCard extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: mobileCardDecoration(c),
+      decoration: mobileCardDecoration(c, m),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -496,6 +501,7 @@ class _SpeedCurveCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final peak = samples.isEmpty
         ? 0
@@ -503,7 +509,7 @@ class _SpeedCurveCard extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: mobileCardDecoration(c),
+      decoration: mobileCardDecoration(c, m),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -622,6 +628,7 @@ class _InfoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final created = task.createdAt;
     final createdText =
@@ -672,7 +679,7 @@ class _InfoCard extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: mobileCardDecoration(c),
+      decoration: mobileCardDecoration(c, m),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

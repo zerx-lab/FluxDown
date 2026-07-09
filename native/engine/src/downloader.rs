@@ -47,6 +47,21 @@ pub enum DownloadError {
     /// Range 能力无关）。
     #[error("file changed on server during download (validator mismatch, server returned {0})")]
     VersionChanged(String),
+    /// 服务器对 `Range: bytes=X-Y` 请求回了 `206 Partial Content`，但响应的
+    /// `Content-Range` 起点与我们请求的偏移【不一致】（或整体缺失且请求非从 0
+    /// 起）——典型于劣质 CDN（如 123 盘免费下载节点）在签名 URL 失效/超配额时，
+    /// 对任意 Range 请求都回 206 却实际返回【从 byte 0 的全量流】。若不拦截，
+    /// seek 到段偏移写入的却是文件开头字节 → 各段字节数写满区间（骗过末尾仅校验
+    /// 字节数量的完整性检查），但内容整体错位 → 完整大小的损坏文件（无 checksum
+    /// 时无从察觉）。与 [`RangeNotSupported`]（非 206）、[`VersionChanged`]（validator
+    /// 不匹配的 200）严格区分：本变体是【206 但区间错位】，重试只会拿到同样的错位
+    /// 响应，故调用方应立即回退单流（单流全量请求不带 Range，服务器"忽略 Range 返
+    /// 全量"的行为对单流反而正确，能下到完整文件），【绝不】记录主机单连接缓存，
+    /// 也【绝不】当瞬时错误退避重试。
+    #[error(
+        "server returned a misaligned Range response (206 but Content-Range does not match the requested offset: {0})"
+    )]
+    RangeMisaligned(String),
     #[error("ed2k error: {0}")]
     Ed2k(String),
     /// ED2K 协议完整性违规：hashset 投毒 / 块 MD4 不匹配 / SENDINGPART 越界 /
@@ -179,6 +194,12 @@ pub struct DownloadParams {
     /// 用此重建浏览器看到的请求，而不是用 GET 重发 URL。修复 form-POST、
     /// 一次性签名 URL 等"URL 之外的输入决定响应"的下载场景。
     pub spec: RequestSpec,
+    /// 音频轨 URL（离散轨对下载，DASH 音视频分离场景）。
+    ///
+    /// `Some` 时表示这是一对分离的音视频轨：`url` 为视频轨、此字段为音频轨，
+    /// 引擎分别下载后用 ffmpeg mux 合并为单文件。不依赖 `.mpd` manifest。
+    /// `None` 时为普通单 URL 下载。
+    pub audio_url: Option<String>,
 }
 
 /// 将浏览器扩展捕获的额外 HTTP 头应用到请求构建器上。
@@ -205,6 +226,10 @@ pub struct DownloadParams {
 ///   - `host` — must match the actual request target, not the browser's.
 ///   - `content-length` — meaningless on a GET; can confuse intermediaries.
 ///   - `connection` — hop-by-hop header managed by the HTTP stack.
+///   - `range` / `if-range` — 分段/续传维度由下载引擎独占管理。浏览器播放
+///     媒体时对 `.m4s`/流分段发的 `Range: bytes=<seek偏移>-` 若被透传到整轨
+///     或整段 GET，会与引擎自己的 Range 冲突：偏移越界即触发 416 Range Not
+///     Satisfiable（B站 DASH 音频轨实测），或悄悄只下回一小片导致文件损坏。
 pub(crate) fn apply_extra_headers(
     req: reqwest::RequestBuilder,
     extra_headers: &std::collections::HashMap<String, String>,
@@ -222,6 +247,8 @@ pub(crate) fn apply_extra_headers(
         "host",
         "content-length",
         "connection",
+        "range",
+        "if-range",
     ];
 
     let mut map = reqwest::header::HeaderMap::with_capacity(extra_headers.len());
@@ -530,6 +557,49 @@ pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Opt
         Some(layers.join(", "))
     } else {
         None
+    }
+}
+
+/// 从 `Content-Range` 响应头解析【起始字节】。
+///
+/// `Content-Range` 形如 `bytes <start>-<end>/<total>`（RFC 9110 §14.4）。多段下载
+/// 据此校验"服务器返回的区间起点是否等于我们请求的 Range 起点"——劣质 CDN 在链接
+/// 失效时会对 `Range: bytes=X-Y` 回 206 却发【从 0 的全量流】，其 `Content-Range`
+/// 起点为 0（或整体缺失），与请求偏移不符。
+///
+/// 以下情形一律返回 `None`（交由 [`is_range_response_misaligned`] 按"起点未知"裁决）：
+///   - 头缺失或非 ASCII；
+///   - 值不以 `bytes ` 前缀开头；
+///   - unsatisfied-range 形式 `bytes */<total>`（`*` 非法数字）；
+///   - `<start>` 解析失败。
+pub(crate) fn parse_content_range_start(headers: &reqwest::header::HeaderMap) -> Option<i64> {
+    let raw = headers.get("content-range")?.to_str().ok()?;
+    // "bytes 100-199/1234" → 去前缀 → "100-199/1234"
+    let rest = raw.trim().strip_prefix("bytes ")?;
+    // 取 '/' 前的区间部分："100-199"（unsatisfied 时为 "*"）
+    let range_part = rest.split('/').next()?;
+    // 取 '-' 前的起点："100"（unsatisfied 时为 "*"，parse 失败 → None）
+    let start_str = range_part.split('-').next()?;
+    start_str.trim().parse::<i64>().ok()
+}
+
+/// 判定一个 206 响应的 `Content-Range` 起点（由 [`parse_content_range_start`] 解析）
+/// 是否与本段请求的 Range 起点 `actual_start` 【错位】。
+///
+/// - `Some(s)`：服务器明确回了起点 `s` → 错位当且仅当 `s != actual_start`。
+/// - `None`（Content-Range 缺失/不可解析）：
+///     - `actual_start == 0`：本就要从 0 写，即便服务器发全量流也落在正确位置，
+///       不算错位（段 #0 与从 0 起的续传对此免疫）→ `false`；
+///     - `actual_start > 0`：请求文件中段却拿不到 Content-Range 佐证，无法确认服务器
+///       是否从 0 全量发送 → 保守判定错位 → `true`（回退单流，牺牲多段并行换正确性）。
+///
+/// 注：合法 206 响应【必须】携带 Content-Range（RFC 9110 §15.3.7），故对合规服务器
+/// 此函数在正常 Range 下恒返回 `false`，不影响多段吞吐；只有真正错位或破损的响应
+/// 才触发回退。
+pub(crate) fn is_range_response_misaligned(cr_start: Option<i64>, actual_start: i64) -> bool {
+    match cr_start {
+        Some(s) => s != actual_start,
+        None => actual_start > 0,
     }
 }
 
@@ -2382,14 +2452,18 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
         {
             Ok(()) => None,
             Err(DownloadError::RangeNotSupported(status))
-            | Err(DownloadError::VersionChanged(status)) => {
-                // 多段尝试中止，回退单流。两种触发：
+            | Err(DownloadError::VersionChanged(status))
+            | Err(DownloadError::RangeMisaligned(status)) => {
+                // 多段尝试中止，回退单流。三种触发：
                 //   • RangeNotSupported：服务器无视 Range（返回 200 全量，如 FnOS NAS）。
                 //   • VersionChanged：文件在 probe 与分段请求间变了（If-Range validator
                 //     不匹配 → 200 全量新版本），旧数据作废需重下。
+                //   • RangeMisaligned：服务器回 206 却发【从 0 的全量流】（Content-Range
+                //     起点不符，如 123 盘失效签名 URL）；已写入段数据是错位垃圾，必须清空。
                 // 注意：有已下数据的【瞬时 200】不会走到这里——coordinator 已在串行降级
-                // 路径就地完成下载，不返回这两个错误，故此处 remove_file 永远不会误删
-                // 有效的多段进度（历史 0kb bug 的根因已在 coordinator 侧消除）。
+                // 路径就地完成下载，不返回这些错误，故此处 remove_file 只清理错位/作废/
+                // 全零的预分配数据，永不误删有效的多段进度（历史 0kb bug 已在 coordinator
+                // 侧消除）。
                 log_info!(
                     "[download] task {} multi-segment aborted (server returned {}; no-Range or \
                      mid-download file change) — clearing stale data, redownloading single-stream",
@@ -2955,8 +3029,17 @@ async fn download_single(
     // resp 为 200 全量压缩流）；此处 encoding 守卫确保万一上方逻辑未覆盖某种
     // 边界（如重发后服务器仍返回 206+encoding）也绝不会把压缩字节范围当作可
     // append 的续传数据，避免静默损坏。
-    let actual_resume =
-        want_resume && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT && encoding.is_none();
+    // BUG-CDN-206-BYTE0-FULLSTREAM（续传面）：劣质 CDN 在链接失效时对
+    // `Range: bytes=N-` 回 206 却发【从 0 的全量流】（Content-Range 起点为 0
+    // 或缺失，而非请求的 N）。若仍按 206 走 seek(End(0)) 追加，会把文件开头字节
+    // 拼到 existing_len 之后 → 错位坏文件。故追加"Content-Range 起点必须 ==
+    // existing_len"条件，不符即视为不可信续传 → 走下方回退全量分支（File::create
+    // 截断 + 复用当前响应体从 0 写入：from-0 全量流恰好落正确位置得完整文件，
+    // 错误页则被末尾 size mismatch 拦截）。与多段 do_segment 的同名校验对称。
+    let actual_resume = want_resume
+        && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
+        && encoding.is_none()
+        && !is_range_response_misaligned(parse_content_range_start(resp.headers()), existing_len);
 
     if want_resume && !actual_resume {
         log_info!(
@@ -3160,6 +3243,7 @@ async fn download_multi_segment(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         PROBE_MAX_RETRIES, PROBE_RETRY_BASE_DELAY, PROBE_TIMEOUT, TEMP_EXT, dedup_filename,
@@ -4016,6 +4100,8 @@ mod tests {
         headers.insert("Host".to_string(), "evil.com".to_string());
         headers.insert("Content-Length".to_string(), "999".to_string());
         headers.insert("Connection".to_string(), "keep-alive".to_string());
+        headers.insert("Range".to_string(), "bytes=1200000-".to_string());
+        headers.insert("If-Range".to_string(), "\"abc\"".to_string());
         // This one should pass through
         headers.insert("Authorization".to_string(), "Bearer ok".to_string());
         let req = client.get("https://example.com/file.zip");
@@ -4027,6 +4113,8 @@ mod tests {
         assert!(built.headers().get("Host").is_none());
         assert!(built.headers().get("Content-Length").is_none());
         assert!(built.headers().get("Connection").is_none());
+        assert!(built.headers().get("Range").is_none());
+        assert!(built.headers().get("If-Range").is_none());
         assert_eq!(
             built
                 .headers()
@@ -4144,6 +4232,147 @@ mod tests {
             super::detect_content_encoding(&headers),
             Some(super::ContentEncoding::Gzip)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_content_range_start / is_range_response_misaligned
+    //
+    // 123 盘 CDN 失效时对 Range 请求回 206，但 Content-Range 起点却是 0
+    // （或整体缺失）。旧代码只检查状态码 == 206 就直接从 actual_start seek
+    // 写入，导致文件开头字节被写到段偏移处——整体错位却字节数吻合，产出
+    // “完整大小的坏 exe”。这里的测试锁定该场景，防止回归。
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_content_range_start_normal() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("bytes 100-199/1234"),
+        );
+        assert_eq!(super::parse_content_range_start(&headers), Some(100));
+    }
+
+    #[test]
+    fn parse_content_range_start_from_zero() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("bytes 0-99/1234"),
+        );
+        // 起点为 0 必须显式区分为 Some(0)，不能与"头缺失"的 None 混淆，
+        // 否则 is_range_response_misaligned 会误判段 0 也需要回退。
+        assert_eq!(super::parse_content_range_start(&headers), Some(0));
+    }
+
+    #[test]
+    fn parse_content_range_start_unknown_total() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("bytes 100-199/*"),
+        );
+        assert_eq!(super::parse_content_range_start(&headers), Some(100));
+    }
+
+    #[test]
+    fn parse_content_range_start_missing_header() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert_eq!(super::parse_content_range_start(&headers), None);
+    }
+
+    #[test]
+    fn parse_content_range_start_unsatisfied_range() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("bytes */1234"),
+        );
+        assert_eq!(super::parse_content_range_start(&headers), None);
+    }
+
+    #[test]
+    fn parse_content_range_start_bare_range_without_bytes_prefix() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("100-199/1234"),
+        );
+        assert_eq!(super::parse_content_range_start(&headers), None);
+    }
+
+    #[test]
+    fn parse_content_range_start_wrong_unit_prefix() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("items 0-5/10"),
+        );
+        assert_eq!(super::parse_content_range_start(&headers), None);
+    }
+
+    #[test]
+    fn parse_content_range_start_real_bug_cdn_zero_replay() {
+        // 真实故障日志：任务总大小 639494994 字节，123 盘 CDN 失效时对
+        // 中段 Range 请求回 206，但 Content-Range 却是从 0 开始的全量流。
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("bytes 0-639494993/639494994"),
+        );
+        assert_eq!(super::parse_content_range_start(&headers), Some(0));
+    }
+
+    #[test]
+    fn is_range_response_misaligned_aligned_nonzero() {
+        assert!(!super::is_range_response_misaligned(Some(100), 100));
+    }
+
+    #[test]
+    fn is_range_response_misaligned_cdn_zero_replay_bug() {
+        // 核心 bug 场景：CDN 回了从 0 开始的全量流，但本段实际请求起点是
+        // 508073519（故障日志中的真实段偏移）。旧代码只看状态码 206 就
+        // 直接 seek(508073519) 写入——必须判定为错位以触发回退，否则
+        // 文件头字节会被写到段偏移处，产出完整大小的坏文件。
+        assert!(super::is_range_response_misaligned(Some(0), 508073519));
+    }
+
+    #[test]
+    fn is_range_response_misaligned_start_mismatch() {
+        assert!(super::is_range_response_misaligned(Some(200), 100));
+    }
+
+    #[test]
+    fn is_range_response_misaligned_missing_header_at_zero_is_ok() {
+        // 段 0（或从 0 续传）对缺失 Content-Range 天然免疫：从 0 写入本
+        // 就是正确落点，无需回退。
+        assert!(!super::is_range_response_misaligned(None, 0));
+    }
+
+    #[test]
+    fn is_range_response_misaligned_missing_header_nonzero_is_misaligned() {
+        // 非 0 起点的段若拿不到 Content-Range，无法确认服务器落点，保守
+        // 判定为错位以触发回退，而不是假设服务器老实返回了正确区间。
+        assert!(super::is_range_response_misaligned(None, 508073519));
+    }
+
+    #[test]
+    fn is_range_response_misaligned_segment_zero_aligned() {
+        assert!(!super::is_range_response_misaligned(Some(0), 0));
+    }
+
+    #[test]
+    fn parse_and_misaligned_end_to_end_cdn_bug_repro() {
+        // 端到端复现 123 盘签名失效场景：CDN 对中段请求回的 Content-Range
+        // 起点是 0，而该段实际请求起点是 508073519 —— 两个函数联动之下
+        // 必须判定为错位，这正是本次 bug 修复要堵住的路径。
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "content-range",
+            reqwest::header::HeaderValue::from_static("bytes 0-639494993/639494994"),
+        );
+        let cr_start = super::parse_content_range_start(&headers);
+        assert!(super::is_range_response_misaligned(cr_start, 508073519));
     }
 
     // -----------------------------------------------------------------------

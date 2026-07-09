@@ -275,6 +275,7 @@ pub(crate) fn aria2_add_uri_to_download_request(params: &Value) -> Result<Downlo
         mime_type: None,
         method: None,
         body: None,
+        audio_url: None,
     })
 }
 

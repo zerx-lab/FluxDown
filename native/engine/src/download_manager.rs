@@ -500,6 +500,9 @@ struct QueuedTask {
     method: Option<String>,
     /// 浏览器扩展捕获的原始请求体（仅非 GET 时有意义）。
     body: Option<downloader::CapturedRequestBody>,
+    /// 音频轨 URL（离散音视频轨对下载）。`Some` 时 `url` 为视频轨、此为音频轨，
+    /// 引擎分别下载后 mux 合并；`None` 为普通单 URL 下载。
+    audio_url: Option<String>,
 }
 
 /// All state associated with a single actively-running download task.
@@ -1603,6 +1606,7 @@ impl DownloadManager {
         selected_file_indices: Vec<i32>,
         method: Option<String>,
         body: Option<downloader::CapturedRequestBody>,
+        audio_url: Option<String>,
     ) -> Option<String> {
         let task_id = Uuid::new_v4().to_string();
         let created_id = task_id.clone();
@@ -1656,6 +1660,13 @@ impl DownloadManager {
         {
             log_info!("save_torrent_file_bytes error: {}", e);
         }
+        // 轨对任务：持久化音频轨 URL，供重启恢复时重建轨对下载。
+        if let Some(ref au) = audio_url
+            && !au.is_empty()
+            && let Err(e) = self.db.save_audio_url(&task_id, au).await
+        {
+            log_info!("save_audio_url error: {}", e);
+        }
 
         self.sink.emit(EngineEvent::TaskProgress {
             task_id: task_id.clone(),
@@ -1691,6 +1702,7 @@ impl DownloadManager {
             selected_file_indices,
             method,
             body,
+            audio_url,
         };
         if is_bt || (self.has_capacity() && self.has_queue_capacity(&queued.queue_id)) {
             self.do_start_task(queued).await;
@@ -1775,6 +1787,7 @@ impl DownloadManager {
             selected_file_indices,
             method,
             body,
+            audio_url,
         } = queued;
 
         // Four-tier segment count priority:
@@ -1817,7 +1830,8 @@ impl DownloadManager {
 
         let use_ftp = is_ftp_url(&url);
         let use_hls = hls_downloader::is_hls_url(&url);
-        let use_dash = dash_downloader::is_dash_url(&url);
+        // 轨对任务（audio_url 非空）复用 DASH 下载器的下载+mux 能力，与 .mpd 后缀正交。
+        let use_dash = dash_downloader::is_dash_url(&url) || audio_url.is_some();
         let use_bt = is_magnet(&url) || !torrent_file_bytes.is_empty() || is_torrent_file_url(&url);
         let use_ed2k = crate::ed2k::link::is_ed2k_url(&url);
 
@@ -2154,6 +2168,7 @@ impl DownloadManager {
                 checksum,
                 extra_headers,
                 spec,
+                audio_url,
             };
 
             tokio::spawn(async move {
@@ -2385,6 +2400,8 @@ impl DownloadManager {
                     selected_file_indices: Vec::new(), // resume tasks have no pre-selection
                     method: None,         // 不持久化 method/body，恢复时按 GET 重发
                     body: None,
+                    // resume 路径下 do_resume_task 会从 DB 重新读 audio_url，此处 None 即可。
+                    audio_url: None,
                 });
                 // 入队后立即广播最新队列位置(与 create_task 一致),否则要等后续
                 // drain_queue 才广播,期间 UI 显示过时的排队位置。
@@ -2444,7 +2461,9 @@ impl DownloadManager {
 
         let use_ftp = is_ftp_url(&task.url);
         let use_hls = hls_downloader::is_hls_url(&task.url);
-        let use_dash = dash_downloader::is_dash_url(&task.url);
+        // 轨对任务：从 DB 读回音频轨 URL，重建轨对下载（与 .mpd 后缀正交）。
+        let audio_url = self.db.load_audio_url(task_id).await.unwrap_or_default();
+        let use_dash = dash_downloader::is_dash_url(&task.url) || audio_url.is_some();
         let use_bt = is_bt_url(&task.url);
         let use_ed2k = crate::ed2k::link::is_ed2k_url(&task.url);
 
@@ -2694,6 +2713,7 @@ impl DownloadManager {
                 // 极端情况下原本是 POST 触发的下载，恢复时会失败——但 method/body 未持久化，
                 // 这是已知折衷：成本远低于把 POST 体写进 SQLite。
                 spec: downloader::RequestSpec::empty_get(),
+                audio_url,
             };
 
             tokio::spawn(async move {
@@ -2927,7 +2947,15 @@ impl DownloadManager {
                 }
 
                 // DASH audio sidecar: clean up .audio.m4a and its .part temp
-                if dash_downloader::is_dash_url(&t.url) {
+                // 轨对任务（视频轨 URL 非 .mpd）也持有 sidecar，需一并清理。
+                let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
+                    || self
+                        .db
+                        .load_audio_url(&t.task_id)
+                        .await
+                        .unwrap_or_default()
+                        .is_some();
+                if has_audio_sidecar {
                     let audio_path = dash_downloader::build_audio_path(&path);
                     let audio_temp =
                         PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
@@ -3172,6 +3200,15 @@ impl DownloadManager {
                     // 时 on_task_done 不执行而需在 &mut self 上下文主动清理）。task_id
                     // 是一次性 UUID 不会复用，故仅为内存一致性，无功能影响。
                     self.auto_retry_counts.remove(tid.as_str());
+                    // 轨对任务的 sidecar（.audio.m4a）清理：spawn 内无 &mut self，
+                    // 在此 &mut self 上下文预读，move 进闭包。
+                    let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
+                        || self
+                            .db
+                            .load_audio_url(&t.task_id)
+                            .await
+                            .unwrap_or_default()
+                            .is_some();
                     cleanup_futs.push(tokio::spawn(async move {
                         // Wait for this task's download handle (10s per-task timeout).
                         // 超时后 abort 外层 future，加速纯 async 任务释放连接/句柄，
@@ -3209,8 +3246,8 @@ impl DownloadManager {
                             );
                         }
 
-                        // DASH audio sidecar cleanup
-                        if dash_downloader::is_dash_url(&url) {
+                        // DASH / 轨对 audio sidecar cleanup
+                        if has_audio_sidecar {
                             let audio_path = dash_downloader::build_audio_path(&path);
                             let audio_temp = PathBuf::from(format!(
                                 "{}{}",
@@ -3411,6 +3448,8 @@ impl DownloadManager {
                 selected_file_indices: Vec::new(), // resume tasks have no pre-selection
                 method: None,
                 body: None,
+                // resume 路径 do_resume_task 从 DB 重读 audio_url，此处 None。
+                audio_url: None,
             });
             // 入队后立即广播最新队列位置(覆盖单个 resume 与 batch_resume 批量入队;
             // broadcast_queue_positions 为只读信号,多次调用无副作用)。

@@ -16,12 +16,16 @@ import {
   looksLikeJson,
   scanForMediaUrls,
 } from "@/utils/media-sniff";
+import { parseDashJson } from "@/utils/dash-manifest";
 export default defineUnlistedScript(() => {
   // 防止重复注入
   if ((window as any).__fluxdown_interceptor__) return;
   (window as any).__fluxdown_interceptor__ = true;
 
   const FLUXDOWN_EVENT = "fluxdown-resource-detected";
+  // 拦到标准 DASH JSON manifest 时派发：权威清晰度 + 视频/音频轨 URL 列表，
+  // 供 Isolated World 转发给 background 存入 tab 级 manifest store。
+  const FLUXDOWN_DASH_EVENT = "fluxdown-dash-manifest";
 
   /** 已通知过的 URL 集合（防止重复通知） */
   const notifiedUrls = new Set<string>();
@@ -132,6 +136,22 @@ export default defineUnlistedScript(() => {
   const MAX_SNIFF_CL = 2 * 1024 * 1024; // Content-Length 门槛：>2MB 不读
   const MAX_SNIFF_READ = 512 * 1024; // 累积读上限：清单 / JSON API 均远小于此
 
+  /** JSON.parse 后的对象若命中标准 DASH 结构，派发权威轨对事件（结构驱动，无站点特判）。 */
+  function tryDashManifest(obj: unknown, url: string): void {
+    try {
+      const manifest = parseDashJson(obj, url);
+      if (manifest) {
+        document.dispatchEvent(
+          new CustomEvent(FLUXDOWN_DASH_EVENT, {
+            detail: { manifest, pageUrl: window.location.href },
+          }),
+        );
+      }
+    } catch {
+      // 深扫异常绝不冒泡
+    }
+  }
+
   /** 对已取到的响应体文本做清单前缀判定 + JSON 内嵌媒体 URL 深扫，命中即上报。 */
   function sniffTextForMedia(
     text: string,
@@ -149,6 +169,7 @@ export default defineUnlistedScript(() => {
       if (text.length <= MAX_SNIFF_CL && looksLikeJson(ct, text)) {
         // 主世界原生 JSON.parse（未打补丁）；深扫结果按内层绝对 URL 上报
         const obj = JSON.parse(text);
+        tryDashManifest(obj, url);
         for (const mediaUrl of scanForMediaUrls(obj, url)) {
           notify(type, mediaUrl);
         }
@@ -340,6 +361,7 @@ export default defineUnlistedScript(() => {
             this.response &&
             typeof this.response === "object"
           ) {
+            tryDashManifest(this.response, responseUrl);
             for (const mediaUrl of scanForMediaUrls(this.response, responseUrl)) {
               notify("xhr-detected", mediaUrl);
             }

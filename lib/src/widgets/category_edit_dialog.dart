@@ -4,6 +4,7 @@ import '../i18n/locale_provider.dart';
 import '../models/custom_category.dart';
 import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'dir_picker_field.dart';
 
 /// 显示分类编辑对话框（新建或编辑）
@@ -208,6 +209,7 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final s = widget.s;
     final c = widget.c;
 
@@ -371,7 +373,7 @@ class _CategoryEditDialogState extends State<CategoryEditDialog> {
                             vertical: 5,
                           ),
                           decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(5),
+                            borderRadius: m.brMd,
                             border: Border.all(color: c.border),
                           ),
                           child: Text(
@@ -446,6 +448,7 @@ class CategoryIconPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Wrap(
       spacing: 4,
       runSpacing: 4,
@@ -461,7 +464,7 @@ class CategoryIconPicker extends StatelessWidget {
               height: 30,
               decoration: BoxDecoration(
                 color: isSelected ? c.accentBg : Colors.transparent,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: m.brMd,
                 border: Border.all(
                   color: isSelected ? c.accent : c.border,
                   width: isSelected ? 1.5 : 1,
@@ -504,6 +507,7 @@ class _MatchModeChipState extends State<MatchModeChip> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final c = widget.c;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -520,7 +524,7 @@ class _MatchModeChipState extends State<MatchModeChip> {
                 : _hover
                     ? c.hoverBg
                     : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
             border: Border.all(
               color: widget.isSelected ? c.accent : c.border,
             ),

@@ -51,6 +51,7 @@ pub(crate) fn parse_batch(body: &[u8]) -> Result<DownloadRequest, String> {
             mime_type: None,
             method: None,
             body: None,
+            audio_url: None,
         });
     }
 
@@ -102,6 +103,7 @@ pub(crate) fn parse_batch(body: &[u8]) -> Result<DownloadRequest, String> {
             mime_type: None,
             method: None,
             body: None,
+            audio_url: None,
         });
     }
 

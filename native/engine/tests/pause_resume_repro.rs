@@ -9,6 +9,8 @@
 //! 运行：
 //!   cargo test -p fluxdown_engine --test pause_resume_repro -- --ignored --nocapture
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -91,18 +93,18 @@ async fn read_request(stream: &mut TcpStream) -> Option<(String, Option<(i64, Op
         if line.is_empty() {
             break;
         }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("range") {
-                let v = value.trim().strip_prefix("bytes=")?;
-                let (s, e) = v.split_once('-')?;
-                let start: i64 = s.trim().parse().ok()?;
-                let end = if e.trim().is_empty() {
-                    None
-                } else {
-                    Some(e.trim().parse::<i64>().ok()?)
-                };
-                range = Some((start, end));
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.trim().eq_ignore_ascii_case("range")
+        {
+            let v = value.trim().strip_prefix("bytes=")?;
+            let (s, e) = v.split_once('-')?;
+            let start: i64 = s.trim().parse().ok()?;
+            let end = if e.trim().is_empty() {
+                None
+            } else {
+                Some(e.trim().parse::<i64>().ok()?)
+            };
+            range = Some((start, end));
         }
     }
     Some((method, range))
@@ -280,6 +282,7 @@ async fn run_scenario(
             std::collections::HashMap::new(),
             Vec::new(),
             method,
+            None,
             None,
         )
         .await

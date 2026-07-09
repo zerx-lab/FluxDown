@@ -200,7 +200,7 @@ const EXTENSION_CATEGORIES: Record<ResourceType, string[]> = {
     "flatpak",
   ],
   torrent: ["torrent"],
-  stream: ["m3u8", "m3u", "mpd"],
+  stream: ["m3u8", "m3u", "mpd", "m4s"],
   subtitle: ["vtt", "srt", "ass", "ssa", "sub", "idx", "sup", "lrc"],
   magnet: [],
   other: [],
@@ -280,6 +280,191 @@ const MIME_CATEGORIES: Record<string, ResourceType> = {
   "text/x-ass": "subtitle",
   "application/x-subtitle": "subtitle",
 };
+
+// ===== 数据驱动嗅探过滤表 =====
+//
+// 不靠代码内固定后缀白名单 + 分片智能过滤，而是一张声明式规则表：
+// 命中即展示，大小/黑名单由每条规则自身携带的条件决定。
+// 内置默认规则，预留 storage.sync 覆盖（编辑 UI 后续接入 applySniffRuleOverrides）。
+
+/** 单条嗅探规则。 */
+export interface SniffRule {
+  /** 匹配目标：后缀名（不含点，如 "m4s"）或 MIME（支持 "video/*" 前缀通配）。 */
+  match: string;
+  /** 匹配维度：按 URL 后缀 或 按 Content-Type。 */
+  kind: "ext" | "mime";
+  /** 命中后归入的资源类别。 */
+  category: ResourceType;
+  /** 最小字节数，0 = 不限（小于此值不展示，仅在大小已知时生效）。 */
+  minSize: number;
+  /** 规则是否启用。false = 显式屏蔽该类资源。 */
+  enabled: boolean;
+  /** true = 命中即丢弃整个请求。 */
+  blacklist?: boolean;
+}
+
+/** 匹配结果。 */
+export interface SniffRuleMatch {
+  /** 是否命中一条启用的正向规则（应当展示）。 */
+  hit: boolean;
+  /** 命中规则归类（未命中时为 "other"）。 */
+  category: ResourceType;
+  /** 命中黑名单或被禁用规则显式拦截 → 整个请求应丢弃。 */
+  blocked: boolean;
+}
+
+/**
+ * 内置默认嗅探规则表。
+ *
+ * 与 EXTENSION_CATEGORIES / MIME_CATEGORIES 保持一致，额外覆盖分片/流媒体后缀
+ * （m4s / ts / m3u8 / mpd）。分片当作普通可下载文件直接展示，不做 <10MB 丢弃
+ * （minSize:0）。
+ */
+const DEFAULT_SNIFF_RULES: SniffRule[] = [
+  // --- 后缀规则（由 EXTENSION_CATEGORIES 派生，全部 minSize:0 命中即收） ---
+  ...Object.entries(EXTENSION_CATEGORIES).flatMap(([category, exts]) =>
+    (category === "image" || category === "magnet" || category === "other"
+      ? []
+      : exts
+    ).map(
+      (ext): SniffRule => ({
+        match: ext,
+        kind: "ext",
+        category: category as ResourceType,
+        minSize: 0,
+        enabled: true,
+      }),
+    ),
+  ),
+  // --- MIME 规则（通配优先） ---
+  { match: "video/*", kind: "mime", category: "video", minSize: 0, enabled: true },
+  { match: "audio/*", kind: "mime", category: "audio", minSize: 0, enabled: true },
+  {
+    match: "application/vnd.apple.mpegurl",
+    kind: "mime",
+    category: "stream",
+    minSize: 0,
+    enabled: true,
+  },
+  {
+    match: "application/x-mpegurl",
+    kind: "mime",
+    category: "stream",
+    minSize: 0,
+    enabled: true,
+  },
+  {
+    match: "application/mpegurl",
+    kind: "mime",
+    category: "stream",
+    minSize: 0,
+    enabled: true,
+  },
+  {
+    match: "application/octet-stream-m3u8",
+    kind: "mime",
+    category: "stream",
+    minSize: 0,
+    enabled: true,
+  },
+  {
+    match: "application/dash+xml",
+    kind: "mime",
+    category: "stream",
+    minSize: 0,
+    enabled: true,
+  },
+  {
+    match: "application/m4s",
+    kind: "mime",
+    category: "stream",
+    minSize: 0,
+    enabled: true,
+  },
+];
+
+/** 当前生效的规则表（默认 = 内置；storage 覆盖后经 applySniffRuleOverrides 替换）。 */
+let activeSniffRules: SniffRule[] = DEFAULT_SNIFF_RULES;
+// 派生索引：kind=ext → Map<ext, rule>；mime 通配单独存。
+let extRuleIndex = new Map<string, SniffRule>();
+let mimeRuleIndex = new Map<string, SniffRule>();
+
+function rebuildSniffIndex(): void {
+  extRuleIndex = new Map();
+  mimeRuleIndex = new Map();
+  for (const rule of activeSniffRules) {
+    if (rule.kind === "ext") {
+      extRuleIndex.set(rule.match.toLowerCase(), rule);
+    } else {
+      mimeRuleIndex.set(rule.match.toLowerCase(), rule);
+    }
+  }
+}
+rebuildSniffIndex();
+
+/** 返回内置默认规则（供设置页初始化 / 重置用）。 */
+export function getDefaultSniffRules(): SniffRule[] {
+  return DEFAULT_SNIFF_RULES.map((r) => ({ ...r }));
+}
+
+/** 返回当前生效规则的副本。 */
+export function getActiveSniffRules(): SniffRule[] {
+  return activeSniffRules.map((r) => ({ ...r }));
+}
+
+/**
+ * 用用户自定义规则覆盖内置默认表（编辑 UI 落地后调用）。
+ * 传空数组或 undefined 恢复内置默认。
+ */
+export function applySniffRuleOverrides(rules?: SniffRule[] | null): void {
+  activeSniffRules =
+    rules && rules.length > 0 ? rules : DEFAULT_SNIFF_RULES;
+  rebuildSniffIndex();
+}
+
+/**
+ * 命中判定：先查后缀规则，再查 MIME 规则（通配优先）。
+ *
+ * @param url 资源 URL（取后缀）
+ * @param contentType Content-Type（可空；取主类型）
+ * @param size 字节数，<=0 表示未知（未知时不因 minSize 拦截）
+ */
+export function matchSniffRule(
+  url: string,
+  contentType: string | undefined,
+  size: number,
+): SniffRuleMatch {
+  const miss: SniffRuleMatch = { hit: false, category: "other", blocked: false };
+
+  // 1) 后缀维度
+  const ext = extractExtension(url);
+  if (ext) {
+    const rule = extRuleIndex.get(ext);
+    if (rule) {
+      if (!rule.enabled || rule.blacklist)
+        return { hit: false, category: rule.category, blocked: true };
+      if (rule.minSize > 0 && size > 0 && size < rule.minSize)
+        return { hit: false, category: rule.category, blocked: true };
+      return { hit: true, category: rule.category, blocked: false };
+    }
+  }
+
+  // 2) MIME 维度（"video/mp4" 先查 "video/*" 再查精确）
+  if (contentType) {
+    const ct = contentType.toLowerCase().split(";")[0].trim();
+    const wildcard = ct.split("/")[0] + "/*";
+    const rule = mimeRuleIndex.get(wildcard) || mimeRuleIndex.get(ct);
+    if (rule) {
+      if (!rule.enabled || rule.blacklist)
+        return { hit: false, category: rule.category, blocked: true };
+      if (rule.minSize > 0 && size > 0 && size < rule.minSize)
+        return { hit: false, category: rule.category, blocked: true };
+      return { hit: true, category: rule.category, blocked: false };
+    }
+  }
+
+  return miss;
+}
 
 // ===== 分类型大小阈值 =====
 // 低于阈值的资源被认为是噪音（预加载片段、缩略图等）
@@ -607,106 +792,14 @@ export function isStreamingUrl(url: string): boolean {
 }
 
 /**
- * 判断 URL 是否是流媒体分片（.m4s / .ts）
+ * 判断 URL 是否指向可嗅探的媒体/可下载资源（页面内 DOM/fetch 上报的兜底判定）。
  *
- * .ts 扩展名有歧义（TypeScript 文件 vs MPEG-TS 分片），
- * 通过 HLS 上下文特征来区分：
- * - URL 中包含 HLS 特征路径（/seg, /chunk, /fragment, /hls）
- * - URL 包含分片序号模式（seg001, chunk-3, -00042）
- * - 纯 .m4s 始终视为 DASH 分片
- */
-export function isStreamSegment(url: string): boolean {
-  const ext = extractExtension(url);
-
-  // .m4s 一定是 DASH fragment
-  if (ext === "m4s") return true;
-
-  // .ts 需要结合上下文判断
-  if (ext === "ts") {
-    const lower = url.toLowerCase();
-    // HLS 特征路径
-    if (
-      lower.includes("/seg") ||
-      lower.includes("/chunk") ||
-      lower.includes("/fragment") ||
-      lower.includes("/hls") ||
-      lower.includes("/ts/") ||
-      lower.includes("/segments/")
-    ) {
-      return true;
-    }
-    // 分片序号模式（如 segment001.ts, chunk-3.ts, media-00042.ts）
-    if (/[_-]\d{2,}\.ts/i.test(url) || /seg\d+/i.test(url)) {
-      return true;
-    }
-    // 没有 HLS 特征 → 可能是合法的 MPEG-TS 文件或 TypeScript 文件，不视为分片
-    return false;
-  }
-
-  return false;
-}
-
-export function isSniffableContentType(contentType: string): boolean {
-  const ct = contentType.toLowerCase().split(";")[0].trim();
-
-  if (ct.startsWith("video/") || ct.startsWith("audio/")) return true;
-
-  if (
-    ct === "application/vnd.apple.mpegurl" ||
-    ct === "application/x-mpegurl" ||
-    ct === "application/mpegurl" ||
-    ct === "application/octet-stream-m3u8"
-  )
-    return true;
-  if (ct === "application/dash+xml") return true;
-  if (
-    ct === "text/vtt" ||
-    ct === "application/x-subrip" ||
-    ct === "text/x-ssa" ||
-    ct === "text/x-ass"
-  )
-    return true;
-
-  const downloadTypes = [
-    "application/octet-stream",
-    "application/x-download",
-    "application/force-download",
-    "application/zip",
-    "application/x-rar-compressed",
-    "application/x-7z-compressed",
-    "application/gzip",
-    "application/x-tar",
-    "application/pdf",
-    "application/x-bittorrent",
-    "application/vnd.android.package-archive",
-    "application/x-msdownload",
-    "application/x-msi",
-    "application/epub+zip",
-  ];
-  if (downloadTypes.includes(ct)) return true;
-
-  // Office 文档
-  if (ct.startsWith("application/vnd.openxmlformats-officedocument"))
-    return true;
-  if (ct.startsWith("application/vnd.ms-")) return true;
-
-  return false;
-}
-
-/**
- * 判断 URL 扩展名是否指向可嗅探的媒体/可下载资源。
- *
- * 独立于 Content-Type 的判定路径：当服务器对媒体文件返回不规范的
- * Content-Type（text/plain、binary/octet-stream、空值、错误的 text/html）时，
- * 靠 URL 扩展名兜底命中。
- *
- * 排除 image/other/magnet：媒体嗅探器不收图片（与 isSniffableContentType 一致，
- * 图片噪音大），magnet/other 无扩展名意义。下游 isWorthShowing 仍做分片/小文件过滤。
+ * 走规则表的后缀维度：命中一条启用的正向规则即可。当服务器对媒体文件返回不规范的
+ * Content-Type（text/plain、binary/octet-stream、空值、错误的 text/html）时，靠 URL
+ * 后缀兜底命中。规则表已排除 image/magnet/other，无需在此额外判断。
  */
 export function isSniffableExtension(url: string): boolean {
-  const type = EXT_TO_TYPE.get(extractExtension(url));
-  if (!type) return false;
-  return type !== "image" && type !== "other" && type !== "magnet";
+  return matchSniffRule(url, undefined, -1).hit;
 }
 
 // ===== 可信度计算 =====
@@ -795,17 +888,6 @@ export function isWorthShowing(resource: DetectedResource): boolean {
     return false;
   }
 
-  // 3. 流媒体分片不单独展示（.ts / .m4s）
-  if (isStreamSegment(resource.url) && resource.type !== "stream") {
-    // 但如果是 attachment 或大文件，可能是合法的 MPEG-TS
-    if (
-      !resource.isAttachment &&
-      (resource.size <= 0 || resource.size < 10 * 1024 * 1024)
-    ) {
-      return false;
-    }
-  }
-
   // 4. 分类型大小阈值过滤（仅当大小已知时）
   if (resource.size > 0) {
     const threshold = SIZE_THRESHOLDS[resource.type];
@@ -869,4 +951,87 @@ export function getResourceTypeIcon(type: ResourceType): string {
     other: "\u{1F4CE}",
   };
   return icons[type];
+}
+
+// ===== 轨道分组（离散音视频轨对） =====
+//
+// DASH 分片场景下视频与音频常被拆成两个独立文件下发（同清晰度一对），
+// 需要把「视频轨 + 音频轨」配对后一起交给下载引擎（引擎按 audio_url 是否
+// 为空判定要不要 mux）。判轨规则通用、不解析任何站点私有 JSON schema：
+//   - mimeType 以 `video/` 开头 → 视频轨；以 `audio/` 开头 → 音频轨。
+//   - mimeType 缺失时按 size 回退：>=2 条缺失且大小均已知时，最小的一条
+//     视为音频轨，其余视为视频轨；只有 1 条或大小不可比较时全部归为独立
+//     视频轨，不猜测音频配对。
+// 音频轨通常只有一条，所有视频清晰度共享同一条（体积/码率最大的）音频轨。
+
+/** 一组「清晰度 + 视频轨 + 可选音频轨」的下载配对。 */
+export interface TrackPairGroup {
+  /** 清晰度标签：优先取 DetectedResource.quality，否则按 size 降序生成占位档位名 */
+  quality: string;
+  videoUrl: string;
+  /** 缺省 = 该清晰度无独立音频轨，视频轨可单独直下 */
+  audioUrl?: string;
+  videoRes: DetectedResource;
+  audioRes?: DetectedResource;
+}
+
+/**
+ * 把一个 tab 内嗅探到的媒体资源（video/audio/stream）按轨道类型 + 清晰度
+ * 分组为「视频轨 + 共享音频轨」列表。纯函数，不依赖 DOM / chrome API。
+ */
+export function groupTrackPairs(
+  resources: DetectedResource[],
+): TrackPairGroup[] {
+  const candidates = resources.filter(
+    (r) => r.type === "video" || r.type === "audio" || r.type === "stream",
+  );
+  if (candidates.length === 0) return [];
+
+  const videoTracks: DetectedResource[] = [];
+  const audioTracks: DetectedResource[] = [];
+  const unknown: DetectedResource[] = [];
+
+  for (const r of candidates) {
+    const mime = r.mimeType?.toLowerCase();
+    if (mime?.startsWith("audio/")) {
+      audioTracks.push(r);
+    } else if (mime?.startsWith("video/")) {
+      videoTracks.push(r);
+    } else {
+      unknown.push(r);
+    }
+  }
+
+  // mimeType 缺失回退：见函数头注释。
+  if (unknown.length === 1) {
+    videoTracks.push(unknown[0]);
+  } else if (unknown.length >= 2) {
+    const allSizeKnown = unknown.every((r) => r.size > 0);
+    if (allSizeKnown) {
+      const sorted = [...unknown].sort((a, b) => b.size - a.size);
+      audioTracks.push(sorted[sorted.length - 1]);
+      videoTracks.push(...sorted.slice(0, -1));
+    } else {
+      videoTracks.push(...unknown);
+    }
+  }
+
+  if (videoTracks.length === 0) return [];
+
+  // 共享音频轨：取体积最大的一条，供所有视频档共用。
+  const sharedAudio =
+    audioTracks.length > 0
+      ? audioTracks.reduce((best, cur) => (cur.size > best.size ? cur : best))
+      : undefined;
+
+  // 清晰度顺序：按视频轨 size 降序排列；quality 字段缺失时用顺位占位命名。
+  const sortedVideo = [...videoTracks].sort((a, b) => b.size - a.size);
+
+  return sortedVideo.map((v, idx) => ({
+    quality: v.quality || `画质${idx + 1}`,
+    videoUrl: v.url,
+    audioUrl: sharedAudio?.url,
+    videoRes: v,
+    audioRes: sharedAudio,
+  }));
 }

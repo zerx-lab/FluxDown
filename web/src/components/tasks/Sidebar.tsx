@@ -12,6 +12,7 @@ import { clearCredentials, getBase } from '../../lib/auth'
 import { cn } from '../../lib/cn'
 import { fileType, fmtSpeed, TYPE_LABELS, type FileType as FT } from '../../lib/format'
 import { connStore, disconnectWs, useGlobalSpeed, useStore } from '../../lib/ws'
+import { confirmDialog } from '../../lib/confirm'
 import { useTasksUi } from './context'
 import { useViewTasks } from './useViewTasks'
 
@@ -136,9 +137,9 @@ export function Sidebar() {
                   type="button"
                   className="icon-btn sm absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover:grid"
                   title="删除队列"
-                  onClick={(e) => {
+                  onClick={async (e) => {
                     e.stopPropagation()
-                    if (window.confirm(`删除队列「${q.name}」？其中的任务会移动到默认队列。`)) deleteQueue.mutate(q.queueId)
+                    if (await confirmDialog({ title: '删除队列', message: `删除队列「${q.name}」？其中的任务会移动到默认队列。`, danger: true })) deleteQueue.mutate(q.queueId)
                   }}
                 >
                   <Trash2 size={13} />

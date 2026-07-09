@@ -1,0 +1,23 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { FloatingNavbar } from "../components/ui/floating-navbar";
+import ThemeMarketPage from "../components/ThemeMarketPage";
+import Footer from "../components/Footer";
+import CommunityFloat from "../components/CommunityFloat";
+---
+
+<Layout
+  title="Theme Market - FluxDown"
+  description="Browse and download community themes for FluxDown. Preview screenshots, pick dark or light variants, and import the theme JSON into the desktop app."
+>
+  <FloatingNavbar client:load />
+  <main class="relative">
+    <div class="absolute inset-0 -z-10 overflow-hidden pointer-events-none">
+      <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-brand-sky/[0.03] blur-[120px] rounded-full"></div>
+      <div class="absolute bottom-1/4 right-0 w-[400px] h-[400px] bg-brand-cyan/[0.02] blur-[100px] rounded-full"></div>
+    </div>
+    <ThemeMarketPage client:load />
+  </main>
+  <Footer client:load />
+  <CommunityFloat client:load />
+</Layout>

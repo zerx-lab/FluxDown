@@ -14,6 +14,8 @@
 //!
 //! 默认 `#[ignore]`，需要网络才能跑。
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

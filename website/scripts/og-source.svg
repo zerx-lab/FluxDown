@@ -1,0 +1,49 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0a0b"/>
+      <stop offset="1" stop-color="#0d1526"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.22" cy="0.35" r="0.6">
+      <stop offset="0" stop-color="#3B82F6" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#3B82F6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- Logo tile -->
+  <g transform="translate(96,150) scale(0.82)">
+    <rect x="0" y="0" width="300" height="300" rx="66" fill="#3B82F6"/>
+    <path d="
+      M 127.5 56.25 Q 127.5 47.25 136.5 47.25 L 163.5 47.25
+      Q 172.5 47.25 172.5 56.25 L 172.5 180 L 206.25 146.25
+      Q 213 139.5 219.75 146.25 L 230.25 156.75 Q 237 163.5 230.25 170.25
+      L 156.75 243.75 Q 150 250.5 143.25 243.75 L 69.75 170.25
+      Q 63 163.5 69.75 156.75 L 80.25 146.25 Q 87 139.5 93.75 146.25
+      L 127.5 180 Z" fill="#F2F4F8"/>
+  </g>
+
+  <!-- Wordmark + tagline -->
+  <text x="470" y="250" font-family="Arial" font-size="112" font-weight="700" fill="#F2F4F8">FluxDown</text>
+  <text x="472" y="330" font-family="Arial" font-size="42" font-weight="600" fill="#3B82F6">Free, open-source IDM alternative</text>
+  <text x="472" y="392" font-family="Arial" font-size="34" font-weight="400" fill="#9aa4b2">Blazing-fast multi-protocol download manager</text>
+  <text x="472" y="440" font-family="Arial" font-size="34" font-weight="400" fill="#9aa4b2">powered by a Rust engine.</text>
+
+  <!-- Feature chips -->
+  <g font-family="Arial" font-size="26" font-weight="500">
+    <g transform="translate(96,510)">
+      <rect x="0" y="0" width="384" height="60" rx="30" fill="#3B82F6" fill-opacity="0.14" stroke="#3B82F6" stroke-opacity="0.4"/>
+      <text x="192" y="39" text-anchor="middle" fill="#cbd5e1">HTTP · FTP · BT · HLS · ed2k</text>
+    </g>
+    <g transform="translate(504,510)">
+      <rect x="0" y="0" width="256" height="60" rx="30" fill="#3B82F6" fill-opacity="0.14" stroke="#3B82F6" stroke-opacity="0.4"/>
+      <text x="128" y="39" text-anchor="middle" fill="#cbd5e1">Smart segmentation</text>
+    </g>
+    <g transform="translate(784,510)">
+      <rect x="0" y="0" width="316" height="60" rx="30" fill="#3B82F6" fill-opacity="0.14" stroke="#3B82F6" stroke-opacity="0.4"/>
+      <text x="158" y="39" text-anchor="middle" fill="#cbd5e1">Zero ads · Zero tracking</text>
+    </g>
+  </g>
+</svg>

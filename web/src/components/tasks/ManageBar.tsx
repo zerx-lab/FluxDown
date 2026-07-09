@@ -3,6 +3,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
+import { confirmDialog } from '../../lib/confirm'
 import { filterTasks } from './filters'
 import { useTasksUi } from './context'
 import { useViewTasks } from './useViewTasks'
@@ -67,8 +68,8 @@ export function ManageBar() {
         type="button"
         className="btn danger sm"
         disabled={selected.size === 0}
-        onClick={() => {
-          if (selected.size > 0 && window.confirm(`删除选中的 ${selected.size} 个任务？`)) batchDelete.mutate(Array.from(selected))
+        onClick={async () => {
+          if (selected.size > 0 && (await confirmDialog({ title: '删除任务', message: `删除选中的 ${selected.size} 个任务？`, danger: true }))) batchDelete.mutate(Array.from(selected))
         }}
       >
         删除

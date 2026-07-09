@@ -6,7 +6,9 @@ import '../../models/download_controller.dart';
 import '../../models/download_task.dart';
 import '../../models/settings_provider.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_metrics.dart';
 import '../mobile_ui.dart';
+import '../../services/kv_store.dart';
 import '../pages/mobile_task_detail_page.dart';
 import '../sheets/mobile_filter_sheet.dart';
 import '../sheets/mobile_new_download_sheet.dart';
@@ -16,11 +18,13 @@ import '../sheets/mobile_task_action_sheet.dart';
 class MobileTasksScreen extends StatefulWidget {
   final DownloadController controller;
   final SettingsProvider settings;
+  final VoidCallback onOpenSettings;
 
   const MobileTasksScreen({
     super.key,
     required this.controller,
     required this.settings,
+    required this.onOpenSettings,
   });
 
   @override
@@ -95,10 +99,10 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final topInset = MediaQuery.paddingOf(context).top;
-    final headerHeight =
-        topInset + MobileDims.appBarHeight + MobileDims.tabsHeight;
+    final headerHeight = topInset + m.mobileAppBarHeight + m.mobileTabsHeight;
 
     return Stack(
       children: [
@@ -116,10 +120,10 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
               }
               return ListView.builder(
                 padding: EdgeInsets.fromLTRB(
-                  MobileDims.pageMargin,
+                  m.mobilePageMargin,
                   headerHeight + 8,
-                  MobileDims.pageMargin,
-                  MobileDims.scrollBottomPadding,
+                  m.mobilePageMargin,
+                  m.mobileScrollBottomPadding,
                 ),
                 itemCount: _countRows(groups),
                 itemBuilder: (context, index) =>
@@ -143,11 +147,11 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
                 child: Column(
                   children: [
                     SizedBox(
-                      height: MobileDims.appBarHeight,
+                      height: m.mobileAppBarHeight,
                       child: _buildAppBar(context),
                     ),
                     SizedBox(
-                      height: MobileDims.tabsHeight,
+                      height: m.mobileTabsHeight,
                       child: _buildTabs(context),
                     ),
                   ],
@@ -157,35 +161,12 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
           ),
         ),
 
-        // FAB
-        Positioned(
-          right: MobileDims.pageMargin,
-          bottom: 86,
-          child: GestureDetector(
-            onTap: () => showMobileNewDownloadSheet(
-              context,
-              controller: widget.controller,
-              settings: widget.settings,
-            ),
-            child: Container(
-              width: MobileDims.fabSize,
-              height: MobileDims.fabSize,
-              decoration: BoxDecoration(
-                color: c.accent,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: const Color(0xFFFFFFFF).withValues(alpha: 0.28),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: c.accent.withValues(alpha: 0.35),
-                    blurRadius: 20,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
-              ),
-              child: Icon(LucideIcons.plus, size: 20, color: c.accentForeground),
-            ),
+        // FAB（可拖拽换位：松手左右贴边，垂直位置自由，位置持久化）
+        _DraggableFab(
+          onTap: () => showMobileNewDownloadSheet(
+            context,
+            controller: widget.controller,
+            settings: widget.settings,
           ),
         ),
       ],
@@ -283,7 +264,7 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
                   dc.customCategoryFilter != null ||
                   dc.queueFilter != null;
               return MobileIconButton(
-                icon: LucideIcons.settings2,
+                icon: LucideIcons.listFilter,
                 showDot: filtered,
                 onTap: () => showMobileFilterSheet(context, dc),
               );
@@ -298,6 +279,10 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
                 onTap: _toggleGlobalPause,
               );
             },
+          ),
+          MobileIconButton(
+            icon: LucideIcons.settings,
+            onTap: widget.onOpenSettings,
           ),
         ],
       ),
@@ -326,8 +311,7 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
             for (final tab in StatusTab.values) ...[
               Center(
                 child: MobileChip(
-                  label:
-                      '${label(tab)} ${dc.filteredCountForStatus(tab)}',
+                  label: '${label(tab)} ${dc.filteredCountForStatus(tab)}',
                   selected: dc.statusTab == tab,
                   onTap: () => dc.setStatusTab(tab),
                 ),
@@ -422,6 +406,7 @@ class _MobileTaskCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final boosted = controller.priorityTaskId == task.id;
     final showBar =
         task.status == TaskStatus.downloading ||
@@ -435,9 +420,9 @@ class _MobileTaskCard extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
       child: Container(
-        margin: const EdgeInsets.only(bottom: MobileDims.cardGap),
+        margin: EdgeInsets.only(bottom: m.mobileCardGap),
         padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
-        decoration: mobileCardDecoration(c),
+        decoration: mobileCardDecoration(c, m),
         child: Row(
           children: [
             // 文件图标
@@ -464,11 +449,7 @@ class _MobileTaskCard extends StatelessWidget {
                   Row(
                     children: [
                       if (boosted) ...[
-                        Icon(
-                          LucideIcons.zap,
-                          size: 13,
-                          color: c.statusWarning,
-                        ),
+                        Icon(LucideIcons.zap, size: 13, color: c.statusWarning),
                         const SizedBox(width: 5),
                       ],
                       Expanded(
@@ -532,17 +513,12 @@ class _MetaLine extends StatelessWidget {
 
     switch (task.status) {
       case TaskStatus.downloading:
-        spans.add(
-          TextSpan(text: '${task.downloadedText} / ${task.sizeText}'),
-        );
+        spans.add(TextSpan(text: '${task.downloadedText} / ${task.sizeText}'));
         sep();
         spans.add(
           TextSpan(
             text: task.speedText,
-            style: base.copyWith(
-              color: c.accent,
-              fontWeight: FontWeight.w600,
-            ),
+            style: base.copyWith(color: c.accent, fontWeight: FontWeight.w600),
           ),
         );
         if (task.etaText != '—') {
@@ -550,9 +526,7 @@ class _MetaLine extends StatelessWidget {
           spans.add(TextSpan(text: task.etaText));
         }
       case TaskStatus.paused:
-        spans.add(
-          TextSpan(text: '${task.downloadedText} / ${task.sizeText}'),
-        );
+        spans.add(TextSpan(text: '${task.downloadedText} / ${task.sizeText}'));
         sep();
         spans.add(
           TextSpan(
@@ -647,20 +621,20 @@ class _ActionButton extends StatelessWidget {
       );
     }
 
-    final (IconData icon, Color color, Color borderColor) =
-        switch (task.status) {
-          TaskStatus.error => (
-            LucideIcons.rotateCcw,
-            c.statusError,
-            c.statusError.withValues(alpha: 0.35),
-          ),
-          TaskStatus.paused || TaskStatus.pending => (
-            LucideIcons.play,
-            c.textPrimary,
-            c.border,
-          ),
-          _ => (LucideIcons.pause, c.textPrimary, c.border),
-        };
+    final (
+      IconData icon,
+      Color color,
+      Color borderColor,
+    ) = switch (task.status) {
+      TaskStatus.error => (
+        LucideIcons.rotateCcw,
+        c.statusError,
+        c.statusError.withValues(alpha: 0.35),
+      ),
+      TaskStatus.paused ||
+      TaskStatus.pending => (LucideIcons.play, c.textPrimary, c.border),
+      _ => (LucideIcons.pause, c.textPrimary, c.border),
+    };
 
     return GestureDetector(
       onTap: () => toggleMobileTask(controller, task),
@@ -698,6 +672,148 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 12),
           Text(label, style: TextStyle(fontSize: 13, color: c.textMuted)),
         ],
+      ),
+    );
+  }
+}
+
+/// 可拖拽 FAB：跟手移动，松手动画贴向左/右边缘，垂直位置自由；
+/// 归一化位置持久化到 KvStore，重启后恢复。
+class _DraggableFab extends StatefulWidget {
+  final VoidCallback onTap;
+
+  const _DraggableFab({required this.onTap});
+
+  @override
+  State<_DraggableFab> createState() => _DraggableFabState();
+}
+
+class _DraggableFabState extends State<_DraggableFab> {
+  static const _keySide = 'mobile_fab_right';
+  static const _keyY = 'mobile_fab_y';
+
+  /// true = 贴右边（默认）
+  bool _snapRight = KvStore.instance.getBool(_keySide) ?? true;
+
+  /// 垂直位置：FAB 顶边 / 可用高度，(0,1)，null = 默认底部
+  double? _yFrac = KvStore.instance.getDouble(_keyY);
+
+  /// 拖拽中的绝对偏移（相对父 Stack），非拖拽时为 null
+  Offset? _dragPos;
+  bool _dragging = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    final media = MediaQuery.of(context);
+    final size = m.mobileFabSize;
+
+    // Positioned 类组件必须是 Stack 的直接子级：外层用 Positioned.fill
+    // 撑满父 Stack，内部再开一个 Stack 承载 AnimatedPositioned。
+    // 内层 Stack 只命中 FAB 本体，空白区域不拦截下层手势。
+    return Positioned.fill(
+      child: LayoutBuilder(
+        builder: (ctx, constraints) {
+          final w = constraints.maxWidth;
+          final h = constraints.maxHeight;
+          final margin = m.mobilePageMargin;
+          // 垂直可移动范围：顶栏之下 ~ 底部安全区之上
+          final minY = media.padding.top + m.mobileAppBarHeight + 8;
+          final maxY = h - size - (86 + media.padding.bottom);
+          final defaultY = maxY;
+
+          double restX() => _snapRight ? w - size - margin : margin;
+          double restY() => ((_yFrac == null) ? defaultY : _yFrac! * h).clamp(
+            minY,
+            maxY < minY ? minY : maxY,
+          );
+
+          final pos = _dragPos ?? Offset(restX(), restY());
+
+          return Stack(
+            children: [
+              AnimatedPositioned(
+                duration: _dragging
+                    ? Duration.zero
+                    : const Duration(milliseconds: 260),
+                curve: Curves.easeOutCubic,
+                left: pos.dx,
+                top: pos.dy,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: widget.onTap,
+                  onPanStart: (d) {
+                    setState(() {
+                      _dragging = true;
+                      _dragPos = Offset(restX(), restY());
+                    });
+                  },
+                  onPanUpdate: (d) {
+                    setState(() {
+                      final p =
+                          (_dragPos ?? Offset(restX(), restY())) + d.delta;
+                      _dragPos = Offset(
+                        p.dx.clamp(0.0, w - size),
+                        p.dy.clamp(minY, maxY < minY ? minY : maxY),
+                      );
+                    });
+                  },
+                  onPanEnd: (d) {
+                    final p = _dragPos;
+                    setState(() {
+                      _dragging = false;
+                      if (p != null) {
+                        // 松手：按中心点决定贴左/贴右，纵向保留
+                        _snapRight = (p.dx + size / 2) > w / 2;
+                        _yFrac = h > 0 ? p.dy / h : null;
+                      }
+                      _dragPos = null;
+                    });
+                    KvStore.instance.setBool(_keySide, _snapRight);
+                    final y = _yFrac;
+                    if (y != null) KvStore.instance.setDouble(_keyY, y);
+                  },
+                  onPanCancel: () => setState(() {
+                    _dragging = false;
+                    _dragPos = null;
+                  }),
+                  child: AnimatedScale(
+                    scale: _dragging ? 1.08 : 1.0,
+                    duration: const Duration(milliseconds: 120),
+                    child: Container(
+                      width: size,
+                      height: size,
+                      decoration: BoxDecoration(
+                        color: c.accent,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: const Color(
+                            0xFFFFFFFF,
+                          ).withValues(alpha: 0.28),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: c.accent.withValues(
+                              alpha: _dragging ? 0.5 : 0.35,
+                            ),
+                            blurRadius: _dragging ? 26 : 20,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        LucideIcons.plus,
+                        size: 20,
+                        color: c.accentForeground,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

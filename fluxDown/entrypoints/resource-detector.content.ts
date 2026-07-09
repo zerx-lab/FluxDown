@@ -15,6 +15,7 @@ import type {
   FetchInterceptDetail,
   ResourceType,
 } from "@/utils/resource-types";
+import type { DashManifest } from "@/utils/dash-manifest";
 import { classifyByExtension, classifyByMime } from "@/utils/resource-types";
 
 export default defineContentScript({
@@ -116,6 +117,31 @@ export default defineContentScript({
       document.removeEventListener(
         "fluxdown-resource-detected",
         handleFetchEvent,
+      );
+    });
+
+    // ===== 4b. 监听 Main World 拦到的标准 DASH manifest（权威清晰度 + 轨道 URL）=====
+    const handleDashManifestEvent = (event: Event) => {
+      const detail = (event as CustomEvent).detail as
+        | { manifest: DashManifest; pageUrl: string }
+        | undefined;
+      if (!detail?.manifest) return;
+      browser.runtime
+        .sendMessage({
+          action: "dashManifestDetected",
+          manifest: detail.manifest,
+          pageUrl: detail.pageUrl || location.href,
+        })
+        .catch(() => {
+          // 扩展可能已失效
+        });
+    };
+
+    document.addEventListener("fluxdown-dash-manifest", handleDashManifestEvent);
+    ctx.onInvalidated(() => {
+      document.removeEventListener(
+        "fluxdown-dash-manifest",
+        handleDashManifestEvent,
       );
     });
 

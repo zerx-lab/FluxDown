@@ -7,6 +7,7 @@ import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../mobile/sheets/mobile_bt_file_sheet.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'bt_file_list_widget.dart';
 
 void showBtFileSelectionDialog(
@@ -114,6 +115,7 @@ class _BtFileSelectionDialogContentState
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final isMultiFile = widget.files.length > 1;
 
@@ -125,8 +127,8 @@ class _BtFileSelectionDialogContentState
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: c.accent.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
+              color: m.soft(c.accent),
+              borderRadius: m.brMd,
             ),
             child: Icon(LucideIcons.folderOpen, size: 14, color: c.accent),
           ),

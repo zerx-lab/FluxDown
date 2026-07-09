@@ -78,6 +78,13 @@ ${DOCKER} compose up -d website
 echo "[4/4] 清理悬空镜像..."
 ${DOCKER} image prune -f >/dev/null 2>&1 || true
 
+# ── 5. IndexNow 提交(容器起来后,线上 sitemap / key 文件已可访问)──
+# 脚本从线上 sitemap 抓 URL,在宿主机直接跑(无需容器内 scripts/);
+# 失败自身容错退 0,不影响部署结果。给站点几秒完成启动再提交。
+echo "[5/5] 提交 IndexNow..."
+sleep 5
+node "${SCRIPT_DIR}/scripts/indexnow-ping.mjs" || echo "      (IndexNow 提交跳过/失败,不影响部署)"
+
 echo "------------------------------------------"
 echo "  ✓ 部署完成: ${REMOTE_SHA:0:8}"
 echo "=========================================="

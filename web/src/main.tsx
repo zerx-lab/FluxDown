@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
 import './index.css'
 import { router } from './router'
+import { ConfirmDialog } from './components/dialogs/confirm-dialog'
 import { ThemeProvider } from './lib/theme'
 import { connectWs } from './lib/ws'
 import { isAuthenticated, saveCredentials } from './lib/auth'
@@ -42,6 +43,7 @@ createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <RouterProvider router={router} />
+        <ConfirmDialog />
       </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>,

@@ -13,6 +13,8 @@
 //!
 //! 默认 `#[ignore]`（绑定端口 + 略慢），需显式 `--ignored` 运行。
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -153,16 +155,11 @@ async fn start_server(state: Arc<ServerState>) -> TestServer {
     let addr = listener.local_addr().expect("local_addr");
     let st = state.clone();
     let accept_task = tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    let st2 = st.clone();
-                    tokio::spawn(async move {
-                        let _ = handle_conn(stream, st2).await;
-                    });
-                }
-                Err(_) => break,
-            }
+        while let Ok((stream, _peer)) = listener.accept().await {
+            let st2 = st.clone();
+            tokio::spawn(async move {
+                let _ = handle_conn(stream, st2).await;
+            });
         }
     });
     TestServer {
@@ -397,11 +394,11 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     let mut chunk = body[slice_start..slice_end].to_vec();
 
     // 损坏注入：第 N 个 range GET 的字节被篡改
-    if let Some(corrupt_n) = st.corrupt_range_get_nth {
-        if n == corrupt_n {
-            for b in chunk.iter_mut() {
-                *b ^= 0xFF;
-            }
+    if let Some(corrupt_n) = st.corrupt_range_get_nth
+        && n == corrupt_n
+    {
+        for b in chunk.iter_mut() {
+            *b ^= 0xFF;
         }
     }
 
@@ -423,14 +420,14 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     write_all(&mut stream, h.as_bytes()).await?;
 
     // 断流注入：第 N 个 range GET 只写前 K 字节然后关闭
-    if let Some((drop_n, k)) = st.drop_range_get_nth {
-        if n == drop_n {
-            let k = k.min(chunk.len());
-            let _ = write_all(&mut stream, &chunk[..k]).await;
-            // 直接关闭，制造不完整传输
-            let _ = stream.shutdown().await;
-            return Ok(());
-        }
+    if let Some((drop_n, k)) = st.drop_range_get_nth
+        && n == drop_n
+    {
+        let k = k.min(chunk.len());
+        let _ = write_all(&mut stream, &chunk[..k]).await;
+        // 直接关闭，制造不完整传输
+        let _ = stream.shutdown().await;
+        return Ok(());
     }
 
     write_all(&mut stream, &chunk).await?;
@@ -445,11 +442,12 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     let _ = stream.shutdown().await;
 
     // body 切换注入：达到阈值后替换 body+etag（模拟下载中文件变化）
-    if let Some((after, ref new_body, ref new_etag)) = st.swap_after_range_gets {
-        if n >= after && st.swapped.swap(1, Ordering::SeqCst) == 0 {
-            *st.body.lock().await = new_body.clone();
-            *st.etag.lock().await = new_etag.clone();
-        }
+    if let Some((after, ref new_body, ref new_etag)) = st.swap_after_range_gets
+        && n >= after
+        && st.swapped.swap(1, Ordering::SeqCst) == 0
+    {
+        *st.body.lock().await = new_body.clone();
+        *st.etag.lock().await = new_etag.clone();
     }
 
     Ok(())
@@ -1144,6 +1142,7 @@ async fn run_full(
         checksum: checksum.to_string(),
         extra_headers: std::collections::HashMap::new(),
         spec: RequestSpec::empty_get(),
+        audio_url: None,
     };
 
     run_download(params).await;

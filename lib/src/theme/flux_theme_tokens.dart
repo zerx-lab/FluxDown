@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart' show Colors;
 import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
+
+import 'flux_metric_tokens.dart';
 
 // ═══════════════════════════════════════════════════════════
 //  FluxThemeScope — InheritedWidget 向下传递 Token
@@ -91,6 +94,9 @@ class FluxThemeTokens {
   // ── Segment Palette（分片调色板）──
   final List<Color> segmentPalette;
 
+  // ── Metric（Layer1：圆角/间距/透明度等非颜色设计变量）──
+  final FluxMetricTokens metric;
+
   const FluxThemeTokens({
     required this.name,
     this.author,
@@ -125,6 +131,7 @@ class FluxThemeTokens {
     required this.statusWarning,
     required this.statusError,
     this.segmentPalette = defaultSegmentPalette,
+    this.metric = FluxMetricTokens.standard,
   });
 
   // ── 默认分片调色板（自定义主题未提供 segmentPalette 时的占位值；
@@ -398,8 +405,6 @@ class FluxThemeTokens {
   static String _colorToHex(Color c) =>
       c.toARGB32().toRadixString(16).padLeft(8, '0');
 
-  static Color _hexToColor(String hex) => Color(int.parse(hex, radix: 16));
-
   Map<String, dynamic> toJson() => {
     'name': name,
     if (author != null) 'author': author,
@@ -454,64 +459,101 @@ class FluxThemeTokens {
       },
       'segmentPalette': segmentPalette.map(_colorToHex).toList(),
     },
+    'metrics': metric.toJson(),
+    'schemaVersion': 2,
   };
 
   factory FluxThemeTokens.fromJson(Map<String, dynamic> json) {
-    final colors = json['colors'] as Map<String, dynamic>;
-    final surface = colors['surface'] as Map<String, dynamic>;
-    final element = colors['element'] as Map<String, dynamic>;
-    final text = colors['text'] as Map<String, dynamic>;
-    final borderMap = colors['border'] as Map<String, dynamic>;
-    final accentMap = colors['accent'] as Map<String, dynamic>;
-    final input = colors['input'] as Map<String, dynamic>;
-    final dialog = colors['dialog'] as Map<String, dynamic>;
-    final switchMap = colors['switch'] as Map<String, dynamic>;
-    final status = colors['status'] as Map<String, dynamic>;
+    final appearance = json['appearance'] == 'dark'
+        ? Brightness.dark
+        : Brightness.light;
+    final base = _defaultsFor(appearance);
+    final colors = _mapOr(json['colors']);
+    final surface = _mapOr(colors['surface']);
+    final element = _mapOr(colors['element']);
+    final text = _mapOr(colors['text']);
+    final borderMap = _mapOr(colors['border']);
+    final accentMap = _mapOr(colors['accent']);
+    final input = _mapOr(colors['input']);
+    final dialog = _mapOr(colors['dialog']);
+    final switchMap = _mapOr(colors['switch']);
+    final status = _mapOr(colors['status']);
 
-    final paletteRaw = colors['segmentPalette'] as List<dynamic>?;
-    final palette =
-        paletteRaw
-            ?.map((e) => _hexToColor(e as String))
-            .toList(growable: false) ??
-        defaultSegmentPalette;
+    final paletteRaw = colors['segmentPalette'];
+    final List<Color> palette;
+    if (paletteRaw is List) {
+      final parsed = paletteRaw
+          .map(tryParseHexColor)
+          .whereType<Color>()
+          .toList(growable: false);
+      palette = parsed.isEmpty
+          ? defaultSegmentPalette
+          : (parsed.length > 32 ? parsed.sublist(0, 32) : parsed);
+    } else {
+      palette = defaultSegmentPalette;
+    }
 
     return FluxThemeTokens(
-      name: json['name'] as String,
-      author: json['author'] as String?,
-      appearance: json['appearance'] == 'dark'
-          ? Brightness.dark
-          : Brightness.light,
-      background: _hexToColor(surface['background'] as String),
-      surface1: _hexToColor(surface['surface1'] as String),
-      surface2: _hexToColor(surface['surface2'] as String),
-      surface3: _hexToColor(surface['surface3'] as String),
-      elementHover: _hexToColor(element['hover'] as String),
-      elementSelected: _hexToColor(element['selected'] as String),
-      elementActive: _hexToColor(element['active'] as String),
-      textPrimary: _hexToColor(text['primary'] as String),
-      textSecondary: _hexToColor(text['secondary'] as String),
-      textMuted: _hexToColor(text['muted'] as String),
-      textDisabled: _hexToColor(text['disabled'] as String),
-      border: _hexToColor(borderMap['default'] as String),
-      borderFocused: _hexToColor(borderMap['focused'] as String),
-      accent: _hexToColor(accentMap['color'] as String),
-      accentHover: _hexToColor(accentMap['hover'] as String),
-      accentBackground: _hexToColor(accentMap['background'] as String),
-      accentForeground: _hexToColor(accentMap['foreground'] as String),
-      inputBackground: _hexToColor(input['background'] as String),
-      inputBorder: _hexToColor(input['border'] as String),
-      inputFocusBorder: _hexToColor(input['focusBorder'] as String),
-      inputFocusBackground: _hexToColor(input['focusBackground'] as String),
-      dialogBackground: _hexToColor(dialog['background'] as String),
-      dialogBarrier: _hexToColor(dialog['barrier'] as String),
-      switchTrack: _hexToColor(switchMap['track'] as String),
-      switchThumb: _hexToColor(switchMap['thumb'] as String),
-      shadow: _hexToColor(colors['shadow'] as String),
-      statusSuccess: _hexToColor(status['success'] as String),
-      statusWarning: _hexToColor(status['warning'] as String),
-      statusError: _hexToColor(status['error'] as String),
+      name: json['name'] is String ? json['name'] as String : base.name,
+      author: json['author'] is String ? json['author'] as String : null,
+      appearance: appearance,
+      background: _hexOr(surface['background'], base.background),
+      surface1: _hexOr(surface['surface1'], base.surface1),
+      surface2: _hexOr(surface['surface2'], base.surface2),
+      surface3: _hexOr(surface['surface3'], base.surface3),
+      elementHover: _hexOr(element['hover'], base.elementHover),
+      elementSelected: _hexOr(element['selected'], base.elementSelected),
+      elementActive: _hexOr(element['active'], base.elementActive),
+      textPrimary: _hexOr(text['primary'], base.textPrimary),
+      textSecondary: _hexOr(text['secondary'], base.textSecondary),
+      textMuted: _hexOr(text['muted'], base.textMuted),
+      textDisabled: _hexOr(text['disabled'], base.textDisabled),
+      border: _hexOr(borderMap['default'], base.border),
+      borderFocused: _hexOr(borderMap['focused'], base.borderFocused),
+      accent: _hexOr(accentMap['color'], base.accent),
+      accentHover: _hexOr(accentMap['hover'], base.accentHover),
+      accentBackground: _hexOr(accentMap['background'], base.accentBackground),
+      accentForeground: _hexOr(accentMap['foreground'], base.accentForeground),
+      inputBackground: _hexOr(input['background'], base.inputBackground),
+      inputBorder: _hexOr(input['border'], base.inputBorder),
+      inputFocusBorder: _hexOr(input['focusBorder'], base.inputFocusBorder),
+      inputFocusBackground: _hexOr(
+        input['focusBackground'],
+        base.inputFocusBackground,
+      ),
+      dialogBackground: _hexOr(dialog['background'], base.dialogBackground),
+      dialogBarrier: _hexOr(dialog['barrier'], base.dialogBarrier),
+      switchTrack: _hexOr(switchMap['track'], base.switchTrack),
+      switchThumb: _hexOr(switchMap['thumb'], base.switchThumb),
+      shadow: _hexOr(colors['shadow'], base.shadow),
+      statusSuccess: _hexOr(status['success'], base.statusSuccess),
+      statusWarning: _hexOr(status['warning'], base.statusWarning),
+      statusError: _hexOr(status['error'], base.statusError),
       segmentPalette: palette,
+      metric: json['metrics'] is Map<String, dynamic>
+          ? FluxMetricTokens.fromJson(json['metrics'] as Map<String, dynamic>)
+          : const FluxMetricTokens(),
     );
+  }
+
+  static FluxThemeTokens _defaultsFor(Brightness b) =>
+      b == Brightness.dark ? defaultDark() : defaultLight();
+
+  static Map<String, dynamic> _mapOr(dynamic v) =>
+      v is Map<String, dynamic> ? v : const {};
+
+  static Color _hexOr(dynamic v, Color fallback) =>
+      v is String ? (tryParseHexColor(v) ?? fallback) : fallback;
+
+  /// 解析 6/8 位 hex 颜色（可带前导 `#`）；非法或非字符串返回 null。
+  static Color? tryParseHexColor(dynamic v) {
+    if (v is! String) return null;
+    var s = v.trim();
+    if (s.startsWith('#')) s = s.substring(1);
+    if (s.length == 6) s = 'ff$s';
+    if (s.length != 8) return null;
+    final n = int.tryParse(s, radix: 16);
+    return n == null ? null : Color(n);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -552,6 +594,7 @@ class FluxThemeTokens {
     Color? statusWarning,
     Color? statusError,
     List<Color>? segmentPalette,
+    FluxMetricTokens? metric,
   }) {
     return FluxThemeTokens(
       name: name ?? this.name,
@@ -587,18 +630,85 @@ class FluxThemeTokens {
       statusWarning: statusWarning ?? this.statusWarning,
       statusError: statusError ?? this.statusError,
       segmentPalette: segmentPalette ?? this.segmentPalette,
+      metric: metric ?? this.metric,
     );
   }
 
   @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is FluxThemeTokens &&
-          name == other.name &&
-          appearance == other.appearance &&
-          background == other.background &&
-          accent == other.accent;
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is FluxThemeTokens &&
+        name == other.name &&
+        author == other.author &&
+        appearance == other.appearance &&
+        background == other.background &&
+        surface1 == other.surface1 &&
+        surface2 == other.surface2 &&
+        surface3 == other.surface3 &&
+        elementHover == other.elementHover &&
+        elementSelected == other.elementSelected &&
+        elementActive == other.elementActive &&
+        textPrimary == other.textPrimary &&
+        textSecondary == other.textSecondary &&
+        textMuted == other.textMuted &&
+        textDisabled == other.textDisabled &&
+        border == other.border &&
+        borderFocused == other.borderFocused &&
+        accent == other.accent &&
+        accentHover == other.accentHover &&
+        accentBackground == other.accentBackground &&
+        accentForeground == other.accentForeground &&
+        inputBackground == other.inputBackground &&
+        inputBorder == other.inputBorder &&
+        inputFocusBorder == other.inputFocusBorder &&
+        inputFocusBackground == other.inputFocusBackground &&
+        dialogBackground == other.dialogBackground &&
+        dialogBarrier == other.dialogBarrier &&
+        switchTrack == other.switchTrack &&
+        switchThumb == other.switchThumb &&
+        shadow == other.shadow &&
+        statusSuccess == other.statusSuccess &&
+        statusWarning == other.statusWarning &&
+        statusError == other.statusError &&
+        metric == other.metric &&
+        listEquals(segmentPalette, other.segmentPalette);
+  }
 
   @override
-  int get hashCode => Object.hash(name, appearance, background, accent);
+  int get hashCode => Object.hashAll([
+    name,
+    author,
+    appearance,
+    background,
+    surface1,
+    surface2,
+    surface3,
+    elementHover,
+    elementSelected,
+    elementActive,
+    textPrimary,
+    textSecondary,
+    textMuted,
+    textDisabled,
+    border,
+    borderFocused,
+    accent,
+    accentHover,
+    accentBackground,
+    accentForeground,
+    inputBackground,
+    inputBorder,
+    inputFocusBorder,
+    inputFocusBackground,
+    dialogBackground,
+    dialogBarrier,
+    switchTrack,
+    switchThumb,
+    shadow,
+    statusSuccess,
+    statusWarning,
+    statusError,
+    metric,
+    Object.hashAll(segmentPalette),
+  ]);
 }

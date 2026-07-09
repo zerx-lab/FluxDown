@@ -290,6 +290,11 @@ export function FloatingNavbar({ className }: { className?: string }) {
         link: "/theme-builder",
         icon: icons.theme,
       },
+      {
+        name: t("nav.themeMarket"),
+        link: "/themes",
+        icon: icons.theme,
+      },
       { name: t("nav.changelog"), link: "/changelog", icon: icons.changelog },
       { name: t("nav.docs"), link: `/docs/${locale}/`, icon: icons.docs },
       { name: t("nav.faq"), link: "/faq", icon: icons.faq },

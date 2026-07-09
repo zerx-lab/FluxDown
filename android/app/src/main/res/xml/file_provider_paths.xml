@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内更新：Rust updater 将 APK 下载到 /data/data/<pkg>/cache，
+     经 FileProvider 以 content:// 暴露给系统安装器。 -->
+<paths>
+    <cache-path name="update" path="." />
+</paths>

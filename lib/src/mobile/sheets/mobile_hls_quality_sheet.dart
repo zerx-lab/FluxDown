@@ -4,6 +4,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../../bindings/bindings.dart';
 import '../../i18n/locale_provider.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_metrics.dart';
 import '../mobile_ui.dart';
 
 /// 移动端 HLS 画质选择底部弹层（Liquid Glass 风格）。
@@ -148,6 +149,7 @@ class _QualityRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final hasRes = option.width > 0 && option.height > 0;
     final resLabel = hasRes
         ? _formatResolution(option.width.toInt(), option.height.toInt())
@@ -163,13 +165,13 @@ class _QualityRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
           color: selected
-              ? c.accent.withValues(alpha: 0.10)
-              : c.surface1.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(14),
+              ? m.soft(c.accent)
+              : m.glassSubtle(c.surface1),
+          borderRadius: m.brChipXl,
           border: Border.all(
             color: selected
-                ? c.accent.withValues(alpha: 0.55)
-                : c.border.withValues(alpha: 0.7),
+                ? m.glassSubtle(c.accent)
+                : m.emphasis(c.border),
             width: selected ? 1.4 : 1,
           ),
         ),
@@ -206,8 +208,8 @@ class _QualityRow extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                 decoration: BoxDecoration(
-                  color: c.accent.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(6),
+                  color: m.mutedStrong(c.accent),
+                  borderRadius: m.brMd,
                 ),
                 child: Text(
                   'Best',

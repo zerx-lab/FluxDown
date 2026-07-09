@@ -12,6 +12,7 @@ import '../services/update_service.dart';
 import '../i18n/locale_provider.dart';
 import '../models/settings_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'category_edit_dialog.dart';
 import 'context_menu.dart';
 
@@ -121,9 +122,10 @@ class _SidebarState extends State<Sidebar> {
               listenable: AppIconService.instance,
               builder: (context, _) {
                 final svc = AppIconService.instance;
+                final m = AppMetrics.of(context);
                 if (svc.isBolt) {
                   return ClipRRect(
-                    borderRadius: BorderRadius.circular(5),
+                    borderRadius: m.brMd,
                     child: Image.asset(
                       AppIconService.builtinBoltAsset,
                       width: 22,
@@ -135,7 +137,7 @@ class _SidebarState extends State<Sidebar> {
                 final customPreview = svc.isCustom ? svc.previewPngPath : null;
                 if (customPreview != null) {
                   return ClipRRect(
-                    borderRadius: BorderRadius.circular(5),
+                    borderRadius: m.brMd,
                     child: Image(
                       key: ValueKey(svc.previewRevision),
                       image: FileImage(File(customPreview)),
@@ -157,7 +159,7 @@ class _SidebarState extends State<Sidebar> {
                   );
                 }
                 return ClipRRect(
-                  borderRadius: BorderRadius.circular(5),
+                  borderRadius: m.brMd,
                   child: Image.asset(
                     'assets/logo/fluxdown_logo.png',
                     width: 22,
@@ -684,6 +686,7 @@ class _NavItemState extends State<_NavItem> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final selected = widget.isSelected;
 
     return MouseRegion(
@@ -702,7 +705,7 @@ class _NavItemState extends State<_NavItem> {
                 : _isHovered
                 ? c.hoverBg
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
           ),
           child: Row(
             children: [
@@ -780,6 +783,7 @@ class _QueueAddButtonState extends State<_QueueAddButton> {
   @override
   Widget build(BuildContext context) {
     final c = widget.c;
+    final m = AppMetrics.of(context);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _isHovered = true),
@@ -792,7 +796,7 @@ class _QueueAddButtonState extends State<_QueueAddButton> {
           height: 16,
           decoration: BoxDecoration(
             color: _isHovered ? c.hoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(3),
+            borderRadius: m.brSm,
           ),
           child: Icon(LucideIcons.plus, size: 11, color: c.textMuted),
         ),
@@ -831,6 +835,7 @@ class _QueueNavItemState extends State<_QueueNavItem> {
   @override
   Widget build(BuildContext context) {
     final c = widget.c;
+    final m = AppMetrics.of(context);
     final selected = widget.isSelected;
 
     return MouseRegion(
@@ -850,7 +855,7 @@ class _QueueNavItemState extends State<_QueueNavItem> {
                 : _isHovered
                 ? c.hoverBg
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
           ),
           child: Row(
             children: [
@@ -948,6 +953,7 @@ class _QueueActionIconState extends State<_QueueActionIcon> {
   @override
   Widget build(BuildContext context) {
     final color = widget.isDestructive ? AppColors.red : widget.c.textSecondary;
+    final m = AppMetrics.of(context);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _isHovered = true),
@@ -960,9 +966,9 @@ class _QueueActionIconState extends State<_QueueActionIcon> {
           height: 18,
           decoration: BoxDecoration(
             color: _isHovered
-                ? color.withValues(alpha: 0.1)
+                ? m.soft(color)
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(3),
+            borderRadius: m.brSm,
           ),
           child: Icon(widget.icon, size: 11, color: color),
         ),
@@ -1470,6 +1476,7 @@ class _UpdateActionButtonState extends State<_UpdateActionButton> {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return ShadTooltip(
       builder: (_) => Text(widget.tooltip),
       child: MouseRegion(
@@ -1484,9 +1491,9 @@ class _UpdateActionButtonState extends State<_UpdateActionButton> {
             height: 22,
             decoration: BoxDecoration(
               color: _isHovered
-                  ? widget.color.withValues(alpha: 0.15)
+                  ? m.active(widget.color)
                   : Colors.transparent,
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: m.brSm,
             ),
             child: Icon(widget.icon, size: 13, color: widget.color),
           ),

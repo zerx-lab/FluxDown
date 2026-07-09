@@ -55,6 +55,11 @@ pub struct UrlEntry {
     /// Format: "algo=hexhash", e.g. "sha-256=abc123..." or "md5=d41d8c...".
     /// Empty = skip verification.
     pub checksum: String,
+    /// 音频轨 URL（通用「视频轨+音频轨」离散下载对语义）。
+    /// 空 = 普通单 URL 下载；非空 = url 视作视频轨，本字段视作音频轨，
+    /// 引擎分别下载两路后 mux 合并。
+    #[serde(default)]
+    pub audio_url: String,
 }
 
 /// Batch create multiple download tasks at once
@@ -175,6 +180,9 @@ pub struct ExternalDownloadRequest {
     pub file_size: i64,    // 0 = unknown
     pub mime_type: String, // empty = unknown
     pub cookies: String,   // browser cookies for authenticated downloads
+    /// 音频轨 URL（通用「视频轨+音频轨」离散下载对语义）。
+    /// 空 = 普通单 URL 下载；非空 = url 是视频轨，本字段是音频轨。
+    pub audio_url: String,
 }
 
 /// Dart → Rust: user confirmed the external download request.
@@ -207,6 +215,11 @@ pub struct ConfirmExternalDownload {
     /// Named queue ID. Empty = default queue.
     #[serde(default)]
     pub queue_id: String,
+    /// 音频轨 URL（通用「视频轨+音频轨」离散下载对语义）。
+    /// 空 = 普通单 URL 下载；非空 = url 是视频轨，本字段是音频轨，
+    /// create_task 尾参按此非空/空转换为 Some/None。
+    #[serde(default)]
+    pub audio_url: String,
 }
 
 // ========== Config signals ==========

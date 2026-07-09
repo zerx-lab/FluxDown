@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_custom_name TEXT NOT NULL DEFAULT '',
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
+    audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
@@ -138,6 +139,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_custom_name TEXT NOT NULL DEFAULT '',
     orig_etag TEXT NOT NULL DEFAULT '',
     orig_last_modified TEXT NOT NULL DEFAULT '',
+    audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
@@ -304,6 +306,8 @@ impl Db {
         self.add_column_if_missing("tasks", "orig_last_modified", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "file_missing", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing("tasks", "audio_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
         Ok(())
     }
@@ -802,6 +806,26 @@ impl Db {
             .filter_map(|s| s.trim().parse::<i32>().ok())
             .collect();
         Ok(Some(indices))
+    }
+
+    /// 持久化音频轨 URL（离散音视频轨对下载）。空串 = 普通单 URL 任务。
+    /// 与 `file_name`/`url` 独立，仅轨对任务写入，供重启恢复时重建轨对下载。
+    pub async fn save_audio_url(&self, id: &str, audio_url: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET audio_url = $1 WHERE id = $2")
+            .bind(audio_url)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 读取音频轨 URL。`None`/空串 = 非轨对任务。
+    pub async fn load_audio_url(&self, id: &str) -> Result<Option<String>, DbError> {
+        let value: Option<String> = sqlx::query_scalar("SELECT audio_url FROM tasks WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(value.filter(|v| !v.is_empty()))
     }
 
     /// Persist the user-specified BT custom name (rename target).
@@ -2396,5 +2420,54 @@ mod tests {
             .expect("task present in load_all");
         assert!(by_id.file_missing, "load_task_by_id must reflect the update");
         assert!(by_all.file_missing, "load_all_tasks must reflect the same update");
+    }
+
+    /// 新插入的普通任务默认没有音频轨：`audio_url` 列默认空串，
+    /// load_audio_url 必须归一化为 None，否则恢复逻辑会把单 URL 任务误当轨对任务处理。
+    #[tokio::test]
+    async fn load_audio_url_returns_none_for_plain_task_without_audio_track() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "plain1").await;
+
+        let audio_url = db.load_audio_url("plain1").await.expect("load audio_url");
+        assert_eq!(audio_url, None, "plain task must not be mistaken for a paired-track task");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// save_audio_url 写入非空 URL 后，load_audio_url 必须原样读回，
+    /// 这是重启恢复重建轨对下载所依赖的往返一致性。
+    #[tokio::test]
+    async fn save_audio_url_then_load_returns_same_value() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "pair1").await;
+
+        db.save_audio_url("pair1", "http://example.com/audio.m4a")
+            .await
+            .expect("save audio_url");
+        let audio_url = db.load_audio_url("pair1").await.expect("load audio_url");
+        assert_eq!(audio_url, Some("http://example.com/audio.m4a".to_string()));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 先写入非空音频轨、再写入空串：表达“取消轨对”，load 必须回到 None
+    /// 而不是残留成 Some("")——这是空串归一化分支的边界行为。
+    #[tokio::test]
+    async fn save_audio_url_with_empty_string_clears_back_to_none() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "pair2").await;
+
+        db.save_audio_url("pair2", "http://example.com/audio.m4a")
+            .await
+            .expect("save audio_url");
+        db.save_audio_url("pair2", "")
+            .await
+            .expect("clear audio_url");
+
+        let audio_url = db.load_audio_url("pair2").await.expect("load audio_url");
+        assert_eq!(audio_url, None, "clearing the audio track must fall back to the default state");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

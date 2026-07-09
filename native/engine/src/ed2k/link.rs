@@ -159,6 +159,7 @@ pub fn parse_ed2k_link(url: &str) -> Result<Ed2kLink, DownloadError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{is_ed2k_url, parse_ed2k_link};
 

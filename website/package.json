@@ -8,13 +8,13 @@
     "preview": "astro preview",
     "astro": "astro",
     "docs:hash": "node scripts/docs-hash.mjs",
-    "docs:lint": "node scripts/docs-lint.mjs"
+    "docs:lint": "node scripts/docs-lint.mjs",
+    "indexnow": "node scripts/indexnow-ping.mjs"
   },
   "dependencies": {
     "@astrojs/node": "^9.2.1",
     "@astrojs/react": "^4.4.2",
     "@astrojs/sitemap": "^3.7.0",
-    "@aws-sdk/client-s3": "^3.1014.0",
     "@icons-pack/react-simple-icons": "^13.11.2",
     "@octokit/graphql": "^9.0.3",
     "@primer/react": "^38.18.0",

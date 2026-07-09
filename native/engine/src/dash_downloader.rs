@@ -70,6 +70,8 @@ struct SegmentDownloadContext<'a> {
     task_id: &'a str,
     /// 浏览器扩展捕获的额外 HTTP 请求头
     extra_headers: &'a std::collections::HashMap<String, String>,
+    /// 浏览器扩展捕获的页面 Referer（B站等 CDN 强制要求，缺失即 403）
+    referrer: &'a str,
 }
 
 pub async fn run_dash_download(params: DownloadParams) {
@@ -249,6 +251,14 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
             segment_details: None,
         })
         .await;
+
+    // 离散音视频轨对旁路：调用方已直接给出视频轨(p.url)+音频轨(p.audio_url)两条
+    // 直链，无需（也无法）拉取 .mpd manifest 解析。直接把两条 URL 当单分段下载后 mux。
+    if let Some(audio_url) = p.audio_url.as_deref()
+        && !audio_url.is_empty()
+    {
+        return run_track_pair_inner(p, audio_url).await;
+    }
 
     let mpd = fetch_and_parse_mpd(&p.client, &p.url, &p.cookies, &p.extra_headers).await?;
     // 多 Period DASH 尚未完全支持，仅下载首个 Period；后续 Period 被静默忽略
@@ -449,6 +459,131 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
     //     （容器重打包后与 video+audio 之和不同）。
     //   • mux 失败 → 磁盘上是 video + 独立 audio 两个文件，dest_path 仅为 video，
     //     故以 video_bytes + audio_bytes 之和上报，避免漏算 audio。
+    let total = if mux_succeeded {
+        match tokio::fs::metadata(&dest_path).await {
+            Ok(meta) => meta.len() as i64,
+            Err(_) => video_bytes + audio_bytes,
+        }
+    } else {
+        video_bytes + audio_bytes
+    };
+    let _ = p.db.update_task_progress(&p.task_id, total).await;
+    Ok(total)
+}
+
+/// 离散音视频轨对下载旁路：`p.url` 为视频轨、`audio_url` 为音频轨，两条均为
+/// 可直接 GET 的完整轨道直链（如 DASH 分离的 m4s）。分别下载后用 ffmpeg mux
+/// 合并为单 mp4。与 MPD manifest 解析路径共用 `download_track` / `mux_audio_video`
+/// / `build_audio_path`，不依赖 `dash_mpd` 解析，因此对任何提供离散轨对的站点通用。
+async fn run_track_pair_inner(
+    p: &DownloadParams,
+    audio_url: &str,
+) -> Result<i64, DownloadError> {
+    log_info!(
+        "[dash-download] task {} track-pair mode: video={} audio={}",
+        p.task_id,
+        p.url,
+        audio_url
+    );
+
+    // 输出文件名：轨对合并产物统一为 .mp4（视频轨常见扩展名 .m4s 不适合最终容器）。
+    let auto_name = if p.file_name.is_empty() {
+        let url_name = extract_from_url(&p.url).unwrap_or_else(|| "download".to_string());
+        match url_name.rfind('.') {
+            Some(dot) => format!("{}.mp4", &url_name[..dot]),
+            None => format!("{}.mp4", url_name),
+        }
+    } else {
+        sanitize_filename(&p.file_name)
+    };
+
+    let save_dir = PathBuf::from(&p.save_dir);
+    let dest_path = save_dir.join(&auto_name);
+
+    p.db.update_task_file_info(&p.task_id, &auto_name, 0).await?;
+
+    if p.cancel_token.is_cancelled() {
+        return Err(DownloadError::Cancelled);
+    }
+
+    let _ = p.db.update_task_status(&p.task_id, 1, "").await;
+    let _ = p
+        .progress_tx
+        .send(ProgressUpdate {
+            task_id: p.task_id.clone(),
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            status: 1,
+            error_message: String::new(),
+            file_name: auto_name.clone(),
+            segment_details: None,
+        })
+        .await;
+
+    let mut progress_state = ProgressState {
+        downloaded_bytes: 0,
+        last_report: std::time::Instant::now(),
+        last_db_save: std::time::Instant::now(),
+    };
+
+    // 每条轨道即一个完整媒体流 → 单分段、无 init、无 range。
+    let video_seg = [DashSegment {
+        url: p.url.clone(),
+        range: None,
+    }];
+    let audio_seg = [DashSegment {
+        url: audio_url.to_string(),
+        range: None,
+    }];
+
+    let video_bytes = download_track(
+        p,
+        &p.url,
+        &None,
+        &video_seg,
+        &dest_path,
+        &mut progress_state,
+    )
+    .await?;
+
+    let audio_path = build_audio_path(&dest_path);
+    let audio_bytes = download_track(
+        p,
+        audio_url,
+        &None,
+        &audio_seg,
+        &audio_path,
+        &mut progress_state,
+    )
+    .await?;
+
+    // 合并两轨；ffmpeg 缺失/失败时保留双文件（与 manifest 路径一致的优雅降级）。
+    let mut mux_succeeded = true;
+    if audio_bytes > 0 {
+        let expected = (video_bytes + audio_bytes).max(0) as u64;
+        match mux_audio_video(&dest_path, &audio_path, expected, &p.cancel_token).await {
+            Ok(()) => {
+                log_info!(
+                    "[dash] task {} track-pair muxed successfully, cleaning up audio track",
+                    p.task_id
+                );
+                let _ = tokio::fs::remove_file(&audio_path).await;
+            }
+            Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
+            Err(e) => {
+                log_info!(
+                    "[dash] task {} warning: track-pair muxing failed ({}). \
+                     需要 ffmpeg 才能合并音视频；音频已保存为独立文件: {}。视频文件: {}",
+                    p.task_id,
+                    e,
+                    audio_path.display(),
+                    dest_path.display(),
+                );
+                mux_succeeded = false;
+            }
+        }
+    }
+
     let total = if mux_succeeded {
         match tokio::fs::metadata(&dest_path).await {
             Ok(meta) => meta.len() as i64,
@@ -1234,6 +1369,7 @@ async fn download_track_inner(
         cancel_token: &p.cancel_token,
         task_id: &p.task_id,
         extra_headers: &p.extra_headers,
+        referrer: &p.referrer,
     };
 
     let segment_iter = init_seg.iter().chain(media_segs.iter());
@@ -1381,6 +1517,11 @@ async fn download_segment_streaming(
     if !safe_cookies.is_empty() {
         req = req.header("Cookie", safe_cookies);
     }
+    // B站等 CDN 对 .m4s 分段强制要求 Referer（缺失即 403）。放在
+    // apply_extra_headers 之前：扩展捕获的真实请求头若含 referer 会覆盖此默认值。
+    if !ctx.referrer.is_empty() {
+        req = req.header(reqwest::header::REFERER, ctx.referrer);
+    }
     // 应用浏览器扩展捕获的额外请求头
     req = crate::downloader::apply_extra_headers(req, ctx.extra_headers);
 
@@ -1474,6 +1615,7 @@ async fn download_segment_streaming(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{build_from_template, is_dash_url, resolve_url_template};
 

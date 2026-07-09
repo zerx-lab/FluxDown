@@ -4,6 +4,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../services/update_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 /// Show the update changelog dialog with a timeline of new releases.
 void showUpdateChangelogDialog(
@@ -48,6 +49,7 @@ class _ChangelogDialogContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return ShadDialog(
       constraints: const BoxConstraints(maxWidth: 520),
@@ -57,8 +59,8 @@ class _ChangelogDialogContent extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: c.accent.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
+              color: m.soft(c.accent),
+              borderRadius: m.brMd,
             ),
             child: Icon(LucideIcons.sparkles, size: 14, color: c.accent),
           ),
@@ -71,7 +73,7 @@ class _ChangelogDialogContent extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
                 color: c.accentBg,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: m.brDialog,
               ),
               child: Text(
                 s.changelogVersionCount(releases.length),
@@ -154,6 +156,7 @@ class _ReleaseEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -197,7 +200,7 @@ class _ReleaseEntry extends StatelessWidget {
                     ),
                     decoration: BoxDecoration(
                       color: c.accentBg,
-                      borderRadius: BorderRadius.circular(4),
+                    borderRadius: m.brSm,
                     ),
                     child: Text(
                       release.tag,
@@ -400,10 +403,11 @@ class _InlineMarkdown extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    return Text.rich(TextSpan(children: _parse(text, c)), style: style);
+    final m = AppMetrics.of(context);
+    return Text.rich(TextSpan(children: _parse(text, c, m)), style: style);
   }
 
-  List<InlineSpan> _parse(String input, AppColors c) {
+  List<InlineSpan> _parse(String input, AppColors c, AppMetrics m) {
     final spans = <InlineSpan>[];
     // Pattern: **bold** or `code`
     final regex = RegExp(r'\*\*(.+?)\*\*|`([^`]+)`');
@@ -432,7 +436,7 @@ class _InlineMarkdown extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
               decoration: BoxDecoration(
                 color: c.surface3,
-                borderRadius: BorderRadius.circular(3),
+                borderRadius: m.brSm,
               ),
               child: Text(
                 match.group(2)!,

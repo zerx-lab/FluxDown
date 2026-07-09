@@ -26,6 +26,7 @@ import '../models/download_controller.dart';
 import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import '../services/bt_file_selection_service.dart';
 
 import 'bt_file_list_widget.dart';
@@ -647,6 +648,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     final meta = _torrentMeta[path];
     final selection = _torrentSelections[path];
     final isCurrentlyProbing = _isProbing && _probingPath == path;
+    final m = AppMetrics.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -711,10 +713,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: c.statusError.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(8),
+              color: m.subtle(c.statusError),
+              borderRadius: m.brCard,
               border: Border.all(
-                color: c.statusError.withValues(alpha: 0.3),
+                color: m.borderSubtle(c.statusError),
               ),
             ),
             child: Row(
@@ -986,6 +988,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                 url: e.url,
                 fileName: e.fileName,
                 checksum: e.checksum,
+                audioUrl: '',
               ),
             )
             .toList(),
@@ -1043,6 +1046,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return ShadDialog(
       title: Row(
@@ -1051,8 +1055,8 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: c.accent.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
+              color: m.soft(c.accent),
+              borderRadius: m.brMd,
             ),
             child: Icon(LucideIcons.download, size: 14, color: c.accent),
           ),
@@ -1184,7 +1188,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                     type: MaterialType.transparency,
                     child: TextSelectionTheme(
                       data: TextSelectionThemeData(
-                        selectionColor: c.accent.withValues(alpha: 0.25),
+                        selectionColor: m.textSelection(c.accent),
                         cursorColor: c.accent,
                         selectionHandleColor: c.accent,
                       ),
@@ -1220,15 +1224,15 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                           fillColor: c.inputBg,
                           hoverColor: Colors.transparent,
                           border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: m.brInput,
                             borderSide: BorderSide(color: c.inputBorder),
                           ),
                           enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: m.brInput,
                             borderSide: BorderSide(color: c.inputBorder),
                           ),
                           focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: m.brInput,
                             borderSide: BorderSide(color: c.inputFocusBorder),
                           ),
                         ),
@@ -1656,14 +1660,15 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   /// 构建磁力链接等待阶段的对话框主体
   Widget _buildBtWaitBody(S s, AppColors c) {
+    final m = AppMetrics.of(context);
     if (_btWaitPhase == 'error') {
       // 解析失败：错误提示
       return Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: c.statusError.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: c.statusError.withValues(alpha: 0.3)),
+          color: m.subtle(c.statusError),
+          borderRadius: m.brCard,
+          border: Border.all(color: m.borderSubtle(c.statusError)),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,

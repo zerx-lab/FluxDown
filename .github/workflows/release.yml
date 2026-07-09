@@ -1060,16 +1060,26 @@ jobs:
 
       # ── Build：按 ABI 拆分（arm64-v8a / armeabi-v7a / x86_64）+ 通用包 ──
       # split-per-abi 产出各硬件专属小体积包；universal 供未知 ABI/手动分发兜底。
+      # versionCode 由语义版本派生（major*1000000 + minor*10000 + patch*100），
+      # 保证覆盖安装（应用内更新）时 versionCode 单调递增。
+      - name: Derive Android versionCode
+        id: vercode
+        run: |
+          IFS=. read -r MAJ MIN PAT <<< "${{ steps.version.outputs.VERSION }}"
+          echo "CODE=$((MAJ * 1000000 + MIN * 10000 + PAT * 100))" >> "$GITHUB_OUTPUT"
+
       - name: Build split-per-ABI APKs
         run: |
           flutter build apk --release --split-per-abi \
-            --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 \
+            --build-name=${{ steps.version.outputs.VERSION }} \
+            --build-number=${{ steps.vercode.outputs.CODE }} \
             --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
       - name: Build universal APK
         run: |
           flutter build apk --release \
-            --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 \
+            --build-name=${{ steps.version.outputs.VERSION }} \
+            --build-number=${{ steps.vercode.outputs.CODE }} \
             --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
       # ── 收集并统一命名（Flutter 输出到 build/app/outputs/flutter-apk/）──

@@ -94,6 +94,12 @@ pub struct DownloadRequest {
     /// 浏览器原始请求体（仅在非 GET 时有意义）。
     #[serde(default)]
     pub body: Option<RequestBody>,
+    /// 音频轨 URL（可选，通用「视频轨+音频轨」离散下载对语义，按 MIME
+    /// video/* vs audio/* 分轨判定，非站点专用协议字段）。
+    /// 非空 = 这是一对轨道，引擎分别下载两路后用 ffmpeg mux 合并；
+    /// 空/缺省 = 普通单 URL 下载。
+    #[serde(rename = "audioUrl", default)]
+    pub audio_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -555,6 +555,7 @@ pub fn frame_with_proto(proto: u8, opcode: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         Ed2kMessage, OP_FOUNDSOURCES, OP_HASHSETANSWER, OP_IDCHANGE, OP_REQUESTPARTS,

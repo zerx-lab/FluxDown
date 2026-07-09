@@ -4,16 +4,10 @@ import { useQuery } from '@tanstack/react-query'
 import { Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { api } from '../../lib/api'
 import { CopyButton } from '../CopyButton'
-import { getToken } from '../../lib/auth'
 import type { ConfigMap } from '../../lib/types'
 import { connStore, useStore } from '../../lib/ws'
-import { SetRow, SetSwitch } from './controls'
-
-function maskToken(t: string): string {
-  if (!t) return '—'
-  if (t.length <= 8) return '•'.repeat(t.length)
-  return `${t.slice(0, 4)}${'•'.repeat(Math.max(4, t.length - 8))}${t.slice(-4)}`
-}
+import { alertDialog } from '../../lib/confirm'
+import { SetRow, SetSwitch, TextInput } from './controls'
 
 export function SecuritySettings({
   config,
@@ -22,24 +16,25 @@ export function SecuritySettings({
   config: ConfigMap
   mutate: (entries: ConfigMap) => void
 }) {
-  const token = getToken()
+  const token = config.local_server_token ?? ''
   const [showToken, setShowToken] = useState(false)
-  const [regenerating, setRegenerating] = useState(false)
   const takeover = (config.local_server_takeover_enabled ?? 'true') === 'true'
   const jsonrpc = (config.local_server_jsonrpc_enabled ?? 'true') === 'true'
   const conn = useStore(connStore)
   const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: api.stats, refetchInterval: 5000 })
 
-  async function regenerate() {
-    setRegenerating(true)
-    try {
-      const res = await api.regenerateToken()
-      window.alert(`新令牌：${res.token}\n${res.note || '重启服务器后生效'}`)
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : '重新生成失败')
-    } finally {
-      setRegenerating(false)
-    }
+  function saveToken(next: string) {
+    const v = next.trim()
+    if (v === token) return
+    mutate({ local_server_token: v })
+    void alertDialog({ message: '访问令牌已保存，重启服务器后生效' })
+  }
+
+  function randomToken() {
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+    saveToken(`fxd_${hex}`)
   }
 
   return (
@@ -47,14 +42,14 @@ export function SecuritySettings({
       <h2 className="set-title">安全与访问</h2>
       <p className="set-desc">对应 local_server_* 配置组 · 服务仅监听配置的地址</p>
       <div className="set-group">
-        <SetRow title="访问令牌" desc="Web / 管理 API 强制鉴权（Authorization: Bearer）">
+        <SetRow title="访问令牌" desc="Web / 管理 API 强制鉴权（Authorization: Bearer）· 可自定义，重启服务器后生效">
           <div className="token-box">
-            <span>{showToken ? token || '—' : maskToken(token)}</span>
+            <TextInput value={token} onCommit={saveToken} password={!showToken} placeholder="自定义或生成令牌" />
             <button type="button" title={showToken ? '隐藏令牌' : '显示令牌'} onClick={() => setShowToken((s) => !s)}>
               {showToken ? <EyeOff /> : <Eye />}
             </button>
             <CopyButton value={token} title="复制令牌" />
-            <button type="button" title="重新生成令牌" disabled={regenerating} onClick={regenerate}>
+            <button type="button" title="随机生成令牌" onClick={randomToken}>
               <RefreshCw />
             </button>
           </div>

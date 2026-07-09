@@ -14,6 +14,7 @@ import '../services/notification_service.dart';
 import '../services/power_service.dart';
 import '../services/shutdown_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import '../widgets/sidebar.dart';
 import '../widgets/header_bar.dart';
 import '../widgets/task_tab_bar.dart';
@@ -620,10 +621,11 @@ class _BoostBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+      color: m.muted(const Color(0xFFF59E0B)),
       child: Row(
         children: [
           const Icon(LucideIcons.zap, size: 14, color: Color(0xFFF59E0B)),
@@ -749,10 +751,11 @@ class _BatchDeleteOverlayState extends State<_BatchDeleteOverlay>
     if (!_visible) return const SizedBox.shrink();
     final s = LocaleScope.of(context);
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return Positioned.fill(
       child: AbsorbPointer(
         child: ColoredBox(
-          color: Colors.black.withValues(alpha: 0.45),
+          color: m.scrim(Colors.black),
           child: Center(
             child: AnimatedBuilder(
               animation: _anim,
@@ -791,15 +794,16 @@ class _BatchDeleteProgressCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Container(
       width: 320,
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       decoration: BoxDecoration(
         color: c.surface1,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: m.brChipLg,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.25),
+            color: m.shadowStrong(Colors.black),
             blurRadius: 20,
             offset: const Offset(0, 8),
           ),
@@ -819,7 +823,7 @@ class _BatchDeleteProgressCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ClipRRect(
-            borderRadius: BorderRadius.circular(4),
+          borderRadius: m.brSm,
             child: LinearProgressIndicator(
               value: animatedProgress,
               backgroundColor: c.surface3,

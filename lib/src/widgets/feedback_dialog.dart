@@ -16,6 +16,7 @@ import '../i18n/locale_provider.dart';
 import '../services/feedback_service.dart';
 import '../services/log_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 /// 在底部状态栏点击反馈按钮时调用此方法打开反馈对话框。
 void showFeedbackDialog(BuildContext context) {
@@ -102,6 +103,7 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
 
     return ShadDialog(
@@ -112,8 +114,8 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: c.accent.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
+              color: m.soft(c.accent),
+              borderRadius: m.brMd,
             ),
             child: Icon(
               LucideIcons.messageSquarePlus,
@@ -260,6 +262,7 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
               maxLength: 200,
               maxLines: 1,
               c: c,
+              m: m,
             ),
             const SizedBox(height: 14),
 
@@ -281,6 +284,7 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
               maxLength: 5000,
               maxLines: 5,
               c: c,
+              m: m,
             ),
             const SizedBox(height: 14),
 
@@ -301,6 +305,7 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
               placeholder: s.feedbackContactPlaceholder,
               maxLines: 1,
               c: c,
+              m: m,
             ),
             const SizedBox(height: 4),
             Text(
@@ -352,6 +357,7 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
     required String placeholder,
     required int maxLines,
     required AppColors c,
+    required AppMetrics m,
     int? maxLength,
   }) {
     return Localizations(
@@ -365,7 +371,7 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
         child: TextSelectionTheme(
           data: TextSelectionThemeData(
             cursorColor: c.accent,
-            selectionColor: c.accent.withValues(alpha: 0.3),
+            selectionColor: m.textSelection(c.accent),
             selectionHandleColor: c.accent,
           ),
           child: TextField(
@@ -388,15 +394,15 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
               filled: true,
               fillColor: c.inputBg,
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: m.brInput,
                 borderSide: BorderSide(color: c.inputBorder),
               ),
               enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: m.brInput,
                 borderSide: BorderSide(color: c.inputBorder),
               ),
               focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: m.brInput,
                 borderSide: BorderSide(color: c.inputFocusBorder, width: 1.5),
               ),
             ),
@@ -461,15 +467,16 @@ class _TypeChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? color.withValues(alpha: 0.12) : c.surface2,
-          borderRadius: BorderRadius.circular(8),
+          color: selected ? m.muted(color) : c.surface2,
+          borderRadius: m.brCard,
           border: Border.all(
-            color: selected ? color.withValues(alpha: 0.4) : c.border,
+            color: selected ? m.borderFaint(color) : c.border,
           ),
         ),
         child: Row(

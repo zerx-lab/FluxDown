@@ -184,6 +184,7 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                     Vec::new(),
                     None,
                     None,
+                    None,
                 )
                 .await;
             // 立即广播 tasksSnapshot，确保客户端在首个 taskProgress 之前

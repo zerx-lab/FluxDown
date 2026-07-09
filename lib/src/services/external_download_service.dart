@@ -80,6 +80,47 @@ class ExternalDownloadService {
       'received request: url=${req.url}, filename=${req.filename}, size=${req.fileSize}',
     );
 
+    // 音视频轨对（浏览器扩展嗅探到离散 video/audio 轨，通用语义，非站点
+    // 特判）：browser 侧已完成清晰度确认。免打扰开启时宿主直接建任务
+    // （不拆分为多任务，audioUrl 原样传 Rust 走离散轨道下载 + mux 旁路）；
+    // 免打扰关闭时落入下方弹窗路径，让用户在 FluxDown 内二次确认（audioUrl
+    // 经弹窗/小窗独立通道透传，不进 URL 文本、不被换行拆分）。
+    final trackPairSilent =
+        (SettingsProvider.globalInstance ?? settingsProvider)
+            .silentDownloadEnabled;
+    if (req.audioUrl.isNotEmpty && trackPairSilent) {
+      final trackSettings = SettingsProvider.globalInstance ?? settingsProvider;
+      final requestedDir = req.saveDir.trim();
+      final matchedDir = trackSettings.resolveCategorySaveDir(
+        req.filename,
+        url: req.url,
+      );
+      final saveDir = requestedDir.isNotEmpty
+          ? requestedDir
+          : (matchedDir.isNotEmpty
+                ? matchedDir
+                : trackSettings.effectiveDefaultSaveDir);
+      logInfo(
+        _tag,
+        'track-pair request, creating task directly: '
+        'url=${req.url}, audioUrl=${req.audioUrl}, saveDir=$saveDir',
+      );
+      ConfirmExternalDownload(
+        url: req.url,
+        saveDir: saveDir,
+        fileName: req.filename,
+        segments: trackSettings.defaultSegments,
+        cookies: req.cookies,
+        referrer: req.referrer,
+        hintFileSize: req.fileSize,
+        proxyUrl: '',
+        userAgent: '',
+        queueId: trackSettings.defaultQueueId,
+        audioUrl: req.audioUrl,
+      ).sendSignalToRust();
+      return;
+    }
+
     // 免打扰下载：不弹确认框、不抢前台，直接按默认设置创建任务。
     // 优先 globalInstance（始终反映用户最新设置），fallback 到启动时实例。
     final silentSettings = SettingsProvider.globalInstance ?? settingsProvider;
@@ -90,7 +131,10 @@ class ExternalDownloadService {
       final entries = parseQuickDownloadEntries(req.url);
       // 请求方显式指定的目录（aria2 dir / 接管 saveDir）优先于分类匹配。
       final requestedDir = req.saveDir.trim();
-      final matchedDir = silentSettings.resolveCategorySaveDir(req.filename);
+      final matchedDir = silentSettings.resolveCategorySaveDir(
+        req.filename,
+        url: req.url,
+      );
       final saveDir = requestedDir.isNotEmpty
           ? requestedDir
           : (matchedDir.isNotEmpty
@@ -117,6 +161,7 @@ class ExternalDownloadService {
             proxyUrl: '',
             userAgent: '',
             queueId: queueId,
+            audioUrl: entry.audioUrl,
           ).sendSignalToRust();
         } else {
           BatchCreateTask(
@@ -126,6 +171,7 @@ class ExternalDownloadService {
                     url: e.url,
                     fileName: e.fileName,
                     checksum: e.checksum,
+                    audioUrl: e.audioUrl,
                   ),
                 )
                 .toList(),
@@ -153,7 +199,10 @@ class ExternalDownloadService {
     if (!_dialogOpen) {
       final popupSettings = SettingsProvider.globalInstance ?? settingsProvider;
       final requestedDir = req.saveDir.trim();
-      final matchedDir = popupSettings.resolveCategorySaveDir(req.filename);
+      final matchedDir = popupSettings.resolveCategorySaveDir(
+        req.filename,
+        url: req.url,
+      );
       final resolvedDir = requestedDir.isNotEmpty
           ? requestedDir
           : (matchedDir.isNotEmpty
@@ -229,6 +278,7 @@ class ExternalDownloadService {
             : effectiveSettings.effectiveDefaultSaveDir,
         defaultQueueId: effectiveSettings.defaultQueueId,
         saveDirFromRequest: requestedDir.isNotEmpty,
+        audioUrl: req.audioUrl,
       );
       logInfo(_tag, 'dialog shown');
     } catch (e, stack) {

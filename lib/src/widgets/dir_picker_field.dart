@@ -3,6 +3,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 /// 目录选择器一体化控件。
 ///
@@ -25,6 +26,7 @@ class DirPickerField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     final hasPath = path.isNotEmpty;
     final displayText = hasPath ? path : (placeholder ?? s.selectSaveDir);
@@ -37,7 +39,7 @@ class DirPickerField extends StatelessWidget {
           height: 36,
           decoration: BoxDecoration(
             color: c.surface1,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
             border: Border.all(color: c.border, width: 1),
           ),
           child: Row(
@@ -70,7 +72,7 @@ class DirPickerField extends StatelessWidget {
                       size: 14,
                       color: enabled
                           ? c.textSecondary
-                          : c.textMuted.withValues(alpha: 0.5),
+                          : m.disabled(c.textMuted),
                     ),
                     const SizedBox(width: 5),
                     Text(
@@ -79,7 +81,7 @@ class DirPickerField extends StatelessWidget {
                         fontSize: 12.5,
                         color: enabled
                             ? c.textSecondary
-                            : c.textMuted.withValues(alpha: 0.5),
+                            : m.disabled(c.textMuted),
                       ),
                     ),
                   ],

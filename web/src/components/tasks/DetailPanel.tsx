@@ -9,6 +9,7 @@ import { CopyButton } from '../CopyButton'
 import { cn } from '../../lib/cn'
 import { fmtBytes, fmtEta, fmtSpeed, fmtTime, protoLabel } from '../../lib/format'
 import { segmentStore, splitStore, useStore } from '../../lib/ws'
+import { confirmDialog } from '../../lib/confirm'
 import type { QueueDto, SegmentDetail } from '../../lib/types'
 import { eventLogStore } from './eventLog'
 import { useTasksUi, type DetailTab } from './context'
@@ -173,8 +174,8 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
         <button
           type="button"
           className="btn danger sm"
-          onClick={() => {
-            if (window.confirm('删除该任务？')) deleteMut.mutate(false)
+          onClick={async () => {
+            if (await confirmDialog({ title: '删除任务', message: '删除该任务？', danger: true })) deleteMut.mutate(false)
           }}
         >
           <Trash2 size={15} />

@@ -6,6 +6,7 @@ import '../models/download_task.dart';
 import '../models/settings_provider.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import '../services/shutdown_service.dart';
 import 'feedback_dialog.dart';
 
@@ -425,6 +426,7 @@ class _SpeedLimitPopoverContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return SizedBox(
       width: 220,
       child: Column(
@@ -476,7 +478,7 @@ class _SpeedLimitPopoverContent extends StatelessWidget {
                       ),
                       decoration: BoxDecoration(
                         color: isSelected ? c.accent : c.surface2,
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius: m.brSm,
                         border: Border.all(
                           color: isSelected ? c.accent : c.border,
                           width: 0.5,
@@ -653,6 +655,7 @@ class _ShutdownPopoverContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = ShutdownService.instance;
     final canInteract = svc.canArm || svc.isArmed;
+    final m = AppMetrics.of(context);
 
     return SizedBox(
       width: 240,
@@ -758,7 +761,7 @@ class _ShutdownPopoverContent extends StatelessWidget {
                       ),
                       decoration: BoxDecoration(
                         color: isSelected ? c.accent : c.surface2,
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius: m.brSm,
                         border: Border.all(
                           color: isSelected ? c.accent : c.border,
                           width: 0.5,

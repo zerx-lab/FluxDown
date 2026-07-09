@@ -10,14 +10,33 @@
  *  右侧停靠 = left: calc(100% - Npx)
  */
 
-import type { DetectedResource, ResourceType, ConfidenceLevel } from '@/utils/resource-types';
-import { formatFileSize, getResourceTypeIcon } from '@/utils/resource-types';
+import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
+import { formatFileSize, getResourceTypeIcon, groupTrackPairs } from '@/utils/resource-types';
+import type { DashManifest } from '@/utils/dash-manifest';
+import { detectTrackKind } from '@/utils/track-detector';
 import type { MessageKey } from '@/utils/locales/zh-CN';
 import { initI18n, setLocale, t } from '@/utils/i18n';
 import './style.css';
 
 /* ===== 常量 ===== */
 interface TabDef { key: 'all' | ResourceType; i18nKey: MessageKey }
+
+/**
+ * 选轨小窗展示用的清晰度选项（UI 视图模型，脱离 DetectedResource 的必填字段约束，
+ * 因为权威 manifest 轨道来自解析而非嗅探，没有 confidence/tabId 等资源存储专属字段）。
+ */
+interface QualityOption {
+  quality: string;
+  videoUrl: string;
+  audioUrl?: string;
+  /** 预格式化的大小/码率文本；真实大小用 formatFileSize，未知大小时显示码率，绝不伪造 */
+  sizeLabel: string;
+  /** 轨道构成标注，如 "视频轨" / "视频轨 + 音频轨" */
+  kindLabel: string;
+  filename: string;
+  mimeType?: string;
+  fileSize?: number;
+}
 const TABS: TabDef[] = [
   { key: 'all', i18nKey: 'panel.tabAll' },
   { key: 'video', i18nKey: 'panel.tabVideo' },
@@ -35,9 +54,12 @@ const SVG_CLOSE = '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="
 const SVG_LOGO = '<path d="M12 3v11M8 10l4 4 4-4"/><path d="M5 17h14"/>';
 const SVG_EMPTY = '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/>';
 const SVG_EYE_OFF = '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>';
+const SVG_PREVIEW = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/>';
 
 const STORAGE_KEY = 'fluxdown_dot_pos';
 const DOT_VISIBLE_KEY = 'fluxdown_dot_visible';
+/** popup 主题存储键（与 popup/main.ts 共用），值：'light' | 'dark' | 'system'。 */
+const THEME_KEY = 'theme';
 
 function svg(inner: string, cls = ''): string {
   return `<svg viewBox="0 0 24 24"${cls ? ` class="${cls}"` : ''} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
@@ -57,6 +79,12 @@ export default defineContentScript({
     let resources: DetectedResource[] = [];
     let activeTab: string = 'all';
     const selectedIds = new Set<string>();
+    /** 曾预览失败（video/img/audio error）的资源 id：仅做视觉标记，不自动隐藏
+     * ——预览失败常见于 CORS，下载走引擎带 cookie/headers 仍可能成功，
+     * 对标 cat-catch：默认全显示，用户手动点「清理」才过滤。 */
+    const previewFailedIds = new Set<string>();
+    /** 用户手动「清理预览失败项」后从展示中排除的资源 id（纯前端视图过滤，不动 store）。 */
+    const dismissedIds = new Set<string>();
     let panelOpen = false;
     let side: 'left' | 'right' = 'right';
 
@@ -70,8 +98,16 @@ export default defineContentScript({
     let selectAllEl: HTMLInputElement;
     let batchCountEl: HTMLElement;
     let batchBtnEl: HTMLButtonElement;
+    let clearFailedBtnEl: HTMLButtonElement;
     let selectAllText: Text;
     let floatBtnEl: HTMLElement;
+    let qualityPickerEl: HTMLElement;
+    let pendingQualityOptions: QualityOption[] = [];
+    let previewModalEl: HTMLElement;
+    /** 页面拦到的权威 DASH manifest（video[]/audio[] 轨道 + 真实清晰度）；未嗅探到时为 null。 */
+    let dashManifest: DashManifest | null = null;
+    /** shadow 内根容器，主题以 data-theme 属性挂在其上，供 CSS light/dark 变量切换。 */
+    let rootContainer: HTMLElement | null = null;
 
     /* ========== Shadow UI ========== */
     const ui = await createShadowRootUi(ctx, {
@@ -79,10 +115,14 @@ export default defineContentScript({
       position: 'overlay',
       anchor: 'body',
       onMount(container) {
+        rootContainer = container;
         buildDot(container);
         buildPanel(container);
         buildFloatButton(container);
+        buildQualityPicker(container);
+        buildPreviewModal(container);
         restoreDotPosition();
+        applyThemeFromStorage();
       },
     });
     ui.mount();
@@ -95,6 +135,9 @@ export default defineContentScript({
       }
       if (msg.action === 'toggleResourcePanel') {
         togglePanel();
+      }
+      if (msg.action === 'dashManifestUpdated' && msg.manifest) {
+        dashManifest = msg.manifest;
       }
     });
 
@@ -112,6 +155,10 @@ export default defineContentScript({
       if (DOT_VISIBLE_KEY in changes) {
         applyDotVisibility(changes[DOT_VISIBLE_KEY].newValue !== false);
       }
+      // 主题跟随 popup 切换：popup 改 storage.local.theme，此处同步到 shadow root。
+      if (THEME_KEY in changes) {
+        applyTheme(changes[THEME_KEY].newValue);
+      }
     });
 
     try {
@@ -120,21 +167,42 @@ export default defineContentScript({
         resources = resp.resources;
         render();
       }
+      if (resp?.dashManifest) {
+        dashManifest = resp.dashManifest;
+      }
     } catch { /* */ }
+
+    /* ========== 预览弹层：Esc 关闭 ========== */
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && previewModalEl?.classList.contains('visible')) {
+        closePreview();
+      }
+    });
 
     /* ========== 视频 hover ========== */
     let floatTimer: ReturnType<typeof setTimeout> | null = null;
     let hoverVideo: HTMLVideoElement | null = null;
 
+    // 从事件路径中查找 video 元素：B站/迅雷等播放器在 video 上覆盖弹幕/控件层，
+    // e.target 往往是覆盖层而非 video 本身，composedPath 可穿透覆盖层与 shadow DOM。
+    function videoInPath(e: Event): HTMLVideoElement | null {
+      const path = e.composedPath ? e.composedPath() : [];
+      for (const node of path) {
+        if (node instanceof HTMLVideoElement) return node;
+      }
+      return e.target instanceof HTMLVideoElement ? e.target : null;
+    }
+
     document.addEventListener('mouseover', (e) => {
-      if (!(e.target instanceof HTMLVideoElement)) return;
-      hoverVideo = e.target;
+      const video = videoInPath(e);
+      if (!video) return;
+      hoverVideo = video;
       if (floatTimer) { clearTimeout(floatTimer); floatTimer = null; }
-      showFloat(e.target);
+      showFloat(video);
     }, true);
 
     document.addEventListener('mouseout', (e) => {
-      if (!(e.target instanceof HTMLVideoElement)) return;
+      if (!videoInPath(e)) return;
       floatTimer = setTimeout(hideFloat, 400);
     }, true);
 
@@ -339,7 +407,19 @@ export default defineContentScript({
         updateSelectAll();
       });
 
+      clearFailedBtnEl = document.createElement('button');
+      clearFailedBtnEl.className = 'clear-failed-btn';
+      clearFailedBtnEl.textContent = t('panel.clearFailed');
+      clearFailedBtnEl.title = t('panel.clearFailedHint');
+      clearFailedBtnEl.style.display = 'none';
+      clearFailedBtnEl.addEventListener('click', () => {
+        for (const id of previewFailedIds) dismissedIds.add(id);
+        previewFailedIds.clear();
+        render();
+      });
+
       footer.appendChild(label);
+      footer.appendChild(clearFailedBtnEl);
       footer.appendChild(batchBtnEl);
 
       panelEl.appendChild(header);
@@ -361,10 +441,44 @@ export default defineContentScript({
       floatBtnEl.addEventListener('click', () => {
         if (!hoverVideo) return;
         const src = hoverVideo.currentSrc || hoverVideo.src;
-        if (src && !src.startsWith('blob:') && !src.startsWith('data:')) {
+        const isBlob = !src || src.startsWith('blob:') || src.startsWith('data:');
+
+        // 直链视频 → 直接下载。
+        if (!isBlob && src) {
           browser.runtime.sendMessage({
             action: 'downloadResource', url: src, referrer: location.href,
           }).catch(() => {});
+          hideFloat();
+          return;
+        }
+
+        // blob/MSE 视频（B站/迅雷等）无直链 → 优先用页面拦到的权威 DASH manifest
+        // 构造真清晰度档（height/bandwidth 来自 manifest，可信）；manifest 缺失时
+        // 回退到嗅探碎片的 groupTrackPairs（分片无法可靠区分清晰度，仅保底）。
+        // 存在音视频轨对或多档清晰度 → 弹出清晰度选择小窗；只有一条无音频的单轨
+        // → 直接下载；两者都拿不到（未嗅探到媒体）→ 回退打开资源面板。
+        const media = mediaResources();
+        const options =
+          dashManifest && dashManifest.video.length > 0
+            ? qualityOptionsFromManifest(dashManifest)
+            : qualityOptionsFromTrackGroups(groupTrackPairs(media));
+        const needsPicker =
+          options.length > 1 || options.some((o) => o.audioUrl);
+        if (needsPicker) {
+          const rect = floatBtnEl.getBoundingClientRect();
+          hideFloat();
+          showQualityPicker(options, rect);
+          return;
+        }
+        if (options.length === 1) {
+          downloadQualityOption(options[0]);
+          hideFloat();
+          return;
+        }
+        if (media.length > 0) {
+          activeTab = media.some((r) => r.type === 'video') ? 'video' : 'all';
+          if (!panelOpen) togglePanel();
+          else render();
         }
         hideFloat();
       });
@@ -485,6 +599,11 @@ export default defineContentScript({
       renderTabs();
       renderList();
       updateBatch();
+      if (clearFailedBtnEl) {
+        // 仅当存在「已标记预览失败且尚未清理」的项时才显示清理按钮。
+        const hasFailed = [...previewFailedIds].some((id) => !dismissedIds.has(id));
+        clearFailedBtnEl.style.display = hasFailed ? '' : 'none';
+      }
     }
 
     function renderBadge(): void {
@@ -563,11 +682,27 @@ export default defineContentScript({
       }
     }
 
+    /**
+     * m4s/分片等 stream 类资源的轨道标注。
+     * 判定委托给通用识别器 `detectTrackKind`（MIME → URL 线索 → 站点规则兜底），
+     * 此处只负责映射为展示用的文案 + CSS class。
+     */
+    function trackKindLabel(r: DetectedResource): { text: string; cls: string } | null {
+      if (r.type !== 'stream') return null;
+      const kind = detectTrackKind({ url: r.url, filename: r.filename, mimeType: r.mimeType, pageUrl: r.pageUrl });
+      if (kind === 'video') return { text: t('panel.trackVideo'), cls: 'video' };
+      if (kind === 'audio') return { text: t('panel.trackAudio'), cls: 'audio' };
+      return null;
+    }
+
     function buildResourceRow(r: DetectedResource): HTMLElement {
-      const row = h('div', `resource-row conf-${r.confidence}`);
+      const failed = previewFailedIds.has(r.id);
+      const row = h('div', `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}`);
       const icon = getResourceTypeIcon(r.type);
       const sizeStr = r.size > 0 ? formatFileSize(r.size) : '';
       const quality = r.quality ? `<span class="quality-tag">${r.quality}</span>` : '';
+      const track = trackKindLabel(r);
+      const trackTag = track ? `<span class="track-tag ${track.cls}">${esc(track.text)}</span>` : '';
       const name = r.filename || tryDecodeUrl(r.url) || r.url;
       const confBadge = r.confidence === 'high'
         ? '<span class="conf-badge high">★</span>'
@@ -579,11 +714,14 @@ export default defineContentScript({
         <div class="info">
           <div class="filename" title="${esc(r.url)}">${confBadge}${esc(name)}</div>
           <div class="meta">
+            ${trackTag}
             ${quality}
             ${sizeStr ? `<span class="size">${sizeStr}</span>` : ''}
             ${r.mimeType ? `<span>${esc(r.mimeType)}</span>` : ''}
+            ${failed ? `<span class="preview-limited" title="${t('panel.previewLimitedHint')}">${t('panel.previewLimited')}</span>` : ''}
           </div>
         </div>
+        ${isPreviewable(r) ? `<button class="preview-btn" title="${t('panel.previewTitle')}">${svg(SVG_PREVIEW)}</button>` : ''}
         <button class="dl-btn" title="${t('panel.download')}">${svg(SVG_DOWNLOAD)}</button>
       `;
 
@@ -592,6 +730,12 @@ export default defineContentScript({
         if (cb.checked) selectedIds.add(r.id); else selectedIds.delete(r.id);
         updateBatch();
         updateSelectAll();
+      });
+
+      const previewBtnEl = row.querySelector('.preview-btn') as HTMLButtonElement | null;
+      previewBtnEl?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPreview(r);
       });
 
       const dl = row.querySelector('.dl-btn') as HTMLButtonElement;
@@ -630,23 +774,39 @@ export default defineContentScript({
     }
 
     function filtered(): DetectedResource[] {
-      return activeTab === 'all' ? resources : resources.filter((r) => r.type === activeTab);
+      const base =
+        activeTab === 'all' ? resources : resources.filter((r) => r.type === activeTab);
+      return dismissedIds.size > 0 ? base.filter((r) => !dismissedIds.has(r.id)) : base;
     }
 
     /* ================================================================
      *  视频浮动按钮
      * ================================================================ */
 
+    /** 该 tab 已嗅探到的媒体类资源（video/audio/stream），供浮标关联 blob/MSE 视频。 */
+    function mediaResources(): DetectedResource[] {
+      return resources.filter(
+        (r) => r.type === 'video' || r.type === 'audio' || r.type === 'stream',
+      );
+    }
+
     function showFloat(video: HTMLVideoElement): void {
       if (!floatBtnEl) return;
-      const src = video.currentSrc || video.src;
-      if (!src || src.startsWith('blob:') || src.startsWith('data:')) return;
       const rect = video.getBoundingClientRect();
       if (rect.width < 120 || rect.height < 80) return;
+
+      const src = video.currentSrc || video.src;
+      const isBlob = !src || src.startsWith('blob:') || src.startsWith('data:');
+      const media = mediaResources();
+
+      // 直链视频 → 可直接下载；blob/MSE 视频 → 依赖嗅探到的媒体资源。
+      // 两者皆无 → 无可下载源，不显示浮标。
+      if (isBlob && media.length === 0) return;
 
       floatBtnEl.style.top = `${rect.top + 8}px`;
       floatBtnEl.style.left = `${rect.right - 110}px`;
 
+      // 分辨率标签优先取播放器实际高度；取不到时回退到嗅探资源数量提示。
       const height = video.videoHeight;
       let label = t('panel.floatDL');
       if (height >= 2160) label = '4K';
@@ -654,6 +814,7 @@ export default defineContentScript({
       else if (height >= 720) label = '720p';
       else if (height >= 480) label = '480p';
       else if (height > 0) label = `${height}p`;
+      else if (isBlob && media.length > 0) label = String(media.length);
 
       const lbl = floatBtnEl.querySelector('.label');
       if (lbl) lbl.textContent = label;
@@ -666,8 +827,273 @@ export default defineContentScript({
     }
 
     /* ================================================================
+     *  清晰度选择小窗（离散音视频轨对下载）
+     * ================================================================ */
+
+    function shortCodec(codecs?: string): string {
+      return codecs ? codecs.split('.')[0] : '';
+    }
+
+    /** 由权威 DASH manifest 构造清晰度选项：真清晰度（height/bandwidth），配对码率最高的音频轨。 */
+    function qualityOptionsFromManifest(manifest: DashManifest): QualityOption[] {
+      const bestAudio = manifest.audio.length > 0
+        ? manifest.audio.reduce((best, cur) => ((cur.bandwidth ?? 0) > (best.bandwidth ?? 0) ? cur : best))
+        : undefined;
+      const kindLabel = bestAudio
+        ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
+        : t('panel.trackVideo');
+
+      return manifest.video.map((v) => {
+        let quality: string;
+        if (v.height) quality = `${v.height}P`;
+        else if (v.bandwidth) quality = `${Math.round(v.bandwidth / 1000)}kbps`;
+        else quality = t('panel.qualityUnknown');
+        const codec = shortCodec(v.codecs);
+
+        return {
+          quality: codec ? `${quality} · ${codec}` : quality,
+          videoUrl: v.url,
+          audioUrl: bestAudio?.url,
+          // manifest 不含时长信息，无法估出真实文件大小，诚实显示码率而非伪造大小。
+          sizeLabel: v.bandwidth ? `${Math.round(v.bandwidth / 1000)} kbps` : '',
+          kindLabel,
+          filename: tryDecodeUrl(v.url) || 'video.mp4',
+          mimeType: v.mimeType,
+          fileSize: undefined,
+        };
+      });
+    }
+
+    /** 由嗅探碎片的 groupTrackPairs 结果构造清晰度选项（manifest 缺失时的保底，清晰度可能不准）。 */
+    function qualityOptionsFromTrackGroups(groups: TrackPairGroup[]): QualityOption[] {
+      return groups.map((g) => ({
+        quality: g.quality,
+        videoUrl: g.videoUrl,
+        audioUrl: g.audioUrl,
+        sizeLabel: g.videoRes.size > 0 ? formatFileSize(g.videoRes.size) : '',
+        kindLabel: g.audioUrl
+          ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
+          : t('panel.trackVideo'),
+        filename: g.videoRes.filename,
+        mimeType: g.videoRes.mimeType,
+        fileSize: g.videoRes.size > 0 ? g.videoRes.size : undefined,
+      }));
+    }
+
+    function buildQualityPicker(root: HTMLElement): void {
+      qualityPickerEl = h('div', 'fluxdown-quality-picker');
+      root.appendChild(qualityPickerEl);
+    }
+
+    function hideQualityPicker(): void {
+      if (qualityPickerEl) qualityPickerEl.classList.remove('visible');
+      pendingQualityOptions = [];
+    }
+
+    /** 弹出清晰度选择小窗：列出各档真清晰度 + 大小/码率 + 轨道构成，选中后下载。 */
+    function showQualityPicker(options: QualityOption[], anchorRect: DOMRect): void {
+      if (!qualityPickerEl) return;
+      pendingQualityOptions = options;
+
+      const items = options.map((o, idx) => `<div class="qp-item" data-idx="${idx}">
+          <div class="qp-main">
+            <span class="qp-quality">${esc(o.quality)}</span>
+            <span class="qp-size">${esc(o.sizeLabel)}</span>
+          </div>
+          <span class="qp-kind">${esc(o.kindLabel)}</span>
+        </div>`).join('');
+
+      qualityPickerEl.innerHTML = `
+        <div class="qp-header">
+          <span class="qp-title">${esc(t('panel.qualityPickerTitle'))}</span>
+          <button type="button" class="qp-close">${svg(SVG_CLOSE)}</button>
+        </div>
+        <div class="qp-list">${items}</div>
+      `;
+
+      qualityPickerEl.querySelector('.qp-close')?.addEventListener('click', hideQualityPicker);
+      qualityPickerEl.querySelectorAll<HTMLElement>('.qp-item').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number(el.dataset.idx);
+          const option = pendingQualityOptions[idx];
+          if (option) downloadQualityOption(option);
+          hideQualityPicker();
+        });
+      });
+
+      // 定位到浮标附近，越界时回夹到视口内
+      const width = 220;
+      let left = anchorRect.right - width;
+      left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+      let top = anchorRect.top;
+      top = Math.max(8, Math.min(top, window.innerHeight - 40));
+      qualityPickerEl.style.left = `${left}px`;
+      qualityPickerEl.style.top = `${top}px`;
+      qualityPickerEl.classList.add('visible');
+    }
+
+    /** 发送单条轨道（或音视频轨对）下载请求给 background。 */
+    function downloadQualityOption(option: QualityOption): void {
+      browser.runtime.sendMessage({
+        action: 'downloadResource',
+        url: option.videoUrl,
+        audioUrl: option.audioUrl,
+        referrer: location.href,
+        filename: option.filename,
+        fileSize: option.fileSize,
+        mimeType: option.mimeType,
+      }).catch(() => {});
+    }
+
+    /* ================================================================
+     *  独立预览弹层（点击按钮触发；图片/视频直链/m4s 分片/hls/dash 按类型分发，
+     *  原生播放失败一律诚实降级提示，禁止引入 hls.js）
+     * ================================================================ */
+
+    /** 仅这些类型显示预览按钮；document/archive/其他不可预览。 */
+    function isPreviewable(r: DetectedResource): boolean {
+      return (
+        r.type === 'image' || r.type === 'video' || r.type === 'audio' || r.type === 'stream'
+      );
+    }
+
+    type PreviewKind = 'image' | 'audio' | 'direct-video' | 'hls' | 'dash' | 'fragment' | 'unsupported';
+
+    /** 按结构特征（type + URL 后缀）分发预览渲染方式，不做站点特判。 */
+    function previewKind(r: DetectedResource): PreviewKind {
+      const mime = r.mimeType?.toLowerCase() || '';
+      const url = r.url.toLowerCase();
+      if (r.type === 'image' || mime.startsWith('image/')) return 'image';
+      if (r.type === 'stream') {
+        if (url.includes('.m3u8')) return 'hls';
+        if (url.includes('.mpd')) return 'dash';
+        return 'fragment'; // m4s 等分片：单文件常缺 moov/init，原生播放大概率失败
+      }
+      if (r.type === 'audio') return 'audio';
+      if (r.type === 'video') return 'direct-video';
+      return 'unsupported';
+    }
+
+    function buildPreviewModal(root: HTMLElement): void {
+      previewModalEl = h('div', 'fluxdown-preview-modal');
+      previewModalEl.innerHTML = `
+        <div class="fluxdown-preview-card">
+          <div class="preview-header">
+            <span class="preview-title"></span>
+            <button type="button" class="preview-close" title="${t('panel.previewClose')}">${svg(SVG_CLOSE)}</button>
+          </div>
+          <div class="preview-body"></div>
+        </div>
+      `;
+      // 点遮罩关闭；点卡片内部（含控件交互）不关闭
+      previewModalEl.addEventListener('click', (e) => {
+        if (e.target === previewModalEl) closePreview();
+      });
+      previewModalEl.querySelector('.preview-close')?.addEventListener('click', closePreview);
+      root.appendChild(previewModalEl);
+    }
+
+    /** 用降级提示替换预览区内容（不黑屏、不假装能播放），并记录该资源预览失败。 */
+    function showPreviewFallback(bodyEl: HTMLElement, message: string, failedId?: string): void {
+      bodyEl.innerHTML = `<div class="preview-fallback">${esc(message)}</div>`;
+      if (failedId && !previewFailedIds.has(failedId)) {
+        previewFailedIds.add(failedId);
+        render();
+      }
+    }
+
+    /** 打开独立预览弹层：按资源类型分发渲染，原生播放失败诚实降级。 */
+    function openPreview(r: DetectedResource): void {
+      if (!previewModalEl) return;
+      const titleEl = previewModalEl.querySelector('.preview-title') as HTMLElement;
+      const bodyEl = previewModalEl.querySelector('.preview-body') as HTMLElement;
+      titleEl.textContent = r.filename || tryDecodeUrl(r.url) || r.url;
+      bodyEl.innerHTML = '';
+
+      const kind = previewKind(r);
+      if (kind === 'image') {
+        const img = document.createElement('img');
+        img.className = 'preview-media';
+        img.addEventListener('load', () => {
+          const hint = h('div', 'preview-hint');
+          hint.textContent = `${img.naturalWidth} × ${img.naturalHeight}`;
+          bodyEl.appendChild(hint);
+        });
+        img.addEventListener('error', () => showPreviewFallback(bodyEl, t('panel.previewFailed'), r.id));
+        img.src = r.url;
+        bodyEl.appendChild(img);
+      } else if (kind === 'audio') {
+        const audio = document.createElement('audio');
+        audio.className = 'preview-media';
+        audio.controls = true;
+        audio.addEventListener('error', () => showPreviewFallback(bodyEl, t('panel.previewFailed'), r.id));
+        audio.src = r.url;
+        bodyEl.appendChild(audio);
+      } else if (kind === 'direct-video') {
+        const video = document.createElement('video');
+        video.className = 'preview-media';
+        video.controls = true;
+        video.autoplay = true;
+        video.muted = true;
+        video.addEventListener('error', () => showPreviewFallback(bodyEl, t('panel.previewFailed'), r.id));
+        video.src = r.url;
+        bodyEl.appendChild(video);
+      } else if (kind === 'fragment' || kind === 'hls' || kind === 'dash') {
+        // m4s 分片 / hls / dash：浏览器原生尝试，失败诚实降级（禁止引入 hls.js）
+        const video = document.createElement('video');
+        video.className = 'preview-media';
+        video.controls = true;
+        const fallbackMsg =
+          kind === 'hls' ? t('panel.previewHlsUnsupported')
+          : kind === 'dash' ? t('panel.previewDashUnsupported')
+          : t('panel.previewFragmentUnsupported');
+        video.addEventListener('error', () => showPreviewFallback(bodyEl, fallbackMsg));
+        video.src = r.url;
+        bodyEl.appendChild(video);
+      } else {
+        showPreviewFallback(bodyEl, t('panel.previewUnsupported'));
+      }
+
+      previewModalEl.classList.add('visible');
+    }
+
+    /** 关闭预览弹层，销毁 video/audio 元素释放资源（暂停 + 清空 src）。 */
+    function closePreview(): void {
+      if (!previewModalEl) return;
+      previewModalEl.classList.remove('visible');
+      const media = previewModalEl.querySelectorAll('video, audio');
+      media.forEach((el) => {
+        const m = el as HTMLMediaElement;
+        m.pause();
+        m.src = '';
+        m.load();
+      });
+    }
+
+    /* ================================================================
      *  工具
      * ================================================================ */
+
+    /** 把主题模式应用到 shadow root 容器：'system' 移除属性（走 CSS media query 回退），
+     *  'light'/'dark' 设 data-theme 属性。与 popup/main.ts 的 applyTheme 语义一致。 */
+    function applyTheme(mode: unknown): void {
+      if (!rootContainer) return;
+      if (mode === 'light' || mode === 'dark') {
+        rootContainer.setAttribute('data-theme', mode);
+      } else {
+        rootContainer.removeAttribute('data-theme');
+      }
+    }
+
+    /** 初始化时从 storage.local 读取 popup 保存的主题并应用（默认 system）。 */
+    async function applyThemeFromStorage(): Promise<void> {
+      try {
+        const res = await browser.storage.local.get(THEME_KEY);
+        applyTheme(res?.[THEME_KEY] ?? 'system');
+      } catch {
+        /* storage 不可用则保持默认（CSS media query 回退） */
+      }
+    }
 
     function h(tag: string, cls: string): HTMLElement {
       const e = document.createElement(tag);

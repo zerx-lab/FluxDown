@@ -7,6 +7,7 @@ import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import '../theme/segment_palette.dart';
 
 class DetailPanel extends StatelessWidget {
@@ -22,6 +23,7 @@ class DetailPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return Container(
       color: c.surface1,
       child: Column(
@@ -43,16 +45,16 @@ class DetailPanel extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _buildFileInfo(c, task),
+            _buildFileInfo(c, m, task),
                             const SizedBox(height: 20),
-                            _buildProgress(c, task),
+            _buildProgress(c, m, task),
                             const SizedBox(height: 20),
                             _buildInfoTable(c, task),
                           ],
                         ),
                       ),
                     ),
-                    _buildActions(c, task),
+                    _buildActions(c, m, task),
                   ],
                 );
               },
@@ -103,7 +105,7 @@ class DetailPanel extends StatelessWidget {
     );
   }
 
-  Widget _buildFileInfo(AppColors c, DownloadTask task) {
+  Widget _buildFileInfo(AppColors c, AppMetrics m, DownloadTask task) {
     return Row(
       children: [
         Container(
@@ -111,7 +113,7 @@ class DetailPanel extends StatelessWidget {
           height: 40,
           decoration: BoxDecoration(
             color: c.surface2,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: m.brCard,
           ),
           child: Center(
             child: Text(
@@ -142,7 +144,7 @@ class DetailPanel extends StatelessWidget {
   // 进度区域：百分比 + 分段进度条 + IDM 网格 + 图例
   // ---------------------------------------------------------------------------
 
-  Widget _buildProgress(AppColors c, DownloadTask task) {
+  Widget _buildProgress(AppColors c, AppMetrics m, DownloadTask task) {
     final rawSegs = task.segments;
     final hasSegs =
         rawSegs != null && rawSegs.isNotEmpty && task.totalBytes > 0;
@@ -194,32 +196,32 @@ class DetailPanel extends StatelessWidget {
 
         // 分段进度条
         if (hasSegs)
-          _buildSegmentedBar(c, segs!, task.totalBytes)
+          _buildSegmentedBar(c, m, segs!, task.totalBytes)
         else
-          _buildSimpleBar(c, pctValue),
+          _buildSimpleBar(c, m, pctValue),
 
         // IDM 网格可视化
         if (hasSegs) ...[
           const SizedBox(height: 16),
-          _buildSegmentGrid(c, segs!, task.totalBytes),
+          _buildSegmentGrid(c, m, segs!, task.totalBytes),
         ],
 
         // 分片图例 — 分片过多时（如 BT 多文件）隐藏避免溢出
         if (hasSegs && segs!.length > 1 && segs.length <= 32) ...[
           const SizedBox(height: 12),
-          _buildSegmentLegend(c, segs),
+          _buildSegmentLegend(c, m, segs),
         ],
       ],
     );
   }
 
   /// 无分片数据时的简单进度条
-  Widget _buildSimpleBar(AppColors c, double progress) {
+  Widget _buildSimpleBar(AppColors c, AppMetrics m, double progress) {
     return Container(
       height: 4,
       decoration: BoxDecoration(
         color: c.surface3,
-        borderRadius: BorderRadius.circular(2),
+        borderRadius: m.brXs,
       ),
       child: FractionallySizedBox(
         alignment: Alignment.centerLeft,
@@ -227,7 +229,7 @@ class DetailPanel extends StatelessWidget {
         child: Container(
           decoration: BoxDecoration(
             color: c.accent,
-            borderRadius: BorderRadius.circular(2),
+            borderRadius: m.brXs,
           ),
         ),
       ),
@@ -237,11 +239,12 @@ class DetailPanel extends StatelessWidget {
   /// 分段进度条 — 每个分片按字节范围比例占位，内部按下载量填充
   Widget _buildSegmentedBar(
     AppColors c,
+    AppMetrics m,
     List<SegmentData> segs,
     int totalBytes,
   ) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(3),
+      borderRadius: m.brSm,
       child: SizedBox(
         height: 6,
         child: CustomPaint(
@@ -260,6 +263,7 @@ class DetailPanel extends StatelessWidget {
   /// IDM 风格网格可视化
   Widget _buildSegmentGrid(
     AppColors c,
+    AppMetrics m,
     List<SegmentData> segs,
     int totalBytes,
   ) {
@@ -278,7 +282,7 @@ class DetailPanel extends StatelessWidget {
         Container(
           decoration: BoxDecoration(
             color: c.surface2,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
             border: Border.all(color: c.border, width: 1),
           ),
           padding: const EdgeInsets.all(6),
@@ -305,7 +309,7 @@ class DetailPanel extends StatelessWidget {
                     cellSize: cellSize,
                     cellGap: cellGap,
                     emptyColor: c.surface3,
-                    isDark: c.bg.computeLuminance() < 0.5,
+                    unfilledAlpha: c.bg.computeLuminance() < 0.5 ? m.alphaMuted : m.alphaActive,
                     palette: SegmentPalette.of(c),
                   ),
                 ),
@@ -318,7 +322,7 @@ class DetailPanel extends StatelessWidget {
   }
 
   /// 分片图例 — 每个分片一行，显示颜色块 + 序号 + 进度
-  Widget _buildSegmentLegend(AppColors c, List<SegmentData> segs) {
+  Widget _buildSegmentLegend(AppColors c, AppMetrics m, List<SegmentData> segs) {
     final palette = SegmentPalette.of(c);
     return Wrap(
       spacing: 12,
@@ -333,7 +337,7 @@ class DetailPanel extends StatelessWidget {
                 height: 8,
                 decoration: BoxDecoration(
                   color: SegmentPalette.colorFor(palette, seg.index),
-                  borderRadius: BorderRadius.circular(2),
+                  borderRadius: m.brXs,
                 ),
               ),
               const SizedBox(width: 4),
@@ -510,7 +514,7 @@ class DetailPanel extends StatelessWidget {
   // 操作按钮
   // ---------------------------------------------------------------------------
 
-  Widget _buildActions(AppColors c, DownloadTask task) {
+  Widget _buildActions(AppColors c, AppMetrics m, DownloadTask task) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -553,7 +557,7 @@ class DetailPanel extends StatelessWidget {
                       height: 14,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white.withValues(alpha: 0.8),
+                        color: m.borderStrong(Colors.white),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -671,7 +675,7 @@ class _SegmentGridPainter extends CustomPainter {
   final double cellSize;
   final double cellGap;
   final Color emptyColor;
-  final bool isDark;
+  final double unfilledAlpha;
   final List<Color> palette;
 
   _SegmentGridPainter({
@@ -682,7 +686,7 @@ class _SegmentGridPainter extends CustomPainter {
     required this.cellSize,
     required this.cellGap,
     required this.emptyColor,
-    required this.isDark,
+    required this.unfilledAlpha,
     required this.palette,
   });
 
@@ -738,7 +742,7 @@ class _SegmentGridPainter extends CustomPainter {
             ..color = SegmentPalette.colorFor(
               palette,
               owner.index,
-            ).withValues(alpha: isDark ? 0.12 : 0.15),
+            ).withValues(alpha: unfilledAlpha),
         );
       }
     }
@@ -753,7 +757,7 @@ class _SegmentGridPainter extends CustomPainter {
       cellSize != old.cellSize ||
       cellGap != old.cellGap ||
       emptyColor != old.emptyColor ||
-      isDark != old.isDark ||
+      unfilledAlpha != old.unfilledAlpha ||
       !identical(palette, old.palette);
 }
 

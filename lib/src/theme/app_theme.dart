@@ -7,21 +7,28 @@ import 'flux_theme_tokens.dart';
 const _fontFamily = 'MiSans';
 
 /// 构建紧凑的按钮尺寸主题
-const _buttonSizes = ShadButtonSizesTheme(
-  regular: ShadButtonSizeTheme(
-    height: 32,
-    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-  ),
-  sm: ShadButtonSizeTheme(
-    height: 28,
-    padding: EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-  ),
-  lg: ShadButtonSizeTheme(
-    height: 36,
-    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-  ),
-  icon: ShadButtonSizeTheme(height: 32, width: 32, padding: EdgeInsets.zero),
-);
+ShadButtonSizesTheme _buttonSizes(FluxThemeTokens tokens) {
+  final m = tokens.metric;
+  return ShadButtonSizesTheme(
+    regular: ShadButtonSizeTheme(
+      height: m.buttonHeightMd,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+    ),
+    sm: ShadButtonSizeTheme(
+      height: m.buttonHeightSm,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+    ),
+    lg: ShadButtonSizeTheme(
+      height: m.buttonHeightLg,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+    ),
+    icon: ShadButtonSizeTheme(
+      height: m.buttonHeightMd,
+      width: m.buttonHeightMd,
+      padding: EdgeInsets.zero,
+    ),
+  );
+}
 
 // ═══════════════════════════════════════════════════════════
 //  从 FluxThemeTokens 构建 ShadThemeData
@@ -47,8 +54,9 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
     _cachedThemeData = ShadThemeData(
       brightness: Brightness.dark,
       colorScheme: colorScheme,
+      radius: BorderRadius.circular(tokens.metric.radiusMd),
       textTheme: ShadTextTheme(family: _fontFamily),
-      buttonSizesTheme: _buttonSizes,
+      buttonSizesTheme: _buttonSizes(tokens),
       ghostButtonTheme: ShadButtonTheme(
         hoverBackgroundColor: tokens.elementHover,
       ),
@@ -65,7 +73,7 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
         border: Border.all(color: tokens.border, width: 1),
         shadows: [
           BoxShadow(
-            color: tokens.shadow.withValues(alpha: 0.25),
+            color: tokens.shadow.withValues(alpha: tokens.metric.alphaShadowStrong),
             blurRadius: 24,
             offset: const Offset(0, 8),
           ),
@@ -76,7 +84,7 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
         border: Border.all(color: tokens.border, width: 1),
         shadows: [
           BoxShadow(
-            color: tokens.shadow.withValues(alpha: 0.25),
+            color: tokens.shadow.withValues(alpha: tokens.metric.alphaShadowStrong),
             blurRadius: 24,
             offset: const Offset(0, 8),
           ),
@@ -89,8 +97,9 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
     _cachedThemeData = ShadThemeData(
       brightness: Brightness.light,
       colorScheme: colorScheme,
+      radius: BorderRadius.circular(tokens.metric.radiusMd),
       textTheme: ShadTextTheme(family: _fontFamily),
-      buttonSizesTheme: _buttonSizes,
+      buttonSizesTheme: _buttonSizes(tokens),
       ghostButtonTheme: ShadButtonTheme(
         hoverBackgroundColor: tokens.elementHover,
       ),
@@ -108,16 +117,15 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
 /// Toast 通用布局（紧凑卡片，统一宽度，右下角堆叠美观）
 const _toastPadding = EdgeInsets.symmetric(horizontal: 16, vertical: 12);
 const _toastConstraints = BoxConstraints(minWidth: 320, maxWidth: 380);
-final _toastRadius = BorderRadius.circular(10);
 
 List<BoxShadow> _toastShadows(FluxThemeTokens tokens) => [
   BoxShadow(
-    color: tokens.shadow.withValues(alpha: 0.16),
+    color: tokens.shadow.withValues(alpha: tokens.metric.alphaShadowSoft),
     blurRadius: 16,
     offset: const Offset(0, 6),
   ),
   BoxShadow(
-    color: tokens.shadow.withValues(alpha: 0.08),
+    color: tokens.shadow.withValues(alpha: tokens.metric.alphaShadowFaint),
     blurRadius: 4,
     offset: const Offset(0, 2),
   ),
@@ -128,7 +136,7 @@ ShadToastTheme _primaryToastTheme(FluxThemeTokens tokens) {
   return ShadToastTheme(
     backgroundColor: tokens.dialogBackground,
     border: ShadBorder.all(color: tokens.border, width: 1),
-    radius: _toastRadius,
+    radius: BorderRadius.circular(tokens.metric.radiusDialog),
     shadows: _toastShadows(tokens),
     padding: _toastPadding,
     constraints: _toastConstraints,
@@ -157,7 +165,7 @@ ShadToastTheme _destructiveToastTheme(
       color: colorScheme.destructive.withValues(alpha: 0.5),
       width: 1,
     ),
-    radius: _toastRadius,
+    radius: BorderRadius.circular(tokens.metric.radiusDialog),
     shadows: _toastShadows(tokens),
     padding: _toastPadding,
     constraints: _toastConstraints,

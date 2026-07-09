@@ -27,6 +27,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'dir_picker_field.dart';
 import 'thread_selector.dart';
 
@@ -46,7 +47,17 @@ class QuickDownloadEntry {
   final String url;
   final String fileName;
   final String checksum;
-  const QuickDownloadEntry(this.url, {this.fileName = '', this.checksum = ''});
+  /// 音频轨 URL（通用「视频轨+音频轨」离散下载对语义，按 MIME video/*
+  /// vs audio/* 分轨判定）。空 = 普通单 URL；非空 = url 是视频轨，
+  /// 本字段是音频轨。仅由外部下载请求（ExternalDownloadRequest.audioUrl）
+  /// 转入；纯文本 URL 列表解析（一行一条）不产生轨对语义。
+  final String audioUrl;
+  const QuickDownloadEntry(
+    this.url, {
+    this.fileName = '',
+    this.checksum = '',
+    this.audioUrl = '',
+  });
 }
 
 /// 解析 aria2 风格的下载条目（URL + 可选 out=/checksum= 选项行）。
@@ -69,12 +80,14 @@ List<QuickDownloadEntry> parseQuickDownloadEntries(String text) {
           current.url,
           fileName: trimmed.substring(4),
           checksum: current.checksum,
+          audioUrl: current.audioUrl,
         );
       } else if (trimmed.startsWith('checksum=')) {
         current = QuickDownloadEntry(
           current.url,
           fileName: current.fileName,
           checksum: trimmed.substring(9),
+          audioUrl: current.audioUrl,
         );
       }
       continue;
@@ -144,6 +157,10 @@ class QuickDownloadFormResult {
   /// 用户是否手动改过线程数（决定是否记忆本次选择）
   final bool threadsUserModified;
 
+  /// 音视频轨对的音频轨 URL（外部请求透传，表单不可编辑；空 = 普通下载）。
+  /// 仅单条时有意义，非空时 url 是视频轨、本字段是音频轨。
+  final String audioUrl;
+
   const QuickDownloadFormResult({
     required this.urlText,
     required this.saveDir,
@@ -155,6 +172,7 @@ class QuickDownloadFormResult {
     required this.cookies,
     required this.checksum,
     required this.threadsUserModified,
+    this.audioUrl = '',
   });
 }
 
@@ -194,6 +212,9 @@ class QuickDownloadForm extends StatefulWidget {
   /// 初始 Cookie（浏览器扩展捕获，预填高级选项供编辑覆盖）
   final String initialCookies;
 
+  /// 音视频轨对的音频轨 URL（外部请求透传，表单不可编辑；空 = 普通下载）
+  final String initialAudioUrl;
+
   final QuickDownloadFormHost host;
   final ValueChanged<QuickDownloadFormResult> onSubmit;
   final VoidCallback onCancel;
@@ -205,6 +226,7 @@ class QuickDownloadForm extends StatefulWidget {
     required this.initialSaveDir,
     required this.defaultQueueId,
     required this.initialCookies,
+    this.initialAudioUrl = '',
     required this.host,
     required this.onSubmit,
     required this.onCancel,
@@ -368,6 +390,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
         cookies: _cookieController.text.trim(),
         checksum: checksum,
         threadsUserModified: _threadsUserModified,
+        audioUrl: widget.initialAudioUrl,
       ),
     );
   }
@@ -376,6 +399,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -406,7 +430,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
             type: MaterialType.transparency,
             child: TextSelectionTheme(
               data: TextSelectionThemeData(
-                selectionColor: c.accent.withValues(alpha: 0.25),
+                selectionColor: m.textSelection(c.accent),
                 cursorColor: c.accent,
                 selectionHandleColor: c.accent,
               ),
@@ -438,15 +462,15 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
                   fillColor: c.inputBg,
                   hoverColor: Colors.transparent,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: m.brInput,
                     borderSide: BorderSide(color: c.inputBorder),
                   ),
                   enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: m.brInput,
                     borderSide: BorderSide(color: c.inputBorder),
                   ),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: m.brInput,
                     borderSide: BorderSide(color: c.inputFocusBorder),
                   ),
                 ),
@@ -787,11 +811,12 @@ class QuickInfoTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: c.surface2,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: m.brSm,
       ),
       child: Text(
         text,

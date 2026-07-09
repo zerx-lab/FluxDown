@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:rinf/rinf.dart';
 
 import '../bindings/bindings.dart';
@@ -218,10 +219,27 @@ class UpdateService extends ChangeNotifier {
     ).sendSignalToRust();
   }
 
-  /// Launch the installer and exit the app.
-  void installUpdate() {
+  /// Launch the installer.
+  ///
+  /// 桌面端：交给 Rust updater（helper 二进制接管，进程随后退出）。
+  /// Android：Rust 无法唤起系统安装器 —— 经 MainActivity 的
+  /// `com.fluxdown/storage` channel 走 FileProvider + ACTION_VIEW。
+  Future<void> installUpdate() async {
     if (_installerPath.isEmpty) return;
     logInfo('UpdateService', 'installUpdate path=$_installerPath');
+    if (Platform.isAndroid) {
+      try {
+        await const MethodChannel(
+          'com.fluxdown/storage',
+        ).invokeMethod<bool>('installApk', {'path': _installerPath});
+      } on PlatformException catch (e) {
+        logError('UpdateService', 'installApk failed', e);
+        _status = UpdateStatus.error;
+        _errorMessage = e.message ?? e.code;
+        notifyListeners();
+      }
+      return;
+    }
     InstallUpdate(installerPath: _installerPath).sendSignalToRust();
   }
 
@@ -284,6 +302,9 @@ class UpdateService extends ChangeNotifier {
 
   /// Fetch changelog from website API and decide whether to show the dialog.
   Future<void> _fetchChangelogAndCheckShown(String latestVersion) async {
+    // Android：/api/changelog 过滤的是桌面 release 版本线，与 mobile-v*
+    // 独立版本号不可比 —— 会误拉全量桌面 changelog，直接跳过。
+    if (Platform.isAndroid) return;
     try {
       // Check if we already showed changelog for this version
       final prefs = KvStore.instance;

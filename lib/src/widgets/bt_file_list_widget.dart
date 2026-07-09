@@ -4,6 +4,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -210,18 +211,19 @@ class BtSelectAllRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return GestureDetector(
       onTap: onToggle,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
           color: allSelected
-              ? c.accent.withValues(alpha: 0.06)
+              ? m.faint(c.accent)
               : c.surface1,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: m.brCard,
           border: Border.all(
             color: allSelected
-                ? c.accent.withValues(alpha: 0.4)
+                ? m.borderFaint(c.accent)
                 : c.border,
             width: 1,
           ),
@@ -298,6 +300,7 @@ class BtFileTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final dirPath = _dirPath;
     final fileName = _fileName;
 
@@ -308,11 +311,11 @@ class BtFileTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
           color: isSelected
-              ? c.accent.withValues(alpha: 0.06)
+              ? m.faint(c.accent)
               : c.surface1,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: m.brCard,
           border: Border.all(
-            color: isSelected ? c.accent.withValues(alpha: 0.4) : c.border,
+            color: isSelected ? m.borderFaint(c.accent) : c.border,
             width: 1,
           ),
         ),
@@ -325,9 +328,9 @@ class BtFileTile extends StatelessWidget {
               height: 28,
               decoration: BoxDecoration(
                 color: isSelected
-                    ? c.accent.withValues(alpha: 0.1)
+                    ? m.soft(c.accent)
                     : c.surface2,
-                borderRadius: BorderRadius.circular(5),
+                borderRadius: m.brMd,
               ),
               child: Icon(
                 btFileIcon(file.path),
@@ -396,12 +399,13 @@ class BtCheckbox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final active = checked || indeterminate;
     return Container(
       width: 17,
       height: 17,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: m.brSm,
         color: active ? accentColor : const Color(0x00000000),
         border: Border.all(
           color: active ? accentColor : const Color(0x66888888),
@@ -416,7 +420,7 @@ class BtCheckbox extends StatelessWidget {
                       height: 2,
                       decoration: BoxDecoration(
                         color: const Color(0xFFFFFFFF),
-                        borderRadius: BorderRadius.circular(1),
+                        borderRadius: m.brProgress,
                       ),
                     )
                   : const Icon(

@@ -218,17 +218,25 @@ class SettingsProvider extends ChangeNotifier {
 
   /// 按分类规则解析文件的保存目录：
   /// 普通分类（按 position 排序）→ other 分类（无普通分类命中时）。
-  /// 无匹配或 [fileName] 为空时返回 ''，由调用方决定回退目录。
+  /// 无匹配时返回 ''，由调用方决定回退目录。
   ///
-  /// 快速下载对话框、独立小窗与免打扰静默路径共用本解析器。
-  String resolveCategorySaveDir(String fileName) {
-    if (fileName.isEmpty) return '';
+  /// [fileName] 为空或无扩展名时，回退用 [url] 路径末段派生的文件名参与匹配
+  /// （浏览器扩展右键下载常只带 URL、不带已解析文件名，需靠 URL 扩展名归类）。
+  ///
+  /// 快速下载对话框、独立小窗、免打扰静默路径与外部下载请求共用本解析器。
+  String resolveCategorySaveDir(String fileName, {String url = ''}) {
+    var name = fileName;
+    if ((name.isEmpty || !name.contains('.')) && url.isNotEmpty) {
+      final derived = _fileNameFromUrl(url);
+      if (derived.isNotEmpty) name = derived;
+    }
+    if (name.isEmpty) return '';
     final categories = visibleCategories;
     final normals = categories
         .where((c) => c.builtinType != 'all' && c.builtinType != 'other')
         .toList();
     for (final cat in normals) {
-      if (cat.saveDir.isNotEmpty && cat.matches(fileName)) {
+      if (cat.saveDir.isNotEmpty && cat.matches(name)) {
         return cat.saveDir;
       }
     }
@@ -237,9 +245,22 @@ class SettingsProvider extends ChangeNotifier {
         .firstOrNull;
     if (otherCat != null &&
         otherCat.saveDir.isNotEmpty &&
-        !normals.any((c) => c.matches(fileName))) {
+        !normals.any((c) => c.matches(name))) {
       return otherCat.saveDir;
     }
+    return '';
+  }
+
+  /// 从 URL 中提取文件名（取最后一段路径，须含 '.'），失败返回 ''。
+  static String _fileNameFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url.trim());
+      final segments = uri.pathSegments;
+      if (segments.isNotEmpty) {
+        final last = Uri.decodeComponent(segments.last);
+        if (last.contains('.')) return last;
+      }
+    } catch (_) {}
     return '';
   }
 

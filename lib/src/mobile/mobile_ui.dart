@@ -6,19 +6,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../models/download_task.dart';
 import '../theme/app_colors.dart';
-
-/// 移动端设计 Token（对应 design/mobile 设计稿）
-abstract final class MobileDims {
-  static const pageMargin = 16.0;
-  static const cardRadius = 12.0;
-  static const cardGap = 10.0;
-  static const appBarHeight = 56.0;
-  static const tabsHeight = 44.0;
-  static const dockBottomGap = 16.0;
-  static const fabSize = 46.0;
-  /// 列表底部留白（悬浮 Dock + FAB 手势区）
-  static const scrollBottomPadding = 120.0;
-}
+import '../theme/app_metrics.dart';
 
 /// 顶栏 / Dock 通用毛玻璃滤镜
 final ImageFilter mobileBlurFilter = ImageFilter.blur(sigmaX: 22, sigmaY: 22);
@@ -42,10 +30,7 @@ List<double> mobileSegmentCellFills(DownloadTask task, int cells) {
   if (segments == null || segments.isEmpty) {
     // 无分段信息 → 按整体进度前缀填充
     final filled = task.progress * cells;
-    return List.generate(
-      cells,
-      (i) => (filled - i).clamp(0.0, 1.0),
-    );
+    return List.generate(cells, (i) => (filled - i).clamp(0.0, 1.0));
   }
 
   final fills = List.filled(cells, 0.0);
@@ -92,10 +77,10 @@ void showMobileToast(BuildContext context, String message) {
 }
 
 /// 玻璃卡片装饰（浅色: 白面板；深色: 深面板）
-BoxDecoration mobileCardDecoration(AppColors c) {
+BoxDecoration mobileCardDecoration(AppColors c, AppMetrics m) {
   return BoxDecoration(
     color: c.surface1,
-    borderRadius: BorderRadius.circular(MobileDims.cardRadius),
+    borderRadius: m.brMobileCard,
     border: Border.all(color: c.border),
     boxShadow: [
       BoxShadow(
@@ -123,16 +108,17 @@ class MobileChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return GestureDetector(
       onTap: onTap,
       child: Container(
         alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? c.accent.withValues(alpha: 0.10) : c.surface1,
-          borderRadius: BorderRadius.circular(999),
+          color: selected ? m.soft(c.accent) : c.surface1,
+          borderRadius: m.brPill,
           border: Border.all(
-            color: selected ? c.accent.withValues(alpha: 0.35) : c.border,
+            color: selected ? m.selectedBorder(c.accent) : c.border,
           ),
         ),
         child: Text(
@@ -169,11 +155,12 @@ class MobileSegmentedRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return Container(
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
         color: c.surface1,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: m.brChipLg,
         border: Border.all(color: c.border),
       ),
       child: Row(
@@ -192,7 +179,7 @@ class MobileSegmentedRow extends StatelessWidget {
                     color: selected == options[i]
                         ? c.accent
                         : const Color(0x00000000),
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: m.brIconTile,
                   ),
                   child: Text(
                     labels[i],
@@ -280,8 +267,9 @@ class MobileProgressBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return ClipRRect(
-      borderRadius: BorderRadius.circular(height / 2),
+      borderRadius: m.brPill,
       child: SizedBox(
         height: height,
         child: Stack(
@@ -319,9 +307,7 @@ Future<T?> showMobileSheet<T>(
         child: AnimatedPadding(
           duration: const Duration(milliseconds: 150),
           curve: Curves.easeOut,
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.viewInsetsOf(ctx).bottom,
-          ),
+          padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
           child: builder(ctx),
         ),
       );
@@ -348,6 +334,9 @@ class MobileSheetContainer extends StatelessWidget {
   final String? title;
   final Widget child;
 
+  /// 标题行右侧动作（如「重置」文字按钮），与标题同一行、垂直居中。
+  final Widget? trailing;
+
   /// 固定在底部的页脚（如「开始下载」按钮），不随内容滚动。
   final Widget? footer;
 
@@ -355,26 +344,26 @@ class MobileSheetContainer extends StatelessWidget {
     super.key,
     this.title,
     required this.child,
+    this.trailing,
     this.footer,
   });
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final media = MediaQuery.of(context);
     final maxHeight = media.size.height * 0.86;
     return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+      borderRadius: m.brSheetTop,
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
         child: Container(
           width: double.infinity,
           constraints: BoxConstraints(maxHeight: maxHeight),
           decoration: BoxDecoration(
-            color: c.bg.withValues(alpha: 0.82),
-            border: Border(
-              top: BorderSide(color: c.border.withValues(alpha: 0.8)),
-            ),
+            color: m.glass(c.bg),
+            border: Border(top: BorderSide(color: m.borderStrong(c.border))),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -388,22 +377,29 @@ class MobileSheetContainer extends StatelessWidget {
                   margin: const EdgeInsets.only(top: 10, bottom: 2),
                   decoration: BoxDecoration(
                     color: c.switchTrack,
-                    borderRadius: BorderRadius.circular(3),
+                    borderRadius: m.brSm,
                   ),
                 ),
               ),
               if (title != null)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
-                  child: Text(
-                    title!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: c.textPrimary,
-                    ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: c.textPrimary,
+                          ),
+                        ),
+                      ),
+                      ?trailing,
+                    ],
                   ),
                 ),
               Flexible(
@@ -487,6 +483,7 @@ class MobileTextField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final single = maxLines == 1;
     final input = ShadInput(
       controller: controller,
@@ -517,7 +514,7 @@ class MobileTextField extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: c.surface1,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: m.brChipLg,
         border: Border.all(color: c.border),
       ),
       child: suffix == null
@@ -552,6 +549,7 @@ class MobilePrimaryButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final Color fg;
     final Color bgColor;
     final Color borderColor;
@@ -562,7 +560,7 @@ class MobilePrimaryButton extends StatelessWidget {
     } else if (destructive) {
       fg = c.statusError;
       bgColor = const Color(0x00000000);
-      borderColor = c.statusError.withValues(alpha: 0.5);
+      borderColor = m.borderFade(c.statusError);
     } else if (filled) {
       fg = c.accentForeground;
       bgColor = c.accent;
@@ -579,7 +577,7 @@ class MobilePrimaryButton extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: bgColor,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: m.brChipXl,
           border: Border.all(color: borderColor),
         ),
         child: Row(
@@ -645,11 +643,7 @@ Future<bool?> showMobileConfirm(
           padding: const EdgeInsets.only(top: 2, bottom: 4),
           child: Text(
             message,
-            style: TextStyle(
-              fontSize: 13,
-              height: 1.5,
-              color: c.textMuted,
-            ),
+            style: TextStyle(fontSize: 13, height: 1.5, color: c.textMuted),
           ),
         ),
       );

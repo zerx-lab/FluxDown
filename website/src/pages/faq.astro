@@ -16,17 +16,17 @@ const faqItems = Array.from({ length: 9 }, (_, i) => ({
   },
 }));
 
-const faqJsonLd = {
-  "@context": "https://schema.org",
+const faqNode = {
   "@type": "FAQPage",
   mainEntity: faqItems,
 };
 ---
 
-<Layout title="FAQ - FluxDown" description="Frequently asked questions about FluxDown download manager. Learn about features, pricing, supported platforms, browser extension, and more.">
-  <Fragment slot="head">
-    <script type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} />
-  </Fragment>
+<Layout
+  title="FluxDown FAQ — Free IDM Alternative, Pricing, Platforms & Extension"
+  description="Frequently asked questions about FluxDown, the free open-source IDM alternative. Learn about features, pricing, supported platforms, the browser extension, and more."
+  jsonLdNodes={[faqNode]}
+>
   <FloatingNavbar client:load />
   <main class="pt-24 relative">
     <!-- Background ambiance -->

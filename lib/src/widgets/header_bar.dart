@@ -12,6 +12,7 @@ import '../pages/settings_page.dart';
 import '../services/log_service.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'context_menu.dart';
 import 'title_drag_area.dart';
 
@@ -238,6 +239,7 @@ class HeaderBarState extends State<HeaderBar> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
     return TitleDragArea(
       child: Container(
@@ -286,11 +288,11 @@ class HeaderBarState extends State<HeaderBar> {
                     child: Container(
                       decoration: BoxDecoration(
                         color: _isSearchActive ? c.inputFocusBg : c.bg,
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: m.brInput,
                         border: Border.all(
                           color: _isSearchActive
-                              ? c.accent.withValues(alpha: 0.6)
-                              : c.border.withValues(alpha: 0.5),
+                              ? m.focusRing(c.accent)
+                              : m.borderFade(c.border),
                           width: 1,
                         ),
                       ),
@@ -325,7 +327,7 @@ class HeaderBarState extends State<HeaderBar> {
                             ),
                             decoration: BoxDecoration(
                               color: c.surface2,
-                              borderRadius: BorderRadius.circular(4),
+                              borderRadius: m.brSm,
                               border: Border.all(color: c.border, width: 1),
                             ),
                             child: Text(
@@ -413,6 +415,7 @@ class _SearchResultsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final c = colors;
     // 按类型分组
     final taskResults = results
@@ -426,10 +429,12 @@ class _SearchResultsPanel extends StatelessWidget {
       constraints: const BoxConstraints(maxHeight: 340),
       decoration: BoxDecoration(
         color: c.surface1,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: m.brCard,
         border: Border.all(color: c.border, width: 1),
         boxShadow: [
           BoxShadow(
+            // 刻意保留：搜索结果浮层专属投影，一次性装饰值，
+            // 不同于对话框/toast 三档阴影语义，无独立可主题化诉求。
             color: Colors.black.withValues(alpha: 0.12),
             blurRadius: 12,
             offset: const Offset(0, 4),
@@ -437,7 +442,7 @@ class _SearchResultsPanel extends StatelessWidget {
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: m.brCard,
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Column(
@@ -525,6 +530,7 @@ class _SearchResultItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final c = colors;
     final r = result;
     final isSettings = r.type == SearchResultType.settings;
@@ -539,7 +545,7 @@ class _SearchResultItem extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           decoration: BoxDecoration(
             color: isHighlighted ? c.hoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
           ),
           child: Row(
             children: [
@@ -548,9 +554,9 @@ class _SearchResultItem extends StatelessWidget {
                 height: 28,
                 decoration: BoxDecoration(
                   color: isSettings
-                      ? c.accent.withValues(alpha: 0.1)
+                      ? m.soft(c.accent)
                       : c.surface2,
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: m.brMd,
                 ),
                 child: Icon(
                   r.icon,
@@ -723,6 +729,7 @@ class _WindowButtonState extends State<_WindowButton> {
           height: 40,
           color: _isHovered
               ? (widget.isClose
+                // 刻意保留：关闭按钮悬停危险态近不透明红底（Windows 标准），一次性字面量。
                     ? AppColors.red.withValues(alpha: 0.9)
                     : c.surface3)
               : Colors.transparent,

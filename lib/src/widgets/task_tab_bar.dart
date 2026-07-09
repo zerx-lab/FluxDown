@@ -3,6 +3,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'task_list_item.dart';
 
 class TaskTabBar extends StatelessWidget {
@@ -14,6 +15,7 @@ class TaskTabBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
@@ -21,7 +23,7 @@ class TaskTabBar extends StatelessWidget {
 
         // 管理模式 → 显示批量操作栏
         if (ctrl.isManageMode) {
-          return _buildManageBar(context, c, ctrl, s);
+          return _buildManageBar(context, c, m, ctrl, s);
         }
 
         // 普通模式 → 状态过滤已移至侧边栏，此处不显示内容
@@ -33,6 +35,7 @@ class TaskTabBar extends StatelessWidget {
   Widget _buildManageBar(
     BuildContext context,
     AppColors c,
+    AppMetrics m,
     DownloadController ctrl,
     S s,
   ) {
@@ -68,9 +71,9 @@ class TaskTabBar extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
               color: checkedCount > 0
-                  ? c.accent.withValues(alpha: 0.1)
+                  ? m.soft(c.accent)
                   : Colors.transparent,
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: m.brSm,
             ),
             child: Text(
               s.selectedCount(checkedCount),
@@ -157,6 +160,7 @@ class _ManageButtonState extends State<_ManageButton> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final enabled = widget.onTap != null;
 
     return MouseRegion(
@@ -170,7 +174,7 @@ class _ManageButtonState extends State<_ManageButton> {
           padding: const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
             color: _isHovered && enabled ? c.hoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: m.brSm,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -180,7 +184,7 @@ class _ManageButtonState extends State<_ManageButton> {
                 size: 14,
                 color: enabled
                     ? widget.color
-                    : widget.color.withValues(alpha: 0.4),
+                    : m.disabled(widget.color),
               ),
               const SizedBox(width: 4),
               Text(
@@ -189,7 +193,7 @@ class _ManageButtonState extends State<_ManageButton> {
                   fontSize: 12,
                   color: enabled
                       ? widget.color
-                      : widget.color.withValues(alpha: 0.4),
+                      : m.disabled(widget.color),
                 ),
               ),
             ],

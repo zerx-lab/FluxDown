@@ -89,6 +89,7 @@ pub enum UpdateError {
 // API response types (matching website /api/release)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_os = "android"))]
 #[derive(Deserialize)]
 struct ReleaseInfo {
     version: String,
@@ -96,6 +97,7 @@ struct ReleaseInfo {
     assets: ReleaseAssets,
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Deserialize)]
 struct ReleaseAssets {
     // Windows (unused on Linux but must be present for serde deserialization)
@@ -135,6 +137,30 @@ struct AssetInfo {
     name: String,
     size: i64,
     download_url: String,
+}
+
+/// Android：`/api/release` 顶层 `mobile` 字段（独立 mobile-v* 版本线）。
+/// `mobile` 为 `null` 表示尚无移动端 release —— 视为已是最新，而非错误。
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct MobileReleaseEnvelope {
+    mobile: Option<MobileRelease>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct MobileRelease {
+    version: String,
+    assets: MobileAssets,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct MobileAssets {
+    android_arm64: Option<AssetInfo>,
+    android_armv7: Option<AssetInfo>,
+    android_x64: Option<AssetInfo>,
+    android_universal: Option<AssetInfo>,
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +242,7 @@ fn detect_linux_install_type() -> LinuxInstallType {
     LinuxInstallType::Portable
 }
 
+#[cfg(not(target_os = "android"))]
 fn select_asset(assets: &ReleaseAssets) -> Option<&AssetInfo> {
     #[cfg(target_os = "windows")]
     {
@@ -262,6 +289,21 @@ fn select_asset(assets: &ReleaseAssets) -> Option<&AssetInfo> {
     {
         None
     }
+}
+
+/// Android：按运行时 ABI 选择 APK 资产，缺失时兜底 universal。
+///
+/// `std::env::consts::ARCH`：`aarch64` → arm64-v8a、`arm` → armeabi-v7a、
+/// `x86_64` → x86_64。未知 ABI 直接取 universal。
+#[cfg(target_os = "android")]
+fn select_mobile_asset(assets: &MobileAssets) -> Option<&AssetInfo> {
+    let preferred = match std::env::consts::ARCH {
+        "aarch64" => assets.android_arm64.as_ref(),
+        "arm" => assets.android_armv7.as_ref(),
+        "x86_64" => assets.android_x64.as_ref(),
+        _ => None,
+    };
+    preferred.or(assets.android_universal.as_ref())
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +359,7 @@ pub async fn check(current_version: &str) {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 async fn check_inner(current_version: &str) -> Result<(), UpdateError> {
     let client = Client::new();
     let url = format!("{UPDATE_API_BASE}/api/release");
@@ -356,6 +399,72 @@ async fn check_inner(current_version: &str) -> Result<(), UpdateError> {
         download_url,
         file_size,
         published_at: release.published_at,
+        error_message: String::new(),
+    }
+    .send_signal_to_dart();
+
+    Ok(())
+}
+
+/// Android 检查：解析 `/api/release` 顶层 `mobile` 字段（独立 mobile-v* 版本线，
+/// 与桌面 `version` 无关）。`mobile == null`（尚无移动端 release）→ 已是最新。
+#[cfg(target_os = "android")]
+async fn check_inner(current_version: &str) -> Result<(), UpdateError> {
+    let client = Client::new();
+    let url = format!("{UPDATE_API_BASE}/api/release");
+
+    let resp = client
+        .get(&url)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(UpdateError::Other(format!(
+            "API returned status {}",
+            resp.status()
+        )));
+    }
+
+    let envelope: MobileReleaseEnvelope = resp.json().await?;
+
+    let Some(mobile) = envelope.mobile else {
+        // 尚无 mobile-v* release —— 视为已是最新版本。
+        UpdateCheckResult {
+            has_update: false,
+            latest_version: current_version.to_string(),
+            current_version: current_version.to_string(),
+            download_url: String::new(),
+            file_size: 0,
+            published_at: String::new(),
+            error_message: String::new(),
+        }
+        .send_signal_to_dart();
+        return Ok(());
+    };
+
+    let has_update = is_newer(&mobile.version, current_version).unwrap_or(false);
+
+    let (download_url, file_size) = match select_mobile_asset(&mobile.assets) {
+        Some(asset) => {
+            let full_url = if asset.download_url.starts_with('/') {
+                format!("{UPDATE_API_BASE}{}", asset.download_url)
+            } else {
+                asset.download_url.clone()
+            };
+            (full_url, asset.size)
+        }
+        None => (String::new(), 0),
+    };
+
+    UpdateCheckResult {
+        // 没有可下载资产时不提示更新（无法完成下载流程）。
+        has_update: has_update && !download_url.is_empty(),
+        latest_version: mobile.version,
+        current_version: current_version.to_string(),
+        download_url,
+        file_size,
+        published_at: String::new(),
         error_message: String::new(),
     }
     .send_signal_to_dart();
@@ -426,6 +535,10 @@ fn sanitize_filename(raw: &str) -> String {
 /// indistinguishable from a manual download until they double-click.
 /// On Windows/Linux we keep `temp_dir` because the helper binary handles the
 /// install end-to-end and the artifact is disposable.
+/// On Android we use the app-private cache dir (`/data/data/<pkg>/cache`) —
+/// `TMPDIR` is not guaranteed in an Android app process, and the FileProvider
+/// declared in the manifest exposes exactly this directory for the install
+/// intent on the Dart/Kotlin side.
 fn pick_download_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -437,6 +550,15 @@ fn pick_download_dir() -> PathBuf {
             // Best-effort create — fall through to temp_dir on failure.
             if std::fs::create_dir_all(&downloads).is_ok() {
                 return downloads;
+            }
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        if let Some(pkg) = fluxdown_engine::data_dir::android_package_name() {
+            let cache = PathBuf::from(format!("/data/data/{pkg}/cache"));
+            if cache.is_dir() || std::fs::create_dir_all(&cache).is_ok() {
+                return cache;
             }
         }
     }
@@ -1046,6 +1168,7 @@ fn install_macos_app(tarball_path: &str) -> Result<(), UpdateError> {
 /// Returns `Err` when the binary is absent (e.g. the user is upgrading from a
 /// version that pre-dates the helper).  Callers should fall back to
 /// `bootstrap_updater_from_zip` in that case.
+#[cfg(not(target_os = "android"))]
 fn find_updater_bin() -> Result<PathBuf, UpdateError> {
     let exe = std::env::current_exe().map_err(UpdateError::Io)?;
     let dir = exe
@@ -1116,8 +1239,9 @@ fn find_or_bootstrap_updater(zip_path: &str) -> Result<PathBuf, UpdateError> {
     find_updater_bin().or_else(|_| bootstrap_updater_from_zip(zip_path))
 }
 
-/// On non-Windows platforms the helper is always expected to be present.
-#[cfg(not(target_os = "windows"))]
+/// On Linux/macOS the helper is always expected to be present. Android never
+/// reaches here — APK installation is driven from the Dart/Kotlin side.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn find_or_bootstrap_updater(_zip_path: &str) -> Result<PathBuf, UpdateError> {
     find_updater_bin()
 }

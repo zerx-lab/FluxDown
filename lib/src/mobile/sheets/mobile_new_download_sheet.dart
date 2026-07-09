@@ -7,6 +7,7 @@ import '../../i18n/locale_provider.dart';
 import '../../models/download_controller.dart';
 import '../../models/settings_provider.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_metrics.dart';
 import '../mobile_ui.dart';
 import '../services/mobile_storage_service.dart';
 
@@ -157,7 +158,7 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
       widget.controller.batchCreateTask(
         entries: [
           for (final url in urls)
-            UrlEntry(url: url, fileName: '', checksum: ''),
+            UrlEntry(url: url, fileName: '', checksum: '', audioUrl: ''),
         ],
         saveDir: saveDir,
         segments: segments,
@@ -175,6 +176,7 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
   Widget build(BuildContext context) {
     final s = LocaleScope.of(context);
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return MobileSheetContainer(
       title: s.newDownload,
       footer: MobilePrimaryButton(
@@ -195,8 +197,10 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
+                  // 刻意保留：粘贴按钮悬浮于毛玻璃弹层之上，需近不透明底色保证可读，
+                  // 属一次性装饰值，非可主题化语义角色。
                   color: c.bg.withValues(alpha: 0.9),
-                  borderRadius: BorderRadius.circular(999),
+                  borderRadius: m.brPill,
                   border: Border.all(color: c.border),
                 ),
                 child: Row(
@@ -335,6 +339,7 @@ class _DirPickRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -342,7 +347,7 @@ class _DirPickRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: c.surface1,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: m.brChipLg,
           border: Border.all(color: c.border),
         ),
         child: Row(

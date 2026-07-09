@@ -5,6 +5,7 @@ import * as ContextMenu from '@radix-ui/react-context-menu'
 import { ChevronRight, Copy, Download, Link2, ListOrdered, Pause, Play, RotateCcw, Trash2, Zap } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { taskFileUrl } from '../../lib/api'
+import { confirmDialog } from '../../lib/confirm'
 import type { QueueDto } from '../../lib/types'
 import type { ViewTask } from './useViewTasks'
 
@@ -106,8 +107,8 @@ export function TaskContextMenu({
           </ContextMenu.Item>
           <ContextMenu.Item
             className="ctx-item danger"
-            onSelect={() => {
-              if (window.confirm('删除任务并删除本地文件？此操作不可撤销。')) onDelete(true)
+            onSelect={async () => {
+              if (await confirmDialog({ title: '删除任务', message: '删除任务并删除本地文件？此操作不可撤销。', danger: true })) onDelete(true)
             }}
           >
             <Trash2 size={14} />

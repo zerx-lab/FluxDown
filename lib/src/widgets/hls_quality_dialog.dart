@@ -7,6 +7,7 @@ import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../mobile/sheets/mobile_hls_quality_sheet.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 
 void showHlsQualityDialog(
   BuildContext context, {
@@ -179,6 +180,7 @@ class _QualityOptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     final hasResolution = option.width > 0 && option.height > 0;
     final resLabel = hasResolution
         ? _formatResolution(option.width.toInt(), option.height.toInt())
@@ -191,8 +193,8 @@ class _QualityOptionTile extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 6),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? c.accent.withValues(alpha: 0.08) : c.surface1,
-          borderRadius: BorderRadius.circular(8),
+          color: isSelected ? m.subtle(c.accent) : c.surface1,
+          borderRadius: m.brCard,
           border: Border.all(
             color: isSelected ? c.accent : c.border,
             width: isSelected ? 1.5 : 1,
@@ -260,8 +262,8 @@ class _QualityOptionTile extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: c.accent.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(4),
+                  color: m.muted(c.accent),
+                  borderRadius: m.brSm,
                 ),
                 child: Text(
                   'Best',

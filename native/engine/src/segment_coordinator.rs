@@ -1965,6 +1965,11 @@ async fn do_segment_with_retry(
             // 文件 + 重下新版本；绝不当瞬时错误退避重试（那会空烧退避并误入串行降级
             // 死循环，最终以误导性的"服务器拒绝所有连接"报错）。
             Err(e @ DownloadError::VersionChanged(_)) => return Err(e),
+            // Range 错位：服务器回 206 却发【从 0 的全量流】（Content-Range 起点不符，
+            // 如 123 盘失效签名 URL）。系统性错误——重试必然拿到同样错位响应，且已写入
+            // 的数据是错位垃圾。立即返回让 coordinator 走 Path B → run_download_inner
+            // 清空临时文件 + 回退单流；绝不当瞬时错误退避重试。
+            Err(e @ DownloadError::RangeMisaligned(_)) => return Err(e),
             // RangeNotSupported 的两义性处理：
             //   • total_downloaded==0：从未有任何段拿到过 206 → 服务器真的无视 Range
             //     （如 FnOS NAS）。立即返回让 coordinator 快速回退单流，不空烧退避。
@@ -2145,6 +2150,32 @@ async fn do_segment(
             record_single_conn_domain(url);
         }
         return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
+    }
+
+    // --- Content-Range 起点对齐校验（BUG-CDN-206-BYTE0-FULLSTREAM）----------
+    // 收到 206 不代表服务器真的返回了我们请求的区间。劣质 CDN（如 123 盘免费下载
+    // 节点）在签名 URL 失效/超配额时，对 `Range: bytes=X-Y` 回 206 却发【从 byte 0
+    // 的全量流】（Content-Range 起点为 0，或整体缺失）。若不校验，seek(actual_start)
+    // 后写入的是文件开头字节 → 字节数写满区间（骗过末尾仅校验字节数量的完整性
+    // 检查），但内容整体错位 → 完整大小的损坏文件（无 checksum 时无法察觉）。
+    // 这里断言 Content-Range 起点 == 本段请求起点，不符则返回 RangeMisaligned，由
+    // coordinator 走 Path B 回退单流（单流全量请求不带 Range，服务器"忽略 Range 返
+    // 全量"的行为反而正常，能下到正确文件）。不置 conn_sensitive——这不是连接压力
+    // 而是链接失效，且随后 Path B 会取消所有 worker。
+    let cr_start = crate::downloader::parse_content_range_start(resp.headers());
+    if crate::downloader::is_range_response_misaligned(cr_start, actual_start) {
+        log_info!(
+            "[coordinator] task {} seg {} Content-Range 错位：请求起点 {} 但响应起点 {:?}\
+             （服务器在 206 上返回错位/从-0 的全量流），回退单流",
+            task_id,
+            seg_idx,
+            actual_start,
+            cr_start
+        );
+        return Err(DownloadError::RangeMisaligned(format!(
+            "segment {}: requested Range start {} but response Content-Range start is {:?}",
+            seg_idx, actual_start, cr_start
+        )));
     }
 
     // --- ETag / Last-Modified consistency check -----------------------------
@@ -2514,6 +2545,7 @@ fn update_seg_state(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         FileSyncGate, LiveSegment, MAX_SEGMENTS, MIN_SPLIT_BYTES, MIN_SYNC_GAP, SegState,
@@ -3223,7 +3255,7 @@ mod tests {
         // 不实际发起 HTTP 请求，仅验证代码路径可编译。
         if false {
             let client = reqwest::Client::new();
-            let _ = async {
+            let _fut = async {
                 let resp = client.get("http://x").send().await.unwrap();
                 let err = resp.error_for_status().unwrap_err();
                 let dl_err = DownloadError::Request(err);

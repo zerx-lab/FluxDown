@@ -1,5 +1,40 @@
+# FluxDown — robots.txt
+# 策略:欢迎所有搜索引擎 + 主流 AI 爬虫抓取公开内容(推广目标是被搜索与 AI 引用),
+# 仅屏蔽 /api/ 动态端点。IndexNow key 见 public/<key>.txt。
+
 User-agent: *
 Allow: /
 Disallow: /api/
+
+# --- AI / LLM 爬虫:显式放行,便于被 AI 搜索与回答引用 ---
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Bytespider
+Allow: /
 
 Sitemap: https://fluxdown.zerx.dev/sitemap-index.xml

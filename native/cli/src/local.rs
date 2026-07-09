@@ -97,6 +97,7 @@ pub async fn run_add_local(args: AddArgs, json: bool) -> Result<(), ClientError>
                 Vec::new(),
                 None,
                 None,
+                None,
             )
             .await;
         match id {

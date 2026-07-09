@@ -61,6 +61,12 @@ export interface DownloadRequest {
   method?: string;
   /** 浏览器原始请求体（仅非 GET 时有意义）。 */
   body?: RequestBody;
+  /**
+   * 离散音视频轨对的音频轨 URL（通用语义，非站点特判）。
+   * 非空 = 这是一对需要分别下载后 mux 合并的视频轨 + 音频轨；
+   * 省略/空 = 普通单 URL 下载。与 NMH 契约 audio_url 字段对应。
+   */
+  audioUrl?: string;
 }
 
 export interface ApiResponse {

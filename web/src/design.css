@@ -78,6 +78,8 @@ svg { display: block; }
 .btn.ghost:hover { background: var(--hover); }
 .btn.danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
 .btn.danger:hover { background: rgba(239,68,68,.08); }
+.btn.danger.solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.danger.solid:hover { background: var(--danger); border-color: var(--danger); filter: brightness(1.06); }
 .btn.sm { height: 28px; padding: 0 11px; font-size: 12px; border-radius: 7px; }
 .btn.block { width: 100%; justify-content: center; height: 38px; }
 
@@ -640,6 +642,23 @@ svg { display: block; }
   display: flex; align-items: center; justify-content: flex-end; gap: 9px;
   padding: 12px 18px 16px; border-top: 1px solid var(--border);
 }
+
+/* 确认 / 提示对话框（命令式，见 components/dialogs/confirm-dialog.tsx） */
+.confirm-dlg { width: 400px; }
+.confirm-dlg .dlg-head { padding: 16px 18px 0; border: none; }
+.confirm-dlg .dlg-body { padding: 12px 18px 4px; }
+.confirm-dlg .dlg-foot { padding: 14px 18px 16px; border-top: none; }
+.confirm-row { display: flex; gap: 13px; align-items: flex-start; }
+.confirm-icon {
+  flex-shrink: 0; width: 38px; height: 38px; border-radius: 10px;
+  display: grid; place-items: center;
+}
+.confirm-icon svg { width: 20px; height: 20px; }
+.confirm-icon.danger { background: rgba(239,68,68,.12); color: var(--danger); }
+.confirm-icon.info { background: var(--accent-weak); color: var(--accent); }
+.confirm-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; padding-top: 1px; }
+.confirm-text b { font-size: 14.5px; font-weight: 600; line-height: 1.3; }
+.confirm-text p { font-size: 12.5px; color: var(--text2); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 
 .dir-row { display: flex; gap: 8px; }
 .dir-row .text-input { flex: 1; }

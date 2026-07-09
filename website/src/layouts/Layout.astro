@@ -1,5 +1,6 @@
 ---
 import "../styles/global.css";
+import { SITE_URL, OG_IMAGE_URL, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, buildGraph } from "../lib/seo";
 
 interface Props {
   title?: string;
@@ -9,9 +10,10 @@ interface Props {
   ogLocale?: string;
   alternates?: { lang: string; href: string }[];
   noindex?: boolean;
+  /** 页面级追加的 JSON-LD 节点(如 FAQPage / BreadcrumbList),并入全站 @graph。 */
+  jsonLdNodes?: Record<string, unknown>[];
 }
 
-const SITE_URL = "https://fluxdown.zerx.dev";
 const {
   title = "FluxDown - Modern Multi-Protocol Download Manager",
   description = "A blazing fast, multi-protocol download manager with browser extension. Powered by Rust engine with HTTP/HTTPS/FTP support, intelligent segmentation, and speed optimization.",
@@ -20,6 +22,7 @@ const {
   ogLocale = "en_US",
   alternates,
   noindex = false,
+  jsonLdNodes = [],
 } = Astro.props;
 
 // canonical 统一带尾斜杠(与 sitemap / Astro 默认输出一致),消除 /faq 与 /faq/ 的信号分裂。
@@ -35,7 +38,7 @@ const resolvedCanonical =
 const isLangExplicit = Astro.props.lang !== undefined;
 const ogLocaleAlternate = ogLocale === "zh_CN" ? "en_US" : "zh_CN";
 
-const ogImageUrl = `${SITE_URL}/logo.png`;
+const ogImageUrl = OG_IMAGE_URL;
 ---
 
 <!doctype html>
@@ -74,9 +77,9 @@ const ogImageUrl = `${SITE_URL}/logo.png`;
     <meta property="og:url" content={resolvedCanonical} />
     <meta property="og:site_name" content="FluxDown" />
     <meta property="og:image" content={ogImageUrl} />
-    <meta property="og:image:width" content="512" />
-    <meta property="og:image:height" content="512" />
-    <meta property="og:image:alt" content="FluxDown Logo" />
+    <meta property="og:image:width" content={String(OG_IMAGE_WIDTH)} />
+    <meta property="og:image:height" content={String(OG_IMAGE_HEIGHT)} />
+    <meta property="og:image:alt" content="FluxDown — Free, open-source IDM alternative" />
     <meta property="og:locale" content={ogLocale} />
     <meta property="og:locale:alternate" content={ogLocaleAlternate} />
 
@@ -85,39 +88,10 @@ const ogImageUrl = `${SITE_URL}/logo.png`;
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageUrl} />
-    <meta name="twitter:image:alt" content="FluxDown Logo" />
+    <meta name="twitter:image:alt" content="FluxDown — Free, open-source IDM alternative" />
 
-    <!-- JSON-LD Structured Data -->
-    <script type="application/ld+json" set:html={JSON.stringify({
-      "@context": "https://schema.org",
-      "@type": "SoftwareApplication",
-      "name": "FluxDown",
-      "applicationCategory": "UtilitiesApplication",
-      "operatingSystem": "Windows 10+, Linux",
-      "description": "A modern multi-protocol download manager with multi-threaded acceleration, smart segmentation, and browser integration. Powered by Rust.",
-      "url": SITE_URL,
-      "image": ogImageUrl,
-      "author": {
-        "@type": "Organization",
-        "name": "FluxDown",
-        "url": SITE_URL
-      },
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "USD"
-      },
-      "softwareVersion": "latest",
-      "downloadUrl": `${SITE_URL}/#download`,
-      "featureList": [
-        "Multi-threaded download acceleration",
-        "HTTP/HTTPS/FTP protocol support",
-        "Smart file segmentation",
-        "Breakpoint resume",
-        "Browser extension integration",
-        "Global speed limiter"
-      ]
-    })} />
+    <!-- JSON-LD: 全站实体图(Organization + WebSite + SoftwareApplication),页面级节点并入 -->
+    <script type="application/ld+json" set:html={JSON.stringify(buildGraph(jsonLdNodes))} />
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />

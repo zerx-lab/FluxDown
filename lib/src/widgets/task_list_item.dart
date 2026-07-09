@@ -4,6 +4,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_task.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'context_menu.dart';
 import '../services/open_folder.dart';
 
@@ -82,6 +83,7 @@ class _TaskListItemState extends State<TaskListItem> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     final isManage = widget.isManageMode;
     final isChecked = widget.isChecked;
 
@@ -124,7 +126,7 @@ class _TaskListItemState extends State<TaskListItem> {
                   height: 28,
                   decoration: BoxDecoration(
                     color: c.accent,
-                    borderRadius: BorderRadius.circular(1.5),
+                    borderRadius: m.brProgress,
                   ),
                 ),
                 const SizedBox(width: 13),
@@ -142,8 +144,8 @@ class _TaskListItemState extends State<TaskListItem> {
                 ),
                 const SizedBox(width: 10),
               ],
-              Expanded(child: _buildFileInfo(c)),
-              SizedBox(width: 150, child: _buildProgress(c)),
+              Expanded(child: _buildFileInfo(c, m)),
+              SizedBox(width: 150, child: _buildProgress(c, m)),
               SizedBox(width: 90, child: _buildSpeed(c)),
               SizedBox(width: 80, child: _buildEta(c)),
               SizedBox(width: 60, child: _buildStatus(c)),
@@ -154,7 +156,7 @@ class _TaskListItemState extends State<TaskListItem> {
     );
   }
 
-  Widget _buildFileInfo(AppColors c) {
+  Widget _buildFileInfo(AppColors c, AppMetrics m) {
     final task = widget.task;
     return Row(
       children: [
@@ -165,7 +167,7 @@ class _TaskListItemState extends State<TaskListItem> {
             height: 18,
             decoration: BoxDecoration(
               color: const Color(0xFFF59E0B), // amber-500
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: m.brSm,
             ),
             child: const Center(
               child: Icon(LucideIcons.zap, size: 11, color: Colors.white),
@@ -178,7 +180,7 @@ class _TaskListItemState extends State<TaskListItem> {
           height: 34,
           decoration: BoxDecoration(
             color: c.surface2,
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: m.brMd,
           ),
           child: Center(
             child: Text(
@@ -218,7 +220,7 @@ class _TaskListItemState extends State<TaskListItem> {
     );
   }
 
-  Widget _buildProgress(AppColors c) {
+  Widget _buildProgress(AppColors c, AppMetrics m) {
     final task = widget.task;
     final percentage = (task.progress * 100).toStringAsFixed(1);
     final progressColor = _progressColor(task, c);
@@ -236,7 +238,7 @@ class _TaskListItemState extends State<TaskListItem> {
                   height: 3,
                   decoration: BoxDecoration(
                     color: c.surface3,
-                    borderRadius: BorderRadius.circular(1.5),
+                    borderRadius: m.brProgress,
                   ),
                   clipBehavior: Clip.hardEdge,
                   child: task.isIndeterminate
@@ -247,7 +249,7 @@ class _TaskListItemState extends State<TaskListItem> {
                           child: Container(
                             decoration: BoxDecoration(
                               color: progressColor,
-                              borderRadius: BorderRadius.circular(1.5),
+                            borderRadius: m.brProgress,
                             ),
                           ),
                         ),
@@ -377,12 +379,13 @@ class _IndeterminateBarState extends State<_IndeterminateBar>
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return AnimatedBuilder(
       animation: _curve,
       child: Container(
         decoration: BoxDecoration(
           color: widget.color,
-          borderRadius: BorderRadius.circular(1.5),
+          borderRadius: m.brProgress,
         ),
       ),
       builder: (context, child) {
@@ -923,11 +926,14 @@ class _KeyBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
       decoration: BoxDecoration(
+        // 刻意保留：Ctrl+↵ 快捷键徽章叠加在危险态深色按钮上的白色薄底，
+        // 强制白底（非主题色）保证对比度，一次性装饰值。
         color: Colors.white.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: m.brSm,
       ),
       child: Text(
         label,
