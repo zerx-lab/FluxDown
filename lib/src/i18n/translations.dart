@@ -611,6 +611,7 @@ class S {
   String get themeImportSuccess => _t('主题导入成功', 'Theme imported successfully');
   String get themeExportSuccess => _t('主题导出成功', 'Theme exported successfully');
   String get themeImportError => _t('主题导入失败', 'Failed to import theme');
+  String get themeMore => _t('更多主题', 'More Themes');
 
   // ─────────────────────────────────────────────
   // 主题色名称
@@ -715,11 +716,15 @@ class S {
     '下载请求时使用的浏览器标识。百度网盘直链下载需设为 netdisk',
     'Browser identity used in download requests. Set to "netdisk" for Baidu Pan.',
   );
-  String get userAgentPlaceholder =>
-      _t('留空使用内置 Chrome UA', 'Leave empty to use built-in Chrome UA');
+  String get userAgentPlaceholder => _t(
+    '留空使用默认标识 FluxDown/版本号',
+    'Leave empty for default identity FluxDown/<version>',
+  );
   String get userAgentTaskPlaceholder =>
       _t('留空使用全局设置', 'Leave empty to use global setting');
-  String get userAgentPresetChrome => _t('Chrome（默认）', 'Chrome (default)');
+  String get userAgentPresetDefault =>
+      _t('默认（FluxDown）', 'Default (FluxDown)');
+  String get userAgentPresetChrome => _t('Chrome', 'Chrome');
   String get userAgentPresetFirefox => _t('Firefox', 'Firefox');
   String get userAgentPresetEdge => _t('Edge', 'Edge');
   String get userAgentPresetSafari => _t('Safari（macOS）', 'Safari (macOS)');
@@ -1038,6 +1043,35 @@ class S {
   String get autoCheckUpdate => _t('自动检查更新', 'Auto Check for Updates');
   String get autoCheckUpdateDesc =>
       _t('启动应用时自动检查新版本', 'Automatically check for updates on startup');
+  String get donateTitle => _t('支持 FluxDown', 'Support FluxDown');
+  String donateDate(int y, int m, int d) => _t(
+    '$y 年 $m 月 $d 日',
+    '${const [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ][m - 1]} $d, $y',
+  );
+  String donateBody(String date, int releases, int commits) => _t(
+    '自 $date 首次提交以来，FluxDown 已累计发布 $releases 个版本，提交代码超过 $commits 次。'
+        '永久免费、零广告、零追踪的背后，是长期坚持不懈的开发与维护，离不开您的支持与反馈。',
+    'Since $date, FluxDown has shipped $releases releases with over $commits commits — '
+        'always free, with zero ads and zero tracking. Ongoing development relies on your support and feedback.',
+  );
+  String get donateThanks => _t(
+    '您的支持能让 FluxDown 更好地开发与发展下去，我们会用心做好产品。非常感谢！',
+    'Your support helps FluxDown keep improving. Thank you so much!',
+  );
+  String get donateButton => _t('给开发者捐赠', 'Donate to the Developer');
   String get upToDate => _t('已是最新版本', 'Up to Date');
   String newVersionFound(String v) =>
       _t('发现新版本 v$v', 'New version v$v available');
@@ -1176,6 +1210,10 @@ class S {
     '日志,导出,反馈,调试,排查,log',
     'log,export,feedback,debug,diagnostic',
   ).split(',')..addAll(['log', 'export', 'debug']);
+  List<String> get searchKeywordsDonate => _t(
+    '捐赠,赞助,支持,打赏,donate',
+    'donate,sponsor,support',
+  ).split(',')..addAll(['donate', 'sponsor', 'support']);
   List<String> get searchKeywordsSidebarVisibility => _t(
     '侧边栏,显示,隐藏,区块,状态,队列,分类',
     'sidebar,show,hide,section,status,queue,category',
@@ -1216,6 +1254,8 @@ class S {
     '填写邮箱可收到反馈进度通知，其他联系方式可能无法收到通知',
     'Enter your email to receive progress notifications. Other contact methods may not receive notifications.',
   );
+  String get feedbackVersionLabel => _t('应用版本', 'App Version');
+  String get feedbackVersionAuto => _t('自动获取', 'Auto-detected');
   String get feedbackAttachLogs => _t('附带今日日志', 'Attach today\'s logs');
   String get feedbackAttachLogsHint => _t(
     '发送时附带当天日志（已脱敏），有助于我们更快定位问题',

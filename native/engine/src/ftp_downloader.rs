@@ -566,6 +566,7 @@ pub async fn run_ftp_download(params: DownloadParams) {
                     error_message: String::new(),
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -599,6 +600,7 @@ pub async fn run_ftp_download(params: DownloadParams) {
                     error_message: msg,
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -665,6 +667,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
             error_message: String::new(),
             file_name: p.file_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -723,6 +726,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
             error_message: String::new(),
             file_name: actual_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -1190,6 +1194,7 @@ async fn ftp_download_single(
                                         end_byte: if total_bytes > 0 { total_bytes - 1 } else { 0 },
                                         downloaded_bytes: downloaded,
                                     }]),
+                                    ..Default::default()
                                 })
                                 .await;
                             last_report = std::time::Instant::now();
@@ -1759,6 +1764,7 @@ async fn ftp_do_segment(
                                     error_message: String::new(),
                                     file_name: String::new(),
                                     segment_details: Some(snapshot),
+                                    ..Default::default()
                                 })
                                 .await;
                             last_report = std::time::Instant::now();

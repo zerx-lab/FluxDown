@@ -143,6 +143,7 @@ class QuickPopupResult {
     'cookies': form.cookies,
     'checksum': form.checksum,
     'threadsUserModified': form.threadsUserModified,
+    'extraHeaders': form.extraHeaders,
   });
 
   factory QuickPopupResult.fromJsonString(String json) {
@@ -160,6 +161,12 @@ class QuickPopupResult {
         cookies: map['cookies'] as String? ?? '',
         checksum: map['checksum'] as String? ?? '',
         threadsUserModified: map['threadsUserModified'] as bool? ?? false,
+        extraHeaders: {
+          for (final e
+              in (map['extraHeaders'] as Map<String, dynamic>? ?? const {})
+                  .entries)
+            e.key: (e.value as String?) ?? '',
+        },
       ),
     );
   }

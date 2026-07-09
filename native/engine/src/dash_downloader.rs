@@ -96,6 +96,7 @@ pub async fn run_dash_download(params: DownloadParams) {
                     error_message: String::new(),
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -128,6 +129,7 @@ pub async fn run_dash_download(params: DownloadParams) {
                     error_message: msg,
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -249,6 +251,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
             error_message: String::new(),
             file_name: p.file_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -354,6 +357,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
             error_message: String::new(),
             file_name: actual_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -517,6 +521,7 @@ async fn run_track_pair_inner(
             error_message: String::new(),
             file_name: auto_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -1420,6 +1425,7 @@ async fn download_track_inner(
                     error_message: String::new(),
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
             progress_state.last_report = std::time::Instant::now();

@@ -21,6 +21,8 @@
 //!   returns -- it never panics. If present, `tx.send(..)` failure (receiver
 //!   already dropped) is silently ignored via `let _ = tx.send(..)`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::Arc;
 use std::time::Duration;
 

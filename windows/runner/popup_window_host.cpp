@@ -23,6 +23,11 @@ constexpr UINT kDwmCornerRound = 2;  // DWMWCP_ROUND
 constexpr int kLogicalWidth = 520;
 constexpr int kLogicalDefaultHeight = 600;
 
+// reveal 兜底定时器：show 后弹窗 Dart 迟迟不发 reveal（引擎冷启动异常/
+// 卡死）时按当前尺寸强制显示，保证窗口永远弹得出来。
+constexpr UINT_PTR kRevealFallbackTimerId = 0x464C5250;  // 'FLRP'
+constexpr UINT kRevealFallbackTimeoutMs = 3000;
+
 // 窗口标题 — 仅用于调试识别（无边框窗口不显示标题栏）。
 // 注意不得等于 L"FluxDown"：main.cpp 单实例逻辑用
 // FindWindow(class, L"FluxDown") 定位主窗口，两者共享窗口类。
@@ -107,6 +112,20 @@ PopupWindowHost::PopupWindowHost(flutter::BinaryMessenger* host_messenger) {
             return;
           }
           HandleHostShow(*payload, std::move(result));
+        } else if (call.method_name() == "append") {
+          // 小窗可见期间新到的外部请求 — 转发给弹窗引擎合入当前表单。
+          // 窗口实际不可见/引擎未就绪时返回 false，Dart 侧复位失步状态。
+          const auto* url_text = std::get_if<std::string>(call.arguments());
+          HWND hwnd = GetHandle();
+          const bool can_append = url_text && hwnd &&
+                                  ::IsWindowVisible(hwnd) && child_ready_ &&
+                                  child_channel_ != nullptr;
+          if (can_append) {
+            child_channel_->InvokeMethod(
+                "appendPayload",
+                std::make_unique<flutter::EncodableValue>(*url_text));
+          }
+          result->Success(flutter::EncodableValue(can_append));
         } else if (call.method_name() == "close") {
           // 契约：close 只隐藏，不回调 onClosed
           HidePopup();
@@ -129,7 +148,9 @@ void PopupWindowHost::HandleHostShow(
   }
 
   // 每次 show 重置为默认尺寸并重新居中：避免继承上一条请求 resize
-  // 后的高度残留；Dart 收到 setPayload 重置表单后会自行再次 resize。
+  // 后的高度残留。窗口保持隐藏（复用时先藏起旧表单画面），由弹窗 Dart
+  // 在新载荷首帧就绪后经 reveal 一次到位「设高 + 显示」。
+  HidePopup();
   ResetPlacement();
 
   if (child_ready_) {
@@ -139,7 +160,8 @@ void PopupWindowHost::HandleHostShow(
     pending_payload_ = payload;
   }
 
-  ShowPopup();
+  // reveal 兜底：Dart 侧异常时超时强制显示（等价旧版立即显示行为）。
+  ArmRevealFallback();
   result->Success(flutter::EncodableValue(true));
 }
 
@@ -283,8 +305,7 @@ void PopupWindowHost::HandleChildCall(
     return;
   }
 
-  if (method == "resize") {
-    HWND hwnd = GetHandle();
+  if (method == "resize" || method == "reveal") {
     double logical_height = 0;
     if (const auto* map =
             std::get_if<flutter::EncodableMap>(call.arguments())) {
@@ -297,27 +318,11 @@ void PopupWindowHost::HandleChildCall(
         }
       }
     }
-    if (hwnd && logical_height > 0) {
-      const UINT dpi = ::GetDpiForWindow(hwnd);
-      const double scale = dpi / 96.0;
-      int physical_height = static_cast<int>(logical_height * scale + 0.5);
-
-      // clamp 到窗口所在显示器工作区高度的 90%
-      HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-      MONITORINFO mi = {};
-      mi.cbSize = sizeof(mi);
-      if (::GetMonitorInfo(monitor, &mi)) {
-        const int max_height =
-            static_cast<int>((mi.rcWork.bottom - mi.rcWork.top) * 0.9);
-        physical_height = (std::min)(physical_height, max_height);
-      }
-
-      RECT rect = {};
-      ::GetWindowRect(hwnd, &rect);
-      // 顶边不动，宽度固定
-      ::SetWindowPos(hwnd, nullptr, 0, 0, rect.right - rect.left,
-                     physical_height,
-                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ApplyLogicalHeight(logical_height);
+    if (method == "reveal") {
+      // reveal 握手：新载荷首帧已就绪 — 设高完成后显示并激活。
+      // ShowPopup 内部解除兜底定时器；窗口已可见时等价一次 resize。
+      ShowPopup();
     }
     result->Success();
     return;
@@ -330,6 +335,48 @@ void PopupWindowHost::DeliverPayload(const std::string& payload) {
   if (child_channel_) {
     child_channel_->InvokeMethod(
         "setPayload", std::make_unique<flutter::EncodableValue>(payload));
+  }
+}
+
+void PopupWindowHost::ApplyLogicalHeight(double logical_height) {
+  HWND hwnd = GetHandle();
+  if (!hwnd || logical_height <= 0) {
+    return;
+  }
+  const UINT dpi = ::GetDpiForWindow(hwnd);
+  const double scale = dpi / 96.0;
+  int physical_height = static_cast<int>(logical_height * scale + 0.5);
+
+  // clamp 到窗口所在显示器工作区高度的 90%
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {};
+  mi.cbSize = sizeof(mi);
+  if (::GetMonitorInfo(monitor, &mi)) {
+    const int max_height =
+        static_cast<int>((mi.rcWork.bottom - mi.rcWork.top) * 0.9);
+    physical_height = (std::min)(physical_height, max_height);
+  }
+
+  RECT rect = {};
+  ::GetWindowRect(hwnd, &rect);
+  // 顶边不动，宽度固定
+  ::SetWindowPos(hwnd, nullptr, 0, 0, rect.right - rect.left, physical_height,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void PopupWindowHost::ArmRevealFallback() {
+  HWND hwnd = GetHandle();
+  if (hwnd) {
+    // 同 id 重复 SetTimer = 重置超时，语义正好匹配连续 show。
+    ::SetTimer(hwnd, kRevealFallbackTimerId, kRevealFallbackTimeoutMs,
+               nullptr);
+  }
+}
+
+void PopupWindowHost::CancelRevealFallback() {
+  HWND hwnd = GetHandle();
+  if (hwnd) {
+    ::KillTimer(hwnd, kRevealFallbackTimerId);
   }
 }
 
@@ -365,13 +412,19 @@ void PopupWindowHost::ShowPopup() {
   if (!hwnd) {
     return;
   }
+  CancelRevealFallback();
   ::ShowWindow(hwnd, SW_SHOW);
   ForceActivate(hwnd);
 }
 
 void PopupWindowHost::HidePopup() {
   HWND hwnd = GetHandle();
-  if (hwnd && ::IsWindowVisible(hwnd)) {
+  if (!hwnd) {
+    return;
+  }
+  // 主引擎主动 close / 提交隐藏时，pending 的 reveal 兜底一并作废。
+  CancelRevealFallback();
+  if (::IsWindowVisible(hwnd)) {
     ::ShowWindow(hwnd, SW_HIDE);
   }
 }
@@ -464,6 +517,13 @@ LRESULT PopupWindowHost::MessageHandler(HWND hwnd, UINT const message,
   if (message == WM_CLOSE) {
     HidePopup();
     NotifyClosed();
+    return 0;
+  }
+
+  // reveal 兜底超时：弹窗 Dart 未按时发来 reveal — 按当前尺寸强制显示，
+  // 保证窗口永远弹得出来（等价旧版 show 立即显示的行为）。
+  if (message == WM_TIMER && wparam == kRevealFallbackTimerId) {
+    ShowPopup();  // 内部先 KillTimer，杜绝重复触发
     return 0;
   }
 

@@ -609,6 +609,7 @@ pub async fn run_hls_download(params: DownloadParams) {
                     error_message: String::new(),
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -641,6 +642,7 @@ pub async fn run_hls_download(params: DownloadParams) {
                     error_message: msg,
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -771,6 +773,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
             error_message: String::new(),
             file_name: p.file_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -870,6 +873,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
             error_message: String::new(),
             file_name: actual_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -1218,6 +1222,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                         error_message: String::new(),
                         file_name: String::new(),
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 last_report = std::time::Instant::now();
@@ -1329,6 +1334,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                         error_message: String::new(),
                         file_name: mp4_file_name,
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 return Ok(mp4_size);

@@ -5,9 +5,11 @@ import { useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { cn } from '../../lib/cn'
+import { useI18n } from '../../lib/i18n'
 import { hlsRequestStore, sendWs, useStore } from '../../lib/ws'
 
 export function HlsQualityDialog() {
+  const { t } = useI18n()
   const request = useStore(hlsRequestStore)
   const open = request !== null
   const [selected, setSelected] = useState<number | null>(null)
@@ -44,17 +46,17 @@ export function HlsQualityDialog() {
         <Dialog.Content className="dialog sm show">
           <header className="dlg-head">
             <Dialog.Title asChild>
-              <b>选择画质</b>
+              <b>{t('hls.title')}</b>
             </Dialog.Title>
             <Dialog.Close asChild>
-              <button type="button" className="icon-btn sm" aria-label="关闭">
+              <button type="button" className="icon-btn sm" aria-label={t('common.close')}>
                 <X size={16} />
               </button>
             </Dialog.Close>
           </header>
           <div className="dlg-body">
             <Dialog.Description className="dlg-sub">
-              检测到 {request?.options.length ?? 0} 个码率 · 60 秒内未选择将自动使用最高带宽
+              {t('hls.desc', { n: request?.options.length ?? 0 })}
             </Dialog.Description>
             <div className="pick-list">
               {request?.options.map((opt) => (
@@ -64,7 +66,7 @@ export function HlsQualityDialog() {
                   className={cn('pick', selected === opt.index && 'active')}
                   onClick={() => setSelected(opt.index)}
                 >
-                  <b>{opt.height > 0 ? `${opt.height}p` : `变体 ${opt.index + 1}`}</b>
+                  <b>{opt.height > 0 ? `${opt.height}p` : t('hls.variant', { n: opt.index + 1 })}</b>
                   <span>{(opt.bandwidth / 1e6).toFixed(1)} Mbps</span>
                   <i className="pick-dot" />
                 </button>
@@ -74,11 +76,11 @@ export function HlsQualityDialog() {
           <footer className="dlg-foot">
             <Dialog.Close asChild>
               <button type="button" className="btn ghost">
-                取消
+                {t('common.cancel')}
               </button>
             </Dialog.Close>
             <button type="button" className="btn primary" onClick={confirm} disabled={selected === null}>
-              开始下载
+              {t('common.startDownload')}
             </button>
           </footer>
         </Dialog.Content>

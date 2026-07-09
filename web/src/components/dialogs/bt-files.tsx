@@ -7,6 +7,7 @@ import { Archive, File, FileText, Film, Image as ImageIcon, Music, X } from 'luc
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { fileType, fmtBytes, type FileType } from '../../lib/format'
+import { useI18n } from '../../lib/i18n'
 import { btRequestStore, sendWs, useStore } from '../../lib/ws'
 
 const FILE_ICONS: Record<FileType, LucideIcon> = {
@@ -19,6 +20,7 @@ const FILE_ICONS: Record<FileType, LucideIcon> = {
 }
 
 export function BtFilesDialog() {
+  const { t } = useI18n()
   const request = useStore(btRequestStore)
   const open = request !== null
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -78,22 +80,22 @@ export function BtFilesDialog() {
         <Dialog.Content className="dialog show">
           <header className="dlg-head">
             <Dialog.Title asChild>
-              <b>选择要下载的文件</b>
+              <b>{t('bt.title')}</b>
             </Dialog.Title>
             <Dialog.Close asChild>
-              <button type="button" className="icon-btn sm" aria-label="关闭">
+              <button type="button" className="icon-btn sm" aria-label={t('common.close')}>
                 <X size={16} />
               </button>
             </Dialog.Close>
           </header>
           <div className="dlg-body">
             <Dialog.Description className="dlg-sub">
-              {files.length} 个文件 · 共 {fmtBytes(totalBytes)}
+              {t('bt.summary', { n: files.length, size: fmtBytes(totalBytes) })}
             </Dialog.Description>
             <label className="mcheck mb-2">
               <input type="checkbox" ref={selectAllRef} checked={allSelected} onChange={toggleAll} />
               <i />
-              全选
+              {t('common.selectAll')}
             </label>
             <div className="bt-tree">
               {files.map((f) => {
@@ -115,16 +117,16 @@ export function BtFilesDialog() {
           </div>
           <footer className="dlg-foot">
             <span className="bt-sel">
-              已选 {selected.size} 个 · {fmtBytes(selectedBytes)}
+              {t('bt.selected', { n: selected.size, size: fmtBytes(selectedBytes) })}
             </span>
             <span className="flex1" />
             <Dialog.Close asChild>
               <button type="button" className="btn ghost">
-                取消
+                {t('common.cancel')}
               </button>
             </Dialog.Close>
             <button type="button" className="btn primary" onClick={confirm} disabled={selected.size === 0}>
-              开始下载
+              {t('common.startDownload')}
             </button>
           </footer>
         </Dialog.Content>

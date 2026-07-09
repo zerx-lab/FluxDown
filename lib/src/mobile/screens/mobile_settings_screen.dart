@@ -16,6 +16,23 @@ import '../mobile_ui.dart';
 
 const _appVersion = String.fromEnvironment('APP_VERSION', defaultValue: 'dev');
 
+/// 全局 UA 预设（与桌面设置页一致；'default' = 空字符串 → 引擎内置 FluxDown 标识）
+const _kUaPresets = <String, String>{
+  'chrome':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+  'firefox':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) '
+      'Gecko/20100101 Firefox/147.0',
+  'edge':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.3800.70',
+  'safari':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3.1 Safari/605.1.15',
+  'netdisk': 'netdisk',
+};
+
 /// 设置屏（移动端：分组卡片列表）
 class MobileSettingsScreen extends StatelessWidget {
   final SettingsProvider settings;
@@ -113,6 +130,12 @@ class MobileSettingsScreen extends StatelessWidget {
                               ? s.statusSpeedLimitOff
                               : '${DownloadTask.formatBytes(settings.speedLimitBytes)}/s',
                           onTap: () => _selectSpeedLimit(context),
+                        ),
+                        _Row(
+                          label: s.userAgent,
+                          value: _uaLabel(s, settings.globalUserAgent),
+                          valueEllipsis: true,
+                          onTap: () => _selectUserAgent(context),
                         ),
                       ],
                     ),
@@ -400,6 +423,59 @@ class MobileSettingsScreen extends StatelessWidget {
         ('socks5', 'SOCKS5'),
       ],
       onSelect: settings.setProxyType,
+    );
+  }
+
+  static String _uaLabel(S s, String ua) {
+    if (ua.isEmpty) return s.userAgentPresetDefault;
+    for (final entry in _kUaPresets.entries) {
+      if (entry.value == ua) {
+        return switch (entry.key) {
+          'netdisk' => s.userAgentPresetNetdisk,
+          'chrome' => 'Chrome',
+          'firefox' => 'Firefox',
+          'edge' => 'Edge',
+          'safari' => 'Safari',
+          _ => entry.key,
+        };
+      }
+    }
+    return s.userAgentPresetCustom;
+  }
+
+  void _selectUserAgent(BuildContext context) {
+    final s = LocaleScope.of(context);
+    const customMarker = '\u0000custom';
+    final current = settings.globalUserAgent;
+    _showSelectSheet<String>(
+      context,
+      title: s.userAgent,
+      // 自定义值不匹配任何预设时用 marker 保持"自定义"高亮
+      current: current.isEmpty || _kUaPresets.containsValue(current)
+          ? current
+          : customMarker,
+      options: [
+        ('', s.userAgentPresetDefault),
+        (_kUaPresets['chrome'] ?? '', 'Chrome'),
+        (_kUaPresets['firefox'] ?? '', 'Firefox'),
+        (_kUaPresets['edge'] ?? '', 'Edge'),
+        (_kUaPresets['safari'] ?? '', 'Safari'),
+        ('netdisk', s.userAgentPresetNetdisk),
+        (customMarker, s.userAgentPresetCustom),
+      ],
+      onSelect: (v) {
+        if (v == customMarker) {
+          _showInputSheet(
+            context,
+            title: s.userAgent,
+            initial: settings.globalUserAgent,
+            placeholder: s.userAgentPlaceholder,
+            onSave: settings.setGlobalUserAgent,
+          );
+        } else {
+          settings.setGlobalUserAgent(v);
+        }
+      },
     );
   }
 

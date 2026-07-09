@@ -285,5 +285,45 @@ void main() {
       expect(decoded.form.queueId, '');
       expect(decoded.form.threadsUserModified, isFalse);
     });
+
+    test('roundtrip：extraHeaders 保留全部自定义请求头键值', () {
+      const original = QuickPopupResult(
+        requestId: 5,
+        form: QuickDownloadFormResult(
+          urlText: 'https://example.com/z',
+          saveDir: '',
+          rename: '',
+          segments: 0,
+          proxyUrl: '',
+          userAgent: '',
+          queueId: '',
+          cookies: '',
+          checksum: '',
+          threadsUserModified: false,
+          extraHeaders: {
+            'Authorization': 'Bearer token-123',
+            'X-Custom-中文键': '中文值',
+          },
+        ),
+      );
+
+      final decoded = QuickPopupResult.fromJsonString(
+        original.toJsonString(),
+      );
+
+      expect(decoded.form.extraHeaders, {
+        'Authorization': 'Bearer token-123',
+        'X-Custom-中文键': '中文值',
+      });
+    });
+
+    test('容错：手工构造 JSON 缺失 extraHeaders 字段时回退空 map', () {
+      const minimalJson =
+          '{"requestId":9,"urlText":"https://example.com/y"}';
+
+      final decoded = QuickPopupResult.fromJsonString(minimalJson);
+
+      expect(decoded.form.extraHeaders, isEmpty);
+    });
   });
 }

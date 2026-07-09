@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
@@ -10,9 +10,9 @@ use fluxdown_engine::proxy_config::ProxyConfig;
 use fluxdown_engine::selection::HostSelection;
 use fluxdown_engine::{Engine, EngineConfig};
 use rinf::{DartSignal, RustSignal};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
-use crate::api_host::{ApiCommand, HubApiHost};
+use crate::api_host::{ApiCommand, HubApiHost, LiveSpeedMap};
 use crate::file_association;
 use crate::logger::log_info;
 use crate::native_messaging::{self};
@@ -23,15 +23,17 @@ use crate::signals::{
     BatchControlTask, BatchCreateTask, CheckFileAssociation, CheckForUpdate, CheckUrlProtocol,
     ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask, CreateQueue, CreateTask,
     DeleteQueue, DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult,
-    ExternalDownloadRequest, FileAssociationStatus, InstallUpdate, MoveTaskToQueue,
-    OpenFile, ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
-    RequestUpdateFailureMarker, RescanFiles, RevealFile, SaveConfig, SelectBtFiles, SelectHlsQuality,
-    SetFileAssociation, SetPriorityTask, SetUrlProtocol, SystemProxyInfo, TestProxyConnection,
-    TrackerSubscriptionResult, UpdateCheckResult, UpdateEd2kServerSubscription,
-    UpdateFailureMarker, UpdateQueue, UpdateTrackerSubscription, UrlProtocolStatus,
+    ExternalDownloadRequest, FileAssociationStatus, InstallUpdate, MoveTaskToQueue, OpenFile,
+    ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
+    RequestUpdateFailureMarker, RescanFiles, RevealFile, SaveConfig, SelectBtFiles,
+    SelectHlsQuality, SetFileAssociation, SetPriorityTask, SetUrlProtocol, SystemProxyInfo,
+    TestProxyConnection, TrackerSubscriptionResult, UpdateCheckResult,
+    UpdateEd2kServerSubscription, UpdateFailureMarker, UpdateQueue, UpdateTrackerSubscription,
+    UrlProtocolStatus,
 };
 use crate::updater;
-use fluxdown_api::server::{ApiServerConfig, spawn_api_server};
+use fluxdown_api::server::{ApiServerConfig, ApiServerHandle, spawn_api_server};
+use fluxdown_api::service::TaskEvent;
 
 /// Compute default save directory (platform-dependent).
 fn default_save_dir() -> String {
@@ -305,7 +307,25 @@ pub async fn run(db_dir: PathBuf) {
     // 引擎事件接收端与选择接口:分别桥接到 hub 的 RustSignal 发送与
     // oneshot 等待表。`sink` 同时供 `Engine::new` 与 `progress_reporter`
     // 使用(后者独立取走 progress_rx,不经由 manager 内部的 sink 字段)。
-    let sink: Arc<dyn EventSink> = Arc::new(RinfEventSink);
+    // `live_speeds`:aria2 兼容层 `live_speeds()` 的实时速率表,`RinfEventSink`
+    // 写、`HubApiHost` 读,构造后两侧共享同一个 `Arc`(见下方 `api_host` 构造点)。
+    let live_speeds: LiveSpeedMap = Arc::new(Mutex::new(HashMap::new()));
+    // aria2 兼容层 WS 通知源:`RinfEventSink` 在状态迁移判定后广播,
+    // `HubApiHost::subscribe_task_events()`、本循环删除命令处理点与
+    // `handle_api_command` 的 `DeleteTask` 分支(经 `rinf_sink.
+    // broadcast_task_stop`)共用同一个 `Sender`。容量 256:无订阅者时
+    // `send` 直接返回 `Err` 并被忽略,容量只影响「有订阅者但消费慢」时
+    // 的积压上限,超限后旧订阅者下次 `recv()` 收到 `Lagged`。
+    let (task_events_tx, _) = broadcast::channel::<TaskEvent>(256);
+    // 保留具体类型的 `Arc`:除了作为 `Arc<dyn EventSink>` 注入引擎,删除
+    // 命令处理点还需直接调用 `broadcast_task_stop`——它不在 `EventSink`
+    // trait 上,因为那是 aria2 兼容层专属的收尾动作,不属于通用事件转发
+    // 契约。
+    let rinf_sink = Arc::new(RinfEventSink::new(
+        live_speeds.clone(),
+        task_events_tx.clone(),
+    ));
+    let sink: Arc<dyn EventSink> = rinf_sink.clone();
     let selector: Arc<dyn HostSelection> = Arc::new(RinfHostSelection::new());
 
     let mut engine = match Engine::new(
@@ -542,6 +562,8 @@ pub async fn run(db_dir: PathBuf) {
         engine.db.clone(),
         api_cmd_tx,
         ext_dl_tx.clone(),
+        live_speeds,
+        task_events_tx,
     ));
     let mut api_server_handle = {
         let cfg = ApiServerConfig::from_config_map(
@@ -609,7 +631,7 @@ pub async fn run(db_dir: PathBuf) {
                 );
                 for entry in msg.entries {
                     engine.manager
-                        .create_task(entry.url, msg.save_dir.clone(), entry.file_name, msg.segments, msg.cookies.clone(), msg.referrer.clone(), 0, Vec::new(), msg.proxy_url.clone(), msg.user_agent.clone(), msg.queue_id.clone(), entry.checksum, HashMap::new(), Vec::new(), None, None, if entry.audio_url.is_empty() { None } else { Some(entry.audio_url) })
+                        .create_task(entry.url, msg.save_dir.clone(), entry.file_name, msg.segments, msg.cookies.clone(), msg.referrer.clone(), 0, Vec::new(), msg.proxy_url.clone(), msg.user_agent.clone(), msg.queue_id.clone(), entry.checksum, msg.extra_headers.clone(), Vec::new(), None, None, if entry.audio_url.is_empty() { None } else { Some(entry.audio_url) })
                         .await;
                 }
                 // 批量创建完成后统一推送一次 AllTasks，同步 queue_id 到 Dart。
@@ -621,8 +643,16 @@ pub async fn run(db_dir: PathBuf) {
                     0 => engine.manager.pause_task(&msg.task_id).await,
                     1 => engine.manager.resume_task(&msg.task_id).await,
                     2 => engine.manager.cancel_task(&msg.task_id).await,
-                    3 => engine.manager.delete_task(&msg.task_id, true).await,   // delete record + files
-                    4 => engine.manager.delete_task(&msg.task_id, false).await,  // delete record only
+                    3 => {
+                        // delete record + files
+                        engine.manager.delete_task(&msg.task_id, true).await;
+                        rinf_sink.broadcast_task_stop(&msg.task_id);
+                    }
+                    4 => {
+                        // delete record only
+                        engine.manager.delete_task(&msg.task_id, false).await;
+                        rinf_sink.broadcast_task_stop(&msg.task_id);
+                    }
                     _ => {}
                 }
             }
@@ -635,8 +665,18 @@ pub async fn run(db_dir: PathBuf) {
                 match msg.action {
                     0 => engine.manager.batch_pause(&msg.task_ids).await,
                     1 => engine.manager.batch_resume(&msg.task_ids).await,
-                    3 => engine.manager.delete_tasks_batch(&msg.task_ids, true).await,
-                    4 => engine.manager.delete_tasks_batch(&msg.task_ids, false).await,
+                    3 => {
+                        engine.manager.delete_tasks_batch(&msg.task_ids, true).await;
+                        for task_id in &msg.task_ids {
+                            rinf_sink.broadcast_task_stop(task_id);
+                        }
+                    }
+                    4 => {
+                        engine.manager.delete_tasks_batch(&msg.task_ids, false).await;
+                        for task_id in &msg.task_ids {
+                            rinf_sink.broadcast_task_stop(task_id);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -656,118 +696,16 @@ pub async fn run(db_dir: PathBuf) {
                     log_info!("Failed to save config: {}", e);
                 }
                 // Notify DownloadManager for runtime-effective settings.
-                match msg.key.as_str() {
-                    "max_concurrent_tasks" => {
-                        if let Ok(v) = msg.value.parse::<usize>() {
-                            log_info!("[actor] updating max_concurrent to {}", v);
-                            engine.manager.set_max_concurrent(v).await;
-                        }
-                    }
-                    "speed_limit_bytes" => {
-                        if let Ok(v) = msg.value.parse::<u64>() {
-                            log_info!("[actor] updating speed_limit to {} B/s", v);
-                            engine.manager.set_speed_limit(v);
-                        }
-                    }
-                    "log_max_size_mb" => {
-                        if let Ok(mb) = msg.value.parse::<u64>() {
-                            log_info!("[actor] updating log_max_size_mb to {}", mb);
-                            crate::logger::set_max_total_bytes(mb * 1024 * 1024);
-                        }
-                    }
-                    "default_save_dir" => {
-                        log_info!("[actor] updating default_save_dir to {}", msg.value);
-                        engine.manager.set_default_save_dir(msg.value);
-                    }
-                    // BT config keys — update in-memory BtConfig and invalidate
-                    // the current session so the next BT download picks up changes.
-                    "bt_enable_dht" | "bt_enable_upnp" | "bt_port_start"
-                    | "bt_port_end" | "bt_custom_trackers"
-                    | "bt_tracker_sub_enabled" | "bt_tracker_sub_urls" => {
-                        log_info!("[actor] BT config changed: {}={}", msg.key, msg.value);
-                        // Reload the full BT config from DB to stay consistent.
-                        let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
-                        engine.manager.set_bt_config(bt_config_from_map(&all_cfg));
-                        // Invalidate (destroy) the current BT session so it is
-                        // re-created with the new config on next BT download.
-                        engine.manager.invalidate_bt_session().await;
-                        // 订阅地址变化 / 重新启用订阅 → 后台立即刷新一次。
-                        if msg.key == "bt_tracker_sub_urls"
-                            || (msg.key == "bt_tracker_sub_enabled" && msg.value == "true")
-                        {
-                            spawn_tracker_sub_refresh(engine.db.clone(), tracker_sub_tx.clone());
-                        }
-                    }
-                    // ED2K 服务器订阅键：地址变化 / 重新启用 → 后台立即刷新一次。
-                    // 服务器列表在每次下载 find-sources 时新读，无需失效会话。
-                    "ed2k_server_sub_urls" | "ed2k_server_sub_enabled" => {
-                        log_info!("[actor] ED2K server sub config changed: {}={}", msg.key, msg.value);
-                        if msg.key == "ed2k_server_sub_urls"
-                            || (msg.key == "ed2k_server_sub_enabled" && msg.value == "true")
-                        {
-                            spawn_ed2k_server_sub_refresh(engine.db.clone(), ed2k_sub_tx.clone());
-                        }
-                    }
-                    // Kad nodes.dat：URL 变化 / Kad 重新启用 → 后台立即刷新一次。
-                    "ed2k_nodes_dat_url" | "ed2k_enable_kad" => {
-                        log_info!("[actor] ED2K Kad config changed: {}={}", msg.key, msg.value);
-                        if msg.key == "ed2k_nodes_dat_url"
-                            || (msg.key == "ed2k_enable_kad" && msg.value == "true")
-                        {
-                            spawn_ed2k_nodes_dat_refresh(engine.db.clone());
-                        }
-                    }
-                    // Proxy config keys — reload full proxy config from DB
-                    // and rebuild the HTTP client.
-                    "proxy_mode" | "proxy_type" | "proxy_host" | "proxy_port"
-                    | "proxy_username" | "proxy_password" | "proxy_no_list" => {
-                        log_info!("[actor] proxy config changed: {}={}", msg.key, msg.value);
-                        let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
-                        let new_proxy = ProxyConfig::from_config_map(&all_cfg);
-                        if let Err(e) = engine.manager.set_proxy_config(new_proxy) {
-                            log_info!("[actor] failed to apply proxy config: {}", e);
-                        }
-                    }
-                    "global_user_agent" => {
-                        log_info!("[actor] user_agent changed: {}", msg.value);
-                        if let Err(e) = engine.manager.set_user_agent(msg.value) {
-                            log_info!("[actor] failed to apply user_agent: {}", e);
-                        }
-                    }
-                    "default_segments" => {
-                        if let Ok(v) = msg.value.parse::<i32>() {
-                            log_info!("[actor] updating default_segments to {}", v);
-                            engine.manager.set_default_segments(v);
-                        }
-                    }
-                    "max_auto_retries" => {
-                        if let Ok(v) = msg.value.parse::<i32>() {
-                            log_info!("[actor] updating max_auto_retries to {}", v);
-                            engine.manager.set_max_auto_retries(v);
-                        }
-                    }
-                    "auto_retry_delay_secs" => {
-                        if let Ok(v) = msg.value.parse::<u64>() {
-                            log_info!("[actor] updating auto_retry_delay_secs to {}", v);
-                            engine.manager.set_auto_retry_delay_secs(v);
-                        }
-                    }
-                    // 本机 API 服务器配置变更 → 热重启监听（优雅停机旧实例
-                    // 后按最新配置重启，含端口/token/子功能开关，无需重启应用）。
-                    k if k.starts_with("local_server_") => {
-                        log_info!(
-                            "[actor] api server config '{}' changed, restarting server",
-                            msg.key
-                        );
-                        api_server_handle.shutdown();
-                        let cfg = ApiServerConfig::from_config_map(
-                            &engine.db.get_all_config().await.unwrap_or_default(),
-                            env!("CARGO_PKG_VERSION"),
-                        );
-                        api_server_handle = spawn_api_server(api_host.clone(), cfg);
-                    }
-                    _ => {} // other config keys — no runtime action needed
-                }
+                apply_config_key(
+                    &mut engine,
+                    &msg.key,
+                    &msg.value,
+                    &tracker_sub_tx,
+                    &ed2k_sub_tx,
+                    &api_host,
+                    &mut api_server_handle,
+                )
+                .await;
             }
             Some(_) = config_req_recv.recv() => {
                 match engine.db.get_all_config().await {
@@ -785,7 +723,16 @@ pub async fn run(db_dir: PathBuf) {
             }
             // --- 管理 API 写命令（本机 API 服务器 /api/v1，见 api_host.rs）---
             Some(cmd) = api_cmd_rx.recv() => {
-                handle_api_command(cmd, &mut engine).await;
+                handle_api_command(
+                    cmd,
+                    &mut engine,
+                    &tracker_sub_tx,
+                    &ed2k_sub_tx,
+                    &api_host,
+                    &mut api_server_handle,
+                    &rinf_sink,
+                )
+                .await;
             }
             // --- Native Messaging: browser extension download requests ---
             Some(req) = native_msg_rx.recv() => {
@@ -833,7 +780,12 @@ pub async fn run(db_dir: PathBuf) {
                 // 命中即用、未命中按默认值（GET、无 body）继续——后者保留向后兼容
                 // 旧版扩展（不发 method/body）的下载路径。
                 let ctx = ext_request_cache.remove(&msg.url).unwrap_or_default();
-                let extra_headers = ctx.headers;
+                // 浏览器捕获的请求头打底，用户手填的同名（忽略大小写）覆盖。
+                let mut extra_headers = ctx.headers;
+                for (k, v) in msg.extra_headers.clone() {
+                    extra_headers.retain(|ek, _| !ek.eq_ignore_ascii_case(&k));
+                    extra_headers.insert(k, v);
+                }
                 let method = ctx.method;
                 let body = ctx.body.map(nm_body_to_captured);
                 log_info!(
@@ -1196,10 +1148,42 @@ pub async fn run(db_dir: PathBuf) {
 
 /// 处理管理 API 写命令：在 actor 事件循环内串行执行，完成后经 oneshot 回执。
 /// 回执接收端掉线（HTTP 请求已中止）无影响，`send` 失败直接忽略。
-async fn handle_api_command(cmd: ApiCommand, engine: &mut Engine) {
+///
+/// `tracker_sub_tx`/`ed2k_sub_tx`/`api_host`/`api_server_handle`：仅
+/// `ApplyConfig` 命令分支需要，透传给 [`apply_config_key`]（与 Dart
+/// `SaveConfig` 信号分支共用同一套「键 → 引擎 setter」逻辑）。
+/// `rinf_sink`:`DeleteTask` 分支需要,删除成功后广播 aria2 `Stop` 事件
+/// 并从前态表移除条目(见 `RinfEventSink::broadcast_task_stop`)。
+async fn handle_api_command(
+    cmd: ApiCommand,
+    engine: &mut Engine,
+    tracker_sub_tx: &mpsc::Sender<fluxdown_engine::tracker_subscription::FetchOutcome>,
+    ed2k_sub_tx: &mpsc::Sender<fluxdown_engine::ed2k::server_subscription::ServerFetchOutcome>,
+    api_host: &Arc<dyn fluxdown_api::service::ApiHost>,
+    api_server_handle: &mut ApiServerHandle,
+    rinf_sink: &Arc<RinfEventSink>,
+) {
     match cmd {
         ApiCommand::CreateTask { req, ack } => {
             let req = *req;
+            // torrent_b64（aria2 addTorrent 兼容入口）非空时 base64 STANDARD
+            // 解码为种子字节，优先于 url（参照 Dart 创建路径 :599，种子字节
+            // 非空时 url 允许为空）。解码失败即请求参数非法；ack 类型仅
+            // `Option<String>`，最接近 BadRequest 语义的表达是回 None 并记录日志。
+            let torrent_file_bytes = match req.torrent_b64.as_deref() {
+                Some(b64) => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(b64) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            log_info!("[actor] api create task: invalid torrent_b64: {}", e);
+                            let _ = ack.send(None);
+                            return;
+                        }
+                    }
+                }
+                None => Vec::new(),
+            };
             // 空 save_dir → 全局默认目录（config 表）→ 平台默认下载目录。
             let mut save_dir = req.save_dir;
             if save_dir.trim().is_empty() {
@@ -1225,7 +1209,7 @@ async fn handle_api_command(cmd: ApiCommand, engine: &mut Engine) {
                     req.cookies,
                     req.referrer,
                     0,
-                    Vec::new(),
+                    torrent_file_bytes,
                     req.proxy_url,
                     req.user_agent,
                     req.queue_id,
@@ -1255,6 +1239,7 @@ async fn handle_api_command(cmd: ApiCommand, engine: &mut Engine) {
             ack,
         } => {
             engine.manager.delete_task(&task_id, delete_files).await;
+            rinf_sink.broadcast_task_stop(&task_id);
             let _ = ack.send(());
         }
         ApiCommand::PauseAll { ack } => {
@@ -1269,6 +1254,154 @@ async fn handle_api_command(cmd: ApiCommand, engine: &mut Engine) {
             engine.manager.batch_resume(&ids).await;
             let _ = ack.send(());
         }
+        ApiCommand::ApplyConfig { keys, ack } => {
+            // 命令只带 keys：值已由 `HubApiHost::apply_config` 写入 DB，
+            // 这里重新整表读取，与 server 侧 `ActorCmd::ApplyConfig` 语义一致。
+            let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
+            for key in &keys {
+                if let Some(value) = all_cfg.get(key) {
+                    apply_config_key(
+                        engine,
+                        key,
+                        value,
+                        tracker_sub_tx,
+                        ed2k_sub_tx,
+                        api_host,
+                        api_server_handle,
+                    )
+                    .await;
+                }
+            }
+            let _ = ack.send(());
+        }
+    }
+}
+
+/// 把单个已持久化的配置键 live-apply 到运行中的引擎。是 Dart `SaveConfig`
+/// 信号分支与管理 API `ApiCommand::ApplyConfig` 命令分支共用的核心逻辑
+/// （单键粒度，行为与原内联 match 完全一致）；`local_server_*` 键触发本机
+/// API 服务器优雅停机 + 用最新配置重新监听（热重启，不影响其余运行中任务）。
+async fn apply_config_key(
+    engine: &mut Engine,
+    key: &str,
+    value: &str,
+    tracker_sub_tx: &mpsc::Sender<fluxdown_engine::tracker_subscription::FetchOutcome>,
+    ed2k_sub_tx: &mpsc::Sender<fluxdown_engine::ed2k::server_subscription::ServerFetchOutcome>,
+    api_host: &Arc<dyn fluxdown_api::service::ApiHost>,
+    api_server_handle: &mut ApiServerHandle,
+) {
+    match key {
+        "max_concurrent_tasks" => {
+            if let Ok(v) = value.parse::<usize>() {
+                log_info!("[actor] updating max_concurrent to {}", v);
+                engine.manager.set_max_concurrent(v).await;
+            }
+        }
+        "speed_limit_bytes" => {
+            if let Ok(v) = value.parse::<u64>() {
+                log_info!("[actor] updating speed_limit to {} B/s", v);
+                engine.manager.set_speed_limit(v);
+            }
+        }
+        "log_max_size_mb" => {
+            if let Ok(mb) = value.parse::<u64>() {
+                log_info!("[actor] updating log_max_size_mb to {}", mb);
+                crate::logger::set_max_total_bytes(mb * 1024 * 1024);
+            }
+        }
+        "default_save_dir" => {
+            log_info!("[actor] updating default_save_dir to {}", value);
+            engine.manager.set_default_save_dir(value.to_string());
+        }
+        // BT config keys — update in-memory BtConfig and invalidate
+        // the current session so the next BT download picks up changes.
+        "bt_enable_dht"
+        | "bt_enable_upnp"
+        | "bt_port_start"
+        | "bt_port_end"
+        | "bt_custom_trackers"
+        | "bt_tracker_sub_enabled"
+        | "bt_tracker_sub_urls" => {
+            log_info!("[actor] BT config changed: {}={}", key, value);
+            // Reload the full BT config from DB to stay consistent.
+            let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
+            engine.manager.set_bt_config(bt_config_from_map(&all_cfg));
+            // Invalidate (destroy) the current BT session so it is
+            // re-created with the new config on next BT download.
+            engine.manager.invalidate_bt_session().await;
+            // 订阅地址变化 / 重新启用订阅 → 后台立即刷新一次。
+            if key == "bt_tracker_sub_urls" || (key == "bt_tracker_sub_enabled" && value == "true")
+            {
+                spawn_tracker_sub_refresh(engine.db.clone(), tracker_sub_tx.clone());
+            }
+        }
+        // ED2K 服务器订阅键：地址变化 / 重新启用 → 后台立即刷新一次。
+        // 服务器列表在每次下载 find-sources 时新读，无需失效会话。
+        "ed2k_server_sub_urls" | "ed2k_server_sub_enabled" => {
+            log_info!("[actor] ED2K server sub config changed: {}={}", key, value);
+            if key == "ed2k_server_sub_urls"
+                || (key == "ed2k_server_sub_enabled" && value == "true")
+            {
+                spawn_ed2k_server_sub_refresh(engine.db.clone(), ed2k_sub_tx.clone());
+            }
+        }
+        // Kad nodes.dat：URL 变化 / Kad 重新启用 → 后台立即刷新一次。
+        "ed2k_nodes_dat_url" | "ed2k_enable_kad" => {
+            log_info!("[actor] ED2K Kad config changed: {}={}", key, value);
+            if key == "ed2k_nodes_dat_url" || (key == "ed2k_enable_kad" && value == "true") {
+                spawn_ed2k_nodes_dat_refresh(engine.db.clone());
+            }
+        }
+        // Proxy config keys — reload full proxy config from DB
+        // and rebuild the HTTP client.
+        "proxy_mode" | "proxy_type" | "proxy_host" | "proxy_port" | "proxy_username"
+        | "proxy_password" | "proxy_no_list" => {
+            log_info!("[actor] proxy config changed: {}={}", key, value);
+            let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
+            let new_proxy = ProxyConfig::from_config_map(&all_cfg);
+            if let Err(e) = engine.manager.set_proxy_config(new_proxy) {
+                log_info!("[actor] failed to apply proxy config: {}", e);
+            }
+        }
+        "global_user_agent" => {
+            log_info!("[actor] user_agent changed: {}", value);
+            if let Err(e) = engine.manager.set_user_agent(value.to_string()) {
+                log_info!("[actor] failed to apply user_agent: {}", e);
+            }
+        }
+        "default_segments" => {
+            if let Ok(v) = value.parse::<i32>() {
+                log_info!("[actor] updating default_segments to {}", v);
+                engine.manager.set_default_segments(v);
+            }
+        }
+        "max_auto_retries" => {
+            if let Ok(v) = value.parse::<i32>() {
+                log_info!("[actor] updating max_auto_retries to {}", v);
+                engine.manager.set_max_auto_retries(v);
+            }
+        }
+        "auto_retry_delay_secs" => {
+            if let Ok(v) = value.parse::<u64>() {
+                log_info!("[actor] updating auto_retry_delay_secs to {}", v);
+                engine.manager.set_auto_retry_delay_secs(v);
+            }
+        }
+        // 本机 API 服务器配置变更 → 热重启监听（优雅停机旧实例
+        // 后按最新配置重启，含端口/token/子功能开关，无需重启应用）。
+        k if k.starts_with("local_server_") => {
+            log_info!(
+                "[actor] api server config '{}' changed, restarting server",
+                key
+            );
+            api_server_handle.shutdown();
+            let cfg = ApiServerConfig::from_config_map(
+                &engine.db.get_all_config().await.unwrap_or_default(),
+                env!("CARGO_PKG_VERSION"),
+            );
+            *api_server_handle = spawn_api_server(api_host.clone(), cfg);
+        }
+        _ => {} // other config keys — no runtime action needed
     }
 }
 

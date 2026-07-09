@@ -6,6 +6,7 @@ import { ChevronRight, Copy, Download, Link2, ListOrdered, Pause, Play, RotateCc
 import type { ReactNode } from 'react'
 import { taskFileUrl } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
+import { useI18n } from '../../lib/i18n'
 import type { QueueDto } from '../../lib/types'
 import type { ViewTask } from './useViewTasks'
 
@@ -30,6 +31,7 @@ export function TaskContextMenu({
   onMove: (queueId: string) => void
   children: ReactNode
 }) {
+  const { t: tr } = useI18n()
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild onContextMenu={onSelect}>
@@ -40,25 +42,25 @@ export function TaskContextMenu({
           {(t.status === 1 || t.status === 5) && (
             <ContextMenu.Item className="ctx-item" onSelect={onPause}>
               <Pause size={14} />
-              暂停
+              {tr('task.pause')}
             </ContextMenu.Item>
           )}
           {(t.status === 2 || t.status === 0) && (
             <ContextMenu.Item className="ctx-item" onSelect={onContinue}>
               <Play size={14} />
-              继续
+              {tr('task.resume')}
             </ContextMenu.Item>
           )}
           {t.status === 4 && (
             <ContextMenu.Item className="ctx-item" onSelect={onContinue}>
               <RotateCcw size={14} />
-              重试
+              {tr('task.retry')}
             </ContextMenu.Item>
           )}
           {t.status !== 3 && (
             <ContextMenu.Item className="ctx-item" onSelect={onBoost}>
               <Zap size={14} />
-              Boost 优先下载
+              {tr('task.boost')}
             </ContextMenu.Item>
           )}
           {t.status === 3 && (
@@ -69,22 +71,22 @@ export function TaskContextMenu({
               }}
             >
               <Download size={14} />
-              保存到本地
+              {tr('task.saveToLocal')}
             </ContextMenu.Item>
           )}
           <ContextMenu.Item className="ctx-item" onSelect={() => void navigator.clipboard.writeText(t.url)}>
             <Copy size={14} />
-            复制下载链接
+            {tr('task.copyUrl')}
           </ContextMenu.Item>
           <ContextMenu.Item className="ctx-item" onSelect={() => void navigator.clipboard.writeText(`${t.saveDir}/${t.fileName}`)}>
             <Link2 size={14} />
-            复制文件服务器路径
+            {tr('task.copyPath')}
           </ContextMenu.Item>
           {queues.filter((q) => q.queueId !== t.queueId).length > 0 && (
             <ContextMenu.Sub>
               <ContextMenu.SubTrigger className="ctx-item">
                 <ListOrdered size={14} />
-                移动到队列…
+                {tr('task.moveToQueue')}
                 <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
               </ContextMenu.SubTrigger>
               <ContextMenu.Portal>
@@ -103,16 +105,16 @@ export function TaskContextMenu({
           <ContextMenu.Separator className="ctx-sep" />
           <ContextMenu.Item className="ctx-item danger" onSelect={() => onDelete(false)}>
             <Trash2 size={14} />
-            删除
+            {tr('task.delete')}
           </ContextMenu.Item>
           <ContextMenu.Item
             className="ctx-item danger"
             onSelect={async () => {
-              if (await confirmDialog({ title: '删除任务', message: '删除任务并删除本地文件？此操作不可撤销。', danger: true })) onDelete(true)
+              if (await confirmDialog({ title: tr('task.deleteTitle'), message: tr('task.deleteWithFilesMsg'), danger: true })) onDelete(true)
             }}
           >
             <Trash2 size={14} />
-            删除并删文件
+            {tr('task.deleteWithFiles')}
           </ContextMenu.Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>

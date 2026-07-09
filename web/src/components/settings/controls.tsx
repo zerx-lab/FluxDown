@@ -43,9 +43,9 @@ export function SetSwitch({
       checked={checked}
       onCheckedChange={onCheckedChange}
       disabled={disabled}
-      className="relative inline-flex h-[22px] w-[38px] shrink-0 cursor-pointer rounded-full bg-track transition-colors data-[state=checked]:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+      className="switch"
     >
-      <SwitchPrimitive.Thumb className="block h-4 w-4 translate-x-[3px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,.25)] transition-transform duration-150 data-[state=checked]:translate-x-[19px]" />
+      <SwitchPrimitive.Thumb className="switch-thumb" />
     </SwitchPrimitive.Root>
   )
 }

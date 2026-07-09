@@ -93,6 +93,10 @@ class _QuickDownloadDialogShell extends StatelessWidget {
     final m = AppMetrics.of(context);
 
     return ShadDialog(
+      // 同 new_download_dialog：焦点圈画在控件外侧，滚动视图会裁切，
+      // 左右各让 6px 进 scrollPadding 保住焦点圈。
+      padding: const EdgeInsets.fromLTRB(18, 24, 18, 24),
+      scrollPadding: const EdgeInsets.symmetric(horizontal: 6),
       title: Row(
         children: [
           Container(

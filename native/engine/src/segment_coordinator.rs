@@ -2386,6 +2386,7 @@ async fn do_segment(
                                     error_message: String::new(),
                                     file_name: String::new(),
                                     segment_details: Some(snapshot),
+                                    ..Default::default()
                                 })
                                 .await;
                             last_report = Instant::now();

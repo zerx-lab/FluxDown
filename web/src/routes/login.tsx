@@ -3,8 +3,10 @@ import { useNavigate } from '@tanstack/react-router'
 import { type FormEvent, useState } from 'react'
 import { api, ApiError } from '../lib/api'
 import { saveCredentials } from '../lib/auth'
+import { translateBackendMessage, useI18n } from '../lib/i18n'
 
 export function LoginScreen() {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const [base, setBase] = useState(() => window.location.origin)
   const [token, setToken] = useState('')
@@ -23,7 +25,7 @@ export function LoginScreen() {
       saveCredentials(effectiveBase, token, remember)
       navigate({ to: '/' })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : '无法连接到服务器，请检查地址')
+      setError(err instanceof ApiError ? translateBackendMessage(err.message) : t('login.connectFailed'))
     } finally {
       setPending(false)
     }
@@ -42,11 +44,11 @@ export function LoginScreen() {
             />
           </svg>
         </span>
-        <h2>连接到 FluxDown 服务器</h2>
-        <p className="login-sub">Downloads, Supercharged. — 远程管理你的下载引擎</p>
+        <h2>{t('login.title')}</h2>
+        <p className="login-sub">{t('login.subtitle')}</p>
         <form className="contents" onSubmit={handleSubmit}>
           <label className="field-label" htmlFor="login-base">
-            服务器地址
+            {t('login.serverAddress')}
           </label>
           <input
             id="login-base"
@@ -58,7 +60,7 @@ export function LoginScreen() {
             onChange={(e) => setBase(e.target.value)}
           />
           <label className="field-label" htmlFor="login-token">
-            访问令牌
+            {t('login.token')}
           </label>
           <input
             id="login-token"
@@ -72,24 +74,24 @@ export function LoginScreen() {
           <label className="remember">
             <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
             <i />
-            记住此设备
+            {t('login.remember')}
           </label>
           {error ? <p className="mt-[-6px] mb-3 text-[12px] text-danger">{error}</p> : null}
           <button className="btn primary block" type="submit" disabled={pending}>
-            {pending ? '连接中…' : '连 接'}
+            {pending ? t('login.connecting') : t('login.connect')}
           </button>
         </form>
-        <p className="login-hint">令牌在服务器「设置 → 安全与访问」中生成；连接仅限局域网或经反向代理的 HTTPS。</p>
+        <p className="login-hint">{t('login.hint')}</p>
       </div>
       <div className="login-feats">
         <span>
-          <b>Rust 引擎</b>HTTP · FTP · BT · HLS · DASH
+          <b>{t('login.featEngine')}</b>{t('login.featEngineDesc')}
         </span>
         <span>
-          <b>实时推送</b>WebSocket 进度 / 分段拆分
+          <b>{t('login.featRealtime')}</b>{t('login.featRealtimeDesc')}
         </span>
         <span>
-          <b>零追踪</b>无账号 · 数据全在你的服务器
+          <b>{t('login.featPrivacy')}</b>{t('login.featPrivacyDesc')}
         </span>
       </div>
     </section>

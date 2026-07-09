@@ -148,7 +148,8 @@ x_down/
 │       ├── routes.rs                  # 路径常量（/api/v1/*，server 与 Rust 客户端共用）
 │       ├── service.rs                 # `ApiHost` trait —— 宿主能力契约（桌面 App / 未来 server 各自实现）
 │       ├── server.rs                  # axum 服务器（/ping、脚本接管、aria2 兼容、管理 API；仅 127.0.0.1）
-│       ├── jsonrpc.rs                 # aria2 JSON-RPC 兼容垫片（addUri/getVersion/multicall/…）
+│       ├── jsonrpc.rs                 # aria2 JSON-RPC 兼容层（36 方法全覆盖派发：addUri/addTorrent/tell*/pause/remove/get(change)GlobalOption/…）
+│       ├── aria2.rs                   # aria2 纯映射层（GID=UUID去连字符前16hex+前缀反查/status 映射/选项↔config 映射/字段拼装/错误文案）
 │       ├── takeover.rs                # 脚本接管批量请求解析
 │       └── auth.rs                    # 鉴权（常量时间比较/Client 头门禁/管理 API 强制 token）
 ├── native/hub/                        # Rinf FFI 适配层 crate（`hub`，edition 2024，crate 名不可改）
@@ -396,7 +397,7 @@ CREATE TABLE queues (
 |---|---|---|---|
 |探活|`GET /ping`|总开关|无|
 |脚本接管|`POST /download`、`/download/batch`|`local_server_takeover_enabled`|`X-FluxDown-Client` 头 + 可选 token|
-|aria2 兼容|`POST /jsonrpc`（addUri/getVersion/getGlobalStat/multicall/listMethods）|`local_server_jsonrpc_enabled`|可选 token（`X-FluxDown-Token` 头或 `params[0]="token:xxx"`）|
+|aria2 兼容|`POST /jsonrpc`（36 方法全覆盖：addUri/addTorrent/tellStatus·Active·Waiting·Stopped/pause·unpause·remove(+force/All)/getFiles·getUris·getOption/get·changeGlobalOption/getGlobalStat/purge·removeDownloadResult/getVersion·getSessionInfo/multicall·listMethods·listNotifications；getPeers·getServers 返空、saveSession·changeOption 降级 OK、addMetalink·changePosition·changeUri·shutdown 明确拒绝 code:1。GID=task_id UUID 去连字符前 16 hex，支持前缀反查；业务错误统一 aria2 风格 code:1；multicall 信封免鉴权、子调用各自带 token）|`local_server_jsonrpc_enabled`|可选 token（`X-FluxDown-Token` 头或 `params[0]="token:xxx"`）|
 |管理 API|`GET /api/v1/info`、`GET/POST /api/v1/tasks`、`GET/DELETE /api/v1/tasks/{id}`、`PUT /api/v1/tasks/{id}/pause\|continue`、`PUT /api/v1/tasks/pause\|continue`、`GET /api/v1/queues`|`local_server_api_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`）|
 |MCP|`POST /mcp`（initialize / tools/list / tools/call / ping；9 个下载管理工具）|`local_server_mcp_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`，与管理 API 共用）|
 |API 文档|`GET /api/v1/openapi.json`（OpenAPI 3.1）|`local_server_api_enabled`|无（纯接口描述，不含数据）|
@@ -408,8 +409,9 @@ CREATE TABLE queues (
 未来 headless server / 手机端复用同一 crate，只需另写一个 `ApiHost` 实现；
 MCP server 等 Rust 客户端直接 import `types` + `routes`。
 
-**语义区分**：接管/aria2 入口 → 外部下载流程（弹快速下载确认框）；管理 API `POST /api/v1/tasks`
-→ 直接创建任务（自动化客户端受信任，无弹框）。
+**语义区分**：浏览器脚本接管入口 → 外部下载流程（弹快速下载确认框）；aria2 `addUri`/`addTorrent`
+与管理 API `POST /api/v1/tasks` → 直接创建任务并返回真实 ID/GID（aria2 客户端与自动化客户端
+预期同步建任务语义，无弹框）。
 
 **OpenAPI 文档**：spec 由 utoipa 从 handler 注解（`#[utoipa::path]`）与 `ToSchema` 派生
 （`openapi.rs`，含漂移守卫测试——路由常量与注解不同步会跑挂）。改动 API 后执行
@@ -539,7 +541,7 @@ NMH 注册：
 | 服务 | 职责 |
 |------|------|
 | `external_download_service.dart` | 监听 Rust 发来的 ExternalDownloadRequest 信号：免打扰直建任务 → 首选独立小窗（PopupWindowService）→ 回退主窗口内快速下载对话框 |
-| `popup_window_service.dart` | 外部唤起独立小窗（主引擎侧）。原生窗口承载**第二 Flutter 引擎**（entrypoint 参数 `--quick-popup`，零插件、不初始化 Rust），懒创建常驻复用；载荷（主题 tokens/语言/队列/默认目录）JSON 注入，结果经原生中继回主引擎发信号。原生宿主：windows/runner/popup_window_host.cpp、macos/Runner/PopupWindowHost.swift、linux/popup_window_host.cc |
+| `popup_window_service.dart` | 外部唤起独立小窗（主引擎侧）。原生窗口承载**第二 Flutter 引擎**（entrypoint 参数 `--quick-popup`，零插件、不初始化 Rust），懒创建常驻复用；载荷（主题 tokens/语言/队列/默认目录）JSON 注入，结果经原生中继回主引擎发信号。显示时序为 reveal 握手：show 只投递载荷（窗口保持隐藏），弹窗 Dart 首帧就绪后经 `reveal(height)` 一次到位「设高+显示」，原生 3s 兜底定时器保证极端情况下窗口仍弹出；小窗可见期间新请求经 `append` 合入现有表单（append 模式，原生返回 false 时主引擎自愈失步的可见标志）；另有 15min pending watchdog 兜底复位。原生宿主：windows/runner/popup_window_host.cpp、macos/Runner/PopupWindowHost.swift、linux/popup_window_host.cc |
 | `quick_download_submitter.dart` | 快速下载表单结果统一提交器：解析 aria2 风格多行条目、记录上次目录/线程数、发 ConfirmExternalDownload/BatchCreateTask |
 | `hls_quality_service.dart` | 监听 HLS 画质信号，弹窗让用户选择码率 |
 | `tray_service.dart` | 系统托盘图标+菜单（多语言），菜单项：显示窗口/新建下载/暂停恢复/退出 |

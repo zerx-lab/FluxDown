@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { api } from '../../lib/api'
 import { CopyButton } from '../CopyButton'
+import { useI18n } from '../../lib/i18n'
 import type { ConfigMap } from '../../lib/types'
 import { connStore, useStore } from '../../lib/ws'
 import { alertDialog } from '../../lib/confirm'
@@ -16,10 +17,13 @@ export function SecuritySettings({
   config: ConfigMap
   mutate: (entries: ConfigMap) => void
 }) {
+  const { t } = useI18n()
   const token = config.local_server_token ?? ''
   const [showToken, setShowToken] = useState(false)
   const takeover = (config.local_server_takeover_enabled ?? 'true') === 'true'
   const jsonrpc = (config.local_server_jsonrpc_enabled ?? 'true') === 'true'
+  const mcp = (config.local_server_mcp_enabled ?? 'true') === 'true'
+  const origin = window.location.origin
   const conn = useStore(connStore)
   const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: api.stats, refetchInterval: 5000 })
 
@@ -27,7 +31,7 @@ export function SecuritySettings({
     const v = next.trim()
     if (v === token) return
     mutate({ local_server_token: v })
-    void alertDialog({ message: '访问令牌已保存，重启服务器后生效' })
+    void alertDialog({ message: t('set.sec.tokenSaved') })
   }
 
   function randomToken() {
@@ -39,38 +43,70 @@ export function SecuritySettings({
 
   return (
     <>
-      <h2 className="set-title">安全与访问</h2>
-      <p className="set-desc">对应 local_server_* 配置组 · 服务仅监听配置的地址</p>
+      <h2 className="set-title">{t('set.security')}</h2>
+      <p className="set-desc">{t('set.sec.desc')}</p>
       <div className="set-group">
-        <SetRow title="访问令牌" desc="Web / 管理 API 强制鉴权（Authorization: Bearer）· 可自定义，重启服务器后生效">
+        <SetRow title={t('set.sec.token')} desc={t('set.sec.tokenDesc')}>
           <div className="token-box">
-            <TextInput value={token} onCommit={saveToken} password={!showToken} placeholder="自定义或生成令牌" />
-            <button type="button" title={showToken ? '隐藏令牌' : '显示令牌'} onClick={() => setShowToken((s) => !s)}>
+            <TextInput value={token} onCommit={saveToken} password={!showToken} placeholder={t('set.sec.tokenPlaceholder')} />
+            <button
+              type="button"
+              title={showToken ? t('set.sec.hideToken') : t('set.sec.showToken')}
+              onClick={() => setShowToken((s) => !s)}
+            >
               {showToken ? <EyeOff /> : <Eye />}
             </button>
-            <CopyButton value={token} title="复制令牌" />
-            <button type="button" title="随机生成令牌" onClick={randomToken}>
+            <CopyButton value={token} title={t('set.sec.copyToken')} />
+            <button type="button" title={t('set.sec.genToken')} onClick={randomToken}>
               <RefreshCw />
             </button>
           </div>
         </SetRow>
       </div>
       <div className="set-group">
-        <SetRow title="aria2 兼容 RPC" desc="/jsonrpc · addUri / getGlobalStat / multicall">
-          <SetSwitch checked={jsonrpc} onCheckedChange={(v) => mutate({ local_server_jsonrpc_enabled: String(v) })} />
-        </SetRow>
-        <SetRow title="脚本接管入口" desc="/download · 油猴脚本 / 浏览器扩展">
+        <SetRow title={t('set.sec.takeover')} desc={t('set.sec.takeoverDesc')}>
           <SetSwitch checked={takeover} onCheckedChange={(v) => mutate({ local_server_takeover_enabled: String(v) })} />
         </SetRow>
+        <AddrRow value={origin} copyTitle={t('set.sec.copyAddr')} />
+      </div>
+      <div className="set-group">
+        <SetRow title={t('set.sec.jsonrpc')} desc={t('set.sec.jsonrpcDesc')}>
+          <SetSwitch checked={jsonrpc} onCheckedChange={(v) => mutate({ local_server_jsonrpc_enabled: String(v) })} />
+        </SetRow>
+        <AddrRow value={`${origin}/jsonrpc`} copyTitle={t('set.sec.copyAddr')} />
+      </div>
+      <div className="set-group">
+        <SetRow title={t('set.sec.api')} desc={t('set.sec.apiDesc')}>
+          <SetSwitch checked disabled onCheckedChange={() => {}} />
+        </SetRow>
+        <AddrRow value={`${origin}/api/v1`} copyTitle={t('set.sec.copyAddr')} />
+      </div>
+      <div className="set-group">
+        <SetRow title={t('set.sec.mcp')} desc={t('set.sec.mcpDesc')}>
+          <SetSwitch checked={mcp} onCheckedChange={(v) => mutate({ local_server_mcp_enabled: String(v) })} />
+        </SetRow>
+        <AddrRow value={`${origin}/mcp`} copyTitle={t('set.sec.copyAddr')} />
       </div>
       <div className="set-group">
         <SetRow
-          title="本机 WebSocket 连接"
-          desc={conn.status === 'connected' ? `已连接 · 延迟 ${conn.rttMs ?? '—'}ms` : '未连接'}
+          title={t('set.sec.ws')}
+          desc={conn.status === 'connected' ? t('set.sec.wsConnected', { rtt: conn.rttMs ?? '—' }) : t('set.sec.wsDisconnected')}
         >
-          <span className="set-value">{stats ? `服务器共 ${stats.wsClients} 个会话` : '—'}</span>
+          <span className="set-value">{stats ? t('set.sec.wsSessions', { n: stats.wsClients }) : '—'}</span>
         </SetRow>
       </div>
     </>
+  )
+}
+
+/** 端点地址行：等宽字体地址 + 复制按钮，对标桌面端 API 服务卡片的"地址"栏。 */
+function AddrRow({ value, copyTitle }: { value: string; copyTitle: string }) {
+  return (
+    <div className="set-row">
+      <div className="token-box" style={{ flex: 1 }}>
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</span>
+        <CopyButton value={value} title={copyTitle} />
+      </div>
+    </div>
   )
 }

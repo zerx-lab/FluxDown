@@ -436,6 +436,7 @@ async fn cmd_add(client: &ApiClient, a: AddArgs, json: bool) -> Result<(), Clien
             queue_id: a.queue.clone().unwrap_or_default(),
             checksum: a.checksum.clone().unwrap_or_default(),
             headers: None,
+            torrent_b64: None,
         };
         match client.create_task(&req).await {
             Ok(res) => created.push(res.task_id),

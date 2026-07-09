@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use base64::Engine as _;
+use fluxdown_api::service::ApiError;
 use fluxdown_api::types::CreateTaskRequest;
 use fluxdown_engine::Engine;
 use fluxdown_engine::bt_downloader::BtConfig;
@@ -22,13 +24,14 @@ use crate::config::default_save_dir;
 /// actor 写命令。每个变体携带 oneshot 回执：actor 完成后发送结果，
 /// HTTP 层同步等待；接收端掉线（请求中止）时 `send` 失败直接忽略。
 pub enum ActorCmd {
-    /// 直接创建任务，回执新任务 ID；`None` = DB 插入失败。
+    /// 直接创建任务，回执新任务 ID；`Err` 区分「种子 base64 非法」
+    /// （`BadRequest`）与「DB 插入失败」（`Internal`）。
     /// `req` 装箱：`CreateTaskRequest` 远大于其余变体。
     CreateTask {
         req: Box<CreateTaskRequest>,
         /// 文件大小提示（aria2/接管入口透传；REST 创建为 0）。
         hint_file_size: i64,
-        ack: oneshot::Sender<Option<String>>,
+        ack: oneshot::Sender<Result<String, ApiError>>,
     },
     PauseTask {
         task_id: String,
@@ -150,6 +153,16 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             ack,
         } => {
             let req = *req;
+            // aria2 addTorrent 兼容：torrent_b64 非空则 base64 解码为种子
+            // 字节；解码失败是客户端请求错误（区别于下方的 DB 插入失败），
+            // 立即回执 BadRequest 并返回，不再继续创建任务。
+            let torrent_bytes = match decode_torrent_b64(req.torrent_b64.as_deref()) {
+                Ok(bytes) => bytes,
+                Err(message) => {
+                    let _ = ack.send(Err(ApiError::BadRequest(message)));
+                    return;
+                }
+            };
             // 空 save_dir → 全局默认目录（config 表）→ 平台默认下载目录。
             let mut save_dir = req.save_dir;
             if save_dir.trim().is_empty() {
@@ -175,7 +188,7 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                     req.cookies,
                     req.referrer,
                     hint_file_size,
-                    Vec::new(),
+                    torrent_bytes,
                     req.proxy_url,
                     req.user_agent,
                     req.queue_id,
@@ -190,7 +203,9 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             // 立即广播 tasksSnapshot，确保客户端在首个 taskProgress 之前
             // 已拿到正确的 queue_id。
             engine.manager.load_and_send_all_tasks().await;
-            let _ = ack.send(task_id);
+            let _ = ack.send(
+                task_id.ok_or_else(|| ApiError::Internal("failed to persist task".to_string())),
+            );
         }
         ActorCmd::PauseTask { task_id, ack } => {
             engine.manager.pause_task(&task_id).await;
@@ -206,8 +221,10 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             ack,
         } => {
             engine.manager.delete_task(&task_id, delete_files).await;
-            // 删除没有对应的 TaskProgress 事件——主动广播快照，
-            // 让其他 WS 客户端的列表同步移除该任务。
+            // 删除没有专属快照事件——主动重发全量快照，让其他 WS 客户端的
+            // 任务列表同步移除该任务；WsHub 也正是靠这次重发的快照（而非
+            // 本处再单独广播）来判定并发出 aria2 onDownloadStop 通知，
+            // 时序说明见 `ws_hub.rs` 模块顶部“删除路径的 Stop 时序”。
             engine.manager.load_and_send_all_tasks().await;
             let _ = ack.send(());
         }
@@ -303,6 +320,18 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                 .map_err(|e| e.to_string());
             let _ = ack.send(result);
         }
+    }
+}
+
+/// 解析 aria2 `addTorrent` 兼容字段：`None`/空串 → 空 `Vec`（非种子任务，
+/// 沿用 `url` 正常下载）；非空则按标准 base64 解码为种子文件字节，
+/// 解码失败返回可直接展示给客户端的错误信息。
+fn decode_torrent_b64(torrent_b64: Option<&str>) -> Result<Vec<u8>, String> {
+    match torrent_b64 {
+        Some(b64) if !b64.is_empty() => base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("invalid torrent_b64: {e}")),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -501,5 +530,30 @@ mod tests {
 
         assert!(!bt.enable_dht);
         assert!(!bt.enable_upnp);
+    }
+
+    #[test]
+    fn decode_torrent_b64_returns_empty_vec_for_none_or_empty_string() {
+        assert_eq!(decode_torrent_b64(None), Ok(Vec::new()));
+        assert_eq!(decode_torrent_b64(Some("")), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn decode_torrent_b64_decodes_valid_standard_base64() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"torrent-bytes");
+        assert_eq!(
+            decode_torrent_b64(Some(&b64)),
+            Ok(b"torrent-bytes".to_vec())
+        );
+    }
+
+    #[test]
+    fn decode_torrent_b64_rejects_invalid_base64_with_readable_message() {
+        let err = decode_torrent_b64(Some("not valid base64!!!"))
+            .expect_err("garbage input must fail to decode");
+        assert!(
+            err.contains("invalid torrent_b64"),
+            "error message should explain the cause: {err}"
+        );
     }
 }

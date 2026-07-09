@@ -10,7 +10,8 @@ import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { clearCredentials, getBase } from '../../lib/auth'
 import { cn } from '../../lib/cn'
-import { fileType, fmtSpeed, TYPE_LABELS, type FileType as FT } from '../../lib/format'
+import { fileType, fmtSpeed, typeLabel, TYPE_ORDER, type FileType as FT } from '../../lib/format'
+import { useI18n } from '../../lib/i18n'
 import { connStore, disconnectWs, useGlobalSpeed, useStore } from '../../lib/ws'
 import { confirmDialog } from '../../lib/confirm'
 import { useTasksUi } from './context'
@@ -27,6 +28,7 @@ const TYPE_ICONS: Record<'all' | FT, LucideIcon> = {
 }
 
 export function Sidebar() {
+  const { t } = useI18n()
   const tasks = useViewTasks()
   const { data: queues = [] } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues })
   const { typeFilter, setTypeFilter, queueFilter, setQueueFilter } = useTasksUi()
@@ -54,7 +56,7 @@ export function Sidebar() {
   })
 
   function addQueue() {
-    const name = window.prompt('新队列名称')
+    const name = window.prompt(t('sidebar.newQueuePrompt'))
     if (name?.trim()) createQueue.mutate(name.trim())
   }
 
@@ -69,10 +71,12 @@ export function Sidebar() {
   })()
   const connText =
     conn.status === 'connected'
-      ? `已连接${conn.rttMs != null ? ` · 延迟 ${conn.rttMs}ms` : ''}`
+      ? conn.rttMs != null
+        ? t('sidebar.connectedRtt', { rtt: conn.rttMs })
+        : t('sidebar.connected')
       : conn.status === 'connecting'
-        ? '连接中…'
-        : '已断开'
+        ? t('sidebar.connecting')
+        : t('sidebar.disconnected')
 
   return (
     <aside className="sidebar">
@@ -88,20 +92,20 @@ export function Sidebar() {
         </span>
         <div className="side-brand-text">
           <b>FluxDown</b>
-          <span>↓ {speed > 0 ? fmtSpeed(speed) : '空闲'}</span>
+          <span>↓ {speed > 0 ? fmtSpeed(speed) : t('sidebar.idle')}</span>
         </div>
       </div>
 
       <div className="side-scroll">
-        <p className="side-label">文件类型</p>
+        <p className="side-label">{t('sidebar.fileTypes')}</p>
         <nav className="side-nav">
-          {(Object.keys(TYPE_LABELS) as ('all' | FT)[]).map((k) => {
+          {TYPE_ORDER.map((k) => {
             const Icon = TYPE_ICONS[k]
             const count = k === 'all' ? tasks.length : tasks.filter((t) => fileType(t.fileName, t.url) === k).length
             return (
               <button key={k} type="button" className={cn('side-item', typeFilter === k && 'active')} onClick={() => setTypeFilter(k)}>
                 <Icon size={15} />
-                <span>{TYPE_LABELS[k]}</span>
+                <span>{typeLabel(k)}</span>
                 <em>{count || ''}</em>
               </button>
             )
@@ -109,15 +113,15 @@ export function Sidebar() {
         </nav>
 
         <p className="side-label row">
-          队列
-          <button type="button" className="side-add" title="新建队列" onClick={addQueue}>
+          {t('sidebar.queues')}
+          <button type="button" className="side-add" title={t('sidebar.newQueue')} onClick={addQueue}>
             <Plus size={13} />
           </button>
         </p>
         <nav className="side-nav">
           <button type="button" className={cn('side-item', queueFilter === 'all' && 'active')} onClick={() => setQueueFilter('all')}>
             <List size={15} />
-            <span>全部任务</span>
+            <span>{t('sidebar.allTasks')}</span>
             <em>{tasks.length || ''}</em>
           </button>
           {queues.map((q) => {
@@ -136,10 +140,11 @@ export function Sidebar() {
                 <button
                   type="button"
                   className="icon-btn sm absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover:grid"
-                  title="删除队列"
+                  title={t('sidebar.deleteQueue')}
                   onClick={async (e) => {
                     e.stopPropagation()
-                    if (await confirmDialog({ title: '删除队列', message: `删除队列「${q.name}」？其中的任务会移动到默认队列。`, danger: true })) deleteQueue.mutate(q.queueId)
+                    if (await confirmDialog({ title: t('sidebar.deleteQueue'), message: t('sidebar.deleteQueueMsg', { name: q.name }), danger: true }))
+                      deleteQueue.mutate(q.queueId)
                   }}
                 >
                   <Trash2 size={13} />
@@ -157,13 +162,13 @@ export function Sidebar() {
             <b>{host}</b>
             <span>{connText}</span>
           </div>
-          <button type="button" className="icon-btn sm ml-auto shrink-0" title="退出登录" onClick={() => setLogoutOpen(true)}>
+          <button type="button" className="icon-btn sm ml-auto shrink-0" title={t('sidebar.logoutTitle')} onClick={() => setLogoutOpen(true)}>
             <LogOut size={13} />
           </button>
         </div>
         <a className="side-feedback" href="https://github.com/zerx-lab/FluxDown/issues" target="_blank" rel="noreferrer">
           <MessageCircle size={14} />
-          反馈
+          {t('sidebar.feedback')}
         </a>
       </div>
 
@@ -173,27 +178,25 @@ export function Sidebar() {
           <Dialog.Content className="dialog sm show">
             <header className="dlg-head">
               <Dialog.Title asChild>
-                <b>退出登录</b>
+                <b>{t('sidebar.logoutTitle')}</b>
               </Dialog.Title>
               <Dialog.Close asChild>
-                <button type="button" className="icon-btn sm" aria-label="关闭">
+                <button type="button" className="icon-btn sm" aria-label={t('common.close')}>
                   <X size={16} />
                 </button>
               </Dialog.Close>
             </header>
             <div className="dlg-body">
-              <Dialog.Description className="dlg-sub">
-                将断开与服务器的连接并清除本设备上保存的令牌，下次访问需重新登录。
-              </Dialog.Description>
+              <Dialog.Description className="dlg-sub">{t('sidebar.logoutMsg')}</Dialog.Description>
             </div>
             <footer className="dlg-foot">
               <Dialog.Close asChild>
                 <button type="button" className="btn ghost">
-                  取消
+                  {t('common.cancel')}
                 </button>
               </Dialog.Close>
               <button type="button" className="btn danger" onClick={logout}>
-                退出登录
+                {t('sidebar.logoutTitle')}
               </button>
             </footer>
           </Dialog.Content>

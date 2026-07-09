@@ -3,8 +3,10 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
+import { useI18n } from '../lib/i18n'
 
-export function CopyButton({ value, title = '复制' }: { value: string; title?: string }) {
+export function CopyButton({ value, title }: { value: string; title?: string }) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const timer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(timer.current), [])
@@ -13,7 +15,7 @@ export function CopyButton({ value, title = '复制' }: { value: string; title?:
     <button
       type="button"
       className={copied ? 'copied' : undefined}
-      title={copied ? '已复制' : title}
+      title={copied ? t('common.copied') : (title ?? t('common.copy'))}
       onClick={() => {
         void navigator.clipboard.writeText(value)
         setCopied(true)

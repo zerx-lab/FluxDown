@@ -12,6 +12,7 @@
  *   contact?: string     // 可选的联系方式（邮箱等）
  *   pagePath?: string    // 可选，docs 反馈关联的页面路径（需以 /docs/ 开头且 ≤200 字符，校验失败则静默忽略）
  *   logs?: string        // 可选，客户端日志（脱敏后），独立折叠展示，上限 30000 字符（超限截断保留末尾）
+ *   appVersion: string   // 应用版本号（≤50 字符）；除 docs 反馈外必填（App 端自动注入，网站表单手动填写）
  * }
  *
  * 防滥用:
@@ -98,7 +99,7 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
     pagePath?: string;
     logs?: string;
     source?: string; // "website"（默认）| "app"，决定来源标签与 body 模板措辞
-    appVersion?: string; // 可选，source=app 时附带的应用版本号
+    appVersion?: string; // 应用版本号，除 docs 类型外必填
   };
 
   try {
@@ -147,6 +148,19 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
     );
   }
 
+  // 版本号：除 docs 反馈外必填（App 端构建时注入自动上报，网站表单由用户填写）。
+  const safeAppVersion =
+    typeof appVersion === "string" && appVersion.trim().length > 0
+      ? appVersion.trim().slice(0, 50)
+      : undefined;
+
+  if (type !== "docs" && !safeAppVersion) {
+    return new Response(
+      JSON.stringify({ error: "Missing required field: appVersion" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
   // 可选字段：pagePath（docs 反馈关联的页面路径）。校验失败静默忽略而非 400，
   // 因为它只是补充上下文，不应阻塞用户提交反馈本身。
   const safePagePath =
@@ -173,9 +187,10 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
 
   // 来源标记：标题前缀 + metadata 的 **Source:** 值（后者必须保留供 parser 门禁识别）。
   const sourceTag = isApp ? "App" : "Website";
+  const versionSuffix = safeAppVersion ? ` (${safeAppVersion})` : "";
   const sourceMeta = isApp
-    ? `Desktop App${appVersion ? ` (${appVersion})` : ""}`
-    : "Website feedback form";
+    ? `Desktop App${versionSuffix}`
+    : `Website feedback form${versionSuffix}`;
 
   // 正文标题：bug / feature / docs / other 各自不同措辞。
   const heading =

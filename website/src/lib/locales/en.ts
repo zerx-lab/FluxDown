@@ -476,6 +476,10 @@ const en = {
   "fb.descLabel": "Description",
   "fb.descPlaceholder":
     "Describe your idea or the issue you encountered in detail...",
+  "fb.versionLabel": "App Version",
+  "fb.versionPlaceholder": "e.g. v0.5.2",
+  "fb.versionHint":
+    "Find it in Settings → About inside FluxDown. Helps us pinpoint the issue.",
   "fb.contactLabel": "Contact",
   "fb.contactPlaceholder": "Email or other way to reach you",
   "fb.contactHint":

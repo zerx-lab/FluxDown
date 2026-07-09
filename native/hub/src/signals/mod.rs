@@ -87,6 +87,9 @@ pub struct BatchCreateTask {
     /// 批次内所有任务共享。
     #[serde(default)]
     pub referrer: String,
+    /// 自定义 HTTP 请求头（批次内所有任务共享）。
+    #[serde(default)]
+    pub extra_headers: std::collections::HashMap<String, String>,
 }
 
 /// Control an existing task (pause/resume/cancel/delete)
@@ -220,6 +223,10 @@ pub struct ConfirmExternalDownload {
     /// create_task 尾参按此非空/空转换为 Some/None。
     #[serde(default)]
     pub audio_url: String,
+    /// 用户在快速下载表单里手填的自定义请求头。与 Rust 侧按 URL 缓存的
+    /// 浏览器捕获请求头合并，同名以用户手填值覆盖。
+    #[serde(default)]
+    pub extra_headers: std::collections::HashMap<String, String>,
 }
 
 // ========== Config signals ==========

@@ -117,6 +117,7 @@ class ExternalDownloadService {
         userAgent: '',
         queueId: trackSettings.defaultQueueId,
         audioUrl: req.audioUrl,
+        extraHeaders: const {},
       ).sendSignalToRust();
       return;
     }
@@ -162,6 +163,7 @@ class ExternalDownloadService {
             userAgent: '',
             queueId: queueId,
             audioUrl: entry.audioUrl,
+            extraHeaders: const {},
           ).sendSignalToRust();
         } else {
           BatchCreateTask(
@@ -182,6 +184,7 @@ class ExternalDownloadService {
             queueId: queueId,
             cookies: req.cookies,
             referrer: req.referrer,
+            extraHeaders: const {},
           ).sendSignalToRust();
         }
         return;
@@ -191,10 +194,11 @@ class ExternalDownloadService {
     }
 
     // ── 首选路径：独立小窗（不抢主窗口前台）──
-    // 小窗仍可见时忽略新请求（与主窗口对话框的去重语义一致）。
+    // 小窗仍可见时把新请求合入现有表单（append 模式）；若原生报告窗口
+    // 实际不可见（状态失步），tryAppend 已复位标志，继续走正常显示流程。
     if (PopupWindowService.instance.isVisible) {
-      logInfo(_tag, 'popup still open, ignoring request');
-      return;
+      final handled = await PopupWindowService.instance.tryAppend(req);
+      if (handled) return;
     }
     if (!_dialogOpen) {
       final popupSettings = SettingsProvider.globalInstance ?? settingsProvider;

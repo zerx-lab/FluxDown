@@ -278,6 +278,10 @@ pub struct CreateTaskRequest {
     /// 附加 HTTP 请求头。
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
+    /// BT 种子文件字节（base64 编码，aria2 `addTorrent` 兼容入口）。
+    /// 非空时按种子任务创建，`url` 允许为空占位。
+    #[serde(default)]
+    pub torrent_b64: Option<String>,
 }
 
 /// 创建任务响应（`POST /api/v1/tasks`）。

@@ -1,50 +1,18 @@
 // 新建下载对话框（对齐 design/web #dlg-new）—— 多行 URL 逐条创建任务；保存目录默认取自
 // 服务器配置（['config'] 的 default_save_dir），支持 FsPicker 浏览服务器目录；高级选项
-// （Cookies/Referrer/单任务代理/Checksum）为可折叠面板，行为对齐原型 #advToggle。
+// （Cookies/自定义请求头/单任务代理/Checksum）为可折叠面板，行为对齐原型 #advToggle。
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Select from '@radix-ui/react-select'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, ChevronRight, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { newDownloadOpenStore } from '../../lib/dialogs'
+import { useI18n } from '../../lib/i18n'
 import { useStore } from '../../lib/ws'
 import { FsPicker } from './fs-picker'
-
-const SEGMENT_OPTIONS = [
-  { value: '0', label: '自动（segment_advisor）' },
-  { value: '1', label: '1 线程' },
-  { value: '2', label: '2 线程' },
-  { value: '4', label: '4 线程' },
-  { value: '8', label: '8 线程' },
-  { value: '16', label: '16 线程' },
-  { value: '32', label: '32 线程' },
-]
-
-const USER_AGENTS = [
-  { value: '', label: '全局默认' },
-  {
-    value:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    label: 'Chrome',
-  },
-  {
-    value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
-    label: 'Firefox',
-  },
-  {
-    value:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
-    label: 'Edge',
-  },
-  {
-    value:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
-    label: 'Safari',
-  },
-]
 
 /** Radix Select 不允许 Item 的 value 为空字符串，用哨兵值代表"未设置/默认"语义。 */
 const EMPTY_VALUE = '__default__'
@@ -72,19 +40,19 @@ function SelectField({
         <Select.Content
           position="popper"
           sideOffset={6}
-          className="z-50 overflow-hidden rounded-lg border border-line bg-surface"
-          style={{ minWidth: 'var(--radix-select-trigger-width)', boxShadow: 'var(--shadow)' }}
+          className="select-pop"
+          style={{ width: 'var(--radix-select-trigger-width)' }}
         >
-          <Select.Viewport className="max-h-64 p-1">
+          <Select.Viewport className="max-h-64">
             {options.map((o) => (
               <Select.Item
                 key={o.value || EMPTY_VALUE}
                 value={o.value === '' ? EMPTY_VALUE : o.value}
-                className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-[13px] text-text outline-none data-[highlighted]:bg-surface2 data-[state=checked]:text-accent"
+                className="select-item"
               >
                 <Select.ItemText>{o.label}</Select.ItemText>
-                <Select.ItemIndicator>
-                  <Check size={13} />
+                <Select.ItemIndicator className="select-item-check">
+                  <Check size={14} />
                 </Select.ItemIndicator>
               </Select.Item>
             ))}
@@ -93,6 +61,12 @@ function SelectField({
       </Select.Portal>
     </Select.Root>
   )
+}
+
+interface HeaderRow {
+  id: number
+  name: string
+  value: string
 }
 
 interface FormState {
@@ -104,7 +78,7 @@ interface FormState {
   queueId: string
   userAgent: string
   cookies: string
-  referrer: string
+  headers: HeaderRow[]
   proxyUrl: string
   checksum: string
   advOpen: boolean
@@ -120,7 +94,7 @@ function emptyForm(saveDir = ''): FormState {
     queueId: '',
     userAgent: '',
     cookies: '',
-    referrer: '',
+    headers: [],
     proxyUrl: '',
     checksum: '',
     advOpen: false,
@@ -133,6 +107,40 @@ export function NewDownloadDialog() {
   const [form, setForm] = useState<FormState>(() => emptyForm())
   const [lineErrors, setLineErrors] = useState<Record<number, string>>({})
   const [submitting, setSubmitting] = useState(false)
+  const headerRowSeq = useRef(0)
+  const { t } = useI18n()
+  const segmentOptions = [
+    { value: '0', label: t('newDl.segmentsAuto') },
+    { value: '1', label: t('newDl.segmentsN', { n: 1 }) },
+    { value: '2', label: t('newDl.segmentsN', { n: 2 }) },
+    { value: '4', label: t('newDl.segmentsN', { n: 4 }) },
+    { value: '8', label: t('newDl.segmentsN', { n: 8 }) },
+    { value: '16', label: t('newDl.segmentsN', { n: 16 }) },
+    { value: '32', label: t('newDl.segmentsN', { n: 32 }) },
+  ]
+  const userAgentOptions = [
+    { value: '', label: t('newDl.globalDefault') },
+    {
+      value:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      label: 'Chrome',
+    },
+    {
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+      label: 'Firefox',
+    },
+    {
+      value:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+      label: 'Edge',
+    },
+    {
+      value:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+      label: 'Safari',
+    },
+    { value: 'netdisk', label: 'netdisk' },
+  ]
 
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: api.getConfig, enabled: open })
   const { data: queues } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues, enabled: open })
@@ -179,6 +187,20 @@ export function NewDownloadDialog() {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
+  function addHeaderRow() {
+    headerRowSeq.current += 1
+    const row: HeaderRow = { id: headerRowSeq.current, name: '', value: '' }
+    setForm((f) => ({ ...f, headers: [...f.headers, row] }))
+  }
+
+  function removeHeaderRow(id: number) {
+    setForm((f) => ({ ...f, headers: f.headers.filter((h) => h.id !== id) }))
+  }
+
+  function updateHeaderRow(id: number, key: 'name' | 'value', value: string) {
+    setForm((f) => ({ ...f, headers: f.headers.map((h) => (h.id === id ? { ...h, [key]: value } : h)) }))
+  }
+
   function close() {
     newDownloadOpenStore.set(false)
   }
@@ -186,6 +208,12 @@ export function NewDownloadDialog() {
   async function handleSubmit() {
     if (urlLines.length === 0 || submitting) return
     setSubmitting(true)
+    const headerEntries: Record<string, string> = {}
+    for (const h of form.headers) {
+      const name = h.name.trim()
+      if (name) headerEntries[name] = h.value
+    }
+    const headers = Object.keys(headerEntries).length > 0 ? headerEntries : undefined
     const nextErrors: Record<number, string> = {}
     let anyOk = false
     for (let i = 0; i < urlLines.length; i++) {
@@ -196,7 +224,7 @@ export function NewDownloadDialog() {
           saveDir: form.saveDir.trim() || undefined,
           segments: Number(form.segments),
           cookies: form.cookies.trim() || undefined,
-          referrer: form.referrer.trim() || undefined,
+          headers,
           proxyUrl: form.proxyUrl.trim() || undefined,
           userAgent: form.userAgent || undefined,
           queueId: form.queueId || undefined,
@@ -222,7 +250,16 @@ export function NewDownloadDialog() {
     >
       <Dialog.Portal>
         <Dialog.Overlay className="wbackdrop show" />
-        <Dialog.Content asChild>
+        <Dialog.Content
+          asChild
+          onPointerDownOutside={(e) => {
+            // 表单对话框：点击外部不关闭（防误触丢失已填内容）。同时根治 Radix Select-in-Dialog
+            // 的已知问题——Select 展开时 body 为 pointer-events:none，点击对话框内元素会命中
+            // 遮罩层，被误判为 outside 而连带关掉整个弹窗（且其派发延迟于 Select 卸载，无法
+            // 靠 DOM 探测区分）。关闭路径：✕ / 取消 / Esc。
+            e.preventDefault()
+          }}
+        >
           <form
             className="dialog show"
             onSubmit={(e) => {
@@ -232,18 +269,18 @@ export function NewDownloadDialog() {
           >
             <header className="dlg-head">
               <Dialog.Title asChild>
-                <b>新建下载</b>
+                <b>{t('newDl.title')}</b>
               </Dialog.Title>
               <Dialog.Close asChild>
-                <button type="button" className="icon-btn sm" aria-label="关闭">
+                <button type="button" className="icon-btn sm" aria-label={t('common.close')}>
                   <X size={16} />
                 </button>
               </Dialog.Close>
             </header>
-            <Dialog.Description className="sr-only">填写下载链接与选项，创建一个或多个下载任务</Dialog.Description>
+            <Dialog.Description className="sr-only">{t('newDl.desc')}</Dialog.Description>
             <div className="dlg-body">
               <label className="field-label" htmlFor="nd-urls">
-                {demoMode ? '下载链接（演示模式，已锁定）' : '下载链接（每行一条，支持 HTTP / FTP / 磁力链 / M3U8）'}
+                {demoMode ? t('newDl.urlLabelDemo') : t('newDl.urlLabel')}
               </label>
               <textarea
                 id="nd-urls"
@@ -261,31 +298,31 @@ export function NewDownloadDialog() {
               />
               {demoMode && (
                 <p className="mt-1 text-xs break-all text-text3">
-                  演示模式：仅允许下载上方的演示文件，其它链接会被服务器拒绝。
+                  {t('newDl.demoHint')}
                 </p>
               )}
               <div className="grid2">
                 <div>
                   <label className="field-label" htmlFor="nd-filename">
-                    文件名（留空自动推断）
+                    {t('newDl.fileName')}
                   </label>
                   <input
                     id="nd-filename"
                     className="text-input"
                     type="text"
-                    placeholder="自动"
+                    placeholder={t('newDl.fileNamePlaceholder')}
                     disabled={!isSingle}
                     value={form.fileName}
                     onChange={(e) => set('fileName', e.target.value)}
                   />
                 </div>
                 <div>
-                  <label className="field-label">线程数</label>
-                  <SelectField value={form.segments} onChange={(v) => set('segments', v)} options={SEGMENT_OPTIONS} ariaLabel="线程数" />
+                  <label className="field-label">{t('newDl.segments')}</label>
+                  <SelectField value={form.segments} onChange={(v) => set('segments', v)} options={segmentOptions} ariaLabel={t('newDl.segments')} />
                 </div>
               </div>
               <label className="field-label" htmlFor="nd-savedir">
-                保存目录（服务器路径）
+                {t('newDl.saveDir')}
               </label>
               <div className="dir-row">
                 <input
@@ -300,26 +337,26 @@ export function NewDownloadDialog() {
               </div>
               <div className="grid2">
                 <div>
-                  <label className="field-label">队列</label>
+                  <label className="field-label">{t('newDl.queue')}</label>
                   <SelectField
                     value={form.queueId}
                     onChange={(v) => set('queueId', v)}
-                    options={[{ value: '', label: '默认队列' }, ...(queues ?? []).map((q) => ({ value: q.queueId, label: q.name }))]}
-                    ariaLabel="队列"
+                    options={[{ value: '', label: t('newDl.defaultQueue') }, ...(queues ?? []).map((q) => ({ value: q.queueId, label: q.name }))]}
+                    ariaLabel={t('newDl.queue')}
                   />
                 </div>
                 <div>
-                  <label className="field-label">User-Agent</label>
-                  <SelectField value={form.userAgent} onChange={(v) => set('userAgent', v)} options={USER_AGENTS} ariaLabel="User-Agent" />
+                  <label className="field-label">{t('newDl.userAgent')}</label>
+                  <SelectField value={form.userAgent} onChange={(v) => set('userAgent', v)} options={userAgentOptions} ariaLabel={t('newDl.userAgent')} />
                 </div>
               </div>
               <button type="button" className={cn('adv-toggle', form.advOpen && 'open')} onClick={() => set('advOpen', !form.advOpen)}>
                 <ChevronRight size={13} />
-                高级选项（Cookies / Referrer / 代理 / Checksum）
+                {t('newDl.advanced')}
               </button>
               <div className={cn('adv-panel', form.advOpen && 'open')}>
                 <label className="field-label" htmlFor="nd-cookies">
-                  Cookies
+                  {t('newDl.cookies')}
                 </label>
                 <input
                   id="nd-cookies"
@@ -329,42 +366,60 @@ export function NewDownloadDialog() {
                   value={form.cookies}
                   onChange={(e) => set('cookies', e.target.value)}
                 />
-                <div className="grid2">
-                  <div>
-                    <label className="field-label" htmlFor="nd-referrer">
-                      Referrer
-                    </label>
-                    <input
-                      id="nd-referrer"
-                      className="text-input"
-                      type="text"
-                      placeholder="https://…"
-                      value={form.referrer}
-                      onChange={(e) => set('referrer', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="field-label" htmlFor="nd-proxy">
-                      单任务代理
-                    </label>
-                    <input
-                      id="nd-proxy"
-                      className="text-input"
-                      type="text"
-                      placeholder="socks5://127.0.0.1:1080"
-                      value={form.proxyUrl}
-                      onChange={(e) => set('proxyUrl', e.target.value)}
-                    />
-                  </div>
+                <label className="field-label">{t('newDl.headers')}</label>
+                <div className="flex flex-col gap-2">
+                  {form.headers.map((h) => (
+                    <div key={h.id} className="flex items-center gap-2">
+                      <input
+                        className="text-input flex-1"
+                        type="text"
+                        spellCheck={false}
+                        placeholder={t('newDl.headerName')}
+                        value={h.name}
+                        onChange={(e) => updateHeaderRow(h.id, 'name', e.target.value)}
+                      />
+                      <input
+                        className="text-input flex-1"
+                        type="text"
+                        spellCheck={false}
+                        placeholder={t('newDl.headerValue')}
+                        value={h.value}
+                        onChange={(e) => updateHeaderRow(h.id, 'value', e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="icon-btn sm shrink-0"
+                        aria-label={t('common.delete')}
+                        onClick={() => removeHeaderRow(h.id)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="btn ghost sm self-start" onClick={addHeaderRow}>
+                    <Plus size={13} />
+                    {t('newDl.headersAdd')}
+                  </button>
                 </div>
+                <label className="field-label" htmlFor="nd-proxy">
+                  {t('newDl.proxy')}
+                </label>
+                <input
+                  id="nd-proxy"
+                  className="text-input"
+                  type="text"
+                  placeholder="socks5://127.0.0.1:1080"
+                  value={form.proxyUrl}
+                  onChange={(e) => set('proxyUrl', e.target.value)}
+                />
                 <label className="field-label" htmlFor="nd-checksum">
-                  Checksum（algo=hexhash，下载完成后校验）
+                  {t('newDl.checksum')}
                 </label>
                 <input
                   id="nd-checksum"
                   className="text-input"
                   type="text"
-                  placeholder="sha256=a1b2c3…"
+                  placeholder={t('newDl.checksumPlaceholder')}
                   value={form.checksum}
                   onChange={(e) => set('checksum', e.target.value)}
                 />
@@ -375,7 +430,7 @@ export function NewDownloadDialog() {
                     (line, i) =>
                       lineErrors[i] && (
                         <p key={i} className="text-xs break-all text-danger">
-                          第 {i + 1} 行 {line}：{lineErrors[i]}
+                          {t('newDl.lineError', { n: i + 1, line, error: lineErrors[i] })}
                         </p>
                       ),
                   )}
@@ -385,11 +440,11 @@ export function NewDownloadDialog() {
             <footer className="dlg-foot">
               <Dialog.Close asChild>
                 <button type="button" className="btn ghost">
-                  取消
+                  {t('common.cancel')}
                 </button>
               </Dialog.Close>
               <button type="submit" className="btn primary" disabled={urlLines.length === 0 || submitting}>
-                {submitting ? '创建中…' : '开始下载'}
+                {submitting ? t('newDl.creating') : t('newDl.create')}
               </button>
             </footer>
           </form>

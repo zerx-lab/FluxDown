@@ -107,11 +107,20 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Get version from tag
         id: version
         shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute repo stats (donate card)
+        id: stats
+        shell: bash
+        run: |
+          echo "FIRST_COMMIT_DATE=$(git log --reverse --format=%ad --date=format:%Y-%m-%d | head -1)" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_COUNT=$(git tag -l 'v[0-9]*' | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "COMMIT_COUNT=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       # ── Rust toolchain ──
       - name: Setup Rust toolchain
@@ -194,7 +203,7 @@ jobs:
 
       - name: Build Flutter Windows app
         # Windows 使用 native-tls（Schannel），无需 aws-lc-sys，无需任何额外 TLS 环境变量
-        run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+        run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
 
       # ── ARM64: Flutter 在 ARM64 runner 上以 x64 仿真运行，输出到 build\windows\x64
       #    但后续步骤（Inno Setup / portable zip）需要 build\windows\arm64 ──
@@ -525,10 +534,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Get version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute repo stats (donate card)
+        id: stats
+        run: |
+          echo "FIRST_COMMIT_DATE=$(git log --reverse --format=%ad --date=format:%Y-%m-%d | head -1)" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_COUNT=$(git tag -l 'v[0-9]*' | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "COMMIT_COUNT=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       # ── 系统依赖 ──
       # 注：已切换到 rustls，无需 libssl-dev（运行时亦无 libssl 依赖）
@@ -597,7 +614,7 @@ jobs:
 
       # ── Build ──
       - name: Build Flutter Linux app
-        run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+        run: flutter build linux --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by CMake custom targets defined in linux/CMakeLists.txt during flutter build.
@@ -830,10 +847,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Get version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute repo stats (donate card)
+        id: stats
+        run: |
+          echo "FIRST_COMMIT_DATE=$(git log --reverse --format=%ad --date=format:%Y-%m-%d | head -1)" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_COUNT=$(git tag -l 'v[0-9]*' | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "COMMIT_COUNT=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       # ── Rust toolchain ──
       - name: Setup Rust toolchain
@@ -892,7 +917,10 @@ jobs:
           flutter build macos --release \
             --build-name=${{ steps.version.outputs.VERSION }} \
             --build-number=1 \
-            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} \
+            --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} \
+            --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} \
+            --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by Xcode shell script build phases defined in macos/Runner.xcodeproj during flutter build.

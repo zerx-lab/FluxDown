@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22"
 fluxdown_api = { version = "0.1.0", path = "../api", package = "fluxdown_api" }
 fluxdown_engine = { version = "0.1.0", path = "../engine", package = "fluxdown_engine" }
 fs2 = "0.4.3"

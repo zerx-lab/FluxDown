@@ -66,6 +66,9 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
   late final TextEditingController _cookieController;
   late final TextEditingController _checksumController;
 
+  /// 自定义请求头列表（#347），每项含一对 key/value 输入控制器。
+  final List<_MobileHeaderRow> _headerRows = [];
+
   late String _threads; // 'auto' | '4' | '8' | '16' | '32'
   late String _queueId;
   String _uaPreset = 'default';
@@ -96,6 +99,9 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     _dirController.dispose();
     _cookieController.dispose();
     _checksumController.dispose();
+    for (final row in _headerRows) {
+      row.dispose();
+    }
     super.dispose();
   }
 
@@ -142,6 +148,13 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     final userAgent = _uaPresets[_uaPreset] ?? '';
     final cookies = _cookieController.text.trim();
     final checksum = _checksumController.text.trim();
+    // 仅保留 key 非空的行；同名 key 后者覆盖前者。
+    final extraHeaders = <String, String>{};
+    for (final row in _headerRows) {
+      final key = row.keyController.text.trim();
+      if (key.isEmpty) continue;
+      extraHeaders[key] = row.valueController.text.trim();
+    }
 
     if (urls.length == 1) {
       widget.controller.createTask(
@@ -152,6 +165,7 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
         userAgent: userAgent,
         queueId: _queueId,
         checksum: checksum,
+        extraHeaders: extraHeaders,
       );
     } else {
       // 批量下载共享目录/线程/UA，校验值仅单任务支持
@@ -195,7 +209,10 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
             suffix: GestureDetector(
               onTap: _pasteFromClipboard,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
                   // 刻意保留：粘贴按钮悬浮于毛玻璃弹层之上，需近不透明底色保证可读，
                   // 属一次性装饰值，非可主题化语义角色。
@@ -322,6 +339,62 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
               controller: _checksumController,
               placeholder: 'sha256=e3b0c44298fc1c…',
             ),
+            MobileFieldLabel(s.taskHeaders),
+            for (int hi = 0; hi < _headerRows.length; hi++) ...[
+              if (hi > 0) const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: MobileTextField(
+                      controller: _headerRows[hi].keyController,
+                      placeholder: s.taskHeadersKeyPlaceholder,
+                      dense: true,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 3,
+                    child: MobileTextField(
+                      controller: _headerRows[hi].valueController,
+                      placeholder: s.taskHeadersValuePlaceholder,
+                      dense: true,
+                    ),
+                  ),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () =>
+                        setState(() => _headerRows.removeAt(hi).dispose()),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(LucideIcons.x, size: 16, color: c.textMuted),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _headerRows.add(_MobileHeaderRow())),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(LucideIcons.plus, size: 14, color: c.accent),
+                    const SizedBox(width: 6),
+                    Text(
+                      s.taskHeadersAdd,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: c.accent,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ],
         ],
       ),
@@ -368,5 +441,16 @@ class _DirPickRow extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// 自定义请求头的一行输入：持有 key / value 两个文本控制器（#347）。
+class _MobileHeaderRow {
+  final TextEditingController keyController = TextEditingController();
+  final TextEditingController valueController = TextEditingController();
+
+  void dispose() {
+    keyController.dispose();
+    valueController.dispose();
   }
 }

@@ -292,7 +292,8 @@ mod inner {
         let c = CString::new(s).map_err(|_| io::Error::other("string contains interior NUL"))?;
         // SAFETY: `c` is a valid NUL-terminated C string that outlives the call;
         // the default allocator (null) copies the bytes into the new CFString.
-        let cf = unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), CF_ENCODING_UTF8) };
+        let cf =
+            unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), CF_ENCODING_UTF8) };
         if cf.is_null() {
             return Err(io::Error::other("CFStringCreateWithCString failed"));
         }
@@ -363,7 +364,8 @@ mod inner {
         };
         // SAFETY: `uti.0` is a valid CFStringRef; the returned handler ref is
         // owned by us and released via the `CfOwned` guard below.
-        let handler = CfOwned(unsafe { LSCopyDefaultRoleHandlerForContentType(uti.0, LS_ROLES_ALL) });
+        let handler =
+            CfOwned(unsafe { LSCopyDefaultRoleHandlerForContentType(uti.0, LS_ROLES_ALL) });
         let Some(handler_id) = cf_to_string(handler.0) else {
             return false;
         };

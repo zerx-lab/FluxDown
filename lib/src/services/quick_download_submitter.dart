@@ -70,6 +70,7 @@ void submitQuickDownload({
         userAgent: result.userAgent,
         queueId: result.queueId,
         audioUrl: audioUrl,
+        extraHeaders: result.extraHeaders,
       ).sendSignalToRust();
     } else {
       // 单条带校验 — ConfirmExternalDownload 信号无 checksum 字段，
@@ -77,12 +78,12 @@ void submitQuickDownload({
       // 代价仅是丢失 hintFileSize，由元数据探测补齐）
       BatchCreateTask(
         entries: [
-        UrlEntry(
-          url: entry.url,
-          fileName: fileName,
-          checksum: checksum,
-          audioUrl: audioUrl,
-        ),
+          UrlEntry(
+            url: entry.url,
+            fileName: fileName,
+            checksum: checksum,
+            audioUrl: audioUrl,
+          ),
         ],
         saveDir: saveDir,
         segments: result.segments,
@@ -91,6 +92,7 @@ void submitQuickDownload({
         queueId: result.queueId,
         cookies: result.cookies,
         referrer: referrer,
+        extraHeaders: result.extraHeaders,
       ).sendSignalToRust();
     }
   } else {
@@ -113,6 +115,7 @@ void submitQuickDownload({
       queueId: result.queueId,
       cookies: result.cookies,
       referrer: referrer,
+      extraHeaders: result.extraHeaders,
     ).sendSignalToRust();
   }
 }

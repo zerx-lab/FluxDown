@@ -8,31 +8,37 @@ import { api, taskFileUrl } from '../../lib/api'
 import { CopyButton } from '../CopyButton'
 import { cn } from '../../lib/cn'
 import { fmtBytes, fmtEta, fmtSpeed, fmtTime, protoLabel } from '../../lib/format'
+import { t as i18nT, useI18n } from '../../lib/i18n'
 import { segmentStore, splitStore, useStore } from '../../lib/ws'
 import { confirmDialog } from '../../lib/confirm'
-import type { QueueDto, SegmentDetail } from '../../lib/types'
+import type { QueueDto, SegmentDetail, TaskStatus } from '../../lib/types'
 import { eventLogStore } from './eventLog'
 import { useTasksUi, type DetailTab } from './context'
 import { useViewTasks, type ViewTask } from './useViewTasks'
 
-const DTABS: { id: DetailTab; label: string }[] = [
-  { id: 'general', label: '常规' },
-  { id: 'segments', label: '分段' },
-  { id: 'queue', label: '队列' },
-  { id: 'log', label: '日志' },
-  { id: 'advanced', label: '高级' },
+const DTABS: { id: DetailTab; labelKey: 'detail.tabGeneral' | 'detail.tabSegments' | 'detail.tabQueue' | 'detail.tabLog' | 'detail.tabAdvanced' }[] = [
+  { id: 'general', labelKey: 'detail.tabGeneral' },
+  { id: 'segments', labelKey: 'detail.tabSegments' },
+  { id: 'queue', labelKey: 'detail.tabQueue' },
+  { id: 'log', labelKey: 'detail.tabLog' },
+  { id: 'advanced', labelKey: 'detail.tabAdvanced' },
 ]
 
-const STATUS_TEXT: Record<number, string> = {
-  0: '排队中',
-  1: '下载中',
-  2: '已暂停',
-  3: '已完成',
-  4: '错误',
-  5: '正在准备',
+/** 状态文案：函数而非模块级常量，避免固化在某一语言（随当前语言实时取值）。 */
+function statusText(s: TaskStatus): string {
+  const KEYS = {
+    0: 'status.pending',
+    1: 'status.downloading',
+    2: 'status.paused',
+    3: 'status.completed',
+    4: 'status.error',
+    5: 'status.preparing',
+  } as const
+  return i18nT(KEYS[s])
 }
 
 export function DetailPanel() {
+  const { t } = useI18n()
   const { currentTaskId, detailOpen, detailTab, setDetailTab, closeDetail } = useTasksUi()
   const tasks = useViewTasks()
   const { data: queues = [] } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues })
@@ -45,7 +51,7 @@ export function DetailPanel() {
         <>
           <header className="detail-head">
             <b className="ellip">{task.fileName || task.url}</b>
-            <button type="button" className="icon-btn sm" title="收起面板" onClick={closeDetail}>
+            <button type="button" className="icon-btn sm" title={t('detail.collapse')} onClick={closeDetail}>
               <X size={14} />
             </button>
           </header>
@@ -57,7 +63,7 @@ export function DetailPanel() {
                 className={cn('dtab', detailTab === d.id && 'active')}
                 onClick={() => setDetailTab(d.id)}
               >
-                {d.label}
+                {t(d.labelKey)}
               </button>
             ))}
           </div>
@@ -78,12 +84,13 @@ export function DetailPanel() {
 const CLAMP_THRESHOLD = 120
 
 function DField({ label, value, copy }: { label: string; value: string; copy?: boolean }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const clampable = value.length > CLAMP_THRESHOLD
   const text = (
     <p
       className={cn(clampable && 'expandable', clampable && !expanded && 'clamp')}
-      title={clampable ? (expanded ? '点击收起' : '点击展开完整内容') : undefined}
+      title={clampable ? (expanded ? t('detail.collapseValue') : t('detail.expand')) : undefined}
       onClick={clampable ? () => setExpanded((v) => !v) : undefined}
     >
       {value}
@@ -109,13 +116,14 @@ function DField({ label, value, copy }: { label: string; value: string; copy?: b
 }
 
 function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
+  const { t: tr } = useI18n()
   const qc = useQueryClient()
   const invalidate = () => qc.invalidateQueries({ queryKey: ['tasks'] })
   const boostMut = useMutation({ mutationFn: () => api.boostTask(t.taskId), onSuccess: invalidate })
   const deleteMut = useMutation({ mutationFn: (deleteFiles: boolean) => api.deleteTask(t.taskId, deleteFiles), onSuccess: invalidate })
   const seg = useStore(segmentStore)[t.taskId]
   const pct = t.totalBytes > 0 ? Math.round((t.downloadedBytes / t.totalBytes) * 100) : 0
-  const queueName = queues.find((q) => q.queueId === t.queueId)?.name ?? '默认队列'
+  const queueName = queues.find((q) => q.queueId === t.queueId)?.name ?? tr('detail.defaultQueue')
 
   return (
     <>
@@ -123,8 +131,8 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
         <div className="d-progress-num">
           <b>{pct}%</b>
           <span>
-            {STATUS_TEXT[t.status] ?? '—'}
-            {t.status === 1 ? ` · 剩余 ${fmtEta(t.totalBytes - t.downloadedBytes, t.speed)}` : ''}
+            {statusText(t.status)}
+            {t.status === 1 ? ` · ${tr('detail.remaining', { eta: fmtEta(t.totalBytes - t.downloadedBytes, t.speed) })}` : ''}
           </span>
         </div>
         <div className="d-bar">
@@ -133,26 +141,26 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
       </div>
       <div className="d-stats">
         <div className="d-stat">
-          <span>已下载</span>
+          <span>{tr('detail.downloaded')}</span>
           <b>{fmtBytes(t.downloadedBytes)}</b>
         </div>
         <div className="d-stat">
-          <span>总大小</span>
+          <span>{tr('detail.totalSize')}</span>
           <b>{fmtBytes(t.totalBytes)}</b>
         </div>
         <div className="d-stat">
-          <span>速度</span>
+          <span>{tr('detail.speed')}</span>
           <b className="accent">{t.speed > 0 ? fmtSpeed(t.speed) : '—'}</b>
         </div>
         <div className="d-stat">
-          <span>线程</span>
+          <span>{tr('detail.threads')}</span>
           <b>{seg?.segmentCount ?? '—'}</b>
         </div>
       </div>
-      <DField label="下载链接" value={t.url || '—'} copy />
-      <DField label="保存位置（服务器）" value={`${t.saveDir}/${t.fileName}`} />
-      <DField label="协议 / 队列" value={`${protoLabel(t.url)} · ${queueName}`} />
-      <DField label="创建时间" value={fmtTime(t.createdAt)} />
+      <DField label={tr('detail.url')} value={t.url || '—'} copy />
+      <DField label={tr('detail.savePath')} value={`${t.saveDir}/${t.fileName}`} />
+      <DField label={tr('detail.protoQueue')} value={`${protoLabel(t.url)} · ${queueName}`} />
+      <DField label={tr('detail.createdAt')} value={fmtTime(t.createdAt)} />
       <div className="d-actions">
         {t.status === 3 ? (
           <button
@@ -163,23 +171,23 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
             }}
           >
             <Download size={15} />
-            保存到本地
+            {tr('task.saveToLocal')}
           </button>
         ) : (
           <button type="button" className="btn ghost sm" onClick={() => boostMut.mutate()}>
             <Zap size={15} />
-            Boost 优先
+            {tr('task.boost')}
           </button>
         )}
         <button
           type="button"
           className="btn danger sm"
           onClick={async () => {
-            if (await confirmDialog({ title: '删除任务', message: '删除该任务？', danger: true })) deleteMut.mutate(false)
+            if (await confirmDialog({ title: tr('task.deleteTitle'), message: tr('task.deleteMsg'), danger: true })) deleteMut.mutate(false)
           }}
         >
           <Trash2 size={15} />
-          删除
+          {tr('task.delete')}
         </button>
       </div>
     </>
@@ -205,6 +213,7 @@ function computeSegCells(segments: SegmentDetail[], totalBytes: number, active: 
 }
 
 function SegmentsTab({ t }: { t: ViewTask }) {
+  const { t: tr } = useI18n()
   const seg = useStore(segmentStore)[t.taskId]
   const split = useStore(splitStore)
   const [, setTick] = useState(0)
@@ -219,10 +228,10 @@ function SegmentsTab({ t }: { t: ViewTask }) {
   }, [recentSplit])
 
   if (t.status === 3) {
-    return <p className="seg-note">任务已完成，分段信息已从 task_segments 表清理。</p>
+    return <p className="seg-note">{tr('detail.segCleared')}</p>
   }
   if (!seg || seg.segments.length === 0) {
-    return <p className="seg-note">暂无分段数据（等待引擎探测完成或分配分段）。</p>
+    return <p className="seg-note">{tr('detail.noSegmentsHint')}</p>
   }
 
   const total = seg.totalBytes || t.totalBytes
@@ -231,9 +240,7 @@ function SegmentsTab({ t }: { t: ViewTask }) {
   return (
     <>
       <div className="seg-summary">
-        <span>
-          共 <b>{seg.segmentCount}</b> 个分段 · segment_advisor 动态决定
-        </span>
+        <span>{tr('detail.segAdvisorSummary', { n: seg.segmentCount })}</span>
         <span>{protoLabel(t.url)}</span>
       </div>
       <div className="seg-map">
@@ -254,12 +261,13 @@ function SegmentsTab({ t }: { t: ViewTask }) {
           </div>
         )
       })}
-      <p className="seg-note">慢速分段由 segment_coordinator 主动拆分 / 抢救；拆分事件（SegmentSplit）经 WebSocket 实时推送并触发列表动画。</p>
+      <p className="seg-note">{tr('detail.segFooterNote')}</p>
     </>
   )
 }
 
 function QueueTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
+  const { t: tr } = useI18n()
   const qc = useQueryClient()
   const moveMut = useMutation({
     mutationFn: (queueId: string) => api.moveTaskToQueue(t.taskId, queueId),
@@ -272,19 +280,19 @@ function QueueTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
     <>
       <div className="q-current">
         <ListOrdered size={15} />
-        <span>当前：{current?.name ?? '默认队列'}</span>
+        <span>{tr('detail.currentQueueValue', { name: current?.name ?? tr('detail.defaultQueue') })}</span>
       </div>
-      <p className="q-move-label">移动到其它队列</p>
+      <p className="q-move-label">{tr('detail.moveToOther')}</p>
       {others.map((q) => (
         <button key={q.queueId} type="button" className="q-item" onClick={() => moveMut.mutate(q.queueId)}>
           <ListOrdered size={14} />
           <span>{q.name}</span>
           <em>
-            {q.speedLimitKbps > 0 ? `${q.speedLimitKbps} KB/s` : '不限速'} · 并发 {q.maxConcurrent}
+            {q.speedLimitKbps > 0 ? `${q.speedLimitKbps} KB/s` : tr('detail.noLimit')} · {tr('detail.concurrency', { n: q.maxConcurrent })}
           </em>
         </button>
       ))}
-      <p className="seg-note">每个命名队列拥有独立限速 / 并发 / 默认目录 / 默认线程配置。</p>
+      <p className="seg-note">{tr('detail.queueFooterNote')}</p>
     </>
   )
 }
@@ -296,12 +304,13 @@ function fmtClock(ms: number): string {
 }
 
 function LogTab({ t }: { t: ViewTask }) {
+  const { t: tr } = useI18n()
   const entries = useStore(eventLogStore).filter((e) => e.taskId === t.taskId)
   return (
     <>
       <div className="log-line">
         <span className="log-time">{fmtClock(Date.now())}</span>
-        <span className="log-msg">当前状态：{STATUS_TEXT[t.status] ?? t.status}</span>
+        <span className="log-msg">{tr('detail.currentStatus', { status: statusText(t.status) })}</span>
       </div>
       {entries.map((e) => (
         <div key={e.id} className="log-line">
@@ -309,21 +318,20 @@ function LogTab({ t }: { t: ViewTask }) {
           <span className={cn('log-msg', e.isError && 'err')}>{e.message}</span>
         </div>
       ))}
-      {entries.length === 0 && (
-        <p className="seg-note">本面板仅记录本次会话内观测到的状态迁移与分段拆分事件；完整审计日志见服务器端 logs/ 目录。</p>
-      )}
+      {entries.length === 0 && <p className="seg-note">{tr('detail.logEmptyNote')}</p>}
     </>
   )
 }
 
 function AdvancedTab({ t }: { t: ViewTask }) {
+  const { t: tr } = useI18n()
   return (
     <>
-      <DField label="Checksum 校验" value={t.checksum || '未设置（下载完成后跳过校验）'} />
-      <DField label="单任务代理" value={t.proxyUrl || '跟随全局（设置 → 代理）'} />
-      <DField label="下载链接 URL" value={t.url} copy />
-      <DField label="保存目录" value={t.saveDir} />
-      <p className="seg-note">Checksum 格式 algo=hexhash（如 sha256=…），任务完成后由引擎在服务器端校验。</p>
+      <DField label={tr('detail.checksum')} value={t.checksum || tr('detail.checksumNotSet')} />
+      <DField label={tr('detail.proxy')} value={t.proxyUrl || tr('detail.proxyNotSet')} />
+      <DField label={tr('detail.url')} value={t.url} copy />
+      <DField label={tr('detail.savePath')} value={t.saveDir} />
+      <p className="seg-note">{tr('detail.checksumFooterNote')}</p>
     </>
   )
 }

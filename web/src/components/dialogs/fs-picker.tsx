@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, Folder, FolderOpen, FolderX, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
+import { useI18n } from '../../lib/i18n'
 
 interface FsPickerProps {
   value: string
@@ -43,6 +44,7 @@ function crumbsOf(path: string): Crumb[] {
 }
 
 export function FsPicker({ value, onChange }: FsPickerProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [path, setPath] = useState(value)
   const crumbsRef = useRef<HTMLDivElement>(null)
@@ -77,7 +79,7 @@ export function FsPicker({ value, onChange }: FsPickerProps) {
       <Dialog.Trigger asChild>
         <button type="button" className="btn ghost">
           <Folder size={15} />
-          浏览
+          {t('fs.browse')}
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
@@ -85,15 +87,15 @@ export function FsPicker({ value, onChange }: FsPickerProps) {
         <Dialog.Content className="dialog fs-dialog show">
           <header className="dlg-head">
             <Dialog.Title asChild>
-              <b>选择保存目录</b>
+              <b>{t('fs.title')}</b>
             </Dialog.Title>
             <Dialog.Close asChild>
-              <button type="button" className="icon-btn sm" aria-label="关闭">
+              <button type="button" className="icon-btn sm" aria-label={t('common.close')}>
                 <X size={16} />
               </button>
             </Dialog.Close>
           </header>
-          <Dialog.Description className="sr-only">浏览服务器文件系统并选择任务保存目录</Dialog.Description>
+          <Dialog.Description className="sr-only">{t('fs.desc')}</Dialog.Description>
           <div className="dlg-body">
             <div className="fs-bar">
               <button
@@ -103,8 +105,8 @@ export function FsPicker({ value, onChange }: FsPickerProps) {
                 onClick={() => {
                   if (data?.parent != null) setPath(data.parent)
                 }}
-                title="上级目录"
-                aria-label="上级目录"
+                title={t('fs.up')}
+                aria-label={t('fs.up')}
               >
                 <ChevronLeft size={14} />
               </button>
@@ -132,17 +134,17 @@ export function FsPicker({ value, onChange }: FsPickerProps) {
               </div>
             </div>
             <div className="fs-list">
-              {isLoading && <div className="fs-empty">加载中…</div>}
+              {isLoading && <div className="fs-empty">{t('common.loading')}</div>}
               {isError && (
                 <div className="fs-empty">
                   <FolderX />
-                  目录读取失败
+                  {t('fs.loadFailed')}
                 </div>
               )}
               {!isLoading && !isError && data?.dirs.length === 0 && (
                 <div className="fs-empty">
                   <FolderOpen />
-                  此目录下没有子目录
+                  {t('fs.emptyDir')}
                 </div>
               )}
               {data?.dirs.map((d) => (
@@ -160,11 +162,11 @@ export function FsPicker({ value, onChange }: FsPickerProps) {
             </span>
             <Dialog.Close asChild>
               <button type="button" className="btn ghost">
-                取消
+                {t('common.cancel')}
               </button>
             </Dialog.Close>
             <button type="button" className="btn primary" onClick={choose}>
-              选择此目录
+              {t('fs.choose')}
             </button>
           </footer>
         </Dialog.Content>

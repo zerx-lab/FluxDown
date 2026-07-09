@@ -13,6 +13,7 @@
 /// 由调用方回退到主窗口内对话框流程。
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -64,6 +65,13 @@ class PopupWindowService {
   int _seq = 0;
 
   _PendingRequest? _pending;
+
+  /// pending 时效 watchdog — 弹窗引擎异常（渲染卡死/通道断开）时
+  /// onResult/onClosed 永不到达，[_visible] 会永久卡 true 导致后续外部
+  /// 请求全部被丢弃。超时后主动 close() 复位。append 路径的原生真值
+  /// 校验（见 [tryAppend]）是第一道自愈，本定时器是最后兜底。
+  Timer? _watchdog;
+  static const _watchdogTimeout = Duration(minutes: 15);
 
   bool get isVisible => _visible;
 
@@ -134,6 +142,7 @@ class PopupWindowService {
           fileSize: req.fileSize,
           audioUrl: req.audioUrl,
         );
+        _armWatchdog();
         logInfo(_tag, 'popup shown, requestId=${payload.requestId}');
       } else {
         logError(_tag, 'native host refused to show popup');
@@ -154,6 +163,7 @@ class PopupWindowService {
     if (!_visible) return;
     _visible = false;
     _pending = null;
+    _watchdog?.cancel();
     try {
       await _channel.invokeMethod<void>('close');
     } on PlatformException catch (e) {
@@ -163,13 +173,60 @@ class PopupWindowService {
     }
   }
 
+  /// 小窗可见期间新到的外部请求 — 请求原生把新 URL 合入当前表单
+  /// （append 模式），不重置用户正在编辑的表单。
+  ///
+  /// 返回 true = 请求已处置（已合入 / 按策略忽略），调用方不再处理；
+  /// 返回 false = 小窗实际已不可见（内存标志失步，已就地复位自愈），
+  /// 调用方应继续走正常 tryShow 流程。
+  Future<bool> tryAppend(ExternalDownloadRequest req) async {
+    if (!_visible) return false;
+    // 音视频轨对请求无法作为普通 URL 行合入（audioUrl 依赖 pending 表
+    // 独立通道透传）——维持既有"忽略并记日志"语义，不打断用户表单。
+    if (req.audioUrl.isNotEmpty) {
+      logInfo(_tag, 'popup open, ignoring track-pair request: ${req.url}');
+      return true;
+    }
+    try {
+      final ok = await _channel.invokeMethod<bool>('append', req.url) ?? false;
+      if (ok) {
+        logInfo(_tag, 'appended external request into visible popup');
+        return true;
+      }
+      // 原生报告窗口实际不可见 — 内存标志失步，复位后让调用方走 show。
+      logInfo(_tag, 'append refused: popup not visible, resetting state');
+      _visible = false;
+      _pending = null;
+      _watchdog?.cancel();
+      return false;
+    } on MissingPluginException {
+      // 旧版宿主无 append — 维持既有"忽略"语义，避免 show 重置用户表单
+      logInfo(_tag, 'append not implemented, ignoring request');
+      return true;
+    } on PlatformException catch (e) {
+      logError(_tag, 'append failed, ignoring request', e);
+      return true;
+    }
+  }
+
+  void _armWatchdog() {
+    _watchdog?.cancel();
+    _watchdog = Timer(_watchdogTimeout, () {
+      logError(_tag, 'popup pending timed out, force closing');
+      close();
+    });
+  }
+
   Future<dynamic> _onCall(MethodCall call) async {
     switch (call.method) {
       case 'onResult':
         _visible = false;
+        _watchdog?.cancel();
         final pending = _pending;
         _pending = null;
-        final result = QuickPopupResult.fromJsonString(call.arguments as String);
+        final result = QuickPopupResult.fromJsonString(
+          call.arguments as String,
+        );
         if (pending == null || pending.requestId != result.requestId) {
           logError(
             _tag,
@@ -189,6 +246,7 @@ class PopupWindowService {
         logInfo(_tag, 'popup closed by user');
         _visible = false;
         _pending = null;
+        _watchdog?.cancel();
     }
   }
 }

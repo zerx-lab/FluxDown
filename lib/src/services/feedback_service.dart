@@ -35,6 +35,9 @@ class FeedbackService {
   FeedbackService._();
   static final instance = FeedbackService._();
 
+  /// 构建时注入的应用版本号（供反馈表单展示，提交时自动上报）。
+  static const String appVersion = _appVersion;
+
   static const _apiBase = 'https://fluxdown.zerx.dev';
   static const _feedbackPath = '/api/feedback';
   static const _timeout = Duration(seconds: 15);

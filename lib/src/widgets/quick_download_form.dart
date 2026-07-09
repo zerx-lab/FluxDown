@@ -21,6 +21,7 @@ import 'package:flutter/material.dart'
         TextField,
         TextSelectionTheme,
         TextSelectionThemeData;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
@@ -47,6 +48,7 @@ class QuickDownloadEntry {
   final String url;
   final String fileName;
   final String checksum;
+
   /// 音频轨 URL（通用「视频轨+音频轨」离散下载对语义，按 MIME video/*
   /// vs audio/* 分轨判定）。空 = 普通单 URL；非空 = url 是视频轨，
   /// 本字段是音频轨。仅由外部下载请求（ExternalDownloadRequest.audioUrl）
@@ -161,6 +163,10 @@ class QuickDownloadFormResult {
   /// 仅单条时有意义，非空时 url 是视频轨、本字段是音频轨。
   final String audioUrl;
 
+  /// 自定义请求头（key 非空才保留；同名后者覆盖）。
+  /// 单条经 ConfirmExternalDownload、批量经 BatchCreateTask 透传。
+  final Map<String, String> extraHeaders;
+
   const QuickDownloadFormResult({
     required this.urlText,
     required this.saveDir,
@@ -173,6 +179,7 @@ class QuickDownloadFormResult {
     required this.checksum,
     required this.threadsUserModified,
     this.audioUrl = '',
+    this.extraHeaders = const {},
   });
 }
 
@@ -192,6 +199,19 @@ abstract class QuickDownloadFormHost {
     required String dialogTitle,
     String? initialDirectory,
   });
+}
+
+/// 表单外部控制器 — 供宿主向**已挂载**的表单追加 URL（独立小窗 append
+/// 模式：小窗可见期间新到的外部请求合入当前表单，而不是重置/丢弃）。
+///
+/// 生命周期与 TextEditingController 类似：由调用方持有，表单在
+/// initState/dispose 中自行挂接/解除。表单未挂载时调用是安全的空操作。
+class QuickDownloadFormController {
+  _QuickDownloadFormState? _state;
+
+  /// 把 [urlText]（可多行）中尚未出现在表单里的 URL 追加到 URL 输入框。
+  /// 返回实际追加的条数（0 = 全部重复或无有效 URL 或表单未挂载）。
+  int appendUrls(String urlText) => _state?._appendUrls(urlText) ?? 0;
 }
 
 /// 快速下载表单主体（URL / 保存目录 / 线程数 / 重命名 / 队列 / 高级选项）
@@ -219,6 +239,9 @@ class QuickDownloadForm extends StatefulWidget {
   final ValueChanged<QuickDownloadFormResult> onSubmit;
   final VoidCallback onCancel;
 
+  /// 可选外部控制器（独立小窗 append 模式用；主窗口对话框不传）。
+  final QuickDownloadFormController? controller;
+
   const QuickDownloadForm({
     super.key,
     required this.initialUrl,
@@ -230,6 +253,7 @@ class QuickDownloadForm extends StatefulWidget {
     required this.host,
     required this.onSubmit,
     required this.onCancel,
+    this.controller,
   });
 
   @override
@@ -245,6 +269,9 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
   final _userAgentController = TextEditingController();
   final _cookieController = TextEditingController();
   final _checksumController = TextEditingController();
+
+  /// 自定义请求头行列表（与主窗口新建下载对话框同款交互）。
+  final List<QuickHeaderRow> _headerRows = [];
 
   /// 选中的哈希算法（与后端 verify_checksum 支持的算法名一致）
   String _selectedHashAlgo = 'sha-256';
@@ -303,6 +330,40 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
         : _effectiveSegmentsOption(_selectedQueueId);
     // 初始化时计算一次
     _onUrlChanged();
+    widget.controller?._state = this;
+  }
+
+  @override
+  void didUpdateWidget(covariant QuickDownloadForm oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      if (identical(oldWidget.controller?._state, this)) {
+        oldWidget.controller?._state = null;
+      }
+      widget.controller?._state = this;
+    }
+  }
+
+  /// 追加外部请求带来的新 URL（见 [QuickDownloadFormController.appendUrls]）。
+  /// 已存在的 URL 去重跳过；追加不重置用户已填的其他字段。
+  int _appendUrls(String urlText) {
+    final incoming = parseQuickDownloadEntries(urlText);
+    if (incoming.isEmpty) return 0;
+    final existing = parseQuickDownloadEntries(
+      _urlController.text,
+    ).map((e) => e.url).toSet();
+    final fresh = incoming.where((e) => !existing.contains(e.url)).toList();
+    if (fresh.isEmpty) return 0;
+    final buffer = StringBuffer(_urlController.text.trimRight());
+    for (final entry in fresh) {
+      if (buffer.isNotEmpty) buffer.write('\n');
+      buffer.write(entry.url);
+      if (entry.fileName.isNotEmpty) {
+        buffer.write('\n out=${entry.fileName}');
+      }
+    }
+    _urlController.text = buffer.toString();
+    return fresh.length;
   }
 
   void _onUrlChanged() {
@@ -317,11 +378,17 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
 
   @override
   void dispose() {
+    if (identical(widget.controller?._state, this)) {
+      widget.controller?._state = null;
+    }
     _urlController.removeListener(_onUrlChanged);
     _urlController.dispose();
     _urlFocusNode.dispose();
     _saveDirController.dispose();
     _cookieController.dispose();
+    for (final row in _headerRows) {
+      row.dispose();
+    }
     _checksumController.dispose();
     _renameController.dispose();
     _proxyUrlController.dispose();
@@ -378,6 +445,14 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
     final hash = _checksumController.text.trim();
     final checksum = hash.isEmpty ? '' : '$_selectedHashAlgo=$hash';
 
+    // 自定义请求头：仅保留 key 非空的行，同名 key 后者覆盖前者。
+    final extraHeaders = <String, String>{};
+    for (final row in _headerRows) {
+      final key = row.keyController.text.trim();
+      if (key.isEmpty) continue;
+      extraHeaders[key] = row.valueController.text.trim();
+    }
+
     widget.onSubmit(
       QuickDownloadFormResult(
         urlText: _urlController.text,
@@ -391,6 +466,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
         checksum: checksum,
         threadsUserModified: _threadsUserModified,
         audioUrl: widget.initialAudioUrl,
+        extraHeaders: extraHeaders,
       ),
     );
   }
@@ -401,356 +477,434 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
     final s = LocaleScope.of(context);
     final m = AppMetrics.of(context);
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // URL 输入区 — 多行可编辑
-        Row(
-          children: [
-            QuickSectionLabel(text: s.downloadUrl, c: c),
-            const Spacer(),
-            if (_urlCount > 0)
-              Text(
-                s.urlCount(_urlCount),
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        // 自适应高度：默认 2 行紧凑，随内容增高到 6 行后内部滚动，
-        // 避免单条链接时大片留白（小窗高度跟随内容，同步收窄）
-        Localizations(
-          locale: const Locale('en'),
-          delegates: const [
-            DefaultWidgetsLocalizations.delegate,
-            DefaultMaterialLocalizations.delegate,
-          ],
-          child: Material(
-            type: MaterialType.transparency,
-            child: TextSelectionTheme(
-              data: TextSelectionThemeData(
-                selectionColor: m.textSelection(c.accent),
-                cursorColor: c.accent,
-                selectionHandleColor: c.accent,
-              ),
-              child: TextField(
-                controller: _urlController,
-                focusNode: _urlFocusNode,
-                minLines: 2,
-                maxLines: 6,
-                cursorColor: c.accent,
-                style: TextStyle(fontSize: 13, color: c.textPrimary),
-                contextMenuBuilder: (context, editableTextState) {
-                  return Localizations(
-                    locale: const Locale('en'),
-                    delegates: const [
-                      DefaultWidgetsLocalizations.delegate,
-                      DefaultMaterialLocalizations.delegate,
-                    ],
-                    child: AdaptiveTextSelectionToolbar.editableText(
-                      editableTextState: editableTextState,
+    // Ctrl+Enter（macOS 加 Cmd+Enter）快速提交——小窗确认场景的高频路径；
+    // 焦点在任意输入框（含多行 URL 框）时均可触发，纯 Enter 不受影响。
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter, control: true):
+            _startDownload,
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true):
+            _startDownload,
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // URL 输入区 — 多行可编辑
+          Row(
+            children: [
+              QuickSectionLabel(text: s.downloadUrl, c: c),
+              const Spacer(),
+              if (_urlCount > 0)
+                Text(
+                  s.urlCount(_urlCount),
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // 自适应高度：默认 2 行紧凑，随内容增高到 6 行后内部滚动，
+          // 避免单条链接时大片留白（小窗高度跟随内容，同步收窄）
+          Localizations(
+            locale: const Locale('en'),
+            delegates: const [
+              DefaultWidgetsLocalizations.delegate,
+              DefaultMaterialLocalizations.delegate,
+            ],
+            child: Material(
+              type: MaterialType.transparency,
+              child: TextSelectionTheme(
+                data: TextSelectionThemeData(
+                  selectionColor: m.textSelection(c.accent),
+                  cursorColor: c.accent,
+                  selectionHandleColor: c.accent,
+                ),
+                child: TextField(
+                  controller: _urlController,
+                  focusNode: _urlFocusNode,
+                  minLines: 2,
+                  maxLines: 6,
+                  cursorColor: c.accent,
+                  style: TextStyle(fontSize: 13, color: c.textPrimary),
+                  contextMenuBuilder: (context, editableTextState) {
+                    return Localizations(
+                      locale: const Locale('en'),
+                      delegates: const [
+                        DefaultWidgetsLocalizations.delegate,
+                        DefaultMaterialLocalizations.delegate,
+                      ],
+                      child: AdaptiveTextSelectionToolbar.editableText(
+                        editableTextState: editableTextState,
+                      ),
+                    );
+                  },
+                  decoration: InputDecoration(
+                    hintText: s.batchUrlPlaceholder,
+                    hintStyle: TextStyle(fontSize: 12.5, color: c.textMuted),
+                    hintMaxLines: 5,
+                    contentPadding: const EdgeInsets.all(10),
+                    filled: true,
+                    fillColor: c.inputBg,
+                    hoverColor: Colors.transparent,
+                    border: OutlineInputBorder(
+                      borderRadius: m.brInput,
+                      borderSide: BorderSide(color: c.inputBorder),
                     ),
-                  );
-                },
-                decoration: InputDecoration(
-                  hintText: s.batchUrlPlaceholder,
-                  hintStyle: TextStyle(fontSize: 12.5, color: c.textMuted),
-                  hintMaxLines: 5,
-                  contentPadding: const EdgeInsets.all(10),
-                  filled: true,
-                  fillColor: c.inputBg,
-                  hoverColor: Colors.transparent,
-                  border: OutlineInputBorder(
-                    borderRadius: m.brInput,
-                    borderSide: BorderSide(color: c.inputBorder),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: m.brInput,
-                    borderSide: BorderSide(color: c.inputBorder),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: m.brInput,
-                    borderSide: BorderSide(color: c.inputFocusBorder),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: m.brInput,
+                      borderSide: BorderSide(color: c.inputBorder),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: m.brInput,
+                      borderSide: BorderSide(color: c.inputFocusBorder),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 14),
-
-        // 保存目录 + 线程数
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  QuickSectionLabel(text: s.saveDir, c: c),
-                  const SizedBox(height: 6),
-                  DirPickerField(
-                    path: _saveDirController.text,
-                    placeholder: s.selectSaveDir,
-                    enabled: !_isPicking,
-                    onTap: _pickSaveDir,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            SizedBox(
-              width: 110,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  QuickSectionLabel(text: s.threads, c: c),
-                  const SizedBox(height: 6),
-                  ThreadSelector(
-                    value: selectedThreads,
-                    version: _threadsSelectVersion,
-                    onChanged: (v) => setState(() {
-                      selectedThreads = v;
-                      _threadsUserModified = true;
-                    }),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-
-        // 重命名 — 仅单条时显示
-        if (!_isBatch) ...[
           const SizedBox(height: 14),
-          QuickSectionLabel(text: s.filenameOptional, c: c),
-          const SizedBox(height: 6),
-          ShadInput(
-            controller: _renameController,
-            placeholder: Text(s.autoDetectFilename),
-          ),
-        ],
 
-        // 队列选择器（有命名队列时才显示）
-        _buildQueueSelector(s, c),
-
-        // 高级选项 — 可折叠，含任务独立代理
-        const SizedBox(height: 10),
-        GestureDetector(
-          onTap: () => setState(() => _showAdvanced = !_showAdvanced),
-          child: Row(
+          // 保存目录 + 线程数
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Icon(
-                _showAdvanced
-                    ? LucideIcons.chevronDown
-                    : LucideIcons.chevronRight,
-                size: 14,
-                color: c.textMuted,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    QuickSectionLabel(text: s.saveDir, c: c),
+                    const SizedBox(height: 6),
+                    DirPickerField(
+                      path: _saveDirController.text,
+                      placeholder: s.selectSaveDir,
+                      enabled: !_isPicking,
+                      onTap: _pickSaveDir,
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(width: 4),
-              Text(
-                s.taskProxyAdvanced,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w500,
-                  color: c.textMuted,
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 110,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    QuickSectionLabel(text: s.threads, c: c),
+                    const SizedBox(height: 6),
+                    ThreadSelector(
+                      value: selectedThreads,
+                      version: _threadsSelectVersion,
+                      onChanged: (v) => setState(() {
+                        selectedThreads = v;
+                        _threadsUserModified = true;
+                      }),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-        ),
-        if (_showAdvanced) ...[
+
+          // 重命名 — 仅单条时显示
+          if (!_isBatch) ...[
+            const SizedBox(height: 14),
+            QuickSectionLabel(text: s.filenameOptional, c: c),
+            const SizedBox(height: 6),
+            ShadInput(
+              controller: _renameController,
+              placeholder: Text(s.autoDetectFilename),
+            ),
+          ],
+
+          // 队列选择器（有命名队列时才显示）
+          _buildQueueSelector(s, c),
+
+          // 高级选项 — 可折叠，含任务独立代理
           const SizedBox(height: 10),
-          Row(
-            children: [
-              QuickSectionLabel(text: s.taskProxy, c: c),
-              const SizedBox(width: 4),
-              ShadTooltip(
-                waitDuration: const Duration(milliseconds: 200),
-                showDuration: Duration.zero,
-                builder: (_) => Text(
-                  s.taskProxyFormatHint,
-                  style: const TextStyle(fontSize: 12, height: 1.5),
+          GestureDetector(
+            onTap: () => setState(() => _showAdvanced = !_showAdvanced),
+            child: Row(
+              children: [
+                Icon(
+                  _showAdvanced
+                      ? LucideIcons.chevronDown
+                      : LucideIcons.chevronRight,
+                  size: 14,
+                  color: c.textMuted,
                 ),
-                child: ShadGestureDetector(
-                  cursor: SystemMouseCursors.help,
-                  child: Icon(
-                    LucideIcons.circleAlert,
-                    size: 13,
+                const SizedBox(width: 4),
+                Text(
+                  s.taskProxyAdvanced,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w500,
                     color: c.textMuted,
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            s.taskProxyDesc,
-            style: TextStyle(fontSize: 11, color: c.textMuted),
-          ),
-          const SizedBox(height: 6),
-          ShadInput(
-            controller: _proxyUrlController,
-            placeholder: Text(s.taskProxyPlaceholder),
-          ),
-          const SizedBox(height: 10),
-          QuickSectionLabel(text: s.userAgent, c: c),
-          const SizedBox(height: 4),
-          Text(
-            s.userAgentTaskPlaceholder,
-            style: TextStyle(fontSize: 11, color: c.textMuted),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              SizedBox(
-                width: 150,
-                child: ShadSelect<String>(
-                  initialValue: _selectedUaPreset,
-                  placeholder: Text(s.userAgentPresetCustom),
-                  options: [
-                    ShadOption(
-                      value: 'chrome',
-                      child: Text(s.userAgentPresetChrome),
-                    ),
-                    ShadOption(
-                      value: 'firefox',
-                      child: Text(s.userAgentPresetFirefox),
-                    ),
-                    ShadOption(
-                      value: 'edge',
-                      child: Text(s.userAgentPresetEdge),
-                    ),
-                    ShadOption(
-                      value: 'netdisk',
-                      child: Text(s.userAgentPresetNetdisk),
-                    ),
-                    ShadOption(
-                      value: 'custom',
-                      child: Text(s.userAgentPresetCustom),
-                    ),
-                  ],
-                  selectedOptionBuilder: (context, value) {
-                    final label = switch (value) {
-                      'chrome' => 'Chrome',
-                      'firefox' => 'Firefox',
-                      'edge' => 'Edge',
-                      'netdisk' => 'netdisk',
-                      _ => s.userAgentPresetCustom,
-                    };
-                    return Text(label, overflow: TextOverflow.ellipsis, maxLines: 1);
-                  },
-                  onChanged: (v) {
-                    if (v == null) return;
-                    setState(() => _selectedUaPreset = v);
-                    final preset = kQuickUaPresets[v];
-                    if (preset != null) {
-                      _userAgentController.text = preset;
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ShadInput(
-                  controller: _userAgentController,
-                  placeholder: Text(s.userAgentPlaceholder),
-                  onChanged: (_) {
-                    if (_selectedUaPreset != 'custom') {
-                      setState(() => _selectedUaPreset = 'custom');
-                    }
-                  },
-                ),
-              ),
-            ],
-          ),
-          // Cookie — 预填浏览器捕获值，可编辑覆盖
-          const SizedBox(height: 10),
-          QuickSectionLabel(text: s.taskCookie, c: c),
-          const SizedBox(height: 4),
-          Text(
-            s.taskCookieDesc,
-            style: TextStyle(fontSize: 11, color: c.textMuted),
-          ),
-          const SizedBox(height: 6),
-          ShadInput(
-            controller: _cookieController,
-            placeholder: Text(s.taskCookiePlaceholder),
-            maxLines: 2,
-          ),
-          // 哈希校验 — 仅单条链接时显示（批量走 URL 行内 checksum= 选项）
-          if (!_isBatch) ...[
+          if (_showAdvanced) ...[
             const SizedBox(height: 10),
-            QuickSectionLabel(text: s.taskChecksum, c: c),
+            Row(
+              children: [
+                QuickSectionLabel(text: s.taskProxy, c: c),
+                const SizedBox(width: 4),
+                ShadTooltip(
+                  waitDuration: const Duration(milliseconds: 200),
+                  showDuration: Duration.zero,
+                  builder: (_) => Text(
+                    s.taskProxyFormatHint,
+                    style: const TextStyle(fontSize: 12, height: 1.5),
+                  ),
+                  child: ShadGestureDetector(
+                    cursor: SystemMouseCursors.help,
+                    child: Icon(
+                      LucideIcons.circleAlert,
+                      size: 13,
+                      color: c.textMuted,
+                    ),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 4),
             Text(
-              s.taskChecksumDesc,
+              s.taskProxyDesc,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            ),
+            const SizedBox(height: 6),
+            ShadInput(
+              controller: _proxyUrlController,
+              placeholder: Text(s.taskProxyPlaceholder),
+            ),
+            const SizedBox(height: 10),
+            QuickSectionLabel(text: s.userAgent, c: c),
+            const SizedBox(height: 4),
+            Text(
+              s.userAgentTaskPlaceholder,
               style: TextStyle(fontSize: 11, color: c.textMuted),
             ),
             const SizedBox(height: 6),
             Row(
               children: [
                 SizedBox(
-                  width: 110,
+                  width: 150,
                   child: ShadSelect<String>(
-                    initialValue: _selectedHashAlgo,
-                    options: const [
-                      ShadOption(value: 'md5', child: Text('md5')),
-                      ShadOption(value: 'sha-1', child: Text('sha-1')),
-                      ShadOption(value: 'sha-256', child: Text('sha-256')),
-                      ShadOption(value: 'sha-512', child: Text('sha-512')),
+                    initialValue: _selectedUaPreset,
+                    placeholder: Text(s.userAgentPresetCustom),
+                    options: [
+                      ShadOption(
+                        value: 'chrome',
+                        child: Text(s.userAgentPresetChrome),
+                      ),
+                      ShadOption(
+                        value: 'firefox',
+                        child: Text(s.userAgentPresetFirefox),
+                      ),
+                      ShadOption(
+                        value: 'edge',
+                        child: Text(s.userAgentPresetEdge),
+                      ),
+                      ShadOption(
+                        value: 'netdisk',
+                        child: Text(s.userAgentPresetNetdisk),
+                      ),
+                      ShadOption(
+                        value: 'custom',
+                        child: Text(s.userAgentPresetCustom),
+                      ),
                     ],
-                    selectedOptionBuilder: (context, value) => Text(
-                      value,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                    ),
-                    onChanged: (algo) {
-                      if (algo == null) return;
-                      setState(() => _selectedHashAlgo = algo);
+                    selectedOptionBuilder: (context, value) {
+                      final label = switch (value) {
+                        'chrome' => 'Chrome',
+                        'firefox' => 'Firefox',
+                        'edge' => 'Edge',
+                        'netdisk' => 'netdisk',
+                        _ => s.userAgentPresetCustom,
+                      };
+                      return Text(
+                        label,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      );
+                    },
+                    onChanged: (v) {
+                      if (v == null) return;
+                      setState(() => _selectedUaPreset = v);
+                      final preset = kQuickUaPresets[v];
+                      if (preset != null) {
+                        _userAgentController.text = preset;
+                      }
                     },
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ShadInput(
-                    controller: _checksumController,
-                    placeholder: Text(s.taskChecksumPlaceholder),
+                    controller: _userAgentController,
+                    placeholder: Text(s.userAgentPlaceholder),
+                    onChanged: (_) {
+                      if (_selectedUaPreset != 'custom') {
+                        setState(() => _selectedUaPreset = 'custom');
+                      }
+                    },
                   ),
                 ),
               ],
             ),
-          ],
-        ],
-
-        // 底部动作按钮（取消 / 开始下载）
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            ShadButton.outline(
-              onPressed: widget.onCancel,
-              child: Text(s.cancel),
+            // Cookie — 预填浏览器捕获值，可编辑覆盖
+            const SizedBox(height: 10),
+            QuickSectionLabel(text: s.taskCookie, c: c),
+            const SizedBox(height: 4),
+            Text(
+              s.taskCookieDesc,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
             ),
-            const SizedBox(width: 8),
-            ShadButton(
-              onPressed: _startDownload,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+            const SizedBox(height: 6),
+            ShadInput(
+              controller: _cookieController,
+              placeholder: Text(s.taskCookiePlaceholder),
+              maxLines: 2,
+            ),
+            // 哈希校验 — 仅单条链接时显示（批量走 URL 行内 checksum= 选项）
+            if (!_isBatch) ...[
+              const SizedBox(height: 10),
+              QuickSectionLabel(text: s.taskChecksum, c: c),
+              const SizedBox(height: 4),
+              Text(
+                s.taskChecksumDesc,
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+              const SizedBox(height: 6),
+              Row(
                 children: [
-                  const Icon(LucideIcons.download, size: 13, color: Colors.white),
-                  const SizedBox(width: 6),
-                  Text(
-                    _isBatch ? s.startBatchDownload(_urlCount) : s.startDownload,
-                    style: const TextStyle(color: Colors.white),
+                  SizedBox(
+                    width: 110,
+                    child: ShadSelect<String>(
+                      initialValue: _selectedHashAlgo,
+                      options: const [
+                        ShadOption(value: 'md5', child: Text('md5')),
+                        ShadOption(value: 'sha-1', child: Text('sha-1')),
+                        ShadOption(value: 'sha-256', child: Text('sha-256')),
+                        ShadOption(value: 'sha-512', child: Text('sha-512')),
+                      ],
+                      selectedOptionBuilder: (context, value) => Text(
+                        value,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                      onChanged: (algo) {
+                        if (algo == null) return;
+                        setState(() => _selectedHashAlgo = algo);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ShadInput(
+                      controller: _checksumController,
+                      placeholder: Text(s.taskChecksumPlaceholder),
+                    ),
                   ),
                 ],
               ),
+            ],
+            // 自定义请求头（与主窗口新建下载对话框对齐）
+            const SizedBox(height: 10),
+            QuickSectionLabel(text: s.taskHeaders, c: c),
+            const SizedBox(height: 4),
+            Text(
+              s.taskHeadersDesc,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            ),
+            const SizedBox(height: 6),
+            for (int hi = 0; hi < _headerRows.length; hi++) ...[
+              if (hi > 0) const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: ShadInput(
+                      controller: _headerRows[hi].keyController,
+                      placeholder: Text(s.taskHeadersKeyPlaceholder),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    flex: 3,
+                    child: ShadInput(
+                      controller: _headerRows[hi].valueController,
+                      placeholder: Text(s.taskHeadersValuePlaceholder),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      _headerRows.removeAt(hi).dispose();
+                    }),
+                    child: Icon(LucideIcons.x, size: 16, color: c.textMuted),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ShadButton.ghost(
+                size: ShadButtonSize.sm,
+                onPressed: () =>
+                    setState(() => _headerRows.add(QuickHeaderRow())),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(LucideIcons.plus, size: 13, color: c.accent),
+                    const SizedBox(width: 6),
+                    Text(
+                      s.taskHeadersAdd,
+                      style: TextStyle(fontSize: 12, color: c.accent),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
-        ),
-      ],
+
+          // 底部动作按钮（取消 / 开始下载）
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              ShadButton.outline(
+                onPressed: widget.onCancel,
+                child: Text(s.cancel),
+              ),
+              const SizedBox(width: 8),
+              ShadButton(
+                onPressed: _startDownload,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      LucideIcons.download,
+                      size: 13,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _isBatch
+                          ? s.startBatchDownload(_urlCount)
+                          : s.startDownload,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -814,10 +968,7 @@ class QuickInfoTag extends StatelessWidget {
     final m = AppMetrics.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: c.surface2,
-        borderRadius: m.brSm,
-      ),
+      decoration: BoxDecoration(color: c.surface2, borderRadius: m.brSm),
       child: Text(
         text,
         style: TextStyle(fontSize: 10, color: c.textMuted),
@@ -859,4 +1010,15 @@ String formatQuickFileSize(int bytes, {required String unknownLabel}) {
     unitIndex++;
   }
   return '${size.toStringAsFixed(unitIndex == 0 ? 0 : 1)} ${units[unitIndex]}';
+}
+
+/// 自定义请求头的一行输入：持有 key / value 两个文本控制器。
+class QuickHeaderRow {
+  final TextEditingController keyController = TextEditingController();
+  final TextEditingController valueController = TextEditingController();
+
+  void dispose() {
+    keyController.dispose();
+    valueController.dispose();
+  }
 }

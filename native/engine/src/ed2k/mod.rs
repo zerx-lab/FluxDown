@@ -139,6 +139,7 @@ pub async fn run_ed2k_download(params: DownloadParams) {
                     error_message: String::new(),
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -163,6 +164,7 @@ pub async fn run_ed2k_download(params: DownloadParams) {
                     error_message: msg,
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -229,6 +231,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<i64, Downloa
             error_message: String::new(),
             file_name: link.file_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -652,6 +655,7 @@ fn spawn_progress_reporter(
                     } else {
                         Some(segment_details)
                     },
+                    ..Default::default()
                 })
                 .await;
         }

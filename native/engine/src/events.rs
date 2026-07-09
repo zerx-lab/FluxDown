@@ -1,9 +1,10 @@
 //! 引擎向宿主(hub/CLI/Server/...)上报的事件,以及事件接收端 trait。
 //!
 //! 每个 [`EngineEvent`] 变体的字段与 `hub::signals` 中对应的现有信号结构体
-//! 逐字段 1:1 展开(不改名、不改类型、不增删字段),字段顺序以
-//! `hub/src/signals/mod.rs` 当前定义为准。`hub` 侧的 `RinfEventSink` 实现
-//! 把每个变体 match 回具体信号类型并调用 `.send_signal_to_dart()`。
+//! 逐字段对应(字段顺序以 `hub/src/signals/mod.rs` 当前定义为准;引擎侧
+//! 可多出信号不需要的字段,如 `TaskProgress::upload_speed_bps`,由宿主
+//! 自行消费)。`hub` 侧的 `RinfEventSink` 实现把每个变体 match 回具体
+//! 信号类型并调用 `.send_signal_to_dart()`。
 
 use crate::model::{QueueInfo, QueuePosition, SegmentDetail, TaskInfo};
 
@@ -28,7 +29,17 @@ pub enum EngineEvent {
         url: String,
         /// 无错误时为空
         error_message: String,
+        /// 实时上传速率(字节/秒)。仅 BT 任务非零,其余协议恒 0。
+        /// 不进 Dart 信号,由宿主写入 aria2 兼容层的实时速率表
+        /// (`ApiHost::live_speeds` 的 `upload_bps`)。
+        upload_speed_bps: i64,
     },
+
+    /// BT 任务数据下载完成(piece 全部下完),但校验与 staging→save_dir
+    /// 搬移尚未完成、任务未进终态。每个任务至多发送一次
+    /// (`progress_reporter` 按 task_id 去重)。对应 aria2 的
+    /// `onBtDownloadComplete` 通知语义,无对应 Dart 信号。
+    BtDataFinished { task_id: String },
 
     /// 响应"请求全部任务" — 全部持久化任务快照。对应 `hub::signals::AllTasks`。
     TasksSnapshot(Vec<TaskInfo>),

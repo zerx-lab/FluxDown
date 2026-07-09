@@ -165,9 +165,6 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   /// 下次收到 BtFilesInfo 时立刻发 [-1] 让 Rust 暂停任务。
   bool _btCancelPending = false;
 
-
-
-
   /// 根据队列 ID 计算有效的线程数选项字符串。
   ///
   /// 优先级：自定义队列的 defaultSegments → 全局 defaultSegments → null（Auto）
@@ -253,8 +250,6 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     });
   }
 
-
-
   void _onTorrentMetaResult(RustSignalPack<TorrentMetaResult> pack) {
     final msg = pack.message;
     // probeId 就是文件路径（_probeTorrentFile 里以 path 作为 probeId）
@@ -273,8 +268,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         _probeError = '';
         _torrentMeta[path] = msg;
         // 默认全选
-        _torrentSelections[path] =
-            msg.files.map((f) => f.index.toInt()).toSet();
+        _torrentSelections[path] = msg.files
+            .map((f) => f.index.toInt())
+            .toSet();
       }
     });
   }
@@ -483,10 +479,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         _probeError = '';
         _probingPath = path;
       });
-      ProbeTorrentMeta(
-        probeId: path,
-        torrentBytes: bytes,
-      ).sendSignalToRust();
+      ProbeTorrentMeta(probeId: path, torrentBytes: bytes).sendSignalToRust();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -715,9 +708,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             decoration: BoxDecoration(
               color: m.subtle(c.statusError),
               borderRadius: m.brCard,
-              border: Border.all(
-                color: m.borderSubtle(c.statusError),
-              ),
+              border: Border.all(color: m.borderSubtle(c.statusError)),
             ),
             child: Row(
               children: [
@@ -742,8 +733,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                 if (selection.length == meta.files.length) {
                   _torrentSelections[path] = {};
                 } else {
-                  _torrentSelections[path] =
-                      meta.files.map((f) => f.index.toInt()).toSet();
+                  _torrentSelections[path] = meta.files
+                      .map((f) => f.index.toInt())
+                      .toSet();
                 }
               });
             },
@@ -825,11 +817,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       );
 
   /// 用户是否已从所有 torrent 中选择了至少一个文件
-  bool get _hasAnyTorrentSelection =>
-      _torrentFilePaths.any((p) {
-        final sel = _torrentSelections[p];
-        return sel != null && sel.isNotEmpty;
-      });
+  bool get _hasAnyTorrentSelection => _torrentFilePaths.any((p) {
+    final sel = _torrentSelections[p];
+    return sel != null && sel.isNotEmpty;
+  });
 
   Future<void> _startDownload() async {
     if (_isSubmitting) return;
@@ -979,8 +970,8 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         extraHeaders: extraHeaders,
       );
     } else {
-      // 多条 — 使用 BatchCreateTask（携带每条的 fileName/checksum）。
-      // 批量信号无 extra_headers 字段，自定义请求头仅对单条任务生效。
+      // 多条 — 使用 BatchCreateTask（携带每条的 fileName/checksum，
+      // 自定义请求头批次内所有任务共享）。
       widget.controller.batchCreateTask(
         entries: entries
             .map(
@@ -998,6 +989,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         userAgent: userAgent,
         queueId: _selectedQueueId,
         cookies: cookie,
+        extraHeaders: extraHeaders,
       );
     }
 
@@ -1010,10 +1002,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     if (_btSelectedIndices.isEmpty) return;
     final indices = _btSelectedIndices.toList()..sort();
     final tid = _btPendingTaskId!;
-    SelectBtFiles(
-      taskId: tid,
-      selectedIndices: indices,
-    ).sendSignalToRust();
+    SelectBtFiles(taskId: tid, selectedIndices: indices).sendSignalToRust();
     // 清理状态，防止 dispose 再次发送 [-1]
     _btPendingTaskId = null;
     _btWaitPhase = null;
@@ -1049,6 +1038,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     final m = AppMetrics.of(context);
 
     return ShadDialog(
+      // 左右各让 6px 从 padding 移入 scrollPadding：内容位置不变，
+      // 但滚动裁切边界外移，避免 ShadInput 外扩焦点圈被裁掉左缘。
+      padding: const EdgeInsets.fromLTRB(18, 24, 18, 24),
+      scrollPadding: const EdgeInsets.symmetric(horizontal: 6),
       title: Row(
         children: [
           Container(
@@ -1077,12 +1070,12 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ShadButton(
                 onPressed:
                     (_isSubmitting ||
-                            _isProbing ||
-                            (_hasTorrentFiles &&
-                                !_hasAnyTorrentSelection &&
-                                _allTorrentsProbed))
-                        ? null
-                        : () => _startDownload(),
+                        _isProbing ||
+                        (_hasTorrentFiles &&
+                            !_hasAnyTorrentSelection &&
+                            _allTorrentsProbed))
+                    ? null
+                    : () => _startDownload(),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1101,7 +1094,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ),
             ],
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        // 右侧留出滚动条槽位，避免 ShadDialog 的覆盖式滚动条
+        // 遮挡自定义请求头行的删除按钮（右缘交互元素）。
+        padding: const EdgeInsets.only(top: 16, bottom: 16, right: 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1573,11 +1568,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                       onTap: () => setState(() {
                         _headerRows.removeAt(hi).dispose();
                       }),
-                      child: Icon(
-                        LucideIcons.x,
-                        size: 16,
-                        color: c.textMuted,
-                      ),
+                      child: Icon(LucideIcons.x, size: 16, color: c.textMuted),
                     ),
                   ],
                 ),
@@ -1708,7 +1699,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             SizedBox(
               width: 28,
               height: 28,
-              child: CircularProgressIndicator(strokeWidth: 2.5, color: c.accent),
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: c.accent,
+              ),
             ),
             const SizedBox(height: 16),
             Text(

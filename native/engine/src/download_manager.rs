@@ -57,6 +57,7 @@ async fn handle_task_panic(
             error_message: msg.to_string(),
             file_name: String::new(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 }
@@ -463,6 +464,10 @@ struct TaskSpeedState {
     /// this task — it indicates a real problem (segment visualization will
     /// be empty) but repeats on every update, so log it only once.
     logged_missing_segments: bool,
+    /// Latest upload speed (bytes/sec) reported by the downloader.
+    /// Non-zero only for BT tasks (librqbit stats); latched from every
+    /// incoming update so throttled emits carry the freshest value.
+    upload_bps: i64,
 }
 
 /// Information needed to start a queued task later.
@@ -902,6 +907,7 @@ impl DownloadManager {
                             save_dir: t.save_dir.clone(),
                             url: t.url.clone(),
                             error_message: String::new(),
+                            upload_speed_bps: 0,
                         });
 
                         self.send_segments_from_db(tid, t.total_bytes).await;
@@ -1678,6 +1684,7 @@ impl DownloadManager {
             save_dir: save_dir.clone(),
             url: db_url.clone(),
             error_message: String::new(),
+            upload_speed_bps: 0,
         });
 
         // BT tasks bypass the HTTP/FTP concurrency queue — they are managed
@@ -1874,6 +1881,7 @@ impl DownloadManager {
                         error_message: e.to_string(),
                         file_name: String::new(),
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 self.active_tasks.remove(&task_id);
@@ -2231,6 +2239,7 @@ impl DownloadManager {
                     save_dir: t.save_dir.clone(),
                     url: t.url.clone(),
                     error_message: String::new(),
+                    upload_speed_bps: 0,
                 });
             }
             return;
@@ -2261,6 +2270,7 @@ impl DownloadManager {
                     save_dir: t.save_dir.clone(),
                     url: t.url.clone(),
                     error_message: String::new(),
+                    upload_speed_bps: 0,
                 });
 
                 // Send persisted segment data so the UI retains the download
@@ -2380,6 +2390,7 @@ impl DownloadManager {
                     save_dir: t.save_dir.clone(),
                     url: t.url.clone(),
                     error_message: String::new(),
+                    upload_speed_bps: 0,
                 });
                 self.pending_queue.push_back(QueuedTask {
                     task_id: task_id.to_string(),
@@ -2434,6 +2445,7 @@ impl DownloadManager {
                         error_message: format!("database error: {e}"),
                         file_name: String::new(),
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 return;
@@ -2502,6 +2514,7 @@ impl DownloadManager {
                         error_message: e.to_string(),
                         file_name: String::new(),
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 self.active_tasks.remove(task_id);
@@ -2808,6 +2821,7 @@ impl DownloadManager {
             save_dir,
             url,
             error_message: CANCELLED_ERROR_MESSAGE.to_string(),
+            upload_speed_bps: 0,
         });
 
         // A slot freed up — try to start queued tasks.
@@ -2993,6 +3007,7 @@ impl DownloadManager {
                 error_message: "deleted".to_string(),
                 file_name: String::new(),
                 segment_details: None,
+                ..Default::default()
             })
             .await;
 
@@ -3167,6 +3182,7 @@ impl DownloadManager {
                                 error_message: "deleted".to_string(),
                                 file_name: String::new(),
                                 segment_details: None,
+                                ..Default::default()
                             })
                             .await;
                         // F010：handle 超时时下载任务可能仍在写盘，延迟二次清理
@@ -3283,6 +3299,7 @@ impl DownloadManager {
                                 error_message: "deleted".to_string(),
                                 file_name: String::new(),
                                 segment_details: None,
+                                ..Default::default()
                             })
                             .await;
                         // F010：handle 超时时下载任务可能仍在写临时文件，延迟
@@ -3319,6 +3336,7 @@ impl DownloadManager {
                             error_message: "deleted".to_string(),
                             file_name: String::new(),
                             segment_details: None,
+                            ..Default::default()
                         })
                         .await;
                 }));
@@ -3428,6 +3446,7 @@ impl DownloadManager {
                 save_dir: task_row.save_dir.clone(),
                 url: task_row.url.clone(),
                 error_message: String::new(),
+                upload_speed_bps: 0,
             });
             self.pending_queue.push_back(QueuedTask {
                 task_id: task_id.to_string(),
@@ -3833,6 +3852,9 @@ pub async fn progress_reporter(
     let mut last_dart_send: HashMap<String, std::time::Instant> = HashMap::new();
     // Track last DB persistence per task (independent of Dart updates).
     let mut last_db_save: HashMap<String, std::time::Instant> = HashMap::new();
+    // BT 数据完成通知去重:每个 task_id 只发一次 `EngineEvent::BtDataFinished`
+    // (完成搬移失败后的重试路径可能再次进入 finished 分支)。
+    let mut bt_finish_notified: HashSet<String> = HashSet::new();
 
     while let Some(update) = rx.recv().await {
         let now = std::time::Instant::now();
@@ -3850,6 +3872,7 @@ pub async fn progress_reporter(
                 last_raw_status: update.status,
                 speed_warmup_remaining: if update.status == 1 { 1 } else { 0 },
                 logged_missing_segments: false,
+                upload_bps: 0,
             }
         });
 
@@ -3936,6 +3959,15 @@ pub async fn progress_reporter(
             state.latest_bytes = update.downloaded_bytes;
         }
         state.last_raw_status = update.status;
+        state.upload_bps = update.upload_speed_bps;
+
+        // BT 数据下载完成标记:绕过节流立即上报(一次性事件,节流可能吞掉),
+        // 按 task_id 去重。
+        if update.bt_data_finished && bt_finish_notified.insert(update.task_id.clone()) {
+            sink.emit(EngineEvent::BtDataFinished {
+                task_id: update.task_id.clone(),
+            });
+        }
 
         let smoothed_speed = state.ema_speed as i64;
         let resolved_name = state.file_name.clone();
@@ -3969,6 +4001,7 @@ pub async fn progress_reporter(
                 save_dir: String::new(),
                 url: String::new(),
                 error_message: update.error_message.clone(),
+                upload_speed_bps: if is_terminal { 0 } else { state.upload_bps },
             });
 
             // Send segment-level progress for IDM-style visualization.
@@ -4474,5 +4507,107 @@ mod tests {
         assert!(sink.events().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BT 数据下载完成标记的一次性契约(`bt_finish_notified` 去重集,见
+    /// `progress_reporter` 文档):同一 task_id 第二次标记
+    /// `bt_data_finished=true`(对应完成搬移失败后重试路径重新进入 finished
+    /// 分支)不得再次触发 `EngineEvent::BtDataFinished`,否则 hub/server 会
+    /// 对同一 GID 重复广播 `aria2.onBtDownloadComplete`。
+    #[tokio::test]
+    async fn progress_reporter_emits_bt_data_finished_once_and_dedupes_repeat() {
+        let (tx, rx) = mpsc::channel(8);
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let sink = Arc::new(RecordingSink::new());
+        let handle = tokio::spawn(progress_reporter(rx, db, sink.clone()));
+
+        for _ in 0..2 {
+            tx.send(ProgressUpdate {
+                task_id: "bt1".to_string(),
+                status: 1,
+                downloaded_bytes: 100,
+                total_bytes: 100,
+                bt_data_finished: true,
+                ..Default::default()
+            })
+            .await
+            .expect("send update");
+        }
+        drop(tx);
+        handle
+            .await
+            .expect("reporter task must finish once channel closes");
+
+        let bt_finished_count = sink
+            .events()
+            .into_iter()
+            .filter(|e| matches!(e, EngineEvent::BtDataFinished { task_id } if task_id == "bt1"))
+            .count();
+        assert_eq!(
+            bt_finished_count, 1,
+            "second bt_data_finished=true mark on the same task must not refire"
+        );
+    }
+
+    /// BT 上传速率透传契约:活跃状态原样透传 `upload_speed_bps`(latch 进
+    /// `TaskSpeedState.upload_bps`),到达终态时强制归零,避免 UI 在任务
+    /// 完成/出错后仍显示陈旧的上传速率。
+    #[tokio::test]
+    async fn progress_reporter_forwards_upload_speed_then_zeroes_on_terminal() {
+        let (tx, rx) = mpsc::channel(8);
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let sink = Arc::new(RecordingSink::new());
+        let handle = tokio::spawn(progress_reporter(rx, db, sink.clone()));
+
+        tx.send(ProgressUpdate {
+            task_id: "bt2".to_string(),
+            status: 1,
+            downloaded_bytes: 10,
+            total_bytes: 1000,
+            upload_speed_bps: 8192,
+            ..Default::default()
+        })
+        .await
+        .expect("send active update");
+
+        tx.send(ProgressUpdate {
+            task_id: "bt2".to_string(),
+            status: 3,
+            downloaded_bytes: 1000,
+            total_bytes: 1000,
+            upload_speed_bps: 8192,
+            ..Default::default()
+        })
+        .await
+        .expect("send terminal update");
+
+        drop(tx);
+        handle
+            .await
+            .expect("reporter task must finish once channel closes");
+
+        let progress_events: Vec<(i32, i64)> = sink
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                EngineEvent::TaskProgress {
+                    status,
+                    upload_speed_bps,
+                    ..
+                } => Some((status, upload_speed_bps)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            progress_events.first(),
+            Some(&(1, 8192)),
+            "active update must forward upload_speed_bps as-is"
+        );
+        assert_eq!(
+            progress_events.last(),
+            Some(&(3, 0)),
+            "terminal update must zero upload_speed_bps regardless of the raw value"
+        );
     }
 }

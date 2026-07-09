@@ -24,6 +24,9 @@ import FlutterMacOS
 private let kPopupWidth: CGFloat = 520
 /// 弹窗初始逻辑高度；resize() 会动态调高。
 private let kPopupInitialHeight: CGFloat = 600
+/// reveal 兜底超时（秒）——show 后弹窗 Dart 迟迟不发 reveal（引擎冷启动
+/// 异常/卡死）时按当前尺寸强制显示，保证窗口永远弹得出来。
+private let kRevealFallbackTimeout: TimeInterval = 3.0
 /// resize() 允许的最大高度占所在屏幕工作区高度的比例。
 private let kPopupMaxHeightRatio: CGFloat = 0.9
 /// 弹窗圆角半径（逻辑像素）；Dart 侧已自绘卡片圆角，这里仅作兜底裁剪，避免四角露出窗口透明背景外的直角瑕疵。
@@ -63,6 +66,8 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
     private var childReady = false
     /// show() 早于 ready() 到达时的暂存载荷；ready() 到达后立即投递并清空。
     private var pendingPayload: String?
+    /// reveal 兜底定时器（show 时武装；reveal 到达 / 隐藏时作废）。
+    private var revealFallback: DispatchWorkItem?
 
     // -------------------------------------------------------------------
     // 主引擎侧接线
@@ -89,18 +94,37 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
                 return
             }
             result(showPopup(payloadJson: payload))
+        case "append":
+            // 小窗可见期间新到的外部请求 — 转发给弹窗引擎合入当前表单。
+            // 窗口实际不可见/引擎未就绪时返回 false，Dart 侧复位失步状态。
+            guard let urlText = call.arguments as? String else {
+                result(FlutterError(code: "bad_args", message: "append: expected URL text string", details: nil))
+                return
+            }
+            let canAppend = (window?.isVisible ?? false) && childReady && childChannel != nil
+            if canAppend {
+                childChannel?.invokeMethod("appendPayload", arguments: urlText)
+            }
+            result(canAppend)
         case "close":
             // 主引擎主动收起（例如用户在主窗口取消了外部请求），不回调 onClosed。
-            window?.orderOut(nil)
+            hidePopup()
             result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
-    /// 懒创建（或复用）弹窗窗口，按载荷投递时序处理 payload，居中显示并激活。
+    /// 懒创建（或复用）弹窗窗口，按载荷投递时序处理 payload 并重置定位。
+    ///
+    /// 显示时序（reveal 握手）：窗口保持隐藏（复用时先藏起旧表单画面），
+    /// 由弹窗 Dart 在新载荷首帧就绪后经 reveal 一次到位「设高 + 显示」——
+    /// 消除旧表单闪现与默认高度→内容高度的二段跳。同时武装兜底定时器：
+    /// reveal 超时未到达时按当前尺寸强制显示，保证窗口永远弹得出来。
     private func showPopup(payloadJson: String) -> Bool {
         let win = ensurePopupWindow()
+
+        hidePopup()
 
         if childReady {
             childChannel?.invokeMethod("setPayload", arguments: payloadJson)
@@ -108,13 +132,34 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
             pendingPayload = payloadJson
         }
 
-        // 每次展示都重置为初始尺寸并居中：避免复用窗口残留上一次请求 resize() 后的高度；
-        // Dart 收到 setPayload 重置表单后会按新内容再次触发 resize()。
-        presentCentered(win, width: kPopupWidth, height: kPopupInitialHeight)
+        // 重置为初始尺寸并居中：避免复用窗口残留上一次请求 resize() 后的
+        // 高度；reveal 到达时会按内容实高覆盖。
+        repositionCentered(win, width: kPopupWidth, height: kPopupInitialHeight)
 
+        let fallback = DispatchWorkItem { [weak self] in
+            self?.revealFallback = nil
+            NSLog("[popup-host] reveal timed out, force presenting popup")
+            self?.presentPopup()
+        }
+        revealFallback = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + kRevealFallbackTimeout, execute: fallback)
+        return true
+    }
+
+    /// 显示并激活（reveal 握手的显示端；也是兜底定时器的强制显示入口）。
+    private func presentPopup() {
+        revealFallback?.cancel()
+        revealFallback = nil
+        guard let win = window else { return }
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        return true
+    }
+
+    /// 统一隐藏入口：隐藏窗口并作废 pending 的 reveal 兜底。
+    private func hidePopup() {
+        revealFallback?.cancel()
+        revealFallback = nil
+        window?.orderOut(nil)
     }
 
     // -------------------------------------------------------------------
@@ -213,11 +258,11 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
                 result(FlutterError(code: "bad_args", message: "submit: expected result JSON string", details: nil))
                 return
             }
-            window?.orderOut(nil)
+            hidePopup()
             hostChannel?.invokeMethod("onResult", arguments: payload)
             result(nil)
         case "cancel":
-            window?.orderOut(nil)
+            hidePopup()
             hostChannel?.invokeMethod("onClosed", arguments: nil)
             result(nil)
         case "pickFolder":
@@ -226,6 +271,15 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
             handleStartDrag(result: result)
         case "resize":
             handleResize(call, result: result)
+        case "reveal":
+            // reveal 握手：新载荷首帧已就绪 — 设高完成后显示并激活
+            // （presentPopup 内部解除兜底定时器）。已可见时等价一次 resize。
+            if let args = call.arguments as? [String: Any],
+                let height = (args["height"] as? NSNumber)?.doubleValue, height > 0 {
+                applyLogicalHeight(CGFloat(height))
+            }
+            presentPopup()
+            result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -296,24 +350,15 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
         result(nil)
     }
 
-    /// 按逻辑像素调整窗口高度：宽度不变，顶边不动（AppKit 坐标系 Y 向上，
-    /// 需以旧 frame 的 maxY 作为锚点反推新 origin.y），并 clamp 到所在屏幕工作区高度的 90%。
-    private func handleResize(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        guard let win = window else {
-            result(nil)
-            return
-        }
-        guard let args = call.arguments as? [String: Any],
-            let height = (args["height"] as? NSNumber)?.doubleValue, height > 0
-        else {
-            result(FlutterError(code: "bad_args", message: "resize: invalid height", details: nil))
-            return
-        }
-
+    /// 按逻辑像素高度调整窗口：宽度不变，顶边不动（AppKit 坐标系 Y 向上，
+    /// 需以旧 frame 的 maxY 作为锚点反推新 origin.y），并 clamp 到所在屏幕
+    /// 工作区高度的 90%。resize / reveal 共用。
+    private func applyLogicalHeight(_ height: CGFloat) {
+        guard let win = window else { return }
         let visibleHeight = win.screen?.visibleFrame.height
             ?? NSScreen.screens.first?.visibleFrame.height
             ?? win.frame.height
-        let clampedHeight = min(CGFloat(height), visibleHeight * kPopupMaxHeightRatio)
+        let clampedHeight = min(height, visibleHeight * kPopupMaxHeightRatio)
 
         let oldFrame = win.frame
         let topY = oldFrame.origin.y + oldFrame.height
@@ -324,6 +369,20 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
             height: clampedHeight
         )
         win.setFrame(newFrame, display: true, animate: false)
+    }
+
+    private func handleResize(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard window != nil else {
+            result(nil)
+            return
+        }
+        guard let args = call.arguments as? [String: Any],
+            let height = (args["height"] as? NSNumber)?.doubleValue, height > 0
+        else {
+            result(FlutterError(code: "bad_args", message: "resize: invalid height", details: nil))
+            return
+        }
+        applyLogicalHeight(CGFloat(height))
         result(nil)
     }
 
@@ -333,7 +392,8 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
 
     /// 以给定逻辑尺寸居中于主屏（screens.first，全局坐标原点所在屏，与 FloatingBallPanel
     /// 的主屏约定一致）。取不到屏幕信息时退化为仅设置尺寸，不改变原点。
-    private func presentCentered(_ win: NSWindow, width: CGFloat, height: CGFloat) {
+    /// 仅重定位/设尺寸，不改变窗口可见性（显示由 presentPopup 负责）。
+    private func repositionCentered(_ win: NSWindow, width: CGFloat, height: CGFloat) {
         guard let visible = NSScreen.screens.first?.visibleFrame else {
             let old = win.frame
             win.setFrame(NSRect(x: old.origin.x, y: old.origin.y, width: width, height: height), display: true)
@@ -349,7 +409,7 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
     // -------------------------------------------------------------------
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        window?.orderOut(nil)
+        hidePopup()
         hostChannel?.invokeMethod("onClosed", arguments: nil)
         // 返回 false 阻止 AppKit 真正销毁窗口：弹窗引擎常驻复用，禁止随窗口关闭而销毁。
         return false

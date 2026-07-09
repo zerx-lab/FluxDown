@@ -1184,12 +1184,15 @@ dependencies = [
  "async-trait",
  "axum",
  "fluxdown_engine",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -1266,6 +1269,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "fluxdown_api",
  "fluxdown_engine",
  "fs2",

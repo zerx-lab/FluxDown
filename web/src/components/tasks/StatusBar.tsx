@@ -5,11 +5,13 @@ import { useQuery } from '@tanstack/react-query'
 import { Download, FlaskConical, HardDrive } from 'lucide-react'
 import { api } from '../../lib/api'
 import { fmtBytes, fmtSpeed } from '../../lib/format'
+import { useI18n } from '../../lib/i18n'
 import { useGlobalSpeed } from '../../lib/ws'
 import { useConfigQuery } from '../settings/useConfig'
 import { useViewTasks } from './useViewTasks'
 
 export function StatusBar() {
+  const { t } = useI18n()
   const tasks = useViewTasks()
   const speed = useGlobalSpeed()
   const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: api.stats, refetchInterval: 30_000 })
@@ -23,22 +25,22 @@ export function StatusBar() {
         <Download size={13} />
         <b>{fmtSpeed(speed)}</b>
       </span>
+      <span className="sb-item">{t('statusbar.tasks', { active, total: tasks.length })}</span>
       <span className="sb-item">
-        {active} 个活跃 · {tasks.length} 个任务
-      </span>
-      <span className="sb-item">
-        限速：<b>{limitBytes > 0 ? fmtSpeed(limitBytes) : '关闭'}</b>
+        {t('statusbar.limit')} <b>{limitBytes > 0 ? fmtSpeed(limitBytes) : t('statusbar.limitOff')}</b>
       </span>
       {stats?.demoMode && (
-        <span className="sb-item accent" title={`演示模式：仅允许下载 ${stats.demoUrl}`}>
+        <span className="sb-item accent" title={t('statusbar.demoTitle', { url: stats.demoUrl })}>
           <FlaskConical size={13} />
-          演示模式
+          {t('statusbar.demoMode')}
         </span>
       )}
       <span className="flex1" />
-      <span className="sb-item" title="服务器磁盘剩余空间">
+      <span className="sb-item" title={t('statusbar.diskTitle')}>
         <HardDrive size={13} />
-        {stats ? `${stats.saveDir} · 剩余 ${stats.diskFreeBytes != null ? fmtBytes(stats.diskFreeBytes) : '未知'}` : '—'}
+        {stats
+          ? t('statusbar.diskFree', { dir: stats.saveDir, free: stats.diskFreeBytes != null ? fmtBytes(stats.diskFreeBytes) : t('common.unknown') })
+          : '—'}
       </span>
       <span className="sb-item">FluxDown Server {stats?.serverVersion ?? '—'}</span>
     </footer>

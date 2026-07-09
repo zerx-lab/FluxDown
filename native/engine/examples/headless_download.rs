@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut done_rx = engine
         .manager
         .take_done_rx()
-        .expect("take_done_rx should return Some on first call");
+        .ok_or("take_done_rx should return Some on first call")?;
 
     engine
         .manager

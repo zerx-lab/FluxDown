@@ -656,6 +656,7 @@ class DownloadController extends ChangeNotifier {
     String queueId = '',
     String cookies = '',
     String referrer = '',
+    Map<String, String> extraHeaders = const {},
   }) {
     logInfo(
       _tag,
@@ -670,6 +671,7 @@ class DownloadController extends ChangeNotifier {
       queueId: queueId,
       cookies: cookies,
       referrer: referrer,
+      extraHeaders: extraHeaders,
     ).sendSignalToRust();
   }
 

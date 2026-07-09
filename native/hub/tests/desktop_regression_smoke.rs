@@ -22,6 +22,8 @@
 //! 默认 `#[ignore]`（绑定本地端口 + 真实网络 I/O），与 `realtest.rs` 现有
 //! 测试的约定一致。
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -221,16 +223,11 @@ async fn start_server(body: Arc<Vec<u8>>) -> TestServer {
         .expect("bind 127.0.0.1:0");
     let addr = listener.local_addr().expect("local_addr");
     let accept_task = tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    let b = body.clone();
-                    tokio::spawn(async move {
-                        let _ = handle_conn(stream, b).await;
-                    });
-                }
-                Err(_) => break,
-            }
+        while let Ok((stream, _peer)) = listener.accept().await {
+            let b = body.clone();
+            tokio::spawn(async move {
+                let _ = handle_conn(stream, b).await;
+            });
         }
     });
     TestServer { addr, accept_task }
@@ -455,6 +452,7 @@ async fn desktop_regression_smoke() {
             Vec::new(),     // selected_file_indices
             None,           // method
             None,           // body
+            None,           // audio_url
         )
         .await;
 

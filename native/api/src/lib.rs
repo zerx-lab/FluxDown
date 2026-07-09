@@ -5,7 +5,7 @@
 //! - [`types`] —— wire JSON 结构体（对外稳定契约，camelCase）
 //! - [`routes`] —— 路径常量（server 与 Rust 客户端共用）
 //! - [`service`] —— [`ApiHost`](service::ApiHost) trait：宿主能力契约
-//! - [`server`] —— axum 服务器（探活 / 脚本接管 / aria2 兼容 / 管理 API）
+//! - [`server`] —— axum 服务器（探活 / 脚本接管 / aria2 兼容含 WS 通知 / 管理 API）
 //!
 //! 宿主（桌面 App 的 hub、未来的 headless server、手机端）各自实现
 //! `ApiHost`，调用 [`server::spawn_api_server`] 即获得完整 API 服务；
@@ -49,8 +49,10 @@
 //! # }
 //! ```
 
+mod aria2;
 pub mod auth;
 mod jsonrpc;
+mod jsonrpc_ws;
 mod mcp;
 pub mod openapi;
 pub mod routes;

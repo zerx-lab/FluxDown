@@ -9,6 +9,7 @@ interface FormState {
   type: FeedbackType;
   title: string;
   description: string;
+  appVersion: string;
   contact: string;
 }
 
@@ -16,6 +17,7 @@ const INITIAL_FORM: FormState = {
   type: "feature",
   title: "",
   description: "",
+  appVersion: "",
   contact: "",
 };
 
@@ -36,7 +38,7 @@ export default function FeedbackSection({ onSuccess }: FeedbackSectionProps) {
   const [errorMsg, setErrorMsg] = useState("");
 
   const handleSubmit = useCallback(async () => {
-    if (!form.title.trim() || !form.description.trim()) return;
+    if (!form.title.trim() || !form.description.trim() || !form.appVersion.trim()) return;
 
     setStatus("submitting");
     setErrorMsg("");
@@ -49,6 +51,7 @@ export default function FeedbackSection({ onSuccess }: FeedbackSectionProps) {
           type: form.type,
           title: form.title.trim(),
           description: form.description.trim(),
+          appVersion: form.appVersion.trim(),
           contact: form.contact.trim() || undefined,
         }),
       });
@@ -78,7 +81,11 @@ export default function FeedbackSection({ onSuccess }: FeedbackSectionProps) {
     }
   }, [form, t, onSuccess]);
 
-  const canSubmit = form.title.trim().length > 0 && form.description.trim().length > 0 && status !== "submitting";
+  const canSubmit =
+    form.title.trim().length > 0 &&
+    form.description.trim().length > 0 &&
+    form.appVersion.trim().length > 0 &&
+    status !== "submitting";
 
   return (
     <section id="feedback" className="relative py-20 sm:py-28 overflow-hidden bg-dark-bg">
@@ -178,6 +185,23 @@ export default function FeedbackSection({ onSuccess }: FeedbackSectionProps) {
                 className="w-full rounded-lg border border-dark-border bg-dark-surface2 px-4 py-2.5 text-sm text-dark-text placeholder:text-dark-text-muted focus:outline-none focus:border-brand-blue/50 focus:ring-1 focus:ring-brand-blue/30 transition-colors resize-none"
               />
               <p className="mt-1 text-[10px] text-dark-text-muted text-right">{form.description.length}/5000</p>
+            </div>
+
+            {/* App Version (required) */}
+            <div className="mb-5">
+              <label htmlFor="fb-version" className="block text-sm font-medium text-dark-text mb-2">
+                {t("fb.versionLabel")} <span className="text-danger">*</span>
+              </label>
+              <input
+                id="fb-version"
+                type="text"
+                maxLength={50}
+                value={form.appVersion}
+                onChange={(e) => setForm((f) => ({ ...f, appVersion: e.target.value }))}
+                placeholder={t("fb.versionPlaceholder")}
+                className="w-full rounded-lg border border-dark-border bg-dark-surface2 px-4 py-2.5 text-sm text-dark-text placeholder:text-dark-text-muted focus:outline-none focus:border-brand-blue/50 focus:ring-1 focus:ring-brand-blue/30 transition-colors"
+              />
+              <p className="mt-1.5 text-xs text-dark-text-muted">{t("fb.versionHint")}</p>
             </div>
 
             {/* Contact (optional) */}

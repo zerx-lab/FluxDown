@@ -119,6 +119,11 @@ pub async fn ensure_server_config(db: &Db) -> Result<String, fluxdown_engine::db
     // headless 服务器的存在意义就是远程管理——管理 API 恒开。
     db.set_config("local_server_api_enabled", "true").await?;
 
+    // MCP 默认开（headless 场景面向自动化/AI 客户端），但尊重用户后续关闭：仅在缺省时播种。
+    if db.get_config("local_server_mcp_enabled").await?.is_none() {
+        db.set_config("local_server_mcp_enabled", "true").await?;
+    }
+
     let token = db
         .get_config("local_server_token")
         .await?

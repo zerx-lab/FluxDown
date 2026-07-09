@@ -6,7 +6,7 @@
 //! |---|---|---|---|
 //! | 探活 | `GET /ping` | 总开关 | 无 |
 //! | 脚本接管 | `POST /download`、`/download/batch` | `takeover_enabled` | `X-FluxDown-Client` 头 + 可选 token |
-//! | aria2 兼容 | `POST /jsonrpc` | `jsonrpc_enabled` | 可选 token（头或 `token:xxx`） |
+//! | aria2 兼容 | `POST /jsonrpc`、`GET /jsonrpc`（WS 升级） | `jsonrpc_enabled` | 可选 token（头或 `token:xxx`；WS 仅 `token:xxx`） |
 //! | 管理 API | `/api/v1/*` | `management_enabled` | **强制** token（Bearer 或头） |
 //!
 //! 服务器只依赖 [`ApiHost`] trait，宿主形态（桌面 App / headless server）无关。
@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth::{check_management_auth, check_takeover_auth, header_token_ok};
 use crate::jsonrpc::handle_jsonrpc;
+use crate::jsonrpc_ws::run_session;
 use crate::mcp::handle_mcp;
 use crate::routes;
 use crate::service::{ApiError, ApiHost, UNKNOWN_ENDPOINT_MESSAGE};
@@ -216,7 +217,7 @@ fn register_core(state: AppState) -> Router<AppState> {
             .route(routes::DOWNLOAD_BATCH, post(takeover_download_batch));
     }
     if state.config.jsonrpc_enabled {
-        router = router.route(routes::JSONRPC, post(jsonrpc));
+        router = router.route(routes::JSONRPC, post(jsonrpc).get(jsonrpc_ws));
     }
     if state.config.mcp_enabled {
         router = router.route(routes::MCP, post(mcp));
@@ -426,6 +427,18 @@ pub(crate) async fn jsonrpc(
     let token_ok = header_token_ok(&headers, &state.config.token);
     let resp = handle_jsonrpc(state.host.as_ref(), &state.config.token, token_ok, &body).await;
     ([(header::CACHE_CONTROL, "no-store")], Json(resp)).into_response()
+}
+
+/// aria2 WS 通知 + 双向 JSON-RPC。GET 带 WebSocket upgrade 头时握手升级，进入
+/// [`run_session`] 会话循环；非 upgrade 的普通 GET 由 [`WebSocketUpgrade`]
+/// 提取器自身拒绝（400 Bad Request，见 axum `WebSocketUpgradeRejection`），
+/// 本函数体不会被调用。与 `POST /jsonrpc` 共用 `jsonrpc_enabled` 开关
+/// （[`register_core`] 里同一个 `if` 分支内注册）。
+pub(crate) async fn jsonrpc_ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| async move {
+        let events = state.host.subscribe_task_events();
+        run_session(socket, state.host.as_ref(), &state.config.token, events).await;
+    })
 }
 
 // ---------------------------------------------------------------------------

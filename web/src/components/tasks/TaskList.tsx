@@ -8,7 +8,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronDown } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import { GROUP_LABELS, GROUP_ORDER, timeGroup, type TimeGroup } from '../../lib/format'
+import { groupLabel, GROUP_ORDER, timeGroup, type TimeGroup } from '../../lib/format'
+import { useI18n } from '../../lib/i18n'
 import { TaskRow } from './TaskRow'
 import { filterTasks } from './filters'
 import { useTasksUi } from './context'
@@ -22,6 +23,7 @@ const GROUP_HEAD_SIZE = 32
 const ROW_SIZE = 68
 
 export function TaskList() {
+  const { t } = useI18n()
   const { statusTab, typeFilter, queueFilter, search, folded, toggleFold, manageMode } = useTasksUi()
   const tasks = useViewTasks()
   const { data: queues = [] } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues })
@@ -29,11 +31,11 @@ export function TaskList() {
 
   const filtered = filterTasks(tasks, { statusTab, typeFilter, queueFilter, search })
   const grouped = new Map<TimeGroup, ViewTask[]>()
-  for (const t of filtered) {
-    const g = timeGroup(t.createdAt)
+  for (const task of filtered) {
+    const g = timeGroup(task.createdAt)
     const arr = grouped.get(g)
-    if (arr) arr.push(t)
-    else grouped.set(g, [t])
+    if (arr) arr.push(task)
+    else grouped.set(g, [task])
   }
   for (const arr of grouped.values()) arr.sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
 
@@ -55,7 +57,7 @@ export function TaskList() {
   return (
     <div className={cn('task-scroll', manageMode && 'manage')} ref={parentRef}>
       {flat.length === 0 ? (
-        <p className="empty-tip">没有匹配的任务</p>
+        <p className="empty-tip">{t('list.empty')}</p>
       ) : (
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((vi) => {
@@ -65,7 +67,7 @@ export function TaskList() {
                 {item.kind === 'group' ? (
                   <div className={cn('group-head', folded.has(item.group) && 'folded')} onClick={() => toggleFold(item.group)}>
                     <ChevronDown size={12} />
-                    {GROUP_LABELS[item.group]} <em>· {item.count}</em>
+                    {groupLabel(item.group)} <em>· {item.count}</em>
                   </div>
                 ) : (
                   <TaskRow task={item.task} queues={queues} />

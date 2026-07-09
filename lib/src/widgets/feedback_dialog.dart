@@ -287,6 +287,40 @@ class _FeedbackDialogContentState extends State<_FeedbackDialogContent> {
               m: m,
             ),
             const SizedBox(height: 14),
+            // ── 应用版本（自动获取，只读） ──
+            Row(
+              children: [
+                _SectionLabel(
+                  text: s.feedbackVersionLabel,
+                  c: c,
+                  required: true,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '(${s.feedbackVersionAuto})',
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+              decoration: BoxDecoration(
+                color: c.surface2,
+                borderRadius: m.brMd,
+                border: Border.all(color: c.border),
+              ),
+              child: Text(
+                FeedbackService.appVersion,
+                style: TextStyle(fontSize: 13, color: c.textSecondary),
+              ),
+            ),
+            const SizedBox(height: 14),
+
 
             // ── 联系方式（可选） ──
             Row(

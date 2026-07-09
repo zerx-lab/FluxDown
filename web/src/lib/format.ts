@@ -1,5 +1,7 @@
 // 数值/时间格式化与文件类型推断 —— fmtBytes/fmtEta 移植自 design/web/app.js。
 
+import { getLocale, t } from './i18n'
+
 const GB = 1024 ** 3
 const MB = 1024 ** 2
 const KB = 1024
@@ -20,28 +22,31 @@ export function fmtSpeed(n: number): string {
 export function fmtEta(remainingBytes: number, speed: number): string {
   if (speed <= 0 || remainingBytes <= 0) return '—'
   const s = Math.round(remainingBytes / speed)
-  if (s < 60) return `${s} 秒`
-  if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
-  return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`
+  if (s < 60) return t('time.secs', { s })
+  if (s < 3600) return t('time.minSecs', { m: Math.floor(s / 60), s: s % 60 })
+  return t('time.hourMin', { h: Math.floor(s / 3600), m: Math.floor((s % 3600) / 60) })
 }
 
 /** Unix 秒 → 本地时间字符串。 */
 export function fmtTime(unixSecs: string | number): string {
   const n = typeof unixSecs === 'string' ? parseInt(unixSecs, 10) : unixSecs
   if (!Number.isFinite(n) || n <= 0) return '—'
-  return new Date(n * 1000).toLocaleString('zh-CN', { hour12: false })
+  return new Date(n * 1000).toLocaleString(getLocale() === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
 }
 
 // ---- 时间分组（今天/昨天/本周/本月/更早，对齐桌面端） ----
 
 export type TimeGroup = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'older'
 export const GROUP_ORDER: TimeGroup[] = ['today', 'yesterday', 'thisWeek', 'thisMonth', 'older']
-export const GROUP_LABELS: Record<TimeGroup, string> = {
-  today: '今天',
-  yesterday: '昨天',
-  thisWeek: '本周',
-  thisMonth: '本月',
-  older: '更早',
+export function groupLabel(g: TimeGroup): string {
+  const KEYS: Record<TimeGroup, 'time.today' | 'time.yesterday' | 'time.thisWeek' | 'time.thisMonth' | 'time.older'> = {
+    today: 'time.today',
+    yesterday: 'time.yesterday',
+    thisWeek: 'time.thisWeek',
+    thisMonth: 'time.thisMonth',
+    older: 'time.older',
+  }
+  return t(KEYS[g])
 }
 
 export function timeGroup(unixSecs: string | number): TimeGroup {
@@ -66,14 +71,18 @@ export function timeGroup(unixSecs: string | number): TimeGroup {
 // ---- 文件类型推断（扩展名列表对齐桌面端 download_task.dart） ----
 
 export type FileType = 'video' | 'audio' | 'document' | 'image' | 'archive' | 'other'
-export const TYPE_LABELS: Record<'all' | FileType, string> = {
-  all: '全部',
-  video: '视频',
-  audio: '音频',
-  document: '文档',
-  image: '图片',
-  archive: '压缩包',
-  other: '其他',
+export const TYPE_ORDER: ('all' | FileType)[] = ['all', 'video', 'audio', 'document', 'image', 'archive', 'other']
+export function typeLabel(k: 'all' | FileType): string {
+  const KEYS: Record<'all' | FileType, 'type.all' | 'type.video' | 'type.audio' | 'type.document' | 'type.image' | 'type.archive' | 'type.other'> = {
+    all: 'type.all',
+    video: 'type.video',
+    audio: 'type.audio',
+    document: 'type.document',
+    image: 'type.image',
+    archive: 'type.archive',
+    other: 'type.other',
+  }
+  return t(KEYS[k])
 }
 
 const VIDEO = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', 'ts', 'm3u8', '3gp', 'rmvb', 'vob']

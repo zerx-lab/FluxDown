@@ -1,6 +1,7 @@
 // 类型化 REST 客户端。401 → 清凭证跳登录。
 
 import { clearCredentials, getBase, getToken } from './auth'
+import { t, translateBackendMessage } from './i18n'
 import type {
   ApiInfo,
   ConfigMap,
@@ -46,7 +47,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     } catch {
       /* 非 JSON 错误体，用 statusText */
     }
-    throw new ApiError(res.status, message)
+    throw new ApiError(res.status, translateBackendMessage(message))
   }
   return (await res.json()) as T
 }
@@ -57,7 +58,7 @@ export const api = {
     const res = await fetch(`${base}/api/v1/info`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-    if (!res.ok) throw new ApiError(res.status, res.status === 401 ? '令牌无效' : res.statusText)
+    if (!res.ok) throw new ApiError(res.status, res.status === 401 ? t('login.invalidToken') : res.statusText)
     return (await res.json()) as ApiInfo
   },
 

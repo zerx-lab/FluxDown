@@ -41,7 +41,15 @@ struct _PopupWindowHost {
   // ready() 到达前暂存的最新载荷 JSON；投递后立即清空。只在“窗口已创建但
   // 弹窗 Dart 尚未 ready”这段短暂窗口期内可能非 NULL。
   gchar* pending_payload;
+
+  // reveal 兜底定时器 source id（0 = 未武装）。show 后弹窗 Dart 迟迟不发
+  // reveal（引擎冷启动异常/卡死）时按当前尺寸强制显示，保证窗口永远弹得
+  // 出来。
+  guint reveal_timeout_id;
 };
+
+// reveal 兜底超时（毫秒）——与 Windows/macOS 宿主保持一致。
+static const guint kRevealFallbackTimeoutMs = 3000;
 
 // =============================================================================
 // 工作区辅助（居中 / resize 高度 clamp 共用）
@@ -132,6 +140,39 @@ static void send_set_payload(PopupWindowHost* self, const gchar* payload_json) {
 }
 
 // =============================================================================
+// reveal 兜底定时器 / 统一隐藏辅助
+// =============================================================================
+
+// present_popup 定义在下方（依赖 popup_view），此处前置声明供 reveal
+// 处理器与兜底回调使用。
+static void present_popup(PopupWindowHost* self);
+
+static void cancel_reveal_fallback(PopupWindowHost* self) {
+  if (self->reveal_timeout_id != 0) {
+    g_source_remove(self->reveal_timeout_id);
+    self->reveal_timeout_id = 0;
+  }
+}
+
+// reveal 超时未到达（弹窗引擎冷启动异常/卡死）——按当前尺寸强制显示，
+// 保证窗口永远弹得出来（等价旧版 show 立即显示的行为）。
+static gboolean reveal_fallback_cb(gpointer user_data) {
+  PopupWindowHost* self = (PopupWindowHost*)user_data;
+  self->reveal_timeout_id = 0;
+  g_warning("[popup-host] reveal timed out, force presenting popup");
+  present_popup(self);
+  return G_SOURCE_REMOVE;
+}
+
+// 统一隐藏入口：隐藏窗口并作废 pending 的 reveal 兜底。
+static void popup_hide(PopupWindowHost* self) {
+  cancel_reveal_fallback(self);
+  if (self->popup_window != nullptr) {
+    gtk_widget_hide(GTK_WIDGET(self->popup_window));
+  }
+}
+
+// =============================================================================
 // 系统级关闭（窗口管理器发起的 delete-event，例如 Alt+F4）
 // =============================================================================
 
@@ -149,7 +190,7 @@ static gboolean popup_window_delete_event_cb(GtkWidget* /*widget*/,
                                              GdkEvent* /*event*/,
                                              gpointer user_data) {
   PopupWindowHost* self = (PopupWindowHost*)user_data;
-  gtk_widget_hide(GTK_WIDGET(self->popup_window));
+  popup_hide(self);
   fl_method_channel_invoke_method(self->host_channel, "onClosed", nullptr,
                                   nullptr, nullptr, nullptr);
   return TRUE;  // 阻止 GTK 默认处理（销毁窗口）。
@@ -174,9 +215,7 @@ static FlMethodResponse* handle_child_submit(PopupWindowHost* self,
     return FL_METHOD_RESPONSE(fl_method_error_response_new(
         "bad_args", "submit requires a JSON string result", nullptr));
   }
-  if (self->popup_window != nullptr) {
-    gtk_widget_hide(GTK_WIDGET(self->popup_window));
-  }
+  popup_hide(self);
   // args 是这次 submit 调用的参数、由 FlMethodCall 拥有；
   // fl_method_channel_invoke_method 只在本次调用内同步编码读取、不保留引
   // 用，可以直接透传给 onResult，不必先落地成一份新的字符串副本。
@@ -186,9 +225,7 @@ static FlMethodResponse* handle_child_submit(PopupWindowHost* self,
 }
 
 static FlMethodResponse* handle_child_cancel(PopupWindowHost* self) {
-  if (self->popup_window != nullptr) {
-    gtk_widget_hide(GTK_WIDGET(self->popup_window));
-  }
+  popup_hide(self);
   fl_method_channel_invoke_method(self->host_channel, "onClosed", nullptr,
                                   nullptr, nullptr, nullptr);
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
@@ -247,20 +284,25 @@ static FlMethodResponse* handle_child_start_drag(PopupWindowHost* self) {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
 }
 
-static FlMethodResponse* handle_child_resize(PopupWindowHost* self,
-                                             FlValue* args) {
-  if (self->popup_window == nullptr) {
-    return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
-  }
+// resize/reveal 共用的高度解析 + 应用（clamp 到工作区 90%，宽度固定、
+// 顶边不动：GtkWindow 默认 NORTH_WEST 重力下 resize 只伸缩右/下边）。
+// 返回 nullptr = 成功；否则为错误响应。
+static FlMethodResponse* apply_logical_height(PopupWindowHost* self,
+                                              FlValue* args,
+                                              const gchar* method_name) {
   if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_MAP) {
+    g_autofree gchar* msg =
+        g_strdup_printf("%s requires a map", method_name);
     return FL_METHOD_RESPONSE(
-        fl_method_error_response_new("bad_args", "resize requires a map", nullptr));
+        fl_method_error_response_new("bad_args", msg, nullptr));
   }
   FlValue* height_value = fl_value_lookup_string(args, "height");
   if (height_value == nullptr ||
       fl_value_get_type(height_value) != FL_VALUE_TYPE_FLOAT) {
-    return FL_METHOD_RESPONSE(fl_method_error_response_new(
-        "bad_args", "resize: missing/invalid height", nullptr));
+    g_autofree gchar* msg =
+        g_strdup_printf("%s: missing/invalid height", method_name);
+    return FL_METHOD_RESPONSE(
+        fl_method_error_response_new("bad_args", msg, nullptr));
   }
 
   GdkRectangle workarea;
@@ -273,10 +315,36 @@ static FlMethodResponse* handle_child_resize(PopupWindowHost* self,
   if (max_height > 0 && target_height > max_height) {
     target_height = max_height;
   }
-  // 宽度固定、顶边不动：GtkWindow 默认 NORTH_WEST 重力下 resize 只会伸缩
-  // 右/下边，左上角原地不动，天然满足“顶边不动”，不需要额外重新定位。
   gtk_window_resize(GTK_WINDOW(self->popup_window), kPopupLogicalWidth,
                     target_height);
+  return nullptr;
+}
+
+static FlMethodResponse* handle_child_resize(PopupWindowHost* self,
+                                             FlValue* args) {
+  if (self->popup_window == nullptr) {
+    return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+  }
+  FlMethodResponse* error = apply_logical_height(self, args, "resize");
+  if (error != nullptr) {
+    return error;
+  }
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+}
+
+// reveal 握手：新载荷首帧已就绪——设高完成后显示并激活（解除兜底定时
+// 器）。窗口已可见时等价一次 resize + 重新前置。
+static FlMethodResponse* handle_child_reveal(PopupWindowHost* self,
+                                             FlValue* args) {
+  if (self->popup_window == nullptr) {
+    return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+  }
+  FlMethodResponse* error = apply_logical_height(self, args, "reveal");
+  if (error != nullptr) {
+    return error;
+  }
+  cancel_reveal_fallback(self);
+  present_popup(self);
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
 }
 
@@ -387,6 +455,8 @@ static void child_method_call_cb(FlMethodChannel* /*channel*/,
     response = handle_child_start_drag(self);
   } else if (g_strcmp0(method, "resize") == 0) {
     response = handle_child_resize(self, args);
+  } else if (g_strcmp0(method, "reveal") == 0) {
+    response = handle_child_reveal(self, args);
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }
@@ -496,18 +566,24 @@ static void ensure_popup_window(PopupWindowHost* self) {
   gtk_widget_realize(GTK_WIDGET(view));
 }
 
-// 每次 show() 都重新声明一次居中约束再 present：GTK 把每一次“隐藏后再显
-// 示”都当作新一轮初始定位处理，这样即使用户此前用 startDrag 把窗口拖到别
-// 处，下次弹出也会回到屏幕中央。Wayland 下 gtk_window_set_position 没有对
-// 应协议、合成器直接忽略，是已知且可接受的降级（契约原文）。
-static void present_and_center(PopupWindowHost* self) {
-  // 与 Windows/macOS 宿主对齐：每次 show 都重置为默认高度再显示，避免复
-  // 用窗口残留上一条请求 resize() 后的高度；Dart 收到 setPayload 重置表
-  // 单后会按新内容再次触发 resize()。对隐藏窗口调用 gtk_window_resize 设
-  // 置的是下次显示时的尺寸，语义正好匹配。
+// 每次 show() 都重新声明一次居中约束：GTK 把每一次“隐藏后再显示”都当作
+// 新一轮初始定位处理，这样即使用户此前用 startDrag 把窗口拖到别处，下次
+// 弹出也会回到屏幕中央。Wayland 下 gtk_window_set_position 没有对应协议、
+// 合成器直接忽略，是已知且可接受的降级（契约原文）。
+//
+// 对隐藏窗口调用 gtk_window_resize 设置的是下次显示时的尺寸——reveal 到
+// 达时会按内容实高覆盖，这里的默认高度只在兜底路径（reveal 超时）可见。
+static void reset_placement(PopupWindowHost* self) {
   gtk_window_resize(self->popup_window, kPopupLogicalWidth,
                     kPopupDefaultHeight);
   gtk_window_set_position(self->popup_window, GTK_WIN_POS_CENTER);
+}
+
+// 显示并激活（reveal 握手的显示端；也是兜底定时器的强制显示入口）。
+static void present_popup(PopupWindowHost* self) {
+  if (self->popup_window == nullptr) {
+    return;
+  }
   gtk_window_present(self->popup_window);
   // 显示即获得键盘焦点（文本输入必需）：present() 负责窗口级别的激活/抢
   // 焦点，这里再显式把焦点交给 FlView，确保 Flutter 侧文本框不需要额外点
@@ -528,6 +604,11 @@ static FlMethodResponse* handle_host_show(PopupWindowHost* self, FlValue* args) 
 
   ensure_popup_window(self);
 
+  // 复用时先藏起旧表单画面并重置定位；窗口保持隐藏，由弹窗 Dart 在新载荷
+  // 首帧就绪后经 reveal 一次到位「设高 + 显示」（reveal 握手）。
+  popup_hide(self);
+  reset_placement(self);
+
   if (self->popup_ready) {
     send_set_payload(self, fl_value_get_string(args));
   } else {
@@ -535,17 +616,38 @@ static FlMethodResponse* handle_host_show(PopupWindowHost* self, FlValue* args) 
     self->pending_payload = g_strdup(fl_value_get_string(args));
   }
 
-  present_and_center(self);
+  // reveal 兜底：Dart 侧异常时超时强制显示（等价旧版立即显示行为）。
+  self->reveal_timeout_id = g_timeout_add(kRevealFallbackTimeoutMs,
+                                          reveal_fallback_cb, self);
 
   return FL_METHOD_RESPONSE(
       fl_method_success_response_new(fl_value_new_bool(TRUE)));
 }
 
 static FlMethodResponse* handle_host_close(PopupWindowHost* self) {
-  if (self->popup_window != nullptr) {
-    gtk_widget_hide(GTK_WIDGET(self->popup_window));
-  }
+  // 契约：close 只隐藏，不回调 onClosed。
+  popup_hide(self);
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+}
+
+// 小窗可见期间新到的外部请求 — 转发给弹窗引擎合入当前表单（append
+// 模式）。窗口实际不可见/引擎未就绪时返回 false，Dart 侧复位失步状态。
+static FlMethodResponse* handle_host_append(PopupWindowHost* self,
+                                            FlValue* args) {
+  if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_STRING) {
+    return FL_METHOD_RESPONSE(fl_method_error_response_new(
+        "bad_args", "append requires a URL text string", nullptr));
+  }
+  const gboolean can_append =
+      self->popup_window != nullptr &&
+      gtk_widget_get_visible(GTK_WIDGET(self->popup_window)) &&
+      self->popup_ready && self->child_channel != nullptr;
+  if (can_append) {
+    fl_method_channel_invoke_method(self->child_channel, "appendPayload",
+                                    args, nullptr, nullptr, nullptr);
+  }
+  return FL_METHOD_RESPONSE(
+      fl_method_success_response_new(fl_value_new_bool(can_append)));
 }
 
 static void host_method_call_cb(FlMethodChannel* /*channel*/,
@@ -559,6 +661,8 @@ static void host_method_call_cb(FlMethodChannel* /*channel*/,
     response = handle_host_show(self, args);
   } else if (g_strcmp0(method, "close") == 0) {
     response = handle_host_close(self);
+  } else if (g_strcmp0(method, "append") == 0) {
+    response = handle_host_append(self, args);
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }
@@ -604,6 +708,7 @@ void popup_window_host_free(PopupWindowHost* self) {
                                               nullptr, nullptr);
     g_object_unref(self->host_channel);
   }
+  cancel_reveal_fallback(self);
   g_free(self->pending_payload);
   g_free(self);
 }

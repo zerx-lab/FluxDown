@@ -4,6 +4,8 @@ import type { LucideIcon } from 'lucide-react'
 import { ArrowLeft, Download, Globe, Info, Lock, Monitor, Palette, Shield } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '../lib/cn'
+import { useI18n } from '../lib/i18n'
+import type { I18nKey } from '../lib/i18n'
 import type { ConfigMap } from '../lib/types'
 import { AboutSettings } from '../components/settings/AboutSettings'
 import { AppearanceSettings } from '../components/settings/AppearanceSettings'
@@ -16,18 +18,19 @@ import { useConfigMutation, useConfigQuery } from '../components/settings/useCon
 
 type Category = 'general' | 'appearance' | 'download' | 'bt' | 'proxy' | 'security' | 'about'
 
-const NAV: { key: Category; label: string; icon: LucideIcon }[] = [
-  { key: 'general', label: '通用', icon: Monitor },
-  { key: 'appearance', label: '外观', icon: Palette },
-  { key: 'download', label: '下载', icon: Download },
-  { key: 'bt', label: 'BitTorrent', icon: Globe },
-  { key: 'proxy', label: '代理', icon: Shield },
-  { key: 'security', label: '安全与访问', icon: Lock },
-  { key: 'about', label: '关于', icon: Info },
+const NAV: { key: Category; labelKey: I18nKey; icon: LucideIcon }[] = [
+  { key: 'general', labelKey: 'set.general', icon: Monitor },
+  { key: 'appearance', labelKey: 'set.appearance', icon: Palette },
+  { key: 'download', labelKey: 'set.download', icon: Download },
+  { key: 'bt', labelKey: 'set.bt', icon: Globe },
+  { key: 'proxy', labelKey: 'set.proxy', icon: Shield },
+  { key: 'security', labelKey: 'set.security', icon: Lock },
+  { key: 'about', labelKey: 'set.about', icon: Info },
 ]
 
 export function SettingsScreen() {
   const navigate = useNavigate()
+  const { t } = useI18n()
   const [cat, setCat] = useState<Category>('general')
   const { data: config, isLoading, isError } = useConfigQuery()
   const mutation = useConfigMutation()
@@ -39,8 +42,8 @@ export function SettingsScreen() {
   function renderBody() {
     if (cat === 'appearance') return <AppearanceSettings />
     if (cat === 'about') return <AboutSettings />
-    if (isLoading) return <p className="set-desc">加载中…</p>
-    if (isError || !config) return <p className="set-desc text-danger">配置加载失败</p>
+    if (isLoading) return <p className="set-desc">{t('common.loading')}</p>
+    if (isError || !config) return <p className="set-desc text-danger">{t('set.loadFailed')}</p>
     switch (cat) {
       case 'general':
         return <GeneralSettings config={config} mutate={mutate} />
@@ -62,14 +65,14 @@ export function SettingsScreen() {
       <aside className="settings-side">
         <button className="settings-back" type="button" onClick={() => navigate({ to: '/' })}>
           <ArrowLeft />
-          返回
+          {t('common.back')}
         </button>
-        <p className="side-label">设置</p>
+        <p className="side-label">{t('set.title')}</p>
         <nav className="settings-nav">
-          {NAV.map(({ key, label, icon: Icon }) => (
+          {NAV.map(({ key, labelKey, icon: Icon }) => (
             <button key={key} type="button" className={cn(cat === key && 'active')} onClick={() => setCat(key)}>
               <Icon />
-              {label}
+              {t(labelKey)}
             </button>
           ))}
         </nav>

@@ -3,6 +3,7 @@
 // alertDialog(...) 返回 Promise<void>（关闭即 resolve）。由
 // components/dialogs/confirm-dialog.tsx 订阅渲染，全局挂载于 ThemeProvider 内。
 
+import { t } from './i18n'
 import { Store } from './ws'
 
 export interface ConfirmState {
@@ -39,10 +40,10 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     confirmStore.set({
       id: ++seq,
       kind: 'confirm',
-      title: opts.title ?? '确认操作',
+      title: opts.title ?? t('common.confirmTitle'),
       message: opts.message,
-      confirmLabel: opts.confirmLabel ?? '确定',
-      cancelLabel: opts.cancelLabel ?? '取消',
+      confirmLabel: opts.confirmLabel ?? t('common.confirm'),
+      cancelLabel: opts.cancelLabel ?? t('common.cancel'),
       danger: opts.danger ?? false,
       resolve,
     })
@@ -57,9 +58,9 @@ export function alertDialog(opts: Omit<ConfirmOptions, 'cancelLabel' | 'danger'>
     confirmStore.set({
       id: ++seq,
       kind: 'alert',
-      title: opts.title ?? '提示',
+      title: opts.title ?? t('common.noticeTitle'),
       message: opts.message,
-      confirmLabel: opts.confirmLabel ?? '知道了',
+      confirmLabel: opts.confirmLabel ?? t('common.gotIt'),
       cancelLabel: '',
       danger: false,
       resolve: () => resolve(),

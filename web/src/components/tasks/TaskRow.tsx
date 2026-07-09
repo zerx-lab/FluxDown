@@ -6,6 +6,7 @@ import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { fileType, fmtBytes, fmtEta, fmtSpeed, fmtTime, protoLabel, type FileType as FT } from '../../lib/format'
+import { translateBackendMessage, useI18n } from '../../lib/i18n'
 import { priorityStore, useStore } from '../../lib/ws'
 import type { QueueDto } from '../../lib/types'
 import { TaskContextMenu } from './TaskContextMenu'
@@ -29,6 +30,7 @@ function statusIconClass(status: ViewTask['status']): string {
 }
 
 function TaskMeta({ t }: { t: ViewTask }) {
+  const { t: tr } = useI18n()
   const sep = <span className="sep">·</span>
   if (t.status === 1) {
     return (
@@ -39,11 +41,11 @@ function TaskMeta({ t }: { t: ViewTask }) {
         {sep}
         <span className="speed">{fmtSpeed(t.speed)}</span>
         {sep}
-        <span>剩余 {fmtEta(t.totalBytes - t.downloadedBytes, t.speed)}</span>
+        <span>{tr('status.eta', { eta: fmtEta(t.totalBytes - t.downloadedBytes, t.speed) })}</span>
       </>
     )
   }
-  if (t.status === 5) return <span>正在准备…</span>
+  if (t.status === 5) return <span>{tr('status.preparingEllipsis')}</span>
   if (t.status === 2) {
     return (
       <>
@@ -51,14 +53,14 @@ function TaskMeta({ t }: { t: ViewTask }) {
           {fmtBytes(t.downloadedBytes)} / {fmtBytes(t.totalBytes)}
         </span>
         {sep}
-        <span className="paused-t">已暂停</span>
+        <span className="paused-t">{tr('status.paused')}</span>
       </>
     )
   }
   if (t.status === 3) {
     return (
       <>
-        <span className="ok">已完成</span>
+        <span className="ok">{tr('status.completed')}</span>
         {sep}
         <span>{fmtBytes(t.totalBytes)}</span>
         {sep}
@@ -66,17 +68,18 @@ function TaskMeta({ t }: { t: ViewTask }) {
       </>
     )
   }
-  if (t.status === 4) return <span className="err">{t.errorMessage || '下载出错'}</span>
-  return <span>排队中</span>
+  if (t.status === 4) return <span className="err">{t.errorMessage ? translateBackendMessage(t.errorMessage) : tr('status.downloadFailed')}</span>
+  return <span>{tr('status.pending')}</span>
 }
 
 function TaskActionButton({ t, onPause, onContinue }: { t: ViewTask; onPause: () => void; onContinue: () => void }) {
+  const { t: tr } = useI18n()
   if (t.status === 1 || t.status === 5)
     return (
       <button
         type="button"
         className="task-act"
-        title="暂停"
+        title={tr('task.pause')}
         onClick={(e) => {
           e.stopPropagation()
           onPause()
@@ -90,7 +93,7 @@ function TaskActionButton({ t, onPause, onContinue }: { t: ViewTask; onPause: ()
       <button
         type="button"
         className="task-act"
-        title="继续"
+        title={tr('task.resume')}
         onClick={(e) => {
           e.stopPropagation()
           onContinue()
@@ -104,7 +107,7 @@ function TaskActionButton({ t, onPause, onContinue }: { t: ViewTask; onPause: ()
       <button
         type="button"
         className="task-act retry"
-        title="重试"
+        title={tr('task.retry')}
         onClick={(e) => {
           e.stopPropagation()
           onContinue()

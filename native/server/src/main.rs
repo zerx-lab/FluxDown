@@ -80,7 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(0);
 
-    // WS 中枢 + 引擎事件/选择接口。
+    // WS 中枢：任务进度/快照广播 + HLS/BT 选择 + aria2 生命周期事件源
+    // （ServerApiHost::subscribe_task_events 经下方 hub.clone() 共享同一个
+    // 实例；EngineEventSink 按 ws_hub 模块文档的统一规则把状态迁移映射为
+    // TaskEvent 广播）。
     let hub = Arc::new(WsHub::new(1024));
     let sink: Arc<dyn EventSink> = Arc::new(EngineEventSink(hub.clone()));
     let selector: Arc<dyn HostSelection> = Arc::new(WsHostSelection(hub.clone()));
@@ -148,12 +151,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_cfg = ApiServerConfig {
         token: token.clone(),
         management_enabled: true,
-        mcp_enabled: true,
         ..api_cfg
     };
     let host: Arc<dyn fluxdown_api::service::ApiHost> = Arc::new(ServerApiHost::new(
         db_handle.clone(),
         cmd_tx.clone(),
+        hub.clone(),
         server_cfg.demo_url.clone(),
     ));
     if let Some(url) = &server_cfg.demo_url {

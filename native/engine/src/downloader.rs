@@ -119,6 +119,7 @@ pub struct FileInfo {
     pub content_encoding_compressed: bool,
 }
 
+#[derive(Default)]
 pub struct ProgressUpdate {
     pub task_id: String,
     pub downloaded_bytes: i64,
@@ -130,6 +131,14 @@ pub struct ProgressUpdate {
     /// Per-segment progress info (for IDM-style visualization).
     /// `None` for single-thread downloads; `Some(vec)` for multi-segment.
     pub segment_details: Option<Vec<SegmentProgressInfo>>,
+    /// 实时上传速率（字节/秒）。仅 BT 任务的周期性进度上报携带非零值
+    /// （librqbit 统计），其余协议恒为 0。
+    pub upload_speed_bps: i64,
+    /// BT 数据下载完成标记：`stats.finished` 时刻（piece 全部下完，但校验
+    /// 与 staging→save_dir 搬移尚未完成、任务未进终态）置 `true` 一次。
+    /// `progress_reporter` 据此立即发 `EngineEvent::BtDataFinished`（按
+    /// task_id 去重），对应 aria2 `onBtDownloadComplete` 通知语义。
+    pub bt_data_finished: bool,
 }
 
 /// Snapshot of a single segment's progress, sent from downloader to progress_reporter.
@@ -671,7 +680,15 @@ pub fn maybe_decompress_stream(
 /// UA via `extra_headers`.  That UA is applied on the first attempt; if the
 /// server returns 4xx we automatically retry *without* the browser UA so that
 /// Cloudflare-protected CDNs also work (see [`resolve_file_info`]).
-const DEFAULT_UA: &str = "FluxDown/1.0";
+///
+/// **Version rule（同 aria2 的 `aria2/<版本>`）**：release 构建为
+/// `FluxDown/<pubspec 版本号>`（build.rs 注入 `FLUXDOWN_APP_VERSION`），
+/// debug 构建固定 `FluxDown/1.0`。
+const DEFAULT_UA: &str = if cfg!(debug_assertions) {
+    "FluxDown/1.0"
+} else {
+    concat!("FluxDown/", env!("FLUXDOWN_APP_VERSION"))
+};
 
 /// Build a properly configured HTTP client that mirrors Chrome's capabilities.
 ///
@@ -896,7 +913,7 @@ pub async fn resolve_file_info(
     let mut last_err = None;
     for attempt in 0..PROBE_MAX_RETRIES {
         // Last attempt: if extra_headers carried a browser UA, drop it so
-        // the request falls back to DEFAULT_UA ("FluxDown/1.0").  This
+        // the request falls back to DEFAULT_UA ("FluxDown/<version>").  This
         // avoids Cloudflare's TLS-fingerprint-vs-UA bot detection.
         let use_downgraded_ua = has_browser_ua && attempt + 1 == PROBE_MAX_RETRIES;
         let attempt_spec = if use_downgraded_ua {
@@ -1824,6 +1841,7 @@ pub async fn run_download(params: DownloadParams) {
                     // 对非空 file_name 锁存);未改名传空串 = 保持原名。
                     file_name: finalize_renamed.unwrap_or_default(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -1881,6 +1899,7 @@ pub async fn run_download(params: DownloadParams) {
                     error_message: full_msg,
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
         }
@@ -2089,6 +2108,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
             error_message: String::new(),
             file_name: p.file_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -2360,6 +2380,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
             error_message: String::new(),
             file_name: actual_name.clone(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -3151,6 +3172,7 @@ async fn download_single(
                                         end_byte: if total_bytes > 0 { total_bytes - 1 } else { 0 },
                                         downloaded_bytes: downloaded,
                                     }]),
+                                    ..Default::default()
                                 })
                                 .await;
                             last_report = std::time::Instant::now();

@@ -1,27 +1,42 @@
-// 外观：主题模式 + 强调色 —— 纯前端，保存在浏览器本地（useTheme）。
+// 外观：主题模式 + 强调色 + 语言 —— 主题/强调色纯前端（useTheme）；语言切换写穿服务器 config。
 import { ACCENT_PRESETS, useTheme } from '../../lib/theme'
 import type { ThemeMode } from '../../lib/theme'
 import { cn } from '../../lib/cn'
+import { LANGUAGE_CONFIG_KEY, useI18n } from '../../lib/i18n'
+import type { Locale } from '../../lib/i18n'
 import { SetRow, SetSelect } from './controls'
+import { useConfigMutation } from './useConfig'
 
-const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
-  { value: 'light', label: '浅色' },
-  { value: 'dark', label: '深色' },
-  { value: 'system', label: '跟随系统' },
+const LANGUAGE_OPTIONS: { value: Locale; label: string }[] = [
+  { value: 'en', label: 'English' },
+  { value: 'zh', label: '简体中文' },
 ]
 
 export function AppearanceSettings() {
   const { mode, setMode, accent, setAccent } = useTheme()
+  const { t, locale, setLocale } = useI18n()
+  const mutation = useConfigMutation()
+
+  const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
+    { value: 'light', label: t('set.appearance.light') },
+    { value: 'dark', label: t('set.appearance.dark') },
+    { value: 'system', label: t('set.appearance.system') },
+  ]
+
+  function onLanguageChange(v: string) {
+    setLocale(v as Locale)
+    mutation.mutate({ [LANGUAGE_CONFIG_KEY]: v })
+  }
 
   return (
     <>
-      <h2 className="set-title">外观</h2>
-      <p className="set-desc">主题与配色（保存在浏览器本地）</p>
+      <h2 className="set-title">{t('set.appearance')}</h2>
+      <p className="set-desc">{t('set.appearance.desc')}</p>
       <div className="set-group">
-        <SetRow title="主题模式">
+        <SetRow title={t('set.appearance.themeMode')}>
           <SetSelect value={mode} onValueChange={(v) => setMode(v as ThemeMode)} options={MODE_OPTIONS} />
         </SetRow>
-        <SetRow title="强调色" desc={ACCENT_PRESETS.map((p) => p.name).join(' / ')}>
+        <SetRow title={t('set.appearance.accent')} desc={t('set.appearance.accentNames')}>
           <div className="color-dots">
             {ACCENT_PRESETS.map((p, i) => (
               <button
@@ -34,6 +49,9 @@ export function AppearanceSettings() {
               />
             ))}
           </div>
+        </SetRow>
+        <SetRow title={t('set.appearance.language')} desc={t('set.appearance.languageDesc')}>
+          <SetSelect value={locale} onValueChange={onLanguageChange} options={LANGUAGE_OPTIONS} />
         </SetRow>
       </div>
     </>

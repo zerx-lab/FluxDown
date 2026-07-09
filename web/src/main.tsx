@@ -6,6 +6,7 @@ import './index.css'
 import { router } from './router'
 import { ConfirmDialog } from './components/dialogs/confirm-dialog'
 import { ThemeProvider } from './lib/theme'
+import { I18nProvider } from './lib/i18n'
 import { connectWs } from './lib/ws'
 import { isAuthenticated, saveCredentials } from './lib/auth'
 
@@ -41,10 +42,12 @@ if (isAuthenticated()) connectWs(queryClient)
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <RouterProvider router={router} />
-        <ConfirmDialog />
-      </ThemeProvider>
+      <I18nProvider>
+        <ThemeProvider>
+          <RouterProvider router={router} />
+          <ConfirmDialog />
+        </ThemeProvider>
+      </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

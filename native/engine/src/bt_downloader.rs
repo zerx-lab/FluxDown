@@ -937,6 +937,7 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
             error_message: String::new(),
             file_name: String::new(),
             segment_details: None,
+            ..Default::default()
         })
         .await;
 
@@ -2577,6 +2578,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 error_message: String::new(),
                 file_name: dn_name.clone(),
                 segment_details: None,
+                ..Default::default()
             })
             .await;
     }
@@ -2805,6 +2807,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         error_message: msg.clone(),
                         file_name: String::new(),
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 return Err(DownloadError::Other(msg));
@@ -2850,6 +2853,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                                     error_message: msg.clone(),
                                     file_name: String::new(),
                                     segment_details: None,
+                                    ..Default::default()
                                 })
                                 .await;
                             return Err(DownloadError::Other(msg));
@@ -2873,6 +2877,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                             error_message: String::new(),
                             file_name: String::new(),
                             segment_details: None,
+                            ..Default::default()
                         })
                         .await;
                 }
@@ -3105,6 +3110,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 error_message: String::new(),
                 file_name: resolved_name.clone(),
                 segment_details: None,
+                ..Default::default()
             })
             .await;
         // Return Cancelled so the manager does not overwrite our status=2.
@@ -3237,6 +3243,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 total_pieces,
                 init_pieces,
             )),
+            ..Default::default()
         })
         .await;
 
@@ -3339,6 +3346,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     error_message: msg.clone(),
                     file_name: String::new(),
                     segment_details: None,
+                    ..Default::default()
                 })
                 .await;
             return Err(DownloadError::Other(msg));
@@ -3347,6 +3355,21 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
         // Check if finished
         if stats.finished {
             log_info!("[BT] task={} finished! total={}", short_id(&task_id), total);
+
+            // BT 数据已全部下完，但校验与 staging→save_dir 搬移尚未开始，任务
+            // 仍未进终态——这正是 aria2 `onBtDownloadComplete` 通知对应的时刻。
+            // 立即补发一条带 `bt_data_finished` 标记的进度（progress_reporter
+            // 侧按 task_id 去重并绕过节流）。
+            let _ = progress_tx
+                .send(ProgressUpdate {
+                    task_id: task_id.clone(),
+                    downloaded_bytes: progress,
+                    total_bytes: total,
+                    status: STATUS_DOWNLOADING,
+                    bt_data_finished: true,
+                    ..Default::default()
+                })
+                .await;
 
             let final_total = if total > 0 { total } else { progress };
             // 注意:此处**不再**无条件写 STATUS_COMPLETED。BT 数据此刻仍在 staging
@@ -3528,6 +3551,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                                         error_message: msg.clone(),
                                         file_name: String::new(),
                                         segment_details: None,
+                                        ..Default::default()
                                     })
                                     .await;
                                 return Err(DownloadError::Other(msg));
@@ -3676,6 +3700,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         error_message: msg.clone(),
                         file_name: String::new(),
                         segment_details: None,
+                        ..Default::default()
                     })
                     .await;
                 // 仍要停止做种,但保留 staging 供恢复(下方清理已被
@@ -3702,6 +3727,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     error_message: String::new(),
                     file_name: completed_name,
                     segment_details: Some(finished_segs),
+                    ..Default::default()
                 })
                 .await;
 
@@ -3864,6 +3890,8 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     error_message: String::new(),
                     file_name: String::new(),
                     segment_details: Some(seg_details),
+                    upload_speed_bps,
+                    ..Default::default()
                 })
                 .await;
 

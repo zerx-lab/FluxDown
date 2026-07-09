@@ -4,11 +4,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
+import { useI18n } from '../../lib/i18n'
 import { filterTasks } from './filters'
 import { useTasksUi } from './context'
 import { useViewTasks } from './useViewTasks'
 
 export function ManageBar() {
+  const { t } = useI18n()
   const { manageMode, setManageMode, selected, setSelected, statusTab, typeFilter, queueFilter, search } = useTasksUi()
   const tasks = useViewTasks()
   const qc = useQueryClient()
@@ -44,9 +46,9 @@ export function ManageBar() {
       <label className="mcheck">
         <input type="checkbox" checked={allSelected} onChange={(e) => toggleAll(e.target.checked)} />
         <i />
-        全选
+        {t('common.selectAll')}
       </label>
-      <span>已选 {selected.size} 项</span>
+      <span>{t('manage.selected', { n: selected.size })}</span>
       <span className="flex1" />
       <button
         type="button"
@@ -54,7 +56,7 @@ export function ManageBar() {
         disabled={selected.size === 0}
         onClick={() => batchPause.mutate(Array.from(selected))}
       >
-        暂停
+        {t('common.pause')}
       </button>
       <button
         type="button"
@@ -62,20 +64,24 @@ export function ManageBar() {
         disabled={selected.size === 0}
         onClick={() => batchContinue.mutate(Array.from(selected))}
       >
-        恢复
+        {t('common.resume')}
       </button>
       <button
         type="button"
         className="btn danger sm"
         disabled={selected.size === 0}
         onClick={async () => {
-          if (selected.size > 0 && (await confirmDialog({ title: '删除任务', message: `删除选中的 ${selected.size} 个任务？`, danger: true }))) batchDelete.mutate(Array.from(selected))
+          if (
+            selected.size > 0 &&
+            (await confirmDialog({ title: t('manage.deleteTitle'), message: t('manage.deleteMsg', { n: selected.size }), danger: true }))
+          )
+            batchDelete.mutate(Array.from(selected))
         }}
       >
-        删除
+        {t('common.delete')}
       </button>
       <button type="button" className="btn ghost sm" onClick={() => setManageMode(false)}>
-        完成
+        {t('common.done')}
       </button>
     </div>
   )

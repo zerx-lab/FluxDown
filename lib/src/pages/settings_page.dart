@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:file_selector/file_selector.dart';
 import '../services/file_picker_service.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../services/build_stats.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -303,6 +304,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       description: s.logExportDesc,
       keywords: s.searchKeywordsLogExport,
       icon: LucideIcons.fileText,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.about,
+      label: s.donateTitle,
+      description: s.donateButton,
+      keywords: s.searchKeywordsDonate,
+      icon: LucideIcons.heart,
     ),
   ];
 }
@@ -733,7 +741,7 @@ class _SearchResultItemState extends State<_SearchResultItem> {
           margin: const EdgeInsets.only(bottom: 2),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
-            color: _isHovered ? c.hoverBg : Colors.transparent,
+            color: _isHovered ? c.hoverBg : c.hoverBg.withValues(alpha: 0),
             borderRadius: m.brMd,
           ),
           child: Row(
@@ -2904,7 +2912,7 @@ const _kUaPresets = {
 };
 
 String _detectPreset(String ua) {
-  if (ua.isEmpty) return 'chrome'; // 空 = 内置 Chrome UA
+  if (ua.isEmpty) return 'default'; // 空 = 内置默认标识（FluxDown/版本号）
   for (final entry in _kUaPresets.entries) {
     if (entry.value == ua) return entry.key;
   }
@@ -2952,9 +2960,9 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
     if (preset == null) return;
     setState(() => _selectedPreset = preset);
     if (preset != 'custom') {
+      // 'default' 不在 _kUaPresets 中，映射为空字符串（引擎内置 UA）
       final ua = _kUaPresets[preset] ?? '';
       _controller.text = ua;
-      // 空字符串 = 使用内置 Chrome UA，与 'chrome' 预设语义等价
       widget.settingsProvider.setGlobalUserAgent(ua);
     }
   }
@@ -2981,6 +2989,10 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
           child: ShadSelect<String>(
             initialValue: _selectedPreset,
             options: [
+              ShadOption(
+                value: 'default',
+                child: Text(s.userAgentPresetDefault),
+              ),
               ShadOption(value: 'chrome', child: Text(s.userAgentPresetChrome)),
               ShadOption(
                 value: 'firefox',
@@ -2996,6 +3008,7 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
             ],
             selectedOptionBuilder: (context, value) {
               final label = switch (value) {
+                'default' => s.userAgentPresetDefault,
                 'chrome' => 'Chrome',
                 'firefox' => 'Firefox',
                 'edge' => 'Edge',
@@ -5830,6 +5843,14 @@ class _ThemeActions extends StatelessWidget {
           colors: c,
           onTap: () => _exportTheme(context),
         ),
+        const SizedBox(width: 8),
+        _SmallActionButton(
+          icon: LucideIcons.globe,
+          label: s.themeMore,
+          colors: c,
+          onTap: () =>
+              launchUrl(Uri.parse('https://fluxdown.zerx.dev/themes')),
+        ),
       ],
     );
   }
@@ -5869,7 +5890,7 @@ class _SmallActionButtonState extends State<_SmallActionButton> {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
-            color: _isHovered ? c.hoverBg : Colors.transparent,
+            color: _isHovered ? c.hoverBg : c.hoverBg.withValues(alpha: 0),
             borderRadius: m.brMd,
             border: Border.all(color: c.border, width: 1),
           ),
@@ -7093,6 +7114,9 @@ class _AboutContent extends StatelessWidget {
             const SizedBox(height: 10),
             // Log export card
             _LogExportCard(colors: c, settingsProvider: settingsProvider),
+            const SizedBox(height: 10),
+            // Donate card
+            _DonateCard(colors: c),
           ],
         );
       },
@@ -7391,6 +7415,56 @@ class _AboutContent extends StatelessWidget {
     final dt = DateTime.tryParse(isoDate);
     if (dt == null) return isoDate;
     return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+  }
+}
+
+// ─────────────────────────────────────────────
+// 捐赠卡片
+// ─────────────────────────────────────────────
+
+class _DonateCard extends StatelessWidget {
+  final AppColors colors;
+  const _DonateCard({required this.colors});
+
+  /// 构建期注入的首次 commit 日期，按当前语言格式化。
+  String _firstDateText(S s) {
+    final dt = DateTime.tryParse(statsFirstCommitDate);
+    if (dt == null) return statsFirstCommitDate;
+    return s.donateDate(dt.year, dt.month, dt.day);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = colors;
+    final s = LocaleScope.of(context);
+    return _SettingCard(
+      label: s.donateTitle,
+      description: s.donateThanks,
+      vertical: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            s.donateBody(_firstDateText(s), statsReleaseCount, statsCommitCount),
+            style: TextStyle(fontSize: 12, height: 1.6, color: c.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          ShadButton(
+            size: ShadButtonSize.sm,
+            onPressed: () =>
+                launchUrl(Uri.parse('https://fluxdown.zerx.dev/sponsor')),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(LucideIcons.heart, size: 13, color: Colors.white),
+                const SizedBox(width: 6),
+                Text(s.donateButton),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
