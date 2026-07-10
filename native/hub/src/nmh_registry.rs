@@ -214,16 +214,23 @@ mod inner {
         let Ok(nmh_exe) = find_nmh_exe() else {
             return true;
         };
-        let expected_exe = strip_unc_prefix(&nmh_exe.to_string_lossy());
+        // 清单由 serde_json 写出，路径中的 `\` 被转义为 `\\`；
+        // 用转义后的形式做内容匹配，否则 Windows 上永远不匹配、每次启动都重注册。
+        let expected_exe_json = strip_unc_prefix(&nmh_exe.to_string_lossy()).replace('\\', "\\\\");
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
         // --- 版本切换检测 ---
         // 读取已注册 Chrome 清单中的 NMH path，与当前 exe 目录对比。
         // 目录不同说明用户切换了版本（dev → portable / installed），强制重新注册。
+        // canonicalize 会加 `\\?\` UNC 前缀，而清单里的 path 写入时已去前缀；
+        // 比较前同样去掉，否则永远判定"目录变了"、每次启动都重注册。
         let current_exe_dir = std::env::current_exe()
             .ok()
             .map(|exe| std::fs::canonicalize(&exe).unwrap_or(exe))
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+            .and_then(|p| {
+                p.parent()
+                    .map(|d| PathBuf::from(strip_unc_prefix(&d.to_string_lossy())))
+            });
 
         if let Some(exe_dir) = &current_exe_dir {
             let chrome_reg = format!(
@@ -271,7 +278,7 @@ mod inner {
             let Ok(content) = std::fs::read_to_string(&manifest_str) else {
                 return true;
             };
-            if !content.contains(&expected_exe) {
+            if !content.contains(&expected_exe_json) {
                 return true;
             }
             // Content versioning: an existing manifest predating Edge support
@@ -282,23 +289,28 @@ mod inner {
             }
         }
 
-        // Firefox 是可选浏览器：注册表项不存在时跳过，不触发重新注册。
+        // Firefox 键缺失也要重注册：能走到这里说明 Chromium 键完好（本机曾完整
+        // 注册过），此时 Firefox 键被外部删除（杀毒/清理工具）应当自愈；
+        // register() 无条件写 Firefox 键，对未安装 Firefox 的机器同样无害幂等。
         let firefox_reg = format!("{}\\{}", r"Software\Mozilla\NativeMessagingHosts", NMH_NAME);
-        if let Ok(key) = hkcu.open_subkey_with_flags(&firefox_reg, KEY_READ) {
-            let Ok(manifest_str): Result<String, _> = key.get_value("") else {
-                return true;
-            };
-            if !manifest_str.ends_with(MANIFEST_FILENAME_FIREFOX) {
-                return true; // still pointing to old shared manifest
-            }
-            if !Path::new(&manifest_str).exists() {
-                return true;
-            }
-            let Ok(content) = std::fs::read_to_string(&manifest_str) else {
-                return true;
-            };
-            if !content.contains(&expected_exe) {
-                return true;
+        match hkcu.open_subkey_with_flags(&firefox_reg, KEY_READ) {
+            Err(_) => return true,
+            Ok(key) => {
+                let Ok(manifest_str): Result<String, _> = key.get_value("") else {
+                    return true;
+                };
+                if !manifest_str.ends_with(MANIFEST_FILENAME_FIREFOX) {
+                    return true; // still pointing to old shared manifest
+                }
+                if !Path::new(&manifest_str).exists() {
+                    return true;
+                }
+                let Ok(content) = std::fs::read_to_string(&manifest_str) else {
+                    return true;
+                };
+                if !content.contains(&expected_exe_json) {
+                    return true;
+                }
             }
         }
 
@@ -359,6 +371,48 @@ mod inner {
 
         log_info!("[nmh_registry] NMH registration removed");
         Ok(())
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    mod tests {
+        use super::{NMH_NAME, needs_update, register};
+        use winreg::RegKey;
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+
+        /// 本机注册表冒烟：Firefox 键被外部删除后 `needs_update()` 必须自愈判定。
+        ///
+        /// 依赖真实 HKCU 注册表与已构建的 `fluxdown_nmh.exe`（`cargo build -p fluxdown_nmh`），
+        /// 会改写本机 NMH 注册（指向 workspace target 目录，安装版启动时会自行纠正），
+        /// 故标记 ignore，手动执行：
+        /// `cargo test -p hub -- --ignored firefox_key_self_heal`
+        #[test]
+        #[ignore]
+        fn firefox_key_self_heal() {
+            // 基线：全量注册后一切匹配。
+            register().expect("register");
+            assert!(!needs_update(), "fresh register must be up to date");
+
+            // 模拟外部删除 Firefox 键（杀毒/清理工具场景）。
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let parent = hkcu
+                .open_subkey_with_flags(r"Software\Mozilla\NativeMessagingHosts", KEY_WRITE)
+                .expect("open Mozilla NMH parent");
+            parent.delete_subkey(NMH_NAME).expect("delete firefox key");
+
+            // 修复点：缺失必须触发重注册（旧代码此处返回 false）。
+            assert!(
+                needs_update(),
+                "missing Firefox key must trigger re-registration"
+            );
+
+            // register() 自愈恢复。
+            register().expect("re-register");
+            assert!(
+                !needs_update(),
+                "self-healed registration must be up to date"
+            );
+        }
     }
 }
 
@@ -474,8 +528,8 @@ mod inner {
     ///
     /// Returns multiple paths: standard location, Flatpak sandboxed variants,
     /// and Firefox-fork browsers (LibreWolf, Waterfox).
-    /// Registration writes to all paths; needs_update checks that the standard
-    /// path is up-to-date (other paths are optional).
+    /// Registration writes to all paths; needs_update requires every path's
+    /// manifest to exist and match (self-heals external deletion on restart).
     fn firefox_nmh_dirs() -> Vec<PathBuf> {
         let Some(home) = home_dir() else {
             return vec![];
@@ -649,12 +703,10 @@ mod inner {
                 .unwrap_or(false)
         });
 
-        // Firefox is optional: if its manifest exists it must match; absence is OK.
+        // Firefox 清单缺失也要重注册（自愈外部删除）；register() 对所有目录
+        // 无条件写入，未安装 Firefox 时写入同样无害幂等。
         let firefox_ok = firefox_nmh_dirs().iter().all(|dir| {
             let path = dir.join(MANIFEST_FILENAME_FIREFOX);
-            if !path.exists() {
-                return true;
-            }
             std::fs::read_to_string(path)
                 .map(|c| c.contains(&wrapper_str))
                 .unwrap_or(false)
@@ -1020,13 +1072,11 @@ mod inner {
                 .unwrap_or(false)
         });
 
-        // Firefox 是可选浏览器：清单存在时才验证路径；未安装 / 未注册则忽略。
+        // Firefox 清单缺失也要重注册（自愈外部删除）；register() 无条件写入，
+        // 未安装 Firefox 时写入同样无害幂等。
         let firefox_ok = firefox_nmh_dir()
             .map(|dir| {
                 let path = dir.join(MANIFEST_FILENAME);
-                if !path.exists() {
-                    return true;
-                }
                 std::fs::read_to_string(path)
                     .map(|c| c.contains(&wrapper_str))
                     .unwrap_or(false)
