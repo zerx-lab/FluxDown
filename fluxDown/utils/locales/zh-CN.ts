@@ -73,7 +73,7 @@ const zhCN = {
   "options.theme.light": "浅色",
   "options.theme.dark": "深色",
   "options.tokenDesc": "服务端首次启动时生成的管理令牌",
-  "footer.settings": "选项",
+  "footer.settings": "全部设置",
 
   // 任务发送通知开关
   "options.general.notifyLocalTitle": "本地任务通知",
@@ -196,6 +196,52 @@ const zhCN = {
   // Manifest
   "manifest.description":
     "拦截浏览器下载，发送到 FluxDown 桌面应用进行高速下载",
+
+  // 顶部 tab（popup）
+  "popup.tabs.tasks": "任务",
+  "popup.tabs.resources": "资源",
+  "popup.tabs.settings": "设置",
+
+  // 资源面板（popup）
+  "popup.resources.empty": "当前页面暂未嗅探到资源",
+
+  // 任务面板（popup）
+  "popup.tasks.downloading": "下载中",
+  "popup.tasks.completed": "最近完成",
+  "popup.tasks.empty": "暂无下载任务",
+  "popup.tasks.appNotRunning": "FluxDown 未运行",
+  "popup.tasks.startApp": "启动 FluxDown",
+  "popup.tasks.starting": "启动中…",
+  "popup.tasks.statsToday": "今日：",
+  "popup.tasks.statsLineTitle": "打开设置查看更多",
+  "popup.task.pause": "暂停",
+  "popup.task.resume": "继续",
+  "popup.task.remove": "删除",
+  "popup.task.open": "打开",
+  "popup.task.reveal": "目录",
+  "popup.task.paused": "已暂停",
+  "popup.task.pending": "等待中",
+  "popup.task.preparing": "准备中",
+  "popup.task.errorGeneric": "下载出错",
+  "popup.task.opFailed": "操作失败",
+
+  // 空态快捷下载（popup）
+  "popup.quickDownload.placeholder": "粘贴下载链接",
+  "popup.quickDownload.button": "下载",
+  "popup.quickDownload.invalidUrl": "请输入有效的下载链接",
+  "popup.quickDownload.sent": "已发送到 FluxDown",
+  "popup.quickDownload.failed": "发送失败",
+
+  // Options 迁移项补充说明
+  "options.general.statsDesc": "重置弹出窗口中显示的已接管/失败计数",
+  "options.rules.minFileSizeDesc": "小于该大小的文件不会被拦截",
+  "options.rules.domainDesc": "这些域名下的下载将不会被拦截",
+
+  // 任务完成通知（任务面板）
+  "notify.taskCompletedTitle": "下载完成",
+  "notify.taskCompletedDetail": "{name} 已下载完成",
+  "notify.openFile": "打开文件",
+  "notify.openFolder": "打开文件夹",
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

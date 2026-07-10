@@ -61,6 +61,19 @@ class PopupWindowService {
   /// 小窗当前是否可见（与主窗口对话框的 _dialogOpen 同语义，用于去重）
   bool _visible = false;
 
+  /// show 握手在途（invokeMethod('show') 尚未返回）。外部请求短时爆发
+  /// （浏览器扩展批量下载会拆成 N 条独立请求）时，后续请求在此期间到达
+  /// 必须排队等 append，而不是各自再发 show 互相覆盖载荷。
+  bool _showing = false;
+
+  /// show 返回后到弹窗引擎 reveal 之间的宽限期截止时刻。此窗口内原生
+  /// append 会因窗口尚未实际可见而返回 false，应重试而非判定失步复位。
+  DateTime? _revealDeadline;
+
+  /// 等待合入表单的 URL（show 在途 / reveal 宽限期内被拒时缓冲）。
+  final List<String> _queuedAppendUrls = [];
+  bool _flushScheduled = false;
+
   /// 请求序号发生器
   int _seq = 0;
 
@@ -73,7 +86,11 @@ class PopupWindowService {
   Timer? _watchdog;
   static const _watchdogTimeout = Duration(minutes: 15);
 
-  bool get isVisible => _visible;
+  /// show 返回后到弹窗实际 reveal 的宽限时长（原生兜底 3s 强制显示，
+  /// 留冗余覆盖首帧慢的极端情况）。
+  static const _revealGrace = Duration(seconds: 6);
+
+  bool get isVisible => _visible || _showing;
 
   /// 在 app 启动时调用一次（主题与 navigator 用于组装载荷）。
   void init({
@@ -130,12 +147,16 @@ class PopupWindowService {
       ],
     );
 
+    _showing = true;
     try {
       final shown =
           await _channel.invokeMethod<bool>('show', payload.toJsonString()) ??
           false;
       if (shown) {
         _visible = true;
+        // show 返回后弹窗引擎尚需时间完成首帧 + reveal（原生 3s 兜底），
+        // 此窗口内 append 被原生拒绝应视为"尚未 reveal"而非失步。
+        _revealDeadline = DateTime.now().add(_revealGrace);
         _pending = _PendingRequest(
           requestId: payload.requestId,
           referrer: req.referrer,
@@ -144,26 +165,30 @@ class PopupWindowService {
         );
         _armWatchdog();
         logInfo(_tag, 'popup shown, requestId=${payload.requestId}');
+        _scheduleFlush();
       } else {
         logError(_tag, 'native host refused to show popup');
+        _queuedAppendUrls.clear();
       }
       return shown;
     } on MissingPluginException {
       // 原生宿主未实现（该平台尚无 popup host）— 静默回退
       logInfo(_tag, 'popup host not implemented on this platform');
+      _queuedAppendUrls.clear();
       return false;
     } on PlatformException catch (e) {
       logError(_tag, 'failed to show popup', e);
+      _queuedAppendUrls.clear();
       return false;
+    } finally {
+      _showing = false;
     }
   }
 
   /// 隐藏小窗（若可见）。
   Future<void> close() async {
     if (!_visible) return;
-    _visible = false;
-    _pending = null;
-    _watchdog?.cancel();
+    _reset();
     try {
       await _channel.invokeMethod<void>('close');
     } on PlatformException catch (e) {
@@ -180,24 +205,41 @@ class PopupWindowService {
   /// 返回 false = 小窗实际已不可见（内存标志失步，已就地复位自愈），
   /// 调用方应继续走正常 tryShow 流程。
   Future<bool> tryAppend(ExternalDownloadRequest req) async {
-    if (!_visible) return false;
     // 音视频轨对请求无法作为普通 URL 行合入（audioUrl 依赖 pending 表
     // 独立通道透传）——维持既有"忽略并记日志"语义，不打断用户表单。
     if (req.audioUrl.isNotEmpty) {
-      logInfo(_tag, 'popup open, ignoring track-pair request: ${req.url}');
+      if (isVisible) {
+        logInfo(_tag, 'popup open, ignoring track-pair request: ${req.url}');
+        return true;
+      }
+      return false;
+    }
+    // show 握手在途（批量请求爆发）— 缓冲，show 成功后统一 append，
+    // 避免各请求并发 show 互相覆盖载荷（浏览器扩展批量下载只剩 1 条的根因）。
+    if (_showing) {
+      _queuedAppendUrls.add(req.url);
+      logInfo(_tag, 'show in flight, queued append: ${req.url}');
       return true;
     }
+    if (!_visible) return false;
     try {
       final ok = await _channel.invokeMethod<bool>('append', req.url) ?? false;
       if (ok) {
         logInfo(_tag, 'appended external request into visible popup');
         return true;
       }
+      // reveal 宽限期内：窗口尚未实际显示（首帧未就绪），不是失步 —
+      // 缓冲重试而不是复位再 show（那会重置用户表单/覆盖批量 URL）。
+      final deadline = _revealDeadline;
+      if (deadline != null && DateTime.now().isBefore(deadline)) {
+        _queuedAppendUrls.add(req.url);
+        logInfo(_tag, 'append deferred until reveal: ${req.url}');
+        _scheduleFlush();
+        return true;
+      }
       // 原生报告窗口实际不可见 — 内存标志失步，复位后让调用方走 show。
       logInfo(_tag, 'append refused: popup not visible, resetting state');
-      _visible = false;
-      _pending = null;
-      _watchdog?.cancel();
+      _reset();
       return false;
     } on MissingPluginException {
       // 旧版宿主无 append — 维持既有"忽略"语义，避免 show 重置用户表单
@@ -207,6 +249,62 @@ class PopupWindowService {
       logError(_tag, 'append failed, ignoring request', e);
       return true;
     }
+  }
+
+  /// 异步冲刷缓冲的 append URL：reveal 前原生会拒绝，按固定间隔重试
+  /// 直至宽限期截止（原生 3s reveal 兜底保证窗口最终可见）。
+  void _scheduleFlush() {
+    if (_flushScheduled || _queuedAppendUrls.isEmpty) return;
+    _flushScheduled = true;
+    unawaited(_flushQueued());
+  }
+
+  Future<void> _flushQueued() async {
+    try {
+      while (_queuedAppendUrls.isNotEmpty && _visible) {
+        final url = _queuedAppendUrls.first;
+        bool ok = false;
+        try {
+          ok = await _channel.invokeMethod<bool>('append', url) ?? false;
+        } on MissingPluginException {
+          logInfo(_tag, 'append not implemented, dropping queued urls');
+          _queuedAppendUrls.clear();
+          return;
+        } on PlatformException catch (e) {
+          logError(_tag, 'queued append failed, dropping: $url', e);
+          _queuedAppendUrls.removeAt(0);
+          continue;
+        }
+        if (ok) {
+          _queuedAppendUrls.removeAt(0);
+          logInfo(_tag, 'flushed queued append: $url');
+          continue;
+        }
+        final deadline = _revealDeadline;
+        if (deadline == null || !DateTime.now().isBefore(deadline)) {
+          logError(
+            _tag,
+            'popup never revealed, dropping ${_queuedAppendUrls.length} queued url(s)',
+          );
+          _queuedAppendUrls.clear();
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+    } finally {
+      _flushScheduled = false;
+      // 冲刷期间可能又有新缓冲进来
+      if (_queuedAppendUrls.isNotEmpty && _visible) _scheduleFlush();
+    }
+  }
+
+  /// 复位所有会话状态（关闭/提交/失步时调用）。
+  void _reset() {
+    _visible = false;
+    _pending = null;
+    _revealDeadline = null;
+    _queuedAppendUrls.clear();
+    _watchdog?.cancel();
   }
 
   void _armWatchdog() {
@@ -220,10 +318,8 @@ class PopupWindowService {
   Future<dynamic> _onCall(MethodCall call) async {
     switch (call.method) {
       case 'onResult':
-        _visible = false;
-        _watchdog?.cancel();
         final pending = _pending;
-        _pending = null;
+        _reset();
         final result = QuickPopupResult.fromJsonString(
           call.arguments as String,
         );
@@ -244,9 +340,7 @@ class PopupWindowService {
         );
       case 'onClosed':
         logInfo(_tag, 'popup closed by user');
-        _visible = false;
-        _pending = null;
-        _watchdog?.cancel();
+        _reset();
     }
   }
 }

@@ -213,6 +213,11 @@ body {
   max-height: none;
 }
 
+/* 排除域名列表同样放开高度限制，走整页滚动而非内部小滚动条 */
+.opt-domain-list {
+  max-height: none;
+}
+
 .opt-tags:empty::after {
   content: attr(data-empty);
   font-size: 12px;

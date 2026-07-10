@@ -1,0 +1,14 @@
+{
+	"luci-app-fluxdown": {
+		"description": "Grant access to FluxDown configuration",
+		"read": {
+			"uci": [ "fluxdown" ],
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "fluxdown" ]
+		}
+	}
+}

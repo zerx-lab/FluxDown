@@ -366,6 +366,10 @@ class _FluxDownAppState extends State<FluxDownApp>
     // 悬浮球服务 — 配置加载完成后初始化（S0.5 初始化钩子）
     _initFloatingBallAfterConfigLoad();
 
+    // 启动时最小化到托盘：配置加载完成后按设置决定是否隐藏主窗口
+    // （原生层 first_frame_cb 默认会显示窗口，此处按用户设置补做隐藏）
+    _applyStartMinimizedToTrayAfterConfigLoad();
+
     // 延迟 5 秒后台静默检查更新（避免阻塞启动流程）
     Future.delayed(const Duration(seconds: 5), () {
       if (!mounted) return;
@@ -601,6 +605,50 @@ class _FluxDownAppState extends State<FluxDownApp>
     timeout = Timer(const Duration(seconds: 10), () {
       cleanup();
       if (mounted) doInit();
+    });
+  }
+
+  /// 启动时最小化到托盘：等配置加载完成后，若用户开启该项则隐藏主窗口
+  /// （与 torrent 关联处理 / 悬浮球初始化同款「等待配置加载」监听模式）。
+  ///
+  /// 主窗口的初始显示由原生层 first_frame_cb 控制（Win32 `Show()` /
+  /// GTK `gtk_widget_show`），在 Flutter 首帧渲染完成时同步触发，早于
+  /// Dart 侧异步的 Rust 配置加载完成。因此这里不「跳过」原生层的显示，
+  /// 而是在配置到达后立即补一次隐藏——由于 Rust 引擎在 `runApp` 之前已
+  /// 完成初始化，配置请求/响应往返通常快于首帧上屏，实际观感等同于
+  /// 跳过显示；仅托盘驻留，窗口可随时从托盘唤出。监听器仅触发一次
+  /// （命中后立即移除），不会在运行期后续设置变更时重复隐藏窗口。
+  void _applyStartMinimizedToTrayAfterConfigLoad() {
+    void apply() {
+      if (!_settingsForExternal.startMinimizedToTray) return;
+      logInfo(
+        'FluxDownApp',
+        'startMinimizedToTray enabled, hiding main window',
+      );
+      windowManager.hide();
+    }
+
+    if (_settingsForExternal.loaded) {
+      apply();
+      return;
+    }
+    late final void Function() listener;
+    Timer? timeout;
+    void cleanup() {
+      timeout?.cancel();
+      _settingsForExternal.removeListener(listener);
+    }
+
+    listener = () {
+      if (_settingsForExternal.loaded) {
+        cleanup();
+        if (mounted) apply();
+      }
+    };
+    _settingsForExternal.addListener(listener);
+    timeout = Timer(const Duration(seconds: 10), () {
+      cleanup();
+      if (mounted) apply();
     });
   }
 

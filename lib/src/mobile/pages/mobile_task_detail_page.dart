@@ -637,7 +637,12 @@ class _InfoCard extends StatelessWidget {
         '${created.hour.toString().padLeft(2, '0')}:'
         '${created.minute.toString().padLeft(2, '0')}';
 
-    Widget row(String key, String value, {bool copyable = false}) {
+    Widget row(
+      String key,
+      String value, {
+      bool copyable = false,
+      String? copyToast,
+    }) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 9),
         child: Row(
@@ -665,7 +670,7 @@ class _InfoCard extends StatelessWidget {
               GestureDetector(
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: value));
-                  showMobileToast(context, s.urlCopied);
+                  showMobileToast(context, copyToast ?? s.urlCopied);
                 },
                 child: Padding(
                   padding: const EdgeInsets.only(left: 8),
@@ -700,6 +705,15 @@ class _InfoCard extends StatelessWidget {
           row(s.mobileProtocol, task.protocolLabel),
           _divider(c),
           row(s.mobileCreatedAt, createdText),
+          if (task.errorMessage.isNotEmpty) ...[
+            _divider(c),
+            row(
+              s.infoError,
+              task.errorMessage,
+              copyable: true,
+              copyToast: s.errorCopied,
+            ),
+          ],
         ],
       ),
     );

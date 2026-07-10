@@ -12,7 +12,9 @@
 //!   - Pipe connection is lazy: established on first message, reconnected on error.
 //!   - When the FluxDown App is not running, NMH automatically launches it and
 //!     polls for the IPC endpoint at a fixed 50ms interval (up to 10s).
-//!   - "ping" messages only check connectivity — they never launch the App.
+//!   - The "no-launch" action set (see `NO_LAUNCH_ACTIONS`) — "ping" plus the
+//!     task-panel query/control actions — only checks connectivity and never
+//!     launches the App.
 //!   - "warmup" messages ensure the App is running and the pipe is connected,
 //!     then are answered locally (never forwarded to the App). The extension
 //!     sends one at download-flow entry so App cold-start overlaps with its
@@ -27,6 +29,20 @@ use std::time::Instant;
 
 /// Maximum message size: 1 MB (Chrome NMH limit).
 const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+
+/// Actions the NMH relay answers/forwards without auto-launching the App
+/// when it isn't already running — mirrors the shared NMH contract's
+/// no-launch action set. `ping` is a pure liveness check; the task-panel
+/// query/control actions target an already-running App, so failing fast
+/// beats a multi-second cold-start stall for a popup that has nothing to
+/// show anyway. `download`/`warmup` are deliberately excluded — those are
+/// the entry points that must launch the App.
+const NO_LAUNCH_ACTIONS: &[&str] = &["ping", "tasks", "task_op", "open_file", "reveal_file"];
+
+/// Whether `action` belongs to [`NO_LAUNCH_ACTIONS`].
+fn is_no_launch_action(action: &str) -> bool {
+    NO_LAUNCH_ACTIONS.contains(&action)
+}
 
 /// IPC path for communicating with the FluxDown desktop app.
 /// Windows uses a Named Pipe; Linux/macOS uses a Unix Domain Socket.
@@ -646,14 +662,15 @@ fn connect_with_auto_launch(last_launch: &mut Option<Instant>) -> Option<pipe::P
 /// extension pays a full port-teardown → new-NMH → ping → resend round-trip
 /// (~0.5-1s) for the first download after every App restart.
 ///
-/// "ping" reconnects without launching the App (liveness checks must not
-/// have side effects); everything else goes through auto-launch.
+/// No-launch actions (see [`NO_LAUNCH_ACTIONS`]) reconnect without launching
+/// the App (liveness/query checks must not have side effects); everything
+/// else goes through auto-launch.
 fn reconnect_and_resend(
     raw: &[u8],
-    is_ping: bool,
+    is_no_launch: bool,
     last_launch: &mut Option<Instant>,
 ) -> Option<pipe::PipeHandle> {
-    let mut p = if is_ping {
+    let mut p = if is_no_launch {
         pipe::PipeHandle::connect(ipc_address())?
     } else {
         connect_with_auto_launch(last_launch)?
@@ -684,12 +701,13 @@ fn main() {
         let parsed = serde_json::from_slice::<IncomingMessage>(&raw);
         let msg_id = parsed.as_ref().map_or(0, |m| m.msg_id);
         let action = parsed.as_ref().map_or("", |m| m.action.as_str());
-        let is_ping = action == "ping";
+        let is_no_launch = is_no_launch_action(action);
 
         // Ensure IPC connection.
-        // "ping" only does a direct connect (no App launch for status checks).
+        // No-launch actions only do a direct connect (no App launch for
+        // status/query checks).
         if pipe.is_none() {
-            pipe = if is_ping {
+            pipe = if is_no_launch {
                 pipe::PipeHandle::connect(ipc_address())
             } else {
                 connect_with_auto_launch(&mut last_launch)
@@ -726,7 +744,7 @@ fn main() {
         if let Err(e) = p.write_message(&raw) {
             log(&format!("pipe write failed ({}), reconnecting", e));
             drop(p);
-            match reconnect_and_resend(&raw, is_ping, &mut last_launch) {
+            match reconnect_and_resend(&raw, is_no_launch, &mut last_launch) {
                 Some(fresh) => p = fresh,
                 None => {
                     respond_status(false, "app_not_running", msg_id);
@@ -749,4 +767,26 @@ fn main() {
     }
 
     log("NMH exiting (stdin closed)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_launch_set_covers_ping_and_task_panel_actions() {
+        for action in ["ping", "tasks", "task_op", "open_file", "reveal_file"] {
+            assert!(is_no_launch_action(action), "{action} should be no-launch");
+        }
+    }
+
+    #[test]
+    fn no_launch_set_excludes_launch_triggering_actions() {
+        for action in ["download", "warmup", "unknown", ""] {
+            assert!(
+                !is_no_launch_action(action),
+                "{action} must still auto-launch the App"
+            );
+        }
+    }
 }

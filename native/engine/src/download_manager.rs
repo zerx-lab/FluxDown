@@ -1688,6 +1688,23 @@ impl DownloadManager {
             return None;
         }
 
+        // 持久化浏览器请求上下文（cookies/referrer/extra_headers），resume 时
+        // 恢复鉴权。全空则跳过（多数直链任务），省一次写。
+        if !cookies.is_empty() || !referrer.is_empty() || !extra_headers.is_empty() {
+            let headers_json = if extra_headers.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string(&extra_headers).unwrap_or_default()
+            };
+            if let Err(e) = self
+                .db
+                .set_task_request_context(&task_id, &cookies, &referrer, &headers_json)
+                .await
+            {
+                log_info!("set_task_request_context error: {}", e);
+            }
+        }
+
         // Persist .torrent file bytes to DB for resume after restart.
         if !torrent_file_bytes.is_empty()
             && let Err(e) = self
@@ -2431,9 +2448,9 @@ impl DownloadManager {
                     file_name: t.file_name,
                     segments: 0, // not used for resume
                     is_resume: true,
-                    cookies: String::new(), // cookies not available for resume from DB
-                    referrer: String::new(), // referrer not persisted; not needed for resume
-                    hint_file_size: 0,      // no hint on resume; use probe to get current size
+                    cookies: String::new(), // resume 上下文由 do_resume_task 从 DB 恢复
+                    referrer: String::new(),
+                    hint_file_size: 0, // no hint on resume; use probe to get current size
                     torrent_file_bytes: Vec::new(), // loaded from DB in do_resume_task
                     proxy_url: t.proxy_url,
                     user_agent: String::new(), // use global UA on resume
@@ -2483,6 +2500,47 @@ impl DownloadManager {
                 return;
             }
         };
+
+        // 恢复持久化的浏览器请求上下文：鉴权站点（cookie+token 双因子的 fnOS、
+        // 带 Authorization 的私有服务）缺它们 resume 必然 4xx。
+        // 旧任务（升级前创建）三者皆空 → 行为与既往完全一致。
+        let (resume_cookies, resume_referrer, resume_extra_headers) =
+            match self.db.load_task_request_context(task_id).await {
+                Ok(Some((c, r, h))) => {
+                    let headers: std::collections::HashMap<String, String> = if h.is_empty() {
+                        std::collections::HashMap::new()
+                    } else {
+                        serde_json::from_str(&h).unwrap_or_else(|e| {
+                            log_info!(
+                                "[manager] task {} extra_headers JSON 解析失败: {}",
+                                task_id,
+                                e
+                            );
+                            std::collections::HashMap::new()
+                        })
+                    };
+                    if !c.is_empty() || !r.is_empty() || !headers.is_empty() {
+                        log_info!(
+                            "[manager] task {} resume 恢复请求上下文: cookies_len={}, \
+                             referrer_len={}, extra_headers={}",
+                            task_id,
+                            c.len(),
+                            r.len(),
+                            headers.len()
+                        );
+                    }
+                    (c, r, headers)
+                }
+                Ok(None) => Default::default(),
+                Err(e) => {
+                    log_info!(
+                        "[manager] task {} load_task_request_context 失败: {}（按空上下文继续）",
+                        task_id,
+                        e
+                    );
+                    Default::default()
+                }
+            };
 
         // Read actual segment count from DB.  0 means "auto" — the downloader
         // will dynamically calculate the optimal count.
@@ -2746,18 +2804,24 @@ impl DownloadManager {
                 progress_tx: self.progress_tx.clone(),
                 cancel_token,
                 speed_limiter,
-                cookies: String::new(),
-                referrer: String::new(), // referrer not persisted; not needed for resume
-                hint_file_size: 0,       // no hint on resume; use probe to get current size
+                cookies: resume_cookies.clone(),
+                referrer: resume_referrer.clone(),
+                hint_file_size: 0, // no hint on resume; use probe to get current size
                 proxy_config: task_proxy,
                 sink: self.sink.clone(),
                 selector: self.selector.clone(),
                 checksum: task.checksum,
-                extra_headers: std::collections::HashMap::new(), // 恢复任务无额外请求头
-                // 恢复任务无浏览器请求上下文 → GET 重发（既往行为，本次重构不改变）。
-                // 极端情况下原本是 POST 触发的下载，恢复时会失败——但 method/body 未持久化，
-                // 这是已知折衷：成本远低于把 POST 体写进 SQLite。
-                spec: downloader::RequestSpec::empty_get(),
+                extra_headers: resume_extra_headers.clone(),
+                // method/body 仍不持久化：恢复一律按 GET 重发（重放 POST 体有
+                // 副作用风险，成本远高于收益）。cookies/referrer/extra_headers
+                // 则从 DB 恢复，保住鉴权站点的 resume。
+                spec: downloader::RequestSpec::from_captured(
+                    None,
+                    resume_cookies,
+                    resume_referrer,
+                    resume_extra_headers,
+                    None,
+                ),
                 audio_url,
                 auto_max_connections: self.auto_max_connections,
             };
@@ -3488,7 +3552,7 @@ impl DownloadManager {
                 file_name: task_row.file_name,
                 segments: 0,
                 is_resume: true,
-                cookies: String::new(),
+                cookies: String::new(), // resume 上下文由 do_resume_task 从 DB 恢复
                 referrer: String::new(),
                 hint_file_size: 0,
                 torrent_file_bytes: Vec::new(),

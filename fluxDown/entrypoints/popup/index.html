@@ -33,117 +33,154 @@
       </div>
     </header>
 
-    <!-- 中部滚动区：header/footer 固定，仅此区域滚动 -->
-    <div class="popup-body">
-    <!-- Main switch -->
-    <section class="section switch-section">
-      <div class="row">
-        <div class="switch-info">
-          <span class="label" data-i18n="switch.label">Download Intercept</span>
-          <span class="hint" id="enableHint" data-i18n="switch.enabled">Enabled</span>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="enableToggle" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="row">
-        <div class="switch-info">
-          <span class="label" data-i18n="settings.dotVisible">Floating Ball</span>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="dotVisibleToggle" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-    </section>
+    <!-- Top tab bar: Tasks / Resources / Settings -->
+    <nav class="top-tabs" id="topTabs">
+      <button class="top-tab active" type="button" data-pane="tasks" data-i18n="popup.tabs.tasks">Tasks</button>
+      <button class="top-tab" type="button" data-pane="resources">
+        <span data-i18n="popup.tabs.resources">Resources</span>
+        <span class="tab-badge hidden" id="resourceBadge">0</span>
+      </button>
+      <button class="top-tab" type="button" data-pane="settings" data-i18n="popup.tabs.settings">Settings</button>
+    </nav>
 
-    <!-- Today's stats -->
-    <section class="section stats-section">
-      <div class="section-title" data-i18n="stats.title">Today's Stats</div>
-      <div class="stats-grid">
-        <div class="stat-item">
-          <span class="stat-value" id="statSent">0</span>
-          <span class="stat-label" data-i18n="stats.sent">Intercepted</span>
+    <!-- ===== Pane: Resources (sniffed on active tab) ===== -->
+    <div class="tab-pane hidden" id="paneResources">
+      <section class="section resource-section">
+        <div class="res-tabs" id="resTypeTabs"></div>
+        <div class="res-scroll" id="resScroll">
+          <div class="task-state hidden" id="resEmpty">
+            <div class="task-state-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </div>
+            <div class="task-state-title" data-i18n="popup.resources.empty">No resources sniffed on this page</div>
+          </div>
+          <div class="res-list" id="resList"></div>
         </div>
-        <div class="stat-divider"></div>
-        <div class="stat-item">
-          <span class="stat-value" id="statFailed">0</span>
-          <span class="stat-label" data-i18n="stats.failed">Failed</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- Quick settings -->
-    <section class="section">
-      <div class="section-title" data-i18n="settings.title">Quick Settings</div>
-      <div class="row">
-        <span class="label" data-i18n="settings.interceptMode">Intercept Mode</span>
-        <select id="interceptModeSelect">
-          <option value="smart" data-i18n="settings.modeSmart">Smart</option>
-          <option value="all" data-i18n="settings.modeAll">Intercept All</option>
-        </select>
-      </div>
-      <div class="mode-hint" id="modeHint" data-i18n="settings.hintSmart">Smart detection based on filename, type, and size</div>
-      <div class="row">
-        <span class="label" data-i18n="settings.minFileSize">Min File Size</span>
-        <select id="minSizeSelect">
-          <option value="0" selected data-i18n="settings.sizeNoLimit">No limit</option>
-          <option value="102400">100 KB</option>
-          <option value="524288">512 KB</option>
-          <option value="1048576">1 MB</option>
-          <option value="5242880">5 MB</option>
-          <option value="10485760">10 MB</option>
-        </select>
-      </div>
-      <div class="mode-hint" data-i18n="settings.altClickHint">Alt + Click to bypass interception</div>
-    </section>
-    <!-- Remote download source -->
-    <section class="section">
-      <div class="section-title" data-i18n="remote.title">Remote Download Source</div>
-      <div class="row">
-        <span class="label-help">
-          <span class="label" data-i18n="remote.mode">Mode</span>
-          <span class="help-icon" id="remoteModeHelp" tabindex="0">?</span>
-        </span>
-        <select id="remoteModeSelect">
-          <option value="off" data-i18n="remote.modeOff">Desktop Only</option>
-          <option value="fallback" data-i18n="remote.modeFallback">Desktop First</option>
-          <option value="always" data-i18n="remote.modeAlways">Remote Only</option>
-        </select>
-      </div>
-      <div class="row">
-        <span class="hint" id="remoteServerSummary"></span>
-        <button class="btn-small accent" id="openOptionsBtn" data-i18n="remote.openOptions">Configure Server</button>
-      </div>
-    </section>
-    <!-- Excluded domains -->
-    <section class="section">
-      <div class="section-header">
-        <span class="section-title" data-i18n="domain.title">Excluded Domains</span>
-        <div class="section-header-actions">
-          <button class="icon-btn small" id="addDomainManualBtn" data-i18n-title="domain.addTitle">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-          </button>
-          <button class="btn-small accent" id="addCurrentDomainBtn" title="">
-            <span data-i18n="domain.currentSite">Current Site</span>
+        <div class="res-footer hidden" id="resFooter">
+          <label class="res-selectall">
+            <input type="checkbox" id="resSelectAll">
+            <span data-i18n="panel.selectAll">Select All</span>
+          </label>
+          <button class="btn-small confirm" id="resBatchBtn" type="button" disabled>
+            <span data-i18n="panel.batchDownload">Batch Download</span>&nbsp;(<span id="resBatchCount">0</span>)
           </button>
         </div>
-      </div>
-      <!-- Domain input (hidden by default) -->
-      <div class="ext-input-row hidden" id="domainInputRow">
-        <input type="text" id="domainInput" data-i18n-placeholder="domain.placeholder" placeholder="Enter domain, e.g. example.com" autocomplete="off">
-        <button class="btn-small confirm" id="domainConfirmBtn" data-i18n="domain.add">Add</button>
-        <button class="btn-small cancel" id="domainCancelBtn" data-i18n="domain.cancel">Cancel</button>
-      </div>
-      <div class="domain-list" id="domainList">
-        <div class="empty-hint" id="domainEmptyHint" data-i18n="domain.empty">No excluded domains</div>
-        <!-- Dynamically generated -->
-      </div>
-    </section>
+      </section>
     </div>
+
+    <!-- ===== Pane: Settings (intercept + floating ball toggles) ===== -->
+    <div class="tab-pane hidden" id="paneSettings">
+      <section class="section switch-section">
+        <div class="row">
+          <div class="switch-info">
+            <span class="label" data-i18n="switch.label">Download Intercept</span>
+            <span class="hint" id="enableHint" data-i18n="switch.enabled">Enabled</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="enableToggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <div class="switch-info">
+            <span class="label" data-i18n="settings.dotVisible">Floating Ball</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="dotVisibleToggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="mode-hint" data-i18n="settings.altClickHint">Press Alt+Shift+D to quickly toggle download interception</div>
+        <div class="row">
+          <div class="switch-info">
+            <span class="label" data-i18n="options.general.notifyLocalTitle">Local Task Notifications</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="notifyLocalToggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <div class="switch-info">
+            <span class="label" data-i18n="options.general.notifyRemoteTitle">Remote Task Notifications</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="notifyRemoteToggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <div class="switch-info">
+            <span class="label" data-i18n="remote.mode">Mode</span>
+          </div>
+          <select id="remoteModeSelect">
+            <option value="off" data-i18n="remote.modeOff">Desktop Only</option>
+            <option value="fallback" data-i18n="remote.modeFallback">Desktop First</option>
+            <option value="always" data-i18n="remote.modeAlways">Remote Only</option>
+          </select>
+        </div>
+        <div class="mode-hint" id="remoteModeHint"></div>
+      </section>
+    </div>
+
+    <!-- ===== Pane: Tasks ===== -->
+    <div class="tab-pane" id="paneTasks">
+    <!-- Task panel (main body) -->
+    <section class="section task-section">
+      <div class="task-scroll" id="taskScroll">
+        <!-- Disconnected state -->
+        <div class="task-state hidden" id="taskDisconnected">
+          <div class="task-state-icon">
+            <img src="/icon/fluxdown_logo.png" alt="FluxDown" width="36" height="36">
+          </div>
+          <div class="task-state-title" data-i18n="popup.tasks.appNotRunning">FluxDown is not running</div>
+          <button class="btn-primary" id="startAppBtn" type="button">
+            <span class="btn-spinner"></span>
+            <span class="btn-label" data-i18n="popup.tasks.startApp">Start FluxDown</span>
+          </button>
+        </div>
+
+        <!-- Empty state (connected, no tasks) -->
+        <div class="task-state hidden" id="taskEmpty">
+          <div class="task-state-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+              <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+            </svg>
+          </div>
+          <div class="task-state-title" data-i18n="popup.tasks.empty">No download tasks</div>
+          <div class="quick-download-row">
+            <input type="text" id="quickDownloadInput" data-i18n-placeholder="popup.quickDownload.placeholder" placeholder="Paste a download URL" autocomplete="off">
+            <button class="btn-small confirm" id="quickDownloadBtn" type="button" data-i18n="popup.quickDownload.button">Download</button>
+          </div>
+        </div>
+
+        <!-- Task groups -->
+        <div class="task-groups hidden" id="taskGroups">
+          <div class="task-group hidden" id="downloadingGroup">
+            <div class="task-group-title" data-i18n="popup.tasks.downloading">Downloading</div>
+            <div class="task-list" id="downloadingList"></div>
+          </div>
+          <div class="task-group hidden" id="completedGroup">
+            <div class="task-group-title" data-i18n="popup.tasks.completed">Recently Completed</div>
+            <div class="task-list" id="completedList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Compressed daily stats -->
+    <button class="stats-line" id="statsLine" type="button" data-i18n-title="popup.tasks.statsLineTitle">
+      <span data-i18n="popup.tasks.statsToday">Today:</span>
+      <span class="stats-line-value success" id="statSent">0</span>
+      <span data-i18n="stats.sent">Intercepted</span>
+      <span class="stats-line-sep">&middot;</span>
+      <span class="stats-line-value danger" id="statFailed">0</span>
+      <span data-i18n="stats.failed">Failed</span>
+    </button>
+    </div><!-- /paneTasks -->
 
     <!-- Footer -->
     <footer class="footer">
@@ -151,11 +188,10 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
-        <span data-i18n="footer.settings">Options</span>
+        <span data-i18n="footer.settings">All Settings</span>
       </button>
       <div class="footer-right">
         <span id="versionLabel">v&hellip;</span>
-        <button class="link-btn" id="resetStatsBtn" data-i18n="stats.reset">Reset Stats</button>
       </div>
     </footer>
   </div>

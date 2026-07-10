@@ -62,10 +62,13 @@ class _HomePageState extends State<HomePage> {
 
   // Detail panel
   bool _isDetailOpen = false;
+  bool _detailOnRight = false; // false=底部，true=右侧
+  double _detailHeight = 280;
+  static const double _detailMinHeight = 200;
+  static const double _detailMaxHeight = 400;
   double _detailWidth = 280;
   static const double _detailMinWidth = 240;
   static const double _detailMaxWidth = 420;
-
   // 主内容区最小宽度，保证 HeaderBar 不溢出
   static const double _mainMinWidth = 400;
 
@@ -312,17 +315,191 @@ class _HomePageState extends State<HomePage> {
     setState(() => _isDetailOpen = false);
   }
 
+  void _toggleDetailPosition() {
+    setState(() => _detailOnRight = !_detailOnRight);
+  }
+
   /// 根据总宽度计算 sidebar 的实际最大值
   double _sidebarMax(double totalWidth) {
-    final reserved = _mainMinWidth + (_isDetailOpen ? _detailWidth : 0);
+    final reserved =
+        _mainMinWidth + (_isDetailOpen && _detailOnRight ? _detailWidth : 0);
     return (totalWidth - reserved).clamp(_sidebarMinWidth, _sidebarMaxWidth);
   }
 
-  /// 根据总宽度计算 detail 的实际最大值
-  double _detailMax(double totalWidth) {
-    final reserved = _mainMinWidth + _sidebarWidth;
+  /// 根据总高度计算 detail 的实际最大值
+  double _detailMax(double totalHeight) {
+    final reserved = 40 + 32 + 50; // titlebar + tabbar + statusbar
+    return (totalHeight - reserved).clamp(_detailMinHeight, _detailMaxHeight);
+  }
+
+  /// 根据总宽度计算 detail 右侧模式的实际最大宽度
+  double _detailMaxW(double totalWidth) {
+    final reserved = _mainMinWidth + (_sidebarVisible ? _sidebarWidth : 0);
     return (totalWidth - reserved).clamp(_detailMinWidth, _detailMaxWidth);
   }
+
+  /// 构建主 Row 的 children（侧边栏固定左侧；详情面板可切到右侧）
+  List<Widget> _buildRowChildren(
+    AppColors c,
+    double totalWidth,
+    double totalHeight,
+  ) {
+    return [
+      if (_sidebarVisible) ...[
+        SizedBox(
+          width: _sidebarWidth,
+          child: Sidebar(
+            controller: _controller,
+            settingsProvider: _settingsProvider,
+          ),
+        ),
+        // Sidebar resize handle（7px 命中区，中央 1px 线）
+        Column(
+          children: [
+            SizedBox(
+              width: _ResizeHandle.hitSize,
+              height: 40,
+              child: Center(child: Container(width: 1, color: c.border)),
+            ),
+            Expanded(
+              child: ColoredBox(
+                color: c.bg,
+                child: _ResizeHandle(
+                  color: c.border,
+                  onDrag: (dx) {
+                    setState(() {
+                      _sidebarWidth = (_sidebarWidth + dx).clamp(
+                        _sidebarMinWidth,
+                        _sidebarMax(totalWidth),
+                      );
+                    });
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+      Expanded(child: _buildContentArea(c, totalHeight)),
+      // 详情面板（右侧模式）
+      if (_isDetailOpen && _detailOnRight) ...[
+        Column(
+          children: [
+            SizedBox(
+              width: _ResizeHandle.hitSize,
+              height: 40,
+              child: Center(child: Container(width: 1, color: c.border)),
+            ),
+            Expanded(
+              child: ColoredBox(
+                color: c.bg,
+                child: _ResizeHandle(
+                  color: c.border,
+                  onDrag: (dx) {
+                    setState(() {
+                      _detailWidth = (_detailWidth - dx).clamp(
+                        _detailMinWidth,
+                        _detailMaxW(totalWidth),
+                      );
+                    });
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+        SizedBox(
+          width: _detailWidth,
+          child: Column(
+            children: [
+              const SizedBox(height: 40),
+              Expanded(
+                child: DetailPanel(
+                  controller: _controller,
+                  onClose: _closeDetail,
+                  isBottom: false,
+                  onTogglePosition: _toggleDetailPosition,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ];
+  }
+
+  /// 构建内容区（任务列表在上、详情面板在下）
+  Widget _buildContentArea(AppColors c, double totalHeight) {
+    return ColoredBox(
+      color: c.bg,
+      child: Column(
+        children: [
+          const SizedBox(height: 40),
+          TaskTabBar(controller: _controller),
+          ListenableBuilder(
+            listenable: _controller,
+            builder: (context, _) {
+              if (!_controller.isBoostActive) {
+                return const SizedBox.shrink();
+              }
+              final tasks = _controller.tasks;
+              if (tasks.isEmpty) return const SizedBox.shrink();
+              final idx = tasks.indexWhere(
+                (t) => t.id == _controller.priorityTaskId,
+              );
+              if (idx < 0) return const SizedBox.shrink();
+              final s = LocaleScope.of(context);
+              final c = AppColors.of(context);
+              return _BoostBanner(
+                fileName: tasks[idx].fileName,
+                autoPausedCount: _controller.boostAutoPausedCount,
+                onCancel: _controller.cancelBoost,
+                s: s,
+                c: c,
+              );
+            },
+          ),
+          Expanded(
+            flex: _isDetailOpen ? 1 : 2,
+            child: TaskList(
+              controller: _controller,
+              onTaskTap: _toggleDetail,
+              onNewDownload: () => showNewDownloadDialog(
+                context,
+                _controller,
+                _settingsProvider,
+              ),
+            ),
+          ),
+          if (_isDetailOpen && !_detailOnRight) ...[
+            // 水平分隔线（可拖拽调整详情面板高度）
+            _ResizeHandle(
+              color: c.border,
+              isVertical: true,
+              onDrag: (dy) {
+                setState(() {
+                  _detailHeight = (_detailHeight - dy).clamp(
+                    _detailMinHeight,
+                    _detailMax(totalHeight),
+                  );
+                });
+              },
+            ),
+            SizedBox(
+              height: _detailHeight,
+              child: DetailPanel(
+                controller: _controller,
+                onClose: _closeDetail,
+                isBottom: true,
+                onTogglePosition: _toggleDetailPosition,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -377,16 +554,24 @@ class _HomePageState extends State<HomePage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final totalWidth = constraints.maxWidth;
+        final totalHeight = constraints.maxHeight;
         // 自动收缩面板宽度以适应窗口
         _sidebarWidth = _sidebarWidth.clamp(
           _sidebarMinWidth,
           _sidebarMax(totalWidth),
         );
         if (_isDetailOpen) {
-          _detailWidth = _detailWidth.clamp(
-            _detailMinWidth,
-            _detailMax(totalWidth),
-          );
+          if (_detailOnRight) {
+            _detailWidth = _detailWidth.clamp(
+              _detailMinWidth,
+              _detailMaxW(totalWidth),
+            );
+          } else {
+            _detailHeight = _detailHeight.clamp(
+              _detailMinHeight,
+              _detailMax(totalHeight),
+            );
+          }
         }
         return Stack(
           children: [
@@ -399,129 +584,27 @@ class _HomePageState extends State<HomePage> {
               child: TitleDragArea(child: ColoredBox(color: c.surface1)),
             ),
             // 内容区 — 全部从 titlebar 下方开始
-            Row(
+            Column(
               children: [
-                // Sidebar（全高 — 自带 logo 区对齐 titlebar）
-                if (_sidebarVisible) ...[
-                  SizedBox(
-                    width: _sidebarWidth,
-                    child: Sidebar(
-                      controller: _controller,
-                      settingsProvider: _settingsProvider,
-                    ),
-                  ),
-                  // Sidebar resize handle — header 区域保持 1px 静态边框，下方可交互
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(height: 40, width: 1, color: c.border),
-                      Expanded(
-                        child: _ResizeHandle(
-                          color: c.border,
-                          onDrag: (dx) {
-                            setState(() {
-                              _sidebarWidth = (_sidebarWidth + dx).clamp(
-                                _sidebarMinWidth,
-                                _sidebarMax(totalWidth),
-                              );
-                            });
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-                // Main content — 从 titlebar 下方开始
+                // 主内容行：Sidebar + 右侧内容
                 Expanded(
-                  child: ColoredBox(
-                    color: c.bg,
-                    child: Column(
-                      children: [
-                        const SizedBox(height: 40),
-                        TaskTabBar(controller: _controller),
-                        ListenableBuilder(
-                          listenable: _controller,
-                          builder: (context, _) {
-                            if (!_controller.isBoostActive) {
-                              return const SizedBox.shrink();
-                            }
-                            final tasks = _controller.tasks;
-                            if (tasks.isEmpty) return const SizedBox.shrink();
-                            final idx = tasks.indexWhere(
-                              (t) => t.id == _controller.priorityTaskId,
-                            );
-                            if (idx < 0) return const SizedBox.shrink();
-                            final s = LocaleScope.of(context);
-                            final c = AppColors.of(context);
-                            return _BoostBanner(
-                              fileName: tasks[idx].fileName,
-                              autoPausedCount: _controller.boostAutoPausedCount,
-                              onCancel: _controller.cancelBoost,
-                              s: s,
-                              c: c,
-                            );
-                          },
-                        ),
-                        Expanded(
-                          child: TaskList(
-                            controller: _controller,
-                            onTaskTap: _toggleDetail,
-                            onNewDownload: () => showNewDownloadDialog(
-                              context,
-                              _controller,
-                              _settingsProvider,
-                            ),
-                          ),
-                        ),
-                        StatusBar(
-                          controller: _controller,
-                          settingsProvider: _settingsProvider,
-                        ),
-                      ],
-                    ),
+                  child: Row(
+                    children: _buildRowChildren(c, totalWidth, totalHeight),
                   ),
                 ),
-                // Detail panel — 从 titlebar 下方开始
-                if (_isDetailOpen) ...[
-                  Column(
-                    children: [
-                      const SizedBox(height: 40),
-                      Expanded(
-                        child: _ResizeHandle(
-                          color: c.border,
-                          onDrag: (dx) {
-                            setState(() {
-                              _detailWidth = (_detailWidth - dx).clamp(
-                                _detailMinWidth,
-                                _detailMax(totalWidth),
-                              );
-                            });
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                  SizedBox(
-                    width: _detailWidth,
-                    child: Column(
-                      children: [
-                        const SizedBox(height: 40),
-                        Expanded(
-                          child: DetailPanel(
-                            controller: _controller,
-                            onClose: _closeDetail,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                // StatusBar（保持在最下方）
+                StatusBar(
+                  controller: _controller,
+                  settingsProvider: _settingsProvider,
+                ),
               ],
             ),
             // HeaderBar — 独立于内容区，不受 DetailPanel 宽度影响
             Positioned(
               top: 0,
-              left: _sidebarVisible ? _sidebarWidth + 1 : 0,
+              left: _sidebarVisible
+                  ? _sidebarWidth + _ResizeHandle.hitSize
+                  : 0,
               right: 0,
               height: 40,
               child: HeaderBar(
@@ -564,46 +647,52 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// 可拖拽的分隔线
-class _ResizeHandle extends StatefulWidget {
+/// 可拖拽的分隔线：1px 视觉线居中 + 7px 透明命中区，便于鼠标悬浮命中
+class _ResizeHandle extends StatelessWidget {
   final Color color;
   final ValueChanged<double> onDrag;
+  final bool isVertical; // true=水平线（上下拖拽），false=垂直线（左右拖拽）
 
-  const _ResizeHandle({required this.color, required this.onDrag});
+  /// 命中区厚度（视觉线居中，两侧透明可命中）
+  static const double hitSize = 7;
 
-  @override
-  State<_ResizeHandle> createState() => _ResizeHandleState();
-}
-
-class _ResizeHandleState extends State<_ResizeHandle> {
-  bool _isHovered = false;
-  bool _isDragging = false;
+  const _ResizeHandle({
+    required this.color,
+    required this.onDrag,
+    this.isVertical = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    final isActive = _isHovered || _isDragging;
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeColumn,
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onHorizontalDragStart: (_) => setState(() => _isDragging = true),
-        onHorizontalDragUpdate: (details) => widget.onDrag(details.delta.dx),
-        onHorizontalDragEnd: (_) => setState(() => _isDragging = false),
-        child: Container(
-          width: isActive ? 3 : 1,
-          color: isActive ? c.accent : widget.color,
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onVerticalDragUpdate: isVertical
+          ? (details) => onDrag(details.delta.dy)
+          : null,
+      onHorizontalDragUpdate: !isVertical
+          ? (details) => onDrag(details.delta.dx)
+          : null,
+      child: MouseRegion(
+        cursor: isVertical
+            ? SystemMouseCursors.resizeRow
+            : SystemMouseCursors.resizeColumn,
+        child: SizedBox(
+          width: isVertical ? double.infinity : hitSize,
+          height: isVertical ? hitSize : double.infinity,
+          child: Center(
+            child: Container(
+              width: isVertical ? double.infinity : 1,
+              height: isVertical ? 1 : double.infinity,
+              color: color,
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
-// =============================================================================
-// Boost Banner — 优先下载模式提示条
-// =============================================================================
-
+/// Boost 优先下载模式提示条
 class _BoostBanner extends StatelessWidget {
   final String fileName;
   final int autoPausedCount;

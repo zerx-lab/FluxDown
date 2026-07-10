@@ -25,6 +25,7 @@ class SettingsProvider extends ChangeNotifier {
   int _autoRetryDelaySecs = 5; // 失败重试间隔（秒）
   bool _autoResumeOnStart = false;
   bool _closeToTray = true; // 默认关闭到托盘
+  bool _startMinimizedToTray = false; // 默认启动时显示主窗口
   bool _autoStartup = false; // 默认不开机启动
   bool _autoCheckUpdate = true; // 默认启动时自动检查更新
   bool _notifyOnComplete = true; // 默认任务完成时弹出通知
@@ -185,6 +186,7 @@ class SettingsProvider extends ChangeNotifier {
   int get autoRetryDelaySecs => _autoRetryDelaySecs;
   bool get autoResumeOnStart => _autoResumeOnStart;
   bool get closeToTray => _closeToTray;
+  bool get startMinimizedToTray => _startMinimizedToTray;
   bool get autoStartup => _autoStartup;
   bool get autoCheckUpdate => _autoCheckUpdate;
   bool get notifyOnComplete => _notifyOnComplete;
@@ -459,6 +461,13 @@ class SettingsProvider extends ChangeNotifier {
     _closeToTray = value;
     notifyListeners();
     _saveToRust('close_to_tray', value.toString());
+  }
+
+  void setStartMinimizedToTray(bool value) {
+    if (_startMinimizedToTray == value) return;
+    _startMinimizedToTray = value;
+    notifyListeners();
+    _saveToRust('start_minimized_to_tray', value.toString());
   }
 
   void setAutoCheckUpdate(bool value) {
@@ -1143,6 +1152,8 @@ class SettingsProvider extends ChangeNotifier {
           _autoResumeOnStart = entry.value == 'true';
         case 'close_to_tray':
           _closeToTray = entry.value == 'true';
+        case 'start_minimized_to_tray':
+          _startMinimizedToTray = entry.value == 'true';
         case 'auto_startup':
           _autoStartup = entry.value == 'true';
         case 'auto_check_update':

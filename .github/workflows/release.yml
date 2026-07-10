@@ -1265,6 +1265,77 @@ jobs:
           name: server-bin-${{ matrix.platform }}
           path: release-assets/*
 
+  # ── 并行 Job 5c': NAS/软路由包（OpenWrt ipk + QNAP qpkg，复用 linux musl 静态产物）──
+  # ipk 纯脚本手打（packaging/openwrt/build_ipk.sh，无需 OpenWrt SDK）；
+  # qpkg 用官方 QDK qbuild（packaging/qnap/build_qpkg.sh）。
+  # 不跑 InstallToUbuntu.sh（其 apt 依赖列表含 ubuntu 24.04 已不存在的 `python` 包），手动装 QDK。
+  # 产物名带 server-bin- 前缀 → release-server 的 download pattern 自动收集附到 Server Release。
+  build-server-nas-packages:
+    name: Build Server (OpenWrt/QNAP packages)
+    needs: [changes, build-server-binaries]
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download linux server tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: server-bin-linux-*
+          path: tarballs/
+          merge-multiple: true
+
+      - name: Extract binaries and webroot
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          mkdir -p extracted
+          tar -C extracted -xzf "tarballs/FluxDown-Server-${VERSION}-linux-x64.tar.gz"
+          tar -C extracted -xzf "tarballs/FluxDown-Server-${VERSION}-linux-arm64.tar.gz"
+
+      - name: Install QDK and imagemagick
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick build-essential rsync
+          git clone --depth 1 https://github.com/qnap-dev/QDK.git /tmp/QDK
+          make -C /tmp/QDK/src
+          sudo cp /tmp/QDK/src/bin/qpkg_encrypt /bin/
+          sudo cp -rf /tmp/QDK/shared /usr/share/QDK
+          sudo mkdir -p /etc/config
+          sed -e '2d' /tmp/QDK/shared/qdk.conf | sudo tee /etc/config/qdk.conf > /dev/null
+          sudo sed -i '2iQDK_PATH_P=/usr/share' /etc/config/qdk.conf
+          echo "/usr/share/QDK/bin" >> "$GITHUB_PATH"
+
+      - name: Build OpenWrt ipk
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          X64="extracted/fluxdown-server-${VERSION}-linux-x64"
+          A64="extracted/fluxdown-server-${VERSION}-linux-arm64"
+          ./packaging/openwrt/build_ipk.sh server "$VERSION" "$X64/fluxdown-server" "$X64/web" x86_64 release-assets
+          ./packaging/openwrt/build_ipk.sh server "$VERSION" "$A64/fluxdown-server" "$A64/web" \
+            aarch64_generic,aarch64_cortex-a53,aarch64_cortex-a72,aarch64_cortex-a76 release-assets
+          ./packaging/openwrt/build_ipk.sh luci "$VERSION" release-assets
+
+      - name: Build QNAP qpkg
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          X64="extracted/fluxdown-server-${VERSION}-linux-x64"
+          A64="extracted/fluxdown-server-${VERSION}-linux-arm64"
+          ./packaging/qnap/build_qpkg.sh "$VERSION" x86_64 "$X64/fluxdown-server" "$X64/web" \
+            "release-assets/FluxDown-Server-${VERSION}-qnap-x64.qpkg"
+          ./packaging/qnap/build_qpkg.sh "$VERSION" arm_64 "$A64/fluxdown-server" "$A64/web" \
+            "release-assets/FluxDown-Server-${VERSION}-qnap-arm64.qpkg"
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-bin-nas-packages
+          path: release-assets/*
+
   # ── 并行 Job: 构建 CLI 二进制（fluxdown，6 平台）──
   # 与 build-server-binaries 同套 runner/target 策略（全原生 runner 规避 C 依赖交叉编译）：
   #   linux   → musl 静态链接（零 glibc 依赖）
@@ -1659,7 +1730,7 @@ jobs:
   release-server:
     name: Release Server
     runs-on: ubuntu-latest
-    needs: [build-server-docker, build-server-binaries]
+    needs: [build-server-docker, build-server-binaries, build-server-nas-packages]
 
     steps:
       - name: Checkout repository
@@ -1757,9 +1828,14 @@ jobs:
           | Windows x64 / ARM64 | \`FluxDown-Server-${VERSION}-windows-{x64,arm64}.zip\` |
           | macOS Intel / Apple Silicon | \`FluxDown-Server-${VERSION}-macos-{x64,arm64}.tar.gz\` |
           | Linux x64 / ARM64（musl 静态链接，任意发行版可用） | \`FluxDown-Server-${VERSION}-linux-{x64,arm64}.tar.gz\` |
+          | OpenWrt 软路由（x86_64 / aarch64 各子架构） | \`fluxdown-server_${VERSION}_<arch>.ipk\` + \`luci-app-fluxdown_${VERSION}_all.ipk\` |
+          | QNAP NAS（QTS x86_64 / ARM64） | \`FluxDown-Server-${VERSION}-qnap-{x64,arm64}.qpkg\` |
 
           解压后直接运行 \`fluxdown-server\`（Windows 为 \`fluxdown-server.exe\`），浏览器访问 \`http://127.0.0.1:17800\`。
           首次启动会在终端打印管理 token，务必保存。文件校验见 \`SHA256SUMS.txt\`。
+
+          **OpenWrt**：\`opkg install fluxdown-server_*.ipk luci-app-fluxdown_*.ipk\`，LuCI「服务 → FluxDown」页管理，Web 界面在 \`http://路由器IP:17800\`。二进制含完整 Web UI（约 20MB+），需 overlay 空间充足的软路由设备。
+          **QNAP**：App Center → 手动安装 \`.qpkg\`（需在设置中允许安装未经验证的应用），装完点应用图标直达 Web 界面。
 
           ## 🐳 Docker（linux/amd64 · linux/arm64）
 

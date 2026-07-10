@@ -105,6 +105,11 @@ interface ReleaseInfo {
       linux_arm64: ReleaseAsset | null;
       macos_x64: ReleaseAsset | null;
       macos_arm64: ReleaseAsset | null;
+      openwrt_x64: ReleaseAsset | null;
+      openwrt_arm64: ReleaseAsset | null;
+      openwrt_luci: ReleaseAsset | null;
+      qnap_x64: ReleaseAsset | null;
+      qnap_arm64: ReleaseAsset | null;
     };
   } | null;
   /** FluxDown CLI（命令行客户端）独立 release，无发布时为 null */
@@ -461,6 +466,26 @@ export default function DownloadSection() {
         {
           label: "macOS Intel (tar.gz)",
           asset: serverAssets?.macos_x64 ?? null,
+        },
+        {
+          label: "OpenWrt x86_64 (ipk)",
+          asset: serverAssets?.openwrt_x64 ?? null,
+        },
+        {
+          label: "OpenWrt aarch64 (ipk)",
+          asset: serverAssets?.openwrt_arm64 ?? null,
+        },
+        {
+          label: "OpenWrt LuCI (ipk)",
+          asset: serverAssets?.openwrt_luci ?? null,
+        },
+        {
+          label: "QNAP x64 (qpkg)",
+          asset: serverAssets?.qnap_x64 ?? null,
+        },
+        {
+          label: "QNAP ARM64 (qpkg)",
+          asset: serverAssets?.qnap_arm64 ?? null,
         },
       ],
     },

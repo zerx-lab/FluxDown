@@ -309,6 +309,15 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "audio_url", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        // 任务请求上下文（cookies/referrer/extra_headers JSON）持久化：resume
+        // 时恢复鉴权上下文。鉴权站点（cookie+token 双因子的 fnOS、带
+        // Authorization 的私有服务）没有它们 resume 必然 4xx。
+        self.add_column_if_missing("tasks", "cookies", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "referrer", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "extra_headers", "TEXT NOT NULL DEFAULT ''")
+            .await?;
         Ok(())
     }
 
@@ -371,6 +380,46 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// 持久化任务的浏览器请求上下文（cookies / referrer / extra_headers JSON），
+    /// 供 resume 恢复鉴权。`extra_headers_json` 为空串表示无额外请求头。
+    pub async fn set_task_request_context(
+        &self,
+        id: &str,
+        cookies: &str,
+        referrer: &str,
+        extra_headers_json: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET cookies = $1, referrer = $2, extra_headers = $3 WHERE id = $4",
+        )
+        .bind(cookies)
+        .bind(referrer)
+        .bind(extra_headers_json)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 读取任务的请求上下文，返回 `(cookies, referrer, extra_headers_json)`。
+    /// 任务不存在返回 `None`；旧库缺列已由 init_schema 迁移兜底（列恒存在）。
+    pub async fn load_task_request_context(
+        &self,
+        id: &str,
+    ) -> Result<Option<(String, String, String)>, DbError> {
+        let row = sqlx::query("SELECT cookies, referrer, extra_headers FROM tasks WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| {
+            (
+                r.try_get("cookies").unwrap_or_default(),
+                r.try_get("referrer").unwrap_or_default(),
+                r.try_get("extra_headers").unwrap_or_default(),
+            )
+        }))
     }
 
     pub async fn update_task_progress(
@@ -1780,6 +1829,49 @@ mod tests {
         assert_eq!(segs[0].end_byte, 2999, "parent end_byte must extend");
         assert_eq!(segs[1].index, 3, "unrelated segment must survive");
         assert_eq!(segs[1].end_byte, 3999);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn task_request_context_roundtrip() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "ctx-task").await;
+
+        // 新任务：三列由 DEFAULT '' 兜底，读取为空上下文。
+        let empty = db
+            .load_task_request_context("ctx-task")
+            .await
+            .expect("load empty");
+        assert_eq!(empty, Some((String::new(), String::new(), String::new())));
+
+        db.set_task_request_context(
+            "ctx-task",
+            "fnos-token=abc; session=xyz",
+            "http://nas.example.com/",
+            r#"{"Authorization":"Bearer t"}"#,
+        )
+        .await
+        .expect("set context");
+
+        let ctx = db
+            .load_task_request_context("ctx-task")
+            .await
+            .expect("load context");
+        assert_eq!(
+            ctx,
+            Some((
+                "fnos-token=abc; session=xyz".to_string(),
+                "http://nas.example.com/".to_string(),
+                r#"{"Authorization":"Bearer t"}"#.to_string(),
+            ))
+        );
+
+        // 不存在的任务 → None（区别于空上下文）。
+        let missing = db
+            .load_task_request_context("phantom")
+            .await
+            .expect("load missing");
+        assert_eq!(missing, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

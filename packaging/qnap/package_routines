@@ -1,0 +1,8 @@
+# FluxDown QPKG 安装钩子（QDK qbuild 打包时嵌入安装器）。
+# 生命周期启停在 shared/fluxdown.sh，此处仅处理卸载清理。
+
+# 卸载时保留 data/（用户任务库）；只清理运行时 pid 文件。
+PKG_PRE_REMOVE="{
+	[ -f \$SYS_QPKG_DIR/fluxdown.pid ] && kill \$(\$CMD_CAT \$SYS_QPKG_DIR/fluxdown.pid) 2>/dev/null
+	\$CMD_RM -f \$SYS_QPKG_DIR/fluxdown.pid
+}"

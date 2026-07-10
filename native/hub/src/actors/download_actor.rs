@@ -561,12 +561,12 @@ pub async fn run(db_dir: PathBuf) {
     // below handles both transports with identical logic.
     let (ext_dl_tx, mut native_msg_rx) = mpsc::channel::<fluxdown_api::types::DownloadRequest>(64);
 
-    // Native Messaging listener (reads from the Named Pipe / Unix socket).
-    native_messaging::spawn_native_messaging_listener_with(ext_dl_tx.clone());
-
     // 本机 API 服务器（127.0.0.1）：探活 / 脚本接管 / aria2 兼容 / 管理 API。
     // 写操作经 api_cmd_rx 回到本事件循环串行执行；local_server_* 配置变更时
     // 热重启（见下方 SaveConfig 分支），无需重启应用。
+    // 先于 Native Messaging listener 构造：listener 的 tasks/task_op/
+    // open_file/reveal_file 分支需要同一个 `Arc<dyn ApiHost>` 查任务表 /
+    // live_speeds / 下发写命令。
     let (api_cmd_tx, mut api_cmd_rx) = mpsc::channel::<ApiCommand>(32);
     let api_host: Arc<dyn fluxdown_api::service::ApiHost> = Arc::new(HubApiHost::new(
         engine.db.clone(),
@@ -575,6 +575,9 @@ pub async fn run(db_dir: PathBuf) {
         live_speeds,
         task_events_tx,
     ));
+
+    // Native Messaging listener (reads from the Named Pipe / Unix socket).
+    native_messaging::spawn_native_messaging_listener_with(ext_dl_tx.clone(), api_host.clone());
     let mut api_server_handle = {
         let cfg = ApiServerConfig::from_config_map(
             &engine.db.get_all_config().await.unwrap_or_default(),

@@ -404,6 +404,13 @@ const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 /// 这解决了大文件下载到 98%+ 时 TCP 连接卡死、速度趋近 0 的问题。
 const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 配额型端点（发生过开放式首段吸收合并 → 新连接必被拒，重连 = 判死任务）的
+/// 停滞容忍。对这类唯一存活流，掐流的代价是无限大，宁可多等也不轻易断开。
+/// 取值对齐 aria2 的读超时默认值（`--timeout`，OptionHandlerFactory.cc 定义
+/// 60s；aria2 甚至默认禁用低速断开 `--lowest-speed-limit=0`）。普通服务器仍用
+/// 上方 5s 快速回收死连接——重连廉价，且我们的尾段抢救依赖快速回收。
+const CHUNK_STALL_TIMEOUT_HOSTILE: Duration = Duration::from_secs(60);
+
 /// fdatasync 合并闸的最小间隔：全局每 2s 至多触发一次整盘 fdatasync。
 ///
 /// 取值略小于 [`DB_SAVE_INTERVAL_SECS`]（3s），确保每个落库周期内仍有一次新鲜
@@ -603,6 +610,7 @@ struct WorkerSpawnCtx {
     client: Client,
     worker_cancel: CancellationToken,
     conn_sensitive: Arc<AtomicBool>,
+    reconnect_hostile: Arc<AtomicBool>,
     total_downloaded: Arc<AtomicI64>,
     seg_states: Arc<StdMutex<Vec<SegmentProgressInfo>>>,
     db: Db,
@@ -634,6 +642,7 @@ impl WorkerSpawnCtx {
             self.client.clone(),
             self.worker_cancel.clone(),
             self.conn_sensitive.clone(),
+            self.reconnect_hostile.clone(),
             self.total_downloaded.clone(),
             self.seg_states.clone(),
             self.db.clone(),
@@ -982,7 +991,20 @@ pub async fn run_coordinated_download(
     // 当前允许的活跃连接额度（ramp 控制变量，1..=worker_cap 内调整）。
     let mut allowed_workers = worker_cap.min(RAMP_INITIAL_WORKERS);
     // 只为 Pending 段开 worker；resume 时多数段可能已完成。
-    let initial_workers = pending_count.min(allowed_workers);
+    // 存在开放式首段候选（从字节 0 起的零进度 Pending 段，判据与下方
+    // pending_assignments 的 open_ended 完全一致）时，初始只启动它一个：
+    // 开放式首段是配额型端点（fnOS multiple-download 等）的潜在生命线，与
+    // 其他 worker 并发启动会竞速消耗请求配额——竞速输掉 = 生命线永远 400 =
+    // 任务死（实测随机复现）。其余 worker 由 ramp tick（RAMP_TICK_SECS=2s）
+    // 自然补齐，正常服务器仅第二连接晚 2s，多段吞吐无感。
+    let has_open_ended_candidate = segments
+        .values()
+        .any(|s| s.state == SegState::Pending && s.start_byte + s.downloaded_bytes == 0);
+    let initial_workers = if has_open_ended_candidate {
+        pending_count.min(allowed_workers).min(1)
+    } else {
+        pending_count.min(allowed_workers)
+    };
 
     // fdatasync 合并闸：多段共享，把各 worker 每 3s 的整盘 fsync 合并为全局约每
     // MIN_SYNC_GAP 一次（fdatasync 本就刷整个 inode，per-fd 重复毫无意义）。
@@ -1025,6 +1047,12 @@ pub async fn run_coordinated_download(
     // 服务器永不置位，行为与优化前完全一致（零回归）。
     let conn_sensitive = Arc::new(AtomicBool::new(false));
 
+    // 重连敌意 latch：吸收合并发生（配额型端点的强信号——新连接已被 400/403
+    // 拒绝且 Pending 段已并入唯一存活流）时由 coordinator 置位。worker 据此把
+    // 停滞容忍从 5s 提到 60s（见 CHUNK_STALL_TIMEOUT_HOSTILE）：此时掐流重连
+    // 必然撞拒绝，等价于判死整个任务。
+    let reconnect_hostile = Arc::new(AtomicBool::new(false));
+
     // worker 生成上下文：启动与 ramp 扩容共用同一 spawn 路径。
     let ctx = WorkerSpawnCtx {
         event_tx,
@@ -1037,6 +1065,7 @@ pub async fn run_coordinated_download(
         client: client.clone(),
         worker_cancel: worker_cancel.clone(),
         conn_sensitive: conn_sensitive.clone(),
+        reconnect_hostile: reconnect_hostile.clone(),
         total_downloaded: total_downloaded.clone(),
         seg_states: seg_states.clone(),
         db: db.clone(),
@@ -1567,6 +1596,11 @@ pub async fn run_coordinated_download(
                                                 seg.end_byte = new_end;
                                             }
                                             rebuild_seg_states(&segments, &seg_states);
+                                            // 吸收合并 = 配额型端点实锤：这条
+                                            // 流从此是唯一生命线，重连必被拒。
+                                            // 提高其停滞容忍，禁止轻易掐流。
+                                            reconnect_hostile
+                                                .store(true, Ordering::Relaxed);
                                             log_info!(
                                                 "[coordinator] task {} 开放式首段 #{} 吸收 {} 个 \
                                                  Pending 段（新终点 {}），复用现有连接续流到文件尾",
@@ -2637,6 +2671,7 @@ fn spawn_worker(
     client: Client,
     cancel_token: CancellationToken,
     conn_sensitive: Arc<AtomicBool>,
+    reconnect_hostile: Arc<AtomicBool>,
     total_downloaded: Arc<AtomicI64>,
     seg_states: Arc<StdMutex<Vec<SegmentProgressInfo>>>,
     db: Db,
@@ -2666,6 +2701,7 @@ fn spawn_worker(
                 &client,
                 &cancel_token,
                 &conn_sensitive,
+                &reconnect_hostile,
                 &total_downloaded,
                 &planned_total,
                 size_is_estimate,
@@ -2751,6 +2787,7 @@ async fn do_segment_with_retry(
     client: &Client,
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
+    reconnect_hostile: &AtomicBool,
     total_downloaded: &AtomicI64,
     planned_total: &AtomicI64,
     size_is_estimate: bool,
@@ -2779,6 +2816,7 @@ async fn do_segment_with_retry(
             client,
             cancel,
             conn_sensitive,
+            reconnect_hostile,
             total_downloaded,
             planned_total,
             size_is_estimate,
@@ -2839,6 +2877,16 @@ async fn do_segment_with_retry(
                 if attempts >= MAX_RETRIES {
                     return Err(e);
                 }
+                // 瞬时失败必须留痕：截断/停滞/网络错误此前静默进退避，日志里
+                // 只见"最后一击"（如重连撞 400），无法还原首因（断流 vs 停滞）。
+                log_info!(
+                    "[segment-retry] task {} seg {} 瞬时失败（第 {}/{} 次重试前）：{}",
+                    task_id,
+                    seg_idx,
+                    attempts,
+                    MAX_RETRIES,
+                    e
+                );
                 // Recover actual_start *and* seg_end from DB for partial progress.
                 // seg_end may have been shrunk by a coordinator split since we started.
                 if let Ok(segs) = db.load_segments(task_id).await
@@ -2879,6 +2927,7 @@ async fn do_segment(
     client: &Client,
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
+    reconnect_hostile: &AtomicBool,
     total_downloaded: &AtomicI64,
     // 当前规划总大小的共享视图（coordinator 就地扩容时更新，见 planned_total 注释）。
     planned_total: &AtomicI64,
@@ -3273,7 +3322,16 @@ async fn do_segment(
                 let _ = db.update_segment_progress(task_id, seg_idx, seg_downloaded).await;
                 return Err(DownloadError::Cancelled);
             }
-            result = tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()) => {
+            result = tokio::time::timeout(
+                // 停滞容忍双档：普通流 5s（重连廉价，快速回收死连接）；吸收
+                // 合并后的唯一生命线 60s（重连必被拒，对齐 aria2 --timeout）。
+                if reconnect_hostile.load(Ordering::Relaxed) {
+                    CHUNK_STALL_TIMEOUT_HOSTILE
+                } else {
+                    CHUNK_STALL_TIMEOUT
+                },
+                stream.next(),
+            ) => {
                 // Unwrap the timeout layer first.  If no chunk arrived within
                 // CHUNK_STALL_TIMEOUT the TCP connection is likely dead — flush
                 // partial progress and bubble up an error so do_segment_with_retry
@@ -3287,9 +3345,13 @@ async fn do_segment(
                         let _ = db.update_segment_progress(
                             task_id, seg_idx, seg_downloaded,
                         ).await;
+                        let stall_secs = if reconnect_hostile.load(Ordering::Relaxed) {
+                            CHUNK_STALL_TIMEOUT_HOSTILE.as_secs()
+                        } else {
+                            CHUNK_STALL_TIMEOUT.as_secs()
+                        };
                         return Err(DownloadError::Other(format!(
-                            "segment {} stalled: no data received for {}s",
-                            seg_idx, CHUNK_STALL_TIMEOUT.as_secs()
+                            "segment {seg_idx} stalled: no data received for {stall_secs}s"
                         )));
                     }
                 };

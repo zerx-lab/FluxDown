@@ -1,0 +1,38 @@
+#!/bin/sh /etc/rc.common
+# FluxDown headless server — procd service
+# UCI 配置见 /etc/config/fluxdown
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/fluxdown-server
+
+start_service() {
+	config_load fluxdown
+
+	local enabled bind data_dir webroot
+	config_get_bool enabled main enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get bind main bind "0.0.0.0:17800"
+	config_get data_dir main data_dir "/etc/fluxdown"
+	config_get webroot main webroot "/usr/share/fluxdown/web"
+
+	mkdir -p "$data_dir"
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param env \
+		FLUXDOWN_BIND="$bind" \
+		FLUXDOWN_DATA_DIR="$data_dir" \
+		FLUXDOWN_WEBROOT="$webroot"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger fluxdown
+}

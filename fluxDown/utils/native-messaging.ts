@@ -30,6 +30,10 @@ const REQUEST_TIMEOUT_MS = 12000;
 // 用短超时避免回退前再额外阻塞 ~24s（review round2 发现 #3/#5 的 ~48s 卡顿）。
 const PING_TIMEOUT_MS = 4000;
 
+// 任务面板轮询超时：不走 sendWithRetry（失败即视为"未连接"，由 popup/alarm
+// 轮询下一轮自然重试），短超时避免 App 无响应时长时间阻塞 UI 刷新。
+const TASKS_POLL_TIMEOUT_MS = 3000;
+
 // ──────────────────────────────────────────────────────────────
 // 类型定义
 // ──────────────────────────────────────────────────────────────
@@ -79,6 +83,10 @@ export interface ApiResponse {
    * 直接调用 native-messaging/remote-server 时不设置。
    */
   channel?: "local" | "remote";
+  /**
+   * action:"tasks" 响应携带的任务列表（仅 "tasks" action 使用，其余 action 不设置）。
+   */
+  tasks?: TaskBrief[];
 }
 
 export interface BatchDownloadItem {
@@ -91,6 +99,23 @@ export interface BatchDownloadItem {
   mimeType?: string;
   method?: string;
   body?: RequestBody;
+}
+
+/**
+ * 任务面板简要信息（action:"tasks" 响应条目，字段与 Rust 端 camelCase 契约一一对应）。
+ * status: 0=pending,1=downloading,2=paused,3=completed,4=error,5=preparing
+ */
+export interface TaskBrief {
+  taskId: string;
+  fileName: string;
+  status: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  /** 实时下载速率，单位 B/s；无记录（未在下载中）为 0 */
+  speed: number;
+  errorMessage?: string;
+  /** Unix 秒级时间戳（字符串），与 Rust 端 TaskDto.createdAt 格式一致 */
+  createdAt: string;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -136,6 +161,7 @@ function getPort(): chrome.runtime.Port | null {
       success: msg.success ?? false,
       message: msg.message,
       taskId: msg.taskId,
+      tasks: Array.isArray(msg.tasks) ? (msg.tasks as TaskBrief[]) : undefined,
     });
   });
 
@@ -318,6 +344,53 @@ export async function nmhSendBatchDownloadRequest(
         ? `${succeeded}/${results.length} items sent (${failed} failed)`
         : `${succeeded} items sent`,
   };
+}
+
+// ──────────────────────────────────────────────────────────────
+// 任务面板（action:"tasks" / "task_op" / "open_file" / "reveal_file"）
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * 拉取任务面板列表：全部非 completed 任务 + 最近完成 10 条。
+ *
+ * 有意不走 sendWithRetry：这是低频轮询（popup 打开时 + alarm 周期性刷新），
+ * 单次失败无副作用（不像 download 那样"消息可能已送达但响应丢失"需要谨慎
+ * 处理），失败直接视为"未连接"，等下一轮轮询自然恢复即可，避免重试拖长
+ * 单次调用耗时。用短超时（3s）保证 UI/alarm 不被无响应的 App 卡住。
+ */
+export async function nmhListTasks(): Promise<{
+  success: boolean;
+  tasks: TaskBrief[];
+  message?: string;
+}> {
+  const result = await sendMessage("tasks", {}, TASKS_POLL_TIMEOUT_MS);
+  if (!result.success) {
+    return { success: false, tasks: [], message: result.message };
+  }
+  return { success: true, tasks: result.tasks ?? [] };
+}
+
+/**
+ * 任务操作：暂停 / 继续 / 删除。与 download 共用 sendWithRetry 语义——
+ * "port disconnected" 时先 ping 确认 App 是否已收到消息，避免盲目重发；
+ * 其余瞬态失败（超时/端口断开前的写失败/App 未运行）可安全重发：remove
+ * 对已删除任务重发是幂等的，pause/resume 重发到达同一目标状态同样无害。
+ */
+export async function nmhTaskOp(
+  op: "pause" | "resume" | "remove",
+  taskId: string,
+): Promise<ApiResponse> {
+  return sendWithRetry("task_op", { op, taskId });
+}
+
+/** 用系统默认程序打开已完成任务的文件。语义同 nmhTaskOp——重发安全。 */
+export async function nmhOpenFile(taskId: string): Promise<ApiResponse> {
+  return sendWithRetry("open_file", { taskId });
+}
+
+/** 在文件管理器中定位已完成任务的文件。语义同 nmhTaskOp——重发安全。 */
+export async function nmhRevealFile(taskId: string): Promise<ApiResponse> {
+  return sendWithRetry("reveal_file", { taskId });
 }
 
 // 进行中的 warmup 请求（去重：并发下载入口只发一个 warmup）

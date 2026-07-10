@@ -103,11 +103,35 @@
             </label>
           </div>
         </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="stats.title">Today's Stats</div>
+            <div class="opt-row-desc" data-i18n="options.general.statsDesc">Reset the intercepted/failed counters shown in the popup.</div>
+          </div>
+          <div class="opt-row-control opt-row-control-inline">
+            <button class="btn-small accent" id="resetStatsBtn" data-i18n="stats.reset">Reset Stats</button>
+          </div>
+        </div>
       </div>
 
       <!-- Remote server panel -->
       <div class="opt-panel hidden" id="panel-remote">
         <h1 class="opt-panel-title" data-i18n="options.nav.remote">Remote Server</h1>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="remote.mode">Mode</div>
+            <div class="opt-row-desc" id="remoteModeDesc"></div>
+          </div>
+          <div class="opt-row-control">
+            <select id="remoteModeSelect">
+              <option value="off" data-i18n="remote.modeOff">Desktop Only</option>
+              <option value="fallback" data-i18n="remote.modeFallback">Desktop First</option>
+              <option value="always" data-i18n="remote.modeAlways">Remote Only</option>
+            </select>
+          </div>
+        </div>
 
         <div class="opt-row">
           <div class="opt-row-info">
@@ -145,6 +169,36 @@
       <div class="opt-panel hidden" id="panel-rules">
         <h1 class="opt-panel-title" data-i18n="options.nav.rules">Intercept Rules</h1>
 
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="settings.interceptMode">Intercept Mode</div>
+            <div class="opt-row-desc" id="modeHint"></div>
+          </div>
+          <div class="opt-row-control">
+            <select id="interceptModeSelect">
+              <option value="smart" data-i18n="settings.modeSmart">Smart</option>
+              <option value="all" data-i18n="settings.modeAll">Intercept All</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="settings.minFileSize">Min File Size</div>
+            <div class="opt-row-desc" data-i18n="options.rules.minFileSizeDesc">Files smaller than this are not intercepted.</div>
+          </div>
+          <div class="opt-row-control">
+            <select id="minSizeSelect">
+              <option value="0" data-i18n="settings.sizeNoLimit">No limit</option>
+              <option value="102400">100 KB</option>
+              <option value="524288">512 KB</option>
+              <option value="1048576">1 MB</option>
+              <option value="5242880">5 MB</option>
+              <option value="10485760">10 MB</option>
+            </select>
+          </div>
+        </div>
+
         <div class="opt-row opt-row-stack">
           <div class="opt-row-info">
             <div class="opt-row-title" data-i18n="options.rules.extTitle">File Extensions</div>
@@ -176,6 +230,22 @@
             <div class="tags-container opt-tags" id="mimeList"></div>
             <div class="opt-rule-actions">
               <button class="btn-small" id="mimeResetBtn" data-i18n="options.rules.resetMime">Restore Defaults</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="opt-row opt-row-stack">
+          <div class="opt-row-info">
+            <div class="opt-row-title" data-i18n="domain.title">Excluded Domains</div>
+            <div class="opt-row-desc" data-i18n="options.rules.domainDesc">Downloads from these domains are never intercepted.</div>
+          </div>
+          <div class="opt-rule-editor">
+            <div class="ext-input-row">
+              <input type="text" id="domainInput" data-i18n-placeholder="domain.placeholder" placeholder="Enter domain, e.g. example.com" autocomplete="off">
+              <button class="btn-small accent" id="domainAddBtn" data-i18n="domain.add">Add</button>
+            </div>
+            <div class="domain-list opt-domain-list" id="domainList">
+              <div class="empty-hint" id="domainEmptyHint" data-i18n="domain.empty">No excluded domains</div>
             </div>
           </div>
         </div>

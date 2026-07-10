@@ -10,16 +10,29 @@ import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../theme/segment_palette.dart';
 
-class DetailPanel extends StatelessWidget {
+class DetailPanel extends StatefulWidget {
   final DownloadController controller;
   final VoidCallback onClose;
+
+  /// 当前是否为底部布局（决定切换按钮图标方向）
+  final bool isBottom;
+
+  /// 切换面板位置（底部 ↔ 右侧）
+  final VoidCallback? onTogglePosition;
 
   const DetailPanel({
     super.key,
     required this.controller,
     required this.onClose,
+    this.isBottom = true,
+    this.onTogglePosition,
   });
 
+  @override
+  State<DetailPanel> createState() => _DetailPanelState();
+}
+
+class _DetailPanelState extends State<DetailPanel> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -32,10 +45,47 @@ class DetailPanel extends StatelessWidget {
           _buildHeader(c),
           Expanded(
             child: ListenableBuilder(
-              listenable: controller,
+              listenable: widget.controller,
               builder: (context, _) {
-                final task = controller.selectedTask;
+                final task = widget.controller.selectedTask;
                 if (task == null) return _buildNoSelection(c);
+                if (widget.isBottom) {
+                  // 底部面板：横向布局（左：文件+进度分布；右：信息表+操作）
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildFileInfo(c, m, task),
+                              const SizedBox(height: 16),
+                              _buildProgress(c, m, task),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Container(width: 1, color: c.border),
+                      Expanded(
+                        child: Column(
+                          children: [
+                            Expanded(
+                              child: SingleChildScrollView(
+                                padding: const EdgeInsets.all(16),
+                                child: _buildInfoTable(c, task),
+                              ),
+                            ),
+                            _buildActions(c, m, task),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                }
+                // 右侧面板：竖直布局
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -45,9 +95,9 @@ class DetailPanel extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-            _buildFileInfo(c, m, task),
+                            _buildFileInfo(c, m, task),
                             const SizedBox(height: 20),
-            _buildProgress(c, m, task),
+                            _buildProgress(c, m, task),
                             const SizedBox(height: 20),
                             _buildInfoTable(c, task),
                           ],
@@ -83,8 +133,24 @@ class DetailPanel extends StatelessWidget {
             ),
           ),
           const Spacer(),
+          // 切换面板位置按钮（底部 ↔ 右侧）
           ShadButton.ghost(
-            onPressed: onClose,
+            onPressed: widget.onTogglePosition,
+            size: ShadButtonSize.sm,
+            width: 28,
+            height: 28,
+            padding: EdgeInsets.zero,
+            child: Icon(
+              widget.isBottom
+                  ? LucideIcons.panelRight
+                  : LucideIcons.panelBottom,
+              size: 14,
+              color: c.textMuted,
+            ),
+          ),
+          const SizedBox(width: 4),
+          ShadButton.ghost(
+            onPressed: widget.onClose,
             size: ShadButtonSize.sm,
             width: 28,
             height: 28,
@@ -379,7 +445,7 @@ class DetailPanel extends StatelessWidget {
         _buildInfoRow(currentS.infoPath, task.saveDir, c),
         _buildUrlRow(c, task.url),
         if (task.errorMessage.isNotEmpty)
-          _buildInfoRow(currentS.infoError, task.errorMessage, c),
+          _buildErrorRow(c, task.errorMessage),
       ],
     );
   }
@@ -504,7 +570,41 @@ class DetailPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 4),
-          _CopyUrlButton(url: url, color: c.textMuted),
+          _CopyValueButton(value: url, color: c.textMuted),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorRow(AppColors c, String message) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 60,
+            child: Text(
+              currentS.infoError,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontSize: 11,
+                color: c.textSecondary,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          _CopyValueButton(
+            value: message,
+            color: c.textMuted,
+            toastText: currentS.errorCopied,
+          ),
         ],
       ),
     );
@@ -529,7 +629,7 @@ class DetailPanel extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: ShadButton(
-                onPressed: () => controller.pauseTask(task.id),
+                onPressed: () => widget.controller.pauseTask(task.id),
                 backgroundColor: c.accent,
                 hoverBackgroundColor: c.accentHover,
                 child: Text(
@@ -546,7 +646,7 @@ class DetailPanel extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: ShadButton(
-                onPressed: () => controller.pauseTask(task.id),
+                onPressed: () => widget.controller.pauseTask(task.id),
                 backgroundColor: c.accent,
                 hoverBackgroundColor: c.accentHover,
                 child: Row(
@@ -578,7 +678,7 @@ class DetailPanel extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: ShadButton(
-                onPressed: () => controller.resumeTask(task.id),
+                onPressed: () => widget.controller.resumeTask(task.id),
                 backgroundColor: c.accent,
                 hoverBackgroundColor: c.accentHover,
                 child: Text(
@@ -596,7 +696,7 @@ class DetailPanel extends StatelessWidget {
             width: double.infinity,
             child: ShadButton.destructive(
               onPressed: () =>
-                  controller.deleteTask(task.id, deleteFiles: true),
+                  widget.controller.deleteTask(task.id, deleteFiles: true),
               child: Text(
                 currentS.deleteTaskAndFile,
                 style: const TextStyle(fontSize: 13, color: Colors.white),
@@ -765,26 +865,31 @@ class _SegmentGridPainter extends CustomPainter {
 // 复制按钮（带勾号反馈）
 // =============================================================================
 
-class _CopyUrlButton extends StatefulWidget {
-  final String url;
+class _CopyValueButton extends StatefulWidget {
+  final String value;
   final Color color;
+  final String? toastText;
 
-  const _CopyUrlButton({required this.url, required this.color});
+  const _CopyValueButton({
+    required this.value,
+    required this.color,
+    this.toastText,
+  });
 
   @override
-  State<_CopyUrlButton> createState() => _CopyUrlButtonState();
+  State<_CopyValueButton> createState() => _CopyValueButtonState();
 }
 
-class _CopyUrlButtonState extends State<_CopyUrlButton> {
+class _CopyValueButtonState extends State<_CopyValueButton> {
   bool _copied = false;
 
   Future<void> _onCopy() async {
-    await Clipboard.setData(ClipboardData(text: widget.url));
+    await Clipboard.setData(ClipboardData(text: widget.value));
     if (!mounted) return;
     setState(() => _copied = true);
     ShadSonner.of(context).show(
       ShadToast(
-        title: Text(currentS.urlCopied),
+        title: Text(widget.toastText ?? currentS.urlCopied),
         duration: const Duration(seconds: 2),
       ),
     );

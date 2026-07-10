@@ -1,0 +1,14 @@
+{
+	"admin/services/fluxdown": {
+		"title": "FluxDown",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "fluxdown"
+		},
+		"depends": {
+			"acl": [ "luci-app-fluxdown" ],
+			"uci": { "fluxdown": true }
+		}
+	}
+}

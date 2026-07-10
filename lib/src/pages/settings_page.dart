@@ -124,6 +124,13 @@ List<SettingsSearchItem> get settingsSearchItems {
     ),
     SettingsSearchItem(
       category: SettingsCategory.general,
+      label: s.startMinimizedToTray,
+      description: s.startMinimizedToTrayDesc,
+      keywords: s.searchKeywordsStartMinimizedToTray,
+      icon: LucideIcons.eyeOff,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.general,
       label: s.floatingBall,
       description: s.floatingBallDesc,
       keywords: s.searchKeywordsFloatingBall,
@@ -1264,6 +1271,16 @@ class _GeneralContent extends StatelessWidget {
               child: ShadSwitch(
                 value: settingsProvider.closeToTray,
                 onChanged: (v) => settingsProvider.setCloseToTray(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).startMinimizedToTray,
+              description: LocaleScope.of(context).startMinimizedToTrayDesc,
+              child: ShadSwitch(
+                value: settingsProvider.startMinimizedToTray,
+                onChanged: (v) =>
+                    settingsProvider.setStartMinimizedToTray(v),
               ),
             ),
             const SizedBox(height: 10),

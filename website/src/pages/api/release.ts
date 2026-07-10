@@ -25,7 +25,8 @@
  *   server: {
  *     version: "0.1.51",
  *     tag: "server-v0.1.51",
- *     assets: { windows_x64, windows_arm64, linux_x64, linux_arm64, macos_x64, macos_arm64 }
+ *     assets: { windows_x64, windows_arm64, linux_x64, linux_arm64, macos_x64, macos_arm64,
+ *               openwrt_x64, openwrt_arm64, openwrt_luci, qnap_x64, qnap_arm64 }
  *   } | null,  // FluxDown Server（headless Web 版），无对应 release 时为 null
  *   cli: { version, tag, assets:{ windows_x64, windows_arm64, linux_x64, linux_arm64, macos_x64, macos_arm64 } } | null,
  *   mobile: { version, tag, assets:{ android_arm64, android_armv7, android_x64, android_universal } } | null
@@ -241,6 +242,22 @@ export const GET: APIRoute = async () => {
     const serverLinuxArm64Asset = findServerAsset("-linux-arm64.tar.gz");
     const serverMacosX64Asset = findServerAsset("-macos-x64.tar.gz");
     const serverMacosArm64Asset = findServerAsset("-macos-arm64.tar.gz");
+    // OpenWrt ipk（命名：fluxdown-server_<ver>_<arch>.ipk / luci-app-fluxdown_<ver>_all.ipk）；
+    // aarch64 有多个子架构标签的 ipk，官网只挂 aarch64_generic，其余在 release 页可取
+    const serverOpenwrtX64Asset = serverRelease?.assets.find(
+      (a) => a.name.startsWith("fluxdown-server_") && a.name.endsWith("_x86_64.ipk"),
+    );
+    const serverOpenwrtArm64Asset = serverRelease?.assets.find(
+      (a) =>
+        a.name.startsWith("fluxdown-server_") &&
+        a.name.endsWith("_aarch64_generic.ipk"),
+    );
+    const serverOpenwrtLuciAsset = serverRelease?.assets.find(
+      (a) => a.name.startsWith("luci-app-fluxdown_") && a.name.endsWith("_all.ipk"),
+    );
+    // QNAP qpkg（命名：FluxDown-Server-<ver>-qnap-<arch>.qpkg）
+    const serverQnapX64Asset = findServerAsset("-qnap-x64.qpkg");
+    const serverQnapArm64Asset = findServerAsset("-qnap-arm64.qpkg");
     // FluxDown CLI 资产（命名：FluxDown-CLI-<ver>-<os>-<arch>.<ext>）
     const findCliAsset = (suffix: string) =>
       cliRelease?.assets.find(
@@ -336,6 +353,26 @@ export const GET: APIRoute = async () => {
               ),
               macos_arm64: formatAsset(
                 serverMacosArm64Asset,
+                serverRelease.tag_name,
+              ),
+              openwrt_x64: formatAsset(
+                serverOpenwrtX64Asset,
+                serverRelease.tag_name,
+              ),
+              openwrt_arm64: formatAsset(
+                serverOpenwrtArm64Asset,
+                serverRelease.tag_name,
+              ),
+              openwrt_luci: formatAsset(
+                serverOpenwrtLuciAsset,
+                serverRelease.tag_name,
+              ),
+              qnap_x64: formatAsset(
+                serverQnapX64Asset,
+                serverRelease.tag_name,
+              ),
+              qnap_arm64: formatAsset(
+                serverQnapArm64Asset,
                 serverRelease.tag_name,
               ),
             },

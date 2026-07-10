@@ -5,13 +5,30 @@
 //!   - The NMH relay binary (`fluxdown_nmh.exe`) connects to this pipe.
 //!   - Messages use a 4-byte LE length prefix + JSON payload.
 //!
-//! Message protocol:
+//! Message protocol (mirrors the no-launch action set in
+//! `native/nmh/src/main.rs` and the extension background script's
+//! popup-facing runtime messages built on top of these):
 //!   - `{"action":"ping","msg_id":N}`     → `{"success":true,"message":"pong","msg_id":N}`
 //!   - `{"action":"download","msg_id":N, ...}` → `{"success":true,"message":"download accepted","msg_id":N}`
+//!   - `{"action":"tasks","msg_id":N}` → `{"success":true,"msg_id":N,"tasks":[TaskBrief, ...]}`
+//!     (every non-completed task + the 10 most recently completed, newest first)
+//!   - `{"action":"task_op","msg_id":N,"op":"pause"|"resume"|"remove","taskId":"..."}`
+//!     → `{"success":true,"msg_id":N}` / `{"success":false,"message":"...","msg_id":N}`
+//!   - `{"action":"open_file","msg_id":N,"taskId":"..."}` /
+//!     `{"action":"reveal_file","msg_id":N,"taskId":"..."}` → only allowed for
+//!     `status == 3` (completed) tasks; rejects with a `message` otherwise
+//!     (unknown task / not completed / file missing on disk).
 
-use fluxdown_api::types::DownloadRequest;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use fluxdown_api::service::{ApiHost, LiveSpeed};
+use fluxdown_api::types::{DownloadRequest, TaskDto};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+
+use crate::logger::{log_error, log_info};
 
 /// Named Pipe path for the NMH relay to connect to.
 #[cfg(windows)]
@@ -37,6 +54,293 @@ struct PipeResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
     msg_id: u64,
+    /// Only set on a successful `"tasks"` response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tasks: Option<Vec<TaskBrief>>,
+}
+
+impl PipeResponse {
+    /// Successful response carrying a human-readable status `message`.
+    fn ok(msg_id: u64, message: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            message: Some(message.into()),
+            msg_id,
+            tasks: None,
+        }
+    }
+
+    /// Failure response carrying the reason in `message`.
+    fn err(msg_id: u64, message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            message: Some(message.into()),
+            msg_id,
+            tasks: None,
+        }
+    }
+
+    /// Successful `"tasks"` response.
+    fn with_tasks(msg_id: u64, tasks: Vec<TaskBrief>) -> Self {
+        Self {
+            success: true,
+            message: None,
+            msg_id,
+            tasks: Some(tasks),
+        }
+    }
+}
+
+/// `taskId`-only payload shared by `task_op`/`open_file`/`reveal_file`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskIdPayload {
+    task_id: String,
+}
+
+/// `{"op":"pause"|"resume"|"remove","taskId":"..."}` payload for `task_op`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskOpPayload {
+    op: String,
+    task_id: String,
+}
+
+/// Minimal task snapshot for the extension popup's task panel (`"tasks"`
+/// action). Field shape is the stable wire contract shared with the
+/// extension background script — keep in sync with its TaskBrief type.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskBrief {
+    task_id: String,
+    file_name: String,
+    /// 0=pending, 1=downloading, 2=paused, 3=completed, 4=error, 5=preparing
+    status: i32,
+    downloaded_bytes: i64,
+    total_bytes: i64,
+    /// Download rate in bytes/sec; 0 when no live sample is available
+    /// (idle/paused/just-finished tasks).
+    speed: i64,
+    error_message: String,
+    created_at: String,
+}
+
+/// Task status code for "completed" (see [`TaskBrief::status`] doc).
+const STATUS_COMPLETED: i32 = 3;
+
+/// Max recently-completed tasks kept in the `"tasks"` response payload.
+const MAX_COMPLETED_TASKS: usize = 10;
+
+/// Build the `"tasks"` action payload: every non-completed task plus the
+/// [`MAX_COMPLETED_TASKS`] most recently completed ones (by `created_at`
+/// descending), each carrying its live speed merged in from `speeds`
+/// (no entry ⇒ 0 B/s).
+///
+/// Pure so the filter/sort semantics are unit-testable without a running
+/// pipe server or database.
+fn select_task_briefs(tasks: Vec<TaskDto>, speeds: &HashMap<String, LiveSpeed>) -> Vec<TaskBrief> {
+    let (mut completed, active): (Vec<TaskDto>, Vec<TaskDto>) = tasks
+        .into_iter()
+        .partition(|t| t.status == STATUS_COMPLETED);
+    completed.sort_by_key(|t| std::cmp::Reverse(t.created_at.parse::<i64>().unwrap_or(0)));
+    completed.truncate(MAX_COMPLETED_TASKS);
+
+    active
+        .into_iter()
+        .chain(completed)
+        .map(|t| {
+            let speed = speeds.get(&t.task_id).map(|s| s.download_bps).unwrap_or(0);
+            TaskBrief {
+                task_id: t.task_id,
+                file_name: t.file_name,
+                status: t.status,
+                downloaded_bytes: t.downloaded_bytes,
+                total_bytes: t.total_bytes,
+                speed,
+                error_message: t.error_message,
+                created_at: t.created_at,
+            }
+        })
+        .collect()
+}
+
+/// Resolve `taskId` → absolute file path for `open_file`/`reveal_file`. Only
+/// `status == 3` (completed) tasks are eligible; returns a pre-built failure
+/// [`PipeResponse`] otherwise (unknown task, not completed yet, or the file
+/// missing on disk).
+async fn resolve_completed_task_path(
+    msg_id: u64,
+    task_id: &str,
+    api_host: &Arc<dyn ApiHost>,
+) -> Result<std::path::PathBuf, PipeResponse> {
+    let task = match api_host.get_task(task_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err(PipeResponse::err(msg_id, "task not found")),
+        Err(e) => return Err(PipeResponse::err(msg_id, e.to_string())),
+    };
+    if task.status != STATUS_COMPLETED {
+        return Err(PipeResponse::err(msg_id, "task is not completed"));
+    }
+    let path = Path::new(&task.save_dir).join(&task.file_name);
+    if !path.exists() {
+        return Err(PipeResponse::err(
+            msg_id,
+            format!("file not found: {}", path.display()),
+        ));
+    }
+    Ok(path)
+}
+
+/// `{"action":"tasks"}` handler.
+async fn handle_tasks(msg_id: u64, api_host: &Arc<dyn ApiHost>) -> PipeResponse {
+    let tasks = match api_host.list_tasks().await {
+        Ok(t) => t,
+        Err(e) => return PipeResponse::err(msg_id, format!("list_tasks failed: {e}")),
+    };
+    let speeds = api_host.live_speeds().await.unwrap_or_default();
+    PipeResponse::with_tasks(msg_id, select_task_briefs(tasks, &speeds))
+}
+
+/// `{"action":"task_op"}` handler: `pause`/`resume`/`remove` (remove never
+/// deletes files — matches the popup's "clear entry" semantics).
+async fn handle_task_op(
+    msg_id: u64,
+    payload: serde_json::Value,
+    api_host: &Arc<dyn ApiHost>,
+) -> PipeResponse {
+    let req: TaskOpPayload = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return PipeResponse::err(msg_id, format!("invalid task_op payload: {e}")),
+    };
+    let (result, ok_message) = match req.op.as_str() {
+        "pause" => (api_host.pause_task(&req.task_id).await, "paused"),
+        "resume" => (api_host.continue_task(&req.task_id).await, "resumed"),
+        "remove" => (api_host.delete_task(&req.task_id, false).await, "removed"),
+        other => return PipeResponse::err(msg_id, format!("unknown task_op: {other}")),
+    };
+    match result {
+        Ok(()) => PipeResponse::ok(msg_id, ok_message),
+        Err(e) => PipeResponse::err(msg_id, e.to_string()),
+    }
+}
+
+/// `{"action":"open_file"}` handler: opens the completed task's file with
+/// the OS default application.
+async fn handle_open_file(
+    msg_id: u64,
+    payload: serde_json::Value,
+    api_host: &Arc<dyn ApiHost>,
+    log_tag: &str,
+) -> PipeResponse {
+    let req: TaskIdPayload = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return PipeResponse::err(msg_id, format!("invalid payload: {e}")),
+    };
+    let path = match resolve_completed_task_path(msg_id, &req.task_id, api_host).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let path_str = path.to_string_lossy().into_owned();
+    if let Err(e) =
+        tokio::task::spawn_blocking(move || crate::reveal_file::open_file(&path_str)).await
+    {
+        log_error!("[{}] open_file task panicked: {}", log_tag, e);
+        return PipeResponse::err(msg_id, "failed to open file");
+    }
+    PipeResponse::ok(msg_id, "ok")
+}
+
+/// `{"action":"reveal_file"}` handler: reveals the completed task's file in
+/// the native file manager, honoring the user's `reveal_file_cmd` template.
+async fn handle_reveal_file(
+    msg_id: u64,
+    payload: serde_json::Value,
+    api_host: &Arc<dyn ApiHost>,
+    log_tag: &str,
+) -> PipeResponse {
+    let req: TaskIdPayload = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return PipeResponse::err(msg_id, format!("invalid payload: {e}")),
+    };
+    let path = match resolve_completed_task_path(msg_id, &req.task_id, api_host).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let path_str = path.to_string_lossy().into_owned();
+    // 与 `download_actor.rs` 的 `RevealFile` 信号分支一致:空模板 = 平台默认。
+    let cfg = api_host.get_config().await.unwrap_or_default();
+    let tpl = cfg.get("reveal_file_cmd").cloned().unwrap_or_default();
+    if let Err(e) =
+        tokio::task::spawn_blocking(move || crate::reveal_file::reveal(&path_str, &tpl)).await
+    {
+        log_error!("[{}] reveal_file task panicked: {}", log_tag, e);
+        return PipeResponse::err(msg_id, "failed to reveal file");
+    }
+    PipeResponse::ok(msg_id, "ok")
+}
+
+/// Dispatch one parsed [`PipeMessage`] to its action handler. Shared between
+/// the Windows Named Pipe and Unix Domain Socket transports (`mod server`
+/// below, per-platform) so action semantics never drift between platforms —
+/// only the framed I/O differs.
+async fn dispatch_action(
+    msg: PipeMessage,
+    dl_tx: &mpsc::Sender<DownloadRequest>,
+    api_host: &Arc<dyn ApiHost>,
+    log_tag: &str,
+) -> PipeResponse {
+    match msg.action.as_str() {
+        "ping" => {
+            log_info!("[{}] ping (msg_id={})", log_tag, msg.msg_id);
+            PipeResponse::ok(msg.msg_id, "pong")
+        }
+        "download" => match serde_json::from_value::<DownloadRequest>(msg.payload) {
+            Ok(download_req) => {
+                log_info!(
+                    "[{}] download request (msg_id={}): url={}",
+                    log_tag,
+                    msg.msg_id,
+                    download_req.url
+                );
+                let _ = dl_tx.send(download_req).await;
+                PipeResponse::ok(msg.msg_id, "download accepted")
+            }
+            Err(e) => {
+                log_info!(
+                    "[{}] download parse error (msg_id={}): {}",
+                    log_tag,
+                    msg.msg_id,
+                    e
+                );
+                PipeResponse::err(msg.msg_id, format!("invalid download payload: {}", e))
+            }
+        },
+        "tasks" => {
+            log_info!("[{}] tasks (msg_id={})", log_tag, msg.msg_id);
+            handle_tasks(msg.msg_id, api_host).await
+        }
+        "task_op" => {
+            log_info!("[{}] task_op (msg_id={})", log_tag, msg.msg_id);
+            handle_task_op(msg.msg_id, msg.payload, api_host).await
+        }
+        "open_file" => {
+            log_info!("[{}] open_file (msg_id={})", log_tag, msg.msg_id);
+            handle_open_file(msg.msg_id, msg.payload, api_host, log_tag).await
+        }
+        "reveal_file" => {
+            log_info!("[{}] reveal_file (msg_id={})", log_tag, msg.msg_id);
+            handle_reveal_file(msg.msg_id, msg.payload, api_host, log_tag).await
+        }
+        other => {
+            log_info!(
+                "[{}] unknown action '{}' (msg_id={})",
+                log_tag,
+                other,
+                msg.msg_id
+            );
+            PipeResponse::err(msg.msg_id, format!("unknown action: {}", other))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -45,11 +349,16 @@ struct PipeResponse {
 
 #[cfg(windows)]
 mod server {
+    use std::sync::Arc;
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::windows::named_pipe::ServerOptions;
     use tokio::sync::mpsc;
 
-    use super::{DownloadRequest, MAX_MESSAGE_SIZE, PIPE_NAME, PipeMessage, PipeResponse};
+    use super::{
+        ApiHost, DownloadRequest, MAX_MESSAGE_SIZE, PIPE_NAME, PipeMessage, PipeResponse,
+        dispatch_action,
+    };
     use crate::logger::log_info;
 
     /// Read a 4-byte LE length-prefixed message from the pipe.
@@ -86,6 +395,7 @@ mod server {
     async fn handle_pipe_client(
         mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
         tx: mpsc::Sender<DownloadRequest>,
+        api_host: Arc<dyn ApiHost>,
     ) {
         loop {
             let raw = match read_framed_message(&mut pipe).await {
@@ -100,11 +410,7 @@ mod server {
                 Ok(m) => m,
                 Err(e) => {
                     log_info!("[nmh-pipe] JSON parse error: {}", e);
-                    let resp = PipeResponse {
-                        success: false,
-                        message: Some(format!("invalid JSON: {}", e)),
-                        msg_id: 0,
-                    };
+                    let resp = PipeResponse::err(0, format!("invalid JSON: {}", e));
                     if let Ok(json) = serde_json::to_vec(&resp)
                         && write_framed_message(&mut pipe, &json).await.is_err()
                     {
@@ -114,55 +420,7 @@ mod server {
                 }
             };
 
-            let response = match msg.action.as_str() {
-                "ping" => {
-                    log_info!("[nmh-pipe] ping (msg_id={})", msg.msg_id);
-                    PipeResponse {
-                        success: true,
-                        message: Some("pong".to_string()),
-                        msg_id: msg.msg_id,
-                    }
-                }
-                "download" => match serde_json::from_value::<DownloadRequest>(msg.payload) {
-                    Ok(download_req) => {
-                        log_info!(
-                            "[nmh-pipe] download request (msg_id={}): url={}",
-                            msg.msg_id,
-                            download_req.url
-                        );
-                        let _ = tx.send(download_req).await;
-                        PipeResponse {
-                            success: true,
-                            message: Some("download accepted".to_string()),
-                            msg_id: msg.msg_id,
-                        }
-                    }
-                    Err(e) => {
-                        log_info!(
-                            "[nmh-pipe] download parse error (msg_id={}): {}",
-                            msg.msg_id,
-                            e
-                        );
-                        PipeResponse {
-                            success: false,
-                            message: Some(format!("invalid download payload: {}", e)),
-                            msg_id: msg.msg_id,
-                        }
-                    }
-                },
-                other => {
-                    log_info!(
-                        "[nmh-pipe] unknown action '{}' (msg_id={})",
-                        other,
-                        msg.msg_id
-                    );
-                    PipeResponse {
-                        success: false,
-                        message: Some(format!("unknown action: {}", other)),
-                        msg_id: msg.msg_id,
-                    }
-                }
-            };
+            let response = dispatch_action(msg, &tx, &api_host, "nmh-pipe").await;
 
             if let Ok(json) = serde_json::to_vec(&response)
                 && write_framed_message(&mut pipe, &json).await.is_err()
@@ -283,10 +541,12 @@ mod server {
         }
     }
 
-    /// Spawn the Named Pipe server, feeding download requests into `tx`.
-    /// The receiving end is owned by `download_actor` and shared with the
-    /// local HTTP takeover server so both transports converge on one channel.
-    pub fn spawn_listener_with(tx: mpsc::Sender<DownloadRequest>) {
+    /// Spawn the Named Pipe server, feeding download requests into `tx` and
+    /// answering `tasks`/`task_op`/`open_file`/`reveal_file` via `api_host`.
+    /// The receiving end of `tx` is owned by `download_actor` and shared with
+    /// the local HTTP takeover server so both transports converge on one
+    /// channel.
+    pub fn spawn_listener_with(tx: mpsc::Sender<DownloadRequest>, api_host: Arc<dyn ApiHost>) {
         tokio::spawn(async move {
             log_info!("[nmh-pipe] starting Named Pipe server at {}", PIPE_NAME);
 
@@ -318,7 +578,8 @@ mod server {
                         log_info!("[nmh-pipe] failed to create next pipe instance: {}", e);
                         // Can't accept more clients, but handle the current one.
                         let tx_clone = tx.clone();
-                        tokio::spawn(handle_pipe_client(server, tx_clone));
+                        let api_host_clone = api_host.clone();
+                        tokio::spawn(handle_pipe_client(server, tx_clone, api_host_clone));
                         // Exit the accept loop — single client mode until restart.
                         break;
                     }
@@ -327,7 +588,8 @@ mod server {
                 // Hand off the connected server to a task.
                 let connected = std::mem::replace(&mut server, next_server);
                 let tx_clone = tx.clone();
-                tokio::spawn(handle_pipe_client(connected, tx_clone));
+                let api_host_clone = api_host.clone();
+                tokio::spawn(handle_pipe_client(connected, tx_clone, api_host_clone));
             }
         });
     }
@@ -337,12 +599,15 @@ mod server {
 #[cfg(not(windows))]
 mod server {
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
     use tokio::sync::mpsc;
 
-    use super::{DownloadRequest, MAX_MESSAGE_SIZE, PipeMessage, PipeResponse};
+    use super::{
+        ApiHost, DownloadRequest, MAX_MESSAGE_SIZE, PipeMessage, PipeResponse, dispatch_action,
+    };
     use crate::logger::log_info;
 
     /// Returns the current user's home directory.
@@ -467,7 +732,11 @@ mod server {
         Ok(())
     }
 
-    async fn handle_client(mut stream: tokio::net::UnixStream, tx: mpsc::Sender<DownloadRequest>) {
+    async fn handle_client(
+        mut stream: tokio::net::UnixStream,
+        tx: mpsc::Sender<DownloadRequest>,
+        api_host: Arc<dyn ApiHost>,
+    ) {
         loop {
             let raw = match read_framed_message(&mut stream).await {
                 Ok(data) => data,
@@ -481,11 +750,7 @@ mod server {
                 Ok(m) => m,
                 Err(e) => {
                     log_info!("[nmh-uds] JSON parse error: {}", e);
-                    let resp = PipeResponse {
-                        success: false,
-                        message: Some(format!("invalid JSON: {}", e)),
-                        msg_id: 0,
-                    };
+                    let resp = PipeResponse::err(0, format!("invalid JSON: {}", e));
                     if let Ok(json) = serde_json::to_vec(&resp)
                         && write_framed_message(&mut stream, &json).await.is_err()
                     {
@@ -495,55 +760,7 @@ mod server {
                 }
             };
 
-            let response = match msg.action.as_str() {
-                "ping" => {
-                    log_info!("[nmh-uds] ping (msg_id={})", msg.msg_id);
-                    PipeResponse {
-                        success: true,
-                        message: Some("pong".to_string()),
-                        msg_id: msg.msg_id,
-                    }
-                }
-                "download" => match serde_json::from_value::<DownloadRequest>(msg.payload) {
-                    Ok(download_req) => {
-                        log_info!(
-                            "[nmh-uds] download request (msg_id={}): url={}",
-                            msg.msg_id,
-                            download_req.url
-                        );
-                        let _ = tx.send(download_req).await;
-                        PipeResponse {
-                            success: true,
-                            message: Some("download accepted".to_string()),
-                            msg_id: msg.msg_id,
-                        }
-                    }
-                    Err(e) => {
-                        log_info!(
-                            "[nmh-uds] download parse error (msg_id={}): {}",
-                            msg.msg_id,
-                            e
-                        );
-                        PipeResponse {
-                            success: false,
-                            message: Some(format!("invalid download payload: {}", e)),
-                            msg_id: msg.msg_id,
-                        }
-                    }
-                },
-                other => {
-                    log_info!(
-                        "[nmh-uds] unknown action '{}' (msg_id={})",
-                        other,
-                        msg.msg_id
-                    );
-                    PipeResponse {
-                        success: false,
-                        message: Some(format!("unknown action: {}", other)),
-                        msg_id: msg.msg_id,
-                    }
-                }
-            };
+            let response = dispatch_action(msg, &tx, &api_host, "nmh-uds").await;
 
             if let Ok(json) = serde_json::to_vec(&response)
                 && write_framed_message(&mut stream, &json).await.is_err()
@@ -553,7 +770,7 @@ mod server {
         }
     }
 
-    pub fn spawn_listener_with(tx: mpsc::Sender<DownloadRequest>) {
+    pub fn spawn_listener_with(tx: mpsc::Sender<DownloadRequest>, api_host: Arc<dyn ApiHost>) {
         let sock_path = socket_path();
 
         tokio::spawn(async move {
@@ -586,7 +803,8 @@ mod server {
                     Ok((stream, _)) => {
                         log_info!("[nmh-uds] client connected");
                         let tx_clone = tx.clone();
-                        tokio::spawn(handle_client(stream, tx_clone));
+                        let api_host_clone = api_host.clone();
+                        tokio::spawn(handle_client(stream, tx_clone, api_host_clone));
                     }
                     Err(e) => {
                         log_info!("[nmh-uds] accept error: {}", e);
@@ -601,8 +819,14 @@ mod server {
 /// sender. Used by `download_actor` so that both the NMH transport and the
 /// local HTTP takeover server can push `DownloadRequest`s into one shared
 /// channel — the actor's `native_msg_rx` branch then handles both uniformly.
-pub fn spawn_native_messaging_listener_with(tx: mpsc::Sender<DownloadRequest>) {
-    server::spawn_listener_with(tx);
+/// `api_host` answers the `tasks`/`task_op`/`open_file`/`reveal_file`
+/// actions (task panel queries/controls), sharing the same instance the
+/// local HTTP API server uses.
+pub fn spawn_native_messaging_listener_with(
+    tx: mpsc::Sender<DownloadRequest>,
+    api_host: Arc<dyn ApiHost>,
+) {
+    server::spawn_listener_with(tx, api_host);
 }
 
 /// Spawn the Native Messaging listener and return a fresh receiver.
@@ -610,11 +834,90 @@ pub fn spawn_native_messaging_listener_with(tx: mpsc::Sender<DownloadRequest>) {
 /// Convenience wrapper for callers that don't need to share the channel.
 /// Ping requests are handled internally (immediate pong response).
 #[allow(dead_code)]
-pub fn spawn_native_messaging_listener() -> mpsc::Receiver<DownloadRequest> {
+pub fn spawn_native_messaging_listener(
+    api_host: Arc<dyn ApiHost>,
+) -> mpsc::Receiver<DownloadRequest> {
     let (tx, rx) = mpsc::channel::<DownloadRequest>(64);
-    server::spawn_listener_with(tx);
+    server::spawn_listener_with(tx, api_host);
     rx
 }
 
 // wire 类型（DownloadRequest/RequestBody）的反序列化测试随类型迁移至
 // fluxdown_api crate（native/api/src/types.rs 的所有者测试）。
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn dto(task_id: &str, status: i32, created_at: &str) -> TaskDto {
+        TaskDto {
+            task_id: task_id.to_string(),
+            url: "https://example.com/f".to_string(),
+            file_name: format!("{task_id}.bin"),
+            save_dir: "/tmp".to_string(),
+            status,
+            downloaded_bytes: 0,
+            total_bytes: 100,
+            error_message: String::new(),
+            created_at: created_at.to_string(),
+            proxy_url: String::new(),
+            queue_id: String::new(),
+            checksum: String::new(),
+            file_missing: false,
+        }
+    }
+
+    #[test]
+    fn select_task_briefs_keeps_all_non_completed() {
+        let tasks = vec![dto("a", 0, "100"), dto("b", 1, "200"), dto("c", 2, "300")];
+        let briefs = select_task_briefs(tasks, &HashMap::new());
+        let ids: Vec<&str> = briefs.iter().map(|t| t.task_id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn select_task_briefs_caps_completed_at_ten_newest_first() {
+        let mut tasks = Vec::new();
+        for i in 0..15 {
+            tasks.push(dto(&format!("t{i}"), STATUS_COMPLETED, &i.to_string()));
+        }
+        let briefs = select_task_briefs(tasks, &HashMap::new());
+        assert_eq!(briefs.len(), MAX_COMPLETED_TASKS);
+        // Newest (largest created_at) first: t14, t13, ..., t5.
+        let ids: Vec<&str> = briefs.iter().map(|t| t.task_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["t14", "t13", "t12", "t11", "t10", "t9", "t8", "t7", "t6", "t5"]
+        );
+    }
+
+    #[test]
+    fn select_task_briefs_mixes_active_and_recent_completed() {
+        let tasks = vec![
+            dto("active1", 1, "1"),
+            dto("done_old", STATUS_COMPLETED, "1"),
+            dto("done_new", STATUS_COMPLETED, "2"),
+        ];
+        let briefs = select_task_briefs(tasks, &HashMap::new());
+        let ids: Vec<&str> = briefs.iter().map(|t| t.task_id.as_str()).collect();
+        assert_eq!(ids, vec!["active1", "done_new", "done_old"]);
+    }
+
+    #[test]
+    fn select_task_briefs_merges_live_speed_defaulting_to_zero() {
+        let tasks = vec![dto("a", 1, "1"), dto("b", 1, "2")];
+        let mut speeds = HashMap::new();
+        speeds.insert(
+            "a".to_string(),
+            LiveSpeed {
+                download_bps: 4096,
+                upload_bps: 0,
+            },
+        );
+        let briefs = select_task_briefs(tasks, &speeds);
+        let by_id = |id: &str| briefs.iter().find(|t| t.task_id == id).unwrap();
+        assert_eq!(by_id("a").speed, 4096);
+        assert_eq!(by_id("b").speed, 0);
+    }
+}
