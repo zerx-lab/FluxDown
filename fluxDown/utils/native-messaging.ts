@@ -301,10 +301,23 @@ async function sendWithRetry(
 // 导出接口（与原 HTTP 版本完全兼容）
 // ──────────────────────────────────────────────────────────────
 
+/**
+ * 过滤伪 referrer：浏览器 downloads API / fetch 规范在 JS 触发下载等场景
+ * 会给出 "about:client" 等占位符，并非真实来源页 URL。原样透传会被部分
+ * CDN 防盗链判为非法 Referer（HTTP 403），视同缺失。
+ */
+function sanitizeReferrer(referrer: string | undefined): string {
+  const r = (referrer || "").trim();
+  return /^https?:\/\//i.test(r) ? r : "";
+}
+
 export async function nmhSendDownloadRequest(
   request: DownloadRequest,
 ): Promise<ApiResponse> {
-  return sendWithRetry("download", request as Record<string, any>);
+  return sendWithRetry("download", {
+    ...request,
+    referrer: sanitizeReferrer(request.referrer),
+  } as Record<string, any>);
 }
 
 // NMH/hub 两端对单帧强制 1MB 上限；留给 action/msg_id 等帧头开销及安全冗余，
@@ -325,7 +338,8 @@ const BATCH_CHUNK_ITEMS_LIMIT = 1000;
 function toBatchWireItem(item: BatchDownloadItem): Record<string, any> {
   const wire: Record<string, any> = { url: item.url };
   if (item.filename) wire.filename = item.filename;
-  if (item.referrer) wire.referrer = item.referrer;
+  const referrer = sanitizeReferrer(item.referrer);
+  if (referrer) wire.referrer = referrer;
   if (item.cookies) wire.cookies = item.cookies;
   if (item.headers && Object.keys(item.headers).length > 0) {
     wire.headers = item.headers;

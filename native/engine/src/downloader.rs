@@ -476,6 +476,29 @@ impl RequestSpec {
     }
 }
 
+/// Referer 合法性检查：仅接受非空且以 `http://` / `https://` 开头的值。
+///
+/// 浏览器（downloads API / fetch 规范）在 JS 触发下载等场景会给出
+/// `about:client` 之类的占位符 referrer，这不是真实来源页 URL；
+/// 将其原样发给服务器会被部分 CDN 的防盗链判为非法请求（HTTP 403）。
+///
+/// # Examples
+///
+/// ```
+/// use fluxdown_engine::downloader::is_valid_referrer;
+///
+/// assert!(is_valid_referrer("https://example.com/page"));
+/// assert!(is_valid_referrer("http://example.com"));
+/// assert!(!is_valid_referrer("about:client"));
+/// assert!(!is_valid_referrer(""));
+/// ```
+pub fn is_valid_referrer(referrer: &str) -> bool {
+    let r = referrer.trim();
+    ["http://", "https://"]
+        .iter()
+        .any(|scheme| r.len() > scheme.len() && r[..scheme.len()].eq_ignore_ascii_case(scheme))
+}
+
 /// 统一请求构建入口——所有发出 HTTP 请求的地方都应通过此函数。
 ///
 /// 此函数替代了散落在 downloader / segment_coordinator / hls / dash 等
@@ -499,7 +522,10 @@ pub fn build_request(
     if !spec.cookies.is_empty() {
         req = req.header("Cookie", &spec.cookies);
     }
-    if !spec.referrer.is_empty() {
+    // Referer 只接受真实的 http(s) URL。浏览器扩展捕获的 referrer 可能是
+    // fetch 规范的占位符 "about:client"（JS 触发的下载没有真实来源页），
+    // 部分 CDN（如 hembed）对非法 Referer 值直接回 403 —— 这类伪值等同于无。
+    if is_valid_referrer(&spec.referrer) {
         req = req.header(reqwest::header::REFERER, &spec.referrer);
     }
     req = apply_extra_headers(req, &spec.extra_headers);
@@ -5106,6 +5132,34 @@ mod tests {
                 .unwrap(),
             "Bearer xyz"
         );
+    }
+
+    /// 伪 referrer（fetch 规范占位符 "about:client" 等非 http(s) 值）不得
+    /// 进入 Referer 头——部分 CDN 防盗链对非法 Referer 直接回 403。
+    #[test]
+    fn build_request_drops_non_http_referrer() {
+        let client = reqwest::Client::new();
+        for bogus in ["about:client", "about:blank", "chrome://downloads", "  "] {
+            let spec = super::RequestSpec {
+                method: reqwest::Method::GET,
+                cookies: String::new(),
+                referrer: bogus.to_string(),
+                extra_headers: std::collections::HashMap::new(),
+                body: None,
+            };
+            let built = super::build_request(
+                &client,
+                "https://example.com/file.zip",
+                reqwest::Method::GET,
+                &spec,
+            )
+            .build()
+            .unwrap();
+            assert!(
+                built.headers().get(reqwest::header::REFERER).is_none(),
+                "bogus referrer {bogus:?} must be dropped"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -1523,7 +1523,7 @@ async fn download_segment_streaming(
     }
     // B站等 CDN 对 .m4s 分段强制要求 Referer（缺失即 403）。放在
     // apply_extra_headers 之前：扩展捕获的真实请求头若含 referer 会覆盖此默认值。
-    if !ctx.referrer.is_empty() {
+    if crate::downloader::is_valid_referrer(ctx.referrer) {
         req = req.header(reqwest::header::REFERER, ctx.referrer);
     }
     // 应用浏览器扩展捕获的额外请求头
