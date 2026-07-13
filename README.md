@@ -28,6 +28,7 @@
 - **Up to 10x faster** — Rust + Tokio engine with IDM-style dynamic segmentation
 - **Multi-protocol** — HTTP/HTTPS, FTP, BitTorrent, eD2K, HLS & DASH streaming
 - **Browser integration** — Chrome / Edge / Firefox extension with a 3-layer interception engine
+- **AI-agent ready** — built-in MCP (Model Context Protocol) server: let Claude, Cursor & other AI clients manage your downloads
 - **Resume anywhere** — full download state persisted in SQLite; survive crashes and reboots
 - **Beautiful UI** — light/dark themes, 13 color schemes, responsive three-pane layout
 - **Clean & private** — free forever, no ads, no tracking, no account, local-first
@@ -42,6 +43,7 @@
 | **Speed Control** | Token-bucket global rate limiting — download in the background without killing your browsing |
 | **Resume Anywhere** | Every byte tracked in SQLite with WAL; power loss never costs you progress |
 | **Browser Integration** | Three-layer download interception, streaming media sniffing, Alt+Click bypass, right-click send |
+| **MCP Server** | Built-in Model Context Protocol endpoint (Streamable HTTP) with 9 tools — AI agents can add, monitor and control downloads |
 | **Beautiful Interface** | shadcn-style widgets, IDM-style segment visualization, named queues, system tray |
 | **Clean & Private** | Zero ads, zero telemetry lock-in, zero accounts — your data never leaves your machine |
 
@@ -76,6 +78,41 @@ Install the extension so FluxDown takes over browser downloads automatically:
 [<img src="https://img.shields.io/badge/Chrome-Web%20Store-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chrome Web Store" />](https://chromewebstore.google.com/detail/fluxdown/meleenglfggcmcajknpeeeiobnpfmahc)
 [<img src="https://img.shields.io/badge/Edge-Add--ons-0078D4?style=for-the-badge&logo=microsoftedge&logoColor=white" alt="Edge Add-ons" />](https://microsoftedge.microsoft.com/addons/detail/fluxdown/nglkkjbogjghekbhhcnccnpfedjbdhhd)
 [<img src="https://img.shields.io/badge/Firefox-Add--ons-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white" alt="Firefox Add-ons" />](https://addons.mozilla.org/firefox/addon/fluxdown)
+
+## MCP Server (Model Context Protocol)
+
+FluxDown ships a built-in **MCP server** so AI agents (Claude Desktop, Cursor, Cline, …) can manage downloads via the [Model Context Protocol](https://modelcontextprotocol.io). It speaks **Streamable HTTP** (JSON-RPC 2.0 over a single `POST /mcp`) on the local API port — no extra process needed.
+
+- **Endpoint**: `http://127.0.0.1:17800/mcp` (local-only by default)
+- **Auth**: Bearer token (`Authorization: Bearer <token>` or `X-FluxDown-Token`), shared with the management API
+- **Enable**: Settings → API Service → toggle *MCP endpoint* (a token is generated automatically); the headless server enables it by default
+
+### Tools (9)
+
+| Tool | Description |
+|---|---|
+| `download_add` | Create a download task (HTTP/HTTPS, FTP, magnet, BitTorrent) |
+| `download_list` | List tasks with progress/speed/status, optional status filter |
+| `download_get` | Get a single task by ID |
+| `download_pause` / `download_resume` | Pause / resume one task |
+| `download_pause_all` / `download_resume_all` | Pause / resume all tasks |
+| `download_remove` | Remove a task, optionally deleting downloaded files |
+| `queue_list` | List named queues and their configuration |
+
+### Client configuration
+
+```json
+{
+  "mcpServers": {
+    "fluxdown": {
+      "url": "http://127.0.0.1:17800/mcp",
+      "headers": { "Authorization": "Bearer <your-token>" }
+    }
+  }
+}
+```
+
+The MCP layer is implemented in [`native/api/src/mcp.rs`](native/api/src/mcp.rs) on top of the same `ApiHost` trait that powers the REST management API and aria2-compatible JSON-RPC.
 
 ## Architecture
 
