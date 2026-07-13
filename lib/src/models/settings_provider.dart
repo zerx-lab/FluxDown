@@ -1307,6 +1307,30 @@ class SettingsProvider extends ChangeNotifier {
     if (_customCategories.isEmpty) {
       _customCategories = CustomCategory.defaultCategories();
     }
+    // 一次性迁移：为旧配置补充「程序」内置分类（插到「压缩包」之前）
+    if (!_customCategories.any((c) => c.builtinType == 'program')) {
+      final defaults = CustomCategory.defaultCategories();
+      final program = defaults.firstWhere((c) => c.builtinType == 'program');
+      final archiveIdx = _customCategories.indexWhere(
+        (c) => c.builtinType == 'archive',
+      );
+      final insertAt = archiveIdx >= 0 ? archiveIdx : _customCategories.length;
+      final pos = archiveIdx >= 0
+          ? _customCategories[archiveIdx].position
+          : program.position;
+      _customCategories.insert(insertAt, program.copyWith(position: pos));
+      // 顺延后续分类的 position，保证排序稳定
+      for (var i = insertAt + 1; i < _customCategories.length; i++) {
+        final c = _customCategories[i];
+        if (c.position >= pos && c.position < 100) {
+          _customCategories[i] = c.copyWith(position: c.position + 1);
+        }
+      }
+      _saveToRust(
+        'custom_categories',
+        CustomCategory.encodeList(_customCategories),
+      );
+    }
     // 配置加载后，立即查询文件关联的实际状态（仅启用了文件关联功能的实例）
     if (_enableFileAssoc) {
       checkFileAssociation();

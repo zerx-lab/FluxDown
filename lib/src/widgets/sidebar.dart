@@ -422,6 +422,7 @@ class _SidebarState extends State<Sidebar> {
         'audio' => s.categoryAudio,
         'document' => s.categoryDocument,
         'image' => s.categoryImage,
+        'program' => s.categoryProgram,
         'archive' => s.categoryArchive,
         'other' => s.categoryOther,
         _ => '',

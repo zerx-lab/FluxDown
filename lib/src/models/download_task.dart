@@ -24,6 +24,7 @@ enum FileCategory {
   audio,
   document,
   image,
+  program,
   archive,
   other;
 
@@ -35,6 +36,7 @@ enum FileCategory {
       FileCategory.audio => s.categoryAudio,
       FileCategory.document => s.categoryDocument,
       FileCategory.image => s.categoryImage,
+      FileCategory.program => s.categoryProgram,
       FileCategory.archive => s.categoryArchive,
       FileCategory.other => s.categoryOther,
     };
@@ -103,6 +105,20 @@ enum FileCategory {
     'heic',
     'avif',
   };
+  static const _programExts = {
+    'exe',
+    'msi',
+    'msix',
+    'appx',
+    'apk',
+    'dmg',
+    'pkg',
+    'deb',
+    'rpm',
+    'appimage',
+    'snap',
+    'flatpak',
+  };
   static const _archiveExts = {
     'zip',
     'rar',
@@ -113,7 +129,6 @@ enum FileCategory {
     'xz',
     'zst',
     'iso',
-    'dmg',
     'cab',
     'lz',
     'lzma',
@@ -126,6 +141,7 @@ enum FileCategory {
     if (_audioExts.contains(e)) return FileCategory.audio;
     if (_docExts.contains(e)) return FileCategory.document;
     if (_imageExts.contains(e)) return FileCategory.image;
+    if (_programExts.contains(e)) return FileCategory.program;
     if (_archiveExts.contains(e)) return FileCategory.archive;
     return FileCategory.other;
   }

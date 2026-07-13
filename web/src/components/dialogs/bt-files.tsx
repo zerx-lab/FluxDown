@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Archive, File, FileText, Film, Image as ImageIcon, Music, X } from 'lucide-react'
+import { Archive, File, FileText, Film, Image as ImageIcon, Music, Package2, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { fileType, fmtBytes, type FileType } from '../../lib/format'
@@ -15,6 +15,7 @@ const FILE_ICONS: Record<FileType, LucideIcon> = {
   audio: Music,
   document: FileText,
   image: ImageIcon,
+  program: Package2,
   archive: Archive,
   other: File,
 }

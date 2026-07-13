@@ -46,6 +46,7 @@ class S {
   String get categoryAudio => _t('音频', 'Audio');
   String get categoryDocument => _t('文档', 'Document');
   String get categoryImage => _t('图片', 'Image');
+  String get categoryProgram => _t('程序', 'Programs');
   String get categoryArchive => _t('压缩包', 'Archive');
   String get categoryOther => _t('其他', 'Other');
 

@@ -1,7 +1,7 @@
 // 单条任务行。对齐 design/web/app.js taskRow()/statusMeta()/actionBtn()/iconClass()。
 
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Check, FileText, Image as ImageIcon, Pause, Play, RotateCcw, Film, Music, File as FileIcon, Zap } from 'lucide-react'
+import { Archive, Check, FileText, Image as ImageIcon, Package2, Pause, Play, RotateCcw, Film, Music, File as FileIcon, Zap } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
@@ -18,6 +18,7 @@ const TYPE_ICONS: Record<FT, LucideIcon> = {
   audio: Music,
   document: FileText,
   image: ImageIcon,
+  program: Package2,
   archive: Archive,
   other: FileIcon,
 }

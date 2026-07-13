@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Archive, ArrowUpCircle, FileText, Image as ImageIcon, LayoutGrid, List, LogOut, Film, Music, MessageCircle, File as FileIcon, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ArrowUpCircle, FileText, Image as ImageIcon, LayoutGrid, List, LogOut, Film, Music, MessageCircle, File as FileIcon, Package2, Plus, Trash2, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { clearCredentials, getBase } from '../../lib/auth'
@@ -24,6 +24,7 @@ const TYPE_ICONS: Record<'all' | FT, LucideIcon> = {
   audio: Music,
   document: FileText,
   image: ImageIcon,
+  program: Package2,
   archive: Archive,
   other: FileIcon,
 }

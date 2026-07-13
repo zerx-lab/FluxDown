@@ -70,15 +70,16 @@ export function timeGroup(unixSecs: string | number): TimeGroup {
 
 // ---- 文件类型推断（扩展名列表对齐桌面端 download_task.dart） ----
 
-export type FileType = 'video' | 'audio' | 'document' | 'image' | 'archive' | 'other'
-export const TYPE_ORDER: ('all' | FileType)[] = ['all', 'video', 'audio', 'document', 'image', 'archive', 'other']
+export type FileType = 'video' | 'audio' | 'document' | 'image' | 'program' | 'archive' | 'other'
+export const TYPE_ORDER: ('all' | FileType)[] = ['all', 'video', 'audio', 'document', 'image', 'program', 'archive', 'other']
 export function typeLabel(k: 'all' | FileType): string {
-  const KEYS: Record<'all' | FileType, 'type.all' | 'type.video' | 'type.audio' | 'type.document' | 'type.image' | 'type.archive' | 'type.other'> = {
+  const KEYS: Record<'all' | FileType, 'type.all' | 'type.video' | 'type.audio' | 'type.document' | 'type.image' | 'type.program' | 'type.archive' | 'type.other'> = {
     all: 'type.all',
     video: 'type.video',
     audio: 'type.audio',
     document: 'type.document',
     image: 'type.image',
+    program: 'type.program',
     archive: 'type.archive',
     other: 'type.other',
   }
@@ -89,7 +90,8 @@ const VIDEO = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', '
 const AUDIO = ['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'ape', 'mid']
 const DOCUMENT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'epub', 'mobi', 'csv', 'rtf', 'odt']
 const IMAGE = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tif', 'tiff', 'heic', 'avif', 'raw']
-const ARCHIVE = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'dmg', 'pkg', 'deb', 'rpm', 'apk']
+const PROGRAM = ['exe', 'msi', 'msix', 'appx', 'apk', 'dmg', 'pkg', 'deb', 'rpm', 'appimage', 'snap', 'flatpak']
+const ARCHIVE = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst', 'iso', 'cab', 'lz', 'lzma']
 
 export function fileType(fileName: string, url = ''): FileType {
   const name = fileName || url.split('?')[0].split('/').pop() || ''
@@ -98,6 +100,7 @@ export function fileType(fileName: string, url = ''): FileType {
   if (AUDIO.includes(ext)) return 'audio'
   if (DOCUMENT.includes(ext)) return 'document'
   if (IMAGE.includes(ext)) return 'image'
+  if (PROGRAM.includes(ext)) return 'program'
   if (ARCHIVE.includes(ext)) return 'archive'
   return 'other'
 }

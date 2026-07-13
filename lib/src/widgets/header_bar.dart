@@ -182,6 +182,7 @@ class HeaderBarState extends State<HeaderBar> {
       FileCategory.audio => LucideIcons.music,
       FileCategory.document => LucideIcons.fileText,
       FileCategory.image => LucideIcons.image,
+      FileCategory.program => LucideIcons.package2,
       FileCategory.archive => LucideIcons.archive,
       _ => LucideIcons.file,
     };

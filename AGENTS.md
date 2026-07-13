@@ -271,8 +271,8 @@ x_down/
 ### 任务状态枚举（8种）
 `pending`(0) / `downloading`(1) / `paused`(2) / `completed`(3) / `error`(4) / `resuming` / `preparing`(5)
 
-### 文件类型分类（7种）
-`all` / `video`(15种扩展名) / `audio`(10种) / `document`(14种) / `image`(13种) / `archive`(13种) / `other`
+### 文件类型分类（8种）
+`all` / `video`(15种扩展名) / `audio`(10种) / `document`(16种) / `image`(14种) / `program`(12种) / `archive`(12种) / `other`
 
 ### 时间分组（5种）
 `today` / `yesterday` / `thisWeek` / `thisMonth` / `older`

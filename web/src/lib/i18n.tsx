@@ -90,6 +90,7 @@ const en = {
   'type.audio': 'Audio',
   'type.document': 'Documents',
   'type.image': 'Images',
+  'type.program': 'Programs',
   'type.archive': 'Archives',
   'type.other': 'Other',
 
@@ -454,6 +455,7 @@ const zh: Record<I18nKey, string> = {
   'type.audio': '音频',
   'type.document': '文档',
   'type.image': '图片',
+  'type.program': '程序',
   'type.archive': '压缩包',
   'type.other': '其他',
 

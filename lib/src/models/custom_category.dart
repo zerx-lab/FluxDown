@@ -60,7 +60,7 @@ class CustomCategory {
   /// 是否为内置分类（不可删除，可编辑/隐藏）
   final bool isBuiltin;
 
-  /// 内置分类类型标识：'all', 'video', 'audio', 'document', 'image', 'archive', 'other'
+  /// 内置分类类型标识：'all', 'video', 'audio', 'document', 'image', 'program', 'archive', 'other'
   /// 自定义分类此值为 null
   final String? builtinType;
 
@@ -253,15 +253,28 @@ class CustomCategory {
       builtinType: 'image',
     ),
     const CustomCategory(
+      id: '_program',
+      name: 'program',
+      icon: CategoryIcon.package2,
+      matchMode: MatchMode.extension,
+      extensions: [
+        'exe', 'msi', 'msix', 'appx', 'apk', 'dmg', 'pkg', 'deb',
+        'rpm', 'appimage', 'snap', 'flatpak',
+      ],
+      position: 5,
+      isBuiltin: true,
+      builtinType: 'program',
+    ),
+    const CustomCategory(
       id: '_archive',
       name: 'archive',
       icon: CategoryIcon.archive,
       matchMode: MatchMode.extension,
       extensions: [
         'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst',
-        'iso', 'dmg', 'cab', 'lz', 'lzma',
+        'iso', 'cab', 'lz', 'lzma',
       ],
-      position: 5,
+      position: 6,
       isBuiltin: true,
       builtinType: 'archive',
     ),
