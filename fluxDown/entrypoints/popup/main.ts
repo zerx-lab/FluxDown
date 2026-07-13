@@ -41,6 +41,8 @@ const statusBadge = $('#statusBadge')!;
 const statusText = statusBadge.querySelector('.status-text')!;
 const enableToggle = $<HTMLInputElement>('#enableToggle');
 const enableHint = $('#enableHint')!;
+const protocolToggle = $<HTMLInputElement>('#protocolToggle');
+const protocolHint = $('#protocolHint')!;
 const dotVisibleToggle = $<HTMLInputElement>('#dotVisibleToggle');
 const notifyLocalToggle = $<HTMLInputElement>('#notifyLocalToggle');
 const notifyRemoteToggle = $<HTMLInputElement>('#notifyRemoteToggle');
@@ -1102,6 +1104,8 @@ async function init() {
   // 高频开关
   enableToggle.checked = settings.enabled;
   updateEnableHint(settings.enabled);
+  protocolToggle.checked = settings.enableFluxdownProtocol === true;
+  updateProtocolHint(settings.enableFluxdownProtocol === true);
   dotVisibleToggle.checked = localState?.['fluxdown_dot_visible'] !== false;
 
   // 任务发送通知开关 + 远程投递模式（与 options 页同一 settings 源，双入口镜像）
@@ -1127,6 +1131,12 @@ async function init() {
 
 function updateEnableHint(enabled: boolean) {
   enableHint.textContent = enabled ? t('switch.enabled') : t('switch.disabled');
+}
+
+function updateProtocolHint(enabled: boolean) {
+  protocolHint.textContent = enabled
+    ? t('options.protocol.enabled')
+    : t('options.protocol.disabled');
 }
 
 /** 远程模式提示 + 未验证连接时禁用非 off 选项（与 options 页同规则） */
@@ -1194,6 +1204,12 @@ themeBtn.addEventListener('click', toggleTheme);
 // 悬浮球显示/隐藏
 dotVisibleToggle.addEventListener('change', async () => {
   await browser.storage.local.set({ fluxdown_dot_visible: dotVisibleToggle.checked });
+});
+
+// fluxdown:// 自定义协议开关
+protocolToggle.addEventListener('change', async () => {
+  await saveSettings({ enableFluxdownProtocol: protocolToggle.checked });
+  updateProtocolHint(protocolToggle.checked);
 });
 
 // 任务发送通知开关（本地 / 远程分开控制）

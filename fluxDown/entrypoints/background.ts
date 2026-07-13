@@ -2351,6 +2351,65 @@ export default defineBackground(() => {
       });
   });
 
+  // ===== fluxdown:// 自定义协议投递（仅 Android） =====
+  // Android 浏览器（Edge/Firefox/Kiwi 等支持扩展的内核）没有 NMH，
+  // 唯一可行链路是经自定义协议 URL 触发系统 VIEW intent 唤起 FluxDown App。
+  // 桌面端 App 的启动参数只解析 fluxdown:// 与 .torrent，但 NMH 链路能携带
+  // Cookie/Headers/method/body，功能是协议模式的严格超集 — 桌面一律忽略此开关。
+  const IS_ANDROID = /\bAndroid\b/i.test(navigator.userAgent);
+
+  /** 协议唤起复用的标签页 id（避免每次下载都泄漏一个空白标签页）。 */
+  let protocolTabId: number | null = null;
+  let protocolTabCloseTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * 打开 fluxdown://download?url=...&filename=... 协议 URL，触发系统唤起
+   * 已注册该协议的应用。复用单个标签页（连续下载不开一排标签），并在最后
+   * 一次唤起 4s 后自动回收标签页。
+   */
+  async function openProtocolUrl(
+    url: string,
+    filename?: string,
+  ): Promise<boolean> {
+    const params = new URLSearchParams({ url });
+    if (filename) params.set("filename", filename);
+    const protocolUrl = `fluxdown://download?${params.toString()}`;
+    console.log("[FluxDown] protocol mode — opening:", protocolUrl);
+    try {
+      if (protocolTabId !== null) {
+        try {
+          await browser.tabs.update(protocolTabId, {
+            url: protocolUrl,
+            active: true,
+          });
+        } catch {
+          // 标签页已被用户关闭 — 重新创建
+          protocolTabId = null;
+        }
+      }
+      if (protocolTabId === null) {
+        const tab = await browser.tabs.create({
+          url: protocolUrl,
+          active: true,
+        });
+        protocolTabId = tab.id ?? null;
+      }
+      // 每次唤起重置回收定时器：4s 无新请求则关闭遗留的空白/错误标签页
+      if (protocolTabCloseTimer) clearTimeout(protocolTabCloseTimer);
+      protocolTabCloseTimer = setTimeout(() => {
+        const id = protocolTabId;
+        protocolTabId = null;
+        if (id !== null) {
+          browser.tabs.remove(id).catch(() => {});
+        }
+      }, 4000);
+      return true;
+    } catch (e) {
+      console.warn("[FluxDown] failed to open fluxdown:// URL:", e);
+      return false;
+    }
+  }
+
   // ===== 核心：发送下载请求到 FluxDown App =====
   async function sendToFluxDown(
     url: string,
@@ -2365,6 +2424,41 @@ export default defineBackground(() => {
     // 引擎收到后分别下载 + mux 合并。追加为末位可选参数，不影响既有调用方。
     audioUrl?: string,
   ): Promise<boolean> {
+    // === fluxdown:// 自定义协议模式（仅 Android 生效） ===
+    // 开启后跳过 NMH/远端投递，经协议 URL 触发系统 intent 唤起 FluxDown App。
+    // 限制：不经过 NMH，Cookie/Headers/method/body 无法携带，适用于公开文件。
+    {
+      const protocolSettings = await getCachedSettings();
+      if (protocolSettings.enableFluxdownProtocol) {
+        if (!IS_ANDROID) {
+          // 桌面端忽略开关走 NMH：桌面 App 不消费协议 URL 携带的下载参数，
+          // 且拦截已取消浏览器下载，若在此短路会把下载送进黑洞。
+          console.warn(
+            "[FluxDown] fluxdown:// protocol mode is Android-only; using NMH/remote instead",
+          );
+        } else if (audioUrl) {
+          // 音视频分轨对（video+audio mux）无法经协议 URL 表达 —— 丢弃
+          // audioUrl 会下成无声视频。返回失败让调用方回退浏览器下载。
+          console.warn(
+            "[FluxDown] protocol mode cannot carry audioUrl; falling back to browser download",
+          );
+          await incrementStat("failed");
+          return false;
+        } else {
+          const ok = await openProtocolUrl(url, filename);
+          await incrementStat(ok ? "sent" : "failed");
+          if (ok && (await shouldNotifyChannel("local"))) {
+            const shownName = filename || extractCleanFilename(url) || url;
+            notify(
+              t("notify.downloadSent"),
+              t("notify.sentToFluxDown", { name: shownName }),
+            );
+          }
+          return ok;
+        }
+      }
+    }
+
     // === 预热 NMH 链路（fire-and-forget） ===
     // App 冷启动 ~0.7-1s，下方 cookie/认证收集最多 ~500ms。先发 warmup
     // 让两者并行；App 已运行时 warmup 是 ~1ms 本地应答，无副作用。
@@ -2834,6 +2928,31 @@ export default defineBackground(() => {
         }>;
         if (!Array.isArray(items) || items.length === 0) {
           return { success: false, message: "No items" };
+        }
+
+        // === fluxdown:// 协议模式（仅 Android）：批量走逐条协议唤起 ===
+        // Android 无 NMH，批量若继续走 NMH/远端必然失败。复用单标签页顺序
+        // 导航，每条间隔 800ms 让系统逐条派发 VIEW intent。认证信息无法携带。
+        {
+          const protoSettings = await getCachedSettings();
+          if (protoSettings.enableFluxdownProtocol && IS_ANDROID) {
+            let batchProtoSent = 0;
+            for (const item of items) {
+              const ok = await openProtocolUrl(item.url, item.filename);
+              if (ok) batchProtoSent++;
+              await new Promise((r) => setTimeout(r, 800));
+            }
+            await incrementStat(batchProtoSent > 0 ? "sent" : "failed");
+            if (batchProtoSent > 0 && (await shouldNotifyChannel("local"))) {
+              notify(
+                t("notify.downloadSent"),
+                t("notify.batchSentDetail", {
+                  count: String(batchProtoSent),
+                }),
+              );
+            }
+            return { success: batchProtoSent > 0, sent: batchProtoSent };
+          }
         }
 
         // 预热 NMH：App 冷启动与下方逐项 cookie 收集（各 500ms 上限）并行

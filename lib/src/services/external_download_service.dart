@@ -73,8 +73,37 @@ class ExternalDownloadService {
     _sub = ExternalDownloadRequest.rustSignalStream.listen(_onRequest);
   }
 
-  void _onRequest(RustSignalPack<ExternalDownloadRequest> pack) async {
-    final req = pack.message;
+  /// 桌面端 `fluxdown://` 协议唤起入口（启动参数 / 第二实例转发）。
+  ///
+  /// Windows 上 `protocol_registry` 把 `fluxdown://` 注册到本 exe，浏览器
+  /// 扩展协议模式或任何第三方唤起都会以协议 URL 作为启动参数进来。构造与
+  /// 浏览器扩展请求同构的 [ExternalDownloadRequest]，复用同一条
+  /// 免打扰 / 独立小窗 / 主窗口对话框处理链。服务未初始化时丢弃并记日志。
+  static void handleLocalRequest({required String url, String filename = ''}) {
+    final inst = _instance;
+    if (inst == null) {
+      logError(_tag, 'handleLocalRequest before init, dropping: $url');
+      return;
+    }
+    inst._handleRequest(
+      ExternalDownloadRequest(
+        url: url,
+        filename: filename,
+        saveDir: '',
+        referrer: '',
+        fileSize: 0,
+        mimeType: '',
+        cookies: '',
+        audioUrl: '',
+      ),
+    );
+  }
+
+  void _onRequest(RustSignalPack<ExternalDownloadRequest> pack) {
+    _handleRequest(pack.message);
+  }
+
+  Future<void> _handleRequest(ExternalDownloadRequest req) async {
     logInfo(
       _tag,
       'received request: url=${req.url}, filename=${req.filename}, size=${req.fileSize}',

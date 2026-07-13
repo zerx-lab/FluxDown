@@ -98,9 +98,14 @@ Future<void> main(List<String> args) async {
       .where((a) => a.toLowerCase().endsWith('.torrent'))
       .toList();
 
+  // 提取启动参数中的 fluxdown:// 协议 URL（Windows 注册表协议处理器：
+  // 浏览器扩展协议模式 / 网页 <a href="fluxdown://..."> 唤起本 exe）。
+  final protocolRequests = args.map(_parseFluxdownProtocolArg).nonNulls.toList();
+
   logInfo(
     'main',
-    'FluxDown starting, args=$args, torrentFiles=${torrentFilePaths.length}',
+    'FluxDown starting, args=$args, torrentFiles=${torrentFilePaths.length}, '
+    'protocolRequests=${protocolRequests.length}',
   );
 
   // 设置全局异常捕获 — Flutter 框架异常
@@ -267,6 +272,7 @@ Future<void> main(List<String> args) async {
       themeProvider: themeProvider,
       localeNotifier: localeNotifier,
       initialTorrentFiles: torrentFilePaths,
+      initialProtocolRequests: protocolRequests,
     ),
   );
 }
@@ -283,6 +289,25 @@ String _decodeFilePath(String arg) {
   return arg;
 }
 
+/// 解析 fluxdown:// 协议启动参数。
+/// 格式：`fluxdown://download?url=<encoded-url>&filename=<name>`。
+/// 非协议参数、host 不是 download、或缺少有效 url 参数时返回 null（忽略）。
+({String url, String filename})? _parseFluxdownProtocolArg(String arg) {
+  if (!arg.toLowerCase().startsWith('fluxdown://')) return null;
+  final uri = Uri.tryParse(arg);
+  if (uri == null || uri.host.toLowerCase() != 'download') {
+    logInfo('main', 'ignoring malformed fluxdown:// arg: $arg');
+    return null;
+  }
+  final url = uri.queryParameters['url']?.trim() ?? '';
+  if (url.isEmpty) {
+    logInfo('main', 'fluxdown:// arg missing url parameter: $arg');
+    return null;
+  }
+  final filename = uri.queryParameters['filename']?.trim() ?? '';
+  return (url: url, filename: filename);
+}
+
 class FluxDownApp extends StatefulWidget {
   final ThemeProvider themeProvider;
   final LocaleNotifier localeNotifier;
@@ -290,11 +315,15 @@ class FluxDownApp extends StatefulWidget {
   /// .torrent file paths passed via command-line args (Windows file association).
   final List<String> initialTorrentFiles;
 
+  /// fluxdown:// 协议请求（Windows 注册表协议处理器经启动参数传入）。
+  final List<({String url, String filename})> initialProtocolRequests;
+
   const FluxDownApp({
     super.key,
     required this.themeProvider,
     required this.localeNotifier,
     this.initialTorrentFiles = const [],
+    this.initialProtocolRequests = const [],
   });
 
   /// 允许子组件通过 context 访问 ThemeProvider
@@ -381,13 +410,16 @@ class _FluxDownAppState extends State<FluxDownApp>
       UpdateService.instance.checkForUpdate();
     });
 
-    // Handle .torrent files passed via command-line args (Windows file association).
+    // Handle .torrent files and fluxdown:// protocol URLs passed via
+    // command-line args (Windows file association / protocol handler).
     // Wait for SettingsProvider to finish loading config from Rust so we have
     // a valid defaultSaveDir, instead of a fragile fixed delay.
-    if (widget.initialTorrentFiles.isNotEmpty) {
+    if (widget.initialTorrentFiles.isNotEmpty ||
+        widget.initialProtocolRequests.isNotEmpty) {
       logInfo(
         'FluxDownApp',
-        'will process ${widget.initialTorrentFiles.length} initial torrent file(s) after config loads',
+        'will process ${widget.initialTorrentFiles.length} torrent file(s) and '
+        '${widget.initialProtocolRequests.length} protocol request(s) after config loads',
       );
       _waitForConfigAndHandleTorrentFiles();
     }
@@ -652,15 +684,20 @@ class _FluxDownAppState extends State<FluxDownApp>
     });
   }
 
-  /// Handle .torrent files passed via command-line args.
-  /// Creates download tasks using the default save directory from settings.
+  /// Handle .torrent files and fluxdown:// protocol URLs passed via
+  /// command-line args. Torrent files create tasks directly with the default
+  /// save directory; protocol URLs route into the same external download
+  /// flow as browser-extension requests (silent / popup / dialog).
   void _handleInitialTorrentFiles() {
+    _dispatchInitialProtocolRequests();
     final saveDir = _settingsForExternal.defaultSaveDir;
     if (saveDir.isEmpty) {
-      logInfo(
-        'FluxDownApp',
-        'default save dir not ready, skipping torrent file handling',
-      );
+      if (widget.initialTorrentFiles.isNotEmpty) {
+        logInfo(
+          'FluxDownApp',
+          'default save dir not ready, skipping torrent file handling',
+        );
+      }
       return;
     }
     for (final path in widget.initialTorrentFiles) {
@@ -672,9 +709,25 @@ class _FluxDownAppState extends State<FluxDownApp>
     }
   }
 
+  /// 分发启动参数中的 fluxdown:// 协议请求（幂等：配置加载监听器与超时
+  /// 兜底可能双触发 _handleInitialTorrentFiles）。
+  bool _protocolRequestsDispatched = false;
+
+  void _dispatchInitialProtocolRequests() {
+    if (_protocolRequestsDispatched) return;
+    _protocolRequestsDispatched = true;
+    for (final req in widget.initialProtocolRequests) {
+      logInfo('FluxDownApp', 'dispatching fluxdown:// arg: ${req.url}');
+      ExternalDownloadService.handleLocalRequest(
+        url: req.url,
+        filename: req.filename,
+      );
+    }
+  }
+
   /// Called when a second instance sends its command-line args via WM_COPYDATA.
-  /// Extracts .torrent file paths and creates download tasks, then brings
-  /// the window to the foreground.
+  /// Extracts .torrent file paths / fluxdown:// protocol URLs, dispatches
+  /// them, then brings the window to the foreground.
   Future<dynamic> _handleSecondInstance(MethodCall call) async {
     if (call.method == 'onSecondInstance') {
       final args = (call.arguments as List<dynamic>).cast<String>();
@@ -683,6 +736,20 @@ class _FluxDownAppState extends State<FluxDownApp>
       // Bring window to foreground.
       await windowManager.show();
       await windowManager.focus();
+
+      // fluxdown:// 协议 URL（浏览器扩展协议模式 / 网页链接唤起时，
+      // 系统启动第二实例，参数经 WM_COPYDATA 转发到本主实例）。
+      final protocolRequests = args
+          .map(_parseFluxdownProtocolArg)
+          .nonNulls
+          .toList();
+      for (final req in protocolRequests) {
+        logInfo('FluxDownApp', 'second-instance fluxdown:// arg: ${req.url}');
+        ExternalDownloadService.handleLocalRequest(
+          url: req.url,
+          filename: req.filename,
+        );
+      }
 
       // Extract .torrent file paths from the args.
       // Linux forwards file:// URIs via GApplication open signal — decode them.
@@ -693,7 +760,9 @@ class _FluxDownAppState extends State<FluxDownApp>
           .toList();
 
       if (torrentPaths.isEmpty) {
-        logInfo('FluxDownApp', 'no torrent files in second-instance args');
+        if (protocolRequests.isEmpty) {
+          logInfo('FluxDownApp', 'no actionable second-instance args');
+        }
         return;
       }
 

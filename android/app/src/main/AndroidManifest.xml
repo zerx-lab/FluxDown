@@ -60,6 +60,18 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="magnet"/>
             </intent-filter>
+            <!-- 自定义协议 fluxdown:// 唤起新建下载（与浏览器插件联动）。
+                格式：fluxdown://download?url=<encoded-url>&filename=<name>
+                浏览器插件的 enableFluxdownProtocol 开关开启后，拦截下载时
+                重定向到此协议 URL，系统（含 Android Edge/Chrome）自动唤起 FluxDown。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data
+                    android:scheme="fluxdown"
+                    android:host="download"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

@@ -48,6 +48,7 @@ const verifyStateHint = $('#verifyStateHint')!;
 const versionLabel = $('#versionLabel')!;
 const notifyLocalToggle = $<HTMLInputElement>('#notifyLocalToggle');
 const notifyRemoteToggle = $<HTMLInputElement>('#notifyRemoteToggle');
+const protocolToggle = $<HTMLInputElement>('#protocolToggle');
 
 // 拦截规则
 const extInput = $<HTMLInputElement>('#extInput');
@@ -292,6 +293,11 @@ notifyRemoteToggle.addEventListener('change', async () => {
   await saveSettings({ notifyRemoteTask: notifyRemoteToggle.checked });
 });
 
+// ===== fluxdown:// 自定义协议开关（仅 Android 生效，与 popup 双入口镜像） =====
+protocolToggle.addEventListener('change', async () => {
+  await saveSettings({ enableFluxdownProtocol: protocolToggle.checked });
+});
+
 // ===== 今日统计重置 =====
 resetStatsBtn.addEventListener('click', async () => {
   const today = new Date().toDateString();
@@ -503,6 +509,9 @@ async function init() {
   // 任务发送通知开关
   notifyLocalToggle.checked = settings.notifyLocalTask !== false;
   notifyRemoteToggle.checked = settings.notifyRemoteTask !== false;
+
+  // fluxdown:// 自定义协议开关
+  protocolToggle.checked = settings.enableFluxdownProtocol === true;
 
   // 拦截模式 / 最小文件大小
   interceptModeSelect.value = settings.interceptMode || 'smart';

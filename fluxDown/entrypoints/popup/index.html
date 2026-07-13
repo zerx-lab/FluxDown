@@ -95,6 +95,17 @@
         <div class="mode-hint" data-i18n="settings.altClickHint">Press Alt+Shift+D to quickly toggle download interception</div>
         <div class="row">
           <div class="switch-info">
+            <span class="label" data-i18n="options.protocol.label">FluxDown Protocol</span>
+            <span class="hint" id="protocolHint" data-i18n="options.protocol.disabled">Off</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="protocolToggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="mode-hint" data-i18n="options.protocol.desc">Android only: launch the FluxDown app via the fluxdown:// protocol when intercepting downloads.</div>
+        <div class="row">
+          <div class="switch-info">
             <span class="label" data-i18n="options.general.notifyLocalTitle">Local Task Notifications</span>
           </div>
           <label class="toggle">
