@@ -3100,7 +3100,16 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     );
 
     if p.use_server_time {
-        apply_server_mtime(&final_dest, &resume_last_modified, &p.task_id).await;
+        // 单流路径优先用【实际响应】锁存的 Last-Modified：If-Range 失配（文件在
+        // 暂停/下载期间变更）会导致 200 全量重下新内容，此时 probe/DB validator
+        // 里的旧时间已不属于磁盘上的字节。多段路径无此偏差——validator 失配即
+        // 整体作废并回退单流（同样拿到锁存值），仍走多段完成的只能是原版本文件，
+        // probe/DB 值即正确值。
+        let last_modified = single_result
+            .as_ref()
+            .and_then(|r| r.latched_last_modified.as_deref())
+            .unwrap_or(&resume_last_modified);
+        apply_server_mtime(&final_dest, last_modified, &p.task_id).await;
     }
 
     Ok((actual_total, finalize_renamed))
@@ -3208,6 +3217,12 @@ struct SingleDownloadResult {
     /// *decompressed* size, which has no relation to the probe's (compressed)
     /// `total_bytes` — the caller MUST skip the file-size integrity check.
     decompressed: bool,
+    /// 服务器【实际响应】的 `Last-Modified`。仅当响应体从 byte 0 全量服务时为
+    /// `Some`（全新下载，或 If-Range 失配回退 200 重下新版本）——此时磁盘内容
+    /// 以该响应为准，probe/DB validator 可能描述的是旧版本，调用方设置文件
+    /// mtime 时必须优先采用本值（空串 = 该响应未携带此头，应放弃服务器时间）。
+    /// 真 206 续传为 `None`（磁盘内容与旧 validator 一致，沿用旧值）。
+    latched_last_modified: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3402,6 +3417,14 @@ async fn download_single(
             existing_len
         );
     }
+    // 从 0 服务的全量体：锁存实际响应的 Last-Modified（见字段 doc）。
+    let latched_last_modified = (!actual_resume).then(|| {
+        resp.headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    });
 
     // Capture the response's own Content-Length before consuming the body.
     // For resumed downloads (206), this is the *remaining* length, not total.
@@ -3530,6 +3553,7 @@ async fn download_single(
     Ok(SingleDownloadResult {
         response_content_length,
         decompressed: encoding.is_some(),
+        latched_last_modified,
     })
 }
 

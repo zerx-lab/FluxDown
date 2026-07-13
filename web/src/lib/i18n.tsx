@@ -317,6 +317,9 @@ const en = {
   'set.download.uaDesc': 'Browser identity for download requests. Set to "netdisk" for Baidu Pan direct links',
   'set.download.uaDefault': 'Default (unset)',
   'set.download.uaCustomPlaceholder': 'Custom User-Agent',
+  'set.download.serverTime': 'Use server file time',
+  'set.download.serverTimeDesc':
+    "Set completed files' modified time to the server-provided Last-Modified instead of the completion time",
 
   // settings: bt
   'set.bt.desc': 'librqbit engine parameters (server side)',
@@ -658,6 +661,8 @@ const zh: Record<I18nKey, string> = {
   'set.download.uaDesc': '下载请求时使用的浏览器标识。百度网盘直链下载需设为 netdisk',
   'set.download.uaDefault': '默认（不设置）',
   'set.download.uaCustomPlaceholder': '自定义 User-Agent',
+  'set.download.serverTime': '使用服务器文件时间',
+  'set.download.serverTimeDesc': '下载完成后将文件修改时间设为服务器提供的 Last-Modified，而非下载完成时间',
 
   'set.bt.desc': 'librqbit 引擎参数（服务器端）',
   'set.bt.dht': '启用 DHT',

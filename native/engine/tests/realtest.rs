@@ -47,7 +47,8 @@ struct ServerState {
     body: Mutex<Arc<Vec<u8>>>,
     /// 当前 ETag（随 body 一起切换）。
     etag: Mutex<String>,
-    last_modified: String,
+    /// 当前 Last-Modified（可随 swap 钩子一起切换，模拟文件变更后的新时间）。
+    last_modified: Mutex<String>,
     content_type: String,
 
     /// false → 忽略所有 Range 请求，永远返回 200 全量，且不发 Accept-Ranges。
@@ -60,6 +61,9 @@ struct ServerState {
     // --- 故障注入钩子 ---
     /// 在累计第 N 个 *range* GET 完成后，把 body/etag 切换为 (新 body, 新 etag)。
     swap_after_range_gets: Option<(usize, Arc<Vec<u8>>, String)>,
+    /// swap 钩子附加项：切换 body/etag 的同时把 Last-Modified 换成该值
+    /// （None = 保持不变，既有测试零影响）。
+    swap_last_modified: Option<String>,
     /// 对第 N 个 *range* GET（1-indexed），只写响应体前 K 字节然后强行关闭连接
     /// （模拟传输中途断流 → 触发引擎重试/续传）。仅生效一次。
     drop_range_get_nth: Option<(usize, usize)>,
@@ -119,12 +123,13 @@ impl ServerState {
         Self {
             body: Mutex::new(body),
             etag: Mutex::new(etag.to_string()),
-            last_modified: "Wed, 21 Oct 2025 07:28:00 GMT".to_string(),
+            last_modified: Mutex::new("Wed, 21 Oct 2025 07:28:00 GMT".to_string()),
             content_type: "application/octet-stream".to_string(),
             support_range: true,
             advertise_accept_ranges: true,
             fake_full_content_length: None,
             swap_after_range_gets: None,
+            swap_last_modified: None,
             drop_range_get_nth: None,
             corrupt_range_get_nth: None,
             gzip_body: None,
@@ -291,6 +296,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
 
     let body = st.body.lock().await.clone();
     let etag = st.etag.lock().await.clone();
+    let last_modified = st.last_modified.lock().await.clone();
     let total = body.len() as i64;
 
     if std::env::var("RT_TRACE").is_ok() {
@@ -331,7 +337,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             h.push_str("Accept-Ranges: bytes\r\n");
         }
         h.push_str(&format!("ETag: \"{}\"\r\n", etag));
-        h.push_str(&format!("Last-Modified: {}\r\n", st.last_modified));
+        h.push_str(&format!("Last-Modified: {}\r\n", last_modified));
         h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
         h.push_str("Connection: close\r\n\r\n");
         write_all(&mut stream, h.as_bytes()).await?;
@@ -345,7 +351,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     // 全量当前文件**。FluxDown 的续传/分段修复正是依赖这一点来检出"文件中途变化"。
     let if_range_matches = match &req.if_range {
         None => true, // 无 If-Range → 正常按 Range 处理
-        Some(v) => v == &format!("\"{}\"", etag) || v == &st.last_modified,
+        Some(v) => v == &format!("\"{}\"", etag) || v == &last_modified,
     };
     let wants_range = req.range.is_some() && st.support_range && if_range_matches;
 
@@ -399,7 +405,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             h.push_str("Accept-Ranges: bytes\r\n");
         }
         h.push_str(&format!("ETag: \"{}\"\r\n", etag));
-        h.push_str(&format!("Last-Modified: {}\r\n", st.last_modified));
+        h.push_str(&format!("Last-Modified: {}\r\n", last_modified));
         h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
         h.push_str("Connection: close\r\n\r\n");
         write_all(&mut stream, h.as_bytes()).await?;
@@ -467,7 +473,7 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     h.push_str("Accept-Ranges: bytes\r\n");
     if st.emit_validators_on_range {
         h.push_str(&format!("ETag: \"{}\"\r\n", etag));
-        h.push_str(&format!("Last-Modified: {}\r\n", st.last_modified));
+        h.push_str(&format!("Last-Modified: {}\r\n", last_modified));
     }
     h.push_str(&format!("Content-Type: {}\r\n", st.content_type));
     h.push_str("Connection: close\r\n\r\n");
@@ -500,13 +506,16 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     }
     let _ = stream.shutdown().await;
 
-    // body 切换注入：达到阈值后替换 body+etag（模拟下载中文件变化）
+    // body 切换注入：达到阈值后替换 body+etag（+可选 Last-Modified），模拟下载中文件变化
     if let Some((after, ref new_body, ref new_etag)) = st.swap_after_range_gets
         && n >= after
         && st.swapped.swap(1, Ordering::SeqCst) == 0
     {
         *st.body.lock().await = new_body.clone();
         *st.etag.lock().await = new_etag.clone();
+        if let Some(new_lm) = &st.swap_last_modified {
+            *st.last_modified.lock().await = new_lm.clone();
+        }
     }
 
     Ok(())
@@ -1414,6 +1423,106 @@ async fn use_server_time_applies_last_modified_to_file_mtime() {
     assert!(
         mtime > expected,
         "❌ 关闭 use_server_time 时文件 mtime 应为本地完成时间，而非服务器时间"
+    );
+
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// use_server_time：暂停期间文件变更（续传 If-Range 失配 → 200 全量重下新版本）
+// 时，mtime 必须采用【新版本】的 Last-Modified，而非 DB 旧 validator 的时间
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn use_server_time_uses_new_last_modified_after_version_change() {
+    use fluxdown_engine::downloader::{DownloadParams, TEMP_EXT, run_download};
+
+    let work_dir = unique_dir("servertime_swap");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let size = 300_000usize;
+    let body_v1 = gen_body(size, 111);
+    let body_v2 = gen_body(size, 222);
+
+    // 服务器上已是【新版本】：etag-v2 + 新 Last-Modified（2026-03-05T12:00:00Z）。
+    let state = ServerState::new(Arc::new(body_v2.clone()), "etag-v2");
+    *state.last_modified.lock().await = "Thu, 05 Mar 2026 12:00:00 GMT".to_string();
+    let new_expected = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_772_712_000);
+    let st = Arc::new(state);
+    let server = start_server(st).await;
+    let url = server.url("/swap.bin");
+
+    // DB 里是【旧版本】的续传现场：validator = etag-v1 + 旧 Last-Modified，
+    // 磁盘上留有 v1 的部分临时文件（单流、无 segment 行）。
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "mt-swap", &url, "swap.bin", 1, size as i64).await;
+    db.set_task_validator("mt-swap", "\"etag-v1\"", "Wed, 21 Oct 2025 07:28:00 GMT")
+        .await
+        .expect("set validator");
+    let temp_path = work_dir.join(format!("swap.bin{TEMP_EXT}"));
+    tokio::fs::write(&temp_path, &body_v1[..100_000])
+        .await
+        .expect("seed partial temp");
+
+    // 单流续传：If-Range("etag-v1") 与服务器 etag-v2 失配 → 200 全量 →
+    // 引擎丢弃旧前缀、从 0 重下【新版本】。
+    let client = test_client();
+    let speed_limiter = SpeedLimiter::new(0);
+    let (tx, mut rx) = mpsc::channel::<ProgressUpdate>(256);
+    let last_status = Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let ls = last_status.clone();
+    let collector = tokio::spawn(async move {
+        while let Some(u) = rx.recv().await {
+            if u.status >= 3 {
+                ls.store(u.status, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    });
+    let params = DownloadParams {
+        auto_max_connections: 0,
+        task_id: "mt-swap".to_string(),
+        url,
+        save_dir: work_dir.to_string_lossy().to_string(),
+        file_name: "swap.bin".to_string(),
+        segment_count: 1,
+        is_resume: true,
+        range_verified: true,
+        db: db.clone(),
+        client,
+        progress_tx: tx,
+        cancel_token: CancellationToken::new(),
+        speed_limiter,
+        cookies: String::new(),
+        referrer: String::new(),
+        hint_file_size: 0,
+        proxy_config: ProxyConfig::default(),
+        sink: std::sync::Arc::new(NoopTestSink),
+        selector: std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        checksum: String::new(),
+        extra_headers: std::collections::HashMap::new(),
+        spec: RequestSpec::empty_get(),
+        audio_url: None,
+        use_server_time: true,
+    };
+    run_download(params).await;
+    let _ = collector.await;
+    let status = last_status.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(status, 3, "❌ 下载未成功");
+
+    // 磁盘内容必须是新版本（If-Range 失配后全量重下的正确性前提）。
+    let dest = work_dir.join("swap.bin");
+    let on_disk = tokio::fs::read(&dest).await.expect("read dest");
+    assert_eq!(on_disk, body_v2, "❌ 磁盘内容应为服务器上的新版本");
+
+    let mtime = tokio::fs::metadata(&dest)
+        .await
+        .expect("metadata")
+        .modified()
+        .expect("mtime");
+    assert_eq!(
+        mtime, new_expected,
+        "❌ 版本变更全量重下后，mtime 应为新版本的 Last-Modified（而非旧 validator 时间）"
     );
 
     drop(server);

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useI18n } from '../../lib/i18n'
 import type { ConfigMap } from '../../lib/types'
 import { FsPicker } from '../dialogs/fs-picker'
-import { NumberFieldRow, SetRow, SetSelect, TextInput } from './controls'
+import { NumberFieldRow, SetRow, SetSelect, SetSwitch, TextInput } from './controls'
 
 const MB = 1024 * 1024
 
@@ -45,6 +45,7 @@ export function DownloadSettings({
   const speedBytes = Number(config.speed_limit_bytes ?? '0')
   const speedMB = speedBytes > 0 ? speedBytes / MB : 0
   const ua = config.global_user_agent ?? ''
+  const useServerTime = (config.use_server_time ?? 'false') === 'true'
 
   // 自定义模式：用户在下拉里选了"自定义"，或当前值不匹配任何预设。
   const isPreset = ua === '' || UA_PRESETS.some((p) => p.value === ua)
@@ -103,6 +104,12 @@ export function DownloadSettings({
               options={uaOptions}
             />
           </div>
+        </SetRow>
+        <SetRow title={t('set.download.serverTime')} desc={t('set.download.serverTimeDesc')}>
+          <SetSwitch
+            checked={useServerTime}
+            onCheckedChange={(v) => mutate({ use_server_time: String(v) })}
+          />
         </SetRow>
       </div>
     </>
