@@ -688,10 +688,8 @@
     "batchDeleteConfirmDescKeepFile": "确定要删除选中的 {count} 个任务吗？已下载的文件将保留在磁盘上。",
     "donateDate": "{y} 年 {m} 月 {d} 日",
     "monthNames": "一月,二月,三月,四月,五月,六月,七月,八月,九月,十月,十一月,十二月",
-
     "settingsCatPlugins": "插件",
     "settingsCatPluginsDesc": "管理已安装插件与浏览插件市场",
-
     "pluginsSectionTitle": "已安装插件",
     "pluginsEmpty": "暂无已安装插件",
     "pluginCommonLoading": "加载中…",
@@ -714,7 +712,6 @@
     "pluginOpUninstallFailed": "卸载失败：{message}",
     "pluginOpEnabledFailed": "更新失败：{message}",
     "pluginOpGenericFailed": "操作失败：{message}",
-
     "marketSectionTitle": "插件市场",
     "marketSectionDesc": "从去中心化镜像浏览并安装社区插件",
     "marketEmpty": "暂无可用插件",
@@ -739,7 +736,6 @@
     "marketYankedVulnerable": "存在安全漏洞",
     "marketYankedMalicious": "已标记恶意",
     "marketRefreshTooltip": "刷新",
-
     "pluginSettingsDialogTitle": "{name} 设置",
     "pluginSettingsSaveButton": "保存",
     "pluginSettingsSaving": "保存中…",
@@ -752,15 +748,12 @@
     "pluginErrSelect": "请选择一个有效选项",
     "pluginSelectPlaceholder": "请选择…",
     "pluginFolderPickPlaceholder": "选择文件夹",
-
     "taskIgnorePluginRetry": "忽略插件重试",
     "taskIgnorePluginRetryTitle": "忽略插件重试",
     "taskIgnorePluginRetryMsg": "此任务在插件解析阶段失败。忽略后将跳过该插件，直接使用原始链接重试下载。如果问题持续出现，可前往「设置 → 插件」检查该插件的配置。",
     "pluginAutoDisabledToast": "插件「{name}」已因连续失败被自动禁用，可在「设置 → 插件」中重新启用",
-
     "settingsCatComponents": "组件",
     "settingsCatComponentsDesc": "管理可选的外部工具",
-
     "componentsFfmpegTitle": "FFmpeg",
     "componentsFfmpegDesc": "开源音视频处理工具，FluxDown 用它合并 DASH 等流媒体下载产生的独立音视频轨",
     "componentsStatusLoading": "探测中…",
@@ -772,13 +765,11 @@
     "componentsSourceSystem": "系统 PATH",
     "componentsSystemPathLabel": "系统 PATH：",
     "componentsSystemPathNotFound": "未找到",
-
     "componentsManualPathLabel": "手动指定路径",
     "componentsManualPathDesc": "直接指定 FFmpeg 可执行文件路径，优先级高于组件安装与系统 PATH",
     "componentsManualPathHint": "例如 C:\\tools\\ffmpeg\\ffmpeg.exe",
     "componentsManualPathSave": "保存",
     "componentsManualPathClear": "清除",
-
     "componentsInstallSectionTitle": "托管安装",
     "componentsInstallSectionDesc": "按需从官方 BtbN/FFmpeg-Builds 发行版下载静态构建，不随安装包分发",
     "componentsFetchVersionsButton": "刷新版本列表",
