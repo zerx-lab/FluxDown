@@ -4601,16 +4601,20 @@ class _ComponentsContentState extends State<_ComponentsContent> {
     final status = _provider.status;
     final hasManaged = status != null && status.managedVersion.isNotEmpty;
 
-    return _SettingCard(
+    return _ComponentAccordionCard(
       label: s.componentsFfmpegTitle,
       description: s.componentsFfmpegDesc,
-      vertical: true,
-      child: Column(
+      summary: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildStatusRow(c, s, status),
           const SizedBox(height: 8),
           _buildSystemPathRow(c, s, status),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           const SizedBox(height: 16),
           Divider(height: 1, color: m.borderFaint(c.border)),
           const SizedBox(height: 16),
@@ -4944,6 +4948,127 @@ class _ComponentsContentState extends State<_ComponentsContent> {
           style: TextStyle(fontSize: 11, color: c.textMuted),
         ),
       ],
+    );
+  }
+}
+
+/// 组件手风琴卡片：视觉复刻 [_SettingCard]（surface1 圆角卡 + 高亮闪烁），
+/// 头部（组件名 + 描述 + 基础状态摘要）常显且整体可点击，展开后显示
+/// 安装与配置操作区（[child]）。经 [_HighlightConsumer] 继续支持设置搜索
+/// 定位 + 闪烁高亮。
+class _ComponentAccordionCard extends StatefulWidget {
+  final String label;
+  final String description;
+
+  /// 折叠态也常显的基础信息（当前来源/版本/系统 PATH）。
+  final Widget summary;
+
+  /// 展开后才显示的操作区（手动路径 + 托管安装/卸载）。
+  final Widget child;
+
+  const _ComponentAccordionCard({
+    required this.label,
+    required this.description,
+    required this.summary,
+    required this.child,
+  });
+
+  @override
+  State<_ComponentAccordionCard> createState() =>
+      _ComponentAccordionCardState();
+}
+
+class _ComponentAccordionCardState extends State<_ComponentAccordionCard>
+    with _HighlightConsumer {
+  bool _expanded = false;
+
+  @override
+  String get highlightLabel => widget.label;
+  @override
+  String get highlightDescription => widget.description;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: flashing ? m.subtle(c.accent) : c.surface1,
+        borderRadius: m.brDialog,
+        border: Border.all(
+          color: flashing ? m.emphasis(c.accent) : m.borderMedium(c.border),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.label,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: c.textPrimary,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.description,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: c.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      AnimatedRotation(
+                        turns: _expanded ? 0.5 : 0,
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeInOut,
+                        child: Icon(
+                          LucideIcons.chevronDown,
+                          size: 16,
+                          color: c.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  widget.summary,
+                ],
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeInOut,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? SizedBox(width: double.infinity, child: widget.child)
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
     );
   }
 }
