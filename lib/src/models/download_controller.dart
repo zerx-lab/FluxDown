@@ -91,6 +91,21 @@ class DownloadController extends ChangeNotifier {
   /// 当活跃任务完成/出错时由 _resumeNextDeferred() 逐个发送到 Rust。
   final List<String> _deferredResumeQueue = [];
 
+  /// 插件钩子活动追踪：taskId → 正在运行的 pluginId 集合（旁路 UI 指示器，
+  /// 不影响任务状态机）。集合非空即在该任务上显示「插件处理中…」。
+  final Map<String, Set<String>> _pluginHookActivity = {};
+
+  /// 插件钩子活动起始时间：taskId → 本轮首个钩子开始时刻（详情面板耗时显示）。
+  final Map<String, DateTime> _pluginHookSince = {};
+
+  /// 插件钩子活动看门狗：taskId → Timer。`running=true` 时设置/重置，
+  /// 超时未收到对应 `running=false`（通知平面 fire-and-forget，事件可能
+  /// 丢失）则清空该任务的活动记录，防止指示器悬挂。
+  final Map<String, Timer> _pluginHookWatchdogs = {};
+
+  /// 看门狗超时 = 钩子墙钟硬顶 1830s + 30s 余量。
+  static const _pluginHookWatchdogTimeout = Duration(seconds: 1860);
+
   StreamSubscription<RustSignalPack<TaskProgress>>? _progressSub;
   StreamSubscription<RustSignalPack<AllTasks>>? _allTasksSub;
   StreamSubscription<RustSignalPack<SegmentProgress>>? _segmentSub;
@@ -100,6 +115,7 @@ class DownloadController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<AllQueues>>? _allQueuesSub;
   StreamSubscription<RustSignalPack<PriorityTaskChanged>>? _prioritySub;
   StreamSubscription<RustSignalPack<FileMissingChanged>>? _fileMissingSub;
+  StreamSubscription<RustSignalPack<PluginHookActivityEvent>>? _pluginHookSub;
 
   bool _disposed = false;
 
@@ -126,6 +142,11 @@ class DownloadController extends ChangeNotifier {
     _allQueuesSub?.cancel();
     _prioritySub?.cancel();
     _fileMissingSub?.cancel();
+    _pluginHookSub?.cancel();
+    for (final timer in _pluginHookWatchdogs.values) {
+      timer.cancel();
+    }
+    _pluginHookWatchdogs.clear();
     super.dispose();
     logInfo(_tag, 'dispose done');
   }
@@ -992,6 +1013,9 @@ class DownloadController extends ChangeNotifier {
     _fileMissingSub = FileMissingChanged.rustSignalStream.listen(
       _onFileMissingChanged,
     );
+    _pluginHookSub = PluginHookActivityEvent.rustSignalStream.listen(
+      _onPluginHookActivity,
+    );
   }
 
   void _onAllTasks(RustSignalPack<AllTasks> pack) {
@@ -1050,6 +1074,53 @@ class DownloadController extends ChangeNotifier {
     }
     if (changed) _safeNotifyListeners();
   }
+
+  /// 插件钩子活动指示：`running=true` 加入 `(taskId, pluginId)` 并设/重置
+  /// 看门狗；`running=false` 移除，集合空则整条清理并取消看门狗。纯旁路 UI
+  /// 状态，不驱动 _tasks 状态机。
+  void _onPluginHookActivity(RustSignalPack<PluginHookActivityEvent> pack) {
+    if (_disposed) return;
+    final e = pack.message;
+    if (e.running) {
+      final set = _pluginHookActivity[e.taskId] ??= {};
+      if (set.isEmpty) {
+        // 该任务本轮首个活动钩子：记录起始时间供详情面板显示耗时。
+        _pluginHookSince[e.taskId] = DateTime.now();
+      }
+      set.add(e.pluginId);
+      _pluginHookWatchdogs[e.taskId]?.cancel();
+      _pluginHookWatchdogs[e.taskId] = Timer(_pluginHookWatchdogTimeout, () {
+        logInfo(
+          _tag,
+          'plugin hook watchdog fired: task=${e.taskId} — 清除悬挂的插件处理指示',
+        );
+        _pluginHookActivity.remove(e.taskId);
+        _pluginHookSince.remove(e.taskId);
+        _pluginHookWatchdogs.remove(e.taskId);
+        _safeNotifyListeners();
+      });
+    } else {
+      final activePlugins = _pluginHookActivity[e.taskId];
+      activePlugins?.remove(e.pluginId);
+      if (activePlugins == null || activePlugins.isEmpty) {
+        _pluginHookActivity.remove(e.taskId);
+        _pluginHookSince.remove(e.taskId);
+        _pluginHookWatchdogs.remove(e.taskId)?.cancel();
+      }
+    }
+    _safeNotifyListeners();
+  }
+
+  /// 该任务当前是否有插件钩子正在处理（旁路 UI 指示器，不代表任务状态）。
+  bool isPluginProcessing(String taskId) =>
+      _pluginHookActivity[taskId]?.isNotEmpty ?? false;
+
+  /// 正在处理该任务的插件 identity 集合（快照拷贝；无活动时为空集）。
+  Set<String> pluginProcessingIds(String taskId) =>
+      Set.unmodifiable(_pluginHookActivity[taskId] ?? const <String>{});
+
+  /// 本轮插件处理的起始时间（无活动时为 null），供详情面板显示耗时。
+  DateTime? pluginProcessingSince(String taskId) => _pluginHookSince[taskId];
 
   void _onProgress(RustSignalPack<TaskProgress> pack) {
     if (_disposed) return;

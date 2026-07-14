@@ -29,6 +29,7 @@
     "statusPreparing": "Preparing",
     "statusResuming": "Resuming",
     "statusFileMissing": "File deleted",
+    "pluginProcessing": "Plugin processing…",
     "subtitlePaused": "Paused",
     "subtitleError": "Download Failed",
     "subtitlePending": "Pending...",

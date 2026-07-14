@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -37,6 +38,27 @@ class DetailPanel extends StatefulWidget {
 }
 
 class _DetailPanelState extends State<DetailPanel> {
+  /// 插件处理耗时显示的 1s 刷新 ticker（仅在有插件活动时运行）。
+  Timer? _pluginTicker;
+
+  @override
+  void dispose() {
+    _pluginTicker?.cancel();
+    super.dispose();
+  }
+
+  /// 按当前活动状态启停 ticker（build 内调用，幂等）。
+  void _syncPluginTicker(bool active) {
+    if (active && _pluginTicker == null) {
+      _pluginTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!active && _pluginTicker != null) {
+      _pluginTicker?.cancel();
+      _pluginTicker = null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -435,9 +457,14 @@ class _DetailPanelState extends State<DetailPanel> {
         segs != null ? segs.where((s) => s.progress < 1.0).length : 0;
     final segCount = activeCount > 0 ? activeCount : null;
     final splitCount = task.recentSplits.length;
+    final pluginActive =
+        task.status == TaskStatus.completed &&
+        widget.controller.isPluginProcessing(task.id);
+    _syncPluginTicker(pluginActive);
 
     return Column(
       children: [
+        if (pluginActive) _buildPluginActivityCard(c, task),
         _buildInfoRow(currentS.infoSize, task.sizeText, c),
         _buildInfoRow(currentS.infoDownloaded, task.downloadedText, c),
         _buildInfoRow(currentS.infoSpeed, task.speedText, c),
@@ -546,6 +573,77 @@ class _DetailPanelState extends State<DetailPanel> {
         ],
       ),
     );
+  }
+
+  /// 插件处理中卡片 — 已完成任务的 onDone 钩子（如 ffmpeg 转码）仍在运行：
+  /// 显示旋转指示、插件 identity 与已耗时（ticker 每秒刷新）。
+  /// 旁路 UI 指示，不代表任务状态机。
+  Widget _buildPluginActivityCard(AppColors c, DownloadTask task) {
+    final ids = widget.controller.pluginProcessingIds(task.id);
+    final since = widget.controller.pluginProcessingSince(task.id);
+    final elapsed = since == null ? null : DateTime.now().difference(since);
+    final title = elapsed == null
+        ? currentS.pluginProcessing
+        : '${currentS.pluginProcessing} · ${_formatElapsed(elapsed)}';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: c.accent.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: c.accent.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.5,
+                  color: c.accent,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      color: c.accent,
+                    ),
+                  ),
+                  if (ids.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      ids.join('、'),
+                      style: TextStyle(fontSize: 10.5, color: c.textMuted),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 耗时格式：`23s` / `1m05s`。
+  static String _formatElapsed(Duration d) {
+    final mins = d.inMinutes;
+    final secs = d.inSeconds % 60;
+    if (mins <= 0) return '${secs}s';
+    return '${mins}m${secs.toString().padLeft(2, '0')}s';
   }
 
   Widget _buildUrlRow(AppColors c, String url) {

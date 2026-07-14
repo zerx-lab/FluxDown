@@ -1,13 +1,13 @@
 // 单条任务行。对齐 design/web/app.js taskRow()/statusMeta()/actionBtn()/iconClass()。
 
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Ban, Archive, Check, FileText, Image as ImageIcon, Package2, Pause, Play, RotateCcw, Film, Music, File as FileIcon, Zap } from 'lucide-react'
+import { Ban, Archive, Check, FileText, Image as ImageIcon, Loader2, Package2, Pause, Play, RotateCcw, Film, Music, File as FileIcon, Zap } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { fileType, fmtBytes, fmtEta, fmtSpeed, fmtTime, protoLabel, type FileType as FT } from '../../lib/format'
 import { translateBackendMessage, useI18n } from '../../lib/i18n'
-import { priorityStore, useStore } from '../../lib/ws'
+import { priorityStore, useStore, useTaskPluginActivity } from '../../lib/ws'
 import type { QueueDto } from '../../lib/types'
 import { TaskContextMenu } from './TaskContextMenu'
 import { useTasksUi } from './context'
@@ -35,6 +35,7 @@ function statusIconClass(status: ViewTask['status']): string {
 
 function TaskMeta({ t }: { t: ViewTask }) {
   const { t: tr } = useI18n()
+  const pluginActive = useTaskPluginActivity(t.taskId)
   const sep = <span className="sep">·</span>
   if (t.status === 1) {
     return (
@@ -69,6 +70,15 @@ function TaskMeta({ t }: { t: ViewTask }) {
         <span>{fmtBytes(t.totalBytes)}</span>
         {sep}
         <span>{fmtTime(t.createdAt)}</span>
+        {pluginActive && (
+          <>
+            {sep}
+            <span className="plugin-activity">
+              <Loader2 size={11} className="animate-spin" />
+              {tr('status.pluginProcessing')}
+            </span>
+          </>
+        )}
       </>
     )
   }

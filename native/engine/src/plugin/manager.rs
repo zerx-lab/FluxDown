@@ -481,32 +481,53 @@ impl PluginManager {
                 self.hook_budget
             };
             let event = event.clone();
+            // onDone 活动指示：带产物钩子可能长时（ffmpeg 转码），旁路上报
+            // 开始/结束供 UI 显示「插件处理中」，不触碰任务状态机。
+            let activity_task_id = match &event {
+                PluginEvent::Done { task_id, .. } => Some(task_id.clone()),
+                _ => None,
+            };
+            let activity_plugin_id = p.manifest.identity.clone();
+            let sink = self.sink.clone();
             let handle = self.runtime.spawn_handle();
             let dev = p.dev;
             let hooks_entry = p.hooks_entry.clone();
             let hooks_cache = p.hooks_cache.clone();
 
             handle.spawn(async move {
+                if let Some(tid) = &activity_task_id {
+                    sink.emit(EngineEvent::PluginHookActivity {
+                        task_id: tid.clone(),
+                        plugin_id: activity_plugin_id.clone(),
+                        running: true,
+                    });
+                }
                 let source = match (hooks_entry, dev) {
                     (Some(path), true) => tokio::fs::read_to_string(&path).await.ok(),
                     (Some(_), false) => hooks_cache,
                     (None, _) => None,
                 };
-                let Some(source) = source else {
-                    return;
-                };
-                let values = load_setting_values_db(&db, &identity).await;
-                let settings_json = build_typed_settings_json(&manifest, &values);
-                let script = PluginScript {
-                    identity,
-                    source,
-                    entry_fn_hint: PluginEntryKind::Hook,
-                    version,
-                    app_version,
-                };
-                runtime
-                    .invoke_hook(&script, event, settings_json, bridge, budget, host)
-                    .await;
+                if let Some(source) = source {
+                    let values = load_setting_values_db(&db, &identity).await;
+                    let settings_json = build_typed_settings_json(&manifest, &values);
+                    let script = PluginScript {
+                        identity,
+                        source,
+                        entry_fn_hint: PluginEntryKind::Hook,
+                        version,
+                        app_version,
+                    };
+                    runtime
+                        .invoke_hook(&script, event, settings_json, bridge, budget, host)
+                        .await;
+                }
+                if let Some(tid) = &activity_task_id {
+                    sink.emit(EngineEvent::PluginHookActivity {
+                        task_id: tid.clone(),
+                        plugin_id: activity_plugin_id,
+                        running: false,
+                    });
+                }
             });
         }
     }

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -26,6 +28,9 @@ class TaskListItem extends StatefulWidget {
   final bool isPriority;
   final VoidCallback? onBoost;
 
+  /// 插件钩子处理中（旁路 UI 指示，仅在 completed 状态下有意义）
+  final bool isPluginProcessing;
+
   /// 管理模式相关
   final bool isManageMode;
   final bool isChecked;
@@ -42,6 +47,7 @@ class TaskListItem extends StatefulWidget {
     this.onDoubleTap,
     this.isPriority = false,
     this.onBoost,
+    this.isPluginProcessing = false,
     this.isManageMode = false,
     this.isChecked = false,
     this.onToggleChecked,
@@ -185,6 +191,20 @@ class _TaskListItemState extends State<TaskListItem> {
         ),
       ),
     );
+    // 插件（onDone 钩子）仍在处理该已完成任务：文件图标外圈旋转扫光边框，
+    // 纯旁路指示，不改变状态列布局。
+    if (task.status == TaskStatus.completed && widget.isPluginProcessing) {
+      final s = LocaleScope.of(context);
+      icon = ShadTooltip(
+        waitDuration: const Duration(milliseconds: 300),
+        builder: (_) => Text(s.pluginProcessing),
+        child: _PluginProcessingRing(
+          borderRadius: m.brMd,
+          color: c.accent,
+          child: icon,
+        ),
+      );
+    }
     if (canDragOut) {
       final filePath = task.filePath;
       final fileName = task.fileName;
@@ -356,12 +376,11 @@ class _TaskListItemState extends State<TaskListItem> {
       case TaskStatus.pending:
         statusColor = c.textMuted;
     }
-    return Center(
-      child: Text(
-        task.statusText,
-        style: TextStyle(fontSize: 12, color: statusColor),
-      ),
+    final statusText = Text(
+      task.statusText,
+      style: TextStyle(fontSize: 12, color: statusColor),
     );
+    return Center(child: statusText);
   }
 }
 
@@ -1015,4 +1034,92 @@ class _KeyBadge extends StatelessWidget {
       ),
     );
   }
+}
+
+// =============================================================================
+// 插件处理中 — 文件图标外圈旋转扫光边框（旁路指示，不影响任务状态机）
+// =============================================================================
+
+class _PluginProcessingRing extends StatefulWidget {
+  final BorderRadius borderRadius;
+  final Color color;
+  final Widget child;
+
+  const _PluginProcessingRing({
+    required this.borderRadius,
+    required this.color,
+    required this.child,
+  });
+
+  @override
+  State<_PluginProcessingRing> createState() => _PluginProcessingRingState();
+}
+
+class _PluginProcessingRingState extends State<_PluginProcessingRing>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) => CustomPaint(
+        foregroundPainter: _SweepBorderPainter(
+          progress: _ctrl.value,
+          color: widget.color,
+          borderRadius: widget.borderRadius,
+        ),
+        child: child,
+      ),
+      child: widget.child,
+    );
+  }
+}
+
+/// 旋转扫光描边：SweepGradient 沿圆角矩形边框旋转，形成「追光」环。
+class _SweepBorderPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  final BorderRadius borderRadius;
+
+  _SweepBorderPainter({
+    required this.progress,
+    required this.color,
+    required this.borderRadius,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final rrect = borderRadius.toRRect(rect.deflate(0.75));
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.round
+      ..shader = SweepGradient(
+        colors: [
+          color.withValues(alpha: 0),
+          color.withValues(alpha: 0),
+          color,
+        ],
+        stops: const [0.0, 0.55, 1.0],
+        transform: GradientRotation(progress * 2 * math.pi),
+      ).createShader(rect);
+    canvas.drawRRect(rrect, paint);
+  }
+
+  @override
+  bool shouldRepaint(_SweepBorderPainter old) =>
+      old.progress != progress ||
+      old.color != color ||
+      old.borderRadius != borderRadius;
 }

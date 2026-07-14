@@ -405,6 +405,7 @@ svg { display: block; }
 .trow-meta .ok { color: var(--success); font-weight: 500; }
 .trow-meta .err { color: var(--danger); }
 .trow-meta .paused-t { color: var(--warning); }
+.trow-meta .plugin-activity { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
 
 .trow-bar { height: 4px; border-radius: 3px; background: var(--track); overflow: hidden; }
 .trow-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .5s linear; }

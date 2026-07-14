@@ -304,6 +304,17 @@ impl EventSink for EngineEventSink {
             EngineEvent::PluginAutoDisabled { identity, reason } => {
                 WsServerMsg::PluginAutoDisabled { identity, reason }
             }
+            // 插件 onDone 钩子活动状态（running=true/false），驱动“插件处理
+            // 中…”指示器；可能并发/丢失，客户端自带看门狗兜底。
+            EngineEvent::PluginHookActivity {
+                task_id,
+                plugin_id,
+                running,
+            } => WsServerMsg::PluginHookActivity {
+                task_id,
+                plugin_id,
+                running,
+            },
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志。
             other => {
                 log_info!("[ws-hub] unhandled engine event: {:?}", other);

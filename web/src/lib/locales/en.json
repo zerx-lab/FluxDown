@@ -47,6 +47,7 @@
     "status.preparingEllipsis": "Preparing…",
     "status.downloadFailed": "Download error",
     "status.eta": "ETA {eta}",
+    "status.pluginProcessing": "Plugin processing…",
     "time.today": "Today",
     "time.yesterday": "Yesterday",
     "time.thisWeek": "This week",

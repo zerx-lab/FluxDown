@@ -72,6 +72,7 @@ class S {
   String get statusPreparing => _r('statusPreparing');
   String get statusResuming => _r('statusResuming');
   String get statusFileMissing => _r('statusFileMissing');
+  String get pluginProcessing => _r('pluginProcessing');
 
   // ─────────────────────────────────────────────
   // 任务副标题

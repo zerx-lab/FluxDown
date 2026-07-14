@@ -198,6 +198,9 @@ class _TaskListState extends State<TaskList> {
                             .deleteTask(task.id, deleteFiles: deleteFiles),
                     isPriority: widget.controller.priorityTaskId == task.id,
                     onBoost: () => widget.controller.setPriorityTask(task.id),
+                    isPluginProcessing: widget.controller.isPluginProcessing(
+                      task.id,
+                    ),
                     isManageMode: isManage,
                     isChecked:
                         widget.controller.checkedTaskIds.contains(task.id),

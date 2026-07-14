@@ -802,6 +802,17 @@ pub struct PluginAutoDisabledNotice {
     pub reason: String,
 }
 
+/// A plugin's onDone hook started/finished running for a task, purely
+/// informational — does not affect task status (Rust → Dart). Same
+/// `(task_id, plugin_id)` pair may fire multiple times; Dart should track
+/// activity as a `(task_id, plugin_id)` set, not assume single-shot.
+#[derive(Serialize, RustSignal)]
+pub struct PluginHookActivityEvent {
+    pub task_id: String,
+    pub plugin_id: String,
+    pub running: bool,
+}
+
 /// Nested plugin info piece — mirrors `fluxdown_engine::plugin::PluginInfo`.
 /// Hub-local: not shared with `fluxdown_api`'s `PluginDto` (hub→api is a
 /// one-way dependency).

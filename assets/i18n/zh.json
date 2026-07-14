@@ -29,6 +29,7 @@
     "statusPreparing": "准备中",
     "statusResuming": "恢复中",
     "statusFileMissing": "文件已删除",
+    "pluginProcessing": "插件处理中…",
     "subtitlePaused": "已暂停",
     "subtitleError": "下载失败",
     "subtitlePending": "等待中...",

@@ -109,6 +109,18 @@ pub enum EngineEvent {
         /// 同 `DisabledReason` 的 PascalCase 惯例（熔断路径固定 `CircuitBreaker`）。
         reason: String,
     },
+
+    /// 插件钩子活动指示：带产物的任务级钩子（onDone，可能含长时 ffmpeg 转码）
+    /// 开始（`running=true`）/结束（`running=false`）。**纯旁路 UI 提示，不影响
+    /// 任务状态机**（通知平面 fire-and-forget 契约不变）；宿主 UI 应自设看门狗
+    /// （钩子墙钟硬顶 1830s）防结束事件丢失导致指示器悬挂。
+    /// hub → `PluginHookActivityEvent` 信号；server → WS `pluginHookActivity`。
+    /// 仅 `plugins` feature 下由 `PluginManager` 发出。
+    PluginHookActivity {
+        task_id: String,
+        plugin_id: String,
+        running: bool,
+    },
 }
 
 /// 引擎事件的接收端,由宿主实现并注入 [`crate::Engine`]。

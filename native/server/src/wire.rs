@@ -168,6 +168,15 @@ pub enum WsServerMsg {
     Pong {},
     /// 插件因熔断（连续超时/过载）被自动禁用（`reason` 固定 `"CircuitBreaker"`）。
     PluginAutoDisabled { identity: String, reason: String },
+    /// 插件 onDone 钩子执行中（`running=true` 开始/`false` 结束）；同一任务可
+    /// 有多个插件并发钩子，客户端按 `(taskId, pluginId)` 集合跟踪，用于在
+    /// 已完成任务旁显示“插件处理中…”指示器。事件可能因 fire-and-forget 丢失
+    /// （尤其是 `running=false`），客户端需自带看门狗超时兜底清除。
+    PluginHookActivity {
+        task_id: String,
+        plugin_id: String,
+        running: bool,
+    },
     /// 插件表发生增删改（安装/卸载/启停/设置变更）；空载荷 ping，客户端收到后
     /// 全量 invalidate 插件列表查询。
     PluginsChanged {},
@@ -392,6 +401,20 @@ mod tests {
         assert!(json.contains("\"type\":\"taskProgress\""));
         assert!(json.contains("\"taskId\":\"t1\""));
         assert!(json.contains("\"downloadedBytes\":10"));
+    }
+
+    #[test]
+    fn ws_server_msg_plugin_hook_activity_uses_camel_case() {
+        let msg = WsServerMsg::PluginHookActivity {
+            task_id: "t1".into(),
+            plugin_id: "p1".into(),
+            running: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"pluginHookActivity\""));
+        assert!(json.contains("\"taskId\":\"t1\""));
+        assert!(json.contains("\"pluginId\":\"p1\""));
+        assert!(json.contains("\"running\":true"));
     }
 
     #[test]

@@ -99,6 +99,7 @@ export type WsServerMsg =
   | { type: 'btSelectionRequest'; taskId: string; files: BtFileEntry[] }
   | { type: 'pluginsChanged' }
   | { type: 'pluginAutoDisabled'; identity: string; reason: string }
+  | { type: 'pluginHookActivity'; taskId: string; pluginId: string; running: boolean }
   | { type: 'componentProgress'; component: string; downloadedBytes: number; totalBytes: number }
   | { type: 'componentResult'; component: string; ok: boolean; message: string }
   | { type: 'pong' }

@@ -261,6 +261,18 @@ impl EventSink for RinfEventSink {
             EngineEvent::PluginAutoDisabled { identity, reason } => {
                 signals::PluginAutoDisabledNotice { identity, reason }.send_signal_to_dart();
             }
+            EngineEvent::PluginHookActivity {
+                task_id,
+                plugin_id,
+                running,
+            } => {
+                signals::PluginHookActivityEvent {
+                    task_id,
+                    plugin_id,
+                    running,
+                }
+                .send_signal_to_dart();
+            }
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志，而非编译失败。
             _ => {
                 crate::logger::log_info!(
