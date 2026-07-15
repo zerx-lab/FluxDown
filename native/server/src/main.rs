@@ -28,7 +28,7 @@ use fluxdown_engine::{Engine, EngineConfig};
 use tokio::sync::mpsc;
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::actor::{ActorCmd, bt_config_from_map, run_actor};
+use crate::actor::{ActorCmd, bt_config_from_map, refresh_tracker_sub, run_actor};
 use crate::config::{ServerConfig, default_save_dir, ensure_server_config};
 use crate::host::ServerApiHost;
 use crate::routes_ext::{ServerState, extra_router};
@@ -196,6 +196,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         resolve_rx,
         plugin_retry_rx,
     ));
+
+    // Tracker 订阅启动自动刷新：启用且缓存超过刷新周期未更新时，后台拉取一次
+    // （镜像桌面 download_actor 的启动自刷新；不阻塞 serve）。
+    {
+        let sub_enabled = all_cfg
+            .get("bt_tracker_sub_enabled")
+            .map(|v| v == "true")
+            .unwrap_or(true);
+        let updated_at = all_cfg
+            .get("bt_tracker_sub_updated_at")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if sub_enabled
+            && now.saturating_sub(updated_at)
+                > fluxdown_engine::tracker_subscription::REFRESH_INTERVAL_SECS
+        {
+            log_info!(
+                "[server] tracker subscription stale (updated_at={}), auto-refreshing",
+                updated_at
+            );
+            let db = db_handle.clone();
+            let tx = cmd_tx.clone();
+            tokio::spawn(async move {
+                refresh_tracker_sub(&db, &tx).await;
+            });
+        }
+    }
 
     // 路由：核心（fluxdown_api 复用）+ 扩展（本 crate）+ SPA 静态托管。
     let api_cfg = ApiServerConfig::from_config_map(&all_cfg, SERVER_VERSION);

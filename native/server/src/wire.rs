@@ -285,6 +285,24 @@ pub struct ProxyTestResponse {
     pub latency_ms: i64,
 }
 
+/// Tracker 订阅刷新结果（`POST /api/v1/bt/tracker-sub/refresh`）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackerSubRefreshResponse {
+    /// 至少一个订阅源拉取成功。
+    pub success: bool,
+    /// 去重合并后的唯一 Tracker 数。
+    pub tracker_count: i64,
+    /// 成功拉取的源数。
+    pub ok_sources: i64,
+    /// 尝试的订阅源总数。
+    pub total_sources: i64,
+    /// 缓存更新时间（Unix 秒；本次未成功时沿用旧值）。
+    pub updated_at: i64,
+    /// 全部源失败时的错误摘要（成功时为空）。
+    pub error: String,
+}
+
 /// 创建命名队列请求（`POST /api/v1/queues`）。
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

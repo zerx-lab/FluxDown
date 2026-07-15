@@ -426,6 +426,7 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
             | "bt_custom_trackers"
             | "bt_tracker_sub_enabled"
             | "bt_tracker_sub_urls"
+            | "bt_tracker_sub_cache"
                 if !bt_applied =>
             {
                 bt_applied = true;
@@ -485,6 +486,55 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
             String::new()
         },
     }
+}
+
+/// 拉取全部 Tracker 订阅源、去重后写回 `bt_tracker_sub_cache` /
+/// `bt_tracker_sub_updated_at` 配置，再经 actor 重载 [`BtConfig`] 并失效当前
+/// BT 会话（下个 BT 任务即用上最新合并列表）。返回抓取结果供 HTTP 层回执。
+///
+/// 网络拉取在**调用方任务**内执行（不占用 actor 事件循环）；全部源失败时
+/// 不改动缓存，保留上次成功的列表。
+pub async fn refresh_tracker_sub(
+    db: &Db,
+    cmd_tx: &mpsc::Sender<ActorCmd>,
+) -> fluxdown_engine::tracker_subscription::FetchOutcome {
+    let cfg = db.get_all_config().await.unwrap_or_default();
+    let urls = cfg
+        .get("bt_tracker_sub_urls")
+        .cloned()
+        .unwrap_or_else(fluxdown_engine::tracker_subscription::default_subscription_urls);
+    let outcome = fluxdown_engine::tracker_subscription::fetch_subscriptions(&urls).await;
+    if outcome.is_success() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if let Err(e) = db
+            .set_config("bt_tracker_sub_cache", &outcome.trackers.join("\n"))
+            .await
+        {
+            log_info!("[server-actor] failed to save tracker sub cache: {}", e);
+        }
+        if let Err(e) = db
+            .set_config("bt_tracker_sub_updated_at", &now.to_string())
+            .await
+        {
+            log_info!("[server-actor] failed to save tracker sub timestamp: {}", e);
+        }
+        // 经 actor 重载 BtConfig + 失效会话（apply_config 匹配 bt_tracker_sub_cache）。
+        let (ack, rx) = oneshot::channel();
+        if cmd_tx
+            .send(ActorCmd::ApplyConfig {
+                keys: vec!["bt_tracker_sub_cache".to_string()],
+                ack,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = rx.await;
+        }
+    }
+    outcome
 }
 
 #[cfg(test)]

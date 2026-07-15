@@ -43,7 +43,8 @@ use crate::config::default_save_dir;
 use crate::wire::{
     ComponentFfmpegStatus, ComponentVersions, ComponentYtdlpStatus, CreateQueueRequest, FsEntry,
     FsListResponse, InstallFfmpegRequest, MoveQueueRequest, ProxyTestRequest, ProxyTestResponse,
-    StatsResponse, TokenResponse, UpdateQueueRequest, WsClientMsg, WsServerMsg,
+    StatsResponse, TokenResponse, TrackerSubRefreshResponse, UpdateQueueRequest, WsClientMsg,
+    WsServerMsg,
 };
 use crate::ws_hub::WsHub;
 
@@ -112,6 +113,10 @@ pub fn extra_router(state: ServerState) -> Router {
         .route(paths::PROXY_TEST, post(proxy_test))
         .route(paths::TOKEN_REGENERATE, post(token_regenerate))
         .route(paths::STATS, get(stats))
+        .route(
+            paths::BT_TRACKER_SUB_REFRESH,
+            post(bt_tracker_sub_refresh),
+        )
         .route(paths::COMPONENT_FFMPEG, get(component_ffmpeg_status))
         .route(
             paths::COMPONENT_FFMPEG_VERSIONS,
@@ -172,6 +177,7 @@ pub mod paths {
     pub const COMPONENT_YTDLP_UNINSTALL: &str = "/api/v1/components/ytdlp/uninstall";
     pub const OPENAPI: &str = "/api/v1/openapi.json";
     pub const DOCS: &str = "/api/v1/docs";
+    pub const BT_TRACKER_SUB_REFRESH: &str = "/api/v1/bt/tracker-sub/refresh";
 }
 
 /// 统一 JSON 错误体（与 `fluxdown_api` 的 `ResultMessage` 形态一致）。
@@ -341,7 +347,48 @@ async fn put_config(
     state
         .send_cmd(|ack| ActorCmd::ApplyConfig { keys, ack })
         .await?;
+    // 订阅地址变更 / 重新启用订阅 → 后台立即刷新一次（镜像桌面 apply_config_key）。
+    let should_refresh = entries.contains_key("bt_tracker_sub_urls")
+        || entries
+            .get("bt_tracker_sub_enabled")
+            .is_some_and(|v| v == "true");
+    if should_refresh {
+        let db = state.db.clone();
+        let cmd_tx = state.cmd_tx.clone();
+        tokio::spawn(async move {
+            crate::actor::refresh_tracker_sub(&db, &cmd_tx).await;
+        });
+    }
     Ok(axum::Json(serde_json::json!({ "success": true, "message": "applied" })).into_response())
+}
+
+/// 立即刷新 BT Tracker 订阅：同步拉取全部订阅源、去重、写回缓存并失效当前
+/// BT 会话，回执抓取结果。网络耗时约 20s/源。
+#[utoipa::path(post, path = "/api/v1/bt/tracker-sub/refresh", tag = "server",
+    responses((status = 200, description = "刷新完成", body = TrackerSubRefreshResponse)),
+    security(("bearer_token" = []), ("api_key" = []))
+)]
+async fn bt_tracker_sub_refresh(
+    State(state): State<ServerState>,
+) -> Result<Response, ApiError> {
+    let outcome = crate::actor::refresh_tracker_sub(&state.db, &state.cmd_tx).await;
+    let updated_at = state
+        .db
+        .get_config("bt_tracker_sub_updated_at")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let resp = TrackerSubRefreshResponse {
+        success: outcome.is_success(),
+        tracker_count: outcome.trackers.len() as i64,
+        ok_sources: outcome.ok_sources as i64,
+        total_sources: outcome.total_sources as i64,
+        updated_at,
+        error: outcome.error,
+    };
+    Ok(axum::Json(resp).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -932,6 +979,7 @@ async fn component_ytdlp_uninstall(State(state): State<ServerState>) -> Result<R
         proxy_test,
         token_regenerate,
         stats,
+        bt_tracker_sub_refresh,
         component_ffmpeg_status,
         component_ffmpeg_versions,
         component_ffmpeg_install,
@@ -961,6 +1009,7 @@ async fn component_ytdlp_uninstall(State(state): State<ServerState>) -> Result<R
         crate::wire::ComponentYtdlpStatus,
         crate::wire::ComponentVersions,
         crate::wire::InstallFfmpegRequest,
+        crate::wire::TrackerSubRefreshResponse,
     )),
     tags((name = "server", description = "headless 服务器扩展端点"))
 )]

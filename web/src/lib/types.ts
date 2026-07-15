@@ -167,6 +167,15 @@ export interface ProxyTestResponse {
   latencyMs: number
 }
 
+export interface TrackerSubRefreshResponse {
+  success: boolean
+  trackerCount: number
+  okSources: number
+  totalSources: number
+  updatedAt: number
+  error: string
+}
+
 export interface CreateQueueRequest {
   name: string
   speedLimitKbps?: number

@@ -23,6 +23,7 @@ import type {
   StatsResponse,
   TaskDto,
   TokenResponse,
+  TrackerSubRefreshResponse,
 } from './types'
 
 export class ApiError extends Error {
@@ -107,6 +108,8 @@ export const api = {
   putConfig: (entries: ConfigMap) =>
     apiFetch<unknown>('/api/v1/config', { method: 'PUT', body: JSON.stringify(entries) }),
 
+  refreshTrackerSub: () =>
+    apiFetch<TrackerSubRefreshResponse>('/api/v1/bt/tracker-sub/refresh', { method: 'POST' }),
   fsList: (path: string) =>
     apiFetch<FsListResponse>(`/api/v1/fs/list?path=${encodeURIComponent(path)}`),
   proxyTest: (req: ProxyTestRequest) =>
