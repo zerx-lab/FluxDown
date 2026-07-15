@@ -3,7 +3,7 @@
 //! - 日志目录：由 `data_dir::resolve_data_dir()` 决定，加 `/logs` 后缀
 //!   - Linux: `~/.local/share/fluxdown/logs/`
 //!   - macOS: `~/Library/Application Support/fluxdown/logs/`
-//!   - Windows 便携版: `<exe_dir>/logs/`
+//!   - Windows 便携版: `<exe_dir>/portable_data/logs/`
 //!   - Windows 安装版: `%LOCALAPPDATA%/FluxDown/logs/`
 //! - 文件名：`fluxdown_YYYY-MM-DD.log`，分卷为 `fluxdown_YYYY-MM-DD.N.log`（与 Dart 端完全一致）
 //! - 两端都以 append 模式写入，POSIX `O_APPEND` 保证单次 write 原子性
