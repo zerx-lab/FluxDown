@@ -11,9 +11,10 @@
 [![Latest Release](https://img.shields.io/github/v/release/zerx-lab/FluxDown?style=flat-square&color=06b6d4&label=release)](https://github.com/zerx-lab/FluxDown/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/zerx-lab/FluxDown/total?style=flat-square&color=22c55e)](https://github.com/zerx-lab/FluxDown/releases)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-8b5cf6?style=flat-square)](#installation)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20NAS%20%7C%20Android-8b5cf6?style=flat-square)](#installation)
 [![Rust](https://img.shields.io/badge/engine-Rust-f74c00?style=flat-square&logo=rust)](native/engine)
 [![Flutter](https://img.shields.io/badge/UI-Flutter-02569B?style=flat-square&logo=flutter)](lib)
+[![MCP Server](https://img.shields.io/badge/MCP-Glama-8b5cf6?style=flat-square)](https://glama.ai/mcp/servers/zerx-lab/FluxDown)
 
 [**Website**](https://fluxdown.zerx.dev) · [**Download**](https://fluxdown.zerx.dev/#download) · [**Changelog**](https://fluxdown.zerx.dev/changelog) · [**FAQ**](https://fluxdown.zerx.dev/faq) · [**Feedback**](https://fluxdown.zerx.dev/feedback)
 
@@ -53,7 +54,7 @@
 |---|:---:|:---:|
 | Price | **Free forever** | $24.95 + renewals |
 | Open source | Yes (AGPL-3.0) | No |
-| Platforms | Windows / macOS / Linux | Windows only |
+| Platforms | Windows / macOS / Linux / NAS / Android | Windows only |
 | BitTorrent & magnet | Yes | No |
 | eD2K / eMule links | Yes | No |
 | HLS / DASH streaming | Yes | Partial |
@@ -70,6 +71,8 @@ Grab the latest build from [**GitHub Releases**](https://github.com/zerx-lab/Flu
 | **Windows** (x64 / ARM64) | `setup.exe` installer · portable `.zip` |
 | **macOS** (Intel / Apple Silicon) | `.dmg` · portable `.tar.gz` |
 | **Linux** (x64) | `.AppImage` · `.deb` · Arch `.pkg.tar.zst` · portable `.tar.gz` |
+| **Android** (arm64-v8a / armeabi-v7a / x86_64) | per-ABI `.apk` · universal `.apk` |
+| **NAS / Server** (headless, x64 / ARM64) | [Docker](https://ghcr.io/zerx-lab/fluxdown-server) · Synology DSM 6/7 `.spk` · QNAP `.qpkg` · OpenWrt `.ipk` · Unraid CA template · CasaOS / ZimaOS app store |
 
 ### Browser Extension
 

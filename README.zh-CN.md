@@ -11,9 +11,10 @@
 [![Latest Release](https://img.shields.io/github/v/release/zerx-lab/FluxDown?style=flat-square&color=06b6d4&label=release)](https://github.com/zerx-lab/FluxDown/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/zerx-lab/FluxDown/total?style=flat-square&color=22c55e)](https://github.com/zerx-lab/FluxDown/releases)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-8b5cf6?style=flat-square)](#安装)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20NAS%20%7C%20Android-8b5cf6?style=flat-square)](#安装)
 [![Rust](https://img.shields.io/badge/engine-Rust-f74c00?style=flat-square&logo=rust)](native/engine)
 [![Flutter](https://img.shields.io/badge/UI-Flutter-02569B?style=flat-square&logo=flutter)](lib)
+[![MCP Server](https://img.shields.io/badge/MCP-Glama-8b5cf6?style=flat-square)](https://glama.ai/mcp/servers/zerx-lab/FluxDown)
 
 [**官网**](https://fluxdown.zerx.dev) · [**下载**](https://fluxdown.zerx.dev/#download) · [**更新日志**](https://fluxdown.zerx.dev/changelog) · [**常见问题**](https://fluxdown.zerx.dev/faq) · [**反馈**](https://fluxdown.zerx.dev/feedback)
 
@@ -53,7 +54,7 @@
 |---|:---:|:---:|
 | 价格 | **永久免费** | $24.95 + 续费 |
 | 开源 | 是（AGPL-3.0） | 否 |
-| 平台 | Windows / macOS / Linux | 仅 Windows |
+| 平台 | Windows / macOS / Linux / NAS / Android | 仅 Windows |
 | BitTorrent 与磁力链 | 支持 | 不支持 |
 | eD2K / eMule 链接 | 支持 | 不支持 |
 | HLS / DASH 流媒体 | 支持 | 部分支持 |
@@ -70,6 +71,8 @@
 | **Windows**（x64 / ARM64） | `setup.exe` 安装程序 · 便携版 `.zip` |
 | **macOS**（Intel / Apple Silicon） | `.dmg` · 便携版 `.tar.gz` |
 | **Linux**（x64） | `.AppImage` · `.deb` · Arch `.pkg.tar.zst` · 便携版 `.tar.gz` |
+| **Android**（arm64-v8a / armeabi-v7a / x86_64） | 分架构 `.apk` · 通用 `.apk` |
+| **NAS / 服务器**（headless，x64 / ARM64） | [Docker](https://ghcr.io/zerx-lab/fluxdown-server) · 群晖 DSM 6/7 `.spk` · QNAP `.qpkg` · OpenWrt `.ipk` · Unraid CA 模板 · CasaOS / ZimaOS 应用商店 |
 
 ### 浏览器扩展
 
