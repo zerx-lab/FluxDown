@@ -167,8 +167,15 @@ pub async fn ytdlp_status(db: &Db, data_dir: &Path) -> YtdlpStatus {
         (ComponentSource::None, PathBuf::new())
     };
 
+    // yt-dlp.exe 是 PyInstaller 单文件包，`--version` 每次都要冷启动解包内置
+    // Python 运行时（数百 ms~数秒），导致每次进设置页都可见地转圈加载。托管
+    // 安装源的版本号即安装时记录的 tag（yt-dlp 版本号本身就是日期 tag，与
+    // `--version` 首行输出一致），直接复用缓存值，跳过冷启动；手动/系统源无
+    // 可信缓存版本，仍按需探测。
     let version = if source == ComponentSource::None {
         String::new()
+    } else if source == ComponentSource::Managed && !managed_version.is_empty() {
+        managed_version.clone()
     } else {
         probe_ytdlp_version(&path).await.unwrap_or_default()
     };
