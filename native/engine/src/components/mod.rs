@@ -106,6 +106,27 @@ pub(crate) async fn fetch_github_json(
         .map_err(|e| ComponentError::Http(e.to_string()))
 }
 
+/// 官网组件版本镜像的基地址。版本列表拉取优先经此转发（服务端持 token +
+/// 24h 缓存，规避 GitHub 匿名 API 每 IP 60/h 限流与直连 api.github.com 的
+/// 网络问题），失败回退直连 GitHub。
+#[cfg(feature = "components")]
+const MIRROR_BASE: &str = "https://fluxdown.zerx.dev/api/components";
+
+/// 版本列表专用：优先经官网镜像 `MIRROR_BASE/<component>` 拉取（返回原样
+/// GitHub JSON），任何失败都回退直连 `github_url`。二进制下载不走此路径。
+#[cfg(feature = "components")]
+pub(crate) async fn fetch_versions_json(
+    client: &reqwest::Client,
+    component: &str,
+    github_url: &str,
+) -> Result<serde_json::Value, ComponentError> {
+    let mirror = format!("{MIRROR_BASE}/{component}");
+    match fetch_github_json(client, &mirror).await {
+        Ok(v) => Ok(v),
+        Err(_) => fetch_github_json(client, github_url).await,
+    }
+}
+
 /// 流式下载 `url` 到 `dest`，`progress(downloaded, total)` 上报进度（total=0 未知）。
 /// ffmpeg 归档 / yt-dlp 单二进制安装共用；每 256KB 上报一次避免信号风暴。
 #[cfg(feature = "components")]

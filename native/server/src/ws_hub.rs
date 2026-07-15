@@ -30,7 +30,7 @@ use std::time::Duration;
 use fluxdown_api::service::{LiveSpeed, TaskEvent, TaskEventKind, task_event_for_transition};
 use fluxdown_engine::events::{EngineEvent, EventSink};
 use fluxdown_engine::log_info;
-use fluxdown_engine::model::{BtFileEntry, HlsQualityOption, TaskInfo};
+use fluxdown_engine::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption, TaskInfo};
 use fluxdown_engine::selection::{HostSelection, SelectionOutcome};
 use tokio::sync::{broadcast, oneshot};
 
@@ -46,6 +46,8 @@ pub struct WsHub {
     pub events: broadcast::Sender<String>,
     pending_hls: Mutex<HashMap<String, oneshot::Sender<i32>>>,
     pending_bt: Mutex<HashMap<String, oneshot::Sender<Vec<i32>>>>,
+    /// 插件 resolve 变体选择等待表（task_id → 应答通道）。
+    pending_variant: Mutex<HashMap<String, oneshot::Sender<i32>>>,
     /// 任务实时速率缓存（task_id → 速率）。[`EngineEventSink`] 消费
     /// `TaskProgress`/`TasksSnapshot` 写入与清理，供 `ServerApiHost::live_speeds`
     /// （aria2 兼容层）经 `live_speeds_snapshot` 读取。
@@ -68,6 +70,7 @@ impl WsHub {
             events,
             pending_hls: Mutex::new(HashMap::new()),
             pending_bt: Mutex::new(HashMap::new()),
+            pending_variant: Mutex::new(HashMap::new()),
             live_speeds: Mutex::new(HashMap::new()),
             task_events,
             task_states: Mutex::new(HashMap::new()),
@@ -397,6 +400,37 @@ impl HostSelection for WsHostSelection {
         outcome
     }
 
+    async fn select_resolve_variant(
+        &self,
+        task_id: &str,
+        options: &[ResolveVariantOption],
+        default_index: i32,
+        timeout: Duration,
+    ) -> SelectionOutcome<i32> {
+        let (tx, rx) = oneshot::channel();
+        lock_or_recover(&self.0.pending_variant).insert(task_id.to_string(), tx);
+
+        self.0.broadcast(&WsServerMsg::ResolveVariantRequest {
+            task_id: task_id.to_string(),
+            default_index,
+            options: options.iter().cloned().map(Into::into).collect(),
+        });
+
+        let outcome = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(idx)) => SelectionOutcome::UserChose(idx),
+            Ok(Err(_)) | Err(_) => {
+                log_info!(
+                    "[ws-selection] task {} resolve variant selection timed out/closed, defaulting",
+                    task_id
+                );
+                SelectionOutcome::TimedOutDefaulted(default_index)
+            }
+        };
+        // 必须移除等待表条目：防 map 无界增长 / 向已丢弃 Receiver 投递。
+        lock_or_recover(&self.0.pending_variant).remove(task_id);
+        outcome
+    }
+
     fn provide_hls_selection(&self, task_id: &str, selected_index: i32) {
         if let Some(tx) = lock_or_recover(&self.0.pending_hls).remove(task_id) {
             let _ = tx.send(selected_index);
@@ -414,6 +448,17 @@ impl HostSelection for WsHostSelection {
         } else {
             log_info!(
                 "[ws-selection] no pending BT selection for task {}",
+                task_id
+            );
+        }
+    }
+
+    fn provide_variant_selection(&self, task_id: &str, selected_index: i32) {
+        if let Some(tx) = lock_or_recover(&self.0.pending_variant).remove(task_id) {
+            let _ = tx.send(selected_index);
+        } else {
+            log_info!(
+                "[ws-selection] no pending resolve variant selection for task {}",
                 task_id
             );
         }
@@ -635,6 +680,56 @@ mod tests {
             .await;
 
         assert_eq!(outcome, SelectionOutcome::TimedOutDefaulted(1));
+    }
+
+    #[tokio::test]
+    async fn ws_host_selection_resolve_variant_answered_before_timeout_returns_user_chose() {
+        let hub = Arc::new(WsHub::new(16));
+        let selector = Arc::new(WsHostSelection(Arc::clone(&hub)));
+        let responder = Arc::clone(&selector);
+
+        let respond_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            responder.provide_variant_selection("task-d", 1);
+        });
+
+        let options = [ResolveVariantOption {
+            index: 0,
+            label: "1080p MP4".into(),
+            container: "mp4".into(),
+            bandwidth: 5_000_000,
+            width: 1920,
+            height: 1080,
+            total_bytes: 123_456,
+        }];
+
+        let outcome = selector
+            .select_resolve_variant("task-d", &options, 0, Duration::from_millis(500))
+            .await;
+
+        respond_task.await.expect("responder task panicked");
+        assert_eq!(outcome, SelectionOutcome::UserChose(1));
+    }
+
+    #[tokio::test]
+    async fn ws_host_selection_resolve_variant_times_out_defaults_to_default_index() {
+        let hub = Arc::new(WsHub::new(16));
+        let selector = WsHostSelection(hub);
+        let options = [ResolveVariantOption {
+            index: 0,
+            label: "1080p MP4".into(),
+            container: "mp4".into(),
+            bandwidth: 5_000_000,
+            width: 1920,
+            height: 1080,
+            total_bytes: 123_456,
+        }];
+
+        let outcome = selector
+            .select_resolve_variant("task-e", &options, 0, Duration::from_millis(50))
+            .await;
+
+        assert_eq!(outcome, SelectionOutcome::TimedOutDefaulted(0));
     }
 
     #[tokio::test]

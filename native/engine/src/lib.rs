@@ -360,8 +360,18 @@ impl HostSelection for NoopSelection {
     ) -> SelectionOutcome<Vec<i32>> {
         SelectionOutcome::NoSelectorConfigured(Vec::new())
     }
+    async fn select_resolve_variant(
+        &self,
+        _task_id: &str,
+        _options: &[crate::model::ResolveVariantOption],
+        default_index: i32,
+        _timeout: Duration,
+    ) -> SelectionOutcome<i32> {
+        SelectionOutcome::NoSelectorConfigured(default_index)
+    }
 
     fn provide_hls_selection(&self, _task_id: &str, _selected_index: i32) {}
 
     fn provide_bt_selection(&self, _task_id: &str, _selected_indices: Vec<i32>) {}
+    fn provide_variant_selection(&self, _task_id: &str, _selected_index: i32) {}
 }

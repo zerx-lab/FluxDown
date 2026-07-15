@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crate::model::{BtFileEntry, HlsQualityOption};
+use crate::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption};
 
 /// 一次宿主选择请求的结果。
 ///
@@ -74,6 +74,17 @@ pub trait HostSelection: Send + Sync {
         timeout: Option<Duration>,
     ) -> SelectionOutcome<Vec<i32>>;
 
+    /// 发起插件 resolve 变体（画质/格式）选择等待；`timeout` 到期后返回
+    /// `TimedOutDefaulted`（默认值 = 调用方传入的 `default_index`，通常为 0，
+    /// 即插件按自身偏好排在首位的变体）。
+    async fn select_resolve_variant(
+        &self,
+        task_id: &str,
+        options: &[ResolveVariantOption],
+        default_index: i32,
+        timeout: Duration,
+    ) -> SelectionOutcome<i32>;
+
     /// 投递 HLS 画质选择答案(由收到 `SelectHlsQuality` DartSignal 的 hub 侧
     /// 调用),唤醒对应 [`select_hls_quality`](HostSelection::select_hls_quality)
     /// 的等待。
@@ -83,4 +94,9 @@ pub trait HostSelection: Send + Sync {
     /// 该信号字段名为 `selected_indices`,见 `hub::signals::SelectBtFiles`),
     /// 唤醒对应 [`select_bt_files`](HostSelection::select_bt_files) 的等待。
     fn provide_bt_selection(&self, task_id: &str, selected_indices: Vec<i32>);
+
+    /// 投递插件 resolve 变体选择答案（由收到 `SelectResolveVariant` 信号的宿主
+    /// 侧调用），唤醒对应
+    /// [`select_resolve_variant`](HostSelection::select_resolve_variant) 的等待。
+    fn provide_variant_selection(&self, task_id: &str, selected_index: i32);
 }

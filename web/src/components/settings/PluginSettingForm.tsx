@@ -1,7 +1,8 @@
 // 单个插件的设置表单 —— 按 widget 分发既有 controls.tsx 行组件；提交前做
 // required/pattern/min-max/select 成员前置校验（全部通过才发起 PUT，避免 all-or-nothing 请求半路失败）。
 
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import { Check, ClipboardCopy } from 'lucide-react'
 import type { I18nKey } from '../../lib/i18n'
 import { useI18n } from '../../lib/i18n'
 import type { PluginDto, SettingFieldDto } from '../../lib/types'
@@ -76,6 +77,7 @@ export function PluginSettingForm({ plugin, saving, onSave }: PluginSettingFormP
       {plugin.settings.map((field) => (
         <Fragment key={field.key}>
           <SettingFieldRow field={field} value={valueOf(field)} onChange={(v) => setValue(field.key, v)} />
+          {field.helperScript && <HelperScriptButton field={field} />}
           {errors[field.key] && <p className="px-4 pb-2 text-[11px] text-danger">{t(errors[field.key]!)}</p>}
         </Fragment>
       ))}
@@ -142,4 +144,29 @@ function SettingFieldRow({
     default:
       return <TextFieldRow title={title} desc={desc} value={value} onCommit={onChange} />
   }
+}
+/** 字段级辅助脚本复制按钮：仅复制文本到剪贴板（绝不执行），供用户粘贴到目标
+ *  网站的开发者工具 Console 运行（典型用途：提取 cookie）。 */
+function HelperScriptButton({ field }: { field: SettingFieldDto }) {
+  const { t } = useI18n()
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  return (
+    <div className="px-4 pb-2">
+      <button
+        type="button"
+        className="btn sm"
+        onClick={() => {
+          void navigator.clipboard.writeText(field.helperScript ?? '')
+          setCopied(true)
+          window.clearTimeout(timer.current)
+          timer.current = window.setTimeout(() => setCopied(false), 2500)
+        }}
+      >
+        {copied ? <Check size={13} /> : <ClipboardCopy size={13} />}
+        {copied ? t('plugins.helperCopied') : field.helperLabel || t('plugins.copyHelper')}
+      </button>
+    </div>
+  )
 }

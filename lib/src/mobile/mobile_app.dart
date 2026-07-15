@@ -6,6 +6,7 @@ import '../i18n/locale_provider.dart';
 import '../services/bt_file_selection_service.dart';
 import '../services/hls_quality_service.dart';
 import '../services/log_service.dart';
+import '../services/resolve_variant_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/flux_theme_tokens.dart';
 import '../theme/theme_provider.dart';
@@ -41,14 +42,16 @@ class _FluxDownMobileAppState extends State<FluxDownMobileApp> {
     widget.themeProvider.addListener(_onChanged);
     widget.localeNotifier.addListener(_onChanged);
 
-    // Rust 信号驱动的全局选择弹窗（HLS 画质 / BT 文件选择）
+    // Rust 信号驱动的全局选择弹窗（HLS 画质 / BT 文件选择 / 插件变体选择）
     HlsQualityService.init(navigatorKey: _navigatorKey);
+    ResolveVariantService.init(navigatorKey: _navigatorKey);
     BtFileSelectionService.init(navigatorKey: _navigatorKey);
   }
 
   @override
   void dispose() {
     HlsQualityService.shutdown();
+    ResolveVariantService.shutdown();
     BtFileSelectionService.shutdown();
     widget.localeNotifier.removeListener(_onChanged);
     widget.themeProvider.removeListener(_onChanged);

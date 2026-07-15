@@ -283,7 +283,7 @@ mod install {
     /// 列出当前平台可安装的稳定版本（降序）。
     pub async fn list_versions(client: &reqwest::Client) -> Result<FfmpegVersions, ComponentError> {
         let plat = platform_tag().ok_or(ComponentError::Unsupported)?;
-        let release = super::super::fetch_github_json(client, RELEASE_API).await?;
+        let release = super::super::fetch_versions_json(client, "ffmpeg", RELEASE_API).await?;
         let empty = Vec::new();
         let assets = release["assets"].as_array().unwrap_or(&empty);
         let mut versions: Vec<String> = assets
@@ -621,7 +621,10 @@ mod install {
             super::extract_from_zip(&both, &bin1, "ffmpeg.exe", "ffprobe.exe")
                 .await
                 .unwrap();
-            assert_eq!(std::fs::read(bin1.join("ffmpeg.exe")).unwrap(), b"FFMPEG_BIN");
+            assert_eq!(
+                std::fs::read(bin1.join("ffmpeg.exe")).unwrap(),
+                b"FFMPEG_BIN"
+            );
             assert_eq!(
                 std::fs::read(bin1.join("ffprobe.exe")).unwrap(),
                 b"FFPROBE_BIN"

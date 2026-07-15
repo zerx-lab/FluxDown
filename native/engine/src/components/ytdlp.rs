@@ -212,8 +212,7 @@ mod install {
     /// yt-dlp Release 列表（分页）与指定 tag / latest 的 GitHub API 端点。
     const RELEASES_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30";
     const RELEASE_TAG_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/";
-    const RELEASE_LATEST_API: &str =
-        "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+    const RELEASE_LATEST_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 
     /// 可安装版本列表（近期 Release 的日期 tag，降序）。
     #[derive(Debug, Clone)]
@@ -229,7 +228,7 @@ mod install {
         client: &reqwest::Client,
     ) -> Result<YtdlpVersions, ComponentError> {
         platform_asset().ok_or(ComponentError::Unsupported)?;
-        let releases = super::super::fetch_github_json(client, RELEASES_API).await?;
+        let releases = super::super::fetch_versions_json(client, "ytdlp", RELEASES_API).await?;
         let empty = Vec::new();
         let arr = releases.as_array().unwrap_or(&empty);
         let versions: Vec<String> = arr
@@ -350,7 +349,11 @@ mod tests {
     #[test]
     fn platform_asset_present_on_supported_targets() {
         // 主流桌面/服务器目标均应有官方资产（本测试在 CI 目标上运行时命中）。
-        if cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")) {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        )) {
             assert!(platform_asset().is_some());
         }
     }

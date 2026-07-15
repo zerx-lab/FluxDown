@@ -97,7 +97,10 @@ async fn runs_real_ytdlp_version() {
 
     assert!(!out.timed_out, "should not time out");
     assert_eq!(out.code, 0, "yt-dlp exit non-zero; stderr: {}", out.stderr);
-    assert!(!out.stdout.trim().is_empty(), "version stdout should be non-empty");
+    assert!(
+        !out.stdout.trim().is_empty(),
+        "version stdout should be non-empty"
+    );
 }
 /// flux.fs：插件工作区（= yt-dlp cwd 同根）通用读写，取代旧 cookies_text。
 /// 确定性、无需 yt-dlp 二进制：写 cookie 文件 → 落在工作区 → 读回 → 列出 → 删除。
@@ -179,11 +182,15 @@ async fn ytdlp_install_smoke() {
         .expect("build client");
     let progress = |d: u64, t: u64| eprintln!("[install] {d}/{t}");
 
-    let status = fluxdown_engine::components::install_ytdlp(&db, &data_dir, &client, None, &progress)
-        .await
-        .expect("install yt-dlp");
+    let status =
+        fluxdown_engine::components::install_ytdlp(&db, &data_dir, &client, None, &progress)
+            .await
+            .expect("install yt-dlp");
     assert_eq!(status.source.as_str(), "managed");
-    assert!(!status.managed_version.is_empty(), "managed version recorded");
+    assert!(
+        !status.managed_version.is_empty(),
+        "managed version recorded"
+    );
     assert!(!status.version.is_empty(), "probed --version non-empty");
     eprintln!("[install] installed yt-dlp {}", status.version);
 
@@ -201,7 +208,11 @@ async fn ytdlp_install_smoke() {
         .run_ytdlp("test@yt", spec(&["--version"]))
         .await
         .expect("run_ytdlp --version");
-    assert_eq!(out.code, 0, "yt-dlp --version exit non-zero: {}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "yt-dlp --version exit non-zero: {}",
+        out.stderr
+    );
     assert!(!out.stdout.trim().is_empty());
 }
 
@@ -224,5 +235,9 @@ async fn ytdlp_list_versions_smoke() {
         "unexpected tag shape: {}",
         v.latest_stable
     );
-    eprintln!("[list] latest={} count={}", v.latest_stable, v.versions.len());
+    eprintln!(
+        "[list] latest={} count={}",
+        v.latest_stable,
+        v.versions.len()
+    );
 }

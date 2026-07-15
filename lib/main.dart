@@ -21,6 +21,7 @@ import 'src/popup/popup_app.dart';
 import 'src/services/floating_ball/floating_ball_service.dart';
 import 'src/services/floating_ball/wayland_degradation_service.dart';
 import 'src/services/hls_quality_service.dart';
+import 'src/services/resolve_variant_service.dart';
 import 'src/services/bt_file_selection_service.dart';
 import 'src/services/app_icon_service.dart';
 import 'src/services/log_service.dart';
@@ -391,6 +392,9 @@ class _FluxDownAppState extends State<FluxDownApp>
     // 初始化 HLS 画质选择服务 — 监听 Rust 端的画质选项信号
     HlsQualityService.init(navigatorKey: _navigatorKey);
 
+    // 初始化插件 resolve 变体选择服务 — 监听 Rust 端的变体选项信号
+    ResolveVariantService.init(navigatorKey: _navigatorKey);
+
     // 初始化 BT 文件选择服务 — 监听 Rust 端的 BtFilesInfo 信号
     BtFileSelectionService.init(navigatorKey: _navigatorKey);
     // 请求加载配置，确保 settingsProvider 有默认保存目录等数据
@@ -452,6 +456,7 @@ class _FluxDownAppState extends State<FluxDownApp>
     _singleInstanceChannel.setMethodCallHandler(null);
     TrayService.instance.onExitApp = null;
     HlsQualityService.shutdown();
+    ResolveVariantService.shutdown();
     BtFileSelectionService.shutdown();
     ExternalDownloadService.shutdown();
     _settingsForExternal.dispose();

@@ -599,6 +599,8 @@ pub struct ResolveOutcome {
     pub kind: ResolveKind,
     pub generation: u64,
     pub result: Result<Option<crate::plugin::ResolveResult>, crate::plugin::PluginError>,
+    /// 用户在变体选择弹窗点关闭/取消 → 取消该任务（而非回退默认变体）。
+    pub cancelled: bool,
 }
 
 /// resolve 等待中的任务状态。Start 携 `QueuedTask`（再入覆盖 res 后分派）；
@@ -624,6 +626,77 @@ impl PendingResolve {
             }
         }
     }
+}
+
+/// 多变体收敛（resolve worker 内、off-actor）：经 `HostSelection` 让用户选择，
+/// 选中变体的非空字段覆盖顶层字段。单变体跳过弹框；超时/免打扰/headless 回退
+/// `default_variant_index`（越界按 0）。
+#[cfg(feature = "plugins")]
+async fn collapse_resolve_variants(
+    task_id: &str,
+    res: &mut crate::plugin::ResolveResult,
+    selector: &dyn HostSelection,
+) -> bool {
+    const VARIANT_SELECTION_TIMEOUT_SECS: u64 = 60;
+    let variants = std::mem::take(&mut res.variants);
+    let default_idx = if (res.default_variant_index as usize) < variants.len() {
+        res.default_variant_index
+    } else {
+        0
+    };
+    let idx = if variants.len() <= 1 {
+        0
+    } else {
+        let options: Vec<crate::model::ResolveVariantOption> = variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| crate::model::ResolveVariantOption {
+                index: i as i32,
+                label: v.label.clone(),
+                container: v.container.clone(),
+                bandwidth: v.bandwidth,
+                width: v.width,
+                height: v.height,
+                total_bytes: v.total_bytes.unwrap_or(0),
+            })
+            .collect();
+        let outcome = selector
+            .select_resolve_variant(
+                task_id,
+                &options,
+                default_idx,
+                std::time::Duration::from_secs(VARIANT_SELECTION_TIMEOUT_SECS),
+            )
+            .await;
+        log_info!(
+            "[plugin-resolve] task {} variant selection outcome: {:?}",
+            task_id,
+            outcome
+        );
+        let chosen = outcome.into_inner();
+        // -1 = 用户在弹窗点关闭/取消 → 取消任务（不收敛、不回退默认）。
+        if chosen < 0 {
+            return true;
+        }
+        if (chosen as usize) < variants.len() {
+            chosen
+        } else {
+            default_idx
+        }
+    };
+    if let Some(v) = variants.into_iter().nth(idx as usize) {
+        res.url = v.url;
+        if v.audio_url.is_some() {
+            res.audio_url = v.audio_url;
+        }
+        if v.file_name.is_some() {
+            res.file_name = v.file_name;
+        }
+        if v.total_bytes.is_some() {
+            res.total_bytes = v.total_bytes;
+        }
+    }
+    false
 }
 
 /// 把 resolve 结果应用到 QueuedTask（再入前）。非 ephemeral 保持 hint_file_size=0
@@ -973,9 +1046,10 @@ impl DownloadManager {
         let tx = self.resolve_tx.clone();
         let handle = pm.runtime_handle();
         let id_for_worker = identity.clone();
+        let selector = self.selector.clone();
         handle.spawn(async move {
             let fut = std::panic::AssertUnwindSafe(pm.resolve(&id_for_worker, req));
-            let result = match fut.catch_unwind().await {
+            let mut result = match fut.catch_unwind().await {
                 Ok(r) => r,
                 Err(panic) => {
                     let msg = panic
@@ -986,12 +1060,22 @@ impl DownloadManager {
                     Err(crate::plugin::PluginError::Runtime(msg))
                 }
             };
+            // 多变体收敛：在 off-actor worker 内 await 用户选择（不阻塞 actor），
+            // 收敛为单一直链后再回流。stale 场景由 on_resolve_ready 世代守卫兜底。
+            // 返回 true = 用户点关闭/取消 → 回流标记 cancelled，actor 取消任务。
+            let mut cancelled = false;
+            if let Ok(Some(res)) = &mut result
+                && !res.variants.is_empty()
+            {
+                cancelled = collapse_resolve_variants(&task_id, res, selector.as_ref()).await;
+            }
             let _ = tx.send(ResolveOutcome {
                 task_id,
                 identity,
                 kind,
                 generation,
                 result,
+                cancelled,
             });
         });
     }
@@ -1022,6 +1106,17 @@ impl DownloadManager {
                 self.active_tasks.remove(&task_id);
                 self.drain_queue().await;
             }
+            return;
+        }
+        // 用户在变体选择弹窗点关闭/取消 → 取消该任务（cancel_task 会清 pending_resolve /
+        // active_tasks 占位、置 status=4、drain_queue）。放在世代守卫之后：确认本 outcome
+        // 拥有当前 pending 条目才动手。
+        if out.cancelled {
+            log_info!(
+                "[plugin-resolve] task {} variant selection cancelled by user, cancelling task",
+                task_id
+            );
+            self.cancel_task(&task_id).await;
             return;
         }
         // 任务已从 DB 删除（兜底；delete_task 亦已清 pending_resolve）→ 放弃再入。
@@ -5104,6 +5199,124 @@ mod tests {
             );
             assert!(q.range_supported);
             assert_eq!(q.hint_file_size, 1_000_000_000);
+        }
+    }
+    /// 多变体收敛语义（选择/回退/字段覆盖）。用 NoopSelection（headless）驱动，
+    /// 覆盖「无选择器 → default_variant_index 回退」与字段覆盖规则。
+    #[cfg(feature = "plugins")]
+    mod variant_collapse {
+        use super::*;
+        use crate::NoopSelection;
+        use crate::plugin::{ResolveResult, ResolveVariant};
+
+        fn variant(label: &str, url: &str) -> ResolveVariant {
+            ResolveVariant {
+                label: label.into(),
+                url: url.into(),
+                ..Default::default()
+            }
+        }
+
+        /// headless（NoopSelection）→ 回退 default_variant_index，选中变体
+        /// 覆盖顶层 url，variants 清空。
+        #[tokio::test]
+        async fn headless_falls_back_to_default_index() {
+            let mut res = ResolveResult {
+                variants: vec![
+                    variant("1080p", "https://v.example.com/hi"),
+                    variant("720p", "https://v.example.com/mid"),
+                ],
+                default_variant_index: 1,
+                ..Default::default()
+            };
+            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert_eq!(res.url, "https://v.example.com/mid");
+            assert!(res.variants.is_empty());
+        }
+
+        /// default_variant_index 越界 → 按 0 处理。
+        #[tokio::test]
+        async fn out_of_range_default_clamps_to_zero() {
+            let mut res = ResolveResult {
+                variants: vec![variant("only", "https://v.example.com/a")],
+                default_variant_index: 9,
+                ..Default::default()
+            };
+            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert_eq!(res.url, "https://v.example.com/a");
+        }
+
+        /// 选中变体的 Some 字段覆盖顶层；None 字段保留顶层原值。
+        #[tokio::test]
+        async fn variant_fields_override_only_when_present() {
+            let mut res = ResolveResult {
+                url: "https://old.example.com".into(),
+                file_name: Some("base.mp4".into()),
+                total_bytes: Some(1),
+                variants: vec![ResolveVariant {
+                    label: "audio".into(),
+                    url: "https://v.example.com/audio".into(),
+                    audio_url: None,
+                    file_name: None,
+                    total_bytes: Some(2_000),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            collapse_resolve_variants("t1", &mut res, &NoopSelection).await;
+            assert_eq!(res.url, "https://v.example.com/audio");
+            assert_eq!(res.file_name.as_deref(), Some("base.mp4"));
+            assert_eq!(res.total_bytes, Some(2_000));
+        }
+
+        /// 用户点关闭/取消（选择器返回 -1）→ collapse 返回 true，且不收敛
+        /// variants（顶层 url 不被改写，交由 actor 取消任务）。
+        #[tokio::test]
+        async fn user_cancel_returns_true_without_collapsing() {
+            use crate::selection::{HostSelection, SelectionOutcome};
+            struct CancelSelection;
+            #[async_trait::async_trait]
+            impl HostSelection for CancelSelection {
+                async fn select_hls_quality(
+                    &self,
+                    _: &str,
+                    _: &[crate::model::HlsQualityOption],
+                    _: std::time::Duration,
+                ) -> SelectionOutcome<i32> {
+                    SelectionOutcome::UserChose(0)
+                }
+                async fn select_bt_files(
+                    &self,
+                    _: &str,
+                    _: &[crate::model::BtFileEntry],
+                    _: Option<std::time::Duration>,
+                ) -> SelectionOutcome<Vec<i32>> {
+                    SelectionOutcome::UserChose(vec![])
+                }
+                async fn select_resolve_variant(
+                    &self,
+                    _: &str,
+                    _: &[crate::model::ResolveVariantOption],
+                    _: i32,
+                    _: std::time::Duration,
+                ) -> SelectionOutcome<i32> {
+                    SelectionOutcome::UserChose(-1)
+                }
+                fn provide_hls_selection(&self, _: &str, _: i32) {}
+                fn provide_bt_selection(&self, _: &str, _: Vec<i32>) {}
+                fn provide_variant_selection(&self, _: &str, _: i32) {}
+            }
+            let mut res = ResolveResult {
+                url: "https://old.example.com".into(),
+                variants: vec![
+                    variant("1080p", "https://v.example.com/hi"),
+                    variant("720p", "https://v.example.com/mid"),
+                ],
+                ..Default::default()
+            };
+            let cancelled = collapse_resolve_variants("t1", &mut res, &CancelSelection).await;
+            assert!(cancelled);
+            assert_eq!(res.url, "https://old.example.com");
         }
     }
 

@@ -899,6 +899,12 @@ class S {
   String hlsQualityBandwidth(String speed) => speed;
 
   // ─────────────────────────────────────────────
+  // 插件 resolve 变体选择
+  // ─────────────────────────────────────────────
+  String get resolveVariantTitle => _r('resolveVariantTitle');
+  String get resolveVariantDesc => _r('resolveVariantDesc');
+
+  // ─────────────────────────────────────────────
   // TrayService
   // ─────────────────────────────────────────────
   String get trayShowWindow => _r('trayShowWindow');
@@ -1084,6 +1090,8 @@ class S {
   String pluginSettingsSaveFailed(String message) =>
       _r('pluginSettingsSaveFailed', {'message': message});
   String get pluginErrRequired => _r('pluginErrRequired');
+  String get pluginCopyHelperScript => _r('pluginCopyHelperScript');
+  String get pluginHelperScriptCopied => _r('pluginHelperScriptCopied');
   String get pluginErrNumber => _r('pluginErrNumber');
   String pluginErrMin(String min) => _r('pluginErrMin', {'min': min});
   String pluginErrMax(String max) => _r('pluginErrMax', {'max': max});
@@ -1147,6 +1155,7 @@ class S {
   String get componentsVersionsLoading => _r('componentsVersionsLoading');
   String componentsVersionsLoadFailed(String message) =>
       _r('componentsVersionsLoadFailed', {'message': message});
+  String get componentsRetryVersions => _r('componentsRetryVersions');
   String get componentsVersionSelectPlaceholder =>
       _r('componentsVersionSelectPlaceholder');
   String componentsManagedVersionLabel(String version) =>

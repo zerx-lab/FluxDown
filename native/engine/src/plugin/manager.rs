@@ -919,17 +919,48 @@ fn build_typed_settings_json(
 /// resolve 输出校验：url scheme ∈{http,https,ftp,magnet,ed2k}、长度 ≤8KB；
 /// file_name 拒绝 `/ \ ..` 与控制字符。
 fn validate_resolve_output(res: &ResolveResult) -> Result<(), PluginError> {
-    check_output_url(&res.url)?;
+    // 变体存在时顶层 url 允许为空（选中变体后覆盖）；非空时仍须合法。
+    if res.variants.is_empty() || !res.url.is_empty() {
+        check_output_url(&res.url)?;
+    }
+    if res.variants.len() > 50 {
+        return Err(PluginError::InvalidOutput(format!(
+            "variants 过多: {} > 50",
+            res.variants.len()
+        )));
+    }
+    for v in &res.variants {
+        if v.label.is_empty() || v.label.chars().count() > 200 {
+            return Err(PluginError::InvalidOutput(
+                "variant label 须非空且 ≤200 字符".to_string(),
+            ));
+        }
+        check_output_url(&v.url)?;
+        if let Some(a) = &v.audio_url
+            && !a.is_empty()
+        {
+            check_output_url(a)?;
+        }
+        if let Some(name) = &v.file_name {
+            check_file_name(name)?;
+        }
+    }
     if let Some(a) = &res.audio_url
         && !a.is_empty()
     {
         check_output_url(a)?;
     }
-    if let Some(name) = &res.file_name
-        && (name.contains('/')
-            || name.contains('\\')
-            || name.contains("..")
-            || name.chars().any(|c| c.is_control()))
+    if let Some(name) = &res.file_name {
+        check_file_name(name)?;
+    }
+    Ok(())
+}
+
+fn check_file_name(name: &str) -> Result<(), PluginError> {
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.chars().any(|c| c.is_control())
     {
         return Err(PluginError::InvalidOutput(format!(
             "file_name 非法: {name}"
@@ -952,4 +983,62 @@ fn check_output_url(url: &str) -> Result<(), PluginError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::validate_resolve_output;
+    use crate::plugin::{ResolveResult, ResolveVariant};
+
+    fn variant(label: &str, url: &str) -> ResolveVariant {
+        ResolveVariant {
+            label: label.into(),
+            url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 有 variants 时顶层 url 允许为空（选中变体后覆盖）。
+    #[test]
+    fn variants_allow_empty_top_level_url() {
+        let res = ResolveResult {
+            variants: vec![variant("1080p", "https://v.example.com/a")],
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&res).is_ok());
+    }
+
+    /// 无 variants 且顶层 url 为空 → 拒（原有单直链语义不放松）。
+    #[test]
+    fn empty_url_without_variants_rejected() {
+        assert!(validate_resolve_output(&ResolveResult::default()).is_err());
+    }
+
+    /// 变体 label 为空 / url scheme 非法 → 拒。
+    #[test]
+    fn invalid_variant_rejected() {
+        let empty_label = ResolveResult {
+            variants: vec![variant("", "https://v.example.com/a")],
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&empty_label).is_err());
+        let bad_scheme = ResolveResult {
+            variants: vec![variant("x", "javascript:alert(1)")],
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&bad_scheme).is_err());
+    }
+
+    /// 变体数量 > 50 → 拒。
+    #[test]
+    fn too_many_variants_rejected() {
+        let res = ResolveResult {
+            variants: (0..51)
+                .map(|i| variant(&format!("v{i}"), "https://v.example.com/a"))
+                .collect(),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&res).is_err());
+    }
 }

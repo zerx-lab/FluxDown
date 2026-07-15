@@ -86,6 +86,20 @@ impl From<model::HlsQualityOption> for signals::HlsQualityOption {
     }
 }
 
+impl From<model::ResolveVariantOption> for signals::ResolveVariantOption {
+    fn from(o: model::ResolveVariantOption) -> Self {
+        Self {
+            index: o.index,
+            label: o.label,
+            container: o.container,
+            bandwidth: o.bandwidth,
+            width: o.width,
+            height: o.height,
+            total_bytes: o.total_bytes,
+        }
+    }
+}
+
 impl From<model::TorrentMetaResult> for signals::TorrentMetaResult {
     fn from(r: model::TorrentMetaResult) -> Self {
         Self {

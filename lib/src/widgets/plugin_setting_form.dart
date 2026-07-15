@@ -5,6 +5,7 @@
 // SavePluginSettings，避免服务端半路校验失败）。服务端异步返回
 // PluginOpResult：ok=false 时展示 message，并把 failedKey 对应字段标红。
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
@@ -284,11 +285,42 @@ class _SettingFieldRow extends StatelessWidget {
         ],
         const SizedBox(height: 6),
         _buildInput(context),
+        if (field.helperScript.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ShadButton.outline(
+              size: ShadButtonSize.sm,
+              onPressed: () => _copyHelperScript(context),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(LucideIcons.clipboardCopy, size: 13),
+                  const SizedBox(width: 5),
+                  Text(
+                    field.helperLabel.isNotEmpty
+                        ? field.helperLabel
+                        : currentS.pluginCopyHelperScript,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
         if (error != null) ...[
           const SizedBox(height: 4),
           Text(error!, style: TextStyle(fontSize: 11, color: c.statusError)),
         ],
       ],
+    );
+  }
+  /// 复制辅助脚本到剪贴板（绝不执行），toast 提示去开发者工具 Console 粘贴运行。
+  Future<void> _copyHelperScript(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: field.helperScript));
+    if (!context.mounted) return;
+    ShadSonner.of(context).show(
+      ShadToast(title: Text(currentS.pluginHelperScriptCopied)),
     );
   }
 

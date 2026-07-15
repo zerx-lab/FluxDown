@@ -284,6 +284,9 @@ async fn handle_socket(mut socket: WebSocket, state: ServerState, authorized: bo
                     Ok(WsClientMsg::BtSelection { task_id, selected_indices }) => {
                         state.selector.provide_bt_selection(&task_id, selected_indices);
                     }
+                    Ok(WsClientMsg::SelectVariant { task_id, selected_index }) => {
+                        state.selector.provide_variant_selection(&task_id, selected_index);
+                    }
                     Err(e) => log_info!("[ws] bad client message: {}", e),
                 }
             }
@@ -942,6 +945,7 @@ async fn component_ytdlp_uninstall(State(state): State<ServerState>) -> Result<R
         crate::wire::SegmentDetailDto,
         crate::wire::QueuePositionDto,
         crate::wire::HlsQualityOptionDto,
+        crate::wire::ResolveVariantOptionDto,
         crate::wire::BtFileDto,
         crate::wire::CreateQueueRequest,
         crate::wire::MoveQueueRequest,

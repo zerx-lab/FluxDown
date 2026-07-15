@@ -32,9 +32,31 @@
 // 返回值约定（ResolveResult）：
 //   url / audioUrl / fileName / totalBytes / extraHeaders / ephemeral / rangeSupported
 //   （详见各字段回填处注释）。
+//   variants（可选，画质/格式多选项数组；非空时宿主弹框让用户选择，60s 超时或
+//   headless/免打扰场景下自动回退 defaultVariantIndex 指向的档位）。元素字段
+//   （camelCase，对应引擎 `plugin::runtime::ResolveVariant`）：
+//     label       展示标签，如 "1080p MP4" / "Audio only (m4a)"（必填非空，≤200 字符）
+//     url         该档的直链（语义同顶层 url：一次性签名直链，ephemeral）
+//     audioUrl    音视频分离场景的配对音频直链；本插件恒显式传值（无需覆盖顶层
+//                 时传 ''），避免宿主收敛逻辑遗留上一档的音频直链
+//     fileName    覆盖顶层 fileName（含该档正确的容器扩展名）
+//     totalBytes  该档总字节数，未知传 0（引擎侧等价于省略）
+//     bandwidth   码率（bps），未知为 0，仅供弹框展示/排序
+//     width/height 分辨率（px），未知为 0（纯音频档恒为 0）
+//     container   容器/扩展名（如 "mp4"/"webm"/"m4a"），可为空
+//   defaultVariantIndex：指向 variants 中与当前「默认画质」设置一致的档位。
+//   本实现中恒为 0——variants[0] 就是按当前设置选出的单结果档，其字段与顶层
+//   url/audioUrl/fileName/totalBytes 逐一相同，故旧宿主（无 variants 支持）
+//   行为不回退；其后至多再附加 4 个分辨率梯度档（去重）+ 1 个纯音频档供选择。
 
 // 一次调用内让 yt-dlp 轮询的 player_client 顺序（任一通过即用）。
 var PLAYER_CLIENTS = 'default,tv,android_vr,ios,web_safari';
+
+// variants 附加的分辨率梯度（从高到低；实际取「不超过该高度的最优档」，源分
+// 辨率不足则跳过，非精确匹配）。加上默认档与纯音频档，实际条数远低于上限。
+var VARIANT_HEIGHT_TIERS = [2160, 1440, 1080, 720, 480];
+// variants 数组条数上限（引擎侧硬上限 50，这里按 UI 可用性收紧）。
+var MAX_VARIANTS = 10;
 
 // Windows/Unix 通用的文件名净化。
 function sanitizeFileName(name) {
@@ -93,6 +115,135 @@ function headersOf(f, info) {
     if (v != null) out[keys[i]] = String(v);
   }
   return keys.length ? out : null;
+}
+
+// 从完整格式列表（info.formats，不受 -f 选择器影响）中选出最佳纯音频轨
+// （vcodec=none 且 acodec!=none）。preferMp4 时优先 m4a（AAC 容器，兼容性更
+// 好），其余情形按码率/文件大小取最高。供多个 video-only 变体共享配对音频。
+function pickBestAudio(formats, preferMp4) {
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < formats.length; i++) {
+    var f = formats[i];
+    if (!f || !f.url) continue;
+    var hasA = f.acodec && f.acodec !== 'none';
+    var hasV = f.vcodec && f.vcodec !== 'none';
+    if (!hasA || hasV) continue;
+    var score = (Number(f.abr) || Number(f.tbr) || 0) * 1000 + sizeOf(f) / 1e6;
+    if (preferMp4 && f.ext === 'm4a') score += 1e9;
+    if (score > bestScore) {
+      bestScore = score;
+      best = f;
+    }
+  }
+  return best;
+}
+
+// 从完整格式列表中，为目标高度梯度选出「不超过该高度、越接近越好」的最优视频
+// 轨（可能是纯视频轨，也可能是已混流轨）。preferMp4 时同等条件优先 mp4 容器。
+function pickVideoAtOrBelow(formats, targetHeight, preferMp4) {
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < formats.length; i++) {
+    var f = formats[i];
+    if (!f || !f.url) continue;
+    var hasV = f.vcodec && f.vcodec !== 'none';
+    if (!hasV) continue;
+    var h = Number(f.height) || 0;
+    if (h <= 0 || h > targetHeight) continue;
+    var score = h * 1e6 + (Number(f.tbr) || 0);
+    if (preferMp4 && f.ext === 'mp4') score += 1e12;
+    if (score > bestScore) {
+      bestScore = score;
+      best = f;
+    }
+  }
+  return best;
+}
+
+// 组装单个 variant 对象（camelCase 字段，契约见文件头注释）。audioUrl /
+// fileName / totalBytes 恒显式赋值（未知传 ''/0，而非省略字段），保证宿主
+// 收敛逻辑（download_manager.rs::collapse_resolve_variants，仅 Some 才覆盖
+// 顶层字段）不会遗留上一次收敛/默认档的字段。
+function buildVariant(opts) {
+  return {
+    label: opts.label,
+    url: opts.url,
+    audioUrl: opts.audioUrl || '',
+    fileName: opts.fileName || '',
+    totalBytes: opts.totalBytes || 0,
+    bandwidth: opts.bandwidth || 0,
+    width: opts.width || 0,
+    height: opts.height || 0,
+    container: opts.container || '',
+  };
+}
+
+// 构建 resolve 返回值的 variants + defaultVariantIndex：
+//   variants[0]      = singleMeta（当前按「默认画质」设置选出的单结果档，
+//                       字段与顶层 url/audioUrl/fileName/totalBytes 一致）
+//   variants[1..]     = 从 info.formats 派生的分辨率梯度档（去重、至多 4 个）
+//                       + 1 个纯音频档（若默认档本身已是纯音频则跳过，避免重复）
+//   defaultVariantIndex 恒为 0（见 variants[0] 说明）。
+// info.formats 缺失/为空时仅返回单元素数组（宿主按 variants.len()<=1 跳过弹框）。
+function buildVariants(info, preferMp4, base, singleMeta) {
+  var list = [
+    buildVariant({
+      label: singleMeta.label,
+      url: singleMeta.url,
+      audioUrl: singleMeta.audioUrl,
+      fileName: singleMeta.fileName,
+      totalBytes: singleMeta.totalBytes,
+      bandwidth: singleMeta.bandwidth,
+      width: singleMeta.width,
+      height: singleMeta.height,
+      container: singleMeta.container,
+    }),
+  ];
+  var seenHeights = {};
+  if (singleMeta.height) seenHeights[singleMeta.height] = true;
+
+  var formats = Array.isArray(info.formats) ? info.formats : [];
+  if (formats.length) {
+    var bestAudio = pickBestAudio(formats, preferMp4);
+
+    for (var i = 0; i < VARIANT_HEIGHT_TIERS.length && list.length < MAX_VARIANTS; i++) {
+      var vf = pickVideoAtOrBelow(formats, VARIANT_HEIGHT_TIERS[i], preferMp4);
+      if (!vf || !vf.height || seenHeights[vf.height]) continue;
+      seenHeights[vf.height] = true;
+      var hasMuxedAudio = vf.acodec && vf.acodec !== 'none';
+      var container = vf.ext || 'mp4';
+      var pairAudio = !hasMuxedAudio && bestAudio;
+      list.push(buildVariant({
+        label: vf.height + 'p ' + container.toUpperCase(),
+        url: vf.url,
+        audioUrl: pairAudio ? bestAudio.url : '',
+        fileName: base + '.' + container,
+        totalBytes: sizeOf(vf) + (pairAudio ? sizeOf(bestAudio) : 0),
+        bandwidth: Number(vf.tbr) ? Math.round(Number(vf.tbr) * 1000) : 0,
+        width: Number(vf.width) || 0,
+        height: Number(vf.height),
+        container: container,
+      }));
+    }
+
+    if (bestAudio && !singleMeta.isAudioOnly && list.length < MAX_VARIANTS) {
+      var aExt = bestAudio.ext || 'm4a';
+      list.push(buildVariant({
+        label: 'Audio only (' + aExt + ')',
+        url: bestAudio.url,
+        audioUrl: '',
+        fileName: base + '.' + aExt,
+        totalBytes: sizeOf(bestAudio),
+        bandwidth: Number(bestAudio.abr) ? Math.round(Number(bestAudio.abr) * 1000) : 0,
+        width: 0,
+        height: 0,
+        container: aExt,
+      }));
+    }
+  }
+
+  return { variants: list, defaultIndex: 0 };
 }
 
 // 判定一段文本是否已是 Netscape cookie 文件（原样透传，不转换）。
@@ -298,6 +449,7 @@ globalThis.resolve = async (ctx) => {
 
   var title = info.title || info.id || 'youtube-video';
   var base = sanitizeFileName(title);
+  var preferMp4 = flux.settings.preferMp4;
   var reqs = Array.isArray(info.requested_formats) ? info.requested_formats : null;
 
   // 情形 A：requested_formats（音视频分离或选定单流）。
@@ -317,20 +469,40 @@ globalThis.resolve = async (ctx) => {
       var a = af || reqs[0];
       if (!a || !a.url) throw new Error('yt-dlp 未返回音频直链: ' + ctx.url);
       if (verbose) flux.logger.info('[youtube] audio', a.format_id, a.ext);
-      return {
+      var aFileName = base + extOf(a, info, false);
+      var aContainer = extOf(a, info, false).slice(1) || 'm4a';
+      var single = {
         url: a.url,
-        fileName: base + extOf(a, info, false),
+        fileName: aFileName,
         totalBytes: sizeOf(a) || null,
         extraHeaders: headersOf(a, info),
         ephemeral: true,
         rangeSupported: true,
       };
+      var builtA = buildVariants(info, preferMp4, base, {
+        label: 'Audio only (' + aContainer + ')',
+        url: a.url,
+        audioUrl: '',
+        fileName: aFileName,
+        totalBytes: sizeOf(a),
+        bandwidth: Number(a.abr) ? Math.round(Number(a.abr) * 1000) : 0,
+        width: 0,
+        height: 0,
+        container: aContainer,
+        isAudioOnly: true,
+      });
+      single.variants = builtA.variants;
+      single.defaultVariantIndex = builtA.defaultIndex;
+      return single;
     }
 
     if (vf && vf.url) {
+      var vFileName = base + extOf(vf, info, true);
+      var vContainer = extOf(vf, info, true).slice(1) || 'mp4';
+      var vHeight = Number(vf.height) || Number(info.height) || 0;
       var result = {
         url: vf.url,
-        fileName: base + extOf(vf, info, true),
+        fileName: vFileName,
         totalBytes: (sizeOf(vf) + sizeOf(af)) || null,
         extraHeaders: headersOf(vf, info),
         ephemeral: true,
@@ -343,6 +515,20 @@ globalThis.resolve = async (ctx) => {
           af ? 'audio ' + af.format_id : 'muxed'
         );
       }
+      var builtV = buildVariants(info, preferMp4, base, {
+        label: (vHeight ? vHeight + 'p ' : '') + vContainer.toUpperCase(),
+        url: vf.url,
+        audioUrl: (af && af.url) ? af.url : '',
+        fileName: vFileName,
+        totalBytes: sizeOf(vf) + sizeOf(af),
+        bandwidth: Number(vf.tbr) ? Math.round(Number(vf.tbr) * 1000) : 0,
+        width: Number(vf.width) || 0,
+        height: vHeight,
+        container: vContainer,
+        isAudioOnly: false,
+      });
+      result.variants = builtV.variants;
+      result.defaultVariantIndex = builtV.defaultIndex;
       return result;
     }
   }
@@ -351,14 +537,34 @@ globalThis.resolve = async (ctx) => {
   if (info.url) {
     var hasVideo = flux.settings.quality !== 'audio';
     if (verbose) flux.logger.info('[youtube] muxed single', info.format_id, info.ext);
-    return {
+    var bFileName = base + extOf(info, info, hasVideo);
+    var bContainer = extOf(info, info, hasVideo).slice(1) || (hasVideo ? 'mp4' : 'm4a');
+    var bHeight = hasVideo ? (Number(info.height) || 0) : 0;
+    var single2 = {
       url: info.url,
-      fileName: base + extOf(info, info, hasVideo),
+      fileName: bFileName,
       totalBytes: sizeOf(info) || null,
       extraHeaders: headersOf(null, info),
       ephemeral: true,
       rangeSupported: true,
     };
+    var builtB = buildVariants(info, preferMp4, base, {
+      label: hasVideo
+        ? (bHeight ? bHeight + 'p ' : '') + bContainer.toUpperCase()
+        : 'Audio only (' + bContainer + ')',
+      url: info.url,
+      audioUrl: '',
+      fileName: bFileName,
+      totalBytes: sizeOf(info),
+      bandwidth: Number(info.tbr) ? Math.round(Number(info.tbr) * 1000) : 0,
+      width: hasVideo ? (Number(info.width) || 0) : 0,
+      height: bHeight,
+      container: bContainer,
+      isAudioOnly: !hasVideo,
+    });
+    single2.variants = builtB.variants;
+    single2.defaultVariantIndex = builtB.defaultIndex;
+    return single2;
   }
 
   throw new Error('yt-dlp 未返回可用直链: ' + ctx.url + '（格式选择器可能过严，可调整画质设置）');

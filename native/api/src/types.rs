@@ -387,6 +387,12 @@ pub struct SettingFieldDto {
     pub max: Option<f64>,
     #[serde(default)]
     pub pattern: Option<String>,
+    /// 辅助脚本（非空时 UI 在字段旁渲染复制按钮，仅复制文本、绝不执行）。
+    #[serde(default)]
+    pub helper_script: Option<String>,
+    /// 辅助脚本按钮文案（空则用默认文案）。
+    #[serde(default)]
+    pub helper_label: Option<String>,
 }
 
 /// 已安装插件视图（列表/设置表单）。
@@ -476,6 +482,8 @@ impl From<fluxdown_engine::plugin::SettingField> for SettingFieldDto {
             required: f.required,
             min: f.min,
             max: f.max,
+            helper_script: f.helper_script,
+            helper_label: f.helper_label,
             pattern: f.pattern,
         }
     }

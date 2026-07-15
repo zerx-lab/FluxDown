@@ -98,6 +98,15 @@ pub struct SettingField {
     /// 仅 string 有效，JS RegExp 语法（见模块文档）。
     #[serde(default)]
     pub pattern: Option<String>,
+    /// 可选「辅助脚本」：非空时宿主在该字段旁渲染一个复制按钮，把脚本原文
+    /// 复制到剪贴板，供用户粘贴到浏览器开发者工具 Console 执行（典型用途：
+    /// 在目标站点上提取 document.cookie 填入 cookie 设置）。宿主绝不执行该
+    /// 脚本，仅复制文本。仅 string 类型字段有效。
+    #[serde(default)]
+    pub helper_script: Option<String>,
+    /// 辅助脚本按钮文案（空则宿主用默认文案「复制获取脚本」）。
+    #[serde(default)]
+    pub helper_label: Option<String>,
 }
 
 impl SettingField {
@@ -382,6 +391,24 @@ pub fn validate_setting_field(f: &SettingField) -> Result<(), PluginError> {
         return err(format!("setting '{}': pattern 仅 string 有效", f.key));
     }
 
+    // helperScript：仅 string 有效；长度设限防 manifest 膨胀。
+    if f.helper_script.is_some() && t != SettingType::String {
+        return err(format!("setting '{}': helperScript 仅 string 有效", f.key));
+    }
+    if let Some(s) = &f.helper_script
+        && (s.is_empty() || s.len() > 4 * 1024)
+    {
+        return err(format!("setting '{}': helperScript 须非空且 ≤4KB", f.key));
+    }
+    if let Some(l) = &f.helper_label
+        && (l.chars().count() > 60 || f.helper_script.is_none())
+    {
+        return err(format!(
+            "setting '{}': helperLabel 须 ≤60 字符且须与 helperScript 同时出现",
+            f.key
+        ));
+    }
+
     // number default 必须能解析为数字，且落在 min/max 闭区间。
     if t == SettingType::Number
         && let Some(d) = &f.default
@@ -589,6 +616,28 @@ mod tests {
             r#"{"identity":"a@b","name":"N","version":"1.0.0",
                 "settings":[{"key":"q","title":"Q1","type":"string"},
                             {"key":"q","title":"Q2","type":"string"}]}"#,
+        );
+        assert!(m.validate().is_err());
+    }
+    #[test]
+    fn helper_script_only_valid_on_string_fields() {
+        let m = parse_ok(
+            r#"{"identity":"a@b","name":"N","version":"1.0.0",
+                "settings":[{"key":"q","title":"Q","type":"boolean","widget":"toggle","helperScript":"copy(1)"}]}"#,
+        );
+        assert!(m.validate().is_err());
+        let ok = parse_ok(
+            r#"{"identity":"a@b","name":"N","version":"1.0.0",
+                "settings":[{"key":"q","title":"Q","type":"string","widget":"textarea","helperScript":"copy(document.cookie)","helperLabel":"复制"}]}"#,
+        );
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn helper_label_requires_helper_script() {
+        let m = parse_ok(
+            r#"{"identity":"a@b","name":"N","version":"1.0.0",
+                "settings":[{"key":"q","title":"Q","type":"string","helperLabel":"复制"}]}"#,
         );
         assert!(m.validate().is_err());
     }

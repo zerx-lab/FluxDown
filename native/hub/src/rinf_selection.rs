@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use fluxdown_engine::model::{BtFileEntry, HlsQualityOption};
+use fluxdown_engine::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption};
 use fluxdown_engine::selection::{HostSelection, SelectionOutcome};
 use rinf::RustSignal;
 use tokio::sync::oneshot;
@@ -32,6 +32,7 @@ const BT_SELECTION_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct RinfHostSelection {
     hls_pending: Mutex<HashMap<String, oneshot::Sender<i32>>>,
     bt_pending: Mutex<HashMap<String, oneshot::Sender<Vec<i32>>>>,
+    variant_pending: Mutex<HashMap<String, oneshot::Sender<i32>>>,
 }
 
 impl RinfHostSelection {
@@ -39,6 +40,7 @@ impl RinfHostSelection {
         Self {
             hls_pending: Mutex::new(HashMap::new()),
             bt_pending: Mutex::new(HashMap::new()),
+            variant_pending: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -162,6 +164,55 @@ impl HostSelection for RinfHostSelection {
         outcome
     }
 
+    async fn select_resolve_variant(
+        &self,
+        task_id: &str,
+        options: &[ResolveVariantOption],
+        default_index: i32,
+        timeout: Duration,
+    ) -> SelectionOutcome<i32> {
+        let (tx, rx) = oneshot::channel();
+        lock_or_recover(&self.variant_pending).insert(task_id.to_string(), tx);
+
+        signals::ResolveVariantSelectionRequest {
+            task_id: task_id.to_string(),
+            default_index,
+            options: options.iter().cloned().map(Into::into).collect(),
+        }
+        .send_signal_to_dart();
+
+        log_info!(
+            "[rinf-selection] task {} sent {} resolve variant options, waiting (timeout={}s)",
+            task_id,
+            options.len(),
+            timeout.as_secs()
+        );
+
+        let outcome = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(idx)) => SelectionOutcome::UserChose(idx),
+            Ok(Err(_)) => {
+                // Channel closed (sender dropped) without an answer — treat like a timeout.
+                log_info!(
+                    "[rinf-selection] task {} resolve variant selection channel closed, defaulting",
+                    task_id
+                );
+                SelectionOutcome::TimedOutDefaulted(default_index)
+            }
+            Err(_) => {
+                log_info!(
+                    "[rinf-selection] task {} resolve variant selection timed out ({}s), defaulting",
+                    task_id,
+                    timeout.as_secs()
+                );
+                SelectionOutcome::TimedOutDefaulted(default_index)
+            }
+        };
+        // 无论哪种结果都必须从等待表移除该 task_id——不清理会导致 map
+        // 无界增长,或后续 provide_variant_selection 尝试 send 到已丢弃的 Receiver。
+        lock_or_recover(&self.variant_pending).remove(task_id);
+        outcome
+    }
+
     fn provide_hls_selection(&self, task_id: &str, selected_index: i32) {
         if let Some(tx) = lock_or_recover(&self.hls_pending).remove(task_id) {
             // `send` 失败(Receiver 已被丢弃,例如已超时)静默忽略，不 panic。
@@ -180,6 +231,17 @@ impl HostSelection for RinfHostSelection {
         } else {
             log_info!(
                 "[rinf-selection] no pending BT selection for task {}",
+                task_id
+            );
+        }
+    }
+
+    fn provide_variant_selection(&self, task_id: &str, selected_index: i32) {
+        if let Some(tx) = lock_or_recover(&self.variant_pending).remove(task_id) {
+            let _ = tx.send(selected_index);
+        } else {
+            log_info!(
+                "[rinf-selection] no pending resolve variant selection for task {}",
                 task_id
             );
         }

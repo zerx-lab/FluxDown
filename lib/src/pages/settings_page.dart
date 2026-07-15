@@ -4971,6 +4971,30 @@ class _ComponentsContentState extends State<_ComponentsContent> {
             ],
           ),
           const SizedBox(height: 8),
+          ShadButton.outline(
+            size: ShadButtonSize.sm,
+            enabled: !p.versionsLoading,
+            onPressed: p.requestVersions,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (p.versionsLoading)
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: c.textSecondary,
+                    ),
+                  )
+                else
+                  Icon(LucideIcons.refreshCw, size: 13, color: c.textSecondary),
+                const SizedBox(width: 6),
+                Text(s.componentsRetryVersions),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
         ],
         ShadSelect<String>(
           enabled: p.versions.isNotEmpty && !p.installing,

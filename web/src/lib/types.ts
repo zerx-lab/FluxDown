@@ -84,6 +84,16 @@ export interface BtFileEntry {
   size: number
 }
 
+export interface ResolveVariantOption {
+  index: number
+  label: string
+  container: string
+  bandwidth: number
+  width: number
+  height: number
+  totalBytes: number
+}
+
 // ---- WS 服务端 → 客户端（tag = type） ----
 
 export type WsServerMsg =
@@ -97,6 +107,7 @@ export type WsServerMsg =
   | { type: 'priorityTaskChanged'; priorityTaskId: string; autoPausedCount: number }
   | { type: 'hlsSelectionRequest'; taskId: string; options: HlsQualityOption[] }
   | { type: 'btSelectionRequest'; taskId: string; files: BtFileEntry[] }
+  | { type: 'resolveVariantRequest'; taskId: string; defaultIndex: number; options: ResolveVariantOption[] }
   | { type: 'pluginsChanged' }
   | { type: 'pluginAutoDisabled'; identity: string; reason: string }
   | { type: 'pluginHookActivity'; taskId: string; pluginId: string; running: boolean }
@@ -139,6 +150,7 @@ export interface SegmentSplitMsg {
 export type WsClientMsg =
   | { type: 'hlsSelection'; taskId: string; selectedIndex: number }
   | { type: 'btSelection'; taskId: string; selectedIndices: number[] }
+  | { type: 'selectVariant'; taskId: string; selectedIndex: number }
   | { type: 'ping' }
 
 // ---- 扩展 REST ----
@@ -250,6 +262,10 @@ export interface SettingFieldDto {
   min: number | null
   max: number | null
   pattern: string | null
+  /** 辅助脚本（非空时字段旁渲染复制按钮，仅复制文本、绝不执行）。旧服务端可能缺省。 */
+  helperScript?: string | null
+  /** 辅助脚本按钮文案（空则用默认文案）。 */
+  helperLabel?: string | null
 }
 
 export interface PluginDto {

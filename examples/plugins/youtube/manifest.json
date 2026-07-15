@@ -1,7 +1,7 @@
 {
   "identity": "fluxdown@youtube",
   "name": "YouTube 视频解析",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "description": "经宿主 yt-dlp 组件解析 YouTube 视频页为可下载直链（画质/容器选择映射为 yt-dlp 格式选择器），交回引擎多段并发下载 + 断点续传。⚠ 依赖 JS 运行时：需在系统 PATH 安装 Node.js（≥22）或 Deno（≥2.3），否则 yt-dlp 无法求解 n-sig 挑战、拿不到直链。签名直链自动按一次性 URL 处理并透传 http_headers 鉴权头。关闭「优先 MP4 容器」时下载完成后经 ffmpeg 转码为 H.264/AAC mp4。需在 App「组件」页安装 yt-dlp（及可选 ffmpeg）。",
   "homepage": "https://fluxdown.zerx.dev",
   "minAppVersion": "0.1.60",
@@ -45,8 +45,8 @@
   "settings": [
     {
       "key": "quality",
-      "title": "画质偏好",
-      "description": "best 取可用最高画质；audio 仅下载音频（m4a）",
+      "title": "默认画质",
+      "description": "下载发起时的默认画质档位（下载时可在画质选择弹框中临时更改；弹框超时 60s 或免打扰/无头场景才直接使用该默认值）。best 取可用最高画质；audio 仅下载音频（m4a）。",
       "type": "string",
       "widget": "select",
       "options": [
@@ -86,10 +86,12 @@
     {
       "key": "cookies",
       "title": "Cookie（绕过风控 / 会员视频）",
-      "description": "遇「Sign in to confirm you're not a bot」风控或下载会员/年龄限制视频时填写。支持两种格式：① 浏览器 Cookie 头 k=v; k2=v2；② Netscape cookies.txt 文件内容。新建下载时任务级 Cookie 优先于此设置。留空则不使用 cookie。",
+      "description": "遇「Sign in to confirm you're not a bot」风控或下载会员/年龄限制视频时填写。支持两种格式：① 浏览器 Cookie 头 k=v; k2=v2；② Netscape cookies.txt 文件内容。⚠ YouTube 的登录会话 cookie（__Secure-3PSID 等）多为 HttpOnly，任何网页 Console 脚本（含 document.cookie）都读不到，只能拿到 PREF 等少数非登录 cookie、无法通过风控。请用下方按钮复制的脚本按提示操作：首选「开发者工具→网络面板→复制任意 youtube 请求的 cookie 请求头」，或用「Get cookies.txt」类扩展导出 cookies.txt 后整段粘贴。新建下载时任务级 Cookie 优先于此设置。留空则不使用 cookie。",
       "type": "string",
       "widget": "textarea",
-      "default": ""
+      "default": "",
+      "helperScript": "(() => { if (!location.hostname.endsWith('youtube.com')) { console.log('%c[FluxDown] 请先打开并登录 www.youtube.com，再在本页 Console 执行本脚本', 'color:#e11'); return; } const readable = document.cookie.split('; ').filter(Boolean); const names = readable.map(s => s.split('=')[0]); const CRITICAL = ['__Secure-3PSID', '__Secure-3PSIDTS', 'LOGIN_INFO']; const missing = CRITICAL.filter(n => !names.includes(n)); if (missing.length === 0 && readable.length >= 5) { const s = readable.join('; '); try { copy(s); console.log('%c[FluxDown] 已复制 ' + readable.length + ' 条完整 cookie 到剪贴板，粘贴到插件 Cookie 输入框即可', 'color:#0a0'); } catch (e) { console.log('[FluxDown] 自动复制失败，请手动复制下面一行：'); console.log(s); } return; } console.log('%c[FluxDown] document.cookie 只能读到 ' + readable.length + ' 条 cookie，缺少登录会话 cookie（' + missing.join(', ') + '），无法通过 YouTube 风控。', 'color:#e11;font-weight:bold'); console.log('%cHttpOnly cookie 受浏览器保护、任何 Console 脚本都读不到。请改用下面任一方法获取完整 cookie：', 'color:#333'); console.log('%c方法 A（推荐，无需插件）：', 'font-weight:bold'); console.log('  1. 按 F12 打开开发者工具，切到「网络 / Network」面板'); console.log('  2. 刷新本页（F5），在请求列表点任意一条 www.youtube.com 的请求'); console.log('  3. 在「标头 / Headers」→「请求标头 / Request Headers」中找到 cookie: 一行'); console.log('  4. 完整复制 cookie: 后面的全部内容，粘贴到插件 Cookie 输入框'); console.log('%c方法 B：用「Get cookies.txt」等浏览器扩展导出 youtube.com 的 cookies.txt，整段内容粘贴到输入框', 'color:#333'); })();",
+      "helperLabel": "复制 Cookie 获取脚本"
     },
     {
       "key": "verbose",

@@ -9,7 +9,9 @@ use utoipa::ToSchema;
 
 use fluxdown_api::types::{QueueDto, TaskDto};
 use fluxdown_engine::components::{FfmpegStatus, FfmpegVersions, YtdlpStatus, YtdlpVersions};
-use fluxdown_engine::model::{BtFileEntry, HlsQualityOption, QueuePosition, SegmentDetail};
+use fluxdown_engine::model::{
+    BtFileEntry, HlsQualityOption, QueuePosition, ResolveVariantOption, SegmentDetail,
+};
 
 // ---------------------------------------------------------------------------
 // WS 服务端 → 客户端
@@ -94,6 +96,33 @@ impl From<BtFileEntry> for BtFileDto {
     }
 }
 
+/// 插件 resolve 返回的可选变体（`resolveVariantRequest` 载荷）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveVariantOptionDto {
+    pub index: i32,
+    pub label: String,
+    pub container: String,
+    pub bandwidth: i64,
+    pub width: i64,
+    pub height: i64,
+    pub total_bytes: i64,
+}
+
+impl From<ResolveVariantOption> for ResolveVariantOptionDto {
+    fn from(o: ResolveVariantOption) -> Self {
+        Self {
+            index: o.index,
+            label: o.label,
+            container: o.container,
+            bandwidth: o.bandwidth,
+            width: o.width,
+            height: o.height,
+            total_bytes: o.total_bytes,
+        }
+    }
+}
+
 /// 服务端经 `/api/v1/ws` 推送的实时消息。
 ///
 /// JSON 形态：`{"type":"taskProgress","taskId":"…",…}`（`type` 判别 + 扁平
@@ -164,6 +193,12 @@ pub enum WsServerMsg {
         task_id: String,
         files: Vec<BtFileDto>,
     },
+    /// 请求客户端选择插件 resolve 变体（画质/格式）；超时用插件提供的默认索引。
+    ResolveVariantRequest {
+        task_id: String,
+        default_index: i32,
+        options: Vec<ResolveVariantOptionDto>,
+    },
     /// `ping` 应答（RTT 测量）。
     Pong {},
     /// 插件因熔断（连续超时/过载）被自动禁用（`reason` 固定 `"CircuitBreaker"`）。
@@ -215,6 +250,11 @@ pub enum WsClientMsg {
     BtSelection {
         task_id: String,
         selected_indices: Vec<i32>,
+    },
+    /// 应答 `resolveVariantRequest`。
+    SelectVariant {
+        task_id: String,
+        selected_index: i32,
     },
     /// RTT 测量，服务端回 `pong`。
     Ping {},
@@ -481,6 +521,23 @@ mod tests {
     }
 
     #[test]
+    fn ws_client_msg_select_variant_roundtrip() {
+        let msg: WsClientMsg =
+            serde_json::from_str(r#"{"type":"selectVariant","taskId":"t4","selectedIndex":1}"#)
+                .unwrap();
+        match msg {
+            WsClientMsg::SelectVariant {
+                task_id,
+                selected_index,
+            } => {
+                assert_eq!(task_id, "t4");
+                assert_eq!(selected_index, 1);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn ws_client_msg_bt_selection_roundtrip_with_indices() {
         let msg: WsClientMsg = serde_json::from_str(
             r#"{"type":"btSelection","taskId":"t2","selectedIndices":[0,2,5]}"#,
@@ -701,6 +758,30 @@ mod tests {
         assert_eq!(v["type"], "btSelectionRequest");
         assert_eq!(v["files"][0]["path"], "folder/video.mp4");
         assert_eq!(v["files"][0]["size"], 999);
+    }
+
+    #[test]
+    fn ws_server_msg_resolve_variant_request_variant() {
+        let msg = WsServerMsg::ResolveVariantRequest {
+            task_id: "t1".into(),
+            default_index: 0,
+            options: vec![ResolveVariantOptionDto {
+                index: 0,
+                label: "1080p MP4".into(),
+                container: "mp4".into(),
+                bandwidth: 5_000_000,
+                width: 1920,
+                height: 1080,
+                total_bytes: 123_456,
+            }],
+        };
+        let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(v["type"], "resolveVariantRequest");
+        assert_eq!(v["taskId"], "t1");
+        assert_eq!(v["defaultIndex"], 0);
+        assert_eq!(v["options"][0]["label"], "1080p MP4");
+        assert_eq!(v["options"][0]["container"], "mp4");
+        assert_eq!(v["options"][0]["totalBytes"], 123_456);
     }
 
     #[test]

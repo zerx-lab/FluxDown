@@ -31,8 +31,8 @@ use crate::signals::{
     ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig, RequestFfmpegStatus,
     RequestFfmpegVersions, RequestMarketIndex, RequestPlugins, RequestUpdateFailureMarker,
     RequestYtdlpStatus, RequestYtdlpVersions, RescanFiles, RevealFile, SaveConfig,
-    SavePluginSettings, SelectBtFiles, SelectHlsQuality, SetFileAssociation, SetPluginEnabled,
-    SetPriorityTask, SetUrlProtocol, SystemProxyInfo, TestProxyConnection,
+    SavePluginSettings, SelectBtFiles, SelectHlsQuality, SelectResolveVariant, SetFileAssociation,
+    SetPluginEnabled, SetPriorityTask, SetUrlProtocol, SystemProxyInfo, TestProxyConnection,
     TrackerSubscriptionResult, UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
     UpdateEd2kServerSubscription, UpdateFailureMarker, UpdateQueue, UpdateTrackerSubscription,
     UrlProtocolStatus, YtdlpInstallProgress, YtdlpInstallResult, YtdlpStatusReport,
@@ -481,6 +481,7 @@ pub async fn run(db_dir: PathBuf) {
     let test_proxy_recv = TestProxyConnection::get_dart_signal_receiver();
     let detect_sys_proxy_recv = DetectSystemProxy::get_dart_signal_receiver();
     let select_hls_quality_recv = SelectHlsQuality::get_dart_signal_receiver();
+    let select_resolve_variant_recv = SelectResolveVariant::get_dart_signal_receiver();
     let set_url_proto_recv = SetUrlProtocol::get_dart_signal_receiver();
     let check_url_proto_recv = CheckUrlProtocol::get_dart_signal_receiver();
     let set_priority_recv = SetPriorityTask::get_dart_signal_receiver();
@@ -1137,6 +1138,16 @@ pub async fn run(db_dir: PathBuf) {
                     msg.selected_index,
                 );
                 engine.selector.provide_hls_selection(&msg.task_id, msg.selected_index);
+            }
+            // --- Plugin resolve variant selection ---
+            Some(signal) = select_resolve_variant_recv.recv() => {
+                let msg = signal.message;
+                log_info!(
+                    "[actor] resolve variant selected: task={}, index={}",
+                    msg.task_id,
+                    msg.selected_index,
+                );
+                engine.selector.provide_variant_selection(&msg.task_id, msg.selected_index);
             }
             // --- Priority (Boost) download ---
             Some(signal) = set_priority_recv.recv() => {

@@ -4,12 +4,14 @@
 import { BtFilesDialog } from './bt-files'
 import { HlsQualityDialog } from './hls-quality'
 import { NewDownloadDialog } from './new-download'
+import { ResolveVariantDialog } from './resolve-variant'
 
 export function GlobalDialogs() {
   return (
     <>
       <NewDownloadDialog />
       <HlsQualityDialog />
+      <ResolveVariantDialog />
       <BtFilesDialog />
     </>
   )

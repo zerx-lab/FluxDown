@@ -12,6 +12,7 @@ import type {
   BtFileEntry,
   HlsQualityOption,
   QueueDto,
+  ResolveVariantOption,
   SegmentProgressMsg,
   SegmentSplitMsg,
   TaskDto,
@@ -61,6 +62,12 @@ export const priorityStore = new Store<{ priorityTaskId: string; autoPausedCount
 })
 /** 待处理的 HLS/BT 选择请求（对话框消费后置 null）。 */
 export const hlsRequestStore = new Store<{ taskId: string; options: HlsQualityOption[] } | null>(null)
+/** 待处理的插件 resolve 变体（画质/格式）选择请求。 */
+export const resolveVariantRequestStore = new Store<{
+  taskId: string
+  defaultIndex: number
+  options: ResolveVariantOption[]
+} | null>(null)
 export const btRequestStore = new Store<{ taskId: string; files: BtFileEntry[] } | null>(null)
 /** 组件（ffmpeg）安装/下载进度，按 component 名索引。 */
 export const componentProgressStore = new Store<
@@ -241,6 +248,9 @@ function dispatch(msg: WsServerMsg) {
       break
     case 'hlsSelectionRequest':
       hlsRequestStore.set({ taskId: msg.taskId, options: msg.options })
+      break
+    case 'resolveVariantRequest':
+      resolveVariantRequestStore.set({ taskId: msg.taskId, defaultIndex: msg.defaultIndex, options: msg.options })
       break
     case 'btSelectionRequest':
       btRequestStore.set({ taskId: msg.taskId, files: msg.files })

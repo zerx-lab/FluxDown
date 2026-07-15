@@ -148,7 +148,18 @@ function ComponentCard({
       : t('components.versionsEmpty')
     versionsBody = (
       <SetRow title={t('components.install')} align="start">
-        <p className="text-[12px] text-text3">{t('components.versionsFailed', { error: reason, bin: binName })}</p>
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-[12px] text-text3">{t('components.versionsFailed', { error: reason, bin: binName })}</p>
+          <button
+            type="button"
+            className="btn ghost sm flex-shrink-0"
+            disabled={versionsQuery.isFetching}
+            onClick={() => void versionsQuery.refetch()}
+          >
+            <RefreshCw size={14} className={versionsQuery.isFetching ? 'animate-spin' : undefined} />
+            {t('common.retry')}
+          </button>
+        </div>
       </SetRow>
     )
   } else {

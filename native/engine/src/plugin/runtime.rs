@@ -75,6 +75,39 @@ pub struct ResolveResult {
     /// 置 true 时引擎跳过 probe 的同时仍按已验证 Range 规划多段并发下载，
     /// 不落入配额型端点（fnOS）的保守单流启动。默认 false（保守）。
     pub range_supported: bool,
+    /// 可选变体列表（画质/格式）。非空时宿主经 `HostSelection::select_resolve_variant`
+    /// 让用户选择，选中变体的非空字段覆盖本结构的 url/audio_url/file_name/
+    /// total_bytes（在 resolve worker 内收敛，回流 actor 前完成）。空 = 单一直链
+    /// 旧语义，零破坏。变体存在时顶层 `url` 允许为空。
+    pub variants: Vec<ResolveVariant>,
+    /// 默认变体索引（超时/免打扰/headless 回退用），通常由插件按自身"画质偏好"
+    /// 设置指向对应变体。越界按 0 处理。默认 0。
+    pub default_variant_index: i32,
+}
+
+/// [`ResolveResult::variants`] 的单个变体。`label` 必填（展示用）；url 为该变体
+/// 直链；其余字段缺省时不覆盖顶层值。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResolveVariant {
+    /// 展示标签（如 `"1080p MP4"`）。必填非空。
+    pub label: String,
+    /// 该变体的视频/主直链。必填非空。
+    pub url: String,
+    /// 可选音频直链（DASH 音视频分离）。
+    pub audio_url: Option<String>,
+    /// 可选文件名（覆盖顶层 file_name）。
+    pub file_name: Option<String>,
+    /// 可选总字节数（覆盖顶层 total_bytes）。
+    pub total_bytes: Option<i64>,
+    /// 码率（bps），未知为 0（仅展示排序用）。
+    pub bandwidth: i64,
+    /// 视频宽度（像素），未知为 0。
+    pub width: i64,
+    /// 视频高度（像素），未知为 0。
+    pub height: i64,
+    /// 容器格式（如 `"mp4"`），可为空。
+    pub container: String,
 }
 
 /// 通知事件。每个变体都带 `url`（= source_url），供 `notify()` 的 `match.urls` 过滤。

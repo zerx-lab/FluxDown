@@ -89,6 +89,25 @@ pub struct HlsQualityOption {
     pub width: i64,
     pub height: i64,
 }
+/// 插件 resolve 返回的可选变体（画质/格式），供宿主弹框让用户选择。
+/// 字段对应 `hub::signals::ResolveVariantOption`。含 `String`，非 `Copy`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveVariantOption {
+    /// 变体在列表中的索引（从 0 开始）。
+    pub index: i32,
+    /// 展示标签（如 `"1080p MP4"`），由插件提供。
+    pub label: String,
+    /// 容器格式（如 `"mp4"`/`"webm"`），可为空。
+    pub container: String,
+    /// 码率（bps），未知为 0。
+    pub bandwidth: i64,
+    /// 视频宽度（像素），未知为 0。
+    pub width: i64,
+    /// 视频高度（像素），未知为 0。
+    pub height: i64,
+    /// 该变体的总字节数，未知为 0。
+    pub total_bytes: i64,
+}
 
 /// 解析出的种子元数据(用于新建下载对话框预览)。
 /// 字段对应 `hub::signals::TorrentMetaResult`。

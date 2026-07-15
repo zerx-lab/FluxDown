@@ -459,6 +459,38 @@ pub struct SelectHlsQuality {
     pub selected_index: i32,
 }
 
+// ========== Plugin resolve variant selection signals ==========
+
+/// 插件 resolve 返回多个可选变体（画质/格式）— 发送给 Dart 供用户选择
+/// (Rust → Dart)。Dart 应展示一个选择对话框并回复 [SelectResolveVariant]。
+#[derive(Serialize, RustSignal)]
+pub struct ResolveVariantSelectionRequest {
+    pub task_id: String,
+    /// 插件按自身偏好排序的默认变体索引（用户未选择/超时时回退）。
+    pub default_index: i32,
+    pub options: Vec<ResolveVariantOption>,
+}
+
+/// 插件 resolve 返回的单个可选变体（画质/格式）。
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct ResolveVariantOption {
+    pub index: i32,
+    pub label: String,
+    pub container: String,
+    pub bandwidth: i64,
+    pub width: i64,
+    pub height: i64,
+    pub total_bytes: i64,
+}
+
+/// User selected a plugin resolve variant (Dart → Rust).
+#[derive(Deserialize, DartSignal)]
+pub struct SelectResolveVariant {
+    pub task_id: String,
+    /// Index of the selected variant (from [ResolveVariantOption.index]).
+    pub selected_index: i32,
+}
+
 // ========== File association signals ==========
 
 /// Set or remove .torrent file association (Dart → Rust).
@@ -882,6 +914,10 @@ pub struct SettingFieldSignal {
     pub max: f64,
     pub has_max: bool,
     pub pattern: String,
+    /// 辅助脚本（空 = 无）。非空时 UI 在字段旁渲染复制按钮，仅复制文本、绝不执行。
+    pub helper_script: String,
+    /// 辅助脚本按钮文案（空 = 用默认文案）。
+    pub helper_label: String,
 }
 
 impl From<fluxdown_engine::plugin::SettingField> for SettingFieldSignal {
@@ -918,6 +954,8 @@ impl From<fluxdown_engine::plugin::SettingField> for SettingFieldSignal {
             has_max: field.max.is_some(),
             max: field.max.unwrap_or(0.0),
             pattern: field.pattern.unwrap_or_default(),
+            helper_script: field.helper_script.unwrap_or_default(),
+            helper_label: field.helper_label.unwrap_or_default(),
         }
     }
 }
