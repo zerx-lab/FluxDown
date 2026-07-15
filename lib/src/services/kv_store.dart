@@ -10,7 +10,8 @@ import 'platform_utils.dart';
 
 const _tag = 'KvStore';
 
-/// 便携模式下 JSON 存储文件名（放在 [resolveDataDir] 目录下，即 exe 目录）。
+/// 便携模式下 JSON 存储文件名（放在 [resolveDataDir] 目录下，
+/// 即 `<exe_dir>/portable_data/`）。
 const _kPortableFileName = 'settings.json';
 
 /// 便携模式写盘防抖间隔。
