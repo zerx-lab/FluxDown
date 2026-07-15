@@ -6,17 +6,22 @@
 //!
 //! | Platform        | Mode      | Directory                                      |
 //! |-----------------|-----------|-------------------------------------------------|
-//! | Windows         | Portable  | `<exe_dir>/`  (data travels with the app)       |
-//! | Windows         | Installed | `%LOCALAPPDATA%\FluxDown\`                      |
-//! | Linux           | —         | `$XDG_DATA_HOME/fluxdown/`                      |
-//! | macOS           | —         | `~/Library/Application Support/fluxdown/`        |
-//! | Android         | —         | `/data/data/<package>/files/fluxdown/`           |
+//! | Windows         | 便携版     | `<exe_dir>/portable_data/`                      |
+//! | Windows         | 安装版     | `%LOCALAPPDATA%\FluxDown\`                      |
+//! | Linux           | —          | `$XDG_DATA_HOME/fluxdown/`                      |
+//! | macOS           | —          | `~/Library/Application Support/fluxdown/`        |
+//! | Android         | —          | `/data/data/<package>/files/fluxdown/`           |
 //!
-//! ### Portable detection (Windows only)
+//! ### 便携模式检测（仅 Windows）
 //!
-//! A `portable` marker file next to the executable signals portable mode.
-//! This is consistent with the existing check in `updater.rs` and the Dart-side
-//! `_isPortableMode()` in `windows_toast_helper.dart`.
+//! exe 同目录下存在 `portable` 标记文件即视为便携模式。
+//! 与 `updater.rs` 和 Dart 侧 `isPortableMode()` 保持一致。
+//!
+//! ### 便携数据迁移（≤ v0.2.x → v0.3+）
+//!
+//! v0.3 以前，便携数据直接散落在 `<exe_dir>/` 根层（与 exe/DLL 混在一起）。
+//! 升级后首次启动时，旧文件自动迁移到 `portable_data/` 子目录。
+//! 迁移幂等——目标文件已存在则跳过。
 
 use std::path::{Path, PathBuf};
 
@@ -92,8 +97,10 @@ fn resolve_data_dir_inner() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if is_portable() {
-            // Portable mode: data lives next to the exe.
-            return exe_dir();
+            let root = exe_dir();
+            let new_dir = root.join(PORTABLE_DATA_DIR);
+            migrate_portable_data(&root, &new_dir);
+            return new_dir;
         }
         // Installed mode: use %LOCALAPPDATA%\FluxDown (always user-writable).
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
@@ -157,6 +164,10 @@ pub fn android_package_name() -> Option<String> {
     }
 }
 
+/// 便携数据子目录名，位于 exe 所在目录内。
+#[cfg(target_os = "windows")]
+const PORTABLE_DATA_DIR: &str = "portable_data";
+
 /// Windows portable detection: `portable` marker file exists next to the exe.
 #[cfg(target_os = "windows")]
 fn is_portable() -> bool {
@@ -166,6 +177,44 @@ fn is_portable() -> bool {
         return dir.join(PORTABLE_MARKER).exists();
     }
     false
+}
+
+/// 将旧版便携数据（≤ v0.2.x，散落在 exe 目录根层）迁移到新的
+/// `portable_data/` 子目录。
+///
+/// 幂等：目标已存在则跳过。迁移通过 `rename` 完成，成功后源文件即被移除。
+///
+/// GUI 路径下 Dart 侧 `_migratePortableData` 先于本函数执行（`main.dart`
+/// L77 `LogService.init` 早于 `initializeRust` 调用），故本函数通常 no-op；
+/// 其主要价值在 CLI（`native/cli`）与 headless server 等纯 Rust 入口路径。
+#[cfg(target_os = "windows")]
+fn migrate_portable_data(old_root: &Path, new_dir: &Path) {
+    let _ = std::fs::create_dir_all(new_dir);
+    // KEEP IN SYNC with lib/src/services/platform_utils.dart knownItems
+    const KNOWN_ITEMS: &[&str] = &[
+        "flux_down.db",
+        "flux_down.db-wal",
+        "flux_down.db-shm",
+        "settings.json",
+        "logs",
+        "bt_session",
+        "plugins",
+        "plugins-work",
+        "bin",
+    ];
+    for name in KNOWN_ITEMS {
+        let old_path = old_root.join(name);
+        let new_path = new_dir.join(name);
+        if old_path.exists() && !new_path.exists() {
+            if let Err(e) = std::fs::rename(&old_path, &new_path) {
+                eprintln!(
+                    "[便携迁移] 移动失败 {} → {}: {e}",
+                    old_path.display(),
+                    new_path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Returns the exe's parent directory, falling back to CWD or ".".
