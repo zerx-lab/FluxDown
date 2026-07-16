@@ -2629,6 +2629,9 @@ async fn apply_only_files_after_init(
                 }
             }
         };
+        if cancelled.load(Ordering::SeqCst) {
+            return false;
+        }
         if let Err(e) = initialized {
             // A wait error is fatal: surface it via the caller's error path
             // instead of falling through and downloading unselected files (#90).
@@ -2640,7 +2643,12 @@ async fn apply_only_files_after_init(
             return false;
         }
         match session.update_only_files(handle, only).await {
-            Ok(()) => return true,
+            Ok(()) => {
+                if cancelled.load(Ordering::SeqCst) {
+                    return false;
+                }
+                return true;
+            }
             Err(e) => {
                 log_info!(
                     "[BT] task={} update_only_files attempt {}/{} failed: {} — waiting for init and retrying",
@@ -3288,6 +3296,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         only.len()
                     );
                     log_info!("[BT] task={} {}", short_id(&task_id), &msg);
+                    let _ = shared_bt.delete_task(&task_id, false).await;
                     let _ = db.update_task_status(&task_id, STATUS_ERROR, &msg).await;
                     let _ = progress_tx
                         .send(ProgressUpdate {
