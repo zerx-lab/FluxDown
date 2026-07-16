@@ -3392,6 +3392,14 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
     let _ = db
         .update_task_file_info(&task_id, &resolved_name, total_bytes)
         .await;
+    // Don't clobber a pause (status=2) that landed during the awaits above.
+    if cancelled.load(Ordering::SeqCst) {
+        log_info!(
+            "[BT] task={} cancelled before downloading-status write → keeping paused state",
+            short_id(&task_id)
+        );
+        return Err(DownloadError::Cancelled);
+    }
     let _ = db
         .update_task_status(&task_id, STATUS_DOWNLOADING, "")
         .await;
