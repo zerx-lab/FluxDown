@@ -42,6 +42,7 @@ import '../widgets/title_drag_area.dart';
 
 enum SettingsCategory {
   general(icon: LucideIcons.settings2),
+  account(icon: LucideIcons.cloud),
   appearance(icon: LucideIcons.palette),
   download(icon: LucideIcons.download),
   bt(icon: LucideIcons.magnet),
@@ -61,6 +62,7 @@ extension SettingsCategoryI18n on SettingsCategory {
     final s = currentS;
     return switch (this) {
       SettingsCategory.general => s.settingsCatGeneral,
+      SettingsCategory.account => s.settingsCatAccount,
       SettingsCategory.appearance => s.settingsCatAppearance,
       SettingsCategory.download => s.settingsCatDownload,
       SettingsCategory.bt => s.settingsCatBt,
@@ -76,6 +78,7 @@ extension SettingsCategoryI18n on SettingsCategory {
     final s = currentS;
     return switch (this) {
       SettingsCategory.general => s.settingsCatGeneralDesc,
+      SettingsCategory.account => s.settingsCatAccountDesc,
       SettingsCategory.appearance => s.settingsCatAppearanceDesc,
       SettingsCategory.download => s.settingsCatDownloadDesc,
       SettingsCategory.bt => s.settingsCatBtDesc,
@@ -1207,7 +1210,7 @@ class _SettingsContentState extends State<_SettingsContent> {
                 padding: const EdgeInsets.fromLTRB(40, 20, 36, 24),
                 child: aligned(
                   AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 200),
+                    duration: const Duration(milliseconds: 120),
                     layoutBuilder: (currentChild, previousChildren) {
                       return Stack(
                         alignment: Alignment.topLeft,
@@ -1235,6 +1238,7 @@ class _SettingsContentState extends State<_SettingsContent> {
       SettingsCategory.general => _GeneralContent(
         settingsProvider: settingsProvider,
       ),
+      SettingsCategory.account => const _AccountContent(),
       SettingsCategory.appearance => const _AppearanceContent(),
       SettingsCategory.download => _DownloadContent(
         settingsProvider: settingsProvider,
@@ -9189,6 +9193,369 @@ class _LogExportCardState extends State<_LogExportCard> {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 账户页面 —— UI 预览，无后端逻辑
+// ─────────────────────────────────────────────
+
+/// 账户分类内容：登录即使用云功能，未登录保持纯本地（无独立开关）。
+/// 当前为纯界面预览：状态仅存于本组件、不持久化、不发起任何网络请求。
+class _AccountContent extends StatefulWidget {
+  const _AccountContent();
+
+  @override
+  State<_AccountContent> createState() => _AccountContentState();
+}
+
+class _AccountContentState extends State<_AccountContent> {
+  bool _loggedIn = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    // 居中窄栏排版：账户是低频页面，内容少，铺满整宽会显得空旷。
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _card(
+              c,
+              m,
+              child: _loggedIn ? _profileBody(s, c) : _heroBody(s, c),
+            ),
+            const SizedBox(height: 16),
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.accountGroupCloudFeatures,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.accountCloudFeaturesDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            _card(
+              c,
+              m,
+              padding: EdgeInsets.zero,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _featureRow(c, m, LucideIcons.refreshCw,
+                      s.accountFeatureConfigSync, s.accountFeatureConfigSyncDesc,
+                      badge: s.accountComingSoon),
+                  _divider(c, m),
+                  _featureRow(c, m, LucideIcons.history,
+                      s.accountFeatureHistorySync,
+                      s.accountFeatureHistorySyncDesc,
+                      badge: s.accountComingSoon),
+                  _divider(c, m),
+                  _featureRow(c, m, LucideIcons.arrowLeftRight,
+                      s.accountFeatureHandoff, s.accountFeatureHandoffDesc,
+                      badge: s.accountComingSoon),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _card(AppColors c, AppMetrics m,
+      {required Widget child, EdgeInsetsGeometry? padding}) {
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      padding: padding ?? const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: c.surface1,
+        borderRadius: m.brDialog,
+        border: Border.all(color: m.borderMedium(c.border), width: 1),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _divider(AppColors c, AppMetrics m) => Container(
+        height: 1,
+        margin: const EdgeInsets.only(left: 52),
+        color: m.borderFade(c.border),
+      );
+
+  /// 未登录：居中英雄区 —— 云图标 + 标题 + 一句话说明 + 登录按钮。
+  Widget _heroBody(S s, AppColors c) {
+    return Column(
+      children: [
+        Container(
+          width: 64,
+          height: 64,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: c.accent.withValues(alpha: 0.12),
+          ),
+          child: Icon(LucideIcons.cloud, size: 30, color: c.accent),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          s.accountLoginDialogTitle,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: c.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          s.accountHeroSubtitle,
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, height: 1.5, color: c.textMuted),
+        ),
+        const SizedBox(height: 18),
+        ShadButton(
+          onPressed: _showLoginDialog,
+          child: Text(s.accountLogin),
+        ),
+      ],
+    );
+  }
+
+  /// 已登录：头像 + 昵称/邮箱横排，退出按钮靠右。
+  Widget _profileBody(S s, AppColors c) {
+    return Row(
+      children: [
+        Container(
+          width: 52,
+          height: 52,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: c.accent.withValues(alpha: 0.15),
+          ),
+          child: Text(
+            'F',
+            style: TextStyle(
+              fontSize: 21,
+              fontWeight: FontWeight.w600,
+              color: c.accent,
+            ),
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'FluxDown',
+                style: TextStyle(
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w600,
+                  color: c.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                'user@example.com',
+                style: TextStyle(fontSize: 12, color: c.textMuted),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        ShadButton.outline(
+          size: ShadButtonSize.sm,
+          onPressed: () => setState(() => _loggedIn = false),
+          child: Text(s.accountLogout),
+        ),
+      ],
+    );
+  }
+
+  /// 云功能行：图标 + 名称/说明 + 「即将推出」标签（无开关，登录后逐项开启）。
+  Widget _featureRow(AppColors c, AppMetrics m, IconData icon, String label,
+      String desc, {required String badge}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: c.surface2,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 15, color: c.textSecondary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: c.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  desc,
+                  style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: c.surface2,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              badge,
+              style: TextStyle(fontSize: 10.5, color: c.textMuted),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 登录对话框（预览）：验证码 / 密码两种方式 Tab 切换，
+  /// 「登录」仅在本地把状态置为已登录，不发起请求。
+  void _showLoginDialog() {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    var useCode = true;
+    showShadDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          Widget tab(String label, bool selected, VoidCallback onTap) {
+            return Expanded(
+              child: GestureDetector(
+                onTap: onTap,
+                behavior: HitTestBehavior.opaque,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: selected ? c.surface1 : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                      color: selected ? c.textPrimary : c.textMuted,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          return ShadDialog(
+            title: Text(s.accountLoginDialogTitle),
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: c.surface2,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      tab(s.accountLoginTabCode, useCode,
+                          () => setDialogState(() => useCode = true)),
+                      tab(s.accountLoginTabPassword, !useCode,
+                          () => setDialogState(() => useCode = false)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                ShadInput(placeholder: Text(s.accountEmailPlaceholder)),
+                const SizedBox(height: 10),
+                if (useCode)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ShadInput(
+                          placeholder: Text(s.accountCodePlaceholder),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ShadButton.outline(
+                        size: ShadButtonSize.sm,
+                        onPressed: () {},
+                        child: Text(s.accountSendCode),
+                      ),
+                    ],
+                  )
+                else ...[
+                  ShadInput(
+                    placeholder: Text(s.accountPasswordPlaceholder),
+                    obscureText: true,
+                  ),
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      s.accountForgotPassword,
+                      style: TextStyle(fontSize: 11.5, color: c.accent),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                ShadButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
+                    setState(() => _loggedIn = true);
+                  },
+                  child: Text(s.accountLogin),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  s.accountLoginTerms,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 10.5, color: c.textMuted),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

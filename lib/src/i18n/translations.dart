@@ -380,6 +380,33 @@ class S {
   String get settingsCatApiServiceDesc => _r('settingsCatApiServiceDesc');
   String get settingsCatAbout => _r('settingsCatAbout');
   String get settingsCatAboutDesc => _r('settingsCatAboutDesc');
+  String get settingsCatAccount => _r('settingsCatAccount');
+  String get settingsCatAccountDesc => _r('settingsCatAccountDesc');
+
+  // 账户 —— UI 预览
+  String get accountHeroSubtitle => _r('accountHeroSubtitle');
+  String get accountLogin => _r('accountLogin');
+  String get accountLogout => _r('accountLogout');
+  String get accountGroupCloudFeatures => _r('accountGroupCloudFeatures');
+  String get accountCloudFeaturesDesc => _r('accountCloudFeaturesDesc');
+  String get accountComingSoon => _r('accountComingSoon');
+  String get accountFeatureConfigSync => _r('accountFeatureConfigSync');
+  String get accountFeatureConfigSyncDesc =>
+      _r('accountFeatureConfigSyncDesc');
+  String get accountFeatureHistorySync => _r('accountFeatureHistorySync');
+  String get accountFeatureHistorySyncDesc =>
+      _r('accountFeatureHistorySyncDesc');
+  String get accountFeatureHandoff => _r('accountFeatureHandoff');
+  String get accountFeatureHandoffDesc => _r('accountFeatureHandoffDesc');
+  String get accountLoginDialogTitle => _r('accountLoginDialogTitle');
+  String get accountLoginTabCode => _r('accountLoginTabCode');
+  String get accountLoginTabPassword => _r('accountLoginTabPassword');
+  String get accountEmailPlaceholder => _r('accountEmailPlaceholder');
+  String get accountCodePlaceholder => _r('accountCodePlaceholder');
+  String get accountSendCode => _r('accountSendCode');
+  String get accountPasswordPlaceholder => _r('accountPasswordPlaceholder');
+  String get accountForgotPassword => _r('accountForgotPassword');
+  String get accountLoginTerms => _r('accountLoginTerms');
 
   // 分类子 Tab
   String get settingsTabGeneral => _r('settingsTabGeneral');
