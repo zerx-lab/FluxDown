@@ -60,6 +60,33 @@ export function saveLocale(locale: Locale): void {
   }
 }
 
+/**
+ * —— SSR 语言注入(固定语言页面:/zh/、/ja/、docs)——
+ * Astro 构建默认串行预渲染(build.concurrency=1),Layout frontmatter 在其
+ * islands SSR 之前执行,因此模块级变量按页生效、无并发竞争。
+ * 客户端不读该值:hydration 前从 <html data-fixed-lang lang> 同步还原,
+ * 保证 SSR/CSR 首帧一致(避免 React #418 hydration mismatch)。
+ */
+let ssrLocale: Locale = "en";
+
+export function setSSRLocale(locale: Locale): void {
+  ssrLocale = locale in localeRegistry ? locale : "en";
+}
+
+/** html lang 属性 → locale 代码(htmlLang 的逆映射) */
+function localeFromHtmlLang(lang: string): Locale {
+  if (lang === "zh-CN") return "zh";
+  return lang in localeRegistry ? lang : "en";
+}
+
+/** 首帧 locale:服务端取注入值;客户端仅固定语言页取 html lang,其余保持 en */
+function initialLocale(): Locale {
+  if (typeof document === "undefined") return ssrLocale;
+  const html = document.documentElement;
+  if (html.hasAttribute("data-fixed-lang")) return localeFromHtmlLang(html.lang);
+  return "en";
+}
+
 /** 获取翻译消息 */
 export function getMessages(locale: Locale): Messages {
   return localeRegistry[locale] ?? en;
@@ -84,12 +111,14 @@ export function t(messages: Messages, key: keyof Messages, params?: Record<strin
  * 这样避免 React hydration mismatch（error #418）。
  */
 export function useLocale() {
-  // 始终以 "en" 作为初始值，保持 SSR/CSR 初始渲染一致
-  const [locale, setLocaleState] = useState<Locale>("en");
-  const [messages, setMessages] = useState<Messages>(en);
+  // 首帧与服务端渲染严格一致:固定语言页 = 页面语言,其余 = "en"
+  const [locale, setLocaleState] = useState<Locale>(initialLocale);
+  const [messages, setMessages] = useState<Messages>(() => getMessages(initialLocale()));
 
-  // 客户端挂载后更新为实际语言（读取 localStorage / navigator.languages）
+  // 客户端挂载后更新为实际语言(读取 localStorage / navigator.languages)。
+  // 固定语言页(/zh/、/ja/、docs)跳过:内容语言由 URL 决定,切换靠导航。
   useEffect(() => {
+    if (document.documentElement.hasAttribute("data-fixed-lang")) return;
     const actual = loadLocale();
     setLocaleState(actual);
     setMessages(getMessages(actual));

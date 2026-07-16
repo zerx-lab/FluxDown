@@ -1,0 +1,19 @@
+---
+/**
+ * 日本語首页(/ja/)——固定语言页:SSR 直出日文内容与日文 meta。
+ * hreflang 簇与 /、/zh/ 双向互指(单一来源 seo.ts HOME_ALTERNATES)。
+ */
+import Layout from "../layouts/Layout.astro";
+import HomeMain from "../components/HomeMain.astro";
+import { HOME_META, HOME_ALTERNATES } from "../lib/seo";
+---
+
+<Layout
+  title={HOME_META.ja.title}
+  description={HOME_META.ja.description}
+  lang="ja"
+  ogLocale="ja_JP"
+  alternates={HOME_ALTERNATES}
+>
+  <HomeMain />
+</Layout>

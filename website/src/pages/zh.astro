@@ -1,0 +1,19 @@
+---
+/**
+ * 简体中文首页(/zh/)——固定语言页:SSR 直出中文内容与中文 meta。
+ * hreflang 簇与 /、/ja/ 双向互指(单一来源 seo.ts HOME_ALTERNATES)。
+ */
+import Layout from "../layouts/Layout.astro";
+import HomeMain from "../components/HomeMain.astro";
+import { HOME_META, HOME_ALTERNATES } from "../lib/seo";
+---
+
+<Layout
+  title={HOME_META.zh.title}
+  description={HOME_META.zh.description}
+  lang="zh-CN"
+  ogLocale="zh_CN"
+  alternates={HOME_ALTERNATES}
+>
+  <HomeMain />
+</Layout>

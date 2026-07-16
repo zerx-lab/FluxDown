@@ -1,6 +1,7 @@
 ---
 import "../styles/global.css";
 import { SITE_URL, OG_IMAGE_URL, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, buildGraph } from "../lib/seo";
+import { setSSRLocale } from "../lib/i18n";
 
 interface Props {
   title?: string;
@@ -15,8 +16,8 @@ interface Props {
 }
 
 const {
-  title = "FluxDown - Modern Multi-Protocol Download Manager",
-  description = "A blazing fast, multi-protocol download manager with browser extension. Powered by Rust engine with HTTP/HTTPS/FTP support, intelligent segmentation, and speed optimization.",
+  title = "FluxDown — Multi-Protocol Download Manager, Rebuilt in Rust",
+  description = "A multi-protocol download manager rebuilt in Rust — dynamic segmentation, deep browser integration, HTTP/FTP/BitTorrent/ED2K/HLS support. Free and open source.",
   canonicalUrl,
   lang = "en",
   ogLocale = "en_US",
@@ -38,6 +39,10 @@ const resolvedCanonical =
 const isLangExplicit = Astro.props.lang !== undefined;
 const ogLocaleAlternate = ogLocale === "zh_CN" ? "en_US" : "zh_CN";
 
+// 固定语言页面:让 React islands 在 SSR 阶段直接以页面语言渲染
+// (谷歌以可见内容判定页面语言,SSR 必须直出目标语言,不能只换 meta)
+setSSRLocale(isLangExplicit ? (lang === "zh-CN" ? "zh" : lang) : "en");
+
 const ogImageUrl = OG_IMAGE_URL;
 ---
 
@@ -55,19 +60,15 @@ const ogImageUrl = OG_IMAGE_URL;
     <link rel="canonical" href={resolvedCanonical} />
     {noindex && <meta name="robots" content="noindex" />}
 
-    <!-- Hreflang: i18n SEO -->
+    <!--
+      Hreflang(i18n SEO):仅在页面确有语言变体时输出(由调用方传入 alternates)。
+      规范要求:双向互指 + 自引用 + 绝对 URL + x-default;无变体的页面不得虚标。
+      语言码遵循 Google 现行规范:ISO 639-1(+可选 ISO 3166-1),如 "zh" 而非 "zh-Hans"。
+    -->
     {
-      alternates === undefined ? (
-        <>
-          <link rel="alternate" hreflang="en" href={resolvedCanonical} />
-          <link rel="alternate" hreflang="zh-Hans" href={resolvedCanonical} />
-          <link rel="alternate" hreflang="x-default" href={resolvedCanonical} />
-        </>
-      ) : (
-        alternates.map((a) => (
-          <link rel="alternate" hreflang={a.lang} href={a.href} />
-        ))
-      )
+      alternates?.map((a) => (
+        <link rel="alternate" hreflang={a.lang} href={a.href} />
+      ))
     }
 
     <!-- Open Graph -->
@@ -79,7 +80,7 @@ const ogImageUrl = OG_IMAGE_URL;
     <meta property="og:image" content={ogImageUrl} />
     <meta property="og:image:width" content={String(OG_IMAGE_WIDTH)} />
     <meta property="og:image:height" content={String(OG_IMAGE_HEIGHT)} />
-    <meta property="og:image:alt" content="FluxDown — Free, open-source IDM alternative" />
+    <meta property="og:image:alt" content="FluxDown — the download manager, rebuilt in Rust" />
     <meta property="og:locale" content={ogLocale} />
     <meta property="og:locale:alternate" content={ogLocaleAlternate} />
 
@@ -88,7 +89,7 @@ const ogImageUrl = OG_IMAGE_URL;
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageUrl} />
-    <meta name="twitter:image:alt" content="FluxDown — Free, open-source IDM alternative" />
+    <meta name="twitter:image:alt" content="FluxDown — the download manager, rebuilt in Rust" />
 
     <!-- JSON-LD: 全站实体图(Organization + WebSite + SoftwareApplication),页面级节点并入 -->
     <script type="application/ld+json" set:html={JSON.stringify(buildGraph(jsonLdNodes))} />
@@ -136,12 +137,15 @@ const ogImageUrl = OG_IMAGE_URL;
           try { savedLocale = localStorage.getItem('fluxdown-locale'); } catch(e) {}
           if (savedLocale === 'zh') {
             html.lang = 'zh-CN';
+          } else if (savedLocale === 'ja') {
+            html.lang = 'ja';
           } else if (savedLocale === 'en') {
             html.lang = 'en';
           } else {
             var langs = navigator.languages || [navigator.language];
             for (var i = 0; i < langs.length; i++) {
               if (langs[i].startsWith('zh')) { html.lang = 'zh-CN'; break; }
+              if (langs[i].startsWith('ja')) { html.lang = 'ja'; break; }
               if (langs[i].startsWith('en')) { html.lang = 'en'; break; }
             }
           }

@@ -23,11 +23,40 @@ export const OG_IMAGE_URL = `${SITE_URL}/og.png`;
 export const OG_IMAGE_WIDTH = 1200;
 export const OG_IMAGE_HEIGHT = 630;
 
-/** 品牌一句话定位(高意图关键词:免费 IDM 替代 + Rust)。 */
+/** 品牌一句话定位(叙事:the download manager rebuilt in Rust;高意图关键词:download manager + Rust)。 */
 export const TAGLINE =
-  "Free, open-source IDM alternative — a blazing-fast multi-protocol download manager powered by Rust.";
+  "The download manager, rebuilt in Rust — runtime dynamic segmentation, multi-protocol coverage from HTTP to BitTorrent, ED2K and HLS, and deep browser integration. Free and open source.";
 
 export const SAME_AS = ["https://github.com/zerx-lab/FluxDown"];
+
+/**
+ * 首页三语 meta 与 hreflang 簇的单一来源(HTML <link>、sitemap xhtml:link 共用)。
+ * hreflang 码遵循 Google 现行规范(ISO 639-1),x-default 指向语言选择页 "/"。
+ */
+export const HOME_META = {
+  en: {
+    title: "FluxDown — Multi-Protocol Download Manager, Rebuilt in Rust",
+    description:
+      "FluxDown rebuilds the download manager from the ground up: a Rust engine with runtime dynamic segmentation, HTTP/HTTPS/FTP/BitTorrent/ED2K/HLS support, and deep browser integration. Free and open source — no ads, no throttling.",
+  },
+  zh: {
+    title: "FluxDown — Rust 重写的多协议下载管理器 | 免费开源下载工具",
+    description:
+      "FluxDown 用 Rust 从头重写下载管理器：运行时动态分段加速，支持 HTTP/HTTPS/FTP/BT 磁力/ED2K/HLS 流媒体，浏览器深度接管。免费开源，无广告，不限速。",
+  },
+  ja: {
+    title: "FluxDown — Rust 製マルチプロトコル・ダウンロードマネージャー | 無料・オープンソース",
+    description:
+      "FluxDown は Rust でダウンロードマネージャーをゼロから再構築。実行時の動的セグメント分割、HTTP/HTTPS/FTP/BitTorrent/ED2K/HLS 対応、ブラウザとの深い連携。無料・オープンソース、広告なし、速度制限なし。",
+  },
+} as const;
+
+export const HOME_ALTERNATES = [
+  { lang: "en", href: `${SITE_URL}/` },
+  { lang: "zh", href: `${SITE_URL}/zh/` },
+  { lang: "ja", href: `${SITE_URL}/ja/` },
+  { lang: "x-default", href: `${SITE_URL}/` },
+];
 
 type JsonLdNode = Record<string, unknown>;
 
@@ -56,7 +85,7 @@ export function websiteNode(): JsonLdNode {
     name: SITE_NAME,
     url: `${SITE_URL}/`,
     publisher: { "@id": ORG_ID },
-    inLanguage: ["en", "zh-Hans"],
+    inLanguage: ["en", "zh-CN", "ja"],
     potentialAction: {
       "@type": "SearchAction",
       target: {

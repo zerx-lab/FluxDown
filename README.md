@@ -32,7 +32,7 @@
 - **AI-agent ready** — built-in MCP (Model Context Protocol) server: let Claude, Cursor & other AI clients manage your downloads
 - **Resume anywhere** — full download state persisted in SQLite; survive crashes and reboots
 - **Beautiful UI** — light/dark themes, 13 color schemes, responsive three-pane layout
-- **Clean & private** — free forever, no ads, no tracking, no account, local-first
+- **Clean & private** — free and open source, no ads, no tracking, no account required, local-first
 
 ## Features
 
@@ -52,7 +52,7 @@
 
 | | FluxDown | IDM |
 |---|:---:|:---:|
-| Price | **Free forever** | $24.95 + renewals |
+| Price | **Free & open source** | $24.95 + renewals |
 | Open source | Yes (AGPL-3.0) | No |
 | Platforms | Windows / macOS / Linux / NAS / Android | Windows only |
 | BitTorrent & magnet | Yes | No |

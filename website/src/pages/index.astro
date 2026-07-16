@@ -1,51 +1,50 @@
 ---
+/**
+ * 默认首页(/)——hreflang x-default 语言选择页(英文内容,客户端跟随浏览器语言)。
+ * SEO 变体:/zh/、/ja/ 为 SSR 固定语言页,三页经 HOME_ALTERNATES 双向互指。
+ * 谷歌规范:不做基于语言的自动重定向;客户端仅同步展示层(标签页标题/描述)。
+ */
 import Layout from "../layouts/Layout.astro";
-import { FloatingNavbar } from "../components/ui/floating-navbar";
-import AnnouncementBar from "../components/AnnouncementBar";
-import AnnouncementModal from "../components/AnnouncementModal";
-import HeroSection from "../components/HeroSection";
-import FeaturesSection from "../components/FeaturesSection";
-import ExtensionSection from "../components/ExtensionSection";
-import DownloadSection from "../components/DownloadSection";
-import SponsorSection from "../components/SponsorSection";
-import Footer from "../components/Footer";
-import CommunityFloat from "../components/CommunityFloat";
+import HomeMain from "../components/HomeMain.astro";
+import { HOME_META, HOME_ALTERNATES } from "../lib/seo";
+
+const localizedMeta = {
+  zh: HOME_META.zh,
+  ja: HOME_META.ja,
+};
 ---
 
 <Layout
-  title="FluxDown — Free IDM Alternative | Fast Multi-Protocol Download Manager"
-  description="FluxDown is a free, open-source IDM alternative. A blazing-fast download manager powered by a Rust engine — HTTP/HTTPS/FTP/BitTorrent/HLS, IDM-style smart segmentation, and browser integration. Zero ads, zero tracking, no account."
+  title={HOME_META.en.title}
+  description={HOME_META.en.description}
+  alternates={HOME_ALTERNATES}
 >
-  <AnnouncementBar client:load />
-  <AnnouncementModal client:idle />
-  <FloatingNavbar client:load />
-  <main>
-    <HeroSection client:load />
-    <!-- Section divider: Hero → Features -->
-    <div class="relative h-px w-full">
-      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-brand-sky/30 to-transparent"></div>
-      <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-sky/[0.04] blur-3xl rounded-full pointer-events-none"></div>
-    </div>
-    <FeaturesSection client:visible />
-    <!-- Section divider: Features → Extension -->
-    <div class="relative h-px w-full">
-      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-brand-cyan/25 to-transparent"></div>
-      <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-cyan/[0.04] blur-3xl rounded-full pointer-events-none"></div>
-    </div>
-    <ExtensionSection client:visible />
-    <!-- Section divider: Extension → Download -->
-    <div class="relative h-px w-full">
-      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-brand-blue/25 to-transparent"></div>
-      <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-blue/[0.04] blur-3xl rounded-full pointer-events-none"></div>
-    </div>
-    <DownloadSection client:visible />
-    <!-- Section divider: Download → Sponsor -->
-    <div class="relative h-px w-full">
-      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-pink-500/25 to-transparent"></div>
-      <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-pink-500/[0.04] blur-3xl rounded-full pointer-events-none"></div>
-    </div>
-    <SponsorSection client:visible />
-  </main>
-  <Footer client:visible />
-  <CommunityFloat client:idle />
+  <HomeMain />
+  <!-- 标签页标题/描述跟随客户端语言(仅展示层;抓取快照仍是英文 x-default) -->
+  <script is:inline define:vars={{ localizedMeta }}>
+    (function () {
+      function apply(loc) {
+        var meta = localizedMeta[loc];
+        if (!meta) return;
+        document.title = meta.title;
+        var d = document.querySelector('meta[name="description"]');
+        if (d) d.setAttribute("content", meta.description);
+      }
+      var loc = null;
+      try { loc = localStorage.getItem("fluxdown-locale"); } catch (e) {}
+      if (!loc) {
+        var langs = navigator.languages || [navigator.language];
+        for (var i = 0; i < langs.length; i++) {
+          var l = (langs[i] || "").toLowerCase();
+          if (l.indexOf("zh") === 0) { loc = "zh"; break; }
+          if (l.indexOf("ja") === 0) { loc = "ja"; break; }
+          if (l.indexOf("en") === 0) break;
+        }
+      }
+      if (loc) apply(loc);
+      window.addEventListener("locale-change", function (e) {
+        if (e.detail && e.detail.locale) apply(e.detail.locale);
+      });
+    })();
+  </script>
 </Layout>

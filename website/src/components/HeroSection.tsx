@@ -84,6 +84,7 @@ type FileCategory =
   | "audio"
   | "document"
   | "image"
+  | "program"
   | "archive"
   | "other";
 
@@ -351,7 +352,7 @@ const TASKS: TaskData[] = [
     status: "mockup.statusError",
     statusColor: "#EF4444",
     statusKey: "error",
-    fileCategory: "other",
+    fileCategory: "program",
     url: "https://drivers.example.com/system-driver-update.exe",
     saveDir: "D:\\Downloads",
     eta: "---",
@@ -425,6 +426,52 @@ const fileIcon = (
     <polyline points="14 2 14 8 20 8" />
   </>
 );
+const programIcon = (
+  <>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="3" y1="9" x2="21" y2="9" />
+  </>
+);
+const downloadArrowIcon = (
+  <>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </>
+);
+const checkCircleIcon = (
+  <>
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+    <polyline points="22 4 12 14.01 9 11.01" />
+  </>
+);
+const pauseCircleIcon = (
+  <>
+    <circle cx="12" cy="12" r="10" />
+    <line x1="10" y1="15" x2="10" y2="9" />
+    <line x1="14" y1="15" x2="14" y2="9" />
+  </>
+);
+const xCircleIcon = (
+  <>
+    <circle cx="12" cy="12" r="10" />
+    <line x1="15" y1="9" x2="9" y2="15" />
+    <line x1="9" y1="9" x2="15" y2="15" />
+  </>
+);
+const layersIcon = (
+  <>
+    <polygon points="12 2 2 7 12 12 22 7 12 2" />
+    <polyline points="2 17 12 22 22 17" />
+    <polyline points="2 12 12 17 22 12" />
+  </>
+);
+const clockIcon = (
+  <>
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
+  </>
+);
 
 const SIDEBAR_ICONS: {
   icon: React.ReactNode;
@@ -436,19 +483,21 @@ const SIDEBAR_ICONS: {
   { icon: musicIcon, labelKey: "mockup.audio", key: "audio" },
   { icon: fileTextIcon, labelKey: "mockup.document", key: "document" },
   { icon: imageIcon, labelKey: "mockup.image", key: "image" },
+  { icon: programIcon, labelKey: "mockup.program", key: "program" },
   { icon: archiveIcon, labelKey: "mockup.archive", key: "archive" },
   { icon: fileIcon, labelKey: "mockup.other", key: "other" },
 ];
 
-const TAB_KEYS: {
+const STATUS_ITEMS: {
+  icon: React.ReactNode;
   labelKey: keyof import("@/lib/locales").Messages;
   key: TaskCategory;
 }[] = [
-  { labelKey: "mockup.tabAll", key: "all" },
-  { labelKey: "mockup.tabDownloading", key: "downloading" },
-  { labelKey: "mockup.tabCompleted", key: "completed" },
-  { labelKey: "mockup.tabPaused", key: "paused" },
-  { labelKey: "mockup.tabError", key: "error" },
+  { icon: gridIcon, labelKey: "mockup.tabAll", key: "all" },
+  { icon: downloadArrowIcon, labelKey: "mockup.tabDownloading", key: "downloading" },
+  { icon: checkCircleIcon, labelKey: "mockup.tabCompleted", key: "completed" },
+  { icon: pauseCircleIcon, labelKey: "mockup.tabPaused", key: "paused" },
+  { icon: xCircleIcon, labelKey: "mockup.tabError", key: "error" },
 ];
 
 export default function HeroSection() {
@@ -841,15 +890,65 @@ export default function HeroSection() {
                     Down
                   </span>
                 </span>
+                <div className="hidden sm:flex items-center" style={{ gap: "8px", marginLeft: "12px" }}>
+                  <div
+                    className="flex items-center"
+                    style={{
+                      height: "23px",
+                      padding: "0 9px",
+                      borderRadius: "6px",
+                      backgroundColor: theme.accent,
+                      gap: "4px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    <span style={{ fontSize: "10.5px", fontWeight: 600, color: "#FFFFFF" }}>
+                      {t("mockup.newDownload")}
+                    </span>
+                  </div>
+                  <div
+                    className="hidden md:flex items-center"
+                    style={{
+                      width: "230px",
+                      height: "23px",
+                      padding: "0 8px",
+                      borderRadius: "6px",
+                      backgroundColor: theme.surface2,
+                      border: `1px solid ${theme.border}`,
+                      gap: "6px",
+                      transition: "background-color 0.3s, border-color 0.3s",
+                    }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <span className="flex-1" style={{ fontSize: "10px", color: theme.textMuted, transition: "color 0.3s" }}>
+                      {t("mockup.searchPlaceholder")}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "8.5px",
+                        color: theme.textMuted,
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: "4px",
+                        padding: "0 4px",
+                        lineHeight: "14px",
+                        transition: "color 0.3s, border-color 0.3s",
+                      }}
+                    >
+                      Ctrl+F
+                    </span>
+                  </div>
+                </div>
               </div>
               <div className="flex items-center">
                 {/* Action buttons — hidden on small screens */}
                 {[
-                  <>
-                    <rect x="6" y="4" width="4" height="16" rx="1" />
-                    <rect x="14" y="4" width="4" height="16" rx="1" />
-                  </>,
-                  <polygon points="6 3 20 12 6 21" />,
                   <>
                     <circle cx="12" cy="12" r="3" />
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -1017,7 +1116,7 @@ export default function HeroSection() {
             {/* ── Main Area: Sidebar + Content + Detail Panel ── */}
             <motion.div
               className="flex"
-              animate={{ height: selectedTaskData ? 540 : 340 }}
+              animate={{ height: selectedTaskData ? 560 : 500 }}
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               style={{ minHeight: 260 }}
             >
@@ -1033,7 +1132,7 @@ export default function HeroSection() {
               >
                 <div
                   style={{
-                    padding: "4px 16px",
+                    padding: "3px 16px",
                     fontSize: "10.5px",
                     fontWeight: 500,
                     color: theme.textMuted,
@@ -1042,9 +1141,85 @@ export default function HeroSection() {
                     transition: "color 0.3s",
                   }}
                 >
-                  {t("mockup.category")}
+                  {t("mockup.sectionStatus")}
                 </div>
-                <nav className="flex-1 mt-1">
+                <nav>
+                  {STATUS_ITEMS.map((item) => (
+                    <SidebarItem
+                      key={item.key}
+                      icon={item.icon}
+                      label={t(item.labelKey)}
+                      count={String(countByTab(item.key))}
+                      selected={activeTab === item.key}
+                      onClick={() => {
+                        setActiveTab(item.key);
+                        setSelectedTask(null);
+                      }}
+                      theme={theme}
+                    />
+                  ))}
+                </nav>
+                <div
+                  className="flex items-center justify-between"
+                  style={{ padding: "3px 16px", marginTop: "6px" }}
+                >
+                  <span
+                    style={{
+                      fontSize: "10.5px",
+                      fontWeight: 500,
+                      color: theme.textMuted,
+                      letterSpacing: "0.5px",
+                      transition: "color 0.3s",
+                    }}
+                  >
+                    {t("mockup.sectionQueue")}
+                  </span>
+                  <span className="flex items-center" style={{ gap: "8px" }}>
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </span>
+                </div>
+                <nav>
+                  <SidebarItem
+                    icon={layersIcon}
+                    label={t("mockup.mainQueue")}
+                    count="1"
+                    onClick={() => {}}
+                    theme={theme}
+                  />
+                  <SidebarItem
+                    icon={clockIcon}
+                    label={t("mockup.laterQueue")}
+                    count="0"
+                    onClick={() => {}}
+                    theme={theme}
+                  />
+                </nav>
+                <div
+                  className="flex items-center justify-between"
+                  style={{ padding: "3px 16px", marginTop: "6px" }}
+                >
+                  <span
+                    style={{
+                      fontSize: "10.5px",
+                      fontWeight: 500,
+                      color: theme.textMuted,
+                      letterSpacing: "0.5px",
+                      transition: "color 0.3s",
+                    }}
+                  >
+                    {t("mockup.category")}
+                  </span>
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </div>
+                <nav className="flex-1">
                   {SIDEBAR_ICONS.map((item) => (
                     <SidebarItem
                       key={item.key}
@@ -1054,7 +1229,6 @@ export default function HeroSection() {
                       selected={activeFile === item.key}
                       onClick={() => {
                         setActiveFile(item.key);
-                        setActiveTab("all");
                         setSelectedTask(null);
                       }}
                       theme={theme}
@@ -1064,43 +1238,13 @@ export default function HeroSection() {
                 <div
                   className="flex items-center"
                   style={{
-                    padding: "16px",
+                    padding: "8px 16px",
                     borderTop: `1px solid ${theme.border}`,
                     transition: "border-color 0.3s",
                   }}
                 >
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="#22C55E"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="12" y1="5" x2="12" y2="19" />
-                    <polyline points="19 12 12 19 5 12" />
-                  </svg>
-                  <span
-                    style={{
-                      fontSize: "11px",
-                      color: theme.textSecondary,
-                      marginLeft: "4px",
-                      transition: "color 0.3s",
-                    }}
-                  >
-                    {t("mockup.download")}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: "11px",
-                      color: "#22C55E",
-                      marginLeft: "6px",
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    12.8 MB/s
+                  <span style={{ fontSize: "10px", color: theme.textMuted, transition: "color 0.3s" }}>
+                    v0.2.1
                   </span>
                 </div>
               </div>
@@ -1114,47 +1258,44 @@ export default function HeroSection() {
                 }}
               >
                 <div
-                  className="flex items-center overflow-x-auto scrollbar-none"
-                  style={{
-                    height: "34px",
-                    padding: "0 12px",
-                    borderBottom: `1px solid ${theme.border}`,
-                    transition: "border-color 0.3s",
-                  }}
-                >
-                  {TAB_KEYS.map((tab) => (
-                    <TabItem
-                      key={tab.key}
-                      label={`${t(tab.labelKey)} (${countByTab(tab.key)})`}
-                      active={activeTab === tab.key}
-                      onClick={() => {
-                        setActiveTab(tab.key);
-                        setSelectedTask(null);
-                      }}
-                      theme={theme}
-                    />
-                  ))}
-                </div>
-                <div
                   className="flex items-center"
                   style={{
-                    height: "30px",
+                    height: "32px",
                     padding: "0 10px",
                     backgroundColor: theme.surface1,
                     borderBottom: `1px solid ${theme.border}`,
                     transition: "background-color 0.3s, border-color 0.3s",
                   }}
                 >
-                  <div
-                    className="flex-1 min-w-0"
-                    style={{
-                      fontSize: "10px",
-                      fontWeight: 500,
-                      color: theme.textMuted,
-                      transition: "color 0.3s",
-                    }}
-                  >
-                    {t("mockup.colFilename")}
+                  <div className="flex items-center flex-1 min-w-0" style={{ gap: "8px" }}>
+                    <div
+                      className="flex items-center shrink-0"
+                      style={{
+                        height: "20px",
+                        padding: "0 7px",
+                        borderRadius: "5px",
+                        border: `1px solid ${theme.border}`,
+                        backgroundColor: theme.surface2,
+                        gap: "4px",
+                        cursor: "pointer",
+                        transition: "background-color 0.3s, border-color 0.3s",
+                      }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={theme.textSecondary} strokeWidth="2" strokeLinecap="round">
+                        <line x1="8" y1="6" x2="21" y2="6" />
+                        <line x1="8" y1="12" x2="21" y2="12" />
+                        <line x1="8" y1="18" x2="21" y2="18" />
+                        <line x1="3" y1="6" x2="3.01" y2="6" />
+                        <line x1="3" y1="12" x2="3.01" y2="12" />
+                        <line x1="3" y1="18" x2="3.01" y2="18" />
+                      </svg>
+                      <span style={{ fontSize: "10px", fontWeight: 500, color: theme.textSecondary, transition: "color 0.3s" }}>
+                        {t("mockup.manage")}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: "10px", fontWeight: 500, color: theme.textMuted, transition: "color 0.3s" }}>
+                      {t("mockup.colFilename")}
+                    </span>
                   </div>
                   <div
                     className="shrink-0"
@@ -1172,7 +1313,7 @@ export default function HeroSection() {
                   <div
                     className="hidden sm:block shrink-0"
                     style={{
-                      width: "80px",
+                      width: "64px",
                       fontSize: "10px",
                       fontWeight: 500,
                       color: theme.textMuted,
@@ -1181,6 +1322,19 @@ export default function HeroSection() {
                     }}
                   >
                     {t("mockup.colSpeed")}
+                  </div>
+                  <div
+                    className="hidden md:block shrink-0"
+                    style={{
+                      width: "64px",
+                      fontSize: "10px",
+                      fontWeight: 500,
+                      color: theme.textMuted,
+                      textAlign: "center",
+                      transition: "color 0.3s",
+                    }}
+                  >
+                    {t("mockup.colEta")}
                   </div>
                   <div
                     className="hidden sm:block shrink-0"
@@ -1196,6 +1350,28 @@ export default function HeroSection() {
                     {t("mockup.colStatus")}
                   </div>
                 </div>
+                {filteredTasks.length > 0 && (
+                  <div
+                    className="flex items-center"
+                    style={{
+                      height: "26px",
+                      padding: "0 12px",
+                      gap: "6px",
+                      borderBottom: `1px solid ${theme.border}`,
+                      transition: "border-color 0.3s",
+                    }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                    <span style={{ fontSize: "10.5px", fontWeight: 500, color: theme.textSecondary, transition: "color 0.3s" }}>
+                      {t("mockup.today")}
+                    </span>
+                    <span style={{ fontSize: "10px", color: theme.textMuted, fontVariantNumeric: "tabular-nums", transition: "color 0.3s" }}>
+                      {filteredTasks.length}
+                    </span>
+                  </div>
+                )}
                 <div className="flex-1 overflow-hidden">
                   <AnimatePresence mode="popLayout">
                     {filteredTasks.map((task, i) => (
@@ -1211,6 +1387,7 @@ export default function HeroSection() {
                           task={task}
                           progress={getProgress(task)}
                           subtitle={getSubtitle(task)}
+                          eta={resolveEta(task)}
                           statusText={resolveStatus(task)}
                           selected={selectedTask === task.id}
                           hovered={hoveredTask === task.id}
@@ -1304,6 +1481,41 @@ export default function HeroSection() {
                   >
                     {t("mockup.statusActive", { n: "2", p: "1", t: "5" })}
                   </span>
+                  <div className="hidden md:flex items-center" style={{ gap: "12px", marginLeft: "auto" }}>
+                    <div className="flex items-center" style={{ gap: "3px" }}>
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="16 12 12 8 8 12" />
+                        <line x1="12" y1="16" x2="12" y2="8" />
+                      </svg>
+                      <span style={{ fontSize: "9.5px", color: theme.textMuted, transition: "color 0.3s" }}>
+                        {t("mockup.speedUnlimited")}
+                      </span>
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="18 15 12 9 6 15" />
+                      </svg>
+                    </div>
+                    <div className="flex items-center" style={{ gap: "3px" }}>
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                        <line x1="12" y1="2" x2="12" y2="12" />
+                      </svg>
+                      <span style={{ fontSize: "9.5px", color: theme.textMuted, transition: "color 0.3s" }}>
+                        {t("mockup.onComplete")}
+                      </span>
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="18 15 12 9 6 15" />
+                      </svg>
+                    </div>
+                    <div className="flex items-center" style={{ gap: "3px" }}>
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={theme.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <span style={{ fontSize: "9.5px", color: theme.textMuted, transition: "color 0.3s" }}>
+                        {t("mockup.feedback")}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1861,7 +2073,7 @@ function SidebarItem({
       onClick={onClick}
       className="flex items-center justify-between transition-colors duration-150 cursor-pointer"
       style={{
-        height: "32px",
+        height: "24px",
         margin: "1px 8px",
         padding: "0 8px",
         borderRadius: "6px",
@@ -1880,8 +2092,8 @@ function SidebarItem({
     >
       <div className="flex items-center" style={{ gap: "8px" }}>
         <svg
-          width="14"
-          height="14"
+          width="13"
+          height="13"
           viewBox="0 0 24 24"
           fill="none"
           stroke={selected ? theme.accent : theme.textSecondary}
@@ -1893,7 +2105,7 @@ function SidebarItem({
         </svg>
         <span
           style={{
-            fontSize: "12.5px",
+            fontSize: "12px",
             color: selected ? theme.accent : theme.textSecondary,
             fontWeight: selected ? 500 : 400,
             transition: "color 0.15s",
@@ -1916,66 +2128,12 @@ function SidebarItem({
   );
 }
 
-function TabItem({
-  label,
-  active,
-  onClick,
-  theme,
-}: {
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-  theme: MockupTheme;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className="relative flex items-center cursor-pointer transition-colors shrink-0"
-      style={{
-        padding: "0 8px",
-        height: "34px",
-        backgroundColor: "transparent",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.backgroundColor = theme.rowHover;
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = "transparent";
-      }}
-    >
-      <span
-        style={{
-          fontSize: "11px",
-          fontWeight: active ? 500 : 400,
-          color: active ? theme.textPrimary : theme.textMuted,
-          transition: "color 0.15s",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {label}
-      </span>
-      {active && (
-        <motion.div
-          layoutId="heroActiveTab"
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: "2px",
-            backgroundColor: theme.accent,
-          }}
-          transition={{ duration: 0.25, ease: "easeInOut" }}
-        />
-      )}
-    </div>
-  );
-}
 
 function TaskRow({
   task,
   progress,
   subtitle,
+  eta,
   statusText,
   selected,
   hovered,
@@ -1986,6 +2144,7 @@ function TaskRow({
   task: TaskData;
   progress: number;
   subtitle: string;
+  eta: string;
   statusText: string;
   selected: boolean;
   hovered: boolean;
@@ -2091,14 +2250,27 @@ function TaskRow({
       <div
         className="hidden sm:block shrink-0"
         style={{
-          width: "80px",
+          width: "64px",
           fontSize: "10.5px",
-          color: task.speedColor,
+          color: task.speed === "---" ? theme.textMuted : task.speedColor,
           textAlign: "center",
           fontVariantNumeric: "tabular-nums",
         }}
       >
-        {task.speed}
+        {task.speed === "---" ? "—" : task.speed}
+      </div>
+      <div
+        className="hidden md:block shrink-0"
+        style={{
+          width: "64px",
+          fontSize: "10.5px",
+          color: theme.textSecondary,
+          textAlign: "center",
+          fontVariantNumeric: "tabular-nums",
+          transition: "color 0.3s",
+        }}
+      >
+        {eta === "---" ? "—" : eta}
       </div>
       <div
         className="hidden sm:block shrink-0"

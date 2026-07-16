@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn, DEMO_URL, GITHUB_REPO_URL } from "@/lib/utils";
-import { useLocale, type Locale } from "@/lib/i18n";
+import { useLocale, saveLocale, type Locale } from "@/lib/i18n";
 import { LOCALES } from "@/lib/locales";
 
 declare global {
@@ -407,8 +407,23 @@ export function FloatingNavbar({ className }: { className?: string }) {
 
   const handleSelectLocale = useCallback(
     (loc: Locale) => {
-      setLocale(loc);
       setLocaleMenuOpen(false);
+      // 页面存在该语言的 hreflang 变体且 URL 不同 → 真实导航(SEO 与标签页标题
+      // 均由目标 URL 的 SSR 承担;固定语言页只能靠导航切换)。先持久化偏好。
+      const alt = document.querySelector<HTMLLinkElement>(
+        `link[rel="alternate"][hreflang="${loc}"]`,
+      );
+      if (alt?.href) {
+        const target = new URL(alt.href);
+        if (target.pathname !== window.location.pathname) {
+          saveLocale(loc);
+          // hreflang 是生产域绝对 URL;导航只取 pathname,保持当前 origin
+          // (本地 preview / 预发环境不跳生产域)。
+          window.location.assign(target.pathname + target.search + target.hash);
+          return;
+        }
+      }
+      setLocale(loc);
     },
     [setLocale],
   );
