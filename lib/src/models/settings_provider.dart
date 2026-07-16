@@ -63,6 +63,10 @@ class SettingsProvider extends ChangeNotifier {
   // 文件关联
   bool _torrentAssocPrompted = false; // 是否已弹窗提示过文件关联
   bool _torrentAssociated = false; // .torrent 文件是否已关联到 FluxDown
+  // User explicitly turned association OFF (persisted). Needed because on
+  // Linux .deb installs the system-wide MIME registration is root-owned and
+  // cannot be removed, so the live query alone can never report false.
+  bool _torrentAssocUserDisabled = false;
 
   // 代理设置
   String _proxyMode = 'none'; // none / system / manual
@@ -1016,10 +1020,16 @@ class SettingsProvider extends ChangeNotifier {
 
   /// 设置或取消 .torrent 文件关联。
   /// 乐观更新 UI，Rust 回传真实状态后会校正。
+  ///
+  /// Toggling OFF records a persisted opt-out so the live status reported
+  /// back by Rust cannot clobber the user's choice (see
+  /// [handleFileAssociationStatus]); toggling ON clears it.
   void setFileAssociation(bool enable) {
     logInfo('Settings', 'setFileAssociation: enable=$enable');
     _torrentAssociated = enable;
+    _torrentAssocUserDisabled = !enable;
     notifyListeners();
+    _saveToRust('torrent_assoc_user_disabled', (!enable).toString());
     SetFileAssociation(enable: enable).sendSignalToRust();
   }
 
@@ -1125,10 +1135,25 @@ class SettingsProvider extends ChangeNotifier {
   }
 
   void _onFileAssocStatus(RustSignalPack<FileAssociationStatus> pack) {
-    final associated = pack.message.isAssociated;
-    logInfo('Settings', 'file association status: $associated');
-    if (_torrentAssociated != associated) {
-      _torrentAssociated = associated;
+    handleFileAssociationStatus(pack.message.isAssociated);
+  }
+
+  /// Applies a live .torrent association status reported by Rust.
+  /// Exposed for tests; production code receives it via the signal stream.
+  ///
+  /// A persisted user opt-out gates the reported status: on Linux .deb
+  /// installs the system-wide MIME registration is root-owned, so after
+  /// `disassociate()` the live query still resolves FluxDown and would
+  /// otherwise snap a user-requested OFF back to ON (issue #98).
+  @visibleForTesting
+  void handleFileAssociationStatus(bool associated) {
+    final effective = associated && !_torrentAssocUserDisabled;
+    logInfo(
+      'Settings',
+      'file association status: $associated (effective: $effective)',
+    );
+    if (_torrentAssociated != effective) {
+      _torrentAssociated = effective;
       notifyListeners();
     }
   }
@@ -1143,7 +1168,13 @@ class SettingsProvider extends ChangeNotifier {
   }
 
   void _onConfigLoaded(RustSignalPack<ConfigLoaded> pack) {
-    final entries = pack.message.entries;
+    applyLoadedConfig(pack.message.entries);
+  }
+
+  /// Applies config entries loaded from Rust.
+  /// Exposed for tests; production code receives them via the signal stream.
+  @visibleForTesting
+  void applyLoadedConfig(List<ConfigEntry> entries) {
     logInfo('Settings', '_onConfigLoaded: ${entries.length} entries');
     String legacyOpenDirCmd = '';
     // 追踪 reveal_file_cmd 键是否出现在配置中（区分「从未设置」与「已清空」）。
@@ -1219,6 +1250,8 @@ class SettingsProvider extends ChangeNotifier {
           _ed2kListenPort = int.tryParse(entry.value) ?? 0;
         case 'torrent_assoc_prompted':
           _torrentAssocPrompted = entry.value == 'true';
+        case 'torrent_assoc_user_disabled':
+          _torrentAssocUserDisabled = entry.value == 'true';
         case 'notify_on_complete':
           _notifyOnComplete = entry.value != 'false'; // 默认 true
         case 'silent_download_enabled':
