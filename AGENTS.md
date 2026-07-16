@@ -70,6 +70,7 @@ npm run build                        # 构建生产版到 dist/
 npm run preview                      # 预览构建结果
 
 # 发布版本（推送 v* tag 触发 GitHub Actions，release notes 由 git-cliff 从 Conventional Commits 生成）
+# 稳定版从 main 打 vX.Y.Z；前沿版从 develop 打 vX.Y.Z-rc.N
 git tag -a v0.x.x -m "v0.x.x" && git push origin v0.x.x
 
 # 图标生成（修改 assets/logo/fluxdown_logo.svg 后执行）
@@ -869,7 +870,8 @@ final fileCount = LogService.instance.logFileCount;
 - DB 操作统一通过 `native/engine/src/db.rs` 的 `Db` 结构体（sqlx 原生 async，占位符一律 `$N`，两后端共用同一份 SQL；仅 DDL 与 `wal_checkpoint` 按后端分支）
 - App-shell 专属逻辑（文件关联/协议注册/NMH/更新器/…）留在 `native/hub`，在 `native/hub/src/lib.rs` 中声明 `mod xxx;`
 
-### 发布新版本
-1. 创建并推送 annotated tag：`git tag -a v0.x.x -m "v0.x.x" && git push origin v0.x.x`
+### 分支模型与发布新版本
+- **分支模型**：`develop` = 开发分支（超集），`main` = 稳定分支（子集）。日常开发一律在 `develop`，禁止直接向 `main` 提交功能；`main` 只经合并/cherry-pick `develop` 前进，hotfix 直进 `main` 后必须立即同步回 `develop`。一致性判定：`git log main --not develop` 恒为空。
+1. 在正确分支创建并推送 annotated tag（稳定版在 `main` 打 `vX.Y.Z`，前沿版在 `develop` 打 `vX.Y.Z-rc.N`）：`git tag -a v0.x.x -m "v0.x.x" && git push origin v0.x.x`
 2. GitHub Actions（`.github/workflows/release.yml`）自动构建全平台产物，git-cliff 从 Conventional Commits 生成 Release Notes
 3. Release Notes 经 Claude 翻译为中英双语（`<!-- fluxdown:lang:zh -->` / `<!-- fluxdown:lang:en -->` 标记分块），官网 changelog 页按站点语言展示对应区块；翻译失败时回退原始 cliff 输出

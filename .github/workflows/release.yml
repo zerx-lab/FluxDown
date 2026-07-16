@@ -38,6 +38,24 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # 分支守卫：前沿版 tag（vX.Y.Z-rc.N）必须打在 develop 分支上，
+      # 稳定版 tag（vX.Y.Z）必须打在 main 分支上。打错分支整条流水线在此失败。
+      - name: Verify tag branch (stable=main, frontier=develop)
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          case "$TAG" in
+            *-*) BRANCH=develop ;;
+            *)   BRANCH=main ;;
+          esac
+          git fetch origin "$BRANCH" --quiet
+          if git merge-base --is-ancestor "$TAG" "origin/$BRANCH"; then
+            echo "::notice::Tag $TAG is on origin/$BRANCH — OK"
+          else
+            echo "::error::Tag $TAG is NOT on origin/$BRANCH（稳定版须从 main 打，前沿版 -rc.N 须从 develop 打）"
+            exit 1
+          fi
+
       - name: Detect changes since previous version tag
         id: detect
         shell: bash

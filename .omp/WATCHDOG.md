@@ -8,6 +8,8 @@
 - 手编 `lib/src/bindings/` 生成物
 - SQL 绕过 `db.rs::Db` 或非 `$N` 占位符
 - 未经用户要求的 git commit/push/tag；执行 `flutter run -d windows`
+- 在 `main` 上直接提交功能；`git log main --not develop` 非空（main 出现 develop 没有的提交）
+- 在 `main` 打 `-rc.N` tag，或在 `develop` 打稳定 tag
 
 ## Concern（转向提醒）
 - 改 signals/mod.rs 未见 `rinf gen`；改 native/api 未重新生成 openapi.json
