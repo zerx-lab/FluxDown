@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../i18n/locale_provider.dart';
 import '../../models/download_controller.dart';
+import '../../models/download_queue.dart';
 import '../../models/download_task.dart';
 import '../../theme/app_colors.dart';
 import '../mobile_ui.dart';
@@ -104,7 +105,7 @@ Future<void> showMobileFilterSheet(
                         ),
                         cell(
                           MobileChip(
-                            label: s.defaultQueue,
+                            label: s.ungroupedTasks,
                             selected: controller.queueFilter == '',
                             onTap: () {
                               if (controller.queueFilter != '') {
@@ -116,7 +117,7 @@ Future<void> showMobileFilterSheet(
                         for (final q in controller.queues)
                           cell(
                             MobileChip(
-                              label: q.name,
+                              label: queueDisplayName(s, q),
                               selected: controller.queueFilter == q.queueId,
                               onTap: () {
                                 if (controller.queueFilter != q.queueId) {

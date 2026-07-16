@@ -287,8 +287,8 @@ pub(crate) fn paginate<T>(items: &[T], offset: i64, num: i64) -> Vec<&T> {
 // ---------------------------------------------------------------------------
 
 /// `addUri`/`addTorrent` 的 `options` 字典解析结果，直接对应
-/// [`CreateTaskRequest`] 里由 aria2 选项映射而来的字段（`pause` 除外——
-/// 那是一次性创建后动作，不落入请求体本身）。
+/// [`CreateTaskRequest`] 里由 aria2 选项映射而来的字段（`pause` 映射为
+/// `start_paused`：建时即暂停）。
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct RequestOptions {
     pub file_name: String,
@@ -409,6 +409,7 @@ fn header_lines(v: Option<&Value>) -> Vec<String> {
 
 /// 把 [`RequestOptions`] 与 `url`/`torrent_b64` 组装为 [`CreateTaskRequest`]。
 /// `addUri` 传 `torrent_b64=None`；`addTorrent` 传 `url=String::new()`。
+/// `opts.pause` → `start_paused`（aria2 语义：新建下载以暂停态入队）。
 pub(crate) fn build_create_task_request(
     url: String,
     torrent_b64: Option<String>,
@@ -430,6 +431,7 @@ pub(crate) fn build_create_task_request(
         method: None,
         body: None,
         audio_url: None,
+        start_paused: opts.pause,
     }
 }
 

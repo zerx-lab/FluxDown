@@ -147,6 +147,7 @@ class ExternalDownloadService {
         queueId: trackSettings.defaultQueueId,
         audioUrl: req.audioUrl,
         extraHeaders: const {},
+        startPaused: false,
       ).sendSignalToRust();
       return;
     }
@@ -193,6 +194,7 @@ class ExternalDownloadService {
             queueId: queueId,
             audioUrl: entry.audioUrl,
             extraHeaders: const {},
+            startPaused: false,
           ).sendSignalToRust();
         } else {
           BatchCreateTask(
@@ -214,6 +216,7 @@ class ExternalDownloadService {
             cookies: req.cookies,
             referrer: req.referrer,
             extraHeaders: const {},
+            startPaused: false,
           ).sendSignalToRust();
         }
         return;

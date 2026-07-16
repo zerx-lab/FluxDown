@@ -27,6 +27,7 @@ impl From<model::TaskInfo> for signals::TaskInfo {
             file_missing: t.file_missing,
             completed_at: t.completed_at,
             segments: t.segments,
+            queue_order: t.queue_order,
         }
     }
 }
@@ -42,6 +43,11 @@ impl From<model::QueueInfo> for signals::QueueInfo {
             position: q.position,
             default_segments: q.default_segments,
             default_user_agent: q.default_user_agent,
+            is_running: q.is_running,
+            schedule_enabled: q.schedule_enabled,
+            schedule_start: q.schedule_start,
+            schedule_stop: q.schedule_stop,
+            schedule_days: q.schedule_days,
         }
     }
 }

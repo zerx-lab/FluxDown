@@ -43,6 +43,10 @@ pub struct CreateTask {
     /// Empty = no pre-selection (show the dialog after metadata resolves).
     #[serde(default)]
     pub selected_file_indices: Vec<i32>,
+    /// 稍后下载：true = 建任务后不启动（paused 落库），待「启动队列」
+    /// 按序恢复或用户手动恢复。
+    #[serde(default)]
+    pub start_paused: bool,
 }
 
 /// Single entry in a batch download (URL + optional filename + optional checksum)
@@ -90,6 +94,9 @@ pub struct BatchCreateTask {
     /// 自定义 HTTP 请求头（批次内所有任务共享）。
     #[serde(default)]
     pub extra_headers: std::collections::HashMap<String, String>,
+    /// 稍后下载：true = 批次内任务全部建为 paused，不启动。
+    #[serde(default)]
+    pub start_paused: bool,
 }
 
 /// Control an existing task (pause/resume/cancel/delete)
@@ -245,6 +252,9 @@ pub struct ConfirmExternalDownload {
     /// 浏览器捕获请求头合并，同名以用户手填值覆盖。
     #[serde(default)]
     pub extra_headers: std::collections::HashMap<String, String>,
+    /// 稍后下载：true = 建任务后不启动（paused 落库）。
+    #[serde(default)]
+    pub start_paused: bool,
 }
 
 // ========== Config signals ==========
@@ -303,6 +313,9 @@ pub struct TaskInfo {
     /// 配置的分段（线程）数。0 = 自动。供 UI 展示与「改线程数」编辑。
     #[serde(default)]
     pub segments: i32,
+    /// 队列内启动顺序（越小越先启动）。0 = 未显式排序（按创建时间）。
+    #[serde(default)]
+    pub queue_order: i32,
 }
 
 /// 文件跟踪：一批已完成任务的「文件已丢失」标志变化（Rust → Dart）。
@@ -611,7 +624,7 @@ pub struct UpdateQueue {
     pub default_user_agent: String,
 }
 
-/// Delete a named queue (Dart → Rust). Tasks move to the default queue.
+/// Delete a named queue (Dart → Rust). Tasks move to the builtin main queue.
 #[derive(Deserialize, DartSignal)]
 pub struct DeleteQueue {
     pub queue_id: String,
@@ -621,7 +634,7 @@ pub struct DeleteQueue {
 #[derive(Deserialize, DartSignal)]
 pub struct MoveTaskToQueue {
     pub task_id: String,
-    /// Target queue ID. Empty string = move to default queue.
+    /// Target queue ID. Empty string = move to the builtin main queue.
     pub queue_id: String,
 }
 
@@ -633,6 +646,40 @@ pub struct RequestAllQueues {}
 #[derive(Serialize, RustSignal)]
 pub struct AllQueues {
     pub queues: Vec<QueueInfo>,
+}
+
+/// 启动队列：置运行态并按队列内顺序恢复其中所有待下载任务 (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct StartQueue {
+    pub queue_id: String,
+}
+
+/// 停止队列：置停止态并暂停其中所有排队/活跃任务 (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct StopQueue {
+    pub queue_id: String,
+}
+
+/// 更新队列的每日定时计划 (Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct SetQueueSchedule {
+    pub queue_id: String,
+    /// 定时计划是否启用。
+    pub enabled: bool,
+    /// 每日定时启动时间 "HH:MM"（空 = 不定时启动）。
+    pub start_time: String,
+    /// 每日定时停止时间 "HH:MM"（空 = 不定时停止）。
+    pub stop_time: String,
+    /// 生效星期位掩码：bit0=周一 … bit6=周日；0/127 = 每天。
+    pub days: i32,
+}
+
+/// 持久化队列内任务顺序（完整新顺序，1..N）(Dart → Rust)
+#[derive(Deserialize, DartSignal)]
+pub struct ReorderQueueTasks {
+    pub queue_id: String,
+    /// 队列内任务的完整新顺序（未列出的任务保持原 queue_order）。
+    pub task_ids: Vec<String>,
 }
 
 // ========== Priority (Boost) download signals ==========
@@ -673,6 +720,22 @@ pub struct QueueInfo {
     /// Default user-agent for tasks in this queue. Empty = inherit global UA.
     #[serde(default)]
     pub default_user_agent: String,
+    /// 队列运行状态：停止的队列不自动启动其中任务。
+    /// （QueueInfo 仅 Rust→Dart 序列化，字段恒由引擎填充。）
+    #[serde(default)]
+    pub is_running: bool,
+    /// 定时计划是否启用。
+    #[serde(default)]
+    pub schedule_enabled: bool,
+    /// 每日定时启动时间 "HH:MM"（空 = 不定时启动）。
+    #[serde(default)]
+    pub schedule_start: String,
+    /// 每日定时停止时间 "HH:MM"（空 = 不定时停止）。
+    #[serde(default)]
+    pub schedule_stop: String,
+    /// 定时生效星期位掩码：bit0=周一 … bit6=周日。
+    #[serde(default)]
+    pub schedule_days: i32,
 }
 
 // ========== BT file selection signals ==========

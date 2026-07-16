@@ -21,6 +21,8 @@ import type {
   ProxyTestRequest,
   ProxyTestResponse,
   QueueDto,
+  QueueOrderRequest,
+  QueueScheduleRequest,
   StatsResponse,
   TaskDto,
   TokenResponse,
@@ -104,6 +106,15 @@ export const api = {
   updateQueue: (id: string, req: CreateQueueRequest) =>
     apiFetch<unknown>(`/api/v1/queues/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
   deleteQueue: (id: string) => apiFetch<unknown>(`/api/v1/queues/${id}`, { method: 'DELETE' }),
+  startQueue: (id: string) => apiFetch<unknown>(`/api/v1/queues/${id}/start`, { method: 'POST' }),
+  stopQueue: (id: string) => apiFetch<unknown>(`/api/v1/queues/${id}/stop`, { method: 'POST' }),
+  setQueueSchedule: (id: string, req: QueueScheduleRequest) =>
+    apiFetch<unknown>(`/api/v1/queues/${id}/schedule`, { method: 'PUT', body: JSON.stringify(req) }),
+  reorderQueue: (id: string, taskIds: string[]) =>
+    apiFetch<unknown>(`/api/v1/queues/${id}/order`, {
+      method: 'PUT',
+      body: JSON.stringify({ taskIds } satisfies QueueOrderRequest),
+    }),
 
   getConfig: () => apiFetch<ConfigMap>('/api/v1/config'),
   putConfig: (entries: ConfigMap) =>

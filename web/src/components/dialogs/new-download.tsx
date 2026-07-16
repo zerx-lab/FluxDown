@@ -187,7 +187,7 @@ export function NewDownloadDialog() {
     newDownloadOpenStore.set(false)
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(startPaused = false) {
     if (urlLines.length === 0 || submitting) return
     setSubmitting(true)
     const headerEntries: Record<string, string> = {}
@@ -196,6 +196,9 @@ export function NewDownloadDialog() {
       if (name) headerEntries[name] = h.value
     }
     const headers = Object.keys(headerEntries).length > 0 ? headerEntries : undefined
+    // 队列归属挂在动作上：立即下载 = 表单所选；稍后下载 = 固定进
+    // 「稍后下载」队列（事后可在详情面板移动队列）。
+    const queueId = startPaused ? 'later' : form.queueId || undefined
     const nextErrors: Record<number, string> = {}
     let anyOk = false
     for (let i = 0; i < urlLines.length; i++) {
@@ -209,8 +212,9 @@ export function NewDownloadDialog() {
           headers,
           proxyUrl: form.proxyUrl.trim() || undefined,
           userAgent: form.userAgent || undefined,
-          queueId: form.queueId || undefined,
+          queueId,
           checksum: form.checksum.trim() || undefined,
+          startPaused: startPaused || undefined,
         })
         anyOk = true
       } catch (err) {
@@ -323,7 +327,13 @@ export function NewDownloadDialog() {
                   <SelectField
                     value={form.queueId}
                     onChange={(v) => set('queueId', v)}
-                    options={[{ value: '', label: t('newDl.defaultQueue') }, ...(queues ?? []).map((q) => ({ value: q.queueId, label: q.name }))]}
+                    options={[
+                      { value: '', label: t('newDl.defaultQueue') },
+                      ...(queues ?? []).map((q) => ({
+                        value: q.queueId,
+                        label: q.queueId === 'main' ? t('sidebar.queueMain') : q.queueId === 'later' ? t('sidebar.queueLater') : q.name,
+                      })),
+                    ]}
                     ariaLabel={t('newDl.queue')}
                   />
                 </div>
@@ -425,6 +435,14 @@ export function NewDownloadDialog() {
                   {t('common.cancel')}
                 </button>
               </Dialog.Close>
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={urlLines.length === 0 || submitting}
+                onClick={() => void handleSubmit(true)}
+              >
+                {t('newDl.later')}
+              </button>
               <button type="submit" className="btn primary" disabled={urlLines.length === 0 || submitting}>
                 {submitting ? t('newDl.creating') : t('newDl.create')}
               </button>

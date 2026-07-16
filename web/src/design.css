@@ -275,6 +275,22 @@ svg { display: block; }
 .side-item:hover { background: var(--hover); color: var(--text); }
 .side-item.active { background: var(--accent-weak); color: var(--accent); font-weight: 500; }
 .side-item.active em { color: var(--accent); }
+.queue-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--text3); }
+.queue-dot.on { background: var(--success); box-shadow: 0 0 0 2px rgba(34,197,94,.18); }
+.queue-actions { display: flex; align-items: center; gap: 2px; }
+
+.day-chip {
+  width: 30px; height: 26px; border-radius: 6px;
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 500; color: var(--text2);
+  background: var(--surface2); border: 1px solid transparent;
+  transition: all .12s;
+}
+.day-chip:hover { background: var(--hover); }
+.day-chip.active { background: var(--accent-weak); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.day-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.time-row { display: flex; align-items: center; gap: 10px; }
+.time-row > div { flex: 1; }
 
 .side-bottom { border-top: 1px solid var(--border); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .conn-badge { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px; background: var(--surface2); }

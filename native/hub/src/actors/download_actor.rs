@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
-use fluxdown_engine::download_manager::{self, TaskDone};
+use fluxdown_engine::download_manager::{self, NewTaskSpec, TaskDone};
 use fluxdown_engine::events::EventSink;
 #[cfg(hub_plugins)]
 use fluxdown_engine::plugin::{PluginError, PluginManager};
@@ -30,16 +30,16 @@ use crate::signals::{
     ExternalDownloadRequest, FfmpegInstallProgress, FfmpegInstallResult, FfmpegStatusReport,
     FfmpegVersionList, FileAssociationStatus, IgnorePluginRetry, InstallFfmpeg,
     InstallMarketPlugin, InstallPlugin, InstallUpdate, InstallYtdlp, MoveTaskToQueue, OpenFile,
-    ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
-    RequestFfmpegStatus, RequestFfmpegVersions, RequestMarketIndex, RequestPlugins,
+    ProbeTorrentMeta, ProxyTestResult, ReorderQueueTasks, RequestAllQueues, RequestAllTasks,
+    RequestConfig, RequestFfmpegStatus, RequestFfmpegVersions, RequestMarketIndex, RequestPlugins,
     RequestUpdateFailureMarker, RequestYtdlpStatus, RequestYtdlpVersions, RescanFiles, RevealFile,
     SaveConfig, SavePluginSettings, SelectBtFiles, SelectHlsQuality, SelectResolveVariant,
-    SetFileAssociation, SetPluginEnabled, SetPriorityTask, SetUrlProtocol, SystemProxyInfo,
-    TaskSegmentsUpdated, TestProxyConnection, TrackerSubscriptionResult, UninstallFfmpeg,
-    UninstallPlugin, UninstallYtdlp, UpdateCheckResult, UpdateEd2kServerSubscription,
-    UpdateFailureMarker, UpdateQueue, UpdateTaskSegments, UpdateTrackerSubscription,
-    UrlProtocolStatus, YtdlpInstallProgress, YtdlpInstallResult, YtdlpStatusReport,
-    YtdlpVersionList,
+    SetFileAssociation, SetPluginEnabled, SetPriorityTask, SetQueueSchedule, SetUrlProtocol,
+    StartQueue, StopQueue, SystemProxyInfo, TaskSegmentsUpdated, TestProxyConnection,
+    TrackerSubscriptionResult, UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
+    UpdateEd2kServerSubscription, UpdateFailureMarker, UpdateQueue, UpdateTaskSegments,
+    UpdateTrackerSubscription, UrlProtocolStatus, YtdlpInstallProgress, YtdlpInstallResult,
+    YtdlpStatusReport, YtdlpVersionList,
 };
 // 插件「分支体专用」信号（仅在 hub_plugins 分支体内构造）：mobile 不引入。
 #[cfg(hub_plugins)]
@@ -483,6 +483,10 @@ pub async fn run(db_dir: PathBuf) {
     let delete_queue_recv = DeleteQueue::get_dart_signal_receiver();
     let move_task_queue_recv = MoveTaskToQueue::get_dart_signal_receiver();
     let all_queues_recv = RequestAllQueues::get_dart_signal_receiver();
+    let start_queue_recv = StartQueue::get_dart_signal_receiver();
+    let stop_queue_recv = StopQueue::get_dart_signal_receiver();
+    let set_queue_schedule_recv = SetQueueSchedule::get_dart_signal_receiver();
+    let reorder_queue_recv = ReorderQueueTasks::get_dart_signal_receiver();
     let config_save_recv = SaveConfig::get_dart_signal_receiver();
     let config_req_recv = RequestConfig::get_dart_signal_receiver();
     let confirm_ext_recv = ConfirmExternalDownload::get_dart_signal_receiver();
@@ -721,12 +725,32 @@ pub async fn run(db_dir: PathBuf) {
     // 淘汰/压实逻辑见 native_msg_rx 分支。
     let mut ext_cache_order: VecDeque<String> = VecDeque::new();
 
+    // 队列定时调度 tick：引擎侧做边沿检测（每边沿每天至多一次 + 当日补
+    // 触发），此处只提供节拍。Delay 防休眠唤醒后积压 tick 连环触发。
+    let mut queue_schedule_tick = tokio::time::interval(std::time::Duration::from_secs(20));
+    queue_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
             Some(signal) = create_recv.recv() => {
                 let msg = signal.message;
                 engine.manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, String::new(), 0, msg.torrent_file_bytes, msg.proxy_url, msg.user_agent, msg.queue_id, msg.checksum, msg.extra_headers, msg.selected_file_indices, None, None, None)
+                    .create_task(NewTaskSpec {
+                        url: msg.url,
+                        save_dir: msg.save_dir,
+                        file_name: msg.file_name,
+                        segments: msg.segments,
+                        cookies: msg.cookies,
+                        torrent_file_bytes: msg.torrent_file_bytes,
+                        proxy_url: msg.proxy_url,
+                        user_agent: msg.user_agent,
+                        queue_id: msg.queue_id,
+                        checksum: msg.checksum,
+                        extra_headers: msg.extra_headers,
+                        selected_file_indices: msg.selected_file_indices,
+                        start_paused: msg.start_paused,
+                        ..Default::default()
+                    })
                     .await;
                 // 立即推送 AllTasks，确保 Dart 端在收到 TaskProgress 之前
                 // 已通过 AllTasks 获得正确的 queue_id，防止新任务被错误归入默认队列。
@@ -755,7 +779,25 @@ pub async fn run(db_dir: PathBuf) {
                     let referrer = if ctx.referrer.is_empty() { msg.referrer.clone() } else { ctx.referrer };
                     let body = ctx.body.map(nm_body_to_captured);
                     engine.manager
-                        .create_task(entry.url, msg.save_dir.clone(), entry.file_name, msg.segments, cookies, referrer, ctx.file_size, Vec::new(), msg.proxy_url.clone(), msg.user_agent.clone(), msg.queue_id.clone(), entry.checksum, extra_headers, Vec::new(), ctx.method, body, if entry.audio_url.is_empty() { None } else { Some(entry.audio_url) })
+                        .create_task(NewTaskSpec {
+                            url: entry.url,
+                            save_dir: msg.save_dir.clone(),
+                            file_name: entry.file_name,
+                            segments: msg.segments,
+                            cookies,
+                            referrer,
+                            hint_file_size: ctx.file_size,
+                            proxy_url: msg.proxy_url.clone(),
+                            user_agent: msg.user_agent.clone(),
+                            queue_id: msg.queue_id.clone(),
+                            checksum: entry.checksum,
+                            extra_headers,
+                            method: ctx.method,
+                            body,
+                            audio_url: if entry.audio_url.is_empty() { None } else { Some(entry.audio_url) },
+                            start_paused: msg.start_paused,
+                            ..Default::default()
+                        })
                         .await;
                 }
                 // 批量创建完成后统一推送一次 AllTasks，同步 queue_id 到 Dart。
@@ -974,7 +1016,24 @@ pub async fn run(db_dir: PathBuf) {
                     body.is_some(),
                 );
                 engine.manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, cookies, referrer, hint_file_size, Vec::new(), msg.proxy_url, msg.user_agent, msg.queue_id, String::new(), extra_headers, Vec::new(), method, body, if msg.audio_url.is_empty() { None } else { Some(msg.audio_url) })
+                    .create_task(NewTaskSpec {
+                        url: msg.url,
+                        save_dir: msg.save_dir,
+                        file_name: msg.file_name,
+                        segments: msg.segments,
+                        cookies,
+                        referrer,
+                        hint_file_size,
+                        proxy_url: msg.proxy_url,
+                        user_agent: msg.user_agent,
+                        queue_id: msg.queue_id,
+                        extra_headers,
+                        method,
+                        body,
+                        audio_url: if msg.audio_url.is_empty() { None } else { Some(msg.audio_url) },
+                        start_paused: msg.start_paused,
+                        ..Default::default()
+                    })
                     .await;
                 // 推送 AllTasks 确保 Dart 端获得正确 queue_id。
                 engine.manager.load_and_send_all_tasks().await;
@@ -1002,6 +1061,37 @@ pub async fn run(db_dir: PathBuf) {
             }
             Some(_) = all_queues_recv.recv() => {
                 engine.manager.send_all_queues().await;
+            }
+            Some(signal) = start_queue_recv.recv() => {
+                let msg = signal.message;
+                log_info!("[actor] StartQueue: id={}", msg.queue_id);
+                engine.manager.start_queue(msg.queue_id).await;
+            }
+            Some(signal) = stop_queue_recv.recv() => {
+                let msg = signal.message;
+                log_info!("[actor] StopQueue: id={}", msg.queue_id);
+                engine.manager.stop_queue(msg.queue_id).await;
+            }
+            Some(signal) = set_queue_schedule_recv.recv() => {
+                let msg = signal.message;
+                log_info!(
+                    "[actor] SetQueueSchedule: id={}, enabled={}, {}-{}, days={}",
+                    msg.queue_id, msg.enabled, msg.start_time, msg.stop_time, msg.days,
+                );
+                engine.manager
+                    .set_queue_schedule(msg.queue_id, msg.enabled, msg.start_time, msg.stop_time, msg.days)
+                    .await;
+            }
+            Some(signal) = reorder_queue_recv.recv() => {
+                let msg = signal.message;
+                log_info!(
+                    "[actor] ReorderQueueTasks: id={}, {} task(s)",
+                    msg.queue_id, msg.task_ids.len(),
+                );
+                engine.manager.reorder_queue_tasks(msg.queue_id, msg.task_ids).await;
+            }
+            _ = queue_schedule_tick.tick() => {
+                engine.manager.tick_queue_schedules().await;
             }
             Some(done) = done_rx.recv() => {
                 engine.manager.on_task_done(&done).await;
@@ -1930,25 +2020,25 @@ async fn handle_api_command(
             log_info!("[actor] api create task: url={}", req.url);
             let task_id = engine
                 .manager
-                .create_task(
-                    req.url,
+                .create_task(NewTaskSpec {
+                    url: req.url,
                     save_dir,
-                    req.file_name,
-                    req.segments,
-                    req.cookies,
-                    req.referrer,
-                    0,
+                    file_name: req.file_name,
+                    segments: req.segments,
+                    cookies: req.cookies,
+                    referrer: req.referrer,
                     torrent_file_bytes,
-                    req.proxy_url,
-                    req.user_agent,
-                    req.queue_id,
-                    req.checksum,
-                    req.headers.unwrap_or_default(),
-                    Vec::new(),
-                    req.method,
-                    req.body.map(Into::into),
-                    req.audio_url,
-                )
+                    proxy_url: req.proxy_url,
+                    user_agent: req.user_agent,
+                    queue_id: req.queue_id,
+                    checksum: req.checksum,
+                    extra_headers: req.headers.unwrap_or_default(),
+                    method: req.method,
+                    body: req.body.map(Into::into),
+                    audio_url: req.audio_url,
+                    start_paused: req.start_paused,
+                    ..Default::default()
+                })
                 .await;
             // 与 Dart 创建路径一致：立即推送 AllTasks 同步 queue_id 到 UI。
             engine.manager.load_and_send_all_tasks().await;
@@ -1978,9 +2068,9 @@ async fn handle_api_command(
             let _ = ack.send(());
         }
         ApiCommand::ContinueAll { ack } => {
-            // 仅恢复 paused(2)；error(4) 留给显式的单任务 continue。
-            let ids = task_ids_by_status(&engine.db, &[2]).await;
-            engine.manager.batch_resume(&ids).await;
+            // 仅恢复 paused(2) 且所在队列运行中的任务；停止队列（含「稍后
+            // 下载」栈）由「启动队列」显式恢复。error(4) 留给单任务 continue。
+            engine.manager.resume_all_eligible().await;
             let _ = ack.send(());
         }
         ApiCommand::ApplyConfig { keys, ack } => {

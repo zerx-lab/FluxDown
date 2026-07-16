@@ -102,25 +102,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     engine
         .manager
-        .create_task(
+        .create_task(fluxdown_engine::download_manager::NewTaskSpec {
             url,
-            work_dir.to_string_lossy().into_owned(),
-            "payload.bin".to_string(),
-            1, // 单分段——本地一次性服务器不支持并发多连接
-            String::new(),
-            String::new(),
-            0,
-            Vec::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            std::collections::HashMap::new(),
-            Vec::new(),
-            None,
-            None,
-            None,
-        )
+            save_dir: work_dir.to_string_lossy().into_owned(),
+            file_name: "payload.bin".to_string(),
+            segments: 1, // 单分段——本地一次性服务器不支持并发多连接
+            ..Default::default()
+        })
         .await;
 
     // 等待任务完成通知(带超时,避免示例在 CI 中意外挂起)。

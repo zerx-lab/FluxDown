@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Archive, ArrowUpCircle, FileText, Image as ImageIcon, LayoutGrid, List, LogOut, Film, Music, MessageCircle, File as FileIcon, Package2, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ArrowUpCircle, FileText, Image as ImageIcon, LayoutGrid, List, LogOut, Film, Music, MessageCircle, File as FileIcon, Package2, Pause, Play, Plus, Trash2, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { clearCredentials, getBase } from '../../lib/auth'
@@ -16,6 +16,7 @@ import { connStore, disconnectWs, useGlobalSpeed, useStore } from '../../lib/ws'
 import { useUpdateCheck } from '../../lib/update'
 import { confirmDialog } from '../../lib/confirm'
 import { useTasksUi } from './context'
+import { QueueScheduleDialog } from './queue-schedule-dialog'
 import { useViewTasks } from './useViewTasks'
 
 const TYPE_ICONS: Record<'all' | FT, LucideIcon> = {
@@ -55,6 +56,14 @@ export function Sidebar() {
   })
   const deleteQueue = useMutation({
     mutationFn: (id: string) => api.deleteQueue(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['queues'] }),
+  })
+  const startQueue = useMutation({
+    mutationFn: (id: string) => api.startQueue(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['queues'] }),
+  })
+  const stopQueue = useMutation({
+    mutationFn: (id: string) => api.stopQueue(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['queues'] }),
   })
 
@@ -129,6 +138,8 @@ export function Sidebar() {
           </button>
           {queues.map((q) => {
             const count = tasks.filter((t) => t.queueId === q.queueId).length
+            const builtin = q.queueId === 'main' || q.queueId === 'later'
+            const displayName = q.queueId === 'main' ? t('sidebar.queueMain') : q.queueId === 'later' ? t('sidebar.queueLater') : q.name
             return (
               <div key={q.queueId} className="group relative">
                 <button
@@ -137,21 +148,42 @@ export function Sidebar() {
                   onClick={() => { setQueueFilter(q.queueId); setSidebarOpen(false) }}
                 >
                   <List size={15} />
-                  <span>{q.name}</span>
+                  <i
+                    className={cn('queue-dot', q.isRunning && 'on')}
+                    title={q.isRunning ? t('sidebar.queueRunning') : t('sidebar.queueStopped')}
+                  />
+                  <span>{displayName}</span>
                   <em className="group-hover:opacity-0">{count || ''}</em>
                 </button>
-                <button
-                  type="button"
-                  className="icon-btn sm absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover:grid"
-                  title={t('sidebar.deleteQueue')}
-                  onClick={async (e) => {
-                    e.stopPropagation()
-                    if (await confirmDialog({ title: t('sidebar.deleteQueue'), message: t('sidebar.deleteQueueMsg', { name: q.name }), danger: true }))
-                      deleteQueue.mutate(q.queueId)
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
+                <div className="queue-actions absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover:flex">
+                  <button
+                    type="button"
+                    className="icon-btn sm"
+                    title={q.isRunning ? t('sidebar.stopQueue') : t('sidebar.startQueue')}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (q.isRunning) stopQueue.mutate(q.queueId)
+                      else startQueue.mutate(q.queueId)
+                    }}
+                  >
+                    {q.isRunning ? <Pause size={13} /> : <Play size={13} />}
+                  </button>
+                  <QueueScheduleDialog queue={q} queueName={displayName} />
+                  {!builtin && (
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      title={t('sidebar.deleteQueue')}
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        if (await confirmDialog({ title: t('sidebar.deleteQueue'), message: t('sidebar.deleteQueueMsg', { name: displayName }), danger: true }))
+                          deleteQueue.mutate(q.queueId)
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
               </div>
             )
           })}

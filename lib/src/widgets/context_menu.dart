@@ -195,6 +195,8 @@ class _ContextMenuItemWidgetState extends State<_ContextMenuItemWidget> {
       onExit: (_) => setState(() => _isHovered = false),
       cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
       child: GestureDetector(
+        // opaque：整行（含文字右侧空白）都可点击，不留命中死区。
+        behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
         child: Container(
           height: widget.itemHeight,

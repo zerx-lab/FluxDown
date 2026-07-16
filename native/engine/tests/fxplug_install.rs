@@ -23,8 +23,8 @@ fn fxplug_installs_via_zip_pipeline() {
     std::fs::create_dir_all(&work).expect("mkdir");
     let identity = install::install_from_zip(&work, &bytes).expect("install_from_zip must succeed");
     // 默认校验示例 echo-rewriter；可经 FLUXDOWN_TEST_FXPLUG_IDENTITY 覆盖以验证其它包。
-    let expected =
-        std::env::var("FLUXDOWN_TEST_FXPLUG_IDENTITY").unwrap_or_else(|_| "fluxdown@echo-rewriter".to_string());
+    let expected = std::env::var("FLUXDOWN_TEST_FXPLUG_IDENTITY")
+        .unwrap_or_else(|_| "fluxdown@echo-rewriter".to_string());
     assert_eq!(identity, expected);
     assert!(work.join(&identity).join("manifest.json").exists());
     assert!(work.join(&identity).join("resolve.js").exists());

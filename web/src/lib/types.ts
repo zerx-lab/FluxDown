@@ -32,6 +32,16 @@ export interface QueueDto {
   position: number
   defaultSegments: number
   defaultUserAgent: string
+  /** 队列是否处于运行态；停止时队列内任务全部暂停，不会被调度器恢复。 */
+  isRunning: boolean
+  /** 是否启用每日定时启停 */
+  scheduleEnabled: boolean
+  /** 每日启动时间 "HH:MM"，为空表示未设置 */
+  scheduleStart: string
+  /** 每日停止时间 "HH:MM"，为空表示未设置 */
+  scheduleStop: string
+  /** 生效星期位掩码：bit0=周一 … bit6=周日，127=每天 */
+  scheduleDays: number
 }
 
 export interface CreateTaskRequest {
@@ -46,6 +56,8 @@ export interface CreateTaskRequest {
   queueId?: string
   checksum?: string
   headers?: Record<string, string>
+  /** true = 稍后下载：任务以 paused 状态创建，不自动启动 */
+  startPaused?: boolean
 }
 
 export interface CreatedTask {
@@ -185,6 +197,17 @@ export interface CreateQueueRequest {
   defaultSaveDir?: string
   defaultSegments?: number
   defaultUserAgent?: string
+}
+
+export interface QueueScheduleRequest {
+  enabled: boolean
+  startTime: string
+  stopTime: string
+  days: number
+}
+
+export interface QueueOrderRequest {
+  taskIds: string[]
 }
 
 export interface FsEntry {

@@ -10,7 +10,9 @@ import '../models/download_task.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import 'context_menu.dart';
+import '../models/download_controller.dart';
 import '../services/open_folder.dart';
+import 'queue_manager_dialog.dart';
 
 /// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
 const _pluginErrorPrefix = '[插件]';
@@ -255,7 +257,15 @@ class _TaskListItemState extends State<TaskListItem> {
               ),
               const SizedBox(height: 2),
               Text(
-                task.subtitle,
+                // 停止队列内的暂停任务显示「等待队列启动」，与用户手动
+                // 暂停区分开（启动队列会按序恢复它们）。
+                task.subtitleWith(
+                  queueStopped:
+                      !(DownloadController.globalInstance?.isQueueRunning(
+                            task.queueId,
+                          ) ??
+                          true),
+                ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 11, color: c.textMuted),
@@ -530,6 +540,19 @@ void showTaskContextMenu(
         label: s.editThreads,
         color: c.textPrimary,
         action: onEditThreads,
+      ),
+    );
+  }
+
+  // --- 移动到队列 ---
+  final queueCtrl = DownloadController.globalInstance;
+  if (queueCtrl != null && queueCtrl.queues.isNotEmpty) {
+    items.add(
+      ContextMenuItem(
+        icon: LucideIcons.layers,
+        label: s.moveToQueueAction,
+        color: c.textPrimary,
+        action: () => showMoveToQueueDialog(context, queueCtrl, task),
       ),
     );
   }

@@ -100,25 +100,13 @@ fn engine_config(work: &std::path::Path) -> EngineConfig {
 async fn create(engine: &mut Engine, url: &str, save_dir: &str, name: &str) -> String {
     engine
         .manager
-        .create_task(
-            url.to_string(),
-            save_dir.to_string(),
-            name.to_string(),
-            1,
-            String::new(),
-            String::new(),
-            0,
-            Vec::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            std::collections::HashMap::new(),
-            Vec::new(),
-            None,
-            None,
-            None,
-        )
+        .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+            url: url.to_string(),
+            save_dir: save_dir.to_string(),
+            file_name: name.to_string(),
+            segments: 1,
+            ..Default::default()
+        })
         .await
         .expect("create_task returns id")
 }

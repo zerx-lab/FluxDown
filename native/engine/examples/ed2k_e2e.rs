@@ -64,25 +64,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     engine
         .manager
-        .create_task(
-            ED2K_LINK.to_string(),
-            work_dir.to_string_lossy().into_owned(),
-            String::new(),
-            0,
-            String::new(),
-            String::new(),
-            0,
-            Vec::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            std::collections::HashMap::new(),
-            Vec::new(),
-            None,
-            None,
-            None,
-        )
+        .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+            url: ED2K_LINK.to_string(),
+            save_dir: work_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await;
 
     let started = std::time::Instant::now();

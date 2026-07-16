@@ -18,7 +18,9 @@ use crate::events::{EngineEvent, EventSink};
 use crate::ftp_downloader;
 use crate::hls_downloader;
 use crate::logger::log_info;
-use crate::model::{QueueInfo, QueuePosition, SegmentDetail, TaskInfo};
+use crate::model::{
+    MAIN_QUEUE_ID, QueueInfo, QueuePosition, SegmentDetail, TaskInfo, is_builtin_queue,
+};
 use crate::proxy_config::ProxyConfig;
 use crate::segment_coordinator::is_single_conn_domain;
 use crate::selection::HostSelection;
@@ -507,6 +509,120 @@ struct TaskSpeedState {
     upload_bps: i64,
 }
 
+/// 解析 `HH:MM` 为当日分钟数（0..1440）。非法输入返回 `None`。
+fn parse_hhmm(s: &str) -> Option<u32> {
+    let (h, m) = s.split_once(':')?;
+    let h: u32 = h.parse().ok()?;
+    let m: u32 = m.parse().ok()?;
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// 定时边沿标识：`(queue_id, 是否启动边沿)`。启动/停止各是独立边沿，
+/// 分别按天记账（见 `DownloadManager::schedule_fired`）。
+type ScheduleEdge = (String, bool);
+
+/// 定时调度的边沿判定核心（纯函数）。
+///
+/// 对每个启用定时且 `day_bit` 命中的队列，找出「今天时刻已过（`now_min`）
+/// 且 `fired` 账本里今天尚未处理」的启动/停止边沿：
+/// - 返回值 `.0` = 本次新越过的全部边沿（调用方应记账为 `today`，保证每
+///   边沿每天至多处理一次——含手动启停后的不重复触发）；
+/// - 返回值 `.1` = 应执行的动作 `(queue_id, 是否启动)`；同队列同天两个
+///   边沿都新近越过时只保留时间靠后的那个，平局（start == stop）取停止。
+fn due_schedule_actions<'a>(
+    queues: impl Iterator<Item = &'a QueueInfo>,
+    fired: &HashMap<ScheduleEdge, chrono::NaiveDate>,
+    today: chrono::NaiveDate,
+    day_bit: i32,
+    now_min: u32,
+) -> (Vec<ScheduleEdge>, Vec<ScheduleEdge>) {
+    let mut passed_edges: Vec<ScheduleEdge> = Vec::new();
+    let mut actions: Vec<ScheduleEdge> = Vec::new();
+    for q in queues {
+        if !q.schedule_enabled || (q.schedule_days & day_bit) == 0 {
+            continue;
+        }
+        // (边沿时刻, 是否启动边沿)；未配置/非法的边沿跳过。
+        let mut newest: Option<(u32, bool)> = None;
+        for (time, is_start) in [
+            (parse_hhmm(&q.schedule_start), true),
+            (parse_hhmm(&q.schedule_stop), false),
+        ] {
+            let Some(minute) = time else { continue };
+            if now_min < minute {
+                continue; // 今天尚未到点
+            }
+            if fired.get(&(q.queue_id.clone(), is_start)) == Some(&today) {
+                continue; // 今天已处理过该边沿
+            }
+            passed_edges.push((q.queue_id.clone(), is_start));
+            // 平局取停止边沿：迭代顺序 start 在前，`>=` 让后者覆盖——宁停不启。
+            if newest.is_none_or(|(m, _)| minute >= m) {
+                newest = Some((minute, is_start));
+            }
+        }
+        if let Some((_, is_start)) = newest {
+            actions.push((q.queue_id.clone(), is_start));
+        }
+    }
+    (passed_edges, actions)
+}
+
+/// 新建下载任务的完整描述（[`DownloadManager::create_task`] 入参）。
+///
+/// 全字段带默认值，调用方只填关心的字段，后续新增字段不再震荡全部调用点：
+///
+/// ```
+/// use fluxdown_engine::download_manager::NewTaskSpec;
+///
+/// let spec = NewTaskSpec {
+///     url: "https://example.com/file.bin".to_string(),
+///     save_dir: "/tmp".to_string(),
+///     ..Default::default()
+/// };
+/// assert!(!spec.start_paused);
+/// ```
+#[derive(Clone, Default)]
+pub struct NewTaskSpec {
+    /// 下载 URL（http/https/ftp/magnet/ed2k/…）。
+    pub url: String,
+    /// 保存目录。
+    pub save_dir: String,
+    /// 文件名（空 = 探测/URL 推断）。
+    pub file_name: String,
+    /// 分段数（<=0 = 自动）。
+    pub segments: i32,
+    /// 浏览器 cookies（空 = 无）。
+    pub cookies: String,
+    /// Referrer（空 = 无）。
+    pub referrer: String,
+    /// 已知文件大小 hint（0 = 未知；-1 = 未知且跳过 probe）。
+    pub hint_file_size: i64,
+    /// `.torrent` 文件内容（非空 = 种子任务）。
+    pub torrent_file_bytes: Vec<u8>,
+    /// 单任务代理（空 = 全局）。
+    pub proxy_url: String,
+    /// 单任务 User-Agent（空 = 队列/全局）。
+    pub user_agent: String,
+    /// 目标队列 ID；空 = 内置主队列（[`MAIN_QUEUE_ID`]）。
+    pub queue_id: String,
+    /// Checksum spec `algo=hexhash`（空 = 跳过校验）。
+    pub checksum: String,
+    /// 额外请求头。
+    pub extra_headers: std::collections::HashMap<String, String>,
+    /// BT 文件预选（空 = 全部文件）。
+    pub selected_file_indices: Vec<i32>,
+    /// 自定义 HTTP method（None = GET）。
+    pub method: Option<String>,
+    /// 捕获的请求体（POST 接管）。
+    pub body: Option<downloader::CapturedRequestBody>,
+    /// 音频轨 URL（「视频轨+音频轨」离散下载对）。
+    pub audio_url: Option<String>,
+    /// 稍后下载：true = 建任务后不启动（paused 入库），待「启动队列」
+    /// 按序恢复或用户手动恢复。
+    pub start_paused: bool,
+}
+
 /// Information needed to start a queued task later.
 struct QueuedTask {
     task_id: String,
@@ -790,6 +906,11 @@ pub struct DownloadManager {
     /// Per-queue speed limiters (queue_id → SpeedLimiter).
     /// Created on demand for queues that have speed_limit_kbps > 0.
     queue_limiters: HashMap<String, SpeedLimiter>,
+    /// 定时调度的边沿触发账本：(queue_id, 是否启动边沿) → 最近处理日期。
+    /// 保证每个定时边沿每天至多触发一次（手动启停后同一天不再重复触发）；
+    /// 内存级，重启清零——重启后当天已越过的边沿会补触发一次（见
+    /// `tick_queue_schedules` 的当日补触发语义）。
+    schedule_fired: HashMap<ScheduleEdge, chrono::NaiveDate>,
     /// 是否已完成启动时的 reset_incomplete_tasks_to_paused 矫正。
     /// 该矫正仅需在第一次 load_and_send_all_tasks 时执行一次，
     /// 后续由 create_task / batch_create 触发时不得重复重置。
@@ -921,6 +1042,7 @@ impl DownloadManager {
             use_server_time: false,
             queues: HashMap::new(),
             queue_limiters: HashMap::new(),
+            schedule_fired: HashMap::new(),
             startup_reset_done: false,
             scanning: Arc::new(AtomicBool::new(false)),
             priority_task_id: None,
@@ -1451,8 +1573,7 @@ impl DownloadManager {
             return Ok(false);
         }
         // 活跃 = 内存中有 spawn，或 DB 状态为下载中(1)/准备中(5)。
-        let was_active =
-            self.active_tasks.contains_key(task_id) || matches!(task.status, 1 | 5);
+        let was_active = self.active_tasks.contains_key(task_id) || matches!(task.status, 1 | 5);
         let seg = if segments <= 0 { 0 } else { segments };
 
         // 活跃任务：先暂停当前 spawn（取消 + 落 paused），改配置后再恢复，
@@ -2348,28 +2469,39 @@ impl DownloadManager {
             .unwrap_or(0)
     }
 
-    /// 创建下载任务，返回新任务 ID；仅在 DB 插入失败时返回 `None`。
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_task(
-        &mut self,
-        url: String,
-        save_dir: String,
-        file_name: String,
-        segments: i32,
-        cookies: String,
-        referrer: String,
-        hint_file_size: i64,
-        torrent_file_bytes: Vec<u8>,
-        proxy_url: String,
-        user_agent: String,
-        queue_id: String,
-        checksum: String,
-        extra_headers: std::collections::HashMap<String, String>,
-        selected_file_indices: Vec<i32>,
-        method: Option<String>,
-        body: Option<downloader::CapturedRequestBody>,
-        audio_url: Option<String>,
-    ) -> Option<String> {
+    /// 创建下载任务，返回新任务 ID（插入失败时 `None`）。
+    ///
+    /// `spec.start_paused` = 稍后下载：任务以 paused(2) 落库，不占并发、
+    /// 不进等待队列，由「启动队列」按序恢复或用户手动恢复；后台元数据
+    /// 探测照常进行，UI 能立即显示文件名/大小。
+    pub async fn create_task(&mut self, spec: NewTaskSpec) -> Option<String> {
+        let NewTaskSpec {
+            url,
+            save_dir,
+            file_name,
+            segments,
+            cookies,
+            referrer,
+            hint_file_size,
+            torrent_file_bytes,
+            proxy_url,
+            user_agent,
+            queue_id,
+            checksum,
+            extra_headers,
+            selected_file_indices,
+            method,
+            body,
+            audio_url,
+            start_paused,
+        } = spec;
+        // 任务必属队列：未指定时归入内置主队列（'' 不再是有效归属，统一
+        // 覆盖旧客户端信号 / aria2 / REST / CLI 等所有创建入口）。
+        let queue_id = if queue_id.is_empty() {
+            MAIN_QUEUE_ID.to_string()
+        } else {
+            queue_id
+        };
         let task_id = Uuid::new_v4().to_string();
         let created_id = task_id.clone();
         // ED2K 链接自带文件名/大小/root hash：调用方未显式给名时从链接回填，
@@ -2402,10 +2534,21 @@ impl DownloadManager {
             url.clone()
         };
 
+        // 稍后下载以 paused(2) 落库；正常创建 pending(0)。
+        let initial_status = if start_paused { 2 } else { 0 };
         if let Err(e) = self
             .db
             .insert_task(
-                &task_id, &db_url, &file_name, &save_dir, seg, 0, &proxy_url, &queue_id, &checksum,
+                &task_id,
+                &db_url,
+                &file_name,
+                &save_dir,
+                seg,
+                0,
+                &proxy_url,
+                &queue_id,
+                &checksum,
+                initial_status,
             )
             .await
         {
@@ -2449,7 +2592,7 @@ impl DownloadManager {
 
         self.sink.emit(EngineEvent::TaskProgress {
             task_id: task_id.clone(),
-            status: 0,
+            status: initial_status,
             downloaded_bytes: 0,
             total_bytes: 0,
             speed: 0,
@@ -2460,7 +2603,6 @@ impl DownloadManager {
             upload_speed_bps: 0,
         });
 
-        // BT tasks bypass the HTTP/FTP concurrency queue — they are managed
         // 插件惰性解析：命中 resolver 则打标（仅存 ID）；协议判定/probe 推迟到实际
         // 下载前的 off-actor resolve，此处不跑 JS。原始 url 参与匹配（非 db_url）。
         let resolver_plugin_id = self.plugin_match_resolver(&url).await;
@@ -2471,8 +2613,27 @@ impl DownloadManager {
                 .set_task_resolver(&task_id, &resolver_plugin_id)
                 .await;
         }
+        // BT tasks bypass the HTTP/FTP concurrency queue — they are managed
         // by the shared librqbit session with its own concurrency controls.
         let is_bt = is_magnet(&url) || !torrent_file_bytes.is_empty();
+
+        if start_paused {
+            // 稍后下载：不启动、不排队。后台 probe 让 UI 尽快拿到文件名/
+            // 大小；带 resolver（探测原始页面 URL 无意义）或 BT（无 HTTP
+            // 元数据可探）任务跳过，语义与排队/直启分支一致。
+            if !has_resolver && !is_bt {
+                let probe_spec = downloader::RequestSpec::from_captured(
+                    method.as_deref(),
+                    cookies.clone(),
+                    referrer.clone(),
+                    extra_headers.clone(),
+                    body.clone(),
+                );
+                self.spawn_meta_probe(task_id, db_url, file_name, probe_spec);
+            }
+            return Some(created_id);
+        }
+
         let queued = QueuedTask {
             task_id,
             url: db_url,
@@ -2514,9 +2675,6 @@ impl DownloadManager {
             let probe_tid = queued.task_id.clone();
             let probe_url = queued.url.clone();
             let probe_name = queued.file_name.clone();
-            // F020：用任务的鉴权上下文（cookies/referrer/extra_headers）构造
-            // probe 的 RequestSpec，使背景 HEAD probe 与真正下载请求一致，
-            // 避免鉴权站点把缺鉴权的裸 HEAD 重定向到登录页污染 DB 文件名。
             let probe_spec = downloader::RequestSpec::from_captured(
                 queued.method.as_deref(),
                 queued.cookies.clone(),
@@ -2527,53 +2685,67 @@ impl DownloadManager {
             self.pending_queue.push_back(queued);
             // 广播最新队列位置
             self.broadcast_queue_positions();
-            // Spawn 元数据探测（后台，非阻塞）
-            let probe_client = self.client.clone();
-            let probe_db = self.db.clone();
-            // 用 resolve() 展开 System→Manual：ftp_connect_sync_with_proxy 直接读
-            // host/port，未解析的 System 代理 host/port 为空会被静默降级直连。实际
-            // 下载路径(do_start_task/do_resume_task)均调 .resolve()，后台探测须对齐。
-            let probe_proxy = self.proxy_config.resolve();
-            let probe_sink = self.sink.clone();
-            #[cfg(feature = "plugins")]
-            let probe_pm = self.plugin_manager.clone();
-            #[cfg(feature = "plugins")]
-            let probe_notify_url = probe_url.clone();
             // 带 resolver 的任务跳过 probe（探测原始页面 URL 无意义）。
             if !has_resolver {
-                tokio::spawn(async move {
-                    let (name, size) = crate::meta_prober::probe_task_meta(
-                        &probe_url,
-                        &probe_name,
-                        &probe_client,
-                        &probe_proxy,
-                        &probe_spec,
-                    )
-                    .await;
-                    if !name.is_empty() || size > 0 {
-                        if !name.is_empty() {
-                            let _ = probe_db.update_task_file_name(&probe_tid, &name).await;
-                        }
-                        probe_sink.emit(EngineEvent::TaskMetaProbed {
-                            task_id: probe_tid.clone(),
-                            file_name: name.clone(),
-                            total_bytes: size,
-                        });
-                        #[cfg(feature = "plugins")]
-                        if let Some(pm) = &probe_pm {
-                            pm.notify(crate::plugin::PluginEvent::MetaProbed {
-                                task_id: probe_tid,
-                                url: probe_notify_url,
-                                file_name: name,
-                                total_bytes: size,
-                            })
-                            .await;
-                        }
-                    }
-                });
+                self.spawn_meta_probe(probe_tid, probe_url, probe_name, probe_spec);
             }
         }
         Some(created_id)
+    }
+
+    /// 后台元数据探测（HEAD → GET Range:0-0，非阻塞）：探得文件名/大小后
+    /// 更新 DB 并广播 [`EngineEvent::TaskMetaProbed`]；失败静默。
+    ///
+    /// F020：用任务的鉴权上下文（cookies/referrer/extra_headers）构造 probe
+    /// 的 `RequestSpec`，使背景 HEAD probe 与真正下载请求一致，避免鉴权站点
+    /// 把缺鉴权的裸 HEAD 重定向到登录页污染 DB 文件名。带 resolver 的任务
+    /// 不应调用（探测原始页面 URL 无意义）。
+    fn spawn_meta_probe(
+        &self,
+        task_id: String,
+        probe_url: String,
+        current_name: String,
+        probe_spec: downloader::RequestSpec,
+    ) {
+        let probe_client = self.client.clone();
+        let probe_db = self.db.clone();
+        // 用 resolve() 展开 System→Manual：ftp_connect_sync_with_proxy 直接读
+        // host/port，未解析的 System 代理 host/port 为空会被静默降级直连。实际
+        // 下载路径(do_start_task/do_resume_task)均调 .resolve()，后台探测须对齐。
+        let probe_proxy = self.proxy_config.resolve();
+        let probe_sink = self.sink.clone();
+        #[cfg(feature = "plugins")]
+        let probe_pm = self.plugin_manager.clone();
+        tokio::spawn(async move {
+            let (name, size) = crate::meta_prober::probe_task_meta(
+                &probe_url,
+                &current_name,
+                &probe_client,
+                &probe_proxy,
+                &probe_spec,
+            )
+            .await;
+            if !name.is_empty() || size > 0 {
+                if !name.is_empty() {
+                    let _ = probe_db.update_task_file_name(&task_id, &name).await;
+                }
+                probe_sink.emit(EngineEvent::TaskMetaProbed {
+                    task_id: task_id.clone(),
+                    file_name: name.clone(),
+                    total_bytes: size,
+                });
+                #[cfg(feature = "plugins")]
+                if let Some(pm) = &probe_pm {
+                    pm.notify(crate::plugin::PluginEvent::MetaProbed {
+                        task_id,
+                        url: probe_url,
+                        file_name: name,
+                        total_bytes: size,
+                    })
+                    .await;
+                }
+            }
+        });
     }
 
     /// Internal: actually spawn the download task (no concurrency check).
@@ -4581,6 +4753,11 @@ impl DownloadManager {
                 position,
                 default_segments,
                 default_user_agent,
+                is_running: true,
+                schedule_enabled: false,
+                schedule_start: String::new(),
+                schedule_stop: String::new(),
+                schedule_days: 127,
             },
         );
         log_info!("[manager] created queue: id={}, name={}", id, name);
@@ -4599,6 +4776,15 @@ impl DownloadManager {
         default_segments: i32,
         default_user_agent: String,
     ) {
+        // 内置队列不可重命名（UI 按固定 ID 显示本地化名称）；其余设置照常。
+        let name = if is_builtin_queue(&queue_id) {
+            self.queues
+                .get(&queue_id)
+                .map(|q| q.name.clone())
+                .unwrap_or(name)
+        } else {
+            name
+        };
         if let Err(e) = self
             .db
             .update_queue(
@@ -4632,8 +4818,16 @@ impl DownloadManager {
         self.send_all_queues().await;
     }
 
-    /// Delete a named queue (tasks move to default queue) and broadcast.
+    /// Delete a named queue (tasks move to the builtin main queue) and
+    /// broadcast.  Builtin queues (`main`/`later`) are protected.
     pub async fn delete_queue(&mut self, queue_id: String) {
+        if is_builtin_queue(&queue_id) {
+            log_info!(
+                "[manager] delete_queue: builtin '{}' is protected",
+                queue_id
+            );
+            return;
+        }
         if let Err(e) = self.db.delete_queue(&queue_id).await {
             log_info!("[manager] delete_queue error: {}", e);
             return;
@@ -4641,12 +4835,19 @@ impl DownloadManager {
         // Sync in-memory cache.
         self.queues.remove(&queue_id);
         self.queue_limiters.remove(&queue_id);
+        self.schedule_fired.retain(|(qid, _), _| qid != &queue_id);
         log_info!("[manager] deleted queue: {}", queue_id);
         self.send_all_queues().await;
     }
 
     /// Move a task to a different queue and broadcast the updated queue list.
     pub async fn move_task_to_queue(&mut self, task_id: String, queue_id: String) {
+        // '' 已不是有效归属：兜底重映射到主队列（兼容旧客户端信号）。
+        let queue_id = if queue_id.is_empty() {
+            MAIN_QUEUE_ID.to_string()
+        } else {
+            queue_id
+        };
         if let Err(e) = self.db.move_task_to_queue(&task_id, &queue_id).await {
             log_info!("[manager] move_task_to_queue error: {}", e);
             return;
@@ -4669,6 +4870,189 @@ impl DownloadManager {
         }
         log_info!("[manager] moved task {} to queue '{}'", task_id, queue_id);
         self.send_all_queues().await;
+    }
+
+    /// 启动队列：置运行态并按队列内顺序（`queue_order` → `created_at`）
+    /// 恢复其中所有 pending/paused 任务，经全局/队列并发门控依次开跑或
+    /// 排队等待。幂等：已在运行时仅补启动未跑的任务。
+    pub async fn start_queue(&mut self, queue_id: String) {
+        if !self.queues.contains_key(&queue_id) {
+            log_info!("[manager] start_queue: unknown queue '{}'", queue_id);
+            return;
+        }
+        if let Err(e) = self.db.set_queue_running(&queue_id, true).await {
+            log_info!("[manager] start_queue: persist error: {}", e);
+            return;
+        }
+        if let Some(q) = self.queues.get_mut(&queue_id) {
+            q.is_running = true;
+        }
+        let ids = match self.db.queue_startable_task_ids(&queue_id).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                log_info!("[manager] start_queue: load tasks error: {}", e);
+                Vec::new()
+            }
+        };
+        log_info!(
+            "[manager] start_queue '{}': resuming {} task(s)",
+            queue_id,
+            ids.len()
+        );
+        self.batch_resume(&ids).await;
+        self.send_all_queues().await;
+    }
+
+    /// 停止队列：置停止态并暂停其中所有排队中与活跃的任务。任务保持
+    /// paused，等待下次「启动队列」按序恢复；其他队列不受影响（释放的
+    /// 并发槽位立即让给它们）。
+    pub async fn stop_queue(&mut self, queue_id: String) {
+        if !self.queues.contains_key(&queue_id) {
+            log_info!("[manager] stop_queue: unknown queue '{}'", queue_id);
+            return;
+        }
+        if let Err(e) = self.db.set_queue_running(&queue_id, false).await {
+            log_info!("[manager] stop_queue: persist error: {}", e);
+            return;
+        }
+        if let Some(q) = self.queues.get_mut(&queue_id) {
+            q.is_running = false;
+        }
+        // 先暂停排队中的（直接从 pending_queue 摘除，不触发 drain），再暂停
+        // 活跃的——顺序反了会让 pause 触发的 drain_queue 把本队列仍在排队的
+        // 任务顶进刚释放的槽位。
+        let mut to_pause: Vec<String> = self
+            .pending_queue
+            .iter()
+            .filter(|entry| entry.queue_id == queue_id)
+            .map(|entry| entry.task_id.clone())
+            .collect();
+        to_pause.extend(
+            self.active_tasks
+                .iter()
+                .filter(|(_, entry)| entry.queue_id == queue_id)
+                .map(|(id, _)| id.clone()),
+        );
+        log_info!(
+            "[manager] stop_queue '{}': pausing {} task(s)",
+            queue_id,
+            to_pause.len()
+        );
+        for tid in &to_pause {
+            self.pause_task(tid).await;
+        }
+        self.send_all_queues().await;
+    }
+
+    /// 更新队列的每日定时计划并广播。`start`/`stop` 为 `HH:MM`（空 = 该
+    /// 边沿不定时，两者彼此独立：只停不启/只启不停均合法）；`days` 为
+    /// 星期位掩码（bit0=周一 … bit6=周日），0 视作每天。非法时间格式
+    /// 忽略本次更新。
+    pub async fn set_queue_schedule(
+        &mut self,
+        queue_id: String,
+        enabled: bool,
+        start: String,
+        stop: String,
+        days: i32,
+    ) {
+        if (!start.is_empty() && parse_hhmm(&start).is_none())
+            || (!stop.is_empty() && parse_hhmm(&stop).is_none())
+        {
+            log_info!(
+                "[manager] set_queue_schedule: invalid time '{}'/'{}' for '{}'",
+                start,
+                stop,
+                queue_id
+            );
+            return;
+        }
+        let days = if days & 0x7f == 0 { 0x7f } else { days & 0x7f };
+        // 两个时刻都为空的「启用」没有任何可执行的动作——规范化为未启用，
+        // 杜绝「已启用但永不触发」的僵尸状态（侧栏定时图标等 UI 均以
+        // schedule_enabled 判定，必须真实）。
+        let enabled = enabled && !(start.is_empty() && stop.is_empty());
+        if let Err(e) = self
+            .db
+            .set_queue_schedule(&queue_id, enabled, &start, &stop, days)
+            .await
+        {
+            log_info!("[manager] set_queue_schedule error: {}", e);
+            return;
+        }
+        if let Some(q) = self.queues.get_mut(&queue_id) {
+            q.schedule_enabled = enabled;
+            q.schedule_start = start;
+            q.schedule_stop = stop;
+            q.schedule_days = days;
+        }
+        // 计划变更后清空该队列的边沿账本，让新时刻当天仍可触发。
+        self.schedule_fired.retain(|(qid, _), _| qid != &queue_id);
+        log_info!("[manager] updated schedule for queue '{}'", queue_id);
+        self.send_all_queues().await;
+    }
+
+    /// 持久化队列内任务顺序（写为 1..N 的 `queue_order`），「启动队列」
+    /// 按此顺序恢复。调用方传入该队列任务的完整新顺序。
+    pub async fn reorder_queue_tasks(&mut self, queue_id: String, ordered_ids: Vec<String>) {
+        if ordered_ids.is_empty() {
+            return;
+        }
+        if let Err(e) = self.db.reorder_queue_tasks(&queue_id, &ordered_ids).await {
+            log_info!("[manager] reorder_queue_tasks error: {}", e);
+        }
+    }
+
+    /// 队列定时调度 tick（宿主每 20~30s 调用一次）。
+    ///
+    /// 边沿触发 + 当日补触发：对每个启用定时且当天生效的队列，找出「今天
+    /// 时刻已过且尚未处理」的启动/停止边沿——同一分钟内多次 tick、手动
+    /// 启停后同一天不会重复触发；休眠/重启错过的边沿在当天恢复运行后补
+    /// 触发一次。同天两个边沿都新近越过时只执行时间靠后的那个。
+    pub async fn tick_queue_schedules(&mut self) {
+        use chrono::{Datelike, Timelike};
+        let now = chrono::Local::now();
+        let today = now.date_naive();
+        let day_bit = 1i32 << now.weekday().num_days_from_monday();
+        let now_min = now.hour() * 60 + now.minute();
+        let (passed_edges, actions) = due_schedule_actions(
+            self.queues.values(),
+            &self.schedule_fired,
+            today,
+            day_bit,
+            now_min,
+        );
+        for key in passed_edges {
+            self.schedule_fired.insert(key, today);
+        }
+        for (queue_id, is_start) in actions {
+            log_info!(
+                "[manager] queue schedule fired: '{}' → {}",
+                queue_id,
+                if is_start { "start" } else { "stop" }
+            );
+            if is_start {
+                self.start_queue(queue_id).await;
+            } else {
+                self.stop_queue(queue_id).await;
+            }
+        }
+    }
+
+    /// 全局恢复：恢复所有「运行中队列」内的 paused 任务；停止队列内的任务
+    /// 不动（由「启动队列」显式恢复）。返回尝试恢复的任务数。
+    pub async fn resume_all_eligible(&mut self) -> usize {
+        match self.db.eligible_resume_task_ids().await {
+            Ok(ids) => {
+                let n = ids.len();
+                self.batch_resume(&ids).await;
+                n
+            }
+            Err(e) => {
+                log_info!("[manager] resume_all_eligible error: {}", e);
+                0
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -5596,6 +5980,7 @@ mod tests {
             "",
             "",
             "",
+            0,
         )
         .await
         .expect("insert task");
@@ -5864,6 +6249,110 @@ mod tests {
             progress_events.last(),
             Some(&(3, 0)),
             "terminal update must zero upload_speed_bps regardless of the raw value"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 队列定时调度：HH:MM 解析与边沿判定
+    // -----------------------------------------------------------------------
+
+    fn sched_queue(id: &str, running: bool, start: &str, stop: &str, days: i32) -> QueueInfo {
+        QueueInfo {
+            queue_id: id.to_string(),
+            name: id.to_string(),
+            speed_limit_kbps: 0,
+            max_concurrent: 0,
+            default_save_dir: String::new(),
+            position: 0,
+            default_segments: 0,
+            default_user_agent: String::new(),
+            is_running: running,
+            schedule_enabled: true,
+            schedule_start: start.to_string(),
+            schedule_stop: stop.to_string(),
+            schedule_days: days,
+        }
+    }
+
+    #[test]
+    fn parse_hhmm_accepts_valid_and_rejects_garbage() {
+        assert_eq!(parse_hhmm("00:00"), Some(0));
+        assert_eq!(parse_hhmm("8:05"), Some(485));
+        assert_eq!(parse_hhmm("23:59"), Some(1439));
+        assert_eq!(parse_hhmm("24:00"), None);
+        assert_eq!(parse_hhmm("12:60"), None);
+        assert_eq!(parse_hhmm(""), None);
+        assert_eq!(parse_hhmm("abc"), None);
+        assert_eq!(parse_hhmm("12-30"), None);
+    }
+
+    #[test]
+    fn schedule_edge_fires_once_per_day() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        let queues = [sched_queue("q", false, "10:00", "", 0x7f)];
+        let mut fired = HashMap::new();
+
+        // 到点：start 边沿触发。
+        let (passed, actions) = due_schedule_actions(queues.iter(), &fired, today, 1, 600);
+        assert_eq!(actions, vec![("q".to_string(), true)]);
+        for k in passed {
+            fired.insert(k, today);
+        }
+
+        // 同日再 tick（含用户手动停止后）：同一边沿不再触发。
+        let (_, actions) = due_schedule_actions(queues.iter(), &fired, today, 1, 601);
+        assert!(actions.is_empty(), "an edge fires at most once per day");
+
+        // 次日：重新触发。
+        let tomorrow = today.succ_opt().unwrap();
+        let (_, actions) = due_schedule_actions(queues.iter(), &fired, tomorrow, 1, 600);
+        assert_eq!(actions.len(), 1, "a new day re-arms the edge");
+    }
+
+    #[test]
+    fn schedule_catchup_prefers_latest_edge() {
+        // start=10:00 与 stop=11:00 都已越过（休眠唤醒补触发场景）：
+        // 两个边沿都记账，但只执行时间靠后的 stop。
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        let queues = [sched_queue("q", true, "10:00", "11:00", 0x7f)];
+        let fired = HashMap::new();
+        let (passed, actions) = due_schedule_actions(queues.iter(), &fired, today, 1, 720);
+        assert_eq!(passed.len(), 2, "both passed edges must be recorded");
+        assert_eq!(actions, vec![("q".to_string(), false)]);
+    }
+
+    #[test]
+    fn schedule_respects_day_mask_disabled_and_future_times() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        let fired = HashMap::new();
+
+        // 仅周一（bit0）生效；tick 处于周四（bit3）→ 不触发。
+        let queues = [sched_queue("q", false, "10:00", "", 0b000_0001)];
+        let (_, actions) = due_schedule_actions(queues.iter(), &fired, today, 1 << 3, 600);
+        assert!(actions.is_empty());
+
+        // 定时未启用 → 不触发。
+        let mut disabled = sched_queue("q", false, "10:00", "", 0x7f);
+        disabled.schedule_enabled = false;
+        let (_, actions) = due_schedule_actions([disabled].iter(), &fired, today, 1, 600);
+        assert!(actions.is_empty());
+
+        // 尚未到点 → 不触发。
+        let queues = [sched_queue("q", false, "10:00", "", 0x7f)];
+        let (_, actions) = due_schedule_actions(queues.iter(), &fired, today, 1, 599);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn schedule_tie_prefers_stop() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        let queues = [sched_queue("q", true, "10:00", "10:00", 0x7f)];
+        let fired = HashMap::new();
+        let (_, actions) = due_schedule_actions(queues.iter(), &fired, today, 1, 600);
+        assert_eq!(
+            actions,
+            vec![("q".to_string(), false)],
+            "start == stop resolves to stop"
         );
     }
 }

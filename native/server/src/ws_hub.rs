@@ -603,6 +603,11 @@ mod tests {
             position: 0,
             default_segments: 4,
             default_user_agent: String::new(),
+            is_running: true,
+            schedule_enabled: false,
+            schedule_start: String::new(),
+            schedule_stop: String::new(),
+            schedule_days: 127,
         }]));
 
         let json = rx.recv().await.expect("broadcast recv");
@@ -809,6 +814,7 @@ mod tests {
             file_missing: false,
             completed_at: String::new(),
             segments: 0,
+            queue_order: 0,
         }]));
 
         let snap = hub.live_speeds_snapshot();
@@ -833,6 +839,7 @@ mod tests {
             file_missing: false,
             completed_at: String::new(),
             segments: 0,
+            queue_order: 0,
         }
     }
 

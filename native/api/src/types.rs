@@ -231,6 +231,11 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
 ///     position: 0,
 ///     default_segments: 0,
 ///     default_user_agent: String::new(),
+///     is_running: true,
+///     schedule_enabled: false,
+///     schedule_start: String::new(),
+///     schedule_stop: String::new(),
+///     schedule_days: 127,
 /// };
 /// let dto = QueueDto::from(q);
 /// assert_eq!(dto.queue_id, "q1");
@@ -248,6 +253,21 @@ pub struct QueueDto {
     pub position: i32,
     pub default_segments: i32,
     pub default_user_agent: String,
+    /// 队列运行状态：停止的队列不自动启动其中任务。
+    #[serde(default = "default_true")]
+    pub is_running: bool,
+    /// 每日定时计划是否启用。
+    #[serde(default)]
+    pub schedule_enabled: bool,
+    /// 每日定时启动时间 `HH:MM`（空 = 不定时启动）。
+    #[serde(default)]
+    pub schedule_start: String,
+    /// 每日定时停止时间 `HH:MM`（空 = 不定时停止）。
+    #[serde(default)]
+    pub schedule_stop: String,
+    /// 定时生效星期位掩码：bit0=周一 … bit6=周日；127 = 每天。
+    #[serde(default = "default_schedule_days")]
+    pub schedule_days: i32,
 }
 
 impl From<fluxdown_engine::model::QueueInfo> for QueueDto {
@@ -261,6 +281,11 @@ impl From<fluxdown_engine::model::QueueInfo> for QueueDto {
             position: q.position,
             default_segments: q.default_segments,
             default_user_agent: q.default_user_agent,
+            is_running: q.is_running,
+            schedule_enabled: q.schedule_enabled,
+            schedule_start: q.schedule_start,
+            schedule_stop: q.schedule_stop,
+            schedule_days: q.schedule_days,
         }
     }
 }
@@ -328,6 +353,18 @@ pub struct CreateTaskRequest {
     /// 非空 = 引擎分别下载两路后 mux 合并；空/缺省 = 普通单 URL 下载。
     #[serde(default)]
     pub audio_url: Option<String>,
+    /// 稍后下载：true = 建任务后不启动（paused 落库），待「启动队列」
+    /// 按序恢复或用户手动恢复。缺省 false = 立即开始。
+    #[serde(default)]
+    pub start_paused: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_schedule_days() -> i32 {
+    127
 }
 
 /// 创建任务响应（`POST /api/v1/tasks`）。
@@ -747,6 +784,11 @@ mod tests {
             position: 0,
             default_segments: 4,
             default_user_agent: "UA/1".to_string(),
+            is_running: true,
+            schedule_enabled: false,
+            schedule_start: String::new(),
+            schedule_stop: String::new(),
+            schedule_days: 127,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["queueId"], "q1");

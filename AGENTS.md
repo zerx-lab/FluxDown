@@ -126,7 +126,7 @@ x_down/
 │       ├── events.rs                  # `EngineEvent`（进度/分段拆分/队列变化等）+ `EventSink` trait
 │       ├── selection.rs               # `SelectionOutcome`/`HostSelection` trait（HLS 画质/BT 文件选择）
 │       ├── model.rs                   # 引擎领域类型（TaskInfo/QueueInfo/SegmentDetail/BtFileEntry/…，不带 rinf derive）
-│       ├── download_manager.rs        # 并发管理/任务生命周期/进度报告（`progress_reporter`）
+│       ├── download_manager.rs        # 并发管理/任务生命周期/进度报告（`progress_reporter`）/队列启停与每日定时调度
 │       ├── downloader.rs              # HTTP/HTTPS 下载引擎（分片/断点续传/`RequestSpec`/`build_request`）
 │       ├── ftp_downloader.rs          # FTP 下载引擎（suppaftp 同步 API）
 │       ├── bt_downloader.rs           # BitTorrent 引擎（librqbit）
@@ -178,7 +178,7 @@ x_down/
 │       ├── ws_hub.rs                  # WsHub broadcast + EngineEventSink（EngineEvent→WS JSON）+ WsHostSelection（HLS/BT 经 WS 往返）
 │       ├── host.rs                    # `ApiHost` 实现（读直查 Db，写经 ActorCmd+oneshot；submit_external 直接建任务，无确认框）
 │       ├── wire.rs                    # WS/扩展 REST 的 wire JSON 契约（WsServerMsg/WsClientMsg，camelCase）
-│       └── routes_ext.rs              # 扩展路由（/ws、/config、队列 CRUD、/tasks/{id}/file 流式取回、/fs/list、/proxy/test、/stats、合并版 openapi.json + Scalar /docs）
+│       └── routes_ext.rs              # 扩展路由（/ws、/config、队列 CRUD+启停/定时/排序、/tasks/{id}/file 流式取回、/fs/list、/proxy/test、/stats、合并版 openapi.json + Scalar /docs）
 ├── web/                               # Web SPA（React 19 + TanStack Router/Query/Table/Virtual + Tailwind v4 + Radix，bun）
 │   └── src/
 │       ├── design.css                 # 移植自 design/web/styles.css（像素级依据）
@@ -245,7 +245,7 @@ x_down/
 
 | 文件 | 功能描述 |
 |------|---------|
-| `widgets/sidebar.dart` | 侧边栏。Logo、文件类型筛选器（视频/音频/文档/图片/压缩包/其他）、状态筛选器、命名队列列表（增删改查）、反馈按钮 |
+| `widgets/sidebar.dart` | 侧边栏。Logo、文件类型筛选器（视频/音频/文档/图片/压缩包/其他）、状态筛选器、命名队列列表（运行状态点/悬浮启停/管理/删除，内置队列本地化显示且不可删）、反馈按钮 |
 | `widgets/header_bar.dart` | 顶部栏。搜索框（Ctrl+F）、批量操作（管理模式/全选/暂停/删除）、全局暂停/恢复、新建下载、设置、窗口控制 |
 | `widgets/task_tab_bar.dart` | 任务状态 Tab（全部/下载中/已完成/已暂停/错误），显示各状态计数 |
 | `widgets/task_list.dart` | 任务列表。虚拟化滚动，时间分组（今天/昨天/本周/本月/更早），分组折叠/展开，右键菜单 |
@@ -258,10 +258,11 @@ x_down/
 
 | 文件 | 功能描述 |
 |------|---------|
-| `widgets/new_download_dialog.dart` | 新建下载。URL（多行批量）、文件名、保存目录、线程数、队列、Cookies、代理、UA、Checksum |
+| `widgets/new_download_dialog.dart` | 新建下载。URL（多行批量）、文件名、保存目录、线程数、Cookies、代理、UA、Checksum。队列选择挂在动作按钮上（表单无队列字段）：「开始下载 ▾」默认进设置的默认队列、「稍后下载 ▾」默认进 later 队列，两按钮的箭头菜单均可显式指定目标队列（选择即提交，共用 `split_action_button.dart`） |
 |`widgets/quick_download_dialog.dart`|快速下载对话框（主窗口内回退路径 + 悬浮球拖链入口；表单主体复用 quick_download_form）|
-|`widgets/quick_download_form.dart`|快速下载共享表单（URL/目录/线程/重命名/队列 + 高级选项：任务代理/UA/Cookie 预填可编辑/哈希校验 + 动作按钮）。经 QuickDownloadFormHost 抽象隔离全局单例，主窗口对话框与独立小窗共用|
+|`widgets/quick_download_form.dart`|快速下载共享表单（URL/目录/线程/重命名 + 高级选项：任务代理/UA/Cookie 预填可编辑/哈希校验）。动作区与新建下载对话框同构：「开始下载 ▾」/「稍后下载 ▾」拆分按钮，队列选择挂在动作上。经 QuickDownloadFormHost 抽象隔离全局单例，主窗口对话框与独立小窗共用|
 | `widgets/hls_quality_dialog.dart` | HLS 画质选择。M3U8 多码率选择，显示带宽/分辨率 |
+|`widgets/queue_manager_dialog.dart`|队列管理对话框（三 Tab：设置/定时/任务顺序 + 即时启停）与「移动到队列」选择框。设置含名称（内置队列锁定）/限速/并发/线程/目录/UA；定时含实时语义摘要 + 时刻网格选择器（点字段弹出左右布局面板：小时列 4×6 / 分钟列 5min 步进 3×4，同一次会话自由选小时+分钟、实时回填、点面板外才关，纯选择杜绝乱填，清除回空态 = 该边沿不定时）+ 星期位掩码；任务 Tab 上移/下移即时持久化 queue_order|
 | `widgets/update_changelog_dialog.dart` | 版本更新对话框。Markdown 渲染更新日志，立即更新/稍后提醒 |
 | `widgets/feedback_dialog.dart` | 反馈对话框。提交到 GitHub Issues |
 | `widgets/context_menu.dart` | 右键菜单。暂停/恢复/取消/删除/删除+文件、打开文件/文件夹、复制URL、Boost优先 |
@@ -295,7 +296,8 @@ CREATE TABLE tasks (
     error_message TEXT NOT NULL DEFAULT '',
     proxy_url TEXT NOT NULL DEFAULT '',
     queue_id TEXT NOT NULL DEFAULT '',
-    checksum TEXT NOT NULL DEFAULT ''   -- 格式：algo=hexhash
+    checksum TEXT NOT NULL DEFAULT '',  -- 格式：algo=hexhash
+    queue_order INTEGER NOT NULL DEFAULT 0  -- 队列内启动顺序（0=按创建时间；>0 显式顺序）
 );
 
 -- 分段表
@@ -320,7 +322,8 @@ CREATE TABLE torrent_files (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
--- 队列表
+-- 队列表（内置队列 id='main' 主队列 / id='later' 稍后下载，播种于 Engine::new，
+-- 不可删除/重命名；存量 queue_id='' 任务播种时迁入 main，'' 不再是有效归属）
 CREATE TABLE queues (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -329,7 +332,12 @@ CREATE TABLE queues (
     default_save_dir TEXT NOT NULL DEFAULT '',
     position INTEGER NOT NULL DEFAULT 0,
     default_segments INTEGER NOT NULL DEFAULT 0,
-    default_user_agent TEXT NOT NULL DEFAULT ''
+    default_user_agent TEXT NOT NULL DEFAULT '',
+    is_running INTEGER NOT NULL DEFAULT 1,       -- 队列运行状态（停止的队列不自动启动其中任务）
+    schedule_enabled INTEGER NOT NULL DEFAULT 0, -- 每日定时启停
+    schedule_start TEXT NOT NULL DEFAULT '',     -- "HH:MM"，空=不定时启动
+    schedule_stop TEXT NOT NULL DEFAULT '',      -- "HH:MM"，空=不定时停止
+    schedule_days INTEGER NOT NULL DEFAULT 127   -- 星期位掩码 bit0=周一…bit6=周日
 );
 ```
 
@@ -371,7 +379,10 @@ CREATE TABLE queues (
 - 协议分发（HTTP/FTP/BT/HLS/DASH）
 - 速度平滑（EMA，α=0.3）
 - WAL Checkpoint（所有任务空闲时执行）
-- 队列管理（全局默认队列 + 命名队列独立配置）
+- 队列管理（内置 main/later + 命名队列独立配置；`start_queue`/`stop_queue` 启停、
+  `set_queue_schedule` 每日定时（边沿触发 + 当日补触发，每边沿每天至多一次）、
+  `reorder_queue_tasks` 队列内顺序、`resume_all_eligible` 全局恢复跳过停止队列；
+  `create_task(NewTaskSpec)` 的 `start_paused` = 稍后下载（建即 paused，不占并发））
 - 通过 `Arc<dyn EventSink>`/`Arc<dyn HostSelection>` 与宿主解耦（由 `Engine::new` 注入）
 
 ### proxy_config.rs — 代理配置

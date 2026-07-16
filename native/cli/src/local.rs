@@ -7,7 +7,7 @@
 //! 不搭 actor（一次性进程仅单一调用方）。HLS/BT 走 [`NoopSelection`]（HLS 取最高码率、
 //! BT 下全部文件）；进度经 [`progress_reporter`] 排空并落 DB（不排空会因通道背压卡死）。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use fluxdown_cli::exit::ExitCode;
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::data_dir::resolve_data_dir;
 use fluxdown_engine::db::Db;
-use fluxdown_engine::download_manager::progress_reporter;
+use fluxdown_engine::download_manager::{NewTaskSpec, progress_reporter};
 use fluxdown_engine::events::EventSink;
 use fluxdown_engine::proxy_config::ProxyConfig;
 use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
@@ -27,6 +27,15 @@ use crate::AddArgs;
 /// 构造 [`Engine`] → 排空进度通道 → 逐 URL `create_task` → 等待全部终态或 Ctrl-C →
 /// 按终态 DB 状态映射 aria2 退出码。返回的 [`ClientError`] 携带退出码，由 `run()` 打印。
 pub async fn run_add_local(args: AddArgs, json: bool) -> Result<(), ClientError> {
+    // `--pause` 建的是暂停任务，永远到不了终态；与「阻塞至完成」的
+    // B 模式语义矛盾，显式拒绝而非静默挂死。
+    if args.pause {
+        return Err(ClientError::new(
+            "--pause conflicts with --local (a paused task never finishes); \
+             use --pause against a running App/server instead",
+            ExitCode::BadRequest,
+        ));
+    }
     // 1) 收集 URL（复用 A 模式约定：命令行 URL + -i 文件；空列表 → BadRequest）。
     let mut urls = args.urls.clone();
     if let Some(f) = &args.input_file {
@@ -80,25 +89,19 @@ pub async fn run_add_local(args: AddArgs, json: bool) -> Result<(), ClientError>
     for url in &urls {
         let id = engine
             .manager
-            .create_task(
-                url.clone(),
-                save_dir.clone(),
-                args.out.clone().unwrap_or_default(),
-                args.segments.unwrap_or(0),
-                args.cookies.clone().unwrap_or_default(),
-                args.referrer.clone().unwrap_or_default(),
-                0,
-                Vec::new(),
-                args.proxy.clone().unwrap_or_default(),
-                args.user_agent.clone().unwrap_or_default(),
-                args.queue.clone().unwrap_or_default(),
-                args.checksum.clone().unwrap_or_default(),
-                HashMap::new(),
-                Vec::new(),
-                None,
-                None,
-                None,
-            )
+            .create_task(NewTaskSpec {
+                url: url.clone(),
+                save_dir: save_dir.clone(),
+                file_name: args.out.clone().unwrap_or_default(),
+                segments: args.segments.unwrap_or(0),
+                cookies: args.cookies.clone().unwrap_or_default(),
+                referrer: args.referrer.clone().unwrap_or_default(),
+                proxy_url: args.proxy.clone().unwrap_or_default(),
+                user_agent: args.user_agent.clone().unwrap_or_default(),
+                queue_id: args.queue.clone().unwrap_or_default(),
+                checksum: args.checksum.clone().unwrap_or_default(),
+                ..Default::default()
+            })
             .await;
         match id {
             Some(id) => created_ids.push(id),

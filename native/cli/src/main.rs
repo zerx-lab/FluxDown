@@ -109,6 +109,10 @@ struct AddArgs {
     /// Checksum 校验，格式 `algo=hexhash`。
     #[arg(long)]
     checksum: Option<String>,
+    /// 稍后下载：创建任务但不开始（aria2 `pause` 语义，进入所属队列
+    /// 等待「启动队列」或手动恢复）。与 `--local` 互斥。
+    #[arg(long)]
+    pause: bool,
     /// 不连接运行中的服务，在本进程内嵌下载引擎独立完成下载
     /// （一次性阻塞至完成/失败；Ctrl-C 中断为暂停并退出，退出码 7）。
     #[arg(long)]
@@ -440,6 +444,7 @@ async fn cmd_add(client: &ApiClient, a: AddArgs, json: bool) -> Result<(), Clien
             method: None,
             body: None,
             audio_url: None,
+            start_paused: a.pause,
         };
         match client.create_task(&req).await {
             Ok(res) => created.push(res.task_id),
@@ -550,8 +555,8 @@ async fn cmd_queue(client: &ApiClient, json: bool) -> Result<(), ClientError> {
         return Ok(());
     }
     println!(
-        "{:<16}  {:<20}  {:>10}  {:>8}",
-        "ID", "NAME", "LIMIT/s", "CONCUR"
+        "{:<16}  {:<20}  {:>8}  {:>10}  {:>8}  {:<11}",
+        "ID", "NAME", "STATE", "LIMIT/s", "CONCUR", "SCHEDULE"
     );
     for q in &queues {
         let limit = if q.speed_limit_kbps > 0 {
@@ -564,12 +569,32 @@ async fn cmd_queue(client: &ApiClient, json: bool) -> Result<(), ClientError> {
         } else {
             "auto".to_string()
         };
+        let state = if q.is_running { "running" } else { "stopped" };
+        let schedule = if q.schedule_enabled {
+            format!(
+                "{}-{}",
+                if q.schedule_start.is_empty() {
+                    "--:--"
+                } else {
+                    &q.schedule_start
+                },
+                if q.schedule_stop.is_empty() {
+                    "--:--"
+                } else {
+                    &q.schedule_stop
+                },
+            )
+        } else {
+            "-".to_string()
+        };
         println!(
-            "{:<16}  {:<20}  {:>10}  {:>8}",
+            "{:<16}  {:<20}  {:>8}  {:>10}  {:>8}  {:<11}",
             truncate(&q.queue_id, 16),
             truncate(&q.name, 20),
+            state,
             limit,
-            concur
+            concur,
+            schedule
         );
     }
     Ok(())

@@ -615,6 +615,7 @@ async fn run_coord(
         "",
         "",
         "",
+        0,
     )
     .await
     .expect("insert_task");
@@ -983,6 +984,7 @@ async fn resume_after_cancel_is_byte_exact() {
         "",
         "",
         "",
+        0,
     )
     .await
     .unwrap();
@@ -1318,6 +1320,7 @@ async fn insert_simple_task(
         "",
         "",
         "",
+        0,
     )
     .await
     .expect("insert_task");
@@ -2794,6 +2797,7 @@ async fn transient_200_on_resume_is_absorbed_byte_exact() {
         "",
         "",
         "",
+        0,
     )
     .await
     .unwrap();

@@ -16,6 +16,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import 'category_edit_dialog.dart';
 import 'context_menu.dart';
+import 'queue_manager_dialog.dart';
 
 class Sidebar extends StatefulWidget {
   final DownloadController controller;
@@ -266,15 +267,17 @@ class _SidebarState extends State<Sidebar> {
         ),
         if (widget.settingsProvider.sidebarQueuesExpanded) ...[
           const SizedBox(height: 4),
-          // 默认队列
-          _NavItem(
-            icon: LucideIcons.inbox,
-            label: s.defaultQueue,
-            count: ctrl.countForQueue(''),
-            isSelected: queueFilter == '',
-            onTap: () => ctrl.setQueueFilter(''),
-          ),
-          // 命名队列
+          // 存量未分组任务（queue_id 为空的历史数据；引擎播种时已迁移，
+          // 通常为 0——仅在仍有残留时显示入口）
+          if (ctrl.countForQueue('') > 0)
+            _NavItem(
+              icon: LucideIcons.inbox,
+              label: s.ungroupedTasks,
+              count: ctrl.countForQueue(''),
+              isSelected: queueFilter == '',
+              onTap: () => ctrl.setQueueFilter(''),
+            ),
+          // 命名队列（内置 main/later 在前，自定义随后，按 position 排序）
           for (final queue in queues)
             _QueueNavItem(
               queue: queue,
@@ -282,9 +285,14 @@ class _SidebarState extends State<Sidebar> {
               isSelected: queueFilter == queue.queueId,
               c: c,
               onTap: () => ctrl.setQueueFilter(queue.queueId),
-              onEdit: () => _showEditQueueDialog(context, ctrl, s, c, queue),
-              onDelete: () =>
-                  _showDeleteQueueDialog(context, ctrl, s, c, queue),
+              onToggleRun: () => queue.isRunning
+                  ? ctrl.stopQueue(queue.queueId)
+                  : ctrl.startQueue(queue.queueId),
+              onManage: () =>
+                  showQueueManagerDialog(context, ctrl, queue.queueId),
+              onDelete: queue.isBuiltin
+                  ? null
+                  : () => _showDeleteQueueDialog(context, ctrl, s, c, queue),
             ),
         ],
       ],
@@ -331,52 +339,6 @@ class _SidebarState extends State<Sidebar> {
     ).then((_) => nameCtrl.dispose());
   }
 
-  // 编辑队列对话框
-  void _showEditQueueDialog(
-    BuildContext context,
-    DownloadController ctrl,
-    S s,
-    AppColors c,
-    DownloadQueue queue,
-  ) {
-    final nameCtrl = TextEditingController(text: queue.name);
-    showShadDialog(
-      context: context,
-      barrierColor: AppColors.of(context).dialogBarrier,
-      animateIn: const [],
-      animateOut: const [],
-      builder: (ctx) => _QueueDialog(
-        title: s.editQueue,
-        nameCtrl: nameCtrl,
-        s: s,
-        c: c,
-        initialSpeedLimit: queue.speedLimitKbps,
-        initialMaxConcurrent: queue.maxConcurrent,
-        initialSaveDir: queue.defaultSaveDir,
-        initialDefaultSegments: queue.defaultSegments,
-        initialUserAgent: queue.defaultUserAgent,
-        onConfirm:
-            (
-              name,
-              speedLimit,
-              maxConcurrent,
-              saveDir,
-              defaultSegments,
-              defaultUserAgent,
-            ) {
-              ctrl.updateQueue(
-                queueId: queue.queueId,
-                name: name,
-                speedLimitKbps: speedLimit,
-                maxConcurrent: maxConcurrent,
-                defaultSaveDir: saveDir,
-                defaultSegments: defaultSegments,
-                defaultUserAgent: defaultUserAgent,
-              );
-            },
-      ),
-    ).then((_) => nameCtrl.dispose());
-  }
 
   // 删除队列确认对话框
   void _showDeleteQueueDialog(
@@ -807,15 +769,19 @@ class _QueueAddButtonState extends State<_QueueAddButton> {
   }
 }
 
-/// 队列导航项（带右键或悬浮菜单的编辑/删除）
+/// 队列导航项：运行状态点 + 悬浮操作（启停/管理/删除）+ 右键菜单。
+/// 内置队列（main/later）无删除入口，显示名经 [queueDisplayName] 本地化。
 class _QueueNavItem extends StatefulWidget {
   final DownloadQueue queue;
   final int count;
   final bool isSelected;
   final AppColors c;
   final VoidCallback onTap;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final VoidCallback onToggleRun;
+  final VoidCallback onManage;
+
+  /// null = 不可删除（内置队列）。
+  final VoidCallback? onDelete;
 
   const _QueueNavItem({
     required this.queue,
@@ -823,7 +789,8 @@ class _QueueNavItem extends StatefulWidget {
     required this.isSelected,
     required this.c,
     required this.onTap,
-    required this.onEdit,
+    required this.onToggleRun,
+    required this.onManage,
     required this.onDelete,
   });
 
@@ -838,6 +805,8 @@ class _QueueNavItemState extends State<_QueueNavItem> {
   Widget build(BuildContext context) {
     final c = widget.c;
     final m = AppMetrics.of(context);
+    final s = LocaleScope.of(context);
+    final queue = widget.queue;
     final selected = widget.isSelected;
 
     return MouseRegion(
@@ -861,36 +830,73 @@ class _QueueNavItemState extends State<_QueueNavItem> {
           ),
           child: Row(
             children: [
+              // 已停止的队列整行弱化，与运行中队列形成明显层次
               Icon(
-                LucideIcons.layers,
+                queue.queueId == kLaterQueueId
+                    ? LucideIcons.clock
+                    : LucideIcons.layers,
                 size: 14,
-                color: selected ? c.accent : c.textSecondary,
+                color: selected
+                    ? c.accent
+                    : queue.isRunning
+                    ? c.textSecondary
+                    : c.textMuted,
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  widget.queue.name,
+                  queueDisplayName(s, queue),
                   style: TextStyle(
                     fontSize: 12.5,
-                    color: selected ? c.accent : c.textSecondary,
+                    color: selected
+                        ? c.accent
+                        : queue.isRunning
+                        ? c.textSecondary
+                        : c.textMuted,
                     fontWeight: selected ? FontWeight.w500 : FontWeight.normal,
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              if (_isHovered && !selected) ...[
+              // 定时已启用且至少有一个生效时刻才显示标识（引擎已归一，
+              // 此处再防御旧数据：启用但两时刻皆空不算真正生效）。
+              if (queue.scheduleEnabled &&
+                  (queue.scheduleStart.isNotEmpty ||
+                      queue.scheduleStop.isNotEmpty)) ...[
+                Icon(LucideIcons.alarmClock, size: 10, color: c.textMuted),
+                const SizedBox(width: 5),
+              ],
+              // 运行状态点（常显）：绿色 = 运行中，灰色 = 已停止
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: queue.isRunning ? AppColors.green : c.textMuted,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              if (_isHovered) ...[
                 _QueueActionIcon(
-                  icon: LucideIcons.pencil,
+                  icon: queue.isRunning ? LucideIcons.pause : LucideIcons.play,
                   c: c,
-                  onTap: widget.onEdit,
+                  onTap: widget.onToggleRun,
                 ),
                 const SizedBox(width: 2),
                 _QueueActionIcon(
-                  icon: LucideIcons.trash2,
+                  icon: LucideIcons.slidersHorizontal,
                   c: c,
-                  onTap: widget.onDelete,
-                  isDestructive: true,
+                  onTap: widget.onManage,
                 ),
+                if (widget.onDelete != null) ...[
+                  const SizedBox(width: 2),
+                  _QueueActionIcon(
+                    icon: LucideIcons.trash2,
+                    c: c,
+                    onTap: widget.onDelete!,
+                    isDestructive: true,
+                  ),
+                ],
               ] else ...[
                 Text(
                   widget.count.toString(),
@@ -911,23 +917,32 @@ class _QueueNavItemState extends State<_QueueNavItem> {
   void _showContextMenu(BuildContext context, Offset position) {
     final s = LocaleScope.of(context);
     final c = AppColors.of(context);
+    final queue = widget.queue;
     showContextMenu(
       context,
       position,
       items: [
         ContextMenuItem(
-          icon: LucideIcons.pencil,
-          label: s.editQueue,
+          icon: queue.isRunning ? LucideIcons.pause : LucideIcons.play,
+          label: queue.isRunning ? s.stopQueueAction : s.startQueueAction,
           color: c.textSecondary,
-          action: widget.onEdit,
+          action: widget.onToggleRun,
         ),
         ContextMenuItem(
-          icon: LucideIcons.trash2,
-          label: s.deleteQueueAction,
-          color: AppColors.red,
-          action: widget.onDelete,
+          icon: LucideIcons.slidersHorizontal,
+          label: s.manageQueueAction,
+          color: c.textSecondary,
+          action: widget.onManage,
         ),
+        if (widget.onDelete != null)
+          ContextMenuItem(
+            icon: LucideIcons.trash2,
+            label: s.deleteQueueAction,
+            color: AppColors.red,
+            action: widget.onDelete!,
+          ),
       ],
+      dividerAfterIndices: widget.onDelete != null ? const {1} : const {},
     );
   }
 }
@@ -989,17 +1004,12 @@ String _detectQueueUaPreset(String ua) {
   return detected == 'default' ? '' : detected;
 }
 
-/// 新建/编辑队列对话框
+/// 新建队列对话框（编辑走 [showQueueManagerDialog]）。
 class _QueueDialog extends StatefulWidget {
   final String title;
   final TextEditingController nameCtrl;
   final S s;
   final AppColors c;
-  final int initialSpeedLimit;
-  final int initialMaxConcurrent;
-  final String initialSaveDir;
-  final int initialDefaultSegments;
-  final String initialUserAgent;
   final void Function(
     String name,
     int speedLimit,
@@ -1015,11 +1025,6 @@ class _QueueDialog extends StatefulWidget {
     required this.nameCtrl,
     required this.s,
     required this.c,
-    this.initialSpeedLimit = 0,
-    this.initialMaxConcurrent = 0,
-    this.initialSaveDir = '',
-    this.initialDefaultSegments = 0,
-    this.initialUserAgent = '',
     required this.onConfirm,
   });
 
@@ -1040,22 +1045,12 @@ class _QueueDialogState extends State<_QueueDialog> {
   @override
   void initState() {
     super.initState();
-    _speedCtrl = TextEditingController(
-      text: widget.initialSpeedLimit > 0
-          ? widget.initialSpeedLimit.toString()
-          : '',
-    );
-    _concurrentCtrl = TextEditingController(
-      text: widget.initialMaxConcurrent > 0
-          ? widget.initialMaxConcurrent.toString()
-          : '',
-    );
-    _saveDirCtrl = TextEditingController(text: widget.initialSaveDir);
-    _uaCtrl = TextEditingController(text: widget.initialUserAgent);
-    _selectedSegments = widget.initialDefaultSegments > 0
-        ? widget.initialDefaultSegments.toString()
-        : '0';
-    _selectedUaPreset = _detectQueueUaPreset(widget.initialUserAgent);
+    _speedCtrl = TextEditingController();
+    _concurrentCtrl = TextEditingController();
+    _saveDirCtrl = TextEditingController();
+    _uaCtrl = TextEditingController();
+    _selectedSegments = '0';
+    _selectedUaPreset = '';
   }
 
   @override

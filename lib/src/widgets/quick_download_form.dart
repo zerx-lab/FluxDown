@@ -26,11 +26,14 @@ import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../i18n/locale_provider.dart';
+import '../models/download_queue.dart';
 import '../models/ua_presets.dart';
 import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
+import 'context_menu.dart';
 import 'dir_picker_field.dart';
+import 'split_action_button.dart';
 import 'thread_selector.dart';
 
 /// 解析后的单条下载入口（URL + 可选 out= 文件名 + 可选 checksum=）
@@ -125,6 +128,15 @@ class QuickQueueOption {
   });
 }
 
+/// QuickQueueOption 显示名 — 内置队列本地化，规则与
+/// `download_queue.dart` 的 `queueDisplayName` 一致；QuickQueueOption 与
+/// DownloadQueue 解耦（独立小窗引擎无 DownloadQueue），故本函数单独定义。
+String _quickQueueDisplayName(S s, QuickQueueOption q) => switch (q.queueId) {
+  kMainQueueId => s.mainQueue,
+  kLaterQueueId => s.laterQueue,
+  _ => q.name,
+};
+
 /// 表单提交结果 — 由调用方解析发信号（见 quick_download_submitter.dart）。
 class QuickDownloadFormResult {
   /// 编辑后的原始多行 URL 文本（未解析）
@@ -157,6 +169,9 @@ class QuickDownloadFormResult {
   /// 单条经 ConfirmExternalDownload、批量经 BatchCreateTask 透传。
   final Map<String, String> extraHeaders;
 
+  /// 「稍后下载」提交 — 建任务但不启动（透传为 startPaused）。
+  final bool startLater;
+
   const QuickDownloadFormResult({
     required this.urlText,
     required this.saveDir,
@@ -170,6 +185,7 @@ class QuickDownloadFormResult {
     required this.threadsUserModified,
     this.audioUrl = '',
     this.extraHeaders = const {},
+    this.startLater = false,
   });
 }
 
@@ -274,9 +290,6 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
   /// 用户是否手动修改过线程数（用于判断切换队列时是否需要自动更新）
   bool _threadsUserModified = false;
 
-  /// 线程选择器的 key 版本，切换队列时递增以强制重建 ShadSelect
-  int _threadsSelectVersion = 0;
-
   /// 是否展开高级选项（含任务代理）
   bool _showAdvanced = false;
 
@@ -305,7 +318,9 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
   @override
   void initState() {
     super.initState();
-    _selectedQueueId = widget.defaultQueueId;
+    _selectedQueueId = widget.defaultQueueId.isEmpty
+        ? kMainQueueId
+        : widget.defaultQueueId;
     _urlController.text = widget.initialUrl;
     _saveDirController.text = widget.initialSaveDir;
     if (widget.initialFileName.isNotEmpty) {
@@ -420,9 +435,14 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
 
   bool get _isBatch => _urlCount > 1;
 
-  void _startDownload() {
+  void _startDownload({bool startLater = false, String? queueOverride}) {
     final saveDir = _saveDirController.text.trim();
     if (saveDir.isEmpty) return;
+
+    // 队列归属挂在动作按钮上（表单不再有队列字段）：箭头菜单显式指定 >
+    // 动作默认——稍后下载 → 「稍后下载」队列；开始下载 → 默认队列。
+    final queueId =
+        queueOverride ?? (startLater ? kLaterQueueId : _selectedQueueId);
 
     final entries = parseQuickDownloadEntries(_urlController.text);
     if (entries.isEmpty) return;
@@ -451,7 +471,8 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
         segments: segments,
         proxyUrl: _proxyUrlController.text.trim(),
         userAgent: _userAgentController.text.trim(),
-        queueId: _selectedQueueId,
+        queueId: queueId,
+        startLater: startLater,
         cookies: _cookieController.text.trim(),
         checksum: checksum,
         threadsUserModified: _threadsUserModified,
@@ -584,7 +605,6 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
                     const SizedBox(height: 6),
                     ThreadSelector(
                       value: selectedThreads,
-                      version: _threadsSelectVersion,
                       onChanged: (v) => setState(() {
                         selectedThreads = v;
                         _threadsUserModified = true;
@@ -606,9 +626,6 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
               placeholder: Text(s.autoDetectFilename),
             ),
           ],
-
-          // 队列选择器（有命名队列时才显示）
-          _buildQueueSelector(s, c),
 
           // 高级选项 — 可折叠，含任务独立代理
           const SizedBox(height: 10),
@@ -877,25 +894,23 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
                 child: Text(s.cancel),
               ),
               const SizedBox(width: 8),
-              ShadButton(
-                onPressed: _startDownload,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      LucideIcons.download,
-                      size: 13,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _isBatch
-                          ? s.startBatchDownload(_urlCount)
-                          : s.startDownload,
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                  ],
-                ),
+              SplitActionButton(
+                icon: LucideIcons.clock,
+                label: s.downloadLater,
+                tooltip: s.laterIntoQueueTooltip(s.laterQueue),
+                onPressed: () => _startDownload(startLater: true),
+                onPickQueue: (anchor) => _showQueueMenu(anchor, later: true),
+              ),
+              const SizedBox(width: 8),
+              SplitActionButton(
+                primary: true,
+                icon: LucideIcons.download,
+                label: _isBatch
+                    ? s.startBatchDownload(_urlCount)
+                    : s.startDownload,
+                tooltip: s.startIntoQueueTooltip(_defaultTargetName(s)),
+                onPressed: () => _startDownload(),
+                onPickQueue: (anchor) => _showQueueMenu(anchor, later: false),
               ),
             ],
           ),
@@ -904,49 +919,41 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
     );
   }
 
-  Widget _buildQueueSelector(S s, AppColors c) {
+  /// 默认目标队列的显示名（「开始下载」tooltip 用）。
+  String _defaultTargetName(S s) {
+    final q = widget.host.queues
+        .where((q) => q.queueId == _selectedQueueId)
+        .firstOrNull;
+    return q == null ? s.mainQueue : _quickQueueDisplayName(s, q);
+  }
+
+  /// 在动作按钮箭头下方弹队列菜单：选择即提交（[later] 决定是否以
+  /// 暂停态创建）。菜单是动作列表而非选择器——不保留选中态。
+  void _showQueueMenu(BuildContext anchor, {required bool later}) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
     final queues = widget.host.queues;
-    if (queues.isEmpty) return const SizedBox.shrink();
-
-    final allOptions = <QuickQueueOption>[
-      const QuickQueueOption(queueId: '', name: ''),
-      ...queues,
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SizedBox(height: 14),
-        QuickSectionLabel(text: s.taskQueueLabel, c: c),
-        const SizedBox(height: 6),
-        ShadSelect<String>(
-          initialValue: _selectedQueueId,
-          options: allOptions.map((q) {
-            final label = q.queueId.isEmpty ? s.defaultQueue : q.name;
-            return ShadOption(value: q.queueId, child: Text(label));
-          }).toList(),
-          selectedOptionBuilder: (context, value) {
-            if (value.isEmpty) return Text(s.defaultQueue);
-            final q = queues.where((q) => q.queueId == value).firstOrNull;
-            return Text(
-              q?.name ?? s.defaultQueue,
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            );
-          },
-          onChanged: (v) {
-            if (v != null) {
-              setState(() {
-                _selectedQueueId = v;
-                // 用户未手动改过线程数时，跟随新队列/全局默认设置
-                if (!_threadsUserModified) {
-                  selectedThreads = _effectiveSegmentsOption(v);
-                  _threadsSelectVersion++;
-                }
-              });
-            }
-          },
-        ),
+    if (queues.isEmpty) {
+      _startDownload(startLater: later);
+      return;
+    }
+    final box = anchor.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final origin = box.localToGlobal(Offset(0, box.size.height + 6));
+    showContextMenu(
+      context,
+      origin,
+      items: [
+        for (final q in queues)
+          ContextMenuItem(
+            icon: q.queueId == kLaterQueueId
+                ? LucideIcons.clock
+                : LucideIcons.layers,
+            label: _quickQueueDisplayName(s, q),
+            color: c.textPrimary,
+            action: () =>
+                _startDownload(startLater: later, queueOverride: q.queueId),
+          ),
       ],
     );
   }

@@ -332,6 +332,31 @@ pub struct MoveQueueRequest {
     pub queue_id: String,
 }
 
+/// 队列每日定时计划请求（`PUT /api/v1/queues/{id}/schedule`）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueScheduleRequest {
+    /// 定时计划是否启用。
+    pub enabled: bool,
+    /// 每日定时启动时间 `HH:MM`（空 = 不定时启动）。
+    #[serde(default)]
+    pub start_time: String,
+    /// 每日定时停止时间 `HH:MM`（空 = 不定时停止）。
+    #[serde(default)]
+    pub stop_time: String,
+    /// 生效星期位掩码：bit0=周一 … bit6=周日；0/缺省 = 每天。
+    #[serde(default)]
+    pub days: i32,
+}
+
+/// 队列内任务排序请求（`PUT /api/v1/queues/{id}/order`）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReorderQueueRequest {
+    /// 队列内任务的完整新顺序（依次写入 1..N 的 queueOrder）。
+    pub task_ids: Vec<String>,
+}
+
 /// 目录项（`FsListResponse.dirs` 元素）。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -641,6 +666,11 @@ mod tests {
             position: 1,
             default_segments: 4,
             default_user_agent: "FluxDown/1.0".into(),
+            is_running: true,
+            schedule_enabled: false,
+            schedule_start: String::new(),
+            schedule_stop: String::new(),
+            schedule_days: 127,
         }
     }
 

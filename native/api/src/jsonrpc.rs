@@ -255,9 +255,8 @@ async fn add_uri(arr: &[Value], id: &Value, host: &dyn ApiHost) -> Value {
         Ok(o) => o,
         Err(e) => return rpc_err(id, 1, &e),
     };
-    let pause = opts.pause;
     let req = aria2::build_create_task_request(url.to_string(), None, opts);
-    create_task_and_respond(id, host, req, pause).await
+    create_task_and_respond(id, host, req).await
 }
 
 /// `aria2.addTorrent`：`params = [torrent(base64), uris?, options?, position?]`。
@@ -280,28 +279,16 @@ async fn add_torrent(arr: &[Value], id: &Value, host: &dyn ApiHost) -> Value {
         Ok(o) => o,
         Err(e) => return rpc_err(id, 1, &e),
     };
-    let pause = opts.pause;
     let req = aria2::build_create_task_request(String::new(), Some(torrent.to_string()), opts);
-    create_task_and_respond(id, host, req, pause).await
+    create_task_and_respond(id, host, req).await
 }
 
-/// `addUri`/`addTorrent` 共用尾段：建任务、按需立即暂停、返回 GID。
-async fn create_task_and_respond(
-    id: &Value,
-    host: &dyn ApiHost,
-    req: CreateTaskRequest,
-    pause: bool,
-) -> Value {
+/// `addUri`/`addTorrent` 共用尾段：建任务、返回 GID。aria2 的 `pause`
+/// 选项已映射为 `CreateTaskRequest.start_paused`（建时即暂停原语），
+/// 不再有「建后补暂停」的竞态窗口。
+async fn create_task_and_respond(id: &Value, host: &dyn ApiHost, req: CreateTaskRequest) -> Value {
     match host.create_task(req).await {
-        Ok(task_id) => {
-            if pause {
-                // aria2 的 `pause` 选项让新建下载以暂停态入队；FluxDown 没有
-                // 「建时即暂停」的原语，退化为「建后立即暂停」，尽力而为，
-                // 暂停失败不影响任务已创建的事实。
-                let _ = host.pause_task(&task_id).await;
-            }
-            rpc_ok(id, Value::String(aria2::task_id_to_gid(&task_id)))
-        }
+        Ok(task_id) => rpc_ok(id, Value::String(aria2::task_id_to_gid(&task_id))),
         Err(e) => rpc_err(id, 1, &e.to_string()),
     }
 }
@@ -786,7 +773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_uri_pause_option_pauses_after_create() {
+    async fn add_uri_pause_option_creates_paused_task() {
         let host = TestHost::new("task-xyz");
         let resp = call(
             &host,
@@ -795,7 +782,12 @@ mod tests {
         )
         .await;
         assert!(resp["result"].is_string());
-        assert_eq!(host.paused.lock().unwrap().as_slice(), ["task-xyz"]);
+        // `pause` 映射为建时即暂停（start_paused），不再有「建后补暂停」
+        // 的第二次调用。
+        let created = host.created.lock().unwrap();
+        assert_eq!(created.len(), 1);
+        assert!(created[0].start_paused);
+        assert!(host.paused.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

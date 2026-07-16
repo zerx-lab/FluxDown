@@ -91,6 +91,41 @@ extension SettingsCategoryI18n on SettingsCategory {
   }
 }
 
+// ─────────────────────────────────────────────
+// 分类子 Tab
+// ─────────────────────────────────────────────
+
+/// 子 Tab id 常量：用于会话内选中记忆与搜索定位路由，字面量保持稳定。
+const _kTabBasic = 'basic';
+const _kTabTracker = 'tracker';
+const _kTabServers = 'servers';
+
+/// 分类下的子 Tab 描述。
+class _SettingsTabSpec {
+  final String id;
+  final String label;
+
+  const _SettingsTabSpec({required this.id, required this.label});
+}
+
+/// 各分类的子 Tab 列表（空 = 该分类无 Tab，内容单页展示）。
+/// 新增 Tab 时在此登记，并为 [settingsSearchItems] 中对应条目补 `tabId`，
+/// 保证设置搜索能直达目标 Tab。
+List<_SettingsTabSpec> _settingsTabsFor(SettingsCategory category) {
+  final s = currentS;
+  return switch (category) {
+    SettingsCategory.bt => [
+      _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
+      _SettingsTabSpec(id: _kTabTracker, label: s.settingsTabTracker),
+    ],
+    SettingsCategory.ed2k => [
+      _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
+      _SettingsTabSpec(id: _kTabServers, label: s.settingsTabServers),
+    ],
+    _ => const [],
+  };
+}
+
 /// 设置项搜索元数据 — 每个设置项对应的分类 + 搜索关键词
 class SettingsSearchItem {
   final SettingsCategory category;
@@ -99,12 +134,17 @@ class SettingsSearchItem {
   final List<String> keywords;
   final IconData icon;
 
+  /// 目标设置项所在的子 Tab id（见 [_settingsTabsFor]）；
+  /// null = 分类无 Tab 或位于默认 Tab。
+  final String? tabId;
+
   SettingsSearchItem({
     required this.category,
     required this.label,
     required this.description,
     required this.keywords,
     required this.icon,
+    this.tabId,
   });
 
   /// 与查询串（已 toLowerCase）匹配：标签/描述/关键词任一命中。
@@ -315,6 +355,23 @@ List<SettingsSearchItem> get settingsSearchItems {
       description: s.btSettingsDesc,
       keywords: s.searchKeywordsBtSettings,
       icon: LucideIcons.magnet,
+      tabId: _kTabBasic,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.bt,
+      label: s.btTrackerList,
+      description: s.btTrackerListDesc,
+      keywords: s.searchKeywordsBtSettings,
+      icon: LucideIcons.list,
+      tabId: _kTabTracker,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.bt,
+      label: s.btTrackerSub,
+      description: s.btTrackerSubDesc,
+      keywords: s.searchKeywordsBtSettings,
+      icon: LucideIcons.rss,
+      tabId: _kTabTracker,
     ),
     SettingsSearchItem(
       category: SettingsCategory.ed2k,
@@ -322,6 +379,23 @@ List<SettingsSearchItem> get settingsSearchItems {
       description: s.ed2kSettingsDesc,
       keywords: s.searchKeywordsEd2kSettings,
       icon: LucideIcons.share2,
+      tabId: _kTabBasic,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.ed2k,
+      label: s.ed2kServerList,
+      description: s.ed2kServerListDesc,
+      keywords: s.searchKeywordsEd2kSettings,
+      icon: LucideIcons.server,
+      tabId: _kTabServers,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.ed2k,
+      label: s.ed2kServerSub,
+      description: s.ed2kServerSubDesc,
+      keywords: s.searchKeywordsEd2kSettings,
+      icon: LucideIcons.rss,
+      tabId: _kTabServers,
     ),
     SettingsSearchItem(
       category: SettingsCategory.proxy,
@@ -1028,6 +1102,12 @@ class _SettingsContent extends StatefulWidget {
 class _SettingsContentState extends State<_SettingsContent> {
   final _scrollController = ScrollController();
 
+  /// 每个分类会话内记住的子 Tab id（不持久化）。
+  final Map<SettingsCategory, String> _tabByCategory = {};
+
+  /// 已做过 Tab 路由判定的高亮请求序号，防止重复处理。
+  int _routedHighlightSeq = 0;
+
   @override
   void didUpdateWidget(covariant _SettingsContent oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -1038,98 +1118,165 @@ class _SettingsContentState extends State<_SettingsContent> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _routeHighlightToTab();
+  }
+
+  @override
   void dispose() {
     _scrollController.dispose();
     super.dispose();
   }
 
+  /// 当前分类应显示的子 Tab id（无 Tab 分类返回空串）。
+  String _activeTabId(List<_SettingsTabSpec> tabs) {
+    if (tabs.isEmpty) return '';
+    final saved = _tabByCategory[widget.category];
+    if (saved != null && tabs.any((t) => t.id == saved)) return saved;
+    return tabs.first.id;
+  }
+
+  void _selectTab(String id) {
+    if (_tabByCategory[widget.category] == id) return;
+    setState(() => _tabByCategory[widget.category] = id);
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
+  }
+
+  /// 高亮请求指向其它子 Tab 上的设置项时，先切到目标 Tab，
+  /// 再由卡片自身消费请求（滚动定位 + 闪烁）。「设置项 → Tab」映射
+  /// 来自 [settingsSearchItems] 的 `tabId` 元数据。
+  void _routeHighlightToTab() {
+    final req = _HighlightScope.of(context)?.request;
+    if (req == null || req.seq == _routedHighlightSeq) return;
+    _routedHighlightSeq = req.seq;
+    final tabs = _settingsTabsFor(widget.category);
+    if (tabs.isEmpty) return;
+    for (final item in settingsSearchItems) {
+      if (item.category != widget.category || item.tabId == null) continue;
+      if (!req.targets(item.label, item.description)) continue;
+      if (tabs.any((t) => t.id == item.tabId)) {
+        // didChangeDependencies 之后必然重建，直接写选中态即可
+        _tabByCategory[widget.category] = item.tabId!;
+      }
+      return;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final category = widget.category;
-    final settingsProvider = widget.settingsProvider;
-    final pluginProvider = widget.pluginProvider;
-    final downloadController = widget.downloadController;
-    return SingleChildScrollView(
-      controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 24),
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _SectionHeader(category: category),
-              const SizedBox(height: 20),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
-                layoutBuilder: (currentChild, previousChildren) {
-                  return Stack(
-                    alignment: Alignment.topCenter,
-                    children: [...previousChildren, ?currentChild],
-                  );
-                },
-                child: switch (category) {
-                  SettingsCategory.general => _GeneralContent(
-                    key: const ValueKey('general'),
-                    settingsProvider: settingsProvider,
-                  ),
-                  SettingsCategory.appearance => const _AppearanceContent(
-                    key: ValueKey('appearance'),
-                  ),
-                  SettingsCategory.download => _DownloadContent(
-                    key: ValueKey('download'),
-                    settingsProvider: settingsProvider,
-                    downloadController: downloadController,
-                  ),
-                  SettingsCategory.bt => _BtContent(
-                    key: const ValueKey('bt'),
-                    settingsProvider: settingsProvider,
-                  ),
-                  SettingsCategory.ed2k => _Ed2kContent(
-                    key: const ValueKey('ed2k'),
-                    settingsProvider: settingsProvider,
-                  ),
-                  SettingsCategory.proxy => _ProxyContent(
-                    key: const ValueKey('proxy'),
-                    settingsProvider: settingsProvider,
-                  ),
-                  SettingsCategory.apiService => _ApiServiceContent(
-                    key: const ValueKey('apiService'),
-                    settingsProvider: settingsProvider,
-                  ),
-                  SettingsCategory.plugins => PluginListView(
-                    key: const ValueKey('plugins'),
-                    provider: pluginProvider,
-                    onNavigateToComponents: () => widget.onSelectCategory
-                        ?.call(SettingsCategory.components),
-                  ),
-                  SettingsCategory.components => Column(
-                    key: const ValueKey('components'),
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: const [
-                      _ComponentsContent(
-                        key: ValueKey('component-ffmpeg'),
-                        kind: _ComponentKind.ffmpeg,
-                      ),
-                      SizedBox(height: 12),
-                      _ComponentsContent(
-                        key: ValueKey('component-ytdlp'),
-                        kind: _ComponentKind.ytdlp,
-                      ),
-                    ],
-                  ),
-                  SettingsCategory.about => _AboutContent(
-                    key: const ValueKey('about'),
-                    settingsProvider: settingsProvider,
-                  ),
-                },
+    final tabs = _settingsTabsFor(category);
+    final tabId = _activeTabId(tabs);
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 内容锚定左侧、紧贴侧边栏，宽度完全自适应吃满可用空间；
+        // 宽视口下由 _AdaptiveSections 切双列利用横向空间。
+        final contentWidth = max(0.0, constraints.maxWidth - 76);
+        Widget aligned(Widget child) => Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(width: contentWidth, child: child),
+        );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 固定头部：不透明背景 + 全宽发丝线，与滚动内容形成清晰边界，
+            // 内容上滑时从线下穿过，滚动区域一目了然
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: c.bg,
+                border: Border(
+                  bottom: BorderSide(color: m.borderFade(c.border), width: 1),
+                ),
               ),
-            ],
-          ),
-        ),
-      ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(40, 24, 36, 0),
+                child: aligned(
+                  _SectionHeader(
+                    category: category,
+                    tabs: tabs,
+                    activeTabId: tabId,
+                    onSelectTab: _selectTab,
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                padding: const EdgeInsets.fromLTRB(40, 20, 36, 24),
+                child: aligned(
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    layoutBuilder: (currentChild, previousChildren) {
+                      return Stack(
+                        alignment: Alignment.topLeft,
+                        children: [...previousChildren, ?currentChild],
+                      );
+                    },
+                    child: KeyedSubtree(
+                      key: ValueKey('${category.name}:$tabId'),
+                      child: _buildBody(category, tabId),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
+  }
+
+  /// 按（分类, 子 Tab）构建内容主体；子树身份由外层 [KeyedSubtree] 承担。
+  Widget _buildBody(SettingsCategory category, String tabId) {
+    final settingsProvider = widget.settingsProvider;
+    return switch (category) {
+      SettingsCategory.general => _GeneralContent(
+        settingsProvider: settingsProvider,
+      ),
+      SettingsCategory.appearance => const _AppearanceContent(),
+      SettingsCategory.download => _DownloadContent(
+        settingsProvider: settingsProvider,
+        downloadController: widget.downloadController,
+      ),
+      SettingsCategory.bt => tabId == _kTabTracker
+          ? _BtTrackerContent(settingsProvider: settingsProvider)
+          : _BtBasicContent(settingsProvider: settingsProvider),
+      SettingsCategory.ed2k => tabId == _kTabServers
+          ? _Ed2kServersContent(settingsProvider: settingsProvider)
+          : _Ed2kBasicContent(settingsProvider: settingsProvider),
+      SettingsCategory.proxy => _ProxyContent(
+        settingsProvider: settingsProvider,
+      ),
+      SettingsCategory.apiService => _ApiServiceContent(
+        settingsProvider: settingsProvider,
+      ),
+      SettingsCategory.plugins => PluginListView(
+        provider: widget.pluginProvider,
+        onNavigateToComponents: () =>
+            widget.onSelectCategory?.call(SettingsCategory.components),
+      ),
+      SettingsCategory.components => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: const [
+          _ComponentsContent(
+            key: ValueKey('component-ffmpeg'),
+            kind: _ComponentKind.ffmpeg,
+          ),
+          SizedBox(height: 12),
+          _ComponentsContent(
+            key: ValueKey('component-ytdlp'),
+            kind: _ComponentKind.ytdlp,
+          ),
+        ],
+      ),
+      SettingsCategory.about => _AboutContent(
+        settingsProvider: settingsProvider,
+      ),
+    };
   }
 }
 
@@ -1139,13 +1286,20 @@ class _SettingsContentState extends State<_SettingsContent> {
 
 class _SectionHeader extends StatelessWidget {
   final SettingsCategory category;
+  final List<_SettingsTabSpec> tabs;
+  final String activeTabId;
+  final ValueChanged<String> onSelectTab;
 
-  const _SectionHeader({required this.category});
+  const _SectionHeader({
+    required this.category,
+    required this.tabs,
+    required this.activeTabId,
+    required this.onSelectTab,
+  });
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    final m = AppMetrics.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1162,9 +1316,84 @@ class _SectionHeader extends StatelessWidget {
           category.localizedDesc,
           style: TextStyle(fontSize: 12, color: c.textMuted),
         ),
-        const SizedBox(height: 14),
-        Divider(height: 1, color: m.borderFade(c.border)),
+        if (tabs.isEmpty)
+          const SizedBox(height: 14)
+        else ...[
+          const SizedBox(height: 10),
+          // Tab 栏：选中态下划线紧贴头部底边的全宽发丝线
+          Row(
+            children: [
+              for (final tab in tabs) ...[
+                _SettingsTab(
+                  label: tab.label,
+                  selected: tab.id == activeTabId,
+                  onTap: () => onSelectTab(tab.id),
+                ),
+                const SizedBox(width: 18),
+              ],
+            ],
+          ),
+        ],
       ],
+    );
+  }
+}
+
+/// 分类头部的子 Tab：文字 + 选中态强调色下划线（与任务列表 Tab 同视觉语言）。
+class _SettingsTab extends StatefulWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SettingsTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  State<_SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<_SettingsTab> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final selected = widget.selected;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.only(top: 4, bottom: 8, left: 2, right: 2),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: selected ? c.accent : Colors.transparent,
+                width: 2,
+              ),
+            ),
+          ),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 13,
+              color: selected
+                  ? c.textPrimary
+                  : _hovered
+                  ? c.textSecondary
+                  : c.textMuted,
+              fontWeight: selected ? FontWeight.w500 : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1364,270 +1593,476 @@ class _SettingCardState extends State<_SettingCard> with _HighlightConsumer {
 }
 
 // ─────────────────────────────────────────────
+// 设置分组：小节标题 + 单卡多行（发丝线分隔）
+// ─────────────────────────────────────────────
+
+/// 设置分组：可选小节标题（支持搜索定位高亮）+ 一张卡片容器，
+/// 组内每行是 [_SettingRow]，行间以发丝线分隔。
+/// 相比一项一卡，垂直密度显著提升，语义分组也更利于扫读。
+class _SettingsGroup extends StatelessWidget {
+  final String? title;
+  final String? subtitle;
+  final List<Widget> children;
+
+  const _SettingsGroup({this.title, this.subtitle, required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (title != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            // 标题作为搜索定位目标（如「侧边栏显示」），命中时闪烁
+            child: _HighlightRegion(
+              label: title!,
+              description: subtitle ?? '',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title!,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.textSecondary,
+                    ),
+                  ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: TextStyle(fontSize: 11, color: c.textMuted),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        Container(
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: c.surface1,
+            borderRadius: m.brDialog,
+            border: Border.all(color: m.borderMedium(c.border), width: 1),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < children.length; i++) ...[
+                if (i > 0)
+                  Container(
+                    height: 1,
+                    margin: const EdgeInsets.only(left: 16),
+                    color: m.borderFade(c.border),
+                  ),
+                children[i],
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 分组内的一行设置项：布局与 [_SettingCard] 一致，但无独立边框背景
+/// （容器视觉由 [_SettingsGroup] 承担），行高更紧凑；
+/// 支持搜索定位 + 闪烁高亮。
+class _SettingRow extends StatefulWidget {
+  final String label;
+  final String description;
+  final Widget child;
+  final bool vertical;
+
+  const _SettingRow({
+    required this.label,
+    required this.description,
+    required this.child,
+    this.vertical = false,
+  });
+
+  @override
+  State<_SettingRow> createState() => _SettingRowState();
+}
+
+class _SettingRowState extends State<_SettingRow> with _HighlightConsumer {
+  @override
+  String get highlightLabel => widget.label;
+  @override
+  String get highlightDescription => widget.description;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      padding: EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: widget.vertical ? 12 : 10,
+      ),
+      color: flashing ? m.subtle(c.accent) : Colors.transparent,
+      child: widget.vertical
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: c.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  widget.description,
+                  style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                ),
+                const SizedBox(height: 10),
+                widget.child,
+              ],
+            )
+          : Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.label,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: c.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.description,
+                        style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                widget.child,
+              ],
+            ),
+    );
+  }
+}
+
+
+// ─────────────────────────────────────────────
+// 自适应分组布局：窄视口单列，宽视口双列瀑布
+// ─────────────────────────────────────────────
+
+/// 设置分组的自适应布局：内容宽度不足 [_twoColMinWidth] 时单列排布；
+/// 足够宽时按预估高度把分组贪心切成左右两列（保持整体顺序：
+/// 左列在前、右列在后），利用横向空间减少滚动。
+class _AdaptiveSections extends StatelessWidget {
+  /// 触发双列的最小内容宽度。
+  static const double _twoColMinWidth = 920;
+  static const double _columnGap = 24;
+  static const double _sectionGap = 16;
+
+  final List<Widget> sections;
+
+  const _AdaptiveSections({required this.sections});
+
+  /// 分组高度权重估计：普通行 1、垂直行 2.4（编辑器/选择器普遍更高）、
+  /// 组标题 0.6；[_WeightedSection] 用显式权重；其余富卡片按 3 估。
+  static double _weightOf(Widget section) {
+    if (section is _WeightedSection) return section.weight;
+    if (section is _SettingsGroup) {
+      var weight = section.title != null ? 0.6 : 0.0;
+      for (final row in section.children) {
+        weight += row is _SettingRow && row.vertical ? 2.4 : 1.0;
+      }
+      return weight;
+    }
+    return 3.0;
+  }
+
+  static Widget _buildColumn(List<Widget> sections) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      for (var i = 0; i < sections.length; i++) ...[
+        if (i > 0) const SizedBox(height: _sectionGap),
+        sections[i],
+      ],
+    ],
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (sections.length < 2 || constraints.maxWidth < _twoColMinWidth) {
+          return _buildColumn(sections);
+        }
+        // 贪心切分：某组的重心越过总权重一半即归入右列
+        final weights = [for (final s in sections) _weightOf(s)];
+        final total = weights.fold(0.0, (a, b) => a + b);
+        var acc = 0.0;
+        var split = 0;
+        while (split < sections.length - 1 &&
+            acc + weights[split] / 2 < total / 2) {
+          acc += weights[split];
+          split++;
+        }
+        if (split == 0) split = 1;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: _buildColumn(sections.sublist(0, split))),
+            const SizedBox(width: _columnGap),
+            Expanded(child: _buildColumn(sections.sublist(split))),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// 为 [_AdaptiveSections] 提供显式高度权重的包装，
+/// 用于无法自动估高的复杂 section（如自定义分类管理列表）。
+class _WeightedSection extends StatelessWidget {
+  final double weight;
+  final Widget child;
+
+  const _WeightedSection({required this.weight, required this.child});
+
+  @override
+  Widget build(BuildContext context) => child;
+}
+
+// ─────────────────────────────────────────────
 // 通用设置
 // ─────────────────────────────────────────────
 
 class _GeneralContent extends StatelessWidget {
   final SettingsProvider settingsProvider;
 
-  const _GeneralContent({super.key, required this.settingsProvider});
+  const _GeneralContent({required this.settingsProvider});
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: settingsProvider,
       builder: (context, _) {
-        return Column(
-          children: [
-            _SettingCard(
-              label: LocaleScope.of(context).autoStartup,
-              description: LocaleScope.of(context).autoStartupDesc,
-              child: ShadSwitch(
-                value: settingsProvider.autoStartup,
-                onChanged: (v) async {
-                  final ok = await settingsProvider.setAutoStartup(v);
-                  if (!ok && context.mounted) {
-                    showShadDialog(
-                      context: context,
-                      barrierColor: AppColors.of(context).dialogBarrier,
-                      animateIn: const [],
-                      animateOut: const [],
-                      builder: (ctx) => ShadDialog.alert(
-                        title: Text(LocaleScope.of(ctx).settingFailed),
-                        description: Text(
-                          LocaleScope.of(ctx).autoStartupFailedDesc,
-                        ),
-                        actions: [
-                          ShadButton(
-                            child: Text(LocaleScope.of(ctx).confirm),
-                            onPressed: () => Navigator.of(ctx).pop(),
+        final s = LocaleScope.of(context);
+        final ballDegraded = FloatingBallService.instance.isDegraded;
+        return _AdaptiveSections(
+          sections: [
+            _SettingsGroup(
+              title: s.settingsGroupStartupTray,
+              children: [
+                _SettingRow(
+                  label: s.autoStartup,
+                  description: s.autoStartupDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.autoStartup,
+                    onChanged: (v) async {
+                      final ok = await settingsProvider.setAutoStartup(v);
+                      if (!ok && context.mounted) {
+                        showShadDialog(
+                          context: context,
+                          barrierColor: AppColors.of(context).dialogBarrier,
+                          animateIn: const [],
+                          animateOut: const [],
+                          builder: (ctx) => ShadDialog.alert(
+                            title: Text(LocaleScope.of(ctx).settingFailed),
+                            description: Text(
+                              LocaleScope.of(ctx).autoStartupFailedDesc,
+                            ),
+                            actions: [
+                              ShadButton(
+                                child: Text(LocaleScope.of(ctx).confirm),
+                                onPressed: () => Navigator.of(ctx).pop(),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                    );
-                  }
-                },
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).closeToTray,
-              description: LocaleScope.of(context).closeToTrayDesc,
-              child: ShadSwitch(
-                value: settingsProvider.closeToTray,
-                onChanged: (v) => settingsProvider.setCloseToTray(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).startMinimizedToTray,
-              description: LocaleScope.of(context).startMinimizedToTrayDesc,
-              child: ShadSwitch(
-                value: settingsProvider.startMinimizedToTray,
-                onChanged: (v) => settingsProvider.setStartMinimizedToTray(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).floatingBall,
-              description: FloatingBallService.instance.isDegraded
-                  ? LocaleScope.of(context).floatingBallWaylandUnsupported
-                  : LocaleScope.of(context).floatingBallDesc,
-              child: ShadSwitch(
-                value: settingsProvider.floatingBallEnabled,
-                enabled: !FloatingBallService.instance.isDegraded,
-                onChanged: (v) => FloatingBallService.instance.setEnabled(v),
-              ),
-            ),
-            if (settingsProvider.floatingBallEnabled &&
-                !FloatingBallService.instance.isDegraded) ...[
-              const SizedBox(height: 10),
-              _SettingCard(
-                label: LocaleScope.of(context).floatingBallActiveOnly,
-                description: LocaleScope.of(context).floatingBallActiveOnlyDesc,
-                child: ShadSwitch(
-                  value: settingsProvider.floatingBallActiveOnly,
-                  onChanged: (v) {
-                    settingsProvider.setFloatingBallActiveOnly(v);
-                    FloatingBallService.instance.refreshVisibility();
-                  },
+                        );
+                      }
+                    },
+                  ),
                 ),
-              ),
-            ],
-            if (Platform.isLinux &&
-                FloatingBallService.instance.isDegraded) ...[
-              const SizedBox(height: 10),
-              _SettingCard(
-                label: LocaleScope.of(context).clipboardWatch,
-                description: LocaleScope.of(context).clipboardWatchDesc,
-                child: ShadSwitch(
-                  value: settingsProvider.clipboardWatchEnabled,
-                  onChanged: (v) =>
-                      settingsProvider.setClipboardWatchEnabled(v),
+                _SettingRow(
+                  label: s.closeToTray,
+                  description: s.closeToTrayDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.closeToTray,
+                    onChanged: (v) => settingsProvider.setCloseToTray(v),
+                  ),
                 ),
-              ),
-            ],
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).torrentFileAssociation,
-              description: LocaleScope.of(context).torrentFileAssociationDesc,
-              child: ShadSwitch(
-                value: settingsProvider.torrentAssociated,
-                onChanged: (v) {
-                  settingsProvider.setFileAssociation(v);
-                  // 用户手动操作过就标记为已提示
-                  settingsProvider.markTorrentAssocPrompted();
-                },
-              ),
+                _SettingRow(
+                  label: s.startMinimizedToTray,
+                  description: s.startMinimizedToTrayDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.startMinimizedToTray,
+                    onChanged: (v) =>
+                        settingsProvider.setStartMinimizedToTray(v),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).notifyOnComplete,
-              description: LocaleScope.of(context).notifyOnCompleteDesc,
-              child: ShadSwitch(
-                value: settingsProvider.notifyOnComplete,
-                onChanged: (v) => settingsProvider.setNotifyOnComplete(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).keepAwakeWhileDownloading,
-              description: LocaleScope.of(
-                context,
-              ).keepAwakeWhileDownloadingDesc,
-              child: ShadSwitch(
-                value: settingsProvider.keepAwakeWhileDownloading,
-                onChanged: (v) =>
-                    settingsProvider.setKeepAwakeWhileDownloading(v),
-              ),
-            ),
-            const SizedBox(height: 20),
-            // 侧边栏显示设置 — 小标题（支持搜索定位高亮）
-            _HighlightRegion(
-              label: LocaleScope.of(context).sidebarVisibility,
-              description: LocaleScope.of(context).sidebarVisibilityDesc,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      LocaleScope.of(context).sidebarVisibility,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.of(context).textPrimary,
-                      ),
+            _SettingsGroup(
+              title: s.settingsGroupSystem,
+              children: [
+                _SettingRow(
+                  label: s.floatingBall,
+                  description: ballDegraded
+                      ? s.floatingBallWaylandUnsupported
+                      : s.floatingBallDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.floatingBallEnabled,
+                    enabled: !ballDegraded,
+                    onChanged: (v) =>
+                        FloatingBallService.instance.setEnabled(v),
+                  ),
+                ),
+                if (settingsProvider.floatingBallEnabled && !ballDegraded)
+                  _SettingRow(
+                    label: s.floatingBallActiveOnly,
+                    description: s.floatingBallActiveOnlyDesc,
+                    child: ShadSwitch(
+                      value: settingsProvider.floatingBallActiveOnly,
+                      onChanged: (v) {
+                        settingsProvider.setFloatingBallActiveOnly(v);
+                        FloatingBallService.instance.refreshVisibility();
+                      },
                     ),
                   ),
-                  Text(
-                    LocaleScope.of(context).sidebarVisibilityDesc,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: AppColors.of(context).textMuted,
+                if (Platform.isLinux && ballDegraded)
+                  _SettingRow(
+                    label: s.clipboardWatch,
+                    description: s.clipboardWatchDesc,
+                    child: ShadSwitch(
+                      value: settingsProvider.clipboardWatchEnabled,
+                      onChanged: (v) =>
+                          settingsProvider.setClipboardWatchEnabled(v),
                     ),
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showSidebarStatus,
-              description: LocaleScope.of(context).showSidebarStatusDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showSidebarStatus,
-                onChanged: (v) => settingsProvider.setShowSidebarStatus(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showSidebarQueues,
-              description: LocaleScope.of(context).showSidebarQueuesDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showSidebarQueues,
-                onChanged: (v) => settingsProvider.setShowSidebarQueues(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showSidebarCategory,
-              description: LocaleScope.of(context).showSidebarCategoryDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showSidebarCategory,
-                onChanged: (v) => settingsProvider.setShowSidebarCategory(v),
-              ),
-            ),
-            const SizedBox(height: 20),
-            // 标题栏按钮设置 — 小标题（支持搜索定位高亮）
-            _HighlightRegion(
-              label: LocaleScope.of(context).titlebarButtons,
-              description: LocaleScope.of(context).titlebarButtonsDesc,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      LocaleScope.of(context).titlebarButtons,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.of(context).textPrimary,
-                      ),
-                    ),
+                _SettingRow(
+                  label: s.torrentFileAssociation,
+                  description: s.torrentFileAssociationDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.torrentAssociated,
+                    onChanged: (v) {
+                      settingsProvider.setFileAssociation(v);
+                      // 用户手动操作过就标记为已提示
+                      settingsProvider.markTorrentAssocPrompted();
+                    },
                   ),
-                  Text(
-                    LocaleScope.of(context).titlebarButtonsDesc,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: AppColors.of(context).textMuted,
-                    ),
+                ),
+                _SettingRow(
+                  label: s.notifyOnComplete,
+                  description: s.notifyOnCompleteDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.notifyOnComplete,
+                    onChanged: (v) => settingsProvider.setNotifyOnComplete(v),
                   ),
-                ],
-              ),
+                ),
+                _SettingRow(
+                  label: s.keepAwakeWhileDownloading,
+                  description: s.keepAwakeWhileDownloadingDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.keepAwakeWhileDownloading,
+                    onChanged: (v) =>
+                        settingsProvider.setKeepAwakeWhileDownloading(v),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showTitlebarPauseAll,
-              description: LocaleScope.of(context).showTitlebarPauseAllDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showTitlebarPauseAll,
-                onChanged: (v) => settingsProvider.setShowTitlebarPauseAll(v),
-              ),
+            _SettingsGroup(
+              title: s.sidebarVisibility,
+              subtitle: s.sidebarVisibilityDesc,
+              children: [
+                _SettingRow(
+                  label: s.showSidebarStatus,
+                  description: s.showSidebarStatusDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showSidebarStatus,
+                    onChanged: (v) => settingsProvider.setShowSidebarStatus(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.showSidebarQueues,
+                  description: s.showSidebarQueuesDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showSidebarQueues,
+                    onChanged: (v) => settingsProvider.setShowSidebarQueues(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.showSidebarCategory,
+                  description: s.showSidebarCategoryDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showSidebarCategory,
+                    onChanged: (v) =>
+                        settingsProvider.setShowSidebarCategory(v),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showTitlebarResumeAll,
-              description: LocaleScope.of(context).showTitlebarResumeAllDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showTitlebarResumeAll,
-                onChanged: (v) => settingsProvider.setShowTitlebarResumeAll(v),
-              ),
+            _SettingsGroup(
+              title: s.titlebarButtons,
+              subtitle: s.titlebarButtonsDesc,
+              children: [
+                _SettingRow(
+                  label: s.showTitlebarPauseAll,
+                  description: s.showTitlebarPauseAllDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showTitlebarPauseAll,
+                    onChanged: (v) =>
+                        settingsProvider.setShowTitlebarPauseAll(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.showTitlebarResumeAll,
+                  description: s.showTitlebarResumeAllDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showTitlebarResumeAll,
+                    onChanged: (v) =>
+                        settingsProvider.setShowTitlebarResumeAll(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.showTitlebarSettings,
+                  description: s.showTitlebarSettingsDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showTitlebarSettings,
+                    onChanged: (v) =>
+                        settingsProvider.setShowTitlebarSettings(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.showTitlebarTheme,
+                  description: s.showTitlebarThemeDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showTitlebarTheme,
+                    onChanged: (v) => settingsProvider.setShowTitlebarTheme(v),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showTitlebarSettings,
-              description: LocaleScope.of(context).showTitlebarSettingsDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showTitlebarSettings,
-                onChanged: (v) => settingsProvider.setShowTitlebarSettings(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).showTitlebarTheme,
-              description: LocaleScope.of(context).showTitlebarThemeDesc,
-              child: ShadSwitch(
-                value: settingsProvider.showTitlebarTheme,
-                onChanged: (v) => settingsProvider.setShowTitlebarTheme(v),
-              ),
-            ),
-            const SizedBox(height: 20),
             // 自定义分类管理（支持搜索定位高亮）
-            _HighlightRegion(
-              label: LocaleScope.of(context).customCategories,
-              description: LocaleScope.of(context).customCategoriesDesc,
-              child: _CustomCategoryManager(settingsProvider: settingsProvider),
+            _WeightedSection(
+              weight: 10,
+              child: _HighlightRegion(
+                label: s.customCategories,
+                description: s.customCategoriesDesc,
+                child: _CustomCategoryManager(
+                  settingsProvider: settingsProvider,
+                ),
+              ),
             ),
           ],
         );
@@ -2082,57 +2517,64 @@ class _TileActionState extends State<_TileAction> {
 // ─────────────────────────────────────────────
 
 class _AppearanceContent extends StatelessWidget {
-  const _AppearanceContent({super.key});
+  const _AppearanceContent();
 
   @override
   Widget build(BuildContext context) {
     final s = LocaleScope.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _SettingCard(
-          label: s.language,
-          description: s.languageDesc,
-          vertical: true,
-          child: const _LanguageSelector(),
+    return _AdaptiveSections(
+      sections: [
+        _SettingsGroup(
+          children: [
+            _SettingRow(
+              label: s.language,
+              description: s.languageDesc,
+              vertical: true,
+              child: const _LanguageSelector(),
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        _SettingCard(
-          label: s.themeMode,
-          description: s.themeModeDesc,
-          vertical: true,
-          child: const _ThemeModeSelector(),
+        _SettingsGroup(
+          title: s.settingsGroupTheme,
+          children: [
+            _SettingRow(
+              label: s.themeMode,
+              description: s.themeModeDesc,
+              vertical: true,
+              child: const _ThemeModeSelector(),
+            ),
+            _SettingRow(
+              label: s.themeSelection,
+              description: s.themeSelectionDesc,
+              vertical: true,
+              child: const _ThemeSelector(),
+            ),
+            _SettingRow(
+              label: s.themeColor,
+              description: s.themeColorDesc,
+              vertical: true,
+              child: const _ColorSchemeSelector(),
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        _SettingCard(
-          label: s.themeSelection,
-          description: s.themeSelectionDesc,
-          vertical: true,
-          child: const _ThemeSelector(),
+        _SettingsGroup(
+          title: s.settingsGroupInterface,
+          children: [
+            _SettingRow(
+              label: s.uiScale,
+              description: s.uiScaleDesc,
+              vertical: true,
+              child: const _UiScaleSelector(),
+            ),
+            if (Platform.isWindows)
+              _SettingRow(
+                label: s.appIcon,
+                description: s.appIconDesc,
+                vertical: true,
+                child: const _AppIconSelector(),
+              ),
+          ],
         ),
-        const SizedBox(height: 10),
-        _SettingCard(
-          label: s.themeColor,
-          description: s.themeColorDesc,
-          vertical: true,
-          child: const _ColorSchemeSelector(),
-        ),
-        const SizedBox(height: 10),
-        _SettingCard(
-          label: s.uiScale,
-          description: s.uiScaleDesc,
-          vertical: true,
-          child: const _UiScaleSelector(),
-        ),
-        if (Platform.isWindows) ...[
-          const SizedBox(height: 10),
-          _SettingCard(
-            label: s.appIcon,
-            description: s.appIconDesc,
-            vertical: true,
-            child: const _AppIconSelector(),
-          ),
-        ],
       ],
     );
   }
@@ -2485,7 +2927,6 @@ class _DownloadContent extends StatelessWidget {
   final DownloadController? downloadController;
 
   const _DownloadContent({
-    super.key,
     required this.settingsProvider,
     this.downloadController,
   });
@@ -2500,114 +2941,130 @@ class _DownloadContent extends StatelessWidget {
       builder: (context, _) {
         final s = LocaleScope.of(context);
         final queues = downloadController?.queues ?? [];
-        return Column(
-          children: [
-            _SettingCard(
-              label: s.defaultSaveDir,
-              description: s.defaultSaveDirDesc,
-              vertical: true,
-              child: _SaveDirPicker(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.rememberLastSaveDir,
-              description: s.rememberLastSaveDirDesc,
-              child: ShadSwitch(
-                value: settingsProvider.rememberLastSaveDir,
-                onChanged: (v) => settingsProvider.setRememberLastSaveDir(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.silentDownload,
-              description: s.silentDownloadDesc,
-              child: ShadSwitch(
-                value: settingsProvider.silentDownloadEnabled,
-                onChanged: (v) => settingsProvider.setSilentDownloadEnabled(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.useServerTime,
-              description: s.useServerTimeDesc,
-              child: ShadSwitch(
-                value: settingsProvider.useServerTime,
-                onChanged: (v) => settingsProvider.setUseServerTime(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.defaultThreads,
-              description: s.defaultThreadsDesc,
-              child: _SegmentSelector(settingsProvider: settingsProvider),
-            ),
-            if (settingsProvider.defaultSegments == 0) ...[
-              const SizedBox(height: 10),
-              _SettingCard(
-                label: s.autoMaxConnections,
-                description: s.autoMaxConnectionsDesc,
-                child: _AutoMaxConnSelector(settingsProvider: settingsProvider),
-              ),
-            ],
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.connPolicyCache,
-              description: s.connPolicyCacheDesc,
-              child: _ConnPolicyClearButton(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.maxConcurrent,
-              description: s.maxConcurrentDesc,
-              child: _ConcurrentSelector(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.speedLimit,
-              description: s.speedLimitDesc,
-              vertical: true,
-              child: _SpeedLimitInput(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.autoRetryCount,
-              description: s.autoRetryCountDesc,
-              child: _AutoRetryCountSelector(
-                settingsProvider: settingsProvider,
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.autoRetryDelay,
-              description: s.autoRetryDelayDesc,
-              vertical: true,
-              child: _AutoRetryDelayInput(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.userAgent,
-              description: s.userAgentDesc,
-              vertical: true,
-              child: _UserAgentEditor(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: s.revealFileCmdLabel,
-              description: s.revealFileCmdDesc,
-              vertical: true,
-              child: _FileManagerCmdInput(settingsProvider: settingsProvider),
-            ),
-            if (queues.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              _SettingCard(
-                label: s.defaultQueueSetting,
-                description: s.defaultQueueSettingDesc,
-                child: _DefaultQueueSelector(
-                  settingsProvider: settingsProvider,
-                  queues: queues,
+        return _AdaptiveSections(
+          sections: [
+            _SettingsGroup(
+              title: s.settingsGroupSaveLocation,
+              children: [
+                _SettingRow(
+                  label: s.defaultSaveDir,
+                  description: s.defaultSaveDirDesc,
+                  vertical: true,
+                  child: _SaveDirPicker(settingsProvider: settingsProvider),
                 ),
-              ),
-            ],
+                _SettingRow(
+                  label: s.rememberLastSaveDir,
+                  description: s.rememberLastSaveDirDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.rememberLastSaveDir,
+                    onChanged: (v) =>
+                        settingsProvider.setRememberLastSaveDir(v),
+                  ),
+                ),
+              ],
+            ),
+            _SettingsGroup(
+              title: s.settingsGroupBehavior,
+              children: [
+                _SettingRow(
+                  label: s.silentDownload,
+                  description: s.silentDownloadDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.silentDownloadEnabled,
+                    onChanged: (v) =>
+                        settingsProvider.setSilentDownloadEnabled(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.useServerTime,
+                  description: s.useServerTimeDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.useServerTime,
+                    onChanged: (v) => settingsProvider.setUseServerTime(v),
+                  ),
+                ),
+                if (queues.isNotEmpty)
+                  _SettingRow(
+                    label: s.defaultQueueSetting,
+                    description: s.defaultQueueSettingDesc,
+                    child: _DefaultQueueSelector(
+                      settingsProvider: settingsProvider,
+                      queues: queues,
+                    ),
+                  ),
+              ],
+            ),
+            _SettingsGroup(
+              title: s.settingsGroupConnection,
+              children: [
+                _SettingRow(
+                  label: s.defaultThreads,
+                  description: s.defaultThreadsDesc,
+                  child: _SegmentSelector(settingsProvider: settingsProvider),
+                ),
+                if (settingsProvider.defaultSegments == 0)
+                  _SettingRow(
+                    label: s.autoMaxConnections,
+                    description: s.autoMaxConnectionsDesc,
+                    child: _AutoMaxConnSelector(
+                      settingsProvider: settingsProvider,
+                    ),
+                  ),
+                _SettingRow(
+                  label: s.connPolicyCache,
+                  description: s.connPolicyCacheDesc,
+                  child: _ConnPolicyClearButton(
+                    settingsProvider: settingsProvider,
+                  ),
+                ),
+                _SettingRow(
+                  label: s.maxConcurrent,
+                  description: s.maxConcurrentDesc,
+                  child: _ConcurrentSelector(settingsProvider: settingsProvider),
+                ),
+                _SettingRow(
+                  label: s.speedLimit,
+                  description: s.speedLimitDesc,
+                  vertical: true,
+                  child: _SpeedLimitInput(settingsProvider: settingsProvider),
+                ),
+              ],
+            ),
+            _SettingsGroup(
+              title: s.settingsGroupRetry,
+              children: [
+                _SettingRow(
+                  label: s.autoRetryCount,
+                  description: s.autoRetryCountDesc,
+                  child: _AutoRetryCountSelector(
+                    settingsProvider: settingsProvider,
+                  ),
+                ),
+                _SettingRow(
+                  label: s.autoRetryDelay,
+                  description: s.autoRetryDelayDesc,
+                  vertical: true,
+                  child: _AutoRetryDelayInput(settingsProvider: settingsProvider),
+                ),
+              ],
+            ),
+            _SettingsGroup(
+              title: s.settingsGroupAdvanced,
+              children: [
+                _SettingRow(
+                  label: s.userAgent,
+                  description: s.userAgentDesc,
+                  vertical: true,
+                  child: _UserAgentEditor(settingsProvider: settingsProvider),
+                ),
+                _SettingRow(
+                  label: s.revealFileCmdLabel,
+                  description: s.revealFileCmdDesc,
+                  vertical: true,
+                  child: _FileManagerCmdInput(settingsProvider: settingsProvider),
+                ),
+              ],
+            ),
           ],
         );
       },
@@ -2631,28 +3088,21 @@ class _DefaultQueueSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = LocaleScope.of(context);
-    final allOptions = <DownloadQueue>[
-      const DownloadQueue(
-        queueId: '',
-        name: '',
-        speedLimitKbps: 0,
-        maxConcurrent: 0,
-        defaultSaveDir: '',
-        position: -1,
-      ),
-      ...queues,
-    ];
+    final validIds = queues.map((q) => q.queueId).toSet();
+    final currentId = settingsProvider.defaultQueueId;
+    // 显示回退到主队列：不强制写回设置，仅当前值为空/失效 ID 时的展示兜底
+    final effectiveId = validIds.contains(currentId)
+        ? currentId
+        : (validIds.contains(kMainQueueId) ? kMainQueueId : queues.first.queueId);
     return ShadSelect<String>(
-      initialValue: settingsProvider.defaultQueueId,
-      options: allOptions.map((q) {
-        final label = q.queueId.isEmpty ? s.defaultQueue : q.name;
-        return ShadOption(value: q.queueId, child: Text(label));
+      initialValue: effectiveId,
+      options: queues.map((q) {
+        return ShadOption(value: q.queueId, child: Text(queueDisplayName(s, q)));
       }).toList(),
       selectedOptionBuilder: (context, value) {
-        if (value.isEmpty) return Text(s.defaultQueue);
         final q = queues.where((q) => q.queueId == value).firstOrNull;
         return Text(
-          q?.name ?? s.defaultQueue,
+          q != null ? queueDisplayName(s, q) : s.mainQueue,
           overflow: TextOverflow.ellipsis,
           maxLines: 1,
         );
@@ -2668,10 +3118,10 @@ class _DefaultQueueSelector extends StatelessWidget {
 // BT 设置
 // ─────────────────────────────────────────────
 
-class _BtContent extends StatelessWidget {
+class _BtBasicContent extends StatelessWidget {
   final SettingsProvider settingsProvider;
 
-  const _BtContent({super.key, required this.settingsProvider});
+  const _BtBasicContent({required this.settingsProvider});
 
   @override
   Widget build(BuildContext context) {
@@ -2685,20 +3135,6 @@ class _BtContent extends StatelessWidget {
               description: LocaleScope.of(context).btListenPortDesc,
               vertical: true,
               child: _BtPortRangeEditor(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).btTrackerList,
-              description: LocaleScope.of(context).btTrackerListDesc,
-              vertical: true,
-              child: _BtTrackerEditor(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).btTrackerSub,
-              description: LocaleScope.of(context).btTrackerSubDesc,
-              vertical: true,
-              child: _BtTrackerSubEditor(settingsProvider: settingsProvider),
             ),
             const SizedBox(height: 6),
             // 重启提示
@@ -2731,58 +3167,111 @@ class _BtContent extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────
-// ED2K 设置
-// ─────────────────────────────────────────────
-
-class _Ed2kContent extends StatelessWidget {
+class _BtTrackerContent extends StatelessWidget {
   final SettingsProvider settingsProvider;
 
-  const _Ed2kContent({super.key, required this.settingsProvider});
+  const _BtTrackerContent({required this.settingsProvider});
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: settingsProvider,
       builder: (context, _) {
-        return Column(
-          children: [
+        return _AdaptiveSections(
+          sections: [
+            _SettingCard(
+              label: LocaleScope.of(context).btTrackerList,
+              description: LocaleScope.of(context).btTrackerListDesc,
+              vertical: true,
+              child: _BtTrackerEditor(settingsProvider: settingsProvider),
+            ),
+            _SettingCard(
+              label: LocaleScope.of(context).btTrackerSub,
+              description: LocaleScope.of(context).btTrackerSubDesc,
+              vertical: true,
+              child: _BtTrackerSubEditor(settingsProvider: settingsProvider),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// ED2K 设置
+// ─────────────────────────────────────────────
+
+class _Ed2kBasicContent extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _Ed2kBasicContent({required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: settingsProvider,
+      builder: (context, _) {
+        final s = LocaleScope.of(context);
+        return _AdaptiveSections(
+          sections: [
+            _SettingsGroup(
+              children: [
+                _SettingRow(
+                  label: s.ed2kEnableKad,
+                  description: s.ed2kEnableKadDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.ed2kEnableKad,
+                    onChanged: (v) => settingsProvider.setEd2kEnableKad(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.ed2kEnableUpnp,
+                  description: s.ed2kEnableUpnpDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.ed2kEnableUpnp,
+                    onChanged: (v) => settingsProvider.setEd2kEnableUpnp(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.ed2kListenPort,
+                  description: s.ed2kListenPortDesc,
+                  child: _Ed2kListenPortEditor(
+                    settingsProvider: settingsProvider,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _Ed2kServersContent extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _Ed2kServersContent({required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: settingsProvider,
+      builder: (context, _) {
+        return _AdaptiveSections(
+          sections: [
             _SettingCard(
               label: LocaleScope.of(context).ed2kServerList,
               description: LocaleScope.of(context).ed2kServerListDesc,
               vertical: true,
               child: _Ed2kServerEditor(settingsProvider: settingsProvider),
             ),
-            const SizedBox(height: 10),
             _SettingCard(
               label: LocaleScope.of(context).ed2kServerSub,
               description: LocaleScope.of(context).ed2kServerSubDesc,
               vertical: true,
               child: _Ed2kServerSubEditor(settingsProvider: settingsProvider),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).ed2kEnableKad,
-              description: LocaleScope.of(context).ed2kEnableKadDesc,
-              child: ShadSwitch(
-                value: settingsProvider.ed2kEnableKad,
-                onChanged: (v) => settingsProvider.setEd2kEnableKad(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).ed2kEnableUpnp,
-              description: LocaleScope.of(context).ed2kEnableUpnpDesc,
-              child: ShadSwitch(
-                value: settingsProvider.ed2kEnableUpnp,
-                onChanged: (v) => settingsProvider.setEd2kEnableUpnp(v),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _SettingCard(
-              label: LocaleScope.of(context).ed2kListenPort,
-              description: LocaleScope.of(context).ed2kListenPortDesc,
-              child: _Ed2kListenPortEditor(settingsProvider: settingsProvider),
             ),
           ],
         );
@@ -2798,7 +3287,7 @@ class _Ed2kContent extends StatelessWidget {
 class _ProxyContent extends StatelessWidget {
   final SettingsProvider settingsProvider;
 
-  const _ProxyContent({super.key, required this.settingsProvider});
+  const _ProxyContent({required this.settingsProvider});
 
   @override
   Widget build(BuildContext context) {
@@ -3978,7 +4467,7 @@ class _ReadOnlyValueBox extends StatelessWidget {
 class _ApiServiceContent extends StatefulWidget {
   final SettingsProvider settingsProvider;
 
-  const _ApiServiceContent({super.key, required this.settingsProvider});
+  const _ApiServiceContent({required this.settingsProvider});
 
   @override
   State<_ApiServiceContent> createState() => _ApiServiceContentState();
@@ -7988,7 +8477,7 @@ class _GradientSlider extends StatelessWidget {
 // ─────────────────────────────────────────────
 
 class _AboutContent extends StatelessWidget {
-  const _AboutContent({super.key, required this.settingsProvider});
+  const _AboutContent({required this.settingsProvider});
 
   final SettingsProvider settingsProvider;
 

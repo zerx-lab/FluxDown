@@ -24,7 +24,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -435,25 +434,13 @@ async fn desktop_regression_smoke() {
 
     engine
         .manager
-        .create_task(
-            url.clone(),
-            save_dir.clone(),
-            file_name.clone(),
-            SEGMENTS,
-            String::new(),  // cookies
-            String::new(),  // referrer
-            0,              // hint_file_size
-            Vec::new(),     // torrent_file_bytes
-            String::new(),  // proxy_url
-            String::new(),  // user_agent
-            String::new(),  // queue_id
-            String::new(),  // checksum
-            HashMap::new(), // extra_headers
-            Vec::new(),     // selected_file_indices
-            None,           // method
-            None,           // body
-            None,           // audio_url
-        )
+        .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+            url: url.clone(),
+            save_dir: save_dir.clone(),
+            file_name: file_name.clone(),
+            segments: SEGMENTS,
+            ..Default::default()
+        })
         .await;
 
     // 等待任务完成通知（带超时，避免测试意外挂起）。

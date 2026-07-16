@@ -1302,6 +1302,10 @@
             "format": "int32",
             "description": "0 = 由 segment_advisor 按文件大小动态决定。"
           },
+          "startPaused": {
+            "type": "boolean",
+            "description": "稍后下载：true = 建任务后不启动（paused 落库），待「启动队列」\n按序恢复或用户手动恢复。缺省 false = 立即开始。"
+          },
           "torrentB64": {
             "type": [
               "string",
@@ -1581,7 +1585,7 @@
       },
       "QueueDto": {
         "type": "object",
-        "description": "命名队列信息（`GET /api/v1/queues` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::QueueDto;\nuse fluxdown_engine::model::QueueInfo;\n\nlet q = QueueInfo {\n    queue_id: \"q1\".to_string(),\n    name: \"工作\".to_string(),\n    speed_limit_kbps: 0,\n    max_concurrent: 3,\n    default_save_dir: String::new(),\n    position: 0,\n    default_segments: 0,\n    default_user_agent: String::new(),\n};\nlet dto = QueueDto::from(q);\nassert_eq!(dto.queue_id, \"q1\");\n```",
+        "description": "命名队列信息（`GET /api/v1/queues` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::QueueDto;\nuse fluxdown_engine::model::QueueInfo;\n\nlet q = QueueInfo {\n    queue_id: \"q1\".to_string(),\n    name: \"工作\".to_string(),\n    speed_limit_kbps: 0,\n    max_concurrent: 3,\n    default_save_dir: String::new(),\n    position: 0,\n    default_segments: 0,\n    default_user_agent: String::new(),\n    is_running: true,\n    schedule_enabled: false,\n    schedule_start: String::new(),\n    schedule_stop: String::new(),\n    schedule_days: 127,\n};\nlet dto = QueueDto::from(q);\nassert_eq!(dto.queue_id, \"q1\");\n```",
         "required": [
           "queueId",
           "name",
@@ -1603,6 +1607,10 @@
           "defaultUserAgent": {
             "type": "string"
           },
+          "isRunning": {
+            "type": "boolean",
+            "description": "队列运行状态：停止的队列不自动启动其中任务。"
+          },
           "maxConcurrent": {
             "type": "integer",
             "format": "int32",
@@ -1617,6 +1625,23 @@
           },
           "queueId": {
             "type": "string"
+          },
+          "scheduleDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "定时生效星期位掩码：bit0=周一 … bit6=周日；127 = 每天。"
+          },
+          "scheduleEnabled": {
+            "type": "boolean",
+            "description": "每日定时计划是否启用。"
+          },
+          "scheduleStart": {
+            "type": "string",
+            "description": "每日定时启动时间 `HH:MM`（空 = 不定时启动）。"
+          },
+          "scheduleStop": {
+            "type": "string",
+            "description": "每日定时停止时间 `HH:MM`（空 = 不定时停止）。"
           },
           "speedLimitKbps": {
             "type": "integer",
@@ -1823,7 +1848,7 @@
       },
       "TaskDto": {
         "type": "object",
-        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    file_missing: false,\n    completed_at: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
+        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
         "required": [
           "taskId",
           "url",

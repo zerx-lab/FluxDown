@@ -7,6 +7,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../../bindings/bindings.dart';
 import '../../i18n/locale_provider.dart';
 import '../../models/download_controller.dart';
+import '../../models/download_queue.dart';
 import '../../models/settings_provider.dart';
 import '../../models/ua_presets.dart';
 import '../../theme/app_colors.dart';
@@ -93,10 +94,10 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     final last = widget.settings.lastDialogThreads;
     _threads = const {'4', '8', '16', '32'}.contains(last) ? last : 'auto';
     _queueId = widget.settings.defaultQueueId;
-    // 默认队列被删除后回退
-    if (_queueId.isNotEmpty &&
+    // 默认队列被删除/为空后回退到主队列
+    if (_queueId.isEmpty ||
         !widget.controller.queues.any((q) => q.queueId == _queueId)) {
-      _queueId = '';
+      _queueId = kMainQueueId;
     }
     // 弹层可见期间逐条到达的批量协议 URL：追加为新行（去重）
     _appendSub = widget.appendUrls?.listen(_appendUrl);
@@ -149,7 +150,7 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     }
   }
 
-  void _start() {
+  void _start({bool later = false}) {
     final s = LocaleScope.of(context);
     final urls = _urlController.text
         .split('\n')
@@ -185,6 +186,11 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
         ? widget.initialFileName
         : '';
 
+    // 队列归属挂在动作上（规则同桌面端）：立即下载 = 表单所选队列；
+    // 稍后下载 = 固定进「稍后下载」队列（移动端不提供逐次改道菜单，
+    // 事后可经任务操作弹层移动队列）。
+    final queueId = later ? kLaterQueueId : _queueId;
+
     if (urls.length == 1) {
       widget.controller.createTask(
         url: urls.first,
@@ -193,9 +199,10 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
         segments: segments,
         cookies: cookies,
         userAgent: userAgent,
-        queueId: _queueId,
+        queueId: queueId,
         checksum: checksum,
         extraHeaders: extraHeaders,
+        startPaused: later,
       );
     } else {
       // 批量下载共享目录/线程/UA，校验值仅单任务支持
@@ -207,8 +214,9 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
         saveDir: saveDir,
         segments: segments,
         userAgent: userAgent,
-        queueId: _queueId,
+        queueId: queueId,
         cookies: cookies,
+        startPaused: later,
       );
     }
 
@@ -223,10 +231,22 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     final m = AppMetrics.of(context);
     return MobileSheetContainer(
       title: s.newDownload,
-      footer: MobilePrimaryButton(
-        label: s.startDownload,
-        icon: LucideIcons.download,
-        onTap: _start,
+      footer: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          MobilePrimaryButton(
+            label: s.startDownload,
+            icon: LucideIcons.download,
+            onTap: _start,
+          ),
+          const SizedBox(height: 10),
+          MobilePrimaryButton(
+            label: s.downloadLater,
+            icon: LucideIcons.clock,
+            filled: false,
+            onTap: () => _start(later: true),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -292,14 +312,9 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              MobileChip(
-                label: s.defaultQueue,
-                selected: _queueId.isEmpty,
-                onTap: () => setState(() => _queueId = ''),
-              ),
               for (final q in widget.controller.queues)
                 MobileChip(
-                  label: q.name,
+                  label: queueDisplayName(s, q),
                   selected: _queueId == q.queueId,
                   onTap: () => setState(() => _queueId = q.queueId),
                 ),

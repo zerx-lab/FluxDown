@@ -13,7 +13,7 @@ use fluxdown_api::types::CreateTaskRequest;
 use fluxdown_engine::Engine;
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
-use fluxdown_engine::download_manager::{ResolveOutcome, TaskDone};
+use fluxdown_engine::download_manager::{NewTaskSpec, ResolveOutcome, TaskDone};
 use fluxdown_engine::log_info;
 use fluxdown_engine::proxy_config::ProxyConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -85,6 +85,31 @@ pub enum ActorCmd {
         queue_id: String,
         ack: oneshot::Sender<()>,
     },
+    /// 启动队列：置运行态并按队列内顺序恢复其中所有待下载任务。
+    StartQueue {
+        queue_id: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// 停止队列：置停止态并暂停其中所有排队/活跃任务。
+    StopQueue {
+        queue_id: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// 更新队列的每日定时计划。
+    SetQueueSchedule {
+        queue_id: String,
+        enabled: bool,
+        start_time: String,
+        stop_time: String,
+        days: i32,
+        ack: oneshot::Sender<()>,
+    },
+    /// 持久化队列内任务顺序（完整新顺序，1..N）。
+    ReorderQueue {
+        queue_id: String,
+        task_ids: Vec<String>,
+        ack: oneshot::Sender<()>,
+    },
     /// Boost 优先下载（空 task_id = 取消 Boost）。
     Boost {
         task_id: String,
@@ -121,6 +146,11 @@ pub async fn run_actor(
     rescan_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     rescan_timer.tick().await;
 
+    // 队列定时调度 tick：引擎侧做边沿检测（每边沿每天至多一次 + 当日补
+    // 触发），此处只提供节拍。
+    let mut queue_schedule_tick = tokio::time::interval(Duration::from_secs(20));
+    queue_schedule_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
             Some(cmd) = cmd_rx.recv() => {
@@ -144,6 +174,9 @@ pub async fn run_actor(
             }
             _ = rescan_timer.tick() => {
                 engine.manager.spawn_file_scan();
+            }
+            _ = queue_schedule_tick.tick() => {
+                engine.manager.tick_queue_schedules().await;
             }
             else => {
                 log_info!("[server-actor] all channels closed, exiting");
@@ -188,25 +221,26 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             log_info!("[server-actor] create task: url={}", req.url);
             let task_id = engine
                 .manager
-                .create_task(
-                    req.url,
+                .create_task(NewTaskSpec {
+                    url: req.url,
                     save_dir,
-                    req.file_name,
-                    req.segments,
-                    req.cookies,
-                    req.referrer,
+                    file_name: req.file_name,
+                    segments: req.segments,
+                    cookies: req.cookies,
+                    referrer: req.referrer,
                     hint_file_size,
-                    torrent_bytes,
-                    req.proxy_url,
-                    req.user_agent,
-                    req.queue_id,
-                    req.checksum,
-                    req.headers.unwrap_or_default(),
-                    Vec::new(),
-                    req.method,
-                    req.body.map(Into::into),
-                    req.audio_url,
-                )
+                    torrent_file_bytes: torrent_bytes,
+                    proxy_url: req.proxy_url,
+                    user_agent: req.user_agent,
+                    queue_id: req.queue_id,
+                    checksum: req.checksum,
+                    extra_headers: req.headers.unwrap_or_default(),
+                    method: req.method,
+                    body: req.body.map(Into::into),
+                    audio_url: req.audio_url,
+                    start_paused: req.start_paused,
+                    ..Default::default()
+                })
                 .await;
             // 立即广播 tasksSnapshot，确保客户端在首个 taskProgress 之前
             // 已拿到正确的 queue_id。
@@ -243,9 +277,9 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             let _ = ack.send(());
         }
         ActorCmd::ContinueAll { ack } => {
-            // 仅恢复 paused(2)；error(4) 留给显式的单任务 continue。
-            let ids = task_ids_by_status(&engine.db, &[2]).await;
-            engine.manager.batch_resume(&ids).await;
+            // 仅恢复 paused(2) 且所在队列运行中的任务；停止队列（含「稍后
+            // 下载」栈）由「启动队列」显式恢复。error(4) 留给单任务 continue。
+            engine.manager.resume_all_eligible().await;
             let _ = ack.send(());
         }
         ActorCmd::ApplyConfig { keys, ack } => {
@@ -308,6 +342,36 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             ack,
         } => {
             engine.manager.move_task_to_queue(task_id, queue_id).await;
+            let _ = ack.send(());
+        }
+        ActorCmd::StartQueue { queue_id, ack } => {
+            engine.manager.start_queue(queue_id).await;
+            let _ = ack.send(());
+        }
+        ActorCmd::StopQueue { queue_id, ack } => {
+            engine.manager.stop_queue(queue_id).await;
+            let _ = ack.send(());
+        }
+        ActorCmd::SetQueueSchedule {
+            queue_id,
+            enabled,
+            start_time,
+            stop_time,
+            days,
+            ack,
+        } => {
+            engine
+                .manager
+                .set_queue_schedule(queue_id, enabled, start_time, stop_time, days)
+                .await;
+            let _ = ack.send(());
+        }
+        ActorCmd::ReorderQueue {
+            queue_id,
+            task_ids,
+            ack,
+        } => {
+            engine.manager.reorder_queue_tasks(queue_id, task_ids).await;
             let _ = ack.send(());
         }
         ActorCmd::Boost { task_id, ack } => {

@@ -169,6 +169,7 @@ async fn run_one_real_download(
         "", // proxy_url
         "", // queue_id
         "", // checksum
+        0,  // initial_status
     )
     .await
     .map_err(|e| format!("insert_task: {e:?}"))?;

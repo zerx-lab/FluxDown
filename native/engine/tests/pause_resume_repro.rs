@@ -266,25 +266,15 @@ async fn run_scenario(
     let hint = if use_hint { size as i64 } else { 0 };
     let task_id = engine
         .manager
-        .create_task(
-            url.clone(),
-            work_dir.to_string_lossy().to_string(),
-            "file.bin".to_string(),
+        .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+            url: url.clone(),
+            save_dir: work_dir.to_string_lossy().to_string(),
+            file_name: "file.bin".to_string(),
             segments,
-            String::new(),
-            String::new(),
-            hint,
-            Vec::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            std::collections::HashMap::new(),
-            Vec::new(),
+            hint_file_size: hint,
             method,
-            None,
-            None,
-        )
+            ..Default::default()
+        })
         .await
         .expect("create_task");
     eprintln!("[{name}] task={task_id} segments={segments} hint={hint}");
@@ -421,11 +411,8 @@ async fn run_change_segments(
     new_segments: i32,
     pause_first: bool,
 ) -> CsResult {
-    let work_dir = std::env::temp_dir().join(format!(
-        "fluxdown_cs_{}_{}",
-        name,
-        std::process::id()
-    ));
+    let work_dir =
+        std::env::temp_dir().join(format!("fluxdown_cs_{}_{}", name, std::process::id()));
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
     tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
@@ -476,25 +463,13 @@ async fn run_change_segments(
 
     let task_id = engine
         .manager
-        .create_task(
-            url.clone(),
-            work_dir.to_string_lossy().to_string(),
-            "file.bin".to_string(),
-            initial_segments,
-            String::new(),
-            String::new(),
-            0,
-            Vec::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            std::collections::HashMap::new(),
-            Vec::new(),
-            None,
-            None,
-            None,
-        )
+        .create_task(fluxdown_engine::download_manager::NewTaskSpec {
+            url: url.clone(),
+            save_dir: work_dir.to_string_lossy().to_string(),
+            file_name: "file.bin".to_string(),
+            segments: initial_segments,
+            ..Default::default()
+        })
         .await
         .expect("create_task");
 
@@ -597,16 +572,25 @@ async fn change_segments_preserves_progress() {
 
     // 暂停态增线程 4 → 8：进度精确保留、段行保留、tasks.segments=8、恢复无全量 GET、完成。
     let up = run_change_segments("up_4_8", 4, 8, true).await;
-    assert_eq!(up.downloaded_after, up.downloaded_before, "增线程：已下字节必须完整保留");
+    assert_eq!(
+        up.downloaded_after, up.downloaded_before,
+        "增线程：已下字节必须完整保留"
+    );
     assert!(up.rows_after > 0, "增线程：段行必须保留（未被删除）");
     assert_eq!(up.tasks_segments, 8, "增线程：tasks.segments 应更新为 8");
-    assert_eq!(up.full_gets, 0, "增线程：恢复期间绝不应出现全量 GET（否则浪费一次性 token）");
+    assert_eq!(
+        up.full_gets, 0,
+        "增线程：恢复期间绝不应出现全量 GET（否则浪费一次性 token）"
+    );
     assert_eq!(up.status, 3, "增线程：应最终下载完成");
     assert_eq!(up.file_len, size, "增线程：完成文件大小应正确");
 
     // 暂停态减线程 8 → 2：同样保留进度并完成。
     let down = run_change_segments("down_8_2", 8, 2, true).await;
-    assert_eq!(down.downloaded_after, down.downloaded_before, "减线程：已下字节必须完整保留");
+    assert_eq!(
+        down.downloaded_after, down.downloaded_before,
+        "减线程：已下字节必须完整保留"
+    );
     assert!(down.rows_after > 0, "减线程：段行必须保留");
     assert_eq!(down.tasks_segments, 2, "减线程：tasks.segments 应更新为 2");
     assert_eq!(down.full_gets, 0, "减线程：恢复期间绝不应出现全量 GET");
@@ -623,7 +607,10 @@ async fn change_segments_preserves_progress() {
         active.downloaded_after
     );
     assert!(active.rows_after > 0, "下载中改：段行必须保留");
-    assert_eq!(active.tasks_segments, 16, "下载中改：tasks.segments 应更新为 16");
+    assert_eq!(
+        active.tasks_segments, 16,
+        "下载中改：tasks.segments 应更新为 16"
+    );
     assert_eq!(active.full_gets, 0, "下载中改：全程绝不应出现全量 GET");
     assert_eq!(active.status, 3, "下载中改：应最终下载完成");
     assert_eq!(active.file_len, size, "下载中改：完成文件大小应正确");

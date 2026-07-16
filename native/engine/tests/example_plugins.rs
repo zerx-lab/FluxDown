@@ -50,8 +50,5 @@ fn all_example_plugin_manifests_are_valid() {
         }
         checked += 1;
     }
-    assert!(
-        checked >= 2,
-        "示例插件目录应至少含 echo-rewriter 与 ytdlp"
-    );
+    assert!(checked >= 2, "示例插件目录应至少含 echo-rewriter 与 ytdlp");
 }

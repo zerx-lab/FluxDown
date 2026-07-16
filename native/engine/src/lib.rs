@@ -166,6 +166,9 @@ impl Engine {
         };
         // 读回持久化的域名连接上限观察（过期/旧版本数据在加载时丢弃）。
         segment_coordinator::load_domain_conn_caps(&db).await;
+        // 播种内置队列（main 主队列 / later 稍后下载，幂等）并迁移存量
+        // 空 queue_id 任务——必须先于宿主的 `manager.load_queues()`。
+        db.seed_builtin_queues().await?;
         // 插件系统构造所需值需在 config 被 move 进 DownloadManagerConfig 前克隆。
         #[cfg(feature = "plugins")]
         let plugin_ctx = (

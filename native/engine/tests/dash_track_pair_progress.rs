@@ -93,6 +93,7 @@ async fn track_pair_reports_midway_progress_with_real_total() {
         "",
         "",
         "",
+        0,
     )
     .await
     .expect("insert_task");

@@ -5,7 +5,7 @@ use sqlx::any::{AnyPoolOptions, AnyRow};
 use sqlx::{AssertSqlSafe, Row};
 use thiserror::Error;
 
-use crate::model::{QueueInfo, TaskInfo};
+use crate::model::{MAIN_QUEUE_ID, QueueInfo, TaskInfo};
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
-    range_verified INTEGER NOT NULL DEFAULT 1
+    range_verified INTEGER NOT NULL DEFAULT 1,
+    queue_order INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -96,7 +97,12 @@ CREATE TABLE IF NOT EXISTS queues (
     default_save_dir TEXT NOT NULL DEFAULT '',
     position INTEGER NOT NULL DEFAULT 0,
     default_segments INTEGER NOT NULL DEFAULT 0,
-    default_user_agent TEXT NOT NULL DEFAULT ''
+    default_user_agent TEXT NOT NULL DEFAULT '',
+    is_running INTEGER NOT NULL DEFAULT 1,
+    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+    schedule_start TEXT NOT NULL DEFAULT '',
+    schedule_stop TEXT NOT NULL DEFAULT '',
+    schedule_days INTEGER NOT NULL DEFAULT 127
 );
 CREATE INDEX IF NOT EXISTS idx_task_segments_task_id ON task_segments(task_id);
 CREATE TABLE IF NOT EXISTS ed2k_blocks (
@@ -148,7 +154,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
-    range_verified INTEGER NOT NULL DEFAULT 1
+    range_verified INTEGER NOT NULL DEFAULT 1,
+    queue_order INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -176,7 +183,12 @@ CREATE TABLE IF NOT EXISTS queues (
     default_save_dir TEXT NOT NULL DEFAULT '',
     position INTEGER NOT NULL DEFAULT 0,
     default_segments INTEGER NOT NULL DEFAULT 0,
-    default_user_agent TEXT NOT NULL DEFAULT ''
+    default_user_agent TEXT NOT NULL DEFAULT '',
+    is_running INTEGER NOT NULL DEFAULT 1,
+    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+    schedule_start TEXT NOT NULL DEFAULT '',
+    schedule_stop TEXT NOT NULL DEFAULT '',
+    schedule_days INTEGER NOT NULL DEFAULT 127
 );
 CREATE INDEX IF NOT EXISTS idx_task_segments_task_id ON task_segments(task_id);
 CREATE TABLE IF NOT EXISTS ed2k_blocks (
@@ -241,10 +253,11 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
+        queue_order: row.try_get("queue_order").unwrap_or(0),
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, file_missing, completed_at, segments";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, file_missing, completed_at, segments, queue_order";
 
 impl Db {
     /// 在 `dir` 目录下打开（不存在则创建）SQLite 数据库 `flux_down.db`。
@@ -356,6 +369,20 @@ impl Db {
         // 重新开始下载（status→0/1/5）时清空，供重下后重新记录。
         self.add_column_if_missing("tasks", "completed_at", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        // 队列内启动顺序（0 = 未显式排序，按 created_at 先来先启动）。
+        self.add_column_if_missing("tasks", "queue_order", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        // 队列启停状态与每日定时计划（IDM 式队列控制）。
+        self.add_column_if_missing("queues", "is_running", "INTEGER NOT NULL DEFAULT 1")
+            .await?;
+        self.add_column_if_missing("queues", "schedule_enabled", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing("queues", "schedule_start", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("queues", "schedule_stop", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("queues", "schedule_days", "INTEGER NOT NULL DEFAULT 127")
+            .await?;
         Ok(())
     }
 
@@ -387,6 +414,9 @@ impl Db {
         Ok(())
     }
 
+    /// 插入新任务。`initial_status` 支持 0（pending，正常创建）与
+    /// 2（paused，「稍后下载」——建任务不启动）；`queue_order` 自动追加
+    /// 到目标队列末尾（现有最大值 +1）。
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_task(
         &self,
@@ -399,22 +429,33 @@ impl Db {
         proxy_url: &str,
         queue_id: &str,
         checksum: &str,
+        initial_status: i32,
     ) -> Result<(), DbError> {
         let now = chrono_now();
+        // 进程内建任务串行（单线程 actor）；跨进程并发（CLI --local 与 App
+        // 同库）的罕见撞序由 (queue_order, created_at) 复合排序自然容忍。
+        let next_order: i64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(MAX(queue_order), 0) + 1 AS BIGINT) FROM tasks WHERE queue_id = $1",
+        )
+        .bind(queue_id)
+        .fetch_one(&self.pool)
+        .await?;
         sqlx::query(
-            "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, created_at, proxy_url, queue_id, checksum)
-             VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, $9, $10)",
+            "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, created_at, proxy_url, queue_id, checksum, queue_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(id)
         .bind(url)
         .bind(file_name)
         .bind(save_dir)
+        .bind(initial_status)
         .bind(segments)
         .bind(total_bytes)
         .bind(now)
         .bind(proxy_url)
         .bind(queue_id)
         .bind(checksum)
+        .bind(next_order as i32)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1786,11 +1827,12 @@ impl Db {
         Ok(())
     }
 
-    /// Delete a queue and move its tasks to the default queue (empty queue_id).
+    /// Delete a queue; its tasks are reassigned to the builtin main queue
+    /// (清除显式 `queue_order`，按 `created_at` 先来先启动)。
     pub async fn delete_queue(&self, id: &str) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
-        // Reassign tasks in the deleted queue to the default queue.
-        sqlx::query("UPDATE tasks SET queue_id = '' WHERE queue_id = $1")
+        sqlx::query("UPDATE tasks SET queue_id = $1, queue_order = 0 WHERE queue_id = $2")
+            .bind(MAIN_QUEUE_ID)
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -1805,7 +1847,7 @@ impl Db {
     /// Load all named queues ordered by position.
     pub async fn load_all_queues(&self) -> Result<Vec<QueueInfo>, DbError> {
         let rows = sqlx::query(
-            "SELECT id, name, speed_limit_kbps, max_concurrent, default_save_dir, position, default_segments, default_user_agent
+            "SELECT id, name, speed_limit_kbps, max_concurrent, default_save_dir, position, default_segments, default_user_agent, is_running, schedule_enabled, schedule_start, schedule_stop, schedule_days
              FROM queues ORDER BY position ASC",
         )
         .fetch_all(&self.pool)
@@ -1821,15 +1863,29 @@ impl Db {
                 position: row.try_get("position")?,
                 default_segments: row.try_get("default_segments")?,
                 default_user_agent: row.try_get("default_user_agent")?,
+                // 迁移新增列：与 task_from_row 同风格的防御性回退。
+                is_running: row.try_get::<i32, _>("is_running").unwrap_or(1) != 0,
+                schedule_enabled: row.try_get::<i32, _>("schedule_enabled").unwrap_or(0) != 0,
+                schedule_start: row.try_get("schedule_start").unwrap_or_default(),
+                schedule_stop: row.try_get("schedule_stop").unwrap_or_default(),
+                schedule_days: row.try_get("schedule_days").unwrap_or(127),
             });
         }
         Ok(queues)
     }
 
-    /// Move a task to a different queue (empty queue_id = default queue).
+    /// Move a task to a different queue, appending to the target queue's
+    /// tail (`queue_order` = 目标队列现有最大值 +1)。
     pub async fn move_task_to_queue(&self, task_id: &str, queue_id: &str) -> Result<(), DbError> {
-        sqlx::query("UPDATE tasks SET queue_id = $1 WHERE id = $2")
+        let next_order: i64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(MAX(queue_order), 0) + 1 AS BIGINT) FROM tasks WHERE queue_id = $1",
+        )
+        .bind(queue_id)
+        .fetch_one(&self.pool)
+        .await?;
+        sqlx::query("UPDATE tasks SET queue_id = $1, queue_order = $2 WHERE id = $3")
             .bind(queue_id)
+            .bind(next_order as i32)
             .bind(task_id)
             .execute(&self.pool)
             .await?;
@@ -1842,6 +1898,135 @@ impl Db {
             .fetch_one(&self.pool)
             .await?;
         Ok(count as i32)
+    }
+
+    /// 更新队列运行状态（启动/停止队列的持久化半边）。
+    pub async fn set_queue_running(&self, id: &str, running: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE queues SET is_running = $1 WHERE id = $2")
+            .bind(if running { 1i32 } else { 0i32 })
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 更新队列的每日定时计划。`start`/`stop` 为 `HH:MM`（空 = 不定时），
+    /// `days` 为星期位掩码（bit0=周一 … bit6=周日）。
+    pub async fn set_queue_schedule(
+        &self,
+        id: &str,
+        enabled: bool,
+        start: &str,
+        stop: &str,
+        days: i32,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE queues SET schedule_enabled = $1, schedule_start = $2, schedule_stop = $3, schedule_days = $4 WHERE id = $5",
+        )
+        .bind(if enabled { 1i32 } else { 0i32 })
+        .bind(start)
+        .bind(stop)
+        .bind(days)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 队列启动时应恢复的任务 ID（status ∈ {0 pending, 2 paused}），按
+    /// 队列内顺序（`queue_order` → `created_at` → `id`）排列。
+    pub async fn queue_startable_task_ids(&self, queue_id: &str) -> Result<Vec<String>, DbError> {
+        let rows = sqlx::query_scalar(
+            "SELECT id FROM tasks WHERE queue_id = $1 AND status IN (0, 2) ORDER BY queue_order ASC, created_at ASC, id ASC",
+        )
+        .bind(queue_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// 「全局恢复」候选：所有 paused 任务中排除**已停止队列**内的任务
+    /// （停止队列由「启动队列」显式恢复；孤儿 queue_id 视作运行中）。
+    pub async fn eligible_resume_task_ids(&self) -> Result<Vec<String>, DbError> {
+        let rows = sqlx::query_scalar(
+            "SELECT t.id FROM tasks t LEFT JOIN queues q ON t.queue_id = q.id \
+             WHERE t.status = 2 AND COALESCE(q.is_running, 1) = 1 \
+             ORDER BY t.queue_order ASC, t.created_at ASC, t.id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// 持久化队列内任务顺序：把 `ordered_ids` 依次写为 1..N 的
+    /// `queue_order`（仅更新仍属于该队列的行，容忍并发移动竞态）。
+    pub async fn reorder_queue_tasks(
+        &self,
+        queue_id: &str,
+        ordered_ids: &[String],
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ordered_ids.iter().enumerate() {
+            sqlx::query("UPDATE tasks SET queue_order = $1 WHERE id = $2 AND queue_id = $3")
+                .bind((i + 1) as i32)
+                .bind(id.as_str())
+                .bind(queue_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 播种内置队列（幂等、进程间安全）：
+    /// - `main` 主队列（运行中，无限制）——未指定队列的任务的归属；
+    /// - `later` 稍后下载（默认停止）——「稍后下载」的默认落点。
+    ///
+    /// 同时把存量 `queue_id = ''` 任务迁入主队列，并在 `default_queue_id`
+    /// 配置缺失时设为主队列。以 config 键 `builtin_queues_seeded` 的原子
+    /// `INSERT … DO NOTHING` 作跨进程互斥：抢不到该行写入的进程直接跳过。
+    pub async fn seed_builtin_queues(&self) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        // 第一条语句即写入：SQLite 取得写锁、PostgreSQL 锁定冲突行，
+        // 并发的第二个进程在此阻塞，提交后读到 rows_affected == 0 即退出。
+        let claimed = sqlx::query(
+            "INSERT INTO config (key, value) VALUES ('builtin_queues_seeded', '1') ON CONFLICT (key) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            return Ok(()); // 已播种（tx 随 drop 回滚，无写入）
+        }
+        // 已有自定义队列整体后移，内置队列固定占位 0/1。
+        sqlx::query("UPDATE queues SET position = position + 2")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO queues (id, name, position, is_running) VALUES ($1, $2, 0, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(MAIN_QUEUE_ID)
+        .bind("Main Queue")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO queues (id, name, position, is_running) VALUES ($1, $2, 1, 0) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(crate::model::LATER_QUEUE_ID)
+        .bind("Download Later")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE tasks SET queue_id = $1 WHERE queue_id = ''")
+            .bind(MAIN_QUEUE_ID)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO config (key, value) VALUES ('default_queue_id', $1) ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(MAIN_QUEUE_ID)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -1916,6 +2101,7 @@ mod tests {
             "",
             "",
             "",
+            0,
         )
         .await
         .expect("insert task");
@@ -2244,6 +2430,7 @@ mod tests {
             "",
             "",
             "",
+            0,
         )
         .await
         .expect("insert task with size");
@@ -2760,6 +2947,7 @@ mod tests {
             "",
             "",
             "",
+            0,
         )
         .await
         .expect("insert");
@@ -3029,6 +3217,166 @@ mod tests {
             "start_byte-mismatched write must affect zero rows"
         );
 
+        close_test_db(&db, dir).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // 队列控制：播种 / 启停与定时持久化 / 队列内顺序 / 全局恢复候选
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn seed_builtin_queues_is_idempotent_and_migrates_legacy() {
+        let (db, dir) = open_test_db().await;
+        // 播种前的存量数据：queue_id='' 任务 + 一个自定义队列（position 0）。
+        insert_task(&db, "legacy").await;
+        db.insert_queue("custom", "我的队列", 0, 0, "", 0, 0, "")
+            .await
+            .expect("insert custom queue");
+
+        db.seed_builtin_queues().await.expect("seed");
+        db.seed_builtin_queues().await.expect("seed twice");
+
+        let queues = db.load_all_queues().await.expect("load queues");
+        assert_eq!(queues.len(), 3, "main + later + custom");
+        assert_eq!(queues[0].queue_id, MAIN_QUEUE_ID);
+        assert!(queues[0].is_running, "main seeds running");
+        assert_eq!(queues[1].queue_id, crate::model::LATER_QUEUE_ID);
+        assert!(!queues[1].is_running, "later seeds stopped");
+        assert_eq!(
+            queues[2].queue_id, "custom",
+            "existing queues shift behind the builtins"
+        );
+
+        let t = db
+            .load_task_by_id("legacy")
+            .await
+            .expect("load")
+            .expect("row");
+        assert_eq!(t.queue_id, MAIN_QUEUE_ID, "'' tasks migrate to main");
+        assert_eq!(
+            db.get_config("default_queue_id")
+                .await
+                .expect("cfg")
+                .as_deref(),
+            Some(MAIN_QUEUE_ID)
+        );
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn seed_does_not_override_existing_default_queue_config() {
+        let (db, dir) = open_test_db().await;
+        db.set_config("default_queue_id", "mine")
+            .await
+            .expect("cfg");
+        db.seed_builtin_queues().await.expect("seed");
+        assert_eq!(
+            db.get_config("default_queue_id")
+                .await
+                .expect("cfg")
+                .as_deref(),
+            Some("mine"),
+            "an explicit default queue must survive seeding"
+        );
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn queue_running_and_schedule_roundtrip() {
+        let (db, dir) = open_test_db().await;
+        db.seed_builtin_queues().await.expect("seed");
+        db.set_queue_running(MAIN_QUEUE_ID, false)
+            .await
+            .expect("stop");
+        db.set_queue_schedule(MAIN_QUEUE_ID, true, "08:30", "23:00", 0b001_1111)
+            .await
+            .expect("schedule");
+        let queues = db.load_all_queues().await.expect("load");
+        let main = queues
+            .iter()
+            .find(|q| q.queue_id == MAIN_QUEUE_ID)
+            .expect("main row");
+        assert!(!main.is_running);
+        assert!(main.schedule_enabled);
+        assert_eq!(main.schedule_start, "08:30");
+        assert_eq!(main.schedule_stop, "23:00");
+        assert_eq!(main.schedule_days, 0b001_1111);
+        close_test_db(&db, dir).await;
+    }
+
+    /// 插入任务自动追加 queue_order；startable 顺序 = queue_order → created_at；
+    /// 完成态任务不参与启动。
+    #[tokio::test]
+    async fn queue_startable_ids_follow_explicit_order() {
+        let (db, dir) = open_test_db().await;
+        for id in ["a", "b", "c"] {
+            db.insert_task(id, "http://e/f", "f", "/tmp", 1, 0, "", "q", "", 2)
+                .await
+                .expect("insert");
+        }
+        let c = db.load_task_by_id("c").await.expect("load").expect("row");
+        assert_eq!(c.queue_order, 3, "inserts append to the queue tail");
+
+        db.reorder_queue_tasks("q", &["c".into(), "a".into(), "b".into()])
+            .await
+            .expect("reorder");
+        let ids = db.queue_startable_task_ids("q").await.expect("startable");
+        assert_eq!(ids, vec!["c", "a", "b"]);
+
+        db.update_task_status("a", 3, "").await.expect("complete");
+        let ids = db.queue_startable_task_ids("q").await.expect("startable");
+        assert_eq!(ids, vec!["c", "b"], "completed tasks drop out");
+        close_test_db(&db, dir).await;
+    }
+
+    /// 全局恢复候选排除停止队列内的任务；孤儿 queue_id 视作运行中。
+    #[tokio::test]
+    async fn eligible_resume_skips_stopped_queues() {
+        let (db, dir) = open_test_db().await;
+        db.seed_builtin_queues().await.expect("seed");
+        for (id, q) in [
+            ("m", MAIN_QUEUE_ID),
+            ("l", crate::model::LATER_QUEUE_ID),
+            ("o", "ghost"),
+        ] {
+            db.insert_task(id, "http://e/f", "f", "/tmp", 1, 0, "", q, "", 2)
+                .await
+                .expect("insert");
+        }
+        let mut ids = db.eligible_resume_task_ids().await.expect("eligible");
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["m", "o"],
+            "tasks inside the stopped later queue must be excluded"
+        );
+        close_test_db(&db, dir).await;
+    }
+
+    /// 移动任务追加到目标队列尾部；删除队列把任务归还主队列并清除显式顺序。
+    #[tokio::test]
+    async fn move_and_delete_queue_maintain_order() {
+        let (db, dir) = open_test_db().await;
+        db.seed_builtin_queues().await.expect("seed");
+        db.insert_task("x", "http://e/f", "f", "/tmp", 1, 0, "", "q2", "", 0)
+            .await
+            .expect("insert x");
+        db.insert_task("y", "http://e/f", "f", "/tmp", 1, 0, "", "q2", "", 0)
+            .await
+            .expect("insert y");
+
+        db.move_task_to_queue("x", "q3").await.expect("move");
+        let x = db.load_task_by_id("x").await.expect("load").expect("row");
+        assert_eq!(x.queue_id, "q3");
+        assert_eq!(x.queue_order, 1, "first task in the target queue");
+
+        db.insert_queue("q2", "Q2", 0, 0, "", 9, 0, "")
+            .await
+            .expect("queue row");
+        db.delete_queue("q2").await.expect("delete");
+        let y = db.load_task_by_id("y").await.expect("load").expect("row");
+        assert_eq!(y.queue_id, MAIN_QUEUE_ID);
+        assert_eq!(y.queue_order, 0, "explicit order resets on reassignment");
         close_test_db(&db, dir).await;
     }
 }

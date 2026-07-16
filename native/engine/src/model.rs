@@ -5,6 +5,27 @@
 //! Rinf/Dart 信号层。`hub` 侧通过 `signal_bridge` 模块的 `From`/`TryFrom`
 //! 实现在这些类型与 `hub::signals::*` 之间转换。
 
+/// 内置「主队列」的固定 ID。所有未显式指定队列的新任务归入此队列；
+/// 不可删除、不可重命名（宿主 UI 按 ID 本地化显示名称）。
+pub const MAIN_QUEUE_ID: &str = "main";
+
+/// 内置「稍后下载」队列的固定 ID。默认停止；「稍后下载」入口在未选
+/// 队列时落入此队列。不可删除、不可重命名。
+pub const LATER_QUEUE_ID: &str = "later";
+
+/// 判断队列 ID 是否为内置队列（`main`/`later`）。
+///
+/// # Examples
+///
+/// ```
+/// use fluxdown_engine::model::{is_builtin_queue, MAIN_QUEUE_ID};
+/// assert!(is_builtin_queue(MAIN_QUEUE_ID));
+/// assert!(!is_builtin_queue("some-uuid"));
+/// ```
+pub fn is_builtin_queue(queue_id: &str) -> bool {
+    queue_id == MAIN_QUEUE_ID || queue_id == LATER_QUEUE_ID
+}
+
 /// 持久化任务信息。字段对应 `hub::signals::TaskInfo`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskInfo {
@@ -35,6 +56,9 @@ pub struct TaskInfo {
     /// 配置的分段（线程）数。0 = 自动（segment_advisor 动态计算）。
     /// 供 UI 展示与「创建后改线程数」编辑；与运行时实际分片数可能不同。
     pub segments: i32,
+    /// 队列内启动顺序（越小越先启动）。0 = 未显式排序，按 `created_at`
+    /// 先来先启动；>0 为显式顺序（`reorder_queue_tasks` 或建任务时追加）。
+    pub queue_order: i32,
 }
 
 /// 命名队列元数据。字段对应 `hub::signals::QueueInfo`。
@@ -54,6 +78,17 @@ pub struct QueueInfo {
     pub default_segments: i32,
     /// 队列内任务默认 User-Agent。空 = 继承全局 UA。
     pub default_user_agent: String,
+    /// 队列运行状态。停止的队列不自动启动其中任务（「稍后下载」与定时
+    /// 调度的基础）；显式的单任务恢复/立即下载不受影响。
+    pub is_running: bool,
+    /// 定时计划是否启用。
+    pub schedule_enabled: bool,
+    /// 每日定时启动时间 `HH:MM`（空 = 不定时启动）。
+    pub schedule_start: String,
+    /// 每日定时停止时间 `HH:MM`（空 = 不定时停止）。
+    pub schedule_stop: String,
+    /// 定时生效的星期位掩码：bit0=周一 … bit6=周日；127 = 每天。
+    pub schedule_days: i32,
 }
 
 /// 单个任务在队列中的位置。字段对应 `hub::signals::QueuePosition`。

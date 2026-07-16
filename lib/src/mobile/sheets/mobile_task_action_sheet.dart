@@ -4,6 +4,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../i18n/locale_provider.dart';
 import '../../models/download_controller.dart';
+import '../../models/download_queue.dart';
 import '../../models/download_task.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_metrics.dart';
@@ -257,8 +258,7 @@ Future<void> _showMoveToQueueSheet(
       }
 
       final rows = <Widget>[
-        queueItem('', s.defaultQueue),
-        for (final q in controller.queues) queueItem(q.queueId, q.name),
+        for (final q in controller.queues) queueItem(q.queueId, queueDisplayName(s, q)),
       ];
 
       return MobileSheetContainer(

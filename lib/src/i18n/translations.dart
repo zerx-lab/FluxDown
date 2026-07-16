@@ -120,6 +120,47 @@ class S {
   String get taskQueueLabel => _r('taskQueueLabel');
   String get defaultQueueSetting => _r('defaultQueueSetting');
   String get defaultQueueSettingDesc => _r('defaultQueueSettingDesc');
+  String get mainQueue => _r('mainQueue');
+  String get laterQueue => _r('laterQueue');
+  String get ungroupedTasks => _r('ungroupedTasks');
+  String get startQueueAction => _r('startQueueAction');
+  String get stopQueueAction => _r('stopQueueAction');
+  String get queueRunningBadge => _r('queueRunningBadge');
+  String get queueStoppedBadge => _r('queueStoppedBadge');
+  String get manageQueueAction => _r('manageQueueAction');
+  String get downloadLater => _r('downloadLater');
+  String startIntoQueueTooltip(String name) =>
+      _r('startIntoQueueTooltip', {'name': name});
+  String laterIntoQueueTooltip(String name) =>
+      _r('laterIntoQueueTooltip', {'name': name});
+  String get subtitleWaitingQueue => _r('subtitleWaitingQueue');
+  String get queueTabSettings => _r('queueTabSettings');
+  String get queueTabSchedule => _r('queueTabSchedule');
+  String get queueTabTasks => _r('queueTabTasks');
+  String get queueScheduleEnable => _r('queueScheduleEnable');
+  String get queueScheduleDesc => _r('queueScheduleDesc');
+  String get queueScheduleStartLabel => _r('queueScheduleStartLabel');
+  String get queueScheduleStopLabel => _r('queueScheduleStopLabel');
+  String get queueScheduleTimeHint => _r('queueScheduleTimeHint');
+  String get queueScheduleTimeInvalid => _r('queueScheduleTimeInvalid');
+  String get queueScheduleDays => _r('queueScheduleDays');
+  String get weekdaysShort => _r('weekdaysShort');
+  String get queueTasksOrderHint => _r('queueTasksOrderHint');
+  String scheduleSummaryBoth(String start, String stop) =>
+      _r('scheduleSummaryBoth', {'start': start, 'stop': stop});
+  String scheduleSummaryStartOnly(String start) =>
+      _r('scheduleSummaryStartOnly', {'start': start});
+  String scheduleSummaryStopOnly(String stop) =>
+      _r('scheduleSummaryStopOnly', {'stop': stop});
+  String get scheduleNeedOneTime => _r('scheduleNeedOneTime');
+  String get scheduleHourLabel => _r('scheduleHourLabel');
+  String get scheduleMinuteLabel => _r('scheduleMinuteLabel');
+  String get queueNoPendingTasks => _r('queueNoPendingTasks');
+  String get moveUpAction => _r('moveUpAction');
+  String get moveDownAction => _r('moveDownAction');
+  String get builtinQueueRenameHint => _r('builtinQueueRenameHint');
+  String get queueDirInheritHint => _r('queueDirInheritHint');
+  String get moveToQueueAction => _r('moveToQueueAction');
   String downloadUpdateVersion(String v) =>
       _r('downloadUpdateVersion', {'v': v});
   String get installAndRestart => _r('installAndRestart');
@@ -339,6 +380,22 @@ class S {
   String get settingsCatApiServiceDesc => _r('settingsCatApiServiceDesc');
   String get settingsCatAbout => _r('settingsCatAbout');
   String get settingsCatAboutDesc => _r('settingsCatAboutDesc');
+
+  // 分类子 Tab
+  String get settingsTabGeneral => _r('settingsTabGeneral');
+  String get settingsTabTracker => _r('settingsTabTracker');
+  String get settingsTabServers => _r('settingsTabServers');
+
+  // 设置分组小节标题
+  String get settingsGroupStartupTray => _r('settingsGroupStartupTray');
+  String get settingsGroupSystem => _r('settingsGroupSystem');
+  String get settingsGroupSaveLocation => _r('settingsGroupSaveLocation');
+  String get settingsGroupBehavior => _r('settingsGroupBehavior');
+  String get settingsGroupConnection => _r('settingsGroupConnection');
+  String get settingsGroupRetry => _r('settingsGroupRetry');
+  String get settingsGroupAdvanced => _r('settingsGroupAdvanced');
+  String get settingsGroupTheme => _r('settingsGroupTheme');
+  String get settingsGroupInterface => _r('settingsGroupInterface');
 
   // ─────────────────────────────────────────────
   // Settings — 通用

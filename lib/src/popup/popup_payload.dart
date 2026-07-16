@@ -144,6 +144,7 @@ class QuickPopupResult {
     'checksum': form.checksum,
     'threadsUserModified': form.threadsUserModified,
     'extraHeaders': form.extraHeaders,
+    'startLater': form.startLater,
   });
 
   factory QuickPopupResult.fromJsonString(String json) {
@@ -161,6 +162,7 @@ class QuickPopupResult {
         cookies: map['cookies'] as String? ?? '',
         checksum: map['checksum'] as String? ?? '',
         threadsUserModified: map['threadsUserModified'] as bool? ?? false,
+        startLater: map['startLater'] as bool? ?? false,
         extraHeaders: {
           for (final e
               in (map['extraHeaders'] as Map<String, dynamic>? ?? const {})

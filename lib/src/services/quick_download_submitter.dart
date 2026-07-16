@@ -6,6 +6,7 @@
 library;
 
 import '../bindings/bindings.dart';
+import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
 import '../widgets/quick_download_form.dart';
 import 'log_service.dart';
@@ -32,6 +33,12 @@ void submitQuickDownload({
     logError(_tag, 'no valid entries, dropping submit');
     return;
   }
+
+  // 稍后下载且未选队列 → 落入内置「稍后下载」队列，等「启动队列」批量恢复；
+  // 已显式选择队列则尊重选择（暂停加入该队列）。
+  final queueId = (result.startLater && result.queueId.isEmpty)
+      ? kLaterQueueId
+      : result.queueId;
 
   // 记录本次保存位置，供"跟随上次保存位置"开关使用
   SettingsProvider.globalInstance?.recordLastSaveDir(saveDir);
@@ -68,7 +75,8 @@ void submitQuickDownload({
         hintFileSize: hintFileSize,
         proxyUrl: result.proxyUrl,
         userAgent: result.userAgent,
-        queueId: result.queueId,
+        queueId: queueId,
+        startPaused: result.startLater,
         audioUrl: audioUrl,
         extraHeaders: result.extraHeaders,
       ).sendSignalToRust();
@@ -89,7 +97,8 @@ void submitQuickDownload({
         segments: result.segments,
         proxyUrl: result.proxyUrl,
         userAgent: result.userAgent,
-        queueId: result.queueId,
+        queueId: queueId,
+        startPaused: result.startLater,
         cookies: result.cookies,
         referrer: referrer,
         extraHeaders: result.extraHeaders,
@@ -112,7 +121,8 @@ void submitQuickDownload({
       segments: result.segments,
       proxyUrl: result.proxyUrl,
       userAgent: result.userAgent,
-      queueId: result.queueId,
+      queueId: queueId,
+      startPaused: result.startLater,
       cookies: result.cookies,
       referrer: referrer,
       extraHeaders: result.extraHeaders,

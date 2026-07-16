@@ -235,6 +235,7 @@ impl ApiHost for ServerApiHost {
                 method: if single { req.method.clone() } else { None },
                 body: if single { req.body.clone() } else { None },
                 audio_url: if single { req.audio_url.clone() } else { None },
+                start_paused: false,
             };
             self.send_cmd(|ack| ActorCmd::CreateTask {
                 req: Box::new(create),

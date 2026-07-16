@@ -232,6 +232,9 @@ class DownloadTask {
   /// 所属命名队列 ID（空字符串 = 默认队列）。
   final String queueId;
 
+  /// 队列内启动顺序（越小越先启动）。0 = 未显式排序（按创建时间先来先启动）。
+  final int queueOrder;
+
   /// 文件名是否已由 Rust 引擎或 DB 确认（非占位符）。
   ///
   /// 设为 true 的时机：
@@ -266,6 +269,7 @@ class DownloadTask {
     this.recentSplits = const [],
     this.queuePosition = -1,
     this.queueId = '',
+    this.queueOrder = 0,
     this.fileNameConfirmed = false,
     this.fileMissing = false,
     this.configuredSegments = 0,
@@ -290,6 +294,7 @@ class DownloadTask {
       totalBytes: info.totalBytes,
       errorMessage: info.errorMessage,
       queueId: info.queueId,
+      queueOrder: info.queueOrder,
       fileNameConfirmed: hasName,
       fileMissing: info.fileMissing,
       configuredSegments: info.segments,
@@ -318,6 +323,7 @@ class DownloadTask {
     List<SplitEventData>? recentSplits,
     int? queuePosition,
     String? queueId,
+    int? queueOrder,
     bool? fileNameConfirmed,
     bool? fileMissing,
     int? configuredSegments,
@@ -339,6 +345,7 @@ class DownloadTask {
       recentSplits: recentSplits ?? this.recentSplits,
       queuePosition: queuePosition ?? this.queuePosition,
       queueId: queueId ?? this.queueId,
+      queueOrder: queueOrder ?? this.queueOrder,
       fileNameConfirmed: fileNameConfirmed ?? this.fileNameConfirmed,
       fileMissing: fileMissing ?? this.fileMissing,
       configuredSegments: configuredSegments ?? this.configuredSegments,
@@ -492,6 +499,16 @@ class DownloadTask {
       case TaskStatus.resuming:
         return '$proto · $sizeText · ${s.subtitleResuming}';
     }
+  }
+
+  /// 带队列上下文的副标题：[queueStopped] = 所属队列处于停止态时，
+  /// paused 任务显示「等待队列启动」——区分「用户暂停」与「等队列启动」
+  /// 两种停着的原因（启动队列会按序恢复这类任务）。
+  String subtitleWith({bool queueStopped = false}) {
+    if (queueStopped && status == TaskStatus.paused) {
+      return '$protocolLabel · $sizeText · ${currentS.subtitleWaitingQueue}';
+    }
+    return subtitle;
   }
 
   /// 状态文本

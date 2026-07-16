@@ -236,6 +236,7 @@ async fn track_pair_multi_segment_pause_resume_and_pair_coordinates() {
         "",
         "",
         "",
+        0,
     )
     .await
     .expect("insert_task");

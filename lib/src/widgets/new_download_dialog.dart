@@ -25,6 +25,8 @@ import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
+import 'context_menu.dart';
+import 'split_action_button.dart';
 import '../models/ua_presets.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
@@ -93,9 +95,6 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   /// 用户是否手动修改过线程数（用于判断切换队列时是否需要自动更新）
   bool _threadsUserModified = false;
-
-  /// 线程选择器的 key 版本，切换队列时递增以强制重建 ShadSelect
-  int _threadsSelectVersion = 0;
 
   /// 是否展开高级选项（含任务代理）
   bool _showAdvanced = false;
@@ -188,9 +187,14 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     _saveDirController.text = widget.settingsProvider.effectiveDefaultSaveDir;
     _urlController.addListener(_onUrlChanged);
     _pasteUrlFromClipboard();
-    // 优先使用侧边栏队列筛选，否则使用设置中的默认队列
+    // 优先使用侧边栏队列筛选，否则使用设置中的默认队列；'' 已不是有效
+    // 归属（引擎会兜底重映射到主队列），选择器直接落到主队列。
     final qf = widget.controller.queueFilter;
-    _selectedQueueId = qf ?? widget.settingsProvider.defaultQueueId;
+    var initialQueue = (qf != null && qf.isNotEmpty)
+        ? qf
+        : widget.settingsProvider.defaultQueueId;
+    if (initialQueue.isEmpty) initialQueue = kMainQueueId;
+    _selectedQueueId = initialQueue;
     // 优先沿用上次用户选择的线程数，其次根据队列/全局设置初始化
     final lastThreads = widget.settingsProvider.lastDialogThreads;
     selectedThreads = lastThreads.isNotEmpty
@@ -823,12 +827,18 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     return sel != null && sel.isNotEmpty;
   });
 
-  Future<void> _startDownload() async {
+  /// 提交是否被阻塞（防重复提交 / 探测中 / 种子未选文件）。
+  bool get _submitBlocked =>
+      _isSubmitting ||
+      _isProbing ||
+      (_hasTorrentFiles && !_hasAnyTorrentSelection && _allTorrentsProbed);
+
+  Future<void> _startDownload({bool later = false, String? queueOverride}) async {
     if (_isSubmitting) return;
     setState(() => _isSubmitting = true);
 
     try {
-      await _startDownloadInner();
+      await _startDownloadInner(later, queueOverride);
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -864,9 +874,15 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     return map;
   }
 
-  Future<void> _startDownloadInner() async {
+  Future<void> _startDownloadInner(bool later, String? queueOverride) async {
     final saveDir = _saveDirController.text.trim();
     if (saveDir.isEmpty) return;
+
+    // 队列归属挂在动作按钮上（表单不再有队列字段）：箭头菜单显式指定 >
+    // 动作默认——稍后下载 → 「稍后下载」队列；开始下载 → 默认队列
+    // （设置的默认下载队列 / 打开对话框时侧栏正筛选的队列）。
+    final queueId =
+        queueOverride ?? (later ? kLaterQueueId : _selectedQueueId);
 
     final proxyUrl = _proxyUrlController.text.trim();
     final userAgent = _userAgentController.text.trim();
@@ -887,9 +903,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             saveDir,
             proxyUrl: proxyUrl,
             userAgent: userAgent,
-            queueId: _selectedQueueId,
+            queueId: queueId,
             selectedFileIndices: selectedIndices,
             torrentName: meta.name,
+            startPaused: later,
           );
         } else {
           // Probe not yet complete (e.g. user clicked too fast, or parse
@@ -899,6 +916,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
             torrentFilePath: path,
             saveDir: saveDir,
             proxyUrl: proxyUrl,
+            startPaused: later,
           );
         }
       }
@@ -923,8 +941,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       );
     }
 
-    // 单条磁力链接：对话框保持打开，转入 loading 阶段等待文件列表
+    // 单条磁力链接（立即下载）：对话框保持打开，转入 loading 阶段等待
+    // 文件列表；稍后下载则跳过此分支直接建暂停任务——文件选择推迟到
+    // 任务真正启动时（引擎经 HostSelection 弹选择框）。
     if (entries.length == 1 &&
+        !later &&
         entries.first.url.toLowerCase().startsWith('magnet:')) {
       final entry = entries.first;
       // 先注册回调，再发 CreateTask 信号，保证信号到达时回调已就位（无竞态）
@@ -939,7 +960,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         cookies: cookie,
         proxyUrl: proxyUrl,
         userAgent: userAgent,
-        queueId: _selectedQueueId,
+        queueId: queueId,
         checksum: _resolveChecksum(entry.checksum),
         extraHeaders: extraHeaders,
       );
@@ -966,9 +987,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         cookies: cookie,
         proxyUrl: proxyUrl,
         userAgent: userAgent,
-        queueId: _selectedQueueId,
+        queueId: queueId,
         checksum: _resolveChecksum(entry.checksum),
         extraHeaders: extraHeaders,
+        startPaused: later,
       );
     } else {
       // 多条 — 使用 BatchCreateTask（携带每条的 fileName/checksum，
@@ -988,9 +1010,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         segments: segments,
         proxyUrl: proxyUrl,
         userAgent: userAgent,
-        queueId: _selectedQueueId,
+        queueId: queueId,
         cookies: cookie,
         extraHeaders: extraHeaders,
+        startPaused: later,
       );
     }
 
@@ -1068,30 +1091,22 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                 onPressed: () => Navigator.of(context).pop(),
                 child: Text(s.cancel),
               ),
-              ShadButton(
-                onPressed:
-                    (_isSubmitting ||
-                        _isProbing ||
-                        (_hasTorrentFiles &&
-                            !_hasAnyTorrentSelection &&
-                            _allTorrentsProbed))
-                    ? null
-                    : () => _startDownload(),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      LucideIcons.download,
-                      size: 13,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _buildStartButtonLabel(s),
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                  ],
-                ),
+              SplitActionButton(
+                enabled: !_submitBlocked,
+                icon: LucideIcons.clock,
+                label: s.downloadLater,
+                tooltip: s.laterIntoQueueTooltip(s.laterQueue),
+                onPressed: () => _startDownload(later: true),
+                onPickQueue: (anchor) => _showQueueMenu(anchor, later: true),
+              ),
+              SplitActionButton(
+                primary: true,
+                enabled: !_submitBlocked,
+                icon: LucideIcons.download,
+                label: _buildStartButtonLabel(s),
+                tooltip: s.startIntoQueueTooltip(_defaultTargetName(s)),
+                onPressed: () => _startDownload(),
+                onPickQueue: (anchor) => _showQueueMenu(anchor, later: false),
               ),
             ],
       child: Padding(
@@ -1312,7 +1327,6 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                         const SizedBox(height: 6),
                         ThreadSelector(
                           value: selectedThreads,
-                          version: _threadsSelectVersion,
                           onChanged: (v) => setState(() {
                             selectedThreads = v;
                             _threadsUserModified = true;
@@ -1336,11 +1350,8 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ),
             ],
 
-            // 队列选择器（有命名队列时才显示）
-            _buildQueueSelector(s, c),
-
-            // 高级选项 — 可折叠，含任务独立代理
             const SizedBox(height: 10),
+            // 高级选项 — 可折叠，含任务独立代理
             GestureDetector(
               onTap: () => setState(() => _showAdvanced = !_showAdvanced),
               child: Row(
@@ -1735,57 +1746,42 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     );
   }
 
-  Widget _buildQueueSelector(S s, AppColors c) {
+  /// 默认目标队列的显示名（「开始下载」tooltip 用）。
+  String _defaultTargetName(S s) {
+    final q = widget.controller.queues
+        .where((q) => q.queueId == _selectedQueueId)
+        .firstOrNull;
+    return q == null ? s.mainQueue : queueDisplayName(s, q);
+  }
+
+  /// 在动作按钮箭头下方弹队列菜单：选择即提交（[later] 决定是否以
+  /// 暂停态创建）。菜单是动作列表而非选择器——不保留选中态。
+  void _showQueueMenu(BuildContext anchor, {required bool later}) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
     final queues = widget.controller.queues;
-    // 没有任何命名队列时不显示
-    if (queues.isEmpty) return const SizedBox.shrink();
-
-    final allOptions = <DownloadQueue>[
-      const DownloadQueue(
-        queueId: '',
-        name: '',
-        speedLimitKbps: 0,
-        maxConcurrent: 0,
-        defaultSaveDir: '',
-        position: -1,
-      ),
-      ...queues,
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SizedBox(height: 10),
-        _SectionLabel(text: s.taskQueueLabel, c: c),
-        const SizedBox(height: 6),
-        ShadSelect<String>(
-          initialValue: _selectedQueueId,
-          options: allOptions.map((q) {
-            final label = q.queueId.isEmpty ? s.defaultQueue : q.name;
-            return ShadOption(value: q.queueId, child: Text(label));
-          }).toList(),
-          selectedOptionBuilder: (context, value) {
-            if (value.isEmpty) return Text(s.defaultQueue);
-            final q = queues.where((q) => q.queueId == value).firstOrNull;
-            return Text(
-              q?.name ?? s.defaultQueue,
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            );
-          },
-          onChanged: (v) {
-            if (v != null) {
-              setState(() {
-                _selectedQueueId = v;
-                // 用户未手动改过线程数时，跟随新队列/全局默认设置
-                if (!_threadsUserModified) {
-                  selectedThreads = _effectiveSegmentsOption(v);
-                  _threadsSelectVersion++;
-                }
-              });
-            }
-          },
-        ),
+    if (queues.isEmpty) {
+      unawaited(_startDownload(later: later));
+      return;
+    }
+    final box = anchor.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final origin = box.localToGlobal(Offset(0, box.size.height + 6));
+    showContextMenu(
+      context,
+      origin,
+      items: [
+        for (final q in queues)
+          ContextMenuItem(
+            icon: q.queueId == kLaterQueueId
+                ? LucideIcons.clock
+                : LucideIcons.layers,
+            label: queueDisplayName(s, q),
+            color: c.textPrimary,
+            action: () => unawaited(
+              _startDownload(later: later, queueOverride: q.queueId),
+            ),
+          ),
       ],
     );
   }

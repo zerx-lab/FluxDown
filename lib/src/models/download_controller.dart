@@ -552,10 +552,11 @@ class DownloadController extends ChangeNotifier {
     String checksum = '',
     Map<String, String> extraHeaders = const {},
     List<int> selectedFileIndices = const [],
+    bool startPaused = false,
   }) {
     logInfo(
       _tag,
-      'createTask: url=$url, dir=$saveDir, file=$fileName, seg=$segments, cookies_len=${cookies.length}, torrent_bytes=${torrentFileBytes?.length ?? 0}, queue=$queueId, headers=${extraHeaders.length}, selected_files=${selectedFileIndices.length}',
+      'createTask: url=$url, dir=$saveDir, file=$fileName, seg=$segments, cookies_len=${cookies.length}, torrent_bytes=${torrentFileBytes?.length ?? 0}, queue=$queueId, headers=${extraHeaders.length}, selected_files=${selectedFileIndices.length}, later=$startPaused',
     );
     CreateTask(
       url: url,
@@ -570,6 +571,7 @@ class DownloadController extends ChangeNotifier {
       checksum: checksum,
       extraHeaders: extraHeaders,
       selectedFileIndices: selectedFileIndices,
+      startPaused: startPaused,
     ).sendSignalToRust();
   }
 
@@ -586,6 +588,7 @@ class DownloadController extends ChangeNotifier {
     String userAgent = '',
     String queueId = '',
     List<int> selectedFileIndices = const [],
+    bool startPaused = false,
   }) {
     logInfo(
       _tag,
@@ -604,6 +607,7 @@ class DownloadController extends ChangeNotifier {
       checksum: '',
       extraHeaders: const {},
       selectedFileIndices: selectedFileIndices,
+      startPaused: startPaused,
     ).sendSignalToRust();
   }
 
@@ -612,12 +616,18 @@ class DownloadController extends ChangeNotifier {
     required String torrentFilePath,
     required String saveDir,
     String proxyUrl = '',
+    bool startPaused = false,
   }) async {
     logInfo(
       _tag,
-      'createTaskFromTorrentFile: path=$torrentFilePath, dir=$saveDir',
+      'createTaskFromTorrentFile: path=$torrentFilePath, dir=$saveDir, later=$startPaused',
     );
-    await sendTorrentFileSignal(torrentFilePath, saveDir, proxyUrl: proxyUrl);
+    await sendTorrentFileSignal(
+      torrentFilePath,
+      saveDir,
+      proxyUrl: proxyUrl,
+      startPaused: startPaused,
+    );
   }
 
   /// Read a .torrent file from disk and send a [CreateTask] signal to Rust.
@@ -636,6 +646,7 @@ class DownloadController extends ChangeNotifier {
     String queueId = '',
     List<int> selectedFileIndices = const [],
     String torrentName = '',
+    bool startPaused = false,
   }) async {
     try {
       final file = File(torrentFilePath);
@@ -667,6 +678,7 @@ class DownloadController extends ChangeNotifier {
         checksum: '',
         extraHeaders: const {},
         selectedFileIndices: selectedFileIndices,
+        startPaused: startPaused,
       ).sendSignalToRust();
     } catch (e) {
       logInfo(_tag, 'failed to read torrent file: $e');
@@ -684,10 +696,11 @@ class DownloadController extends ChangeNotifier {
     String cookies = '',
     String referrer = '',
     Map<String, String> extraHeaders = const {},
+    bool startPaused = false,
   }) {
     logInfo(
       _tag,
-      'batchCreateTask: ${entries.length} entries, dir=$saveDir, seg=$segments, queue=$queueId, cookies_len=${cookies.length}',
+      'batchCreateTask: ${entries.length} entries, dir=$saveDir, seg=$segments, queue=$queueId, cookies_len=${cookies.length}, later=$startPaused',
     );
     BatchCreateTask(
       entries: entries,
@@ -699,6 +712,7 @@ class DownloadController extends ChangeNotifier {
       cookies: cookies,
       referrer: referrer,
       extraHeaders: extraHeaders,
+      startPaused: startPaused,
     ).sendSignalToRust();
   }
 
@@ -867,6 +881,83 @@ class DownloadController extends ChangeNotifier {
     MoveTaskToQueue(taskId: taskId, queueId: queueId).sendSignalToRust();
   }
 
+  /// 按 ID 查找队列（不存在返回 null）。
+  DownloadQueue? queueById(String queueId) {
+    for (final q in _queues) {
+      if (q.queueId == queueId) return q;
+    }
+    return null;
+  }
+
+  /// 队列是否运行中。空 ID / 未知队列视作运行中（防御）。
+  bool isQueueRunning(String queueId) {
+    if (queueId.isEmpty) return true;
+    return queueById(queueId)?.isRunning ?? true;
+  }
+
+  /// 启动队列：置运行态并按队列内顺序恢复其中所有待下载任务。
+  void startQueue(String queueId) {
+    logInfo(_tag, 'startQueue: $queueId');
+    // 乐观更新运行态；Rust 的 AllQueues 广播随后校正。
+    final idx = _queues.indexWhere((q) => q.queueId == queueId);
+    if (idx >= 0 && !_queues[idx].isRunning) {
+      _queues[idx] = _queues[idx].copyWith(isRunning: true);
+      _safeNotifyListeners();
+    }
+    StartQueue(queueId: queueId).sendSignalToRust();
+  }
+
+  /// 停止队列：置停止态并暂停其中所有排队/活跃任务。
+  void stopQueue(String queueId) {
+    logInfo(_tag, 'stopQueue: $queueId');
+    final idx = _queues.indexWhere((q) => q.queueId == queueId);
+    if (idx >= 0 && _queues[idx].isRunning) {
+      _queues[idx] = _queues[idx].copyWith(isRunning: false);
+      _safeNotifyListeners();
+    }
+    StopQueue(queueId: queueId).sendSignalToRust();
+  }
+
+  /// 更新队列每日定时计划（HH:MM，空 = 该边沿不定时；days 位掩码 bit0=周一）。
+  void setQueueSchedule({
+    required String queueId,
+    required bool enabled,
+    String startTime = '',
+    String stopTime = '',
+    int days = 127,
+  }) {
+    logInfo(
+      _tag,
+      'setQueueSchedule: id=$queueId, enabled=$enabled, $startTime-$stopTime, days=$days',
+    );
+    SetQueueSchedule(
+      queueId: queueId,
+      enabled: enabled,
+      startTime: startTime,
+      stopTime: stopTime,
+      days: days,
+    ).sendSignalToRust();
+  }
+
+  /// 持久化队列内任务顺序（完整新顺序），并本地乐观更新 queueOrder。
+  void reorderQueueTasks(String queueId, List<String> orderedIds) {
+    logInfo(_tag, 'reorderQueueTasks: id=$queueId, ${orderedIds.length} tasks');
+    if (orderedIds.isEmpty) return;
+    final orderOf = <String, int>{
+      for (var i = 0; i < orderedIds.length; i++) orderedIds[i]: i + 1,
+    };
+    var changed = false;
+    for (var i = 0; i < _tasks.length; i++) {
+      final newOrder = orderOf[_tasks[i].id];
+      if (newOrder != null && _tasks[i].queueOrder != newOrder) {
+        _tasks[i] = _tasks[i].copyWith(queueOrder: newOrder);
+        changed = true;
+      }
+    }
+    if (changed) _safeNotifyListeners();
+    ReorderQueueTasks(queueId: queueId, taskIds: orderedIds).sendSignalToRust();
+  }
+
   /// 设置或取消优先下载任务（Boost 模式）。
   /// 传入当前优先任务 ID 则切换（取消），传入其他 ID 则设置为新优先任务。
   ///
@@ -954,6 +1045,9 @@ class DownloadController extends ChangeNotifier {
     for (int i = 0; i < _tasks.length; i++) {
       final t = _tasks[i];
       if (t.status == TaskStatus.paused || t.status == TaskStatus.error) {
+        // 停止队列（含「稍后下载」栈）里的任务不参与全局恢复，
+        // 由「启动队列」显式恢复——与引擎侧 resume_all_eligible 语义一致。
+        if (!isQueueRunning(t.queueId)) continue;
         candidates.add(t.id);
         _boostAutoPausedIds.remove(t.id);
         _optimisticPausedIds.remove(t.id);
@@ -1250,6 +1344,9 @@ class DownloadController extends ChangeNotifier {
         totalBytes: p.totalBytes,
         speed: p.speed,
         errorMessage: p.errorMessage,
+        // TaskProgress 不携带 queue_id：归属待定（非「未分组」），
+        // 紧随其后的 AllTasks 快照会带来真实归属。
+        queueId: kQueueAttributionPending,
       );
       _tasks.insert(0, task);
       // 新任务直接以 completed 状态出现（如瞬间完成的小文件）

@@ -43,8 +43,8 @@ use crate::config::default_save_dir;
 use crate::wire::{
     ComponentFfmpegStatus, ComponentVersions, ComponentYtdlpStatus, CreateQueueRequest, FsEntry,
     FsListResponse, InstallFfmpegRequest, LogFileDto, LogsResponse, MoveQueueRequest,
-    ProxyTestRequest, ProxyTestResponse, StatsResponse, TokenResponse, TrackerSubRefreshResponse,
-    UpdateQueueRequest, WsClientMsg, WsServerMsg,
+    ProxyTestRequest, ProxyTestResponse, QueueScheduleRequest, ReorderQueueRequest, StatsResponse,
+    TokenResponse, TrackerSubRefreshResponse, UpdateQueueRequest, WsClientMsg, WsServerMsg,
 };
 use crate::ws_hub::WsHub;
 
@@ -107,6 +107,10 @@ pub fn extra_router(state: ServerState) -> Router {
         .route(paths::CONFIG, get(get_config).put(put_config))
         .route(paths::QUEUES, post(create_queue))
         .route(paths::QUEUE, put(update_queue).delete(delete_queue))
+        .route(paths::QUEUE_START, post(start_queue))
+        .route(paths::QUEUE_STOP, post(stop_queue))
+        .route(paths::QUEUE_SCHEDULE, put(set_queue_schedule))
+        .route(paths::QUEUE_ORDER, put(reorder_queue))
         .route(paths::TASK_QUEUE, put(move_task_queue))
         .route(paths::TASK_BOOST, put(boost_task))
         .route(paths::FS_LIST, get(fs_list))
@@ -114,10 +118,7 @@ pub fn extra_router(state: ServerState) -> Router {
         .route(paths::TOKEN_REGENERATE, post(token_regenerate))
         .route(paths::STATS, get(stats))
         .route(paths::LOGS, get(logs_info))
-        .route(
-            paths::BT_TRACKER_SUB_REFRESH,
-            post(bt_tracker_sub_refresh),
-        )
+        .route(paths::BT_TRACKER_SUB_REFRESH, post(bt_tracker_sub_refresh))
         .route(paths::COMPONENT_FFMPEG, get(component_ffmpeg_status))
         .route(
             paths::COMPONENT_FFMPEG_VERSIONS,
@@ -162,6 +163,10 @@ pub mod paths {
     pub const CONFIG: &str = "/api/v1/config";
     pub const QUEUES: &str = "/api/v1/queues";
     pub const QUEUE: &str = "/api/v1/queues/{id}";
+    pub const QUEUE_START: &str = "/api/v1/queues/{id}/start";
+    pub const QUEUE_STOP: &str = "/api/v1/queues/{id}/stop";
+    pub const QUEUE_SCHEDULE: &str = "/api/v1/queues/{id}/schedule";
+    pub const QUEUE_ORDER: &str = "/api/v1/queues/{id}/order";
     pub const TASK_QUEUE: &str = "/api/v1/tasks/{id}/queue";
     pub const TASK_BOOST: &str = "/api/v1/tasks/{id}/boost";
     pub const TASK_FILE: &str = "/api/v1/tasks/{id}/file";
@@ -372,9 +377,7 @@ async fn put_config(
     responses((status = 200, description = "刷新完成", body = TrackerSubRefreshResponse)),
     security(("bearer_token" = []), ("api_key" = []))
 )]
-async fn bt_tracker_sub_refresh(
-    State(state): State<ServerState>,
-) -> Result<Response, ApiError> {
+async fn bt_tracker_sub_refresh(State(state): State<ServerState>) -> Result<Response, ApiError> {
     let outcome = crate::actor::refresh_tracker_sub(&state.db, &state.cmd_tx).await;
     let updated_at = state
         .db
@@ -465,6 +468,85 @@ async fn delete_queue(
 ) -> Result<Response, ApiError> {
     state
         .send_cmd(|ack| ActorCmd::DeleteQueue { queue_id: id, ack })
+        .await?;
+    Ok(ok_response())
+}
+
+/// 启动队列：置运行态并按队列内顺序恢复其中所有待下载任务。
+#[utoipa::path(post, path = "/api/v1/queues/{id}/start", tag = "server",
+    params(("id" = String, Path, description = "队列 ID")),
+    responses((status = 200, description = "已启动")),
+    security(("bearer_token" = []), ("api_key" = []))
+)]
+async fn start_queue(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    state
+        .send_cmd(|ack| ActorCmd::StartQueue { queue_id: id, ack })
+        .await?;
+    Ok(ok_response())
+}
+
+/// 停止队列：置停止态并暂停其中所有排队/活跃任务。
+#[utoipa::path(post, path = "/api/v1/queues/{id}/stop", tag = "server",
+    params(("id" = String, Path, description = "队列 ID")),
+    responses((status = 200, description = "已停止")),
+    security(("bearer_token" = []), ("api_key" = []))
+)]
+async fn stop_queue(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    state
+        .send_cmd(|ack| ActorCmd::StopQueue { queue_id: id, ack })
+        .await?;
+    Ok(ok_response())
+}
+
+/// 更新队列的每日定时启停计划。
+#[utoipa::path(put, path = "/api/v1/queues/{id}/schedule", tag = "server",
+    params(("id" = String, Path, description = "队列 ID")),
+    request_body = QueueScheduleRequest,
+    responses((status = 200, description = "已更新")),
+    security(("bearer_token" = []), ("api_key" = []))
+)]
+async fn set_queue_schedule(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    axum::Json(req): axum::Json<QueueScheduleRequest>,
+) -> Result<Response, ApiError> {
+    state
+        .send_cmd(|ack| ActorCmd::SetQueueSchedule {
+            queue_id: id,
+            enabled: req.enabled,
+            start_time: req.start_time,
+            stop_time: req.stop_time,
+            days: req.days,
+            ack,
+        })
+        .await?;
+    Ok(ok_response())
+}
+
+/// 持久化队列内任务顺序（1..N 写入 queueOrder，队列启动按此顺序恢复）。
+#[utoipa::path(put, path = "/api/v1/queues/{id}/order", tag = "server",
+    params(("id" = String, Path, description = "队列 ID")),
+    request_body = ReorderQueueRequest,
+    responses((status = 200, description = "已排序")),
+    security(("bearer_token" = []), ("api_key" = []))
+)]
+async fn reorder_queue(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    axum::Json(req): axum::Json<ReorderQueueRequest>,
+) -> Result<Response, ApiError> {
+    state
+        .send_cmd(|ack| ActorCmd::ReorderQueue {
+            queue_id: id,
+            task_ids: req.task_ids,
+            ack,
+        })
         .await?;
     Ok(ok_response())
 }
@@ -1026,6 +1108,10 @@ async fn component_ytdlp_uninstall(State(state): State<ServerState>) -> Result<R
         create_queue,
         update_queue,
         delete_queue,
+        start_queue,
+        stop_queue,
+        set_queue_schedule,
+        reorder_queue,
         move_task_queue,
         boost_task,
         task_file,
@@ -1055,6 +1141,8 @@ async fn component_ytdlp_uninstall(State(state): State<ServerState>) -> Result<R
         crate::wire::BtFileDto,
         crate::wire::CreateQueueRequest,
         crate::wire::MoveQueueRequest,
+        crate::wire::QueueScheduleRequest,
+        crate::wire::ReorderQueueRequest,
         crate::wire::ProxyTestRequest,
         crate::wire::ProxyTestResponse,
         crate::wire::FsEntry,
