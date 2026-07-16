@@ -3297,6 +3297,15 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     );
                     log_info!("[BT] task={} {}", short_id(&task_id), &msg);
                     let _ = shared_bt.delete_task(&task_id, false).await;
+                    // Pause landed during teardown — keep status=2 (the bad
+                    // handle is already gone; resume re-adds with AtAdd).
+                    if cancelled.load(Ordering::SeqCst) {
+                        log_info!(
+                            "[BT] task={} cancelled during selection-failure teardown → keeping paused state",
+                            short_id(&task_id)
+                        );
+                        return Err(DownloadError::Cancelled);
+                    }
                     let _ = db.update_task_status(&task_id, STATUS_ERROR, &msg).await;
                     let _ = progress_tx
                         .send(ProgressUpdate {
