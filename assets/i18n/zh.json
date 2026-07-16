@@ -754,8 +754,9 @@
     "donateDate": "{y} 年 {m} 月 {d} 日",
     "monthNames": "一月,二月,三月,四月,五月,六月,七月,八月,九月,十月,十一月,十二月",
 
+    "settingsCatExtensions": "扩展",
+    "settingsCatExtensionsDesc": "管理插件与可选的外部组件",
     "settingsCatPlugins": "插件",
-    "settingsCatPluginsDesc": "管理已安装插件与浏览插件市场",
 
     "pluginsSectionTitle": "已安装插件",
     "pluginsEmpty": "暂无已安装插件",
@@ -832,11 +833,10 @@
 
     "taskIgnorePluginRetry": "忽略插件重试",
     "taskIgnorePluginRetryTitle": "忽略插件重试",
-    "taskIgnorePluginRetryMsg": "此任务在插件解析阶段失败。忽略后将跳过该插件，直接使用原始链接重试下载。如果问题持续出现，可前往「设置 → 插件」检查该插件的配置。",
-    "pluginAutoDisabledToast": "插件「{name}」已因连续失败被自动禁用，可在「设置 → 插件」中重新启用",
+    "taskIgnorePluginRetryMsg": "此任务在插件解析阶段失败。忽略后将跳过该插件，直接使用原始链接重试下载。如果问题持续出现，可前往「设置 → 扩展 → 插件」检查该插件的配置。",
+    "pluginAutoDisabledToast": "插件「{name}」已因连续失败被自动禁用，可在「设置 → 扩展 → 插件」中重新启用",
 
     "settingsCatComponents": "组件",
-    "settingsCatComponentsDesc": "管理可选的外部工具",
 
     "componentsFfmpegTitle": "FFmpeg",
     "componentsFfmpegDesc": "开源音视频处理工具，FluxDown 用它合并 DASH 等流媒体下载产生的独立音视频轨",

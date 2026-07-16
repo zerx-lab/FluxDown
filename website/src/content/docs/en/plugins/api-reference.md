@@ -135,7 +135,7 @@ Read-only object with your manifest-declared settings, already typed: `string` f
 
 ### `flux.ffmpeg`
 
-Available **only** when the manifest declares `permissions: ["ffmpeg"]` — otherwise `flux.ffmpeg` is `undefined`, so guard with `if (flux.ffmpeg)`. It runs the ffmpeg FluxDown resolves (a user-set path → the managed install → system `PATH`), so ffmpeg must also actually be present (installable from the app's Components page).
+Available **only** when the manifest declares `permissions: ["ffmpeg"]` — otherwise `flux.ffmpeg` is `undefined`, so guard with `if (flux.ffmpeg)`. It runs the ffmpeg FluxDown resolves (a user-set path → the managed install → system `PATH`), so ffmpeg must also actually be present (installable from the app's Settings → Extensions → Components tab).
 
 - `flux.ffmpeg.available()` → `Promise<{ available, version, source }>` — probe the effective ffmpeg. `source` is `"manual"` / `"managed"` / `"system"` / `"none"`.
 - `flux.ffmpeg.run(spec)` → `Promise<outcome>` — run ffmpeg. `spec`:
@@ -179,7 +179,7 @@ globalThis.onDone = async (ctx) => {
 
 ### `flux.ffprobe`
 
-Gated by the same `permissions: ["ffmpeg"]` declaration as `flux.ffmpeg` — no separate permission exists. It shares the exact same jail (available **only** inside `onDone`, rejecting elsewhere), the same path-resolution order (user-set → managed install → system `PATH`), and the same argument screening (no URL scheme, no absolute path, no parent traversal, no embedded absolute path). ffprobe ships alongside the managed ffmpeg install — installing ffmpeg from the Components page also places ffprobe in `<data_dir>/bin`, so no separate install step is needed.
+Gated by the same `permissions: ["ffmpeg"]` declaration as `flux.ffmpeg` — no separate permission exists. It shares the exact same jail (available **only** inside `onDone`, rejecting elsewhere), the same path-resolution order (user-set → managed install → system `PATH`), and the same argument screening (no URL scheme, no absolute path, no parent traversal, no embedded absolute path). ffprobe ships alongside the managed ffmpeg install — installing ffmpeg from the Settings → Extensions → Components tab also places ffprobe in `<data_dir>/bin`, so no separate install step is needed.
 
 - `flux.ffprobe.run(spec)` → `Promise<outcome>` — run ffprobe. `spec` and the resolved `outcome` are identical in shape to `flux.ffmpeg.run` (`args` / `subdir` / `timeoutMs`, resolving to `{ code, stdout, stderr, timedOut, truncatedStdout, truncatedStderr }`).
 
@@ -194,7 +194,7 @@ const info = JSON.parse(out.stdout);
 
 ### `flux.ytdlp`
 
-Available **only** when the manifest declares `permissions: ["ytdlp"]` — otherwise `flux.ytdlp` is `undefined`, so guard with `if (flux.ytdlp)`. It runs the yt-dlp FluxDown resolves (a user-set path → the managed install → system `PATH`), so yt-dlp must also actually be present (installable from the app's Components page).
+Available **only** when the manifest declares `permissions: ["ytdlp"]` — otherwise `flux.ytdlp` is `undefined`, so guard with `if (flux.ytdlp)`. It runs the yt-dlp FluxDown resolves (a user-set path → the managed install → system `PATH`), so yt-dlp must also actually be present (installable from the app's Settings → Extensions → Components tab).
 
 - `flux.ytdlp.available()` → `Promise<{ available, version, source }>` — probe the effective yt-dlp. `source` is `"manual"` / `"managed"` / `"system"` / `"none"`. A quick `run({ args: ['--version'] })` and checking `code === 0` works as a lighter-weight liveness probe too.
 - `flux.ytdlp.run(spec)` → `Promise<outcome>` — run yt-dlp. `spec`:

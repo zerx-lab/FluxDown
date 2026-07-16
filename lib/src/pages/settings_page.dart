@@ -48,8 +48,7 @@ enum SettingsCategory {
   ed2k(icon: LucideIcons.share2),
   proxy(icon: LucideIcons.globe),
   apiService(icon: LucideIcons.server),
-  plugins(icon: LucideIcons.puzzle),
-  components(icon: LucideIcons.blocks),
+  extensions(icon: LucideIcons.puzzle),
   about(icon: LucideIcons.info);
 
   final IconData icon;
@@ -68,8 +67,7 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.ed2k => s.settingsCatEd2k,
       SettingsCategory.proxy => s.settingsCatProxy,
       SettingsCategory.apiService => s.settingsCatApiService,
-      SettingsCategory.plugins => s.settingsCatPlugins,
-      SettingsCategory.components => s.settingsCatComponents,
+      SettingsCategory.extensions => s.settingsCatExtensions,
       SettingsCategory.about => s.settingsCatAbout,
     };
   }
@@ -84,8 +82,7 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.ed2k => s.settingsCatEd2kDesc,
       SettingsCategory.proxy => s.settingsCatProxyDesc,
       SettingsCategory.apiService => s.settingsCatApiServiceDesc,
-      SettingsCategory.plugins => s.settingsCatPluginsDesc,
-      SettingsCategory.components => s.settingsCatComponentsDesc,
+      SettingsCategory.extensions => s.settingsCatExtensionsDesc,
       SettingsCategory.about => s.settingsCatAboutDesc,
     };
   }
@@ -99,6 +96,8 @@ extension SettingsCategoryI18n on SettingsCategory {
 const _kTabBasic = 'basic';
 const _kTabTracker = 'tracker';
 const _kTabServers = 'servers';
+const _kTabPlugins = 'plugins';
+const _kTabComponents = 'components';
 
 /// 分类下的子 Tab 描述。
 class _SettingsTabSpec {
@@ -121,6 +120,10 @@ List<_SettingsTabSpec> _settingsTabsFor(SettingsCategory category) {
     SettingsCategory.ed2k => [
       _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
       _SettingsTabSpec(id: _kTabServers, label: s.settingsTabServers),
+    ],
+    SettingsCategory.extensions => [
+      _SettingsTabSpec(id: _kTabPlugins, label: s.settingsCatPlugins),
+      _SettingsTabSpec(id: _kTabComponents, label: s.settingsCatComponents),
     ],
     _ => const [],
   };
@@ -671,8 +674,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         onConsumed: _onHighlightConsumed,
                         child: _SettingsContent(
                           category: _selected,
-                          onSelectCategory: (cat) =>
-                              setState(() => _selected = cat),
                           settingsProvider: widget.settingsProvider,
                           pluginProvider: widget.pluginProvider,
                           downloadController: widget.downloadController,
@@ -1084,15 +1085,12 @@ class _SettingsContent extends StatefulWidget {
   final PluginProvider pluginProvider;
   final DownloadController? downloadController;
 
-  /// 切换设置分类（如插件依赖提醒跳「组件」分类），由设置页注入。
-  final ValueChanged<SettingsCategory>? onSelectCategory;
 
   const _SettingsContent({
     required this.category,
     required this.settingsProvider,
     required this.pluginProvider,
     this.downloadController,
-    this.onSelectCategory,
   });
 
   @override
@@ -1254,25 +1252,25 @@ class _SettingsContentState extends State<_SettingsContent> {
       SettingsCategory.apiService => _ApiServiceContent(
         settingsProvider: settingsProvider,
       ),
-      SettingsCategory.plugins => PluginListView(
-        provider: widget.pluginProvider,
-        onNavigateToComponents: () =>
-            widget.onSelectCategory?.call(SettingsCategory.components),
-      ),
-      SettingsCategory.components => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: const [
-          _ComponentsContent(
-            key: ValueKey('component-ffmpeg'),
-            kind: _ComponentKind.ffmpeg,
-          ),
-          SizedBox(height: 12),
-          _ComponentsContent(
-            key: ValueKey('component-ytdlp'),
-            kind: _ComponentKind.ytdlp,
-          ),
-        ],
-      ),
+      SettingsCategory.extensions => tabId == _kTabComponents
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: const [
+                _ComponentsContent(
+                  key: ValueKey('component-ffmpeg'),
+                  kind: _ComponentKind.ffmpeg,
+                ),
+                SizedBox(height: 12),
+                _ComponentsContent(
+                  key: ValueKey('component-ytdlp'),
+                  kind: _ComponentKind.ytdlp,
+                ),
+              ],
+            )
+          : PluginListView(
+              provider: widget.pluginProvider,
+              onNavigateToComponents: () => _selectTab(_kTabComponents),
+            ),
       SettingsCategory.about => _AboutContent(
         settingsProvider: settingsProvider,
       ),

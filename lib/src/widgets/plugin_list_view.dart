@@ -22,7 +22,7 @@ class PluginListView extends StatefulWidget {
   final PluginProvider provider;
 
   /// 安装的插件缺基础组件（ffmpeg/yt-dlp）时「前往组件设置」的跳转回调
-  /// （由设置页注入，切到组件分类）。
+  /// （由设置页注入，切到「扩展 → 组件」Tab）。
   final VoidCallback? onNavigateToComponents;
 
   const PluginListView({

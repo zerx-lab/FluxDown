@@ -85,7 +85,7 @@ What each part means:
 
 ## 4. Install in dev mode
 
-In the desktop app: **Settings → Plugins → install from directory**, pick `my-resolver/`, leave the **dev mode** switch on.
+In the desktop app: **Settings → Extensions → Plugins → install from directory**, pick `my-resolver/`, leave the **dev mode** switch on.
 
 Dev mode records your folder's path instead of copying it, and re-reads `resolver.js` **on every invocation**. Your loop becomes:
 

@@ -59,7 +59,6 @@ export function PluginsSettings() {
 
   return (
     <div className="max-w-[640px]">
-      <h2 className="set-title">{t('set.plugins')}</h2>
       <p className="set-desc">{t('set.plugins.desc')}</p>
 
       <div className="set-group">

@@ -296,7 +296,6 @@ export function ComponentsSettings() {
 
   return (
     <div className="max-w-[640px]">
-      <h2 className="set-title">{t('set.components')}</h2>
       <p className="set-desc">{t('set.components.desc')}</p>
 
       <ComponentCard

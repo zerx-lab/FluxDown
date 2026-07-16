@@ -3,7 +3,7 @@ title: 写第一个插件
 description: 一步一步写出、装上并调试一个能用的 URL 解析插件。
 section: plugins
 order: 2
-sourceHash: "102a295e9715"
+sourceHash: "2cd0573ea925"
 ---
 
 这篇教程从零写一个 resolver 插件：拦截一个虚构网盘的分享链接，调它的 API 拿到真实下载直链，交给 FluxDown 下载。走完一遍，你就掌握了完整的「改代码 → 测试」循环。
@@ -86,7 +86,7 @@ async function resolve(ctx) {
 
 ## 4. 用开发模式安装
 
-在桌面应用里：**设置 → 插件 → 从目录安装**，选中 `my-resolver/`，保持**开发模式**开关打开。
+在桌面应用里：**设置 → 扩展 → 插件 → 从目录安装**，选中 `my-resolver/`，保持**开发模式**开关打开。
 
 开发模式只记录文件夹路径、不拷贝，并且**每次调用都重新读** `resolver.js`。你的循环变成：
 
@@ -94,7 +94,7 @@ async function resolve(ctx) {
 2. 在 FluxDown 里添加（或恢复）一个匹配的下载。
 3. 看结果——不用重装，不用重启。
 
-只有 `manifest.json` 的改动需要重新加载：在设置页把插件关掉再打开。
+只有 `manifest.json` 的改动需要重新加载：在**设置 → 扩展 → 插件**页把插件关掉再打开。
 
 ## 5. 测试与调试
 

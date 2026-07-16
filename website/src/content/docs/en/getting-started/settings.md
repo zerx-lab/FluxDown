@@ -5,7 +5,7 @@ section: getting-started
 order: 4
 ---
 
-Open **Settings** from the top bar's gear icon. The settings sidebar has eight categories, in this order: General, Appearance, Download, BitTorrent, eD2K, Proxy, API Service, and About. This page documents every setting in each one, along with its default value. A search box at the top of the Settings sidebar can jump straight to any setting by name.
+Open **Settings** from the top bar's gear icon. The settings sidebar has nine categories, in this order: General, Appearance, Download, BitTorrent, eD2K, Proxy, API Service, Extensions, and About. This page documents every setting in each one, along with its default value. The Extensions category hosts plugin management and optional external components (FFmpeg, yt-dlp) in two tabs — see the [Plugins docs](/docs/en/plugins/overview/) for those. A search box at the top of the Settings sidebar can jump straight to any setting by name.
 
 ## General
 
@@ -47,7 +47,7 @@ Open **Settings** from the top bar's gear icon. The settings sidebar has eight c
 | Retry Interval | Seconds to wait before each automatic retry. | 5 |
 | User-Agent | The browser identity sent with download requests; presets for Chrome/Firefox/Edge/Safari. Empty uses the built-in Chrome UA. | Empty (built-in Chrome UA) |
 | File manager command | Custom command template for opening a file or folder in a third-party manager. Placeholders: `{path}` (current path) and `{dir}` (folder). Empty uses the platform default (Explorer/Finder/Nautilus). | Empty |
-| Default Queue | Which queue new downloads join when none is explicitly chosen (used by the browser extension too). Only shown once you've created a named queue. | Default Queue |
+| Default Queue | Which queue new downloads join when none is explicitly chosen (used by the browser extension too). | Main Queue (built-in) |
 
 ### Third-party file managers
 

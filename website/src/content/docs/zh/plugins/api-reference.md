@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 入口函数签名、flux.* 完整接口、全部运行时限制。
 section: plugins
 order: 4
-sourceHash: "4af14f66308d"
+sourceHash: "4501af5b1d55"
 ---
 
 插件脚本能看到的一切：FluxDown 会调用的五个入口函数，和注入的 `flux` 对象。跨越 JS 边界的字段名全部是 camelCase。
@@ -136,7 +136,7 @@ try {
 
 ### `flux.ffmpeg`
 
-**仅当** manifest 声明 `permissions: ["ffmpeg"]` 时可用——否则 `flux.ffmpeg` 为 `undefined`，请用 `if (flux.ffmpeg)` 判断。它运行 FluxDown 解析到的 ffmpeg（用户手动指定的路径 → 托管安装 → 系统 `PATH`），因此还要求 ffmpeg 确实存在（可在应用「组件」页安装）。
+**仅当** manifest 声明 `permissions: ["ffmpeg"]` 时可用——否则 `flux.ffmpeg` 为 `undefined`，请用 `if (flux.ffmpeg)` 判断。它运行 FluxDown 解析到的 ffmpeg（用户手动指定的路径 → 托管安装 → 系统 `PATH`），因此还要求 ffmpeg 确实存在（可在应用「设置 → 扩展 → 组件」页安装）。
 
 - `flux.ffmpeg.available()` → `Promise<{ available, version, source }>`——探测生效的 ffmpeg。`source` 取 `"manual"` / `"managed"` / `"system"` / `"none"`。
 - `flux.ffmpeg.run(spec)` → `Promise<outcome>`——运行 ffmpeg。`spec`：
@@ -180,7 +180,7 @@ globalThis.onDone = async (ctx) => {
 
 ### `flux.ffprobe`
 
-和 `flux.ffmpeg` 由同一个 `permissions: ["ffmpeg"]` 声明门控——不存在独立权限。它共享完全相同的沙箱（**仅**在 `onDone` 里可用，其他事件里调用会 reject）、相同的路径解析顺序（用户手动指定 → 托管安装 → 系统 `PATH`），以及相同的参数审查（不许 URL scheme、不许绝对路径、不许上级穿越、不许内嵌绝对路径）。ffprobe 随托管 ffmpeg 一并安装——在「组件」页安装 ffmpeg 时会同时把 ffprobe 落到 `<data_dir>/bin`，无需额外安装步骤。
+和 `flux.ffmpeg` 由同一个 `permissions: ["ffmpeg"]` 声明门控——不存在独立权限。它共享完全相同的沙箱（**仅**在 `onDone` 里可用，其他事件里调用会 reject）、相同的路径解析顺序（用户手动指定 → 托管安装 → 系统 `PATH`），以及相同的参数审查（不许 URL scheme、不许绝对路径、不许上级穿越、不许内嵌绝对路径）。ffprobe 随托管 ffmpeg 一并安装——在「设置 → 扩展 → 组件」页安装 ffmpeg 时会同时把 ffprobe 放进 `<data_dir>/bin`，无需单独安装。
 
 - `flux.ffprobe.run(spec)` → `Promise<outcome>`——运行 ffprobe。`spec` 与 resolve 出的 `outcome` 形状与 `flux.ffmpeg.run` 完全一致（`args` / `subdir` / `timeoutMs`，resolve 出 `{ code, stdout, stderr, timedOut, truncatedStdout, truncatedStderr }`）。
 
@@ -195,7 +195,7 @@ const info = JSON.parse(out.stdout);
 
 ### `flux.ytdlp`
 
-**仅当** manifest 声明 `permissions: ["ytdlp"]` 时可用——否则 `flux.ytdlp` 为 `undefined`，请用 `if (flux.ytdlp)` 判断。它运行 FluxDown 解析到的 yt-dlp（用户手动指定的路径 → 托管安装 → 系统 `PATH`），因此还要求 yt-dlp 确实存在（可在应用「组件」页安装）。
+**仅当** manifest 声明 `permissions: ["ytdlp"]` 时可用——否则 `flux.ytdlp` 为 `undefined`，请用 `if (flux.ytdlp)` 判断。它运行 FluxDown 解析到的 yt-dlp（用户手动指定的路径 → 托管安装 → 系统 `PATH`），因此还要求 yt-dlp 确实存在（可在应用「设置 → 扩展 → 组件」页安装）。
 
 - `flux.ytdlp.available()` → `Promise<{ available, version, source }>`——探测生效的 yt-dlp。`source` 取 `"manual"` / `"managed"` / `"system"` / `"none"`。想轻量探测也可以直接 `run({ args: ['--version'] })` 看 `code === 0`。
 - `flux.ytdlp.run(spec)` → `Promise<outcome>`——运行 yt-dlp。`spec`：

@@ -1072,10 +1072,13 @@ class S {
   String get mobileGoGrant => _r('mobileGoGrant');
 
   // ─────────────────────────────────────────────
-  // 插件系统 — 已安装管理
+  // 扩展（插件 + 组件）
   // ─────────────────────────────────────────────
+  String get settingsCatExtensions => _r('settingsCatExtensions');
+  String get settingsCatExtensionsDesc => _r('settingsCatExtensionsDesc');
+
+  // 插件系统 — 已安装管理
   String get settingsCatPlugins => _r('settingsCatPlugins');
-  String get settingsCatPluginsDesc => _r('settingsCatPluginsDesc');
 
   String get pluginsSectionTitle => _r('pluginsSectionTitle');
   String get pluginsEmpty => _r('pluginsEmpty');
@@ -1183,7 +1186,6 @@ class S {
   // 组件管理（v1 仅 ffmpeg）
   // ─────────────────────────────────────────────
   String get settingsCatComponents => _r('settingsCatComponents');
-  String get settingsCatComponentsDesc => _r('settingsCatComponentsDesc');
 
   String get componentsFfmpegTitle => _r('componentsFfmpegTitle');
   String get componentsFfmpegDesc => _r('componentsFfmpegDesc');

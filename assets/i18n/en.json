@@ -754,8 +754,9 @@
     "donateDate": "{month} {d}, {y}",
     "monthNames": "January,February,March,April,May,June,July,August,September,October,November,December",
 
+    "settingsCatExtensions": "Extensions",
+    "settingsCatExtensionsDesc": "Manage plugins & optional external components",
     "settingsCatPlugins": "Plugins",
-    "settingsCatPluginsDesc": "Manage installed plugins & browse the market",
 
     "pluginsSectionTitle": "Installed Plugins",
     "pluginsEmpty": "No plugins installed yet",
@@ -832,11 +833,10 @@
 
     "taskIgnorePluginRetry": "Ignore plugin retry",
     "taskIgnorePluginRetryTitle": "Ignore Plugin Retry",
-    "taskIgnorePluginRetryMsg": "This task failed while a plugin was resolving it. Ignoring will skip the plugin and retry with the original link directly. If this keeps happening, check the plugin's settings under Settings → Plugins.",
-    "pluginAutoDisabledToast": "Plugin \"{name}\" was auto-disabled after repeated failures. Re-enable it from Settings → Plugins.",
+    "taskIgnorePluginRetryMsg": "This task failed while a plugin was resolving it. Ignoring will skip the plugin and retry with the original link directly. If this keeps happening, check the plugin's settings under Settings → Extensions → Plugins.",
+    "pluginAutoDisabledToast": "Plugin \"{name}\" was auto-disabled after repeated failures. Re-enable it from Settings → Extensions → Plugins.",
 
     "settingsCatComponents": "Components",
-    "settingsCatComponentsDesc": "Manage optional external tools",
 
     "componentsFfmpegTitle": "FFmpeg",
     "componentsFfmpegDesc": "Open-source audio/video toolkit. FluxDown uses it to merge separate audio and video tracks from DASH and similar streaming downloads.",

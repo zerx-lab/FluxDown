@@ -45,11 +45,11 @@ Every invocation runs in a **fresh JavaScript context** (QuickJS). No variables 
 | Hook timeout / memory | 5 s / 32 MB |
 | Circuit breaker | 3 consecutive timeouts or out-of-memory errors → plugin auto-disabled |
 
-An auto-disabled plugin shows a notice in the app and can be re-enabled from the plugin settings page.
+An auto-disabled plugin shows a notice in the app and can be re-enabled from the Plugins tab under Settings → Extensions.
 
 ## Installing plugins
 
-Open **Settings → Plugins** in the desktop app. Three ways in:
+Open **Settings → Extensions → Plugins** in the desktop app. Three ways in:
 
 - **Zip upload** — a `.fxplug` file (which is just a zip of the plugin folder, see [Packaging](/docs/en/plugins/packaging/)).
 - **From a directory** — point at a local folder containing `manifest.json`. With **dev mode** on (the default for directory installs), FluxDown records the folder path instead of copying it, and re-reads your `.js` files on every invocation — edit, save, re-run, no reinstall. Manifest changes still require a reload (toggle the plugin off and on).
