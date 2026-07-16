@@ -2540,6 +2540,122 @@ async fn verify_staged_pieces(
     .map_err(|e| format!("verification task failed: {e}"))?
 }
 
+/// How a BT file selection reaches librqbit. A known subset is baked into
+/// `AddTorrentOptions.only_files` at add time because `update_only_files` is
+/// rejected while librqbit is Initializing; a dialog selection stays post-add (#90).
+#[derive(Debug, PartialEq, Eq)]
+pub enum BtSelectionStrategy {
+    All,
+    AtAdd(Vec<usize>),
+    PostAdd,
+}
+
+impl BtSelectionStrategy {
+    pub fn only_files_for_add(&self) -> Option<Vec<usize>> {
+        match self {
+            BtSelectionStrategy::AtAdd(subset) => Some(subset.clone()),
+            BtSelectionStrategy::All | BtSelectionStrategy::PostAdd => None,
+        }
+    }
+}
+
+/// Build the librqbit add options for a fresh torrent. Baking the known subset
+/// into `only_files` here (not via a post-add `update_only_files`) is the fix
+/// for the Initializing race (#90); the production add site must go through this.
+pub fn build_add_torrent_options(
+    strategy: &BtSelectionStrategy,
+    output_folder: String,
+) -> AddTorrentOptions {
+    AddTorrentOptions {
+        overwrite: true,
+        output_folder: Some(output_folder),
+        only_files: strategy.only_files_for_add(),
+        ..Default::default()
+    }
+}
+
+/// Negative indices (the `-1` cancel sentinel or corrupt entries) are not valid
+/// librqbit file ids and are dropped; an empty result means "not yet known".
+pub fn decide_bt_selection_strategy(
+    skip_file_selection: bool,
+    pre_selected_indices: &[i32],
+) -> BtSelectionStrategy {
+    if skip_file_selection {
+        return BtSelectionStrategy::All;
+    }
+    let subset: Vec<usize> = pre_selected_indices
+        .iter()
+        .copied()
+        .filter(|&i| i >= 0)
+        .map(|i| i as usize)
+        .collect();
+    if subset.is_empty() {
+        // Empty input (dialog pending) or all-negative garbage (e.g. a corrupt
+        // `[-2]`): never bake an empty `only_files`; defer to the post-add flow (#90).
+        BtSelectionStrategy::PostAdd
+    } else {
+        debug_assert!(!subset.is_empty(), "AtAdd must never carry an empty subset");
+        BtSelectionStrategy::AtAdd(subset)
+    }
+}
+
+/// Wait out librqbit's `Initializing` window (which rejects `update_only_files`),
+/// then apply the post-add selection. Returns `true` once applied (#90).
+async fn apply_only_files_after_init(
+    session: &Arc<Session>,
+    handle: &BtHandle,
+    only: &HashSet<usize>,
+    task_id: &str,
+    cancelled: &AtomicBool,
+) -> bool {
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        if cancelled.load(Ordering::SeqCst) {
+            return false;
+        }
+        // librqbit's `wait_until_initialized` blocks for the whole hash-check;
+        // race it against cancellation (polling the same AtomicBool the add loop
+        // uses) so a pause/cancel is not stuck behind it (#90). BoxFuture is
+        // Unpin, so `&mut` in select! needs no extra pinning.
+        let mut init = handle.wait_until_initialized();
+        let initialized = loop {
+            tokio::select! {
+                biased;
+                r = &mut init => break r,
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return false;
+                    }
+                }
+            }
+        };
+        if let Err(e) = initialized {
+            // A wait error is fatal: surface it via the caller's error path
+            // instead of falling through and downloading unselected files (#90).
+            log_info!(
+                "[BT] task={} wait_until_initialized failed before applying file selection: {}",
+                short_id(task_id),
+                e
+            );
+            return false;
+        }
+        match session.update_only_files(handle, only).await {
+            Ok(()) => return true,
+            Err(e) => {
+                log_info!(
+                    "[BT] task={} update_only_files attempt {}/{} failed: {} — waiting for init and retrying",
+                    short_id(task_id),
+                    attempt,
+                    MAX_ATTEMPTS,
+                    e
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+    false
+}
+
 async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
     let BtInnerParams {
         task_id,
@@ -2562,6 +2678,9 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
     // entirely because librqbit already retains the previous update_only_files
     // state internally.
     let had_existing_handle = existing_handle.is_some();
+    let selection_strategy =
+        decide_bt_selection_strategy(skip_file_selection, &pre_selected_indices);
+
     // -----------------------------------------------------------------------
     // Phase 1: Send initial file name from dn= parameter so user sees something
     // -----------------------------------------------------------------------
@@ -2635,11 +2754,16 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             shared_bt.clear_stale_fastresume(&hash);
         }
         let stage_dir_str = stage_dir.to_string_lossy().into_owned();
-        let add_opts = AddTorrentOptions {
-            overwrite: true,
-            output_folder: Some(stage_dir_str),
-            ..Default::default()
-        };
+        // A known subset must be baked into add options here; a post-add update
+        // is rejected while librqbit is Initializing (#90).
+        if let Some(subset) = selection_strategy.only_files_for_add() {
+            log_info!(
+                "[BT] task={} baking {} pre-selected file(s) into add options (only_files) to survive librqbit init",
+                short_id(&task_id),
+                subset.len()
+            );
+        }
+        let add_opts = build_add_torrent_options(&selection_strategy, stage_dir_str);
 
         log_info!(
             "[BT] task={} adding torrent to shared session (metadata resolution may take a while)...",
@@ -3117,26 +3241,69 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
         return Err(DownloadError::Cancelled);
     }
 
-    // If user selected nothing (should not happen in practice), fall back to
-    // downloading all files.
-    let selected_indices = if selected_indices.is_empty() {
+    // If the selection is empty or holds no valid (non-negative) index — e.g. a
+    // corrupt persisted `[-2]`; the `-1` cancel sentinel already returned above —
+    // fall back to all files rather than applying an empty only_files that would
+    // download nothing (#90).
+    let selected_indices = if selected_indices.iter().all(|&i| i < 0) {
         (0..file_count as i32).collect::<Vec<_>>()
     } else {
         selected_indices
     };
 
-    // Restrict to selected files when only a subset was chosen.
-    // Path R (had_existing_handle) produces selected_indices.len() == file_count
-    // so update_only_files is skipped — librqbit already has the right state.
-    // Path A and Path B both need to apply the selection on a fresh add_torrent.
+    // Path R (had_existing_handle) yields selected_indices.len() == file_count,
+    // so this block is skipped — librqbit already has the right state.
     if selected_indices.len() < file_count {
-        let only: HashSet<usize> = selected_indices.iter().map(|&i| i as usize).collect();
-        if let Err(e) = session.update_only_files(&handle, &only).await {
-            log_info!(
-                "[BT] task={} update_only_files error: {} — downloading all",
-                short_id(&task_id),
-                e
-            );
+        match selection_strategy {
+            // Already applied at add time (#90); skip the post-add update.
+            BtSelectionStrategy::AtAdd(_) => {
+                log_info!(
+                    "[BT] task={} file selection ({} file(s)) applied at add time — skipping post-add update_only_files",
+                    short_id(&task_id),
+                    selected_indices.len()
+                );
+            }
+            // Dialog selection known only post-add: wait out Initializing, then apply (#90).
+            BtSelectionStrategy::All | BtSelectionStrategy::PostAdd => {
+                let only: HashSet<usize> = selected_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| i >= 0)
+                    .map(|i| i as usize)
+                    .collect();
+                if apply_only_files_after_init(&session, &handle, &only, &task_id, &cancelled).await
+                {
+                    log_info!(
+                        "[BT] task={} file selection applied post-add ({} file(s))",
+                        short_id(&task_id),
+                        only.len()
+                    );
+                } else if cancelled.load(Ordering::SeqCst) {
+                    return Err(DownloadError::Cancelled);
+                } else {
+                    // Surface the failure instead of silently downloading unselected
+                    // files (#90); mirrors the other fatal BT setup error paths.
+                    let msg = format!(
+                        "failed to apply file selection ({} file(s)) after librqbit init",
+                        only.len()
+                    );
+                    log_info!("[BT] task={} {}", short_id(&task_id), &msg);
+                    let _ = db.update_task_status(&task_id, STATUS_ERROR, &msg).await;
+                    let _ = progress_tx
+                        .send(ProgressUpdate {
+                            task_id: task_id.clone(),
+                            downloaded_bytes: 0,
+                            total_bytes,
+                            status: STATUS_ERROR,
+                            error_message: msg.clone(),
+                            file_name: resolved_name.clone(),
+                            segment_details: None,
+                            ..Default::default()
+                        })
+                        .await;
+                    return Err(DownloadError::Other(msg));
+                }
+            }
         }
     }
 
