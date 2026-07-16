@@ -3287,6 +3287,8 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         only.len()
                     );
                 } else if cancelled.load(Ordering::SeqCst) {
+                    // Drop the handle with unapplied only_files so resume re-adds via AtAdd.
+                    let _ = shared_bt.delete_task(&task_id, false).await;
                     return Err(DownloadError::Cancelled);
                 } else {
                     // Surface the failure instead of silently downloading unselected
