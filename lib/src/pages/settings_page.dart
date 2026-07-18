@@ -105,6 +105,7 @@ extension SettingsCategoryI18n on SettingsCategory {
 /// 子 Tab id 常量：用于会话内选中记忆与搜索定位路由，字面量保持稳定。
 const _kTabBasic = 'basic';
 const _kTabTracker = 'tracker';
+const _kTabSeeding = 'seeding';
 const _kTabServers = 'servers';
 const _kTabPlugins = 'plugins';
 const _kTabComponents = 'components';
@@ -126,6 +127,7 @@ List<_SettingsTabSpec> _settingsTabsFor(SettingsCategory category) {
     SettingsCategory.bt => [
       _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
       _SettingsTabSpec(id: _kTabTracker, label: s.settingsTabTracker),
+      _SettingsTabSpec(id: _kTabSeeding, label: s.settingsTabSeeding),
     ],
     SettingsCategory.ed2k => [
       _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
@@ -385,6 +387,14 @@ List<SettingsSearchItem> get settingsSearchItems {
       keywords: s.searchKeywordsBtSettings,
       icon: LucideIcons.rss,
       tabId: _kTabTracker,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.bt,
+      label: s.btSeedingTitle,
+      description: s.btSeedingTitle,
+      keywords: s.searchKeywordsBtSettings,
+      icon: LucideIcons.uploadCloud,
+      tabId: _kTabSeeding,
     ),
     SettingsSearchItem(
       category: SettingsCategory.ed2k,
@@ -1253,6 +1263,8 @@ class _SettingsContentState extends State<_SettingsContent> {
       ),
       SettingsCategory.bt => tabId == _kTabTracker
           ? _BtTrackerContent(settingsProvider: settingsProvider)
+          : tabId == _kTabSeeding
+          ? _BtSeedingContent(settingsProvider: settingsProvider)
           : _BtBasicContent(settingsProvider: settingsProvider),
       SettingsCategory.ed2k => tabId == _kTabServers
           ? _Ed2kServersContent(settingsProvider: settingsProvider)
@@ -3207,6 +3219,284 @@ class _BtTrackerContent extends StatelessWidget {
               description: LocaleScope.of(context).btTrackerSubDesc,
               vertical: true,
               child: _BtTrackerSubEditor(settingsProvider: settingsProvider),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// BT 做种设置
+// ─────────────────────────────────────────────
+
+class _BtSeedingContent extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtSeedingContent({required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: settingsProvider,
+      builder: (context, _) {
+        return _AdaptiveSections(
+          sections: [
+            _SettingCard(
+              label: LocaleScope.of(context).btSeedingTitle,
+              description: LocaleScope.of(context).btSeedingTitle,
+              vertical: true,
+              child: _BtSeedingEditor(settingsProvider: settingsProvider),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _BtSeedingEditor extends StatefulWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtSeedingEditor({required this.settingsProvider});
+
+  @override
+  State<_BtSeedingEditor> createState() => _BtSeedingEditorState();
+}
+
+class _BtSeedingEditorState extends State<_BtSeedingEditor> {
+  late TextEditingController _ratioCtrl;
+  late TextEditingController _postRatioCtrl;
+  late TextEditingController _timeCtrl;
+  late TextEditingController _inactiveCtrl;
+  late TextEditingController _maxSeedingCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final sp = widget.settingsProvider;
+    _ratioCtrl = TextEditingController(
+      text: sp.btSeedRatioLimit.toStringAsFixed(1),
+    );
+    _postRatioCtrl = TextEditingController(
+      text: sp.btSeedPostRatioLimit.toStringAsFixed(1),
+    );
+    _timeCtrl = TextEditingController(text: '${sp.btSeedTimeLimitMinutes}');
+    _inactiveCtrl = TextEditingController(
+      text: '${sp.btSeedInactiveTimeLimitMinutes}',
+    );
+    _maxSeedingCtrl = TextEditingController(text: '${sp.btMaxSeedingTasks}');
+  }
+
+  @override
+  void didUpdateWidget(_BtSeedingEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final sp = widget.settingsProvider;
+    final ratioText = sp.btSeedRatioLimit.toStringAsFixed(1);
+    if (_ratioCtrl.text != ratioText) _ratioCtrl.text = ratioText;
+    final postRatioText = sp.btSeedPostRatioLimit.toStringAsFixed(1);
+    if (_postRatioCtrl.text != postRatioText) {
+      _postRatioCtrl.text = postRatioText;
+    }
+    final timeText = '${sp.btSeedTimeLimitMinutes}';
+    if (_timeCtrl.text != timeText) _timeCtrl.text = timeText;
+    final inactiveText = '${sp.btSeedInactiveTimeLimitMinutes}';
+    if (_inactiveCtrl.text != inactiveText) _inactiveCtrl.text = inactiveText;
+    final maxSeedingText = '${sp.btMaxSeedingTasks}';
+    if (_maxSeedingCtrl.text != maxSeedingText) {
+      _maxSeedingCtrl.text = maxSeedingText;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ratioCtrl.dispose();
+    _postRatioCtrl.dispose();
+    _timeCtrl.dispose();
+    _inactiveCtrl.dispose();
+    _maxSeedingCtrl.dispose();
+    super.dispose();
+  }
+
+  void _commitRatio() {
+    final sp = widget.settingsProvider;
+    final value = double.tryParse(_ratioCtrl.text) ?? 0.0;
+    if (value >= 0.0) sp.setBtSeedRatioLimit(value);
+  }
+
+  void _commitPostRatio() {
+    final sp = widget.settingsProvider;
+    final value = double.tryParse(_postRatioCtrl.text) ?? 0.0;
+    if (value >= 0.0) sp.setBtSeedPostRatioLimit(value);
+  }
+
+  void _commitTime() {
+    final sp = widget.settingsProvider;
+    final value = int.tryParse(_timeCtrl.text) ?? 0;
+    if (value >= 0) sp.setBtSeedTimeLimitMinutes(value);
+  }
+
+  void _commitInactive() {
+    final sp = widget.settingsProvider;
+    final value = int.tryParse(_inactiveCtrl.text) ?? 0;
+    if (value >= 0) sp.setBtSeedInactiveTimeLimitMinutes(value);
+  }
+
+  void _commitMaxSeeding() {
+    final sp = widget.settingsProvider;
+    final value = int.tryParse(_maxSeedingCtrl.text) ?? 0;
+    if (value >= 0) sp.setBtMaxSeedingTasks(value);
+  }
+
+  Widget _buildConditionRow({
+    required AppColors c,
+    required bool enabled,
+    required ValueChanged<bool> onChanged,
+    required String label,
+    required TextEditingController controller,
+    required String suffix,
+    required VoidCallback onSubmitted,
+  }) {
+    return Row(
+      children: [
+        ShadSwitch(value: enabled, onChanged: onChanged),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+        SizedBox(
+          width: 80,
+          child: ShadInput(
+            controller: controller,
+            enabled: enabled,
+            keyboardType: TextInputType.number,
+            onSubmitted: (_) => onSubmitted(),
+            onChanged: (_) => onSubmitted(),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(suffix, style: TextStyle(fontSize: 12, color: c.textMuted)),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    final sp = widget.settingsProvider;
+
+    return ListenableBuilder(
+      listenable: sp,
+      builder: (context, _) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildConditionRow(
+              c: c,
+              enabled: sp.btSeedRatioEnabled,
+              onChanged: sp.setBtSeedRatioEnabled,
+              label: s.btSeedRatioLimit,
+              controller: _ratioCtrl,
+              suffix: '',
+              onSubmitted: _commitRatio,
+            ),
+            const SizedBox(height: 8),
+            _buildConditionRow(
+              c: c,
+              enabled: sp.btSeedPostRatioEnabled,
+              onChanged: sp.setBtSeedPostRatioEnabled,
+              label: s.btSeedPostRatioLimit,
+              controller: _postRatioCtrl,
+              suffix: '',
+              onSubmitted: _commitPostRatio,
+            ),
+            const SizedBox(height: 8),
+            _buildConditionRow(
+              c: c,
+              enabled: sp.btSeedTimeEnabled,
+              onChanged: sp.setBtSeedTimeEnabled,
+              label: s.btSeedTimeLimit,
+              controller: _timeCtrl,
+              suffix: s.minutesSuffix,
+              onSubmitted: _commitTime,
+            ),
+            const SizedBox(height: 8),
+            _buildConditionRow(
+              c: c,
+              enabled: sp.btSeedInactiveTimeEnabled,
+              onChanged: sp.setBtSeedInactiveTimeEnabled,
+              label: s.btSeedInactiveTimeLimit,
+              controller: _inactiveCtrl,
+              suffix: s.minutesSuffix,
+              onSubmitted: _commitInactive,
+            ),
+            const SizedBox(height: 8),
+            _buildConditionRow(
+              c: c,
+              enabled: true,
+              onChanged: (_) {},
+              label: s.btMaxSeedingTasks,
+              controller: _maxSeedingCtrl,
+              suffix: s.tasksSuffix,
+              onSubmitted: _commitMaxSeeding,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Text(
+                  s.btSeedConditionsOperator,
+                  style: TextStyle(fontSize: 12, color: c.textSecondary),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 160,
+                  child: ShadSelect<String>(
+                    initialValue: sp.btSeedConditionsOperator,
+                    options: [
+                      ShadOption(value: 'or', child: Text(s.btSeedOperatorOr)),
+                      ShadOption(
+                        value: 'and',
+                        child: Text(s.btSeedOperatorAnd),
+                      ),
+                    ],
+                    selectedOptionBuilder: (context, value) {
+                      return Text(
+                        value == 'and'
+                            ? s.btSeedOperatorAnd
+                            : s.btSeedOperatorOr,
+                        style: TextStyle(fontSize: 12, color: c.textPrimary),
+                      );
+                    },
+                    onChanged: (v) {
+                      if (v != null) sp.setBtSeedConditionsOperator(v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Text(
+                  s.btSeedThenAction,
+                  style: TextStyle(fontSize: 12, color: c.textSecondary),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  s.btSeedStopSeeding,
+                  style: TextStyle(fontSize: 12, color: c.textPrimary),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              s.btSettingsRestartHint,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
             ),
           ],
         );

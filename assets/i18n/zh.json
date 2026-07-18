@@ -853,11 +853,9 @@
     "batchDeleteConfirmDescKeepFile": "确定要删除选中的 {count} 个任务吗？已下载的文件将保留在磁盘上。",
     "donateDate": "{y} 年 {m} 月 {d} 日",
     "monthNames": "一月,二月,三月,四月,五月,六月,七月,八月,九月,十月,十一月,十二月",
-
     "settingsCatExtensions": "扩展",
     "settingsCatExtensionsDesc": "管理插件与可选的外部组件",
     "settingsCatPlugins": "插件",
-
     "pluginsSectionTitle": "已安装插件",
     "pluginsEmpty": "暂无已安装插件",
     "pluginCommonLoading": "加载中…",
@@ -884,7 +882,6 @@
     "pluginDepsMissingBody": "插件已安装，但其声明的能力依赖以下尚未安装的组件：{components}。安装组件前对应功能不可用，是否前往组件设置安装？",
     "pluginDepsGoToComponents": "前往组件设置",
     "pluginDepsLater": "稍后",
-
     "marketSectionTitle": "插件市场",
     "marketSectionDesc": "浏览并安装社区插件",
     "marketEmpty": "暂无可用插件",
@@ -915,7 +912,6 @@
     "marketYankedVulnerable": "存在安全漏洞",
     "marketYankedMalicious": "已标记恶意",
     "marketRefreshTooltip": "刷新",
-
     "pluginSettingsDialogTitle": "{name} 设置",
     "pluginSettingsSaveButton": "保存",
     "pluginSettingsSaving": "保存中…",
@@ -930,14 +926,11 @@
     "pluginErrSelect": "请选择一个有效选项",
     "pluginSelectPlaceholder": "请选择…",
     "pluginFolderPickPlaceholder": "选择文件夹",
-
     "taskIgnorePluginRetry": "忽略插件重试",
     "taskIgnorePluginRetryTitle": "忽略插件重试",
     "taskIgnorePluginRetryMsg": "此任务在插件解析阶段失败。忽略后将跳过该插件，直接使用原始链接重试下载。如果问题持续出现，可前往「设置 → 扩展 → 插件」检查该插件的配置。",
     "pluginAutoDisabledToast": "插件「{name}」已因连续失败被自动禁用，可在「设置 → 扩展 → 插件」中重新启用",
-
     "settingsCatComponents": "组件",
-
     "componentsFfmpegTitle": "FFmpeg",
     "componentsFfmpegDesc": "开源音视频处理工具，FluxDown 用它合并 DASH 等流媒体下载产生的独立音视频轨",
     "componentsYtdlpTitle": "yt-dlp",
@@ -951,14 +944,12 @@
     "componentsSourceSystem": "系统 PATH",
     "componentsSystemPathLabel": "系统 PATH：",
     "componentsSystemPathNotFound": "未找到",
-
     "componentsManualPathLabel": "手动指定路径",
     "componentsManualPathDesc": "直接指定 {name} 可执行文件路径，优先级高于组件安装与系统 PATH",
     "componentsManualPathHintFfmpeg": "例如 C:\\tools\\ffmpeg\\ffmpeg.exe",
     "componentsManualPathHintYtdlp": "例如 C:\\tools\\yt-dlp\\yt-dlp.exe",
     "componentsManualPathSave": "保存",
     "componentsManualPathClear": "清除",
-
     "componentsInstallSectionTitle": "托管安装",
     "componentsInstallSectionDescFfmpeg": "按需从官方 BtbN/FFmpeg-Builds 发行版下载静态构建，不随安装包分发",
     "componentsInstallSectionDescYtdlp": "按需从官方 yt-dlp/yt-dlp GitHub 发行版下载对应平台二进制，不随安装包分发",
@@ -978,5 +969,33 @@
     "componentsUninstallSuccess": "{name} 已卸载",
     "componentsUninstallFailed": "卸载失败：{message}",
     "componentsUninstallConfirmTitle": "卸载 {name}",
-    "componentsUninstallConfirmMsg": "这将删除托管安装的 {name}，手动指定路径与系统 PATH 中的 {name} 不受影响"
+    "componentsUninstallConfirmMsg": "这将删除托管安装的 {name}，手动指定路径与系统 PATH 中的 {name} 不受影响",
+    "statusSeeding": "做种中",
+    "tabSeeding": "做种中",
+    "btSeedingTitle": "做种设置",
+    "btSeedRatioLimit": "当总分享率达到",
+    "btSeedPostRatioLimit": "当做种后分享率达到",
+    "btSeedTimeLimit": "达到总做种时间",
+    "btSeedInactiveTimeLimit": "达到不活跃做种时间",
+    "btSeedConditionsOperator": "条件组合方式",
+    "btSeedOperatorOr": "满足任一条件",
+    "btSeedOperatorAnd": "满足所有条件",
+    "btSeedThenAction": "然后",
+    "btSeedStopSeeding": "停止做种",
+    "btMaxSeedingTasks": "最大做种任务数",
+    "seedRatio": "分享率",
+    "seedTime": "做种时间",
+    "seedingStatus": "做种状态",
+    "seedingStatusNone": "未做种",
+    "seedingStatusSeeding": "做种中",
+    "seedingStatusRatioReached": "已达到分享率限制",
+    "seedingStatusTimeReached": "已达到做种时间限制",
+    "seedingStatusInactiveReached": "已达到不活跃做种时间限制",
+    "seedingStatusUserStopped": "已手动停止",
+    "seedingStatusDeleted": "任务已删除",
+    "seedingStatusSessionReleased": "BT 会话已释放",
+    "uploadedTotal": "已上传",
+    "minutesSuffix": "分钟",
+    "tasksSuffix": "个",
+    "settingsTabSeeding": "做种"
 }

@@ -11,6 +11,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession, TorrentSource};
+use crate::bt_seeding::{
+    SEEDING_STATUS_ACTIVE, SeedingLimitConfig, SeedingStopReason, SeedingUploadSnapshot,
+};
 use crate::dash_downloader;
 use crate::db::Db;
 use crate::downloader::{self, DownloadParams, ProgressUpdate, SegmentProgressInfo};
@@ -1294,6 +1297,9 @@ impl DownloadManager {
                     url: task.url.clone(),
                     error_message: msg,
                     upload_speed_bps: 0,
+                    uploaded_bytes: task.uploaded_bytes,
+                    seeding_status: task.seeding_status,
+                    seeding_message: task.seeding_message.clone(),
                 });
                 self.pending_resolve.remove(&task_id);
                 self.active_tasks.remove(&task_id);
@@ -1504,12 +1510,13 @@ impl DownloadManager {
     }
 
     /// Update global speed limit (bytes/sec).  Takes effect immediately on
-    /// all active and future HTTP/FTP/BT downloads.  0 = unlimited.
+    /// all active and future HTTP/FTP/BT downloads and BT uploads.  0 = unlimited.
     pub fn set_speed_limit(&mut self, bps: u64) {
         self.speed_limiter.set_limit(bps);
         // Synchronise speed limit to the shared BT session (if initialised).
         if let Some(ref bt) = self.bt_session {
             bt.set_speed_limit(bps);
+            bt.set_upload_speed_limit(bps);
         }
     }
 
@@ -1652,6 +1659,160 @@ impl DownloadManager {
         self.bt_config = config;
     }
 
+    /// Periodically account for seeding uploads and evaluate ratio/time limits.
+    ///
+    /// This is a cheap no-op when no BT session exists or no seeders are active.
+    /// Upload bytes are persisted and emitted so the UI can show live upload
+    /// speed/ratio; seeders that exceed configured limits are stopped.
+    pub async fn tick_seeding_evaluation(&mut self) {
+        self.account_seeding_uploads().await;
+        self.evaluate_seeding_limits().await;
+    }
+
+    /// Persist and emit upload stats for every active seeder.
+    async fn account_seeding_uploads(&self) {
+        let Some(ref bt) = self.bt_session else {
+            return;
+        };
+        let seeding_mgr = bt.seeding_manager();
+        let task_ids = seeding_mgr.all_task_ids().await;
+        for task_id in task_ids {
+            let Some(handle) = seeding_mgr.get_handle(&task_id).await else {
+                continue;
+            };
+            let stats = handle.stats();
+            let uploaded_bytes = stats
+                .live
+                .as_ref()
+                .map(|l| l.snapshot.uploaded_bytes as i64)
+                .unwrap_or(0);
+            let upload_speed_bps = stats
+                .live
+                .as_ref()
+                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
+                .unwrap_or(0);
+
+            let _ = self
+                .db
+                .update_task_uploaded_bytes(&task_id, uploaded_bytes)
+                .await;
+
+            if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await {
+                self.sink.emit(EngineEvent::TaskProgress {
+                    task_id: task_id.clone(),
+                    status: 3,
+                    downloaded_bytes: t.downloaded_bytes,
+                    total_bytes: t.total_bytes,
+                    speed: 0,
+                    file_name: t.file_name.clone(),
+                    save_dir: t.save_dir.clone(),
+                    url: t.url.clone(),
+                    error_message: String::new(),
+                    upload_speed_bps,
+                    uploaded_bytes,
+                    seeding_status: 1,
+                    seeding_message: String::new(),
+                });
+            }
+        }
+    }
+
+    /// Evaluate configured seeding limits for every active seeder.
+    ///
+    /// Reads live upload stats to determine which seeders have exceeded their
+    /// configured ratio/time/inactivity limits, then stops them. Upload
+    /// accounting (persisting `uploaded_bytes` and emitting `TaskProgress`) is
+    /// intentionally left to [`Self::account_seeding_uploads`] so it happens
+    /// exactly once per tick.
+    async fn evaluate_seeding_limits(&self) {
+        let Some(ref bt) = self.bt_session else {
+            return;
+        };
+
+        let config = SeedingLimitConfig {
+            ratio_limit: self.bt_config.seed_ratio_limit,
+            post_ratio_limit: self.bt_config.seed_post_ratio_limit,
+            seed_time_limit_minutes: self.bt_config.seed_time_limit_minutes,
+            inactive_time_limit_minutes: self.bt_config.seed_inactive_time_limit_minutes,
+            operator: self.bt_config.seed_limit_operator,
+        };
+        if !config.has_enabled_conditions() {
+            return;
+        }
+
+        let seeding_mgr = bt.seeding_manager();
+        let task_ids = seeding_mgr.all_task_ids().await;
+        if task_ids.is_empty() {
+            return;
+        }
+
+        // Build snapshots for limit evaluation from live stats and DB totals.
+        let mut snapshots: HashMap<String, SeedingUploadSnapshot> = HashMap::new();
+        for task_id in &task_ids {
+            let Some(handle) = seeding_mgr.get_handle(task_id).await else {
+                continue;
+            };
+            let stats = handle.stats();
+            let uploaded_bytes = stats
+                .live
+                .as_ref()
+                .map(|l| l.snapshot.uploaded_bytes as i64)
+                .unwrap_or(0);
+            let upload_speed_bps = stats
+                .live
+                .as_ref()
+                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
+                .unwrap_or(0);
+
+            let downloaded_bytes = self
+                .db
+                .get_task_downloaded_bytes(task_id)
+                .await
+                .unwrap_or(1);
+
+            snapshots.insert(
+                task_id.clone(),
+                SeedingUploadSnapshot {
+                    total_uploaded: uploaded_bytes,
+                    total_downloaded: downloaded_bytes,
+                    upload_speed_bps,
+                },
+            );
+        }
+
+        let to_stop = seeding_mgr
+            .evaluate_limits(&config, |id| snapshots.get(id).copied().unwrap_or_default())
+            .await;
+
+        for (task_id, reason) in to_stop {
+            let short = &task_id[..task_id.len().min(8)];
+            log_info!("[manager] stopping seeder {}: {}", short, reason.message());
+            let _ = bt.unregister_seeder(&task_id).await;
+            let _ = bt.pause_task(&task_id).await;
+            let _ = self
+                .db
+                .update_task_seeding_status(&task_id, reason.as_i32(), reason.message())
+                .await;
+            if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await {
+                self.sink.emit(EngineEvent::TaskProgress {
+                    task_id: task_id.clone(),
+                    status: 3,
+                    downloaded_bytes: t.downloaded_bytes,
+                    total_bytes: t.total_bytes,
+                    speed: 0,
+                    file_name: t.file_name.clone(),
+                    save_dir: t.save_dir.clone(),
+                    url: t.url.clone(),
+                    error_message: String::new(),
+                    upload_speed_bps: 0,
+                    uploaded_bytes: t.uploaded_bytes,
+                    seeding_status: reason.as_i32(),
+                    seeding_message: reason.message().to_string(),
+                });
+            }
+        }
+    }
+
     /// Invalidate (destroy) the current BT session so it will be re-created
     /// with the latest `bt_config` on the next BT download.  Active BT
     /// downloads are gracefully paused first so their progress is preserved
@@ -1700,6 +1861,9 @@ impl DownloadManager {
                             url: t.url.clone(),
                             error_message: String::new(),
                             upload_speed_bps: 0,
+                            uploaded_bytes: t.uploaded_bytes,
+                            seeding_status: t.seeding_status,
+                            seeding_message: t.seeding_message.clone(),
                         });
 
                         self.send_segments_from_db(tid, t.total_bytes).await;
@@ -2070,6 +2234,13 @@ impl DownloadManager {
         }
         // Keep the session alive if any BT tasks are actively downloading.
         if self.active_tasks.values().any(|e| e.is_bt) {
+            return;
+        }
+        // Keep the session alive if any completed torrents are still seeding.
+        if let Some(ref bt) = self.bt_session
+            && bt.has_seeders().await
+        {
+            log_info!("[manager] deferring BT session release — seeders active");
             return;
         }
         // BT tasks bypass the pending queue, so this guard is purely
@@ -2601,6 +2772,9 @@ impl DownloadManager {
             url: db_url.clone(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
 
         // 插件惰性解析：命中 resolver 则打标（仅存 ID）；协议判定/probe 推迟到实际
@@ -3234,6 +3408,35 @@ impl DownloadManager {
     }
     #[cfg(not(feature = "plugins"))]
     fn clear_pending_resolve(&mut self, _task_id: &str) {}
+    /// Emit a `TaskProgress` event for `task_id` using the latest DB row.
+    /// `speed` is always reported as 0 because this helper is used for
+    /// paused / completed / seeding transitions where no download speed exists.
+    async fn emit_progress_from_db(
+        &self,
+        task_id: &str,
+        status: i32,
+        seeding_status: i32,
+        seeding_message: &str,
+        upload_speed_bps: i64,
+    ) {
+        if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await {
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: task_id.to_string(),
+                status,
+                downloaded_bytes: t.downloaded_bytes,
+                total_bytes: t.total_bytes,
+                speed: 0,
+                file_name: t.file_name.clone(),
+                save_dir: t.save_dir.clone(),
+                url: t.url.clone(),
+                error_message: String::new(),
+                upload_speed_bps,
+                uploaded_bytes: t.uploaded_bytes,
+                seeding_status,
+                seeding_message: seeding_message.to_string(),
+            });
+        }
+    }
 
     pub async fn pause_task(&mut self, task_id: &str) {
         self.clear_pending_resolve(task_id);
@@ -3243,20 +3446,7 @@ impl DownloadManager {
             // 广播更新后的队列位置
             self.broadcast_queue_positions();
             let _ = self.db.update_task_status(task_id, 2, "").await;
-            if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await {
-                self.sink.emit(EngineEvent::TaskProgress {
-                    task_id: task_id.to_string(),
-                    status: 2,
-                    downloaded_bytes: t.downloaded_bytes,
-                    total_bytes: t.total_bytes,
-                    speed: 0,
-                    file_name: t.file_name.clone(),
-                    save_dir: t.save_dir.clone(),
-                    url: t.url.clone(),
-                    error_message: String::new(),
-                    upload_speed_bps: 0,
-                });
-            }
+            self.emit_progress_from_db(task_id, 2, 0, "", 0).await;
             return;
         }
 
@@ -3273,21 +3463,9 @@ impl DownloadManager {
             }
 
             let _ = self.db.update_task_status(task_id, 2, "").await;
+            self.emit_progress_from_db(task_id, 2, 0, "", 0).await;
 
             if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await {
-                self.sink.emit(EngineEvent::TaskProgress {
-                    task_id: task_id.to_string(),
-                    status: 2,
-                    downloaded_bytes: t.downloaded_bytes,
-                    total_bytes: t.total_bytes,
-                    speed: 0,
-                    file_name: t.file_name.clone(),
-                    save_dir: t.save_dir.clone(),
-                    url: t.url.clone(),
-                    error_message: String::new(),
-                    upload_speed_bps: 0,
-                });
-
                 // Send persisted segment data so the UI retains the download
                 // distribution visualization after pausing.
                 self.send_segments_from_db(task_id, t.total_bytes).await;
@@ -3314,6 +3492,42 @@ impl DownloadManager {
             // Cancelled if our guard fires), and the spawned wrapper still sends
             // done_tx → on_task_done → maybe_release_bt_session, so the session
             // is released safely once the task has actually stopped.
+        }
+
+        // Third branch: the task is a completed BT torrent that is currently
+        // seeding. Pausing it must stop the seeder and persist the user-stopped
+        // state without changing the overall completed status.
+        if let Ok(Some(task)) = self.db.load_task_by_id(task_id).await
+            && task.status == 3
+        {
+            match task.seeding_status {
+                s if s == SEEDING_STATUS_ACTIVE => {
+                    if let Some(ref bt) = self.bt_session {
+                        let _ = bt.pause_task(task_id).await;
+                        let _ = bt.unregister_seeder(task_id).await;
+                    }
+                    let _ = self
+                        .db
+                        .update_task_seeding_status(
+                            task_id,
+                            SeedingStopReason::UserStopped.as_i32(),
+                            SeedingStopReason::UserStopped.message(),
+                        )
+                        .await;
+                    self.emit_progress_from_db(
+                        task_id,
+                        3,
+                        SeedingStopReason::UserStopped.as_i32(),
+                        SeedingStopReason::UserStopped.message(),
+                        0,
+                    )
+                    .await;
+                }
+                s if s == SeedingStopReason::UserStopped.as_i32() => {
+                    // Already paused by the user — idempotent no-op.
+                }
+                _ => {}
+            }
         }
     }
 
@@ -3369,6 +3583,49 @@ impl DownloadManager {
 
         // Load task once and reuse for both the is_bt check and the queue entry.
         let task_row = self.db.load_task_by_id(task_id).await.ok().flatten();
+
+        // Handle paused BT seeders before treating the task as an ordinary resume.
+        // A completed task with seeding_status == 4 is still a finished download;
+        // resuming it only reactivates seeding.
+        if let Some(ref task) = task_row
+            && task.status == 3
+            && task.seeding_status == SeedingStopReason::UserStopped.as_i32()
+        {
+            let stopped_status = SeedingStopReason::UserStopped.as_i32();
+            let stopped_message = SeedingStopReason::UserStopped.message();
+            if let Some(ref bt) = self.bt_session {
+                match bt.resume_task(task_id).await {
+                    Ok(Some(handle)) => {
+                        bt.register_seeder(task_id, handle, task.uploaded_at_completion)
+                            .await;
+                        let _ = self.db.update_task_seeding_status(task_id, 1, "").await;
+                        self.emit_progress_from_db(task_id, 3, 1, "", 0).await;
+                    }
+                    Ok(None) => {
+                        log_info!(
+                            "[manager] resume_task {}: no cached BT handle, cannot resume seeding",
+                            task_id
+                        );
+                        self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
+                            .await;
+                    }
+                    Err(e) => {
+                        log_info!("[manager] resume_task {}: BT resume failed: {}", task_id, e);
+                        self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
+                            .await;
+                    }
+                }
+            } else {
+                log_info!(
+                    "[manager] resume_task {}: no BT session, cannot resume seeding",
+                    task_id
+                );
+                self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
+                    .await;
+            }
+            return;
+        }
+
         let is_bt = task_row
             .as_ref()
             .map(|t| is_bt_url(&t.url))
@@ -3406,6 +3663,9 @@ impl DownloadManager {
                     url: t.url.clone(),
                     error_message: String::new(),
                     upload_speed_bps: 0,
+                    uploaded_bytes: t.uploaded_bytes,
+                    seeding_status: t.seeding_status,
+                    seeding_message: t.seeding_message.clone(),
                 });
                 self.pending_queue.push_back(QueuedTask {
                     task_id: task_id.to_string(),
@@ -3972,10 +4232,7 @@ impl DownloadManager {
             .await;
 
         // Send update with actual task info if available
-        let (file_name, save_dir, url) = match self.db.load_task_by_id(task_id).await {
-            Ok(Some(t)) => (t.file_name, t.save_dir, t.url),
-            _ => Default::default(),
-        };
+        let task_info = self.db.load_task_by_id(task_id).await.ok().flatten();
 
         self.sink.emit(EngineEvent::TaskProgress {
             task_id: task_id.to_string(),
@@ -3983,11 +4240,32 @@ impl DownloadManager {
             downloaded_bytes: 0,
             total_bytes: 0,
             speed: 0,
-            file_name,
-            save_dir,
-            url,
+            file_name: task_info
+                .as_ref()
+                .map(|t| t.file_name.clone())
+                .unwrap_or_default(),
+            save_dir: task_info
+                .as_ref()
+                .map(|t| t.save_dir.clone())
+                .unwrap_or_default(),
+            url: task_info
+                .as_ref()
+                .map(|t| t.url.clone())
+                .unwrap_or_default(),
             error_message: CANCELLED_ERROR_MESSAGE.to_string(),
             upload_speed_bps: 0,
+            uploaded_bytes: task_info
+                .as_ref()
+                .map(|t| t.uploaded_bytes)
+                .unwrap_or_default(),
+            seeding_status: task_info
+                .as_ref()
+                .map(|t| t.seeding_status)
+                .unwrap_or_default(),
+            seeding_message: task_info
+                .as_ref()
+                .map(|t| t.seeding_message.clone())
+                .unwrap_or_default(),
         });
 
         // A slot freed up — try to start queued tasks.
@@ -4629,6 +4907,9 @@ impl DownloadManager {
                 url: task_row.url.clone(),
                 error_message: String::new(),
                 upload_speed_bps: 0,
+                uploaded_bytes: task_row.uploaded_bytes,
+                seeding_status: task_row.seeding_status,
+                seeding_message: task_row.seeding_message.clone(),
             });
             self.pending_queue.push_back(QueuedTask {
                 task_id: task_id.to_string(),
@@ -4871,10 +5152,8 @@ impl DownloadManager {
         log_info!("[manager] moved task {} to queue '{}'", task_id, queue_id);
         // 定向广播归属变化：AllQueues 只带队列元数据，不带任务归属，
         // 客户端任务表若不更新会导致「移动到队列」看似无效。
-        self.sink.emit(EngineEvent::TaskQueueChanged {
-            task_id,
-            queue_id,
-        });
+        self.sink
+            .emit(EngineEvent::TaskQueueChanged { task_id, queue_id });
         self.send_all_queues().await;
     }
 
@@ -5377,7 +5656,10 @@ pub async fn progress_reporter(
 
         // For terminal states (completed / error / paused) always send immediately.
         // For downloading (status=1) and preparing (status=5), rate-limit to avoid flooding Dart.
-        let is_terminal = update.status != 1 && update.status != 5;
+        // BT tasks that are actively seeding (status=3, seeding_status=1) are also
+        // treated as live so the UI keeps receiving upload speed updates.
+        let is_seeding = update.seeding_status == SEEDING_STATUS_ACTIVE;
+        let is_terminal = update.status != 1 && update.status != 5 && !is_seeding;
         // Status transitions (e.g. preparing→downloading) must also be sent
         // immediately so the UI never skips an intermediate state.
         let is_status_change = update.status != state.last_sent_status;
@@ -5392,7 +5674,8 @@ pub async fn progress_reporter(
 
         if should_send || has_new_name {
             // Terminal states (completed / error / paused) should report zero
-            // speed so the UI doesn't show a stale EMA value.
+            // speed so the UI doesn't show a stale EMA value. Active seeders keep
+            // their upload speed so the list/detail panels remain accurate.
             let report_speed = if is_terminal { 0 } else { smoothed_speed };
             sink.emit(EngineEvent::TaskProgress {
                 task_id: update.task_id.clone(),
@@ -5405,6 +5688,9 @@ pub async fn progress_reporter(
                 url: String::new(),
                 error_message: update.error_message.clone(),
                 upload_speed_bps: if is_terminal { 0 } else { state.upload_bps },
+                uploaded_bytes: update.uploaded_bytes,
+                seeding_status: update.seeding_status,
+                seeding_message: update.seeding_message.clone(),
             });
 
             // Send segment-level progress for IDM-style visualization.
@@ -5526,7 +5812,11 @@ pub async fn progress_reporter(
         // Status 2 (paused): speed state is stale; a fresh one will be
         //   created via `or_insert_with` when the task resumes.
         // Status 3 (completed) / 4 (error/cancelled/deleted): terminal.
-        if update.status == 2 || update.status == 3 || update.status == 4 {
+        // BT seeders (status=3 with seeding_status=1) stay alive so the UI
+        // continues to receive live upload speed/ratio updates.
+        let should_remove_state =
+            update.status == 2 || update.status == 4 || (update.status == 3 && !is_seeding);
+        if should_remove_state {
             states.remove(&update.task_id);
             last_dart_send.remove(&update.task_id);
             last_db_save.remove(&update.task_id);

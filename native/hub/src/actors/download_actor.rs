@@ -105,6 +105,36 @@ fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         } else {
             String::new()
         },
+        seed_ratio_limit: cfg
+            .get("bt_seed_ratio_limit")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(1.0),
+        seed_post_ratio_limit: cfg
+            .get("bt_seed_post_ratio_limit")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0),
+        seed_time_limit_minutes: cfg
+            .get("bt_seed_time_limit_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(72 * 60),
+        seed_inactive_time_limit_minutes: cfg
+            .get("bt_seed_inactive_time_limit_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0),
+        seed_limit_operator: cfg
+            .get("bt_seed_limit_operator")
+            .map(|v| {
+                if v.eq_ignore_ascii_case("and") {
+                    fluxdown_engine::bt_seeding::SeedingLimitOperator::And
+                } else {
+                    fluxdown_engine::bt_seeding::SeedingLimitOperator::Or
+                }
+            })
+            .unwrap_or(fluxdown_engine::bt_seeding::SeedingLimitOperator::Or),
+        max_seeding_tasks: cfg
+            .get("bt_max_seeding_tasks")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0),
     }
 }
 
@@ -729,6 +759,12 @@ pub async fn run(db_dir: PathBuf) {
     // 触发），此处只提供节拍。Delay 防休眠唤醒后积压 tick 连环触发。
     let mut queue_schedule_tick = tokio::time::interval(std::time::Duration::from_secs(20));
     queue_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Seeding evaluation timer: check ratio/time limits and update live upload
+    // stats at `SEEDING_EVAL_INTERVAL` so the UI reflects seeding speed promptly.
+    let mut seeding_interval =
+        tokio::time::interval(fluxdown_engine::bt_seeding::SEEDING_EVAL_INTERVAL);
+    seeding_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -1863,6 +1899,10 @@ pub async fn run(db_dir: PathBuf) {
                 #[cfg(not(hub_plugins))]
                 let _ = (tid, delay);
             }
+            // --- Seeding evaluation timer ---
+            _ = seeding_interval.tick() => {
+                engine.manager.tick_seeding_evaluation().await;
+            }
         }
     }
 }
@@ -2140,7 +2180,13 @@ async fn apply_config_key(
         | "bt_port_end"
         | "bt_custom_trackers"
         | "bt_tracker_sub_enabled"
-        | "bt_tracker_sub_urls" => {
+        | "bt_tracker_sub_urls"
+        | "bt_seed_ratio_limit"
+        | "bt_seed_post_ratio_limit"
+        | "bt_seed_time_limit_minutes"
+        | "bt_seed_inactive_time_limit_minutes"
+        | "bt_seed_limit_operator"
+        | "bt_max_seeding_tasks" => {
             log_info!("[actor] BT config changed: {}={}", key, value);
             // Reload the full BT config from DB to stay consistent.
             let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
@@ -2219,11 +2265,9 @@ async fn apply_config_key(
         }
         // 值为空 = 用户在设置中点了「清除已学习的服务器策略」：清空内存缓存
         // 并重写持久化（非空值是引擎自己落盘的数据，不经此路径回流）。
-        "domain_conn_caps" => {
-            if value.is_empty() {
-                log_info!("[actor] clearing learned domain connection caps");
-                engine.manager.clear_domain_conn_caps();
-            }
+        "domain_conn_caps" if value.is_empty() => {
+            log_info!("[actor] clearing learned domain connection caps");
+            engine.manager.clear_domain_conn_caps();
         }
         // 本机 API 服务器配置变更 → 热重启监听（优雅停机旧实例
         // 后按最新配置重启，含端口/token/子功能开关，无需重启应用）。

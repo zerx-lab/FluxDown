@@ -129,6 +129,23 @@ SyncEntry _string(String key, String Function() read, void Function(String) writ
   },
 );
 
+SyncEntry _double(String key, double Function() read, void Function(double) write) => SyncEntry(
+  key: key,
+  read: read,
+  apply: (value) {
+    final v = switch (value) {
+      num n => n.toDouble(),
+      String s => double.tryParse(s),
+      _ => null,
+    };
+    if (v == null) {
+      logInfo(_tag, 'skip $key: expected double, got ${value.runtimeType}');
+      return;
+    }
+    write(v);
+  },
+);
+
 void _applyThemeSelection(ThemeProvider theme, String key, dynamic value, {required bool dark}) {
   if (value is! String) {
     logInfo(_tag, 'skip $key: expected string, got ${value.runtimeType}');
@@ -347,7 +364,7 @@ List<SyncEntry> buildSyncCatalog({
     settings.setKeepAwakeWhileDownloading,
   ),
 
-  // ── bt（5）──
+  // ── bt（5 + 6 做种）──
   _bool('bt.enable_dht', () => settings.btEnableDht, settings.setBtEnableDht),
   _bool('bt.enable_upnp', () => settings.btEnableUpnp, settings.setBtEnableUpnp),
   _string('bt.custom_trackers', () => settings.btCustomTrackers, settings.setBtCustomTrackers),
@@ -357,6 +374,39 @@ List<SyncEntry> buildSyncCatalog({
     settings.setBtTrackerSubEnabled,
   ),
   _string('bt.tracker_sub_urls', () => settings.btTrackerSubUrls, settings.setBtTrackerSubUrls),
+
+  // ── bt 做种（6）──
+  // 启用态由 limit>0 编码（0=关闭），同步 limit 值即同步启用状态。
+  _double(
+    'bt.seed_ratio_limit',
+    () => settings.btSeedRatioLimit,
+    settings.setBtSeedRatioLimit,
+  ),
+  _double(
+    'bt.seed_post_ratio_limit',
+    () => settings.btSeedPostRatioLimit,
+    settings.setBtSeedPostRatioLimit,
+  ),
+  _int(
+    'bt.seed_time_limit_minutes',
+    () => settings.btSeedTimeLimitMinutes,
+    settings.setBtSeedTimeLimitMinutes,
+  ),
+  _int(
+    'bt.seed_inactive_time_limit_minutes',
+    () => settings.btSeedInactiveTimeLimitMinutes,
+    settings.setBtSeedInactiveTimeLimitMinutes,
+  ),
+  _string(
+    'bt.seed_limit_operator',
+    () => settings.btSeedConditionsOperator,
+    settings.setBtSeedConditionsOperator,
+  ),
+  _int(
+    'bt.max_seeding_tasks',
+    () => settings.btMaxSeedingTasks,
+    settings.setBtMaxSeedingTasks,
+  ),
 
   // ── ed2k（5）──
   _bool('ed2k.enable_kad', () => settings.ed2kEnableKad, settings.setEd2kEnableKad),

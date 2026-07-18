@@ -1615,6 +1615,7 @@ fn find_or_bootstrap_updater(zip_path: &str) -> Result<PathBuf, UpdateError> {
 /// On Linux/macOS the helper is always expected to be present. Android never
 /// reaches here — APK installation is driven from the Dart/Kotlin side.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(dead_code)]
 fn find_or_bootstrap_updater(_zip_path: &str) -> Result<PathBuf, UpdateError> {
     find_updater_bin()
 }

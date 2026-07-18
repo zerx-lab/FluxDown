@@ -490,6 +490,36 @@ class _DetailPanelState extends State<DetailPanel> {
             c,
           ),
         ],
+        if (task.isBt) ...[
+          _buildInfoRow(
+            currentS.uploadedTotal,
+            task.uploadedBytes > 0
+                ? DownloadTask.formatBytes(task.uploadedBytes)
+                : '—',
+            c,
+          ),
+          if (task.isSeeding)
+            _buildInfoRow(
+              currentS.infoSpeed,
+              task.uploadSpeedBps > 0
+                  ? '↑ ${DownloadTask.formatBytes(task.uploadSpeedBps)}/s'
+                  : '—',
+              c,
+            ),
+          _buildInfoRow(
+            currentS.seedRatio,
+            task.seedRatio.toStringAsFixed(2),
+            c,
+          ),
+          if (task.isSeeding)
+            _buildInfoRow(
+              currentS.seedTime,
+              _formatDuration(task.seedingDuration),
+              c,
+            ),
+          if (task.seedingStatus != SeedingStatus.none)
+            _buildInfoRow(currentS.seedingStatus, task.seedingStatusText, c),
+        ],
         if (segCount != null)
           _buildInfoRow(currentS.activeSegments, '$segCount', c),
         _buildThreadsConfigRow(c, task),
@@ -815,10 +845,11 @@ class _DetailPanelState extends State<DetailPanel> {
       ),
       child: Column(
         children: [
-          // 暂停 / 恢复
+          // 暂停 / 恢复（做种任务也允许暂停）
           if (task.status == TaskStatus.downloading ||
               task.status == TaskStatus.pending ||
-              task.status == TaskStatus.preparing)
+              task.status == TaskStatus.preparing ||
+              task.isSeeding)
             SizedBox(
               width: double.infinity,
               child: ShadButton(

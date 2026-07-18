@@ -205,9 +205,7 @@ fn archive_handler_is_third_party(path: &str) -> bool {
     };
 
     // Explorer 内建压缩文件夹 handler（zip/cab 默认）。
-    if progid.eq_ignore_ascii_case("CompressedFolder")
-        || progid.eq_ignore_ascii_case("CABFolder")
-    {
+    if progid.eq_ignore_ascii_case("CompressedFolder") || progid.eq_ignore_ascii_case("CABFolder") {
         return false;
     }
 

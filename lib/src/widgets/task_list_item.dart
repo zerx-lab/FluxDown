@@ -347,15 +347,61 @@ class _TaskListItemState extends State<TaskListItem> {
 
   Widget _buildSpeed(AppColors c) {
     final task = widget.task;
-    final isActive = task.status == TaskStatus.downloading;
-    return Center(
-      child: Text(
-        task.speedText,
-        style: TextStyle(
-          fontSize: 12,
-          color: isActive ? AppColors.green : c.textMuted,
-          fontFeatures: const [FontFeature.tabularFigures()],
+    if (!task.isBt) {
+      final isActive = task.status == TaskStatus.downloading;
+      return Center(
+        child: Text(
+          task.speedText,
+          style: TextStyle(
+            fontSize: 12,
+            color: isActive ? AppColors.green : c.textMuted,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
         ),
+      );
+    }
+
+    final down = task.speed;
+    final up = task.uploadSpeedBps;
+    final hasDown = down > 0;
+    final hasUp = up > 0;
+    if (!hasDown && !hasUp) {
+      return Center(
+        child: Text(
+          '—',
+          style: TextStyle(
+            fontSize: 12,
+            color: c.textMuted,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      );
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (hasDown)
+            Text(
+              '↓ ${DownloadTask.formatBytes(down)}/s',
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.green,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          if (hasUp)
+            Text(
+              '↑ ${DownloadTask.formatBytes(up)}/s',
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.green,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -378,19 +424,23 @@ class _TaskListItemState extends State<TaskListItem> {
   Widget _buildStatus(AppColors c) {
     final task = widget.task;
     Color statusColor;
-    switch (task.status) {
-      case TaskStatus.downloading:
-      case TaskStatus.resuming:
-      case TaskStatus.preparing:
-        statusColor = c.accent;
-      case TaskStatus.completed:
-        statusColor = task.fileMissing ? AppColors.amber : AppColors.green;
-      case TaskStatus.paused:
-        statusColor = AppColors.amber;
-      case TaskStatus.error:
-        statusColor = AppColors.red;
-      case TaskStatus.pending:
-        statusColor = c.textMuted;
+    if (task.isSeeding) {
+      statusColor = AppColors.green;
+    } else {
+      switch (task.status) {
+        case TaskStatus.downloading:
+        case TaskStatus.resuming:
+        case TaskStatus.preparing:
+          statusColor = c.accent;
+        case TaskStatus.completed:
+          statusColor = task.fileMissing ? AppColors.amber : AppColors.green;
+        case TaskStatus.paused:
+          statusColor = AppColors.amber;
+        case TaskStatus.error:
+          statusColor = AppColors.red;
+        case TaskStatus.pending:
+          statusColor = c.textMuted;
+      }
     }
     final statusText = Text(
       task.statusText,
@@ -502,6 +552,17 @@ void showTaskContextMenu(
         ),
       );
     case TaskStatus.completed:
+      // 已完成但正在做种的 BT 任务也可以暂停
+      if (task.isSeeding) {
+        items.add(
+          ContextMenuItem(
+            icon: LucideIcons.pause,
+            label: s.pause,
+            color: c.textPrimary,
+            action: onPause,
+          ),
+        );
+      }
       break;
   }
 

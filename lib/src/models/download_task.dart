@@ -17,6 +17,39 @@ enum TaskStatus {
   preparing,
 }
 
+/// BT 做种状态 — 与 Rust 端 `SeedingStopReason::as_i32` 对应
+/// 0=none, 1=active seeding, 2=ratio reached,
+/// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
+/// 7=inactive time reached
+enum SeedingStatus {
+  none,
+  seeding,
+  ratioReached,
+  timeReached,
+  userStopped,
+  deleted,
+  sessionReleased,
+  inactiveReached,
+}
+
+/// Convert a Rust seeding status code to the Dart enum.
+///
+/// Mirrors [taskStatusFromInt] and must stay in sync with
+/// `SeedingStopReason::as_i32` in `native/engine/src/bt_seeding.rs`.
+SeedingStatus seedingStatusFromInt(int value) {
+  return switch (value) {
+    0 => SeedingStatus.none,
+    1 => SeedingStatus.seeding,
+    2 => SeedingStatus.ratioReached,
+    3 => SeedingStatus.timeReached,
+    4 => SeedingStatus.userStopped,
+    5 => SeedingStatus.deleted,
+    6 => SeedingStatus.sessionReleased,
+    7 => SeedingStatus.inactiveReached,
+    _ => SeedingStatus.none,
+  };
+}
+
 /// 文件类型分类 — 由扩展名推断
 enum FileCategory {
   all,
@@ -253,6 +286,24 @@ class DownloadTask {
   /// 来自 DB 的 tasks.segments 列（经 AllTasks 快照下发），供详情面板
   /// 展示与「创建后改线程数」编辑。与运行时实际分片数 [segments] 不同。
   final int configuredSegments;
+  /// 已上传字节数（BT 做种）。仅对 BT 任务有意义，默认 0。
+  final int uploadedBytes;
+
+  /// 下载完成时已上传字节数（BT 做种后分享率基准）。仅对 BT 任务有意义，默认 0。
+  final int uploadedAtCompletion;
+
+  /// BT 做种状态。
+  final SeedingStatus seedingStatus;
+
+  /// 做种状态/停止原因的辅助说明。
+  final String seedingMessage;
+
+  /// 实时上传速率（字节/秒）。仅 BT 做种时非零。
+  final int uploadSpeedBps;
+
+  /// 进入做种状态的本地时间，用于 UI 估算做种时长。持久化后无法恢复，重启后
+  /// 会从新的做种信号重新计算。
+  final DateTime? seedingStartedAt;
 
   DownloadTask({
     required this.id,
@@ -274,6 +325,12 @@ class DownloadTask {
     this.fileMissing = false,
     this.configuredSegments = 0,
     this.completedAt,
+    this.uploadedBytes = 0,
+    this.uploadedAtCompletion = 0,
+    this.seedingStatus = SeedingStatus.none,
+    this.seedingMessage = '',
+    this.uploadSpeedBps = 0,
+    this.seedingStartedAt,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -298,6 +355,10 @@ class DownloadTask {
       fileNameConfirmed: hasName,
       fileMissing: info.fileMissing,
       configuredSegments: info.segments,
+      uploadedBytes: info.uploadedBytes,
+      uploadedAtCompletion: info.uploadedAtCompletion,
+      seedingStatus: seedingStatusFromInt(info.seedingStatus),
+      seedingMessage: info.seedingMessage,
       createdAt: seconds > 0
           ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000)
           : DateTime.now(),
@@ -327,6 +388,12 @@ class DownloadTask {
     bool? fileNameConfirmed,
     bool? fileMissing,
     int? configuredSegments,
+    int? uploadedBytes,
+    int? uploadedAtCompletion,
+    SeedingStatus? seedingStatus,
+    String? seedingMessage,
+    int? uploadSpeedBps,
+    DateTime? seedingStartedAt,
     DateTime? createdAt,
     DateTime? completedAt,
   }) {
@@ -349,6 +416,12 @@ class DownloadTask {
       fileNameConfirmed: fileNameConfirmed ?? this.fileNameConfirmed,
       fileMissing: fileMissing ?? this.fileMissing,
       configuredSegments: configuredSegments ?? this.configuredSegments,
+      uploadedBytes: uploadedBytes ?? this.uploadedBytes,
+      uploadedAtCompletion: uploadedAtCompletion ?? this.uploadedAtCompletion,
+      seedingStatus: seedingStatus ?? this.seedingStatus,
+      seedingMessage: seedingMessage ?? this.seedingMessage,
+      uploadSpeedBps: uploadSpeedBps ?? this.uploadSpeedBps,
+      seedingStartedAt: seedingStartedAt ?? this.seedingStartedAt,
       createdAt: createdAt ?? this.createdAt,
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
     );
@@ -357,9 +430,12 @@ class DownloadTask {
   /// 根据 TaskProgress 信号增量更新
   DownloadTask applyProgress(TaskProgress p) {
     final newStatus = taskStatusFromInt(p.status);
+    final isNowSeeding =
+        newStatus == TaskStatus.completed && p.seedingStatus == 1;
     // Rust 端已通过固定窗口采样 + 单层 EMA 充分平滑，Dart 直接使用。
-    // 非下载状态强制归零，防止残留值。
+    // 非下载状态强制归零，防止残留值；BT 任务的上传速度始终透传，供列表同时展示。
     final int displaySpeed = newStatus == TaskStatus.downloading ? p.speed : 0;
+    final int displayUploadSpeed = isBt ? p.uploadSpeedBps : 0;
 
     // 收到 Rust 下载引擎发来的非空文件名，视为已确认（用户输入或引擎解析）。
     // 一旦确认，后续 TaskMetaProbed 不再覆盖此名字。
@@ -376,12 +452,22 @@ class DownloadTask {
         newStatus == TaskStatus.downloading ||
         newStatus == TaskStatus.preparing ||
         newStatus == TaskStatus.resuming;
+    final newSeedingStatus = seedingStatusFromInt(p.seedingStatus);
+    // 首次进入做种状态时记录本地开始时间，用于估算做种时长。
+    final newSeedingStartedAt = isNowSeeding && seedingStatus != SeedingStatus.seeding
+        ? DateTime.now()
+        : seedingStartedAt;
 
     return copyWith(
       status: newStatus,
       downloadedBytes: p.downloadedBytes,
       totalBytes: p.totalBytes > 0 ? p.totalBytes : null,
       speed: displaySpeed,
+      uploadSpeedBps: displayUploadSpeed,
+      uploadedBytes: p.uploadedBytes,
+      seedingStatus: newSeedingStatus,
+      seedingMessage: p.seedingMessage,
+      seedingStartedAt: newSeedingStartedAt,
       fileName: nameFromProgress,
       saveDir: p.saveDir.isNotEmpty ? p.saveDir : null,
       errorMessage: p.errorMessage,
@@ -465,6 +551,34 @@ class DownloadTask {
     return '${formatBytes(speed)}/s';
   }
 
+  /// 格式化上传速度
+  String get uploadSpeedText {
+    if (uploadSpeedBps <= 0) return '—';
+    return '${formatBytes(uploadSpeedBps)}/s';
+  }
+
+  /// 当前是否处于 BT 做种状态
+  bool get isSeeding =>
+      status == TaskStatus.completed && seedingStatus == SeedingStatus.seeding;
+
+  /// 分享率（uploaded / downloaded）
+  double get seedRatio =>
+      downloadedBytes <= 0 ? 0.0 : uploadedBytes / downloadedBytes;
+
+  /// 做种后分享率（(uploaded - uploadedAtCompletion) / downloaded）
+  double get postSeedRatio => downloadedBytes <= 0
+      ? 0.0
+      : (uploadedBytes - uploadedAtCompletion) / downloadedBytes;
+
+  /// 当前任务是否为 BT 任务
+  bool get isBt => protocolLabel == 'BT';
+
+  /// 做种时长。尚未进入做种或无法估算时返回 `Duration.zero`。
+  Duration get seedingDuration =>
+      isSeeding && seedingStartedAt != null
+          ? DateTime.now().difference(seedingStartedAt!)
+          : Duration.zero;
+
   /// 协议类型标识
   String get protocolLabel {
     final lower = url.toLowerCase();
@@ -475,10 +589,28 @@ class DownloadTask {
     return 'HTTP';
   }
 
+  /// 做种停止/状态原因的中文/英文文本。
+  String get seedingStatusText {
+    final s = currentS;
+    return switch (seedingStatus) {
+      SeedingStatus.none => s.seedingStatusNone,
+      SeedingStatus.seeding => s.seedingStatusSeeding,
+      SeedingStatus.ratioReached => s.seedingStatusRatioReached,
+      SeedingStatus.timeReached => s.seedingStatusTimeReached,
+      SeedingStatus.userStopped => s.seedingStatusUserStopped,
+      SeedingStatus.deleted => s.seedingStatusDeleted,
+      SeedingStatus.sessionReleased => s.seedingStatusSessionReleased,
+      SeedingStatus.inactiveReached => s.seedingStatusInactiveReached,
+    };
+  }
+
   /// 副标题信息
   String get subtitle {
     final s = currentS;
     final proto = protocolLabel;
+    if (isSeeding) {
+      return '$proto · $sizeText · ↑ $uploadSpeedText · ${s.seedRatio} ${seedRatio.toStringAsFixed(2)}';
+    }
     switch (status) {
       case TaskStatus.downloading:
         return '$proto · $sizeText · $speedText';
@@ -514,6 +646,7 @@ class DownloadTask {
   /// 状态文本
   String get statusText {
     final s = currentS;
+    if (isSeeding) return s.statusSeeding;
     if (status == TaskStatus.completed && fileMissing) {
       return s.statusFileMissing;
     }

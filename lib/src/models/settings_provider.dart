@@ -89,6 +89,25 @@ class SettingsProvider extends ChangeNotifier {
   int _btPortEnd = 6891; // 监听端口结束
   String _btCustomTrackers = ''; // 用户自定义 Tracker 列表（换行分隔）
 
+  // BT 做种限制（Rust 端以 value > 0 表示启用；Dart 端保存开关状态与数值）
+  bool _btSeedRatioEnabled = true; // 启用总分享率限制
+  double _btSeedRatioLimit = 1.0; // 总分享率限制值
+  bool _btSeedPostRatioEnabled = false; // 启用做种后分享率限制
+  double _btSeedPostRatioLimit = 0.0; // 做种后分享率限制值
+  bool _btSeedTimeEnabled = true; // 启用总做种时间限制
+  int _btSeedTimeLimitMinutes = 72 * 60; // 总做种时间限制（分钟）
+  bool _btSeedInactiveTimeEnabled = false; // 启用不活跃做种时间限制
+  int _btSeedInactiveTimeLimitMinutes = 30; // 不活跃做种时间限制（分钟）
+  String _btSeedConditionsOperator = 'or'; // 条件组合方式：'and' / 'or'
+
+  int _btMaxSeedingTasks = 0; // 最大同时做种任务数（0 = 无限制）
+
+  // 临时缓存：开关关闭时保留上次输入的数值，再次打开时恢复。
+  double _btSeedRatioLimitCached = 1.0;
+  double _btSeedPostRatioLimitCached = 1.0;
+  int _btSeedTimeLimitMinutesCached = 72 * 60;
+  int _btSeedInactiveTimeLimitMinutesCached = 30;
+
   // BT Tracker 订阅（社区维护的 tracker 列表，Rust 端拉取后合并去重）
   bool _btTrackerSubEnabled = true; // 启用 Tracker 订阅
   String _btTrackerSubUrls = ''; // 订阅地址（换行分隔）
@@ -301,6 +320,19 @@ class SettingsProvider extends ChangeNotifier {
   int get btPortStart => _btPortStart;
   int get btPortEnd => _btPortEnd;
   String get btCustomTrackers => _btCustomTrackers;
+
+  // BT 做种限制 Getters
+  bool get btSeedRatioEnabled => _btSeedRatioEnabled;
+  double get btSeedRatioLimit => _btSeedRatioLimit;
+  bool get btSeedPostRatioEnabled => _btSeedPostRatioEnabled;
+  double get btSeedPostRatioLimit => _btSeedPostRatioLimit;
+  bool get btSeedTimeEnabled => _btSeedTimeEnabled;
+  int get btSeedTimeLimitMinutes => _btSeedTimeLimitMinutes;
+  bool get btSeedInactiveTimeEnabled => _btSeedInactiveTimeEnabled;
+  int get btSeedInactiveTimeLimitMinutes => _btSeedInactiveTimeLimitMinutes;
+  String get btSeedConditionsOperator => _btSeedConditionsOperator;
+
+  int get btMaxSeedingTasks => _btMaxSeedingTasks;
 
   // BT Tracker 订阅 Getters
   bool get btTrackerSubEnabled => _btTrackerSubEnabled;
@@ -800,6 +832,134 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('bt_custom_trackers', value);
   }
 
+  void setBtSeedRatioEnabled(bool value) {
+    if (_btSeedRatioEnabled == value) return;
+    _btSeedRatioEnabled = value;
+    notifyListeners();
+    if (value) {
+      _btSeedRatioLimit = _btSeedRatioLimitCached;
+    } else {
+      _btSeedRatioLimitCached = _btSeedRatioLimit;
+    }
+    _saveToRust(
+      'bt_seed_ratio_limit',
+      _btSeedRatioEnabled ? _btSeedRatioLimit.toString() : '0',
+    );
+  }
+
+  void setBtSeedRatioLimit(double value) {
+    if (_btSeedRatioLimit == value) return;
+    _btSeedRatioLimit = value;
+    if (_btSeedRatioEnabled) {
+      _btSeedRatioLimitCached = value;
+    }
+    notifyListeners();
+    if (_btSeedRatioEnabled) {
+      _saveToRust('bt_seed_ratio_limit', value.toString());
+    }
+  }
+
+  void setBtSeedPostRatioEnabled(bool value) {
+    if (_btSeedPostRatioEnabled == value) return;
+    _btSeedPostRatioEnabled = value;
+    notifyListeners();
+    if (value) {
+      _btSeedPostRatioLimit = _btSeedPostRatioLimitCached;
+    } else {
+      _btSeedPostRatioLimitCached = _btSeedPostRatioLimit;
+    }
+    _saveToRust(
+      'bt_seed_post_ratio_limit',
+      _btSeedPostRatioEnabled ? _btSeedPostRatioLimit.toString() : '0',
+    );
+  }
+
+  void setBtSeedPostRatioLimit(double value) {
+    if (_btSeedPostRatioLimit == value) return;
+    _btSeedPostRatioLimit = value;
+    if (_btSeedPostRatioEnabled) {
+      _btSeedPostRatioLimitCached = value;
+    }
+    notifyListeners();
+    if (_btSeedPostRatioEnabled) {
+      _saveToRust('bt_seed_post_ratio_limit', value.toString());
+    }
+  }
+
+  void setBtSeedTimeEnabled(bool value) {
+    if (_btSeedTimeEnabled == value) return;
+    _btSeedTimeEnabled = value;
+    notifyListeners();
+    if (value) {
+      _btSeedTimeLimitMinutes = _btSeedTimeLimitMinutesCached;
+    } else {
+      _btSeedTimeLimitMinutesCached = _btSeedTimeLimitMinutes;
+    }
+    _saveToRust(
+      'bt_seed_time_limit_minutes',
+      _btSeedTimeEnabled ? _btSeedTimeLimitMinutes.toString() : '0',
+    );
+  }
+
+  void setBtSeedTimeLimitMinutes(int value) {
+    if (_btSeedTimeLimitMinutes == value) return;
+    _btSeedTimeLimitMinutes = value;
+    if (_btSeedTimeEnabled) {
+      _btSeedTimeLimitMinutesCached = value;
+    }
+    notifyListeners();
+    if (_btSeedTimeEnabled) {
+      _saveToRust('bt_seed_time_limit_minutes', value.toString());
+    }
+  }
+
+  void setBtSeedInactiveTimeEnabled(bool value) {
+    if (_btSeedInactiveTimeEnabled == value) return;
+    _btSeedInactiveTimeEnabled = value;
+    notifyListeners();
+    if (value) {
+      _btSeedInactiveTimeLimitMinutes = _btSeedInactiveTimeLimitMinutesCached;
+    } else {
+      _btSeedInactiveTimeLimitMinutesCached = _btSeedInactiveTimeLimitMinutes;
+    }
+    _saveToRust(
+      'bt_seed_inactive_time_limit_minutes',
+      _btSeedInactiveTimeEnabled
+          ? _btSeedInactiveTimeLimitMinutes.toString()
+          : '0',
+    );
+  }
+
+  void setBtSeedInactiveTimeLimitMinutes(int value) {
+    if (_btSeedInactiveTimeLimitMinutes == value) return;
+    _btSeedInactiveTimeLimitMinutes = value;
+    if (_btSeedInactiveTimeEnabled) {
+      _btSeedInactiveTimeLimitMinutesCached = value;
+    }
+    notifyListeners();
+    if (_btSeedInactiveTimeEnabled) {
+      _saveToRust(
+        'bt_seed_inactive_time_limit_minutes',
+        value.toString(),
+      );
+    }
+  }
+
+  void setBtSeedConditionsOperator(String value) {
+    final normalized = value == 'and' ? 'and' : 'or';
+    if (_btSeedConditionsOperator == normalized) return;
+    _btSeedConditionsOperator = normalized;
+    notifyListeners();
+    _saveToRust('bt_seed_limit_operator', normalized);
+  }
+
+  void setBtMaxSeedingTasks(int value) {
+    if (_btMaxSeedingTasks == value) return;
+    _btMaxSeedingTasks = value;
+    notifyListeners();
+    _saveToRust('bt_max_seeding_tasks', value.toString());
+  }
+
   // BT Tracker 订阅 Setters
 
   void setBtTrackerSubEnabled(bool value) {
@@ -1222,6 +1382,29 @@ class SettingsProvider extends ChangeNotifier {
           _btPortEnd = int.tryParse(entry.value) ?? 6891;
         case 'bt_custom_trackers':
           _btCustomTrackers = entry.value;
+        case 'bt_seed_ratio_limit':
+          _btSeedRatioLimit = double.tryParse(entry.value) ?? 1.0;
+          _btSeedRatioEnabled = _btSeedRatioLimit > 0.0;
+          _btSeedRatioLimitCached = _btSeedRatioEnabled ? _btSeedRatioLimit : 1.0;
+        case 'bt_seed_post_ratio_limit':
+          _btSeedPostRatioLimit = double.tryParse(entry.value) ?? 0.0;
+          _btSeedPostRatioEnabled = _btSeedPostRatioLimit > 0.0;
+          _btSeedPostRatioLimitCached =
+              _btSeedPostRatioEnabled ? _btSeedPostRatioLimit : 1.0;
+        case 'bt_seed_time_limit_minutes':
+          _btSeedTimeLimitMinutes = int.tryParse(entry.value) ?? 72 * 60;
+          _btSeedTimeEnabled = _btSeedTimeLimitMinutes > 0;
+          _btSeedTimeLimitMinutesCached =
+              _btSeedTimeEnabled ? _btSeedTimeLimitMinutes : 72 * 60;
+        case 'bt_seed_inactive_time_limit_minutes':
+          _btSeedInactiveTimeLimitMinutes = int.tryParse(entry.value) ?? 30;
+          _btSeedInactiveTimeEnabled = _btSeedInactiveTimeLimitMinutes > 0;
+          _btSeedInactiveTimeLimitMinutesCached =
+              _btSeedInactiveTimeEnabled ? _btSeedInactiveTimeLimitMinutes : 30;
+        case 'bt_seed_limit_operator':
+          _btSeedConditionsOperator = entry.value == 'and' ? 'and' : 'or';
+        case 'bt_max_seeding_tasks':
+          _btMaxSeedingTasks = int.tryParse(entry.value) ?? 0;
         case 'bt_tracker_sub_enabled':
           _btTrackerSubEnabled = entry.value == 'true';
         case 'bt_tracker_sub_urls':

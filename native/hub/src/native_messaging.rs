@@ -709,11 +709,11 @@ mod server {
     ///
     /// - macOS: `~/Library/Application Support/fluxdown/fluxdown.sock`
     ///   (avoids /tmp sandbox isolation and $TMPDIR per-app randomisation;
-    ///    uses getpwuid fallback so launchd-launched NMH also finds it)
+    ///   uses getpwuid fallback so launchd-launched NMH also finds it)
     /// - Linux:  `~/.local/share/fluxdown/fluxdown.sock`
     ///   (avoids $XDG_RUNTIME_DIR sandbox remapping inside Flatpak/Snap;
-    ///    ~/.local/share/ is bind-mounted into the sandbox so both the host
-    ///    app and the browser-spawned NMH see the same path)
+    ///   ~/.local/share/ is bind-mounted into the sandbox so both the host
+    ///   app and the browser-spawned NMH see the same path)
     /// - Other Unix: `$XDG_RUNTIME_DIR/fluxdown.sock` → `/tmp/fluxdown.sock`
     pub fn socket_path() -> std::path::PathBuf {
         #[cfg(target_os = "macos")]
@@ -734,15 +734,15 @@ mod server {
         // Flatpak, causing the app and NMH to see different socket paths.
         #[cfg(target_os = "linux")]
         {
-            if let Ok(home) = std::env::var("HOME") {
-                if !home.is_empty() {
-                    let dir = std::path::Path::new(&home)
-                        .join(".local")
-                        .join("share")
-                        .join("fluxdown");
-                    let _ = std::fs::create_dir_all(&dir);
-                    return dir.join("fluxdown.sock");
-                }
+            if let Ok(home) = std::env::var("HOME")
+                && !home.is_empty()
+            {
+                let dir = std::path::Path::new(&home)
+                    .join(".local")
+                    .join("share")
+                    .join("fluxdown");
+                let _ = std::fs::create_dir_all(&dir);
+                return dir.join("fluxdown.sock");
             }
         }
         // Fallback for any other Unix-like OS

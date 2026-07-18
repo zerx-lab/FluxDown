@@ -121,6 +121,9 @@ impl EventSink for RinfEventSink {
                 total_bytes,
                 speed,
                 upload_speed_bps,
+                uploaded_bytes,
+                seeding_status,
+                seeding_message,
                 file_name,
                 save_dir,
                 url,
@@ -161,6 +164,10 @@ impl EventSink for RinfEventSink {
                     save_dir,
                     url,
                     error_message,
+                    upload_speed_bps,
+                    uploaded_bytes,
+                    seeding_status,
+                    seeding_message,
                 }
                 .send_signal_to_dart();
             }

@@ -43,6 +43,7 @@ class _SidebarState extends State<Sidebar> {
     StatusTab.completed => LucideIcons.circleCheck,
     StatusTab.paused => LucideIcons.circlePause,
     StatusTab.error => LucideIcons.circleAlert,
+    StatusTab.seeding => LucideIcons.arrowUpCircle,
   };
 
   static String _statusLabel(S s, StatusTab tab) => switch (tab) {
@@ -51,6 +52,7 @@ class _SidebarState extends State<Sidebar> {
     StatusTab.completed => s.tabCompleted,
     StatusTab.paused => s.tabPaused,
     StatusTab.error => s.tabError,
+    StatusTab.seeding => s.tabSeeding,
   };
 
   // ─────────────────────────────────────────────
@@ -228,7 +230,8 @@ class _SidebarState extends State<Sidebar> {
             count: ctrl.countForStatus(tab),
             isSelected: selectedStatus == tab,
             showActivityDot:
-                tab == StatusTab.downloading && ctrl.downloadingCount > 0,
+                (tab == StatusTab.downloading && ctrl.downloadingCount > 0) ||
+                (tab == StatusTab.seeding && ctrl.seedingCount > 0),
             onTap: () => ctrl.setStatusTab(tab),
           ),
       ],

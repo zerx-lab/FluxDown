@@ -33,6 +33,14 @@ pub enum EngineEvent {
         /// 不进 Dart 信号,由宿主写入 aria2 兼容层的实时速率表
         /// (`ApiHost::live_speeds` 的 `upload_bps`)。
         upload_speed_bps: i64,
+        /// 已上传字节数（BT 做种）。仅 BT 任务有意义，默认 0。
+        uploaded_bytes: i64,
+        /// Seeding status: 0=none, 1=active seeding, 2=ratio reached,
+        /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
+        /// 7=inactive time reached.
+        seeding_status: i32,
+        /// BT 做种状态的辅助说明（如停止原因）。无错误/未做种时为空。
+        seeding_message: String,
     },
 
     /// BT 任务数据下载完成(piece 全部下完),但校验与 staging→save_dir

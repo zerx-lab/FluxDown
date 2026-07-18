@@ -150,6 +150,11 @@ pub async fn run_actor(
     // 触发），此处只提供节拍。
     let mut queue_schedule_tick = tokio::time::interval(Duration::from_secs(20));
     queue_schedule_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Seeding evaluation timer: check ratio/time limits and stop seeders
+    // that have exceeded the configured thresholds at the shared interval.
+    let mut seeding_interval =
+        tokio::time::interval(fluxdown_engine::bt_seeding::SEEDING_EVAL_INTERVAL);
+    seeding_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -177,6 +182,10 @@ pub async fn run_actor(
             }
             _ = queue_schedule_tick.tick() => {
                 engine.manager.tick_queue_schedules().await;
+            }
+            // --- Seeding evaluation timer ---
+            _ = seeding_interval.tick() => {
+                engine.manager.tick_seeding_evaluation().await;
             }
             else => {
                 log_info!("[server-actor] all channels closed, exiting");
@@ -491,6 +500,12 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
             | "bt_tracker_sub_enabled"
             | "bt_tracker_sub_urls"
             | "bt_tracker_sub_cache"
+            | "bt_seed_ratio_limit"
+            | "bt_seed_post_ratio_limit"
+            | "bt_seed_time_limit_minutes"
+            | "bt_seed_inactive_time_limit_minutes"
+            | "bt_seed_limit_operator"
+            | "bt_max_seeding_tasks"
                 if !bt_applied =>
             {
                 bt_applied = true;
@@ -549,6 +564,36 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         } else {
             String::new()
         },
+        seed_ratio_limit: cfg
+            .get("bt_seed_ratio_limit")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(1.0),
+        seed_post_ratio_limit: cfg
+            .get("bt_seed_post_ratio_limit")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0),
+        seed_time_limit_minutes: cfg
+            .get("bt_seed_time_limit_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(72 * 60),
+        seed_inactive_time_limit_minutes: cfg
+            .get("bt_seed_inactive_time_limit_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0),
+        seed_limit_operator: cfg
+            .get("bt_seed_limit_operator")
+            .map(|v| {
+                if v.eq_ignore_ascii_case("and") {
+                    fluxdown_engine::bt_seeding::SeedingLimitOperator::And
+                } else {
+                    fluxdown_engine::bt_seeding::SeedingLimitOperator::Or
+                }
+            })
+            .unwrap_or(fluxdown_engine::bt_seeding::SeedingLimitOperator::Or),
+        max_seeding_tasks: cfg
+            .get("bt_max_seeding_tasks")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0),
     }
 }
 

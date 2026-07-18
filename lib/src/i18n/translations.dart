@@ -514,6 +514,7 @@ class S {
   // 分类子 Tab
   String get settingsTabGeneral => _r('settingsTabGeneral');
   String get settingsTabTracker => _r('settingsTabTracker');
+  String get settingsTabSeeding => _r('settingsTabSeeding');
   String get settingsTabServers => _r('settingsTabServers');
 
   // 设置分组小节标题
@@ -858,6 +859,43 @@ class S {
   String get btTrackerSubPlaceholder => _r('btTrackerSubPlaceholder');
   String get btTrackerSubResetConfirm => _r('btTrackerSubResetConfirm');
   String get btPortInvalid => _r('btPortInvalid');
+
+  // ─────────────────────────────────────────────
+  // Settings — BT 做种
+  // ─────────────────────────────────────────────
+  String get btSeedingTitle => _r('btSeedingTitle');
+  String get btSeedRatioLimit => _r('btSeedRatioLimit');
+  String get btSeedPostRatioLimit => _r('btSeedPostRatioLimit');
+  String get btSeedTimeLimit => _r('btSeedTimeLimit');
+  String get btSeedInactiveTimeLimit => _r('btSeedInactiveTimeLimit');
+  String get btSeedConditionsOperator => _r('btSeedConditionsOperator');
+  String get btSeedOperatorOr => _r('btSeedOperatorOr');
+  String get btSeedOperatorAnd => _r('btSeedOperatorAnd');
+  String get btSeedThenAction => _r('btSeedThenAction');
+  String get btSeedStopSeeding => _r('btSeedStopSeeding');
+  String get btMaxSeedingTasks => _r('btMaxSeedingTasks');
+  String get minutesSuffix => _r('minutesSuffix');
+  String get tasksSuffix => _r('tasksSuffix');
+
+  // ─────────────────────────────────────────────
+  // BT 做种状态/指标
+  // ─────────────────────────────────────────────
+  String get statusSeeding => _r('statusSeeding');
+  String get tabSeeding => _r('tabSeeding');
+  String get seedRatio => _r('seedRatio');
+  String get seedTime => _r('seedTime');
+  String get seedingStatus => _r('seedingStatus');
+  String get seedingStatusNone => _r('seedingStatusNone');
+  String get seedingStatusSeeding => _r('seedingStatusSeeding');
+  String get seedingStatusRatioReached => _r('seedingStatusRatioReached');
+  String get seedingStatusTimeReached => _r('seedingStatusTimeReached');
+  String get seedingStatusInactiveReached =>
+      _r('seedingStatusInactiveReached');
+  String get seedingStatusUserStopped => _r('seedingStatusUserStopped');
+  String get seedingStatusDeleted => _r('seedingStatusDeleted');
+  String get seedingStatusSessionReleased =>
+      _r('seedingStatusSessionReleased');
+  String get uploadedTotal => _r('uploadedTotal');
 
   // ─────────────────────────────────────────────
   // eD2K 服务器设置
