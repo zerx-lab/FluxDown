@@ -6,7 +6,9 @@
 //! 自行消费)。`hub` 侧的 `RinfEventSink` 实现把每个变体 match 回具体
 //! 信号类型并调用 `.send_signal_to_dart()`。
 
-use crate::model::{QueueInfo, QueuePosition, SegmentDetail, TaskInfo};
+use crate::model::{
+    GroupInfo, ManifestItemInfo, QueueInfo, QueuePosition, SegmentDetail, TaskInfo,
+};
 
 /// 引擎运行期间产生的、宿主需要感知的事件。
 ///
@@ -124,6 +126,26 @@ pub enum EngineEvent {
         task_id: String,
         plugin_id: String,
         running: bool,
+    },
+
+    /// 全部任务组快照——组建/删除/改名/回收(GC)后发送。对应
+    /// `hub::signals::AllGroups`；server → WS `groupsChanged`。组**进度**不在此列
+    /// （仍由宿主按 `group_id` 对 `TaskProgress` 做 SUM 聚合，引擎不发组级进度）。
+    GroupsChanged(Vec<GroupInfo>),
+
+    /// 前置预解析（多文件清单）结果，只读、不建任务、不写库。`items` 为空且
+    /// `error` 为空 = 插件未返回清单（宿主应回退普通单任务创建）；`error` 非空 =
+    /// 预解析失败（同样回退普通创建，`error` 供 UI 提示）。对应
+    /// `hub::signals::ResolvePreviewResult`。仅 `plugins` feature 下由
+    /// [`crate::download_manager::DownloadManager::begin_resolve_preview`] 发出
+    /// （feature 关时该方法直接发出空清单，无需宿主 `cfg` 分叉）。
+    ResolvePreviewReady {
+        preview_id: String,
+        name: String,
+        source_url: String,
+        items: Vec<ManifestItemInfo>,
+        /// 无错误时为空。
+        error: String,
     },
 }
 

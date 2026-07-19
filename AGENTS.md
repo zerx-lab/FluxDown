@@ -85,9 +85,13 @@ x_down/
 │   ├── main.dart                      # 应用入口（多窗口分发、初始化流程）
 │   └── src/
 │       ├── models/                    # 数据模型与状态管理
-│       │   ├── download_task.dart     # 任务模型（状态枚举/文件类型/分段数据）
-│       │   ├── download_controller.dart  # 核心控制器（桥接 Rust 信号和 Flutter UI）
+│       │   ├── download_task.dart     # 任务模型（状态枚举/文件类型/分段数据/groupId/站点键提取）
+│       │   ├── download_controller.dart  # 核心控制器（桥接 Rust 信号和 Flutter UI；buildListSections 视图管线/组状态）
 │       │   ├── download_queue.dart    # 命名队列模型
+│       │   ├── view_prefs.dart        # 视图偏好（形态/密度/分组/排序/列，KvStore 全局+per 页签覆盖层）
+│       │   ├── list_entity.dart       # 列表实体抽象（TaskEntity/GroupEntity/成员行/目录行 + ListSection）
+│       │   ├── task_group.dart        # 任务组模型 DownloadGroup（火花条抽样/路径链压缩纯函数）
+│       │   ├── manifest_selection.dart # manifest 选择弹窗纯逻辑（树构建/单链折叠/规格策略/resolver_item 拼接）
 │       │   └── settings_provider.dart # 全局设置（30+ 配置项）
 │       ├── pages/                     # 页面
 │       │   ├── home_page.dart         # 主页面（三栏布局：侧边栏+列表+详情）
@@ -239,7 +243,7 @@ x_down/
 
 | 文件 | 功能描述 |
 |------|---------|
-| `pages/home_page.dart` | 主页面。三栏布局（侧边栏 180-320px / 任务列表 / 详情面板 240-420px），全局快捷键（Ctrl+F/A/Esc/Del），Boost 优先下载 Banner |
+| `pages/home_page.dart` | 主页面。三栏布局（侧边栏 180-320px / 任务列表 / 详情面板 240-420px），全局快捷键（Ctrl+F/A/Esc/Del + 视图 V/Shift+D/G/S 循环 + ↑↓跨组导航 + Space 暂停恢复），选中模型 task/group 互斥（详情面板二选一渲染），Boost 优先下载 Banner |
 | `pages/settings_page.dart` | 设置页面。侧边栏导航 6 个分类：通用（开机启动/关闭到托盘/torrent关联）、外观（语言/主题/颜色）、下载（目录/线程/并发/速度/UA/队列）、BT（自定义 Tracker）、代理（无/系统/手动 + 代理测试）、关于（版本更新） |
 
 ### 核心布局组件
@@ -247,22 +251,27 @@ x_down/
 | 文件 | 功能描述 |
 |------|---------|
 | `widgets/sidebar.dart` | 侧边栏。Logo、文件类型筛选器（视频/音频/文档/图片/压缩包/其他）、状态筛选器、命名队列列表（运行状态点/悬浮启停/管理/删除，内置队列本地化显示且不可删）、反馈按钮 |
-| `widgets/header_bar.dart` | 顶部栏。搜索框（Ctrl+F）、批量操作（管理模式/全选/暂停/删除）、全局暂停/恢复、新建下载、设置、窗口控制 |
+| `widgets/header_bar.dart` | 顶部栏。搜索框（Ctrl+F，命令面板式跳转，含组名匹配）、批量操作（管理模式/全选/暂停/删除）、全局暂停/恢复、新建下载、「显示选项」按钮（sliders 图标+非默认 6px 圆点+tooltip 报完整视图状态，插窗口控制工具簇最左）、设置、窗口控制 |
 | `widgets/task_tab_bar.dart` | 任务状态 Tab（全部/下载中/已完成/已暂停/错误），显示各状态计数 |
-| `widgets/task_list.dart` | 任务列表。虚拟化滚动，时间分组（今天/昨天/本周/本月/更早），分组折叠/展开，右键菜单 |
-| `widgets/task_list_item.dart` | 任务列表项。文件图标、文件名/大小/速度/进度、协议标识（HTTP/FTP/BT）、进度条、多选复选框、操作按钮、Boost 标识 |
-| `widgets/detail_panel.dart` | 详情面板。5个Tab：常规（文件信息/URL/路径/进度/速度/ETA）、分段（IDM风格可视化+动态拆分动画）、队列（移动任务）、日志、高级（Checksum/代理） |
-| `widgets/status_bar.dart` | 底部状态栏。全局下载速度、活跃任务数/总任务数、速度限制显示 |
+| `widgets/task_list.dart` | 任务列表（视图系统渲染层）。列表/网格双形态、舒适 64px/紧凑 44px 双密度、7 维分组吸顶分组头（聚合信息+hover 批量操作+折叠）、动态列（表头 ⊞/右键表头/面板三入口）、网格 bento 行装箱虚拟化（组卡 2× 跨列）、组活卡片接入、「N 失败」直达（展开+滚动+闪烁）、右键菜单 |
+| `widgets/task_list_item.dart` | 任务列表项（密度参数化）。文件图标、协议徽标（9.5px 大写，可关回退副标题前缀）、状态列图标+文字双编码、hover 操作簇（28×28 右缘对齐）、紧凑档行底 2px 进度条、动态列渲染（task_columns 注册表驱动）、多选复选框、Boost 标识 |
+| `widgets/task_columns.dart` | 列注册表（表头与任务行单一事实源）。9 列定义/canonical 序/宽度预算护栏（列表宽-168，超限拒绝）/紧凑档 progress→size 自动切换 |
+| `widgets/view_options_panel.dart` | 显示选项面板（ShadPopover 300px 玻璃浮层）。形态/密度（网格禁用）/分组 chips/排序+方向/显示开关/列 chips/重置为默认；快捷键标注 V·Shift+D·G·S；即时生效；偏好按状态页签独立记忆 |
+| `widgets/task_group_card.dart` | 任务组活卡片。折叠行 64/44px（成员火花条 5px×18 ≤24 逐根 >24 抽样、SUM 条、状态计数行、失败可点直达）、展开成员行 52/44px（树轨 2px、失败副标题「直链已过期·下次启动自动重新解析」）、目录分段行 28/24px（路径链压缩 >3 段中省略、点击折叠）、网格组卡 2× 跨列、组右键菜单（全部暂停/恢复/重试失败/打开组文件夹/复制来源/删除±文件） |
+| `widgets/group_detail_panel.dart` | 组详情面板（2 Tab）。概览：SUM 大号进度+计数行+放大火花条+组操作+来源/目录/时间/队列/解析插件（惰性续期标注）；成员：迷你列表点击下钻成员任务详情 |
+| `widgets/detail_panel.dart` | 详情面板。单栏滚动：进度/分段可视化（IDM 网格+动态拆分动画）/操作行/信息字段（组成员任务显示「所属任务组」链接）/日志/高级（Checksum/代理） |
+| `widgets/status_bar.dart` | 底部状态栏。全局下载速度、活跃任务数/总任务数、作用域摘要（N 任务·合计大小·已隐藏 M 已完成）、视图状态回显、E9 密度建议 pill（>150 行一次性，可永久关闭）、速度限制显示 |
 | `widgets/title_drag_area.dart` | 自定义标题栏拖拽区域 |
 
 ### 对话框组件
 
 | 文件 | 功能描述 |
 |------|---------|
-| `widgets/new_download_dialog.dart` | 新建下载。URL（多行批量）、文件名、保存目录、线程数、Cookies、代理、UA、Checksum。队列选择挂在动作按钮上（表单无队列字段）：「开始下载 ▾」默认进设置的默认队列、「稍后下载 ▾」默认进 later 队列，两按钮的箭头菜单均可显式指定目标队列（选择即提交，共用 `split_action_button.dart`） |
+| `widgets/new_download_dialog.dart` | 新建下载。URL（多行批量）、文件名、保存目录、线程数、Cookies、代理、UA、Checksum。队列选择挂在动作按钮上（表单无队列字段）：「开始下载 ▾」默认进设置的默认队列、「稍后下载 ▾」默认进 later 队列，两按钮的箭头菜单均可显式指定目标队列（选择即提交，共用 `split_action_button.dart`）。提交时单 http(s) URL 先经 ResolvePreviewRequest 预解析（multi resolver 命中返回清单 → 弹 manifest 选择框建组；无清单/失败/超时 90s → 原路径直接创建，行为零差异） |
 |`widgets/quick_download_dialog.dart`|快速下载对话框（主窗口内回退路径 + 悬浮球拖链入口；表单主体复用 quick_download_form）|
 |`widgets/quick_download_form.dart`|快速下载共享表单（URL/目录/线程/重命名 + 高级选项：任务代理/UA/Cookie 预填可编辑/哈希校验）。动作区与新建下载对话框同构：「开始下载 ▾」/「稍后下载 ▾」拆分按钮，队列选择挂在动作上。经 QuickDownloadFormHost 抽象隔离全局单例，主窗口对话框与独立小窗共用|
 | `widgets/hls_quality_dialog.dart` | HLS 画质选择。M3U8 多码率选择，显示带宽/分辨率 |
+| `widgets/manifest_select_dialog.dart` | manifest 前置选择弹窗（多文件任务组入口）。摘要区（组名可编辑+N 项·总大小）、智能建议条（本地剧集启发式）、意图按钮组（按文件类型一键选集）、虚拟化文件树（三态勾选/扩展名筛选 chips/单链目录折叠/缩进封顶 4 级）、规格策略 segmented（最高/1080P/720P/最省+次优回退汇总+逐项调整）、底栏（目录/队列/已选计数/确认随原意图）。确认发 CreateTaskGroup（resolver_item=`<itemId>`或`<itemId>@<variantId>`，≥1 项一律建组）。配套 `manifest_select_tree.dart` 树行渲染 |
 |`widgets/queue_manager_dialog.dart`|队列管理对话框（三 Tab：设置/定时/任务顺序 + 即时启停）与「移动到队列」选择框。设置含名称（内置队列锁定）/限速/并发/线程/目录/UA；定时含实时语义摘要 + 时刻网格选择器（点字段弹出左右布局面板：小时列 4×6 / 分钟列 5min 步进 3×4，同一次会话自由选小时+分钟、实时回填、点面板外才关，纯选择杜绝乱填，清除回空态 = 该边沿不定时）+ 星期位掩码；任务 Tab 上移/下移即时持久化 queue_order|
 | `widgets/update_changelog_dialog.dart` | 版本更新对话框。Markdown 渲染更新日志，立即更新/稍后提醒 |
 | `widgets/feedback_dialog.dart` | 反馈对话框。提交到 GitHub Issues |
@@ -298,7 +307,18 @@ CREATE TABLE tasks (
     proxy_url TEXT NOT NULL DEFAULT '',
     queue_id TEXT NOT NULL DEFAULT '',
     checksum TEXT NOT NULL DEFAULT '',  -- 格式：algo=hexhash
-    queue_order INTEGER NOT NULL DEFAULT 0  -- 队列内启动顺序（0=按创建时间；>0 显式顺序）
+    queue_order INTEGER NOT NULL DEFAULT 0, -- 队列内启动顺序（0=按创建时间；>0 显式顺序）
+    group_id TEXT NOT NULL DEFAULT '',      -- 任务组归属（空=不属于任何组；迁移加列）
+    resolver_item TEXT NOT NULL DEFAULT ''  -- 插件二段解析标识 <itemId>[@variantId]（迁移加列）
+);
+
+-- 任务组表（多文件下载的纯逻辑聚合壳：组=N 独立子任务+组行；末个成员删除时 gc_empty_groups 自动回收）
+CREATE TABLE task_groups (
+    id TEXT PRIMARY KEY,               -- UUID
+    name TEXT NOT NULL,                -- manifest.name / 用户改名
+    source_url TEXT NOT NULL DEFAULT '', -- 原始分享链接
+    save_dir TEXT NOT NULL DEFAULT '', -- 组根目录（基目录/组名）
+    created_at TEXT NOT NULL           -- Unix 时间戳（秒）
 );
 
 -- 分段表
@@ -384,6 +404,7 @@ CREATE TABLE queues (
   `set_queue_schedule` 每日定时（边沿触发 + 当日补触发，每边沿每天至多一次）、
   `reorder_queue_tasks` 队列内顺序、`resume_all_eligible` 全局恢复跳过停止队列；
   `create_task(NewTaskSpec)` 的 `start_paused` = 稍后下载（建即 paused，不占并发））
+- 任务组（多文件）：`create_task_group`/`pause_group`/`resume_group`/`retry_group_failed`/`delete_group`/`rename_group`/`send_all_groups`（GroupsChanged 全量快照事件）；组=纯逻辑聚合壳（N 独立子任务+task_groups 行），组进度由前端 SUM 聚合；`gc_empty_groups` 在单删/批删/组删尾部自动回收空组；`begin_resolve_preview` off-actor 只读预解析（ResolvePreviewReady 事件）；manifest 自动裂变见 on_resolve_ready（单条目原地改写/多条目单事务裂变 fission_into_group，10GiB 阈值超限全员转 paused）
 - 通过 `Arc<dyn EventSink>`/`Arc<dyn HostSelection>` 与宿主解耦（由 `Engine::new` 注入）
 
 ### proxy_config.rs — 代理配置
@@ -473,9 +494,14 @@ CLI 独立二进制可能解析到不同目录、不共享），下载任务对 
 插件是**可选、可失败的下载任务中间层**，JS 编写（rquickjs 运行时），
 带声明式设置项（双端 UI 自动生成表单）。能力拆两个正交平面：
 
-- **Resolver 平面**：`globalThis.resolve(ctx) → {url,...}|null`。每次发起下载**协议判定之前**惰性执行、
-  且 **off-actor**（防冻结单线程 actor）；命中后失败 fail-closed（进 status=4，绝不把网页 HTML 当视频存）。
-  惰性 = 每次 start/resume 都重跑，天然防直链过期。
+- **Resolver 平面**：`globalThis.resolve(ctx) → {url,...}|{manifest:{name,items[]}}|null`。每次发起下载
+  **协议判定之前**惰性执行、且 **off-actor**（防冻结单线程 actor）；命中后失败 fail-closed（进 status=4，
+  绝不把网页 HTML 当视频存）。惰性 = 每次 start/resume 都重跑，天然防直链过期。
+  **多文件两段式**：初段（`ctx.resolverItem` 空）可返回 manifest 清单（items ≤1000、path 深度 ≤8、
+  path+name ≤180 字符、per-item variants ≤50，与 url/variants/audioUrl 互斥）→ 引擎裂变为任务组；
+  二段（`ctx.resolverItem`=`<itemId>[@variantId]`）必须返回直链，返回 manifest 被拒（防递归）、
+  返回 variants 静默取默认。resolver 声明 `"multi": true` 才触发新建下载对话框的**前置预解析**
+  （`begin_resolve_preview` 只读，选择弹窗建组）；未声明却在 start 返回清单仍由自动裂变兜底。
 - **通知平面**：onStart/onDone/onError/onMetaProbed 全部 **fire-and-forget**（失败仅记日志、超时、
   `try_acquire` 不阻塞，绝不影响任务状态）。仅 onError 内可 `flux.task.requestRetry({delayMs})` 命令式重试。
 - **通用文件面**：`flux.fs.writeFile/readFile/remove/list`（每插件工作区 `plugin_workspace`，与

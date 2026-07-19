@@ -53,6 +53,12 @@ pub struct ResolveRequest {
     pub referrer: String,
     pub user_agent: String,
     pub extra_headers: HashMap<String, String>,
+    /// 二段解析标识（不透明字符串，对应清单条目的 `id` 或 `id@variantId`）。
+    /// 初段解析（含前置预解析）恒为空；非空即二段——`PluginManager::resolve`
+    /// 据此拒绝嵌套 manifest（防裂变递归，见 [`ResolveResult::manifest`]）并让
+    /// 变体收敛静默取默认（不为 N 个子任务弹 N 个选择框）。引擎不解释具体格式，
+    /// 由发起方（前端固定选择/引擎自动裂变）与插件约定（D5 契约）。
+    pub resolver_item: String,
 }
 
 /// `resolve(ctx)` 的返回值。返回 `null`/`undefined` 表示放行不改写（映射为
@@ -83,6 +89,64 @@ pub struct ResolveResult {
     /// 默认变体索引（超时/免打扰/headless 回退用），通常由插件按自身"画质偏好"
     /// 设置指向对应变体。越界按 0 处理。默认 0。
     pub default_variant_index: i32,
+    /// 多文件清单（网盘文件夹/多规格资源）。与 `url`/`variants`/`audio_url`
+    /// **互斥**（`manifest.is_some()` 时后三者须为空，`validate_resolve_output`
+    /// fail-closed 强制）。仅初段解析（[`ResolveRequest::resolver_item`] 为空）
+    /// 可返回；二段返回会被拒绝（防递归裂变）。`None` = 单直链旧语义。
+    pub manifest: Option<ResolveManifest>,
+}
+
+/// [`ResolveResult::manifest`] —— 插件返回的多文件清单（网盘文件夹/多规格
+/// 资源）。扁平 `items[] + path` 表达（同构 [`crate::model::BtFileEntry`] 的
+/// 相对路径惯例），不做递归树；`path` 深度与「`path`+`name`」总长受契约层硬
+/// 限制（校验实现见 `super::manager` 的 `validate_resolve_output`，设计详见
+/// 设计文档 §4.2）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResolveManifest {
+    /// 文件夹名/组名（gopeed `Res.Name` 同义）。空 = 由宿主用母任务文件名/
+    /// 首个条目名兜底（引擎自动裂变路径的语义，见 `on_resolve_ready`）。
+    pub name: String,
+    /// 清单条目，1..=1000。
+    pub items: Vec<ManifestItem>,
+}
+
+/// [`ResolveManifest::items`] 的单个条目。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ManifestItem {
+    /// 插件自定义标识，回传 [`ResolveRequest::resolver_item`] 用（不透明字符串，
+    /// 引擎不解释语义）。非空，≤200 字符。
+    pub id: String,
+    /// 文件名。非空，须通过与 [`ResolveResult::file_name`] 相同的合法性检查
+    /// （禁 `/`、`\`、`..`、控制字符）。
+    pub name: String,
+    /// 相对组根目录的子路径（空字符串 = 根）。须过
+    /// [`super::manifest::is_safe_relative_path`]；按 `/` 计深度 ≤8 级；
+    /// `path + "/" + name` 总长 ≤180 字符（给 `save_dir` 前缀留余量，规避
+    /// Windows `MAX_PATH` 260 限制）。
+    pub path: String,
+    /// 已知大小（字节）。`None`/负数按未知（0）处理。
+    pub size: Option<i64>,
+    /// 条目种类。合法值 `""`/`"file"`（预留 `"folder"` 懒展开，v1 不实现，
+    /// 其余值一律拒绝）。
+    pub kind: String,
+    /// 可选规格（画质/格式）。空 = 无规格选择，`resolver_item` 直接取 `id`；
+    /// 非空时取 `id@variants[0].id`（引擎自动全选场景取首个规格——初段清单
+    /// 无 default 语义）。≤50 个。
+    pub variants: Vec<ManifestVariant>,
+}
+
+/// [`ManifestItem::variants`] 的单个规格。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ManifestVariant {
+    /// 插件自定义标识，拼进 `resolver_item`（`<itemId>@<variantId>`）。非空。
+    pub id: String,
+    /// 展示标签。非空。
+    pub label: String,
+    /// 已知大小（字节）。`None`/负数按未知（0）处理。
+    pub size: Option<i64>,
 }
 
 /// [`ResolveResult::variants`] 的单个变体。`label` 必填（展示用）；url 为该变体
@@ -568,6 +632,7 @@ mod tests {
             referrer: String::new(),
             user_agent: "UA".into(),
             extra_headers: HashMap::new(),
+            resolver_item: String::new(),
         };
         let v: serde_json::Value = serde_json::to_value(&req).expect("serialize");
         assert_eq!(v["taskId"], "t");

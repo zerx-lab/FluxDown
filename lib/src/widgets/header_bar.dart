@@ -31,6 +31,9 @@ class SearchResult {
   /// 任务搜索结果的 taskId
   final String? taskId;
 
+  /// 组搜索结果的 groupId（非空时点击选中该组而非任务，见 `_selectResult`）。
+  final String? groupId;
+
   /// 设置项搜索结果的目标项（含分类/标签/描述，用于导航 + 高亮定位）
   final SettingsSearchItem? settingsItem;
 
@@ -40,6 +43,7 @@ class SearchResult {
     required this.subtitle,
     required this.icon,
     this.taskId,
+    this.groupId,
     this.settingsItem,
   });
 }
@@ -52,6 +56,9 @@ class HeaderBar extends StatefulWidget {
   final VoidCallback onNewDownload;
   final DownloadController controller;
   final void Function(SettingsSearchItem item) onNavigateToSettings;
+
+  // 「显示选项」按钮已移至任务列表表头右缘（task_list.dart），titlebar
+  // 不再持有 viewPrefsStore（用户决策：入口跟随列表区）。
 
   const HeaderBar({
     super.key,
@@ -151,6 +158,24 @@ class HeaderBarState extends State<HeaderBar> {
       if (results.length >= 5) break; // 任务最多显示 5 条
     }
 
+    // 搜索组名（成员名已被上面的任务名搜索覆盖，这里只需补组名匹配）。
+    for (final group in widget.controller.groups) {
+      if (!group.displayName.toLowerCase().contains(query)) continue;
+      final memberCount = widget.controller.tasks
+          .where((t) => t.groupId == group.id)
+          .length;
+      results.add(
+        SearchResult(
+          type: SearchResultType.task,
+          title: group.displayName,
+          subtitle: currentS.groupItemsCount(memberCount),
+          icon: LucideIcons.layers,
+          groupId: group.id,
+        ),
+      );
+      if (results.length >= 8) break;
+    }
+
     // 搜索设置项
     for (final item in settingsSearchItems) {
       final matched =
@@ -205,7 +230,9 @@ class HeaderBarState extends State<HeaderBar> {
     _focusNode.unfocus();
     _hideOverlay();
 
-    if (result.type == SearchResultType.task && result.taskId != null) {
+    if (result.groupId != null) {
+      widget.controller.selectGroup(result.groupId);
+    } else if (result.type == SearchResultType.task && result.taskId != null) {
       widget.controller.selectTask(result.taskId);
     } else if (result.type == SearchResultType.settings &&
         result.settingsItem != null) {
@@ -761,7 +788,6 @@ class _TitlebarToolButtons extends StatelessWidget {
   final VoidCallback? onSettings;
   final bool isSettingsActive;
 
-
   const _TitlebarToolButtons({
     required this.controller,
     this.onSettings,
@@ -884,12 +910,13 @@ class _TitlebarOverlayReservation extends StatelessWidget {
 
   /// 单个工具按钮宽度
   static const double _toolButtonWidth = 40;
-
   @override
   Widget build(BuildContext context) {
     final settings = SettingsProvider.globalInstance;
     if (settings == null) {
-      return const SizedBox(width: _windowButtonsWidth + _toolButtonWidth * 4);
+      return SizedBox(
+        width: _windowButtonsWidth + _toolButtonWidth * 4,
+      );
     }
     return ListenableBuilder(
       listenable: settings,
@@ -971,3 +998,4 @@ class _ToolButtonState extends State<_ToolButton> {
     return button;
   }
 }
+

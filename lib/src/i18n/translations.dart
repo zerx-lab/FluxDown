@@ -207,6 +207,65 @@ class S {
   String get colSpeed => _r('colSpeed');
   String get colEta => _r('colEta');
   String get colStatus => _r('colStatus');
+  String get colSize => _r('colSize');
+  String get colCreated => _r('colCreated');
+  String get colProtocol => _r('colProtocol');
+  String get colSource => _r('colSource');
+  String get colQueue => _r('colQueue');
+
+  // ─────────────────────────────────────────────
+  // 视图系统（任务列表多形态展现）
+  // ─────────────────────────────────────────────
+  String get viewOptionsTitle => _r('viewOptionsTitle');
+  String viewEntryTooltip(String state) =>
+      _r('viewEntryTooltip', {'state': state});
+  String get viewSectionForm => _r('viewSectionForm');
+  String get viewSectionDensity => _r('viewSectionDensity');
+  String get viewSectionGroupBy => _r('viewSectionGroupBy');
+  String get viewSectionSort => _r('viewSectionSort');
+  String get viewSectionDisplay => _r('viewSectionDisplay');
+  String get viewSectionColumns => _r('viewSectionColumns');
+  String get viewFormList => _r('viewFormList');
+  String get viewFormGrid => _r('viewFormGrid');
+  String get viewDensityComfortable => _r('viewDensityComfortable');
+  String get viewDensityCompact => _r('viewDensityCompact');
+  String get viewDensityGridDisabledHint => _r('viewDensityGridDisabledHint');
+  String get viewGroupSmart => _r('viewGroupSmart');
+  String get viewGroupDate => _r('viewGroupDate');
+  String get viewGroupStatus => _r('viewGroupStatus');
+  String get viewGroupType => _r('viewGroupType');
+  String get viewGroupQueue => _r('viewGroupQueue');
+  String get viewGroupSite => _r('viewGroupSite');
+  String get viewGroupNone => _r('viewGroupNone');
+  String get viewSortSmart => _r('viewSortSmart');
+  String get viewSortCreated => _r('viewSortCreated');
+  String get viewSortName => _r('viewSortName');
+  String get viewSortSize => _r('viewSortSize');
+  String get viewSortProgress => _r('viewSortProgress');
+  String get viewSortSpeed => _r('viewSortSpeed');
+  String get viewShowCompleted => _r('viewShowCompleted');
+  String get viewProtocolBadges => _r('viewProtocolBadges');
+  String get viewResetDefault => _r('viewResetDefault');
+  String get viewResetHint => _r('viewResetHint');
+  String get viewResetToast => _r('viewResetToast');
+  String get viewColumnsAtLeastOne => _r('viewColumnsAtLeastOne');
+  String get viewColumnsBudgetExceeded => _r('viewColumnsBudgetExceeded');
+  String get viewColumnHintCompactRow => _r('viewColumnHintCompactRow');
+  String get viewColumnsMenuTitle => _r('viewColumnsMenuTitle');
+  String get viewColumnsResetAction => _r('viewColumnsResetAction');
+  String get viewBucketRetryAll => _r('viewBucketRetryAll');
+  String get viewSiteBt => _r('viewSiteBt');
+  String statusScopeSummary(int count, String size) =>
+      _r('statusScopeSummary', {'count': count, 'size': size});
+  String statusScopeHidden(int count) =>
+      _r('statusScopeHidden', {'count': count});
+  String statusViewGroupedByLabel(String dim) =>
+      _r('statusViewGroupedByLabel', {'dim': dim});
+  String statusViewSortedByLabel(String key) =>
+      _r('statusViewSortedByLabel', {'key': key});
+  String get densityHintMessage => _r('densityHintMessage');
+  String get densityHintSwitchAction => _r('densityHintSwitchAction');
+  String get densityHintDismissTooltip => _r('densityHintDismissTooltip');
 
   // ─────────────────────────────────────────────
   // TaskListItem (右键菜单)
@@ -272,6 +331,40 @@ class S {
     'splitLatest',
     {'parentNum': parentNum, 'childNum': childNum, 'childSize': childSize},
   );
+  String get detailTabGeneral => _r('detailTabGeneral');
+  String get detailTabQueue => _r('detailTabQueue');
+  String get detailTabLog => _r('detailTabLog');
+  String get detailTabAdvanced => _r('detailTabAdvanced');
+  String get detailBoostActive => _r('detailBoostActive');
+  String get infoProtocolSource => _r('infoProtocolSource');
+  String detailSegsSummary(int total, int active) =>
+      _r('detailSegsSummary', {'total': total, 'active': active});
+  String get detailQueueMoveHint => _r('detailQueueMoveHint');
+  String detailQueueMovedToast(String name) =>
+      _r('detailQueueMovedToast', {'name': name});
+  String get detailLogHint => _r('detailLogHint');
+  String get detailLogEmpty => _r('detailLogEmpty');
+  String get detailLogCreated => _r('detailLogCreated');
+  String detailLogSplit(
+    int parentNum,
+    int childNum,
+    String size,
+    String kind,
+  ) => _r('detailLogSplit', {
+    'parentNum': parentNum,
+    'childNum': childNum,
+    'size': size,
+    'kind': kind,
+  });
+  String get detailSplitProactive => _r('detailSplitProactive');
+  String get detailSplitReactive => _r('detailSplitReactive');
+  String get detailLogCompleted => _r('detailLogCompleted');
+  String detailLogFailed(String message) =>
+      _r('detailLogFailed', {'message': message});
+  String get detailNotSet => _r('detailNotSet');
+  String get detailFollowGlobal => _r('detailFollowGlobal');
+  String get detailActionFolder => _r('detailActionFolder');
+  String get detailActionCopyLink => _r('detailActionCopyLink');
 
   // ─────────────────────────────────────────────
   // NewDownloadDialog / QuickDownloadDialog
@@ -396,8 +489,7 @@ class S {
   String get accountCloudFeaturesDesc => _r('accountCloudFeaturesDesc');
   String get accountComingSoon => _r('accountComingSoon');
   String get accountFeatureConfigSync => _r('accountFeatureConfigSync');
-  String get accountFeatureConfigSyncDesc =>
-      _r('accountFeatureConfigSyncDesc');
+  String get accountFeatureConfigSyncDesc => _r('accountFeatureConfigSyncDesc');
   String get accountFeatureMultiDevice => _r('accountFeatureMultiDevice');
   String get accountFeatureMultiDeviceDesc =>
       _r('accountFeatureMultiDeviceDesc');
@@ -436,8 +528,7 @@ class S {
   String get accountErrorInvalidCode => _r('accountErrorInvalidCode');
   String get accountErrorRateLimited => _r('accountErrorRateLimited');
   String get accountErrorEmailTaken => _r('accountErrorEmailTaken');
-  String get accountErrorAccountDisabled =>
-      _r('accountErrorAccountDisabled');
+  String get accountErrorAccountDisabled => _r('accountErrorAccountDisabled');
   String get accountErrorRegistrationClosed =>
       _r('accountErrorRegistrationClosed');
   String get accountErrorRegistrationIncomplete =>
@@ -461,34 +552,27 @@ class S {
   String get accountDevicesRetry => _r('accountDevicesRetry');
   String accountDevicesManageAll(int count) =>
       _r('accountDevicesManageAll', {'count': count});
-  String get accountDevicesManageAllTitle =>
-      _r('accountDevicesManageAllTitle');
+  String get accountDevicesManageAllTitle => _r('accountDevicesManageAllTitle');
   String get accountDevicesSearchHint => _r('accountDevicesSearchHint');
   String get accountDevicesSearchNoResults =>
       _r('accountDevicesSearchNoResults');
   String get accountDeviceDetailTitle => _r('accountDeviceDetailTitle');
   String get accountDeviceFieldPlatform => _r('accountDeviceFieldPlatform');
-  String get accountDeviceFieldAppVersion =>
-      _r('accountDeviceFieldAppVersion');
+  String get accountDeviceFieldAppVersion => _r('accountDeviceFieldAppVersion');
   String get accountDeviceFieldLastIp => _r('accountDeviceFieldLastIp');
-  String get accountDeviceFieldCreatedAt =>
-      _r('accountDeviceFieldCreatedAt');
-  String get accountDeviceFieldLastSeenAt =>
-      _r('accountDeviceFieldLastSeenAt');
+  String get accountDeviceFieldCreatedAt => _r('accountDeviceFieldCreatedAt');
+  String get accountDeviceFieldLastSeenAt => _r('accountDeviceFieldLastSeenAt');
   String get accountDeviceFieldId => _r('accountDeviceFieldId');
   String get accountDeviceDeleteAction => _r('accountDeviceDeleteAction');
-  String get accountDevicePlatformWindows =>
-      _r('accountDevicePlatformWindows');
+  String get accountDevicePlatformWindows => _r('accountDevicePlatformWindows');
   String get accountDevicePlatformMacos => _r('accountDevicePlatformMacos');
   String get accountDevicePlatformLinux => _r('accountDevicePlatformLinux');
-  String get accountDevicePlatformAndroid =>
-      _r('accountDevicePlatformAndroid');
+  String get accountDevicePlatformAndroid => _r('accountDevicePlatformAndroid');
   String get accountDevicePlatformIos => _r('accountDevicePlatformIos');
   String get accountDevicePlatformWeb => _r('accountDevicePlatformWeb');
   String get accountServerAddress => _r('accountServerAddress');
   String get accountServerAddressDesc => _r('accountServerAddressDesc');
-  String get accountServerAddressInvalid =>
-      _r('accountServerAddressInvalid');
+  String get accountServerAddressInvalid => _r('accountServerAddressInvalid');
   String get accountServerAddressReset => _r('accountServerAddressReset');
   String get accountServerAddressSaved => _r('accountServerAddressSaved');
 
@@ -756,8 +840,7 @@ class S {
   String get userAgentPresetSafari => _r('userAgentPresetSafari');
   String get userAgentPresetCustom => _r('userAgentPresetCustom');
   List<String> get searchKeywordsUserAgent =>
-      _r('searchKeywordsUserAgent').split(',')
-        ..addAll(['ua', 'user-agent']);
+      _r('searchKeywordsUserAgent').split(',')..addAll(['ua', 'user-agent']);
 
   // 文件管理器自定义命令
   String get fileManagerSection => _r('fileManagerSection');
@@ -1227,8 +1310,7 @@ class S {
   String get pluginDevModeSwitch => _r('pluginDevModeSwitch');
   String get pluginDevModeBadge => _r('pluginDevModeBadge');
   String get pluginDisabledManual => _r('pluginDisabledManual');
-  String get pluginDisabledCircuitBreaker =>
-      _r('pluginDisabledCircuitBreaker');
+  String get pluginDisabledCircuitBreaker => _r('pluginDisabledCircuitBreaker');
   String get pluginSettingsTooltip => _r('pluginSettingsTooltip');
   String get pluginUninstallTooltip => _r('pluginUninstallTooltip');
   String get pluginUninstallTitle => _r('pluginUninstallTitle');
@@ -1264,8 +1346,7 @@ class S {
   String get marketYankedDeprecated => _r('marketYankedDeprecated');
   String get marketSearchPlaceholder => _r('marketSearchPlaceholder');
   String get marketSearchNoResult => _r('marketSearchNoResult');
-  String marketShowMore(int count) =>
-      _r('marketShowMore', {'count': '$count'});
+  String marketShowMore(int count) => _r('marketShowMore', {'count': '$count'});
   String get pluginDetailIdentity => _r('pluginDetailIdentity');
   String get pluginDetailAuthor => _r('pluginDetailAuthor');
   String get pluginDetailPublishTime => _r('pluginDetailPublishTime');
@@ -1305,8 +1386,7 @@ class S {
   String get pluginErrPattern => _r('pluginErrPattern');
   String get pluginErrSelect => _r('pluginErrSelect');
   String get pluginSelectPlaceholder => _r('pluginSelectPlaceholder');
-  String get pluginFolderPickPlaceholder =>
-      _r('pluginFolderPickPlaceholder');
+  String get pluginFolderPickPlaceholder => _r('pluginFolderPickPlaceholder');
 
   // ─────────────────────────────────────────────
   // 插件系统 — 任务逃生舱 & 自动禁用通知
@@ -1337,8 +1417,7 @@ class S {
   String get componentsSourceManaged => _r('componentsSourceManaged');
   String get componentsSourceSystem => _r('componentsSourceSystem');
   String get componentsSystemPathLabel => _r('componentsSystemPathLabel');
-  String get componentsSystemPathNotFound =>
-      _r('componentsSystemPathNotFound');
+  String get componentsSystemPathNotFound => _r('componentsSystemPathNotFound');
 
   String get componentsManualPathLabel => _r('componentsManualPathLabel');
   String componentsManualPathDesc(String name) =>
@@ -1370,8 +1449,7 @@ class S {
   String get componentsReinstallButton => _r('componentsReinstallButton');
   String get componentsUninstallButton => _r('componentsUninstallButton');
   String get componentsInstalling => _r('componentsInstalling');
-  String get componentsInstallUnknownSize =>
-      _r('componentsInstallUnknownSize');
+  String get componentsInstallUnknownSize => _r('componentsInstallUnknownSize');
   String componentsInstallSuccess(String name) =>
       _r('componentsInstallSuccess', {'name': name});
   String componentsInstallFailed(String message) =>
@@ -1384,4 +1462,79 @@ class S {
       _r('componentsUninstallConfirmTitle', {'name': name});
   String componentsUninstallConfirmMsg(String name) =>
       _r('componentsUninstallConfirmMsg', {'name': name});
+
+  // ─────────────────────────────────────────────
+  // 预解析清单选择弹窗（manifest*）
+  // ─────────────────────────────────────────────
+  String get manifestDialogTitle => _r('manifestDialogTitle');
+  String manifestDialogDesc(int count) =>
+      _r('manifestDialogDesc', {'count': count});
+  String get manifestGroupNameLabel => _r('manifestGroupNameLabel');
+  String get manifestGroupNamePlaceholder => _r('manifestGroupNamePlaceholder');
+  String manifestSummary(int count, String size) =>
+      _r('manifestSummary', {'count': count, 'size': size});
+  String manifestSuggestionText(int count) =>
+      _r('manifestSuggestionText', {'count': count});
+  String get manifestSuggestionApply => _r('manifestSuggestionApply');
+  String get manifestIntentLabel => _r('manifestIntentLabel');
+  String manifestCategoryChip(String name, int count, String size) =>
+      _r('manifestCategoryChip', {'name': name, 'count': count, 'size': size});
+  String get manifestSelectAll => _r('manifestSelectAll');
+  String get manifestInvertSelection => _r('manifestInvertSelection');
+  String get manifestFilesLabel => _r('manifestFilesLabel');
+  String get manifestExpandAll => _r('manifestExpandAll');
+  String get manifestCollapseAll => _r('manifestCollapseAll');
+  String get manifestTreeSelectVisible => _r('manifestTreeSelectVisible');
+  String get manifestTreeEmpty => _r('manifestTreeEmpty');
+  String get manifestQualityPolicyLabel => _r('manifestQualityPolicyLabel');
+  String get manifestQualityHighest => _r('manifestQualityHighest');
+  String get manifestQuality1080p => _r('manifestQuality1080p');
+  String get manifestQuality720p => _r('manifestQuality720p');
+  String get manifestQualityLowest => _r('manifestQualityLowest');
+  String manifestQualityFallbackHint(int count) =>
+      _r('manifestQualityFallbackHint', {'count': count});
+  String get manifestAdjustPerItem => _r('manifestAdjustPerItem');
+  String get manifestQueueLabel => _r('manifestQueueLabel');
+  String manifestSelectedSummary(int count, String size) =>
+      _r('manifestSelectedSummary', {'count': count, 'size': size});
+  String get manifestResolvingLabel => _r('manifestResolvingLabel');
+  String get manifestResolvingCancel => _r('manifestResolvingCancel');
+
+  // ─────────────────────────────────────────────
+  // 任务组桌面 UI（组活卡片 / 组详情面板）
+  // ─────────────────────────────────────────────
+  String groupItemsCount(int n) => _r('groupItemsCount', {'n': n});
+  String groupDoneCount(int n) => _r('groupDoneCount', {'n': n});
+  String groupDownloadingCount(int n) =>
+      _r('groupDownloadingCount', {'n': n});
+  String groupPendingCount(int n) => _r('groupPendingCount', {'n': n});
+  String groupPausedCount(int n) => _r('groupPausedCount', {'n': n});
+  String groupFailedCount(int n) => _r('groupFailedCount', {'n': n});
+  String groupDoneOfTotal(int done, int total) =>
+      _r('groupDoneOfTotal', {'done': done, 'total': total});
+  String groupEtaRemaining(String eta) =>
+      _r('groupEtaRemaining', {'eta': eta});
+  String get groupPauseAll => _r('groupPauseAll');
+  String get groupResumeAll => _r('groupResumeAll');
+  String get groupRetryFailed => _r('groupRetryFailed');
+  String get groupOpenFolder => _r('groupOpenFolder');
+  String get groupCopySourceLink => _r('groupCopySourceLink');
+  String get groupDelete => _r('groupDelete');
+  String get groupDeleteWithFiles => _r('groupDeleteWithFiles');
+  String get groupPluginBadge => _r('groupPluginBadge');
+  String get groupMemberExpiredResolve => _r('groupMemberExpiredResolve');
+  String groupDirMeta(int count, String size) =>
+      _r('groupDirMeta', {'count': count, 'size': size});
+  String get groupDetailOverviewTab => _r('groupDetailOverviewTab');
+  String get groupDetailMembersTab => _r('groupDetailMembersTab');
+  String get groupDetailSource => _r('groupDetailSource');
+  String get groupDetailSaveDir => _r('groupDetailSaveDir');
+  String get groupDetailCreatedAt => _r('groupDetailCreatedAt');
+  String get groupDetailQueue => _r('groupDetailQueue');
+  String get groupDetailResolverPlugin => _r('groupDetailResolverPlugin');
+  String get groupDetailLazyRenewHint => _r('groupDetailLazyRenewHint');
+  String groupDetailSubtitle(String status) =>
+      _r('groupDetailSubtitle', {'status': status});
+  String get groupDetailNoMembers => _r('groupDetailNoMembers');
+  String get groupMemberOfLabel => _r('groupMemberOfLabel');
 }

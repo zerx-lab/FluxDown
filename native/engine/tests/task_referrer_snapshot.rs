@@ -1,6 +1,8 @@
 //! Repro for issue #111: the outbound task snapshot (DB load path used at
 //! startup) must carry the persisted referrer so hosts can show the source page.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use fluxdown_engine::db::Db;
 
 #[tokio::test]

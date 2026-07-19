@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
-use fluxdown_engine::download_manager::{self, NewTaskSpec, TaskDone};
+use fluxdown_engine::download_manager::{
+    self, CreateGroupSpec, GroupItemSpec, NewTaskSpec, TaskDone,
+};
 use fluxdown_engine::events::EventSink;
 #[cfg(hub_plugins)]
 use fluxdown_engine::plugin::{PluginError, PluginManager};
@@ -26,17 +28,18 @@ use crate::rinf_sink::RinfEventSink;
 use crate::signals::{
     BatchControlTask, BatchCreateTask, CheckFileAssociation, CheckForUpdate, CheckUrlProtocol,
     ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask, CreateQueue, CreateTask,
-    DeleteQueue, DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult,
+    CreateTaskGroup, DeleteQueue, DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult,
     ExternalDownloadRequest, FfmpegInstallProgress, FfmpegInstallResult, FfmpegStatusReport,
-    FfmpegVersionList, FileAssociationStatus, IgnorePluginRetry, InstallFfmpeg,
+    FfmpegVersionList, FileAssociationStatus, GroupControl, IgnorePluginRetry, InstallFfmpeg,
     InstallMarketPlugin, InstallPlugin, InstallUpdate, InstallYtdlp, MoveTaskToQueue, OpenFile,
-    ProbeTorrentMeta, ProxyTestResult, ReorderQueueTasks, RequestAllQueues, RequestAllTasks,
-    RequestConfig, RequestFfmpegStatus, RequestFfmpegVersions, RequestMarketIndex, RequestPlugins,
-    RequestUpdateFailureMarker, RequestYtdlpStatus, RequestYtdlpVersions, RescanFiles, RevealFile,
-    SaveConfig, SavePluginSettings, SelectBtFiles, SelectHlsQuality, SelectResolveVariant,
-    SetFileAssociation, SetPluginEnabled, SetPriorityTask, SetQueueSchedule, SetUrlProtocol,
-    StartQueue, StopQueue, SystemProxyInfo, TaskSegmentsUpdated, TestProxyConnection,
-    TrackerSubscriptionResult, UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
+    ProbeTorrentMeta, ProxyTestResult, RenameGroup, ReorderQueueTasks, RequestAllGroups,
+    RequestAllQueues, RequestAllTasks, RequestConfig, RequestFfmpegStatus, RequestFfmpegVersions,
+    RequestMarketIndex, RequestPlugins, RequestUpdateFailureMarker, RequestYtdlpStatus,
+    RequestYtdlpVersions, RescanFiles, ResolvePreviewRequest, RevealFile, SaveConfig,
+    SavePluginSettings, SelectBtFiles, SelectHlsQuality, SelectResolveVariant, SetFileAssociation,
+    SetPluginEnabled, SetPriorityTask, SetQueueSchedule, SetUrlProtocol, StartQueue, StopQueue,
+    SystemProxyInfo, TaskSegmentsUpdated, TestProxyConnection, TrackerSubscriptionResult,
+    UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
     UpdateEd2kServerSubscription, UpdateFailureMarker, UpdateQueue, UpdateTaskSegments,
     UpdateTrackerSubscription, UrlProtocolStatus, YtdlpInstallProgress, YtdlpInstallResult,
     YtdlpStatusReport, YtdlpVersionList,
@@ -730,6 +733,50 @@ pub async fn run(db_dir: PathBuf) {
     let mut queue_schedule_tick = tokio::time::interval(std::time::Duration::from_secs(20));
     queue_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // ===== 任务组 / 清单预解析信号合并转发 =====
+    // 主 select! 已逼近 64 分支上限，5 个新增信号不各占一条分支，走单
+    // mpsc 合并（仿 tracker_sub/ed2k_sub 的「后台 spawn → 结果回流 mpsc →
+    // 主循环单分支」范式，529-608）：独立 tokio task 内 `tokio::select!`
+    // 循环 recv 5 个 DartSignal receiver，逐个转发进 `group_tx`；主循环只
+    // 增一条 `Some(g) = group_rx.recv()` 分支。
+    enum GroupSignal {
+        Preview(ResolvePreviewRequest),
+        Create(CreateTaskGroup),
+        Control(GroupControl),
+        Rename(RenameGroup),
+        RequestAll(RequestAllGroups),
+    }
+    let (group_tx, mut group_rx) = mpsc::unbounded_channel::<GroupSignal>();
+    {
+        let preview_recv = ResolvePreviewRequest::get_dart_signal_receiver();
+        let create_group_recv = CreateTaskGroup::get_dart_signal_receiver();
+        let group_control_recv = GroupControl::get_dart_signal_receiver();
+        let rename_group_recv = RenameGroup::get_dart_signal_receiver();
+        let request_all_groups_recv = RequestAllGroups::get_dart_signal_receiver();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(signal) = preview_recv.recv() => {
+                        if group_tx.send(GroupSignal::Preview(signal.message)).is_err() { break; }
+                    }
+                    Some(signal) = create_group_recv.recv() => {
+                        if group_tx.send(GroupSignal::Create(signal.message)).is_err() { break; }
+                    }
+                    Some(signal) = group_control_recv.recv() => {
+                        if group_tx.send(GroupSignal::Control(signal.message)).is_err() { break; }
+                    }
+                    Some(signal) = rename_group_recv.recv() => {
+                        if group_tx.send(GroupSignal::Rename(signal.message)).is_err() { break; }
+                    }
+                    Some(signal) = request_all_groups_recv.recv() => {
+                        if group_tx.send(GroupSignal::RequestAll(signal.message)).is_err() { break; }
+                    }
+                    else => break,
+                }
+            }
+        });
+    }
+
     loop {
         tokio::select! {
             Some(signal) = create_recv.recv() => {
@@ -872,6 +919,78 @@ pub async fn run(db_dir: PathBuf) {
                 engine.manager.load_and_send_all_tasks().await;
                 // Also send queue list so Dart sidebar can show named queues.
                 engine.manager.send_all_queues().await;
+            }
+            Some(group_signal) = group_rx.recv() => {
+                match group_signal {
+                    GroupSignal::Preview(msg) => {
+                        engine.manager
+                            .begin_resolve_preview(
+                                msg.preview_id,
+                                msg.url,
+                                msg.cookies,
+                                msg.referrer,
+                                msg.user_agent,
+                                msg.extra_headers,
+                            )
+                            .await;
+                    }
+                    GroupSignal::Create(msg) => {
+                        engine.manager
+                            .create_task_group(CreateGroupSpec {
+                                source_url: msg.source_url,
+                                group_name: msg.group_name,
+                                base_save_dir: msg.save_dir,
+                                queue_id: msg.queue_id,
+                                segments: msg.segments,
+                                cookies: msg.cookies,
+                                referrer: msg.referrer,
+                                user_agent: msg.user_agent,
+                                proxy_url: msg.proxy_url,
+                                extra_headers: msg.extra_headers,
+                                ignore_tls_errors: msg.ignore_tls_errors,
+                                start_paused: msg.start_paused,
+                                items: msg.items
+                                    .into_iter()
+                                    .map(|it| GroupItemSpec {
+                                        resolver_item: it.resolver_item,
+                                        file_name: it.file_name,
+                                        rel_path: it.rel_path,
+                                        size: it.size,
+                                    })
+                                    .collect(),
+                            })
+                            .await;
+                    }
+                    GroupSignal::Control(msg) => match msg.action {
+                        0 => engine.manager.pause_group(&msg.group_id).await,
+                        1 => engine.manager.resume_group(&msg.group_id).await,
+                        2 => engine.manager.retry_group_failed(&msg.group_id).await,
+                        3 | 4 => {
+                            // 删除前先取成员清单：delete_group 之后行已不在，
+                            // 但 aria2 兼容层需要逐成员广播 Stop + 清前态表
+                            // （与 ControlTask/BatchControlTask 删除路径同款收尾）。
+                            let member_ids = engine
+                                .db
+                                .group_member_ids(&msg.group_id)
+                                .await
+                                .unwrap_or_default();
+                            engine
+                                .manager
+                                .delete_group(&msg.group_id, msg.action == 3)
+                                .await;
+                            for task_id in &member_ids {
+                                rinf_sink.broadcast_task_stop(task_id);
+                            }
+                        }
+                        _ => {}
+                    },
+                    GroupSignal::Rename(msg) => {
+                        engine.manager.rename_group(&msg.group_id, &msg.name).await;
+                    }
+                    GroupSignal::RequestAll(_) => {
+                        engine.manager.send_all_groups().await;
+                    }
+                }
             }
             Some(_) = rescan_recv.recv() => {
                 // 文件跟踪：桌面窗口聚焦 / 移动端回前台 → 重扫已完成任务文件是否仍在。

@@ -137,6 +137,12 @@ pub struct ResolverDecl {
     /// 单次 resolve 超时（毫秒）。可下调宿主预算，不可超 30s 硬顶。
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// 声明该 resolver 支持多文件清单前置预解析（`ResolveResult::manifest`）。
+    /// `false`（默认）的单文件插件不会被前置预解析无谓触发（避免解析昂贵的
+    /// 单文件插件白跑一次）；未声明却在 start 阶段返回清单的插件仍由引擎
+    /// `on_resolve_ready` 的自动裂变兜底（D6），不依赖本字段。
+    #[serde(default)]
+    pub multi: bool,
 }
 
 /// hooks 声明。

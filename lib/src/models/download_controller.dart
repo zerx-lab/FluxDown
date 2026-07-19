@@ -10,6 +10,9 @@ import '../i18n/locale_provider.dart';
 import 'custom_category.dart';
 import 'download_queue.dart';
 import 'download_task.dart';
+import 'list_entity.dart';
+import 'task_group.dart';
+import 'view_prefs.dart';
 
 const _tag = 'DownloadCtrl';
 
@@ -22,6 +25,9 @@ class DownloadController extends ChangeNotifier {
   static DownloadController? globalInstance;
   final List<DownloadTask> _tasks = [];
   String? _selectedTaskId;
+  /// 当前选中的任务组 ID（与 [_selectedTaskId] 互斥，见 [selectGroup]/
+  /// [selectTask]）。
+  String? _selectedGroupId;
   FileCategory _categoryFilter = FileCategory.all;
   CustomCategory? _customCategoryFilter;
 
@@ -38,6 +44,22 @@ class DownloadController extends ChangeNotifier {
   // 缓存 — 避免 filteredTasks / groupedTasks 每次访问重新计算
   List<DownloadTask>? _cachedFilteredTasks;
   List<TaskGroup>? _cachedGroupedTasks;
+
+  // 视图系统（desktop）— buildListSections() 结果 memo：仅当 ViewPrefs
+  // 或底层 filteredTasks 引用变化时才重新分桶排序。
+  ViewPrefs? _lastSectionsPrefs;
+  List<DownloadTask>? _lastSectionsSourceTasks;
+  List<ListSection>? _lastSections;
+
+  // 任务组（桌面 UI）— AllGroups 快照 + 展开/折叠运行态。
+  final Map<String, DownloadGroup> _groups = {};
+
+  /// 已展开的组 ID 集合（design-proto-spec §1 `state.expanded`）。
+  final Set<String> _expandedGroupIds = {};
+
+  /// 已折叠的组内目录集合，键为 `<groupId>:<dirPath>`
+  /// （design-proto-spec §1 `state.collapsedDirs`）。
+  final Set<String> _collapsedDirKeys = {};
 
   // 管理模式（多选）
   bool _isManageMode = false;
@@ -122,6 +144,7 @@ class DownloadController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<TaskQueueChanged>>? _taskQueueChangedSub;
   StreamSubscription<RustSignalPack<PluginHookActivityEvent>>? _pluginHookSub;
   StreamSubscription<RustSignalPack<TaskSegmentsUpdated>>? _segmentsUpdatedSub;
+  StreamSubscription<RustSignalPack<AllGroups>>? _allGroupsSub;
 
   bool _disposed = false;
 
@@ -132,6 +155,7 @@ class DownloadController extends ChangeNotifier {
     // 启动时请求所有持久化任务和队列
     const RequestAllTasks().sendSignalToRust();
     const RequestAllQueues().sendSignalToRust();
+    const RequestAllGroups().sendSignalToRust();
   }
 
   @override
@@ -151,6 +175,7 @@ class DownloadController extends ChangeNotifier {
     _taskQueueChangedSub?.cancel();
     _pluginHookSub?.cancel();
     _segmentsUpdatedSub?.cancel();
+    _allGroupsSub?.cancel();
     for (final timer in _pluginHookWatchdogs.values) {
       timer.cancel();
     }
@@ -164,6 +189,13 @@ class DownloadController extends ChangeNotifier {
   void _safeNotifyListeners() {
     _cachedFilteredTasks = null;
     _cachedGroupedTasks = null;
+    // 视图 sections memo 与 filteredTasks 缓存同生命周期失效：memo 的
+    // identical(源列表) 判定在「全部」页签（filteredTasks 直通返回 _tasks
+    // 本体）+ 原地改 _tasks（_onAllTasks clear+addAll / 进度 copyWith 回写）
+    // 时实例恒同，不失效会吞掉一切内容变化（启动首帧空列表、进度冻结）。
+    _lastSections = null;
+    _lastSectionsPrefs = null;
+    _lastSectionsSourceTasks = null;
     if (!_disposed) notifyListeners();
   }
 
@@ -172,6 +204,12 @@ class DownloadController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   List<DownloadTask> get tasks => _tasks;
+
+  /// 任务列表内容区最新已知宽度（由 [TaskList] 每次布局写入，非
+  /// notifyListeners 触发字段——纯粹供「显示选项」面板等非列表内部组件
+  /// 估算列宽预算 [columnWidthBudget] 使用，避免为此单一需求跨 4 层组件
+  /// 显式传参）。初始值取一个宽松默认，首帧布局后立即被覆盖为准确值。
+  double listContentWidth = 900;
 
   FileCategory get categoryFilter => _categoryFilter;
   CustomCategory? get customCategoryFilter => _customCategoryFilter;
@@ -307,6 +345,95 @@ class DownloadController extends ChangeNotifier {
   void toggleGroupCollapsed(TimeGroup group) {
     _collapsedGroups[group] = !isGroupCollapsed(group);
     _safeNotifyListeners();
+  }
+
+  // ===========================================================================
+  // 视图系统（desktop）— List<ListSection> 产出（契约：contract-dart.md）。
+  // 复用现有 队列→分类→状态Tab→搜索 过滤管线（filteredTasks），在其上叠加
+  // 「显示已完成」开关 + 分桶 + 排序；不影响 mobile 端仍在使用的
+  // groupedTasks/TaskGroup（保留不动，见文件顶部 mobile_tasks_screen.dart）。
+  // ===========================================================================
+
+  /// 按 [prefs] 产出桌面任务列表视图的分桶结果（7 维分桶 × 6 键排序）。
+  /// 轻量 memo：仅当 [prefs] 或底层 [filteredTasks] 引用变化时才重新计算。
+  List<ListSection> buildListSections(ViewPrefs prefs) {
+    final tasks = filteredTasks;
+    if (_lastSections != null &&
+        _lastSectionsPrefs == prefs &&
+        identical(_lastSectionsSourceTasks, tasks)) {
+      return _lastSections!;
+    }
+    final visible = prefs.showCompleted
+        ? tasks
+        : tasks.where((t) => t.status != TaskStatus.completed).toList();
+
+    final partition = partitionTasksByGroup(visible, _groups.keys.toSet());
+    final entities = <ListEntity>[...partition.ungrouped];
+    for (final entry in partition.byGroup.entries) {
+      entities.add(buildGroupEntity(_groups[entry.key]!, entry.value));
+    }
+
+    final bucketize = bucketFunctionTable(_queues)[prefs.groupBy]!;
+    final sections = bucketize(entities);
+    for (final section in sections) {
+      section.entities.sort(
+        (a, b) => compareEntities(prefs.sortKey, prefs.sortDir, a, b),
+      );
+    }
+
+    // 展开扁平化后处理（design-proto-spec §8）：分桶/排序已完成，只在组行
+    // 后面插入其成员/目录行，不改变桶结构/顶层排序。仅列表形态生效——
+    // 网格无行内展开机制（§8「网格降级」），组卡点击只选中+开详情面板。
+    final result = prefs.form != ViewForm.list
+        ? sections
+        : [
+            for (final section in sections)
+              ListSection(
+                key: section.key,
+                title: section.title,
+                entities: [
+                  for (final e in section.entities) ...[
+                    e,
+                    if (e is GroupEntity && isGroupExpanded(e.groupId))
+                      ...flattenGroupMembers(
+                        group: _groups[e.groupId]!,
+                        members: partition.byGroup[e.groupId] ?? const [],
+                        isDirCollapsed: (path) =>
+                            isDirCollapsed(e.groupId, path),
+                      ),
+                  ],
+                ],
+              ),
+          ];
+
+    _lastSectionsPrefs = prefs;
+    _lastSectionsSourceTasks = tasks;
+    _lastSections = result;
+    return result;
+  }
+
+  /// 「显示已完成」关闭时，当前页签被隐藏的已完成任务数（状态栏摘要用；
+  /// 开启时恒为 0）。
+  int hiddenCompletedCount(ViewPrefs prefs) {
+    if (prefs.showCompleted) return 0;
+    return filteredTasks
+        .where((t) => t.status == TaskStatus.completed)
+        .length;
+  }
+
+  /// 当前视图下可见实体的「展开」计数（组按成员数计；本波无组，等价于
+  /// 可见任务数；状态栏左侧摘要用）。
+  int visibleEntityExpandedCount(ViewPrefs prefs) {
+    var count = 0;
+    for (final section in buildListSections(prefs)) {
+      for (final e in section.entities) {
+        // 组展开产出的成员/目录行已经由其所属 GroupEntity 计入一次。
+        if (e is GroupMemberEntity || e is GroupDirEntity) continue;
+        count +=
+            e is GroupEntity ? (e.members.isEmpty ? 1 : e.members.length) : 1;
+      }
+    }
+    return count;
   }
 
   /// 在当前文件类型筛选下，各状态的任务数量（用于 Tab 显示计数）
@@ -776,8 +903,16 @@ class DownloadController extends ChangeNotifier {
   }
 
   void selectTask(String? taskId) {
-    if (_selectedTaskId == taskId) return;
+    if (taskId == null) {
+      if (_selectedTaskId == null) return;
+      _selectedTaskId = null;
+      _safeNotifyListeners();
+      return;
+    }
+    if (_selectedTaskId == taskId && _selectedGroupId == null) return;
+    // 选中任务与选中组互斥（home_page.dart 详情面板二选一展示）。
     _selectedTaskId = taskId;
+    _selectedGroupId = null;
     _safeNotifyListeners();
   }
 
@@ -1130,6 +1265,7 @@ class DownloadController extends ChangeNotifier {
     _segmentsUpdatedSub = TaskSegmentsUpdated.rustSignalStream.listen(
       _onTaskSegmentsUpdated,
     );
+    _allGroupsSub = AllGroups.rustSignalStream.listen(_onAllGroups);
   }
 
   void _onAllTasks(RustSignalPack<AllTasks> pack) {
@@ -1512,6 +1648,211 @@ class DownloadController extends ChangeNotifier {
     _safeNotifyListeners();
   }
 
+  void _onAllGroups(RustSignalPack<AllGroups> pack) {
+    if (_disposed) return;
+    final incoming = pack.message.groups;
+    logInfo(_tag, '_onAllGroups: ${incoming.length} groups');
+    _groups
+      ..clear()
+      ..addEntries(
+        incoming.map((g) => MapEntry(g.groupId, DownloadGroup.fromSignal(g))),
+      );
+    final incomingIds = _groups.keys.toSet();
+    _expandedGroupIds.removeWhere((id) => !incomingIds.contains(id));
+    _collapsedDirKeys.removeWhere(
+      (key) => !incomingIds.any((id) => key.startsWith('$id:')),
+    );
+    if (_selectedGroupId != null && !incomingIds.contains(_selectedGroupId)) {
+      _selectedGroupId = null;
+    }
+    _safeNotifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 任务组（桌面 UI）— 查询 / 选中 / 展开折叠 / 操作
+  // ---------------------------------------------------------------------------
+
+  /// 全部任务组（无序，UI 按需自行排序/展示）。
+  List<DownloadGroup> get groups => _groups.values.toList();
+
+  /// 按 ID 查找任务组（不存在返回 null）。
+  DownloadGroup? groupById(String groupId) => _groups[groupId];
+
+  String? get selectedGroupId => _selectedGroupId;
+
+  DownloadGroup? get selectedGroup =>
+      _selectedGroupId == null ? null : _groups[_selectedGroupId];
+
+  /// 选中的组当前成员任务（组详情面板「成员」Tab 用）。
+  List<DownloadTask> get selectedGroupMembers {
+    final gid = _selectedGroupId;
+    if (gid == null) return const [];
+    return _tasks.where((t) => t.groupId == gid).toList();
+  }
+
+  void selectGroup(String? groupId) {
+    if (groupId == null) {
+      if (_selectedGroupId == null) return;
+      _selectedGroupId = null;
+      _safeNotifyListeners();
+      return;
+    }
+    if (_selectedGroupId == groupId && _selectedTaskId == null) return;
+    // 选中组与选中任务互斥。
+    _selectedGroupId = groupId;
+    _selectedTaskId = null;
+    _safeNotifyListeners();
+  }
+
+  bool isGroupExpanded(String groupId) => _expandedGroupIds.contains(groupId);
+
+  void toggleGroupExpanded(String groupId) {
+    if (!_expandedGroupIds.add(groupId)) _expandedGroupIds.remove(groupId);
+    _safeNotifyListeners();
+  }
+
+  void setGroupExpanded(String groupId, bool expanded) {
+    final changed = expanded
+        ? _expandedGroupIds.add(groupId)
+        : _expandedGroupIds.remove(groupId);
+    if (changed) _safeNotifyListeners();
+  }
+
+  static String _dirKey(String groupId, String path) => '$groupId:$path';
+
+  bool isDirCollapsed(String groupId, String path) =>
+      _collapsedDirKeys.contains(_dirKey(groupId, path));
+
+  void toggleDirCollapsed(String groupId, String path) {
+    final key = _dirKey(groupId, path);
+    if (!_collapsedDirKeys.add(key)) _collapsedDirKeys.remove(key);
+    _safeNotifyListeners();
+  }
+
+  /// 「N 失败」直达（design-proto-spec §8 `jumpToFail`）：展开组 + 若失败
+  /// 成员所在目录被折叠则一并展开。滚动定位与高亮闪烁动效由调用方
+  /// （task_group_card.dart / task_list.dart）负责。
+  void revealGroupMember(String groupId, String memberTaskId) {
+    var changed = _expandedGroupIds.add(groupId);
+    final group = _groups[groupId];
+    DownloadTask? memberTask;
+    for (final t in _tasks) {
+      if (t.id == memberTaskId) {
+        memberTask = t;
+        break;
+      }
+    }
+    if (group != null && memberTask != null) {
+      final dir = groupMemberDirPath(memberTask, group);
+      if (dir.isNotEmpty && _collapsedDirKeys.remove(_dirKey(groupId, dir))) {
+        changed = true;
+      }
+    }
+    if (changed) _safeNotifyListeners();
+  }
+
+  /// 按聚合态二选一（design-proto-spec §8 组右键菜单 / §13 Space 键）：
+  /// 任一成员活跃/排队则全部暂停，否则全部恢复。
+  void toggleGroupPauseResume(String groupId) {
+    final hasActive = _tasks.any(
+      (t) => t.groupId == groupId && t.status.isActiveOrQueued,
+    );
+    if (hasActive) {
+      pauseGroup(groupId);
+    } else {
+      resumeGroup(groupId);
+    }
+  }
+
+  /// 暂停组内全部活跃/排队成员（乐观 UI，同 [pauseAll] 语义仅限定组内）。
+  void pauseGroup(String groupId) {
+    logInfo(_tag, 'pauseGroup: $groupId');
+    for (var i = 0; i < _tasks.length; i++) {
+      final t = _tasks[i];
+      if (t.groupId != groupId || !t.status.isActiveOrQueued) continue;
+      _optimisticPausedIds.add(t.id);
+      _tasks[i] = t.copyWith(status: TaskStatus.paused, speed: 0);
+    }
+    GroupControl(groupId: groupId, action: 0).sendSignalToRust();
+    _safeNotifyListeners();
+  }
+
+  /// 恢复组内全部暂停/失败成员（乐观 UI，同 [resumeAll] 语义仅限定组内）。
+  void resumeGroup(String groupId) {
+    logInfo(_tag, 'resumeGroup: $groupId');
+    for (var i = 0; i < _tasks.length; i++) {
+      final t = _tasks[i];
+      if (t.groupId != groupId) continue;
+      if (t.status != TaskStatus.paused && t.status != TaskStatus.error) {
+        continue;
+      }
+      _optimisticPausedIds.remove(t.id);
+      _tasks[i] = t.copyWith(status: TaskStatus.resuming);
+    }
+    GroupControl(groupId: groupId, action: 1).sendSignalToRust();
+    _safeNotifyListeners();
+  }
+
+  /// 仅重试组内失败成员。
+  void retryGroupFailed(String groupId) {
+    logInfo(_tag, 'retryGroupFailed: $groupId');
+    for (var i = 0; i < _tasks.length; i++) {
+      final t = _tasks[i];
+      if (t.groupId != groupId || t.status != TaskStatus.error) continue;
+      _optimisticPausedIds.remove(t.id);
+      _tasks[i] = t.copyWith(status: TaskStatus.resuming);
+    }
+    GroupControl(groupId: groupId, action: 2).sendSignalToRust();
+    _safeNotifyListeners();
+  }
+
+  /// 删除组（记录，[deleteFiles] 时一并删除磁盘文件）及其全部成员任务。
+  void deleteGroup(String groupId, {required bool deleteFiles}) {
+    logInfo(_tag, 'deleteGroup: $groupId, deleteFiles=$deleteFiles');
+    final ids = _tasks
+        .where((t) => t.groupId == groupId)
+        .map((t) => t.id)
+        .toSet();
+    _optimisticPausedIds.removeAll(ids);
+    _boostAutoPausedIds.removeAll(ids);
+    _deferredResumeQueue.removeWhere(ids.contains);
+    _deletedTaskIds.addAll(ids);
+    _tasks.removeWhere((t) => ids.contains(t.id));
+    if (_selectedTaskId != null && ids.contains(_selectedTaskId)) {
+      _selectedTaskId = null;
+    }
+    if (_selectedGroupId == groupId) _selectedGroupId = null;
+    _groups.remove(groupId);
+    _expandedGroupIds.remove(groupId);
+    _collapsedDirKeys.removeWhere((k) => k.startsWith('$groupId:'));
+    GroupControl(
+      groupId: groupId,
+      action: deleteFiles ? 3 : 4,
+    ).sendSignalToRust();
+    _safeNotifyListeners();
+  }
+
+  /// 重命名任务组（乐观更新本地缓存；`name` trim 后为空则忽略，同引擎侧
+  /// 校验语义）。proto 组右键菜单未收录该入口（design-proto-spec §8），本
+  /// 方法按契约要求接线信号，暂无 UI 触发点（详见 dart-groups-report.md）。
+  void renameGroup(String groupId, String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    logInfo(_tag, 'renameGroup: $groupId -> $trimmed');
+    final existing = _groups[groupId];
+    if (existing != null) {
+      _groups[groupId] = DownloadGroup(
+        id: existing.id,
+        name: trimmed,
+        sourceUrl: existing.sourceUrl,
+        saveDir: existing.saveDir,
+        createdAt: existing.createdAt,
+      );
+    }
+    RenameGroup(groupId: groupId, name: trimmed).sendSignalToRust();
+    _safeNotifyListeners();
+  }
+
   void _onPriorityTaskChanged(RustSignalPack<PriorityTaskChanged> pack) {
     if (_disposed) return;
     final p = pack.message;
@@ -1539,4 +1880,338 @@ class DownloadController extends ChangeNotifier {
 
     _safeNotifyListeners();
   }
+}
+
+// =============================================================================
+// 视图系统 — 分桶函数表 + 排序比较器表（7 维 × 6 键，纯函数）
+//
+// 行为规格依据：design-proto-spec.md §2/§3。全部为顶层公开纯函数（不依赖
+// DownloadController 实例状态，`queue` 维度的队列顺序单独接参数），供
+// buildListSections() 组装，也供 test/ 直接单测（DownloadController 因
+// 依赖 rinf FFI 无法在测试中实例化，纯函数抽出是唯一可测路径）。
+// =============================================================================
+
+bool _isActiveOrQueued(TaskStatus s) =>
+    s == TaskStatus.downloading ||
+    s == TaskStatus.preparing ||
+    s == TaskStatus.resuming ||
+    s == TaskStatus.pending;
+
+/// 时间分档序号（design-proto-spec §2 `dateKey`）：0=今天 1=昨天 2=本周
+/// 3=本月 4=更早。复用现有 [TimeGroup] 枚举顺序，与 `_buildTimeGroups`
+/// 语义一致。
+int dateKeyOf(DateTime createdAt) => TimeGroup.fromDateTime(createdAt).index;
+
+List<ListSection> _bucketByDateKey(List<ListEntity> entities) {
+  final buckets = <int, List<ListEntity>>{};
+  for (final e in entities) {
+    (buckets[dateKeyOf(e.createdAt)] ??= []).add(e);
+  }
+  return [
+    for (var k = 0; k < TimeGroup.values.length; k++)
+      if (buckets[k] != null && buckets[k]!.isNotEmpty)
+        ListSection(
+          key: 'date:$k',
+          title: TimeGroup.values[k].label,
+          entities: buckets[k]!,
+        ),
+  ];
+}
+
+/// 「不分组」：单桶纯平铺，`title=null` 不渲染分组头。
+List<ListSection> bucketEntitiesNone(List<ListEntity> entities) => [
+  ListSection(key: 'none:all', title: null, entities: entities),
+];
+
+/// 「智能」：活跃（下载中/准备中/恢复中/排队）置顶一桶，其余按时间分档
+/// （design-proto-spec §2 `by=smart`；等价于现状 `groupedTasks` 分桶行为，
+/// 保证默认视图零感知）。
+List<ListSection> bucketEntitiesSmart(List<ListEntity> entities) {
+  final active = entities
+      .where((e) => _isActiveOrQueued(e.statusBucket))
+      .toList();
+  final historical = entities
+      .where((e) => !_isActiveOrQueued(e.statusBucket))
+      .toList();
+  return [
+    if (active.isNotEmpty)
+      ListSection(
+        key: 'smart:live',
+        title: currentS.activeGroupLabel,
+        entities: active,
+      ),
+    ..._bucketByDateKey(historical),
+  ];
+}
+
+/// 「日期」：全量按时间分档（与 `smart` 的差异是不做活跃置顶）。
+List<ListSection> bucketEntitiesByDate(List<ListEntity> entities) =>
+    _bucketByDateKey(entities);
+
+String _statusBucketLabel(TaskStatus st) {
+  final s = currentS;
+  return switch (st) {
+    TaskStatus.downloading => s.statusDownloading,
+    TaskStatus.pending => s.statusPending,
+    TaskStatus.paused => s.statusPaused,
+    TaskStatus.error => s.statusError,
+    TaskStatus.completed => s.statusCompleted,
+    TaskStatus.preparing => s.statusDownloading,
+    TaskStatus.resuming => s.statusDownloading,
+  };
+}
+
+/// 「状态」：固定顺序 [下载中,排队,暂停,失败,完成]，仅保留有成员的桶
+/// （design-proto-spec §2 `by=status`；preparing/resuming 视觉上并入
+/// 下载中桶，与列表行/网格卡的状态色映射一致）。
+List<ListSection> bucketEntitiesByStatus(List<ListEntity> entities) {
+  const order = [
+    TaskStatus.downloading,
+    TaskStatus.pending,
+    TaskStatus.paused,
+    TaskStatus.error,
+    TaskStatus.completed,
+  ];
+  final buckets = <TaskStatus, List<ListEntity>>{};
+  for (final e in entities) {
+    final bucket =
+        _isActiveOrQueued(e.statusBucket) && e.statusBucket != TaskStatus.pending
+        ? TaskStatus.downloading
+        : e.statusBucket;
+    (buckets[bucket] ??= []).add(e);
+  }
+  return [
+    for (final st in order)
+      if (buckets[st] != null && buckets[st]!.isNotEmpty)
+        ListSection(
+          key: 'status:${st.name}',
+          title: _statusBucketLabel(st),
+          entities: buckets[st]!,
+        ),
+  ];
+}
+
+/// 「类型」：固定顺序（design-proto-spec §2 `TYPE_ORDER`= `FileCategory`
+/// 去掉 `all`），仅保留有成员的桶。
+List<ListSection> bucketEntitiesByType(List<ListEntity> entities) {
+  final order = FileCategory.values.where((c) => c != FileCategory.all);
+  final buckets = <FileCategory, List<ListEntity>>{};
+  for (final e in entities) {
+    (buckets[e.categoryKey] ??= []).add(e);
+  }
+  return [
+    for (final cat in order)
+      if (buckets[cat] != null && buckets[cat]!.isNotEmpty)
+        ListSection(
+          key: 'type:${cat.name}',
+          title: cat.label,
+          entities: buckets[cat]!,
+        ),
+  ];
+}
+
+/// 「队列」：默认队列（`queueId==''`）固定排最前，其余按 [queues] 已排序
+/// 顺序分桶，仅保留有成员的桶。
+List<ListSection> bucketEntitiesByQueue(
+  List<ListEntity> entities,
+  List<DownloadQueue> queues,
+) {
+  final buckets = <String, List<ListEntity>>{};
+  for (final e in entities) {
+    (buckets[e.queueId] ??= []).add(e);
+  }
+  final s = currentS;
+  final sections = <ListSection>[];
+  final defaultBucket = buckets[''];
+  if (defaultBucket != null && defaultBucket.isNotEmpty) {
+    sections.add(
+      ListSection(key: 'queue:', title: s.ungroupedTasks, entities: defaultBucket),
+    );
+  }
+  for (final q in queues) {
+    final bucket = buckets[q.queueId];
+    if (bucket == null || bucket.isEmpty) continue;
+    sections.add(
+      ListSection(
+        key: 'queue:${q.queueId}',
+        title: queueDisplayName(s, q),
+        entities: bucket,
+      ),
+    );
+  }
+  return sections;
+}
+
+/// 「站点」：按 [ListEntity.siteKey] 分桶，桶按成员数降序排列
+/// （design-proto-spec §2 `by=site`）。
+List<ListSection> bucketEntitiesBySite(List<ListEntity> entities) {
+  final buckets = <String, List<ListEntity>>{};
+  for (final e in entities) {
+    (buckets[e.siteKey] ??= []).add(e);
+  }
+  final keys = buckets.keys.toList()
+    ..sort((a, b) => buckets[b]!.length.compareTo(buckets[a]!.length));
+  return [
+    for (final key in keys)
+      ListSection(
+        key: 'site:${key.replaceAll(RegExp(r'\W'), '_')}',
+        title: buckets[key]!.first.siteLabel,
+        entities: buckets[key]!,
+      ),
+  ];
+}
+
+/// 分桶函数表：[ViewGroupBy] → 分桶函数（`queue` 维度需要队列顺序，
+/// 经 [queues] 参数柯里化）。
+Map<ViewGroupBy, List<ListSection> Function(List<ListEntity>)>
+bucketFunctionTable(List<DownloadQueue> queues) => {
+  ViewGroupBy.smart: bucketEntitiesSmart,
+  ViewGroupBy.date: bucketEntitiesByDate,
+  ViewGroupBy.status: bucketEntitiesByStatus,
+  ViewGroupBy.type: bucketEntitiesByType,
+  ViewGroupBy.queue: (entities) => bucketEntitiesByQueue(entities, queues),
+  ViewGroupBy.site: bucketEntitiesBySite,
+  ViewGroupBy.none: bucketEntitiesNone,
+};
+
+/// 「智能」排序比较器：状态优先级（下载中0 < 准备/恢复中1 < 排队2 <
+/// 暂停3 < 失败4 < 完成5）→ 排队内按队列位置 → 其余按创建时间升序，
+/// 固定升序稳定、忽略 [SortDir]（design-proto-spec §3 `smart` 语义，对齐
+/// 现状 `_compareActiveTasks` 并推广到全部状态，保证默认视图零感知）。
+int compareEntitiesSmart(ListEntity a, ListEntity b) {
+  int tier(TaskStatus s) => switch (s) {
+    TaskStatus.downloading => 0,
+    TaskStatus.preparing => 1,
+    TaskStatus.resuming => 1,
+    TaskStatus.pending => 2,
+    TaskStatus.paused => 3,
+    TaskStatus.error => 4,
+    TaskStatus.completed => 5,
+  };
+  final diff = tier(a.statusBucket) - tier(b.statusBucket);
+  if (diff != 0) return diff;
+  if (a.statusBucket == TaskStatus.pending && a is TaskEntity && b is TaskEntity) {
+    return a.task.queuePosition.compareTo(b.task.queuePosition);
+  }
+  return a.createdAt.compareTo(b.createdAt);
+}
+
+/// 6 键排序比较器表（`smart` 忽略 [dir]；其余按 [dir] 升/降序，
+/// design-proto-spec §3 `sortEnts`）。
+int compareEntities(ViewSortKey key, SortDir dir, ListEntity a, ListEntity b) {
+  if (key == ViewSortKey.smart) return compareEntitiesSmart(a, b);
+  final mul = dir == SortDir.asc ? 1 : -1;
+  switch (key) {
+    case ViewSortKey.created:
+      return a.createdAt.compareTo(b.createdAt) * mul;
+    case ViewSortKey.name:
+      return a.name.compareTo(b.name) * mul;
+    case ViewSortKey.size:
+      return a.totalBytes.compareTo(b.totalBytes) * mul;
+    case ViewSortKey.progress:
+      return a.progress.compareTo(b.progress) * mul;
+    case ViewSortKey.speed:
+      return a.speedBytesPerSec.compareTo(b.speedBytesPerSec) * mul;
+    case ViewSortKey.smart:
+      return compareEntitiesSmart(a, b);
+  }
+}
+
+// =============================================================================
+// 任务组 — 归组 / 展开扁平化 / 目录路径推导（纯函数）
+//
+// 行为规格依据：design-proto-spec.md §8 `membersHtml`/`dirRowHtml`/
+// `jumpToFail`。全部为顶层公开纯函数（不依赖 DownloadController 实例状态），
+// 供 buildListSections() 调用，也供 test/ 直接单测（同上方视图系统分桶/
+// 排序纯函数的测试策略——DownloadController 因依赖 rinf FFI 无法在测试中
+// 实例化）。
+// =============================================================================
+
+/// 按 `groupId` 归组：非空且 [knownGroupIds] 已知 → 归入组；否则（含孤儿
+/// groupId——组表未知，GC 竞态或组已删除）→ 降级为普通任务平铺
+/// （design-proto-spec 无此场景，工程防御）。
+({List<TaskEntity> ungrouped, Map<String, List<DownloadTask>> byGroup})
+partitionTasksByGroup(List<DownloadTask> tasks, Set<String> knownGroupIds) {
+  final ungrouped = <TaskEntity>[];
+  final byGroup = <String, List<DownloadTask>>{};
+  for (final t in tasks) {
+    final gid = t.groupId;
+    if (gid.isEmpty || !knownGroupIds.contains(gid)) {
+      ungrouped.add(TaskEntity(t));
+    } else {
+      (byGroup[gid] ??= []).add(t);
+    }
+  }
+  return (ungrouped: ungrouped, byGroup: byGroup);
+}
+
+/// 用真实 [DownloadGroup] 元数据 + 成员任务构造 [GroupEntity]（组聚合字段
+/// 由 [GroupEntity] 自身从 `members` 派生，见 list_entity.dart §3.2）。
+/// [members] 须非空（[partitionTasksByGroup] 只在有成员时才产出该组键）。
+GroupEntity buildGroupEntity(DownloadGroup group, List<DownloadTask> members) {
+  return GroupEntity(
+    groupId: group.id,
+    groupName: group.displayName,
+    sourceUrl: group.sourceUrl,
+    saveDir: group.saveDir,
+    groupCreatedAt: group.createdAt,
+    groupQueueId: members.isEmpty ? '' : members.first.queueId,
+    members: [for (final t in members) TaskEntity(t)],
+  );
+}
+
+/// 成员在组内的相对目录路径（''=组根目录）。工程推导：引擎为每个组成员
+/// 任务的 `saveDir` 写入「组根目录 + relPath 的目录部分」（组创建时
+/// `GroupItemEntry.relPath` 拼接进最终落盘路径，hub-final-signals.md §3）；
+/// `TaskInfo` 本身不携带独立的 relPath 字段，因此用 `task.saveDir` 相对
+/// `group.saveDir` 的前缀差得到目录路径——两者相同或无法识别前缀关系
+/// （不可能场景的防御）时视为组根目录。
+String groupMemberDirPath(DownloadTask task, DownloadGroup group) {
+  final root = group.saveDir.replaceAll('\\', '/');
+  final dir = task.saveDir.replaceAll('\\', '/');
+  if (dir == root) return '';
+  final rootWithSlash = root.endsWith('/') ? root : '$root/';
+  if (!dir.startsWith(rootWithSlash)) return '';
+  return dir.substring(rootWithSlash.length);
+}
+
+/// 组内成员「path 排序 + 非空目录去重插入目录行 + 折叠隐藏」聚簇
+/// （design-proto-spec §8 `membersHtml`）。返回值不含组头行本身
+/// （[GroupEntity]），只是紧随其后要插入的扁平行序列；根目录（空 dir）
+/// 成员直贴、不产出目录头。
+List<ListEntity> flattenGroupMembers({
+  required DownloadGroup group,
+  required List<DownloadTask> members,
+  required bool Function(String path) isDirCollapsed,
+}) {
+  final withDir = [
+    for (final t in members) (task: t, dir: groupMemberDirPath(t, group)),
+  ];
+  String fullPath(({DownloadTask task, String dir}) e) =>
+      e.dir.isEmpty ? e.task.fileName : '${e.dir}/${e.task.fileName}';
+  withDir.sort((a, b) => fullPath(a).compareTo(fullPath(b)));
+
+  final result = <ListEntity>[];
+  String? currentDir;
+  for (final e in withDir) {
+    if (e.dir != currentDir) {
+      currentDir = e.dir;
+      if (e.dir.isNotEmpty) {
+        final inDir = withDir.where((x) => x.dir == e.dir);
+        result.add(
+          GroupDirEntity(
+            groupId: group.id,
+            path: e.dir,
+            fileCount: inDir.length,
+            totalDirBytes: inDir.fold(0, (s, x) => s + x.task.totalBytes),
+          ),
+        );
+      }
+    }
+    if (e.dir.isNotEmpty && isDirCollapsed(e.dir)) continue;
+    result.add(
+      GroupMemberEntity(task: e.task, groupId: group.id, dirPath: e.dir),
+    );
+  }
+  return result;
 }

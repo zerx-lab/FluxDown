@@ -8,12 +8,15 @@ import 'package:url_launcher/url_launcher.dart';
 import 'flux_sonner.dart';
 import '../bindings/bindings.dart';
 import '../models/download_controller.dart';
+import '../models/download_queue.dart';
 import '../models/download_task.dart';
 import '../i18n/locale_provider.dart';
+import '../services/open_folder.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../theme/segment_palette.dart';
 import 'edit_threads_dialog.dart';
+import 'task_columns.dart';
 
 /// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
 const _pluginErrorPrefix = '[插件]';
@@ -43,6 +46,12 @@ class DetailPanel extends StatefulWidget {
 class _DetailPanelState extends State<DetailPanel> {
   /// 插件处理耗时显示的 1s 刷新 ticker（仅在有插件活动时运行）。
   Timer? _pluginTicker;
+
+  /// 当前选中 Tab：0=常规 1=队列 2=日志 3=高级（design-proto-spec §12）。
+  int _tab = 0;
+
+  /// 上一次渲染的任务 ID —— 用于检测「切换到另一个任务」并把 Tab 重置回常规。
+  String? _lastTaskId;
 
   @override
   void dispose() {
@@ -77,63 +86,35 @@ class _DetailPanelState extends State<DetailPanel> {
               listenable: widget.controller,
               builder: (context, _) {
                 final task = widget.controller.selectedTask;
-                if (task == null) return _buildNoSelection(c);
-                if (widget.isBottom) {
-                  // 底部面板：横向布局（左：文件+进度分布；右：信息表+操作）
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _buildFileInfo(c, m, task),
-                              const SizedBox(height: 16),
-                              _buildProgress(c, m, task),
-                            ],
-                          ),
-                        ),
-                      ),
-                      Container(width: 1, color: c.border),
-                      Expanded(
-                        child: Column(
-                          children: [
-                            Expanded(
-                              child: SingleChildScrollView(
-                                padding: const EdgeInsets.all(16),
-                                child: _buildInfoTable(c, task),
-                              ),
-                            ),
-                            _buildActions(c, m, task),
-                          ],
-                        ),
-                      ),
-                    ],
-                  );
+                if (task == null) {
+                  _lastTaskId = null;
+                  return _buildNoSelection(c);
                 }
-                // 右侧面板：竖直布局
+                // 选中任务切换时，Tab 重置回常规（design-proto-spec §12 契约）。
+                if (task.id != _lastTaskId) {
+                  _lastTaskId = task.id;
+                  _tab = 0;
+                }
+                final pluginActive =
+                    task.status == TaskStatus.completed &&
+                    widget.controller.isPluginProcessing(task.id);
+                _syncPluginTicker(pluginActive);
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildFileInfo(c, m, task),
-                            const SizedBox(height: 20),
-                            _buildProgress(c, m, task),
-                            const SizedBox(height: 20),
-                            _buildInfoTable(c, task),
-                          ],
-                        ),
-                      ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                      child: _buildFileHeader(c, m, task),
                     ),
-                    _buildActions(c, m, task),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: _buildTabBar(c, m),
+                    ),
+                    const SizedBox(height: 2),
+                    Expanded(
+                      child: _buildTabContent(c, m, task, pluginActive),
+                    ),
                   ],
                 );
               },
@@ -200,16 +181,19 @@ class _DetailPanelState extends State<DetailPanel> {
     );
   }
 
-  Widget _buildFileInfo(AppColors c, AppMetrics m, DownloadTask task) {
+  // ---------------------------------------------------------------------------
+  // 文件头部区：图标 + 文件名 + 状态副标题（含 Boost 标记）
+  // ---------------------------------------------------------------------------
+
+  Widget _buildFileHeader(AppColors c, AppMetrics m, DownloadTask task) {
+    final isBoost = widget.controller.priorityTaskId == task.id;
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
           width: 40,
           height: 40,
-          decoration: BoxDecoration(
-            color: c.surface2,
-            borderRadius: m.brCard,
-          ),
+          decoration: BoxDecoration(color: c.surface2, borderRadius: m.brCard),
           child: Center(
             child: Text(
               task.fileExtension,
@@ -224,11 +208,45 @@ class _DetailPanelState extends State<DetailPanel> {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Text(
-            task.fileName,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 13, color: c.textPrimary),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                task.fileName,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, color: c.textPrimary),
+              ),
+              const SizedBox(height: 3),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      task.statusText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: c.textMuted),
+                    ),
+                  ),
+                  if (isBoost) ...[
+                    Text(
+                      ' · ',
+                      style: TextStyle(fontSize: 11, color: c.textMuted),
+                    ),
+                    const Icon(LucideIcons.zap, size: 10, color: AppColors.amber),
+                    const SizedBox(width: 2),
+                    Text(
+                      currentS.detailBoostActive,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.amber,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
           ),
         ),
       ],
@@ -236,10 +254,232 @@ class _DetailPanelState extends State<DetailPanel> {
   }
 
   // ---------------------------------------------------------------------------
-  // 进度区域：百分比 + 分段进度条 + IDM 网格 + 图例
+  // Tab 条（chip 式，复用 group_detail_panel.dart 既有 `_buildTabBar` 模式）
   // ---------------------------------------------------------------------------
 
-  Widget _buildProgress(AppColors c, AppMetrics m, DownloadTask task) {
+  Widget _buildTabBar(AppColors c, AppMetrics m) {
+    final labels = [
+      currentS.detailTabGeneral,
+      currentS.detailTabQueue,
+      currentS.detailTabLog,
+      currentS.detailTabAdvanced,
+    ];
+    return Row(
+      children: [
+        for (var i = 0; i < labels.length; i++) ...[
+          if (i > 0) const SizedBox(width: 4),
+          GestureDetector(
+            onTap: () => setState(() => _tab = i),
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _tab == i
+                      ? c.accentBg
+                      : c.accentBg.withValues(alpha: 0),
+                  borderRadius: m.brMd,
+                ),
+                child: Text(
+                  labels[i],
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: _tab == i ? FontWeight.w500 : FontWeight.normal,
+                    color: _tab == i ? c.accent : c.textSecondary,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildTabContent(
+    AppColors c,
+    AppMetrics m,
+    DownloadTask task,
+    bool pluginActive,
+  ) {
+    switch (_tab) {
+      case 1:
+        return _buildQueueTab(c, task);
+      case 2:
+        return _buildLogTab(c, task);
+      case 3:
+        return _buildAdvancedTab(c, task);
+      case 0:
+      default:
+        return _buildGeneralTab(c, m, task, pluginActive);
+    }
+  }
+
+  /// Tab 内容通用滚动容器；底部横向布局时限宽 560 居左（design-proto-spec §12
+  /// 队列/日志/高级 Tab「全宽单栏」要求），竖直面板本就窄，不额外限宽。
+  Widget _tabScroll(Widget child) {
+    final content = Padding(padding: const EdgeInsets.all(16), child: child);
+    if (!widget.isBottom) return SingleChildScrollView(child: content);
+    return SingleChildScrollView(
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: content,
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 常规 Tab
+  // ---------------------------------------------------------------------------
+
+  Widget _buildGeneralTab(
+    AppColors c,
+    AppMetrics m,
+    DownloadTask task,
+    bool pluginActive,
+  ) {
+    if (widget.isBottom) {
+      // 底部横向布局：左（进度头区+下载分布）flex2，1px 分隔，右（信息字段
+      // 滚动 + 钉底操作 footer）flex1（design-proto-spec §12 + 用户决策：
+      // 操作按钮固定在最底部，不随字段滚动）。
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            flex: 2,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [_buildProgress(c, m, task, pluginActive)],
+              ),
+            ),
+          ),
+          Container(width: 1, color: c.border),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: _buildGeneralFields(c, m, task),
+                    ),
+                  ),
+                ),
+                _buildActionsFooter(c, m, task),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildProgress(c, m, task, pluginActive),
+                const SizedBox(height: 20),
+                ..._buildGeneralFields(c, m, task),
+              ],
+            ),
+          ),
+        ),
+        _buildActionsFooter(c, m, task),
+      ],
+    );
+  }
+
+  /// 信息字段（错误行/逃生舱 + 字段表）—— 操作按钮与删除已移入钉底
+  /// [_buildActionsFooter]，本方法只产出滚动区内容。
+  List<Widget> _buildGeneralFields(
+    AppColors c,
+    AppMetrics m,
+    DownloadTask task,
+  ) {
+    final s = currentS;
+    final widgets = <Widget>[];
+    if (task.errorMessage.isNotEmpty) {
+      widgets.add(const SizedBox(height: 10));
+      widgets.add(_buildErrorRow(c, task.errorMessage));
+    }
+    if (task.status == TaskStatus.error &&
+        task.errorMessage.startsWith(_pluginErrorPrefix)) {
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(_buildIgnorePluginRetryButton(c, task));
+    }
+    widgets.add(const SizedBox(height: 16));
+    if (task.groupId.isNotEmpty &&
+        widget.controller.groupById(task.groupId) != null) {
+      widgets.add(_buildGroupLinkRow(c, task.groupId));
+    }
+    widgets.add(_buildInfoRow(s.infoPath, task.saveDir, c));
+    widgets.add(_buildUrlRow(c, task.url));
+    if (task.referrer.isNotEmpty) {
+      widgets.add(_buildSourcePageRow(c, task.referrer));
+    }
+    // 协议·来源：BT/磁力的 siteLabel 本身已是「BT · 磁力」（extractSiteLabel
+    // 特例），再拼 protocolLabel 会冗余成「BT · BT · 磁力」——bt 桶直接用
+    // siteLabel（对齐 proto 图示「BitTorrent · 磁力链接」语义）。
+    widgets.add(
+      _buildInfoRow(
+        s.infoProtocolSource,
+        task.siteKey == 'bt'
+            ? task.siteLabel
+            : '${task.protocolLabel} · ${task.siteLabel}',
+        c,
+      ),
+    );
+    widgets.add(_buildInfoRow(s.infoStartedAt, formatWhen(task.createdAt), c));
+    if (task.status == TaskStatus.completed && task.completedAt != null) {
+      widgets.add(
+        _buildInfoRow(
+          s.infoCompletedAt,
+          _formatDateTime(task.completedAt!),
+          c,
+        ),
+      );
+      widgets.add(
+        _buildInfoRow(
+          s.infoDuration,
+          _formatDuration(task.completedAt!.difference(task.createdAt)),
+          c,
+        ),
+      );
+    }
+    widgets.add(_buildInfoRow(s.colQueue, _queueLabel(task.queueId), c));
+    return widgets;
+  }
+
+  String _queueLabel(String queueId) {
+    final s = currentS;
+    if (queueId.isEmpty) return s.ungroupedTasks;
+    final q = widget.controller.queueById(queueId);
+    return q == null ? queueId : queueDisplayName(s, q);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 进度区域：百分比 + done/total + 分段进度条 + IDM 网格 + 图例 + segs-sum
+  // ---------------------------------------------------------------------------
+
+  Widget _buildProgress(
+    AppColors c,
+    AppMetrics m,
+    DownloadTask task,
+    bool pluginActive,
+  ) {
     final rawSegs = task.segments;
     final hasSegs =
         rawSegs != null && rawSegs.isNotEmpty && task.totalBytes > 0;
@@ -273,19 +513,41 @@ class _DetailPanelState extends State<DetailPanel> {
       pctValue = task.progress;
     }
     final pctStr = (pctValue * 100).toStringAsFixed(1);
+    final doneTotalText = task.totalBytes > 0
+        ? '${task.downloadedText} / ${task.sizeText}'
+        : task.downloadedText;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 百分比大字
-        Text(
-          '$pctStr%',
-          style: TextStyle(
-            fontSize: 26,
-            fontWeight: FontWeight.w600,
-            color: c.textPrimary,
-            fontFeatures: const [FontFeature.tabularFigures()],
-          ),
+        if (pluginActive) _buildPluginActivityCard(c, task),
+        // 大号百分比 + 同行小字 done/total
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              '$pctStr%',
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w600,
+                color: c.textPrimary,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                '· $doneTotalText',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: c.textMuted,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 8),
 
@@ -294,6 +556,8 @@ class _DetailPanelState extends State<DetailPanel> {
           _buildSegmentedBar(c, m, segs!, task.totalBytes)
         else
           _buildSimpleBar(c, m, pctValue),
+        const SizedBox(height: 8),
+        _buildProgressSubLine(c, task),
 
         // IDM 网格可视化
         if (hasSegs) ...[
@@ -306,6 +570,57 @@ class _DetailPanelState extends State<DetailPanel> {
           const SizedBox(height: 12),
           _buildSegmentLegend(c, m, segs),
         ],
+
+        // segs-sum 行：分段数 · 活跃数 · 动态拆分状态（+ 最近拆分详情）
+        if (hasSegs) ...[
+          const SizedBox(height: 12),
+          _buildSegsSummary(c, segs!, task),
+        ],
+      ],
+    );
+  }
+
+  /// sub 行：下载中显示 `速度 · 剩余 eta`（绿色），否则状态文字；
+  /// 右端仅 HTTP/FTP 任务显示线程数（配置值或「自动」）。
+  Widget _buildProgressSubLine(AppColors c, DownloadTask task) {
+    final s = currentS;
+    final isActive =
+        task.status == TaskStatus.downloading ||
+        task.status == TaskStatus.resuming;
+    final leftText = isActive
+        ? '${task.speedText} · ${s.infoRemaining} ${task.etaText}'
+        : task.statusText;
+    final leftColor = isActive ? AppColors.green : c.textMuted;
+    final proto = task.protocolLabel;
+    final showThreads = proto == 'HTTP' || proto == 'FTP';
+    final threadsText = task.configuredSegments > 0
+        ? s.infoThreads(task.configuredSegments)
+        : s.auto;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            leftText,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              color: leftColor,
+              fontWeight: isActive ? FontWeight.w500 : FontWeight.normal,
+            ),
+          ),
+        ),
+        if (showThreads) ...[
+          const SizedBox(width: 8),
+          Text(
+            threadsText,
+            style: TextStyle(
+              fontSize: 11,
+              color: c.textMuted,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -314,18 +629,12 @@ class _DetailPanelState extends State<DetailPanel> {
   Widget _buildSimpleBar(AppColors c, AppMetrics m, double progress) {
     return Container(
       height: 4,
-      decoration: BoxDecoration(
-        color: c.surface3,
-        borderRadius: m.brXs,
-      ),
+      decoration: BoxDecoration(color: c.surface3, borderRadius: m.brXs),
       child: FractionallySizedBox(
         alignment: Alignment.centerLeft,
         widthFactor: progress,
         child: Container(
-          decoration: BoxDecoration(
-            color: c.accent,
-            borderRadius: m.brXs,
-          ),
+          decoration: BoxDecoration(color: c.accent, borderRadius: m.brXs),
         ),
       ),
     );
@@ -404,7 +713,9 @@ class _DetailPanelState extends State<DetailPanel> {
                     cellSize: cellSize,
                     cellGap: cellGap,
                     emptyColor: c.surface3,
-                    unfilledAlpha: c.bg.computeLuminance() < 0.5 ? m.alphaMuted : m.alphaActive,
+                    unfilledAlpha: c.bg.computeLuminance() < 0.5
+                        ? m.alphaMuted
+                        : m.alphaActive,
                     palette: SegmentPalette.of(c),
                   ),
                 ),
@@ -417,7 +728,11 @@ class _DetailPanelState extends State<DetailPanel> {
   }
 
   /// 分片图例 — 每个分片一行，显示颜色块 + 序号 + 进度
-  Widget _buildSegmentLegend(AppColors c, AppMetrics m, List<SegmentData> segs) {
+  Widget _buildSegmentLegend(
+    AppColors c,
+    AppMetrics m,
+    List<SegmentData> segs,
+  ) {
     final palette = SegmentPalette.of(c);
     return Wrap(
       spacing: 12,
@@ -450,125 +765,309 @@ class _DetailPanelState extends State<DetailPanel> {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // 信息表
-  // ---------------------------------------------------------------------------
-
-  Widget _buildInfoTable(AppColors c, DownloadTask task) {
-    final segs = task.segments;
-    final activeCount =
-        segs != null ? segs.where((s) => s.progress < 1.0).length : 0;
-    final segCount = activeCount > 0 ? activeCount : null;
-    final splitCount = task.recentSplits.length;
-    final pluginActive =
-        task.status == TaskStatus.completed &&
-        widget.controller.isPluginProcessing(task.id);
-    _syncPluginTicker(pluginActive);
-
+  /// segs-sum 行 —— `N 分段 · N 活跃 · 动态拆分：开启 · …`；
+  /// recentSplits 非空时尾追最近拆分详情小字（原「拆分信息行」数据重组）。
+  Widget _buildSegsSummary(
+    AppColors c,
+    List<SegmentData> segs,
+    DownloadTask task,
+  ) {
+    final s = currentS;
+    final active = segs.where((seg) => seg.progress < 1.0).length;
+    final splits = task.recentSplits;
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (pluginActive) _buildPluginActivityCard(c, task),
-        _buildInfoRow(currentS.infoSize, task.sizeText, c),
-        _buildInfoRow(currentS.infoDownloaded, task.downloadedText, c),
-        // 速度/剩余仅对进行中的任务有意义，其余状态不展示。
-        if (task.status == TaskStatus.downloading ||
-            task.status == TaskStatus.resuming) ...[
-          _buildInfoRow(currentS.infoSpeed, task.speedText, c),
-          _buildInfoRow(currentS.infoRemaining, task.etaText, c),
-        ],
-        _buildInfoRow(currentS.infoStatus, task.statusText, c),
-        _buildInfoRow(currentS.infoStartedAt, _formatDateTime(task.createdAt), c),
-        if (task.status == TaskStatus.completed &&
-            task.completedAt != null) ...[
-          _buildInfoRow(
-            currentS.infoCompletedAt,
-            _formatDateTime(task.completedAt!),
-            c,
-          ),
-          _buildInfoRow(
-            currentS.infoDuration,
-            _formatDuration(task.completedAt!.difference(task.createdAt)),
-            c,
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(LucideIcons.split, size: 11, color: c.textMuted),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                s.detailSegsSummary(segs.length, active),
+                style: TextStyle(fontSize: 10.5, color: c.textMuted),
+              ),
+            ),
+          ],
+        ),
+        if (splits.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 15),
+            child: _buildSplitDetail(c, splits),
           ),
         ],
-        if (segCount != null)
-          _buildInfoRow(currentS.activeSegments, '$segCount', c),
-        _buildThreadsConfigRow(c, task),
-        if (splitCount > 0) _buildSplitInfoRow(c, task),
-        _buildInfoRow(currentS.infoPath, task.saveDir, c),
-        _buildUrlRow(c, task.url),
-        if (task.referrer.isNotEmpty) _buildSourcePageRow(c, task.referrer),
-        if (task.errorMessage.isNotEmpty)
-          _buildErrorRow(c, task.errorMessage),
       ],
     );
   }
 
-  /// 动态分段拆分信息行 — 显示拆分次数和最近拆分详情
-  Widget _buildSplitInfoRow(AppColors c, DownloadTask task) {
-    final splits = task.recentSplits;
-    if (splits.isEmpty) return const SizedBox.shrink();
-
+  /// 最近拆分详情 —— 次数统计 + 最新一次拆分位置/大小。
+  Widget _buildSplitDetail(AppColors c, List<SplitEventData> splits) {
+    final s = currentS;
     final latest = splits.last;
-    final proactiveCount = splits.where((s) => s.isProactive).length;
+    final proactiveCount = splits.where((sp) => sp.isProactive).length;
     final reactiveCount = splits.length - proactiveCount;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          s.splitCount(splits.length, reactiveCount, proactiveCount),
+          style: TextStyle(
+            fontSize: 10.5,
+            color: c.textSecondary,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          s.splitLatest(
+            latest.parentIndex + 1,
+            latest.childIndex + 1,
+            DownloadTask.formatBytes(latest.childEnd - latest.childStart + 1),
+          ),
+          style: TextStyle(
+            fontSize: 10,
+            color: c.textMuted,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+  }
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  // ---------------------------------------------------------------------------
+  // 钉底操作 footer：主操作 + 文件夹 + 复制链接（图标+文字等宽）+ 删除按钮。
+  // 固定在常规 Tab 最底部，不随字段区滚动（用户决策：按钮放最底部、带文字）。
+  // ---------------------------------------------------------------------------
+
+  Widget _buildActionsFooter(AppColors c, AppMetrics m, DownloadTask task) {
+    final s = currentS;
+    final primary = _buildPrimaryActionButton(c, m, task);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: c.border, width: 1)),
+      ),
+      child: Column(
         children: [
-          SizedBox(
-            width: 60,
-            child: Row(
-              children: [
-                Icon(LucideIcons.split, size: 11, color: c.accent),
-                const SizedBox(width: 3),
-                Text(
-                  currentS.dynamicSplit,
-                  style: TextStyle(fontSize: 11, color: c.textMuted),
-                ),
+          Row(
+            children: [
+              if (primary != null) ...[
+                Expanded(child: primary),
+                const SizedBox(width: 8),
               ],
+              Expanded(
+                child: _buildLabeledActionButton(
+                  c: c,
+                  icon: LucideIcons.folderOpen,
+                  label: s.detailActionFolder,
+                  onPressed: () => openFolder(task.revealFolderPath),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildLabeledActionButton(
+                  c: c,
+                  icon: LucideIcons.link,
+                  label: s.detailActionCopyLink,
+                  onPressed: () => _copyLinkWithToast(task.url),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _buildDeleteButton(c, task),
+        ],
+      ),
+    );
+  }
+
+  /// 暂停 / 恢复中 / 继续 —— 现有三态逻辑，完成态无主操作（返回 null）。
+  Widget? _buildPrimaryActionButton(
+    AppColors c,
+    AppMetrics m,
+    DownloadTask task,
+  ) {
+    final s = currentS;
+    switch (task.status) {
+      case TaskStatus.downloading:
+      case TaskStatus.pending:
+      case TaskStatus.preparing:
+        return ShadButton(
+          onPressed: () => widget.controller.pauseTask(task.id),
+          backgroundColor: c.accent,
+          hoverBackgroundColor: c.accentHover,
+          child: Text(
+            s.pause,
+            style: const TextStyle(
+              fontSize: 13,
+              color: Color(0xFFFFFFFF),
+              fontWeight: FontWeight.w500,
             ),
           ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  currentS.splitCount(
-                    splits.length,
-                    reactiveCount,
-                    proactiveCount,
-                  ),
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: c.textSecondary,
-                    fontFeatures: const [FontFeature.tabularFigures()],
+        );
+      case TaskStatus.resuming:
+        return ShadButton(
+          onPressed: () => widget.controller.pauseTask(task.id),
+          backgroundColor: c.accent,
+          hoverBackgroundColor: c.accentHover,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: m.borderStrong(const Color(0xFFFFFFFF)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  s.resumingClickPause,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFFFFFFFF),
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  currentS.splitLatest(
-                    latest.parentIndex + 1,
-                    latest.childIndex + 1,
-                    DownloadTask.formatBytes(
-                      latest.childEnd - latest.childStart + 1,
-                    ),
-                  ),
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: c.textMuted,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ],
+              ),
+            ],
+          ),
+        );
+      case TaskStatus.paused:
+      case TaskStatus.error:
+        return ShadButton(
+          onPressed: () => widget.controller.resumeTask(task.id),
+          backgroundColor: c.accent,
+          hoverBackgroundColor: c.accentHover,
+          child: Text(
+            s.resume,
+            style: const TextStyle(
+              fontSize: 13,
+              color: Color(0xFFFFFFFF),
+              fontWeight: FontWeight.w500,
             ),
+          ),
+        );
+      case TaskStatus.completed:
+        return null;
+    }
+  }
+
+  /// 图标+文字操作按钮（footer 等宽排布；用户决策：不要纯图标）。
+  Widget _buildLabeledActionButton({
+    required AppColors c,
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return ShadButton.outline(
+      onPressed: onPressed,
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      // FittedBox scaleDown：极窄面板下内容整体缩小而非溢出报错
+      //（ShadButton 内部给子树的约束在窄宽时会收紧，Flexible+ellipsis
+      // 在其布局管线里不总能生效——缩放是结构性兜底）。
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: c.textSecondary),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              maxLines: 1,
+              style: TextStyle(fontSize: 12.5, color: c.textPrimary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _copyLinkWithToast(String url) {
+    Clipboard.setData(ClipboardData(text: url));
+    FluxSonner.of(context).show(
+      ShadToast(
+        title: Text(currentS.urlCopied),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Widget _buildDeleteButton(AppColors c, DownloadTask task) {
+    return SizedBox(
+      width: double.infinity,
+      child: ShadButton.destructive(
+        onPressed: () =>
+            widget.controller.deleteTask(task.id, deleteFiles: true),
+        child: Text(
+          currentS.deleteTaskAndFile,
+          style: const TextStyle(fontSize: 13, color: Color(0xFFFFFFFF)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIgnorePluginRetryButton(AppColors c, DownloadTask task) {
+    return SizedBox(
+      width: double.infinity,
+      child: ShadButton.outline(
+        onPressed: () => _confirmIgnorePluginRetry(task.id),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(LucideIcons.shieldOff, size: 14, color: c.textPrimary),
+            const SizedBox(width: 6),
+            Text(
+              currentS.taskIgnorePluginRetry,
+              style: TextStyle(fontSize: 13, color: c.textPrimary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 逃生舱：确认后忽略插件重新解析，直接用原始链接恢复下载。
+  void _confirmIgnorePluginRetry(String taskId) {
+    final c = AppColors.of(context);
+    final s = currentS;
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.taskIgnorePluginRetryTitle),
+        description: Text(s.taskIgnorePluginRetryMsg),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.cancel),
+          ),
+          ShadButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              IgnorePluginRetry(taskId: taskId).sendSignalToRust();
+            },
+            child: Text(s.taskIgnorePluginRetry),
           ),
         ],
       ),
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // 信息行辅助
+  // ---------------------------------------------------------------------------
 
   Widget _buildInfoRow(String label, String value, AppColors c) {
     return Padding(
@@ -641,9 +1140,56 @@ class _DetailPanelState extends State<DetailPanel> {
                 padding: EdgeInsets.zero,
                 onPressed: () =>
                     showEditThreadsDialog(context, widget.controller, task),
-                child: Icon(LucideIcons.pencil, size: 12, color: c.textSecondary),
+                child: Icon(
+                  LucideIcons.pencil,
+                  size: 12,
+                  color: c.textSecondary,
+                ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// 「所属任务组」链接行——组成员任务专属，点击选中该组（打开组详情面板，
+  /// design-proto-spec §12 `taskDetailHtml` `data-goto-group`）。
+  Widget _buildGroupLinkRow(AppColors c, String groupId) {
+    final s = currentS;
+    final group = widget.controller.groupById(groupId);
+    final name = group?.displayName ?? groupId;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 60,
+            child: Text(
+              s.groupMemberOfLabel,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            ),
+          ),
+          Expanded(
+            child: GestureDetector(
+              onTap: () => widget.controller.selectGroup(groupId),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: c.accent),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(LucideIcons.chevronRight, size: 11, color: c.accent),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -720,7 +1266,7 @@ class _DetailPanelState extends State<DetailPanel> {
     return '${mins}m${secs.toString().padLeft(2, '0')}s';
   }
 
-  /// `yyyy-MM-dd HH:mm:ss` 本地时间格式（开始/结束时间行）。
+  /// `yyyy-MM-dd HH:mm:ss` 本地时间格式（结束时间 / 日志时间戳等精确场景）。
   static String _formatDateTime(DateTime dt) {
     String two(int v) => v.toString().padLeft(2, '0');
     return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
@@ -851,149 +1397,272 @@ class _DetailPanelState extends State<DetailPanel> {
   }
 
   // ---------------------------------------------------------------------------
-  // 操作按钮
+  // 队列 Tab
   // ---------------------------------------------------------------------------
 
-  Widget _buildActions(AppColors c, AppMetrics m, DownloadTask task) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        border: Border(top: BorderSide(color: c.border, width: 1)),
-      ),
-      child: Column(
+  Widget _buildQueueTab(AppColors c, DownloadTask task) {
+    final s = currentS;
+    final queues = widget.controller.queues;
+    return _tabScroll(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 暂停 / 恢复
-          if (task.status == TaskStatus.downloading ||
-              task.status == TaskStatus.pending ||
-              task.status == TaskStatus.preparing)
-            SizedBox(
-              width: double.infinity,
-              child: ShadButton(
-                onPressed: () => widget.controller.pauseTask(task.id),
-                backgroundColor: c.accent,
-                hoverBackgroundColor: c.accentHover,
-                child: Text(
-                  currentS.pause,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Colors.white,
-                    fontWeight: FontWeight.w500,
+          for (final q in queues)
+            _QueueSelectRow(
+              queue: q,
+              isCurrent: q.queueId == task.queueId,
+              onTap: () {
+                if (q.queueId == task.queueId) return;
+                widget.controller.moveTaskToQueue(task.id, q.queueId);
+                FluxSonner.of(context).show(
+                  ShadToast(
+                    title: Text(
+                      s.detailQueueMovedToast(queueDisplayName(s, q)),
+                    ),
+                    duration: const Duration(seconds: 2),
                   ),
-                ),
-              ),
-            )
-          else if (task.status == TaskStatus.resuming)
-            SizedBox(
-              width: double.infinity,
-              child: ShadButton(
-                onPressed: () => widget.controller.pauseTask(task.id),
-                backgroundColor: c.accent,
-                hoverBackgroundColor: c.accentHover,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: m.borderStrong(Colors.white),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      currentS.resumingClickPause,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else if (task.status == TaskStatus.paused ||
-              task.status == TaskStatus.error)
-            SizedBox(
-              width: double.infinity,
-              child: ShadButton(
-                onPressed: () => widget.controller.resumeTask(task.id),
-                backgroundColor: c.accent,
-                hoverBackgroundColor: c.accentHover,
-                child: Text(
-                  currentS.resume,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Colors.white,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
+                );
+              },
             ),
-          if (task.status == TaskStatus.error &&
-              task.errorMessage.startsWith(_pluginErrorPrefix)) ...[
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: ShadButton.outline(
-                onPressed: () => _confirmIgnorePluginRetry(task.id),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(LucideIcons.shieldOff, size: 14, color: c.textPrimary),
-                    const SizedBox(width: 6),
-                    Text(
-                      currentS.taskIgnorePluginRetry,
-                      style: TextStyle(fontSize: 13, color: c.textPrimary),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: ShadButton.destructive(
-              onPressed: () =>
-                  widget.controller.deleteTask(task.id, deleteFiles: true),
-              child: Text(
-                currentS.deleteTaskAndFile,
-                style: const TextStyle(fontSize: 13, color: Colors.white),
-              ),
-            ),
+          const SizedBox(height: 10),
+          Text(
+            s.detailQueueMoveHint,
+            style: TextStyle(fontSize: 10.5, color: c.textMuted, height: 1.5),
           ),
         ],
       ),
     );
   }
 
-  /// 逃生舱：确认后忽略插件重新解析，直接用原始链接恢复下载。
-  void _confirmIgnorePluginRetry(String taskId) {
-    final c = AppColors.of(context);
+  // ---------------------------------------------------------------------------
+  // 日志 Tab —— 只展示真实可得事件（本次会话内存记录，不持久化）
+  // ---------------------------------------------------------------------------
+
+  Widget _buildLogTab(AppColors c, DownloadTask task) {
     final s = currentS;
-    showShadDialog(
-      context: context,
-      barrierColor: c.dialogBarrier,
-      animateIn: const [],
-      animateOut: const [],
-      builder: (ctx) => ShadDialog(
-        title: Text(s.taskIgnorePluginRetryTitle),
-        description: Text(s.taskIgnorePluginRetryMsg),
-        actions: [
-          ShadButton.outline(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(s.cancel),
+    final rows = <Widget>[
+      _buildLogRow(c, _formatDateTime(task.createdAt), s.detailLogCreated),
+    ];
+    for (final split in task.recentSplits) {
+      final kind = split.isProactive
+          ? s.detailSplitProactive
+          : s.detailSplitReactive;
+      final size = DownloadTask.formatBytes(
+        split.childEnd - split.childStart + 1,
+      );
+      rows.add(
+        _buildLogRow(
+          c,
+          _formatDateTime(split.receivedAt),
+          s.detailLogSplit(
+            split.parentIndex + 1,
+            split.childIndex + 1,
+            size,
+            kind,
           ),
-          ShadButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              IgnorePluginRetry(taskId: taskId).sendSignalToRust();
-            },
-            child: Text(s.taskIgnorePluginRetry),
+        ),
+      );
+    }
+    if (task.completedAt != null) {
+      rows.add(
+        _buildLogRow(
+          c,
+          _formatDateTime(task.completedAt!),
+          s.detailLogCompleted,
+        ),
+      );
+    }
+    if (task.status == TaskStatus.error && task.errorMessage.isNotEmpty) {
+      rows.add(
+        _buildLogRow(
+          c,
+          null,
+          s.detailLogFailed(task.errorMessage),
+          isError: true,
+        ),
+      );
+    }
+    return _tabScroll(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(LucideIcons.info, size: 11, color: c.textMuted),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  s.detailLogHint,
+                  style: TextStyle(fontSize: 10.5, color: c.textMuted),
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 12),
+          if (rows.isEmpty)
+            Text(
+              s.detailLogEmpty,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            )
+          else
+            ...rows,
         ],
+      ),
+    );
+  }
+
+  Widget _buildLogRow(
+    AppColors c,
+    String? time,
+    String text, {
+    bool isError = false,
+  }) {
+    final textWidget = Text(
+      text,
+      style: TextStyle(
+        fontSize: 11,
+        fontFamily: 'monospace',
+        color: isError ? AppColors.red : c.textSecondary,
+      ),
+    );
+    if (time == null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: textWidget,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 140,
+            child: Text(
+              time,
+              style: TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: c.textMuted,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          Expanded(child: textWidget),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 高级 Tab
+  // ---------------------------------------------------------------------------
+
+  Widget _buildAdvancedTab(AppColors c, DownloadTask task) {
+    final s = currentS;
+    return _tabScroll(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildInfoRow(
+            s.taskChecksum,
+            task.checksum.isEmpty ? s.detailNotSet : task.checksum,
+            c,
+          ),
+          _buildInfoRow(
+            s.taskProxy,
+            task.proxyUrl.isEmpty ? s.detailFollowGlobal : task.proxyUrl,
+            c,
+          ),
+          _buildThreadsConfigRow(c, task),
+        ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// 队列 Tab —— 单选队列行（同 queue_manager_dialog.dart `_MoveTargetRow` 视觉）
+// =============================================================================
+
+class _QueueSelectRow extends StatefulWidget {
+  final DownloadQueue queue;
+  final bool isCurrent;
+  final VoidCallback onTap;
+
+  const _QueueSelectRow({
+    required this.queue,
+    required this.isCurrent,
+    required this.onTap,
+  });
+
+  @override
+  State<_QueueSelectRow> createState() => _QueueSelectRowState();
+}
+
+class _QueueSelectRowState extends State<_QueueSelectRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    final s = currentS;
+    final q = widget.queue;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          height: 38,
+          margin: const EdgeInsets.only(bottom: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: widget.isCurrent
+                ? c.accentBg
+                : _hovered
+                ? c.hoverBg
+                : c.hoverBg.withValues(alpha: 0),
+            borderRadius: m.brMd,
+          ),
+          child: Row(
+            children: [
+              Icon(
+                q.queueId == kLaterQueueId
+                    ? LucideIcons.clock
+                    : LucideIcons.layers,
+                size: 14,
+                color: widget.isCurrent ? c.accent : c.textSecondary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  queueDisplayName(s, q),
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: widget.isCurrent ? c.accent : c.textPrimary,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: q.isRunning ? AppColors.green : c.textMuted,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              if (widget.isCurrent) ...[
+                const SizedBox(width: 8),
+                Icon(LucideIcons.check, size: 13, color: c.accent),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

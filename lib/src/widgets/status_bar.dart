@@ -4,7 +4,9 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../models/settings_provider.dart';
+import '../models/view_prefs.dart';
 import '../i18n/locale_provider.dart';
+import '../services/kv_store.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../services/shutdown_service.dart';
@@ -35,11 +37,13 @@ String _formatSpeed(int bytes) {
 class StatusBar extends StatefulWidget {
   final DownloadController controller;
   final SettingsProvider settingsProvider;
+  final ViewPrefsStore viewPrefsStore;
 
   const StatusBar({
     super.key,
     required this.controller,
     required this.settingsProvider,
+    required this.viewPrefsStore,
   });
 
   @override
@@ -54,6 +58,15 @@ class _StatusBarState extends State<StatusBar> {
 
   /// 上次已写入 settings 的字节数，用于防循环更新
   int _lastKnownBytes = -1;
+
+  /// E9 密度建议 pill 是否已被永久关闭（KvStore 持久化）。
+  bool _densityHintDismissed =
+      KvStore.instance.getBool('view_density_hint_dismissed') ?? false;
+
+  void _dismissDensityHint() {
+    setState(() => _densityHintDismissed = true);
+    KvStore.instance.setBool('view_density_hint_dismissed', true);
+  }
 
   @override
   void initState() {
@@ -195,6 +208,7 @@ class _StatusBarState extends State<StatusBar> {
       listenable: Listenable.merge([
         widget.controller,
         widget.settingsProvider,
+        widget.viewPrefsStore,
         ShutdownService.instance,
       ]),
       builder: (context, _) {
@@ -204,6 +218,24 @@ class _StatusBarState extends State<StatusBar> {
         final active = widget.controller.activeCount;
         final paused = widget.controller.pausedCount;
         final total = widget.controller.tasks.length;
+
+        final tab = widget.controller.statusTab.name;
+        final prefs = widget.viewPrefsStore.resolve(tab);
+        final visibleCount = widget.controller.visibleEntityExpandedCount(
+          prefs,
+        );
+        final hiddenCompleted = widget.controller.hiddenCompletedCount(prefs);
+        final scopeSizeText = DownloadTask.formatBytes(
+          widget.controller
+              .buildListSections(prefs)
+              .expand((section) => section.entities)
+              .fold<int>(0, (sum, e) => sum + e.totalBytes),
+        );
+        final showDensityHint =
+            !_densityHintDismissed &&
+            prefs.density == ViewDensity.comfortable &&
+            prefs.form == ViewForm.list &&
+            visibleCount > 150;
 
         return Container(
           height: 28,
@@ -254,7 +286,43 @@ class _StatusBarState extends State<StatusBar> {
                 s.statusSummary(active, paused, total),
                 style: TextStyle(fontSize: 10.5, color: c.textMuted),
               ),
+              const SizedBox(width: 20),
+              // 视图作用域摘要（design-proto-spec §11 `renderStatusbar` 左段）：
+              // N 个任务 · 合计大小 [· 已隐藏 M 个已完成]
+              Flexible(
+                child: Text(
+                  hiddenCompleted > 0
+                      ? '${s.statusScopeSummary(visibleCount, scopeSizeText)}'
+                            '${s.statusScopeHidden(hiddenCompleted)}'
+                      : s.statusScopeSummary(visibleCount, scopeSizeText),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: c.textMuted,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
               const Spacer(),
+              if (showDensityHint) ...[
+                _DensityHintPill(
+                  onSwitch: () => widget.viewPrefsStore.update(
+                    tab,
+                    (p) => p.copyWith(density: ViewDensity.compact),
+                  ),
+                  onDismiss: _dismissDensityHint,
+                ),
+                const SizedBox(width: 12),
+              ],
+              // 视图状态回显（design-proto-spec §11 `.sb-view`）
+              Text(
+                describeViewState(prefs),
+                style: TextStyle(fontSize: 10.5, color: c.textMuted),
+              ),
+              const SizedBox(width: 12),
+              Container(width: 1, height: 12, color: c.border),
+              const SizedBox(width: 12),
               // 限速 Popover 触发器
               _SpeedLimitTrigger(
                 popoverController: _popoverController,
@@ -310,6 +378,69 @@ class _StatusBarState extends State<StatusBar> {
           ),
         );
       },
+    );
+  }
+}
+
+// =============================================================================
+// E9 密度建议 pill（>150 行 + 舒适档一次性提示，design §5 E9）
+// =============================================================================
+
+class _DensityHintPill extends StatelessWidget {
+  final VoidCallback onSwitch;
+  final VoidCallback onDismiss;
+
+  const _DensityHintPill({required this.onSwitch, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: c.accentBg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(LucideIcons.zap, size: 10, color: c.accent),
+          const SizedBox(width: 4),
+          Text(
+            s.densityHintMessage,
+            style: TextStyle(fontSize: 10, color: c.accent),
+          ),
+          const SizedBox(width: 6),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: onSwitch,
+              child: Text(
+                s.densityHintSwitchAction,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: c.accent,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          ShadTooltip(
+            waitDuration: const Duration(milliseconds: 400),
+            builder: (_) => Text(s.densityHintDismissTooltip),
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: onDismiss,
+                child: Icon(LucideIcons.x, size: 10, color: c.accent),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

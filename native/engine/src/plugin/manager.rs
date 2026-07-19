@@ -18,11 +18,12 @@ use crate::logger::log_info;
 
 use super::manifest::{
     PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField, SettingType,
+    is_safe_relative_path,
 };
 use super::quickjs::HARD_TIMEOUT_CEILING;
 use super::runtime::{
-    ExecutionBudget, HostContext, PluginBridge, PluginEntryKind, PluginError, PluginEvent,
-    PluginScript, ResolveRequest, ResolveResult, ScriptRuntime,
+    ExecutionBudget, HostContext, ManifestItem, PluginBridge, PluginEntryKind, PluginError,
+    PluginEvent, PluginScript, ResolveManifest, ResolveRequest, ResolveResult, ScriptRuntime,
 };
 
 /// 连续超时/超内存达到该次数 → 自动熔断禁用。
@@ -331,6 +332,36 @@ impl PluginManager {
         None
     }
 
+    /// 同 [`Self::match_resolver`]，但仅当命中插件的 resolver 声明了
+    /// `"multi": true` 时才返回——供前置预解析（[`ResolveManifest`]）判定是否
+    /// 触发，避免解析昂贵的单文件插件在创建下载时白跑一次（A2 契约）。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run(pm: std::sync::Arc<fluxdown_engine::plugin::PluginManager>) {
+    /// // 未声明 multi 的插件恒不命中，即使 URL glob 匹配。
+    /// let hit = pm.match_multi_resolver("https://pan.example.com/s/abc").await;
+    /// assert!(hit.is_none() || hit.is_some());
+    /// # }
+    /// ```
+    pub async fn match_multi_resolver(&self, url: &str) -> Option<String> {
+        let snapshot = self.plugins.read().await.clone();
+        let mut candidates: Vec<&LoadedPlugin> = snapshot
+            .iter()
+            .filter(|p| p.enabled && p.manifest.resolvers.first().is_some_and(|r| r.multi))
+            .collect();
+        candidates.sort_by(|a, b| a.manifest.identity.cmp(&b.manifest.identity));
+        for p in candidates {
+            for pat in p.manifest.resolver_urls() {
+                if super::manifest::url_glob_match(pat, url) {
+                    return Some(p.manifest.identity.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// 惰性解析。off-actor worker 调用（在插件专用 runtime 上）。
     ///
     /// **fail-closed**：任务带 resolver 绑定但插件已卸载/被禁用/当前版本无
@@ -393,6 +424,8 @@ impl PluginManager {
             version: dev_ver,
             app_version: self.app_version.clone(),
         };
+        // 二段防递归判定须在 req 被 invoke_resolve 消费前捕获。
+        let second_stage = !req.resolver_item.is_empty();
 
         let result = self
             .runtime
@@ -427,7 +460,7 @@ impl PluginManager {
 
         let result = result?;
         if let Some(res) = &result {
-            validate_resolve_output(res)?;
+            validate_resolve_output(res, second_stage)?;
         }
         Ok(result)
     }
@@ -917,8 +950,24 @@ fn build_typed_settings_json(
 }
 
 /// resolve 输出校验：url scheme ∈{http,https,ftp,magnet,ed2k}、长度 ≤8KB；
-/// file_name 拒绝 `/ \ ..` 与控制字符。
-fn validate_resolve_output(res: &ResolveResult) -> Result<(), PluginError> {
+/// file_name 拒绝 `/ \ ..` 与控制字符；`manifest` 与 `url`/`variants`/
+/// `audio_url` 互斥，且二段解析（`second_stage`，对应
+/// [`ResolveRequest::resolver_item`] 非空）不可返回 `manifest`（防递归裂变，
+/// D6/§7.6）。全 fail-closed：任一违规整体拒绝该次 resolve 结果。
+fn validate_resolve_output(res: &ResolveResult, second_stage: bool) -> Result<(), PluginError> {
+    if let Some(manifest) = &res.manifest {
+        if second_stage {
+            return Err(PluginError::InvalidOutput(
+                "二段解析（resolverItem 非空）不可返回 manifest：防递归裂变".to_string(),
+            ));
+        }
+        if !res.url.is_empty() || !res.variants.is_empty() || res.audio_url.is_some() {
+            return Err(PluginError::InvalidOutput(
+                "manifest 与 url/variants/audioUrl 互斥".to_string(),
+            ));
+        }
+        return validate_manifest(manifest);
+    }
     // 变体存在时顶层 url 允许为空（选中变体后覆盖）；非空时仍须合法。
     if res.variants.is_empty() || !res.url.is_empty() {
         check_output_url(&res.url)?;
@@ -985,16 +1034,107 @@ fn check_output_url(url: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// [`ResolveResult::manifest`] 校验：items 1..=1000；item.id 非空 ≤200；
+/// item.name 非空且过 [`check_file_name`]；path 空或
+/// [`is_safe_relative_path`]，按 `/` 计深度 ≤8，`path+"/"+name` 总长 ≤180
+/// 字符（给 `save_dir` 前缀留余量，规避 Windows `MAX_PATH` 260 限制）；
+/// kind ∈ {"", "file"}；per-item variants ≤50，variant id/label 非空。
+/// fail-closed：任一条目违规拒绝整个 manifest（不做部分放行）。
+fn validate_manifest(m: &ResolveManifest) -> Result<(), PluginError> {
+    if m.items.is_empty() || m.items.len() > 1000 {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest items 数量非法: {}（须 1..=1000）",
+            m.items.len()
+        )));
+    }
+    for item in &m.items {
+        validate_manifest_item(item)?;
+    }
+    Ok(())
+}
+
+fn validate_manifest_item(item: &ManifestItem) -> Result<(), PluginError> {
+    if item.id.is_empty() || item.id.chars().count() > 200 {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest item id 非法: '{}'",
+            item.id
+        )));
+    }
+    if item.name.is_empty() {
+        return Err(PluginError::InvalidOutput(
+            "manifest item name 不可为空".to_string(),
+        ));
+    }
+    check_file_name(&item.name)?;
+    if !item.path.is_empty() && !is_safe_relative_path(&item.path) {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest item path 非法: '{}'",
+            item.path
+        )));
+    }
+    let depth = if item.path.is_empty() {
+        0
+    } else {
+        item.path.split('/').count()
+    };
+    if depth > 8 {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest item path 深度超限: {depth} > 8"
+        )));
+    }
+    let full_len = if item.path.is_empty() {
+        item.name.chars().count()
+    } else {
+        item.path.chars().count() + 1 + item.name.chars().count()
+    };
+    if full_len > 180 {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest item 落盘路径过长: {full_len} > 180"
+        )));
+    }
+    if !item.kind.is_empty() && item.kind != "file" {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest item kind 非法: '{}'",
+            item.kind
+        )));
+    }
+    if item.variants.len() > 50 {
+        return Err(PluginError::InvalidOutput(format!(
+            "manifest item variants 过多: {} > 50",
+            item.variants.len()
+        )));
+    }
+    for v in &item.variants {
+        if v.id.is_empty() || v.label.is_empty() {
+            return Err(PluginError::InvalidOutput(
+                "manifest variant id/label 不可为空".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::validate_resolve_output;
-    use crate::plugin::{ResolveResult, ResolveVariant};
+    use crate::plugin::{
+        ManifestItem, ManifestVariant, ResolveManifest, ResolveResult, ResolveVariant,
+    };
 
     fn variant(label: &str, url: &str) -> ResolveVariant {
         ResolveVariant {
             label: label.into(),
             url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    fn item(id: &str, name: &str, path: &str) -> ManifestItem {
+        ManifestItem {
+            id: id.into(),
+            name: name.into(),
+            path: path.into(),
             ..Default::default()
         }
     }
@@ -1006,13 +1146,13 @@ mod tests {
             variants: vec![variant("1080p", "https://v.example.com/a")],
             ..Default::default()
         };
-        assert!(validate_resolve_output(&res).is_ok());
+        assert!(validate_resolve_output(&res, false).is_ok());
     }
 
     /// 无 variants 且顶层 url 为空 → 拒（原有单直链语义不放松）。
     #[test]
     fn empty_url_without_variants_rejected() {
-        assert!(validate_resolve_output(&ResolveResult::default()).is_err());
+        assert!(validate_resolve_output(&ResolveResult::default(), false).is_err());
     }
 
     /// 变体 label 为空 / url scheme 非法 → 拒。
@@ -1022,12 +1162,12 @@ mod tests {
             variants: vec![variant("", "https://v.example.com/a")],
             ..Default::default()
         };
-        assert!(validate_resolve_output(&empty_label).is_err());
+        assert!(validate_resolve_output(&empty_label, false).is_err());
         let bad_scheme = ResolveResult {
             variants: vec![variant("x", "javascript:alert(1)")],
             ..Default::default()
         };
-        assert!(validate_resolve_output(&bad_scheme).is_err());
+        assert!(validate_resolve_output(&bad_scheme, false).is_err());
     }
 
     /// 变体数量 > 50 → 拒。
@@ -1039,6 +1179,164 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        assert!(validate_resolve_output(&res).is_err());
+        assert!(validate_resolve_output(&res, false).is_err());
+    }
+
+    /// manifest 合法清单（1 段路径 + 无规格）→ 通过。
+    #[test]
+    fn valid_manifest_passes() {
+        let res = ResolveResult {
+            manifest: Some(ResolveManifest {
+                name: "share".into(),
+                items: vec![item("f1", "a.mp4", "sub")],
+            }),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&res, false).is_ok());
+    }
+
+    /// manifest 与 url/variants/audioUrl 互斥 → 各自拒绝。
+    #[test]
+    fn manifest_mutually_exclusive_with_url_fields() {
+        let with_url = ResolveResult {
+            url: "https://x.example.com/a".into(),
+            manifest: Some(ResolveManifest {
+                items: vec![item("f1", "a.mp4", "")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&with_url, false).is_err());
+
+        let with_variants = ResolveResult {
+            variants: vec![variant("x", "https://x.example.com/a")],
+            manifest: Some(ResolveManifest {
+                items: vec![item("f1", "a.mp4", "")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&with_variants, false).is_err());
+
+        let with_audio = ResolveResult {
+            audio_url: Some("https://x.example.com/a.m4a".into()),
+            manifest: Some(ResolveManifest {
+                items: vec![item("f1", "a.mp4", "")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&with_audio, false).is_err());
+    }
+
+    /// 二段解析（`resolverItem` 非空，`second_stage=true`）返回 manifest → 拒
+    /// （防递归裂变，D6/§7.6）。
+    #[test]
+    fn second_stage_manifest_rejected() {
+        let res = ResolveResult {
+            manifest: Some(ResolveManifest {
+                items: vec![item("f1", "a.mp4", "")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&res, true).is_err());
+    }
+
+    /// items 为空 / 超过 1000 → 拒。
+    #[test]
+    fn manifest_item_count_out_of_range_rejected() {
+        let empty = ResolveResult {
+            manifest: Some(ResolveManifest::default()),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&empty, false).is_err());
+
+        let too_many = ResolveResult {
+            manifest: Some(ResolveManifest {
+                items: (0..1001)
+                    .map(|i| item(&format!("f{i}"), "a.mp4", ""))
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&too_many, false).is_err());
+    }
+
+    /// item id/name 为空、path 不安全（含 `..`）、path 深度超 8、
+    /// `path+name` 总长超 180、kind 非法、variant id 为空 → 各自拒绝。
+    #[test]
+    fn manifest_item_field_violations_rejected() {
+        let cases: Vec<ResolveManifest> = vec![
+            ResolveManifest {
+                items: vec![item("", "a.mp4", "")],
+                ..Default::default()
+            },
+            ResolveManifest {
+                items: vec![item("f1", "", "")],
+                ..Default::default()
+            },
+            ResolveManifest {
+                items: vec![item("f1", "a.mp4", "../escape")],
+                ..Default::default()
+            },
+            ResolveManifest {
+                items: vec![item("f1", "a.mp4", "a/b/c/d/e/f/g/h/i")],
+                ..Default::default()
+            },
+            ResolveManifest {
+                items: vec![item("f1", &"a".repeat(200), "")],
+                ..Default::default()
+            },
+            ResolveManifest {
+                items: vec![ManifestItem {
+                    kind: "folder".into(),
+                    ..item("f1", "a.mp4", "")
+                }],
+                ..Default::default()
+            },
+            ResolveManifest {
+                items: vec![ManifestItem {
+                    variants: vec![ManifestVariant {
+                        id: String::new(),
+                        label: "1080p".into(),
+                        size: None,
+                    }],
+                    ..item("f1", "a.mp4", "")
+                }],
+                ..Default::default()
+            },
+        ];
+        for m in cases {
+            let res = ResolveResult {
+                manifest: Some(m),
+                ..Default::default()
+            };
+            assert!(validate_resolve_output(&res, false).is_err());
+        }
+    }
+
+    /// item.variants 数量 > 50 → 拒。
+    #[test]
+    fn manifest_item_too_many_variants_rejected() {
+        let m = ResolveManifest {
+            items: vec![ManifestItem {
+                variants: (0..51)
+                    .map(|i| ManifestVariant {
+                        id: format!("v{i}"),
+                        label: format!("v{i}"),
+                        size: None,
+                    })
+                    .collect(),
+                ..item("f1", "a.mp4", "")
+            }],
+            ..Default::default()
+        };
+        let res = ResolveResult {
+            manifest: Some(m),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&res, false).is_err());
     }
 }

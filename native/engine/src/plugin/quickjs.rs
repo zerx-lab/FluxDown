@@ -1002,6 +1002,7 @@ mod tests {
             referrer: String::new(),
             user_agent: String::new(),
             extra_headers: Default::default(),
+            resolver_item: String::new(),
         };
         let budget = ExecutionBudget {
             timeout: Duration::from_secs(10),
@@ -1041,6 +1042,7 @@ mod tests {
             referrer: String::new(),
             user_agent: String::new(),
             extra_headers: Default::default(),
+            resolver_item: String::new(),
         };
         let budget = ExecutionBudget {
             timeout: Duration::from_secs(10),

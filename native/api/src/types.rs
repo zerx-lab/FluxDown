@@ -161,6 +161,7 @@ pub struct DownloadRequest {
 ///     segments: 0,
 ///     queue_order: 0,
 ///     referrer: String::new(),
+///     group_id: String::new(),
 /// };
 /// let dto = TaskDto::from(info);
 /// assert_eq!(dto.task_id, "t1");

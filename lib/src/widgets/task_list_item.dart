@@ -8,15 +8,26 @@ import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_task.dart';
+import '../models/view_prefs.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import 'context_menu.dart';
 import '../models/download_controller.dart';
 import '../services/open_folder.dart';
 import 'queue_manager_dialog.dart';
+import 'task_columns.dart';
 
 /// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
 const _pluginErrorPrefix = '[插件]';
+
+/// 舒适档默认列（现状硬编码 4 列，与 [ViewPrefs.defaultColumns] canonical
+/// 顺序一致），保证不接入视图系统的调用点行为不变。
+const _kDefaultColumns = [
+  TaskColumnId.progress,
+  TaskColumnId.speed,
+  TaskColumnId.eta,
+  TaskColumnId.status,
+];
 
 class TaskListItem extends StatefulWidget {
   final DownloadTask task;
@@ -42,6 +53,16 @@ class TaskListItem extends StatefulWidget {
   final bool isChecked;
   final VoidCallback? onToggleChecked;
 
+  /// 视图系统：密度（舒适 64px / 紧凑 44px）。
+  final ViewDensity density;
+
+  /// 视图系统：本行渲染的列（已按 [effectiveColumns] 解析——紧凑档下
+  /// progress 已替换为 size，本组件不再重复该映射）。
+  final List<TaskColumnId> columns;
+
+  /// 视图系统：协议徽标开关（关闭时副标题回退协议前缀）。
+  final bool protocolBadges;
+
   const TaskListItem({
     super.key,
     required this.task,
@@ -58,6 +79,9 @@ class TaskListItem extends StatefulWidget {
     this.isManageMode = false,
     this.isChecked = false,
     this.onToggleChecked,
+    this.density = ViewDensity.comfortable,
+    this.columns = _kDefaultColumns,
+    this.protocolBadges = true,
   });
 
   @override
@@ -72,8 +96,12 @@ class _TaskListItemState extends State<TaskListItem> {
   DateTime? _lastTapTime;
   static const _doubleTapWindow = Duration(milliseconds: 280);
 
+  bool get _compact => widget.density == ViewDensity.compact;
+  double get _rowHeight => _compact ? 44 : 64;
+  double get _iconSize => _compact ? 24 : 34;
+
   /// 单击立即触发；若与上一次点击间隔在双击窗口内，则额外触发双击。
-  void _handleTapDown() {
+  void _handleTap() {
     final now = DateTime.now();
     final last = _lastTapTime;
     if (last != null && now.difference(last) < _doubleTapWindow) {
@@ -105,6 +133,43 @@ class _TaskListItemState extends State<TaskListItem> {
     final m = AppMetrics.of(context);
     final isManage = widget.isManageMode;
     final isChecked = widget.isChecked;
+    final compact = _compact;
+
+    final row = Row(
+      children: [
+        // 选中/勾选时左侧 accent 指示条
+        if (widget.isSelected || (isManage && isChecked)) ...[
+          Container(
+            width: 3,
+            height: compact ? 20 : 28,
+            decoration: BoxDecoration(
+              color: c.accent,
+              borderRadius: m.brProgress,
+            ),
+          ),
+          const SizedBox(width: 13),
+        ],
+        // 管理模式下显示复选框
+        if (isManage) ...[
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: Icon(
+              isChecked ? LucideIcons.squareCheck : LucideIcons.square,
+              size: 16,
+              color: isChecked ? c.accent : c.textMuted,
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+        Expanded(child: _buildFileInfo(c, m, compact)),
+        for (final col in widget.columns)
+          SizedBox(
+            width: kTaskColumns[col]!.width,
+            child: kTaskColumns[col]!.cellBuilder(context, widget.task),
+          ),
+      ],
+    );
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
@@ -112,20 +177,15 @@ class _TaskListItemState extends State<TaskListItem> {
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         // 管理模式：单击切换勾选（非幂等），无双击需求，直接用 onTap。
-        // 非管理模式：用 onTapDown + 手动双击检测，单击立即响应、零延迟，
-        //   双击仍可触发；避免 GestureDetector.onDoubleTap 因等待第二击
-        //   而把单击延迟 ~300ms。
-        onTap: isManage ? widget.onToggleChecked : null,
-        onTapDown: isManage ? null : (_) => _handleTapDown(),
+        // 非管理模式：onTap + 时间戳双击检测——本 detector 未注册
+        //   onDoubleTap，onTap 在指针抬起、竞技场即时裁决后立刻触发，
+        //   无 ~300ms 等待；且行内 hover 操作按钮（子 GestureDetector）
+        //   赢得竞技场后本行 onTap 被正确拒绝，点操作按钮不再连带选中行
+        //   （onTapDown 会在裁决前到点无条件触发，曾致点按钮穿透开详情）。
+        onTap: isManage ? widget.onToggleChecked : _handleTap,
         onSecondaryTapDown: isManage ? null : _showContextMenu,
         child: Container(
-          height: 64,
-          padding: EdgeInsets.only(
-            left: (widget.isSelected || (isManage && isChecked)) ? 0 : 16,
-            right: 16,
-            top: 8,
-            bottom: 8,
-          ),
+          height: _rowHeight,
           decoration: BoxDecoration(
             color: isManage && isChecked
                 ? c.selectedBg
@@ -136,38 +196,45 @@ class _TaskListItemState extends State<TaskListItem> {
                 : Colors.transparent,
             border: Border(bottom: BorderSide(color: c.border, width: 1)),
           ),
-          child: Row(
+          child: Stack(
             children: [
-              // 选中/勾选时左侧 accent 指示条
-              if (widget.isSelected || (isManage && isChecked)) ...[
-                Container(
-                  width: 3,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    color: c.accent,
-                    borderRadius: m.brProgress,
-                  ),
+              Padding(
+                padding: EdgeInsets.only(
+                  left: (widget.isSelected || (isManage && isChecked)) ? 0 : 16,
+                  right: 16,
+                  top: compact ? 4 : 8,
+                  bottom: compact ? 6 : 8,
                 ),
-                const SizedBox(width: 13),
-              ],
-              // 管理模式下显示复选框
-              if (isManage) ...[
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: Icon(
-                    isChecked ? LucideIcons.squareCheck : LucideIcons.square,
-                    size: 16,
-                    color: isChecked ? c.accent : c.textMuted,
-                  ),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    row,
+                    if (_isHovered && !isManage)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        child: Center(
+                          child: TaskHoverActionCluster(
+                            task: widget.task,
+                            onPause: widget.onPause,
+                            onResume: widget.onResume,
+                            onMoreTapDown: _showContextMenu,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 10),
-              ],
-              Expanded(child: _buildFileInfo(c, m)),
-              SizedBox(width: 150, child: _buildProgress(c, m)),
-              SizedBox(width: 90, child: _buildSpeed(c)),
-              SizedBox(width: 80, child: _buildEta(c)),
-              SizedBox(width: 60, child: _buildStatus(c)),
+              ),
+              // 紧凑档：进度移到行底边缘 2px 全宽条，信息不减、行高 -31%（P4）。
+              if (compact)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: 2,
+                  child: _CompactProgressEdge(task: widget.task),
+                ),
             ],
           ),
         ),
@@ -175,23 +242,24 @@ class _TaskListItemState extends State<TaskListItem> {
     );
   }
 
-  Widget _buildFileInfo(AppColors c, AppMetrics m) {
+  Widget _buildFileInfo(AppColors c, AppMetrics m, bool compact) {
     final task = widget.task;
     // 已完成且文件仍在磁盘上的任务，文件图标支持拖出到资源管理器/其他应用。
     final canDragOut =
         task.status == TaskStatus.completed && !task.fileMissing;
+    final iconSize = _iconSize;
     Widget icon = Container(
-      width: 34,
-      height: 34,
+      width: iconSize,
+      height: iconSize,
       decoration: BoxDecoration(
         color: c.surface2,
-        borderRadius: m.brMd,
+        borderRadius: compact ? m.brSm : m.brMd,
       ),
       child: Center(
         child: Text(
           task.fileExtension,
           style: TextStyle(
-            fontSize: 10,
+            fontSize: compact ? 8.5 : 10,
             fontWeight: FontWeight.w600,
             color: c.textSecondary,
             fontFeatures: const [FontFeature.tabularFigures()],
@@ -207,7 +275,7 @@ class _TaskListItemState extends State<TaskListItem> {
         waitDuration: const Duration(milliseconds: 300),
         builder: (_) => Text(s.pluginProcessing),
         child: _PluginProcessingRing(
-          borderRadius: m.brMd,
+          borderRadius: compact ? m.brSm : m.brMd,
           color: c.accent,
           child: icon,
         ),
@@ -250,27 +318,31 @@ class _TaskListItemState extends State<TaskListItem> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(
-                task.fileName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: c.textPrimary),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      task.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 13, color: c.textPrimary),
+                    ),
+                  ),
+                  if (widget.protocolBadges) ...[
+                    const SizedBox(width: 6),
+                    _ProtocolBadge(task: task),
+                  ],
+                ],
               ),
-              const SizedBox(height: 2),
-              Text(
-                // 停止队列内的暂停任务显示「等待队列启动」，与用户手动
-                // 暂停区分开（启动队列会按序恢复它们）。
-                task.subtitleWith(
-                  queueStopped:
-                      !(DownloadController.globalInstance?.isQueueRunning(
-                            task.queueId,
-                          ) ??
-                          true),
+              if (!compact) ...[
+                const SizedBox(height: 2),
+                Text(
+                  _subtitleText(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
+              ],
             ],
           ),
         ),
@@ -278,125 +350,210 @@ class _TaskListItemState extends State<TaskListItem> {
     );
   }
 
-  Widget _buildProgress(AppColors c, AppMetrics m) {
+  /// 停止队列内的暂停任务显示「等待队列启动」，与用户手动暂停区分开
+  /// （启动队列会按序恢复它们）。协议徽标开启时去重协议前缀
+  /// （design-proto-spec §5 `subline`：badge 开时副标题不再重复协议）。
+  String _subtitleText() {
     final task = widget.task;
-    final percentage = (task.progress * 100).toStringAsFixed(1);
-    final progressColor = _progressColor(task, c);
+    final full = task.subtitleWith(
+      queueStopped: !(DownloadController.globalInstance?.isQueueRunning(
+            task.queueId,
+          ) ??
+          true),
+    );
+    if (!widget.protocolBadges) return full;
+    final prefix = '${task.protocolLabel} · ';
+    return full.startsWith(prefix) ? full.substring(prefix.length) : full;
+  }
+}
 
-    return Padding(
-      padding: const EdgeInsets.only(right: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: c.surface3,
-                    borderRadius: m.brProgress,
-                  ),
-                  clipBehavior: Clip.hardEdge,
-                  child: task.isIndeterminate
-                      ? _IndeterminateBar(color: progressColor)
-                      : FractionallySizedBox(
-                          alignment: Alignment.centerLeft,
-                          widthFactor: task.progress,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: progressColor,
-                            borderRadius: m.brProgress,
-                            ),
-                          ),
-                        ),
-                ),
+// =============================================================================
+// 协议徽标（9.5px 大写，design-proto-spec §5 `.badge`）
+// =============================================================================
+
+class _ProtocolBadge extends StatelessWidget {
+  final DownloadTask task;
+  const _ProtocolBadge({required this.task});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final label = task.siteKey == 'bt' ? 'BT' : task.protocolLabel;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: c.surface2,
+        borderRadius: const BorderRadius.all(Radius.circular(4)),
+      ),
+      child: Text(
+        label.toUpperCase(),
+        style: TextStyle(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.2,
+          color: c.textMuted,
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// 紧凑档行底进度边缘条（2px 全宽，design-proto-spec §6 `.trow-edge`）
+// =============================================================================
+
+class _CompactProgressEdge extends StatelessWidget {
+  final DownloadTask task;
+  const _CompactProgressEdge({required this.task});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final color = taskStatusColor(task.status, c, fileMissing: task.fileMissing);
+    return ColoredBox(
+      color: c.surface3,
+      child: task.isIndeterminate
+          ? _IndeterminateBar(color: color)
+          : Align(
+              alignment: Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: task.progress.clamp(0.0, 1.0),
+                heightFactor: 1,
+                child: ColoredBox(color: color),
               ),
-              const SizedBox(width: 8),
-              Text(
-                task.isIndeterminate ? '—' : '$percentage%',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: c.textSecondary,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ],
+            ),
+    );
+  }
+}
+
+// =============================================================================
+// hover 操作簇（28×28，右缘与状态列对齐，design-proto-spec §5 `.acts`）
+// =============================================================================
+
+class TaskHoverActionCluster extends StatelessWidget {
+  final DownloadTask task;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final void Function(TapDownDetails) onMoreTapDown;
+
+  const TaskHoverActionCluster({
+    super.key,
+    required this.task,
+    required this.onPause,
+    required this.onResume,
+    required this.onMoreTapDown,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    final buttons = <Widget>[];
+    switch (task.status) {
+      case TaskStatus.downloading:
+      case TaskStatus.pending:
+      case TaskStatus.preparing:
+      case TaskStatus.resuming:
+        buttons.add(
+          TaskActionButton(icon: LucideIcons.pause, primary: true, onTap: onPause),
+        );
+      case TaskStatus.paused:
+      case TaskStatus.error:
+        buttons.add(
+          TaskActionButton(icon: LucideIcons.play, primary: true, onTap: onResume),
+        );
+      case TaskStatus.completed:
+        break;
+    }
+    buttons.add(
+      TaskActionButton(
+        icon: LucideIcons.folderOpen,
+        onTap: () => openFolder(task.revealFolderPath),
+      ),
+    );
+    buttons.add(
+      TaskActionButton(icon: LucideIcons.moreHorizontal, onTapDown: onMoreTapDown),
+    );
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+        color: c.surface1,
+        borderRadius: m.brMd,
+        border: Border.all(color: c.border, width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: m.shadowSoft(c.shadow),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < buttons.length; i++) ...[
+            if (i > 0) const SizedBox(width: 2),
+            buttons[i],
+          ],
         ],
       ),
     );
   }
+}
 
-  Color _progressColor(DownloadTask task, AppColors c) {
-    switch (task.status) {
-      case TaskStatus.downloading:
-      case TaskStatus.pending:
-      case TaskStatus.preparing:
-      case TaskStatus.resuming:
-        return c.accent;
-      case TaskStatus.completed:
-        return task.fileMissing ? AppColors.amber : AppColors.green;
-      case TaskStatus.paused:
-        return AppColors.amber;
-      case TaskStatus.error:
-        return AppColors.red;
-    }
-  }
+/// 28×28 单个行/卡片操作按钮（design-proto-spec §5 `.act`）。
+class TaskActionButton extends StatefulWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+  final void Function(TapDownDetails)? onTapDown;
+  final bool primary;
 
-  Widget _buildSpeed(AppColors c) {
-    final task = widget.task;
-    final isActive = task.status == TaskStatus.downloading;
-    return Center(
-      child: Text(
-        task.speedText,
-        style: TextStyle(
-          fontSize: 12,
-          color: isActive ? AppColors.green : c.textMuted,
-          fontFeatures: const [FontFeature.tabularFigures()],
+  const TaskActionButton({
+    super.key,
+    required this.icon,
+    this.onTap,
+    this.onTapDown,
+    this.primary = false,
+  });
+
+  @override
+  State<TaskActionButton> createState() => _TaskActionButtonState();
+}
+
+class _TaskActionButtonState extends State<TaskActionButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onTapDown: widget.onTapDown,
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: widget.primary
+                ? c.accentBg
+                : _hovered
+                ? c.hoverBg
+                : Colors.transparent,
+            borderRadius: m.brSm,
+          ),
+          child: Icon(
+            widget.icon,
+            size: 14,
+            color: widget.primary ? c.accent : c.textSecondary,
+          ),
         ),
       ),
     );
-  }
-
-  Widget _buildEta(AppColors c) {
-    final task = widget.task;
-    final isActive = task.status == TaskStatus.downloading;
-    return Center(
-      child: Text(
-        task.etaText,
-        style: TextStyle(
-          fontSize: 12,
-          color: isActive ? c.textSecondary : c.textMuted,
-          fontFeatures: const [FontFeature.tabularFigures()],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatus(AppColors c) {
-    final task = widget.task;
-    Color statusColor;
-    switch (task.status) {
-      case TaskStatus.downloading:
-      case TaskStatus.resuming:
-      case TaskStatus.preparing:
-        statusColor = c.accent;
-      case TaskStatus.completed:
-        statusColor = task.fileMissing ? AppColors.amber : AppColors.green;
-      case TaskStatus.paused:
-        statusColor = AppColors.amber;
-      case TaskStatus.error:
-        statusColor = AppColors.red;
-      case TaskStatus.pending:
-        statusColor = c.textMuted;
-    }
-    final statusText = Text(
-      task.statusText,
-      style: TextStyle(fontSize: 12, color: statusColor),
-    );
-    return Center(child: statusText);
   }
 }
 

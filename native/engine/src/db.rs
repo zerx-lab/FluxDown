@@ -5,7 +5,7 @@ use sqlx::any::{AnyPoolOptions, AnyRow};
 use sqlx::{AssertSqlSafe, Row};
 use thiserror::Error;
 
-use crate::model::{MAIN_QUEUE_ID, QueueInfo, TaskInfo};
+use crate::model::{GroupInfo, MAIN_QUEUE_ID, QueueInfo, TaskInfo};
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
     PRIMARY KEY (task_id, file_name),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS task_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_url TEXT NOT NULL DEFAULT '',
+    save_dir TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 ";
 
 /// 建表 DDL（PostgreSQL 方言）。
@@ -213,6 +220,13 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
     PRIMARY KEY (task_id, file_name),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS task_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_url TEXT NOT NULL DEFAULT '',
+    save_dir TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 ";
 
 /// SQLite 连接级 PRAGMA（在 `after_connect` 钩子中对每个新连接执行）。
@@ -258,10 +272,54 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         segments: row.try_get("segments").unwrap_or(0),
         queue_order: row.try_get("queue_order").unwrap_or(0),
         referrer: row.try_get("referrer").unwrap_or_default(),
+        group_id: row.try_get("group_id").unwrap_or_default(),
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, referrer";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, referrer, group_id";
+
+/// 把 `AnyRow` 映射为 [`GroupInfo`]。
+fn group_from_row(row: &AnyRow) -> Result<GroupInfo, sqlx::Error> {
+    Ok(GroupInfo {
+        group_id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        source_url: row.try_get("source_url").unwrap_or_default(),
+        save_dir: row.try_get("save_dir").unwrap_or_default(),
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+/// [`Db::fission_into_group`] 的单个兄弟任务描述（清单中母任务之外的条目）。
+#[derive(Debug, Clone, Default)]
+pub struct GroupSiblingSpec {
+    pub id: String,
+    pub file_name: String,
+    pub save_dir: String,
+    pub resolver_item: String,
+    pub total_bytes: i64,
+    /// 0=pending（正常裂变，随后按容量 start/入队）或 2=paused（清单总大小
+    /// 超阈值静默转 paused，见 `FISSION_AUTO_START_MAX_TOTAL_BYTES`）。
+    pub status: i32,
+}
+
+/// [`Db::fission_into_group`] 的裂变请求：组行字段 + 母任务改写字段 + 兄弟
+/// 任务列表。母任务的队列/代理/TLS 策略/分段数/resolver 插件绑定/请求上下文
+/// （cookies/referrer/extra_headers）由 `fission_into_group` 内部从 DB 读回
+/// 并复制给每个兄弟任务，无需在此重复携带。
+#[derive(Debug, Clone, Default)]
+pub struct FissionSpec {
+    pub group_id: String,
+    pub group_name: String,
+    pub group_save_dir: String,
+    pub group_source_url: String,
+    pub mother_task_id: String,
+    pub mother_resolver_item: String,
+    pub mother_file_name: String,
+    pub mother_save_dir: String,
+    pub mother_total_bytes: i64,
+    pub mother_status: i32,
+    pub siblings: Vec<GroupSiblingSpec>,
+}
 
 impl Db {
     /// 在 `dir` 目录下打开（不存在则创建）SQLite 数据库 `flux_down.db`。
@@ -389,6 +447,12 @@ impl Db {
         self.add_column_if_missing("queues", "schedule_stop", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("queues", "schedule_days", "INTEGER NOT NULL DEFAULT 127")
+            .await?;
+        // 多文件任务组：group_id 关联 task_groups.id（空 = 不属于任何组）；
+        // resolver_item 为二段解析标识（不透明字符串，专用 getter，不进 TaskInfo）。
+        self.add_column_if_missing("tasks", "group_id", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "resolver_item", "TEXT NOT NULL DEFAULT ''")
             .await?;
         Ok(())
     }
@@ -2071,6 +2135,256 @@ impl Db {
         tx.commit().await?;
         Ok(())
     }
+
+    /// 插入任务组行。`created_at` 内部生成（Unix 秒字符串），与
+    /// [`Self::insert_task_with_tls_policy`] 惯例一致，不暴露给调用方。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
+    /// use fluxdown_engine::db::Db;
+    /// let db = Db::connect("sqlite::memory:").await?;
+    /// db.insert_group("g1", "我的相册", "https://pan.example.com/s/x", "/tmp/我的相册").await?;
+    /// assert_eq!(db.load_all_groups().await?.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn insert_group(
+        &self,
+        id: &str,
+        name: &str,
+        source_url: &str,
+        save_dir: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO task_groups (id, name, source_url, save_dir, created_at) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(source_url)
+        .bind(save_dir)
+        .bind(chrono_now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 全部任务组，按创建时间倒序（新建的组排前面，与 [`Self::load_all_tasks`]
+    /// 惯例一致）。
+    pub async fn load_all_groups(&self) -> Result<Vec<GroupInfo>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id, name, source_url, save_dir, created_at FROM task_groups ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut groups = Vec::with_capacity(rows.len());
+        for row in &rows {
+            groups.push(group_from_row(row)?);
+        }
+        Ok(groups)
+    }
+
+    /// 按 ID 读取单个任务组，不存在返回 `None`。
+    pub async fn load_group_by_id(&self, id: &str) -> Result<Option<GroupInfo>, DbError> {
+        let row = sqlx::query(
+            "SELECT id, name, source_url, save_dir, created_at FROM task_groups WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.as_ref().map(group_from_row).transpose()?)
+    }
+
+    /// 重命名任务组。空名校验由调用方负责
+    /// （`DownloadManager::rename_group` 已 `trim` 拦截空名）。
+    pub async fn rename_group(&self, id: &str, name: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE task_groups SET name = $1 WHERE id = $2")
+            .bind(name)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 设置任务的 `group_id` 归属（空串 = 移出所有组）。
+    pub async fn set_task_group(&self, task_id: &str, group_id: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET group_id = $1 WHERE id = $2")
+            .bind(group_id)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 设置任务的二段解析标识（不透明字符串，专用 getter
+    /// [`Self::get_task_resolver_item`]，不进 [`TaskInfo`]，与
+    /// `resolver_plugin_id`/[`Self::set_task_resolver`] 惯例一致）。
+    pub async fn set_task_resolver_item(
+        &self,
+        task_id: &str,
+        resolver_item: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET resolver_item = $1 WHERE id = $2")
+            .bind(resolver_item)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 读取任务的二段解析标识（空串 = 无）。
+    pub async fn get_task_resolver_item(&self, task_id: &str) -> Result<String, DbError> {
+        let row = sqlx::query("SELECT resolver_item FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .map(|r| r.try_get::<String, _>("resolver_item").unwrap_or_default())
+            .unwrap_or_default())
+    }
+
+    /// 组内成员任务 ID，按启动顺序排列（`queue_order` → `created_at`）。
+    pub async fn group_member_ids(&self, group_id: &str) -> Result<Vec<String>, DbError> {
+        let rows = sqlx::query_scalar(
+            "SELECT id FROM tasks WHERE group_id = $1 ORDER BY queue_order ASC, created_at ASC",
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// 回收无成员任务组（组生命周期 D8：末个成员删除时自动回收）。返回删除
+    /// 的组行数，供调用方仅在真正发生回收时广播
+    /// [`crate::events::EngineEvent::GroupsChanged`]。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
+    /// use fluxdown_engine::db::Db;
+    /// let db = Db::connect("sqlite::memory:").await?;
+    /// let deleted = db.gc_empty_groups().await?;
+    /// assert_eq!(deleted, 0); // 没有任务组时是无操作
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn gc_empty_groups(&self) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM task_groups WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.group_id = task_groups.id)",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// 单条目清单原地改写任务的落盘目标（外部无 UI 入口的自动裂变单条目
+    /// 分支，D6）：不建组，仅覆盖 `save_dir`/`file_name`/`total_bytes`，
+    /// `checksum` 清空（旧值针对改写前的下载目标，保留必致校验失败）。
+    pub async fn rewrite_task_for_item(
+        &self,
+        id: &str,
+        save_dir: &str,
+        file_name: &str,
+        total_bytes: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET save_dir = $1, file_name = $2, total_bytes = $3, checksum = '' WHERE id = $4",
+        )
+        .bind(save_dir)
+        .bind(file_name)
+        .bind(total_bytes)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 多条目清单裂变为任务组（外部无 UI 入口的自动裂变多条目分支，D6）：
+    /// 单事务内建组行 + 改写母任务 + 批量插入兄弟任务（复制母行的队列/代理/
+    /// TLS 策略/分段数/resolver 插件绑定/请求上下文列），失败整体回滚
+    /// （RAII：任何 `?` 早返回时 Drop 自动 ROLLBACK，母任务保持改写前状态，
+    /// 调用方据此按 status=4 兜底，见 `on_resolve_ready`）。
+    pub async fn fission_into_group(&self, spec: &FissionSpec) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT url, proxy_url, queue_id, ignore_tls_errors, segments, resolver_plugin_id, \
+             cookies, referrer, extra_headers, queue_order FROM tasks WHERE id = $1",
+        )
+        .bind(&spec.mother_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let url: String = row.try_get("url")?;
+        let proxy_url: String = row.try_get("proxy_url").unwrap_or_default();
+        let queue_id: String = row.try_get("queue_id").unwrap_or_default();
+        let ignore_tls_errors: i32 = row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0);
+        let segments: i32 = row.try_get("segments").unwrap_or(0);
+        let resolver_plugin_id: String = row.try_get("resolver_plugin_id").unwrap_or_default();
+        let cookies: String = row.try_get("cookies").unwrap_or_default();
+        let referrer: String = row.try_get("referrer").unwrap_or_default();
+        let extra_headers: String = row.try_get("extra_headers").unwrap_or_default();
+        let base_order: i32 = row.try_get("queue_order").unwrap_or(0);
+
+        let now = chrono_now();
+        sqlx::query(
+            "INSERT INTO task_groups (id, name, source_url, save_dir, created_at) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&spec.group_id)
+        .bind(&spec.group_name)
+        .bind(&spec.group_source_url)
+        .bind(&spec.group_save_dir)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE tasks SET group_id = $1, resolver_item = $2, file_name = $3, save_dir = $4, \
+             total_bytes = $5, checksum = '', status = $6 WHERE id = $7",
+        )
+        .bind(&spec.group_id)
+        .bind(&spec.mother_resolver_item)
+        .bind(&spec.mother_file_name)
+        .bind(&spec.mother_save_dir)
+        .bind(spec.mother_total_bytes)
+        .bind(spec.mother_status)
+        .bind(&spec.mother_task_id)
+        .execute(&mut *tx)
+        .await?;
+
+        for (i, sib) in spec.siblings.iter().enumerate() {
+            let queue_order = base_order + 1 + i as i32;
+            sqlx::query(
+                "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, \
+                 created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, \
+                 group_id, resolver_item, resolver_plugin_id, cookies, referrer, extra_headers) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '', $11, $12, $13, $14, $15, $16, $17, $18)",
+            )
+            .bind(&sib.id)
+            .bind(&url)
+            .bind(&sib.file_name)
+            .bind(&sib.save_dir)
+            .bind(sib.status)
+            .bind(segments)
+            .bind(sib.total_bytes)
+            .bind(&now)
+            .bind(&proxy_url)
+            .bind(&queue_id)
+            .bind(ignore_tls_errors)
+            .bind(queue_order)
+            .bind(&spec.group_id)
+            .bind(&sib.resolver_item)
+            .bind(&resolver_plugin_id)
+            .bind(&cookies)
+            .bind(&referrer)
+            .bind(&extra_headers)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 pub struct SegmentInfo {
@@ -2148,6 +2462,266 @@ mod tests {
         )
         .await
         .expect("insert task");
+    }
+
+    #[tokio::test]
+    async fn group_crud_roundtrip() {
+        let (db, dir) = open_test_db().await;
+        db.insert_group(
+            "g1",
+            "我的相册",
+            "https://pan.example.com/s/x",
+            "/tmp/我的相册",
+        )
+        .await
+        .expect("insert group");
+        let groups = db.load_all_groups().await.expect("load groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, "g1");
+        assert_eq!(groups[0].name, "我的相册");
+
+        let loaded = db.load_group_by_id("g1").await.expect("load by id");
+        assert!(loaded.is_some());
+        assert!(
+            db.load_group_by_id("missing")
+                .await
+                .expect("load missing")
+                .is_none()
+        );
+
+        db.rename_group("g1", "新名字").await.expect("rename");
+        let renamed = db
+            .load_group_by_id("g1")
+            .await
+            .expect("load renamed")
+            .expect("exists");
+        assert_eq!(renamed.name, "新名字");
+
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn set_task_group_and_resolver_item_roundtrip() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "t1").await;
+        db.insert_group("g1", "组", "", "/tmp/g1")
+            .await
+            .expect("insert group");
+        db.set_task_group("t1", "g1").await.expect("set group");
+        db.set_task_resolver_item("t1", "item1@1080p")
+            .await
+            .expect("set resolver item");
+
+        let task = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load")
+            .expect("exists");
+        assert_eq!(task.group_id, "g1");
+        assert_eq!(
+            db.get_task_resolver_item("t1").await.expect("get item"),
+            "item1@1080p"
+        );
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn group_member_ids_orders_by_queue_order() {
+        let (db, dir) = open_test_db().await;
+        db.insert_group("g1", "组", "", "/tmp/g1")
+            .await
+            .expect("insert group");
+        insert_task(&db, "second").await;
+        insert_task(&db, "first").await;
+        db.set_task_group("second", "g1").await.expect("set group");
+        db.set_task_group("first", "g1").await.expect("set group");
+        // 显式 queue_order：first(1) 排在 second(2) 前面，即使插入顺序相反。
+        db.reorder_queue_tasks("", &["first".to_string(), "second".to_string()])
+            .await
+            .expect("reorder");
+        let ids = db.group_member_ids("g1").await.expect("member ids");
+        assert_eq!(ids, vec!["first".to_string(), "second".to_string()]);
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn gc_empty_groups_deletes_orphan_group_rows_only() {
+        let (db, dir) = open_test_db().await;
+        db.insert_group("empty", "空组", "", "/tmp/empty")
+            .await
+            .expect("insert empty group");
+        db.insert_group("populated", "有成员组", "", "/tmp/populated")
+            .await
+            .expect("insert populated group");
+        insert_task(&db, "member").await;
+        db.set_task_group("member", "populated")
+            .await
+            .expect("set group");
+
+        let deleted = db.gc_empty_groups().await.expect("gc");
+        assert_eq!(deleted, 1);
+        assert!(db.load_group_by_id("empty").await.expect("load").is_none());
+        assert!(
+            db.load_group_by_id("populated")
+                .await
+                .expect("load")
+                .is_some()
+        );
+
+        // 幂等：无孤儿组时返回 0。
+        assert_eq!(db.gc_empty_groups().await.expect("gc again"), 0);
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn rewrite_task_for_item_overwrites_target_and_clears_checksum() {
+        let (db, dir) = open_test_db().await;
+        db.insert_task(
+            "t1",
+            "http://example.com/orig",
+            "orig.bin",
+            "/tmp",
+            1,
+            0,
+            "",
+            "",
+            "sha256=deadbeef",
+            0,
+        )
+        .await
+        .expect("insert task");
+
+        db.rewrite_task_for_item("t1", "/tmp/group/sub", "item.mp4", 12345)
+            .await
+            .expect("rewrite");
+
+        let task = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load")
+            .expect("exists");
+        assert_eq!(task.save_dir, "/tmp/group/sub");
+        assert_eq!(task.file_name, "item.mp4");
+        assert_eq!(task.total_bytes, 12345);
+        assert_eq!(task.checksum, "");
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn fission_into_group_creates_group_and_copies_mother_context() {
+        let (db, dir) = open_test_db().await;
+        db.insert_task_with_tls_policy(
+            "mother",
+            "https://pan.example.com/s/x",
+            "share.bin",
+            "/tmp",
+            2,
+            0,
+            "",
+            "",
+            "",
+            true,
+            0,
+        )
+        .await
+        .expect("insert mother");
+        db.set_task_request_context("mother", "k=v", "https://ref.example", "{\"X-Test\":\"1\"}")
+            .await
+            .expect("set request context");
+        db.set_task_resolver("mother", "test@plugin")
+            .await
+            .expect("set resolver");
+
+        let spec = FissionSpec {
+            group_id: "g1".to_string(),
+            group_name: "我的相册".to_string(),
+            group_save_dir: "/tmp/我的相册".to_string(),
+            group_source_url: "https://pan.example.com/s/x".to_string(),
+            mother_task_id: "mother".to_string(),
+            mother_resolver_item: "f1".to_string(),
+            mother_file_name: "a.mp4".to_string(),
+            mother_save_dir: "/tmp/我的相册/a".to_string(),
+            mother_total_bytes: 1000,
+            mother_status: 0,
+            siblings: vec![GroupSiblingSpec {
+                id: "sib1".to_string(),
+                file_name: "b.mp4".to_string(),
+                save_dir: "/tmp/我的相册/b".to_string(),
+                resolver_item: "f2".to_string(),
+                total_bytes: 2000,
+                status: 0,
+            }],
+        };
+        db.fission_into_group(&spec).await.expect("fission");
+
+        let groups = db.load_all_groups().await.expect("load groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, "g1");
+
+        let mother = db
+            .load_task_by_id("mother")
+            .await
+            .expect("load mother")
+            .expect("exists");
+        assert_eq!(mother.group_id, "g1");
+        assert_eq!(mother.file_name, "a.mp4");
+        assert_eq!(mother.save_dir, "/tmp/我的相册/a");
+        assert_eq!(mother.total_bytes, 1000);
+        assert_eq!(mother.checksum, "");
+        assert_eq!(
+            db.get_task_resolver_item("mother")
+                .await
+                .expect("mother item"),
+            "f1"
+        );
+
+        let sibling = db
+            .load_task_by_id("sib1")
+            .await
+            .expect("load sibling")
+            .expect("exists");
+        assert_eq!(sibling.group_id, "g1");
+        assert_eq!(sibling.file_name, "b.mp4");
+        assert_eq!(sibling.total_bytes, 2000);
+        assert_eq!(sibling.url, "https://pan.example.com/s/x");
+        assert!(sibling.ignore_tls_errors);
+        assert_eq!(sibling.segments, 2);
+        assert_eq!(
+            db.get_task_resolver_item("sib1").await.expect("sib item"),
+            "f2"
+        );
+        assert_eq!(
+            db.get_task_resolver("sib1").await.expect("sib resolver"),
+            "test@plugin"
+        );
+        let (cookies, referrer, headers) = db
+            .load_task_request_context("sib1")
+            .await
+            .expect("sib ctx")
+            .expect("exists");
+        assert_eq!(cookies, "k=v");
+        assert_eq!(referrer, "https://ref.example");
+        assert_eq!(headers, "{\"X-Test\":\"1\"}");
+
+        let ids = db.group_member_ids("g1").await.expect("member ids");
+        assert_eq!(ids, vec!["mother".to_string(), "sib1".to_string()]);
+
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn fission_into_group_rolls_back_on_missing_mother() {
+        let (db, dir) = open_test_db().await;
+        let spec = FissionSpec {
+            group_id: "g1".to_string(),
+            group_name: "组".to_string(),
+            group_save_dir: "/tmp/g1".to_string(),
+            mother_task_id: "does-not-exist".to_string(),
+            ..Default::default()
+        };
+        assert!(db.fission_into_group(&spec).await.is_err());
+        assert!(db.load_group_by_id("g1").await.expect("load").is_none());
+        close_test_db(&db, dir).await;
     }
 
     #[tokio::test]

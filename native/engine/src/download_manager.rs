@@ -623,6 +623,50 @@ pub struct NewTaskSpec {
     /// 稍后下载：true = 建任务后不启动（paused 入库），待「启动队列」
     /// 按序恢复或用户手动恢复。
     pub start_paused: bool,
+    /// 所属任务组 ID（空 = 不属于任何组）。由 [`DownloadManager::create_task_group`]
+    /// 传入；`create_task` 落库后调用 [`crate::db::Db::set_task_group`]。
+    pub group_id: String,
+    /// 二段解析标识（不透明字符串，对应清单条目 `id`/`id@variantId`）。非空但
+    /// 未命中 resolver 插件 → fail-closed，任务直接 status=4（不发起下载
+    /// `source_url`，绝不把网页 HTML 当直链保存）。
+    pub resolver_item: String,
+}
+
+/// [`DownloadManager::create_task_group`] 的单个组成员条目（清单条目的引擎侧
+/// 投影；`resolver_item` 拼接规则见设计文档 D5/§7.2，由调用方按
+/// `<itemId>` / `<itemId>@<variantId>` 固定规则拼接）。
+#[derive(Clone, Default)]
+pub struct GroupItemSpec {
+    /// 二段解析标识（不透明字符串）。
+    pub resolver_item: String,
+    /// 文件名。
+    pub file_name: String,
+    /// 相对组根目录的子路径（空 = 组根）。
+    pub rel_path: String,
+    /// 已知大小（字节，0 = 未知），透传为 [`NewTaskSpec::hint_file_size`]。
+    pub size: i64,
+}
+
+/// [`DownloadManager::create_task_group`] 的建组请求（B3 契约）。
+#[derive(Clone, Default)]
+pub struct CreateGroupSpec {
+    /// 原始分享/清单链接（组行 `source_url`，展示/复制用）。
+    pub source_url: String,
+    /// 组名（`task_groups.name`；空 = 组根目录直接用 `base_save_dir`）。
+    pub group_name: String,
+    /// 基础保存目录（组根目录 = `base_save_dir/sanitize(group_name)`）。
+    pub base_save_dir: String,
+    pub queue_id: String,
+    pub segments: i32,
+    pub cookies: String,
+    pub referrer: String,
+    pub user_agent: String,
+    pub proxy_url: String,
+    pub extra_headers: std::collections::HashMap<String, String>,
+    pub ignore_tls_errors: bool,
+    /// 稍后下载：透传给每个成员的 [`NewTaskSpec::start_paused`]。
+    pub start_paused: bool,
+    pub items: Vec<GroupItemSpec>,
 }
 
 /// Information needed to start a queued task later.
@@ -674,6 +718,10 @@ struct QueuedTask {
     /// resolver 插件担保直链支持 Range（`rangeSupported: true`）：跳过 probe 的
     /// 同时按已验证 Range 规划多段，不落入配额型端点式的保守单流启动。
     range_supported: bool,
+    /// 二段解析标识（透传给 [`crate::plugin::ResolveRequest::resolver_item`]）。
+    /// 空 = 初段解析。始终存在（feature 关时恒空且不读取）。
+    #[cfg_attr(not(feature = "plugins"), allow(dead_code))]
+    resolver_item: String,
 }
 
 /// All state associated with a single actively-running download task.
@@ -804,7 +852,20 @@ async fn collapse_resolve_variants(
             default_idx
         }
     };
-    if let Some(v) = variants.into_iter().nth(idx as usize) {
+    apply_chosen_variant(res, variants, idx);
+    false
+}
+
+/// 把选中变体的非空字段覆盖到顶层（url/audioUrl/fileName/totalBytes）。
+/// [`collapse_resolve_variants`]（用户选择）与
+/// [`collapse_resolve_variants_silent`]（二段静默收敛）共用。
+#[cfg(feature = "plugins")]
+fn apply_chosen_variant(
+    res: &mut crate::plugin::ResolveResult,
+    variants: Vec<crate::plugin::ResolveVariant>,
+    idx: i32,
+) {
+    if let Some(v) = variants.into_iter().nth(idx.max(0) as usize) {
         res.url = v.url;
         if v.audio_url.is_some() {
             res.audio_url = v.audio_url;
@@ -816,7 +877,71 @@ async fn collapse_resolve_variants(
             res.total_bytes = v.total_bytes;
         }
     }
-    false
+}
+
+/// 二段解析（[`crate::plugin::ResolveRequest::resolver_item`] 非空）场景的
+/// 静默变体收敛：不经 [`HostSelection`]，直接取 `default_variant_index`
+/// （越界按 0）——绝不为 N 个裂变子任务弹 N 个选择框（A1 契约）。
+#[cfg(feature = "plugins")]
+fn collapse_resolve_variants_silent(res: &mut crate::plugin::ResolveResult) {
+    let variants = std::mem::take(&mut res.variants);
+    let idx = if (res.default_variant_index as usize) < variants.len() {
+        res.default_variant_index
+    } else {
+        0
+    };
+    apply_chosen_variant(res, variants, idx);
+}
+
+/// 清单裂变（外部无 UI 入口自动展开，D6）自动启动的总大小阈值：Σsize 超过
+/// 此值时全员（含母任务）静默转 paused，不自动占用带宽/磁盘。未知大小的
+/// 条目按 0 计（保守放行，记录在案，见设计文档 §6.3/§7.8）。
+#[cfg(feature = "plugins")]
+const FISSION_AUTO_START_MAX_TOTAL_BYTES: i64 = 10 * 1024 * 1024 * 1024;
+
+/// 清单 item 的解析标识拼接：无规格 = `<itemId>`；有规格 = `<itemId>@<variantId>`
+/// （引擎自动取首个规格——初段清单无 default 语义）。两个 id 均为插件自定义
+/// token，引擎本身不解释语义（D5 契约）。
+#[cfg(feature = "plugins")]
+fn manifest_item_resolver_token(item: &crate::plugin::ManifestItem) -> String {
+    match item.variants.first() {
+        Some(v) => format!("{}@{}", item.id, v.id),
+        None => item.id.clone(),
+    }
+}
+
+/// 清单 item 的相对子目录拼进 `base`（`rel_path` 空 = 根，落盘目标不变）。
+#[cfg(feature = "plugins")]
+fn join_manifest_path(base: &str, rel_path: &str) -> String {
+    if rel_path.is_empty() {
+        base.to_string()
+    } else {
+        PathBuf::from(base)
+            .join(rel_path)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// 把插件清单条目转换为宿主可展示的 [`crate::model::ManifestItemInfo`]
+/// （[`DownloadManager::begin_resolve_preview`] 用）。
+#[cfg(feature = "plugins")]
+fn manifest_item_to_info(item: crate::plugin::ManifestItem) -> crate::model::ManifestItemInfo {
+    crate::model::ManifestItemInfo {
+        id: item.id,
+        name: item.name,
+        path: item.path,
+        size: item.size.unwrap_or(0).max(0),
+        variants: item
+            .variants
+            .into_iter()
+            .map(|v| crate::model::ManifestVariantInfo {
+                id: v.id,
+                label: v.label,
+                size: v.size.unwrap_or(0).max(0),
+            })
+            .collect(),
+    }
 }
 
 /// 把 resolve 结果应用到 QueuedTask（再入前）。非 ephemeral 保持 hint_file_size=0
@@ -1154,6 +1279,118 @@ impl DownloadManager {
         String::new()
     }
 
+    /// 前置预解析（多文件清单，B2 契约）：off-actor、只读，不建任务、不写库。
+    /// [`crate::plugin::PluginManager::match_multi_resolver`] 未命中（插件未
+    /// 声明 `resolver.multi=true`）→ 立即发出空清单（不跑 resolve，避免解析
+    /// 昂贵的单文件插件白跑一次）；命中则在插件专用 runtime 上 spawn 一次初段
+    /// resolve（`resolver_item` 恒为空）。`task_id` 传空串（尚无任务）。
+    #[cfg(feature = "plugins")]
+    pub async fn begin_resolve_preview(
+        &self,
+        preview_id: String,
+        url: String,
+        cookies: String,
+        referrer: String,
+        user_agent: String,
+        extra_headers: HashMap<String, String>,
+    ) {
+        let Some(pm) = self.plugin_manager.clone() else {
+            self.sink.emit(EngineEvent::ResolvePreviewReady {
+                preview_id,
+                name: String::new(),
+                source_url: url,
+                items: Vec::new(),
+                error: String::new(),
+            });
+            return;
+        };
+        let Some(identity) = pm.match_multi_resolver(&url).await else {
+            self.sink.emit(EngineEvent::ResolvePreviewReady {
+                preview_id,
+                name: String::new(),
+                source_url: url,
+                items: Vec::new(),
+                error: String::new(),
+            });
+            return;
+        };
+        let sink = self.sink.clone();
+        let handle = pm.runtime_handle();
+        let req = crate::plugin::ResolveRequest {
+            task_id: String::new(),
+            url: url.clone(),
+            cookies,
+            referrer,
+            user_agent,
+            extra_headers,
+            resolver_item: String::new(),
+        };
+        handle.spawn(async move {
+            let fut = std::panic::AssertUnwindSafe(pm.resolve(&identity, req));
+            let result = match fut.catch_unwind().await {
+                Ok(r) => r,
+                Err(panic) => Err(crate::plugin::PluginError::Runtime(panic_message(&panic))),
+            };
+            let event = match result {
+                Ok(Some(res)) => match res.manifest {
+                    Some(manifest) => EngineEvent::ResolvePreviewReady {
+                        preview_id,
+                        name: manifest.name,
+                        source_url: url,
+                        items: manifest
+                            .items
+                            .into_iter()
+                            .map(manifest_item_to_info)
+                            .collect(),
+                        error: String::new(),
+                    },
+                    None => EngineEvent::ResolvePreviewReady {
+                        preview_id,
+                        name: String::new(),
+                        source_url: url,
+                        items: Vec::new(),
+                        error: String::new(),
+                    },
+                },
+                Ok(None) => EngineEvent::ResolvePreviewReady {
+                    preview_id,
+                    name: String::new(),
+                    source_url: url,
+                    items: Vec::new(),
+                    error: String::new(),
+                },
+                Err(e) => EngineEvent::ResolvePreviewReady {
+                    preview_id,
+                    name: String::new(),
+                    source_url: url,
+                    items: Vec::new(),
+                    error: e.to_string(),
+                },
+            };
+            sink.emit(event);
+        });
+    }
+
+    /// `plugins` feature 关时的同签名占位：直接发出空清单，宿主无需 `cfg` 分叉。
+    #[cfg(not(feature = "plugins"))]
+    pub async fn begin_resolve_preview(
+        &self,
+        preview_id: String,
+        url: String,
+        _cookies: String,
+        _referrer: String,
+        _user_agent: String,
+        _extra_headers: HashMap<String, String>,
+    ) {
+        self.sink.emit(EngineEvent::ResolvePreviewReady {
+            preview_id,
+            name: String::new(),
+            source_url: url,
+            items: Vec::new(),
+            error: String::new(),
+        });
+    }
+
     /// off-actor resolve worker：在插件专用 runtime 上 spawn（禁裸 tokio::spawn），
     /// panic 隔离，无条件回流（交 on_resolve_ready 兜底）。
     #[cfg(feature = "plugins")]
@@ -1173,6 +1410,7 @@ impl DownloadManager {
         let handle = pm.runtime_handle();
         let id_for_worker = identity.clone();
         let selector = self.selector.clone();
+        let second_stage = !req.resolver_item.is_empty();
         handle.spawn(async move {
             let fut = std::panic::AssertUnwindSafe(pm.resolve(&id_for_worker, req));
             let mut result = match fut.catch_unwind().await {
@@ -1189,11 +1427,17 @@ impl DownloadManager {
             // 多变体收敛：在 off-actor worker 内 await 用户选择（不阻塞 actor），
             // 收敛为单一直链后再回流。stale 场景由 on_resolve_ready 世代守卫兜底。
             // 返回 true = 用户点关闭/取消 → 回流标记 cancelled，actor 取消任务。
+            // 二段解析（resolver_item 非空）绝不弹选择框：静默取默认变体
+            // （引擎自动裂变场景不为 N 个子任务弹 N 个选择框，A1 契约）。
             let mut cancelled = false;
             if let Ok(Some(res)) = &mut result
                 && !res.variants.is_empty()
             {
-                cancelled = collapse_resolve_variants(&task_id, res, selector.as_ref()).await;
+                if second_stage {
+                    collapse_resolve_variants_silent(res);
+                } else {
+                    cancelled = collapse_resolve_variants(&task_id, res, selector.as_ref()).await;
+                }
             }
             let _ = tx.send(ResolveOutcome {
                 task_id,
@@ -1258,6 +1502,19 @@ impl DownloadManager {
 
         match out.result {
             Ok(applied) => {
+                // 清单裂变（外部无 UI 入口自动展开，D6）：resolve 结果携带 manifest
+                // 时不进入正常 Start/Resume 分派，改走 apply_manifest_fission（单
+                // 条目原地改写 / 多条目单事务裂变为组）。Start 与 Resume 两种 kind
+                // 均可能触达——旧任务被用户 resume 时同样应裂变。
+                let has_manifest = applied.as_ref().is_some_and(|r| r.manifest.is_some());
+                if has_manifest {
+                    self.pending_resolve.remove(&task_id);
+                    self.active_tasks.remove(&task_id);
+                    if let Some(res) = applied {
+                        self.apply_manifest_fission(task, out.identity, res).await;
+                    }
+                    return;
+                }
                 // Ok(Some) = 改写；Ok(None) = 放行（用原 url）。
                 match out.kind {
                     ResolveKind::Start => {
@@ -1304,6 +1561,285 @@ impl DownloadManager {
                 self.drain_queue().await;
             }
         }
+    }
+
+    /// resolve 结果携带 [`crate::plugin::ResolveManifest`] 时的裂变分派（外部无
+    /// UI 入口的自动展开，D6）：单条目原地改写落盘目标（不建组）；多条目单事务
+    /// 裂变为任务组。`identity` 为命中的 resolver 插件 ID（复制进裂变出的兄弟
+    /// 任务的 `resolver_plugin_id`，保证二段解析走同一插件）。
+    ///
+    /// 守卫：`task.downloaded_bytes != 0`（任务已有下载数据）→ 拒绝改写（避免
+    /// 摧毁已下载分段），置 status=4。
+    #[cfg(feature = "plugins")]
+    async fn apply_manifest_fission(
+        &mut self,
+        task: TaskInfo,
+        identity: String,
+        res: crate::plugin::ResolveResult,
+    ) {
+        let task_id = task.task_id.clone();
+        let Some(manifest) = res.manifest else {
+            self.drain_queue().await;
+            return;
+        };
+        if task.downloaded_bytes != 0 {
+            let msg = "任务已有数据，拒绝清单改写".to_string();
+            let _ = self.db.update_task_status(&task_id, 4, &msg).await;
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: task_id.clone(),
+                status: 4,
+                downloaded_bytes: task.downloaded_bytes,
+                total_bytes: task.total_bytes,
+                speed: 0,
+                file_name: task.file_name.clone(),
+                save_dir: task.save_dir.clone(),
+                url: task.url.clone(),
+                error_message: msg,
+                upload_speed_bps: 0,
+            });
+            self.drain_queue().await;
+            return;
+        }
+        if manifest.items.is_empty() {
+            // 校验器已 fail-closed 挡空 items；理论不可达，防御性放行不改写。
+            self.drain_queue().await;
+            return;
+        }
+
+        let (cookies, referrer, extra_headers) = self
+            .db
+            .load_task_request_context(&task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|(c, r, h)| {
+                let headers: HashMap<String, String> = serde_json::from_str(&h).unwrap_or_default();
+                (c, r, headers)
+            })
+            .unwrap_or_default();
+
+        if manifest.items.len() == 1 {
+            let item = &manifest.items[0];
+            let resolver_item = manifest_item_resolver_token(item);
+            let new_save_dir = join_manifest_path(&task.save_dir, &item.path);
+            if let Err(e) = self
+                .db
+                .rewrite_task_for_item(
+                    &task_id,
+                    &new_save_dir,
+                    &item.name,
+                    item.size.unwrap_or(0).max(0),
+                )
+                .await
+            {
+                log_info!("[manager] rewrite_task_for_item error: {}", e);
+            }
+            let _ = self
+                .db
+                .set_task_resolver_item(&task_id, &resolver_item)
+                .await;
+            let new_queued = QueuedTask {
+                task_id: task_id.clone(),
+                url: task.url.clone(),
+                save_dir: new_save_dir,
+                file_name: item.name.clone(),
+                segments: task.segments,
+                is_resume: false,
+                cookies,
+                referrer,
+                hint_file_size: 0,
+                torrent_file_bytes: Vec::new(),
+                proxy_url: task.proxy_url.clone(),
+                user_agent: String::new(),
+                queue_id: task.queue_id.clone(),
+                checksum: String::new(),
+                ignore_tls_errors: task.ignore_tls_errors,
+                extra_headers,
+                selected_file_indices: Vec::new(),
+                method: None,
+                body: None,
+                audio_url: None,
+                resolver_plugin_id: identity,
+                resolved: false,
+                range_supported: false,
+                resolver_item,
+            };
+            self.begin_resolve_start(new_queued).await;
+            self.load_and_send_all_tasks().await;
+            self.broadcast_queue_positions();
+            return;
+        }
+
+        // 多条目：单事务裂变为组（Db::fission_into_group，失败整体回滚）。
+        let group_id = Uuid::new_v4().to_string();
+        let group_name = if !manifest.name.is_empty() {
+            manifest.name.clone()
+        } else if !task.file_name.is_empty() {
+            task.file_name.clone()
+        } else {
+            manifest.items[0].name.clone()
+        };
+        let group_save_dir =
+            join_manifest_path(&task.save_dir, &downloader::sanitize_filename(&group_name));
+
+        let total_size: i64 = manifest
+            .items
+            .iter()
+            .map(|it| it.size.unwrap_or(0).max(0))
+            .sum();
+        let over_threshold = total_size > FISSION_AUTO_START_MAX_TOTAL_BYTES;
+        let status = if over_threshold { 2 } else { 0 };
+
+        let mother_item = &manifest.items[0];
+        let mother_resolver_item = manifest_item_resolver_token(mother_item);
+        let mother_save_dir = join_manifest_path(&group_save_dir, &mother_item.path);
+        let mother_file_name = mother_item.name.clone();
+        let mother_total_bytes = mother_item.size.unwrap_or(0).max(0);
+
+        let siblings: Vec<crate::db::GroupSiblingSpec> = manifest.items[1..]
+            .iter()
+            .map(|item| crate::db::GroupSiblingSpec {
+                id: Uuid::new_v4().to_string(),
+                file_name: item.name.clone(),
+                save_dir: join_manifest_path(&group_save_dir, &item.path),
+                resolver_item: manifest_item_resolver_token(item),
+                total_bytes: item.size.unwrap_or(0).max(0),
+                status,
+            })
+            .collect();
+
+        let spec = crate::db::FissionSpec {
+            group_id,
+            group_name,
+            group_save_dir,
+            group_source_url: task.url.clone(),
+            mother_task_id: task_id.clone(),
+            mother_resolver_item,
+            mother_file_name,
+            mother_save_dir,
+            mother_total_bytes,
+            mother_status: status,
+            siblings,
+        };
+
+        if let Err(e) = self.db.fission_into_group(&spec).await {
+            let msg = format!("裂变失败: {e}");
+            let _ = self.db.update_task_status(&task_id, 4, &msg).await;
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: task_id.clone(),
+                status: 4,
+                downloaded_bytes: 0,
+                total_bytes: task.total_bytes,
+                speed: 0,
+                file_name: task.file_name.clone(),
+                save_dir: task.save_dir.clone(),
+                url: task.url.clone(),
+                error_message: msg,
+                upload_speed_bps: 0,
+            });
+            self.drain_queue().await;
+            return;
+        }
+
+        let crate::db::FissionSpec {
+            mother_file_name,
+            mother_save_dir,
+            mother_resolver_item,
+            siblings,
+            ..
+        } = spec;
+
+        if over_threshold {
+            // 全员（含母）转 paused：不启动，仅广播各自的终态进度。
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: task_id.clone(),
+                status: 2,
+                downloaded_bytes: 0,
+                total_bytes: mother_total_bytes,
+                speed: 0,
+                file_name: mother_file_name,
+                save_dir: mother_save_dir,
+                url: task.url.clone(),
+                error_message: String::new(),
+                upload_speed_bps: 0,
+            });
+            for sib in siblings {
+                self.sink.emit(EngineEvent::TaskProgress {
+                    task_id: sib.id,
+                    status: 2,
+                    downloaded_bytes: 0,
+                    total_bytes: sib.total_bytes,
+                    speed: 0,
+                    file_name: sib.file_name,
+                    save_dir: sib.save_dir,
+                    url: task.url.clone(),
+                    error_message: String::new(),
+                    upload_speed_bps: 0,
+                });
+            }
+        } else {
+            let mother_queued = QueuedTask {
+                task_id: task_id.clone(),
+                url: task.url.clone(),
+                save_dir: mother_save_dir,
+                file_name: mother_file_name,
+                segments: task.segments,
+                is_resume: false,
+                cookies: cookies.clone(),
+                referrer: referrer.clone(),
+                hint_file_size: 0,
+                torrent_file_bytes: Vec::new(),
+                proxy_url: task.proxy_url.clone(),
+                user_agent: String::new(),
+                queue_id: task.queue_id.clone(),
+                checksum: String::new(),
+                ignore_tls_errors: task.ignore_tls_errors,
+                extra_headers: extra_headers.clone(),
+                selected_file_indices: Vec::new(),
+                method: None,
+                body: None,
+                audio_url: None,
+                resolver_plugin_id: identity.clone(),
+                resolved: false,
+                range_supported: false,
+                resolver_item: mother_resolver_item,
+            };
+            self.begin_resolve_start(mother_queued).await;
+
+            for sib in siblings {
+                let sib_queued = QueuedTask {
+                    task_id: sib.id,
+                    url: task.url.clone(),
+                    save_dir: sib.save_dir,
+                    file_name: sib.file_name,
+                    segments: task.segments,
+                    is_resume: false,
+                    cookies: cookies.clone(),
+                    referrer: referrer.clone(),
+                    hint_file_size: 0,
+                    torrent_file_bytes: Vec::new(),
+                    proxy_url: task.proxy_url.clone(),
+                    user_agent: String::new(),
+                    queue_id: task.queue_id.clone(),
+                    checksum: String::new(),
+                    ignore_tls_errors: task.ignore_tls_errors,
+                    extra_headers: extra_headers.clone(),
+                    selected_file_indices: Vec::new(),
+                    method: None,
+                    body: None,
+                    audio_url: None,
+                    resolver_plugin_id: identity.clone(),
+                    resolved: false,
+                    range_supported: false,
+                    resolver_item: sib.resolver_item,
+                };
+                self.enqueue_persisted_task(sib_queued, true).await;
+            }
+        }
+
+        self.load_and_send_all_tasks().await;
+        self.send_all_groups().await;
+        self.broadcast_queue_positions();
     }
 
     /// 插件 onError 命令式重试（actor 上下文，复用 auto_retry 账本限流）。
@@ -1370,6 +1906,7 @@ impl DownloadManager {
             referrer: queued.referrer.clone(),
             user_agent: queued.user_agent.clone(),
             extra_headers: queued.extra_headers.clone(),
+            resolver_item: queued.resolver_item.clone(),
         };
         self.pending_resolve.insert(
             task_id.clone(),
@@ -1415,6 +1952,11 @@ impl DownloadManager {
                 (c, r, headers)
             })
             .unwrap_or_default();
+        let resolver_item = self
+            .db
+            .get_task_resolver_item(task_id)
+            .await
+            .unwrap_or_default();
         let req = crate::plugin::ResolveRequest {
             task_id: task_id.to_string(),
             url: task.url.clone(),
@@ -1422,6 +1964,7 @@ impl DownloadManager {
             referrer,
             user_agent: String::new(),
             extra_headers,
+            resolver_item,
         };
         self.pending_resolve.insert(
             task_id.to_string(),
@@ -2499,6 +3042,8 @@ impl DownloadManager {
             body,
             audio_url,
             start_paused,
+            group_id,
+            resolver_item,
         } = spec;
         // 任务必属队列：未指定时归入内置主队列（'' 不再是有效归属，统一
         // 覆盖旧客户端信号 / aria2 / REST / CLI 等所有创建入口）。
@@ -2619,6 +3164,37 @@ impl DownloadManager {
                 .set_task_resolver(&task_id, &resolver_plugin_id)
                 .await;
         }
+        // 任务组/二段解析标识落库（组创建 create_task_group 循环调用本函数时
+        // 传入；均为空则是普通任务，两次写入均短路跳过）。
+        if !group_id.is_empty() {
+            let _ = self.db.set_task_group(&task_id, &group_id).await;
+        }
+        if !resolver_item.is_empty() {
+            let _ = self
+                .db
+                .set_task_resolver_item(&task_id, &resolver_item)
+                .await;
+        }
+        // fail-closed：resolver_item 非空但未命中插件（或 plugins feature 关，
+        // has_resolver 恒空）→ 任务直接置 error，绝不发起对 source_url 的下载
+        // （那会把网页 HTML/分享页当直链保存）。
+        if !resolver_item.is_empty() && !has_resolver {
+            let msg = "解析插件不可用".to_string();
+            let _ = self.db.update_task_status(&task_id, 4, &msg).await;
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: task_id.clone(),
+                status: 4,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                speed: 0,
+                file_name: file_name.clone(),
+                save_dir: save_dir.clone(),
+                url: db_url.clone(),
+                error_message: msg,
+                upload_speed_bps: 0,
+            });
+            return Some(created_id);
+        }
         // BT tasks bypass the HTTP/FTP concurrency queue — they are managed
         // by the shared librqbit session with its own concurrency controls.
         let is_bt = is_magnet(&url) || !torrent_file_bytes.is_empty();
@@ -2673,7 +3249,20 @@ impl DownloadManager {
             resolver_plugin_id,
             resolved: false,
             range_supported: false,
+            resolver_item,
         };
+        self.enqueue_persisted_task(queued, has_resolver).await;
+        Some(created_id)
+    }
+
+    /// 排队分发：有容量（或 BT 恒直启）立即启动，否则入 `pending_queue` 并广播
+    /// 位置。`create_task` 尾部与清单裂变（`apply_manifest_fission`）的兄弟任务
+    /// 分发共用，避免复制粘贴（B5 契约）。`has_resolver` 为 true 时跳过
+    /// meta-probe（探测原始页面 URL 无意义，二段解析会取得真实直链）。
+    async fn enqueue_persisted_task(&mut self, queued: QueuedTask, has_resolver: bool) {
+        // 与 create_task 建任务时的判定式一致（is_torrent_file_url 未涵盖——
+        // 该分支历来只按 magnet/内嵌种子字节判定，保持原行为不变）。
+        let is_bt = is_magnet(&queued.url) || !queued.torrent_file_bytes.is_empty();
         if is_bt || (self.has_capacity() && self.has_queue_capacity(&queued.queue_id)) {
             self.do_start_task(queued).await;
             // If do_start_task failed early (e.g. BT session init), the slot
@@ -2719,7 +3308,6 @@ impl DownloadManager {
                 );
             }
         }
-        Some(created_id)
     }
 
     /// 为当前任务解析代理/UA/TLS 策略并构建一致的 HTTP 上下文。
@@ -2848,6 +3436,7 @@ impl DownloadManager {
             resolver_plugin_id: _,
             resolved: _,
             range_supported,
+            resolver_item: _,
         } = queued;
 
         // Four-tier segment count priority:
@@ -3464,6 +4053,7 @@ impl DownloadManager {
                     resolver_plugin_id: String::new(),
                     resolved: false,
                     range_supported: false,
+                    resolver_item: String::new(),
                 });
                 // 入队后立即广播最新队列位置(与 create_task 一致),否则要等后续
                 // drain_queue 才广播,期间 UI 显示过时的排队位置。
@@ -4247,6 +4837,11 @@ impl DownloadManager {
             self.clear_priority().await;
         }
 
+        // 组 GC 钩子：成员删除后清理无成员的孤儿组行（D8 生命周期）。
+        let gc_count = self.db.gc_empty_groups().await.unwrap_or(0);
+        if gc_count > 0 {
+            self.send_all_groups().await;
+        }
         // A slot freed up — try to start queued tasks.
         self.drain_queue().await;
         self.maybe_wal_checkpoint().await;
@@ -4579,6 +5174,11 @@ impl DownloadManager {
             log_info!("[manager] delete_tasks_batch DB error: {}", e);
         }
 
+        // 组 GC 钩子：批量删除后清理无成员的孤儿组行（D8 生命周期）。
+        let gc_count = self.db.gc_empty_groups().await.unwrap_or(0);
+        if gc_count > 0 {
+            self.send_all_groups().await;
+        }
         // 7. Cleanup boost state.
         for tid in task_ids {
             self.auto_paused_ids.remove(tid.as_str());
@@ -4694,6 +5294,7 @@ impl DownloadManager {
                 resolver_plugin_id: String::new(),
                 resolved: false,
                 range_supported: false,
+                resolver_item: String::new(),
             });
             // 入队后立即广播最新队列位置(覆盖单个 resume 与 batch_resume 批量入队;
             // broadcast_queue_positions 为只读信号,多次调用无副作用)。
@@ -4880,6 +5481,139 @@ impl DownloadManager {
         self.send_all_queues().await;
     }
 
+    // -----------------------------------------------------------------------
+    // Task group management（多文件任务组，B3/B4 契约）
+    // -----------------------------------------------------------------------
+
+    /// 广播全部任务组快照（组建/删除/改名/回收后调用，照 [`Self::send_all_queues`]
+    /// 模式）。
+    pub async fn send_all_groups(&self) {
+        match self.db.load_all_groups().await {
+            Ok(groups) => self.sink.emit(EngineEvent::GroupsChanged(groups)),
+            Err(e) => log_info!("[manager] load_all_groups error: {}", e),
+        }
+    }
+
+    /// 建组：`items` 为空直接返回 `None`（不建空组；即便单条目也走本方法而非
+    /// 平任务——设计文档 §7.3「选中 1 项也建组」，平任务无法携带
+    /// `resolver_item` 规格选择）。落盘目标 = `base_save_dir/sanitize(group_name)
+    /// /item.rel_path`（`group_name` 为空则直接用 `base_save_dir`）。逐成员经
+    /// [`Self::create_task`] 创建，复用其全部并发/队列/resolver 落库/
+    /// fail-closed 逻辑；结束后广播任务快照与组列表。
+    pub async fn create_task_group(&mut self, spec: CreateGroupSpec) -> Option<String> {
+        if spec.items.is_empty() {
+            return None;
+        }
+        let group_save_dir = if spec.group_name.trim().is_empty() {
+            spec.base_save_dir.clone()
+        } else {
+            PathBuf::from(&spec.base_save_dir)
+                .join(downloader::sanitize_filename(&spec.group_name))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let group_id = Uuid::new_v4().to_string();
+        if let Err(e) = self
+            .db
+            .insert_group(
+                &group_id,
+                &spec.group_name,
+                &spec.source_url,
+                &group_save_dir,
+            )
+            .await
+        {
+            log_info!("[manager] insert_group error: {}", e);
+            return None;
+        }
+        for item in &spec.items {
+            let save_dir = if item.rel_path.is_empty() {
+                group_save_dir.clone()
+            } else {
+                PathBuf::from(&group_save_dir)
+                    .join(&item.rel_path)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            self.create_task(NewTaskSpec {
+                url: spec.source_url.clone(),
+                save_dir,
+                file_name: item.file_name.clone(),
+                segments: spec.segments,
+                cookies: spec.cookies.clone(),
+                referrer: spec.referrer.clone(),
+                hint_file_size: item.size,
+                proxy_url: spec.proxy_url.clone(),
+                user_agent: spec.user_agent.clone(),
+                queue_id: spec.queue_id.clone(),
+                ignore_tls_errors: spec.ignore_tls_errors,
+                extra_headers: spec.extra_headers.clone(),
+                start_paused: spec.start_paused,
+                group_id: group_id.clone(),
+                resolver_item: item.resolver_item.clone(),
+                ..Default::default()
+            })
+            .await;
+        }
+        self.load_and_send_all_tasks().await;
+        self.send_all_groups().await;
+        Some(group_id)
+    }
+
+    /// 暂停组内成员（仅活跃/等待中的成员受影响，[`Self::pause_task`] 对非活跃
+    /// 任务是安全的空操作）。
+    pub async fn pause_group(&mut self, group_id: &str) {
+        let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
+        for id in ids {
+            self.pause_task(&id).await;
+        }
+    }
+
+    /// 恢复组内成员（暂停/出错状态的成员会被重新启动）。
+    pub async fn resume_group(&mut self, group_id: &str) {
+        let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
+        for id in ids {
+            self.resume_task(&id).await;
+        }
+    }
+
+    /// 仅重试组内失败（status=4）成员，跳过其余状态的成员。
+    pub async fn retry_group_failed(&mut self, group_id: &str) {
+        let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
+        for id in ids {
+            let is_failed = self
+                .db
+                .load_task_by_id(&id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|t| t.status == 4);
+            if is_failed {
+                self.resume_task(&id).await;
+            }
+        }
+    }
+
+    /// 删除整组：批量删除全部成员；组行由 [`Self::delete_tasks_batch`] 尾部的
+    /// GC 钩子（末个成员删除后 [`crate::db::Db::gc_empty_groups`]）自动回收。
+    pub async fn delete_group(&mut self, group_id: &str, delete_files: bool) {
+        let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
+        self.delete_tasks_batch(&ids, delete_files).await;
+    }
+
+    /// 重命名任务组。`name` trim 后为空则忽略（不清空组名）。
+    pub async fn rename_group(&mut self, group_id: &str, name: &str) {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if let Err(e) = self.db.rename_group(group_id, trimmed).await {
+            log_info!("[manager] rename_group error: {}", e);
+            return;
+        }
+        self.send_all_groups().await;
+    }
+
     /// Move a task to a different queue and broadcast the updated queue list.
     pub async fn move_task_to_queue(&mut self, task_id: String, queue_id: String) {
         // '' 已不是有效归属：兜底重映射到主队列（兼容旧客户端信号）。
@@ -4911,10 +5645,8 @@ impl DownloadManager {
         log_info!("[manager] moved task {} to queue '{}'", task_id, queue_id);
         // 定向广播归属变化：AllQueues 只带队列元数据，不带任务归属，
         // 客户端任务表若不更新会导致「移动到队列」看似无效。
-        self.sink.emit(EngineEvent::TaskQueueChanged {
-            task_id,
-            queue_id,
-        });
+        self.sink
+            .emit(EngineEvent::TaskQueueChanged { task_id, queue_id });
         self.send_all_queues().await;
     }
 
@@ -5610,6 +6342,7 @@ mod tests {
                 resolver_plugin_id: "yt@flux".into(),
                 resolved: false,
                 range_supported: false,
+                resolver_item: String::new(),
             }
         }
 

@@ -276,6 +276,28 @@ impl EventSink for RinfEventSink {
                 }
                 .send_signal_to_dart();
             }
+            EngineEvent::GroupsChanged(groups) => {
+                signals::AllGroups {
+                    groups: groups.into_iter().map(Into::into).collect(),
+                }
+                .send_signal_to_dart();
+            }
+            EngineEvent::ResolvePreviewReady {
+                preview_id,
+                name,
+                source_url,
+                items,
+                error,
+            } => {
+                signals::ResolvePreviewResult {
+                    preview_id,
+                    name,
+                    source_url,
+                    error,
+                    items: items.into_iter().map(Into::into).collect(),
+                }
+                .send_signal_to_dart();
+            }
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志，而非编译失败。
             _ => {
                 crate::logger::log_info!(

@@ -35,6 +35,7 @@ import '../services/bt_file_selection_service.dart';
 
 import 'bt_file_list_widget.dart';
 import 'dir_picker_field.dart';
+import 'manifest_select_dialog.dart';
 import 'thread_selector.dart';
 
 void showNewDownloadDialog(
@@ -169,6 +170,33 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   /// 下次收到 BtFilesInfo 时立刻发 [-1] 让 Rust 暂停任务。
   bool _btCancelPending = false;
 
+  // ── manifest 预解析状态（单条 http(s) 链接可能是多文件清单）───────────────
+  // 提交单条 http(s) 非磁力/种子链接时先探测是否为多文件清单：发
+  // ResolvePreviewRequest，等待同 previewId 的 ResolvePreviewResult（90s 超
+  // 时视同无清单）。命中清单则弹 manifest_select_dialog；无清单/error/超时/
+  // 用户取消都回退到（或中止）原有单任务创建路径，行为零差异。
+
+  /// 当前等待中的 previewId；非 null 时动作按钮进入 loading 态。
+  String? _pendingPreviewId;
+
+  /// 90s 超时计时器。
+  Timer? _previewTimeoutTimer;
+
+  /// 当前等待中的结果 Future；由 [_onResolvePreviewResult]/超时/取消三处之一
+  /// complete。
+  Completer<ResolvePreviewResult?>? _previewCompleter;
+
+  /// 用户主动取消了本次预解析等待——迟到的结果到达时已被
+  /// [_onResolvePreviewResult] 的 previewId 判空跳过；此标记额外让
+  /// `_startDownloadInner` 区分"取消"（中止整个提交）与"无清单"（继续走
+  /// 原有创建路径）。
+  bool _previewCancelled = false;
+
+  /// ResolvePreviewResult 信号订阅。
+  StreamSubscription<RustSignalPack<ResolvePreviewResult>>? _previewSub;
+
+  static int _previewIdSeq = 0;
+
   /// 根据队列 ID 计算有效的线程数选项字符串。
   ///
   /// 优先级：自定义队列的 defaultSegments → 全局 defaultSegments → null（Auto）
@@ -208,6 +236,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     _metaSub = TorrentMetaResult.rustSignalStream.listen(_onTorrentMetaResult);
     // 订阅任务进度 — 磁力等待阶段任务转 error 时跳出等待并展示错误（#379）
     _btProgressSub = TaskProgress.rustSignalStream.listen(_onBtTaskProgress);
+    // 订阅预解析结果（单条 http(s) 链接是否为多文件清单）
+    _previewSub = ResolvePreviewResult.rustSignalStream.listen(
+      _onResolvePreviewResult,
+    );
   }
 
   /// 磁力等待阶段（probing/selecting）监听任务错误信号。
@@ -432,6 +464,16 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     }
     _metaSub?.cancel();
     _btProgressSub?.cancel();
+    _previewTimeoutTimer?.cancel();
+    // dispose 期间还有预解析等待中：视同用户取消，避免 `_startDownloadInner`
+    // 的挂起协程在组件已卸载后误判"无清单"继续创建任务（对齐
+    // `_cancelPreviewResolve` 的取消语义）。
+    if (_pendingPreviewId != null) {
+      _pendingPreviewId = null;
+      _previewCancelled = true;
+    }
+    _previewCompleter?.complete(null);
+    _previewSub?.cancel();
     _urlController.removeListener(_onUrlChanged);
     _urlController.dispose();
     _urlFocusNode.dispose();
@@ -837,7 +879,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       _isProbing ||
       (_hasTorrentFiles && !_hasAnyTorrentSelection && _allTorrentsProbed);
 
-  Future<void> _startDownload({bool later = false, String? queueOverride}) async {
+  Future<void> _startDownload({
+    bool later = false,
+    String? queueOverride,
+  }) async {
     if (_isSubmitting) return;
     setState(() => _isSubmitting = true);
 
@@ -885,8 +930,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     // 队列归属挂在动作按钮上（表单不再有队列字段）：箭头菜单显式指定 >
     // 动作默认——稍后下载 → 「稍后下载」队列；开始下载 → 默认队列
     // （设置的默认下载队列 / 打开对话框时侧栏正筛选的队列）。
-    final queueId =
-        queueOverride ?? (later ? kLaterQueueId : _selectedQueueId);
+    final queueId = queueOverride ?? (later ? kLaterQueueId : _selectedQueueId);
 
     final proxyUrl = _proxyUrlController.text.trim();
     final userAgent = _userAgentController.text.trim();
@@ -943,6 +987,48 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       widget.settingsProvider.setLastDialogThreads(
         segments > 0 ? segments.toString() : 'auto',
       );
+    }
+
+    // ── 预解析：单条 http(s) 非磁力/种子/ed2k 链接，先探测是否为多文件清单 ──
+    // （contract-dart.md §选择弹窗）。多行/磁力/种子路径完全不变；外部下载·
+    // 快速小窗 v1 不接入本流程（仅完整新建下载对话框接入，此处记录偏离）。
+    if (entries.length == 1 && _isPreviewableUrl(entries.first.url)) {
+      final entry = entries.first;
+      final manifest = await _resolvePreviewIfManifest(
+        url: entry.url,
+        cookies: cookie,
+        userAgent: userAgent,
+        extraHeaders: extraHeaders,
+      );
+      if (_previewCancelled) {
+        _previewCancelled = false;
+        return; // 用户取消等待：不提交，对话框保持打开
+      }
+      if (manifest != null) {
+        // 有清单 → 弹选择框（表单对话框保持底层）；确认发出 CreateTaskGroup
+        // 并两层一起关闭，取消则回到本表单（未被改动，可编辑重新提交）。
+        if (!mounted) return;
+        final created = await showManifestSelectDialog(
+          context,
+          controller: widget.controller,
+          manifest: manifest,
+          sourceUrl: entry.url,
+          initialSaveDir: saveDir,
+          initialQueueId: queueId,
+          segments: segments,
+          cookies: cookie,
+          referrer: '',
+          userAgent: userAgent,
+          proxyUrl: proxyUrl,
+          extraHeaders: extraHeaders,
+          ignoreTlsErrors: _ignoreTlsErrors,
+          later: later,
+        );
+        if (created && mounted) Navigator.of(context).pop();
+        return;
+      }
+      // manifest == null && !_previewCancelled：无清单/error/超时 → 落入下方
+      // 原有创建路径（行为零差异）。
     }
 
     // 单条磁力链接（立即下载）：对话框保持打开，转入 loading 阶段等待
@@ -1062,6 +1148,118 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  /// 是否应对该 URL 发起预解析：单条 http(s) 链接。种子文件路径已在
+  /// `_hasTorrentFiles` 分支提前处理；磁力/ed2k 永远不匹配（无 http(s) 前缀）。
+  bool _isPreviewableUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.startsWith('http://') || lower.startsWith('https://');
+  }
+
+  String _genPreviewId() {
+    _previewIdSeq += 1;
+    return '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_$_previewIdSeq';
+  }
+
+  /// 匹配 previewId 并 complete 等待中的 Future；previewId 不匹配（迟到、或
+  /// 已被取消清空 `_pendingPreviewId`）直接忽略——满足"取消则忽略迟到结果"。
+  void _onResolvePreviewResult(RustSignalPack<ResolvePreviewResult> pack) {
+    final msg = pack.message;
+    if (_pendingPreviewId == null || msg.previewId != _pendingPreviewId) return;
+    final completer = _previewCompleter;
+    _pendingPreviewId = null;
+    _previewCompleter = null;
+    _previewTimeoutTimer?.cancel();
+    _previewTimeoutTimer = null;
+    completer?.complete(msg);
+    if (mounted) setState(() {});
+  }
+
+  /// 发 ResolvePreviewRequest 并等待结果（90s 超时视同无清单）。
+  ///
+  /// 返回非 null = 拿到清单（`items` 非空且无 `error`）；返回 null 且
+  /// [_previewCancelled] 为 false = 无清单/error/超时，调用方应回退到原有
+  /// 创建路径；返回 null 且 [_previewCancelled] 为 true = 用户主动取消，
+  /// 调用方应中止整个提交（对话框保持打开）。
+  Future<ResolvePreviewResult?> _resolvePreviewIfManifest({
+    required String url,
+    required String cookies,
+    required String userAgent,
+    required Map<String, String> extraHeaders,
+  }) async {
+    _previewCancelled = false;
+    final previewId = _genPreviewId();
+    final completer = Completer<ResolvePreviewResult?>();
+    setState(() {
+      _pendingPreviewId = previewId;
+      _previewCompleter = completer;
+    });
+    ResolvePreviewRequest(
+      previewId: previewId,
+      url: url,
+      cookies: cookies,
+      referrer: '',
+      userAgent: userAgent,
+      extraHeaders: extraHeaders,
+    ).sendSignalToRust();
+    _previewTimeoutTimer = Timer(const Duration(seconds: 90), () {
+      if (_pendingPreviewId != previewId) return;
+      _pendingPreviewId = null;
+      _previewCompleter = null;
+      _previewTimeoutTimer = null;
+      completer.complete(null);
+      if (mounted) setState(() {});
+    });
+    final result = await completer.future;
+    if (_previewCancelled) return null;
+    if (result == null) return null; // 超时
+    if (result.error.isNotEmpty || result.items.isEmpty) return null; // 无清单/失败
+    return result;
+  }
+
+  /// 用户在等待预解析结果时点了取消：忽略后续迟到结果，恢复表单可编辑，
+  /// 不提交任何任务（既不建单任务、也不弹清单选择框）。
+  void _cancelPreviewResolve() {
+    if (_pendingPreviewId == null) return;
+    _pendingPreviewId = null;
+    _previewTimeoutTimer?.cancel();
+    _previewTimeoutTimer = null;
+    _previewCancelled = true;
+    _previewCompleter?.complete(null);
+    _previewCompleter = null;
+    setState(() {});
+  }
+
+  /// 预解析等待阶段的 actions（Cancel + loading 态的主按钮）。
+  List<Widget> _buildPreviewResolveActions(S s, AppColors c) {
+    return [
+      ShadButton.outline(
+        onPressed: _cancelPreviewResolve,
+        child: Text(s.manifestResolvingCancel),
+      ),
+      ShadButton(
+        onPressed: null,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Color(0xFFFFFFFF),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              s.manifestResolvingLabel,
+              style: const TextStyle(color: Color(0xFFFFFFFF)),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -1090,9 +1288,17 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       ),
       description: _btWaitPhase == 'error'
           ? null
-          : Text(_btWaitPhase != null ? s.btWaitingFiles : s.batchDownloadDesc),
+          : Text(
+              _btWaitPhase != null
+                  ? s.btWaitingFiles
+                  : (_pendingPreviewId != null
+                        ? s.manifestResolvingLabel
+                        : s.batchDownloadDesc),
+            ),
       actions: _btWaitPhase != null
           ? _buildBtWaitActions(s, c)
+          : _pendingPreviewId != null
+          ? _buildPreviewResolveActions(s, c)
           : [
               ShadButton.outline(
                 onPressed: () => Navigator.of(context).pop(),
@@ -1116,531 +1322,564 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                 onPickQueue: (anchor) => _showQueueMenu(anchor, later: false),
               ),
             ],
-      child: Padding(
-        // 右侧留出滚动条槽位，避免 ShadDialog 的覆盖式滚动条
-        // 遮挡自定义请求头行的删除按钮（右缘交互元素）。
-        padding: const EdgeInsets.only(top: 16, bottom: 16, right: 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── BT 等待文件列表阶段 ──────────────────────────────────────────
-            if (_btWaitPhase != null) ...[
-              _buildBtWaitBody(s, c),
-            ] else if (_hasTorrentFiles) ...[
-              // ── Per-torrent header + file list ────────────────────────────
-              for (int ti = 0; ti < _torrentFilePaths.length; ti++)
-                _buildTorrentFileEntry(ti, c, s),
-              const SizedBox(height: 8),
-              // ── Add more / clear buttons ──────────────────────────────
-              Row(
-                children: [
-                  ShadButton.outline(
-                    size: ShadButtonSize.sm,
-                    enabled: !_isPicking && !_isProbing,
-                    onPressed: _pickTorrentFiles,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          LucideIcons.plus,
-                          size: 13,
-                          color: c.textSecondary,
+      child: IgnorePointer(
+        ignoring: _pendingPreviewId != null,
+        child: Opacity(
+          opacity: _pendingPreviewId != null ? 0.5 : 1,
+          child: Padding(
+            // 右侧留出滚动条槽位，避免 ShadDialog 的覆盖式滚动条
+            // 遮挡自定义请求头行的删除按钮（右缘交互元素）。
+            padding: const EdgeInsets.only(top: 16, bottom: 16, right: 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ── BT 等待文件列表阶段 ──────────────────────────────────────────
+                if (_btWaitPhase != null) ...[
+                  _buildBtWaitBody(s, c),
+                ] else if (_hasTorrentFiles) ...[
+                  // ── Per-torrent header + file list ────────────────────────────
+                  for (int ti = 0; ti < _torrentFilePaths.length; ti++)
+                    _buildTorrentFileEntry(ti, c, s),
+                  const SizedBox(height: 8),
+                  // ── Add more / clear buttons ──────────────────────────────
+                  Row(
+                    children: [
+                      ShadButton.outline(
+                        size: ShadButtonSize.sm,
+                        enabled: !_isPicking && !_isProbing,
+                        onPressed: _pickTorrentFiles,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              LucideIcons.plus,
+                              size: 13,
+                              color: c.textSecondary,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              s.openTorrentFile,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: c.textSecondary,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 4),
-                        Text(
-                          s.openTorrentFile,
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () => setState(() {
+                          _torrentFilePaths.clear();
+                          _torrentMeta.clear();
+                          _torrentSelections.clear();
+                          _probingPath = null;
+                          _isProbing = false;
+                          _probeError = '';
+                        }),
+                        child: Text(
+                          s.cancel,
                           style: TextStyle(
                             fontSize: 12,
-                            color: c.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  GestureDetector(
-                    onTap: () => setState(() {
-                      _torrentFilePaths.clear();
-                      _torrentMeta.clear();
-                      _torrentSelections.clear();
-                      _probingPath = null;
-                      _isProbing = false;
-                      _probeError = '';
-                    }),
-                    child: Text(
-                      s.cancel,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: c.textMuted,
-                        decoration: TextDecoration.underline,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-            ] else if (!_hasTorrentFiles && _btWaitPhase == null) ...[
-              // URL 输入区 — 始终多行
-              Row(
-                children: [
-                  _SectionLabel(text: s.downloadUrl, c: c),
-                  const Spacer(),
-                  if (_urlCount > 0)
-                    Text(
-                      s.urlCount(_urlCount),
-                      style: TextStyle(fontSize: 11, color: c.textMuted),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              SizedBox(
-                height: 120,
-                child: Localizations(
-                  locale: const Locale('en'),
-                  delegates: const [
-                    DefaultWidgetsLocalizations.delegate,
-                    DefaultMaterialLocalizations.delegate,
-                  ],
-                  child: Material(
-                    type: MaterialType.transparency,
-                    child: TextSelectionTheme(
-                      data: TextSelectionThemeData(
-                        selectionColor: m.textSelection(c.accent),
-                        cursorColor: c.accent,
-                        selectionHandleColor: c.accent,
-                      ),
-                      child: TextField(
-                        controller: _urlController,
-                        focusNode: _urlFocusNode,
-                        maxLines: null,
-                        expands: true,
-                        textAlignVertical: TextAlignVertical.top,
-                        cursorColor: c.accent,
-                        style: TextStyle(fontSize: 13, color: c.textPrimary),
-                        contextMenuBuilder: (context, editableTextState) {
-                          return Localizations(
-                            locale: const Locale('en'),
-                            delegates: const [
-                              DefaultWidgetsLocalizations.delegate,
-                              DefaultMaterialLocalizations.delegate,
-                            ],
-                            child: AdaptiveTextSelectionToolbar.editableText(
-                              editableTextState: editableTextState,
-                            ),
-                          );
-                        },
-                        decoration: InputDecoration(
-                          hintText: s.batchUrlPlaceholder,
-                          hintStyle: TextStyle(
-                            fontSize: 12.5,
                             color: c.textMuted,
-                          ),
-                          hintMaxLines: 5,
-                          contentPadding: const EdgeInsets.all(10),
-                          filled: true,
-                          fillColor: c.inputBg,
-                          hoverColor: Colors.transparent,
-                          border: OutlineInputBorder(
-                            borderRadius: m.brInput,
-                            borderSide: BorderSide(color: c.inputBorder),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: m.brInput,
-                            borderSide: BorderSide(color: c.inputBorder),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: m.brInput,
-                            borderSide: BorderSide(color: c.inputFocusBorder),
+                            decoration: TextDecoration.underline,
                           ),
                         ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-              // .torrent 文件选择 + TXT 导入按钮
-              Row(
-                children: [
-                  ShadButton.ghost(
-                    size: ShadButtonSize.sm,
-                    enabled: !_isPicking,
-                    onPressed: _pickTorrentFiles,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(LucideIcons.fileDown, size: 13, color: c.accent),
-                        const SizedBox(width: 6),
-                        Text(
-                          s.openTorrentFile,
-                          style: TextStyle(fontSize: 12, color: c.accent),
-                        ),
-                      ],
-                    ),
-                  ),
-                  ShadButton.ghost(
-                    size: ShadButtonSize.sm,
-                    enabled: !_isPicking,
-                    onPressed: _importFromTxt,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          LucideIcons.fileText,
-                          size: 13,
-                          color: c.textMuted,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          s.importTxtFile,
-                          style: TextStyle(fontSize: 12, color: c.textMuted),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-            ],
-
-            // 保存目录 + 线程数
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SectionLabel(text: s.saveDir, c: c),
-                      const SizedBox(height: 6),
-                      DirPickerField(
-                        path: _saveDirController.text,
-                        placeholder: s.selectSaveDir,
-                        enabled: !_isPicking,
-                        onTap: _pickSaveDir,
                       ),
                     ],
                   ),
-                ),
-                if (!_allMagnet && !_hasTorrentFiles) ...[
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    width: 110,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _SectionLabel(text: s.threads, c: c),
-                        const SizedBox(height: 6),
-                        ThreadSelector(
-                          value: selectedThreads,
-                          onChanged: (v) => setState(() {
-                            selectedThreads = v;
-                            _threadsUserModified = true;
-                          }),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
-
-            // 重命名 — 仅单条 URL 时显示（torrent 文件自动识别名称）
-            if (!_isBatch) ...[
-              const SizedBox(height: 14),
-              _SectionLabel(text: s.renameOptional, c: c),
-              const SizedBox(height: 6),
-              ShadInput(
-                controller: _renameController,
-                placeholder: Text(s.autoDetectFilename),
-              ),
-            ],
-
-            const SizedBox(height: 10),
-            // 高级选项 — 可折叠，含任务独立代理
-            GestureDetector(
-              onTap: () => setState(() => _showAdvanced = !_showAdvanced),
-              child: Row(
-                children: [
-                  Icon(
-                    _showAdvanced
-                        ? LucideIcons.chevronDown
-                        : LucideIcons.chevronRight,
-                    size: 14,
-                    color: c.textMuted,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    s.taskProxyAdvanced,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w500,
-                      color: c.textMuted,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (_showAdvanced) ...[
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  _SectionLabel(text: s.taskProxy, c: c),
-                  const SizedBox(width: 4),
-                  ShadTooltip(
-                    waitDuration: const Duration(milliseconds: 200),
-                    builder: (_) => Text(
-                      s.taskProxyFormatHint,
-                      style: const TextStyle(fontSize: 12, height: 1.5),
-                    ),
-                    child: ShadGestureDetector(
-                      cursor: SystemMouseCursors.help,
-                      child: Icon(
-                        LucideIcons.circleAlert,
-                        size: 13,
-                        color: c.textMuted,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                s.taskProxyDesc,
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
-              const SizedBox(height: 6),
-              ShadInput(
-                controller: _proxyUrlController,
-                placeholder: Text(s.taskProxyPlaceholder),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                  const SizedBox(height: 14),
+                ] else if (!_hasTorrentFiles && _btWaitPhase == null) ...[
+                  // URL 输入区 — 始终多行
+                  Row(
+                    children: [
+                      _SectionLabel(text: s.downloadUrl, c: c),
+                      const Spacer(),
+                      if (_urlCount > 0)
                         Text(
-                          s.taskIgnoreTlsErrors,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: c.textPrimary,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          s.taskIgnoreTlsErrorsDesc,
+                          s.urlCount(_urlCount),
                           style: TextStyle(fontSize: 11, color: c.textMuted),
                         ),
-                      ],
-                    ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  ShadSwitch(
-                    value: _ignoreTlsErrors,
-                    onChanged: (value) =>
-                        setState(() => _ignoreTlsErrors = value),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              _SectionLabel(text: s.userAgent, c: c),
-              const SizedBox(height: 4),
-              Text(
-                s.userAgentTaskPlaceholder,
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
+                  const SizedBox(height: 6),
                   SizedBox(
-                    width: 150,
-                    child: ShadSelect<String>(
-                      initialValue: _selectedUaPreset,
-                      options: [
-                        ShadOption(
-                          value: 'default',
-                          child: Text(s.queueUaInheritGlobal),
-                        ),
-                        ShadOption(
-                          value: 'chrome',
-                          child: Text(s.userAgentPresetChrome),
-                        ),
-                        ShadOption(
-                          value: 'firefox',
-                          child: Text(s.userAgentPresetFirefox),
-                        ),
-                        ShadOption(
-                          value: 'edge',
-                          child: Text(s.userAgentPresetEdge),
-                        ),
-                        ShadOption(
-                          value: 'safari',
-                          child: Text(s.userAgentPresetSafari),
-                        ),
-                        ShadOption(
-                          value: 'custom',
-                          child: Text(s.userAgentPresetCustom),
-                        ),
+                    height: 120,
+                    child: Localizations(
+                      locale: const Locale('en'),
+                      delegates: const [
+                        DefaultWidgetsLocalizations.delegate,
+                        DefaultMaterialLocalizations.delegate,
                       ],
-                      selectedOptionBuilder: (context, value) {
-                        final label = switch (value) {
-                          'chrome' => 'Chrome',
-                          'firefox' => 'Firefox',
-                          'edge' => 'Edge',
-                          'safari' => 'Safari',
-                          'custom' => s.userAgentPresetCustom,
-                          _ => s.queueUaInheritGlobal,
-                        };
-                        return Text(
-                          label,
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                        );
-                      },
-                      onChanged: (preset) {
-                        if (preset == null) return;
-                        setState(() => _selectedUaPreset = preset);
-                        if (preset != 'custom') {
-                          _userAgentController.text = kUaPresets[preset] ?? '';
-                        }
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ShadInput(
-                      controller: _userAgentController,
-                      placeholder: Text(s.userAgentTaskPlaceholder),
-                      onChanged: (value) {
-                        final detected = detectUaPreset(value);
-                        if (detected != _selectedUaPreset) {
-                          setState(() => _selectedUaPreset = detected);
-                        }
-                      },
-                    ),
-                  ),
-                ],
-              ),
-              // Cookie（#256）
-              const SizedBox(height: 10),
-              _SectionLabel(text: s.taskCookie, c: c),
-              const SizedBox(height: 4),
-              Text(
-                s.taskCookieDesc,
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
-              const SizedBox(height: 6),
-              ShadInput(
-                controller: _cookieController,
-                placeholder: Text(s.taskCookiePlaceholder),
-                maxLines: 2,
-              ),
-              // 哈希校验（#247/#248）
-              const SizedBox(height: 10),
-              _SectionLabel(text: s.taskChecksum, c: c),
-              const SizedBox(height: 4),
-              Text(
-                s.taskChecksumDesc,
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  SizedBox(
-                    width: 110,
-                    child: ShadSelect<String>(
-                      initialValue: _selectedHashAlgo,
-                      options: const [
-                        ShadOption(value: 'md5', child: Text('md5')),
-                        ShadOption(value: 'sha-1', child: Text('sha-1')),
-                        ShadOption(value: 'sha-256', child: Text('sha-256')),
-                        ShadOption(value: 'sha-512', child: Text('sha-512')),
-                      ],
-                      selectedOptionBuilder: (context, value) => Text(
-                        value,
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
+                      child: Material(
+                        type: MaterialType.transparency,
+                        child: TextSelectionTheme(
+                          data: TextSelectionThemeData(
+                            selectionColor: m.textSelection(c.accent),
+                            cursorColor: c.accent,
+                            selectionHandleColor: c.accent,
+                          ),
+                          child: TextField(
+                            controller: _urlController,
+                            focusNode: _urlFocusNode,
+                            maxLines: null,
+                            expands: true,
+                            textAlignVertical: TextAlignVertical.top,
+                            cursorColor: c.accent,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: c.textPrimary,
+                            ),
+                            contextMenuBuilder: (context, editableTextState) {
+                              return Localizations(
+                                locale: const Locale('en'),
+                                delegates: const [
+                                  DefaultWidgetsLocalizations.delegate,
+                                  DefaultMaterialLocalizations.delegate,
+                                ],
+                                child:
+                                    AdaptiveTextSelectionToolbar.editableText(
+                                      editableTextState: editableTextState,
+                                    ),
+                              );
+                            },
+                            decoration: InputDecoration(
+                              hintText: s.batchUrlPlaceholder,
+                              hintStyle: TextStyle(
+                                fontSize: 12.5,
+                                color: c.textMuted,
+                              ),
+                              hintMaxLines: 5,
+                              contentPadding: const EdgeInsets.all(10),
+                              filled: true,
+                              fillColor: c.inputBg,
+                              hoverColor: Colors.transparent,
+                              border: OutlineInputBorder(
+                                borderRadius: m.brInput,
+                                borderSide: BorderSide(color: c.inputBorder),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: m.brInput,
+                                borderSide: BorderSide(color: c.inputBorder),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: m.brInput,
+                                borderSide: BorderSide(
+                                  color: c.inputFocusBorder,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
-                      onChanged: (algo) {
-                        if (algo == null) return;
-                        setState(() => _selectedHashAlgo = algo);
-                      },
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ShadInput(
-                      controller: _checksumController,
-                      placeholder: Text(s.taskChecksumPlaceholder),
-                    ),
+                  const SizedBox(height: 6),
+                  // .torrent 文件选择 + TXT 导入按钮
+                  Row(
+                    children: [
+                      ShadButton.ghost(
+                        size: ShadButtonSize.sm,
+                        enabled: !_isPicking,
+                        onPressed: _pickTorrentFiles,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              LucideIcons.fileDown,
+                              size: 13,
+                              color: c.accent,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              s.openTorrentFile,
+                              style: TextStyle(fontSize: 12, color: c.accent),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ShadButton.ghost(
+                        size: ShadButtonSize.sm,
+                        enabled: !_isPicking,
+                        onPressed: _importFromTxt,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              LucideIcons.fileText,
+                              size: 13,
+                              color: c.textMuted,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              s.importTxtFile,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: c.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 8),
                 ],
-              ),
-              // 自定义请求头（#347）
-              const SizedBox(height: 10),
-              _SectionLabel(text: s.taskHeaders, c: c),
-              const SizedBox(height: 4),
-              Text(
-                s.taskHeadersDesc,
-                style: TextStyle(fontSize: 11, color: c.textMuted),
-              ),
-              const SizedBox(height: 6),
-              for (int hi = 0; hi < _headerRows.length; hi++) ...[
-                if (hi > 0) const SizedBox(height: 6),
+
+                // 保存目录 + 线程数
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Expanded(
-                      flex: 2,
-                      child: ShadInput(
-                        controller: _headerRows[hi].keyController,
-                        placeholder: Text(s.taskHeadersKeyPlaceholder),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _SectionLabel(text: s.saveDir, c: c),
+                          const SizedBox(height: 6),
+                          DirPickerField(
+                            path: _saveDirController.text,
+                            placeholder: s.selectSaveDir,
+                            enabled: !_isPicking,
+                            onTap: _pickSaveDir,
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      flex: 3,
-                      child: ShadInput(
-                        controller: _headerRows[hi].valueController,
-                        placeholder: Text(s.taskHeadersValuePlaceholder),
+                    if (!_allMagnet && !_hasTorrentFiles) ...[
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 110,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _SectionLabel(text: s.threads, c: c),
+                            const SizedBox(height: 6),
+                            ThreadSelector(
+                              value: selectedThreads,
+                              onChanged: (v) => setState(() {
+                                selectedThreads = v;
+                                _threadsUserModified = true;
+                              }),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                    GestureDetector(
-                      onTap: () => setState(() {
-                        _headerRows.removeAt(hi).dispose();
-                      }),
-                      child: Icon(LucideIcons.x, size: 16, color: c.textMuted),
-                    ),
+                    ],
                   ],
                 ),
-              ],
-              const SizedBox(height: 6),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: ShadButton.ghost(
-                  size: ShadButtonSize.sm,
-                  onPressed: () =>
-                      setState(() => _headerRows.add(_HeaderRow())),
+
+                // 重命名 — 仅单条 URL 时显示（torrent 文件自动识别名称）
+                if (!_isBatch) ...[
+                  const SizedBox(height: 14),
+                  _SectionLabel(text: s.renameOptional, c: c),
+                  const SizedBox(height: 6),
+                  ShadInput(
+                    controller: _renameController,
+                    placeholder: Text(s.autoDetectFilename),
+                  ),
+                ],
+
+                const SizedBox(height: 10),
+                // 高级选项 — 可折叠，含任务独立代理
+                GestureDetector(
+                  onTap: () => setState(() => _showAdvanced = !_showAdvanced),
                   child: Row(
-                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(LucideIcons.plus, size: 13, color: c.accent),
-                      const SizedBox(width: 6),
+                      Icon(
+                        _showAdvanced
+                            ? LucideIcons.chevronDown
+                            : LucideIcons.chevronRight,
+                        size: 14,
+                        color: c.textMuted,
+                      ),
+                      const SizedBox(width: 4),
                       Text(
-                        s.taskHeadersAdd,
-                        style: TextStyle(fontSize: 12, color: c.accent),
+                        s.taskProxyAdvanced,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w500,
+                          color: c.textMuted,
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ),
-            ],
-          ],
+                if (_showAdvanced) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _SectionLabel(text: s.taskProxy, c: c),
+                      const SizedBox(width: 4),
+                      ShadTooltip(
+                        waitDuration: const Duration(milliseconds: 200),
+                        builder: (_) => Text(
+                          s.taskProxyFormatHint,
+                          style: const TextStyle(fontSize: 12, height: 1.5),
+                        ),
+                        child: ShadGestureDetector(
+                          cursor: SystemMouseCursors.help,
+                          child: Icon(
+                            LucideIcons.circleAlert,
+                            size: 13,
+                            color: c.textMuted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    s.taskProxyDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 6),
+                  ShadInput(
+                    controller: _proxyUrlController,
+                    placeholder: Text(s.taskProxyPlaceholder),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              s.taskIgnoreTlsErrors,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: c.textPrimary,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              s.taskIgnoreTlsErrorsDesc,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: c.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      ShadSwitch(
+                        value: _ignoreTlsErrors,
+                        onChanged: (value) =>
+                            setState(() => _ignoreTlsErrors = value),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _SectionLabel(text: s.userAgent, c: c),
+                  const SizedBox(height: 4),
+                  Text(
+                    s.userAgentTaskPlaceholder,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 150,
+                        child: ShadSelect<String>(
+                          initialValue: _selectedUaPreset,
+                          options: [
+                            ShadOption(
+                              value: 'default',
+                              child: Text(s.queueUaInheritGlobal),
+                            ),
+                            ShadOption(
+                              value: 'chrome',
+                              child: Text(s.userAgentPresetChrome),
+                            ),
+                            ShadOption(
+                              value: 'firefox',
+                              child: Text(s.userAgentPresetFirefox),
+                            ),
+                            ShadOption(
+                              value: 'edge',
+                              child: Text(s.userAgentPresetEdge),
+                            ),
+                            ShadOption(
+                              value: 'safari',
+                              child: Text(s.userAgentPresetSafari),
+                            ),
+                            ShadOption(
+                              value: 'custom',
+                              child: Text(s.userAgentPresetCustom),
+                            ),
+                          ],
+                          selectedOptionBuilder: (context, value) {
+                            final label = switch (value) {
+                              'chrome' => 'Chrome',
+                              'firefox' => 'Firefox',
+                              'edge' => 'Edge',
+                              'safari' => 'Safari',
+                              'custom' => s.userAgentPresetCustom,
+                              _ => s.queueUaInheritGlobal,
+                            };
+                            return Text(
+                              label,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            );
+                          },
+                          onChanged: (preset) {
+                            if (preset == null) return;
+                            setState(() => _selectedUaPreset = preset);
+                            if (preset != 'custom') {
+                              _userAgentController.text =
+                                  kUaPresets[preset] ?? '';
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ShadInput(
+                          controller: _userAgentController,
+                          placeholder: Text(s.userAgentTaskPlaceholder),
+                          onChanged: (value) {
+                            final detected = detectUaPreset(value);
+                            if (detected != _selectedUaPreset) {
+                              setState(() => _selectedUaPreset = detected);
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  // Cookie（#256）
+                  const SizedBox(height: 10),
+                  _SectionLabel(text: s.taskCookie, c: c),
+                  const SizedBox(height: 4),
+                  Text(
+                    s.taskCookieDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 6),
+                  ShadInput(
+                    controller: _cookieController,
+                    placeholder: Text(s.taskCookiePlaceholder),
+                    maxLines: 2,
+                  ),
+                  // 哈希校验（#247/#248）
+                  const SizedBox(height: 10),
+                  _SectionLabel(text: s.taskChecksum, c: c),
+                  const SizedBox(height: 4),
+                  Text(
+                    s.taskChecksumDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 110,
+                        child: ShadSelect<String>(
+                          initialValue: _selectedHashAlgo,
+                          options: const [
+                            ShadOption(value: 'md5', child: Text('md5')),
+                            ShadOption(value: 'sha-1', child: Text('sha-1')),
+                            ShadOption(
+                              value: 'sha-256',
+                              child: Text('sha-256'),
+                            ),
+                            ShadOption(
+                              value: 'sha-512',
+                              child: Text('sha-512'),
+                            ),
+                          ],
+                          selectedOptionBuilder: (context, value) => Text(
+                            value,
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                          onChanged: (algo) {
+                            if (algo == null) return;
+                            setState(() => _selectedHashAlgo = algo);
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ShadInput(
+                          controller: _checksumController,
+                          placeholder: Text(s.taskChecksumPlaceholder),
+                        ),
+                      ),
+                    ],
+                  ),
+                  // 自定义请求头（#347）
+                  const SizedBox(height: 10),
+                  _SectionLabel(text: s.taskHeaders, c: c),
+                  const SizedBox(height: 4),
+                  Text(
+                    s.taskHeadersDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 6),
+                  for (int hi = 0; hi < _headerRows.length; hi++) ...[
+                    if (hi > 0) const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: ShadInput(
+                            controller: _headerRows[hi].keyController,
+                            placeholder: Text(s.taskHeadersKeyPlaceholder),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 3,
+                          child: ShadInput(
+                            controller: _headerRows[hi].valueController,
+                            placeholder: Text(s.taskHeadersValuePlaceholder),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTap: () => setState(() {
+                            _headerRows.removeAt(hi).dispose();
+                          }),
+                          child: Icon(
+                            LucideIcons.x,
+                            size: 16,
+                            color: c.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: ShadButton.ghost(
+                      size: ShadButtonSize.sm,
+                      onPressed: () =>
+                          setState(() => _headerRows.add(_HeaderRow())),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(LucideIcons.plus, size: 13, color: c.accent),
+                          const SizedBox(width: 6),
+                          Text(
+                            s.taskHeadersAdd,
+                            style: TextStyle(fontSize: 12, color: c.accent),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );

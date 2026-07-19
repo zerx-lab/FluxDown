@@ -1,5 +1,7 @@
 //! Repro for issue #111: `TaskDto` must expose the task referrer on the wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use fluxdown_api::types::TaskDto;
 use fluxdown_engine::model::TaskInfo;
 
@@ -24,6 +26,7 @@ fn task_dto_json_carries_referrer() {
         segments: 0,
         queue_order: 0,
         referrer: "https://example.com/page".to_string(),
+        group_id: String::new(),
     };
     let dto = TaskDto::from(info);
     assert_eq!(dto.referrer, "https://example.com/page");

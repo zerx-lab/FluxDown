@@ -63,6 +63,10 @@ pub struct TaskInfo {
     pub queue_order: i32,
     /// Source page URL captured by the browser extension (empty = none).
     pub referrer: String,
+    /// 所属任务组 ID（空 = 不属于任何组）。多文件任务组裂变/建组时写入；
+    /// `resolver_item`（二段解析标识）不进本结构，走专用 getter
+    /// [`crate::db::Db::get_task_resolver_item`]（与 `resolver_plugin_id` 惯例一致）。
+    pub group_id: String,
 }
 
 /// 命名队列元数据。字段对应 `hub::signals::QueueInfo`。
@@ -165,4 +169,45 @@ pub struct TorrentMetaResult {
     pub files: Vec<BtFileEntry>,
     /// 解析失败时非空。
     pub error: String,
+}
+
+/// 任务组元数据（多文件任务组的壳，纯逻辑聚合层——不参与调度/限速，见
+/// `docs/multi-file-task-group-design.md` §4.3）。字段对应
+/// `hub::signals::GroupInfo`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupInfo {
+    pub group_id: String,
+    pub name: String,
+    /// 原始分享/清单链接（展示/复制用）。
+    pub source_url: String,
+    /// 组根目录（`base_save_dir/sanitize(name)`），子任务落盘 = 本值 +
+    /// 清单条目的相对路径。
+    pub save_dir: String,
+    /// Unix seconds 时间戳。
+    pub created_at: String,
+}
+
+/// 预解析清单的单个条目（供 [`crate::events::EngineEvent::ResolvePreviewReady`]
+/// 展示，字段对应 `hub::signals::ManifestItemInfo`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestItemInfo {
+    /// 插件自定义标识，回传 `resolver_item` 用（不透明字符串，引擎不解释语义）。
+    pub id: String,
+    pub name: String,
+    /// 相对组根目录的子路径（空 = 根）。
+    pub path: String,
+    /// 已知大小（字节），未知为 0。
+    pub size: i64,
+    /// 可选规格（画质/格式），空 = 无规格选择。
+    pub variants: Vec<ManifestVariantInfo>,
+}
+
+/// [`ManifestItemInfo::variants`] 的单个规格。字段对应
+/// `hub::signals::ManifestVariantInfo`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestVariantInfo {
+    pub id: String,
+    pub label: String,
+    /// 已知大小（字节），未知为 0。
+    pub size: i64,
 }

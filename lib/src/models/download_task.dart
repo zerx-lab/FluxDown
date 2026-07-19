@@ -192,7 +192,12 @@ class SplitEventData {
   final bool isProactive;
   final int totalSegments;
 
-  const SplitEventData({
+  /// 事件接收时刻（本地时间），供详情面板日志 Tab 展示时间戳。
+  /// 未显式传入时默认当前时刻——构造点（controller `_onSplitEvent`）
+  /// 自然带上真实接收时间，无需逐处修改调用点。
+  final DateTime receivedAt;
+
+  SplitEventData({
     required this.parentIndex,
     required this.parentNewEnd,
     required this.childIndex,
@@ -200,7 +205,8 @@ class SplitEventData {
     required this.childEnd,
     required this.isProactive,
     required this.totalSegments,
-  });
+    DateTime? receivedAt,
+  }) : receivedAt = receivedAt ?? DateTime.now();
 }
 
 class DownloadTask {
@@ -256,8 +262,25 @@ class DownloadTask {
 
   /// 当前任务是否显式接受无效 HTTPS 证书。
   final bool ignoreTlsErrors;
+
+  /// 任务哈希校验值（用户创建时可选填写，供高级 Tab 展示；空 = 未设置）。
+  final String checksum;
+
+  /// 任务独立代理（空 = 跟随全局代理设置）。
+  final String proxyUrl;
+
   /// Source page URL captured by the browser extension (empty = none).
   final String referrer;
+
+  /// 所属任务组 ID（空字符串 = 不属于任何组）。TaskProgress 信号不携带
+  /// group_id（先到时暂空——组归属不像队列存在「归属未知」占位哨兵需求，
+  /// 组建/裂变操作后引擎必发 AllTasks 全量快照，随即被真实值覆盖，见
+  /// `applyProgress`/`_onProgress` 「new task from progress」分支）。
+  final String groupId;
+
+  // ── 站点分桶键（惰性缓存；见 view_prefs/list_entity 站点分组维度）──
+  String? _siteKeyCache;
+  String? _siteLabelCache;
 
   DownloadTask({
     required this.id,
@@ -280,6 +303,9 @@ class DownloadTask {
     this.configuredSegments = 0,
     this.ignoreTlsErrors = false,
     this.referrer = '',
+    this.groupId = '',
+    this.checksum = '',
+    this.proxyUrl = '',
     this.completedAt,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
@@ -307,6 +333,9 @@ class DownloadTask {
       configuredSegments: info.segments,
       ignoreTlsErrors: info.ignoreTlsErrors,
       referrer: info.referrer,
+      groupId: info.groupId,
+      checksum: info.checksum,
+      proxyUrl: info.proxyUrl,
       createdAt: seconds > 0
           ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000)
           : DateTime.now(),
@@ -338,6 +367,9 @@ class DownloadTask {
     int? configuredSegments,
     bool? ignoreTlsErrors,
     String? referrer,
+    String? groupId,
+    String? checksum,
+    String? proxyUrl,
     DateTime? createdAt,
     DateTime? completedAt,
   }) {
@@ -362,6 +394,9 @@ class DownloadTask {
       configuredSegments: configuredSegments ?? this.configuredSegments,
       ignoreTlsErrors: ignoreTlsErrors ?? this.ignoreTlsErrors,
       referrer: referrer ?? this.referrer,
+      groupId: groupId ?? this.groupId,
+      checksum: checksum ?? this.checksum,
+      proxyUrl: proxyUrl ?? this.proxyUrl,
       createdAt: createdAt ?? this.createdAt,
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
     );
@@ -488,6 +523,12 @@ class DownloadTask {
     return 'HTTP';
   }
 
+  /// 站点分桶键（注册域聚合，磁力/BT 归一为 `bt`）。首次访问后缓存在本实例上。
+  String get siteKey => _siteKeyCache ??= extractSiteKey(url);
+
+  /// 站点展示 label（保留离用户最近的一级子域）。首次访问后缓存在本实例上。
+  String get siteLabel => _siteLabelCache ??= extractSiteLabel(url);
+
   /// 副标题信息
   String get subtitle {
     final s = currentS;
@@ -569,6 +610,81 @@ class DownloadTask {
     final value = bytes / pow(1024, i);
     return '${value.toStringAsFixed(value >= 100 ? 0 : 1)} ${units[i]}';
   }
+}
+
+// =============================================================================
+// 站点分桶键提取（view_prefs 站点分组维度 / list_entity siteKey 聚合键）
+// =============================================================================
+
+/// 二级公共后缀表：域名以此结尾时，注册域取最后 3 段而非 2 段
+/// （如 `foo.com.cn` 是注册域，而非误判为 `com.cn`）。仅收录高频后缀，
+/// 非详尽 Public Suffix List——零外联纪律下的内置精简表。
+const Set<String> kTwoLevelPublicSuffixes = {
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn',
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk',
+  'com.au', 'net.au', 'org.au',
+  'co.jp', 'ne.jp', 'or.jp',
+  'co.kr', 'ne.kr',
+  'com.hk', 'com.tw', 'com.sg', 'com.br',
+};
+
+/// 从 URL 识别的粗粒度协议 token（与 [DownloadTask.protocolLabel] 语义一致，
+/// 但不依赖 DownloadTask 实例，供纯函数式站点提取复用）。
+String _protocolToken(String url) {
+  final lower = url.toLowerCase();
+  if (lower.startsWith('magnet:') || lower.startsWith('torrent-file://')) {
+    return 'BT';
+  }
+  if (lower.startsWith('ftp://')) return 'FTP';
+  if (lower.startsWith('ed2k://')) return 'ED2K';
+  return 'HTTP';
+}
+
+/// 解析并规范化 host：小写化 + 去除 `www.` 前缀；解析失败/无 host 返回空串。
+String _normalizedHost(String url) {
+  final uri = Uri.tryParse(url);
+  var host = (uri?.host ?? '').toLowerCase();
+  if (host.startsWith('www.')) host = host.substring(4);
+  return host;
+}
+
+/// 由规范化 host 推导注册域（去子域聚合，如 `pan.baidu.com`→`baidu.com`；
+/// `foo.bar.com.cn`→`bar.com.cn`）。
+String _registrableDomain(String host) {
+  final labels = host.split('.');
+  if (labels.length <= 2) return host;
+  final lastTwo = '${labels[labels.length - 2]}.${labels[labels.length - 1]}';
+  if (kTwoLevelPublicSuffixes.contains(lastTwo) && labels.length >= 3) {
+    return labels.sublist(labels.length - 3).join('.');
+  }
+  return lastTwo;
+}
+
+/// 从 URL 提取站点分桶键（注册域聚合，去 `www.`；磁力/BT 协议归一为固定
+/// `bt`；host 解析失败的其它协议回退为协议 token 小写形式，保证分桶键
+/// 永不为空）。同一注册域下所有子域聚合进同一桶
+/// （`pan.baidu.com`/`www.baidu.com` 同归 `baidu.com`）。
+String extractSiteKey(String url) {
+  if (_protocolToken(url) == 'BT') return 'bt';
+  final host = _normalizedHost(url);
+  if (host.isEmpty) return _protocolToken(url).toLowerCase();
+  return _registrableDomain(host);
+}
+
+/// 从 URL 提取站点展示 label：与 [extractSiteKey] 共享同一分桶语义，但展示
+/// 更具体——保留离用户最近的一级子域（如 `pan.baidu.com`），更深的子域链
+/// 收敛掉；磁力/BT 显示为「BT · 磁力」（design-proto-spec §2 `siteLabel`
+/// 唯一特例）。
+String extractSiteLabel(String url) {
+  if (_protocolToken(url) == 'BT') return currentS.viewSiteBt;
+  final host = _normalizedHost(url);
+  if (host.isEmpty) return _protocolToken(url);
+  final registrable = _registrableDomain(host);
+  final hostLabels = host.split('.');
+  final registrableLabels = registrable.split('.');
+  if (hostLabels.length <= registrableLabels.length) return registrable;
+  final keepFrom = hostLabels.length - registrableLabels.length - 1;
+  return hostLabels.sublist(keepFrom).join('.');
 }
 
 // =============================================================================

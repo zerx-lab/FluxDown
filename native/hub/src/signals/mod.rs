@@ -331,6 +331,9 @@ pub struct TaskInfo {
     /// Source page URL captured by the browser extension (empty = none).
     #[serde(default)]
     pub referrer: String,
+    /// 所属任务组 ID（空 = 不属于任何组）。
+    #[serde(default)]
+    pub group_id: String,
 }
 
 /// 文件跟踪：一批已完成任务的「文件已丢失」标志变化（Rust → Dart）。
@@ -1305,4 +1308,130 @@ pub struct YtdlpInstallProgress {
 pub struct YtdlpInstallResult {
     pub ok: bool,
     pub message: String,
+}
+
+// ========== 任务组 / 清单预解析（多文件任务组） ==========
+
+/// Dart 请求前置预解析清单（多文件分享/合集链接，建组对话框展示用）。
+/// 只读、不建任务、不写库；结果经 [`ResolvePreviewResult`] 回传。
+#[derive(Deserialize, DartSignal)]
+pub struct ResolvePreviewRequest {
+    /// 由 Dart 生成，[`ResolvePreviewResult.preview_id`] 原样回传用于匹配。
+    pub preview_id: String,
+    pub url: String,
+    pub cookies: String,
+    pub referrer: String,
+    pub user_agent: String,
+    pub extra_headers: std::collections::HashMap<String, String>,
+}
+
+/// [`ResolvePreviewRequest`] 的结果（Rust → Dart）。`items` 为空且 `error`
+/// 为空 = 插件未返回清单（Dart 应回退普通单任务创建对话框）；`error` 非空 =
+/// 预解析失败（同样回退，`error` 供 UI 提示）。
+#[derive(Serialize, RustSignal)]
+pub struct ResolvePreviewResult {
+    pub preview_id: String,
+    pub name: String,
+    pub source_url: String,
+    /// 无错误时为空。
+    pub error: String,
+    pub items: Vec<ManifestItemDto>,
+}
+
+/// [`ResolvePreviewResult.items`] 的单个清单条目。
+#[derive(Serialize, SignalPiece)]
+pub struct ManifestItemDto {
+    /// 插件自定义标识，建组时按 `<id>` 或 `<id>@<variantId>` 拼进
+    /// [`GroupItemEntry.resolver_item`]。
+    pub id: String,
+    pub name: String,
+    /// 相对组根目录的子路径（空 = 根）。
+    pub path: String,
+    /// 已知大小（字节），未知为 0。
+    pub size: i64,
+    pub variants: Vec<ManifestVariantDto>,
+}
+
+/// [`ManifestItemDto.variants`] 的单个规格（画质/格式）。
+#[derive(Serialize, SignalPiece)]
+pub struct ManifestVariantDto {
+    pub id: String,
+    pub label: String,
+    /// 已知大小（字节），未知为 0。
+    pub size: i64,
+}
+
+/// Dart 请求建立多文件任务组（用户在预览对话框确认条目选择后发送）。
+#[derive(Deserialize, DartSignal)]
+pub struct CreateTaskGroup {
+    /// 原始分享/清单链接（组行 `source_url`，展示/复制用）。
+    pub source_url: String,
+    /// 组名（空 = 组根目录直接用 `save_dir`）。
+    pub group_name: String,
+    /// 基础保存目录（组根目录 = `save_dir/sanitize(group_name)`）。
+    pub save_dir: String,
+    pub queue_id: String,
+    pub segments: i32,
+    pub cookies: String,
+    pub referrer: String,
+    pub user_agent: String,
+    pub proxy_url: String,
+    pub extra_headers: std::collections::HashMap<String, String>,
+    pub ignore_tls_errors: bool,
+    /// 稍后下载：true = 建组后不启动，待「启动队列」或用户手动恢复。
+    pub start_paused: bool,
+    pub items: Vec<GroupItemEntry>,
+}
+
+/// [`CreateTaskGroup.items`] 的单个组成员条目（用户在预览对话框勾选后的
+/// 清单条目/规格投影）。
+#[derive(Deserialize, SignalPiece)]
+pub struct GroupItemEntry {
+    /// 二段解析标识，按 `<itemId>` 或 `<itemId>@<variantId>` 拼接（见
+    /// [`ManifestItemDto.id`]/[`ManifestVariantDto.id`]）。
+    pub resolver_item: String,
+    pub file_name: String,
+    /// 相对组根目录的子路径（空 = 组根）。
+    pub rel_path: String,
+    /// 已知大小（字节，0 = 未知）。
+    pub size: i64,
+}
+
+/// Dart 请求对一个任务组执行操作（暂停/恢复/重试失败/删除）。
+#[derive(Deserialize, DartSignal)]
+pub struct GroupControl {
+    pub group_id: String,
+    /// 0=pause, 1=resume, 2=retry_failed, 3=delete(记录+文件),
+    /// 4=delete(仅记录)。
+    pub action: i32,
+}
+
+/// Dart 请求重命名任务组。`name` trim 后为空则忽略。
+#[derive(Deserialize, DartSignal)]
+pub struct RenameGroup {
+    pub group_id: String,
+    pub name: String,
+}
+
+/// Dart 请求全量任务组快照（结果经 [`AllGroups`] 回传）。
+#[derive(Deserialize, DartSignal)]
+pub struct RequestAllGroups {}
+
+/// 全量任务组快照（Rust → Dart）。组建/删除/改名/回收(GC)后发送。
+#[derive(Serialize, RustSignal)]
+pub struct AllGroups {
+    pub groups: Vec<GroupInfo>,
+}
+
+/// 单个任务组元数据（[`AllGroups.groups`] 的成员）。
+#[derive(Serialize, SignalPiece)]
+pub struct GroupInfo {
+    pub group_id: String,
+    pub name: String,
+    /// 原始分享/清单链接（展示/复制用）。
+    pub source_url: String,
+    /// 组根目录（子任务落盘 = 本值 + 清单条目的相对路径）。
+    pub save_dir: String,
+    /// Unix seconds 时间戳。
+    pub created_at: String,
 }

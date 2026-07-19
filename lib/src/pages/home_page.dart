@@ -9,8 +9,10 @@ import '../../main.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
+import '../models/list_entity.dart';
 import '../models/plugin_provider.dart';
 import '../models/settings_provider.dart';
+import '../models/view_prefs.dart';
 import '../services/external_download_service.dart';
 import '../services/cloud/config_sync_service.dart';
 import '../services/log_service.dart';
@@ -25,6 +27,7 @@ import '../widgets/header_bar.dart';
 import '../widgets/task_tab_bar.dart';
 import '../widgets/task_list.dart';
 import '../widgets/detail_panel.dart';
+import '../widgets/group_detail_panel.dart';
 import '../widgets/status_bar.dart';
 import '../widgets/new_download_dialog.dart';
 import '../widgets/task_list_item.dart';
@@ -55,6 +58,8 @@ class _HomePageState extends State<HomePage> {
   final _settingsProvider = SettingsProvider();
   final _pluginProvider = PluginProvider();
   final _headerBarKey = GlobalKey<HeaderBarState>();
+  /// 任务列表视图系统偏好 store（全局 + 按状态页签覆盖层，contract-dart.md）。
+  final _viewPrefsStore = ViewPrefsStore();
 
   // 页面切换
   bool _showSettings = false;
@@ -208,6 +213,7 @@ class _HomePageState extends State<HomePage> {
     _controller.onSegmentsUpdateResult = null;
     _controller.dispose();
     _settingsProvider.dispose();
+    _viewPrefsStore.dispose();
     super.dispose();
     logInfo('HomePage', 'dispose done');
   }
@@ -317,7 +323,9 @@ class _HomePageState extends State<HomePage> {
   /// 当选中任务被删除后，controller.selectedTask 变为 null，
   /// 此时自动关闭详情面板。
   void _onControllerChanged() {
-    if (_isDetailOpen && _controller.selectedTask == null) {
+    if (_isDetailOpen &&
+        _controller.selectedTask == null &&
+        _controller.selectedGroupId == null) {
       setState(() => _isDetailOpen = false);
     }
   }
@@ -401,8 +409,160 @@ class _HomePageState extends State<HomePage> {
       );
       return true;
     }
+    // ── 视图系统快捷键（contract-dart.md §入口/面板/快捷键）——
+    // 沿用「输入框聚焦时跳过」守卫，避免拦截搜索框等文本输入。
+    if (!_isTextFieldFocused) {
+      final tab = _controller.statusTab.name;
+      final shift = HardwareKeyboard.instance.isShiftPressed;
+
+      // V → 循环形态 列表↔网格
+      if (!isMod && !shift && event.logicalKey == LogicalKeyboardKey.keyV) {
+        _viewPrefsStore.update(
+          tab,
+          (p) => p.copyWith(
+            form: p.form == ViewForm.list ? ViewForm.grid : ViewForm.list,
+          ),
+        );
+        return true;
+      }
+
+      // Shift+D → 切换密度 舒适↔紧凑
+      if (!isMod && shift && event.logicalKey == LogicalKeyboardKey.keyD) {
+        _viewPrefsStore.update(
+          tab,
+          (p) => p.copyWith(
+            density: p.density == ViewDensity.comfortable
+                ? ViewDensity.compact
+                : ViewDensity.comfortable,
+          ),
+        );
+        return true;
+      }
+
+      // G → 循环分组维度
+      if (!isMod && !shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+        _viewPrefsStore.update(tab, (p) {
+          final idx = kGroupByCycle.indexOf(p.groupBy);
+          return p.copyWith(
+            groupBy: kGroupByCycle[(idx + 1) % kGroupByCycle.length],
+          );
+        });
+        return true;
+      }
+
+      // S → 循环排序键（重置为该键默认方向）
+      if (!isMod && !shift && event.logicalKey == LogicalKeyboardKey.keyS) {
+        _viewPrefsStore.update(tab, (p) {
+          final idx = kSortKeyCycle.indexOf(p.sortKey);
+          final next = kSortKeyCycle[(idx + 1) % kSortKeyCycle.length];
+          return p.copyWith(sortKey: next, sortDir: kSortKeyDefaultDir[next]);
+        });
+        return true;
+      }
+
+      // ↑/↓ → 跨组行导航（拼接全部分桶实体，忽略折叠态——见实现说明）
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _navigateSelection(-1);
+        return true;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        _navigateSelection(1);
+        return true;
+      }
+
+      // Space → 暂停/恢复选中任务
+      if (event.logicalKey == LogicalKeyboardKey.space) {
+        _toggleSelectedPauseResume();
+        return true;
+      }
+    }
 
     return false;
+  }
+
+  /// 是否有文本输入组件（TextField/ShadInput 等，内部均落到 [EditableText]）
+  /// 持有焦点——全局单字母快捷键（V/G/S/Shift+D/↑↓/Space）必须在此时让路，
+  /// 否则会拦截用户在搜索框等处的正常输入。Ctrl/Cmd 组合键与 Esc/Del 不受
+  /// 此守卫影响（现状行为不变）。
+  bool get _isTextFieldFocused {
+    final focus = FocusManager.instance.primaryFocus;
+    final ctx = focus?.context;
+    if (ctx == null) return false;
+    if (ctx.widget is EditableText) return true;
+    var found = false;
+    ctx.visitAncestorElements((element) {
+      if (element.widget is EditableText) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
+  /// 当前视图分桶展开后的可导航实体（跨组连续，忽略 TaskList 内部折叠态
+  /// ——折叠桶内的行虽不可见，仍可通过键盘导航选中并驱动详情面板；已知的
+  /// 有限简化，记录在案）。只含顶层任务/组行（design-proto-spec §13
+  /// 「跨组导航：取 listMount 内所有 task/group 的 id 序」），组展开产出的
+  /// 成员/目录行不参与键盘序列（不是 proto `selectedId` 的语义域）。
+  List<ListEntity> _navigableEntities() {
+    final prefs = _viewPrefsStore.resolve(_controller.statusTab.name);
+    final sections = _controller.buildListSections(prefs);
+    return [
+      for (final section in sections)
+        for (final entity in section.entities)
+          if (entity is TaskEntity || entity is GroupEntity) entity,
+    ];
+  }
+
+  void _navigateSelection(int delta) {
+    final entities = _navigableEntities();
+    if (entities.isEmpty) return;
+    final currentId =
+        _controller.selectedTaskId ?? _controller.selectedGroupId;
+    final currentIndex = currentId == null
+        ? -1
+        : entities.indexWhere((e) => e.id == currentId);
+    final nextIndex = currentIndex == -1
+        ? (delta > 0 ? 0 : entities.length - 1)
+        : (currentIndex + delta).clamp(0, entities.length - 1);
+    final next = entities[nextIndex];
+    if (next is GroupEntity) {
+      _controller.selectGroup(next.groupId);
+    } else {
+      _controller.selectTask(next.id);
+    }
+    setState(() => _isDetailOpen = true);
+  }
+
+  void _toggleSelectedPauseResume() {
+    final groupId = _controller.selectedGroupId;
+    if (groupId != null) {
+      _controller.toggleGroupPauseResume(groupId);
+      return;
+    }
+    final id = _controller.selectedTaskId;
+    if (id == null) return;
+    DownloadTask? task;
+    for (final t in _controller.tasks) {
+      if (t.id == id) {
+        task = t;
+        break;
+      }
+    }
+    if (task == null) return;
+    switch (task.status) {
+      case TaskStatus.downloading:
+      case TaskStatus.pending:
+      case TaskStatus.preparing:
+      case TaskStatus.resuming:
+        _controller.pauseTask(id);
+      case TaskStatus.paused:
+      case TaskStatus.error:
+        _controller.resumeTask(id);
+      case TaskStatus.completed:
+        break;
+    }
   }
 
   /// 点击任务行：
@@ -421,14 +581,46 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// 点击组行 / 组卡：同 [_toggleDetail] 语义，选中组与选中任务互斥。
+  void _toggleDetailGroup(String groupId) {
+    final isSame = _controller.selectedGroupId == groupId;
+    if (isSame && _isDetailOpen) {
+      _controller.selectGroup(null);
+      setState(() => _isDetailOpen = false);
+    } else {
+      _controller.selectGroup(groupId);
+      setState(() => _isDetailOpen = true);
+    }
+  }
+
   void _closeDetail() {
     _controller.selectTask(null);
+    _controller.selectGroup(null);
     setState(() => _isDetailOpen = false);
   }
 
   void _toggleDetailPosition() {
     setState(() => _detailOnRight = !_detailOnRight);
     KvStore.instance.setBool('detail_panel_on_right', _detailOnRight);
+  }
+
+  /// 详情面板二选一：选中组时渲染 [GroupDetailPanel]，否则渲染任务
+  /// [DetailPanel]（selectTask/selectGroup 互斥，见 download_controller.dart）。
+  Widget _buildDetailPanel({required bool isBottom}) {
+    if (_controller.selectedGroupId != null) {
+      return GroupDetailPanel(
+        controller: _controller,
+        onClose: _closeDetail,
+        isBottom: isBottom,
+        onTogglePosition: _toggleDetailPosition,
+      );
+    }
+    return DetailPanel(
+      controller: _controller,
+      onClose: _closeDetail,
+      isBottom: isBottom,
+      onTogglePosition: _toggleDetailPosition,
+    );
   }
 
   /// 根据总宽度计算 sidebar 的实际最大值
@@ -492,12 +684,7 @@ class _HomePageState extends State<HomePage> {
             children: [
               const SizedBox(height: 40),
               Expanded(
-                child: DetailPanel(
-                  controller: _controller,
-                  onClose: _closeDetail,
-                  isBottom: false,
-                  onTogglePosition: _toggleDetailPosition,
-                ),
+                child: _buildDetailPanel(isBottom: false),
               ),
             ],
           ),
@@ -540,7 +727,9 @@ class _HomePageState extends State<HomePage> {
             flex: _isDetailOpen ? 1 : 2,
             child: TaskList(
               controller: _controller,
+              viewPrefsStore: _viewPrefsStore,
               onTaskTap: _toggleDetail,
+              onGroupTap: _toggleDetailGroup,
               onNewDownload: () => showNewDownloadDialog(
                 context,
                 _controller,
@@ -566,12 +755,7 @@ class _HomePageState extends State<HomePage> {
             ),
             SizedBox(
               height: _detailHeight,
-              child: DetailPanel(
-                controller: _controller,
-                onClose: _closeDetail,
-                isBottom: true,
-                onTogglePosition: _toggleDetailPosition,
-              ),
+              child: _buildDetailPanel(isBottom: true),
             ),
           ],
         ],
@@ -677,6 +861,7 @@ class _HomePageState extends State<HomePage> {
                 StatusBar(
                   controller: _controller,
                   settingsProvider: _settingsProvider,
+                  viewPrefsStore: _viewPrefsStore,
                 ),
               ],
             ),

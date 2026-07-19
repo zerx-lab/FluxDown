@@ -30,6 +30,7 @@ impl From<model::TaskInfo> for signals::TaskInfo {
             segments: t.segments,
             queue_order: t.queue_order,
             referrer: t.referrer,
+            group_id: t.group_id,
         }
     }
 }
@@ -117,6 +118,40 @@ impl From<model::TorrentMetaResult> for signals::TorrentMetaResult {
             total_bytes: r.total_bytes,
             files: r.files.into_iter().map(Into::into).collect(),
             error: r.error,
+        }
+    }
+}
+
+impl From<model::GroupInfo> for signals::GroupInfo {
+    fn from(g: model::GroupInfo) -> Self {
+        Self {
+            group_id: g.group_id,
+            name: g.name,
+            source_url: g.source_url,
+            save_dir: g.save_dir,
+            created_at: g.created_at,
+        }
+    }
+}
+
+impl From<model::ManifestVariantInfo> for signals::ManifestVariantDto {
+    fn from(v: model::ManifestVariantInfo) -> Self {
+        Self {
+            id: v.id,
+            label: v.label,
+            size: v.size,
+        }
+    }
+}
+
+impl From<model::ManifestItemInfo> for signals::ManifestItemDto {
+    fn from(i: model::ManifestItemInfo) -> Self {
+        Self {
+            id: i.id,
+            name: i.name,
+            path: i.path,
+            size: i.size,
+            variants: i.variants.into_iter().map(Into::into).collect(),
         }
     }
 }
