@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use fluxdown_api::types::{QueueDto, TaskDto};
+use fluxdown_api::types::{GroupDto, QueueDto, TaskDto};
 use fluxdown_engine::components::{FfmpegStatus, FfmpegVersions, YtdlpStatus, YtdlpVersions};
 use fluxdown_engine::model::{
     BtFileEntry, HlsQualityOption, QueuePosition, ResolveVariantOption, SegmentDetail,
@@ -217,6 +217,9 @@ pub enum WsServerMsg {
     /// 插件表发生增删改（安装/卸载/启停/设置变更）；空载荷 ping，客户端收到后
     /// 全量 invalidate 插件列表查询。
     PluginsChanged {},
+    /// 任务组列表变化（组建/删除/改名/回收后）；组进度仍由前端按
+    /// `groupId` 对 `taskProgress` SUM 聚合，本消息不含进度字段。
+    GroupsChanged { groups: Vec<GroupDto> },
     /// 组件安装/下载进度（`component` 固定 `"ffmpeg"`；`totalBytes=0` 表示未知）。
     ComponentProgress {
         component: String,
@@ -657,6 +660,7 @@ mod tests {
             file_missing: false,
             completed_at: String::new(),
             referrer: String::new(),
+            group_id: String::new(),
         }
     }
 

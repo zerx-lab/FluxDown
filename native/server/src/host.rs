@@ -18,13 +18,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
 use fluxdown_api::types::{
-    CreateTaskRequest, DownloadRequest, MarketEntryDto, PluginDto, QueueDto, TaskDto,
+    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, MarketEntryDto, PluginDto,
+    QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 use fluxdown_engine::db::Db;
+use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec};
 use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::actor::ActorCmd;
+use crate::config::default_save_dir;
 use crate::wire::WsServerMsg;
 use crate::ws_hub::WsHub;
 
@@ -97,6 +100,15 @@ impl ServerApiHost {
     /// 任务存在性检查（写操作前置），不存在 → 404。
     async fn ensure_task_exists(&self, task_id: &str) -> Result<(), ApiError> {
         match self.db.load_task_by_id(task_id).await {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(ApiError::NotFound),
+            Err(e) => Err(ApiError::Internal(e.to_string())),
+        }
+    }
+
+    /// 任务组存在性检查（写操作前置），不存在 → 404。
+    async fn ensure_group_exists(&self, group_id: &str) -> Result<(), ApiError> {
+        match self.db.load_group_by_id(group_id).await {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(ApiError::NotFound),
             Err(e) => Err(ApiError::Internal(e.to_string())),
@@ -399,12 +411,161 @@ impl ApiHost for ServerApiHost {
         fluxdown_engine::plugin::dependencies::missing_components(&self.db, &self.data_dir, &perms)
             .await
     }
+
+    // -- 任务组与前置预解析（Phase D：docs/multi-file-task-group-design.md）--
+
+    /// 前置预解析：写操作经 `ActorCmd::ResolvePreview` + oneshot 回执；
+    /// wire↔engine 转换（`ResolvePreviewOutcome` → `ResolvePreviewResponse`、
+    /// `ManifestItemInfo` → `PreviewItemDto`）在此完成。
+    async fn resolve_preview(
+        &self,
+        req: ResolvePreviewRequest,
+    ) -> Result<ResolvePreviewResponse, ApiError> {
+        let ResolvePreviewRequest {
+            url,
+            cookies,
+            referrer,
+            user_agent,
+            extra_headers,
+        } = req;
+        let source_url = url.clone();
+        let outcome = self
+            .send_cmd(|ack| ActorCmd::ResolvePreview {
+                url,
+                cookies,
+                referrer,
+                user_agent,
+                extra_headers,
+                ack,
+            })
+            .await?;
+        Ok(ResolvePreviewResponse {
+            name: outcome.name,
+            source_url,
+            error: outcome.error,
+            items: outcome
+                .items
+                .into_iter()
+                .map(manifest_item_to_preview_dto)
+                .collect(),
+        })
+    }
+
+    /// 创建多文件任务组：wire→engine 转换（`CreateGroupRequest` →
+    /// `CreateGroupSpec`）在此完成，`save_dir` 空值兜底与
+    /// `ActorCmd::CreateTask` 分支同款（config 表 `default_save_dir` →
+    /// 平台默认下载目录）。
+    async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
+        demo_guard(self.demo_url.as_deref(), &req.source_url)?;
+        let mut base_save_dir = req.save_dir;
+        if base_save_dir.trim().is_empty() {
+            base_save_dir = self
+                .db
+                .get_config("default_save_dir")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+        }
+        if base_save_dir.trim().is_empty() {
+            base_save_dir = default_save_dir();
+        }
+        let spec = CreateGroupSpec {
+            source_url: req.source_url,
+            group_name: req.group_name,
+            base_save_dir,
+            queue_id: req.queue_id,
+            segments: req.segments,
+            cookies: req.cookies,
+            referrer: req.referrer,
+            user_agent: req.user_agent,
+            proxy_url: req.proxy_url,
+            extra_headers: req.extra_headers,
+            ignore_tls_errors: req.ignore_tls_errors,
+            start_paused: req.start_paused,
+            items: req
+                .items
+                .into_iter()
+                .map(|it| GroupItemSpec {
+                    resolver_item: it.resolver_item,
+                    file_name: it.file_name,
+                    rel_path: it.rel_path,
+                    size: it.size,
+                })
+                .collect(),
+        };
+        self.send_cmd(|ack| ActorCmd::CreateGroup {
+            spec: Box::new(spec),
+            ack,
+        })
+        .await?
+    }
+
+    /// 列出全部任务组：直查 `Db`（与 `list_tasks`/`list_queues` 同款读写分离）。
+    async fn list_groups(&self) -> Result<Vec<GroupDto>, ApiError> {
+        self.db
+            .load_all_groups()
+            .await
+            .map(|groups| groups.into_iter().map(GroupDto::from).collect())
+            .map_err(|e| ApiError::Internal(e.to_string()))
+    }
+
+    async fn group_pause(&self, group_id: &str) -> Result<(), ApiError> {
+        self.ensure_group_exists(group_id).await?;
+        self.send_cmd(|ack| ActorCmd::GroupPause {
+            group_id: group_id.to_string(),
+            ack,
+        })
+        .await
+    }
+
+    async fn group_continue(&self, group_id: &str) -> Result<(), ApiError> {
+        self.ensure_group_exists(group_id).await?;
+        self.send_cmd(|ack| ActorCmd::GroupContinue {
+            group_id: group_id.to_string(),
+            ack,
+        })
+        .await
+    }
+
+    async fn group_delete(&self, group_id: &str, delete_files: bool) -> Result<(), ApiError> {
+        self.ensure_group_exists(group_id).await?;
+        self.send_cmd(|ack| ActorCmd::GroupDelete {
+            group_id: group_id.to_string(),
+            delete_files,
+            ack,
+        })
+        .await
+    }
+}
+
+/// 把插件清单条目转换为 REST 预解析响应 DTO（`server` 侧 wire↔engine
+/// 转换，见 [`ServerApiHost::resolve_preview`]）。
+fn manifest_item_to_preview_dto(
+    item: fluxdown_engine::model::ManifestItemInfo,
+) -> fluxdown_api::types::PreviewItemDto {
+    fluxdown_api::types::PreviewItemDto {
+        id: item.id,
+        name: item.name,
+        path: item.path,
+        size: item.size,
+        variants: item
+            .variants
+            .into_iter()
+            .map(|v| fluxdown_api::types::PreviewVariantDto {
+                id: v.id,
+                label: v.label,
+                size: v.size,
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use fluxdown_api::types::GroupItemRequest;
 
     const DEMO: &str = "https://example.com/demo.bin";
 
@@ -525,5 +686,87 @@ mod tests {
         let ev = rx.recv().await.expect("task event");
         assert_eq!(ev.task_id, "t1");
         assert_eq!(ev.kind, fluxdown_api::service::TaskEventKind::Start);
+    }
+
+    #[tokio::test]
+    async fn create_task_group_rejects_when_demo_mode_blocks_source_url() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        let hub = Arc::new(WsHub::new(4));
+        let host = ServerApiHost::new(
+            db,
+            cmd_tx,
+            hub,
+            Some(DEMO.to_string()),
+            None,
+            None,
+            std::env::temp_dir(),
+        );
+        let req = CreateGroupRequest {
+            source_url: "https://evil.example/share".to_string(),
+            group_name: "x".to_string(),
+            save_dir: String::new(),
+            queue_id: String::new(),
+            segments: 0,
+            cookies: String::new(),
+            referrer: String::new(),
+            user_agent: String::new(),
+            proxy_url: String::new(),
+            extra_headers: HashMap::new(),
+            ignore_tls_errors: false,
+            start_paused: false,
+            items: vec![GroupItemRequest {
+                resolver_item: "a".to_string(),
+                file_name: "a.bin".to_string(),
+                rel_path: String::new(),
+                size: 0,
+            }],
+        };
+        let result = host.create_task_group(req).await;
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+        // 演示模式在发送 ActorCmd 前已拒绝，actor 通道不应收到任何命令。
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn group_actions_return_not_found_for_unknown_group() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let hub = Arc::new(WsHub::new(4));
+        let host = ServerApiHost::new(db, cmd_tx, hub, None, None, None, std::env::temp_dir());
+        assert!(matches!(
+            host.group_pause("missing").await,
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            host.group_continue("missing").await,
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            host.group_delete("missing", false).await,
+            Err(ApiError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_groups_reads_from_db_as_camel_case_dto() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.insert_group("g1", "合集", "https://x/share", "/downloads/合集")
+            .await
+            .expect("insert group");
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let hub = Arc::new(WsHub::new(4));
+        let host = ServerApiHost::new(db, cmd_tx, hub, None, None, None, std::env::temp_dir());
+        let groups = host.list_groups().await.expect("list groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, "g1");
+        assert_eq!(groups[0].name, "合集");
+        assert_eq!(groups[0].save_dir, "/downloads/合集");
     }
 }

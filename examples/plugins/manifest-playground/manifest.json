@@ -1,0 +1,38 @@
+{
+  "identity": "fluxdown@manifest-playground",
+  "name": "Manifest Playground (测试)",
+  "version": "1.0.0",
+  "description": "多嵌套文件夹/多文件清单测试插件：拦截 *://manifest.test/* 链接，初段返回覆盖全部边界形态的清单（8 级深链单链合并、逐级带文件的分叉目录、根级散件、大小未知、超长文件名、规格变体、千项压测），二段按设置的直链前缀返回真实下载地址。用于验证新建任务的清单选择弹窗、任务组创建与二段惰性解析。",
+  "homepage": "https://fluxdown.zerx.dev",
+  "minAppVersion": "0.1.44",
+  "resolvers": [
+    {
+      "match": { "urls": ["*://manifest.test/*"] },
+      "entry": "resolve.js",
+      "timeoutMs": 10000,
+      "multi": true
+    }
+  ],
+  "settings": [
+    {
+      "key": "dataset",
+      "title": "数据集",
+      "description": "normal = 嵌套边界样例（约 100 项，含深链/散件/未知大小）；stress = 千项压测（1000 项，虚拟化验证）",
+      "type": "string",
+      "widget": "select",
+      "options": [
+        { "value": "normal", "label": "嵌套边界样例" },
+        { "value": "stress", "label": "千项压测 (1000)" }
+      ],
+      "default": "normal"
+    },
+    {
+      "key": "target",
+      "title": "二段直链",
+      "description": "每个选中条目在启动时实际下载的地址（追加 ?item=<resolverItem> 查询串）。留空 = 二段放行原始链接，下载会失败——仅用于验证弹窗/建组/稍后下载流程",
+      "type": "string",
+      "widget": "text",
+      "default": ""
+    }
+  ]
+}

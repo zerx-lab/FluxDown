@@ -1467,36 +1467,49 @@ class S {
   // 预解析清单选择弹窗（manifest*）
   // ─────────────────────────────────────────────
   String get manifestDialogTitle => _r('manifestDialogTitle');
-  String manifestDialogDesc(int count) =>
-      _r('manifestDialogDesc', {'count': count});
-  String get manifestGroupNameLabel => _r('manifestGroupNameLabel');
   String get manifestGroupNamePlaceholder => _r('manifestGroupNamePlaceholder');
+  String get manifestGroupNameTooltip => _r('manifestGroupNameTooltip');
   String manifestSummary(int count, String size) =>
       _r('manifestSummary', {'count': count, 'size': size});
-  String manifestSuggestionText(int count) =>
-      _r('manifestSuggestionText', {'count': count});
-  String get manifestSuggestionApply => _r('manifestSuggestionApply');
-  String get manifestIntentLabel => _r('manifestIntentLabel');
-  String manifestCategoryChip(String name, int count, String size) =>
-      _r('manifestCategoryChip', {'name': name, 'count': count, 'size': size});
+  String get manifestPluginBadge => _r('manifestPluginBadge');
+  String get manifestSearchPlaceholder => _r('manifestSearchPlaceholder');
+  String get manifestSortByName => _r('manifestSortByName');
+  String get manifestSortBySizeDesc => _r('manifestSortBySizeDesc');
   String get manifestSelectAll => _r('manifestSelectAll');
   String get manifestInvertSelection => _r('manifestInvertSelection');
-  String get manifestFilesLabel => _r('manifestFilesLabel');
-  String get manifestExpandAll => _r('manifestExpandAll');
-  String get manifestCollapseAll => _r('manifestCollapseAll');
-  String get manifestTreeSelectVisible => _r('manifestTreeSelectVisible');
+  String get manifestClearSelection => _r('manifestClearSelection');
+  String get manifestBreadcrumbUpTooltip => _r('manifestBreadcrumbUpTooltip');
+  String get manifestBreadcrumbMoreTooltip =>
+      _r('manifestBreadcrumbMoreTooltip');
+  String manifestSearchResultCount(int count) =>
+      _r('manifestSearchResultCount', {'count': count});
   String get manifestTreeEmpty => _r('manifestTreeEmpty');
-  String get manifestQualityPolicyLabel => _r('manifestQualityPolicyLabel');
-  String get manifestQualityHighest => _r('manifestQualityHighest');
-  String get manifestQuality1080p => _r('manifestQuality1080p');
-  String get manifestQuality720p => _r('manifestQuality720p');
-  String get manifestQualityLowest => _r('manifestQualityLowest');
-  String manifestQualityFallbackHint(int count) =>
-      _r('manifestQualityFallbackHint', {'count': count});
-  String get manifestAdjustPerItem => _r('manifestAdjustPerItem');
-  String get manifestQueueLabel => _r('manifestQueueLabel');
+  String manifestItemsCount(int count) =>
+      _r('manifestItemsCount', {'count': count});
+  String get manifestDirSizeUnknown => _r('manifestDirSizeUnknown');
+  String get manifestFileSizeUnknown => _r('manifestFileSizeUnknown');
+  String get manifestAdvancedToggle => _r('manifestAdvancedToggle');
+  String get manifestAdvancedHint => _r('manifestAdvancedHint');
+  String get manifestAdvancedDotTooltip => _r('manifestAdvancedDotTooltip');
+  String get manifestProxyHint => _r('manifestProxyHint');
+  String get manifestSegmentsHint => _r('manifestSegmentsHint');
+  String get manifestIgnoreTlsHint => _r('manifestIgnoreTlsHint');
+  String get manifestUaCustomPlaceholder => _r('manifestUaCustomPlaceholder');
+  String get manifestCookieHint => _r('manifestCookieHint');
+  String get manifestHeadersHint => _r('manifestHeadersHint');
+  String manifestStartToQueue(String name) =>
+      _r('manifestStartToQueue', {'name': name});
+  String manifestLaterToQueue(String name) =>
+      _r('manifestLaterToQueue', {'name': name});
+  String get manifestNoSelection => _r('manifestNoSelection');
   String manifestSelectedSummary(int count, String size) =>
       _r('manifestSelectedSummary', {'count': count, 'size': size});
+  String manifestSelectedSummaryApprox(int count, String size) =>
+      _r('manifestSelectedSummaryApprox', {'count': count, 'size': size});
+  String manifestUnknownSizeNote(int count) =>
+      _r('manifestUnknownSizeNote', {'count': count});
+  String manifestStartDownloadWithCount(int count) =>
+      _r('manifestStartDownloadWithCount', {'count': count});
   String get manifestResolvingLabel => _r('manifestResolvingLabel');
   String get manifestResolvingCancel => _r('manifestResolvingCancel');
 

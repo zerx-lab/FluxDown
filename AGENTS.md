@@ -271,7 +271,7 @@ x_down/
 |`widgets/quick_download_dialog.dart`|快速下载对话框（主窗口内回退路径 + 悬浮球拖链入口；表单主体复用 quick_download_form）|
 |`widgets/quick_download_form.dart`|快速下载共享表单（URL/目录/线程/重命名 + 高级选项：任务代理/UA/Cookie 预填可编辑/哈希校验）。动作区与新建下载对话框同构：「开始下载 ▾」/「稍后下载 ▾」拆分按钮，队列选择挂在动作上。经 QuickDownloadFormHost 抽象隔离全局单例，主窗口对话框与独立小窗共用|
 | `widgets/hls_quality_dialog.dart` | HLS 画质选择。M3U8 多码率选择，显示带宽/分辨率 |
-| `widgets/manifest_select_dialog.dart` | manifest 前置选择弹窗（多文件任务组入口）。摘要区（组名可编辑+N 项·总大小）、智能建议条（本地剧集启发式）、意图按钮组（按文件类型一键选集）、虚拟化文件树（三态勾选/扩展名筛选 chips/单链目录折叠/缩进封顶 4 级）、规格策略 segmented（最高/1080P/720P/最省+次优回退汇总+逐项调整）、底栏（目录/队列/已选计数/确认随原意图）。确认发 CreateTaskGroup（resolver_item=`<itemId>`或`<itemId>@<variantId>`，≥1 项一律建组）。配套 `manifest_select_tree.dart` 树行渲染 |
+| `widgets/manifest_select_dialog.dart` | manifest 前置选择弹窗（多文件任务组入口，v1.6 下钻导航版）。摘要区（组名可编辑+N 项·总大小·来源站点·插件解析徽标）、工具栏（搜索全部层级+扩展名 chips 频次前 7+全选反选清空+按名称/大小排序）、面包屑条（深度唯一去处，>4 段折叠⋯）、文件列表（零缩进，目录三态勾选+单链合并+进入箭头，虚拟化 34px 行）、高级选项折叠面板（代理/线程数/忽略证书/UA/Cookie/请求头，组级）、底栏（保存目录预览+已选计数+双拆分按钮）。确认发 CreateTaskGroup（resolver_item 恒为 `<itemId>`，规格选择留给插件默认档）。纯逻辑见 `models/manifest_selection.dart`+`models/manifest_breadcrumb.dart`；渲染拆 `manifest_browse_list.dart`（文件列表）/`manifest_advanced_panel.dart`（高级选项）/`manifest_dialog_chrome.dart`（摘要/工具栏/面包屑/底栏） |
 |`widgets/queue_manager_dialog.dart`|队列管理对话框（三 Tab：设置/定时/任务顺序 + 即时启停）与「移动到队列」选择框。设置含名称（内置队列锁定）/限速/并发/线程/目录/UA；定时含实时语义摘要 + 时刻网格选择器（点字段弹出左右布局面板：小时列 4×6 / 分钟列 5min 步进 3×4，同一次会话自由选小时+分钟、实时回填、点面板外才关，纯选择杜绝乱填，清除回空态 = 该边沿不定时）+ 星期位掩码；任务 Tab 上移/下移即时持久化 queue_order|
 | `widgets/update_changelog_dialog.dart` | 版本更新对话框。Markdown 渲染更新日志，立即更新/稍后提醒 |
 | `widgets/feedback_dialog.dart` | 反馈对话框。提交到 GitHub Issues |
@@ -432,7 +432,7 @@ CREATE TABLE queues (
 |探活|`GET /ping`|总开关|无|
 |脚本接管|`POST /download`、`/download/batch`|`local_server_takeover_enabled`|`X-FluxDown-Client` 头 + 可选 token|
 |aria2 兼容|`POST /jsonrpc`（36 方法全覆盖：addUri/addTorrent/tellStatus·Active·Waiting·Stopped/pause·unpause·remove(+force/All)/getFiles·getUris·getOption/get·changeGlobalOption/getGlobalStat/purge·removeDownloadResult/getVersion·getSessionInfo/multicall·listMethods·listNotifications；getPeers·getServers 返空、saveSession·changeOption 降级 OK、addMetalink·changePosition·changeUri·shutdown 明确拒绝 code:1。GID=task_id UUID 去连字符前 16 hex，支持前缀反查；业务错误统一 aria2 风格 code:1；multicall 信封免鉴权、子调用各自带 token）|`local_server_jsonrpc_enabled`|可选 token（`X-FluxDown-Token` 头或 `params[0]="token:xxx"`）|
-|管理 API|`GET /api/v1/info`、`GET/POST /api/v1/tasks`、`GET/DELETE /api/v1/tasks/{id}`、`PUT /api/v1/tasks/{id}/pause\|continue`、`PUT /api/v1/tasks/pause\|continue`、`GET /api/v1/queues`|`local_server_api_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`）|
+|管理 API|`GET /api/v1/info`、`GET/POST /api/v1/tasks`、`GET/DELETE /api/v1/tasks/{id}`、`PUT /api/v1/tasks/{id}/pause\|continue`、`PUT /api/v1/tasks/pause\|continue`、`GET /api/v1/queues`、`POST /api/v1/resolve/preview`（插件多文件清单预解析，只读）、`GET/POST /api/v1/groups`（任务组列表/建组+子任务）、`DELETE /api/v1/groups/{id}?deleteFiles=`、`PUT /api/v1/groups/{id}/pause\|continue`（`TaskDto.groupId` 标记成员归属，组进度由客户端聚合）|`local_server_api_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`）|
 |MCP|`POST /mcp`（initialize / tools/list / tools/call / ping；9 个下载管理工具）|`local_server_mcp_enabled`|**强制** token（`Authorization: Bearer` 或 `X-FluxDown-Token`，与管理 API 共用）|
 |API 文档|`GET /api/v1/openapi.json`（OpenAPI 3.1）|`local_server_api_enabled`|无（纯接口描述，不含数据）|
 

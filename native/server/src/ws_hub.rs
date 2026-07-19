@@ -321,6 +321,11 @@ impl EventSink for EngineEventSink {
                 plugin_id,
                 running,
             },
+            // 组名/删除/回收需要实时传导给 web 客户端（组进度仍由前端按
+            // groupId 对 taskProgress SUM 聚合，本消息不含进度字段）。
+            EngineEvent::GroupsChanged(groups) => WsServerMsg::GroupsChanged {
+                groups: groups.into_iter().map(Into::into).collect(),
+            },
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志。
             other => {
                 log_info!("[ws-hub] unhandled engine event: {:?}", other);
@@ -619,6 +624,29 @@ mod tests {
         assert_eq!(v["queues"][0]["queueId"], "q1");
         assert_eq!(v["queues"][0]["speedLimitKbps"], 256);
         assert_eq!(v["queues"][0]["maxConcurrent"], 2);
+    }
+
+    #[tokio::test]
+    async fn engine_event_sink_maps_groups_changed_to_camel_case_json() {
+        use fluxdown_engine::model::GroupInfo;
+
+        let hub = Arc::new(WsHub::new(16));
+        let mut rx = hub.events.subscribe();
+        let sink = EngineEventSink(Arc::clone(&hub));
+
+        sink.emit(EngineEvent::GroupsChanged(vec![GroupInfo {
+            group_id: "g1".into(),
+            name: "合集".into(),
+            source_url: "https://example.com/share".into(),
+            save_dir: "/downloads/合集".into(),
+            created_at: "1700000000".into(),
+        }]));
+
+        let json = rx.recv().await.expect("broadcast recv");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["type"], "groupsChanged");
+        assert_eq!(v["groups"][0]["groupId"], "g1");
+        assert_eq!(v["groups"][0]["saveDir"], "/downloads/合集");
     }
 
     #[tokio::test]

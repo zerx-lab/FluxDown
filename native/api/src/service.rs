@@ -13,7 +13,8 @@ use tokio::sync::broadcast;
 use async_trait::async_trait;
 
 use crate::types::{
-    CreateTaskRequest, DownloadRequest, MarketEntryDto, PluginDto, QueueDto, TaskDto,
+    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, MarketEntryDto, PluginDto,
+    QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组
@@ -196,11 +197,65 @@ pub trait ApiHost: Send + Sync {
         let _ = identity;
         Vec::new()
     }
+
+    // -- 任务组与前置预解析（Phase D：docs/multi-file-task-group-design.md）--
+    // 默认实现降级为「未接线宿主」：resolve/list 返回空表，写操作报不支持——
+    // 与插件系统的默认实现同一纪律，保 CLI 等纯客户端 `ApiHost` 实现不破。
+
+    /// 前置预解析（多文件清单）：只读、不建任务、不写库。默认空结果
+    /// （`items`/`error` 均空，客户端应回退普通单任务创建）。
+    async fn resolve_preview(
+        &self,
+        req: ResolvePreviewRequest,
+    ) -> Result<ResolvePreviewResponse, ApiError> {
+        let _ = req;
+        Ok(ResolvePreviewResponse {
+            name: String::new(),
+            source_url: String::new(),
+            error: String::new(),
+            items: Vec::new(),
+        })
+    }
+
+    /// 创建多文件任务组（建组 + N 子任务），返回新组 ID。
+    async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
+        let _ = req;
+        Err(groups_unsupported())
+    }
+
+    /// 列出全部任务组。默认空表。
+    async fn list_groups(&self) -> Result<Vec<GroupDto>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// 暂停组内全部成员。宿主实现须先校验组存在，不存在 → [`ApiError::NotFound`]。
+    async fn group_pause(&self, group_id: &str) -> Result<(), ApiError> {
+        let _ = group_id;
+        Err(groups_unsupported())
+    }
+
+    /// 恢复组内全部成员。宿主实现须先校验组存在，不存在 → [`ApiError::NotFound`]。
+    async fn group_continue(&self, group_id: &str) -> Result<(), ApiError> {
+        let _ = group_id;
+        Err(groups_unsupported())
+    }
+
+    /// 删除整组（批量删成员）。`delete_files = true` 时同时删除磁盘文件。
+    /// 宿主实现须先校验组存在，不存在 → [`ApiError::NotFound`]。
+    async fn group_delete(&self, group_id: &str, delete_files: bool) -> Result<(), ApiError> {
+        let _ = (group_id, delete_files);
+        Err(groups_unsupported())
+    }
 }
 
 /// 未支持插件的宿主（如纯 aria2 客户端场景）的统一错误。
 fn plugins_unsupported() -> ApiError {
     ApiError::Internal("plugins not supported by this host".to_string())
+}
+
+/// 未支持任务组的宿主的统一错误。
+fn groups_unsupported() -> ApiError {
+    ApiError::Internal("task groups not supported by this host".to_string())
 }
 
 /// 任务生命周期事件类别，一一对应 aria2 的 6 种 WS 通知。

@@ -37,7 +37,10 @@ use crate::mcp::handle_mcp;
 use crate::routes;
 use crate::service::{ApiError, ApiHost, UNKNOWN_ENDPOINT_MESSAGE};
 use crate::takeover::parse_batch;
-use crate::types::{CreateTaskRequest, CreatedTask, DownloadRequest};
+use crate::types::{
+    CreateGroupRequest, CreateGroupResponse, CreateTaskRequest, CreatedTask, DownloadRequest,
+    ResolvePreviewRequest,
+};
 
 /// 请求体大小上限：4 MB（足够容纳批量 URL 列表）。
 const MAX_BODY_SIZE: usize = 4 * 1024 * 1024;
@@ -234,6 +237,14 @@ fn register_core(state: AppState) -> Router<AppState> {
             .route(routes::API_TASK_PAUSE, put(api_pause_task))
             .route(routes::API_TASK_CONTINUE, put(api_continue_task))
             .route(routes::API_QUEUES, get(api_list_queues))
+            .route(routes::API_RESOLVE_PREVIEW, post(api_resolve_preview))
+            .route(
+                routes::API_GROUPS,
+                get(api_list_groups).post(api_create_group),
+            )
+            .route(routes::API_GROUP, axum::routing::delete(api_delete_group))
+            .route(routes::API_GROUP_PAUSE, put(api_group_pause))
+            .route(routes::API_GROUP_CONTINUE, put(api_group_continue))
             .route(routes::API_PLUGINS, get(api_list_plugins))
             .route(routes::API_PLUGINS_INSTALL, post(api_install_plugin))
             .route(
@@ -740,6 +751,177 @@ pub(crate) async fn api_list_queues(State(state): State<AppState>, headers: Head
         Ok(queues) => Json(queues).into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 任务组与前置预解析（/api/v1/groups*、/api/v1/resolve/preview，全强制 token；
+// docs/multi-file-task-group-design.md Phase D）
+// ---------------------------------------------------------------------------
+
+/// 前置预解析清单（多文件清单，只读、不建任务、不写库）。强制鉴权——
+/// 会触发插件网络调用（网盘 API），与管理 API 其余端点同一门禁。
+#[utoipa::path(post, path = "/api/v1/resolve/preview", tag = "groups",
+    request_body = ResolvePreviewRequest,
+    responses(
+        (status = 200, description = "预解析结果（items 为空且 error 为空 = 插件未返回清单）", body = crate::types::ResolvePreviewResponse),
+        (status = 400, description = "载荷非法或缺少 url", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_resolve_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: ResolvePreviewRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid resolve preview payload: {e}"),
+            );
+        }
+    };
+    if req.url.trim().is_empty() {
+        return result_response(StatusCode::BAD_REQUEST, false, "url is required");
+    }
+    match state.host.resolve_preview(req).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 列出全部任务组。
+#[utoipa::path(get, path = "/api/v1/groups", tag = "groups",
+    responses(
+        (status = 200, description = "任务组列表", body = Vec<crate::types::GroupDto>),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_list_groups(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.list_groups().await {
+        Ok(groups) => Json(groups).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 创建多文件任务组（建组 + N 子任务），返回新组 ID。`items` 为空 → 400。
+#[utoipa::path(post, path = "/api/v1/groups", tag = "groups",
+    request_body = CreateGroupRequest,
+    responses(
+        (status = 200, description = "创建成功", body = CreateGroupResponse),
+        (status = 400, description = "载荷非法或 items 为空", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+        (status = 503, description = "应用关闭中", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_create_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: CreateGroupRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid create group payload: {e}"),
+            );
+        }
+    };
+    if req.items.is_empty() {
+        return result_response(StatusCode::BAD_REQUEST, false, "items is required");
+    }
+    match state.host.create_task_group(req).await {
+        Ok(group_id) => Json(CreateGroupResponse { group_id }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteGroupQuery {
+    /// true = 同时删除磁盘文件。默认 false（仅删记录）。
+    #[serde(default)]
+    delete_files: bool,
+}
+
+/// 删除任务组（批量删成员），可选同时删除磁盘文件。
+#[utoipa::path(delete, path = "/api/v1/groups/{id}", tag = "groups",
+    params(("id" = String, Path, description = "任务组 ID（UUID）"), DeleteGroupQuery),
+    responses(
+        (status = 200, description = "已删除", body = crate::types::ResultMessage),
+        (status = 404, description = "任务组不存在", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_delete_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<DeleteGroupQuery>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    ack(state.host.group_delete(&id, q.delete_files).await)
+}
+
+/// 暂停组内全部成员。
+#[utoipa::path(put, path = "/api/v1/groups/{id}/pause", tag = "groups",
+    params(("id" = String, Path, description = "任务组 ID（UUID）")),
+    responses(
+        (status = 200, description = "已暂停", body = crate::types::ResultMessage),
+        (status = 404, description = "任务组不存在", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_group_pause(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    ack(state.host.group_pause(&id).await)
+}
+
+/// 恢复组内全部成员。
+#[utoipa::path(put, path = "/api/v1/groups/{id}/continue", tag = "groups",
+    params(("id" = String, Path, description = "任务组 ID（UUID）")),
+    responses(
+        (status = 200, description = "已恢复", body = crate::types::ResultMessage),
+        (status = 404, description = "任务组不存在", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_group_continue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    ack(state.host.group_continue(&id).await)
 }
 
 // ---------------------------------------------------------------------------

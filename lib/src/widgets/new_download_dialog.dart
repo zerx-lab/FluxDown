@@ -1010,7 +1010,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         if (!mounted) return;
         final created = await showManifestSelectDialog(
           context,
-          controller: widget.controller,
+          queues: widget.controller.queues,
           manifest: manifest,
           sourceUrl: entry.url,
           initialSaveDir: saveDir,

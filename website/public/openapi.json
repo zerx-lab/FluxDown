@@ -16,6 +16,304 @@
     }
   ],
   "paths": {
+    "/api/v1/groups": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "列出全部任务组。",
+        "operationId": "api_list_groups",
+        "responses": {
+          "200": {
+            "description": "任务组列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "创建多文件任务组（建组 + N 子任务），返回新组 ID。`items` 为空 → 400。",
+        "operationId": "api_create_group",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateGroupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法或 items 为空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "应用关闭中",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/groups/{id}": {
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "删除任务组（批量删成员），可选同时删除磁盘文件。",
+        "operationId": "api_delete_group",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务组 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deleteFiles",
+            "in": "path",
+            "description": "true = 同时删除磁盘文件。默认 false（仅删记录）。",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已删除",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务组不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/groups/{id}/continue": {
+      "put": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "恢复组内全部成员。",
+        "operationId": "api_group_continue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务组 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已恢复",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务组不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/groups/{id}/pause": {
+      "put": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "暂停组内全部成员。",
+        "operationId": "api_group_pause",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务组 ID（UUID）",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已暂停",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务组不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
     "/api/v1/info": {
       "get": {
         "tags": [
@@ -503,6 +801,65 @@
                   "items": {
                     "$ref": "#/components/schemas/QueueDto"
                   }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/resolve/preview": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "前置预解析清单（多文件清单，只读、不建任务、不写库）。强制鉴权——\n会触发插件网络调用（网盘 API），与管理 API 其余端点同一门禁。",
+        "operationId": "api_resolve_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolvePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "预解析结果（items 为空且 error 为空 = 插件未返回清单）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvePreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法或缺少 url",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
                 }
               }
             }
@@ -1226,6 +1583,82 @@
           }
         }
       },
+      "CreateGroupRequest": {
+        "type": "object",
+        "description": "创建多文件任务组请求（`POST /api/v1/groups`）。`items` 不可为空\n（空数组 → 400）。\n\n# Examples\n\n```\nuse fluxdown_api::types::CreateGroupRequest;\n\nlet req: CreateGroupRequest = serde_json::from_str(\n    r#\"{\"sourceUrl\":\"https://x/share\",\"groupName\":\"合集\",\"items\":[\n        {\"resolverItem\":\"a\",\"fileName\":\"a.mp4\"}\n    ]}\"#,\n)\n.unwrap();\nassert_eq!(req.group_name, \"合集\");\nassert_eq!(req.items.len(), 1);\nassert!(req.save_dir.is_empty()); // 空 = 使用全局默认保存目录\n```",
+        "properties": {
+          "cookies": {
+            "type": "string"
+          },
+          "extraHeaders": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "groupName": {
+            "type": "string",
+            "description": "组名（空 = 组根目录直接用 `save_dir`）。"
+          },
+          "ignoreTlsErrors": {
+            "type": "boolean",
+            "description": "忽略 HTTPS 证书错误。缺省 false（严格验证）。"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupItemRequest"
+            },
+            "description": "组成员清单（不可为空，见本类型文档）。"
+          },
+          "proxyUrl": {
+            "type": "string",
+            "description": "单任务代理 URL（空 = 使用全局代理）。"
+          },
+          "queueId": {
+            "type": "string",
+            "description": "命名队列 ID（空 = 默认队列）。"
+          },
+          "referrer": {
+            "type": "string"
+          },
+          "saveDir": {
+            "type": "string",
+            "description": "基础保存目录（组根目录 = `save_dir/sanitize(group_name)`）；\n空 = 使用全局默认保存目录。"
+          },
+          "segments": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 = 由 segment_advisor 按文件大小动态决定。"
+          },
+          "sourceUrl": {
+            "type": "string",
+            "description": "原始分享/清单链接（组行 `source_url`，展示/复制用）。"
+          },
+          "startPaused": {
+            "type": "boolean",
+            "description": "稍后下载：true = 建组后不启动，待「启动队列」或用户手动恢复。"
+          },
+          "userAgent": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateGroupResponse": {
+        "type": "object",
+        "description": "创建任务组响应（`POST /api/v1/groups`）。",
+        "required": [
+          "groupId"
+        ],
+        "properties": {
+          "groupId": {
+            "type": "string"
+          }
+        }
+      },
       "CreateTaskRequest": {
         "type": "object",
         "description": "创建任务请求（`POST /api/v1/tasks`）。\n\n与外部下载请求 [`DownloadRequest`] 不同：本请求**直接创建任务**，\n不经过快速下载确认弹框（管理 API 的调用方是受信任的自动化客户端）。\n\n# Examples\n\n```\nuse fluxdown_api::types::CreateTaskRequest;\n\nlet req: CreateTaskRequest =\n    serde_json::from_str(r#\"{\"url\":\"https://example.com/f.zip\",\"segments\":8}\"#).unwrap();\nassert_eq!(req.url, \"https://example.com/f.zip\");\nassert_eq!(req.segments, 8);\nassert!(req.save_dir.is_empty()); // 空 = 使用全局默认保存目录\n```",
@@ -1415,6 +1848,63 @@
           }
         }
       },
+      "GroupDto": {
+        "type": "object",
+        "description": "任务组信息（`GET /api/v1/groups` 响应元素）。\n\n# Examples\n\n```\nuse fluxdown_api::types::GroupDto;\nuse fluxdown_engine::model::GroupInfo;\n\nlet info = GroupInfo {\n    group_id: \"g1\".to_string(),\n    name: \"合集\".to_string(),\n    source_url: \"https://example.com/share\".to_string(),\n    save_dir: \"/downloads/合集\".to_string(),\n    created_at: \"1700000000\".to_string(),\n};\nlet dto = GroupDto::from(info);\nassert_eq!(dto.group_id, \"g1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"groupId\\\":\\\"g1\\\"\"));\n```",
+        "required": [
+          "groupId",
+          "name",
+          "sourceUrl",
+          "saveDir",
+          "createdAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "description": "Unix 秒级时间戳（字符串）。"
+          },
+          "groupId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "saveDir": {
+            "type": "string",
+            "description": "组根目录（子任务落盘 = 本值 + 清单条目的相对路径）。"
+          },
+          "sourceUrl": {
+            "type": "string",
+            "description": "原始分享/清单链接（展示/复制用）。"
+          }
+        }
+      },
+      "GroupItemRequest": {
+        "type": "object",
+        "description": "[`CreateGroupRequest::items`] 的单个组成员条目（客户端在预览响应上\n勾选后的清单条目/规格投影）。",
+        "required": [
+          "resolverItem",
+          "fileName"
+        ],
+        "properties": {
+          "fileName": {
+            "type": "string"
+          },
+          "relPath": {
+            "type": "string",
+            "description": "相对组根目录的子路径（空 = 组根）。"
+          },
+          "resolverItem": {
+            "type": "string",
+            "description": "二段解析标识，按 `<itemId>` 或 `<itemId>@<variantId>` 拼接（见\n[`PreviewItemDto::id`]/[`PreviewVariantDto::id`]）。"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "已知大小（字节，0 = 未知）。"
+          }
+        }
+      },
       "InstallPluginDevRequest": {
         "type": "object",
         "description": "安装 dev 插件请求体。",
@@ -1587,6 +2077,63 @@
           }
         }
       },
+      "PreviewItemDto": {
+        "type": "object",
+        "description": "[`ResolvePreviewResponse::items`] 的单个清单条目。",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "size",
+          "variants"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "插件自定义标识，建组时按 `<id>` 或 `<id>@<variantId>` 拼进\n[`GroupItemRequest::resolver_item`]。"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "相对组根目录的子路径（空 = 根）。"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "已知大小（字节），未知为 0。"
+          },
+          "variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewVariantDto"
+            }
+          }
+        }
+      },
+      "PreviewVariantDto": {
+        "type": "object",
+        "description": "[`PreviewItemDto::variants`] 的单个规格（画质/格式）。",
+        "required": [
+          "id",
+          "label",
+          "size"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "已知大小（字节），未知为 0。"
+          }
+        }
+      },
       "QueueDto": {
         "type": "object",
         "description": "命名队列信息（`GET /api/v1/queues` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::QueueDto;\nuse fluxdown_engine::model::QueueInfo;\n\nlet q = QueueInfo {\n    queue_id: \"q1\".to_string(),\n    name: \"工作\".to_string(),\n    speed_limit_kbps: 0,\n    max_concurrent: 3,\n    default_save_dir: String::new(),\n    position: 0,\n    default_segments: 0,\n    default_user_agent: String::new(),\n    is_running: true,\n    schedule_enabled: false,\n    schedule_start: String::new(),\n    schedule_stop: String::new(),\n    schedule_days: 127,\n};\nlet dto = QueueDto::from(q);\nassert_eq!(dto.queue_id, \"q1\");\n```",
@@ -1728,6 +2275,62 @@
         ],
         "description": "浏览器原始请求体（form POST / XHR raw body 等）。\n\n当用户在 form-submit 触发的下载中点击下载按钮时，浏览器实际发起的是\nPOST 请求并携带表单数据；扩展通过 `webRequest.onBeforeRequest` 抓到 method\n与 body 后透传到此字段。宿主端按 `kind` 重建请求体。\n\n协议字段：\n- `formData`：来自 `requestBody.formData`，宿主用 `reqwest::form()` 编码为\n  `application/x-www-form-urlencoded`\n- `urlencoded`：扩展端已序列化好的 url-encoded 字符串（直接作为 body 发送）\n- `raw`：base64 编码的二进制 body（XHR / fetch 直接发送 ArrayBuffer 的场景）"
       },
+      "ResolvePreviewRequest": {
+        "type": "object",
+        "description": "前置预解析请求（`POST /api/v1/resolve/preview`）。只读、不建任务、\n不写库；结果见 [`ResolvePreviewResponse`]。\n\n# Examples\n\n```\nuse fluxdown_api::types::ResolvePreviewRequest;\n\nlet req: ResolvePreviewRequest =\n    serde_json::from_str(r#\"{\"url\":\"https://example.com/share\"}\"#).unwrap();\nassert_eq!(req.url, \"https://example.com/share\");\nassert!(req.cookies.is_empty());\n```",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "cookies": {
+            "type": "string"
+          },
+          "extraHeaders": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "referrer": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "userAgent": {
+            "type": "string"
+          }
+        }
+      },
+      "ResolvePreviewResponse": {
+        "type": "object",
+        "description": "[`ResolvePreviewRequest`] 的结果。`items` 为空且 `error` 为空 = 插件未\n返回清单（客户端应回退普通单任务创建对话框）；`error` 非空 = 预解析\n失败（同样回退，`error` 供 UI 提示）。",
+        "required": [
+          "name",
+          "sourceUrl"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "无错误时为空。"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewItemDto"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "sourceUrl": {
+            "type": "string"
+          }
+        }
+      },
       "ResultMessage": {
         "type": "object",
         "description": "通用结果响应（接管端点应答 / 各端点错误响应统一格式）。",
@@ -1852,7 +2455,7 @@
       },
       "TaskDto": {
         "type": "object",
-        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    ignore_tls_errors: false,\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n    queue_order: 0,\n    referrer: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
+        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    ignore_tls_errors: false,\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n    queue_order: 0,\n    referrer: String::new(),\n    group_id: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
         "required": [
           "taskId",
           "url",
@@ -1893,6 +2496,10 @@
           },
           "fileName": {
             "type": "string"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "所属任务组 ID（空 = 不属于任何组）。"
           },
           "ignoreTlsErrors": {
             "type": "boolean",
@@ -1963,6 +2570,10 @@
     {
       "name": "management",
       "description": "管理 API（强制 token）"
+    },
+    {
+      "name": "groups",
+      "description": "任务组与前置预解析（多文件任务组；强制 token）"
     },
     {
       "name": "plugins",

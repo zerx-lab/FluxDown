@@ -65,6 +65,17 @@ pub const API_MARKET: &str = "/api/v1/market";
 /// 从市场安装（POST {pluginId}）。
 pub const API_MARKET_INSTALL: &str = "/api/v1/market/install";
 
+/// 前置预解析清单（POST，只读、不建任务）。
+pub const API_RESOLVE_PREVIEW: &str = "/api/v1/resolve/preview";
+/// 任务组集合（GET 列表 / POST 建组+子任务）。
+pub const API_GROUPS: &str = "/api/v1/groups";
+/// 单任务组（DELETE，query `deleteFiles=true` 可选同时删文件）。
+pub const API_GROUP: &str = "/api/v1/groups/{id}";
+/// 暂停组内成员（PUT）。
+pub const API_GROUP_PAUSE: &str = "/api/v1/groups/{id}/pause";
+/// 恢复组内成员（PUT）。
+pub const API_GROUP_CONTINUE: &str = "/api/v1/groups/{id}/continue";
+
 /// 生成单任务路径（客户端用）。
 #[must_use]
 pub fn task_path(task_id: &str) -> String {
@@ -81,4 +92,22 @@ pub fn task_pause_path(task_id: &str) -> String {
 #[must_use]
 pub fn task_continue_path(task_id: &str) -> String {
     format!("{API_TASKS}/{task_id}/continue")
+}
+
+/// 生成单任务组路径（客户端用）。
+#[must_use]
+pub fn group_path(group_id: &str) -> String {
+    format!("{API_GROUPS}/{group_id}")
+}
+
+/// 生成暂停任务组路径（客户端用）。
+#[must_use]
+pub fn group_pause_path(group_id: &str) -> String {
+    format!("{API_GROUPS}/{group_id}/pause")
+}
+
+/// 生成恢复任务组路径（客户端用）。
+#[must_use]
+pub fn group_continue_path(group_id: &str) -> String {
+    format!("{API_GROUPS}/{group_id}/continue")
 }

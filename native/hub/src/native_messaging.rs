@@ -932,6 +932,7 @@ mod tests {
             file_missing: false,
             completed_at: String::new(),
             referrer: String::new(),
+            group_id: String::new(),
         }
     }
 

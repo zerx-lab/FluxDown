@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::FutureExt;
 use reqwest::Client;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -669,6 +669,39 @@ pub struct CreateGroupSpec {
     pub items: Vec<GroupItemSpec>,
 }
 
+/// [`DownloadManager::spawn_resolve_preview`] 的一次性结果，经 `oneshot`
+/// 回传给调用方（actor 内 [`DownloadManager::begin_resolve_preview`] 转发为
+/// [`crate::events::EngineEvent::ResolvePreviewReady`]；管理 API 宿主
+/// （`hub`/`server` 的 `ResolvePreview` 命令分支）直接消费本结构的字段
+/// 组装 REST 响应）。
+pub struct ResolvePreviewOutcome {
+    pub name: String,
+    pub items: Vec<crate::model::ManifestItemInfo>,
+    /// 无错误时为空。
+    pub error: String,
+}
+
+impl ResolvePreviewOutcome {
+    /// 插件未返回清单 / 未命中 `multi` resolver / `plugins` feature 关闭时
+    /// 的空结果。
+    fn empty() -> Self {
+        Self {
+            name: String::new(),
+            items: Vec::new(),
+            error: String::new(),
+        }
+    }
+
+    /// 插件调用失败（`panic` 或 `PluginError`）时的错误结果。
+    fn failed(error: String) -> Self {
+        Self {
+            name: String::new(),
+            items: Vec::new(),
+            error,
+        }
+    }
+}
+
 /// Information needed to start a queued task later.
 struct QueuedTask {
     task_id: String,
@@ -1280,11 +1313,10 @@ impl DownloadManager {
     }
 
     /// 前置预解析（多文件清单，B2 契约）：off-actor、只读，不建任务、不写库。
-    /// [`crate::plugin::PluginManager::match_multi_resolver`] 未命中（插件未
-    /// 声明 `resolver.multi=true`）→ 立即发出空清单（不跑 resolve，避免解析
-    /// 昂贵的单文件插件白跑一次）；命中则在插件专用 runtime 上 spawn 一次初段
-    /// resolve（`resolver_item` 恒为空）。`task_id` 传空串（尚无任务）。
-    #[cfg(feature = "plugins")]
+    /// 薄封装：委托 [`Self::spawn_resolve_preview`] 拿到 oneshot receiver 后
+    /// spawn 一个转发任务 await 结果并 emit [`EngineEvent::ResolvePreviewReady`]
+    /// （语义与重构前一致；`plugins` feature 关闭时同样立即收到空 outcome，
+    /// 宿主无需 `cfg` 分叉）。
     pub async fn begin_resolve_preview(
         &self,
         preview_id: String,
@@ -1294,49 +1326,68 @@ impl DownloadManager {
         user_agent: String,
         extra_headers: HashMap<String, String>,
     ) {
-        let Some(pm) = self.plugin_manager.clone() else {
-            self.sink.emit(EngineEvent::ResolvePreviewReady {
-                preview_id,
-                name: String::new(),
-                source_url: url,
-                items: Vec::new(),
-                error: String::new(),
-            });
-            return;
-        };
-        let Some(identity) = pm.match_multi_resolver(&url).await else {
-            self.sink.emit(EngineEvent::ResolvePreviewReady {
-                preview_id,
-                name: String::new(),
-                source_url: url,
-                items: Vec::new(),
-                error: String::new(),
-            });
-            return;
-        };
+        let rx =
+            self.spawn_resolve_preview(url.clone(), cookies, referrer, user_agent, extra_headers);
         let sink = self.sink.clone();
-        let handle = pm.runtime_handle();
-        let req = crate::plugin::ResolveRequest {
-            task_id: String::new(),
-            url: url.clone(),
-            cookies,
-            referrer,
-            user_agent,
-            extra_headers,
-            resolver_item: String::new(),
+        tokio::spawn(async move {
+            let outcome = rx.await.unwrap_or_else(|_| {
+                ResolvePreviewOutcome::failed("resolve preview worker dropped".to_string())
+            });
+            sink.emit(EngineEvent::ResolvePreviewReady {
+                preview_id,
+                name: outcome.name,
+                source_url: url,
+                items: outcome.items,
+                error: outcome.error,
+            });
+        });
+    }
+
+    /// 前置预解析核心（B2 契约，可复用）：无 `plugin_manager` / 未命中
+    /// `multi` resolver → 立即发出空 outcome（不跑 resolve，避免解析昂贵的
+    /// 单文件插件白跑一次）；命中则把
+    /// [`crate::plugin::PluginManager::match_multi_resolver`] 与初段
+    /// `resolve`（`resolver_item` 恒为空，`task_id` 传空串——尚无任务）整段
+    /// 放到插件专用 runtime 上执行。本方法（`&self`，同步）立即返回
+    /// receiver，不阻塞调用方 actor。
+    #[cfg(feature = "plugins")]
+    pub fn spawn_resolve_preview(
+        &self,
+        url: String,
+        cookies: String,
+        referrer: String,
+        user_agent: String,
+        extra_headers: HashMap<String, String>,
+    ) -> oneshot::Receiver<ResolvePreviewOutcome> {
+        let (tx, rx) = oneshot::channel();
+        let Some(pm) = self.plugin_manager.clone() else {
+            let _ = tx.send(ResolvePreviewOutcome::empty());
+            return rx;
         };
+        let handle = pm.runtime_handle();
         handle.spawn(async move {
+            let Some(identity) = pm.match_multi_resolver(&url).await else {
+                let _ = tx.send(ResolvePreviewOutcome::empty());
+                return;
+            };
+            let req = crate::plugin::ResolveRequest {
+                task_id: String::new(),
+                url: url.clone(),
+                cookies,
+                referrer,
+                user_agent,
+                extra_headers,
+                resolver_item: String::new(),
+            };
             let fut = std::panic::AssertUnwindSafe(pm.resolve(&identity, req));
             let result = match fut.catch_unwind().await {
                 Ok(r) => r,
                 Err(panic) => Err(crate::plugin::PluginError::Runtime(panic_message(&panic))),
             };
-            let event = match result {
+            let outcome = match result {
                 Ok(Some(res)) => match res.manifest {
-                    Some(manifest) => EngineEvent::ResolvePreviewReady {
-                        preview_id,
+                    Some(manifest) => ResolvePreviewOutcome {
                         name: manifest.name,
-                        source_url: url,
                         items: manifest
                             .items
                             .into_iter()
@@ -1344,51 +1395,29 @@ impl DownloadManager {
                             .collect(),
                         error: String::new(),
                     },
-                    None => EngineEvent::ResolvePreviewReady {
-                        preview_id,
-                        name: String::new(),
-                        source_url: url,
-                        items: Vec::new(),
-                        error: String::new(),
-                    },
+                    None => ResolvePreviewOutcome::empty(),
                 },
-                Ok(None) => EngineEvent::ResolvePreviewReady {
-                    preview_id,
-                    name: String::new(),
-                    source_url: url,
-                    items: Vec::new(),
-                    error: String::new(),
-                },
-                Err(e) => EngineEvent::ResolvePreviewReady {
-                    preview_id,
-                    name: String::new(),
-                    source_url: url,
-                    items: Vec::new(),
-                    error: e.to_string(),
-                },
+                Ok(None) => ResolvePreviewOutcome::empty(),
+                Err(e) => ResolvePreviewOutcome::failed(e.to_string()),
             };
-            sink.emit(event);
+            let _ = tx.send(outcome);
         });
+        rx
     }
 
-    /// `plugins` feature 关时的同签名占位：直接发出空清单，宿主无需 `cfg` 分叉。
+    /// `plugins` feature 关时的同签名占位：立即完成一个空 outcome。
     #[cfg(not(feature = "plugins"))]
-    pub async fn begin_resolve_preview(
+    pub fn spawn_resolve_preview(
         &self,
-        preview_id: String,
-        url: String,
+        _url: String,
         _cookies: String,
         _referrer: String,
         _user_agent: String,
         _extra_headers: HashMap<String, String>,
-    ) {
-        self.sink.emit(EngineEvent::ResolvePreviewReady {
-            preview_id,
-            name: String::new(),
-            source_url: url,
-            items: Vec::new(),
-            error: String::new(),
-        });
+    ) -> oneshot::Receiver<ResolvePreviewOutcome> {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(ResolvePreviewOutcome::empty());
+        rx
     }
 
     /// off-actor resolve worker：在插件专用 runtime 上 spawn（禁裸 tokio::spawn），

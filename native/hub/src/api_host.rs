@@ -29,10 +29,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
-use fluxdown_api::types::{CreateTaskRequest, DownloadRequest, QueueDto, TaskDto};
+use fluxdown_api::types::{
+    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, QueueDto,
+    ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
+};
 #[cfg(hub_plugins)]
 use fluxdown_api::types::{MarketEntryDto, PluginDto};
 use fluxdown_engine::db::Db;
+use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec, ResolvePreviewOutcome};
 #[cfg(hub_plugins)]
 use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -89,6 +93,40 @@ pub enum ApiCommand {
     ApplyConfig {
         keys: Vec<String>,
         ack: oneshot::Sender<()>,
+    },
+    /// 建组：wire→engine 转换（`CreateGroupRequest` → `CreateGroupSpec`，含
+    /// `save_dir` 空值兜底）已在 [`HubApiHost::create_task_group`] 完成，回执
+    /// 新组 ID；`None` = DB 插入失败或 `items` 为空。`spec` 装箱理由同
+    /// [`ApiCommand::CreateTask`]。
+    CreateGroup {
+        spec: Box<CreateGroupSpec>,
+        ack: oneshot::Sender<Option<String>>,
+    },
+    /// 暂停组内全部成员。
+    GroupPause {
+        group_id: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// 恢复组内全部成员。
+    GroupContinue {
+        group_id: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// 删除整组（批量删成员）。
+    GroupDelete {
+        group_id: String,
+        delete_files: bool,
+        ack: oneshot::Sender<()>,
+    },
+    /// 前置预解析：actor 内 `spawn_resolve_preview` off-actor 完成后由转发
+    /// 任务回执，绝不在 actor 内 await 解析结果（最长 30s 会冻结事件循环）。
+    ResolvePreview {
+        url: String,
+        cookies: String,
+        referrer: String,
+        user_agent: String,
+        extra_headers: HashMap<String, String>,
+        ack: oneshot::Sender<ResolvePreviewOutcome>,
     },
 }
 
@@ -154,6 +192,15 @@ impl HubApiHost {
     /// 任务存在性检查（写操作前置），不存在 → 404。
     async fn ensure_task_exists(&self, task_id: &str) -> Result<(), ApiError> {
         match self.db.load_task_by_id(task_id).await {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(ApiError::NotFound),
+            Err(e) => Err(ApiError::Internal(e.to_string())),
+        }
+    }
+
+    /// 任务组存在性检查（写操作前置），不存在 → 404。
+    async fn ensure_group_exists(&self, group_id: &str) -> Result<(), ApiError> {
+        match self.db.load_group_by_id(group_id).await {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(ApiError::NotFound),
             Err(e) => Err(ApiError::Internal(e.to_string())),
@@ -378,5 +425,152 @@ impl ApiHost for HubApiHost {
         let perms = pm.permissions_of(identity).await;
         fluxdown_engine::plugin::dependencies::missing_components(&self.db, &self.data_dir, &perms)
             .await
+    }
+
+    // -- 任务组与前置预解析（Phase D：docs/multi-file-task-group-design.md）--
+
+    /// 前置预解析：写操作经 `ApiCommand::ResolvePreview` + oneshot 回执；
+    /// wire↔engine 转换（`ResolvePreviewOutcome` → `ResolvePreviewResponse`、
+    /// `ManifestItemInfo` → `PreviewItemDto`）在此完成。
+    async fn resolve_preview(
+        &self,
+        req: ResolvePreviewRequest,
+    ) -> Result<ResolvePreviewResponse, ApiError> {
+        let ResolvePreviewRequest {
+            url,
+            cookies,
+            referrer,
+            user_agent,
+            extra_headers,
+        } = req;
+        let source_url = url.clone();
+        let outcome = self
+            .send_cmd(|ack| ApiCommand::ResolvePreview {
+                url,
+                cookies,
+                referrer,
+                user_agent,
+                extra_headers,
+                ack,
+            })
+            .await?;
+        Ok(ResolvePreviewResponse {
+            name: outcome.name,
+            source_url,
+            error: outcome.error,
+            items: outcome
+                .items
+                .into_iter()
+                .map(manifest_item_to_preview_dto)
+                .collect(),
+        })
+    }
+
+    /// 创建多文件任务组：wire→engine 转换（`CreateGroupRequest` →
+    /// `CreateGroupSpec`）在此完成，`save_dir` 空值兜底与 `ApiCommand::CreateTask`
+    /// 分支同款（config 表 `default_save_dir` → 平台默认下载目录）。
+    async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
+        let mut base_save_dir = req.save_dir;
+        if base_save_dir.trim().is_empty() {
+            base_save_dir = self
+                .db
+                .get_config("default_save_dir")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+        }
+        if base_save_dir.trim().is_empty() {
+            base_save_dir = crate::actors::download_actor::default_save_dir();
+        }
+        let spec = CreateGroupSpec {
+            source_url: req.source_url,
+            group_name: req.group_name,
+            base_save_dir,
+            queue_id: req.queue_id,
+            segments: req.segments,
+            cookies: req.cookies,
+            referrer: req.referrer,
+            user_agent: req.user_agent,
+            proxy_url: req.proxy_url,
+            extra_headers: req.extra_headers,
+            ignore_tls_errors: req.ignore_tls_errors,
+            start_paused: req.start_paused,
+            items: req
+                .items
+                .into_iter()
+                .map(|it| GroupItemSpec {
+                    resolver_item: it.resolver_item,
+                    file_name: it.file_name,
+                    rel_path: it.rel_path,
+                    size: it.size,
+                })
+                .collect(),
+        };
+        self.send_cmd(|ack| ApiCommand::CreateGroup {
+            spec: Box::new(spec),
+            ack,
+        })
+        .await?
+        .ok_or_else(|| ApiError::Internal("failed to persist group".to_string()))
+    }
+
+    /// 列出全部任务组：直查 `Db`（与 `list_tasks`/`list_queues` 同款读写分离）。
+    async fn list_groups(&self) -> Result<Vec<GroupDto>, ApiError> {
+        self.db
+            .load_all_groups()
+            .await
+            .map(|groups| groups.into_iter().map(GroupDto::from).collect())
+            .map_err(|e| ApiError::Internal(e.to_string()))
+    }
+
+    async fn group_pause(&self, group_id: &str) -> Result<(), ApiError> {
+        self.ensure_group_exists(group_id).await?;
+        self.send_cmd(|ack| ApiCommand::GroupPause {
+            group_id: group_id.to_string(),
+            ack,
+        })
+        .await
+    }
+
+    async fn group_continue(&self, group_id: &str) -> Result<(), ApiError> {
+        self.ensure_group_exists(group_id).await?;
+        self.send_cmd(|ack| ApiCommand::GroupContinue {
+            group_id: group_id.to_string(),
+            ack,
+        })
+        .await
+    }
+
+    async fn group_delete(&self, group_id: &str, delete_files: bool) -> Result<(), ApiError> {
+        self.ensure_group_exists(group_id).await?;
+        self.send_cmd(|ack| ApiCommand::GroupDelete {
+            group_id: group_id.to_string(),
+            delete_files,
+            ack,
+        })
+        .await
+    }
+}
+
+/// 把插件清单条目转换为 REST 预解析响应 DTO（`hub` 侧 wire↔engine 转换，
+/// 见 [`HubApiHost::resolve_preview`]）。
+fn manifest_item_to_preview_dto(
+    item: fluxdown_engine::model::ManifestItemInfo,
+) -> fluxdown_api::types::PreviewItemDto {
+    fluxdown_api::types::PreviewItemDto {
+        id: item.id,
+        name: item.name,
+        path: item.path,
+        size: item.size,
+        variants: item
+            .variants
+            .into_iter()
+            .map(|v| fluxdown_api::types::PreviewVariantDto {
+                id: v.id,
+                label: v.label,
+                size: v.size,
+            })
+            .collect(),
     }
 }

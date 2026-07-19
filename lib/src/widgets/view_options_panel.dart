@@ -384,48 +384,30 @@ class ViewOptionsPanel extends StatelessWidget {
   }
 
   // ---------------------------------------------------------------------------
-  // 显示 — 开关组（显示已完成 / 协议徽标）
+  // 显示 — chips（显示已完成 / 协议徽标，与「列」同布局，选中=开启）
   // ---------------------------------------------------------------------------
 
   Widget _displaySwitches(BuildContext context, AppColors c, ViewPrefs prefs) {
     final s = LocaleScope.of(context);
-    return Column(
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
       children: [
-        _switchRow(
-          c: c,
+        _chip(
+          context: context,
           label: s.viewShowCompleted,
-          value: prefs.showCompleted,
-          onChanged: (v) => _apply((p) => p.copyWith(showCompleted: v)),
+          selected: prefs.showCompleted,
+          onTap: () =>
+              _apply((p) => p.copyWith(showCompleted: !prefs.showCompleted)),
         ),
-        _switchRow(
-          c: c,
+        _chip(
+          context: context,
           label: s.viewProtocolBadges,
-          value: prefs.protocolBadges,
-          onChanged: (v) => _apply((p) => p.copyWith(protocolBadges: v)),
+          selected: prefs.protocolBadges,
+          onTap: () =>
+              _apply((p) => p.copyWith(protocolBadges: !prefs.protocolBadges)),
         ),
       ],
-    );
-  }
-
-  Widget _switchRow({
-    required AppColors c,
-    required String label,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(fontSize: 12, color: c.textPrimary),
-            ),
-          ),
-          ShadSwitch(value: value, onChanged: onChanged, width: 32, height: 18, margin: 2),
-        ],
-      ),
     );
   }
 

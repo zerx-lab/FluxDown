@@ -13,7 +13,9 @@ use fluxdown_api::types::CreateTaskRequest;
 use fluxdown_engine::Engine;
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
-use fluxdown_engine::download_manager::{NewTaskSpec, ResolveOutcome, TaskDone};
+use fluxdown_engine::download_manager::{
+    CreateGroupSpec, NewTaskSpec, ResolveOutcome, ResolvePreviewOutcome, TaskDone,
+};
 use fluxdown_engine::log_info;
 use fluxdown_engine::proxy_config::ProxyConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -122,6 +124,39 @@ pub enum ActorCmd {
         username: String,
         password: String,
         ack: oneshot::Sender<Result<i64, String>>,
+    },
+    /// 建组：wire→engine 转换（`CreateGroupRequest` → `CreateGroupSpec`，含
+    /// `save_dir` 空值兜底）已在 `ServerApiHost::create_task_group` 完成。
+    /// `spec` 装箱理由同 `ActorCmd::CreateTask`。
+    CreateGroup {
+        spec: Box<CreateGroupSpec>,
+        ack: oneshot::Sender<Result<String, ApiError>>,
+    },
+    /// 暂停组内全部成员。
+    GroupPause {
+        group_id: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// 恢复组内全部成员。
+    GroupContinue {
+        group_id: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// 删除整组（批量删成员）。
+    GroupDelete {
+        group_id: String,
+        delete_files: bool,
+        ack: oneshot::Sender<()>,
+    },
+    /// 前置预解析：actor 内 `spawn_resolve_preview` off-actor 完成后由转发
+    /// 任务回执，绝不在 actor 内 await 解析结果（最长 30s 会冻结事件循环）。
+    ResolvePreview {
+        url: String,
+        cookies: String,
+        referrer: String,
+        user_agent: String,
+        extra_headers: HashMap<String, String>,
+        ack: oneshot::Sender<ResolvePreviewOutcome>,
     },
 }
 
@@ -392,6 +427,58 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                 .await
                 .map_err(|e| e.to_string());
             let _ = ack.send(result);
+        }
+        ActorCmd::CreateGroup { spec, ack } => {
+            let group_id = engine.manager.create_task_group(*spec).await;
+            let _ = ack.send(
+                group_id.ok_or_else(|| ApiError::Internal("failed to persist group".to_string())),
+            );
+        }
+        ActorCmd::GroupPause { group_id, ack } => {
+            engine.manager.pause_group(&group_id).await;
+            let _ = ack.send(());
+        }
+        ActorCmd::GroupContinue { group_id, ack } => {
+            engine.manager.resume_group(&group_id).await;
+            let _ = ack.send(());
+        }
+        ActorCmd::GroupDelete {
+            group_id,
+            delete_files,
+            ack,
+        } => {
+            engine.manager.delete_group(&group_id, delete_files).await;
+            // 删除没有专属快照事件——主动重发全量快照，WsHub 靠快照对比判定
+            // 并广播每个消失成员的 aria2 onDownloadStop 通知（与单任务
+            // `ActorCmd::DeleteTask` 同款时序，见本文件该分支注释）。
+            engine.manager.load_and_send_all_tasks().await;
+            let _ = ack.send(());
+        }
+        ActorCmd::ResolvePreview {
+            url,
+            cookies,
+            referrer,
+            user_agent,
+            extra_headers,
+            ack,
+        } => {
+            // 绝不在 actor 内 await 解析结果——插件解析最长 30s 会冻结事件
+            // 循环；转发任务 off-actor 等待后再回执。
+            let rx = engine.manager.spawn_resolve_preview(
+                url,
+                cookies,
+                referrer,
+                user_agent,
+                extra_headers,
+            );
+            tokio::spawn(async move {
+                let outcome = rx.await.unwrap_or(ResolvePreviewOutcome {
+                    name: String::new(),
+                    items: Vec::new(),
+                    error: "resolve preview worker dropped".to_string(),
+                });
+                let _ = ack.send(outcome);
+            });
         }
     }
 }

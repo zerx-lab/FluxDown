@@ -1,395 +1,547 @@
-// Tests for the manifest-select dialog's pure logic layer.
+// Tests for the manifest-select dialog's pure logic layer (v1.6 下钻导航版).
 //
 // Source: lib/src/models/manifest_selection.dart. Pure functions only — no
 // Flutter widget pumping, no rinf FFI required (ManifestItemDto/
-// ManifestVariantDto/GroupItemEntry are plain bincode-serializable classes,
-// constructible without native init).
+// GroupItemEntry are plain bincode-serializable classes, constructible
+// without native init).
+//
+// 测试数据结构性子集移植自 design/desktop-task-views/manifest.js 的
+// mockManifest：8 级深链（单链合并跳级）、每级带文件的分叉深层目录、
+// 根级散件（大小未知/超长名）。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flux_down/src/bindings/bindings.dart';
-import 'package:flux_down/src/models/download_task.dart';
+import 'package:flux_down/src/models/manifest_breadcrumb.dart';
 import 'package:flux_down/src/models/manifest_selection.dart';
 
-ManifestItemDto _item(
-  String id,
-  String path, {
-  int size = 100,
-  List<ManifestVariantDto> variants = const [],
-}) {
+/// 取路径的父目录段（模拟 items 里 path 是"相对子目录"字段，不含文件名）。
+ManifestItemDto _fileAt(String id, String dirPath, String fileName, {int size = 100}) {
   return ManifestItemDto(
     id: id,
-    name: path.split('/').last,
-    path: path,
+    name: fileName,
+    path: dirPath,
     size: size,
-    variants: variants,
+    variants: const [],
   );
 }
 
-ManifestVariantDto _variant(String id, String label, {int size = 100}) =>
-    ManifestVariantDto(id: id, label: label, size: size);
-
 void main() {
-  group('buildManifestTree', () {
-    test('顶层混合目录与文件：目录排前、各自按名排序', () {
-      final items = [
-        _item('m', 'movie.mkv'),
-        _item('f2', 'Extras/featurette.mkv'),
-        _item('s', 'Extras/sample.mkv'),
-      ];
-      final roots = buildManifestTree(items);
-      expect(roots, hasLength(2));
-      expect(roots[0], isA<ManifestDirNode>());
-      expect((roots[0] as ManifestDirNode).name, 'Extras');
-      expect((roots[0] as ManifestDirNode).children, hasLength(2));
-      expect((roots[0] as ManifestDirNode).children.map((c) => c.name), [
-        'featurette.mkv',
-        'sample.mkv',
-      ]);
-      expect(roots[1], isA<ManifestFileNode>());
-      expect(roots[1].name, 'movie.mkv');
+  group('manifestItemVisible / manifestIsSearching', () {
+    test('扩展名筛选：命中大写扩展名才可见，空筛选不过滤', () {
+      final mkv = _fileAt('1', '', 'a.mkv');
+      final srt = _fileAt('2', '', 'b.srt');
+      expect(manifestItemVisible(mkv, extFilter: {}, search: ''), isTrue);
+      expect(manifestItemVisible(mkv, extFilter: {'MKV'}, search: ''), isTrue);
+      expect(manifestItemVisible(srt, extFilter: {'MKV'}, search: ''), isFalse);
     });
 
-    test('单链目录折叠：a/b/c 无分叉无文件时合并为一行', () {
-      final items = [_item('f', 'a/b/c/file.mkv')];
-      final roots = buildManifestTree(items);
-      expect(roots, hasLength(1));
-      final dir = roots.single as ManifestDirNode;
-      expect(dir.name, 'a/b/c');
-      expect(dir.path, 'a/b/c');
-      expect(dir.children, hasLength(1));
-      expect(dir.children.single.name, 'file.mkv');
+    test('搜索词大小写不敏感匹配文件名', () {
+      final it = _fileAt('1', '', 'Show.S01E01.mkv');
+      expect(manifestItemVisible(it, extFilter: {}, search: 'show'), isTrue);
+      expect(manifestItemVisible(it, extFilter: {}, search: 'nomatch'), isFalse);
     });
 
-    test('分叉目录不折叠：出现多子目录时链条中断', () {
-      final items = [
-        _item('x', 'a/b/x.mkv'),
-        _item('y', 'a/b/y.mkv'),
-        _item('z', 'a/other/z.mkv'),
-      ];
-      final roots = buildManifestTree(items);
-      expect(roots, hasLength(1));
-      final a = roots.single as ManifestDirNode;
-      expect(a.name, 'a'); // 'a' 本身有 2 个子目录，不与它们合并
-      expect(a.children.map((c) => c.name), ['b', 'other']);
-      final b = a.children[0] as ManifestDirNode;
-      expect(b.children, hasLength(2));
-    });
-
-    test('同级出现文件时链条中断（即使只有一个子目录）', () {
-      final items = [
-        _item('a', 'root/sibling.mkv'),
-        _item('b', 'root/nested/deep.mkv'),
-      ];
-      final roots = buildManifestTree(items);
-      final root = roots.single as ManifestDirNode;
-      expect(root.name, 'root'); // root 下有 sibling.mkv 文件，不与 nested 合并
-      expect(root.children.map((c) => c.name), ['nested', 'sibling.mkv']);
+    test('manifestIsSearching 对空白词判定为非搜索态', () {
+      expect(manifestIsSearching(''), isFalse);
+      expect(manifestIsSearching('   '), isFalse);
+      expect(manifestIsSearching(' a '), isTrue);
     });
   });
 
-  group('flattenManifestTree — 缩进封顶 + 灰色父目录前缀', () {
-    // 手工搭一条 7 层深的链（每层用真实节点，绕开 buildManifestTree 的单链
-    // 折叠，专测封顶与前缀计算本身）。
-    ManifestFileNode leaf(int depth) => ManifestFileNode(
-      item: _item('leaf', 'a/b/c/d/e/f/file.mkv'),
-      path: 'a/b/c/d/e/f/file.mkv',
-      depth: depth,
-    );
-    ManifestDirNode chain() {
-      final f = ManifestDirNode(
-        name: 'f',
-        path: 'a/b/c/d/e/f',
-        depth: 5,
-        children: [leaf(6)],
-      );
-      final e = ManifestDirNode(
-        name: 'e',
-        path: 'a/b/c/d/e',
-        depth: 4,
-        children: [f],
-      );
-      final d = ManifestDirNode(
-        name: 'd',
-        path: 'a/b/c/d',
-        depth: 3,
-        children: [e],
-      );
-      final c = ManifestDirNode(
-        name: 'c',
-        path: 'a/b/c',
-        depth: 2,
-        children: [d],
-      );
-      final b = ManifestDirNode(
-        name: 'b',
-        path: 'a/b',
-        depth: 1,
-        children: [c],
-      );
-      return ManifestDirNode(name: 'a', path: 'a', depth: 0, children: [b]);
-    }
+  group('manifestTopExtensions — 频次 top7', () {
+    test('按出现频次取前 N，计数相同按扩展名排序保证确定性', () {
+      final items = [
+        for (var i = 0; i < 5; i++) _fileAt('mkv$i', '', 'v$i.mkv'),
+        for (var i = 0; i < 3; i++) _fileAt('srt$i', '', 's$i.srt'),
+        _fileAt('nfo', '', 'x.nfo'),
+      ];
+      final top = manifestTopExtensions(items, limit: 2);
+      expect(top, hasLength(2));
+      expect(top[0].ext, 'MKV');
+      expect(top[0].count, 5);
+      expect(top[1].ext, 'SRT');
+      expect(top[1].count, 3);
+    });
 
-    test('深度 ≤ 封顶级数：缩进随深度递增，无灰色前缀', () {
-      final rows = flattenManifestTree([chain()], {});
-      // a(0) b(1) c(2) d(3) e(4) f(5,capped=4) file(6,capped=4)
-      expect(rows.map((r) => r.node.name).toList(), [
-        'a',
+    test('无扩展名文件归入 FILE', () {
+      final items = [_fileAt('1', '', 'README')];
+      final top = manifestTopExtensions(items);
+      expect(top.single.ext, 'FILE');
+    });
+  });
+
+  group('manifestRowsAt — 8 级深链单链合并 + 跳级进入/返回', () {
+    // 对齐 mockManifest 的 "制作资料/原盘结构样例/BDMV/STREAM(/CLIPINF/META/DL)"：
+    // 无中间文件的深链应合并为一行，进入一次跳到链尾；根级另有一个散件文件。
+    final items = [
+      _fileAt('m2ts', '制作资料/原盘结构样例/BDMV/STREAM', '00055.m2ts'),
+      _fileAt(
+        'clpi',
+        '制作资料/原盘结构样例/BDMV/STREAM/CLIPINF/META/DL',
+        '00001.clpi',
+      ),
+      _fileAt('root_nfo', '', 'readme.nfo'),
+    ];
+
+    test('根层：深链合并为一个目录行 + 一个根级文件行', () {
+      final result = manifestRowsAt(
+        items: items,
+        cwd: '',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(result.cwd, '');
+      expect(result.rows, hasLength(2));
+      final dirEntry = result.rows.whereType<ManifestDirRowEntry>().single;
+      expect(dirEntry.row.labels, ['制作资料', '原盘结构样例', 'BDMV', 'STREAM']);
+      expect(dirEntry.row.path, '制作资料/原盘结构样例/BDMV/STREAM');
+      expect(dirEntry.row.count, 2); // m2ts + 深层 clpi 都在这条链子树下
+      final fileEntry = result.rows.whereType<ManifestFileRowEntry>().single;
+      expect(fileEntry.row.item.id, 'root_nfo');
+    });
+
+    test('进入合并行一次跳级到链尾，链尾还能再合并出下一段单链', () {
+      final level1 = manifestRowsAt(
+        items: items,
+        cwd: '制作资料/原盘结构样例/BDMV/STREAM',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(level1.cwd, '制作资料/原盘结构样例/BDMV/STREAM');
+      // 该层：00055.m2ts 直属文件 + CLIPINF/META/DL 单链合并的子目录行
+      expect(level1.rows, hasLength(2));
+      final dirEntry = level1.rows.whereType<ManifestDirRowEntry>().single;
+      expect(dirEntry.row.labels, ['CLIPINF', 'META', 'DL']);
+      expect(
+        dirEntry.row.path,
+        '制作资料/原盘结构样例/BDMV/STREAM/CLIPINF/META/DL',
+      );
+    });
+
+    test('返回上级：STREAM 自身有直属文件（00055.m2ts），是"实层"——只跳到这里，不再跳过', () {
+      final up = manifestUpPath(
+        items: items,
+        cwd: '制作资料/原盘结构样例/BDMV/STREAM/CLIPINF/META/DL',
+        extFilter: {},
+      );
+      // CLIPINF/META 均无直属文件、只有单个子目录（纯过渡层）→ 一路跳过；
+      // STREAM 有直属文件 00055.m2ts → 是「实层」，停在这里。
+      expect(up, '制作资料/原盘结构样例/BDMV/STREAM');
+    });
+
+    test('返回上级：全链均为纯过渡层（无任何直属文件）时一次跳回根', () {
+      final pureChainItems = [
+        _fileAt('leaf', 'a/b/c', 'leaf.mkv'),
+      ];
+      final up = manifestUpPath(
+        items: pureChainItems,
+        cwd: 'a/b/c',
+        extFilter: {},
+      );
+      expect(up, '');
+    });
+  });
+
+  group('manifestRowsAt — 每级带文件的分叉目录不合并', () {
+    // 对齐 mockManifest 的 "制作资料/字幕工程(/分轨(/EP01(/中文)))"：字幕工程
+    // 每一级都有直属文件，链条在每一步都中断，不发生单链合并；额外在
+    // "制作资料" 下放一个旁支（其他/），确保制作资料本身也不会被并入
+    // 字幕工程（否则「制作资料只有一个子目录」的合并条件会先于本组要
+    // 验证的现象触发，掩盖测试意图）。
+    final items = [
+      _fileAt('a', '制作资料/字幕工程', '说明.txt'),
+      _fileAt('b', '制作资料/字幕工程/分轨', '命名规范.txt'),
+      _fileAt('c', '制作资料/字幕工程/分轨/EP01', '打轴笔记.txt'),
+      _fileAt('d', '制作资料/字幕工程/分轨/EP01/中文', '样式表.ass'),
+      _fileAt('e', '制作资料/其他', 'sibling.txt'),
+    ];
+
+    test('制作资料下有 2 个子目录（字幕工程/其他），不发生单链合并', () {
+      final result = manifestRowsAt(
+        items: items,
+        cwd: '',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      final dirEntry = result.rows.whereType<ManifestDirRowEntry>().single;
+      expect(dirEntry.row.labels, ['制作资料']);
+      expect(dirEntry.row.path, '制作资料');
+      expect(dirEntry.row.count, 5);
+    });
+
+    test('制作资料层：字幕工程/其他各自有直属文件，均不与下级合并', () {
+      final level1 = manifestRowsAt(
+        items: items,
+        cwd: '制作资料',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      final dirs = level1.rows.whereType<ManifestDirRowEntry>().toList();
+      expect(dirs.map((d) => d.row.labels), [
+        ['其他'],
+        ['字幕工程'],
+      ]);
+    });
+
+    test('逐层进入都能看到该层直属文件 + 未合并的下一级目录行', () {
+      final level1 = manifestRowsAt(
+        items: items,
+        cwd: '制作资料/字幕工程',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(level1.rows, hasLength(2));
+      final dir = level1.rows.whereType<ManifestDirRowEntry>().single;
+      expect(dir.row.labels, ['分轨']); // 分轨自身也有文件，不会继续合并
+      final file = level1.rows.whereType<ManifestFileRowEntry>().single;
+      expect(file.row.item.id, 'a');
+    });
+  });
+
+  group('manifestRowsAt — 根级散件', () {
+    test('path 为空串的条目直接落在根层文件行', () {
+      final items = [_fileAt('a', '', 'x.nfo'), _fileAt('b', '', 'y.txt')];
+      final result = manifestRowsAt(
+        items: items,
+        cwd: '',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(result.rows, hasLength(2));
+      expect(result.rows.every((r) => r is ManifestFileRowEntry), isTrue);
+    });
+  });
+
+  group('大小未知（size==0）参与统计', () {
+    test('manifestSelectionStat：未知项计入 unknownCount，不计入 size', () {
+      final items = [
+        _fileAt('a', '', 'x.mkv', size: 1000),
+        _fileAt('b', '', 'y.nfo', size: 0), // 未知
+      ];
+      final stat = manifestSelectionStat(items, {'a', 'b'});
+      expect(stat.count, 2);
+      expect(stat.size, 1000); // ≈ 前缀由 UI 层依据 unknownCount>0 决定是否加
+      expect(stat.unknownCount, 1);
+    });
+
+    test('目录行统计（+ 后缀语义）：子树含未知项时 unknown=true，size 只累计已知项', () {
+      final items = [
+        _fileAt('a', 'd', 'x.mkv', size: 1000),
+        _fileAt('b', 'd', 'y.nfo', size: 0),
+      ];
+      final result = manifestRowsAt(
+        items: items,
+        cwd: '',
+        selectedItemIds: {'a', 'b'},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      final dir = result.rows.whereType<ManifestDirRowEntry>().single.row;
+      expect(dir.count, 2);
+      expect(dir.size, 1000);
+      expect(dir.unknown, isTrue);
+      expect(dir.selCnt, 2);
+    });
+
+    test('文件排序 size 键：未知（size==0）排到末尾', () {
+      final items = [
+        _fileAt('a', '', 'unknown.nfo', size: 0),
+        _fileAt('b', '', 'big.mkv', size: 2000),
+        _fileAt('c', '', 'small.mkv', size: 500),
+      ];
+      final result = manifestRowsAt(
+        items: items,
+        cwd: '',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.size,
+      );
+      final ids = result.rows
+          .whereType<ManifestFileRowEntry>()
+          .map((r) => r.row.item.id)
+          .toList();
+      expect(ids, ['b', 'c', 'a']);
+    });
+  });
+
+  group('筛选后 cwd 回退根', () {
+    test('扩展名筛选把当前层筛空后，rowsAt 落回根并返回新 cwd', () {
+      final items = [
+        _fileAt('a', 'dirA', 'x.mkv'),
+        _fileAt('b', '', 'root.srt'),
+      ];
+      final result = manifestRowsAt(
+        items: items,
+        cwd: 'dirA',
+        selectedItemIds: {},
+        extFilter: {'SRT'}, // 只留 srt，dirA 整层被筛空
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(result.cwd, ''); // 回退根
+      expect(result.rows, hasLength(1));
+      expect(
+        (result.rows.single as ManifestFileRowEntry).row.item.id,
         'b',
-        'c',
-        'd',
-        'e',
-        'f',
-        'file.mkv',
-      ]);
-      expect(rows.map((r) => r.indent).toList(), [0, 1, 2, 3, 4, 4, 4]);
+      );
     });
 
-    test('深度 > 封顶级数：缩进封顶在 4，附带 "…/父目录/" 灰色前缀', () {
-      final rows = flattenManifestTree([chain()], {});
-      final f = rows.firstWhere((r) => r.node.name == 'f');
-      final file = rows.firstWhere((r) => r.node.name == 'file.mkv');
-      final e = rows.firstWhere((r) => r.node.name == 'e');
-      expect(e.greyPrefix, ''); // depth 4 == cap，未超限
-      expect(f.greyPrefix, '…/e/'); // depth 5 > cap，父目录名 = e
-      expect(file.greyPrefix, '…/f/'); // depth 6 > cap，父目录名 = f
-    });
-
-    test('折叠的目录不展开子树，但自身仍占一行', () {
-      final root = chain();
-      final rows = flattenManifestTree([root], {'a'});
-      expect(rows, hasLength(1));
-      expect(rows.single.node.name, 'a');
+    test('cwd 本身路径在可见树里不存在（如已被删除的深层路径）同样回退根', () {
+      final items = [_fileAt('a', '', 'root.mkv')];
+      final result = manifestRowsAt(
+        items: items,
+        cwd: 'no/such/path',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(result.cwd, '');
     });
   });
 
-  group('三态目录勾选', () {
-    late ManifestDirNode dir;
-    setUp(() {
-      dir = ManifestDirNode(
-        name: 'd',
+  group('搜索扁平模式行流', () {
+    test('搜索态返回跨层级扁平结果，文件行 showPath=true', () {
+      final items = [
+        _fileAt('a', '深层/路径', 'Show.S01E01.mkv'),
+        _fileAt('b', '', 'Show.S01E02.mkv'),
+        _fileAt('c', '', 'other.txt'),
+      ];
+      final result = manifestRowsAt(
+        items: items,
+        cwd: '深层/路径', // 搜索态下 cwd 被忽略
+        selectedItemIds: {},
+        extFilter: {},
+        search: 'show',
+        sortKey: ManifestSortKey.name,
+      );
+      expect(result.rows, hasLength(2));
+      expect(result.rows.every((r) => r is ManifestFileRowEntry), isTrue);
+      for (final r in result.rows) {
+        expect((r as ManifestFileRowEntry).row.showPath, isTrue);
+      }
+    });
+
+    test('搜索结果计数（面包屑用）与可见集一致', () {
+      final items = [
+        _fileAt('a', '', 'match1.mkv'),
+        _fileAt('b', '', 'match2.mkv'),
+        _fileAt('c', '', 'other.txt'),
+      ];
+      final crumb = buildManifestBreadcrumb(
+        items: items,
+        cwd: '',
+        extFilter: {},
+        search: 'match',
+      );
+      expect(crumb.searching, isTrue);
+      expect(crumb.searchResultCount, 2);
+      expect(crumb.segments, isEmpty);
+      expect(crumb.showUp, isFalse);
+    });
+  });
+
+  group('面包屑折叠模型', () {
+    test('≤4 段：全部平铺展示，无 ellipsis，overflow 为空', () {
+      final crumb = buildManifestBreadcrumb(
+        items: const [],
+        cwd: 'a/b/c',
+        extFilter: {},
+        search: '',
+      );
+      expect(crumb.searching, isFalse);
+      expect(crumb.showUp, isTrue);
+      expect(crumb.segments.map((s) => s.kind), [
+        ManifestCrumbKind.home,
+        ManifestCrumbKind.segment,
+        ManifestCrumbKind.segment,
+        ManifestCrumbKind.segment,
+      ]);
+      expect(crumb.segments.map((s) => s.label).skip(1), ['a', 'b', 'c']);
+      expect(crumb.segments.last.isLast, isTrue);
+      expect(crumb.overflowSegments, isEmpty);
+    });
+
+    test('>4 段：折叠为 home / 首段 / ⋯ / 末两段，中间段进 overflow', () {
+      final crumb = buildManifestBreadcrumb(
+        items: const [],
+        cwd: 'a/b/c/d/e/f',
+        extFilter: {},
+        search: '',
+      );
+      expect(crumb.segments.map((s) => s.kind), [
+        ManifestCrumbKind.home,
+        ManifestCrumbKind.segment, // a
+        ManifestCrumbKind.ellipsis,
+        ManifestCrumbKind.segment, // e
+        ManifestCrumbKind.segment, // f
+      ]);
+      expect(crumb.segments[1].label, 'a');
+      expect(crumb.segments[3].label, 'e');
+      expect(crumb.segments[4].label, 'f');
+      expect(crumb.segments[4].isLast, isTrue);
+      // 隐藏中段：b/c/d
+      expect(crumb.overflowSegments.map((s) => s.label), ['b', 'c', 'd']);
+      expect(crumb.overflowSegments.map((s) => s.path), [
+        'a/b',
+        'a/b/c',
+        'a/b/c/d',
+      ]);
+    });
+
+    test('根目录：home 为 isLast，showUp=false', () {
+      final crumb = buildManifestBreadcrumb(
+        items: const [],
+        cwd: '',
+        extFilter: {},
+        search: '',
+      );
+      expect(crumb.segments, hasLength(1));
+      expect(crumb.segments.single.kind, ManifestCrumbKind.home);
+      expect(crumb.segments.single.isLast, isTrue);
+      expect(crumb.showUp, isFalse);
+    });
+  });
+
+  group('全选 / 反选 / 清空 —— 作用域=全部可见文件', () {
+    final items = [
+      _fileAt('a', '', 'a.mkv'),
+      _fileAt('b', '', 'b.srt'),
+      _fileAt('c', '', 'c.mkv'),
+    ];
+
+    test('全选：替换为当前可见集合（筛选范围外的旧选中被丢弃）', () {
+      final selected = manifestSelectAllVisible(
+        items,
+        extFilter: {'MKV'},
+        search: '',
+      );
+      expect(selected, {'a', 'c'});
+    });
+
+    test('反选：可见集合内「此前未选」的条目，可见范围外旧选中同样被丢弃', () {
+      final inverted = manifestInvertVisibleSelection(
+        items,
+        {'a', 'b'}, // b 在筛选范围外（不是 mkv）
+        extFilter: {'MKV'},
+        search: '',
+      );
+      expect(inverted, {'c'}); // a 已选被移除；b 因不可见被丢弃；c 未选变已选
+    });
+
+    test('清空：调用方直接置空集合（不需要模型函数）', () {
+      final cleared = <String>{};
+      expect(cleared, isEmpty);
+    });
+  });
+
+  group('目录三态推导', () {
+    test('由行统计推导 unchecked / checked / indeterminate', () {
+      const none = ManifestDirRow(
         path: 'd',
-        depth: 0,
-        children: [
-          ManifestFileNode(
-            item: _item('1', 'd/1.mkv'),
-            path: 'd/1.mkv',
-            depth: 1,
-          ),
-          ManifestFileNode(
-            item: _item('2', 'd/2.mkv'),
-            path: 'd/2.mkv',
-            depth: 1,
-          ),
-          ManifestFileNode(
-            item: _item('3', 'd/3.mkv'),
-            path: 'd/3.mkv',
-            depth: 1,
-          ),
-        ],
+        labels: ['d'],
+        count: 3,
+        size: 300,
+        selCnt: 0,
+        unknown: false,
       );
+      const all = ManifestDirRow(
+        path: 'd',
+        labels: ['d'],
+        count: 3,
+        size: 300,
+        selCnt: 3,
+        unknown: false,
+      );
+      const partial = ManifestDirRow(
+        path: 'd',
+        labels: ['d'],
+        count: 3,
+        size: 300,
+        selCnt: 1,
+        unknown: false,
+      );
+      expect(manifestDirRowCheckState(none), ManifestCheckState.unchecked);
+      expect(manifestDirRowCheckState(all), ManifestCheckState.checked);
+      expect(manifestDirRowCheckState(partial), ManifestCheckState.indeterminate);
     });
 
-    test('全未选中 → unchecked；全选中 → checked；部分选中 → indeterminate', () {
-      expect(manifestDirCheckState(dir, {}), ManifestCheckState.unchecked);
-      expect(
-        manifestDirCheckState(dir, {'1', '2', '3'}),
-        ManifestCheckState.checked,
+    test('manifestToggleDirSubtree：整树全选中则整体取消，否则整体选中', () {
+      final items = [
+        _fileAt('1', 'd', '1.mkv'),
+        _fileAt('2', 'd', '2.mkv'),
+        _fileAt('3', 'd/sub', '3.mkv'),
+      ];
+      final selected = manifestToggleDirSubtree(
+        items: items,
+        dirPath: 'd',
+        selectedItemIds: {},
+        extFilter: {},
+        search: '',
       );
-      expect(
-        manifestDirCheckState(dir, {'1'}),
-        ManifestCheckState.indeterminate,
-      );
-    });
-
-    test('勾选目录 = 递归选中全部叶子；取消勾选 = 递归清空', () {
-      final selected = toggleManifestDirSelection(dir, {}, true);
       expect(selected, {'1', '2', '3'});
-      final unselected = toggleManifestDirSelection(dir, {
-        '1',
-        '2',
-        '3',
-        'other',
-      }, false);
+      final unselected = manifestToggleDirSubtree(
+        items: items,
+        dirPath: 'd',
+        selectedItemIds: {'1', '2', '3', 'other'},
+        extFilter: {},
+        search: '',
+      );
       expect(unselected, {'other'});
     });
 
-    test('collectManifestItemIds 收集整棵子树的叶子 id', () {
-      expect(collectManifestItemIds(dir), {'1', '2', '3'});
-    });
-
-    test('manifestNodeTotalSize 聚合子树 Σsize', () {
-      expect(manifestNodeTotalSize(dir), 300); // 3 个文件各 size:100（默认值）
-    });
-  });
-
-  group('扩展名筛选 / 意图聚合', () {
-    final items = [
-      _item('v1', 'a.mkv', size: 1000),
-      _item('v2', 'b.mp4', size: 2000),
-      _item('a1', 'c.mp3', size: 300),
-      _item('d1', 'd.pdf', size: 50),
-    ];
-
-    test('filterManifestItemsByCategory 按类型过滤，all 不过滤', () {
-      expect(filterManifestItemsByCategory(items, FileCategory.all), items);
-      expect(
-        filterManifestItemsByCategory(
-          items,
-          FileCategory.video,
-        ).map((i) => i.id),
-        ['v1', 'v2'],
-      );
-    });
-
-    test('aggregateManifestByCategory 计数 + Σsize，仅含实际出现的类型', () {
-      final agg = aggregateManifestByCategory(items);
-      expect(agg.map((a) => a.category), isNot(contains(FileCategory.all)));
-      final video = agg.firstWhere((a) => a.category == FileCategory.video);
-      expect(video.count, 2);
-      expect(video.totalSize, 3000);
-      expect(video.itemIds, {'v1', 'v2'});
-      expect(agg.any((a) => a.category == FileCategory.image), isFalse);
-    });
-
-    test('全选 / 反选', () {
-      final all = allManifestItemIds(items);
-      expect(all, {'v1', 'v2', 'a1', 'd1'});
-      final inverted = invertManifestSelection(items, {'v1', 'v2'});
-      expect(inverted, {'a1', 'd1'});
-    });
-
-    test('manifestTotalSize / manifestSelectedSize', () {
-      expect(manifestTotalSize(items), 3350);
-      expect(manifestSelectedSize(items, {'v1', 'a1'}), 1300);
-    });
-  });
-
-  group('规格策略：最高 / 1080P / 720P / 最省 + 精确档回退计数', () {
-    late List<ManifestItemDto> items;
-    setUp(() {
-      items = [
-        _item(
-          'exact',
-          'ep1.mkv',
-          variants: [
-            _variant('v2160', '2160p'),
-            _variant('v1080', '1080p'),
-            _variant('v480', '480p'),
-          ],
-        ),
-        _item(
-          'noexact',
-          'ep2.mkv',
-          variants: [_variant('v2160b', '2160p'), _variant('v480b', '480p')],
-        ),
-        _item('single', 'readme.txt'), // 无 variants，不受策略影响
-      ];
-    });
-
-    test('highest 选分辨率最大的 variant', () {
-      final result = applyManifestQualityPolicy(
-        items,
-        ManifestQualityPolicy.highest,
-      );
-      final map = result.asMap;
-      expect(map['exact'], 'v2160');
-      expect(map['noexact'], 'v2160b');
-      expect(map['single'], isNull);
-      expect(result.fallbackCount, 0); // highest 没有"精确档"概念
-    });
-
-    test('lowest 选分辨率最小的 variant', () {
-      final result = applyManifestQualityPolicy(
-        items,
-        ManifestQualityPolicy.lowest,
-      );
-      final map = result.asMap;
-      expect(map['exact'], 'v480');
-      expect(map['noexact'], 'v480b');
-    });
-
-    test('p1080 精确命中时不回退；未命中时选最接近的并计入回退', () {
-      final result = applyManifestQualityPolicy(
-        items,
-        ManifestQualityPolicy.p1080,
-      );
-      final map = result.asMap;
-      expect(map['exact'], 'v1080'); // 精确命中
-      // noexact 只有 2160/480，距 1080 最近的是 2160（差 1080）vs 480（差 600）→ 480 更近
-      expect(map['noexact'], 'v480b');
-      expect(result.fallbackCount, 1);
-      final exactChoice = result.choices.firstWhere((c) => c.itemId == 'exact');
-      final noexactChoice = result.choices.firstWhere(
-        (c) => c.itemId == 'noexact',
-      );
-      expect(exactChoice.isFallback, isFalse);
-      expect(noexactChoice.isFallback, isTrue);
-    });
-
-    test('p720 两个条目都没有精确档，都回退且计数为 2', () {
-      final result = applyManifestQualityPolicy(
-        items,
-        ManifestQualityPolicy.p720,
-      );
-      expect(result.fallbackCount, 2);
-    });
-
-    test('resolveEffectiveManifestVariants：per-item 覆盖优先于策略基准', () {
-      final policyResult = applyManifestQualityPolicy(
-        items,
-        ManifestQualityPolicy.highest,
-      );
-      final effective = resolveEffectiveManifestVariants(policyResult, {
-        'exact': 'v480', // 手动覆盖成最低画质
-      });
-      expect(effective['exact'], 'v480');
-      expect(effective['noexact'], 'v2160b'); // 未覆盖，沿用策略基准
-    });
-  });
-
-  group('resolver_item 拼接', () {
-    test('无 variantId（null 或空串）只用 itemId；否则 itemId@variantId', () {
-      expect(buildManifestResolverItem('item1', null), 'item1');
-      expect(buildManifestResolverItem('item1', ''), 'item1');
-      expect(buildManifestResolverItem('item1', 'v2'), 'item1@v2');
-    });
-
-    test('buildManifestGroupItems：命中 variant 时 size 取 variant.size', () {
+    test('manifestDirFileIds 只收集可见条目', () {
       final items = [
-        _item(
-          'i1',
-          'a/ep1.mkv',
-          size: 999,
-          variants: [_variant('v1', '1080p', size: 500)],
-        ),
-        _item('i2', 'b/ep2.mkv', size: 300),
+        _fileAt('1', 'd', '1.mkv'),
+        _fileAt('2', 'd', '2.srt'),
       ];
-      final entries = buildManifestGroupItems(
-        items,
-        {'i1', 'i2'},
-        {'i1': 'v1', 'i2': null},
+      final ids = manifestDirFileIds(
+        items: items,
+        dirPath: 'd',
+        extFilter: {'MKV'},
+        search: '',
       );
+      expect(ids, {'1'});
+    });
+  });
+
+  group('resolver_item / CreateTaskGroup.items 投影', () {
+    test('buildManifestGroupItems：resolver_item 恒为 itemId（无 @variant 后缀）', () {
+      final items = [
+        _fileAt('i1', 'a', 'ep1.mkv', size: 999),
+        _fileAt('i2', 'b', 'ep2.mkv', size: 300),
+      ];
+      final entries = buildManifestGroupItems(items, {'i1', 'i2'});
       expect(entries, hasLength(2));
-      final e1 = entries.firstWhere((e) => e.resolverItem == 'i1@v1');
-      expect(e1.size, 500);
-      expect(e1.relPath, 'a/ep1.mkv');
-      final e2 = entries.firstWhere((e) => e.resolverItem == 'i2');
-      expect(e2.size, 300);
+      final e1 = entries.firstWhere((e) => e.resolverItem == 'i1');
+      expect(e1.fileName, 'ep1.mkv');
+      expect(e1.relPath, 'a');
+      expect(e1.size, 999);
     });
 
-    test('buildManifestGroupItems 只包含选中集合内的条目', () {
-      final items = [_item('i1', 'x.mkv'), _item('i2', 'y.mkv')];
-      final entries = buildManifestGroupItems(
-        items,
-        {'i1'},
-        {'i1': null, 'i2': null},
-      );
+    test('只包含选中集合内的条目', () {
+      final items = [_fileAt('i1', '', 'x.mkv'), _fileAt('i2', '', 'y.mkv')];
+      final entries = buildManifestGroupItems(items, {'i1'});
       expect(entries, hasLength(1));
       expect(entries.single.resolverItem, 'i1');
     });
   });
 
-  group('组名默认值', () {
+  group('组名默认值 / 来源站点', () {
     test('manifest.name 非空时直接使用（trim）', () {
       expect(manifestDefaultGroupName('  My Show  ', 'https://x/y'), 'My Show');
     });
@@ -404,43 +556,81 @@ void main() {
     test('都拿不到时返回空串', () {
       expect(manifestDefaultGroupName('', ''), '');
     });
+
+    test('manifestSourceHost 解析域名，失败返回空串', () {
+      expect(manifestSourceHost('https://pan.baidu.com/s/1abc'), 'pan.baidu.com');
+      expect(manifestSourceHost('not a url'), '');
+    });
   });
 
-  group('剧集智能建议启发式', () {
-    test('高置信度编号模式 → 正片 + 匹配字幕建议', () {
-      final items = [
-        _item('e1', 'Show S01E01.mkv'),
-        _item('e2', 'Show S01E02.mkv'),
-        _item('e3', 'Show S01E03.mkv'),
-        _item('s1', 'Show S01E01.srt'),
-        _item('nfo', 'Show.nfo'),
-      ];
-      final suggestion = detectManifestEpisodeSuggestion(items);
-      expect(suggestion, isNotNull);
-      expect(suggestion!.itemIds, {'e1', 'e2', 'e3', 's1'});
-      expect(suggestion.count, 4);
+  group('高级选项 dirty 判定 / 请求头生效表', () {
+    ManifestAdvancedOptions defaults() => const ManifestAdvancedOptions(
+      proxyUrl: '',
+      ignoreTlsErrors: false,
+      uaInherit: true,
+      userAgent: '',
+      cookies: '',
+      segments: 0,
+      headers: [],
+    );
+
+    test('默认值不 dirty', () {
+      expect(manifestAdvancedOptionsDirty(defaults()), isFalse);
     });
 
-    test('视频条目不足 2 个 → 置信度不足，返回 null', () {
-      final items = [_item('e1', 'Show S01E01.mkv')];
-      expect(detectManifestEpisodeSuggestion(items), isNull);
+    test('任一字段偏离默认即 dirty', () {
+      expect(
+        manifestAdvancedOptionsDirty(
+          ManifestAdvancedOptions(
+            proxyUrl: 'socks5://127.0.0.1:1080',
+            ignoreTlsErrors: defaults().ignoreTlsErrors,
+            uaInherit: defaults().uaInherit,
+            userAgent: defaults().userAgent,
+            cookies: defaults().cookies,
+            segments: defaults().segments,
+            headers: defaults().headers,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        manifestAdvancedOptionsDirty(
+          ManifestAdvancedOptions(
+            proxyUrl: '',
+            ignoreTlsErrors: false,
+            uaInherit: false, // 切自定义但输入框为空，不算 dirty
+            userAgent: '',
+            cookies: '',
+            segments: 0,
+            headers: const [],
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        manifestAdvancedOptionsDirty(
+          ManifestAdvancedOptions(
+            proxyUrl: '',
+            ignoreTlsErrors: false,
+            uaInherit: true,
+            userAgent: '',
+            cookies: '',
+            segments: 4,
+            headers: const [],
+          ),
+        ),
+        isTrue,
+      );
     });
 
-    test('命中比例过低（< 60%）→ 返回 null', () {
-      final items = [
-        _item('e1', 'Show S01E01.mkv'),
-        _item('e2', 'random_name.mkv'),
-        _item('e3', 'another_clip.mkv'),
-      ];
-      expect(detectManifestEpisodeSuggestion(items), isNull);
-    });
-
-    test('排除花絮/预告后无剩余正片 → 返回 null', () {
-      final items = [
-        _item('t1', 'Trailer 01.mkv'),
-        _item('t2', 'Trailer 02.mkv'),
-      ];
-      expect(detectManifestEpisodeSuggestion(items), isNull);
+    test('manifestEffectiveHeaders 丢弃空 key/value 行，同名后者覆盖前者', () {
+      final result = manifestEffectiveHeaders(const [
+        ManifestHeaderEntry(key: 'Referer', value: 'https://a'),
+        ManifestHeaderEntry(key: '', value: 'ignored'),
+        ManifestHeaderEntry(key: 'X-Empty', value: ''),
+        ManifestHeaderEntry(key: 'Referer', value: 'https://b'),
+      ]);
+      expect(result, {'Referer': 'https://b'});
     });
   });
 }

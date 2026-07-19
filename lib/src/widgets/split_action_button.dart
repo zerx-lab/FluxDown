@@ -81,9 +81,10 @@ class SplitActionButton extends StatelessWidget {
             child: child,
           );
 
-    return ShadTooltip(
-      builder: (_) => Text(tooltip),
-      child: Stack(
+    // 禁用态视觉降级：ShadButton 置 null onPressed 只拦截交互不改外观
+    // （子内容颜色是本组件显式指定的），不降透明度会呈现「看似可点但
+    // 点不动」的假可用态（2026-07-19 manifest 弹窗 0 选中反馈）。
+    final body = Stack(
         children: [
           button,
           // 覆盖命中区：分隔线右侧（含右内边距）全部触发下拉。
@@ -106,7 +107,11 @@ class SplitActionButton extends StatelessWidget {
             ),
           ),
         ],
-      ),
+    );
+
+    return ShadTooltip(
+      builder: (_) => Text(tooltip),
+      child: enabled ? body : Opacity(opacity: 0.5, child: body),
     );
   }
 }

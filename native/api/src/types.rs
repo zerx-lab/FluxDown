@@ -201,6 +201,9 @@ pub struct TaskDto {
     /// Source page URL captured by the browser extension (empty = none).
     #[serde(default)]
     pub referrer: String,
+    /// 所属任务组 ID（空 = 不属于任何组）。
+    #[serde(default)]
+    pub group_id: String,
 }
 
 impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
@@ -222,6 +225,7 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
             file_missing: t.file_missing,
             completed_at: t.completed_at,
             referrer: t.referrer,
+            group_id: t.group_id,
         }
     }
 }
@@ -621,6 +625,205 @@ impl From<fluxdown_engine::plugin::MarketEntry> for MarketEntryDto {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 任务组与预解析（多文件任务组，Phase D；`docs/multi-file-task-group-design.md`）
+// ---------------------------------------------------------------------------
+
+/// 任务组信息（`GET /api/v1/groups` 响应元素）。
+///
+/// # Examples
+///
+/// ```
+/// use fluxdown_api::types::GroupDto;
+/// use fluxdown_engine::model::GroupInfo;
+///
+/// let info = GroupInfo {
+///     group_id: "g1".to_string(),
+///     name: "合集".to_string(),
+///     source_url: "https://example.com/share".to_string(),
+///     save_dir: "/downloads/合集".to_string(),
+///     created_at: "1700000000".to_string(),
+/// };
+/// let dto = GroupDto::from(info);
+/// assert_eq!(dto.group_id, "g1");
+/// let json = serde_json::to_string(&dto).unwrap();
+/// assert!(json.contains("\"groupId\":\"g1\""));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupDto {
+    pub group_id: String,
+    pub name: String,
+    /// 原始分享/清单链接（展示/复制用）。
+    pub source_url: String,
+    /// 组根目录（子任务落盘 = 本值 + 清单条目的相对路径）。
+    pub save_dir: String,
+    /// Unix 秒级时间戳（字符串）。
+    pub created_at: String,
+}
+
+impl From<fluxdown_engine::model::GroupInfo> for GroupDto {
+    fn from(g: fluxdown_engine::model::GroupInfo) -> Self {
+        Self {
+            group_id: g.group_id,
+            name: g.name,
+            source_url: g.source_url,
+            save_dir: g.save_dir,
+            created_at: g.created_at,
+        }
+    }
+}
+
+/// [`CreateGroupRequest::items`] 的单个组成员条目（客户端在预览响应上
+/// 勾选后的清单条目/规格投影）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupItemRequest {
+    /// 二段解析标识，按 `<itemId>` 或 `<itemId>@<variantId>` 拼接（见
+    /// [`PreviewItemDto::id`]/[`PreviewVariantDto::id`]）。
+    pub resolver_item: String,
+    pub file_name: String,
+    /// 相对组根目录的子路径（空 = 组根）。
+    #[serde(default)]
+    pub rel_path: String,
+    /// 已知大小（字节，0 = 未知）。
+    #[serde(default)]
+    pub size: i64,
+}
+
+/// 创建多文件任务组请求（`POST /api/v1/groups`）。`items` 不可为空
+/// （空数组 → 400）。
+///
+/// # Examples
+///
+/// ```
+/// use fluxdown_api::types::CreateGroupRequest;
+///
+/// let req: CreateGroupRequest = serde_json::from_str(
+///     r#"{"sourceUrl":"https://x/share","groupName":"合集","items":[
+///         {"resolverItem":"a","fileName":"a.mp4"}
+///     ]}"#,
+/// )
+/// .unwrap();
+/// assert_eq!(req.group_name, "合集");
+/// assert_eq!(req.items.len(), 1);
+/// assert!(req.save_dir.is_empty()); // 空 = 使用全局默认保存目录
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupRequest {
+    /// 原始分享/清单链接（组行 `source_url`，展示/复制用）。
+    #[serde(default)]
+    pub source_url: String,
+    /// 组名（空 = 组根目录直接用 `save_dir`）。
+    #[serde(default)]
+    pub group_name: String,
+    /// 基础保存目录（组根目录 = `save_dir/sanitize(group_name)`）；
+    /// 空 = 使用全局默认保存目录。
+    #[serde(default)]
+    pub save_dir: String,
+    /// 命名队列 ID（空 = 默认队列）。
+    #[serde(default)]
+    pub queue_id: String,
+    /// 0 = 由 segment_advisor 按文件大小动态决定。
+    #[serde(default)]
+    pub segments: i32,
+    #[serde(default)]
+    pub cookies: String,
+    #[serde(default)]
+    pub referrer: String,
+    #[serde(default)]
+    pub user_agent: String,
+    /// 单任务代理 URL（空 = 使用全局代理）。
+    #[serde(default)]
+    pub proxy_url: String,
+    #[serde(default)]
+    pub extra_headers: HashMap<String, String>,
+    /// 忽略 HTTPS 证书错误。缺省 false（严格验证）。
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
+    /// 稍后下载：true = 建组后不启动，待「启动队列」或用户手动恢复。
+    #[serde(default)]
+    pub start_paused: bool,
+    /// 组成员清单（不可为空，见本类型文档）。
+    #[serde(default)]
+    pub items: Vec<GroupItemRequest>,
+}
+
+/// 创建任务组响应（`POST /api/v1/groups`）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupResponse {
+    pub group_id: String,
+}
+
+/// 前置预解析请求（`POST /api/v1/resolve/preview`）。只读、不建任务、
+/// 不写库；结果见 [`ResolvePreviewResponse`]。
+///
+/// # Examples
+///
+/// ```
+/// use fluxdown_api::types::ResolvePreviewRequest;
+///
+/// let req: ResolvePreviewRequest =
+///     serde_json::from_str(r#"{"url":"https://example.com/share"}"#).unwrap();
+/// assert_eq!(req.url, "https://example.com/share");
+/// assert!(req.cookies.is_empty());
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePreviewRequest {
+    pub url: String,
+    #[serde(default)]
+    pub cookies: String,
+    #[serde(default)]
+    pub referrer: String,
+    #[serde(default)]
+    pub user_agent: String,
+    #[serde(default)]
+    pub extra_headers: HashMap<String, String>,
+}
+
+/// [`ResolvePreviewRequest`] 的结果。`items` 为空且 `error` 为空 = 插件未
+/// 返回清单（客户端应回退普通单任务创建对话框）；`error` 非空 = 预解析
+/// 失败（同样回退，`error` 供 UI 提示）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePreviewResponse {
+    pub name: String,
+    pub source_url: String,
+    /// 无错误时为空。
+    #[serde(default)]
+    pub error: String,
+    #[serde(default)]
+    pub items: Vec<PreviewItemDto>,
+}
+
+/// [`ResolvePreviewResponse::items`] 的单个清单条目。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewItemDto {
+    /// 插件自定义标识，建组时按 `<id>` 或 `<id>@<variantId>` 拼进
+    /// [`GroupItemRequest::resolver_item`]。
+    pub id: String,
+    pub name: String,
+    /// 相对组根目录的子路径（空 = 根）。
+    pub path: String,
+    /// 已知大小（字节），未知为 0。
+    pub size: i64,
+    pub variants: Vec<PreviewVariantDto>,
+}
+
+/// [`PreviewItemDto::variants`] 的单个规格（画质/格式）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewVariantDto {
+    pub id: String,
+    pub label: String,
+    /// 已知大小（字节），未知为 0。
+    pub size: i64,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -771,6 +974,7 @@ mod tests {
             file_missing: false,
             completed_at: String::new(),
             referrer: String::new(),
+            group_id: "g1".to_string(),
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["taskId"], "t1");
@@ -786,6 +990,7 @@ mod tests {
         assert_eq!(v["queueId"], "");
         assert_eq!(v["checksum"], "");
         assert_eq!(v["ignoreTlsErrors"], false);
+        assert_eq!(v["groupId"], "g1");
         // 蛇形字段名不应残留（防止漏掉 rename_all）。
         assert!(v.get("task_id").is_none());
         assert!(v.get("file_name").is_none());

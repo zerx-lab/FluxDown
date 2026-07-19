@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{
-    self, CreateGroupSpec, GroupItemSpec, NewTaskSpec, TaskDone,
+    self, CreateGroupSpec, GroupItemSpec, NewTaskSpec, ResolvePreviewOutcome, TaskDone,
 };
 use fluxdown_engine::events::EventSink;
 #[cfg(hub_plugins)]
@@ -52,7 +52,7 @@ use fluxdown_api::server::{ApiServerConfig, ApiServerHandle, spawn_api_server};
 use fluxdown_api::service::TaskEvent;
 
 /// Compute default save directory (platform-dependent).
-fn default_save_dir() -> String {
+pub(crate) fn default_save_dir() -> String {
     // Android：应用专属外部目录（免权限可写）；公共 Download 目录需
     // SAF / All-files 权限，由 Dart 侧引导用户选择后经配置下发。
     #[cfg(target_os = "android")]
@@ -2215,6 +2215,63 @@ async fn handle_api_command(
                 }
             }
             let _ = ack.send(());
+        }
+        ApiCommand::CreateGroup { spec, ack } => {
+            let group_id = engine.manager.create_task_group(*spec).await;
+            let _ = ack.send(group_id);
+        }
+        ApiCommand::GroupPause { group_id, ack } => {
+            engine.manager.pause_group(&group_id).await;
+            let _ = ack.send(());
+        }
+        ApiCommand::GroupContinue { group_id, ack } => {
+            engine.manager.resume_group(&group_id).await;
+            let _ = ack.send(());
+        }
+        ApiCommand::GroupDelete {
+            group_id,
+            delete_files,
+            ack,
+        } => {
+            // 删除前先取成员清单：delete_group 之后行已不在，但 aria2 兼容层
+            // 需要逐成员广播 Stop + 清前态表（对齐 rinf `GroupSignal::Control`
+            // 3|4 分支同款收尾，见本文件上方 group_rx 循环）。
+            let member_ids = engine
+                .db
+                .group_member_ids(&group_id)
+                .await
+                .unwrap_or_default();
+            engine.manager.delete_group(&group_id, delete_files).await;
+            for task_id in &member_ids {
+                rinf_sink.broadcast_task_stop(task_id);
+            }
+            let _ = ack.send(());
+        }
+        ApiCommand::ResolvePreview {
+            url,
+            cookies,
+            referrer,
+            user_agent,
+            extra_headers,
+            ack,
+        } => {
+            // 绝不在 actor 内 await 解析结果——插件解析最长 30s 会冻结事件
+            // 循环；转发任务 off-actor 等待后再回执。
+            let rx = engine.manager.spawn_resolve_preview(
+                url,
+                cookies,
+                referrer,
+                user_agent,
+                extra_headers,
+            );
+            tokio::spawn(async move {
+                let outcome = rx.await.unwrap_or(ResolvePreviewOutcome {
+                    name: String::new(),
+                    items: Vec::new(),
+                    error: "resolve preview worker dropped".to_string(),
+                });
+                let _ = ack.send(outcome);
+            });
         }
     }
 }

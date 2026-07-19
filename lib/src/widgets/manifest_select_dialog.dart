@@ -1,35 +1,38 @@
-// 预解析清单选择弹窗（多文件分享/合集链接建组前的确认框）。
+// 预解析清单选择弹窗（多文件分享/合集链接建组前的确认框，v1.6 下钻导航版）。
 //
 // 触发路径：new_download_dialog.dart 对单条 http(s) 非磁力/种子链接先发
 // ResolvePreviewRequest 探测是否为多文件清单；命中后弹出本对话框，底层的
-// 新建下载表单保持不动。取消 → 回到表单（表单未被改动，可编辑重新提交）；
-// 确认 → 发 CreateTaskGroup，两层对话框一起关闭（由调用方在 Future 完成后
-// 关闭底层表单，本文件只负责自己的 Navigator.pop）。
+// 新建下载表单保持不动。取消 → 回到表单；确认 → 发 CreateTaskGroup，两层
+// 对话框一起关闭（由调用方在 Future 完成后关闭底层表单，本文件只负责自己
+// 的 Navigator.pop）。
 //
-// 纯逻辑（树构建/单链折叠/三态勾选/扩展名聚合/规格策略/resolver_item 拼接/
-// 剧集启发式）全部委托 models/manifest_selection.dart；本文件只持有交互
-// 状态（选中集合/折叠集合/筛选/策略/per-item 覆盖）与渲染。
+// 结构（自上而下六段，design/desktop-task-views/DESIGN.md §4.10）：
+// 摘要区 → 工具栏（搜索/扩展名筛选/全选反选清空/排序） → 面包屑
+// （深度的唯一去处） → 文件列表（下钻导航主体，manifest_browse_list.dart）
+// → 高级选项折叠面板（manifest_advanced_panel.dart） → 底栏（保存目录/
+// 已选计数/取消/双拆分按钮）。
 //
-// 结构（渐进披露，自上而下，contract-dart.md §选择弹窗）：
-// 摘要区 → 智能建议条 → 意图按钮组 → 文件树（扩展名筛选常驻） → 规格策略
-// → 底栏（保存目录/队列/已选计数 + 取消/确认）。
+// 纯逻辑（可见性/行流/单链合并/跳级/面包屑折叠/选择作用域/统计）全部委托
+// models/manifest_selection.dart；本文件只持有交互状态（cwd/选中集合/
+// 筛选/搜索词/排序键/高级选项）与渲染。
 
+import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
-import '../models/download_controller.dart';
 import '../models/download_queue.dart';
-import '../models/download_task.dart';
+import '../models/manifest_breadcrumb.dart';
 import '../models/manifest_selection.dart';
 import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
-import 'bt_file_list_widget.dart' show BtCheckbox;
-import 'dir_picker_field.dart';
+import 'context_menu.dart';
 import 'flux_sonner.dart';
-import 'manifest_select_tree.dart';
+import 'manifest_advanced_panel.dart';
+import 'manifest_browse_list.dart';
+import 'manifest_dialog_chrome.dart';
 
 /// 弹出清单选择框。
 ///
@@ -37,7 +40,7 @@ import 'manifest_select_tree.dart';
 /// 新建下载表单对话框）；返回 `false` = 用户取消（表单对话框保持打开）。
 Future<bool> showManifestSelectDialog(
   BuildContext context, {
-  required DownloadController controller,
+  required List<DownloadQueue> queues,
   required ResolvePreviewResult manifest,
   required String sourceUrl,
   required String initialSaveDir,
@@ -58,7 +61,7 @@ Future<bool> showManifestSelectDialog(
     animateIn: const [],
     animateOut: const [],
     builder: (context) => _ManifestSelectDialogContent(
-      controller: controller,
+      queues: queues,
       manifest: manifest,
       sourceUrl: sourceUrl,
       initialSaveDir: initialSaveDir,
@@ -76,8 +79,11 @@ Future<bool> showManifestSelectDialog(
   return result ?? false;
 }
 
+/// 固定的每子任务线程数预设集合（对齐 manifest_advanced_panel.dart）。
+const Set<int> _kSegmentPresets = {1, 4, 8, 16, 32};
+
 class _ManifestSelectDialogContent extends StatefulWidget {
-  final DownloadController controller;
+  final List<DownloadQueue> queues;
   final ResolvePreviewResult manifest;
   final String sourceUrl;
   final String initialSaveDir;
@@ -92,7 +98,7 @@ class _ManifestSelectDialogContent extends StatefulWidget {
   final bool later;
 
   const _ManifestSelectDialogContent({
-    required this.controller,
+    required this.queues,
     required this.manifest,
     required this.sourceUrl,
     required this.initialSaveDir,
@@ -115,115 +121,164 @@ class _ManifestSelectDialogContent extends StatefulWidget {
 class _ManifestSelectDialogContentState
     extends State<_ManifestSelectDialogContent> {
   late final TextEditingController _groupNameController;
-  late final ManifestEpisodeSuggestion? _suggestion;
+  late final TextEditingController _searchController;
+  late final ManifestAdvancedControllers _advControllers;
+  late final FocusNode _keyboardFocusNode;
 
+  // 下钻导航状态。初始 sel 为空集（对齐 openManifestModal 语义，0 选中禁用
+  // 提交是设计边界态，不是缺陷）。
+  String _cwd = '';
   Set<String> _selectedItemIds = {};
-  final Set<String> _collapsedDirPaths = {};
-  FileCategory _categoryFilter = FileCategory.all;
-  ManifestQualityPolicy _qualityPolicy = ManifestQualityPolicy.highest;
-  final Map<String, String> _perItemOverrides = {};
-  bool _suggestionDismissed = false;
-  bool _submitted = false;
-  bool _isPicking = false;
+  final Set<String> _extFilter = {};
+  String _search = '';
+  ManifestSortKey _sortKey = ManifestSortKey.name;
+
+  bool _advOpen = false;
+  bool _ignoreTlsErrors = false;
+  bool _uaInherit = true;
+  int _segments = 0;
 
   late String _saveDir;
-  late String _queueId;
+  bool _isPickingDir = false;
+  bool _submitted = false;
 
   List<ManifestItemDto> get _items => widget.manifest.items;
 
   @override
   void initState() {
     super.initState();
-    _selectedItemIds = allManifestItemIds(_items);
-    _suggestion = detectManifestEpisodeSuggestion(_items);
     _groupNameController = TextEditingController(
       text: manifestDefaultGroupName(widget.manifest.name, widget.sourceUrl),
     );
+    _searchController = TextEditingController();
+    _keyboardFocusNode = FocusNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _keyboardFocusNode.requestFocus();
+    });
+
     _saveDir = widget.initialSaveDir;
-    _queueId = widget.initialQueueId;
+    _ignoreTlsErrors = widget.ignoreTlsErrors;
+    _uaInherit = widget.userAgent.trim().isEmpty;
+    _segments = _kSegmentPresets.contains(widget.segments) ? widget.segments : 0;
+    _advControllers = ManifestAdvancedControllers(
+      initialProxyUrl: widget.proxyUrl,
+      initialUserAgent: widget.userAgent,
+      initialCookies: widget.cookies,
+      initialHeaders: widget.extraHeaders,
+    );
   }
 
   @override
   void dispose() {
     _groupNameController.dispose();
+    _searchController.dispose();
+    _advControllers.dispose();
+    _keyboardFocusNode.dispose();
     super.dispose();
   }
 
-  // ── 派生数据 ────────────────────────────────────────────────────────────
+  // ── 下钻导航 ──────────────────────────────────────────────────────────
 
-  List<ManifestItemDto> get _filteredItems =>
-      filterManifestItemsByCategory(_items, _categoryFilter);
-
-  ManifestPolicyResult get _policyResult =>
-      applyManifestQualityPolicy(_items, _qualityPolicy);
-
-  Map<String, String?> get _effectiveVariants =>
-      resolveEffectiveManifestVariants(_policyResult, _perItemOverrides);
-
-  Set<String> _allDirPaths(List<ManifestNode> nodes) {
-    final result = <String>{};
-    void walk(ManifestNode node) {
-      if (node is ManifestDirNode) {
-        result.add(node.path);
-        for (final c in node.children) {
-          walk(c);
-        }
-      }
-    }
-
-    for (final n in nodes) {
-      walk(n);
-    }
-    return result;
+  /// 校验/回退 [_cwd]（筛选后该层被清空时落回根）。只在非搜索态调用。
+  void _setCwd(String path) {
+    final result = manifestRowsAt(
+      items: _items,
+      cwd: path,
+      selectedItemIds: _selectedItemIds,
+      extFilter: _extFilter,
+      search: '',
+      sortKey: _sortKey,
+    );
+    _cwd = result.cwd;
   }
 
-  // ── 交互 ────────────────────────────────────────────────────────────────
+  void _navigateTo(String path) => setState(() => _setCwd(path));
 
-  void _applySuggestion() {
-    final suggestion = _suggestion;
-    if (suggestion == null) return;
-    setState(() => _selectedItemIds = Set.from(suggestion.itemIds));
+  void _navigateUp() {
+    if (_cwd.isEmpty || manifestIsSearching(_search)) return;
+    final up = manifestUpPath(items: _items, cwd: _cwd, extFilter: _extFilter);
+    setState(() => _setCwd(up));
   }
 
-  void _toggleDirCollapse(ManifestDirNode dir) {
+  // ── 选择 ──────────────────────────────────────────────────────────────
+
+  void _toggleDirSubtree(String dirPath) {
     setState(() {
-      if (_collapsedDirPaths.contains(dir.path)) {
-        _collapsedDirPaths.remove(dir.path);
-      } else {
-        _collapsedDirPaths.add(dir.path);
-      }
+      _selectedItemIds = manifestToggleDirSubtree(
+        items: _items,
+        dirPath: dirPath,
+        selectedItemIds: _selectedItemIds,
+        extFilter: _extFilter,
+        search: _search,
+      );
     });
   }
 
-  void _toggleDirSelection(ManifestDirNode dir, bool select) {
-    setState(
-      () => _selectedItemIds = toggleManifestDirSelection(
-        dir,
-        _selectedItemIds,
-        select,
-      ),
-    );
-  }
-
-  void _toggleFileSelection(ManifestFileNode file) {
+  void _toggleFile(String itemId) {
     setState(() {
       final next = Set<String>.from(_selectedItemIds);
-      if (next.contains(file.item.id)) {
-        next.remove(file.item.id);
-      } else {
-        next.add(file.item.id);
-      }
+      if (!next.remove(itemId)) next.add(itemId);
       _selectedItemIds = next;
     });
   }
 
-  void _selectVariant(ManifestFileNode file, String variantId) {
-    setState(() => _perItemOverrides[file.item.id] = variantId);
+  void _selectAllVisible() => setState(
+    () => _selectedItemIds = manifestSelectAllVisible(
+      _items,
+      extFilter: _extFilter,
+      search: _search,
+    ),
+  );
+
+  void _invertVisible() => setState(
+    () => _selectedItemIds = manifestInvertVisibleSelection(
+      _items,
+      _selectedItemIds,
+      extFilter: _extFilter,
+      search: _search,
+    ),
+  );
+
+  void _clearSelection() => setState(() => _selectedItemIds = {});
+
+  // ── 筛选 / 搜索 / 排序 ────────────────────────────────────────────────
+
+  void _toggleExt(String ext) {
+    setState(() {
+      if (!_extFilter.remove(ext)) _extFilter.add(ext);
+      _setCwd(_cwd);
+    });
   }
 
+  void _onSearchChanged(String value) {
+    setState(() {
+      _search = value;
+      if (!manifestIsSearching(_search)) _setCwd(_cwd);
+    });
+  }
+
+  void _toggleSort() => setState(
+    () => _sortKey = _sortKey == ManifestSortKey.name
+        ? ManifestSortKey.size
+        : ManifestSortKey.name,
+  );
+
+  // ── 高级选项 ──────────────────────────────────────────────────────────
+
+  void _toggleAdvOpen() => setState(() => _advOpen = !_advOpen);
+
+  void _addHeaderRow() =>
+      setState(() => _advControllers.headerRows.add(ManifestHeaderRowControllers()));
+
+  void _removeHeaderRow(int index) => setState(
+    () => _advControllers.headerRows.removeAt(index).dispose(),
+  );
+
+  // ── 保存目录 ──────────────────────────────────────────────────────────
+
   Future<void> _pickSaveDir() async {
-    if (_isPicking) return;
-    setState(() => _isPicking = true);
+    if (_isPickingDir) return;
+    setState(() => _isPickingDir = true);
     try {
       final result = await FilePickerService.pickDirectory(
         dialogTitle: currentS.selectSaveDir,
@@ -233,7 +288,7 @@ class _ManifestSelectDialogContentState
     } on FilePickerException catch (e) {
       if (mounted) _showPickerError(e);
     } finally {
-      if (mounted) setState(() => _isPicking = false);
+      if (mounted) setState(() => _isPickingDir = false);
     }
   }
 
@@ -249,543 +304,267 @@ class _ManifestSelectDialogContentState
     FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
   }
 
-  void _onConfirm() {
+  // ── 面包屑 ⋯ 溢出菜单 / 队列选择菜单 ─────────────────────────────────
+
+  void _showCrumbOverflowMenu(
+    BuildContext anchor,
+    List<ManifestCrumbSegment> overflow,
+  ) {
+    final box = anchor.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final origin = box.localToGlobal(Offset(0, box.size.height + 4));
+    final c = AppColors.of(context);
+    showContextMenu(
+      context,
+      origin,
+      items: [
+        for (final seg in overflow)
+          ContextMenuItem(
+            icon: LucideIcons.folder,
+            label: seg.label,
+            color: c.textPrimary,
+            action: () => _navigateTo(seg.path),
+          ),
+      ],
+    );
+  }
+
+  /// 拆分按钮 ▾：队列快速选择，选择即提交。启停语义只由按钮决定：与
+  /// new_download_dialog.dart `_showQueueMenu` 同一模式，但菜单文案对齐
+  /// v1.6 设计（「开始下载到 · X」/「稍后下载到 · X」）。
+  void _showQueueMenu(BuildContext anchor, {required bool later}) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    if (widget.queues.isEmpty) {
+      _submit(later ? kLaterQueueId : widget.initialQueueId, later);
+      return;
+    }
+    final box = anchor.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final origin = box.localToGlobal(Offset(0, box.size.height + 6));
+    showContextMenu(
+      context,
+      origin,
+      items: [
+        for (final q in widget.queues)
+          ContextMenuItem(
+            icon: q.queueId == kLaterQueueId
+                ? LucideIcons.clock
+                : LucideIcons.layers,
+            label: later
+                ? s.manifestLaterToQueue(queueDisplayName(s, q))
+                : s.manifestStartToQueue(queueDisplayName(s, q)),
+            color: c.textPrimary,
+            action: () => _submit(q.queueId, later),
+          ),
+      ],
+    );
+  }
+
+  // ── 键盘 ──────────────────────────────────────────────────────────────
+
+  bool _isTextFieldFocused() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    if (ctx.widget is EditableText) return true;
+    var found = false;
+    ctx.visitAncestorElements((element) {
+      if (element.widget is EditableText) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
+  void _handleKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      Navigator.of(context).pop(false);
+      return;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.backspace) {
+      if (manifestIsSearching(_search) || _cwd.isEmpty) return;
+      if (_isTextFieldFocused()) return;
+      _navigateUp();
+    }
+  }
+
+  // ── 提交 ──────────────────────────────────────────────────────────────
+
+  void _submit(String queueId, bool startPaused) {
     if (_submitted || _selectedItemIds.isEmpty) return;
     _submitted = true;
-    final groupItems = buildManifestGroupItems(
-      _items,
-      _selectedItemIds,
-      _effectiveVariants,
-    );
+    final groupItems = buildManifestGroupItems(_items, _selectedItemIds);
+    final groupName = _groupNameController.text.trim();
+    final effectiveUserAgent = _uaInherit
+        ? ''
+        : _advControllers.userAgentController.text.trim();
     CreateTaskGroup(
       sourceUrl: widget.sourceUrl,
-      groupName: _groupNameController.text.trim(),
+      groupName: groupName.isEmpty ? widget.manifest.name : groupName,
       saveDir: _saveDir,
-      queueId: _queueId,
-      segments: widget.segments,
-      cookies: widget.cookies,
+      queueId: queueId,
+      segments: _segments,
+      cookies: _advControllers.cookieController.text.trim(),
       referrer: widget.referrer,
-      userAgent: widget.userAgent,
-      proxyUrl: widget.proxyUrl,
-      extraHeaders: widget.extraHeaders,
-      ignoreTlsErrors: widget.ignoreTlsErrors,
-      startPaused: widget.later,
+      userAgent: effectiveUserAgent,
+      proxyUrl: _advControllers.proxyController.text.trim(),
+      extraHeaders: manifestEffectiveHeaders(_advControllers.snapshotHeaders()),
+      ignoreTlsErrors: _ignoreTlsErrors,
+      startPaused: startPaused,
       items: groupItems,
     ).sendSignalToRust();
     Navigator.of(context).pop(true);
   }
 
-  // ── build ──────────────────────────────────────────────────────────────
+  // ── build ────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    final m = AppMetrics.of(context);
     final s = LocaleScope.of(context);
 
-    final tree = buildManifestTree(_filteredItems);
-    final visibleRows = flattenManifestTree(tree, _collapsedDirPaths);
-    final allDirPaths = _allDirPaths(tree);
-    final allCollapsed =
-        allDirPaths.isNotEmpty &&
-        allDirPaths.every(_collapsedDirPaths.contains);
-    final filteredIds = _filteredItems.map((i) => i.id).toSet();
-    final allFilteredSelected =
-        filteredIds.isNotEmpty && filteredIds.every(_selectedItemIds.contains);
-    final anyFilteredSelected = filteredIds.any(_selectedItemIds.contains);
-    final hasVariants = _items.any((i) => i.variants.isNotEmpty);
-    final policyResult = _policyResult;
-    final selectedSize = manifestSelectedSize(_items, _selectedItemIds);
-    final confirmLabel = widget.later ? s.downloadLater : s.startDownload;
-
-    return ShadDialog(
-      constraints: const BoxConstraints(maxWidth: 680),
-      padding: const EdgeInsets.fromLTRB(18, 24, 18, 24),
-      scrollPadding: const EdgeInsets.symmetric(horizontal: 6),
-      title: Row(
-        children: [
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: m.soft(c.accent),
-              borderRadius: m.brMd,
-            ),
-            child: Icon(LucideIcons.listChecks, size: 14, color: c.accent),
-          ),
-          const SizedBox(width: 10),
-          Text(s.manifestDialogTitle),
-        ],
+    final rowsResult = manifestRowsAt(
+      items: _items,
+      cwd: _cwd,
+      selectedItemIds: _selectedItemIds,
+      extFilter: _extFilter,
+      search: _search,
+      sortKey: _sortKey,
+    );
+    final breadcrumb = buildManifestBreadcrumb(
+      items: _items,
+      cwd: _cwd,
+      extFilter: _extFilter,
+      search: _search,
+    );
+    final advDirty = manifestAdvancedOptionsDirty(
+      ManifestAdvancedOptions(
+        proxyUrl: _advControllers.proxyController.text,
+        ignoreTlsErrors: _ignoreTlsErrors,
+        uaInherit: _uaInherit,
+        userAgent: _advControllers.userAgentController.text,
+        cookies: _advControllers.cookieController.text,
+        segments: _segments,
+        headers: _advControllers.snapshotHeaders(),
       ),
-      description: Text(s.manifestDialogDesc(_items.length)),
-      actions: [
-        ShadButton.outline(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: Text(s.cancel),
-        ),
-        ShadButton(
-          onPressed: _selectedItemIds.isEmpty || _submitted ? null : _onConfirm,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
+    );
+    final selStat = manifestSelectionStat(_items, _selectedItemIds);
+    final defaultQueue = widget.queues
+        .where((q) => q.queueId == widget.initialQueueId)
+        .firstOrNull;
+    final startTooltipTarget = defaultQueue == null
+        ? s.mainQueue
+        : queueDisplayName(s, defaultQueue);
+
+    return KeyboardListener(
+      focusNode: _keyboardFocusNode,
+      onKeyEvent: _handleKey,
+      child: ShadDialog(
+        constraints: const BoxConstraints(maxWidth: 780, maxHeight: 620),
+        padding: EdgeInsets.zero,
+        scrollable: false,
+        radius: AppMetrics.of(context).brDialog,
+        child: SizedBox(
+          width: 780,
+          height: 620,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(
-                LucideIcons.download,
-                size: 13,
-                color: Color(0xFFFFFFFF),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 14, 8),
+                child: ManifestSummaryHeader(
+                  groupNameController: _groupNameController,
+                  itemCount: _items.length,
+                  totalSize: manifestTotalSize(_items),
+                  sourceUrl: widget.sourceUrl,
+                  onClose: () => Navigator.of(context).pop(false),
+                ),
               ),
-              const SizedBox(width: 6),
-              Text(
-                confirmLabel,
-                style: const TextStyle(color: Color(0xFFFFFFFF)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: ManifestToolbar(
+                  searchController: _searchController,
+                  onSearchChanged: _onSearchChanged,
+                  topExtensions: manifestTopExtensions(_items),
+                  extFilter: _extFilter,
+                  onToggleExt: _toggleExt,
+                  onSelectAll: _selectAllVisible,
+                  onInvert: _invertVisible,
+                  onClear: _clearSelection,
+                  sortKey: _sortKey,
+                  onToggleSort: _toggleSort,
+                ),
               ),
-            ],
-          ),
-        ),
-      ],
-      child: Padding(
-        padding: const EdgeInsets.only(top: 16, bottom: 16, right: 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── 摘要区 ────────────────────────────────────────────────────
-            _SectionLabel(text: s.manifestGroupNameLabel, c: c),
-            const SizedBox(height: 6),
-            ShadInput(
-              controller: _groupNameController,
-              placeholder: Text(s.manifestGroupNamePlaceholder),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              s.manifestSummary(
-                _items.length,
-                DownloadTask.formatBytes(manifestTotalSize(_items)),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: ManifestBreadcrumbBar(
+                  breadcrumb: breadcrumb,
+                  onNavigate: _navigateTo,
+                  onUp: _navigateUp,
+                  onShowOverflowMenu: _showCrumbOverflowMenu,
+                ),
               ),
-              style: TextStyle(fontSize: 11.5, color: c.textMuted),
-            ),
-
-            // ── 智能建议条 ────────────────────────────────────────────────
-            if (_suggestion != null && !_suggestionDismissed) ...[
-              const SizedBox(height: 12),
-              _buildSuggestionBar(c, m, s, _suggestion),
-            ],
-
-            // ── 意图按钮组 ────────────────────────────────────────────────
-            const SizedBox(height: 14),
-            _SectionLabel(text: s.manifestIntentLabel, c: c),
-            const SizedBox(height: 6),
-            _buildIntentBar(c, m, s),
-
-            // ── 文件树区 ──────────────────────────────────────────────────
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                _SectionLabel(text: s.manifestFilesLabel, c: c),
-                const Spacer(),
-                _linkButton(
-                  c: c,
-                  label: allCollapsed
-                      ? s.manifestExpandAll
-                      : s.manifestCollapseAll,
-                  onTap: () => setState(() {
-                    if (allCollapsed) {
-                      _collapsedDirPaths.clear();
-                    } else {
-                      _collapsedDirPaths
-                        ..clear()
-                        ..addAll(allDirPaths);
-                    }
-                  }),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            _buildExtensionFilterChips(c, m, s),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: filteredIds.isEmpty
-                      ? null
-                      : () => setState(() {
-                          _selectedItemIds = allFilteredSelected
-                              ? _selectedItemIds.difference(filteredIds)
-                              : _selectedItemIds.union(filteredIds);
-                        }),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      BtCheckbox(
-                        checked: allFilteredSelected,
-                        indeterminate:
-                            !allFilteredSelected && anyFilteredSelected,
-                        accentColor: c.accent,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        s.manifestTreeSelectVisible,
-                        style: TextStyle(fontSize: 12, color: c.textSecondary),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            ManifestTreeList(
-              rows: visibleRows,
-              selectedItemIds: _selectedItemIds,
-              collapsedDirPaths: _collapsedDirPaths,
-              effectiveVariants: _effectiveVariants,
-              onToggleDirCollapse: _toggleDirCollapse,
-              onToggleDirSelection: _toggleDirSelection,
-              onToggleFileSelection: _toggleFileSelection,
-              onSelectVariant: _selectVariant,
-            ),
-
-            // ── 规格策略 ──────────────────────────────────────────────────
-            if (hasVariants) ...[
-              const SizedBox(height: 14),
-              _SectionLabel(text: s.manifestQualityPolicyLabel, c: c),
-              const SizedBox(height: 6),
-              _segmented<ManifestQualityPolicy>(
-                context: context,
-                options: [
-                  (ManifestQualityPolicy.highest, s.manifestQualityHighest),
-                  (ManifestQualityPolicy.p1080, s.manifestQuality1080p),
-                  (ManifestQualityPolicy.p720, s.manifestQuality720p),
-                  (ManifestQualityPolicy.lowest, s.manifestQualityLowest),
-                ],
-                selected: _qualityPolicy,
-                onChanged: (v) => setState(() {
-                  _qualityPolicy = v;
-                  _perItemOverrides.clear();
-                }),
-              ),
-              if (policyResult.fallbackCount > 0) ...[
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Icon(LucideIcons.info, size: 12, color: c.textMuted),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        s.manifestQualityFallbackHint(
-                          policyResult.fallbackCount,
-                        ),
-                        style: TextStyle(fontSize: 11, color: c.textMuted),
-                      ),
-                    ),
-                    _linkButton(
-                      c: c,
-                      label: s.manifestAdjustPerItem,
-                      onTap: () => setState(_collapsedDirPaths.clear),
-                    ),
-                  ],
-                ),
-              ],
-            ],
-
-            // ── 底栏：保存目录 / 队列 / 已选计数 ─────────────────────────────
-            const SizedBox(height: 14),
-            _SectionLabel(text: s.saveDir, c: c),
-            const SizedBox(height: 6),
-            DirPickerField(
-              path: _saveDir,
-              placeholder: s.selectSaveDir,
-              enabled: !_isPicking,
-              onTap: _pickSaveDir,
-            ),
-            const SizedBox(height: 10),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SectionLabel(text: s.manifestQueueLabel, c: c),
-                      const SizedBox(height: 6),
-                      _buildQueueSelect(c, s),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Text(
-                  s.manifestSelectedSummary(
-                    _selectedItemIds.length,
-                    DownloadTask.formatBytes(selectedSize),
-                  ),
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: c.textPrimary,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── 子区块构建 ─────────────────────────────────────────────────────────
-
-  Widget _buildSuggestionBar(
-    AppColors c,
-    AppMetrics m,
-    S s,
-    ManifestEpisodeSuggestion suggestion,
-  ) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: m.subtle(c.accent),
-        borderRadius: m.brMd,
-        border: Border.all(color: m.borderSubtle(c.accent)),
-      ),
-      child: Row(
-        children: [
-          Icon(LucideIcons.sparkles, size: 14, color: c.accent),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              s.manifestSuggestionText(suggestion.count),
-              style: TextStyle(fontSize: 12, color: c.textPrimary),
-            ),
-          ),
-          _linkButton(
-            c: c,
-            label: s.manifestSuggestionApply,
-            onTap: _applySuggestion,
-          ),
-          const SizedBox(width: 12),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => setState(() => _suggestionDismissed = true),
-            child: Icon(LucideIcons.x, size: 14, color: c.textMuted),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildIntentBar(AppColors c, AppMetrics m, S s) {
-    final aggregates = aggregateManifestByCategory(_items);
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      children: [
-        for (final agg in aggregates)
-          _actionChip(
-            c: c,
-            m: m,
-            label: s.manifestCategoryChip(
-              agg.category.label,
-              agg.count,
-              DownloadTask.formatBytes(agg.totalSize),
-            ),
-            onTap: () =>
-                setState(() => _selectedItemIds = Set.from(agg.itemIds)),
-          ),
-        _actionChip(
-          c: c,
-          m: m,
-          label: s.manifestSelectAll,
-          onTap: () =>
-              setState(() => _selectedItemIds = allManifestItemIds(_items)),
-        ),
-        _actionChip(
-          c: c,
-          m: m,
-          label: s.manifestInvertSelection,
-          onTap: () => setState(
-            () => _selectedItemIds = invertManifestSelection(
-              _items,
-              _selectedItemIds,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildExtensionFilterChips(AppColors c, AppMetrics m, S s) {
-    final aggregates = aggregateManifestByCategory(_items);
-    final categories = [FileCategory.all, ...aggregates.map((a) => a.category)];
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      children: [
-        for (final category in categories)
-          _filterChip(
-            c: c,
-            m: m,
-            label: category.label,
-            selected: _categoryFilter == category,
-            onTap: () => setState(() => _categoryFilter = category),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildQueueSelect(AppColors c, S s) {
-    final queues = widget.controller.queues;
-    return SizedBox(
-      width: double.infinity,
-      child: ShadSelect<String>(
-        initialValue: _queueId,
-        options: [
-          for (final q in queues)
-            ShadOption(value: q.queueId, child: Text(queueDisplayName(s, q))),
-        ],
-        selectedOptionBuilder: (context, value) {
-          final q = queues.where((q) => q.queueId == value).firstOrNull;
-          return Text(
-            q == null ? s.mainQueue : queueDisplayName(s, q),
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
-          );
-        },
-        onChanged: (v) {
-          if (v != null) setState(() => _queueId = v);
-        },
-      ),
-    );
-  }
-
-  // ── 通用小组件 ─────────────────────────────────────────────────────────
-
-  Widget _linkButton({
-    required AppColors c,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.w600,
-          color: c.accent,
-        ),
-      ),
-    );
-  }
-
-  Widget _actionChip({
-    required AppColors c,
-    required AppMetrics m,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(color: c.surface2, borderRadius: m.brPill),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 11.5,
-            fontWeight: FontWeight.w500,
-            color: c.textSecondary,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _filterChip({
-    required AppColors c,
-    required AppMetrics m,
-    required String label,
-    required bool selected,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: selected ? c.accent : c.surface2,
-          borderRadius: m.brPill,
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 11.5,
-            fontWeight: FontWeight.w500,
-            color: selected ? const Color(0xFFFFFFFF) : c.textSecondary,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _segmented<T>({
-    required BuildContext context,
-    required List<(T, String)> options,
-    required T selected,
-    required ValueChanged<T> onChanged,
-  }) {
-    final c = AppColors.of(context);
-    final m = AppMetrics.of(context);
-    return Container(
-      height: 28,
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(color: c.surface2, borderRadius: m.brSm),
-      child: Row(
-        children: [
-          for (final opt in options)
-            Expanded(
-              child: GestureDetector(
-                onTap: () => onChanged(opt.$1),
+              const SizedBox(height: 4),
+              Expanded(
                 child: Container(
-                  alignment: Alignment.center,
+                  margin: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: opt.$1 == selected
-                        ? c.accent
-                        : const Color(0x00000000),
-                    borderRadius: m.brXs,
+                    border: Border(top: BorderSide(color: c.border)),
                   ),
-                  child: Text(
-                    opt.$2,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w500,
-                      color: opt.$1 == selected
-                          ? const Color(0xFFFFFFFF)
-                          : c.textSecondary,
-                    ),
+                  child: ManifestBrowseList(
+                    rows: rowsResult.rows,
+                    selectedItemIds: _selectedItemIds,
+                    height: double.infinity,
+                    onToggleDirSubtree: _toggleDirSubtree,
+                    onEnterDir: _navigateTo,
+                    onToggleFile: _toggleFile,
                   ),
                 ),
               ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionLabel extends StatelessWidget {
-  final String text;
-  final AppColors c;
-
-  const _SectionLabel({required this.text, required this.c});
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: TextStyle(
-        fontSize: 11.5,
-        fontWeight: FontWeight.w500,
-        color: c.textSecondary,
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: ManifestAdvancedPanel(
+                  open: _advOpen,
+                  dirty: advDirty,
+                  onToggleOpen: _toggleAdvOpen,
+                  controllers: _advControllers,
+                  ignoreTlsErrors: _ignoreTlsErrors,
+                  onIgnoreTlsChanged: (v) => setState(() => _ignoreTlsErrors = v),
+                  uaInherit: _uaInherit,
+                  onUaInheritChanged: (v) => setState(() => _uaInherit = v),
+                  segments: _segments,
+                  onSegmentsChanged: (v) => setState(() => _segments = v),
+                  onAddHeader: _addHeaderRow,
+                  onRemoveHeader: _removeHeaderRow,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: c.border)),
+                ),
+                child: ManifestFooterBar(
+                  saveDir: _saveDir,
+                  manifestName: widget.manifest.name,
+                  groupNameController: _groupNameController,
+                  isPickingDir: _isPickingDir,
+                  onPickSaveDir: _pickSaveDir,
+                  selStat: selStat,
+                  onCancel: () => Navigator.of(context).pop(false),
+                  startTooltipTarget: startTooltipTarget,
+                  onSubmitLater: () => _submit(kLaterQueueId, true),
+                  onPickLaterQueue: (anchor) => _showQueueMenu(anchor, later: true),
+                  onSubmitStart: () => _submit(widget.initialQueueId, false),
+                  onPickStartQueue: (anchor) => _showQueueMenu(anchor, later: false),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

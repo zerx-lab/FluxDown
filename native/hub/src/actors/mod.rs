@@ -1,4 +1,4 @@
-mod download_actor;
+pub(crate) mod download_actor;
 
 pub async fn create_actors() {
     // Determine the data directory using the shared resolver.

@@ -29,7 +29,10 @@ use crate::server::{self, ApiServerConfig};
 use crate::service::{
     ApiError, ApiHost, LiveSpeed, TaskEvent, TaskEventKind, UNKNOWN_ENDPOINT_MESSAGE,
 };
-use crate::types::{CreateTaskRequest, DownloadRequest, QueueDto, TaskDto};
+use crate::types::{
+    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, QueueDto,
+    ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
+};
 
 // ---------------------------------------------------------------------------
 // MockHost：记录调用、返回可配置结果
@@ -50,6 +53,14 @@ struct MockHostInner {
     config: HashMap<String, String>,
     applied_config: Vec<HashMap<String, String>>,
     speeds: HashMap<String, LiveSpeed>,
+    groups: Vec<GroupDto>,
+    created_groups: Vec<CreateGroupRequest>,
+    next_group_id: String,
+    group_deleted: Vec<(String, bool)>,
+    group_paused: Vec<String>,
+    group_continued: Vec<String>,
+    resolve_preview_requests: Vec<ResolvePreviewRequest>,
+    resolve_preview_response: Option<ResolvePreviewResponse>,
 }
 
 struct MockHost {
@@ -74,6 +85,7 @@ impl MockHost {
         Self {
             inner: Mutex::new(MockHostInner {
                 next_task_id: "mock-task-1".to_string(),
+                next_group_id: "mock-group-1".to_string(),
                 ..Default::default()
             }),
             events: Some(broadcast::channel(16).0),
@@ -94,6 +106,16 @@ impl MockHost {
 
     fn with_speeds(mut self, speeds: HashMap<String, LiveSpeed>) -> Self {
         self.inner.get_mut().unwrap().speeds = speeds;
+        self
+    }
+
+    fn with_groups(mut self, groups: Vec<GroupDto>) -> Self {
+        self.inner.get_mut().unwrap().groups = groups;
+        self
+    }
+
+    fn with_resolve_preview_response(mut self, resp: ResolvePreviewResponse) -> Self {
+        self.inner.get_mut().unwrap().resolve_preview_response = Some(resp);
         self
     }
 
@@ -133,6 +155,26 @@ impl MockHost {
 
     fn continue_all_calls(&self) -> u32 {
         self.inner.lock().unwrap().continue_all_calls
+    }
+
+    fn created_groups(&self) -> Vec<CreateGroupRequest> {
+        self.inner.lock().unwrap().created_groups.clone()
+    }
+
+    fn group_deleted(&self) -> Vec<(String, bool)> {
+        self.inner.lock().unwrap().group_deleted.clone()
+    }
+
+    fn group_paused(&self) -> Vec<String> {
+        self.inner.lock().unwrap().group_paused.clone()
+    }
+
+    fn group_continued(&self) -> Vec<String> {
+        self.inner.lock().unwrap().group_continued.clone()
+    }
+
+    fn resolve_preview_requests(&self) -> Vec<ResolvePreviewRequest> {
+        self.inner.lock().unwrap().resolve_preview_requests.clone()
     }
 
     /// 模拟宿主检测到一次任务状态迁移，广播对应事件。若本实例未启用事件订阅
@@ -243,6 +285,63 @@ impl ApiHost for MockHost {
     fn subscribe_task_events(&self) -> Option<broadcast::Receiver<TaskEvent>> {
         self.events.as_ref().map(broadcast::Sender::subscribe)
     }
+
+    async fn resolve_preview(
+        &self,
+        req: ResolvePreviewRequest,
+    ) -> Result<ResolvePreviewResponse, ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.resolve_preview_requests.push(req);
+        Ok(inner
+            .resolve_preview_response
+            .clone()
+            .unwrap_or(ResolvePreviewResponse {
+                name: String::new(),
+                source_url: String::new(),
+                error: String::new(),
+                items: Vec::new(),
+            }))
+    }
+
+    async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        let id = inner.next_group_id.clone();
+        inner.created_groups.push(req);
+        Ok(id)
+    }
+
+    async fn list_groups(&self) -> Result<Vec<GroupDto>, ApiError> {
+        Ok(self.inner.lock().unwrap().groups.clone())
+    }
+
+    async fn group_pause(&self, group_id: &str) -> Result<(), ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.groups.iter().any(|g| g.group_id == group_id) {
+            return Err(ApiError::NotFound);
+        }
+        inner.group_paused.push(group_id.to_string());
+        Ok(())
+    }
+
+    async fn group_continue(&self, group_id: &str) -> Result<(), ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.groups.iter().any(|g| g.group_id == group_id) {
+            return Err(ApiError::NotFound);
+        }
+        inner.group_continued.push(group_id.to_string());
+        Ok(())
+    }
+
+    async fn group_delete(&self, group_id: &str, delete_files: bool) -> Result<(), ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.groups.iter().any(|g| g.group_id == group_id) {
+            return Err(ApiError::NotFound);
+        }
+        inner
+            .group_deleted
+            .push((group_id.to_string(), delete_files));
+        Ok(())
+    }
 }
 
 fn sample_task(id: &str, status: i32) -> TaskDto {
@@ -263,6 +362,17 @@ fn sample_task(id: &str, status: i32) -> TaskDto {
         file_missing: false,
         completed_at: String::new(),
         referrer: String::new(),
+        group_id: String::new(),
+    }
+}
+
+fn sample_group(id: &str) -> GroupDto {
+    GroupDto {
+        group_id: id.to_string(),
+        name: format!("group-{id}"),
+        source_url: "https://example.com/share".to_string(),
+        save_dir: "/tmp".to_string(),
+        created_at: "1700000000".to_string(),
     }
 }
 
@@ -1270,6 +1380,220 @@ async fn pause_continue_all_static_route_not_swallowed_by_id_route() {
     // `/tasks/{id}` 误吞成 pause_task("pause")/continue_task("continue")。
     assert!(server.host.paused_ids().is_empty());
     assert!(server.host.continued_ids().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 任务组与前置预解析（/api/v1/groups*、/api/v1/resolve/preview）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_groups_returns_camel_case_json_from_host() {
+    let host = MockHost::new().with_groups(vec![sample_group("g1"), sample_group("g2")]);
+    let server = TestServer::start(host, |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let resp = server
+        .send(&request(
+            "GET",
+            routes::API_GROUPS,
+            &[("X-FluxDown-Token", "T")],
+            "",
+        ))
+        .await;
+    assert_eq!(resp.status, 200);
+    let arr = resp.json();
+    let arr = arr.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["groupId"], "g1");
+    assert_eq!(arr[0]["saveDir"], "/tmp");
+}
+
+#[tokio::test]
+async fn create_group_returns_group_id_and_forwards_items() {
+    let server = TestServer::start(MockHost::new(), |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let body = json!({
+        "sourceUrl": "https://example.com/share",
+        "groupName": "合集",
+        "items": [
+            {"resolverItem": "a", "fileName": "a.mp4"},
+            {"resolverItem": "b", "fileName": "b.mp4"},
+        ],
+    })
+    .to_string();
+    let resp = server
+        .send(&request(
+            "POST",
+            routes::API_GROUPS,
+            &[("X-FluxDown-Token", "T")],
+            &body,
+        ))
+        .await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.json()["groupId"], "mock-group-1");
+    let created = server.host.created_groups();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].group_name, "合集");
+    assert_eq!(created[0].items.len(), 2);
+}
+
+#[tokio::test]
+async fn create_group_empty_items_returns_400() {
+    let server = TestServer::start(MockHost::new(), |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let body = json!({"sourceUrl": "https://x", "items": []}).to_string();
+    let resp = server
+        .send(&request(
+            "POST",
+            routes::API_GROUPS,
+            &[("X-FluxDown-Token", "T")],
+            &body,
+        ))
+        .await;
+    assert_eq!(resp.status, 400);
+    assert!(server.host.created_groups().is_empty());
+}
+
+#[tokio::test]
+async fn group_pause_continue_and_delete_by_id() {
+    let host = MockHost::new().with_groups(vec![sample_group("g1")]);
+    let server = TestServer::start(host, |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let pause_resp = server
+        .send(&request(
+            "PUT",
+            &routes::group_pause_path("g1"),
+            &[("X-FluxDown-Token", "T")],
+            "",
+        ))
+        .await;
+    assert_eq!(pause_resp.status, 200);
+    let continue_resp = server
+        .send(&request(
+            "PUT",
+            &routes::group_continue_path("g1"),
+            &[("X-FluxDown-Token", "T")],
+            "",
+        ))
+        .await;
+    assert_eq!(continue_resp.status, 200);
+    let delete_resp = server
+        .send(&request(
+            "DELETE",
+            &format!("{}?deleteFiles=true", routes::group_path("g1")),
+            &[("X-FluxDown-Token", "T")],
+            "",
+        ))
+        .await;
+    assert_eq!(delete_resp.status, 200);
+    assert_eq!(server.host.group_paused(), vec!["g1".to_string()]);
+    assert_eq!(server.host.group_continued(), vec!["g1".to_string()]);
+    assert_eq!(server.host.group_deleted(), vec![("g1".to_string(), true)]);
+}
+
+#[tokio::test]
+async fn group_action_on_unknown_id_returns_404() {
+    let server = TestServer::start(MockHost::new(), |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let resp = server
+        .send(&request(
+            "PUT",
+            &routes::group_pause_path("missing"),
+            &[("X-FluxDown-Token", "T")],
+            "",
+        ))
+        .await;
+    assert_eq!(resp.status, 404);
+    let resp = server
+        .send(&request(
+            "DELETE",
+            &routes::group_path("missing"),
+            &[("X-FluxDown-Token", "T")],
+            "",
+        ))
+        .await;
+    assert_eq!(resp.status, 404);
+}
+
+#[tokio::test]
+async fn resolve_preview_forwards_request_and_returns_host_response() {
+    let host = MockHost::new().with_resolve_preview_response(ResolvePreviewResponse {
+        name: "预览清单".to_string(),
+        source_url: "https://example.com/share".to_string(),
+        error: String::new(),
+        items: vec![],
+    });
+    let server = TestServer::start(host, |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let body = json!({"url": "https://example.com/share", "cookies": "s=1"}).to_string();
+    let resp = server
+        .send(&request(
+            "POST",
+            routes::API_RESOLVE_PREVIEW,
+            &[("X-FluxDown-Token", "T")],
+            &body,
+        ))
+        .await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.json()["name"], "预览清单");
+    let reqs = server.host.resolve_preview_requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].url, "https://example.com/share");
+    assert_eq!(reqs[0].cookies, "s=1");
+}
+
+#[tokio::test]
+async fn resolve_preview_empty_url_returns_400() {
+    let server = TestServer::start(MockHost::new(), |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let body = json!({"url": "   "}).to_string();
+    let resp = server
+        .send(&request(
+            "POST",
+            routes::API_RESOLVE_PREVIEW,
+            &[("X-FluxDown-Token", "T")],
+            &body,
+        ))
+        .await;
+    assert_eq!(resp.status, 400);
+    assert!(server.host.resolve_preview_requests().is_empty());
+}
+
+#[tokio::test]
+async fn groups_endpoints_require_token() {
+    let server = TestServer::start(MockHost::new(), |c| {
+        c.token = "T".to_string();
+        c.management_enabled = true;
+    })
+    .await;
+    let resp = server
+        .send(&request("GET", routes::API_GROUPS, &[], ""))
+        .await;
+    assert_eq!(resp.status, 401);
+    let resp = server
+        .send(&request("POST", routes::API_RESOLVE_PREVIEW, &[], ""))
+        .await;
+    assert_eq!(resp.status, 401);
 }
 
 // ---------------------------------------------------------------------------

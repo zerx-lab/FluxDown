@@ -320,6 +320,10 @@ class _GroupCountsLineState extends State<_GroupCountsLine> {
       TextSpan(
         style: TextStyle(
           fontSize: widget.compact ? 10.5 : 11,
+          // 行内固定行高（64/52/44px 行预算按字号估算；真实字体行高可达
+          // 1.4-1.5 倍字号，不钉死会底部溢出——测试环境 Ahem 字体行高=字号
+          // 暴露不了，见 2026-07-19 组卡片溢出修复）。
+          height: 1.2,
           color: c.textMuted,
           fontFeatures: const [FontFeature.tabularFigures()],
         ),
@@ -514,6 +518,7 @@ class _TaskGroupRowState extends State<TaskGroupRow> {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 12.5,
+                          height: 1.2,
                           fontWeight: FontWeight.w500,
                           color: c.textPrimary,
                         ),
@@ -544,6 +549,9 @@ class _TaskGroupRowState extends State<TaskGroupRow> {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 13,
+                              // 钉行高：64px 行内名称+计数+SUM 条纵向预算
+                              // 依赖行高确定性（同 _GroupCountsLine 注释）。
+                              height: 1.2,
                               fontWeight: FontWeight.w500,
                               color: c.textPrimary,
                             ),
@@ -867,7 +875,7 @@ class _GroupMemberRowState extends State<GroupMemberRow> {
                             task.fileName,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12.5, color: c.textPrimary),
+                            style: TextStyle(fontSize: 12.5, height: 1.2, color: c.textPrimary),
                           ),
                           if (!compact) ...[
                             const SizedBox(height: 2),
@@ -877,6 +885,8 @@ class _GroupMemberRowState extends State<GroupMemberRow> {
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 fontSize: 10.5,
+                                // 钉行高：52px 成员行 名称+副标题 预算同理。
+                                height: 1.2,
                                 color: task.status == TaskStatus.error
                                     ? AppColors.amber
                                     : c.textMuted,

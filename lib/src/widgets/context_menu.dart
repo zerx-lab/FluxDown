@@ -25,6 +25,9 @@ class ContextMenuItem {
 ///
 /// [items] 菜单项列表。
 /// [dividerAfterIndices] 在哪些 index 后面插入分隔线。
+/// [menuWidth] 是宽度下限：实际宽度按最长标签实测自适应（clamp 到 320，
+/// 超出部分由菜单项内的省略号兜底），长文案（如「开始下载到 · 队列名」）
+/// 不再横向溢出。
 void showContextMenu(
   BuildContext context,
   Offset globalPosition, {
@@ -32,6 +35,24 @@ void showContextMenu(
   Set<int> dividerAfterIndices = const {},
   double menuWidth = 180.0,
 }) {
+  // 标签实测宽度（样式对齐 _ContextMenuItemWidget：fontSize 13）。
+  // 水平开销 = 外边距 4×2 + 内边距 12×2 + 图标 15 + 间距 10 + 边框 1×2
+  //          = 59，另加 8px 字体度量安全余量（TextPainter 用默认字族测量，
+  //          与实际渲染字族可能有轻微差异，省略号兜底残余误差）。
+  var maxLabel = 0.0;
+  final painter = TextPainter(textDirection: TextDirection.ltr);
+  for (final item in items) {
+    painter.text = TextSpan(
+      text: item.label,
+      style: const TextStyle(fontSize: 13),
+    );
+    painter.layout();
+    if (painter.width > maxLabel) maxLabel = painter.width;
+  }
+  // 只增不减：调用方的 menuWidth 是下限；自适应增宽封顶 320（更长文案由
+  // 省略号兜底）。不用 clamp(menuWidth, 320)——调用方传 >320 会因下限>上限抛错。
+  final fitted = maxLabel + 59 + 8;
+  if (fitted > menuWidth) menuWidth = fitted > 320.0 ? 320.0 : fitted;
   final overlay = Overlay.of(context);
   final c = AppColors.of(context);
 
@@ -212,9 +233,13 @@ class _ContextMenuItemWidgetState extends State<_ContextMenuItemWidget> {
             children: [
               Icon(widget.item.icon, size: 15, color: color),
               const SizedBox(width: 10),
-              Text(
-                widget.item.label,
-                style: TextStyle(fontSize: 13, color: color),
+              Expanded(
+                child: Text(
+                  widget.item.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: color),
+                ),
               ),
             ],
           ),
