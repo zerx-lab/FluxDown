@@ -323,12 +323,11 @@ class _TaskListState extends State<TaskList> {
                               entity.groupId ==
                               widget.controller.selectedGroupId,
                           density: prefs.density,
-                          onTap: () {
-                            widget.controller.toggleGroupExpanded(
-                              entity.groupId,
-                            );
-                            widget.onGroupTap?.call(entity.groupId);
-                          },
+                          // 行点击 = 查看组详情；展开/收起仅由左侧 chevron 触发。
+                          onTap: () =>
+                              widget.onGroupTap?.call(entity.groupId),
+                          onToggleExpand: () => widget.controller
+                              .toggleGroupExpanded(entity.groupId),
                           onPauseAll: () =>
                               widget.controller.pauseGroup(entity.groupId),
                           onResumeAll: () =>

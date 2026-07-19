@@ -428,6 +428,7 @@ class TaskGroupRow extends StatefulWidget {
   final bool isSelected;
   final ViewDensity density;
   final VoidCallback onTap;
+  final VoidCallback onToggleExpand;
   final VoidCallback onPauseAll;
   final VoidCallback onResumeAll;
   final VoidCallback? onRetryFailed;
@@ -444,6 +445,7 @@ class TaskGroupRow extends StatefulWidget {
     required this.isSelected,
     required this.density,
     required this.onTap,
+    required this.onToggleExpand,
     required this.onPauseAll,
     required this.onResumeAll,
     this.onRetryFailed,
@@ -498,13 +500,37 @@ class _TaskGroupRowState extends State<TaskGroupRow> {
           ),
           const SizedBox(width: 13),
         ],
-        AnimatedRotation(
-          turns: widget.expanded ? 0.25 : 0,
-          duration: const Duration(milliseconds: 150),
-          child: Icon(LucideIcons.chevronRight, size: 13, color: c.textMuted),
+        // 展开/收起命中区 = 组图标向左的全部区域（chevron+间隙+图标），
+        // 子手势赢得竞技场，不连带行 onTap 选中；高度拉满行高，便于点击。
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onToggleExpand,
+          child: Container(
+            height: double.infinity,
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 21,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: AnimatedRotation(
+                      turns: widget.expanded ? 0.25 : 0,
+                      duration: const Duration(milliseconds: 150),
+                      child: Icon(
+                        LucideIcons.chevronRight,
+                        size: 13,
+                        color: c.textMuted,
+                      ),
+                    ),
+                  ),
+                ),
+                buildGroupIcon(c, m, iconSize, group.members.length),
+              ],
+            ),
+          ),
         ),
-        const SizedBox(width: 8),
-        buildGroupIcon(c, m, iconSize, group.members.length),
         const SizedBox(width: 12),
         Expanded(
           child: compact
@@ -632,7 +658,8 @@ class _TaskGroupRowState extends State<TaskGroupRow> {
       onExit: (_) => setState(() => _hovered = false),
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        // onTap：行内 ⋯/失败直达等子手势赢得竞技场后不连带触发组行展开。
+        // onTap：查看组详情（选中组）；展开/收起仅由左侧 chevron 子手势触发，
+        // 行内 ⋯/失败直达等子手势赢得竞技场后同样不连带触发。
         onTap: widget.onTap,
         onSecondaryTapDown: _showContextMenu,
         child: Container(
