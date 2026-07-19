@@ -11,6 +11,7 @@ import { t } from './i18n'
 import type {
   BtFileEntry,
   HlsQualityOption,
+  GroupDto,
   QueueDto,
   ResolveVariantOption,
   SegmentProgressMsg,
@@ -245,14 +246,22 @@ function dispatch(msg: WsServerMsg) {
     case 'queuesChanged':
       queryClientRef?.setQueryData<QueueDto[]>(['queues'], msg.queues)
       break
+    case 'groupsChanged':
+      queryClientRef?.setQueryData<GroupDto[]>(['groups'], msg.groups)
+      break
     case 'taskQueueChanged':
       queryClientRef?.setQueryData<TaskDto[]>(['tasks'], (old) =>
         old?.map((t) => (t.taskId === msg.taskId ? { ...t, queueId: msg.queueId } : t)),
       )
       break
-    case 'queuePositionsChanged':
-      // 位置信息暂不驱动 UI（列表按时间分组），忽略。
+    case 'queuePositionsChanged': {
+      // 回写 queueOrder，驱动队列管理对话框「任务」Tab 的顺序实时重排。
+      const pos = new Map(msg.positions.map((p) => [p.taskId, p.position]))
+      queryClientRef?.setQueryData<TaskDto[]>(['tasks'], (old) =>
+        old?.map((t) => (pos.has(t.taskId) ? { ...t, queueOrder: pos.get(t.taskId) } : t)),
+      )
       break
+    }
     case 'priorityTaskChanged':
       priorityStore.set({ priorityTaskId: msg.priorityTaskId, autoPausedCount: msg.autoPausedCount })
       break

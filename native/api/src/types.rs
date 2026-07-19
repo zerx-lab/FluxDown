@@ -204,6 +204,9 @@ pub struct TaskDto {
     /// 所属任务组 ID（空 = 不属于任何组）。
     #[serde(default)]
     pub group_id: String,
+    /// 队列内启动顺序（0 = 未显式排序，按创建时间；>0 = 显式顺序）。
+    #[serde(default)]
+    pub queue_order: i32,
 }
 
 impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
@@ -226,6 +229,7 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
             completed_at: t.completed_at,
             referrer: t.referrer,
             group_id: t.group_id,
+            queue_order: t.queue_order,
         }
     }
 }
@@ -975,6 +979,7 @@ mod tests {
             completed_at: String::new(),
             referrer: String::new(),
             group_id: "g1".to_string(),
+            queue_order: 7,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["taskId"], "t1");
@@ -982,6 +987,7 @@ mod tests {
         assert_eq!(v["fileName"], "f.zip");
         assert_eq!(v["saveDir"], "/tmp");
         assert_eq!(v["status"], 1);
+        assert_eq!(v["queueOrder"], 7);
         assert_eq!(v["downloadedBytes"], 10);
         assert_eq!(v["totalBytes"], 100);
         assert_eq!(v["errorMessage"], "");

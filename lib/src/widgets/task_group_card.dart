@@ -309,7 +309,7 @@ class _GroupCountsLineState extends State<_GroupCountsLine> {
         TextSpan(text: ' · ${s.groupPausedCount(counts.paused)}'),
       if (counts.failed > 0)
         TextSpan(
-          text: ' · ${s.groupFailedCount(counts.failed)} ⚠',
+          text: ' · ${s.groupFailedCount(counts.failed)}',
           style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w500),
           recognizer: widget.onJumpToFail == null ? null : _failRecognizer,
         ),

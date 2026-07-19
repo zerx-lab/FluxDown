@@ -6,8 +6,10 @@ import { Download, FlaskConical, HardDrive } from 'lucide-react'
 import { api } from '../../lib/api'
 import { fmtBytes, fmtSpeed } from '../../lib/format'
 import { useI18n } from '../../lib/i18n'
+import { useViewPrefs } from '../../lib/view-prefs'
 import { useGlobalSpeed } from '../../lib/ws'
 import { useConfigQuery } from '../settings/useConfig'
+import { useTasksUi } from './context'
 import { useViewTasks } from './useViewTasks'
 
 export function StatusBar() {
@@ -16,8 +18,14 @@ export function StatusBar() {
   const speed = useGlobalSpeed()
   const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: api.stats, refetchInterval: 30_000 })
   const { data: config } = useConfigQuery()
+  const { statusTab } = useTasksUi()
+  const prefs = useViewPrefs(statusTab)
   const active = tasks.filter((t) => t.status === 0 || t.status === 1 || t.status === 5).length
   const limitBytes = Number(config?.speed_limit_bytes ?? 0)
+  const visibleForScope = prefs.showCompleted ? tasks : tasks.filter((t) => t.status !== 3)
+  const scopeCount = visibleForScope.length
+  const scopeSizeBytes = visibleForScope.reduce((s, t) => s + t.totalBytes, 0)
+  const hiddenCompleted = prefs.showCompleted ? 0 : tasks.filter((t) => t.status === 3).length
 
   return (
     <footer className="statusbar">
@@ -26,6 +34,10 @@ export function StatusBar() {
         <b>{fmtSpeed(speed)}</b>
       </span>
       <span className="sb-item">{t('statusbar.tasks', { active, total: tasks.length })}</span>
+      <span className="sb-item sb-scope">
+        {t('view.scopeSummary', { count: scopeCount, size: fmtBytes(scopeSizeBytes) })}
+        {hiddenCompleted > 0 && t('view.scopeHidden', { count: hiddenCompleted })}
+      </span>
       <span className="sb-item">
         {t('statusbar.limit')} <b>{limitBytes > 0 ? fmtSpeed(limitBytes) : t('statusbar.limitOff')}</b>
       </span>

@@ -1077,6 +1077,10 @@ pub struct DownloadManager {
     /// 该矫正仅需在第一次 load_and_send_all_tasks 时执行一次，
     /// 后续由 create_task / batch_create 触发时不得重复重置。
     startup_reset_done: bool,
+    /// 批量建组/清单裂变期间为 true：抑制 create_task 的逐任务 TaskProgress
+    /// 与 enqueue_persisted_task 的逐次全量队列位置广播，由批量操作尾部的
+    /// 一次 TasksSnapshot + 一次 QueuePositionsChanged 统一覆盖。
+    suppress_bulk_broadcasts: bool,
     /// 文件跟踪扫描是否正在进行（防重叠）。内存级；`Arc` 以便 detached 扫描
     /// task 与调用方共享同一标志。
     scanning: Arc<AtomicBool>,
@@ -1206,6 +1210,7 @@ impl DownloadManager {
             queue_limiters: HashMap::new(),
             schedule_fired: HashMap::new(),
             startup_reset_done: false,
+            suppress_bulk_broadcasts: false,
             scanning: Arc::new(AtomicBool::new(false)),
             priority_task_id: None,
             auto_paused_ids: HashSet::new(),
@@ -1778,35 +1783,10 @@ impl DownloadManager {
             ..
         } = spec;
 
-        if over_threshold {
-            // 全员（含母）转 paused：不启动，仅广播各自的终态进度。
-            self.sink.emit(EngineEvent::TaskProgress {
-                task_id: task_id.clone(),
-                status: 2,
-                downloaded_bytes: 0,
-                total_bytes: mother_total_bytes,
-                speed: 0,
-                file_name: mother_file_name,
-                save_dir: mother_save_dir,
-                url: task.url.clone(),
-                error_message: String::new(),
-                upload_speed_bps: 0,
-            });
-            for sib in siblings {
-                self.sink.emit(EngineEvent::TaskProgress {
-                    task_id: sib.id,
-                    status: 2,
-                    downloaded_bytes: 0,
-                    total_bytes: sib.total_bytes,
-                    speed: 0,
-                    file_name: sib.file_name,
-                    save_dir: sib.save_dir,
-                    url: task.url.clone(),
-                    error_message: String::new(),
-                    upload_speed_bps: 0,
-                });
-            }
-        } else {
+        // over_threshold：全员（含母）已由 fission_into_group 落库为 paused，
+        // 不启动、也不逐成员广播——尾部 load_and_send_all_tasks 的快照一次性
+        // 覆盖全部成员状态（消除 N 成员 N 条 TaskProgress 的事件风暴）。
+        if !over_threshold {
             let mother_queued = QueuedTask {
                 task_id: task_id.clone(),
                 url: task.url.clone(),
@@ -1835,6 +1815,9 @@ impl DownloadManager {
             };
             self.begin_resolve_start(mother_queued).await;
 
+            // 抑制逐兄弟入队广播（每入队一个就全量广播一次队列位置 = O(N²)
+            // 载荷），尾部统一 broadcast_queue_positions + 快照。
+            self.suppress_bulk_broadcasts = true;
             for sib in siblings {
                 let sib_queued = QueuedTask {
                     task_id: sib.id,
@@ -1864,6 +1847,7 @@ impl DownloadManager {
                 };
                 self.enqueue_persisted_task(sib_queued, true).await;
             }
+            self.suppress_bulk_broadcasts = false;
         }
 
         self.load_and_send_all_tasks().await;
@@ -2979,6 +2963,16 @@ impl DownloadManager {
         }
     }
 
+    /// 批量操作（启停队列/组暂停恢复/全局暂停恢复）尾部的单次任务快照广播。
+    /// 对比 [`Self::load_and_send_all_tasks`]：不做启动矫正、不逐任务重发分段
+    /// 数据——N 任务只产生一条 [`EngineEvent::TasksSnapshot`]。
+    async fn send_tasks_snapshot(&self) {
+        match self.db.load_all_tasks().await {
+            Ok(tasks) => self.sink.emit(EngineEvent::TasksSnapshot(tasks)),
+            Err(e) => log_info!("[manager] send_tasks_snapshot error: {}", e),
+        }
+    }
+
     /// Load segment records from DB and emit a `SegmentProgress` event.
     /// Used when pausing and on app startup to restore the download distribution
     /// visualization without requiring an active download.
@@ -3170,18 +3164,21 @@ impl DownloadManager {
             log_info!("save_audio_url error: {}", e);
         }
 
-        self.sink.emit(EngineEvent::TaskProgress {
-            task_id: task_id.clone(),
-            status: initial_status,
-            downloaded_bytes: 0,
-            total_bytes: 0,
-            speed: 0,
-            file_name: file_name.clone(),
-            save_dir: save_dir.clone(),
-            url: db_url.clone(),
-            error_message: String::new(),
-            upload_speed_bps: 0,
-        });
+        // 批量建组/裂变期间抑制逐任务广播，尾部统一 TasksSnapshot 覆盖。
+        if !self.suppress_bulk_broadcasts {
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: task_id.clone(),
+                status: initial_status,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                speed: 0,
+                file_name: file_name.clone(),
+                save_dir: save_dir.clone(),
+                url: db_url.clone(),
+                error_message: String::new(),
+                upload_speed_bps: 0,
+            });
+        }
 
         // 插件惰性解析：命中 resolver 则打标（仅存 ID）；协议判定/probe 推迟到实际
         // 下载前的 off-actor resolve，此处不跑 JS。原始 url 参与匹配（非 db_url）。
@@ -3323,8 +3320,10 @@ impl DownloadManager {
                 queued.ignore_tls_errors,
             );
             self.pending_queue.push_back(queued);
-            // 广播最新队列位置
-            self.broadcast_queue_positions();
+            // 广播最新队列位置（批量建组/裂变期间抑制，尾部统一广播一次）
+            if !self.suppress_bulk_broadcasts {
+                self.broadcast_queue_positions();
+            }
             // 带 resolver 的任务跳过 probe（探测原始页面 URL 无意义）。
             if !has_resolver {
                 self.spawn_meta_probe(
@@ -4042,6 +4041,12 @@ impl DownloadManager {
                 queue_id
             );
             if let Some(t) = task_row {
+                // 排队即 pending：持久化 status=0，让批量操作尾部的
+                // TasksSnapshot（按 DB 生成）不会把排队任务回显成 paused。
+                // 完成态（3）保持不动（degenerate resume，与既往一致）。
+                if t.status != 3 {
+                    let _ = self.db.update_task_status(task_id, 0, "").await;
+                }
                 // Notify Dart: task is now queued (pending), not actively resuming.
                 // Without this signal, the UI keeps all tasks stuck in "resuming" status
                 // even though only max_concurrent are actually downloading.
@@ -5224,6 +5229,10 @@ impl DownloadManager {
 
     /// Batch resume multiple tasks.  Pre-loads all task info in one DB query
     /// to avoid N+1 queries, then processes each with the cached data.
+    ///
+    /// 批量事件契约：循环内不逐任务广播——排队任务统一批量落库 pending 后，
+    /// 尾部一次 [`EngineEvent::QueuePositionsChanged`] + 一次
+    /// [`EngineEvent::TasksSnapshot`]，N 任务恒定常数条消息（此前为 2N 条）。
     pub async fn batch_resume(&mut self, task_ids: &[String]) {
         if task_ids.is_empty() {
             return;
@@ -5242,15 +5251,34 @@ impl DownloadManager {
             }
         };
 
+        // 收集进入 pending_queue 排队的任务，循环后统一落库/广播。
+        let mut queued: Vec<String> = Vec::new();
         for tid in task_ids {
             if let Some(task_row) = task_map.get(tid.as_str()) {
-                self.resume_task_with_row(tid, task_row.clone()).await;
+                // 完成态（3）不改写 DB：与单任务 resume 一致（degenerate
+                // resume 交给 do_resume_task 的既有语义处理）。
+                let persist_pending = task_row.status != 3;
+                if self.resume_task_with_row(tid, task_row.clone()).await && persist_pending {
+                    queued.push(tid.clone());
+                }
             }
         }
+        if !queued.is_empty() {
+            // 快照按 DB 生成：排队任务必须持久化为 pending(0)，否则尾部
+            // 快照会把它们回显成 paused。
+            if let Err(e) = self.db.update_tasks_status_batch(&queued, 0).await {
+                log_info!("[manager] batch_resume: persist pending error: {}", e);
+            }
+            self.broadcast_queue_positions();
+        }
+        self.send_tasks_snapshot().await;
     }
 
     /// Resume a task using a pre-loaded TaskInfo row (avoids redundant DB query).
-    async fn resume_task_with_row(&mut self, task_id: &str, task_row: TaskInfo) {
+    ///
+    /// 返回 `true` = 任务已进入 `pending_queue` 排队。本函数不发任何事件：
+    /// 状态持久化与广播由调用方 [`Self::batch_resume`] 在循环后统一完成。
+    async fn resume_task_with_row(&mut self, task_id: &str, task_row: TaskInfo) -> bool {
         // 批量手动 resume 与单任务 resume_task 语义对齐：用户手动恢复应重置
         // 自动重试计数，给一个全新的重试配额。否则一个已耗尽配额的任务被批量
         // 恢复后，下次可重试错误会立刻命中"已耗尽"分支、停在 error，与单任务
@@ -5259,7 +5287,7 @@ impl DownloadManager {
         if self.active_tasks.contains_key(task_id) {
             let is_terminal = task_row.status == 3 || task_row.status == 4;
             if !is_terminal {
-                return; // truly still active — do not interrupt
+                return false; // truly still active — do not interrupt
             }
             log_info!(
                 "[manager] resume_task {}: stale active_tasks entry (terminal in DB) — force-removing",
@@ -5269,7 +5297,7 @@ impl DownloadManager {
         }
 
         if self.pending_queue.iter().any(|q| q.task_id == task_id) {
-            return;
+            return false;
         }
 
         let is_bt = is_bt_url(&task_row.url);
@@ -5278,6 +5306,7 @@ impl DownloadManager {
         if is_bt || (self.has_capacity() && self.has_queue_capacity(&queue_id)) {
             self.do_resume_task(task_id).await;
             self.drain_queue().await;
+            false
         } else {
             log_info!(
                 "[manager] queuing resume for task {} (active={}, max={}, queue={})",
@@ -5286,18 +5315,6 @@ impl DownloadManager {
                 self.max_concurrent,
                 queue_id
             );
-            self.sink.emit(EngineEvent::TaskProgress {
-                task_id: task_id.to_string(),
-                status: 0,
-                downloaded_bytes: task_row.downloaded_bytes,
-                total_bytes: task_row.total_bytes,
-                speed: 0,
-                file_name: task_row.file_name.clone(),
-                save_dir: task_row.save_dir.clone(),
-                url: task_row.url.clone(),
-                error_message: String::new(),
-                upload_speed_bps: 0,
-            });
             self.pending_queue.push_back(QueuedTask {
                 task_id: task_id.to_string(),
                 url: task_row.url,
@@ -5325,17 +5342,58 @@ impl DownloadManager {
                 range_supported: false,
                 resolver_item: String::new(),
             });
-            // 入队后立即广播最新队列位置(覆盖单个 resume 与 batch_resume 批量入队;
-            // broadcast_queue_positions 为只读信号,多次调用无副作用)。
-            self.broadcast_queue_positions();
+            true
         }
     }
 
     /// Batch pause multiple tasks.
+    ///
+    /// 与逐任务 [`Self::pause_task`] 循环语义等价，但为大批量（任务组/停止
+    /// 队列/全局暂停）消除逐任务事件风暴：
+    /// - 排队中的任务：批量摘除 + 单次批量落库 paused，不逐任务发事件；
+    ///   先摘排队再暂停活跃——顺序反了会让 pause 触发的 drain_queue 把
+    ///   仍在排队的任务顶进刚释放的槽位；
+    /// - 活跃任务：仍逐个走 [`Self::pause_task`]（取消令牌/BT 会话/Boost
+    ///   守卫/分段快照），数量受并发上限约束；
+    /// - 尾部一次 [`EngineEvent::QueuePositionsChanged`] + 一次
+    ///   [`EngineEvent::TasksSnapshot`] 取代逐任务广播。
     pub async fn batch_pause(&mut self, task_ids: &[String]) {
-        for tid in task_ids {
+        if task_ids.is_empty() {
+            return;
+        }
+        let idset: HashSet<&str> = task_ids.iter().map(|s| s.as_str()).collect();
+        let queued: Vec<String> = self
+            .pending_queue
+            .iter()
+            .filter(|e| idset.contains(e.task_id.as_str()))
+            .map(|e| e.task_id.clone())
+            .collect();
+        if !queued.is_empty() {
+            self.pending_queue
+                .retain(|e| !idset.contains(e.task_id.as_str()));
+            for tid in &queued {
+                self.clear_pending_resolve(tid);
+            }
+            if let Err(e) = self.db.update_tasks_status_batch(&queued, 2).await {
+                log_info!("[manager] batch_pause: persist paused error: {}", e);
+            }
+        }
+        let active: Vec<String> = self
+            .active_tasks
+            .keys()
+            .filter(|id| idset.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for tid in &active {
             self.pause_task(tid).await;
         }
+        if queued.is_empty() && active.is_empty() {
+            return; // 全员本就非活跃非排队：保持既往完全无操作、无广播。
+        }
+        if !queued.is_empty() {
+            self.broadcast_queue_positions();
+        }
+        self.send_tasks_snapshot().await;
     }
 }
 
@@ -5555,6 +5613,9 @@ impl DownloadManager {
             log_info!("[manager] insert_group error: {}", e);
             return None;
         }
+        // 抑制逐成员广播：N 成员的 create_task 各发一条 TaskProgress + 每次
+        // 排队一条全量队列位置（O(N²) 载荷）；尾部快照 + 单次位置广播覆盖。
+        self.suppress_bulk_broadcasts = true;
         for item in &spec.items {
             let save_dir = if item.rel_path.is_empty() {
                 group_save_dir.clone()
@@ -5584,43 +5645,65 @@ impl DownloadManager {
             })
             .await;
         }
+        self.suppress_bulk_broadcasts = false;
+        // 逐成员抑制后统一广播一次队列位置（此前每入队一个成员就全量广播一次）。
+        self.broadcast_queue_positions();
         self.load_and_send_all_tasks().await;
         self.send_all_groups().await;
         Some(group_id)
     }
 
-    /// 暂停组内成员（仅活跃/等待中的成员受影响，[`Self::pause_task`] 对非活跃
-    /// 任务是安全的空操作）。
+    /// 暂停组内成员（批量路径：排队成员批量摘除落库、活跃成员逐个取消，
+    /// 尾部一次快照广播，见 [`Self::batch_pause`]；对非活跃成员是安全的空操作）。
     pub async fn pause_group(&mut self, group_id: &str) {
         let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
-        for id in ids {
-            self.pause_task(&id).await;
-        }
+        self.batch_pause(&ids).await;
     }
 
-    /// 恢复组内成员（暂停/出错状态的成员会被重新启动）。
+    /// 恢复组内成员（暂停/出错/排队状态的成员会被重新启动；已完成成员跳过，
+    /// 不会被重新下载）。批量路径：一次载入成员行 + 尾部一次快照广播。
     pub async fn resume_group(&mut self, group_id: &str) {
         let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
-        for id in ids {
-            self.resume_task(&id).await;
-        }
+        let rows = match self.db.load_tasks_by_ids(&ids).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                log_info!("[manager] resume_group: load members error: {}", e);
+                return;
+            }
+        };
+        let status: HashMap<&str, i32> = rows
+            .iter()
+            .map(|t| (t.task_id.as_str(), t.status))
+            .collect();
+        // 按 group_member_ids 的启动顺序过滤，保持队列顺序稳定。
+        let resumable: Vec<String> = ids
+            .into_iter()
+            .filter(|id| status.get(id.as_str()).is_some_and(|s| *s != 3))
+            .collect();
+        self.batch_resume(&resumable).await;
     }
 
-    /// 仅重试组内失败（status=4）成员，跳过其余状态的成员。
+    /// 仅重试组内失败（status=4）成员，跳过其余状态的成员。批量路径：
+    /// 一次载入成员行取代逐成员 N+1 查询。
     pub async fn retry_group_failed(&mut self, group_id: &str) {
         let ids = self.db.group_member_ids(group_id).await.unwrap_or_default();
-        for id in ids {
-            let is_failed = self
-                .db
-                .load_task_by_id(&id)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|t| t.status == 4);
-            if is_failed {
-                self.resume_task(&id).await;
+        let rows = match self.db.load_tasks_by_ids(&ids).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                log_info!("[manager] retry_group_failed: load members error: {}", e);
+                return;
             }
-        }
+        };
+        let failed: HashSet<&str> = rows
+            .iter()
+            .filter(|t| t.status == 4)
+            .map(|t| t.task_id.as_str())
+            .collect();
+        let to_retry: Vec<String> = ids
+            .into_iter()
+            .filter(|id| failed.contains(id.as_str()))
+            .collect();
+        self.batch_resume(&to_retry).await;
     }
 
     /// 删除整组：批量删除全部成员；组行由 [`Self::delete_tasks_batch`] 尾部的
@@ -5725,9 +5808,8 @@ impl DownloadManager {
         if let Some(q) = self.queues.get_mut(&queue_id) {
             q.is_running = false;
         }
-        // 先暂停排队中的（直接从 pending_queue 摘除，不触发 drain），再暂停
-        // 活跃的——顺序反了会让 pause 触发的 drain_queue 把本队列仍在排队的
-        // 任务顶进刚释放的槽位。
+        // 先摘排队中的、再暂停活跃的——顺序由 batch_pause 内部保证（反了会
+        // 让 pause 触发的 drain_queue 把本队列仍在排队的任务顶进刚释放的槽位）。
         let mut to_pause: Vec<String> = self
             .pending_queue
             .iter()
@@ -5745,9 +5827,7 @@ impl DownloadManager {
             queue_id,
             to_pause.len()
         );
-        for tid in &to_pause {
-            self.pause_task(tid).await;
-        }
+        self.batch_pause(&to_pause).await;
         self.send_all_queues().await;
     }
 
@@ -6797,6 +6877,89 @@ mod tests {
             db.update_task_status(id, status, "")
                 .await
                 .expect("advance task status");
+        }
+    }
+
+    /// 批量事件契约：批量恢复/暂停 N 个排队任务 = 常数条事件
+    /// （1 × QueuePositionsChanged + 1 × TasksSnapshot），零逐任务
+    /// TaskProgress；状态经批量 SQL 落库（恢复排队 → 0，暂停 → 2）。
+    #[tokio::test]
+    async fn batch_resume_and_pause_emit_constant_event_count() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        for id in ["q1", "q2", "q3"] {
+            insert_task_at_status(&db, id, "/tmp", "f.bin", 2).await;
+        }
+        let sink = Arc::new(RecordingSink::new());
+        let mut mgr = DownloadManager::new(
+            db.clone(),
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                default_save_dir: "/tmp".to_string(),
+                app_data_dir: String::new(),
+                data_dir: std::env::temp_dir(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            sink.clone(),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+        // 占满唯一并发槽：三个任务全部走排队分支，不触发真实下载。
+        mgr.active_tasks.insert(
+            "occupier".to_string(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: 0,
+                handle: None,
+                is_bt: false,
+                queue_id: String::new(),
+            },
+        );
+
+        let count = |events: &[EngineEvent]| {
+            let progress = events
+                .iter()
+                .filter(|e| matches!(e, EngineEvent::TaskProgress { .. }))
+                .count();
+            let positions = events
+                .iter()
+                .filter(|e| matches!(e, EngineEvent::QueuePositionsChanged(_)))
+                .count();
+            let snapshots = events
+                .iter()
+                .filter(|e| matches!(e, EngineEvent::TasksSnapshot(_)))
+                .count();
+            (progress, positions, snapshots)
+        };
+
+        let ids: Vec<String> = ["q1", "q2", "q3"].iter().map(|s| s.to_string()).collect();
+        mgr.batch_resume(&ids).await;
+
+        let (progress, positions, snapshots) = count(&sink.events());
+        assert_eq!(progress, 0, "批量恢复不得逐任务发 TaskProgress");
+        assert_eq!(positions, 1, "批量恢复只广播一次队列位置");
+        assert_eq!(snapshots, 1, "批量恢复只广播一次任务快照");
+        assert_eq!(mgr.pending_queue.len(), 3);
+        for id in ["q1", "q2", "q3"] {
+            let t = db.load_task_by_id(id).await.expect("load").expect("task");
+            assert_eq!(t.status, 0, "排队任务必须批量持久化为 pending");
+        }
+
+        // 批量暂停：同样常数条事件，排队任务全部摘除并落库 paused。
+        mgr.batch_pause(&ids).await;
+
+        let (progress, positions, snapshots) = count(&sink.events());
+        assert_eq!(progress, 0, "批量暂停排队任务不得逐任务发 TaskProgress");
+        assert_eq!(positions, 2, "批量暂停只追加一次队列位置广播");
+        assert_eq!(snapshots, 2, "批量暂停只追加一次任务快照");
+        assert!(mgr.pending_queue.is_empty());
+        for id in ["q1", "q2", "q3"] {
+            let t = db.load_task_by_id(id).await.expect("load").expect("task");
+            assert_eq!(t.status, 2, "排队任务必须批量持久化为 paused");
         }
     }
 

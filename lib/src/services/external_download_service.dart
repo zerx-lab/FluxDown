@@ -57,6 +57,10 @@ class ExternalDownloadService {
       navigatorKey: navigatorKey,
     );
     _instance!._startListening();
+    // 小窗托管缓冲的重分发入口：清单视图期间到达的请求 / 弹窗可见期间的
+    // 音视频轨对请求由 PopupWindowService 完整缓冲，冲刷时重新走本服务的
+    // 完整分发链（免打扰/独立小窗/回退对话框策略统一适用）。
+    PopupWindowService.instance.redispatch = _instance!._handleRequest;
   }
 
   static void shutdown() {
@@ -68,6 +72,7 @@ class ExternalDownloadService {
   void _teardown() {
     logInfo(_tag, '_teardown');
     _sub?.cancel();
+    PopupWindowService.instance.redispatch = null;
   }
 
   void _startListening() {

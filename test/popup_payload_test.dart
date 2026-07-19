@@ -4,7 +4,9 @@
 // 该 JSON 是两个引擎间的 wire 契约。本测试只断言往返语义（roundtrip +
 // 缺省字段容错），不断言实现细节（如 JSON 键顺序 / 内部字段名）。
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flux_down/src/bindings/bindings.dart';
 import 'package:flux_down/src/popup/popup_payload.dart';
+import 'package:flux_down/src/widgets/manifest_select_view.dart';
 import 'package:flux_down/src/widgets/quick_download_form.dart';
 
 /// 递归深度比较，用于校验 tokensJson 这类任意嵌套 Map/List 结构在
@@ -328,6 +330,160 @@ void main() {
       final decoded = QuickPopupResult.fromJsonString(minimalJson);
 
       expect(decoded.form.extraHeaders, isEmpty);
+    });
+  });
+
+  // 清单预解析 relay 信封（弹窗 ↔ 主引擎 经原生 relay/onRelay 透传）。
+  group('PopupRelayMessage', () {
+    test('previewRequest roundtrip：表单快照全字段还原', () {
+      const form = QuickDownloadFormResult(
+        urlText: 'https://example.com/合集页面?id=1',
+        saveDir: r'C:\Downloads\影视',
+        rename: '',
+        segments: 16,
+        proxyUrl: 'socks5://127.0.0.1:1080',
+        userAgent: 'TestUA/1.0',
+        queueId: 'queue-x',
+        cookies: 'sid=abc; token=秘',
+        checksum: '',
+        ignoreTlsErrors: true,
+        threadsUserModified: true,
+        startLater: false,
+        extraHeaders: {'X-Auth': 'b', 'Referer': 'https://example.com'},
+      );
+      final wire = encodePreviewRequest(
+        requestId: 7,
+        seq: 3,
+        form: form,
+      ).toJsonString();
+      final msg = PopupRelayMessage.fromJsonString(wire);
+      expect(msg.kind, kPopupRelayPreviewRequest);
+      expect(msg.requestId, 7);
+      expect(msg.seq, 3);
+      final decoded = decodePreviewRequestForm(msg);
+      expect(decoded.urlText, form.urlText);
+      expect(decoded.saveDir, form.saveDir);
+      expect(decoded.segments, form.segments);
+      expect(decoded.proxyUrl, form.proxyUrl);
+      expect(decoded.userAgent, form.userAgent);
+      expect(decoded.queueId, form.queueId);
+      expect(decoded.cookies, form.cookies);
+      expect(decoded.ignoreTlsErrors, form.ignoreTlsErrors);
+      expect(decoded.threadsUserModified, form.threadsUserModified);
+      expect(decoded.extraHeaders, form.extraHeaders);
+    });
+
+    test('previewResult roundtrip：清单 items/variants 语义不变', () {
+      const manifest = ResolvePreviewResult(
+        previewId: 'pv_1',
+        name: '沙丘·第二季 4K',
+        sourceUrl: 'https://manifest.test/demo',
+        error: '',
+        items: [
+          ManifestItemDto(
+            id: 'ep01',
+            name: 'E01.mkv',
+            path: '正片',
+            size: 6442450944,
+            variants: [
+              ManifestVariantDto(id: '4k', label: '2160p', size: 6442450944),
+              ManifestVariantDto(id: '1080', label: '1080p', size: 0),
+            ],
+          ),
+          ManifestItemDto(
+            id: 'nfo',
+            name: '沙丘S02.nfo',
+            path: '',
+            size: 0,
+            variants: [],
+          ),
+        ],
+      );
+      final wire = encodePreviewResult(
+        requestId: 7,
+        seq: 3,
+        manifest: manifest,
+      ).toJsonString();
+      final msg = PopupRelayMessage.fromJsonString(wire);
+      expect(msg.kind, kPopupRelayPreviewResult);
+      final decoded = decodePreviewResultManifest(msg);
+      expect(decoded, isNotNull);
+      expect(decoded!.name, manifest.name);
+      expect(decoded.sourceUrl, manifest.sourceUrl);
+      expect(decoded.items.length, 2);
+      expect(decoded.items[0].id, 'ep01');
+      expect(decoded.items[0].path, '正片');
+      expect(decoded.items[0].size, 6442450944);
+      expect(decoded.items[0].variants.length, 2);
+      expect(decoded.items[0].variants[1].size, 0);
+      expect(decoded.items[1].variants, isEmpty);
+    });
+
+    test('previewResult：manifest=null 编解码后仍为 null（无清单回退语义）', () {
+      final wire = encodePreviewResult(
+        requestId: 1,
+        seq: 1,
+        manifest: null,
+      ).toJsonString();
+      final msg = PopupRelayMessage.fromJsonString(wire);
+      expect(decodePreviewResultManifest(msg), isNull);
+    });
+
+    test('groupSubmit roundtrip：建组投影全字段；referrer 恒由主引擎回填（解码为空）', () {
+      const sub = ManifestGroupSubmission(
+        sourceUrl: 'https://manifest.test/demo',
+        groupName: '沙丘·第二季',
+        saveDir: r'C:\Downloads',
+        queueId: 'later',
+        segments: 8,
+        cookies: 'sid=abc',
+        referrer: 'https://should-not-survive.example',
+        userAgent: 'UA/2',
+        proxyUrl: '',
+        extraHeaders: {'X-K': 'v'},
+        ignoreTlsErrors: false,
+        startPaused: true,
+        items: [
+          GroupItemEntry(
+            resolverItem: 'ep01@4k',
+            fileName: 'E01.mkv',
+            relPath: '正片',
+            size: 6442450944,
+          ),
+        ],
+      );
+      final wire = encodeGroupSubmit(
+        requestId: 9,
+        seq: 2,
+        sub: sub,
+      ).toJsonString();
+      final msg = PopupRelayMessage.fromJsonString(wire);
+      expect(msg.kind, kPopupRelayGroupSubmit);
+      final decoded = decodeGroupSubmit(msg);
+      expect(decoded.sourceUrl, sub.sourceUrl);
+      expect(decoded.groupName, sub.groupName);
+      expect(decoded.saveDir, sub.saveDir);
+      expect(decoded.queueId, sub.queueId);
+      expect(decoded.segments, sub.segments);
+      expect(decoded.cookies, sub.cookies);
+      // referrer 保存在主引擎 pending 表，不经弹窗流转：解码侧恒为空。
+      expect(decoded.referrer, '');
+      expect(decoded.userAgent, sub.userAgent);
+      expect(decoded.extraHeaders, sub.extraHeaders);
+      expect(decoded.startPaused, isTrue);
+      expect(decoded.items.length, 1);
+      expect(decoded.items[0].resolverItem, 'ep01@4k');
+      expect(decoded.items[0].relPath, '正片');
+      expect(decoded.items[0].size, 6442450944);
+    });
+
+    test('previewCancel：kind/requestId/seq 原样往返，data 为空容错', () {
+      final wire = encodePreviewCancel(requestId: 4, seq: 6).toJsonString();
+      final msg = PopupRelayMessage.fromJsonString(wire);
+      expect(msg.kind, kPopupRelayPreviewCancel);
+      expect(msg.requestId, 4);
+      expect(msg.seq, 6);
+      expect(msg.data, isEmpty);
     });
   });
 }

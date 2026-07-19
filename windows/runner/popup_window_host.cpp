@@ -126,6 +126,21 @@ PopupWindowHost::PopupWindowHost(flutter::BinaryMessenger* host_messenger) {
                 std::make_unique<flutter::EncodableValue>(*url_text));
           }
           result->Success(flutter::EncodableValue(can_append));
+        } else if (call.method_name() == "relay") {
+          // 通用透传中继（清单预解析流程，见 popup_payload.dart 信封）：
+          // 不解析载荷，原样转发给弹窗引擎的 onRelay；弹窗引擎未就绪时
+          // 返回 false，交由主引擎判弃。
+          const auto* json = std::get_if<std::string>(call.arguments());
+          if (!json) {
+            result->Error("bad-args", "relay expects a JSON string");
+            return;
+          }
+          const bool can_relay = child_ready_ && child_channel_ != nullptr;
+          if (can_relay) {
+            child_channel_->InvokeMethod(
+                "onRelay", std::make_unique<flutter::EncodableValue>(*json));
+          }
+          result->Success(flutter::EncodableValue(can_relay));
         } else if (call.method_name() == "close") {
           // 契约：close 只隐藏，不回调 onClosed
           HidePopup();
@@ -305,8 +320,22 @@ void PopupWindowHost::HandleChildCall(
     return;
   }
 
+  if (method == "relay") {
+    // 通用透传中继：原样转发给主引擎的 onRelay（不解析、不改窗口状态）。
+    const auto* json = std::get_if<std::string>(call.arguments());
+    if (!json) {
+      result->Error("bad-args", "relay expects a JSON string");
+      return;
+    }
+    host_channel_->InvokeMethod(
+        "onRelay", std::make_unique<flutter::EncodableValue>(*json));
+    result->Success();
+    return;
+  }
+
   if (method == "resize" || method == "reveal") {
     double logical_height = 0;
+    double logical_width = 0;
     if (const auto* map =
             std::get_if<flutter::EncodableMap>(call.arguments())) {
       auto it = map->find(flutter::EncodableValue("height"));
@@ -317,8 +346,16 @@ void PopupWindowHost::HandleChildCall(
           logical_height = static_cast<double>(*i);
         }
       }
+      auto wit = map->find(flutter::EncodableValue("width"));
+      if (wit != map->end()) {
+        if (const auto* d = std::get_if<double>(&wit->second)) {
+          logical_width = *d;
+        } else if (const auto* i = std::get_if<int32_t>(&wit->second)) {
+          logical_width = static_cast<double>(*i);
+        }
+      }
     }
-    ApplyLogicalHeight(logical_height);
+    ApplyLogicalSize(logical_width, logical_height);
     if (method == "reveal") {
       // reveal 握手：新载荷首帧已就绪 — 设高完成后显示并激活。
       // ShowPopup 内部解除兜底定时器；窗口已可见时等价一次 resize。
@@ -338,7 +375,11 @@ void PopupWindowHost::DeliverPayload(const std::string& payload) {
   }
 }
 
-void PopupWindowHost::ApplyLogicalHeight(double logical_height) {
+// 按逻辑像素调整窗口尺寸。height<=0 忽略整个调用；width<=0 维持现宽
+// （既有"高度跟随、宽度固定"行为逐字节不变）。宽度变化时保持窗口水平
+// 中心与顶边不动，并把尺寸/位置 clamp 进所在显示器工作区（高宽各 90%）。
+void PopupWindowHost::ApplyLogicalSize(double logical_width,
+                                       double logical_height) {
   HWND hwnd = GetHandle();
   if (!hwnd || logical_height <= 0) {
     return;
@@ -347,21 +388,48 @@ void PopupWindowHost::ApplyLogicalHeight(double logical_height) {
   const double scale = dpi / 96.0;
   int physical_height = static_cast<int>(logical_height * scale + 0.5);
 
-  // clamp 到窗口所在显示器工作区高度的 90%
+  RECT rect = {};
+  ::GetWindowRect(hwnd, &rect);
+  const int old_width = rect.right - rect.left;
+  int physical_width = old_width;
+  if (logical_width > 0) {
+    physical_width = static_cast<int>(logical_width * scale + 0.5);
+  }
+
+  // clamp 到窗口所在显示器工作区（高/宽各 90%）
   HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi = {};
   mi.cbSize = sizeof(mi);
-  if (::GetMonitorInfo(monitor, &mi)) {
+  const bool have_monitor = ::GetMonitorInfo(monitor, &mi) != 0;
+  if (have_monitor) {
     const int max_height =
         static_cast<int>((mi.rcWork.bottom - mi.rcWork.top) * 0.9);
     physical_height = (std::min)(physical_height, max_height);
+    const int max_width =
+        static_cast<int>((mi.rcWork.right - mi.rcWork.left) * 0.9);
+    physical_width = (std::min)(physical_width, max_width);
   }
 
-  RECT rect = {};
-  ::GetWindowRect(hwnd, &rect);
-  // 顶边不动，宽度固定
-  ::SetWindowPos(hwnd, nullptr, 0, 0, rect.right - rect.left, physical_height,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  if (physical_width == old_width) {
+    // 宽度不变：顶边不动、位置不动（既有行为）。
+    ::SetWindowPos(hwnd, nullptr, 0, 0, old_width, physical_height,
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
+
+  // 宽度变化：水平保持窗口中心、顶边不动，x 收进工作区。
+  int x = rect.left - (physical_width - old_width) / 2;
+  if (have_monitor) {
+    const int max_x = mi.rcWork.right - physical_width;
+    if (x > max_x) {
+      x = max_x;
+    }
+    if (x < mi.rcWork.left) {
+      x = static_cast<int>(mi.rcWork.left);
+    }
+  }
+  ::SetWindowPos(hwnd, nullptr, x, rect.top, physical_width, physical_height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void PopupWindowHost::ArmRevealFallback() {

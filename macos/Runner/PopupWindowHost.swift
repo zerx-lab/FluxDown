@@ -2,10 +2,10 @@
 // 外部唤起独立下载小窗（原生宿主，macOS）。
 //
 // 完整契约见 FluxDown 跨端契约文档（外部唤起独立小窗 v1）：
-// - 主引擎通道 fluxdown/popup_host（注册在主引擎 messenger 上）：show / close，
-//   回调 onResult / onClosed。
+// - 主引擎通道 fluxdown/popup_host（注册在主引擎 messenger 上）：show / close / relay，
+//   回调 onResult / onClosed / onRelay。
 // - 弹窗引擎通道 fluxdown/popup_child（注册在弹窗引擎 messenger 上）：ready / submit /
-//   cancel / pickFolder / startDrag / resize，回调 setPayload。
+//   cancel / pickFolder / startDrag / resize（可选 width）/ relay，回调 setPayload / onRelay。
 //
 // 设计原则（方案评审硬性约束，勿改）：
 // - 弹窗窗口 + 弹窗引擎懒创建、常驻复用：首次 show 创建，之后仅 hide/show，
@@ -108,6 +108,18 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
                 childChannel?.invokeMethod("appendPayload", arguments: urlText)
             }
             result(canAppend)
+        case "relay":
+            // 通用透传中继：不解析/不校验载荷，原样转发给弹窗引擎；
+            // 弹窗引擎未就绪时返回 false，交由调用方处理失步。
+            guard let payload = call.arguments as? String else {
+                result(FlutterError(code: "bad_args", message: "relay: expected payload JSON string", details: nil))
+                return
+            }
+            let canRelay = childReady && childChannel != nil
+            if canRelay {
+                childChannel?.invokeMethod("onRelay", arguments: payload)
+            }
+            result(canRelay)
         case "close":
             // 主引擎主动收起（例如用户在主窗口取消了外部请求），不回调 onClosed。
             hidePopup()
@@ -295,6 +307,14 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
             hidePopup()
             hostChannel?.invokeMethod("onClosed", arguments: nil)
             result(nil)
+        case "relay":
+            // 通用透传中继：不解析/不校验载荷，原样转发给主引擎。
+            guard let payload = call.arguments as? String else {
+                result(FlutterError(code: "bad_args", message: "relay: expected payload JSON string", details: nil))
+                return
+            }
+            hostChannel?.invokeMethod("onRelay", arguments: payload)
+            result(nil)
         case "pickFolder":
             handlePickFolder(call, result: result)
         case "startDrag":
@@ -306,7 +326,8 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
             // （presentPopup 内部解除兜底定时器）。已可见时等价一次 resize。
             if let args = call.arguments as? [String: Any],
                 let height = (args["height"] as? NSNumber)?.doubleValue, height > 0 {
-                applyLogicalHeight(CGFloat(height))
+                let width = (args["width"] as? NSNumber)?.doubleValue
+                applyLogicalHeight(CGFloat(height), width: width.flatMap { $0 > 0 ? CGFloat($0) : nil })
             }
             presentPopup()
             result(nil)
@@ -380,22 +401,33 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
         result(nil)
     }
 
-    /// 按逻辑像素高度调整窗口：宽度不变，顶边不动（AppKit 坐标系 Y 向上，
-    /// 需以旧 frame 的 maxY 作为锚点反推新 origin.y），并 clamp 到所在屏幕
-    /// 工作区高度的 90%。resize / reveal 共用。
-    private func applyLogicalHeight(_ height: CGFloat) {
+    /// 按逻辑像素高度（+ 可选宽度）调整窗口：默认宽度不变，顶边不动（AppKit 坐标系
+    /// Y 向上，需以旧 frame 的 maxY 作为锚点反推新 origin.y），并 clamp 到所在屏幕
+    /// 工作区高度的 90%。width 非 nil 时同步按同一比例 clamp 宽度，水平方向保持
+    /// 窗口中心不变（相应平移 origin.x 并收进工作区边界内）。resize / reveal 共用。
+    private func applyLogicalHeight(_ height: CGFloat, width: CGFloat? = nil) {
         guard let win = window else { return }
-        let visibleHeight = win.screen?.visibleFrame.height
-            ?? NSScreen.screens.first?.visibleFrame.height
-            ?? win.frame.height
+        let visibleFrame = win.screen?.visibleFrame ?? NSScreen.screens.first?.visibleFrame
+        let visibleHeight = visibleFrame?.height ?? win.frame.height
         let clampedHeight = min(height, visibleHeight * kPopupMaxHeightRatio)
 
         let oldFrame = win.frame
         let topY = oldFrame.origin.y + oldFrame.height
+        var newWidth = oldFrame.width
+        var newX = oldFrame.origin.x
+        if let width = width {
+            let visibleWidth = visibleFrame?.width ?? oldFrame.width
+            let clampedWidth = min(width, visibleWidth * kPopupMaxHeightRatio)
+            newX -= (clampedWidth - oldFrame.width) / 2
+            if let visibleFrame = visibleFrame {
+                newX = min(max(newX, visibleFrame.minX), visibleFrame.maxX - clampedWidth)
+            }
+            newWidth = clampedWidth
+        }
         let newFrame = NSRect(
-            x: oldFrame.origin.x,
+            x: newX,
             y: topY - clampedHeight,
-            width: oldFrame.width,
+            width: newWidth,
             height: clampedHeight
         )
         win.setFrame(newFrame, display: true, animate: false)
@@ -412,7 +444,8 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
             result(FlutterError(code: "bad_args", message: "resize: invalid height", details: nil))
             return
         }
-        applyLogicalHeight(CGFloat(height))
+        let width = (args["width"] as? NSNumber)?.doubleValue
+        applyLogicalHeight(CGFloat(height), width: width.flatMap { $0 > 0 ? CGFloat($0) : nil })
         result(nil)
     }
 

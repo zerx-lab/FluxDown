@@ -21,7 +21,8 @@ enum ViewDensity { comfortable, compact }
 /// 分组维度（7 维，含「不分组」）。
 enum ViewGroupBy { smart, date, status, type, queue, site, none }
 
-/// 排序键（6 键，作用于组内/桶内行序）。
+/// 排序键（6 键）。`smart` 只定桶内行序；显式键同时决定桶间顺序
+/// （「排序控全局叙事」，见 download_controller.dart `orderSections`）。
 enum ViewSortKey { smart, created, name, size, progress, speed }
 
 /// 排序方向。

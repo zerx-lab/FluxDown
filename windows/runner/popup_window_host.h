@@ -20,10 +20,10 @@
 // - 窗口 + 引擎懒创建、常驻复用：首次 show 创建，之后只 hide/show，
 //   进程存续期间禁止销毁（规避历史 isolate 频繁建销崩溃）；
 // - 弹窗引擎零插件注册、不初始化 Rust；
-// - 两条 MethodChannel：主引擎 `fluxdown/popup_host`（show/close/append 入、
-//   onResult/onClosed 出），弹窗引擎 `fluxdown/popup_child`
-//   （ready/submit/cancel/pickFolder/startDrag/resize/reveal 入、
-//   setPayload/appendPayload 出）。
+// - 两条 MethodChannel：主引擎 `fluxdown/popup_host`（show/close/append/relay
+//   入、onResult/onClosed/onRelay 出），弹窗引擎 `fluxdown/popup_child`
+//   （ready/submit/cancel/pickFolder/startDrag/resize/reveal/relay 入、
+//   setPayload/appendPayload/onRelay 出；resize/reveal 支持可选 width）。
 //
 // 显示时序（reveal 握手）：show 只投递载荷 + 重置位置，窗口保持隐藏；
 // 弹窗 Dart 在新载荷首帧布局完成后经 reveal(height) 请求「设高 + 显示」
@@ -70,8 +70,9 @@ class PopupWindowHost : public Win32Window {
   // 隐藏窗口（不销毁）。
   void HidePopup();
 
-  // 按逻辑像素高度调整窗口（clamp 到工作区 90%，宽度/顶边不动）。
-  void ApplyLogicalHeight(double logical_height);
+  // 按逻辑像素调整窗口尺寸（clamp 到工作区 90%）。width<=0 维持现宽
+  // （既有高度跟随行为）；宽度变化时保持水平中心与顶边不动。
+  void ApplyLogicalSize(double logical_width, double logical_height);
 
   // 武装/解除 reveal 兜底定时器（show 后 Dart 迟迟不 reveal 时强制显示）。
   void ArmRevealFallback();

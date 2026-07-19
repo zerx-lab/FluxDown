@@ -374,12 +374,13 @@ class DownloadController extends ChangeNotifier {
     }
 
     final bucketize = bucketFunctionTable(_queues)[prefs.groupBy]!;
-    final sections = bucketize(entities);
-    for (final section in sections) {
+    final bucketed = bucketize(entities);
+    for (final section in bucketed) {
       section.entities.sort(
         (a, b) => compareEntities(prefs.sortKey, prefs.sortDir, a, b),
       );
     }
+    final sections = orderSections(bucketed, prefs.sortKey, prefs.sortDir);
 
     // 展开扁平化后处理（design-proto-spec §8）：分桶/排序已完成，只在组行
     // 后面插入其成员/目录行，不改变桶结构/顶层排序。仅列表形态生效——
@@ -2115,6 +2116,39 @@ int compareEntities(ViewSortKey key, SortDir dir, ListEntity a, ListEntity b) {
     case ViewSortKey.smart:
       return compareEntitiesSmart(a, b);
   }
+}
+
+/// 桶间排序（「排序控全局叙事」）：显式排序键下，分桶结果按各桶首行——
+/// 桶内排序完成后该桶在当前比较器下的极值代表——用同一比较器重排，使
+/// 全列表首行恒为当前排序键的全局极值（状态分组+进度↓ → 已完成桶置顶、
+/// +速度↓ → 下载中桶置顶；日期分组+创建时间↑ → 时间正序阅读）。
+/// `smart` 排序保持各维度固定叙事顺序（默认视图零感知）；`smart:live`
+/// 活跃桶恒置顶（智能分组的置顶承诺高于排序）；比较相等时保持分桶函数
+/// 产出的固定顺序（显式索引平局裁决——`List.sort` 不稳定）。
+/// 前置条件：各桶已按同一 [key]/[dir] 完成桶内排序（首行才是极值代表），
+/// 且除单桶维度外分桶函数只产出非空桶。
+List<ListSection> orderSections(
+  List<ListSection> sections,
+  ViewSortKey key,
+  SortDir dir,
+) {
+  if (key == ViewSortKey.smart || sections.length < 2) return sections;
+  final pinned = <ListSection>[];
+  final movable = <ListSection>[];
+  for (final s in sections) {
+    (s.key == 'smart:live' ? pinned : movable).add(s);
+  }
+  final order = List<int>.generate(movable.length, (i) => i);
+  order.sort((ia, ib) {
+    final c = compareEntities(
+      key,
+      dir,
+      movable[ia].entities.first,
+      movable[ib].entities.first,
+    );
+    return c != 0 ? c : ia - ib;
+  });
+  return [...pinned, for (final i in order) movable[i]];
 }
 
 // =============================================================================

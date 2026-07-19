@@ -858,8 +858,7 @@ class _DetailPanelState extends State<DetailPanel> {
                 const SizedBox(width: 8),
               ],
               Expanded(
-                child: _buildLabeledActionButton(
-                  c: c,
+                child: DetailFooterActionButton(
                   icon: LucideIcons.folderOpen,
                   label: s.detailActionFolder,
                   onPressed: () => openFolder(task.revealFolderPath),
@@ -867,8 +866,7 @@ class _DetailPanelState extends State<DetailPanel> {
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: _buildLabeledActionButton(
-                  c: c,
+                child: DetailFooterActionButton(
                   icon: LucideIcons.link,
                   label: s.detailActionCopyLink,
                   onPressed: () => _copyLinkWithToast(task.url),
@@ -889,106 +887,11 @@ class _DetailPanelState extends State<DetailPanel> {
     AppMetrics m,
     DownloadTask task,
   ) {
-    final s = currentS;
-    switch (task.status) {
-      case TaskStatus.downloading:
-      case TaskStatus.pending:
-      case TaskStatus.preparing:
-        return ShadButton(
-          onPressed: () => widget.controller.pauseTask(task.id),
-          backgroundColor: c.accent,
-          hoverBackgroundColor: c.accentHover,
-          child: Text(
-            s.pause,
-            style: const TextStyle(
-              fontSize: 13,
-              color: Color(0xFFFFFFFF),
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        );
-      case TaskStatus.resuming:
-        return ShadButton(
-          onPressed: () => widget.controller.pauseTask(task.id),
-          backgroundColor: c.accent,
-          hoverBackgroundColor: c.accentHover,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: m.borderStrong(const Color(0xFFFFFFFF)),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  s.resumingClickPause,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFFFFFFFF),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      case TaskStatus.paused:
-      case TaskStatus.error:
-        return ShadButton(
-          onPressed: () => widget.controller.resumeTask(task.id),
-          backgroundColor: c.accent,
-          hoverBackgroundColor: c.accentHover,
-          child: Text(
-            s.resume,
-            style: const TextStyle(
-              fontSize: 13,
-              color: Color(0xFFFFFFFF),
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        );
-      case TaskStatus.completed:
-        return null;
-    }
-  }
-
-  /// 图标+文字操作按钮（footer 等宽排布；用户决策：不要纯图标）。
-  Widget _buildLabeledActionButton({
-    required AppColors c,
-    required IconData icon,
-    required String label,
-    required VoidCallback onPressed,
-  }) {
-    return ShadButton.outline(
-      onPressed: onPressed,
-      height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      // FittedBox scaleDown：极窄面板下内容整体缩小而非溢出报错
-      //（ShadButton 内部给子树的约束在窄宽时会收紧，Flexible+ellipsis
-      // 在其布局管线里不总能生效——缩放是结构性兜底）。
-      child: FittedBox(
-        fit: BoxFit.scaleDown,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: c.textSecondary),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              maxLines: 1,
-              style: TextStyle(fontSize: 12.5, color: c.textPrimary),
-            ),
-          ],
-        ),
-      ),
+    if (task.status == TaskStatus.completed) return null;
+    return DetailFooterPrimaryButton(
+      status: task.status,
+      onPause: () => widget.controller.pauseTask(task.id),
+      onResume: () => widget.controller.resumeTask(task.id),
     );
   }
 
@@ -1873,6 +1776,129 @@ class _CopyValueButtonState extends State<_CopyValueButton> {
           color: _copied ? const Color(0xFF22C55E) : widget.color,
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 钉底 footer 按钮（公开 widget：detail_panel_footer_overflow_test.dart
+// 直接 pump 真实实现做窄宽防溢出回归，不复刻结构）。
+//
+// 防溢出机制（2026-07 窄面板 12/24px 溢出根因）：Flutter Flex 给非 flex
+// 子项的主轴约束**无界**，ShadButton 内部 Row 因此把无界宽度传给 child——
+// FittedBox 直接作 child 拿不到有限上界，scaleDown 永不生效。
+// `expands: true` 把 child 包进 Expanded 变 flex 子项（shadcn button.dart
+// `effectiveExpands`），获得真实剩余宽度后 FittedBox 才能整体缩小内容。
+// ---------------------------------------------------------------------------
+
+/// footer 图标+文字操作按钮（等宽排布；用户决策：不要纯图标）。
+class DetailFooterActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  const DetailFooterActionButton({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return ShadButton.outline(
+      onPressed: onPressed,
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      expands: true,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: c.textSecondary),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              maxLines: 1,
+              style: TextStyle(fontSize: 12.5, color: c.textPrimary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// footer 主操作按钮：暂停（活跃/排队）/ 恢复中（点击暂停）/ 继续
+/// （暂停/失败）。完成态由调用方省略本按钮。
+class DetailFooterPrimaryButton extends StatelessWidget {
+  final TaskStatus status;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+
+  const DetailFooterPrimaryButton({
+    super.key,
+    required this.status,
+    required this.onPause,
+    required this.onResume,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    final s = currentS;
+    switch (status) {
+      case TaskStatus.downloading:
+      case TaskStatus.pending:
+      case TaskStatus.preparing:
+        return _filled(c, onPause, Text(s.pause, style: _kLabelStyle));
+      case TaskStatus.resuming:
+        return _filled(
+          c,
+          onPause,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: m.borderStrong(const Color(0xFFFFFFFF)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // 无 Flexible/ellipsis：本 Row 在 FittedBox 的无界测量下布局
+              // （Flexible 在无界主轴会断言崩溃），超宽由 scaleDown 整体缩小。
+              Text(s.resumingClickPause, maxLines: 1, style: _kLabelStyle),
+            ],
+          ),
+        );
+      case TaskStatus.paused:
+      case TaskStatus.error:
+        return _filled(c, onResume, Text(s.resume, style: _kLabelStyle));
+      case TaskStatus.completed:
+        return const SizedBox.shrink();
+    }
+  }
+
+  static const _kLabelStyle = TextStyle(
+    fontSize: 13,
+    color: Color(0xFFFFFFFF),
+    fontWeight: FontWeight.w500,
+  );
+
+  Widget _filled(AppColors c, VoidCallback onPressed, Widget content) {
+    return ShadButton(
+      onPressed: onPressed,
+      backgroundColor: c.accent,
+      hoverBackgroundColor: c.accentHover,
+      expands: true,
+      child: FittedBox(fit: BoxFit.scaleDown, child: content),
     );
   }
 }

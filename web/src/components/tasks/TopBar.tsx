@@ -10,14 +10,16 @@ import { cn } from '../../lib/cn'
 import { openNewDownload } from '../../lib/dialogs'
 import { fmtSpeed } from '../../lib/format'
 import { useI18n } from '../../lib/i18n'
+import { GROUP_BY_CYCLE, SORT_KEY_CYCLE, SORT_KEY_DEFAULT_DIR, updateViewPrefs } from '../../lib/view-prefs'
 import { useConfigQuery } from '../settings/useConfig'
 import { useTasksUi } from './context'
 import { useViewTasks } from './useViewTasks'
+import { ViewOptionsPanelButton } from './ViewOptionsPanel'
 
 export function TopBar() {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const { search, setSearch, manageMode, setManageMode, setSidebarOpen } = useTasksUi()
+  const { search, setSearch, manageMode, setManageMode, setSidebarOpen, statusTab } = useTasksUi()
   const tasks = useViewTasks()
   const qc = useQueryClient()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -40,6 +42,37 @@ export function TopBar() {
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const active = document.activeElement
+      if (active instanceof HTMLElement && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable)) return
+      const key = e.key.toLowerCase()
+      if (key === 'v' && !e.shiftKey) {
+        e.preventDefault()
+        updateViewPrefs(statusTab, (p) => ({ ...p, form: p.form === 'list' ? 'grid' : 'list' }))
+      } else if (e.shiftKey && key === 'd') {
+        e.preventDefault()
+        updateViewPrefs(statusTab, (p) => (p.form === 'grid' ? p : { ...p, density: p.density === 'comfortable' ? 'compact' : 'comfortable' }))
+      } else if (key === 'g' && !e.shiftKey) {
+        e.preventDefault()
+        updateViewPrefs(statusTab, (p) => {
+          const i = GROUP_BY_CYCLE.indexOf(p.groupBy)
+          return { ...p, groupBy: GROUP_BY_CYCLE[(i + 1) % GROUP_BY_CYCLE.length] }
+        })
+      } else if (key === 's' && !e.shiftKey) {
+        e.preventDefault()
+        updateViewPrefs(statusTab, (p) => {
+          const i = SORT_KEY_CYCLE.indexOf(p.sortKey)
+          const next = SORT_KEY_CYCLE[(i + 1) % SORT_KEY_CYCLE.length]
+          return { ...p, sortKey: next, sortDir: SORT_KEY_DEFAULT_DIR[next] }
+        })
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [statusTab])
 
   const hasActive = tasks.some((t) => t.status === 0 || t.status === 1 || t.status === 5)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['tasks'] })
@@ -80,6 +113,7 @@ export function TopBar() {
           {hasActive ? <Pause size={17} /> : <Play size={17} />}
         </button>
         <LimitButton />
+        <ViewOptionsPanelButton />
         <span className="vsep" />
         <button type="button" className="btn primary" onClick={openNewDownload}>
           <Plus size={15} />

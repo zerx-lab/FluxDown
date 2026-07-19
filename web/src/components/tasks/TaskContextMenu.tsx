@@ -6,6 +6,7 @@ import { ChevronRight, Copy, Download, Link2, ListOrdered, Pause, Play, RotateCc
 import type { ReactNode } from 'react'
 import { taskFileUrl } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
+import { queueDisplayName } from '../../lib/format'
 import { useI18n } from '../../lib/i18n'
 import type { QueueDto } from '../../lib/types'
 import type { ViewTask } from './useViewTasks'
@@ -95,7 +96,7 @@ export function TaskContextMenu({
                     .filter((q) => q.queueId !== t.queueId)
                     .map((q) => (
                       <ContextMenu.Item key={q.queueId} className="ctx-item" onSelect={() => onMove(q.queueId)}>
-                        {q.name}
+                        {queueDisplayName(q)}
                       </ContextMenu.Item>
                     ))}
                 </ContextMenu.SubContent>

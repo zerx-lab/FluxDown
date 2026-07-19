@@ -26,7 +26,8 @@ class ManifestSummaryHeader extends StatelessWidget {
   final int itemCount;
   final int totalSize;
   final String sourceUrl;
-  final VoidCallback onClose;
+  /// null = 不渲染右上角关闭 X（独立小窗自带标题栏关闭按钮时传 null）。
+  final VoidCallback? onClose;
 
   const ManifestSummaryHeader({
     super.key,
@@ -106,15 +107,17 @@ class ManifestSummaryHeader extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(width: 8),
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onClose,
-          child: Padding(
-            padding: const EdgeInsets.all(4),
-            child: Icon(LucideIcons.x, size: 16, color: c.textMuted),
+        if (onClose != null) ...[
+          const SizedBox(width: 8),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onClose,
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(LucideIcons.x, size: 16, color: c.textMuted),
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

@@ -231,6 +231,24 @@ static FlMethodResponse* handle_child_cancel(PopupWindowHost* self) {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
 }
 
+// relay：通用透传（弹窗引擎 → 主引擎方向）。不解析不校验参数内容，原样
+// 转发给主引擎侧 onRelay，不改变任何窗口状态（不同于 submit/cancel，没
+// 有隐藏窗口的副作用）。
+static FlMethodResponse* handle_child_relay(PopupWindowHost* self,
+                                            FlValue* args) {
+  if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_STRING) {
+    return FL_METHOD_RESPONSE(fl_method_error_response_new(
+        "bad_args", "relay requires a JSON string payload", nullptr));
+  }
+  // args 是这次 relay 调用的参数、由 FlMethodCall 拥有；
+  // fl_method_channel_invoke_method 只在本次调用内同步编码读取、不保留引
+  // 用，可以直接透传给 onRelay，不必先落地成一份新的副本（对照
+  // handle_child_submit 转发 onResult 的同一处理）。
+  fl_method_channel_invoke_method(self->host_channel, "onRelay", args,
+                                  nullptr, nullptr, nullptr);
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+}
+
 // startDrag：坐标/按钮/时间戳优先取自 gtk_get_current_event()。但实际几乎
 // 总是 NULL——method call 由平台通道经 GLib 主循环的消息分发触发，并不处
 // 在真实输入事件的调用栈内（Dart 手势识别到发起这次 native 调用之间，至少
@@ -284,8 +302,11 @@ static FlMethodResponse* handle_child_start_drag(PopupWindowHost* self) {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
 }
 
-// resize/reveal 共用的高度解析 + 应用（clamp 到工作区 90%，宽度固定、
-// 顶边不动：GtkWindow 默认 NORTH_WEST 重力下 resize 只伸缩右/下边）。
+// resize/reveal 共用的尺寸解析 + 应用：height 必填、clamp 到工作区 90%；
+// width 可选（float/int 皆容忍，缺失或 <=0 时与现状逐字节一致——宽度不
+// 动，仍固定 520），传入时同样 clamp 到工作区宽度 90%。顶边不动：
+// GtkWindow 默认 NORTH_WEST 重力下 resize 只伸缩右/下边。Wayland 下禁止
+// 任何全局坐标定位，宽度变化因此只 resize、不做水平居中补偿。
 // 返回 nullptr = 成功；否则为错误响应。
 static FlMethodResponse* apply_logical_height(PopupWindowHost* self,
                                               FlValue* args,
@@ -315,7 +336,28 @@ static FlMethodResponse* apply_logical_height(PopupWindowHost* self,
   if (max_height > 0 && target_height > max_height) {
     target_height = max_height;
   }
-  gtk_window_resize(GTK_WINDOW(self->popup_window), kPopupLogicalWidth,
+
+  gint target_width = kPopupLogicalWidth;
+  FlValue* width_value = fl_value_lookup_string(args, "width");
+  if (width_value != nullptr) {
+    gdouble width_logical = 0.0;
+    gboolean have_width = TRUE;
+    if (fl_value_get_type(width_value) == FL_VALUE_TYPE_FLOAT) {
+      width_logical = fl_value_get_float(width_value);
+    } else if (fl_value_get_type(width_value) == FL_VALUE_TYPE_INT) {
+      width_logical = (gdouble)fl_value_get_int(width_value);
+    } else {
+      have_width = FALSE;
+    }
+    if (have_width && width_logical > 0) {
+      gint max_width = (gint)lround(workarea.width * kResizeWorkareaFraction);
+      target_width = (gint)lround(width_logical);
+      if (max_width > 0 && target_width > max_width) {
+        target_width = max_width;
+      }
+    }
+  }
+  gtk_window_resize(GTK_WINDOW(self->popup_window), target_width,
                     target_height);
   return nullptr;
 }
@@ -457,6 +499,8 @@ static void child_method_call_cb(FlMethodChannel* /*channel*/,
     response = handle_child_resize(self, args);
   } else if (g_strcmp0(method, "reveal") == 0) {
     response = handle_child_reveal(self, args);
+  } else if (g_strcmp0(method, "relay") == 0) {
+    response = handle_child_relay(self, args);
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }
@@ -650,6 +694,25 @@ static FlMethodResponse* handle_host_append(PopupWindowHost* self,
       fl_method_success_response_new(fl_value_new_bool(can_append)));
 }
 
+// relay：通用透传（主引擎 → 弹窗引擎方向）。弹窗引擎就绪（对应 Windows
+// 的 child_ready_ && child_channel_ != nullptr）才转发，否则回 false 让
+// Dart 侧知道这次中继没有送达。
+static FlMethodResponse* handle_host_relay(PopupWindowHost* self,
+                                           FlValue* args) {
+  if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_STRING) {
+    return FL_METHOD_RESPONSE(fl_method_error_response_new(
+        "bad_args", "relay requires a JSON string payload", nullptr));
+  }
+  const gboolean can_relay =
+      self->popup_ready && self->child_channel != nullptr;
+  if (can_relay) {
+    fl_method_channel_invoke_method(self->child_channel, "onRelay", args,
+                                    nullptr, nullptr, nullptr);
+  }
+  return FL_METHOD_RESPONSE(
+      fl_method_success_response_new(fl_value_new_bool(can_relay)));
+}
+
 static void host_method_call_cb(FlMethodChannel* /*channel*/,
                                 FlMethodCall* method_call, gpointer user_data) {
   PopupWindowHost* self = (PopupWindowHost*)user_data;
@@ -663,6 +726,8 @@ static void host_method_call_cb(FlMethodChannel* /*channel*/,
     response = handle_host_close(self);
   } else if (g_strcmp0(method, "append") == 0) {
     response = handle_host_append(self, args);
+  } else if (g_strcmp0(method, "relay") == 0) {
+    response = handle_host_relay(self, args);
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }

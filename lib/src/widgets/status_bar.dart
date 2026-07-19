@@ -6,7 +6,6 @@ import '../models/download_task.dart';
 import '../models/settings_provider.dart';
 import '../models/view_prefs.dart';
 import '../i18n/locale_provider.dart';
-import '../services/kv_store.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../services/shutdown_service.dart';
@@ -58,15 +57,6 @@ class _StatusBarState extends State<StatusBar> {
 
   /// 上次已写入 settings 的字节数，用于防循环更新
   int _lastKnownBytes = -1;
-
-  /// E9 密度建议 pill 是否已被永久关闭（KvStore 持久化）。
-  bool _densityHintDismissed =
-      KvStore.instance.getBool('view_density_hint_dismissed') ?? false;
-
-  void _dismissDensityHint() {
-    setState(() => _densityHintDismissed = true);
-    KvStore.instance.setBool('view_density_hint_dismissed', true);
-  }
 
   @override
   void initState() {
@@ -231,11 +221,6 @@ class _StatusBarState extends State<StatusBar> {
               .expand((section) => section.entities)
               .fold<int>(0, (sum, e) => sum + e.totalBytes),
         );
-        final showDensityHint =
-            !_densityHintDismissed &&
-            prefs.density == ViewDensity.comfortable &&
-            prefs.form == ViewForm.list &&
-            visibleCount > 150;
 
         return Container(
           height: 28,
@@ -289,7 +274,12 @@ class _StatusBarState extends State<StatusBar> {
               const SizedBox(width: 20),
               // 视图作用域摘要（design-proto-spec §11 `renderStatusbar` 左段）：
               // N 个任务 · 合计大小 [· 已隐藏 M 个已完成]
-              Flexible(
+              //
+              // Expanded（非 Flexible）：吃满全部剩余空间把右簇顶到行尾。
+              // 此前 Flexible(loose) 与 Spacer 各分一半剩余空间，Flexible
+              // 没用掉的配额不会回流给 Spacer，按 mainAxisAlignment.start
+              // 沉积在行尾——表现为「反馈」右侧一大段空白且随窗口变宽。
+              Expanded(
                 child: Text(
                   hiddenCompleted > 0
                       ? '${s.statusScopeSummary(visibleCount, scopeSizeText)}'
@@ -304,25 +294,6 @@ class _StatusBarState extends State<StatusBar> {
                   ),
                 ),
               ),
-              const Spacer(),
-              if (showDensityHint) ...[
-                _DensityHintPill(
-                  onSwitch: () => widget.viewPrefsStore.update(
-                    tab,
-                    (p) => p.copyWith(density: ViewDensity.compact),
-                  ),
-                  onDismiss: _dismissDensityHint,
-                ),
-                const SizedBox(width: 12),
-              ],
-              // 视图状态回显（design-proto-spec §11 `.sb-view`）
-              Text(
-                describeViewState(prefs),
-                style: TextStyle(fontSize: 10.5, color: c.textMuted),
-              ),
-              const SizedBox(width: 12),
-              Container(width: 1, height: 12, color: c.border),
-              const SizedBox(width: 12),
               // 限速 Popover 触发器
               _SpeedLimitTrigger(
                 popoverController: _popoverController,
@@ -378,69 +349,6 @@ class _StatusBarState extends State<StatusBar> {
           ),
         );
       },
-    );
-  }
-}
-
-// =============================================================================
-// E9 密度建议 pill（>150 行 + 舒适档一次性提示，design §5 E9）
-// =============================================================================
-
-class _DensityHintPill extends StatelessWidget {
-  final VoidCallback onSwitch;
-  final VoidCallback onDismiss;
-
-  const _DensityHintPill({required this.onSwitch, required this.onDismiss});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    final s = LocaleScope.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: c.accentBg,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(LucideIcons.zap, size: 10, color: c.accent),
-          const SizedBox(width: 4),
-          Text(
-            s.densityHintMessage,
-            style: TextStyle(fontSize: 10, color: c.accent),
-          ),
-          const SizedBox(width: 6),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: onSwitch,
-              child: Text(
-                s.densityHintSwitchAction,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: c.accent,
-                  decoration: TextDecoration.underline,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          ShadTooltip(
-            waitDuration: const Duration(milliseconds: 400),
-            builder: (_) => Text(s.densityHintDismissTooltip),
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: GestureDetector(
-                onTap: onDismiss,
-                child: Icon(LucideIcons.x, size: 10, color: c.accent),
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

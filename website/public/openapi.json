@@ -2513,6 +2513,11 @@
             "type": "string",
             "description": "命名队列 ID（空 = 默认队列）。"
           },
+          "queueOrder": {
+            "type": "integer",
+            "format": "int32",
+            "description": "队列内启动顺序（0 = 未显式排序，按创建时间；>0 = 显式顺序）。"
+          },
           "referrer": {
             "type": "string",
             "description": "Source page URL captured by the browser extension (empty = none)."

@@ -689,6 +689,58 @@ impl Db {
         Ok(())
     }
 
+    /// 批量更新任务状态（同一状态写入多任务），`error_message` 统一清空；
+    /// `completed_at` 维护规则与 [`Db::update_task_status`] 一致。批量操作
+    /// （停止队列/批量暂停/批量恢复排队）专用：N 任务一条（分块）SQL，
+    /// 取代逐任务 N 次 UPDATE。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
+    /// use fluxdown_engine::db::Db;
+    /// let db = Db::connect("sqlite::memory:").await?;
+    /// db.update_tasks_status_batch(&["a".to_string(), "b".to_string()], 2)
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_tasks_status_batch(
+        &self,
+        ids: &[String],
+        status: i32,
+    ) -> Result<(), DbError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // SQLite has a max variable limit of 999; chunk to stay safe
+        // (same pattern as `load_tasks_by_ids`).  $1 = status, $2 = now.
+        const CHUNK: usize = 500;
+        for chunk in ids.chunks(CHUNK) {
+            let placeholders: String = (3..chunk.len() + 3)
+                .map(|i| format!("${i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "UPDATE tasks SET status = $1, error_message = '',
+                     completed_at = CASE
+                         WHEN $1 = 3 AND completed_at = '' THEN $2
+                         WHEN $1 IN (0, 1, 5) THEN ''
+                         ELSE completed_at
+                     END
+                 WHERE id IN ({placeholders})"
+            );
+            let mut query = sqlx::query(AssertSqlSafe(sql))
+                .bind(status)
+                .bind(chrono_now());
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            query.execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
     /// 更新任务的「文件已丢失」标志（文件跟踪）。仅当任务仍处于 completed
     /// (`status = 3`) 时生效——文件扫描的「读快照 → 异步 stat → 写回」三阶段间，
     /// 任务可能已被删除或状态变化，`WHERE id AND status = 3` 让这类竞态退化为
@@ -3396,6 +3448,55 @@ mod tests {
         // 重新下载 → 清空。
         db.update_task_status("c1", 1, "").await.expect("restart");
         assert_eq!(load(db.clone()).await.completed_at, "");
+
+        close_test_db(&db, dir).await;
+    }
+
+    /// update_tasks_status_batch：一条（分块）SQL 批量置状态——
+    /// - 列出的任务全部更新、error_message 统一清空；
+    /// - completed_at 维护规则与单任务 update_task_status 一致
+    ///   （→2 保持、→0 清空）；
+    /// - 未列出的任务不受影响。
+    #[tokio::test]
+    async fn update_tasks_status_batch_updates_all_listed_tasks() {
+        let (db, dir) = open_test_db().await;
+        insert_task_with_size(&db, "b1", 100).await;
+        insert_task_with_size(&db, "b2", 100).await;
+        insert_task_with_size(&db, "b3", 100).await;
+        db.update_task_status("b1", 4, "boom")
+            .await
+            .expect("seed b1 error");
+        db.update_task_status("b2", 3, "")
+            .await
+            .expect("seed b2 completed");
+        let b3_before = db
+            .load_task_by_id("b3")
+            .await
+            .expect("load")
+            .expect("b3 exists");
+
+        // b1(error) + b2(completed) → paused；b3 未列出必须不受影响。
+        let ids = vec!["b1".to_string(), "b2".to_string()];
+        db.update_tasks_status_batch(&ids, 2)
+            .await
+            .expect("batch pause");
+
+        let b1 = db.load_task_by_id("b1").await.expect("load").expect("b1");
+        assert_eq!(b1.status, 2);
+        assert_eq!(b1.error_message, "", "批量置状态必须清空 error_message");
+        let b2 = db.load_task_by_id("b2").await.expect("load").expect("b2");
+        assert_eq!(b2.status, 2);
+        assert_ne!(b2.completed_at, "", "→2 不得清空 completed_at");
+        let b3 = db.load_task_by_id("b3").await.expect("load").expect("b3");
+        assert_eq!(b3.status, b3_before.status, "未列出的任务不得被改动");
+
+        // →0（批量恢复排队）清空 completed_at，与单任务规则一致。
+        db.update_tasks_status_batch(&ids, 0)
+            .await
+            .expect("batch pending");
+        let b2 = db.load_task_by_id("b2").await.expect("load").expect("b2");
+        assert_eq!(b2.status, 0);
+        assert_eq!(b2.completed_at, "", "→0 必须清空 completed_at");
 
         close_test_db(&db, dir).await;
     }

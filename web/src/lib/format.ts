@@ -152,3 +152,11 @@ export function protoLabel(url: string): string {
   if (url.startsWith('http://')) return 'HTTP'
   return 'URL'
 }
+
+/** 队列显示名：内置队列（main/later）本地化，命名队列用存量名——
+ *  所有队列名显示点（侧边栏/详情面板/右键菜单/选择器/附加信息列）的单一事实源。 */
+export function queueDisplayName(q: { queueId: string; name: string }): string {
+  if (q.queueId === 'main') return t('sidebar.queueMain')
+  if (q.queueId === 'later') return t('sidebar.queueLater')
+  return q.name
+}

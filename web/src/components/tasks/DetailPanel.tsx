@@ -7,11 +7,12 @@ import { Ban, Download, ListOrdered, Trash2, X, Zap } from 'lucide-react'
 import { api, taskFileUrl } from '../../lib/api'
 import { CopyButton } from '../CopyButton'
 import { cn } from '../../lib/cn'
-import { fmtBytes, fmtDuration, fmtEta, fmtSpeed, fmtTime, protoLabel } from '../../lib/format'
+import { fmtBytes, fmtDuration, fmtEta, fmtSpeed, fmtTime, protoLabel, queueDisplayName } from '../../lib/format'
 import { t as i18nT, translateBackendMessage, useI18n } from '../../lib/i18n'
 import { segmentStore, splitStore, useStore } from '../../lib/ws'
 import { confirmDialog } from '../../lib/confirm'
-import type { QueueDto, SegmentDetail, TaskStatus } from '../../lib/types'
+import { groupDisplayName } from '../../lib/task-group'
+import type { GroupDto, QueueDto, SegmentDetail, TaskStatus } from '../../lib/types'
 import { eventLogStore } from './eventLog'
 import { useTasksUi, type DetailTab } from './context'
 import { useViewTasks, type ViewTask } from './useViewTasks'
@@ -28,7 +29,7 @@ const DTABS: { id: DetailTab; labelKey: 'detail.tabGeneral' | 'detail.tabSegment
 ]
 
 /** 状态文案：函数而非模块级常量，避免固化在某一语言（随当前语言实时取值）。 */
-function statusText(s: TaskStatus): string {
+export function statusText(s: TaskStatus): string {
   const KEYS = {
     0: 'status.pending',
     1: 'status.downloading',
@@ -45,6 +46,7 @@ export function DetailPanel() {
   const { currentTaskId, detailOpen, detailTab, setDetailTab, closeDetail } = useTasksUi()
   const tasks = useViewTasks()
   const { data: queues = [] } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues })
+  const { data: groups = [] } = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
   const task = tasks.find((t) => t.taskId === currentTaskId)
   const open = detailOpen && !!task
 
@@ -71,7 +73,7 @@ export function DetailPanel() {
             ))}
           </div>
           <div className="detail-body">
-            {detailTab === 'general' && <GeneralTab t={task} queues={queues} />}
+            {detailTab === 'general' && <GeneralTab t={task} queues={queues} groups={groups} />}
             {detailTab === 'segments' && <SegmentsTab t={task} />}
             {detailTab === 'queue' && <QueueTab t={task} queues={queues} />}
             {detailTab === 'log' && <LogTab t={task} />}
@@ -86,7 +88,7 @@ export function DetailPanel() {
 /** 超过该长度的值默认折叠为 3 行，点击展开/收起（完整值始终可通过复制按钮获取）。 */
 const CLAMP_THRESHOLD = 120
 
-function DField({ label, value, copy }: { label: string; value: string; copy?: boolean }) {
+export function DField({ label, value, copy }: { label: string; value: string; copy?: boolean }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const clampable = value.length > CLAMP_THRESHOLD
@@ -118,7 +120,21 @@ function DField({ label, value, copy }: { label: string; value: string; copy?: b
   )
 }
 
-function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
+/** 「所属任务组」可点击链接行——点击选中该组并打开组详情面板（与 DField 视觉一致，仅
+ *  值文本换成可点击的强调色，对齐桌面 detail_panel.dart _buildGroupLinkRow）。 */
+function GroupLinkField({ label, name, onClick }: { label: string; name: string; onClick: () => void }) {
+  return (
+    <div className="d-field">
+      <span>{label}</span>
+      <p className="d-link" onClick={onClick}>
+        {name}
+      </p>
+    </div>
+  )
+}
+
+function GeneralTab({ t, queues, groups }: { t: ViewTask; queues: QueueDto[]; groups: GroupDto[] }) {
+  const { selectGroup } = useTasksUi()
   const { t: tr } = useI18n()
   const qc = useQueryClient()
   const invalidate = () => qc.invalidateQueries({ queryKey: ['tasks'] })
@@ -127,7 +143,9 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
   const ignorePluginRetryMut = useMutation({ mutationFn: () => api.ignorePluginRetry(t.taskId), onSuccess: invalidate })
   const seg = useStore(segmentStore)[t.taskId]
   const pct = t.totalBytes > 0 ? Math.round((t.downloadedBytes / t.totalBytes) * 100) : 0
-  const queueName = queues.find((q) => q.queueId === t.queueId)?.name ?? tr('detail.defaultQueue')
+  const taskQueue = queues.find((q) => q.queueId === t.queueId)
+  const queueName = taskQueue ? queueDisplayName(taskQueue) : tr('detail.defaultQueue')
+  const memberGroup = t.groupId ? groups.find((g) => g.groupId === t.groupId) : undefined
 
   return (
     <>
@@ -164,6 +182,13 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
       <DField label={tr('detail.url')} value={t.url || '—'} copy />
       <DField label={tr('detail.savePath')} value={`${t.saveDir}/${t.fileName}`} />
       <DField label={tr('detail.protoQueue')} value={`${protoLabel(t.url)} · ${queueName}`} />
+      {t.groupId ? (
+        <GroupLinkField
+          label={tr('group.memberOfLabel')}
+          name={memberGroup ? groupDisplayName(memberGroup) : t.groupId}
+          onClick={() => selectGroup(t.groupId!)}
+        />
+      ) : null}
       <DField label={tr('detail.createdAt')} value={fmtTime(t.createdAt)} />
       {t.status === 3 && t.completedAt ? (
         <>
@@ -299,13 +324,13 @@ function QueueTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
     <>
       <div className="q-current">
         <ListOrdered size={15} />
-        <span>{tr('detail.currentQueueValue', { name: current?.name ?? tr('detail.defaultQueue') })}</span>
+        <span>{tr('detail.currentQueueValue', { name: current ? queueDisplayName(current) : tr('detail.defaultQueue') })}</span>
       </div>
       <p className="q-move-label">{tr('detail.moveToOther')}</p>
       {others.map((q) => (
         <button key={q.queueId} type="button" className="q-item" onClick={() => moveMut.mutate(q.queueId)}>
           <ListOrdered size={14} />
-          <span>{q.name}</span>
+          <span>{queueDisplayName(q)}</span>
           <em>
             {q.speedLimitKbps > 0 ? `${q.speedLimitKbps} KB/s` : tr('detail.noLimit')} · {tr('detail.concurrency', { n: q.maxConcurrent })}
           </em>

@@ -8,10 +8,13 @@ import type {
   ComponentVersions,
   ComponentYtdlpStatus,
   ConfigMap,
+  CreateGroupRequest,
+  CreateGroupResponse,
   CreateQueueRequest,
   CreateTaskRequest,
   CreatedTask,
   FsListResponse,
+  GroupDto,
   InstallFfmpegRequest,
   InstalledPlugin,
   LogsResponse,
@@ -21,6 +24,8 @@ import type {
   ProxyTestRequest,
   ProxyTestResponse,
   QueueDto,
+  ResolvePreviewRequest,
+  ResolvePreviewResponse,
   QueueOrderRequest,
   QueueScheduleRequest,
   StatsResponse,
@@ -99,6 +104,21 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ queueId }),
     }),
+
+  // 任务组与前置预解析（多文件下载）
+  resolvePreview: (req: ResolvePreviewRequest) =>
+    apiFetch<ResolvePreviewResponse>('/api/v1/resolve/preview', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  listGroups: () => apiFetch<GroupDto[]>('/api/v1/groups'),
+  createGroup: (req: CreateGroupRequest) =>
+    apiFetch<CreateGroupResponse>('/api/v1/groups', { method: 'POST', body: JSON.stringify(req) }),
+  deleteGroup: (id: string, deleteFiles: boolean) =>
+    apiFetch<unknown>(`/api/v1/groups/${id}?deleteFiles=${deleteFiles}`, { method: 'DELETE' }),
+  pauseGroup: (id: string) => apiFetch<unknown>(`/api/v1/groups/${id}/pause`, { method: 'PUT' }),
+  continueGroup: (id: string) =>
+    apiFetch<unknown>(`/api/v1/groups/${id}/continue`, { method: 'PUT' }),
 
   listQueues: () => apiFetch<QueueDto[]>('/api/v1/queues'),
   createQueue: (req: CreateQueueRequest) =>

@@ -32,6 +32,7 @@ import '../models/ua_presets.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../services/bt_file_selection_service.dart';
+import '../services/resolve_preview_client.dart';
 
 import 'bt_file_list_widget.dart';
 import 'dir_picker_field.dart';
@@ -171,31 +172,18 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   bool _btCancelPending = false;
 
   // ── manifest 预解析状态（单条 http(s) 链接可能是多文件清单）───────────────
-  // 提交单条 http(s) 非磁力/种子链接时先探测是否为多文件清单：发
-  // ResolvePreviewRequest，等待同 previewId 的 ResolvePreviewResult（90s 超
-  // 时视同无清单）。命中清单则弹 manifest_select_dialog；无清单/error/超时/
-  // 用户取消都回退到（或中止）原有单任务创建路径，行为零差异。
+  // 提交单条 http(s) 非磁力/种子/ed2k 链接时先探测是否为多文件清单（发送/
+  // 90s 超时/取消/迟到丢弃逻辑收敛在 ResolvePreviewClient，独立小窗与快速
+  // 下载回退对话框共用同一实现）。命中清单则弹 manifest_select_dialog；
+  // 无清单/error/超时/用户取消都回退到（或中止）原有单任务创建路径，
+  // 行为零差异。
 
-  /// 当前等待中的 previewId；非 null 时动作按钮进入 loading 态。
-  String? _pendingPreviewId;
+  /// 当前等待中的预解析；非 null 时动作按钮进入 loading 态。
+  ResolvePreviewHandle? _previewHandle;
 
-  /// 90s 超时计时器。
-  Timer? _previewTimeoutTimer;
-
-  /// 当前等待中的结果 Future；由 [_onResolvePreviewResult]/超时/取消三处之一
-  /// complete。
-  Completer<ResolvePreviewResult?>? _previewCompleter;
-
-  /// 用户主动取消了本次预解析等待——迟到的结果到达时已被
-  /// [_onResolvePreviewResult] 的 previewId 判空跳过；此标记额外让
-  /// `_startDownloadInner` 区分"取消"（中止整个提交）与"无清单"（继续走
-  /// 原有创建路径）。
+  /// 用户主动取消了本次预解析等待——让 `_startDownloadInner` 区分"取消"
+  /// （中止整个提交）与"无清单"（继续走原有创建路径）。
   bool _previewCancelled = false;
-
-  /// ResolvePreviewResult 信号订阅。
-  StreamSubscription<RustSignalPack<ResolvePreviewResult>>? _previewSub;
-
-  static int _previewIdSeq = 0;
 
   /// 根据队列 ID 计算有效的线程数选项字符串。
   ///
@@ -236,10 +224,6 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     _metaSub = TorrentMetaResult.rustSignalStream.listen(_onTorrentMetaResult);
     // 订阅任务进度 — 磁力等待阶段任务转 error 时跳出等待并展示错误（#379）
     _btProgressSub = TaskProgress.rustSignalStream.listen(_onBtTaskProgress);
-    // 订阅预解析结果（单条 http(s) 链接是否为多文件清单）
-    _previewSub = ResolvePreviewResult.rustSignalStream.listen(
-      _onResolvePreviewResult,
-    );
   }
 
   /// 磁力等待阶段（probing/selecting）监听任务错误信号。
@@ -464,16 +448,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     }
     _metaSub?.cancel();
     _btProgressSub?.cancel();
-    _previewTimeoutTimer?.cancel();
     // dispose 期间还有预解析等待中：视同用户取消，避免 `_startDownloadInner`
     // 的挂起协程在组件已卸载后误判"无清单"继续创建任务（对齐
     // `_cancelPreviewResolve` 的取消语义）。
-    if (_pendingPreviewId != null) {
-      _pendingPreviewId = null;
-      _previewCancelled = true;
-    }
-    _previewCompleter?.complete(null);
-    _previewSub?.cancel();
+    _previewHandle?.cancel();
+    _previewHandle = null;
     _urlController.removeListener(_onUrlChanged);
     _urlController.dispose();
     _urlFocusNode.dispose();
@@ -990,9 +969,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     }
 
     // ── 预解析：单条 http(s) 非磁力/种子/ed2k 链接，先探测是否为多文件清单 ──
-    // （contract-dart.md §选择弹窗）。多行/磁力/种子路径完全不变；外部下载·
-    // 快速小窗 v1 不接入本流程（仅完整新建下载对话框接入，此处记录偏离）。
-    if (entries.length == 1 && _isPreviewableUrl(entries.first.url)) {
+    // （contract-dart.md §选择弹窗）。多行/磁力/种子路径完全不变；外部下载
+    // 两条快速路径（回退对话框/独立小窗）经 ResolvePreviewClient 同样接入。
+    if (entries.length == 1 && isManifestPreviewableUrl(entries.first.url)) {
       final entry = entries.first;
       final manifest = await _resolvePreviewIfManifest(
         url: entry.url,
@@ -1022,7 +1001,6 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
           proxyUrl: proxyUrl,
           extraHeaders: extraHeaders,
           ignoreTlsErrors: _ignoreTlsErrors,
-          later: later,
         );
         if (created && mounted) Navigator.of(context).pop();
         return;
@@ -1148,33 +1126,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     if (mounted) Navigator.of(context).pop();
   }
 
-  /// 是否应对该 URL 发起预解析：单条 http(s) 链接。种子文件路径已在
-  /// `_hasTorrentFiles` 分支提前处理；磁力/ed2k 永远不匹配（无 http(s) 前缀）。
-  bool _isPreviewableUrl(String url) {
-    final lower = url.toLowerCase();
-    return lower.startsWith('http://') || lower.startsWith('https://');
-  }
+  // （原 `_isPreviewableUrl` 判定移至 resolve_preview_client.dart 的
+  // `isManifestPreviewableUrl`，三个入口共用。）
 
-  String _genPreviewId() {
-    _previewIdSeq += 1;
-    return '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_$_previewIdSeq';
-  }
-
-  /// 匹配 previewId 并 complete 等待中的 Future；previewId 不匹配（迟到、或
-  /// 已被取消清空 `_pendingPreviewId`）直接忽略——满足"取消则忽略迟到结果"。
-  void _onResolvePreviewResult(RustSignalPack<ResolvePreviewResult> pack) {
-    final msg = pack.message;
-    if (_pendingPreviewId == null || msg.previewId != _pendingPreviewId) return;
-    final completer = _previewCompleter;
-    _pendingPreviewId = null;
-    _previewCompleter = null;
-    _previewTimeoutTimer?.cancel();
-    _previewTimeoutTimer = null;
-    completer?.complete(msg);
-    if (mounted) setState(() {});
-  }
-
-  /// 发 ResolvePreviewRequest 并等待结果（90s 超时视同无清单）。
+  /// 经 [ResolvePreviewClient] 发起预解析并等待结果（90s 超时视同无清单）。
   ///
   /// 返回非 null = 拿到清单（`items` 非空且无 `error`）；返回 null 且
   /// [_previewCancelled] 为 false = 无清单/error/超时，调用方应回退到原有
@@ -1187,45 +1142,33 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     required Map<String, String> extraHeaders,
   }) async {
     _previewCancelled = false;
-    final previewId = _genPreviewId();
-    final completer = Completer<ResolvePreviewResult?>();
-    setState(() {
-      _pendingPreviewId = previewId;
-      _previewCompleter = completer;
-    });
-    ResolvePreviewRequest(
-      previewId: previewId,
+    final handle = ResolvePreviewClient.start(
       url: url,
       cookies: cookies,
       referrer: '',
       userAgent: userAgent,
       extraHeaders: extraHeaders,
-    ).sendSignalToRust();
-    _previewTimeoutTimer = Timer(const Duration(seconds: 90), () {
-      if (_pendingPreviewId != previewId) return;
-      _pendingPreviewId = null;
-      _previewCompleter = null;
-      _previewTimeoutTimer = null;
-      completer.complete(null);
+    );
+    setState(() => _previewHandle = handle);
+    final result = await handle.future;
+    if (identical(_previewHandle, handle)) {
+      _previewHandle = null;
       if (mounted) setState(() {});
-    });
-    final result = await completer.future;
-    if (_previewCancelled) return null;
-    if (result == null) return null; // 超时
-    if (result.error.isNotEmpty || result.items.isEmpty) return null; // 无清单/失败
+    }
+    if (handle.cancelled) {
+      _previewCancelled = true;
+      return null;
+    }
     return result;
   }
 
   /// 用户在等待预解析结果时点了取消：忽略后续迟到结果，恢复表单可编辑，
   /// 不提交任何任务（既不建单任务、也不弹清单选择框）。
   void _cancelPreviewResolve() {
-    if (_pendingPreviewId == null) return;
-    _pendingPreviewId = null;
-    _previewTimeoutTimer?.cancel();
-    _previewTimeoutTimer = null;
-    _previewCancelled = true;
-    _previewCompleter?.complete(null);
-    _previewCompleter = null;
+    final handle = _previewHandle;
+    if (handle == null) return;
+    _previewHandle = null;
+    handle.cancel();
     setState(() {});
   }
 
@@ -1291,13 +1234,13 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
           : Text(
               _btWaitPhase != null
                   ? s.btWaitingFiles
-                  : (_pendingPreviewId != null
+                  : (_previewHandle != null
                         ? s.manifestResolvingLabel
                         : s.batchDownloadDesc),
             ),
       actions: _btWaitPhase != null
           ? _buildBtWaitActions(s, c)
-          : _pendingPreviewId != null
+          : _previewHandle != null
           ? _buildPreviewResolveActions(s, c)
           : [
               ShadButton.outline(
@@ -1323,9 +1266,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ),
             ],
       child: IgnorePointer(
-        ignoring: _pendingPreviewId != null,
+        ignoring: _previewHandle != null,
         child: Opacity(
-          opacity: _pendingPreviewId != null ? 0.5 : 1,
+          opacity: _previewHandle != null ? 0.5 : 1,
           child: Padding(
             // 右侧留出滚动条槽位，避免 ShadDialog 的覆盖式滚动条
             // 遮挡自定义请求头行的删除按钮（右缘交互元素）。

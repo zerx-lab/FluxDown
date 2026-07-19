@@ -263,9 +263,6 @@ class S {
       _r('statusViewGroupedByLabel', {'dim': dim});
   String statusViewSortedByLabel(String key) =>
       _r('statusViewSortedByLabel', {'key': key});
-  String get densityHintMessage => _r('densityHintMessage');
-  String get densityHintSwitchAction => _r('densityHintSwitchAction');
-  String get densityHintDismissTooltip => _r('densityHintDismissTooltip');
 
   // ─────────────────────────────────────────────
   // TaskListItem (右键菜单)

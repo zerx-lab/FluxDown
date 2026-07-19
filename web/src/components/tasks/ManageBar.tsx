@@ -1,10 +1,11 @@
 // 批量管理条：全选 / 已选计数 / 批量暂停恢复删除。仅在 manageMode 时渲染内容
 // （所有 hooks 必须先于该判断无条件调用，满足 Rules of Hooks）。
 
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import { useI18n } from '../../lib/i18n'
+import { groupDisplayName } from '../../lib/task-group'
 import { filterTasks } from './filters'
 import { useTasksUi } from './context'
 import { useViewTasks } from './useViewTasks'
@@ -13,6 +14,7 @@ export function ManageBar() {
   const { t } = useI18n()
   const { manageMode, setManageMode, selected, setSelected, statusTab, typeFilter, queueFilter, search } = useTasksUi()
   const tasks = useViewTasks()
+  const { data: groups = [] } = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
   const qc = useQueryClient()
   const invalidate = () => qc.invalidateQueries({ queryKey: ['tasks'] })
 
@@ -34,7 +36,8 @@ export function ManageBar() {
 
   if (!manageMode) return null
 
-  const visible = filterTasks(tasks, { statusTab, typeFilter, queueFilter, search })
+  const groupNameByGroupId = new Map(groups.map((g) => [g.groupId, groupDisplayName(g).toLowerCase()]))
+  const visible = filterTasks(tasks, { statusTab, typeFilter, queueFilter, search, groupNameByGroupId })
   const allSelected = visible.length > 0 && visible.every((t) => selected.has(t.taskId))
 
   function toggleAll(checked: boolean) {

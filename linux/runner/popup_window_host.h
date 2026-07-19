@@ -10,12 +10,13 @@ G_BEGIN_DECLS
 // 引擎渲染快速下载表单）。
 //
 // 职责：
-// - 在主引擎 messenger 上注册 fluxdown/popup_host 通道，响应 show/close，
-//   并把 onResult/onClosed 中继回主引擎 Dart。
-// - 懒创建承载第二个 Flutter 引擎（--quick-popup 入口、零插件注册、不初始
-//   化 Rust）的无边框 GTK 顶层窗口，并在该引擎自己的 messenger 上注册
+// - 在主引擎 messenger 上注册 fluxdown/popup_host 通道，响应
+//   show/close/relay，并把 onResult/onClosed/onRelay 中继回主引擎 Dart。
+// - 懒创建承载第二个 Flutter 引擎（--quick-popup 入口、零插件注册、不初
+//   始化 Rust）的无边框 GTK 顶层窗口，并在该引擎自己的 messenger 上注册
 //   fluxdown/popup_child 通道，响应 ready/submit/cancel/pickFolder/
-//   startDrag/resize，并把 setPayload 投递给弹窗 Dart。
+//   startDrag/resize/relay（resize 支持可选 width），并把 setPayload/
+//   onRelay 投递给弹窗 Dart。
 // - 窗口与引擎一旦创建即常驻复用：之后的每次外部请求都只 hide/show，绝不
 //   重建——历史上 desktop_multi_window 频繁建销 isolate 曾导致 0xc0000005
 //   崩溃（commit 39d6c74），本实现刻意规避同类模式。

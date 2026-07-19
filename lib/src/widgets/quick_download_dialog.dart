@@ -3,11 +3,14 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
+import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
 import '../services/file_picker_service.dart';
 import '../services/quick_download_submitter.dart';
+import '../services/resolve_preview_client.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
+import 'manifest_select_dialog.dart';
 import 'quick_download_form.dart';
 
 /// 浏览器扩展下载请求的快速确认对话框（主窗口内回退路径）。
@@ -63,7 +66,12 @@ void showQuickDownloadDialog(
 }
 
 /// 对话框外壳：ShadDialog 标题/描述 + 共享表单主体。
-class _QuickDownloadDialogShell extends StatelessWidget {
+///
+/// 有状态：提交单条 http(s) 链接时先经 [ResolvePreviewClient] 探测多文件
+/// 清单（与新建下载对话框同一门控/90s 超时/取消/回退语义）；命中 → 弹
+/// [showManifestSelectDialog]，确认后两层一起关闭；无清单/超时 → 零差异
+/// 落入原 [submitQuickDownload] 提交路径。
+class _QuickDownloadDialogShell extends StatefulWidget {
   final String url;
   final String filename;
   final int fileSize;
@@ -85,6 +93,90 @@ class _QuickDownloadDialogShell extends StatelessWidget {
     required this.defaultQueueId,
     this.audioUrl = '',
   });
+
+  @override
+  State<_QuickDownloadDialogShell> createState() =>
+      _QuickDownloadDialogShellState();
+}
+
+class _QuickDownloadDialogShellState extends State<_QuickDownloadDialogShell> {
+  /// 当前等待中的预解析；非 null 时表单动作区进入 loading 态。
+  ResolvePreviewHandle? _previewHandle;
+
+  @override
+  void dispose() {
+    _previewHandle?.cancel();
+    _previewHandle = null;
+    super.dispose();
+  }
+
+  void _cancelResolve() {
+    final handle = _previewHandle;
+    if (handle == null) return;
+    setState(() => _previewHandle = null);
+    handle.cancel();
+  }
+
+  Future<void> _onSubmit(QuickDownloadFormResult result) async {
+    // 单条 http(s) 链接先探测多文件清单。音视频轨对请求除外——
+    // 清单建组无法承载 audioUrl 合并语义，维持原单任务路径。
+    final entries = parseQuickDownloadEntries(result.urlText);
+    if (widget.audioUrl.isEmpty &&
+        _previewHandle == null &&
+        entries.length == 1 &&
+        isManifestPreviewableUrl(entries.first.url)) {
+      // 镜像 new_download_dialog 的提交点偏好记录——清单路径确认后不再
+      // 经过 submitQuickDownload（无清单回退时那里会以同值重记，幂等）。
+      SettingsProvider.globalInstance?.recordLastSaveDir(result.saveDir);
+      if (result.threadsUserModified) {
+        SettingsProvider.globalInstance?.setLastDialogThreads(
+          result.segments > 0 ? result.segments.toString() : 'auto',
+        );
+      }
+      final handle = ResolvePreviewClient.start(
+        url: entries.first.url,
+        cookies: result.cookies,
+        referrer: widget.referrer,
+        userAgent: result.userAgent,
+        extraHeaders: result.extraHeaders,
+      );
+      setState(() => _previewHandle = handle);
+      final manifest = await handle.future;
+      if (!mounted) return;
+      setState(() => _previewHandle = null);
+      if (handle.cancelled) return; // 取消等待：表单保持可编辑
+      if (manifest != null) {
+        // 有清单 → 弹选择框（本对话框保持底层）；确认发出 CreateTaskGroup
+        // 并两层一起关闭，取消则回到本表单（未被改动，可编辑重新提交）。
+        final created = await showManifestSelectDialog(
+          context,
+          queues: DownloadController.globalInstance?.queues ?? const [],
+          manifest: manifest,
+          sourceUrl: entries.first.url,
+          initialSaveDir: result.saveDir,
+          initialQueueId: result.queueId.isEmpty
+              ? kMainQueueId
+              : result.queueId,
+          segments: result.segments,
+          cookies: result.cookies,
+          referrer: widget.referrer,
+          userAgent: result.userAgent,
+          proxyUrl: result.proxyUrl,
+          extraHeaders: result.extraHeaders,
+          ignoreTlsErrors: result.ignoreTlsErrors,
+        );
+        if (created && mounted) Navigator.of(context).pop();
+        return;
+      }
+      // 无清单/error/超时 → 落入下方原提交路径（行为零差异）。
+    }
+    submitQuickDownload(
+      result: result,
+      referrer: widget.referrer,
+      hintFileSize: widget.fileSize,
+    );
+    if (mounted) Navigator.of(context).pop();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -111,35 +203,38 @@ class _QuickDownloadDialogShell extends StatelessWidget {
           const SizedBox(width: 10),
           Text(s.newDownload),
           const SizedBox(width: 8),
-          if (fileSize > 0)
+          if (widget.fileSize > 0)
             QuickInfoTag(
-              text: formatQuickFileSize(fileSize, unknownLabel: s.unknownSize),
+              text: formatQuickFileSize(
+                widget.fileSize,
+                unknownLabel: s.unknownSize,
+              ),
               c: c,
             ),
-          if (fileSize > 0 && mimeType.isNotEmpty) const SizedBox(width: 6),
-          if (mimeType.isNotEmpty)
-            Flexible(child: QuickInfoTag(text: mimeType, c: c)),
+          if (widget.fileSize > 0 && widget.mimeType.isNotEmpty)
+            const SizedBox(width: 6),
+          if (widget.mimeType.isNotEmpty)
+            Flexible(child: QuickInfoTag(text: widget.mimeType, c: c)),
         ],
       ),
-      description: Text(s.fromBrowserExtension),
+      description: Text(
+        _previewHandle != null
+            ? s.manifestResolvingLabel
+            : s.fromBrowserExtension,
+      ),
       child: Padding(
         padding: const EdgeInsets.only(top: 16),
         child: QuickDownloadForm(
-          initialUrl: url,
-          initialFileName: filename,
-          initialSaveDir: saveDir,
-          defaultQueueId: defaultQueueId,
-          initialCookies: cookies,
-          initialAudioUrl: audioUrl,
+          initialUrl: widget.url,
+          initialFileName: widget.filename,
+          initialSaveDir: widget.saveDir,
+          defaultQueueId: widget.defaultQueueId,
+          initialCookies: widget.cookies,
+          initialAudioUrl: widget.audioUrl,
           host: const _MainWindowFormHost(),
-          onSubmit: (result) {
-            submitQuickDownload(
-              result: result,
-              referrer: referrer,
-              hintFileSize: fileSize,
-            );
-            Navigator.of(context).pop();
-          },
+          resolving: _previewHandle != null,
+          onCancelResolve: _cancelResolve,
+          onSubmit: _onSubmit,
           onCancel: () => Navigator.of(context).pop(),
         ),
       ),

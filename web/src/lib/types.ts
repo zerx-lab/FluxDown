@@ -23,6 +23,96 @@ export interface TaskDto {
   fileMissing?: boolean
   /** Unix 秒时间戳（字符串），任务完成时刻；未完成为空串 */
   completedAt?: string
+  /** 浏览器扩展捕获的来源页 URL（空 = 无） */
+  referrer?: string
+  /** 所属任务组 ID（空 = 不属于任何组）；旧服务端可能缺省 */
+  groupId?: string
+  /** 队列内启动顺序（0 = 未显式排序，按创建时间；>0 = 显式顺序）；旧服务端可能缺省 */
+  queueOrder?: number
+}
+
+/** 任务组行（多文件下载的纯逻辑聚合壳）。 */
+export interface GroupDto {
+  groupId: string
+  name: string
+  /** 原始分享/清单链接（展示/复制用） */
+  sourceUrl: string
+  /** 组根目录（子任务落盘 = 本值 + 相对路径） */
+  saveDir: string
+  /** Unix 秒时间戳（字符串） */
+  createdAt: string
+}
+
+/** 建组请求的单个成员条目（预览响应勾选后的投影）。 */
+export interface GroupItemRequest {
+  /** 二段解析标识：`<itemId>` 或 `<itemId>@<variantId>` */
+  resolverItem: string
+  fileName: string
+  /** 相对组根目录的子路径（空 = 组根） */
+  relPath?: string
+  /** 已知大小（字节，0 = 未知） */
+  size?: number
+}
+
+/** 创建多文件任务组请求（POST /api/v1/groups）。items 不可为空。 */
+export interface CreateGroupRequest {
+  sourceUrl?: string
+  groupName?: string
+  saveDir?: string
+  queueId?: string
+  segments?: number
+  cookies?: string
+  referrer?: string
+  userAgent?: string
+  proxyUrl?: string
+  extraHeaders?: Record<string, string>
+  ignoreTlsErrors?: boolean
+  /** 稍后下载：true = 建组后不启动 */
+  startPaused?: boolean
+  items: GroupItemRequest[]
+}
+
+export interface CreateGroupResponse {
+  groupId: string
+}
+
+/** 前置预解析请求（POST /api/v1/resolve/preview，只读不建任务）。 */
+export interface ResolvePreviewRequest {
+  url: string
+  cookies?: string
+  referrer?: string
+  userAgent?: string
+  extraHeaders?: Record<string, string>
+}
+
+/**
+ * 预解析结果。items 空且 error 空 = 插件未返回清单（回退普通创建）；
+ * error 非空 = 预解析失败（同样回退，error 供提示）。
+ */
+export interface ResolvePreviewResponse {
+  name: string
+  sourceUrl: string
+  error?: string
+  items: PreviewItemDto[]
+}
+
+/** 清单条目。 */
+export interface PreviewItemDto {
+  /** 插件自定义标识，建组时拼进 resolverItem */
+  id: string
+  name: string
+  /** 相对组根目录的子路径（空 = 根） */
+  path: string
+  /** 已知大小（字节），未知为 0 */
+  size: number
+  variants: PreviewVariantDto[]
+}
+
+/** 规格（画质/格式）。 */
+export interface PreviewVariantDto {
+  id: string
+  label: string
+  size: number
 }
 
 export interface QueueDto {
@@ -121,6 +211,7 @@ export type WsServerMsg =
   | ({ type: 'segmentSplit' } & SegmentSplitMsg)
   | { type: 'taskMetaProbed'; taskId: string; fileName: string; totalBytes: number }
   | { type: 'queuesChanged'; queues: QueueDto[] }
+  | { type: 'groupsChanged'; groups: GroupDto[] }
   | { type: 'taskQueueChanged'; taskId: string; queueId: string }
   | { type: 'queuePositionsChanged'; positions: { taskId: string; position: number }[] }
   | { type: 'priorityTaskChanged'; priorityTaskId: string; autoPausedCount: number }

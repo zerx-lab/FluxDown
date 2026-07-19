@@ -29,16 +29,23 @@ export interface TaskFilters {
   typeFilter: 'all' | FileType
   queueFilter: string
   search: string
+  /** groupId → 展示名小写形式；搜索词命中组名时该组全部成员视为命中，即使各自
+   *  文件名不匹配（TopBar 搜索匹配组名）。未传等价于仅按文件名过滤。 */
+  groupNameByGroupId?: Map<string, string>
 }
 
-/** 任务列表实际渲染用的组合过滤（tab + 类型 + 队列 + 搜索）。 */
+/** 任务列表实际渲染用的组合过滤（tab + 类型 + 队列 + 搜索，搜索额外匹配所属组名）。 */
 export function filterTasks(tasks: ViewTask[], f: TaskFilters): ViewTask[] {
   const q = f.search.trim().toLowerCase()
   return tasks.filter((t) => {
     if (!matchesStatusTab(f.statusTab, t.status)) return false
     if (f.typeFilter !== 'all' && fileType(t.fileName, t.url) !== f.typeFilter) return false
     if (f.queueFilter !== 'all' && t.queueId !== f.queueFilter) return false
-    if (q && !t.fileName.toLowerCase().includes(q)) return false
+    if (q) {
+      const groupName = t.groupId ? f.groupNameByGroupId?.get(t.groupId) : undefined
+      const matchesGroup = groupName !== undefined && groupName.includes(q)
+      if (!matchesGroup && !t.fileName.toLowerCase().includes(q)) return false
+    }
     return true
   })
 }

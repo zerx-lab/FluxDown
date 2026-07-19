@@ -12,6 +12,7 @@ library;
 import 'package:flutter/material.dart'
     show
         AdaptiveTextSelectionToolbar,
+        CircularProgressIndicator,
         Colors,
         DefaultMaterialLocalizations,
         InputDecoration,
@@ -131,8 +132,9 @@ class QuickQueueOption {
 
 /// QuickQueueOption 显示名 — 内置队列本地化，规则与
 /// `download_queue.dart` 的 `queueDisplayName` 一致；QuickQueueOption 与
-/// DownloadQueue 解耦（独立小窗引擎无 DownloadQueue），故本函数单独定义。
-String _quickQueueDisplayName(S s, QuickQueueOption q) => switch (q.queueId) {
+/// DownloadQueue 解耦（独立小窗引擎无 DownloadQueue），故本函数单独定义，
+/// 供本表单与清单选择视图（manifest_select_view.dart）共用。
+String quickQueueDisplayName(S s, QuickQueueOption q) => switch (q.queueId) {
   kMainQueueId => s.mainQueue,
   kLaterQueueId => s.laterQueue,
   _ => q.name,
@@ -253,6 +255,13 @@ class QuickDownloadForm extends StatefulWidget {
   /// 可选外部控制器（独立小窗 append 模式用；主窗口对话框不传）。
   final QuickDownloadFormController? controller;
 
+  /// 清单预解析等待态：动作区换为「取消 + spinner 禁用主按钮」，表单主体
+  /// 保持可见但不可重复提交。由外壳驱动（表单自身不发信号、不做探测）。
+  final bool resolving;
+
+  /// [resolving] 为 true 时「取消」按钮的回调（中止预解析等待）。
+  final VoidCallback? onCancelResolve;
+
   const QuickDownloadForm({
     super.key,
     required this.initialUrl,
@@ -265,6 +274,8 @@ class QuickDownloadForm extends StatefulWidget {
     required this.onSubmit,
     required this.onCancel,
     this.controller,
+    this.resolving = false,
+    this.onCancelResolve,
   });
 
   @override
@@ -444,6 +455,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
   bool get _isBatch => _urlCount > 1;
 
   void _startDownload({bool startLater = false, String? queueOverride}) {
+    if (widget.resolving) return;
     final saveDir = _saveDirController.text.trim();
     if (saveDir.isEmpty) return;
 
@@ -925,36 +937,70 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
             ),
           ],
 
-          // 底部动作按钮（取消 / 开始下载）
+          // 底部动作按钮（取消 / 开始下载）；预解析等待态换为
+          // 「取消 + spinner 禁用主按钮」（镜像新建下载对话框的等待 UI）。
           const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              ShadButton.outline(
-                onPressed: widget.onCancel,
-                child: Text(s.cancel),
-              ),
-              const SizedBox(width: 8),
-              SplitActionButton(
-                icon: LucideIcons.clock,
-                label: s.downloadLater,
-                tooltip: s.laterIntoQueueTooltip(s.laterQueue),
-                onPressed: () => _startDownload(startLater: true),
-                onPickQueue: (anchor) => _showQueueMenu(anchor, later: true),
-              ),
-              const SizedBox(width: 8),
-              SplitActionButton(
-                primary: true,
-                icon: LucideIcons.download,
-                label: _isBatch
-                    ? s.startBatchDownload(_urlCount)
-                    : s.startDownload,
-                tooltip: s.startIntoQueueTooltip(_defaultTargetName(s)),
-                onPressed: () => _startDownload(),
-                onPickQueue: (anchor) => _showQueueMenu(anchor, later: false),
-              ),
-            ],
-          ),
+          if (widget.resolving)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                ShadButton.outline(
+                  onPressed: widget.onCancelResolve,
+                  child: Text(s.manifestResolvingCancel),
+                ),
+                const SizedBox(width: 8),
+                ShadButton(
+                  onPressed: null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFFFFFFFF),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        s.manifestResolvingLabel,
+                        style: const TextStyle(color: Color(0xFFFFFFFF)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            )
+          else
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                ShadButton.outline(
+                  onPressed: widget.onCancel,
+                  child: Text(s.cancel),
+                ),
+                const SizedBox(width: 8),
+                SplitActionButton(
+                  icon: LucideIcons.clock,
+                  label: s.downloadLater,
+                  tooltip: s.laterIntoQueueTooltip(s.laterQueue),
+                  onPressed: () => _startDownload(startLater: true),
+                  onPickQueue: (anchor) => _showQueueMenu(anchor, later: true),
+                ),
+                const SizedBox(width: 8),
+                SplitActionButton(
+                  primary: true,
+                  icon: LucideIcons.download,
+                  label: _isBatch
+                      ? s.startBatchDownload(_urlCount)
+                      : s.startDownload,
+                  tooltip: s.startIntoQueueTooltip(_defaultTargetName(s)),
+                  onPressed: () => _startDownload(),
+                  onPickQueue: (anchor) => _showQueueMenu(anchor, later: false),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -965,7 +1011,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
     final q = widget.host.queues
         .where((q) => q.queueId == _selectedQueueId)
         .firstOrNull;
-    return q == null ? s.mainQueue : _quickQueueDisplayName(s, q);
+    return q == null ? s.mainQueue : quickQueueDisplayName(s, q);
   }
 
   /// 在动作按钮箭头下方弹队列菜单：选择即提交（[later] 决定是否以
@@ -990,7 +1036,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
             icon: q.queueId == kLaterQueueId
                 ? LucideIcons.clock
                 : LucideIcons.layers,
-            label: _quickQueueDisplayName(s, q),
+            label: quickQueueDisplayName(s, q),
             color: c.textPrimary,
             action: () =>
                 _startDownload(startLater: later, queueOverride: q.queueId),

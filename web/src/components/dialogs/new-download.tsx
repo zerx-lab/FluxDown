@@ -1,73 +1,51 @@
 // 新建下载对话框（对齐 design/web #dlg-new）—— 多行 URL 逐条创建任务；保存目录默认取自
 // 服务器配置（['config'] 的 default_save_dir），支持 FsPicker 浏览服务器目录；高级选项
 // （Cookies/自定义请求头/单任务代理/Checksum）为可折叠面板，行为对齐原型 #advToggle。
+//
+// 单条 http(s) URL 提交时先尝试 resolvePreview 探测是否为多文件清单（超时/异常/空清单/error
+// 均静默回退直接建任务，行为与预解析前完全一致）；命中后交给 manifest-select.tsx 接管
+// （本对话框保持打开，manifest 弹窗以嵌套模态盖在上层；确认建组后由 manifest-select.tsx
+// 关闭本对话框，取消则回到本表单）。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import * as Select from '@radix-ui/react-select'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
+import { ChevronRight, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import { newDownloadOpenStore } from '../../lib/dialogs'
+import { queueDisplayName } from '../../lib/format'
+import { newDownloadOpenStore, openManifestSelect } from '../../lib/dialogs'
 import { useI18n } from '../../lib/i18n'
+import { manifestIsPreviewableUrl } from '../../lib/manifest-selection'
 import { UA_PRESETS } from '../../lib/ua-presets'
 import { useStore } from '../../lib/ws'
 import { FsPicker } from './fs-picker'
-
-/** Radix Select 不允许 Item 的 value 为空字符串，用哨兵值代表"未设置/默认"语义。 */
-const EMPTY_VALUE = '__default__'
-
-function SelectField({
-  value,
-  onChange,
-  options,
-  ariaLabel,
-}: {
-  value: string
-  onChange: (v: string) => void
-  options: { value: string; label: string }[]
-  ariaLabel: string
-}) {
-  return (
-    <Select.Root value={value === '' ? EMPTY_VALUE : value} onValueChange={(v) => onChange(v === EMPTY_VALUE ? '' : v)}>
-      <Select.Trigger className="select w-full" aria-label={ariaLabel}>
-        <Select.Value className="min-w-0 flex-1 truncate text-left" />
-        <Select.Icon className="shrink-0 text-text3">
-          <ChevronDown size={14} />
-        </Select.Icon>
-      </Select.Trigger>
-      <Select.Portal>
-        <Select.Content
-          position="popper"
-          sideOffset={6}
-          className="select-pop"
-          style={{ width: 'var(--radix-select-trigger-width)' }}
-        >
-          <Select.Viewport className="max-h-64">
-            {options.map((o) => (
-              <Select.Item
-                key={o.value || EMPTY_VALUE}
-                value={o.value === '' ? EMPTY_VALUE : o.value}
-                className="select-item"
-              >
-                <Select.ItemText>{o.label}</Select.ItemText>
-                <Select.ItemIndicator className="select-item-check">
-                  <Check size={14} />
-                </Select.ItemIndicator>
-              </Select.Item>
-            ))}
-          </Select.Viewport>
-        </Select.Content>
-      </Select.Portal>
-    </Select.Root>
-  )
-}
+import { SelectField } from './select-field'
 
 interface HeaderRow {
   id: number
   name: string
   value: string
+}
+
+/** resolvePreview 探测超时（对齐桌面端 90s）：超时后视同无清单，回退直接建任务。 */
+const RESOLVE_PREVIEW_TIMEOUT_MS = 90_000
+
+/** 与超时定时器赛跑；超时 resolve 为 timeout 标记，不影响仍在途的底层请求。 */
+function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms)
+    promise.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
 }
 
 interface FormState {
@@ -199,6 +177,43 @@ export function NewDownloadDialog() {
     // 队列归属挂在动作上：立即下载 = 表单所选；稍后下载 = 固定进
     // 「稍后下载」队列（事后可在详情面板移动队列）。
     const queueId = startPaused ? 'later' : form.queueId || undefined
+
+    // 单条 http(s) 链接：先探测是否为多文件清单（90s 超时；异常/空清单/error 均静默回退到
+    // 下方直接建任务路径，行为与预解析前完全一致）。命中后本对话框保持打开，manifest 弹窗
+    // 以嵌套模态接管；确认建组后由 manifest-select.tsx 关闭本对话框，取消则回到本表单。
+    if (isSingle && !demoMode && manifestIsPreviewableUrl(urlLines[0])) {
+      const url = urlLines[0]
+      try {
+        const preview = await raceTimeout(
+          api.resolvePreview({
+            url,
+            cookies: form.cookies.trim() || undefined,
+            userAgent: form.userAgent || undefined,
+            extraHeaders: headers,
+          }),
+          RESOLVE_PREVIEW_TIMEOUT_MS,
+        )
+        if (preview.error) console.warn('[resolvePreview]', preview.error)
+        if (!preview.error && preview.items.length > 0) {
+          setSubmitting(false)
+          openManifestSelect({
+            manifest: preview,
+            sourceUrl: url,
+            saveDir: form.saveDir.trim(),
+            queueId: form.queueId,
+            segments: Number(form.segments),
+            cookies: form.cookies.trim(),
+            userAgent: form.userAgent,
+            proxyUrl: form.proxyUrl.trim(),
+            extraHeaders: headerEntries,
+          })
+          return
+        }
+      } catch (err) {
+        console.warn('[resolvePreview] failed, falling back to direct create', err)
+      }
+    }
+
     const nextErrors: Record<number, string> = {}
     let anyOk = false
     for (let i = 0; i < urlLines.length; i++) {
@@ -331,7 +346,7 @@ export function NewDownloadDialog() {
                       { value: '', label: t('newDl.defaultQueue') },
                       ...(queues ?? []).map((q) => ({
                         value: q.queueId,
-                        label: q.queueId === 'main' ? t('sidebar.queueMain') : q.queueId === 'later' ? t('sidebar.queueLater') : q.name,
+                        label: queueDisplayName(q),
                       })),
                     ]}
                     ariaLabel={t('newDl.queue')}

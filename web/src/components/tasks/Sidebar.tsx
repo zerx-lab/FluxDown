@@ -10,13 +10,13 @@ import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { clearCredentials, getBase } from '../../lib/auth'
 import { cn } from '../../lib/cn'
-import { fileType, fmtSpeed, typeLabel, TYPE_ORDER, type FileType as FT } from '../../lib/format'
+import { fileType, fmtSpeed, queueDisplayName, typeLabel, TYPE_ORDER, type FileType as FT } from '../../lib/format'
 import { useI18n } from '../../lib/i18n'
 import { connStore, disconnectWs, useGlobalSpeed, useStore } from '../../lib/ws'
 import { useUpdateCheck } from '../../lib/update'
 import { confirmDialog } from '../../lib/confirm'
 import { useTasksUi } from './context'
-import { QueueScheduleDialog } from './queue-schedule-dialog'
+import { QueueManagerDialog } from './queue-manager-dialog'
 import { useViewTasks } from './useViewTasks'
 
 const TYPE_ICONS: Record<'all' | FT, LucideIcon> = {
@@ -131,21 +131,16 @@ export function Sidebar() {
           </button>
         </p>
         <nav className="side-nav">
-          <button type="button" className={cn('side-item', queueFilter === 'all' && 'active')} onClick={() => { setQueueFilter('all'); setSidebarOpen(false) }}>
-            <List size={15} />
-            <span>{t('sidebar.allTasks')}</span>
-            <em>{tasks.length || ''}</em>
-          </button>
           {queues.map((q) => {
             const count = tasks.filter((t) => t.queueId === q.queueId).length
             const builtin = q.queueId === 'main' || q.queueId === 'later'
-            const displayName = q.queueId === 'main' ? t('sidebar.queueMain') : q.queueId === 'later' ? t('sidebar.queueLater') : q.name
+            const displayName = queueDisplayName(q)
             return (
-              <div key={q.queueId} className="group relative">
+              <div key={q.queueId} className="queue-row">
                 <button
                   type="button"
                   className={cn('side-item', queueFilter === q.queueId && 'active')}
-                  onClick={() => { setQueueFilter(q.queueId); setSidebarOpen(false) }}
+                  onClick={() => { setQueueFilter((f) => (f === q.queueId ? 'all' : q.queueId)); setSidebarOpen(false) }}
                 >
                   <List size={15} />
                   <i
@@ -153,9 +148,9 @@ export function Sidebar() {
                     title={q.isRunning ? t('sidebar.queueRunning') : t('sidebar.queueStopped')}
                   />
                   <span>{displayName}</span>
-                  <em className="group-hover:opacity-0">{count || ''}</em>
+                  <em>{count || ''}</em>
                 </button>
-                <div className="queue-actions absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover:flex">
+                <div className="queue-actions">
                   <button
                     type="button"
                     className="icon-btn sm"
@@ -168,7 +163,7 @@ export function Sidebar() {
                   >
                     {q.isRunning ? <Pause size={13} /> : <Play size={13} />}
                   </button>
-                  <QueueScheduleDialog queue={q} queueName={displayName} />
+                  <QueueManagerDialog queue={q} queueName={displayName} />
                   {!builtin && (
                     <button
                       type="button"

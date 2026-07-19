@@ -239,4 +239,77 @@ void main() {
       expect(compareEntities(ViewSortKey.speed, SortDir.asc, slow, fast), lessThan(0));
     });
   });
+
+  group('orderSections (inter-bucket ordering, sort drives global narrative)', () {
+    final now = DateTime.now();
+
+    test('smart key keeps canonical bucket order', () {
+      final entities = <ListEntity>[
+        TaskEntity(_task(id: 'c', status: TaskStatus.completed, downloaded: 1000, createdAt: now)),
+        TaskEntity(_task(id: 'e', status: TaskStatus.error, createdAt: now)),
+        TaskEntity(_task(id: 'd', status: TaskStatus.downloading, createdAt: now)),
+      ];
+      final ordered = orderSections(
+        bucketEntitiesByStatus(entities), ViewSortKey.smart, SortDir.desc);
+      expect(ordered.map((s) => s.key),
+          ['status:downloading', 'status:error', 'status:completed']);
+    });
+
+    test('explicit key reorders buckets by top-row extremum (progress desc puts completed first)', () {
+      final entities = <ListEntity>[
+        TaskEntity(_task(id: 'e', status: TaskStatus.error, downloaded: 0)),
+        TaskEntity(_task(id: 'c', status: TaskStatus.completed, downloaded: 1000)),
+        TaskEntity(_task(id: 'd', status: TaskStatus.downloading, downloaded: 500)),
+      ];
+      final sections = bucketEntitiesByStatus(entities);
+      for (final s in sections) {
+        s.entities.sort(
+            (a, b) => compareEntities(ViewSortKey.progress, SortDir.desc, a, b));
+      }
+      final ordered = orderSections(sections, ViewSortKey.progress, SortDir.desc);
+      expect(ordered.map((s) => s.key),
+          ['status:completed', 'status:downloading', 'status:error']);
+    });
+
+    test('smart:live bucket stays pinned under explicit sort', () {
+      final entities = <ListEntity>[
+        TaskEntity(_task(id: 'a', status: TaskStatus.completed, fileName: 'aaa.zip', createdAt: now)),
+        TaskEntity(_task(id: 'z', status: TaskStatus.downloading, fileName: 'zzz.zip', createdAt: now)),
+      ];
+      final sections = bucketEntitiesSmart(entities);
+      for (final s in sections) {
+        s.entities.sort(
+            (a, b) => compareEntities(ViewSortKey.name, SortDir.asc, a, b));
+      }
+      final ordered = orderSections(sections, ViewSortKey.name, SortDir.asc);
+      expect(ordered.first.key, 'smart:live');
+    });
+
+    test('ties preserve bucketizer canonical order', () {
+      final entities = <ListEntity>[
+        TaskEntity(_task(id: 'c', status: TaskStatus.completed, fileName: 'same.zip')),
+        TaskEntity(_task(id: 'e', status: TaskStatus.error, fileName: 'same.zip')),
+      ];
+      final ordered = orderSections(
+          bucketEntitiesByStatus(entities), ViewSortKey.name, SortDir.asc);
+      expect(ordered.map((s) => s.key), ['status:error', 'status:completed']);
+    });
+
+    test('date buckets read chronologically under created asc', () {
+      final entities = <ListEntity>[
+        TaskEntity(_task(id: 't', status: TaskStatus.completed, createdAt: now)),
+        TaskEntity(_task(
+            id: 'o',
+            status: TaskStatus.completed,
+            createdAt: now.subtract(const Duration(days: 400)))),
+      ];
+      final sections = bucketEntitiesByDate(entities);
+      for (final s in sections) {
+        s.entities.sort(
+            (a, b) => compareEntities(ViewSortKey.created, SortDir.asc, a, b));
+      }
+      final ordered = orderSections(sections, ViewSortKey.created, SortDir.asc);
+      expect(ordered.map((s) => s.key), ['date:4', 'date:0']);
+    });
+  });
 }

@@ -410,37 +410,14 @@ class _GroupDetailPanelState extends State<GroupDetailPanel> {
     GroupEntity entity,
     GroupMemberCounts counts,
   ) {
-    final c = AppColors.of(context);
-    final s = LocaleScope.of(context);
     final hasActive = entity.members.any((m) => m.statusBucket.isActiveOrQueued);
-    return Row(
-      children: [
-        Expanded(
-          child: ShadButton(
-            onPressed: () => hasActive
-                ? widget.controller.pauseGroup(group.id)
-                : widget.controller.resumeGroup(group.id),
-            backgroundColor: c.accent,
-            hoverBackgroundColor: c.accentHover,
-            child: Text(
-              hasActive ? s.groupPauseAll : s.groupResumeAll,
-              style: const TextStyle(fontSize: 12.5, color: Colors.white),
-            ),
-          ),
-        ),
-        if (counts.failed > 0) ...[
-          const SizedBox(width: 8),
-          ShadButton.outline(
-            onPressed: () => widget.controller.retryGroupFailed(group.id),
-            child: Text(s.groupRetryFailed, style: const TextStyle(fontSize: 12.5)),
-          ),
-        ],
-        const SizedBox(width: 8),
-        ShadButton.outline(
-          onPressed: () => openFolder(group.saveDir),
-          child: Icon(LucideIcons.folderOpen, size: 14, color: c.textSecondary),
-        ),
-      ],
+    return GroupDetailActionsRow(
+      hasActive: hasActive,
+      showRetry: counts.failed > 0,
+      onPauseAll: () => widget.controller.pauseGroup(group.id),
+      onResumeAll: () => widget.controller.resumeGroup(group.id),
+      onRetryFailed: () => widget.controller.retryGroupFailed(group.id),
+      onOpenFolder: () => openFolder(group.saveDir),
     );
   }
 
@@ -576,7 +553,7 @@ class _GroupCountsLineWrapper extends StatelessWidget {
       if (counts.downloading > 0) s.groupDownloadingCount(counts.downloading),
       if (counts.pending > 0) s.groupPendingCount(counts.pending),
       if (counts.paused > 0) s.groupPausedCount(counts.paused),
-      if (counts.failed > 0) '${s.groupFailedCount(counts.failed)} ⚠',
+      if (counts.failed > 0) s.groupFailedCount(counts.failed),
       s.groupDoneOfTotal(counts.done, counts.total),
       ?etaLine,
     ];
@@ -637,3 +614,79 @@ Color _sparklineColor(TaskStatus status, AppColors c) => switch (status) {
   TaskStatus.pending => c.surface3,
   TaskStatus.downloading || TaskStatus.preparing || TaskStatus.resuming => c.accent,
 };
+
+/// 组概览动作行：全部暂停/恢复 + 重试失败项（有失败时，与主按钮等宽）
+/// + 打开文件夹（图标，自然宽）。
+///
+/// 公开 widget：detail_panel_footer_overflow_test.dart 直接 pump 真实实现
+/// 做窄宽防溢出回归。两个文字按钮 = Expanded + `expands: true` + FittedBox
+/// 等宽排布（与任务详情钉底 footer 同一约定）；防溢出机制见
+/// detail_panel.dart 钉底 footer 按钮的注释（Flutter Flex 给非 flex 子项
+/// 无界主轴约束，无 expands 时 FittedBox 拿不到有限上界、scaleDown 失效；
+/// 2026-07 组面板「全部暂停」在有失败项的窄面板下溢出 6.5px 的根因）。
+/// 重试项不可用自然宽：长文案 locale（en ≈ 152px）在面板最小宽 240 下
+/// 会把外层 Row 本身挤溢出（回归测试用未加载 i18n 的 key 文案覆盖该界）。
+class GroupDetailActionsRow extends StatelessWidget {
+  final bool hasActive;
+  final bool showRetry;
+  final VoidCallback onPauseAll;
+  final VoidCallback onResumeAll;
+  final VoidCallback onRetryFailed;
+  final VoidCallback onOpenFolder;
+
+  const GroupDetailActionsRow({
+    super.key,
+    required this.hasActive,
+    required this.showRetry,
+    required this.onPauseAll,
+    required this.onResumeAll,
+    required this.onRetryFailed,
+    required this.onOpenFolder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    return Row(
+      children: [
+        Expanded(
+          child: ShadButton(
+            onPressed: hasActive ? onPauseAll : onResumeAll,
+            backgroundColor: c.accent,
+            hoverBackgroundColor: c.accentHover,
+            expands: true,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                hasActive ? s.groupPauseAll : s.groupResumeAll,
+                style: const TextStyle(fontSize: 12.5, color: Colors.white),
+              ),
+            ),
+          ),
+        ),
+        if (showRetry) ...[
+          const SizedBox(width: 8),
+          Expanded(
+            child: ShadButton.outline(
+              onPressed: onRetryFailed,
+              expands: true,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  s.groupRetryFailed,
+                  style: const TextStyle(fontSize: 12.5),
+                ),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(width: 8),
+        ShadButton.outline(
+          onPressed: onOpenFolder,
+          child: Icon(LucideIcons.folderOpen, size: 14, color: c.textSecondary),
+        ),
+      ],
+    );
+  }
+}

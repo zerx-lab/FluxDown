@@ -606,20 +606,31 @@ class _HomePageState extends State<HomePage> {
 
   /// 详情面板二选一：选中组时渲染 [GroupDetailPanel]，否则渲染任务
   /// [DetailPanel]（selectTask/selectGroup 互斥，见 download_controller.dart）。
+  ///
+  /// 二选一判定依赖 controller 状态，必须包 ListenableBuilder 响应通知：
+  /// 组面板内点成员（selectTask）与任务面板内点「所属任务组」（selectGroup）
+  /// 都不经本页 setState，静态判定会让旧面板滞留在各自的无选中空态
+  /// （表现为点成员后右侧只剩「选择一个任务查看详情」，须重新点列表行
+  /// 触发 home 重建才恢复）。
   Widget _buildDetailPanel({required bool isBottom}) {
-    if (_controller.selectedGroupId != null) {
-      return GroupDetailPanel(
-        controller: _controller,
-        onClose: _closeDetail,
-        isBottom: isBottom,
-        onTogglePosition: _toggleDetailPosition,
-      );
-    }
-    return DetailPanel(
-      controller: _controller,
-      onClose: _closeDetail,
-      isBottom: isBottom,
-      onTogglePosition: _toggleDetailPosition,
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) {
+        if (_controller.selectedGroupId != null) {
+          return GroupDetailPanel(
+            controller: _controller,
+            onClose: _closeDetail,
+            isBottom: isBottom,
+            onTogglePosition: _toggleDetailPosition,
+          );
+        }
+        return DetailPanel(
+          controller: _controller,
+          onClose: _closeDetail,
+          isBottom: isBottom,
+          onTogglePosition: _toggleDetailPosition,
+        );
+      },
     );
   }
 
