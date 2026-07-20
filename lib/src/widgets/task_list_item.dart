@@ -702,19 +702,6 @@ void showTaskContextMenu(
     );
   }
 
-  // --- 移动到队列 ---
-  final queueCtrl = DownloadController.globalInstance;
-  if (queueCtrl != null && queueCtrl.queues.isNotEmpty) {
-    items.add(
-      ContextMenuItem(
-        icon: LucideIcons.layers,
-        label: s.moveToQueueAction,
-        color: c.textPrimary,
-        action: () => showMoveToQueueDialog(context, queueCtrl, task),
-      ),
-    );
-  }
-
   // 暂停/继续/优先组后面加分隔线（如果有的话）
   if (items.isNotEmpty) {
     dividers.add(items.length - 1);
@@ -761,6 +748,19 @@ void showTaskContextMenu(
       },
     ),
   );
+
+  // --- 移动到队列（与复制同组）---
+  final queueCtrl = DownloadController.globalInstance;
+  if (queueCtrl != null && queueCtrl.queues.isNotEmpty) {
+    items.add(
+      ContextMenuItem(
+        icon: LucideIcons.layers,
+        label: s.moveToQueueAction,
+        color: c.textPrimary,
+        action: () => showMoveToQueueDialog(context, queueCtrl, task),
+      ),
+    );
+  }
   dividers.add(items.length - 1); // 复制组后加分隔线
 
   // --- 删除选项 ---
