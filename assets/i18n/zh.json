@@ -411,6 +411,7 @@
     "cloudSyncStatusSynced": "已同步",
     "cloudSyncStatusError": "同步失败：{reason}",
     "cloudSyncNow": "立即同步",
+    "cloudSyncLoginRequired": "登录后可开启",
     "cloudSyncOtherDevice": "其他设备",
     "cloudSyncAppliedToast": "已同步来自 {deviceName} 的 {count} 项设置",
     "cloudSyncFailedToast": "配置同步失败：{reason}",

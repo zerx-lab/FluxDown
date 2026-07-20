@@ -583,6 +583,7 @@ class S {
   String cloudSyncStatusError(String reason) =>
       _r('cloudSyncStatusError', {'reason': reason});
   String get cloudSyncNow => _r('cloudSyncNow');
+  String get cloudSyncLoginRequired => _r('cloudSyncLoginRequired');
   String get cloudSyncOtherDevice => _r('cloudSyncOtherDevice');
   String cloudSyncAppliedToast(int count, String deviceName) =>
       _r('cloudSyncAppliedToast', {'count': count, 'deviceName': deviceName});

@@ -411,6 +411,7 @@
     "cloudSyncStatusSynced": "Synced",
     "cloudSyncStatusError": "Sync failed: {reason}",
     "cloudSyncNow": "Sync now",
+    "cloudSyncLoginRequired": "Sign in to enable",
     "cloudSyncOtherDevice": "another device",
     "cloudSyncAppliedToast": "Synced {count} setting(s) from {deviceName}",
     "cloudSyncFailedToast": "Config sync failed: {reason}",

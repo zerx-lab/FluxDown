@@ -9279,6 +9279,9 @@ class _AccountContentState extends State<_AccountContent> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _AccountCard(
+                  padding: loggedIn && user != null
+                      ? const EdgeInsets.symmetric(horizontal: 20, vertical: 18)
+                      : null,
                   child: loggedIn && user != null
                       ? _profileBody(context, s, c, user)
                       : _heroBody(context, s, c),
@@ -9436,64 +9439,98 @@ class _AccountContentState extends State<_AccountContent> {
     );
   }
 
-  /// 已登录：单行纯身份 —— 左侧集群（昵称 + 套餐 chip + Origin ID 胶囊徽章，可点复制）
-  /// 与右侧退出登录按钮同基线；左侧集群整体用 Expanded 独占剩余宽度撑开，
-  /// 按钮贴右对齐（避免 Flexible+Spacer 同行均分弹性空间的坑）。
+  /// 已登录：头像 + 两行身份块（第一行 昵称 + 套餐 chip，第二行 Origin ID 胶囊，
+  /// 可点复制）+ 右侧退出登录按钮；头像取昵称首字符（无字符回退云图标）。
   /// 邮箱不在此展示——移至下方「账号与安全」分组（见 _AccountContentState.build）。
   Widget _profileBody(BuildContext context, S s, AppColors c, CloudUser user) {
     final displayName =
         user.nickname.isNotEmpty ? user.nickname : user.email.split('@').first;
     final hasOriginId = user.originId != null;
+    final initial = _avatarInitial(displayName);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // 左侧集群必须用 Expanded 独占剩余宽度：若 Flexible(昵称) 与 Spacer 并存，
-        // 两者会均分弹性空间，昵称用不完的配额不归还，在按钮右侧留下大块空白。
-        Expanded(
-          child: Row(
-            children: [
-              Flexible(
-                child: Text(
-                  displayName,
-                  overflow: TextOverflow.ellipsis,
+        // 头像：昵称首字符大写（surrogate-safe），无可用字符时回退云图标。
+        Container(
+          width: 46,
+          height: 46,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: c.accent.withValues(alpha: 0.12),
+          ),
+          child: initial.isEmpty
+              ? Icon(LucideIcons.cloud, size: 22, color: c.accent)
+              : Text(
+                  initial,
                   style: TextStyle(
-                    fontSize: 14.5,
+                    fontSize: 19,
                     fontWeight: FontWeight.w600,
-                    color: c.textPrimary,
+                    color: c.accent,
                   ),
                 ),
-              ),
-              if (user.plan.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: c.accent.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    user.plan,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: c.accent,
+        ),
+        const SizedBox(width: 14),
+        // 两行身份块独占剩余宽度，与右侧按钮同基线。
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      displayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: c.textPrimary,
+                      ),
                     ),
                   ),
-                ),
-              ],
-              const SizedBox(width: 8),
+                  if (user.plan.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: c.accent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        user.plan,
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: c.accent,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 6),
               // Origin ID 胶囊徽章：类 QQ 号的唯一数字身份，理论上登录态不会为 null
               // （防御兜底灰色 "#—"，不可点）；中英文显示名统一 "Origin ID"，见契约。
               ShadTooltip(
                 builder: (_) => const Text('Origin ID'),
                 child: MouseRegion(
-                  cursor: hasOriginId ? SystemMouseCursors.click : MouseCursor.defer,
+                  cursor: hasOriginId
+                      ? SystemMouseCursors.click
+                      : MouseCursor.defer,
                   child: GestureDetector(
                     onTap: hasOriginId
                         ? () => unawaited(_copyOriginId(context, user.originId!))
                         : null,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
                       decoration: BoxDecoration(
                         color: (hasOriginId ? c.accent : c.textMuted).withValues(
                           alpha: 0.12,
@@ -9533,6 +9570,13 @@ class _AccountContentState extends State<_AccountContent> {
         ),
       ],
     );
+  }
+
+  /// 昵称首字符大写（surrogate-safe，emoji/CJK 不裂开）；无可用字符返回空串。
+  String _avatarInitial(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return '';
+    return String.fromCharCode(trimmed.runes.first).toUpperCase();
   }
 
   Future<void> _copyOriginId(BuildContext context, int originId) async {
@@ -9642,8 +9686,9 @@ Widget _featureRow(
   );
 }
 
-/// 配置同步行：图标 + 名称/说明 + 开关（顶部），下方状态文案 + 「立即同步」
-/// 按钮（底部）。替代原「即将推出」占位（[_featureRow] + accountFeatureConfigSync），
+/// 配置同步行（单行紧凑版）：图标 + 标题/副标题 + 尾部控件。副标题在「活跃态」
+/// （已登录且开启）显示实时同步状态，否则显示静态说明。低频的「立即同步」降级为
+/// 尾部图标按钮，仅活跃态可见、忙时转圈禁用；开关未登录时禁用并提示需登录。
 /// 经 [ConfigSyncService] 单例展示实时状态。
 Widget _configSyncRow(BuildContext context) {
   return ListenableBuilder(
@@ -9652,75 +9697,107 @@ Widget _configSyncRow(BuildContext context) {
       final s = LocaleScope.of(context);
       final c = AppColors.of(context);
       final sync = ConfigSyncService.instance;
+      final loggedIn = CloudAuthService.instance.isLoggedIn;
       final busy =
           sync.status == CloudSyncStatus.connecting ||
           sync.status == CloudSyncStatus.syncing;
+      // 活跃态：已登录且开关开启 —— 副标题走实时状态、尾部露出「立即同步」。
+      final active = loggedIn && sync.enabled;
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
-            Row(
-              children: [
-                Container(
-                  width: 30,
-                  height: 30,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: c.surface2,
-                    borderRadius: BorderRadius.circular(8),
+            Container(
+              width: 30,
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: c.surface2,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(LucideIcons.refreshCw, size: 15, color: c.textSecondary),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.cloudSyncTitle,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: c.textPrimary,
+                    ),
                   ),
-                  child: Icon(LucideIcons.refreshCw, size: 15, color: c.textSecondary),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        s.cloudSyncTitle,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: c.textPrimary,
+                  const SizedBox(height: 2),
+                  if (active)
+                    Row(
+                      children: [
+                        _cloudSyncStatusIcon(c, sync.status, busy),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            _cloudSyncStatusText(s, sync),
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: sync.status == CloudSyncStatus.error
+                                  ? c.statusError
+                                  : c.textMuted,
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        s.cloudSyncDesc,
-                        style: TextStyle(fontSize: 11.5, color: c.textMuted),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                ShadSwitch(
-                  value: sync.enabled,
-                  onChanged: (v) => unawaited(sync.setEnabled(v)),
-                ),
-              ],
+                      ],
+                    )
+                  else
+                    Text(
+                      s.cloudSyncDesc,
+                      style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                    ),
+                ],
+              ),
             ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                _cloudSyncStatusIcon(c, sync.status, busy),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _cloudSyncStatusText(s, sync),
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11.5, color: c.textMuted),
-                  ),
+            const SizedBox(width: 12),
+            // 低频操作「立即同步」降级为图标按钮，仅活跃态可见；忙时转圈并禁用。
+            if (active) ...[
+              ShadTooltip(
+                builder: (_) => Text(s.cloudSyncNow),
+                child: ShadIconButton.ghost(
+                  icon: busy
+                      ? SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: c.textSecondary,
+                          ),
+                        )
+                      : Icon(
+                          LucideIcons.refreshCw,
+                          size: 14,
+                          color: c.textSecondary,
+                        ),
+                  onPressed: busy ? null : () => unawaited(sync.syncNow()),
                 ),
-                const SizedBox(width: 8),
-                ShadButton.outline(
-                  size: ShadButtonSize.sm,
-                  enabled: sync.enabled && !busy,
-                  onPressed: () => unawaited(sync.syncNow()),
-                  child: Text(s.cloudSyncNow),
+              ),
+              const SizedBox(width: 4),
+            ],
+            // 未登录：开关禁用并提示需登录（不显示为开启，避免误导）。
+            if (loggedIn)
+              ShadSwitch(
+                value: sync.enabled,
+                onChanged: (v) => unawaited(sync.setEnabled(v)),
+              )
+            else
+              ShadTooltip(
+                builder: (_) => Text(s.cloudSyncLoginRequired),
+                child: ShadSwitch(
+                  value: false,
+                  enabled: false,
+                  onChanged: (_) {},
                 ),
-              ],
-            ),
+              ),
           ],
         ),
       );
