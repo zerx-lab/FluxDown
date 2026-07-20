@@ -182,6 +182,38 @@ class CloudAuthService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── 邮箱变更 ─────────────────────────────────────────────────────────
+
+  /// 第一步：向当前绑定邮箱发送验证码，返回 TTL（秒）。
+  Future<int> sendEmailChangeCode() =>
+      CloudClient.instance.sendEmailChangeCode();
+
+  /// 第二步：携原邮箱验证码向新邮箱发送验证码，返回 TTL（秒）。
+  Future<int> sendEmailChangeNewCode({
+    required String newEmail,
+    required String oldCode,
+  }) => CloudClient.instance.sendEmailChangeNewCode(
+    newEmail: newEmail,
+    oldCode: oldCode,
+  );
+
+  /// 第三步：校验原/新邮箱验证码并更新绑定邮箱，成功后刷新本地用户快照。
+  Future<void> changeEmail({
+    required String newEmail,
+    required String oldCode,
+    required String newCode,
+  }) async {
+    final profile = await CloudClient.instance.changeEmail(
+      newEmail: newEmail,
+      oldCode: oldCode,
+      newCode: newCode,
+    );
+    _user = profile.user;
+    _entitlements = profile.entitlements;
+    await _persistUser();
+    notifyListeners();
+  }
+
   // ── 设备管理 ─────────────────────────────────────────────────────────
 
   Future<List<CloudDevice>> fetchDevices() => CloudClient.instance.devices();

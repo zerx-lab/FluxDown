@@ -277,6 +277,41 @@ class CloudClient {
     await _request('DELETE', '/devices/$id', authed: true);
   });
 
+  /// POST /me/email/code：向当前绑定邮箱发送验证码（邮箱变更第一步），返回 TTL（秒）。
+  Future<int> sendEmailChangeCode() => _authed(() async {
+    final json = await _request('POST', '/me/email/code', authed: true);
+    return _ttlSeconds(json);
+  });
+
+  /// POST /me/email/code/new：携原邮箱验证码向新邮箱发送验证码（第二步），返回 TTL（秒）。
+  Future<int> sendEmailChangeNewCode({
+    required String newEmail,
+    required String oldCode,
+  }) => _authed(() async {
+    final json = await _request(
+      'POST',
+      '/me/email/code/new',
+      body: {'email': newEmail, 'code': oldCode},
+      authed: true,
+    );
+    return _ttlSeconds(json);
+  });
+
+  /// POST /me/email：同时校验原/新邮箱验证码并更新绑定邮箱（第三步），返回最新用户资料。
+  Future<CloudProfile> changeEmail({
+    required String newEmail,
+    required String oldCode,
+    required String newCode,
+  }) => _authed(() async {
+    final json = await _request(
+      'POST',
+      '/me/email',
+      body: {'email': newEmail, 'oldCode': oldCode, 'newCode': newCode},
+      authed: true,
+    );
+    return CloudProfile.fromJson(json);
+  });
+
   // ── 配置同步（Bearer UserAuth，401 自动刷新重放一次；SSE 事件流由
   //    ConfigSyncService 用独立 HttpClient 直连，不走本类）──────────────────
 

@@ -9310,30 +9310,52 @@ class _AccountContentState extends State<_AccountContent> {
                     ),
                   ),
                   _AccountCard(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    child: Row(
-                      children: [
-                        Text(
-                          s.accountEmailPlaceholder,
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w500,
-                            color: c.textPrimary,
+                    padding: EdgeInsets.zero,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _showChangeEmailDialog(context, user.email),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 14,
+                          ),
+                          child: Row(
+                            children: [
+                              Text(
+                                s.accountEmailPlaceholder,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w500,
+                                  color: c.textPrimary,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              // 邮箱值右对齐：Expanded 占满剩余宽度，内部 Align 居右，超长省略号截断。
+                              Expanded(
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: Text(
+                                    user.email,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: c.textMuted,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Icon(
+                                LucideIcons.pencil,
+                                size: 14,
+                                color: c.textMuted,
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        // 邮箱值右对齐：Expanded 占满剩余宽度，内部 Align 居右，超长省略号截断。
-                        Expanded(
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: Text(
-                              user.email,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(fontSize: 12.5, color: c.textMuted),
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -9894,6 +9916,16 @@ void _showRegisterDialog(
       initialEmail: initialEmail,
       initialPassword: initialPassword,
     ),
+  );
+}
+
+void _showChangeEmailDialog(BuildContext context, String currentEmail) {
+  showShadDialog(
+    context: context,
+    // 禁止点击背景关闭：验证码有 60s 限频，用户切到邮箱客户端取码回来时
+    // 误点背景不应关闭弹窗导致重来。
+    barrierDismissible: false,
+    builder: (_) => _ChangeEmailDialog(currentEmail: currentEmail),
   );
 }
 
@@ -11091,6 +11123,310 @@ class _CodeVerifyForm extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 修改邮箱对话框：先向原邮箱发码验证身份，再向新邮箱发码验证归属，
+// 两码齐备后一并提交更新绑定。
+// ─────────────────────────────────────────────
+
+enum _EmailChangeStep { form, verify }
+
+class _ChangeEmailDialog extends StatefulWidget {
+  final String currentEmail;
+
+  const _ChangeEmailDialog({required this.currentEmail});
+
+  @override
+  State<_ChangeEmailDialog> createState() => _ChangeEmailDialogState();
+}
+
+class _ChangeEmailDialogState extends State<_ChangeEmailDialog> {
+  _EmailChangeStep _step = _EmailChangeStep.form;
+
+  final _oldCodeController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _newCodeController = TextEditingController();
+
+  bool _busy = false;
+  String? _error;
+
+  Timer? _timer;
+  // 原邮箱与新邮箱各自独立的有效期/重发倒计时，同一 timer 每秒递减。
+  int _oldTtl = 0;
+  int _oldResend = 0;
+  int _newTtl = 0;
+  int _newResend = 0;
+
+  static final _emailRe = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
+  String get _newEmail => _emailController.text.trim();
+  String get _oldCode => _oldCodeController.text.trim();
+
+  @override
+  void initState() {
+    super.initState();
+    // 打开即向当前邮箱发送验证码（第一步）。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _sendOldCode());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _oldCodeController.dispose();
+    _emailController.dispose();
+    _newCodeController.dispose();
+    super.dispose();
+  }
+
+  void _ensureTimer() {
+    _timer ??= Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        if (_oldTtl > 0) _oldTtl--;
+        if (_oldResend > 0) _oldResend--;
+        if (_newTtl > 0) _newTtl--;
+        if (_newResend > 0) _newResend--;
+      });
+    });
+  }
+
+  /// 第一步：向当前邮箱发送验证码（也用于该步的重发）。
+  Future<void> _sendOldCode() async {
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final ttl = await CloudAuthService.instance.sendEmailChangeCode();
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _oldTtl = ttl;
+        _oldResend = 60;
+      });
+      _ensureTimer();
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  /// 第二步：校验原邮箱验证码后向新邮箱发码（也用于验证界面的重发）。
+  Future<void> _sendNewCode() async {
+    final s = LocaleScope.of(context);
+    final email = _newEmail;
+    if (_oldCode.isEmpty) {
+      setState(() => _error = s.accountEmailChangeOldCodeHint);
+      return;
+    }
+    if (!_emailRe.hasMatch(email)) {
+      setState(() => _error = s.accountEmailChangeInvalid);
+      return;
+    }
+    if (email.toLowerCase() == widget.currentEmail.toLowerCase()) {
+      setState(() => _error = s.accountEmailChangeSame);
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final ttl = await CloudAuthService.instance.sendEmailChangeNewCode(
+        newEmail: email,
+        oldCode: _oldCode,
+      );
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _step = _EmailChangeStep.verify;
+        _newTtl = ttl;
+        _newResend = 60;
+        _newCodeController.clear();
+      });
+      _ensureTimer();
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  /// 第三步：提交原/新邮箱验证码完成邮箱变更。
+  Future<void> _submit() async {
+    final s = LocaleScope.of(context);
+    final newCode = _newCodeController.text.trim();
+    if (newCode.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await CloudAuthService.instance.changeEmail(
+        newEmail: _newEmail,
+        oldCode: _oldCode,
+        newCode: newCode,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      FluxSonner.of(context).show(
+        ShadToast(
+          title: Text(s.accountEmailChangeSuccess),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+
+    if (_step == _EmailChangeStep.verify) {
+      return ShadDialog(
+        title: Text(s.accountEmailChangeTitle),
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: _CodeVerifyForm(
+          subtitle: s.accountEmailChangeCodeSubtitle(_newEmail),
+          codeController: _newCodeController,
+          ttlRemaining: _newTtl,
+          resendRemaining: _newResend,
+          busy: _busy,
+          error: _error,
+          onResend: _sendNewCode,
+          onSubmit: _submit,
+          onBack: () => setState(() {
+            _step = _EmailChangeStep.form;
+            _error = null;
+            _newCodeController.clear();
+          }),
+        ),
+      );
+    }
+
+    return ShadDialog(
+      title: Text(s.accountEmailChangeTitle),
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 4),
+          Text(
+            s.accountEmailChangeOldSubtitle(widget.currentEmail),
+            style: TextStyle(fontSize: 12, height: 1.5, color: c.textMuted),
+          ),
+          const SizedBox(height: 14),
+          ShadInput(
+            controller: _oldCodeController,
+            placeholder: Text(s.accountEmailChangeOldCodePlaceholder),
+            enabled: !_busy,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _oldTtl > 0 ? s.accountCodeExpireIn(_oldTtl) : '',
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
+                ),
+              ),
+              ShadButton.link(
+                enabled: _oldResend <= 0 && !_busy,
+                onPressed: _sendOldCode,
+                child: Text(
+                  _oldResend > 0
+                      ? s.accountResendCodeIn(_oldResend)
+                      : s.accountResendCode,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ShadInput(
+            controller: _emailController,
+            placeholder: Text(s.accountEmailChangeNewPlaceholder),
+            enabled: !_busy,
+            keyboardType: TextInputType.emailAddress,
+            onSubmitted: (_) => _sendNewCode(),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _error!,
+              style: TextStyle(fontSize: 11.5, color: c.statusError),
+            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: ShadButton.outline(
+                  enabled: !_busy,
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(s.cancel),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ShadButton(
+                  enabled: !_busy,
+                  onPressed: _sendNewCode,
+                  child: _busy
+                      ? SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: c.dialogBg,
+                          ),
+                        )
+                      : Text(s.accountEmailChangeSendNewCode),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

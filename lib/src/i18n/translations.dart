@@ -494,6 +494,22 @@ class S {
   String get accountLoginTabCode => _r('accountLoginTabCode');
   String get accountLoginTabPassword => _r('accountLoginTabPassword');
   String get accountEmailPlaceholder => _r('accountEmailPlaceholder');
+  String get accountEmailChangeTitle => _r('accountEmailChangeTitle');
+  String accountEmailChangeOldSubtitle(String email) =>
+      _r('accountEmailChangeOldSubtitle', {'email': email});
+  String get accountEmailChangeOldCodePlaceholder =>
+      _r('accountEmailChangeOldCodePlaceholder');
+  String get accountEmailChangeOldCodeHint =>
+      _r('accountEmailChangeOldCodeHint');
+  String get accountEmailChangeSendNewCode =>
+      _r('accountEmailChangeSendNewCode');
+  String get accountEmailChangeNewPlaceholder =>
+      _r('accountEmailChangeNewPlaceholder');
+  String accountEmailChangeCodeSubtitle(String email) =>
+      _r('accountEmailChangeCodeSubtitle', {'email': email});
+  String get accountEmailChangeInvalid => _r('accountEmailChangeInvalid');
+  String get accountEmailChangeSame => _r('accountEmailChangeSame');
+  String get accountEmailChangeSuccess => _r('accountEmailChangeSuccess');
   String get accountLoginAccountPlaceholder =>
       _r('accountLoginAccountPlaceholder');
   String get accountCodePlaceholder => _r('accountCodePlaceholder');
