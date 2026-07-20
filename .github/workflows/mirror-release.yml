@@ -99,17 +99,8 @@ jobs:
           done
           echo "当前镜像 tag:"; ls -1 "$MIRROR_DIR" 2>/dev/null || true
           REMOTE
-
-      - name: 验证镜像可用
-        if: steps.t.outputs.skip != '1'
-        env:
-          TAG: ${{ steps.t.outputs.tag }}
-        run: |
-          # 取本次一个资产名，请求镜像前缀 URL，应命中本地 (X-Mirror-Source: local)
-          ASSET=$(ls assets | head -1)
-          URL="https://mirror.fluxdown.com/https://github.com/${{ github.repository }}/releases/download/$TAG/$ASSET"
-          echo "探测: $URL"
-          # --path-as-is: 保留 URL 中的 //，否则 curl 会压成 /https:/ 导致误判未命中
-          SRC=$(curl -sI --path-as-is "$URL" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-mirror-source"{print $2}')
-          echo "X-Mirror-Source=$SRC"
-          [ "$SRC" = "local" ] || { echo "::warning::镜像未命中本地 (source=$SRC)"; }
+          # ── 4. 服务器本机验证命中 (--resolve 127.0.0.1，绕开 runner→国内不稳定链路) ──
+          A=$(ls assets | head -1)
+          SRC=$($SSH "$SSH_USER@$HOST" "curl -skI --path-as-is --resolve mirror.fluxdown.com:443:127.0.0.1 'https://mirror.fluxdown.com/https://github.com/$REPO/releases/download/$TAG/$A' | grep -i '^x-mirror-source:' | tr -d '\r' | sed 's/.*: //'")
+          echo "镜像命中验证: $A -> source=$SRC"
+          [ "$SRC" = "local" ] || { echo "::error::镜像未命中 (source=$SRC)"; exit 1; }
