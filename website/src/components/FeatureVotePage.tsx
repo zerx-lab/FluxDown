@@ -252,7 +252,7 @@ export default function FeatureVotePage() {
     : [];
 
   return (
-    <section className="pt-24 sm:pt-32 pb-16 sm:pb-20">
+    <section className="pt-10 sm:pt-12 pb-16 sm:pb-20">
       <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
         {/* ── Header ── */}
         <motion.div

@@ -2,11 +2,11 @@
 import Layout from "../layouts/Layout.astro";
 import { FloatingNavbar } from "../components/ui/floating-navbar";
 import AnnouncementBar from "../components/AnnouncementBar";
-import FeatureVotePage from "../components/FeatureVotePage";
+import FeatureRoadmapTabs from "../components/FeatureRoadmapTabs";
 import Footer from "../components/Footer";
 ---
 
-<Layout title="Feature Vote - FluxDown" description="Vote on upcoming FluxDown features or propose your own. Community-driven roadmap powered by GitHub Issues.">
+<Layout title="Roadmap & Feature Vote - FluxDown" description="FluxDown's official roadmap — planned, in progress and completed milestones — plus community feature voting.">
   <AnnouncementBar client:load />
   <FloatingNavbar client:load />
   <main class="relative">
@@ -14,7 +14,7 @@ import Footer from "../components/Footer";
       <div class="absolute top-0 left-1/3 w-[500px] h-[300px] bg-brand-sky/[0.03] blur-[120px] rounded-full"></div>
       <div class="absolute bottom-0 right-1/4 w-[400px] h-[300px] bg-brand-cyan/[0.03] blur-[100px] rounded-full"></div>
     </div>
-    <FeatureVotePage client:load />
+    <FeatureRoadmapTabs client:load />
   </main>
   <Footer client:load />
 </Layout>
