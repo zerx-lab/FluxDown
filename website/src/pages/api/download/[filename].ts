@@ -49,22 +49,15 @@ const GITHUB_HEADERS: Record<string, string> = {
 };
 
 /**
- * 中国大陆常用的 GitHub 下载加速镜像（前缀完整 GitHub URL 使用）。
- * 默认使用 ghproxy.net（hunshcn/gh-proxy 公共实例，release/archive 走
- * Cloudflare 加速）——遵守 `<镜像>/<完整GitHub直链>` 前缀契约，实测本仓
- * Release 资产可正常代理（200 + content-length 一致）。Google Safe
- * Browsing 透明度报告状态为 5（安全，无危险标志），Chrome 不会弹红。
- * 可用性随时间变化，且可能被 Safe Browsing 拉黑（Chrome 会弹全屏
- * "危险网站"警告）——入选前须人工核查
- * https://transparencyreport.google.com/safe-browsing/search?url=<域名>。
- * 按顺序健康检查、自动降级，也可通过 DOWNLOAD_MIRRORS 环境变量
- * （逗号分隔）覆盖，无需改代码。
- *
- * 注意 github.akams.cn / ghproxy.link 之类靠页面 JS 生成节点或"地址发布页"
- * 的站点不是前缀代理本体，前缀 URL 会落到 404 / HTML 公告页——健康检查
- * 校验 content-length 恰好防住这类不兼容镜像。
+ * GitHub 下载加速镜像（遵守 `<镜像>/<完整GitHub直链>` 前缀契约）。
+ * 默认使用自建国内镜像 mirror.fluxdown.com（阿里云直连，不经 Cloudflare）：
+ *   - 只镜像「最新 stable + 最新 preview」的 release 资产，命中则国内满速直发；
+ *   - 旧版本资产已在发版时清理 → 镜像层自动 302 回落 GitHub 官方 CDN。
+ * 按顺序健康检查（HEAD 2xx 且 content-length 与 GitHub asset 一致——只看状态码
+ * 会被「200 + HTML 公告页」的假镜像骗过），全部不健康时调用方降级 GitHub 直连。
+ * 可通过 DOWNLOAD_MIRRORS 环境变量（逗号分隔）覆盖，无需改代码。
  */
-const DEFAULT_MIRRORS = ["https://ghproxy.net"];
+const DEFAULT_MIRRORS = ["https://mirror.fluxdown.com"];
 
 function mirrorList(): string[] {
   const raw = DOWNLOAD_MIRRORS?.trim();
