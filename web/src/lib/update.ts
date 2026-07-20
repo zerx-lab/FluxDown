@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
 
 const RELEASES_URL = 'https://api.github.com/repos/zerx-lab/FluxDown/releases?per_page=30'
-// 稳定版仅认严格三段式；前沿版额外放行 -rc.N 预发布后缀。
+// 稳定版仅认严格三段式；预览版额外放行 -rc.N 预发布后缀。
 const STABLE_TAG_RE = /^server-v(\d+\.\d+\.\d+)$/
 const FRONTIER_TAG_RE = /^server-v(\d+\.\d+\.\d+(?:-[\w.]+)?)$/
 

@@ -30,7 +30,7 @@ interface Release {
   version: string;
   published_at: string;
   body: string;
-  /** 前沿预发布版（vX.Y.Z-rc.N）标记 */
+  /** 预览预发布版（vX.Y.Z-rc.N）标记 */
   prerelease?: boolean;
   assets: ReleaseAsset[];
 }
@@ -703,7 +703,7 @@ export default function ChangelogSection() {
           </p>
         </motion.div>
 
-        {/* Channel tabs: 稳定版 / 前沿版 */}
+        {/* Channel tabs: 稳定版 / 预览版 */}
         <div className="mb-10 flex flex-col items-center gap-3">
           <div className="inline-flex items-center rounded-lg border border-dark-border bg-dark-surface1 p-1">
             {(["stable", "frontier"] as const).map((ch) => (

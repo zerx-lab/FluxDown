@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # 分支守卫：前沿版 tag（vX.Y.Z-rc.N）必须打在 develop 分支上，
+      # 分支守卫：预览版 tag（vX.Y.Z-rc.N）必须打在 develop 分支上，
       # 稳定版 tag（vX.Y.Z）必须打在 main 分支上。打错分支整条流水线在此失败。
       - name: Verify tag branch (stable=main, frontier=develop)
         shell: bash
@@ -52,7 +52,7 @@ jobs:
           if git merge-base --is-ancestor "$TAG" "origin/$BRANCH"; then
             echo "::notice::Tag $TAG is on origin/$BRANCH — OK"
           else
-            echo "::error::Tag $TAG is NOT on origin/$BRANCH（稳定版须从 main 打，前沿版 -rc.N 须从 develop 打）"
+            echo "::error::Tag $TAG is NOT on origin/$BRANCH（稳定版须从 main 打，预览版 -rc.N 须从 develop 打）"
             exit 1
           fi
 
@@ -287,7 +287,7 @@ jobs:
     name: Build Browser Extension
     runs-on: ubuntu-latest
     needs: changes
-    # 浏览器扩展发布后无法更改版本号，故预发布（前沿版）tag 不打包扩展。
+    # 浏览器扩展发布后无法更改版本号，故预发布（预览版）tag 不打包扩展。
     if: needs.changes.outputs.extension == 'true' && !contains(github.ref_name, '-')
 
     steps:

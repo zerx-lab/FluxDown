@@ -218,9 +218,9 @@ export const GET: APIRoute = async ({ params, url, request }) => {
           { status: 404, headers: { "Content-Type": "application/json" } },
         );
       }
-      // 仅拒绝草稿。预发布（前沿版）资产允许经显式 ?tag= 下载：官网页面
+      // 仅拒绝草稿。预发布（预览版）资产允许经显式 ?tag= 下载：官网页面
       // 从不暴露预发布 tag（无 tag 的"最新"路径见下方仍只认正式版），只有
-      // /api/release?channel=frontier 才会把前沿 tag 交给客户端更新通道。
+      // /api/release?channel=frontier 才会把预览 tag 交给客户端更新通道。
       if (release.draft) {
         return new Response(
           JSON.stringify({

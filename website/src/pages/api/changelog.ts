@@ -9,7 +9,7 @@
  *   per_page - 每页条数，默认 10，最大 100
  *   since    - 可选，起始版本号（含），如 "v0.0.2" 或 "0.0.2"
  *   channel  - 可选，更新渠道：stable（默认，仅稳定版 vX.Y.Z）
- *              或 frontier（仅前沿预发布版 vX.Y.Z-rc.N）
+ *              或 frontier（仅预览预发布版 vX.Y.Z-rc.N）
  *
  * 返回格式:
  * {
@@ -65,7 +65,7 @@ interface FilteredRelease {
   version: string;
   published_at: string;
   body: string;
-  /** 是否为前沿预发布版（GitHub prerelease，tag 形如 vX.Y.Z-rc.N） */
+  /** 是否为预览预发布版（GitHub prerelease，tag 形如 vX.Y.Z-rc.N） */
   prerelease: boolean;
   assets: ReleaseAsset[];
 }
@@ -176,7 +176,7 @@ async function getCachedReleases(
   if (!all) {
     const raw = await fetchAllGitHubReleases();
 
-    // 只保留 v* 客户端 release（含前沿预发布）；extension-v* / website-v*
+    // 只保留 v* 客户端 release（含预览预发布）；extension-v* / website-v*
     // 组件 release 不属于 App 更新日志（且其 tag 无法按 semver 解析）
     all = raw
       .filter((r) => !r.draft && /^v\d/.test(r.tag_name))
@@ -204,7 +204,7 @@ async function getCachedReleases(
     setCached(CACHE_KEY, all);
   }
 
-  // 渠道切分：稳定版 tab 只看正式版，前沿版 tab 只看 rc 预发布
+  // 渠道切分：稳定版 tab 只看正式版，预览版 tab 只看 rc 预发布
   let releases = all.filter((r) =>
     channel === "frontier" ? r.prerelease : !r.prerelease,
   );

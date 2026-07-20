@@ -131,7 +131,7 @@ function pickRelease(
 
 export const GET: APIRoute = async ({ url }) => {
   // 渠道：缺省 stable（官网/存量客户端不带 channel 参数 → 永远稳定版）；
-  // frontier 放行 prerelease，供客户端"前沿版"更新通道使用。
+  // frontier 放行 prerelease，供客户端"预览版"更新通道使用。
   const channel =
     url.searchParams.get("channel") === "frontier" ? "frontier" : "stable";
   const includePrerelease = channel === "frontier";

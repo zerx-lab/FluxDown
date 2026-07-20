@@ -28,7 +28,7 @@ class SettingsProvider extends ChangeNotifier {
   bool _startMinimizedToTray = false; // 默认启动时显示主窗口
   bool _autoStartup = false; // 默认不开机启动
   bool _autoCheckUpdate = true; // 默认启动时自动检查更新
-  String _updateChannel = 'stable'; // 更新渠道：stable 稳定版 / frontier 前沿版（含预发布）
+  String _updateChannel = 'stable'; // 更新渠道：stable 稳定版 / frontier 预览版（含预发布）
   bool _notifyOnComplete = true; // 默认任务完成时弹出通知
   bool _silentDownloadEnabled = false; // 免打扰下载：外部请求不弹确认框直接下载
   bool _useServerTime = false; // 完成文件的修改时间采用服务器 Last-Modified
@@ -494,7 +494,7 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('auto_check_update', value.toString());
   }
 
-  /// 设置更新渠道（'stable' 稳定版 / 'frontier' 前沿版）。
+  /// 设置更新渠道（'stable' 稳定版 / 'frontier' 预览版）。
   void setUpdateChannel(String value) {
     if (_updateChannel == value) return;
     _updateChannel = value;
