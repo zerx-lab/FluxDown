@@ -16,6 +16,7 @@
  *   version: "1.0.0",
  *   published_at: "2025-01-01T00:00:00Z",
  *   total_downloads: 12345,
+ *   extension_version: "0.2.3",   // 浏览器扩展版本（取自 extension-v* tag），无扩展 release 时为 undefined
  *   assets: {
  *     setup: { name, size, download_url },
  *     portable: { name, size, download_url },
@@ -225,16 +226,18 @@ export const GET: APIRoute = async ({ url }) => {
     // 无 tag "最新"路径只认稳定版）；stable 保持无 tag（官网下载与旧行为一致）。
     const appTag = includePrerelease ? latest.tag_name : undefined;
 
-    // 浏览器扩展 release：优先最新的独立 extension-v* release，
-    // 旧版本扩展资产与客户端合并在同一个 release 中，同样能被匹配到
-    const extensionRelease = published.find((r) =>
-      r.assets.some(
-        (a) =>
-          a.name.endsWith("-chrome.zip") ||
-          a.name.endsWith("-extension.zip") ||
-          a.name.endsWith("-firefox.xpi"),
-      ),
-    );
+    // 浏览器扩展 release：优先最新的独立 extension-v* release（版本号取自 tag），
+    // 回退到任何含扩展资产的 release（旧版本扩展资产与客户端合并在同一 release 中）
+    const extensionRelease =
+      published.find((r) => /^extension-v\d+\.\d+\.\d+$/.test(r.tag_name)) ??
+      published.find((r) =>
+        r.assets.some(
+          (a) =>
+            a.name.endsWith("-chrome.zip") ||
+            a.name.endsWith("-extension.zip") ||
+            a.name.endsWith("-firefox.xpi"),
+        ),
+      );
 
     // FluxDown Server release：独立 server-v* release（headless Web 服务器）
     const serverRelease = published.find(
@@ -286,6 +289,16 @@ export const GET: APIRoute = async ({ url }) => {
     const firefoxExtensionAsset = extensionRelease?.assets.find((a) =>
       a.name.endsWith("-firefox.xpi"),
     );
+    // 扩展版本号：优先从 extension-v* tag 提取；旧版合并 release 则从资产名解析
+    const extensionVersion = extensionRelease
+      ? /^extension-v(\d+\.\d+\.\d+)$/.exec(extensionRelease.tag_name)?.[1] ??
+        /^FluxDown-(\d+\.\d+\.\d+)-(?:chrome|extension)\.zip$/.exec(
+          extensionAsset?.name ?? "",
+        )?.[1] ??
+        /^FluxDown-(\d+\.\d+\.\d+)-firefox\.xpi$/.exec(
+          firefoxExtensionAsset?.name ?? "",
+        )?.[1]
+      : undefined;
     // macOS 资产
     const macosDmgArm64Asset = latest.assets.find((a) =>
       a.name.endsWith("-macos-arm64.dmg"),
@@ -394,6 +407,7 @@ export const GET: APIRoute = async ({ url }) => {
       tag: latest.tag_name,
       published_at: latest.published_at,
       total_downloads: totalDownloads,
+      extension_version: extensionVersion,
       assets: {
         setup: formatAsset(setupAsset, appTag),
         portable: formatAsset(portableAsset, appTag),

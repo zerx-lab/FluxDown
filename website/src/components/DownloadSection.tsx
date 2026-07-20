@@ -92,6 +92,7 @@ interface ReleaseInfo {
   tag: string;
   published_at: string;
   total_downloads: number;
+  extension_version?: string;
   assets: {
     setup: ReleaseAsset | null;
     portable: ReleaseAsset | null;
@@ -1243,7 +1244,9 @@ export default function DownloadSection() {
                   {(release?.assets.extension ||
                     release?.assets.firefox_extension) && (
                     <p className="text-[10px] text-dark-text-muted mt-1">
-                      {t("dl.version", { version: release.version })}
+                      {t("dl.version", {
+                        version: release.extension_version ?? release.version,
+                      })}
                     </p>
                   )}
                   <p className="text-[10px] text-dark-text-muted/70 mt-0.5">
