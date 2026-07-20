@@ -50,6 +50,7 @@ interface WallSponsor {
   avatar: string | null;
   amountCents: number;
   date: string;
+  message: string | null;
 }
 
 // Deterministic fallback tile color for sponsors without an avatar.
@@ -72,6 +73,11 @@ function avatarColor(name: string): string {
 function fmtCents(cents: number): string {
   const yuan = cents / 100;
   return Number.isInteger(yuan) ? `¥${yuan}` : `¥${yuan.toFixed(2)}`;
+}
+
+// "2024-05-01" → "2024.05.01"; falls back to the raw value.
+function fmtDate(date: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.replace(/-/g, ".") : date;
 }
 
 export default function SponsorSection({
@@ -400,7 +406,7 @@ export default function SponsorSection({
                   {featured.map((s, i) => (
                     <div
                       key={`feat-${s.name}-${s.date}-${i}`}
-                      className="flex flex-col items-center text-center rounded-2xl border border-dark-border/40 bg-gradient-to-b from-pink-500/[0.05] to-dark-surface1/40 px-2 pt-4 pb-3.5"
+                      className="flex flex-col items-center text-center rounded-2xl border border-dark-border/40 bg-gradient-to-b from-pink-500/[0.05] to-dark-surface1/40 px-3 pt-4 pb-4"
                     >
                       {s.avatar ? (
                         <img
@@ -423,10 +429,21 @@ export default function SponsorSection({
                       >
                         {s.name}
                       </span>
-                      {s.amountCents > 0 && (
-                        <span className="mt-0.5 text-xs text-dark-text-muted">
-                          {fmtCents(s.amountCents)}
-                        </span>
+                      <div className="mt-1 flex flex-wrap items-center justify-center gap-x-1.5 text-[11px] text-dark-text-muted">
+                        {s.amountCents > 0 && (
+                          <span className="font-semibold text-pink-300/90">
+                            {fmtCents(s.amountCents)}
+                          </span>
+                        )}
+                        <span>{fmtDate(s.date)}</span>
+                      </div>
+                      {s.message && (
+                        <p
+                          className="mt-2 w-full whitespace-pre-line break-words text-[11px] leading-relaxed text-dark-text-secondary line-clamp-3"
+                          title={s.message}
+                        >
+                          “{s.message}”
+                        </p>
                       )}
                     </div>
                   ))}
@@ -439,33 +456,48 @@ export default function SponsorSection({
                 {rest.map((s, i) => (
                   <div
                     key={`${s.name}-${s.date}-${i}`}
-                    className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-dark-border/40 bg-dark-surface1/40"
+                    className="flex flex-col gap-2 px-3.5 py-2.5 rounded-xl border border-dark-border/40 bg-dark-surface1/40"
                   >
-                    {s.avatar ? (
-                      <img
-                        src={s.avatar}
-                        alt=""
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                        className="w-8 h-8 rounded-full object-cover shrink-0"
-                      />
-                    ) : (
-                      <span
-                        className={`w-8 h-8 rounded-full shrink-0 inline-flex items-center justify-center text-xs font-semibold ${avatarColor(s.name)}`}
+                    <div className="flex items-center gap-3">
+                      {s.avatar ? (
+                        <img
+                          src={s.avatar}
+                          alt=""
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          className="w-8 h-8 rounded-full object-cover shrink-0"
+                        />
+                      ) : (
+                        <span
+                          className={`w-8 h-8 rounded-full shrink-0 inline-flex items-center justify-center text-xs font-semibold ${avatarColor(s.name)}`}
+                        >
+                          {s.name.slice(0, 1).toUpperCase()}
+                        </span>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <span
+                          className="block truncate text-sm text-dark-text-secondary"
+                          title={s.name}
+                        >
+                          {s.name}
+                        </span>
+                        <span className="block text-[11px] text-dark-text-muted">
+                          {fmtDate(s.date)}
+                        </span>
+                      </div>
+                      {s.amountCents > 0 && (
+                        <span className="shrink-0 text-xs font-semibold text-pink-300/90">
+                          {fmtCents(s.amountCents)}
+                        </span>
+                      )}
+                    </div>
+                    {s.message && (
+                      <p
+                        className="pl-11 whitespace-pre-line break-words text-xs leading-relaxed text-dark-text-muted line-clamp-2"
+                        title={s.message}
                       >
-                        {s.name.slice(0, 1).toUpperCase()}
-                      </span>
-                    )}
-                    <span
-                      className="flex-1 min-w-0 truncate text-sm text-dark-text-secondary"
-                      title={s.name}
-                    >
-                      {s.name}
-                    </span>
-                    {s.amountCents > 0 && (
-                      <span className="shrink-0 text-xs text-dark-text-muted">
-                        {fmtCents(s.amountCents)}
-                      </span>
+                        “{s.message}”
+                      </p>
                     )}
                   </div>
                 ))}

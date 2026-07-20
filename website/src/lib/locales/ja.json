@@ -701,7 +701,7 @@
     "sponsor.wall.namePlaceholder": "お名前（任意、スポンサーウォールに表示されます）",
     "sponsor.wall.messagePlaceholder": "メッセージ（任意）",
     "sponsor.wall.hint": "支払い後、スポンサーは自動的にGitHubのスポンサーウォールに登録されます。お名前とメッセージを入力すると表示され、空欄の場合は「匿名スポンサー」として記録されます。",
-    "sponsor.wall.link": "スポンサーウォールを見る",
+    "sponsor.wall.link": "すべてのスポンサーを見る",
     "sponsor.wall.thanksNote": "あなたのスポンサーはまもなくスポンサーウォールに表示されます。",
     "sponsor.list.title": "最近のスポンサー",
     "sponsor.list.featured": "特別な感謝",

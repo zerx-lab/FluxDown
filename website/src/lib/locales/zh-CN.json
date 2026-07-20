@@ -677,7 +677,7 @@
     "sponsor.wall.namePlaceholder": "您的名称（选填，将展示在赞助名录）",
     "sponsor.wall.messagePlaceholder": "留言（选填）",
     "sponsor.wall.hint": "支付成功后，赞助将自动登记到 GitHub 赞助名录；填写名称与留言即展示，留空则以「匿名赞助者」记录。",
-    "sponsor.wall.link": "查看赞助名录",
+    "sponsor.wall.link": "查看全部赞助名录",
     "sponsor.wall.thanksNote": "您的赞助将很快出现在赞助名录中。",
     "sponsor.list.title": "最新赞助",
     "sponsor.list.featured": "特别感谢",

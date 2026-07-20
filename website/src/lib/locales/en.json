@@ -701,7 +701,7 @@
   "sponsor.wall.namePlaceholder": "Your name (optional, shown on the sponsor wall)",
   "sponsor.wall.messagePlaceholder": "Message (optional)",
   "sponsor.wall.hint": "After payment, your sponsorship is automatically added to the GitHub sponsor wall. Fill in a name and message to be shown, or leave blank to be recorded as an anonymous sponsor.",
-  "sponsor.wall.link": "View sponsor wall",
+  "sponsor.wall.link": "View all sponsors",
   "sponsor.wall.thanksNote": "Your sponsorship will appear on the sponsor wall shortly.",
   "sponsor.list.title": "Recent Sponsors",
   "sponsor.list.featured": "Special thanks",

@@ -34,6 +34,7 @@ export interface WallSponsor {
   avatar: string | null;
   amountCents: number;
   date: string; // YYYY-MM-DD (sponsor time, Asia/Shanghai)
+  message: string | null; // sponsor blockquote message, if any
 }
 
 interface ParsedSponsor extends WallSponsor {
@@ -61,6 +62,16 @@ function parseComment(c: {
   const amountRaw = body.match(AMOUNT_RE)?.[1];
   const amountCents = amountRaw ? Math.round(parseFloat(amountRaw) * 100) : 0;
 
+  // Message = the blockquote lines the wall writer emits between heading and
+  // the `¥amount · date` footer (each prefixed with "> ").
+  const message =
+    body
+      .split("\n")
+      .filter((l) => /^>\s?/.test(l))
+      .map((l) => l.replace(/^>\s?/, ""))
+      .join("\n")
+      .trim() || null;
+
   const createdAt = c.created_at ?? "";
   const date = body.match(DATE_RE)?.[1] ?? createdAt.slice(0, 10);
   // 赞助日期（迁移评论的 created_at 是迁移时间，正文日期才是真实时间）；
@@ -70,7 +81,7 @@ function parseComment(c: {
     ? dayTs + ((Date.parse(createdAt) || 0) % 86_400_000)
     : Date.parse(createdAt) || 0;
 
-  return { name, avatar: heading[1] ?? null, amountCents, date, ts };
+  return { name, avatar: heading[1] ?? null, amountCents, date, message, ts };
 }
 
 // ---------- Cache ----------
