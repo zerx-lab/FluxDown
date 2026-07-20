@@ -293,6 +293,11 @@ pub(crate) fn clear_domain_conn_caps(db: &Db) {
 /// 低速连接通过 [`dynamic_min_split_bytes`] 自适应降低此阈值。
 const MIN_SPLIT_BYTES: i64 = 2 * 1024 * 1024; // 2 MB
 
+/// 尾部相对阈值分母：`remaining < total / 该值` 视为“接近末尾”。50 = 末尾 2%。
+/// 与绝对阈值 `worker_cap × MIN_SPLIT_BYTES` 以 AND 组合构成 [`is_tail`] 判据。
+/// 初值待真实大文件下载校验：偏早（过度冻结）调大，偏晚（仍见骤降）调小。
+const TAIL_FRACTION_DENOM: i64 = 50;
+
 /// 根据当前实时吞吐量动态计算最小拆分阈值。
 ///
 /// - 低速（< 1 MB/s）：512 KB — 更积极拆分，空闲 worker 可快速参与慢段
@@ -392,6 +397,53 @@ fn ramp_verdict(pre_grow_bps: f64, current_bps: f64) -> RampVerdict {
     } else {
         RampVerdict::Freeze
     }
+}
+
+/// 尾部判据：剩余量既不足以给每个目标连接一个整段（工作饥饿），又已接近文件
+/// 末尾。两条件 **AND** 缺一不可：
+/// - 仅绝对项会让小/中文件（total < `worker_cap` × [`MIN_SPLIT_BYTES`]）从第 0
+///   字节起恒判尾部，使其真实惩罚检测整体失效；相对项排除此误判。
+/// - 仅相对项在巨型文件上会远未工作饥饿就判尾部，过早冻结；绝对项收窄之。
+///
+/// 进入尾部后 coordinator 冻结连接额度、短路自适应收缩/学习（见 ramp tick），
+/// 保持当前连接数持续下载剩余字节，消除下载尾段的速度骤降。
+fn is_tail(remaining: i64, worker_cap: usize, total: i64) -> bool {
+    remaining < worker_cap as i64 * MIN_SPLIT_BYTES && remaining < total / TAIL_FRACTION_DENOM
+}
+
+/// 峰值型持续劣化收缩判据：本窗口是否应计一次收缩 strike。
+///
+/// 仅在【非扩容评估期】（`!awaiting_eval`）、已冻结或额度到顶、额度 >1、存活数
+/// 恰等于额度、且吞吐跌破峰值 × [`RAMP_COLLAPSE_FACTOR`] 时成立。尾部由调用点的
+/// `!tail` 短路，不在此函数内判定。
+fn should_shrink(
+    throughput: f64,
+    peak: f64,
+    allowed: usize,
+    cap: usize,
+    alive: usize,
+    frozen: bool,
+    awaiting_eval: bool,
+) -> bool {
+    !awaiting_eval
+        && (frozen || allowed >= cap)
+        && allowed > 1
+        && alive == allowed
+        && peak > 0.0
+        && throughput < peak * RAMP_COLLAPSE_FACTOR
+}
+
+/// 扩容门：未冻结、无连接敏感信号、额度已用满、未达上限，且【本窗口未发生收缩】。
+/// `shrunk_this_tick` 根治同窗口 shrink→re-expand 震荡。
+fn should_expand(
+    frozen: bool,
+    conn_sensitive: bool,
+    alive: usize,
+    allowed: usize,
+    cap: usize,
+    shrunk_this_tick: bool,
+) -> bool {
+    !frozen && !conn_sensitive && alive >= allowed && allowed < cap && !shrunk_this_tick
 }
 
 /// 尾部微拆分阈值：当正常拆分（`dynamic_min_split_bytes` 计算的阈值）失败时，
@@ -2031,6 +2083,17 @@ pub async fn run_coordinated_download(
                 let range_ok =
                     range_verdict.load(Ordering::Relaxed) == RANGE_VERDICT_SUPPORTED;
                 if !serial_mode && !all_done(&segments) && range_ok {
+                    // 尾部判据：进入尾部即冻结连接额度、短路
+                    // 自适应 collapse/shrink/expand，绝不因尾部固有的吞吐下降收缩
+                    // 连接或学习域名上限；补 worker 循环仍按当前额度死磕剩余字节。
+                    let remaining = (effective_total_bytes - bytes).max(0);
+                    let tail = is_tail(remaining, worker_cap, effective_total_bytes);
+                    let mut shrunk_this_tick = false;
+                    if tail {
+                        // 丢弃待评估的扩容：清 awaiting_ramp_eval 使下方 collapse
+                        // 评估短路（不回滚、不写域名缓存、不置 ramp_frozen）。
+                        awaiting_ramp_eval = false;
+                    }
                     // 2. 评估上一次扩容的效果：
                     //    - 崩塌（跌破扩容前 × RAMP_COLLAPSE_FACTOR）→ 回滚到
                     //      扩容前规模并学习域名连接上限——服务器在按连接惩罚，
@@ -2091,18 +2154,23 @@ pub async fn run_coordinated_download(
                     if throughput > peak_throughput {
                         peak_throughput = throughput;
                         shrink_strikes = 0;
-                    } else if !awaiting_ramp_eval
-                        && (ramp_frozen || allowed_workers >= worker_cap)
-                        && allowed_workers > 1
-                        && alive == allowed_workers
-                        && peak_throughput > 0.0
-                        && throughput < peak_throughput * RAMP_COLLAPSE_FACTOR
+                    } else if !tail
+                        && should_shrink(
+                            throughput,
+                            peak_throughput,
+                            allowed_workers,
+                            worker_cap,
+                            alive,
+                            ramp_frozen,
+                            awaiting_ramp_eval,
+                        )
                     {
                         shrink_strikes += 1;
                         if shrink_strikes >= RAMP_SHRINK_STRIKES {
                             shrink_strikes = 0;
                             let old = allowed_workers;
                             allowed_workers = (allowed_workers / 2).max(1);
+                            shrunk_this_tick = true;
                             log_info!(
                                 "[adaptive] task {} sustained degradation shrink: {} -> {} \
                                  conns, throughput {:.0} B/s < peak {:.0} × {:.2}",
@@ -2119,10 +2187,15 @@ pub async fn run_coordinated_download(
                     }
 
                     // 3. 扩容决策：未冻结、无连接敏感信号、当前额度已用满、未达上限。
-                    if !ramp_frozen
-                        && !conn_sensitive.load(Ordering::Relaxed)
-                        && alive >= allowed_workers
-                        && allowed_workers < worker_cap
+                    if !tail
+                        && should_expand(
+                            ramp_frozen,
+                            conn_sensitive.load(Ordering::Relaxed),
+                            alive,
+                            allowed_workers,
+                            worker_cap,
+                            shrunk_this_tick,
+                        )
                     {
                         pre_grow_throughput = throughput;
                         pre_grow_workers = allowed_workers;
@@ -4131,9 +4204,9 @@ mod tests {
         FileSyncGate, LiveSegment, MAX_SEGMENTS, MIN_SPLIT_BYTES, MIN_SYNC_GAP, RampVerdict,
         SegState, TAIL_MIN_SPLIT_BYTES, all_done, build_seg_state_vec,
         check_cross_segment_validators, conn_cap_cache, dynamic_min_split_bytes, extract_host,
-        find_next_pending_only, find_next_work, is_single_conn_domain, ramp_verdict,
-        rebuild_seg_states, record_domain_conn_cap, try_proactive_split, try_split_largest,
-        validate_coverage,
+        find_next_pending_only, find_next_work, is_single_conn_domain, is_tail, ramp_verdict,
+        rebuild_seg_states, record_domain_conn_cap, should_expand, should_shrink,
+        try_proactive_split, try_split_largest, validate_coverage,
     };
     use crate::downloader::{DownloadError, SegmentProgressInfo, is_server_rejection};
     use std::collections::BTreeMap;
@@ -4195,6 +4268,136 @@ mod tests {
     #[test]
     fn ramp_verdict_zero_throughput_freezes() {
         assert_eq!(ramp_verdict(0.0, 0.0), RampVerdict::Freeze);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_tail / should_shrink / should_expand（尾部自适应门控）
+    // -----------------------------------------------------------------------
+
+    const MB: i64 = 1024 * 1024;
+
+    /// 大文件尾部场景：5.6GB @cap16，剩余 15MB → 尾部（abs 15<32MB ∧ rel 15<112MB）。
+    #[test]
+    fn is_tail_true_at_large_file_tail() {
+        assert!(is_tail(15 * MB, 16, 5600 * MB));
+    }
+
+    /// 双阈值 AND：小/中文件中段不得判尾部，否则其真实惩罚检测会被整程禁用。
+    /// 50MB@cap64，剩余 40MB：abs(40<128MB)✓ 但 rel(40 < 50/50=1MB)✗ → 非尾部。
+    #[test]
+    fn is_tail_false_for_small_file_midway() {
+        assert!(!is_tail(40 * MB, 64, 50 * MB));
+    }
+
+    /// 巨型文件远未工作饥饿不得判尾部：100GB@cap16，剩余 2GB，abs(2GB<32MB)✗。
+    #[test]
+    fn is_tail_false_for_huge_file_far_from_end() {
+        assert!(!is_tail(2048 * MB, 16, 102_400 * MB));
+    }
+
+    /// cap==1 的 no-op 由下游 allowed>1 / allowed<cap 守卫保证，非 is_tail 恒真：
+    /// is_tail(x,1,_) 仅在 remaining 同时 <2MB 且 <total/50 时为真。
+    #[test]
+    fn is_tail_cap_one_is_not_always_true() {
+        assert!(is_tail(512 * 1024, 1, 50 * MB));
+        assert!(!is_tail(3 * MB, 1, 50 * MB));
+    }
+
+    /// 绝对阈值用严格 <：恰等于 cap×MIN_SPLIT 判非尾部，减 1 才入尾部。
+    #[test]
+    fn is_tail_absolute_boundary_excludes_equal() {
+        assert!(!is_tail(32 * MB, 16, 5600 * MB));
+        assert!(is_tail(32 * MB - 1, 16, 5600 * MB));
+    }
+
+    /// 中段真实惩罚（59MB/s→2MB/s、已到 cap、alive==allowed）仍应收缩。
+    #[test]
+    fn should_shrink_true_on_midway_penalty() {
+        assert!(should_shrink(
+            2_000_000.0,
+            59_000_000.0,
+            16,
+            16,
+            16,
+            true,
+            false
+        ));
+    }
+
+    /// 扩容评估期内不收缩（留给扩容前后的直接对照，避免误判）。
+    #[test]
+    fn should_shrink_false_while_awaiting_eval() {
+        assert!(!should_shrink(
+            2_000_000.0,
+            59_000_000.0,
+            16,
+            16,
+            16,
+            true,
+            true
+        ));
+    }
+
+    /// 未冻结且未到顶 → 收缩前置条件不满足。
+    #[test]
+    fn should_shrink_false_when_not_frozen_and_below_cap() {
+        assert!(!should_shrink(
+            2_000_000.0,
+            59_000_000.0,
+            8,
+            16,
+            8,
+            false,
+            false
+        ));
+    }
+
+    /// alive != allowed（尾声退休 / 收缩过渡期）不收缩。
+    #[test]
+    fn should_shrink_false_when_alive_ne_allowed() {
+        assert!(!should_shrink(
+            2_000_000.0,
+            59_000_000.0,
+            16,
+            16,
+            8,
+            true,
+            false
+        ));
+    }
+
+    /// allowed==1 到达下限不再收缩。
+    #[test]
+    fn should_shrink_false_at_min_allowed() {
+        assert!(!should_shrink(
+            2_000_000.0,
+            59_000_000.0,
+            1,
+            1,
+            1,
+            true,
+            false
+        ));
+    }
+
+    /// 正常可扩：未冻结、无连接敏感、额度用满、未达上限、本窗口未收缩。
+    #[test]
+    fn should_expand_true_when_healthy() {
+        assert!(should_expand(false, false, 8, 8, 16, false));
+    }
+
+    /// 本窗口发生过收缩 → 禁止同窗口 re-expand（根治震荡）。
+    #[test]
+    fn should_expand_false_after_shrink_same_tick() {
+        assert!(!should_expand(false, false, 16, 8, 16, true));
+    }
+
+    /// 已冻结 / 连接敏感 / 已达上限 均不扩容。
+    #[test]
+    fn should_expand_false_on_guards() {
+        assert!(!should_expand(true, false, 8, 8, 16, false));
+        assert!(!should_expand(false, true, 8, 8, 16, false));
+        assert!(!should_expand(false, false, 16, 16, 16, false));
     }
 
     // -----------------------------------------------------------------------
