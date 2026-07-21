@@ -223,10 +223,10 @@ async fn scan_missing_files(db: Db, sink: Arc<dyn EventSink>, scanning: Arc<Atom
     }
     let _guard = ScanGuard(scanning);
 
-    let tasks = match db.load_all_tasks().await {
+    let tasks = match db.load_tasks_by_statuses(&[2, 3, 4]).await {
         Ok(t) => t,
         Err(e) => {
-            log_info!("[file-scan] load_all_tasks error: {}", e);
+            log_info!("[file-scan] load_tasks_by_statuses error: {}", e);
             return;
         }
     };
@@ -241,7 +241,7 @@ async fn scan_missing_files(db: Db, sink: Arc<dyn EventSink>, scanning: Arc<Atom
 
     let sem = Arc::new(Semaphore::new(FILE_SCAN_CONCURRENCY));
     let mut futs = Vec::new();
-    for t in tasks.iter().filter(|t| t.status == 3) {
+    for t in tasks.iter() {
         if active_paths.contains(&(t.save_dir.as_str(), t.file_name.as_str())) {
             continue;
         }
