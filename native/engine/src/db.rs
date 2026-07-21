@@ -133,6 +133,16 @@ CREATE TABLE IF NOT EXISTS task_groups (
     save_dir TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS link_devices (
+    fingerprint TEXT PRIMARY KEY,
+    identity_pub BLOB NOT NULL,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT '',
+    link_secret BLOB NOT NULL,
+    candidates TEXT NOT NULL DEFAULT '',
+    paired_at INTEGER NOT NULL DEFAULT 0,
+    last_seen_at INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 /// 建表 DDL（PostgreSQL 方言）。
@@ -226,6 +236,16 @@ CREATE TABLE IF NOT EXISTS task_groups (
     source_url TEXT NOT NULL DEFAULT '',
     save_dir TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS link_devices (
+    fingerprint TEXT PRIMARY KEY,
+    identity_pub BYTEA NOT NULL,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT '',
+    link_secret BYTEA NOT NULL,
+    candidates TEXT NOT NULL DEFAULT '',
+    paired_at BIGINT NOT NULL DEFAULT 0,
+    last_seen_at BIGINT NOT NULL DEFAULT 0
 );
 ";
 
@@ -2437,6 +2457,100 @@ impl Db {
         tx.commit().await?;
         Ok(())
     }
+
+    /// 插入或更新一条已配对设备（link 名册）。冲突（同指纹 = 同一设备）时刷新
+    /// 展示名/平台/候选端点/**链路密钥**/配对与最近活跃时间——重新配对会用新
+    /// ECDH 派生的密钥覆盖旧值（支持密钥轮换）。`identity_pub` 由指纹决定，不变。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn link_upsert_device(
+        &self,
+        fingerprint: &str,
+        identity_pub: &[u8],
+        name: &str,
+        platform: &str,
+        link_secret: &[u8],
+        candidates_json: &str,
+        paired_at: i64,
+        last_seen_at: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO link_devices (fingerprint, identity_pub, name, platform, link_secret, candidates, paired_at, last_seen_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (fingerprint) DO UPDATE SET
+                 name = excluded.name,
+                 platform = excluded.platform,
+                 link_secret = excluded.link_secret,
+                 candidates = excluded.candidates,
+                 paired_at = excluded.paired_at,
+                 last_seen_at = excluded.last_seen_at",
+        )
+        .bind(fingerprint)
+        .bind(identity_pub)
+        .bind(name)
+        .bind(platform)
+        .bind(link_secret)
+        .bind(candidates_json)
+        .bind(paired_at)
+        .bind(last_seen_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 读取全部已配对设备，按最近活跃降序。
+    pub async fn link_load_devices(&self) -> Result<Vec<LinkDeviceRow>, DbError> {
+        let rows = sqlx::query(
+            "SELECT fingerprint, identity_pub, name, platform, link_secret, candidates, paired_at, last_seen_at
+             FROM link_devices ORDER BY last_seen_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(link_device_from_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// 按指纹读取单台已配对设备（数据面链路鉴权时查密钥用）。
+    pub async fn link_load_device(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<LinkDeviceRow>, DbError> {
+        let row = sqlx::query(
+            "SELECT fingerprint, identity_pub, name, platform, link_secret, candidates, paired_at, last_seen_at
+             FROM link_devices WHERE fingerprint = $1",
+        )
+        .bind(fingerprint)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(r) => Ok(Some(link_device_from_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// 删除一台已配对设备（解除配对）。返回是否删到行。
+    pub async fn link_delete_device(&self, fingerprint: &str) -> Result<bool, DbError> {
+        let r = sqlx::query("DELETE FROM link_devices WHERE fingerprint = $1")
+            .bind(fingerprint)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// 刷新设备最近活跃时间（成功连接/探活后）。
+    pub async fn link_touch_device(
+        &self,
+        fingerprint: &str,
+        last_seen_at: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE link_devices SET last_seen_at = $1 WHERE fingerprint = $2")
+            .bind(last_seen_at)
+            .bind(fingerprint)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 pub struct SegmentInfo {
@@ -2444,6 +2558,32 @@ pub struct SegmentInfo {
     pub start_byte: i64,
     pub end_byte: i64,
     pub downloaded_bytes: i64,
+}
+
+/// 已配对设备的持久化行（link 名册）。`candidates` 为 JSON 数组文本；上层
+/// （`link::store`）负责反序列化为强类型 `PeerRecord`。
+pub struct LinkDeviceRow {
+    pub fingerprint: String,
+    pub identity_pub: Vec<u8>,
+    pub name: String,
+    pub platform: String,
+    pub link_secret: Vec<u8>,
+    pub candidates_json: String,
+    pub paired_at: i64,
+    pub last_seen_at: i64,
+}
+
+fn link_device_from_row(row: &AnyRow) -> Result<LinkDeviceRow, sqlx::Error> {
+    Ok(LinkDeviceRow {
+        fingerprint: row.try_get("fingerprint")?,
+        identity_pub: row.try_get("identity_pub")?,
+        name: row.try_get("name")?,
+        platform: row.try_get("platform")?,
+        link_secret: row.try_get("link_secret")?,
+        candidates_json: row.try_get("candidates")?,
+        paired_at: row.try_get("paired_at")?,
+        last_seen_at: row.try_get("last_seen_at")?,
+    })
 }
 
 fn chrono_now() -> String {

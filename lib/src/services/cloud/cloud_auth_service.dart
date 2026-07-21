@@ -52,6 +52,17 @@ class CloudAuthService extends ChangeNotifier {
   /// 当前设备的持久标识，供设备列表 UI 判断"是否当前设备"。
   String get currentDeviceId => DeviceIdentity.deviceId();
 
+  /// 设备名册缓存（登录后共享给侧栏设备区与设置页，避免各自重复拉取）。
+  List<CloudDevice> _devices = const [];
+  List<CloudDevice> get devices => _devices;
+
+  /// 除当前设备外的远程设备（侧栏「设备」区渐进披露的判定源）。
+  List<CloudDevice> get remoteDevices =>
+      _devices.where((d) => d.deviceId != currentDeviceId).toList();
+
+  /// 是否存在远程设备（决定侧栏设备区是否自动出现）。
+  bool get hasRemoteDevices => remoteDevices.isNotEmpty;
+
   void _restore() {
     final at = KvStore.instance.getString(_kAccessTokenKey);
     final rt = KvStore.instance.getString(_kRefreshTokenKey);
@@ -216,16 +227,38 @@ class CloudAuthService extends ChangeNotifier {
 
   // ── 设备管理 ─────────────────────────────────────────────────────────
 
-  Future<List<CloudDevice>> fetchDevices() => CloudClient.instance.devices();
+  /// 拉取设备名册并更新缓存（设置页与侧栏共用；成功后 notifyListeners）。
+  Future<List<CloudDevice>> fetchDevices() async {
+    final list = await CloudClient.instance.devices();
+    _devices = list;
+    notifyListeners();
+    return list;
+  }
 
-  Future<CloudDevice> renameDevice(String id, String name) =>
-      CloudClient.instance.renameDevice(id, name);
+  /// 刷新设备名册缓存（忽略返回值的语义化别名，供侧栏/服务静默调用）。
+  Future<void> refreshDevices() async {
+    try {
+      await fetchDevices();
+    } catch (_) {
+      // 网络失败不清空既有缓存，静默忽略（侧栏容错，避免闪烁）。
+    }
+  }
+
+  Future<CloudDevice> renameDevice(String id, String name) async {
+    final updated = await CloudClient.instance.renameDevice(id, name);
+    _devices = [for (final d in _devices) d.id == id ? updated : d];
+    notifyListeners();
+    return updated;
+  }
 
   /// 删除设备；删除的恰好是当前设备时，服务端已吊销其全部会话，本地同步登出。
   Future<void> deleteDevice(CloudDevice device) async {
     await CloudClient.instance.deleteDevice(device.id);
+    _devices = _devices.where((d) => d.id != device.id).toList();
     if (device.deviceId == currentDeviceId) {
       await _clearSession();
+    } else {
+      notifyListeners();
     }
   }
 
@@ -256,6 +289,7 @@ class CloudAuthService extends ChangeNotifier {
   Future<void> _clearSession() async {
     _user = null;
     _entitlements = null;
+    _devices = const [];
     _status = CloudAuthStatus.unauthenticated;
     CloudClient.instance.accessToken = null;
     CloudClient.instance.refreshToken = null;

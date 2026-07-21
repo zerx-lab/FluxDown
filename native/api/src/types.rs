@@ -1032,3 +1032,104 @@ mod tests {
         assert!(v.get("speed_limit_kbps").is_none());
     }
 }
+
+// ---------------------------------------------------------------------------
+// P2P 设备互联（device link）—— 配对握手 + 数据面下发的 wire 契约
+// ---------------------------------------------------------------------------
+
+/// `/ping` 透出的本机设备互联身份（无鉴权），供发起方 TOFU 固定 + 展示。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPingInfo {
+    /// 本机 Ed25519 身份指纹（设备 ID）。
+    pub fingerprint: String,
+    /// 展示名。
+    pub name: String,
+    /// 平台标识。
+    #[serde(default)]
+    pub platform: String,
+}
+
+/// 配对 `hello` 请求（发起方 → 响应方）。全部密钥/签名字段为 base64。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairHelloRequest {
+    /// 一次性配对码（响应方 UI 展示、用户手输）。
+    pub code: String,
+    /// 发起方临时 X25519 公钥（base64）。
+    pub initiator_eph_pub: String,
+    /// 发起方 Ed25519 身份公钥（base64）。
+    pub initiator_id_pub: String,
+    /// 发起方对握手转录的 Ed25519 签名（base64）。
+    pub initiator_sig: String,
+    /// 发起方展示名。
+    pub name: String,
+    /// 发起方平台。
+    #[serde(default)]
+    pub platform: String,
+    /// 发起方客户端版本。
+    #[serde(default)]
+    pub app_version: String,
+    /// 发起方自报可达候选地址（`ip:port`），供响应方存为回连候选。
+    #[serde(default)]
+    pub initiator_addrs: Vec<String>,
+}
+
+/// 配对 `hello` 回复（响应方 → 发起方）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairHelloResponse {
+    pub session_id: String,
+    pub responder_eph_pub: String,
+    pub responder_id_pub: String,
+    pub responder_sig: String,
+    pub name: String,
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub app_version: String,
+    /// 供响应方本地展示的 SAS（应与发起方计算一致）。
+    pub sas: String,
+}
+
+/// 配对 `confirm` 请求：SAS 核对后确认/拒绝。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairConfirmRequest {
+    pub session_id: String,
+    pub confirm: bool,
+}
+
+/// 已配对设备下发下载任务的请求体（鉴权走 `X-FluxLink-*` 头，非 body）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkTaskRequest {
+    pub url: String,
+    #[serde(default)]
+    pub save_dir: String,
+    #[serde(default)]
+    pub file_name: String,
+}
+
+/// 数据面链路 HMAC 鉴权凭据（从 `X-FluxLink-*` 请求头提取，非 wire body）。
+#[derive(Debug, Clone)]
+pub struct LinkAuth {
+    /// 发起方设备指纹（响应方据此查每对独立链路密钥）。
+    pub device: String,
+    /// Unix 秒时间戳（防重放）。
+    pub ts: i64,
+    /// 一次性随机串。
+    pub nonce: String,
+    /// HMAC-SHA256 标签（hex）。
+    pub tag: String,
+}
+
+/// 生成配对码的响应（`POST /api/v1/link/code`）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkCodeResponse {
+    /// 6 位一次性配对码。
+    pub code: String,
+    /// 有效秒数。
+    pub ttl_seconds: i64,
+}

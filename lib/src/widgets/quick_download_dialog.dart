@@ -5,6 +5,7 @@ import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
+import '../services/cloud/cloud_auth_service.dart';
 import '../services/file_picker_service.dart';
 import '../services/quick_download_submitter.dart';
 import '../services/resolve_preview_client.dart';
@@ -253,6 +254,17 @@ class _MainWindowFormHost implements QuickDownloadFormHost {
         queueId: q.queueId,
         name: q.name,
         defaultSegments: q.defaultSegments,
+      ),
+  ];
+
+  @override
+  List<QuickDeviceOption> get devices => [
+    for (final d in CloudAuthService.instance.remoteDevices)
+      QuickDeviceOption(
+        deviceId: d.deviceId,
+        name: d.name,
+        platform: d.platform,
+        isOnline: d.isOnline,
       ),
   ];
 

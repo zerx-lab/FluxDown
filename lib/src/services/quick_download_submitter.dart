@@ -9,6 +9,7 @@ import '../bindings/bindings.dart';
 import '../models/download_queue.dart';
 import '../models/settings_provider.dart';
 import '../widgets/quick_download_form.dart';
+import 'cloud/cloud_client.dart';
 import 'log_service.dart';
 
 const _tag = 'QuickSubmit';
@@ -48,6 +49,24 @@ void submitQuickDownload({
     SettingsProvider.globalInstance?.setLastDialogThreads(
       result.segments > 0 ? result.segments.toString() : 'auto',
     );
+  }
+
+  final targetDeviceId = result.targetDeviceId.trim();
+  if (targetDeviceId.isNotEmpty) {
+    // 远程下发 — 全部走 Dart 层调云 API，不改本机 rinf bincode 信号路径
+    // （本机路径见下方 entries.length==1/else 分支，完全不变）。
+    SettingsProvider.globalInstance?.setLastTargetDevice(targetDeviceId);
+    CloudClient.instance
+        .dispatchTask(toDevice: targetDeviceId, url: result.urlText, saveDir: saveDir)
+        .then(
+          (task) =>
+              logInfo(_tag, 'dispatched task ${task.id} to device=$targetDeviceId'),
+        )
+        .catchError(
+          (Object e) =>
+              logError(_tag, 'dispatch to device=$targetDeviceId failed: $e'),
+        );
+    return;
   }
 
   if (entries.length == 1) {

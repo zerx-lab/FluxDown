@@ -22,7 +22,8 @@ export interface Entitlements {
   [key: string]: unknown
 }
 
-/** 受信任设备（DeviceDto，v1.1 增补 lastIp/appVersion，均可空）。 */
+/** 受信任设备（DeviceDto，v1.1 增补 lastIp/appVersion，均可空；v1.3 增补 isOnline/isCurrent，
+ *  多设备协同用，见 mdc §1.2）。 */
 export interface CloudDevice {
   id: string
   deviceId: string
@@ -34,6 +35,10 @@ export interface CloudDevice {
   appVersion?: string
   createdAt: string
   lastSeenAt: string
+  /** 该设备当前是否有活跃 SSE 连接（服务端 PresenceRegistry 判定）。 */
+  isOnline?: boolean
+  /** 是否为发起本次请求的设备（服务端按请求头 deviceId 比对）。 */
+  isCurrent?: boolean
 }
 
 /** 登录/注册验证/验证码登录 成功后的统一响应。 */
@@ -64,6 +69,33 @@ export interface TtlResponse {
 /** GET /devices 响应。 */
 export interface DevicesResponse {
   devices: CloudDevice[]
+}
+
+/** 跨设备任务状态机（cross_device_tasks.status，见 mdc §1.1）。 */
+export type RemoteTaskStatus = 'pending' | 'accepted' | 'downloading' | 'paused' | 'completed' | 'failed' | 'canceled'
+
+/** 跨设备任务（RemoteTaskDto）：downloadedBytes/speed/progress 来自服务端内存快照（无则 0），
+ *  绝不落库、绝不轮询，靠 `GET /tasks/events` SSE 增量回流（见 mdc §1.3/§1.5）。 */
+export interface RemoteTask {
+  id: string
+  fromDevice: string
+  toDevice: string
+  url: string
+  saveDir?: string
+  fileName: string
+  status: RemoteTaskStatus
+  totalBytes?: number
+  downloadedBytes: number
+  speed: number
+  progress: number
+  error?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** GET /tasks/remote 响应。 */
+export interface RemoteTasksResponse {
+  tasks: RemoteTask[]
 }
 
 /** 服务端错误统一形态 `{code, message}`，附带 HTTP 状态码方便按 code/status 分支处理。 */

@@ -18,11 +18,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
 use fluxdown_api::types::{
-    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, MarketEntryDto, PluginDto,
-    QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
+    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
+    LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
+    LinkTaskRequest, MarketEntryDto, PluginDto, QueueDto, ResolvePreviewRequest,
+    ResolvePreviewResponse, TaskDto,
 };
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec};
+use fluxdown_engine::link::{LinkError, LinkManager, WireHello};
 use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -49,6 +52,8 @@ pub struct ServerApiHost {
     /// 数据目录（与 `Engine::data_dir` 同源），供组件存在性探测
     /// （`plugin::dependencies::missing_components`）解析托管组件路径。
     data_dir: PathBuf,
+    /// 本地设备互联管理器（`None` = 未启用 / mDNS 关闭）。
+    link: Option<Arc<LinkManager>>,
 }
 
 /// 演示模式守卫：`demo_url` 已设置且请求 URL 与之不符（trim 后精确比较）
@@ -64,6 +69,7 @@ pub fn demo_guard(demo_url: Option<&str>, url: &str) -> Result<(), ApiError> {
 }
 
 impl ServerApiHost {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,
         cmd_tx: mpsc::Sender<ActorCmd>,
@@ -72,6 +78,7 @@ impl ServerApiHost {
         default_language: Option<String>,
         plugin_manager: Option<Arc<PluginManager>>,
         data_dir: PathBuf,
+        link: Option<Arc<LinkManager>>,
     ) -> Self {
         Self {
             db,
@@ -81,6 +88,7 @@ impl ServerApiHost {
             default_language,
             plugin_manager,
             data_dir,
+            link,
         }
     }
 
@@ -537,6 +545,102 @@ impl ApiHost for ServerApiHost {
         })
         .await
     }
+
+    async fn link_ping_info(&self) -> Option<LinkPingInfo> {
+        let link = self.link.as_ref()?;
+        Some(LinkPingInfo {
+            fingerprint: link.fingerprint().to_string(),
+            name: link.self_name().to_string(),
+            platform: link.self_platform().unwrap_or("").to_string(),
+        })
+    }
+
+    async fn link_pair_hello(
+        &self,
+        req: LinkPairHelloRequest,
+    ) -> Result<LinkPairHelloResponse, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let wire = WireHello {
+            code: req.code,
+            initiator_eph_pub: req.initiator_eph_pub,
+            initiator_id_pub: req.initiator_id_pub,
+            initiator_sig: req.initiator_sig,
+            name: req.name,
+            platform: opt_str(req.platform),
+            app_version: opt_str(req.app_version),
+            initiator_addrs: req.initiator_addrs,
+        };
+        let resp = link.pair_hello_wire(wire).map_err(map_link_err)?;
+        Ok(LinkPairHelloResponse {
+            session_id: resp.session_id,
+            responder_eph_pub: resp.responder_eph_pub,
+            responder_id_pub: resp.responder_id_pub,
+            responder_sig: resp.responder_sig,
+            name: resp.name,
+            platform: resp.platform.unwrap_or_default(),
+            app_version: resp.app_version.unwrap_or_default(),
+            sas: resp.sas,
+        })
+    }
+
+    async fn link_pair_confirm(&self, req: LinkPairConfirmRequest) -> Result<(), ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.pair_confirm(&req.session_id, req.confirm)
+            .await
+            .map_err(map_link_err)?;
+        Ok(())
+    }
+
+    async fn link_create_task(&self, auth: LinkAuth, body: Vec<u8>) -> Result<String, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        // 用收到的原始字节校验（HMAC 覆盖 body 摘要），再反序列化。
+        link.authorize(
+            "POST",
+            "/api/v1/link/tasks",
+            &auth.device,
+            auth.ts,
+            &auth.nonce,
+            &body,
+            &auth.tag,
+        )
+        .await
+        .map_err(map_link_err)?;
+        let req: LinkTaskRequest =
+            serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        let ctreq: CreateTaskRequest = serde_json::from_value(serde_json::json!({
+            "url": req.url,
+            "saveDir": req.save_dir,
+            "fileName": req.file_name,
+        }))
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.create_task(ctreq).await
+    }
+
+    async fn link_generate_code(&self) -> Result<LinkCodeResponse, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        Ok(LinkCodeResponse {
+            code: link.generate_code(),
+            ttl_seconds: 120,
+        })
+    }
+}
+
+/// 空串 → `None`，非空 → `Some`（wire DTO 的空 platform/version 归一为 Option）。
+fn opt_str(s: String) -> Option<String> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// [`LinkError`] → [`ApiError`] 映射（决定 HTTP 状态码）。
+fn map_link_err(e: LinkError) -> ApiError {
+    match e {
+        LinkError::Unauthorized => ApiError::Unauthorized,
+        LinkError::InvalidCode
+        | LinkError::BadSignature
+        | LinkError::BadPayload(_)
+        | LinkError::SessionExpired => ApiError::BadRequest(e.to_string()),
+        LinkError::Unreachable => ApiError::Unavailable,
+        other => ApiError::Internal(other.to_string()),
+    }
 }
 
 /// 把插件清单条目转换为 REST 预解析响应 DTO（`server` 侧 wire↔engine
@@ -629,6 +733,7 @@ mod tests {
             Some("zh".to_string()),
             None,
             std::env::temp_dir(),
+            None,
         );
 
         // 设置页未保存过语言 → 回退 FLUXDOWN_LANG
@@ -662,6 +767,7 @@ mod tests {
             None,
             None,
             std::env::temp_dir(),
+            None,
         );
 
         let mut rx = host
@@ -703,6 +809,7 @@ mod tests {
             None,
             None,
             std::env::temp_dir(),
+            None,
         );
         let req = CreateGroupRequest {
             source_url: "https://evil.example/share".to_string(),
@@ -737,7 +844,16 @@ mod tests {
             .expect("connect mem db");
         let (cmd_tx, _cmd_rx) = mpsc::channel(1);
         let hub = Arc::new(WsHub::new(4));
-        let host = ServerApiHost::new(db, cmd_tx, hub, None, None, None, std::env::temp_dir());
+        let host = ServerApiHost::new(
+            db,
+            cmd_tx,
+            hub,
+            None,
+            None,
+            None,
+            std::env::temp_dir(),
+            None,
+        );
         assert!(matches!(
             host.group_pause("missing").await,
             Err(ApiError::NotFound)
@@ -762,11 +878,109 @@ mod tests {
             .expect("insert group");
         let (cmd_tx, _cmd_rx) = mpsc::channel(1);
         let hub = Arc::new(WsHub::new(4));
-        let host = ServerApiHost::new(db, cmd_tx, hub, None, None, None, std::env::temp_dir());
+        let host = ServerApiHost::new(
+            db,
+            cmd_tx,
+            hub,
+            None,
+            None,
+            None,
+            std::env::temp_dir(),
+            None,
+        );
         let groups = host.list_groups().await.expect("list groups");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_id, "g1");
         assert_eq!(groups[0].name, "合集");
         assert_eq!(groups[0].save_dir, "/downloads/合集");
+    }
+
+    /// 端到端：两个 LinkManager 经**真实 HTTP**（api_router + ServerApiHost）完成
+    /// 配对——覆盖 wire base64 编解码、handler、host 映射、pairing 密码学全链路。
+    #[tokio::test]
+    async fn link_pairing_end_to_end_over_http() {
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+
+        async fn mem_db(tag: &str) -> Db {
+            let url = format!(
+                "sqlite:file:linktest_{tag}_{}?mode=memory&cache=shared",
+                uuid::Uuid::new_v4().simple()
+            );
+            Db::connect(&url).await.expect("mem db")
+        }
+        fn info(name: &str) -> fluxdown_engine::link::SelfInfo {
+            fluxdown_engine::link::SelfInfo {
+                name: name.to_string(),
+                platform: Some("linux".to_string()),
+                app_version: None,
+            }
+        }
+
+        // 响应方（被添加设备）+ 真实 HTTP 服务器。
+        let db_r = mem_db("resp").await;
+        let (tx_r, _rx_r) = mpsc::channel::<fluxdown_engine::link::LinkEngineEvent>(16);
+        let responder = LinkManager::load(db_r.clone(), info("NAS"), 17800, tx_r)
+            .await
+            .expect("responder link");
+        let code = responder.generate_code();
+
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let host: Arc<dyn ApiHost> = Arc::new(ServerApiHost::new(
+            db_r,
+            cmd_tx,
+            Arc::new(WsHub::new(4)),
+            None,
+            None,
+            None,
+            std::env::temp_dir(),
+            Some(responder.clone()),
+        ));
+        let cfg = fluxdown_api::server::ApiServerConfig::from_config_map(
+            &std::collections::HashMap::new(),
+            "test",
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let app = fluxdown_api::server::api_router(host, cfg);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        // 发起方（添加设备）。
+        let db_i = mem_db("init").await;
+        let (tx_i, _rx_i) = mpsc::channel::<fluxdown_engine::link::LinkEngineEvent>(16);
+        let initiator = LinkManager::load(db_i, info("Laptop"), 0, tx_i)
+            .await
+            .expect("initiator link");
+
+        // begin（发 hello）→ confirm（发 confirm），全程真实 HTTP。
+        let begin = initiator
+            .begin_pairing("127.0.0.1", addr.port(), &code)
+            .await
+            .expect("begin pairing");
+        assert_eq!(begin.peer_name, "NAS");
+        assert!(!begin.sas.is_empty());
+        let rec = initiator
+            .confirm_pairing(&begin.token, true)
+            .await
+            .expect("confirm pairing")
+            .expect("peer record");
+        assert_eq!(rec.name, "NAS");
+
+        // 双方名册均入册；链路密钥一致（ECDH 对称）。
+        let init_devs = initiator.list_devices().await.expect("init devices");
+        let resp_devs = responder.list_devices().await.expect("resp devices");
+        assert_eq!(init_devs.len(), 1);
+        assert_eq!(resp_devs.len(), 1);
+        assert_eq!(init_devs[0].name, "NAS");
+        assert_eq!(resp_devs[0].name, "Laptop");
+        assert_eq!(init_devs[0].link_secret, resp_devs[0].link_secret);
+
+        // 错误配对码经 HTTP 被拒。
+        let bad = initiator
+            .begin_pairing("127.0.0.1", addr.port(), "000000")
+            .await;
+        assert!(bad.is_err());
     }
 }

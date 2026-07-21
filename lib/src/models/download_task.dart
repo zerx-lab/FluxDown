@@ -278,6 +278,12 @@ class DownloadTask {
   /// `applyProgress`/`_onProgress` 「new task from progress」分支）。
   final String groupId;
 
+  /// 归属设备标识（'' = 本机；非空 = 远程设备 deviceId）。跨设备任务混排 + 设备筛选用。
+  final String deviceId;
+
+  /// 是否为远程设备上执行的任务（经 FluxCloud 回流的只读视图，非本地引擎任务）。
+  final bool isRemote;
+
   // ── 站点分桶键（惰性缓存；见 view_prefs/list_entity 站点分组维度）──
   String? _siteKeyCache;
   String? _siteLabelCache;
@@ -306,6 +312,8 @@ class DownloadTask {
     this.groupId = '',
     this.checksum = '',
     this.proxyUrl = '',
+    this.deviceId = '',
+    this.isRemote = false,
     this.completedAt,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();

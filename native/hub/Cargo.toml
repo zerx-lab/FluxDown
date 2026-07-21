@@ -54,9 +54,9 @@ encoding_rs = "0.8"
 fluxdown_engine = { version = "0.1.0", path = "../engine", features = ["components"] }
 fluxdown_api = { version = "0.1.0", path = "../api" }
 
-# desktop（Windows/macOS/Linux）追加 plugins；mobile 保持关闭
+# desktop（Windows/macOS/Linux）追加 plugins + link（本地设备互联）；mobile 保持关闭
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-fluxdown_engine = { version = "0.1.0", path = "../engine", features = ["plugins", "components"] }
+fluxdown_engine = { version = "0.1.0", path = "../engine", features = ["plugins", "components", "link"] }
 fluxdown_api = { version = "0.1.0", path = "../api", features = ["plugins"] }
 
 [target.'cfg(windows)'.dependencies]

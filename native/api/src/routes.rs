@@ -76,6 +76,16 @@ pub const API_GROUP_PAUSE: &str = "/api/v1/groups/{id}/pause";
 /// 恢复组内成员（PUT）。
 pub const API_GROUP_CONTINUE: &str = "/api/v1/groups/{id}/continue";
 
+/// P2P 设备互联：发起配对握手（POST，无 token 鉴权，由一次性配对码守卫）。
+pub const API_LINK_PAIR_HELLO: &str = "/api/v1/link/pair/hello";
+/// P2P 设备互联：确认/拒绝配对（POST，无 token 鉴权，由会话 + SAS 守卫）。
+pub const API_LINK_PAIR_CONFIRM: &str = "/api/v1/link/pair/confirm";
+/// P2P 设备互联：已配对设备下发下载任务（POST，链路 HMAC 鉴权，非 token）。
+pub const API_LINK_TASKS: &str = "/api/v1/link/tasks";
+/// P2P 设备互联：生成一次性配对码（POST，**需 management token**，供 web/CLI 让
+/// headless 设备出示配对码）。
+pub const API_LINK_CODE: &str = "/api/v1/link/code";
+
 /// 生成单任务路径（客户端用）。
 #[must_use]
 pub fn task_path(task_id: &str) -> String {

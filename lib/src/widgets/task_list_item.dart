@@ -16,6 +16,8 @@ import '../models/download_controller.dart';
 import '../services/open_folder.dart';
 import 'queue_manager_dialog.dart';
 import 'task_columns.dart';
+import '../services/cloud/cloud_auth_service.dart';
+import '../services/cloud/cloud_models.dart';
 
 /// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
 const _pluginErrorPrefix = '[插件]';
@@ -332,6 +334,10 @@ class _TaskListItemState extends State<TaskListItem> {
                     const SizedBox(width: 6),
                     _ProtocolBadge(task: task),
                   ],
+                  if (CloudAuthService.instance.hasRemoteDevices) ...[
+                    const SizedBox(width: 6),
+                    _DeviceBadge(task: task),
+                  ],
                 ],
               ),
               if (!compact) ...[
@@ -393,6 +399,74 @@ class _ProtocolBadge extends StatelessWidget {
           letterSpacing: 0.2,
           color: c.textMuted,
         ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// 设备徽标（9.5px 大写，视觉规格同协议徽标，design-proto-spec §5 `.badge`；
+// 仅 CloudAuthService.hasRemoteDevices 时由调用方渐进披露渲染）
+// =============================================================================
+
+class _DeviceBadge extends StatelessWidget {
+  final DownloadTask task;
+  const _DeviceBadge({required this.task});
+
+  /// 按 task.deviceId 在设备名册中查找对应设备（本机 deviceId 为空字符串）。
+  CloudDevice? get _matchedDevice {
+    final devices = CloudAuthService.instance.devices;
+    if (task.deviceId.isEmpty) {
+      for (final d in devices) {
+        if (d.isCurrent) return d;
+      }
+      return null;
+    }
+    for (final d in devices) {
+      if (d.deviceId == task.deviceId) return d;
+    }
+    return null;
+  }
+
+  String _label(S s) {
+    if (task.deviceId.isEmpty) return s.thisDevice;
+    return _matchedDevice?.name ?? task.deviceId;
+  }
+
+  IconData get _icon {
+    final platform = _matchedDevice?.platform;
+    return switch (platform) {
+      'windows' || 'macos' || 'linux' => LucideIcons.monitor,
+      'android' || 'ios' => LucideIcons.smartphone,
+      _ => task.deviceId.isEmpty ? LucideIcons.monitor : LucideIcons.server,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: c.surface2,
+        borderRadius: const BorderRadius.all(Radius.circular(4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(_icon, size: 9, color: c.textMuted),
+          const SizedBox(width: 3),
+          Text(
+            _label(s).toUpperCase(),
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+              color: c.textMuted,
+            ),
+          ),
+        ],
       ),
     );
   }

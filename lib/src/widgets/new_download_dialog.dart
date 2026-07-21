@@ -33,6 +33,8 @@ import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../services/bt_file_selection_service.dart';
 import '../services/resolve_preview_client.dart';
+import '../services/cloud/cloud_auth_service.dart';
+import '../services/cloud/cloud_client.dart';
 
 import 'bt_file_list_widget.dart';
 import 'dir_picker_field.dart';
@@ -95,6 +97,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   /// 选中的队列 ID（空字符串 = 默认队列）
   String _selectedQueueId = '';
+
+  /// 下载到（目标设备）：null/空 = 本机；非空 = 远程 deviceId。渐进披露 —
+  /// 仅当 CloudAuthService.instance.hasRemoteDevices 时才在 UI 呈现选择行，
+  /// 无远程设备时该字段恒为 null，本机下载路径零改动。
+  String? _selectedDeviceId;
 
   /// 用户是否手动修改过线程数（用于判断切换队列时是否需要自动更新）
   bool _threadsUserModified = false;
@@ -215,6 +222,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         : widget.settingsProvider.defaultQueueId;
     if (initialQueue.isEmpty) initialQueue = kMainQueueId;
     _selectedQueueId = initialQueue;
+    // "下载到"记忆上次选择的目标设备；空 = 本机（渐进披露：无远程设备时
+    // 该值不会在 UI 中出现选择入口，_selectedDeviceId 也不影响提交路径）。
+    final lastTargetDevice = widget.settingsProvider.lastTargetDevice;
+    _selectedDeviceId = lastTargetDevice.isEmpty ? null : lastTargetDevice;
     // 优先沿用上次用户选择的线程数，其次根据队列/全局设置初始化
     final lastThreads = widget.settingsProvider.lastDialogThreads;
     selectedThreads = lastThreads.isNotEmpty
@@ -958,6 +969,14 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     // 记录本次保存位置，供"跟随上次保存位置"开关使用
     widget.settingsProvider.recordLastSaveDir(saveDir);
 
+    // 远程设备下发：不经本地引擎/rinf 信号，直接调云 API；_selectedDeviceId
+    // 为 null/空（本机）时下方 CreateTask/BatchCreateTask 路径完全不变。
+    final targetDeviceId = _selectedDeviceId;
+    if (targetDeviceId != null && targetDeviceId.isNotEmpty) {
+      await _dispatchEntriesToDevice(targetDeviceId, entries, saveDir);
+      return;
+    }
+
     final parsed = int.tryParse(selectedThreads ?? '') ?? 0;
     final segments = parsed > 0 ? parsed.clamp(1, 256) : 0;
 
@@ -1089,6 +1108,49 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     }
 
     if (mounted) Navigator.of(context).pop();
+  }
+
+  /// 把解析出的下载条目下发给远程设备（走 FluxCloud dispatch API），不经
+  /// 本地引擎/rinf 信号。单条 URL 单次下发；多条批量逐条下发（契约 v1
+  /// §3.2：多 URL 批量场景允许逐条 dispatch）。成功后记忆本次目标设备
+  /// 并复用对话框既有 toast/关闭流程；失败展示 s.dispatchFailed 且保持
+  /// 对话框打开，方便用户重试或切回本机。
+  Future<void> _dispatchEntriesToDevice(
+    String deviceId,
+    List<_ParsedEntry> entries,
+    String saveDir,
+  ) async {
+    final rename = _renameController.text.trim();
+    try {
+      for (final entry in entries) {
+        final fileName = entries.length == 1 && rename.isNotEmpty
+            ? rename
+            : entry.fileName;
+        await CloudClient.instance.dispatchTask(
+          toDevice: deviceId,
+          url: entry.url,
+          saveDir: saveDir,
+          fileName: fileName.isNotEmpty ? fileName : null,
+        );
+      }
+      widget.settingsProvider.setLastTargetDevice(deviceId);
+      if (!mounted) return;
+      final deviceName =
+          CloudAuthService.instance.remoteDevices
+              .where((d) => d.deviceId == deviceId)
+              .firstOrNull
+              ?.name ??
+          deviceId;
+      FluxSonner.of(
+        context,
+      ).show(ShadToast(title: Text(currentS.dispatchedToDevice(deviceName))));
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (!mounted) return;
+      FluxSonner.of(
+        context,
+      ).show(ShadToast.destructive(title: Text(currentS.dispatchFailed)));
+    }
   }
 
   /// 用户在对话框内确认了 BT 文件选择（磁力链接等待阶段）
@@ -1468,6 +1530,65 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                     ],
                   ),
                   const SizedBox(height: 8),
+                  // "下载到"目标设备 — 渐进披露：仅存在远程设备时才出现，
+                  // 无远程设备时界面零变化（契约 v1 §3.2/§6.2）。
+                  if (CloudAuthService.instance.hasRemoteDevices) ...[
+                    _SectionLabel(text: s.downloadTo, c: c),
+                    const SizedBox(height: 6),
+                    ShadSelect<String>(
+                      initialValue: _selectedDeviceId ?? '',
+                      options: [
+                        ShadOption(value: '', child: Text(s.thisDevice)),
+                        for (final device
+                            in CloudAuthService.instance.remoteDevices)
+                          ShadOption(
+                            value: device.deviceId,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  device.name,
+                                  style: device.isOnline
+                                      ? null
+                                      : TextStyle(color: c.textMuted),
+                                ),
+                                if (!device.isOnline) ...[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    s.deviceOffline,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: c.textMuted,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                      ],
+                      selectedOptionBuilder: (context, value) {
+                        if (value.isEmpty) return Text(s.thisDevice);
+                        final device = CloudAuthService.instance.remoteDevices
+                            .where((d) => d.deviceId == value)
+                            .firstOrNull;
+                        return Text(
+                          device?.name ?? value,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        );
+                      },
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(
+                          () =>
+                              _selectedDeviceId = value.isEmpty
+                              ? null
+                              : value,
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                 ],
 
                 // 保存目录 + 线程数

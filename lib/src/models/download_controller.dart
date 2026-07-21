@@ -41,6 +41,12 @@ class DownloadController extends ChangeNotifier {
   /// 当前队列筛选 ID：null = 不过滤（显示全部），'' = 默认队列，非空 = 指定命名队列
   String? _queueFilter;
 
+  /// 当前设备筛选 ID：null = 全部设备，'' = 本机，非空 = 远程设备 deviceId
+  String? _deviceFilter;
+
+  /// 远程设备任务快照（经 FluxCloud 回流，由 RemoteTaskService.updateRemoteTasks 注入）
+  List<DownloadTask> _remoteTasks = const [];
+
   // 缓存 — 避免 filteredTasks / groupedTasks 每次访问重新计算
   List<DownloadTask>? _cachedFilteredTasks;
   List<TaskGroup>? _cachedGroupedTasks;
@@ -221,10 +227,32 @@ class DownloadController extends ChangeNotifier {
   /// 当前队列筛选（null = 不过滤，'' = 默认队列，非空 = 指定命名队列）
   String? get queueFilter => _queueFilter;
 
-  /// 按队列 ID 过滤
+  /// 当前设备筛选（null = 全部设备；'' = 本机；非空 = 远程设备 deviceId）
+  String? get deviceFilter => _deviceFilter;
+
+  /// 远程设备任务（经 FluxCloud 回流，由 RemoteTaskService 注入）
+  List<DownloadTask> get remoteTasks => _remoteTasks;
+
+  /// 本地引擎任务快照（供 RemoteTaskService 关联下发任务、上报进度）。
+  List<DownloadTask> get localTasks => List.unmodifiable(_tasks);
+
+  /// 设备维度作用域任务集（混排管线最上游）：
+  /// deviceFilter==null → 本地+远程混排；''（本机）→ 本地；远程 deviceId → 该设备远程任务。
+  List<DownloadTask> get _deviceScopedTasks {
+    final f = _deviceFilter;
+    if (f == null) {
+      if (_remoteTasks.isEmpty) return _tasks;
+      return [..._tasks, ..._remoteTasks];
+    }
+    if (f.isEmpty) return _tasks;
+    return _remoteTasks.where((t) => t.deviceId == f).toList();
+  }
+
+  /// 按队列 ID 过滤（叠加在设备作用域之上）
   List<DownloadTask> get _queueFiltered {
-    if (_queueFilter == null) return _tasks;
-    return _tasks.where((t) => t.queueId == _queueFilter).toList();
+    final base = _deviceScopedTasks;
+    if (_queueFilter == null) return base;
+    return base.where((t) => t.queueId == _queueFilter).toList();
   }
 
   /// 队列过滤后的任务列表（公开给侧边栏计数使用）
@@ -521,6 +549,12 @@ class DownloadController extends ChangeNotifier {
   /// [queueId] 为空字符串表示默认队列
   int countForQueue(String queueId) {
     return _tasks.where((t) => t.queueId == queueId).length;
+  }
+
+  /// 指定设备的任务数（用于侧边栏设备区计数）。'' = 本机。
+  int countForDevice(String deviceId) {
+    if (deviceId.isEmpty) return _tasks.length;
+    return _remoteTasks.where((t) => t.deviceId == deviceId).length;
   }
 
   // ---------------------------------------------------------------------------
@@ -958,6 +992,31 @@ class DownloadController extends ChangeNotifier {
       _queueFilter = queueId;
     }
     _safeNotifyListeners();
+  }
+
+  /// 设置设备筛选。传入相同值则切回「全部设备」。null=全部，''=本机，非空=远程设备。
+  void setDeviceFilter(String? deviceId) {
+    if (_deviceFilter == deviceId) {
+      _deviceFilter = null;
+    } else {
+      _deviceFilter = deviceId;
+    }
+    _safeNotifyListeners();
+  }
+
+  /// 由 RemoteTaskService 注入最新远程任务快照（进度回流驱动 UI 刷新）。
+  void updateRemoteTasks(List<DownloadTask> tasks) {
+    _remoteTasks = tasks;
+    _safeNotifyListeners();
+  }
+
+  /// 设备名册变化时清理失效的设备筛选（筛选的远程设备已被移除 → 回到全部）。
+  void pruneDeviceFilter(Set<String> knownRemoteDeviceIds) {
+    final f = _deviceFilter;
+    if (f != null && f.isNotEmpty && !knownRemoteDeviceIds.contains(f)) {
+      _deviceFilter = null;
+      _safeNotifyListeners();
+    }
   }
 
   // ---------------------------------------------------------------------------

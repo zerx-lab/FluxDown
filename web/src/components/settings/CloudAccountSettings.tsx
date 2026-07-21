@@ -8,13 +8,13 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '../../lib/cn'
 import { cloudApi, getCloudBaseUrl, isCloudBaseUrlCustom, resetCloudBaseUrl, setCloudBaseUrl } from '../../lib/cloud/client'
 import { suggest } from '../../lib/cloud/nickname'
-import { applyCloudSession, clearCloudSession, cloudDeviceId, getCloudRefreshToken, useCloudSession } from '../../lib/cloud/session'
+import { applyCloudSession, clearCloudSession, cloudDeviceId, getCloudRefreshToken, setShowDeviceSync, useCloudSession, useShowDeviceSync } from '../../lib/cloud/session'
 import { CloudApiError, type CloudDevice } from '../../lib/cloud/types'
 import { confirmDialog } from '../../lib/confirm'
 import { fmtIsoTime, fmtRelativeTime } from '../../lib/format'
 import type { I18nKey } from '../../lib/i18n'
 import { useI18n } from '../../lib/i18n'
-import { SetRow, TextInput } from './controls'
+import { SetRow, SetSwitch, TextInput } from './controls'
 
 const DEVICES_QUERY_KEY = ['cloud', 'devices']
 
@@ -704,6 +704,7 @@ const DEVICE_INLINE_LIMIT = 5
 
 function DeviceListSection() {
   const { t } = useI18n()
+  const showDeviceSync = useShowDeviceSync()
   const currentId = cloudDeviceId()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: DEVICES_QUERY_KEY,
@@ -741,6 +742,9 @@ function DeviceListSection() {
         {t('cloud.devicesDesc')}
       </p>
       <div className="set-group">
+        <SetRow title="在侧边栏显示设备同步" desc="开启后即使仅本机也在侧边栏展示设备区，便于提前熟悉多设备协同入口">
+          <SetSwitch checked={showDeviceSync} onCheckedChange={setShowDeviceSync} />
+        </SetRow>
         {isLoading ? (
           <p className="p-4 text-[12px] text-text3">{t('common.loading')}</p>
         ) : isError ? (
@@ -877,6 +881,7 @@ function DeviceItem({
             </div>
             <div className="min-w-0 flex-1 text-left">
               <div className="flex items-center gap-2">
+                <i className={cn('queue-dot', device.isOnline && 'on')} title={device.isOnline ? '在线' : '离线'} />
                 <b className="truncate text-[13px] font-medium">{device.name || '-'}</b>
                 {isCurrent ? (
                   <span className="flex-shrink-0 rounded-full bg-accent-weak px-1.5 py-0.5 text-[9.5px] font-semibold text-accent">

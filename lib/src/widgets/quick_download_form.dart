@@ -130,6 +130,24 @@ class QuickQueueOption {
   });
 }
 
+/// 表单可选目标设备（[QuickDownloadFormHost.devices] 的元素）。
+///
+/// 与 `CloudDevice` 解耦：独立小窗引擎中不存在 CloudAuthService，
+/// 设备名册经载荷 JSON 注入后以本类型还原。
+class QuickDeviceOption {
+  final String deviceId;
+  final String name;
+  final String? platform;
+  final bool isOnline;
+
+  const QuickDeviceOption({
+    required this.deviceId,
+    required this.name,
+    this.platform,
+    this.isOnline = false,
+  });
+}
+
 /// QuickQueueOption 显示名 — 内置队列本地化，规则与
 /// `download_queue.dart` 的 `queueDisplayName` 一致；QuickQueueOption 与
 /// DownloadQueue 解耦（独立小窗引擎无 DownloadQueue），故本函数单独定义，
@@ -178,6 +196,9 @@ class QuickDownloadFormResult {
   /// 「稍后下载」提交 — 建任务但不启动（透传为 startPaused）。
   final bool startLater;
 
+  /// 目标设备 ID（'' = 本机哨兵值，非空 = 远程设备，走云下发）。
+  final String targetDeviceId;
+
   const QuickDownloadFormResult({
     required this.urlText,
     required this.saveDir,
@@ -193,6 +214,7 @@ class QuickDownloadFormResult {
     this.audioUrl = '',
     this.extraHeaders = const {},
     this.startLater = false,
+    this.targetDeviceId = '',
   });
 }
 
@@ -200,6 +222,9 @@ class QuickDownloadFormResult {
 abstract class QuickDownloadFormHost {
   /// 可选队列列表（空 = 不显示队列选择器）
   List<QuickQueueOption> get queues;
+
+  /// 可选目标设备列表（空 = 不显示"下载到"选择器）
+  List<QuickDeviceOption> get devices;
 
   /// 全局默认线程数（0 = 自动）
   int get defaultSegments;
@@ -297,6 +322,9 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
 
   /// 选中的哈希算法（与后端 verify_checksum 支持的算法名一致）
   String _selectedHashAlgo = 'sha-256';
+
+  /// 选中的目标设备 ID（'' = 本机）
+  String _selectedTargetDevice = '';
   String? selectedThreads;
   String _selectedUaPreset = 'default';
 
@@ -499,6 +527,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
         threadsUserModified: _threadsUserModified,
         audioUrl: widget.initialAudioUrl,
         extraHeaders: extraHeaders,
+        targetDeviceId: _selectedTargetDevice,
       ),
     );
   }
@@ -596,6 +625,46 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
             ),
           ),
           const SizedBox(height: 14),
+          if (widget.host.devices.isNotEmpty) ...[
+            QuickSectionLabel(text: s.downloadTo, c: c),
+            const SizedBox(height: 6),
+            ShadSelect<String>(
+              initialValue: _selectedTargetDevice,
+              options: [
+                ShadOption(value: '', child: Text(s.thisDevice)),
+                for (final d in widget.host.devices)
+                  ShadOption(
+                    value: d.deviceId,
+                    child: Text(
+                      d.isOnline
+                          ? d.name
+                          : '${d.name} (${s.deviceOffline})',
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  ),
+              ],
+              selectedOptionBuilder: (context, value) {
+                final name = value.isEmpty
+                    ? s.thisDevice
+                    : widget.host.devices
+                          .where((d) => d.deviceId == value)
+                          .firstOrNull
+                          ?.name ??
+                      value;
+                return Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                );
+              },
+              onChanged: (id) {
+                if (id == null) return;
+                setState(() => _selectedTargetDevice = id);
+              },
+            ),
+            const SizedBox(height: 14),
+          ],
 
           // 保存目录 + 线程数
           Row(

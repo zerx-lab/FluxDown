@@ -16,6 +16,9 @@ pub mod ed2k;
 pub mod events;
 pub mod ftp_downloader;
 pub mod hls_downloader;
+/// 本地设备互联（P2P 局域网配对 + mDNS 发现 + 直连传输）。仅 `link` feature 下编译。
+#[cfg(feature = "link")]
+pub mod link;
 pub mod logger;
 pub mod meta_prober;
 pub mod model;

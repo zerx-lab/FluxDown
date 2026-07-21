@@ -30,6 +30,7 @@ import '../models/settings_provider.dart';
 import '../popup/popup_payload.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/quick_download_form.dart';
+import 'cloud/cloud_auth_service.dart';
 import 'log_service.dart';
 import 'quick_download_submitter.dart';
 import 'resolve_preview_client.dart';
@@ -155,6 +156,7 @@ class PopupWindowService {
     }
 
     final queues = DownloadController.globalInstance?.queues ?? const [];
+    final devices = CloudAuthService.instance.remoteDevices;
     final payload = QuickPopupPayload(
       requestId: ++_seq,
       url: req.url,
@@ -174,6 +176,15 @@ class PopupWindowService {
             queueId: q.queueId,
             name: q.name,
             defaultSegments: q.defaultSegments,
+          ),
+      ],
+      devices: [
+        for (final d in devices)
+          QuickDeviceOption(
+            deviceId: d.deviceId,
+            name: d.name,
+            platform: d.platform,
+            isOnline: d.isOnline,
           ),
       ],
     );

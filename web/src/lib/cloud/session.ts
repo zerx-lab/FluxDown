@@ -111,3 +111,22 @@ function detectOs(ua: string): string {
   if (/Linux/.test(ua)) return 'Linux'
   return ''
 }
+
+// ---------------------------------------------------------------------------
+// 设备协同 UI 偏好 —— 侧边栏设备区渐进披露的本地开关（mdc §4 web 节「或本地开关」）：
+// 关（默认）= 仅有 ≥1 台远程设备时才显示；开 = 已登录即显示（即使仅本机），便于提前
+// 熟悉入口。纯前端展示偏好，不写云端配置。
+// ---------------------------------------------------------------------------
+
+const SHOW_DEVICE_SYNC_KEY = 'fluxdown.cloud.showDevices'
+
+export const showDeviceSyncStore = new Store<boolean>(localStorage.getItem(SHOW_DEVICE_SYNC_KEY) === 'true')
+
+export function useShowDeviceSync(): boolean {
+  return useStore(showDeviceSyncStore)
+}
+
+export function setShowDeviceSync(v: boolean) {
+  localStorage.setItem(SHOW_DEVICE_SYNC_KEY, String(v))
+  showDeviceSyncStore.set(v)
+}

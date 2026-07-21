@@ -48,6 +48,10 @@ class SettingsProvider extends ChangeNotifier {
   bool _showSidebarQueues = true; // 显示队列区块
   bool _showSidebarCategory = true; // 显示分类区块
 
+  // 侧边栏设备协同区显示（三态渐进披露）：
+  // null=自动（有远程设备才显示）/ true=强制显示 / false=强制隐藏
+  bool? _showSidebarDevice;
+
   // 标题栏工具按钮显示设置
   bool _showTitlebarPauseAll = true; // 全部暂停按钮
   bool _showTitlebarResumeAll = true; // 全部恢复按钮
@@ -57,6 +61,7 @@ class SettingsProvider extends ChangeNotifier {
   // 侧边栏折叠状态（持久化）
   bool _sidebarQueuesExpanded = true; // 队列区块展开
   bool _sidebarCategoryExpanded = false; // 分类区块展开（默认折叠）
+  bool _sidebarDeviceExpanded = true; // 设备区块展开
 
   // 自定义分类
   List<CustomCategory> _customCategories = [];
@@ -119,6 +124,7 @@ class SettingsProvider extends ChangeNotifier {
   bool _localServerJsonrpcEnabled = true;
   bool _localServerApiEnabled = false;
   bool _localServerMcpEnabled = false;
+  bool _localServerLanEnabled = false;
 
   // UA 设置
   String _globalUserAgent = ''; // 空字符串 = 使用内置 Chrome UA
@@ -134,6 +140,9 @@ class SettingsProvider extends ChangeNotifier {
 
   // 上次下载确认时使用的保存目录（'' = 未记录）
   String _lastSaveDir = '';
+
+  // 新建下载对话框上次选择的目标设备（'' = 本机/未记录，非空 = 远程 deviceId）
+  String _lastTargetDevice = '';
 
   // 文件管理器自定义命令模板（空 = 用平台默认行为）
   // {path} = 完整文件路径；{dir} = 目录路径；占位符在 Rust 端做 shell 转义
@@ -216,6 +225,13 @@ class SettingsProvider extends ChangeNotifier {
   bool get showSidebarQueues => _showSidebarQueues;
   bool get showSidebarCategory => _showSidebarCategory;
 
+  /// 设备协同区显示覆盖（null=自动 / true=强制显示 / false=强制隐藏）。
+  bool? get showSidebarDeviceOverride => _showSidebarDevice;
+
+  /// 设备协同区最终是否显示：override 优先，未设置时跟随是否有远程设备。
+  bool showSidebarDeviceEffective(bool hasRemoteDevices) =>
+      _showSidebarDevice ?? hasRemoteDevices;
+
   // 标题栏工具按钮 Getters
   bool get showTitlebarPauseAll => _showTitlebarPauseAll;
   bool get showTitlebarResumeAll => _showTitlebarResumeAll;
@@ -224,6 +240,7 @@ class SettingsProvider extends ChangeNotifier {
 
   bool get sidebarQueuesExpanded => _sidebarQueuesExpanded;
   bool get sidebarCategoryExpanded => _sidebarCategoryExpanded;
+  bool get sidebarDeviceExpanded => _sidebarDeviceExpanded;
 
   // 自定义分类 Getter
   List<CustomCategory> get customCategories =>
@@ -332,6 +349,7 @@ class SettingsProvider extends ChangeNotifier {
   bool get localServerJsonrpcEnabled => _localServerJsonrpcEnabled;
   bool get localServerApiEnabled => _localServerApiEnabled;
   bool get localServerMcpEnabled => _localServerMcpEnabled;
+  bool get localServerLanEnabled => _localServerLanEnabled;
 
   // UA 设置 Getter
   String get globalUserAgent => _globalUserAgent;
@@ -429,6 +447,17 @@ class SettingsProvider extends ChangeNotifier {
     _lastSaveDir = dir;
     if (_rememberLastSaveDir) notifyListeners();
     _saveToRust('last_save_dir', dir);
+  }
+
+  /// 新建下载对话框上次选择的目标设备（'' = 本机）。
+  String get lastTargetDevice => _lastTargetDevice;
+
+  /// 记录上次「下载到」选择的目标设备（'' = 本机）。
+  void setLastTargetDevice(String deviceId) {
+    if (_lastTargetDevice == deviceId) return;
+    _lastTargetDevice = deviceId;
+    notifyListeners();
+    _saveToRust('last_target_device', deviceId);
   }
 
   void setMaxConcurrentTasks(int value) {
@@ -592,6 +621,14 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('show_sidebar_category', value.toString());
   }
 
+  /// 设置设备协同区显示覆盖（true=强制显示 / false=强制隐藏，右键隐藏与设置开关共用）。
+  void setShowSidebarDevice(bool value) {
+    if (_showSidebarDevice == value) return;
+    _showSidebarDevice = value;
+    notifyListeners();
+    _saveToRust('show_sidebar_device', value.toString());
+  }
+
   // 标题栏工具按钮 Setters
 
   void setShowTitlebarPauseAll(bool value) {
@@ -627,6 +664,13 @@ class SettingsProvider extends ChangeNotifier {
     _sidebarQueuesExpanded = value;
     notifyListeners();
     _saveToRust('sidebar_queues_expanded', value.toString());
+  }
+
+  void setSidebarDeviceExpanded(bool value) {
+    if (_sidebarDeviceExpanded == value) return;
+    _sidebarDeviceExpanded = value;
+    notifyListeners();
+    _saveToRust('sidebar_device_expanded', value.toString());
   }
 
   void setSidebarCategoryExpanded(bool value) {
@@ -967,6 +1011,15 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('local_server_mcp_enabled', value.toString());
   }
 
+  /// 允许局域网 / 组网访问：开启后本机 API 服务绑定 0.0.0.0（Rust 端热重启监听），
+  /// 使同网络或用户自建组网内的设备可访问本机服务与配对；关闭则仅回环可达。
+  void setLocalServerLanEnabled(bool value) {
+    if (_localServerLanEnabled == value) return;
+    _localServerLanEnabled = value;
+    notifyListeners();
+    _saveToRust('local_server_lan_enabled', value.toString());
+  }
+
   /// 生成 32 位随机 hex token（管理 API 自动鉴权 / UI 手动重新生成共用）
   static String _generateHexToken() {
     final r = Random.secure();
@@ -1303,12 +1356,16 @@ class SettingsProvider extends ChangeNotifier {
           _localServerApiEnabled = entry.value == 'true';
         case 'local_server_mcp_enabled':
           _localServerMcpEnabled = entry.value == 'true';
+        case 'local_server_lan_enabled':
+          _localServerLanEnabled = entry.value == 'true';
         case 'global_user_agent':
           _globalUserAgent = entry.value;
         case 'default_queue_id':
           _defaultQueueId = entry.value;
         case 'last_dialog_threads':
           _lastDialogThreads = entry.value;
+        case 'last_target_device':
+          _lastTargetDevice = entry.value;
         case 'remember_last_save_dir':
           _rememberLastSaveDir = entry.value == 'true';
         case 'last_save_dir':
@@ -1324,6 +1381,12 @@ class SettingsProvider extends ChangeNotifier {
           _showSidebarQueues = entry.value != 'false';
         case 'show_sidebar_category':
           _showSidebarCategory = entry.value != 'false';
+        case 'show_sidebar_device':
+          _showSidebarDevice = entry.value == 'true'
+              ? true
+              : entry.value == 'false'
+              ? false
+              : null;
         case 'show_titlebar_pause_all':
           _showTitlebarPauseAll = entry.value != 'false';
         case 'show_titlebar_resume_all':
@@ -1336,6 +1399,8 @@ class SettingsProvider extends ChangeNotifier {
           _sidebarQueuesExpanded = entry.value != 'false';
         case 'sidebar_category_expanded':
           _sidebarCategoryExpanded = entry.value == 'true';
+        case 'sidebar_device_expanded':
+          _sidebarDeviceExpanded = entry.value != 'false';
         case 'custom_categories':
           _customCategories = CustomCategory.decodeList(entry.value);
         case 'program_category_migrated':

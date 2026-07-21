@@ -5,9 +5,12 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Archive, ArrowUpCircle, FileText, Image as ImageIcon, LayoutGrid, List, LogOut, Film, Music, MessageCircle, File as FileIcon, Package2, Pause, Play, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ArrowUpCircle, FileText, Image as ImageIcon, LayoutGrid, List, LogOut, Film, Monitor, Music, MessageCircle, File as FileIcon, Package2, Pause, Play, Plus, Smartphone, Trash2, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
+import { cloudApi } from '../../lib/cloud/client'
+import { cloudDeviceId, useCloudSession, useShowDeviceSync } from '../../lib/cloud/session'
+import { useRemoteTasks } from '../../lib/cloud/useRemoteTasks'
 import { clearCredentials, getBase } from '../../lib/auth'
 import { cn } from '../../lib/cn'
 import { fileType, fmtSpeed, queueDisplayName, typeLabel, TYPE_ORDER, type FileType as FT } from '../../lib/format'
@@ -34,13 +37,27 @@ export function Sidebar() {
   const { t } = useI18n()
   const tasks = useViewTasks()
   const { data: queues = [] } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues })
-  const { typeFilter, setTypeFilter, queueFilter, setQueueFilter, sidebarOpen, setSidebarOpen } = useTasksUi()
+  const { typeFilter, setTypeFilter, queueFilter, setQueueFilter, deviceFilter, setDeviceFilter, sidebarOpen, setSidebarOpen } = useTasksUi()
   const speed = useGlobalSpeed()
   const conn = useStore(connStore)
   const update = useUpdateCheck()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [logoutOpen, setLogoutOpen] = useState(false)
+  const session = useCloudSession()
+  const showDeviceOverride = useShowDeviceSync()
+  const myDeviceId = cloudDeviceId()
+  const { data: cloudDevices = [] } = useQuery({
+    queryKey: ['cloud', 'devices'],
+    queryFn: () => cloudApi.devices().then((r) => r.devices),
+    enabled: session.status === 'authenticated',
+    staleTime: 10_000,
+  })
+  const remoteDevices = cloudDevices.filter((d) => d.deviceId !== myDeviceId)
+  const { remoteTasks } = useRemoteTasks()
+  // 渐进披露：已登录 + 至少一台远程设备才显示设备区；设置页「显示设备同步」开关可强制显示
+  // （即使仅本机，便于提前熟悉入口，见 mdc §4「或本地开关」）。
+  const showDeviceSection = session.status === 'authenticated' && (remoteDevices.length > 0 || showDeviceOverride)
 
   function logout() {
     setLogoutOpen(false)
@@ -123,6 +140,49 @@ export function Sidebar() {
             )
           })}
         </nav>
+
+        {showDeviceSection && (
+          <>
+            <p className="side-label">设备</p>
+            <nav className="side-nav">
+              <button
+                type="button"
+                className={cn('side-item', deviceFilter === null && 'active')}
+                onClick={() => { setDeviceFilter(null); setSidebarOpen(false) }}
+              >
+                <Monitor size={15} />
+                <span>全部设备</span>
+              </button>
+              <button
+                type="button"
+                className={cn('side-item', deviceFilter === myDeviceId && 'active')}
+                onClick={() => { setDeviceFilter(myDeviceId); setSidebarOpen(false) }}
+              >
+                <Monitor size={15} />
+                <i className="queue-dot on" title="在线" />
+                <span>{t('cloud.deviceCurrent')}</span>
+                <em>{tasks.length || ''}</em>
+              </button>
+              {remoteDevices.map((d) => {
+                const Icon = d.platform === 'android' || d.platform === 'ios' ? Smartphone : Monitor
+                const count = remoteTasks.filter((rt) => rt.toDevice === d.deviceId).length
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    className={cn('side-item', deviceFilter === d.deviceId && 'active')}
+                    onClick={() => { setDeviceFilter(d.deviceId); setSidebarOpen(false) }}
+                  >
+                    <Icon size={15} />
+                    <i className={cn('queue-dot', d.isOnline && 'on')} title={d.isOnline ? '在线' : '离线'} />
+                    <span>{d.name || '-'}</span>
+                    <em>{count || ''}</em>
+                  </button>
+                )
+              })}
+            </nav>
+          </>
+        )}
 
         <p className="side-label row">
           {t('sidebar.queues')}

@@ -33,10 +33,17 @@ use fluxdown_api::types::{
     CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, QueueDto,
     ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
+#[cfg(hub_link)]
+use fluxdown_api::types::{
+    LinkAuth, LinkCodeResponse, LinkPairConfirmRequest, LinkPairHelloRequest,
+    LinkPairHelloResponse, LinkPingInfo, LinkTaskRequest,
+};
 #[cfg(hub_plugins)]
 use fluxdown_api::types::{MarketEntryDto, PluginDto};
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec, ResolvePreviewOutcome};
+#[cfg(hub_link)]
+use fluxdown_engine::link::{LinkError, WireHello};
 #[cfg(hub_plugins)]
 use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -148,6 +155,9 @@ pub struct HubApiHost {
     /// 数据目录（与 `Engine::data_dir` 同源），供组件存在性探测
     /// （`plugin::dependencies::missing_components`）解析托管组件路径。
     data_dir: PathBuf,
+    /// 本地设备互联管理器（桌面 `hub_link`；`None` = mDNS 关闭）。
+    #[cfg(hub_link)]
+    link: Option<Arc<fluxdown_engine::link::LinkManager>>,
 }
 
 impl HubApiHost {
@@ -155,6 +165,7 @@ impl HubApiHost {
     /// (与 NMH / 脚本接管共用的外部下载通道);`live_speeds` → 与
     /// `RinfEventSink` 共享的同一个实时速率表 `Arc`;`task_events_tx` → 与
     /// `RinfEventSink` 共享的同一个任务事件广播 `Sender`。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,
         cmd_tx: mpsc::Sender<ApiCommand>,
@@ -163,6 +174,7 @@ impl HubApiHost {
         task_events_tx: broadcast::Sender<TaskEvent>,
         #[cfg(hub_plugins)] plugin_manager: Option<Arc<PluginManager>>,
         data_dir: PathBuf,
+        #[cfg(hub_link)] link: Option<Arc<fluxdown_engine::link::LinkManager>>,
     ) -> Self {
         Self {
             db,
@@ -173,6 +185,8 @@ impl HubApiHost {
             #[cfg(hub_plugins)]
             plugin_manager,
             data_dir,
+            #[cfg(hub_link)]
+            link,
         }
     }
 
@@ -551,6 +565,88 @@ impl ApiHost for HubApiHost {
         })
         .await
     }
+
+    #[cfg(hub_link)]
+    async fn link_ping_info(&self) -> Option<LinkPingInfo> {
+        let link = self.link.as_ref()?;
+        Some(LinkPingInfo {
+            fingerprint: link.fingerprint().to_string(),
+            name: link.self_name().to_string(),
+            platform: link.self_platform().unwrap_or("").to_string(),
+        })
+    }
+
+    #[cfg(hub_link)]
+    async fn link_pair_hello(
+        &self,
+        req: LinkPairHelloRequest,
+    ) -> Result<LinkPairHelloResponse, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let wire = WireHello {
+            code: req.code,
+            initiator_eph_pub: req.initiator_eph_pub,
+            initiator_id_pub: req.initiator_id_pub,
+            initiator_sig: req.initiator_sig,
+            name: req.name,
+            platform: link_opt_str(req.platform),
+            app_version: link_opt_str(req.app_version),
+            initiator_addrs: req.initiator_addrs,
+        };
+        let resp = link.pair_hello_wire(wire).map_err(map_link_err)?;
+        Ok(LinkPairHelloResponse {
+            session_id: resp.session_id,
+            responder_eph_pub: resp.responder_eph_pub,
+            responder_id_pub: resp.responder_id_pub,
+            responder_sig: resp.responder_sig,
+            name: resp.name,
+            platform: resp.platform.unwrap_or_default(),
+            app_version: resp.app_version.unwrap_or_default(),
+            sas: resp.sas,
+        })
+    }
+
+    #[cfg(hub_link)]
+    async fn link_pair_confirm(&self, req: LinkPairConfirmRequest) -> Result<(), ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.pair_confirm(&req.session_id, req.confirm)
+            .await
+            .map_err(map_link_err)?;
+        Ok(())
+    }
+
+    #[cfg(hub_link)]
+    async fn link_create_task(&self, auth: LinkAuth, body: Vec<u8>) -> Result<String, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.authorize(
+            "POST",
+            "/api/v1/link/tasks",
+            &auth.device,
+            auth.ts,
+            &auth.nonce,
+            &body,
+            &auth.tag,
+        )
+        .await
+        .map_err(map_link_err)?;
+        let req: LinkTaskRequest =
+            serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        let ctreq: CreateTaskRequest = serde_json::from_value(serde_json::json!({
+            "url": req.url,
+            "saveDir": req.save_dir,
+            "fileName": req.file_name,
+        }))
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.create_task(ctreq).await
+    }
+
+    #[cfg(hub_link)]
+    async fn link_generate_code(&self) -> Result<LinkCodeResponse, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        Ok(LinkCodeResponse {
+            code: link.generate_code(),
+            ttl_seconds: 120,
+        })
+    }
 }
 
 /// 把插件清单条目转换为 REST 预解析响应 DTO（`hub` 侧 wire↔engine 转换，
@@ -572,5 +668,25 @@ fn manifest_item_to_preview_dto(
                 size: v.size,
             })
             .collect(),
+    }
+}
+
+/// 空串 → `None`（wire DTO 的空 platform/version 归一为 Option）。
+#[cfg(hub_link)]
+fn link_opt_str(s: String) -> Option<String> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// [`LinkError`] → [`ApiError`] 映射（决定 HTTP 状态码）。
+#[cfg(hub_link)]
+fn map_link_err(e: LinkError) -> ApiError {
+    match e {
+        LinkError::Unauthorized => ApiError::Unauthorized,
+        LinkError::InvalidCode
+        | LinkError::BadSignature
+        | LinkError::BadPayload(_)
+        | LinkError::SessionExpired => ApiError::BadRequest(e.to_string()),
+        LinkError::Unreachable => ApiError::Unavailable,
+        other => ApiError::Internal(other.to_string()),
     }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,15 +18,20 @@ import '../theme/app_metrics.dart';
 import 'category_edit_dialog.dart';
 import 'context_menu.dart';
 import 'queue_manager_dialog.dart';
+import '../services/cloud/cloud_auth_service.dart';
 
 class Sidebar extends StatefulWidget {
   final DownloadController controller;
   final SettingsProvider settingsProvider;
 
+  /// 侧栏「＋ 添加设备」入口：跳转设置页账户区（低频管理，不做专门导航栈）。
+  final VoidCallback? onOpenAccountSettings;
+
   const Sidebar({
     super.key,
     required this.controller,
     required this.settingsProvider,
+    this.onOpenAccountSettings,
   });
 
   @override
@@ -33,6 +39,32 @@ class Sidebar extends StatefulWidget {
 }
 
 class _SidebarState extends State<Sidebar> {
+  @override
+  void initState() {
+    super.initState();
+    if (CloudAuthService.instance.isLoggedIn) {
+      unawaited(CloudAuthService.instance.refreshDevices());
+    }
+    CloudAuthService.instance.addListener(_onDeviceRosterChanged);
+  }
+
+  @override
+  void dispose() {
+    CloudAuthService.instance.removeListener(_onDeviceRosterChanged);
+    super.dispose();
+  }
+
+  /// 设备名册（远程设备增删/在线态）变化时，清理已失效的设备筛选。
+  /// 绝不在 build 内 notify —— 排到帧末执行。
+  void _onDeviceRosterChanged() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.controller.pruneDeviceFilter({
+        for (final d in CloudAuthService.instance.remoteDevices) d.deviceId,
+      });
+    });
+  }
+
   // ─────────────────────────────────────────────
   // 图标映射
   // ─────────────────────────────────────────────
@@ -73,6 +105,7 @@ class _SidebarState extends State<Sidebar> {
               listenable: Listenable.merge([
                 widget.controller,
                 widget.settingsProvider,
+                CloudAuthService.instance,
               ]),
               builder: (context, _) {
                 final ctrl = widget.controller;
@@ -92,6 +125,12 @@ class _SidebarState extends State<Sidebar> {
                       ],
                       if (sp.showSidebarCategory)
                         _buildCategorySection(ctrl, s, c),
+                      if (sp.showSidebarDeviceEffective(
+                        CloudAuthService.instance.hasRemoteDevices,
+                      )) ...[
+                        _buildDeviceSection(ctrl, s, c),
+                        const SizedBox(height: 6),
+                      ],
                     ],
                   ),
                 );
@@ -443,6 +482,75 @@ class _SidebarState extends State<Sidebar> {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // 设备区块（可折叠，多设备协同渐进披露；无远程设备且未强制开启时整区不渲染）
+  // ─────────────────────────────────────────────
+
+  /// 设备类型徽标：桌面(monitor)/移动(smartphone)/未知或服务器(server)。
+  static IconData _deviceTypeIcon(String? platform) => switch (platform) {
+    'windows' || 'macos' || 'linux' => LucideIcons.monitor,
+    'android' || 'ios' => LucideIcons.smartphone,
+    _ => LucideIcons.server,
+  };
+
+  Widget _buildDeviceSection(DownloadController ctrl, S s, AppColors c) {
+    final deviceFilter = ctrl.deviceFilter;
+    final remoteDevices = CloudAuthService.instance.remoteDevices;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GestureDetector(
+          onSecondaryTapUp: (d) => _showSectionContextMenu(
+            context,
+            d.globalPosition,
+            s,
+            onHide: () => widget.settingsProvider.setShowSidebarDevice(false),
+          ),
+          child: _CollapsibleSectionHeader(
+            title: s.deviceSection,
+            expanded: widget.settingsProvider.sidebarDeviceExpanded,
+            c: c,
+            onToggle: () => widget.settingsProvider.setSidebarDeviceExpanded(
+              !widget.settingsProvider.sidebarDeviceExpanded,
+            ),
+          ),
+        ),
+        if (widget.settingsProvider.sidebarDeviceExpanded) ...[
+          const SizedBox(height: 4),
+          _NavItem(
+            icon: LucideIcons.globe,
+            label: s.allDevices,
+            isSelected: deviceFilter == null,
+            onTap: () => ctrl.setDeviceFilter(null),
+          ),
+          _NavItem(
+            icon: LucideIcons.monitor,
+            label: s.thisDevice,
+            count: ctrl.countForDevice(''),
+            isSelected: deviceFilter == '',
+            isOnline: true,
+            onTap: () => ctrl.setDeviceFilter(''),
+          ),
+          for (final device in remoteDevices)
+            _NavItem(
+              icon: _deviceTypeIcon(device.platform),
+              label: device.name,
+              count: ctrl.countForDevice(device.deviceId),
+              isSelected: deviceFilter == device.deviceId,
+              isOnline: device.isOnline,
+              onTap: () => ctrl.setDeviceFilter(device.deviceId),
+            ),
+          _NavItem(
+            icon: LucideIcons.plus,
+            label: s.addDeviceEntry,
+            isSelected: false,
+            onTap: () => widget.onOpenAccountSettings?.call(),
+          ),
+        ],
+      ],
+    );
+  }
+
   void _showSectionContextMenu(
     BuildContext context,
     Offset position,
@@ -629,6 +737,8 @@ class _NavItem extends StatefulWidget {
   final int? count;
   final bool isSelected;
   final bool showActivityDot;
+  /// 设备在线态圆点（null=不显示；true=实心绿/在线；false=空心灰/离线）。
+  final bool? isOnline;
   final VoidCallback onTap;
 
   const _NavItem({
@@ -637,6 +747,7 @@ class _NavItem extends StatefulWidget {
     this.count,
     required this.isSelected,
     this.showActivityDot = false,
+    this.isOnline,
     required this.onTap,
   });
 
@@ -652,6 +763,30 @@ class _NavItemState extends State<_NavItem> {
     final c = AppColors.of(context);
     final m = AppMetrics.of(context);
     final selected = widget.isSelected;
+    final Widget? statusDot = widget.showActivityDot
+        ? Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: AppColors.green,
+              shape: BoxShape.circle,
+              border: Border.all(color: c.surface1, width: 1),
+            ),
+          )
+        : widget.isOnline == null
+        ? null
+        : Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: widget.isOnline! ? AppColors.green : Colors.transparent,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: widget.isOnline! ? c.surface1 : c.textMuted,
+                width: widget.isOnline! ? 1 : 1.2,
+              ),
+            ),
+          );
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
@@ -682,20 +817,8 @@ class _NavItemState extends State<_NavItem> {
                     size: 14,
                     color: selected ? c.accent : c.textSecondary,
                   ),
-                  if (widget.showActivityDot)
-                    Positioned(
-                      top: -2,
-                      right: -3,
-                      child: Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: AppColors.green,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: c.surface1, width: 1),
-                        ),
-                      ),
-                    ),
+                  if (statusDot != null)
+                    Positioned(top: -2, right: -3, child: statusDot),
                 ],
               ),
               const SizedBox(width: 8),

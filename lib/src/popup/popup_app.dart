@@ -642,6 +642,9 @@ class _PopupFormHost implements QuickDownloadFormHost {
   List<QuickQueueOption> get queues => payload.queues;
 
   @override
+  List<QuickDeviceOption> get devices => payload.devices;
+
+  @override
   int get defaultSegments => payload.defaultSegments;
 
   @override

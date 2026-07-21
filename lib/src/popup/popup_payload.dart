@@ -54,6 +54,9 @@ class QuickPopupPayload {
   /// 命名队列列表
   final List<QuickQueueOption> queues;
 
+  /// 设备名册（云账户已登录且有远程设备时非空；渐进披露判定源）。
+  final List<QuickDeviceOption> devices;
+
   const QuickPopupPayload({
     required this.requestId,
     required this.url,
@@ -68,6 +71,7 @@ class QuickPopupPayload {
     required this.lastDialogThreads,
     required this.defaultQueueId,
     required this.queues,
+    this.devices = const [],
   });
 
   String toJsonString() => jsonEncode({
@@ -92,6 +96,15 @@ class QuickPopupPayload {
             'id': q.queueId,
             'name': q.name,
             'defaultSegments': q.defaultSegments,
+          },
+      ],
+      'devices': [
+        for (final d in devices)
+          {
+            'deviceId': d.deviceId,
+            'name': d.name,
+            'platform': d.platform,
+            'isOnline': d.isOnline,
           },
       ],
     },
@@ -120,6 +133,15 @@ class QuickPopupPayload {
             queueId: (q as Map<String, dynamic>)['id'] as String? ?? '',
             name: q['name'] as String? ?? '',
             defaultSegments: (q['defaultSegments'] as num?)?.toInt() ?? 0,
+          ),
+      ],
+      devices: [
+        for (final d in (env['devices'] as List? ?? const []))
+          QuickDeviceOption(
+            deviceId: (d as Map<String, dynamic>)['deviceId'] as String? ?? '',
+            name: d['name'] as String? ?? '',
+            platform: d['platform'] as String?,
+            isOnline: d['isOnline'] as bool? ?? false,
           ),
       ],
     );
@@ -163,6 +185,7 @@ Map<String, dynamic> quickFormResultToJson(QuickDownloadFormResult form) => {
   'threadsUserModified': form.threadsUserModified,
   'extraHeaders': form.extraHeaders,
   'startLater': form.startLater,
+  'targetDeviceId': form.targetDeviceId,
 };
 
 QuickDownloadFormResult quickFormResultFromJson(Map<String, dynamic> map) =>
@@ -179,6 +202,7 @@ QuickDownloadFormResult quickFormResultFromJson(Map<String, dynamic> map) =>
       ignoreTlsErrors: map['ignoreTlsErrors'] as bool? ?? false,
       threadsUserModified: map['threadsUserModified'] as bool? ?? false,
       startLater: map['startLater'] as bool? ?? false,
+      targetDeviceId: map['targetDeviceId'] as String? ?? '',
       extraHeaders: {
         for (final e
             in (map['extraHeaders'] as Map<String, dynamic>? ?? const {})

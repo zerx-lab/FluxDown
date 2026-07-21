@@ -672,6 +672,66 @@ class S {
   String get showSidebarCategoryDesc => _r('showSidebarCategoryDesc');
   String get hideSection => _r('hideSection');
 
+  // 多设备协同
+  String get deviceSection => _r('deviceSection');
+  String get allDevices => _r('allDevices');
+  String get thisDevice => _r('thisDevice');
+  String get addDeviceEntry => _r('addDeviceEntry');
+  String get deviceOnline => _r('deviceOnline');
+  String get deviceOffline => _r('deviceOffline');
+  String get showSidebarDevice => _r('showSidebarDevice');
+  String get showSidebarDeviceDesc => _r('showSidebarDeviceDesc');
+  String get downloadTo => _r('downloadTo');
+  String get downloadToHint => _r('downloadToHint');
+  String get multiDeviceTitle => _r('multiDeviceTitle');
+  String get multiDeviceDesc => _r('multiDeviceDesc');
+  String devicesOnlineCount(int count) =>
+      _r('devicesOnlineCount', {'count': count});
+  String dispatchedToDevice(String device) =>
+      _r('dispatchedToDevice', {'device': device});
+  String get dispatchFailed => _r('dispatchFailed');
+  String get addDeviceHint => _r('addDeviceHint');
+  String get addDeviceAccountLabel => _r('addDeviceAccountLabel');
+  String get addDeviceLoginRequired => _r('addDeviceLoginRequired');
+
+  // 本地设备互联（局域网配对，免账号）
+  String get addDeviceTabAccount => _r('addDeviceTabAccount');
+  String get addDeviceTabLocal => _r('addDeviceTabLocal');
+  String get localPairingHint => _r('localPairingHint');
+  String get localPairingDiscovering => _r('localPairingDiscovering');
+  String get localPairingNoDevices => _r('localPairingNoDevices');
+  String get localPairingCodeLabel => _r('localPairingCodeLabel');
+  String get localPairingCodePlaceholder => _r('localPairingCodePlaceholder');
+  String get localPairingCodeHint => _r('localPairingCodeHint');
+  String get localPairingConnect => _r('localPairingConnect');
+  String get localPairingManualAddress => _r('localPairingManualAddress');
+  String get localPairingSasTitle => _r('localPairingSasTitle');
+  String get localPairingSasHint => _r('localPairingSasHint');
+  String get localPairingConfirm => _r('localPairingConfirm');
+  String localPairingPaired(String device) =>
+      _r('localPairingPaired', {'device': device});
+  String get localPairingFailed => _r('localPairingFailed');
+  String get localPairingOnline => _r('localPairingOnline');
+  String get localPairingOffline => _r('localPairingOffline');
+  String get localGenerateCode => _r('localGenerateCode');
+  String localMyCode(String code) => _r('localMyCode', {'code': code});
+  String addDeviceAccountSynced(String account) =>
+      _r('addDeviceAccountSynced', {'account': account});
+  String get addDeviceAccountFooter => _r('addDeviceAccountFooter');
+
+  // 本地设备管理（未登录也可用，免账号）
+  String get localDevicesSectionTitle => _r('localDevicesSectionTitle');
+  String get localDevicesSectionDesc => _r('localDevicesSectionDesc');
+  String get localDevicesEmpty => _r('localDevicesEmpty');
+  String get localDeviceThisTitle => _r('localDeviceThisTitle');
+  String get localDeviceThisDesc => _r('localDeviceThisDesc');
+  String get localDeviceAddressLabel => _r('localDeviceAddressLabel');
+  String get localDeviceAddressHint => _r('localDeviceAddressHint');
+  String get localDeviceUnpair => _r('localDeviceUnpair');
+  String get localDeviceCodeCopied => _r('localDeviceCodeCopied');
+  String get apiServiceLanEnable => _r('apiServiceLanEnable');
+  String get apiServiceLanEnableDesc => _r('apiServiceLanEnableDesc');
+
   // 标题栏按钮
   String get titlebarButtons => _r('titlebarButtons');
   String get titlebarButtonsDesc => _r('titlebarButtonsDesc');

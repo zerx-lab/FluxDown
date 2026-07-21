@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart';
 
 import '../kv_store.dart';
 import 'cloud_models.dart';
+import 'device_identity.dart';
 
 /// 默认服务地址：Actions 打包时用 --dart-define=FLUXCLOUD_BASE_URL=https://... 注入
 /// 官方地址，未注入时回退本地联调端口（开发期）。
@@ -254,7 +255,11 @@ class CloudClient {
 
   /// GET /devices：当前用户名下已信任设备，按 lastSeenAt 降序。
   Future<List<CloudDevice>> devices() => _authed(() async {
-    final json = await _request('GET', '/devices', authed: true);
+    final json = await _request(
+      'GET',
+      '/devices?deviceId=${Uri.encodeQueryComponent(DeviceIdentity.deviceId())}',
+      authed: true,
+    );
     final list = json['devices'] as List<dynamic>? ?? const [];
     return list
         .map((e) => CloudDevice.fromJson(e as Map<String, dynamic>))
@@ -275,6 +280,83 @@ class CloudClient {
   /// DELETE /devices/{id}：删除设备 + 吊销其名下全部未撤销 refresh token。
   Future<void> deleteDevice(String id) => _authed(() async {
     await _request('DELETE', '/devices/$id', authed: true);
+  });
+
+  // ── 跨设备任务协同（Bearer UserAuth；SSE 事件流由 RemoteTaskService 独立直连）──
+
+  /// POST /tasks/dispatch：把下载任务下发给目标设备执行。返回创建的跨设备任务。
+  Future<RemoteTask> dispatchTask({
+    required String toDevice,
+    required String url,
+    String? saveDir,
+    String? fileName,
+    Map<String, dynamic>? options,
+  }) => _authed(() async {
+    final json = await _request(
+      'POST',
+      '/tasks/dispatch',
+      body: {
+        'deviceId': DeviceIdentity.deviceId(),
+        'toDevice': toDevice,
+        'url': url,
+        if (saveDir != null && saveDir.isNotEmpty) 'saveDir': saveDir,
+        if (fileName != null && fileName.isNotEmpty) 'fileName': fileName,
+        ...?options,
+      },
+      authed: true,
+    );
+    return RemoteTask.fromJson(json);
+  });
+
+  /// GET /tasks/remote：拉取本账号全部跨设备任务（持久态 + 内存进度快照），断线重连用。
+  Future<List<RemoteTask>> remoteTasks() => _authed(() async {
+    final json = await _request('GET', '/tasks/remote', authed: true);
+    final list = json['tasks'] as List<dynamic>? ?? const [];
+    return list
+        .map((e) => RemoteTask.fromJson(e as Map<String, dynamic>))
+        .toList();
+  });
+
+  /// POST /tasks/{id}/status：执行端上报任务状态转换（服务端落库 + 广播）。
+  Future<void> reportTaskStatus(
+    String id, {
+    required String status,
+    int? totalBytes,
+    String? fileName,
+    String? error,
+  }) => _authed(() async {
+    await _request(
+      'POST',
+      '/tasks/$id/status',
+      body: {
+        'status': status,
+        if (totalBytes != null) 'totalBytes': totalBytes,
+        if (fileName != null && fileName.isNotEmpty) 'fileName': fileName,
+        if (error != null && error.isNotEmpty) 'error': error,
+      },
+      authed: true,
+    );
+  });
+
+  /// POST /tasks/progress：执行端批量上报进度（服务端仅更内存 + 广播，不落库）。
+  Future<void> reportProgress(List<ProgressReport> items) => _authed(() async {
+    if (items.isEmpty) return;
+    await _request(
+      'POST',
+      '/tasks/progress',
+      body: {'items': items.map((e) => e.toJson()).toList()},
+      authed: true,
+    );
+  });
+
+  /// POST /tasks/{id}/command：向执行端下发控制命令（pause/resume/cancel）。
+  Future<void> commandTask(String id, String action) => _authed(() async {
+    await _request(
+      'POST',
+      '/tasks/$id/command',
+      body: {'action': action},
+      authed: true,
+    );
   });
 
   /// POST /me/email/code：向当前绑定邮箱发送验证码（邮箱变更第一步），返回 TTL（秒）。

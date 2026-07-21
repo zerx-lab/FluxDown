@@ -13,8 +13,9 @@ use tokio::sync::broadcast;
 use async_trait::async_trait;
 
 use crate::types::{
-    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, MarketEntryDto, PluginDto,
-    QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
+    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
+    LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
+    MarketEntryDto, PluginDto, QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组
@@ -45,6 +46,9 @@ pub enum ApiError {
     /// 宿主正在关闭（命令通道已断）→ 503。
     #[error("app shutting down")]
     Unavailable,
+    /// 鉴权失败（链路 HMAC 不符 / 设备未配对 / 时间戳过期）→ 401。
+    #[error("unauthorized")]
+    Unauthorized,
     /// 其它内部错误 → 500。
     #[error("{0}")]
     Internal(String),
@@ -246,6 +250,41 @@ pub trait ApiHost: Send + Sync {
         let _ = (group_id, delete_files);
         Err(groups_unsupported())
     }
+
+    // -- P2P 设备互联（默认降级：不支持的宿主报错 / ping 信息返回 None）--
+
+    /// `/ping` 透出的本机设备互联身份（无鉴权）。默认 `None`（不支持 link 的宿主
+    /// 省略该字段）。
+    async fn link_ping_info(&self) -> Option<LinkPingInfo> {
+        None
+    }
+
+    /// 处理入站配对 `hello`（无 token 鉴权，由一次性配对码守卫）。
+    async fn link_pair_hello(
+        &self,
+        req: LinkPairHelloRequest,
+    ) -> Result<LinkPairHelloResponse, ApiError> {
+        let _ = req;
+        Err(link_unsupported())
+    }
+
+    /// 处理入站配对 `confirm`（SAS 核对后确认/拒绝）。
+    async fn link_pair_confirm(&self, req: LinkPairConfirmRequest) -> Result<(), ApiError> {
+        let _ = req;
+        Err(link_unsupported())
+    }
+
+    /// 已配对设备下发下载任务：先校验 `auth`（链路 HMAC，含 body 摘要），再反序列化
+    /// `body`（原始请求体字节，须与签名覆盖的字节一致）为任务并创建，返回任务 ID。
+    async fn link_create_task(&self, auth: LinkAuth, body: Vec<u8>) -> Result<String, ApiError> {
+        let _ = (auth, body);
+        Err(link_unsupported())
+    }
+
+    /// 生成一次性配对码（供 headless 设备经 web/CLI 出示）。默认不支持。
+    async fn link_generate_code(&self) -> Result<LinkCodeResponse, ApiError> {
+        Err(link_unsupported())
+    }
 }
 
 /// 未支持插件的宿主（如纯 aria2 客户端场景）的统一错误。
@@ -256,6 +295,11 @@ fn plugins_unsupported() -> ApiError {
 /// 未支持任务组的宿主的统一错误。
 fn groups_unsupported() -> ApiError {
     ApiError::Internal("task groups not supported by this host".to_string())
+}
+
+/// 未支持设备互联的宿主（如纯 aria2 客户端 / mobile）的统一错误。
+fn link_unsupported() -> ApiError {
+    ApiError::Internal("device link not supported by this host".to_string())
 }
 
 /// 任务生命周期事件类别，一一对应 aria2 的 6 种 WS 通知。

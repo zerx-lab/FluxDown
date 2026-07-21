@@ -4,7 +4,7 @@
 // 去重为单个 in-flight promise，避免刷新风暴。
 
 import { applyCloudSession, clearCloudSession, cloudDefaultDeviceName, cloudDeviceId, CLOUD_DEVICE_PLATFORM, getCloudAccessToken, getCloudRefreshToken } from './session'
-import type { AuthResponse, CloudDevice, CloudProfile, DevicesResponse, LoginResult, TtlResponse } from './types'
+import type { AuthResponse, CloudDevice, CloudProfile, DevicesResponse, LoginResult, RemoteTask, RemoteTasksResponse, TtlResponse } from './types'
 import { CloudApiError } from './types'
 
 /** 默认服务地址：Actions 打包时经 VITE_FLUXCLOUD_BASE_URL 构建期注入官方地址，
@@ -158,4 +158,13 @@ export const cloudApi = {
 
   /** DELETE /devices/{id}：删除设备 + 吊销其名下全部未撤销 refresh token。 */
   deleteDevice: (id: string) => authedRequest<unknown>('DELETE', `/devices/${id}`),
+
+  /** POST /tasks/dispatch：向指定设备下发跨设备下载任务（云中转，见 mdc §1.4）；
+   *  deviceId 为发起端自身标识，供服务端记录 fromDevice。 */
+  dispatchTask: (req: { toDevice: string; url: string; saveDir?: string; fileName?: string }) =>
+    authedRequest<RemoteTask>('POST', '/tasks/dispatch', { ...req, deviceId: cloudDeviceId() }),
+
+  /** GET /tasks/remote：拉取当前账号下全部跨设备任务全量（持久态 join 内存进度快照，
+   *  首次加载/SSE 断线重连用，见 mdc §1.4）。 */
+  remoteTasks: () => authedRequest<RemoteTasksResponse>('GET', '/tasks/remote'),
 }

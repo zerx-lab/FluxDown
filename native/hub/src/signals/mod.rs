@@ -1435,3 +1435,72 @@ pub struct GroupInfo {
     /// Unix seconds 时间戳。
     pub created_at: String,
 }
+
+// ========== 本地设备互联（device link）信号 ==========
+
+/// Dart → Rust：设备互联命令（单信号 + `action` 判别，避免逼近 select! 64 分支上限）。
+/// action 取值：generateCode / startDiscovery / stopDiscovery / probe / beginPairing /
+/// confirmPairing / listDevices / removeDevice。
+#[derive(Deserialize, DartSignal)]
+pub struct LinkCommand {
+    pub action: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: i32,
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub accept: bool,
+    #[serde(default)]
+    pub fingerprint: String,
+}
+
+/// 已发现设备（未配对）——`LinkEvent.discovered` 的负载。
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct LinkDiscoveredPiece {
+    pub fingerprint: String,
+    pub name: String,
+    pub platform: String,
+    pub host: String,
+    pub port: i32,
+    pub app_version: String,
+    pub source: String, // "mdns" | "manual"
+}
+
+/// 已配对设备——`LinkEvent.devices` 列表元素。
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct LinkDevicePiece {
+    pub fingerprint: String,
+    pub name: String,
+    pub platform: String,
+    pub online: bool,
+    pub last_seen_at: i64,
+}
+
+/// Rust → Dart：设备互联事件（单信号 + `kind` 判别）。
+/// kind 取值：identity / code / discovered / pairingChallenge / paired / unpaired /
+/// devices / error。
+#[derive(Serialize, RustSignal)]
+pub struct LinkEvent {
+    pub kind: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub ttl_seconds: i64,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub sas: String,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub name: String,
+    pub discovered: Option<LinkDiscoveredPiece>,
+    #[serde(default)]
+    pub devices: Vec<LinkDevicePiece>,
+}

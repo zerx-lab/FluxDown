@@ -197,6 +197,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugin_retry_rx,
     ));
 
+    // 本地设备互联（P2P 局域网配对 + mDNS 发现 + 直连传输）。
+    // 广播端口 = FLUXDOWN_BIND 的端口；FLUXDOWN_MDNS=off 时不主动广播（仍可手动配对）。
+    let link_mgr = {
+        let api_port = server_cfg
+            .bind
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(17800);
+        let self_name = std::env::var("FLUXDOWN_LINK_NAME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "FluxDown Server".to_string());
+        let self_info = fluxdown_engine::link::SelfInfo {
+            name: self_name,
+            platform: Some("server".to_string()),
+            app_version: Some(SERVER_VERSION.to_string()),
+        };
+        let (link_tx, mut link_rx) = mpsc::channel::<fluxdown_engine::link::LinkEngineEvent>(64);
+        match fluxdown_engine::link::LinkManager::load(
+            db_handle.clone(),
+            self_info,
+            api_port,
+            link_tx,
+        )
+        .await
+        {
+            Ok(mgr) => {
+                log_info!(
+                    "[server] device link ready, fingerprint={}",
+                    mgr.fingerprint()
+                );
+                // 事件仅记日志（headless 无交互 UI；配对成功/错误可在日志追踪）。
+                tokio::spawn(async move {
+                    while let Some(ev) = link_rx.recv().await {
+                        match ev {
+                            fluxdown_engine::link::LinkEngineEvent::Paired(r) => {
+                                log_info!(
+                                    "[server] paired device: {} ({})",
+                                    r.name,
+                                    r.short_fingerprint()
+                                );
+                            }
+                            fluxdown_engine::link::LinkEngineEvent::Error(m) => {
+                                log_info!("[server] link error: {}", m);
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                let mdns_on = std::env::var("FLUXDOWN_MDNS")
+                    .map(|v| {
+                        !matches!(
+                            v.trim().to_ascii_lowercase().as_str(),
+                            "0" | "false" | "off" | "no"
+                        )
+                    })
+                    .unwrap_or(true);
+                if mdns_on {
+                    mgr.start_advertising();
+                    log_info!("[server] mDNS advertising on port {}", api_port);
+                }
+                Some(mgr)
+            }
+            Err(e) => {
+                log_info!("[server] device link init failed: {}", e);
+                None
+            }
+        }
+    };
+
     // 匿名统计（首次部署/每日活跃；不含任何下载任务信息）。
     // FLUXDOWN_ANALYTICS=off 或未配置 App-Key 时内部自行退出。
     tokio::spawn(analytics::run(db_handle.clone(), SERVER_VERSION));
@@ -247,6 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server_cfg.language.clone(),
         plugin_manager,
         engine_data_dir.clone(),
+        link_mgr,
     ));
     if let Some(url) = &server_cfg.demo_url {
         log_info!("[server] demo mode enabled, allowed url: {}", url);

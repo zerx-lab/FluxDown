@@ -661,6 +661,7 @@ mod tests {
             completed_at: String::new(),
             referrer: String::new(),
             group_id: String::new(),
+            queue_order: 0,
         }
     }
 

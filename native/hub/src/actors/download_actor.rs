@@ -45,6 +45,7 @@ use crate::signals::{
     YtdlpStatusReport, YtdlpVersionList,
 };
 // 插件「分支体专用」信号（仅在 hub_plugins 分支体内构造）：mobile 不引入。
+use crate::signals::LinkCommand;
 #[cfg(hub_plugins)]
 use crate::signals::{MarketEntrySignal, MarketIndexLoaded, PluginList, PluginOpResult};
 use crate::updater;
@@ -649,6 +650,54 @@ pub async fn run(db_dir: PathBuf) {
     #[cfg(hub_plugins)]
     let plugin_manager = engine.manager.plugin_manager();
     let (api_cmd_tx, mut api_cmd_rx) = mpsc::channel::<ApiCommand>(32);
+
+    // 本地设备互联（桌面）：加载本机身份 + 启动 mDNS 浏览驱动的发现/配对。
+    // 桌面在本地互联中主要充当**发起方**（发现并添加 NAS/服务器等局域网可达设备）；
+    // 事件（发现/配对进度/名册）经 LinkEvent 信号回流 Dart。
+    #[cfg(hub_link)]
+    let link_mgr: Option<Arc<fluxdown_engine::link::LinkManager>> = {
+        let self_name = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "FluxDown".to_string());
+        let self_info = fluxdown_engine::link::SelfInfo {
+            name: self_name,
+            platform: Some(std::env::consts::OS.to_string()),
+            app_version: None,
+        };
+        let (link_tx, mut link_rx) = mpsc::channel::<fluxdown_engine::link::LinkEngineEvent>(64);
+        // api_port = 本机 API 端口（供自报候选/mDNS 广播），从 config 读，回退 17800。
+        let api_port = engine
+            .db
+            .get_config("local_server_port")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.trim().parse::<u16>().ok())
+            .unwrap_or(17800);
+        match fluxdown_engine::link::LinkManager::load(
+            engine.db.clone(),
+            self_info,
+            api_port,
+            link_tx,
+        )
+        .await
+        {
+            Ok(mgr) => {
+                tokio::spawn(async move {
+                    while let Some(ev) = link_rx.recv().await {
+                        emit_link_engine_event(ev);
+                    }
+                });
+                Some(mgr)
+            }
+            Err(e) => {
+                log_info!("[link] init failed: {e}");
+                None
+            }
+        }
+    };
     #[cfg(hub_plugins)]
     let api_host: Arc<dyn fluxdown_api::service::ApiHost> = Arc::new(HubApiHost::new(
         engine.db.clone(),
@@ -658,6 +707,8 @@ pub async fn run(db_dir: PathBuf) {
         task_events_tx,
         plugin_manager.clone(),
         engine.data_dir.clone(),
+        #[cfg(hub_link)]
+        link_mgr.clone(),
     ));
     #[cfg(not(hub_plugins))]
     let api_host: Arc<dyn fluxdown_api::service::ApiHost> = Arc::new(HubApiHost::new(
@@ -667,6 +718,8 @@ pub async fn run(db_dir: PathBuf) {
         live_speeds,
         task_events_tx,
         engine.data_dir.clone(),
+        #[cfg(hub_link)]
+        link_mgr.clone(),
     ));
 
     // Native Messaging listener (reads from the Named Pipe / Unix socket).
@@ -776,6 +829,32 @@ pub async fn run(db_dir: PathBuf) {
             }
         });
     }
+
+    // LinkCommand 信号在所有平台都编译；发现/配对逻辑仅桌面（hub_link）可用。
+    // select! 分支体不接受 #[cfg]（会让宏解析失败），故把平台差异收进一个装箱闭包，
+    // 分支体只调用它——桌面转发到 LinkManager，移动端为空操作。
+    let link_recv = LinkCommand::get_dart_signal_receiver();
+    let link_dispatch: Box<dyn Fn(LinkCommand) + Send> = {
+        #[cfg(hub_link)]
+        {
+            let lm = link_mgr.clone();
+            Box::new(move |cmd: LinkCommand| {
+                if let Some(link) = lm.clone() {
+                    tokio::spawn(handle_link_command(cmd, link));
+                }
+            })
+        }
+        #[cfg(not(hub_link))]
+        {
+            Box::new(|_cmd: LinkCommand| {})
+        }
+    };
+    // 独立任务里 drain LinkCommand（主 select! 已逼近 tokio 64 分支上限，不再加分支）。
+    tokio::spawn(async move {
+        while let Some(signal) = link_recv.recv().await {
+            link_dispatch(signal.message);
+        }
+    });
 
     loop {
         tokio::select! {
@@ -2598,5 +2677,152 @@ mod tests {
         let signal = synthesize_batch_request(&[a, b]);
         assert_eq!(signal.referrer, "https://page.example/");
         assert_eq!(signal.save_dir, "D:/dl");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 本地设备互联（device link）—— LinkCommand 处理 + LinkEvent 发射（桌面）
+// ─────────────────────────────────────────────────────────────────────────
+
+#[cfg(hub_link)]
+fn link_event_base(kind: &str) -> crate::signals::LinkEvent {
+    crate::signals::LinkEvent {
+        kind: kind.to_string(),
+        message: String::new(),
+        code: String::new(),
+        ttl_seconds: 0,
+        token: String::new(),
+        sas: String::new(),
+        fingerprint: String::new(),
+        name: String::new(),
+        discovered: None,
+        devices: Vec::new(),
+    }
+}
+
+/// 汇总本机名册（含并发在线探测）并以 `LinkEvent{kind:"devices"}` 推给 Dart。
+#[cfg(hub_link)]
+async fn emit_link_devices(link: &fluxdown_engine::link::LinkManager) {
+    use rinf::RustSignal;
+    let records = link.list_devices().await.unwrap_or_default();
+    let online: Vec<bool> =
+        futures_util::future::join_all(records.iter().map(|r| link.is_online(&r.fingerprint)))
+            .await;
+    let devices = records
+        .iter()
+        .zip(online)
+        .map(|(r, on)| crate::signals::LinkDevicePiece {
+            fingerprint: r.fingerprint.clone(),
+            name: r.name.clone(),
+            platform: r.platform.clone().unwrap_or_default(),
+            online: on,
+            last_seen_at: r.last_seen_at,
+        })
+        .collect();
+    let mut ev = link_event_base("devices");
+    ev.devices = devices;
+    ev.send_signal_to_dart();
+}
+
+/// 把引擎侧 [`LinkEngineEvent`](fluxdown_engine::link::LinkEngineEvent) 转成
+/// Dart 信号（发现/配对成功/解除配对/错误）。
+#[cfg(hub_link)]
+fn emit_link_engine_event(ev: fluxdown_engine::link::LinkEngineEvent) {
+    use fluxdown_engine::link::{DiscoveryKind, LinkEngineEvent as E};
+    use rinf::RustSignal;
+    match ev {
+        E::Discovered(p) => {
+            let mut e = link_event_base("discovered");
+            e.discovered = Some(crate::signals::LinkDiscoveredPiece {
+                fingerprint: p.fingerprint.unwrap_or_default(),
+                name: p.name,
+                platform: p.platform.unwrap_or_default(),
+                host: p.host,
+                port: p.port as i32,
+                app_version: p.app_version.unwrap_or_default(),
+                source: match p.kind {
+                    DiscoveryKind::Mdns => "mdns",
+                    DiscoveryKind::Manual => "manual",
+                }
+                .to_string(),
+            });
+            e.send_signal_to_dart();
+        }
+        E::Paired(r) => {
+            let mut e = link_event_base("paired");
+            e.fingerprint = r.fingerprint;
+            e.name = r.name;
+            e.send_signal_to_dart();
+        }
+        E::Unpaired(fp) => {
+            let mut e = link_event_base("unpaired");
+            e.fingerprint = fp;
+            e.send_signal_to_dart();
+        }
+        E::Error(m) => {
+            let mut e = link_event_base("error");
+            e.message = m;
+            e.send_signal_to_dart();
+        }
+    }
+}
+
+/// 处理来自 Dart 的 [`LinkCommand`](crate::signals::LinkCommand)（off-actor 执行）。
+#[cfg(hub_link)]
+async fn handle_link_command(
+    msg: crate::signals::LinkCommand,
+    link: Arc<fluxdown_engine::link::LinkManager>,
+) {
+    use rinf::RustSignal;
+    let emit_err = |m: String| {
+        let mut ev = link_event_base("error");
+        ev.message = m;
+        ev.send_signal_to_dart();
+    };
+    match msg.action.as_str() {
+        "generateCode" => {
+            let mut e = link_event_base("code");
+            e.code = link.generate_code();
+            e.ttl_seconds = 120;
+            e.send_signal_to_dart();
+        }
+        "startDiscovery" => {
+            if let Err(e) = link.start_discovery() {
+                emit_err(e.to_string());
+            }
+        }
+        "stopDiscovery" => link.stop_discovery(),
+        "probe" => match link.probe(&msg.host, msg.port as u16).await {
+            Ok(p) => emit_link_engine_event(fluxdown_engine::link::LinkEngineEvent::Discovered(p)),
+            Err(e) => emit_err(e.to_string()),
+        },
+        "beginPairing" => {
+            match link
+                .begin_pairing(&msg.host, msg.port as u16, &msg.code)
+                .await
+            {
+                Ok(r) => {
+                    let mut e = link_event_base("pairingChallenge");
+                    e.token = r.token;
+                    e.sas = r.sas;
+                    e.name = r.peer_name;
+                    e.fingerprint = r.peer_fingerprint;
+                    e.send_signal_to_dart();
+                }
+                Err(e) => emit_err(e.to_string()),
+            }
+        }
+        "confirmPairing" => match link.confirm_pairing(&msg.token, msg.accept).await {
+            Ok(_) => emit_link_devices(&link).await,
+            Err(e) => emit_err(e.to_string()),
+        },
+        "listDevices" => emit_link_devices(&link).await,
+        "removeDevice" => {
+            if let Err(e) = link.remove_device(&msg.fingerprint).await {
+                emit_err(e.to_string());
+            }
+            emit_link_devices(&link).await;
+        }
+        _ => {}
     }
 }

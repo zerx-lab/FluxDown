@@ -39,7 +39,7 @@ use crate::service::{ApiError, ApiHost, UNKNOWN_ENDPOINT_MESSAGE};
 use crate::takeover::parse_batch;
 use crate::types::{
     CreateGroupRequest, CreateGroupResponse, CreateTaskRequest, CreatedTask, DownloadRequest,
-    ResolvePreviewRequest,
+    LinkAuth, LinkPairConfirmRequest, LinkPairHelloRequest, ResolvePreviewRequest,
 };
 
 /// 请求体大小上限：4 MB（足够容纳批量 URL 列表）。
@@ -69,7 +69,7 @@ const BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
 pub struct ApiServerConfig {
     /// 总开关（`local_server_enabled`，默认 true）。
     pub enabled: bool,
-    /// 监听端口（`local_server_port`，默认 17800；永远只绑 127.0.0.1）。
+    /// 监听端口（`local_server_port`，默认 17800）。
     pub port: u16,
     /// 鉴权 token（`local_server_token`，空 = 接管/aria2 不鉴权，管理 API 拒绝）。
     pub token: String,
@@ -82,6 +82,10 @@ pub struct ApiServerConfig {
     /// MCP 端点子开关（`local_server_mcp_enabled`，默认 false）。
     /// 与管理 API 共用 token 鉴权（Bearer / X-FluxDown-Token）。
     pub mcp_enabled: bool,
+    /// 允许局域网 / 组网访问（`local_server_lan_enabled`，默认 false）。
+    /// 为 true 时绑定 `0.0.0.0` 使同网络 / 用户自建组网内的设备可达（供免账号本地
+    /// 配对的响应方场景）；为 false 时仅绑回环 `127.0.0.1`。
+    pub lan_enabled: bool,
     /// 宿主应用版本号（`/ping`、`/api/v1/info` 返回）。
     pub app_version: String,
 }
@@ -104,14 +108,22 @@ impl ApiServerConfig {
             jsonrpc_enabled: flag("local_server_jsonrpc_enabled", true),
             management_enabled: flag("local_server_api_enabled", false),
             mcp_enabled: flag("local_server_mcp_enabled", false),
+            lan_enabled: flag("local_server_lan_enabled", false),
             app_version: app_version.to_string(),
         }
     }
 
-    /// 监听地址。永远只绑本机回环，杜绝外网/局域网暴露。
+    /// 监听地址。默认仅绑本机回环，杜绝外网/局域网暴露；用户显式开启
+    /// `local_server_lan_enabled` 后绑 `0.0.0.0`，供免账号本地配对的响应方
+    /// 在可信网络 / 自建组网内被对端访问。
     #[must_use]
     pub fn bind_addr(&self) -> SocketAddr {
-        SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))
+        let ip = if self.lan_enabled {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            Ipv4Addr::LOCALHOST
+        };
+        SocketAddr::from((ip, self.port))
     }
 }
 
@@ -225,6 +237,12 @@ fn register_core(state: AppState) -> Router<AppState> {
     if state.config.mcp_enabled {
         router = router.route(routes::MCP, post(mcp));
     }
+    // P2P 设备互联端点：**无 token 鉴权**（配对由一次性码 + SAS 守卫；数据面由
+    // 每对独立链路 HMAC 守卫），故与 /ping 同级恒注册，不进 management 分组。
+    router = router
+        .route(routes::API_LINK_PAIR_HELLO, post(api_link_pair_hello))
+        .route(routes::API_LINK_PAIR_CONFIRM, post(api_link_pair_confirm))
+        .route(routes::API_LINK_TASKS, post(api_link_create_task));
     if state.config.management_enabled {
         router = router
             .route(routes::API_INFO, get(api_info))
@@ -262,7 +280,8 @@ fn register_core(state: AppState) -> Router<AppState> {
                 post(api_ignore_plugin_retry),
             )
             .route(routes::API_MARKET, get(api_market_list))
-            .route(routes::API_MARKET_INSTALL, post(api_market_install));
+            .route(routes::API_MARKET_INSTALL, post(api_market_install))
+            .route(routes::API_LINK_CODE, post(api_link_generate_code));
     }
 
     router
@@ -333,6 +352,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         result_response(status, false, &self.to_string())
@@ -359,7 +379,92 @@ pub(crate) async fn ping(State(state): State<AppState>) -> Response {
     if let Some(lang) = state.host.web_language().await {
         body["language"] = json!(lang);
     }
+    if let Some(info) = state.host.link_ping_info().await {
+        body["linkFingerprint"] = json!(info.fingerprint);
+        body["linkName"] = json!(info.name);
+        if !info.platform.is_empty() {
+            body["linkPlatform"] = json!(info.platform);
+        }
+    }
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// P2P 设备互联端点（无 token 鉴权：配对由一次性码 + SAS 守卫；数据面由链路 HMAC）
+// ---------------------------------------------------------------------------
+
+/// 处理配对 `hello`（发起方 → 本机）。
+pub(crate) async fn api_link_pair_hello(State(state): State<AppState>, body: Bytes) -> Response {
+    let req: LinkPairHelloRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid link hello payload: {e}"),
+            );
+        }
+    };
+    match state.host.link_pair_hello(req).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 处理配对 `confirm`（SAS 核对后确认/拒绝）。
+pub(crate) async fn api_link_pair_confirm(State(state): State<AppState>, body: Bytes) -> Response {
+    let req: LinkPairConfirmRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid link confirm payload: {e}"),
+            );
+        }
+    };
+    match state.host.link_pair_confirm(req).await {
+        Ok(()) => result_response(StatusCode::OK, true, "ok"),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 已配对设备下发下载任务：从 `X-FluxLink-*` 头取鉴权凭据 → 校验 → 建任务。
+pub(crate) async fn api_link_create_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let auth = LinkAuth {
+        device: h("x-fluxlink-device").to_string(),
+        ts: h("x-fluxlink-ts").parse::<i64>().unwrap_or(0),
+        nonce: h("x-fluxlink-nonce").to_string(),
+        tag: h("x-fluxlink-auth").to_string(),
+    };
+    if auth.device.is_empty() || auth.tag.is_empty() {
+        return result_response(StatusCode::UNAUTHORIZED, false, "missing link auth headers");
+    }
+    // 传原始 body 字节给宿主：HMAC 覆盖了 body 摘要，宿主须用**收到的原始字节**
+    // 校验后再反序列化，不能先解析（重序列化字节可能与签名不一致）。
+    match state.host.link_create_task(auth, body.to_vec()).await {
+        Ok(task_id) => Json(CreatedTask { task_id }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 生成一次性配对码（**需 management token**）。供 web/CLI 让 headless 设备出示。
+pub(crate) async fn api_link_generate_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.link_generate_code().await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,12 +1338,24 @@ mod tests {
     }
 
     #[test]
-    fn bind_addr_is_always_loopback_regardless_of_port() {
+    fn bind_addr_defaults_to_loopback() {
         let mut map = HashMap::new();
         map.insert("local_server_port".to_string(), "12345".to_string());
         let cfg = ApiServerConfig::from_config_map(&map, "1.0.0");
         let addr = cfg.bind_addr();
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
+        assert_eq!(addr.port(), 12345);
+    }
+
+    #[test]
+    fn bind_addr_binds_all_interfaces_when_lan_enabled() {
+        let mut map = HashMap::new();
+        map.insert("local_server_port".to_string(), "12345".to_string());
+        map.insert("local_server_lan_enabled".to_string(), "true".to_string());
+        let cfg = ApiServerConfig::from_config_map(&map, "1.0.0");
+        assert!(cfg.lan_enabled);
+        let addr = cfg.bind_addr();
+        assert_eq!(addr.ip().to_string(), "0.0.0.0");
         assert_eq!(addr.port(), 12345);
     }
 }

@@ -12,6 +12,8 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
+import { cloudApi } from '../../lib/cloud/client'
+import { cloudDeviceId, useCloudSession } from '../../lib/cloud/session'
 import { cn } from '../../lib/cn'
 import { queueDisplayName } from '../../lib/format'
 import { newDownloadOpenStore, openManifestSelect } from '../../lib/dialogs'
@@ -61,6 +63,8 @@ interface FormState {
   proxyUrl: string
   checksum: string
   advOpen: boolean
+  /** 下发目标设备 deviceId；空串 = 本机（默认，走现有本地引擎路径）。 */
+  deviceId: string
 }
 
 function emptyForm(saveDir = ''): FormState {
@@ -77,6 +81,7 @@ function emptyForm(saveDir = ''): FormState {
     proxyUrl: '',
     checksum: '',
     advOpen: false,
+    deviceId: '',
   }
 }
 
@@ -105,6 +110,15 @@ export function NewDownloadDialog() {
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: api.getConfig, enabled: open })
   const { data: queues } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues, enabled: open })
   const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: api.stats, enabled: open })
+  const session = useCloudSession()
+  const { data: cloudDevices = [] } = useQuery({
+    queryKey: ['cloud', 'devices'],
+    queryFn: () => cloudApi.devices().then((r) => r.devices),
+    enabled: open && session.status === 'authenticated',
+    staleTime: 10_000,
+  })
+  const remoteDevices = cloudDevices.filter((d) => d.deviceId !== cloudDeviceId())
+  const showDeviceSelect = session.status === 'authenticated' && remoteDevices.length > 0
   const demoMode = stats?.demoMode ?? false
   const demoUrl = stats?.demoUrl ?? ''
 
@@ -181,7 +195,7 @@ export function NewDownloadDialog() {
     // 单条 http(s) 链接：先探测是否为多文件清单（90s 超时；异常/空清单/error 均静默回退到
     // 下方直接建任务路径，行为与预解析前完全一致）。命中后本对话框保持打开，manifest 弹窗
     // 以嵌套模态接管；确认建组后由 manifest-select.tsx 关闭本对话框，取消则回到本表单。
-    if (isSingle && !demoMode && manifestIsPreviewableUrl(urlLines[0])) {
+    if (!form.deviceId && isSingle && !demoMode && manifestIsPreviewableUrl(urlLines[0])) {
       const url = urlLines[0]
       try {
         const preview = await raceTimeout(
@@ -216,21 +230,31 @@ export function NewDownloadDialog() {
 
     const nextErrors: Record<number, string> = {}
     let anyOk = false
+    const remoteTarget = form.deviceId || null
     for (let i = 0; i < urlLines.length; i++) {
       try {
-        await api.createTask({
-          url: urlLines[i],
-          fileName: isSingle ? form.fileName.trim() || undefined : undefined,
-          saveDir: form.saveDir.trim() || undefined,
-          segments: Number(form.segments),
-          cookies: form.cookies.trim() || undefined,
-          headers,
-          proxyUrl: form.proxyUrl.trim() || undefined,
-          userAgent: form.userAgent || undefined,
-          queueId,
-          checksum: form.checksum.trim() || undefined,
-          startPaused: startPaused || undefined,
-        })
+        if (remoteTarget) {
+          await cloudApi.dispatchTask({
+            toDevice: remoteTarget,
+            url: urlLines[i],
+            saveDir: form.saveDir.trim() || undefined,
+            fileName: isSingle ? form.fileName.trim() || undefined : undefined,
+          })
+        } else {
+          await api.createTask({
+            url: urlLines[i],
+            fileName: isSingle ? form.fileName.trim() || undefined : undefined,
+            saveDir: form.saveDir.trim() || undefined,
+            segments: Number(form.segments),
+            cookies: form.cookies.trim() || undefined,
+            headers,
+            proxyUrl: form.proxyUrl.trim() || undefined,
+            userAgent: form.userAgent || undefined,
+            queueId,
+            checksum: form.checksum.trim() || undefined,
+            startPaused: startPaused || undefined,
+          })
+        }
         anyOk = true
       } catch (err) {
         nextErrors[i] = err instanceof Error ? err.message : String(err)
@@ -336,6 +360,20 @@ export function NewDownloadDialog() {
                 />
                 <FsPicker value={form.saveDir} onChange={(p) => setForm((f) => ({ ...f, saveDir: p, saveDirTouched: true }))} />
               </div>
+              {showDeviceSelect && (
+                <>
+                  <label className="field-label">下载到</label>
+                  <SelectField
+                    value={form.deviceId}
+                    onChange={(v) => set('deviceId', v)}
+                    options={[
+                      { value: '', label: t('cloud.deviceCurrent') },
+                      ...remoteDevices.map((d) => ({ value: d.deviceId, label: d.name || '-' })),
+                    ]}
+                    ariaLabel="下载到"
+                  />
+                </>
+              )}
               <div className="grid2">
                 <div>
                   <label className="field-label">{t('newDl.queue')}</label>

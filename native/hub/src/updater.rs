@@ -27,11 +27,12 @@
 //!   • Shell injection and escaping edge-cases in POSIX shell scripts
 //!
 //! All HTTP requests go through the website API (`/api/release`, `/api/download/:fn`).
-//! Desktop auto-update always appends `source=github` to the download URL so the
-//! endpoint 302s straight to the GitHub release CDN, bypassing the mainland-China
-//! accelerator-mirror geo-routing (that routing still applies to website downloads).
-//! The CDN supports Range requests, so the multi-segment download below works
-//! transparently through the redirect.
+//! Desktop auto-update lets `/api/download` do geo-routing: mainland-China clients
+//! are 302'd to the self-hosted CN mirror (mirror.fluxdown.com — latest release
+//! served locally at full speed, pruned older versions fall back to the GitHub
+//! release CDN), everyone else goes straight to GitHub. Both the mirror and the
+//! GitHub CDN honor Range requests, so the multi-segment download below works
+//! transparently through the 302 redirect.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -472,17 +473,14 @@ async fn check_inner(current_version: &str, channel: &str) -> Result<(), UpdateE
 
     let (download_url, file_size) = match select_asset(&release.assets) {
         Some(asset) => {
-            let mut full_url = if asset.download_url.starts_with('/') {
+            let full_url = if asset.download_url.starts_with('/') {
                 format!("{UPDATE_API_BASE}{}", asset.download_url)
             } else {
                 asset.download_url.clone()
             };
-            // PC 自动更新固定直连 GitHub CDN，绕过 /api/download 的大陆镜像加速路由。
-            full_url.push_str(if full_url.contains('?') {
-                "&source=github"
-            } else {
-                "?source=github"
-            });
+            // 桌面自动更新经 /api/download 地域路由：大陆用户走国内镜像
+            // (mirror.fluxdown.com，命中最新版满速、旧版回落 GitHub CDN)，海外直连 GitHub CDN。
+            // 镜像与 GitHub CDN 均支持 Range，多段分段下载透过 302 重定向正常工作。
             (full_url, asset.size)
         }
         None => (String::new(), 0),

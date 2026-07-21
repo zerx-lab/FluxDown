@@ -17,14 +17,18 @@ bytes = "1"
 cbc = "0.1"
 chrono = { version = "0.4.43", default-features = false, features = ["clock", "std"] }
 dash-mpd = { version = "0.19", default-features = false }
+ed25519-dalek = { version = "3.0.0", optional = true }
 encoding_rs = "0.8"
 flate2 = "1"
 futures-util = "0.3"
 hex = "0.4"
+hkdf = { version = "0.12", optional = true }
+hmac = { version = "0.12", optional = true }
 igd-next = { version = "0.17.1", features = ["aio_tokio"] }
 m3u8-rs = "6"
 md-5 = "0.10"
 md4 = "0.10"
+mdns-sd = { version = "0.20.2", optional = true }
 rand = "0.9"
 rquickjs = { version = "0.12.1", features = ["full-async", "parallel"], optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -40,6 +44,7 @@ tracing = "0.1"
 ts2mp4 = "0.3"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+x25519-dalek = { version = "3", optional = true, features = ["static_secrets", "zeroize"] }
 # 插件 zip 安装（跨桌面/服务端；仅 plugins feature 开启时启用）
 zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 
@@ -65,3 +70,7 @@ http = "1.4.0"
 plugins = ["dep:rquickjs", "dep:zip"]
 # 组件托管安装（ffmpeg 下载/解压）；desktop/server 开启，mobile/CLI 关闭。
 components = ["dep:zip"]
+# 本地设备互联（P2P 局域网配对 + mDNS 发现 + 直连传输）。desktop hub 与 headless
+# server 开启；mobile（Android/iOS）关闭——mDNS 在移动端需原生 NsdManager/Bonjour
+# 权限，且本地配对定位为桌面/NAS 场景。关闭时下载主链路零变化（link 模块整体 cfg 门控）。
+link = ["dep:mdns-sd", "dep:ed25519-dalek", "dep:x25519-dalek", "dep:hkdf", "dep:hmac"]

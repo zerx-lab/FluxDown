@@ -121,6 +121,12 @@ class CloudDevice {
   /// 该设备最近一次发令牌请求携带的客户端版本号（v1.1 新增，可空）。
   final String? appVersion;
 
+  /// 该设备当前是否在线（服务端按 SSE presence 连接实时判定，v1.2 多设备协同新增）。
+  final bool isOnline;
+
+  /// 是否为当前请求设备（服务端按请求头 deviceId 比对，v1.2 新增）。
+  final bool isCurrent;
+
   const CloudDevice({
     required this.id,
     required this.deviceId,
@@ -130,6 +136,8 @@ class CloudDevice {
     required this.lastSeenAt,
     this.lastIp,
     this.appVersion,
+    this.isOnline = false,
+    this.isCurrent = false,
   });
 
   factory CloudDevice.fromJson(Map<String, dynamic> json) => CloudDevice(
@@ -141,6 +149,8 @@ class CloudDevice {
     lastSeenAt: (json['lastSeenAt'] as String?) ?? '',
     lastIp: json['lastIp'] as String?,
     appVersion: json['appVersion'] as String?,
+    isOnline: json['isOnline'] as bool? ?? false,
+    isCurrent: json['isCurrent'] as bool? ?? false,
   );
 }
 
@@ -258,4 +268,135 @@ class SyncPullResult {
         .map((e) => SyncItem.fromJson(e as Map<String, dynamic>))
         .toList(),
   );
+}
+
+/// 跨设备任务状态（对应服务端 cross_device_tasks.status）。
+enum RemoteTaskStatus {
+  pending,
+  accepted,
+  downloading,
+  paused,
+  completed,
+  failed,
+  canceled;
+
+  static RemoteTaskStatus fromWire(String s) => switch (s) {
+    'accepted' => accepted,
+    'downloading' => downloading,
+    'paused' => paused,
+    'completed' => completed,
+    'failed' => failed,
+    'canceled' => canceled,
+    _ => pending,
+  };
+
+  String get wire => name;
+
+  bool get isActive =>
+      this == accepted || this == downloading || this == pending;
+
+  bool get isTerminal =>
+      this == completed || this == failed || this == canceled;
+}
+
+/// 跨设备任务（对应服务端 RemoteTaskDto）。进度字段来自服务端内存快照，
+/// 经 SSE task.progress 增量更新（见 RemoteTaskService），不落库。
+class RemoteTask {
+  final String id;
+  final String fromDevice;
+  final String toDevice;
+  final String url;
+  final String? saveDir;
+  final String fileName;
+  final RemoteTaskStatus status;
+  final int? totalBytes;
+  final int downloadedBytes;
+  final int speed;
+  final double progress;
+  final String? error;
+  final String createdAt;
+  final String updatedAt;
+
+  const RemoteTask({
+    required this.id,
+    required this.fromDevice,
+    required this.toDevice,
+    required this.url,
+    this.saveDir,
+    this.fileName = '',
+    this.status = RemoteTaskStatus.pending,
+    this.totalBytes,
+    this.downloadedBytes = 0,
+    this.speed = 0,
+    this.progress = 0,
+    this.error,
+    this.createdAt = '',
+    this.updatedAt = '',
+  });
+
+  factory RemoteTask.fromJson(Map<String, dynamic> json) => RemoteTask(
+    id: json['id'] as String,
+    fromDevice: (json['fromDevice'] as String?) ?? '',
+    toDevice: (json['toDevice'] as String?) ?? '',
+    url: (json['url'] as String?) ?? '',
+    saveDir: json['saveDir'] as String?,
+    fileName: (json['fileName'] as String?) ?? '',
+    status: RemoteTaskStatus.fromWire((json['status'] as String?) ?? 'pending'),
+    totalBytes: (json['totalBytes'] as num?)?.toInt(),
+    downloadedBytes: (json['downloadedBytes'] as num?)?.toInt() ?? 0,
+    speed: (json['speed'] as num?)?.toInt() ?? 0,
+    progress: (json['progress'] as num?)?.toDouble() ?? 0,
+    error: json['error'] as String?,
+    createdAt: (json['createdAt'] as String?) ?? '',
+    updatedAt: (json['updatedAt'] as String?) ?? '',
+  );
+
+  /// SSE 增量更新：只覆盖传入的非空字段，其余保留（进度回流高频路径，避免重建全对象）。
+  RemoteTask copyWith({
+    RemoteTaskStatus? status,
+    int? totalBytes,
+    int? downloadedBytes,
+    int? speed,
+    double? progress,
+    String? fileName,
+    String? error,
+    String? updatedAt,
+  }) => RemoteTask(
+    id: id,
+    fromDevice: fromDevice,
+    toDevice: toDevice,
+    url: url,
+    saveDir: saveDir,
+    fileName: fileName ?? this.fileName,
+    status: status ?? this.status,
+    totalBytes: totalBytes ?? this.totalBytes,
+    downloadedBytes: downloadedBytes ?? this.downloadedBytes,
+    speed: speed ?? this.speed,
+    progress: progress ?? this.progress,
+    error: error ?? this.error,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+}
+
+/// 执行端批量上报进度的单条载荷（POST /tasks/progress 的 items[]）。
+class ProgressReport {
+  final String taskId;
+  final int downloadedBytes;
+  final int speed;
+  final double progress;
+
+  const ProgressReport({
+    required this.taskId,
+    required this.downloadedBytes,
+    required this.speed,
+    required this.progress,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'taskId': taskId,
+    'downloadedBytes': downloadedBytes,
+    'speed': speed,
+    'progress': progress,
+  };
 }

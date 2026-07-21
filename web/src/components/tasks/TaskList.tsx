@@ -14,10 +14,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
+import { ChevronDown, ChevronRight, Download, Folder } from 'lucide-react'
 import { api } from '../../lib/api'
+import { cloudDeviceId } from '../../lib/cloud/session'
+import type { RemoteTask, RemoteTaskStatus } from '../../lib/cloud/types'
+import { useRemoteTasks } from '../../lib/cloud/useRemoteTasks'
 import { cn } from '../../lib/cn'
-import { fmtBytes } from '../../lib/format'
+import { fmtBytes, fmtSpeed } from '../../lib/format'
 import { useI18n } from '../../lib/i18n'
 import { bucketEntities, compareSectionEntities, orderSections, type SectionEntity } from '../../lib/list-sections'
 import { compressPathChain, dirKey, flattenGroupMembers, groupDisplayName } from '../../lib/task-group'
@@ -37,6 +40,7 @@ type FlatItem =
   | { kind: 'groupdir'; groupId: string; path: string; fileCount: number; totalBytes: number }
   | { kind: 'groupmember'; task: ViewTask }
   | { kind: 'gridrow'; entities: SectionEntity<ViewTask>[] }
+  | { kind: 'remoterow'; task: RemoteTask }
 
 // 行的估算尺寸取自 design.css：.task-row/.grow min-height 64 + margin-bottom 4（虚拟
 // 滚动下 margin 不参与相邻元素排布，需并入 estimateSize 才能还原视觉间距）。
@@ -54,12 +58,24 @@ const GRID_GAP = 10
 const GRID_ROW_SIZE = GRID_CARD_HEIGHT + GRID_GAP
 const GRID_CARD_MIN_WIDTH = 210
 
+/** 跨设备任务状态 → 展示文案（mdc §1.1 状态机）。 */
+const REMOTE_STATUS_LABEL: Record<RemoteTaskStatus, string> = {
+  pending: '等待中',
+  accepted: '已接受',
+  downloading: '下载中',
+  paused: '已暂停',
+  completed: '已完成',
+  failed: '失败',
+  canceled: '已取消',
+}
+
 export function TaskList() {
   const { t } = useI18n()
   const {
     statusTab,
     typeFilter,
     queueFilter,
+    deviceFilter,
     search,
     foldedSections,
     toggleSectionFold,
@@ -74,6 +90,9 @@ export function TaskList() {
   const tasks = useViewTasks()
   const { data: queues = [] } = useQuery({ queryKey: ['queues'], queryFn: api.listQueues })
   const { data: groups = [] } = useQuery({ queryKey: ['groups'], queryFn: api.listGroups })
+  const { remoteTasks } = useRemoteTasks()
+  const isRemoteDeviceFilter = deviceFilter !== null && deviceFilter !== cloudDeviceId()
+  const remoteTasksForDevice = isRemoteDeviceFilter ? remoteTasks.filter((rt) => rt.toDevice === deviceFilter) : []
   const parentRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState(960)
 
@@ -124,40 +143,44 @@ export function TaskList() {
   const cardsPerRow = Math.max(1, Math.floor((containerWidth + GRID_GAP) / (GRID_CARD_MIN_WIDTH + GRID_GAP)))
 
   const flat: FlatItem[] = []
-  for (const section of sections) {
-    if (section.title !== null) flat.push({ kind: 'sectionhead', key: section.key, title: section.title, count: section.entities.length })
-    if (foldedSections.has(section.key)) continue
+  if (isRemoteDeviceFilter) {
+    for (const rt of remoteTasksForDevice) flat.push({ kind: 'remoterow', task: rt })
+  } else {
+    for (const section of sections) {
+      if (section.title !== null) flat.push({ kind: 'sectionhead', key: section.key, title: section.title, count: section.entities.length })
+      if (foldedSections.has(section.key)) continue
 
-    if (isGrid) {
-      // 行装箱：task 占 1 槽，group 占 2 槽，贪心凑满 cardsPerRow 即换行（网格无组内展开机制）。
-      let row: SectionEntity<ViewTask>[] = []
-      let used = 0
-      for (const e of section.entities) {
-        const cost = e.kind === 'group' ? Math.min(2, cardsPerRow) : 1
-        if (used + cost > cardsPerRow && row.length > 0) {
-          flat.push({ kind: 'gridrow', entities: row })
-          row = []
-          used = 0
+      if (isGrid) {
+        // 行装箱：task 占 1 槽，group 占 2 槽，贪心凑满 cardsPerRow 即换行（网格无组内展开机制）。
+        let row: SectionEntity<ViewTask>[] = []
+        let used = 0
+        for (const e of section.entities) {
+          const cost = e.kind === 'group' ? Math.min(2, cardsPerRow) : 1
+          if (used + cost > cardsPerRow && row.length > 0) {
+            flat.push({ kind: 'gridrow', entities: row })
+            row = []
+            used = 0
+          }
+          row.push(e)
+          used += cost
         }
-        row.push(e)
-        used += cost
-      }
-      if (row.length > 0) flat.push({ kind: 'gridrow', entities: row })
-      continue
-    }
-
-    for (const e of section.entities) {
-      if (e.kind === 'task') {
-        flat.push({ kind: 'row', task: e.task })
+        if (row.length > 0) flat.push({ kind: 'gridrow', entities: row })
         continue
       }
-      flat.push({ kind: 'grouprow', group: e.group, members: e.members })
-      if (!expandedGroups.has(e.group.groupId)) continue
-      const groupId = e.group.groupId
-      const isDirCollapsed = (path: string) => collapsedDirs.has(dirKey(groupId, path))
-      for (const m of flattenGroupMembers(e.members, e.group.saveDir, isDirCollapsed)) {
-        if (m.kind === 'dir') flat.push({ kind: 'groupdir', groupId, path: m.path, fileCount: m.fileCount, totalBytes: m.totalBytes })
-        else flat.push({ kind: 'groupmember', task: m.task })
+
+      for (const e of section.entities) {
+        if (e.kind === 'task') {
+          flat.push({ kind: 'row', task: e.task })
+          continue
+        }
+        flat.push({ kind: 'grouprow', group: e.group, members: e.members })
+        if (!expandedGroups.has(e.group.groupId)) continue
+        const groupId = e.group.groupId
+        const isDirCollapsed = (path: string) => collapsedDirs.has(dirKey(groupId, path))
+        for (const m of flattenGroupMembers(e.members, e.group.saveDir, isDirCollapsed)) {
+          if (m.kind === 'dir') flat.push({ kind: 'groupdir', groupId, path: m.path, fileCount: m.fileCount, totalBytes: m.totalBytes })
+          else flat.push({ kind: 'groupmember', task: m.task })
+        }
       }
     }
   }
@@ -221,6 +244,38 @@ export function TaskList() {
                 {item.kind === 'groupmember' && (
                   <div className="grow-member">
                     <TaskRow task={item.task} queues={queues} density={prefs.density} protocolBadges={prefs.protocolBadges} columns={prefs.columns} />
+                  </div>
+                )}
+                {item.kind === 'remoterow' && (
+                  <div className={cn('task-row', isCompact && 'compact')}>
+                    <span className="trow-icon">
+                      <Download size={19} />
+                    </span>
+                    <div className="trow-main">
+                      <div className="trow-name">
+                        <b>{item.task.fileName || item.task.url}</b>
+                      </div>
+                      <div className="trow-meta">
+                        <span>{REMOTE_STATUS_LABEL[item.task.status] ?? item.task.status}</span>
+                        {item.task.status === 'downloading' && (
+                          <>
+                            <span>
+                              {' '}
+                              · {fmtBytes(item.task.downloadedBytes)}
+                              {item.task.totalBytes ? ` / ${fmtBytes(item.task.totalBytes)}` : ''}
+                            </span>
+                            <span> · {fmtSpeed(item.task.speed)}</span>
+                          </>
+                        )}
+                        {item.task.error && <span className="text-danger"> · {item.task.error}</span>}
+                      </div>
+                      <div className="trow-bar">
+                        <i style={{ width: `${Math.round((item.task.progress || 0) * 100)}%` }} />
+                      </div>
+                    </div>
+                    <div className="trow-side">
+                      <span className="trow-pct">{Math.round((item.task.progress || 0) * 100)}%</span>
+                    </div>
                   </div>
                 )}
                 {item.kind === 'gridrow' && (

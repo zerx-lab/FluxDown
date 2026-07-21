@@ -8,11 +8,16 @@ import type { StatusTab } from './filters'
 
 export type DetailTab = 'general' | 'segments' | 'queue' | 'log' | 'advanced'
 
+const DEVICE_FILTER_KEY = 'fluxdown.tasks.deviceFilter'
+
 interface TasksUiState {
   typeFilter: 'all' | FileType
   setTypeFilter: Dispatch<SetStateAction<'all' | FileType>>
   queueFilter: string
   setQueueFilter: Dispatch<SetStateAction<string>>
+  /** 设备筛选：null=全部设备；本机=cloudDeviceId()；远程设备=其 deviceId（见 Sidebar 设备区）。 */
+  deviceFilter: string | null
+  setDeviceFilter: Dispatch<SetStateAction<string | null>>
   statusTab: StatusTab
   setStatusTab: Dispatch<SetStateAction<StatusTab>>
   search: string
@@ -51,6 +56,7 @@ const Ctx = createContext<TasksUiState | null>(null)
 export function TasksUiProvider({ children }: { children: ReactNode }) {
   const [typeFilter, setTypeFilter] = useState<'all' | FileType>('all')
   const [queueFilter, setQueueFilter] = useState('all')
+  const [deviceFilter, setDeviceFilterState] = useState<string | null>(() => localStorage.getItem(DEVICE_FILTER_KEY))
   const [statusTab, setStatusTab] = useState<StatusTab>('all')
   const [search, setSearch] = useState('')
   const [manageMode, setManageModeState] = useState(false)
@@ -69,6 +75,14 @@ export function TasksUiProvider({ children }: { children: ReactNode }) {
   function setManageMode(v: SetStateAction<boolean>) {
     setManageModeState(v)
     setSelected(new Set())
+  }
+  function setDeviceFilter(v: SetStateAction<string | null>) {
+    setDeviceFilterState((prev) => {
+      const next = typeof v === 'function' ? (v as (p: string | null) => string | null)(prev) : v
+      if (next === null) localStorage.removeItem(DEVICE_FILTER_KEY)
+      else localStorage.setItem(DEVICE_FILTER_KEY, next)
+      return next
+    })
   }
   function toggleSectionFold(key: string) {
     setFoldedSections((prev) => {
@@ -137,6 +151,8 @@ export function TasksUiProvider({ children }: { children: ReactNode }) {
         setTypeFilter,
         queueFilter,
         setQueueFilter,
+        deviceFilter,
+        setDeviceFilter,
         statusTab,
         setStatusTab,
         search,

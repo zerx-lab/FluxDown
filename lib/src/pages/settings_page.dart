@@ -30,6 +30,8 @@ import '../services/cloud/config_sync_service.dart';
 import '../services/cloud/cloud_models.dart';
 import '../services/cloud/nickname_pool.dart';
 import '../services/floating_ball/floating_ball_service.dart';
+import '../services/link/link_models.dart';
+import '../services/link/local_pairing_service.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
 import '../theme/app_colors.dart';
@@ -37,6 +39,7 @@ import '../theme/app_metrics.dart';
 import '../theme/flux_theme_tokens.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/category_edit_dialog.dart';
+import '../widgets/add_device_dialog.dart';
 import '../widgets/dir_picker_field.dart';
 import '../widgets/number_selector.dart';
 import '../widgets/plugin_list_view.dart';
@@ -1245,7 +1248,9 @@ class _SettingsContentState extends State<_SettingsContent> {
       SettingsCategory.general => _GeneralContent(
         settingsProvider: settingsProvider,
       ),
-      SettingsCategory.account => const _AccountContent(),
+      SettingsCategory.account => _AccountContent(
+        settingsProvider: settingsProvider,
+      ),
       SettingsCategory.appearance => const _AppearanceContent(),
       SettingsCategory.download => _DownloadContent(
         settingsProvider: settingsProvider,
@@ -2025,6 +2030,16 @@ class _GeneralContent extends StatelessWidget {
                     value: settingsProvider.showSidebarCategory,
                     onChanged: (v) =>
                         settingsProvider.setShowSidebarCategory(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.showSidebarDevice,
+                  description: s.showSidebarDeviceDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.showSidebarDeviceEffective(
+                      CloudAuthService.instance.hasRemoteDevices,
+                    ),
+                    onChanged: (v) => settingsProvider.setShowSidebarDevice(v),
                   ),
                 ),
               ],
@@ -4800,6 +4815,44 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
                             Text(s.apiServiceTokenClear),
                           ],
                         ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Divider(height: 1, color: m.borderFaint(c.border)),
+                  const SizedBox(height: 14),
+                  // 允许局域网 / 组网访问：免账号本地配对的响应方需被对端访问，
+                  // 跨网络（VPN/组网）时须绑 0.0.0.0；内网穿透至回环则无需开启。
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              s.apiServiceLanEnable,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: enabled ? c.textPrimary : c.textDisabled,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              s.apiServiceLanEnableDesc,
+                              style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      ShadSwitch(
+                        value: sp.localServerLanEnabled,
+                        enabled: enabled,
+                        onChanged: enabled
+                            ? (v) => sp.setLocalServerLanEnabled(v)
+                            : null,
                       ),
                     ],
                   ),
@@ -9230,7 +9283,8 @@ class _LogExportCardState extends State<_LogExportCard> {
 /// 账户分类内容：登录即使用云功能，未登录保持纯本地（无独立开关）。
 /// 登录状态与用户/设备数据均来自 [CloudAuthService]；本组件只负责展示与交互。
 class _AccountContent extends StatefulWidget {
-  const _AccountContent();
+  final SettingsProvider settingsProvider;
+  const _AccountContent({required this.settingsProvider});
 
   @override
   State<_AccountContent> createState() => _AccountContentState();
@@ -9286,6 +9340,15 @@ class _AccountContentState extends State<_AccountContent> {
                       ? _profileBody(context, s, c, user)
                       : _heroBody(context, s, c),
                 ),
+                // 未登录：暴露免账号「本地设备」区（本机配对码 + 已配对名册 +
+                // 添加设备入口）。登录用户经上方「设备协同」卡片的添加设备弹窗
+                // 也能用本地配对页，故此处仅未登录时补齐入口。
+                if (!loggedIn || user == null) ...[
+                  const SizedBox(height: 20),
+                  _LocalDeviceSection(
+                    settingsProvider: widget.settingsProvider,
+                  ),
+                ],
                 if (loggedIn && user != null) ...[
                   const SizedBox(height: 20),
                   Padding(
@@ -9395,13 +9458,7 @@ class _AccountContentState extends State<_AccountContent> {
                     children: [
                       _configSyncRow(context),
                       _accountDivider(context),
-                      _featureRow(
-                        context,
-                        LucideIcons.monitorSmartphone,
-                        s.accountFeatureMultiDevice,
-                        s.accountFeatureMultiDeviceDesc,
-                        badge: s.accountComingSoon,
-                      ),
+                      _multiDeviceRow(context),
                     ],
                   ),
                 ),
@@ -9647,64 +9704,73 @@ Widget _accountDivider(BuildContext context) {
   );
 }
 
-/// 云功能行：图标 + 名称/说明 + 「即将推出」标签（无开关，登录后逐项开启）。
-Widget _featureRow(
-  BuildContext context,
-  IconData icon,
-  String label,
-  String desc, {
-  required String badge,
-}) {
-  final c = AppColors.of(context);
-  return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-    child: Row(
-      children: [
-        Container(
-          width: 30,
-          height: 30,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: c.surface2,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(icon, size: 15, color: c.textSecondary),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: c.textPrimary,
+/// 多设备协同状态行：无独立开关，登录云账户后自动可用；已登录时用徽标展示当前
+/// 在线设备数（含本机），未登录时仅展示功能说明，设备列表见上方「设备协同」卡片。
+Widget _multiDeviceRow(BuildContext context) {
+  return ListenableBuilder(
+    listenable: CloudAuthService.instance,
+    builder: (context, _) {
+      final s = LocaleScope.of(context);
+      final c = AppColors.of(context);
+      final auth = CloudAuthService.instance;
+      final onlineCount = auth.devices.where((d) => d.isOnline).length;
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 30,
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: c.surface2,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                LucideIcons.monitorSmartphone,
+                size: 15,
+                color: c.textSecondary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.multiDeviceTitle,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: c.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.multiDeviceDesc,
+                    style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            if (auth.isLoggedIn) ...[
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: c.surface2,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  s.devicesOnlineCount(onlineCount),
+                  style: TextStyle(fontSize: 10.5, color: c.textMuted),
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                desc,
-                style: TextStyle(fontSize: 11.5, color: c.textMuted),
-              ),
             ],
-          ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-          decoration: BoxDecoration(
-            color: c.surface2,
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(
-            badge,
-            style: TextStyle(fontSize: 10.5, color: c.textMuted),
-          ),
-        ),
-      ],
-    ),
+      );
+    },
   );
 }
 
@@ -10094,6 +10160,297 @@ class _DeviceListModel extends ChangeNotifier {
       DateTime.tryParse(isoDate) ?? DateTime.fromMillisecondsSinceEpoch(0);
 }
 
+/// 未登录也可用的「本地设备」区（免账号本地配对）：
+/// - 本机配对码：作为「被添加方」出示给对端在其「添加设备 → 本地配对」中输入。
+/// - 已配对本地设备名册：可解除配对。
+/// - 「添加设备」：作为「发起方」打开 [showAddDeviceDialog]（未登录默认本地配对页）。
+class _LocalDeviceSection extends StatefulWidget {
+  final SettingsProvider settingsProvider;
+  const _LocalDeviceSection({required this.settingsProvider});
+
+  @override
+  State<_LocalDeviceSection> createState() => _LocalDeviceSectionState();
+}
+
+class _LocalDeviceSectionState extends State<_LocalDeviceSection> {
+  List<String> _localIps = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    // attach 幂等（home_page 启动已接线）；拉一次已配对名册用于展示。
+    unawaited(LocalPairingService.instance.attach());
+    LocalPairingService.instance.refreshDevices();
+    unawaited(_loadLocalIps());
+  }
+
+  /// 探测本机非回环 IPv4，用于「本机地址」展示（供对端在同网络/组网内连接）。
+  Future<void> _loadLocalIps() async {
+    try {
+      final ifaces = await NetworkInterface.list(
+        includeLoopback: false,
+        includeLinkLocal: false,
+        type: InternetAddressType.IPv4,
+      );
+      final ips = [
+        for (final iface in ifaces)
+          for (final addr in iface.addresses) addr.address,
+      ];
+      if (mounted) setState(() => _localIps = ips);
+    } catch (_) {
+      // 权限/平台限制：静默降级为仅展示端口地址。
+    }
+  }
+
+  void _copyCode(BuildContext context, String code) {
+    Clipboard.setData(ClipboardData(text: code));
+    FluxSonner.of(context).show(
+      ShadToast(title: Text(LocaleScope.of(context).localDeviceCodeCopied)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    final sp = widget.settingsProvider;
+    return ListenableBuilder(
+      listenable: Listenable.merge([LocalPairingService.instance, sp]),
+      builder: (context, _) {
+        final svc = LocalPairingService.instance;
+        final devices = svc.localDevices;
+        final port = sp.localServerPort;
+        final code = svc.generatedCode;
+        final addresses = (sp.localServerLanEnabled && _localIps.isNotEmpty)
+            ? [for (final ip in _localIps) '$ip:$port']
+            : ['127.0.0.1:$port'];
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.localDevicesSectionTitle,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.localDevicesSectionDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            // 本机配对码卡片（作为被添加方）
+            _AccountCard(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.localDeviceThisTitle,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: c.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.localDeviceThisDesc,
+                    style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  if (code == null || code.isEmpty)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: ShadButton.outline(
+                        size: ShadButtonSize.sm,
+                        onPressed: svc.generateCode,
+                        child: Text(s.localGenerateCode),
+                      ),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: c.surface2,
+                        borderRadius: m.brInput,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              code.split('').join('  '),
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 2,
+                                color: c.textPrimary,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
+                              ),
+                            ),
+                          ),
+                          ShadButton.ghost(
+                            size: ShadButtonSize.sm,
+                            onPressed: () => _copyCode(context, code),
+                            child: const Icon(LucideIcons.copy, size: 14),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    s.localDeviceAddressLabel,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: c.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  for (final addr in addresses)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        addr,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: c.textPrimary,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 6),
+                  Text(
+                    s.localDeviceAddressHint,
+                    style: TextStyle(
+                      fontSize: 11,
+                      height: 1.5,
+                      color: c.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // 已配对本地设备名册
+            if (devices.isEmpty)
+              _AccountCard(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 20,
+                ),
+                child: Center(
+                  child: Text(
+                    s.localDevicesEmpty,
+                    style: TextStyle(fontSize: 12, color: c.textMuted),
+                  ),
+                ),
+              )
+            else
+              _AccountCard(
+                padding: EdgeInsets.zero,
+                child: Column(
+                  children: [
+                    for (var i = 0; i < devices.length; i++) ...[
+                      if (i > 0)
+                        Container(
+                          height: 1,
+                          margin: const EdgeInsets.only(left: 52),
+                          color: m.borderFade(c.border),
+                        ),
+                      _LocalDeviceRow(device: devices[i]),
+                    ],
+                  ],
+                ),
+              ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ShadButton.outline(
+                size: ShadButtonSize.sm,
+                onPressed: () => showAddDeviceDialog(context),
+                child: Text(s.addDeviceEntry),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// 已配对本地设备行：平台图标 + 名称/在线状态 + 解除配对。
+class _LocalDeviceRow extends StatelessWidget {
+  final LocalDevice device;
+  const _LocalDeviceRow({required this.device});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Icon(
+            _devicePlatformIcon(device.platform),
+            size: 18,
+            color: c.textSecondary,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  device.name,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: c.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  device.online ? s.localPairingOnline : s.localPairingOffline,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: device.online ? c.statusSuccess : c.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ShadButton.ghost(
+            size: ShadButtonSize.sm,
+            onPressed: () =>
+                LocalPairingService.instance.removeDevice(device.fingerprint),
+            child: Text(
+              s.localDeviceUnpair,
+              style: TextStyle(fontSize: 12, color: c.statusError),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _DeviceListSection extends StatefulWidget {
   const _DeviceListSection();
 
@@ -10121,6 +10478,10 @@ class _DeviceListSectionState extends State<_DeviceListSection> {
       context: context,
       builder: (_) => _DeviceManageAllDialog(model: _model),
     );
+  }
+
+  void _showAddDeviceDialog(BuildContext context) {
+    showAddDeviceDialog(context);
   }
 
   @override
@@ -10236,6 +10597,15 @@ class _DeviceListSectionState extends State<_DeviceListSection> {
               ),
             ),
             _AccountCard(padding: EdgeInsets.zero, child: body),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ShadButton.outline(
+                size: ShadButtonSize.sm,
+                onPressed: () => _showAddDeviceDialog(context),
+                child: Text(s.addDeviceEntry),
+              ),
+            ),
           ],
         );
       },
@@ -10558,9 +10928,32 @@ class _DeviceRow extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      _deviceRowSubtitle(s, device),
-                      style: TextStyle(fontSize: 11, color: c.textMuted),
+                    Row(
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: device.isOnline
+                                ? c.statusSuccess
+                                : c.textMuted,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          device.isOnline ? s.deviceOnline : s.deviceOffline,
+                          style: TextStyle(fontSize: 11, color: c.textMuted),
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            _deviceRowSubtitle(s, device),
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 11, color: c.textMuted),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),

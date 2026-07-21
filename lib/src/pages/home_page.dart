@@ -15,6 +15,8 @@ import '../models/settings_provider.dart';
 import '../models/view_prefs.dart';
 import '../services/external_download_service.dart';
 import '../services/cloud/config_sync_service.dart';
+import '../services/cloud/remote_task_service.dart';
+import '../services/link/local_pairing_service.dart';
 import '../services/log_service.dart';
 import '../services/kv_store.dart';
 import '../services/notification_service.dart';
@@ -123,6 +125,10 @@ class _HomePageState extends State<HomePage> {
         locale: localeNotifier,
       ),
     );
+    // FluxCloud 跨设备任务协同：providers 就绪后接线，登录即开 SSE 长连回流进度。
+    unawaited(RemoteTaskService.instance.attach());
+    // 本地设备互联（局域网配对，免账号）：与账号体系无关，启动即接线监听。
+    unawaited(LocalPairingService.instance.attach());
     // 首次启动 .torrent 文件关联提示（仅 Windows）
     if (Platform.isWindows) {
       _settingsProvider.addListener(_onSettingsLoadedForAssocPrompt);
@@ -666,6 +672,10 @@ class _HomePageState extends State<HomePage> {
           child: Sidebar(
             controller: _controller,
             settingsProvider: _settingsProvider,
+            onOpenAccountSettings: () => setState(() {
+              _initialSettingsCategory = SettingsCategory.account;
+              _showSettings = true;
+            }),
           ),
         ),
       ],
