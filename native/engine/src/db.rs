@@ -1409,6 +1409,7 @@ impl Db {
             ),
             ("ed2k_nodes_dat_cache", ""),
             ("ed2k_nodes_dat_updated_at", "0"),
+            ("auto_cleanup_missing_files", "false"),
         ];
         for (key, value) in defaults {
             sqlx::query(
