@@ -4,7 +4,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../../bindings/bindings.dart';
 import '../../i18n/locale_provider.dart';
 import '../../theme/app_colors.dart';
-import '../../widgets/bt_file_list_widget.dart' show formatBtFileSize;
+import '../../widgets/bt_file_selection_shared.dart' show formatBtFileSize;
 import '../../theme/app_metrics.dart';
 import '../mobile_ui.dart';
 

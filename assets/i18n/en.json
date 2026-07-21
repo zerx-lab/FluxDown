@@ -277,6 +277,8 @@
     "btFileSelectDescSingle": "This torrent contains 1 file. Confirm to start downloading.",
     "btFileSelectDesc": "This torrent contains {count} files. Select which files to download.",
     "btFileSelectAll": "All Files",
+    "btFileTreeView": "Tree view",
+    "btFileListView": "List view",
     "btFileSelectConfirm": "Download {count} file(s) ({size})",
     "btResolvingMagnet": "Resolving magnet link, please wait...",
     "btResolveFailed": "Failed to resolve magnet link: no metadata received (no peers or DHT blocked). The task was marked as error; you can retry it later from the task list.",

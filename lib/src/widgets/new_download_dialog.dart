@@ -36,7 +36,8 @@ import '../services/resolve_preview_client.dart';
 import '../services/cloud/cloud_auth_service.dart';
 import '../services/cloud/cloud_client.dart';
 
-import 'bt_file_list_widget.dart';
+import 'bt_file_selection_shared.dart' show formatBtFileSize;
+import 'bt_file_selection_view.dart';
 import 'dir_picker_field.dart';
 import 'manifest_select_dialog.dart';
 import 'thread_selector.dart';
@@ -150,9 +151,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   /// TorrentMetaResult 信号订阅
   StreamSubscription<RustSignalPack<TorrentMetaResult>>? _metaSub;
 
-  // ── 磁力链接等待文件列表状态机 ─────────────────────────────────────────────
+  // ── 磁力链接等待文件选择状态机 ─────────────────────────────────────────────
   // 状态：null = 普通模式；'probing' = 已创建任务正在等待 DHT 解析；
-  //        'selecting' = 文件列表已到达，等待用户选择；
+  //        'selecting' = 文件元数据已到达，展示文件选择视图；
   //        'error' = 解析失败（任务已转 error，如元数据解析超时）
   String? _btWaitPhase; // null | 'probing' | 'selecting' | 'error'
 
@@ -168,7 +169,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   /// TaskProgress 信号订阅 — 监听磁力任务在等待阶段转入 error 状态（#379）
   StreamSubscription<RustSignalPack<TaskProgress>>? _btProgressSub;
 
-  /// 收到的 BT 文件列表（Phase=selecting 时非空）
+  /// 收到的 BT 文件条目（Phase=selecting 时非空）
   List<BtFileEntry> _btFiles = [];
 
   /// 用户在对话框内对 BT 文件的勾选状态
@@ -267,10 +268,10 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     });
   }
 
-  /// 由 [BtFileSelectionService] 回调：DHT 解析完成，文件列表已就绪。
+  /// 由 [BtFileSelectionService] 回调：DHT 解析完成，文件元数据已就绪。
   void _onBtFilesInfoReceived(BtFilesInfo msg) {
     // 用户已取消（probing 阶段点取消、或对话框被关闭）：
-    // 立刻发 [-1] 让 Rust 将任务暂停，不展示文件列表。
+    // 立刻发 [-1] 让 Rust 将任务暂停，不展示文件选择视图。
     if (_btCancelPending || !mounted || _btWaitPhase != 'probing') {
       SelectBtFiles(
         taskId: msg.taskId,
@@ -764,30 +765,15 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ],
             ),
           )
-        // ── File list (parsed successfully) ───────────────────────────────
+        // File selection view (tree by default, list optional).
         else if (meta != null && selection != null)
-          BtFileListWidget(
+          BtFileSelectionView(
+            key: ValueKey('torrent-file-selection:$path'),
             files: meta.files,
             selectedIndices: selection,
-            onToggleAll: () {
+            onSelectionChanged: (updatedSelection) {
               setState(() {
-                if (selection.length == meta.files.length) {
-                  _torrentSelections[path] = {};
-                } else {
-                  _torrentSelections[path] = meta.files
-                      .map((f) => f.index.toInt())
-                      .toSet();
-                }
-              });
-            },
-            onToggleFile: (idx) {
-              setState(() {
-                final current = _torrentSelections[path] ?? {};
-                if (current.contains(idx)) {
-                  _torrentSelections[path] = Set.from(current)..remove(idx);
-                } else {
-                  _torrentSelections[path] = Set.from(current)..add(idx);
-                }
+                _torrentSelections[path] = updatedSelection;
               });
             },
             maxHeight: 260,
@@ -1029,7 +1015,8 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     }
 
     // 单条磁力链接（立即下载）：对话框保持打开，转入 loading 阶段等待
-    // 文件列表；稍后下载则跳过此分支直接建暂停任务——文件选择推迟到
+    // 文件元数据并进入选择视图；稍后下载则跳过此分支直接建暂停任务，
+    // 文件选择推迟到
     // 任务真正启动时（引擎经 HostSelection 弹选择框）。
     if (entries.length == 1 &&
         !later &&
@@ -1339,11 +1326,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // ── BT 等待文件列表阶段 ──────────────────────────────────────────
+                // ── BT 等待文件选择阶段 ──────────────────────────────────────────
                 if (_btWaitPhase != null) ...[
                   _buildBtWaitBody(s, c),
                 ] else if (_hasTorrentFiles) ...[
-                  // ── Per-torrent header + file list ────────────────────────────
+                  // Per-torrent header and selectable file view.
                   for (int ti = 0; ti < _torrentFilePaths.length; ti++)
                     _buildTorrentFileEntry(ti, c, s),
                   const SizedBox(height: 8),
@@ -2062,26 +2049,13 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         ),
       );
     }
-    // selecting 阶段：文件列表
-    return BtFileListWidget(
+    // selecting 阶段：文件选择视图（默认树形，可切换列表）
+    return BtFileSelectionView(
       files: _btFiles,
       selectedIndices: _btSelectedIndices,
-      onToggleAll: () {
+      onSelectionChanged: (selection) {
         setState(() {
-          if (_btSelectedIndices.length == _btFiles.length) {
-            _btSelectedIndices = {};
-          } else {
-            _btSelectedIndices = _btFiles.map((f) => f.index.toInt()).toSet();
-          }
-        });
-      },
-      onToggleFile: (idx) {
-        setState(() {
-          if (_btSelectedIndices.contains(idx)) {
-            _btSelectedIndices = Set.from(_btSelectedIndices)..remove(idx);
-          } else {
-            _btSelectedIndices = Set.from(_btSelectedIndices)..add(idx);
-          }
+          _btSelectedIndices = selection;
         });
       },
       maxHeight: 340,

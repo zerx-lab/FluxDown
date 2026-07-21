@@ -417,6 +417,8 @@ class S {
   String btFileSelectDesc(int count) =>
       _r('btFileSelectDesc', {'count': count});
   String get btFileSelectAll => _r('btFileSelectAll');
+  String get btFileTreeView => _r('btFileTreeView');
+  String get btFileListView => _r('btFileListView');
   String btFileSelectConfirm(int count, String size) =>
       _r('btFileSelectConfirm', {'count': count, 'size': size});
   String get btResolvingMagnet => _r('btResolvingMagnet');

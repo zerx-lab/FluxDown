@@ -14,7 +14,7 @@ import '../models/download_task.dart';
 import '../models/manifest_selection.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
-import 'bt_file_list_widget.dart' show BtCheckbox;
+import 'bt_file_selection_shared.dart' show BtCheckbox;
 
 /// 行高恒 34px（design §4.10：1000+ 项虚拟化后 DOM 仅 ~25 行）。
 const double kManifestRowHeight = 34;

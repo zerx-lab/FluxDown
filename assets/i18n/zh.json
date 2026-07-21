@@ -277,6 +277,8 @@
     "btFileSelectDescSingle": "该种子包含 1 个文件，确认后开始下载。",
     "btFileSelectDesc": "该种子包含 {count} 个文件，请选择要下载的文件。",
     "btFileSelectAll": "全部文件",
+    "btFileTreeView": "树形视图",
+    "btFileListView": "列表视图",
     "btFileSelectConfirm": "下载 {count} 个文件（{size}）",
     "btResolvingMagnet": "正在解析磁力链接，请稍候...",
     "btResolveFailed": "磁力链接解析失败：未获取到元数据（无可用 peers 或 DHT 被屏蔽）。任务已标记为错误，可稍后在任务列表重试。",
