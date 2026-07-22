@@ -8,7 +8,8 @@ import '../i18n/locale_provider.dart';
 import '../mobile/sheets/mobile_bt_file_sheet.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
-import 'bt_file_list_widget.dart';
+import 'bt_file_selection_shared.dart' show formatBtFileSize;
+import 'bt_file_selection_view.dart';
 
 void showBtFileSelectionDialog(
   BuildContext context, {
@@ -179,26 +180,12 @@ class _BtFileSelectionDialogContentState
       ],
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 12),
-        child: BtFileListWidget(
+        child: BtFileSelectionView(
           files: widget.files,
           selectedIndices: _selectedIndices,
-          onToggleAll: () {
+          onSelectionChanged: (selection) {
             setState(() {
-              if (_selectedIndices.length == widget.files.length) {
-                _selectedIndices = {};
-              } else {
-                _selectedIndices =
-                    widget.files.map((f) => f.index.toInt()).toSet();
-              }
-            });
-          },
-          onToggleFile: (idx) {
-            setState(() {
-              if (_selectedIndices.contains(idx)) {
-                _selectedIndices = Set.from(_selectedIndices)..remove(idx);
-              } else {
-                _selectedIndices = Set.from(_selectedIndices)..add(idx);
-              }
+              _selectedIndices = selection;
             });
           },
           maxHeight: 340,
