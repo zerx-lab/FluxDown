@@ -103,12 +103,21 @@ class BtFileTreeWidget extends StatefulWidget {
   final ValueChanged<Set<int>> onSelectionChanged;
   final double maxHeight;
 
+  /// Collapsed directory paths. When supplied together with
+  /// [onToggleDirectory] the expansion state is controlled by the parent,
+  /// so it survives tree/list view switches. When null the widget keeps its
+  /// own internal expansion state (all directories expanded by default).
+  final Set<String>? collapsedDirectories;
+  final ValueChanged<String>? onToggleDirectory;
+
   const BtFileTreeWidget({
     super.key,
     required this.files,
     required this.selectedIndices,
     required this.onSelectionChanged,
     this.maxHeight = 300,
+    this.collapsedDirectories,
+    this.onToggleDirectory,
   });
 
   @override
@@ -117,8 +126,14 @@ class BtFileTreeWidget extends StatefulWidget {
 
 class _BtFileTreeWidgetState extends State<BtFileTreeWidget> {
   late List<BtFileTreeNode> _roots;
-  final Set<String> _expandedDirectories = {};
-  Set<String> _knownDirectories = {};
+
+  /// Fallback expansion state used only when the parent does not control it.
+  /// A directory is expanded unless its path is present here (expand-all
+  /// default); stale paths for removed directories are harmless.
+  final Set<String> _internalCollapsed = {};
+
+  Set<String> get _collapsed =>
+      widget.collapsedDirectories ?? _internalCollapsed;
 
   @override
   void initState() {
@@ -136,20 +151,6 @@ class _BtFileTreeWidgetState extends State<BtFileTreeWidget> {
 
   void _rebuildTree() {
     _roots = buildBtFileTree(widget.files);
-    final directories = <String>{};
-
-    void collectDirectories(List<BtFileTreeNode> nodes) {
-      for (final node in nodes) {
-        if (!node.isDirectory) continue;
-        directories.add(node.path);
-        collectDirectories(node.children);
-      }
-    }
-
-    collectDirectories(_roots);
-    _expandedDirectories.retainAll(directories);
-    _expandedDirectories.addAll(directories.difference(_knownDirectories));
-    _knownDirectories = directories;
   }
 
   bool get _allSelected => widget.files.every(
@@ -169,10 +170,17 @@ class _BtFileTreeWidgetState extends State<BtFileTreeWidget> {
     );
   }
 
+  bool _isExpanded(String path) => !_collapsed.contains(path);
+
   void _toggleExpanded(String path) {
+    final onToggle = widget.onToggleDirectory;
+    if (onToggle != null) {
+      onToggle(path);
+      return;
+    }
     setState(() {
-      if (!_expandedDirectories.remove(path)) {
-        _expandedDirectories.add(path);
+      if (!_internalCollapsed.remove(path)) {
+        _internalCollapsed.add(path);
       }
     });
   }
@@ -185,7 +193,7 @@ class _BtFileTreeWidgetState extends State<BtFileTreeWidget> {
     final rows = <Widget>[];
     for (final node in nodes) {
       if (node.isDirectory) {
-        final expanded = _expandedDirectories.contains(node.path);
+        final expanded = _isExpanded(node.path);
         rows.add(
           BtDirectoryTile(
             key: ValueKey('bt-tree-dir:${node.path}'),
@@ -206,6 +214,7 @@ class _BtFileTreeWidgetState extends State<BtFileTreeWidget> {
         rows.add(
           _BtTreeFileTile(
             key: ValueKey('bt-tree-file:${file.index}'),
+            name: node.name,
             file: file,
             depth: depth,
             isSelected: widget.selectedIndices.contains(file.index.toInt()),
@@ -389,6 +398,7 @@ class BtDirectoryTile extends StatelessWidget {
 }
 
 class _BtTreeFileTile extends StatelessWidget {
+  final String name;
   final BtFileEntry file;
   final int depth;
   final bool isSelected;
@@ -397,20 +407,13 @@ class _BtTreeFileTile extends StatelessWidget {
 
   const _BtTreeFileTile({
     super.key,
+    required this.name,
     required this.file,
     required this.depth,
     required this.isSelected,
     required this.onTap,
     required this.c,
   });
-
-  String get _fileName {
-    final parts = file.path
-        .split(RegExp(r'[\\/]+'))
-        .where((part) => part.isNotEmpty)
-        .toList();
-    return parts.isEmpty ? file.path : parts.last;
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -450,7 +453,7 @@ class _BtTreeFileTile extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                _fileName,
+                name,
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,

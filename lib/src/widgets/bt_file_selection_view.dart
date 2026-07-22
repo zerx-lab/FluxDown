@@ -32,6 +32,10 @@ class BtFileSelectionView extends StatefulWidget {
 class _BtFileSelectionViewState extends State<BtFileSelectionView> {
   BtFileDisplayMode _mode = BtFileDisplayMode.tree;
 
+  /// Directory expansion is owned here (not inside the tree widget) so it
+  /// survives switching between tree and list views.
+  final Set<String> _collapsedDirectories = {};
+
   void _toggleIndices(Iterable<int> indices) {
     widget.onSelectionChanged(
       toggleBtFileSelection(widget.selectedIndices, indices),
@@ -65,6 +69,12 @@ class _BtFileSelectionViewState extends State<BtFileSelectionView> {
             selectedIndices: widget.selectedIndices,
             onSelectionChanged: widget.onSelectionChanged,
             maxHeight: widget.maxHeight,
+            collapsedDirectories: _collapsedDirectories,
+            onToggleDirectory: (path) => setState(() {
+              if (!_collapsedDirectories.remove(path)) {
+                _collapsedDirectories.add(path);
+              }
+            }),
           )
         else
           BtFileListWidget(
