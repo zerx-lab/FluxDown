@@ -1,29 +1,20 @@
 /**
- * GET /api/download/:filename?tag=v1.2.3[&source=github|mirror]
+ * GET /api/download/:filename?tag=v1.2.3
  *
- * Release 资产的地域感知下载路由（仓库已开源，asset 可公开直连）。
+ * Release 资产的下载路由（仓库已开源，asset 可公开直连）。
  * - 若提供 ?tag= 参数，则在对应 tag 的 release 中查找 asset
  * - 若不提供 tag，则在最新的正式 release 中查找 asset
  *
  * 路由策略（302 重定向，本服务不中转下载流量）：
- * - 中国大陆用户（Cloudflare `CF-IPCountry: CN`，无该头时降级用
- *   Accept-Language 含 zh-CN 判断）：GitHub 加速镜像 → GitHub 直连。
- *   镜像做服务端 HEAD 健康检查，结果按镜像缓存 10 分钟，失效自动切下一个。
- * - 其他地区：GitHub 直连（官方 CDN 全球最快）。
- * - ?source= 可显式指定来源，用于调试与前端手动切换。
+ * - 一律 302 到 GitHub 官方 CDN 直连（browser_download_url）。
+ *   国内加速镜像逻辑暂时下线，后续再更新。
  *
- * 桌面 App 自升级同样经由本端点（/api/release 返回的 download_url 指向这里），
- * App 发起下载时携带自身 IP，地域判定对网站与 App 两个入口统一生效。
- * 镜像与 GitHub CDN 均支持 Range（已验证 206），App 的多线程分段升级下载
- * 透过 302 正常工作。
+ * 桌面 App 自升级同样经由本端点（/api/release 返回的 download_url 指向这里）。
+ * GitHub CDN 支持 Range（已验证 206），App 的多线程分段升级下载透过 302 正常工作。
  */
 
 import type { APIRoute } from "astro";
-import {
-  GITHUB_TOKEN,
-  GITHUB_REPO,
-  DOWNLOAD_MIRRORS,
-} from "astro:env/server";
+import { GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
 
 export const prerender = false;
 
@@ -48,84 +39,6 @@ const GITHUB_HEADERS: Record<string, string> = {
   ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {}),
 };
 
-/**
- * GitHub 下载加速镜像（遵守 `<镜像>/<完整GitHub直链>` 前缀契约）。
- * 默认使用自建国内镜像 mirror.fluxdown.com（阿里云直连，不经 Cloudflare）：
- *   - 只镜像「最新 stable + 最新 preview」的 release 资产，命中则国内满速直发；
- *   - 旧版本资产已在发版时清理 → 镜像层自动 302 回落 GitHub 官方 CDN。
- * 按顺序健康检查（HEAD 2xx 且 content-length 与 GitHub asset 一致——只看状态码
- * 会被「200 + HTML 公告页」的假镜像骗过），全部不健康时调用方降级 GitHub 直连。
- * 可通过 DOWNLOAD_MIRRORS 环境变量（逗号分隔）覆盖，无需改代码。
- */
-const DEFAULT_MIRRORS = ["https://mirror.fluxdown.com"];
-
-function mirrorList(): string[] {
-  const raw = DOWNLOAD_MIRRORS?.trim();
-  if (!raw) return DEFAULT_MIRRORS;
-  return raw
-    .split(",")
-    .map((s) => s.trim().replace(/\/+$/, ""))
-    .filter(Boolean);
-}
-
-/** 镜像健康状态缓存：按镜像域名（非按文件）缓存，TTL 内不重复探测。 */
-const mirrorHealth = new Map<string, { ok: boolean; checkedAt: number }>();
-const MIRROR_HEALTH_TTL_MS = 10 * 60 * 1000;
-const MIRROR_PROBE_TIMEOUT_MS = 3000;
-
-/**
- * 按配置顺序找到第一个健康的镜像，返回镜像化的下载 URL。
- * 健康标准：HEAD 2xx 且 content-length 与 GitHub asset 大小一致——
- * 只看状态码会被"200 + HTML 公告页"的假镜像骗过。
- * 全部不可用时返回 null（调用方降级到 GitHub 直连）。
- */
-async function resolveMirrorUrl(
-  directUrl: string,
-  expectedSize: number,
-): Promise<string | null> {
-  for (const mirror of mirrorList()) {
-    const candidate = `${mirror}/${directUrl}`;
-    const cached = mirrorHealth.get(mirror);
-    const fresh = cached && Date.now() - cached.checkedAt < MIRROR_HEALTH_TTL_MS;
-
-    if (fresh) {
-      if (cached.ok) return candidate;
-      continue;
-    }
-
-    let ok = false;
-    try {
-      const res = await fetch(candidate, {
-        method: "HEAD",
-        redirect: "follow",
-        signal: AbortSignal.timeout(MIRROR_PROBE_TIMEOUT_MS),
-      });
-      const len = Number(res.headers.get("content-length"));
-      ok = res.ok && (expectedSize <= 0 || len === expectedSize);
-    } catch {
-      // 超时/网络错误 → 视为不健康
-    }
-
-    mirrorHealth.set(mirror, { ok, checkedAt: Date.now() });
-    if (ok) return candidate;
-  }
-
-  return null;
-}
-
-/**
- * 判断请求是否来自中国大陆。
- * 优先使用 Cloudflare 的 CF-IPCountry 头（需在 CF 面板开启 IP Geolocation）；
- * 头缺失时（直连源站/未开启开关）降级用 Accept-Language 含 zh-CN 启发式判断——
- * 误判成本低：镜像本身是全球可达的透传代理，只是非大陆用户走镜像会稍慢。
- */
-function isMainlandChina(request: Request): boolean {
-  const country = request.headers.get("cf-ipcountry");
-  if (country) return country.toUpperCase() === "CN";
-
-  const lang = request.headers.get("accept-language") ?? "";
-  return /\bzh-CN\b/i.test(lang);
-}
 
 /**
  * 通过 tag 名称获取指定 release。
@@ -186,7 +99,7 @@ function redirectTo(location: string, source: string): Response {
   });
 }
 
-export const GET: APIRoute = async ({ params, url, request }) => {
+export const GET: APIRoute = async ({ params, url }) => {
   const { filename } = params;
 
   if (!filename) {
@@ -197,7 +110,6 @@ export const GET: APIRoute = async ({ params, url, request }) => {
   }
 
   const tag = url.searchParams.get("tag")?.trim() || "";
-  const source = url.searchParams.get("source")?.trim().toLowerCase() || "";
 
   try {
     // ── 1. 定位目标 Release ──
@@ -249,21 +161,8 @@ export const GET: APIRoute = async ({ params, url, request }) => {
     // 仓库已公开，browser_download_url 无需 token 签名即可直连
     const directUrl = asset.browser_download_url;
 
-    // ── 3. 显式 source 覆盖（调试 / 前端手动切换）──
-    if (source === "github") {
-      return redirectTo(directUrl, "github");
-    }
-
-    // ── 4. 地域路由 ──
-    const preferMirror = source === "mirror" || isMainlandChina(request);
-
-    if (preferMirror) {
-      // 中国大陆：加速镜像 → GitHub 直连
-      const mirrorUrl = await resolveMirrorUrl(directUrl, asset.size);
-      if (mirrorUrl) return redirectTo(mirrorUrl, "mirror");
-    }
-
-    // ── 5. 其他地区（或大陆全链路降级）：GitHub 官方 CDN 直连 ──
+    // 直接使用 GitHub 官方 CDN 直连（镜像逻辑暂时下线，后续再更新）。
+    // 保留 ?source= 参数兼容前端调用，但当前一律回落 GitHub 直连。
     return redirectTo(directUrl, "github");
   } catch (err) {
     return new Response(
