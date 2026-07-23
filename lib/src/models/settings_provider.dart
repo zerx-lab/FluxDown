@@ -96,11 +96,13 @@ class SettingsProvider extends ChangeNotifier {
   double _btSeedPostRatioLimit = 0.0; // 做种后分享率限制值
   bool _btSeedTimeEnabled = true; // 启用总做种时间限制
   int _btSeedTimeLimitMinutes = 72 * 60; // 总做种时间限制（分钟）
+  String _btSeedTimeLimitUnit = 'minutes'; // 显示单位：'minutes'/'hours'/'days'
   bool _btSeedInactiveTimeEnabled = false; // 启用不活跃做种时间限制
   int _btSeedInactiveTimeLimitMinutes = 30; // 不活跃做种时间限制（分钟）
+  String _btSeedInactiveTimeLimitUnit = 'minutes'; // 显示单位
   String _btSeedConditionsOperator = 'or'; // 条件组合方式：'and' / 'or'
-
-  int _btMaxSeedingTasks = 0; // 最大同时做种任务数（0 = 无限制）
+  String _btSeedThenAction =
+      'stop'; // 满足条件后动作：'stop' / 'delete' / 'delete_files'
 
   // 临时缓存：开关关闭时保留上次输入的数值，再次打开时恢复。
   double _btSeedRatioLimitCached = 1.0;
@@ -328,11 +330,12 @@ class SettingsProvider extends ChangeNotifier {
   double get btSeedPostRatioLimit => _btSeedPostRatioLimit;
   bool get btSeedTimeEnabled => _btSeedTimeEnabled;
   int get btSeedTimeLimitMinutes => _btSeedTimeLimitMinutes;
+  String get btSeedTimeLimitUnit => _btSeedTimeLimitUnit;
   bool get btSeedInactiveTimeEnabled => _btSeedInactiveTimeEnabled;
   int get btSeedInactiveTimeLimitMinutes => _btSeedInactiveTimeLimitMinutes;
+  String get btSeedInactiveTimeLimitUnit => _btSeedInactiveTimeLimitUnit;
   String get btSeedConditionsOperator => _btSeedConditionsOperator;
-
-  int get btMaxSeedingTasks => _btMaxSeedingTasks;
+  String get btSeedThenAction => _btSeedThenAction;
 
   // BT Tracker 订阅 Getters
   bool get btTrackerSubEnabled => _btTrackerSubEnabled;
@@ -913,6 +916,17 @@ class SettingsProvider extends ChangeNotifier {
     }
   }
 
+  void setBtSeedTimeLimitUnit(String value) {
+    final normalized =
+        const {'hours': 'hours', 'days': 'days'}.containsKey(value)
+        ? value
+        : 'minutes';
+    if (_btSeedTimeLimitUnit == normalized) return;
+    _btSeedTimeLimitUnit = normalized;
+    notifyListeners();
+    _saveToRust('bt_seed_time_limit_unit', normalized);
+  }
+
   void setBtSeedInactiveTimeEnabled(bool value) {
     if (_btSeedInactiveTimeEnabled == value) return;
     _btSeedInactiveTimeEnabled = value;
@@ -938,11 +952,19 @@ class SettingsProvider extends ChangeNotifier {
     }
     notifyListeners();
     if (_btSeedInactiveTimeEnabled) {
-      _saveToRust(
-        'bt_seed_inactive_time_limit_minutes',
-        value.toString(),
-      );
+      _saveToRust('bt_seed_inactive_time_limit_minutes', value.toString());
     }
+  }
+
+  void setBtSeedInactiveTimeLimitUnit(String value) {
+    final normalized =
+        const {'hours': 'hours', 'days': 'days'}.containsKey(value)
+        ? value
+        : 'minutes';
+    if (_btSeedInactiveTimeLimitUnit == normalized) return;
+    _btSeedInactiveTimeLimitUnit = normalized;
+    notifyListeners();
+    _saveToRust('bt_seed_inactive_time_limit_unit', normalized);
   }
 
   void setBtSeedConditionsOperator(String value) {
@@ -953,11 +975,18 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('bt_seed_limit_operator', normalized);
   }
 
-  void setBtMaxSeedingTasks(int value) {
-    if (_btMaxSeedingTasks == value) return;
-    _btMaxSeedingTasks = value;
+  void setBtSeedThenAction(String value) {
+    final normalized =
+        const {
+          'delete': 'delete',
+          'delete_files': 'delete_files',
+        }.containsKey(value)
+        ? value
+        : 'stop';
+    if (_btSeedThenAction == normalized) return;
+    _btSeedThenAction = normalized;
     notifyListeners();
-    _saveToRust('bt_max_seeding_tasks', value.toString());
+    _saveToRust('bt_seed_then_action', normalized);
   }
 
   // BT Tracker 订阅 Setters
@@ -1340,7 +1369,10 @@ class SettingsProvider extends ChangeNotifier {
     // 追踪「程序」分类迁移是否已执行过（键存在 = 已迁移，删除不再复活）。
     bool programCategoryMigrated = false;
     for (final entry in entries) {
-      logInfo('Settings', '  config: ${entry.key}=${_truncateForLog(entry.value)}');
+      logInfo(
+        'Settings',
+        '  config: ${entry.key}=${_truncateForLog(entry.value)}',
+      );
       switch (entry.key) {
         case 'default_save_dir':
           _defaultSaveDir = entry.value;
@@ -1385,26 +1417,47 @@ class SettingsProvider extends ChangeNotifier {
         case 'bt_seed_ratio_limit':
           _btSeedRatioLimit = double.tryParse(entry.value) ?? 1.0;
           _btSeedRatioEnabled = _btSeedRatioLimit > 0.0;
-          _btSeedRatioLimitCached = _btSeedRatioEnabled ? _btSeedRatioLimit : 1.0;
+          _btSeedRatioLimitCached = _btSeedRatioEnabled
+              ? _btSeedRatioLimit
+              : 1.0;
         case 'bt_seed_post_ratio_limit':
           _btSeedPostRatioLimit = double.tryParse(entry.value) ?? 0.0;
           _btSeedPostRatioEnabled = _btSeedPostRatioLimit > 0.0;
-          _btSeedPostRatioLimitCached =
-              _btSeedPostRatioEnabled ? _btSeedPostRatioLimit : 1.0;
+          _btSeedPostRatioLimitCached = _btSeedPostRatioEnabled
+              ? _btSeedPostRatioLimit
+              : 1.0;
         case 'bt_seed_time_limit_minutes':
           _btSeedTimeLimitMinutes = int.tryParse(entry.value) ?? 72 * 60;
           _btSeedTimeEnabled = _btSeedTimeLimitMinutes > 0;
-          _btSeedTimeLimitMinutesCached =
-              _btSeedTimeEnabled ? _btSeedTimeLimitMinutes : 72 * 60;
+          _btSeedTimeLimitMinutesCached = _btSeedTimeEnabled
+              ? _btSeedTimeLimitMinutes
+              : 72 * 60;
+        case 'bt_seed_time_limit_unit':
+          _btSeedTimeLimitUnit =
+              const {'hours': 'hours', 'days': 'days'}.containsKey(entry.value)
+              ? entry.value
+              : 'minutes';
         case 'bt_seed_inactive_time_limit_minutes':
           _btSeedInactiveTimeLimitMinutes = int.tryParse(entry.value) ?? 30;
           _btSeedInactiveTimeEnabled = _btSeedInactiveTimeLimitMinutes > 0;
-          _btSeedInactiveTimeLimitMinutesCached =
-              _btSeedInactiveTimeEnabled ? _btSeedInactiveTimeLimitMinutes : 30;
+          _btSeedInactiveTimeLimitMinutesCached = _btSeedInactiveTimeEnabled
+              ? _btSeedInactiveTimeLimitMinutes
+              : 30;
+        case 'bt_seed_inactive_time_limit_unit':
+          _btSeedInactiveTimeLimitUnit =
+              const {'hours': 'hours', 'days': 'days'}.containsKey(entry.value)
+              ? entry.value
+              : 'minutes';
         case 'bt_seed_limit_operator':
           _btSeedConditionsOperator = entry.value == 'and' ? 'and' : 'or';
-        case 'bt_max_seeding_tasks':
-          _btMaxSeedingTasks = int.tryParse(entry.value) ?? 0;
+        case 'bt_seed_then_action':
+          _btSeedThenAction =
+              const {
+                'delete': 'delete',
+                'delete_files': 'delete_files',
+              }.containsKey(entry.value)
+              ? entry.value
+              : 'stop';
         case 'bt_tracker_sub_enabled':
           _btTrackerSubEnabled = entry.value == 'true';
         case 'bt_tracker_sub_urls':

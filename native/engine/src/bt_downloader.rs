@@ -327,8 +327,8 @@ pub struct BtConfig {
     pub seed_inactive_time_limit_minutes: u64,
     /// How to combine the ratio, seed-time and inactive-time limits.
     pub seed_limit_operator: crate::bt_seeding::SeedingLimitOperator,
-    /// Maximum number of tasks allowed to seed at the same time (0 = unlimited).
-    pub max_seeding_tasks: usize,
+    /// What to do once a seeding limit is reached.
+    pub seed_then_action: String,
 }
 
 impl Default for BtConfig {
@@ -345,7 +345,7 @@ impl Default for BtConfig {
             seed_time_limit_minutes: 72 * 60,
             seed_inactive_time_limit_minutes: 0,
             seed_limit_operator: crate::bt_seeding::SeedingLimitOperator::Or,
-            max_seeding_tasks: 0,
+            seed_then_action: "stop".to_string(),
         }
     }
 }
@@ -642,7 +642,7 @@ impl SharedBtSession {
             inflight_adds: AtomicUsize::new(0),
             torrent_ids: Mutex::new(HashMap::new()),
             completion_move_lock: Mutex::new(()),
-            seeding: Arc::new(SeedingManager::new(bt_config.max_seeding_tasks)),
+            seeding: Arc::new(SeedingManager::new()),
             persistence_folder,
         })
     }
@@ -761,19 +761,26 @@ impl SharedBtSession {
 
     /// Register a completed torrent as an active seeder.
     ///
-    /// Returns `true` if the torrent was registered. Returns `false` if the
-    /// configured maximum number of seeding tasks has been reached.
-    ///
-    /// `uploaded_at_completion` is the total uploaded bytes observed when the
-    /// download completed; it is used to compute the post-completion ratio.
+    /// Returns `true` if the torrent was newly registered. `uploaded_at_completion`
+    /// is the total uploaded bytes observed when the download completed; it is used
+    /// to compute the post-completion ratio. `started_at_unix` is persisted so the
+    /// seeding time limit survives restarts.
     pub async fn register_seeder(
         &self,
         task_id: &str,
         handle: BtHandle,
         uploaded_at_completion: i64,
+        started_at_unix: i64,
+        last_session_uploaded: i64,
     ) -> bool {
         self.seeding
-            .register(task_id.to_string(), handle, uploaded_at_completion)
+            .register(
+                task_id.to_string(),
+                handle,
+                uploaded_at_completion,
+                started_at_unix,
+                last_session_uploaded,
+            )
             .await
     }
 
@@ -4040,20 +4047,27 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             // connections and prevented seeding.  Keeping it alive is the core
             // of the post-completion seeding refactor.
             shared_bt.store_handle(&task_id, handle.clone()).await;
+            let started_at_unix = chrono::Local::now().timestamp();
             let registered = shared_bt
-                .register_seeder(&task_id, handle.clone(), completed_uploaded_bytes)
+                .register_seeder(
+                    &task_id,
+                    handle.clone(),
+                    completed_uploaded_bytes,
+                    started_at_unix,
+                    completed_uploaded_bytes,
+                )
                 .await;
             let _ = db
                 .update_task_uploaded_at_completion(&task_id, completed_uploaded_bytes)
                 .await;
             if registered {
-                let _ = db.update_task_seeding_status(&task_id, 1, "").await;
+                let _ = db.set_task_seeding_active(&task_id, started_at_unix).await;
             } else {
-                // Maximum number of simultaneous seeding tasks reached: pause
-                // this torrent so it stops consuming upload bandwidth and peers.
+                // Should not happen now that there is no per-seeding max; keep the
+                // fallback pause in case registration is ever gated again.
                 let _ = shared_bt.pause_task(&task_id).await;
                 let _ = db
-                    .update_task_seeding_status(&task_id, 0, "max seeding tasks reached")
+                    .update_task_seeding_status(&task_id, 0, "seeding registration declined")
                     .await;
             }
 

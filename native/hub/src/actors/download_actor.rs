@@ -131,10 +131,10 @@ fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
                 }
             })
             .unwrap_or(fluxdown_engine::bt_seeding::SeedingLimitOperator::Or),
-        max_seeding_tasks: cfg
-            .get("bt_max_seeding_tasks")
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0),
+        seed_then_action: cfg
+            .get("bt_seed_then_action")
+            .cloned()
+            .unwrap_or_else(|| "stop".to_string()),
     }
 }
 
@@ -2172,7 +2172,7 @@ async fn apply_config_key(
             log_info!("[actor] updating default_save_dir to {}", value);
             engine.manager.set_default_save_dir(value.to_string());
         }
-        // BT config keys — update in-memory BtConfig and invalidate
+        // BT session-level config keys — update in-memory BtConfig and invalidate
         // the current session so the next BT download picks up changes.
         "bt_enable_dht"
         | "bt_enable_upnp"
@@ -2180,14 +2180,8 @@ async fn apply_config_key(
         | "bt_port_end"
         | "bt_custom_trackers"
         | "bt_tracker_sub_enabled"
-        | "bt_tracker_sub_urls"
-        | "bt_seed_ratio_limit"
-        | "bt_seed_post_ratio_limit"
-        | "bt_seed_time_limit_minutes"
-        | "bt_seed_inactive_time_limit_minutes"
-        | "bt_seed_limit_operator"
-        | "bt_max_seeding_tasks" => {
-            log_info!("[actor] BT config changed: {}={}", key, value);
+        | "bt_tracker_sub_urls" => {
+            log_info!("[actor] BT session config changed: {}={}", key, value);
             // Reload the full BT config from DB to stay consistent.
             let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
             engine.manager.set_bt_config(bt_config_from_map(&all_cfg));
@@ -2199,6 +2193,18 @@ async fn apply_config_key(
             {
                 spawn_tracker_sub_refresh(engine.db.clone(), tracker_sub_tx.clone());
             }
+        }
+        // Seeding limit keys — these are read live from BtConfig every evaluation
+        // tick, so a simple in-memory update is enough; no session rebuild needed.
+        "bt_seed_ratio_limit"
+        | "bt_seed_post_ratio_limit"
+        | "bt_seed_time_limit_minutes"
+        | "bt_seed_inactive_time_limit_minutes"
+        | "bt_seed_limit_operator"
+        | "bt_seed_then_action" => {
+            log_info!("[actor] BT seeding config changed: {}={}", key, value);
+            let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
+            engine.manager.set_bt_config(bt_config_from_map(&all_cfg));
         }
         // ED2K 服务器订阅键：地址变化 / 重新启用 → 后台立即刷新一次。
         // 服务器列表在每次下载 find-sources 时新读，无需失效会话。

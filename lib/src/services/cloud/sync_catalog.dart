@@ -65,12 +65,16 @@ class ThemeSelection {
   final BuiltinThemeId? builtinId;
 
   const ThemeSelection.custom(String id) : customId = id, builtinId = null;
-  const ThemeSelection.builtin(BuiltinThemeId id) : builtinId = id, customId = null;
+  const ThemeSelection.builtin(BuiltinThemeId id)
+    : builtinId = id,
+      customId = null;
 }
 
 /// appearance.dark_theme / light_theme 编码：`"custom:<id>"` 或 `"builtin:<name>"`。
-String encodeThemeSelection({required String? customId, required BuiltinThemeId builtin}) =>
-    customId != null ? 'custom:$customId' : 'builtin:${builtin.name}';
+String encodeThemeSelection({
+  required String? customId,
+  required BuiltinThemeId builtin,
+}) => customId != null ? 'custom:$customId' : 'builtin:${builtin.name}';
 
 /// appearance.dark_theme / light_theme 解码：格式非法或内置 ID 未知返回 null；
 /// "custom:" 前缀本地是否存在该导入主题由调用方（拿到 [ThemeProvider]）校验。
@@ -91,33 +95,39 @@ ThemeSelection? decodeThemeSelection(String value) {
 // 目录装配
 // ─────────────────────────────────────────────
 
-SyncEntry _bool(String key, bool Function() read, void Function(bool) write) => SyncEntry(
-  key: key,
-  read: read,
-  apply: (value) {
-    final v = decodeBool(value);
-    if (v == null) {
-      logInfo(_tag, 'skip $key: expected bool, got ${value.runtimeType}');
-      return;
-    }
-    write(v);
-  },
-);
+SyncEntry _bool(String key, bool Function() read, void Function(bool) write) =>
+    SyncEntry(
+      key: key,
+      read: read,
+      apply: (value) {
+        final v = decodeBool(value);
+        if (v == null) {
+          logInfo(_tag, 'skip $key: expected bool, got ${value.runtimeType}');
+          return;
+        }
+        write(v);
+      },
+    );
 
-SyncEntry _int(String key, int Function() read, void Function(int) write) => SyncEntry(
-  key: key,
-  read: read,
-  apply: (value) {
-    final v = decodeInt(value);
-    if (v == null) {
-      logInfo(_tag, 'skip $key: expected int, got ${value.runtimeType}');
-      return;
-    }
-    write(v);
-  },
-);
+SyncEntry _int(String key, int Function() read, void Function(int) write) =>
+    SyncEntry(
+      key: key,
+      read: read,
+      apply: (value) {
+        final v = decodeInt(value);
+        if (v == null) {
+          logInfo(_tag, 'skip $key: expected int, got ${value.runtimeType}');
+          return;
+        }
+        write(v);
+      },
+    );
 
-SyncEntry _string(String key, String Function() read, void Function(String) write) => SyncEntry(
+SyncEntry _string(
+  String key,
+  String Function() read,
+  void Function(String) write,
+) => SyncEntry(
   key: key,
   read: read,
   apply: (value) {
@@ -129,7 +139,11 @@ SyncEntry _string(String key, String Function() read, void Function(String) writ
   },
 );
 
-SyncEntry _double(String key, double Function() read, void Function(double) write) => SyncEntry(
+SyncEntry _double(
+  String key,
+  double Function() read,
+  void Function(double) write,
+) => SyncEntry(
   key: key,
   read: read,
   apply: (value) {
@@ -146,7 +160,12 @@ SyncEntry _double(String key, double Function() read, void Function(double) writ
   },
 );
 
-void _applyThemeSelection(ThemeProvider theme, String key, dynamic value, {required bool dark}) {
+void _applyThemeSelection(
+  ThemeProvider theme,
+  String key,
+  dynamic value, {
+  required bool dark,
+}) {
   if (value is! String) {
     logInfo(_tag, 'skip $key: expected string, got ${value.runtimeType}');
     return;
@@ -186,7 +205,10 @@ List<SyncEntry> buildSyncCatalog({
     read: () => encodeThemeMode(theme.themeMode),
     apply: (value) {
       if (value is! String) {
-        logInfo(_tag, 'skip appearance.theme_mode: expected string, got ${value.runtimeType}');
+        logInfo(
+          _tag,
+          'skip appearance.theme_mode: expected string, got ${value.runtimeType}',
+        );
         return;
       }
       final mode = decodeThemeMode(value);
@@ -203,7 +225,8 @@ List<SyncEntry> buildSyncCatalog({
       customId: theme.isCustomDarkActive ? theme.selectedCustomDarkId : null,
       builtin: theme.selectedDarkTheme,
     ),
-    apply: (value) => _applyThemeSelection(theme, 'appearance.dark_theme', value, dark: true),
+    apply: (value) =>
+        _applyThemeSelection(theme, 'appearance.dark_theme', value, dark: true),
   ),
   SyncEntry(
     key: 'appearance.light_theme',
@@ -211,17 +234,27 @@ List<SyncEntry> buildSyncCatalog({
       customId: theme.isCustomLightActive ? theme.selectedCustomLightId : null,
       builtin: theme.selectedLightTheme,
     ),
-    apply: (value) => _applyThemeSelection(theme, 'appearance.light_theme', value, dark: false),
+    apply: (value) => _applyThemeSelection(
+      theme,
+      'appearance.light_theme',
+      value,
+      dark: false,
+    ),
   ),
   SyncEntry(
     key: 'appearance.color_scheme',
     read: () => theme.colorScheme.name,
     apply: (value) {
       if (value is! String) {
-        logInfo(_tag, 'skip appearance.color_scheme: expected string, got ${value.runtimeType}');
+        logInfo(
+          _tag,
+          'skip appearance.color_scheme: expected string, got ${value.runtimeType}',
+        );
         return;
       }
-      final scheme = AppColorScheme.values.where((e) => e.name == value).firstOrNull;
+      final scheme = AppColorScheme.values
+          .where((e) => e.name == value)
+          .firstOrNull;
       if (scheme == null) {
         logInfo(_tag, 'skip appearance.color_scheme: unknown value "$value"');
         return;
@@ -235,7 +268,10 @@ List<SyncEntry> buildSyncCatalog({
     apply: (value) {
       final v = decodeInt(value);
       if (v == null) {
-        logInfo(_tag, 'skip appearance.custom_color: expected int, got ${value.runtimeType}');
+        logInfo(
+          _tag,
+          'skip appearance.custom_color: expected int, got ${value.runtimeType}',
+        );
         return;
       }
       theme.setCustomColor(Color(v));
@@ -248,7 +284,10 @@ List<SyncEntry> buildSyncCatalog({
     read: () => locale.preference,
     apply: (value) {
       if (value is! String) {
-        logInfo(_tag, 'skip general.locale: expected string, got ${value.runtimeType}');
+        logInfo(
+          _tag,
+          'skip general.locale: expected string, got ${value.runtimeType}',
+        );
         return;
       }
       if (value != kLocaleSystem && !I18nStore.available.contains(value)) {
@@ -258,8 +297,16 @@ List<SyncEntry> buildSyncCatalog({
       locale.setLocale(value);
     },
   ),
-  _string('general.update_channel', () => settings.updateChannel, settings.setUpdateChannel),
-  _bool('general.auto_check_update', () => settings.autoCheckUpdate, settings.setAutoCheckUpdate),
+  _string(
+    'general.update_channel',
+    () => settings.updateChannel,
+    settings.setUpdateChannel,
+  ),
+  _bool(
+    'general.auto_check_update',
+    () => settings.autoCheckUpdate,
+    settings.setAutoCheckUpdate,
+  ),
   _bool(
     'general.clipboard_watch',
     () => settings.clipboardWatchEnabled,
@@ -319,14 +366,26 @@ List<SyncEntry> buildSyncCatalog({
     () => settings.maxConcurrentTasks,
     settings.setMaxConcurrentTasks,
   ),
-  _int('download.default_segments', () => settings.defaultSegments, settings.setDefaultSegments),
+  _int(
+    'download.default_segments',
+    () => settings.defaultSegments,
+    settings.setDefaultSegments,
+  ),
   _int(
     'download.auto_max_connections',
     () => settings.autoMaxConnections,
     settings.setAutoMaxConnections,
   ),
-  _int('download.speed_limit_bytes', () => settings.speedLimitBytes, settings.setSpeedLimitBytes),
-  _int('download.max_auto_retries', () => settings.maxAutoRetries, settings.setMaxAutoRetries),
+  _int(
+    'download.speed_limit_bytes',
+    () => settings.speedLimitBytes,
+    settings.setSpeedLimitBytes,
+  ),
+  _int(
+    'download.max_auto_retries',
+    () => settings.maxAutoRetries,
+    settings.setMaxAutoRetries,
+  ),
   _int(
     'download.auto_retry_delay_secs',
     () => settings.autoRetryDelaySecs,
@@ -342,7 +401,11 @@ List<SyncEntry> buildSyncCatalog({
     () => settings.rememberLastSaveDir,
     settings.setRememberLastSaveDir,
   ),
-  _bool('download.use_server_time', () => settings.useServerTime, settings.setUseServerTime),
+  _bool(
+    'download.use_server_time',
+    () => settings.useServerTime,
+    settings.setUseServerTime,
+  ),
   _string(
     'download.global_user_agent',
     () => settings.globalUserAgent,
@@ -366,14 +429,26 @@ List<SyncEntry> buildSyncCatalog({
 
   // ── bt（5 + 6 做种）──
   _bool('bt.enable_dht', () => settings.btEnableDht, settings.setBtEnableDht),
-  _bool('bt.enable_upnp', () => settings.btEnableUpnp, settings.setBtEnableUpnp),
-  _string('bt.custom_trackers', () => settings.btCustomTrackers, settings.setBtCustomTrackers),
+  _bool(
+    'bt.enable_upnp',
+    () => settings.btEnableUpnp,
+    settings.setBtEnableUpnp,
+  ),
+  _string(
+    'bt.custom_trackers',
+    () => settings.btCustomTrackers,
+    settings.setBtCustomTrackers,
+  ),
   _bool(
     'bt.tracker_sub_enabled',
     () => settings.btTrackerSubEnabled,
     settings.setBtTrackerSubEnabled,
   ),
-  _string('bt.tracker_sub_urls', () => settings.btTrackerSubUrls, settings.setBtTrackerSubUrls),
+  _string(
+    'bt.tracker_sub_urls',
+    () => settings.btTrackerSubUrls,
+    settings.setBtTrackerSubUrls,
+  ),
 
   // ── bt 做种（6）──
   // 启用态由 limit>0 编码（0=关闭），同步 limit 值即同步启用状态。
@@ -402,16 +477,28 @@ List<SyncEntry> buildSyncCatalog({
     () => settings.btSeedConditionsOperator,
     settings.setBtSeedConditionsOperator,
   ),
-  _int(
-    'bt.max_seeding_tasks',
-    () => settings.btMaxSeedingTasks,
-    settings.setBtMaxSeedingTasks,
+  _string(
+    'bt.seed_then_action',
+    () => settings.btSeedThenAction,
+    settings.setBtSeedThenAction,
   ),
 
   // ── ed2k（5）──
-  _bool('ed2k.enable_kad', () => settings.ed2kEnableKad, settings.setEd2kEnableKad),
-  _bool('ed2k.enable_upnp', () => settings.ed2kEnableUpnp, settings.setEd2kEnableUpnp),
-  _string('ed2k.server_list', () => settings.ed2kServerList, settings.setEd2kServerList),
+  _bool(
+    'ed2k.enable_kad',
+    () => settings.ed2kEnableKad,
+    settings.setEd2kEnableKad,
+  ),
+  _bool(
+    'ed2k.enable_upnp',
+    () => settings.ed2kEnableUpnp,
+    settings.setEd2kEnableUpnp,
+  ),
+  _string(
+    'ed2k.server_list',
+    () => settings.ed2kServerList,
+    settings.setEd2kServerList,
+  ),
   _bool(
     'ed2k.server_sub_enabled',
     () => settings.ed2kServerSubEnabled,

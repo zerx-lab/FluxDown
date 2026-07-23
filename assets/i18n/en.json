@@ -982,7 +982,8 @@
     "btSeedOperatorAnd": "Match all conditions",
     "btSeedThenAction": "Then",
     "btSeedStopSeeding": "Stop seeding",
-    "btMaxSeedingTasks": "Max Seeding Tasks",
+    "btSeedDeleteTask": "Delete task",
+    "btSeedDeleteTaskAndFiles": "Delete task & files",
     "seedRatio": "Share ratio",
     "seedTime": "Seeding time",
     "seedingStatus": "Seeding status",
@@ -995,7 +996,8 @@
     "seedingStatusDeleted": "Task deleted",
     "seedingStatusSessionReleased": "BT session released",
     "uploadedTotal": "Uploaded",
-    "minutesSuffix": "min",
-    "tasksSuffix": "tasks",
+    "timeUnitMinutes": "min",
+    "timeUnitHours": "hr",
+    "timeUnitDays": "days",
     "settingsTabSeeding": "Seeding"
 }

@@ -395,8 +395,7 @@ class S {
   String get accountCloudFeaturesDesc => _r('accountCloudFeaturesDesc');
   String get accountComingSoon => _r('accountComingSoon');
   String get accountFeatureConfigSync => _r('accountFeatureConfigSync');
-  String get accountFeatureConfigSyncDesc =>
-      _r('accountFeatureConfigSyncDesc');
+  String get accountFeatureConfigSyncDesc => _r('accountFeatureConfigSyncDesc');
   String get accountFeatureMultiDevice => _r('accountFeatureMultiDevice');
   String get accountFeatureMultiDeviceDesc =>
       _r('accountFeatureMultiDeviceDesc');
@@ -435,8 +434,7 @@ class S {
   String get accountErrorInvalidCode => _r('accountErrorInvalidCode');
   String get accountErrorRateLimited => _r('accountErrorRateLimited');
   String get accountErrorEmailTaken => _r('accountErrorEmailTaken');
-  String get accountErrorAccountDisabled =>
-      _r('accountErrorAccountDisabled');
+  String get accountErrorAccountDisabled => _r('accountErrorAccountDisabled');
   String get accountErrorRegistrationClosed =>
       _r('accountErrorRegistrationClosed');
   String get accountErrorRegistrationIncomplete =>
@@ -460,34 +458,27 @@ class S {
   String get accountDevicesRetry => _r('accountDevicesRetry');
   String accountDevicesManageAll(int count) =>
       _r('accountDevicesManageAll', {'count': count});
-  String get accountDevicesManageAllTitle =>
-      _r('accountDevicesManageAllTitle');
+  String get accountDevicesManageAllTitle => _r('accountDevicesManageAllTitle');
   String get accountDevicesSearchHint => _r('accountDevicesSearchHint');
   String get accountDevicesSearchNoResults =>
       _r('accountDevicesSearchNoResults');
   String get accountDeviceDetailTitle => _r('accountDeviceDetailTitle');
   String get accountDeviceFieldPlatform => _r('accountDeviceFieldPlatform');
-  String get accountDeviceFieldAppVersion =>
-      _r('accountDeviceFieldAppVersion');
+  String get accountDeviceFieldAppVersion => _r('accountDeviceFieldAppVersion');
   String get accountDeviceFieldLastIp => _r('accountDeviceFieldLastIp');
-  String get accountDeviceFieldCreatedAt =>
-      _r('accountDeviceFieldCreatedAt');
-  String get accountDeviceFieldLastSeenAt =>
-      _r('accountDeviceFieldLastSeenAt');
+  String get accountDeviceFieldCreatedAt => _r('accountDeviceFieldCreatedAt');
+  String get accountDeviceFieldLastSeenAt => _r('accountDeviceFieldLastSeenAt');
   String get accountDeviceFieldId => _r('accountDeviceFieldId');
   String get accountDeviceDeleteAction => _r('accountDeviceDeleteAction');
-  String get accountDevicePlatformWindows =>
-      _r('accountDevicePlatformWindows');
+  String get accountDevicePlatformWindows => _r('accountDevicePlatformWindows');
   String get accountDevicePlatformMacos => _r('accountDevicePlatformMacos');
   String get accountDevicePlatformLinux => _r('accountDevicePlatformLinux');
-  String get accountDevicePlatformAndroid =>
-      _r('accountDevicePlatformAndroid');
+  String get accountDevicePlatformAndroid => _r('accountDevicePlatformAndroid');
   String get accountDevicePlatformIos => _r('accountDevicePlatformIos');
   String get accountDevicePlatformWeb => _r('accountDevicePlatformWeb');
   String get accountServerAddress => _r('accountServerAddress');
   String get accountServerAddressDesc => _r('accountServerAddressDesc');
-  String get accountServerAddressInvalid =>
-      _r('accountServerAddressInvalid');
+  String get accountServerAddressInvalid => _r('accountServerAddressInvalid');
   String get accountServerAddressReset => _r('accountServerAddressReset');
   String get accountServerAddressSaved => _r('accountServerAddressSaved');
 
@@ -756,8 +747,7 @@ class S {
   String get userAgentPresetSafari => _r('userAgentPresetSafari');
   String get userAgentPresetCustom => _r('userAgentPresetCustom');
   List<String> get searchKeywordsUserAgent =>
-      _r('searchKeywordsUserAgent').split(',')
-        ..addAll(['ua', 'user-agent']);
+      _r('searchKeywordsUserAgent').split(',')..addAll(['ua', 'user-agent']);
 
   // 文件管理器自定义命令
   String get fileManagerSection => _r('fileManagerSection');
@@ -873,9 +863,11 @@ class S {
   String get btSeedOperatorAnd => _r('btSeedOperatorAnd');
   String get btSeedThenAction => _r('btSeedThenAction');
   String get btSeedStopSeeding => _r('btSeedStopSeeding');
-  String get btMaxSeedingTasks => _r('btMaxSeedingTasks');
-  String get minutesSuffix => _r('minutesSuffix');
-  String get tasksSuffix => _r('tasksSuffix');
+  String get btSeedDeleteTask => _r('btSeedDeleteTask');
+  String get btSeedDeleteTaskAndFiles => _r('btSeedDeleteTaskAndFiles');
+  String get timeUnitMinutes => _r('timeUnitMinutes');
+  String get timeUnitHours => _r('timeUnitHours');
+  String get timeUnitDays => _r('timeUnitDays');
 
   // ─────────────────────────────────────────────
   // BT 做种状态/指标
@@ -889,12 +881,10 @@ class S {
   String get seedingStatusSeeding => _r('seedingStatusSeeding');
   String get seedingStatusRatioReached => _r('seedingStatusRatioReached');
   String get seedingStatusTimeReached => _r('seedingStatusTimeReached');
-  String get seedingStatusInactiveReached =>
-      _r('seedingStatusInactiveReached');
+  String get seedingStatusInactiveReached => _r('seedingStatusInactiveReached');
   String get seedingStatusUserStopped => _r('seedingStatusUserStopped');
   String get seedingStatusDeleted => _r('seedingStatusDeleted');
-  String get seedingStatusSessionReleased =>
-      _r('seedingStatusSessionReleased');
+  String get seedingStatusSessionReleased => _r('seedingStatusSessionReleased');
   String get uploadedTotal => _r('uploadedTotal');
 
   // ─────────────────────────────────────────────
@@ -1262,8 +1252,7 @@ class S {
   String get pluginDevModeSwitch => _r('pluginDevModeSwitch');
   String get pluginDevModeBadge => _r('pluginDevModeBadge');
   String get pluginDisabledManual => _r('pluginDisabledManual');
-  String get pluginDisabledCircuitBreaker =>
-      _r('pluginDisabledCircuitBreaker');
+  String get pluginDisabledCircuitBreaker => _r('pluginDisabledCircuitBreaker');
   String get pluginSettingsTooltip => _r('pluginSettingsTooltip');
   String get pluginUninstallTooltip => _r('pluginUninstallTooltip');
   String get pluginUninstallTitle => _r('pluginUninstallTitle');
@@ -1299,8 +1288,7 @@ class S {
   String get marketYankedDeprecated => _r('marketYankedDeprecated');
   String get marketSearchPlaceholder => _r('marketSearchPlaceholder');
   String get marketSearchNoResult => _r('marketSearchNoResult');
-  String marketShowMore(int count) =>
-      _r('marketShowMore', {'count': '$count'});
+  String marketShowMore(int count) => _r('marketShowMore', {'count': '$count'});
   String get pluginDetailIdentity => _r('pluginDetailIdentity');
   String get pluginDetailAuthor => _r('pluginDetailAuthor');
   String get pluginDetailPublishTime => _r('pluginDetailPublishTime');
@@ -1340,8 +1328,7 @@ class S {
   String get pluginErrPattern => _r('pluginErrPattern');
   String get pluginErrSelect => _r('pluginErrSelect');
   String get pluginSelectPlaceholder => _r('pluginSelectPlaceholder');
-  String get pluginFolderPickPlaceholder =>
-      _r('pluginFolderPickPlaceholder');
+  String get pluginFolderPickPlaceholder => _r('pluginFolderPickPlaceholder');
 
   // ─────────────────────────────────────────────
   // 插件系统 — 任务逃生舱 & 自动禁用通知
@@ -1372,8 +1359,7 @@ class S {
   String get componentsSourceManaged => _r('componentsSourceManaged');
   String get componentsSourceSystem => _r('componentsSourceSystem');
   String get componentsSystemPathLabel => _r('componentsSystemPathLabel');
-  String get componentsSystemPathNotFound =>
-      _r('componentsSystemPathNotFound');
+  String get componentsSystemPathNotFound => _r('componentsSystemPathNotFound');
 
   String get componentsManualPathLabel => _r('componentsManualPathLabel');
   String componentsManualPathDesc(String name) =>
@@ -1405,8 +1391,7 @@ class S {
   String get componentsReinstallButton => _r('componentsReinstallButton');
   String get componentsUninstallButton => _r('componentsUninstallButton');
   String get componentsInstalling => _r('componentsInstalling');
-  String get componentsInstallUnknownSize =>
-      _r('componentsInstallUnknownSize');
+  String get componentsInstallUnknownSize => _r('componentsInstallUnknownSize');
   String componentsInstallSuccess(String name) =>
       _r('componentsInstallSuccess', {'name': name});
   String componentsInstallFailed(String message) =>

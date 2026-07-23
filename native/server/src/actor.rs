@@ -500,18 +500,24 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
             | "bt_tracker_sub_enabled"
             | "bt_tracker_sub_urls"
             | "bt_tracker_sub_cache"
-            | "bt_seed_ratio_limit"
+                if !bt_applied =>
+            {
+                bt_applied = true;
+                log_info!("[server-actor] BT session config changed, invalidating session");
+                engine.manager.set_bt_config(bt_config_from_map(&all));
+                engine.manager.invalidate_bt_session().await;
+            }
+            "bt_seed_ratio_limit"
             | "bt_seed_post_ratio_limit"
             | "bt_seed_time_limit_minutes"
             | "bt_seed_inactive_time_limit_minutes"
             | "bt_seed_limit_operator"
-            | "bt_max_seeding_tasks"
+            | "bt_seed_then_action"
                 if !bt_applied =>
             {
                 bt_applied = true;
-                log_info!("[server-actor] BT config changed, invalidating session");
+                log_info!("[server-actor] BT seeding config changed, live-applied");
                 engine.manager.set_bt_config(bt_config_from_map(&all));
-                engine.manager.invalidate_bt_session().await;
             }
             // 服务器自身配置（token/端口/子开关）重启生效；其余键无运行时动作。
             _ => {}
@@ -590,10 +596,10 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
                 }
             })
             .unwrap_or(fluxdown_engine::bt_seeding::SeedingLimitOperator::Or),
-        max_seeding_tasks: cfg
-            .get("bt_max_seeding_tasks")
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0),
+        seed_then_action: cfg
+            .get("bt_seed_then_action")
+            .cloned()
+            .unwrap_or_else(|| "stop".to_string()),
     }
 }
 

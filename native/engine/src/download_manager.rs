@@ -1663,13 +1663,79 @@ impl DownloadManager {
     ///
     /// This is a cheap no-op when no BT session exists or no seeders are active.
     /// Upload bytes are persisted and emitted so the UI can show live upload
-    /// speed/ratio; seeders that exceed configured limits are stopped.
+    /// speed/ratio; seeders that exceed configured limits are stopped (or
+    /// removed, depending on the configured `seed_then_action`).
     pub async fn tick_seeding_evaluation(&mut self) {
         self.account_seeding_uploads().await;
-        self.evaluate_seeding_limits().await;
+        let to_stop = self.evaluate_seeding_limits().await;
+        let then_action =
+            crate::bt_seeding::SeedingThenAction::parse(&self.bt_config.seed_then_action);
+        for (task_id, reason) in to_stop {
+            let short = &task_id[..task_id.len().min(8)];
+            log_info!("[manager] stopping seeder {}: {}", short, reason.message());
+
+            let bt = self.bt_session.clone();
+            if let Some(bt) = bt {
+                let _ = bt.unregister_seeder(&task_id).await;
+                let _ = bt.pause_task(&task_id).await;
+            }
+
+            if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await {
+                match then_action {
+                    crate::bt_seeding::SeedingThenAction::DeleteTask => {
+                        let _ = self
+                            .db
+                            .update_task_seeding_status(
+                                &task_id,
+                                reason.as_i32(),
+                                reason.message(),
+                            )
+                            .await;
+                        self.delete_task(&task_id, false).await;
+                        continue;
+                    }
+                    crate::bt_seeding::SeedingThenAction::DeleteTaskAndFiles => {
+                        let _ = self
+                            .db
+                            .update_task_seeding_status(
+                                &task_id,
+                                reason.as_i32(),
+                                reason.message(),
+                            )
+                            .await;
+                        self.delete_task(&task_id, true).await;
+                        continue;
+                    }
+                    crate::bt_seeding::SeedingThenAction::Stop => {
+                        let _ = self
+                            .db
+                            .update_task_seeding_status(&task_id, reason.as_i32(), reason.message())
+                            .await;
+                        self.sink.emit(EngineEvent::TaskProgress {
+                            task_id: task_id.clone(),
+                            status: 3,
+                            downloaded_bytes: t.downloaded_bytes,
+                            total_bytes: t.total_bytes,
+                            speed: 0,
+                            file_name: t.file_name.clone(),
+                            save_dir: t.save_dir.clone(),
+                            url: t.url.clone(),
+                            error_message: String::new(),
+                            upload_speed_bps: 0,
+                            uploaded_bytes: t.uploaded_bytes,
+                            seeding_status: reason.as_i32(),
+                            seeding_message: reason.message().to_string(),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Persist and emit upload stats for every active seeder.
+    ///
+    /// Uses delta accumulation so `tasks.uploaded_bytes` stays correct across
+    /// librqbit counter resets (pause/resume or session rebuild).
     async fn account_seeding_uploads(&self) {
         let Some(ref bt) = self.bt_session else {
             return;
@@ -1681,21 +1747,27 @@ impl DownloadManager {
                 continue;
             };
             let stats = handle.stats();
-            let uploaded_bytes = stats
-                .live
-                .as_ref()
-                .map(|l| l.snapshot.uploaded_bytes as i64)
-                .unwrap_or(0);
-            let upload_speed_bps = stats
-                .live
-                .as_ref()
-                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
-                .unwrap_or(0);
+            let Some(live) = stats.live.as_ref() else {
+                // No live snapshot while paused — do not overwrite with zero.
+                continue;
+            };
+            let snapshot_uploaded = live.snapshot.uploaded_bytes as i64;
+            let upload_speed_bps = (live.upload_speed.mbps * 1024.0 * 1024.0) as i64;
 
-            let _ = self
-                .db
-                .update_task_uploaded_bytes(&task_id, uploaded_bytes)
-                .await;
+            let Some(delta) = seeding_mgr
+                .apply_upload_snapshot(&task_id, snapshot_uploaded, upload_speed_bps)
+                .await
+            else {
+                continue;
+            };
+
+            let new_total = match self.db.add_task_uploaded_bytes(&task_id, delta).await {
+                Ok(n) => n,
+                Err(e) => {
+                    log_info!("[manager] add_task_uploaded_bytes error: {}", e);
+                    continue;
+                }
+            };
 
             if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await {
                 self.sink.emit(EngineEvent::TaskProgress {
@@ -1709,7 +1781,7 @@ impl DownloadManager {
                     url: t.url.clone(),
                     error_message: String::new(),
                     upload_speed_bps,
-                    uploaded_bytes,
+                    uploaded_bytes: new_total,
                     seeding_status: 1,
                     seeding_message: String::new(),
                 });
@@ -1719,14 +1791,12 @@ impl DownloadManager {
 
     /// Evaluate configured seeding limits for every active seeder.
     ///
-    /// Reads live upload stats to determine which seeders have exceeded their
-    /// configured ratio/time/inactivity limits, then stops them. Upload
-    /// accounting (persisting `uploaded_bytes` and emitting `TaskProgress`) is
-    /// intentionally left to [`Self::account_seeding_uploads`] so it happens
-    /// exactly once per tick.
-    async fn evaluate_seeding_limits(&self) {
+    /// Uses the persisted cumulative `uploaded_bytes` and `downloaded_bytes`
+    /// from the DB so ratio limits are not under-counted across librqbit
+    /// session resets.
+    async fn evaluate_seeding_limits(&self) -> Vec<(String, SeedingStopReason)> {
         let Some(ref bt) = self.bt_session else {
-            return;
+            return Vec::new();
         };
 
         let config = SeedingLimitConfig {
@@ -1735,16 +1805,21 @@ impl DownloadManager {
             seed_time_limit_minutes: self.bt_config.seed_time_limit_minutes,
             inactive_time_limit_minutes: self.bt_config.seed_inactive_time_limit_minutes,
             operator: self.bt_config.seed_limit_operator,
+            then_action: crate::bt_seeding::SeedingThenAction::parse(
+                &self.bt_config.seed_then_action,
+            ),
         };
         if !config.has_enabled_conditions() {
-            return;
+            return Vec::new();
         }
 
         let seeding_mgr = bt.seeding_manager();
         let task_ids = seeding_mgr.all_task_ids().await;
         if task_ids.is_empty() {
-            return;
+            return Vec::new();
         }
+
+        let now_unix = chrono::Local::now().timestamp();
 
         // Build snapshots for limit evaluation from live stats and DB totals.
         let mut snapshots: HashMap<String, SeedingUploadSnapshot> = HashMap::new();
@@ -1753,18 +1828,14 @@ impl DownloadManager {
                 continue;
             };
             let stats = handle.stats();
-            let uploaded_bytes = stats
-                .live
-                .as_ref()
-                .map(|l| l.snapshot.uploaded_bytes as i64)
-                .unwrap_or(0);
             let upload_speed_bps = stats
                 .live
                 .as_ref()
                 .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
                 .unwrap_or(0);
 
-            let downloaded_bytes = self
+            let total_uploaded = self.db.get_task_uploaded_bytes(task_id).await.unwrap_or(0);
+            let total_downloaded = self
                 .db
                 .get_task_downloaded_bytes(task_id)
                 .await
@@ -1773,44 +1844,18 @@ impl DownloadManager {
             snapshots.insert(
                 task_id.clone(),
                 SeedingUploadSnapshot {
-                    total_uploaded: uploaded_bytes,
-                    total_downloaded: downloaded_bytes,
+                    total_uploaded,
+                    total_downloaded,
                     upload_speed_bps,
                 },
             );
         }
 
-        let to_stop = seeding_mgr
-            .evaluate_limits(&config, |id| snapshots.get(id).copied().unwrap_or_default())
-            .await;
-
-        for (task_id, reason) in to_stop {
-            let short = &task_id[..task_id.len().min(8)];
-            log_info!("[manager] stopping seeder {}: {}", short, reason.message());
-            let _ = bt.unregister_seeder(&task_id).await;
-            let _ = bt.pause_task(&task_id).await;
-            let _ = self
-                .db
-                .update_task_seeding_status(&task_id, reason.as_i32(), reason.message())
-                .await;
-            if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await {
-                self.sink.emit(EngineEvent::TaskProgress {
-                    task_id: task_id.clone(),
-                    status: 3,
-                    downloaded_bytes: t.downloaded_bytes,
-                    total_bytes: t.total_bytes,
-                    speed: 0,
-                    file_name: t.file_name.clone(),
-                    save_dir: t.save_dir.clone(),
-                    url: t.url.clone(),
-                    error_message: String::new(),
-                    upload_speed_bps: 0,
-                    uploaded_bytes: t.uploaded_bytes,
-                    seeding_status: reason.as_i32(),
-                    seeding_message: reason.message().to_string(),
-                });
-            }
-        }
+        seeding_mgr
+            .evaluate_limits(&config, now_unix, |id| {
+                snapshots.get(id).copied().unwrap_or_default()
+            })
+            .await
     }
 
     /// Invalidate (destroy) the current BT session so it will be re-created
@@ -1829,6 +1874,43 @@ impl DownloadManager {
             .filter(|(_, e)| e.is_bt)
             .map(|(id, _)| id.clone())
             .collect();
+
+        // 1b. Mark any active seeders as stopped because the whole BT session is
+        // about to be released. This prevents stale "seeding" UI state.
+        if let Some(ref bt) = self.bt_session {
+            let seeder_ids = bt.seeding_manager().all_task_ids().await;
+            for tid in &seeder_ids {
+                let _ = bt.unregister_seeder(tid).await;
+                let _ = self
+                    .db
+                    .update_task_seeding_status(
+                        tid,
+                        crate::bt_seeding::SeedingStopReason::SessionReleased.as_i32(),
+                        crate::bt_seeding::SeedingStopReason::SessionReleased.message(),
+                    )
+                    .await;
+                if let Ok(Some(t)) = self.db.load_task_by_id(tid).await {
+                    self.sink.emit(EngineEvent::TaskProgress {
+                        task_id: tid.clone(),
+                        status: t.status,
+                        downloaded_bytes: t.downloaded_bytes,
+                        total_bytes: t.total_bytes,
+                        speed: 0,
+                        file_name: t.file_name.clone(),
+                        save_dir: t.save_dir.clone(),
+                        url: t.url.clone(),
+                        error_message: String::new(),
+                        upload_speed_bps: 0,
+                        uploaded_bytes: t.uploaded_bytes,
+                        seeding_status: crate::bt_seeding::SeedingStopReason::SessionReleased
+                            .as_i32(),
+                        seeding_message: crate::bt_seeding::SeedingStopReason::SessionReleased
+                            .message()
+                            .to_string(),
+                    });
+                }
+            }
+        }
 
         // 2. Gracefully pause each active BT task (cancel token, persist
         //    progress, update DB status to paused, notify Dart).
@@ -1943,15 +2025,21 @@ impl DownloadManager {
         }
     }
 
-    /// Whether we have a free slot for a new HTTP/FTP download.
-    /// BT tasks are excluded from this count because they are managed by the
-    /// shared librqbit session with its own concurrency controls.
-    fn has_capacity(&self) -> bool {
+    /// Whether we have a free slot for a new download.
+    ///
+    /// BT tasks and active seeders now count toward the same global
+    /// `max_concurrent` ceiling as HTTP/FTP downloads. `0` means unlimited.
+    async fn has_capacity(&self) -> bool {
         if self.max_concurrent == 0 {
             return true;
         }
-        let http_ftp_active = self.active_tasks.values().filter(|e| !e.is_bt).count();
-        http_ftp_active < self.max_concurrent
+        let active = self.active_tasks.len();
+        let seeding = if let Some(bt) = self.bt_session.as_ref() {
+            bt.seeding_manager().active_count().await as usize
+        } else {
+            0
+        };
+        active + seeding < self.max_concurrent
     }
 
     /// Whether the named queue `queue_id` has room for another task.
@@ -2027,7 +2115,7 @@ impl DownloadManager {
                 continue;
             }
             // Global concurrency ceiling reached — keep this and the rest.
-            if !self.has_capacity() {
+            if !self.has_capacity().await {
                 kept.push_back(queued);
                 global_full = true;
                 continue;
@@ -2297,6 +2385,54 @@ impl DownloadManager {
         tokio::spawn(async move {
             scan_missing_files(db, sink, scanning).await;
         });
+    }
+
+    /// Reset seeding state left over from a previous session.
+    ///
+    /// librqbit does not restore seeders across restarts (we intentionally clear
+    /// its session.json), so any task that was seeding when the app exited will
+    /// be stuck with `seeding_status = 1` but no actual peer connections.
+    /// Normalize those rows to `UserStopped` and clear the persisted start time.
+    pub async fn reset_stale_seeding(&self) {
+        let stale = match self.db.load_tasks_with_seeding_status(1).await {
+            Ok(t) => t,
+            Err(e) => {
+                log_info!("[manager] load_tasks_with_seeding_status error: {}", e);
+                return;
+            }
+        };
+        for t in stale {
+            let short = &t.task_id[..t.task_id.len().min(8)];
+            log_info!(
+                "[manager] resetting stale seeding state for task {} to user-stopped",
+                short
+            );
+            let _ = self
+                .db
+                .update_task_seeding_status(
+                    &t.task_id,
+                    crate::bt_seeding::SeedingStopReason::UserStopped.as_i32(),
+                    crate::bt_seeding::SeedingStopReason::UserStopped.message(),
+                )
+                .await;
+            self.sink.emit(EngineEvent::TaskProgress {
+                task_id: t.task_id.clone(),
+                status: t.status,
+                downloaded_bytes: t.downloaded_bytes,
+                total_bytes: t.total_bytes,
+                speed: 0,
+                file_name: t.file_name.clone(),
+                save_dir: t.save_dir.clone(),
+                url: t.url.clone(),
+                error_message: String::new(),
+                upload_speed_bps: 0,
+                uploaded_bytes: t.uploaded_bytes,
+                seeding_status: crate::bt_seeding::SeedingStopReason::UserStopped.as_i32(),
+                seeding_message: crate::bt_seeding::SeedingStopReason::UserStopped
+                    .message()
+                    .to_string(),
+            });
+        }
     }
 
     pub async fn load_and_send_all_tasks(&mut self) {
@@ -2571,6 +2707,8 @@ impl DownloadManager {
             // 文件跟踪：仅进程启动时扫一次；运行期检测交给 RescanFiles（桌面/
             // 移动聚焦）与 headless 定时器两条专属触发路径。
             self.spawn_file_scan();
+            // librqbit 不跨重启恢复做种，把残留做种态重置为 UserStopped。
+            self.reset_stale_seeding().await;
         }
     }
 
@@ -2832,7 +2970,7 @@ impl DownloadManager {
             resolved: false,
             range_supported: false,
         };
-        if is_bt || (self.has_capacity() && self.has_queue_capacity(&queued.queue_id)) {
+        if is_bt || (self.has_capacity().await && self.has_queue_capacity(&queued.queue_id)) {
             self.do_start_task(queued).await;
             // If do_start_task failed early (e.g. BT session init), the slot
             // was freed — drain the queue so pending tasks can proceed.
@@ -3596,9 +3734,19 @@ impl DownloadManager {
             if let Some(ref bt) = self.bt_session {
                 match bt.resume_task(task_id).await {
                     Ok(Some(handle)) => {
-                        bt.register_seeder(task_id, handle, task.uploaded_at_completion)
+                        let started_at_unix = chrono::Local::now().timestamp();
+                        bt.register_seeder(
+                            task_id,
+                            handle,
+                            task.uploaded_at_completion,
+                            started_at_unix,
+                            0,
+                        )
+                        .await;
+                        let _ = self
+                            .db
+                            .set_task_seeding_active(task_id, started_at_unix)
                             .await;
-                        let _ = self.db.update_task_seeding_status(task_id, 1, "").await;
                         self.emit_progress_from_db(task_id, 3, 1, "", 0).await;
                     }
                     Ok(None) => {
@@ -3635,7 +3783,7 @@ impl DownloadManager {
             .map(|t| t.queue_id.clone())
             .unwrap_or_default();
 
-        if is_bt || (self.has_capacity() && self.has_queue_capacity(&queue_id)) {
+        if is_bt || (self.has_capacity().await && self.has_queue_capacity(&queue_id)) {
             self.do_resume_task(task_id).await;
             // If do_resume_task failed early (e.g. BT session init), drain
             // the queue so pending tasks can proceed.
@@ -4462,6 +4610,21 @@ impl DownloadManager {
             delete_task_artifact_files(&self.db, task_id, &t.save_dir).await;
         }
 
+        // If the task was still marked as seeding, record the deletion reason
+        // before the row disappears.
+        if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await
+            && t.seeding_status == crate::bt_seeding::SEEDING_STATUS_ACTIVE
+        {
+            let _ = self
+                .db
+                .update_task_seeding_status(
+                    task_id,
+                    crate::bt_seeding::SeedingStopReason::TaskDeleted.as_i32(),
+                    crate::bt_seeding::SeedingStopReason::TaskDeleted.message(),
+                )
+                .await;
+        }
+
         if let Err(e) = self.db.delete_task(task_id).await {
             log_info!("[manager] delete_task {}: DB delete error: {}", task_id, e);
         }
@@ -4885,7 +5048,7 @@ impl DownloadManager {
         let is_bt = is_bt_url(&task_row.url);
         let queue_id = task_row.queue_id.clone();
 
-        if is_bt || (self.has_capacity() && self.has_queue_capacity(&queue_id)) {
+        if is_bt || (self.has_capacity().await && self.has_queue_capacity(&queue_id)) {
             self.do_resume_task(task_id).await;
             self.drain_queue().await;
         } else {

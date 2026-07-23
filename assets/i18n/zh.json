@@ -982,7 +982,8 @@
     "btSeedOperatorAnd": "满足所有条件",
     "btSeedThenAction": "然后",
     "btSeedStopSeeding": "停止做种",
-    "btMaxSeedingTasks": "最大做种任务数",
+    "btSeedDeleteTask": "删除任务",
+    "btSeedDeleteTaskAndFiles": "删除任务和文件",
     "seedRatio": "分享率",
     "seedTime": "做种时间",
     "seedingStatus": "做种状态",
@@ -995,7 +996,8 @@
     "seedingStatusDeleted": "任务已删除",
     "seedingStatusSessionReleased": "BT 会话已释放",
     "uploadedTotal": "已上传",
-    "minutesSuffix": "分钟",
-    "tasksSuffix": "个",
+    "timeUnitMinutes": "分钟",
+    "timeUnitHours": "小时",
+    "timeUnitDays": "天",
     "settingsTabSeeding": "做种"
 }
