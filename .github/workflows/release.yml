@@ -10,6 +10,15 @@ permissions:
   packages: write # 允许推送 Docker 镜像到 ghcr.io（build-server-docker job）
   actions: write # 允许在 release job 末尾删除旧 artifact（避免 500MB 配额耗尽）
 
+# ── SignPath 代码签名（Windows PE，OSS 免费证书）──
+# 需要仓库 secret SIGNPATH_API_TOKEN（SignPath 控制台 CI 用户的 API token）。
+# 生产证书由 SignPath 审核 setup 并导入后，把 SIGNPATH_SIGNING_POLICY 改为 release-signing。
+env:
+  SIGNPATH_ORGANIZATION_ID: 8e88ecd8-8099-49f5-9edf-e43053de7d3e
+  SIGNPATH_PROJECT_SLUG: FluxDown
+  SIGNPATH_SIGNING_POLICY: test-signing
+  SIGNPATH_ARTIFACT_CONFIG: windows-exe-zip
+
 jobs:
   # ── 前置 Job: 检测上一个版本 tag → 当前 tag 之间哪些组件目录有变更 ──
   # 规则：
@@ -238,6 +247,40 @@ jobs:
             Write-Host "Renamed build\windows\x64 -> build\windows\arm64"
           }
 
+      # ── SignPath 签名 Round 1: 应用 exe（flux_down / fluxdown_nmh / fluxdown_updater）──
+      # 必须在 Inno Setup 打包与 portable zip 之前完成，
+      # 保证安装器内嵌与便携版解压出的 exe 均已带签名。
+      - name: Collect unsigned app executables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\signing\app | Out-Null
+          Copy-Item "build\windows\${{ matrix.arch }}\runner\Release\*.exe" "build\signing\app\"
+
+      - name: Upload unsigned app executables
+        id: upload-unsigned-app
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-app-exe-${{ matrix.arch }}
+          path: build/signing/app/*.exe
+
+      - name: Sign app executables (SignPath)
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-unsigned-app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/signing/app-signed
+
+      - name: Replace app executables with signed versions
+        shell: pwsh
+        run: |
+          Copy-Item "build\signing\app-signed\*.exe" "build\windows\${{ matrix.arch }}\runner\Release\" -Force
+
       # ── Inno Setup installer ──
       # NOTE: fluxdown_nmh.exe and fluxdown_updater.exe are built automatically
       # by CMake custom targets defined in windows/CMakeLists.txt during flutter build.
@@ -261,6 +304,32 @@ jobs:
       - name: Build installer with Inno Setup
         run: |
           iscc /DMyAppVersion=${{ steps.version.outputs.VERSION }} /DMyAppArch=${{ matrix.arch }} installer\windows\setup.iss
+
+      # ── SignPath 签名 Round 2: Inno Setup 安装器本体 ──
+      - name: Upload unsigned installer
+        id: upload-unsigned-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer-${{ matrix.arch }}
+          path: build/installer/FluxDown-*.exe
+
+      - name: Sign installer (SignPath)
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/signing/installer-signed
+
+      - name: Replace installer with signed version
+        shell: pwsh
+        run: |
+          Copy-Item "build\signing\installer-signed\*.exe" "build\installer\" -Force
 
       # ── Compress portable version ──
       - name: Create portable zip
@@ -1289,6 +1358,42 @@ jobs:
           tar -C build/server -czf "release-assets/FluxDown-Server-${VERSION}-${{ matrix.platform }}.tar.gz" "${PKG}"
           ls -la release-assets/
 
+      # ── SignPath 签名: fluxdown-server.exe（打包前签名，zip 内即为已签名二进制）──
+      - name: Collect unsigned server executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\signing\unsigned | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\fluxdown-server.exe" "build\signing\unsigned\"
+
+      - name: Upload unsigned server executable
+        if: runner.os == 'Windows'
+        id: upload-unsigned-server
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-server-exe-${{ matrix.platform }}
+          path: build/signing/unsigned/*.exe
+
+      - name: Sign server executable (SignPath)
+        if: runner.os == 'Windows'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-unsigned-server.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/signing/signed
+
+      - name: Replace server executable with signed version
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "build\signing\signed\fluxdown-server.exe" "target\${{ matrix.target }}\release\fluxdown-server.exe" -Force
+
       - name: Package (zip)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -1469,6 +1574,42 @@ jobs:
           cp "target/${{ matrix.target }}/release/fluxdown" "build/cli/${PKG}/"
           tar -C build/cli -czf "release-assets/FluxDown-CLI-${VERSION}-${{ matrix.platform }}.tar.gz" "${PKG}"
           ls -la release-assets/
+
+      # ── SignPath 签名: fluxdown.exe（打包前签名，zip 内即为已签名二进制）──
+      - name: Collect unsigned CLI executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\signing\unsigned | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\fluxdown.exe" "build\signing\unsigned\"
+
+      - name: Upload unsigned CLI executable
+        if: runner.os == 'Windows'
+        id: upload-unsigned-cli
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-cli-exe-${{ matrix.platform }}
+          path: build/signing/unsigned/*.exe
+
+      - name: Sign CLI executable (SignPath)
+        if: runner.os == 'Windows'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-unsigned-cli.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/signing/signed
+
+      - name: Replace CLI executable with signed version
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "build\signing\signed\fluxdown.exe" "target\${{ matrix.target }}\release\fluxdown.exe" -Force
 
       - name: Package (zip)
         if: runner.os == 'Windows'
