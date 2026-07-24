@@ -25,25 +25,25 @@ import CommunityFloat from "./CommunityFloat";
     <div class="absolute inset-0 bg-gradient-to-r from-transparent via-brand-sky/30 to-transparent"></div>
     <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-sky/[0.04] blur-3xl rounded-full pointer-events-none"></div>
   </div>
-  <FeaturesSection client:visible />
+  <FeaturesSection client:visible={{ rootMargin: "400px" }} />
   <!-- Section divider: Features → Extension -->
   <div class="relative h-px w-full">
     <div class="absolute inset-0 bg-gradient-to-r from-transparent via-brand-cyan/25 to-transparent"></div>
     <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-cyan/[0.04] blur-3xl rounded-full pointer-events-none"></div>
   </div>
-  <ExtensionSection client:visible />
+  <ExtensionSection client:visible={{ rootMargin: "400px" }} />
   <!-- Section divider: Extension → Download -->
   <div class="relative h-px w-full">
     <div class="absolute inset-0 bg-gradient-to-r from-transparent via-brand-blue/25 to-transparent"></div>
     <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-blue/[0.04] blur-3xl rounded-full pointer-events-none"></div>
   </div>
-  <DownloadSection client:visible />
+  <DownloadSection client:visible={{ rootMargin: "400px" }} />
   <!-- Section divider: Download → Sponsor -->
   <div class="relative h-px w-full">
     <div class="absolute inset-0 bg-gradient-to-r from-transparent via-pink-500/25 to-transparent"></div>
     <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-pink-500/[0.04] blur-3xl rounded-full pointer-events-none"></div>
   </div>
-  <SponsorSection client:visible />
+  <SponsorSection client:visible={{ rootMargin: "400px" }} />
 </main>
-<Footer client:visible />
+<Footer client:visible={{ rootMargin: "400px" }} />
 <CommunityFloat client:idle />
