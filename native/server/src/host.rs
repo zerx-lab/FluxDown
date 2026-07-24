@@ -520,6 +520,9 @@ mod tests {
             url: "http://x".to_string(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
 
         let ev = rx.recv().await.expect("task event");

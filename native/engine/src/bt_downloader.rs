@@ -41,6 +41,7 @@ pub type BtHandle = Arc<ManagedTorrent>;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::bt_seeding::SeedingManager;
 use crate::db::Db;
 use crate::downloader::{DownloadError, ProgressUpdate, SegmentProgressInfo};
 use crate::logger::log_info;
@@ -315,6 +316,19 @@ pub struct BtConfig {
     /// see `tracker_subscription`).  Empty when the subscription feature is
     /// disabled.  Merged + deduped with `custom_trackers` at session build.
     pub subscription_trackers: String,
+    /// Stop seeding when the total share ratio reaches this value (0 = unlimited).
+    pub seed_ratio_limit: f64,
+    /// Stop seeding when the post-completion share ratio reaches this value
+    /// (`(uploaded - uploaded_at_completion) / downloaded`, 0 = unlimited).
+    pub seed_post_ratio_limit: f64,
+    /// Stop seeding after this many minutes (0 = unlimited).
+    pub seed_time_limit_minutes: u64,
+    /// Stop seeding after this many minutes of zero upload speed (0 = unlimited).
+    pub seed_inactive_time_limit_minutes: u64,
+    /// How to combine the ratio, seed-time and inactive-time limits.
+    pub seed_limit_operator: crate::bt_seeding::SeedingLimitOperator,
+    /// What to do once a seeding limit is reached.
+    pub seed_then_action: String,
 }
 
 impl Default for BtConfig {
@@ -326,6 +340,12 @@ impl Default for BtConfig {
             port_end: 6891,
             custom_trackers: String::new(),
             subscription_trackers: String::new(),
+            seed_ratio_limit: 1.0,
+            seed_post_ratio_limit: 0.0,
+            seed_time_limit_minutes: 72 * 60,
+            seed_inactive_time_limit_minutes: 0,
+            seed_limit_operator: crate::bt_seeding::SeedingLimitOperator::Or,
+            seed_then_action: "stop".to_string(),
         }
     }
 }
@@ -431,6 +451,8 @@ pub struct SharedBtSession {
     /// It is the BT analogue of the HTTP path's `reserved_temp_paths`.  The
     /// lock is only contended in the rare simultaneous-completion case.
     completion_move_lock: Mutex<()>,
+    /// Tracks completed torrents that are kept alive for seeding.
+    seeding: Arc<SeedingManager>,
     /// Folder holding librqbit persistence files (session.json, `{hash}.bitv`,
     /// `{hash}.torrent`).  Kept so that `clear_stale_fastresume` can remove a
     /// `.bitv` whose staging data no longer exists (BUG-BT-PHANTOM-PIECES).
@@ -491,6 +513,7 @@ impl SharedBtSession {
         let total_tracker_count = trackers.len();
 
         let download_bps = NonZeroU32::new(speed_limit_bps.min(u32::MAX as u64) as u32);
+        let upload_bps = NonZeroU32::new(speed_limit_bps.min(u32::MAX as u64) as u32);
 
         // Persistence folder: store session.json + {hash}.bitv + {hash}.torrent
         // in the app data directory (next to flux_down.db), NOT in the user's
@@ -534,7 +557,7 @@ impl SharedBtSession {
                     trackers,
                     ratelimits: librqbit::limits::LimitsConfig {
                         download_bps,
-                        upload_bps: None,
+                        upload_bps,
                     },
                     // Optimised peer connection parameters.
                     peer_opts: Some(PeerConnectionOptions {
@@ -619,6 +642,7 @@ impl SharedBtSession {
             inflight_adds: AtomicUsize::new(0),
             torrent_ids: Mutex::new(HashMap::new()),
             completion_move_lock: Mutex::new(()),
+            seeding: Arc::new(SeedingManager::new()),
             persistence_folder,
         })
     }
@@ -664,6 +688,18 @@ impl SharedBtSession {
         let limit = NonZeroU32::new(bps.min(u32::MAX as u64) as u32);
         self.session.ratelimits.set_download_bps(limit);
         log_info!("[BT] shared session speed limit updated to {} B/s", bps);
+    }
+
+    /// Update the global upload speed limit at runtime.
+    /// `bps == 0` means unlimited.  Takes effect immediately on all active
+    /// BT uploads / seeding.
+    pub fn set_upload_speed_limit(&self, bps: u64) {
+        let limit = NonZeroU32::new(bps.min(u32::MAX as u64) as u32);
+        self.session.ratelimits.set_upload_bps(limit);
+        log_info!(
+            "[BT] shared session upload speed limit updated to {} B/s",
+            bps
+        );
     }
 
     /// Get an `Arc<Session>` handle for adding torrents.
@@ -723,6 +759,46 @@ impl SharedBtSession {
         }
     }
 
+    /// Register a completed torrent as an active seeder.
+    ///
+    /// Returns `true` if the torrent was newly registered. `uploaded_at_completion`
+    /// is the total uploaded bytes observed when the download completed; it is used
+    /// to compute the post-completion ratio. `started_at_unix` is persisted so the
+    /// seeding time limit survives restarts.
+    pub async fn register_seeder(
+        &self,
+        task_id: &str,
+        handle: BtHandle,
+        uploaded_at_completion: i64,
+        started_at_unix: i64,
+        last_session_uploaded: i64,
+    ) -> bool {
+        self.seeding
+            .register(
+                task_id.to_string(),
+                handle,
+                uploaded_at_completion,
+                started_at_unix,
+                last_session_uploaded,
+            )
+            .await
+    }
+
+    /// Unregister a seeder.  Returns `true` if the task was actively seeding.
+    pub async fn unregister_seeder(&self, task_id: &str) -> bool {
+        self.seeding.unregister(task_id).await.is_some()
+    }
+
+    /// Access the shared [`SeedingManager`].
+    pub fn seeding_manager(&self) -> Arc<SeedingManager> {
+        self.seeding.clone()
+    }
+
+    /// Returns `true` if at least one completed torrent is currently seeding.
+    pub async fn has_seeders(&self) -> bool {
+        self.seeding.active_count().await > 0
+    }
+
     /// Gracefully shut down the BT session and runtime.
     ///
     /// Pauses all active torrents, then shuts down the runtime with a timeout.
@@ -766,6 +842,9 @@ impl SharedBtSession {
         // Remove from map first (under lock), then perform async deletion
         // outside the lock to minimise contention.
         let handle = self.handles.lock().await.remove(task_id);
+        // Ensure the task is also removed from the seeding manager so completed
+        // torrents do not keep being evaluated after deletion.
+        self.unregister_seeder(task_id).await;
         if let Some(handle) = handle {
             let torrent_id = handle.id();
             // Clean up the torrent_id → task_id mapping.
@@ -3551,6 +3630,20 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
         if stats.finished {
             log_info!("[BT] task={} finished! total={}", short_id(&task_id), total);
 
+            // Capture live upload stats so the UI can keep showing upload speed
+            // while we verify/move pieces. librqbit is still active and seeding
+            // during this phase.
+            let upload_speed_bps = stats
+                .live
+                .as_ref()
+                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
+                .unwrap_or(0);
+            let uploaded_bytes = stats
+                .live
+                .as_ref()
+                .map(|l| l.snapshot.uploaded_bytes as i64)
+                .unwrap_or(0);
+
             // BT 数据已全部下完，但校验与 staging→save_dir 搬移尚未开始，任务
             // 仍未进终态——这正是 aria2 `onBtDownloadComplete` 通知对应的时刻。
             // 立即补发一条带 `bt_data_finished` 标记的进度（progress_reporter
@@ -3562,6 +3655,8 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     total_bytes: total,
                     status: STATUS_DOWNLOADING,
                     bt_data_finished: true,
+                    upload_speed_bps,
+                    uploaded_bytes,
                     ..Default::default()
                 })
                 .await;
@@ -3913,6 +4008,19 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 .await;
 
             // Send the single STATUS_COMPLETED signal with the true file name.
+            // Include the current uploaded bytes, upload speed and seeding status
+            // so the UI immediately shows the task as seeding.
+            let uploaded_bytes = db.get_task_uploaded_bytes(&task_id).await.unwrap_or(0);
+            let completed_upload_speed_bps = stats
+                .live
+                .as_ref()
+                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
+                .unwrap_or(0);
+            let completed_uploaded_bytes = stats
+                .live
+                .as_ref()
+                .map(|l| l.snapshot.uploaded_bytes as i64)
+                .unwrap_or(uploaded_bytes);
             let _ = progress_tx
                 .send(ProgressUpdate {
                     task_id: task_id.clone(),
@@ -3922,29 +4030,53 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     error_message: String::new(),
                     file_name: completed_name,
                     segment_details: Some(finished_segs),
-                    ..Default::default()
+                    upload_speed_bps: completed_upload_speed_bps,
+                    bt_data_finished: false,
+                    uploaded_bytes: completed_uploaded_bytes,
+                    seeding_status: 1,
+                    seeding_message: String::new(),
                 })
                 .await;
 
             // Retain the handle in the cache (do NOT call take_handle) and
-            // pause the torrent so it stops seeding.
+            // register the completed torrent as an active seeder.  The torrent
+            // stays live so it can upload to peers; the cached handle also lets
+            // future delete_task(delete_files=true) reach session.delete.
             //
-            // Keeping the handle alive means that a future
-            // delete_task(delete_files=true) call can reach
-            // session.delete(torrent_id, true), which properly removes the
-            // files via librqbit.  Previously we called take_handle +
-            // session.delete(false) here, which discarded the handle and
-            // removed the session entry; that left no clean path for file
-            // deletion — only an unreliable filesystem-path fallback.
-            let _ = shared_bt.pause_task(&task_id).await;
+            // Previously we paused the torrent here, which stopped all peer
+            // connections and prevented seeding.  Keeping it alive is the core
+            // of the post-completion seeding refactor.
+            shared_bt.store_handle(&task_id, handle.clone()).await;
+            let started_at_unix = chrono::Local::now().timestamp();
+            let registered = shared_bt
+                .register_seeder(
+                    &task_id,
+                    handle.clone(),
+                    completed_uploaded_bytes,
+                    started_at_unix,
+                    completed_uploaded_bytes,
+                )
+                .await;
+            let _ = db
+                .update_task_uploaded_at_completion(&task_id, completed_uploaded_bytes)
+                .await;
+            if registered {
+                let _ = db.set_task_seeding_active(&task_id, started_at_unix).await;
+            } else {
+                // Should not happen now that there is no per-seeding max; keep the
+                // fallback pause in case registration is ever gated again.
+                let _ = shared_bt.pause_task(&task_id).await;
+                let _ = db
+                    .update_task_seeding_status(&task_id, 0, "seeding registration declined")
+                    .await;
+            }
 
-            // Clean up the staging directory AFTER pause_task() so that
-            // librqbit has released all file handles it held inside the
-            // staging dir.  On Windows, open handles prevent deletion
-            // (ERROR_SHARING_VIOLATION), which is why remove_dir_all called
-            // before pause would silently fail and leave the staging dir
-            // behind.  We retry a few times with a short delay to handle
-            // the case where the runtime thread hasn't fully flushed yet.
+            // Clean up the staging directory after the torrent entered seeding.
+            // librqbit keeps file handles open while seeding the moved files,
+            // so on Windows open handles inside the staging dir could prevent
+            // deletion (ERROR_SHARING_VIOLATION).  We retry a few times with a
+            // short delay to handle the case where the runtime thread hasn't
+            // fully released handles yet.
             let stage_dir_for_cleanup = bt_stage_dir(&save_dir, &task_id);
             // Only clean up staging when every selected file was successfully
             // moved out.  If any move failed, leaving the staging dir intact
@@ -3959,7 +4091,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     match tokio::fs::remove_dir_all(&stage_dir_for_cleanup).await {
                         Ok(()) => {
                             log_info!(
-                                "[BT] task={} staging dir removed after pause (attempt {})",
+                                "[BT] task={} staging dir removed after seeding registration (attempt {})",
                                 short_id(&task_id),
                                 attempt + 1
                             );
@@ -4076,6 +4208,13 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 downloaded_pieces,
             );
 
+            // Persist cumulative upload for seeding ratio accounting.
+            let cumulative_upload = stats
+                .live
+                .as_ref()
+                .map(|l| l.snapshot.uploaded_bytes as i64)
+                .unwrap_or(0);
+
             let _ = progress_tx
                 .send(ProgressUpdate {
                     task_id: task_id.clone(),
@@ -4086,6 +4225,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     file_name: String::new(),
                     segment_details: Some(seg_details),
                     upload_speed_bps,
+                    uploaded_bytes: cumulative_upload,
                     ..Default::default()
                 })
                 .await;
@@ -4102,6 +4242,15 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             if total > 0 {
                 let _ = db.update_task_total_bytes(&task_id, total).await;
             }
+            // Persist cumulative upload for seeding ratio accounting.
+            let cumulative_upload = stats
+                .live
+                .as_ref()
+                .map(|l| l.snapshot.uploaded_bytes as i64)
+                .unwrap_or(0);
+            let _ = db
+                .update_task_uploaded_bytes(&task_id, cumulative_upload)
+                .await;
             last_db_save = Instant::now();
         }
 

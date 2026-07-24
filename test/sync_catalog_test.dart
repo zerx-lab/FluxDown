@@ -71,11 +71,17 @@ void main() {
 
     test('encodeThemeSelection prefers custom id over builtin', () {
       expect(
-        encodeThemeSelection(customId: 'abc', builtin: BuiltinThemeId.defaultDark),
+        encodeThemeSelection(
+          customId: 'abc',
+          builtin: BuiltinThemeId.defaultDark,
+        ),
         'custom:abc',
       );
       expect(
-        encodeThemeSelection(customId: null, builtin: BuiltinThemeId.defaultDark),
+        encodeThemeSelection(
+          customId: null,
+          builtin: BuiltinThemeId.defaultDark,
+        ),
         'builtin:defaultDark',
       );
     });
@@ -111,16 +117,21 @@ void main() {
       settings = _newSettingsProvider();
       theme = ThemeProvider();
       locale = LocaleNotifier();
-      catalog = buildSyncCatalog(settings: settings, theme: theme, locale: locale);
+      catalog = buildSyncCatalog(
+        settings: settings,
+        theme: theme,
+        locale: locale,
+      );
     });
 
     tearDown(() {
       settings.dispose();
     });
 
-    test('has exactly the 41 keys listed in the sync contract v1', () {
-      // 5 appearance + 6 general + 7 ui + 13 download + 5 bt + 5 ed2k.
-      expect(catalog.length, 41);
+    test('has exactly the 47 keys listed in the sync contract v1', () {
+      // 5 appearance + 6 general + 7 ui + 13 download + 11 bt（5 + 6 做种）+ 5 ed2k.
+      // 做种 6 项：ratio/post_ratio/time/inactive_time/operator/then_action.
+      expect(catalog.length, 47);
     });
 
     test('every key matches the contract key pattern and length limit', () {
@@ -153,7 +164,14 @@ void main() {
     });
 
     test('every key falls under one of the six documented categories', () {
-      const prefixes = {'appearance', 'general', 'ui', 'download', 'bt', 'ed2k'};
+      const prefixes = {
+        'appearance',
+        'general',
+        'ui',
+        'download',
+        'bt',
+        'ed2k',
+      };
       for (final entry in catalog) {
         expect(prefixes, contains(entry.key.split('.').first));
       }
@@ -170,7 +188,11 @@ void main() {
       settings = _newSettingsProvider();
       theme = ThemeProvider();
       locale = LocaleNotifier();
-      catalog = buildSyncCatalog(settings: settings, theme: theme, locale: locale);
+      catalog = buildSyncCatalog(
+        settings: settings,
+        theme: theme,
+        locale: locale,
+      );
     });
 
     tearDown(() {
@@ -179,14 +201,17 @@ void main() {
 
     SyncEntry entryFor(String key) => catalog.firstWhere((e) => e.key == key);
 
-    test('bool entry silently skips a wrong-typed value instead of throwing', () {
-      final entry = entryFor('general.auto_check_update');
-      final before = settings.autoCheckUpdate;
-      expect(() => entry.apply('not-a-bool'), returnsNormally);
-      expect(settings.autoCheckUpdate, before);
-      expect(() => entry.apply(null), returnsNormally);
-      expect(settings.autoCheckUpdate, before);
-    });
+    test(
+      'bool entry silently skips a wrong-typed value instead of throwing',
+      () {
+        final entry = entryFor('general.auto_check_update');
+        final before = settings.autoCheckUpdate;
+        expect(() => entry.apply('not-a-bool'), returnsNormally);
+        expect(settings.autoCheckUpdate, before);
+        expect(() => entry.apply(null), returnsNormally);
+        expect(settings.autoCheckUpdate, before);
+      },
+    );
 
     test('int entry silently skips a non-numeric value', () {
       final entry = entryFor('download.max_concurrent_tasks');
@@ -235,45 +260,52 @@ void main() {
     });
   });
 
-  group('apply() tolerant parsing — successful path (theme/locale, no FFI)', () {
-    late ThemeProvider theme;
-    late LocaleNotifier locale;
-    late SettingsProvider settings;
-    late List<SyncEntry> catalog;
+  group(
+    'apply() tolerant parsing — successful path (theme/locale, no FFI)',
+    () {
+      late ThemeProvider theme;
+      late LocaleNotifier locale;
+      late SettingsProvider settings;
+      late List<SyncEntry> catalog;
 
-    setUp(() {
-      settings = _newSettingsProvider();
-      theme = ThemeProvider();
-      locale = LocaleNotifier();
-      catalog = buildSyncCatalog(settings: settings, theme: theme, locale: locale);
-    });
+      setUp(() {
+        settings = _newSettingsProvider();
+        theme = ThemeProvider();
+        locale = LocaleNotifier();
+        catalog = buildSyncCatalog(
+          settings: settings,
+          theme: theme,
+          locale: locale,
+        );
+      });
 
-    tearDown(() {
-      settings.dispose();
-    });
+      tearDown(() {
+        settings.dispose();
+      });
 
-    SyncEntry entryFor(String key) => catalog.firstWhere((e) => e.key == key);
+      SyncEntry entryFor(String key) => catalog.firstWhere((e) => e.key == key);
 
-    test('appearance.theme_mode applies a valid mode', () {
-      entryFor('appearance.theme_mode').apply('dark');
-      expect(theme.themeMode, ThemeMode.dark);
-    });
+      test('appearance.theme_mode applies a valid mode', () {
+        entryFor('appearance.theme_mode').apply('dark');
+        expect(theme.themeMode, ThemeMode.dark);
+      });
 
-    test('appearance.color_scheme applies a known scheme', () {
-      entryFor('appearance.color_scheme').apply('green');
-      expect(theme.colorScheme, AppColorScheme.green);
-    });
+      test('appearance.color_scheme applies a known scheme', () {
+        entryFor('appearance.color_scheme').apply('green');
+        expect(theme.colorScheme, AppColorScheme.green);
+      });
 
-    test('appearance.custom_color applies an ARGB int', () {
-      entryFor('appearance.custom_color').apply(0xFF112233);
-      expect(theme.customColor, const Color(0xFF112233));
-      expect(theme.colorScheme, AppColorScheme.custom);
-    });
+      test('appearance.custom_color applies an ARGB int', () {
+        entryFor('appearance.custom_color').apply(0xFF112233);
+        expect(theme.customColor, const Color(0xFF112233));
+        expect(theme.colorScheme, AppColorScheme.custom);
+      });
 
-    test('appearance.dark_theme applies a known builtin id', () {
-      entryFor('appearance.dark_theme').apply('builtin:nord');
-      expect(theme.selectedDarkTheme, BuiltinThemeId.nord);
-      expect(theme.isCustomDarkActive, isFalse);
-    });
-  });
+      test('appearance.dark_theme applies a known builtin id', () {
+        entryFor('appearance.dark_theme').apply('builtin:nord');
+        expect(theme.selectedDarkTheme, BuiltinThemeId.nord);
+        expect(theme.isCustomDarkActive, isFalse);
+      });
+    },
+  );
 }

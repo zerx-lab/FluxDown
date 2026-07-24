@@ -377,7 +377,7 @@ pub fn write(message: &str) {
         logger.write_impl(message, false);
     }
     #[cfg(debug_assertions)]
-    eprintln!("{message}");
+    eprintln!("{} {message}", Local::now().format("%H:%M:%S%.3f"));
 }
 
 /// 写入一条错误日志（立即刷盘，确保崩溃前不丢失）。
@@ -388,7 +388,7 @@ pub fn write_error(message: &str) {
         logger.write_impl(message, true);
     }
     #[cfg(debug_assertions)]
-    eprintln!("{message}");
+    eprintln!("{} {message}", Local::now().format("%H:%M:%S%.3f"));
 }
 
 /// 单个日志文件的元信息（列举与导出用）。

@@ -150,6 +150,11 @@ pub async fn run_actor(
     // 触发），此处只提供节拍。
     let mut queue_schedule_tick = tokio::time::interval(Duration::from_secs(20));
     queue_schedule_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Seeding evaluation timer: check ratio/time limits and stop seeders
+    // that have exceeded the configured thresholds at the shared interval.
+    let mut seeding_interval =
+        tokio::time::interval(fluxdown_engine::bt_seeding::SEEDING_EVAL_INTERVAL);
+    seeding_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -177,6 +182,10 @@ pub async fn run_actor(
             }
             _ = queue_schedule_tick.tick() => {
                 engine.manager.tick_queue_schedules().await;
+            }
+            // --- Seeding evaluation timer ---
+            _ = seeding_interval.tick() => {
+                engine.manager.tick_seeding_evaluation().await;
             }
             else => {
                 log_info!("[server-actor] all channels closed, exiting");
@@ -495,9 +504,21 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
                 if !bt_applied =>
             {
                 bt_applied = true;
-                log_info!("[server-actor] BT config changed, invalidating session");
+                log_info!("[server-actor] BT session config changed, invalidating session");
                 engine.manager.set_bt_config(bt_config_from_map(&all));
                 engine.manager.invalidate_bt_session().await;
+            }
+            "bt_seed_ratio_limit"
+            | "bt_seed_post_ratio_limit"
+            | "bt_seed_time_limit_minutes"
+            | "bt_seed_inactive_time_limit_minutes"
+            | "bt_seed_limit_operator"
+            | "bt_seed_then_action"
+                if !bt_applied =>
+            {
+                bt_applied = true;
+                log_info!("[server-actor] BT seeding config changed, live-applied");
+                engine.manager.set_bt_config(bt_config_from_map(&all));
             }
             // 服务器自身配置（token/端口/子开关）重启生效；其余键无运行时动作。
             _ => {}
@@ -550,6 +571,36 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         } else {
             String::new()
         },
+        seed_ratio_limit: cfg
+            .get("bt_seed_ratio_limit")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(1.0),
+        seed_post_ratio_limit: cfg
+            .get("bt_seed_post_ratio_limit")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0),
+        seed_time_limit_minutes: cfg
+            .get("bt_seed_time_limit_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(72 * 60),
+        seed_inactive_time_limit_minutes: cfg
+            .get("bt_seed_inactive_time_limit_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0),
+        seed_limit_operator: cfg
+            .get("bt_seed_limit_operator")
+            .map(|v| {
+                if v.eq_ignore_ascii_case("and") {
+                    fluxdown_engine::bt_seeding::SeedingLimitOperator::And
+                } else {
+                    fluxdown_engine::bt_seeding::SeedingLimitOperator::Or
+                }
+            })
+            .unwrap_or(fluxdown_engine::bt_seeding::SeedingLimitOperator::Or),
+        seed_then_action: cfg
+            .get("bt_seed_then_action")
+            .cloned()
+            .unwrap_or_else(|| "stop".to_string()),
     }
 }
 

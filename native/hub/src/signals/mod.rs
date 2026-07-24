@@ -171,6 +171,20 @@ pub struct TaskProgress {
     pub save_dir: String,
     pub url: String,
     pub error_message: String, // empty if no error
+    /// 实时上传速率（字节/秒）。仅 BT 任务非零，其余协议恒 0。
+    #[serde(default)]
+    pub upload_speed_bps: i64,
+    /// 已上传字节数（BT 做种）。仅 BT 任务有意义，默认 0。
+    #[serde(default)]
+    pub uploaded_bytes: i64,
+    /// Seeding status: 0=none, 1=active seeding, 2=ratio reached,
+    /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
+    /// 7=inactive time reached.
+    #[serde(default)]
+    pub seeding_status: i32,
+    /// BT 做种状态的辅助说明（如停止原因）。无错误/未做种时为空。
+    #[serde(default)]
+    pub seeding_message: String,
 }
 
 /// Response to RequestAllTasks — all persisted tasks
@@ -328,6 +342,21 @@ pub struct TaskInfo {
     /// 队列内启动顺序（越小越先启动）。0 = 未显式排序（按创建时间）。
     #[serde(default)]
     pub queue_order: i32,
+    /// Cumulative uploaded bytes for BT tasks (0 for other protocols).
+    #[serde(default)]
+    pub uploaded_bytes: i64,
+    /// Uploaded bytes observed when the download completed (post-completion
+    /// ratio baseline, 0 for non-BT tasks).
+    #[serde(default)]
+    pub uploaded_at_completion: i64,
+    /// Seeding status: 0=none, 1=active seeding, 2=ratio reached,
+    /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
+    /// 7=inactive time reached.
+    #[serde(default)]
+    pub seeding_status: i32,
+    /// Reason/description when seeding stopped (e.g. "ratio 1.5 reached").
+    #[serde(default)]
+    pub seeding_message: String,
     /// Source page URL captured by the browser extension (empty = none).
     #[serde(default)]
     pub referrer: String,

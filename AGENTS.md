@@ -299,6 +299,8 @@ CREATE TABLE tasks (
     queue_id TEXT NOT NULL DEFAULT '',
     checksum TEXT NOT NULL DEFAULT '',  -- 格式：algo=hexhash
     queue_order INTEGER NOT NULL DEFAULT 0  -- 队列内启动顺序（0=按创建时间；>0 显式顺序）
+    checksum TEXT NOT NULL DEFAULT ''   -- 格式：algo=hexhash
+    uploaded_at_completion BIGINT NOT NULL DEFAULT 0  -- 下载完成时刻的累计上传字节（做种后分享率基准）
 );
 
 -- 分段表
@@ -646,6 +648,12 @@ NMH 注册：
 | BT | `btEnableUpnp` | 启用 UPnP |
 | BT | `btPortStart/End` | 端口范围 |
 | BT | `btCustomTrackers` | 自定义 Tracker 列表 |
+| BT | `bt_seed_ratio_limit` | 总分享率做种条件（默认 1.0，0=关闭） |
+| BT | `bt_seed_post_ratio_limit` | 做种后分享率条件（以 `uploaded_at_completion` 为基准，默认 0=关闭） |
+| BT | `bt_seed_time_limit_minutes` | 总做种时间条件（默认 4320=72h，0=关闭） |
+| BT | `bt_seed_inactive_time_limit_minutes` | 不活跃做种时间条件（默认 0=关闭） |
+| BT | `bt_seed_limit_operator` | 条件组合运算符（and/or，默认 or） |
+| BT | `bt_max_seeding_tasks` | 最大做种任务数（0=不限，超限转暂停） |
 | 代理 | `proxyMode` | 代理模式（None/System/Manual） |
 | 代理 | `proxyType` | 代理类型（HTTP/HTTPS/SOCKS4/SOCKS5） |
 | 代理 | `proxyHost/Port` | 代理地址 |

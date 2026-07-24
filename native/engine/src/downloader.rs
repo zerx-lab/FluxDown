@@ -156,6 +156,14 @@ pub struct ProgressUpdate {
     /// `progress_reporter` 据此立即发 `EngineEvent::BtDataFinished`（按
     /// task_id 去重），对应 aria2 `onBtDownloadComplete` 通知语义。
     pub bt_data_finished: bool,
+    /// 已上传字节数（BT 做种）。仅 BT 任务有意义，默认 0。
+    pub uploaded_bytes: i64,
+    /// Seeding status: 0=none, 1=active seeding, 2=ratio reached,
+    /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
+    /// 7=inactive time reached.
+    pub seeding_status: i32,
+    /// BT 做种状态的辅助说明（如停止原因）。无错误/未做种时为空。
+    pub seeding_message: String,
 }
 
 /// Snapshot of a single segment's progress, sent from downloader to progress_reporter.

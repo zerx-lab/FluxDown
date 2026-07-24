@@ -173,7 +173,11 @@ async fn track(key: &str, event_name: &str, device_id: &str, server_version: &'s
             true
         }
         Ok(resp) => {
-            log_info!("[analytics] {} rejected: HTTP {}", event_name, resp.status());
+            log_info!(
+                "[analytics] {} rejected: HTTP {}",
+                event_name,
+                resp.status()
+            );
             false
         }
         Err(e) => {

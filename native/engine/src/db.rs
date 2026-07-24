@@ -70,7 +70,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     range_verified INTEGER NOT NULL DEFAULT 1,
-    queue_order INTEGER NOT NULL DEFAULT 0
+    queue_order INTEGER NOT NULL DEFAULT 0,
+    uploaded_bytes BIGINT NOT NULL DEFAULT 0,
+    uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
+    seeding_status INTEGER NOT NULL DEFAULT 0,
+    seeding_message TEXT NOT NULL DEFAULT '',
+    seeding_started_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -157,7 +162,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
     range_verified INTEGER NOT NULL DEFAULT 1,
-    queue_order INTEGER NOT NULL DEFAULT 0
+    queue_order INTEGER NOT NULL DEFAULT 0,
+    uploaded_bytes BIGINT NOT NULL DEFAULT 0,
+    uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
+    seeding_status INTEGER NOT NULL DEFAULT 0,
+    seeding_message TEXT NOT NULL DEFAULT '',
+    seeding_started_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -257,11 +267,15 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
         queue_order: row.try_get("queue_order").unwrap_or(0),
+        uploaded_bytes: row.try_get("uploaded_bytes").unwrap_or_default(),
+        uploaded_at_completion: row.try_get("uploaded_at_completion").unwrap_or_default(),
+        seeding_status: row.try_get("seeding_status").unwrap_or_default(),
+        seeding_message: row.try_get("seeding_message").unwrap_or_default(),
         referrer: row.try_get("referrer").unwrap_or_default(),
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, referrer";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, referrer";
 
 impl Db {
     /// 在 `dir` 目录下打开（不存在则创建）SQLite 数据库 `flux_down.db`。
@@ -389,6 +403,20 @@ impl Db {
         self.add_column_if_missing("queues", "schedule_stop", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("queues", "schedule_days", "INTEGER NOT NULL DEFAULT 127")
+            .await?;
+        self.add_column_if_missing("tasks", "uploaded_bytes", "BIGINT NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "uploaded_at_completion",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.add_column_if_missing("tasks", "seeding_status", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing("tasks", "seeding_message", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "seeding_started_at", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         Ok(())
     }
@@ -623,6 +651,118 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// 更新任务已上传字节数（BT 做种）。
+    pub async fn update_task_uploaded_bytes(
+        &self,
+        task_id: &str,
+        uploaded_bytes: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET uploaded_bytes = $1 WHERE id = $2")
+            .bind(uploaded_bytes)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 更新任务完成时已上传字节数（BT 做种后分享率基准）。
+    pub async fn update_task_uploaded_at_completion(
+        &self,
+        task_id: &str,
+        uploaded_at_completion: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET uploaded_at_completion = $1 WHERE id = $2")
+            .bind(uploaded_at_completion)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 更新任务做种状态与辅助说明，并清空做种起始时间（用于停止/删除/重置）。
+    pub async fn update_task_seeding_status(
+        &self,
+        task_id: &str,
+        seeding_status: i32,
+        message: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET seeding_status = $1, seeding_message = $2, seeding_started_at = 0 WHERE id = $3",
+        )
+        .bind(seeding_status)
+        .bind(message)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 原子增加任务已上传字节数，并返回更新后的累计值（BT 做种增量累计）。
+    pub async fn add_task_uploaded_bytes(&self, task_id: &str, delta: i64) -> Result<i64, DbError> {
+        sqlx::query("UPDATE tasks SET uploaded_bytes = uploaded_bytes + $1 WHERE id = $2")
+            .bind(delta)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        let total: i64 = sqlx::query_scalar("SELECT uploaded_bytes FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(total)
+    }
+
+    /// 激活做种状态并记录做种起始时间（unix 秒）。
+    pub async fn set_task_seeding_active(
+        &self,
+        task_id: &str,
+        started_at_unix: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET seeding_status = 1, seeding_message = '', seeding_started_at = $1 WHERE id = $2",
+        )
+        .bind(started_at_unix)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 查询所有残留做种态的任务（启动恢复/重置用）。
+    pub async fn load_tasks_with_seeding_status(
+        &self,
+        status: i32,
+    ) -> Result<Vec<TaskInfo>, DbError> {
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE seeding_status = $1");
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .bind(status)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut tasks = Vec::with_capacity(rows.len());
+        for row in &rows {
+            tasks.push(task_from_row(row)?);
+        }
+        Ok(tasks)
+    }
+
+    /// 读取任务已上传字节数。
+    pub async fn get_task_uploaded_bytes(&self, task_id: &str) -> Result<i64, DbError> {
+        let uploaded: i64 = sqlx::query_scalar("SELECT uploaded_bytes FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(uploaded)
+    }
+
+    /// 读取任务已下载字节数。
+    pub async fn get_task_downloaded_bytes(&self, task_id: &str) -> Result<i64, DbError> {
+        let downloaded: i64 =
+            sqlx::query_scalar("SELECT downloaded_bytes FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(downloaded)
     }
 
     /// 更新任务的「文件已丢失」标志（文件跟踪）。仅当任务仍处于 completed

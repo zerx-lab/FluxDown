@@ -14,7 +14,7 @@ import 'download_task.dart';
 const _tag = 'DownloadCtrl';
 
 /// 顶部 Tab 状态筛选
-enum StatusTab { all, downloading, completed, paused, error }
+enum StatusTab { all, downloading, completed, paused, error, seeding }
 
 /// 核心状态管理器 — 桥接 Rust 信号和 Flutter UI
 class DownloadController extends ChangeNotifier {
@@ -238,6 +238,8 @@ class DownloadController extends ChangeNotifier {
         byCategory.where((t) => t.status == TaskStatus.paused).toList(),
       StatusTab.error =>
         byCategory.where((t) => t.status == TaskStatus.error).toList(),
+      StatusTab.seeding =>
+        byCategory.where((t) => t.isSeeding).toList(),
     };
     _cachedFilteredTasks = result;
     return result;
@@ -330,6 +332,7 @@ class DownloadController extends ChangeNotifier {
         byCategory.where((t) => t.status == TaskStatus.paused).length,
       StatusTab.error =>
         byCategory.where((t) => t.status == TaskStatus.error).length,
+      StatusTab.seeding => byCategory.where((t) => t.isSeeding).length,
     };
   }
 
@@ -386,6 +389,7 @@ class DownloadController extends ChangeNotifier {
       StatusTab.paused =>
         base.where((t) => t.status == TaskStatus.paused).length,
       StatusTab.error => base.where((t) => t.status == TaskStatus.error).length,
+      StatusTab.seeding => base.where((t) => t.isSeeding).length,
     };
   }
 
@@ -513,6 +517,7 @@ class DownloadController extends ChangeNotifier {
   /// 统计数据
   int get downloadingCount =>
       _tasks.where((t) => t.status == TaskStatus.downloading).length;
+  int get seedingCount => _tasks.where((t) => t.isSeeding).length;
   int get completedCount =>
       _tasks.where((t) => t.status == TaskStatus.completed).length;
   int get pausedCount =>
@@ -701,8 +706,8 @@ class DownloadController extends ChangeNotifier {
     String queueId = '',
     String cookies = '',
     String referrer = '',
-    Map<String, String> extraHeaders = const {},
     bool ignoreTlsErrors = false,
+    Map<String, String> extraHeaders = const {},
     bool startPaused = false,
   }) {
     logInfo(
@@ -718,11 +723,24 @@ class DownloadController extends ChangeNotifier {
       queueId: queueId,
       cookies: cookies,
       referrer: referrer,
-      extraHeaders: extraHeaders,
       ignoreTlsErrors: ignoreTlsErrors,
+      extraHeaders: extraHeaders,
       startPaused: startPaused,
     ).sendSignalToRust();
   }
+
+  /// 乐观更新：将做种中任务标记为用户暂停。
+  DownloadTask _pauseSeederOptimistically(DownloadTask t) => t.copyWith(
+    status: TaskStatus.completed,
+    seedingStatus: SeedingStatus.userStopped,
+    uploadSpeedBps: 0,
+  );
+
+  /// 乐观更新：将用户暂停的做种任务恢复为做种中。
+  DownloadTask _resumeSeederOptimistically(DownloadTask t) => t.copyWith(
+    status: TaskStatus.completed,
+    seedingStatus: SeedingStatus.seeding,
+  );
 
   void pauseTask(String taskId) {
     logInfo(_tag, 'pauseTask: $taskId');
@@ -738,6 +756,10 @@ class DownloadController extends ChangeNotifier {
           t.status == TaskStatus.preparing) {
         _tasks[idx] = t.copyWith(status: TaskStatus.paused, speed: 0);
         _safeNotifyListeners();
+      } else if (t.isSeeding) {
+        // 做种中的 BT 任务：保持 completed 状态，仅将做种状态切为 userStopped。
+        _tasks[idx] = _pauseSeederOptimistically(t);
+        _safeNotifyListeners();
       }
     }
     ControlTask(taskId: taskId, action: 0).sendSignalToRust();
@@ -750,7 +772,14 @@ class DownloadController extends ChangeNotifier {
     // 立即切换到 resuming 状态，让 UI 即时响应
     final idx = _tasks.indexWhere((t) => t.id == taskId);
     if (idx >= 0) {
-      _tasks[idx] = _tasks[idx].copyWith(status: TaskStatus.resuming);
+      final t = _tasks[idx];
+      if (t.status == TaskStatus.completed &&
+          t.seedingStatus == SeedingStatus.userStopped) {
+        // 已暂停的做种任务：保持 completed，仅恢复做种状态。
+        _tasks[idx] = _resumeSeederOptimistically(t);
+      } else {
+        _tasks[idx] = _tasks[idx].copyWith(status: TaskStatus.resuming);
+      }
       _safeNotifyListeners();
     }
     ControlTask(taskId: taskId, action: 1).sendSignalToRust();
@@ -1025,11 +1054,14 @@ class DownloadController extends ChangeNotifier {
           // 修复：boost 结束后，部分任务在 Rust 侧已入 pending_queue，
           // 但 Dart 侧仍显示 paused（未收到 status=0 信号）。
           // queuePosition > 0 说明任务确实在 Rust 的队列里等待启动。
-          (t.status == TaskStatus.paused && t.queuePosition > 0)) {
+          (t.status == TaskStatus.paused && t.queuePosition > 0) ||
+          t.isSeeding) {
         toPause.add(t.id);
         _optimisticPausedIds.add(t.id);
         // 乐观 UI 更新
-        if (t.status != TaskStatus.paused) {
+        if (t.isSeeding) {
+          _tasks[i] = _pauseSeederOptimistically(t);
+        } else if (t.status != TaskStatus.paused) {
           _tasks[i] = t.copyWith(status: TaskStatus.paused, speed: 0);
         }
       }
@@ -1052,14 +1084,22 @@ class DownloadController extends ChangeNotifier {
     final candidates = <String>[];
     for (int i = 0; i < _tasks.length; i++) {
       final t = _tasks[i];
-      if (t.status == TaskStatus.paused || t.status == TaskStatus.error) {
+      final isPausedSeeder = t.status == TaskStatus.completed &&
+          t.seedingStatus == SeedingStatus.userStopped;
+      if (t.status == TaskStatus.paused ||
+          t.status == TaskStatus.error ||
+          isPausedSeeder) {
         // 停止队列（含「稍后下载」栈）里的任务不参与全局恢复，
         // 由「启动队列」显式恢复——与引擎侧 resume_all_eligible 语义一致。
         if (!isQueueRunning(t.queueId)) continue;
         candidates.add(t.id);
         _boostAutoPausedIds.remove(t.id);
         _optimisticPausedIds.remove(t.id);
-        _tasks[i] = t.copyWith(status: TaskStatus.resuming);
+        if (isPausedSeeder) {
+          _tasks[i] = _resumeSeederOptimistically(t);
+        } else {
+          _tasks[i] = t.copyWith(status: TaskStatus.resuming);
+        }
       }
     }
     if (candidates.isEmpty) return;
@@ -1160,11 +1200,10 @@ class DownloadController extends ChangeNotifier {
       // 跳过仍在删除中的任务，防止 AllTasks 把它们重新插回列表（僵尸复活）。
       if (_deletedTaskIds.contains(info.taskId)) continue;
       var task = DownloadTask.fromTaskInfo(info);
-      // 若用户已乐观暂停该任务，DB 的旧状态（downloading/resuming 等）不得覆盖 UI。
-      // 避免 AllTasks 到达时 DB 尚未写入 paused，导致任务被还原成下载中，
-      // 随后守卫又因 old=downloading != paused 而失效。
+      // 若用户已乐观暂停该任务，DB 的旧活跃状态（downloading/resuming/pending 等）
+      // 不得覆盖 UI。completed 等非活跃状态不在此列（例如做种暂停应保持 completed）。
       if (_optimisticPausedIds.contains(info.taskId) &&
-          task.status != TaskStatus.paused) {
+          task.status.isActiveOrQueued) {
         task = task.copyWith(status: TaskStatus.paused, speed: 0);
       }
       _tasks.add(task);
@@ -1322,6 +1361,14 @@ class DownloadController extends ChangeNotifier {
     final idx = _tasks.indexWhere((t) => t.id == p.taskId);
     if (idx >= 0) {
       final oldStatus = _tasks[idx].status;
+      // 额外守卫：用户已乐观暂停的做种任务，在 Rust 落库 seeding_status=4 之前
+      // 可能仍有滞后的 seeding_status=1 进度信号到达，拦截它避免 UI 闪回做种中。
+      if (_optimisticPausedIds.contains(p.taskId) &&
+          oldStatus == TaskStatus.completed &&
+          _tasks[idx].seedingStatus == SeedingStatus.userStopped &&
+          p.seedingStatus == SeedingStatus.seeding.index) {
+        return;
+      }
       // 守卫逻辑：防止 Rust 积压/提前到达的信号覆盖乐观 UI 状态。
       // 对在 _optimisticPausedIds 中且当前 UI 为 paused 或 pending（延迟队列）的任务生效。
       if (_optimisticPausedIds.contains(p.taskId) &&

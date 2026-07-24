@@ -61,8 +61,38 @@ pub struct TaskInfo {
     /// 队列内启动顺序（越小越先启动）。0 = 未显式排序，按 `created_at`
     /// 先来先启动；>0 为显式顺序（`reorder_queue_tasks` 或建任务时追加）。
     pub queue_order: i32,
+    /// 已上传字节数（BT 做种）。仅对 BT 任务有意义，默认 0。
+    pub uploaded_bytes: i64,
+    /// 下载完成时已上传字节数（BT 做种后分享率基准）。仅对 BT 任务有意义，默认 0。
+    pub uploaded_at_completion: i64,
+    /// Seeding status: 0=none, 1=active seeding, 2=ratio reached,
+    /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
+    /// 7=inactive time reached.
+    pub seeding_status: i32,
+    /// BT 做种状态的辅助说明（如错误信息）。
+    pub seeding_message: String,
     /// Source page URL captured by the browser extension (empty = none).
     pub referrer: String,
+}
+
+impl TaskInfo {
+    /// 当前任务是否处于 BT 做种状态。
+    ///
+    /// 做种定义为：任务已完成（`status == 3`）且 `seeding_status == 1`。
+    pub fn is_seeding(&self) -> bool {
+        self.status == 3 && self.seeding_status == 1
+    }
+
+    /// 计算分享率（upload / download）。
+    ///
+    /// 当 `downloaded_bytes` 为 0 时返回 0.0，避免除零。
+    pub fn seed_ratio(&self) -> f64 {
+        if self.downloaded_bytes == 0 {
+            0.0
+        } else {
+            self.uploaded_bytes as f64 / self.downloaded_bytes as f64
+        }
+    }
 }
 
 /// 命名队列元数据。字段对应 `hub::signals::QueueInfo`。

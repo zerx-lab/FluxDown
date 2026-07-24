@@ -387,25 +387,23 @@ async fn negotiate_upload_slot(
         .map_err(|_| DownloadError::Ed2k("upload negotiation stalled".into()))??;
         let _ = proto_byte;
         match opcode {
-            OP_FILEREQANSWER => {
+            OP_FILEREQANSWER if !sent_status => {
                 // 对端持有文件 → 发 FileStatusRequest（SETREQFILEID 0x4F）。
-                if !sent_status {
-                    let fsr = proto::frame(OP_SETREQFILEID, file_hash);
-                    stream.write_all(&fsr).await.map_err(DownloadError::Io)?;
-                    sent_status = true;
-                }
+                let fsr = proto::frame(OP_SETREQFILEID, file_hash);
+                stream.write_all(&fsr).await.map_err(DownloadError::Io)?;
+                sent_status = true;
             }
+            OP_FILEREQANSWER => {}
             OP_FILEREQANSNOFIL => {
                 return Err(DownloadError::Ed2k("peer does not have this file".into()));
             }
-            OP_FILESTATUS => {
+            OP_FILESTATUS if !sent_start => {
                 // 拿到分片位图 → 发 StartUpload（0x54），入对端上传队列。
-                if !sent_start {
-                    let su = proto::frame(OP_STARTUPLOADREQ, file_hash);
-                    stream.write_all(&su).await.map_err(DownloadError::Io)?;
-                    sent_start = true;
-                }
+                let su = proto::frame(OP_STARTUPLOADREQ, file_hash);
+                stream.write_all(&su).await.map_err(DownloadError::Io)?;
+                sent_start = true;
             }
+            OP_FILESTATUS => {}
             OP_ACCEPTUPLOADREQ => {
                 // 获得上传槽 → 可以请求分片。
                 return Ok(());

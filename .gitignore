@@ -117,4 +117,9 @@ design/
 .promo/
 assets/screenshot/
 .zed/
+
+# FVM Version Cache
+.fvm/
+
+# Git worktrees
 .worktrees/
