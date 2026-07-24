@@ -209,6 +209,7 @@ void main() {
           queueId: 'queue-9',
           cookies: 'sid=xyz; theme=dark',
           checksum: 'sha-256=deadbeef0123456789',
+          ignoreTlsErrors: true,
           threadsUserModified: true,
         ),
       );
@@ -231,6 +232,7 @@ void main() {
       );
       expect(decoded.form.cookies, original.form.cookies);
       expect(decoded.form.checksum, original.form.checksum);
+      expect(decoded.form.ignoreTlsErrors, isTrue);
     });
 
     test('边界：segments=0（自动）、threadsUserModified=false、全部字符串字段为空', () {
@@ -262,6 +264,7 @@ void main() {
       expect(decoded.form.proxyUrl, '');
       expect(decoded.form.userAgent, '');
       expect(decoded.form.queueId, '');
+      expect(decoded.form.ignoreTlsErrors, isFalse);
       expect(decoded.form.threadsUserModified, isFalse);
     });
 
@@ -283,6 +286,7 @@ void main() {
       expect(decoded.form.proxyUrl, '');
       expect(decoded.form.userAgent, '');
       expect(decoded.form.queueId, '');
+      expect(decoded.form.ignoreTlsErrors, isFalse);
       expect(decoded.form.threadsUserModified, isFalse);
     });
 

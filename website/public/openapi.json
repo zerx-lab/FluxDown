@@ -1275,6 +1275,10 @@
               "type": "string"
             }
           },
+          "ignoreTlsErrors": {
+            "type": "boolean",
+            "description": "忽略 HTTPS 证书错误。缺省 false（严格验证）。"
+          },
           "method": {
             "type": [
               "string",
@@ -1848,7 +1852,7 @@
       },
       "TaskDto": {
         "type": "object",
-        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
+        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    ignore_tls_errors: false,\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n    queue_order: 0,\n    referrer: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
         "required": [
           "taskId",
           "url",
@@ -1890,6 +1894,10 @@
           "fileName": {
             "type": "string"
           },
+          "ignoreTlsErrors": {
+            "type": "boolean",
+            "description": "是否显式忽略 HTTPS 证书错误。默认 false（严格验证）。"
+          },
           "proxyUrl": {
             "type": "string",
             "description": "单任务代理 URL（空 = 使用全局代理）。"
@@ -1897,6 +1905,10 @@
           "queueId": {
             "type": "string",
             "description": "命名队列 ID（空 = 默认队列）。"
+          },
+          "referrer": {
+            "type": "string",
+            "description": "Source page URL captured by the browser extension (empty = none)."
           },
           "saveDir": {
             "type": "string"

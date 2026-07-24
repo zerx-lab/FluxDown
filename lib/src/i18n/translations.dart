@@ -261,6 +261,7 @@ class S {
   String get infoPath => _r('infoPath');
   String get infoError => _r('infoError');
   String get infoUrl => _r('infoUrl');
+  String get infoSourcePage => _r('infoSourcePage');
   String get resumingClickPause => _r('resumingClickPause');
   String get dynamicSplit => _r('dynamicSplit');
   String splitCount(int total, int reactive, int proactive) => _r(
@@ -764,6 +765,8 @@ class S {
   String get taskProxyPlaceholder => _r('taskProxyPlaceholder');
   String get taskProxyAdvanced => _r('taskProxyAdvanced');
   String get taskProxyFormatHint => _r('taskProxyFormatHint');
+  String get taskIgnoreTlsErrors => _r('taskIgnoreTlsErrors');
+  String get taskIgnoreTlsErrorsDesc => _r('taskIgnoreTlsErrorsDesc');
 
   // 任务 Cookie（新建下载对话框高级选项）
   String get taskCookie => _r('taskCookie');

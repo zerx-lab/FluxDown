@@ -243,6 +243,7 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                     user_agent: req.user_agent,
                     queue_id: req.queue_id,
                     checksum: req.checksum,
+                    ignore_tls_errors: req.ignore_tls_errors,
                     extra_headers: req.headers.unwrap_or_default(),
                     method: req.method,
                     body: req.body.map(Into::into),

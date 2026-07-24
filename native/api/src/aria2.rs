@@ -188,7 +188,8 @@ pub(crate) fn build_uris_array(task: &TaskDto) -> Value {
     }
 }
 
-/// `getOption`（单任务）：只拼装 `dir`/`out`/`all-proxy`/`checksum`，
+/// `getOption`（单任务）：拼装 `dir`/`out`/`all-proxy`/`checksum`/
+/// `check-certificate`，
 /// 且仅在对应字段非空时才出现（对齐 aria2 `defined()` 语义：未设置的
 /// 选项不以空字符串占位）。
 pub(crate) fn build_get_option(task: &TaskDto) -> Value {
@@ -207,6 +208,12 @@ pub(crate) fn build_get_option(task: &TaskDto) -> Value {
     }
     if !task.checksum.is_empty() {
         obj.insert("checksum".to_string(), Value::String(task.checksum.clone()));
+    }
+    if task.ignore_tls_errors {
+        obj.insert(
+            "check-certificate".to_string(),
+            Value::String("false".to_string()),
+        );
     }
     Value::Object(obj)
 }
@@ -300,6 +307,7 @@ pub(crate) struct RequestOptions {
     pub proxy_url: String,
     pub user_agent: String,
     pub checksum: String,
+    pub ignore_tls_errors: bool,
     pub pause: bool,
 }
 
@@ -309,7 +317,8 @@ pub(crate) struct RequestOptions {
 /// `header`（字符串或字符串数组）→ Cookie/Referer/其余头、
 /// `split`→segments、`all-proxy`|`http-proxy`|`https-proxy`→proxy_url
 /// （优先 `all-proxy`）、`user-agent`→user_agent、`checksum`→checksum
-/// （原样透传，格式已是 `algo=hex`）、`pause`→pause（一次性动作标记）。
+/// （原样透传，格式已是 `algo=hex`）、`check-certificate=false`→忽略 TLS
+/// 证书错误、`pause`→pause（一次性动作标记）。
 /// 其余未知键静默忽略（对齐 aria2：不认识的选项不报错）。
 ///
 /// `options.gid`（自定义 GID）显式拒绝——GID 由 `task_id` 派生，
@@ -354,6 +363,7 @@ pub(crate) fn parse_request_options(
     if let Some(v) = opts.get("checksum").and_then(|v| v.as_str()) {
         out.checksum = v.to_string();
     }
+    out.ignore_tls_errors = option_is_false(opts.get("check-certificate"));
     out.pause = option_is_true(opts.get("pause"));
 
     let mut extra_headers: HashMap<String, String> = HashMap::new();
@@ -394,6 +404,14 @@ fn option_is_true(v: Option<&Value>) -> bool {
     }
 }
 
+fn option_is_false(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::Bool(b)) => !*b,
+        Some(Value::String(s)) => s == "false",
+        _ => false,
+    }
+}
+
 /// `header` 选项同时接受单个字符串与字符串数组（aria2 `Cumulative`
 /// 选项语义）。
 fn header_lines(v: Option<&Value>) -> Vec<String> {
@@ -426,6 +444,7 @@ pub(crate) fn build_create_task_request(
         user_agent: opts.user_agent,
         queue_id: String::new(),
         checksum: opts.checksum,
+        ignore_tls_errors: opts.ignore_tls_errors,
         headers: opts.headers,
         torrent_b64,
         method: None,
@@ -758,8 +777,10 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            ignore_tls_errors: false,
             file_missing: false,
             completed_at: String::new(),
+            referrer: String::new(),
         }
     }
 
@@ -929,6 +950,15 @@ mod tests {
         assert_eq!(opt["out"], "f.zip");
         assert!(opt.get("all-proxy").is_none());
         assert!(opt.get("checksum").is_none());
+        assert!(opt.get("check-certificate").is_none());
+    }
+
+    #[test]
+    fn build_get_option_exposes_explicit_insecure_tls_policy() {
+        let mut t = task("t1", 1);
+        t.ignore_tls_errors = true;
+        let opt = build_get_option(&t);
+        assert_eq!(opt["check-certificate"], "false");
     }
 
     // -- keys 过滤 ---------------------------------------------------------
@@ -1002,6 +1032,7 @@ mod tests {
             "http-proxy": "http://ignored:1",
             "user-agent": "UA/2.0",
             "checksum": "sha-256=deadbeef",
+            "check-certificate": "false",
             "pause": "true",
             "header": ["Cookie: a=b", "X-Custom: v"],
         });
@@ -1013,6 +1044,7 @@ mod tests {
         assert_eq!(opts.proxy_url, "http://proxy:8080");
         assert_eq!(opts.user_agent, "UA/2.0");
         assert_eq!(opts.checksum, "sha-256=deadbeef");
+        assert!(opts.ignore_tls_errors);
         assert!(opts.pause);
         assert_eq!(opts.cookies, "a=b");
         assert_eq!(opts.headers.unwrap().get("X-Custom").unwrap(), "v");

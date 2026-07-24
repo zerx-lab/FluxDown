@@ -800,7 +800,7 @@ const DEFAULT_UA: &str = if cfg!(debug_assertions) {
     concat!("FluxDown/", env!("FLUXDOWN_APP_VERSION"))
 };
 
-/// Build a properly configured HTTP client that mirrors Chrome's capabilities.
+/// Build a properly configured HTTP client with strict TLS certificate validation.
 ///
 /// When `proxy_config` specifies a proxy, it is injected into the client builder.
 /// - `ProxyMode::None`   → explicit `no_proxy()` to disable env-var proxies
@@ -812,6 +812,18 @@ pub fn build_client(
     proxy_config: &crate::proxy_config::ProxyConfig,
     user_agent: &str,
 ) -> Result<Client, DownloadError> {
+    build_client_with_tls_policy(proxy_config, user_agent, false)
+}
+
+/// Build a download client with an explicit per-task TLS certificate policy.
+///
+/// `ignore_tls_errors` must only come from an explicit user choice for the
+/// current task. The secure default is enforced by [`build_client`].
+pub fn build_client_with_tls_policy(
+    proxy_config: &crate::proxy_config::ProxyConfig,
+    user_agent: &str,
+    ignore_tls_errors: bool,
+) -> Result<Client, DownloadError> {
     use crate::proxy_config::{ProxyMode, detect_system_proxy};
 
     let ua = if user_agent.is_empty() {
@@ -821,15 +833,11 @@ pub fn build_client(
     };
     let mut builder = Client::builder()
         .user_agent(ua)
-        // TLS — 跳过证书验证（过期、自签名、hostname 不匹配等）。
-        // 下载管理器与浏览器行为保持一致：浏览器允许用户忽略证书错误继续下载，
-        // 且企业内网邮箱等场景常见 hostname mismatch，严格验证会导致下载失败。
-        // 类似 curl -k / aria2 --check-certificate=false。
-        .danger_accept_invalid_certs(true)
-        // NOTE: This setting also applies to MITM proxy scenarios.
-        // A malicious proxy could intercept HTTPS traffic undetected.
-        // Users operating in sensitive environments should be aware of this trade-off.
-        // A future improvement would be to add a "strict TLS" toggle in Settings.
+        // TLS defaults to strict verification. Only a task whose confirmation
+        // dialog explicitly enabled the insecure option reaches `true` here.
+        // This accepts expired/self-signed/hostname-mismatched certificates and
+        // also permits undetectable HTTPS interception by a MITM proxy.
+        .danger_accept_invalid_certs(ignore_tls_errors)
         // HTTP version — force HTTP/1.1 for download manager use cases:
         //  1. Range requests are reliable and well-tested on HTTP/1.1.
         //  2. Multi-segment downloads use separate TCP connections; HTTP/2

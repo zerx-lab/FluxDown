@@ -159,6 +159,9 @@ class QuickDownloadFormResult {
   /// 哈希校验值（"algo=hexhash"，仅单条时有意义，空 = 跳过校验）
   final String checksum;
 
+  /// 是否忽略当前任务的 HTTPS 证书错误。默认 false。
+  final bool ignoreTlsErrors;
+
   /// 用户是否手动改过线程数（决定是否记忆本次选择）
   final bool threadsUserModified;
 
@@ -183,6 +186,7 @@ class QuickDownloadFormResult {
     required this.queueId,
     required this.cookies,
     required this.checksum,
+    this.ignoreTlsErrors = false,
     required this.threadsUserModified,
     this.audioUrl = '',
     this.extraHeaders = const {},
@@ -293,6 +297,9 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
 
   /// 是否展开高级选项（含任务代理）
   bool _showAdvanced = false;
+
+  /// 当前任务是否显式忽略 HTTPS 证书错误。安全默认值为 false。
+  bool _ignoreTlsErrors = false;
 
   /// 解析出的有效 URL 数量（实时计算）
   int _urlCount = 0;
@@ -476,6 +483,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
         startLater: startLater,
         cookies: _cookieController.text.trim(),
         checksum: checksum,
+        ignoreTlsErrors: _ignoreTlsErrors,
         threadsUserModified: _threadsUserModified,
         audioUrl: widget.initialAudioUrl,
         extraHeaders: extraHeaders,
@@ -685,6 +693,38 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
             ShadInput(
               controller: _proxyUrlController,
               placeholder: Text(s.taskProxyPlaceholder),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        s.taskIgnoreTlsErrors,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: c.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        s.taskIgnoreTlsErrorsDesc,
+                        style: TextStyle(fontSize: 11, color: c.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ShadSwitch(
+                  value: _ignoreTlsErrors,
+                  onChanged: (value) =>
+                      setState(() => _ignoreTlsErrors = value),
+                ),
+              ],
             ),
             const SizedBox(height: 10),
             QuickSectionLabel(text: s.userAgent, c: c),

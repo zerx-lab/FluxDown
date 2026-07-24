@@ -142,6 +142,7 @@ class QuickPopupResult {
     'queueId': form.queueId,
     'cookies': form.cookies,
     'checksum': form.checksum,
+    'ignoreTlsErrors': form.ignoreTlsErrors,
     'threadsUserModified': form.threadsUserModified,
     'extraHeaders': form.extraHeaders,
     'startLater': form.startLater,
@@ -161,6 +162,7 @@ class QuickPopupResult {
         queueId: map['queueId'] as String? ?? '',
         cookies: map['cookies'] as String? ?? '',
         checksum: map['checksum'] as String? ?? '',
+        ignoreTlsErrors: map['ignoreTlsErrors'] as bool? ?? false,
         threadsUserModified: map['threadsUserModified'] as bool? ?? false,
         startLater: map['startLater'] as bool? ?? false,
         extraHeaders: {

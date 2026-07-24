@@ -830,6 +830,7 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            ignore_tls_errors: false,
             file_missing: false,
             completed_at: String::new(),
             segments: 0,
@@ -838,6 +839,7 @@ mod tests {
             uploaded_at_completion: 0,
             seeding_status: 0,
             seeding_message: String::new(),
+            referrer: String::new(),
         }]));
 
         let snap = hub.live_speeds_snapshot();
@@ -859,6 +861,7 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            ignore_tls_errors: false,
             file_missing: false,
             completed_at: String::new(),
             segments: 0,
@@ -867,6 +870,7 @@ mod tests {
             uploaded_at_completion: 0,
             seeding_status: 0,
             seeding_message: String::new(),
+            referrer: String::new(),
         }
     }
 

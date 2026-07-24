@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     proxy_url TEXT NOT NULL DEFAULT '',
     queue_id TEXT NOT NULL DEFAULT '',
     checksum TEXT NOT NULL DEFAULT '',
+    ignore_tls_errors INTEGER NOT NULL DEFAULT 0,
     bt_selected_files TEXT NOT NULL DEFAULT '',
     bt_custom_name TEXT NOT NULL DEFAULT '',
     orig_etag TEXT NOT NULL DEFAULT '',
@@ -153,6 +154,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     proxy_url TEXT NOT NULL DEFAULT '',
     queue_id TEXT NOT NULL DEFAULT '',
     checksum TEXT NOT NULL DEFAULT '',
+    ignore_tls_errors INTEGER NOT NULL DEFAULT 0,
     bt_selected_files TEXT NOT NULL DEFAULT '',
     bt_custom_name TEXT NOT NULL DEFAULT '',
     orig_etag TEXT NOT NULL DEFAULT '',
@@ -260,6 +262,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         proxy_url: row.try_get("proxy_url").unwrap_or_default(),
         queue_id: row.try_get("queue_id").unwrap_or_default(),
         checksum: row.try_get("checksum").unwrap_or_default(),
+        ignore_tls_errors: row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0) != 0,
         file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
@@ -268,10 +271,11 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         uploaded_at_completion: row.try_get("uploaded_at_completion").unwrap_or_default(),
         seeding_status: row.try_get("seeding_status").unwrap_or_default(),
         seeding_message: row.try_get("seeding_message").unwrap_or_default(),
+        referrer: row.try_get("referrer").unwrap_or_default(),
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, referrer";
 
 impl Db {
     /// 在 `dir` 目录下打开（不存在则创建）SQLite 数据库 `flux_down.db`。
@@ -337,6 +341,9 @@ impl Db {
         self.add_column_if_missing("queues", "default_segments", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         self.add_column_if_missing("tasks", "checksum", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        // 单任务 TLS 策略：旧任务安全迁移为严格验证（0）。
+        self.add_column_if_missing("tasks", "ignore_tls_errors", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         self.add_column_if_missing("queues", "default_user_agent", "TEXT NOT NULL DEFAULT ''")
             .await?;
@@ -459,6 +466,39 @@ impl Db {
         checksum: &str,
         initial_status: i32,
     ) -> Result<(), DbError> {
+        self.insert_task_with_tls_policy(
+            id,
+            url,
+            file_name,
+            save_dir,
+            segments,
+            total_bytes,
+            proxy_url,
+            queue_id,
+            checksum,
+            false,
+            initial_status,
+        )
+        .await
+    }
+
+    /// 插入带显式 TLS 证书策略的新任务。普通调用方使用 [`Self::insert_task`]，
+    /// 默认严格验证；仅下载确认链路应传入 `ignore_tls_errors = true`。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_task_with_tls_policy(
+        &self,
+        id: &str,
+        url: &str,
+        file_name: &str,
+        save_dir: &str,
+        segments: i32,
+        total_bytes: i64,
+        proxy_url: &str,
+        queue_id: &str,
+        checksum: &str,
+        ignore_tls_errors: bool,
+        initial_status: i32,
+    ) -> Result<(), DbError> {
         let now = chrono_now();
         // 进程内建任务串行（单线程 actor）；跨进程并发（CLI --local 与 App
         // 同库）的罕见撞序由 (queue_order, created_at) 复合排序自然容忍。
@@ -469,8 +509,8 @@ impl Db {
         .fetch_one(&self.pool)
         .await?;
         sqlx::query(
-            "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, created_at, proxy_url, queue_id, checksum, queue_order)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            "INSERT INTO tasks (id, url, file_name, save_dir, status, segments, total_bytes, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(id)
         .bind(url)
@@ -483,6 +523,7 @@ impl Db {
         .bind(proxy_url)
         .bind(queue_id)
         .bind(checksum)
+        .bind(i32::from(ignore_tls_errors))
         .bind(next_order as i32)
         .execute(&self.pool)
         .await?;
@@ -2247,6 +2288,41 @@ mod tests {
         )
         .await
         .expect("insert task");
+    }
+
+    #[tokio::test]
+    async fn task_tls_policy_is_strict_by_default_and_persists_explicit_opt_in() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "strict").await;
+        db.insert_task_with_tls_policy(
+            "insecure",
+            "https://self-signed.example/file.bin",
+            "file.bin",
+            "/tmp",
+            1,
+            0,
+            "",
+            "",
+            "",
+            true,
+            0,
+        )
+        .await
+        .expect("insert task with explicit TLS opt-in");
+
+        let strict = db
+            .load_task_by_id("strict")
+            .await
+            .expect("load strict task")
+            .expect("strict task exists");
+        let insecure = db
+            .load_task_by_id("insecure")
+            .await
+            .expect("load insecure task")
+            .expect("insecure task exists");
+        assert!(!strict.ignore_tls_errors);
+        assert!(insecure.ignore_tls_errors);
+        close_test_db(&db, dir).await;
     }
 
     // -----------------------------------------------------------------------

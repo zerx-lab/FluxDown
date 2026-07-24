@@ -1,0 +1,106 @@
+name: Mirror release assets to CN server
+
+# 发版后把「本次 release 的全部资产」推送到国内镜像服务器 (mirror.fluxdown.com)，
+# 并清理旧资产：本地只保留「最新 stable + 最新 preview」两条线，旧版本自动回落 GitHub。
+# 仅镜像主 App 版本线 (v1.2.3 / v1.2.3-rc.N)；组件 release (extension-v*/server-v*/
+# cli-v*/mobile-v*) 以字母开头，startsWith 'v' 过滤掉，不镜像。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "手动镜像指定 tag (如 v1.2.3)"
+        required: true
+
+concurrency:
+  group: mirror-release
+  cancel-in-progress: false # 发版推送不可中途取消，排队执行
+
+env:
+  # 镜像根目录 (1Panel OpenResty 站点 mirror.fluxdown.com 的 dl 目录)。
+  # 对应 nginx: root /www/sites/mirror/dl; 命中则满速直发，未命中 302 回落 GitHub。
+  MIRROR_DIR: /opt/1panel/apps/openresty/openresty/www/sites/mirror/dl
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'v')
+    steps:
+      - name: 解析 tag
+        id: t
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9] ]]; then
+            echo "非主线 tag ($TAG)，跳过镜像"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 下载本次 release 全部资产
+        if: steps.t.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets
+          gh release download "${{ steps.t.outputs.tag }}" \
+            --repo "${{ github.repository }}" --dir assets --pattern '*' --clobber
+          echo "已下载："; ls -la assets
+
+      - name: 配置 SSH
+        if: steps.t.outputs.skip != '1'
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.CN_SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.CN_SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 推送资产 + 清理旧版本
+        if: steps.t.outputs.skip != '1'
+        env:
+          HOST: ${{ secrets.CN_SERVER_HOST }}
+          SSH_USER: ${{ secrets.CN_SERVER_USER }}
+          TAG: ${{ steps.t.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes"
+
+          # ── 1. 推送本次 tag 的资产 (rsync --delete 保证该 tag 目录内容一致) ──
+          $SSH "$SSH_USER@$HOST" "mkdir -p '$MIRROR_DIR/$TAG'"
+          rsync -avz --delete -e "ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes" \
+            assets/ "$SSH_USER@$HOST:$MIRROR_DIR/$TAG/"
+
+          # ── 2. 计算需保留的 tag：最新 stable + 最新 preview (按 semver 取最高) ──
+          STABLE=$(gh release list --repo "$REPO" --limit 200 \
+            --json tagName,isPrerelease,isDraft \
+            -q '[.[]|select(.isDraft|not)|select(.isPrerelease|not)|select(.tagName|test("^v[0-9]"))]|.[].tagName' \
+            | sort -Vr | head -1)
+          PREVIEW=$(gh release list --repo "$REPO" --limit 200 \
+            --json tagName,isPrerelease,isDraft \
+            -q '[.[]|select(.isDraft|not)|select(.isPrerelease)|select(.tagName|test("^v[0-9]"))]|.[].tagName' \
+            | sort -Vr | head -1)
+          echo "保留：stable=[$STABLE] preview=[$PREVIEW] (本次=$TAG)"
+
+          # ── 3. 远程清理：删除 dl/ 下不在保留集的 tag 目录 (幂等自愈) ──
+          $SSH "$SSH_USER@$HOST" "MIRROR_DIR='$MIRROR_DIR' bash -s '$STABLE' '$PREVIEW' '$TAG'" <<'REMOTE'
+          set -eu
+          declare -A KEEP=()
+          for t in "$@"; do [ -n "$t" ] && KEEP["$t"]=1; done
+          [ "${#KEEP[@]}" -gt 0 ] || { echo "保留集为空，跳过清理"; exit 0; }
+          for d in "$MIRROR_DIR"/*/; do
+            [ -d "$d" ] || continue
+            n=$(basename "$d")
+            if [ -z "${KEEP[$n]:-}" ]; then echo "清理旧版本: $n"; rm -rf "$d"; fi
+          done
+          echo "当前镜像 tag:"; ls -1 "$MIRROR_DIR" 2>/dev/null || true
+          REMOTE
+          # ── 4. 服务器本机验证命中 (--resolve 127.0.0.1，绕开 runner→国内不稳定链路) ──
+          A=$(ls assets | head -1)
+          SRC=$($SSH "$SSH_USER@$HOST" "curl -skI --path-as-is --resolve mirror.fluxdown.com:443:127.0.0.1 'https://mirror.fluxdown.com/https://github.com/$REPO/releases/download/$TAG/$A' | grep -i '^x-mirror-source:' | tr -d '\r' | sed 's/.*: //'")
+          echo "镜像命中验证: $A -> source=$SRC"
+          [ "$SRC" = "local" ] || { echo "::error::镜像未命中 (source=$SRC)"; exit 1; }

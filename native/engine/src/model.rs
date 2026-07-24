@@ -46,6 +46,8 @@ pub struct TaskInfo {
     pub queue_id: String,
     /// Checksum spec,格式 `algo=hexhash`(空 = 跳过校验)。
     pub checksum: String,
+    /// 是否忽略 HTTPS 证书错误。默认 false；仅由用户为当前任务显式启用。
+    pub ignore_tls_errors: bool,
     /// 文件跟踪：completed 任务的目标文件在磁盘上是否已丢失（被删除/移动）。
     /// 由引擎按需扫描计算并落库（见 `crate::download_manager::DownloadManager::spawn_file_scan`）；
     /// 仅对 status=3 语义有效，默认 false。
@@ -69,6 +71,8 @@ pub struct TaskInfo {
     pub seeding_status: i32,
     /// BT 做种状态的辅助说明（如错误信息）。
     pub seeding_message: String,
+    /// Source page URL captured by the browser extension (empty = none).
+    pub referrer: String,
 }
 
 impl TaskInfo {

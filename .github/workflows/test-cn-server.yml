@@ -1,0 +1,41 @@
+name: Test CN Server Connection
+
+# 手动触发，用于验证 GitHub Actions runner 能否 SSH 连接到大陆服务器。
+# 这是后续「Actions 推送 release 资产到大陆服务器做加速」的连通性前置测试。
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: test-cn-server
+  cancel-in-progress: true
+
+jobs:
+  test-connection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH 连接测试
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.CN_SERVER_HOST }}
+          username: ${{ secrets.CN_SERVER_USER }}
+          key: ${{ secrets.CN_SERVER_SSH_KEY }}
+          command_timeout: 60s
+          script: |
+            echo "=== 连接成功 ==="
+            echo "主机名 : $(hostname)"
+            echo "系统   : $(uname -srm)"
+            echo "用户   : $(whoami)"
+            echo "时间   : $(date '+%F %T %Z')"
+            echo
+            echo "=== 磁盘 (根分区) ==="
+            df -h /
+            echo
+            echo "=== 内存 ==="
+            free -h 2>/dev/null || echo "(free 不可用)"
+            echo
+            echo "=== 出网诊断: 服务器 -> GitHub (预期失败, 印证需 push 模式) ==="
+            if curl -sI --connect-timeout 6 https://github.com >/dev/null 2>&1; then
+              echo "结果: 服务器可直连 GitHub"
+            else
+              echo "结果: 服务器无法直连 GitHub (符合预期, 由 Actions 推送资产)"
+            fi

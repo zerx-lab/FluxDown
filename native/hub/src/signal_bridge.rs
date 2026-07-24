@@ -24,6 +24,7 @@ impl From<model::TaskInfo> for signals::TaskInfo {
             proxy_url: t.proxy_url,
             queue_id: t.queue_id,
             checksum: t.checksum,
+            ignore_tls_errors: t.ignore_tls_errors,
             file_missing: t.file_missing,
             completed_at: t.completed_at,
             segments: t.segments,
@@ -32,6 +33,7 @@ impl From<model::TaskInfo> for signals::TaskInfo {
             uploaded_at_completion: t.uploaded_at_completion,
             seeding_status: t.seeding_status,
             seeding_message: t.seeding_message,
+            referrer: t.referrer,
         }
     }
 }

@@ -611,6 +611,8 @@ pub struct NewTaskSpec {
     pub queue_id: String,
     /// Checksum spec `algo=hexhash`（空 = 跳过校验）。
     pub checksum: String,
+    /// 忽略 HTTPS 证书错误（默认 false；仅由用户为当前任务显式启用）。
+    pub ignore_tls_errors: bool,
     /// 额外请求头。
     pub extra_headers: std::collections::HashMap<String, String>,
     /// BT 文件预选（空 = 全部文件）。
@@ -651,6 +653,8 @@ struct QueuedTask {
     /// Checksum spec for post-download integrity verification.
     /// Format: "algo=hexhash". Empty = skip verification.
     checksum: String,
+    /// Per-task HTTPS certificate policy. False = strict verification.
+    ignore_tls_errors: bool,
     /// 浏览器扩展捕获的额外 HTTP 请求头（如 Authorization）。
     extra_headers: std::collections::HashMap<String, String>,
     /// Pre-selected file indices for BT downloads (from the new-download dialog).
@@ -2797,6 +2801,7 @@ impl DownloadManager {
             user_agent,
             queue_id,
             checksum,
+            ignore_tls_errors,
             extra_headers,
             selected_file_indices,
             method,
@@ -2847,7 +2852,7 @@ impl DownloadManager {
         let initial_status = if start_paused { 2 } else { 0 };
         if let Err(e) = self
             .db
-            .insert_task(
+            .insert_task_with_tls_policy(
                 &task_id,
                 &db_url,
                 &file_name,
@@ -2857,6 +2862,7 @@ impl DownloadManager {
                 &proxy_url,
                 &queue_id,
                 &checksum,
+                ignore_tls_errors,
                 initial_status,
             )
             .await
@@ -2941,7 +2947,16 @@ impl DownloadManager {
                     extra_headers.clone(),
                     body.clone(),
                 );
-                self.spawn_meta_probe(task_id, db_url, file_name, probe_spec);
+                let (probe_client, probe_proxy) =
+                    self.task_http_context(&proxy_url, &user_agent, &queue_id, ignore_tls_errors);
+                self.spawn_meta_probe(
+                    task_id,
+                    db_url,
+                    file_name,
+                    probe_spec,
+                    probe_client,
+                    probe_proxy,
+                );
             }
             return Some(created_id);
         }
@@ -2961,6 +2976,7 @@ impl DownloadManager {
             user_agent,
             queue_id,
             checksum,
+            ignore_tls_errors,
             extra_headers,
             selected_file_indices,
             method,
@@ -2994,15 +3010,70 @@ impl DownloadManager {
                 queued.extra_headers.clone(),
                 queued.body.clone(),
             );
+            let (probe_client, probe_proxy) = self.task_http_context(
+                &queued.proxy_url,
+                &queued.user_agent,
+                &queued.queue_id,
+                queued.ignore_tls_errors,
+            );
             self.pending_queue.push_back(queued);
             // 广播最新队列位置
             self.broadcast_queue_positions();
             // 带 resolver 的任务跳过 probe（探测原始页面 URL 无意义）。
             if !has_resolver {
-                self.spawn_meta_probe(probe_tid, probe_url, probe_name, probe_spec);
+                self.spawn_meta_probe(
+                    probe_tid,
+                    probe_url,
+                    probe_name,
+                    probe_spec,
+                    probe_client,
+                    probe_proxy,
+                );
             }
         }
         Some(created_id)
+    }
+
+    /// 为当前任务解析代理/UA/TLS 策略并构建一致的 HTTP 上下文。
+    fn task_http_context(
+        &self,
+        proxy_url: &str,
+        user_agent: &str,
+        queue_id: &str,
+        ignore_tls_errors: bool,
+    ) -> (Client, ProxyConfig) {
+        let queue_ua = self
+            .queues
+            .get(queue_id)
+            .map(|q| q.default_user_agent.as_str())
+            .unwrap_or("");
+        let resolved_ua = if !user_agent.is_empty() {
+            user_agent
+        } else if !queue_ua.is_empty() {
+            queue_ua
+        } else {
+            self.global_user_agent.as_str()
+        };
+        let needs_dedicated_client = !proxy_url.is_empty()
+            || !user_agent.is_empty()
+            || !queue_ua.is_empty()
+            || ignore_tls_errors;
+        if !needs_dedicated_client {
+            return (self.client.clone(), self.proxy_config.resolve());
+        }
+
+        let proxy = if proxy_url.is_empty() {
+            self.proxy_config.resolve()
+        } else {
+            ProxyConfig::from_proxy_url(proxy_url)
+        };
+        match downloader::build_client_with_tls_policy(&proxy, resolved_ua, ignore_tls_errors) {
+            Ok(client) => (client, proxy),
+            Err(e) => {
+                log_info!("[manager] failed to build per-task client: {}", e);
+                (self.client.clone(), self.proxy_config.resolve())
+            }
+        }
     }
 
     /// 后台元数据探测（HEAD → GET Range:0-0，非阻塞）：探得文件名/大小后
@@ -3018,13 +3089,10 @@ impl DownloadManager {
         probe_url: String,
         current_name: String,
         probe_spec: downloader::RequestSpec,
+        probe_client: Client,
+        probe_proxy: ProxyConfig,
     ) {
-        let probe_client = self.client.clone();
         let probe_db = self.db.clone();
-        // 用 resolve() 展开 System→Manual：ftp_connect_sync_with_proxy 直接读
-        // host/port，未解析的 System 代理 host/port 为空会被静默降级直连。实际
-        // 下载路径(do_start_task/do_resume_task)均调 .resolve()，后台探测须对齐。
-        let probe_proxy = self.proxy_config.resolve();
         let probe_sink = self.sink.clone();
         #[cfg(feature = "plugins")]
         let probe_pm = self.plugin_manager.clone();
@@ -3083,6 +3151,7 @@ impl DownloadManager {
             user_agent,
             queue_id,
             checksum,
+            ignore_tls_errors,
             extra_headers,
             selected_file_indices,
             method,
@@ -3276,45 +3345,8 @@ impl DownloadManager {
                     .await;
             })
         } else {
-            // Resolve proxy and UA: per-task values override global config.
-            // `.resolve()` expands System mode into a concrete Manual config
-            // so that FTP downloader (which reads host/port directly) works.
-            //
-            // Three-tier UA resolution (highest → lowest priority):
-            //   1. Per-task explicit UA — set when creating/confirming the task
-            //   2. Per-queue default UA — inherited from queue when task UA is empty
-            //   3. Global UA — final fallback when both task and queue UA are empty
-            let queue_ua = self
-                .queues
-                .get(&queue_id)
-                .map(|q| q.default_user_agent.as_str())
-                .unwrap_or("");
-            let resolved_ua = if !user_agent.is_empty() {
-                user_agent.as_str()
-            } else if !queue_ua.is_empty() {
-                queue_ua
-            } else {
-                self.global_user_agent.as_str()
-            };
-            let needs_rebuild =
-                !proxy_url.is_empty() || !user_agent.is_empty() || !queue_ua.is_empty();
-            let (task_client, task_proxy) = if needs_rebuild {
-                let pc = if proxy_url.is_empty() {
-                    self.proxy_config.resolve()
-                } else {
-                    ProxyConfig::from_proxy_url(&proxy_url)
-                };
-                match downloader::build_client(&pc, resolved_ua) {
-                    Ok(c) => (c, pc),
-                    Err(e) => {
-                        log_info!("[manager] failed to build per-task client: {}", e);
-                        // Fallback to global
-                        (self.client.clone(), self.proxy_config.resolve())
-                    }
-                }
-            } else {
-                (self.client.clone(), self.proxy_config.resolve())
-            };
+            let (task_client, task_proxy) =
+                self.task_http_context(&proxy_url, &user_agent, &queue_id, ignore_tls_errors);
             // ---------------------------------------------------------------
             // 文件名最终决策：manager 是文件名的唯一决策者
             //
@@ -3830,6 +3862,7 @@ impl DownloadManager {
                     user_agent: String::new(), // use global UA on resume
                     queue_id: t.queue_id,
                     checksum: t.checksum, // loaded from DB for integrity verification
+                    ignore_tls_errors: false, // resume path reloads the persisted value from DB
                     extra_headers: std::collections::HashMap::new(), // 恢复任务无额外请求头
                     selected_file_indices: Vec::new(), // resume tasks have no pre-selection
                     method: None,         // 不持久化 method/body，恢复时按 GET 重发
@@ -4214,14 +4247,20 @@ impl DownloadManager {
         } else {
             // Resolve proxy and UA for resume: use global UA (cookies not
             // persisted in DB, so only proxy_url is available from task row).
-            let needs_rebuild = !task.proxy_url.is_empty() || !self.global_user_agent.is_empty();
+            let needs_rebuild = !task.proxy_url.is_empty()
+                || !self.global_user_agent.is_empty()
+                || task.ignore_tls_errors;
             let (task_client, task_proxy) = if needs_rebuild {
                 let pc = if task.proxy_url.is_empty() {
                     self.proxy_config.resolve()
                 } else {
                     ProxyConfig::from_proxy_url(&task.proxy_url)
                 };
-                match downloader::build_client(&pc, &self.global_user_agent) {
+                match downloader::build_client_with_tls_policy(
+                    &pc,
+                    &self.global_user_agent,
+                    task.ignore_tls_errors,
+                ) {
                     Ok(c) => (c, pc),
                     Err(e) => {
                         log_info!("[manager] failed to build per-task client on resume: {}", e);
@@ -5089,6 +5128,7 @@ impl DownloadManager {
                 user_agent: String::new(),
                 queue_id: task_row.queue_id,
                 checksum: task_row.checksum,
+                ignore_tls_errors: false, // resume path reloads the persisted value from DB
                 extra_headers: std::collections::HashMap::new(), // 恢复任务无额外请求头
                 selected_file_indices: Vec::new(), // resume tasks have no pre-selection
                 method: None,
@@ -6014,6 +6054,7 @@ mod tests {
                 user_agent: String::new(),
                 queue_id: String::new(),
                 checksum: String::new(),
+                ignore_tls_errors: false,
                 extra_headers: std::collections::HashMap::new(),
                 selected_file_indices: Vec::new(),
                 method: None,

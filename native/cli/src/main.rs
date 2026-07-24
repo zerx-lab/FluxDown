@@ -439,6 +439,7 @@ async fn cmd_add(client: &ApiClient, a: AddArgs, json: bool) -> Result<(), Clien
             user_agent: a.user_agent.clone().unwrap_or_default(),
             queue_id: a.queue.clone().unwrap_or_default(),
             checksum: a.checksum.clone().unwrap_or_default(),
+            ignore_tls_errors: false,
             headers: None,
             torrent_b64: None,
             method: None,

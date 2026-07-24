@@ -17,6 +17,8 @@ export interface TaskDto {
   proxyUrl: string
   queueId: string
   checksum: string
+  /** 当前任务是否显式接受无效 HTTPS 证书 */
+  ignoreTlsErrors: boolean
   /** 文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false */
   fileMissing?: boolean
   /** Unix 秒时间戳（字符串），任务完成时刻；未完成为空串 */
@@ -55,6 +57,8 @@ export interface CreateTaskRequest {
   userAgent?: string
   queueId?: string
   checksum?: string
+  /** true = 仅为此任务忽略 HTTPS 证书错误；默认 false */
+  ignoreTlsErrors?: boolean
   headers?: Record<string, string>
   /** true = 稍后下载：任务以 paused 状态创建，不自动启动 */
   startPaused?: boolean

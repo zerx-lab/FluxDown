@@ -100,6 +100,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   /// 是否展开高级选项（含任务代理）
   bool _showAdvanced = false;
 
+  /// 当前任务是否显式忽略 HTTPS 证书错误。安全默认值为 false。
+  bool _ignoreTlsErrors = false;
+
   /// 防止双击重复提交
   bool _isSubmitting = false;
 
@@ -963,6 +966,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         userAgent: userAgent,
         queueId: queueId,
         checksum: _resolveChecksum(entry.checksum),
+        ignoreTlsErrors: _ignoreTlsErrors,
         extraHeaders: extraHeaders,
       );
       setState(() {
@@ -990,6 +994,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         userAgent: userAgent,
         queueId: queueId,
         checksum: _resolveChecksum(entry.checksum),
+        ignoreTlsErrors: _ignoreTlsErrors,
         extraHeaders: extraHeaders,
         startPaused: later,
       );
@@ -1013,6 +1018,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         userAgent: userAgent,
         queueId: queueId,
         cookies: cookie,
+        ignoreTlsErrors: _ignoreTlsErrors,
         extraHeaders: extraHeaders,
         startPaused: later,
       );
@@ -1408,6 +1414,38 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ShadInput(
                 controller: _proxyUrlController,
                 placeholder: Text(s.taskProxyPlaceholder),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          s.taskIgnoreTlsErrors,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: c.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          s.taskIgnoreTlsErrorsDesc,
+                          style: TextStyle(fontSize: 11, color: c.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ShadSwitch(
+                    value: _ignoreTlsErrors,
+                    onChanged: (value) =>
+                        setState(() => _ignoreTlsErrors = value),
+                  ),
+                ],
               ),
               const SizedBox(height: 10),
               _SectionLabel(text: s.userAgent, c: c),

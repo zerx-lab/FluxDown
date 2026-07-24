@@ -731,8 +731,10 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            ignore_tls_errors: false,
             file_missing: false,
             completed_at: String::new(),
+            referrer: String::new(),
         }
     }
 
