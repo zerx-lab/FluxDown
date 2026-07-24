@@ -1,20 +1,23 @@
 /**
- * GET /api/download/:filename?tag=v1.2.3
+ * GET /api/download/:filename?tag=v1.2.3&source=mirror|github
  *
  * Release 资产的下载路由（仓库已开源，asset 可公开直连）。
  * - 若提供 ?tag= 参数，则在对应 tag 的 release 中查找 asset
  * - 若不提供 tag，则在最新的正式 release 中查找 asset
  *
  * 路由策略（302 重定向，本服务不中转下载流量）：
- * - 一律 302 到 GitHub 官方 CDN 直连（browser_download_url）。
- *   国内加速镜像逻辑暂时下线，后续再更新。
+ * - 中国大陆请求（x-vercel-ip-country / cf-ipcountry == CN）且镜像清单
+ *   （mirror.qwld.cn/manifest.json，60s 内存缓存 + 2.5s 超时）确认持有
+ *   该 tag+asset 时，302 到镜像；镜像端本地缺失时自身还会再 302 回 GitHub。
+ * - 其余地域、镜像不可达或未持有该资产：302 到 GitHub 官方 CDN 直连。
+ * - ?source=mirror|github 可显式覆盖地域判定（调试/用户手动切换源）。
  *
  * 桌面 App 自升级同样经由本端点（/api/release 返回的 download_url 指向这里）。
- * GitHub CDN 支持 Range（已验证 206），App 的多线程分段升级下载透过 302 正常工作。
+ * GitHub CDN 与镜像端均支持 Range（206），App 的多线程分段升级下载透过 302 正常工作。
  */
 
 import type { APIRoute } from "astro";
-import { GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
+import { GITHUB_TOKEN, GITHUB_REPO, MIRROR_BASE_URL } from "astro:env/server";
 
 export const prerender = false;
 
@@ -39,6 +42,39 @@ const GITHUB_HEADERS: Record<string, string> = {
   ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {}),
 };
 
+// ── 镜像清单缓存：60s 内存 TTL，探测失败视为镜像不可用（回退 GitHub）──
+interface MirrorManifest {
+  releases?: { tag: string; assets?: { name: string }[] }[];
+}
+let mirrorCache: { at: number; manifest: MirrorManifest | null } | null = null;
+const MIRROR_CACHE_TTL = 60 * 1000;
+
+/** 拉取镜像清单（带缓存与 2.5s 超时）；任何失败返回 null。 */
+async function fetchMirrorManifest(): Promise<MirrorManifest | null> {
+  const now = Date.now();
+  if (mirrorCache && now - mirrorCache.at < MIRROR_CACHE_TTL) {
+    return mirrorCache.manifest;
+  }
+  let manifest: MirrorManifest | null = null;
+  try {
+    const res = await fetch(`${MIRROR_BASE_URL}/manifest.json`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (res.ok) manifest = (await res.json()) as MirrorManifest;
+  } catch {
+    // 镜像不可达 → null，调用方回退 GitHub
+  }
+  mirrorCache = { at: now, manifest };
+  return manifest;
+}
+
+/** 镜像是否已持有指定 tag 的指定资产。 */
+async function mirrorHasAsset(tag: string, filename: string): Promise<boolean> {
+  const manifest = await fetchMirrorManifest();
+  if (!manifest?.releases) return false;
+  const rel = manifest.releases.find((r) => r.tag === tag);
+  return !!rel?.assets?.some((a) => a.name === filename);
+}
 
 /**
  * 通过 tag 名称获取指定 release。
@@ -99,7 +135,7 @@ function redirectTo(location: string, source: string): Response {
   });
 }
 
-export const GET: APIRoute = async ({ params, url }) => {
+export const GET: APIRoute = async ({ params, url, request }) => {
   const { filename } = params;
 
   if (!filename) {
@@ -159,11 +195,25 @@ export const GET: APIRoute = async ({ params, url }) => {
     }
 
     // 仓库已公开，browser_download_url 无需 token 签名即可直连
-    const directUrl = asset.browser_download_url;
+    const githubUrl = asset.browser_download_url;
 
-    // 直接使用 GitHub 官方 CDN 直连（镜像逻辑暂时下线，后续再更新）。
-    // 保留 ?source= 参数兼容前端调用，但当前一律回落 GitHub 直连。
-    return redirectTo(directUrl, "github");
+    // ── 3. 地域分流：CN → 国内镜像（mirror.qwld.cn），其余 → GitHub ──
+    // ?source= 显式覆盖：mirror 强制镜像，github 强制直连。
+    const source = url.searchParams.get("source");
+    const country =
+      request.headers.get("x-vercel-ip-country") ??
+      request.headers.get("cf-ipcountry") ??
+      "";
+    const preferMirror =
+      source === "mirror" || (source !== "github" && country === "CN");
+
+    if (preferMirror && (await mirrorHasAsset(release.tag_name, filename))) {
+      const mirrorUrl = `${MIRROR_BASE_URL}/releases/${encodeURIComponent(release.tag_name)}/${encodeURIComponent(filename)}`;
+      return redirectTo(mirrorUrl, "mirror");
+    }
+
+    // 镜像未持有该资产 / 镜像不可达 / 非 CN 地域：GitHub 官方 CDN 直连
+    return redirectTo(githubUrl, "github");
   } catch (err) {
     return new Response(
       JSON.stringify({ error: "Download failed", detail: String(err) }),

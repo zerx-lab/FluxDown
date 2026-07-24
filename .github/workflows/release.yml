@@ -2258,3 +2258,38 @@ jobs:
           if [ "$FAIL" -gt 0 ]; then
             echo "⚠️  ${FAIL} deletion(s) failed (will be retried next release)"
           fi
+
+  # ── 最终 Job: 通知国内镜像同步（mirror.qwld.cn）──
+  # 任一组件 release 成功后触发 githubProxy 拉取最新正式版/预览版资产。
+  # 镜像自身有兜底轮询，本步失败仅延迟镜像更新，不阻断发布（continue-on-error）。
+  # 需要仓库 secrets：MIRROR_SYNC_SECRET（与镜像端 FDPROXY_SECRET 一致）；
+  # 可选 MIRROR_SYNC_URL 覆盖默认地址。
+  notify-mirror:
+    name: Notify Download Mirror
+    runs-on: ubuntu-latest
+    needs: [release-app, release-extension, release-server, release-mobile, release-cli]
+    if: ${{ always() && !cancelled() && contains(needs.*.result, 'success') }}
+
+    steps:
+      - name: Trigger mirror sync
+        continue-on-error: true
+        env:
+          MIRROR_SYNC_URL: ${{ secrets.MIRROR_SYNC_URL || 'https://mirror.qwld.cn/sync' }}
+          MIRROR_SYNC_SECRET: ${{ secrets.MIRROR_SYNC_SECRET }}
+        run: |
+          if [ -z "$MIRROR_SYNC_SECRET" ]; then
+            echo "⚠️  MIRROR_SYNC_SECRET not configured, skipping mirror notification"
+            exit 0
+          fi
+          # 最多重试 3 次，每次 15s 超时；镜像端 202 表示已排队同步
+          for i in 1 2 3; do
+            if curl -fsS -m 15 -X POST \
+              -H "Authorization: Bearer ${MIRROR_SYNC_SECRET}" \
+              "$MIRROR_SYNC_URL"; then
+              echo "✅ Mirror sync triggered"
+              exit 0
+            fi
+            echo "⚠️  Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "⚠️  Mirror unreachable after 3 attempts (mirror poll will catch up)"

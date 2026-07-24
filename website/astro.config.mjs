@@ -119,6 +119,16 @@ export default defineConfig({
         optional: true,
       }),
 
+      // ── 可选：国内下载镜像（githubProxy 服务）根地址 ──
+      // /api/download 对 CN 地域请求 302 到 `${MIRROR_BASE_URL}/releases/<tag>/<file>`，
+      // 镜像不可达或未持有资产时自动回退 GitHub 直连。
+      MIRROR_BASE_URL: envField.string({
+        context: "server",
+        access: "secret",
+        default: "https://mirror.qwld.cn",
+        optional: true,
+      }),
+
       // ── 赞助名录（Sponsor Wall）──
       // 支付成功后自动把赞助者名称/留言评论到公开仓库的置顶 issue
       SPONSOR_WALL_REPO: envField.string({
