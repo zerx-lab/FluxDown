@@ -1,0 +1,257 @@
+# ── SignPath 签名流程验证（手动触发，不发 Release）──
+# 完整复刻 release.yml 的 build-windows job（x64 + ARM64）：
+# Flutter 构建 → SignPath 签应用 exe → Inno Setup 安装器 → SignPath 签安装器 → portable zip，
+# 最后校验所有产物的 Authenticode 签名并上传 artifact 供人工抽查。
+# 验证通过后本 workflow 可删除；正式打包仍走 release.yml（tag 触发）。
+name: SignPath Signing Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SIGNPATH_ORGANIZATION_ID: 8e88ecd8-8099-49f5-9edf-e43053de7d3e
+  SIGNPATH_PROJECT_SLUG: FluxDown
+  SIGNPATH_SIGNING_POLICY: test-signing
+  SIGNPATH_ARTIFACT_CONFIG: windows-exe-zip
+
+jobs:
+  build-windows:
+    name: Build & Sign Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set test version
+        id: version
+        shell: bash
+        run: |
+          echo "VERSION=0.0.0-signtest" >> "$GITHUB_OUTPUT"
+          echo "CLEAN_VERSION=0.0.0" >> "$GITHUB_OUTPUT"
+
+      - name: Compute repo stats (donate card)
+        id: stats
+        shell: bash
+        run: |
+          echo "FIRST_COMMIT_DATE=$(git log --reverse --format=%ad --date=format:%Y-%m-%d | head -1)" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_COUNT=$(git tag -l 'v[0-9]*' | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "COMMIT_COUNT=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ── Rust toolchain ──
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Cache Rinf CLI
+        id: cache-rinf
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/rinf.exe
+          key: rinf-cli-${{ runner.os }}-${{ matrix.arch }}-8.9.0
+
+      # ── Flutter SDK（x64 用预编译包，ARM64 用 git clone 原生安装）──
+      - name: Setup Flutter (x64)
+        if: matrix.arch == 'x64'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Flutter (ARM64 via git)
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          git clone https://github.com/flutter/flutter.git -b stable --depth 1 "$USERPROFILE/flutter"
+          echo "$USERPROFILE/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Flutter (ARM64)
+        if: matrix.arch == 'arm64'
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter/bin/cache
+          key: flutter-arm64-stable
+
+      - name: Flutter precache & version info
+        run: |
+          flutter --version
+          flutter precache --windows
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      # ── Rinf code generation ──
+      - name: Install Rinf CLI
+        if: steps.cache-rinf.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          for i in 1 2 3; do
+            cargo install rinf_cli@8.9.0 && exit 0
+            echo "cargo install failed (attempt $i), retrying in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Generate Rinf bindings
+        run: rinf gen
+
+      # ── Build ──
+      - name: Build Flutter Windows app
+        run: flutter build windows --release --build-name=${{ steps.version.outputs.CLEAN_VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }} --dart-define=FLUXCLOUD_BASE_URL=${{ secrets.FLUXCLOUD_BASE_URL }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
+
+      - name: Normalize build output path for ARM64
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if ((Test-Path "build\windows\x64") -and -not (Test-Path "build\windows\arm64")) {
+            Rename-Item -Path "build\windows\x64" -NewName "arm64"
+            Write-Host "Renamed build\windows\x64 -> build\windows\arm64"
+          }
+
+      # ── SignPath 签名 Round 1: 应用 exe ──
+      - name: Collect unsigned app executables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\signing\app | Out-Null
+          Copy-Item "build\windows\${{ matrix.arch }}\runner\Release\*.exe" "build\signing\app\"
+
+      - name: Upload unsigned app executables
+        id: upload-unsigned-app
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-app-exe-${{ matrix.arch }}
+          path: build/signing/app/*.exe
+
+      - name: Sign app executables (SignPath)
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-unsigned-app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/signing/app-signed
+
+      - name: Replace app executables with signed versions
+        shell: pwsh
+        run: |
+          Copy-Item "build\signing\app-signed\*.exe" "build\windows\${{ matrix.arch }}\runner\Release\" -Force
+
+      # ── Inno Setup installer ──
+      - name: Ensure Inno Setup is installed
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+            echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+
+      - name: Install Inno Setup Chinese Simplified language file
+        shell: pwsh
+        run: |
+          $issLangDir = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          Copy-Item "installer\windows\ChineseSimplified.isl" -Destination "$issLangDir\ChineseSimplified.isl" -Force
+
+      - name: Build installer with Inno Setup
+        run: |
+          iscc /DMyAppVersion=${{ steps.version.outputs.VERSION }} /DMyAppArch=${{ matrix.arch }} installer\windows\setup.iss
+
+      # ── SignPath 签名 Round 2: 安装器本体 ──
+      - name: Upload unsigned installer
+        id: upload-unsigned-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer-${{ matrix.arch }}
+          path: build/installer/FluxDown-*.exe
+
+      - name: Sign installer (SignPath)
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/signing/installer-signed
+
+      - name: Replace installer with signed version
+        shell: pwsh
+        run: |
+          Copy-Item "build\signing\installer-signed\*.exe" "build\installer\" -Force
+
+      # ── Portable zip ──
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          New-Item -Path "build\windows\${{ matrix.arch }}\runner\Release\portable" -ItemType File -Force | Out-Null
+          Compress-Archive -Path "build\windows\${{ matrix.arch }}\runner\Release\*" -DestinationPath "build\installer\FluxDown-${{ steps.version.outputs.VERSION }}-windows-${{ matrix.arch }}-portable.zip"
+
+      # ── 校验：安装器 + portable zip 内所有 exe 必须带 Authenticode 签名 ──
+      # 测试证书是自签的，Status 不会是 Valid（根不受信），
+      # 校验标准 = 存在 SignerCertificate 且非 NotSigned。
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        run: |
+          $failed = $false
+          function Check-Sig([string]$Path) {
+            $sig = Get-AuthenticodeSignature -FilePath $Path
+            $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '<none>' }
+            Write-Host ("{0}`n  Status: {1}  Signer: {2}" -f $Path, $sig.Status, $subject)
+            if ($sig.Status -eq 'NotSigned' -or -not $sig.SignerCertificate) {
+              Write-Host "::error::UNSIGNED: $Path"
+              $script:failed = $true
+            }
+          }
+          Get-ChildItem "build\installer\FluxDown-*.exe" | ForEach-Object { Check-Sig $_.FullName }
+          Expand-Archive "build\installer\FluxDown-*-portable.zip" -DestinationPath "build\verify-portable"
+          Get-ChildItem "build\verify-portable" -Recurse -Filter *.exe | ForEach-Object { Check-Sig $_.FullName }
+          if ($failed) { exit 1 }
+          Write-Host "All executables carry an Authenticode signature."
+
+      # ── 上传最终产物供人工抽查 ──
+      - name: Upload signed installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: signtest-installer-${{ matrix.arch }}
+          path: build/installer/FluxDown-*.exe
+
+      - name: Upload signed portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: signtest-portable-${{ matrix.arch }}
+          path: build/installer/FluxDown-*-portable.zip
