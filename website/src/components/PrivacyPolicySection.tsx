@@ -35,6 +35,7 @@ export default function PrivacyPolicySection() {
               <li>{t("privacy.s1.item1")}</li>
               <li>{t("privacy.s1.item2")}</li>
               <li>{t("privacy.s1.item3")}</li>
+              <li>{t("privacy.s1.item4")}</li>
             </ul>
           </div>
 

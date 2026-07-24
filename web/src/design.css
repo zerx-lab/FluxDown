@@ -946,7 +946,8 @@ svg { display: block; }
 .log-line { display: flex; gap: 8px; padding: 5px 0; font-size: 11px; line-height: 1.5; border-bottom: 1px solid var(--border); }
 .log-line:last-child { border: none; }
 .log-time { flex-shrink: 0; color: var(--text3); font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px; }
-.log-msg { color: var(--text2); word-break: break-all; }
+/* pre-wrap：多 CDN 事件等多行日志按 \n 换行且保留缩进（首行摘要 + 缩进节点明细）。 */
+.log-msg { color: var(--text2); word-break: break-all; white-space: pre-wrap; }
 .log-msg.err { color: var(--danger); }
 /* 内容展示区保留文本选择（日志/令牌等，供用户复制） */
 .log-line, .token-box { user-select: text; -webkit-user-select: text; }

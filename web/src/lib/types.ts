@@ -209,6 +209,7 @@ export type WsServerMsg =
   | { type: 'tasksSnapshot'; tasks: TaskDto[] }
   | ({ type: 'segmentProgress' } & SegmentProgressMsg)
   | ({ type: 'segmentSplit' } & SegmentSplitMsg)
+  | ({ type: 'taskCdnEvent' } & TaskCdnEventMsg)
   | { type: 'taskMetaProbed'; taskId: string; fileName: string; totalBytes: number }
   | { type: 'queuesChanged'; queues: QueueDto[] }
   | { type: 'groupsChanged'; groups: GroupDto[] }
@@ -253,6 +254,35 @@ export interface SegmentSplitMsg {
   childEnd: number
   isProactive: boolean
   totalSegments: number
+}
+/** 多 CDN 单节点描述（taskCdnEvent 载荷，见 server/src/wire.rs CdnNodeDto）。 */
+export interface CdnNodeWire {
+  /** 节点 IP；SYS 兜底节点（系统 DNS、无钉定）为 "SYS"。 */
+  ip: string
+  /** 候选来源："sys" / "doh:<端点IP>" / "ecs:<端点IP>"；SYS 为空串。 */
+  origin: string
+  /** 本任务经该节点下载的字节数（summary 有效，其余 0）。 */
+  bytes: number
+  /** EWMA 吞吐（B/s）：pool = 健康度先验（0 = 无先验）；summary = 实测。 */
+  ewmaBps: number
+  /** 当前未归还的段租约数（leases 快照有效，其余 0）。 */
+  active: number
+}
+
+/** 多 CDN 并发下载的节点级活动事件（任务详情日志；语义见
+ *  fluxdown_engine events.rs EngineEvent::TaskCdnEvent）。 */
+export interface TaskCdnEventMsg {
+  taskId: string
+  /** "pool" | "kick" | "breaker" | "fallback" | "leases" | "summary" */
+  kind: string
+  host: string
+  nodes: CdnNodeWire[]
+  ip: string
+  reason: string
+  candidates: number
+  alive: number
+  cap: number
+  autoCap: boolean
 }
 
 // ---- WS 客户端 → 服务端 ----

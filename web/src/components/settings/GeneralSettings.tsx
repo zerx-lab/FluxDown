@@ -32,8 +32,6 @@ export function GeneralSettings({
   const maxConcurrent = Number(config.max_concurrent_tasks ?? '5')
   const defaultSegments = Number(config.default_segments ?? '0')
   const autoMaxConnections = Number(config.auto_max_connections ?? '16')
-  const cdnMultiEnabled = (config.cdn_multi_enabled ?? '0') === '1'
-  const cdnMaxNodes = Number(config.cdn_max_nodes ?? '0')
   const connPolicyCount = parseConnPolicyCount(config.domain_conn_caps ?? '')
   const maxRetries = Number(config.max_auto_retries ?? '3')
   const retryDelay = Number(config.auto_retry_delay_secs ?? '5')
@@ -65,22 +63,6 @@ export function GeneralSettings({
             value={autoMaxConnections}
             min={1}
             onCommit={(n) => mutate({ auto_max_connections: String(n) })}
-          />
-        )}
-        <SetRow title={t('set.general.cdnMulti')} desc={t('set.general.cdnMultiDesc')}>
-          <SetSwitch
-            checked={cdnMultiEnabled}
-            onCheckedChange={(v) => mutate({ cdn_multi_enabled: v ? '1' : '0' })}
-          />
-        </SetRow>
-        {cdnMultiEnabled && (
-          <NumberFieldRow
-            title={t('set.general.cdnMaxNodes')}
-            desc={t('set.general.cdnMaxNodesDesc')}
-            value={cdnMaxNodes}
-            min={0}
-            max={8}
-            onCommit={(n) => mutate({ cdn_max_nodes: String(Math.min(8, Math.max(0, n))) })}
           />
         )}
         <SetRow title={t('set.general.connPolicy')} desc={t('set.general.connPolicyDesc')}>

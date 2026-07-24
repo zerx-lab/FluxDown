@@ -1,6 +1,7 @@
 // 代理：服务器出站代理（config 表）+ 连通性测试（/api/v1/proxy/test）。
 import { useState } from 'react'
 import { api } from '../../lib/api'
+import { confirmDialog } from '../../lib/confirm'
 import { translateBackendMessage, useI18n } from '../../lib/i18n'
 import type { ConfigMap } from '../../lib/types'
 import { SetRow, SetSelect, TextFieldRow } from './controls'
@@ -31,6 +32,23 @@ export function ProxySettings({
   const noList = config.proxy_no_list ?? ''
 
   const [testState, setTestState] = useState<TestState>({ status: 'idle' })
+
+  /** 开启代理时与多 CDN 并发互斥（对齐桌面端 _selectProxyMode）：功能已开启则弹
+   *  确认框——确认「关闭该功能并开启代理」一次写入两个键，取消则保持原模式。 */
+  async function onModeChange(v: string) {
+    const cdnMultiEnabled = (config.cdn_multi_enabled ?? '0') === '1'
+    if (v === mode) return
+    if (v === 'none' || !cdnMultiEnabled) {
+      mutate({ proxy_mode: v })
+      return
+    }
+    const ok = await confirmDialog({
+      title: t('set.proxy.cdnMultiConfirmTitle'),
+      message: t('set.proxy.cdnMultiConfirmDesc'),
+      confirmLabel: t('set.proxy.cdnMultiConfirmEnable'),
+    })
+    if (ok) mutate({ cdn_multi_enabled: '0', proxy_mode: v })
+  }
 
   const PROXY_MODE_OPTIONS = [
     { value: 'none', label: t('set.proxy.none') },
@@ -72,7 +90,7 @@ export function ProxySettings({
       </p>
       <div className="set-group">
         <SetRow title={t('set.proxy.mode')}>
-          <SetSelect value={mode} onValueChange={(v) => mutate({ proxy_mode: v })} options={PROXY_MODE_OPTIONS} />
+          <SetSelect value={mode} onValueChange={(v) => void onModeChange(v)} options={PROXY_MODE_OPTIONS} />
         </SetRow>
         {mode === 'manual' ? (
           <>

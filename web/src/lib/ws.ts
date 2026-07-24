@@ -16,6 +16,7 @@ import type {
   ResolveVariantOption,
   SegmentProgressMsg,
   SegmentSplitMsg,
+  TaskCdnEventMsg,
   TaskDto,
   TaskProgressMsg,
   WsClientMsg,
@@ -57,6 +58,8 @@ export const connStore = new Store<{
   status: 'connecting' | 'connected' | 'disconnected'
   rttMs: number | null
 }>({ status: 'disconnected', rttMs: null })
+/** 最近一次多 CDN 节点级活动事件（任务详情日志用），带到达时间戳（同 splitStore 范式）。 */
+export const cdnEventStore = new Store<(TaskCdnEventMsg & { at: number }) | null>(null)
 export const priorityStore = new Store<{ priorityTaskId: string; autoPausedCount: number }>({
   priorityTaskId: '',
   autoPausedCount: 0,
@@ -238,6 +241,9 @@ function dispatch(msg: WsServerMsg) {
       break
     case 'segmentSplit':
       splitStore.set({ ...msg, at: Date.now() })
+      break
+    case 'taskCdnEvent':
+      cdnEventStore.set({ ...msg, at: Date.now() })
       break
     case 'taskMetaProbed':
       queryClientRef?.setQueryData<TaskDto[]>(['tasks'], (old) =>

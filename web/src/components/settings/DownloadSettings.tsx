@@ -1,5 +1,6 @@
-// 下载：默认保存目录 / 全局限速 / 全局 User-Agent（服务器 config 表）。
+// 下载：默认保存目录 / 全局限速 / 全局 User-Agent / 多 CDN 并发（服务器 config 表）。
 import { useState } from 'react'
+import { confirmDialog } from '../../lib/confirm'
 import { useI18n } from '../../lib/i18n'
 import type { ConfigMap } from '../../lib/types'
 import { FsPicker } from '../dialogs/fs-picker'
@@ -23,6 +24,27 @@ export function DownloadSettings({
   const speedMB = speedBytes > 0 ? speedBytes / MB : 0
   const ua = config.global_user_agent ?? ''
   const useServerTime = (config.use_server_time ?? 'false') === 'true'
+  const cdnMultiEnabled = (config.cdn_multi_enabled ?? '0') === '1'
+  const cdnMaxNodes = Number(config.cdn_max_nodes ?? '0')
+  const proxyMode = config.proxy_mode ?? 'none'
+
+  /** 开启多 CDN 并发时与代理互斥（对齐桌面端 _onCdnMultiChanged）：代理已启用则
+   *  弹确认框——确认「关闭代理并开启」一次写入两个键，取消则不改任何状态。 */
+  async function onCdnMultiChange(v: boolean) {
+    if (!v || proxyMode === 'none') {
+      mutate({ cdn_multi_enabled: v ? '1' : '0' })
+      return
+    }
+    const ok = await confirmDialog({
+      title: t('set.download.cdnMultiProxyConfirmTitle'),
+      message:
+        proxyMode === 'system'
+          ? t('set.download.cdnMultiProxyConfirmDescSystem')
+          : t('set.download.cdnMultiProxyConfirmDescManual'),
+      confirmLabel: t('set.download.cdnMultiProxyConfirmDisable'),
+    })
+    if (ok) mutate({ proxy_mode: 'none', cdn_multi_enabled: '1' })
+  }
 
   // 自定义模式：用户在下拉里选了"自定义"，或当前值不匹配任何预设。
   const isPreset = ua === '' || UA_PRESETS.some((p) => p.value === ua)
@@ -88,6 +110,19 @@ export function DownloadSettings({
             onCheckedChange={(v) => mutate({ use_server_time: String(v) })}
           />
         </SetRow>
+        <SetRow title={t('set.download.cdnMulti')} desc={t('set.download.cdnMultiDesc')}>
+          <SetSwitch checked={cdnMultiEnabled} onCheckedChange={(v) => void onCdnMultiChange(v)} />
+        </SetRow>
+        {cdnMultiEnabled && (
+          <NumberFieldRow
+            title={t('set.download.cdnMaxNodes')}
+            desc={t('set.download.cdnMaxNodesDesc')}
+            value={cdnMaxNodes}
+            min={0}
+            max={8}
+            onCommit={(n) => mutate({ cdn_max_nodes: String(Math.min(8, Math.max(0, n))) })}
+          />
+        )}
       </div>
     </>
   )

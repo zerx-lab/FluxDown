@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { BentoGrid, BentoGridItem } from "@/components/ui/bento-grid";
-import { Cpu, Layers, Globe, Gauge, RefreshCw, Chrome, Palette, ShieldCheck, Puzzle, Package } from "lucide-react";
+import { Cpu, Layers, Globe, Gauge, RefreshCw, Chrome, Palette, ShieldCheck, Puzzle, Package, Zap } from "lucide-react";
 import { useLocale } from "@/lib/i18n";
 
 /** Mini terminal output — Rust engine card */
@@ -146,6 +146,37 @@ const ComponentBadges = () => (
   </div>
 );
 
+/** Mirror route comparison — Community Speed Network card */
+const CdnRouteViz = () => {
+  const routes = [
+    { name: "origin", latency: "1.2 MB/s", width: "22%", color: "#64748B", best: false },
+    { name: "mirror-hk", latency: "6.8 MB/s", width: "62%", color: "#38bdf8", best: false },
+    { name: "mirror-sg", latency: "11.4 MB/s", width: "96%", color: "#22C55E", best: true },
+  ];
+  return (
+    <div className="rounded-lg border border-dark-border bg-dark-bg p-2.5 space-y-1.5 font-mono text-[10px]">
+      {routes.map((r) => (
+        <div key={r.name} className="flex items-center gap-2">
+          <span className="w-16 shrink-0 text-dark-text-muted">{r.name}</span>
+          <div className="flex-1 h-1.5 rounded-full bg-dark-surface2 overflow-hidden">
+            <motion.div
+              className="h-full rounded-full"
+              style={{ backgroundColor: r.color }}
+              initial={{ width: 0 }}
+              whileInView={{ width: r.width }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+            />
+          </div>
+          <span className="w-16 shrink-0 text-right" style={{ color: r.color }}>
+            {r.latency}{r.best ? " ✓" : ""}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const IDMGridVisualization = () => {
   const colors = [
     "#3B82F6", "#22C55E", "#F59E0B", "#A855F7",
@@ -259,6 +290,14 @@ export default function FeaturesSection() {
       icon: <div className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-[#EC4899]/10"><Package className="w-5 h-5 text-[#EC4899]" /></div>,
       className: "md:col-span-2 lg:col-span-2",
       header: <ComponentBadges />,
+    },
+    // Row 5: full-width highlight — Community Speed Network
+    {
+      title: t("features.cdnTitle"),
+      description: t("features.cdnDesc"),
+      icon: <div className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-[#F59E0B]/10"><Zap className="w-5 h-5 text-[#F59E0B]" /></div>,
+      className: "md:col-span-2 lg:col-span-4",
+      header: <CdnRouteViz />,
     },
   ];
 
