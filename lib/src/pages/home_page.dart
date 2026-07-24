@@ -672,10 +672,6 @@ class _HomePageState extends State<HomePage> {
           child: Sidebar(
             controller: _controller,
             settingsProvider: _settingsProvider,
-            onOpenAccountSettings: () => setState(() {
-              _initialSettingsCategory = SettingsCategory.account;
-              _showSettings = true;
-            }),
           ),
         ),
       ],

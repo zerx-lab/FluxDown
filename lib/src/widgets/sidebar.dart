@@ -19,19 +19,15 @@ import 'category_edit_dialog.dart';
 import 'context_menu.dart';
 import 'queue_manager_dialog.dart';
 import '../services/cloud/cloud_auth_service.dart';
+import 'add_device_dialog.dart';
 
 class Sidebar extends StatefulWidget {
   final DownloadController controller;
   final SettingsProvider settingsProvider;
-
-  /// 侧栏「＋ 添加设备」入口：跳转设置页账户区（低频管理，不做专门导航栈）。
-  final VoidCallback? onOpenAccountSettings;
-
   const Sidebar({
     super.key,
     required this.controller,
     required this.settingsProvider,
-    this.onOpenAccountSettings,
   });
 
   @override
@@ -540,11 +536,13 @@ class _SidebarState extends State<Sidebar> {
               isOnline: device.isOnline,
               onTap: () => ctrl.setDeviceFilter(device.deviceId),
             ),
+          // 「＋ 添加设备」：直接弹出添加设备弹窗（未登录默认本地配对页），
+          // 无需先进入设置页；设置页内的入口用于隐藏该侧栏项后的管理编辑。
           _NavItem(
             icon: LucideIcons.plus,
             label: s.addDeviceEntry,
             isSelected: false,
-            onTap: () => widget.onOpenAccountSettings?.call(),
+            onTap: () => showAddDeviceDialog(context),
           ),
         ],
       ],
