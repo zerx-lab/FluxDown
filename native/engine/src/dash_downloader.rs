@@ -660,7 +660,9 @@ async fn download_track_coordinated(
         track_len,
         false, // 全长来自 206 Content-Range 分母，权威值
         seg_count,
-        &p.client,
+        // DASH 轨对不聚合（P0 边界：per-节点 ALPN 例外延后），单节点池
+        // 包裹任务 client，行为与现状一致。
+        crate::cdn::NodePool::single(p.client.clone()),
         &p.db,
         &p.progress_tx,
         &p.cancel_token,

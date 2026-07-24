@@ -701,9 +701,8 @@ impl ApiHost for ServerApiHost {
     async fn link_devices(&self) -> Result<Vec<LinkDeviceInfo>, ApiError> {
         let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
         let records = link.list_devices().await.map_err(map_link_err)?;
-        let probe = futures_util::future::join_all(
-            records.iter().map(|r| link.is_online(&r.fingerprint)),
-        );
+        let probe =
+            futures_util::future::join_all(records.iter().map(|r| link.is_online(&r.fingerprint)));
         let online = tokio::time::timeout(Duration::from_secs(5), probe)
             .await
             .unwrap_or_else(|_| vec![false; records.len()]);
@@ -1260,8 +1259,7 @@ mod tests {
             .await
             .expect("delete request");
         assert_eq!(del.status(), reqwest::StatusCode::OK);
-        let del_body: fluxdown_api::types::LinkOkResponse =
-            del.json().await.expect("delete json");
+        let del_body: fluxdown_api::types::LinkOkResponse = del.json().await.expect("delete json");
         assert!(del_body.ok);
 
         let devices_after: fluxdown_api::types::LinkDevicesResponse = client

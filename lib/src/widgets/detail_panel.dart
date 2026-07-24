@@ -1343,9 +1343,9 @@ class _DetailPanelState extends State<DetailPanel> {
 
   Widget _buildLogTab(AppColors c, DownloadTask task) {
     final s = currentS;
-    final rows = <Widget>[
-      _buildLogRow(c, _formatDateTime(task.createdAt), s.detailLogCreated),
-    ];
+    // 时间线：拆分事件与多 CDN 事件按接收时间合并（同刻保持到达顺序）。
+    final timeline = <(DateTime, int, Widget)>[];
+    var seq = 0;
     for (final split in task.recentSplits) {
       final kind = split.isProactive
           ? s.detailSplitProactive
@@ -1353,7 +1353,9 @@ class _DetailPanelState extends State<DetailPanel> {
       final size = DownloadTask.formatBytes(
         split.childEnd - split.childStart + 1,
       );
-      rows.add(
+      timeline.add((
+        split.receivedAt,
+        seq++,
         _buildLogRow(
           c,
           _formatDateTime(split.receivedAt),
@@ -1364,8 +1366,25 @@ class _DetailPanelState extends State<DetailPanel> {
             kind,
           ),
         ),
-      );
+      ));
     }
+    for (final evt in task.cdnEvents) {
+      final text = _cdnEventText(s, evt);
+      if (text.isEmpty) continue;
+      timeline.add((
+        evt.receivedAt,
+        seq++,
+        _buildLogRow(c, _formatDateTime(evt.receivedAt), text),
+      ));
+    }
+    timeline.sort((a, b) {
+      final byTime = a.$1.compareTo(b.$1);
+      return byTime != 0 ? byTime : a.$2.compareTo(b.$2);
+    });
+    final rows = <Widget>[
+      _buildLogRow(c, _formatDateTime(task.createdAt), s.detailLogCreated),
+      ...timeline.map((e) => e.$3),
+    ];
     if (task.completedAt != null) {
       rows.add(
         _buildLogRow(
@@ -1413,6 +1432,74 @@ class _DetailPanelState extends State<DetailPanel> {
         ],
       ),
     );
+  }
+
+  /// 多 CDN 候选来源标记 → 本地化标签（`sys` / `doh:<端点>` / `ecs:<端点>`）。
+  String _cdnOriginLabel(S s, String origin) {
+    if (origin == 'sys') return s.detailCdnOriginSys;
+    if (origin.startsWith('doh:')) {
+      return s.detailCdnOriginDoh(origin.substring(4));
+    }
+    if (origin.startsWith('ecs:')) {
+      return s.detailCdnOriginEcs(origin.substring(4));
+    }
+    return origin; // 未知标记原样展示（引擎新增来源时向前兼容）
+  }
+
+  /// 多 CDN 事件 → 日志文案（多行：首行摘要，节点细节缩进列出）。
+  /// 未知 kind 返回空串（调用方跳过，向前兼容）。
+  String _cdnEventText(S s, CdnEventData e) {
+    switch (e.kind) {
+      case 'pool':
+        final lines = <String>[
+          s.detailLogCdnPool(e.host, e.nodes.length),
+          '  ${s.detailLogCdnPoolStats(e.candidates, e.alive, e.cap)}'
+              '${e.autoCap ? s.detailCdnAutoSuffix : ''}',
+        ];
+        for (final n in e.nodes) {
+          var line = '  ${n.ip} · ${_cdnOriginLabel(s, n.origin)}';
+          if (n.ewmaBps > 0) {
+            line += ' · ${s.detailCdnPrior(DownloadTask.formatBytes(n.ewmaBps))}';
+          }
+          lines.add(line);
+        }
+        return lines.join('\n');
+      case 'kick':
+        final reason = switch (e.reason) {
+          'validator' => s.detailCdnKickValidator,
+          'build' => s.detailCdnKickBuild,
+          _ => s.detailCdnKickFail(e.candidates),
+        };
+        return s.detailLogCdnKick(e.ip, reason);
+      case 'breaker':
+        return s.detailLogCdnBreaker(e.host);
+      case 'fallback':
+        return e.reason == 'few'
+            ? s.detailLogCdnFallbackFew(e.candidates, e.alive)
+            : s.detailLogCdnFallbackError;
+      case 'leases':
+        final lines = <String>[s.detailLogCdnLeases(e.host)];
+        for (final n in e.nodes) {
+          final ip = n.ip == 'SYS' ? s.detailCdnNodeSys : n.ip;
+          var line = '  ${s.detailLogCdnLeasesNode(ip, n.active)}';
+          if (n.bytes > 0) {
+            line += ' · ${DownloadTask.formatBytes(n.bytes)}';
+          }
+          lines.add(line);
+        }
+        return lines.join('\n');
+      case 'summary':
+        final lines = <String>[s.detailLogCdnSummary(e.host)];
+        for (final n in e.nodes) {
+          final ip = n.ip == 'SYS' ? s.detailCdnNodeSys : n.ip;
+          lines.add(
+            '  ${s.detailLogCdnSummaryNode(ip, DownloadTask.formatBytes(n.bytes), DownloadTask.formatBytes(n.ewmaBps))}',
+          );
+        }
+        return lines.join('\n');
+      default:
+        return '';
+    }
   }
 
   Widget _buildLogRow(
@@ -1809,7 +1896,6 @@ class DetailFooterActionButton extends StatelessWidget {
     final c = AppColors.of(context);
     return ShadButton.outline(
       onPressed: onPressed,
-      height: 36,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       expands: true,
       child: FittedBox(

@@ -209,6 +209,53 @@ class SplitEventData {
   }) : receivedAt = receivedAt ?? DateTime.now();
 }
 
+/// 多 CDN 并发下载的节点级活动事件（来自 Rust `TaskCdnEvent` 信号，
+/// 本次会话内存记录，不持久化）。供详情面板日志 Tab 展示。
+class CdnEventData {
+  /// "pool" | "kick" | "breaker" | "fallback" | "leases" | "summary"
+  final String kind;
+
+  /// 钉定目标 host。
+  final String host;
+
+  /// pool/leases/summary 的节点清单（ip/来源/字节数/吞吐/并发段数）；其余事件为空。
+  final List<CdnNodeDetail> nodes;
+
+  /// kick：被踢节点 IP；其余为空串。
+  final String ip;
+
+  /// kick："validator"|"fail"|"build"；fallback："few"|"error"。
+  final String reason;
+
+  /// pool/fallback：去重候选 IP 总数；kick(fail)：连续失败次数。
+  final int candidates;
+
+  /// pool/fallback：connect 预筛存活数。
+  final int alive;
+
+  /// pool：本次生效的钉定节点数上限。
+  final int cap;
+
+  /// pool：上限是否为自动档推导。
+  final bool autoCap;
+
+  /// 事件接收时刻（本地时间），供日志 Tab 展示时间戳。
+  final DateTime receivedAt;
+
+  CdnEventData({
+    required this.kind,
+    required this.host,
+    required this.nodes,
+    required this.ip,
+    required this.reason,
+    required this.candidates,
+    required this.alive,
+    required this.cap,
+    required this.autoCap,
+    DateTime? receivedAt,
+  }) : receivedAt = receivedAt ?? DateTime.now();
+}
+
 class DownloadTask {
   final String id;
   final String url;
@@ -231,6 +278,10 @@ class DownloadTask {
 
   /// Recent split events (for animation). Kept for a short window then cleared.
   final List<SplitEventData> recentSplits;
+
+  /// 多 CDN 节点级事件（本次会话记录，任务完成后仍保留供日志查看；
+  /// controller 侧封顶条数防无界增长）。
+  final List<CdnEventData> cdnEvents;
 
   /// 在 pending_queue 中的排队位置（1-based）。-1 = 不在队列中。
   final int queuePosition;
@@ -301,6 +352,7 @@ class DownloadTask {
     this.isSelected = false,
     this.segments,
     this.recentSplits = const [],
+    this.cdnEvents = const [],
     this.queuePosition = -1,
     this.queueId = '',
     this.queueOrder = 0,
@@ -367,6 +419,7 @@ class DownloadTask {
     bool? isSelected,
     List<SegmentData>? segments,
     List<SplitEventData>? recentSplits,
+    List<CdnEventData>? cdnEvents,
     int? queuePosition,
     String? queueId,
     int? queueOrder,
@@ -394,6 +447,7 @@ class DownloadTask {
       isSelected: isSelected ?? this.isSelected,
       segments: segments ?? this.segments,
       recentSplits: recentSplits ?? this.recentSplits,
+      cdnEvents: cdnEvents ?? this.cdnEvents,
       queuePosition: queuePosition ?? this.queuePosition,
       queueId: queueId ?? this.queueId,
       queueOrder: queueOrder ?? this.queueOrder,

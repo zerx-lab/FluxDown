@@ -298,6 +298,32 @@ impl EventSink for RinfEventSink {
                 }
                 .send_signal_to_dart();
             }
+            EngineEvent::TaskCdnEvent {
+                task_id,
+                kind,
+                host,
+                nodes,
+                ip,
+                reason,
+                candidates,
+                alive,
+                cap,
+                auto_cap,
+            } => {
+                signals::TaskCdnEvent {
+                    task_id,
+                    kind,
+                    host,
+                    nodes: nodes.into_iter().map(Into::into).collect(),
+                    ip,
+                    reason,
+                    candidates,
+                    alive,
+                    cap,
+                    auto_cap,
+                }
+                .send_signal_to_dart();
+            }
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志，而非编译失败。
             _ => {
                 crate::logger::log_info!(

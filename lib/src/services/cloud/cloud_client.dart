@@ -425,6 +425,75 @@ class CloudClient {
     return (json['revision'] as num?)?.toInt() ?? 0;
   });
 
+  // ── CDN 聚合下载云端配置（Bearer UserAuth；ETag 条件请求，
+  //    CdnConfigService 12h 周期 + 登录时拉取）────────────────────────────
+
+  /// GET /cdn/config：P1 §四契约。不复用 [_request]——该端点需要发送
+  /// If-None-Match 请求头、读取响应 ETag 头，且 304 是正常「未变更」结果
+  /// 而非错误，与其余接口的错误语义不同。[ifNoneMatch] 传入上次持久化的
+  /// ETag（原样回传，含引号）。
+  Future<CdnConfigResult> fetchCdnConfig({String? ifNoneMatch}) => _authed(() async {
+    _ensureHttp();
+    final uri = Uri.parse('${CloudApiConfig.baseUrl}$_kApiPrefix/cdn/config');
+    try {
+      final req = await _http!.getUrl(uri).timeout(_timeout);
+      req.headers.set('Accept', 'application/json');
+      if (accessToken != null && accessToken!.isNotEmpty) {
+        req.headers.set('Authorization', 'Bearer $accessToken');
+      }
+      if (ifNoneMatch != null && ifNoneMatch.isNotEmpty) {
+        req.headers.set('If-None-Match', ifNoneMatch);
+      }
+      final res = await req.close().timeout(_timeout);
+      if (res.statusCode == 304) {
+        await res.drain<void>();
+        return const CdnConfigResult.notModified();
+      }
+      final text = await res.transform(utf8.decoder).join();
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final etag = res.headers.value(HttpHeaders.etagHeader);
+        final json = text.trim().isEmpty
+            ? const <String, dynamic>{}
+            : jsonDecode(text) as Map<String, dynamic>;
+        return CdnConfigResult(etag: etag, config: CdnConfig.fromJson(json));
+      }
+      var code = 'unknown_error';
+      var message = 'HTTP ${res.statusCode}';
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is Map<String, dynamic>) {
+          code = (decoded['code'] as String?) ?? code;
+          message = (decoded['message'] as String?) ?? message;
+        }
+      } catch (_) {
+        // 错误体不是合法 JSON：保留默认 code/message，不阻断错误抛出。
+      }
+      throw CloudApiException(code: code, message: message, status: res.statusCode);
+    } on CloudApiException {
+      rethrow;
+    } on TimeoutException {
+      throw const CloudApiException(
+        code: 'network_error',
+        message: '请求超时，请检查网络或服务器地址',
+        status: 0,
+      );
+    } catch (e) {
+      throw CloudApiException(code: 'network_error', message: '网络请求失败：$e', status: 0);
+    }
+  });
+
+  // ── CDN 众包遥测上报（Bearer UserAuth；P2 §五契约，由 CdnReportService
+  //    每 30min + 启动时上传引擎侧缓冲的 `cdn_pending_reports`）────────────
+
+  /// POST /cdn/report：上报一批遥测样本。调用方须保证 [samples] ≤64 条
+  /// （服务端单次批量上限），超量由调用方分批；样本元素形状与契约
+  /// `samples[]` 一致（host/ip/connect_ms?/throughput_bps?/ok），
+  /// `device_hash` 由服务端从鉴权设备 id 派生，本端不发送。成功 204。
+  Future<void> reportCdnSamples(List<Map<String, dynamic>> samples) => _authed(() async {
+    if (samples.isEmpty) return;
+    await _request('POST', '/cdn/report', body: {'samples': samples}, authed: true);
+  });
+
   // ── 内部实现 ─────────────────────────────────────────────────────────
 
   Map<String, dynamic> _withDeviceInfo(

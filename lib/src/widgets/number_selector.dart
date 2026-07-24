@@ -36,6 +36,10 @@ class NumberSelector extends StatefulWidget {
   /// 选中态展示文案（如 `5 个任务`）；null = 直接显示数字。
   final String Function(int value)? selectedLabel;
 
+  /// 下拉预设列表中单个选项的展示文案（如 `0 → 自动`）；null = 直接显示数字。
+  /// 与 [selectedLabel] 分开，避免影响未传入本参数的既有调用方的列表展示。
+  final String Function(int value)? presetLabel;
+
   const NumberSelector({
     super.key,
     required this.value,
@@ -45,6 +49,7 @@ class NumberSelector extends StatefulWidget {
     required this.fallback,
     required this.onChanged,
     this.selectedLabel,
+    this.presetLabel,
   });
 
   @override
@@ -139,6 +144,7 @@ class _NumberSelectorState extends State<NumberSelector> {
   Widget _buildSelect(BuildContext context) {
     final s = LocaleScope.of(context);
     String label(int v) => widget.selectedLabel?.call(v) ?? '$v';
+    String optionLabel(int v) => widget.presetLabel?.call(v) ?? '$v';
 
     return ShadSelect<int>(
       key: ValueKey('ns_$_selectRebuild'),
@@ -146,7 +152,7 @@ class _NumberSelectorState extends State<NumberSelector> {
       initialValue: widget.value,
       options: [
         for (final n in widget.presets)
-          ShadOption(value: n, child: Text('$n')),
+          ShadOption(value: n, child: Text(optionLabel(n))),
         ShadOption(value: _kCustomSentinel, child: Text(s.customThreads)),
       ],
       selectedOptionBuilder: (_, value) => Text(label(value)),

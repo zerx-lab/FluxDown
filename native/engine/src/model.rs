@@ -116,6 +116,24 @@ pub struct SegmentDetail {
     pub downloaded_bytes: i64,
 }
 
+/// 多 CDN 并发的单节点描述（`EngineEvent::TaskCdnEvent` 载荷）。
+/// 字段对应 `hub::signals::CdnNodeDetail`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CdnNodeInfo {
+    /// 节点 IP；SYS 兜底节点（系统 DNS、无钉定）为 `"SYS"`。
+    pub ip: String,
+    /// 候选来源标记：`"sys"`（系统 DNS）/ `"doh:<端点IP>"` / `"ecs:<端点IP>"`；
+    /// SYS 节点为空串。UI 侧据此本地化展示。
+    pub origin: String,
+    /// 本任务经该节点实际下载的字节数（`kind="summary"` 有效，其余事件为 0）。
+    pub bytes: i64,
+    /// EWMA 吞吐（字节/秒）：`kind="pool"` = 健康度先验；`kind="summary"` =
+    /// 任务结束时实测。
+    pub ewma_bps: i64,
+    /// 当前未归还的段租约数（`kind="leases"` 快照有效，其余事件为 0）。
+    pub active: i32,
+}
+
 /// BT 种子内的单个文件条目。字段对应 `hub::signals::BtFileEntry`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BtFileEntry {

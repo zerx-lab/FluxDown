@@ -400,3 +400,81 @@ class ProgressReport {
     'progress': progress,
   };
 }
+
+/// CDN 聚合下载云端解析节点（GET /cdn/config 响应 resolvers[]）。
+class CdnResolverEntry {
+  final String url;
+  final bool ecs;
+
+  const CdnResolverEntry({required this.url, required this.ecs});
+
+  factory CdnResolverEntry.fromJson(Map<String, dynamic> json) => CdnResolverEntry(
+    url: json['url'] as String? ?? '',
+    ecs: json['ecs'] as bool? ?? false,
+  );
+}
+
+/// CDN 聚合下载云端 ECS 子网先验（GET /cdn/config 响应 ecs_subnets[]，P2 新增）：
+/// resolver 发起 EDNS Client Subnet 查询时按 [subnet] 附带的地域先验，
+/// [region]/[isp] 仅供后台管理展示，客户端引擎只消费 [subnet]。
+class CdnEcsSubnetEntry {
+  final String region;
+  final String isp;
+  final String subnet;
+
+  const CdnEcsSubnetEntry({required this.region, required this.isp, required this.subnet});
+
+  factory CdnEcsSubnetEntry.fromJson(Map<String, dynamic> json) => CdnEcsSubnetEntry(
+    region: json['region'] as String? ?? '',
+    isp: json['isp'] as String? ?? '',
+    subnet: json['subnet'] as String? ?? '',
+  );
+}
+
+/// GET /cdn/config 响应（P1 §四 + P2 §五契约）：CDN 多节点聚合下载云端配置快照。
+/// 字段名为服务端约定的 snake_case（直接对应 FluxDown 引擎 config 表键，
+/// 与本文件其余模型的 camelCase 约定不同——见契约「客户端行为」节）。
+/// [policy] 暂不解析（引擎侧聚合超时预算等仍走本地默认值）。
+class CdnConfig {
+  final int revision;
+  final bool enabled;
+  final int maxNodes;
+  final List<CdnResolverEntry> resolvers;
+  final List<CdnEcsSubnetEntry> ecsSubnets;
+
+  const CdnConfig({
+    required this.revision,
+    required this.enabled,
+    required this.maxNodes,
+    required this.resolvers,
+    required this.ecsSubnets,
+  });
+
+  factory CdnConfig.fromJson(Map<String, dynamic> json) {
+    final resolversJson = json['resolvers'] as List<dynamic>? ?? const [];
+    final ecsSubnetsJson = json['ecs_subnets'] as List<dynamic>? ?? const [];
+    return CdnConfig(
+      revision: (json['revision'] as num?)?.toInt() ?? 0,
+      enabled: json['enabled'] as bool? ?? false,
+      maxNodes: (json['max_nodes'] as num?)?.toInt() ?? 0,
+      resolvers: resolversJson
+          .map((e) => CdnResolverEntry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      ecsSubnets: ecsSubnetsJson
+          .map((e) => CdnEcsSubnetEntry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+}
+
+/// [CloudClient.fetchCdnConfig] 结果。304 命中时 [notModified] 为 true，
+/// [etag]/[config] 均为 null——调用方应保留本地已持久化的旧值不动。
+class CdnConfigResult {
+  final String? etag;
+  final CdnConfig? config;
+  final bool notModified;
+
+  const CdnConfigResult({this.etag, this.config}) : notModified = false;
+
+  const CdnConfigResult.notModified() : etag = null, config = null, notModified = true;
+}

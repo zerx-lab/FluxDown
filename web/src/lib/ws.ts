@@ -89,6 +89,9 @@ export const pluginActivityStore = new Store<Record<string, Set<string>>>({})
 const pluginActivityWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 /** 看门狗超时：钩子墙钟硬顶 1830s + 30s 余量。 */
 const PLUGIN_ACTIVITY_WATCHDOG_MS = 1_860_000
+/** 任务完成瞬间跃迁（status→3）的旁路监听：CDN 遥测上报等后台服务用
+ *  （lib/cloud/cdn.ts 注册；ws 不反向 import，避免与 session.ts 的 Store 依赖成环）。 */
+export const taskCompletionListeners = new Set<() => void>()
 
 function clearPluginActivityWatchdog(taskId: string) {
   const timer = pluginActivityWatchdogs.get(taskId)
@@ -220,6 +223,8 @@ function dispatch(msg: WsServerMsg) {
           // 完成瞬间跃迁：REST 缓存无 completedAt（WS 进度不含该字段），拉一次全量补齐完成时间/耗时。
           if (live.status === 3 && prev && prev.status !== 3) {
             void qc.invalidateQueries({ queryKey: ['tasks'] })
+            // CDN 遥测事件驱动上报：任务完成 → 10s 去抖后上传本轮样本（对齐桌面 home_page）。
+            for (const fn of taskCompletionListeners) fn()
           }
         }
       }

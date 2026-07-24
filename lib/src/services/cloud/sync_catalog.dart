@@ -157,7 +157,7 @@ void _applyThemeSelection(ThemeProvider theme, String key, dynamic value, {requi
   }
 }
 
-/// 装配契约「同步键目录 v1」的全部 41 个键。顺序与契约文档一致，便于对照审阅。
+/// 装配契约「同步键目录 v1」的全部 44 个键。顺序与契约文档一致，便于对照审阅。
 List<SyncEntry> buildSyncCatalog({
   required SettingsProvider settings,
   required ThemeProvider theme,
@@ -296,7 +296,7 @@ List<SyncEntry> buildSyncCatalog({
     settings.setShowTitlebarTheme,
   ),
 
-  // ── download（13）──
+  // ── download（16）──
   _int(
     'download.max_concurrent_tasks',
     () => settings.maxConcurrentTasks,
@@ -308,6 +308,12 @@ List<SyncEntry> buildSyncCatalog({
     () => settings.autoMaxConnections,
     settings.setAutoMaxConnections,
   ),
+  _bool(
+    'download.cdn_multi_enabled',
+    () => settings.cdnMultiEnabled,
+    settings.setCdnMultiEnabled,
+  ),
+  _int('download.cdn_max_nodes', () => settings.cdnMaxNodes, settings.setCdnMaxNodes),
   _int('download.speed_limit_bytes', () => settings.speedLimitBytes, settings.setSpeedLimitBytes),
   _int('download.max_auto_retries', () => settings.maxAutoRetries, settings.setMaxAutoRetries),
   _int(

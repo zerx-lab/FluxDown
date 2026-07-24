@@ -633,7 +633,7 @@ async fn run_coord(
         total,
         false,
         segments,
-        &client,
+        fluxdown_engine::cdn::NodePool::single(client.clone()),
         &db,
         &tx,
         cancel,
@@ -1010,7 +1010,7 @@ async fn resume_after_cancel_is_byte_exact() {
         size as i64,
         false,
         8,
-        &client,
+        fluxdown_engine::cdn::NodePool::single(client.clone()),
         &db,
         &tx,
         &cancel,
@@ -1050,7 +1050,7 @@ async fn resume_after_cancel_is_byte_exact() {
         size as i64,
         false,
         8,
-        &client,
+        fluxdown_engine::cdn::NodePool::single(client.clone()),
         &db,
         &tx2,
         &cancel_done,
@@ -1293,6 +1293,7 @@ async fn run_full(
         audio_url: None,
         use_server_time: false,
         ffmpeg_path: None,
+        cdn: fluxdown_engine::cdn::CdnTaskInput::default(),
     };
 
     run_download(params).await;
@@ -1378,6 +1379,7 @@ async fn run_full_server_time(
         audio_url: None,
         use_server_time,
         ffmpeg_path: None,
+        cdn: fluxdown_engine::cdn::CdnTaskInput::default(),
     };
 
     run_download(params).await;
@@ -1519,6 +1521,7 @@ async fn use_server_time_uses_new_last_modified_after_version_change() {
         audio_url: None,
         use_server_time: true,
         ffmpeg_path: None,
+        cdn: fluxdown_engine::cdn::CdnTaskInput::default(),
     };
     run_download(params).await;
     let _ = collector.await;
@@ -2502,6 +2505,7 @@ async fn resume_of_unverified_hint_task_stays_plain_get() {
         audio_url: None,
         use_server_time: false,
         ffmpeg_path: None,
+        cdn: fluxdown_engine::cdn::CdnTaskInput::default(),
     };
     run_download(params).await;
     let _ = collector.await;
@@ -2734,6 +2738,7 @@ async fn manual_real_url_hint_download() {
         audio_url: None,
         use_server_time: false,
         ffmpeg_path: None,
+        cdn: fluxdown_engine::cdn::CdnTaskInput::default(),
     };
     run_download(params).await;
     let _ = collector.await;
@@ -2851,7 +2856,7 @@ async fn transient_200_on_resume_is_absorbed_byte_exact() {
         size,
         false,
         segs_count,
-        &client,
+        fluxdown_engine::cdn::NodePool::single(client.clone()),
         &db,
         &tx,
         &cancel,

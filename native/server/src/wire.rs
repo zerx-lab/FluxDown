@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 use fluxdown_api::types::{GroupDto, QueueDto, TaskDto};
 use fluxdown_engine::components::{FfmpegStatus, FfmpegVersions, YtdlpStatus, YtdlpVersions};
 use fluxdown_engine::model::{
-    BtFileEntry, HlsQualityOption, QueuePosition, ResolveVariantOption, SegmentDetail,
+    BtFileEntry, CdnNodeInfo, HlsQualityOption, QueuePosition, ResolveVariantOption, SegmentDetail,
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,34 @@ impl From<SegmentDetail> for SegmentDetailDto {
             start_byte: s.start_byte,
             end_byte: s.end_byte,
             downloaded_bytes: s.downloaded_bytes,
+        }
+    }
+}
+
+/// 多 CDN 单节点描述（`taskCdnEvent` 载荷）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CdnNodeDto {
+    /// 节点 IP；SYS 兜底节点为 "SYS"。
+    pub ip: String,
+    /// 候选来源："sys" / "doh:<端点IP>" / "ecs:<端点IP>"；SYS 为空串。
+    pub origin: String,
+    /// 本任务经该节点下载的字节数（summary 有效，其余 0）。
+    pub bytes: i64,
+    /// EWMA 吞吐（B/s）：pool = 健康度先验（0 = 无先验）；summary = 实测。
+    pub ewma_bps: i64,
+    /// 当前未归还的段租约数（leases 快照有效，其余 0）。
+    pub active: i32,
+}
+
+impl From<CdnNodeInfo> for CdnNodeDto {
+    fn from(n: CdnNodeInfo) -> Self {
+        Self {
+            ip: n.ip,
+            origin: n.origin,
+            bytes: n.bytes,
+            ewma_bps: n.ewma_bps,
+            active: n.active,
         }
     }
 }
@@ -167,6 +195,21 @@ pub enum WsServerMsg {
         child_end: i64,
         is_proactive: bool,
         total_segments: i32,
+    },
+    /// 多 CDN 并发下载的节点级活动事件（任务详情日志）。语义与字段约定见
+    /// `fluxdown_engine::events::EngineEvent::TaskCdnEvent`。
+    TaskCdnEvent {
+        task_id: String,
+        /// "pool" | "kick" | "breaker" | "fallback" | "summary"
+        kind: String,
+        host: String,
+        nodes: Vec<CdnNodeDto>,
+        ip: String,
+        reason: String,
+        candidates: i32,
+        alive: i32,
+        cap: i32,
+        auto_cap: bool,
     },
     /// 任务元数据探测完成（文件名/大小确定）。
     TaskMetaProbed {

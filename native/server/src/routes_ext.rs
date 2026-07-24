@@ -321,12 +321,17 @@ async fn send_msg(socket: &mut WebSocket, msg: &WsServerMsg) -> Result<(), ()> {
 // 配置
 // ---------------------------------------------------------------------------
 
-/// 读取全部配置键值。
+/// 读取全部配置键值。读取前先经 actor 把内存中的 CDN 遥测样本刷进
+/// `cdn_pending_reports`（对齐 hub 的 RequestConfig 处理点），保证 Web 面板
+/// 众包上报能读到最新样本。
 #[utoipa::path(get, path = "/api/v1/config", tag = "server",
     responses((status = 200, body = HashMap<String, String>)),
     security(("bearer_token" = []), ("api_key" = []))
 )]
 async fn get_config(State(state): State<ServerState>) -> Result<Response, ApiError> {
+    state
+        .send_cmd(|ack| ActorCmd::FlushCdnReports { ack })
+        .await?;
     let map = state
         .db
         .get_all_config()

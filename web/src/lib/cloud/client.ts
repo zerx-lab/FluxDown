@@ -4,7 +4,7 @@
 // 去重为单个 in-flight promise，避免刷新风暴。
 
 import { applyCloudSession, clearCloudSession, cloudDefaultDeviceName, cloudDeviceId, CLOUD_DEVICE_PLATFORM, getCloudAccessToken, getCloudRefreshToken } from './session'
-import type { AuthResponse, CloudDevice, CloudProfile, DevicesResponse, LoginResult, RemoteTask, RemoteTasksResponse, TtlResponse } from './types'
+import type { AuthResponse, CdnConfig, CdnConfigResult, CloudDevice, CloudProfile, DevicesResponse, LoginResult, RemoteTask, RemoteTasksResponse, TtlResponse } from './types'
 import { CloudApiError } from './types'
 
 /** 默认服务地址：Actions 打包时经 VITE_FLUXCLOUD_BASE_URL 构建期注入官方地址，
@@ -13,17 +13,24 @@ const DEFAULT_BASE_URL: string = import.meta.env.VITE_FLUXCLOUD_BASE_URL?.trim()
 const BASE_KEY = 'fluxdown.cloud.base'
 const API_PREFIX = '/api/v1'
 
-/** 当前生效的云服务地址：localStorage 自定义覆盖，否则回退默认常量。 */
+/** 当前生效的云服务地址：仅开发构建允许 localStorage 自定义覆盖（对应设置项也只在
+ *  开发构建显示），生产构建锁定构建期注入的默认常量——与桌面端 CloudApiConfig
+ *  的 kDebugMode 门控对称，避免残留覆盖值指向失效地址。 */
 export function getCloudBaseUrl(): string {
+  if (!import.meta.env.DEV) return DEFAULT_BASE_URL
   const custom = localStorage.getItem(BASE_KEY)
   return custom?.trim() ? custom.trim() : DEFAULT_BASE_URL
 }
 
 /** 是否为用户自定义地址（非默认值），供设置页展示"恢复默认"按钮状态。 */
 export function isCloudBaseUrlCustom(): boolean {
+  if (!import.meta.env.DEV) return false
   const custom = localStorage.getItem(BASE_KEY)
   return !!custom?.trim() && custom.trim() !== DEFAULT_BASE_URL
 }
+
+/** 云服务地址是否允许编辑（仅开发构建），供设置页决定是否渲染地址编辑行。 */
+export const CLOUD_BASE_URL_EDITABLE: boolean = import.meta.env.DEV
 
 export function setCloudBaseUrl(url: string) {
   localStorage.setItem(BASE_KEY, url.trim())
@@ -105,6 +112,38 @@ async function authedRequest<T>(method: string, path: string, body?: unknown): P
     return await rawRequest<T>(method, path, body, true)
   }
 }
+/** GET /cdn/config 专用请求：需要发送 If-None-Match、读取响应 ETag，且 304 是正常
+ *  「未变更」结果而非错误，与 rawRequest 的错误语义不同（对齐桌面端 fetchCdnConfig）。
+ *  命中 401 时刷新一次并重放。 */
+async function fetchCdnConfigOnce(ifNoneMatch?: string | null): Promise<CdnConfigResult> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Authorization: `Bearer ${getCloudAccessToken()}`,
+  }
+  if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch
+  const res = await fetch(`${getCloudBaseUrl()}${API_PREFIX}/cdn/config`, { headers })
+  if (res.status === 304) return { notModified: true, etag: null, config: null }
+  const text = await res.text()
+  if (res.ok) {
+    let config: CdnConfig | null = null
+    try {
+      config = text.trim() ? (JSON.parse(text) as CdnConfig) : null
+    } catch {
+      /* 非 JSON 响应体按无配置处理 */
+    }
+    return { notModified: false, etag: res.headers.get('ETag'), config }
+  }
+  let code = 'unknown_error'
+  let message = res.statusText
+  try {
+    const err = JSON.parse(text) as { code?: string; message?: string }
+    code = err.code ?? code
+    message = err.message ?? message
+  } catch {
+    /* 错误体不是合法 JSON：保留默认 code/message */
+  }
+  throw new CloudApiError(code, message, res.status)
+}
 
 export const cloudApi = {
   /** POST /auth/register：发码建 pending 用户（或为未完成注册的邮箱重发验证码）。 */
@@ -167,4 +206,20 @@ export const cloudApi = {
   /** GET /tasks/remote：拉取当前账号下全部跨设备任务全量（持久态 join 内存进度快照，
    *  首次加载/SSE 断线重连用，见 mdc §1.4）。 */
   remoteTasks: () => authedRequest<RemoteTasksResponse>('GET', '/tasks/remote'),
+
+  /** GET /cdn/config：ETag 条件请求（P1 §四契约），304 返回 notModified。
+   *  命中 401 时刷新一次并重放（fetchCdnConfigOnce 不走 authedRequest 因返回形态不同）。 */
+  cdnConfig: async (ifNoneMatch?: string | null): Promise<CdnConfigResult> => {
+    try {
+      return await fetchCdnConfigOnce(ifNoneMatch)
+    } catch (e) {
+      if (!(e instanceof CloudApiError) || e.status !== 401) throw e
+      await refreshSession()
+      return await fetchCdnConfigOnce(ifNoneMatch)
+    }
+  },
+
+  /** POST /cdn/report：上报一批 CDN 众包遥测样本（≤64 条/次，超量由调用方分批；
+   *  device_hash 由服务端从鉴权设备派生，本端不发送）。成功 204。 */
+  cdnReport: (samples: unknown[]) => authedRequest<unknown>('POST', '/cdn/report', { samples }),
 }

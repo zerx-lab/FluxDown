@@ -147,6 +147,40 @@ pub enum EngineEvent {
         /// 无错误时为空。
         error: String,
     },
+
+    /// 多 CDN 并发下载的节点级活动事件（任务详情「日志」Tab 的可观测性）。
+    /// 对应 `hub::signals::TaskCdnEvent`；server → WS `taskCdnEvent`。
+    /// 仅多节点聚合被尝试/生效的任务发出；单节点池路径零事件。
+    TaskCdnEvent {
+        task_id: String,
+        /// 事件类型：
+        /// - `"pool"`：多节点池就绪（`nodes` = 就绪节点清单，含来源与健康度先验）；
+        /// - `"kick"`：钉定节点被踢除（`ip`/`reason`/`count`）；
+        /// - `"breaker"`：聚合熔断——被踢节点数过半，24h 内不再对该 host 聚合；
+        /// - `"fallback"`：聚合已尝试但未成（存活候选不足/聚合任务异常），退单节点；
+        /// - `"leases"`：节点并发分布快照（`nodes` = 参与中节点，`active` = 该节点
+        ///   当前未归还的段租约数；租约借还时按 2s 节流 + 变化检测发射）；
+        /// - `"summary"`：多段下载结束后的节点贡献统计（`nodes` = 各节点字节数/实测吞吐）。
+        kind: String,
+        /// 钉定目标 host。
+        host: String,
+        /// `pool`/`leases`/`summary` 的节点清单；其余事件为空。
+        nodes: Vec<crate::model::CdnNodeInfo>,
+        /// `kick`：被踢节点 IP；其余事件为空串。
+        ip: String,
+        /// `kick`：`"validator"`（内容不一致）/`"fail"`（连续失败）/`"build"`
+        /// （pinned client 构建失败）；`fallback`：`"few"`（存活不足）/`"error"`
+        /// （聚合任务异常）。其余事件为空串。
+        reason: String,
+        /// `pool`/`fallback`：去重候选 IP 总数；`kick`(fail)：连续失败次数。
+        candidates: i32,
+        /// `pool`/`fallback`：connect 预筛存活数。
+        alive: i32,
+        /// `pool`：本次生效的钉定节点数上限。
+        cap: i32,
+        /// `pool`：上限是否为自动档推导（文件大小阶梯）。
+        auto_cap: bool,
+    },
 }
 
 /// 引擎事件的接收端,由宿主实现并注入 [`crate::Engine`]。

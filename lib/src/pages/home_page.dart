@@ -14,6 +14,8 @@ import '../models/plugin_provider.dart';
 import '../models/settings_provider.dart';
 import '../models/view_prefs.dart';
 import '../services/external_download_service.dart';
+import '../services/cloud/cdn_config_service.dart';
+import '../services/cloud/cdn_report_service.dart';
 import '../services/cloud/config_sync_service.dart';
 import '../services/cloud/remote_task_service.dart';
 import '../services/link/local_pairing_service.dart';
@@ -127,6 +129,10 @@ class _HomePageState extends State<HomePage> {
     );
     // FluxCloud 跨设备任务协同：providers 就绪后接线，登录即开 SSE 长连回流进度。
     unawaited(RemoteTaskService.instance.attach());
+    // FluxCloud CDN 聚合下载云端配置：登录即拉 + 12h 周期刷新，失败静默。
+    unawaited(CdnConfigService.instance.attach());
+    // FluxCloud CDN 众包遥测上报：常开，登录即上报一次 + 30min 周期，失败静默保留。
+    unawaited(CdnReportService.instance.attach());
     // 本地设备互联（局域网配对，免账号）：与账号体系无关，启动即接线监听。
     unawaited(LocalPairingService.instance.attach());
     // 首次启动 .torrent 文件关联提示（仅 Windows）
@@ -340,6 +346,8 @@ class _HomePageState extends State<HomePage> {
     // 通知服务内部做 800ms 防抖合批（多文件 → "N 个文件已下载"），
     // 此处无需再做汇总聚合。
     NotificationService.instance.showDownloadComplete(task);
+    // CDN 遥测事件驱动上报：任务完成 → 10s 去抖后上传本轮样本。
+    CdnReportService.instance.notifyTaskCompleted();
   }
 
   /// 「修改线程数」结果提示。成功 → 普通 toast；被拒（任务非暂停态）→

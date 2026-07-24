@@ -332,6 +332,13 @@ List<SettingsSearchItem> get settingsSearchItems {
     ),
     SettingsSearchItem(
       category: SettingsCategory.download,
+      label: s.cdnMultiEnabled,
+      description: s.cdnMultiEnabledDesc,
+      keywords: s.searchKeywordsCdnMulti,
+      icon: LucideIcons.network,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
       label: s.connPolicyCache,
       description: s.connPolicyCacheDesc,
       keywords: s.searchKeywordsThreads,
@@ -2963,6 +2970,45 @@ class _DownloadContent extends StatelessWidget {
     this.downloadController,
   });
 
+  /// 开启多 CDN 并发前检查代理：代理启用时该功能不会生效，先让用户
+  /// 选择「关闭代理并开启」或取消，避免开了却无效的误解。
+  void _onCdnMultiChanged(BuildContext context, S s, bool value) {
+    final mode = settingsProvider.proxyMode;
+    if (!value || mode == 'none') {
+      settingsProvider.setCdnMultiEnabled(value);
+      return;
+    }
+    final c = AppColors.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.cdnMultiProxyConfirmTitle),
+        description: Text(
+          mode == 'system'
+              ? s.cdnMultiProxyConfirmDescSystem
+              : s.cdnMultiProxyConfirmDescManual,
+        ),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.cancel),
+          ),
+          ShadButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              settingsProvider.setProxyMode('none');
+              settingsProvider.setCdnMultiEnabled(true);
+            },
+            child: Text(s.cdnMultiProxyConfirmDisable),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final listenable = downloadController != null
@@ -3039,6 +3085,22 @@ class _DownloadContent extends StatelessWidget {
                     label: s.autoMaxConnections,
                     description: s.autoMaxConnectionsDesc,
                     child: _AutoMaxConnSelector(
+                      settingsProvider: settingsProvider,
+                    ),
+                  ),
+                _SettingRow(
+                  label: s.cdnMultiEnabled,
+                  description: s.cdnMultiEnabledDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.cdnMultiEnabled,
+                    onChanged: (v) => _onCdnMultiChanged(context, s, v),
+                  ),
+                ),
+                if (settingsProvider.cdnMultiEnabled)
+                  _SettingRow(
+                    label: s.cdnMaxNodes,
+                    description: s.cdnMaxNodesDesc,
+                    child: _CdnMaxNodesSelector(
                       settingsProvider: settingsProvider,
                     ),
                   ),
@@ -3428,6 +3490,29 @@ class _AutoMaxConnSelector extends StatelessWidget {
       max: 64,
       fallback: 16,
       onChanged: settingsProvider.setAutoMaxConnections,
+    );
+  }
+}
+
+class _CdnMaxNodesSelector extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _CdnMaxNodesSelector({required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    // 0 = 自动档（按文件大小/并发连接数推导），与 [SettingsProvider] 语义一致。
+    String label(int v) => v == 0 ? s.auto : '$v';
+    return NumberSelector(
+      value: settingsProvider.cdnMaxNodes,
+      presets: const [0, 2, 3, 4, 6, 8],
+      min: 0,
+      max: 8,
+      fallback: 0,
+      selectedLabel: label,
+      presetLabel: label,
+      onChanged: settingsProvider.setCdnMaxNodes,
     );
   }
 }
@@ -3981,6 +4066,47 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
     super.dispose();
   }
 
+  /// 开启代理前检查多 CDN 并发下载：该功能在代理启用时不生效，若已开启
+  /// 则先提醒用户「开启代理将同时关闭该功能」，确认后关闭功能再切代理。
+  void _selectProxyMode(BuildContext context, S s, String mode) {
+    final sp = widget.settingsProvider;
+    if (sp.proxyMode == mode) return;
+    if (!sp.cdnMultiEnabled) {
+      _applyProxyMode(mode);
+      return;
+    }
+    final c = AppColors.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.proxyCdnMultiConfirmTitle),
+        description: Text(s.proxyCdnMultiConfirmDesc),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.cancel),
+          ),
+          ShadButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              widget.settingsProvider.setCdnMultiEnabled(false);
+              _applyProxyMode(mode);
+            },
+            child: Text(s.proxyCdnMultiConfirmEnable),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _applyProxyMode(String mode) {
+    widget.settingsProvider.setProxyMode(mode);
+    if (mode == 'system') _requestDetectSystemProxy();
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -4032,10 +4158,7 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
                   label: s.proxyModeSystem,
                   selected: sp.proxyMode == 'system',
                   colors: c,
-                  onTap: () {
-                    sp.setProxyMode('system');
-                    _requestDetectSystemProxy();
-                  },
+                  onTap: () => _selectProxyMode(context, s, 'system'),
                 ),
               ),
               Expanded(
@@ -4044,7 +4167,7 @@ class _ProxySettingsCardState extends State<_ProxySettingsCard> {
                   label: s.proxyModeManual,
                   selected: sp.proxyMode == 'manual',
                   colors: c,
-                  onTap: () => sp.setProxyMode('manual'),
+                  onTap: () => _selectProxyMode(context, s, 'manual'),
                 ),
               ),
             ],
@@ -9936,6 +10059,7 @@ String _cloudErrorText(S s, CloudApiException e) => switch (e.code) {
   'account_disabled' => s.accountErrorAccountDisabled,
   'registration_closed' => s.accountErrorRegistrationClosed,
   'registration_incomplete' => s.accountErrorRegistrationIncomplete,
+  'device_limit' => s.accountErrorDeviceLimit,
   'validation_error' =>
     e.message.isNotEmpty ? e.message : s.accountErrorValidation,
   'network_error' => s.accountErrorNetwork,

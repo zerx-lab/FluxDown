@@ -299,6 +299,30 @@ impl EventSink for EngineEventSink {
                 is_proactive,
                 total_segments,
             },
+            // 多 CDN 节点级活动（池就绪/踢除/熔断/回退/贡献统计）→ 任务详情日志。
+            EngineEvent::TaskCdnEvent {
+                task_id,
+                kind,
+                host,
+                nodes,
+                ip,
+                reason,
+                candidates,
+                alive,
+                cap,
+                auto_cap,
+            } => WsServerMsg::TaskCdnEvent {
+                task_id,
+                kind,
+                host,
+                nodes: nodes.into_iter().map(Into::into).collect(),
+                ip,
+                reason,
+                candidates,
+                alive,
+                cap,
+                auto_cap,
+            },
             // BT 数据下载完成(引擎每任务至多发一次):无对应 WS 快照消息,
             // 仅广播 aria2 `onBtDownloadComplete` 通知源事件。
             EngineEvent::BtDataFinished { task_id } => {

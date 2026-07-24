@@ -192,7 +192,7 @@ async fn run_one_real_download(
         total_bytes,
         false,
         INITIAL_SEGMENTS,
-        &client,
+        fluxdown_engine::cdn::NodePool::single(client.clone()),
         &db,
         &progress_tx,
         &cancel,

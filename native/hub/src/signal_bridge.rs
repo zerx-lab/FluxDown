@@ -75,6 +75,18 @@ impl From<model::SegmentDetail> for signals::SegmentDetail {
     }
 }
 
+impl From<model::CdnNodeInfo> for signals::CdnNodeDetail {
+    fn from(n: model::CdnNodeInfo) -> Self {
+        Self {
+            ip: n.ip,
+            origin: n.origin,
+            bytes: n.bytes,
+            ewma_bps: n.ewma_bps,
+            active: n.active,
+        }
+    }
+}
+
 impl From<model::BtFileEntry> for signals::BtFileEntry {
     fn from(f: model::BtFileEntry) -> Self {
         Self {

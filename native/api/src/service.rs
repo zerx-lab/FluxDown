@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use crate::types::{
     CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
     LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmRequest,
-    LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo, MarketEntryDto, PluginDto,
-    QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
+    LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo, MarketEntryDto, PluginDto, QueueDto,
+    ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组

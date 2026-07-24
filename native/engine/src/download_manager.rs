@@ -1066,6 +1066,17 @@ pub struct DownloadManager {
     /// 下载完成后是否把文件修改时间设为服务器提供的 `Last-Modified` 时间
     /// （config `use_server_time`，默认关闭）。
     use_server_time: bool,
+    /// 多 CDN 节点并发下载全局开关（config `cdn_multi_enabled`，默认关，
+    /// 实验性）。任务级还需通过 §3.2 前置条件（https/无代理/Range 已验证/
+    /// 域名未学习为单连接等）才会真正聚合。
+    cdn_multi_enabled: bool,
+    /// 单任务最多钉定的 CDN 节点数（config `cdn_max_nodes`，0..=8；
+    /// **0 = 自动**：按文件大小与并发连接数推导，默认值；SYS 兜底节点
+    /// 不计入）。
+    cdn_max_nodes: i32,
+    /// 云端下发的节点数上限（config `cdn_cloud_max_nodes`，由 Dart 云拉取
+    /// 服务落库注入；0 = 云端未下发）。有效上限 = min(本地/自动, 云端)。
+    cdn_cloud_max_nodes: i32,
     /// In-memory cache of named queue settings (queue_id → QueueInfo).
     /// Kept in sync with the DB on every queue CRUD operation.
     queues: HashMap<String, QueueInfo>,
@@ -1210,6 +1221,9 @@ impl DownloadManager {
             global_default_segments: 0,
             auto_max_connections: DEFAULT_AUTO_MAX_CONNECTIONS,
             use_server_time: false,
+            cdn_multi_enabled: false,
+            cdn_max_nodes: 0, // 0 = 自动档
+            cdn_cloud_max_nodes: 0,
             queues: HashMap::new(),
             queue_limiters: HashMap::new(),
             schedule_fired: HashMap::new(),
@@ -2056,6 +2070,54 @@ impl DownloadManager {
     /// <=0 = unlimited (advisor value used as-is).
     pub fn set_auto_max_connections(&mut self, v: i32) {
         self.auto_max_connections = v;
+    }
+
+    /// Update the Multi-CDN aggregation toggle (config `cdn_multi_enabled`).
+    pub fn set_cdn_multi_enabled(&mut self, v: bool) {
+        self.cdn_multi_enabled = v;
+    }
+
+    /// Update the Multi-CDN per-task pinned-node cap (config `cdn_max_nodes`).
+    /// 0 = 自动档（按文件大小/并发推导）；1..=8 手动值。兜底 clamp 杜绝
+    /// 越界配置。
+    pub fn set_cdn_max_nodes(&mut self, v: i32) {
+        self.cdn_max_nodes = v.clamp(0, crate::cdn::MAX_NODES_LIMIT as i32);
+    }
+
+    /// Update the cloud-issued Multi-CDN node cap (config `cdn_cloud_max_nodes`).
+    /// 0 = 无云端上限。
+    pub fn set_cdn_cloud_max_nodes(&mut self, v: i32) {
+        self.cdn_cloud_max_nodes = v.clamp(0, crate::cdn::MAX_NODES_LIMIT as i32);
+    }
+
+    /// Update the cloud-issued DoH resolver endpoint list (config
+    /// `cdn_resolver_endpoints`，JSON 字符串数组)。校验与回退语义见
+    /// [`crate::cdn::resolver::set_dynamic_endpoints`]。
+    pub fn set_cdn_resolver_endpoints(&mut self, json: &str) {
+        crate::cdn::resolver::set_dynamic_endpoints(json);
+    }
+
+    /// Update the cloud hints base origin (config `cdn_hints_base`，空 =
+    /// 禁用；仅接受 https)。
+    pub fn set_cdn_hints_base(&mut self, base: &str) {
+        crate::cdn::hints::set_base(base);
+    }
+
+    /// Update the cloud-issued ECS probe subnets (config `cdn_ecs_subnets`，
+    /// JSON 字符串数组，IPv4 CIDR)。
+    pub fn set_cdn_ecs_subnets(&mut self, json: &str) {
+        crate::cdn::resolver::set_ecs_subnets(json);
+    }
+
+    /// Dart 遥测上报完成（config `cdn_pending_reports` 写空）→ 清空引擎侧
+    /// 待上传样本缓冲。
+    pub fn clear_cdn_pending_reports(&mut self) {
+        crate::cdn::telemetry::clear();
+    }
+    /// 同步落盘遥测缓冲（Dart `RequestConfig` 读 config 前由宿主调用，
+    /// 保证上报读到全部内存样本，见 telemetry::flush 文档）。
+    pub async fn flush_cdn_pending_reports(&self) {
+        crate::cdn::telemetry::flush(&self.db).await;
     }
 
     /// Update whether completed downloads adopt the server-provided
@@ -3342,6 +3404,48 @@ impl DownloadManager {
         }
     }
 
+    /// 任务有效 UA 的解析优先级：任务 > 队列 > 全局。任务 client 与多 CDN
+    /// pinned client 共用此结果（两者 UA 必须逐字节一致）。
+    fn resolved_task_ua<'a>(&'a self, user_agent: &'a str, queue_id: &str) -> &'a str {
+        let queue_ua = self
+            .queues
+            .get(queue_id)
+            .map(|q| q.default_user_agent.as_str())
+            .unwrap_or("");
+        if !user_agent.is_empty() {
+            user_agent
+        } else if !queue_ua.is_empty() {
+            queue_ua
+        } else {
+            self.global_user_agent.as_str()
+        }
+    }
+
+    /// 折算多 CDN 聚合的任务级输入（方案 §3.2 的 manager 侧条件）：
+    /// 全局开关 && 未忽略 TLS 错误（§1.2 规则 1）&& 无有效代理（任务级或
+    /// 全局级，含 System 解析结果；§11-5 代理路由优先，钉 IP 让位）。
+    /// URL scheme/Range 验证/域名级条件由下载路径继续校验。
+    fn cdn_task_input(
+        &self,
+        ignore_tls_errors: bool,
+        task_proxy: &ProxyConfig,
+        user_agent: &str,
+    ) -> crate::cdn::CdnTaskInput {
+        use crate::proxy_config::ProxyMode;
+        crate::cdn::CdnTaskInput {
+            enabled: self.cdn_multi_enabled
+                && !ignore_tls_errors
+                && task_proxy.mode == ProxyMode::None,
+            max_nodes: self
+                .cdn_max_nodes
+                .clamp(0, crate::cdn::MAX_NODES_LIMIT as i32) as usize,
+            cloud_max_nodes: self
+                .cdn_cloud_max_nodes
+                .clamp(0, crate::cdn::MAX_NODES_LIMIT as i32) as usize,
+            user_agent: user_agent.to_string(),
+        }
+    }
+
     /// 为当前任务解析代理/UA/TLS 策略并构建一致的 HTTP 上下文。
     fn task_http_context(
         &self,
@@ -3355,13 +3459,7 @@ impl DownloadManager {
             .get(queue_id)
             .map(|q| q.default_user_agent.as_str())
             .unwrap_or("");
-        let resolved_ua = if !user_agent.is_empty() {
-            user_agent
-        } else if !queue_ua.is_empty() {
-            queue_ua
-        } else {
-            self.global_user_agent.as_str()
-        };
+        let resolved_ua = self.resolved_task_ua(user_agent, queue_id);
         let needs_dedicated_client = !proxy_url.is_empty()
             || !user_agent.is_empty()
             || !queue_ua.is_empty()
@@ -3802,6 +3900,13 @@ impl DownloadManager {
                 body.clone(),
             );
 
+            // 多 CDN 聚合输入：manager 侧条件（开关/TLS/代理）在此折算；
+            // pinned client 的 UA 与任务 client 同源（resolved_task_ua）。
+            let cdn = self.cdn_task_input(
+                ignore_tls_errors,
+                &task_proxy,
+                self.resolved_task_ua(&user_agent, &queue_id),
+            );
             let params = DownloadParams {
                 task_id: task_id.clone(),
                 url,
@@ -3834,6 +3939,7 @@ impl DownloadManager {
                 // 落 tasks.segments_epoch，旧 spawn 迟到的段进度写全类失效。
                 spawn_gen: spawn_gen as i64,
                 ffmpeg_path: crate::components::resolve_ffmpeg(&self.db, &self.data_dir).await,
+                cdn,
             };
 
             tokio::spawn(async move {
@@ -4523,6 +4629,9 @@ impl DownloadManager {
                 resume_hint
             };
 
+            // 多 CDN 聚合输入（resume：UA 只有全局值可用，与上方 client 构建一致）。
+            let cdn =
+                self.cdn_task_input(task.ignore_tls_errors, &task_proxy, &self.global_user_agent);
             let params = DownloadParams {
                 task_id: tid.clone(),
                 url: task.url,
@@ -4559,6 +4668,7 @@ impl DownloadManager {
                 use_server_time: self.use_server_time,
                 spawn_gen: spawn_gen as i64,
                 ffmpeg_path: crate::components::resolve_ffmpeg(&self.db, &self.data_dir).await,
+                cdn,
             };
 
             tokio::spawn(async move {

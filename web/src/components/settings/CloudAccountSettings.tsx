@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Check, ChevronRight, Cloud, Copy, Monitor, Pencil, Search, Smartphone, Trash2, X } from 'lucide-react'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '../../lib/cn'
-import { cloudApi, getCloudBaseUrl, isCloudBaseUrlCustom, resetCloudBaseUrl, setCloudBaseUrl } from '../../lib/cloud/client'
+import { CLOUD_BASE_URL_EDITABLE, cloudApi, getCloudBaseUrl, isCloudBaseUrlCustom, resetCloudBaseUrl, setCloudBaseUrl } from '../../lib/cloud/client'
 import { suggest } from '../../lib/cloud/nickname'
 import { applyCloudSession, clearCloudSession, cloudDeviceId, getCloudRefreshToken, setShowDeviceSync, useCloudSession, useShowDeviceSync } from '../../lib/cloud/session'
 import { CloudApiError, type CloudDevice } from '../../lib/cloud/types'
@@ -974,7 +974,14 @@ function DeviceItem({
 // 云服务器地址
 // ---------------------------------------------------------------------------
 
+/** 云服务器地址编辑：仅开发构建渲染（与桌面端 kDebugMode 门控对称），
+ *  生产构建锁定构建期注入的官方地址，保证请求打到正确的生产环境。 */
 function CloudServerAddressGroup() {
+  if (!CLOUD_BASE_URL_EDITABLE) return null
+  return <CloudServerAddressEditor />
+}
+
+function CloudServerAddressEditor() {
   const { t } = useI18n()
   const [value, setValue] = useState(getCloudBaseUrl())
   const [error, setError] = useState('')

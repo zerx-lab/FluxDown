@@ -97,6 +97,35 @@ export interface RemoteTask {
 export interface RemoteTasksResponse {
   tasks: RemoteTask[]
 }
+/** GET /cdn/config 响应 resolvers[]（snake_case wire，直接对应引擎 config 表键约定，
+ *  与本文件其余 camelCase 模型不同——对齐桌面端 cloud_models.dart CdnConfig）。 */
+export interface CdnResolverEntry {
+  url: string
+  ecs: boolean
+}
+
+/** GET /cdn/config 响应 ecs_subnets[]：resolver ECS 查询的地域先验，客户端只消费 subnet。 */
+export interface CdnEcsSubnetEntry {
+  region: string
+  isp: string
+  subnet: string
+}
+
+/** GET /cdn/config 响应：CDN 多节点聚合下载云端配置快照（P1 §四 + P2 §五契约）。 */
+export interface CdnConfig {
+  revision: number
+  enabled: boolean
+  max_nodes: number
+  resolvers: CdnResolverEntry[]
+  ecs_subnets: CdnEcsSubnetEntry[]
+}
+
+/** fetchCdnConfig 结果：304 命中时 notModified=true，etag/config 均为 null。 */
+export interface CdnConfigResult {
+  notModified: boolean
+  etag: string | null
+  config: CdnConfig | null
+}
 
 /** 服务端错误统一形态 `{code, message}`，附带 HTTP 状态码方便按 code/status 分支处理。 */
 export class CloudApiError extends Error {

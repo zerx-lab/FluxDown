@@ -206,6 +206,7 @@ fn make_params(
         auto_max_connections: 0,
         use_server_time: false,
         ffmpeg_path: None,
+        cdn: fluxdown_engine::cdn::CdnTaskInput::default(),
     }
 }
 

@@ -377,6 +377,46 @@ pub struct SegmentSplitEvent {
     pub total_segments: i32,
 }
 
+/// 多 CDN 并发下载的节点级活动事件（Rust → Dart，详情面板「日志」Tab）。
+/// 语义与字段约定见 `fluxdown_engine::events::EngineEvent::TaskCdnEvent`。
+#[derive(Serialize, RustSignal)]
+pub struct TaskCdnEvent {
+    pub task_id: String,
+    /// "pool" | "kick" | "breaker" | "fallback" | "leases" | "summary"
+    pub kind: String,
+    /// 钉定目标 host。
+    pub host: String,
+    /// pool/leases/summary 的节点清单；其余事件为空。
+    pub nodes: Vec<CdnNodeDetail>,
+    /// kick：被踢节点 IP；其余为空串。
+    pub ip: String,
+    /// kick："validator"|"fail"|"build"；fallback："few"|"error"。
+    pub reason: String,
+    /// pool/fallback：去重候选 IP 总数；kick(fail)：连续失败次数。
+    pub candidates: i32,
+    /// pool/fallback：connect 预筛存活数。
+    pub alive: i32,
+    /// pool：本次生效的钉定节点数上限。
+    pub cap: i32,
+    /// pool：上限是否为自动档推导。
+    pub auto_cap: bool,
+}
+
+/// 多 CDN 单节点描述（`TaskCdnEvent` 载荷）。
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct CdnNodeDetail {
+    /// 节点 IP；SYS 兜底节点为 "SYS"。
+    pub ip: String,
+    /// 候选来源："sys" / "doh:<端点IP>" / "ecs:<端点IP>"；SYS 为空串。
+    pub origin: String,
+    /// 本任务经该节点下载的字节数（summary 有效，其余 0）。
+    pub bytes: i64,
+    /// EWMA 吞吐（B/s）：pool = 健康度先验（0 = 无先验）；summary = 实测。
+    pub ewma_bps: i64,
+    /// 当前未归还的段租约数（leases 快照有效，其余 0）。
+    pub active: i32,
+}
+
 // ========== Auto-update signals ==========
 
 /// Check for application updates (Dart → Rust)

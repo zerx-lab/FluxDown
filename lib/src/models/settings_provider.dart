@@ -18,6 +18,8 @@ class SettingsProvider extends ChangeNotifier {
   String _defaultSaveDir = _platformDefaultSaveDir();
   int _defaultSegments = 0; // 0 = 自动（由 Rust segment_advisor 动态计算）
   int _autoMaxConnections = 16; // 自动模式下智能调度的最大连接数上限
+  bool _cdnMultiEnabled = false; // 多 CDN 节点并发下载（实验性，P0）：同一文件多节点并发拉取
+  int _cdnMaxNodes = 0; // 单任务最多钉定的 CDN 节点数，0..=8；0 = 自动档
   int _connPolicyCount = 0; // 已学习的域名连接上限记录数（未过期）
   int _maxConcurrentTasks = 5;
   int _speedLimitBytes = 0; // 0 = 无限制
@@ -193,6 +195,8 @@ class SettingsProvider extends ChangeNotifier {
   String get defaultSaveDir => _defaultSaveDir;
   int get defaultSegments => _defaultSegments;
   int get autoMaxConnections => _autoMaxConnections;
+  bool get cdnMultiEnabled => _cdnMultiEnabled;
+  int get cdnMaxNodes => _cdnMaxNodes;
 
   /// 引擎已学习的域名连接上限记录数（未过期条目；随 ConfigLoaded 刷新）。
   int get connPolicyCount => _connPolicyCount;
@@ -396,6 +400,21 @@ class SettingsProvider extends ChangeNotifier {
     _autoMaxConnections = value;
     notifyListeners();
     _saveToRust('auto_max_connections', value.toString());
+  }
+
+  void setCdnMultiEnabled(bool value) {
+    if (_cdnMultiEnabled == value) return;
+    _cdnMultiEnabled = value;
+    notifyListeners();
+    _saveToRust('cdn_multi_enabled', value ? '1' : '0');
+  }
+
+  void setCdnMaxNodes(int value) {
+    final clamped = value.clamp(0, 8);
+    if (_cdnMaxNodes == clamped) return;
+    _cdnMaxNodes = clamped;
+    notifyListeners();
+    _saveToRust('cdn_max_nodes', clamped.toString());
   }
 
   /// 清除引擎学习的域名连接上限缓存（空值 = 清除指令，Rust 侧据此识别）。
@@ -1241,6 +1260,10 @@ class SettingsProvider extends ChangeNotifier {
           _defaultSegments = int.tryParse(entry.value) ?? 0;
         case 'auto_max_connections':
           _autoMaxConnections = int.tryParse(entry.value) ?? 16;
+        case 'cdn_multi_enabled':
+          _cdnMultiEnabled = entry.value == '1' || entry.value == 'true';
+        case 'cdn_max_nodes':
+          _cdnMaxNodes = (int.tryParse(entry.value) ?? 0).clamp(0, 8);
         case 'domain_conn_caps':
           _connPolicyCount = _parseConnPolicyCount(entry.value);
         case 'max_concurrent_tasks':
@@ -1328,19 +1351,25 @@ class SettingsProvider extends ChangeNotifier {
         case 'log_max_size_mb':
           _logMaxSizeMb = int.tryParse(entry.value) ?? 10;
           LogService.instance.maxTotalBytes = _logMaxSizeMb * 1024 * 1024;
-        case 'proxy_mode':
+        // 代理键落盘走 200ms 防抖（_saveProxyConfig）：若某键仍在待写队列，
+        // 说明内存值比引擎快照新，跳过回写，否则防抖到期会把被快照覆盖的
+        // 旧值重新持久化（例如「关闭代理并开启多 CDN」后立即进入设置分区
+        // 触发 RequestConfig 的竞态）。
+        case 'proxy_mode' when !_pendingProxyKeys.contains('proxy_mode'):
           _proxyMode = entry.value;
-        case 'proxy_type':
+        case 'proxy_type' when !_pendingProxyKeys.contains('proxy_type'):
           _proxyType = entry.value;
-        case 'proxy_host':
+        case 'proxy_host' when !_pendingProxyKeys.contains('proxy_host'):
           _proxyHost = entry.value;
-        case 'proxy_port':
+        case 'proxy_port' when !_pendingProxyKeys.contains('proxy_port'):
           _proxyPort = entry.value;
-        case 'proxy_username':
+        case 'proxy_username'
+            when !_pendingProxyKeys.contains('proxy_username'):
           _proxyUsername = entry.value;
-        case 'proxy_password':
+        case 'proxy_password'
+            when !_pendingProxyKeys.contains('proxy_password'):
           _proxyPassword = entry.value;
-        case 'proxy_no_list':
+        case 'proxy_no_list' when !_pendingProxyKeys.contains('proxy_no_list'):
           _proxyNoList = entry.value;
         case 'local_server_enabled':
           _localServerEnabled = entry.value == 'true';

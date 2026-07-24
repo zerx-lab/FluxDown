@@ -79,6 +79,14 @@ pub enum DownloadError {
     /// （重试只会拿到同样的分母）。
     #[error("server reports a larger true size than planned (Content-Range total: {0})")]
     TrueSizeLarger(i64),
+    /// 多 CDN 节点池中【单个钉定节点】的可归因失败（连接失败/超时/停滞/
+    /// 跨节点 validator 不一致/HTTP 拒绝）。由 worker 在钉定租约上翻译产生
+    /// （见 `cdn::is_node_attributable`），coordinator 按 retryable 语义把段
+    /// 回收重派（下一次租约自然避开被降权/踢除的节点），【绝不】把单节点
+    /// 的问题升级为任务失败。SYS（系统 DNS）节点的错误不经翻译，语义与
+    /// 现状完全一致——故本变体永不成为任务的 final_error。
+    #[error("cdn node failed: {0}")]
+    CdnNodeFailed(String),
     #[error("ed2k error: {0}")]
     Ed2k(String),
     /// ED2K 协议完整性违规：hashset 投毒 / 块 MD4 不匹配 / SENDINGPART 越界 /
@@ -253,6 +261,10 @@ pub struct DownloadParams {
     /// `components::resolve_ffmpeg` 解析注入（manual → managed → system）。
     /// `None` = 未解析到，dash 下载器回退 `Command::new("ffmpeg")` 走 PATH。
     pub ffmpeg_path: Option<std::path::PathBuf>,
+    /// 多 CDN 节点聚合的任务级输入（manager 按全局设置与任务上下文折算，
+    /// 见 [`crate::cdn::CdnTaskInput`]）。`enabled == false`（默认）时多段
+    /// 路径构造单节点池，行为与现状逐字节一致。
+    pub cdn: crate::cdn::CdnTaskInput,
 }
 
 /// 将浏览器扩展捕获的额外 HTTP 头应用到请求构建器上。
@@ -807,6 +819,29 @@ pub fn build_client(
     build_client_with_tls_policy(proxy_config, user_agent, false)
 }
 
+/// 构建【钉定 IP】的下载 client：与 [`build_client_with_tls_policy`] 完全同参
+/// 装配（代理/UA/TLS 语义逐项继承），仅额外把 `host` 的 DNS 解析钉定到
+/// `ip`（reqwest `.resolve()`）。SNI 与 Host 头保持域名不变，TLS 证书照常
+/// 严格校验——伪造节点拿不到该域名的有效证书，这是多节点完整性的锚。
+/// 重定向到【其他 host】时钉定不生效（按系统 DNS 解析），行为与现状一致。
+///
+/// `SocketAddr` 的端口传 0：DNS 覆盖没有端口概念，实际端口取自请求 URL
+/// （reqwest 文档明确忽略此处端口）。
+pub fn build_pinned_client(
+    proxy_config: &crate::proxy_config::ProxyConfig,
+    user_agent: &str,
+    ignore_tls_errors: bool,
+    host: &str,
+    ip: std::net::IpAddr,
+) -> Result<Client, DownloadError> {
+    build_client_inner(
+        proxy_config,
+        user_agent,
+        ignore_tls_errors,
+        Some((host, ip)),
+    )
+}
+
 /// Build a download client with an explicit per-task TLS certificate policy.
 ///
 /// `ignore_tls_errors` must only come from an explicit user choice for the
@@ -815,6 +850,18 @@ pub fn build_client_with_tls_policy(
     proxy_config: &crate::proxy_config::ProxyConfig,
     user_agent: &str,
     ignore_tls_errors: bool,
+) -> Result<Client, DownloadError> {
+    build_client_inner(proxy_config, user_agent, ignore_tls_errors, None)
+}
+
+/// 共享装配核心：[`build_client_with_tls_policy`] 与 [`build_pinned_client`]
+/// 的唯一实现体。`pin = Some((host, ip))` 时追加 `.resolve()` DNS 钉定，
+/// 其余配置两者逐字节相同（代理/UA/TLS/池参数绝不允许分叉）。
+fn build_client_inner(
+    proxy_config: &crate::proxy_config::ProxyConfig,
+    user_agent: &str,
+    ignore_tls_errors: bool,
+    pin: Option<(&str, std::net::IpAddr)>,
 ) -> Result<Client, DownloadError> {
     use crate::proxy_config::{ProxyMode, detect_system_proxy};
 
@@ -957,6 +1004,11 @@ pub fn build_client_with_tls_policy(
                 builder = builder.no_proxy();
             }
         }
+    }
+
+    // --- DNS 钉定（多 CDN 节点池的 pinned client）---
+    if let Some((host, ip)) = pin {
+        builder = builder.resolve(host, std::net::SocketAddr::new(ip, 0));
     }
 
     let client = builder.build()?;
@@ -2349,6 +2401,12 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
 
     let client = &p.client;
 
+    // 多 CDN 候选聚合（解析 + connect 预筛）与下方 probe 并行发起，不增加
+    // 起飞延迟；静态门控（开关/https/Range 已验证/单连接域名/熔断标记）
+    // 不通过时为 None。结果在多段分支收割；单流分支主动中止。
+    let cdn_pending =
+        crate::cdn::spawn_aggregation(&p.url, &p.cdn, p.range_verified, &p.task_id, &p.db);
+
     // When the browser extension provides a file size hint, skip the probe
     // phase (HEAD + GET Range:0-0) entirely.  One-time CDN URLs (e.g.
     // Lanzou, ctbpsp.com signed URLs) treat every HTTP request as a download
@@ -2728,6 +2786,21 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
         // 病态分母膨胀）时 TrueSizeLarger 才会冒泡到此处，落入下方通用 Err 分支以
         // status=4 显式终止——DB 段行与临时文件【保留】，用户重试时 resume 重新
         // probe 真实大小接着下（fail-loud 且不丢进度）。
+        // 收割并行发起的候选聚合，构造节点池（存活 <2 或未发起 → 单节点池，
+        // 行为与现状一致）。
+        let nodes = crate::cdn::finish_pool(
+            cdn_pending,
+            client,
+            &p.cdn,
+            &p.db,
+            &p.task_id,
+            effective_total_bytes,
+            segments,
+            &p.sink,
+        )
+        .await;
+        // summary 事件需要在多段下载结束后读取节点贡献统计。
+        let nodes_for_summary = nodes.clone();
         let ms_outcome = download_multi_segment(
             &p.task_id,
             &p.url,
@@ -2735,7 +2808,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
             effective_total_bytes,
             size_is_estimate,
             segments,
-            client,
+            nodes,
             &p.db,
             &p.progress_tx,
             &p.cancel_token,
@@ -2759,6 +2832,29 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
                         final_total
                     );
                     effective_total_bytes = final_total;
+                }
+                // 多节点池：发一条节点贡献统计（详情面板「日志」Tab），只算
+                // 实际产生流量的节点。单节点池零事件。
+                if nodes_for_summary.is_multi() {
+                    let stats: Vec<crate::model::CdnNodeInfo> = nodes_for_summary
+                        .node_stats()
+                        .into_iter()
+                        .filter(|n| n.bytes > 0)
+                        .collect();
+                    if !stats.is_empty() {
+                        p.sink.emit(crate::events::EngineEvent::TaskCdnEvent {
+                            task_id: p.task_id.clone(),
+                            kind: "summary".to_string(),
+                            host: nodes_for_summary.host().to_string(),
+                            nodes: stats,
+                            ip: String::new(),
+                            reason: String::new(),
+                            candidates: 0,
+                            alive: 0,
+                            cap: 0,
+                            auto_cap: false,
+                        });
+                    }
                 }
                 None
             }
@@ -2812,6 +2908,10 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
             Err(e) => return Err(e),
         }
     } else {
+        // 单流路径不聚合：中止后台候选聚合任务（若已发起）。
+        if let Some(pending) = cdn_pending {
+            pending.abort();
+        }
         // F025: 续传时从多段切换到单流（例如 effective_total_bytes 经容差修正后
         // <=1MB、用户改 segment_count=1、或 spec 变 non-GET）。上次多段运行已把临时
         // 文件【预分配到满尺寸】total_bytes 并写入部分数据，且 DB 仍有 segment 行。
@@ -3628,7 +3728,7 @@ async fn download_multi_segment(
     // coordinator → do_segment，决定 Content-Range 分母扩容检查的漂移容差。
     size_is_estimate: bool,
     segment_count: i32,
-    client: &Client,
+    nodes: std::sync::Arc<crate::cdn::NodePool>,
     db: &Db,
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     cancel_token: &CancellationToken,
@@ -3663,7 +3763,7 @@ async fn download_multi_segment(
         total_bytes,
         size_is_estimate,
         segment_count,
-        client,
+        nodes,
         db,
         progress_tx,
         cancel_token,

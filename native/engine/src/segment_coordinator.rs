@@ -41,6 +41,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::cdn::NodePool;
 use crate::db::Db;
 use crate::downloader::{DownloadError, ProgressUpdate, SegmentProgressInfo, is_server_rejection};
 use crate::events::{EngineEvent, EventSink};
@@ -634,6 +635,15 @@ const UI_REPORT_INTERVAL_MS: u128 = 200;
 const MAX_RETRIES: u32 = 5;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
+/// 多 CDN 钉定节点租约的段内重试预算（收紧版 MAX_RETRIES）。
+///
+/// SYS 单节点时段内重试是唯一自愈手段，值得 5 次 × 指数退避（~80s）的耐心；
+/// 钉定节点死亡时同样耐心意味着 ~30s×3 次才被踢——架空快速故障切换
+///（#127 主诉求之一）。钉定租约上抛廉价：coordinator 立即回收段重派，
+/// 下一次租借自然落到健康节点，故只留一次带短退避的就地重试（吸收单次
+/// 网络抖动），失败即上抛交给节点池切换。
+const PINNED_NODE_MAX_RETRIES: u32 = 2;
+
 /// 单个 chunk 的读取超时（stall detection）。如果超过此时间没有收到任何数据，
 /// 视为连接停滞，返回错误触发 retry 机制（断开旧连接，用 Range 请求从断点续传）。
 /// 5 秒足够容忍正常的 CDN 抖动，又能快速从真正卡死的连接中恢复。
@@ -912,7 +922,7 @@ struct WorkerSpawnCtx {
     planned_total: Arc<AtomicI64>,
     size_is_estimate: bool,
     first_validators: Arc<StdMutex<Option<(String, String)>>>,
-    client: Client,
+    nodes: Arc<NodePool>,
     worker_cancel: CancellationToken,
     conn_sensitive: Arc<AtomicBool>,
     reconnect_hostile: Arc<AtomicBool>,
@@ -947,7 +957,7 @@ impl WorkerSpawnCtx {
             self.planned_total.clone(),
             self.size_is_estimate,
             self.first_validators.clone(),
-            self.client.clone(),
+            self.nodes.clone(),
             self.worker_cancel.clone(),
             self.conn_sensitive.clone(),
             self.reconnect_hostile.clone(),
@@ -995,7 +1005,7 @@ pub async fn run_coordinated_download(
     // do_segment 决定 Content-Range 分母的扩容容差（估计值→零容差）。
     size_is_estimate: bool,
     initial_segment_count: i32,
-    client: &Client,
+    nodes: Arc<NodePool>,
     db: &Db,
     progress_tx: &mpsc::Sender<ProgressUpdate>,
     cancel_token: &CancellationToken,
@@ -1440,7 +1450,7 @@ pub async fn run_coordinated_download(
         planned_total: planned_total.clone(),
         size_is_estimate,
         first_validators: first_validators.clone(),
-        client: client.clone(),
+        nodes: nodes.clone(),
         worker_cancel: worker_cancel.clone(),
         conn_sensitive: conn_sensitive.clone(),
         reconnect_hostile: reconnect_hostile.clone(),
@@ -1890,6 +1900,94 @@ pub async fn run_coordinated_download(
                             }
                             continue;
                         }
+                        // --- 多 CDN 节点可归因失败：回收段重派 ----------------
+                        // worker 已在钉定租约上把节点可归因错误翻译为
+                        // CdnNodeFailed（SYS 租约错误不经翻译，不会到达此臂），
+                        // 且 NodePool 已完成降权/踢除——此处只需把段回 Pending
+                        // 并重新派工：下一次租借自然避开劣质节点。节点池全灭时
+                        // 租约退 SYS，其错误走原语义分支——本臂绝不可能把任务
+                        // 拖入无限循环。派工逻辑与 TrueSizeLarger 重派完全同款
+                        //（verdict / 串行模式门控一致）。
+                        if let DownloadError::CdnNodeFailed(msg) = &error {
+                            log_info!(
+                                "[coordinator] task {} seg {} CDN 节点失败，回收重派: {}",
+                                task_id,
+                                seg_index,
+                                msg
+                            );
+                            if let Some(seg) = segments.get_mut(&seg_index) {
+                                seg.state = SegState::Pending;
+                            }
+                            let verdict_ok = range_verdict.load(Ordering::Relaxed)
+                                == RANGE_VERDICT_SUPPORTED;
+                            let next_work = if !verdict_ok {
+                                match find_next_pending_only(&mut segments) {
+                                    Some(mut nw) if nw.assignment.actual_start == 0 => {
+                                        nw.assignment.open_ended = true;
+                                        nw.assignment.no_range = true;
+                                        Some(nw)
+                                    }
+                                    Some(nw) => {
+                                        if let Some(seg) =
+                                            segments.get_mut(&nw.assignment.seg_index)
+                                        {
+                                            seg.state = SegState::Pending;
+                                        }
+                                        None
+                                    }
+                                    None => None,
+                                }
+                            } else if serial_mode {
+                                let other_active = segments.values()
+                                    .any(|s| s.state == SegState::Active);
+                                if other_active {
+                                    None
+                                } else {
+                                    find_next_pending_only(&mut segments)
+                                }
+                            } else {
+                                find_next_work(
+                                    &mut segments,
+                                    &mut next_index,
+                                    effective_total_bytes,
+                                    current_min_split,
+                                )
+                            };
+                            if let Some(next) = next_work {
+                                let new_seg_idx = next.assignment.seg_index;
+                                let redispatch_open = next.assignment.open_ended;
+                                persist_segment_change(
+                                    db, task_id, &segments,
+                                    new_seg_idx, next.split_parent,
+                                ).await;
+                                if let Some(parent_idx) = next.split_parent {
+                                    send_split_event(
+                                        sink, task_id, parent_idx, new_seg_idx,
+                                        &segments, false, scope,
+                                    );
+                                }
+                                rebuild_seg_states(&segments, &seg_states);
+                                if let Some(Some(tx)) = worker_assign_txs.get(worker_id) {
+                                    if tx.send(next.assignment).await.is_err() {
+                                        if let Some(seg) = segments.get_mut(&new_seg_idx) {
+                                            seg.state = SegState::Pending;
+                                        }
+                                    } else if redispatch_open {
+                                        open_ended_streaming = Some(new_seg_idx);
+                                    }
+                                } else if let Some(seg) = segments.get_mut(&new_seg_idx) {
+                                    // worker 槽位已退休（竞态防御）：段回 Pending
+                                    // 由存活 worker 的 Done 流程拾取。
+                                    seg.state = SegState::Pending;
+                                }
+                            } else if let Some(slot) = worker_assign_txs.get_mut(worker_id) {
+                                // 无工可派（串行模式他段在跑等）：退休本 worker，
+                                // Pending 段由存活 worker 拾取（与既有重派同款）。
+                                *slot = None;
+                            }
+                            continue;
+                        }
+
                         // 失败处置分三类：
                         //   (1) 403/429 服务器拒绝多连接 + 有其它段在工作；
                         //   (2) 瞬时 RangeNotSupported——已下载过数据（any_data，证明
@@ -3335,7 +3433,7 @@ fn spawn_worker(
     planned_total: Arc<AtomicI64>,
     size_is_estimate: bool,
     first_validators: Arc<StdMutex<Option<(String, String)>>>,
-    client: Client,
+    nodes: Arc<NodePool>,
     cancel_token: CancellationToken,
     conn_sensitive: Arc<AtomicBool>,
     reconnect_hostile: Arc<AtomicBool>,
@@ -3359,6 +3457,12 @@ fn spawn_worker(
                 break;
             }
 
+            // 每个 assignment 租借一个节点：段内重试沿用同一租约的 client
+            //（keep-alive 连接不丢）；段失败重派后的下一次租借自然避开被
+            // 降权/踢除的节点——段间节点切换零新增状态机。
+            let lease = nodes.lease();
+            let seg_started = Instant::now();
+
             let result = do_segment_with_retry(
                 &task_id,
                 assignment.seg_index,
@@ -3369,7 +3473,14 @@ fn spawn_worker(
                 assignment.seg_end,
                 assignment.open_ended,
                 assignment.no_range,
-                &client,
+                // 钉定租约收紧段内重试预算：失败快速上抛交给节点池切换；
+                // SYS 租约保持原 5 次预算（唯一数据流，耐心自愈 == 现状）。
+                if lease.is_pinned() {
+                    PINNED_NODE_MAX_RETRIES
+                } else {
+                    MAX_RETRIES
+                },
+                lease.client(),
                 &cancel_token,
                 &conn_sensitive,
                 &reconnect_hostile,
@@ -3392,6 +3503,22 @@ fn spawn_worker(
             )
             .await;
 
+            // 健康度回报：成功喂 EWMA（≥256KB 段），失败降权/踢除。
+            // 取消不回报（非节点信号）。归还（并发额度）由 lease Drop 承担。
+            match &result {
+                Ok(downloaded) => nodes.report(
+                    &lease,
+                    (*downloaded).max(0) as u64,
+                    seg_started.elapsed(),
+                    Ok(()),
+                ),
+                Err(DownloadError::Cancelled) => {}
+                Err(e) => nodes.report(&lease, 0, seg_started.elapsed(), Err(e)),
+            }
+            let lease_pinned = lease.is_pinned();
+            let lease_desc = lease.describe();
+            drop(lease);
+
             match result {
                 Ok(downloaded) => {
                     let _ = event_tx
@@ -3412,7 +3539,28 @@ fn spawn_worker(
                     // 【保活】等待下一个 assignment（coordinator 退休本 worker 或
                     // 结束时关闭 channel，recv 返回 None 自然退出）。其余错误维持
                     // 原语义：报告后退出。
-                    let recoverable = matches!(e, DownloadError::TrueSizeLarger(_));
+                    //
+                    // 多节点池的【钉定】租约上，节点可归因错误（连接失败/超时/
+                    // 停滞/validator 不一致/HTTP 拒绝）翻译为 CdnNodeFailed
+                    //（同为可恢复：coordinator 回收段重派，绝不升级为任务失败）。
+                    // SYS 租约的错误保持原样——语义与无聚合时完全一致。
+                    let e = if lease_pinned && crate::cdn::is_node_attributable(&e) {
+                        log_info!(
+                            "[worker {}] task {} seg {} 节点 {} 可归因失败，翻译为 CdnNodeFailed: {}",
+                            worker_id,
+                            task_id,
+                            assignment.seg_index,
+                            lease_desc,
+                            e
+                        );
+                        DownloadError::CdnNodeFailed(format!("node {lease_desc}: {e}"))
+                    } else {
+                        e
+                    };
+                    let recoverable = matches!(
+                        e,
+                        DownloadError::TrueSizeLarger(_) | DownloadError::CdnNodeFailed(_)
+                    );
                     let _ = event_tx
                         .send(WorkerEvent::Failed {
                             worker_id,
@@ -3460,6 +3608,9 @@ async fn do_segment_with_retry(
     mut seg_end: i64,
     open_ended: bool,
     no_range: bool,
+    // 段内瞬时错误重试预算：SYS 租约 = MAX_RETRIES，钉定租约 =
+    // PINNED_NODE_MAX_RETRIES（快速上抛交给节点池切换）。
+    max_retries: u32,
     client: &Client,
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
@@ -3576,7 +3727,7 @@ async fn do_segment_with_retry(
                     return Err(e);
                 }
                 attempts += 1;
-                if attempts >= MAX_RETRIES {
+                if attempts >= max_retries {
                     return Err(e);
                 }
                 // 瞬时失败必须留痕：截断/停滞/网络错误此前静默进退避，日志里
@@ -3586,7 +3737,7 @@ async fn do_segment_with_retry(
                     task_id,
                     seg_idx,
                     attempts,
-                    MAX_RETRIES,
+                    max_retries,
                     e
                 );
                 // Recover actual_start *and* seg_end from DB for partial progress.

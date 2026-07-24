@@ -118,9 +118,9 @@ void main() {
       settings.dispose();
     });
 
-    test('has exactly the 41 keys listed in the sync contract v1', () {
-      // 5 appearance + 6 general + 7 ui + 13 download + 5 bt + 5 ed2k.
-      expect(catalog.length, 41);
+    test('has exactly the 43 keys listed in the sync contract v1', () {
+      // 5 appearance + 6 general + 7 ui + 15 download + 5 bt + 5 ed2k.
+      expect(catalog.length, 43);
     });
 
     test('every key matches the contract key pattern and length limit', () {

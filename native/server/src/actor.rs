@@ -59,6 +59,12 @@ pub enum ActorCmd {
         keys: Vec<String>,
         ack: oneshot::Sender<()>,
     },
+    /// GET /api/v1/config 前置：把内存中的 CDN 遥测样本同步落盘到 config 表
+    /// `cdn_pending_reports`（对齐 hub 的 RequestConfig 处理点），Web 面板
+    /// 众包上报才能读到本轮任务的全部样本。
+    FlushCdnReports {
+        ack: oneshot::Sender<()>,
+    },
     CreateQueue {
         name: String,
         speed_limit_kbps: i64,
@@ -322,6 +328,10 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
             apply_config(engine, &keys).await;
             let _ = ack.send(());
         }
+        ActorCmd::FlushCdnReports { ack } => {
+            engine.manager.flush_cdn_pending_reports().await;
+            let _ = ack.send(());
+        }
         ActorCmd::CreateQueue {
             name,
             speed_limit_kbps,
@@ -530,6 +540,46 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
             "auto_max_connections" => {
                 if let Some(v) = all.get(key).and_then(|v| v.parse::<i32>().ok()) {
                     engine.manager.set_auto_max_connections(v);
+                }
+            }
+            "cdn_multi_enabled" => {
+                if let Some(v) = all.get(key) {
+                    engine
+                        .manager
+                        .set_cdn_multi_enabled(v == "1" || v == "true");
+                }
+            }
+            "cdn_max_nodes" => {
+                if let Some(v) = all.get(key).and_then(|v| v.parse::<i32>().ok()) {
+                    engine.manager.set_cdn_max_nodes(v.clamp(0, 8));
+                }
+            }
+            "cdn_cloud_max_nodes" => {
+                if let Some(v) = all.get(key).and_then(|v| v.parse::<i32>().ok()) {
+                    engine.manager.set_cdn_cloud_max_nodes(v.clamp(0, 8));
+                }
+            }
+            "cdn_resolver_endpoints" => {
+                if let Some(v) = all.get(key) {
+                    engine.manager.set_cdn_resolver_endpoints(v);
+                }
+            }
+            "cdn_hints_base" => {
+                if let Some(v) = all.get(key) {
+                    engine.manager.set_cdn_hints_base(v);
+                }
+            }
+            "cdn_ecs_subnets" => {
+                if let Some(v) = all.get(key) {
+                    engine.manager.set_cdn_ecs_subnets(v);
+                }
+            }
+            "cdn_pending_reports" => {
+                // Dart 上报成功后写空串清空；引擎自己写入的非空值不回调（避免自触发）。
+                if let Some(v) = all.get(key)
+                    && v.is_empty()
+                {
+                    engine.manager.clear_cdn_pending_reports();
                 }
             }
             "use_server_time" => {

@@ -142,6 +142,7 @@ class DownloadController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<AllTasks>>? _allTasksSub;
   StreamSubscription<RustSignalPack<SegmentProgress>>? _segmentSub;
   StreamSubscription<RustSignalPack<SegmentSplitEvent>>? _splitSub;
+  StreamSubscription<RustSignalPack<TaskCdnEvent>>? _cdnEventSub;
   StreamSubscription<RustSignalPack<TaskMetaProbed>>? _metaProbedSub;
   StreamSubscription<RustSignalPack<QueuePositionsUpdate>>? _queuePosSub;
   StreamSubscription<RustSignalPack<AllQueues>>? _allQueuesSub;
@@ -173,6 +174,7 @@ class DownloadController extends ChangeNotifier {
     _allTasksSub?.cancel();
     _segmentSub?.cancel();
     _splitSub?.cancel();
+    _cdnEventSub?.cancel();
     _metaProbedSub?.cancel();
     _queuePosSub?.cancel();
     _allQueuesSub?.cancel();
@@ -1305,6 +1307,7 @@ class DownloadController extends ChangeNotifier {
     _progressSub = TaskProgress.rustSignalStream.listen(_onProgress);
     _segmentSub = SegmentProgress.rustSignalStream.listen(_onSegmentProgress);
     _splitSub = SegmentSplitEvent.rustSignalStream.listen(_onSplitEvent);
+    _cdnEventSub = TaskCdnEvent.rustSignalStream.listen(_onCdnEvent);
     _metaProbedSub = TaskMetaProbed.rustSignalStream.listen(_onTaskMetaProbed);
     _queuePosSub = QueuePositionsUpdate.rustSignalStream.listen(
       _onQueuePositionsUpdate,
@@ -1637,6 +1640,51 @@ class DownloadController extends ChangeNotifier {
       'parent=#${evt.parentIndex}→end=${evt.parentNewEnd}, '
       'child=#${evt.childIndex} [${evt.childStart}, ${evt.childEnd}], '
       'proactive=${evt.isProactive}, total=${evt.totalSegments}',
+    );
+    _safeNotifyListeners();
+  }
+
+  /// Maximum number of CDN events to keep per task (ring buffer).
+  static const _maxCdnEvents = 40;
+
+  void _onCdnEvent(RustSignalPack<TaskCdnEvent> pack) {
+    if (_disposed) return;
+    final evt = pack.message;
+    if (_deletedTaskIds.contains(evt.taskId)) return;
+    final idx = _tasks.indexWhere((t) => t.id == evt.taskId);
+    if (idx < 0) return;
+
+    // 与 recentSplits 不同：CDN 事件在任务离开 downloading 后仍保留——
+    // 日志 Tab 的核心价值正是完成后回看走了哪些节点（封顶防无界增长）。
+    // leases 快照是"当前状态"而非离散事件：连续快照只保留最新一条，
+    // 避免日志 Tab 被节流后的滚动快照刷屏。
+    final current = List<CdnEventData>.from(_tasks[idx].cdnEvents);
+    if (evt.kind == 'leases' &&
+        current.isNotEmpty &&
+        current.last.kind == 'leases') {
+      current.removeLast();
+    }
+    current.add(
+      CdnEventData(
+        kind: evt.kind,
+        host: evt.host,
+        nodes: evt.nodes,
+        ip: evt.ip,
+        reason: evt.reason,
+        candidates: evt.candidates,
+        alive: evt.alive,
+        cap: evt.cap,
+        autoCap: evt.autoCap,
+      ),
+    );
+    if (current.length > _maxCdnEvents) {
+      current.removeRange(0, current.length - _maxCdnEvents);
+    }
+    _tasks[idx] = _tasks[idx].copyWith(cdnEvents: current);
+    logInfo(
+      _tag,
+      'cdn event: task=${evt.taskId}, kind=${evt.kind}, host=${evt.host}, '
+      'nodes=${evt.nodes.length}, ip=${evt.ip}, reason=${evt.reason}',
     );
     _safeNotifyListeners();
   }

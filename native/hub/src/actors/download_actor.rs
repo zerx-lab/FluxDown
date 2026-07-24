@@ -233,7 +233,18 @@ fn spawn_ed2k_nodes_dat_refresh(db: Db) {
 /// Read initial config values from DB to pass to DownloadManager.
 async fn load_initial_config(
     db: &Db,
-) -> (usize, u64, String, BtConfig, ProxyConfig, String, i32, i32) {
+) -> (
+    usize,
+    u64,
+    String,
+    BtConfig,
+    ProxyConfig,
+    String,
+    i32,
+    i32,
+    bool,
+    i32,
+) {
     let config = db.get_all_config().await.unwrap_or_default();
     let max_concurrent = config
         .get("max_concurrent_tasks")
@@ -260,6 +271,17 @@ async fn load_initial_config(
         .get("auto_max_connections")
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(16);
+    // Multi-CDN 并发下载开关（实验性，P0）。老库无此 key → 默认关闭。
+    let cdn_multi_enabled = config
+        .get("cdn_multi_enabled")
+        .is_some_and(|v| v == "1" || v == "true");
+    // 单任务最多钉定的 CDN 节点数，0..=8；0 = 自动档（按文件大小/并发推导）。
+    // 老库无此 key → 默认 0。
+    let cdn_max_nodes = config
+        .get("cdn_max_nodes")
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0)
+        .clamp(0, 8);
 
     (
         max_concurrent,
@@ -270,6 +292,8 @@ async fn load_initial_config(
         user_agent,
         default_segments,
         auto_max_connections,
+        cdn_multi_enabled,
+        cdn_max_nodes,
     )
 }
 
@@ -297,6 +321,8 @@ pub async fn run(db_dir: PathBuf) {
         user_agent,
         default_segments,
         auto_max_connections,
+        cdn_multi_enabled,
+        cdn_max_nodes,
     ) = load_initial_config(&db).await;
     log_info!(
         "[actor] proxy config: mode={}, type={}, host={}, port={}",
@@ -386,6 +412,8 @@ pub async fn run(db_dir: PathBuf) {
     engine
         .manager
         .set_auto_max_connections(auto_max_connections);
+    engine.manager.set_cdn_multi_enabled(cdn_multi_enabled);
+    engine.manager.set_cdn_max_nodes(cdn_max_nodes);
 
     // Apply persisted log size cap (MB) to the global logger.
     if let Ok(Some(v)) = engine.db.get_config("log_max_size_mb").await
@@ -1094,6 +1122,9 @@ pub async fn run(db_dir: PathBuf) {
                 .await;
             }
             Some(_) = config_req_recv.recv() => {
+                // Dart CDN 遥测上报依赖此处先把内存样本刷进 config 表
+                // （见 cdn_report_service.dart 文件头 / telemetry::flush）。
+                engine.manager.flush_cdn_pending_reports().await;
                 match engine.db.get_all_config().await {
                     Ok(map) => {
                         let entries: Vec<ConfigEntry> = map
@@ -2457,6 +2488,44 @@ async fn apply_config_key(
             if let Ok(v) = value.parse::<i32>() {
                 log_info!("[actor] updating auto_max_connections to {}", v);
                 engine.manager.set_auto_max_connections(v);
+            }
+        }
+        "cdn_multi_enabled" => {
+            let v = value == "1" || value == "true";
+            log_info!("[actor] updating cdn_multi_enabled to {}", v);
+            engine.manager.set_cdn_multi_enabled(v);
+        }
+        "cdn_max_nodes" => {
+            if let Ok(v) = value.parse::<i32>() {
+                let v = v.clamp(0, 8);
+                log_info!("[actor] updating cdn_max_nodes to {}", v);
+                engine.manager.set_cdn_max_nodes(v);
+            }
+        }
+        "cdn_cloud_max_nodes" => {
+            if let Ok(v) = value.parse::<i32>() {
+                let v = v.clamp(0, 8);
+                log_info!("[actor] updating cdn_cloud_max_nodes to {}", v);
+                engine.manager.set_cdn_cloud_max_nodes(v);
+            }
+        }
+        "cdn_resolver_endpoints" => {
+            log_info!("[actor] updating cdn_resolver_endpoints");
+            engine.manager.set_cdn_resolver_endpoints(value);
+        }
+        "cdn_hints_base" => {
+            log_info!("[actor] updating cdn_hints_base");
+            engine.manager.set_cdn_hints_base(value);
+        }
+        "cdn_ecs_subnets" => {
+            log_info!("[actor] updating cdn_ecs_subnets");
+            engine.manager.set_cdn_ecs_subnets(value);
+        }
+        "cdn_pending_reports" => {
+            // Dart 上报成功后写空串清空；引擎自己写入的非空值不回调（避免自触发）。
+            if value.is_empty() {
+                log_info!("[actor] clearing cdn_pending_reports");
+                engine.manager.clear_cdn_pending_reports();
             }
         }
         "use_server_time" => {

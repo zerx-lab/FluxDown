@@ -137,6 +137,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| s.parse::<i32>().ok())
             .unwrap_or(16),
     );
+    // Multi-CDN 并发下载开关（实验性，P0）。老库无此 key → 默认关闭。
+    engine.manager.set_cdn_multi_enabled(
+        all_cfg
+            .get("cdn_multi_enabled")
+            .is_some_and(|s| s == "1" || s == "true"),
+    );
+    // 单任务最多钉定的 CDN 节点数，0..=8；0 = 自动档（按文件大小/并发推导）。
+    // 老库无此 key → 默认 0。
+    engine.manager.set_cdn_max_nodes(
+        all_cfg
+            .get("cdn_max_nodes")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(0)
+            .clamp(0, 8),
+    );
     if let Some(v) = all_cfg
         .get("max_auto_retries")
         .and_then(|s| s.parse::<i32>().ok())

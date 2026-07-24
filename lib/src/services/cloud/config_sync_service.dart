@@ -29,6 +29,7 @@ import '../../models/settings_provider.dart';
 import '../../theme/theme_provider.dart';
 import '../kv_store.dart';
 import '../log_service.dart';
+import 'cdn_config_service.dart';
 import 'cloud_auth_service.dart';
 import 'cloud_client.dart';
 import 'cloud_models.dart';
@@ -511,7 +512,11 @@ class ConfigSyncService extends ChangeNotifier {
         .listen(_onSseLine, onDone: _onSseDisconnected, onError: (_) => _onSseDisconnected());
   }
 
-  /// 只解析 `data: {"revision": N}` 行；`:` 开头的注释心跳与空行仅用于喂看门狗。
+  /// 解析 `data: {...}` 行：无 `kind` 字段沿用既有 per-user sync revision
+  /// 处理；`kind: "cdn_config"` 是合入本流的全局 CDN 配置变更事件（P2 §九，
+  /// FluxDownCloud 管理端保存 CDN 设置后 bump），与本账号 sync revision 是
+  /// 两套独立计数——不参与水位线比较，只触发 [CdnConfigService] 立即重拉。
+  /// `:` 开头的注释心跳与空行仅用于喂看门狗。
   void _onSseLine(String line) {
     _resetSseWatchdog();
     if (!line.startsWith('data:')) return;
@@ -519,6 +524,11 @@ class ConfigSyncService extends ChangeNotifier {
     if (payload.isEmpty) return;
     try {
       final json = jsonDecode(payload) as Map<String, dynamic>;
+      if (json['kind'] == 'cdn_config') {
+        logInfo(_tag, 'cdn config revision changed via sse, refreshing');
+        CdnConfigService.instance.refreshNow();
+        return;
+      }
       final revision = (json['revision'] as num?)?.toInt();
       // 严格相等才跳过：push 回包快进后自回显事件恰等于水位线；revision
       // 倒退（如管理端清空同步数据后 publish(0)）必须照常 pull 以触发 resync。

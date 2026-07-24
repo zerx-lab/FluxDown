@@ -358,6 +358,40 @@ class S {
   String get detailLogCompleted => _r('detailLogCompleted');
   String detailLogFailed(String message) =>
       _r('detailLogFailed', {'message': message});
+  String detailLogCdnPool(String host, int n) =>
+      _r('detailLogCdnPool', {'host': host, 'n': n});
+  String detailLogCdnPoolStats(int candidates, int alive, int cap) => _r(
+    'detailLogCdnPoolStats',
+    {'candidates': candidates, 'alive': alive, 'cap': cap},
+  );
+  String get detailCdnAutoSuffix => _r('detailCdnAutoSuffix');
+  String get detailCdnOriginSys => _r('detailCdnOriginSys');
+  String detailCdnOriginDoh(String ep) => _r('detailCdnOriginDoh', {'ep': ep});
+  String detailCdnOriginEcs(String ep) => _r('detailCdnOriginEcs', {'ep': ep});
+  String detailCdnPrior(String speed) => _r('detailCdnPrior', {'speed': speed});
+  String detailLogCdnKick(String ip, String reason) =>
+      _r('detailLogCdnKick', {'ip': ip, 'reason': reason});
+  String get detailCdnKickValidator => _r('detailCdnKickValidator');
+  String detailCdnKickFail(int n) => _r('detailCdnKickFail', {'n': n});
+  String get detailCdnKickBuild => _r('detailCdnKickBuild');
+  String detailLogCdnBreaker(String host) =>
+      _r('detailLogCdnBreaker', {'host': host});
+  String detailLogCdnFallbackFew(int candidates, int alive) => _r(
+    'detailLogCdnFallbackFew',
+    {'candidates': candidates, 'alive': alive},
+  );
+  String get detailLogCdnFallbackError => _r('detailLogCdnFallbackError');
+  String detailLogCdnLeases(String host) =>
+      _r('detailLogCdnLeases', {'host': host});
+  String detailLogCdnLeasesNode(String ip, int count) =>
+      _r('detailLogCdnLeasesNode', {'ip': ip, 'count': count});
+  String detailLogCdnSummary(String host) =>
+      _r('detailLogCdnSummary', {'host': host});
+  String detailLogCdnSummaryNode(String ip, String bytes, String speed) => _r(
+    'detailLogCdnSummaryNode',
+    {'ip': ip, 'bytes': bytes, 'speed': speed},
+  );
+  String get detailCdnNodeSys => _r('detailCdnNodeSys');
   String get detailNotSet => _r('detailNotSet');
   String get detailFollowGlobal => _r('detailFollowGlobal');
   String get detailActionFolder => _r('detailActionFolder');
@@ -551,6 +585,7 @@ class S {
   String get accountErrorValidation => _r('accountErrorValidation');
   String get accountErrorNetwork => _r('accountErrorNetwork');
   String get accountErrorUnknown => _r('accountErrorUnknown');
+  String get accountErrorDeviceLimit => _r('accountErrorDeviceLimit');
   String get accountDeviceRenameTitle => _r('accountDeviceRenameTitle');
   String get accountDeviceRenameInvalid => _r('accountDeviceRenameInvalid');
   String get accountDeviceDeleteConfirmTitle =>
@@ -847,6 +882,19 @@ class S {
   String get defaultThreadsDesc => _r('defaultThreadsDesc');
   String get autoMaxConnections => _r('autoMaxConnections');
   String get autoMaxConnectionsDesc => _r('autoMaxConnectionsDesc');
+  String get cdnMultiEnabled => _r('cdnMultiEnabled');
+  String get cdnMultiEnabledDesc => _r('cdnMultiEnabledDesc');
+  String get cdnMultiProxyConfirmTitle => _r('cdnMultiProxyConfirmTitle');
+  String get cdnMultiProxyConfirmDescSystem =>
+      _r('cdnMultiProxyConfirmDescSystem');
+  String get cdnMultiProxyConfirmDescManual =>
+      _r('cdnMultiProxyConfirmDescManual');
+  String get cdnMultiProxyConfirmDisable => _r('cdnMultiProxyConfirmDisable');
+  String get proxyCdnMultiConfirmTitle => _r('proxyCdnMultiConfirmTitle');
+  String get proxyCdnMultiConfirmDesc => _r('proxyCdnMultiConfirmDesc');
+  String get proxyCdnMultiConfirmEnable => _r('proxyCdnMultiConfirmEnable');
+  String get cdnMaxNodes => _r('cdnMaxNodes');
+  String get cdnMaxNodesDesc => _r('cdnMaxNodesDesc');
   String get connPolicyCache => _r('connPolicyCache');
   String get connPolicyCacheDesc => _r('connPolicyCacheDesc');
   String get connPolicyCacheClear => _r('connPolicyCacheClear');
@@ -1178,6 +1226,9 @@ class S {
   List<String> get searchKeywordsConcurrent =>
       _r('searchKeywordsConcurrent').split(',')
         ..addAll(['concurrent', 'parallel', 'max']);
+  List<String> get searchKeywordsCdnMulti =>
+      _r('searchKeywordsCdnMulti').split(',')
+        ..addAll(['cdn', 'node', 'multi-cdn', 'concurrent']);
   List<String> get searchKeywordsSpeedLimit =>
       _r('searchKeywordsSpeedLimit').split(',')
         ..addAll(['speed', 'limit', 'bandwidth']);

@@ -5,6 +5,7 @@
 //! 解耦,不绑定具体的 FFI/信号/传输协议。
 
 pub mod bt_downloader;
+pub mod cdn;
 pub mod components;
 pub mod dash_downloader;
 pub mod data_dir;
@@ -169,6 +170,15 @@ impl Engine {
         };
         // 读回持久化的域名连接上限观察（过期/旧版本数据在加载时丢弃）。
         segment_coordinator::load_domain_conn_caps(&db).await;
+        // 读回持久化的 CDN 节点健康度（多节点聚合的跨任务先验，同上范式）。
+        cdn::health::load_cdn_health(&db).await;
+        // 读回云端下发的 resolver 端点清单（空/非法 → 内置 baseline）。
+        cdn::resolver::load_endpoints_from_config(&db).await;
+        // 读回云端下发的 ECS 探测子网与 hints base（P2；空 = 各自禁用）。
+        cdn::resolver::load_ecs_from_config(&db).await;
+        cdn::hints::load_base_from_config(&db).await;
+        // 遥测：回读上次进程遗留的待上传样本（采样常开）。
+        cdn::telemetry::load_pending(&db).await;
         // 播种内置队列（main 主队列 / later 稍后下载，幂等）并迁移存量
         // 空 queue_id 任务——必须先于宿主的 `manager.load_queues()`。
         db.seed_builtin_queues().await?;
@@ -236,6 +246,13 @@ impl Engine {
             ));
             pm.load_all().await;
             manager.install_plugin_manager(pm);
+        }
+        // 云端下发的 CDN 节点上限（Dart 云拉取服务写 config 表；未下发/离线
+        // = 0 不生效）。开关与本地上限由宿主经既有 config 注入链路设置。
+        if let Ok(Some(v)) = db.get_config("cdn_cloud_max_nodes").await
+            && let Ok(n) = v.trim().parse::<i32>()
+        {
+            manager.set_cdn_cloud_max_nodes(n);
         }
         Ok(Self {
             db,

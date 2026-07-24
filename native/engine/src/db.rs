@@ -1453,6 +1453,10 @@ impl Db {
             ("default_segments", "0"),
             // Auto 模式最大连接数上限：advisor 推荐值经此裁剪。
             ("auto_max_connections", "16"),
+            // 多 CDN 节点并发下载（实验性）：默认关；节点上限 0=自动（按文件
+            // 大小/并发推导），1..=8 手动。
+            ("cdn_multi_enabled", "0"),
+            ("cdn_max_nodes", "0"),
             ("max_concurrent_tasks", "5"),
             ("speed_limit_bytes", "0"),
             // 自动重试：-1=无限，0=关闭，1..10=次数。延迟（秒）固定基值×已重试次数。

@@ -734,9 +734,8 @@ impl ApiHost for HubApiHost {
     async fn link_devices(&self) -> Result<Vec<LinkDeviceInfo>, ApiError> {
         let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
         let records = link.list_devices().await.map_err(map_link_err)?;
-        let probe = futures_util::future::join_all(
-            records.iter().map(|r| link.is_online(&r.fingerprint)),
-        );
+        let probe =
+            futures_util::future::join_all(records.iter().map(|r| link.is_online(&r.fingerprint)));
         let online = tokio::time::timeout(Duration::from_secs(5), probe)
             .await
             .unwrap_or_else(|_| vec![false; records.len()]);
