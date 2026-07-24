@@ -988,6 +988,7 @@
     "btSeedDeleteTask": "删除任务",
     "btSeedDeleteTaskAndFiles": "删除任务和文件",
     "seedRatio": "分享率",
+    "seedRatioAfter": "做种后分享率",
     "seedTime": "做种时间",
     "seedingStatus": "做种状态",
     "seedingStatusNone": "未做种",

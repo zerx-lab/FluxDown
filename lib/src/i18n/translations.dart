@@ -878,6 +878,7 @@ class S {
   String get statusSeeding => _r('statusSeeding');
   String get tabSeeding => _r('tabSeeding');
   String get seedRatio => _r('seedRatio');
+  String get seedRatioAfter => _r('seedRatioAfter');
   String get seedTime => _r('seedTime');
   String get seedingStatus => _r('seedingStatus');
   String get seedingStatusNone => _r('seedingStatusNone');

@@ -510,6 +510,13 @@ struct TaskSpeedState {
     /// Non-zero only for BT tasks (librqbit stats); latched from every
     /// incoming update so throttled emits carry the freshest value.
     upload_bps: i64,
+    /// Last raw `uploaded_bytes` snapshot from the downloader (librqbit
+    /// session counter). Used to compute deltas for cumulative upload
+    /// accounting across pause/resume and session rebuilds.
+    last_uploaded_snapshot: i64,
+    /// Cumulative uploaded bytes for BT tasks. Kept in memory so the UI
+    /// never shows the librqbit counter reset to zero after pause/resume.
+    cumulative_uploaded: i64,
 }
 
 /// 解析 `HH:MM` 为当日分钟数（0..1440）。非法输入返回 `None`。
@@ -5758,6 +5765,8 @@ pub async fn progress_reporter(
                 speed_warmup_remaining: if update.status == 1 { 1 } else { 0 },
                 logged_missing_segments: false,
                 upload_bps: 0,
+                last_uploaded_snapshot: 0,
+                cumulative_uploaded: 0,
             }
         });
 
@@ -5846,6 +5855,65 @@ pub async fn progress_reporter(
         state.last_raw_status = update.status;
         state.upload_bps = update.upload_speed_bps;
 
+        // -----------------------------------------------------------------
+        // BT upload cumulative accounting (download + seeding phases).
+        //
+        // librqbit's `stats.live.snapshot.uploaded_bytes` is a per-session
+        // counter that resets to zero whenever the torrent is paused and
+        // resumed (or the whole BT session is rebuilt). To keep the UI's
+        // "uploaded bytes / ratio" correct across these resets, we delta-
+        // accumulate against the DB column `tasks.uploaded_bytes`.
+        //
+        // A task is treated as a BT uploader once it has ever reported a
+        // non-zero upload snapshot or upload speed. On the first such
+        // observation (or after a state reset on resume) we load the DB
+        // baseline so we can continue from the previous cumulative value.
+        // -----------------------------------------------------------------
+        let mut cumulative_uploaded = update.uploaded_bytes;
+        let is_bt_upload = update.uploaded_bytes > 0
+            || update.upload_speed_bps > 0
+            || state.last_uploaded_snapshot > 0;
+        if is_bt_upload {
+            let snapshot = update.uploaded_bytes;
+            let delta = if snapshot >= state.last_uploaded_snapshot {
+                snapshot - state.last_uploaded_snapshot
+            } else {
+                // Counter reset (pause/resume or session rebuild). Do not
+                // subtract a negative delta; the new session's counter starts
+                // from zero and will be accumulated going forward.
+                0
+            };
+            state.last_uploaded_snapshot = snapshot;
+
+            if state.cumulative_uploaded == 0 && delta == 0 {
+                // First time we see this BT task in this reporter state and
+                // no new bytes since the snapshot. Initialize from DB so the
+                // UI doesn't briefly flash zero.
+                if let Ok(db_total) = db.get_task_uploaded_bytes(&update.task_id).await {
+                    state.cumulative_uploaded = db_total;
+                }
+            }
+
+            if delta > 0 {
+                state.cumulative_uploaded = match db
+                    .add_task_uploaded_bytes(&update.task_id, delta)
+                    .await
+                {
+                    Ok(total) => total,
+                    Err(e) => {
+                        log_info!(
+                            "[progress-reporter] add_task_uploaded_bytes error for {}: {}",
+                            &update.task_id,
+                            e
+                        );
+                        state.cumulative_uploaded.saturating_add(delta)
+                    }
+                };
+            }
+
+            cumulative_uploaded = state.cumulative_uploaded;
+        }
+
         // BT 数据下载完成标记:绕过节流立即上报(一次性事件,节流可能吞掉),
         // 按 task_id 去重。
         if update.bt_data_finished && bt_finish_notified.insert(update.task_id.clone()) {
@@ -5891,7 +5959,7 @@ pub async fn progress_reporter(
                 url: String::new(),
                 error_message: update.error_message.clone(),
                 upload_speed_bps: if is_terminal { 0 } else { state.upload_bps },
-                uploaded_bytes: update.uploaded_bytes,
+                uploaded_bytes: cumulative_uploaded,
                 seeding_status: update.seeding_status,
                 seeding_message: update.seeding_message.clone(),
             });

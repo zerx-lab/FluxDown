@@ -988,6 +988,7 @@
     "btSeedDeleteTask": "Delete task",
     "btSeedDeleteTaskAndFiles": "Delete task & files",
     "seedRatio": "Share ratio",
+    "seedRatioAfter": "Post-seed ratio",
     "seedTime": "Seeding time",
     "seedingStatus": "Seeding status",
     "seedingStatusNone": "Not seeding",

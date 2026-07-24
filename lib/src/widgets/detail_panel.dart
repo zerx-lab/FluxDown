@@ -512,6 +512,12 @@ class _DetailPanelState extends State<DetailPanel> {
             task.seedRatio.toStringAsFixed(2),
             c,
           ),
+          if (task.uploadedAtCompletion > 0)
+            _buildInfoRow(
+              currentS.seedRatioAfter,
+              task.postSeedRatio.toStringAsFixed(2),
+              c,
+            ),
           if (task.isSeeding)
             _buildInfoRow(
               currentS.seedTime,
