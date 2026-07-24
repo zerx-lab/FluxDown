@@ -14,8 +14,9 @@ use async_trait::async_trait;
 
 use crate::types::{
     CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
-    LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
-    MarketEntryDto, PluginDto, QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
+    LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmRequest,
+    LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo, MarketEntryDto, PluginDto,
+    QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组
@@ -283,6 +284,71 @@ pub trait ApiHost: Send + Sync {
 
     /// 生成一次性配对码（供 headless 设备经 web/CLI 出示）。默认不支持。
     async fn link_generate_code(&self) -> Result<LinkCodeResponse, ApiError> {
+        Err(link_unsupported())
+    }
+
+    // -- 本地互联管理面（web/PC 一致驱动 LinkManager；均需 management token，
+    //    默认降级：不支持的宿主一律报 link_unsupported）--
+
+    /// 本地设备发现开关：`start=true` 开始 mDNS 浏览并清空发现快照，
+    /// `start=false` 停止。
+    async fn link_discovery(&self, start: bool) -> Result<(), ApiError> {
+        let _ = start;
+        Err(link_unsupported())
+    }
+
+    /// 当前发现快照（发起方侧 UI 轮询用）。
+    async fn link_discovered(&self) -> Result<Vec<LinkDiscoveredPeer>, ApiError> {
+        Err(link_unsupported())
+    }
+
+    /// 手动地址探测（不入发现快照，直接返回给调用方）。
+    async fn link_probe(&self, host: &str, port: u16) -> Result<LinkDiscoveredPeer, ApiError> {
+        let _ = (host, port);
+        Err(link_unsupported())
+    }
+
+    /// 发起配对：发送 `hello`，返回待确认令牌 + SAS + 对端信息。
+    async fn link_pair_begin(
+        &self,
+        host: &str,
+        port: u16,
+        code: &str,
+    ) -> Result<LinkPairBeginResponse, ApiError> {
+        let _ = (host, port, code);
+        Err(link_unsupported())
+    }
+
+    /// SAS 核对后确认/拒绝配对。`accept=false` 或对端拒绝 → `Ok(None)`。
+    async fn link_pair_finish(
+        &self,
+        token: &str,
+        accept: bool,
+    ) -> Result<Option<LinkDeviceInfo>, ApiError> {
+        let _ = (token, accept);
+        Err(link_unsupported())
+    }
+
+    /// 全部已配对设备（含并发在线探测）。
+    async fn link_devices(&self) -> Result<Vec<LinkDeviceInfo>, ApiError> {
+        Err(link_unsupported())
+    }
+
+    /// 解除配对（删除设备）。不存在 → `Ok(false)`（handler 据此回 404）。
+    async fn link_remove_device(&self, fingerprint: &str) -> Result<bool, ApiError> {
+        let _ = fingerprint;
+        Err(link_unsupported())
+    }
+
+    /// 把一个下载任务下发给已配对设备，返回对端新任务 ID。
+    async fn link_dispatch(
+        &self,
+        fingerprint: &str,
+        url: &str,
+        save_dir: Option<&str>,
+        file_name: Option<&str>,
+    ) -> Result<String, ApiError> {
+        let _ = (fingerprint, url, save_dir, file_name);
         Err(link_unsupported())
     }
 }

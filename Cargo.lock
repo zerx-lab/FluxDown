@@ -1387,6 +1387,7 @@ dependencies = [
  "fluxdown_api",
  "fluxdown_engine",
  "fs2",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",

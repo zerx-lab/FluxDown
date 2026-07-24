@@ -11,6 +11,7 @@ import { api } from '../../lib/api'
 import { cloudApi } from '../../lib/cloud/client'
 import { cloudDeviceId, useCloudSession, useShowDeviceSync } from '../../lib/cloud/session'
 import { useRemoteTasks } from '../../lib/cloud/useRemoteTasks'
+import { linkApi } from '../../lib/link'
 import { clearCredentials, getBase } from '../../lib/auth'
 import { cn } from '../../lib/cn'
 import { fileType, fmtSpeed, queueDisplayName, typeLabel, TYPE_ORDER, type FileType as FT } from '../../lib/format'
@@ -58,6 +59,15 @@ export function Sidebar() {
   // 渐进披露：已登录 + 至少一台远程设备才显示设备区；设置页「显示设备同步」开关可强制显示
   // （即使仅本机，便于提前熟悉入口，见 mdc §4「或本地开关」）。
   const showDeviceSection = session.status === 'authenticated' && (remoteDevices.length > 0 || showDeviceOverride)
+  // 本地设备(link)小节：仅展示已配对设备（在线圆点），不参与 deviceFilter 任务过滤——
+  // 本地设备的任务运行在对端，本端看不到其进度，点击没有意义（见契约 web 侧说明）。
+  const { data: linkDevices = [] } = useQuery({
+    queryKey: ['link', 'devices'],
+    queryFn: () => linkApi.devices().then((r) => r.devices),
+    staleTime: 10_000,
+    retry: false,
+  })
+  const showLinkSection = linkDevices.length > 0
 
   function logout() {
     setLogoutOpen(false)
@@ -178,6 +188,24 @@ export function Sidebar() {
                     <span>{d.name || '-'}</span>
                     <em>{count || ''}</em>
                   </button>
+                )
+              })}
+            </nav>
+          </>
+        )}
+
+        {showLinkSection && (
+          <>
+            <p className="side-label">{t('sidebar.directDevices')}</p>
+            <nav className="side-nav">
+              {linkDevices.map((d) => {
+                const Icon = d.platform === 'android' || d.platform === 'ios' ? Smartphone : Monitor
+                return (
+                  <div key={d.fingerprint} className="side-item">
+                    <Icon size={15} />
+                    <i className={cn('queue-dot', d.online && 'on')} title={d.online ? t('link.online') : t('link.offline')} />
+                    <span>{d.name || '-'}</span>
+                  </div>
                 )
               })}
             </nav>

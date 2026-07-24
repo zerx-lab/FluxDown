@@ -10127,6 +10127,28 @@ class _DeviceListModel extends ChangeNotifier {
   String? error;
   bool loading = true;
 
+  _DeviceListModel() {
+    // 跟随 CloudAuthService 的名册缓存：RemoteTaskService 收到 presence 事件后
+    // 会静默 refreshDevices() 更新缓存——若本 model 只在面板打开时拉一次，
+    // 登录后 SSE 尚未建立的窗口期拉到的「离线」快照会永远停留在界面上。
+    CloudAuthService.instance.addListener(_onAuthRosterChanged);
+  }
+
+  @override
+  void dispose() {
+    CloudAuthService.instance.removeListener(_onAuthRosterChanged);
+    super.dispose();
+  }
+
+  /// auth 名册缓存变化（presence 刷新/侧栏静默刷新/登出清空）时同步本地快照。
+  /// 不动 loading/error——静默更新，避免界面闪 spinner。
+  void _onAuthRosterChanged() {
+    final cached = CloudAuthService.instance.devices;
+    if (cached.isEmpty && CloudAuthService.instance.isLoggedIn) return;
+    devices = _sorted(cached);
+    notifyListeners();
+  }
+
   Future<void> load() async {
     loading = true;
     notifyListeners();

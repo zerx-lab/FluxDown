@@ -14,18 +14,19 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
 use fluxdown_api::types::{
     CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
-    LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
-    LinkTaskRequest, MarketEntryDto, PluginDto, QueueDto, ResolvePreviewRequest,
-    ResolvePreviewResponse, TaskDto,
+    LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmRequest,
+    LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo, LinkTaskRequest, MarketEntryDto,
+    PluginDto, QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec};
-use fluxdown_engine::link::{LinkError, LinkManager, WireHello};
+use fluxdown_engine::link::{DiscoveredPeer, DiscoveryKind, LinkError, LinkManager, WireHello};
 use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -623,6 +624,137 @@ impl ApiHost for ServerApiHost {
             ttl_seconds: 120,
         })
     }
+
+    async fn link_discovery(&self, start: bool) -> Result<(), ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        if start {
+            link.start_discovery().map_err(map_link_err)
+        } else {
+            link.stop_discovery();
+            Ok(())
+        }
+    }
+
+    async fn link_discovered(&self) -> Result<Vec<LinkDiscoveredPeer>, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        Ok(link
+            .discovered_peers()
+            .into_iter()
+            .map(link_discovered_dto)
+            .collect())
+    }
+
+    async fn link_probe(&self, host: &str, port: u16) -> Result<LinkDiscoveredPeer, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.probe(host, port)
+            .await
+            .map(link_discovered_dto)
+            .map_err(map_link_err)
+    }
+
+    async fn link_pair_begin(
+        &self,
+        host: &str,
+        port: u16,
+        code: &str,
+    ) -> Result<LinkPairBeginResponse, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let result = link
+            .begin_pairing(host, port, code)
+            .await
+            .map_err(map_link_err)?;
+        Ok(LinkPairBeginResponse {
+            token: result.token,
+            sas: result.sas,
+            peer_name: result.peer_name,
+            peer_fingerprint: result.peer_fingerprint,
+        })
+    }
+
+    async fn link_pair_finish(
+        &self,
+        token: &str,
+        accept: bool,
+    ) -> Result<Option<LinkDeviceInfo>, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let Some(record) = link
+            .confirm_pairing(token, accept)
+            .await
+            .map_err(map_link_err)?
+        else {
+            return Ok(None);
+        };
+        let online = link.is_online(&record.fingerprint).await;
+        Ok(Some(LinkDeviceInfo {
+            fingerprint: record.fingerprint,
+            name: record.name,
+            platform: record.platform,
+            online,
+            paired_at: record.paired_at,
+            last_seen_at: record.last_seen_at,
+        }))
+    }
+
+    /// 已配对设备列表：并发在线探测（每台走传输栈 `connect`；参考 hub
+    /// `emit_link_devices` 的并发思路），整体限时兜底——个别设备长时间不可达
+    /// 不应拖慢整批响应。
+    async fn link_devices(&self) -> Result<Vec<LinkDeviceInfo>, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let records = link.list_devices().await.map_err(map_link_err)?;
+        let probe = futures_util::future::join_all(
+            records.iter().map(|r| link.is_online(&r.fingerprint)),
+        );
+        let online = tokio::time::timeout(Duration::from_secs(5), probe)
+            .await
+            .unwrap_or_else(|_| vec![false; records.len()]);
+        Ok(records
+            .into_iter()
+            .zip(online)
+            .map(|(r, on)| LinkDeviceInfo {
+                fingerprint: r.fingerprint,
+                name: r.name,
+                platform: r.platform,
+                online: on,
+                paired_at: r.paired_at,
+                last_seen_at: r.last_seen_at,
+            })
+            .collect())
+    }
+
+    async fn link_remove_device(&self, fingerprint: &str) -> Result<bool, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.remove_device(fingerprint).await.map_err(map_link_err)
+    }
+
+    async fn link_dispatch(
+        &self,
+        fingerprint: &str,
+        url: &str,
+        save_dir: Option<&str>,
+        file_name: Option<&str>,
+    ) -> Result<String, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.dispatch(fingerprint, url, save_dir, file_name)
+            .await
+            .map_err(map_link_err)
+    }
+}
+
+/// 引擎 `link::DiscoveredPeer` → wire DTO（`kind` → `source` 小写字符串）。
+fn link_discovered_dto(p: DiscoveredPeer) -> LinkDiscoveredPeer {
+    LinkDiscoveredPeer {
+        fingerprint: p.fingerprint,
+        name: p.name,
+        platform: p.platform,
+        host: p.host,
+        port: p.port,
+        app_version: p.app_version,
+        source: match p.kind {
+            DiscoveryKind::Mdns => "mdns",
+            DiscoveryKind::Manual => "manual",
+        }
+        .to_string(),
+    }
 }
 
 /// 空串 → `None`，非空 → `Some`（wire DTO 的空 platform/version 归一为 Option）。
@@ -637,6 +769,7 @@ fn map_link_err(e: LinkError) -> ApiError {
         LinkError::InvalidCode
         | LinkError::BadSignature
         | LinkError::BadPayload(_)
+        | LinkError::SelfPairing
         | LinkError::SessionExpired => ApiError::BadRequest(e.to_string()),
         LinkError::Unreachable => ApiError::Unavailable,
         other => ApiError::Internal(other.to_string()),
@@ -982,5 +1115,173 @@ mod tests {
             .begin_pairing("127.0.0.1", addr.port(), "000000")
             .await;
         assert!(bad.is_err());
+    }
+
+    /// 端到端：两个 LinkManager 经**新管理面 HTTP handler**
+    /// （`/api/v1/link/pair/begin`、`/pair/finish`、`/devices`、
+    /// `DELETE /devices/{fingerprint}`）完成配对与名册管理——区别于
+    /// [`link_pairing_end_to_end_over_http`] 直调引擎方法，本测试全程走
+    /// routes.rs 常量 → server.rs handler → `ApiHost` 新方法 →
+    /// `ServerApiHost` 实现的真实 HTTP 链路，且带 management token 鉴权。
+    #[tokio::test]
+    async fn link_management_plane_pair_and_devices_over_http() {
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+
+        async fn mem_db(tag: &str) -> Db {
+            let url = format!(
+                "sqlite:file:linkmgmt_{tag}_{}?mode=memory&cache=shared",
+                uuid::Uuid::new_v4().simple()
+            );
+            Db::connect(&url).await.expect("mem db")
+        }
+        fn info(name: &str) -> fluxdown_engine::link::SelfInfo {
+            fluxdown_engine::link::SelfInfo {
+                name: name.to_string(),
+                platform: Some("linux".to_string()),
+                app_version: None,
+            }
+        }
+        /// 起一个带 management token 的真实 axum 服务器，返回监听地址。
+        async fn spawn_management(
+            link: Arc<LinkManager>,
+            db: Db,
+            mgmt_token: &str,
+        ) -> std::net::SocketAddr {
+            let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+            let host: Arc<dyn ApiHost> = Arc::new(ServerApiHost::new(
+                db,
+                cmd_tx,
+                Arc::new(WsHub::new(4)),
+                None,
+                None,
+                None,
+                std::env::temp_dir(),
+                Some(link),
+            ));
+            let mut map = HashMap::new();
+            map.insert("local_server_api_enabled".to_string(), "true".to_string());
+            map.insert("local_server_token".to_string(), mgmt_token.to_string());
+            let cfg = fluxdown_api::server::ApiServerConfig::from_config_map(&map, "test");
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let app = fluxdown_api::server::api_router(host, cfg);
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            addr
+        }
+
+        // 响应方：真实 HTTP 服务器，承载既有数据面端点（pair/hello、pair/confirm，
+        // 无 token 鉴权）——发起方管理面 handler 内部会向它发真实 HTTP 请求。
+        let db_r = mem_db("resp").await;
+        let (tx_r, _rx_r) = mpsc::channel::<fluxdown_engine::link::LinkEngineEvent>(16);
+        let responder = LinkManager::load(db_r.clone(), info("NAS"), 17800, tx_r)
+            .await
+            .expect("responder link");
+        let code = responder.generate_code();
+        let addr_r = spawn_management(responder, db_r, "resp-token").await;
+
+        // 发起方：本测试实际驱动的对象——经其新管理面路由完成 begin/finish/
+        // devices/delete，而非直调引擎方法。
+        let db_i = mem_db("init").await;
+        let (tx_i, _rx_i) = mpsc::channel::<fluxdown_engine::link::LinkEngineEvent>(16);
+        let initiator = LinkManager::load(db_i.clone(), info("Laptop"), 0, tx_i)
+            .await
+            .expect("initiator link");
+        let token = "mgmt-secret";
+        let addr_i = spawn_management(initiator, db_i, token).await;
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr_i}");
+
+        // begin：管理面 handler → ApiHost::link_pair_begin → LinkManager::begin_pairing
+        // （内部对响应方发真实 HTTP hello）。
+        let begin: fluxdown_api::types::LinkPairBeginResponse = client
+            .post(format!("{base}/api/v1/link/pair/begin"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "host": "127.0.0.1",
+                "port": addr_r.port(),
+                "code": code,
+            }))
+            .send()
+            .await
+            .expect("begin request")
+            .json()
+            .await
+            .expect("begin json");
+        assert_eq!(begin.peer_name, "NAS");
+        assert!(!begin.sas.is_empty());
+
+        // finish：SAS 核对后确认配对。
+        let finish: fluxdown_api::types::LinkPairFinishResponse = client
+            .post(format!("{base}/api/v1/link/pair/finish"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "token": begin.token, "accept": true }))
+            .send()
+            .await
+            .expect("finish request")
+            .json()
+            .await
+            .expect("finish json");
+        assert!(finish.paired);
+        let device = finish.device.expect("paired device");
+        assert_eq!(device.name, "NAS");
+        let fingerprint = device.fingerprint;
+
+        // devices：列表应含刚配对的一台，且在线（响应方服务器真实存活）。
+        let devices: fluxdown_api::types::LinkDevicesResponse = client
+            .get(format!("{base}/api/v1/link/devices"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("devices request")
+            .json()
+            .await
+            .expect("devices json");
+        assert_eq!(devices.devices.len(), 1);
+        assert_eq!(devices.devices[0].fingerprint, fingerprint);
+        assert!(devices.devices[0].online);
+
+        // 未鉴权请求应被管理 API 门禁拒绝（复用既有 token 中间件）。
+        let unauth = client
+            .get(format!("{base}/api/v1/link/devices"))
+            .send()
+            .await
+            .expect("unauth request");
+        assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // 删除：解除配对后名册应清空。
+        let del = client
+            .delete(format!("{base}/api/v1/link/devices/{fingerprint}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("delete request");
+        assert_eq!(del.status(), reqwest::StatusCode::OK);
+        let del_body: fluxdown_api::types::LinkOkResponse =
+            del.json().await.expect("delete json");
+        assert!(del_body.ok);
+
+        let devices_after: fluxdown_api::types::LinkDevicesResponse = client
+            .get(format!("{base}/api/v1/link/devices"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("devices after request")
+            .json()
+            .await
+            .expect("devices after json");
+        assert!(devices_after.devices.is_empty());
+
+        // 删除不存在的设备 → 404。
+        let del_missing = client
+            .delete(format!("{base}/api/v1/link/devices/{fingerprint}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("delete missing request");
+        assert_eq!(del_missing.status(), reqwest::StatusCode::NOT_FOUND);
     }
 }

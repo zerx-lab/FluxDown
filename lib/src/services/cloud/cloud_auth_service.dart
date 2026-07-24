@@ -183,6 +183,14 @@ class CloudAuthService extends ChangeNotifier {
     await _clearSession();
   }
 
+  /// 服务端会话被吊销（SSE `session.revoked` / 管理端操作）时的被动登出：
+  /// 凭证已在服务端失效，只清本地会话，不再发 logout 请求。
+  Future<void> onRemoteSessionRevoked() async {
+    if (!isLoggedIn) return;
+    logInfo(_tag, 'session revoked by server, clearing local session');
+    await _clearSession();
+  }
+
   /// 拉取 /me 刷新用户信息与套餐能力快照（如昵称/套餐在其他设备被更改后同步）。
   Future<void> refreshProfile() async {
     if (!isLoggedIn) return;

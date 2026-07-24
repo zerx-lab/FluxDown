@@ -1133,3 +1133,128 @@ pub struct LinkCodeResponse {
     /// 有效秒数。
     pub ttl_seconds: i64,
 }
+
+// ---------------------------------------------------------------------------
+// P2P 设备互联管理面（发现/配对/名册；均需 management token；
+// docs 见 local://link_mgmt_contract.md）
+// ---------------------------------------------------------------------------
+
+/// 一台被发现、尚未配对的设备（`GET /api/v1/link/discovered` 元素 /
+/// `POST /api/v1/link/probe` 响应）。对应引擎 `link::DiscoveredPeer`（宿主层
+/// 转换，`kind` → `source` 小写字符串 `"mdns"`/`"manual"`）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDiscoveredPeer {
+    /// 对端指纹（经 `/ping` TOFU 获得；mDNS 未探测到时为 `None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    pub host: String,
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    /// 发现途径：`"mdns"` | `"manual"`。
+    pub source: String,
+}
+
+/// 本地设备发现开关请求体（`POST /api/v1/link/discovery`）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDiscoveryRequest {
+    /// `"start"` | `"stop"`。
+    pub action: String,
+}
+
+/// 手动地址探测请求体（`POST /api/v1/link/probe`）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkProbeRequest {
+    pub host: String,
+    pub port: u16,
+}
+
+/// 发起配对请求体（`POST /api/v1/link/pair/begin`）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairBeginRequest {
+    pub host: String,
+    pub port: u16,
+    pub code: String,
+}
+
+/// 发起配对成功后的待确认结果（`POST /api/v1/link/pair/begin` 响应）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairBeginResponse {
+    pub token: String,
+    /// 供双方肉眼核对的短认证串。
+    pub sas: String,
+    pub peer_name: String,
+    pub peer_fingerprint: String,
+}
+
+/// SAS 核对后确认/拒绝配对请求体（`POST /api/v1/link/pair/finish`）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairFinishRequest {
+    pub token: String,
+    pub accept: bool,
+}
+
+/// 配对完成结果（`POST /api/v1/link/pair/finish` 响应）。`accept=false` 或
+/// 对端拒绝时 `paired=false`，`device` 省略。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPairFinishResponse {
+    pub paired: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<LinkDeviceInfo>,
+}
+
+/// 一台**已配对**设备的对外视图（`GET /api/v1/link/devices` 元素）。严禁透出
+/// `link_secret`/`identity_pub` 等敏感字段（对应引擎 `link::PeerRecord`）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDeviceInfo {
+    pub fingerprint: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// 并发探测得到的在线状态（见 `ApiHost::link_devices` 实现）。
+    pub online: bool,
+    pub paired_at: i64,
+    pub last_seen_at: i64,
+}
+
+/// 发现快照响应（`GET /api/v1/link/discovered`）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LinkDiscoveredResponse {
+    pub peers: Vec<LinkDiscoveredPeer>,
+}
+
+/// 已配对设备列表响应（`GET /api/v1/link/devices`）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LinkDevicesResponse {
+    pub devices: Vec<LinkDeviceInfo>,
+}
+
+/// 已配对设备下发下载任务请求体（管理面，token 鉴权；区别于数据面链路 HMAC
+/// 鉴权的 [`LinkTaskRequest`]，字段语义一致）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDeviceTaskRequest {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+}
+
+/// 通用 `{"ok":true}` 应答（发现开关 / 解除配对）。与 [`ResultMessage`] 的
+/// `{"success","message"}` 形态不同——契约就此路由指定的字面 wire 形状。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LinkOkResponse {
+    pub ok: bool,
+}

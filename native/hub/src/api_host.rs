@@ -34,16 +34,20 @@ use fluxdown_api::types::{
     ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
 #[cfg(hub_link)]
+use std::time::Duration;
+
+#[cfg(hub_link)]
 use fluxdown_api::types::{
-    LinkAuth, LinkCodeResponse, LinkPairConfirmRequest, LinkPairHelloRequest,
-    LinkPairHelloResponse, LinkPingInfo, LinkTaskRequest,
+    LinkAuth, LinkCodeResponse, LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse,
+    LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
+    LinkTaskRequest,
 };
 #[cfg(hub_plugins)]
 use fluxdown_api::types::{MarketEntryDto, PluginDto};
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec, ResolvePreviewOutcome};
 #[cfg(hub_link)]
-use fluxdown_engine::link::{LinkError, WireHello};
+use fluxdown_engine::link::{DiscoveredPeer, DiscoveryKind, LinkError, WireHello};
 #[cfg(hub_plugins)]
 use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -647,6 +651,146 @@ impl ApiHost for HubApiHost {
             ttl_seconds: 120,
         })
     }
+
+    #[cfg(hub_link)]
+    async fn link_discovery(&self, start: bool) -> Result<(), ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        if start {
+            link.start_discovery().map_err(map_link_err)
+        } else {
+            link.stop_discovery();
+            Ok(())
+        }
+    }
+
+    #[cfg(hub_link)]
+    async fn link_discovered(&self) -> Result<Vec<LinkDiscoveredPeer>, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        Ok(link
+            .discovered_peers()
+            .into_iter()
+            .map(link_discovered_dto)
+            .collect())
+    }
+
+    #[cfg(hub_link)]
+    async fn link_probe(&self, host: &str, port: u16) -> Result<LinkDiscoveredPeer, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.probe(host, port)
+            .await
+            .map(link_discovered_dto)
+            .map_err(map_link_err)
+    }
+
+    #[cfg(hub_link)]
+    async fn link_pair_begin(
+        &self,
+        host: &str,
+        port: u16,
+        code: &str,
+    ) -> Result<LinkPairBeginResponse, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let result = link
+            .begin_pairing(host, port, code)
+            .await
+            .map_err(map_link_err)?;
+        Ok(LinkPairBeginResponse {
+            token: result.token,
+            sas: result.sas,
+            peer_name: result.peer_name,
+            peer_fingerprint: result.peer_fingerprint,
+        })
+    }
+
+    #[cfg(hub_link)]
+    async fn link_pair_finish(
+        &self,
+        token: &str,
+        accept: bool,
+    ) -> Result<Option<LinkDeviceInfo>, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let Some(record) = link
+            .confirm_pairing(token, accept)
+            .await
+            .map_err(map_link_err)?
+        else {
+            return Ok(None);
+        };
+        let online = link.is_online(&record.fingerprint).await;
+        Ok(Some(LinkDeviceInfo {
+            fingerprint: record.fingerprint,
+            name: record.name,
+            platform: record.platform,
+            online,
+            paired_at: record.paired_at,
+            last_seen_at: record.last_seen_at,
+        }))
+    }
+
+    /// 已配对设备列表：并发在线探测（照抄 `download_actor::emit_link_devices`
+    /// 的 `join_all` 思路），整体限时兜底——个别设备长时间不可达不应拖慢整批
+    /// 响应。
+    #[cfg(hub_link)]
+    async fn link_devices(&self) -> Result<Vec<LinkDeviceInfo>, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        let records = link.list_devices().await.map_err(map_link_err)?;
+        let probe = futures_util::future::join_all(
+            records.iter().map(|r| link.is_online(&r.fingerprint)),
+        );
+        let online = tokio::time::timeout(Duration::from_secs(5), probe)
+            .await
+            .unwrap_or_else(|_| vec![false; records.len()]);
+        Ok(records
+            .into_iter()
+            .zip(online)
+            .map(|(r, on)| LinkDeviceInfo {
+                fingerprint: r.fingerprint,
+                name: r.name,
+                platform: r.platform,
+                online: on,
+                paired_at: r.paired_at,
+                last_seen_at: r.last_seen_at,
+            })
+            .collect())
+    }
+
+    #[cfg(hub_link)]
+    async fn link_remove_device(&self, fingerprint: &str) -> Result<bool, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.remove_device(fingerprint).await.map_err(map_link_err)
+    }
+
+    #[cfg(hub_link)]
+    async fn link_dispatch(
+        &self,
+        fingerprint: &str,
+        url: &str,
+        save_dir: Option<&str>,
+        file_name: Option<&str>,
+    ) -> Result<String, ApiError> {
+        let link = self.link.as_ref().ok_or(ApiError::Unauthorized)?;
+        link.dispatch(fingerprint, url, save_dir, file_name)
+            .await
+            .map_err(map_link_err)
+    }
+}
+
+/// 引擎 `link::DiscoveredPeer` → wire DTO（`kind` → `source` 小写字符串）。
+#[cfg(hub_link)]
+fn link_discovered_dto(p: DiscoveredPeer) -> LinkDiscoveredPeer {
+    LinkDiscoveredPeer {
+        fingerprint: p.fingerprint,
+        name: p.name,
+        platform: p.platform,
+        host: p.host,
+        port: p.port,
+        app_version: p.app_version,
+        source: match p.kind {
+            DiscoveryKind::Mdns => "mdns",
+            DiscoveryKind::Manual => "manual",
+        }
+        .to_string(),
+    }
 }
 
 /// 把插件清单条目转换为 REST 预解析响应 DTO（`hub` 侧 wire↔engine 转换，
@@ -685,6 +829,7 @@ fn map_link_err(e: LinkError) -> ApiError {
         LinkError::InvalidCode
         | LinkError::BadSignature
         | LinkError::BadPayload(_)
+        | LinkError::SelfPairing
         | LinkError::SessionExpired => ApiError::BadRequest(e.to_string()),
         LinkError::Unreachable => ApiError::Unavailable,
         other => ApiError::Internal(other.to_string()),

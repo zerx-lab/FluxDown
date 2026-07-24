@@ -495,10 +495,14 @@ struct TaskSpeedState {
     last_sent_status: i32,
     /// Last raw status observed from downloader updates.
     last_raw_status: i32,
-    /// Number of sampling windows to skip speed calculation for.
-    /// Used as warmup after prepare/resume to avoid artificial speed spikes
-    /// caused by baseline jumps (e.g. resume from non-zero downloaded bytes).
-    speed_warmup_remaining: u8,
+    /// 进入下载态后是否仍在等待第一个「有增长」的更新。该更新可能携带
+    /// resume 基线跳变（先收 status=1/bytes=0，下一条直接跳到已恢复字节），
+    /// 其 delta 不代表真实传输——只用作测量基线、不计入速度。取代旧的
+    /// 「整窗 warmup 跳过」：首个速度值从 ~2s 提前到 <1s。
+    awaiting_first_growth: bool,
+    /// 本次下载态内是否已推送过非零速度。首个非零速度视同状态变更，
+    /// 绕过 500ms 节流立即推送（UI 的速度与 ETA 即刻出现）。
+    sent_nonzero_speed: bool,
     /// Whether the "no cached segments" anomaly has already been logged for
     /// this task — it indicates a real problem (segment visualization will
     /// be empty) but repeats on every update, so log it only once.
@@ -6117,6 +6121,13 @@ const EMA_ALPHA: f64 = 0.4;
 /// the noise caused by uneven update spacing in multi-segment downloads.
 const SPEED_SAMPLE_INTERVAL_MS: u128 = 1_000;
 
+/// 种子采样窗（ms）：尚无任何速度估计（任务刚起步/刚恢复，ema==0）时的
+/// 短窗，让第一个速度值在首字节后数百毫秒内出现（IDM/aria2 式即时反馈）；
+/// 得到首个估计后切回 [`SPEED_SAMPLE_INTERVAL_MS`] 稳态窗口。300ms 至少
+/// 覆盖一个 coordinator 上报周期（200ms），种子样本仍是窗口均值而非单点
+/// 瞬时值。
+const SPEED_SEED_INTERVAL_MS: u128 = 300;
+
 /// Decay factor applied to EMA when no new bytes arrive during a full
 /// sampling window.  0.5 per window means speed halves every second during
 /// a stall, reaching <1 KB/s in ~10 windows (~10 s) for a 1 MB/s baseline.
@@ -6154,7 +6165,8 @@ pub async fn progress_reporter(
                 cached_segments: None,
                 last_sent_status: -1, // never sent yet
                 last_raw_status: update.status,
-                speed_warmup_remaining: if update.status == 1 { 1 } else { 0 },
+                awaiting_first_growth: update.status == 1,
+                sent_nonzero_speed: false,
                 logged_missing_segments: false,
                 upload_bps: 0,
             }
@@ -6181,14 +6193,16 @@ pub async fn progress_reporter(
         // - Entering downloading (5/2 -> 1) may carry baseline jumps.
         // - Some sources send an initial status=1 with downloaded=0, then
         //   quickly jump to resumed bytes on the next update.
-        // - A warmup window skips the first sample to prevent spikes.
+        // - 首个「有增长」的更新被吸收为测量基线（awaiting_first_growth），
+        //   之后的增量才计入速度——跳变永远进不了速度计算。
         // -----------------------------------------------------------------
         let entered_downloading = update.status == 1 && state.last_raw_status != 1;
         if entered_downloading {
             state.ema_speed = 0.0;
             state.sample_bytes = update.downloaded_bytes;
             state.sample_time = now;
-            state.speed_warmup_remaining = 1;
+            state.awaiting_first_growth = true;
+            state.sent_nonzero_speed = false;
         }
 
         if update.status == 1 {
@@ -6197,21 +6211,35 @@ pub async fn progress_reporter(
                 state.ema_speed = 0.0;
                 state.sample_bytes = update.downloaded_bytes;
                 state.sample_time = now;
-                state.speed_warmup_remaining = 1;
+                state.awaiting_first_growth = true;
             }
 
             state.latest_bytes = update.downloaded_bytes;
 
+            // 首增长基线吸收：进入下载态后第一个「有增长」的更新可能携带
+            // resume 基线跳变，其 delta 不代表真实传输。把它仅用作测量基线
+            // （代价：丢弃至多一条更新 ≈ 200ms 的真实增量），后续增量即纯
+            // 传输字节。
+            if state.awaiting_first_growth && update.downloaded_bytes > state.sample_bytes {
+                state.awaiting_first_growth = false;
+                state.sample_bytes = update.downloaded_bytes;
+                state.sample_time = now;
+            }
+
             // Only compute speed when the sampling window expires.
+            // 尚无速度估计（ema==0）时用种子短窗尽快出第一个值，
+            // 有估计后回到 1s 稳态窗 + EMA 平滑。
+            let window_ms = if state.ema_speed == 0.0 {
+                SPEED_SEED_INTERVAL_MS
+            } else {
+                SPEED_SAMPLE_INTERVAL_MS
+            };
             let window_elapsed_ms = now.duration_since(state.sample_time).as_millis();
-            if window_elapsed_ms >= SPEED_SAMPLE_INTERVAL_MS {
+            if window_elapsed_ms >= window_ms {
                 let dt = now.duration_since(state.sample_time).as_secs_f64();
                 let delta = update.downloaded_bytes - state.sample_bytes;
 
-                if state.speed_warmup_remaining > 0 {
-                    // Warmup: just advance baseline, skip speed calc.
-                    state.speed_warmup_remaining -= 1;
-                } else if delta > 0 && dt > 0.01 {
+                if delta > 0 && dt > 0.01 {
                     let window_speed = delta as f64 / dt;
                     if state.ema_speed == 0.0 {
                         // First valid sample — adopt directly for instant feedback.
@@ -6237,7 +6265,8 @@ pub async fn progress_reporter(
         } else {
             // Non-downloading state: reset everything.
             state.ema_speed = 0.0;
-            state.speed_warmup_remaining = 0;
+            state.awaiting_first_growth = false;
+            state.sent_nonzero_speed = false;
             state.sample_bytes = update.downloaded_bytes;
             state.sample_time = now;
             state.latest_bytes = update.downloaded_bytes;
@@ -6262,7 +6291,11 @@ pub async fn progress_reporter(
         // Status transitions (e.g. preparing→downloading) must also be sent
         // immediately so the UI never skips an intermediate state.
         let is_status_change = update.status != state.last_sent_status;
-        let should_send = is_terminal || is_status_change || {
+        // 速度从 0 → 非零的首次转变（起步/恢复后的第一个速度估计）视同
+        // 状态变更立即推送：不被 500ms 节流吞掉，速度与 ETA 即刻可见。
+        let speed_now_visible =
+            update.status == 1 && smoothed_speed > 0 && !state.sent_nonzero_speed;
+        let should_send = is_terminal || is_status_change || speed_now_visible || {
             let last = last_dart_send.get(&update.task_id);
             last.is_none()
                 || now.duration_since(*last.unwrap_or(&now)).as_millis() >= MIN_DART_INTERVAL_MS
@@ -6275,6 +6308,9 @@ pub async fn progress_reporter(
             // Terminal states (completed / error / paused) should report zero
             // speed so the UI doesn't show a stale EMA value.
             let report_speed = if is_terminal { 0 } else { smoothed_speed };
+            if report_speed > 0 {
+                state.sent_nonzero_speed = true;
+            }
             sink.emit(EngineEvent::TaskProgress {
                 task_id: update.task_id.clone(),
                 status: update.status,

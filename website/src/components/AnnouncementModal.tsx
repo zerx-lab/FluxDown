@@ -6,6 +6,13 @@ import type { Announcement } from "@/lib/announcements";
 
 const STORAGE_KEY = "fluxdown-dismissed-announcements";
 
+/** 官方域名列表；首项为主域名，用于"前往官网"按钮。 */
+const OFFICIAL_SITES = [
+  "https://www.fluxdown.com",
+  "https://fluxdown.com",
+  "https://fluxdown.zerx.dev",
+] as const;
+
 function getDismissed(): string[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -42,7 +49,7 @@ export default function AnnouncementModal() {
     setCurrent(null);
   }, [current]);
 
-  const officialSite = t("announcementModal.officialSite");
+  const primarySite = OFFICIAL_SITES[0];
 
   return (
     <AnimatePresence>
@@ -112,25 +119,28 @@ export default function AnnouncementModal() {
                   <p className="text-[11px] font-medium uppercase tracking-wide text-success/90">
                     {t("announcementModal.officialLabel")}
                   </p>
-                  <a
-                    href={officialSite}
-                    className="mt-1 inline-flex items-center gap-1.5 font-mono text-sm text-success hover:underline"
-                  >
-                    {officialSite}
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                  {OFFICIAL_SITES.map((site) => (
+                    <a
+                      key={site}
+                      href={site}
+                      className="mt-1 flex w-fit items-center gap-1.5 font-mono text-sm text-success hover:underline"
                     >
-                      <path d="M7 7h10v10" />
-                      <path d="M7 17 17 7" />
-                    </svg>
-                  </a>
+                      {site}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M7 7h10v10" />
+                        <path d="M7 17 17 7" />
+                      </svg>
+                    </a>
+                  ))}
                 </div>
               </div>
 
@@ -142,7 +152,7 @@ export default function AnnouncementModal() {
                   {t("announcementModal.confirm")}
                 </button>
                 <a
-                  href={officialSite}
+                  href={primarySite}
                   onClick={handleClose}
                   className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-brand-blue to-brand-cyan px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-blue/20 hover:opacity-90 transition-opacity"
                 >

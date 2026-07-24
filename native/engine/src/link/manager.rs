@@ -47,6 +47,25 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// 发现快照去重键：优先用指纹（mDNS TXT 记录携带，稳定）；探测阶段指纹未知
+/// 时退化到 `host:port`。
+fn discovered_peer_key(p: &DiscoveredPeer) -> String {
+    match &p.fingerprint {
+        Some(fp) => fp.clone(),
+        None => format!("{}:{}", p.host, p.port),
+    }
+}
+
+/// 按 [`discovered_peer_key`] 去重更新发现快照：已存在则原地覆盖（刷新地址/
+/// 名称等可能变化的字段），否则追加。
+fn upsert_discovered(snapshot: &mut Vec<DiscoveredPeer>, peer: DiscoveredPeer) {
+    let key = discovered_peer_key(&peer);
+    match snapshot.iter_mut().find(|e| discovered_peer_key(e) == key) {
+        Some(existing) => *existing = peer,
+        None => snapshot.push(peer),
+    }
+}
+
 /// 发起方待确认会话（begin_pairing 与 confirm_pairing 之间的状态）。
 struct PendingInit {
     initiator: PairingInitiator,
@@ -71,6 +90,10 @@ pub struct LinkManager {
     pending: Mutex<HashMap<String, PendingInit>>,
     /// 数据面防重放：时窗内已见过的 `(device:nonce, ts)`，authorize 剪枝保持有界。
     seen_nonces: Mutex<Vec<(String, i64)>>,
+    /// 发现快照（发起方侧）：`start_discovery` 转发任务里按 [`upsert_discovered`]
+    /// 去重更新；`start_discovery` 调用时清空；`probe` 的结果不入此快照。
+    /// `Arc` 包裹以便转发任务（`tokio::spawn` 的 `'static` 闭包）持有写句柄。
+    discovered: Arc<Mutex<Vec<DiscoveredPeer>>>,
 }
 
 impl LinkManager {
@@ -103,6 +126,7 @@ impl LinkManager {
             browser: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             seen_nonces: Mutex::new(Vec::new()),
+            discovered: Arc::new(Mutex::new(Vec::new())),
         }))
     }
 
@@ -221,8 +245,13 @@ impl LinkManager {
 
     // ── 发现（发起方侧）───────────────────────────────────────────────────
 
-    /// 开始 mDNS 浏览：发现的设备经事件通道以 `Discovered` 汇出（幂等）。
+    /// 开始 mDNS 浏览：发现的设备经事件通道以 `Discovered` 汇出，并同步去重
+    /// 更新发现快照。幂等——重复调用不重启浏览，但仍清空发现快照，与管理面
+    /// `POST /link/discovery {"action":"start"}` 的语义对齐。
     pub fn start_discovery(&self) -> LinkResult<()> {
+        if let Ok(mut snapshot) = self.discovered.lock() {
+            snapshot.clear();
+        }
         let mut guard = self.browser.lock().map_err(|_| LinkError::Unavailable)?;
         if guard.is_some() {
             return Ok(());
@@ -230,11 +259,15 @@ impl LinkManager {
         let (tx, mut rx) = mpsc::channel::<DiscoveredPeer>(64);
         let out = self.events.clone();
         let self_fp = self.identity.fingerprint().to_string();
+        let discovered = Arc::clone(&self.discovered);
         tokio::spawn(async move {
             while let Some(peer) = rx.recv().await {
                 // 过滤掉本机自身的广播。
                 if peer.fingerprint.as_deref() == Some(self_fp.as_str()) {
                     continue;
+                }
+                if let Ok(mut snapshot) = discovered.lock() {
+                    upsert_discovered(&mut snapshot, peer.clone());
                 }
                 if out.send(LinkEngineEvent::Discovered(peer)).await.is_err() {
                     break;
@@ -250,6 +283,16 @@ impl LinkManager {
         if let Ok(mut guard) = self.browser.lock() {
             *guard = None; // Drop → daemon.shutdown()
         }
+    }
+
+    /// 当前发现快照（发起方侧 UI 轮询用）；`start_discovery` 时清空，浏览期间
+    /// 持续去重更新。
+    #[must_use]
+    pub fn discovered_peers(&self) -> Vec<DiscoveredPeer> {
+        self.discovered
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// 手动地址探测（mDNS 失效兜底）：`/ping` 一台设备，返回其信息（不配对）。

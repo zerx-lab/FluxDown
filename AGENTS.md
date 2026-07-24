@@ -208,10 +208,10 @@ FluxDown/
 - **ED2K**：eDonkey2000 纯 leech。源发现 = 服务器 `GETSOURCES`（手动 `ed2k_server_list` + 订阅 `server.met` 缓存）+ Kad DHT 兜底 + UPnP-IGD 争 HighID + LowID 回调中继。逐块 MD4 + hashset 自校验（违规拉黑 peer）；分块 MD4 root hash（PART_SIZE=9.28MB，幻影尾处理）。进程级共享 `Ed2kClient` 持久服务器会话。
 
 ### 引擎子系统（一句话职责）
-- `download_manager.rs`（~7300 行）：任务生命周期、并发、队列（内置 + 命名，启停/每日定时边沿触发/顺序）、任务组、自动重试、协议分发、off-actor 插件解析插桩、速度平滑（EMA α=0.3）、WAL checkpoint。
+- `download_manager.rs`（~7300 行）：任务生命周期、并发、队列（内置 + 命名，启停/每日定时边沿触发/顺序）、任务组、自动重试、协议分发、off-actor 插件解析插桩、速度平滑（EMA α=0.4，1s 采样窗）、WAL checkpoint。
 - `downloader.rs`：共享原语（`DownloadError` 含 Ed2k/Ed2kIntegrity/Cancelled、`RequestSpec`、文件名/编码工具）。
 - `segment_advisor.rs`：按文件大小 + CPU 推荐连接上限（HTTP 是上限，coordinator 逐步爬升）。
-- `segment_coordinator.rs`（~5300 行）：IDM 式动态分段（按需分配、对半拆最大在传分段救慢速、连接复用、per-domain 连接上限、`fallocate` 预分配）。
+- `segment_coordinator.rs`（~5300 行）：IDM 式动态分段（按需分配、对半拆最大在传分段救慢速、连接复用、per-domain 连接策略学习——负面上限 + 正面起步提示双观察面、`fallocate` 预分配）。
 - `speed_limiter.rs`：全局 token bucket（Arc 可克隆，limit==0=不限）。
 - `meta_prober.rs`：队列任务后台探测文件名/大小（8s；HTTP HEAD / FTP SIZE / magnet dn= / torrent 跳过）。
 - `proxy_config.rs`：无/系统（Windows 注册表）/手动；HTTP/HTTPS/SOCKS4/5；`test_proxy_connection` 测延迟。

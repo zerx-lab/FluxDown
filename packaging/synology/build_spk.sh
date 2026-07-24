@@ -31,6 +31,20 @@ case "$ARCH" in
 	*) echo "invalid arch: $ARCH (expect x86_64|armv8)" >&2; exit 2 ;;
 esac
 
+# ── DSM 版本规范化：INFO 的 version 只允许数字/./-（含字母如 "0.2.5-rc.1" 会被
+#    DSM 上传时直接判"套件文件格式不正确"）。映射为 base-build 形式并保序：
+#    alpha.N→-10NN, beta.N→-20NN, rc.N→-30NN，正式版→-9000，
+#    保证 rc < 正式版 < 下一版本，可原地升级。──
+BASE=${VERSION%%-*}
+PRE=${VERSION#"$BASE"}
+case "$PRE" in
+	"")        SPK_VERSION="$BASE-9000" ;;
+	-alpha*) N=${PRE#-alpha}; N=${N#.}; SPK_VERSION="$BASE-10$(printf %02d "${N:-0}")" ;;
+	-beta*)  N=${PRE#-beta};  N=${N#.}; SPK_VERSION="$BASE-20$(printf %02d "${N:-0}")" ;;
+	-rc*)    N=${PRE#-rc};    N=${N#.}; SPK_VERSION="$BASE-30$(printf %02d "${N:-0}")" ;;
+	*) echo "unsupported prerelease suffix in version: $VERSION" >&2; exit 2 ;;
+esac
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 stage="$work/stage"
@@ -78,7 +92,7 @@ EXTRACT_KB=$(du -sk "$payload" | cut -f1)
 CHECKSUM=$(md5sum "$stage/package.tgz" | cut -d' ' -f1)
 {
 	echo 'package="FluxDown"'
-	echo "version=\"$VERSION\""
+	echo "version=\"$SPK_VERSION\""
 	echo 'displayname="FluxDown Server"'
 	echo 'description="Blazing fast, multi-protocol download manager. Rust engine with HTTP/HTTPS/FTP/BitTorrent/HLS support, intelligent segmentation, and a full Web UI on port 17800."'
 	echo 'maintainer="zerx-lab"'

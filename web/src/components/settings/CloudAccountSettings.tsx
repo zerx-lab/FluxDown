@@ -14,6 +14,7 @@ import { confirmDialog } from '../../lib/confirm'
 import { fmtIsoTime, fmtRelativeTime } from '../../lib/format'
 import type { I18nKey } from '../../lib/i18n'
 import { useI18n } from '../../lib/i18n'
+import { DirectDevicesSection } from './DirectDevicesSection'
 import { SetRow, SetSwitch, TextInput } from './controls'
 
 const DEVICES_QUERY_KEY = ['cloud', 'devices']
@@ -74,6 +75,7 @@ export function CloudAccountSettings() {
       ) : (
         <AuthPanel />
       )}
+      <DirectDevicesSection />
       <CloudServerAddressGroup />
     </div>
   )

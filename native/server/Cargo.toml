@@ -17,6 +17,8 @@ async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.22"
 fluxdown_api = { version = "0.1.0", path = "../api", package = "fluxdown_api", features = ["plugins"] }
+# 已配对本地设备并发在线探测（link 管理面 `link_devices`，参考 hub emit_link_devices 用法）。
+futures-util = "0.3"
 fluxdown_engine = { version = "0.1.0", path = "../engine", package = "fluxdown_engine", features = ["plugins", "components", "link"] }
 fs2 = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }

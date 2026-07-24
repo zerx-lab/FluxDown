@@ -146,6 +146,10 @@ class RemoteTaskService extends ChangeNotifier {
         return;
       }
       _retryAttempt = 0;
+      // SSE 已建立：主动刷新设备名册，让「本机在线」立刻反映到 UI。
+      // 依赖服务端回发的自身 presence 事件在重连重叠期（引用计数未过 0↔1）不广播，
+      // 不能只靠事件驱动。
+      _schedulePresenceRefresh();
     } catch (e, stack) {
       if (_stopped) return;
       logError(_tag, 'sync/connect failed', e, stack);
@@ -256,6 +260,13 @@ class RemoteTaskService extends ChangeNotifier {
         if (target == _deviceId) _applyCommand(json);
       case 'presence':
         _schedulePresenceRefresh();
+      case 'session.revoked':
+        // 服务端吊销会话（全部或指定本机）：立即被动登出。
+        // auth 状态变化经 _onAuthChanged → stop() 断 SSE，presence 随之离线。
+        final target = json['deviceId'] as String?;
+        if (target == null || target == _deviceId) {
+          unawaited(CloudAuthService.instance.onRemoteSessionRevoked());
+        }
     }
   }
 

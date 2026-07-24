@@ -14,6 +14,7 @@ import { ChevronRight, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cloudApi } from '../../lib/cloud/client'
 import { cloudDeviceId, useCloudSession } from '../../lib/cloud/session'
+import { linkApi } from '../../lib/link'
 import { cn } from '../../lib/cn'
 import { queueDisplayName } from '../../lib/format'
 import { newDownloadOpenStore, openManifestSelect } from '../../lib/dialogs'
@@ -63,7 +64,9 @@ interface FormState {
   proxyUrl: string
   checksum: string
   advOpen: boolean
-  /** 下发目标设备 deviceId；空串 = 本机（默认，走现有本地引擎路径）。 */
+  /** 下发目标：空串 = 本机（默认，走现有本地引擎路径）；`cloud:<deviceId>` = FluxCloud
+   *  云中转已登录设备；`link:<fingerprint>` = 局域网直连(link)已配对设备。见下方
+   *  showDeviceSelect/deviceOptions（两类来源互斥，提交时按前缀还原）。 */
   deviceId: string
 }
 
@@ -118,7 +121,27 @@ export function NewDownloadDialog() {
     staleTime: 10_000,
   })
   const remoteDevices = cloudDevices.filter((d) => d.deviceId !== cloudDeviceId())
-  const showDeviceSelect = session.status === 'authenticated' && remoteDevices.length > 0
+  const showCloudDevices = session.status === 'authenticated' && remoteDevices.length > 0
+  // 本地设备(link)分组：局域网直连已配对设备，与云中转完全独立；宿主未启用/不支持时
+  // 该请求失败（见 lib/link.ts isLinkUnsupportedError），静默按空列表处理，分组不出现。
+  const { data: linkDevices = [] } = useQuery({
+    queryKey: ['link', 'devices'],
+    queryFn: () => linkApi.devices().then((r) => r.devices),
+    enabled: open,
+    staleTime: 10_000,
+    retry: false,
+  })
+  const showLinkDevices = linkDevices.length > 0
+  const showDeviceSelect = showCloudDevices || showLinkDevices
+  const deviceOptions = [
+    { value: '', label: t('cloud.deviceCurrent') },
+    ...(showCloudDevices
+      ? remoteDevices.map((d) => ({ value: `cloud:${d.deviceId}`, label: d.name || '-', group: t('newDl.deviceGroupCloud') }))
+      : []),
+    ...(showLinkDevices
+      ? linkDevices.map((d) => ({ value: `link:${d.fingerprint}`, label: d.name || '-', group: t('newDl.deviceGroupDirect') }))
+      : []),
+  ]
   const demoMode = stats?.demoMode ?? false
   const demoUrl = stats?.demoUrl ?? ''
 
@@ -230,12 +253,19 @@ export function NewDownloadDialog() {
 
     const nextErrors: Record<number, string> = {}
     let anyOk = false
-    const remoteTarget = form.deviceId || null
+    const linkFingerprint = form.deviceId.startsWith('link:') ? form.deviceId.slice('link:'.length) : ''
+    const cloudTarget = form.deviceId.startsWith('cloud:') ? form.deviceId.slice('cloud:'.length) : ''
     for (let i = 0; i < urlLines.length; i++) {
       try {
-        if (remoteTarget) {
+        if (linkFingerprint) {
+          await linkApi.dispatchTask(linkFingerprint, {
+            url: urlLines[i],
+            saveDir: form.saveDir.trim() || undefined,
+            fileName: isSingle ? form.fileName.trim() || undefined : undefined,
+          })
+        } else if (cloudTarget) {
           await cloudApi.dispatchTask({
-            toDevice: remoteTarget,
+            toDevice: cloudTarget,
             url: urlLines[i],
             saveDir: form.saveDir.trim() || undefined,
             fileName: isSingle ? form.fileName.trim() || undefined : undefined,
@@ -362,16 +392,8 @@ export function NewDownloadDialog() {
               </div>
               {showDeviceSelect && (
                 <>
-                  <label className="field-label">下载到</label>
-                  <SelectField
-                    value={form.deviceId}
-                    onChange={(v) => set('deviceId', v)}
-                    options={[
-                      { value: '', label: t('cloud.deviceCurrent') },
-                      ...remoteDevices.map((d) => ({ value: d.deviceId, label: d.name || '-' })),
-                    ]}
-                    ariaLabel="下载到"
-                  />
+                  <label className="field-label">{t('newDl.dispatchTo')}</label>
+                  <SelectField value={form.deviceId} onChange={(v) => set('deviceId', v)} options={deviceOptions} ariaLabel={t('newDl.dispatchTo')} />
                 </>
               )}
               <div className="grid2">

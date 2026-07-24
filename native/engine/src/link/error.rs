@@ -16,6 +16,10 @@ pub enum LinkError {
     #[error("peer identity signature verification failed")]
     BadSignature,
 
+    /// 双端持有同一身份（共享同一引擎数据库的进程互相配对）——设备不能与自己配对。
+    #[error("cannot pair a device with itself (both ends share the same link identity)")]
+    SelfPairing,
+
     /// 载荷字段非法（长度不符 / base64 解码失败 / 缺字段等）。
     #[error("invalid link payload: {0}")]
     BadPayload(String),

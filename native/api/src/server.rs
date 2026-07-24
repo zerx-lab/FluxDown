@@ -39,7 +39,10 @@ use crate::service::{ApiError, ApiHost, UNKNOWN_ENDPOINT_MESSAGE};
 use crate::takeover::parse_batch;
 use crate::types::{
     CreateGroupRequest, CreateGroupResponse, CreateTaskRequest, CreatedTask, DownloadRequest,
-    LinkAuth, LinkPairConfirmRequest, LinkPairHelloRequest, ResolvePreviewRequest,
+    LinkAuth, LinkDeviceTaskRequest, LinkDevicesResponse, LinkDiscoveredResponse,
+    LinkDiscoveryRequest, LinkOkResponse, LinkPairBeginRequest, LinkPairConfirmRequest,
+    LinkPairFinishRequest, LinkPairFinishResponse, LinkPairHelloRequest, LinkProbeRequest,
+    ResolvePreviewRequest,
 };
 
 /// 请求体大小上限：4 MB（足够容纳批量 URL 列表）。
@@ -281,7 +284,18 @@ fn register_core(state: AppState) -> Router<AppState> {
             )
             .route(routes::API_MARKET, get(api_market_list))
             .route(routes::API_MARKET_INSTALL, post(api_market_install))
-            .route(routes::API_LINK_CODE, post(api_link_generate_code));
+            .route(routes::API_LINK_CODE, post(api_link_generate_code))
+            .route(routes::API_LINK_DISCOVERY, post(api_link_discovery))
+            .route(routes::API_LINK_DISCOVERED, get(api_link_discovered))
+            .route(routes::API_LINK_PROBE, post(api_link_probe))
+            .route(routes::API_LINK_PAIR_BEGIN, post(api_link_pair_begin))
+            .route(routes::API_LINK_PAIR_FINISH, post(api_link_pair_finish))
+            .route(routes::API_LINK_DEVICES, get(api_link_devices))
+            .route(
+                routes::API_LINK_DEVICE,
+                axum::routing::delete(api_link_remove_device),
+            )
+            .route(routes::API_LINK_DEVICE_TASKS, post(api_link_device_tasks));
     }
 
     router
@@ -463,6 +477,211 @@ pub(crate) async fn api_link_generate_code(
     }
     match state.host.link_generate_code().await {
         Ok(resp) => Json(resp).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 本地互联管理面（/api/v1/link/*，强制 token；供 web/PC 一致驱动 LinkManager，
+// 契约见 docs/link_mgmt_contract.md）
+// ---------------------------------------------------------------------------
+
+/// 本地设备发现开关：`start` 幂等且清空发现快照；`stop` 停止 mDNS 浏览。
+pub(crate) async fn api_link_discovery(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: LinkDiscoveryRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid discovery payload: {e}"),
+            );
+        }
+    };
+    let start = match req.action.as_str() {
+        "start" => true,
+        "stop" => false,
+        other => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("unknown discovery action: {other}"),
+            );
+        }
+    };
+    match state.host.link_discovery(start).await {
+        Ok(()) => Json(LinkOkResponse { ok: true }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 当前发现快照（发起方侧 UI 轮询）。
+pub(crate) async fn api_link_discovered(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.link_discovered().await {
+        Ok(peers) => Json(LinkDiscoveredResponse { peers }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 手动地址探测（mDNS 失效兜底）；结果不入发现快照。
+pub(crate) async fn api_link_probe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: LinkProbeRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid probe payload: {e}"),
+            );
+        }
+    };
+    match state.host.link_probe(&req.host, req.port).await {
+        Ok(peer) => Json(peer).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 发起配对：向 `host:port` 发送 `hello`（带配对码），返回待确认令牌 + SAS +
+/// 对端信息，供 UI 展示 SAS 核对后调 [`api_link_pair_finish`]。
+pub(crate) async fn api_link_pair_begin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: LinkPairBeginRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid pair begin payload: {e}"),
+            );
+        }
+    };
+    match state
+        .host
+        .link_pair_begin(&req.host, req.port, &req.code)
+        .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// SAS 核对后确认/拒绝配对（管理面版本，区别于响应方内部 `pair/confirm`）。
+pub(crate) async fn api_link_pair_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: LinkPairFinishRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid pair finish payload: {e}"),
+            );
+        }
+    };
+    match state.host.link_pair_finish(&req.token, req.accept).await {
+        Ok(device) => Json(LinkPairFinishResponse {
+            paired: device.is_some(),
+            device,
+        })
+        .into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 已配对设备列表（含并发在线探测）。
+pub(crate) async fn api_link_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.link_devices().await {
+        Ok(devices) => Json(LinkDevicesResponse { devices }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 解除配对（删除设备）。
+pub(crate) async fn api_link_remove_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(fingerprint): Path<String>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.link_remove_device(&fingerprint).await {
+        Ok(true) => Json(LinkOkResponse { ok: true }).into_response(),
+        Ok(false) => ApiError::NotFound.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 下发下载任务给已配对设备（管理面，token 鉴权；区别于数据面链路 HMAC 鉴权的
+/// `POST /api/v1/link/tasks`）。
+pub(crate) async fn api_link_device_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(fingerprint): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: LinkDeviceTaskRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return result_response(
+                StatusCode::BAD_REQUEST,
+                false,
+                &format!("invalid link task payload: {e}"),
+            );
+        }
+    };
+    match state
+        .host
+        .link_dispatch(
+            &fingerprint,
+            &req.url,
+            req.save_dir.as_deref(),
+            req.file_name.as_deref(),
+        )
+        .await
+    {
+        Ok(task_id) => Json(CreatedTask { task_id }).into_response(),
         Err(e) => e.into_response(),
     }
 }

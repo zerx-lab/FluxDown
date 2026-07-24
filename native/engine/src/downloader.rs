@@ -2080,7 +2080,9 @@ pub const DB_SAVE_INTERVAL_SECS: u64 = 3;
 
 /// 单个 chunk 的读取超时（stall detection）。如果超过此时间没有收到任何数据，
 /// 视为连接停滞，返回错误触发 retry 或让用户感知到真实状态。
-/// 与 segment_coordinator 中的同名常量保持一致。
+/// 刻意比 segment_coordinator 的 5s 更宽（10s）：单流路径没有并行段兜底，
+/// 这条连接是唯一数据流，掐早了只有整任务重试一条路；多段路径重连廉价且
+/// 尾段抢救依赖快速回收，故用更激进的 5s。
 const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------

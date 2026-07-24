@@ -14,7 +14,7 @@ export const ANNOUNCEMENTS: Announcement[] = [
   {
     id: "security-warning-fake-site",
     messageKey: "announcement.5",
-    link: "https://fluxdown.zerx.dev",
+    link: "https://www.fluxdown.com",
     date: "2026-06-25",
     active: true,
     popup: true,

@@ -163,6 +163,11 @@ impl PairingResponder {
 
     /// 处理 `hello`：校验码 → ECDH → 验发起方签名 → 建会话 → 签自身握手。
     pub fn handle_hello(&self, req: &HelloRequest) -> LinkResult<HelloResponse> {
+        // 自配对守卫：发起方与本机持同一长期身份（典型场景：两个进程共享同一
+        // 引擎数据库）——它们本就是同一台设备，直接拒绝，不消费配对码。
+        if req.initiator_id_pub == self.identity.public_bytes() {
+            return Err(LinkError::SelfPairing);
+        }
         // 取出并消费匹配的有效码（消费即移除，杜绝重放）。
         let eph_secret = {
             let mut codes = self.codes.lock().map_err(|_| LinkError::Unavailable)?;
@@ -324,6 +329,10 @@ impl PairingInitiator {
         resp: &HelloResponse,
         responder_addr: &str,
     ) -> LinkResult<String> {
+        // 自配对守卫先于验签：身份相同即可决断（共享数据库的进程互连场景）。
+        if resp.responder_id_pub == self.identity.public_bytes() {
+            return Err(LinkError::SelfPairing);
+        }
         if !LinkIdentity::verify(
             &resp.responder_id_pub,
             &transcript_resp(&resp.responder_eph_pub, &self.eph_pub),
@@ -377,6 +386,31 @@ mod tests {
             platform: Some("linux".to_string()),
             app_version: Some("0.1.0".to_string()),
         }
+    }
+
+    #[test]
+    fn self_pairing_rejected_without_consuming_code() {
+        // 双端同一身份（共享引擎数据库的两个进程）→ hello 直接拒绝，且配对码不被消费。
+        let id = LinkIdentity::generate();
+        let responder = PairingResponder::new(id.clone(), self_info("NAS"));
+        let mut initiator = PairingInitiator::new(id.clone());
+
+        let code = responder.generate_code();
+        let hello = initiator.build_hello(&code, &self_info("NAS"), vec![]);
+        assert!(matches!(
+            responder.handle_hello(&hello),
+            Err(LinkError::SelfPairing)
+        ));
+
+        // 码未被消费：换一个正常身份仍可用同一码完成 hello。
+        let mut other = PairingInitiator::new(LinkIdentity::generate());
+        let hello2 = other.build_hello(&code, &self_info("Laptop"), vec![]);
+        let resp = responder.handle_hello(&hello2).unwrap();
+        // 发起方若发现响应方就是自己，同样拒绝。
+        assert!(matches!(
+            initiator.on_hello_response(&resp, "127.0.0.1:1"),
+            Err(LinkError::SelfPairing)
+        ));
     }
 
     #[test]

@@ -78,9 +78,9 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
     return ShadDialog(
       title: Text(s.addDeviceEntry),
       actions: [
-        ShadButton(
+        ShadButton.outline(
           onPressed: () => Navigator.of(context).pop(),
-          child: Text(s.confirm),
+          child: Text(s.close),
         ),
       ],
       child: ConstrainedBox(

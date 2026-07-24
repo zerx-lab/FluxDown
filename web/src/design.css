@@ -251,6 +251,12 @@ svg { display: block; }
 .select-item[data-state="checked"] { background: var(--accent-weak); color: var(--accent); font-weight: 500; }
 .select-item-check { position: absolute; right: 9px; display: inline-flex; align-items: center; color: var(--accent); }
 .select-item-check svg { width: 14px; height: 14px; }
+/* Select 内的分组标题（可选，见 select-field.tsx group 字段——如"下载到"设备选择器的
+   「云设备」/「本地设备」两组），非交互文本，样式对齐 .side-label 的弱化大写小标题。 */
+.select-group-label {
+  padding: 7px 10px 4px; font-size: 10.5px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .04em;
+}
 .select-scroll {
   display: flex; align-items: center; justify-content: center;
   height: 22px; color: var(--text3); cursor: default; background: var(--surface);

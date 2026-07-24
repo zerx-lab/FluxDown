@@ -86,6 +86,28 @@ pub const API_LINK_TASKS: &str = "/api/v1/link/tasks";
 /// headless 设备出示配对码）。
 pub const API_LINK_CODE: &str = "/api/v1/link/code";
 
+// -- 本地互联管理面（web/PC 一致驱动 LinkManager；均需 management token）--
+
+/// 本地设备发现开关（POST `{"action":"start"|"stop"}`，**需 management token**）。
+/// start 幂等，且会清空发现快照。
+pub const API_LINK_DISCOVERY: &str = "/api/v1/link/discovery";
+/// 当前发现快照（GET，**需 management token**）。
+pub const API_LINK_DISCOVERED: &str = "/api/v1/link/discovered";
+/// 手动地址探测（POST `{"host","port"}`，**需 management token**；结果不入
+/// 发现快照，直接返回给调用方）。
+pub const API_LINK_PROBE: &str = "/api/v1/link/probe";
+/// 发起配对（POST `{"host","port","code"}`，**需 management token**）。
+pub const API_LINK_PAIR_BEGIN: &str = "/api/v1/link/pair/begin";
+/// SAS 核对后确认/拒绝配对（POST `{"token","accept"}`，**需 management token**）。
+pub const API_LINK_PAIR_FINISH: &str = "/api/v1/link/pair/finish";
+/// 已配对设备列表（GET，**需 management token**；含并发在线探测）。
+pub const API_LINK_DEVICES: &str = "/api/v1/link/devices";
+/// 单个已配对设备（DELETE 解除配对，**需 management token**；不存在 404）。
+pub const API_LINK_DEVICE: &str = "/api/v1/link/devices/{fingerprint}";
+/// 已配对设备下发下载任务（POST，**需 management token**；区别于数据面链路
+/// HMAC 鉴权的 [`API_LINK_TASKS`]）。
+pub const API_LINK_DEVICE_TASKS: &str = "/api/v1/link/devices/{fingerprint}/tasks";
+
 /// 生成单任务路径（客户端用）。
 #[must_use]
 pub fn task_path(task_id: &str) -> String {
@@ -120,4 +142,16 @@ pub fn group_pause_path(group_id: &str) -> String {
 #[must_use]
 pub fn group_continue_path(group_id: &str) -> String {
     format!("{API_GROUPS}/{group_id}/continue")
+}
+
+/// 生成单个已配对设备路径（客户端用）。
+#[must_use]
+pub fn link_device_path(fingerprint: &str) -> String {
+    format!("/api/v1/link/devices/{fingerprint}")
+}
+
+/// 生成已配对设备下发任务路径（客户端用）。
+#[must_use]
+pub fn link_device_tasks_path(fingerprint: &str) -> String {
+    format!("/api/v1/link/devices/{fingerprint}/tasks")
 }
