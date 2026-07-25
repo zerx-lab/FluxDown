@@ -304,6 +304,7 @@ class MobileTasksScreenState extends State<MobileTasksScreen> {
           StatusTab.completed => s.tabCompleted,
           StatusTab.paused => s.tabPaused,
           StatusTab.error => s.tabError,
+          StatusTab.seeding => s.tabSeeding,
         };
         return ListView(
           scrollDirection: Axis.horizontal,

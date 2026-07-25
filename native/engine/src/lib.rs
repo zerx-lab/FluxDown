@@ -7,6 +7,7 @@
 /// `ProxyMode::Auto`：直连优先、慢则采样、快则热切换的自动代理决策。
 pub mod auto_proxy;
 pub mod bt_downloader;
+pub mod bt_seeding;
 pub mod cdn;
 pub mod components;
 pub mod dash_downloader;

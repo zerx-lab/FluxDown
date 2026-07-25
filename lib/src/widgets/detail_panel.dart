@@ -459,6 +459,57 @@ class _DetailPanelState extends State<DetailPanel> {
       );
     }
     widgets.add(_buildInfoRow(s.colQueue, _queueLabel(task.queueId), c));
+
+    // BT 做种信息
+    if (task.isBt) {
+      widgets.add(
+        _buildInfoRow(
+          s.uploadedTotal,
+          task.uploadedBytes > 0
+              ? DownloadTask.formatBytes(task.uploadedBytes)
+              : '—',
+          c,
+        ),
+      );
+      if (task.isSeeding && task.uploadSpeedBps > 0) {
+        widgets.add(
+          _buildInfoRow(
+            s.infoSpeed,
+            '↑ ${DownloadTask.formatBytes(task.uploadSpeedBps)}/s',
+            c,
+          ),
+        );
+      }
+      widgets.add(
+        _buildInfoRow(
+          s.seedRatio,
+          task.seedRatio.toStringAsFixed(2),
+          c,
+        ),
+      );
+      if (task.uploadedAtCompletion > 0) {
+        widgets.add(
+          _buildInfoRow(
+            s.seedRatioAfter,
+            task.postSeedRatio.toStringAsFixed(2),
+            c,
+          ),
+        );
+      }
+      if (task.isSeeding) {
+        widgets.add(
+          _buildInfoRow(
+            s.seedTime,
+            _formatDuration(task.seedingDuration),
+            c,
+          ),
+        );
+      }
+      if (task.seedingStatus != SeedingStatus.none) {
+        widgets.add(_buildInfoRow(s.seedingStatus, task.seedingStatusText, c));
+      }
+    }
+
     return widgets;
   }
 
@@ -1374,6 +1425,28 @@ class _DetailPanelState extends State<DetailPanel> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 暂停 / 恢复（做种任务也允许暂停）
+          if (task.status == TaskStatus.downloading ||
+              task.status == TaskStatus.pending ||
+              task.status == TaskStatus.preparing ||
+              task.isSeeding)
+            SizedBox(
+              width: double.infinity,
+              child: ShadButton(
+                onPressed: () => widget.controller.pauseTask(task.id),
+                backgroundColor: c.accent,
+                hoverBackgroundColor: c.accentHover,
+                child: Text(
+                  currentS.pause,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
           for (final q in queues)
             _QueueSelectRow(
               queue: q,

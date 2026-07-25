@@ -616,6 +616,7 @@ class _TaskActionButtonState extends State<TaskActionButton> {
       ),
     );
   }
+
 }
 
 // =============================================================================
@@ -720,8 +721,19 @@ void showTaskContextMenu(
         ),
       );
     case TaskStatus.completed:
+      // 已完成但正在做种的 BT 任务也可以暂停
+      if (task.isSeeding) {
+        items.add(
+          ContextMenuItem(
+            icon: LucideIcons.pause,
+            label: s.pause,
+            color: c.textPrimary,
+            action: onPause,
+          ),
+        );
+      }
     case TaskStatus.canceled:
-      break; // 两者均为终态，不提供暂停/继续菜单项
+      break; // 终态，不提供暂停/继续菜单项
   }
 
   // --- 忽略插件重试（逃生舱：插件解析失败任务专属）---

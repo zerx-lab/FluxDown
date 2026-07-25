@@ -14,6 +14,7 @@
 // `fakeAsync` so the timer is virtual and `async.elapse(...)` drives it
 // deterministically instead of waiting on real wall-clock time.
 
+// ignore: depend_on_referenced_packages
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';

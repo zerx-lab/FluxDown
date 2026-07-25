@@ -393,10 +393,10 @@ pub(crate) async fn read_until_found_sources(
             Ed2kMessage::FoundSources {
                 file_hash: fh,
                 sources,
-            } => {
-                if &fh == file_hash {
-                    return Ok(sources);
-                }
+            } if &fh == file_hash => {
+                return Ok(sources);
+            }
+            Ed2kMessage::FoundSources { .. } => {
                 // 非本文件的源应答，忽略继续等。
             }
             Ed2kMessage::ServerMessage(_) | Ed2kMessage::ServerStatus | Ed2kMessage::Unknown(_) => {

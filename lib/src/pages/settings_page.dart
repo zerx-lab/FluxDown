@@ -116,6 +116,7 @@ extension SettingsCategoryI18n on SettingsCategory {
 /// 子 Tab id 常量：用于会话内选中记忆与搜索定位路由，字面量保持稳定。
 const _kTabBasic = 'basic';
 const _kTabTracker = 'tracker';
+const _kTabSeeding = 'seeding';
 const _kTabServers = 'servers';
 const _kTabPlugins = 'plugins';
 const _kTabComponents = 'components';
@@ -137,6 +138,7 @@ List<_SettingsTabSpec> _settingsTabsFor(SettingsCategory category) {
     SettingsCategory.bt => [
       _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
       _SettingsTabSpec(id: _kTabTracker, label: s.settingsTabTracker),
+      _SettingsTabSpec(id: _kTabSeeding, label: s.settingsTabSeeding),
     ],
     SettingsCategory.ed2k => [
       _SettingsTabSpec(id: _kTabBasic, label: s.settingsTabGeneral),
@@ -425,6 +427,14 @@ List<SettingsSearchItem> get settingsSearchItems {
       keywords: s.searchKeywordsBtSettings,
       icon: LucideIcons.rss,
       tabId: _kTabTracker,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.bt,
+      label: s.btSeedingTitle,
+      description: s.btSeedingTitle,
+      keywords: s.searchKeywordsBtSettings,
+      icon: LucideIcons.uploadCloud,
+      tabId: _kTabSeeding,
     ),
     SettingsSearchItem(
       category: SettingsCategory.ed2k,
@@ -1137,7 +1147,6 @@ class _SettingsContent extends StatefulWidget {
   final PluginProvider pluginProvider;
   final DownloadController? downloadController;
 
-
   const _SettingsContent({
     required this.category,
     required this.settingsProvider,
@@ -1295,12 +1304,16 @@ class _SettingsContentState extends State<_SettingsContent> {
         settingsProvider: settingsProvider,
         downloadController: widget.downloadController,
       ),
-      SettingsCategory.bt => tabId == _kTabTracker
-          ? _BtTrackerContent(settingsProvider: settingsProvider)
-          : _BtBasicContent(settingsProvider: settingsProvider),
-      SettingsCategory.ed2k => tabId == _kTabServers
-          ? _Ed2kServersContent(settingsProvider: settingsProvider)
-          : _Ed2kBasicContent(settingsProvider: settingsProvider),
+      SettingsCategory.bt =>
+        tabId == _kTabTracker
+            ? _BtTrackerContent(settingsProvider: settingsProvider)
+            : tabId == _kTabSeeding
+            ? _BtSeedingContent(settingsProvider: settingsProvider)
+            : _BtBasicContent(settingsProvider: settingsProvider),
+      SettingsCategory.ed2k =>
+        tabId == _kTabServers
+            ? _Ed2kServersContent(settingsProvider: settingsProvider)
+            : _Ed2kBasicContent(settingsProvider: settingsProvider),
       SettingsCategory.proxy => _ProxyContent(
         settingsProvider: settingsProvider,
       ),
@@ -1568,7 +1581,9 @@ class _HighlightRegionState extends State<_HighlightRegion>
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
       decoration: BoxDecoration(
-        color: flashing ? m.subtle(c.accent) : m.subtle(c.accent).withValues(alpha: 0),
+        color: flashing
+            ? m.subtle(c.accent)
+            : m.subtle(c.accent).withValues(alpha: 0),
         borderRadius: m.brDialog,
       ),
       child: widget.child,
@@ -1763,7 +1778,9 @@ class _SettingRowState extends State<_SettingRow> with _HighlightConsumer {
         horizontal: 16,
         vertical: widget.vertical ? 12 : 10,
       ),
-      color: flashing ? m.subtle(c.accent) : m.subtle(c.accent).withValues(alpha: 0),
+      color: flashing
+          ? m.subtle(c.accent)
+          : m.subtle(c.accent).withValues(alpha: 0),
       child: widget.vertical
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1814,7 +1831,6 @@ class _SettingRowState extends State<_SettingRow> with _HighlightConsumer {
     );
   }
 }
-
 
 // ─────────────────────────────────────────────
 // 自适应分组布局：窄视口单列，宽视口双列瀑布
@@ -2587,7 +2603,9 @@ class _TileActionState extends State<_TileAction> {
           width: 22,
           height: 22,
           decoration: BoxDecoration(
-            color: _hover ? m.soft(widget.color) : m.soft(widget.color).withValues(alpha: 0),
+            color: _hover
+                ? m.soft(widget.color)
+                : m.soft(widget.color).withValues(alpha: 0),
             borderRadius: m.brSm,
           ),
           child: Icon(widget.icon, size: 12, color: widget.color),
@@ -3161,7 +3179,9 @@ class _DownloadContent extends StatelessWidget {
                 _SettingRow(
                   label: s.maxConcurrent,
                   description: s.maxConcurrentDesc,
-                  child: _ConcurrentSelector(settingsProvider: settingsProvider),
+                  child: _ConcurrentSelector(
+                    settingsProvider: settingsProvider,
+                  ),
                 ),
                 _SettingRow(
                   label: s.speedLimit,
@@ -3185,7 +3205,9 @@ class _DownloadContent extends StatelessWidget {
                   label: s.autoRetryDelay,
                   description: s.autoRetryDelayDesc,
                   vertical: true,
-                  child: _AutoRetryDelayInput(settingsProvider: settingsProvider),
+                  child: _AutoRetryDelayInput(
+                    settingsProvider: settingsProvider,
+                  ),
                 ),
               ],
             ),
@@ -3202,7 +3224,9 @@ class _DownloadContent extends StatelessWidget {
                   label: s.revealFileCmdLabel,
                   description: s.revealFileCmdDesc,
                   vertical: true,
-                  child: _FileManagerCmdInput(settingsProvider: settingsProvider),
+                  child: _FileManagerCmdInput(
+                    settingsProvider: settingsProvider,
+                  ),
                 ),
               ],
             ),
@@ -3234,11 +3258,16 @@ class _DefaultQueueSelector extends StatelessWidget {
     // 显示回退到主队列：不强制写回设置，仅当前值为空/失效 ID 时的展示兜底
     final effectiveId = validIds.contains(currentId)
         ? currentId
-        : (validIds.contains(kMainQueueId) ? kMainQueueId : queues.first.queueId);
+        : (validIds.contains(kMainQueueId)
+              ? kMainQueueId
+              : queues.first.queueId);
     return ShadSelect<String>(
       initialValue: effectiveId,
       options: queues.map((q) {
-        return ShadOption(value: q.queueId, child: Text(queueDisplayName(s, q)));
+        return ShadOption(
+          value: q.queueId,
+          child: Text(queueDisplayName(s, q)),
+        );
       }).toList(),
       selectedOptionBuilder: (context, value) {
         final q = queues.where((q) => q.queueId == value).firstOrNull;
@@ -3331,6 +3360,387 @@ class _BtTrackerContent extends StatelessWidget {
               description: LocaleScope.of(context).btTrackerSubDesc,
               vertical: true,
               child: _BtTrackerSubEditor(settingsProvider: settingsProvider),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// BT 做种设置
+// ─────────────────────────────────────────────
+
+class _BtSeedingContent extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtSeedingContent({required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: settingsProvider,
+      builder: (context, _) {
+        return _AdaptiveSections(
+          sections: [
+            _SettingCard(
+              label: LocaleScope.of(context).btSeedingTitle,
+              description: LocaleScope.of(context).btSeedingTitle,
+              vertical: true,
+              child: _BtSeedingEditor(settingsProvider: settingsProvider),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _BtSeedingEditor extends StatefulWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtSeedingEditor({required this.settingsProvider});
+
+  @override
+  State<_BtSeedingEditor> createState() => _BtSeedingEditorState();
+}
+
+class _BtSeedingEditorState extends State<_BtSeedingEditor> {
+  late TextEditingController _ratioCtrl;
+  late TextEditingController _postRatioCtrl;
+  late TextEditingController _timeCtrl;
+  late TextEditingController _inactiveCtrl;
+
+  static int _unitFactor(String unit) {
+    return switch (unit) {
+      'days' => 1440,
+      'hours' => 60,
+      _ => 1,
+    };
+  }
+
+  static int _displayValue(int minutes, String unit) {
+    return minutes ~/ _unitFactor(unit);
+  }
+
+  static int _toMinutes(int displayValue, String unit) {
+    return displayValue * _unitFactor(unit);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final sp = widget.settingsProvider;
+    _ratioCtrl = TextEditingController(
+      text: sp.btSeedRatioLimit.toStringAsFixed(1),
+    );
+    _postRatioCtrl = TextEditingController(
+      text: sp.btSeedPostRatioLimit.toStringAsFixed(1),
+    );
+    _timeCtrl = TextEditingController(
+      text:
+          '${_displayValue(sp.btSeedTimeLimitMinutes, sp.btSeedTimeLimitUnit)}',
+    );
+    _inactiveCtrl = TextEditingController(
+      text:
+          '${_displayValue(sp.btSeedInactiveTimeLimitMinutes, sp.btSeedInactiveTimeLimitUnit)}',
+    );
+  }
+
+  @override
+  void didUpdateWidget(_BtSeedingEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final sp = widget.settingsProvider;
+    final ratioText = sp.btSeedRatioLimit.toStringAsFixed(1);
+    if (_ratioCtrl.text != ratioText) _ratioCtrl.text = ratioText;
+    final postRatioText = sp.btSeedPostRatioLimit.toStringAsFixed(1);
+    if (_postRatioCtrl.text != postRatioText) {
+      _postRatioCtrl.text = postRatioText;
+    }
+    final timeText =
+        '${_displayValue(sp.btSeedTimeLimitMinutes, sp.btSeedTimeLimitUnit)}';
+    if (_timeCtrl.text != timeText) _timeCtrl.text = timeText;
+    final inactiveText =
+        '${_displayValue(sp.btSeedInactiveTimeLimitMinutes, sp.btSeedInactiveTimeLimitUnit)}';
+    if (_inactiveCtrl.text != inactiveText) _inactiveCtrl.text = inactiveText;
+  }
+
+  @override
+  void dispose() {
+    _ratioCtrl.dispose();
+    _postRatioCtrl.dispose();
+    _timeCtrl.dispose();
+    _inactiveCtrl.dispose();
+    super.dispose();
+  }
+
+  void _commitRatio() {
+    final sp = widget.settingsProvider;
+    final value = double.tryParse(_ratioCtrl.text) ?? 0.0;
+    if (value >= 0.0) sp.setBtSeedRatioLimit(value);
+  }
+
+  void _commitPostRatio() {
+    final sp = widget.settingsProvider;
+    final value = double.tryParse(_postRatioCtrl.text) ?? 0.0;
+    if (value >= 0.0) sp.setBtSeedPostRatioLimit(value);
+  }
+
+  void _commitTime() {
+    final sp = widget.settingsProvider;
+    final value = int.tryParse(_timeCtrl.text) ?? 0;
+    if (value >= 0) {
+      sp.setBtSeedTimeLimitMinutes(_toMinutes(value, sp.btSeedTimeLimitUnit));
+    }
+  }
+
+  void _commitInactive() {
+    final sp = widget.settingsProvider;
+    final value = int.tryParse(_inactiveCtrl.text) ?? 0;
+    if (value >= 0) {
+      sp.setBtSeedInactiveTimeLimitMinutes(
+        _toMinutes(value, sp.btSeedInactiveTimeLimitUnit),
+      );
+    }
+  }
+
+  Widget _buildRatioRow({
+    required AppColors c,
+    required bool enabled,
+    required ValueChanged<bool> onChanged,
+    required String label,
+    required TextEditingController controller,
+    required VoidCallback onSubmitted,
+  }) {
+    return Row(
+      children: [
+        ShadSwitch(value: enabled, onChanged: onChanged),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+        SizedBox(
+          width: 80,
+          child: ShadInput(
+            controller: controller,
+            enabled: enabled,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            onSubmitted: (_) => onSubmitted(),
+            onChanged: (_) => onSubmitted(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTimeRow({
+    required AppColors c,
+    required S s,
+    required bool enabled,
+    required ValueChanged<bool> onChanged,
+    required String label,
+    required TextEditingController controller,
+    required String unit,
+    required ValueChanged<String> onUnitChanged,
+    required VoidCallback onSubmitted,
+  }) {
+    return Row(
+      children: [
+        ShadSwitch(value: enabled, onChanged: onChanged),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+        SizedBox(
+          width: 72,
+          child: ShadInput(
+            controller: controller,
+            enabled: enabled,
+            keyboardType: TextInputType.number,
+            onSubmitted: (_) => onSubmitted(),
+            onChanged: (_) => onSubmitted(),
+          ),
+        ),
+        const SizedBox(width: 6),
+        SizedBox(
+          width: 80,
+          child: ShadSelect<String>(
+            enabled: enabled,
+            initialValue: unit,
+            options: [
+              ShadOption(value: 'minutes', child: Text(s.timeUnitMinutes)),
+              ShadOption(value: 'hours', child: Text(s.timeUnitHours)),
+              ShadOption(value: 'days', child: Text(s.timeUnitDays)),
+            ],
+            selectedOptionBuilder: (context, value) {
+              final text = switch (value) {
+                'hours' => s.timeUnitHours,
+                'days' => s.timeUnitDays,
+                _ => s.timeUnitMinutes,
+              };
+              return Text(
+                text,
+                style: TextStyle(fontSize: 12, color: c.textPrimary),
+              );
+            },
+            onChanged: (v) {
+              if (v != null) onUnitChanged(v);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _thenActionLabel(S s, String action) {
+    return switch (action) {
+      'delete' => s.btSeedDeleteTask,
+      'delete_files' => s.btSeedDeleteTaskAndFiles,
+      _ => s.btSeedStopSeeding,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    final sp = widget.settingsProvider;
+
+    return ListenableBuilder(
+      listenable: sp,
+      builder: (context, _) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildRatioRow(
+              c: c,
+              enabled: sp.btSeedRatioEnabled,
+              onChanged: sp.setBtSeedRatioEnabled,
+              label: s.btSeedRatioLimit,
+              controller: _ratioCtrl,
+              onSubmitted: _commitRatio,
+            ),
+            const SizedBox(height: 8),
+            _buildRatioRow(
+              c: c,
+              enabled: sp.btSeedPostRatioEnabled,
+              onChanged: sp.setBtSeedPostRatioEnabled,
+              label: s.btSeedPostRatioLimit,
+              controller: _postRatioCtrl,
+              onSubmitted: _commitPostRatio,
+            ),
+            const SizedBox(height: 8),
+            _buildTimeRow(
+              c: c,
+              s: s,
+              enabled: sp.btSeedTimeEnabled,
+              onChanged: sp.setBtSeedTimeEnabled,
+              label: s.btSeedTimeLimit,
+              controller: _timeCtrl,
+              unit: sp.btSeedTimeLimitUnit,
+              onUnitChanged: (unit) {
+                sp.setBtSeedTimeLimitUnit(unit);
+              },
+              onSubmitted: _commitTime,
+            ),
+            const SizedBox(height: 8),
+            _buildTimeRow(
+              c: c,
+              s: s,
+              enabled: sp.btSeedInactiveTimeEnabled,
+              onChanged: sp.setBtSeedInactiveTimeEnabled,
+              label: s.btSeedInactiveTimeLimit,
+              controller: _inactiveCtrl,
+              unit: sp.btSeedInactiveTimeLimitUnit,
+              onUnitChanged: (unit) {
+                sp.setBtSeedInactiveTimeLimitUnit(unit);
+              },
+              onSubmitted: _commitInactive,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Text(
+                  s.btSeedConditionsOperator,
+                  style: TextStyle(fontSize: 12, color: c.textSecondary),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 160,
+                  child: ShadSelect<String>(
+                    initialValue: sp.btSeedConditionsOperator,
+                    options: [
+                      ShadOption(value: 'or', child: Text(s.btSeedOperatorOr)),
+                      ShadOption(
+                        value: 'and',
+                        child: Text(s.btSeedOperatorAnd),
+                      ),
+                    ],
+                    selectedOptionBuilder: (context, value) {
+                      return Text(
+                        value == 'and'
+                            ? s.btSeedOperatorAnd
+                            : s.btSeedOperatorOr,
+                        style: TextStyle(fontSize: 12, color: c.textPrimary),
+                      );
+                    },
+                    onChanged: (v) {
+                      if (v != null) sp.setBtSeedConditionsOperator(v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Text(
+                  s.btSeedThenAction,
+                  style: TextStyle(fontSize: 12, color: c.textSecondary),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 160,
+                  child: ShadSelect<String>(
+                    initialValue: sp.btSeedThenAction,
+                    options: [
+                      ShadOption(
+                        value: 'stop',
+                        child: Text(s.btSeedStopSeeding),
+                      ),
+                      ShadOption(
+                        value: 'delete',
+                        child: Text(s.btSeedDeleteTask),
+                      ),
+                      ShadOption(
+                        value: 'delete_files',
+                        child: Text(s.btSeedDeleteTaskAndFiles),
+                      ),
+                    ],
+                    selectedOptionBuilder: (context, value) {
+                      return Text(
+                        _thenActionLabel(s, value),
+                        style: TextStyle(fontSize: 12, color: c.textPrimary),
+                      );
+                    },
+                    onChanged: (v) {
+                      if (v != null) sp.setBtSeedThenAction(v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              s.btSettingsRestartHint,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
             ),
           ],
         );
@@ -5636,7 +6046,8 @@ class _ComponentsContentState extends State<_ComponentsContent> {
     );
   }
 
-  void _saveManualPath() => _provider.saveManualPath(_pathController.text.trim());
+  void _saveManualPath() =>
+      _provider.saveManualPath(_pathController.text.trim());
 
   void _clearManualPath() {
     _pathController.clear();
@@ -8405,8 +8816,16 @@ class _ThemeModeSelector extends StatelessWidget {
             label: s.themeModeSystem,
             icon: LucideIcons.monitor,
           ),
-          (mode: ThemeMode.light, label: s.themeModeLight, icon: LucideIcons.sun),
-          (mode: ThemeMode.dark, label: s.themeModeDark, icon: LucideIcons.moon),
+          (
+            mode: ThemeMode.light,
+            label: s.themeModeLight,
+            icon: LucideIcons.sun,
+          ),
+          (
+            mode: ThemeMode.dark,
+            label: s.themeModeDark,
+            icon: LucideIcons.moon,
+          ),
         ];
 
         return Wrap(
@@ -9805,7 +10224,8 @@ class _AccountContentState extends State<_AccountContent> {
     super.initState();
     // 修正登录会话恢复时的旧快照（如 originId 在 kv 缓存里仍是注册前的 null）；
     // 静默刷新，失败只记日志不打扰 UI。
-    if (!_cloudProfileRefreshedThisSession && CloudAuthService.instance.isLoggedIn) {
+    if (!_cloudProfileRefreshedThisSession &&
+        CloudAuthService.instance.isLoggedIn) {
       _cloudProfileRefreshedThisSession = true;
       unawaited(_silentRefreshProfile());
     }
@@ -9815,7 +10235,12 @@ class _AccountContentState extends State<_AccountContent> {
     try {
       await CloudAuthService.instance.refreshProfile();
     } catch (e, stack) {
-      logError('CloudAuth', 'silent /me refresh on account page failed', e, stack);
+      logError(
+        'CloudAuth',
+        'silent /me refresh on account page failed',
+        e,
+        stack,
+      );
     }
   }
 
@@ -10028,8 +10453,9 @@ class _AccountContentState extends State<_AccountContent> {
   /// 可点复制）+ 右侧退出登录按钮；头像取昵称首字符（无字符回退云图标）。
   /// 邮箱不在此展示——移至下方「账号与安全」分组（见 _AccountContentState.build）。
   Widget _profileBody(BuildContext context, S s, AppColors c, CloudUser user) {
-    final displayName =
-        user.nickname.isNotEmpty ? user.nickname : user.email.split('@').first;
+    final displayName = user.nickname.isNotEmpty
+        ? user.nickname
+        : user.email.split('@').first;
     final hasOriginId = user.originId != null;
     final initial = _avatarInitial(displayName);
     return Row(
@@ -10109,7 +10535,8 @@ class _AccountContentState extends State<_AccountContent> {
                       : MouseCursor.defer,
                   child: GestureDetector(
                     onTap: hasOriginId
-                        ? () => unawaited(_copyOriginId(context, user.originId!))
+                        ? () =>
+                              unawaited(_copyOriginId(context, user.originId!))
                         : null,
                     child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -10117,9 +10544,8 @@ class _AccountContentState extends State<_AccountContent> {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: (hasOriginId ? c.accent : c.textMuted).withValues(
-                          alpha: 0.12,
-                        ),
+                        color: (hasOriginId ? c.accent : c.textMuted)
+                            .withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Row(
@@ -10130,7 +10556,9 @@ class _AccountContentState extends State<_AccountContent> {
                             style: TextStyle(
                               fontSize: 11.5,
                               fontWeight: FontWeight.w600,
-                              fontFeatures: const [FontFeature.tabularFigures()],
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
                               color: hasOriginId ? c.accent : c.textMuted,
                             ),
                           ),
@@ -10514,8 +10942,9 @@ class _ServerAddressCard extends StatefulWidget {
 }
 
 class _ServerAddressCardState extends State<_ServerAddressCard> {
-  late final TextEditingController _controller =
-      TextEditingController(text: CloudApiConfig.baseUrl);
+  late final TextEditingController _controller = TextEditingController(
+    text: CloudApiConfig.baseUrl,
+  );
   late final FocusNode _focusNode = FocusNode()..addListener(_onFocusChange);
 
   @override
@@ -10538,15 +10967,16 @@ class _ServerAddressCardState extends State<_ServerAddressCard> {
       return;
     }
     final uri = Uri.tryParse(value);
-    final valid = uri != null &&
+    final valid =
+        uri != null &&
         (uri.scheme == 'http' || uri.scheme == 'https') &&
         uri.host.isNotEmpty;
     if (!valid) {
       setState(() => _controller.text = CloudApiConfig.baseUrl);
       if (!mounted) return;
-      FluxSonner.of(context).show(
-        ShadToast.destructive(title: Text(s.accountServerAddressInvalid)),
-      );
+      FluxSonner.of(
+        context,
+      ).show(ShadToast.destructive(title: Text(s.accountServerAddressInvalid)));
       return;
     }
     await CloudApiConfig.setBaseUrl(value);
@@ -11616,7 +12046,11 @@ class _DeviceRow extends StatelessWidget {
               ShadTooltip(
                 builder: (_) => Text(s.accountDeviceDeleteConfirmTitle),
                 child: ShadIconButton.ghost(
-                  icon: Icon(LucideIcons.trash2, size: 14, color: c.statusError),
+                  icon: Icon(
+                    LucideIcons.trash2,
+                    size: 14,
+                    color: c.statusError,
+                  ),
                   onPressed: () => _delete(context),
                 ),
               ),
@@ -12630,7 +13064,11 @@ class _LoginDialogContentState extends State<_LoginDialogContent> {
         final email = _emailPrefillForRegister;
         final password = _passwordController.text;
         Navigator.of(context).pop();
-        _showRegisterDialog(context, initialEmail: email, initialPassword: password);
+        _showRegisterDialog(
+          context,
+          initialEmail: email,
+          initialPassword: password,
+        );
         return;
       }
       setState(() {
@@ -12775,10 +13213,14 @@ class _LoginDialogContentState extends State<_LoginDialogContent> {
             controller: _accountController,
             // 验证码 tab 只认邮箱；密码 tab 接受邮箱或纯数字 Origin ID。
             placeholder: Text(
-              useCode ? s.accountEmailPlaceholder : s.accountLoginAccountPlaceholder,
+              useCode
+                  ? s.accountEmailPlaceholder
+                  : s.accountLoginAccountPlaceholder,
             ),
             enabled: !_busy,
-            keyboardType: useCode ? TextInputType.emailAddress : TextInputType.text,
+            keyboardType: useCode
+                ? TextInputType.emailAddress
+                : TextInputType.text,
           ),
           const SizedBox(height: 10),
           if (useCode) ...[
@@ -12796,10 +13238,13 @@ class _LoginDialogContentState extends State<_LoginDialogContent> {
                 const SizedBox(width: 8),
                 ShadButton.outline(
                   size: ShadButtonSize.sm,
-                  enabled: !_busy && _account.isNotEmpty && _resendRemaining <= 0,
+                  enabled:
+                      !_busy && _account.isNotEmpty && _resendRemaining <= 0,
                   onPressed: _sendLoginCode,
                   child: Text(
-                    _resendRemaining > 0 ? '${_resendRemaining}s' : s.accountSendCode,
+                    _resendRemaining > 0
+                        ? '${_resendRemaining}s'
+                        : s.accountSendCode,
                   ),
                 ),
               ],
@@ -12822,7 +13267,10 @@ class _LoginDialogContentState extends State<_LoginDialogContent> {
           ],
           if (_error != null) ...[
             const SizedBox(height: 8),
-            Text(_error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
+            Text(
+              _error!,
+              style: TextStyle(fontSize: 11.5, color: c.statusError),
+            ),
           ],
           const SizedBox(height: 16),
           ShadButton(
@@ -12886,9 +13334,12 @@ class _RegisterDialogContent extends StatefulWidget {
 
 class _RegisterDialogContentState extends State<_RegisterDialogContent> {
   _RegisterStep _step = _RegisterStep.form;
-  late final _emailController = TextEditingController(text: widget.initialEmail ?? '');
-  late final _passwordController =
-      TextEditingController(text: widget.initialPassword ?? '');
+  late final _emailController = TextEditingController(
+    text: widget.initialEmail ?? '',
+  );
+  late final _passwordController = TextEditingController(
+    text: widget.initialPassword ?? '',
+  );
   final _nicknameController = TextEditingController();
   final _codeController = TextEditingController();
 
@@ -12903,14 +13354,18 @@ class _RegisterDialogContentState extends State<_RegisterDialogContent> {
     super.initState();
     // 预填「盲盒兽名」默认昵称建议（跟随当前界面语言），情绪触点前置；
     // 用户可改可清空，清空时提交前会静默重新生成（见 _register）。
-    _nicknameController.text = NicknamePool.suggest(currentLocale.startsWith('zh'));
+    _nicknameController.text = NicknamePool.suggest(
+      currentLocale.startsWith('zh'),
+    );
   }
 
   /// 🎲 换一换：显式用户操作，重新随机生成一个「盲盒兽名」覆盖当前输入框
   /// （不受“用户手改后不自动覆盖”限制——那条规则约束的是无操作触发的自动覆盖）。
   void _rerollNickname() {
     setState(() {
-      _nicknameController.text = NicknamePool.suggest(currentLocale.startsWith('zh'));
+      _nicknameController.text = NicknamePool.suggest(
+        currentLocale.startsWith('zh'),
+      );
     });
   }
 
@@ -13033,7 +13488,9 @@ class _RegisterDialogContentState extends State<_RegisterDialogContent> {
         title: Text(s.accountRegisterVerifyTitle),
         constraints: const BoxConstraints(maxWidth: 400),
         child: _CodeVerifyForm(
-          subtitle: s.accountRegisterVerifySubtitle(_emailController.text.trim()),
+          subtitle: s.accountRegisterVerifySubtitle(
+            _emailController.text.trim(),
+          ),
           codeController: _codeController,
           ttlRemaining: _ttlRemaining,
           resendRemaining: _resendRemaining,
@@ -13096,7 +13553,10 @@ class _RegisterDialogContentState extends State<_RegisterDialogContent> {
           ),
           if (_error != null) ...[
             const SizedBox(height: 8),
-            Text(_error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
+            Text(
+              _error!,
+              style: TextStyle(fontSize: 11.5, color: c.statusError),
+            ),
           ],
           const SizedBox(height: 16),
           ShadButton(

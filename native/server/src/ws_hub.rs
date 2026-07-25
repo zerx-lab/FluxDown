@@ -186,6 +186,7 @@ impl EventSink for EngineEventSink {
                 url,
                 error_message,
                 upload_speed_bps,
+                ..
             } => {
                 // 实时速率缓存：仅 downloading(1)/preparing(5) 保留非零值，
                 // 到达终态（paused/completed/error）立即清除，避免 aria2
@@ -560,6 +561,9 @@ mod tests {
             url: "http://x".into(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
 
         let json = rx.recv().await.expect("broadcast recv");
@@ -592,6 +596,9 @@ mod tests {
             url: "magnet:?xt=urn:btih:abc".into(),
             error_message: String::new(),
             upload_speed_bps: 777,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
 
         let speeds = hub.live_speeds_snapshot();
@@ -907,6 +914,9 @@ mod tests {
             url: "http://x".into(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
         let snap = hub.live_speeds_snapshot();
         assert_eq!(snap.get("t1").map(|s| s.download_bps), Some(4096));
@@ -922,6 +932,9 @@ mod tests {
             url: "http://x".into(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
         assert!(
             !hub.live_speeds_snapshot().contains_key("t1"),
@@ -946,6 +959,9 @@ mod tests {
                 url: "http://x".into(),
                 error_message: String::new(),
                 upload_speed_bps: 0,
+                uploaded_bytes: 0,
+                seeding_status: 0,
+                seeding_message: String::new(),
             });
         }
         assert_eq!(hub.live_speeds_snapshot().len(), 2);
@@ -970,6 +986,10 @@ mod tests {
             completed_at: String::new(),
             segments: 0,
             queue_order: 0,
+            uploaded_bytes: 0,
+            uploaded_at_completion: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
             referrer: String::new(),
             group_id: String::new(),
             rss_source_id: String::new(),
@@ -1001,6 +1021,10 @@ mod tests {
             completed_at: String::new(),
             segments: 0,
             queue_order: 0,
+            uploaded_bytes: 0,
+            uploaded_at_completion: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
             referrer: String::new(),
             group_id: String::new(),
             rss_source_id: String::new(),
@@ -1175,6 +1199,9 @@ mod tests {
                 url: "http://x".into(),
                 error_message: String::new(),
                 upload_speed_bps: 0,
+                uploaded_bytes: 0,
+                seeding_status: 0,
+                seeding_message: String::new(),
             }
         }
 
@@ -1217,6 +1244,9 @@ mod tests {
             url: "http://x".into(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
         assert_eq!(
             rx.recv().await.expect("start event").kind,
@@ -1236,6 +1266,9 @@ mod tests {
             url: String::new(),
             error_message: "deleted".into(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
         assert!(
             matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Empty)),
@@ -1270,6 +1303,9 @@ mod tests {
             url: "http://x".into(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
         assert_eq!(
             rx.recv().await.expect("start event").kind,
@@ -1287,6 +1323,9 @@ mod tests {
             url: "http://x".into(),
             error_message: String::new(),
             upload_speed_bps: 0,
+            uploaded_bytes: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         });
         assert_eq!(
             rx.recv().await.expect("complete event").kind,

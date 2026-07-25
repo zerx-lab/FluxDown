@@ -324,12 +324,48 @@ final Map<TaskColumnId, TaskColumnDef> kTaskColumns = {
     id: TaskColumnId.speed,
     width: 90,
     label: (s) => s.colSpeed,
-    cellBuilder: (context, task) => _tnumCenter(
-      task.speedText,
-      task.status == TaskStatus.downloading
-          ? AppColors.green
-          : AppColors.of(context).textMuted,
-    ),
+    cellBuilder: (context, task) {
+      final c = AppColors.of(context);
+      if (!task.isBt) {
+        return _tnumCenter(
+          task.speedText,
+          task.status == TaskStatus.downloading ? AppColors.green : c.textMuted,
+        );
+      }
+      final down = task.speed;
+      final up = task.uploadSpeedBps;
+      final hasDown = down > 0;
+      final hasUp = up > 0;
+      if (!hasDown && !hasUp) {
+        return _tnumCenter('—', c.textMuted);
+      }
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (hasDown)
+              Text(
+                '↓ ${DownloadTask.formatBytes(down)}/s',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppColors.green,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            if (hasUp)
+              Text(
+                '↑ ${DownloadTask.formatBytes(up)}/s',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppColors.green,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+          ],
+        ),
+      );
+    },
   ),
   TaskColumnId.eta: TaskColumnDef(
     id: TaskColumnId.eta,

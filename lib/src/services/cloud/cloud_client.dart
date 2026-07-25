@@ -330,7 +330,7 @@ class CloudClient {
       '/tasks/$id/status',
       body: {
         'status': status,
-        if (totalBytes != null) 'totalBytes': totalBytes,
+        'totalBytes': ?totalBytes,
         if (fileName != null && fileName.isNotEmpty) 'fileName': fileName,
         if (error != null && error.isNotEmpty) 'error': error,
       },
