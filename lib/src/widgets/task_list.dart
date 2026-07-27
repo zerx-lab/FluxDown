@@ -341,7 +341,7 @@ class _TaskListState extends State<TaskList> {
             ),
           ),
           SizedBox(
-            width: 60,
+            width: 80,
             child: Center(
               child: Text(
                 s.colStatus,

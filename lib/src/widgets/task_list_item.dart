@@ -167,7 +167,7 @@ class _TaskListItemState extends State<TaskListItem> {
               SizedBox(width: 150, child: _buildProgress(c, m)),
               SizedBox(width: 90, child: _buildSpeed(c)),
               SizedBox(width: 80, child: _buildEta(c)),
-              SizedBox(width: 60, child: _buildStatus(c)),
+              SizedBox(width: 80, child: _buildStatus(c)),
             ],
           ),
         ),
@@ -394,6 +394,8 @@ class _TaskListItemState extends State<TaskListItem> {
     }
     final statusText = Text(
       task.statusText,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
       style: TextStyle(fontSize: 12, color: statusColor),
     );
     return Center(child: statusText);
