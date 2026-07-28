@@ -74,12 +74,24 @@ export function clearCloudSession() {
 /** 面板本身固定作为一台 web 设备登录 FluxCloud，与宿主 App 账户状态无关。 */
 export const CLOUD_DEVICE_PLATFORM = 'web'
 
+/** RFC 4122 UUID v4 via crypto.getRandomValues() —— 不同于 crypto.randomUUID()，
+ *  getRandomValues() 无 Secure Context 限制，NAS/Docker 面板经明文 HTTP（非
+ *  localhost）访问时 randomUUID 缺失会直接抛错（见 issue #204），此处规避。 */
+function randomUuidV4(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80 // variant 10
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /** 客户端持久设备标识（UUID v4），首次调用生成并落盘，此后永久不变 —— 服务端
  *  devices 表识别"同一设备"的唯一依据。 */
 export function cloudDeviceId(): string {
   const existing = localStorage.getItem(DEVICE_ID_KEY)
   if (existing) return existing
-  const id = crypto.randomUUID()
+  const id = randomUuidV4()
   localStorage.setItem(DEVICE_ID_KEY, id)
   return id
 }
