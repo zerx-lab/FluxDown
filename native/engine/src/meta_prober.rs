@@ -213,7 +213,7 @@ async fn probe_http_meta(
                 })
                 .unwrap_or(false);
             let name = if file_name.is_empty() && !is_html {
-                extract_filename(response.headers(), url)
+                extract_filename(response.headers(), url, response.url().as_str())
             } else {
                 String::new()
             };

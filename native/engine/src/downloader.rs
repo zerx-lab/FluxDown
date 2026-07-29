@@ -1337,7 +1337,7 @@ async fn resolve_file_info_once(
         .unwrap_or("")
         .to_string();
 
-    let file_name = extract_filename(&headers, final_url.as_str());
+    let file_name = extract_filename(&headers, url, final_url.as_str());
     log_info!(
         "[resolve] url={} → name={}, size={}, range={}, ct={}",
         url,
@@ -1536,7 +1536,7 @@ async fn resolve_file_info_plain_get_fallback(
         .unwrap_or("")
         .to_string();
 
-    let file_name = extract_filename(&headers, final_url.as_str());
+    let file_name = extract_filename(&headers, url, final_url.as_str());
 
     let etag = headers
         .get(reqwest::header::ETAG)
@@ -1641,7 +1641,7 @@ async fn resolve_file_info_non_get(
         .unwrap_or("")
         .to_string();
 
-    let file_name = extract_filename(&headers, final_url.as_str());
+    let file_name = extract_filename(&headers, url, final_url.as_str());
 
     let etag = headers
         .get(reqwest::header::ETAG)
@@ -1748,14 +1748,36 @@ fn mime_to_ext(content_type: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn extract_filename(headers: &reqwest::header::HeaderMap, url: &str) -> String {
+pub(crate) fn extract_filename(
+    headers: &reqwest::header::HeaderMap,
+    request_url: &str,
+    final_url: &str,
+) -> String {
     // 1. Try Content-Disposition: attachment; filename="xxx"
     if let Some(name) = extract_from_content_disposition(headers) {
         return name;
     }
 
-    // 2. Try URL path (after removing query & fragment)
-    if let Some(name) = extract_from_url(url) {
+    // 2. Try URL path (after removing query & fragment).  Prefer the
+    // *original* request URL when its last segment carries a real-looking
+    // extension: a redirect can land on a URL that structurally lacks one
+    // (e.g. GitHub's `archive/refs/tags/<tag>.zip` redirects to codeload's
+    // `.../zip/refs/tags/<tag>`, dropping `.zip`). If `<tag>` itself embeds a
+    // dot from a version number (like "11.0-1b"), reading only the
+    // post-redirect URL manufactures a bogus extension (".0-1b") even though
+    // the original URL had the right one all along. Fall back to the final
+    // URL when the original doesn't look like a real filename (e.g. it was a
+    // shortlink whose redirect target is the only URL with a real name).
+    let from_request = extract_from_url(request_url);
+    if let Some(name) = &from_request
+        && has_plausible_extension(name)
+    {
+        return name.clone();
+    }
+    if let Some(name) = extract_from_url(final_url) {
+        return name;
+    }
+    if let Some(name) = from_request {
         return name;
     }
 
@@ -1768,6 +1790,21 @@ pub(crate) fn extract_filename(headers: &reqwest::header::HeaderMap, url: &str) 
     }
 
     "download".to_string()
+}
+
+/// Whether `name`'s trailing "extension" (the part after the last `.`) looks
+/// like a real file extension: 1–10 ASCII alphanumeric characters. Used to
+/// prefer a URL whose last path segment carries a genuine extension over one
+/// that merely contains a stray dot — e.g. a version number embedded in a
+/// path segment, as in GitHub's codeload redirect targets.
+fn has_plausible_extension(name: &str) -> bool {
+    match name.rfind('.') {
+        Some(pos) if pos + 1 < name.len() => {
+            let ext = &name[pos + 1..];
+            (1..=10).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
 }
 
 fn extract_from_content_disposition(headers: &reqwest::header::HeaderMap) -> Option<String> {
@@ -4241,15 +4278,53 @@ mod tests {
     #[test]
     fn extract_filename_prefers_content_disposition() {
         let headers = make_headers_with_cd("attachment; filename=\"from_header.zip\"");
-        let name = extract_filename(&headers, "https://example.com/from_url.tar.gz");
+        let name = extract_filename(
+            &headers,
+            "https://example.com/from_url.tar.gz",
+            "https://example.com/from_url.tar.gz",
+        );
         assert_eq!(name, "from_header.zip");
     }
 
     #[test]
     fn extract_filename_falls_back_to_url() {
         let headers = reqwest::header::HeaderMap::new();
-        let name = extract_filename(&headers, "https://example.com/from_url.tar.gz");
+        let name = extract_filename(
+            &headers,
+            "https://example.com/from_url.tar.gz",
+            "https://example.com/from_url.tar.gz",
+        );
         assert_eq!(name, "from_url.tar.gz");
+    }
+
+    #[test]
+    fn extract_filename_prefers_original_url_extension_over_extensionless_redirect() {
+        // Regression test for #223: GitHub's `archive/refs/tags/<tag>.zip`
+        // redirects to codeload's `.../zip/refs/tags/<tag>`, which drops the
+        // `.zip` suffix entirely. When the tag itself embeds a dot from a
+        // version number ("proton-11.0-1b"), naively reading only the
+        // post-redirect URL manufactures a bogus extension (".0-1b") instead
+        // of the correct ".zip" from the original request URL.
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(
+            &headers,
+            "https://github.com/ValveSoftware/Proton/archive/refs/tags/proton-11.0-1b.zip",
+            "https://codeload.github.com/ValveSoftware/Proton/zip/refs/tags/proton-11.0-1b",
+        );
+        assert_eq!(name, "proton-11.0-1b.zip");
+    }
+
+    #[test]
+    fn extract_filename_falls_back_to_final_url_when_original_has_no_extension() {
+        // A shortlink-style original URL has no real filename; the redirect
+        // target does — still usable when Content-Disposition is absent.
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(
+            &headers,
+            "https://dl.example.com/abc123",
+            "https://cdn.example.com/files/real-name.pdf",
+        );
+        assert_eq!(name, "real-name.pdf");
     }
 
     #[test]
@@ -4258,14 +4333,14 @@ mod tests {
         if let Ok(v) = reqwest::header::HeaderValue::from_str("application/pdf") {
             headers.insert(reqwest::header::CONTENT_TYPE, v);
         }
-        let name = extract_filename(&headers, "https://example.com/");
+        let name = extract_filename(&headers, "https://example.com/", "https://example.com/");
         assert_eq!(name, "download.pdf");
     }
 
     #[test]
     fn extract_filename_ultimate_fallback() {
         let headers = reqwest::header::HeaderMap::new();
-        let name = extract_filename(&headers, "https://example.com/");
+        let name = extract_filename(&headers, "https://example.com/", "https://example.com/");
         assert_eq!(name, "download");
     }
 
