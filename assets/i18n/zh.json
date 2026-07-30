@@ -192,6 +192,8 @@
   "boostBannerCancel": "取消",
   "openFile": "打开文件",
   "openFolder": "打开所在文件夹",
+  "copyFile": "复制文件",
+  "fileCopied": "已复制文件",
   "copyUrl": "复制下载地址",
   "urlCopied": "已复制下载地址",
   "errorCopied": "已复制错误信息",

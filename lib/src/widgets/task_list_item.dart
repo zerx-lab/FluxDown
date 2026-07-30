@@ -3,8 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
-import 'flux_sonner.dart';
+import 'package:super_clipboard/super_clipboard.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_task.dart';
@@ -20,6 +21,7 @@ import 'queue_manager_dialog.dart';
 import 'task_columns.dart';
 import '../services/cloud/cloud_auth_service.dart';
 import '../services/cloud/cloud_models.dart';
+import 'flux_sonner.dart';
 
 /// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
 const _pluginErrorPrefix = '[插件]';
@@ -780,6 +782,27 @@ void showTaskContextMenu(
         label: s.openFile,
         color: c.textPrimary,
         action: () => _openFile(filePath),
+      ),
+    );
+    items.add(
+      ContextMenuItem(
+        icon: LucideIcons.copy,
+        label: s.copyFile,
+        color: c.textPrimary,
+        action: () async {
+          final clipboard = SystemClipboard.instance;
+          if (clipboard == null) return;
+          final item = DataWriterItem();
+          item.add(Formats.fileUri(Uri.file(filePath)));
+          await clipboard.write([item]);
+          if (!context.mounted) return;
+          FluxSonner.of(context).show(
+            ShadToast(
+              title: Text(s.fileCopied),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        },
       ),
     );
   }

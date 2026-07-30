@@ -192,6 +192,8 @@
   "boostBannerCancel": "Cancel",
   "openFile": "Open File",
   "openFolder": "Open Folder",
+  "copyFile": "Copy File",
+  "fileCopied": "File Copied",
   "copyUrl": "Copy URL",
   "urlCopied": "URL Copied",
   "errorCopied": "Error message copied",
