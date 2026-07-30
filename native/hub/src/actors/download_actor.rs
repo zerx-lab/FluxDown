@@ -39,13 +39,13 @@ use crate::signals::{
     RequestUpdateFailureMarker, RequestWebhookDeliveries, RequestYtdlpStatus, RequestYtdlpVersions,
     RescanFiles, ResolvePreviewRequest, RevealFile, SaveConfig, SavePluginSettings, SelectBtFiles,
     SelectHlsQuality, SelectResolveVariant, SetFileAssociation, SetPluginEnabled, SetPriorityTask,
-    SetQueueSchedule, SetRssItemAction, SetUrlProtocol, SimulateWebhookEvent, StartQueue,
-    StopQueue, SystemProxyInfo, TaskSegmentsUpdated, TestProxyConnection, TestWebhookEndpoint,
-    TrackerSubscriptionResult, UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
-    UpdateEd2kServerSubscription, UpdateFailureMarker, UpdateQueue, UpdateRssSource,
-    UpdateTaskSegments, UpdateTrackerSubscription, UrlProtocolStatus, ValidateRssFeed,
-    WebhookDeliveries, WebhookPresets, WebhookSimulateAck, WebhookTestResult, YtdlpInstallProgress,
-    YtdlpInstallResult, YtdlpStatusReport, YtdlpVersionList,
+    SetQueueSchedule, SetRssItemAction, SetTaskSeedLimits, SetUrlProtocol, SimulateWebhookEvent,
+    StartQueue, StopQueue, SystemProxyInfo, TaskSegmentsUpdated, TestProxyConnection,
+    TestWebhookEndpoint, TrackerSubscriptionResult, UninstallFfmpeg, UninstallPlugin,
+    UninstallYtdlp, UpdateCheckResult, UpdateEd2kServerSubscription, UpdateFailureMarker,
+    UpdateQueue, UpdateRssSource, UpdateTaskSegments, UpdateTrackerSubscription, UrlProtocolStatus,
+    ValidateRssFeed, WebhookDeliveries, WebhookPresets, WebhookSimulateAck, WebhookTestResult,
+    YtdlpInstallProgress, YtdlpInstallResult, YtdlpStatusReport, YtdlpVersionList,
 };
 // 插件「分支体专用」信号（仅在 hub_plugins 分支体内构造）：mobile 不引入。
 use crate::signals::LinkCommand;
@@ -953,6 +953,8 @@ pub async fn run(db_dir: PathBuf) {
         Webhook(WebhookSignal),
         /// BT 做种限制求值节拍（`SEEDING_EVAL_INTERVAL`，见 engine::bt_seeding）。
         SeedingTick,
+        /// 任务级做种限制覆盖写入（热读，下一次做种求值 tick 生效）。
+        SeedLimits(SetTaskSeedLimits),
     }
     let (aux_tx, mut aux_rx) = mpsc::unbounded_channel::<AuxSignal>();
     let group_tx = aux_tx.clone();
@@ -962,6 +964,7 @@ pub async fn run(db_dir: PathBuf) {
         let group_control_recv = GroupControl::get_dart_signal_receiver();
         let rename_group_recv = RenameGroup::get_dart_signal_receiver();
         let request_all_groups_recv = RequestAllGroups::get_dart_signal_receiver();
+        let seed_limits_recv = SetTaskSeedLimits::get_dart_signal_receiver();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -979,6 +982,9 @@ pub async fn run(db_dir: PathBuf) {
                     }
                     Some(signal) = request_all_groups_recv.recv() => {
                         if group_tx.send(AuxSignal::Group(GroupSignal::RequestAll(signal.message))).is_err() { break; }
+                    }
+                    Some(signal) = seed_limits_recv.recv() => {
+                        if group_tx.send(AuxSignal::SeedLimits(signal.message)).is_err() { break; }
                     }
                     else => break,
                 }
@@ -1398,6 +1404,18 @@ pub async fn run(db_dir: PathBuf) {
                 },
                 AuxSignal::SeedingTick => {
                     engine.manager.tick_seeding_evaluation().await;
+                }
+                AuxSignal::SeedLimits(msg) => {
+                    engine
+                        .manager
+                        .set_task_seed_limits(
+                            &msg.task_id,
+                            msg.ratio_limit_milli,
+                            msg.post_ratio_limit_milli,
+                            msg.seed_time_limit_minutes,
+                            msg.inactive_time_limit_minutes,
+                        )
+                        .await;
                 }
                 }
             }

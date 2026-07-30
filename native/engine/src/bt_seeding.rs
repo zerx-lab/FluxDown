@@ -167,6 +167,78 @@ impl Default for SeedingLimitConfig {
     }
 }
 
+/// 任务级做种限制覆盖的哨兵：跟随全局配置。
+pub const SEED_LIMIT_INHERIT: i64 = -2;
+/// 任务级做种限制覆盖的哨兵：不限制（禁用该条件）。
+pub const SEED_LIMIT_UNLIMITED: i64 = -1;
+
+/// Per-task overrides for the global seeding limits.
+///
+/// Sentinel semantics per field: `-2` = inherit the global value, `-1` =
+/// unlimited (condition disabled), `>= 0` = custom value (`0` behaves as
+/// unlimited because the engine treats zero limits as disabled). Ratio
+/// values are stored in thousandths (`1500` = ratio 1.5) so the persisted
+/// representation stays integral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeedLimitOverrides {
+    pub ratio_limit_milli: i64,
+    pub post_ratio_limit_milli: i64,
+    pub seed_time_limit_minutes: i64,
+    pub inactive_time_limit_minutes: i64,
+}
+
+impl Default for SeedLimitOverrides {
+    /// 默认全部跟随全局。
+    fn default() -> Self {
+        Self {
+            ratio_limit_milli: SEED_LIMIT_INHERIT,
+            post_ratio_limit_milli: SEED_LIMIT_INHERIT,
+            seed_time_limit_minutes: SEED_LIMIT_INHERIT,
+            inactive_time_limit_minutes: SEED_LIMIT_INHERIT,
+        }
+    }
+}
+
+impl SeedLimitOverrides {
+    /// Returns `true` when every field inherits the global configuration.
+    pub fn is_all_inherit(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Resolve the effective limit config for one task: overrides replace the
+    /// matching global values; operator and then-action stay global.
+    pub fn apply(&self, global: &SeedingLimitConfig) -> SeedingLimitConfig {
+        fn ratio(v: i64, global: f64) -> f64 {
+            match v {
+                SEED_LIMIT_INHERIT => global,
+                v if v <= 0 => 0.0,
+                v => v as f64 / 1000.0,
+            }
+        }
+        fn minutes(v: i64, global: u64) -> u64 {
+            match v {
+                SEED_LIMIT_INHERIT => global,
+                v if v <= 0 => 0,
+                v => v as u64,
+            }
+        }
+        SeedingLimitConfig {
+            ratio_limit: ratio(self.ratio_limit_milli, global.ratio_limit),
+            post_ratio_limit: ratio(self.post_ratio_limit_milli, global.post_ratio_limit),
+            seed_time_limit_minutes: minutes(
+                self.seed_time_limit_minutes,
+                global.seed_time_limit_minutes,
+            ),
+            inactive_time_limit_minutes: minutes(
+                self.inactive_time_limit_minutes,
+                global.inactive_time_limit_minutes,
+            ),
+            operator: global.operator,
+            then_action: global.then_action,
+        }
+    }
+}
+
 /// One actively seeding torrent.
 pub struct SeedingEntry {
     pub handle: BtHandle,
@@ -545,28 +617,30 @@ impl SeedingManager {
             .collect()
     }
 
-    /// Evaluate active seeders against the configured limits. Returns Vec of
-    /// `(task_id, reason)` for seeders that should be stopped. Queued seeds
-    /// are frozen (no uploads, no time accrual) and are never stopped here.
+    /// Evaluate active seeders against their effective limits. `resolve`
+    /// returns the per-task effective config plus a live upload snapshot;
+    /// tasks whose effective config has no enabled conditions never stop.
+    /// Returns Vec of `(task_id, reason)` for seeders that should be stopped.
+    /// Queued seeds are frozen (no uploads, no time accrual) and are never
+    /// stopped here.
     pub async fn evaluate_limits(
         &self,
-        config: &SeedingLimitConfig,
-        snapshot: impl Fn(&str) -> SeedingUploadSnapshot,
+        resolve: impl Fn(&str) -> (SeedingLimitConfig, SeedingUploadSnapshot),
     ) -> Vec<(String, SeedingStopReason)> {
-        if !config.has_enabled_conditions() {
-            return Vec::new();
-        }
-
         let now = Instant::now();
         let mut guard = self.state.lock().await;
         let mut stops = Vec::new();
         for (task_id, entry) in guard.active.iter_mut() {
-            let snap = snapshot(task_id);
+            let (config, snap) = resolve(task_id);
 
             // Any upload activity resets the inactive timer.
             if snap.upload_speed_bps > 0 || snap.total_uploaded > entry.last_uploaded_bytes {
                 entry.last_upload_instant = now;
                 entry.last_uploaded_bytes = snap.total_uploaded;
+            }
+
+            if !config.has_enabled_conditions() {
+                continue;
             }
 
             let reason = evaluate_entry(
@@ -575,7 +649,7 @@ impl SeedingManager {
                 entry.last_upload_instant,
                 entry.uploaded_at_completion,
                 snap,
-                config,
+                &config,
             );
             if reason != SeedingStopReason::None {
                 entry.stop_reason = reason;
@@ -842,7 +916,7 @@ mod tests {
         let manager = SeedingManager::new();
         let config = config_or(1.0, 0.0, 60, 0);
         let stops = manager
-            .evaluate_limits(&config, |_| SeedingUploadSnapshot::default())
+            .evaluate_limits(|_| (config, SeedingUploadSnapshot::default()))
             .await;
         assert!(stops.is_empty());
     }
@@ -852,8 +926,67 @@ mod tests {
         let manager = SeedingManager::new();
         let config = SeedingLimitConfig::default();
         let stops = manager
-            .evaluate_limits(&config, |_| snap(200, 100, 100, 0))
+            .evaluate_limits(|_| (config, snap(200, 100, 100, 0)))
             .await;
+        assert!(stops.is_empty());
+    }
+
+    #[test]
+    fn overrides_default_is_all_inherit() {
+        let o = SeedLimitOverrides::default();
+        assert!(o.is_all_inherit());
+        let global = config_or(1.5, 0.0, 30, 5);
+        assert_eq!(o.apply(&global), global);
+    }
+
+    #[test]
+    fn overrides_unlimited_disables_conditions() {
+        let o = SeedLimitOverrides {
+            ratio_limit_milli: SEED_LIMIT_UNLIMITED,
+            post_ratio_limit_milli: SEED_LIMIT_UNLIMITED,
+            seed_time_limit_minutes: SEED_LIMIT_UNLIMITED,
+            inactive_time_limit_minutes: SEED_LIMIT_UNLIMITED,
+        };
+        let global = config_or(1.5, 2.0, 30, 5);
+        let effective = o.apply(&global);
+        assert!(!effective.has_enabled_conditions());
+        // 组合方式与达标动作始终取全局。
+        assert_eq!(effective.operator, global.operator);
+        assert_eq!(effective.then_action, global.then_action);
+    }
+
+    #[test]
+    fn overrides_custom_values_replace_global() {
+        let o = SeedLimitOverrides {
+            ratio_limit_milli: 2500,
+            post_ratio_limit_milli: SEED_LIMIT_INHERIT,
+            seed_time_limit_minutes: 90,
+            inactive_time_limit_minutes: SEED_LIMIT_UNLIMITED,
+        };
+        let global = config_or(1.0, 0.5, 30, 5);
+        let effective = o.apply(&global);
+        assert_eq!(effective.ratio_limit, 2.5);
+        assert_eq!(effective.post_ratio_limit, 0.5);
+        assert_eq!(effective.seed_time_limit_minutes, 90);
+        assert_eq!(effective.inactive_time_limit_minutes, 0);
+    }
+
+    #[tokio::test]
+    async fn per_task_override_enables_limit_when_global_disabled() {
+        // 全局全关，但任务自定义 ratio 1.0：该任务应按覆盖值停止。
+        let manager = SeedingManager::new();
+        let global = SeedingLimitConfig::default();
+        let overrides = SeedLimitOverrides {
+            ratio_limit_milli: 1000,
+            ..SeedLimitOverrides::default()
+        };
+        assert!(!global.has_enabled_conditions());
+        let effective = overrides.apply(&global);
+        assert!(effective.has_enabled_conditions());
+        let stops = manager
+            .evaluate_limits(|_| (effective, snap(200, 100, 100, 0)))
+            .await;
+        // 空管理器无做种者——纯覆盖解析已在上面断言；此处仅验证签名可用。
         assert!(stops.is_empty());
     }
 }

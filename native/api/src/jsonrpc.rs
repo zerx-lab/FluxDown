@@ -740,6 +740,14 @@ mod tests {
             origin_url: String::new(),
             auto_route: String::new(),
             queue_order: 0,
+            uploaded_bytes: 0,
+            uploaded_at_completion: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
+            seed_ratio_limit_milli: -2,
+            seed_post_ratio_limit_milli: -2,
+            seed_time_limit_minutes: -2,
+            seed_inactive_time_limit_minutes: -2,
         }
     }
 

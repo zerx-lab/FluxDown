@@ -125,6 +125,16 @@ pub enum ActorCmd {
         task_id: String,
         ack: oneshot::Sender<()>,
     },
+    /// 设置单任务做种限制覆盖（-2 = 跟随全局，-1 = 不限制，>=0 = 自定义，
+    /// 0 视同不限制；分享率为千分比）。
+    SetTaskSeedLimits {
+        task_id: String,
+        ratio_limit_milli: i64,
+        post_ratio_limit_milli: i64,
+        seed_time_limit_minutes: i64,
+        inactive_time_limit_minutes: i64,
+        ack: oneshot::Sender<()>,
+    },
     TestProxy {
         proxy_type: String,
         host: String,
@@ -388,6 +398,26 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
         }
         ActorCmd::ContinueTask { task_id, ack } => {
             engine.manager.resume_task(&task_id).await;
+            let _ = ack.send(());
+        }
+        ActorCmd::SetTaskSeedLimits {
+            task_id,
+            ratio_limit_milli,
+            post_ratio_limit_milli,
+            seed_time_limit_minutes,
+            inactive_time_limit_minutes,
+            ack,
+        } => {
+            engine
+                .manager
+                .set_task_seed_limits(
+                    &task_id,
+                    ratio_limit_milli,
+                    post_ratio_limit_milli,
+                    seed_time_limit_minutes,
+                    inactive_time_limit_minutes,
+                )
+                .await;
             let _ = ack.send(());
         }
         ActorCmd::DeleteTask {

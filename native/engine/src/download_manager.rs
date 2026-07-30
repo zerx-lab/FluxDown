@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession, TorrentSource};
 use crate::bt_seeding::{
-    SEEDING_QUEUED_MESSAGE, SEEDING_STATUS_ACTIVE, SEEDING_STATUS_QUEUED, SeedingLimitConfig,
-    SeedingStopReason, SeedingUploadSnapshot,
+    SEEDING_QUEUED_MESSAGE, SEEDING_STATUS_ACTIVE, SEEDING_STATUS_QUEUED, SeedLimitOverrides,
+    SeedingLimitConfig, SeedingStopReason, SeedingUploadSnapshot,
 };
 use crate::dash_downloader;
 use crate::db::Db;
@@ -2644,13 +2644,14 @@ impl DownloadManager {
     ///
     /// Uses the persisted cumulative `uploaded_bytes` / `downloaded_bytes` /
     /// `total_bytes` from the DB row so ratio limits are not under-counted
-    /// across librqbit session resets.
+    /// across librqbit session resets. Per-task overrides（跟随全局/不限/
+    /// 自定义）在此处解析为生效配置；组合方式与达标动作恒为全局值。
     async fn evaluate_seeding_limits(&self) -> Vec<(String, SeedingStopReason)> {
         let Some(ref bt) = self.bt_session else {
             return Vec::new();
         };
 
-        let config = SeedingLimitConfig {
+        let global = SeedingLimitConfig {
             ratio_limit: self.bt_config.seed_ratio_limit,
             post_ratio_limit: self.bt_config.seed_post_ratio_limit,
             seed_time_limit_minutes: self.bt_config.seed_time_limit_minutes,
@@ -2660,9 +2661,6 @@ impl DownloadManager {
                 &self.bt_config.seed_then_action,
             ),
         };
-        if !config.has_enabled_conditions() {
-            return Vec::new();
-        }
 
         let seeding_mgr = bt.seeding_manager();
         let task_ids = seeding_mgr.active_task_ids().await;
@@ -2670,8 +2668,9 @@ impl DownloadManager {
             return Vec::new();
         }
 
-        // Build snapshots for limit evaluation from live stats and DB totals.
-        let mut snapshots: HashMap<String, SeedingUploadSnapshot> = HashMap::new();
+        // Build per-task effective configs and live snapshots from DB totals.
+        let mut resolved: HashMap<String, (SeedingLimitConfig, SeedingUploadSnapshot)> =
+            HashMap::new();
         for task_id in &task_ids {
             let Some(handle) = seeding_mgr.get_handle(task_id).await else {
                 continue;
@@ -2687,20 +2686,60 @@ impl DownloadManager {
                 continue;
             };
 
-            snapshots.insert(
+            let overrides = SeedLimitOverrides {
+                ratio_limit_milli: t.seed_ratio_limit_milli,
+                post_ratio_limit_milli: t.seed_post_ratio_limit_milli,
+                seed_time_limit_minutes: t.seed_time_limit_minutes,
+                inactive_time_limit_minutes: t.seed_inactive_time_limit_minutes,
+            };
+            resolved.insert(
                 task_id.clone(),
-                SeedingUploadSnapshot {
-                    total_uploaded: t.uploaded_bytes,
-                    total_downloaded: t.downloaded_bytes,
-                    total_size: t.total_bytes,
-                    upload_speed_bps,
-                },
+                (
+                    overrides.apply(&global),
+                    SeedingUploadSnapshot {
+                        total_uploaded: t.uploaded_bytes,
+                        total_downloaded: t.downloaded_bytes,
+                        total_size: t.total_bytes,
+                        upload_speed_bps,
+                    },
+                ),
             );
         }
 
         seeding_mgr
-            .evaluate_limits(&config, |id| snapshots.get(id).copied().unwrap_or_default())
+            .evaluate_limits(|id| {
+                resolved.get(id).copied().unwrap_or((
+                    SeedingLimitConfig::default(),
+                    SeedingUploadSnapshot::default(),
+                ))
+            })
             .await
+    }
+
+    /// 写入任务级做种限制覆盖（哨兵：-2 跟随全局、-1 不限、>=0 自定义；
+    /// 比率为千分比）。热生效：下一次做种求值 tick 即按新值判定，无需
+    /// 重建会话或重新注册做种者。
+    pub async fn set_task_seed_limits(
+        &self,
+        task_id: &str,
+        ratio_limit_milli: i64,
+        post_ratio_limit_milli: i64,
+        seed_time_limit_minutes: i64,
+        inactive_time_limit_minutes: i64,
+    ) {
+        if let Err(e) = self
+            .db
+            .set_task_seed_limits(
+                task_id,
+                ratio_limit_milli,
+                post_ratio_limit_milli,
+                seed_time_limit_minutes,
+                inactive_time_limit_minutes,
+            )
+            .await
+        {
+            log_info!("[manager] set_task_seed_limits {}: {}", task_id, e);
+        }
     }
 
     /// Invalidate (destroy) the current BT session so it will be re-created

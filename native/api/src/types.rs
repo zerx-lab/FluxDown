@@ -164,6 +164,10 @@ pub struct DownloadRequest {
 ///     uploaded_at_completion: 0,
 ///     seeding_status: 0,
 ///     seeding_message: String::new(),
+///     seed_ratio_limit_milli: -2,
+///     seed_post_ratio_limit_milli: -2,
+///     seed_time_limit_minutes: -2,
+///     seed_inactive_time_limit_minutes: -2,
 ///     referrer: String::new(),
 ///     group_id: String::new(),
 ///     rss_source_id: String::new(),
@@ -239,6 +243,19 @@ pub struct TaskDto {
     /// 做种状态辅助说明（如停止原因，空 = 无）。
     #[serde(default)]
     pub seeding_message: String,
+    /// 任务级总分享率上限（千分比，1500 = 1.5）。哨兵：-2 = 跟随全局，
+    /// -1 = 不限制，>=0 = 自定义（0 视同不限制）。
+    #[serde(default = "default_seed_limit_inherit")]
+    pub seed_ratio_limit_milli: i64,
+    /// 任务级做种后分享率上限（千分比）。哨兵语义同上。
+    #[serde(default = "default_seed_limit_inherit")]
+    pub seed_post_ratio_limit_milli: i64,
+    /// 任务级做种时长上限（分钟）。哨兵语义同上。
+    #[serde(default = "default_seed_limit_inherit")]
+    pub seed_time_limit_minutes: i64,
+    /// 任务级不活跃做种时长上限（分钟）。哨兵语义同上。
+    #[serde(default = "default_seed_limit_inherit")]
+    pub seed_inactive_time_limit_minutes: i64,
 }
 
 impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
@@ -269,6 +286,10 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
             uploaded_at_completion: t.uploaded_at_completion,
             seeding_status: t.seeding_status,
             seeding_message: t.seeding_message,
+            seed_ratio_limit_milli: t.seed_ratio_limit_milli,
+            seed_post_ratio_limit_milli: t.seed_post_ratio_limit_milli,
+            seed_time_limit_minutes: t.seed_time_limit_minutes,
+            seed_inactive_time_limit_minutes: t.seed_inactive_time_limit_minutes,
         }
     }
 }
@@ -427,6 +448,11 @@ fn default_true() -> bool {
 
 fn default_schedule_days() -> i32 {
     127
+}
+
+/// 任务级做种限制的反序列化默认值：-2 = 跟随全局（缺字段不得落到 0=自定义）。
+fn default_seed_limit_inherit() -> i64 {
+    -2
 }
 
 /// 创建任务响应（`POST /api/v1/tasks`）。
@@ -1026,6 +1052,10 @@ mod tests {
             uploaded_at_completion: 7,
             seeding_status: 1,
             seeding_message: String::new(),
+            seed_ratio_limit_milli: -2,
+            seed_post_ratio_limit_milli: -2,
+            seed_time_limit_minutes: -2,
+            seed_inactive_time_limit_minutes: -2,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["taskId"], "t1");

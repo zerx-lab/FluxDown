@@ -323,6 +323,25 @@ async fn handle_socket(mut socket: WebSocket, state: ServerState, authorized: bo
                     Ok(WsClientMsg::SelectVariant { task_id, selected_index }) => {
                         state.selector.provide_variant_selection(&task_id, selected_index);
                     }
+                    Ok(WsClientMsg::SetTaskSeedLimits {
+                        task_id,
+                        ratio_limit_milli,
+                        post_ratio_limit_milli,
+                        seed_time_limit_minutes,
+                        inactive_time_limit_minutes,
+                    }) => {
+                        // fire-and-forget：actor 掉线（send 失败）与回执一并忽略。
+                        let _ = state
+                            .send_cmd(|ack| ActorCmd::SetTaskSeedLimits {
+                                task_id,
+                                ratio_limit_milli,
+                                post_ratio_limit_milli,
+                                seed_time_limit_minutes,
+                                inactive_time_limit_minutes,
+                                ack,
+                            })
+                            .await;
+                    }
                     Err(e) => log_info!("[ws] bad client message: {}", e),
                 }
             }

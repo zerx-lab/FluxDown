@@ -354,6 +354,15 @@ pub enum WsClientMsg {
         task_id: String,
         selected_index: i32,
     },
+    /// 设置单任务做种限制覆盖（qBittorrent 三态语义：-2 = 跟随全局，
+    /// -1 = 不限制，>=0 = 自定义，0 视同不限制；分享率为千分比）。
+    SetTaskSeedLimits {
+        task_id: String,
+        ratio_limit_milli: i64,
+        post_ratio_limit_milli: i64,
+        seed_time_limit_minutes: i64,
+        inactive_time_limit_minutes: i64,
+    },
     /// RTT 测量，服务端回 `pong`。
     Ping {},
 }
@@ -836,6 +845,30 @@ mod tests {
     }
 
     #[test]
+    fn ws_client_msg_set_task_seed_limits_roundtrip() {
+        let msg: WsClientMsg = serde_json::from_str(
+            r#"{"type":"setTaskSeedLimits","taskId":"t5","ratioLimitMilli":1500,"postRatioLimitMilli":-1,"seedTimeLimitMinutes":-2,"inactiveTimeLimitMinutes":30}"#,
+        )
+        .unwrap();
+        match msg {
+            WsClientMsg::SetTaskSeedLimits {
+                task_id,
+                ratio_limit_milli,
+                post_ratio_limit_milli,
+                seed_time_limit_minutes,
+                inactive_time_limit_minutes,
+            } => {
+                assert_eq!(task_id, "t5");
+                assert_eq!(ratio_limit_milli, 1500);
+                assert_eq!(post_ratio_limit_milli, -1);
+                assert_eq!(seed_time_limit_minutes, -2);
+                assert_eq!(inactive_time_limit_minutes, 30);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn ws_client_msg_bt_selection_roundtrip_with_indices() {
         let msg: WsClientMsg = serde_json::from_str(
             r#"{"type":"btSelection","taskId":"t2","selectedIndices":[0,2,5]}"#,
@@ -901,6 +934,10 @@ mod tests {
             uploaded_at_completion: 0,
             seeding_status: 0,
             seeding_message: String::new(),
+            seed_ratio_limit_milli: -2,
+            seed_post_ratio_limit_milli: -2,
+            seed_time_limit_minutes: -2,
+            seed_inactive_time_limit_minutes: -2,
         }
     }
 

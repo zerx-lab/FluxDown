@@ -77,7 +77,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     seeding_status INTEGER NOT NULL DEFAULT 0,
     seeding_message TEXT NOT NULL DEFAULT '',
     seeding_started_at INTEGER NOT NULL DEFAULT 0,
-    seeding_time_secs INTEGER NOT NULL DEFAULT 0
+    seeding_time_secs INTEGER NOT NULL DEFAULT 0,
+    seed_ratio_limit_milli INTEGER NOT NULL DEFAULT -2,
+    seed_post_ratio_limit_milli INTEGER NOT NULL DEFAULT -2,
+    seed_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
+    seed_inactive_time_limit_minutes INTEGER NOT NULL DEFAULT -2
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -251,7 +255,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     seeding_status INTEGER NOT NULL DEFAULT 0,
     seeding_message TEXT NOT NULL DEFAULT '',
     seeding_started_at INTEGER NOT NULL DEFAULT 0,
-    seeding_time_secs INTEGER NOT NULL DEFAULT 0
+    seeding_time_secs INTEGER NOT NULL DEFAULT 0,
+    seed_ratio_limit_milli INTEGER NOT NULL DEFAULT -2,
+    seed_post_ratio_limit_milli INTEGER NOT NULL DEFAULT -2,
+    seed_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
+    seed_inactive_time_limit_minutes INTEGER NOT NULL DEFAULT -2
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -436,6 +444,12 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         uploaded_at_completion: row.try_get("uploaded_at_completion").unwrap_or_default(),
         seeding_status: row.try_get("seeding_status").unwrap_or_default(),
         seeding_message: row.try_get("seeding_message").unwrap_or_default(),
+        seed_ratio_limit_milli: row.try_get("seed_ratio_limit_milli").unwrap_or(-2),
+        seed_post_ratio_limit_milli: row.try_get("seed_post_ratio_limit_milli").unwrap_or(-2),
+        seed_time_limit_minutes: row.try_get("seed_time_limit_minutes").unwrap_or(-2),
+        seed_inactive_time_limit_minutes: row
+            .try_get("seed_inactive_time_limit_minutes")
+            .unwrap_or(-2),
         referrer: row.try_get("referrer").unwrap_or_default(),
         group_id: row.try_get("group_id").unwrap_or_default(),
         rss_source_id: row.try_get("rss_source_id").unwrap_or_default(),
@@ -444,7 +458,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, referrer, group_id, rss_source_id, origin_url, auto_route";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, referrer, group_id, rss_source_id, origin_url, auto_route";
 
 /// 把 `AnyRow` 映射为 [`GroupInfo`]。
 fn group_from_row(row: &AnyRow) -> Result<GroupInfo, sqlx::Error> {
@@ -658,6 +672,31 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "seeding_time_secs", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        // 任务级做种限制覆盖（-2=跟随全局、-1=不限、>=0 自定义；比率为千分比）。
+        self.add_column_if_missing(
+            "tasks",
+            "seed_ratio_limit_milli",
+            "INTEGER NOT NULL DEFAULT -2",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "seed_post_ratio_limit_milli",
+            "INTEGER NOT NULL DEFAULT -2",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "seed_time_limit_minutes",
+            "INTEGER NOT NULL DEFAULT -2",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "seed_inactive_time_limit_minutes",
+            "INTEGER NOT NULL DEFAULT -2",
+        )
+        .await?;
         Ok(())
     }
 
@@ -1062,6 +1101,30 @@ impl Db {
             .bind(task_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// 写入任务级做种限制覆盖（哨兵：-2 跟随全局、-1 不限、>=0 自定义；
+    /// 比率为千分比）。小于 -2 的入参钳到 -2。
+    pub async fn set_task_seed_limits(
+        &self,
+        task_id: &str,
+        ratio_limit_milli: i64,
+        post_ratio_limit_milli: i64,
+        seed_time_limit_minutes: i64,
+        inactive_time_limit_minutes: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET seed_ratio_limit_milli = $1, seed_post_ratio_limit_milli = $2, \
+             seed_time_limit_minutes = $3, seed_inactive_time_limit_minutes = $4 WHERE id = $5",
+        )
+        .bind(ratio_limit_milli.max(-2))
+        .bind(post_ratio_limit_milli.max(-2))
+        .bind(seed_time_limit_minutes.max(-2))
+        .bind(inactive_time_limit_minutes.max(-2))
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
