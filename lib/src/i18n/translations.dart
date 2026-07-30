@@ -1180,6 +1180,7 @@ class S {
   String get seedingStatusNone => _r('seedingStatusNone');
   String get seedingStatusSeeding => _r('seedingStatusSeeding');
   String get seedingStatusQueued => _r('seedingStatusQueued');
+  String get seedingResume => _r('seedingResume');
   String get seedingStatusRatioReached => _r('seedingStatusRatioReached');
   String get seedingStatusTimeReached => _r('seedingStatusTimeReached');
   String get seedingStatusInactiveReached => _r('seedingStatusInactiveReached');

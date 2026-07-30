@@ -281,11 +281,12 @@ impl std::fmt::Debug for SeedingEntry {
     }
 }
 
-/// A completed torrent waiting for a free seeding slot.
+/// A completed torrent waiting for a free seeding slot. No session upload
+/// baseline is kept: queued torrents are paused, and unpausing always resets
+/// librqbit's per-session upload counter, so activation restarts from 0.
 struct QueuedSeed {
     handle: BtHandle,
     uploaded_at_completion: i64,
-    last_session_uploaded: i64,
     seed_time_base_secs: i64,
 }
 
@@ -418,7 +419,6 @@ impl SeedingManager {
                 QueuedSeed {
                     handle,
                     uploaded_at_completion,
-                    last_session_uploaded,
                     seed_time_base_secs,
                 },
             ));
@@ -454,7 +454,9 @@ impl SeedingManager {
                     last_upload_instant: now,
                     last_uploaded_bytes: queued.uploaded_at_completion,
                     uploaded_at_completion: queued.uploaded_at_completion,
-                    last_session_uploaded: queued.last_session_uploaded,
+                    // Paused-then-unpaused torrents restart librqbit's upload
+                    // counter from zero — so does the delta baseline.
+                    last_session_uploaded: 0,
                     stop_reason: SeedingStopReason::None,
                 },
             );
@@ -487,7 +489,6 @@ impl SeedingManager {
                     QueuedSeed {
                         handle: entry.handle,
                         uploaded_at_completion: entry.uploaded_at_completion,
-                        last_session_uploaded: entry.last_session_uploaded,
                         seed_time_base_secs: folded,
                     },
                 ));
@@ -534,9 +535,11 @@ impl SeedingManager {
             entry.last_session_uploaded = snapshot_uploaded;
         }
 
-        if upload_speed_bps > 0 || snapshot_uploaded > entry.last_uploaded_bytes {
+        // `last_uploaded_bytes` 只保存 DB 累计尺度，由 `evaluate_limits`
+        // 独占写入；这里的入参是会话计数器（尺度更小），据它检测到的上传
+        // 活动只刷新不活跃计时器，或直接依据正的增量。
+        if upload_speed_bps > 0 || delta > 0 {
             entry.last_upload_instant = Instant::now();
-            entry.last_uploaded_bytes = snapshot_uploaded;
         }
 
         Some(delta)
@@ -573,12 +576,6 @@ impl SeedingManager {
     pub async fn is_seeding(&self, task_id: &str) -> bool {
         let guard = self.state.lock().await;
         guard.active.contains_key(task_id)
-    }
-
-    /// Number of currently active seeders.
-    pub async fn active_count(&self) -> usize {
-        let guard = self.state.lock().await;
-        guard.active.len()
     }
 
     /// Number of registered seeders, active plus queued.

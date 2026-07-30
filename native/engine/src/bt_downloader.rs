@@ -4081,6 +4081,11 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 .as_ref()
                 .map(|l| l.snapshot.uploaded_bytes as i64)
                 .unwrap_or(uploaded_bytes);
+            // 分享率基线必须与 tasks.uploaded_bytes 同尺度（跨会话累计）：
+            // 会话计数器在暂停/恢复或跨重启续传后从零重计，直接用它做基线
+            // 会把先前会话的上传量算进「做种后分享率」。会话计数器只作
+            // last_session_uploaded 的增量基线。
+            let uploaded_at_completion = uploaded_bytes.max(completed_uploaded_bytes);
 
             // Retain the handle in the cache (do NOT call take_handle) and
             // register the completed torrent as a seeder.  The torrent stays
@@ -4094,13 +4099,13 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 .register_seeder(
                     &task_id,
                     handle.clone(),
-                    completed_uploaded_bytes,
+                    uploaded_at_completion,
                     completed_uploaded_bytes,
                     seed_time_base,
                 )
                 .await;
             let _ = db
-                .update_task_uploaded_at_completion(&task_id, completed_uploaded_bytes)
+                .update_task_uploaded_at_completion(&task_id, uploaded_at_completion)
                 .await;
             let (seeding_status, seeding_message) = match registration {
                 SeedingRegistration::Activated | SeedingRegistration::AlreadyPresent => {
@@ -4111,11 +4116,22 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 }
                 SeedingRegistration::Queued => {
                     let _ = shared_bt.pause_task(&task_id).await;
-                    let _ = db.set_task_seeding_queued(&task_id).await;
-                    (
-                        crate::bt_seeding::SEEDING_STATUS_QUEUED,
-                        crate::bt_seeding::SEEDING_QUEUED_MESSAGE,
-                    )
+                    if shared_bt.seeding_manager().is_seeding(&task_id).await {
+                        // 与 actor 侧 reconcile 的升级竞争：注册后、暂停前它
+                        // 可能已被提升为活跃做种者。以 SeedingManager 内存态
+                        // 为准，重新解除暂停并落活跃状态，避免三方失配。
+                        let _ = shared_bt.resume_task(&task_id).await;
+                        let _ = db
+                            .set_task_seeding_active(&task_id, chrono::Local::now().timestamp())
+                            .await;
+                        (crate::bt_seeding::SEEDING_STATUS_ACTIVE, "")
+                    } else {
+                        let _ = db.set_task_seeding_queued(&task_id).await;
+                        (
+                            crate::bt_seeding::SEEDING_STATUS_QUEUED,
+                            crate::bt_seeding::SEEDING_QUEUED_MESSAGE,
+                        )
+                    }
                 }
             };
 

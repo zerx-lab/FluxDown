@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession, TorrentSource};
 use crate::bt_seeding::{
     SEEDING_QUEUED_MESSAGE, SEEDING_STATUS_ACTIVE, SEEDING_STATUS_QUEUED, SeedLimitOverrides,
-    SeedingLimitConfig, SeedingStopReason, SeedingUploadSnapshot,
+    SeedingLimitConfig, SeedingRegistration, SeedingStopReason, SeedingUploadSnapshot,
 };
 use crate::dash_downloader;
 use crate::db::Db;
@@ -2484,18 +2484,11 @@ impl DownloadManager {
             if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await {
                 match then_action {
                     crate::bt_seeding::SeedingThenAction::DeleteTask => {
-                        let _ = self
-                            .db
-                            .update_task_seeding_status(&task_id, reason.as_i32(), reason.message())
-                            .await;
+                        // 行即将删除，不写只会随行消失的停止原因。
                         self.delete_task(&task_id, false).await;
                         continue;
                     }
                     crate::bt_seeding::SeedingThenAction::DeleteTaskAndFiles => {
-                        let _ = self
-                            .db
-                            .update_task_seeding_status(&task_id, reason.as_i32(), reason.message())
-                            .await;
                         self.delete_task(&task_id, true).await;
                         continue;
                     }
@@ -2541,11 +2534,36 @@ impl DownloadManager {
         let (activated, demoted) = mgr.reconcile().await;
         for task_id in activated {
             if let Err(e) = bt.resume_task(&task_id).await {
+                // unpause 失败不得谎报做种中：回滚注册、结算时长、保持停止
+                // 态（用户可再次手动恢复），并把槽位让给下一次 reconcile。
                 log_info!(
                     "[manager] seeding promote {}: unpause failed: {}",
                     &task_id[..task_id.len().min(8)],
                     e
                 );
+                if let Some(seed) = mgr.unregister(&task_id).await {
+                    let _ = self
+                        .db
+                        .set_task_seeding_time(&task_id, seed.seed_time_secs)
+                        .await;
+                }
+                let _ = self
+                    .db
+                    .update_task_seeding_status(
+                        &task_id,
+                        SeedingStopReason::UserStopped.as_i32(),
+                        "seed resume failed",
+                    )
+                    .await;
+                self.emit_progress_from_db(
+                    &task_id,
+                    3,
+                    SeedingStopReason::UserStopped.as_i32(),
+                    "seed resume failed",
+                    0,
+                )
+                .await;
+                continue;
             }
             let _ = self
                 .db
@@ -3334,7 +3352,7 @@ impl DownloadManager {
                 Ok(t) => stale.extend(t),
                 Err(e) => {
                     log_info!("[manager] load_tasks_with_seeding_status error: {}", e);
-                    return;
+                    break;
                 }
             }
         }
@@ -5007,87 +5025,11 @@ impl DownloadManager {
         // Load task once and reuse for both the is_bt check and the queue entry.
         let task_row = self.db.load_task_by_id(task_id).await.ok().flatten();
 
-        // Handle stopped BT seeders before treating the task as an ordinary
-        // resume. A completed task with a user-stopped seeding state is still
-        // a finished download; resuming it only reactivates seeding. When the
-        // active-seeder cap is reached the task enters the seeding queue
-        // instead (torrent stays paused until a slot frees up).
+        // 已完成任务的做种恢复走专用分支（停止态 → 重新做种/排队），
+        // 绝不进入普通恢复/下载流水线。
         if let Some(ref task) = task_row
-            && task.status == 3
-            && task.seeding_status == SeedingStopReason::UserStopped.as_i32()
+            && self.try_resume_seeding(task_id, task).await
         {
-            let stopped_status = SeedingStopReason::UserStopped.as_i32();
-            let stopped_message = SeedingStopReason::UserStopped.message();
-            if let Some(ref bt) = self.bt_session {
-                match bt.cached_handle(task_id).await {
-                    Some(handle) => {
-                        let seed_time_base =
-                            self.db.get_task_seeding_time(task_id).await.unwrap_or(0);
-                        let registration = bt
-                            .register_seeder(
-                                task_id,
-                                handle,
-                                task.uploaded_at_completion,
-                                0,
-                                seed_time_base,
-                            )
-                            .await;
-                        match registration {
-                            crate::bt_seeding::SeedingRegistration::Activated
-                            | crate::bt_seeding::SeedingRegistration::AlreadyPresent => {
-                                if let Err(e) = bt.resume_task(task_id).await {
-                                    log_info!(
-                                        "[manager] resume_task {}: BT resume failed: {}",
-                                        task_id,
-                                        e
-                                    );
-                                }
-                                let _ = self
-                                    .db
-                                    .set_task_seeding_active(
-                                        task_id,
-                                        chrono::Local::now().timestamp(),
-                                    )
-                                    .await;
-                                self.emit_progress_from_db(
-                                    task_id,
-                                    3,
-                                    SEEDING_STATUS_ACTIVE,
-                                    "",
-                                    0,
-                                )
-                                .await;
-                            }
-                            crate::bt_seeding::SeedingRegistration::Queued => {
-                                let _ = self.db.set_task_seeding_queued(task_id).await;
-                                self.emit_progress_from_db(
-                                    task_id,
-                                    3,
-                                    SEEDING_STATUS_QUEUED,
-                                    SEEDING_QUEUED_MESSAGE,
-                                    0,
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                    None => {
-                        log_info!(
-                            "[manager] resume_task {}: no cached BT handle, cannot resume seeding",
-                            task_id
-                        );
-                        self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
-                            .await;
-                    }
-                }
-            } else {
-                log_info!(
-                    "[manager] resume_task {}: no BT session, cannot resume seeding",
-                    task_id
-                );
-                self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
-                    .await;
-            }
             return;
         }
 
@@ -5983,22 +5925,6 @@ impl DownloadManager {
             delete_task_artifact_files(&self.db, task_id, &t.save_dir).await;
         }
 
-        // If the task was still marked as seeding, record the deletion reason
-        // before the row disappears.
-        if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await
-            && (t.seeding_status == crate::bt_seeding::SEEDING_STATUS_ACTIVE
-                || t.seeding_status == crate::bt_seeding::SEEDING_STATUS_QUEUED)
-        {
-            let _ = self
-                .db
-                .update_task_seeding_status(
-                    task_id,
-                    crate::bt_seeding::SeedingStopReason::TaskDeleted.as_i32(),
-                    crate::bt_seeding::SeedingStopReason::TaskDeleted.message(),
-                )
-                .await;
-        }
-
         if let Err(e) = self.db.delete_task(task_id).await {
             log_info!("[manager] delete_task {}: DB delete error: {}", task_id, e);
         }
@@ -6429,6 +6355,84 @@ impl DownloadManager {
         self.send_tasks_snapshot().await;
     }
 
+    /// 已完成任务的做种恢复：停止态（2..=7，用户暂停或限制达标）重新注册
+    /// 为做种者，或在活动做种数达上限时进入做种队列。返回 `true` 表示该
+    /// 任务按做种语义处理完毕（含失败提示），调用方不得再走普通恢复路径；
+    /// `false` 表示任务不属于做种恢复场景。
+    ///
+    /// 恢复后若限制未调整，下一次求值 tick 会再次停止——先调高全局或任务级
+    /// 限制才有意义。
+    async fn try_resume_seeding(&self, task_id: &str, task: &TaskInfo) -> bool {
+        if task.status != 3 || !(2..=7).contains(&task.seeding_status) {
+            return false;
+        }
+        let stopped_status = task.seeding_status;
+        let stopped_message = task.seeding_message.as_str();
+        let Some(bt) = self.bt_session.clone() else {
+            log_info!(
+                "[manager] resume_task {}: no BT session, cannot resume seeding",
+                task_id
+            );
+            self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
+                .await;
+            return true;
+        };
+        let Some(handle) = bt.cached_handle(task_id).await else {
+            log_info!(
+                "[manager] resume_task {}: no cached BT handle, cannot resume seeding",
+                task_id
+            );
+            self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
+                .await;
+            return true;
+        };
+        let seed_time_base = self.db.get_task_seeding_time(task_id).await.unwrap_or(0);
+        let registration = bt
+            .register_seeder(
+                task_id,
+                handle,
+                task.uploaded_at_completion,
+                0,
+                seed_time_base,
+            )
+            .await;
+        match registration {
+            SeedingRegistration::Activated | SeedingRegistration::AlreadyPresent => {
+                if let Err(e) = bt.resume_task(task_id).await {
+                    // unpause 失败不得谎报做种中：回滚注册并保持停止态。
+                    log_info!("[manager] resume_task {}: BT resume failed: {}", task_id, e);
+                    if let Some(seed) = bt.unregister_seeder(task_id).await {
+                        let _ = self
+                            .db
+                            .set_task_seeding_time(task_id, seed.seed_time_secs)
+                            .await;
+                    }
+                    self.emit_progress_from_db(task_id, 3, stopped_status, stopped_message, 0)
+                        .await;
+                    return true;
+                }
+                let _ = self
+                    .db
+                    .set_task_seeding_active(task_id, chrono::Local::now().timestamp())
+                    .await;
+                self.emit_progress_from_db(task_id, 3, SEEDING_STATUS_ACTIVE, "", 0)
+                    .await;
+            }
+            SeedingRegistration::Queued => {
+                let _ = self.db.set_task_seeding_queued(task_id).await;
+                self.emit_progress_from_db(
+                    task_id,
+                    3,
+                    SEEDING_STATUS_QUEUED,
+                    SEEDING_QUEUED_MESSAGE,
+                    0,
+                )
+                .await;
+            }
+        }
+        true
+    }
+
     /// Resume a task using a pre-loaded TaskInfo row (avoids redundant DB query).
     ///
     /// 返回 `true` = 任务已进入 `pending_queue` 排队。本函数不发任何事件：
@@ -6452,6 +6456,11 @@ impl DownloadManager {
         }
 
         if self.pending_queue.iter().any(|q| q.task_id == task_id) {
+            return false;
+        }
+
+        // 已完成种子的「恢复」是重新做种，绝不能重新进下载流水线。
+        if self.try_resume_seeding(task_id, &task_row).await {
             return false;
         }
 
@@ -6543,8 +6552,24 @@ impl DownloadManager {
         for tid in &active {
             self.pause_task_silent(tid).await;
         }
-        if queued.is_empty() && active.is_empty() {
-            return; // 全员本就非活跃非排队：保持既往完全无操作、无广播。
+        // 做种/排队做种的任务（status=3）既不在 pending_queue 也不在
+        // active_tasks，单独收集，逐个走 pause_task_silent 的做种分支
+        // （停止做种 → UserStopped）。
+        let seeding: Vec<String> = if let Some(ref bt) = self.bt_session {
+            bt.seeding_manager()
+                .all_task_ids()
+                .await
+                .into_iter()
+                .filter(|id| idset.contains(id.as_str()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for tid in &seeding {
+            self.pause_task_silent(tid).await;
+        }
+        if queued.is_empty() && active.is_empty() && seeding.is_empty() {
+            return; // 全员本就非活跃非排队非做种：保持既往完全无操作、无广播。
         }
         if !queued.is_empty() {
             self.broadcast_queue_positions();
@@ -7891,10 +7916,9 @@ pub async fn progress_reporter(
         // Status 2 (paused): speed state is stale; a fresh one will be
         //   created via `or_insert_with` when the task resumes.
         // Status 3 (completed) / 4 (error/cancelled/deleted): terminal.
-        // BT seeders (status=3 with seeding_status=1) stay alive so the UI
-        // continues to receive live upload speed/ratio updates.
-        let should_remove_state =
-            update.status == 2 || update.status == 4 || (update.status == 3 && !is_seeding);
+        // 做种期的实时上传统计不经 reporter（由 manager 直接 sink.emit），
+        // 完成帧之后不会再有本任务的 ProgressUpdate，保留状态只会泄漏。
+        let should_remove_state = update.status == 2 || update.status == 3 || update.status == 4;
         if should_remove_state {
             states.remove(&update.task_id);
             last_dart_send.remove(&update.task_id);

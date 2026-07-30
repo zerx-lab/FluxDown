@@ -743,6 +743,18 @@ class DownloadTask {
       (seedingStatus == SeedingStatus.seeding ||
           seedingStatus == SeedingStatus.queued);
 
+  /// 做种已停止（用户暂停或限制达标），可通过恢复重新开始做种。
+  /// deleted(5) 不算——任务行即将消失，无恢复意义。
+  bool get isSeedingStopped =>
+      status == TaskStatus.completed &&
+      const {
+        SeedingStatus.ratioReached,
+        SeedingStatus.timeReached,
+        SeedingStatus.userStopped,
+        SeedingStatus.sessionReleased,
+        SeedingStatus.inactiveReached,
+      }.contains(seedingStatus);
+
   /// 分享率（uploaded / downloaded）
   double get seedRatio =>
       downloadedBytes <= 0 ? 0.0 : uploadedBytes / downloadedBytes;

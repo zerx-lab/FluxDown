@@ -939,9 +939,8 @@ class DownloadController extends ChangeNotifier {
     final idx = _tasks.indexWhere((t) => t.id == taskId);
     if (idx >= 0) {
       final t = _tasks[idx];
-      if (t.status == TaskStatus.completed &&
-          t.seedingStatus == SeedingStatus.userStopped) {
-        // 已暂停的做种任务：保持 completed，仅恢复做种状态。
+      if (t.status == TaskStatus.completed && t.isSeedingStopped) {
+        // 做种已停止（用户暂停/限制达标）：保持 completed，仅恢复做种状态。
         _tasks[idx] = _resumeSeederOptimistically(t);
       } else {
         _tasks[idx] = _tasks[idx].copyWith(status: TaskStatus.resuming);

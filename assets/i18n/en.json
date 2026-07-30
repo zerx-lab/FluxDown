@@ -1214,6 +1214,7 @@
     "seedingStatusNone": "Not seeding",
     "seedingStatusSeeding": "Seeding",
     "seedingStatusQueued": "Queued for seeding",
+    "seedingResume": "Resume seeding",
     "seedingStatusRatioReached": "Ratio limit reached",
     "seedingStatusTimeReached": "Seeding time limit reached",
     "seedingStatusInactiveReached": "Inactive seeding limit reached",

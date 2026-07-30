@@ -1214,6 +1214,7 @@
     "seedingStatusNone": "未做种",
     "seedingStatusSeeding": "做种中",
     "seedingStatusQueued": "排队做种",
+    "seedingResume": "继续做种",
     "seedingStatusRatioReached": "已达到分享率限制",
     "seedingStatusTimeReached": "已达到做种时间限制",
     "seedingStatusInactiveReached": "已达到不活跃做种时间限制",
