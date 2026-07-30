@@ -1,7 +1,17 @@
 //! BitTorrent seeding lifecycle.
+//!
+//! 完成的 torrent 保留 librqbit 句柄继续做种。活动做种数受
+//! `seed_max_active` 上限约束（0 = 不限制）：超出上限的完成任务进入
+//! FIFO 做种队列（librqbit 侧暂停，不上传），有槽位释放时按序激活；
+//! 上限热更新后由周期性 `reconcile` 升/降级补齐差额。
+//!
+//! 做种时长跨暂停/重启**累计**：每个做种者以落库的累计秒数为基线
+//! （`seed_time_base_secs`），叠加本次激活以来的墙钟时长；排队/暂停
+//! 期间不计时。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
@@ -11,6 +21,13 @@ use crate::logger::log_info;
 
 /// Numeric code indicating an active seeder (not a stop reason).
 pub const SEEDING_STATUS_ACTIVE: i32 = 1;
+
+/// Numeric code indicating a completed torrent waiting for a free seeding
+/// slot (`seed_max_active` reached). Not a stop reason.
+pub const SEEDING_STATUS_QUEUED: i32 = 8;
+
+/// Auxiliary message persisted alongside [`SEEDING_STATUS_QUEUED`].
+pub const SEEDING_QUEUED_MESSAGE: &str = "queued for seeding";
 
 /// Interval between periodic evaluations of BT seeding ratio/time limits.
 pub const SEEDING_EVAL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -116,7 +133,7 @@ pub struct SeedingLimitConfig {
     /// Post-completion upload-to-download ratio threshold
     /// (`(uploaded - uploaded_at_completion) / downloaded`). `0.0` disables.
     pub post_ratio_limit: f64,
-    /// Maximum time spent seeding, in minutes. `0` disables the limit.
+    /// Maximum cumulative seeding time, in minutes. `0` disables the limit.
     pub seed_time_limit_minutes: u64,
     /// Maximum time allowed with zero upload speed, in minutes. `0` disables.
     pub inactive_time_limit_minutes: u64,
@@ -137,12 +154,12 @@ impl SeedingLimitConfig {
 }
 
 impl Default for SeedingLimitConfig {
-    /// Default limits: share to a 1.0 ratio **or** seed for 72 hours.
+    /// 默认所有限制均禁用：完成的任务持续做种，直到用户手动停止。
     fn default() -> Self {
         Self {
-            ratio_limit: 1.0,
+            ratio_limit: 0.0,
             post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 72 * 60,
+            seed_time_limit_minutes: 0,
             inactive_time_limit_minutes: 0,
             operator: SeedingLimitOperator::Or,
             then_action: SeedingThenAction::Stop,
@@ -153,9 +170,11 @@ impl Default for SeedingLimitConfig {
 /// One actively seeding torrent.
 pub struct SeedingEntry {
     pub handle: BtHandle,
-    /// Wall-clock start time of this seeding period (unix seconds).
-    /// Persisted across restarts so total seeding time is cumulative.
-    pub started_at_unix: i64,
+    /// Cumulative seeding seconds persisted before this activation stint.
+    pub seed_time_base_secs: i64,
+    /// Instant this seeding stint started (activation time). Queued/paused
+    /// periods are excluded from the cumulative seeding time.
+    pub stint_started: Instant,
     /// Last instant at which the seeder had non-zero upload activity.
     pub last_upload_instant: Instant,
     /// Total uploaded bytes observed at `last_upload_instant`.
@@ -169,10 +188,18 @@ pub struct SeedingEntry {
     pub stop_reason: SeedingStopReason,
 }
 
+impl SeedingEntry {
+    /// Cumulative seeding seconds including the current stint.
+    fn effective_seed_time_secs(&self, now: Instant) -> i64 {
+        self.seed_time_base_secs
+            .saturating_add(now.duration_since(self.stint_started).as_secs() as i64)
+    }
+}
+
 impl std::fmt::Debug for SeedingEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SeedingEntry")
-            .field("started_at_unix", &self.started_at_unix)
+            .field("seed_time_base_secs", &self.seed_time_base_secs)
             .field("last_upload_instant", &self.last_upload_instant)
             .field("last_uploaded_bytes", &self.last_uploaded_bytes)
             .field("uploaded_at_completion", &self.uploaded_at_completion)
@@ -182,67 +209,233 @@ impl std::fmt::Debug for SeedingEntry {
     }
 }
 
+/// A completed torrent waiting for a free seeding slot.
+struct QueuedSeed {
+    handle: BtHandle,
+    uploaded_at_completion: i64,
+    last_session_uploaded: i64,
+    seed_time_base_secs: i64,
+}
+
+/// Outcome of [`SeedingManager::register`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedingRegistration {
+    /// Registered and immediately active (a free slot was available).
+    Activated,
+    /// Registered but queued: `seed_max_active` is reached. The caller must
+    /// pause the torrent; a later `reconcile` activates it in FIFO order.
+    Queued,
+    /// The task was already registered (active or queued).
+    AlreadyPresent,
+}
+
+/// State snapshot returned by [`SeedingManager::unregister`].
+#[derive(Debug, Clone, Copy)]
+pub struct UnregisteredSeed {
+    /// `true` when the entry was actively seeding (vs waiting in the queue).
+    pub was_active: bool,
+    /// Final cumulative seeding seconds (base + current stint for active
+    /// entries). The caller should persist this value.
+    pub seed_time_secs: i64,
+}
+
 /// Snapshot of live upload state needed by [`SeedingManager::evaluate_limits`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SeedingUploadSnapshot {
     /// Cumulative uploaded bytes persisted in the database.
     pub total_uploaded: i64,
-    /// Total downloaded bytes (for a completed torrent this equals file size).
+    /// Total downloaded bytes recorded for the task.
     pub total_downloaded: i64,
+    /// Total torrent size in bytes. Used as the ratio divisor fallback when
+    /// `total_downloaded` is implausibly small (restored/rechecked data).
+    pub total_size: i64,
     /// Current upload speed in bytes per second.
     pub upload_speed_bps: i64,
 }
 
+/// Internal collections guarded by one lock: the active map plus the FIFO
+/// wait queue. A task id lives in at most one of the two.
+#[derive(Default)]
+struct SeedingState {
+    active: HashMap<String, SeedingEntry>,
+    queued: VecDeque<(String, QueuedSeed)>,
+}
+
 /// Manages the lifecycle of seeding BT torrents.
 pub struct SeedingManager {
-    seeders: Mutex<HashMap<String, SeedingEntry>>,
+    state: Mutex<SeedingState>,
+    /// Max simultaneously active seeders. `0` = unlimited.
+    cap: AtomicUsize,
+}
+
+fn short_id(task_id: &str) -> &str {
+    task_id.get(..8).unwrap_or(task_id)
 }
 
 impl SeedingManager {
-    /// Create an empty seeding manager.
+    /// Create an empty seeding manager with no active-seeder cap.
     pub fn new() -> Self {
         Self {
-            seeders: Mutex::new(HashMap::new()),
+            state: Mutex::new(SeedingState::default()),
+            cap: AtomicUsize::new(0),
         }
     }
 
-    /// Register a completed BT task as an active seeder.
+    /// Update the max active seeder cap (`0` = unlimited). Takes effect on
+    /// the next `register`/`reconcile`.
+    pub fn set_cap(&self, cap: usize) {
+        self.cap.store(cap, Ordering::Relaxed);
+    }
+
+    /// Current max active seeder cap (`0` = unlimited).
+    pub fn cap(&self) -> usize {
+        self.cap.load(Ordering::Relaxed)
+    }
+
+    fn has_free_slot(&self, active_len: usize) -> bool {
+        let cap = self.cap();
+        cap == 0 || active_len < cap
+    }
+
+    /// Register a completed BT task as a seeder.
     ///
-    /// Returns `true` if the task was newly registered. Returns `false` if it
-    /// was already registered.
+    /// With a free slot the task becomes active immediately; otherwise it is
+    /// appended to the wait queue (the caller must pause the torrent).
+    /// `seed_time_base_secs` is the persisted cumulative seeding time.
     pub async fn register(
         &self,
         task_id: String,
         handle: BtHandle,
         uploaded_at_completion: i64,
-        started_at_unix: i64,
         last_session_uploaded: i64,
-    ) -> bool {
-        let short = task_id.get(..8).unwrap_or(&task_id);
-        let mut guard = self.seeders.lock().await;
-        if guard.contains_key(&task_id) {
-            return false;
+        seed_time_base_secs: i64,
+    ) -> SeedingRegistration {
+        let mut guard = self.state.lock().await;
+        if guard.active.contains_key(&task_id) || guard.queued.iter().any(|(id, _)| id == &task_id)
+        {
+            return SeedingRegistration::AlreadyPresent;
         }
-        log_info!("[bt-seeding] task={} registered for seeding", short);
-        let now = Instant::now();
-        let entry = SeedingEntry {
-            handle,
-            started_at_unix,
-            last_upload_instant: now,
-            last_uploaded_bytes: uploaded_at_completion,
-            uploaded_at_completion,
-            last_session_uploaded,
-            stop_reason: SeedingStopReason::None,
-        };
-        guard.insert(task_id, entry);
-        true
+        if self.has_free_slot(guard.active.len()) {
+            log_info!(
+                "[bt-seeding] task={} registered for seeding (active)",
+                short_id(&task_id)
+            );
+            let now = Instant::now();
+            guard.active.insert(
+                task_id,
+                SeedingEntry {
+                    handle,
+                    seed_time_base_secs,
+                    stint_started: now,
+                    last_upload_instant: now,
+                    last_uploaded_bytes: uploaded_at_completion,
+                    uploaded_at_completion,
+                    last_session_uploaded,
+                    stop_reason: SeedingStopReason::None,
+                },
+            );
+            SeedingRegistration::Activated
+        } else {
+            log_info!(
+                "[bt-seeding] task={} queued for seeding (cap {} reached)",
+                short_id(&task_id),
+                self.cap()
+            );
+            guard.queued.push_back((
+                task_id,
+                QueuedSeed {
+                    handle,
+                    uploaded_at_completion,
+                    last_session_uploaded,
+                    seed_time_base_secs,
+                },
+            ));
+            SeedingRegistration::Queued
+        }
+    }
+
+    /// Rebalance active seeders against the cap.
+    ///
+    /// Promotes queued seeds (FIFO) while slots are free and demotes the most
+    /// recently activated seeders while over cap (their elapsed stint is
+    /// folded into the cumulative base; they re-enter the queue front).
+    /// Returns `(activated_ids, demoted)`——demoted 项附带结算后的累计做种
+    /// 秒数供调用方落库；调用方还需 unpause/pause torrent 并持久化状态迁移。
+    pub async fn reconcile(&self) -> (Vec<String>, Vec<(String, i64)>) {
+        let mut guard = self.state.lock().await;
+        let cap = self.cap();
+        let mut activated = Vec::new();
+        let mut demoted: Vec<(String, i64)> = Vec::new();
+
+        // Promote while there is room.
+        while self.has_free_slot(guard.active.len()) {
+            let Some((task_id, queued)) = guard.queued.pop_front() else {
+                break;
+            };
+            let now = Instant::now();
+            guard.active.insert(
+                task_id.clone(),
+                SeedingEntry {
+                    handle: queued.handle,
+                    seed_time_base_secs: queued.seed_time_base_secs,
+                    stint_started: now,
+                    last_upload_instant: now,
+                    last_uploaded_bytes: queued.uploaded_at_completion,
+                    uploaded_at_completion: queued.uploaded_at_completion,
+                    last_session_uploaded: queued.last_session_uploaded,
+                    stop_reason: SeedingStopReason::None,
+                },
+            );
+            log_info!(
+                "[bt-seeding] task={} promoted from seeding queue",
+                short_id(&task_id)
+            );
+            activated.push(task_id);
+        }
+
+        // Demote while over cap (cap shrank at runtime). Most recently
+        // activated seeders yield first and keep queue-front priority.
+        if cap > 0 {
+            let now = Instant::now();
+            while guard.active.len() > cap {
+                let Some(task_id) = guard
+                    .active
+                    .iter()
+                    .max_by_key(|(_, e)| e.stint_started)
+                    .map(|(id, _)| id.clone())
+                else {
+                    break;
+                };
+                let Some(entry) = guard.active.remove(&task_id) else {
+                    break;
+                };
+                let folded = entry.effective_seed_time_secs(now);
+                guard.queued.push_front((
+                    task_id.clone(),
+                    QueuedSeed {
+                        handle: entry.handle,
+                        uploaded_at_completion: entry.uploaded_at_completion,
+                        last_session_uploaded: entry.last_session_uploaded,
+                        seed_time_base_secs: folded,
+                    },
+                ));
+                log_info!(
+                    "[bt-seeding] task={} demoted to seeding queue (cap {})",
+                    short_id(&task_id),
+                    cap
+                );
+                demoted.push((task_id, folded));
+            }
+        }
+
+        (activated, demoted)
     }
 
     /// Apply a fresh live-upload snapshot and return the delta that should be
     /// added to the persisted `uploaded_bytes` counter.
     ///
     /// Returns `None` when `snapshot_uploaded` is negative (should not happen)
-    /// or the seeder is no longer registered. The caller should skip DB writes
+    /// or the seeder is not actively seeding. The caller should skip DB writes
     /// when this returns `None`.
     ///
     /// librqbit resets its internal upload counter when a torrent is paused
@@ -257,8 +450,8 @@ impl SeedingManager {
         if snapshot_uploaded < 0 {
             return None;
         }
-        let mut guard = self.seeders.lock().await;
-        let entry = guard.get_mut(task_id)?;
+        let mut guard = self.state.lock().await;
+        let entry = guard.active.get_mut(task_id)?;
 
         // Counter reset (pause/resume or new session): start a new baseline.
         if snapshot_uploaded < entry.last_session_uploaded {
@@ -277,42 +470,87 @@ impl SeedingManager {
         Some(delta)
     }
 
-    /// Remove a seeding entry and return it, if present.
-    pub async fn unregister(&self, task_id: &str) -> Option<SeedingEntry> {
-        let mut guard = self.seeders.lock().await;
-        guard.remove(task_id)
+    /// Remove a seeding entry (active or queued) and report its final
+    /// cumulative seeding time for persistence.
+    pub async fn unregister(&self, task_id: &str) -> Option<UnregisteredSeed> {
+        let mut guard = self.state.lock().await;
+        if let Some(entry) = guard.active.remove(task_id) {
+            return Some(UnregisteredSeed {
+                was_active: true,
+                seed_time_secs: entry.effective_seed_time_secs(Instant::now()),
+            });
+        }
+        let pos = guard.queued.iter().position(|(id, _)| id == task_id)?;
+        let (_, queued) = guard.queued.remove(pos)?;
+        Some(UnregisteredSeed {
+            was_active: false,
+            seed_time_secs: queued.seed_time_base_secs,
+        })
     }
 
-    /// Get a clone of the handle for the given task, if it is seeding.
+    /// Get a clone of the handle for the given task, if actively seeding.
     pub async fn get_handle(&self, task_id: &str) -> Option<BtHandle> {
-        let guard = self.seeders.lock().await;
-        guard.get(task_id).map(|entry| Arc::clone(&entry.handle))
+        let guard = self.state.lock().await;
+        guard
+            .active
+            .get(task_id)
+            .map(|entry| Arc::clone(&entry.handle))
     }
 
-    /// Returns `true` if the task is currently registered as a seeder.
+    /// Returns `true` if the task is actively seeding (not queued).
     pub async fn is_seeding(&self, task_id: &str) -> bool {
-        let guard = self.seeders.lock().await;
-        guard.contains_key(task_id)
+        let guard = self.state.lock().await;
+        guard.active.contains_key(task_id)
     }
 
     /// Number of currently active seeders.
     pub async fn active_count(&self) -> usize {
-        let guard = self.seeders.lock().await;
-        guard.len()
+        let guard = self.state.lock().await;
+        guard.active.len()
     }
 
-    /// Snapshot of all task IDs currently seeding.
+    /// Number of registered seeders, active plus queued.
+    pub async fn total_count(&self) -> usize {
+        let guard = self.state.lock().await;
+        guard.active.len() + guard.queued.len()
+    }
+
+    /// Snapshot of actively seeding task IDs.
+    pub async fn active_task_ids(&self) -> Vec<String> {
+        let guard = self.state.lock().await;
+        guard.active.keys().cloned().collect()
+    }
+
+    /// Snapshot of every registered task ID (active first, then queued).
     pub async fn all_task_ids(&self) -> Vec<String> {
-        let guard = self.seeders.lock().await;
-        guard.keys().cloned().collect()
+        let guard = self.state.lock().await;
+        guard
+            .active
+            .keys()
+            .cloned()
+            .chain(guard.queued.iter().map(|(id, _)| id.clone()))
+            .collect()
     }
 
-    /// Evaluate seeders against the configured limits. Returns Vec of
-    /// `(task_id, reason)` for seeders that should be stopped.
+    /// Effective cumulative seeding seconds per active seeder, for periodic
+    /// persistence. Queued entries are excluded (their base is already
+    /// persisted and does not advance).
+    pub async fn seed_time_snapshot(&self) -> Vec<(String, i64)> {
+        let now = Instant::now();
+        let guard = self.state.lock().await;
+        guard
+            .active
+            .iter()
+            .map(|(id, e)| (id.clone(), e.effective_seed_time_secs(now)))
+            .collect()
+    }
+
+    /// Evaluate active seeders against the configured limits. Returns Vec of
+    /// `(task_id, reason)` for seeders that should be stopped. Queued seeds
+    /// are frozen (no uploads, no time accrual) and are never stopped here.
     pub async fn evaluate_limits(
         &self,
         config: &SeedingLimitConfig,
-        now_unix: i64,
         snapshot: impl Fn(&str) -> SeedingUploadSnapshot,
     ) -> Vec<(String, SeedingStopReason)> {
         if !config.has_enabled_conditions() {
@@ -320,9 +558,9 @@ impl SeedingManager {
         }
 
         let now = Instant::now();
-        let mut guard = self.seeders.lock().await;
+        let mut guard = self.state.lock().await;
         let mut stops = Vec::new();
-        for (task_id, entry) in guard.iter_mut() {
+        for (task_id, entry) in guard.active.iter_mut() {
             let snap = snapshot(task_id);
 
             // Any upload activity resets the inactive timer.
@@ -333,13 +571,10 @@ impl SeedingManager {
 
             let reason = evaluate_entry(
                 now,
-                now_unix,
-                entry.started_at_unix,
+                entry.effective_seed_time_secs(now),
                 entry.last_upload_instant,
                 entry.uploaded_at_completion,
-                snap.total_uploaded,
-                snap.total_downloaded,
-                snap.upload_speed_bps,
+                snap,
                 config,
             );
             if reason != SeedingStopReason::None {
@@ -357,17 +592,32 @@ impl Default for SeedingManager {
     }
 }
 
+/// Ratio of `uploaded` against the effective divisor: downloaded bytes,
+/// falling back to the full torrent size when the recorded download count is
+/// implausibly small (< 1% of the size, e.g. data restored from disk after a
+/// recheck). A non-positive divisor with non-zero upload counts as an
+/// infinite ratio so any enabled ratio limit fires immediately.
+fn ratio_of(uploaded: i64, total_downloaded: i64, total_size: i64) -> f64 {
+    let mut divisor = total_downloaded;
+    if divisor < total_size / 100 {
+        divisor = total_size;
+    }
+    if divisor <= 0 {
+        if uploaded > 0 { f64::INFINITY } else { 0.0 }
+    } else {
+        uploaded as f64 / divisor as f64
+    }
+}
+
 /// Pure helper: decide whether a single seeding entry should stop.
-#[allow(clippy::too_many_arguments)]
+/// `seed_time_secs` is the cumulative seeding time including the current
+/// stint; paused/queued periods are excluded by construction.
 fn evaluate_entry(
     now: Instant,
-    now_unix: i64,
-    started_at_unix: i64,
+    seed_time_secs: i64,
     last_upload_instant: Instant,
     uploaded_at_completion: i64,
-    total_uploaded: i64,
-    total_downloaded: i64,
-    upload_speed_bps: i64,
+    snap: SeedingUploadSnapshot,
     config: &SeedingLimitConfig,
 ) -> SeedingStopReason {
     let ratio_enabled = config.ratio_limit > 0.0;
@@ -379,18 +629,21 @@ fn evaluate_entry(
         return SeedingStopReason::None;
     }
 
-    let total_downloaded = total_downloaded.max(1) as f64;
-    let ratio_reached =
-        ratio_enabled && (total_uploaded as f64 / total_downloaded) >= config.ratio_limit;
+    let ratio_reached = ratio_enabled
+        && ratio_of(snap.total_uploaded, snap.total_downloaded, snap.total_size)
+            >= config.ratio_limit;
     let post_ratio_reached = post_ratio_enabled
-        && ((total_uploaded - uploaded_at_completion) as f64 / total_downloaded)
-            >= config.post_ratio_limit;
+        && ratio_of(
+            snap.total_uploaded.saturating_sub(uploaded_at_completion),
+            snap.total_downloaded,
+            snap.total_size,
+        ) >= config.post_ratio_limit;
 
-    let seed_time_reached = seed_time_enabled
-        && (now_unix.saturating_sub(started_at_unix) as u64) >= config.seed_time_limit_minutes * 60;
+    let seed_time_reached =
+        seed_time_enabled && seed_time_secs >= (config.seed_time_limit_minutes * 60) as i64;
 
     let inactive_reached = inactive_enabled
-        && upload_speed_bps == 0
+        && snap.upload_speed_bps == 0
         && now.duration_since(last_upload_instant)
             >= Duration::from_secs(config.inactive_time_limit_minutes * 60);
 
@@ -431,56 +684,95 @@ fn evaluate_entry(
 mod tests {
     use super::*;
 
-    #[test]
-    fn total_ratio_reached() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 1.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 0,
-            inactive_time_limit_minutes: 0,
+    fn snap(uploaded: i64, downloaded: i64, size: i64, speed: i64) -> SeedingUploadSnapshot {
+        SeedingUploadSnapshot {
+            total_uploaded: uploaded,
+            total_downloaded: downloaded,
+            total_size: size,
+            upload_speed_bps: speed,
+        }
+    }
+
+    fn config_or(
+        ratio: f64,
+        post_ratio: f64,
+        time_min: u64,
+        inactive_min: u64,
+    ) -> SeedingLimitConfig {
+        SeedingLimitConfig {
+            ratio_limit: ratio,
+            post_ratio_limit: post_ratio,
+            seed_time_limit_minutes: time_min,
+            inactive_time_limit_minutes: inactive_min,
             operator: SeedingLimitOperator::Or,
             then_action: SeedingThenAction::Stop,
-        };
+        }
+    }
+
+    #[test]
+    fn defaults_have_all_limits_disabled() {
+        let config = SeedingLimitConfig::default();
+        assert!(!config.has_enabled_conditions());
+        assert_eq!(config.operator, SeedingLimitOperator::Or);
+        assert_eq!(config.then_action, SeedingThenAction::Stop);
+    }
+
+    #[test]
+    fn total_ratio_reached() {
+        let config = config_or(1.0, 0.0, 0, 0);
         let now = Instant::now();
-        let reason = evaluate_entry(now, 0, 0, now, 0, 200, 100, 0, &config);
+        let reason = evaluate_entry(now, 0, now, 0, snap(200, 100, 100, 0), &config);
         assert_eq!(reason, SeedingStopReason::RatioReached);
     }
 
     #[test]
-    fn seed_time_reached() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 0.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 10,
-            inactive_time_limit_minutes: 0,
-            operator: SeedingLimitOperator::Or,
-            then_action: SeedingThenAction::Stop,
-        };
+    fn ratio_divisor_falls_back_to_total_size() {
+        // Downloaded counter is implausibly small (<1% of size): the divisor
+        // falls back to the torrent size, so 200 uploaded of a 10_000 torrent
+        // stays far below a 1.0 ratio even though uploaded >> downloaded.
+        let config = config_or(1.0, 0.0, 0, 0);
         let now = Instant::now();
-        let reason = evaluate_entry(now, 20 * 60, 0, now, 0, 0, 1, 0, &config);
+        let reason = evaluate_entry(now, 0, now, 0, snap(200, 10, 10_000, 0), &config);
+        assert_eq!(reason, SeedingStopReason::None);
+
+        // With uploads reaching the full size, the ratio limit fires.
+        let reason = evaluate_entry(now, 0, now, 0, snap(10_000, 10, 10_000, 0), &config);
+        assert_eq!(reason, SeedingStopReason::RatioReached);
+    }
+
+    #[test]
+    fn zero_divisor_with_uploads_counts_as_infinite_ratio() {
+        let config = config_or(2.0, 0.0, 0, 0);
+        let now = Instant::now();
+        let reason = evaluate_entry(now, 0, now, 0, snap(1, 0, 0, 0), &config);
+        assert_eq!(reason, SeedingStopReason::RatioReached);
+
+        // No uploads and no data: ratio is 0, nothing fires.
+        let reason = evaluate_entry(now, 0, now, 0, snap(0, 0, 0, 0), &config);
+        assert_eq!(reason, SeedingStopReason::None);
+    }
+
+    #[test]
+    fn seed_time_reached_uses_cumulative_seconds() {
+        let config = config_or(0.0, 0.0, 10, 0);
+        let now = Instant::now();
+        let reason = evaluate_entry(now, 20 * 60, now, 0, snap(0, 1, 1, 0), &config);
         assert_eq!(reason, SeedingStopReason::TimeReached);
+
+        let reason = evaluate_entry(now, 5 * 60, now, 0, snap(0, 1, 1, 0), &config);
+        assert_eq!(reason, SeedingStopReason::None);
     }
 
     #[test]
     fn inactive_time_reached() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 0.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 0,
-            inactive_time_limit_minutes: 5,
-            operator: SeedingLimitOperator::Or,
-            then_action: SeedingThenAction::Stop,
-        };
+        let config = config_or(0.0, 0.0, 0, 5);
         let now = Instant::now();
         let reason = evaluate_entry(
             now,
             0,
-            0,
             now - Duration::from_secs(6 * 60),
             0,
-            100,
-            100,
-            0,
+            snap(100, 100, 100, 0),
             &config,
         );
         assert_eq!(reason, SeedingStopReason::InactiveTimeReached);
@@ -488,71 +780,17 @@ mod tests {
 
     #[test]
     fn inactive_time_not_reached_if_uploaded_recently() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 0.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 0,
-            inactive_time_limit_minutes: 5,
-            operator: SeedingLimitOperator::Or,
-            then_action: SeedingThenAction::Stop,
-        };
+        let config = config_or(0.0, 0.0, 0, 5);
         let now = Instant::now();
-        // Seeding started a long time ago, but the last upload was only
-        // 1 minute ago, so the 5-minute inactive window has not elapsed.
         let reason = evaluate_entry(
             now,
             60 * 60,
-            0,
             now - Duration::from_secs(60),
             0,
-            100,
-            100,
-            0,
+            snap(100, 100, 100, 0),
             &config,
         );
         assert_eq!(reason, SeedingStopReason::None);
-    }
-
-    #[test]
-    fn inactive_time_counts_since_last_upload_not_total_seed_time() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 0.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 0,
-            inactive_time_limit_minutes: 5,
-            operator: SeedingLimitOperator::Or,
-            then_action: SeedingThenAction::Stop,
-        };
-        let now = Instant::now();
-        // Seeder uploaded for 4 minutes after registration, then stalled
-        // for 1 minute. Total seeding time is 5 minutes, but the continuous
-        // zero-upload window is only 1 minute, so it must NOT be stopped.
-        let reason = evaluate_entry(
-            now,
-            5 * 60,
-            0,
-            now - Duration::from_secs(60),
-            0,
-            100,
-            100,
-            0,
-            &config,
-        );
-        assert_eq!(reason, SeedingStopReason::None);
-
-        // After the stall reaches the full 5-minute limit, it should stop.
-        let reason = evaluate_entry(
-            now,
-            9 * 60,
-            0,
-            now - Duration::from_secs(5 * 60),
-            0,
-            100,
-            100,
-            0,
-            &config,
-        );
-        assert_eq!(reason, SeedingStopReason::InactiveTimeReached);
     }
 
     #[test]
@@ -567,51 +805,44 @@ mod tests {
         };
         let now = Instant::now();
         // Ratio reached, but seed time not yet.
-        let reason = evaluate_entry(now, 5 * 60, 0, now, 0, 200, 100, 1000, &config);
+        let reason = evaluate_entry(now, 5 * 60, now, 0, snap(200, 100, 100, 1000), &config);
         assert_eq!(reason, SeedingStopReason::None);
 
         // Both reached.
-        let reason = evaluate_entry(now, 20 * 60, 0, now, 0, 200, 100, 1000, &config);
+        let reason = evaluate_entry(now, 20 * 60, now, 0, snap(200, 100, 100, 1000), &config);
         assert_eq!(reason, SeedingStopReason::RatioReached);
     }
 
     #[test]
     fn or_combination_stops_on_any() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 2.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 10,
-            inactive_time_limit_minutes: 0,
-            operator: SeedingLimitOperator::Or,
-            then_action: SeedingThenAction::Stop,
-        };
+        let config = config_or(2.0, 0.0, 10, 0);
         let now = Instant::now();
         // Ratio not reached, but seed time reached.
-        let reason = evaluate_entry(now, 20 * 60, 0, now, 0, 100, 100, 0, &config);
+        let reason = evaluate_entry(now, 20 * 60, now, 0, snap(100, 100, 100, 0), &config);
         assert_eq!(reason, SeedingStopReason::TimeReached);
     }
 
     #[test]
     fn no_enabled_conditions_never_stops() {
-        let config = SeedingLimitConfig {
-            ratio_limit: 0.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 0,
-            inactive_time_limit_minutes: 0,
-            operator: SeedingLimitOperator::And,
-            then_action: SeedingThenAction::Stop,
-        };
+        let config = config_or(0.0, 0.0, 0, 0);
         let now = Instant::now();
-        let reason = evaluate_entry(now, 365 * 24 * 60 * 60, 0, now, 0, 1_000_000, 1, 0, &config);
+        let reason = evaluate_entry(
+            now,
+            365 * 24 * 60 * 60,
+            now,
+            0,
+            snap(1_000_000, 1, 1, 0),
+            &config,
+        );
         assert_eq!(reason, SeedingStopReason::None);
     }
 
     #[tokio::test]
     async fn manager_returns_no_stops_when_empty() {
         let manager = SeedingManager::new();
-        let config = SeedingLimitConfig::default();
+        let config = config_or(1.0, 0.0, 60, 0);
         let stops = manager
-            .evaluate_limits(&config, 0, |_| SeedingUploadSnapshot::default())
+            .evaluate_limits(&config, |_| SeedingUploadSnapshot::default())
             .await;
         assert!(stops.is_empty());
     }
@@ -619,20 +850,9 @@ mod tests {
     #[tokio::test]
     async fn manager_respects_disabled_conditions() {
         let manager = SeedingManager::new();
-        let config = SeedingLimitConfig {
-            ratio_limit: 0.0,
-            post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 0,
-            inactive_time_limit_minutes: 0,
-            operator: SeedingLimitOperator::Or,
-            then_action: SeedingThenAction::Stop,
-        };
+        let config = SeedingLimitConfig::default();
         let stops = manager
-            .evaluate_limits(&config, 0, |_| SeedingUploadSnapshot {
-                total_uploaded: 200,
-                total_downloaded: 100,
-                upload_speed_bps: 0,
-            })
+            .evaluate_limits(&config, |_| snap(200, 100, 100, 0))
             .await;
         assert!(stops.is_empty());
     }

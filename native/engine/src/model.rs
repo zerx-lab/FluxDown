@@ -67,7 +67,7 @@ pub struct TaskInfo {
     pub uploaded_at_completion: i64,
     /// Seeding status: 0=none, 1=active seeding, 2=ratio reached,
     /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
-    /// 7=inactive time reached.
+    /// 7=inactive time reached, 8=queued for a seeding slot.
     pub seeding_status: i32,
     /// BT 做种状态的辅助说明（如错误信息）。
     pub seeding_message: String,

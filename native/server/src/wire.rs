@@ -176,6 +176,12 @@ pub enum WsServerMsg {
         save_dir: String,
         url: String,
         error_message: String,
+        /// BT 做种累计上传字节数（非 BT 任务恒 0）。
+        uploaded_bytes: i64,
+        /// 0=none, 1=做种中, 2-7=停止原因, 8=排队做种（等待槽位）
+        seeding_status: i32,
+        /// 做种停止原因的人类可读描述（无则为空）。
+        seeding_message: String,
     },
     /// 全部任务快照（连接建立时 + 引擎主动广播）。
     TasksSnapshot { tasks: Vec<TaskDto> },
@@ -767,11 +773,16 @@ mod tests {
             save_dir: "/tmp".into(),
             url: "http://x".into(),
             error_message: String::new(),
+            uploaded_bytes: 42,
+            seeding_status: 1,
+            seeding_message: String::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"taskProgress\""));
         assert!(json.contains("\"taskId\":\"t1\""));
         assert!(json.contains("\"downloadedBytes\":10"));
+        assert!(json.contains("\"uploadedBytes\":42"));
+        assert!(json.contains("\"seedingStatus\":1"));
     }
 
     #[test]
@@ -886,6 +897,10 @@ mod tests {
             origin_url: String::new(),
             auto_route: String::new(),
             queue_order: 0,
+            uploaded_bytes: 0,
+            uploaded_at_completion: 0,
+            seeding_status: 0,
+            seeding_message: String::new(),
         }
     }
 

@@ -4333,7 +4333,7 @@
       },
       "TaskDto": {
         "type": "object",
-        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    ignore_tls_errors: false,\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n    queue_order: 0,\n    referrer: String::new(),\n    group_id: String::new(),\n    rss_source_id: String::new(),\n    origin_url: String::new(),\n    auto_route: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
+        "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    ignore_tls_errors: false,\n    file_missing: false,\n    completed_at: String::new(),\n    segments: 0,\n    queue_order: 0,\n    uploaded_bytes: 0,\n    uploaded_at_completion: 0,\n    seeding_status: 0,\n    seeding_message: String::new(),\n    referrer: String::new(),\n    group_id: String::new(),\n    rss_source_id: String::new(),\n    origin_url: String::new(),\n    auto_route: String::new(),\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
         "required": [
           "taskId",
           "url",
@@ -4415,6 +4415,15 @@
           "saveDir": {
             "type": "string"
           },
+          "seedingMessage": {
+            "type": "string",
+            "description": "做种状态辅助说明（如停止原因，空 = 无）。"
+          },
+          "seedingStatus": {
+            "type": "integer",
+            "format": "int32",
+            "description": "BT 做种状态：0=无, 1=做种中, 2=达分享率, 3=达时长, 4=用户停止,\n5=任务删除, 6=会话释放, 7=不活跃停止, 8=排队等待做种槽。"
+          },
           "status": {
             "type": "integer",
             "format": "int32",
@@ -4426,6 +4435,16 @@
           "totalBytes": {
             "type": "integer",
             "format": "int64"
+          },
+          "uploadedAtCompletion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "下载完成时刻的已上传字节数（做种后分享率基准，非 BT 任务恒 0）。"
+          },
+          "uploadedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "BT 已上传字节数（做种累计，非 BT 任务恒 0）。"
           },
           "url": {
             "type": "string"

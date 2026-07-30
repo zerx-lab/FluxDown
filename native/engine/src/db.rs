@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
     seeding_status INTEGER NOT NULL DEFAULT 0,
     seeding_message TEXT NOT NULL DEFAULT '',
-    seeding_started_at INTEGER NOT NULL DEFAULT 0
+    seeding_started_at INTEGER NOT NULL DEFAULT 0,
+    seeding_time_secs INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -249,7 +250,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
     seeding_status INTEGER NOT NULL DEFAULT 0,
     seeding_message TEXT NOT NULL DEFAULT '',
-    seeding_started_at INTEGER NOT NULL DEFAULT 0
+    seeding_started_at INTEGER NOT NULL DEFAULT 0,
+    seeding_time_secs INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -654,6 +656,8 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "seeding_started_at", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        self.add_column_if_missing("tasks", "seeding_time_secs", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
         Ok(())
     }
 
@@ -1026,6 +1030,38 @@ impl Db {
         .bind(task_id)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// 标记任务为排队做种（活动做种数达上限，等待槽位）。
+    /// 不动 seeding_time_secs——排队期间不计时。
+    pub async fn set_task_seeding_queued(&self, task_id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET seeding_status = 8, seeding_message = $1, seeding_started_at = 0 WHERE id = $2",
+        )
+        .bind(crate::bt_seeding::SEEDING_QUEUED_MESSAGE)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 读取任务累计做种秒数（跨暂停/重启累计的基线）。
+    pub async fn get_task_seeding_time(&self, task_id: &str) -> Result<i64, DbError> {
+        let secs: i64 = sqlx::query_scalar("SELECT seeding_time_secs FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(secs)
+    }
+
+    /// 写入任务累计做种秒数（周期快照或停止时的最终结算值）。
+    pub async fn set_task_seeding_time(&self, task_id: &str, secs: i64) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET seeding_time_secs = $1 WHERE id = $2")
+            .bind(secs)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

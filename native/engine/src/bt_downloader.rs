@@ -41,7 +41,7 @@ pub type BtHandle = Arc<ManagedTorrent>;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::bt_seeding::SeedingManager;
+use crate::bt_seeding::{SeedingManager, SeedingRegistration, UnregisteredSeed};
 use crate::db::Db;
 use crate::downloader::{DownloadError, ProgressUpdate, SegmentProgressInfo};
 use crate::logger::{log_error, log_info};
@@ -329,6 +329,9 @@ pub struct BtConfig {
     pub seed_limit_operator: crate::bt_seeding::SeedingLimitOperator,
     /// What to do once a seeding limit is reached.
     pub seed_then_action: String,
+    /// Max simultaneously active seeders (0 = unlimited). Completed torrents
+    /// beyond the cap wait in a FIFO seeding queue until a slot frees up.
+    pub seed_max_active: usize,
 }
 
 impl Default for BtConfig {
@@ -340,12 +343,13 @@ impl Default for BtConfig {
             port_end: 6891,
             custom_trackers: String::new(),
             subscription_trackers: String::new(),
-            seed_ratio_limit: 1.0,
+            seed_ratio_limit: 0.0,
             seed_post_ratio_limit: 0.0,
-            seed_time_limit_minutes: 72 * 60,
+            seed_time_limit_minutes: 0,
             seed_inactive_time_limit_minutes: 0,
             seed_limit_operator: crate::bt_seeding::SeedingLimitOperator::Or,
             seed_then_action: "stop".to_string(),
+            seed_max_active: 0,
         }
     }
 }
@@ -810,34 +814,41 @@ impl SharedBtSession {
         }
     }
 
-    /// Register a completed torrent as an active seeder.
+    /// Get the cached torrent handle without changing its pause state.
+    pub async fn cached_handle(&self, task_id: &str) -> Option<BtHandle> {
+        self.handles.lock().await.get(task_id).cloned()
+    }
+
+    /// Register a completed torrent as a seeder.
     ///
-    /// Returns `true` if the torrent was newly registered. `uploaded_at_completion`
-    /// is the total uploaded bytes observed when the download completed; it is used
-    /// to compute the post-completion ratio. `started_at_unix` is persisted so the
-    /// seeding time limit survives restarts.
+    /// `uploaded_at_completion` is the total uploaded bytes observed when the
+    /// download completed (post-completion ratio baseline);
+    /// `seed_time_base_secs` is the persisted cumulative seeding time. The
+    /// outcome tells the caller whether the seeder is active or queued
+    /// behind the `seed_max_active` cap.
     pub async fn register_seeder(
         &self,
         task_id: &str,
         handle: BtHandle,
         uploaded_at_completion: i64,
-        started_at_unix: i64,
         last_session_uploaded: i64,
-    ) -> bool {
+        seed_time_base_secs: i64,
+    ) -> SeedingRegistration {
         self.seeding
             .register(
                 task_id.to_string(),
                 handle,
                 uploaded_at_completion,
-                started_at_unix,
                 last_session_uploaded,
+                seed_time_base_secs,
             )
             .await
     }
 
-    /// Unregister a seeder.  Returns `true` if the task was actively seeding.
-    pub async fn unregister_seeder(&self, task_id: &str) -> bool {
-        self.seeding.unregister(task_id).await.is_some()
+    /// Unregister a seeder (active or queued). Returns its final cumulative
+    /// seeding time for persistence, or `None` if it was not registered.
+    pub async fn unregister_seeder(&self, task_id: &str) -> Option<UnregisteredSeed> {
+        self.seeding.unregister(task_id).await
     }
 
     /// Access the shared [`SeedingManager`].
@@ -845,9 +856,9 @@ impl SharedBtSession {
         self.seeding.clone()
     }
 
-    /// Returns `true` if at least one completed torrent is currently seeding.
+    /// Returns `true` if any completed torrent is seeding or queued to seed.
     pub async fn has_seeders(&self) -> bool {
-        self.seeding.active_count().await > 0
+        self.seeding.total_count().await > 0
     }
 
     /// Gracefully shut down the BT session and runtime.
@@ -895,7 +906,7 @@ impl SharedBtSession {
         let handle = self.handles.lock().await.remove(task_id);
         // Ensure the task is also removed from the seeding manager so completed
         // torrents do not keep being evaluated after deletion.
-        self.unregister_seeder(task_id).await;
+        let _ = self.unregister_seeder(task_id).await;
         if let Some(handle) = handle {
             let torrent_id = handle.id();
             // Clean up the torrent_id → task_id mapping.
@@ -4058,9 +4069,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 .delete_config(&format!("bt_completion_top_{}", task_id))
                 .await;
 
-            // Send the single STATUS_COMPLETED signal with the true file name.
-            // Include the current uploaded bytes, upload speed and seeding status
-            // so the UI immediately shows the task as seeding.
+            // Compute the upload stats that accompany the completed signal.
             let uploaded_bytes = db.get_task_uploaded_bytes(&task_id).await.unwrap_or(0);
             let completed_upload_speed_bps = stats
                 .live
@@ -4072,6 +4081,46 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 .as_ref()
                 .map(|l| l.snapshot.uploaded_bytes as i64)
                 .unwrap_or(uploaded_bytes);
+
+            // Retain the handle in the cache (do NOT call take_handle) and
+            // register the completed torrent as a seeder.  The torrent stays
+            // live so it can upload to peers; the cached handle also lets
+            // future delete_task(delete_files=true) reach session.delete.
+            // When the active-seeder cap is reached the torrent is queued and
+            // paused instead; a later reconcile activates it in FIFO order.
+            shared_bt.store_handle(&task_id, handle.clone()).await;
+            let seed_time_base = db.get_task_seeding_time(&task_id).await.unwrap_or(0);
+            let registration = shared_bt
+                .register_seeder(
+                    &task_id,
+                    handle.clone(),
+                    completed_uploaded_bytes,
+                    completed_uploaded_bytes,
+                    seed_time_base,
+                )
+                .await;
+            let _ = db
+                .update_task_uploaded_at_completion(&task_id, completed_uploaded_bytes)
+                .await;
+            let (seeding_status, seeding_message) = match registration {
+                SeedingRegistration::Activated | SeedingRegistration::AlreadyPresent => {
+                    let _ = db
+                        .set_task_seeding_active(&task_id, chrono::Local::now().timestamp())
+                        .await;
+                    (crate::bt_seeding::SEEDING_STATUS_ACTIVE, "")
+                }
+                SeedingRegistration::Queued => {
+                    let _ = shared_bt.pause_task(&task_id).await;
+                    let _ = db.set_task_seeding_queued(&task_id).await;
+                    (
+                        crate::bt_seeding::SEEDING_STATUS_QUEUED,
+                        crate::bt_seeding::SEEDING_QUEUED_MESSAGE,
+                    )
+                }
+            };
+
+            // Send the single STATUS_COMPLETED signal with the true file name
+            // and the actual seeding state so the UI reflects it immediately.
             let _ = progress_tx
                 .send(ProgressUpdate {
                     task_id: task_id.clone(),
@@ -4084,43 +4133,10 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     upload_speed_bps: completed_upload_speed_bps,
                     bt_data_finished: false,
                     uploaded_bytes: completed_uploaded_bytes,
-                    seeding_status: 1,
-                    seeding_message: String::new(),
+                    seeding_status,
+                    seeding_message: seeding_message.to_string(),
                 })
                 .await;
-
-            // Retain the handle in the cache (do NOT call take_handle) and
-            // register the completed torrent as an active seeder.  The torrent
-            // stays live so it can upload to peers; the cached handle also lets
-            // future delete_task(delete_files=true) reach session.delete.
-            //
-            // Previously we paused the torrent here, which stopped all peer
-            // connections and prevented seeding.  Keeping it alive is the core
-            // of the post-completion seeding refactor.
-            shared_bt.store_handle(&task_id, handle.clone()).await;
-            let started_at_unix = chrono::Local::now().timestamp();
-            let registered = shared_bt
-                .register_seeder(
-                    &task_id,
-                    handle.clone(),
-                    completed_uploaded_bytes,
-                    started_at_unix,
-                    completed_uploaded_bytes,
-                )
-                .await;
-            let _ = db
-                .update_task_uploaded_at_completion(&task_id, completed_uploaded_bytes)
-                .await;
-            if registered {
-                let _ = db.set_task_seeding_active(&task_id, started_at_unix).await;
-            } else {
-                // Should not happen now that there is no per-seeding max; keep the
-                // fallback pause in case registration is ever gated again.
-                let _ = shared_bt.pause_task(&task_id).await;
-                let _ = db
-                    .update_task_seeding_status(&task_id, 0, "seeding registration declined")
-                    .await;
-            }
 
             // Clean up the staging directory after the torrent entered seeding.
             // librqbit keeps file handles open while seeding the moved files,

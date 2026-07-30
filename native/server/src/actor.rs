@@ -800,6 +800,7 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
             | "bt_seed_inactive_time_limit_minutes"
             | "bt_seed_limit_operator"
             | "bt_seed_then_action"
+            | "bt_seed_max_active"
                 if !bt_applied =>
             {
                 bt_applied = true;
@@ -860,7 +861,7 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         seed_ratio_limit: cfg
             .get("bt_seed_ratio_limit")
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(1.0),
+            .unwrap_or(0.0),
         seed_post_ratio_limit: cfg
             .get("bt_seed_post_ratio_limit")
             .and_then(|v| v.parse::<f64>().ok())
@@ -868,7 +869,7 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         seed_time_limit_minutes: cfg
             .get("bt_seed_time_limit_minutes")
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(72 * 60),
+            .unwrap_or(0),
         seed_inactive_time_limit_minutes: cfg
             .get("bt_seed_inactive_time_limit_minutes")
             .and_then(|v| v.parse::<u64>().ok())
@@ -887,6 +888,10 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
             .get("bt_seed_then_action")
             .cloned()
             .unwrap_or_else(|| "stop".to_string()),
+        seed_max_active: cfg
+            .get("bt_seed_max_active")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0),
     }
 }
 
@@ -1006,6 +1011,29 @@ mod tests {
 
         assert!(!bt.enable_dht);
         assert!(!bt.enable_upnp);
+    }
+
+    #[test]
+    fn bt_config_from_map_defaults_all_seeding_limits_to_disabled() {
+        // 缺省（键不存在）时所有做种限制均为“不限制”：0 值在求值端表示
+        // 该维度不参与判定，任务完成后无限做种。
+        let bt = bt_config_from_map(&HashMap::new());
+
+        assert_eq!(bt.seed_ratio_limit, 0.0);
+        assert_eq!(bt.seed_post_ratio_limit, 0.0);
+        assert_eq!(bt.seed_time_limit_minutes, 0);
+        assert_eq!(bt.seed_inactive_time_limit_minutes, 0);
+        assert_eq!(bt.seed_max_active, 0);
+    }
+
+    #[test]
+    fn bt_config_from_map_parses_seed_max_active_and_falls_back_to_zero_on_garbage() {
+        let bt = bt_config_from_map(&cfg_map(&[("bt_seed_max_active", "3")]));
+        assert_eq!(bt.seed_max_active, 3);
+
+        // 非法值等同缺省：0 = 不限制同时做种数。
+        let bt = bt_config_from_map(&cfg_map(&[("bt_seed_max_active", "-1")]));
+        assert_eq!(bt.seed_max_active, 0);
     }
 
     #[test]

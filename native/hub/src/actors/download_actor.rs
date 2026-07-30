@@ -115,7 +115,7 @@ fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         seed_ratio_limit: cfg
             .get("bt_seed_ratio_limit")
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(1.0),
+            .unwrap_or(0.0),
         seed_post_ratio_limit: cfg
             .get("bt_seed_post_ratio_limit")
             .and_then(|v| v.parse::<f64>().ok())
@@ -123,7 +123,7 @@ fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
         seed_time_limit_minutes: cfg
             .get("bt_seed_time_limit_minutes")
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(72 * 60),
+            .unwrap_or(0),
         seed_inactive_time_limit_minutes: cfg
             .get("bt_seed_inactive_time_limit_minutes")
             .and_then(|v| v.parse::<u64>().ok())
@@ -142,6 +142,10 @@ fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
             .get("bt_seed_then_action")
             .cloned()
             .unwrap_or_else(|| "stop".to_string()),
+        seed_max_active: cfg
+            .get("bt_seed_max_active")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0),
     }
 }
 
@@ -2812,7 +2816,8 @@ async fn apply_config_key(
         | "bt_seed_time_limit_minutes"
         | "bt_seed_inactive_time_limit_minutes"
         | "bt_seed_limit_operator"
-        | "bt_seed_then_action" => {
+        | "bt_seed_then_action"
+        | "bt_seed_max_active" => {
             log_info!("[actor] BT seeding config changed: {}={}", key, value);
             let all_cfg = engine.db.get_all_config().await.unwrap_or_default();
             engine.manager.set_bt_config(bt_config_from_map(&all_cfg));

@@ -160,6 +160,10 @@ pub struct DownloadRequest {
 ///     completed_at: String::new(),
 ///     segments: 0,
 ///     queue_order: 0,
+///     uploaded_bytes: 0,
+///     uploaded_at_completion: 0,
+///     seeding_status: 0,
+///     seeding_message: String::new(),
 ///     referrer: String::new(),
 ///     group_id: String::new(),
 ///     rss_source_id: String::new(),
@@ -222,6 +226,19 @@ pub struct TaskDto {
     /// 队列内启动顺序（0 = 未显式排序，按创建时间；>0 = 显式顺序）。
     #[serde(default)]
     pub queue_order: i32,
+    /// BT 已上传字节数（做种累计，非 BT 任务恒 0）。
+    #[serde(default)]
+    pub uploaded_bytes: i64,
+    /// 下载完成时刻的已上传字节数（做种后分享率基准，非 BT 任务恒 0）。
+    #[serde(default)]
+    pub uploaded_at_completion: i64,
+    /// BT 做种状态：0=无, 1=做种中, 2=达分享率, 3=达时长, 4=用户停止,
+    /// 5=任务删除, 6=会话释放, 7=不活跃停止, 8=排队等待做种槽。
+    #[serde(default)]
+    pub seeding_status: i32,
+    /// 做种状态辅助说明（如停止原因，空 = 无）。
+    #[serde(default)]
+    pub seeding_message: String,
 }
 
 impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
@@ -248,6 +265,10 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
             origin_url: t.origin_url,
             auto_route: t.auto_route,
             queue_order: t.queue_order,
+            uploaded_bytes: t.uploaded_bytes,
+            uploaded_at_completion: t.uploaded_at_completion,
+            seeding_status: t.seeding_status,
+            seeding_message: t.seeding_message,
         }
     }
 }
@@ -1001,6 +1022,10 @@ mod tests {
             origin_url: String::new(),
             auto_route: String::new(),
             queue_order: 7,
+            uploaded_bytes: 42,
+            uploaded_at_completion: 7,
+            seeding_status: 1,
+            seeding_message: String::new(),
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["taskId"], "t1");
