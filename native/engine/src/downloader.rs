@@ -1758,23 +1758,46 @@ pub(crate) fn extract_filename(
         return name;
     }
 
-    // 2. Try URL path (after removing query & fragment).  Prefer the
-    // *original* request URL when its last segment carries a real-looking
-    // extension: a redirect can land on a URL that structurally lacks one
-    // (e.g. GitHub's `archive/refs/tags/<tag>.zip` redirects to codeload's
-    // `.../zip/refs/tags/<tag>`, dropping `.zip`). If `<tag>` itself embeds a
-    // dot from a version number (like "11.0-1b"), reading only the
-    // post-redirect URL manufactures a bogus extension (".0-1b") even though
-    // the original URL had the right one all along. Fall back to the final
-    // URL when the original doesn't look like a real filename (e.g. it was a
-    // shortlink whose redirect target is the only URL with a real name).
+    // 2. Try URL path (after removing query & fragment).
+    //
+    // Redirects make this ambiguous: either side may hold the real name.
+    // GitHub's `archive/refs/tags/<tag>.zip` redirects to codeload's
+    // `.../zip/refs/tags/<tag>` (extension dropped — a dot inside the tag,
+    // like "11.0-1b", then manufactures a bogus ".0-1b"), while a
+    // `download.php`-style endpoint redirects to a CDN URL that is the only
+    // place the real filename exists. No static preference is right for
+    // both, so decide per-case:
+    //
+    //   a. The final segment equals the request segment minus its extension
+    //      → the redirect provably dropped the extension (codeload pattern);
+    //      use the request segment, restoring it.
+    //   b. The final segment carries a plausible extension → trust it, same
+    //      as the pre-redirect-aware behavior (covers shortlinks and
+    //      `download.php` → CDN redirects).
+    //   c. Only the request segment carries a plausible extension → use it
+    //      (redirect target structurally lacks a filename).
+    //   d. Neither looks like a filename → final, then request, as before.
     let from_request = extract_from_url(request_url);
-    if let Some(name) = &from_request
-        && has_plausible_extension(name)
+    let from_final = extract_from_url(final_url);
+    if let (Some(req), Some(fin)) = (&from_request, &from_final)
+        && has_plausible_extension(req)
+        && req
+            .rfind('.')
+            .is_some_and(|pos| &req[..pos] == fin.as_str())
     {
-        return name.clone();
+        return req.clone();
     }
-    if let Some(name) = extract_from_url(final_url) {
+    if let Some(fin) = &from_final
+        && has_plausible_extension(fin)
+    {
+        return fin.clone();
+    }
+    if let Some(req) = &from_request
+        && has_plausible_extension(req)
+    {
+        return req.clone();
+    }
+    if let Some(name) = from_final {
         return name;
     }
     if let Some(name) = from_request {
@@ -4325,6 +4348,49 @@ mod tests {
             "https://cdn.example.com/files/real-name.pdf",
         );
         assert_eq!(name, "real-name.pdf");
+    }
+
+    #[test]
+    fn extract_filename_keeps_final_url_for_script_endpoint_redirect() {
+        // Regression guard: a dynamic endpoint URL ("download.php") carries a
+        // plausible extension itself, but the redirect target is the only URL
+        // with the real filename. The pre-#224 behavior (trust the final URL)
+        // must be preserved here — the request URL wins only when the final
+        // segment lacks a real extension or is provably a truncation.
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(
+            &headers,
+            "https://example.com/download.php",
+            "https://cdn.example.com/files/real-file.zip",
+        );
+        assert_eq!(name, "real-file.zip");
+    }
+
+    #[test]
+    fn extract_filename_restores_extension_dropped_by_redirect_numeric_tag() {
+        // Codeload pattern with a purely numeric pseudo-extension: the final
+        // segment "v1.2" (ext "2" is 1 alnum char, hence "plausible") equals
+        // the request segment minus ".zip" — the stem match must win.
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(
+            &headers,
+            "https://github.com/o/r/archive/refs/tags/v1.2.zip",
+            "https://codeload.github.com/o/r/zip/refs/tags/v1.2",
+        );
+        assert_eq!(name, "v1.2.zip");
+    }
+
+    #[test]
+    fn extract_filename_restores_extension_dropped_by_redirect_letter_suffix_tag() {
+        // Tag whose pseudo-extension contains a letter ("0b") would pass the
+        // plausibility check on the final URL; only the stem match catches it.
+        let headers = reqwest::header::HeaderMap::new();
+        let name = extract_filename(
+            &headers,
+            "https://github.com/o/r/archive/refs/tags/proton-1.0b.zip",
+            "https://codeload.github.com/o/r/zip/refs/tags/proton-1.0b",
+        );
+        assert_eq!(name, "proton-1.0b.zip");
     }
 
     #[test]
