@@ -3385,6 +3385,13 @@ class _BtSeedingContent extends StatelessWidget {
         return _AdaptiveSections(
           sections: [
             _SettingCard(
+              label: LocaleScope.of(context).btSeedMaxActive,
+              description: LocaleScope.of(context).btSeedMaxActiveDesc,
+              child: _BtSeedMaxActiveSelector(
+                settingsProvider: settingsProvider,
+              ),
+            ),
+            _SettingCard(
               label: LocaleScope.of(context).btSeedingTitle,
               description: LocaleScope.of(context).btSeedingTitle,
               vertical: true,
@@ -3745,6 +3752,29 @@ class _BtSeedingEditorState extends State<_BtSeedingEditor> {
           ],
         );
       },
+    );
+  }
+}
+
+class _BtSeedMaxActiveSelector extends StatelessWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtSeedMaxActiveSelector({required this.settingsProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    // 0 = 不限制活动做种数；超出上限的已完成任务进入排队做种，等待空闲槽位。
+    String label(int v) => v == 0 ? s.btSeedMaxActiveUnlimited : '$v';
+    return NumberSelector(
+      value: settingsProvider.btSeedMaxActive,
+      presets: const [0, 1, 3, 5, 10, 20],
+      min: 0,
+      max: 999,
+      fallback: 0,
+      selectedLabel: label,
+      presetLabel: label,
+      onChanged: settingsProvider.setBtSeedMaxActive,
     );
   }
 }

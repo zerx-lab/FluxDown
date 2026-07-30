@@ -6,11 +6,13 @@
 // Note on scope: entries backed by [SettingsProvider] setters call
 // `SaveConfig(...).sendSignalToRust()` (Rinf FFI), which needs the compiled
 // native `hub` library that isn't loadable under plain `flutter test`. So the
-// "successful apply" path is exercised only via [ThemeProvider]/
-// [LocaleNotifier]-backed entries (pure KvStore, no FFI); the SettingsProvider
-// entries are only exercised through the *skip* path, where the setter is
-// never reached. ConfigSyncService itself (network + singleton) is not
-// unit-tested here — see task notes.
+// "successful apply" path is exercised via [ThemeProvider]/[LocaleNotifier]-
+// backed entries (pure KvStore, no FFI); for the BT seeding entries the
+// provider mutates state and notifies *before* the trailing FFI call, so
+// those tests swallow the FFI error and assert on provider state. The other
+// SettingsProvider entries are only exercised through the *skip* path, where
+// the setter is never reached. ConfigSyncService itself (network + singleton)
+// is not unit-tested here — see task notes.
 
 import 'dart:async';
 import 'dart:convert';
@@ -128,10 +130,10 @@ void main() {
       settings.dispose();
     });
 
-    test('has exactly the 50 keys listed in the sync contract v1', () {
-      // 5 appearance + 6 general + 8 ui + 15 download + 11 bt（5 + 6 做种） + 5 ed2k.
-      // 做种 6 项：ratio/post_ratio/time/inactive_time/operator/then_action.
-      expect(catalog.length, 50);
+    test('has exactly the 51 keys listed in the sync contract v1', () {
+      // 5 appearance + 6 general + 8 ui + 15 download + 12 bt（5 + 7 做种） + 5 ed2k.
+      // 做种 7 项：ratio/post_ratio/time/inactive_time/operator/then_action/max_active.
+      expect(catalog.length, 51);
     });
 
     test('every key matches the contract key pattern and length limit', () {
@@ -257,6 +259,84 @@ void main() {
       final before = locale.preference;
       expect(() => entry.apply('xx-not-real'), returnsNormally);
       expect(locale.preference, before);
+    });
+  });
+
+  group('bt seeding entries — enable state encoded as value>0', () {
+    late SettingsProvider settings;
+    late ThemeProvider theme;
+    late LocaleNotifier locale;
+    late List<SyncEntry> catalog;
+
+    setUp(() {
+      settings = _newSettingsProvider();
+      theme = ThemeProvider();
+      locale = LocaleNotifier();
+      catalog = buildSyncCatalog(
+        settings: settings,
+        theme: theme,
+        locale: locale,
+      );
+    });
+
+    tearDown(() {
+      settings.dispose();
+    });
+
+    SyncEntry entryFor(String key) => catalog.firstWhere((e) => e.key == key);
+
+    /// The seeding apply methods mutate provider state and notify listeners
+    /// before the trailing `SaveConfig(...).sendSignalToRust()` (Rinf FFI),
+    /// which fails under plain `flutter test`. Swallow that failure so the
+    /// already-applied state can be asserted.
+    void applyIgnoringFfi(SyncEntry entry, dynamic value) {
+      try {
+        entry.apply(value);
+      } catch (_) {}
+    }
+
+    test('read() reports 0 while a limit is disabled (default state)', () {
+      expect(settings.btSeedRatioEnabled, isFalse);
+      expect(entryFor('bt.seed_ratio_limit').read(), 0.0);
+      expect(settings.btSeedTimeEnabled, isFalse);
+      expect(entryFor('bt.seed_time_limit_minutes').read(), 0);
+    });
+
+    test('apply(>0) enables bt.seed_ratio_limit and takes the value', () {
+      applyIgnoringFfi(entryFor('bt.seed_ratio_limit'), 1.5);
+      expect(settings.btSeedRatioEnabled, isTrue);
+      expect(settings.btSeedRatioLimit, 1.5);
+      expect(entryFor('bt.seed_ratio_limit').read(), 1.5);
+    });
+
+    test('apply(0) disables bt.seed_ratio_limit but keeps the local value', () {
+      applyIgnoringFfi(entryFor('bt.seed_ratio_limit'), 2.0);
+      applyIgnoringFfi(entryFor('bt.seed_ratio_limit'), 0.0);
+      expect(settings.btSeedRatioEnabled, isFalse);
+      expect(settings.btSeedRatioLimit, 2.0);
+      expect(entryFor('bt.seed_ratio_limit').read(), 0.0);
+    });
+
+    test('bt.seed_time_limit_minutes apply round-trips enable/disable', () {
+      final entry = entryFor('bt.seed_time_limit_minutes');
+      applyIgnoringFfi(entry, 90);
+      expect(settings.btSeedTimeEnabled, isTrue);
+      expect(settings.btSeedTimeLimitMinutes, 90);
+      expect(entry.read(), 90);
+      applyIgnoringFfi(entry, 0);
+      expect(settings.btSeedTimeEnabled, isFalse);
+      expect(entry.read(), 0);
+    });
+
+    test('bt.seed_max_active read/apply round-trip (0 = unlimited)', () {
+      final entry = entryFor('bt.seed_max_active');
+      expect(entry.read(), 0);
+      applyIgnoringFfi(entry, 3);
+      expect(settings.btSeedMaxActive, 3);
+      expect(entry.read(), 3);
+      applyIgnoringFfi(entry, 0);
+      expect(settings.btSeedMaxActive, 0);
+      expect(entry.read(), 0);
     });
   });
 

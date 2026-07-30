@@ -111,13 +111,14 @@ class SettingsProvider extends ChangeNotifier {
   int _btPortEnd = 6891; // 监听端口结束
   String _btCustomTrackers = ''; // 用户自定义 Tracker 列表（换行分隔）
 
-  // BT 做种限制（Rust 端以 value > 0 表示启用；Dart 端保存开关状态与数值）
-  bool _btSeedRatioEnabled = true; // 启用总分享率限制
-  double _btSeedRatioLimit = 1.0; // 总分享率限制值
+  // BT 做种限制（Rust 端以 value > 0 表示启用；Dart 端保存开关状态与数值。
+  // 四项限制默认全部关闭，仅在用户显式勾选后生效）
+  bool _btSeedRatioEnabled = false; // 启用总分享率限制
+  double _btSeedRatioLimit = 0.0; // 总分享率限制值
   bool _btSeedPostRatioEnabled = false; // 启用做种后分享率限制
   double _btSeedPostRatioLimit = 0.0; // 做种后分享率限制值
-  bool _btSeedTimeEnabled = true; // 启用总做种时间限制
-  int _btSeedTimeLimitMinutes = 72 * 60; // 总做种时间限制（分钟）
+  bool _btSeedTimeEnabled = false; // 启用总做种时间限制
+  int _btSeedTimeLimitMinutes = 0; // 总做种时间限制（分钟）
   String _btSeedTimeLimitUnit = 'minutes'; // 显示单位：'minutes'/'hours'/'days'
   bool _btSeedInactiveTimeEnabled = false; // 启用不活跃做种时间限制
   int _btSeedInactiveTimeLimitMinutes = 30; // 不活跃做种时间限制（分钟）
@@ -125,6 +126,7 @@ class SettingsProvider extends ChangeNotifier {
   String _btSeedConditionsOperator = 'or'; // 条件组合方式：'and' / 'or'
   String _btSeedThenAction =
       'stop'; // 满足条件后动作：'stop' / 'delete' / 'delete_files'
+  int _btSeedMaxActive = 0; // 最大同时活动做种任务数（0=不限制，超出的完成任务排队等待）
 
   // 临时缓存：开关关闭时保留上次输入的数值，再次打开时恢复。
   double _btSeedRatioLimitCached = 1.0;
@@ -381,6 +383,7 @@ class SettingsProvider extends ChangeNotifier {
   String get btSeedInactiveTimeLimitUnit => _btSeedInactiveTimeLimitUnit;
   String get btSeedConditionsOperator => _btSeedConditionsOperator;
   String get btSeedThenAction => _btSeedThenAction;
+  int get btSeedMaxActive => _btSeedMaxActive;
 
   // BT Tracker 订阅 Getters
   bool get btTrackerSubEnabled => _btTrackerSubEnabled;
@@ -1116,6 +1119,87 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('bt_seed_then_action', normalized);
   }
 
+  void setBtSeedMaxActive(int value) {
+    final clamped = value < 0 ? 0 : value;
+    if (_btSeedMaxActive == clamped) return;
+    _btSeedMaxActive = clamped;
+    notifyListeners();
+    _saveToRust('bt_seed_max_active', clamped.toString());
+  }
+
+  // 云同步应用做种限制：与引擎 kv 同一编码（value > 0 = 启用并取该值，
+  // 0 = 关闭）。关闭时保留内存数值与缓存，用户再次手动开启可恢复。
+
+  void applySyncedBtSeedRatioLimit(double value) {
+    final enabled = value > 0.0;
+    if (enabled) {
+      if (_btSeedRatioEnabled && _btSeedRatioLimit == value) return;
+      _btSeedRatioEnabled = true;
+      _btSeedRatioLimit = value;
+      _btSeedRatioLimitCached = value;
+    } else {
+      if (!_btSeedRatioEnabled) return;
+      _btSeedRatioEnabled = false;
+      _btSeedRatioLimitCached = _btSeedRatioLimit;
+    }
+    notifyListeners();
+    _saveToRust('bt_seed_ratio_limit', enabled ? value.toString() : '0');
+  }
+
+  void applySyncedBtSeedPostRatioLimit(double value) {
+    final enabled = value > 0.0;
+    if (enabled) {
+      if (_btSeedPostRatioEnabled && _btSeedPostRatioLimit == value) return;
+      _btSeedPostRatioEnabled = true;
+      _btSeedPostRatioLimit = value;
+      _btSeedPostRatioLimitCached = value;
+    } else {
+      if (!_btSeedPostRatioEnabled) return;
+      _btSeedPostRatioEnabled = false;
+      _btSeedPostRatioLimitCached = _btSeedPostRatioLimit;
+    }
+    notifyListeners();
+    _saveToRust('bt_seed_post_ratio_limit', enabled ? value.toString() : '0');
+  }
+
+  void applySyncedBtSeedTimeLimitMinutes(int value) {
+    final enabled = value > 0;
+    if (enabled) {
+      if (_btSeedTimeEnabled && _btSeedTimeLimitMinutes == value) return;
+      _btSeedTimeEnabled = true;
+      _btSeedTimeLimitMinutes = value;
+      _btSeedTimeLimitMinutesCached = value;
+    } else {
+      if (!_btSeedTimeEnabled) return;
+      _btSeedTimeEnabled = false;
+      _btSeedTimeLimitMinutesCached = _btSeedTimeLimitMinutes;
+    }
+    notifyListeners();
+    _saveToRust('bt_seed_time_limit_minutes', enabled ? value.toString() : '0');
+  }
+
+  void applySyncedBtSeedInactiveTimeLimitMinutes(int value) {
+    final enabled = value > 0;
+    if (enabled) {
+      if (_btSeedInactiveTimeEnabled &&
+          _btSeedInactiveTimeLimitMinutes == value) {
+        return;
+      }
+      _btSeedInactiveTimeEnabled = true;
+      _btSeedInactiveTimeLimitMinutes = value;
+      _btSeedInactiveTimeLimitMinutesCached = value;
+    } else {
+      if (!_btSeedInactiveTimeEnabled) return;
+      _btSeedInactiveTimeEnabled = false;
+      _btSeedInactiveTimeLimitMinutesCached = _btSeedInactiveTimeLimitMinutes;
+    }
+    notifyListeners();
+    _saveToRust(
+      'bt_seed_inactive_time_limit_minutes',
+      enabled ? value.toString() : '0',
+    );
+  }
+
   // BT Tracker 订阅 Setters
 
   void setBtTrackerSubEnabled(bool value) {
@@ -1598,7 +1682,7 @@ class SettingsProvider extends ChangeNotifier {
         case 'bt_custom_trackers':
           _btCustomTrackers = entry.value;
         case 'bt_seed_ratio_limit':
-          _btSeedRatioLimit = double.tryParse(entry.value) ?? 1.0;
+          _btSeedRatioLimit = double.tryParse(entry.value) ?? 0.0;
           _btSeedRatioEnabled = _btSeedRatioLimit > 0.0;
           _btSeedRatioLimitCached = _btSeedRatioEnabled
               ? _btSeedRatioLimit
@@ -1610,7 +1694,7 @@ class SettingsProvider extends ChangeNotifier {
               ? _btSeedPostRatioLimit
               : 1.0;
         case 'bt_seed_time_limit_minutes':
-          _btSeedTimeLimitMinutes = int.tryParse(entry.value) ?? 72 * 60;
+          _btSeedTimeLimitMinutes = int.tryParse(entry.value) ?? 0;
           _btSeedTimeEnabled = _btSeedTimeLimitMinutes > 0;
           _btSeedTimeLimitMinutesCached = _btSeedTimeEnabled
               ? _btSeedTimeLimitMinutes
@@ -1621,7 +1705,7 @@ class SettingsProvider extends ChangeNotifier {
               ? entry.value
               : 'minutes';
         case 'bt_seed_inactive_time_limit_minutes':
-          _btSeedInactiveTimeLimitMinutes = int.tryParse(entry.value) ?? 30;
+          _btSeedInactiveTimeLimitMinutes = int.tryParse(entry.value) ?? 0;
           _btSeedInactiveTimeEnabled = _btSeedInactiveTimeLimitMinutes > 0;
           _btSeedInactiveTimeLimitMinutesCached = _btSeedInactiveTimeEnabled
               ? _btSeedInactiveTimeLimitMinutes
@@ -1641,6 +1725,8 @@ class SettingsProvider extends ChangeNotifier {
               }.containsKey(entry.value)
               ? entry.value
               : 'stop';
+        case 'bt_seed_max_active':
+          _btSeedMaxActive = int.tryParse(entry.value) ?? 0;
         case 'bt_tracker_sub_enabled':
           _btTrackerSubEnabled = entry.value == 'true';
         case 'bt_tracker_sub_urls':

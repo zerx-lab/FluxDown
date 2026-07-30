@@ -24,7 +24,7 @@ enum TaskStatus {
 /// BT 做种状态 — 与 Rust 端 `SeedingStopReason::as_i32` 对应
 /// 0=none, 1=active seeding, 2=ratio reached,
 /// 3=time reached, 4=user stopped, 5=task deleted, 6=session released,
-/// 7=inactive time reached
+/// 7=inactive time reached, 8=queued (等待做种槽位)
 enum SeedingStatus {
   none,
   seeding,
@@ -34,6 +34,8 @@ enum SeedingStatus {
   deleted,
   sessionReleased,
   inactiveReached,
+  // 加在末尾：避免影响任何隐含依赖枚举 index 的对应关系。
+  queued,
 }
 
 /// Convert a Rust seeding status code to the Dart enum.
@@ -50,6 +52,7 @@ SeedingStatus seedingStatusFromInt(int value) {
     5 => SeedingStatus.deleted,
     6 => SeedingStatus.sessionReleased,
     7 => SeedingStatus.inactiveReached,
+    8 => SeedingStatus.queued,
     _ => SeedingStatus.none,
   };
 }
@@ -702,9 +705,12 @@ class DownloadTask {
     return '${formatBytes(uploadSpeedBps)}/s';
   }
 
-  /// 当前是否处于 BT 做种状态
+  /// 当前是否处于 BT 做种分类（活跃做种或排队等待做种槽位，
+  /// 二者都归入「做种」Tab 并可暂停）
   bool get isSeeding =>
-      status == TaskStatus.completed && seedingStatus == SeedingStatus.seeding;
+      status == TaskStatus.completed &&
+      (seedingStatus == SeedingStatus.seeding ||
+          seedingStatus == SeedingStatus.queued);
 
   /// 分享率（uploaded / downloaded）
   double get seedRatio =>
@@ -746,6 +752,7 @@ class DownloadTask {
       SeedingStatus.deleted => s.seedingStatusDeleted,
       SeedingStatus.sessionReleased => s.seedingStatusSessionReleased,
       SeedingStatus.inactiveReached => s.seedingStatusInactiveReached,
+      SeedingStatus.queued => s.seedingStatusQueued,
     };
   }
 
@@ -799,7 +806,11 @@ class DownloadTask {
   /// 状态文本
   String get statusText {
     final s = currentS;
-    if (isSeeding) return s.statusSeeding;
+    if (isSeeding) {
+      return seedingStatus == SeedingStatus.queued
+          ? s.seedingStatusQueued
+          : s.statusSeeding;
+    }
     if (status == TaskStatus.completed && fileMissing) {
       return s.statusFileMissing;
     }

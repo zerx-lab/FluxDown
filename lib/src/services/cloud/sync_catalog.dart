@@ -193,7 +193,7 @@ void _applyThemeSelection(
   }
 }
 
-/// 装配契约「同步键目录 v1」的全部 44 个键。顺序与契约文档一致，便于对照审阅。
+/// 装配契约「同步键目录 v1」的全部 51 个键。顺序与契约文档一致，便于对照审阅。
 List<SyncEntry> buildSyncCatalog({
   required SettingsProvider settings,
   required ThemeProvider theme,
@@ -442,7 +442,7 @@ List<SyncEntry> buildSyncCatalog({
     settings.setKeepAwakeWhileDownloading,
   ),
 
-  // ── bt（5 + 6 做种）──
+  // ── bt（5 + 7 做种）──
   _bool('bt.enable_dht', () => settings.btEnableDht, settings.setBtEnableDht),
   _bool(
     'bt.enable_upnp',
@@ -465,27 +465,30 @@ List<SyncEntry> buildSyncCatalog({
     settings.setBtTrackerSubUrls,
   ),
 
-  // ── bt 做种（6）──
-  // 启用态由 limit>0 编码（0=关闭），同步 limit 值即同步启用状态。
+  // ── bt 做种（7）──
+  // 四项限制的启用态由 limit>0 编码（0=关闭）：read 侧按开关折算，禁用即上报 0；
+  // apply 侧 >0 启用并设值、==0 禁用且保留本地缓存值。
   _double(
     'bt.seed_ratio_limit',
-    () => settings.btSeedRatioLimit,
-    settings.setBtSeedRatioLimit,
+    () => settings.btSeedRatioEnabled ? settings.btSeedRatioLimit : 0.0,
+    settings.applySyncedBtSeedRatioLimit,
   ),
   _double(
     'bt.seed_post_ratio_limit',
-    () => settings.btSeedPostRatioLimit,
-    settings.setBtSeedPostRatioLimit,
+    () => settings.btSeedPostRatioEnabled ? settings.btSeedPostRatioLimit : 0.0,
+    settings.applySyncedBtSeedPostRatioLimit,
   ),
   _int(
     'bt.seed_time_limit_minutes',
-    () => settings.btSeedTimeLimitMinutes,
-    settings.setBtSeedTimeLimitMinutes,
+    () => settings.btSeedTimeEnabled ? settings.btSeedTimeLimitMinutes : 0,
+    settings.applySyncedBtSeedTimeLimitMinutes,
   ),
   _int(
     'bt.seed_inactive_time_limit_minutes',
-    () => settings.btSeedInactiveTimeLimitMinutes,
-    settings.setBtSeedInactiveTimeLimitMinutes,
+    () => settings.btSeedInactiveTimeEnabled
+        ? settings.btSeedInactiveTimeLimitMinutes
+        : 0,
+    settings.applySyncedBtSeedInactiveTimeLimitMinutes,
   ),
   _string(
     'bt.seed_limit_operator',
@@ -496,6 +499,11 @@ List<SyncEntry> buildSyncCatalog({
     'bt.seed_then_action',
     () => settings.btSeedThenAction,
     settings.setBtSeedThenAction,
+  ),
+  _int(
+    'bt.seed_max_active',
+    () => settings.btSeedMaxActive,
+    settings.setBtSeedMaxActive,
   ),
 
   // ── ed2k（5）──

@@ -1157,6 +1157,9 @@ class S {
   String get btSeedStopSeeding => _r('btSeedStopSeeding');
   String get btSeedDeleteTask => _r('btSeedDeleteTask');
   String get btSeedDeleteTaskAndFiles => _r('btSeedDeleteTaskAndFiles');
+  String get btSeedMaxActive => _r('btSeedMaxActive');
+  String get btSeedMaxActiveDesc => _r('btSeedMaxActiveDesc');
+  String get btSeedMaxActiveUnlimited => _r('btSeedMaxActiveUnlimited');
   String get timeUnitMinutes => _r('timeUnitMinutes');
   String get timeUnitHours => _r('timeUnitHours');
   String get timeUnitDays => _r('timeUnitDays');
@@ -1172,6 +1175,7 @@ class S {
   String get seedingStatus => _r('seedingStatus');
   String get seedingStatusNone => _r('seedingStatusNone');
   String get seedingStatusSeeding => _r('seedingStatusSeeding');
+  String get seedingStatusQueued => _r('seedingStatusQueued');
   String get seedingStatusRatioReached => _r('seedingStatusRatioReached');
   String get seedingStatusTimeReached => _r('seedingStatusTimeReached');
   String get seedingStatusInactiveReached => _r('seedingStatusInactiveReached');
