@@ -4293,15 +4293,9 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             if total > 0 {
                 let _ = db.update_task_total_bytes(&task_id, total).await;
             }
-            // Persist cumulative upload for seeding ratio accounting.
-            let cumulative_upload = stats
-                .live
-                .as_ref()
-                .map(|l| l.snapshot.uploaded_bytes as i64)
-                .unwrap_or(0);
-            let _ = db
-                .update_task_uploaded_bytes(&task_id, cumulative_upload)
-                .await;
+            // 上传量不在此落库：progress_reporter 对 ProgressUpdate.uploaded_bytes
+            // 做增量累计（add_task_uploaded_bytes），绝对值覆盖写会在 librqbit
+            // 计数器因暂停/恢复归零后清掉已累计值。
             last_db_save = Instant::now();
         }
 

@@ -637,6 +637,23 @@ impl Db {
         // coordinator 侧状态机更新。
         self.add_column_if_missing("tasks", "auto_route", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        // BT 做种：上传量累计 / 完成时基线 / 做种状态机 / 起始时间
+        // （见 bt_seeding.rs）。旧库缺列时所有做种写库与 TASK_COLUMNS
+        // 查询都会直接报 "no such column"，必须幂等补齐。
+        self.add_column_if_missing("tasks", "uploaded_bytes", "BIGINT NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "uploaded_at_completion",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.add_column_if_missing("tasks", "seeding_status", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing("tasks", "seeding_message", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "seeding_started_at", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
         Ok(())
     }
 
@@ -948,20 +965,6 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
-    }
-
-    /// 更新任务已上传字节数（BT 做种）。
-    pub async fn update_task_uploaded_bytes(
-        &self,
-        task_id: &str,
-        uploaded_bytes: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query("UPDATE tasks SET uploaded_bytes = $1 WHERE id = $2")
-            .bind(uploaded_bytes)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 
     /// 更新任务完成时已上传字节数（BT 做种后分享率基准）。
