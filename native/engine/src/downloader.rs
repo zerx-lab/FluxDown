@@ -651,7 +651,11 @@ pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Opt
     for part in value.split(',') {
         let lower = part.trim().to_ascii_lowercase();
         match lower.as_str() {
-            "identity" | "" => {}
+            // "none" 不是 IANA 登记的编码 token，但部分服务器/反代用它显式
+            // 表达"未压缩"（等价于省略该头或写 identity）。按未知编码处理会把
+            // 明确声明"无压缩"的响应误判为不可解码的压缩层，导致下载被永久拒绝
+            // （BUG-HTTP-NONE-ENCODING-FALSE-POSITIVE）。
+            "identity" | "none" | "" => {}
             "gzip" | "x-gzip" | "br" | "brotli" | "deflate" | "zstd" => layers.push(lower),
             other => {
                 has_unknown = true;
@@ -5069,6 +5073,62 @@ mod tests {
         assert_eq!(
             super::detect_content_encoding(&headers),
             Some(super::ContentEncoding::Gzip)
+        );
+    }
+
+    #[test]
+    fn unsupported_content_encoding_none_token_is_supported() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_ENCODING,
+            reqwest::header::HeaderValue::from_static("none"),
+        );
+        assert!(super::unsupported_content_encoding(&headers).is_none());
+    }
+
+    #[test]
+    fn unsupported_content_encoding_identity_is_supported() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_ENCODING,
+            reqwest::header::HeaderValue::from_static("identity"),
+        );
+        assert!(super::unsupported_content_encoding(&headers).is_none());
+    }
+
+    #[test]
+    fn unsupported_content_encoding_gzip_is_supported() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_ENCODING,
+            reqwest::header::HeaderValue::from_static("gzip"),
+        );
+        assert!(super::unsupported_content_encoding(&headers).is_none());
+    }
+
+    #[test]
+    fn unsupported_content_encoding_unknown_token_rejected() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_ENCODING,
+            reqwest::header::HeaderValue::from_static("compress"),
+        );
+        assert_eq!(
+            super::unsupported_content_encoding(&headers),
+            Some("compress".to_string())
+        );
+    }
+
+    #[test]
+    fn unsupported_content_encoding_multi_layer_rejected() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_ENCODING,
+            reqwest::header::HeaderValue::from_static("gzip, gzip"),
+        );
+        assert_eq!(
+            super::unsupported_content_encoding(&headers),
+            Some("gzip, gzip".to_string())
         );
     }
 
