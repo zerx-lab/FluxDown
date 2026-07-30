@@ -2796,44 +2796,65 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     // 按 SUPPORTED 起步、正常多段规划，保留 CDN 漂移容差。
     let size_is_estimate = p.hint_file_size > 0 && !p.range_verified;
 
+    // On resume, load any segment rows left over from a previous run once —
+    // reused below both for the "auto" segment-count reuse and to decide
+    // whether a forced single-connection resume must still go through the
+    // multi-segment coordinator instead of discarding existing progress.
+    let existing_segment_rows = if p.is_resume {
+        p.db.load_segments(&p.task_id).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     // Dynamic segment calculation when user chose "auto" (segment_count <= 0).
     let segments = if p.segment_count <= 0 {
         // When resuming, check if DB already has segment rows from a previous
         // run.  If so, reuse that count — avoids a redundant bandwidth probe
         // and guarantees segment definitions stay consistent with what's on disk.
-        if p.is_resume {
-            let existing = p.db.load_segments(&p.task_id).await.unwrap_or_default();
-            if !existing.is_empty() {
-                let n = existing.len() as i32;
-                log_info!(
-                    "[download] task {} resume: reusing {} existing segment(s) from DB",
-                    p.task_id,
-                    n
-                );
+        if !existing_segment_rows.is_empty() {
+            let n = existing_segment_rows.len() as i32;
+            log_info!(
+                "[download] task {} resume: reusing {} existing segment(s) from DB",
+                p.task_id,
                 n
-            } else {
-                // Segment rows were lost (e.g. crash between tasks.segments
-                // update and insert_segments).  Fall through to advisor.
-                compute_segments_with_advisor(p, &info).await
-            }
+            );
+            n
         } else {
+            // Segment rows were lost (e.g. crash between tasks.segments
+            // update and insert_segments), or this is a fresh download.
             compute_segments_with_advisor(p, &info).await
         }
     } else {
         p.segment_count
     };
 
-    // Use multi-segment only when:
+    // BUG: a resume whose effective concurrency was forced down to 1 (domain
+    // single-connection cache — see `is_single_conn_domain` in
+    // `download_manager.rs` — or the user setting segments=1 directly) must
+    // NOT collapse into the true single-stream path below when the DB still
+    // holds a prior multi-segment layout: that path unconditionally deletes
+    // the segment rows and the pre-allocated temp file (see the "switching
+    // multi-segment → single-stream" branch further down), discarding every
+    // byte already downloaded even though nothing about the file changed.
+    // The coordinator already resumes existing DB segments under any
+    // `worker_cap` (including 1 — the same value the domain-cap clamp forces
+    // mid-flight on an already-running multi-segment download), so routing
+    // through it here costs nothing and preserves progress instead of
+    // silently restarting a large download from byte 0.
+    let resume_has_segments = !existing_segment_rows.is_empty();
+
+    // Use multi-segment when:
     //   • The server supports Range (probe confirmed)
     //   • File is > 1 MB (small files don't benefit from segmentation)
-    //   • We asked for more than 1 segment
+    //   • We asked for more than 1 segment, OR this resume already has a
+    //     multi-segment layout on disk that must be preserved
     //   • Original HTTP method is GET-like — POST + Range:bytes=X-Y is undefined
     //     in HTTP standards and most servers will silently return 200 OK with
     //     full body, corrupting the assembled output. Force single-stream
     //     for non-GET to make uupdump-style form-POST downloads safe.
     let use_segments = effective_supports_range
         && effective_total_bytes > 1_048_576
-        && segments > 1
+        && (segments > 1 || resume_has_segments)
         && p.spec.is_get_like();
     if !p.spec.is_get_like() {
         log_info!(
