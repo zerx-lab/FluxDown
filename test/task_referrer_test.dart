@@ -27,6 +27,10 @@ void main() {
     uploadedAtCompletion: 0,
     seedingStatus: 0,
     seedingMessage: '',
+    seedRatioLimitMilli: -2,
+    seedPostRatioLimitMilli: -2,
+    seedTimeLimitMinutes: -2,
+    seedInactiveTimeLimitMinutes: -2,
     referrer: 'https://example.com/page',
     groupId: '',
     rssSourceId: '',
@@ -95,6 +99,10 @@ void main() {
       uploadedAtCompletion: 0,
       seedingStatus: 0,
       seedingMessage: '',
+      seedRatioLimitMilli: -2,
+      seedPostRatioLimitMilli: -2,
+      seedTimeLimitMinutes: -2,
+      seedInactiveTimeLimitMinutes: -2,
     );
     final task = DownloadTask.fromTaskInfo(info);
     expect(task.checksum, 'sha256=deadbeef');

@@ -1482,6 +1482,40 @@ class DownloadController extends ChangeNotifier {
     UpdateTaskSegments(taskId: taskId, segments: n).sendSignalToRust();
   }
 
+  /// 设置任务级做种限制覆盖（三态哨兵：-2=跟随全局设置、-1=不限制、
+  /// >=0=自定义，分享率为千分比）。先乐观更新本地字段并通知 UI，
+  /// 权威值随引擎下一次 AllTasks 快照回填。
+  void setTaskSeedLimits(
+    String taskId, {
+    required int ratioMilli,
+    required int postRatioMilli,
+    required int timeMinutes,
+    required int inactiveMinutes,
+  }) {
+    logInfo(
+      _tag,
+      'setTaskSeedLimits: task=$taskId, ratio=$ratioMilli, '
+      'postRatio=$postRatioMilli, time=$timeMinutes, inactive=$inactiveMinutes',
+    );
+    final idx = _tasks.indexWhere((t) => t.id == taskId);
+    if (idx >= 0) {
+      _tasks[idx] = _tasks[idx].copyWith(
+        seedRatioLimitMilli: ratioMilli,
+        seedPostRatioLimitMilli: postRatioMilli,
+        seedTimeLimitMinutes: timeMinutes,
+        seedInactiveTimeLimitMinutes: inactiveMinutes,
+      );
+      _safeNotifyListeners();
+    }
+    SetTaskSeedLimits(
+      taskId: taskId,
+      ratioLimitMilli: ratioMilli,
+      postRatioLimitMilli: postRatioMilli,
+      seedTimeLimitMinutes: timeMinutes,
+      inactiveTimeLimitMinutes: inactiveMinutes,
+    ).sendSignalToRust();
+  }
+
   /// 处理 Rust 的分段数修改结果：成功则更新 configuredSegments，
   /// 并通过 [onSegmentsUpdateResult] 通知 UI 弹提示。
   void _onTaskSegmentsUpdated(RustSignalPack<TaskSegmentsUpdated> pack) {

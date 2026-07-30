@@ -412,6 +412,19 @@ class DownloadTask {
   /// 空 = 非 Auto 模式，详情面板不显示该行）。
   final String autoRoute;
 
+  /// 任务级做种限制覆盖（三态哨兵：-2=跟随全局设置、-1=不限制、>=0=自定义，
+  /// 其中 0 等效不限制）。分享率为千分比（1500 = 1.5）。
+  final int seedRatioLimitMilli;
+
+  /// 做种后分享率限制覆盖（千分比，哨兵语义同 [seedRatioLimitMilli]）。
+  final int seedPostRatioLimitMilli;
+
+  /// 做种时长限制覆盖（分钟，哨兵语义同 [seedRatioLimitMilli]）。
+  final int seedTimeLimitMinutes;
+
+  /// 无活动做种时长限制覆盖（分钟，哨兵语义同 [seedRatioLimitMilli]）。
+  final int seedInactiveTimeLimitMinutes;
+
   // ── 站点分桶键（惰性缓存；见 view_prefs/list_entity 站点分组维度）──
   String? _siteKeyCache;
   String? _siteLabelCache;
@@ -453,6 +466,10 @@ class DownloadTask {
     this.seedingMessage = '',
     this.uploadSpeedBps = 0,
     this.seedingStartedAt,
+    this.seedRatioLimitMilli = -2,
+    this.seedPostRatioLimitMilli = -2,
+    this.seedTimeLimitMinutes = -2,
+    this.seedInactiveTimeLimitMinutes = -2,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -489,6 +506,10 @@ class DownloadTask {
       checksum: info.checksum,
       proxyUrl: info.proxyUrl,
       autoRoute: info.autoRoute,
+      seedRatioLimitMilli: info.seedRatioLimitMilli,
+      seedPostRatioLimitMilli: info.seedPostRatioLimitMilli,
+      seedTimeLimitMinutes: info.seedTimeLimitMinutes,
+      seedInactiveTimeLimitMinutes: info.seedInactiveTimeLimitMinutes,
       createdAt: seconds > 0
           ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000)
           : DateTime.now(),
@@ -533,6 +554,10 @@ class DownloadTask {
     String? checksum,
     String? proxyUrl,
     String? autoRoute,
+    int? seedRatioLimitMilli,
+    int? seedPostRatioLimitMilli,
+    int? seedTimeLimitMinutes,
+    int? seedInactiveTimeLimitMinutes,
     DateTime? createdAt,
     DateTime? completedAt,
   }) {
@@ -570,6 +595,12 @@ class DownloadTask {
       checksum: checksum ?? this.checksum,
       proxyUrl: proxyUrl ?? this.proxyUrl,
       autoRoute: autoRoute ?? this.autoRoute,
+      seedRatioLimitMilli: seedRatioLimitMilli ?? this.seedRatioLimitMilli,
+      seedPostRatioLimitMilli:
+          seedPostRatioLimitMilli ?? this.seedPostRatioLimitMilli,
+      seedTimeLimitMinutes: seedTimeLimitMinutes ?? this.seedTimeLimitMinutes,
+      seedInactiveTimeLimitMinutes:
+          seedInactiveTimeLimitMinutes ?? this.seedInactiveTimeLimitMinutes,
       createdAt: createdAt ?? this.createdAt,
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
     );

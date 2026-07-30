@@ -1160,6 +1160,10 @@ class S {
   String get btSeedMaxActive => _r('btSeedMaxActive');
   String get btSeedMaxActiveDesc => _r('btSeedMaxActiveDesc');
   String get btSeedMaxActiveUnlimited => _r('btSeedMaxActiveUnlimited');
+  String get btSeedLimitsTitle => _r('btSeedLimitsTitle');
+  String get btSeedLimitsModeGlobal => _r('btSeedLimitsModeGlobal');
+  String get btSeedLimitsModeUnlimited => _r('btSeedLimitsModeUnlimited');
+  String get btSeedLimitsModeCustom => _r('btSeedLimitsModeCustom');
   String get timeUnitMinutes => _r('timeUnitMinutes');
   String get timeUnitHours => _r('timeUnitHours');
   String get timeUnitDays => _r('timeUnitDays');

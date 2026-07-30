@@ -508,6 +508,9 @@ class _DetailPanelState extends State<DetailPanel> {
       if (task.seedingStatus != SeedingStatus.none) {
         widgets.add(_buildInfoRow(s.seedingStatus, task.seedingStatusText, c));
       }
+      if (task.status == TaskStatus.completed || task.isSeeding) {
+        widgets.add(_buildSeedLimitsRow(c, task));
+      }
     }
 
     return widgets;
@@ -1102,6 +1105,78 @@ class _DetailPanelState extends State<DetailPanel> {
             ),
         ],
       ),
+    );
+  }
+
+  /// 「做种限制」行 —— 展示当前三态模式摘要（跟随全局/不限制/自定义），
+  /// 提供编辑入口打开每任务做种限制对话框。仅 BT 已完成/做种任务展示。
+  Widget _buildSeedLimitsRow(AppColors c, DownloadTask task) {
+    final s = currentS;
+    final values = [
+      task.seedRatioLimitMilli,
+      task.seedPostRatioLimitMilli,
+      task.seedTimeLimitMinutes,
+      task.seedInactiveTimeLimitMinutes,
+    ];
+    final String summary;
+    if (values.every((v) => v == -2)) {
+      summary = s.btSeedLimitsModeGlobal;
+    } else if (values.every((v) => v == -1)) {
+      summary = s.btSeedLimitsModeUnlimited;
+    } else {
+      summary = s.btSeedLimitsModeCustom;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 60,
+            child: Text(
+              s.btSeedLimitsTitle,
+              style: TextStyle(fontSize: 11, color: c.textMuted),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              summary,
+              style: TextStyle(
+                fontSize: 11,
+                color: c.textSecondary,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          Tooltip(
+            message: s.btSeedLimitsTitle,
+            child: ShadButton.ghost(
+              height: 22,
+              width: 22,
+              padding: EdgeInsets.zero,
+              onPressed: () => _showSeedLimitsDialog(task),
+              child: Icon(
+                LucideIcons.pencil,
+                size: 12,
+                color: c.textSecondary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSeedLimitsDialog(DownloadTask task) {
+    final c = AppColors.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) =>
+          _SeedLimitsDialog(controller: widget.controller, task: task),
     );
   }
 
@@ -2131,6 +2206,266 @@ class DetailFooterPrimaryButton extends StatelessWidget {
       hoverBackgroundColor: c.accentHover,
       expands: true,
       child: FittedBox(fit: BoxFit.scaleDown, child: content),
+    );
+  }
+}
+
+/// 「做种限制」对话框 —— 每任务覆盖全局做种限制。三态语义：跟随全局设置 /
+/// 不限制 / 自定义；自定义模式下每行开关决定该项是否生效（未勾选 = 不限制
+/// 该项），分享率以小数展示、提交时转千分比，时长以分钟为单位。
+class _SeedLimitsDialog extends StatefulWidget {
+  final DownloadController controller;
+  final DownloadTask task;
+
+  const _SeedLimitsDialog({required this.controller, required this.task});
+
+  @override
+  State<_SeedLimitsDialog> createState() => _SeedLimitsDialogState();
+}
+
+class _SeedLimitsDialogState extends State<_SeedLimitsDialog> {
+  /// 哨兵：跟随全局设置。
+  static const int _followGlobal = -2;
+
+  /// 哨兵：不限制。
+  static const int _unlimited = -1;
+
+  /// 'global' | 'unlimited' | 'custom'
+  late String _mode;
+  late bool _ratioEnabled;
+  late bool _postRatioEnabled;
+  late bool _timeEnabled;
+  late bool _inactiveEnabled;
+  late final TextEditingController _ratioCtrl;
+  late final TextEditingController _postRatioCtrl;
+  late final TextEditingController _timeCtrl;
+  late final TextEditingController _inactiveCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final t = widget.task;
+    final values = [
+      t.seedRatioLimitMilli,
+      t.seedPostRatioLimitMilli,
+      t.seedTimeLimitMinutes,
+      t.seedInactiveTimeLimitMinutes,
+    ];
+    if (values.every((v) => v == _followGlobal)) {
+      _mode = 'global';
+    } else if (values.every((v) => v == _unlimited)) {
+      _mode = 'unlimited';
+    } else {
+      _mode = 'custom';
+    }
+    _ratioEnabled = t.seedRatioLimitMilli >= 0;
+    _postRatioEnabled = t.seedPostRatioLimitMilli >= 0;
+    _timeEnabled = t.seedTimeLimitMinutes >= 0;
+    _inactiveEnabled = t.seedInactiveTimeLimitMinutes >= 0;
+    // 未启用行给默认建议值，勾选后即可直接确认。
+    _ratioCtrl = TextEditingController(
+      text: _ratioText(_ratioEnabled ? t.seedRatioLimitMilli : 1000),
+    );
+    _postRatioCtrl = TextEditingController(
+      text: _ratioText(_postRatioEnabled ? t.seedPostRatioLimitMilli : 1000),
+    );
+    _timeCtrl = TextEditingController(
+      text: '${_timeEnabled ? t.seedTimeLimitMinutes : 72 * 60}',
+    );
+    _inactiveCtrl = TextEditingController(
+      text: '${_inactiveEnabled ? t.seedInactiveTimeLimitMinutes : 30}',
+    );
+  }
+
+  @override
+  void dispose() {
+    _ratioCtrl.dispose();
+    _postRatioCtrl.dispose();
+    _timeCtrl.dispose();
+    _inactiveCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 千分比 → 小数字符串（1500 → '1.5'）。
+  static String _ratioText(int milli) => (milli / 1000.0).toString();
+
+  /// 小数字符串 → 千分比（'1.5' → 1500），非法/负值按 0 处理。
+  static int _ratioMilli(TextEditingController ctrl) {
+    final v = double.tryParse(ctrl.text) ?? 0.0;
+    return v > 0 ? (v * 1000).round() : 0;
+  }
+
+  /// 分钟字符串 → 分钟数，非法/负值按 0 处理。
+  static int _minutes(TextEditingController ctrl) {
+    final v = int.tryParse(ctrl.text) ?? 0;
+    return v > 0 ? v : 0;
+  }
+
+  void _confirm() {
+    final int ratio;
+    final int postRatio;
+    final int time;
+    final int inactive;
+    switch (_mode) {
+      case 'global':
+        ratio = _followGlobal;
+        postRatio = _followGlobal;
+        time = _followGlobal;
+        inactive = _followGlobal;
+      case 'unlimited':
+        ratio = _unlimited;
+        postRatio = _unlimited;
+        time = _unlimited;
+        inactive = _unlimited;
+      default:
+        ratio = _ratioEnabled ? _ratioMilli(_ratioCtrl) : _unlimited;
+        postRatio = _postRatioEnabled
+            ? _ratioMilli(_postRatioCtrl)
+            : _unlimited;
+        time = _timeEnabled ? _minutes(_timeCtrl) : _unlimited;
+        inactive = _inactiveEnabled ? _minutes(_inactiveCtrl) : _unlimited;
+    }
+    widget.controller.setTaskSeedLimits(
+      widget.task.id,
+      ratioMilli: ratio,
+      postRatioMilli: postRatio,
+      timeMinutes: time,
+      inactiveMinutes: inactive,
+    );
+    Navigator.of(context).pop();
+  }
+
+  String _modeLabel(S s, String mode) {
+    return switch (mode) {
+      'unlimited' => s.btSeedLimitsModeUnlimited,
+      'custom' => s.btSeedLimitsModeCustom,
+      _ => s.btSeedLimitsModeGlobal,
+    };
+  }
+
+  Widget _buildLimitRow({
+    required AppColors c,
+    required bool enabled,
+    required ValueChanged<bool> onChanged,
+    required String label,
+    required TextEditingController controller,
+    required bool decimal,
+    String? unit,
+  }) {
+    return Row(
+      children: [
+        ShadSwitch(value: enabled, onChanged: onChanged),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+        SizedBox(
+          width: 72,
+          child: ShadInput(
+            controller: controller,
+            enabled: enabled,
+            keyboardType: decimal
+                ? const TextInputType.numberWithOptions(decimal: true)
+                : TextInputType.number,
+          ),
+        ),
+        if (unit != null) ...[
+          const SizedBox(width: 6),
+          Text(unit, style: TextStyle(fontSize: 12, color: c.textMuted)),
+        ],
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = currentS;
+    return ShadDialog(
+      title: Text(s.btSeedLimitsTitle),
+      actions: [
+        ShadButton.outline(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(s.cancel),
+        ),
+        ShadButton(onPressed: _confirm, child: Text(s.confirm)),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ShadSelect<String>(
+              initialValue: _mode,
+              options: [
+                ShadOption(
+                  value: 'global',
+                  child: Text(s.btSeedLimitsModeGlobal),
+                ),
+                ShadOption(
+                  value: 'unlimited',
+                  child: Text(s.btSeedLimitsModeUnlimited),
+                ),
+                ShadOption(
+                  value: 'custom',
+                  child: Text(s.btSeedLimitsModeCustom),
+                ),
+              ],
+              selectedOptionBuilder: (context, value) => Text(
+                _modeLabel(s, value),
+                style: TextStyle(fontSize: 12, color: c.textPrimary),
+              ),
+              onChanged: (v) {
+                if (v != null) setState(() => _mode = v);
+              },
+            ),
+            if (_mode == 'custom') ...[
+              const SizedBox(height: 12),
+              _buildLimitRow(
+                c: c,
+                enabled: _ratioEnabled,
+                onChanged: (v) => setState(() => _ratioEnabled = v),
+                label: s.btSeedRatioLimit,
+                controller: _ratioCtrl,
+                decimal: true,
+              ),
+              const SizedBox(height: 8),
+              _buildLimitRow(
+                c: c,
+                enabled: _postRatioEnabled,
+                onChanged: (v) => setState(() => _postRatioEnabled = v),
+                label: s.btSeedPostRatioLimit,
+                controller: _postRatioCtrl,
+                decimal: true,
+              ),
+              const SizedBox(height: 8),
+              _buildLimitRow(
+                c: c,
+                enabled: _timeEnabled,
+                onChanged: (v) => setState(() => _timeEnabled = v),
+                label: s.btSeedTimeLimit,
+                controller: _timeCtrl,
+                decimal: false,
+                unit: s.timeUnitMinutes,
+              ),
+              const SizedBox(height: 8),
+              _buildLimitRow(
+                c: c,
+                enabled: _inactiveEnabled,
+                onChanged: (v) => setState(() => _inactiveEnabled = v),
+                label: s.btSeedInactiveTimeLimit,
+                controller: _inactiveCtrl,
+                decimal: false,
+                unit: s.timeUnitMinutes,
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
