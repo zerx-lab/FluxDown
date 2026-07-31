@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
+    file_present_at INTEGER NOT NULL DEFAULT 0,
     range_verified INTEGER NOT NULL DEFAULT 1,
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
@@ -220,6 +221,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_ts ON webhook_deliveries(timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_tasks_missing_cleanup ON tasks(created_at DESC)
+    WHERE status = 3 AND file_missing = 1;
 ";
 
 /// 建表 DDL（PostgreSQL 方言）。
@@ -250,6 +253,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
+    file_present_at INTEGER NOT NULL DEFAULT 0,
     range_verified INTEGER NOT NULL DEFAULT 1,
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
@@ -400,6 +404,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_ts ON webhook_deliveries(timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_tasks_missing_cleanup ON tasks(created_at DESC)
+    WHERE status = 3 AND file_missing = 1;
 ";
 
 /// SQLite 连接级 PRAGMA（在 `after_connect` 钩子中对每个新连接执行）。
@@ -418,6 +424,15 @@ const SQLITE_PRAGMAS: &str = "PRAGMA journal_mode=WAL;\
 pub struct Db {
     pool: sqlx::AnyPool,
     backend: Backend,
+}
+
+#[cfg(test)]
+impl Db {
+    /// 测试专用的连接池句柄——供跨模块测试构造故障/精确字段场景
+    /// （如 DROP TABLE 触发降级、绕开盖章逻辑直写行）。生产代码不可见。
+    pub(crate) fn test_pool(&self) -> &sqlx::AnyPool {
+        &self.pool
+    }
 }
 
 /// 把 `AnyRow` 手动映射为 [`TaskInfo`]（列名 `id`→字段 `task_id`）。
@@ -465,6 +480,14 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
 }
 
 const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, referrer, group_id, rss_source_id, origin_url, auto_route";
+
+/// 「丢失文件清理」资格谓词：[`Db::load_missing_cleanup_candidates`] 与
+/// [`Db::is_missing_cleanup_candidate`] 共用，保证批量预览与执行前复核
+/// 语义严格一致。`seeding_status` 字面量对应 `crate::bt_seeding` 的
+/// `SEEDING_STATUS_ACTIVE`(1) / `SEEDING_STATUS_QUEUED`(8)。
+const MISSING_CLEANUP_WHERE: &str = "status = 3 AND file_missing = 1 \
+     AND (downloaded_bytes > 0 OR file_present_at > 0) \
+     AND seeding_status NOT IN (1, 8)";
 
 /// 把 `AnyRow` 映射为 [`GroupInfo`]。
 fn group_from_row(row: &AnyRow) -> Result<GroupInfo, sqlx::Error> {
@@ -621,6 +644,14 @@ impl Db {
         // 完成（status→3）的时刻，插件 onDone 等 hook 后处理不计入；任务
         // 重新开始下载（status→0/1/5）时清空，供重下后重新记录。
         self.add_column_if_missing("tasks", "completed_at", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        // 文件曾确证存在于最终路径的时刻（Unix 秒，0 = 从未确证）。任务
+        // 完成（status→3）时由 update_task_status 盖章——所有协议在进终态前
+        // 都已把数据落到最终路径。「丢失文件清理」用它把「文件被用户删了」
+        // 与「文件从未落盘」（0 字节任务/建文件前即失败）区分开。不进
+        // TASK_COLUMNS/TaskInfo，仅在 WHERE 子句消费（同 seeding_started_at
+        // 的库内私有列先例）。
+        self.add_column_if_missing("tasks", "file_present_at", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         // 队列内启动顺序（0 = 未显式排序，按 created_at 先来先启动）。
         self.add_column_if_missing("tasks", "queue_order", "INTEGER NOT NULL DEFAULT 0")
@@ -926,11 +957,13 @@ impl Db {
         Ok(())
     }
 
-    /// 更新任务状态与错误信息，并同步维护 `completed_at`（任务结束时间）：
+    /// 更新任务状态与错误信息，并同步维护 `completed_at`（任务结束时间）
+    /// 与 `file_present_at`（文件曾确证存在时刻，丢失文件清理资格证据）：
     /// - `status = 3`（下载完成）且尚未记录 → 写入当前 Unix 秒。此写入发生在
     ///   下载数据落盘完成之时，早于插件 onDone 等 hook 后处理，故结束时间
     ///   不含 hook 耗时；重复写 3（幂等竞态）不会覆盖首次记录。
-    /// - `status ∈ {0, 1, 5}`（重新排队/下载/准备）→ 清空，重下后重新记录。
+    /// - `status ∈ {0, 1, 5}`（重新排队/下载/准备）→ 清空 completed_at，
+    ///   重下后重新记录；`file_present_at` 是历史证据，不随重下清除。
     /// - 其余状态（暂停/错误）保持不变。
     pub async fn update_task_status(
         &self,
@@ -944,6 +977,10 @@ impl Db {
                      WHEN $1 = 3 AND completed_at = '' THEN $3
                      WHEN $1 IN (0, 1, 5) THEN ''
                      ELSE completed_at
+                 END,
+                 file_present_at = CASE
+                     WHEN $1 = 3 AND file_present_at = 0 THEN $5
+                     ELSE file_present_at
                  END
              WHERE id = $4",
         )
@@ -951,6 +988,7 @@ impl Db {
         .bind(error_message)
         .bind(chrono_now())
         .bind(id)
+        .bind(chrono_now_secs())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -981,10 +1019,12 @@ impl Db {
             return Ok(());
         }
         // SQLite has a max variable limit of 999; chunk to stay safe
-        // (same pattern as `load_tasks_by_ids`).  $1 = status, $2 = now.
+        // (same pattern as `load_tasks_by_ids`).
+        // $1 = status，$2 = completed_at 用 Unix 秒字符串，
+        // $3 = file_present_at 用 Unix 秒整数，id 从 $4 起。
         const CHUNK: usize = 500;
         for chunk in ids.chunks(CHUNK) {
-            let placeholders: String = (3..chunk.len() + 3)
+            let placeholders: String = (4..chunk.len() + 4)
                 .map(|i| format!("${i}"))
                 .collect::<Vec<_>>()
                 .join(",");
@@ -994,12 +1034,17 @@ impl Db {
                          WHEN $1 = 3 AND completed_at = '' THEN $2
                          WHEN $1 IN (0, 1, 5) THEN ''
                          ELSE completed_at
+                     END,
+                     file_present_at = CASE
+                         WHEN $1 = 3 AND file_present_at = 0 THEN $3
+                         ELSE file_present_at
                      END
                  WHERE id IN ({placeholders})"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql))
                 .bind(status)
-                .bind(chrono_now());
+                .bind(chrono_now())
+                .bind(chrono_now_secs());
             for id in chunk {
                 query = query.bind(id.as_str());
             }
@@ -1032,6 +1077,43 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// 丢失文件清理候选：已完成、文件确证丢失、且曾确证在最终路径存在过
+    /// （`downloaded_bytes > 0` 或完成时盖章 `file_present_at`）的任务。
+    /// 正在做种（`SEEDING_STATUS_ACTIVE`）/排队做种（`SEEDING_STATUS_QUEUED`）
+    /// 的任务被排除——它们仍被 librqbit 会话持有，须由用户显式删除
+    /// （走完整做种注销流程）。
+    ///
+    /// 「曾确证存在」守卫把「文件被用户删了」与「文件从未落盘」（0 字节
+    /// 任务、建文件前即失败的任务）区分开，后者永不被清理。
+    ///
+    /// [`Db::is_missing_cleanup_candidate`] 复用同一谓词常量
+    /// `MISSING_CLEANUP_WHERE`，确保批量预览与执行复核语义零漂移。
+    pub async fn load_missing_cleanup_candidates(&self) -> Result<Vec<TaskInfo>, DbError> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE {MISSING_CLEANUP_WHERE} ORDER BY created_at DESC"
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .fetch_all(&self.pool)
+            .await?;
+        let mut tasks = Vec::with_capacity(rows.len());
+        for row in &rows {
+            tasks.push(task_from_row(row)?);
+        }
+        Ok(tasks)
+    }
+
+    /// 单任务资格复核：与 `load_missing_cleanup_candidates` 同一谓词。
+    /// 生产消费于 `DownloadManager::execute_missing_cleanup` 的执行前复核——
+    /// 状态/丢失标记/存在证据/做种态四维一次性判定，不手工复制谓词。
+    pub async fn is_missing_cleanup_candidate(&self, id: &str) -> Result<bool, DbError> {
+        let sql = format!("SELECT 1 FROM tasks WHERE id = $1 AND {MISSING_CLEANUP_WHERE}");
+        let row = sqlx::query(AssertSqlSafe(sql))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
     }
 
     /// 更新任务完成时已上传字节数（BT 做种后分享率基准）。
@@ -1912,6 +1994,10 @@ impl Db {
             ("cdn_max_nodes", "0"),
             ("max_concurrent_tasks", "5"),
             ("speed_limit_bytes", "0"),
+            // 丢失文件自动清理："true" = 文件扫描完成后自动删除「已完成且
+            // 文件确证丢失且曾确证存在」的任务记录（资格谓词同
+            // MISSING_CLEANUP_WHERE）。默认关；实时读库，热生效。
+            ("auto_cleanup_missing_files", "false"),
             // 全局 BT 上传限速（B/s）："0" = 不限。与 speed_limit_bytes
             // 解耦：后者只管下载，本键管 BT 上传（下载期上传 + 做种）。
             ("upload_limit_bytes", "0"),
@@ -3706,11 +3792,15 @@ fn rss_item_from_row(row: &AnyRow) -> Result<RssItemInfo, sqlx::Error> {
 }
 
 fn chrono_now() -> String {
-    let now = std::time::SystemTime::now();
-    let since_epoch = now
+    format!("{}", chrono_now_secs())
+}
+
+/// Unix 秒（INTEGER 列专用；`chrono_now` 的 i64 版本，如 `file_present_at`）。
+fn chrono_now_secs() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", since_epoch.as_secs())
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 // ---------------------------------------------------------------------------
@@ -5519,5 +5609,211 @@ mod tests {
         assert_eq!(y.queue_id, MAIN_QUEUE_ID);
         assert_eq!(y.queue_order, 0, "explicit order resets on reassignment");
         close_test_db(&db, dir).await;
+    }
+
+    // --------------------------------------------------------------------
+    // 丢失文件清理：资格谓词（MISSING_CLEANUP_WHERE）与 file_present_at 盖章
+    // --------------------------------------------------------------------
+
+    /// 按给定字段直接写入一行任务（谓词矩阵测试的搭建辅助）。
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_cleanup_row(
+        db: &Db,
+        id: &str,
+        status: i32,
+        file_missing: bool,
+        downloaded_bytes: i64,
+        file_present_at: i64,
+        seeding_status: i32,
+    ) {
+        sqlx::query(
+            "INSERT INTO tasks (id, url, file_name, save_dir, status, \
+             total_bytes, downloaded_bytes, segments, created_at, file_missing, \
+             file_present_at, seeding_status) \
+             VALUES ($1, 'http://x', 'f', '/tmp', $2, 0, $3, 0, '0', $4, $5, $6)",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(downloaded_bytes)
+        .bind(file_missing as i32)
+        .bind(file_present_at)
+        .bind(seeding_status)
+        .execute(&db.pool)
+        .await
+        .expect("insert cleanup row");
+    }
+
+    /// 谓词矩阵：每个资格维度单独违例都必须被排除；两条读路径
+    /// （批量候选 + 单任务复核）对同一行必须始终一致。
+    #[tokio::test]
+    async fn missing_cleanup_predicate_matrix() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+
+        // 合格：completed + 确证丢失 + 有下载字节证据。
+        insert_cleanup_row(&db, "ok-bytes", 3, true, 100, 0, 0).await;
+        // 合格：completed + 确证丢失 + 0 字节但有完成盖章证据。
+        insert_cleanup_row(&db, "ok-stamped", 3, true, 0, 1_700_000_000, 0).await;
+        // 排除：文件从未确证存在（0 字节且无盖章）——「从未落盘」≠「被删」。
+        insert_cleanup_row(&db, "no-evidence", 3, true, 0, 0, 0).await;
+        // 排除：文件未丢失。
+        insert_cleanup_row(&db, "not-missing", 3, false, 100, 0, 0).await;
+        // 排除：非 completed（paused）——谓词只管 status=3。
+        insert_cleanup_row(&db, "paused", 2, true, 100, 0, 0).await;
+        // 排除：做种中（SEEDING_STATUS_ACTIVE）——仍被 librqbit 会话持有。
+        insert_cleanup_row(&db, "seeding", 3, true, 100, 0, 1).await;
+        // 排除：排队做种（SEEDING_STATUS_QUEUED）。
+        insert_cleanup_row(&db, "seed-queued", 3, true, 100, 0, 8).await;
+
+        let candidates = db
+            .load_missing_cleanup_candidates()
+            .await
+            .expect("load candidates");
+        let mut ids: Vec<&str> = candidates.iter().map(|t| t.task_id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec!["ok-bytes", "ok-stamped"],
+            "only fully-qualified tasks may be returned"
+        );
+
+        // 单任务复核路径必须与批量路径逐行一致。
+        for (id, expected) in [
+            ("ok-bytes", true),
+            ("ok-stamped", true),
+            ("no-evidence", false),
+            ("not-missing", false),
+            ("paused", false),
+            ("seeding", false),
+            ("seed-queued", false),
+        ] {
+            let got = db.is_missing_cleanup_candidate(id).await.expect("recheck");
+            assert_eq!(got, expected, "recheck mismatch for {id}");
+        }
+    }
+
+    /// file_present_at 生命周期：status→3 时盖章一次；重复写 3 不覆盖；
+    /// 重下（→0/1/5）清除 completed_at 但保留 file_present_at（历史证据）。
+    #[tokio::test]
+    async fn update_task_status_stamps_file_present_at_once() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        insert_task(&db, "t1").await;
+
+        let present_at = || async {
+            sqlx::query_scalar::<_, i64>("SELECT file_present_at FROM tasks WHERE id = 't1'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("read file_present_at")
+        };
+
+        assert_eq!(present_at().await, 0, "新任务不得有存在证据");
+
+        // 暂停/错误不盖章。
+        db.update_task_status("t1", 2, "").await.expect("pause");
+        db.update_task_status("t1", 4, "boom").await.expect("error");
+        assert_eq!(present_at().await, 0, "非完成状态不得盖章");
+
+        // 完成 → 盖章。
+        db.update_task_status("t1", 3, "").await.expect("complete");
+        let first = present_at().await;
+        assert!(first > 0, "完成时必须盖章");
+
+        // 重复写 3（幂等竞态）不覆盖首次记录。
+        db.update_task_status("t1", 3, "")
+            .await
+            .expect("re-complete");
+        assert_eq!(present_at().await, first, "重复完成不得覆盖首次盖章");
+
+        // 重下：completed_at 清空（既有契约），file_present_at 保留。
+        db.update_task_status("t1", 1, "")
+            .await
+            .expect("redownload");
+        assert_eq!(present_at().await, first, "重下不得清除历史证据");
+        let t = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load")
+            .expect("present");
+        assert_eq!(t.completed_at, "", "重下必须清空 completed_at（既有契约）");
+
+        // 再次完成：已有盖章，不更新。
+        db.update_task_status("t1", 3, "")
+            .await
+            .expect("complete again");
+        assert_eq!(present_at().await, first, "已有盖章时再次完成不得更新");
+    }
+
+    /// 批量状态更新与单任务同一盖章契约。
+    #[tokio::test]
+    async fn update_tasks_status_batch_stamps_file_present_at() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        insert_task(&db, "b1").await;
+        insert_task(&db, "b2").await;
+
+        db.update_tasks_status_batch(&["b1".to_string(), "b2".to_string()], 3)
+            .await
+            .expect("batch complete");
+
+        for id in ["b1", "b2"] {
+            let v = sqlx::query_scalar::<_, i64>("SELECT file_present_at FROM tasks WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .expect("read");
+            assert!(v > 0, "批量完成必须盖章（{id}）");
+        }
+
+        // 批量重下不清除历史证据。
+        db.update_tasks_status_batch(&["b1".to_string()], 0)
+            .await
+            .expect("batch requeue");
+        let v = sqlx::query_scalar::<_, i64>("SELECT file_present_at FROM tasks WHERE id = 'b1'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read");
+        assert!(v > 0, "批量重下不得清除历史证据");
+    }
+
+    /// 默认配置：`auto_cleanup_missing_files` 播种为 "false"（默认关闭，
+    /// 老库 ON CONFLICT DO NOTHING 不覆盖用户既有值）。
+    #[tokio::test]
+    async fn init_default_config_seeds_auto_cleanup_disabled() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.init_default_config("/tmp").await.expect("seed defaults");
+        let v = db
+            .get_config("auto_cleanup_missing_files")
+            .await
+            .expect("get config")
+            .expect("seeded");
+        assert_eq!(v, "false", "自动清理必须默认关闭");
+
+        // 用户已开启时，重复播种不得覆盖。
+        db.set_config("auto_cleanup_missing_files", "true")
+            .await
+            .expect("user enable");
+        db.init_default_config("/tmp").await.expect("re-seed");
+        let v = db
+            .get_config("auto_cleanup_missing_files")
+            .await
+            .expect("get config")
+            .expect("seeded");
+        assert_eq!(v, "true", "重复播种不得覆盖用户设置");
+    }
+
+    /// MISSING_CLEANUP_WHERE 中的做种状态字面量必须与 bt_seeding 常量一致。
+    /// 若将来新增「数据仍被会话持有」的做种子状态，此测试会因谓词未更新而失败。
+    #[tokio::test]
+    async fn missing_cleanup_where_uses_bt_seeding_constants() {
+        use crate::bt_seeding::{SEEDING_STATUS_ACTIVE, SEEDING_STATUS_QUEUED};
+        assert_eq!(SEEDING_STATUS_ACTIVE, 1);
+        assert_eq!(SEEDING_STATUS_QUEUED, 8);
+        assert!(MISSING_CLEANUP_WHERE.contains("NOT IN (1, 8)"));
     }
 }
