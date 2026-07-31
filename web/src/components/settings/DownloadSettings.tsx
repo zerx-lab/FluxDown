@@ -27,6 +27,7 @@ export function DownloadSettings({
   const cdnMultiEnabled = (config.cdn_multi_enabled ?? '0') === '1'
   const cdnMaxNodes = Number(config.cdn_max_nodes ?? '0')
   const proxyMode = config.proxy_mode ?? 'none'
+  const fileExistsBehavior = config.file_exists_behavior ?? 'rename'
 
   /** 开启多 CDN 并发时与代理互斥（对齐桌面端 _onCdnMultiChanged）：代理已启用则
    *  弹确认框——确认「关闭代理并开启」一次写入两个键，取消则不改任何状态。
@@ -109,6 +110,17 @@ export function DownloadSettings({
           <SetSwitch
             checked={useServerTime}
             onCheckedChange={(v) => mutate({ use_server_time: String(v) })}
+          />
+        </SetRow>
+        <SetRow title={t('set.download.fileExists')} desc={t('set.download.fileExistsDesc')}>
+          <SetSelect
+            value={fileExistsBehavior === 'overwrite' ? 'overwrite' : 'rename'}
+            onValueChange={(v) => mutate({ file_exists_behavior: v })}
+            options={[
+              { value: 'rename', label: t('set.download.fileExistsRename') },
+              { value: 'overwrite', label: t('set.download.fileExistsOverwrite') },
+            ]}
+            width={160}
           />
         </SetRow>
         <SetRow title={t('set.download.cdnMulti')} desc={t('set.download.cdnMultiDesc')}>

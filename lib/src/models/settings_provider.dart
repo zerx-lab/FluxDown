@@ -175,6 +175,9 @@ class SettingsProvider extends ChangeNotifier {
   // 默认队列设置
   String _defaultQueueId = ''; // 空字符串 = 默认队列
 
+  // 文件已存在时的处理方式（'rename' = 自动重命名，'overwrite' = 覆盖旧文件）
+  String _fileExistsBehavior = 'rename';
+
   // 新建下载对话框上次选择的线程数（'' = 未记录，'auto' = 自动，数字串 = 固定）
   String _lastDialogThreads = '';
 
@@ -428,6 +431,9 @@ class SettingsProvider extends ChangeNotifier {
 
   // 默认队列 Getter
   String get defaultQueueId => _defaultQueueId;
+
+  // 文件已存在时处理方式 Getter
+  String get fileExistsBehavior => _fileExistsBehavior;
 
   // 新建下载对话框上次选择的线程数 Getter
   String get lastDialogThreads => _lastDialogThreads;
@@ -1429,6 +1435,14 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('default_queue_id', value);
   }
 
+  // 文件已存在时处理方式 Setter
+  void setFileExistsBehavior(String value) {
+    if (_fileExistsBehavior == value) return;
+    _fileExistsBehavior = value;
+    notifyListeners();
+    _saveToRust('file_exists_behavior', value);
+  }
+
   // 文件管理器命令 Setters
   void setRevealFileCmd(String value) {
     if (_revealFileCmd == value) return;
@@ -1857,6 +1871,8 @@ class SettingsProvider extends ChangeNotifier {
           _globalUserAgent = entry.value;
         case 'default_queue_id':
           _defaultQueueId = entry.value;
+        case 'file_exists_behavior':
+          _fileExistsBehavior = entry.value.isEmpty ? 'rename' : entry.value;
         case 'last_dialog_threads':
           _lastDialogThreads = entry.value;
         case 'last_target_device':

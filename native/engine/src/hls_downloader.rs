@@ -1302,7 +1302,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         dest_path.display()
     );
 
-    if let Some(mp4_path) = remux_ts_to_mp4(&dest_path, &p.task_id).await {
+    if let Some(mp4_path) = remux_ts_to_mp4(&dest_path, &p.task_id, p.allow_overwrite).await {
         let mp4_file_name = mp4_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -1374,7 +1374,15 @@ fn remux_space_ok(avail: Option<u64>, file_len: u64) -> bool {
     }
 }
 
-async fn remux_ts_to_mp4(ts_path: &std::path::Path, task_id: &str) -> Option<PathBuf> {
+/// `allow_overwrite`（config `file_exists_behavior` == "overwrite"）：为
+/// true 时,同名 `.mp4` 已作为普通最终文件存在不触发编号改名——保留原名,
+/// 占名遇 AlreadyExists 时删除旧文件后重试一次;目录/删除失败仍走既有
+/// 失败路径(保留 .ts)。
+async fn remux_ts_to_mp4(
+    ts_path: &std::path::Path,
+    task_id: &str,
+    allow_overwrite: bool,
+) -> Option<PathBuf> {
     let ext = ts_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if !ext.eq_ignore_ascii_case("ts") {
         return None;
@@ -1414,6 +1422,7 @@ async fn remux_ts_to_mp4(ts_path: &std::path::Path, task_id: &str) -> Option<Pat
         &desired_name,
         &std::collections::HashSet::new(),
         &std::collections::HashSet::new(),
+        allow_overwrite,
     )
     .await;
     let mp4_path = parent.join(&unique_name);
@@ -1439,8 +1448,27 @@ async fn remux_ts_to_mp4(ts_path: &std::path::Path, task_id: &str) -> Option<Pat
             .open(&mp4_owned)
             .map(drop)
         {
-            let _ = std::fs::remove_file(&mp4_tmp_inner);
-            return Err(e);
+            // overwrite 模式:dedup 对已存在的普通 mp4 保留了原名,占名必然
+            // AlreadyExists——删除旧文件后重试占名一次(覆盖旧文件)。目标是
+            // 目录、删除失败或二次抢占时维持既有失败路径(保留 .ts)。
+            let overwrote = allow_overwrite
+                && e.kind() == std::io::ErrorKind::AlreadyExists
+                && mp4_owned.is_file()
+                && std::fs::remove_file(&mp4_owned).is_ok()
+                && std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&mp4_owned)
+                    .map(drop)
+                    .is_ok();
+            if !overwrote {
+                let _ = std::fs::remove_file(&mp4_tmp_inner);
+                return Err(e);
+            }
+            log_info!(
+                "[hls] overwrote existing '{}' (file_exists_behavior=overwrite)",
+                mp4_owned.display()
+            );
         }
         if let Err(e) = std::fs::rename(&mp4_tmp_inner, &mp4_owned) {
             let _ = std::fs::remove_file(&mp4_owned);

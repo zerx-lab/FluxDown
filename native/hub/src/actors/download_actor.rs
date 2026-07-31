@@ -490,6 +490,10 @@ pub async fn run(db_dir: PathBuf) {
         if let Some(v) = cfg.get("use_server_time") {
             engine.manager.set_use_server_time(v == "true");
         }
+        // 文件已存在时的处理方式（"rename"=自动重命名，默认；"overwrite"=覆盖旧文件）。
+        if let Some(v) = cfg.get("file_exists_behavior") {
+            engine.manager.set_file_exists_overwrite(v == "overwrite");
+        }
     }
 
     if let Some(rx) = engine.manager.take_progress_rx() {
@@ -2956,6 +2960,11 @@ async fn apply_config_key(
             let v = value == "true";
             log_info!("[actor] updating use_server_time to {}", v);
             engine.manager.set_use_server_time(v);
+        }
+        "file_exists_behavior" => {
+            let v = value == "overwrite";
+            log_info!("[actor] updating file_exists_behavior overwrite to {}", v);
+            engine.manager.set_file_exists_overwrite(v);
         }
         "max_auto_retries" => {
             if let Ok(v) = value.parse::<i32>() {

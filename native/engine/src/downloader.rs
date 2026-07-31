@@ -262,6 +262,12 @@ pub struct DownloadParams {
     /// （config `use_server_time`）。服务器未提供该头、解析失败或写入失败时
     /// 保留本地完成时间，绝不影响下载结果。
     pub use_server_time: bool,
+    /// 文件已存在时是否覆盖旧文件（config `file_exists_behavior` ==
+    /// `"overwrite"`，manager 注入）。true 时，起名/终名冲突若**仅**来自
+    /// 磁盘上已存在的最终文件，则保留原名并在 finalize 时删除旧文件后
+    /// 占名；`.fdownloading` 临时文件、并发任务预订（reserved）与 avoid
+    /// 集合仍按编号改名，绝不覆盖其他任务的在途/产物。
+    pub allow_overwrite: bool,
     /// 段行布局属主令牌（= manager 的 spawn generation）。多段路径起飞时
     /// 写入 `tasks.segments_epoch`，worker 段进度写入以它作存在性守卫——
     /// 快速 pause→resume 后旧 spawn 迟到的写入全类失效（含段 0），杜绝
@@ -2112,20 +2118,37 @@ pub(crate) fn decode_bytes_utf8_or_gbk(bytes: &[u8]) -> Result<String, String> {
 /// 未完成任务 file_name)。与磁盘条目一并视为冲突,防止 finalize 换名撞上
 /// 兄弟任务「已预订但临时文件尚未落盘」的名字造成 DB 指针别名(两任务
 /// file_name 指向同一磁盘名,误删其一即毁对方产物)。
+///
+/// `allow_overwrite`（config `file_exists_behavior` == "overwrite"）:为
+/// true 时,磁盘上**仅最终文件**存在不算冲突——保留原名,完成时由
+/// finalize 覆盖旧文件;`.fdownloading` 临时文件、`reserved` 预订与
+/// `avoid` 集合命中仍是硬冲突,照旧编号改名。目录同名也照旧改名
+/// (文件不能覆盖目录)。
 pub async fn dedup_filename(
     dir: &Path,
     name: &str,
     reserved: &std::collections::HashSet<std::path::PathBuf>,
     avoid: &std::collections::HashSet<String>,
+    allow_overwrite: bool,
 ) -> String {
     // Phase 1: fast probe — most of the time there is no conflict.
     let candidate = dir.join(name);
     let temp_candidate = PathBuf::from(format!("{}{}", candidate.display(), TEMP_EXT));
     // Also check the in-flight reservation set BEFORE the async disk probes
     // so that two tasks starting simultaneously both see each other's claim.
+    let final_conflict = if allow_overwrite {
+        // overwrite 模式:仅目录算最终名冲突(文件不能覆盖目录);普通
+        // 文件存在 = 保留原名,finalize 时覆盖。
+        tokio::fs::metadata(&candidate)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+    } else {
+        tokio::fs::try_exists(&candidate).await.unwrap_or(false)
+    };
     if !reserved.contains(&temp_candidate)
         && !avoid.contains(&name.to_lowercase())
-        && !tokio::fs::try_exists(&candidate).await.unwrap_or(false)
+        && !final_conflict
         && !tokio::fs::try_exists(&temp_candidate)
             .await
             .unwrap_or(false)
@@ -3292,6 +3315,9 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
     let mut chosen = actual_name.clone();
     let mut avoid: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut avoid_loaded = false;
+    // overwrite 模式的一次性删除机会:仅对原名尝试,删除后重试同名占名;
+    // 再失败(占名与删除间被并发写者抢占)回落到既有 re-dedup 换名环。
+    let mut overwrite_attempted = false;
     let mut attempt = 0u32;
     loop {
         let dst = save_dir.join(&chosen);
@@ -3318,16 +3344,54 @@ async fn run_download_inner(p: &DownloadParams) -> Result<(i64, Option<String>),
                         avoid = names.into_iter().map(|n| n.to_lowercase()).collect();
                     }
                 }
+                // overwrite 模式(config `file_exists_behavior`):dst 是磁盘上
+                // 已存在的普通旧文件(非目录、不在兄弟任务 avoid 集)时,删除
+                // 旧文件后按原名重试占名一次。avoid 命中/目录/删除失败都不覆盖,
+                // 走下方既有换名环。
+                if p.allow_overwrite
+                    && !overwrite_attempted
+                    && chosen == actual_name
+                    && !avoid.contains(&chosen.to_lowercase())
+                {
+                    overwrite_attempted = true;
+                    let is_dir = tokio::fs::metadata(&dst)
+                        .await
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false);
+                    if !is_dir {
+                        match tokio::fs::remove_file(&dst).await {
+                            Ok(()) => {
+                                log_info!(
+                                    "[download] task {} overwriting existing file '{}' (file_exists_behavior=overwrite)",
+                                    p.task_id,
+                                    dst.display()
+                                );
+                                continue;
+                            }
+                            Err(re) => {
+                                log_info!(
+                                    "[download] task {} failed to remove existing '{}' for overwrite: {}; falling back to rename",
+                                    p.task_id,
+                                    dst.display(),
+                                    re
+                                );
+                            }
+                        }
+                    }
+                }
                 log_info!(
                     "[download] task {} destination '{}' is taken; re-deduping",
                     p.task_id,
                     dst.display()
                 );
+                // re-dedup 恒按保守语义(allow_overwrite=false):此环仅在原名
+                // 已被抢占/覆盖失败后进入,再放行原名会原地打转直到 attempt 耗尽。
                 chosen = dedup_filename(
                     &save_dir,
                     &actual_name,
                     &std::collections::HashSet::new(),
                     &avoid,
+                    false,
                 )
                 .await;
             }
@@ -4612,6 +4676,7 @@ mod tests {
             "test.txt",
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(result, "test.txt");
@@ -4633,6 +4698,7 @@ mod tests {
             "test.txt",
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(result, "test (1).txt");
@@ -4664,6 +4730,7 @@ mod tests {
             "TEST.txt",
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_ne!(
@@ -4689,6 +4756,7 @@ mod tests {
             "test.txt",
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(result, "test (1).txt");
@@ -4709,6 +4777,7 @@ mod tests {
             "README",
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(result, "README (1)");
@@ -4736,6 +4805,7 @@ mod tests {
             "video.mp4",
             &reserved,
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(result, "video (1).mp4");
@@ -4762,6 +4832,7 @@ mod tests {
             "video.mp4",
             &reserved,
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(result, "video (2).mp4");
@@ -4801,12 +4872,121 @@ mod tests {
             "setup.exe",
             &reserved,
             &std::collections::HashSet::new(),
+            false,
         )
         .await;
         assert_eq!(
             result, "setup.exe",
             "reserved 集合不含本任务名时，dedup 必须返回原名（PR #296 回归 bug）"
         );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // dedup_filename: allow_overwrite（config `file_exists_behavior` ==
+    // "overwrite"）——仅磁盘最终文件存在时保留原名；临时文件 / reserved /
+    // avoid 命中仍照旧编号改名。
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dedup_filename_overwrite_keeps_name_when_only_final_exists() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_ow_final");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        tokio::fs::write(dir.join("test.txt"), b"old")
+            .await
+            .unwrap_or(());
+
+        let result = dedup_filename(
+            &dir,
+            "test.txt",
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+        )
+        .await;
+        assert_eq!(
+            result, "test.txt",
+            "overwrite 模式下仅最终文件存在必须保留原名（完成时覆盖）"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_overwrite_temp_file_still_conflicts() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_ow_temp");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        // 在途下载的临时文件是硬冲突——绝不覆盖其他任务的在途产物。
+        tokio::fs::write(dir.join(format!("test.txt{TEMP_EXT}")), b"")
+            .await
+            .unwrap_or(());
+
+        let result = dedup_filename(
+            &dir,
+            "test.txt",
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+        )
+        .await;
+        assert_eq!(result, "test (1).txt");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_overwrite_reserved_and_avoid_still_conflict() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_ow_reserved");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = tokio::fs::create_dir_all(&dir).await;
+
+        // reserved 命中：兄弟任务已预订同名 temp。
+        let mut reserved = std::collections::HashSet::new();
+        reserved.insert(dir.join(format!("video.mp4{TEMP_EXT}")));
+        let result = dedup_filename(
+            &dir,
+            "video.mp4",
+            &reserved,
+            &std::collections::HashSet::new(),
+            true,
+        )
+        .await;
+        assert_eq!(result, "video (1).mp4");
+
+        // avoid 命中：同目录未完成任务已登记同名。
+        let mut avoid = std::collections::HashSet::new();
+        avoid.insert("movie.mkv".to_string());
+        let result = dedup_filename(
+            &dir,
+            "Movie.mkv",
+            &std::collections::HashSet::new(),
+            &avoid,
+            true,
+        )
+        .await;
+        assert_eq!(result, "Movie (1).mkv");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn dedup_filename_overwrite_directory_still_conflicts() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_ow_dir");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = tokio::fs::create_dir_all(dir.join("data.bin")).await;
+
+        let result = dedup_filename(
+            &dir,
+            "data.bin",
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+        )
+        .await;
+        assert_eq!(result, "data (1).bin", "文件不能覆盖同名目录，必须改名");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -5698,8 +5878,14 @@ mod tests {
         let mut avoid = std::collections::HashSet::new();
         avoid.insert("movie.mkv".to_string());
 
-        let result =
-            dedup_filename(&dir, "Movie.mkv", &std::collections::HashSet::new(), &avoid).await;
+        let result = dedup_filename(
+            &dir,
+            "Movie.mkv",
+            &std::collections::HashSet::new(),
+            &avoid,
+            false,
+        )
+        .await;
         assert_eq!(result, "Movie (1).mkv");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;

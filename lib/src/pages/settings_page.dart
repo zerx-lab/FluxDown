@@ -350,6 +350,13 @@ List<SettingsSearchItem> get settingsSearchItems {
     ),
     SettingsSearchItem(
       category: SettingsCategory.download,
+      label: s.fileExistsBehavior,
+      description: s.fileExistsBehaviorDesc,
+      keywords: s.searchKeywordsFileExists,
+      icon: LucideIcons.copyX,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
       label: s.defaultThreads,
       description: s.defaultThreadsDesc,
       keywords: s.searchKeywordsThreads,
@@ -3124,6 +3131,36 @@ class _DownloadContent extends StatelessWidget {
                   child: ShadSwitch(
                     value: settingsProvider.useServerTime,
                     onChanged: (v) => settingsProvider.setUseServerTime(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.fileExistsBehavior,
+                  description: s.fileExistsBehaviorDesc,
+                  child: ShadSelect<String>(
+                    initialValue:
+                        settingsProvider.fileExistsBehavior == 'overwrite'
+                        ? 'overwrite'
+                        : 'rename',
+                    options: [
+                      ShadOption(
+                        value: 'rename',
+                        child: Text(s.fileExistsRename),
+                      ),
+                      ShadOption(
+                        value: 'overwrite',
+                        child: Text(s.fileExistsOverwrite),
+                      ),
+                    ],
+                    selectedOptionBuilder: (context, value) => Text(
+                      value == 'overwrite'
+                          ? s.fileExistsOverwrite
+                          : s.fileExistsRename,
+                    ),
+                    onChanged: (v) {
+                      if (v != null) {
+                        settingsProvider.setFileExistsBehavior(v);
+                      }
+                    },
                   ),
                 ),
                 if (queues.isNotEmpty)

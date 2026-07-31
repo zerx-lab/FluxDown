@@ -1570,7 +1570,7 @@ pub fn rescue_stranded_staging_files(
             }
             let child_name = entry.file_name();
             let child_name_str = child_name.to_string_lossy();
-            let final_name = dedup_name_in_dir(save_path, &child_name_str, claimed);
+            let final_name = dedup_name_in_dir(save_path, &child_name_str, claimed, false);
             let dst = save_path.join(&final_name);
 
             match move_path(&entry.path(), &dst) {
@@ -1632,7 +1632,7 @@ pub fn rescue_stranded_staging_files(
                 );
                 continue;
             }
-            let final_child_name = dedup_name_in_dir(save_path, &child_name_str, claimed);
+            let final_child_name = dedup_name_in_dir(save_path, &child_name_str, claimed, false);
             let dst = save_path.join(&final_child_name);
 
             match move_path(&entry.path(), &dst) {
@@ -1700,11 +1700,26 @@ pub fn rescue_stranded_staging_files(
 ///   HTTP finalize rename 会覆盖 BT 产物(跨协议撞名)。
 /// - **`avoid` 集合(小写折叠)**:其他 BT 任务经完成哨兵声明、但可能尚未
 ///   在磁盘留下足迹的顶层名(见 `bt_completion_top_*` claim-aware dedup)。
-fn dedup_name_in_dir(dir: &Path, name: &str, avoid: &HashSet<String>) -> String {
+///
+/// `allow_overwrite`（config `file_exists_behavior` == "overwrite"）:为
+/// true 时,磁盘上**仅普通最终文件**同名不算冲突——保留原名,移动阶段
+/// 删除旧文件后落盘;`.fdownloading` 临时文件与 `avoid`(claimed)命中
+/// 仍是硬冲突,照旧编号改名。同名**目录**也照旧改名(不覆盖目录)。
+fn dedup_name_in_dir(
+    dir: &Path,
+    name: &str,
+    avoid: &HashSet<String>,
+    allow_overwrite: bool,
+) -> String {
     let temp_ext = crate::downloader::TEMP_EXT;
     let candidate = dir.join(name);
     let temp_candidate = dir.join(format!("{name}{temp_ext}"));
-    if !candidate.exists() && !temp_candidate.exists() && !avoid.contains(&name.to_lowercase()) {
+    let final_conflict = if allow_overwrite {
+        candidate.is_dir()
+    } else {
+        candidate.exists()
+    };
+    if !final_conflict && !temp_candidate.exists() && !avoid.contains(&name.to_lowercase()) {
         return name.to_string();
     }
 
@@ -1756,6 +1771,11 @@ struct CompletionLayoutInput<'a> {
     custom_name: &'a str,
     torrent_root_name: &'a str,
     reuse_top: Option<&'a str>,
+    /// 「文件已存在时」全局行为(config `file_exists_behavior`):true =
+    /// overwrite——fresh dedup 对磁盘上已存在的普通最终文件保留原名,
+    /// 移动阶段先删旧文件再落盘;claimed/temp 仍硬冲突。批内 `taken`
+    /// 互撞的编号 reconcile 恒按保守语义(编号变体绝不覆盖真实文件)。
+    allow_overwrite: bool,
     claimed: &'a HashSet<String>,
 }
 
@@ -1835,6 +1855,7 @@ fn compute_completion_layout(input: CompletionLayoutInput<'_>) -> Option<Complet
         custom_name,
         torrent_root_name,
         reuse_top,
+        allow_overwrite,
         claimed,
     } = input;
 
@@ -1884,7 +1905,7 @@ fn compute_completion_layout(input: CompletionLayoutInput<'_>) -> Option<Complet
     if all_selected && is_multi_file_torrent {
         let final_top = match reuse_top {
             Some(n) if !save_dir.join(n).exists() || save_dir.join(n).is_dir() => n.to_string(),
-            _ => dedup_name_in_dir(save_dir, desired_container, claimed),
+            _ => dedup_name_in_dir(save_dir, desired_container, claimed, allow_overwrite),
         };
         let dst_root = save_dir.join(&final_top);
         let moves = selected_files
@@ -1920,7 +1941,7 @@ fn compute_completion_layout(input: CompletionLayoutInput<'_>) -> Option<Complet
             // 仅当哨兵名未被占用才复用;dst 已存在(无论类型)⟹ 非本任务
             // 合法重试的残留,fresh dedup 换名,绝不 REPLACE 覆盖(见函数 doc)。
             Some(n) if !save_dir.join(n).exists() => n.to_string(),
-            _ => dedup_name_in_dir(save_dir, desired, claimed),
+            _ => dedup_name_in_dir(save_dir, desired, claimed, allow_overwrite),
         };
         let src = stage_dir.join(rel);
         let dst = save_dir.join(&final_name);
@@ -1958,7 +1979,7 @@ fn compute_completion_layout(input: CompletionLayoutInput<'_>) -> Option<Complet
             basename.as_str()
         };
         // First dedup against the on-disk contents of save_dir.
-        let mut candidate = dedup_name_in_dir(save_dir, candidate_seed, claimed);
+        let mut candidate = dedup_name_in_dir(save_dir, candidate_seed, claimed, allow_overwrite);
         // Then dedup against names already chosen in *this* batch.  Use a plain
         // numeric counter on the seed's stem/ext (`stem (n).ext`) rather than
         // prepending `_` to the whole candidate, which previously stacked
@@ -1981,7 +2002,8 @@ fn compute_completion_layout(input: CompletionLayoutInput<'_>) -> Option<Complet
                     None => format!("{} ({})", stem, n),
                 };
                 // Reconcile against disk again so we never overwrite a real file.
-                let deduped = dedup_name_in_dir(save_dir, &numbered, claimed);
+                // (恒保守:overwrite 只放行原名,编号变体绝不覆盖真实文件。)
+                let deduped = dedup_name_in_dir(save_dir, &numbered, claimed, false);
                 if !taken.contains(&deduped.to_lowercase()) {
                     candidate = deduped;
                     break;
@@ -4003,6 +4025,17 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 (resolved_name.clone(), true)
             } else {
                 let sentinel_key = format!("bt_completion_top_{}", task_id);
+                // 「文件已存在时」全局行为(config `file_exists_behavior`,默认
+                // rename):完成时实时读库(对齐 bt_seed_enabled 先例),用户下载
+                // 途中切换也能生效。overwrite 时 fresh dedup 仅对磁盘上已存在的
+                // 普通最终文件保留原名,移动前删除旧文件;temp/claimed 照旧改名。
+                let allow_overwrite = db
+                    .get_config("file_exists_behavior")
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|v| v == "overwrite")
+                    .unwrap_or(false);
                 let planned_completion = {
                     // Serialize dedup-name + sentinel declaration against other
                     // BT task completions sharing this session's save_dir. The
@@ -4050,6 +4083,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         custom_name: &custom_name,
                         torrent_root_name: &resolved_name,
                         reuse_top: reuse_top.as_deref(),
+                        allow_overwrite,
                         claimed: &claimed,
                     });
                     match layout {
@@ -4058,7 +4092,27 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                             if reuse_top.as_deref() != Some(layout.top_level_name.as_str()) {
                                 let _ = db.set_config(&sentinel_key, &layout.top_level_name).await;
                             }
-                            Some((layout, retrying_completion))
+                            // overwrite 模式:锁内快照「规划时点已作为普通文件存在
+                            // 且被保留原名」的 dst(含容器顶层名)。移动阶段只删除
+                            // 这份快照里的路径——规划后才出现的并发产物不在其列,
+                            // 决不误删。`m.src.exists()` 守卫排除重试中「上次已成功
+                            // 移动」的 dst(那是本任务产物,PriorSuccess 逻辑接管)。
+                            let overwrite_dsts: HashSet<PathBuf> = if allow_overwrite {
+                                let mut set = HashSet::new();
+                                let top = save_path.join(&layout.top_level_name);
+                                if top.is_file() {
+                                    set.insert(top);
+                                }
+                                for m in &layout.moves {
+                                    if m.src.exists() && m.dst.is_file() {
+                                        set.insert(m.dst.clone());
+                                    }
+                                }
+                                set
+                            } else {
+                                HashSet::new()
+                            };
+                            Some((layout, retrying_completion, overwrite_dsts))
                         }
                     }
                 };
@@ -4072,7 +4126,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         );
                         (resolved_name.clone(), false)
                     }
-                    Some((layout, retrying_completion)) => {
+                    Some((layout, retrying_completion, overwrite_dsts)) => {
                         let move_count = layout.moves.len();
                         let dst_fallback_candidates: HashSet<PathBuf> = if retrying_completion {
                             layout
@@ -4262,6 +4316,28 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                         let tid_for_move = task_id.clone();
                         let move_result = tokio::task::spawn_blocking(move || {
                             let mut succeeded = 0usize;
+                            // overwrite 模式:先删规划时点快照到的旧最终文件(仍是
+                            // 普通文件才删;已变目录/消失则跳过),给 move 的
+                            // create_new 原子占名让路。删除失败不中止——对应 move
+                            // 会照旧 AlreadyExists 失败,走既有 ERROR+重试路径。
+                            for dst in &overwrite_dsts {
+                                if !dst.is_file() {
+                                    continue;
+                                }
+                                match std::fs::remove_file(dst) {
+                                    Ok(()) => log_info!(
+                                        "[BT] task={} removed existing file '{}' before move (file_exists_behavior=overwrite)",
+                                        short_id(&tid_for_move),
+                                        dst.display(),
+                                    ),
+                                    Err(e) => log_info!(
+                                        "[BT] task={} failed to remove existing '{}' for overwrite: {}",
+                                        short_id(&tid_for_move),
+                                        dst.display(),
+                                        e,
+                                    ),
+                                }
+                            }
                             for item in &moves {
                                 let dst_verified = verified_existing_dsts.contains(&item.dst);
                                 match move_completion_item(
@@ -4917,6 +4993,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let _ = std::fs::remove_dir_all(&tmp);
@@ -4960,6 +5037,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Movie Pack",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let layout = match layout {
@@ -4999,6 +5077,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Movie Pack",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let layout = match layout {
@@ -5040,6 +5119,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let layout = match layout {
@@ -5079,6 +5159,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Bad/Name:01",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let top = match layout {
@@ -5107,6 +5188,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let layout = match layout {
@@ -6001,6 +6083,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: Some("Torrent"),
+            allow_overwrite: false,
             claimed: &claims,
         });
         let top = match layout {
@@ -6021,6 +6104,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: Some("Torrent"),
+            allow_overwrite: false,
             claimed: &claims,
         });
         let top = match layout {
@@ -6042,6 +6126,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claims,
         });
         let top = match layout {
@@ -6191,7 +6276,7 @@ mod tests {
         // Differently-cased numbered variant already occupies " (1)".
         let _ = std::fs::write(dir.join("Movie (1).mkv"), b"x");
 
-        let name = super::dedup_name_in_dir(&dir, "MOVIE.mkv", &HashSet::new());
+        let name = super::dedup_name_in_dir(&dir, "MOVIE.mkv", &HashSet::new(), false);
         assert_ne!(
             name, "MOVIE (1).mkv",
             "case-different existing 'Movie (1).mkv' must be treated as occupied"
@@ -6207,7 +6292,7 @@ mod tests {
         // Only the in-progress temp file exists; the final name does not.
         let _ = std::fs::write(dir.join("movie.mkv.fdownloading"), b"partial");
 
-        let name = super::dedup_name_in_dir(&dir, "movie.mkv", &HashSet::new());
+        let name = super::dedup_name_in_dir(&dir, "movie.mkv", &HashSet::new(), false);
         assert_eq!(name, "movie (1).mkv");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6220,7 +6305,56 @@ mod tests {
         let mut avoid = HashSet::new();
         avoid.insert("movie.mkv".to_string());
 
-        let name = super::dedup_name_in_dir(&dir, "Movie.mkv", &avoid);
+        let name = super::dedup_name_in_dir(&dir, "Movie.mkv", &avoid, false);
+        assert_eq!(name, "Movie (1).mkv");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -------------------------------------------------------------------------
+    // dedup_name_in_dir — allow_overwrite（config `file_exists_behavior` ==
+    // "overwrite"）:仅磁盘普通最终文件同名时保留原名;temp / avoid /
+    // 目录仍照旧编号改名。
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn dedup_name_in_dir_overwrite_keeps_name_when_only_final_exists() {
+        let dir = unique_test_dir("dedup_ow_final");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("movie.mkv"), b"old");
+
+        let name = super::dedup_name_in_dir(&dir, "movie.mkv", &HashSet::new(), true);
+        assert_eq!(
+            name, "movie.mkv",
+            "overwrite 模式下仅最终文件存在必须保留原名（移动前删除旧文件）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dedup_name_in_dir_overwrite_temp_and_dir_still_conflict() {
+        let dir = unique_test_dir("dedup_ow_temp");
+        let _ = std::fs::create_dir_all(&dir);
+        // 在途下载的临时文件是硬冲突——绝不覆盖其他任务的在途产物。
+        let _ = std::fs::write(dir.join("movie.mkv.fdownloading"), b"partial");
+        let name = super::dedup_name_in_dir(&dir, "movie.mkv", &HashSet::new(), true);
+        assert_eq!(name, "movie (1).mkv");
+
+        // 同名目录也不覆盖(BT 内容不能盖到用户目录上)。
+        let _ = std::fs::create_dir_all(dir.join("Pack"));
+        let name = super::dedup_name_in_dir(&dir, "Pack", &HashSet::new(), true);
+        assert_eq!(name, "Pack (1)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dedup_name_in_dir_overwrite_avoid_set_still_conflicts() {
+        let dir = unique_test_dir("dedup_ow_avoid");
+        let _ = std::fs::create_dir_all(&dir);
+        // 其他任务经完成哨兵声明的名字仍是硬冲突。
+        let mut avoid = HashSet::new();
+        avoid.insert("movie.mkv".to_string());
+
+        let name = super::dedup_name_in_dir(&dir, "Movie.mkv", &avoid, true);
         assert_eq!(name, "Movie (1).mkv");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6250,6 +6384,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: Some("movie.mkv"),
+            allow_overwrite: false,
             claimed: &claims,
         });
         let top = match layout {
@@ -6281,6 +6416,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: Some("movie.mkv"),
+            allow_overwrite: false,
             claimed: &claims,
         });
         let top = match layout {
@@ -6312,6 +6448,7 @@ mod tests {
             custom_name: "",
             torrent_root_name: "Torrent",
             reuse_top: None,
+            allow_overwrite: false,
             claimed: &claimed,
         });
         let top = match layout {

@@ -801,6 +801,11 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
                     engine.manager.set_use_server_time(v == "true");
                 }
             }
+            "file_exists_behavior" => {
+                if let Some(v) = all.get(key) {
+                    engine.manager.set_file_exists_overwrite(v == "overwrite");
+                }
+            }
             k if k == fluxdown_engine::webhook::CONFIG_KEY_ENDPOINTS => {
                 if let Some(v) = all.get(key) {
                     engine.manager.set_webhook_endpoints(v);

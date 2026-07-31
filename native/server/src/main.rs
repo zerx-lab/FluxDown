@@ -178,6 +178,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(v) = all_cfg.get("use_server_time") {
         engine.manager.set_use_server_time(v == "true");
     }
+    // 文件已存在时的处理方式（"rename"=自动重命名，默认；"overwrite"=覆盖旧文件）。
+    if let Some(v) = all_cfg.get("file_exists_behavior") {
+        engine.manager.set_file_exists_overwrite(v == "overwrite");
+    }
 
     // 进度上报旁路：progress_rx 独立消费（不 spawn 则无任何进度事件）。
     if let Some(rx) = engine.manager.take_progress_rx() {

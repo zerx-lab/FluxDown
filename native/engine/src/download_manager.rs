@@ -400,17 +400,30 @@ async fn delete_task_artifact_files(db: &crate::db::Db, task_id: &str, save_dir:
 /// fast-path disk check — acceptable here because we are on the
 /// `current_thread` runtime in a synchronous (non-`.await`) section and the
 /// result only needs to be "good enough" at the moment of reservation.
+/// `allow_overwrite`（config `file_exists_behavior` == "overwrite"）：为
+/// true 时,磁盘上**仅最终文件**存在不算冲突——保留原名,完成时由
+/// finalize 覆盖旧文件;`.fdownloading` 临时文件(在途下载)与 `reserved`
+/// 预订命中仍是硬冲突,照旧编号改名,绝不覆盖其他任务的在途/产物。
+/// 目录同名也照旧改名(文件不能覆盖目录)。
 fn dedup_filename_sync(
     dir: &std::path::Path,
     name: &str,
     reserved: &HashSet<std::path::PathBuf>,
+    allow_overwrite: bool,
 ) -> String {
     let temp_ext = downloader::TEMP_EXT;
 
     // Phase 1: fast probe.
     let candidate = dir.join(name);
     let temp_candidate = PathBuf::from(format!("{}{}", candidate.display(), temp_ext));
-    if !reserved.contains(&temp_candidate) && !candidate.exists() && !temp_candidate.exists() {
+    let final_conflict = if allow_overwrite {
+        // overwrite 模式:仅目录算最终名冲突(rename 不能把文件盖到目录上);
+        // 普通文件存在 = 允许保留原名,完成时覆盖。
+        candidate.is_dir()
+    } else {
+        candidate.exists()
+    };
+    if !reserved.contains(&temp_candidate) && !final_conflict && !temp_candidate.exists() {
         return name.to_string();
     }
 
@@ -1099,6 +1112,11 @@ pub struct DownloadManager {
     /// 下载完成后是否把文件修改时间设为服务器提供的 `Last-Modified` 时间
     /// （config `use_server_time`，默认关闭）。
     use_server_time: bool,
+    /// 文件已存在时是否覆盖旧文件（config `file_exists_behavior` ==
+    /// `"overwrite"`，默认 false = 自动重命名）。仅当重名冲突**只**来自
+    /// 磁盘上已存在的最终文件时保留原名并在完成时覆盖；`.fdownloading`
+    /// 临时文件与并发任务的预订名仍按编号改名，绝不覆盖在途产物。
+    file_exists_overwrite: bool,
     /// 多 CDN 节点并发下载全局开关（config `cdn_multi_enabled`，默认关，
     /// 实验性）。任务级还需通过 §3.2 前置条件（https/无代理/Range 已验证/
     /// 域名未学习为单连接等）才会真正聚合。
@@ -1280,6 +1298,7 @@ impl DownloadManager {
             global_default_segments: 0,
             auto_max_connections: DEFAULT_AUTO_MAX_CONNECTIONS,
             use_server_time: false,
+            file_exists_overwrite: false,
             cdn_multi_enabled: false,
             cdn_max_nodes: 0, // 0 = 自动档
             queues: HashMap::new(),
@@ -2197,6 +2216,15 @@ impl DownloadManager {
     /// were spawned with.
     pub fn set_use_server_time(&mut self, v: bool) {
         self.use_server_time = v;
+    }
+
+    /// Update the "when file exists" behavior (config `file_exists_behavior`):
+    /// `true` = overwrite the pre-existing final file (keep the original
+    /// name), `false` = auto-rename (default). Takes effect for downloads
+    /// started after the change; already-running downloads keep the value
+    /// they were spawned with.
+    pub fn set_file_exists_overwrite(&mut self, v: bool) {
+        self.file_exists_overwrite = v;
     }
 
     /// Update global speed limit (bytes/sec).  Takes effect immediately on
@@ -4870,8 +4898,12 @@ impl DownloadManager {
             // 此时 self.reserved_temp_paths 中只有兄弟任务的预订，不包含自己，
             // 因此不会出现"自我冲突"。
             let reserved_temp_path: Option<std::path::PathBuf> = if !file_name.is_empty() {
-                let deduped =
-                    dedup_filename_sync(&save_path, &file_name, &self.reserved_temp_paths);
+                let deduped = dedup_filename_sync(
+                    &save_path,
+                    &file_name,
+                    &self.reserved_temp_paths,
+                    self.file_exists_overwrite,
+                );
                 if deduped != file_name {
                     file_name = deduped.clone();
                     // dedup 改名后立即落库（spawned task 不再修改文件名）
@@ -4933,6 +4965,7 @@ impl DownloadManager {
                 audio_url,
                 auto_max_connections: self.auto_max_connections,
                 use_server_time: self.use_server_time,
+                allow_overwrite: self.file_exists_overwrite,
                 // 段行布局属主令牌：本次 spawn 的 generation。多段路径起飞时
                 // 落 tasks.segments_epoch，旧 spawn 迟到的段进度写全类失效。
                 spawn_gen: spawn_gen as i64,
@@ -5809,6 +5842,7 @@ impl DownloadManager {
                 audio_url,
                 auto_max_connections: self.auto_max_connections,
                 use_server_time: self.use_server_time,
+                allow_overwrite: self.file_exists_overwrite,
                 spawn_gen: spawn_gen as i64,
                 ffmpeg_path: crate::components::resolve_ffmpeg(&self.db, &self.data_dir).await,
                 cdn,
@@ -8500,6 +8534,70 @@ pub async fn progress_reporter(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // dedup_filename_sync — allow_overwrite（config `file_exists_behavior`
+    // == "overwrite"）:仅磁盘最终文件存在时保留原名;temp / reserved 命中
+    // 仍照旧编号改名(与 `downloader::dedup_filename` 语义严格对称)。
+    // -----------------------------------------------------------------------
+
+    fn unique_dedup_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "fluxdown_test_ddsync_{}_{}",
+            tag,
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn dedup_filename_sync_overwrite_keeps_name_when_only_final_exists() {
+        let dir = unique_dedup_dir("final");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("test.txt"), b"old");
+
+        let result = dedup_filename_sync(&dir, "test.txt", &HashSet::new(), true);
+        assert_eq!(
+            result, "test.txt",
+            "overwrite 模式下仅最终文件存在必须保留原名（finalize 时覆盖）"
+        );
+        // rename 模式(默认)对同一状态照旧编号改名。
+        let result = dedup_filename_sync(&dir, "test.txt", &HashSet::new(), false);
+        assert_eq!(result, "test (1).txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dedup_filename_sync_overwrite_temp_file_still_conflicts() {
+        let dir = unique_dedup_dir("temp");
+        let _ = std::fs::create_dir_all(&dir);
+        // 在途下载的临时文件是硬冲突——绝不覆盖其他任务的在途产物。
+        let _ = std::fs::write(
+            dir.join(format!("test.txt{}", downloader::TEMP_EXT)),
+            b"partial",
+        );
+
+        let result = dedup_filename_sync(&dir, "test.txt", &HashSet::new(), true);
+        assert_eq!(result, "test (1).txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dedup_filename_sync_overwrite_reserved_hit_still_conflicts() {
+        let dir = unique_dedup_dir("reserved");
+        let _ = std::fs::create_dir_all(&dir);
+        // 磁盘干净,但兄弟任务已预订同名 temp 路径。
+        let mut reserved = HashSet::new();
+        reserved.insert(dir.join(format!("video.mp4{}", downloader::TEMP_EXT)));
+
+        let result = dedup_filename_sync(&dir, "video.mp4", &reserved, true);
+        assert_eq!(result, "video (1).mp4");
+
+        // 同名目录也不覆盖(文件不能盖到目录上)。
+        let _ = std::fs::create_dir_all(dir.join("data.bin"));
+        let result = dedup_filename_sync(&dir, "data.bin", &HashSet::new(), true);
+        assert_eq!(result, "data (1).bin");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// resolver 插件 resolve 结果 → QueuedTask 的应用语义（hint / Range 担保）。
     #[cfg(feature = "plugins")]

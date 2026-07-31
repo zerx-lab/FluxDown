@@ -711,6 +711,10 @@ class S {
   String get silentDownloadDesc => _r('silentDownloadDesc');
   String get useServerTime => _r('useServerTime');
   String get useServerTimeDesc => _r('useServerTimeDesc');
+  String get fileExistsBehavior => _r('fileExistsBehavior');
+  String get fileExistsBehaviorDesc => _r('fileExistsBehaviorDesc');
+  String get fileExistsRename => _r('fileExistsRename');
+  String get fileExistsOverwrite => _r('fileExistsOverwrite');
   String get keepAwakeWhileDownloading => _r('keepAwakeWhileDownloading');
   String get keepAwakeWhileDownloadingDesc =>
       _r('keepAwakeWhileDownloadingDesc');
@@ -1399,6 +1403,9 @@ class S {
   List<String> get searchKeywordsUseServerTime =>
       _r('searchKeywordsUseServerTime').split(',')
         ..addAll(['time', 'timestamp', 'mtime', 'last-modified']);
+  List<String> get searchKeywordsFileExists =>
+      _r('searchKeywordsFileExists').split(',')
+        ..addAll(['overwrite', 'rename', 'exists', 'duplicate', 'conflict']);
   List<String> get searchKeywordsKeepAwake =>
       _r('searchKeywordsKeepAwake').split(',')
         ..addAll(['awake', 'sleep', 'screen', 'wake']);

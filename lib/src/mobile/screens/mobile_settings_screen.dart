@@ -121,6 +121,13 @@ class MobileSettingsScreen extends StatelessWidget {
                           onTap: () => _selectSpeedLimit(context),
                         ),
                         _Row(
+                          label: s.fileExistsBehavior,
+                          value: settings.fileExistsBehavior == 'overwrite'
+                              ? s.fileExistsOverwrite
+                              : s.fileExistsRename,
+                          onTap: () => _selectFileExistsBehavior(context),
+                        ),
+                        _Row(
                           label: s.userAgent,
                           value: _uaLabel(s, settings.globalUserAgent),
                           valueEllipsis: true,
@@ -470,6 +477,22 @@ class MobileSettingsScreen extends StatelessWidget {
         ('frontier', s.updateChannelFrontier),
       ],
       onSelect: settings.setUpdateChannel,
+    );
+  }
+
+  void _selectFileExistsBehavior(BuildContext context) {
+    final s = LocaleScope.of(context);
+    _showSelectSheet<String>(
+      context,
+      title: s.fileExistsBehavior,
+      current: settings.fileExistsBehavior == 'overwrite'
+          ? 'overwrite'
+          : 'rename',
+      options: [
+        ('rename', s.fileExistsRename),
+        ('overwrite', s.fileExistsOverwrite),
+      ],
+      onSelect: settings.setFileExistsBehavior,
     );
   }
 
