@@ -1527,5 +1527,17 @@
   "searchKeywordsWebhookLog": "推送记录,投递日志,webhook 日志,调试,送达",
   "webhookLogFilterLabel": "推送目标",
   "webhookLogPending": "投递中…",
-  "webhookSimulateNoTarget": "没有目标订阅「完成」事件，这次没有发出任何请求。"
+  "webhookSimulateNoTarget": "没有目标订阅「完成」事件，这次没有发出任何请求。",
+  "autoCleanupMissingFiles": "自动清理丢失文件的任务",
+  "autoCleanupMissingFilesDesc": "开启后，每次文件扫描完成后自动移除已完成但文件已不存在的任务记录。",
+  "cleanupMissingFiles": "清理丢失文件的任务",
+  "cleanupMissingFilesDesc": "移除已完成但下载文件已不存在的任务记录。",
+  "cleanupMissingFilesConfirm": "发现 {n} 个文件已丢失的任务记录，将永久移除。此操作不可撤销。",
+  "cleanupMissingFilesResult": "已移除 {n} 个任务记录。",
+  "cleanupMissingFilesHealed": "{n} 个任务的文件已找回，已保留记录并恢复标记。",
+  "noMissingFilesToClean": "没有发现丢失文件的任务记录。",
+  "searchKeywordsMissingCleanup": "清理,丢失文件,删除记录,自动清理,文件不存在",
+  "missingCleanupTimeout": "请求超时，请重试。",
+  "missingCleanupExecTimeout": "清理请求超时——引擎可能仍在后台执行，结果稍后生效。",
+  "cleanupInProgress": "清理正在进行中，请稍后再试。"
 }

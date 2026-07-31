@@ -199,6 +199,9 @@ class SettingsProvider extends ChangeNotifier {
   // 下载位置自动使用上次保存的位置（开启后新建下载默认目录跟随上次下载的目录）
   bool _rememberLastSaveDir = false;
 
+  // 文件扫描完成后自动清理「已完成但文件确证丢失」的任务记录（默认关）
+  bool _autoCleanupMissingFiles = false;
+
   // 上次下载确认时使用的保存目录（'' = 未记录）
   String _lastSaveDir = '';
 
@@ -459,6 +462,7 @@ class SettingsProvider extends ChangeNotifier {
   // 记住上次保存位置 Getters
   bool get rememberLastSaveDir => _rememberLastSaveDir;
   String get lastSaveDir => _lastSaveDir;
+  bool get autoCleanupMissingFiles => _autoCleanupMissingFiles;
 
   /// 生效的默认保存目录：开关开启且已有记录时返回上次保存位置，否则返回固定默认目录
   String get effectiveDefaultSaveDir =>
@@ -550,6 +554,13 @@ class SettingsProvider extends ChangeNotifier {
     _rememberLastSaveDir = value;
     notifyListeners();
     _saveToRust('remember_last_save_dir', value.toString());
+  }
+
+  void setAutoCleanupMissingFiles(bool value) {
+    if (_autoCleanupMissingFiles == value) return;
+    _autoCleanupMissingFiles = value;
+    notifyListeners();
+    _saveToRust('auto_cleanup_missing_files', value.toString());
   }
 
   /// 记录下载确认时使用的保存目录（无条件记录，开关开启后立即生效）
@@ -1957,6 +1968,8 @@ class SettingsProvider extends ChangeNotifier {
           _lastTargetDevice = entry.value;
         case 'remember_last_save_dir':
           _rememberLastSaveDir = entry.value == 'true';
+        case 'auto_cleanup_missing_files':
+          _autoCleanupMissingFiles = entry.value == 'true';
         case 'last_save_dir':
           _lastSaveDir = entry.value;
         case 'reveal_file_cmd':

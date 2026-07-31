@@ -1527,5 +1527,17 @@
   "searchKeywordsWebhookLog": "webhook log,delivery,deliveries,debug",
   "webhookLogFilterLabel": "Endpoint",
   "webhookLogPending": "Delivering…",
-  "webhookSimulateNoTarget": "No target subscribes to task.completed — nothing was sent."
+  "webhookSimulateNoTarget": "No target subscribes to task.completed — nothing was sent.",
+  "autoCleanupMissingFiles": "Auto-cleanup missing file records",
+  "autoCleanupMissingFilesDesc": "Automatically remove task records whose downloaded files no longer exist on disk. The cleanup runs after each file scan.",
+  "cleanupMissingFiles": "Clean up missing file records",
+  "cleanupMissingFilesDesc": "Remove completed task records whose downloaded files no longer exist on disk.",
+  "cleanupMissingFilesConfirm": "Found {n} task record(s) with missing files. These records will be permanently removed. This action cannot be undone.",
+  "cleanupMissingFilesResult": "Removed {n} task record(s).",
+  "cleanupMissingFilesHealed": "Kept {n} task record(s): their files reappeared on disk, marked as present.",
+  "noMissingFilesToClean": "No missing-file records found.",
+  "searchKeywordsMissingCleanup": "clean up,missing file,delete record,auto cleanup,lost file",
+  "missingCleanupTimeout": "Request timed out — please try again.",
+  "missingCleanupExecTimeout": "Cleanup timed out — the engine may still be running it in the background.",
+  "cleanupInProgress": "Cleanup is already in progress — please wait."
 }

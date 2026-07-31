@@ -441,6 +441,11 @@ List<SyncEntry> buildSyncCatalog({
     () => settings.keepAwakeWhileDownloading,
     settings.setKeepAwakeWhileDownloading,
   ),
+  _bool(
+    'download.auto_cleanup_missing_files',
+    () => settings.autoCleanupMissingFiles,
+    settings.setAutoCleanupMissingFiles,
+  ),
 
   // ── bt（5 + 7 做种）──
   _bool('bt.enable_dht', () => settings.btEnableDht, settings.setBtEnableDht),

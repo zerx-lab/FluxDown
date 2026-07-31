@@ -929,6 +929,22 @@ class S {
   String get selectDefaultSaveDir => _r('selectDefaultSaveDir');
   String get rememberLastSaveDir => _r('rememberLastSaveDir');
   String get rememberLastSaveDirDesc => _r('rememberLastSaveDirDesc');
+  String get autoCleanupMissingFiles => _r('autoCleanupMissingFiles');
+  String get autoCleanupMissingFilesDesc => _r('autoCleanupMissingFilesDesc');
+  String get cleanupMissingFiles => _r('cleanupMissingFiles');
+  String get cleanupMissingFilesDesc => _r('cleanupMissingFilesDesc');
+  String cleanupMissingFilesConfirm(int n) =>
+      _r('cleanupMissingFilesConfirm', {'n': n});
+  String cleanupMissingFilesResult(int n) =>
+      _r('cleanupMissingFilesResult', {'n': n});
+  String cleanupMissingFilesHealed(int n) =>
+      _r('cleanupMissingFilesHealed', {'n': n});
+  String get noMissingFilesToClean => _r('noMissingFilesToClean');
+  List<String> get searchKeywordsMissingCleanup =>
+      _r('searchKeywordsMissingCleanup').split(',');
+  String get missingCleanupTimeout => _r('missingCleanupTimeout');
+  String get missingCleanupExecTimeout => _r('missingCleanupExecTimeout');
+  String get cleanupInProgress => _r('cleanupInProgress');
   String get defaultThreads => _r('defaultThreads');
   String get defaultThreadsDesc => _r('defaultThreadsDesc');
   String get autoMaxConnections => _r('autoMaxConnections');

@@ -130,10 +130,10 @@ void main() {
       settings.dispose();
     });
 
-    test('has exactly the 51 keys listed in the sync contract v1', () {
-      // 5 appearance + 6 general + 8 ui + 15 download + 12 bt（5 + 7 做种） + 5 ed2k.
+    test('has exactly the 52 keys listed in the sync contract v1', () {
+      // 5 appearance + 6 general + 8 ui + 16 download + 12 bt（5 + 7 做种） + 5 ed2k.
       // 做种 7 项：ratio/post_ratio/time/inactive_time/operator/then_action/max_active.
-      expect(catalog.length, 51);
+      expect(catalog.length, 52);
     });
 
     test('every key matches the contract key pattern and length limit', () {

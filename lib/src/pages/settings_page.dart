@@ -359,6 +359,20 @@ List<SettingsSearchItem> get settingsSearchItems {
     ),
     SettingsSearchItem(
       category: SettingsCategory.download,
+      label: s.autoCleanupMissingFiles,
+      description: s.autoCleanupMissingFilesDesc,
+      keywords: s.searchKeywordsMissingCleanup,
+      icon: LucideIcons.trash2,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.cleanupMissingFiles,
+      description: s.cleanupMissingFilesDesc,
+      keywords: s.searchKeywordsMissingCleanup,
+      icon: LucideIcons.fileX,
+    ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
       label: s.useServerTime,
       description: s.useServerTimeDesc,
       keywords: s.searchKeywordsUseServerTime,
@@ -3161,6 +3175,24 @@ class _DownloadContent extends StatelessWidget {
                           settingsProvider.setSilentSkipSelection(v),
                     ),
                   ),
+                _SettingRow(
+                  label: s.autoCleanupMissingFiles,
+                  description: s.autoCleanupMissingFilesDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.autoCleanupMissingFiles,
+                    onChanged: (v) =>
+                        settingsProvider.setAutoCleanupMissingFiles(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.cleanupMissingFiles,
+                  description: s.cleanupMissingFilesDesc,
+                  child: ShadButton.outline(
+                    size: ShadButtonSize.sm,
+                    onPressed: () => _showMissingCleanupDialog(context),
+                    child: Text(s.cleanupMissingFiles),
+                  ),
+                ),
                 _SettingRow(
                   label: s.useServerTime,
                   description: s.useServerTimeDesc,
@@ -14293,5 +14325,137 @@ class _RegisterDialogContentState extends State<_RegisterDialogContent> {
         ],
       ),
     );
+  }
+}
+
+/// 防重入守卫：弹窗未关闭前再次点击只 toast，不重复请求。
+final _cleanupGuard = ValueNotifier<bool>(false);
+
+/// 「清理丢失文件的任务」手动入口：拉候选 → 确认弹窗 → 执行 → 结果 toast。
+///
+/// 请求-响应以 `requestId` 配对（同 `WebhookTestResult` 先例）：超时重试
+/// 后到达的过期响应被 `firstWhere` 滤掉，不会被新一轮订阅误消费。
+/// 超时窗口与引擎上限配套：候选 35s（引擎 BT staging 收集 30s 总包 +
+/// DB 余量）、执行 120s（N×1s TOCTOU + N×5s staging + 删除）。
+Future<void> _showMissingCleanupDialog(BuildContext context) async {
+  final s = LocaleScope.of(context);
+  void toast(String message) {
+    if (context.mounted) {
+      FluxSonner.of(context).show(ShadToast(title: Text(message)));
+    }
+  }
+
+  if (_cleanupGuard.value) {
+    toast(s.cleanupInProgress);
+    return;
+  }
+  _cleanupGuard.value = true;
+  try {
+    final candidatesReqId = 'mc-${DateTime.now().microsecondsSinceEpoch}';
+    final resultFuture = MissingCleanupCandidatesResult.rustSignalStream
+        .firstWhere((p) => p.message.requestId == candidatesReqId);
+    try {
+      GetMissingCleanupCandidates(
+        requestId: candidatesReqId,
+      ).sendSignalToRust();
+    } catch (_) {
+      toast(s.missingCleanupTimeout);
+      return;
+    }
+    final RustSignalPack<MissingCleanupCandidatesResult> result;
+    try {
+      result = await resultFuture.timeout(const Duration(seconds: 35));
+    } on TimeoutException {
+      toast(s.missingCleanupTimeout);
+      return;
+    } catch (_) {
+      toast(s.missingCleanupTimeout);
+      return;
+    }
+    final candidates = result.message.candidates;
+    if (!context.mounted) return;
+
+    if (candidates.isEmpty) {
+      toast(s.noMissingFilesToClean);
+      return;
+    }
+
+    final confirmed = await showShadDialog<bool>(
+      context: context,
+      barrierColor: AppColors.of(context).dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.cleanupMissingFiles),
+        description: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(s.cleanupMissingFilesConfirm(candidates.length)),
+            // 小候选集直接列出文件名——破坏性确认所见即所得。
+            if (candidates.length <= 5) ...[
+              const SizedBox(height: 8),
+              for (final t in candidates)
+                Text(
+                  '\u2022 ${t.fileName}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
+          ],
+        ),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(LocaleScope.of(ctx).cancel),
+          ),
+          ShadButton.destructive(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(LocaleScope.of(ctx).confirm),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    final execReqId = 'mx-${DateTime.now().microsecondsSinceEpoch}';
+    final execFuture = MissingCleanupExecuted.rustSignalStream.firstWhere(
+      (p) => p.message.requestId == execReqId,
+    );
+    try {
+      ExecuteMissingCleanup(
+        requestId: execReqId,
+        taskIds: candidates.map((t) => t.taskId).toList(),
+      ).sendSignalToRust();
+    } catch (_) {
+      toast(s.missingCleanupExecTimeout);
+      return;
+    }
+    final RustSignalPack<MissingCleanupExecuted> execResult;
+    try {
+      execResult = await execFuture.timeout(const Duration(seconds: 120));
+    } on TimeoutException {
+      toast(s.missingCleanupExecTimeout);
+      return;
+    } catch (_) {
+      toast(s.missingCleanupExecTimeout);
+      return;
+    }
+
+    if (context.mounted) {
+      final msg = execResult.message;
+      FluxSonner.of(context).show(
+        ShadToast(
+          title: Text(s.cleanupMissingFilesResult(msg.deleted)),
+          // healed 语义是「文件找回、未删除」，与 deleted 分开表述。
+          description: msg.healed > 0
+              ? Text(s.cleanupMissingFilesHealed(msg.healed))
+              : null,
+        ),
+      );
+    }
+  } finally {
+    _cleanupGuard.value = false;
   }
 }
