@@ -218,6 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // actor 独占 engine；HTTP 层经 cmd_tx 写入。
     let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCmd>(64);
     tokio::spawn(run_actor(
+        cmd_tx.clone(),
         engine,
         cmd_rx,
         done_rx,

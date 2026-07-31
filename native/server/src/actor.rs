@@ -250,10 +250,16 @@ pub enum ActorCmd {
         endpoint_json: String,
         ack: oneshot::Sender<Box<fluxdown_engine::webhook::WebhookDelivery>>,
     },
+    /// 扫描完成后触发丢失文件自动清理（若设置开启）。由 spawned 任务驱动，
+    /// 无回执：fire-and-forget，失败仅记日志不影响主循环。
+    AutoCleanupMissingFiles,
 }
 
 /// actor 主循环。持有 `Engine` 直至进程退出。
+/// `cmd_tx` 仅供 spawned 任务转发 `AutoCleanupMissingFiles` 等内部命令回
+/// actor 串行上下文，actor 自身不直接使用。
 pub async fn run_actor(
+    cmd_tx: mpsc::Sender<ActorCmd>,
     mut engine: Engine,
     mut cmd_rx: mpsc::Receiver<ActorCmd>,
     mut done_rx: mpsc::Receiver<TaskDone>,
@@ -271,6 +277,24 @@ pub async fn run_actor(
     // 积压 tick 造成扫描风暴。
     let mut rescan_timer = tokio::time::interval(Duration::from_secs(300));
     rescan_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    // 扫描完成 → 触发丢失文件自动清理（若设置开启）。
+    // 与 hub 同款模式：独立 spawned 任务监听 scan_done_notify，
+    // 通过 cmd_tx 转发为 ActorCmd 进入串行 actor 上下文。
+    let cleanup_scan_done = engine.manager.scan_done_notify();
+    let cleanup_cmd_tx = cmd_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            cleanup_scan_done.notified().await;
+            if cleanup_cmd_tx
+                .send(ActorCmd::AutoCleanupMissingFiles)
+                .await
+                .is_err()
+            {
+                break; // actor 已退出
+            }
+        }
+    });
     rescan_timer.tick().await;
 
     // 队列定时调度 tick：引擎侧做边沿检测（每边沿每天至多一次 + 当日补
@@ -711,6 +735,35 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                     serde_json::from_str(&endpoint_json).unwrap_or_default();
                 let _ = ack.send(Box::new(dispatcher.test_endpoint(spec).await));
             });
+        }
+        ActorCmd::AutoCleanupMissingFiles => {
+            // panic 不扩散：自动清理是后台路径，失败仅记日志。
+            let outcome = match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+                engine.manager.auto_cleanup_missing_files(),
+            ))
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    let msg = if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = e.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    log_info!("[server-actor] auto-cleanup panicked: {}", msg);
+                    Default::default()
+                }
+            };
+            if outcome.had_effect() {
+                log_info!(
+                    "[server-actor] auto-cleanup: deleted {}, healed {}",
+                    outcome.deleted,
+                    outcome.healed
+                );
+                engine.manager.load_and_send_all_tasks().await;
+            }
         }
     }
 }
