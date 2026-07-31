@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::FutureExt;
 use reqwest::Client;
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -174,6 +174,17 @@ fn is_bt_url(url: &str) -> bool {
     is_magnet(url) || is_torrent_file_url(url)
 }
 
+/// BT staging 保底判定：staging 目录仍持有真实数据的任务视为「数据仍在」，
+/// 不参与丢失文件清理（哪怕最终路径已缺失）。覆盖「完成搬移部分失败」
+/// 场景——记录可删与否取决于数据是否真的没了，而不是最终路径是否存在。
+fn bt_staging_holds_data(t: &TaskInfo) -> bool {
+    is_bt_url(&t.url)
+        && bt_downloader::stage_dir_has_real_data(&bt_downloader::bt_stage_dir(
+            &t.save_dir,
+            &t.task_id,
+        ))
+}
+
 /// 文件跟踪扫描的并发上限。`try_exists` 内部走 tokio blocking 线程池，限流以
 /// bound 该共享池占用，防慢盘/网络盘扫描饿死并发下载 IO。
 const FILE_SCAN_CONCURRENCY: usize = 64;
@@ -181,6 +192,19 @@ const FILE_SCAN_CONCURRENCY: usize = 64;
 /// 单次文件存在性探测的超时（秒），防失联网络盘把整批扫描拖住到 OS 默认
 /// 重试时长。
 const FILE_SCAN_STAT_TIMEOUT_SECS: u64 = 5;
+
+/// 丢失文件清理 TOCTOU 复核的单次 stat 超时（秒）。手动/自动清理都跑在
+/// 用户等待路径上，不能像后台扫描那样给 5s 宽限——累积延迟会超出 Dart
+/// 端等待窗口（候选 35s / 执行 120s）。1s 足以区分本地盘上文件在与否，
+/// 网络盘慢则保守跳过（宁可漏删也不错删或让用户白等）。
+const CLEANUP_TOCTOU_TIMEOUT_SECS: u64 = 1;
+
+/// 丢失文件清理 BT staging 检查的单任务超时（秒）。staging 判定是同步递
+/// 归 `read_dir`（`spawn_blocking`），线程卡在死挂载/NFS 上时 JoinHandle
+/// 永不就绪——裸 await 会永久冻结调用方（actor 主循环）。阻塞池被既有
+/// 卡死线程耗尽后健康盘任务同样排不上线程，故必须包超时。超时按
+/// 「有数据」保守跳过（fail-safe）。
+const CLEANUP_STAGING_TIMEOUT_SECS: u64 = 5;
 
 /// 文件跟踪：构造 completed 任务的目标磁盘路径。`file_name` 为空或不安全
 /// （未命名 magnet、路径穿越等）时返回 `None`——无法可靠判定存在性，跳过。
@@ -213,19 +237,27 @@ async fn probe_missing(path: &Path) -> Option<bool> {
 /// [`DownloadManager::spawn_file_scan`] 在 detached task 中调用；`scanning`
 /// 标志确保同一时刻只有一个扫描在跑。双向判定（探到存在即把标志翻回 false），
 /// 无棘轮，文件移回后自愈。
-async fn scan_missing_files(db: Db, sink: Arc<dyn EventSink>, scanning: Arc<AtomicBool>) {
-    // 防重叠：已有扫描在跑就直接返回。
+async fn scan_missing_files(
+    db: Db,
+    sink: Arc<dyn EventSink>,
+    scanning: Arc<AtomicBool>,
+    scan_done: Arc<Notify>,
+) {
+    // 防重叠：已有扫描在跑就直接返回（在跑的那个收尾时会发完成通知）。
     if scanning.swap(true, Ordering::SeqCst) {
         return;
     }
-    // RAII 复位守卫：无论正常返回还是 panic 都把标志清回 false。
-    struct ScanGuard(Arc<AtomicBool>);
+    // RAII 复位守卫：无论正常返回还是 panic 都把标志清回 false，并发
+    // 「扫描完成」通知（`notify_one` 存一个许可，监听者暂未挂起也不丢），
+    // 宿主据此触发丢失文件自动清理——此刻 file_missing 标记最新。
+    struct ScanGuard(Arc<AtomicBool>, Arc<Notify>);
     impl Drop for ScanGuard {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
+            self.1.notify_one();
         }
     }
-    let _guard = ScanGuard(scanning);
+    let _guard = ScanGuard(scanning, scan_done);
 
     let tasks = match db.load_all_tasks().await {
         Ok(t) => t,
@@ -1296,6 +1328,8 @@ pub struct DownloadManager {
     /// 文件跟踪扫描是否正在进行（防重叠）。内存级；`Arc` 以便 detached 扫描
     /// task 与调用方共享同一标志。
     scanning: Arc<AtomicBool>,
+    /// 文件扫描完成通知（扫描收尾 RAII 守卫触发；供宿主驱动丢失文件自动清理）。
+    scan_done: Arc<Notify>,
     /// Boost 模式当前优先任务 ID（内存级，重启清空）。None = 无优先任务。
     priority_task_id: Option<String>,
     /// 因 Boost 模式自动暂停的任务 ID 集合（内存级，重启清空）。
@@ -1390,6 +1424,21 @@ pub struct DownloadManagerConfig {
     pub proxy_config: ProxyConfig,
     pub user_agent: String,
 }
+
+/// 执行丢失文件清理的返回：`deleted` 已硬删除数，`healed` TOCTOU
+/// 复核发现文件仍存在时回收 `file_missing=false` 的自愈数。调用方
+/// 应在任一 > 0 时刷新 UI，避免「全自愈」场景下 UI 仍显示过期标记。
+#[derive(Debug, Default)]
+pub struct CleanupOutcome {
+    pub deleted: usize,
+    pub healed: usize,
+}
+
+impl CleanupOutcome {
+    pub fn had_effect(&self) -> bool {
+        self.deleted > 0 || self.healed > 0
+    }
+}
 impl DownloadManager {
     pub fn new(
         db: Db,
@@ -1457,6 +1506,7 @@ impl DownloadManager {
             startup_reset_done: false,
             suppress_bulk_broadcasts: false,
             scanning: Arc::new(AtomicBool::new(false)),
+            scan_done: Arc::new(Notify::new()),
             priority_task_id: None,
             auto_paused_ids: HashSet::new(),
             auto_retry_counts: HashMap::new(),
@@ -3681,9 +3731,17 @@ impl DownloadManager {
         let db = self.db.clone();
         let sink = self.sink.clone();
         let scanning = self.scanning.clone();
+        let scan_done = self.scan_done.clone();
         tokio::spawn(async move {
-            scan_missing_files(db, sink, scanning).await;
+            scan_missing_files(db, sink, scanning, scan_done).await;
         });
+    }
+
+    /// 「文件扫描完成」通知句柄：每次扫描收尾（含提前返回/panic，经 RAII
+    /// 守卫）触发一次。宿主监听它驱动丢失文件自动清理——此时
+    /// `file_missing` 标记刚刷新，是清理决策的最新依据。
+    pub fn scan_done_notify(&self) -> Arc<Notify> {
+        self.scan_done.clone()
     }
 
     /// Normalize seeding state left over from a previous session.
@@ -6219,6 +6277,202 @@ impl DownloadManager {
         // A slot freed up — try to start queued tasks.
         self.drain_queue().await;
         self.maybe_release_bt_session().await;
+    }
+
+    /// 「文件已丢失」清理候选（只读预览）。
+    ///
+    /// 资格 = [`crate::db::Db::load_missing_cleanup_candidates`] 的 SQL 谓词
+    /// （completed + 确证丢失 + 曾确证有文件 + 非做种/排队做种），再叠加
+    /// BT staging 保底：staging 目录仍持有真实数据的任务（完成搬移部分
+    /// 失败等）哪怕最终路径缺失也不进候选——记录可删与否取决于数据是否
+    /// 真的没了，而不是最终路径是否存在。查询失败降级为空清单（预览
+    /// 场景下宁可显示「无可清理」也不可报错打断用户）。
+    ///
+    /// 注意：本函数在调用方（actor）轮次内同步 await——DB 查询 + BT
+    /// staging 收集（30s 总包超时封顶）。慢盘上会让 actor 停转数秒，
+    /// 这是有意的折衷：清理决策必须与任务生命周期串行，off-actor 并发
+    /// 执行会引入「删除 vs 任务操作」竞态。
+    pub async fn missing_cleanup_candidates(&self) -> Vec<TaskInfo> {
+        let tasks = match self.db.load_missing_cleanup_candidates().await {
+            Ok(t) => t,
+            Err(e) => {
+                log_info!("[missing-cleanup] load candidates error: {}", e);
+                return Vec::new();
+            }
+        };
+        if tasks.is_empty() {
+            return Vec::new();
+        }
+        // BT staging 判定是同步递归 read_dir：逐任务 spawn_blocking +
+        // Semaphore 限流（与文件扫描共用并发上限，防慢盘扫描饿死下载 IO）。
+        // 整个收集包 30s 总包超时——死挂载上 blocking 线程永不就绪时宁可
+        // 返回空预览，也不让调用方无限等待。
+        let sem = Arc::new(Semaphore::new(FILE_SCAN_CONCURRENCY));
+        let collect = async move {
+            let mut candidates: Vec<Option<TaskInfo>> = Vec::with_capacity(tasks.len());
+            let mut bt_handles: Vec<(usize, JoinHandle<bool>)> = Vec::new();
+            for t in tasks {
+                let idx = candidates.len();
+                // BT 任务默认保守排除，唯有 staging 检查确证无数据才放行；
+                // 许可获取失败（semaphore 关闭，实际不可达）同样排除。
+                if !is_bt_url(&t.url) {
+                    candidates.push(Some(t));
+                    continue;
+                }
+                match sem.clone().acquire_owned().await {
+                    Ok(permit) => {
+                        let probe = t.clone();
+                        bt_handles.push((
+                            idx,
+                            tokio::task::spawn_blocking(move || {
+                                let _permit = permit;
+                                bt_staging_holds_data(&probe)
+                            }),
+                        ));
+                        candidates.push(Some(t));
+                    }
+                    Err(_) => candidates.push(None),
+                }
+            }
+            for (slot, handle) in bt_handles {
+                // spawn_blocking panic 按「有数据」保守排除。
+                if handle.await.unwrap_or(true) {
+                    candidates[slot] = None;
+                }
+            }
+            candidates.into_iter().flatten().collect::<Vec<_>>()
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(30), collect).await {
+            Ok(v) => v,
+            Err(_) => {
+                log_info!("[missing-cleanup] BT staging collection timed out after 30s");
+                Vec::new()
+            }
+        }
+    }
+
+    /// 执行丢失文件清理：对每个 id 先经 `is_missing_cleanup_candidate`
+    /// 资格复核（与候选查询同一谓词，状态/丢失标记/存在证据/做种态四维
+    /// 零漂移），再做 TOCTOU 实时 stat（文件找回则自愈标记并计入 healed），
+    /// BT 任务额外过 staging 保底，全部通过才经 `delete_task` 完整生命周期
+    /// 删除。返回 [`CleanupOutcome`]，调用方据 `had_effect()` 决定刷新 UI。
+    pub async fn execute_missing_cleanup(&mut self, task_ids: &[String]) -> CleanupOutcome {
+        let mut deleted = 0usize;
+        let mut healed = 0usize;
+        for id in task_ids {
+            // 资格复核走与候选查询同一谓词——覆盖存在证据维度
+            // （「从未落盘」≠「被删」），调用方绕过候选列表直塞 id 也安全。
+            match self.db.is_missing_cleanup_candidate(id).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    log_info!("[missing-cleanup] recheck {} error: {}", id, e);
+                    continue;
+                }
+            }
+            let t = match self.db.load_task_by_id(id).await {
+                Ok(Some(t)) => t,
+                Ok(None) => continue,
+                Err(e) => {
+                    log_info!("[missing-cleanup] reload {} error: {}", id, e);
+                    continue;
+                }
+            };
+            // TOCTOU：DB 的 file_missing 标记可能过期（文件从回收站找回）。
+            // 实时 stat 确认仍缺失才放行；stat 超时/错误一律保守跳过。
+            if let Some(path) = task_target_path(&t.save_dir, &t.file_name) {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(CLEANUP_TOCTOU_TIMEOUT_SECS),
+                    tokio::fs::try_exists(&path),
+                )
+                .await
+                {
+                    Ok(Ok(true)) => {
+                        let _ = self.db.update_task_file_missing(id, false).await;
+                        healed += 1;
+                        continue;
+                    }
+                    Err(_) | Ok(Err(_)) => {
+                        log_info!("[missing-cleanup] stat timeout for {}, skipping", id);
+                        continue;
+                    }
+                    Ok(Ok(false)) => { /* 确认缺失，放行 */ }
+                }
+            }
+            // BT staging 保底：必须包超时——死挂载/阻塞池耗尽会让
+            // JoinHandle 永不就绪，裸 await 会永久冻结 actor 主循环。
+            // 超时按「有数据」保守跳过（fail-safe）。
+            if is_bt_url(&t.url) {
+                let staged = match tokio::time::timeout(
+                    std::time::Duration::from_secs(CLEANUP_STAGING_TIMEOUT_SECS),
+                    tokio::task::spawn_blocking(move || bt_staging_holds_data(&t)),
+                )
+                .await
+                {
+                    Ok(join) => join.unwrap_or(true),
+                    Err(_) => {
+                        log_info!(
+                            "[missing-cleanup] staging check timeout for {}, skipping",
+                            id
+                        );
+                        continue;
+                    }
+                };
+                if staged {
+                    continue;
+                }
+            }
+            self.delete_task(id, false).await;
+            // 删除确认走三路 match（Ok(None) 才计数），不靠 rows_affected。
+            match self.db.load_task_by_id(id).await {
+                Ok(None) => deleted += 1,
+                Ok(Some(_)) | Err(_) => {
+                    log_info!(
+                        "[missing-cleanup] DB delete unconfirmed for {}, skipping count",
+                        id
+                    );
+                    continue;
+                }
+            }
+        }
+        if deleted > 0 {
+            log_info!(
+                "[missing-cleanup] removed {} tasks with missing files",
+                deleted
+            );
+        }
+        if healed > 0 {
+            log_info!(
+                "[missing-cleanup] healed {} tasks (file re-appeared)",
+                healed
+            );
+        }
+        CleanupOutcome { deleted, healed }
+    }
+
+    /// 自动清理入口（设置项 `auto_cleanup_missing_files` 开启时由宿主在
+    /// 文件扫描完成后触发，见 [`Self::scan_done_notify`]）：候选取全量
+    /// 资格集，执行路径与手动确认完全一致。开关实时读库，热生效；
+    /// 默认关闭。
+    pub async fn auto_cleanup_missing_files(&mut self) -> CleanupOutcome {
+        let enabled = self
+            .db
+            .get_config("auto_cleanup_missing_files")
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if !enabled {
+            return CleanupOutcome::default();
+        }
+        let ids: Vec<String> = self
+            .missing_cleanup_candidates()
+            .await
+            .into_iter()
+            .map(|t| t.task_id)
+            .collect();
+        self.execute_missing_cleanup(&ids).await
     }
 
     /// Delete task record and optionally its files on disk.
@@ -9640,7 +9894,13 @@ mod tests {
         let sink = Arc::new(RecordingSink::new());
 
         // (a) 文件仍在：不落库变化、不发事件。
-        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        scan_missing_files(
+            db.clone(),
+            sink.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await;
         let task = db
             .load_task_by_id("t-roundtrip")
             .await
@@ -9657,7 +9917,13 @@ mod tests {
 
         // (b) 文件被删：翻为 true，发一次事件。
         std::fs::remove_file(&file_path).expect("delete test file");
-        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        scan_missing_files(
+            db.clone(),
+            sink.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await;
         let task = db
             .load_task_by_id("t-roundtrip")
             .await
@@ -9683,7 +9949,13 @@ mod tests {
 
         // (c) 文件移回：翻回 false，再发一次事件（双向自愈，无棘轮）。
         std::fs::write(&file_path, b"data").expect("recreate test file");
-        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        scan_missing_files(
+            db.clone(),
+            sink.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await;
         let task = db
             .load_task_by_id("t-roundtrip")
             .await
@@ -9725,7 +9997,13 @@ mod tests {
         insert_task_at_status(&db, "t-downloading", &save_dir, "movie.mp4", 1).await;
 
         let sink = Arc::new(RecordingSink::new());
-        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        scan_missing_files(
+            db.clone(),
+            sink.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await;
 
         let task = db
             .load_task_by_id("t-downloading")
@@ -9759,7 +10037,13 @@ mod tests {
         insert_task_at_status(&db, "t-active-redownload", &save_dir, file_name, 1).await;
 
         let sink = Arc::new(RecordingSink::new());
-        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        scan_missing_files(
+            db.clone(),
+            sink.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await;
 
         let completed = db
             .load_task_by_id("t-completed-stale")
@@ -9997,5 +10281,280 @@ mod tests {
             vec![("q".to_string(), false)],
             "start == stop resolves to stop"
         );
+    }
+
+    // --------------------------------------------------------------------
+    // 丢失文件清理：BT staging 保底 / TOCTOU 复核 / 自动清理开关 / 降级
+    // --------------------------------------------------------------------
+
+    /// 构造清理测试用的 DownloadManager（内存库 + 录音 sink）。
+    fn cleanup_test_manager(db: Db, save_dir: &str) -> DownloadManager {
+        DownloadManager::new(
+            db,
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.to_string(),
+                app_data_dir: String::new(),
+                data_dir: std::env::temp_dir(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            Arc::new(RecordingSink::new()),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager")
+    }
+
+    /// 搭建：插入任务并置为 completed（完成时盖章 file_present_at）
+    /// + 文件确证丢失。
+    async fn insert_completed_missing(
+        db: &Db,
+        id: &str,
+        url: &str,
+        file_name: &str,
+        save_dir: &str,
+    ) {
+        db.insert_task(id, url, file_name, save_dir, 1, 0, "", "", "", 0)
+            .await
+            .expect("insert");
+        db.update_task_status(id, 3, "").await.expect("complete");
+        db.update_task_file_missing(id, true)
+            .await
+            .expect("mark missing");
+    }
+
+    /// `execute_missing_cleanup` 对 BT 任务的保底复核：staging 目录仍持有
+    /// 真实数据（完成搬移部分失败）时任务不能被删除。
+    #[tokio::test]
+    async fn execute_missing_cleanup_skips_bt_with_staging_data() {
+        let dir = unique_filetrack_test_dir("bt_staging_guard");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect");
+        // BT 判定依赖 magnet URL；已完成 + 文件确证丢失。
+        insert_completed_missing(
+            &db,
+            "t-bt-staging",
+            "magnet:?xt=urn:btih:aaaa",
+            "movie.mp4",
+            &save_dir,
+        )
+        .await;
+
+        // 构造 staging 目录含真实数据：模拟「搬移部分失败」场景。
+        let stage_dir = dir.join(".bt_stage_t-bt-staging");
+        std::fs::create_dir_all(&stage_dir).expect("create stage dir");
+        std::fs::write(stage_dir.join("part.bin"), b"real-data").expect("write stage file");
+
+        let mut mgr = cleanup_test_manager(db.clone(), &save_dir);
+        let outcome = mgr
+            .execute_missing_cleanup(&["t-bt-staging".to_string()])
+            .await;
+        assert_eq!(
+            outcome.deleted, 0,
+            "BT task with staging data must be skipped"
+        );
+        assert!(
+            db.load_task_by_id("t-bt-staging")
+                .await
+                .expect("load")
+                .is_some(),
+            "skipped task must survive"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// TOCTOU 磁盘复核：文件从回收站找回后仍存在磁盘上 → 不删除，
+    /// 并自愈回收 file_missing 标记为 false。
+    #[tokio::test]
+    async fn execute_missing_cleanup_toctou_skips_if_file_recovered() {
+        let dir = unique_filetrack_test_dir("toctou_recovered");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+        let file_path = dir.join("real.mp4");
+        std::fs::write(&file_path, b"hello").expect("write file");
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect");
+        insert_completed_missing(
+            &db,
+            "t-recovered",
+            "https://example.com/real.mp4",
+            "real.mp4",
+            &save_dir,
+        )
+        .await;
+
+        let mut mgr = cleanup_test_manager(db.clone(), &save_dir);
+        let outcome = mgr
+            .execute_missing_cleanup(&["t-recovered".to_string()])
+            .await;
+        assert_eq!(outcome.deleted, 0, "file exists on disk -> must NOT delete");
+        assert!(outcome.healed > 0, "TOCTOU should self-heal file_missing");
+
+        let t = db
+            .load_task_by_id("t-recovered")
+            .await
+            .expect("load")
+            .expect("exist");
+        assert!(!t.file_missing, "file_missing should be reset to false");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 存在证据纵深防御：即便调用方把「0 字节且从未盖章」的任务 id 直接
+    /// 塞进执行清单（绕过候选谓词），执行前的资格复核也必须拒绝删除——
+    /// 「文件从未落盘」≠「被用户删除」。
+    #[tokio::test]
+    async fn execute_missing_cleanup_skips_task_without_existence_evidence() {
+        let dir = unique_filetrack_test_dir("no_evidence");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect");
+        // 直写行绕过盖章逻辑：completed + 确证丢失，但 0 字节且无完成盖章。
+        sqlx::query(
+            "INSERT INTO tasks (id, url, file_name, save_dir, status, \
+             total_bytes, downloaded_bytes, segments, created_at, file_missing, \
+             file_present_at) \
+             VALUES ('t-no-evidence', 'https://example.com/gone.bin', 'gone.bin', \
+             $1, 3, 0, 0, 0, '0', 1, 0)",
+        )
+        .bind(&save_dir)
+        .execute(db.test_pool())
+        .await
+        .expect("insert no-evidence row");
+
+        let mut mgr = cleanup_test_manager(db.clone(), &save_dir);
+        let outcome = mgr
+            .execute_missing_cleanup(&["t-no-evidence".to_string()])
+            .await;
+        assert_eq!(
+            outcome.deleted, 0,
+            "task without existence evidence must survive"
+        );
+        assert!(
+            db.load_task_by_id("t-no-evidence")
+                .await
+                .expect("load")
+                .is_some()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `missing_cleanup_candidates` 的编排层回归：BT staging 有数据时
+    /// 排除该 BT 任务，非 BT 任务（HTTP）正常保留在候选集中。
+    #[tokio::test]
+    async fn missing_cleanup_candidates_filters_bt_with_staging_data() {
+        let dir = unique_filetrack_test_dir("candidates_bt");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect");
+        // BT 任务（magnet）：staging 有数据 → 应从候选集中排除。
+        insert_completed_missing(
+            &db,
+            "t-bt",
+            "magnet:?xt=urn:btih:bbbb",
+            "bt-movie.mp4",
+            &save_dir,
+        )
+        .await;
+        let stage_dir = dir.join(".bt_stage_t-bt");
+        std::fs::create_dir_all(&stage_dir).expect("create stage dir");
+        std::fs::write(stage_dir.join("part.bin"), b"x").expect("write stage file");
+
+        // 非 BT 任务（HTTP）：应正常出现在候选集中。
+        insert_completed_missing(
+            &db,
+            "t-http",
+            "https://example.com/file.zip",
+            "file.zip",
+            &save_dir,
+        )
+        .await;
+
+        let mgr = cleanup_test_manager(db.clone(), &save_dir);
+        let candidates = mgr.missing_cleanup_candidates().await;
+        let ids: Vec<&str> = candidates.iter().map(|t| t.task_id.as_str()).collect();
+        assert!(
+            !ids.contains(&"t-bt"),
+            "BT with staging data must be excluded"
+        );
+        assert!(ids.contains(&"t-http"), "HTTP task must be included");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 候选查询 DB 故障降级：查询失败必须返回空清单（预览宁可显示
+    /// 「无可清理」也不报错打断用户），绝不 panic 或上抛。
+    #[tokio::test]
+    async fn missing_cleanup_candidates_degrades_to_empty_on_db_error() {
+        let db = Db::connect("sqlite::memory:").await.expect("connect");
+        sqlx::query("DROP TABLE tasks")
+            .execute(db.test_pool())
+            .await
+            .expect("drop tasks");
+        let mgr = cleanup_test_manager(db.clone(), "/tmp");
+        let candidates = mgr.missing_cleanup_candidates().await;
+        assert!(
+            candidates.is_empty(),
+            "DB error must degrade to empty candidate list"
+        );
+    }
+
+    /// `auto_cleanup_missing_files` 入口契约：开关关闭返回 0（安全默认），
+    /// 开启则执行实际清理并返回删除数。
+    #[tokio::test]
+    async fn auto_cleanup_missing_files_respects_config_switch() {
+        let dir = unique_filetrack_test_dir("auto_cleanup_switch");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect");
+        insert_completed_missing(
+            &db,
+            "t-http-switch",
+            "https://example.com/file.bin",
+            "file.bin",
+            &save_dir,
+        )
+        .await;
+
+        let mut mgr = cleanup_test_manager(db.clone(), &save_dir);
+        // 默认关闭。
+        let outcome_off = mgr.auto_cleanup_missing_files().await;
+        assert_eq!(outcome_off.deleted, 0, "默认关闭时不得删除任何任务");
+        assert!(
+            db.load_task_by_id("t-http-switch")
+                .await
+                .expect("load")
+                .is_some()
+        );
+
+        // 开启后应执行清理。
+        db.set_config("auto_cleanup_missing_files", "true")
+            .await
+            .expect("set config");
+        let outcome_on = mgr.auto_cleanup_missing_files().await;
+        assert!(
+            outcome_on.deleted > 0,
+            "expected >0, got {}",
+            outcome_on.deleted
+        );
+        assert!(
+            db.load_task_by_id("t-http-switch")
+                .await
+                .expect("load")
+                .is_none(),
+            "开启后合格任务应被删除"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
