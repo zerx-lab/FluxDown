@@ -2046,3 +2046,42 @@ pub struct WebhookTestResult {
     pub latency_ms: i64,
     pub error_message: String,
 }
+
+// ========== 丢失文件清理 ==========
+
+/// 请求丢失文件清理候选预览（Dart → Rust）。
+/// `request_id` 由 Dart 生成并回显于响应，配对请求-响应——超时重试后
+/// 到达的过期响应被 Dart 端丢弃，不会被新一轮订阅误消费（同
+/// `WebhookTestResult.request_id` 先例）。
+#[derive(Deserialize, DartSignal)]
+pub struct GetMissingCleanupCandidates {
+    pub request_id: String,
+}
+
+/// 执行丢失文件清理（Dart → Rust）。
+/// `task_ids` 为确认删除的任务 ID 列表（来自预览弹窗）；`request_id`
+/// 用途同上。
+#[derive(Deserialize, DartSignal)]
+pub struct ExecuteMissingCleanup {
+    pub request_id: String,
+    pub task_ids: Vec<String>,
+}
+
+/// 丢失文件清理候选预览结果（Rust → Dart）。
+/// 返回当前所有「已完成且文件确证丢失且曾确证存在」的任务列表，
+/// 供 Dart 端展示确认弹窗。
+#[derive(Serialize, RustSignal)]
+pub struct MissingCleanupCandidatesResult {
+    pub request_id: String,
+    pub candidates: Vec<TaskInfo>,
+}
+
+/// 丢失文件清理执行结果（Rust → Dart）。
+/// `deleted` 实际删除数，`healed` TOCTOU 自愈数（文件找回，未删除，
+/// 仅回收 file_missing 标记）——两者语义不同，Dart 端必须分别展示。
+#[derive(Serialize, RustSignal)]
+pub struct MissingCleanupExecuted {
+    pub request_id: String,
+    pub deleted: i32,
+    pub healed: i32,
+}

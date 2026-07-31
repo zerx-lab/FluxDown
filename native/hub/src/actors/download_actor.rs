@@ -29,20 +29,21 @@ use crate::signals::{
     BatchControlTask, BatchCreateTask, CheckFileAssociation, CheckForUpdate, CheckUrlProtocol,
     ClearWebhookDeliveries, ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask,
     CreateQueue, CreateRssSource, CreateTask, CreateTaskGroup, DeleteQueue, DeleteRssSource,
-    DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult, ExternalDownloadRequest,
-    FfmpegInstallProgress, FfmpegInstallResult, FfmpegStatusReport, FfmpegVersionList,
-    FileAssociationStatus, GroupControl, IgnorePluginRetry, InstallFfmpeg, InstallMarketPlugin,
-    InstallPlugin, InstallUpdate, InstallYtdlp, MoveTaskToQueue, OpenFile, ProbeTorrentMeta,
-    ProxyTestResult, RefreshRssSource, RenameGroup, RenameTask, RenameTaskResult,
-    ReorderQueueTasks, RequestAllGroups, RequestAllQueues, RequestAllRssSources, RequestAllTasks,
-    RequestConfig, RequestFfmpegStatus, RequestFfmpegVersions, RequestMarketIndex, RequestPlugins,
-    RequestRssItems, RequestUpdateFailureMarker, RequestWebhookDeliveries, RequestYtdlpStatus,
-    RequestYtdlpVersions, RescanFiles, ResolvePreviewRequest, RevealFile, SaveConfig,
-    SavePluginSettings, SelectBtFiles, SelectHlsQuality, SelectResolveVariant, SetFileAssociation,
-    SetPluginEnabled, SetPriorityTask, SetQueueSchedule, SetRssItemAction, SetTaskSeedLimits,
-    SetUrlProtocol, SimulateWebhookEvent, StartQueue, StopQueue, SystemProxyInfo,
-    TaskSegmentsUpdated, TestProxyConnection, TestWebhookEndpoint, TrackerSubscriptionResult,
-    UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
+    DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult, ExecuteMissingCleanup,
+    ExternalDownloadRequest, FfmpegInstallProgress, FfmpegInstallResult, FfmpegStatusReport,
+    FfmpegVersionList, FileAssociationStatus, GetMissingCleanupCandidates, GroupControl,
+    IgnorePluginRetry, InstallFfmpeg, InstallMarketPlugin, InstallPlugin, InstallUpdate,
+    InstallYtdlp, MissingCleanupCandidatesResult, MissingCleanupExecuted, MoveTaskToQueue,
+    OpenFile, ProbeTorrentMeta, ProxyTestResult, RefreshRssSource, RenameGroup, RenameTask,
+    RenameTaskResult, ReorderQueueTasks, RequestAllGroups, RequestAllQueues, RequestAllRssSources,
+    RequestAllTasks, RequestConfig, RequestFfmpegStatus, RequestFfmpegVersions, RequestMarketIndex,
+    RequestPlugins, RequestRssItems, RequestUpdateFailureMarker, RequestWebhookDeliveries,
+    RequestYtdlpStatus, RequestYtdlpVersions, RescanFiles, ResolvePreviewRequest, RevealFile,
+    SaveConfig, SavePluginSettings, SelectBtFiles, SelectHlsQuality, SelectResolveVariant,
+    SetFileAssociation, SetPluginEnabled, SetPriorityTask, SetQueueSchedule, SetRssItemAction,
+    SetTaskSeedLimits, SetUrlProtocol, SimulateWebhookEvent, StartQueue, StopQueue,
+    SystemProxyInfo, TaskSegmentsUpdated, TestProxyConnection, TestWebhookEndpoint,
+    TrackerSubscriptionResult, UninstallFfmpeg, UninstallPlugin, UninstallYtdlp, UpdateCheckResult,
     UpdateEd2kServerSubscription, UpdateFailureMarker, UpdateQueue, UpdateRssSource,
     UpdateTaskSegments, UpdateTrackerSubscription, UrlProtocolStatus, ValidateRssFeed,
     WebhookDeliveries, WebhookPresets, WebhookSimulateAck, WebhookTestResult, YtdlpInstallProgress,
@@ -341,6 +342,17 @@ async fn load_initial_config(
         cdn_multi_enabled,
         cdn_max_nodes,
     )
+}
+
+/// 提取 `catch_unwind` 载荷的可读消息（String / &str / 未知类型兜底）。
+fn panic_payload_message(e: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = e.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = e.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 pub async fn run(db_dir: PathBuf) {
@@ -996,12 +1008,19 @@ pub async fn run(db_dir: PathBuf) {
         Simulate(SimulateWebhookEvent),
         Test(TestWebhookEndpoint),
     }
+    enum CleanupSignal {
+        RequestCandidates(GetMissingCleanupCandidates),
+        Execute(ExecuteMissingCleanup),
+    }
     enum AuxSignal {
         Group(GroupSignal),
         Rss(RssSignal),
         Webhook(WebhookSignal),
+        Cleanup(CleanupSignal),
         /// BT 做种限制求值节拍（`SEEDING_EVAL_INTERVAL`，见 engine::bt_seeding）。
         SeedingTick,
+        /// 文件扫描完成 → 触发丢失文件自动清理（若设置开启）。
+        CleanupTick,
         /// 任务级做种限制覆盖写入（热读，下一次做种求值 tick 生效）。
         SeedLimits(SetTaskSeedLimits),
     }
@@ -1066,6 +1085,36 @@ pub async fn run(db_dir: PathBuf) {
             }
         });
     }
+
+    let cleanup_tx = aux_tx.clone();
+    {
+        let request_candidates_recv = GetMissingCleanupCandidates::get_dart_signal_receiver();
+        let execute_cleanup_recv = ExecuteMissingCleanup::get_dart_signal_receiver();
+        tokio::spawn(async move {
+            loop {
+                let sent = tokio::select! {
+                    Some(s) = request_candidates_recv.recv() => cleanup_tx.send(AuxSignal::Cleanup(CleanupSignal::RequestCandidates(s.message))),
+                    Some(s) = execute_cleanup_recv.recv() => cleanup_tx.send(AuxSignal::Cleanup(CleanupSignal::Execute(s.message))),
+                    else => break,
+                };
+                if sent.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    // 文件扫描完成 → 丢入 aux 泵触发丢失文件自动清理（若设置开启）。
+    let cleanup_scan_done = engine.manager.scan_done_notify();
+    let cleanup_tick_tx = aux_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            cleanup_scan_done.notified().await;
+            if cleanup_tick_tx.send(AuxSignal::CleanupTick).is_err() {
+                break; // actor 已退出
+            }
+        }
+    });
 
     let rss_tx = aux_tx;
     {
@@ -1470,6 +1519,83 @@ pub async fn run(db_dir: PathBuf) {
                 },
                 AuxSignal::SeedingTick => {
                     engine.manager.tick_seeding_evaluation().await;
+                }
+                AuxSignal::Cleanup(cleanup_signal) => match cleanup_signal {
+                    CleanupSignal::RequestCandidates(msg) => {
+                        // panic 不扩散：预览失败按空清单应答（Dart 显示
+                        // 「无可清理」），绝不杀死 actor 主循环。
+                        let candidates = match futures_util::FutureExt::catch_unwind(
+                            std::panic::AssertUnwindSafe(
+                                engine.manager.missing_cleanup_candidates(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log_info!(
+                                    "[missing-cleanup] candidates panicked: {}",
+                                    panic_payload_message(e)
+                                );
+                                Vec::new()
+                            }
+                        };
+                        let candidates: Vec<crate::signals::TaskInfo> =
+                            candidates.into_iter().map(|t| t.into()).collect();
+                        MissingCleanupCandidatesResult {
+                            request_id: msg.request_id,
+                            candidates,
+                        }
+                        .send_signal_to_dart();
+                    }
+                    CleanupSignal::Execute(msg) => {
+                        let outcome = match futures_util::FutureExt::catch_unwind(
+                            std::panic::AssertUnwindSafe(
+                                engine.manager.execute_missing_cleanup(&msg.task_ids),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(o) => o,
+                            Err(e) => {
+                                log_info!(
+                                    "[missing-cleanup] execute panicked: {}",
+                                    panic_payload_message(e)
+                                );
+                                Default::default()
+                            }
+                        };
+                        if outcome.had_effect() {
+                            engine.manager.load_and_send_all_tasks().await;
+                        }
+                        MissingCleanupExecuted {
+                            request_id: msg.request_id,
+                            deleted: i32::try_from(outcome.deleted).unwrap_or(i32::MAX),
+                            healed: i32::try_from(outcome.healed).unwrap_or(i32::MAX),
+                        }
+                        .send_signal_to_dart();
+                    }
+                },
+                AuxSignal::CleanupTick => {
+                    let outcome = match futures_util::FutureExt::catch_unwind(
+                        std::panic::AssertUnwindSafe(
+                            engine.manager.auto_cleanup_missing_files(),
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(o) => o,
+                        Err(e) => {
+                            log_info!(
+                                "[missing-cleanup] auto (tick) panicked: {}",
+                                panic_payload_message(e)
+                            );
+                            Default::default()
+                        }
+                    };
+                    if outcome.had_effect() {
+                        engine.manager.load_and_send_all_tasks().await;
+                    }
                 }
                 AuxSignal::SeedLimits(msg) => {
                     engine
