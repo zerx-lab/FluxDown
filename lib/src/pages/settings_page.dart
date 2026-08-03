@@ -4906,6 +4906,7 @@ class _UserAgentEditor extends StatefulWidget {
 
 class _UserAgentEditorState extends State<_UserAgentEditor> {
   late TextEditingController _controller;
+  late FocusNode _focusNode;
   late String _selectedPreset;
 
   @override
@@ -4914,13 +4915,21 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
     final ua = widget.settingsProvider.globalUserAgent;
     _controller = TextEditingController(text: ua);
     _selectedPreset = detectUaPreset(ua);
+    _focusNode = FocusNode();
+    _focusNode.addListener(() {
+      // 失焦时持久化（与 _FileManagerCmdInput 一致），避免未回车直接离开
+      // 设置页导致刚输入的自定义 UA 被丢弃（#266）
+      if (!_focusNode.hasFocus) _commit();
+    });
   }
 
   @override
   void didUpdateWidget(_UserAgentEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
     final ua = widget.settingsProvider.globalUserAgent;
-    if (ua != _controller.text) {
+    // 仅在未聚焦（用户未编辑）时才用外部值回填，避免编辑过程中被外部
+    // rebuild 回灌旧值
+    if (!_focusNode.hasFocus && ua != _controller.text) {
       _controller.text = ua;
       _selectedPreset = detectUaPreset(ua);
     }
@@ -4929,6 +4938,7 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
   @override
   void dispose() {
     _controller.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -4951,8 +4961,8 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
     }
   }
 
-  void _onSubmit(String value) {
-    widget.settingsProvider.setGlobalUserAgent(value);
+  void _commit() {
+    widget.settingsProvider.setGlobalUserAgent(_controller.text);
   }
 
   @override
@@ -4996,9 +5006,10 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
         Expanded(
           child: ShadInput(
             controller: _controller,
+            focusNode: _focusNode,
             placeholder: Text(s.userAgentPlaceholder),
             onChanged: _onTextChanged,
-            onSubmitted: _onSubmit,
+            onSubmitted: (_) => _commit(),
           ),
         ),
       ],
