@@ -697,6 +697,13 @@ Future<void> _showSelectSheet<T>(
   );
 }
 
+/// 单个设置项的文本编辑 sheet。
+///
+/// 提交时机：点「确认」或 sheet 关闭（下滑、点遮罩、系统返回）。移动端
+/// 拿不到桌面那套「失焦即保存」——`EditableTextTapOutsideIntent` 的默认
+/// 实现对 android/iOS 的 touch 事件直接跳过，点别处根本不会失焦——所以
+/// 只能在 sheet 关闭时兜底提交，否则编辑内容会随手势关闭静默丢失（#266
+/// 在移动端的等价面）。
 Future<void> _showInputSheet(
   BuildContext context, {
   required String title,
@@ -706,6 +713,13 @@ Future<void> _showInputSheet(
   required ValueChanged<String> onSave,
 }) {
   final controller = TextEditingController(text: initial);
+  var committed = false;
+  void commit() {
+    if (committed) return;
+    committed = true;
+    if (controller.text != initial) onSave(controller.text);
+  }
+
   return showMobileSheet<void>(
     context,
     builder: (ctx) {
@@ -715,7 +729,7 @@ Future<void> _showInputSheet(
         footer: MobilePrimaryButton(
           label: s.confirm,
           onTap: () {
-            onSave(controller.text);
+            commit();
             Navigator.of(ctx).pop();
           },
         ),
@@ -729,7 +743,10 @@ Future<void> _showInputSheet(
         ),
       );
     },
-  ).whenComplete(controller.dispose);
+  ).whenComplete(() {
+    commit();
+    controller.dispose();
+  });
 }
 
 // ─────────────────────────────────────────────

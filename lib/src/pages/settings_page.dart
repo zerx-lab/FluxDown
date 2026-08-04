@@ -4892,6 +4892,31 @@ class _AutoRetryDelayInputState extends State<_AutoRetryDelayInput> {
 }
 
 // ─────────────────────────────────────────────
+// 失焦提交型输入的卸载兜底
+// ─────────────────────────────────────────────
+
+/// 输入框带着未提交的编辑被销毁时的兜底提交。
+///
+/// 失焦提交依赖 [FocusNode] 的 listener，而组件被程序性卸载时（浏览器扩展
+/// 推来新下载导致设置页自动切回首页等）全程没有指针事件，不会触发失焦；
+/// 卸载时输入框内层的 `Focus` 又先于外层 `State.dispose` 摘掉焦点，
+/// [FocusNode.dispose] 时节点已脱离焦点树、其 `_notify` 提前返回——两条路
+/// 都通知不到 listener，未提交的编辑就此静默丢失（#266 的残留面）。
+///
+/// 所以调用方**不能**用 `hasFocus` 判断「用户是否正在编辑」（dispose 时它
+/// 恒为 false），只能比对输入框文本与已生效值：不等即说明有未提交的编辑。
+///
+/// 提交推迟到下一帧：卸载发生在 build/unmount 阶段，此时直接调用 provider
+/// 的 setter 会经 `notifyListeners` 触发别处 `setState`，命中
+/// 「setState() called during build」断言。
+///
+/// 待提交的值必须在 dispose 里**先取出**再传入闭包——回调执行时 controller
+/// 已经 dispose，闭包内不可再读它。
+void _commitOnUnmount(VoidCallback commit) {
+  WidgetsBinding.instance.addPostFrameCallback((_) => commit());
+}
+
+// ─────────────────────────────────────────────
 // UA 编辑器
 // ─────────────────────────────────────────────
 
@@ -4937,6 +4962,13 @@ class _UserAgentEditorState extends State<_UserAgentEditor> {
 
   @override
   void dispose() {
+    // 失焦提交在程序性卸载时不会触发（见 _commitOnUnmount），文本与已生效
+    // 值不等即说明有未提交的编辑，按值兜底一次。
+    final ua = _controller.text;
+    final sp = widget.settingsProvider;
+    if (ua != sp.globalUserAgent) {
+      _commitOnUnmount(() => sp.setGlobalUserAgent(ua));
+    }
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -5061,6 +5093,12 @@ class _FileManagerCmdInputState extends State<_FileManagerCmdInput> {
 
   @override
   void dispose() {
+    // 失焦提交在程序性卸载时不会触发（见 _commitOnUnmount），按值兜底一次。
+    final cmd = _controller.text;
+    final sp = widget.settingsProvider;
+    if (cmd != sp.revealFileCmd) {
+      _commitOnUnmount(() => sp.setRevealFileCmd(cmd));
+    }
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -5841,6 +5879,17 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
 
   @override
   void dispose() {
+    // 失焦提交在程序性卸载时不会触发（见 _commitOnUnmount），按值兜底一次。
+    // 非法端口直接丢弃——组件已经不在，既回退不了输入框也弹不出提示。
+    final sp = widget.settingsProvider;
+    final port = _parsePort(_portController.text);
+    if (port != null && port != sp.localServerPort) {
+      _commitOnUnmount(() => sp.setLocalServerPort(port));
+    }
+    final token = _tokenController.text.trim();
+    if (token != sp.localServerToken) {
+      _commitOnUnmount(() => sp.setLocalServerToken(token));
+    }
     _portFocusNode.removeListener(_onPortFocusChange);
     _portFocusNode.dispose();
     _portController.dispose();
@@ -5854,11 +5903,18 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
     if (!_portFocusNode.hasFocus) _commitPort();
   }
 
+  /// 端口区间校验（1024-65535）；非法返回 null。
+  static int? _parsePort(String raw) {
+    final value = int.tryParse(raw.trim());
+    if (value == null || value < 1024 || value > 65535) return null;
+    return value;
+  }
+
   /// 端口失焦/提交时校验 1024-65535；非法则回退为当前生效值
   void _commitPort() {
     final sp = widget.settingsProvider;
-    final value = int.tryParse(_portController.text.trim());
-    if (value == null || value < 1024 || value > 65535) {
+    final value = _parsePort(_portController.text);
+    if (value == null) {
       setState(() => _portController.text = sp.localServerPort.toString());
       FluxSonner.of(context).show(
         ShadToast.destructive(
@@ -9783,6 +9839,7 @@ class _CustomColorPicker extends StatefulWidget {
 
 class _CustomColorPickerState extends State<_CustomColorPicker> {
   late TextEditingController _hexController;
+  late FocusNode _hexFocusNode;
   late double _hue;
   late double _saturation;
   late double _lightness;
@@ -9795,6 +9852,7 @@ class _CustomColorPickerState extends State<_CustomColorPicker> {
     _saturation = hsl.saturation;
     _lightness = hsl.lightness;
     _hexController = TextEditingController(text: _colorToHex(widget.color));
+    _hexFocusNode = FocusNode()..addListener(_onHexFocusChange);
   }
 
   @override
@@ -9814,6 +9872,15 @@ class _CustomColorPickerState extends State<_CustomColorPicker> {
 
   @override
   void dispose() {
+    // 手输 hex 未回车就被程序性卸载时的兜底（滑块是即时提交，只有手输
+    // 这一条路径需要补）；见 _commitOnUnmount。
+    final color = _parseHex(_hexController.text);
+    if (color != null && color != widget.color) {
+      final onChanged = widget.onChanged;
+      _commitOnUnmount(() => onChanged(color));
+    }
+    _hexFocusNode.removeListener(_onHexFocusChange);
+    _hexFocusNode.dispose();
     _hexController.dispose();
     super.dispose();
   }
@@ -9849,12 +9916,27 @@ class _CustomColorPickerState extends State<_CustomColorPicker> {
     widget.onChanged(color);
   }
 
-  void _onHexSubmitted(String value) {
+  void _onHexFocusChange() {
+    if (!_hexFocusNode.hasFocus) _commitHex(_hexController.text);
+  }
+
+  /// 解析 6 位 hex 文本（可带 `#`）；非法返回 null。
+  static Color? _parseHex(String value) {
     final hex = value.replaceAll('#', '').trim();
-    if (hex.length != 6) return;
+    if (hex.length != 6) return null;
     final parsed = int.tryParse(hex, radix: 16);
-    if (parsed == null) return;
-    final color = Color(0xFF000000 | parsed);
+    if (parsed == null) return null;
+    return Color(0xFF000000 | parsed);
+  }
+
+  /// 提交 hex 输入（失焦或回车）。非法输入回退为当前生效颜色的文本，
+  /// 避免输入框停在一个永远不会生效的半成品值上。
+  void _commitHex(String value) {
+    final color = _parseHex(value);
+    if (color == null) {
+      _hexController.text = _colorToHex(widget.color);
+      return;
+    }
     final hsl = HSLColor.fromColor(color);
     setState(() {
       _hue = hsl.hue;
@@ -9923,8 +10005,9 @@ class _CustomColorPickerState extends State<_CustomColorPicker> {
               width: 90,
               child: ShadInput(
                 controller: _hexController,
+                focusNode: _hexFocusNode,
                 placeholder: const Text('3B82F6'),
-                onSubmitted: _onHexSubmitted,
+                onSubmitted: _commitHex,
               ),
             ),
           ],
