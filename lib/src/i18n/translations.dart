@@ -281,6 +281,8 @@ class S {
   String get boostBannerCancel => _r('boostBannerCancel');
   String get openFile => _r('openFile');
   String get openFolder => _r('openFolder');
+  String get copyFile => _r('copyFile');
+  String get fileCopied => _r('fileCopied');
   String get copyUrl => _r('copyUrl');
   String get urlCopied => _r('urlCopied');
   String get errorCopied => _r('errorCopied');

@@ -47,6 +47,7 @@ dependencies:
   flutter_local_notifications: ^21.0.0
   url_launcher: ^6.3.1
   super_drag_and_drop: 0.9.1
+  super_clipboard: 0.9.1
   device_info_plus: ^11.5.0
 
 dev_dependencies:

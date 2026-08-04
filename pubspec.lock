@@ -771,7 +771,7 @@ packages:
     source: hosted
     version: "1.4.1"
   super_clipboard:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: super_clipboard
       sha256: e73f3bb7e66cc9260efa1dc507f979138e7e106c3521e2dda2d0311f6d728a16
