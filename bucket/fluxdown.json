@@ -28,7 +28,9 @@
     "persist": [
         "settings.json"
     ],
-    "checkver": "github",
+    "checkver": {
+        "github": "https://github.com/zerx-lab/FluxDown"
+    },
     "autoupdate": {
         "architecture": {
             "64bit": {
