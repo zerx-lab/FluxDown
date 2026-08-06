@@ -20,6 +20,7 @@ import type {
   ApiResponse,
   DownloadRequest,
   BatchDownloadItem,
+  TaskBrief,
 } from "./native-messaging";
 
 /** remote-server 所需的最小配置（对应 FluxDownSettings 的 remoteUrl/remoteToken 子集） */
@@ -34,6 +35,11 @@ export interface RemoteServerConfig {
 const DOWNLOAD_TIMEOUT_MS = 15000;
 // ping 探活超时：短超时，用于快速判定远程是否在线（fallback 路由决策 / popup 测试连接）。
 const PING_TIMEOUT_MS = 4000;
+// 任务面板轮询超时：与 native-messaging.ts 的 TASKS_POLL_TIMEOUT_MS 同一语义——
+// 低频轮询，失败直接视为"未连接"，不重试，等下一轮自然恢复。
+const TASKS_POLL_TIMEOUT_MS = 3000;
+// 任务操作（暂停/继续/删除）超时：与 DOWNLOAD_TIMEOUT_MS 同量级，预留网络抖动余量。
+const TASK_OP_TIMEOUT_MS = 10000;
 
 /** ping 成功时的附加信息（服务端 /ping 返回 {app, version, message: "pong"}） */
 export interface RemotePingResult extends ApiResponse {
@@ -50,7 +56,10 @@ function buildHeaders(cfg: RemoteServerConfig): HeadersInit {
 }
 
 /**
- * 统一 POST JSON 请求，把 fetch 异常/HTTP 状态码整形为 ApiResponse。
+ * 通用 JSON 请求：把 fetch 异常/HTTP 状态码整形为 ApiResponse。
+ * remoteSendDownloadRequest/remoteSendBatchDownloadRequest（POST）与
+ * remoteTaskOp（PUT/DELETE）共用这条路径；remoteListTasks 的响应体是裸
+ * 数组、不套 ApiResponse 契约，未走这里，单独实现解析。
  *
  * message 前缀约定（供上层字符串匹配，不做本地化——本地化由 popup/dispatch 按
  * 前缀映射到 i18n key）：
@@ -59,9 +68,10 @@ function buildHeaders(cfg: RemoteServerConfig): HeadersInit {
  *   - "remote_unreachable"：fetch 抛异常（网络错误/超时/DNS 失败等）
  *   - 其余：服务端业务返回的失败信息（HTTP 状态非 2xx 或 body.success=false）
  */
-async function postJson(
+async function requestJson(
   url: string,
   cfg: RemoteServerConfig,
+  method: string,
   body: unknown,
   timeoutMs: number,
 ): Promise<ApiResponse> {
@@ -72,9 +82,9 @@ async function postJson(
   let resp: Response;
   try {
     resp = await fetch(url, {
-      method: "POST",
+      method,
       headers: buildHeaders(cfg),
-      body: JSON.stringify(body),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
@@ -108,7 +118,13 @@ export async function remoteSendDownloadRequest(
   req: DownloadRequest,
   cfg: RemoteServerConfig,
 ): Promise<ApiResponse> {
-  return postJson(`${cfg.remoteUrl}/download`, cfg, req, DOWNLOAD_TIMEOUT_MS);
+  return requestJson(
+    `${cfg.remoteUrl}/download`,
+    cfg,
+    "POST",
+    req,
+    DOWNLOAD_TIMEOUT_MS,
+  );
 }
 
 /** 批量投递下载请求：POST {remoteUrl}/download/batch，body 为 {items:[...]} */
@@ -116,9 +132,10 @@ export async function remoteSendBatchDownloadRequest(
   items: BatchDownloadItem[],
   cfg: RemoteServerConfig,
 ): Promise<ApiResponse> {
-  return postJson(
+  return requestJson(
     `${cfg.remoteUrl}/download/batch`,
     cfg,
+    "POST",
     { items },
     DOWNLOAD_TIMEOUT_MS,
   );
@@ -192,4 +209,89 @@ export async function remoteVerify(
     return { success: false, message: "remote_auth_failed" };
   }
   return ping;
+}
+
+/**
+ * 拉取远程任务列表：GET {remoteUrl}/api/v1/tasks（管理 API，裸数组响应，
+ * 与 postJson/requestJson 的 ApiResponse 包裹契约不同，单独实现解析）。
+ *
+ * TaskDto 与 TaskBrief 字段一一对应（camelCase 契约一致），唯一缺口是
+ * speed——管理 API 是纯轮询接口，不含引擎的实时限速数字（只经 WebSocket
+ * 推送），远程任务列表的 speed 恒为 0。
+ */
+export async function remoteListTasks(
+  cfg: RemoteServerConfig,
+): Promise<{ success: boolean; tasks: TaskBrief[]; message?: string }> {
+  if (!cfg.remoteUrl) {
+    return { success: false, tasks: [], message: "remote_not_configured" };
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${cfg.remoteUrl}/api/v1/tasks`, {
+      method: "GET",
+      headers: buildHeaders(cfg),
+      signal: AbortSignal.timeout(TASKS_POLL_TIMEOUT_MS),
+    });
+  } catch (err) {
+    return {
+      success: false,
+      tasks: [],
+      message: `remote_unreachable: ${String(err)}`,
+    };
+  }
+
+  if (resp.status === 401 || resp.status === 403) {
+    return { success: false, tasks: [], message: "remote_auth_failed" };
+  }
+  if (!resp.ok) {
+    return { success: false, tasks: [], message: `HTTP ${resp.status}` };
+  }
+
+  const data = await resp.json().catch(() => null);
+  if (!Array.isArray(data)) {
+    return { success: false, tasks: [], message: "remote_bad_response" };
+  }
+
+  return {
+    success: true,
+    tasks: data.map((task: Record<string, unknown>) => ({
+      taskId: String(task.taskId ?? ""),
+      fileName: String(task.fileName ?? ""),
+      status: Number(task.status ?? 0),
+      downloadedBytes: Number(task.downloadedBytes ?? 0),
+      totalBytes: Number(task.totalBytes ?? 0),
+      speed: 0,
+      errorMessage:
+        typeof task.errorMessage === "string" && task.errorMessage
+          ? task.errorMessage
+          : undefined,
+      createdAt: String(task.createdAt ?? ""),
+    })),
+  };
+}
+
+/**
+ * 远程任务操作：暂停 / 继续 / 删除。语义同 nmhTaskOp——remove 对已删除任务
+ * 重发幂等，pause/resume 重发到达同一目标状态同样无害。
+ */
+export async function remoteTaskOp(
+  op: "pause" | "resume" | "remove",
+  taskId: string,
+  cfg: RemoteServerConfig,
+): Promise<ApiResponse> {
+  const path =
+    op === "pause"
+      ? `/api/v1/tasks/${taskId}/pause`
+      : op === "resume"
+        ? `/api/v1/tasks/${taskId}/continue`
+        : `/api/v1/tasks/${taskId}`;
+  const method = op === "remove" ? "DELETE" : "PUT";
+  return requestJson(
+    `${cfg.remoteUrl}${path}`,
+    cfg,
+    method,
+    undefined,
+    TASK_OP_TIMEOUT_MS,
+  );
 }

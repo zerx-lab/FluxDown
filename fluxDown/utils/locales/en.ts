@@ -229,6 +229,8 @@ const en: Record<MessageKey, string> = {
   "popup.tasks.appNotRunning": "FluxDown is not running",
   "popup.tasks.startApp": "Start FluxDown",
   "popup.tasks.starting": "Starting…",
+  "popup.tasks.remoteUnreachable": "Cannot connect to the remote server",
+  "popup.tasks.retry": "Retry",
   "popup.tasks.statsToday": "Today:",
   "popup.tasks.statsLineTitle": "Open settings for details",
   "popup.task.pause": "Pause",

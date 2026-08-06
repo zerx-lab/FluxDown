@@ -69,6 +69,7 @@ const statFailed = $('#statFailed')!;
 
 // 任务面板
 const taskDisconnectedEl = $('#taskDisconnected')!;
+const taskDisconnectedTitleEl = taskDisconnectedEl.querySelector('.task-state-title')!;
 const taskEmptyEl = $('#taskEmpty')!;
 const taskGroupsEl = $('#taskGroups')!;
 const downloadingGroupEl = $('#downloadingGroup')!;
@@ -217,6 +218,8 @@ interface NmhTasksResponse {
   ok: boolean;
   connected: boolean;
   tasks: TaskBrief[];
+  /** 本次数据来源通道；任务操作（暂停/继续/删除）需要回传同一通道。 */
+  channel?: 'local' | 'remote';
 }
 
 interface NmhOpResponse {
@@ -232,6 +235,9 @@ const TASK_STATUS = {
   ERROR: 4,
   PREPARING: 5,
 } as const;
+
+/** 最近一次成功轮询的数据来源通道，任务操作按此路由（见 download-dispatch.ts taskOp 文档）。 */
+let _lastChannel: 'local' | 'remote' = 'local';
 
 async function nmhTasks(): Promise<NmhTasksResponse> {
   try {
@@ -253,6 +259,7 @@ async function nmhTaskOp(
       type: 'nmh-task-op',
       op,
       taskId,
+      channel: _lastChannel,
     })) as NmhOpResponse | undefined;
     return res ?? { ok: false };
   } catch (e) {
@@ -572,6 +579,11 @@ function resetStartAppState(): void {
 }
 
 startAppBtn.addEventListener('click', () => {
+  if (remoteModeSelect.value === 'always') {
+    // 远程模式没有本地应用可"启动"——点击视为手动重试一次连接探测。
+    void pollTasksOnce();
+    return;
+  }
   if (appStarting) return;
   appStarting = true;
   setStartAppLoading(true);
@@ -583,9 +595,27 @@ startAppBtn.addEventListener('click', () => {
   }, 8000);
 });
 
+/**
+ * 断线态文案随远程模式切换：「仅远程」模式没有本地 App 可言，误导性的
+ * "启动 FluxDown" 按钮换成「重试」；跳过 appStarting 期间的覆写，避免
+ * 每秒轮询把"启动中…"文案打回原样。
+ */
+function syncDisconnectedUi(): void {
+  const isRemoteOnly = remoteModeSelect.value === 'always';
+  taskDisconnectedTitleEl.textContent = t(
+    isRemoteOnly ? 'popup.tasks.remoteUnreachable' : 'popup.tasks.appNotRunning',
+  );
+  if (!appStarting) {
+    startAppBtn.querySelector('.btn-label')!.textContent = t(
+      isRemoteOnly ? 'popup.tasks.retry' : 'popup.tasks.startApp',
+    );
+  }
+}
+
 function renderTaskPanel(connected: boolean, tasks: TaskBrief[]): void {
   quickDownloadRow.classList.toggle('hidden', !connected);
   if (!connected) {
+    syncDisconnectedUi();
     taskDisconnectedEl.classList.remove('hidden');
     taskEmptyEl.classList.add('hidden');
     taskGroupsEl.classList.add('hidden');
@@ -622,6 +652,7 @@ async function pollTasksOnce(): Promise<void> {
   pollInFlight = true;
   try {
     const res = await nmhTasks();
+    if (res.channel) _lastChannel = res.channel;
     renderTaskPanel(res.connected, res.tasks);
   } finally {
     pollInFlight = false;

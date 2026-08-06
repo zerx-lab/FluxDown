@@ -215,6 +215,8 @@ const zhCN = {
   "popup.tasks.appNotRunning": "FluxDown 未运行",
   "popup.tasks.startApp": "启动 FluxDown",
   "popup.tasks.starting": "启动中…",
+  "popup.tasks.remoteUnreachable": "无法连接到远程服务器",
+  "popup.tasks.retry": "重试",
   "popup.tasks.statsToday": "今日：",
   "popup.tasks.statsLineTitle": "打开设置查看更多",
   "popup.task.pause": "暂停",

@@ -3,7 +3,7 @@
  *
  * 职责：根据用户设置的 remoteMode，在 NMH（桌面 App，Native Messaging）与
  * 远程 HTTP 下载源（fluxdown_server）之间路由下载请求 / 可用性探测，对上层
- * （background.ts、popup）暴露与 native-messaging.ts 完全同名同签名的 5 个
+ * （background.ts、popup）暴露与 native-messaging.ts 完全同名同签名的
  * 导出函数——调用方只需换 import 源，函数名、参数、返回值形状不变。
  *
  * === 路由策略（FluxDownSettings.remoteMode） ===
@@ -41,11 +41,14 @@ import type {
   ApiResponse,
   DownloadRequest,
   BatchDownloadItem,
+  TaskBrief,
 } from "./native-messaging";
 import {
   remoteSendDownloadRequest,
   remoteSendBatchDownloadRequest,
   remotePing,
+  remoteListTasks,
+  remoteTaskOp,
 } from "./remote-server";
 import type { RemoteServerConfig } from "./remote-server";
 import { loadSettings } from "./settings";
@@ -237,4 +240,54 @@ export async function checkFluxDownAvailableWithRetry(): Promise<boolean> {
       .catch(() => false),
   ]);
   return nmhUp || remoteUp;
+}
+
+export interface ListTasksResult {
+  success: boolean;
+  tasks: TaskBrief[];
+  message?: string;
+  /** 实际取数的通道；popup 展示 + taskOp 路由都复用该字段。 */
+  channel: "local" | "remote";
+}
+
+/**
+ * 拉取任务面板列表，按 remoteMode 路由数据来源：
+ *   - "off"：NMH。
+ *   - "always"：远程管理 API（GET /api/v1/tasks）。
+ *   - "fallback"：优先 NMH；本轮 NMH 拉取失败（nmhListTasks 不区分具体
+ *     原因，单次失败即视为"未连接"，见该函数文档）时改用远程列表——与
+ *     sendDownloadRequest 的路由哲学一致：单次只反映一个真实来源，不合并
+ *     两侧列表（taskId 命名空间不共享，合并没有意义）。
+ */
+export async function listTasks(): Promise<ListTasksResult> {
+  const cfg = toRoutingConfig(await getRoutingSettings());
+  const mode = effectiveMode(cfg);
+
+  if (mode === "off") {
+    return { ...(await nmh.nmhListTasks()), channel: "local" };
+  }
+  if (mode === "always") {
+    return { ...(await remoteListTasks(cfg.remote)), channel: "remote" };
+  }
+
+  const local = await nmh.nmhListTasks();
+  if (local.success) return { ...local, channel: "local" };
+  return { ...(await remoteListTasks(cfg.remote)), channel: "remote" };
+}
+
+/**
+ * 任务操作（暂停/继续/删除）：channel 由调用方回填 listTasks() 返回的通道
+ * ——同一时刻任务面板只展示一个来源，操作必须投给同一后端，不能按
+ * remoteMode 重新判定（fallback 模式下两次轮询间通道可能已切换）。
+ */
+export async function taskOp(
+  op: "pause" | "resume" | "remove",
+  taskId: string,
+  channel: "local" | "remote",
+): Promise<ApiResponse> {
+  if (channel === "remote") {
+    const cfg = toRoutingConfig(await getRoutingSettings());
+    return remoteTaskOp(op, taskId, cfg.remote);
+  }
+  return nmh.nmhTaskOp(op, taskId);
 }

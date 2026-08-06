@@ -36,10 +36,10 @@ import {
   checkFluxDownAvailable,
   checkFluxDownAvailableWithRetry,
   warmupNativeHost,
+  listTasks,
+  taskOp,
 } from "@/utils/download-dispatch";
 import {
-  nmhListTasks,
-  nmhTaskOp,
   nmhOpenFile,
   nmhRevealFile,
   nmhWarmupNativeHost,
@@ -2131,12 +2131,13 @@ export default defineBackground(() => {
   // 仅当"已知存在活跃任务"（pending/downloading/preparing）时才创建低频
   // periodic alarm 轮询任务列表；无活跃任务时清除 alarm，避免长期空转。
   // 活跃感知来源：
-  //   a) 本地下载请求发送成功后（sendToFluxDown / batchDownload），乐观地
+  //   a) 下载请求发送成功后（sendToFluxDown / batchDownload），乐观地
   //      认为"可能有活跃任务"，启动 alarm；
   //   b) 每次拿到任务列表（无论来自 alarm 轮询还是 popup 的 nmh-tasks 消息）
   //      时按其中是否存在活跃状态任务续期或停止。
-  // 远程模式下投递到远程服务器的任务不经过本地 NMH，nmhListTasks 天然拿不
-  // 到它们，故本轮询自动不参与远程任务的完成通知。
+  // 轮询经 download-dispatch 的 listTasks() 按 remoteMode 路由（off 走 NMH、
+  // always 走远程管理 API、fallback 优先 NMH 不可达时改投远程），与下载投递
+  // 路由完全一致——远程任务同样参与完成通知（按 notifyRemoteTask 开关）。
 
   const TASK_POLL_ALARM_NAME = "fluxdown-task-poll";
   // Chrome 对 periodInMinutes < 0.5 不予兑现（会被夹到 30s 一次；未打包的
@@ -2167,9 +2168,12 @@ export default defineBackground(() => {
     }
   }
 
-  /** download/batchDownload 成功发送后调用：远程通道不参与本地完成通知。 */
-  function maybeArmTaskPollForChannel(channel?: "local" | "remote"): void {
-    if (channel === "remote") return;
+  /**
+   * download/batchDownload 成功发送后调用：确保任务轮询 alarm 已启用。
+   * 通道无关——listTasks() 内部按 remoteMode 自动路由到正确来源，远程任务
+   * 同样需要这条 alarm 驱动完成通知（见上方大注释）。
+   */
+  function maybeArmTaskPollForChannel(_channel?: "local" | "remote"): void {
     ensureTaskPollAlarm().catch(() => {});
   }
 
@@ -2236,7 +2240,10 @@ export default defineBackground(() => {
    * Firefox（MV2 不支持 buttons）：降级为点击通知主体 = 打开文件夹
    * （onClicked 处理，见下方监听器）。
    */
-  function notifyTaskCompleted(task: TaskBrief): void {
+  function notifyTaskCompleted(
+    task: TaskBrief,
+    channel: "local" | "remote",
+  ): void {
     if (!browser.notifications?.create) return;
     const notificationId = `${TASK_NOTIFICATION_PREFIX}${task.taskId}`;
     const opts: Record<string, any> = {
@@ -2247,7 +2254,9 @@ export default defineBackground(() => {
         name: task.fileName || task.taskId,
       }),
     };
-    if (!import.meta.env.FIREFOX) {
+    // 打开文件/文件夹按钮走 NMH open_file/reveal_file，只对本地任务有意义——
+    // 远程任务的文件在 fluxdown_server 主机上，本机没有对应路径可打开。
+    if (!import.meta.env.FIREFOX && channel === "local") {
       opts.buttons = [
         { title: t("notify.openFile") },
         { title: t("notify.openFolder") },
@@ -2297,6 +2306,7 @@ export default defineBackground(() => {
 
   async function processTasksPollResultInner(
     tasks: TaskBrief[],
+    channel: "local" | "remote",
   ): Promise<void> {
     const prevSnapshot = await loadTaskSnapshot();
     const nextSnapshot: Record<string, number> = {};
@@ -2315,12 +2325,9 @@ export default defineBackground(() => {
     }
     persistTaskSnapshot(nextSnapshot);
 
-    if (newlyCompleted.length > 0) {
-      const settings = await loadSettings();
-      if (settings.notifyLocalTask === true) {
-        for (const task of newlyCompleted) {
-          notifyTaskCompleted(task);
-        }
+    if (newlyCompleted.length > 0 && (await shouldNotifyChannel(channel))) {
+      for (const task of newlyCompleted) {
+        notifyTaskCompleted(task, channel);
       }
     }
 
@@ -2339,19 +2346,22 @@ export default defineBackground(() => {
    * 活跃任务决定续期还是清除轮询 alarm。alarm 触发与 popup 的 nmh-tasks
    * 轮询共用此函数，保证两条路径下的通知/alarm 状态完全一致。
    */
-  function processTasksPollResult(tasks: TaskBrief[]): Promise<void> {
+  function processTasksPollResult(
+    tasks: TaskBrief[],
+    channel: "local" | "remote",
+  ): Promise<void> {
     _taskSnapshotChain = _taskSnapshotChain.then(() =>
-      processTasksPollResultInner(tasks),
+      processTasksPollResultInner(tasks, channel),
     );
     return _taskSnapshotChain;
   }
 
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name !== TASK_POLL_ALARM_NAME) return;
-    nmhListTasks()
+    listTasks()
       .then((result) => {
-        if (!result.success) return; // App 暂不可达，等下一轮
-        return processTasksPollResult(result.tasks);
+        if (!result.success) return; // 当前通道暂不可达，等下一轮
+        return processTasksPollResult(result.tasks, result.channel);
       })
       .catch((e) => {
         console.warn("[FluxDown] task poll alarm handler failed:", e);
@@ -2726,16 +2736,28 @@ export default defineBackground(() => {
     //     历史消息的 `action` 字段并存，互不冲突。---
     switch (message.type) {
       case "nmh-tasks": {
-        const result = await nmhListTasks();
+        const result = await listTasks();
         if (!result.success) {
-          return { ok: false, connected: false, tasks: [] };
+          return {
+            ok: false,
+            connected: false,
+            tasks: [],
+            channel: result.channel,
+          };
         }
-        await processTasksPollResult(result.tasks);
-        return { ok: true, connected: true, tasks: result.tasks };
+        await processTasksPollResult(result.tasks, result.channel);
+        return {
+          ok: true,
+          connected: true,
+          tasks: result.tasks,
+          channel: result.channel,
+        };
       }
       case "nmh-task-op": {
         const op = message.op;
         const taskId = message.taskId;
+        const channel: "local" | "remote" =
+          message.channel === "remote" ? "remote" : "local";
         if (
           typeof taskId !== "string" ||
           !taskId ||
@@ -2743,7 +2765,7 @@ export default defineBackground(() => {
         ) {
           return { ok: false, message: "invalid_request" };
         }
-        const result = await nmhTaskOp(op, taskId);
+        const result = await taskOp(op, taskId, channel);
         return { ok: result.success, message: result.message };
       }
       case "nmh-open-file": {
