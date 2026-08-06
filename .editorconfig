@@ -1,0 +1,10 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+# Windows 批处理必须 CRLF(当前仓库无此类文件,防御未来引入)
+[*.{bat,cmd}]
+end_of_line = crlf
