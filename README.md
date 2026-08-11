@@ -4,6 +4,8 @@
 
 # FluxDown
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fzerx-lab%2FFluxDown.svg)](https://mcptoplist.com/server/glama%2Fzerx-lab%2FFluxDown)
+
 ### Downloads, Supercharged.
 
 *A blazing fast, multi-protocol download manager — the free & open-source IDM alternative.*
