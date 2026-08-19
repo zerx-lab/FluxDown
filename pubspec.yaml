@@ -45,6 +45,7 @@ dependencies:
   path: ^1.9.0
   ffi: ^2.2.0
   flutter_local_notifications: ^21.0.0
+  flutter_foreground_task: ^9.2.2
   url_launcher: ^6.3.1
   super_drag_and_drop: 0.9.1
   device_info_plus: ^11.5.0

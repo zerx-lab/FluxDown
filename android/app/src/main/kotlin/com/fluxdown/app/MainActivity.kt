@@ -1,349 +1,43 @@
 package com.fluxdown.app
 
-import android.Manifest
-import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.DocumentsContract
-import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
 
 /**
- * FluxDown 移动端存储桥。
+ * FluxDown 桌面启动入口 + 本地存储桥宿主。
  *
- * MethodChannel `com.fluxdown/storage`：
- * - `pickDirectory`        → 调起系统文件管理器（SAF ACTION_OPEN_DOCUMENT_TREE）
- *                            选择目录，返回可供 Rust 引擎 std::fs 直写的文件系统
- *                            路径；无法映射（如云存储 provider）返回 null。
- * - `hasAllFilesAccess`    → 是否已具备写公共目录的权限
- *                            （API 30+: 所有文件访问；API <30: WRITE_EXTERNAL_STORAGE）。
- * - `requestAllFilesAccess`→ 引导授权（API 30+ 跳系统设置页；API <30 运行时权限弹窗）。
+ * 只承担桌面 Launcher（不透明主题，见 MainTheme）与 [AppStorage] 本地存储能力；
+ * 外部下载唤起由 [ExternalDownloadActivity] 承载（透明窗口弹下载框）。二者共享
+ * 同一个 FlutterEngine（见 [FluxdownEngine]），保持单 Dart 会话、下载状态、
+ * Rust 桥与前台服务不重复初始化。
+ *
+ * 引擎在 [onStart] 里经 [FluxdownEngine.cacheIfAbsent] 缓存、channel 经
+ * [AppStorage.bind] 绑定——[onStart] 对 fresh 与 cached 两种引擎路径都会执行，
+ * 不依赖 configureFlutterEngine 的版本差异。
  */
 class MainActivity : FlutterActivity() {
-    private var pendingResult: MethodChannel.Result? = null
-    private var shareChannel: MethodChannel? = null
-    /** 冷启动时暂存的分享内容（url + filename），等 Dart 侧首次 getInitialShare 时取走。 */
-    private var pendingShare: HashMap<String, String>? = null
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            CHANNEL,
-        ).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "pickDirectory" -> pickDirectory(result)
-                "hasAllFilesAccess" -> result.success(hasAllFilesAccess())
-                "requestAllFilesAccess" -> {
-                    requestAllFilesAccess()
-                    result.success(null)
-                }
-                // 应用专属外部下载目录。必须经 framework 创建
-                // （Android/data 层禁止应用自建子树），Rust std::fs 才能直写。
-                "getExternalDownloadDir" ->
-                    result.success(getExternalFilesDir("Download")?.absolutePath)
-                // 应用内更新：唤起系统安装器安装下载好的 APK
-                "installApk" -> installApk(call.argument<String>("path"), result)
-                // 用系统默认应用打开已下载文件（无关联时回退系统选择器）
-                "openFile" -> openFile(call.argument<String>("path"), result)
-                else -> result.notImplemented()
-            }
+    override fun getCachedEngineId(): String? =
+        if (FluxdownEngine.cached != null) FluxdownEngine.ENGINE_ID else null
+
+    override fun onStart() {
+        super.onStart()
+        getFlutterEngine()?.let { engine ->
+            FluxdownEngine.cacheIfAbsent(engine)
+            AppStorage.bind(engine, this)
         }
-        shareChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            SHARE_CHANNEL,
-        ).apply {
-            setMethodCallHandler { call, result ->
-                when (call.method) {
-                    // Dart 侧就绪后主动拉取冷启动分享（取走即清空）
-                    "getInitialShare" -> {
-                        result.success(pendingShare)
-                        pendingShare = null
-                    }
-                    else -> result.notImplemented()
-                }
-            }
-        }
-        // 冷启动：configureFlutterEngine 时 Dart 尚未注册 handler，先暂存
-        pendingShare = extractShared(intent)
+        FluxdownEngine.registerMain(this)
     }
 
-    // ── 目录选择（SAF） ──
-
-    private fun pickDirectory(result: MethodChannel.Result) {
-        if (pendingResult != null) {
-            result.error("busy", "directory picker already open", null)
-            return
-        }
-        pendingResult = result
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
-            )
-        }
-        try {
-            startActivityForResult(intent, REQUEST_PICK_DIR)
-        } catch (e: Exception) {
-            pendingResult = null
-            result.error("unavailable", e.message, null)
-        }
+    override fun onDestroy() {
+        FluxdownEngine.clearMain(this)
+        super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode != REQUEST_PICK_DIR) {
+        // 目录选择器结果由 AppStorage 处理；其余交给默认行为。
+        if (!AppStorage.onActivityResult(this, requestCode, resultCode, data)) {
             super.onActivityResult(requestCode, resultCode, data)
-            return
         }
-        val result = pendingResult ?: return
-        pendingResult = null
-        val uri = data?.data
-        if (resultCode != Activity.RESULT_OK || uri == null) {
-            result.success(null) // 用户取消
-            return
-        }
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
-        } catch (_: Exception) {
-            // 持久化授权失败不致命：路径写入依赖文件系统权限而非 SAF 授权
-        }
-        // null = 用户取消；"" = 无法映射为文件系统路径（Dart 侧提示重选）
-        result.success(treeUriToPath(uri) ?: "")
-    }
-
-    /**
-     * SAF tree URI → 文件系统路径。
-     *
-     * 仅外部存储 provider 可映射：
-     * - `primary:<rel>` → `/storage/emulated/0/<rel>`
-     * - `home:<rel>`    → 公共 Documents 目录
-     * - `<volId>:<rel>` → `/storage/<volId>/<rel>`（SD 卡等）
-     * 其他 provider（下载 provider / 云存储）返回 null，由 Dart 侧提示重选。
-     */
-    private fun treeUriToPath(uri: Uri): String? {
-        if (uri.authority != "com.android.externalstorage.documents") return null
-        val docId = DocumentsContract.getTreeDocumentId(uri)
-        val split = docId.split(":", limit = 2)
-        val volume = split[0]
-        val rel = split.getOrElse(1) { "" }
-        val base = when (volume) {
-            "primary" -> Environment.getExternalStorageDirectory().absolutePath
-            "home" ->
-                Environment
-                    .getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-                    .absolutePath
-            else -> "/storage/$volume"
-        }
-        return if (rel.isEmpty()) base else "$base/$rel"
-    }
-
-    // ── 公共目录写权限 ──
-
-    private fun hasAllFilesAccess(): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-                PackageManager.PERMISSION_GRANTED
-        }
-
-    private fun requestAllFilesAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:$packageName"),
-                    ),
-                )
-            } catch (_: Exception) {
-                // 个别 ROM 不支持带包名的入口，退回总开关页
-                try {
-                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                } catch (_: Exception) {
-                }
-            }
-        } else {
-            requestPermissions(
-                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                REQUEST_WRITE_PERM,
-            )
-        }
-    }
-
-    // ── 应用内更新：APK 安装唤起 ──
-
-    /**
-     * 经 FileProvider 把 cache 目录下的 APK 交给系统安装器。
-     * Android 8+ 首次会引导用户开启"允许安装未知应用"，随后重入安装流程。
-     * 返回 true=已发出安装 intent；错误经 result.error 报回 Dart。
-     */
-    private fun installApk(path: String?, result: MethodChannel.Result) {
-        if (path.isNullOrEmpty()) {
-            result.error("bad_args", "path is required", null)
-            return
-        }
-        val file = java.io.File(path)
-        if (!file.exists()) {
-            result.error("not_found", "APK not found: $path", null)
-            return
-        }
-        try {
-            val uri = androidx.core.content.FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                file,
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("install_failed", e.message, null)
-        }
-    }
-
-    // ── 打开已下载文件 ──
-
-    /**
-     * 用系统默认应用打开文件：经 FileProvider 暴露 content:// URI + ACTION_VIEW。
-     * targetSdk ≥ 24 禁止把 file:// URI 递出应用，必须走 content://。
-     * 无应用声明处理该 MIME（或系统拒绝）时，放宽为 星/星 并经系统选择器
-     * （Intent.createChooser）让用户自选应用。
-     * 错误码：bad_args / not_found / open_failed / no_handler，Dart 侧据此提示。
-     */
-    private fun openFile(path: String?, result: MethodChannel.Result) {
-        if (path.isNullOrEmpty()) {
-            result.error("bad_args", "path is required", null)
-            return
-        }
-        val file = java.io.File(path)
-        if (!file.exists()) {
-            result.error("not_found", "file not found: $path", null)
-            return
-        }
-        val uri = try {
-            androidx.core.content.FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                file,
-            )
-        } catch (e: IllegalArgumentException) {
-            // 路径不在 file_provider_paths 声明的根之内（如部分 SD 卡挂载点）
-            result.error("open_failed", e.message, null)
-            return
-        }
-        val mime = android.webkit.MimeTypeMap.getSingleton()
-            .getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
-        val view = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mime)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        try {
-            startActivity(view)
-            result.success(true)
-        } catch (_: android.content.ActivityNotFoundException) {
-            // 没有应用能直接处理该 MIME：放宽类型并让用户从选择器挑应用
-            val fallback = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "*/*")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            try {
-                val chooser = Intent.createChooser(fallback, null).apply {
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivity(chooser)
-                result.success(true)
-            } catch (e: Exception) {
-                result.error("no_handler", e.message, null)
-            }
-        } catch (e: Exception) {
-            result.error("open_failed", e.message, null)
-        }
-    }
-
-    /** 热启动（singleTop）：应用已在前台/后台，新分享 intent 到达。 */
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        val shared = extractShared(intent) ?: return
-        // Dart 侧已就绪，直接推送；channel 未建成则暂存兜底
-        shareChannel?.invokeMethod("onShare", shared) ?: run { pendingShare = shared }
-    }
-
-    /**
-     * 从 intent 提取可下载的 URL / magnet，连同可选文件名打包为
-     * `{"url": ..., "filename": ...}`（filename 仅 fluxdown:// 协议携带，
-     * 其余场景为空串，Dart 侧据此预填重命名）。
-     * - ACTION_SEND / ACTION_SEND_MULTIPLE：取 EXTRA_TEXT（浏览器"分享链接"、
-     *   Via 等外部下载器切换协议），缺失时回退 ClipData 文本（通配 mimeType
-     *   的分享可能不带 EXTRA_TEXT）
-     * - ACTION_VIEW：取 data（magnet: 直链等；fluxdown:// 则解析 url/filename 参数）
-     * 返回 null 表示无可用内容（如首页 LAUNCHER 启动）。
-     */
-    private fun extractShared(intent: Intent?): HashMap<String, String>? {
-        if (intent == null) return null
-        return when (intent.action) {
-            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
-                val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()?.ifEmpty { null }
-                    ?: extractClipText(intent)
-                text?.let { sharePayload(it) }
-            }
-            Intent.ACTION_VIEW -> {
-                val data = intent.dataString?.trim()?.ifEmpty { null } ?: return null
-                if (data.startsWith("fluxdown://", ignoreCase = true)) {
-                    // fluxdown://download?url=<encoded-url>&filename=<name>
-                    // 解析 url 参数提取真实下载地址，filename 一并携带
-                    // （协议模式不带 Cookie，Content-Disposition 场景引擎推断
-                    // 不出正确文件名，扩展传来的 filename 是唯一可靠来源）。
-                    // 解析失败/缺 url 参数 → 返回 null 当作普通启动忽略；
-                    // 决不能把 fluxdown:// 原始串交给 Dart，否则会创建必然失败的垃圾任务。
-                    try {
-                        val uri = Uri.parse(data)
-                        val url = uri.getQueryParameter("url")?.trim()?.ifEmpty { null }
-                            ?: return null
-                        val filename = uri.getQueryParameter("filename")?.trim() ?: ""
-                        sharePayload(url, filename)
-                    } catch (_: Exception) {
-                        null
-                    }
-                } else {
-                    sharePayload(data)
-                }
-            }
-            else -> null
-        }
-    }
-
-    /** 组装跨 channel 的分享载荷（StandardMethodCodec 可编码的 HashMap）。 */
-    private fun sharePayload(url: String, filename: String = ""): HashMap<String, String> =
-        hashMapOf("url" to url, "filename" to filename)
-
-    /** 遍历 ClipData 取首个非空文本项（分享 intent 缺 EXTRA_TEXT 时的兜底）。 */
-    private fun extractClipText(intent: Intent): String? {
-        val clip = intent.clipData ?: return null
-        for (i in 0 until clip.itemCount) {
-            val text = clip.getItemAt(i).text?.toString()?.trim()
-            if (!text.isNullOrEmpty()) return text
-        }
-        return null
-    }
-
-    companion object {
-        private const val CHANNEL = "com.fluxdown/storage"
-        private const val SHARE_CHANNEL = "com.fluxdown/share"
-        private const val REQUEST_PICK_DIR = 0x4D01
-        private const val REQUEST_WRITE_PERM = 0x4D02
     }
 }

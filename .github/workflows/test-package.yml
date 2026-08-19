@@ -1,0 +1,358 @@
+name: Manual Client Test Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref, branch, tag, or commit to build
+        required: true
+        default: main
+        type: string
+      version:
+        description: Three-part test version used by platform packages
+        required: true
+        default: 0.0.0
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Resolve test version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      clean_version: ${{ steps.version.outputs.clean_version }}
+    steps:
+      - name: Validate version
+        shell: bash
+        run: |
+          if [[ ! "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version must match MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+      - name: Set version outputs
+        id: version
+        shell: bash
+        run: |
+          echo "version=${{ inputs.version }}-manual.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "clean_version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    name: Test Windows (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: manual-test-rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: manual-test-rust-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Cache Rinf CLI
+        id: cache-rinf
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/rinf.exe
+          key: manual-test-rinf-${{ runner.os }}-${{ matrix.arch }}-8.9.0
+
+      - name: Setup Flutter x64
+        if: matrix.arch == 'x64'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Flutter ARM64
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          git clone https://github.com/flutter/flutter.git -b stable --depth 1 "$USERPROFILE/flutter"
+          echo "$USERPROFILE/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Flutter ARM64
+        if: matrix.arch == 'arm64'
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter/bin/cache
+          key: manual-test-flutter-arm64-stable
+
+      - name: Install dependencies and generate bindings
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          flutter precache --windows
+          flutter pub get
+          if [ "${{ steps.cache-rinf.outputs.cache-hit }}" != "true" ]; then cargo install rinf_cli@8.9.0; fi
+          rinf gen
+
+      - name: Build Flutter Windows app
+        run: flutter build windows --release --build-name=${{ needs.version.outputs.clean_version }} --build-number=1 --dart-define=APP_VERSION=${{ needs.version.outputs.version }}
+
+      - name: Normalize ARM64 output
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if ((Test-Path "build\windows\x64") -and -not (Test-Path "build\windows\arm64")) {
+            Rename-Item -Path "build\windows\x64" -NewName "arm64"
+          }
+
+      - name: Bundle MSVC CRT
+        shell: pwsh
+        run: |
+          $release = "build\windows\${{ matrix.arch }}\runner\Release"
+          $bytes = [System.IO.File]::ReadAllBytes("$release\flux_down.exe")
+          $peOff = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOff + 4)
+          $archDir = switch ($machine) { 0x8664 { 'x64' } 0xAA64 { 'arm64' } default { throw "Unexpected PE machine" } }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -property installationPath
+          $crtDir = Get-ChildItem "$vsRoot\VC\Redist\MSVC\*\$archDir\Microsoft.VC1*.CRT" -Directory | Sort-Object FullName | Select-Object -Last 1
+          Copy-Item "$($crtDir.FullName)\msvcp140*.dll", "$($crtDir.FullName)\vcruntime140*.dll" $release -Force
+
+      - name: Build unsigned installer
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+            echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+          Copy-Item "installer\windows\ChineseSimplified.isl" "C:\Program Files (x86)\Inno Setup 6\Languages\ChineseSimplified.isl" -Force
+          iscc /DMyAppVersion=${{ needs.version.outputs.clean_version }} /DMyAppArch=${{ matrix.arch }} installer\windows\setup.iss
+
+      - name: Create portable package
+        shell: pwsh
+        run: |
+          New-Item -Path "build\windows\${{ matrix.arch }}\runner\Release\portable" -ItemType File -Force | Out-Null
+          New-Item -Path build\installer -ItemType Directory -Force | Out-Null
+          Compress-Archive -Path "build\windows\${{ matrix.arch }}\runner\Release\*" -DestinationPath "build\installer\FluxDown-${{ needs.version.outputs.version }}-windows-${{ matrix.arch }}-portable.zip"
+
+      - name: Upload Windows test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-windows-${{ matrix.arch }}-${{ github.run_number }}
+          path: |
+            build/installer/FluxDown-*.exe
+            build/installer/FluxDown-*-portable.zip
+          if-no-files-found: error
+
+  build-linux:
+    name: Test Linux x64
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install system dependencies
+        run: sudo apt-get update -y && sudo apt-get install -y cmake ninja-build clang pkg-config libgtk-3-dev libnotify-dev libsecret-1-dev patchelf libfuse2 zstd
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Build app
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          flutter precache --linux
+          flutter pub get
+          cargo install rinf_cli@8.9.0
+          rinf gen
+          flutter build linux --release --build-name=${{ needs.version.outputs.clean_version }} --build-number=1 --dart-define=APP_VERSION=${{ needs.version.outputs.version }}
+      - name: Package Linux artifacts
+        shell: bash
+        run: |
+          set -e
+          VERSION=${{ needs.version.outputs.version }}
+          BUNDLE=build/linux/x64/release/bundle
+          mkdir -p build/installer
+          mkdir -p "FluxDown-${VERSION}-linux-x64"
+          cp -a "$BUNDLE/." "FluxDown-${VERSION}-linux-x64/"
+          tar -czf "build/installer/FluxDown-${VERSION}-linux-x64.tar.gz" "FluxDown-${VERSION}-linux-x64"
+          rm -rf "FluxDown-${VERSION}-linux-x64"
+          mkdir -p AppDir
+          cp -a "$BUNDLE/." AppDir/
+          cp linux/com.fluxdown.app.desktop AppDir/
+          cp assets/logo/fluxdown_logo.png AppDir/com.fluxdown.app.png
+          printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "${0}")")"\nexport LD_LIBRARY_PATH="${HERE}/lib:${LD_LIBRARY_PATH:-}"\nexec "${HERE}/flux_down" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+          wget -qO appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool.AppImage AppDir "build/installer/FluxDown-${VERSION}-linux-x64.AppImage"
+      - name: Upload Linux test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-linux-${{ github.run_number }}
+          path: build/installer/*
+          if-no-files-found: error
+
+  build-macos:
+    name: Test macOS (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Build app
+        shell: bash
+        run: |
+          flutter precache --macos
+          flutter pub get
+          cargo install rinf_cli@8.9.0
+          rinf gen
+          flutter build macos --release --build-name=${{ needs.version.outputs.clean_version }} --build-number=1 --dart-define=APP_VERSION=${{ needs.version.outputs.version }}
+      - name: Package macOS artifacts
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          APP_PATH=build/macos/Build/Products/Release/FluxDown.app
+          mkdir -p build/installer dmg_src
+          cp -R "$APP_PATH" "FluxDown-${VERSION}-macos-${{ matrix.arch }}"
+          tar -czf "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.tar.gz" "FluxDown-${VERSION}-macos-${{ matrix.arch }}"
+          rm -rf "FluxDown-${VERSION}-macos-${{ matrix.arch }}"
+          cp -R "$APP_PATH" dmg_src/
+          brew install create-dmg
+          create-dmg --volname "FluxDown ${VERSION}" --window-size 660 400 --icon "FluxDown.app" 160 185 --app-drop-link 500 185 --no-internet-enable "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.dmg" dmg_src/ || hdiutil create -volname "FluxDown ${VERSION}" -srcfolder dmg_src -ov -format UDZO "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.dmg"
+      - name: Upload macOS test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-macos-${{ matrix.arch }}-${{ github.run_number }}
+          path: build/installer/*
+          if-no-files-found: error
+
+  build-android:
+    name: Test Android APK
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Setup Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Setup Flutter and build
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          flutter --version
+          flutter pub get
+          cargo install rinf_cli@8.9.0
+          rinf gen
+          flutter build apk --release --split-per-abi --build-name=${{ needs.version.outputs.clean_version }} --build-number=1 --dart-define=APP_VERSION=${{ needs.version.outputs.version }}
+          flutter build apk --release --build-name=${{ needs.version.outputs.clean_version }} --build-number=1 --dart-define=APP_VERSION=${{ needs.version.outputs.version }}
+      - name: Collect Android artifacts
+        shell: bash
+        run: |
+          mkdir -p build/android
+          VERSION=${{ needs.version.outputs.version }}
+          SRC=build/app/outputs/flutter-apk
+          cp "$SRC/app-arm64-v8a-release.apk" "build/android/FluxDown-${VERSION}-android-arm64-v8a.apk"
+          cp "$SRC/app-armeabi-v7a-release.apk" "build/android/FluxDown-${VERSION}-android-armeabi-v7a.apk"
+          cp "$SRC/app-x86_64-release.apk" "build/android/FluxDown-${VERSION}-android-x86_64.apk"
+          cp "$SRC/app-release.apk" "build/android/FluxDown-${VERSION}-android-universal.apk"
+      - name: Upload Android test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-android-${{ github.run_number }}
+          path: build/android/*.apk
+          if-no-files-found: error
+
+  build-extension:
+    name: Test Browser Extensions
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build extension packages
+        working-directory: fluxDown
+        shell: bash
+        run: |
+          VERSION=${{ needs.version.outputs.clean_version }}
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" package.json
+          npm ci
+          npm run build
+          npm run build:firefox
+          mkdir -p ../build/extension
+          (cd .output && zip -qr "../../build/extension/FluxDown-${VERSION}-chrome.zip" chrome-mv3)
+          npx web-ext build --source-dir .output/firefox-mv2 --artifacts-dir ../build/extension --overwrite-dest
+          FIREFOX_ZIP=$(find ../build/extension -maxdepth 1 -name '*.zip' -print -quit)
+          test -n "$FIREFOX_ZIP"
+          mv "$FIREFOX_ZIP" "../build/extension/FluxDown-${VERSION}-firefox.zip"
+      - name: Upload extension test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-browser-extensions-${{ github.run_number }}
+          path: build/extension/*
+          if-no-files-found: error

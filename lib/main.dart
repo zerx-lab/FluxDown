@@ -22,6 +22,7 @@ import 'src/services/quick_download_submitter.dart';
 import 'src/popup/popup_app.dart';
 import 'src/services/floating_ball/floating_ball_service.dart';
 import 'src/services/floating_ball/wayland_degradation_service.dart';
+import 'src/services/foreground_service.dart';
 import 'src/services/hls_quality_service.dart';
 import 'src/services/resolve_variant_service.dart';
 import 'src/services/bt_file_selection_service.dart';
@@ -155,6 +156,7 @@ Future<void> main(List<String> args) async {
   // ===== 移动端启动流程 =====
   // Android / iOS 走精简初始化：无窗口管理、托盘、开机启动等桌面服务。
   if (Platform.isAndroid || Platform.isIOS) {
+    ForegroundServiceManager.initCommunicationPort();
     logInfo('main', 'initializing Rust runtime (mobile)...');
     await initializeRust(assignRustSignal);
     logInfo('main', 'starting mobile shell');

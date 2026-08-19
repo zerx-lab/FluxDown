@@ -13,6 +13,8 @@ import '../theme/theme_provider.dart';
 import '../services/kv_store.dart';
 import '../services/update_service.dart';
 import 'screens/mobile_settings_screen.dart';
+import '../services/foreground_service.dart';
+import 'services/external_return_state_machine.dart';
 import 'services/mobile_storage_service.dart';
 import 'screens/mobile_tasks_screen.dart';
 import 'services/share_intent_service.dart';
@@ -40,10 +42,11 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
   bool _sheetOpen = false;
 
   /// 新建下载弹层是否正在展示（区别于更新提示等其他弹层）。
-  /// 弹层可见期间到达的分享 / 协议 URL 经 [_shareAppendCtrl] 合入表单，
-  /// 支撑扩展批量协议唤起（逐条 VIEW intent，间隔 800ms）。
+  /// 新建下载弹层已打开时，后续协议请求会把完整元数据合入表单。
   bool _downloadSheetOpen = false;
-  final _shareAppendCtrl = StreamController<String>.broadcast();
+  final _externalReturn = ExternalReturnStateMachine();
+  final _shareAppendCtrl =
+      StreamController<SharedDownloadRequest>.broadcast();
 
   /// 自动更新检查只触发一次（等配置加载完成后）。
   bool _updateCheckScheduled = false;
@@ -62,6 +65,10 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _settings.requestConfig();
     _ensureAndroidSaveDir();
+    ForegroundServiceManager.instance.start(
+      _controller,
+      widget.localeNotifier.s,
+    );
     // 系统分享 / URL scheme 接入：收到链接切到下载页并弹新建下载弹层
     ShareIntentService.init(_onShared);
     // 启动自动检查更新：等配置加载完成后按 autoCheckUpdate 决定
@@ -171,10 +178,10 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
   /// 并预填 URL（fluxdown:// 协议携带的建议文件名一并预填）。
   /// 新建下载弹层已打开时把 URL 追加进现有表单（批量协议唤起逐条到达）；
   /// 其他弹层（更新提示等）打开时忽略，避免叠层。
-  Future<void> _onShared(String url, String filename) async {
+  Future<void> _onShared(SharedDownloadRequest request) async {
     if (!mounted) return;
     if (_downloadSheetOpen) {
-      _shareAppendCtrl.add(url);
+      _shareAppendCtrl.add(request);
       return;
     }
     if (_sheetOpen) return;
@@ -182,15 +189,28 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
     Navigator.of(context).popUntil((r) => r.isFirst);
     _sheetOpen = true;
     _downloadSheetOpen = true;
+    final externalFlowId = request.external
+        ? _externalReturn.beginExternalSheet()
+        : null;
+    if (externalFlowId != null) setState(() {});
     try {
       await showMobileNewDownloadSheet(
         context,
         controller: _controller,
         settings: _settings,
-        initialUrl: url,
-        initialFileName: filename,
-        appendUrls: _shareAppendCtrl.stream,
+        initialUrl: request.url,
+        initialFileName: request.filename,
+        initialCookies: request.cookies,
+        initialReferrer: request.referrer,
+        initialHeaders: request.headers,
+        appendRequests: _shareAppendCtrl.stream,
       );
+      if (externalFlowId != null && _externalReturn.beginReturn(externalFlowId)) {
+        final returned = await ShareIntentService.returnToSourceApp();
+        if (!returned && _externalReturn.returnFailed(externalFlowId) && mounted) {
+          setState(() {});
+        }
+      }
     } finally {
       _sheetOpen = false;
       _downloadSheetOpen = false;
@@ -214,6 +234,7 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     ShareIntentService.shutdown();
+    ForegroundServiceManager.instance.stop();
     _shareAppendCtrl.close();
     _settings.removeListener(_maybeScheduleUpdateCheck);
     UpdateService.instance.removeListener(_onUpdateChanged);
@@ -224,8 +245,13 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 文件跟踪：回到前台时用户可能刚在文件管理器删/移了文件，触发一次重扫。
+    if (state == AppLifecycleState.paused) {
+      _externalReturn.onPaused();
+      return;
+    }
     if (state == AppLifecycleState.resumed) {
+      if (_externalReturn.onResumed() && mounted) setState(() {});
+      // 文件跟踪：回到前台时用户可能刚在文件管理器删/移了文件，触发一次重扫。
       RescanFiles().sendSignalToRust();
     }
   }
@@ -260,6 +286,10 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+
+    if (_externalReturn.shouldHideMainUi) {
+      return const SizedBox.expand();
+    }
 
     return Container(
       color: c.bg,

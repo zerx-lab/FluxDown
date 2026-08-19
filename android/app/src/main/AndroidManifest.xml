@@ -10,8 +10,15 @@
         android:maxSdkVersion="29"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
-    <!-- API 33+ 通知权限（下载完成通知） -->
+    <!-- 前台服务：后台持续下载（切换应用不中断），任务栏常驻通知 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- API 33+ 通知权限（前台服务通知/下载完成通知） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 保持 CPU/WiFi 唤醒，防止后台下载被系统休眠中断 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- 请求忽略电池优化，提升后台存活率（用户可拒绝） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <!-- 应用内更新：唤起系统安装器安装下载的 APK（Android 8+ 需用户授权"安装未知应用"） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
@@ -22,9 +29,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
-            android:theme="@style/LaunchTheme"
+            android:launchMode="singleTask"
+            android:theme="@style/MainTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
@@ -34,12 +40,30 @@
                  to determine the Window background behind the Flutter UI. -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
-              android:resource="@style/NormalTheme"
+              android:resource="@style/MainTheme"
               />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+        </activity>
+        <!-- 外部下载唤起入口：透明主题（ExternalTheme）+ 独立任务栈，在来源应用
+             上方只显示新建下载弹窗。与 MainActivity 共享同一 FlutterEngine。 -->
+        <activity
+            android:name=".ExternalDownloadActivity"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/ExternalTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/ExternalTheme"
+              />
             <!-- 接收分享的文本/链接（浏览器"分享"→ FluxDown 快速新建下载）。
                  注意：Via 的第三方下载器列表是闭源写死的白名单（见 GopeedLab/gopeed#412），
                  此 SEND filter 只是接收前提；出现在 Via 列表还需 Via 作者收录
@@ -70,11 +94,47 @@
                     android:host="download"/>
             </intent-filter>
         </activity>
+        <!-- http(s) 下载处理入口（Firefox 会按此匹配）：任意 MIME 的 http/https
+             直链唤起 FluxDown 新建下载。 -->
+        <activity-alias
+            android:name="com.fluxdown.app.ExternalDownloadManager"
+            android:enabled="true"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:targetActivity="com.fluxdown.app.ExternalDownloadActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 通用 http/https 直链匹配（View Handlers 兜底）：任意 scheme 直链唤起
+             下载，不仅限于带二进制 MIME 的。 -->
+        <activity-alias
+            android:name="com.fluxdown.app.ExternalBrowserCompatActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:targetActivity="com.fluxdown.app.ExternalDownloadActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+        </activity-alias>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- flutter_foreground_task 前台服务（插件固定类名） -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
         <!-- 应用内更新：把 cache 目录下的 APK 经 content:// 暴露给系统安装器 -->
         <provider
             android:name="androidx.core.content.FileProvider"

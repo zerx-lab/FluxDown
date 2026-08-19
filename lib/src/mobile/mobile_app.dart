@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart' show MaterialPageRoute;
 import 'package:flutter/widgets.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../i18n/locale_provider.dart';
@@ -92,9 +93,11 @@ class _FluxDownMobileAppState extends State<FluxDownMobileApp> {
                     navigatorKey: _navigatorKey,
                     color: theme.colorScheme.primary,
                     debugShowCheckedModeBanner: false,
-                    home: MobileShell(
-                      themeProvider: widget.themeProvider,
-                      localeNotifier: widget.localeNotifier,
+                    home: WithForegroundTask(
+                      child: MobileShell(
+                        themeProvider: widget.themeProvider,
+                        localeNotifier: widget.localeNotifier,
+                      ),
                     ),
                     pageRouteBuilder:
                         <T>(RouteSettings settings, WidgetBuilder builder) {
