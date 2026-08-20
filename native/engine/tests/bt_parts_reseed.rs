@@ -71,19 +71,22 @@ async fn reseed_with_parts_sidecar_passes_check_without_recreating_files() {
         &content_dir,
         CreateTorrentOptions {
             name: Some("parts-e2e"),
+            trackers: Vec::new(),
             piece_length: Some(piece_length),
         },
+        &librqbit::spawn_utils::BlockingSpawner::new(1),
     )
     .await
     .unwrap();
     let torrent_bytes = torrent.as_bytes().unwrap();
 
     // 从 torrent 元数据（而非源目录遍历顺序）重建 file_id 顺序与偏移。
-    let parsed = librqbit::torrent_from_bytes::<librqbit::ByteBufOwned>(&torrent_bytes).unwrap();
+    let parsed = librqbit::torrent_from_bytes(&torrent_bytes).unwrap();
+    let info = parsed.info.data.validate().unwrap();
     let mut files: Vec<PartsFileMeta> = Vec::new();
     let mut offset: u64 = 0;
     let pl = u64::from(piece_length);
-    for fd in parsed.info.iter_file_details().unwrap() {
+    for fd in info.iter_file_details() {
         let len = fd.len;
         let piece_range = if len > 0 {
             u32::try_from(offset / pl).unwrap()..u32::try_from((offset + len - 1) / pl + 1).unwrap()
@@ -92,7 +95,7 @@ async fn reseed_with_parts_sidecar_passes_check_without_recreating_files() {
             p..p
         };
         files.push(PartsFileMeta {
-            relative_path: fd.filename.to_pathbuf().unwrap(),
+            relative_path: fd.filename.to_pathbuf(),
             len,
             offset_in_torrent: offset,
             piece_range,
@@ -139,13 +142,10 @@ async fn reseed_with_parts_sidecar_passes_check_without_recreating_files() {
     let session = Session::new_with_opts(
         session_dir.clone(),
         SessionOptions {
-            disable_dht: true,
-            disable_dht_persistence: true,
+            dht: None,
             persistence: Some(librqbit::SessionPersistenceConfig::Json {
                 folder: Some(persist_dir),
             }),
-            listen_port_range: None,
-            enable_upnp_port_forwarding: false,
             ..Default::default()
         },
     )

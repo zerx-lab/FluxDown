@@ -33,7 +33,11 @@ uuid = { version = "1.23.4", features = ["v4"] }
 # 匿名统计上报（analytics.rs）。特性集与 engine 完全一致，避免 workspace
 # feature 合并出第二套 reqwest 编译配置。
 [target.'cfg(windows)'.dependencies]
+librqbit = { version = "9", default-features = false, features = ["default-tls"] }
 reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "json", "socks"] }
 
 [target.'cfg(unix)'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
+
+[target."cfg(not(windows))".dependencies]
+librqbit = { version = "9", default-features = false, features = ["rust-tls"] }

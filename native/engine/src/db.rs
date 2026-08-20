@@ -2012,6 +2012,8 @@ impl Db {
             ("bt_enable_upnp", "true"),
             ("bt_port_start", "6881"),
             ("bt_port_end", "6891"),
+            // MSE 三态逃生开关（disabled/enabled/forced），无 UI，经 config API/CLI 可设。
+            ("bt_mse_mode", "enabled"),
             ("bt_custom_trackers", ""),
             // Tracker 订阅：默认启用，订阅社区流行的两个精选列表
             // （XIU2/TrackersListCollection + ngosang/trackerslist）。

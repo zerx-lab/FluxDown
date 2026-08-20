@@ -63,7 +63,7 @@ fluxdown_api = { version = "0.1.0", path = "../api", features = ["plugins"] }
 winreg = "0.55"
 # Windows 用系统内置 Schannel（native-tls），完全绕开 aws-lc-sys 的 MSVC 编译问题
 reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "json", "socks"] }
-librqbit = { version = "8", default-features = false, features = ["default-tls"] }
+librqbit = { version = "9", default-features = false, features = ["default-tls"] }
 # 系统调用：SetFileInformationByHandle（文件预分配真正保留 NTFS 物理簇）
 # 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
 # Win32_UI_Shell + WindowsAndMessaging：ShellExecuteW（打开文件/目录走系统关联，等价双击，见 reveal_file.rs）
@@ -78,7 +78,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # default-features = false：去掉 default-tls（native-tls→openssl，Android 交叉编译无 openssl）；
 # 其余默认特性显式保留，Linux/macOS 行为不变
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
-librqbit = { version = "8", default-features = false, features = ["rust-tls"] }
+librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
 # 系统调用：fallocate（文件预分配）、posix_fadvise（页缓存释放）
 libc = "0.2"
 

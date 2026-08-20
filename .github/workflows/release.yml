@@ -149,21 +149,23 @@ jobs:
           restore-keys: |
             engine-verify-${{ runner.os }}-
 
-      - name: Test vendored librqbit MSE
+      - name: Test fork librqbit MSE
         if: needs.changes.outputs.engine == 'true'
         run: |
-          cargo test --manifest-path native/engine/vendor/librqbit/Cargo.toml --lib mse
-          cargo test --manifest-path native/engine/vendor/librqbit/Cargo.toml --lib read_buf
-          cargo test --manifest-path native/engine/vendor/librqbit/Cargo.toml --lib fresh_redial
-          cargo test --manifest-path native/engine/vendor/librqbit/Cargo.toml --lib --no-run
+          git clone --depth 1 --branch mse https://github.com/lingdiansr/rqbit
+          cargo test --manifest-path rqbit/crates/librqbit/Cargo.toml --lib mse
+          cargo test --manifest-path rqbit/crates/librqbit/Cargo.toml --lib read_buf
+          cargo test --manifest-path rqbit/crates/librqbit/Cargo.toml --lib fresh_redial
+          cargo test --manifest-path rqbit/crates/librqbit/Cargo.toml --lib --no-run
 
       - name: Verify engine workspace
         if: needs.changes.outputs.engine == 'true'
         run: |
           cargo check --locked -p fluxdown_engine
           cargo test --locked -p fluxdown_engine
+          # 评审要求：engine 侧本地集成用例（parts 续种 + sparse 存储）。
+          cargo test --locked -p fluxdown_engine --test bt_parts_reseed --test bt_sparse_add
           cargo fmt --check
-          cargo fmt --manifest-path native/engine/vendor/librqbit/Cargo.toml -- --check
 
       - name: Verify librqbit patch source
         if: needs.changes.outputs.engine == 'true'
@@ -181,13 +183,13 @@ jobs:
               raise SystemExit(f"expected one librqbit package, found {len(packages)}")
           package = packages[0]
           manifest = pathlib.Path(package["manifest_path"]).as_posix()
-          if package["version"] != "8.1.1":
+          if package["version"] != "9.0.0":
               raise SystemExit(f"unexpected librqbit version: {package['version']}")
-          if package["source"] is not None:
-              raise SystemExit(f"librqbit still resolves from registry: {package['source']}")
-          if not manifest.endswith("/native/engine/vendor/librqbit/Cargo.toml"):
-              raise SystemExit(f"unexpected librqbit manifest: {manifest}")
-          print(f"verified vendored librqbit {package['version']}: {manifest}")
+          if not (package["source"] or "").startswith("git+https://github.com/lingdiansr/rqbit"):
+              raise SystemExit(f"librqbit must resolve from the MSE fork, got: {package['source']}")
+          if "/native/engine/vendor/" in manifest:
+              raise SystemExit(f"librqbit must not resolve from the vendored copy: {manifest}")
+          print(f"verified fork librqbit {package['version']}: {manifest} ({package['source']})")
           PY
 
   # ── 并行 Job 1: 构建 Windows 安装包（x64 + ARM64）──

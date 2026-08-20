@@ -890,6 +890,7 @@ async fn apply_config(engine: &mut Engine, keys: &[String]) {
             | "bt_tracker_sub_enabled"
             | "bt_tracker_sub_urls"
             | "bt_tracker_sub_cache"
+            | "bt_mse_mode"
                 if !bt_applied =>
             {
                 bt_applied = true;
@@ -1025,6 +1026,17 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> BtConfig {
             .get("bt_seed_max_active")
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0),
+        mse_mode: parse_mse_mode(cfg.get("bt_mse_mode").map(String::as_str)),
+    }
+}
+
+/// Parse the MSE policy config value ("disabled"/"enabled"/"forced",
+/// case-insensitive). Missing or unknown values fall back to `Enabled`.
+fn parse_mse_mode(value: Option<&str>) -> librqbit::MseMode {
+    match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("disabled") => librqbit::MseMode::Disabled,
+        Some("forced") => librqbit::MseMode::Forced,
+        _ => librqbit::MseMode::Enabled,
     }
 }
 
