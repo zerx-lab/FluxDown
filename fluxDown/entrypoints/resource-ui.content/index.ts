@@ -239,6 +239,16 @@ export default defineContentScript({
       floatTimer = setTimeout(hideFloat, 400);
     }, true);
 
+    // 浮标定位在 mouseover 时按 video.getBoundingClientRect() 计算一次并写死为
+    // position:fixed 的视口坐标，此后不会随滚动重算；页面滚动时 video 已经移开，
+    // 浮标却仍钉在原视口位置，遮挡滚动后出现的其他内容（#275）。滚动即隐藏，
+    // 下次 hover 到视频时 showFloat() 会重新按当前坐标显示。
+    document.addEventListener('scroll', () => {
+      if (!floatBtnEl?.classList.contains('visible')) return;
+      if (floatTimer) { clearTimeout(floatTimer); floatTimer = null; }
+      hideFloat();
+    }, { capture: true, passive: true });
+
     /* ================================================================
      *  构建 DOM
      * ================================================================ */
