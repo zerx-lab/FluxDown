@@ -14,8 +14,10 @@ const _tag = 'ShareIntent';
 /// - Dart 侧 invoke `getInitialShare`（冷启动，首帧就绪后主动拉取暂存内容，
 ///   取走即清空，避免重复触发）。
 ///
-/// 载荷双形态兼容：Android 传 `{url, filename}` Map（filename 仅
-/// fluxdown:// 协议携带，其余为空串）；iOS 仍传纯 String（无协议模式）。
+/// 载荷双形态兼容：Android 传 `{url, filename, userAgent, cookie, referer}`
+/// Map（filename 仅 fluxdown:// 协议携带，其余为空串；userAgent/cookie/referer
+/// 在 X 浏览器 ACTION_VIEW 直链路径附上，缺省为空串）；iOS 仍传纯 String
+/// （无协议模式，三字段恒为空）。
 ///
 /// 分享内容可能夹带描述文字（如“看看这个 https://x/f.zip”），[extractUrl]
 /// 从中提取首个可下载的 URL / magnet。
@@ -27,14 +29,31 @@ class ShareIntentService {
   /// 当前平台是否支持系统分享接入
   static bool get supported => Platform.isAndroid || Platform.isIOS;
 
-  static void Function(String url, String filename)? _onShared;
+  /// 回调形参：url / 建议文件名（仅 fluxdown:// 携带，其余空串）/ UA /
+  /// Cookie / Referer（X 浏览器 ACTION_VIEW 直链附上，缺省空串）。
+  static void Function(
+    String url,
+    String filename,
+    String userAgent,
+    String cookie,
+    String referer,
+  )?
+      _onShared;
 
   /// 注册分享回调，并立即拉取冷启动时暂存的分享内容。
   ///
-  /// [onShared] 收到的是已提取的 URL / magnet 与可选的建议文件名
-  /// （仅 fluxdown:// 协议携带，其余场景为空串）；提取失败则不回调。
+  /// [onShared] 收到的是已提取的 URL / magnet 与可选的建议文件名，以及
+  /// X 浏览器可能附带的 User-Agent / Cookie / Referer（空串 = 未提供）；
+  /// 提取失败则不回调。
   static Future<void> init(
-    void Function(String url, String filename) onShared,
+    void Function(
+      String url,
+      String filename,
+      String userAgent,
+      String cookie,
+      String referer,
+    )
+        onShared,
   ) async {
     if (!supported) return;
     _onShared = onShared;
@@ -61,9 +80,15 @@ class ShareIntentService {
   static void _dispatch(Object? raw) {
     final String? text;
     var filename = '';
+    var userAgent = '';
+    var cookie = '';
+    var referer = '';
     if (raw is Map) {
       text = raw['url'] as String?;
       filename = (raw['filename'] as String?)?.trim() ?? '';
+      userAgent = (raw['userAgent'] as String?)?.trim() ?? '';
+      cookie = (raw['cookie'] as String?)?.trim() ?? '';
+      referer = (raw['referer'] as String?)?.trim() ?? '';
     } else {
       text = raw as String?;
     }
@@ -75,7 +100,7 @@ class ShareIntentService {
       return;
     }
     logInfo(_tag, 'shared url received');
-    _onShared?.call(url, filename);
+    _onShared?.call(url, filename, userAgent, cookie, referer);
   }
 
   /// 从分享文本中提取首个可下载链接。

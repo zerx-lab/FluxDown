@@ -171,7 +171,13 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
   /// 并预填 URL（fluxdown:// 协议携带的建议文件名一并预填）。
   /// 新建下载弹层已打开时把 URL 追加进现有表单（批量协议唤起逐条到达）；
   /// 其他弹层（更新提示等）打开时忽略，避免叠层。
-  Future<void> _onShared(String url, String filename) async {
+  Future<void> _onShared(
+    String url,
+    String filename,
+    String userAgent,
+    String cookie,
+    String referer,
+  ) async {
     if (!mounted) return;
     if (_downloadSheetOpen) {
       _shareAppendCtrl.add(url);
@@ -189,6 +195,9 @@ class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
         settings: _settings,
         initialUrl: url,
         initialFileName: filename,
+        initialUserAgent: userAgent,
+        initialCookie: cookie,
+        initialReferer: referer,
         appendUrls: _shareAppendCtrl.stream,
       );
     } finally {

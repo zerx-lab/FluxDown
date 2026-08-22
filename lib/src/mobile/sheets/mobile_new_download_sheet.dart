@@ -22,6 +22,9 @@ Future<void> showMobileNewDownloadSheet(
   required SettingsProvider settings,
   String initialUrl = '',
   String initialFileName = '',
+  String initialUserAgent = '',
+  String initialCookie = '',
+  String initialReferer = '',
   Stream<String>? appendUrls,
 }) {
   return showMobileSheet<void>(
@@ -31,6 +34,9 @@ Future<void> showMobileNewDownloadSheet(
       settings: settings,
       initialUrl: initialUrl,
       initialFileName: initialFileName,
+      initialUserAgent: initialUserAgent,
+      initialCookie: initialCookie,
+      initialReferer: initialReferer,
       appendUrls: appendUrls,
       rootContext: context,
     ),
@@ -47,6 +53,16 @@ class _NewDownloadSheet extends StatefulWidget {
   /// 仅当用户未改动预填 URL 时随任务提交。
   final String initialFileName;
 
+  /// X 浏览器 ACTION_VIEW 直链附带的 User-Agent（空串 = 未提供）。
+  /// UA 走 chip 枚举选择、无自由文本槽，故预填为自定义请求头 User-Agent 行。
+  final String initialUserAgent;
+
+  /// X 浏览器附带的 Cookie（空串 = 未提供），预填到高级选项 Cookie 输入框。
+  final String initialCookie;
+
+  /// X 浏览器附带的 Referer（空串 = 未提供），预填为自定义请求头 Referer 行。
+  final String initialReferer;
+
   /// 弹层可见期间追加到 URL 输入框的后续分享 / 协议 URL
   /// （扩展批量协议唤起逐条 VIEW intent 到达，合入现有表单）。
   final Stream<String>? appendUrls;
@@ -59,6 +75,9 @@ class _NewDownloadSheet extends StatefulWidget {
     required this.settings,
     required this.initialUrl,
     required this.initialFileName,
+    this.initialUserAgent = '',
+    this.initialCookie = '',
+    this.initialReferer = '',
     this.appendUrls,
     required this.rootContext,
   });
@@ -89,7 +108,7 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     _dirController = TextEditingController(
       text: widget.settings.effectiveDefaultSaveDir,
     );
-    _cookieController = TextEditingController();
+    _cookieController = TextEditingController(text: widget.initialCookie);
     _checksumController = TextEditingController();
     final last = widget.settings.lastDialogThreads;
     _threads = const {'4', '8', '16', '32'}.contains(last) ? last : 'auto';
@@ -98,6 +117,22 @@ class _NewDownloadSheetState extends State<_NewDownloadSheet> {
     if (_queueId.isEmpty ||
         !widget.controller.queues.any((q) => q.queueId == _queueId)) {
       _queueId = kMainQueueId;
+    }
+    // X 浏览器附带的 UA / Referer 预填为自定义请求头行，供用户在高级选项
+    // 内覆盖（请求头行在展开高级选项时渲染，数据此时已就绪）。
+    if (widget.initialUserAgent.isNotEmpty) {
+      _headerRows.add(
+        _MobileHeaderRow()
+          ..keyController.text = 'User-Agent'
+          ..valueController.text = widget.initialUserAgent,
+      );
+    }
+    if (widget.initialReferer.isNotEmpty) {
+      _headerRows.add(
+        _MobileHeaderRow()
+          ..keyController.text = 'Referer'
+          ..valueController.text = widget.initialReferer,
+      );
     }
     // 弹层可见期间逐条到达的批量协议 URL：追加为新行（去重）
     _appendSub = widget.appendUrls?.listen(_appendUrl);

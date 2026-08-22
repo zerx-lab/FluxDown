@@ -334,16 +334,40 @@ class MainActivity : FlutterActivity() {
                         null
                     }
                 } else {
-                    sharePayload(data)
+                    // X 浏览器主路径：ACTION_VIEW 携 User-Agent/Cookie/Referer
+                    // 三个 extra；其 fallback 为 ACTION_SEND（仅带 url，见上方
+                    // 分支），fluxdown:// 协议模式同样不带这些字段，故仅在此
+                    // 直链分支读取并透传。
+                    sharePayload(
+                        data,
+                        userAgent = intent.getStringExtra("User-Agent") ?: "",
+                        cookie = intent.getStringExtra("Cookie") ?: "",
+                        referer = intent.getStringExtra("Referer") ?: "",
+                    )
                 }
             }
             else -> null
         }
     }
 
-    /** 组装跨 channel 的分享载荷（StandardMethodCodec 可编码的 HashMap）。 */
-    private fun sharePayload(url: String, filename: String = ""): HashMap<String, String> =
-        hashMapOf("url" to url, "filename" to filename)
+    /**
+     * 组装跨 channel 的分享载荷（StandardMethodCodec 可编码的 HashMap）。
+     * 除 url / filename 外，X 浏览器 ACTION_VIEW 主路径会附上
+     * User-Agent / Cookie / Referer（空串 = 未提供）。
+     */
+    private fun sharePayload(
+        url: String,
+        filename: String = "",
+        userAgent: String = "",
+        cookie: String = "",
+        referer: String = "",
+    ): HashMap<String, String> = hashMapOf(
+        "url" to url,
+        "filename" to filename,
+        "userAgent" to userAgent,
+        "cookie" to cookie,
+        "referer" to referer,
+    )
 
     /** 遍历 ClipData 取首个非空文本项（分享 intent 缺 EXTRA_TEXT 时的兜底）。 */
     private fun extractClipText(intent: Intent): String? {
