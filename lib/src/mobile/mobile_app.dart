@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart' show MaterialPageRoute;
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
@@ -67,9 +68,23 @@ class _FluxDownMobileAppState extends State<FluxDownMobileApp> {
     final FluxThemeTokens tokens = widget.themeProvider.activeTokens(context);
     final theme = buildThemeFromTokens(tokens);
 
-    return LocaleScope(
-      s: widget.localeNotifier.s,
-      child: FluxThemeScope(
+    // 状态栏/导航栏图标按当前主题亮度反色，避免浅色主题下白底白图标看不清
+    // （Android 默认跟随系统默认浅色图标，需显式声明；见 Android 通知栏适配）。
+    final dark = tokens.appearance == Brightness.dark;
+    final overlayStyle = SystemUiOverlayStyle(
+      statusBarColor: Color(0x00000000),
+      statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+      statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+      systemNavigationBarColor: Color(0x00000000),
+      systemNavigationBarIconBrightness:
+          dark ? Brightness.light : Brightness.dark,
+    );
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: overlayStyle,
+      child: LocaleScope(
+        s: widget.localeNotifier.s,
+        child: FluxThemeScope(
         tokens: tokens,
         child: ShadTheme(
           data: theme,
@@ -109,6 +124,7 @@ class _FluxDownMobileAppState extends State<FluxDownMobileApp> {
             ),
           ),
         ),
+      ),
       ),
     );
   }

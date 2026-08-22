@@ -1,0 +1,14 @@
+<!-- 通知栏 small icon：纯白色单色矢量图。
+     Android 通知小图标只用 alpha 通道，必须保持纯白单色，
+     系统会根据通知栏背景自动反色，避免彩色启动图标被压缩成色块。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <!-- Material download 图标：向下箭头落入托盘 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M5,20h14v-2H5v2zM19,9h-4V3H9v6H5l7,7 7,-7z" />
+</vector>
