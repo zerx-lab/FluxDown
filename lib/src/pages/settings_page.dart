@@ -41,6 +41,7 @@ import '../services/link/local_pairing_service.dart';
 import '../services/local_interfaces.dart';
 import '../services/kv_store.dart';
 import '../services/log_service.dart';
+import '../services/open_folder.dart';
 import '../services/update_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
@@ -11307,14 +11308,9 @@ class _LogExportCardState extends State<_LogExportCard> {
   }
 
   void _openLogDir() {
-    final path = LogService.instance.logDir.path;
-    if (Platform.isWindows) {
-      Process.run('explorer', [path]);
-    } else if (Platform.isMacOS) {
-      Process.run('open', [path]);
-    } else {
-      Process.run('xdg-open', [path]);
-    }
+    // 统一走 Rust open 动词链路（openFolder → reveal_file.rs），不再硬编码
+    // explorer，默认文件管理器（含第三方）由系统 open 关联解析。
+    openFolder(LogService.instance.logDir.path);
   }
 
   @override

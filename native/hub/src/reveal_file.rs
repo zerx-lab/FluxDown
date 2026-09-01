@@ -13,7 +13,7 @@
 /// 平台默认行为（无模板时）：
 /// | 平台    | 文件                                                   | 目录                          |
 /// |---------|--------------------------------------------------------|-------------------------------|
-/// | Windows | 第三方默认 FM→打开父目录，否则 `explorer.exe /select,"path"`     | `cmd /c start "" "dir"`       |
+/// | Windows | `SHOpenFolderAndSelectItems`（选中），失败回退 open 动词  | `ShellExecuteW("open", dir)`  |
 /// | macOS   | `open -R path`                                         | `open path`                   |
 /// | Linux   | D-Bus `FileManager1.ShowItems`，失败 fallback xdg-open | `xdg-open dir`                |
 pub fn reveal(path: &str, tpl: &str) {
@@ -140,6 +140,68 @@ fn shell_execute_open(path: &str) -> bool {
         )
     };
     h as usize > 32
+}
+
+/// 标准 Shell API：打开 `path` 所在父目录并选中 `path`（文件/目录皆可）。
+///
+/// `SHOpenFolderAndSelectItems` 是 Windows Shell 的标准「定位到文件夹视图」
+/// 调用，不硬编码 explorer.exe——文件夹视图由系统 Shell 打开。用 cidl=0 的
+/// 简写形式：`pidlFolder` 直接指向要选中的项，系统自动打开其父目录并选中
+/// 该项（见 MSDN 备注）。实现与 CLaunch 的 `openParentFolder` 同款：
+/// `SHParseDisplayName` 解析绝对 PIDL + `CoTaskMemFree` 释放 + 防御性 COM
+/// 初始化；失败返回 false，调用方回退为 open 动词打开父目录。
+///
+/// 文档要求先 CoInitialize：本函数运行在 spawn_blocking/NMH 线程上，这里
+/// 做防御性初始化（同 `shortcut_icon.rs` 的模式）——`hr < 0` 视为失败；
+/// S_OK/S_FALSE 都会取得本线程初始化引用，结尾须配对 `CoUninitialize`。
+#[cfg(target_os = "windows")]
+fn sh_open_folder_and_select(path: &str) -> bool {
+    use windows_sys::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize};
+    use windows_sys::Win32::UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName};
+
+    /// `COINIT_APARTMENTTHREADED`。
+    const COINIT_APARTMENTTHREADED: u32 = 2;
+
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide 为有效的 NUL 结尾 UTF-16 缓冲，在调用期间存活；其余参数
+    // 按文档允许为空。
+    let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED) };
+    if hr < 0 {
+        crate::logger::log_info!("[reveal] CoInitializeEx failed: {hr:#x}");
+        return false;
+    }
+
+    let mut pidl = std::ptr::null_mut();
+    // SAFETY: wide 存活于调用期间；ppidl 接收输出，sfgaoIn/psfgaoOut 传空。
+    // pbc 为 *mut c_void，须用 null_mut()——Rust 无 *const → *mut 隐式转换。
+    let hr_parse = unsafe {
+        SHParseDisplayName(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            &mut pidl,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if hr_parse < 0 || pidl.is_null() {
+        crate::logger::log_info!("[reveal] SHParseDisplayName failed: {hr_parse:#x}");
+        // SAFETY: 与上方取得初始化引用的 CoInitializeEx 配对。
+        unsafe { CoUninitialize() };
+        return false;
+    }
+
+    // cidl=0 简写：pidlFolder 直接指向要选中的项，系统打开其父目录并选中它。
+    // SAFETY: pidl 为 SHParseDisplayName 成功返回的有效 PIDL，调用后立即释放。
+    let hr_select = unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) };
+    // SAFETY: 释放 SHParseDisplayName 按 COM 分配器返回的 PIDL。
+    unsafe { CoTaskMemFree(pidl.cast()) };
+    // SAFETY: 与上方取得初始化引用的 CoInitializeEx 配对。
+    unsafe { CoUninitialize() };
+    if hr_select < 0 {
+        crate::logger::log_info!("[reveal] SHOpenFolderAndSelectItems failed: {hr_select:#x}");
+        return false;
+    }
+    true
 }
 
 /// 常见压缩包扩展名（含复合扩展名 .tar.gz 等——只需匹配末段即可）。
@@ -313,73 +375,27 @@ fn shell_quote(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 平台默认：reveal 文件（父目录 + 选中）
+// 平台默认：reveal 文件（标准 Shell API 选中，失败回退 open 动词）
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 fn platform_reveal_file(path: &str) {
-    use std::os::windows::process::CommandExt;
-
-    // 若用户把"打开目录"的默认处理程序替换成第三方文件管理器（改
-    // HKCR\Directory\shell\open\command，OneCommander/Directory Opus/Total
-    // Commander/Files 等的统一机制），尊重该设置：用其打开父目录。Windows 的
-    // /select（打开目录并选中文件）是 Explorer 私有 verb，第三方 FM 普遍不支持，
-    // 也无通用 API 可重定向，故退化为"打开父目录"。想在第三方 FM 里精确选中的
-    // 用户可在设置里配置 reveal 文件命令模板（reveal() 已优先于此处理）。
-    if default_dir_handler_is_third_party() {
-        let dir = std::path::Path::new(path)
-            .parent()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string());
-        crate::logger::log_info!(
-            "[reveal] third-party default file manager detected; opening parent dir instead of explorer /select"
-        );
-        platform_open_dir(&dir);
+    // 优先走标准 Shell API「打开父目录并选中」：SHOpenFolderAndSelectItems
+    // 由系统 Shell 打开文件夹视图并选中目标，不硬编码 explorer.exe（见
+    // sh_open_folder_and_select）。explorer /select 是 Explorer 私有语法、
+    // 会绕过 open 关联，不再使用。API 失败时回退 open 动词打开父目录
+    // （不选中），保证至少有响应。
+    if sh_open_folder_and_select(path) {
         return;
     }
-
-    // Explorer 仍是默认：用 /select 打开父目录并选中文件。
-    let arg = format!(r#"/select,"{}""#, path);
-    if let Err(e) = std::process::Command::new("explorer.exe")
-        .raw_arg(&arg)
-        .spawn()
-    {
-        crate::logger::log_info!("[reveal] explorer /select failed: {e}");
-    }
-}
-
-/// Windows：系统"打开目录"的默认处理程序是否已被替换成第三方文件管理器。
-///
-/// 读取 `HKCR\Directory\shell\<默认 verb>\command` 并解析其可执行文件名。
-/// 非 `explorer.exe` 时返回 `true`；键缺失、读取失败或仍是 Explorer 时返回
-/// `false`（保留 `/select` 的选中体验）。`<默认 verb>` 取 `Directory\shell`
-/// 的默认值，为空或 `none` 时回退到 `open`（第三方替换的常用写法）。
-#[cfg(target_os = "windows")]
-fn default_dir_handler_is_third_party() -> bool {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CLASSES_ROOT;
-
-    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let Ok(shell) = hkcr.open_subkey(r"Directory\shell") else {
-        return false;
-    };
-    let verb = shell.get_value::<String, _>("").unwrap_or_default();
-    let verb = verb.trim();
-    let verb = if verb.is_empty() || verb.eq_ignore_ascii_case("none") {
-        "open"
-    } else {
-        verb
-    };
-    let Ok(cmd_key) = hkcr.open_subkey(format!(r"Directory\shell\{verb}\command")) else {
-        return false;
-    };
-    let Ok(cmd) = cmd_key.get_value::<String, _>("") else {
-        return false;
-    };
-    match exe_basename(&cmd) {
-        Some(name) => !name.eq_ignore_ascii_case("explorer.exe"),
-        None => false,
-    }
+    crate::logger::log_info!(
+        "[reveal] SHOpenFolderAndSelectItems failed; falling back to open verb"
+    );
+    let dir = std::path::Path::new(path)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string());
+    platform_open_dir(&dir);
 }
 
 /// 返回裸路径字符串中首个（不区分大小写）以 `.exe` 结尾的字节偏移；找不到
@@ -463,14 +479,18 @@ fn platform_reveal_file(path: &str) {
 // 平台默认：打开目录（不选中）
 // ---------------------------------------------------------------------------
 //
-// Windows: 用 `cmd /c start "" "dir"` 走 ShellExecute 关联，尊重用户在
-// `HKCR\Folder\shell\open\command` 注册的默认 FM；直接 explorer.exe <dir>
-// 会强制使用 Explorer。
+// Windows: ShellExecuteW("open") —— 微软官方的"打开"调用（双击的 API 本体），
+// 系统按 Directory/Folder 的 open 动词关联解析默认文件管理器；`cmd /c start`
+// 仅作 ShellExecuteW 失败时的回退（start 内部同样走该关联）。
 // macOS: open <dir> 走 LaunchServices，尊重 `public.folder` 默认 handler。
 // Linux: xdg-open 走 mimeapps.list 的 inode/directory 默认。
 
 #[cfg(target_os = "windows")]
 fn platform_open_dir(dir: &str) {
+    if shell_execute_open(dir) {
+        return;
+    }
+    crate::logger::log_info!("[reveal] ShellExecuteW failed; falling back to cmd /c start");
     use std::os::windows::process::CommandExt;
     // start 的第一个引号串是窗口标题，必须保留为空，否则 cmd 会把目录路径
     // 当成标题而打开新 cmd 窗口。

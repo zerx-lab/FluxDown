@@ -38,3 +38,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 x25519-dalek = { version = "3", features = ["static_secrets", "zeroize"] }
+
+[target.'cfg(windows)'.dependencies]
+# ShellExecuteW("open")：reveal 路径的标准「打开」调用（见 platform.rs）
+# Win32_UI_Shell_Common：SHParseDisplayName / SHOpenFolderAndSelectItems（ITEMIDLIST 类型，见 platform.rs）
+# 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }

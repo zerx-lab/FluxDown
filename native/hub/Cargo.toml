@@ -67,9 +67,10 @@ reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "js
 # 系统调用：SetFileInformationByHandle（文件预分配真正保留 NTFS 物理簇）
 # 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
 # Win32_UI_Shell + WindowsAndMessaging：ShellExecuteW（打开文件/目录走系统关联，等价双击，见 reveal_file.rs）
+# Win32_UI_Shell_Common：SHParseDisplayName / SHOpenFolderAndSelectItems（ITEMIDLIST 类型，见 reveal_file.rs）
 # Win32_System_DataExchange + Memory + Foundation：CF_HDROP 剪贴板（右键「复制文件」，见 clipboard_file.rs）
 # Win32_System_Com：CoCreateInstance/IPersistFile（快捷方式图标重写，见 shortcut_icon.rs）
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
 # ZIP 解析：用于 bootstrap fluxdown_updater.exe（从下载的 ZIP 中提取，兼容从旧版升级的用户）
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
