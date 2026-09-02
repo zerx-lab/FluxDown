@@ -61,7 +61,7 @@ sourceHash: "b8cae49fcfee"
 | 字段 | 必填 | 规则 |
 |---|---|---|
 | `entry` | 是 | 脚本文件，安全相对路径。按订阅的事件各定义一个全局函数。 |
-| `events` | 是 | 非空，只能取 `onStart`、`onError`、`onDone`、`onMetaProbed`，其余一律拒绝。 |
+| `events` | 是 | 非空，只能取 `onStart`、`onError`、`onDone`、`onMetaProbed`、`onCancel`，其余一律拒绝。 |
 | `match` | 否 | 可选的 URL 过滤器，pattern 规则同上；存在时 `urls` 不能为空。省略 = 所有任务都触发。 |
 
 注意：同一插件如果还声明了 resolver，`onMetaProbed` 对它的任务永远不触发——带 resolver 的任务直接跳过元数据探测。你照订阅的话，FluxDown 会记一条警告日志。

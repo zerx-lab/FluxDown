@@ -45,7 +45,7 @@ sourceHash: "4501af5b1d55"
 
 错误行为是 fail-closed：抛异常、超时、返回值不合法、插件已卸载或被禁用，任务都进入错误状态。原始 URL 绝不会被悄悄下载。
 
-### `onStart(ctx)` / `onDone(ctx)` / `onError(ctx)` / `onMetaProbed(ctx)`
+### `onStart(ctx)` / `onDone(ctx)` / `onError(ctx)` / `onMetaProbed(ctx)` / `onCancel(ctx)`
 
 通知钩子。都会收到 `{ event, taskId, url }`，再加各自的字段：
 
@@ -55,8 +55,13 @@ sourceHash: "4501af5b1d55"
 | `onError` | `message`——任务的错误文本 |
 | `onDone` | `filePath`——完成文件的绝对路径；`audioPath`——轨对任务（视频+音频离散轨）mux 失败降级时独立音频文件（`<主干名>.audio.m4a`）的绝对路径，单文件产物（含 mux 成功）为 `null`；`muxed`——轨对任务是否已成功合并为单文件，非轨对任务恒 `false` |
 | `onMetaProbed` | `fileName`、`totalBytes`——探测结果 |
+| `onCancel` | `reason`——取消原因（可选；例如 `variant_selection_cancelled`、`user_cancelled`） |
 
 `url` 恒为任务的原始 URL，manifest 里 `hooks.match.urls` 也是拿它过滤的。
+
+`onCancel` 与 `onDone`、`onError` 互斥；同一任务最多触发一次。用户取消下载时
+`reason` 为 `user_cancelled`，在画质/格式变体选择窗口点取消时为
+`variant_selection_cancelled`。取消钩子不能重试或改变任务状态。
 
 钩子发出后不管结果：异常和超时只记日志然后吞掉，插件运行时忙不过来时通知直接丢弃。钩子做的任何事都改变不了任务——唯一例外是 `flux.task.requestRetry`，且只在 `onError` 里有效。
 
