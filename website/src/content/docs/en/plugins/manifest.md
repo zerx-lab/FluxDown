@@ -60,7 +60,7 @@ A plugin may declare a resolver, hooks, or both. A manifest with neither is vali
 | Field | Required | Rules |
 |---|---|---|
 | `entry` | yes | Script file, safe relative path. Must define a global function per subscribed event. |
-| `events` | yes | Non-empty subset of `onStart`, `onError`, `onDone`, `onMetaProbed`. Anything else is rejected. |
+| `events` | yes | Non-empty subset of `onStart`, `onError`, `onDone`, `onMetaProbed`, `onCancel`. Anything else is rejected. |
 | `match` | no | Optional URL filter, same pattern rules. If present, `urls` must be non-empty. Omitted = the hooks fire for every task. |
 
 Caveat: if the same plugin also declares a resolver, `onMetaProbed` never fires for its tasks — resolver tasks skip the metadata probe entirely. FluxDown logs a warning if you subscribe to it anyway.

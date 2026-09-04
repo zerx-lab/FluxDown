@@ -44,7 +44,7 @@ After resolution, FluxDown re-examines the *resolved* URL to pick the protocol e
 
 Error behavior is fail-closed: an exception, timeout, invalid return value, or an uninstalled/disabled plugin all put the task into the error state. The original URL is never silently downloaded.
 
-### `onStart(ctx)` / `onDone(ctx)` / `onError(ctx)` / `onMetaProbed(ctx)`
+### `onStart(ctx)` / `onDone(ctx)` / `onError(ctx)` / `onMetaProbed(ctx)` / `onCancel(ctx)`
 
 Notification hooks. All receive `{ event, taskId, url }` plus event-specific fields:
 
@@ -54,8 +54,13 @@ Notification hooks. All receive `{ event, taskId, url }` plus event-specific fie
 | `onError` | `message` — the task's error text |
 | `onDone` | `filePath` — absolute path of the finished file; `audioPath` — for track-pair tasks (separate video+audio streams) where muxing failed, the absolute path of the standalone audio file (`<stem>.audio.m4a`); `null` for single-file results (including successful mux); `muxed` — whether a track-pair task was successfully merged into a single file, always `false` for non-track-pair tasks |
 | `onMetaProbed` | `fileName`, `totalBytes` — probe results |
+| `onCancel` | `reason` — optional cancellation reason (for example, `variant_selection_cancelled` or `user_cancelled`) |
 
 `url` is always the task's original URL, and it's what the manifest's `hooks.match.urls` filter is applied to.
+
+`onCancel` is mutually exclusive with `onDone` and `onError`, and fires at most once per task.
+User cancellation uses `reason: "user_cancelled"`; closing the variant selection dialog uses
+`reason: "variant_selection_cancelled"`. The cancellation hook cannot retry or change task state.
 
 Hooks are fire-and-forget: exceptions and timeouts are logged and swallowed, and if the plugin runtime is saturated the notification is dropped. Nothing a hook does can change the task — with one exception, `flux.task.requestRetry`, valid only inside `onError`.
 
