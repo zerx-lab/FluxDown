@@ -1993,7 +1993,8 @@ impl DownloadManager {
                 "[plugin-resolve] task {} variant selection cancelled by user, cancelling task",
                 task_id
             );
-            self.cancel_task(&task_id).await;
+            self.cancel_task_with_reason(&task_id, "variant_selection_cancelled")
+                .await;
             return;
         }
         // 任务已从 DB 删除（兜底；delete_task 亦已清 pending_resolve）→ 放弃再入。
@@ -6689,6 +6690,25 @@ impl DownloadManager {
     }
 
     pub async fn cancel_task(&mut self, task_id: &str) {
+        self.cancel_task_with_reason(task_id, "user_cancelled")
+            .await;
+    }
+
+    /// 取消任务并携带插件 Hook 原因。公开入口保留默认的
+    /// `user_cancelled` 语义；内部取消场景可传递更具体的原因。
+    #[allow(unused_variables)]
+    async fn cancel_task_with_reason(&mut self, task_id: &str, reason: &str) {
+        // 先读取终态和 URL：取消可能来自尚未启动的队列项，也可能来自变体
+        // 选择窗口。仅首次从非终态进入 cancelled 才发 onCancel，避免重复
+        // 调用 cancel_task 造成重复通知。
+        let task_before = self.db.load_task_by_id(task_id).await.ok().flatten();
+        let should_notify_cancel = task_before
+            .as_ref()
+            .is_some_and(|task| task.status != 3 && task.status != 4);
+        let cancel_url = task_before
+            .as_ref()
+            .map(|task| task.url.clone())
+            .unwrap_or_default();
         // 清除自动重试计数，与 delete_task / resume_task 对齐。取消是用户的
         // 明确意图，必须从自动重试状态中移除，使后续 create/resume 干净起步。
         self.auto_retry_counts.remove(task_id);
@@ -6765,6 +6785,19 @@ impl DownloadManager {
                 .map(|t| t.seeding_time_secs)
                 .unwrap_or_default(),
         });
+
+        // 插件通知：取消不改变任务状态，也不等待脚本执行；Hook 异常/超时由
+        // PluginManager 按通知平面约定吞掉。URL 取取消前任务记录，保证变体
+        // 选择取消仍能拿到分享链接（任务尚未应用解析结果）。
+        #[cfg(feature = "plugins")]
+        if should_notify_cancel && let Some(pm) = &self.plugin_manager {
+            pm.notify(crate::plugin::PluginEvent::Cancel {
+                task_id: task_id.to_string(),
+                url: cancel_url,
+                reason: Some(reason.to_string()),
+            })
+            .await;
+        }
 
         // A slot freed up — try to start queued tasks.
         self.drain_queue().await;

@@ -5,7 +5,7 @@
 //!    实际发起下载协议判定之前、且 off-actor（见 [`crate::download_manager`] 的
 //!    off-actor resolve 插桩）；命中后失败 fail-closed（进 status=4，绝不静默把网页
 //!    HTML 当视频保存），并暴露「忽略插件重试」逃生舱。
-//! 2. **通知平面**：onStart/onDone/onError/onMetaProbed **全部 fire-and-forget**
+//! 2. **通知平面**：onStart/onDone/onError/onMetaProbed/onCancel **全部 fire-and-forget**
 //!    （失败仅记日志、超时、`try_acquire` 不阻塞，绝不影响任务状态）。
 //!
 //! 本模块仅在 `plugins` feature 开启时编译（desktop/server），mobile 关闭以免背 JS

@@ -184,7 +184,7 @@ pub struct PluginManifest {
 }
 
 /// 合法事件名（manifest `hooks.events`）。
-pub const VALID_EVENTS: [&str; 4] = ["onStart", "onError", "onDone", "onMetaProbed"];
+pub const VALID_EVENTS: [&str; 5] = ["onStart", "onError", "onDone", "onMetaProbed", "onCancel"];
 
 /// ffmpeg 能力权限名（manifest `permissions`）。
 pub const PERMISSION_FFMPEG: &str = "ffmpeg";
@@ -568,6 +568,15 @@ mod tests {
                 "resolvers":[{"match":{"urls":["*://x.com/*"]},"entry":"r.js"}],
                 "settings":[{"key":"q","title":"Q","type":"string","widget":"select",
                              "options":[{"value":"a","label":"A"}],"default":"a"}]}"#,
+        );
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn on_cancel_event_is_valid() {
+        let m = parse_ok(
+            r#"{"identity":"a@b","name":"N","version":"1.0.0",
+                "hooks":{"entry":"h.js","events":["onCancel"]}}"#,
         );
         assert!(m.validate().is_ok());
     }

@@ -11,7 +11,7 @@ FluxDown 插件是挂进下载流程的小段 JavaScript 程序。一个插件�
 插件只能做两类事：
 
 1. **解析 URL（resolver）**——在下载开始前改写任务的 URL。典型用途：把一个分享页链接（视频页、网盘页）变成真正的直链。在 manifest 的 `resolvers` 里声明，脚本导出一个全局 `resolve(ctx)` 函数。
-2. **响应任务事件（hooks）**——任务开始、完成、出错、探测到元数据时收到通知。在 `hooks` 里声明，脚本导出全局的 `onStart` / `onDone` / `onError` / `onMetaProbed` 函数。
+2. **响应任务事件（hooks）**——任务开始、完成、出错、取消、探测到元数据时收到通知。在 `hooks` 里声明，脚本导出全局的 `onStart` / `onDone` / `onError` / `onCancel` / `onMetaProbed` 函数。
 
 插件**不能**创建任务、不能读任意文件、不能操作界面。它和外界打交道只有 `flux.*` 这一套接口（HTTP 请求、键值存储、日志、请求重试），见 [API 参考](/docs/zh/plugins/api-reference/)。
 

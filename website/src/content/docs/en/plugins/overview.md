@@ -10,7 +10,7 @@ FluxDown plugins are small JavaScript programs that hook into the download pipel
 Plugins can do exactly two things:
 
 1. **Resolve URLs** — rewrite a task's URL before the download starts. This is how you turn a share-page link (a video page, a file-hosting page) into the actual direct download link. Declared under `resolvers` in the manifest; the script exports a global `resolve(ctx)` function.
-2. **React to task events** — get notified when a task starts, finishes, fails, or has its metadata probed. Declared under `hooks`; the script exports global `onStart` / `onDone` / `onError` / `onMetaProbed` functions.
+2. **React to task events** — get notified when a task starts, finishes, fails, is cancelled, or has its metadata probed. Declared under `hooks`; the script exports global `onStart` / `onDone` / `onError` / `onCancel` / `onMetaProbed` functions.
 
 Plugins **cannot** create tasks, read arbitrary files, or touch the UI. They talk to the outside world only through the `flux.*` API (HTTP fetch, key-value storage, logging, retry requests) — see the [API reference](/docs/en/plugins/api-reference/).
 

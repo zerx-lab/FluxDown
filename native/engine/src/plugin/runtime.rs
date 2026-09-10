@@ -35,7 +35,7 @@ pub struct PluginScript {
 pub enum PluginEntryKind {
     /// resolver 入口：`globalThis.resolve`。
     Resolve,
-    /// hook 入口：`globalThis.onStart/onError/onDone/onMetaProbed`（由 event 决定）。
+    /// hook 入口：`globalThis.onStart/onError/onDone/onMetaProbed/onCancel`（由 event 决定）。
     Hook,
 }
 
@@ -209,6 +209,13 @@ pub enum PluginEvent {
         file_name: String,
         total_bytes: i64,
     },
+    #[serde(rename = "onCancel")]
+    Cancel {
+        task_id: String,
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 impl PluginEvent {
@@ -219,6 +226,7 @@ impl PluginEvent {
             PluginEvent::Error { .. } => "onError",
             PluginEvent::Done { .. } => "onDone",
             PluginEvent::MetaProbed { .. } => "onMetaProbed",
+            PluginEvent::Cancel { .. } => "onCancel",
         }
     }
 
@@ -233,7 +241,8 @@ impl PluginEvent {
             PluginEvent::Start { url, .. }
             | PluginEvent::Error { url, .. }
             | PluginEvent::Done { url, .. }
-            | PluginEvent::MetaProbed { url, .. } => url,
+            | PluginEvent::MetaProbed { url, .. }
+            | PluginEvent::Cancel { url, .. } => url,
         }
     }
 }
@@ -611,6 +620,26 @@ mod tests {
             "must not emit snake_case task_id"
         );
         assert!(v.get("file_path").is_none());
+
+        let cancel = PluginEvent::Cancel {
+            task_id: "t3".into(),
+            url: "https://example.com/share".into(),
+            reason: Some("variant_selection_cancelled".into()),
+        };
+        let cv: serde_json::Value = serde_json::to_value(&cancel).expect("serialize");
+        assert_eq!(cv["event"], "onCancel");
+        assert_eq!(cv["taskId"], "t3");
+        assert_eq!(cv["url"], "https://example.com/share");
+        assert_eq!(cv["reason"], "variant_selection_cancelled");
+
+        let cancel_without_reason = PluginEvent::Cancel {
+            task_id: "t4".into(),
+            url: "https://example.com/share2".into(),
+            reason: None,
+        };
+        let crv: serde_json::Value =
+            serde_json::to_value(&cancel_without_reason).expect("serialize");
+        assert!(crv.get("reason").is_none());
 
         let meta = PluginEvent::MetaProbed {
             task_id: "t2".into(),
