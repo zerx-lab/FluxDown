@@ -179,7 +179,11 @@ pub struct BatchControlTask {
 pub struct RequestAllTasks {}
 
 /// Reveal a file in the native file manager and select it.
-/// Windows: explorer.exe /select,"path" via raw_arg (bypasses argument escaping).
+/// Windows: SHOpenFolderAndSelectItems (standard Shell API) opens the parent
+/// folder and selects the item; on failure falls back to ShellExecuteW("open")
+/// on the parent directory. If the default directory handler is a third-party
+/// file manager, opens the parent directory directly (FMs that only override
+/// HKCR\Directory\shell\open\command cannot intercept the Shell API).
 /// macOS/Linux: handled on the Dart side; this signal is Windows-only.
 #[derive(Deserialize, DartSignal)]
 pub struct RevealFile {

@@ -9,7 +9,6 @@
 // 这里既不崩也不留白，UI 无需同步改动即可先把新结论展示出来。
 
 import 'dart:async';
-import 'dart:io' show Platform, Process;
 
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter/widgets.dart';
@@ -20,6 +19,7 @@ import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../models/settings_provider.dart';
 import '../services/log_service.dart';
+import '../services/open_folder.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import 'flux_sonner.dart';
@@ -223,14 +223,9 @@ class _DoctorReportViewState extends State<DoctorReportView> {
   }
 
   void _openLogDir() {
-    final path = LogService.instance.logDir.path;
-    if (Platform.isWindows) {
-      Process.run('explorer', [path]);
-    } else if (Platform.isMacOS) {
-      Process.run('open', [path]);
-    } else {
-      Process.run('xdg-open', [path]);
-    }
+    // 统一走 Rust open 动词链路（openFolder → reveal_file.rs），不再硬编码
+    // explorer，默认文件管理器（含第三方）由系统 open 关联解析。
+    openFolder(LogService.instance.logDir.path);
   }
 
   /// 这一条检查项能就地做什么。`null` = 没有可用动作（正常项 / 只能重装）。

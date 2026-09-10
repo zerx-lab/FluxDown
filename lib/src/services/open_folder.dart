@@ -38,7 +38,11 @@ const _storageChannel = MethodChannel('com.fluxdown/storage');
 ///   1. 用户在设置中配置了自定义命令模板（reveal_file_cmd / open_dir_cmd）
 ///      → 走模板（cmd /c 或 sh -c），支持任意第三方文件管理器
 ///   2. 否则走平台默认：
-///      Windows: 文件→第三方默认 FM 打开父目录，否则 explorer /select；目录→cmd /c start
+///      Windows: 先探测「打开目录」默认处理程序是否为第三方文件管理器
+///      （只改 HKCR\Directory\shell\open\command 的 FM 拦截不到 Shell API），
+///      命中→ShellExecuteW("open") 仅打开父目录；否则 SHOpenFolderAndSelectItems
+///      （标准 Shell API）打开父目录并选中文件，失败回退 ShellExecuteW("open")；
+///      目录→ShellExecuteW("open")
 ///      macOS:   open -R 或 open
 ///      Linux:   D-Bus FileManager1.ShowItems 或 xdg-open
 ///
