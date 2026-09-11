@@ -461,6 +461,17 @@ export default defineContentScript({
       `;
       countEl = header.querySelector('.resource-count') as HTMLElement;
 
+      const headerActions = h('div', 'panel-header-actions');
+
+      exportDebugBtnEl = document.createElement('button');
+      exportDebugBtnEl.className = 'export-debug-btn';
+      exportDebugBtnEl.type = 'button';
+      exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+      exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
+      exportDebugBtnEl.setAttribute('aria-label', t('panel.exportDebugLog'));
+      exportDebugBtnEl.addEventListener('click', exportResourceDebugLog);
+      headerActions.appendChild(exportDebugBtnEl);
+
       const hideBtn = h('button', 'btn-close');
       hideBtn.title = t('panel.hideDot');
       hideBtn.innerHTML = svg(SVG_EYE_OFF);
@@ -468,12 +479,13 @@ export default defineContentScript({
         browser.storage.local.set({ [DOT_VISIBLE_KEY]: false });
         if (panelOpen) togglePanel();
       });
-      header.appendChild(hideBtn);
+      headerActions.appendChild(hideBtn);
 
       const closeBtn = h('button', 'btn-close');
       closeBtn.innerHTML = svg(SVG_CLOSE);
       closeBtn.addEventListener('click', () => { togglePanel(); });
-      header.appendChild(closeBtn);
+      headerActions.appendChild(closeBtn);
+      header.appendChild(headerActions);
 
       tabsEl = h('div', 'panel-tabs');
       listEl = h('div', 'panel-list');
@@ -528,15 +540,8 @@ export default defineContentScript({
         render();
       });
 
-      exportDebugBtnEl = document.createElement('button');
-      exportDebugBtnEl.className = 'export-debug-btn';
-      exportDebugBtnEl.textContent = t('panel.exportDebugLog');
-      exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
-      exportDebugBtnEl.addEventListener('click', exportResourceDebugLog);
-
       const actions = h('div', 'panel-footer-actions');
       actions.appendChild(clearFailedBtnEl);
-      actions.appendChild(exportDebugBtnEl);
       actions.appendChild(batchBtnEl);
 
       footer.appendChild(label);
@@ -1022,6 +1027,11 @@ export default defineContentScript({
     /** 语言切换时刷新静态文本（全选 label、批量下载按钮） */
     function refreshStaticTexts(): void {
       if (selectAllText) selectAllText.textContent = ` ${t('panel.selectAll')}`;
+      if (exportDebugBtnEl) {
+        exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+        exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
+        exportDebugBtnEl.setAttribute('aria-label', t('panel.exportDebugLog'));
+      }
       if (batchBtnEl) {
         batchBtnEl.innerHTML = `${svg(SVG_DOWNLOAD)} ${t('panel.batchDownload')} (<span>0</span>)`;
         batchCountEl = batchBtnEl.querySelector('span') as HTMLElement;

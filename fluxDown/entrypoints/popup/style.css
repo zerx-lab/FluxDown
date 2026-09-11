@@ -1155,12 +1155,54 @@ select:focus {
   padding: 8px 8px 6px;
 }
 
+.res-toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-bottom: 6px;
+}
+
+.res-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+}
+
 .res-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  flex-shrink: 0;
-  margin-bottom: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.res-debug-btn {
+  flex: none;
+  appearance: none;
+  padding: 3px 6px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.res-debug-btn:hover {
+  color: var(--accent);
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.res-debug-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .res-tabs.hidden {
