@@ -39,6 +39,91 @@ export interface DashManifest {
 // ===== 递归扫描预算（仿 media-sniff.ts scanForMediaUrls，防御超大 JSON） =====
 const MAX_SCAN_DEPTH = 12;
 const MAX_SCAN_NODES = 3000;
+const MAX_TEXT_SCAN_LENGTH = 2 * 1024 * 1024;
+const MAX_JSON_ROOTS = 64;
+
+/**
+ * 从页面内嵌脚本中提取平衡的 JSON 根对象/数组。
+ *
+ * 这里故意不执行页面脚本，也不依赖站点私有变量名；只在脚本文本中做
+ * 一个有界的 JS 字符串/注释感知扫描，再把完整 JSON 交给 JSON.parse。
+ */
+function extractJsonRoots(text: string): string[] {
+  const roots: string[] = [];
+  const stack: string[] = [];
+  let start = -1;
+  let quote: '"' | "'" | "`" | null = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const current = text[index];
+    const next = text[index + 1];
+
+    if (lineComment) {
+      if (current === '\n' || current === '\r') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (current === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (current === '\\') {
+        escaped = true;
+      } else if (current === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (current === '/' && next === '/') {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (current === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (current === '"' || current === "'" || current === '`') {
+      quote = current;
+      continue;
+    }
+    if (current === '{' || current === '[') {
+      if (stack.length === 0) start = index;
+      stack.push(current);
+      continue;
+    }
+    if (current !== '}' && current !== ']') continue;
+    if (stack.length === 0) continue;
+
+    const opening = stack[stack.length - 1];
+    const matches = (opening === '{' && current === '}')
+      || (opening === '[' && current === ']');
+    if (!matches) {
+      stack.length = 0;
+      start = -1;
+      continue;
+    }
+
+    stack.pop();
+    if (stack.length === 0 && start >= 0) {
+      roots.push(text.slice(start, index + 1));
+      start = -1;
+      if (roots.length >= MAX_JSON_ROOTS) break;
+    }
+  }
+
+  return roots;
+}
 
 function isVideoCodec(codecs: string): boolean {
   const lower = codecs.toLowerCase();
@@ -184,4 +269,29 @@ export function parseDashJson(root: unknown, baseUrl: string): DashManifest | nu
     // 解析异常绝不冒泡（可能是页面响应体畸形 JSON 结构）
     return null;
   }
+}
+
+/**
+ * 从响应/内嵌脚本文本中寻找 JSON 形态 DASH 清单。
+ *
+ * 响应拦截可能在页面播放器初始化之后才注入；扫描内嵌状态可以补上这类
+ * 已经存在于 DOM 的清单，同时仍然只接受结构化 video[]/audio[] 轨道。
+ */
+export function parseDashJsonText(text: string, baseUrl: string): DashManifest | null {
+  if (!text || text.length > MAX_TEXT_SCAN_LENGTH) return null;
+
+  let audioOnly: DashManifest | null = null;
+  for (const rootText of extractJsonRoots(text)) {
+    let root: unknown;
+    try {
+      root = JSON.parse(rootText);
+    } catch {
+      continue;
+    }
+    const manifest = parseDashJson(root, baseUrl);
+    if (!manifest) continue;
+    if (manifest.video.length > 0) return manifest;
+    audioOnly ||= manifest;
+  }
+  return audioOnly;
 }

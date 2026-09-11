@@ -144,7 +144,11 @@ export default defineUnlistedScript(() => {
       if (manifest) {
         document.dispatchEvent(
           new CustomEvent(FLUXDOWN_DASH_EVENT, {
-            detail: { manifest, pageUrl: window.location.href },
+            detail: {
+              manifest,
+              manifestUrl: url,
+              pageUrl: window.location.href,
+            },
           }),
         );
       }

@@ -1210,10 +1210,21 @@ select:focus {
 
 .res-row {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 4px;
-  border-bottom: 1px solid var(--border);
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.res-row + .res-row {
+  margin-top: 4px;
+}
+
+.res-row:hover {
+  background: var(--bg-hover);
 }
 
 .res-row:last-child {
@@ -1222,14 +1233,9 @@ select:focus {
 
 .res-check {
   flex: none;
-  margin: 0;
+  margin: 3px 0 0;
   accent-color: var(--accent);
   cursor: pointer;
-}
-
-.res-icon {
-  flex: none;
-  font-size: 13px;
 }
 
 .res-info {
@@ -1245,6 +1251,25 @@ select:focus {
   text-overflow: ellipsis;
 }
 
+.res-candidate-row.unresolved {
+  opacity: 0.68;
+}
+
+.res-candidate-name {
+  font-weight: 600;
+}
+
+.res-candidate-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.res-candidate-warning {
+  color: #d99a16;
+}
+
 .res-meta {
   margin-top: 1px;
   font-size: 10px;
@@ -1256,8 +1281,9 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  min-width: 42px;
   height: 24px;
+  padding: 0 7px;
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border);
@@ -1283,8 +1309,9 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  min-width: 42px;
   height: 24px;
+  padding: 0 7px;
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border);
@@ -1433,9 +1460,8 @@ select:focus {
   cursor: pointer;
 }
 
-/* ===== File-type icon palette（task-icon / res-icon 共用） ===== */
-.task-icon,
-.res-icon {
+/* ===== File-type icon palette（task rows only） ===== */
+.task-icon {
   color: var(--text-secondary);
 }
 
@@ -1451,9 +1477,3 @@ select:focus {
 .icon-subtitle { color: #a855f7; }
 .icon-file { color: var(--text-secondary); }
 .icon-success { color: var(--success); }
-
-.res-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}

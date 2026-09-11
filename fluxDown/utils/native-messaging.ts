@@ -96,6 +96,7 @@ export interface ApiResponse {
  */
 export interface BatchDownloadItem {
   url: string;
+  audioUrl?: string;
   filename?: string;
   referrer?: string;
   cookies?: string;
@@ -337,6 +338,7 @@ const BATCH_CHUNK_ITEMS_LIMIT = 1000;
  */
 function toBatchWireItem(item: BatchDownloadItem): Record<string, any> {
   const wire: Record<string, any> = { url: item.url };
+  if (item.audioUrl) wire.audioUrl = item.audioUrl;
   if (item.filename) wire.filename = item.filename;
   const referrer = sanitizeReferrer(item.referrer);
   if (referrer) wire.referrer = referrer;
@@ -398,6 +400,7 @@ async function nmhSendBatchDownloadLegacy(
     items.map((item) =>
       nmhSendDownloadRequest({
         url: item.url,
+        audioUrl: item.audioUrl,
         filename: item.filename || "",
         referrer: item.referrer || "",
         cookies: item.cookies,

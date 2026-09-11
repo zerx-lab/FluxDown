@@ -431,14 +431,16 @@
 /* --- 资源行 --- */
 .resource-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 7px 14px;
-  border-bottom: 1px solid var(--fd-border);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--fd-surface);
   transition: background 0.1s ease;
 }
 
-.resource-row:last-child { border-bottom: none; }
+.resource-row + .resource-row { margin-top: 4px; }
 
 .resource-row:hover {
   background: var(--fd-hover);
@@ -448,15 +450,6 @@
 .resource-row.conf-high {
   border-left: 2px solid var(--fd-accent);
   padding-left: 12px;
-}
-
-.resource-row .conf-badge {
-  display: inline;
-  font-size: 10px;
-  margin-right: 3px;
-}
-.resource-row .conf-badge.high {
-  color: #FBBF24;
 }
 
 /* 低可信度折叠区分隔线 */
@@ -495,17 +488,10 @@
 .resource-row .check {
   width: 15px;
   height: 15px;
+  margin-top: 3px;
   accent-color: var(--fd-accent);
   cursor: pointer;
   flex-shrink: 0;
-}
-
-.resource-row .type-icon {
-  flex-shrink: 0;
-  font-size: 15px;
-  width: 20px;
-  text-align: center;
-  line-height: 1;
 }
 
 .resource-row .info {
@@ -520,6 +506,27 @@
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.3;
+}
+
+.resource-row.media-candidate-row .filename {
+  font-weight: 600;
+}
+
+.resource-row.media-candidate-row.unresolved {
+  opacity: 0.72;
+}
+
+.resource-row.media-candidate-row .candidate-meta {
+  flex-wrap: wrap;
+}
+
+.resource-row.media-candidate-row .candidate-source {
+  color: var(--fd-accent);
+  font-weight: 600;
+}
+
+.resource-row.media-candidate-row .candidate-warning {
+  color: #FBBF24;
 }
 
 .resource-row .meta {
@@ -565,7 +572,7 @@
 
 .resource-row .dl-btn {
   flex-shrink: 0;
-  width: 26px;
+  min-width: 42px;
   height: 26px;
   display: flex;
   align-items: center;
@@ -576,7 +583,9 @@
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s ease;
-  padding: 0;
+  padding: 0 7px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .resource-row .dl-btn:hover {
@@ -585,19 +594,9 @@
   color: #fff;
 }
 
-.resource-row .dl-btn svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .resource-row .preview-btn {
   flex-shrink: 0;
-  width: 26px;
+  min-width: 42px;
   height: 26px;
   display: flex;
   align-items: center;
@@ -608,23 +607,15 @@
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s ease;
-  padding: 0;
+  padding: 0 7px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .resource-row .preview-btn:hover {
   background: var(--fd-hover);
   border-color: var(--fd-border-strong);
   color: var(--fd-text);
-}
-
-.resource-row .preview-btn svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 /* --- 预览受限标记 + 清理按钮（对标 cat-catch：手动清理，不自动隐藏） --- */

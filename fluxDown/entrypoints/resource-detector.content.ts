@@ -18,6 +18,7 @@ import type {
   FetchInterceptDetail,
   ResourceType,
 } from "@/utils/resource-types";
+import { parseDashJsonText } from "@/utils/dash-manifest";
 import type { DashManifest } from "@/utils/dash-manifest";
 import { classifyByExtension, classifyByMime } from "@/utils/resource-types";
 
@@ -58,6 +59,51 @@ export default defineContentScript({
 
     /** 已报告的 URL 集合（防止重复上报） */
     const reportedUrls = new Set<string>();
+    let inlineDashSignature = "";
+    let inlineDashScanTimer: number | undefined;
+
+    /**
+     * 补扫页面已经存在的内嵌 JSON 状态。
+     * Main World 注入发生在 document_idle，播放器可能已经完成首个请求，
+     * 这一步让「页面有清单但扩展没赶上请求」仍能得到可下载候选。
+     */
+    function scanInlineDashManifest(): void {
+      if (!sniffingEnabled) return;
+
+      for (const script of Array.from(document.scripts)) {
+        const text = script.textContent || "";
+        if (!text) continue;
+        const manifest = parseDashJsonText(text, location.href);
+        if (!manifest || manifest.video.length === 0) continue;
+
+        const signature = [
+          ...manifest.video.map((track) => `${track.url}|${track.bandwidth ?? 0}|${track.codecs ?? ""}`),
+          ...manifest.audio.map((track) => `${track.url}|${track.bandwidth ?? 0}|${track.codecs ?? ""}`),
+        ].join("\n");
+        if (signature === inlineDashSignature) continue;
+        inlineDashSignature = signature;
+
+        browser.runtime
+          .sendMessage({
+            action: "dashManifestDetected",
+            manifest,
+            manifestUrl: `${location.href}#fluxdown-inline-dash`,
+            pageUrl: location.href,
+          })
+          .catch(() => {
+            // 扩展可能已失效
+          });
+        return;
+      }
+    }
+
+    function scheduleInlineDashScan(): void {
+      if (!sniffingEnabled || inlineDashScanTimer !== undefined) return;
+      inlineDashScanTimer = window.setTimeout(() => {
+        inlineDashScanTimer = undefined;
+        scanInlineDashManifest();
+      }, 0);
+    }
 
     // ===== 1. 初始 DOM 扫描 =====
     if (sniffingEnabled) {
@@ -72,9 +118,12 @@ export default defineContentScript({
       const found: ResourceMessagePayload[] = [];
 
       for (const mutation of mutations) {
+        let scriptAdded = false;
+
         // 新增节点
         for (const node of mutation.addedNodes) {
           if (!(node instanceof HTMLElement)) continue;
+          if (node instanceof HTMLScriptElement) scriptAdded = true;
           found.push(...checkElement(node));
           // 检查子元素
           const children = node.querySelectorAll(
@@ -84,6 +133,8 @@ export default defineContentScript({
             found.push(...checkElement(child as HTMLElement));
           }
         }
+
+        if (scriptAdded) scheduleInlineDashScan();
 
         // 属性变化（如 video.src 被 JS 修改）
         if (
@@ -109,6 +160,12 @@ export default defineContentScript({
 
       // 扩展失效时断开观察
       ctx.onInvalidated(() => observer.disconnect());
+      ctx.onInvalidated(() => {
+        if (inlineDashScanTimer !== undefined) {
+          window.clearTimeout(inlineDashScanTimer);
+          inlineDashScanTimer = undefined;
+        }
+      });
     }
 
     // ===== 3. 注入 Main World 拦截脚本 =====
@@ -162,13 +219,14 @@ export default defineContentScript({
     // ===== 4b. 监听 Main World 拦到的标准 DASH manifest（权威清晰度 + 轨道 URL）=====
     const handleDashManifestEvent = (event: Event) => {
       const detail = (event as CustomEvent).detail as
-        | { manifest: DashManifest; pageUrl: string }
+        | { manifest: DashManifest; manifestUrl?: string; pageUrl: string }
         | undefined;
       if (!detail?.manifest) return;
       browser.runtime
         .sendMessage({
           action: "dashManifestDetected",
           manifest: detail.manifest,
+          manifestUrl: detail.manifestUrl || "",
           pageUrl: detail.pageUrl || location.href,
         })
         .catch(() => {
@@ -183,6 +241,8 @@ export default defineContentScript({
         handleDashManifestEvent,
       );
     });
+
+    if (sniffingEnabled) scanInlineDashManifest();
 
     // ===== 5. 一次性 CDN 下载 URL 预抢占 =====
     // 监听 Main World 脚本检测到的"AJAX 生成一次性 CDN URL"事件，

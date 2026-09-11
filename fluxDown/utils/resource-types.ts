@@ -577,6 +577,35 @@ const NOISE_PATH_PATTERNS: string[] = [
 ];
 
 /**
+ * 无扩展名 API 端点的路径特征。
+ *
+ * 播放页经常会把播放信息接口挂在 object/embed 或 fetch/XHR 上；这些接口
+ * 的最后一段可能恰好是 `view`，如果按 URL 末段兜底展示，就会出现一个看起来
+ * 像文件名的「view」资源。这里只针对未知类型（见 isWorthShowing），不会
+ * 影响带明确媒体扩展名的真实资源，也不会拦截 Content-Disposition 下载。
+ */
+const API_PATH_PATTERNS: RegExp[] = [
+  /\/(?:api|ajax)(?:\/|$)/,
+  /\/graphql(?:\/|$)/,
+  /\/x\/(?:web-interface|player|v2)(?:\/|$)/,
+];
+
+/** 判断一个无扩展名 URL 是否更像页面 API，而不是用户要下载的文件。 */
+export function isLikelyApiUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (extractExtension(url)) return false;
+
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    const apiHost = hostname.startsWith("api.") || hostname.includes(".api.");
+    return apiHost || API_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 判断 URL 是否命中噪音黑名单
  */
 export function isNoiseUrl(url: string): boolean {
@@ -885,6 +914,17 @@ export function isWorthShowing(resource: DetectedResource): boolean {
 
   // 2. 噪音域名/路径
   if (isNoiseUrl(resource.url)) {
+    return false;
+  }
+
+  // 未知类型的 API 响应（例如 B 站 /x/web-interface/view）不是可下载文件。
+  // attachment 明确表达了用户要下载，必须保留；视频/音频/流等已知媒体也不
+  // 走此规则，避免误伤无扩展名的真实媒体 URL。
+  if (
+    resource.type === "other" &&
+    !resource.isAttachment &&
+    isLikelyApiUrl(resource.url)
+  ) {
     return false;
   }
 
