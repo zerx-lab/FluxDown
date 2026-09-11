@@ -17,7 +17,7 @@ import {
   looksLikeJson,
   scanForMediaUrls,
 } from "@/utils/media-sniff";
-import { parseDashJson } from "@/utils/dash-manifest";
+import { parseDashJson, parseDashXml } from "@/utils/dash-manifest";
 export default defineUnlistedScript(() => {
   // 防止重复注入
   if ((window as any).__fluxdown_interceptor__) return;
@@ -53,6 +53,22 @@ export default defineUnlistedScript(() => {
       lower === "application/mpegurl" ||
       lower === "application/octet-stream-m3u8" ||
       lower === "application/dash+xml"
+    );
+  }
+
+  /** DASH 清单通常是 application/dash+xml，也可能是流 URL + text/xml/JSON。 */
+  function isDashManifestResponse(ct: string, url: string): boolean {
+    const lower = ct.toLowerCase();
+    if (
+      lower.includes("dash+xml") ||
+      lower.startsWith("text/xml") ||
+      lower.startsWith("application/xml")
+    ) return true;
+    return (
+      isStreamingUrl(url) &&
+      !lower.startsWith("video/") &&
+      !lower.startsWith("audio/") &&
+      !lower.includes("mpegurl")
     );
   }
 
@@ -137,23 +153,37 @@ export default defineUnlistedScript(() => {
   const MAX_SNIFF_CL = 2 * 1024 * 1024; // Content-Length 门槛：>2MB 不读
   const MAX_SNIFF_READ = 512 * 1024; // 累积读上限：清单 / JSON API 均远小于此
 
+  function emitDashManifest(
+    manifest: ReturnType<typeof parseDashJson>,
+    url: string,
+  ): void {
+    if (!manifest) return;
+    document.dispatchEvent(
+      new CustomEvent(FLUXDOWN_DASH_EVENT, {
+        detail: {
+          manifest,
+          manifestUrl: url,
+          pageUrl: window.location.href,
+        },
+      }),
+    );
+  }
+
   /** JSON.parse 后的对象若命中标准 DASH 结构，派发权威轨对事件（结构驱动，无站点特判）。 */
   function tryDashManifest(obj: unknown, url: string): void {
     try {
-      const manifest = parseDashJson(obj, url);
-      if (manifest) {
-        document.dispatchEvent(
-          new CustomEvent(FLUXDOWN_DASH_EVENT, {
-            detail: {
-              manifest,
-              manifestUrl: url,
-              pageUrl: window.location.href,
-            },
-          }),
-        );
-      }
+      emitDashManifest(parseDashJson(obj, url), url);
     } catch {
       // 深扫异常绝不冒泡
+    }
+  }
+
+  /** XML MPD 响应体命中后派发权威轨道事件。 */
+  function tryDashXmlManifest(text: string, url: string): void {
+    try {
+      emitDashManifest(parseDashXml(text, url), url);
+    } catch {
+      // XML 解析异常绝不冒泡
     }
   }
 
@@ -168,6 +198,9 @@ export default defineUnlistedScript(() => {
       if (!text) return;
       const magic = sniffManifestMagic(text.slice(0, 512));
       if (magic) {
+        if (magic === "dash-manifest") {
+          tryDashXmlManifest(text, url);
+        }
         notify(type, url, magic);
         return;
       }
@@ -269,10 +302,11 @@ export default defineUnlistedScript(() => {
 
         // 响应体清单 / JSON 深扫：覆盖「通用 CT + 非 .m3u8 URL」的清单与 JSON 内嵌媒体 URL
         if (
-          !isMediaContentType(ct) &&
-          !isStreamingUrl(finalUrl) &&
-          isHttpUrl(finalUrl) &&
-          !isSkippableCt(ct) &&
+          (isDashManifestResponse(ct, finalUrl) ||
+            (!isMediaContentType(ct) &&
+              !isStreamingUrl(finalUrl) &&
+              isHttpUrl(finalUrl) &&
+              !isSkippableCt(ct))) &&
           (!cl || parseInt(cl, 10) <= MAX_SNIFF_CL)
         ) {
           readBodyAndSniff(response.clone(), finalUrl, ct).catch(() => {});
@@ -353,10 +387,11 @@ export default defineUnlistedScript(() => {
 
         // 响应体清单 / JSON 深扫（XHR）
         if (
-          !isMediaContentType(ct) &&
-          !isStreamingUrl(responseUrl) &&
-          isHttpUrl(responseUrl) &&
-          !isSkippableCt(ct)
+          isDashManifestResponse(ct, responseUrl) ||
+          (!isMediaContentType(ct) &&
+            !isStreamingUrl(responseUrl) &&
+            isHttpUrl(responseUrl) &&
+            !isSkippableCt(ct))
         ) {
           const rt = this.responseType;
           if (rt === "" || rt === "text") {

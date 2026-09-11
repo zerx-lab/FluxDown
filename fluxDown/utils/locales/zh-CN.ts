@@ -194,6 +194,10 @@ const zhCN = {
   "panel.previewLimitedHint": "浏览器预览受跨域/登录限制失败，但下载仍可能成功（引擎会带上登录态）",
   "panel.clearFailed": "清理预览失败项",
   "panel.clearFailedHint": "把预览失败的资源从列表隐藏（不影响其他资源，也不代表无法下载）",
+  "panel.exportDebugLog": "导出调试日志",
+  "panel.exportDebugLogTitle": "导出当前页面的原始嗅探资源、播放清单和聚合关系",
+  "panel.exportDebugLogDone": "嗅探调试日志已导出",
+  "panel.exportDebugLogFailed": "导出嗅探调试日志失败",
 
   // Shortcut toggle
   "shortcut.toggleTitle": "拦截切换",

@@ -208,6 +208,10 @@ const en: Record<MessageKey, string> = {
   "panel.previewLimitedHint": "Browser preview failed due to CORS/login limits, but download may still succeed (the engine sends your session)",
   "panel.clearFailed": "Clear failed previews",
   "panel.clearFailedHint": "Hide resources that failed to preview (doesn't affect others, and doesn't mean they can't be downloaded)",
+  "panel.exportDebugLog": "Export debug log",
+  "panel.exportDebugLogTitle": "Export raw sniffed resources, playlists, and aggregation links for this page",
+  "panel.exportDebugLogDone": "Sniffer debug log exported",
+  "panel.exportDebugLogFailed": "Failed to export sniffer debug log",
 
   // Shortcut toggle
   "shortcut.toggleTitle": "Intercept Toggle",

@@ -3,8 +3,9 @@
  *
  * 背景：webRequest/fetch 嗅探到的是 MSE 播放器按需请求的碎片 URL（.m4s 等），
  * 无法可靠反推「这条属于哪个清晰度 / 是视频轨还是音频轨」。真正权威的清晰度 +
- * 轨道列表来自页面本身请求的 DASH manifest（本模块只处理 JSON 形态；标准
- * `<MPD>` XML 见 TODO，暂回退到调用方的碎片分组兜底）。
+ * 轨道列表来自页面本身请求的 DASH manifest。JSON 形态与标准 `<MPD>` XML
+ * 都支持；无法还原成单个可下载 URL 的 SegmentTemplate 轨道仍会被保留为
+ * 关联线索，但不会被误当成可下载文件。
  *
  * 行业通用铁律：只识别「结构特征」，不解析任何站点私有字段名 / 不做
  * `if (url.includes("xxx"))` 式站点特判。结构特征 = 「JSON 中存在 video[]
@@ -26,6 +27,8 @@ export interface DashTrack {
   width?: number;
   height?: number;
   id?: string | number;
+  /** SegmentTemplate/SegmentList 只有轨道线索，没有单个完整文件 URL。 */
+  downloadable?: boolean;
 }
 
 /** 一份 manifest 里的全部轨道，按清晰度/码率降序排列。 */
@@ -294,4 +297,241 @@ export function parseDashJsonText(text: string, baseUrl: string): DashManifest |
     audioOnly ||= manifest;
   }
   return audioOnly;
+}
+
+// ===== 标准 MPD XML 解析 =====
+
+/** XML 解析只保留 DASH 所需的轻量节点，避免给扩展增加 DOM/XML 依赖。 */
+interface XmlNode {
+  name: string;
+  attributes: Record<string, string>;
+  children: XmlNode[];
+  text: string;
+}
+
+function xmlLocalName(name: string): string {
+  const colon = name.indexOf(":");
+  return (colon >= 0 ? name.slice(colon + 1) : name).toLowerCase();
+}
+
+function decodeXmlEntities(value: string): string {
+  return value.replace(
+    /&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi,
+    (whole, entity: string) => {
+      const lower = entity.toLowerCase();
+      if (lower === "amp") return "&";
+      if (lower === "lt") return "<";
+      if (lower === "gt") return ">";
+      if (lower === "quot") return '"';
+      if (lower === "apos") return "'";
+      const code = lower.startsWith("#x")
+        ? Number.parseInt(lower.slice(2), 16)
+        : Number.parseInt(lower.slice(1), 10);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : whole;
+    },
+  );
+}
+
+function parseXmlAttributes(source: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  const pattern = /([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  for (const match of source.matchAll(pattern)) {
+    const value = match[2] ?? match[3];
+    if (value !== undefined) {
+      attributes[xmlLocalName(match[1])] = decodeXmlEntities(value);
+    }
+  }
+  return attributes;
+}
+
+/** 有界、容错的 XML token 扫描器；解析失败返回 null，不影响页面请求。 */
+function parseXmlDocument(text: string): XmlNode | null {
+  const documentNode: XmlNode = {
+    name: "#document",
+    attributes: {},
+    children: [],
+    text: "",
+  };
+  const stack: XmlNode[] = [documentNode];
+  const tokenPattern = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![^>]*>|<[^>]*>|[^<]+/g;
+
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0];
+    if (token.startsWith("<!--") || token.startsWith("<?") || token.startsWith("<!")) {
+      if (token.startsWith("<![CDATA[")) {
+        stack[stack.length - 1].text += token.slice(9, -3);
+      }
+      continue;
+    }
+    if (!token.startsWith("<")) {
+      stack[stack.length - 1].text += token;
+      continue;
+    }
+    if (token.startsWith("</")) {
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+
+    const selfClosing = /\/\s*>$/.test(token);
+    const inner = token.slice(1, selfClosing ? -2 : -1).trim();
+    const nameMatch = /^([A-Za-z_:][\w:.-]*)/.exec(inner);
+    if (!nameMatch) continue;
+    const node: XmlNode = {
+      name: xmlLocalName(nameMatch[1]),
+      attributes: parseXmlAttributes(inner.slice(nameMatch[0].length)),
+      children: [],
+      text: "",
+    };
+    stack[stack.length - 1].children.push(node);
+    if (!selfClosing) stack.push(node);
+  }
+
+  return documentNode.children.find((node) => node.name === "mpd") || null;
+}
+
+function directChild(node: XmlNode, name: string): XmlNode | undefined {
+  return node.children.find((child) => child.name === name);
+}
+
+function directText(node: XmlNode, name: string): string | undefined {
+  const child = directChild(node, name);
+  const value = child?.text.trim();
+  return value ? decodeXmlEntities(value) : undefined;
+}
+
+function resolveXmlBase(node: XmlNode, inherited: string): string {
+  const raw = directText(node, "baseurl");
+  if (!raw) return inherited;
+  try {
+    return new URL(raw, inherited).href;
+  } catch {
+    return inherited;
+  }
+}
+
+function childSegmentTemplate(node: XmlNode): XmlNode | undefined {
+  return directChild(node, "segmenttemplate") || directChild(node, "segmentlist");
+}
+
+function templateTrackUrl(template: XmlNode, baseUrl: string): string | null {
+  const segmentUrl = directChild(template, "segmenturl");
+  const raw = template.attributes.media || segmentUrl?.attributes.media;
+  if (!raw) return null;
+  // 仅用于轨道/分片关联的稳定线索，绝不把未展开的 $Number$ 当真实 URL 下载。
+  const placeholder = raw.replace(/\$[^$]*\$/g, "__fluxdown_segment__");
+  try {
+    return new URL(placeholder, baseUrl).href;
+  } catch {
+    return null;
+  }
+}
+
+function finiteNumber(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function isXmlVideo(
+  mimeType: string | undefined,
+  codecs: string | undefined,
+  node: XmlNode,
+): boolean {
+  if (mimeType?.toLowerCase().startsWith("video/")) return true;
+  if (codecs && isVideoCodec(codecs)) return true;
+  return node.attributes.height !== undefined || node.attributes.width !== undefined;
+}
+
+function isXmlAudio(
+  mimeType: string | undefined,
+  codecs: string | undefined,
+): boolean {
+  if (mimeType?.toLowerCase().startsWith("audio/")) return true;
+  return !!codecs && isAudioCodec(codecs) && !isVideoCodec(codecs);
+}
+
+function sortXmlTracks(video: DashTrack[], audio: DashTrack[]): DashManifest | null {
+  if (video.length === 0 && audio.length === 0) return null;
+  return {
+    video: video.sort((a, b) => rankVideo(b) - rankVideo(a)),
+    audio: audio.sort((a, b) => (b.bandwidth ?? 0) - (a.bandwidth ?? 0)),
+  };
+}
+
+/**
+ * 解析标准 MPEG-DASH MPD XML。
+ *
+ * 直接 Representation/BaseURL 可作为下载轨道；使用 SegmentTemplate 或
+ * SegmentList 的轨道只标记 `downloadable:false`，用于把实际 m4s 分片归入
+ * 正确清单，避免生成大量“未找到播放清单”假阳性卡片。
+ */
+export function parseDashXml(text: string, baseUrl: string): DashManifest | null {
+  if (!text || text.length > MAX_TEXT_SCAN_LENGTH) return null;
+  try {
+    const root = parseXmlDocument(text);
+    if (!root) return null;
+
+    const video: DashTrack[] = [];
+    const audio: DashTrack[] = [];
+
+    const visit = (
+      node: XmlNode,
+      inheritedBase: string,
+      inheritedTemplate?: XmlNode,
+    ): void => {
+      const nodeBase = resolveXmlBase(node, inheritedBase);
+      const ownTemplate = childSegmentTemplate(node) || inheritedTemplate;
+
+      if (node.name === "adaptationset") {
+        const adaptationMime = node.attributes.mimetype ||
+          (node.attributes.contenttype === "video" ? "video/mp4" :
+            node.attributes.contenttype === "audio" ? "audio/mp4" : undefined);
+        const adaptationCodecs = node.attributes.codecs;
+        for (const representation of node.children.filter(
+          (child) => child.name === "representation",
+        )) {
+          const representationBase = resolveXmlBase(representation, nodeBase);
+          const mimeType = representation.attributes.mimetype || adaptationMime;
+          const codecs = representation.attributes.codecs || adaptationCodecs;
+          const template = childSegmentTemplate(representation) || ownTemplate;
+          const templateUrl = template ? templateTrackUrl(template, representationBase) : null;
+          const hasTemplate = !!template;
+          const rawUrl = hasTemplate ? templateUrl : representationBase;
+          if (!rawUrl || rawUrl.endsWith("/")) continue;
+
+          const track: DashTrack = {
+            url: rawUrl,
+            mimeType,
+            codecs,
+            bandwidth: finiteNumber(representation.attributes.bandwidth),
+            width: finiteNumber(representation.attributes.width),
+            height: finiteNumber(representation.attributes.height),
+            id: representation.attributes.id,
+            downloadable: !hasTemplate,
+          };
+          if (isXmlVideo(mimeType, codecs, representation)) video.push(track);
+          else if (isXmlAudio(mimeType, codecs)) audio.push(track);
+        }
+      }
+
+      for (const child of node.children) {
+        if (node.name === "adaptationset" && child.name === "representation") continue;
+        visit(child, nodeBase, ownTemplate);
+      }
+    };
+
+    visit(root, baseUrl);
+    return sortXmlTracks(video, audio);
+  } catch {
+    return null;
+  }
+}
+
+/** 统一入口：按响应前缀选择 XML MPD 或 JSON DASH。 */
+export function parseDashManifestText(text: string, baseUrl: string): DashManifest | null {
+  const head = text.trimStart().slice(0, 300).toUpperCase();
+  if (head.includes("<MPD")) return parseDashXml(text, baseUrl);
+  return parseDashJsonText(text, baseUrl);
 }

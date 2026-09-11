@@ -61,10 +61,13 @@ import {
 import type { ResourceMessagePayload } from "@/utils/resource-types";
 import type { DashManifest } from "@/utils/dash-manifest";
 import {
+  buildMediaCandidates,
+  countMediaCandidateRows,
+} from "@/utils/media-candidates";
+import {
   addResources,
   addSniffedResource,
   getResourcesForTab,
-  getResourceCountForTab,
   clearResourcesForTab,
   updateBadgeForTab,
   initTabLifecycleListeners,
@@ -217,10 +220,43 @@ export default defineBackground(() => {
   initTabLifecycleListeners();
 
   // ===== DASH manifest tab 级存储（权威清晰度 + 轨道 URL，仿 resource-store）=====
-  // 同一页面可能同时存在多个播放器/播放会话，按 manifest URL 保留一个有界集合，
-  // 由 UI 再投影为多个视频候选；不再用「最新一份」覆盖之前的视频。
+  // 同一页面可能同时存在多个播放器/播放会话，按规范化后的 manifest URL 保留
+  // 一个有界集合，由 UI 再投影为多个视频候选。
   const tabDashManifests = new Map<number, Map<string, DashManifest>>();
   const MAX_DASH_MANIFESTS_PER_TAB = 8;
+
+  /**
+   * 计算资源面板实际展示的行数：媒体按候选/清晰度聚合，已被候选代表的
+   * 原始视频、音频和分片不重复计数；非媒体资源各占一行。
+   */
+  function displayedResourceCount(tabId: number): number {
+    const resources = getResourcesForTab(tabId);
+    const stored = tabDashManifests.get(tabId);
+    const manifests = stored
+      ? Array.from(stored.entries()).map(([url, manifest]) => ({ url, manifest }))
+      : [];
+    const candidates = buildMediaCandidates(resources, {
+      fallbackTitle: "Video",
+      videoLabel: "Video",
+      pageUrl: resources.find((resource) => resource.pageUrl)?.pageUrl,
+      manifests,
+    });
+    const representedIds = new Set(
+      candidates.flatMap((candidate) => candidate.rawResourceIds),
+    );
+    const rawCount = resources.filter(
+      (resource) =>
+        resource.type !== "video" &&
+        resource.type !== "stream" &&
+        !representedIds.has(resource.id),
+    ).length;
+    return countMediaCandidateRows(candidates) + rawCount;
+  }
+
+  function updateDisplayedBadgeForTab(tabId: number): Promise<void> {
+    return updateBadgeForTab(tabId, displayedResourceCount(tabId));
+  }
+
   browser.tabs.onRemoved.addListener((tabId) => {
     tabDashManifests.delete(tabId);
   });
@@ -716,7 +752,7 @@ export default defineBackground(() => {
             mainHeaders,
           );
           if (added > 0) {
-            updateBadgeForTab(details.tabId);
+            updateDisplayedBadgeForTab(details.tabId);
             notifyContentScript(details.tabId);
           }
         }
@@ -809,7 +845,7 @@ export default defineBackground(() => {
 
         if (added > 0) {
           // 更新 Badge
-          updateBadgeForTab(details.tabId);
+          updateDisplayedBadgeForTab(details.tabId);
           // 推送给 Content Script UI
           notifyContentScript(details.tabId);
         }
@@ -2868,7 +2904,7 @@ export default defineBackground(() => {
 
         const added = addResources(tabId, pageUrl, payloads);
         if (added > 0) {
-          await updateBadgeForTab(tabId);
+          await updateDisplayedBadgeForTab(tabId);
           await notifyContentScript(tabId);
         }
         return { success: true, added };
@@ -2888,8 +2924,8 @@ export default defineBackground(() => {
         }
         const manifestUrl =
           typeof message.manifestUrl === "string" && message.manifestUrl
-            ? message.manifestUrl
-            : `__legacy__${Date.now()}`;
+            ? normalizeUrlForDedup(message.manifestUrl)
+            : "__legacy__";
         let stored = tabDashManifests.get(tabId);
         if (!stored) {
           stored = new Map();
@@ -2902,6 +2938,7 @@ export default defineBackground(() => {
           if (typeof oldest !== "string") break;
           stored.delete(oldest);
         }
+        await updateDisplayedBadgeForTab(tabId);
         await notifyDashManifest(tabId);
         return { success: true };
       }

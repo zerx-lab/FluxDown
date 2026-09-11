@@ -22,6 +22,10 @@ import {
   candidateFilename,
   defaultCandidateVariant,
 } from '@/utils/media-candidates';
+import {
+  buildResourceDebugLog,
+  stringifyResourceDebugLog,
+} from '@/utils/resource-debug-log';
 import type { MessageKey } from '@/utils/locales/zh-CN';
 import { initI18n, setLocale, t } from '@/utils/i18n';
 import { loadSettings } from '@/utils/settings';
@@ -92,6 +96,11 @@ export default defineContentScript({
       item: DetectedResource | MediaCandidate;
       variant?: MediaCandidateVariant;
     }
+    function isContentMediaCandidate(
+      item: DetectedResource | MediaCandidate,
+    ): item is MediaCandidate {
+      return 'downloadable' in item;
+    }
     function contentResourceRowId(
       item: DetectedResource | MediaCandidate,
       variant?: MediaCandidateVariant,
@@ -120,6 +129,7 @@ export default defineContentScript({
     let batchCountEl: HTMLElement;
     let batchBtnEl: HTMLButtonElement;
     let clearFailedBtnEl: HTMLButtonElement;
+    let exportDebugBtnEl: HTMLButtonElement;
     let selectAllText: Text;
     let floatBtnEl: HTMLElement;
     let qualityPickerEl: HTMLElement;
@@ -131,6 +141,47 @@ export default defineContentScript({
     let dashManifests: DashManifestEntry[] = [];
     /** shadow 内根容器，主题以 data-theme 属性挂在其上，供 CSS light/dark 变量切换。 */
     let rootContainer: HTMLElement | null = null;
+
+    function resourceDebugFilename(): string {
+      const stamp = new Date().toISOString().replace(/[.:]/g, '-');
+      return `fluxdown-resource-debug-${stamp}.json`;
+    }
+
+    /** 从页面内资源面板直接导出当前嗅探/聚合快照。 */
+    function exportResourceDebugLog(): void {
+      const log = buildResourceDebugLog({
+        resources,
+        manifests: dashManifests,
+        candidates: buildMediaCandidates(resources, {
+          pageTitle: document.title,
+          pageUrl: location.href,
+          fallbackTitle: t('panel.videoCandidate'),
+          videoLabel: t('panel.videoIndex'),
+          manifests: dashManifests,
+        }),
+        tabId: undefined,
+        pageUrl: location.href,
+        pageTitle: document.title,
+        source: 'content',
+      });
+      const blobUrl = URL.createObjectURL(
+        new Blob([stringifyResourceDebugLog(log)], { type: 'application/json' }),
+      );
+      try {
+        const anchor = document.createElement('a');
+        anchor.href = blobUrl;
+        anchor.download = resourceDebugFilename();
+        anchor.click();
+        exportDebugBtnEl.textContent = t('panel.exportDebugLogDone');
+      } catch {
+        exportDebugBtnEl.textContent = t('panel.exportDebugLogFailed');
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+        window.setTimeout(() => {
+          exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+        }, 2_000);
+      }
+    }
 
     /* ========== Shadow UI ========== */
     const ui = await createShadowRootUi(ctx, {
@@ -459,8 +510,7 @@ export default defineContentScript({
         browser.runtime.sendMessage({
           action: 'batchDownload',
           items,
-        }).catch(() => {});
-
+        });
         selectedIds.clear();
         renderList();
         updateBatch();
@@ -478,9 +528,19 @@ export default defineContentScript({
         render();
       });
 
+      exportDebugBtnEl = document.createElement('button');
+      exportDebugBtnEl.className = 'export-debug-btn';
+      exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+      exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
+      exportDebugBtnEl.addEventListener('click', exportResourceDebugLog);
+
+      const actions = h('div', 'panel-footer-actions');
+      actions.appendChild(clearFailedBtnEl);
+      actions.appendChild(exportDebugBtnEl);
+      actions.appendChild(batchBtnEl);
+
       footer.appendChild(label);
-      footer.appendChild(clearFailedBtnEl);
-      footer.appendChild(batchBtnEl);
+      footer.appendChild(actions);
 
       panelEl.appendChild(header);
       panelEl.appendChild(tabsEl);
@@ -523,7 +583,7 @@ export default defineContentScript({
               fragmentCount: 0,
               downloadable: true,
             };
-            browser.runtime.sendMessage({
+            void browser.runtime.sendMessage({
               action: 'downloadResource',
               url: src,
               referrer: location.href,
@@ -532,7 +592,7 @@ export default defineContentScript({
                 label: 'original',
                 videoUrl: src,
               }),
-            }).catch(() => {});
+            });
           }
           hideFloat();
           return;
@@ -831,8 +891,6 @@ export default defineContentScript({
         filename: candidateFilename(candidate, variant),
         fileSize: variant.fileSize,
         mimeType: variant.mimeType,
-      }).then((response: { success?: boolean } | undefined) => {
-        if (!response?.success && button) button.disabled = false;
       }).catch(() => {
         if (button) button.disabled = false;
       });
@@ -842,7 +900,10 @@ export default defineContentScript({
       candidate: MediaCandidate,
       variant?: MediaCandidateVariant,
     ): HTMLElement {
-      const row = h('div', `resource-row media-candidate-row${candidate.downloadable ? '' : ' unresolved'}`);
+      const row = h(
+        'div',
+        `resource-row media-candidate-row${candidate.downloadable ? '' : ' unresolved'}`,
+      );
       const rowId = contentResourceRowId(candidate, variant);
       const source = variant
         ? `<span class="candidate-source">${esc(candidateSourceLabel(candidate.source))}</span>`
@@ -889,7 +950,10 @@ export default defineContentScript({
 
     function buildResourceRow(r: DetectedResource): HTMLElement {
       const failed = previewFailedIds.has(r.id);
-      const row = h('div', `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}`);
+      const row = h(
+        'div',
+        `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}`,
+      );
       const sizeStr = r.size > 0 ? formatFileSize(r.size) : '';
       const quality = r.quality ? `<span class="quality-tag">${r.quality}</span>` : '';
       const track = trackKindLabel(r);
@@ -935,8 +999,6 @@ export default defineContentScript({
           filename: name,
           fileSize: r.size > 0 ? r.size : undefined,
           mimeType: r.mimeType,
-        }).then((response: { success?: boolean } | undefined) => {
-          if (!response?.success) dl.disabled = false;
         }).catch(() => {
           dl.disabled = false;
         });
@@ -980,8 +1042,22 @@ export default defineContentScript({
         videoLabel: t('panel.videoIndex'),
         manifests: dashManifests,
       });
-      if (tab === 'all') return candidates;
-      return candidates.filter((candidate) => candidate.type === tab);
+      return candidates.filter(
+        (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
+      );
+    }
+
+    /** DASH 候选已经代表的原始轨道不再作为独立音频/视频资源重复展示。 */
+    function aggregatedMediaResourceIds(): Set<string> {
+      return new Set(
+        buildMediaCandidates(resources, {
+          pageTitle: document.title,
+          pageUrl: location.href,
+          fallbackTitle: t('panel.videoCandidate'),
+          videoLabel: t('panel.videoIndex'),
+          manifests: dashManifests,
+        }).flatMap((candidate) => candidate.rawResourceIds),
+      );
     }
 
     function rawResourcesForTab(tab: string): DetectedResource[] {
@@ -990,9 +1066,13 @@ export default defineContentScript({
         : resources
           .filter((resource) => resource.type === tab)
           .filter((resource) => !isMediaResource(resource));
+      const aggregatedIds = aggregatedMediaResourceIds();
       return dismissedIds.size > 0
-        ? base.filter((resource) => !dismissedIds.has(resource.id))
-        : base;
+        ? base.filter(
+          (resource) =>
+            !dismissedIds.has(resource.id) && !aggregatedIds.has(resource.id),
+        )
+        : base.filter((resource) => !aggregatedIds.has(resource.id));
     }
 
     function displayItemsForTab(tab: string): Array<DetectedResource | MediaCandidate> {
@@ -1201,7 +1281,7 @@ export default defineContentScript({
 
     /** 发送单条轨道（或音视频轨对）下载请求给 background。 */
     function downloadQualityOption(option: QualityOption): void {
-      browser.runtime.sendMessage({
+      void browser.runtime.sendMessage({
         action: 'downloadResource',
         url: option.videoUrl,
         audioUrl: option.audioUrl,

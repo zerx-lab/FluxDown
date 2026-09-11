@@ -18,7 +18,7 @@ import type {
   FetchInterceptDetail,
   ResourceType,
 } from "@/utils/resource-types";
-import { parseDashJsonText } from "@/utils/dash-manifest";
+import { parseDashManifestText } from "@/utils/dash-manifest";
 import type { DashManifest } from "@/utils/dash-manifest";
 import { classifyByExtension, classifyByMime } from "@/utils/resource-types";
 
@@ -73,7 +73,7 @@ export default defineContentScript({
       for (const script of Array.from(document.scripts)) {
         const text = script.textContent || "";
         if (!text) continue;
-        const manifest = parseDashJsonText(text, location.href);
+        const manifest = parseDashManifestText(text, location.href);
         if (!manifest || manifest.video.length === 0) continue;
 
         const signature = [

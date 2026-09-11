@@ -38,6 +38,10 @@ import {
   candidateFilename,
 } from '@/utils/media-candidates';
 import {
+  buildResourceDebugLog,
+  stringifyResourceDebugLog,
+} from '@/utils/resource-debug-log';
+import {
   fileIconKind,
   fileIconSvg,
   ICON_CHECK_CIRCLE,
@@ -98,6 +102,7 @@ const resourceBadge = $('#resourceBadge')!;
 
 // 资源面板
 const resTypeTabsEl = $('#resTypeTabs')!;
+const resExportDebugBtn = $<HTMLButtonElement>('#resExportDebugBtn');
 const resEmptyEl = $('#resEmpty')!;
 const resListEl = $('#resList')!;
 const resFooterEl = $('#resFooter')!;
@@ -844,19 +849,72 @@ function popupMediaCandidates(): MediaCandidate[] {
   });
 }
 
+function resourceDebugFilename(): string {
+  const stamp = new Date().toISOString().replace(/[.:]/g, '-');
+  return `fluxdown-resource-debug-${stamp}.json`;
+}
+
+/** 导出当前活动页面的原始资源、清单解析结果和候选聚合关系。 */
+async function exportResourceDebugLog(): Promise<void> {
+  resExportDebugBtn.disabled = true;
+  const filename = resourceDebugFilename();
+  const log = buildResourceDebugLog({
+    resources,
+    manifests: dashManifests,
+    candidates: popupMediaCandidates(),
+    tabId: resourceTabId,
+    pageUrl: resourcePageUrl,
+    pageTitle: resourcePageTitle,
+    source: 'popup',
+  });
+  const blobUrl = URL.createObjectURL(
+    new Blob([stringifyResourceDebugLog(log)], { type: 'application/json' }),
+  );
+  try {
+    await browser.downloads.download({ url: blobUrl, filename, saveAs: true });
+    showToast(t('panel.exportDebugLogDone'));
+  } catch {
+    // Some Firefox versions reject blob: URLs through downloads.download;
+    // the anchor path still downloads the same data without exposing secrets.
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      anchor.click();
+      showToast(t('panel.exportDebugLogDone'));
+    } catch {
+      showToast(t('panel.exportDebugLogFailed'), 'error');
+    }
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+    resExportDebugBtn.disabled = false;
+  }
+}
+
+/** DASH 候选已经代表的原始轨道不再作为独立音频/视频资源重复展示。 */
+function popupAggregatedResourceIds(): Set<string> {
+  return new Set(
+    popupMediaCandidates().flatMap((candidate) => candidate.rawResourceIds),
+  );
+}
+
 function displayResourceItems(tab: ResourceType | 'all'): Array<DetectedResource | MediaCandidate> {
   const candidates = popupMediaCandidates().filter(
-    (candidate) => tab === 'all' || candidate.type === tab,
+    (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
   );
-  const raw = tab === 'all'
-    ? resources.filter((resource) => resource.type !== 'video' && resource.type !== 'stream')
-    : filteredResourcesFor(tab);
+  const raw = filteredResourcesFor(tab);
   return [...candidates, ...raw];
 }
 
 function filteredResourcesFor(tab: ResourceType | 'all'): DetectedResource[] {
   const base = tab === 'all' ? resources : resources.filter((r) => r.type === tab);
-  return base.filter((resource) => resource.type !== 'video' && resource.type !== 'stream');
+  const aggregatedIds = popupAggregatedResourceIds();
+  return base.filter(
+    (resource) =>
+      resource.type !== 'video' &&
+      resource.type !== 'stream' &&
+      !aggregatedIds.has(resource.id),
+  );
 }
 
 function resourceRowsFor(tab: ResourceType | 'all'): PopupResourceRow[] {
@@ -1316,6 +1374,10 @@ resBatchBtn.addEventListener('click', async () => {
     showToast(t('popup.quickDownload.failed'), 'error');
     resBatchBtn.disabled = false;
   }
+});
+
+resExportDebugBtn.addEventListener('click', () => {
+  void exportResourceDebugLog();
 });
 
 // ===== 排除当前站点 =====

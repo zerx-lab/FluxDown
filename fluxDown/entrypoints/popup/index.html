@@ -53,7 +53,13 @@
     <!-- ===== Pane: Resources (sniffed on active tab) ===== -->
     <div class="tab-pane hidden" id="paneResources">
       <section class="section resource-section">
-        <div class="res-tabs" id="resTypeTabs"></div>
+        <div class="res-toolbar">
+          <div class="res-tabs" id="resTypeTabs"></div>
+          <button class="res-debug-btn" id="resExportDebugBtn" type="button"
+            data-i18n="panel.exportDebugLog" data-i18n-title="panel.exportDebugLogTitle">
+            Export log
+          </button>
+        </div>
         <div class="res-scroll" id="resScroll">
           <div class="task-state hidden" id="resEmpty">
             <div class="task-state-icon">
