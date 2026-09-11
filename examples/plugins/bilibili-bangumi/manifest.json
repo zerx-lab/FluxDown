@@ -1,0 +1,99 @@
+{
+  "identity": "fluxdown@bilibili-bangumi",
+  "name": "Bilibili 番剧分集下载",
+  "version": "0.1.0",
+  "description": "独立的 B 站番剧插件：从番剧链接读取正片分集清单，按集解析真实视频流并交回 FluxDown 下载。",
+  "homepage": "https://fluxdown.zerx.dev",
+  "minAppVersion": "0.1.44",
+  "resolvers": [
+    {
+      "match": {
+        "urls": [
+          "*://www.bilibili.com/bangumi/play/ss*",
+          "*://bilibili.com/bangumi/play/ss*",
+          "*://m.bilibili.com/bangumi/play/ss*",
+          "*://www.bilibili.com/bangumi/media/md*",
+          "*://bilibili.com/bangumi/media/md*",
+          "*://m.bilibili.com/bangumi/media/md*"
+        ]
+      },
+      "entry": "resolve.js",
+      "timeoutMs": 45000,
+      "multi": true
+    }
+  ],
+  "hooks": {
+    "entry": "hooks.js",
+    "events": ["onStart", "onError", "onDone"],
+    "match": {
+      "urls": [
+        "*://*.bilibili.com/*",
+        "*://*.bilivideo.com/*",
+        "*://*.bilivideo.cn/*"
+      ]
+    }
+  },
+  "settings": [
+    {
+      "key": "cookies",
+      "title": "导入 Bilibili Cookie",
+      "description": "解析时使用的登录态。支持浏览器 Cookie 头或 Netscape cookies.txt；保存后插件会在后续解析中复用。",
+      "type": "string",
+      "widget": "textarea",
+      "default": ""
+    },
+    {
+      "key": "reuseStoredSession",
+      "title": "复用已保存登录态",
+      "description": "优先使用插件保存的会话；关闭后每次仅使用上方 Cookie 设置。",
+      "type": "boolean",
+      "widget": "toggle",
+      "default": "true"
+    },
+    {
+      "key": "includeExtras",
+      "title": "包含番外与花絮",
+      "description": "关闭时只列出正片；开启后同时列出 PV、采访和其他分区。",
+      "type": "boolean",
+      "widget": "toggle",
+      "default": "false"
+    },
+    {
+      "key": "quality",
+      "title": "默认画质",
+      "description": "无人值守或选择框超时时使用的画质；手动下载仍可在变体列表中选择。",
+      "type": "string",
+      "widget": "select",
+      "options": [
+        { "value": "best", "label": "最佳画质" },
+        { "value": "2160", "label": "不超过 2160p" },
+        { "value": "1440", "label": "不超过 1440p" },
+        { "value": "1080", "label": "不超过 1080p" },
+        { "value": "720", "label": "不超过 720p" },
+        { "value": "480", "label": "不超过 480p" },
+        { "value": "audio", "label": "仅音频" }
+      ],
+      "default": "best"
+    },
+    {
+      "key": "retryCount",
+      "title": "下载失败重试次数",
+      "description": "每个下载任务失败后自动重试的次数；默认 5 次。实际次数仍受宿主已有自动重试上限约束。",
+      "type": "number",
+      "widget": "number",
+      "min": 0,
+      "max": 5,
+      "default": "5"
+    },
+    {
+      "key": "retryDelaySeconds",
+      "title": "重试间隔（秒）",
+      "description": "下载失败后等待多久再重试；默认 2 秒。",
+      "type": "number",
+      "widget": "number",
+      "min": 1,
+      "max": 60,
+      "default": "2"
+    }
+  ]
+}
