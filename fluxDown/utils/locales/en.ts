@@ -29,6 +29,8 @@ const en: Record<MessageKey, string> = {
   "settings.modeAll": "Intercept All",
   "settings.hintSmart": "Smart detection based on filename, type, and size",
   "settings.hintAll": "Intercept all downloads (except excluded domains)",
+  "settings.localDownloadHint":
+    "Locally generated blob:/data: files are not supported and use the browser download",
   "settings.minFileSize": "Min File Size",
   "settings.sizeNoLimit": "No limit",
   "settings.interceptMagnet": "Take Over Magnet Links",

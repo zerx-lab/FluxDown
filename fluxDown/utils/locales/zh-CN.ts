@@ -27,6 +27,8 @@ const zhCN = {
   "settings.modeAll": "拦截所有",
   "settings.hintSmart": "综合文件名、类型、大小智能判断",
   "settings.hintAll": "拦截所有下载（除排除域名外）",
+  "settings.localDownloadHint":
+    "网页本地生成的 blob:/data: 文件不支持接管，将由浏览器下载",
   "settings.minFileSize": "最小文件大小",
   "settings.sizeNoLimit": "不限",
   "settings.interceptMagnet": "接管磁力链接",
