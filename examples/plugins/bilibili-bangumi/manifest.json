@@ -22,17 +22,6 @@
       "multi": true
     }
   ],
-  "hooks": {
-    "entry": "hooks.js",
-    "events": ["onStart", "onError", "onDone"],
-    "match": {
-      "urls": [
-        "*://*.bilibili.com/*",
-        "*://*.bilivideo.com/*",
-        "*://*.bilivideo.cn/*"
-      ]
-    }
-  },
   "settings": [
     {
       "key": "cookies",
@@ -74,26 +63,6 @@
         { "value": "audio", "label": "仅音频" }
       ],
       "default": "best"
-    },
-    {
-      "key": "retryCount",
-      "title": "下载失败重试次数",
-      "description": "每个下载任务失败后自动重试的次数；默认 5 次。实际次数仍受宿主已有自动重试上限约束。",
-      "type": "number",
-      "widget": "number",
-      "min": 0,
-      "max": 5,
-      "default": "5"
-    },
-    {
-      "key": "retryDelaySeconds",
-      "title": "重试间隔（秒）",
-      "description": "下载失败后等待多久再重试；默认 2 秒。",
-      "type": "number",
-      "widget": "number",
-      "min": 1,
-      "max": 60,
-      "default": "2"
     }
   ]
 }

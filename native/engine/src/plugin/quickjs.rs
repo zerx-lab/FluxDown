@@ -119,10 +119,9 @@ impl QuickJsScriptRuntime {
 
     /// 执行一段脚本并调用入口函数，返回 JS 侧字符串结果（resolve 用；hook 返回空串）。
     ///
-    /// `entry` = 入口全局函数名；`arg_json` = 传给入口的参数 JSON；`retry_task_id`
-    /// = Some(task_id) 时 `flux.task.requestRetry` 生效（onError 专用）；
+    /// `entry` = 入口全局函数名；`arg_json` = 传给入口的参数 JSON；
     /// `artifact_task_id` = Some(task_id) 时 `flux.task.recordArtifact` 生效
-    /// （onDone 专用）；均为 None 时对应门面调用被 warn 忽略/拒绝。
+    /// （onDone 专用）。
     #[allow(clippy::too_many_arguments)]
     async fn run_script(
         &self,
@@ -132,7 +131,6 @@ impl QuickJsScriptRuntime {
         arg_json: String,
         settings_json: String,
         info_json: String,
-        retry_task_id: Option<String>,
         artifact_task_id: Option<String>,
         bridge: Arc<dyn PluginBridge>,
         plugin_id: String,
@@ -169,7 +167,6 @@ impl QuickJsScriptRuntime {
                 &ctx,
                 &bridge,
                 &plugin_id,
-                retry_task_id,
                 artifact_task_id,
                 ffmpeg_permitted,
                 ffmpeg_root,
@@ -282,7 +279,6 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 settings_json,
                 info_json,
                 None,
-                None,
                 bridge,
                 plugin.identity.clone(),
                 budget,
@@ -319,10 +315,6 @@ impl ScriptRuntime for QuickJsScriptRuntime {
             Err(_) => return,
         };
         let entry = event.hook_fn_name();
-        let retry_task_id = match &event {
-            PluginEvent::Error { task_id, .. } => Some(task_id.clone()),
-            _ => None,
-        };
         // onDone 专用：flux.task.recordArtifact 登记衍生产物。
         let artifact_task_id = match &event {
             PluginEvent::Done { task_id, .. } => Some(task_id.clone()),
@@ -340,7 +332,6 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 arg_json,
                 settings_json,
                 info_json,
-                retry_task_id,
                 artifact_task_id,
                 bridge,
                 identity.clone(),
@@ -420,7 +411,7 @@ fn build_entry_wrapper(entry: &str, is_resolve: bool) -> String {
     }
 }
 
-/// 注入低层 `__flux_*` 桥接函数（异步 fetch/storage、同步 log/requestRetry；
+/// 注入低层 `__flux_*` 桥接函数（异步 fetch/storage、同步 log；
 /// 授权时另注入异步 `__flux_ffmpeg_*`）。`interrupt_ns` 供 ffmpeg 调用把子进程
 /// 挂起时长补进中断预算。
 #[allow(clippy::too_many_arguments)]
@@ -428,7 +419,6 @@ fn inject_bridge(
     ctx: &Ctx<'_>,
     bridge: &Arc<dyn PluginBridge>,
     plugin_id: &str,
-    retry_task_id: Option<String>,
     artifact_task_id: Option<String>,
     ffmpeg_permitted: bool,
     ffmpeg_root: Option<PathBuf>,
@@ -613,25 +603,6 @@ fn inject_bridge(
         })?
         .with_name("__flux_log")?;
         globals.set("__flux_log", f)?;
-    }
-
-    // __flux_request_retry(delayStr) -> ()（同步；仅 onError 生效）
-    {
-        let b = bridge.clone();
-        let pid = plugin_id.to_string();
-        let f = Function::new(ctx.clone(), move |delay: String| {
-            let delay_ms = delay.parse::<u64>().unwrap_or(0);
-            match &retry_task_id {
-                Some(tid) => b.request_retry(tid, delay_ms),
-                None => b.log(
-                    &pid,
-                    PluginLogLevel::Warn,
-                    "flux.task.requestRetry 仅 onError 钩子可用，已忽略",
-                ),
-            }
-        })?
-        .with_name("__flux_request_retry")?;
-        globals.set("__flux_request_retry", f)?;
     }
 
     // __flux_record_artifact(name) -> Promise<String("" 或错误消息)>（仅 onDone 生效）
@@ -888,7 +859,6 @@ const FLUX_PRELUDE: &str = r#"
       error: (...a) => __flux_log('error', __args2str(a)),
     },
     task: {
-      requestRetry: (opts) => __flux_request_retry(String((opts && opts.delayMs) || 0)),
       recordArtifact: (name) => __flux_record_artifact(String(name)).then((s) => {
         if (s) throw new Error(s);
       }),

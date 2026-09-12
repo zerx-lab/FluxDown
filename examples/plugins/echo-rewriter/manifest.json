@@ -2,7 +2,7 @@
   "identity": "fluxdown@echo-rewriter",
   "name": "Echo Rewriter (示例)",
   "version": "1.0.0",
-  "description": "FluxDown 插件系统示例：演示 resolver 惰性解析、通知钩子、7 种设置控件与 flux.* 桥接 API。classic-script + globalThis 入口范式。",
+  "description": "FluxDown 插件系统示例：演示 resolver 惰性解析、通知钩子、6 种设置控件与 flux.* 桥接 API。classic-script + globalThis 入口范式。",
   "homepage": "https://fluxdown.zerx.dev",
   "minAppVersion": "0.1.60",
   "resolvers": [
@@ -14,7 +14,7 @@
   ],
   "hooks": {
     "entry": "hooks.js",
-    "events": ["onStart", "onError", "onDone"],
+    "events": ["onStart", "onDone"],
     "match": { "urls": ["*"] }
   },
   "settings": [
@@ -23,7 +23,6 @@
     { "key": "note", "title": "备注", "type": "string", "widget": "textarea", "default": "" },
     { "key": "quality", "title": "画质偏好", "type": "string", "widget": "select", "options": [{ "value": "best", "label": "最佳" }, { "value": "1080p", "label": "1080p" }, { "value": "720p", "label": "720p" }], "default": "best" },
     { "key": "verbose", "title": "详细日志", "type": "boolean", "widget": "toggle", "default": "false" },
-    { "key": "retries", "title": "重试次数", "type": "number", "widget": "number", "min": 0, "max": 10, "default": "3" },
     { "key": "saveDir", "title": "自定义保存目录", "type": "string", "widget": "folder", "default": "" }
   ]
 }
