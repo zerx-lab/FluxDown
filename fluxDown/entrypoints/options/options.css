@@ -125,6 +125,21 @@ body {
   color: var(--text-secondary);
 }
 
+.opt-row-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  color: #3b82f6;
+  white-space: nowrap;
+}
+
+.opt-row-note-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
 .opt-row-control {
   flex: 1 1 320px;
   max-width: 380px;
