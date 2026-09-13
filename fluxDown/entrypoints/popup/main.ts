@@ -36,6 +36,9 @@ import type {
 import {
   buildMediaCandidates,
   candidateFilename,
+  friendlyQualityKey,
+  isHighFrameRate,
+  qualityResolutionLabel,
 } from '@/utils/media-candidates';
 import {
   buildResourceDebugLog,
@@ -1130,28 +1133,14 @@ function closePreview(): void {
   }
 }
 
-function popupCandidateSourceLabel(source: MediaCandidate['source']): string {
-  if (source === 'hls') return 'HLS';
-  if (source === 'dash') return 'DASH';
-  if (source === 'fragments') return t('panel.videoSourceFragments');
-  return t('panel.videoSourceDirect');
-}
-
 function popupCandidateVariantLabel(variant: MediaCandidateVariant): string {
   if (variant.label === 'auto') return t('panel.autoQuality');
   if (variant.label === 'original') return t('panel.originalQuality');
-  const codec = variant.codec?.startsWith('avc')
-    ? 'H.264'
-    : variant.codec?.startsWith('hvc') || variant.codec?.startsWith('hev')
-      ? 'H.265'
-      : variant.codec?.startsWith('av01')
-        ? 'AV1'
-        : variant.codec?.startsWith('vp09') || variant.codec?.startsWith('vp9')
-          ? 'VP9'
-          : variant.codec;
-  const details = [codec, variant.bandwidth ? `${Math.round(variant.bandwidth / 1000)} kbps` : '']
-    .filter(Boolean);
-  return details.length > 0 ? `${variant.label} · ${details.join(' · ')}` : variant.label;
+  const key = friendlyQualityKey(variant.label);
+  const quality = key ? t(key) : t('panel.qualityUnknown');
+  if (!isHighFrameRate(variant.frameRate)) return quality;
+  const resolution = qualityResolutionLabel(variant.label);
+  return resolution ? `${resolution} · ${t('panel.quality60fps')}` : quality;
 }
 
 function downloadPopupCandidate(
@@ -1210,17 +1199,9 @@ function buildCandidateResRow(
   const meta = document.createElement('div');
   meta.className = 'res-meta res-candidate-meta';
   if (variant) {
-    const source = document.createElement('span');
-    source.textContent = popupCandidateSourceLabel(candidate.source);
-    meta.appendChild(source);
     const quality = document.createElement('span');
     quality.textContent = popupCandidateVariantLabel(variant);
     meta.appendChild(quality);
-    if (variant.fileSize && !variant.bandwidth) {
-      const size = document.createElement('span');
-      size.textContent = formatFileSize(variant.fileSize);
-      meta.appendChild(size);
-    }
   }
   if (!candidate.downloadable) {
     const warning = document.createElement('span');

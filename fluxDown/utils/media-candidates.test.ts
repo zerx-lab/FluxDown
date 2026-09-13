@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildMediaCandidates,
   countMediaCandidateRows,
+  selectQualityVideoTracks,
 } from "./media-candidates";
 import type { DashManifest } from "./dash-manifest";
 import type { DetectedResource } from "./resource-types";
@@ -65,6 +66,46 @@ function manifest(
 }
 
 describe("buildMediaCandidates", () => {
+  test("同一分辨率按普通帧率/高帧率各保留一档，并选择码率最高的轨道", () => {
+    const tracks: DashManifest["video"] = [
+      {
+        id: "1080-av1",
+        url: "https://cdn.example.com/1080-av1.m4s",
+        height: 1080,
+        bandwidth: 5_000_000,
+        frameRate: 30,
+      },
+      {
+        id: "1080-h264",
+        url: "https://cdn.example.com/1080-h264.m4s",
+        height: 1080,
+        bandwidth: 8_000_000,
+        frameRate: 30,
+      },
+      {
+        id: "1080-60",
+        url: "https://cdn.example.com/1080-60.m4s",
+        height: 1080,
+        bandwidth: 6_000_000,
+        frameRate: 60,
+      },
+      {
+        id: "720",
+        url: "https://cdn.example.com/720.m4s",
+        height: 720,
+        bandwidth: 2_000_000,
+        frameRate: 30,
+      },
+    ];
+
+    const selected = selectQualityVideoTracks(tracks);
+    expect(selected.map((track) => track.id)).toEqual([
+      "1080-h264",
+      "1080-60",
+      "720",
+    ]);
+  });
+
   test("consumes raw video/audio tracks already represented by a DASH candidate", () => {
     const currentManifest = manifest("deadline=100&sig=one", "deadline=100&sig=one");
     const resources = [

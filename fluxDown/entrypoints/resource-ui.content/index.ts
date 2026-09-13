@@ -21,6 +21,10 @@ import {
   buildMediaCandidates,
   candidateFilename,
   defaultCandidateVariant,
+  friendlyQualityKey,
+  isHighFrameRate,
+  qualityResolutionLabel,
+  selectQualityVideoTracks,
 } from '@/utils/media-candidates';
 import {
   buildResourceDebugLog,
@@ -857,28 +861,14 @@ export default defineContentScript({
       return null;
     }
 
-    function candidateSourceLabel(source: MediaCandidate['source']): string {
-      if (source === 'hls') return 'HLS';
-      if (source === 'dash') return 'DASH';
-      if (source === 'fragments') return t('panel.videoSourceFragments');
-      return t('panel.videoSourceDirect');
-    }
-
     function candidateVariantLabel(variant: MediaCandidateVariant): string {
       if (variant.label === 'auto') return t('panel.autoQuality');
       if (variant.label === 'original') return t('panel.originalQuality');
-      const codec = variant.codec?.startsWith('avc')
-        ? 'H.264'
-        : variant.codec?.startsWith('hvc') || variant.codec?.startsWith('hev')
-          ? 'H.265'
-          : variant.codec?.startsWith('av01')
-            ? 'AV1'
-            : variant.codec?.startsWith('vp09') || variant.codec?.startsWith('vp9')
-              ? 'VP9'
-              : variant.codec;
-      const details = [codec, variant.bandwidth ? `${Math.round(variant.bandwidth / 1000)} kbps` : '']
-        .filter(Boolean);
-      return details.length > 0 ? `${variant.label} · ${details.join(' · ')}` : variant.label;
+      const key = friendlyQualityKey(variant.label);
+      const quality = key ? t(key) : t('panel.qualityUnknown');
+      if (!isHighFrameRate(variant.frameRate)) return quality;
+      const resolution = qualityResolutionLabel(variant.label);
+      return resolution ? `${resolution} · ${t('panel.quality60fps')}` : quality;
     }
 
     function downloadCandidate(
@@ -910,14 +900,8 @@ export default defineContentScript({
         `resource-row media-candidate-row${candidate.downloadable ? '' : ' unresolved'}`,
       );
       const rowId = contentResourceRowId(candidate, variant);
-      const source = variant
-        ? `<span class="candidate-source">${esc(candidateSourceLabel(candidate.source))}</span>`
-        : '';
       const quality = variant
         ? `<span>${esc(candidateVariantLabel(variant))}</span>`
-        : '';
-      const size = variant?.fileSize && !variant.bandwidth
-        ? `<span>${esc(formatFileSize(variant.fileSize))}</span>`
         : '';
       const warning = candidate.downloadable
         ? ''
@@ -928,9 +912,7 @@ export default defineContentScript({
         <div class="info">
           <div class="filename" title="${esc(candidate.pageUrl)}">${esc(candidate.title)}</div>
           <div class="meta candidate-meta">
-            ${source}
             ${quality}
-            ${size}
             ${warning}
           </div>
         </div>
@@ -1187,10 +1169,6 @@ export default defineContentScript({
      *  清晰度选择小窗（离散音视频轨对下载）
      * ================================================================ */
 
-    function shortCodec(codecs?: string): string {
-      return codecs ? codecs.split('.')[0] : '';
-    }
-
     /** 由权威 DASH manifest 构造清晰度选项：真清晰度（height/bandwidth），配对码率最高的音频轨。 */
     function qualityOptionsFromManifest(manifest: DashManifest): QualityOption[] {
       const bestAudio = manifest.audio.length > 0
@@ -1211,19 +1189,24 @@ export default defineContentScript({
         ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
         : t('panel.trackVideo');
 
-      return manifest.video.map((v) => {
-        let quality: string;
-        if (v.height) quality = `${v.height}P`;
-        else if (v.bandwidth) quality = `${Math.round(v.bandwidth / 1000)}kbps`;
-        else quality = t('panel.qualityUnknown');
-        const codec = shortCodec(v.codecs);
+      return selectQualityVideoTracks(manifest.video).map((v) => {
+        const rawQuality = v.height
+          ? `${v.height}p`
+          : v.bandwidth
+            ? `${Math.round(v.bandwidth / 1000)}kbps`
+            : '';
+        const qualityKey = friendlyQualityKey(rawQuality);
+        const baseQuality = qualityKey ? t(qualityKey) : t('panel.qualityUnknown');
+        const resolution = qualityResolutionLabel(rawQuality);
+        const quality = isHighFrameRate(v.frameRate) && resolution
+          ? `${resolution} · ${t('panel.quality60fps')}`
+          : baseQuality;
 
         return {
-          quality: codec ? `${quality} · ${codec}` : quality,
+          quality,
           videoUrl: v.url,
           audioUrl: bestAudio?.url,
-          // manifest 不含时长信息，无法估出真实文件大小，诚实显示码率而非伪造大小。
-          sizeLabel: v.bandwidth ? `${Math.round(v.bandwidth / 1000)} kbps` : '',
+          sizeLabel: '',
           kindLabel,
           filename: candidateFilename(filenameCandidate, {
             id: `float:${v.id ?? v.url}`,

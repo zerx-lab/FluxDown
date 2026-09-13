@@ -26,6 +26,7 @@ describe("parseDashJson — 标准 DASH JSON 结构识别", () => {
             bandwidth: 3_000_000,
             width: 1920,
             height: 1080,
+            frame_rate: "60000/1001",
             mimeType: "video/mp4",
             codecs: "avc1.640032",
           },
@@ -70,6 +71,7 @@ describe("parseDashJson — 标准 DASH JSON 结构识别", () => {
     expect(result!.video.find((t) => t.id === 80)!.url).toBe(
       "https://cdn.example.com/video-1080.m4s",
     );
+    expect(result!.video.find((t) => t.id === 80)!.frameRate).toBeCloseTo(59.94, 2);
   });
 
   test("嵌套任意深度（结构驱动，不要求固定路径）也能识别", () => {

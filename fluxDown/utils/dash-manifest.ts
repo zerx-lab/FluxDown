@@ -27,6 +27,8 @@ export interface DashTrack {
   width?: number;
   height?: number;
   id?: string | number;
+  /** 视频帧率；常见 JSON 值为数字，XML 值也可能是 `60000/1001`。 */
+  frameRate?: number;
   /** SegmentTemplate/SegmentList 只有轨道线索，没有单个完整文件 URL。 */
   downloadable?: boolean;
 }
@@ -189,7 +191,24 @@ function toTrack(item: unknown, baseUrl: string): DashTrack | null {
   if (typeof o.width === "number") track.width = o.width;
   if (typeof o.height === "number") track.height = o.height;
   if (typeof o.id === "string" || typeof o.id === "number") track.id = o.id;
+  const frameRate = parseFrameRate(o.frameRate ?? o.frame_rate ?? o.framerate ?? o.fps);
+  if (frameRate !== undefined) track.frameRate = frameRate;
   return track;
+}
+
+function parseFrameRate(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const raw = value.trim().replace(/fps$/i, "");
+  if (!raw) return undefined;
+  const parts = raw.split("/");
+  const numerator = Number(parts[0]);
+  const denominator = parts.length > 1 ? Number(parts[1]) : 1;
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return undefined;
+  }
+  const frameRate = numerator / denominator;
+  return frameRate > 0 ? frameRate : undefined;
 }
 
 /** 轨道的 mimeType/codecs 是否明确与"视频"矛盾（用于过滤 video[] 数组里的误入项）。 */
@@ -509,6 +528,7 @@ export function parseDashXml(text: string, baseUrl: string): DashManifest | null
             width: finiteNumber(representation.attributes.width),
             height: finiteNumber(representation.attributes.height),
             id: representation.attributes.id,
+            frameRate: parseFrameRate(representation.attributes.framerate),
             downloadable: !hasTemplate,
           };
           if (isXmlVideo(mimeType, codecs, representation)) video.push(track);

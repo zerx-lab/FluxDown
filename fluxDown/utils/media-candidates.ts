@@ -34,6 +34,7 @@ export interface MediaCandidateVariant {
   mimeType?: string;
   bandwidth?: number;
   codec?: string;
+  frameRate?: number;
   fileSize?: number;
   resourceId?: string;
 }
@@ -219,7 +220,37 @@ function trackIdentity(
     track.width ?? 0,
     track.height ?? 0,
     track.bandwidth ?? 0,
+    track.frameRate ?? 0,
   ].join("|");
+}
+
+/** 将同一分辨率下的普通帧率/高帧率编码合并为用户可选择的画质档。 */
+export function selectQualityVideoTracks(
+  tracks: DashManifest["video"],
+): DashManifest["video"] {
+  const selected = new Map<string, DashManifest["video"][number]>();
+  for (const track of tracks) {
+    if (track.downloadable === false) continue;
+    const height = track.height ?? 0;
+    const frameRateTier = isHighFrameRate(track.frameRate) ? "high" : "normal";
+    const key = `${height}|${frameRateTier}`;
+    const current = selected.get(key);
+    if (!current || (track.bandwidth ?? 0) > (current.bandwidth ?? 0)) {
+      selected.set(key, track);
+    }
+  }
+  return Array.from(selected.values());
+}
+
+export function isHighFrameRate(frameRate?: number): boolean {
+  return (frameRate ?? 0) >= 50;
+}
+
+export function qualityResolutionLabel(label: string): string | undefined {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === "4k") return "4K";
+  const match = /^(\d+)p$/.exec(normalized);
+  return match ? `${Number(match[1])}P` : undefined;
 }
 
 function manifestSignature(manifest: DashManifest): string {
@@ -412,8 +443,7 @@ export function buildMediaCandidates(
 
     const audioUrl = bestAudioUrl(entry.manifest);
     const seenVariantKeys = new Set<string>();
-    const variants = entry.manifest.video.flatMap((track, trackIndex) => {
-      if (track.downloadable === false) return [];
+    const variants = selectQualityVideoTracks(entry.manifest.video).flatMap((track, trackIndex) => {
       // Signed URLs can change between two identical manifest responses. Use
       // the stable track identity for the row key so the same 1080p/360p
       // variant is not shown again just because its CDN signature rotated.
@@ -428,6 +458,7 @@ export function buildMediaCandidates(
         mimeType: track.mimeType,
         bandwidth: track.bandwidth,
         codec: shortCodec(track.codecs),
+        frameRate: track.frameRate,
       }];
     });
 
@@ -578,19 +609,37 @@ export function candidateFilename(
   candidate: MediaCandidate,
   variant: MediaCandidateVariant,
 ): string {
-  const variantDetails = [
-    variant.label === "auto" || variant.label === "original" ? "" : variant.label,
-    variant.codec,
-    variant.bandwidth ? `${Math.round(variant.bandwidth / 1000)}kbps` : "",
-  ].filter(Boolean).join(" ");
-  const label = variantDetails ? ` - ${safeFilenamePart(variantDetails)}` : "";
-  return `${safeFilenamePart(candidate.title)}${label}.${variantExtension(variant)}`;
+  return `${safeFilenamePart(candidate.title)}.${variantExtension(variant)}`;
 }
 
 export function defaultCandidateVariant(
   candidate: MediaCandidate,
 ): MediaCandidateVariant | undefined {
   return candidate.variants[0];
+}
+
+export type FriendlyQualityKey =
+  | "panel.quality4k"
+  | "panel.quality2k"
+  | "panel.quality1080"
+  | "panel.quality720"
+  | "panel.quality480"
+  | "panel.quality360";
+
+/** 将技术清晰度标签映射为面向普通用户的画质标签。 */
+export function friendlyQualityKey(label: string): FriendlyQualityKey | undefined {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === "4k") return "panel.quality4k";
+  const match = /^(\d+)p$/.exec(normalized);
+  if (!match) return undefined;
+  const height = Number(match[1]);
+  if (height >= 2160) return "panel.quality4k";
+  if (height >= 1440) return "panel.quality2k";
+  if (height >= 1080) return "panel.quality1080";
+  if (height >= 720) return "panel.quality720";
+  if (height >= 480) return "panel.quality480";
+  if (height >= 360) return "panel.quality360";
+  return undefined;
 }
 
 /**
