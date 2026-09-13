@@ -27,9 +27,25 @@ import { loadSettings, saveSettings } from '@/utils/settings';
 import type { RemoteMode } from '@/utils/settings';
 import type { DetectedResource, ResourceType } from '@/utils/resource-types';
 import { formatFileSize } from '@/utils/resource-types';
+import type { MessageKey } from '@/utils/locales/zh-CN';
+import type {
+  DashManifestEntry,
+  MediaCandidate,
+  MediaCandidateVariant,
+} from '@/utils/media-candidates';
+import {
+  buildMediaCandidates,
+  candidateFilename,
+  friendlyQualityKey,
+  isHighFrameRate,
+  qualityResolutionLabel,
+} from '@/utils/media-candidates';
+import {
+  buildResourceDebugLog,
+  stringifyResourceDebugLog,
+} from '@/utils/resource-debug-log';
 import {
   fileIconKind,
-  resourceIconKind,
   fileIconSvg,
   ICON_CHECK_CIRCLE,
 } from '@/utils/file-icons';
@@ -89,6 +105,7 @@ const resourceBadge = $('#resourceBadge')!;
 
 // 资源面板
 const resTypeTabsEl = $('#resTypeTabs')!;
+const resExportDebugBtn = $<HTMLButtonElement>('#resExportDebugBtn');
 const resEmptyEl = $('#resEmpty')!;
 const resListEl = $('#resList')!;
 const resFooterEl = $('#resFooter')!;
@@ -673,6 +690,7 @@ async function submitQuickDownload(): Promise<void> {
     const res = (await browser.runtime.sendMessage({
       action: 'downloadResource',
       url,
+      tabId: resourceTabId,
     })) as { success?: boolean; message?: string } | undefined;
     if (res?.success) {
       showToast(t('popup.quickDownload.sent'));
@@ -739,7 +757,7 @@ topTabs.addEventListener('click', (e) => {
 // 轻量列表：类型筛选 + 预览 + 单个/批量下载，选轨等重交互留在页内面板。
 
 /** 与页内面板一致的类型 tab 顺序（无资源的类型不渲染）。 */
-const RES_TABS: Array<{ key: ResourceType | 'all'; i18nKey: string }> = [
+const RES_TABS: Array<{ key: ResourceType | 'all'; i18nKey: MessageKey }> = [
   { key: 'all', i18nKey: 'panel.tabAll' },
   { key: 'video', i18nKey: 'panel.tabVideo' },
   { key: 'audio', i18nKey: 'panel.tabAudio' },
@@ -754,28 +772,63 @@ const RES_TABS: Array<{ key: ResourceType | 'all'; i18nKey: string }> = [
 let resources: DetectedResource[] = [];
 let resActiveType: ResourceType | 'all' = 'all';
 const resSelectedIds = new Set<string>();
+let dashManifests: DashManifestEntry[] = [];
+let resourcePageTitle = '';
+let resourcePageUrl = '';
+/** Popup 没有 sender.tab，下载时显式告诉 background 资源来自哪个页面。 */
+let resourceTabId: number | undefined;
+
+type PopupResourceItem = DetectedResource | MediaCandidate;
+
+interface PopupResourceRow {
+  id: string;
+  item: PopupResourceItem;
+  variant?: MediaCandidateVariant;
+}
+
+function popupResourceRowId(item: PopupResourceItem, variant?: MediaCandidateVariant): string {
+  // Representation ids are not guaranteed to be unique in real DASH
+  // manifests. Keep the source URL in the row key so selecting one row can
+  // never select sibling codec/quality rows accidentally.
+  return variant ? `${item.id}::${variant.id}::${variant.videoUrl}` : item.id;
+}
 
 async function refreshResources(): Promise<void> {
   try {
     const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!activeTab?.id) {
+    if (typeof activeTab?.id !== 'number' || activeTab.id < 0) {
       resources = [];
+      dashManifests = [];
+      resourcePageTitle = '';
+      resourcePageUrl = '';
+      resourceTabId = undefined;
     } else {
+      resourceTabId = activeTab.id;
+      resourcePageTitle = activeTab.title || '';
+      resourcePageUrl = activeTab.url || '';
       const res = (await browser.runtime.sendMessage({
         action: 'getResources',
         tabId: activeTab.id,
-      })) as { resources?: DetectedResource[] } | undefined;
+      })) as {
+        resources?: DetectedResource[];
+        dashManifests?: DashManifestEntry[];
+      } | undefined;
       resources = res?.resources ?? [];
+      dashManifests = Array.isArray(res?.dashManifests) ? res.dashManifests : [];
     }
   } catch {
     resources = [];
+    dashManifests = [];
+    resourcePageTitle = '';
+    resourcePageUrl = '';
+    resourceTabId = undefined;
   }
   // 快照刷新后清掉已消失资源的选中态
-  const alive = new Set(resources.map((r) => r.id));
+  const alive = new Set(resourceRowsFor('all').map((row) => row.id));
   for (const id of resSelectedIds) {
     if (!alive.has(id)) resSelectedIds.delete(id);
   }
-  if (resources.every((r) => r.type !== resActiveType) && resActiveType !== 'all') {
+  if (resActiveType !== 'all' && resourceRowsFor(resActiveType).length === 0) {
     resActiveType = 'all';
   }
   updateResourceBadge();
@@ -784,23 +837,134 @@ async function refreshResources(): Promise<void> {
 }
 
 function updateResourceBadge(): void {
-  resourceBadge.textContent = resources.length > 99 ? '99+' : String(resources.length);
-  resourceBadge.classList.toggle('hidden', resources.length === 0);
+  const count = resourceRowsFor('all').length;
+  resourceBadge.textContent = count > 99 ? '99+' : String(count);
+  resourceBadge.classList.toggle('hidden', count === 0);
 }
 
-function filteredResources(): DetectedResource[] {
-  return resActiveType === 'all'
-    ? resources
-    : resources.filter((r) => r.type === resActiveType);
+function popupMediaCandidates(): MediaCandidate[] {
+  return buildMediaCandidates(resources, {
+    pageTitle: resourcePageTitle,
+    pageUrl: resourcePageUrl,
+    fallbackTitle: t('panel.videoCandidate'),
+    videoLabel: t('panel.videoIndex'),
+    manifests: dashManifests,
+  });
+}
+
+function resourceDebugFilename(): string {
+  const stamp = new Date().toISOString().replace(/[.:]/g, '-');
+  return `fluxdown-resource-debug-${stamp}.json`;
+}
+
+/** 导出当前活动页面的原始资源、清单解析结果和候选聚合关系。 */
+async function exportResourceDebugLog(): Promise<void> {
+  resExportDebugBtn.disabled = true;
+  const filename = resourceDebugFilename();
+  const log = buildResourceDebugLog({
+    resources,
+    manifests: dashManifests,
+    candidates: popupMediaCandidates(),
+    tabId: resourceTabId,
+    pageUrl: resourcePageUrl,
+    pageTitle: resourcePageTitle,
+    source: 'popup',
+  });
+  const blobUrl = URL.createObjectURL(
+    new Blob([stringifyResourceDebugLog(log)], { type: 'application/json' }),
+  );
+  try {
+    await browser.downloads.download({ url: blobUrl, filename, saveAs: true });
+    showToast(t('panel.exportDebugLogDone'));
+  } catch {
+    // Some Firefox versions reject blob: URLs through downloads.download;
+    // the anchor path still downloads the same data without exposing secrets.
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      anchor.click();
+      showToast(t('panel.exportDebugLogDone'));
+    } catch {
+      showToast(t('panel.exportDebugLogFailed'), 'error');
+    }
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+    resExportDebugBtn.disabled = false;
+  }
+}
+
+/** DASH 候选已经代表的原始轨道不再作为独立音频/视频资源重复展示。 */
+function popupAggregatedResourceIds(): Set<string> {
+  return new Set(
+    popupMediaCandidates().flatMap((candidate) => candidate.rawResourceIds),
+  );
+}
+
+function displayResourceItems(tab: ResourceType | 'all'): Array<DetectedResource | MediaCandidate> {
+  const candidates = popupMediaCandidates().filter(
+    (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
+  );
+  const raw = filteredResourcesFor(tab);
+  return [...candidates, ...raw];
+}
+
+function filteredResourcesFor(tab: ResourceType | 'all'): DetectedResource[] {
+  const base = tab === 'all' ? resources : resources.filter((r) => r.type === tab);
+  const aggregatedIds = popupAggregatedResourceIds();
+  return base.filter(
+    (resource) =>
+      resource.type !== 'video' &&
+      resource.type !== 'stream' &&
+      !aggregatedIds.has(resource.id),
+  );
+}
+
+function resourceRowsFor(tab: ResourceType | 'all'): PopupResourceRow[] {
+  const rows: PopupResourceRow[] = [];
+  for (const item of displayResourceItems(tab)) {
+    if ('downloadable' in item && item.variants.length > 0) {
+      for (const variant of item.variants) {
+        rows.push({ id: popupResourceRowId(item, variant), item, variant });
+      }
+    } else {
+      rows.push({ id: popupResourceRowId(item), item });
+    }
+  }
+  return rows;
+}
+
+function selectableResourceRows(): PopupResourceRow[] {
+  return resourceRowsFor(resActiveType).filter(
+    (row) => !('downloadable' in row.item) || row.item.downloadable,
+  );
+}
+
+function selectedResourceDownloadItems(): Array<Record<string, unknown>> {
+  const items: Array<Record<string, unknown>> = [];
+  for (const row of resourceRowsFor(resActiveType)) {
+    if (!resSelectedIds.has(row.id)) continue;
+    if ('downloadable' in row.item) {
+      if (!row.item.downloadable || !row.variant) continue;
+      items.push({
+        url: row.variant.videoUrl,
+        audioUrl: row.variant.audioUrl,
+        referrer: row.item.pageUrl || resourcePageUrl || undefined,
+        filename: candidateFilename(row.item, row.variant),
+        fileSize: row.variant.fileSize,
+        mimeType: row.variant.mimeType,
+      });
+    } else {
+      items.push(resDownloadPayload(row.item));
+    }
+  }
+  return items;
 }
 
 function renderResTabs(): void {
   resTypeTabsEl.textContent = '';
   for (const tab of RES_TABS) {
-    const count =
-      tab.key === 'all'
-        ? resources.length
-        : resources.filter((r) => r.type === tab.key).length;
+    const count = resourceRowsFor(tab.key).length;
     if (tab.key !== 'all' && count === 0) continue;
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -819,17 +983,27 @@ function resDownloadPayload(r: DetectedResource) {
   return {
     url: r.url,
     referrer: r.pageUrl || undefined,
-    filename: r.filename,
+    filename: resourceDisplayName(r),
     fileSize: r.size > 0 ? r.size : undefined,
     mimeType: r.mimeType,
   };
 }
 
+function resourceDisplayName(r: DetectedResource): string {
+  const filename = r.filename?.trim();
+  if (filename) return filename;
+  try {
+    const pathname = new URL(r.url).pathname.split('/').filter(Boolean).pop();
+    if (pathname) return decodeURIComponent(pathname);
+  } catch {
+    // Keep the URL as the last-resort label for malformed or relative URLs.
+  }
+  return r.url || t('panel.tabOther');
+}
+
 // ===== 资源预览（与页内浮动面板同规则：图片/音频/视频直链/流分片按类型分发，
 // 原生播放失败诚实降级提示，禁止引入 hls.js） =====
 
-const SVG_PREVIEW =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/></svg>';
 const SVG_PREVIEW_CLOSE =
   '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 
@@ -896,7 +1070,7 @@ function openPreview(r: DetectedResource): void {
   const modal = ensurePreviewModal();
   const titleEl = modal.querySelector('.preview-title') as HTMLElement;
   const bodyEl = modal.querySelector('.preview-body') as HTMLElement;
-  titleEl.textContent = r.filename || r.url;
+  titleEl.textContent = resourceDisplayName(r);
   bodyEl.textContent = '';
 
   const kind = previewKind(r);
@@ -959,6 +1133,97 @@ function closePreview(): void {
   }
 }
 
+function popupCandidateVariantLabel(variant: MediaCandidateVariant): string {
+  if (variant.label === 'auto') return t('panel.autoQuality');
+  if (variant.label === 'original') return t('panel.originalQuality');
+  const key = friendlyQualityKey(variant.label);
+  const quality = key ? t(key) : t('panel.qualityUnknown');
+  if (!isHighFrameRate(variant.frameRate)) return quality;
+  const resolution = qualityResolutionLabel(variant.label);
+  return resolution ? `${resolution} · ${t('panel.quality60fps')}` : quality;
+}
+
+function downloadPopupCandidate(
+  candidate: MediaCandidate,
+  variant: MediaCandidateVariant,
+  button?: HTMLButtonElement,
+): void {
+  if (button) button.disabled = true;
+  void browser.runtime.sendMessage({
+    action: 'downloadResource',
+    url: variant.videoUrl,
+    audioUrl: variant.audioUrl,
+    tabId: resourceTabId,
+    referrer: candidate.pageUrl || resourcePageUrl || undefined,
+    filename: candidateFilename(candidate, variant),
+    fileSize: variant.fileSize,
+    mimeType: variant.mimeType,
+  }).then((res: { success?: boolean; message?: string } | undefined) => {
+    if (res?.success) showToast(t('popup.quickDownload.sent'));
+    else showToast(res?.message || t('popup.quickDownload.failed'), 'error');
+    if (button && !res?.success) button.disabled = false;
+  }).catch(() => {
+    showToast(t('popup.quickDownload.failed'), 'error');
+    if (button) button.disabled = false;
+  });
+}
+
+function buildCandidateResRow(
+  candidate: MediaCandidate,
+  variant?: MediaCandidateVariant,
+): HTMLElement {
+  const row = document.createElement('div');
+  row.className = `res-row res-candidate-row${candidate.downloadable ? '' : ' unresolved'}`;
+  const rowId = popupResourceRowId(candidate, variant);
+
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'res-check';
+  check.disabled = !candidate.downloadable || !variant;
+  check.checked = resSelectedIds.has(rowId);
+  check.addEventListener('change', () => {
+    if (check.checked) resSelectedIds.add(rowId);
+    else resSelectedIds.delete(rowId);
+    updateResBatchBar();
+  });
+  row.appendChild(check);
+
+  const info = document.createElement('div');
+  info.className = 'res-info res-candidate-info';
+  const name = document.createElement('div');
+  name.className = 'res-name res-candidate-name';
+  name.textContent = candidate.title;
+  name.title = candidate.pageUrl;
+  info.appendChild(name);
+
+  const meta = document.createElement('div');
+  meta.className = 'res-meta res-candidate-meta';
+  if (variant) {
+    const quality = document.createElement('span');
+    quality.textContent = popupCandidateVariantLabel(variant);
+    meta.appendChild(quality);
+  }
+  if (!candidate.downloadable) {
+    const warning = document.createElement('span');
+    warning.className = 'res-candidate-warning';
+    warning.textContent = t('panel.videoNeedsManifest');
+    meta.appendChild(warning);
+  }
+  info.appendChild(meta);
+  row.appendChild(info);
+
+  if (candidate.downloadable && variant) {
+    const dl = document.createElement('button');
+    dl.type = 'button';
+    dl.className = 'res-dl-btn';
+    dl.title = t('panel.downloadCandidate');
+    dl.textContent = t('panel.download');
+    dl.addEventListener('click', () => downloadPopupCandidate(candidate, variant, dl));
+    row.appendChild(dl);
+  }
+  return row;
+}
+
 // Esc 关闭预览弹层
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && previewModalEl?.classList.contains('visible')) {
@@ -981,17 +1246,11 @@ function buildResRow(r: DetectedResource): HTMLElement {
   });
   row.appendChild(check);
 
-  const icon = document.createElement('span');
-  const resKind = resourceIconKind(r.type);
-  icon.className = `res-icon icon-${resKind}`;
-  icon.innerHTML = fileIconSvg(resKind, 14);
-  row.appendChild(icon);
-
   const info = document.createElement('div');
   info.className = 'res-info';
   const name = document.createElement('div');
   name.className = 'res-name';
-  name.textContent = r.filename;
+  name.textContent = resourceDisplayName(r);
   name.title = r.url;
   info.appendChild(name);
   const size = formatFileSize(r.size);
@@ -1008,7 +1267,7 @@ function buildResRow(r: DetectedResource): HTMLElement {
     pv.type = 'button';
     pv.className = 'res-preview-btn';
     pv.title = t('panel.previewTitle');
-    pv.innerHTML = SVG_PREVIEW;
+    pv.textContent = t('panel.previewTitle');
     pv.addEventListener('click', () => openPreview(r));
     row.appendChild(pv);
   }
@@ -1017,14 +1276,14 @@ function buildResRow(r: DetectedResource): HTMLElement {
   dl.type = 'button';
   dl.className = 'res-dl-btn';
   dl.title = t('popup.quickDownload.button');
-  dl.innerHTML =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+  dl.textContent = t('panel.download');
   dl.addEventListener('click', async () => {
     dl.disabled = true;
     try {
       const res = (await browser.runtime.sendMessage({
         action: 'downloadResource',
         ...resDownloadPayload(r),
+        tabId: resourceTabId,
       })) as { success?: boolean; message?: string } | undefined;
       if (res?.success) {
         showToast(t('popup.quickDownload.sent'));
@@ -1043,11 +1302,17 @@ function buildResRow(r: DetectedResource): HTMLElement {
 }
 
 function renderResList(): void {
-  const items = filteredResources();
+  const rows = resourceRowsFor(resActiveType);
   resListEl.textContent = '';
-  for (const r of items) resListEl.appendChild(buildResRow(r));
+  for (const row of rows) {
+    if ('downloadable' in row.item) {
+      resListEl.appendChild(buildCandidateResRow(row.item, row.variant));
+    } else {
+      resListEl.appendChild(buildResRow(row.item));
+    }
+  }
 
-  const empty = resources.length === 0;
+  const empty = rows.length === 0;
   resEmptyEl.classList.toggle('hidden', !empty);
   resTypeTabsEl.classList.toggle('hidden', empty);
   resFooterEl.classList.toggle('hidden', empty);
@@ -1055,31 +1320,33 @@ function renderResList(): void {
 }
 
 function updateResBatchBar(): void {
-  const visible = filteredResources();
-  const selectedVisible = visible.filter((r) => resSelectedIds.has(r.id)).length;
-  resBatchCount.textContent = String(resSelectedIds.size);
-  resBatchBtn.disabled = resSelectedIds.size === 0;
+  const visible = selectableResourceRows();
+  const selectedVisible = visible.filter((row) => resSelectedIds.has(row.id)).length;
+  const selectedCount = selectedResourceDownloadItems().length;
+  resBatchCount.textContent = String(selectedCount);
+  resBatchBtn.disabled = selectedCount === 0;
   resSelectAll.checked = visible.length > 0 && selectedVisible === visible.length;
 }
 
 resSelectAll.addEventListener('change', () => {
-  const visible = filteredResources();
+  const visible = selectableResourceRows();
   if (resSelectAll.checked) {
-    for (const r of visible) resSelectedIds.add(r.id);
+    for (const row of visible) resSelectedIds.add(row.id);
   } else {
-    for (const r of visible) resSelectedIds.delete(r.id);
+    for (const row of visible) resSelectedIds.delete(row.id);
   }
   renderResList();
 });
 
 resBatchBtn.addEventListener('click', async () => {
-  const items = resources.filter((r) => resSelectedIds.has(r.id));
+  const items = selectedResourceDownloadItems();
   if (items.length === 0) return;
   resBatchBtn.disabled = true;
   try {
     await browser.runtime.sendMessage({
       action: 'batchDownload',
-      items: items.map(resDownloadPayload),
+      items,
+      tabId: resourceTabId,
     });
     showToast(t('popup.quickDownload.sent'));
     resSelectedIds.clear();
@@ -1088,6 +1355,10 @@ resBatchBtn.addEventListener('click', async () => {
     showToast(t('popup.quickDownload.failed'), 'error');
     resBatchBtn.disabled = false;
   }
+});
+
+resExportDebugBtn.addEventListener('click', () => {
+  void exportResourceDebugLog();
 });
 
 // ===== 排除当前站点 =====

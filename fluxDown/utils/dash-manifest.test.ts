@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseDashJson } from "./dash-manifest";
+import { parseDashJson, parseDashManifestText, parseDashXml } from "./dash-manifest";
 
 const BASE = "https://cdn.example.com/";
 const PAGE = "https://example.com/watch";
@@ -26,6 +26,7 @@ describe("parseDashJson — 标准 DASH JSON 结构识别", () => {
             bandwidth: 3_000_000,
             width: 1920,
             height: 1080,
+            frame_rate: "60000/1001",
             mimeType: "video/mp4",
             codecs: "avc1.640032",
           },
@@ -70,6 +71,7 @@ describe("parseDashJson — 标准 DASH JSON 结构识别", () => {
     expect(result!.video.find((t) => t.id === 80)!.url).toBe(
       "https://cdn.example.com/video-1080.m4s",
     );
+    expect(result!.video.find((t) => t.id === 80)!.frameRate).toBeCloseTo(59.94, 2);
   });
 
   test("嵌套任意深度（结构驱动，不要求固定路径）也能识别", () => {
@@ -128,5 +130,65 @@ describe("parseDashJson — 标准 DASH JSON 结构识别", () => {
     expect(parseDashJson("plain string", PAGE)).toBeNull();
     expect(parseDashJson(42, PAGE)).toBeNull();
     expect(parseDashJson([1, 2, 3], PAGE)).toBeNull();
+  });
+});
+
+describe("parseDashXml — 标准 MPD XML 结构识别", () => {
+  test("解析 Representation/BaseURL，并继承 AdaptationSet 的媒体属性", () => {
+    const xml = `<?xml version="1.0"?>
+      <MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+        <Period>
+          <AdaptationSet mimeType="video/mp4" codecs="avc1.640028">
+            <Representation id="1080" bandwidth="3000000" width="1920" height="1080">
+              <BaseURL>video/1080.mp4?sig=one&amp;x=1</BaseURL>
+            </Representation>
+          </AdaptationSet>
+          <AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2">
+            <Representation id="audio" bandwidth="128000">
+              <BaseURL>audio/main.m4a</BaseURL>
+            </Representation>
+          </AdaptationSet>
+        </Period>
+      </MPD>`;
+
+    const result = parseDashXml(xml, BASE);
+    expect(result).not.toBeNull();
+    expect(result!.video[0]).toMatchObject({
+      id: "1080",
+      height: 1080,
+      url: "https://cdn.example.com/video/1080.mp4?sig=one&x=1",
+      downloadable: true,
+    });
+    expect(result!.audio[0]).toMatchObject({
+      id: "audio",
+      url: "https://cdn.example.com/audio/main.m4a",
+      downloadable: true,
+    });
+    expect(parseDashManifestText(xml, BASE)).toEqual(result);
+  });
+
+  test("SegmentTemplate 只作为分片关联线索，不生成错误的可下载 URL", () => {
+    const xml = `
+      <MPD>
+        <Period>
+          <AdaptationSet mimeType="video/mp4" contentType="video">
+            <SegmentTemplate media="video/$RepresentationID$/seg-$Number$.m4s" />
+            <Representation id="360" bandwidth="700000" width="640" height="360" />
+          </AdaptationSet>
+        </Period>
+      </MPD>`;
+
+    const result = parseDashXml(xml, BASE);
+    expect(result).not.toBeNull();
+    expect(result!.video[0]).toMatchObject({
+      id: "360",
+      height: 360,
+      downloadable: false,
+    });
+    expect(result!.video[0].url).toContain("video/__fluxdown_segment__/");
+  });
+
+  test("非 MPD XML 返回 null", () => {
+    expect(parseDashXml("<html><body>not a manifest</body></html>", BASE)).toBeNull();
   });
 });

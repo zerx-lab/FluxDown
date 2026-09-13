@@ -12,10 +12,24 @@
 
 import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
-import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
-import { formatFileSize, getResourceTypeIcon, groupTrackPairs } from '@/utils/resource-types';
+import type { DetectedResource, ResourceType, ConfidenceLevel } from '@/utils/resource-types';
+import { formatFileSize } from '@/utils/resource-types';
 import type { DashManifest } from '@/utils/dash-manifest';
 import { detectTrackKind } from '@/utils/track-detector';
+import type { DashManifestEntry, MediaCandidate, MediaCandidateVariant } from '@/utils/media-candidates';
+import {
+  buildMediaCandidates,
+  candidateFilename,
+  defaultCandidateVariant,
+  friendlyQualityKey,
+  isHighFrameRate,
+  qualityResolutionLabel,
+  selectQualityVideoTracks,
+} from '@/utils/media-candidates';
+import {
+  buildResourceDebugLog,
+  stringifyResourceDebugLog,
+} from '@/utils/resource-debug-log';
 import type { MessageKey } from '@/utils/locales/zh-CN';
 import { initI18n, setLocale, t } from '@/utils/i18n';
 import { loadSettings } from '@/utils/settings';
@@ -57,7 +71,6 @@ const SVG_CLOSE = '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="
 const SVG_LOGO = '<path d="M12 3v11M8 10l4 4 4-4"/><path d="M5 17h14"/>';
 const SVG_EMPTY = '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/>';
 const SVG_EYE_OFF = '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>';
-const SVG_PREVIEW = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/>';
 
 const STORAGE_KEY = 'fluxdown_dot_pos';
 const DOT_VISIBLE_KEY = 'fluxdown_dot_visible';
@@ -82,6 +95,24 @@ export default defineContentScript({
     let resources: DetectedResource[] = [];
     let activeTab: string = 'all';
     const selectedIds = new Set<string>();
+    interface ContentResourceRow {
+      id: string;
+      item: DetectedResource | MediaCandidate;
+      variant?: MediaCandidateVariant;
+    }
+    function isContentMediaCandidate(
+      item: DetectedResource | MediaCandidate,
+    ): item is MediaCandidate {
+      return 'downloadable' in item;
+    }
+    function contentResourceRowId(
+      item: DetectedResource | MediaCandidate,
+      variant?: MediaCandidateVariant,
+    ): string {
+      // Representation ids are not guaranteed to be unique in real DASH
+      // manifests, so include the source URL in the row key.
+      return variant ? `${item.id}::${variant.id}::${variant.videoUrl}` : item.id;
+    }
     /** 曾预览失败（video/img/audio error）的资源 id：仅做视觉标记，不自动隐藏
      * ——预览失败常见于 CORS，下载走引擎带 cookie/headers 仍可能成功，
      * 对标 cat-catch：默认全显示，用户手动点「清理」才过滤。 */
@@ -102,15 +133,59 @@ export default defineContentScript({
     let batchCountEl: HTMLElement;
     let batchBtnEl: HTMLButtonElement;
     let clearFailedBtnEl: HTMLButtonElement;
+    let exportDebugBtnEl: HTMLButtonElement;
     let selectAllText: Text;
     let floatBtnEl: HTMLElement;
     let qualityPickerEl: HTMLElement;
     let pendingQualityOptions: QualityOption[] = [];
     let previewModalEl: HTMLElement;
-    /** 页面拦到的权威 DASH manifest（video[]/audio[] 轨道 + 真实清晰度）；未嗅探到时为 null。 */
+    /** 页面拦到的权威 DASH manifest（兼容旧消息，仅用于悬浮按钮）。 */
     let dashManifest: DashManifest | null = null;
+    /** 同一 tab 的多个播放会话；资源面板按此集合构建视频候选。 */
+    let dashManifests: DashManifestEntry[] = [];
     /** shadow 内根容器，主题以 data-theme 属性挂在其上，供 CSS light/dark 变量切换。 */
     let rootContainer: HTMLElement | null = null;
+
+    function resourceDebugFilename(): string {
+      const stamp = new Date().toISOString().replace(/[.:]/g, '-');
+      return `fluxdown-resource-debug-${stamp}.json`;
+    }
+
+    /** 从页面内资源面板直接导出当前嗅探/聚合快照。 */
+    function exportResourceDebugLog(): void {
+      const log = buildResourceDebugLog({
+        resources,
+        manifests: dashManifests,
+        candidates: buildMediaCandidates(resources, {
+          pageTitle: document.title,
+          pageUrl: location.href,
+          fallbackTitle: t('panel.videoCandidate'),
+          videoLabel: t('panel.videoIndex'),
+          manifests: dashManifests,
+        }),
+        tabId: undefined,
+        pageUrl: location.href,
+        pageTitle: document.title,
+        source: 'content',
+      });
+      const blobUrl = URL.createObjectURL(
+        new Blob([stringifyResourceDebugLog(log)], { type: 'application/json' }),
+      );
+      try {
+        const anchor = document.createElement('a');
+        anchor.href = blobUrl;
+        anchor.download = resourceDebugFilename();
+        anchor.click();
+        exportDebugBtnEl.textContent = t('panel.exportDebugLogDone');
+      } catch {
+        exportDebugBtnEl.textContent = t('panel.exportDebugLogFailed');
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+        window.setTimeout(() => {
+          exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+        }, 2_000);
+      }
+    }
 
     /* ========== Shadow UI ========== */
     const ui = await createShadowRootUi(ctx, {
@@ -169,6 +244,12 @@ export default defineContentScript({
       }
       if (msg.action === 'dashManifestUpdated' && msg.manifest) {
         dashManifest = msg.manifest;
+        dashManifests = Array.isArray(msg.dashManifests)
+          ? msg.dashManifests
+          : dashManifest
+            ? [{ url: '', manifest: dashManifest }]
+            : [];
+        render();
       }
     });
 
@@ -195,13 +276,18 @@ export default defineContentScript({
     if (sniffEnabled) {
       try {
         const resp = await browser.runtime.sendMessage({ action: 'getResources' });
-        if (resp?.resources?.length > 0) {
+        if (Array.isArray(resp?.resources)) {
           resources = resp.resources;
-          render();
         }
         if (resp?.dashManifest) {
           dashManifest = resp.dashManifest;
         }
+        if (Array.isArray(resp?.dashManifests)) {
+          dashManifests = resp.dashManifests;
+        } else if (dashManifest) {
+          dashManifests = [{ url: '', manifest: dashManifest }];
+        }
+        render();
       } catch { /* */ }
     }
 
@@ -379,6 +465,17 @@ export default defineContentScript({
       `;
       countEl = header.querySelector('.resource-count') as HTMLElement;
 
+      const headerActions = h('div', 'panel-header-actions');
+
+      exportDebugBtnEl = document.createElement('button');
+      exportDebugBtnEl.className = 'export-debug-btn';
+      exportDebugBtnEl.type = 'button';
+      exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+      exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
+      exportDebugBtnEl.setAttribute('aria-label', t('panel.exportDebugLog'));
+      exportDebugBtnEl.addEventListener('click', exportResourceDebugLog);
+      headerActions.appendChild(exportDebugBtnEl);
+
       const hideBtn = h('button', 'btn-close');
       hideBtn.title = t('panel.hideDot');
       hideBtn.innerHTML = svg(SVG_EYE_OFF);
@@ -386,12 +483,13 @@ export default defineContentScript({
         browser.storage.local.set({ [DOT_VISIBLE_KEY]: false });
         if (panelOpen) togglePanel();
       });
-      header.appendChild(hideBtn);
+      headerActions.appendChild(hideBtn);
 
       const closeBtn = h('button', 'btn-close');
       closeBtn.innerHTML = svg(SVG_CLOSE);
       closeBtn.addEventListener('click', () => { togglePanel(); });
-      header.appendChild(closeBtn);
+      headerActions.appendChild(closeBtn);
+      header.appendChild(headerActions);
 
       tabsEl = h('div', 'panel-tabs');
       listEl = h('div', 'panel-list');
@@ -404,10 +502,12 @@ export default defineContentScript({
       selectAllText = document.createTextNode(` ${t('panel.selectAll')}`);
       label.appendChild(selectAllText);
       selectAllEl.addEventListener('change', () => {
-        const items = filtered();
+        const items = selectableItems();
         if (selectAllEl.checked) {
-          for (const r of items) selectedIds.add(r.id);
-        } else { selectedIds.clear(); }
+          for (const item of items) selectedIds.add(item.id);
+        } else {
+          for (const item of items) selectedIds.delete(item.id);
+        }
         renderList();
         updateBatch();
       });
@@ -418,22 +518,15 @@ export default defineContentScript({
       batchBtnEl.innerHTML = `${svg(SVG_DOWNLOAD)} ${t('panel.batchDownload')} (<span>0</span>)`;
       batchCountEl = batchBtnEl.querySelector('span') as HTMLElement;
       batchBtnEl.addEventListener('click', () => {
-        const items = resources.filter((r) => selectedIds.has(r.id));
+        const items = selectedDownloadItems();
         if (items.length === 0) return;
 
         // 一次性发送所有选中资源给 Background，由 Background 端顺序执行
         // 避免循环 sendMessage 导致 Chrome MV3 消息通道串行阻塞，只有第一个被处理
         browser.runtime.sendMessage({
           action: 'batchDownload',
-          items: items.map((r) => ({
-            url: r.url,
-            referrer: r.pageUrl || location.href,
-            filename: r.filename,
-            fileSize: r.size > 0 ? r.size : undefined,
-            mimeType: r.mimeType,
-          })),
-        }).catch(() => {});
-
+          items,
+        });
         selectedIds.clear();
         renderList();
         updateBatch();
@@ -451,9 +544,12 @@ export default defineContentScript({
         render();
       });
 
+      const actions = h('div', 'panel-footer-actions');
+      actions.appendChild(clearFailedBtnEl);
+      actions.appendChild(batchBtnEl);
+
       footer.appendChild(label);
-      footer.appendChild(clearFailedBtnEl);
-      footer.appendChild(batchBtnEl);
+      footer.appendChild(actions);
 
       panelEl.appendChild(header);
       panelEl.appendChild(tabsEl);
@@ -478,23 +574,49 @@ export default defineContentScript({
 
         // 直链视频 → 直接下载。
         if (!isBlob && src) {
-          browser.runtime.sendMessage({
-            action: 'downloadResource', url: src, referrer: location.href,
-          }).catch(() => {});
+          const candidate = mediaCandidatesForTab('all').find((item) =>
+            item.variants.some((variant) => variant.videoUrl === src),
+          );
+          const variant = candidate ? defaultCandidateVariant(candidate) : undefined;
+          if (candidate && variant) {
+            downloadCandidate(candidate, variant);
+          } else {
+            const fallbackCandidate: MediaCandidate = {
+              id: 'float-direct',
+              title: document.title || t('panel.videoCandidate'),
+              type: 'video',
+              source: 'direct',
+              pageUrl: location.href,
+              variants: [],
+              rawResourceIds: [],
+              fragmentCount: 0,
+              downloadable: true,
+            };
+            void browser.runtime.sendMessage({
+              action: 'downloadResource',
+              url: src,
+              referrer: location.href,
+              filename: candidateFilename(fallbackCandidate, {
+                id: 'float-direct-variant',
+                label: 'original',
+                videoUrl: src,
+              }),
+            });
+          }
           hideFloat();
           return;
         }
 
         // blob/MSE 视频（B站/迅雷等）无直链 → 优先用页面拦到的权威 DASH manifest
         // 构造真清晰度档（height/bandwidth 来自 manifest，可信）；manifest 缺失时
-        // 回退到嗅探碎片的 groupTrackPairs（分片无法可靠区分清晰度，仅保底）。
+        // 不把嗅探到的单个分片伪装成可下载视频，改为打开候选面板提示用户。
         // 存在音视频轨对或多档清晰度 → 弹出清晰度选择小窗；只有一条无音频的单轨
         // → 直接下载；两者都拿不到（未嗅探到媒体）→ 回退打开资源面板。
         const media = mediaResources();
         const options =
           dashManifest && dashManifest.video.length > 0
             ? qualityOptionsFromManifest(dashManifest)
-            : qualityOptionsFromTrackGroups(groupTrackPairs(media));
+            : [];
         const needsPicker =
           options.length > 1 || options.some((o) => o.audioUrl);
         if (needsPicker) {
@@ -642,7 +764,7 @@ export default defineContentScript({
 
     function renderBadge(): void {
       if (!badgeEl) return;
-      const n = resources.length;
+      const n = resourceRowsForTab('all').length;
       badgeEl.textContent = n > 99 ? '99+' : String(n);
       badgeEl.classList.toggle('show', n > 0);
       if (countEl) countEl.textContent = n > 0 ? `${n} ${t('panel.resources')}` : '';
@@ -652,7 +774,7 @@ export default defineContentScript({
       if (!tabsEl) return;
       tabsEl.innerHTML = '';
       for (const tab of TABS) {
-        const count = tab.key === 'all' ? resources.length : resources.filter((r) => r.type === tab.key).length;
+        const count = resourceRowsForTab(tab.key).length;
         if (tab.key !== 'all' && count === 0) continue;
         const btn = h('button', `panel-tab${activeTab === tab.key ? ' active' : ''}`);
         btn.textContent = `${t(tab.i18nKey)} ${count}`;
@@ -665,9 +787,9 @@ export default defineContentScript({
 
     function renderList(): void {
       if (!listEl) return;
-      const items = filtered();
+      const rows = resourceRowsForTab(activeTab);
 
-      if (items.length === 0) {
+      if (rows.length === 0) {
         listEl.innerHTML = `
           <div class="panel-empty">
             ${svg(SVG_EMPTY)}
@@ -678,6 +800,16 @@ export default defineContentScript({
       }
 
       listEl.innerHTML = '';
+
+      for (const row of rows) {
+        if ('downloadable' in row.item) {
+          listEl.appendChild(buildMediaCandidateRow(row.item, row.variant));
+        }
+      }
+
+      const items = rows
+        .filter((row): row is ContentResourceRow & { item: DetectedResource } => !('downloadable' in row.item))
+        .map((row) => row.item);
 
       // 按可信度分组（资源已按 confidence desc 排序）
       const main = items.filter((r) => r.confidence !== 'low');
@@ -729,24 +861,96 @@ export default defineContentScript({
       return null;
     }
 
+    function candidateVariantLabel(variant: MediaCandidateVariant): string {
+      if (variant.label === 'auto') return t('panel.autoQuality');
+      if (variant.label === 'original') return t('panel.originalQuality');
+      const key = friendlyQualityKey(variant.label);
+      const quality = key ? t(key) : t('panel.qualityUnknown');
+      if (!isHighFrameRate(variant.frameRate)) return quality;
+      const resolution = qualityResolutionLabel(variant.label);
+      return resolution ? `${resolution} · ${t('panel.quality60fps')}` : quality;
+    }
+
+    function downloadCandidate(
+      candidate: MediaCandidate,
+      variant: MediaCandidateVariant,
+      button?: HTMLButtonElement,
+    ): void {
+      if (button?.disabled) return;
+      if (button) button.disabled = true;
+      void browser.runtime.sendMessage({
+        action: 'downloadResource',
+        url: variant.videoUrl,
+        audioUrl: variant.audioUrl,
+        referrer: candidate.pageUrl || location.href,
+        filename: candidateFilename(candidate, variant),
+        fileSize: variant.fileSize,
+        mimeType: variant.mimeType,
+      }).catch(() => {
+        if (button) button.disabled = false;
+      });
+    }
+
+    function buildMediaCandidateRow(
+      candidate: MediaCandidate,
+      variant?: MediaCandidateVariant,
+    ): HTMLElement {
+      const row = h(
+        'div',
+        `resource-row media-candidate-row${candidate.downloadable ? '' : ' unresolved'}`,
+      );
+      const rowId = contentResourceRowId(candidate, variant);
+      const quality = variant
+        ? `<span>${esc(candidateVariantLabel(variant))}</span>`
+        : '';
+      const warning = candidate.downloadable
+        ? ''
+        : `<span class="candidate-warning">${esc(t('panel.videoNeedsManifest'))}</span>`;
+
+      row.innerHTML = `
+        <input type="checkbox" class="check" ${candidate.downloadable && variant ? '' : 'disabled'} ${selectedIds.has(rowId) ? 'checked' : ''}>
+        <div class="info">
+          <div class="filename" title="${esc(candidate.pageUrl)}">${esc(candidate.title)}</div>
+          <div class="meta candidate-meta">
+            ${quality}
+            ${warning}
+          </div>
+        </div>
+        ${candidate.downloadable && variant
+          ? `<button class="dl-btn" title="${t('panel.downloadCandidate')}">${esc(t('panel.download'))}</button>`
+          : ''}
+      `;
+
+      const cb = row.querySelector('.check') as HTMLInputElement;
+      cb.addEventListener('change', () => {
+        if (cb.checked) selectedIds.add(rowId); else selectedIds.delete(rowId);
+        updateBatch();
+        updateSelectAll();
+      });
+
+      const dl = row.querySelector('.dl-btn') as HTMLButtonElement | null;
+      dl?.addEventListener('click', () => {
+        if (variant) downloadCandidate(candidate, variant, dl);
+      });
+      return row;
+    }
+
     function buildResourceRow(r: DetectedResource): HTMLElement {
       const failed = previewFailedIds.has(r.id);
-      const row = h('div', `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}`);
-      const icon = getResourceTypeIcon(r.type);
+      const row = h(
+        'div',
+        `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}`,
+      );
       const sizeStr = r.size > 0 ? formatFileSize(r.size) : '';
       const quality = r.quality ? `<span class="quality-tag">${r.quality}</span>` : '';
       const track = trackKindLabel(r);
       const trackTag = track ? `<span class="track-tag ${track.cls}">${esc(track.text)}</span>` : '';
       const name = r.filename || tryDecodeUrl(r.url) || r.url;
-      const confBadge = r.confidence === 'high'
-        ? '<span class="conf-badge high">★</span>'
-        : '';
 
       row.innerHTML = `
         <input type="checkbox" class="check" ${selectedIds.has(r.id) ? 'checked' : ''}>
-        <span class="type-icon">${icon}</span>
         <div class="info">
-          <div class="filename" title="${esc(r.url)}">${confBadge}${esc(name)}</div>
+          <div class="filename" title="${esc(r.url)}">${esc(name)}</div>
           <div class="meta">
             ${trackTag}
             ${quality}
@@ -755,8 +959,8 @@ export default defineContentScript({
             ${failed ? `<span class="preview-limited" title="${t('panel.previewLimitedHint')}">${t('panel.previewLimited')}</span>` : ''}
           </div>
         </div>
-        ${isPreviewable(r) ? `<button class="preview-btn" title="${t('panel.previewTitle')}">${svg(SVG_PREVIEW)}</button>` : ''}
-        <button class="dl-btn" title="${t('panel.download')}">${svg(SVG_DOWNLOAD)}</button>
+        ${isPreviewable(r) ? `<button class="preview-btn" title="${t('panel.previewTitle')}">${esc(t('panel.previewTitle'))}</button>` : ''}
+        <button class="dl-btn" title="${t('panel.download')}">${esc(t('panel.download'))}</button>
       `;
 
       const cb = row.querySelector('.check') as HTMLInputElement;
@@ -774,32 +978,42 @@ export default defineContentScript({
 
       const dl = row.querySelector('.dl-btn') as HTMLButtonElement;
       dl.addEventListener('click', () => {
-        browser.runtime.sendMessage({
+        if (dl.disabled) return;
+        dl.disabled = true;
+        void browser.runtime.sendMessage({
           action: 'downloadResource',
           url: r.url, referrer: r.pageUrl || location.href,
-          filename: r.filename,
+          filename: name,
           fileSize: r.size > 0 ? r.size : undefined,
           mimeType: r.mimeType,
-        }).catch(() => {});
+        }).catch(() => {
+          dl.disabled = false;
+        });
       });
 
       return row;
     }
 
     function updateBatch(): void {
-      if (batchCountEl) batchCountEl.textContent = String(selectedIds.size);
-      if (batchBtnEl) batchBtnEl.disabled = selectedIds.size === 0;
+      const count = selectedDownloadItems().length;
+      if (batchCountEl) batchCountEl.textContent = String(count);
+      if (batchBtnEl) batchBtnEl.disabled = count === 0;
     }
 
     function updateSelectAll(): void {
       if (!selectAllEl) return;
-      const items = filtered();
-      selectAllEl.checked = items.length > 0 && items.every((r) => selectedIds.has(r.id));
+      const items = selectableItems();
+      selectAllEl.checked = items.length > 0 && items.every((item) => selectedIds.has(item.id));
     }
 
     /** 语言切换时刷新静态文本（全选 label、批量下载按钮） */
     function refreshStaticTexts(): void {
       if (selectAllText) selectAllText.textContent = ` ${t('panel.selectAll')}`;
+      if (exportDebugBtnEl) {
+        exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+        exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
+        exportDebugBtnEl.setAttribute('aria-label', t('panel.exportDebugLog'));
+      }
       if (batchBtnEl) {
         batchBtnEl.innerHTML = `${svg(SVG_DOWNLOAD)} ${t('panel.batchDownload')} (<span>0</span>)`;
         batchCountEl = batchBtnEl.querySelector('span') as HTMLElement;
@@ -807,20 +1021,111 @@ export default defineContentScript({
       }
     }
 
-    function filtered(): DetectedResource[] {
-      const base =
-        activeTab === 'all' ? resources : resources.filter((r) => r.type === activeTab);
-      return dismissedIds.size > 0 ? base.filter((r) => !dismissedIds.has(r.id)) : base;
+    function isMediaResource(resource: DetectedResource): boolean {
+      return resource.type === 'video' || resource.type === 'stream';
+    }
+
+    function mediaCandidatesForTab(tab: string): MediaCandidate[] {
+      if (tab !== 'all' && tab !== 'video' && tab !== 'stream') return [];
+      const candidates = buildMediaCandidates(resources, {
+        pageTitle: document.title,
+        pageUrl: location.href,
+        fallbackTitle: t('panel.videoCandidate'),
+        videoLabel: t('panel.videoIndex'),
+        manifests: dashManifests,
+      });
+      return candidates.filter(
+        (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
+      );
+    }
+
+    /** DASH 候选已经代表的原始轨道不再作为独立音频/视频资源重复展示。 */
+    function aggregatedMediaResourceIds(): Set<string> {
+      return new Set(
+        buildMediaCandidates(resources, {
+          pageTitle: document.title,
+          pageUrl: location.href,
+          fallbackTitle: t('panel.videoCandidate'),
+          videoLabel: t('panel.videoIndex'),
+          manifests: dashManifests,
+        }).flatMap((candidate) => candidate.rawResourceIds),
+      );
+    }
+
+    function rawResourcesForTab(tab: string): DetectedResource[] {
+      const base = tab === 'all'
+        ? resources.filter((resource) => !isMediaResource(resource))
+        : resources
+          .filter((resource) => resource.type === tab)
+          .filter((resource) => !isMediaResource(resource));
+      const aggregatedIds = aggregatedMediaResourceIds();
+      return dismissedIds.size > 0
+        ? base.filter(
+          (resource) =>
+            !dismissedIds.has(resource.id) && !aggregatedIds.has(resource.id),
+        )
+        : base.filter((resource) => !aggregatedIds.has(resource.id));
+    }
+
+    function displayItemsForTab(tab: string): Array<DetectedResource | MediaCandidate> {
+      return [...mediaCandidatesForTab(tab), ...rawResourcesForTab(tab)];
+    }
+
+    function resourceRowsForTab(tab: string): ContentResourceRow[] {
+      const rows: ContentResourceRow[] = [];
+      for (const item of displayItemsForTab(tab)) {
+        if ('downloadable' in item && item.variants.length > 0) {
+          for (const variant of item.variants) {
+            rows.push({ id: contentResourceRowId(item, variant), item, variant });
+          }
+        } else {
+          rows.push({ id: item.id, item });
+        }
+      }
+      return rows;
+    }
+
+    function selectableItems(): ContentResourceRow[] {
+      return resourceRowsForTab(activeTab).filter(
+        (row) => !('downloadable' in row.item) || row.item.downloadable,
+      );
+    }
+
+    function selectedDownloadItems(): Array<Record<string, unknown>> {
+      const items: Array<Record<string, unknown>> = [];
+      for (const row of resourceRowsForTab(activeTab)) {
+        if (!selectedIds.has(row.id)) continue;
+        if ('downloadable' in row.item) {
+          if (!row.item.downloadable || !row.variant) continue;
+          items.push({
+            url: row.variant.videoUrl,
+            audioUrl: row.variant.audioUrl,
+            referrer: row.item.pageUrl || location.href,
+            filename: candidateFilename(row.item, row.variant),
+            fileSize: row.variant.fileSize,
+            mimeType: row.variant.mimeType,
+          });
+        } else {
+          items.push({
+            url: row.item.url,
+            referrer: row.item.pageUrl || location.href,
+            filename: row.item.filename || tryDecodeUrl(row.item.url) || row.item.url,
+            fileSize: row.item.size > 0 ? row.item.size : undefined,
+            mimeType: row.item.mimeType,
+          });
+        }
+      }
+      return items;
     }
 
     /* ================================================================
      *  视频浮动按钮
      * ================================================================ */
 
-    /** 该 tab 已嗅探到的媒体类资源（video/audio/stream），供浮标关联 blob/MSE 视频。 */
+    /** 该 tab 已嗅探到的视频类资源，供浮标关联 blob/MSE 视频。 */
     function mediaResources(): DetectedResource[] {
       return resources.filter(
-        (r) => r.type === 'video' || r.type === 'audio' || r.type === 'stream',
+        (r) => r.type === 'video' || r.type === 'stream',
       );
     }
 
@@ -864,54 +1169,55 @@ export default defineContentScript({
      *  清晰度选择小窗（离散音视频轨对下载）
      * ================================================================ */
 
-    function shortCodec(codecs?: string): string {
-      return codecs ? codecs.split('.')[0] : '';
-    }
-
     /** 由权威 DASH manifest 构造清晰度选项：真清晰度（height/bandwidth），配对码率最高的音频轨。 */
     function qualityOptionsFromManifest(manifest: DashManifest): QualityOption[] {
       const bestAudio = manifest.audio.length > 0
         ? manifest.audio.reduce((best, cur) => ((cur.bandwidth ?? 0) > (best.bandwidth ?? 0) ? cur : best))
         : undefined;
+      const filenameCandidate: MediaCandidate = {
+        id: 'float-manifest',
+        title: document.title || t('panel.videoCandidate'),
+        type: 'stream',
+        source: 'dash',
+        pageUrl: location.href,
+        variants: [],
+        rawResourceIds: [],
+        fragmentCount: 0,
+        downloadable: true,
+      };
       const kindLabel = bestAudio
         ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
         : t('panel.trackVideo');
 
-      return manifest.video.map((v) => {
-        let quality: string;
-        if (v.height) quality = `${v.height}P`;
-        else if (v.bandwidth) quality = `${Math.round(v.bandwidth / 1000)}kbps`;
-        else quality = t('panel.qualityUnknown');
-        const codec = shortCodec(v.codecs);
+      return selectQualityVideoTracks(manifest.video).map((v) => {
+        const rawQuality = v.height
+          ? `${v.height}p`
+          : v.bandwidth
+            ? `${Math.round(v.bandwidth / 1000)}kbps`
+            : '';
+        const qualityKey = friendlyQualityKey(rawQuality);
+        const baseQuality = qualityKey ? t(qualityKey) : t('panel.qualityUnknown');
+        const resolution = qualityResolutionLabel(rawQuality);
+        const quality = isHighFrameRate(v.frameRate) && resolution
+          ? `${resolution} · ${t('panel.quality60fps')}`
+          : baseQuality;
 
         return {
-          quality: codec ? `${quality} · ${codec}` : quality,
+          quality,
           videoUrl: v.url,
           audioUrl: bestAudio?.url,
-          // manifest 不含时长信息，无法估出真实文件大小，诚实显示码率而非伪造大小。
-          sizeLabel: v.bandwidth ? `${Math.round(v.bandwidth / 1000)} kbps` : '',
+          sizeLabel: '',
           kindLabel,
-          filename: tryDecodeUrl(v.url) || 'video.mp4',
+          filename: candidateFilename(filenameCandidate, {
+            id: `float:${v.id ?? v.url}`,
+            label: quality,
+            videoUrl: v.url,
+            audioUrl: bestAudio?.url,
+          }),
           mimeType: v.mimeType,
           fileSize: undefined,
         };
       });
-    }
-
-    /** 由嗅探碎片的 groupTrackPairs 结果构造清晰度选项（manifest 缺失时的保底，清晰度可能不准）。 */
-    function qualityOptionsFromTrackGroups(groups: TrackPairGroup[]): QualityOption[] {
-      return groups.map((g) => ({
-        quality: g.quality,
-        videoUrl: g.videoUrl,
-        audioUrl: g.audioUrl,
-        sizeLabel: g.videoRes.size > 0 ? formatFileSize(g.videoRes.size) : '',
-        kindLabel: g.audioUrl
-          ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
-          : t('panel.trackVideo'),
-        filename: g.videoRes.filename,
-        mimeType: g.videoRes.mimeType,
-        fileSize: g.videoRes.size > 0 ? g.videoRes.size : undefined,
-      }));
     }
 
     function buildQualityPicker(root: HTMLElement): void {
@@ -968,7 +1274,7 @@ export default defineContentScript({
 
     /** 发送单条轨道（或音视频轨对）下载请求给 background。 */
     function downloadQualityOption(option: QualityOption): void {
-      browser.runtime.sendMessage({
+      void browser.runtime.sendMessage({
         action: 'downloadResource',
         url: option.videoUrl,
         audioUrl: option.audioUrl,

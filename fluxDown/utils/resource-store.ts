@@ -193,8 +193,11 @@ export function getTabsWithResources(): number[] {
 
 // ===== Badge 更新 =====
 
-export async function updateBadgeForTab(tabId: number): Promise<void> {
-  const count = getResourceCountForTab(tabId);
+export async function updateBadgeForTab(
+  tabId: number,
+  displayedCount?: number,
+): Promise<void> {
+  const count = displayedCount ?? getResourceCountForTab(tabId);
   const text = count > 0 ? String(count) : "";
 
   try {
