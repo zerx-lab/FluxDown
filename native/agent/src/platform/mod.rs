@@ -178,18 +178,226 @@ fn launch_path(path: &Path, reveal: bool) -> Result<(), PlatformError> {
 
 #[cfg(windows)]
 fn launch_path(path: &Path, reveal: bool) -> Result<(), PlatformError> {
-    let mut command = if reveal {
-        let mut command = std::process::Command::new("explorer.exe");
-        command.arg(format!("/select,{}", path.display()));
-        command
-    } else {
-        let mut command = std::process::Command::new("cmd.exe");
-        command.arg("/c").arg("start").arg("").arg(path);
-        command
-    };
+    if reveal {
+        // 「在文件夹中显示」：
+        // 1) 第三方默认文件管理器兜底（#122，同 hub reveal_file.rs 的
+        //    platform_reveal_file）：OneCommander / Total Commander / Files
+        //    等只改 HKCR\Directory\shell\open\command、未挂 Explorer
+        //    Replacement 钩子的 FM 拦截不到 SHOpenFolderAndSelectItems——API
+        //    会直接拉起 Explorer 且返回成功，永远走不到回退；必须先探测，
+        //    命中即退化为「用第三方 FM 打开父目录」（不选中）。
+        // 2) Explorer 仍是默认：走标准 Shell API「打开父目录并选中」（见
+        //    sh_open_folder_and_select），失败回退 open 动词打开父目录，
+        //    保证至少有响应。
+        let dir = if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent().unwrap_or(path).to_path_buf()
+        };
+        if default_dir_handler_is_third_party() {
+            tracing::debug!("reveal: third-party default file manager detected; opening dir");
+            return open_with_shell(&dir);
+        }
+        if !path.is_dir() && sh_open_folder_and_select(&path.to_string_lossy()) {
+            return Ok(());
+        }
+        tracing::debug!(
+            "reveal: SHOpenFolderAndSelectItems failed; falling back to ShellExecuteW open"
+        );
+        return open_with_shell(&dir);
+    }
+    open_with_shell(path)
+}
+
+/// 打开任意路径（文件走默认关联程序、目录走默认文件管理器）。
+///
+/// 与 hub `reveal_file.rs` 的 `platform_open_dir` 同一策略：优先直接调 Win32
+/// `ShellExecuteW`（"open" 默认 verb，双击的 API 本体，无 cmd 引号/元字符
+/// 解析风险）；失败才回退 `cmd /c start "" <path>`（start 内部同样走 open
+/// 关联；第一个空引号串是窗口标题，不能省）。
+#[cfg(windows)]
+fn open_with_shell(path: &Path) -> Result<(), PlatformError> {
+    use std::os::windows::process::CommandExt;
+
+    let text = path.to_string_lossy();
+    if shell_execute_open(&text) {
+        return Ok(());
+    }
+    tracing::debug!("ShellExecuteW failed; falling back to cmd /c start");
+    let mut command = std::process::Command::new("cmd.exe");
+    command.raw_arg(format!(r#"/c start "" "{text}""#));
     set_no_console_window(&mut command);
     command.spawn()?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 打开/定位的 Shell 调用与注册表探测：与 hub `reveal_file.rs` 同款实现的有意
+// 复制（crate 边界隔离），下列每个函数在 hub 都有同名对应，修改务必双份同步。
+// ---------------------------------------------------------------------------
+
+/// 直接调 Win32 `ShellExecuteW`（"open" 默认 verb）打开路径——微软官方的
+/// 「打开」调用（双击的 API 本体），系统按 open 动词关联解析默认处理程序。
+/// 与 `hub/src/reveal_file.rs` 的同名实现保持一致。
+/// 返回值 > 32 表示成功（Win32 约定）。
+#[cfg(windows)]
+fn shell_execute_open(path: &str) -> bool {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide/verb 均为有效的 NUL 结尾 UTF-16 缓冲，在调用期间存活；
+    // 其余参数按文档允许为空。
+    let h = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    h as usize > 32
+}
+
+/// 标准 Shell API：打开 `path` 所在父目录并选中 `path`（文件/目录皆可）。
+///
+/// `SHOpenFolderAndSelectItems` 是 Windows Shell 的标准「定位到文件夹视图」
+/// 调用，不硬编码 explorer.exe——文件夹视图由系统 Shell 打开。用 cidl=0 的
+/// 简写形式：`pidlFolder` 直接指向要选中的项，系统自动打开其父目录并选中
+/// 该项（见 MSDN 备注）。实现与 CLaunch 的 `openParentFolder` 同款：
+/// `SHParseDisplayName` 解析绝对 PIDL + `CoTaskMemFree` 释放 + 防御性 COM
+/// 初始化；失败返回 false，调用方回退为 open 动词打开父目录。
+///
+/// **同步注意**：本函数与 hub `reveal_file.rs` 的同名函数是有意复制的两份
+/// （crate 边界隔离），修改任一份务必同步另一份。
+///
+/// 文档要求先 CoInitialize：本函数运行在 RPC 处理线程上，这里做防御性
+/// 初始化——`hr < 0` 视为失败；S_OK/S_FALSE 都会取得本线程初始化引用，
+/// 结尾须配对 `CoUninitialize`。
+#[cfg(windows)]
+fn sh_open_folder_and_select(path: &str) -> bool {
+    use windows_sys::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize};
+    use windows_sys::Win32::UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName};
+
+    /// `COINIT_APARTMENTTHREADED`。
+    const COINIT_APARTMENTTHREADED: u32 = 2;
+
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide 为有效的 NUL 结尾 UTF-16 缓冲，在调用期间存活；其余参数
+    // 按文档允许为空。
+    let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED) };
+    if hr < 0 {
+        tracing::debug!(hr = format!("{hr:#x}"), "CoInitializeEx failed");
+        return false;
+    }
+
+    let mut pidl = std::ptr::null_mut();
+    // SAFETY: wide 存活于调用期间；ppidl 接收输出，sfgaoIn/psfgaoOut 传空。
+    // pbc 为 *mut c_void，须用 null_mut()——Rust 无 *const → *mut 隐式转换。
+    let hr_parse = unsafe {
+        SHParseDisplayName(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            &mut pidl,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if hr_parse < 0 || pidl.is_null() {
+        tracing::debug!(hr = format!("{hr_parse:#x}"), "SHParseDisplayName failed");
+        // SAFETY: 与上方取得初始化引用的 CoInitializeEx 配对。
+        unsafe { CoUninitialize() };
+        return false;
+    }
+
+    // cidl=0 简写：pidlFolder 直接指向要选中的项，系统打开其父目录并选中它。
+    // SAFETY: pidl 为 SHParseDisplayName 成功返回的有效 PIDL，调用后立即释放。
+    let hr_select = unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) };
+    // SAFETY: 释放 SHParseDisplayName 按 COM 分配器返回的 PIDL。
+    unsafe { CoTaskMemFree(pidl.cast()) };
+    // SAFETY: 与上方取得初始化引用的 CoInitializeEx 配对。
+    unsafe { CoUninitialize() };
+    if hr_select < 0 {
+        tracing::debug!(
+            hr = format!("{hr_select:#x}"),
+            "SHOpenFolderAndSelectItems failed"
+        );
+        return false;
+    }
+    true
+}
+
+/// Windows：系统「打开目录」的默认处理程序是否已被替换成第三方文件管理器。
+///
+/// 读取 `HKCR\Directory\shell\<默认 verb>\command` 并解析其可执行文件名。
+/// 非 `explorer.exe` 时返回 `true`；键缺失、读取失败或仍是 Explorer 时返回
+/// `false`（保留 Shell API 的选中体验）。`<默认 verb>` 取 `Directory\shell`
+/// 的默认值，为空或 `none` 时回退到 `open`（第三方替换的常用写法）。只改了
+/// 此键的第三方 FM（OneCommander 等）拦截不到 `SHOpenFolderAndSelectItems`，
+/// 必须靠它兜底。与 hub `reveal_file.rs` 的同名函数保持一致。
+#[cfg(windows)]
+fn default_dir_handler_is_third_party() -> bool {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CLASSES_ROOT;
+
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let Ok(shell) = hkcr.open_subkey(r"Directory\shell") else {
+        return false;
+    };
+    let verb = shell.get_value::<String, _>("").unwrap_or_default();
+    let verb = verb.trim();
+    let verb = if verb.is_empty() || verb.eq_ignore_ascii_case("none") {
+        "open"
+    } else {
+        verb
+    };
+    let Ok(cmd_key) = hkcr.open_subkey(format!(r"Directory\shell\{verb}\command")) else {
+        return false;
+    };
+    let Ok(cmd) = cmd_key.get_value::<String, _>("") else {
+        return false;
+    };
+    match exe_basename(&cmd) {
+        Some(name) => !name.eq_ignore_ascii_case("explorer.exe"),
+        None => false,
+    }
+}
+
+/// 返回裸路径字符串中首个（不区分大小写）以 `.exe` 结尾的字节偏移；找不到
+/// 时返回 `None`。`.exe` 全为 ASCII，`to_ascii_lowercase` 不改变字节长度
+/// 与 UTF-8 边界，返回的偏移量可直接用于原字符串按字节切片。
+#[cfg(windows)]
+fn find_exe_end(cmd: &str) -> Option<usize> {
+    cmd.to_ascii_lowercase().find(".exe").map(|idx| idx + 4)
+}
+
+/// 从注册表 shell command 字符串解析出可执行文件的文件名（basename）。
+/// 支持带引号路径（`"C:\..\fm.exe" "%1"`）与裸路径
+/// (`%SystemRoot%\Explorer.exe /idlist,...`)；返回 `None` 表示无法解析。
+#[cfg(windows)]
+fn exe_basename(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    let exe = if let Some(rest) = cmd.strip_prefix('"') {
+        rest.split('"').next().unwrap_or(rest)
+    } else {
+        // 裸路径可能含空格且未加引号写入注册表（如部分第三方文件管理器的安装
+        // 程序），不能简单按空白切分；取字符串中首个（不区分大小写）以
+        // ".exe" 结尾的位置，把它之前的内容整体当作可执行文件路径，大小写
+        // 按原样保留。找不到 ".exe" 时退回按空白切分。
+        match find_exe_end(cmd) {
+            Some(end) => &cmd[..end],
+            None => cmd.split_whitespace().next().unwrap_or(cmd),
+        }
+    };
+    let base = exe.rsplit(['\\', '/']).next().unwrap_or(exe).trim();
+    if base.is_empty() {
+        None
+    } else {
+        Some(base.to_string())
+    }
 }
 
 #[cfg(windows)]

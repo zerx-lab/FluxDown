@@ -754,9 +754,11 @@ class DownloadTask {
 
   /// 「打开所在文件夹」应传给原生层的路径。
   ///
-  /// 已完成且文件存在时返回完整文件路径，便于文件管理器定位并选中文件；下载中、
-  /// 暂停、失败、排队、准备中、文件丢失等状态下最终文件可能尚未落盘，改为返回
-  /// 保存目录 [saveDir]，避免原生层将不存在的文件路径误判后打不开任何位置。
+  /// 已完成且文件存在时返回完整文件路径，文件管理器打开父目录时可据此选中
+  /// 文件（Windows 走 SHOpenFolderAndSelectItems，macOS open -R、Linux
+  /// D-Bus ShowItems 同样支持选中）；下载中、暂停、失败、排队、准备中、
+  /// 文件丢失等状态下最终文件可能尚未落盘，改为返回保存目录 [saveDir]，
+  /// 避免原生层将不存在的文件路径误判后打不开任何位置。
   /// [saveDir] 为空时退回文件路径。
   String get revealFolderPath {
     if (status == TaskStatus.completed && !fileMissing) return filePath;
