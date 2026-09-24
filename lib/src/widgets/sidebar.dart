@@ -20,6 +20,7 @@ import 'category_edit_dialog.dart';
 import 'context_menu.dart';
 import 'queue_manager_dialog.dart';
 import 'rss_manager_dialog.dart';
+import 'rss_unread_icon.dart';
 import 'rss_wizard_dialog.dart';
 import '../models/rss_provider.dart';
 import '../models/plugin_provider.dart';
@@ -1423,10 +1424,14 @@ class _RssNavItemState extends State<_RssNavItem> {
             ),
             child: Row(
               children: [
-                Icon(
-                  unhealthy ? LucideIcons.circleAlert : LucideIcons.rss,
-                  size: 14,
-                  color: unhealthy ? AppColors.red : textColor,
+                RssUnreadIcon(
+                  unreadCount: source.unreadCount,
+                  surfaceColor: c.surface1,
+                  child: Icon(
+                    unhealthy ? LucideIcons.circleAlert : LucideIcons.rss,
+                    size: 14,
+                    color: unhealthy ? AppColors.red : textColor,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -1468,25 +1473,6 @@ class _RssNavItemState extends State<_RssNavItem> {
                   ),
                 ] else if (widget.isRefreshing)
                   _rssSpinner(c)
-                else if (source.unreadCount > 0)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 5,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      color: m.soft(c.accent),
-                      borderRadius: m.brSm,
-                    ),
-                    child: Text(
-                      source.unreadCount.toString(),
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        color: c.accent,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  )
                 else if (!source.enabled)
                   Icon(LucideIcons.pause, size: 10, color: c.textMuted),
               ],
