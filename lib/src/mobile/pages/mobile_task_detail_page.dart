@@ -421,21 +421,15 @@ class _ProgressCard extends StatelessWidget {
                   style: TextStyle(fontSize: 12, color: c.textSecondary),
                 ),
               ],
-              if (task.status == TaskStatus.error) ...[
-                Expanded(
-                  child: Text(
-                    task.errorMessage.isEmpty
-                        ? s.subtitleError
-                        : task.errorMessage,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.end,
-                    style: TextStyle(fontSize: 12, color: c.statusError),
-                  ),
-                ),
-              ],
             ],
           ),
+          if (task.status == TaskStatus.error) ...[
+            const SizedBox(height: 6),
+            Text(
+              task.errorMessage.isEmpty ? s.subtitleError : task.errorMessage,
+              style: TextStyle(fontSize: 12, color: c.statusError),
+            ),
+          ],
           const SizedBox(height: 12),
           MobileProgressBar(
             progress: task.isIndeterminate ? 1.0 : task.progress,
