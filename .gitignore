@@ -126,3 +126,4 @@ assets/screenshot/
 .worktrees/
 website-v2/
 .tmp*
+.github/context-mode/sessions/
