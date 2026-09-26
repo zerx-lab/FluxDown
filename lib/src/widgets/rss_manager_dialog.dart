@@ -9,8 +9,10 @@ import '../models/download_task.dart';
 import '../models/plugin_provider.dart';
 import '../models/rss_filter.dart';
 import '../models/rss_provider.dart';
+import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
+import 'flux_sonner.dart';
 import 'overflow_tooltip_text.dart';
 import 'rss_item_list.dart' show rssReasonLabel;
 
@@ -85,6 +87,7 @@ class _RssManagerDialogState extends State<RssManagerDialog> {
   bool _smartEpisode = false;
   bool _sendReferer = true;
   bool _notifyOnDownload = true;
+  bool _isPickingSaveDir = false;
   String _providerId = 'rss';
   String _providerConfig = '';
 
@@ -144,6 +147,35 @@ class _RssManagerDialogState extends State<RssManagerDialog> {
       if (s.sourceId == widget.sourceId) return s;
     }
     return null;
+  }
+
+  Future<void> _pickSaveDir() async {
+    if (_isPickingSaveDir) return;
+    setState(() => _isPickingSaveDir = true);
+    try {
+      final result = await FilePickerService.pickDirectory(
+        dialogTitle: currentS.selectSaveDir,
+        initialDirectory: _saveDirCtrl.text.trim().isNotEmpty
+            ? _saveDirCtrl.text.trim()
+            : null,
+      );
+      if (result != null && mounted) {
+        setState(() => _saveDirCtrl.text = result);
+      }
+    } on FilePickerException catch (e) {
+      if (!mounted) return;
+      final s = currentS;
+      final message = switch (e.reason) {
+        FilePickerFailReason.timeout => s.filePickerErrorTimeout,
+        FilePickerFailReason.noDialogTool => s.filePickerErrorNoTool,
+        FilePickerFailReason.comInitFailed => s.filePickerErrorNative,
+        FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
+        FilePickerFailReason.unknown => s.filePickerErrorGeneric,
+      };
+      FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
+    } finally {
+      if (mounted) setState(() => _isPickingSaveDir = false);
+    }
   }
 
   void _save() {
@@ -375,7 +407,8 @@ class _RssManagerDialogState extends State<RssManagerDialog> {
             for (final entry in providerOptions.entries)
               ShadOption(value: entry.key, child: Text(entry.value)),
           ],
-          selectedOptionBuilder: (ctx, value) => Text(providerOptions[value] ?? value),
+          selectedOptionBuilder: (ctx, value) =>
+              Text(providerOptions[value] ?? value),
           onChanged: (value) {
             if (value == null) return;
             setState(() {
@@ -422,7 +455,8 @@ class _RssManagerDialogState extends State<RssManagerDialog> {
                       for (final v in kRssIntervalOptions)
                         ShadOption(value: v, child: Text(_intervalLabel(s, v))),
                     ],
-                    selectedOptionBuilder: (ctx, v) => Text(_intervalLabel(s, v)),
+                    selectedOptionBuilder: (ctx, v) =>
+                        Text(_intervalLabel(s, v)),
                     onChanged: (v) {
                       if (v != null) setState(() => _intervalMinutes = v);
                     },
@@ -458,9 +492,27 @@ class _RssManagerDialogState extends State<RssManagerDialog> {
                 children: [
                   _fieldLabel(s.rssSaveDirLabel, c),
                   const SizedBox(height: 6),
-                  ShadInput(
-                    controller: _saveDirCtrl,
-                    placeholder: Text(s.rssSaveDirHint),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ShadInput(
+                          controller: _saveDirCtrl,
+                          placeholder: Text(s.rssSaveDirHint),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Tooltip(
+                        message: s.selectSaveDir,
+                        child: ShadButton.ghost(
+                          onPressed: _isPickingSaveDir ? null : _pickSaveDir,
+                          size: ShadButtonSize.sm,
+                          width: 32,
+                          height: 32,
+                          padding: EdgeInsets.zero,
+                          child: Icon(LucideIcons.folderOpen, size: 15),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -513,8 +565,9 @@ class _RssManagerDialogState extends State<RssManagerDialog> {
     );
   }
 
-  String _intervalLabel(S s, int minutes) =>
-      minutes < 60 ? s.rssEveryMinutes(minutes) : s.rssEveryHours(minutes ~/ 60);
+  String _intervalLabel(S s, int minutes) => minutes < 60
+      ? s.rssEveryMinutes(minutes)
+      : s.rssEveryHours(minutes ~/ 60);
 
   // ─────────────────────────────────────────────
   // 过滤规则（下半屏实时预览 = 本功能相对 qBittorrent 的核心差异化）

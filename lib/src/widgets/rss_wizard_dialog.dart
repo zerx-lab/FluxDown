@@ -8,8 +8,10 @@ import '../models/download_queue.dart';
 import '../models/download_task.dart';
 import '../models/plugin_provider.dart';
 import '../models/rss_provider.dart';
+import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
+import 'flux_sonner.dart';
 
 /// 新建订阅向导：**一个输入框 + 一次验证 + 两个选项**，30 秒完成（设计文档 P1）。
 ///
@@ -60,6 +62,7 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
       .toString();
 
   bool _validating = false;
+  bool _isPickingSaveDir = false;
   int _seenValidateSeq = 0;
   RssValidateResult? _result;
 
@@ -104,6 +107,35 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
       _result = null;
     });
     widget.rss.validate(requestId: _requestId, url: url);
+  }
+
+  Future<void> _pickSaveDir() async {
+    if (_isPickingSaveDir) return;
+    setState(() => _isPickingSaveDir = true);
+    try {
+      final result = await FilePickerService.pickDirectory(
+        dialogTitle: currentS.selectSaveDir,
+        initialDirectory: _saveDirCtrl.text.trim().isNotEmpty
+            ? _saveDirCtrl.text.trim()
+            : null,
+      );
+      if (result != null && mounted) {
+        setState(() => _saveDirCtrl.text = result);
+      }
+    } on FilePickerException catch (e) {
+      if (!mounted) return;
+      final s = currentS;
+      final message = switch (e.reason) {
+        FilePickerFailReason.timeout => s.filePickerErrorTimeout,
+        FilePickerFailReason.noDialogTool => s.filePickerErrorNoTool,
+        FilePickerFailReason.comInitFailed => s.filePickerErrorNative,
+        FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
+        FilePickerFailReason.unknown => s.filePickerErrorGeneric,
+      };
+      FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
+    } finally {
+      if (mounted) setState(() => _isPickingSaveDir = false);
+    }
   }
 
   void _subscribe() {
@@ -212,7 +244,8 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
                   for (final entry in providerOptions.entries)
                     ShadOption(value: entry.key, child: Text(entry.value)),
                 ],
-                selectedOptionBuilder: (ctx, value) => Text(providerOptions[value] ?? value),
+                selectedOptionBuilder: (ctx, value) =>
+                    Text(providerOptions[value] ?? value),
                 onChanged: (value) {
                   if (value == null) return;
                   setState(() {
@@ -343,9 +376,29 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
                             ),
                           ),
                           const SizedBox(height: 6),
-                          ShadInput(
-                            controller: _saveDirCtrl,
-                            placeholder: Text(s.rssSaveDirHint),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ShadInput(
+                                  controller: _saveDirCtrl,
+                                  placeholder: Text(s.rssSaveDirHint),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Tooltip(
+                                message: s.selectSaveDir,
+                                child: ShadButton.ghost(
+                                  onPressed: _isPickingSaveDir
+                                      ? null
+                                      : _pickSaveDir,
+                                  size: ShadButtonSize.sm,
+                                  width: 32,
+                                  height: 32,
+                                  padding: EdgeInsets.zero,
+                                  child: Icon(LucideIcons.folderOpen, size: 15),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
