@@ -36,6 +36,8 @@ class RssItemList extends StatefulWidget {
 
 class _RssItemListState extends State<RssItemList> {
   final _searchCtrl = TextEditingController();
+  final Set<String> _selectedGuids = {};
+  String _selectionSourceId = '';
   String _query = '';
 
   /// 条目排序方向。默认新→旧：引擎回来的快照本来就是这个顺序（DB
@@ -59,11 +61,26 @@ class _RssItemListState extends State<RssItemList> {
         if (source == null) return const SizedBox.shrink();
         final items = widget.provider.selectedItems;
         final visible = _visibleItems(items);
+        final selectedGuids = _selectionSourceId == source.sourceId
+            ? _selectedGuids
+            : const <String>{};
+        final selectedItems = items
+            .where((item) => selectedGuids.contains(item.guid))
+            .toList(growable: false);
         // 底色由主区统一给（HomePage._buildContentArea = surface1）。
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildHeader(s, c, source),
+            if (visible.isNotEmpty || selectedItems.isNotEmpty)
+              _buildSelectionBar(
+                s,
+                c,
+                source.sourceId,
+                visible,
+                selectedItems,
+                selectedGuids,
+              ),
             Expanded(
               child: items.isEmpty
                   ? _buildEmpty(s, c, source)
@@ -78,9 +95,15 @@ class _RssItemListState extends State<RssItemList> {
                           child: _RssItemRow(
                             key: ValueKey('${item.sourceId}/${item.guid}'),
                             item: item,
+                            selected: selectedGuids.contains(item.guid),
                             busy: widget.provider.isItemDownloading(
                               item.sourceId,
                               item.guid,
+                            ),
+                            onSelectionChanged: (selected) => _setItemSelected(
+                              source.sourceId,
+                              item.guid,
+                              selected,
                             ),
                             onDownload: () => widget.provider.downloadItem(
                               item.sourceId,
@@ -102,6 +125,117 @@ class _RssItemListState extends State<RssItemList> {
     );
   }
 
+  Widget _buildSelectionBar(
+    S s,
+    AppColors c,
+    String sourceId,
+    List<RssItemEntry> visible,
+    List<RssItemEntry> selectedItems,
+    Set<String> selectedGuids,
+  ) {
+    final allVisibleSelected =
+        visible.isNotEmpty &&
+        visible.every((item) => selectedGuids.contains(item.guid));
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: c.border)),
+      ),
+      child: Row(
+        children: [
+          _RssSelectionCheckbox(
+            checked: allVisibleSelected,
+            onTap: () =>
+                _setVisibleSelected(sourceId, visible, !allVisibleSelected),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            s.rssSelectVisible,
+            style: TextStyle(fontSize: 11.5, color: c.textMuted),
+          ),
+          const Spacer(),
+          if (selectedItems.isNotEmpty) ...[
+            Text(
+              s.rssSelectedCount(selectedItems.length),
+              style: TextStyle(fontSize: 11.5, color: c.textMuted),
+            ),
+            const SizedBox(width: 8),
+            ShadButton.secondary(
+              size: ShadButtonSize.sm,
+              height: 22,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              onPressed: () => _downloadSelected(sourceId, selectedItems),
+              child: Text(
+                s.rssDownloadSelected,
+                style: const TextStyle(fontSize: 11),
+              ),
+            ),
+            const SizedBox(width: 6),
+            ShadButton.ghost(
+              size: ShadButtonSize.sm,
+              height: 22,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              onPressed: () => _clearSelection(sourceId),
+              child: Text(
+                s.rssClearSelection,
+                style: const TextStyle(fontSize: 11),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _setItemSelected(String sourceId, String guid, bool selected) {
+    setState(() {
+      _prepareSelectionForSource(sourceId);
+      if (selected) {
+        _selectedGuids.add(guid);
+      } else {
+        _selectedGuids.remove(guid);
+      }
+    });
+  }
+
+  void _setVisibleSelected(
+    String sourceId,
+    List<RssItemEntry> visible,
+    bool selected,
+  ) {
+    setState(() {
+      _prepareSelectionForSource(sourceId);
+      for (final item in visible) {
+        if (selected) {
+          _selectedGuids.add(item.guid);
+        } else {
+          _selectedGuids.remove(item.guid);
+        }
+      }
+    });
+  }
+
+  void _clearSelection(String sourceId) {
+    setState(() {
+      _prepareSelectionForSource(sourceId);
+      _selectedGuids.clear();
+    });
+  }
+
+  void _prepareSelectionForSource(String sourceId) {
+    if (_selectionSourceId == sourceId) return;
+    _selectionSourceId = sourceId;
+    _selectedGuids.clear();
+  }
+
+  void _downloadSelected(String sourceId, List<RssItemEntry> selectedItems) {
+    for (final item in selectedItems) {
+      widget.provider.downloadItem(sourceId, item.guid);
+    }
+    _clearSelection(sourceId);
+  }
+
   /// 过滤 + 排序后的条目。
   ///
   /// 排序按 `pubDate` 走，并用**原始下标**做 tie-break：`List.sort` 不保证
@@ -120,7 +254,9 @@ class _RssItemListState extends State<RssItemList> {
     indexed.sort((a, b) {
       final (ai, ax) = a;
       final (bi, bx) = b;
-      if ((ax.pubDate == 0) != (bx.pubDate == 0)) return ax.pubDate == 0 ? 1 : -1;
+      if ((ax.pubDate == 0) != (bx.pubDate == 0)) {
+        return ax.pubDate == 0 ? 1 : -1;
+      }
       final byDate = _oldestFirst
           ? ax.pubDate.compareTo(bx.pubDate)
           : bx.pubDate.compareTo(ax.pubDate);
@@ -367,9 +503,11 @@ class _RssItemListState extends State<RssItemList> {
 /// 一条 RSS 条目行。状态 chip 决定行尾可用操作（P4：条目状态可见 + 可覆盖）。
 class _RssItemRow extends StatefulWidget {
   final RssItemEntry item;
+  final bool selected;
 
   /// 引擎正在为这条条目抓种子 / 建任务。
   final bool busy;
+  final ValueChanged<bool> onSelectionChanged;
   final VoidCallback onDownload;
   final VoidCallback onIgnore;
   final VoidCallback onOpenTask;
@@ -377,7 +515,9 @@ class _RssItemRow extends StatefulWidget {
   const _RssItemRow({
     super.key,
     required this.item,
+    required this.selected,
     required this.busy,
+    required this.onSelectionChanged,
     required this.onDownload,
     required this.onIgnore,
     required this.onOpenTask,
@@ -409,6 +549,11 @@ class _RssItemRowState extends State<_RssItemRow> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
+            _RssSelectionCheckbox(
+              checked: widget.selected,
+              onTap: () => widget.onSelectionChanged(!widget.selected),
+            ),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -531,6 +676,37 @@ class _RssItemRowState extends State<_RssItemRow> {
     final d = DateTime.fromMillisecondsSinceEpoch(unixSeconds * 1000);
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+  }
+}
+
+/// RSS 选择框沿用「全部文件」管理列表里的方框图标和主题色。
+class _RssSelectionCheckbox extends StatelessWidget {
+  final bool checked;
+  final VoidCallback onTap;
+
+  const _RssSelectionCheckbox({required this.checked, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: Center(
+            child: Icon(
+              checked ? LucideIcons.squareCheck : LucideIcons.square,
+              size: 16,
+              color: checked ? c.accent : c.textMuted,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
