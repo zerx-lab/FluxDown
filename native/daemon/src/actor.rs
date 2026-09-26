@@ -413,7 +413,10 @@ async fn run_actor(
                 engine.manager.load_and_send_all_tasks().await;
             }
             _ = file_scan.tick() => engine.manager.spawn_file_scan(),
-            _ = queue_schedule.tick() => engine.manager.tick_queue_schedules().await,
+            _ = queue_schedule.tick() => {
+                engine.manager.tick_queue_schedules().await;
+                engine.manager.tick_system_proxy();
+            }
             _ = rss_poll.tick() => engine.manager.tick_rss_sources(),
             event = receive_rss_event(&mut rss_events), if rss_events.is_some() => {
                 if let Some(event) = event { engine.manager.on_rss_event(event).await; }

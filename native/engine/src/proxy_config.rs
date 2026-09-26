@@ -160,7 +160,7 @@ impl ProxyType {
 // ---------------------------------------------------------------------------
 
 /// Complete proxy configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyConfig {
     pub mode: ProxyMode,
     pub proxy_type: ProxyType,
