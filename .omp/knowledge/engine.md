@@ -77,7 +77,7 @@
 - `segment_coordinator.rs`（~5300 行）：IDM 式动态分段（按需分配、对半拆最大在传分段救慢速、连接复用、per-domain 连接策略学习——负面上限 + 正面起步提示双观察面、`fallocate` 预分配）。
 - `speed_limiter.rs`：全局 token bucket（Arc 可克隆，limit==0=不限）。
 - `meta_prober.rs`：队列任务后台探测文件名/大小（8s；HTTP HEAD / FTP SIZE / magnet dn= / torrent 跳过）。
-- `proxy_config.rs`：无/系统（Windows 注册表）/手动/**自动**（`ProxyMode::Auto`）；HTTP/HTTPS/SOCKS4/5；`test_proxy_connection` 测延迟。
+- `proxy_config.rs`：无/系统（Windows 注册表）/手动/**自动**（`ProxyMode::Auto`）；HTTP/HTTPS/SOCKS4/5；`test_proxy_connection` 测延迟。**运行期跟随**：`DownloadManager::tick_system_proxy`（宿主 20s 与 `tick_queue_schedules` 同 tick 搭车）+ `refresh_system_proxy_if_changed`（挂 `create_task` 新任务与 `resume_task` 暂停→开始入口）仅在 Auto 模式比对系统代理快照，变化即清 `DecisionCache` + failover 状态，**新任务/手动恢复的任务**随当前系统代理重评（运行中任务不热切；route_health 先验靠指纹 epoch 自愈；System 模式代理地址烤在共享 client 里，仅设置变更时重建）。
 - `auto_proxy.rs`：`ProxyMode::Auto` 决策机器——任务直连无阻塞启动（保留 CDN 聚合资格），越过 6s 爬升期且剩余 ≥4MiB 时，对全部可用候选（手动字段 + 系统代理；相同端点去重）并行各采 256KiB；按相同的单连接量纲比较（不让多分段总速掩盖慢连接），取最快且吞吐 ≥2× 的代理，经 `NodePool::switch_to_client` 在分段边界热切换。host 级决策缓存两层：内存租约 `DecisionCache` 记录胜出来源（重启清零）+ `route_health.rs` 持久化先验（config `auto_route_health`，网络指纹 epoch——换网整表丢弃、**离线=unknown 不清表**）；持久层未记录代理来源，故手动与系统候选并存时只缩短复评等待、不盲采纳旧 Proxy 先验。Cooldown 指数退避 / NoSwitch 完整性门禁；局部续传永不直接采纳 host 代理租约，必须重新采样 validator。failover **独立于通用重试配额**：手动代理、系统代理、本地直连在一个自动恢复周期内各尝试至多一次，当前链路传输失败就切到尚未尝试的候选；三路均失败后只服从通用重试，杜绝 ping-pong。任务级最终链路落 `tasks.auto_route` + `EngineEvent::TaskRouteChanged`（含 `direct:failover` / `proxy:failover:{manual,system}`），双端详情面板可追溯。代理设置变更同点清 `DecisionCache` + `route_health` + `domain_conn_caps` + failover 状态。
 - `disk_space.rs`：跨平台余量查询（HLS remux/DASH mux ENOSPC 预检）。
 - `proc.rs`：`no_console_window` —— **每个 console 子进程 spawn 都必须包裹**（ffmpeg/ffprobe/yt-dlp/tar/探版），防 Windows 闪窗。

@@ -1901,6 +1901,7 @@ pub async fn run(
             }
             _ = queue_schedule_tick.tick() => {
                 engine.manager.tick_queue_schedules().await;
+                engine.manager.tick_system_proxy();
             }
             Some(done) = done_rx.recv() => {
                 engine.manager.on_task_done(&done).await;

@@ -1688,6 +1688,10 @@ pub struct DownloadManager {
     /// 当前自动恢复周期已尝试过的三条链路。用户手动恢复/重下会清除，
     /// 自动重试不会清除；每条链路至多一次，防止坏链路无限 ping-pong。
     auto_failover_attempts: HashMap<String, AutoFailoverAttempts>,
+    /// 最近一次解析到的系统代理（`detect_system_proxy()` 结果，内存级）。
+    /// 仅 [`Self::tick_system_proxy`]（`ProxyMode::Auto`）用：与最新检测
+    /// 比对，变化即作废 Auto 决策缓存，让新任务按当前系统代理状态重评。
+    last_system_proxy: Option<ProxyConfig>,
     /// 当前正在下载（或排队准备启动）的任务已预订的临时文件路径集合。
     ///
     /// 用于解决 `dedup_filename` 的 TOCTOU 竞态：多个并发任务同时调用
@@ -1837,6 +1841,7 @@ impl DownloadManager {
             auto_proxy_cache: crate::auto_proxy::DecisionCache::new(),
             auto_failover_pending: HashMap::new(),
             auto_failover_attempts: HashMap::new(),
+            last_system_proxy: crate::proxy_config::detect_system_proxy().ok().flatten(),
             reserved_temp_paths: Arc::new(Mutex::new(HashSet::new())),
             sink,
             selector,
@@ -2842,7 +2847,51 @@ impl DownloadManager {
         self.auto_failover_pending.clear();
         self.auto_failover_attempts.clear();
         crate::route_health::clear_all(&self.db);
+        // 系统代理基线重同步：`tick_system_proxy` 的比对基准必须反映
+        // 「此刻」的 OS 状态，避免沿用旧基线在后续 tick 误触发/漏触发。
+        self.last_system_proxy = crate::proxy_config::detect_system_proxy().ok().flatten();
         Ok(())
+    }
+
+    /// 系统代理变化感知 tick（宿主 ~20s 调用一次，与 `tick_queue_schedules`
+    /// 同节拍搭车，不新增宿主分支）。
+    ///
+    /// 仅 [`ProxyMode::Auto`] 生效；判定逻辑见
+    /// [`Self::refresh_system_proxy_if_changed`]。
+    pub fn tick_system_proxy(&mut self) {
+        self.refresh_system_proxy_if_changed();
+    }
+
+    /// 比对最新系统代理与基线快照，变化即作废 Auto 的 host 决策缓存与
+    /// failover 状态。
+    ///
+    /// 调用点：宿主 20s tick、[`Self::create_task`]（新任务）与
+    /// [`Self::resume_task`]（暂停→开始）——后两者让用户动作即时生效，
+    /// 不用等下一个 tick。**新任务**随当前系统代理状态重新评估（候选解析
+    /// 在采样时现场检测，天然读到新值；此处清的是租约/冷却/先验，否则旧
+    /// 决策最长滞留 10min）。运行中任务按既有设计不热切。`route_health`
+    /// 的持久化先验无需在此清：网络指纹本身覆盖系统代理，60s 内经
+    /// `ensure_net_epoch` 自愈。其余模式是纯 no-op——用户显式选择的链路
+    /// 不该被 OS 状态打断。
+    fn refresh_system_proxy_if_changed(&mut self) {
+        if self.proxy_config.mode != ProxyMode::Auto {
+            return;
+        }
+        let detected = match crate::proxy_config::detect_system_proxy() {
+            Ok(v) => v,
+            Err(e) => {
+                log_info!("[manager] system proxy re-detect failed: {e}");
+                return;
+            }
+        };
+        if detected == self.last_system_proxy {
+            return;
+        }
+        log_info!("[manager] system proxy changed, invalidating auto-route decisions");
+        self.last_system_proxy = detected;
+        self.auto_proxy_cache.clear();
+        self.auto_failover_pending.clear();
+        self.auto_failover_attempts.clear();
     }
 
     /// 清空已学习的域名连接上限观察（内存 + 持久化）。
@@ -4752,6 +4801,9 @@ impl DownloadManager {
             );
             return None;
         }
+        // 新任务入口感知系统代理变化：本任务的 Auto 评估即按当前系统
+        // 代理状态进行，不等下一个 20s tick。
+        self.refresh_system_proxy_if_changed();
         // HTTP Basic 认证：显式凭据 → 生成 Authorization 头
         // （覆盖捕获到的同名头）并按需保存到站点凭据库；未显式提供且头中
         // 无 Authorization → 自动套用该站点已保存的凭据。注入发生在请求
@@ -6133,6 +6185,9 @@ impl DownloadManager {
     }
 
     pub async fn resume_task(&mut self, task_id: &str) {
+        // 暂停→开始是用户「让新系统代理状态生效」的动作入口：先感知变化
+        // 作废旧决策，本次恢复的 Auto 采样/租约即按当前系统代理评估。
+        self.refresh_system_proxy_if_changed();
         // 用户手动恢复开启新一轮重试预算。若备用链路已排程但尚未回流，
         // 保留其目标与单次守卫；否则允许新的手动周期再换路一次。
         self.auto_retry_counts.remove(task_id);

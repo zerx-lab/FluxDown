@@ -351,6 +351,7 @@ pub async fn run_actor(
             }
             _ = queue_schedule_tick.tick() => {
                 engine.manager.tick_queue_schedules().await;
+                engine.manager.tick_system_proxy();
             }
             _ = rss_poll_tick.tick() => {
                 engine.manager.tick_rss_sources();
