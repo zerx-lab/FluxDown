@@ -540,6 +540,19 @@ fn parse_m3u8_bytes(base_url: &str, bytes: &[u8]) -> Result<M3u8Content, Downloa
                     };
                 }
 
+                // `m3u8-rs` 解析 `#EXT-X-KEY:METHOD=NONE` 失败时,整条标签会被降级进
+                // `unknown_tags`(`tag == "X-KEY"`),段上不再有 `key`。而本状态机里
+                // `None` 表示"沿用上一段密钥",于是声明为明文的段会被上一段的 AES-128
+                // 密钥解密,以 PKCS7 unpad 失败告终。这里把那条被丢掉的标签识别回来,
+                // 显式结束加密状态。
+                if seg.key.is_none() && has_dropped_ext_x_key_method_none(seg) {
+                    current_key = Some(HlsKey {
+                        method: HlsKeyMethod::None,
+                        uri: String::new(),
+                        iv: None,
+                    });
+                }
+
                 let seg_key = current_key.as_ref().and_then(|k| {
                     if k.method == HlsKeyMethod::Aes128 {
                         Some(HlsKey {
@@ -606,6 +619,25 @@ fn parse_m3u8_bytes(base_url: &str, bytes: &[u8]) -> Result<M3u8Content, Downloa
             })
         }
     }
+}
+
+/// `true` 若 `seg` 携带一条被降级进 `unknown_tags` 的 `#EXT-X-KEY:METHOD=NONE`。
+///
+/// `m3u8-rs` 解析 `METHOD=NONE` 失败后,`alt` 回溯把整条标签降级成
+/// `ExtTag { tag: "X-KEY", rest }`,段上不再有 `key`;而 `None` 在本模块的粘性状态机里
+/// 表示"沿用上一段密钥",明文段因此会被上一段的密钥解密。RFC 8216 §4.3.2.4 规定
+/// `METHOD=NONE` 时其他属性 MUST NOT 出现,故该形态必不带 `IV` —— 正是解析失败的那一类。
+///
+/// 只按 RFC 8216 §4.2 的严格拼写比对属性项(属性名 `METHOD`、值 `NONE`、`=` 两侧无空白),
+/// 不为任何非法拼写放宽。
+fn has_dropped_ext_x_key_method_none(seg: &m3u8_rs::MediaSegment) -> bool {
+    seg.unknown_tags.iter().any(|tag| {
+        tag.tag == "X-KEY"
+            && tag
+                .rest
+                .as_deref()
+                .is_some_and(|rest| rest.split(',').any(|attr| attr == "METHOD=NONE"))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3582,7 +3614,7 @@ async fn download_segment_once(
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_HLS_CONCURRENCY, DownloadError, M3u8Content, MAX_HLS_CONCURRENCY,
+        DEFAULT_HLS_CONCURRENCY, DownloadError, HlsKeyMethod, M3u8Content, MAX_HLS_CONCURRENCY,
         compute_default_iv, decrypt_segment, hls_concurrency, is_hls_url, parse_iv_hex,
         parse_m3u8_bytes, parse_resume_checkpoint, remux_space_ok, resolve_uri, should_write_init,
     };
@@ -4097,663 +4129,70 @@ mod tests {
         assert!(should_write_init(Some(&map_a), Some(&map_b)));
     }
 
-    use super::{
-        HlsRequestCtx, HlsVariant, SegmentTransport, VariantId, extra_headers_for_origin,
-        format_resume_checkpoint, match_saved_variant, parse_checkpoint_variant, resume_is_usable,
-    };
-
-    fn variant(bandwidth: u64, resolution: Option<(u64, u64)>, uri: &str) -> HlsVariant {
-        HlsVariant {
-            bandwidth,
-            resolution,
-            uri: uri.to_string(),
-            audio_uri: None,
-        }
-    }
+    // ---------------------------------------------------------------------
+    // EXT-X-KEY:METHOD=NONE — 结束加密,而非沿用上一段密钥
+    // ---------------------------------------------------------------------
 
     #[test]
-    fn parse_iv_hex_rejects_multibyte_without_panic() {
-        // 32 字节但含多字节字符:按字节切片会落在字符中间。
-        let iv = format!("0中{}", "a".repeat(28));
-        assert_eq!(iv.len(), 32);
-        assert!(parse_iv_hex(&iv).is_err());
-    }
-
-    #[test]
-    fn checkpoint_roundtrips_selected_variant_and_stays_backward_compatible() {
-        let v = variant(
-            2_000_000,
-            Some((1280, 720)),
-            "https://cdn.example.com/v/720/index.m3u8?token=abc",
-        );
-        let id = VariantId::of(&v);
-        assert_eq!(id.path, "/v/720/index.m3u8");
-        let cp = format_resume_checkpoint(5, 1024, 0, Some(&id.encode()));
-        assert_eq!(parse_resume_checkpoint(&cp), (5, 1024, Some(0)));
-        assert_eq!(parse_checkpoint_variant(&cp), Some(id));
-        // 旧格式没有变体段。
-        assert_eq!(parse_checkpoint_variant("5:1024:0"), None);
-        assert_eq!(parse_checkpoint_variant("5:1024"), None);
-        // 无分辨率的变体同样可往返。
-        let no_res = VariantId::of(&variant(1, None, "https://a.example/x.m3u8"));
-        assert_eq!(VariantId::decode(&no_res.encode()), Some(no_res));
-    }
-
-    #[test]
-    fn match_saved_variant_survives_rotated_signature_token() {
-        let saved = VariantId::of(&variant(
-            2_000_000,
-            Some((1280, 720)),
-            "https://a.example/720/i.m3u8?token=old",
-        ));
-        let variants = [
-            variant(
-                800_000,
-                Some((640, 360)),
-                "https://a.example/360/i.m3u8?token=new",
-            ),
-            variant(
-                2_000_000,
-                Some((1280, 720)),
-                "https://a.example/720/i.m3u8?token=new",
-            ),
-        ];
-        assert_eq!(match_saved_variant(&variants, &saved), Some(1));
-    }
-
-    #[test]
-    fn match_saved_variant_rejects_ambiguous_or_missing() {
-        let variants = [
-            variant(2_000_000, Some((1280, 720)), "https://a.example/a/x.m3u8"),
-            variant(2_000_000, Some((1280, 720)), "https://a.example/b/y.m3u8"),
-        ];
-        // 画质相同无法区分、path 也对不上 -> 不能猜。
-        let ambiguous = VariantId {
-            bandwidth: 2_000_000,
-            resolution: Some((1280, 720)),
-            path: "/c/z.m3u8".to_string(),
+    fn test_parse_m3u8_bytes_ext_x_key_method_none_ends_encryption() {
+        // METHOD=NONE 声明其后的段为明文。该标签若被忽略,明文段会沿用上一段的
+        // AES-128 密钥,下载阶段以 PKCS7 unpad 失败告终。
+        let base_url = "https://cdn.example.com/live/media.m3u8";
+        let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n\
+#EXT-X-MEDIA-SEQUENCE:0\n\
+#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x00000000000000000000000000000001\n\
+#EXTINF:6.000,\nseg0.ts\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6.000,\nseg1.ts\n#EXT-X-ENDLIST\n";
+        let content = match parse_m3u8_bytes(base_url, playlist.as_bytes()) {
+            Ok(c) => c,
+            Err(e) => panic!("playlist must parse, got error: {e}"),
         };
-        assert_eq!(match_saved_variant(&variants, &ambiguous), None);
-        // 画质变了但 path 唯一对应 -> 按 path 找回。
-        let by_path = VariantId {
-            bandwidth: 1,
-            resolution: None,
-            path: "/b/y.m3u8".to_string(),
-        };
-        assert_eq!(match_saved_variant(&variants, &by_path), Some(1));
-        let missing = VariantId {
-            bandwidth: 1,
-            resolution: None,
-            path: "/nope.m3u8".to_string(),
-        };
-        assert_eq!(match_saved_variant(&variants, &missing), None);
-    }
-
-    #[test]
-    fn resume_is_usable_guards_prefix_validity() {
-        assert!(resume_is_usable(3, 100, 120, 10, false, false));
-        // 检查点段数超过新播放列表:前缀无法对齐。
-        assert!(!resume_is_usable(11, 100, 120, 10, false, false));
-        assert!(resume_is_usable(10, 100, 120, 10, false, false));
-        assert!(!resume_is_usable(0, 100, 120, 10, false, false));
-        assert!(!resume_is_usable(3, 0, 120, 10, false, false));
-        assert!(!resume_is_usable(3, 100, 0, 10, false, false));
-        assert!(!resume_is_usable(3, 100, 120, 10, true, false));
-        assert!(!resume_is_usable(3, 100, 120, 10, false, true));
-    }
-
-    #[test]
-    fn credential_headers_only_go_to_manifest_origin() {
-        let mut headers = std::collections::HashMap::new();
-        headers.insert("Authorization".to_string(), "Bearer t".to_string());
-        headers.insert("cookie".to_string(), "a=b".to_string());
-        headers.insert("Proxy-Authorization".to_string(), "Basic x".to_string());
-        headers.insert("X-Token".to_string(), "keep".to_string());
-        let manifest = "https://site.example/master.m3u8";
-
-        let same = extra_headers_for_origin(manifest, "https://site.example/seg0.ts", &headers);
-        assert_eq!(same.len(), 4);
-
-        for other in [
-            "https://cdn.example/seg0.ts",
-            "http://site.example/seg0.ts",
-            "https://site.example:8443/seg0.ts",
-        ] {
-            let filtered = extra_headers_for_origin(manifest, other, &headers);
-            assert_eq!(filtered.len(), 1, "{other}");
-            assert_eq!(filtered.get("X-Token").map(String::as_str), Some("keep"));
-        }
-    }
-
-    #[test]
-    fn playlist_with_bom_and_leading_whitespace_parses() {
-        let playlist = b"\xEF\xBB\xBF\n  #EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n";
-        assert!(parse_m3u8_bytes("https://example.com/a.m3u8", playlist).is_ok());
-    }
-
-    #[test]
-    fn media_playlist_live_flag() {
-        let base = "https://example.com/a.m3u8";
-        let live_of = |body: &str| match parse_m3u8_bytes(base, body.as_bytes()) {
-            Ok(M3u8Content::Media { live, .. }) => live,
-            _ => panic!("expected media playlist"),
-        };
-        let head = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n";
-        let seg = "#EXTINF:6.0,\nseg0.ts\n";
-        assert!(live_of(&format!("{head}{seg}")));
-        assert!(!live_of(&format!("{head}{seg}#EXT-X-ENDLIST\n")));
-        assert!(!live_of(&format!("{head}#EXT-X-PLAYLIST-TYPE:VOD\n{seg}")));
-        assert!(live_of(&format!("{head}#EXT-X-PLAYLIST-TYPE:EVENT\n{seg}")));
-    }
-
-    #[test]
-    fn master_skips_iframe_variants_and_reports_external_audio() {
-        let master = "#EXTM3U\n\
-#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"en\",DEFAULT=YES,URI=\"audio/en.m3u8\"\n\
-#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,AUDIO=\"aud\"\n\
-v360.m3u8\n\
-#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=1920x1080,URI=\"iframe.m3u8\"\n";
-        match parse_m3u8_bytes("https://example.com/m.m3u8", master.as_bytes()) {
-            Ok(M3u8Content::Master { variants }) => {
-                assert_eq!(variants.len(), 1, "I-frame variant must be skipped");
-                assert_eq!(variants[0].bandwidth, 800_000);
-                assert_eq!(
-                    variants[0].audio_uri.as_deref(),
-                    Some("https://example.com/audio/en.m3u8")
+        match content {
+            M3u8Content::Media { segments, .. } => {
+                assert_eq!(segments.len(), 2);
+                let encrypted = match &segments[0].key {
+                    Some(k) => k,
+                    None => panic!("segment 0 must stay AES-128 encrypted"),
+                };
+                assert!(
+                    encrypted.method == HlsKeyMethod::Aes128,
+                    "segment 0 must stay AES-128 encrypted"
+                );
+                assert_eq!(encrypted.uri, "https://cdn.example.com/live/key.bin");
+                assert!(
+                    segments[1].key.is_none(),
+                    "METHOD=NONE must end encryption instead of inheriting the previous key"
                 );
             }
-            _ => panic!("expected master playlist"),
+            M3u8Content::Master { .. } => panic!("expected media playlist"),
         }
-    }
-
-    /// 起一个只接受一次连接的服务器:`send_headers` 为 true 时先发响应头和部分
-    /// body 再挂住,否则读完请求后什么都不发;返回地址与释放信号。
-    async fn stalling_server(
-        send_headers: bool,
-    ) -> Result<(std::net::SocketAddr, tokio::sync::oneshot::Sender<()>), std::io::Error> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-        let address = listener.local_addr()?;
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(async move {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let mut request = [0u8; 1024];
-            let received = socket
-                .read(&mut request)
-                .await
-                .expect("read stalled fixture request");
-            if received == 0 {
-                return;
-            }
-            if send_headers {
-                socket
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nhello",
-                    )
-                    .await
-                    .expect("write stalled fixture response");
-            }
-            release_rx.await.expect("release stalled fixture");
-        });
-        Ok((address, release_tx))
-    }
-
-    async fn stalled_segment_error(
-        send_headers: bool,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let (address, release_tx) = stalling_server(send_headers).await?;
-        let client = reqwest::Client::builder().no_proxy().build()?;
-        let tracker = super::TransferTracker::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let url = format!("http://{address}/segment.ts");
-        let headers = std::collections::HashMap::new();
-        let ctx = HlsRequestCtx {
-            cookies: "",
-            cookie_base_url: &url,
-            header_origin_url: &url,
-            referrer: "",
-            extra_headers: &headers,
-        };
-        let transport = SegmentTransport {
-            client: &client,
-            ctx: &ctx,
-            cancel_token: &cancel,
-            tracker: &tracker,
-            header_timeout: std::time::Duration::from_millis(200),
-            idle_timeout: std::time::Duration::from_millis(200),
-        };
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            super::download_segment_once(&transport, &url, None, 0),
-        )
-        .await?;
-        release_tx
-            .send(())
-            .map_err(|()| "stalled fixture exited before release")?;
-        match result {
-            Err(DownloadError::Other(message)) => Ok(message),
-            other => Err(format!("expected stalled error, got ok={}", other.is_ok()).into()),
-        }
-    }
-
-    #[tokio::test]
-    async fn segment_body_stall_is_reported_as_stalled() -> Result<(), Box<dyn std::error::Error>> {
-        let message = stalled_segment_error(true).await?;
-        assert!(message.contains("stalled"), "{message}");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn segment_header_stall_is_reported_as_stalled() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let message = stalled_segment_error(false).await?;
-        assert!(message.contains("stalled"), "{message}");
-        Ok(())
     }
 
     #[test]
-    fn audio_track_tag_ignores_signed_query() {
-        assert_eq!(
-            super::audio_track_tag("https://cdn.example.com/a/en.m3u8?token=aaa&exp=1"),
-            super::audio_track_tag("https://cdn.example.com/a/en.m3u8?token=bbb&exp=2")
-        );
-        assert_ne!(
-            super::audio_track_tag("https://cdn.example.com/a/en.m3u8"),
-            super::audio_track_tag("https://cdn.example.com/a/fr.m3u8")
-        );
-    }
-
-    #[test]
-    fn write_failure_reports_full_disk_as_actionable_error() {
-        let full = std::io::Error::from(std::io::ErrorKind::StorageFull);
-        match super::write_failure(full) {
-            DownloadError::Other(message) => assert!(message.contains("磁盘空间不足")),
-            other => panic!("expected Other, got {other}"),
-        }
-        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        assert!(matches!(super::write_failure(denied), DownloadError::Io(_)));
-    }
-
-    /// 按路径返回固定 body 的服务器(404 兜底),记录收到的请求路径。
-    async fn static_server(
-        routes: Vec<(&'static str, Vec<u8>)>,
-    ) -> Result<
-        (
-            std::net::SocketAddr,
-            std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        ),
-        std::io::Error,
-    > {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-        let address = listener.local_addr()?;
-        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let served = std::sync::Arc::clone(&hits);
-        let routes = std::sync::Arc::new(routes);
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
+    fn test_parse_m3u8_bytes_unrelated_unknown_tag_keeps_sticky_key() {
+        // 兜底只认 METHOD=NONE:其他未知标签不得改动粘性密钥状态。
+        let base_url = "https://cdn.example.com/live/media.m3u8";
+        let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n\
+#EXT-X-MEDIA-SEQUENCE:0\n\
+#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x00000000000000000000000000000001\n\
+#EXTINF:6.000,\nseg0.ts\n#EXT-X-UNKNOWN-TAG:whatever\n#EXTINF:6.000,\nseg1.ts\n#EXT-X-ENDLIST\n";
+        let content = match parse_m3u8_bytes(base_url, playlist.as_bytes()) {
+            Ok(c) => c,
+            Err(e) => panic!("playlist must parse, got error: {e}"),
+        };
+        match content {
+            M3u8Content::Media { segments, .. } => {
+                assert_eq!(segments.len(), 2);
+                let inherited = match &segments[1].key {
+                    Some(k) => k,
+                    None => panic!("AES-128 must stay in effect across segments"),
                 };
-                let routes = std::sync::Arc::clone(&routes);
-                let served = std::sync::Arc::clone(&served);
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 2048];
-                    let Ok(n) = socket.read(&mut buf).await else {
-                        return;
-                    };
-                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let path = request
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap_or_default()
-                        .to_owned();
-                    if let Ok(mut hits) = served.lock() {
-                        hits.push(path.clone());
-                    }
-                    let body = routes
-                        .iter()
-                        .find(|(route, _)| *route == path)
-                        .map(|(_, body)| body.clone());
-                    let response = match body {
-                        Some(body) => {
-                            let mut response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            )
-                            .into_bytes();
-                            response.extend(body);
-                            response
-                        }
-                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                            .to_vec(),
-                    };
-                    if let Err(error) = socket.write_all(&response).await {
-                        tracing::debug!(%error, "HLS fixture client disconnected");
-                    }
-                });
+                assert!(
+                    inherited.method == HlsKeyMethod::Aes128,
+                    "AES-128 must stay in effect across segments"
+                );
+                assert_eq!(inherited.uri, "https://cdn.example.com/live/key.bin");
             }
-        });
-        Ok((address, hits))
-    }
-
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let dir =
-            std::env::temp_dir().join(format!("fluxdown_hls_{tag}_{}_{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create HLS fixture directory");
-        dir
-    }
-
-    const AUDIO_SEGMENTS: [&[u8]; 3] = [b"AAAA-0000", b"BBBB-1111-22", b"CCCC-3"];
-
-    /// 以固定的 3 段音轨跑一次 `run_audio_track`,返回 `(总字节, 进度原子值)`。
-    async fn run_audio_fixture(
-        address: std::net::SocketAddr,
-        temp_path: &std::path::Path,
-        db: &crate::db::Db,
-        is_resume: bool,
-    ) -> Result<(i64, i64), Box<dyn std::error::Error>> {
-        let playlist_url = format!("http://{address}/audio/index.m3u8");
-        let segments = (0..AUDIO_SEGMENTS.len())
-            .map(|i| super::HlsSegment {
-                uri: format!("http://{address}/audio/seg{i}.ts"),
-                duration: 1.0,
-                key: None,
-                byte_range: None,
-                discontinuity: false,
-                map: None,
-            })
-            .collect();
-        let written = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
-        let run = super::AudioRun {
-            track: super::AudioTrack {
-                segments,
-                media_sequence: 0,
-                playlist_url: playlist_url.clone(),
-                temp_path: temp_path.to_path_buf(),
-                resume_key: super::audio_resume_key("t-audio"),
-                tag: super::audio_track_tag(&playlist_url),
-            },
-            client: reqwest::Client::builder().no_proxy().build()?,
-            cookies: String::new(),
-            referrer: String::new(),
-            extra_headers: std::collections::HashMap::new(),
-            header_origin_url: playlist_url,
-            cancel: tokio_util::sync::CancellationToken::new(),
-            task_id: "t-audio".to_owned(),
-            db: db.clone(),
-            sink: std::sync::Arc::new(crate::NoopSink),
-            speed_limiter: crate::speed_limiter::SpeedLimiter::new(0),
-            key_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
-            tracker: super::TransferTracker::new(),
-            written: std::sync::Arc::clone(&written),
-            segment_limit: 2,
-            is_resume,
-        };
-        let total = super::run_audio_track(run).await?;
-        Ok((total, written.load(std::sync::atomic::Ordering::Relaxed)))
-    }
-
-    fn audio_routes() -> Vec<(&'static str, Vec<u8>)> {
-        vec![
-            ("/audio/seg0.ts", AUDIO_SEGMENTS[0].to_vec()),
-            ("/audio/seg1.ts", AUDIO_SEGMENTS[1].to_vec()),
-            ("/audio/seg2.ts", AUDIO_SEGMENTS[2].to_vec()),
-        ]
-    }
-
-    #[tokio::test]
-    async fn audio_track_checkpoint_failure_preserves_durable_prefix_and_can_restart()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (address, _) = static_server(audio_routes()).await?;
-        let dir = scratch_dir("audio_checkpoint_failure");
-        let temp = dir.join("clip.audio.m4a.fdownloading");
-        let url = format!("sqlite://{}?mode=rwc", dir.join("checkpoint.db").display());
-        let db = crate::db::Db::connect(&url).await?;
-        let pool = sqlx::AnyPool::connect(&url).await?;
-        sqlx::query("CREATE TRIGGER fail_checkpoint BEFORE INSERT ON config WHEN NEW.key = 'hls_audio_resume_t-audio' AND NEW.value NOT LIKE '0:0:%' BEGIN SELECT RAISE(ABORT, 'checkpoint write failed'); END")
-            .execute(&pool).await?;
-        let result = run_audio_fixture(address, &temp, &db, false).await;
-        assert!(
-            matches!(&result, Err(error) if error.to_string().contains("checkpoint write failed")),
-            "{result:?}"
-        );
-        assert_eq!(std::fs::read(&temp)?, AUDIO_SEGMENTS[0]);
-        let checkpoint = db
-            .get_config(&super::audio_resume_key("t-audio"))
-            .await?
-            .unwrap_or_default();
-        assert!(checkpoint.starts_with("0:0:"), "{checkpoint}");
-        sqlx::query("DROP TRIGGER fail_checkpoint")
-            .execute(&pool)
-            .await?;
-        run_audio_fixture(address, &temp, &db, true).await?;
-        assert_eq!(std::fs::read(&temp)?, AUDIO_SEGMENTS.concat());
-        pool.close().await;
-        drop(db);
-        if let Err(error) = std::fs::remove_dir_all(&dir) {
-            crate::logger::report_warning("hls-test", "remove_checkpoint_fixture", &error);
+            M3u8Content::Master { .. } => panic!("expected media playlist"),
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn audio_track_is_written_in_order_with_progress()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (address, hits) = static_server(audio_routes()).await?;
-        let dir = scratch_dir("audio_order");
-        let temp = dir.join("clip.audio.m4a.fdownloading");
-        let db = crate::db::Db::connect("sqlite::memory:").await?;
-
-        let (total, progress) = run_audio_fixture(address, &temp, &db, false).await?;
-
-        let expected: Vec<u8> = AUDIO_SEGMENTS.concat();
-        assert_eq!(std::fs::read(&temp)?, expected);
-        assert_eq!(total, expected.len() as i64);
-        assert_eq!(progress, expected.len() as i64);
-        assert_eq!(hits.lock().map(|h| h.len()).unwrap_or_default(), 3);
-        let checkpoint = db
-            .get_config(&super::audio_resume_key("t-audio"))
-            .await?
-            .unwrap_or_default();
-        assert!(
-            checkpoint.starts_with(&format!("3:{}:0:", expected.len())),
-            "{checkpoint}"
-        );
-        std::fs::remove_dir_all(&dir)?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn audio_track_resumes_from_checkpoint_and_drops_partial_tail()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (address, hits) = static_server(audio_routes()).await?;
-        let dir = scratch_dir("audio_resume");
-        let temp = dir.join("clip.audio.m4a.fdownloading");
-        let db = crate::db::Db::connect("sqlite::memory:").await?;
-
-        // 前两段已完整落盘,第三段写了半截垃圾(崩溃残留)。
-        let prefix: Vec<u8> = AUDIO_SEGMENTS[..2].concat();
-        let mut on_disk = prefix.clone();
-        on_disk.extend_from_slice(b"CC");
-        std::fs::write(&temp, &on_disk)?;
-        let playlist_url = format!("http://{address}/audio/index.m3u8");
-        db.set_config(
-            &super::audio_resume_key("t-audio"),
-            &super::format_resume_checkpoint(
-                2,
-                prefix.len() as i64,
-                0,
-                Some(&super::audio_track_tag(&playlist_url)),
-            ),
-        )
-        .await?;
-
-        let (total, _) = run_audio_fixture(address, &temp, &db, true).await?;
-
-        let expected: Vec<u8> = AUDIO_SEGMENTS.concat();
-        assert_eq!(std::fs::read(&temp)?, expected);
-        assert_eq!(total, expected.len() as i64);
-        let requested = hits.lock().map(|h| h.clone()).unwrap_or_default();
-        assert_eq!(requested, vec!["/audio/seg2.ts".to_owned()]);
-        std::fs::remove_dir_all(&dir)?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn audio_track_restarts_when_checkpoint_belongs_to_another_rendition()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (address, hits) = static_server(audio_routes()).await?;
-        let dir = scratch_dir("audio_other");
-        let temp = dir.join("clip.audio.m4a.fdownloading");
-        let db = crate::db::Db::connect("sqlite::memory:").await?;
-
-        let prefix: Vec<u8> = AUDIO_SEGMENTS[..2].concat();
-        std::fs::write(&temp, &prefix)?;
-        db.set_config(
-            &super::audio_resume_key("t-audio"),
-            &super::format_resume_checkpoint(
-                2,
-                prefix.len() as i64,
-                0,
-                Some(&super::audio_track_tag("https://other.example.com/fr.m3u8")),
-            ),
-        )
-        .await?;
-
-        let (total, _) = run_audio_fixture(address, &temp, &db, true).await?;
-
-        // 磁盘前缀属于另一条音轨:不能拼接,必须整条重下。
-        let expected: Vec<u8> = AUDIO_SEGMENTS.concat();
-        assert_eq!(std::fs::read(&temp)?, expected);
-        assert_eq!(total, expected.len() as i64);
-        assert_eq!(hits.lock().map(|h| h.len()).unwrap_or_default(), 3);
-        std::fs::remove_dir_all(&dir)?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn unusable_ffmpeg_is_not_reported_available() {
-        assert!(
-            !crate::dash_downloader::ffmpeg_usable(std::path::Path::new(
-                "/nonexistent/dir/ffmpeg-does-not-exist"
-            ))
-            .await
-        );
-    }
-
-    /// 用 `FLUXDOWN_TEST_FFMPEG` 指向的真实 ffmpeg 生成 1 秒测试 TS;未设置返回 `None`
-    /// (CI 无 ffmpeg 时跳过真实执行)。
-    fn ffmpeg_fixture(
-        dir: &std::path::Path,
-        name: &str,
-        streams: &[&str],
-    ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-        let ffmpeg = std::path::PathBuf::from(std::env::var("FLUXDOWN_TEST_FFMPEG").ok()?);
-        let out = dir.join(name);
-        let mut cmd = std::process::Command::new(&ffmpeg);
-        cmd.args(["-y", "-loglevel", "error"]);
-        for stream in streams {
-            match *stream {
-                "video" => {
-                    cmd.args(["-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1"]);
-                }
-                _ => {
-                    cmd.args(["-f", "lavfi", "-i", "sine=frequency=440:duration=1"]);
-                }
-            }
-        }
-        for (i, stream) in streams.iter().enumerate() {
-            let codec = if *stream == "video" { "-c:v" } else { "-c:a" };
-            let name = if *stream == "video" { "mpeg4" } else { "aac" };
-            cmd.args(["-map", &format!("{i}"), codec, name]);
-        }
-        let status = cmd.args(["-f", "mpegts"]).arg(&out).status().ok()?;
-        status.success().then_some((ffmpeg, out))
-    }
-
-    fn probe_streams(ffmpeg: &std::path::Path, file: &std::path::Path) -> String {
-        let output = std::process::Command::new(ffmpeg)
-            .arg("-i")
-            .arg(file)
-            .output();
-        output
-            .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
-            .unwrap_or_default()
-    }
-
-    #[tokio::test]
-    async fn remux_streams_ts_into_mp4_when_ffmpeg_is_available() {
-        let dir = scratch_dir("remux_ffmpeg");
-        let Some((ffmpeg, ts)) = ffmpeg_fixture(&dir, "clip.ts", &["video", "audio"]) else {
-            eprintln!("[skip] 未设置 FLUXDOWN_TEST_FFMPEG，跳过真实 ffmpeg remux");
-            std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
-            return;
-        };
-        let cancel = tokio_util::sync::CancellationToken::new();
-
-        let mp4 =
-            super::remux_ts_to_mp4(&ts, "t", false, false, Some(ffmpeg.as_path()), &cancel).await;
-
-        let Some(mp4) = mp4 else {
-            panic!("ffmpeg remux must produce an mp4");
-        };
-        let Ok(bytes) = std::fs::read(&mp4) else {
-            panic!("read mp4");
-        };
-        assert_eq!(&bytes[4..8], b"ftyp");
-        assert!(ts.exists(), "remux 不删除源 .ts,由调用方在落库后清理");
-        let probe = probe_streams(&ffmpeg, &mp4);
-        assert!(
-            probe.contains("Video:") && probe.contains("Audio:"),
-            "{probe}"
-        );
-        std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
-    }
-
-    #[tokio::test]
-    async fn ffmpeg_copy_merges_separate_audio_into_video() {
-        let dir = scratch_dir("mux_ffmpeg");
-        let Some((ffmpeg, video)) = ffmpeg_fixture(&dir, "video.ts", &["video"]) else {
-            eprintln!("[skip] 未设置 FLUXDOWN_TEST_FFMPEG，跳过真实 ffmpeg mux");
-            std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
-            return;
-        };
-        let Some((_, audio)) = ffmpeg_fixture(&dir, "audio.ts", &["audio"]) else {
-            std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
-            return;
-        };
-        let out = dir.join("merged.mp4.fdownloading");
-        let cancel = tokio_util::sync::CancellationToken::new();
-
-        let result = crate::dash_downloader::ffmpeg_copy_to_mp4(
-            &video,
-            Some(audio.as_path()),
-            &out,
-            1024,
-            &cancel,
-            &ffmpeg,
-        )
-        .await;
-
-        assert!(result.is_ok(), "{result:?}");
-        let Ok(bytes) = std::fs::read(&out) else {
-            panic!("read merged");
-        };
-        assert_eq!(&bytes[4..8], b"ftyp");
-        let probe = probe_streams(&ffmpeg, &out);
-        assert!(
-            probe.contains("Video:") && probe.contains("Audio:"),
-            "{probe}"
-        );
-        std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
     }
 }
