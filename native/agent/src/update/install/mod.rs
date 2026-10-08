@@ -416,7 +416,7 @@ where
 }
 
 /// 退出码 0 视为成功，否则把 stderr 末尾带进错误。
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn ensure_success(program: &Path, output: &std::process::Output) -> Result<(), InstallError> {
     if output.status.success() {
         return Ok(());
@@ -429,7 +429,7 @@ fn ensure_success(program: &Path, output: &std::process::Output) -> Result<(), I
     )))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn stderr_tail(stderr: &[u8]) -> String {
     const MAX_CHARS: usize = 600;
     let text = String::from_utf8_lossy(stderr);
