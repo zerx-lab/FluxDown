@@ -229,7 +229,10 @@ impl AuxiliaryWindowView {
             .absolute()
             .inset_0()
             .items_center()
-            .pl(spacing.sm)
+            .pl(crate::title_bar_left_padding(
+                cfg!(target_os = "macos"),
+                spacing.sm,
+            ))
             .pr(spacing.md)
             .child(
                 div()
@@ -429,6 +432,7 @@ impl ShellView {
                     .inset_0()
                     .items_center()
                     .gap(spacing.sm)
+                    .pl(crate::title_bar_left_padding(is_macos, spacing.sm))
                     .pr(if is_macos { spacing.md } else { spacing.sm })
                     .children(leading)
                     .children(sidebar_toggle)
