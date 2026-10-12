@@ -291,7 +291,7 @@ cargo test -p fluxdown_mobile        # Shared native mobile core
 
 ## Contributing & Community
 
-- **Bug reports / feature requests** — [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) or the in-app feedback dialog
+- **Bug reports / feature requests** — [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) or the [website feedback page](https://fluxdown.zerx.dev/feedback)
 - **QQ Group** — [832143651](https://fluxdown.zerx.dev/qq-group)
 
 Pull requests are welcome! Branch off `main` and target `main` — it is the development branch, while `stable` only tracks stable releases (maintainers advance it from `main`). Before submitting, please make sure:

@@ -9,7 +9,7 @@ body:
         感谢反馈！请尽量填写完整，便于我们快速定位。
         Thanks for reporting! Please fill in as much as possible so we can reproduce quickly.
 
-        > 💡 也可以直接在应用内（状态栏反馈按钮）或[官网反馈页](https://fluxdown.zerx.dev/feedback)提交，会自动附带系统信息与日志。
+        > 💡 也可以通过[官网反馈页](https://fluxdown.zerx.dev/feedback)提交问题。
   - type: textarea
     id: description
     attributes:

@@ -291,7 +291,7 @@ cargo test -p fluxdown_mobile        # 原生移动端共享核心
 
 ## 参与贡献与社区
 
-- **Bug 反馈 / 功能建议** —— [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) 或应用内反馈对话框
+- **Bug 反馈 / 功能建议** —— [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) 或[官网反馈页](https://fluxdown.zerx.dev/feedback)
 - **QQ 群** —— [832143651](https://fluxdown.zerx.dev/qq-group)
 
 欢迎提交 Pull Request！请从 `main` 拉分支并把 PR 提到 `main` —— `main` 是开发分支，`stable` 只承载稳定版本（由维护者从 `main` 合并前进）。提交前请确保通过：

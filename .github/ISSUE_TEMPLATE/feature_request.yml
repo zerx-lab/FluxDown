@@ -9,7 +9,7 @@ body:
         感谢你的建议！好的想法让 FluxDown 变得更好。
         Thanks for the suggestion! Great ideas make FluxDown better.
 
-        > 💡 也可以直接在应用内（状态栏反馈按钮）或[官网反馈页](https://fluxdown.zerx.dev/feedback)提交。
+        > 💡 也可以通过[官网反馈页](https://fluxdown.zerx.dev/feedback)提交建议。
   - type: textarea
     id: problem
     attributes:
