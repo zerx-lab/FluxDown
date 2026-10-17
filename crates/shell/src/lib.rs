@@ -60,6 +60,20 @@ pub(crate) const fn initial_traffic_light_y() -> Pixels {
     px(TRAFFIC_LIGHT_INSET_PX)
 }
 
+/// macOS 交通灯按钮区域安全避让宽度（逻辑像素）：
+/// 左留白（12px）+ 3 个标准交通灯按钮与间距 + 右侧间距，共 80px。
+/// 与 gpui-component 标题栏的 macOS 默认左留白 `px(80.)` 及官网 GPUI 预览一致。
+pub const MAC_TRAFFIC_LIGHT_WIDTH_PX: f32 = 80.;
+
+/// 标题栏内容的安全左留白：macOS 固定保留交通灯宽度，其他平台采用标准间距。
+pub(crate) fn title_bar_left_padding(is_macos: bool, non_mac_padding: Pixels) -> Pixels {
+    if is_macos {
+        px(MAC_TRAFFIC_LIGHT_WIDTH_PX)
+    } else {
+        non_mac_padding
+    }
+}
+
 /// 以 gpui-component `TitleBar` 窗口选项为基础，交通灯改为对齐 shell 标题栏高度。
 fn shell_window_options() -> WindowOptions {
     let mut options = TitleBar::window_options();
@@ -145,5 +159,24 @@ mod tests {
             options.window_decorations,
             Some(gpui::WindowDecorations::Client)
         );
+    }
+
+    #[test]
+    fn title_bar_left_padding_reserves_traffic_lights_on_macos() {
+        use super::{MAC_TRAFFIC_LIGHT_WIDTH_PX, title_bar_left_padding};
+
+        // macOS 下必须保留 80px 避让区，避免遮挡 AppKit 交通灯
+        assert_eq!(
+            title_bar_left_padding(true, px(8.)),
+            px(MAC_TRAFFIC_LIGHT_WIDTH_PX)
+        );
+        assert_eq!(title_bar_left_padding(true, px(0.)), px(80.));
+
+        // 非 macOS 下保留传入的常规内边距
+        assert_eq!(title_bar_left_padding(false, px(8.)), px(8.));
+        assert_eq!(title_bar_left_padding(false, px(0.)), px(0.));
+
+        // 交通灯安全避让宽度须大于交通灯本身占据的范围 (12 + 16*3 = 60px)
+        assert!(title_bar_left_padding(true, px(0.)) >= px(64.));
     }
 }
