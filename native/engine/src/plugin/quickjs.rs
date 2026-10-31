@@ -23,9 +23,10 @@ use rquickjs::{
 use tokio::sync::Semaphore;
 
 use super::runtime::{
-    AuthRequest, AuthResult, ExecutionBudget, FfmpegSpec, HostContext, HostEvents, PluginBridge,
-    PluginEntryKind, PluginError, PluginEvent, PluginHost, PluginLogLevel, PluginScript,
-    PluginTaskPort, ResolveRequest, ResolveResult, ScriptRuntime, SubscriptionRequest, YtdlpSpec,
+    ArchiveRequest, ArchiveResult, AuthRequest, AuthResult, ExecutionBudget, FfmpegSpec,
+    HostContext, HostEvents, PluginBridge, PluginEntryKind, PluginError, PluginEvent, PluginHost,
+    PluginLogLevel, PluginScript, PluginTaskPort, ResolveRequest, ResolveResult, ScriptRuntime,
+    SubscriptionRequest, YtdlpSpec,
 };
 
 /// 硬顶（**CPU/中断**预算）：单次调用的 JS 字节码执行不得跨过该墙——interrupt
@@ -77,6 +78,8 @@ pub struct QuickJsScriptRuntime {
     /// auth 平面独立信号量（M-2）：与 resolve/subscription 物理隔离，登录轮询
     /// 不会挤占正常下载任务的 resolve permit，反之亦然。
     auth_sema: Arc<Semaphore>,
+    /// Archive calls are rare but run against untrusted scripts; cap concurrent isolates.
+    archive_sema: Arc<Semaphore>,
 }
 
 impl Drop for QuickJsScriptRuntime {
@@ -113,6 +116,7 @@ impl QuickJsScriptRuntime {
             ext_hook_sema: Arc::new(Semaphore::new(workers.max(1))),
             ext_hook_waiters: Arc::new(AtomicUsize::new(0)),
             auth_sema: Arc::new(Semaphore::new(AUTH_CONCURRENCY)),
+            archive_sema: Arc::new(Semaphore::new(2)),
         })
     }
 
@@ -156,7 +160,7 @@ impl QuickJsScriptRuntime {
         info_json: String,
         retry_task_id: Option<String>,
         artifact_task_id: Option<String>,
-        bridge: Arc<dyn PluginBridge>,
+        bridge: Option<Arc<dyn PluginBridge>>,
         plugin_id: String,
         budget: ExecutionBudget,
         host: HostContext,
@@ -193,32 +197,43 @@ impl QuickJsScriptRuntime {
         let wall_pause = Arc::new(super::runtime::WallPause::default());
         let wall_pause_bridge = wall_pause.clone();
         let exec = ctx.async_with(async move |ctx| -> Result<String, PluginError> {
-            inject_bridge(
-                &ctx,
-                &bridge,
-                &plugin_id,
-                retry_task_id,
-                artifact_task_id,
-                ffmpeg_permitted,
-                ffmpeg_root,
-                ytdlp_permitted,
-                auth_permitted,
-                private_network_allowed,
-                egress,
-                interrupt_ns_bridge,
-                wall_pause_bridge,
-            )
-            .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
-
-            // 注入类型化设置 / info / 入口参数。
+            if let Some(bridge) = bridge.filter(|_| entry_owned != "archive") {
+                inject_bridge(
+                    &ctx,
+                    &bridge,
+                    &plugin_id,
+                    retry_task_id,
+                    artifact_task_id,
+                    ffmpeg_permitted,
+                    ffmpeg_root,
+                    ytdlp_permitted,
+                    auth_permitted,
+                    private_network_allowed,
+                    egress,
+                    interrupt_ns_bridge,
+                    wall_pause_bridge,
+                )
+                .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
+            }
+            // Archive does not receive plugin/app metadata or host APIs.
             set_json_global(&ctx, "__flux_settings_json", &settings_json)?;
-            set_json_global(&ctx, "__flux_info", &info_json)?;
+            if entry_owned != "archive" {
+                set_json_global(&ctx, "__flux_info", &info_json)?;
+            }
             set_json_global(&ctx, "__flux_arg", &arg_json)?;
 
-            // 先建 flux/console 门面，再 eval 插件源码（定义 globalThis 入口）。
-            ctx.eval::<rquickjs::Value, _>(FLUX_PRELUDE)
+            // Archive exposes only typed settings; no ordinary host facade is installed.
+            if entry_owned == "archive" {
+                ctx.eval::<rquickjs::Value, _>(
+                    "globalThis.flux = { settings: __flux_settings_json };",
+                )
                 .catch(&ctx)
-                .map_err(|e| PluginError::Runtime(format!("flux 门面初始化失败: {e}")))?;
+                .map_err(|e| PluginError::Runtime(format!("archive flux 初始化失败: {e}")))?;
+            } else {
+                ctx.eval::<rquickjs::Value, _>(FLUX_PRELUDE)
+                    .catch(&ctx)
+                    .map_err(|e| PluginError::Runtime(format!("flux 门面初始化失败: {e}")))?;
+            }
             ctx.eval::<rquickjs::Value, _>(source.as_bytes())
                 .catch(&ctx)
                 .map_err(|e| caught_error(e, PluginError::CompileFailed))?;
@@ -361,7 +376,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 None,
                 None,
-                bridge,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 host,
@@ -374,6 +389,46 @@ impl ScriptRuntime for QuickJsScriptRuntime {
         let result: ResolveResult = serde_json::from_str(&raw)
             .map_err(|e| PluginError::InvalidOutput(format!("resolve 返回值非法: {e}")))?;
         Ok(Some(result))
+    }
+
+    async fn invoke_archive(
+        &self,
+        plugin: &PluginScript,
+        req: ArchiveRequest,
+        settings_json: String,
+        budget: ExecutionBudget,
+    ) -> Result<Option<ArchiveResult>, PluginError> {
+        let _permit = tokio::time::timeout(
+            RESOLVE_ACQUIRE_TIMEOUT,
+            self.archive_sema.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| PluginError::Overloaded)?
+        .map_err(|_| PluginError::Overloaded)?;
+        let arg_json =
+            serde_json::to_string(&req).map_err(|e| PluginError::Runtime(e.to_string()))?;
+        let result = self
+            .run_script(
+                plugin.source.clone(),
+                "archive",
+                false,
+                arg_json,
+                settings_json,
+                info_json(&plugin.identity, &plugin.version, &plugin.app_version),
+                None,
+                None,
+                None,
+                plugin.identity.clone(),
+                budget,
+                HostContext::default(),
+            )
+            .await?;
+        if result == NULL_SENTINEL {
+            return Ok(None);
+        }
+        serde_json::from_str(&result)
+            .map(Some)
+            .map_err(|e| PluginError::InvalidOutput(format!("archive 返回值非法: {e}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -415,7 +470,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 None,
                 artifact_task_id,
-                bridge,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 host,
@@ -460,7 +515,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 None,
                 None,
-                bridge,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 host,
@@ -506,7 +561,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
             info_json,
             None,
             None,
-            bridge,
+            Some(bridge),
             plugin.identity.clone(),
             budget,
             host,
@@ -592,7 +647,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 retry_task_id,
                 artifact_task_id,
-                bridge,
+                Some(bridge),
                 identity.clone(),
                 budget,
                 host,
@@ -688,7 +743,7 @@ pub(super) fn set_json_global(ctx: &Ctx<'_>, name: &str, json: &str) -> Result<(
 /// 构建调用入口函数并 stringify 结果的 wrapper。
 fn build_entry_wrapper(entry: &str, is_resolve: bool) -> String {
     let entry_lit = serde_json::to_string(entry).unwrap_or_else(|_| "\"resolve\"".to_string());
-    if is_resolve {
+    if entry == "archive" || is_resolve {
         format!(
             "(async () => {{ const __fn = globalThis[{entry_lit}]; \
              if (typeof __fn !== 'function') throw new Error('入口 '+{entry_lit}+' 未定义'); \
@@ -1345,9 +1400,9 @@ mod tests {
 
     use super::QuickJsScriptRuntime;
     use crate::plugin::runtime::{
-        AuthRequest, BridgeHttpRequest, BridgeHttpResponse, ExecutionBudget, HostContext,
-        PluginBridge, PluginEntryKind, PluginError, PluginLogLevel, PluginScript, ResolveRequest,
-        ResolveResult, ScriptRuntime, SubscriptionRequest,
+        ArchiveRequest, AuthRequest, BridgeHttpRequest, BridgeHttpResponse, ExecutionBudget,
+        HostContext, PluginBridge, PluginEntryKind, PluginError, PluginLogLevel, PluginScript,
+        ResolveRequest, ResolveResult, ScriptRuntime, SubscriptionRequest,
     };
 
     /// 测试桩：全空实现（OOM 测试不触网/不落盘）。
@@ -1722,5 +1777,36 @@ mod tests {
         drop(held);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(rt.resolve_sema.available_permits(), base);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_is_async_and_exposes_only_settings_facade() {
+        let rt = QuickJsScriptRuntime::new(1).expect("runtime");
+        let script = PluginScript {
+            identity: "test@archive".to_string(),
+            source: "globalThis.archive = async ctx => ({ folderName: \
+                     typeof flux.fetch + ':' + flux.settings.label + ':' + ctx.fileName });"
+                .to_string(),
+            entry_fn_hint: PluginEntryKind::Archive,
+            version: "1.0.0".to_string(),
+            app_version: "0.0.0".to_string(),
+        };
+        let result = rt
+            .invoke_archive(
+                &script,
+                ArchiveRequest {
+                    file_name: "episode.mkv".to_string(),
+                },
+                "{\"label\":\"Anime\"}".to_string(),
+                ExecutionBudget {
+                    timeout: Duration::from_secs(2),
+                    memory_limit_bytes: 16 * 1024 * 1024,
+                },
+            )
+            .await
+            .expect("archive invocation");
+        assert_eq!(
+            result.expect("archive result").folder_name,
+            "undefined:Anime:episode.mkv"
+        );
     }
 }

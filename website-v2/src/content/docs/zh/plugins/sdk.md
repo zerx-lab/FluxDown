@@ -3,7 +3,7 @@ title: 插件 SDK 与 CLI
 description: fluxdown-plugin-sdk 参考——create/build/validate/pack/dev 命令行、项目配置、运行时辅助函数、JSX 运行时、随包类型与 manifest 校验器 API。
 section: plugins
 order: 13
-sourceHash: "e7118aef9c60"
+sourceHash: "54d760857009"
 ---
 
 `fluxdown-plugin-sdk` 是用 TypeScript 编写 FluxDown 插件的工具链：带类型的 `flux.*`、用于[可移植视图](/docs/zh/plugins/views/)的 JSX 运行时、与引擎和插件索引同一套的 manifest 校验器，以及负责打包、校验、封装 `.fxplug` 的 CLI。
@@ -157,7 +157,7 @@ my-plugin/
 
 ## 入口辅助函数
 
-引擎在求值脚本之后会读取固定的全局名：`resolve`、`onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`、`authenticate`、`subscribe`。`fluxdown-plugin-sdk/runtime` 里的辅助函数会（用 `Reflect.set(globalThis, …)`）把你的函数赋给这些全局名，所以每个入口文件都可以写成普通模块。每个辅助函数都会原样返回你传入的函数。
+引擎在求值脚本之后会读取固定的全局名：`resolve`、`onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`、`authenticate`、`subscribe` 和 `archive`。`fluxdown-plugin-sdk/runtime` 里的辅助函数会（用 `Reflect.set(globalThis, …)`）把受支持的函数赋给这些全局名，所以每个入口文件都可以写成普通模块。每个辅助函数都会原样返回你传入的函数。
 
 | 辅助函数 | 安装的全局名 | 使引擎调用它的 manifest 字段 |
 |---|---|---|
@@ -166,6 +166,7 @@ my-plugin/
 | `defineInterceptors(handlers: InterceptHandlers)` | `globalThis.intercept`，按 `ctx.stage` 分派到 `handlers` 中同名阶段的处理函数（`prepare`、`probed`、`refresh`、`selectVariant`、`selectPeriod`、`segments`、`liveSegments`、`finalize`、`failed`）；没有对应处理函数时返回 `undefined` | `interceptors.entry`（需要 `intercept` 权限；订阅哪些阶段由 `interceptors.stages` 决定） |
 | `defineAuth(fn: AuthFn)` | `globalThis.authenticate` | `auth.entry`（需要 `auth` 权限） |
 | `defineSubscription(fn: SubscribeFn)` | `globalThis.subscribe` | `subscriptions[].entry` |
+| —（直接赋给 `globalThis.archive`） | `globalThis.archive: (ctx: ArchiveContext) => ArchiveResult \| null` | `contributes.archive`（需要 `archive` 权限） |
 | `defineMain(setup: (flux: MainFlux) => void)` | 不安装任何全局名——它**立即同步地**用 `main` 脚本的门面（`MainFlux`）调用 `setup(flux)`，因此视图、命令、rpc 处理器、事件和定时器都在脚本求值期间完成注册 | `main.entry` |
 
 ```ts
@@ -220,7 +221,7 @@ defineMain((flux) => {
 
 ## 随包类型
 
-- `flux` 及其子接口（`Flux`、`FluxFetchOptions` 等）、入口上下文与返回值（`ResolveContext`、`ResolveResult`、`AuthContext`、`AuthResult`、`SubscribeContext`、`HookHandlers` 等）、`ViewEvent`、`ViewContext`、`ViewDefinition`、`FluxEvent`，以及全部视图类型与 JSX 内置元素——来自 `fluxdown-plugin-sdk`。
+- `flux` 及其子接口（`Flux`、`FluxFetchOptions` 等）、入口上下文与返回值（`ResolveContext`、`ResolveResult`、`AuthContext`、`AuthResult`、`SubscribeContext`、`ArchiveContext`、`ArchiveResult`、`HookHandlers` 等）、`ViewEvent`、`ViewContext`、`ViewDefinition`、`FluxEvent`，以及全部视图类型与 JSX 内置元素——来自 `fluxdown-plugin-sdk`。
 - `ThemeTokenPath`——`fluxdown.theme().tokens` 能解析的每一个主题 token 路径，由主题注册表生成。
 - `fluxdown-plugin-sdk/types/desktop`——桌面界面脚本（`gpui-kit` 等）的类型声明，由桌面运行时生成。
 

@@ -78,6 +78,40 @@ async fn install_plugin(engine: &Engine, dir: &Path, identity: &str, stages: &st
     pm.set_enabled(&id, true).await.expect("enable");
 }
 
+async fn install_archive_plugin(engine: &Engine, dir: &Path) {
+    tokio::fs::create_dir_all(dir).await.expect("mkdir plugin");
+    tokio::fs::write(
+        dir.join("manifest.json"),
+        r#"{
+            "identity":"tester@archive",
+            "name":"Archive test",
+            "version":"1.0.0",
+            "permissions":["archive"],
+            "main":{"entry":"main.js"},
+            "contributes":{"archive":"archive.js"}
+        }"#,
+    )
+    .await
+    .expect("write manifest");
+    tokio::fs::write(dir.join("main.js"), "")
+        .await
+        .expect("write main");
+    tokio::fs::write(
+        dir.join("archive.js"),
+        r#"globalThis.archive = async ({fileName}) => ({folderName:"Anime Title"});"#,
+    )
+    .await
+    .expect("write archive entry");
+    let pm = engine.manager.plugin_manager().expect("plugin manager");
+    let id = pm.install_dev(dir).await.expect("install archive plugin");
+    pm.grant_consent(&id, &["archive".to_string()], &[])
+        .await
+        .expect("grant archive permission");
+    pm.set_enabled(&id, true)
+        .await
+        .expect("enable archive plugin");
+}
+
 async fn plugin_notes(engine: &Engine, task_id: &str) -> Vec<String> {
     engine
         .db
@@ -1002,5 +1036,68 @@ async fn prepare_max_range_bytes_applies_on_every_run() {
         "activity log must name the changed field: {notes:?}"
     );
 
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_nests_download_under_matched_category_without_renaming() {
+    use fluxdown_engine::category_route::{CategoryRoute, CategoryRule};
+
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-route-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir work");
+    let body = Arc::new(vec![0x5a; 4096]);
+    let armed = Arc::new(AtomicBool::new(false));
+    let (port, _server) = spawn_range_server(body.clone(), armed);
+    let mut engine = make_engine(&work).await;
+    install_archive_plugin(&engine, &work.join("archive_plugin")).await;
+    let mut done_rx = engine.manager.take_done_rx().expect("done channel");
+    let category_dir = work.join("Videos");
+    let file_name = "The Expanse S02E03.mkv";
+    let task_id = engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: format!("http://127.0.0.1:{port}/episode"),
+            save_dir: work.to_string_lossy().into_owned(),
+            file_name: file_name.to_string(),
+            segments: 1,
+            category_route: Some(CategoryRoute {
+                rules: vec![CategoryRule {
+                    match_mode: "extension".to_string(),
+                    extensions: vec!["mkv".to_string()],
+                    save_dir: category_dir.to_string_lossy().into_owned(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .expect("create task");
+    let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
+        .await
+        .expect("task finishes")
+        .expect("done channel open");
+    engine.manager.on_task_done(&done).await;
+    let task = engine.db.load_task_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_eq!(
+        task.file_name, file_name,
+        "archive routing must not rename files"
+    );
+    assert_eq!(
+        Path::new(&task.save_dir),
+        category_dir.join("Anime Title").as_path(),
+        "archive folder must remain nested below the FD category"
+    );
+    assert_eq!(
+        tokio::fs::read(category_dir.join("Anime Title").join(file_name))
+            .await
+            .expect("read archived file"),
+        *body
+    );
+    assert!(
+        !work.join(file_name).exists(),
+        "file must not be left in the unclassified root"
+    );
     cleanup(&work).await;
 }

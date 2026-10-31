@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "af2f46fd3b3a"
+sourceHash: "a4039d071531"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -32,13 +32,14 @@ sourceHash: "af2f46fd3b3a"
   "main": { "entry": "main.js", "events": ["onDone"], "background": false },
   "contributes": {
     "views": [{ "id": "dashboard", "title": "看板", "location": "activity" }],
-    "commands": [{ "id": "refresh", "title": "刷新", "palette": true }]
+    "commands": [{ "id": "refresh", "title": "刷新", "palette": true }],
+    "archive": "archive.js"
   },
   "settings": [
     { "key": "quality", "title": "偏好画质", "type": "string", "widget": "select",
       "options": [ { "value": "hd", "label": "高清" }, { "value": "sd", "label": "标清" } ], "default": "hd" }
   ],
-  "permissions": []
+  "permissions": ["archive"]
 }
 ```
 
@@ -61,7 +62,7 @@ sourceHash: "af2f46fd3b3a"
 | `interceptors` | 否 | object | 任务拦截器（请求改写、分片过滤、后处理）。见 [`interceptors`](#interceptors)。 |
 | `auth` | 否 | object | 平台登录入口。见 [`auth`](#auth)。 |
 | `main` | 否 | object | 常驻脚本，承载可移植视图、命令与后台逻辑。见 [`main`](#main)。 |
-| `contributes` | 否 | object | 视图、命令、浏览器嗅探规则与页面脚本。见 [`contributes`](#contributes)。 |
+| `contributes` | 否 | object | 视图、命令、归档分类、浏览器嗅探规则与页面脚本。见 [`contributes`](#contributes)。 |
 | `permissions` | 否 | array | 能力授权，未知值一律拒绝。见 [`permissions`](#permissions)。 |
 | `settings` | 否 | array | 声明式设置项。见 [`settings[]`](#settings)。 |
 
@@ -219,12 +220,20 @@ hooks 在下载生命周期事件发生时运行你的代码。
                 "portable": true, "icon": "icons/dashboard.svg" }],
     "commands": [{ "id": "refresh", "title": "刷新", "palette": true, "taskMenu": false }],
     "sniffRules": "rules.json",
-    "pageScripts": [{ "id": "hello", "title": "你好", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }]
+    "pageScripts": [{ "id": "hello", "title": "你好", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }],
+    "archive": "archive.js"
   }
 }
 ```
 
-`views` / `commands` 为空数组等同于不声明。
+`views` / `commands` 为空数组等同于不声明。`archive` 会在下载名已知后为跟随分类路由的任务选择一个子目录；它不改文件名，也不接管保存根目录。
+
+### `archive`
+
+`contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。宿主在已有分类规则命中、任务跟随分类目录时调用 `globalThis.archive({ fileName })`；用户明确选择其他保存目录时不调用。`flux.settings` 可读，网络、文件系统、任务与进程接口不可用。
+
+返回 `null` / `undefined` 表示不分类；或返回 `{ folderName: "The Expanse" }`。`folderName` 必须是已清洗的单个目录名，不能包含路径；空值或不安全结果会被忽略，不会让下载失败。有效目录名追加在现有分类目录下；首个按插件 identity 排序的有效结果生效。任务恢复及完成期复核复用已保存结果，不重新调用插件。原始文件名保持不变。
+
 
 ### `views[]`
 
@@ -365,6 +374,7 @@ hooks 在下载生命周期事件发生时运行你的代码。
 | `desktop` | 允许桌面脚本（`contributes.views[].desktop`）在桌面进程内以完全信任运行。 |
 | `background` | 允许 `main` 随 daemon 常驻（`main.background`）。 |
 | `intercept` | 允许声明 `interceptors`，在任务运行时读取并修改其请求、分片、画质与完成后的文件。 |
+| `archive` | 允许声明 `contributes.archive`，按下载文件名为已有分类目录选择单层子目录。 |
 
 未知值会让整份 manifest 失败。风险等级、授权与审计见[权限、授权与审计](/docs/zh/plugins/permissions/)；各权限背后的接口见 [API 参考](/docs/zh/plugins/api-reference/)。
 
@@ -377,6 +387,7 @@ hooks 在下载生命周期事件发生时运行你的代码。
 | 任一 `views[].desktop` | `desktop` |
 | `contributes.sniffRules` | `browserRules` |
 | `contributes.pageScripts`（非空） | `pageScripts` |
+| `contributes.archive` | `archive` |
 
 （`tasks`、`ffmpeg`、`ytdlp` 在调用接口时才检查，manifest 校验不要求。）
 

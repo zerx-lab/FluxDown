@@ -156,7 +156,7 @@ Strict mode (always on in the CLI) is stricter than the app in two ways, which t
 
 ## Entry-point helpers
 
-The engine reads fixed globals after evaluating a script: `resolve`, `onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`, `authenticate`, `subscribe`. The helpers in `fluxdown-plugin-sdk/runtime` assign your functions to those globals (with `Reflect.set(globalThis, …)`), so each entry file can be an ordinary module. Each helper returns the function(s) you passed.
+The engine reads fixed globals after evaluating a script: `resolve`, `onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`, `authenticate`, `subscribe`, and `archive`. The helpers in `fluxdown-plugin-sdk/runtime` assign supported helpers to those globals (with `Reflect.set(globalThis, …)`), so each entry file can be an ordinary module. Each helper returns the function(s) you passed.
 
 | Helper | Installs | Manifest field that makes the engine call it |
 |---|---|---|
@@ -165,6 +165,7 @@ The engine reads fixed globals after evaluating a script: `resolve`, `onStart` /
 | `defineInterceptors(handlers: InterceptHandlers)` | `globalThis.intercept`, dispatching on `ctx.stage` to the same-named handler in `handlers` (`prepare`, `probed`, `refresh`, `selectVariant`, `selectPeriod`, `segments`, `liveSegments`, `finalize`, `failed`); returns `undefined` when there is no handler | `interceptors.entry` (needs the `intercept` permission; which stages fire is set by `interceptors.stages`) |
 | `defineAuth(fn: AuthFn)` | `globalThis.authenticate` | `auth.entry` (needs the `auth` permission) |
 | `defineSubscription(fn: SubscribeFn)` | `globalThis.subscribe` | `subscriptions[].entry` |
+| — (assign `globalThis.archive`) | `globalThis.archive: (ctx: ArchiveContext) => ArchiveResult \| null` | `contributes.archive` (requires the `archive` permission) |
 | `defineMain(setup: (flux: MainFlux) => void)` | nothing — it calls `setup(flux)` **immediately and synchronously** with the `main`-script facade (`MainFlux`), so views, commands, rpc handlers, events and timers are registered while the script is evaluated | `main.entry` |
 
 ```ts
@@ -219,7 +220,7 @@ defineMain((flux) => {
 
 ## Types shipped
 
-- `flux` and its sub-APIs (`Flux`, `FluxFetchOptions`, …), the entry contexts and results (`ResolveContext`, `ResolveResult`, `AuthContext`, `AuthResult`, `SubscribeContext`, `HookHandlers`, …), `ViewEvent`, `ViewContext`, `ViewDefinition`, `FluxEvent`, and all view types and intrinsic elements — from `fluxdown-plugin-sdk`.
+- `flux` and its sub-APIs (`Flux`, `FluxFetchOptions`, …), the entry contexts and results (`ResolveContext`, `ResolveResult`, `AuthContext`, `AuthResult`, `SubscribeContext`, `ArchiveContext`, `ArchiveResult`, `HookHandlers`, …), `ViewEvent`, `ViewContext`, `ViewDefinition`, `FluxEvent`, and all view types and intrinsic elements — from `fluxdown-plugin-sdk`.
 - `ThemeTokenPath` — every theme token path that `fluxdown.theme().tokens` resolves, generated from the theme registry.
 - `fluxdown-plugin-sdk/types/desktop` — declarations for desktop UI scripts (`gpui-kit` and friends), generated from the desktop runtime.
 

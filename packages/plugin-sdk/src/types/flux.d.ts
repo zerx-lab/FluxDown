@@ -374,6 +374,16 @@ export interface ResolveContext {
   resolverItem: string;
 }
 
+/** `archive(ctx)` argument. */
+export interface ArchiveContext {
+  fileName: string;
+}
+
+/** Archive destination directory name (`folderName` is one path component). */
+export interface ArchiveResult {
+  folderName: string;
+}
+
 export interface ResolveVariant {
   label: string;
   url: string;
@@ -739,6 +749,8 @@ export interface HookHandlers {
 declare global {
   /** The plugin runtime facade. */
   const flux: Flux;
+  /** Archive contribution entry point, requiring the `archive` permission. */
+  function archive(ctx: ArchiveContext): ArchiveResult | null;
   /**
    * Console routed to the plugin log. Declared as a plain variable: do not enable the DOM
    * lib in plugin projects (the QuickJS host has no DOM).

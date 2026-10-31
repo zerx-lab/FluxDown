@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "56e403845992"
+sourceHash: "c2cf843e76f9"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -28,6 +28,13 @@ sourceHash: "56e403845992"
 | [`authenticate(ctx)`](#authenticatectx) | 宿主驱动一次登录动作（`begin` / `poll` / `cancel` / `logout` / `status`）。 | `auth.entry` + 权限 `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) 对象 |
 | [`subscribe(ctx)`](#subscribectx) | 属于你的 provider 的订阅源被刷新。 | `subscriptions[0]` | `subscriptions[0].entry` | 规范化的订阅内容对象 |
 | [`main`](#main-常驻脚本) | daemon（或某个视图）激活你的常驻脚本。 | `main` | `main.entry` | —（用于注册处理器） |
+| [`archive(ctx)`](#archivectx) | 已有分类规则命中且任务跟随分类目录时，为下载选择子目录。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ folderName }` 或 `null` |
+
+### `archive(ctx)`
+
+这是一个纯本地分类回调，不解析 URL，也不访问文件或网络。它只在已有分类规则命中、任务跟随分类目录时调用；用户明确选择其他保存目录时跳过。每次调用使用新的 QuickJS 运行时，可读取 `flux.settings`，但没有 `flux.fetch`、文件系统、任务或进程接口。
+
+`ctx` 只包含 `fileName`（当前已知文件名）。返回 `null` / `undefined` 表示不追加目录；返回 `{ folderName: "The Expanse" }` 选择一个已清洗的单层目录名。路径分隔符、空名及其他不安全名称会被忽略，不会使任务失败。多个插件按 identity 排序，首个有效结果生效；结果会持久化供恢复和完成期复用，原文件名不变。
 
 脚本如何运行：
 

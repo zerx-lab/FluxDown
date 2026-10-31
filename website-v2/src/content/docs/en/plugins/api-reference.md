@@ -27,6 +27,13 @@ Conventions:
 | [`authenticate(ctx)`](#authenticatectx) | The host drives a login (`begin` / `poll` / `cancel` / `logout` / `status`). | `auth.entry` + permission `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) object |
 | [`subscribe(ctx)`](#subscribectx) | A subscription source of your provider is refreshed. | `subscriptions[0]` | `subscriptions[0].entry` | Normalized feed object |
 | [`main`](#the-main-script) | The daemon (or a view) activates your resident script. | `main` | `main.entry` | — (registers handlers) |
+| [`archive(ctx)`](#archivectx) | An existing category rule matched and the task follows category routing. | `contributes.archive` + permission `archive` | The `.js` file named by `contributes.archive` | `{ folderName }` or `null` |
+
+### `archive(ctx)`
+
+This local-only callback classifies by the known filename; it does not resolve URLs or access files or the network. The host calls it only when an existing category rule matches and the task follows category routing. An explicitly selected save directory bypasses it. Each call uses a fresh QuickJS runtime. It can read `flux.settings`, but has no `flux.fetch`, filesystem, task or process APIs.
+
+`ctx` contains only `fileName`, the filename known at routing time. Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }` to choose one sanitized directory component. Empty or unsafe names are ignored and do not fail the download. Plugins are tried in identity order; the first valid result wins. The folder decision is persisted for resume and completion, and the downloaded filename is unchanged.
 
 How scripts are run:
 

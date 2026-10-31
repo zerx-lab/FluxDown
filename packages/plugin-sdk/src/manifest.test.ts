@@ -79,8 +79,8 @@ describe("misc rules", () => {
     const good = { ...base, settings: [{ key: "k", title: "K", type: "number", min: 1, max: 5, default: "3" }] };
     expect(validateManifest(good, new Set()).ok).toBe(true);
   });
-  test("nine permissions", () => {
-    expect(VALID_PERMISSIONS).toHaveLength(9);
+  test("ten permissions", () => {
+    expect(VALID_PERMISSIONS).toHaveLength(10);
   });
   test("ipv6 network hosts", () => {
     const m = (host: string) => ({
@@ -192,15 +192,19 @@ describe("validatePackage", () => {
 describe("reviewOf", () => {
   test("collects every URL scope a reviewer approves, sorted and de-duplicated", () => {
     const review = reviewOf({
-      permissions: ["intercept", "pageScripts"],
+      permissions: ["intercept", "pageScripts", "archive"],
       resolvers: [{ match: { urls: ["*://b.example/*"] } }],
       hooks: { match: { urls: ["*://a.example/*", "*://b.example/*"] } },
       interceptors: { match: { urls: ["*://c.example/*"] } },
-      contributes: { pageScripts: [{ matches: ["https://z.example/*"] }, { matches: ["https://y.example/*"] }] },
+      contributes: {
+        pageScripts: [{ matches: ["https://z.example/*"] }, { matches: ["https://y.example/*"] }],
+        archive: "handlers/archive.js",
+      },
     });
     expect(review).toEqual({
-      permissions: ["intercept", "pageScripts"],
+      permissions: ["intercept", "pageScripts", "archive"],
       risk: "full",
+      archiveEntry: "handlers/archive.js",
       networkHosts: [],
       downloadUrls: ["*://a.example/*", "*://b.example/*", "*://c.example/*"],
       pageScriptMatches: ["https://y.example/*", "https://z.example/*"],

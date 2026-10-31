@@ -42,6 +42,19 @@ pub struct CategoryRoute {
     pub rules: Vec<CategoryRule>,
     /// 「其他」分类的目录；空 = 不兜底。
     pub other_dir: String,
+    /// FD 分类命中后选定的附加归档目录；续传与完成收尾复用，不重新执行插件。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ArchiveRoute>,
+}
+
+/// 受限归档插件选定的单层番剧目录。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveRoute {
+    /// FD 分类规则命中的目录；归档目录始终是它的子目录。
+    pub category_dir: String,
+    /// 经安全校验的单层目录名。
+    pub folder_name: String,
 }
 
 /// [`CategoryRoute::rules`] 的单条普通分类。
@@ -123,8 +136,20 @@ impl CategoryRoute {
         if text.is_empty() {
             return None;
         }
-        match serde_json::from_str(text) {
-            Ok(route) => Some(route),
+        match serde_json::from_str::<CategoryRoute>(text) {
+            Ok(mut route) => {
+                if route
+                    .archive
+                    .as_ref()
+                    .is_some_and(|archive| !valid_archive_folder(&archive.folder_name))
+                {
+                    log_warn!(
+                        "[category-route] task {task_id}: ignoring unsafe stored archive folder"
+                    );
+                    route.archive = None;
+                }
+                Some(route)
+            }
             Err(error) => {
                 log_warn!("[category-route] task {task_id}: ignoring malformed route: {error}");
                 None
@@ -135,6 +160,13 @@ impl CategoryRoute {
     /// 编码为 `tasks.category_route` 列值。
     pub(crate) fn to_column(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
+    }
+    fn to_db_column(&self) -> Result<String, crate::db::DbError> {
+        self.to_column().map_err(|error| {
+            crate::db::DbError::InvalidConfig(format!(
+                "category route serialization failed: {error}"
+            ))
+        })
     }
 }
 
@@ -234,7 +266,7 @@ fn percent_decode(input: &str) -> String {
 /// 占名而改变时返回 `(新文件名, 大小)`，供完成帧上报。任何失败都只记日志与任务活动、产物
 /// 留在原目录，绝不让已下载完成的任务失败。
 pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i64)> {
-    let route = match p.db.load_task_category_route(&p.task_id).await {
+    let mut route = match p.db.load_task_category_route(&p.task_id).await {
         Ok(text) => CategoryRoute::from_column(&p.task_id, &text)?,
         Err(error) => {
             crate::logger::report_warning("category-route", "load task route", &error);
@@ -253,8 +285,95 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
         return None;
     }
     let source = source_address(&row.origin_url, &row.url);
-    let target = route.save_dir_for(&row.file_name, &row.url, source)?;
-    if same_dir(target, &row.save_dir).await {
+    let category_dir = route
+        .save_dir_for(&row.file_name, &row.url, source)
+        .map(str::to_owned);
+    let notes = crate::intercept::ActivityNotes::of(p);
+    let mut target = category_dir;
+    if let Some(category_dir) = target.clone() {
+        if let Some(mut archive) = route.archive.clone() {
+            if archive.category_dir != category_dir {
+                archive.category_dir.clone_from(&category_dir);
+                route.archive = Some(archive.clone());
+                let column = match route.to_db_column() {
+                    Ok(column) => column,
+                    Err(error) => {
+                        crate::logger::report_error(
+                            "category-route",
+                            "encode archive route",
+                            &error,
+                        );
+                        return None;
+                    }
+                };
+                if let Err(error) = p.db.set_task_category_route(&p.task_id, &column).await {
+                    crate::logger::report_error("category-route", "persist archive route", &error);
+                    return None;
+                }
+            }
+            target = Some(
+                Path::new(&archive.category_dir)
+                    .join(&archive.folder_name)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            route.archive = Some(archive);
+        } else {
+            match p.interceptor.archive_folder(&row.file_name).await {
+                Ok(Some(folder_name)) if valid_archive_folder(&folder_name) => {
+                    target = Some(
+                        Path::new(&category_dir)
+                            .join(&folder_name)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                    route.archive = Some(ArchiveRoute {
+                        category_dir,
+                        folder_name,
+                    });
+                    let column = match route.to_db_column() {
+                        Ok(column) => column,
+                        Err(error) => {
+                            crate::logger::report_error(
+                                "category-route",
+                                "encode archive route",
+                                &error,
+                            );
+                            return None;
+                        }
+                    };
+                    if let Err(error) = p.db.set_task_category_route(&p.task_id, &column).await {
+                        crate::logger::report_error(
+                            "category-route",
+                            "persist archive route",
+                            &error,
+                        );
+                        return None;
+                    }
+                }
+                Ok(Some(folder_name)) => {
+                    notes
+                        .add(format!("忽略不安全的番剧归档目录名：{folder_name:?}"))
+                        .await;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    notes
+                        .add(format!("番剧归档插件未能识别文件名：{error}"))
+                        .await;
+                }
+            }
+        }
+    } else if let Some(archive) = &route.archive {
+        target = Some(
+            Path::new(&archive.category_dir)
+                .join(&archive.folder_name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    let target = target?;
+    if same_dir(&target, &row.save_dir).await {
         return None;
     }
     let src = Path::new(&row.save_dir).join(&row.file_name);
@@ -268,7 +387,7 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
             .await;
         return None;
     }
-    let target_dir = Path::new(target);
+    let target_dir = Path::new(&target);
     // 全局「覆盖」对目标目录同样生效；逐任务覆盖答复只绑定询问时的目录与名字，不外推。
     let overwrite = match p.overwrite {
         crate::file_exists::OverwritePolicy::Any => crate::file_exists::OverwritePolicy::Any,
@@ -299,7 +418,7 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
         }
     };
     let moved = target_dir.join(&chosen);
-    if let Err(error) = p.db.set_task_location(&p.task_id, target, &chosen).await {
+    if let Err(error) = p.db.set_task_location(&p.task_id, &target, &chosen).await {
         crate::logger::report_error("category-route", "persist relocated task", &error);
         // 库里仍是旧位置：把文件移回，保证任务记录与磁盘一致。
         let never = crate::file_exists::OverwritePolicy::Never;
@@ -363,16 +482,14 @@ pub(crate) fn output_name(file_name: &str, url: &str) -> Option<String> {
     Some(format!("{stem}.mp4"))
 }
 
-/// 开始写盘前按当前最佳文件名重选目录（见模块文档）：启动序幕定名（探测得到的服务器
-/// 文件名、按类型推断的名字、插件 resolve 改的名字）之后、「文件已存在」判断与去重
-/// 之前调用，只改任务记录，不移动任何文件。HLS 按转封装后的 `.mp4` 预判；未命中任何
-/// 分类时回到基准目录。
+/// 开始写盘前按当前最佳文件名重选目录。仅 FD 分类规则命中后才调用归档插件，
+/// 并把选定的单层归档目录持久化，以便续传不受插件更新影响。
 pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), crate::db::DbError> {
     if p.file_name.is_empty() {
         return Ok(());
     }
     let column = p.db.load_task_category_route(&p.task_id).await?;
-    let Some(route) = CategoryRoute::from_column(&p.task_id, &column) else {
+    let Some(mut route) = CategoryRoute::from_column(&p.task_id, &column) else {
         return Ok(());
     };
     if route.base_dir.is_empty() {
@@ -384,10 +501,58 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
     let source = source_address(&row.origin_url, &row.url);
     let output = output_name(&p.file_name, &p.url);
     let name = output.as_deref().unwrap_or(&p.file_name);
-    let target = route
-        .save_dir_for(name, &p.url, source)
-        .unwrap_or(&route.base_dir)
-        .to_owned();
+    let category_dir = route.save_dir_for(name, &p.url, source).map(str::to_owned);
+    let mut target = category_dir
+        .clone()
+        .unwrap_or_else(|| route.base_dir.clone());
+    if let Some(category_dir) = category_dir {
+        if let Some(mut archive) = route.archive.clone() {
+            // 分类规则在续传时仍优先；保存的番剧名不重新由插件推断。
+            if archive.category_dir != category_dir {
+                archive.category_dir.clone_from(&category_dir);
+                route.archive = Some(archive.clone());
+                let route_column = route.to_db_column()?;
+                p.db.set_task_category_route(&p.task_id, &route_column)
+                    .await?;
+            }
+            target = Path::new(&archive.category_dir)
+                .join(&archive.folder_name)
+                .to_string_lossy()
+                .into_owned();
+            route.archive = Some(archive);
+        } else {
+            match p.interceptor.archive_folder(&p.file_name).await {
+                Ok(Some(folder_name)) if valid_archive_folder(&folder_name) => {
+                    target = Path::new(&category_dir)
+                        .join(&folder_name)
+                        .to_string_lossy()
+                        .into_owned();
+                    route.archive = Some(ArchiveRoute {
+                        category_dir,
+                        folder_name,
+                    });
+                    let route_column = route.to_db_column()?;
+                    p.db.set_task_category_route(&p.task_id, &route_column)
+                        .await?;
+                }
+                Ok(Some(folder_name)) => log_warn!(
+                    "[category-route] task {} ignored unsafe archive folder {folder_name:?}",
+                    p.task_id
+                ),
+                Ok(None) => {}
+                Err(error) => log_warn!(
+                    "[category-route] task {} archive plugin failed open: {error}",
+                    p.task_id
+                ),
+            }
+        }
+    } else if let Some(archive) = &route.archive {
+        // 规则更新后未命中，不拆散已确定归档的任务。
+        target = Path::new(&archive.category_dir)
+            .join(&archive.folder_name)
+            .to_string_lossy()
+            .into_owned();
+    }
     if same_dir(&target, &p.save_dir).await {
         return Ok(());
     }
@@ -400,6 +565,17 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
     p.save_dir = target;
     publish_location(p).await;
     Ok(())
+}
+
+/// 归档插件输出必须是单个已清洗的目录分量，拒绝路径、设备名及任何会被引擎改写的名字。
+pub(crate) fn valid_archive_folder(folder: &str) -> bool {
+    !folder.is_empty()
+        && folder.len() <= 180
+        && folder != "."
+        && folder != ".."
+        && !folder.contains(['/', '\\', ':'])
+        && !folder.chars().any(char::is_control)
+        && crate::naming::sanitize_filename(folder) == folder
 }
 
 /// 两个目录是否同一处：字面相同，或都存在且规范化后相同（大小写不敏感的文件系统、
@@ -499,7 +675,7 @@ async fn remove_staging(staging: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::CategoryRoute;
+    use super::{ArchiveRoute, CategoryRoute, valid_archive_folder};
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -615,6 +791,32 @@ mod tests {
             None
         );
         assert_eq!(output_name("a.ts", "https://cdn.test/a.ts"), None);
+    }
+    #[test]
+    fn archive_folder_is_one_safe_filesystem_component() {
+        assert!(valid_archive_folder("The Expanse"));
+        assert!(valid_archive_folder("季节 2"));
+        assert!(!valid_archive_folder(""));
+        assert!(!valid_archive_folder("."));
+        assert!(!valid_archive_folder(".."));
+        assert!(!valid_archive_folder("../outside"));
+        assert!(!valid_archive_folder("a\\b"));
+        assert!(!valid_archive_folder("a:b"));
+        assert!(!valid_archive_folder("bad\u{0000}name"));
+    }
+
+    #[test]
+    fn stored_archive_route_rejects_path_components() {
+        let route = CategoryRoute {
+            archive: Some(ArchiveRoute {
+                category_dir: "/downloads/video".into(),
+                folder_name: "../outside".into(),
+            }),
+            ..Default::default()
+        };
+        let text = route.to_column().expect("encode route");
+        let restored = CategoryRoute::from_column("unsafe", &text).expect("valid route data");
+        assert!(restored.archive.is_none());
     }
 
     #[tokio::test]

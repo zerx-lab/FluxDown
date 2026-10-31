@@ -166,16 +166,19 @@ pub struct LoadedPlugin {
     hooks_entry: Option<PathBuf>,
     /// interceptors 入口绝对路径（若声明）。
     intercept_entry: Option<PathBuf>,
-    /// auth 入口绝对路径（若声明）。
-    auth_entry: Option<PathBuf>,
-    /// subscription provider 入口绝对路径（若声明）。
-    subscription_entry: Option<PathBuf>,
-    /// 非 dev 模式的缓存源码（加载时读入）。
+    /// 已安装模式下的各脚本源码缓存；dev 插件每次按路径重读。
     resolver_cache: Option<String>,
     hooks_cache: Option<String>,
     intercept_cache: Option<String>,
     auth_cache: Option<String>,
     subscription_cache: Option<String>,
+    /// Archive callback entry path and installed source cache.
+    archive_entry: Option<PathBuf>,
+    archive_cache: Option<String>,
+    /// auth 入口绝对路径（若声明）。
+    auth_entry: Option<PathBuf>,
+    /// subscription provider 入口绝对路径（若声明）。
+    subscription_entry: Option<PathBuf>,
     /// `main` 入口绝对路径（若声明）。
     main_entry: Option<PathBuf>,
     /// 非 dev 模式的 `main` 源码缓存。
@@ -205,6 +208,13 @@ impl LoadedPlugin {
         match (&self.intercept_entry, self.dev) {
             (Some(p), true) => tokio::fs::read_to_string(p).await.ok(),
             (Some(_), false) => self.intercept_cache.clone(),
+            (None, _) => None,
+        }
+    }
+    async fn archive_source(&self) -> Option<String> {
+        match (&self.archive_entry, self.dev) {
+            (Some(path), true) => tokio::fs::read_to_string(path).await.ok(),
+            (Some(_), false) => self.archive_cache.clone(),
             (None, _) => None,
         }
     }
@@ -597,6 +607,11 @@ impl PluginManager {
         let resolver_entry = manifest.resolvers.first().map(|r| dir.join(&r.entry));
         let hooks_entry = manifest.hooks.as_ref().map(|h| dir.join(&h.entry));
         let intercept_entry = manifest.interceptors.as_ref().map(|i| dir.join(&i.entry));
+        let archive_entry = manifest
+            .contributes
+            .as_ref()
+            .and_then(|c| c.archive.as_ref())
+            .map(|p| dir.join(p));
         let auth_entry = manifest.auth.as_ref().map(|a| dir.join(&a.entry));
         let subscription_entry = manifest.subscriptions.first().map(|s| dir.join(&s.entry));
 
@@ -734,9 +749,29 @@ impl PluginManager {
         )
         .await
         .map_err(fail)?;
-        let (resolver_cache, hooks_cache, auth_cache, subscription_cache, intercept_cache) = if dev
+        let archive_source = read_entry(
+            dir,
+            manifest
+                .contributes
+                .as_ref()
+                .and_then(|c| c.archive.as_deref()),
+        )
+        .await
+        .map_err(fail)?;
+        if let Some(source) = archive_source.as_deref()
+            && let Err(error) = self.runtime.check_compile(source)
         {
-            (None, None, None, None, None)
+            return Err(fail(format!("archive 脚本编译失败: {error}")));
+        }
+        let (
+            resolver_cache,
+            hooks_cache,
+            auth_cache,
+            subscription_cache,
+            intercept_cache,
+            archive_cache,
+        ) = if dev {
+            (None, None, None, None, None, None)
         } else {
             (
                 resolver_source,
@@ -744,6 +779,7 @@ impl PluginManager {
                 auth_source,
                 subscription_source,
                 intercept_source,
+                archive_source,
             )
         };
 
@@ -787,11 +823,13 @@ impl PluginManager {
             resolver_entry,
             hooks_entry,
             intercept_entry,
+            archive_entry,
             auth_entry,
             subscription_entry,
             resolver_cache,
             hooks_cache,
             intercept_cache,
+            archive_cache,
             auth_cache,
             subscription_cache,
             main_entry,
@@ -1826,6 +1864,7 @@ impl PluginManager {
             p.auth_source().await,
             p.subscription_source().await,
             p.intercept_source().await,
+            p.archive_source().await,
         ]
         .into_iter()
         .flatten()
@@ -3171,14 +3210,16 @@ mod tests {
             resolver_entry: None,
             hooks_entry: None,
             intercept_entry: None,
+            archive_entry: None,
             auth_entry: None,
             subscription_entry: None,
+            main_entry: None,
             resolver_cache: None,
             hooks_cache: None,
             intercept_cache: None,
+            archive_cache: None,
             auth_cache: None,
             subscription_cache: None,
-            main_entry: None,
             main_cache: None,
             view_icons: Vec::new(),
             timeout_streak: Arc::new(AtomicU32::new(0)),

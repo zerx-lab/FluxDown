@@ -9,6 +9,7 @@
     { "name": "browserRules", "permissions": ["browserRules"], "risk": "elevated" },
     { "name": "background", "permissions": ["background"], "risk": "elevated" },
     { "name": "intercept", "permissions": ["intercept"], "risk": "elevated" },
+    { "name": "archive", "permissions": ["archive"], "risk": "elevated" },
     { "name": "desktop alone", "permissions": ["desktop"], "risk": "full" },
     { "name": "pageScripts alone", "permissions": ["pageScripts"], "risk": "full" },
     { "name": "pageScripts wins over elevated", "permissions": ["browserRules", "pageScripts"], "risk": "full" },

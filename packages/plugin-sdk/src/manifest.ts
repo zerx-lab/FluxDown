@@ -16,6 +16,7 @@ export const VALID_PERMISSIONS = [
   "background",
   "intercept",
   "pageScripts",
+  "archive",
 ] as const;
 export const VALID_INTERCEPT_STAGES = [
   "prepare",
@@ -61,7 +62,7 @@ export interface ValidateOptions {
   /**
    * Listing-grade checks, stricter than the client: version/minAppVersion must be a plain
    * three-part number, and every resolver/hooks/auth/subscription entry and `icon` must exist
-   * in the package. The client only requires `main`, `desktop` and `sniffRules` files at install.
+   * in the package. The client only requires `main`, `desktop`, `sniffRules` and `archive` files at install.
    */
   strict?: boolean;
 }
@@ -412,7 +413,7 @@ function checkContributes(
   const contributes = manifest.contributes;
   if (contributes === undefined || contributes === null) return;
   if (!isObject(contributes)) return void errors.push("contributes 须为对象");
-  unknownKeys(errors, "contributes", contributes, ["views", "commands", "sniffRules", "pageScripts"]);
+  unknownKeys(errors, "contributes", contributes, ["views", "commands", "sniffRules", "pageScripts", "archive"]);
   const hasMain = manifest.main !== undefined && manifest.main !== null;
 
   const views = contributes.views ?? [];
@@ -505,6 +506,16 @@ function checkContributes(
         errors.push("声明 sniffRules 时 permissions 必须包含 browserRules");
       }
       if (!inPackage(files, rules)) errors.push(`包内缺少文件 '${rules}'`);
+    }
+  }
+  const archive = contributes.archive;
+  if (archive !== undefined && archive !== null) {
+    if (typeof archive !== "string" || !isSafeRelativePath(archive)) {
+      errors.push(`archive 路径 '${String(archive)}' 非法`);
+    } else {
+      if (!hasExtension(archive, [".js"])) errors.push(`archive '${archive}' 扩展名须为 .js`);
+      if (!hasPermission(permissions, "archive")) errors.push("声明 archive 时 permissions 必须包含 archive");
+      if (!inPackage(files, archive)) errors.push(`包内缺少文件 '${archive}'`);
     }
   }
 
@@ -783,7 +794,7 @@ export function validateManifest(
 export function riskOf(manifest: { permissions?: readonly string[] | null }): PluginRisk {
   const permissions = manifest.permissions ?? [];
   if (permissions.includes("desktop") || permissions.includes("pageScripts")) return "full";
-  const elevated = ["ffmpeg", "ytdlp", "auth", "tasks", "browserRules", "background", "intercept"];
+  const elevated = ["ffmpeg", "ytdlp", "auth", "tasks", "browserRules", "background", "intercept", "archive"];
   return permissions.some((p) => elevated.includes(p)) ? "elevated" : "standard";
 }
 
@@ -799,7 +810,7 @@ export function networkHostsOf(manifest: {
   return [...hosts].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-/** Files that must exist at install: `main.entry`, each `desktop.entry`, each view `icon`, `sniffRules`, every pageScript `js`. */
+/** Files that must exist at install: `main.entry`, contributions and every pageScript `js`. */
 export function packageFilesOf(manifest: Obj): string[] {
   const files: string[] = [];
   const main = manifest.main;
@@ -824,6 +835,7 @@ export function packageFilesOf(manifest: Obj): string[] {
         }
       }
     }
+    if (typeof contributes.archive === "string") files.push(contributes.archive);
   }
   return files;
 }
@@ -968,6 +980,8 @@ export function validatePackage(manifest: unknown, files: PackageFiles): Validat
 export interface PackageReview {
   permissions: string[];
   risk: PluginRisk;
+  /** Archive handler entry point needing reviewer awareness. */
+  archiveEntry: string | null;
   /** Hosts desktop scripts may reach (`networkHostsOf`). */
   networkHosts: string[];
   /** URL globs whose downloads the plugin handles: resolver, hooks and interceptors `match.urls`. */
@@ -989,6 +1003,7 @@ export function reviewOf(manifest: Obj): PackageReview {
   return {
     permissions: stringArray(manifest.permissions) ? [...manifest.permissions] : [],
     risk: riskOf(manifest as { permissions?: string[] }),
+    archiveEntry: typeof contributes.archive === "string" ? contributes.archive : null,
     networkHosts: networkHostsOf(manifest as Parameters<typeof networkHostsOf>[0]),
     downloadUrls: sortedUnique([...resolvers.flatMap(matchUrls), ...matchUrls(manifest.hooks), ...matchUrls(manifest.interceptors)]),
     pageScriptMatches: sortedUnique(pageScripts.flatMap((s) => (isObject(s) && stringArray(s.matches) ? s.matches : []))),

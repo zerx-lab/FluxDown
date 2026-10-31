@@ -60,7 +60,7 @@ A plugin may declare any combination of `resolvers`, `subscriptions`, `hooks`, `
 | `interceptors` | no | object | Task interceptors (request rewrite, segment filtering, post-processing). See [`interceptors`](#interceptors). |
 | `auth` | no | object | Platform login entry. See [`auth`](#auth). |
 | `main` | no | object | Always-on script for portable views, commands and background logic. See [`main`](#main). |
-| `contributes` | no | object | Views, commands, browser sniff rules and page scripts. See [`contributes`](#contributes). |
+| `contributes` | no | object | Views, commands, archive classification, browser sniff rules and page scripts. See [`contributes`](#contributes). |
 | `permissions` | no | array | Capability grants; unknown values are rejected. See [`permissions`](#permissions). |
 | `settings` | no | array | Declarative settings fields. See [`settings[]`](#settings). |
 
@@ -218,12 +218,20 @@ Validation runs after `auth`, in this order: `entry` path → `stages` non-empty
                 "portable": true, "icon": "icons/dashboard.svg" }],
     "commands": [{ "id": "refresh", "title": "Refresh", "palette": true, "taskMenu": false }],
     "sniffRules": "rules.json",
-    "pageScripts": [{ "id": "hello", "title": "Hello", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }]
+    "pageScripts": [{ "id": "hello", "title": "Hello", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }],
+    "archive": "archive.js"
   }
 }
 ```
 
-Empty `views` / `commands` arrays are the same as leaving them out.
+Empty `views` / `commands` arrays are the same as leaving them out. `archive` chooses a child folder for category-routed tasks after the filename is known; it does not rename files or take over the save root.
+
+### `archive`
+
+`contributes.archive` names an in-package `.js` file and requires `permissions: ["archive"]`. The host calls `globalThis.archive({ fileName })` only when an existing category rule matches and the task follows category routing; an explicitly chosen save directory bypasses it. `flux.settings` is available, but network, filesystem, task and process APIs are not.
+
+Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }`. `folderName` must be one sanitized directory component, never a path. Empty or unsafe results are ignored and do not fail the download. The first valid result in plugin-identity order wins and is nested under the matched category directory. The folder decision is persisted and reused on resume and completion; the downloaded filename is unchanged.
+
 
 ### `views[]`
 
