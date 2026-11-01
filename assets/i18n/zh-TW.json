@@ -3468,5 +3468,11 @@
   "shortcutActionToggleDetail": "切換詳細資料面板",
   "shortcutActionCycleDensity": "切換清單密度",
   "shortcutActionCycleGroup": "切換分組方式",
-  "shortcutActionCycleSort": "切換排序方式"
+  "shortcutActionCycleSort": "切換排序方式",
+  "accountPurchaseTabMembership": "會員",
+  "accountSubscriptionUntil": "會員卡至 {date}",
+  "accountRenew": "續費",
+  "accountPeriodDays": "{days} 天",
+  "accountPurchaseGroupLifetime": "永久",
+  "accountPurchaseGroupCards": "會員卡"
 }
