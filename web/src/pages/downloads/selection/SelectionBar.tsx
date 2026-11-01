@@ -1,4 +1,4 @@
-import { Download, Pause, Play, Share2, Trash2, X } from 'lucide-react'
+import { Download, Pause, Play, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
@@ -6,7 +6,6 @@ import { ActionMenu, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
 import { confirmDeleteWithFiles, deleteViews, downloadViewsFiles, pauseViews, resumeViews } from '../model/actions'
 import { useDownloads } from '../state'
-import { openSharePanel, useSendState } from '../../share'
 
 const BTN =
   'inline-flex h-control min-w-control shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-sm text-foreground hover:bg-nav-hover active:bg-nav-selected disabled:pointer-events-none disabled:opacity-50 mobile:min-h-touch mobile:min-w-touch'
@@ -45,7 +44,6 @@ function SelectionActions({ inline }: { inline?: boolean }) {
   const t = useT()
   const { summary, selectedViews, clearSelection } = useDownloads()
   const btn = inline ? BTN_INLINE : undefined
-  const shareState = useSendState(selectedViews)
 
   const deleteEntries: MenuEntry[] = [
     { type: 'item', key: 'delete-task', label: t('deleteTask'), icon: Trash2, onSelect: () => void deleteViews(selectedViews, false) },
@@ -69,16 +67,6 @@ function SelectionActions({ inline }: { inline?: boolean }) {
       {summary.anyLocal && (
         <Action label={t('webDownloadFile')} className={btn} disabled={!summary.allDownloadable} onClick={() => downloadViewsFiles(selectedViews)}>
           <Icon icon={Download} size="md" />
-        </Action>
-      )}
-      {shareState === 'hidden' ? null : (
-        <Action
-          label={shareState === 'ok' ? t('sharePanelTitle') : t(shareState)}
-          className={btn}
-          disabled={shareState !== 'ok'}
-          onClick={() => openSharePanel(selectedViews.map((view) => view.taskId))}
-        >
-          <Icon icon={Share2} size="md" />
         </Action>
       )}
       <ActionMenu

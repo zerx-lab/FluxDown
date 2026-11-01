@@ -6,7 +6,7 @@
 // - 单条 http(s) 链接先 `daemon.group.resolvePreview` 探测插件多文件清单，命中则进入清单选择建任务组；
 // - 外部捕获（`agent.capture.*`）作为链接行并入表单，提交时经 `agent.capture.resolve` 确认，关闭时未确认的一并忽略。
 
-import { ChevronDown, ChevronRight, FileText, FolderOpen, Plus, Share2, Sprout, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, FolderOpen, Plus, Sprout, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
@@ -38,9 +38,6 @@ import { SaveDirCombo } from './SaveDirCombo'
 import { CategoryPicker } from './CategoryPicker'
 import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory, recordSaveDir, saveDirChoices } from '../../../lib/saveDirHistory'
 import { accountErrorKey } from '../../settings/sections/account/errorText'
-import { extractShareItems, isPickupCodeItem, parseShareLink, removeShareItem, shareNoticeKey } from '../../share/model'
-import { usePickupCodeLength, useShareAvailable } from '../../share/state'
-import { openShareReceive } from '../../share/store'
 import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue, summarizeDispatch } from './target'
 import type { RemoteTarget } from './target'
 import { queueLabel } from './utils'
@@ -142,18 +139,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const txtInput = useRef<HTMLInputElement>(null)
   const resolveToken = useRef(0)
 
-  const shareAvailable = useShareAvailable()
-  const shareActive = shareAvailable && target === null
-  const pickupLength = usePickupCodeLength()
-  // 待接收项 = 分享链接 + 取件码（逐行识别、按值去重）：不进下载条目，交给接收确认。
-  const shareItems = useMemo(() => extractShareItems(text, pickupLength), [text, pickupLength])
-  const hasShareInput = shareItems.length > 0
   const parsed = useMemo(() => parseInput(text, false), [text])
-  // FluxMesh可用时分享链接（含 `https://…/s/<slug>` 形式）不当作普通下载链接。
-  const entries = useMemo(
-    () => (shareActive ? parsed.entries.filter((entry) => parseShareLink(entry.url) === null) : parsed.entries),
-    [parsed.entries, shareActive],
-  )
+  const entries = parsed.entries
 
   // aria2c 命令带出的 Cookie / UA / 请求头回填到高级字段（规则同桌面端，见 `aria2c.ts`）：
   // 与上次处理的 hints 相同则不处理；用户编辑过的字段 / 行不再覆盖。
@@ -181,18 +168,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const allMagnet = count > 0 && entries.every((entry) => isMagnetUrl(entry.url))
   const busy = phase !== 'idle' || busyFiles
   const remoteDirCheck = target ? checkRemoteSaveDir(remoteSaveDir, target.pathStyle) : 'ok'
-  const canSubmit = !busy && (count > 0 ? (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '') : shareActive && hasShareInput)
-  const shareNotice = shareNoticeKey(count, shareItems.length, shareItems.filter(isPickupCodeItem).length, shareAvailable && target === null)
-
-  /** 把第一个待接收项（分享链接或取件码）交给接收确认框并从输入里拿走；输入已空（无其它条目、无更多待接收项）时关闭本对话框。 */
-  const receiveShare = () => {
-    const first = shareItems[0]
-    if (first === undefined) return
-    openShareReceive(first)
-    const rest = removeShareItem(text, first, pickupLength)
-    if (count === 0 && extractShareItems(rest, pickupLength).length === 0) closeNewDownload()
-    else setText(rest)
-  }
+  const canSubmit = !busy && count > 0 && (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '')
 
   // ── 分类下拉：Auto 模式下目录框跟随识别出的文件名（规则见 `lib/categoryRoute.ts`）──
   const categoriesPref = useAgent((snapshot) => snapshot.preferences.values[CUSTOM_CATEGORIES_PREF_KEY], undefined)
@@ -414,11 +390,6 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   const submit = async (later: boolean, queueOverride?: string) => {
     if (!canSubmit) return
-    // 分享链接走接收确认框（永不直接建任务）；其余链接照常下载。
-    if (shareActive && hasShareInput) {
-      receiveShare()
-      if (count === 0) return
-    }
     if (target) {
       await submitRemote(target)
       return
@@ -763,18 +734,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               }}
               className="font-mono text-xs"
             />
-            {text.trim() !== '' && count === 0 && !(shareActive && hasShareInput) ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
-            {shareNotice ? (
-              <div className="flex items-start gap-2 rounded-md border border-hairline bg-chrome px-2.5 py-2 text-xs text-muted-foreground">
-                <Icon icon={Share2} className="mt-0.5 shrink-0 text-text-tertiary" />
-                <span className="min-w-0 flex-1">{t(shareNotice, { count: shareItems.length })}</span>
-                {shareActive ? (
-                  <Button variant="outline" disabled={busy} onClick={receiveShare}>
-                    {t('shareReceive')}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
+            {text.trim() !== '' && count === 0 ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
             {captures.length > 0 ? <FieldHint>{t('newDownloadCaptureContextHint')}</FieldHint> : null}
             {notice ? <FieldError className="break-all">{notice}</FieldError> : null}
             {failures.map((failure, index) => (

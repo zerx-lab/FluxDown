@@ -23,7 +23,7 @@ const stored = () => JSON.parse(local.getItem(CHROME_LAYOUT_KEY) ?? 'null') as R
 describe('chromeStore', () => {
   test('默认布局复现改造前的结构', () => {
     const layout = getChromeLayout()
-    expect(layout.railTop).toEqual(['downloads', 'rss', 'webhooks', 'share'])
+    expect(layout.railTop).toEqual(['downloads', 'rss', 'webhooks'])
     expect(layout.railBottom).toEqual(['account', 'settings'])
     expect(layout.statusLeading).toEqual(['downloadSpeed', 'uploadSpeed', 'pauseAll', 'resumeAll'])
     expect(layout.statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'proxy', 'diskFree'])
@@ -50,7 +50,7 @@ describe('chromeStore', () => {
     expect(setChromeItemHidden('rss', true)).toBe(true)
     expect(setChromeItemHidden('rss', true)).toBe(false)
     expect(stored().hidden).toEqual(['rss'])
-    expect(stored().railTop).toEqual(['downloads', 'rss', 'webhooks', 'share'])
+    expect(stored().railTop).toEqual(['downloads', 'rss', 'webhooks'])
     expect(moveChromeItem('rss', 'titleLeading', null)).toBe(true)
     expect(stored().hidden).toEqual(['rss'])
     expect(setChromeItemHidden('rss', false)).toBe(true)

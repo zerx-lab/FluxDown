@@ -97,28 +97,6 @@ export type ErrorReason =
   | 'referralAlreadyUsed'
   | 'referralPlanExcluded'
   | 'referralCodeTaken'
-  | 'shareUnavailable'
-  | 'shareNotFound'
-  | 'shareExpired'
-  | 'shareStopped'
-  | 'shareCodeInvalid'
-  | 'shareRateLimited'
-  | 'shareTurnstileRequired'
-  | 'shareFileChanged'
-  | 'shareSenderOffline'
-  | 'shareTaskNotShareable'
-  | 'shareBridgeUnavailable'
-  | 'shareQuotaExceeded'
-  | 'shareCloudNotReady'
-  | 'shareTrafficExhausted'
-  | 'shareCloudUnavailable'
-  | 'shareOwnShare'
-  | 'shareSourceMissing'
-  | 'shareSwarmLocked'
-  | 'shareSwarmQuotaExhausted'
-  | 'shareSwarmLoginRequired'
-  | 'shareStrikeLimited'
-  | 'shareAppealExists'
   | 'subscriptionConflict'
   | 'unknown';
 
@@ -126,7 +104,7 @@ export type ErrorReason =
 export interface RpcErrorData {
   code: ApplicationErrorCode;
   retryable: boolean;
-  /** 出错的参数字段名；`shareStrikeLimited` 时携带解除时刻（RFC 3339）。 */
+  /** 出错的参数字段名。 */
   field?: string;
   /** 乐观并发冲突时服务端当前版本（如 daemon.config.patch）。 */
   revision?: number;

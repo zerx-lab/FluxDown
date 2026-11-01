@@ -23,14 +23,9 @@ export function effectivePriceMinor(plan: CloudPlan): number {
   return plan.campaign ? plan.campaign.effectivePriceMinor : plan.priceMinor
 }
 
-/** 旧服务端缺失 `productKind` 视为会员。 */
-export function isPack(plan: CloudPlan): boolean {
-  return plan.productKind === 'pack'
-}
-
 /** 周期会员卡：`billingPeriodDays` 非空且 > 0；缺失 / null 为永久套餐。 */
 export function isSubscriptionPlan(plan: CloudPlan): boolean {
-  return !isPack(plan) && typeof plan.billingPeriodDays === 'number' && plan.billingPeriodDays > 0
+  return typeof plan.billingPeriodDays === 'number' && plan.billingPeriodDays > 0
 }
 
 /** 永久套餐：可购买会员中非周期卡。 */
@@ -48,22 +43,10 @@ export function baseSortOf(catalog: readonly CloudPlan[], currentCode: string | 
   return catalog.find((plan) => plan.code === (currentCode || 'free'))?.sort ?? null
 }
 
-function sortedBySort(plans: CloudPlan[]): CloudPlan[] {
-  return plans
-    .map((plan, index) => ({ plan, index }))
-    .sort((a, b) => a.plan.sort - b.plan.sort || a.index - b.index)
-    .map(({ plan }) => plan)
-}
-
-/** 流量包列表：pack 且 purchasable，按 sort 升序稳定排序（始终可选，不看已持有 / 抵扣）。 */
-export function packPlans(catalog: readonly CloudPlan[]): CloudPlan[] {
-  return sortedBySort(catalog.filter((plan) => isPack(plan) && plan.purchasable))
-}
-
 /** 可购买会员列表：membership、purchasable、非 free、生效价 > 0，按 sort 升序稳定排序。 */
 export function purchasablePlans(catalog: readonly CloudPlan[]): CloudPlan[] {
   return catalog
-    .filter((plan) => !isPack(plan) && plan.purchasable && plan.code !== 'free' && effectivePriceMinor(plan) > 0)
+    .filter((plan) => plan.purchasable && plan.code !== 'free' && effectivePriceMinor(plan) > 0)
     .map((plan, index) => ({ plan, index }))
     .sort((a, b) => a.plan.sort - b.plan.sort || a.index - b.index)
     .map(({ plan }) => plan)
@@ -78,7 +61,7 @@ export function ownedPriceMinor(catalog: readonly CloudPlan[], currentCode: stri
 export type PlanCardState = 'current' | 'renewable' | 'tierBlocked' | 'creditBlocked' | 'available'
 
 /**
- * 卡片状态优先级：Current > TierBlocked > CreditBlocked > Available；流量包恒为 Available。
+ * 卡片状态优先级：Current > TierBlocked > CreditBlocked > Available。
  * 周期会员卡：同卡 → Renewable；有其他生效卡 → TierBlocked；sort ≤ 永久套餐 sort → TierBlocked；否则 Available；不抵扣。
  */
 export function planCardState(
@@ -89,7 +72,6 @@ export function planCardState(
   activeSubscription: CloudSubscription | null | undefined = null,
   baseSort: number | null = null,
 ): PlanCardState {
-  if (isPack(plan)) return 'available'
   if (isSubscriptionPlan(plan)) {
     if (activeSubscription) return activeSubscription.planCode === plan.code ? 'renewable' : 'tierBlocked'
     if (baseSort !== null && plan.sort <= baseSort) return 'tierBlocked'
