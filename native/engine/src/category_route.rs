@@ -45,6 +45,10 @@ pub struct CategoryRoute {
     /// FD 分类命中后选定的附加归档目录；续传与完成收尾复用，不重新执行插件。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<ArchiveRoute>,
+    /// Source metadata is persisted alongside the authorized route so resume does not
+    /// need to rerun the resolver or infer a title from a member filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_metadata: Option<crate::model::ArchiveMetadata>,
 }
 
 /// 受限归档插件选定的单层番剧目录。
@@ -167,6 +171,88 @@ impl CategoryRoute {
                 "category route serialization failed: {error}"
             ))
         })
+    }
+}
+/// Persist source metadata in the existing route JSON, including route-less tasks.
+/// A route-less JSON object has an empty base directory and therefore cannot redirect.
+#[cfg(feature = "plugins")]
+pub(crate) async fn persist_archive_metadata(
+    db: &crate::db::Db,
+    task_id: &str,
+    metadata: &crate::model::ArchiveMetadata,
+) -> Result<(), crate::db::DbError> {
+    let column = db.load_task_category_route(task_id).await?;
+    let mut route = match CategoryRoute::from_column(task_id, &column) {
+        Some(route) => route,
+        None if column.is_empty() => CategoryRoute::default(),
+        None => return Ok(()),
+    };
+    route.archive_metadata = Some(metadata.clone());
+    db.set_task_category_route(task_id, &route.to_db_column()?)
+        .await
+}
+
+/// Route a complete group only when every member resolves to the same non-empty category.
+/// The archive callback is invoked once for the group root; relative member paths remain
+/// the caller's responsibility and are joined below the returned root.
+pub(crate) async fn archive_group_root(
+    fallback: &str,
+    group_name: &str,
+    item_names: &[(&str, &str)],
+    source_url: &str,
+    metadata: Option<&crate::model::ArchiveMetadata>,
+    route: &CategoryRoute,
+    interceptor: &dyn crate::intercept::TaskInterceptor,
+) -> String {
+    let mut categories = item_names
+        .iter()
+        .map(|(name, url)| route.save_dir_for(name, url, source_url).map(str::to_owned));
+    let Some(Some(category_dir)) = categories.next() else {
+        return fallback.to_owned();
+    };
+    if categories.any(|category| category.as_deref() != Some(category_dir.as_str())) {
+        return fallback.to_owned();
+    }
+    let folder = match interceptor
+        .archive_folder(crate::model::ArchiveContext {
+            file_name: group_name.to_owned(),
+            metadata: metadata.cloned(),
+            is_group: true,
+        })
+        .await
+    {
+        Ok(Some(folder)) if valid_archive_folder(&folder) => Some(folder),
+        Ok(Some(_)) => {
+            log_warn!("[category-route] group archive plugin returned an unsafe folder");
+            None
+        }
+        Ok(None) => None,
+        Err(error) => {
+            log_warn!("[category-route] group archive plugin failed open: {error}");
+            None
+        }
+    };
+    let clean_group_name = if group_name.is_empty() {
+        String::new()
+    } else {
+        crate::naming::sanitize_filename(group_name)
+    };
+    if let Some(folder) = folder {
+        let folder_matches_group =
+            !clean_group_name.is_empty() && folder.eq_ignore_ascii_case(&clean_group_name);
+        let root = Path::new(&category_dir).join(folder);
+        if clean_group_name.is_empty() || folder_matches_group {
+            root.to_string_lossy().into_owned()
+        } else {
+            root.join(clean_group_name).to_string_lossy().into_owned()
+        }
+    } else if clean_group_name.is_empty() {
+        category_dir
+    } else {
+        Path::new(&category_dir)
+            .join(clean_group_name)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -319,7 +405,15 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
             );
             route.archive = Some(archive);
         } else {
-            match p.interceptor.archive_folder(&row.file_name).await {
+            match p
+                .interceptor
+                .archive_folder(crate::model::ArchiveContext {
+                    file_name: row.file_name.clone(),
+                    metadata: route.archive_metadata.clone(),
+                    is_group: false,
+                })
+                .await
+            {
                 Ok(Some(folder_name)) if valid_archive_folder(&folder_name) => {
                     target = Some(
                         Path::new(&category_dir)
@@ -521,7 +615,15 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
                 .into_owned();
             route.archive = Some(archive);
         } else {
-            match p.interceptor.archive_folder(&p.file_name).await {
+            match p
+                .interceptor
+                .archive_folder(crate::model::ArchiveContext {
+                    file_name: p.file_name.clone(),
+                    metadata: route.archive_metadata.clone(),
+                    is_group: !row.group_id.is_empty(),
+                })
+                .await
+            {
                 Ok(Some(folder_name)) if valid_archive_folder(&folder_name) => {
                     target = Path::new(&category_dir)
                         .join(&folder_name)
@@ -762,6 +864,13 @@ mod tests {
         let route = CategoryRoute {
             base_dir: "/downloads".into(),
             other_dir: "/other".into(),
+            archive_metadata: Some(crate::model::ArchiveMetadata {
+                platform: "bilibili".into(),
+                media_kind: "series".into(),
+                series_id: "42".into(),
+                series_title: "Series".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let text = route.to_column().expect("encode route");
@@ -885,5 +994,56 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(&root).await {
             tracing::warn!(%error, "test directory cleanup failed");
         }
+    }
+
+    #[tokio::test]
+    async fn groups_route_only_when_every_member_has_the_same_category() {
+        let route = CategoryRoute {
+            rules: vec![
+                super::CategoryRule {
+                    extensions: vec!["mp4".into()],
+                    save_dir: "/video".into(),
+                    ..Default::default()
+                },
+                super::CategoryRule {
+                    extensions: vec!["srt".into()],
+                    save_dir: "/subtitles".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let interceptor = crate::intercept::NoopInterceptor;
+        let common = super::archive_group_root(
+            "/base/group",
+            "group",
+            &[
+                ("a.mp4", "https://host/a.mp4"),
+                ("b.mp4", "https://host/b.mp4"),
+            ],
+            "https://host/list",
+            None,
+            &route,
+            &interceptor,
+        )
+        .await;
+        assert_eq!(
+            std::path::Path::new(&common),
+            std::path::Path::new("/video").join("group")
+        );
+        let mixed = super::archive_group_root(
+            "/base/group",
+            "group",
+            &[
+                ("a.mp4", "https://host/a.mp4"),
+                ("b.srt", "https://host/b.srt"),
+            ],
+            "https://host/list",
+            None,
+            &route,
+            &interceptor,
+        )
+        .await;
+        assert_eq!(mixed, "/base/group");
     }
 }

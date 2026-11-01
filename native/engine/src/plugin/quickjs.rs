@@ -1795,6 +1795,8 @@ mod tests {
                 &script,
                 ArchiveRequest {
                     file_name: "episode.mkv".to_string(),
+                    metadata: None,
+                    is_group: false,
                 },
                 "{\"label\":\"Anime\"}".to_string(),
                 ExecutionBudget {

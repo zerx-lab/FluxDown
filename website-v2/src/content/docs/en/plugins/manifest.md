@@ -224,13 +224,13 @@ Validation runs after `auth`, in this order: `entry` path → `stages` non-empty
 }
 ```
 
-Empty `views` / `commands` arrays are the same as leaving them out. `archive` chooses a child folder for category-routed tasks after the filename is known; it does not rename files or take over the save root.
+Empty `views` / `commands` arrays are the same as leaving them out. `archive` chooses a child folder for category-routed tasks from the known filename and optional source metadata; it does not rename files or take over the save root.
 
 ### `archive`
 
-`contributes.archive` names an in-package `.js` file and requires `permissions: ["archive"]`. The host calls `globalThis.archive({ fileName })` only when an existing category rule matches and the task follows category routing; an explicitly chosen save directory bypasses it. `flux.settings` is available, but network, filesystem, task and process APIs are not.
+`contributes.archive` names an in-package `.js` file and requires `permissions: ["archive"]`. The host calls `globalThis.archive({ fileName, metadata?, isGroup })` only when an existing category rule matches and the task follows category routing; an explicitly chosen save directory bypasses it. `metadata` may carry `platform`, `mediaKind`, `creatorId`, `creatorName`, `seriesId`, `seriesTitle`, `collectionId` and `collectionTitle`. Each value is a label limited to 180 UTF-8 bytes, with no control characters. This is source metadata, not file-content recognition; URLs, local paths and credentials are not exposed. `flux.settings` is available, but network, filesystem, task and process APIs are not.
 
-Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }`. `folderName` must be one sanitized directory component, never a path. Empty or unsafe results are ignored and do not fail the download. The first valid result in plugin-identity order wins and is nested under the matched category directory. The folder decision is persisted and reused on resume and completion; the downloaded filename is unchanged.
+For groups the callback runs once at the root, with `isGroup: true`; member relative paths and filenames are preserved. A category is applied to the group only if every member has the same category. Return `null` / `undefined` or `{ folderName: "The Expanse" }`. `folderName` must be one sanitized directory component, never a path. Empty or invalid archive output is ignored (fail-open) and does not fail the download. The first valid result in plugin-identity order wins and is nested under the matched category directory. The folder decision is persisted and reused on resume and completion; the downloaded filename is unchanged.
 
 
 ### `views[]`

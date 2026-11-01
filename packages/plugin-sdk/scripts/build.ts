@@ -2,8 +2,9 @@
 import * as esbuild from "esbuild";
 import { chmodSync, cpSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(root, "dist");
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
@@ -68,7 +69,7 @@ await esbuild.build({
 chmodSync(join(dist, "cli.js"), 0o755);
 
 // Declarations (cli and tests excluded), then the hand-written / generated ambient types.
-const tsc = Bun.spawnSync([join(root, "node_modules/.bin/tsc"), "-p", "tsconfig.build.json"], {
+const tsc = Bun.spawnSync([process.execPath, join(root, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.build.json"], {
   cwd: root,
   stdout: "inherit",
   stderr: "inherit",

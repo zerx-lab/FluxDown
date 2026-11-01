@@ -1,5 +1,18 @@
 // 队列与任务组 DTO。
 
+import type { CategoryRouteDto } from "./agent";
+
+export interface ArchiveMetadataDto {
+  platform: string;
+  mediaKind: string;
+  creatorId: string;
+  creatorName: string;
+  seriesId: string;
+  seriesTitle: string;
+  collectionId: string;
+  collectionTitle: string;
+}
+
 /** 命名队列。 */
 export interface QueueDto {
   queueId: string;
@@ -100,6 +113,9 @@ export interface CreateGroupRequest {
    * 该插件，插件已不可用则成员 fail-closed；空 = 引擎按预解析同一规则选插件。
    */
   resolverPluginId?: string;
+  archiveMetadata?: ArchiveMetadataDto;
+  /** Only present when following classification; omit for explicit save directories. */
+  categoryRoute?: CategoryRouteDto;
   items: GroupItemRequest[];
 }
 
@@ -143,4 +159,6 @@ export interface ResolvePreviewResponse {
   /** 产出清单的插件 identity；无清单为空串（旧 daemon 缺省）。建组时回填 `CreateGroupRequest.resolverPluginId`。 */
   pluginId?: string;
   items: PreviewItemDto[];
+  /** Root metadata shared by all preview items. */
+  archiveMetadata?: ArchiveMetadataDto;
 }

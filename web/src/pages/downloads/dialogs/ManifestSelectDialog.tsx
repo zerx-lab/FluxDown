@@ -7,11 +7,12 @@ import { ArrowLeft, ChevronRight, File as FileIcon, Folder, Home, MoreHorizontal
 import { useMemo, useState } from 'react'
 import { useT } from '../../../i18n'
 import { rpc } from '../../../lib/rpc'
-import type { QueueDto, ResolvePreviewResponse } from '../../../lib/rpc'
+import type { CategoryRouteDto, QueueDto, ResolvePreviewResponse } from '../../../lib/rpc'
 import { LATER_QUEUE_ID } from '../../../lib/rpc'
 import { ActionMenu, Button, Checkbox, Dialog, DialogFooter, FieldHint, FormField, Icon, Input, InputWithAction } from '../../../ui'
 import { toastRpcError } from '../../../lib/rpcToast'
 import type { MenuEntry } from '../../../ui'
+import { routeBaseDir, routeFollows } from '../../../lib/categoryRoute'
 import { cn } from '../../../lib/cn'
 import { FsPickerDialog } from './FsPickerDialog'
 import {
@@ -36,6 +37,7 @@ import { formatBytes, queueLabel } from './utils'
 /** 组级请求选项：沿用新建下载表单里已填的值，下发给全部子任务。 */
 export interface ManifestBaseOptions {
   saveDir: string
+  offeredSaveDir: string
   queueId: string
   segments: number
   cookies: string
@@ -43,6 +45,7 @@ export interface ManifestBaseOptions {
   proxyUrl: string
   headers: Record<string, string>
   ignoreTlsErrors: boolean
+  categoryRoute?: CategoryRouteDto
 }
 
 export function ManifestSelectDialog({
@@ -101,10 +104,16 @@ export function ManifestSelectDialog({
     if (submitting || stat.count === 0) return
     setSubmitting(true)
     try {
+      const route = base.categoryRoute && routeFollows(base.categoryRoute, saveDir.trim(), base.offeredSaveDir)
+        ? base.categoryRoute
+        : undefined
+      const submittedSaveDir = route
+        ? routeBaseDir(route, saveDir.trim(), base.offeredSaveDir)
+        : saveDir.trim()
       await rpc.daemon.group.create({
         sourceUrl,
         groupName: groupName.trim() || preview.name || undefined,
-        saveDir: saveDir.trim() || undefined,
+        saveDir: submittedSaveDir || undefined,
         queueId: queueId || undefined,
         segments: base.segments,
         cookies: base.cookies || undefined,
@@ -114,6 +123,8 @@ export function ManifestSelectDialog({
         ignoreTlsErrors: base.ignoreTlsErrors,
         startPaused,
         resolverPluginId: preview.pluginId || undefined,
+        archiveMetadata: preview.archiveMetadata,
+        categoryRoute: route,
         items: buildManifestGroupItems(items, selected),
       })
       onCreated()

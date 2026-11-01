@@ -374,11 +374,24 @@ export interface ResolveContext {
   resolverItem: string;
 }
 
+/** Root-level, source-provided archive hints; never credentials, URLs, or paths. */
+export interface ArchiveMetadata {
+  platform?: string;
+  mediaKind?: string;
+  creatorId?: string;
+  creatorName?: string;
+  seriesId?: string;
+  seriesTitle?: string;
+  collectionId?: string;
+  collectionTitle?: string;
+}
+
 /** `archive(ctx)` argument. */
 export interface ArchiveContext {
   fileName: string;
+  metadata?: ArchiveMetadata;
+  isGroup?: boolean;
 }
-
 /** Archive destination directory name (`folderName` is one path component). */
 export interface ArchiveResult {
   folderName: string;
@@ -424,7 +437,9 @@ export interface ResolveResult {
   /** Request overlay applied to this task's every run (same shape as the `prepare` result). */
   request?: RequestPatch;
   /** Multi-file listing; mutually exclusive with `url` / `variants` / `audioUrl`. */
-  manifest?: { name?: string; items: ManifestItem[] };
+  manifest?: { name?: string; items: ManifestItem[]; archiveMetadata?: ArchiveMetadata };
+  /** Root metadata shared by this resolver result and its manifest items. */
+  archiveMetadata?: ArchiveMetadata;
 }
 
 /** `authenticate(ctx)` argument. */

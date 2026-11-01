@@ -15,7 +15,7 @@ use crate::plugin::manifest::{
 };
 use crate::plugin::quickjs::HARD_TIMEOUT_CEILING;
 use crate::plugin::runtime::{
-    ArchiveRequest, ExecutionBudget, HostContext, PluginEntryKind, PluginError, PluginScript,
+    ExecutionBudget, HostContext, PluginEntryKind, PluginError, PluginScript,
 };
 
 /// 未声明 `timeoutMs` 时的单次调用超时。
@@ -192,7 +192,7 @@ impl PluginManager {
     }
     pub(super) async fn archive_folder(
         &self,
-        file_name: &str,
+        context: crate::model::ArchiveContext,
         task_id: &str,
     ) -> Result<Option<String>, PluginError> {
         let snapshot = self.plugins.read().await.clone();
@@ -255,9 +255,7 @@ impl PluginManager {
                 .runtime
                 .invoke_archive(
                     &script,
-                    ArchiveRequest {
-                        file_name: file_name.to_string(),
-                    },
+                    context.clone(),
                     settings_json,
                     ExecutionBudget {
                         timeout: DEFAULT_INTERCEPT_TIMEOUT,
@@ -340,17 +338,19 @@ impl TaskInterceptor for PluginTaskInterceptor {
         self.has_archivers
     }
 
-    async fn archive_folder(&self, file_name: &str) -> Result<Option<String>, String> {
+    async fn archive_folder(
+        &self,
+        context: crate::model::ArchiveContext,
+    ) -> Result<Option<String>, String> {
         if !self.has_archivers {
             return Ok(None);
         }
         let pm = self.pm.clone();
         let task_id = self.task_id.clone();
-        let file_name = file_name.to_string();
         let handle = self
             .pm
             .runtime_handle()
-            .spawn(async move { pm.archive_folder(&file_name, &task_id).await });
+            .spawn(async move { pm.archive_folder(context, &task_id).await });
         let mut guard = AbortGuard(handle);
         match (&mut guard.0).await {
             Ok(Ok(folder)) => Ok(folder),

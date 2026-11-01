@@ -34,12 +34,17 @@ struct GroupsProtocolTests {
         #expect(json["startPaused"]?.boolValue == true)
         #expect(json["extraHeaders"]?["A"]?.stringValue == "B")
         #expect(json["items"]?.arrayValue?.first?["resolverItem"]?.stringValue == "v@hd")
-        #expect(json["items"]?.arrayValue?.first?["relPath"]?.stringValue == "p")
-        #expect(json["resolverPluginId"]?.stringValue == "")
+        #expect(json["categoryRoute"] == nil)
+        #expect(json["archiveMetadata"] == nil)
         var bound = request
         bound.resolverPluginId = "p1"
         let boundJson = try ProtocolJSON.decode(JSONValue.self, from: ProtocolJSON.encode(bound, what: "g"), what: "g")
         #expect(boundJson["resolverPluginId"]?.stringValue == "p1")
+        bound.categoryRoute = CategoryRouteDto(
+            rules: [CategoryRuleDto(matchMode: "extension", extensions: ["mp4"], saveDir: "/video")]
+        )
+        let routedJson = try ProtocolJSON.decode(JSONValue.self, from: ProtocolJSON.encode(bound, what: "g"), what: "g")
+        #expect(routedJson["categoryRoute"]?["rules"]?.arrayValue?.first?["saveDir"]?.stringValue == "/video")
 
         let capture = try ProtocolJSON.decode(JSONValue.self, from: ProtocolJSON.encode(CaptureCreateGroupParams(transactionId: "tx", request: request), what: "c"), what: "c")
         #expect(capture["transactionId"]?.stringValue == "tx")

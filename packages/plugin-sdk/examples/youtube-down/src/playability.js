@@ -61,6 +61,8 @@ export function videoInfo(responses) {
   const live = (key) => details.some((d) => d[key] === true);
   return {
     title: first((d) => d.title) || "",
+    creatorId: first((d) => d.channelId) || "",
+    creatorName: first((d) => d.author) || "",
     duration: Number(first((d) => d.lengthSeconds)) || 0,
     liveStatus: live("isPostLiveDvr") ? "post_live" : live("isLive") ? "is_live" : live("isUpcoming") ? "is_upcoming" : "",
   };

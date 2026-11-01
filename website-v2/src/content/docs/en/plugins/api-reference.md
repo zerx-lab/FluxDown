@@ -27,13 +27,15 @@ Conventions:
 | [`authenticate(ctx)`](#authenticatectx) | The host drives a login (`begin` / `poll` / `cancel` / `logout` / `status`). | `auth.entry` + permission `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) object |
 | [`subscribe(ctx)`](#subscribectx) | A subscription source of your provider is refreshed. | `subscriptions[0]` | `subscriptions[0].entry` | Normalized feed object |
 | [`main`](#the-main-script) | The daemon (or a view) activates your resident script. | `main` | `main.entry` | — (registers handlers) |
-| [`archive(ctx)`](#archivectx) | An existing category rule matched and the task follows category routing. | `contributes.archive` + permission `archive` | The `.js` file named by `contributes.archive` | `{ folderName }` or `null` |
+| [`archive(ctx)`](#archivectx) | A category rule matched and the task follows category routing. | `contributes.archive` + permission `archive` | The `.js` file named by `contributes.archive` | `{ folderName }` or `null` |
 
 ### `archive(ctx)`
 
-This local-only callback classifies by the known filename; it does not resolve URLs or access files or the network. The host calls it only when an existing category rule matches and the task follows category routing. An explicitly selected save directory bypasses it. Each call uses a fresh QuickJS runtime. It can read `flux.settings`, but has no `flux.fetch`, filesystem, task or process APIs.
+This local-only callback classifies using the known filename and optional source metadata; it does not resolve URLs or access files or the network. The host calls it only when an existing category rule matches and the task follows category routing. An explicitly selected save directory bypasses it. Each call uses a fresh QuickJS runtime. It can read `flux.settings`, but has no `flux.fetch`, filesystem, task or process APIs.
 
-`ctx` contains only `fileName`, the filename known at routing time. Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }` to choose one sanitized directory component. Empty or unsafe names are ignored and do not fail the download. Plugins are tried in identity order; the first valid result wins. The folder decision is persisted for resume and completion, and the downloaded filename is unchanged.
+`ctx` is `{ fileName, metadata?, isGroup }`. `fileName` is the known filename; `metadata` is optional source metadata (`platform`, `mediaKind` (`""`, `"series"` or `"post"`), `creatorId`, `creatorName`, `seriesId`, `seriesTitle`, `collectionId`, `collectionTitle`). Each label is limited to 180 UTF-8 bytes and must not contain control characters. This is source metadata only: the archive callback cannot inspect semantic file contents. The host does not expose URLs, local paths or credentials through this metadata.
+
+For a group, `isGroup` is true and routing is performed once at the group root; member paths and filenames remain unchanged. A group receives a category only when all members have the same category; it is not split by member. Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }` to choose one sanitized directory component. Empty or unsafe output is ignored (fail-open) and does not fail the download. The first valid result in plugin-identity order wins. The folder decision is persisted for resume and completion; the downloaded filename is unchanged.
 
 How scripts are run:
 
@@ -81,7 +83,9 @@ Return `null` or `undefined` to pass through: FluxDown downloads `ctx.url` uncha
 | `rangeSupported` | boolean | `true` = you guarantee the resolved host honours HTTP Range requests (e.g. googlevideo). Combined with `ephemeral`, FluxDown still skips the probe but plans a full multi-segment download right away instead of the conservative single-stream start. Default `false`: without a probe, Range capability is learned from the first response. |
 | `variants` | array | Multiple quality/format choices — see [Variants](#variants). |
 | `defaultVariantIndex` | integer | Which variant is the default (used on the 60 s picker timeout, do-not-disturb and headless runs). Out-of-range values fall back to `0`. Default `0`. |
-| `manifest` | object | A multi-file result — see [Manifests](#manifest-results). Mutually exclusive with `url`, `variants` and `audioUrl`. |
+| `manifest` | object | A multi-file result — see [Manifests](#manifest-results), including its optional root `archiveMetadata`. Mutually exclusive with `url`, `variants` and `audioUrl`. |
+
+`archiveMetadata` may also be returned at the top level of a normal resolve result. If the result is a manifest and both the resolve result and manifest root provide metadata, the manifest's `archiveMetadata` takes precedence.
 
 After resolution, FluxDown re-examines the *resolved* URL to pick the protocol engine — a resolver may return an HLS playlist, a magnet link or an FTP URL and the right engine takes over.
 
@@ -124,6 +128,7 @@ A manifest describes several files in one result (a share link, a cloud-drive fo
 ```text
 { name?, items: [{ id, name, path?, size?, kind?, variants?: [{ id, label, size? }] }] }
 ```
+`manifest.archiveMetadata` is optional root-level source metadata. When both the resolve result and manifest root supply metadata, the manifest value takes precedence. It is source metadata only, not file-content extraction.
 
 | Field | Rule |
 |---|---|

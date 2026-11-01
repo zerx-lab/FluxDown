@@ -1860,7 +1860,7 @@
   "pluginPermPageScriptsName": "Run scripts on web pages",
   "pluginPermPageScriptsDesc": "Runs the plugin's scripts on the websites listed below. Those scripts can read and modify the page content and your logged-in session on those sites.",
   "pluginPermArchiveName": "Choose archive folders",
-  "pluginPermArchiveDesc": "Reads the downloaded file name and chooses a folder name for organizing archive downloads. It cannot access files, the network, other tasks or processes.",
+  "pluginPermArchiveDesc": "Reads file names and source-provided creator, series or collection information to choose an archive subfolder. It cannot access files, the network, other tasks or processes.",
   "pluginConsentPageScripts": "Page scripts",
   "pluginRiskStandard": "Standard",
   "pluginRiskElevated": "Elevated",

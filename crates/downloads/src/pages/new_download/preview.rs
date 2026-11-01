@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_component::{WindowExt as _, button::Button, notification::Notification, v_flex};
 
-use super::NewDownloadView;
+use super::{CategoryMode, NewDownloadView};
 use crate::{
     controller::{DownloadsCommand, DownloadsResult},
     model::new_download::BuiltRequests,
@@ -84,7 +84,7 @@ impl NewDownloadView {
             Ok(DownloadsResult::Preview(manifest))
                 if manifest.error.is_empty() && !manifest.items.is_empty() =>
             {
-                Some(manifest)
+                Some(*manifest)
             }
             Ok(DownloadsResult::Preview(manifest)) if manifest.error.is_empty() => None,
             Ok(_) => {
@@ -142,8 +142,13 @@ impl NewDownloadView {
             ManifestView::new(
                 self.translator.clone(),
                 manifest,
-                request,
+                request.clone(),
                 self.context.queues.clone(),
+                self.context
+                    .category_route
+                    .clone()
+                    .filter(|_| self.category_mode == CategoryMode::Auto && !self.is_remote()),
+                self.context.save_dir.clone(),
                 submit,
                 back,
                 window,

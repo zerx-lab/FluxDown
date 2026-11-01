@@ -62,7 +62,7 @@ return jsc;
 })();
 "use strict";
 (() => {
-  // examples/youtube-down/src/clients.js
+  // packages/plugin-sdk/examples/youtube-down/src/clients.js
   var SAFARI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)";
   var CLIENTS = {
     tv_samsung: {
@@ -139,7 +139,7 @@ return jsc;
     return names.length ? [...new Set(names)] : null;
   }
 
-  // examples/youtube-down/src/query.js
+  // packages/plugin-sdk/examples/youtube-down/src/query.js
   function decode(text) {
     try {
       return decodeURIComponent(text.replace(/\+/g, " "));
@@ -176,7 +176,7 @@ return jsc;
     return `${path}?${parts.join("&")}`;
   }
 
-  // examples/youtube-down/src/formats.js
+  // packages/plugin-sdk/examples/youtube-down/src/formats.js
   var MAX_VIDEO_OPTIONS = 9;
   var VIDEO_CODECS = /* @__PURE__ */ new Set(["avc1", "avc2", "avc3", "avc4", "vp9", "vp8", "hev1", "hev2", "h263", "h264", "mp4v", "hvc1", "av1", "theora", "dvh1", "dvhe"]);
   var AUDIO_CODECS = /* @__PURE__ */ new Set(["flac", "mp4a", "opus", "vorbis", "mp3", "aac", "ac-4", "ac-3", "ec-3", "eac3", "dtsc", "dtse", "dtsh", "dtsl"]);
@@ -408,7 +408,7 @@ return jsc;
     };
   }
 
-  // examples/youtube-down/src/sha1.js
+  // packages/plugin-sdk/examples/youtube-down/src/sha1.js
   function utf8Bytes(text) {
     const out = [];
     for (let i = 0; i < text.length; i++) {
@@ -483,7 +483,7 @@ return jsc;
     return [h0, h1, h2, h3, h4].map((h) => (h >>> 0).toString(16).padStart(8, "0")).join("");
   }
 
-  // examples/youtube-down/src/cookies.js
+  // packages/plugin-sdk/examples/youtube-down/src/cookies.js
   var YOUTUBE_DOMAIN_RE = /(^|\.)youtube\.com$/i;
   function looksNetscape(text) {
     return /^# (Netscape )?HTTP Cookie File/m.test(text) || /^[^\t\n]+\t(TRUE|FALSE)\t[^\t\n]*\t(TRUE|FALSE)\t/m.test(text);
@@ -593,7 +593,7 @@ return jsc;
     return out.length ? out.join(" ") : null;
   }
 
-  // examples/youtube-down/src/innertube.js
+  // packages/plugin-sdk/examples/youtube-down/src/innertube.js
   var ORIGIN = "https://www.youtube.com";
   function extractYtcfg(html) {
     const m = /ytcfg\.set\s*\(\s*({.+?})\s*\)\s*;/.exec(html || "");
@@ -736,7 +736,7 @@ return jsc;
     }
   };
 
-  // examples/youtube-down/src/playability.js
+  // packages/plugin-sdk/examples/youtube-down/src/playability.js
   function textOf(node) {
     if (!node) return "";
     if (typeof node === "string") return node;
@@ -786,12 +786,14 @@ return jsc;
     const live = (key) => details.some((d) => d[key] === true);
     return {
       title: first((d) => d.title) || "",
+      creatorId: first((d) => d.channelId) || "",
+      creatorName: first((d) => d.author) || "",
       duration: Number(first((d) => d.lengthSeconds)) || 0,
       liveStatus: live("isPostLiveDvr") ? "post_live" : live("isLive") ? "is_live" : live("isUpcoming") ? "is_upcoming" : ""
     };
   }
 
-  // examples/youtube-down/src/player.js
+  // packages/plugin-sdk/examples/youtube-down/src/player.js
   var EJS_VERSION = "0.8.0";
   var INDEX_KEY = "ejs.players";
   var FILE_PREFIX = "ejs-player-";
@@ -944,7 +946,7 @@ return jsc;
     }
   };
 
-  // examples/youtube-down/src/playlist.js
+  // packages/plugin-sdk/examples/youtube-down/src/playlist.js
   var VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
   var BROWSE_PARAMS = "wgYCCAA=";
   var UNAVAILABLE_TITLES = /* @__PURE__ */ new Set(["[Private video]", "[Deleted video]", "[Unavailable video]"]);
@@ -1014,8 +1016,9 @@ return jsc;
       const alert = alertText(first);
       throw new Error(alert ? `播放列表不可访问：${alert}` : "播放列表不存在，或需要登录才能查看");
     }
-    const md = first.metadata && first.metadata.playlistMetadataRenderer || {};
-    const title = textOf2(md.title) || playlistId;
+    const metadata = first.metadata && first.metadata.playlistMetadataRenderer || {};
+    const title = textOf2(metadata.title) || playlistId;
+    const author = textOf2(metadata.author);
     const seen = /* @__PURE__ */ new Set();
     const entries = [];
     const take = (page2) => {
@@ -1035,10 +1038,10 @@ return jsc;
       page = parsePage(next.onResponseReceivedActions || next.onResponseReceivedEndpoints || next.continuationContents || []);
       take(page);
     }
-    return { title, entries };
+    return { title, author, entries };
   }
 
-  // examples/youtube-down/src/target.js
+  // packages/plugin-sdk/examples/youtube-down/src/target.js
   var VIDEO_ID_RE2 = /^[A-Za-z0-9_-]{11}$/;
   var LIST_ID_RE = /^[A-Za-z0-9_-]{2,64}$/;
   var PRESETS = ["best", "2160", "1440", "1080", "720", "480", "360", "audio"];
@@ -1067,7 +1070,7 @@ return jsc;
     return { videoId, preset: PRESETS.includes(preset) ? preset : "best" };
   }
 
-  // examples/youtube-down/src/main.js
+  // packages/plugin-sdk/examples/youtube-down/src/main.js
   var ITEM_PRESETS = [
     { id: "best", label: "最高画质" },
     { id: "1080", label: "≤ 1080p" },
@@ -1156,6 +1159,9 @@ return jsc;
     }
     const { info, formats } = extracted;
     const base = sanitizeFileName(info.title, videoId);
+    const archiveMetadata = { platform: "youtube", mediaKind: "post" };
+    if (info.creatorId) archiveMetadata.creatorId = String(info.creatorId);
+    if (info.creatorName) archiveMetadata.creatorName = String(info.creatorName);
     const options = buildOptions(formats, String(flux.settings.codec || "compat"), base);
     if (options.length === 0) throw new Error("没有可直接下载的格式（可能被风控或需要登录 Cookie）");
     const chosen = pickOption(options, preset);
@@ -1168,7 +1174,8 @@ return jsc;
       totalBytes: top.totalBytes || void 0,
       // googlevideo 直链带签名与过期时间：跳过探测（探测会浪费一次性直链），并担保支持 Range。
       ephemeral: true,
-      rangeSupported: true
+      rangeSupported: true,
+      archiveMetadata
     };
     if (interactive && preset === "ask" && options.length > 1) {
       result.variants = options.map(toVariant);
@@ -1180,7 +1187,7 @@ return jsc;
     const started = Date.now();
     const session = new Session(cookieText(ctx));
     const limit = Math.min(1e3, Math.max(1, Math.floor(Number(flux.settings.playlistLimit) || 200)));
-    const { title, entries } = await fetchPlaylist(session, playlistId, limit);
+    const { title, author, entries } = await fetchPlaylist(session, playlistId, limit);
     if (entries.length === 0) throw new Error("播放列表为空，或其中的视频都不可用");
     const quality = String(flux.settings.quality || "ask");
     const first = ITEM_PRESETS.find((p) => p.id === quality) || ITEM_PRESETS[0];
@@ -1199,7 +1206,9 @@ return jsc;
         flux.logger.warn("[youtube-down] 播放器预热失败（子任务会各自重试）:", e.message);
       }
     }
-    return { manifest: { name: sanitizeFileName(title, playlistId), items } };
+    return {
+      manifest: { name: sanitizeFileName(title, playlistId), items, archiveMetadata: { platform: "youtube", mediaKind: "post", collectionId: playlistId, collectionTitle: title, ...author ? { creatorName: author } : {} } }
+    };
   }
   globalThis.resolve = async (ctx) => {
     const item = parseItem(ctx.resolverItem);

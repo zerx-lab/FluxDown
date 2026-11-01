@@ -256,6 +256,7 @@ final class NewDownloadForm {
         let adv = advanced
         return ManifestBaseOptions(
             saveDir: saveDir.trimmingCharacters(in: .whitespacesAndNewlines),
+            offeredSaveDir: categoryState.offeredSaveDir(initial: initialSaveDir),
             queueId: queue,
             segments: Int32(segments),
             cookies: adv.cookie.trimmingCharacters(in: .whitespacesAndNewlines),

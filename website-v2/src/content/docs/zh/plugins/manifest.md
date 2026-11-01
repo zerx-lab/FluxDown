@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "a4039d071531"
+sourceHash: "6f07a92a4875"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -226,13 +226,13 @@ hooks 在下载生命周期事件发生时运行你的代码。
 }
 ```
 
-`views` / `commands` 为空数组等同于不声明。`archive` 会在下载名已知后为跟随分类路由的任务选择一个子目录；它不改文件名，也不接管保存根目录。
+`views` / `commands` 为空数组等同于不声明。`archive` 会依据已知文件名及可选来源元数据，为跟随分类路由的任务选择子目录；它不改文件名，也不接管保存根目录。
 
 ### `archive`
 
-`contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。宿主在已有分类规则命中、任务跟随分类目录时调用 `globalThis.archive({ fileName })`；用户明确选择其他保存目录时不调用。`flux.settings` 可读，网络、文件系统、任务与进程接口不可用。
+`contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。宿主仅在已有分类规则命中、任务跟随分类目录时调用 `globalThis.archive({ fileName, metadata?, isGroup })`；用户明确选择其他保存目录时不调用。`metadata` 可包含 `platform`、`mediaKind`、`creatorId`、`creatorName`、`seriesId`、`seriesTitle`、`collectionId` 与 `collectionTitle`。每个值是最多 180 UTF-8 字节且不含控制字符的标签。这些是来源元数据，不进行文件内容识别；URL、本地路径与凭据不会暴露。`flux.settings` 可读，网络、文件系统、任务与进程接口不可用。
 
-返回 `null` / `undefined` 表示不分类；或返回 `{ folderName: "The Expanse" }`。`folderName` 必须是已清洗的单个目录名，不能包含路径；空值或不安全结果会被忽略，不会让下载失败。有效目录名追加在现有分类目录下；首个按插件 identity 排序的有效结果生效。任务恢复及完成期复核复用已保存结果，不重新调用插件。原始文件名保持不变。
+任务组只在组根调用一次，并带 `isGroup: true`；成员相对路径与文件名保持不变。只有所有成员属于同一分类时才对整个组应用分类。返回 `null` / `undefined` 或 `{ folderName: "The Expanse" }`；`folderName` 必须是已清洗的单个目录名，不能包含路径。空值或非法归档输出会被忽略（fail-open），不会让下载失败。有效目录名追加在现有分类目录下；首个按插件 identity 排序的有效结果生效。任务恢复及完成期复核复用已保存结果，不重新调用插件。
 
 
 ### `views[]`

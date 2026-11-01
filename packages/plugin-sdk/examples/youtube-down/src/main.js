@@ -121,6 +121,9 @@ async function resolveVideo(ctx, videoId, preset, interactive) {
   }
   const { info, formats } = extracted;
   const base = sanitizeFileName(info.title, videoId);
+  const archiveMetadata = { platform: "youtube", mediaKind: "post" };
+  if (info.creatorId) archiveMetadata.creatorId = String(info.creatorId);
+  if (info.creatorName) archiveMetadata.creatorName = String(info.creatorName);
   const options = buildOptions(formats, String(flux.settings.codec || "compat"), base);
   if (options.length === 0) throw new Error("没有可直接下载的格式（可能被风控或需要登录 Cookie）");
 
@@ -135,6 +138,7 @@ async function resolveVideo(ctx, videoId, preset, interactive) {
     // googlevideo 直链带签名与过期时间：跳过探测（探测会浪费一次性直链），并担保支持 Range。
     ephemeral: true,
     rangeSupported: true,
+    archiveMetadata,
   };
   if (interactive && preset === "ask" && options.length > 1) {
     // variants[0] 即最高画质，弹框超时 / 免打扰 / headless 时按它下载。
@@ -148,7 +152,7 @@ async function listPlaylist(ctx, playlistId) {
   const started = Date.now();
   const session = new Session(cookieText(ctx));
   const limit = Math.min(1000, Math.max(1, Math.floor(Number(flux.settings.playlistLimit) || 200)));
-  const { title, entries } = await fetchPlaylist(session, playlistId, limit);
+  const { title, author, entries } = await fetchPlaylist(session, playlistId, limit);
   if (entries.length === 0) throw new Error("播放列表为空，或其中的视频都不可用");
   const quality = String(flux.settings.quality || "ask");
   const first = ITEM_PRESETS.find((p) => p.id === quality) || ITEM_PRESETS[0];
@@ -169,7 +173,9 @@ async function listPlaylist(ctx, playlistId) {
       flux.logger.warn("[youtube-down] 播放器预热失败（子任务会各自重试）:", e.message);
     }
   }
-  return { manifest: { name: sanitizeFileName(title, playlistId), items } };
+  return {
+    manifest: { name: sanitizeFileName(title, playlistId), items, archiveMetadata: { platform: "youtube", mediaKind: "post", collectionId: playlistId, collectionTitle: title, ...(author ? { creatorName: author } : {}) } },
+  };
 }
 
 globalThis.resolve = async (ctx) => {

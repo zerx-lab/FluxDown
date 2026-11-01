@@ -2742,6 +2742,9 @@ fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem
 /// [`ResolveRequest::resolver_item`] 非空）不可返回 `manifest`（防递归裂变，
 /// D6/§7.6）。全 fail-closed：任一违规整体拒绝该次 resolve 结果。
 fn validate_resolve_output(res: &ResolveResult, second_stage: bool) -> Result<(), PluginError> {
+    if let Some(metadata) = &res.archive_metadata {
+        validate_archive_metadata(metadata)?;
+    }
     if let Some(manifest) = &res.manifest {
         if second_stage {
             return Err(PluginError::InvalidOutput(
@@ -2827,7 +2830,34 @@ fn check_output_url(url: &str) -> Result<(), PluginError> {
 /// 字符（给 `save_dir` 前缀留余量，规避 Windows `MAX_PATH` 260 限制）；
 /// kind ∈ {"", "file"}；per-item variants ≤50，variant id/label 非空。
 /// fail-closed：任一条目违规拒绝整个 manifest（不做部分放行）。
+fn validate_archive_metadata(metadata: &crate::model::ArchiveMetadata) -> Result<(), PluginError> {
+    if !matches!(metadata.media_kind.as_str(), "" | "series" | "post") {
+        return Err(PluginError::InvalidOutput(
+            "archiveMetadata.mediaKind must be empty, series, or post".to_string(),
+        ));
+    }
+    for (field, value) in [
+        ("platform", &metadata.platform),
+        ("creatorId", &metadata.creator_id),
+        ("creatorName", &metadata.creator_name),
+        ("seriesId", &metadata.series_id),
+        ("seriesTitle", &metadata.series_title),
+        ("collectionId", &metadata.collection_id),
+        ("collectionTitle", &metadata.collection_title),
+    ] {
+        if value.len() > 180 || value.chars().any(char::is_control) {
+            return Err(PluginError::InvalidOutput(format!(
+                "archiveMetadata.{field} exceeds limit or contains controls"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_manifest(m: &ResolveManifest) -> Result<(), PluginError> {
+    if let Some(metadata) = &m.archive_metadata {
+        validate_archive_metadata(metadata)?;
+    }
     if m.items.is_empty() || m.items.len() > 1000 {
         return Err(PluginError::InvalidOutput(format!(
             "manifest items 数量非法: {}（须 1..=1000）",
@@ -3373,10 +3403,54 @@ mod tests {
             manifest: Some(ResolveManifest {
                 name: "share".into(),
                 items: vec![item("f1", "a.mp4", "sub")],
+                ..Default::default()
             }),
             ..Default::default()
         };
         assert!(validate_resolve_output(&res, false).is_ok());
+    }
+    #[test]
+    fn archive_metadata_is_validated_on_resolve_and_manifest() {
+        let valid = crate::model::ArchiveMetadata {
+            media_kind: "series".into(),
+            series_title: "Series".into(),
+            ..Default::default()
+        };
+        let direct = ResolveResult {
+            archive_metadata: Some(valid.clone()),
+            url: "https://cdn.example/file.mp4".into(),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&direct, false).is_ok());
+        let invalid = crate::model::ArchiveMetadata {
+            media_kind: "unknown".into(),
+            ..Default::default()
+        };
+        assert!(
+            validate_resolve_output(
+                &ResolveResult {
+                    archive_metadata: Some(invalid),
+                    url: "https://cdn.example/file.mp4".into(),
+                    ..Default::default()
+                },
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_resolve_output(
+                &ResolveResult {
+                    manifest: Some(ResolveManifest {
+                        archive_metadata: Some(valid),
+                        items: vec![item("id", "file.mp4", "")],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                false
+            )
+            .is_ok()
+        );
     }
 
     /// manifest 与 url/variants/audioUrl 互斥 → 各自拒绝。

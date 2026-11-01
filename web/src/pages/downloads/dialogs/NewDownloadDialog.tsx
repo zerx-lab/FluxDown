@@ -447,11 +447,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         )
         if (token !== resolveToken.current) return // 用户取消了探测
         if (!preview.error && preview.items.length > 0) {
+          const route = categoryShown && categoryMode.kind === 'auto' ? categoryRoute : null
+          const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
           setManifest({
             preview,
             sourceUrl: single.url,
             base: {
-              saveDir: options.saveDir,
+              saveDir: followed ? routeBaseDir(followed, options.saveDir, context.saveDir) : options.saveDir,
+              offeredSaveDir: context.saveDir,
               // 「稍后下载」触发的清单：主按钮仍是「开始下载」，必须落到开始队列而非稍后队列。
               queueId: later ? context.queueId : options.queueId,
               segments: options.segments,
@@ -460,6 +463,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               proxyUrl: options.proxyUrl,
               headers: options.headers,
               ignoreTlsErrors: options.ignoreTlsErrors,
+              categoryRoute: followed ?? undefined,
             },
           })
           setPhase('idle')

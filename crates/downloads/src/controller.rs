@@ -312,7 +312,8 @@ pub enum DownloadsResult {
     TaskSpeedHistory(Option<fluxdown_protocol::TaskSpeedHistoryDto>),
     /// `BtStatus` 的 peer / tracker 实况。
     BtStatus(fluxdown_protocol::BtStatusDto),
-    Preview(fluxdown_protocol::ResolvePreviewResponse),
+    /// Rare, metadata-heavy payload stays boxed so every command result remains small.
+    Preview(Box<fluxdown_protocol::ResolvePreviewResponse>),
     /// `FileIcon` 的 PNG 字节。
     FileIcon(Vec<u8>),
     /// `CreateMany` 的逐条结果（与请求条目同序）。

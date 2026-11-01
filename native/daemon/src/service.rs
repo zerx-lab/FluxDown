@@ -472,6 +472,9 @@ impl DaemonService {
                                     .into_iter()
                                     .map(manifest_item_to_preview_dto)
                                     .collect(),
+                                archive_metadata: outcome
+                                    .archive_metadata
+                                    .map(fluxdown_engine_protocol::archive_metadata_to_dto),
                             })
                         }
                         Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
@@ -1798,6 +1801,12 @@ impl DaemonService {
                 })
                 .collect(),
             resolver_plugin_id: request.resolver_plugin_id,
+            archive_metadata: request
+                .archive_metadata
+                .map(fluxdown_engine_protocol::archive_metadata_to_engine),
+            category_route: request
+                .category_route
+                .map(fluxdown_engine_protocol::category_route_to_engine),
         }
     }
 }

@@ -175,8 +175,11 @@ pub trait TaskInterceptor: Send + Sync {
     fn has_archivers(&self) -> bool {
         false
     }
-    /// Resolve an optional archive folder name.
-    async fn archive_folder(&self, _file_name: &str) -> Result<Option<String>, String> {
+    /// Resolve an optional archive folder using source metadata and group context.
+    async fn archive_folder(
+        &self,
+        _context: crate::model::ArchiveContext,
+    ) -> Result<Option<String>, String> {
         Ok(None)
     }
     fn set_egress(&self, _egress: TaskEgressView) {}
