@@ -230,7 +230,7 @@ Empty `views` / `commands` arrays are the same as leaving them out. `archive` ch
 
 `contributes.archive` names an in-package `.js` file and requires `permissions: ["archive"]`. The host calls `globalThis.archive({ fileName })` only when an existing category rule matches and the task follows category routing; an explicitly chosen save directory bypasses it. `flux.settings` is available, but network, filesystem, task and process APIs are not.
 
-Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }`. `folderName` must be one sanitized directory component, never a path. Empty or unsafe results are ignored and do not fail the download. The first valid result in plugin-identity order wins and is nested under the matched category directory. The folder decision is persisted and reused on resume and completion; the downloaded filename is unchanged.
+Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }`; synchronous values and Promises are accepted. `folderName` must be one sanitized directory component, never a path. Empty or unsafe results are ignored and do not fail the download. The first valid result in plugin-identity order wins and is nested under the matched category directory. A saved folder decision is reused on resume and completion without calling the plugin again. If no decision has been saved (for example, the filename was unknown or the callback returned `null`), completion may call the plugin again with the final filename. The downloaded filename is unchanged.
 
 
 ### `views[]`

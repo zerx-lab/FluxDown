@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "a4039d071531"
+sourceHash: "6170e8789b6e"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -232,7 +232,7 @@ hooks 在下载生命周期事件发生时运行你的代码。
 
 `contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。宿主在已有分类规则命中、任务跟随分类目录时调用 `globalThis.archive({ fileName })`；用户明确选择其他保存目录时不调用。`flux.settings` 可读，网络、文件系统、任务与进程接口不可用。
 
-返回 `null` / `undefined` 表示不分类；或返回 `{ folderName: "The Expanse" }`。`folderName` 必须是已清洗的单个目录名，不能包含路径；空值或不安全结果会被忽略，不会让下载失败。有效目录名追加在现有分类目录下；首个按插件 identity 排序的有效结果生效。任务恢复及完成期复核复用已保存结果，不重新调用插件。原始文件名保持不变。
+返回 `null` / `undefined` 表示不追加归档目录；或返回 `{ folderName: "The Expanse" }`，支持同步返回值及 Promise。`folderName` 必须是已清洗的单个目录名，不能包含路径；空值或不安全结果会被忽略，不会让下载失败。有效目录名追加在现有分类目录下；首个按插件 identity 排序的有效结果生效。任务恢复及完成期复核会复用已保存结果，不重新调用插件；若尚无保存结果（例如文件名当时未知或回调返回 `null`），完成阶段可按最终文件名再次调用。原始文件名保持不变。
 
 
 ### `views[]`

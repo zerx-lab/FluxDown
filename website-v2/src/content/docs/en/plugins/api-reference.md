@@ -33,7 +33,7 @@ Conventions:
 
 This local-only callback classifies by the known filename; it does not resolve URLs or access files or the network. The host calls it only when an existing category rule matches and the task follows category routing. An explicitly selected save directory bypasses it. Each call uses a fresh QuickJS runtime. It can read `flux.settings`, but has no `flux.fetch`, filesystem, task or process APIs.
 
-`ctx` contains only `fileName`, the filename known at routing time. Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }` to choose one sanitized directory component. Empty or unsafe names are ignored and do not fail the download. Plugins are tried in identity order; the first valid result wins. The folder decision is persisted for resume and completion, and the downloaded filename is unchanged.
+`ctx` contains only `fileName`, the filename known at routing time. Return `null` / `undefined` to leave the task unchanged, or `{ folderName: "The Expanse" }` to choose one sanitized directory component; synchronous values and Promises are accepted. Empty or unsafe names are ignored and do not fail the download. Plugins are tried in identity order; the first valid result wins. A saved folder decision is reused on resume and completion without another callback. If no decision has been saved, completion may call the plugin again with the final filename. The downloaded filename is unchanged.
 
 How scripts are run:
 

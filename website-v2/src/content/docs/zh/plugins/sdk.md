@@ -3,7 +3,7 @@ title: 插件 SDK 与 CLI
 description: fluxdown-plugin-sdk 参考——create/build/validate/pack/dev 命令行、项目配置、运行时辅助函数、JSX 运行时、随包类型与 manifest 校验器 API。
 section: plugins
 order: 13
-sourceHash: "54d760857009"
+sourceHash: "8cc235a08a93"
 ---
 
 `fluxdown-plugin-sdk` 是用 TypeScript 编写 FluxDown 插件的工具链：带类型的 `flux.*`、用于[可移植视图](/docs/zh/plugins/views/)的 JSX 运行时、与引擎和插件索引同一套的 manifest 校验器，以及负责打包、校验、封装 `.fxplug` 的 CLI。
@@ -166,7 +166,7 @@ my-plugin/
 | `defineInterceptors(handlers: InterceptHandlers)` | `globalThis.intercept`，按 `ctx.stage` 分派到 `handlers` 中同名阶段的处理函数（`prepare`、`probed`、`refresh`、`selectVariant`、`selectPeriod`、`segments`、`liveSegments`、`finalize`、`failed`）；没有对应处理函数时返回 `undefined` | `interceptors.entry`（需要 `intercept` 权限；订阅哪些阶段由 `interceptors.stages` 决定） |
 | `defineAuth(fn: AuthFn)` | `globalThis.authenticate` | `auth.entry`（需要 `auth` 权限） |
 | `defineSubscription(fn: SubscribeFn)` | `globalThis.subscribe` | `subscriptions[].entry` |
-| —（直接赋给 `globalThis.archive`） | `globalThis.archive: (ctx: ArchiveContext) => ArchiveResult \| null` | `contributes.archive`（需要 `archive` 权限） |
+| —（直接赋给 `globalThis.archive`） | `globalThis.archive: (ctx: ArchiveContext) => ArchiveResult \| null \| undefined \| Promise<ArchiveResult \| null \| undefined>` | `contributes.archive`（需要 `archive` 权限） |
 | `defineMain(setup: (flux: MainFlux) => void)` | 不安装任何全局名——它**立即同步地**用 `main` 脚本的门面（`MainFlux`）调用 `setup(flux)`，因此视图、命令、rpc 处理器、事件和定时器都在脚本求值期间完成注册 | `main.entry` |
 
 ```ts

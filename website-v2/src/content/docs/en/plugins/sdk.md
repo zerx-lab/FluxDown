@@ -165,7 +165,7 @@ The engine reads fixed globals after evaluating a script: `resolve`, `onStart` /
 | `defineInterceptors(handlers: InterceptHandlers)` | `globalThis.intercept`, dispatching on `ctx.stage` to the same-named handler in `handlers` (`prepare`, `probed`, `refresh`, `selectVariant`, `selectPeriod`, `segments`, `liveSegments`, `finalize`, `failed`); returns `undefined` when there is no handler | `interceptors.entry` (needs the `intercept` permission; which stages fire is set by `interceptors.stages`) |
 | `defineAuth(fn: AuthFn)` | `globalThis.authenticate` | `auth.entry` (needs the `auth` permission) |
 | `defineSubscription(fn: SubscribeFn)` | `globalThis.subscribe` | `subscriptions[].entry` |
-| — (assign `globalThis.archive`) | `globalThis.archive: (ctx: ArchiveContext) => ArchiveResult \| null` | `contributes.archive` (requires the `archive` permission) |
+| — (assign `globalThis.archive`) | `globalThis.archive: (ctx: ArchiveContext) => ArchiveResult \| null \| undefined \| Promise<ArchiveResult \| null \| undefined>` | `contributes.archive` (requires the `archive` permission) |
 | `defineMain(setup: (flux: MainFlux) => void)` | nothing — it calls `setup(flux)` **immediately and synchronously** with the `main`-script facade (`MainFlux`), so views, commands, rpc handlers, events and timers are registered while the script is evaluated | `main.entry` |
 
 ```ts

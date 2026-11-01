@@ -750,7 +750,7 @@ declare global {
   /** The plugin runtime facade. */
   const flux: Flux;
   /** Archive contribution entry point, requiring the `archive` permission. */
-  function archive(ctx: ArchiveContext): ArchiveResult | null;
+  function archive(ctx: ArchiveContext): Awaitable<ArchiveResult | null | undefined>;
   /**
    * Console routed to the plugin log. Declared as a plain variable: do not enable the DOM
    * lib in plugin projects (the QuickJS host has no DOM).
