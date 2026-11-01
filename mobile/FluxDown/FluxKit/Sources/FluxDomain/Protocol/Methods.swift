@@ -232,26 +232,6 @@ public enum HostMethod {
     public static let agentLinkDispatch = "agent.link.dispatch"
     /// `LinkDeviceParams` → `LinkControlCredentialDto`：向本机 agent 申请对某已配对主机的设备控制凭据（仅 `controllable && !revoked`）。
     public static let agentLinkControlCredential = "agent.link.controlCredential"
-    /// FluxMesh（`agent.share.*`）：仅当主机 hello 带 `agent.share` 能力时可用；移动端暂不使用，常量只为与 `method.rs` 一一对应。
-    public static let agentShareConfig = "agent.share.config"
-    public static let agentShareSetLocalConfig = "agent.share.setLocalConfig"
-    public static let agentShareCreate = "agent.share.create"
-    public static let agentShareList = "agent.share.list"
-    public static let agentShareUpdate = "agent.share.update"
-    public static let agentShareStop = "agent.share.stop"
-    public static let agentShareResume = "agent.share.resume"
-    public static let agentShareDelete = "agent.share.delete"
-    public static let agentShareResolve = "agent.share.resolve"
-    public static let agentShareReceive = "agent.share.receive"
-    public static let agentShareReceiveRecords = "agent.share.receiveRecords"
-    public static let agentShareDismissPending = "agent.share.dismissPending"
-    public static let agentShareSwitchToBridge = "agent.share.switchToBridge"
-    public static let agentShareDiagnostics = "agent.share.diagnostics"
-    public static let agentShareLogs = "agent.share.logs"
-    public static let agentShareSessionKill = "agent.share.sessionKill"
-    public static let agentShareConvertToCloud = "agent.share.convertToCloud"
-    public static let agentShareDeleteCloudCopy = "agent.share.deleteCloudCopy"
-    public static let agentShareStopProviding = "agent.share.stopProviding"
     public static let agentPlanList = "agent.plan.list"
     public static let agentOrderCreate = "agent.order.create"
     public static let agentOrderGet = "agent.order.get"
@@ -343,7 +323,5 @@ public enum HostCapability {
     public static let agentOpenTaskFiles = "agent.openTaskFiles"
     /// 按连接下发：本连接可把任务产物写入 agent 所在主机的系统剪贴板（`agent.platform.copyTaskFiles`）。
     public static let agentCopyTaskFiles = "agent.copyTaskFiles"
-    /// 本主机编入了FluxMesh服务（`agent.share.*`）；移动端暂不使用。
-    public static let agentShare = "agent.share"
     public static let clientSelections = "client.selections"
 }
