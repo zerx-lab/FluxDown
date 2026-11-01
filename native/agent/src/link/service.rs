@@ -90,17 +90,12 @@ pub(crate) fn refresh_request_ttls(requests: &mut [LinkPairingRequestDto]) {
 /// 本机建下载任务的入口（生产实现走 daemon；测试注入记录型实现）。
 #[async_trait]
 pub trait LinkTaskCreator: Send + Sync {
-    /// 以「无人值守」方式创建任务，返回任务 ID。
-    async fn create_task(&self, request: CreateTaskRequest) -> Result<String, ApiError>;
-
-    /// 创建接收任务并可选附带本机分类路由。
+    /// 以「无人值守」方式创建接收任务，处理可选本机分类路由并返回任务 ID。
     async fn create_task_with_route(
         &self,
         request: CreateTaskRequest,
-        _category_route: Option<fluxdown_protocol::CategoryRouteDto>,
-    ) -> Result<String, ApiError> {
-        self.create_task(request).await
-    }
+        category_route: Option<fluxdown_protocol::CategoryRouteDto>,
+    ) -> Result<String, ApiError>;
 }
 
 /// 经 daemon JSON-RPC 创建任务。
@@ -117,10 +112,6 @@ impl DaemonTaskCreator {
 
 #[async_trait]
 impl LinkTaskCreator for DaemonTaskCreator {
-    async fn create_task(&self, request: CreateTaskRequest) -> Result<String, ApiError> {
-        self.create_task_with_route(request, None).await
-    }
-
     async fn create_task_with_route(
         &self,
         request: CreateTaskRequest,
