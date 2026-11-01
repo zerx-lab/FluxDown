@@ -27,8 +27,8 @@ use gpui_component::{
 
 use super::NewDownloadView;
 use crate::model::save_dir_category::{
-    CategoryMode, auto_follow_target, category_options, dir_untouched, matched_category,
-    predict_save_dir,
+    CategoryMode, auto_follow_target, category_options, category_route_eligible, matched_category,
+    predict_save_dir, save_dir_untouched,
 };
 
 /// 分类下拉触发器定宽（图标 + 名称 + chevron）。
@@ -139,17 +139,17 @@ impl NewDownloadView {
 
     /// 目录框是否仍是表单写入的值（用户没手动改过），见 [`dir_untouched`]。
     pub(super) fn save_dir_untouched(&self, cx: &App) -> bool {
-        !self.category_dir_manually_edited
-            && dir_untouched(
-                &self.save_dir.read(cx).value(),
-                &self.context.save_dir,
-                self.category_written_dir.as_deref(),
-            )
+        save_dir_untouched(
+            &self.save_dir.read(cx).value(),
+            &self.context.save_dir,
+            self.category_written_dir.as_deref(),
+            self.category_dir_manually_edited,
+        )
     }
 
     /// 提交是否挂分类路由：自动模式且目录框未被手改。
     pub(super) fn routes_by_category(&self, cx: &App) -> bool {
-        self.category_mode == CategoryMode::Auto && self.save_dir_untouched(cx)
+        category_route_eligible(&self.category_mode, self.save_dir_untouched(cx))
     }
 
     /// 分类目录记忆的键：显式所选分类，或自动模式命中（触发器显示）的分类；不分类 / 无命中 /
@@ -185,6 +185,7 @@ impl NewDownloadView {
             &self.context.save_dir,
             self.category_written_dir.as_deref(),
             predicted.as_deref(),
+            self.category_dir_manually_edited,
         ) else {
             return;
         };

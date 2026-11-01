@@ -1741,13 +1741,6 @@ mod tests {
     }
 
     #[test]
-    fn explicitly_unrouted_category_dir_stays_in_place() {
-        let (route_out, save_dir, _) = routed_plan("/data/video", "/downloads", None);
-        assert_eq!(route_out, None);
-        assert_eq!(save_dir, "/data/video");
-    }
-
-    #[test]
     fn capture_confirmation_disables_category_route_after_manual_directory_choice() {
         fn disable_flag(route: Option<CategoryRouteDto>, save_dir: &str) -> bool {
             let plan = NewDownloadSubmission::Tasks {

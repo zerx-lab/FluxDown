@@ -38,7 +38,9 @@ use crate::{
             compose_request, custom_segments, detect_ua_preset, manual_proxy_url, parse_entries,
             parse_input, ua_preset_keys, ua_preset_value,
         },
-        save_dir_category::{CategoryMode, NewDownloadCategory, category_options, dir_untouched},
+        save_dir_category::{
+            CategoryMode, NewDownloadCategory, category_options, save_dir_untouched,
+        },
         save_dir_history::{
             CategorySaveDirHistory, read_category_save_dir_history, read_save_dir_history,
             record_category_save_dir, record_save_dir, save_dir_choices,
@@ -908,10 +910,11 @@ impl NewDownloadView {
         let current = self.save_dir.read(cx).value().to_string();
         if save_dir != self.context.save_dir
             && current == self.context.save_dir
-            && dir_untouched(
+            && save_dir_untouched(
                 &current,
                 &self.context.save_dir,
                 self.category_written_dir.as_deref(),
+                self.category_dir_manually_edited,
             )
         {
             let value = save_dir.clone();
