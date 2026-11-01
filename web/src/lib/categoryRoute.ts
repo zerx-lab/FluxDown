@@ -169,8 +169,8 @@ export function dirUntouched(current: string, offered: string, lastWritten: stri
 /**
  * Auto 模式下预测输入变化时目录框应改写成的值；用户手改过（非 `dirUntouched`）返回 null。
  */
-export function autoFollowDir(current: string, offered: string, lastWritten: string | null, predicted: string | null): string | null {
-  if (!dirUntouched(current, offered, lastWritten)) return null
+export function autoFollowDir(current: string, offered: string, lastWritten: string | null, predicted: string | null, manuallyChosen = false): string | null {
+  if (manuallyChosen || !dirUntouched(current, offered, lastWritten)) return null
   return predicted ?? offered.trim()
 }
 
@@ -180,4 +180,14 @@ export function modeDir(mode: CategoryPickMode, categories: readonly CustomCateg
   if (mode.kind === 'none') return offered
   const category = categories.find((item) => item.id === mode.id)
   return category ? category.saveDir.trim() : offered
+}
+/** Route is submitted only while Auto is active and the directory still follows the offered/category route. */
+export function eligibleRoute(
+  route: CategoryRouteDto | null,
+  mode: CategoryPickMode,
+  manuallyChosen: boolean,
+  submitted: string,
+  offered: string,
+): CategoryRouteDto | null {
+  return route !== null && mode.kind === 'auto' && !manuallyChosen && routeFollows(route, submitted, offered) ? route : null
 }

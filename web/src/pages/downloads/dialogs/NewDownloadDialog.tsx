@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { autoFollowDir, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -196,8 +196,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const predictedUrl = entries[0]?.url ?? ''
   const predictedDir = categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
-    if (!categoryShown || categoryMode.kind !== 'auto' || saveDirManuallyChosen.current) return
-    const next = autoFollowDir(saveDir, context.saveDir, lastWrittenDir.current, predictedDir)
+    if (!categoryShown || categoryMode.kind !== 'auto') return
+    const next = autoFollowDir(saveDir, context.saveDir, lastWrittenDir.current, predictedDir, saveDirManuallyChosen.current)
     if (next === null) return
     lastWrittenDir.current = next
     if (next !== saveDir) setSaveDir(next)
@@ -452,13 +452,12 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         )
         if (token !== resolveToken.current) return // 用户取消了探测
         if (!preview.error && preview.items.length > 0) {
-          const route = categoryShown && categoryMode.kind === 'auto' && !saveDirManuallyChosen.current ? categoryRoute : null
-          const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
+          // Manifest group.create has no categoryRoute; preserve exactly what the form displays.
           setManifest({
             preview,
             sourceUrl: single.url,
             base: {
-              saveDir: followed ? routeBaseDir(followed, options.saveDir, context.saveDir) : options.saveDir,
+              saveDir: options.saveDir,
               // 「稍后下载」触发的清单：主按钮仍是「开始下载」，必须落到开始队列而非稍后队列。
               queueId: later ? context.queueId : options.queueId,
               segments: options.segments,
@@ -494,13 +493,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         await rpc.agent.capture.resolve({
           transactionId: capture.transactionId,
           accepted: true,
-          disableCategoryRoute: !(
-            categoryShown &&
-            categoryMode.kind === 'auto' &&
-            !saveDirManuallyChosen.current &&
-            categoryRoute !== null &&
-            routeFollows(categoryRoute, options.saveDir, context.saveDir)
-          ),
+          disableCategoryRoute: eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir) === null,
           request,
         })
         consumed.add(capture.transactionId)
@@ -524,8 +517,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       let { common } = batch
       // 分类路由：只对本机提交生效；目录仍是表单初始值 / 分类目录时交给引擎按文件名定落点；
       // 分类下拉选了「不分类」/ 指定分类时用户已显式定目录，不路由。
-      const route = categoryShown && categoryMode.kind === 'auto' && !saveDirManuallyChosen.current ? categoryRoute : null
-      const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
+      const followed = eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir)
       if (followed) common = { ...common, saveDir: routeBaseDir(followed, options.saveDir, context.saveDir) }
       const controller = new AbortController()
       importAbort.current = controller
