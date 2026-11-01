@@ -23,26 +23,13 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// [`crate::judge_frame`] 判定），v16 增加外部恢复任务通知（`AgentEvent::CaptureTasksResumed`），
 /// v17 取消全量任务单帧：快照与替换事件只带任务总数（`DaemonSnapshot.taskTotal` /
 /// `queueTotal`），任务表经 `system.taskPage` 分页载入（`DaemonEvent::TablesReloading`），
-/// `TaskDto` 默认值字段不再上线（反序列化须容忍缺省），v18 增加FluxMesh（临时文件分享）：
-/// `agent.share.*` 方法、`AgentEvent::ShareChanged` / `ShareProgress`（`AgentSnapshot.share`）与
-/// `ErrorReason::Share*`，v19 增加FluxMesh云端暂存 / 桥接：`agent.share.convertToCloud` /
-/// `deleteCloudCopy`、`ShareDto.cloudState` / `upload`、`SharePathKind::{Cdn, Bridge}`、
-/// `ShareSessionBytesDto.{cdn, bridge}` 与 `ErrorReason::Share{CloudNotReady, TrafficExhausted, CloudUnavailable}`，
-/// v20 增加FluxMesh「我的分享」恢复 / 删除：`agent.share.resume` / `delete`、`ShareDto.sourceMissing`
-/// 与 `ErrorReason::ShareSourceMissing`，v21 增加FluxMesh共享：`agent.share.stopProviding`、`SharePathKind::Swarm`、
-/// `ShareDto.swarm`、`ShareLocalConfigDto.{defaultSwarm, autoProvide}`、`ShareSourcesDto.swarmPeers`、
-/// `ShareTaskFactsDto.swarmPeers`、`ShareSessionBytesDto.peer`、`ShareReceiveRecordDto.provideState`，
-/// v22 增加FluxMesh额度：`agent.share.usageRefresh`、`ShareStateDto.usage`、`CloudPlan.productKind / pack`，
-/// v23 增加共享准入：`ShareTaskFactsDto.swarmBlock`、`ShareLocalConfigDto.{provideDailyCapBytes, provideDayOffsetSecs}`、
-/// `SharePolicySummaryDto.{swarmPriorityReservedSlots, provideDailyCapDefaultBytes}`、
-/// `ErrorReason::ShareSwarm{QuotaExhausted, LoginRequired}`，v24 增加合规：`agent.share.report` / `appeal`、
-/// `ShareStatus::Takedown`、`ShareDto.{takedownReason, appeal}`、`ErrorReason::Share{StrikeLimited, AppealExists}`，
+/// `TaskDto` 默认值字段不再上线（反序列化须容忍缺省），v18–v24 曾承载的临时文件分享协议已整体移除，
 /// v25 增加周期会员卡：`CloudPlan.billingPeriodDays`、`CloudProfile` / `AgentSessionDto.activeSubscription`、
 /// `ErrorReason::SubscriptionConflict`，v26 增加 BT 防吸血：`daemon.bt.guard.*` 方法、
 /// `DaemonEvent::{BtGuardChanged, BtGuardCloudRefreshWanted, BtGuardEvidenceReady}` 与 `BtPeerDto` 嫌疑字段
 /// （纯增量，旧客户端忽略未知字段与方法）。
 pub const PROTOCOL_VERSION: u32 = 26;
-/// 旧客户端不能解析新增的云端暂存 / 桥接方法与字段语义（UI 会把云端副本当成实时分享展示），必须在握手时拒绝混用。
+/// 旧客户端不能解析 v19 起的协议语义，必须在握手时拒绝混用。
 pub const MIN_PROTOCOL_VERSION: u32 = 19;
 /// 服务收到 `system.shutdown` 而退出时的 WebSocket 关闭原因：客户端据此停止重连与重拉。
 pub const CLOSE_REASON_SERVICE_QUIT: &str = "service-quit";

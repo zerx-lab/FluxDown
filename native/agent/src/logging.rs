@@ -18,13 +18,12 @@ use crate::runtime::AgentResult;
 /// 一等公民 crate：默认按用户级别输出；第三方（hyper / reqwest / tungstenite / axum）只保留 warn+。
 /// 嵌入模式下 daemon 与 agent 同进程，daemon 事件也写进这份日志；移动端 UniFFI 会话驱动
 /// （`fluxdown_mobile`，只在重连时记一行原因）同样写进来，否则界面卡在加载 / 断连时无从定位。
-const FIRST_PARTY_TARGETS: [&str; 7] = [
+const FIRST_PARTY_TARGETS: [&str; 6] = [
     "fluxdown_agent",
     "fluxdown_daemon",
     "fluxdown_link",
     "fluxdown_api",
     "fluxdown_protocol",
-    "fluxdown_share",
     "fluxdown_mobile",
 ];
 
@@ -70,9 +69,6 @@ fn init_at(agent_data_dir: &Path, engine_data_dir: &Path) {
         .with_writer(LogFileWriter)
         .with_filter(build_filter());
     let subscriber = tracing_subscriber::registry().with(fmt_layer);
-    // iroh / FluxMesh tracing 另走内存环形缓冲（诊断页），不受上面主输出过滤的影响。
-    #[cfg(feature = "share-p2p")]
-    let subscriber = subscriber.with(crate::share::logs::layer());
     if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
         log.log_unthrottled(
             Level::Warn,
@@ -276,7 +272,7 @@ mod tests {
     fn default_filter_keeps_third_party_quiet() {
         assert_eq!(
             default_directives(Level::Info),
-            "warn,fluxdown_agent=info,fluxdown_daemon=info,fluxdown_link=info,fluxdown_api=info,fluxdown_protocol=info,fluxdown_share=info,fluxdown_mobile=info"
+            "warn,fluxdown_agent=info,fluxdown_daemon=info,fluxdown_link=info,fluxdown_api=info,fluxdown_protocol=info,fluxdown_mobile=info"
         );
         assert_eq!(default_directives(Level::Error), "error");
     }

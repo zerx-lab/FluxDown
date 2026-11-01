@@ -18,7 +18,6 @@ use crate::model::{
     devices::{DeviceEntry, local_device_id, other_devices},
     file_conflict::FileConflictSet,
     group_tree::{GroupAggregate, GroupMeta},
-    share::ShareFacts,
 };
 
 /// 本机偏好：新建下载对话框上次使用的保存目录（设备本地，不进云同步）。
@@ -478,8 +477,6 @@ impl DownloadsController {
         if self.stale {
             self.task_runtime.clear();
         }
-        self.store
-            .replace_share(ShareFacts::from_state(&snapshot.share));
         self.rebuild_all();
         self.rebuild_remote();
     }
@@ -546,10 +543,6 @@ impl DownloadsController {
                 self.set_preferences(&preferences.values);
                 true
             }
-            AgentEvent::ShareChanged(state) => {
-                self.store.replace_share(ShareFacts::from_state(state))
-            }
-            AgentEvent::ShareProgress(progress) => self.store.apply_share_progress(progress),
             AgentEvent::Daemon(event) => self.apply_daemon_event(event),
             _ => false,
         }
@@ -2438,85 +2431,5 @@ mod tests {
         assert!(controller.store().remote().is_empty());
         assert!(controller.other_devices().is_empty());
         assert_eq!(controller.local_device_id(), None);
-    }
-
-    fn share_state(
-        path_kind: fluxdown_protocol::SharePathKind,
-    ) -> fluxdown_protocol::ShareStateDto {
-        let mut state = fluxdown_protocol::ShareStateDto {
-            available: true,
-            can_send: true,
-            ..fluxdown_protocol::ShareStateDto::default()
-        };
-        state.task_facts.insert(
-            "t1".into(),
-            fluxdown_protocol::ShareTaskFactsDto {
-                is_share_receive: true,
-                path_kind,
-                session_id: Some("s1".into()),
-                ..fluxdown_protocol::ShareTaskFactsDto::default()
-            },
-        );
-        state
-    }
-
-    #[test]
-    fn share_facts_follow_snapshot_changed_and_progress_events() {
-        use fluxdown_protocol::{SharePathKind, ShareProgressDto};
-        let mut controller = DownloadsController::new(Arc::new(NullPort));
-        assert!(!controller.store().share().available());
-
-        let snapshot = fluxdown_protocol::AgentSnapshot {
-            share: share_state(SharePathKind::Relay),
-            ..fluxdown_protocol::AgentSnapshot::default()
-        };
-        controller.replace_snapshot(&snapshot);
-        {
-            let share = controller.store().share();
-            assert!(share.available() && share.can_send());
-            assert_eq!(
-                share.task("t1").map(|facts| facts.path_kind),
-                Some(SharePathKind::Relay)
-            );
-        }
-
-        // 整体替换：内容相同不算变化（不触发表格重绘），内容变了才算。
-        assert!(
-            !controller.apply_event(&agent(AgentEvent::ShareChanged(share_state(
-                SharePathKind::Relay
-            ))))
-        );
-        assert!(
-            controller.apply_event(&agent(AgentEvent::ShareChanged(share_state(
-                SharePathKind::DirectLan
-            ))))
-        );
-
-        // 进度只刷新匹配会话的路径；路径没变的高频帧不重绘。
-        let progress = |session: &str, path_kind| {
-            agent(AgentEvent::ShareProgress(ShareProgressDto {
-                session_id: session.into(),
-                path_kind,
-                ..ShareProgressDto::default()
-            }))
-        };
-        assert!(!controller.apply_event(&progress("other", SharePathKind::Relay)));
-        assert!(!controller.apply_event(&progress("s1", SharePathKind::DirectLan)));
-        assert!(controller.apply_event(&progress("s1", SharePathKind::Relay)));
-        assert_eq!(
-            controller
-                .store()
-                .share()
-                .task("t1")
-                .map(|facts| facts.path_kind),
-            Some(SharePathKind::Relay)
-        );
-
-        // FluxMesh不可用：入口门控随之关闭。
-        controller.apply_event(&agent(AgentEvent::ShareChanged(
-            fluxdown_protocol::ShareStateDto::default(),
-        )));
-        assert!(!controller.store().share().available());
-        assert!(!controller.store().share().is_share_receive("t1"));
     }
 }

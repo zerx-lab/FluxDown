@@ -152,8 +152,6 @@ pub struct RemoteTaskService {
     ws_handshaking: AtomicBool,
     /// 云端 SSE 里推送相关的事件（`notify.changed` / `notify.delivery` / 重连 / `resync`）转交云端推送模块。
     notify_feed: Option<crate::cloud_notify::NotifyFeed>,
-    /// FluxMesh事件（`share.claimed` / `share.sessionKill` / `share.changed`）原样转交FluxMesh服务；未编入FluxMesh时为空。
-    share_feed: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
     runtime: Mutex<Runtime>,
 }
 
@@ -181,7 +179,6 @@ impl RemoteTaskService {
             ws_pong_seen: AtomicBool::new(false),
             ws_handshaking: AtomicBool::new(false),
             notify_feed: None,
-            share_feed: None,
             runtime: Mutex::new(Runtime::default()),
         }
     }
@@ -190,13 +187,6 @@ impl RemoteTaskService {
     #[must_use]
     pub fn with_notify_feed(mut self, feed: crate::cloud_notify::NotifyFeed) -> Self {
         self.notify_feed = Some(feed);
-        self
-    }
-
-    /// 接入FluxMesh服务：SSE 里的FluxMesh事件转交给它处理。
-    #[must_use]
-    pub fn with_share_feed(mut self, feed: tokio::sync::mpsc::UnboundedSender<Value>) -> Self {
-        self.share_feed = Some(feed);
         self
     }
 
@@ -1107,13 +1097,6 @@ impl RemoteTaskService {
                     feed.resync();
                 }
                 return Ok(Some(SseEnd::Resync));
-            }
-            "share.claimed" | "share.sessionKill" | "share.changed" | "share.usage" => {
-                if let Some(feed) = &self.share_feed
-                    && feed.send(event.clone()).is_err()
-                {
-                    tracing::debug!("share service is gone; share event dropped");
-                }
             }
             _ => {}
         }
@@ -2497,7 +2480,6 @@ fn socket_error_end(event: &Value) -> Result<SseEnd, RemoteError> {
             },
             retryable: false,
             unreachable: false,
-            details: None,
         })),
         "presence_connection_missing" => Ok(SseEnd::Resync),
         other => Err(RemoteError::Protocol(format!(

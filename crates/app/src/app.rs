@@ -80,12 +80,6 @@ pub(crate) struct Desktop {
     pub account_host: Entity<AccountHost>,
     /// 设置侧栏「推介有奖」页的可见性（已登录 + 设备本地偏好），设置窗口与命令面板共用。
     pub referral_visibility: Entity<SlotVisibility>,
-    /// 设置「FluxMesh」页「网络诊断」Tab 的可见性（FluxMesh 可用时才出现），设置窗口与命令面板共用。
-    pub share_network_visibility: Entity<SlotVisibility>,
-    /// FluxMesh状态中枢：管理页、分享面板、接收窗口、设置页与任务来源徽标共用的唯一一份FluxMesh投影。
-    pub share_hub: Entity<fluxdown_ui_share::ShareHub>,
-    /// 接收确认窗口内的视图（窗口关闭后失效）：新的来源交给它而不是再开一个窗口。
-    pub share_receive: Option<WeakEntity<fluxdown_ui_share::ShareReceiveView>>,
     /// 主窗口内的下载页（主窗口关闭后失效）。
     pub main_downloads: Option<WeakEntity<DownloadView>>,
     pub main_shell: Option<WeakEntity<ShellView>>,
@@ -253,7 +247,6 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
             cx.new(|_| SettingsStore::new(Arc::new(AgentSettingsPort::new(agent_client.clone()))));
         attach(&session, &settings_store, cx);
         let account_host = crate::account_host::install(&translator, &session, &agent_client, cx);
-        let share_hub = crate::share_host::install(&translator, &session, &agent_client, cx);
         let quit_store = settings_store.clone();
         cx.on_app_quit(move |cx| {
             let calls = quit_store.update(cx, |store, _| store.drain_pending_calls());
@@ -278,7 +271,6 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
         crate::menus::install(cx, &translator);
         crate::menus::install_global_actions(cx);
         let referral_visibility = cx.new(|_| SlotVisibility::default());
-        let share_network_visibility = cx.new(|_| SlotVisibility::default());
         cx.set_global(Desktop {
             translator: translator.clone(),
             session: session.clone(),
@@ -286,9 +278,6 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
             settings_store,
             account_host,
             referral_visibility,
-            share_network_visibility,
-            share_hub,
-            share_receive: None,
             main_downloads: None,
             main_shell: None,
             settings_view: None,
@@ -301,7 +290,6 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
         // 会话并叠加本地未回执编辑，外观与语言只从它投影（见 `observe_preferences`）。
         observe_preferences(cx);
         crate::account_host::bind_referral_visibility(cx);
-        crate::share_host::bind_network_visibility(cx);
         after_first_snapshot(cx, crate::legacy_themes::migrate);
         cx.subscribe(&session, |_, signal, cx| match signal {
             SessionSignal::Snapshot(snapshot) => {

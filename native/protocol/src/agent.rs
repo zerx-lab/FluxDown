@@ -131,41 +131,9 @@ pub struct CloudPlan {
     pub campaign: Option<CloudPlanCampaign>,
     #[serde(default = "default_true")]
     pub purchasable: bool,
-    /// 产品形态：会员（永久 / 会员卡）或流量包。
-    #[serde(default)]
-    pub product_kind: CloudProductKind,
-    /// 流量包规格（`productKind = pack` 时存在）。
-    #[serde(default)]
-    pub pack: Option<CloudPack>,
-    /// 周期会员卡的周期天数；`None` = 永久套餐（或流量包）。
+    /// 周期会员卡的周期天数；`None` = 永久套餐。
     #[serde(default)]
     pub billing_period_days: Option<u32>,
-}
-
-/// 套餐产品形态（`CloudPlan.productKind`）。
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum CloudProductKind {
-    /// 会员套餐。
-    #[default]
-    Membership,
-    /// 流量包（消耗品，可重复购买、叠加）。
-    Pack,
-    /// 对端发送了本端不认识的形态。
-    #[serde(other)]
-    Unknown,
-}
-
-/// 流量包规格。
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[serde(rename_all = "camelCase", default)]
-pub struct CloudPack {
-    pub kind: crate::ShareTrafficKind,
-    pub bytes: u64,
-    /// 支付后有效天数。
-    pub valid_days: u32,
 }
 
 fn default_badge_style() -> String {

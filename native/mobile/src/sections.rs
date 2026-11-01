@@ -255,9 +255,6 @@ pub(crate) fn affected(event: &AgentEvent) -> &'static [Section] {
         | AgentEvent::CaptureTasksStarted(_)
         // 外部恢复任务只驱动桌面提示窗口，移动端既无分区也不发通知。
         | AgentEvent::CaptureTasksResumed(_)
-        // FluxMesh暂不进移动端（桌面 / Web 先行）：既无分区也不发通知。
-        | AgentEvent::ShareChanged(_)
-        | AgentEvent::ShareProgress(_)
         // 远端主机的应用内更新只在其桌面 / Web 界面操作，移动端不暴露分区。
         | AgentEvent::UpdateChanged(_)
         | AgentEvent::SessionRevoked(_) => &[],

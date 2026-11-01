@@ -6,7 +6,6 @@
 [workspace]
 resolver = "3"
 members = ["native/*", "crates/*", "scripts/desktop-dev"]
-exclude = ["poc/iroh-demo"]
 
 [workspace.package]
 edition = "2024"

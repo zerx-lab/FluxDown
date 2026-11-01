@@ -43,9 +43,6 @@ pub fn is_capture_url(value: &str) -> bool {
 /// ```
 #[must_use]
 pub fn normalize_capture_url(value: &str) -> String {
-    if is_share_link(value) {
-        return value.trim().to_owned();
-    }
     let Some(rest) = deep_link_rest(value) else {
         return value.to_owned();
     };
@@ -53,70 +50,6 @@ pub fn normalize_capture_url(value: &str) -> String {
         return url;
     }
     percent_decode(rest)
-}
-
-/// FluxMesh分享链接的解析结果。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ShareRef {
-    /// 分享 slug：非空 `[A-Za-z0-9_-]+`。
-    pub slug: String,
-}
-
-/// 官网分享页所在主机（小写）。
-const SHARE_HOSTS: [&str; 2] = ["fluxdown.com", "fluxdown.zerx.dev"];
-
-/// 解析FluxMesh分享链接：`fluxdown://share/<slug>` 或 `https://<官网主机>/s/<slug>`
-/// （scheme / 主机大小写不敏感，允许首尾空白、末尾 `/`、查询串与片段）；
-/// 其他输入（含 slug 为空或含非法字符）为 `None`。
-///
-/// ```
-/// use fluxdown_protocol::capture_link::share_ref;
-/// assert_eq!(
-///     share_ref("https://fluxdown.com/s/Ab-1_x").map(|r| r.slug).as_deref(),
-///     Some("Ab-1_x")
-/// );
-/// assert!(share_ref("https://fluxdown.com/s/").is_none());
-/// ```
-#[must_use]
-pub fn share_ref(value: &str) -> Option<ShareRef> {
-    let value = value.trim();
-    let tail = strip_prefix_ci(value, "fluxdown://share/").or_else(|| {
-        let rest = strip_prefix_ci(value, "https://")?;
-        let (host, path) = rest.split_once('/')?;
-        SHARE_HOSTS
-            .iter()
-            .any(|h| host.eq_ignore_ascii_case(h))
-            .then(|| path.strip_prefix("s/"))
-            .flatten()
-    })?;
-    let path = tail
-        .find(['?', '#'])
-        .and_then(|end| tail.get(..end))
-        .unwrap_or(tail);
-    let slug = path.strip_suffix('/').unwrap_or(path);
-    let valid = !slug.is_empty()
-        && slug
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    valid.then(|| ShareRef {
-        slug: slug.to_owned(),
-    })
-}
-
-/// `value` 是否为FluxMesh分享链接（见 [`share_ref`]）。
-#[must_use]
-pub fn is_share_link(value: &str) -> bool {
-    share_ref(value).is_some()
-}
-
-/// 大小写不敏感地去掉 ASCII 前缀。
-fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
-    let head = value.get(..prefix.len())?;
-    if head.eq_ignore_ascii_case(prefix) {
-        value.get(prefix.len()..)
-    } else {
-        None
-    }
 }
 
 /// `fluxdown://download?url=…&filename=…` 携带的文件名（浏览器扩展协议模式会带上
@@ -276,63 +209,6 @@ mod tests {
         assert_eq!(deep_link_file_name(link).as_deref(), Some("中 1.bin"));
         assert_eq!(deep_link_file_name("fluxdown:https://a.b/c"), None);
         assert_eq!(deep_link_file_name("https://a.b/c?filename=x"), None);
-    }
-
-    #[test]
-    fn share_ref_recognises_both_forms() {
-        let slug = |v: &str| share_ref(v).map(|r| r.slug);
-        assert_eq!(
-            slug("fluxdown://share/abc_DEF-1").as_deref(),
-            Some("abc_DEF-1")
-        );
-        assert_eq!(
-            slug("  https://fluxdown.com/s/abc  ").as_deref(),
-            Some("abc")
-        );
-        assert_eq!(
-            slug("https://fluxdown.zerx.dev/s/abc").as_deref(),
-            Some("abc")
-        );
-        assert_eq!(slug("HTTPS://FluxDown.COM/s/abc").as_deref(), Some("abc"));
-        assert_eq!(slug("FLUXDOWN://share/abc").as_deref(), Some("abc"));
-        assert_eq!(slug("https://fluxdown.com/s/abc/").as_deref(), Some("abc"));
-        assert_eq!(
-            slug("https://fluxdown.com/s/abc?x=1#f").as_deref(),
-            Some("abc")
-        );
-        assert_eq!(slug("fluxdown://share/abc#f").as_deref(), Some("abc"));
-        assert!(is_share_link("fluxdown://share/abc"));
-    }
-
-    #[test]
-    fn share_ref_rejects_non_share_input() {
-        assert!(share_ref("https://example.com/s/abc").is_none());
-        assert!(share_ref("https://www.fluxdown.com/s/abc").is_none());
-        assert!(share_ref("https://fluxdown.com/download/abc").is_none());
-        assert!(share_ref("https://fluxdown.com/s/").is_none());
-        assert!(share_ref("fluxdown://share/").is_none());
-        assert!(share_ref("fluxdown://share/a/b").is_none());
-        assert!(share_ref("https://fluxdown.com/s/a/b").is_none());
-        assert!(share_ref("fluxdown://share/a%20b").is_none());
-        assert!(share_ref("fluxdown://download?url=x").is_none());
-        assert!(!is_share_link("https://a.b/c.zip"));
-    }
-
-    #[test]
-    fn share_links_are_not_rewritten_as_deep_links() {
-        assert_eq!(
-            normalize_capture_url("  fluxdown://share/abc "),
-            "fluxdown://share/abc"
-        );
-        assert_eq!(
-            normalize_capture_url("https://fluxdown.com/s/abc"),
-            "https://fluxdown.com/s/abc"
-        );
-        assert_eq!(deep_link_file_name("fluxdown://share/abc"), None);
-        assert_eq!(
-            normalize_capture_url("fluxdown://download?url=https%3A%2F%2Fa.b%2Fc"),
-            "https://a.b/c"
-        );
     }
 
     #[test]

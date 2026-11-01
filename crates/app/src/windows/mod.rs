@@ -32,8 +32,6 @@ pub mod progress;
 pub mod queue_manager;
 pub mod selection;
 pub mod settings;
-pub mod share;
-pub mod share_receive;
 pub mod task_detail;
 pub mod update_prompt;
 
@@ -60,10 +58,6 @@ pub enum WindowKey {
     UpdatePrompt,
     /// 插件桌面界面（contributes.views 的 desktop 入口，gpui-shell 运行），key 为 `<identity>/<viewId>`。
     Plugin(String),
-    /// FluxMesh分享面板：key 是任务集（`tasks:<排序后的 id>`）或 `share:<分享 id>`，同一组任务只开一个。
-    Share(String),
-    /// FluxMesh接收确认窗口（单例：取件码 / 链接 / 深链 / 剪贴板打开的分享都进这一个）。
-    ShareReceive,
 }
 
 pub struct WindowRegistry {

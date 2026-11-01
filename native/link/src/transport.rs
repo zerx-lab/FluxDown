@@ -1,55 +1,24 @@
-//! 数据面传输抽象 —— **可扩展性核心 seam**。
+//! 数据面直连：拨号已配对设备的候选地址并以 `/ping` 复核身份。
 //!
-//! [`Transport`] 定义「如何到达一台已知设备的数据面」。v1 仅实现
-//! [`DirectTransport`]（网络可达直连，无 NAT 穿透）。未来的打洞策略
-//! （iroh QUIC、云中继）实现同一 trait 并注册进 [`TransportStack`] 的优先级链——
-//! 配对协议、数据面调度、UI 全都只依赖本 trait，**新增打洞方式不触碰本 seam 以上
-//! 任何代码**。这正是设计文档 §6.5「连接路径 `mDNS→记录地址→打洞→中继` 由引擎
-//! 自动升级、用户无感」的落地骨架。
+//! 只支持网络可达直连（同局域网 / 已配端口转发 / 公网反代），不做 NAT 穿透。
 
-use std::sync::Arc;
 use std::time::Duration;
-
-use async_trait::async_trait;
 
 use super::address::PeerAddress;
 use super::error::LinkError;
-use super::types::{PeerRecord, TransportKind};
+use super::types::PeerRecord;
 
 /// 拨通一台已配对设备后得到的连接句柄。
-///
-/// v1 Direct 下 `base_url` 即对端 fluxdown API 基址（`http(s)://host[:port][/base]`）；
-/// 未来 iroh/relay 变体会把加密隧道封装为一个本地转发的 `base_url`，**数据面调度层只认
-/// base_url**，因此新增传输方式对上层零改动。
 #[derive(Debug, Clone)]
 pub struct PeerConn {
-    /// 对端 fluxdown API 基址（不含尾斜杠）。
+    /// 对端 fluxdown API 基址（`http(s)://host[:port][/base]`，不含尾斜杠）。
     pub base_url: String,
-    /// 本次连接实际走的传输类型（日志/诊断）。
-    pub kind: TransportKind,
     /// 对端 `/ping` 自报的数据面链路协议版本（旧版对端没有该字段 = 0）。发起方据此在发出
     /// 数据面请求之前判定 [`LinkError::PeerOutdated`]。
     pub link_protocol: u32,
 }
 
-/// 到达已知设备数据面的策略。
-#[async_trait]
-pub trait Transport: Send + Sync {
-    /// 传输类型标签。
-    fn kind(&self) -> TransportKind;
-
-    /// 本传输是否具备拨号 `peer` 所需信息（Direct 需至少一个 Direct 候选）。
-    fn supports(&self, peer: &PeerRecord) -> bool;
-
-    /// 建立到 `peer` 的已鉴权数据面端点。不可达时返回
-    /// [`LinkError::Unreachable`]，让 [`TransportStack`] 落到下一策略。
-    async fn connect(&self, peer: &PeerRecord) -> Result<PeerConn, LinkError>;
-}
-
-/// 网络可达直连（v1 唯一传输）：拨号 Direct 候选（`ip:port` 或完整 URL）并 `/ping` 探活。
-///
-/// **不使用任何 NAT 穿透**——仅适用于双方网络互相可达（同局域网 / 已配端口转发 /
-/// 公网反代）。跨网穿透留给未来的 iroh/relay 传输。
+/// 网络可达直连：拨号候选（`ip:port` 或完整 URL）并 `/ping` 探活。
 pub struct DirectTransport {
     client: reqwest::Client,
     probe_timeout: Duration,
@@ -65,19 +34,10 @@ impl DirectTransport {
             probe_timeout: Duration::from_secs(3),
         }
     }
-}
 
-#[async_trait]
-impl Transport for DirectTransport {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Direct
-    }
-
-    fn supports(&self, peer: &PeerRecord) -> bool {
-        peer.direct_address().is_some()
-    }
-
-    async fn connect(&self, peer: &PeerRecord) -> Result<PeerConn, LinkError> {
+    /// 建立到 `peer` 的已鉴权数据面端点。没有候选或全部不可达时返回
+    /// [`LinkError::Unreachable`]。
+    pub async fn connect(&self, peer: &PeerRecord) -> Result<PeerConn, LinkError> {
         // 依次尝试全部 Direct 候选而非只试第一个：候选列表可能同时保留 mDNS 新发现的地址
         // （未探测、纯启发式排序，见 `crate::discovery::pick_best_v4` 文档）、对端自报的地址与
         // 配对时验证过的旧地址——只试首个会让一次误选直接判死本该可达的设备。任一候选
@@ -92,11 +52,7 @@ impl Transport for DirectTransport {
         // 「地址上是别人」的线索）；这不会把冒充降级成成功——通过的候选必须指纹一致，数据面
         // 的响应还要经链路密钥解封（见 `LinkManager::post_sealed`）。
         let mut mismatch: Option<String> = None;
-        for candidate in peer
-            .candidates
-            .iter()
-            .filter(|c| c.kind == TransportKind::Direct)
-        {
+        for candidate in &peer.candidates {
             let addr = candidate.address.as_str();
             let address = match PeerAddress::parse(addr) {
                 Ok(address) => address,
@@ -156,7 +112,6 @@ impl Transport for DirectTransport {
                 Ok(link_protocol) => {
                     return Ok(PeerConn {
                         base_url: address.base_url(),
-                        kind: TransportKind::Direct,
                         link_protocol,
                     });
                 }
@@ -197,62 +152,11 @@ fn verify_ping_identity(
     }
 }
 
-/// 传输策略优先级链：按序尝试各传输，首个成功即返回；全部不可达 → `Unreachable`。
-///
-/// v1 只含 [`DirectTransport`]；未来 `TransportStack::new(vec![direct, iroh, relay])`
-/// 即实现「直连优先、打洞次之、中继兜底」的自动升级，上层调用 [`connect`] 不变。
-#[derive(Clone)]
-pub struct TransportStack {
-    transports: Vec<Arc<dyn Transport>>,
-}
-
-impl TransportStack {
-    /// 用一组传输（按优先级排列）构造。
-    #[must_use]
-    pub fn new(transports: Vec<Arc<dyn Transport>>) -> Self {
-        Self { transports }
-    }
-
-    /// v1 便捷构造：仅网络可达直连。
-    #[must_use]
-    pub fn direct_only(client: reqwest::Client) -> Self {
-        Self::new(vec![Arc::new(DirectTransport::new(client))])
-    }
-
-    /// 已注册的传输类型（诊断/日志用）。
-    #[must_use]
-    pub fn kinds(&self) -> Vec<TransportKind> {
-        self.transports.iter().map(|t| t.kind()).collect()
-    }
-
-    /// 按优先级拨号 `peer`，返回首个成功的连接。
-    ///
-    /// 单个传输返回 [`LinkError::Unreachable`] 时继续尝试下一个；返回其他错误
-    /// （如鉴权失败）则立即上抛（那不是「换条路能解决」的问题）。
-    pub async fn connect(&self, peer: &PeerRecord) -> Result<PeerConn, LinkError> {
-        let mut last = LinkError::Unreachable;
-        for t in &self.transports {
-            if !t.supports(peer) {
-                continue;
-            }
-            match t.connect(peer).await {
-                Ok(conn) => return Ok(conn),
-                Err(LinkError::Unreachable) => {
-                    last = LinkError::Unreachable;
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(last)
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::{PeerCandidate, PeerRecord};
+    use crate::types::{PeerCandidate, PeerRecord, TransportKind};
 
     fn peer_with(candidates: Vec<PeerCandidate>) -> PeerRecord {
         PeerRecord {
@@ -265,29 +169,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn direct_supports_requires_direct_candidate() {
-        let client = reqwest::Client::new();
-        let t = DirectTransport::new(client);
-        assert!(!t.supports(&peer_with(vec![])));
-        assert!(t.supports(&peer_with(vec![PeerCandidate {
-            kind: TransportKind::Direct,
-            address: "127.0.0.1:1".to_string(),
-        }])));
-        // 仅有未来传输的候选（无 Direct）→ Direct 不支持。
-        assert!(!t.supports(&peer_with(vec![PeerCandidate {
-            kind: TransportKind::Iroh,
-            address: "node-id".to_string(),
-        }])));
-    }
-
     #[tokio::test]
-    async fn stack_returns_unreachable_when_no_supporting_transport() {
-        let stack = TransportStack::direct_only(reqwest::Client::new());
-        // 无 Direct 候选 → 没有传输支持 → Unreachable。
-        let err = stack.connect(&peer_with(vec![])).await.unwrap_err();
+    async fn connect_without_candidates_is_unreachable() {
+        let t = DirectTransport::new(reqwest::Client::new());
+        let err = t.connect(&peer_with(vec![])).await.unwrap_err();
         assert!(matches!(err, LinkError::Unreachable));
-        assert_eq!(stack.kinds(), vec![TransportKind::Direct]);
     }
 
     #[tokio::test]

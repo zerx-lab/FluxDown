@@ -375,9 +375,6 @@ pub struct AgentSnapshot {
     /// 云端推送状态（未登录时只保留本机上报开关与隐私字段，`overview` 为空）。
     #[serde(default)]
     pub cloud_notify: crate::CloudNotifyStateDto,
-    /// FluxMesh分区（本构建未编入FluxMesh时保持默认：`available == false`）。
-    #[serde(default)]
-    pub share: crate::ShareStateDto,
 }
 
 impl AgentSnapshot {
@@ -403,7 +400,6 @@ impl AgentSnapshot {
             power: self.power,
             update: self.update.clone(),
             cloud_notify: self.cloud_notify.clone(),
-            share: self.share.clone(),
         }
     }
 }
@@ -557,11 +553,6 @@ pub enum AgentEvent {
     /// `sessionExpired`；账号停用 → `accountDisabled`）。一次性通知，不进快照；紧随其后会有
     /// `SessionChanged(None)`。用户主动登出 / 删除本设备不发送。
     SessionRevoked(crate::ErrorReason),
-    /// FluxMesh分区整体替换（`AgentSnapshot.share`）。
-    ShareChanged(crate::ShareStateDto),
-    /// 单个FluxMesh会话的进度 / 路径刷新，高频；同一 `sessionId` 的后帧完整取代前帧（见
-    /// [`crate::coalesce::FrameQueue`]）。
-    ShareProgress(crate::ShareProgressDto),
 }
 
 /// `service.event` notification 的事件主体。
@@ -813,8 +804,6 @@ pub fn apply_agent_event(snapshot: &mut AgentSnapshot, event: &AgentEvent) {
         AgentEvent::PowerChanged(power) => snapshot.power = *power,
         AgentEvent::UpdateChanged(update) => snapshot.update.clone_from(update),
         AgentEvent::CloudNotifyChanged(state) => snapshot.cloud_notify.clone_from(state),
-        AgentEvent::ShareChanged(state) => snapshot.share.clone_from(state),
-        AgentEvent::ShareProgress(progress) => snapshot.share.apply_progress(progress),
         AgentEvent::CaptureTasksStarted(_)
         | AgentEvent::CaptureTasksResumed(_)
         | AgentEvent::SessionRevoked(_) => {}

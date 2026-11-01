@@ -1,4 +1,4 @@
-//! 本地设备互联（device link）—— P2P 局域网配对 + mDNS 发现 + 可扩展直连传输。
+//! 本地设备互联（device link）—— P2P 局域网配对 + mDNS 发现 + 网络可达直连。
 //!
 //! 与宿主无关：宿主（agent / 冻结的 server）只需实现 [`LinkStorage`]
 //! （身份种子 + 已配对名册的持久化），并驱动 [`LinkManager`]。
@@ -8,7 +8,7 @@
 //! - [`address`]：对端地址模型（http/https、域名、反代 base path）。
 //! - [`discovery`]：发现层：mDNS 广播/浏览 + 手动地址 `/ping` 探测。
 //! - [`pairing`]：配对协议（一次性码 + 临时公钥承诺-揭示 + X25519 ECDH + SAS + 身份签名）。
-//! - [`transport`]：**数据面传输 seam** —— Direct(v2) / 未来 iroh、relay 插拔。
+//! - [`transport`]：数据面直连（拨号候选地址 + `/ping` 身份复核）。
 //! - [`storage`]：持久化 trait（身份种子 + 已配对设备名册）。
 //! - [`crypto`]：指纹 / SAS / 链路密钥 / 数据面 v2 的 MAC 与 AEAD 原语。
 //! - [`text`]：对端自报文本的清洗（控制 / 双向控制字符、长度）。
@@ -40,7 +40,7 @@ pub use pairing::{
     RevealAccepted, RevealRequest, RevealResponse, SelfInfo,
 };
 pub use storage::{LinkStorage, RecordUpdate};
-pub use transport::{DirectTransport, PeerConn, Transport, TransportStack};
+pub use transport::{DirectTransport, PeerConn};
 pub use types::{
     DiscoveredPeer, DiscoveryKind, MAX_DIRECT_CANDIDATES, PeerCandidate, PeerInfo, PeerRecord,
     TransportKind,

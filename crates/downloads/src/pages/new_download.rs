@@ -15,7 +15,7 @@ use probe::LinkProbe;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -35,13 +35,12 @@ use crate::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
             ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
             UrlEntry, append_entries, build_requests, capture_entry, checksum_spec,
-            compose_request, custom_segments, detect_ua_preset, is_pickup_code, manual_proxy_url,
-            parse_entries, parse_input, share_note, ua_preset_keys, ua_preset_value,
+            compose_request, custom_segments, detect_ua_preset, manual_proxy_url, parse_entries,
+            parse_input, ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{CategoryMode, NewDownloadCategory, category_options},
         save_dir_history::{read_save_dir_history, record_save_dir, save_dir_choices},
     },
-    pages::downloads::IdOpener,
     strings::NewDownloadStrings,
     submission::{
         CapturedTask, NewDownloadSubmission, RemoteItem, RemoteSubmission, TorrentFileOptions,
@@ -121,8 +120,6 @@ pub struct NewDownloadContext {
     pub targets: Vec<DeviceEntry>,
     /// 「下载到」初值：设备本地偏好里上次的目标（目标已不存在则为本机）。
     pub target: DispatchTarget,
-    /// 云端取件码位数（0 = 未知，按默认 6 位）：输入里整行恰为该位数的数字识别为取件码。
-    pub pickup_code_length: u8,
 }
 
 /// 从 agent 快照投影「新建下载」环境（无主窗口时的外部捕获确认、菜单入口共用规则）。
@@ -140,7 +137,6 @@ pub fn new_download_context_from_snapshot(snapshot: &AgentSnapshot) -> NewDownlo
             snapshot.cloud_connection.state == fluxdown_protocol::CloudConnectionState::Connected,
             true,
         ),
-        snapshot.share.policy_summary.pickup_code_length,
     )
 }
 
@@ -166,7 +162,6 @@ pub(crate) fn build_new_download_context(
     queues: &[QueueDto],
     selected_queue: Option<&str>,
     targets: Vec<DeviceEntry>,
-    pickup_code_length: u8,
 ) -> NewDownloadContext {
     let config_str = |key: &str| config.get(key).map_or("", |value| value.trim());
     let remember = preferences
@@ -232,7 +227,6 @@ pub(crate) fn build_new_download_context(
         initial_urls: Vec::new(),
         targets,
         target,
-        pickup_code_length,
     }
 }
 
@@ -282,12 +276,6 @@ pub struct NewDownloadView {
     on_submit: NewDownloadSubmit,
     urls: Entity<TextareaState>,
     entries: Vec<UrlEntry>,
-    /// 输入里的FluxMesh分享链接（不是下载链接：交给接收确认流程）。
-    share_links: Vec<String>,
-    /// 本表单已交给接收流程的分享链接：不重复交出。
-    share_handed: HashSet<String>,
-    /// 宿主提供的接收入口；`None` = 本构建 / 本窗口不能接收FluxMesh。
-    open_share_receive: Option<IdOpener>,
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
     captures: Vec<PendingCaptureDto>,
     save_dir: Entity<InputState>,
@@ -407,9 +395,6 @@ impl NewDownloadView {
             on_submit,
             urls,
             entries: Vec::new(),
-            share_links: Vec::new(),
-            share_handed: HashSet::new(),
-            open_share_receive: None,
             captures: Vec::new(),
             save_dir,
             custom_threads,
@@ -566,13 +551,8 @@ impl NewDownloadView {
     }
 
     fn refresh_entries(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let parsed = parse_input(
-            &self.urls.read(cx).value(),
-            false,
-            self.context.pickup_code_length,
-        );
+        let parsed = parse_input(&self.urls.read(cx).value(), false);
         self.entries = parsed.entries;
-        self.share_links = parsed.share_links;
         self.sync_site_auth(window, cx);
         self.sync_hints(parsed.hints, window, cx);
         self.sync_probe(window, cx);
@@ -818,72 +798,6 @@ impl NewDownloadView {
         }
     }
 
-    /// 注入「打开接收确认」入口（参数为分享链接原文）；窗口由 app 创建，所以经此注入，
-    /// 而不是挤进 [`NewDownloadContext`]（它是可比较的纯数据）。
-    pub fn set_open_share_receive(&mut self, opener: Option<IdOpener>, cx: &mut Context<Self>) {
-        self.open_share_receive = opener;
-        cx.notify();
-    }
-
-    /// 宿主当前是否提供接收入口。
-    pub fn has_share_receive(&self) -> bool {
-        self.open_share_receive.is_some()
-    }
-
-    /// 尚未交给接收流程的分享链接（输入顺序）。
-    fn pending_share_links(&self) -> impl Iterator<Item = &String> {
-        self.share_links
-            .iter()
-            .filter(|link| !self.share_handed.contains(*link))
-    }
-
-    /// 输入里只有分享链接、没有普通下载链接：提交按钮变为「接收」。
-    fn share_only(&self) -> bool {
-        self.entries.is_empty() && !self.share_links.is_empty()
-    }
-
-    /// 「接收」可点：仅分享链接、宿主有接收入口、有尚未交出的链接。
-    fn can_receive_share(&self) -> bool {
-        self.share_only()
-            && self.open_share_receive.is_some()
-            && !self.picking
-            && !self.preview_gate.is_active()
-            && self.manifest.is_none()
-            && self.pending_share_links().next().is_some()
-    }
-
-    /// 把第一条未交出的分享链接交给接收确认（一次只处理一条）；没有可交的链接或宿主没有
-    /// 接收入口时返回 `false`。
-    fn hand_off_share_link(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(open) = self.open_share_receive.clone() else {
-            return false;
-        };
-        let Some(link) = self.pending_share_links().next().cloned() else {
-            return false;
-        };
-        self.share_handed.insert(link.clone());
-        open(link, window, cx);
-        true
-    }
-
-    /// 链接框下的分享链接提示：`(文案, 是否错误)`。宿主没有接收入口时给出「不可用」说明
-    /// （分享链接既不会被当成下载链接，也无处可接收）。
-    fn share_note_text(&self) -> Option<(SharedString, bool)> {
-        if self.share_links.is_empty() {
-            return None;
-        }
-        if self.open_share_receive.is_none() {
-            return Some((self.strings.share_unavailable_note.clone(), true));
-        }
-        let pending = self.pending_share_links().count();
-        let pending_codes = self
-            .pending_share_links()
-            .filter(|item| is_pickup_code(item))
-            .count();
-        share_note(self.entries.len(), pending, pending_codes)
-            .map(|note| (self.strings.format_share_note(note), false))
-    }
-
     fn target_label(&self, entry: &DeviceEntry) -> SharedString {
         let status = match entry.online {
             Some(true) => &self.strings.device_online,
@@ -964,7 +878,6 @@ impl NewDownloadView {
             category_options,
             custom_categories,
             manual_proxy_url,
-            pickup_code_length,
             ..
         } = context;
         if save_dir != self.context.save_dir
@@ -1005,10 +918,6 @@ impl NewDownloadView {
             self.category_mode = CategoryMode::Auto;
         }
         self.context.manual_proxy_url = manual_proxy_url;
-        if self.context.pickup_code_length != pickup_code_length {
-            self.context.pickup_code_length = pickup_code_length;
-            self.refresh_entries(window, cx);
-        }
         self.sync_category(window, cx);
         cx.notify();
     }
@@ -1106,22 +1015,9 @@ impl NewDownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 只有分享链接：提交 = 打开接收确认；链接交完后关窗，还有剩余则留在表单里继续。
-        if self.share_only() {
-            if self.can_receive_share() && self.hand_off_share_link(window, cx) {
-                if self.pending_share_links().next().is_none() {
-                    window.remove_window();
-                } else {
-                    cx.notify();
-                }
-            }
-            return;
-        }
         if !self.can_submit(cx) {
             return;
         }
-        // 混合输入：分享链接先交给接收确认，普通链接照常提交。
-        self.hand_off_share_link(window, cx);
         // 远端目标没有队列 / 稍后下载：只有立即开始一条路径。
         if let Some(entry) = self.target_entry().cloned() {
             if !later && queue_override.is_none() {
@@ -1629,16 +1525,8 @@ impl NewDownloadView {
                     }),
             )
             .child(url_box)
-            .when(
-                has_text && count == 0 && self.share_links.is_empty(),
-                |this| this.child(field_error(self.strings.no_valid_url.clone(), cx)),
-            )
-            .when_some(self.share_note_text(), |this, (text, is_error)| {
-                this.child(if is_error {
-                    field_error(text, cx).into_any_element()
-                } else {
-                    field_hint(text, cx).into_any_element()
-                })
+            .when(has_text && count == 0, |this| {
+                this.child(field_error(self.strings.no_valid_url.clone(), cx))
             })
             .children(self.render_probe_status(cx))
             .when(!self.captures.is_empty() && !self.is_remote(), |this| {
@@ -2242,7 +2130,7 @@ impl NewDownloadView {
     fn render_footer(&self, cx: &mut Context<Self>) -> Div {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
-        let enabled = self.can_submit(cx) || self.can_receive_share();
+        let enabled = self.can_submit(cx);
         let later_queue = self.queue_label(fluxdown_protocol::LATER_QUEUE_ID);
         let start_queue = self.queue_label(&self.context.queue_id);
         // 分体按钮：两半统一控件高度（`Size::Size` 让右侧箭头半成为 `density.control` 见方，
@@ -2265,20 +2153,7 @@ impl NewDownloadView {
                     .control(cx)
                     .on_click(|_, window, _| window.remove_window()),
             )
-            .children(if self.share_only() {
-                // 只有分享链接：单个「接收」按钮，不走队列 / 稍后下载。
-                vec![
-                    Button::new("new-download-receive-share")
-                        .primary()
-                        .label(self.strings.share_receive.clone())
-                        .control(cx)
-                        .disabled(!enabled)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.submit(false, None, window, cx);
-                        }))
-                        .into_any_element(),
-                ]
-            } else if self.is_remote() {
+            .children(if self.is_remote() {
                 // 下发只有「立即开始」：没有队列，也没有稍后下载。
                 vec![
                     Button::new("new-download-start-remote")

@@ -277,60 +277,6 @@ pub const AGENT_LINK_CONTROL_CREDENTIAL: &str = "agent.link.controlCredential";
 /// `LinkDispatchParams` → `LinkDispatchResult`：下发下载到已配对设备。
 pub const AGENT_LINK_DISPATCH: &str = "agent.link.dispatch";
 
-/// FluxMesh（临时文件分享）。仅当 agent 编入FluxMesh服务时可用（否则 `Unsupported`，hello 不带
-/// `agent.share` 能力；已编入但本机开关未开启（`ShareLocalConfigDto.enabled`，实验性、默认关）或被
-/// 云端关闭时返回 `Unavailable` + `ShareUnavailable`——开关关闭时只有 `config` / `setLocalConfig` 可用）。
-/// 刷新云端策略并返回 → `ShareConfigDto`（云端策略摘要 + 本机设置）；开关关闭时不访问云端、策略摘要为空。
-pub const AGENT_SHARE_CONFIG: &str = "agent.share.config";
-/// `ShareLocalConfigDto` → `ShareLocalConfigDto`：整体替换本机FluxMesh设置，返回规范化后的值。
-/// 也是开启 / 关闭FluxMesh的唯一入口（`enabled`）。
-pub const AGENT_SHARE_SET_LOCAL_CONFIG: &str = "agent.share.setLocalConfig";
-/// `ShareCreateParams` → `ShareDto`：从已完成的本机任务创建分享（多任务合成一个分享）。
-pub const AGENT_SHARE_CREATE: &str = "agent.share.create";
-/// → `Vec<ShareDto>`：我的分享。
-pub const AGENT_SHARE_LIST: &str = "agent.share.list";
-/// `ShareUpdateParams` → `ShareDto`：改有效期 / 次数 / 领取通知，链接与取件码不变。
-pub const AGENT_SHARE_UPDATE: &str = "agent.share.update";
-/// `ShareIdParams` → `ShareDto`：停止分享（取件码释放），返回停止后的状态。
-pub const AGENT_SHARE_STOP: &str = "agent.share.stop";
-/// `ShareIdParams` → `ShareDto`：重新开始已停止 / 已过期的分享（同 id、同链接，重新分配取件码）。
-/// 已在分享中则原样返回；本机源文件缺失或已被修改 → `ShareSourceMissing`（只能删除）。
-pub const AGENT_SHARE_RESUME: &str = "agent.share.resume";
-/// `ShareIdParams` → `{ "ok": true }`：删除分享记录（分享中的先停止，云端记录一并删除）。
-pub const AGENT_SHARE_DELETE: &str = "agent.share.delete";
-/// `ShareResolveParams` → `ShareResolveDto`：解析取件码 / 链接，返回接收确认框预览。
-pub const AGENT_SHARE_RESOLVE: &str = "agent.share.resolve";
-/// `ShareReceiveParams` → `ShareReceiveResultDto`：接收分享，建出普通下载任务。
-pub const AGENT_SHARE_RECEIVE: &str = "agent.share.receive";
-/// `ShareDismissPendingParams` → `{ "ok": true }`：取消快照里待确认的链接接收（`pendingReceive`）。
-pub const AGENT_SHARE_DISMISS_PENDING: &str = "agent.share.dismissPending";
-/// `ShareReceiveRecordsParams` → `ShareReceiveRecordsPage`：接收记录翻页。
-pub const AGENT_SHARE_RECEIVE_RECORDS: &str = "agent.share.receiveRecords";
-/// `ShareSwitchToBridgeParams` → `ShareTaskFactsDto`：把接收任务切到实时桥接（分享方在线、网关可用时）。
-/// 无可用桥接 → `ShareBridgeUnavailable`；桥接流量额度耗尽 → `ShareTrafficExhausted`。
-pub const AGENT_SHARE_SWITCH_TO_BRIDGE: &str = "agent.share.switchToBridge";
-/// `ShareDiagnosticsParams` → `ShareDiagnosticsDto`：网络快照 + 原始 JSON + 全量 iroh 指标 + 会话详情。
-pub const AGENT_SHARE_DIAGNOSTICS: &str = "agent.share.diagnostics";
-/// `ShareLogsParams` → `ShareLogsDto`：iroh tracing 内存环形缓冲里的日志行。
-pub const AGENT_SHARE_LOGS: &str = "agent.share.logs";
-/// `ShareSessionKillParams` → `{ "ok": true }`：分享方强制中断一个接收方会话。
-pub const AGENT_SHARE_SESSION_KILL: &str = "agent.share.sessionKill";
-/// `ShareConvertToCloudParams` → `ShareDto`：把实时分享转为云端暂存。预检（登录、额度、存储可用）失败
-/// 同步返回错误；通过后立即返回 `cloudState = uploading`，上传在后台进行，进度经 `ShareChanged` 下发。
-pub const AGENT_SHARE_CONVERT_TO_CLOUD: &str = "agent.share.convertToCloud";
-/// `ShareIdParams` → `ShareDto`：删除云端副本（上传中则先取消）；分享回到实时模式。
-pub const AGENT_SHARE_DELETE_CLOUD_COPY: &str = "agent.share.deleteCloudCopy";
-/// `ShareStopProvidingParams` → `ShareReceiveRecordDto`：停止该次接收的共享（共享提供），记录 `provideState = stopped`；记录不存在 → `ShareNotFound`。
-pub const AGENT_SHARE_STOP_PROVIDING: &str = "agent.share.stopProviding";
-/// → `ShareUsageDto | null`：FluxMesh额度与贡献（距上次成功拉取不足 30 s 返回缓存，否则先拉取）。
-/// 未登录返回 `null`；结果同时写入 `ShareStateDto.usage` 并发布 `ShareChanged`。
-pub const AGENT_SHARE_USAGE_REFRESH: &str = "agent.share.usageRefresh";
-/// `ShareReportParams` → `{ "ok": true }`：举报一份本机已领取的分享（endpoint 签名提交）；
-/// 未领取 → `Forbidden`，重复举报静默成功。
-pub const AGENT_SHARE_REPORT: &str = "agent.share.report";
-/// `ShareAppealParams` → `ShareDto`：对已下架的分享申诉；已申诉 → `ShareAppealExists`。
-pub const AGENT_SHARE_APPEAL: &str = "agent.share.appeal";
-
 pub const AGENT_PLAN_LIST: &str = "agent.plan.list";
 pub const AGENT_ORDER_CREATE: &str = "agent.order.create";
 pub const AGENT_ORDER_GET: &str = "agent.order.get";
@@ -450,9 +396,6 @@ pub const CAPABILITY_AGENT_OPEN_TASK_FILES: &str = "agent.openTaskFiles";
 /// （agent `desktop` 特性）且检测到图形会话；headless / NAS 构建与远程连接都没有（浏览器无法把文件
 /// 写进系统剪贴板，客户端据此隐藏「复制文件」）。
 pub const CAPABILITY_AGENT_COPY_TASK_FILES: &str = "agent.copyTaskFiles";
-/// 本 agent 编入了FluxMesh服务（`agent.share.*`）。条件能力：未编入FluxMesh的构建（如 iOS 商店版）
-/// 不下发；因此不在服务级基线 hello 里无条件出现。
-pub const CAPABILITY_AGENT_SHARE: &str = "agent.share";
 pub const CAPABILITY_CLIENT_SELECTIONS: &str = "client.selections";
 
 /// 规范ALL_METHODS。
@@ -640,28 +583,6 @@ pub const ALL_METHODS: &[&str] = &[
     AGENT_LINK_REFRESH,
     AGENT_LINK_CONTROL_CREDENTIAL,
     AGENT_LINK_DISPATCH,
-    AGENT_SHARE_CONFIG,
-    AGENT_SHARE_SET_LOCAL_CONFIG,
-    AGENT_SHARE_CREATE,
-    AGENT_SHARE_LIST,
-    AGENT_SHARE_UPDATE,
-    AGENT_SHARE_STOP,
-    AGENT_SHARE_RESUME,
-    AGENT_SHARE_DELETE,
-    AGENT_SHARE_RESOLVE,
-    AGENT_SHARE_RECEIVE,
-    AGENT_SHARE_DISMISS_PENDING,
-    AGENT_SHARE_RECEIVE_RECORDS,
-    AGENT_SHARE_SWITCH_TO_BRIDGE,
-    AGENT_SHARE_DIAGNOSTICS,
-    AGENT_SHARE_LOGS,
-    AGENT_SHARE_SESSION_KILL,
-    AGENT_SHARE_CONVERT_TO_CLOUD,
-    AGENT_SHARE_DELETE_CLOUD_COPY,
-    AGENT_SHARE_STOP_PROVIDING,
-    AGENT_SHARE_USAGE_REFRESH,
-    AGENT_SHARE_REPORT,
-    AGENT_SHARE_APPEAL,
     AGENT_PLAN_LIST,
     AGENT_ORDER_CREATE,
     AGENT_ORDER_GET,
@@ -789,7 +710,6 @@ pub const AGENT_CAPABILITIES: &[&str] = &[
     CAPABILITY_AGENT_EXTERNAL_CAPTURE,
     CAPABILITY_AGENT_OPEN_TASK_FILES,
     CAPABILITY_AGENT_COPY_TASK_FILES,
-    CAPABILITY_AGENT_SHARE,
 ];
 
 /// 规范CLIENT_CAPABILITIES。
