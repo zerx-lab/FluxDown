@@ -211,7 +211,7 @@ All of these appear as `[插件] <identity>: <message>`. Messages from the host 
 
 - The pattern did not match. Patterns compare against the full URL, case-insensitively; `*` is the only wildcard; the text before the first `*` must be a prefix of the URL and the text after the last `*` a suffix. `example.com/*` does **not** match `https://example.com/x` — use `*://example.com/*`.
 - The plugin is disabled, still **Authorization required**, or not loaded.
-- Another plugin was chosen. If several plugins match, FluxDown asks once and may remember the choice; check **Plugins → Site default plugins**. Unattended downloads use the site default or the plugin with the smallest identity.
+- Another plugin was chosen. If several plugins match, FluxDown asks once and may remember the choice; check **Settings → Extensions → Site Defaults**. Unattended downloads use the site default or the plugin with the smallest identity.
 - The URL is added in a way that skips plugins — check by adding the link in the normal **New download** dialog.
 
 Also see the [resolver walkthrough](/docs/en/plugins/your-first-plugin/#5-test-and-debug).

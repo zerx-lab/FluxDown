@@ -1620,6 +1620,8 @@
   "pluginChoiceConfirm": "使用此插件",
   "pluginSiteDefaultsTitle": "站点默认插件",
   "pluginSiteDefaultsDesc": "多个插件都能处理同一站点时，下载按这里选定的插件处理；移除记录后会重新询问",
+  "pluginSiteDefaultsTab": "站点默认",
+  "pluginSiteDefaultsEmpty": "暂无站点默认插件",
   "pluginSiteDefaultAutomatic": "自动选择 · 待确认",
   "pluginSiteDefaultAutomaticHint": "无人值守下载（免打扰、RSS、远程派发）自动使用了该插件；确认后普通下载也不再询问",
   "pluginSiteDefaultConfirm": "确认",

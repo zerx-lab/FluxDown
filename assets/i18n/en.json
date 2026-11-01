@@ -1620,6 +1620,8 @@
   "pluginChoiceConfirm": "Use This Plugin",
   "pluginSiteDefaultsTitle": "Site Default Plugins",
   "pluginSiteDefaultsDesc": "When several plugins can handle the same site, downloads use the plugin chosen here. Remove an entry to be asked again",
+  "pluginSiteDefaultsTab": "Site Defaults",
+  "pluginSiteDefaultsEmpty": "No site default plugins yet",
   "pluginSiteDefaultAutomatic": "Auto-selected · unconfirmed",
   "pluginSiteDefaultAutomaticHint": "Unattended downloads (silent mode, RSS, remote dispatch) picked this plugin automatically. Confirm it so regular downloads stop asking",
   "pluginSiteDefaultConfirm": "Confirm",
