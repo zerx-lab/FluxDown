@@ -114,7 +114,7 @@
   `spawn_reseed_from_disk` 异步校验，失败回落 UserStopped 并附原因）。无现成种子时在 **actor 之外**（服务层，慢方法通道）
   `build_torrent` 哈希生成；给 `torrentPath` 时 `plan_local_seed` 校验形态（文件 ↔ 同名单文件种子，文件夹 ↔ 任意多文件种子）。
   `unlimited` = 任务级四项限制写 -1（永不因限制停止，可在详情「做种」页改回）；不受「完成后自动做种」开关约束。
-  路径一律是 daemon 主机路径（Web 手输）；与 FluxMesh 分享无关，不受实验性开关门控。
+  路径一律是 daemon 主机路径（Web 手输）。
   创建前按 info hash 对全部 BT 任务（种子字节 + 磁力 URL）查重，重复时 `seedLocal` 返回 `duplicate=true` + 已有任务（不建新任务，客户端弹 `duplicateTorrentToast`）。
 - **BT 分享材料 / 实况**：`daemon.task.torrentShare` 返回磁力链接（种子自带 tracker ∪ `extra_trackers_for` 会话追加 tracker，去重）与可选
   `.torrent` base64（库里无字节的纯磁力任务不返回）；右键「复制磁力链接 / 导出 .torrent」用它。`daemon.task.btStatus` 返回逐 peer

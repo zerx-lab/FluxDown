@@ -303,7 +303,6 @@ jobs:
                 # 服务器 = fluxdown-agent --server + fluxdownd；桌面 = fluxdown-desktop + 同一对进程
                 native/daemon/*|native/agent/*) APP=true; SERVER=true; MOBILE=true; IOS=true ;;
                 native/link/*)       APP=true; SERVER=true; MOBILE=true; IOS=true ;;
-                native/share/*)      APP=true; SERVER=true; MOBILE=true; IOS=true ;;
                 native/mobile/*)     MOBILE=true; IOS=true ;;
                 # GPUI 桌面客户端
                 crates/*)            APP=true ;;
