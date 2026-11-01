@@ -1,5 +1,5 @@
 /**
- * Cloudflare Turnstile 小部件（显式渲染）：下载与举报表单共用。
+ * Cloudflare Turnstile 小部件（显式渲染）：BT 防吸血申诉表单使用。
  * 父组件经 `ref.reset()` 在每次请求后换新 token（token 一次性）；脚本加载失败或小部件报错走 `onError`。
  */
 import { useEffect, useImperativeHandle, useRef, type Ref } from "react";

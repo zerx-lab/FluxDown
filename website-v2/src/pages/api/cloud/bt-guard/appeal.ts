@@ -12,17 +12,17 @@ import type { APIRoute } from "astro";
 import { MAX_APPEAL_BODY, parseAppealRequest, readBodyCapped } from "@/lib/bt-guard";
 import { submitAppeal } from "@/lib/bt-guard-proxy";
 import { getClientIp } from "@/lib/client-ip";
-import { failureResponse, shareJson, shareNoContent } from "@/lib/share-proxy";
+import { failureResponse, proxyJson, proxyNoContent } from "@/lib/cloud-proxy";
 
 export const prerender = false;
 
 export const POST: APIRoute = async ({ request, clientAddress }) => {
   // 不信任 content-length：chunked / 谎报长度的请求同样在超过上限时中止读取。
   const text = await readBodyCapped(request, MAX_APPEAL_BODY);
-  if (text === null) return shareJson({ code: "payload_too_large" }, 413);
+  if (text === null) return proxyJson({ code: "payload_too_large" }, 413);
   const parsed = parseAppealRequest(text);
-  if (!parsed.ok) return shareJson({ code: "validation_error" }, 422);
+  if (!parsed.ok) return proxyJson({ code: "validation_error" }, 422);
 
   const result = await submitAppeal(parsed, getClientIp(request, clientAddress));
-  return result.ok ? shareNoContent() : failureResponse(result);
+  return result.ok ? proxyNoContent() : failureResponse(result);
 };

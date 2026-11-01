@@ -8,7 +8,10 @@
  * - `POST /api/v1/bt-guard/public/appeal { detail, contact?, turnstileToken? }` → 204；
  *   失败 `{ code, message }`：429 `rate_limited` / 403|400 `turnstile_required|turnstile_failed` / 409 `appeal_pending` / 404 `not_listed`。
  */
-import { isRecord, MAX_TURNSTILE_TOKEN } from "./share-landing";
+import { isRecord } from "./is-record";
+
+/** Cloudflare Turnstile token 上限 2048 字符。 */
+const MAX_TURNSTILE_TOKEN = 2048;
 
 export const BT_GUARD_ENTRY_ACTIONS = ["ban", "choke", "throttle"] as const;
 export type BtGuardEntryAction = (typeof BT_GUARD_ENTRY_ACTIONS)[number];

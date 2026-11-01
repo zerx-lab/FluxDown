@@ -28,7 +28,7 @@ const LG_GRID: Record<number, string> = { 2: "lg:grid-cols-2", 3: "lg:grid-cols-
 
 /** Periodic membership card: a membership with a positive billing period (missing / null = permanent). */
 function isCard(plan: CloudPlan): boolean {
-  return plan.productKind !== "pack" && typeof plan.billingPeriodDays === "number" && plan.billingPeriodDays > 0;
+  return typeof plan.billingPeriodDays === "number" && plan.billingPeriodDays > 0;
 }
 
 /**
@@ -62,7 +62,7 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
   if (catalog.state === "loading") {
     cells.push(<SkeletonCell key="s1" label={t.loading} />, <SkeletonCell key="s2" label={t.loading} />);
   } else if (catalog.state === "ready") {
-    for (const plan of catalog.plans.filter((p) => p.productKind !== "pack" && !isCard(p))) cells.push(<CloudPlanCell key={plan.code} plan={plan} lang={lang} />);
+    for (const plan of catalog.plans.filter((p) => !isCard(p))) cells.push(<CloudPlanCell key={plan.code} plan={plan} lang={lang} />);
   } else {
     cells.push(
       <PlanShell key="fb-free" tag={t.cloudTag} name={t.fallback.freeName} price={t.free} desc={t.fallback.freeDesc} />,
@@ -84,9 +84,7 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
   const mdFill = total % 2;
   const lgFill = (cols - (total % cols)) % cols;
 
-  const packs = catalog.state === "ready" ? catalog.plans.filter((p) => p.productKind === "pack") : [];
   const cards = catalog.state === "ready" ? catalog.plans.filter(isCard) : [];
-  const packT = pricing[lang].packs;
   const cardT = pricing[lang].cards;
 
   return (
@@ -114,19 +112,6 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
         <div className="fig mt-5">
           <div className="cells grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
             {cards.map((plan) => (
-              <CloudPlanCell key={plan.code} plan={plan} lang={lang} />
-            ))}
-          </div>
-        </div>
-      </section>
-    )}
-    {packs.length > 0 && (
-      <section className="mt-12" aria-label={packT.title}>
-        <h3 className="h3">{packT.title}</h3>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{packT.lede}</p>
-        <div className="fig mt-5">
-          <div className="cells grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-            {packs.map((plan) => (
               <CloudPlanCell key={plan.code} plan={plan} lang={lang} />
             ))}
           </div>
@@ -163,19 +148,6 @@ function AppCell({ lang, downloadHref, sourceHref }: Props) {
   );
 }
 
-const KIB = 1024;
-/** Pack capacity, e.g. 100 GB / 1.5 TB (binary units; display only). */
-function formatPackBytes(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let v = bytes;
-  let i = 0;
-  while (v >= KIB && i < units.length - 1) {
-    v /= KIB;
-    i += 1;
-  }
-  return `${Number.isInteger(v) ? v : v.toFixed(1)} ${units[i]}`;
-}
-
 function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
   const t = pricing[lang].plans;
   const c = plan.campaign;
@@ -184,16 +156,6 @@ function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
     c && stage && stage.quota != null ? Math.max(0, stage.quota - (c.stageSold[c.currentStageIndex] ?? 0)) : null;
   const priceMinor = c ? c.effectivePriceMinor : plan.priceMinor;
   const paid = plan.priceMinor > 0;
-  const pack = plan.productKind === "pack" ? plan.pack : null;
-  const packT = pricing[lang].packs;
-  const kindLabel = pack
-    ? pack.kind === "swarm"
-      ? packT.kindSwarm
-      : pack.kind === "upload"
-        ? packT.kindUpload
-        : packT.kindDownload
-    : "";
-  const features = pack ? [`${formatPackBytes(pack.bytes)} ${kindLabel}`, ...plan.highlights] : plan.highlights;
 
   return (
     <PlanShell
@@ -203,7 +165,7 @@ function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
       ribbon={<PlanRibbon plan={plan} />}
       price={priceMinor === 0 ? t.free : formatMinor(priceMinor, plan.currency, lang)}
       strike={c != null && c.effectivePriceMinor < plan.priceMinor ? formatMinor(plan.priceMinor, plan.currency, lang) : undefined}
-      period={pack ? packT.validDays(pack.validDays) : priceMinor > 0 ? (isCard(plan) ? pricing[lang].cards.period(plan.billingPeriodDays ?? 0) : t.oneTime) : undefined}
+      period={priceMinor > 0 ? (isCard(plan) ? pricing[lang].cards.period(plan.billingPeriodDays ?? 0) : t.oneTime) : undefined}
       note={c?.endAt ? t.campaignEnds(formatDate(c.endAt, lang)) : undefined}
       campaign={
         c && (
@@ -218,7 +180,7 @@ function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
         )
       }
       desc={plan.description}
-      features={features}
+      features={plan.highlights}
       featured={paid}
       footer={
         paid &&

@@ -97,7 +97,7 @@ The `ctx` object passed to `init`, `render`, `event` is:
 | `props` | Reserved for opening a view with parameters. The current clients always pass `{}`. |
 | `refresh()` | Asks for a re-render of this session. Requests are merged; a session renders at most once every 100 ms. |
 | `close()` | Closes the dialog or stand-alone window hosting this view and ends the session. A view embedded in a page (activity page, task-detail tab) just shows "ended" with a **Reopen** button. Idempotent; may be called inside `init`. |
-| `navigate(target)` | `"downloads"`, `"rss"`, `"webhooks"`, `"share"` or `{ view }` (an `activity` view of this plugin). Brings the main window to the front and switches page; returns a promise that rejects on an invalid target or when called after `close()`. May be called inside `init`. Ignored (with a logged warning) by a client that cannot show the page. Only the client that opened the view is affected. Example: after `await flux.tasks.create(...)`, call `await ctx.navigate("downloads")`. |
+| `navigate(target)` | `"downloads"`, `"rss"`, `"webhooks"` or `{ view }` (an `activity` view of this plugin). Brings the main window to the front and switches page; returns a promise that rejects on an invalid target or when called after `close()`. May be called inside `init`. Ignored (with a logged warning) by a client that cannot show the page. Only the client that opened the view is affected. Example: after `await flux.tasks.create(...)`, call `await ctx.navigate("downloads")`. |
 
 > **Children are nodes, never strings.** `h("stack", {}, "hello")` is invalid. Put text in a `text` node: `h("text", { text: "hello" })`. Props that expect a string must be strings too: `text: 5` is rejected, use `String(5)`.
 
