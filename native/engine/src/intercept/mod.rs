@@ -167,19 +167,23 @@ pub fn sync_egress(p: &DownloadParams) {
 /// 引擎调用插件拦截器的唯一入口。
 #[async_trait::async_trait]
 pub trait TaskInterceptor: Send + Sync {
-    /// Participating URL interceptors, ordered by identity.
+    /// 参与本任务的插件，identity 升序。
     fn entries(&self) -> &[InterceptorEntry];
-    /// Persisted source URL.
+    /// 任务持久化的原始 URL。
     fn source_url(&self) -> &str;
-    /// Whether an enabled archive callback is available.
+    /// 是否存在已启用的归档插件。
     fn has_archivers(&self) -> bool {
         false
     }
-    /// Resolve an optional archive folder name.
+    /// 按文件名选择可选的归档子目录。
     async fn archive_folder(&self, _file_name: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
+    /// 任务当前出口变化（见 [`sync_egress`]）；之后的调用按它选插件请求出口。未同步过的
+    /// 拦截器（元数据探测、失败阶段）按全局规则 + 全局模式。
     fn set_egress(&self, _egress: TaskEgressView) {}
+    /// 调用 `identity` 的 `intercept(ctx)`；`Ok(None)` = 插件不做改动。
+    /// 调用方丢弃返回的 future 即中止插件侧执行。
     async fn call(
         &self,
         identity: &str,

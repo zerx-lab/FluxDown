@@ -482,8 +482,11 @@ pub(crate) fn output_name(file_name: &str, url: &str) -> Option<String> {
     Some(format!("{stem}.mp4"))
 }
 
-/// 开始写盘前按当前最佳文件名重选目录。仅 FD 分类规则命中后才调用归档插件，
-/// 并把选定的单层归档目录持久化，以便续传不受插件更新影响。
+/// 开始写盘前按当前最佳文件名重选目录（见模块文档）：启动序幕定名（探测得到的服务器
+/// 文件名、按类型推断的名字、插件 resolve 改的名字）之后、「文件已存在」判断与去重
+/// 之前调用，只改任务记录，不移动任何文件。HLS 按转封装后的 `.mp4` 预判；未命中任何
+/// 分类时回到基准目录。仅 FD 分类规则命中后才调用归档插件，并把选定的单层归档目录
+/// 持久化，以便续传不受插件更新影响。
 pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), crate::db::DbError> {
     if p.file_name.is_empty() {
         return Ok(());

@@ -48,6 +48,8 @@
 另见 AGENTS.md §4：quickjs-jit 与 gpui-shell 同版本、持有引擎的 actor 必须 drain `resolve_rx` / `plugin_retry_rx`、插件页面脚本只经 `userScripts`。
 
 - **QuickJS 抛 `null` 要按异常值识别为 OOM**：内存紧贴上限时 QuickJS 连 `"out of memory"` 错误对象都分配不出，改抛 `null`，字符串匹配的 `reclassify_oom` 认不出，该次 OOM 不计入熔断；必须在仍持有异常值时判定（代价：插件主动 `throw null` 也计 OOM） → `native/engine/src/plugin/quickjs.rs::caught_error`、回归 `null_exception_sentinel_counts_as_memory_limit_exceeded`。
+- **拦截器链必须显式按 identity 升序排序，不能依赖插件加载顺序**：目录遍历和去重都不保证 identity 顺序，后续插件会看到前一个插件改写后的请求，乱序会改变下载行为 → `native/engine/src/plugin/interceptors.rs::PluginManager::task_interceptor`；回归 `plugin::manager::tests::task_interceptors_follow_identity_order_not_load_order`。
+- **归档回调处于下载起跑 / 完成的等待路径，必须限制并发与耗时**：独立 `ARCHIVE_CONCURRENCY` 信号量最多运行 2 个实例，单次获取许可最多等待 3 秒，脚本执行预算为 5 秒；多个归档插件依次执行，延迟可累加，超时由现有熔断处理，不能把“纯本地回调”等同于零延迟 → `native/engine/src/plugin/quickjs.rs::{ARCHIVE_CONCURRENCY,invoke_archive}`、`native/engine/src/plugin/interceptors.rs::archive_folder`。
 - **QuickJS 宿主预置的 JSON 全局值不能再次 `JSON.parse`**：`set_json_global` 已把值解析成 JS 对象；再次 parse 会把对象转为 `"[object Object]"` 并让调用失败 → `native/engine/src/plugin/quickjs.rs::set_json_global`。
 - **外部工具子进程要补全登录 shell 的 PATH**：macOS 从 Dock / 访达启动只继承 `/usr/bin:/bin:/usr/sbin:/sbin`，yt-dlp 找不到 node / bun，带 Cookie 解析 YouTube 报 "The page needs to be reloaded"；取 PATH 的等待不计入插件脚本墙钟 → `native/engine/src/plugin/tool_path.rs::apply_full_path_env`（`read_login_shell_path` / `merge_path_lists`）。
 - **插件安装期校验必须覆盖拦截器入口脚本**：只校验主入口会让拦截器语法错误的插件装上后运行期才炸 → `native/engine/src/plugin/manager.rs`、回归 `native/engine/tests/engine/plugin_interceptors.rs::broken_interceptor_script_is_rejected_at_install`。

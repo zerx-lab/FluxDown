@@ -42,6 +42,8 @@ const RESOLVE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 /// 轮询是低频交互式调用，不该也不需要和 resolve 抢同一组 permit（否则高频轮询
 /// 会把正常下载任务的 resolve 挤到 `Overloaded`）。
 const AUTH_CONCURRENCY: usize = 2;
+/// 归档脚本的独立并发上限，避免不可信脚本耗尽其他调用平面的运行时资源。
+const ARCHIVE_CONCURRENCY: usize = 2;
 /// resolve 返回 null/undefined 的哨兵。
 const NULL_SENTINEL: &str = "__FLUX_NULL__";
 /// storage.get 无值的哨兵。
@@ -78,7 +80,7 @@ pub struct QuickJsScriptRuntime {
     /// auth 平面独立信号量（M-2）：与 resolve/subscription 物理隔离，登录轮询
     /// 不会挤占正常下载任务的 resolve permit，反之亦然。
     auth_sema: Arc<Semaphore>,
-    /// Archive calls are rare but run against untrusted scripts; cap concurrent isolates.
+    /// 归档脚本使用独立信号量，限制不可信脚本运行时的并发数。
     archive_sema: Arc<Semaphore>,
 }
 
@@ -116,7 +118,7 @@ impl QuickJsScriptRuntime {
             ext_hook_sema: Arc::new(Semaphore::new(workers.max(1))),
             ext_hook_waiters: Arc::new(AtomicUsize::new(0)),
             auth_sema: Arc::new(Semaphore::new(AUTH_CONCURRENCY)),
-            archive_sema: Arc::new(Semaphore::new(2)),
+            archive_sema: Arc::new(Semaphore::new(ARCHIVE_CONCURRENCY)),
         })
     }
 

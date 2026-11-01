@@ -376,13 +376,13 @@ pub struct ContributesDecl {
     pub views: Vec<ViewDecl>,
     #[serde(default)]
     pub commands: Vec<CommandDecl>,
-    /// Browser sniff rules package (`.json`), requiring `browserRules`.
+    /// 浏览器扩展嗅探规则包（相对路径，`.json`），需 `browserRules` 权限。
     #[serde(default)]
     pub sniff_rules: Option<String>,
-    /// Browser page scripts (0..=16), requiring `pageScripts`.
+    /// 浏览器页面脚本（0..=16 条），需 `pageScripts` 权限。
     #[serde(default)]
     pub page_scripts: Vec<PageScriptDecl>,
-    /// Archive handler script (`.js`), requiring `archive`.
+    /// 归档脚本（相对路径，`.js`），需 `archive` 权限。
     #[serde(default)]
     pub archive: Option<String>,
 }
@@ -493,9 +493,9 @@ pub const PERMISSION_BACKGROUND: &str = "background";
 pub const PERMISSION_INTERCEPT: &str = "intercept";
 /// 浏览器页面脚本权限名（风险 Full：脚本在用户任意匹配网页内运行）。
 pub const PERMISSION_PAGE_SCRIPTS: &str = "pageScripts";
-/// Archive handler permission name.
+/// 归档脚本权限名。
 pub const PERMISSION_ARCHIVE: &str = "archive";
-/// Legal capability permissions (`permissions`).
+/// 合法能力权限（manifest `permissions`）。
 pub const VALID_PERMISSIONS: [&str; 10] = [
     PERMISSION_FFMPEG,
     PERMISSION_YTDLP,

@@ -32,7 +32,7 @@ impl PluginManager {
         current_url: &str,
     ) -> Arc<dyn TaskInterceptor> {
         let snapshot = self.plugins.read().await.clone();
-        let entries: Vec<InterceptorEntry> = snapshot
+        let mut entries: Vec<InterceptorEntry> = snapshot
             .iter()
             .filter(|p| p.enabled && p.manifest.has_permission(PERMISSION_INTERCEPT))
             .filter_map(|p| {
@@ -56,6 +56,7 @@ impl PluginManager {
                 })
             })
             .collect();
+        entries.sort_by(|a, b| a.identity.cmp(&b.identity));
         let has_archivers = snapshot.iter().any(|p| {
             p.enabled
                 && p.manifest.has_permission(PERMISSION_ARCHIVE)
