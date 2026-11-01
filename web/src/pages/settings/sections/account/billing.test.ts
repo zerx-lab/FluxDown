@@ -10,7 +10,6 @@ import {
   formatMinor,
   normalizeReferralCode,
   ownedPriceMinor,
-  packPlans,
   pageCount,
   payableMinor,
   planCardState,
@@ -198,18 +197,6 @@ describe('其它', () => {
     expect(pageCount(0, 20)).toBe(1)
     expect(pageCount(20, 20)).toBe(1)
     expect(pageCount(21, 20)).toBe(2)
-  })
-})
-
-describe('pack plans', () => {
-  const pack = (code: string, sort: number) => plan(code, 500, { productKind: 'pack', sort, pack: { kind: 'swarm', bytes: 1, validDays: 30 } })
-  test('purchasablePlans excludes packs, packPlans only packs sorted', () => {
-    const catalog = [pack('p2', 2), plan('pro', 1000), pack('p1', 1), pack('off', 0)].map((p) => (p.code === 'off' ? { ...p, purchasable: false } : p))
-    expect(purchasablePlans(catalog).map((p) => p.code)).toEqual(['pro'])
-    expect(packPlans(catalog).map((p) => p.code)).toEqual(['p1', 'p2'])
-  })
-  test('packs are always available regardless of tier or credit', () => {
-    expect(planCardState(pack('p', 1), 'p', 99999, 99999)).toBe('available')
   })
 })
 

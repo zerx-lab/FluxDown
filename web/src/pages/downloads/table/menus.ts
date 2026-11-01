@@ -21,8 +21,6 @@ import {
   SquareCheck,
   RotateCw,
   Rows3,
-  Share2,
-  Square,
   ShieldCheck,
   Trash2,
   Zap,
@@ -71,7 +69,6 @@ import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
 import type { GroupCounts } from '../model/groupTree'
 import { openChangeSegments, openChangeUrl, openGroupDetail, openRename } from '../dialogs'
-import { openSharePanel, peekSendState, peekShareTaskFacts, providingRecordId, stopProviding } from '../../share'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -182,24 +179,6 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
       icon: Files,
       onSelect: () => void copyTaskFiles(views),
     })
-  }
-  // 分享：未编入FluxMesh时不出现；未完成 / 文件丢失 / 远程任务 / 未登录时置灰并在说明行给出原因（多选合成一个分享）。
-  const shareState = peekSendState(views)
-  if (shareState !== 'hidden') {
-    entries.push({
-      type: 'item',
-      key: 'share',
-      label: t('sharePanelTitle'),
-      icon: Share2,
-      disabled: shareState !== 'ok',
-      ...(shareState === 'ok' ? {} : { description: t(shareState) }),
-      onSelect: () => openSharePanel(views.map((view) => view.taskId)),
-    })
-  }
-  // 停止共享：单选且该接收任务的记录仍在共享（含已完成回传中的任务）。
-  const providingId = only ? providingRecordId(peekShareTaskFacts(only.taskId)) : null
-  if (providingId) {
-    entries.push({ type: 'item', key: 'stop-providing', label: t('shareStopProviding'), icon: Square, onSelect: () => void stopProviding(providingId, t) })
   }
   if (only && canRename(only)) {
     entries.push({ type: 'item', key: 'rename', label: t('renameTask'), icon: Pen, onSelect: () => openRename(only.taskId) })

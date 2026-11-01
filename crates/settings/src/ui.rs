@@ -1264,13 +1264,6 @@ impl SettingsTab {
         self
     }
 
-    /// 注入视图的 Tab 占满内容区高度、由视图自管滚动（仅对已注入视图的 Tab 生效）。
-    #[must_use]
-    pub(crate) fn fill_height(mut self) -> Self {
-        self.fill = self.view.is_some();
-        self
-    }
-
     /// 本 Tab 的分组（注入整页视图的 Tab 为空）。
     pub(crate) fn section_list(&self) -> &[SettingsSection] {
         &self.sections

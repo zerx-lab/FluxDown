@@ -294,7 +294,7 @@ async fn evidence_loop(
                 continue;
             }
         }
-        if !flag(events, KEY_REPORT_ENABLED) || !cloud.has_account().await {
+        if !flag(events, KEY_REPORT_ENABLED) || !cloud.is_authenticated().await {
             // 未开启上报或未登录：不弹出（daemon 侧上限自然丢旧），已保留的也不再发送。
             uploader.clear();
             continue;

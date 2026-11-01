@@ -36,7 +36,6 @@ impl AuthResponse {
 pub(crate) struct CloudErrorBody {
     pub code: Option<String>,
     pub message: Option<String>,
-    pub details: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]

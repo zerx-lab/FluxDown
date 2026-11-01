@@ -7,7 +7,6 @@ use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::{DownloadHostActions, DownloadView};
 use fluxdown_ui_rss::RssView;
 use fluxdown_ui_settings::{PushHost, PushView};
-use fluxdown_ui_share::ShareView;
 use fluxdown_ui_shell::{ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options};
 use gpui::{App, AppContext as _, Window, WindowHandle, px, size};
 use gpui_component::{Icon, Root};
@@ -56,8 +55,6 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         watch_import_suspension(&client, &downloads, cx);
         let rss_port = Arc::new(AgentRssPort::new(client.clone()));
         let rss = cx.new(|cx| RssView::new(translator.clone(), rss_port, window, cx));
-        let share_hub = Desktop::global(cx).share_hub.clone();
-        let share = cx.new(|cx| ShareView::new(share_hub.clone(), window, cx));
         let push = cx.new(|cx| {
             PushView::new(
                 translator.clone(),
@@ -115,17 +112,6 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                     )
                     .optional(optional),
                 ),
-                ActivityEntry::Share => routes.push(
-                    ShellRoute::new(
-                        crate::activity::SHARE_ROUTE,
-                        button_id,
-                        "activity-share-tooltip",
-                        entry.label_key(),
-                        Icon::new(FluxIcon::Share2),
-                        share.clone().into(),
-                    )
-                    .optional(optional),
-                ),
                 ActivityEntry::Account => {
                     let host = Desktop::global(cx).account_host.clone();
                     let button = cx.new(|cx| {
@@ -176,7 +162,7 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
         let shutdown_status = crate::power::status(cx);
         let shutdown_port = crate::power::shutdown_port(cx);
         downloads.update(cx, |downloads, _| {
-            let mut host = DownloadHostActions {
+            let host = DownloadHostActions {
                 open_new_download: Some(Rc::new(|context, _, cx| {
                     crate::windows::new_download::open(cx, context);
                 })),
@@ -210,9 +196,7 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
                 on_user_started: Some(Rc::new(crate::progress_windows::user_started)),
                 run_plugin_command: Some(crate::plugin_contributions::command_runner()),
                 plugin_tab_view: Some(crate::plugin_contributions::tab_view_factory()),
-                ..DownloadHostActions::default()
             };
-            crate::share_host::extend_download_actions(&mut host, &share_hub);
             downloads.set_host_actions(host);
         });
 
@@ -280,10 +264,10 @@ pub fn should_close(window: &mut Window, cx: &mut App) -> bool {
         return true;
     }
     if Desktop::active_task_count(cx) == 0 {
-        crate::lifecycle::quit_everything_in(window, cx);
+        crate::lifecycle::quit_everything(cx);
     } else {
-        confirm_active_tasks(window, cx, |window, cx| {
-            crate::lifecycle::quit_everything_in(window, cx);
+        confirm_active_tasks(window, cx, |_window, cx| {
+            crate::lifecycle::quit_everything(cx);
         });
     }
     false

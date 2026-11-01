@@ -19,7 +19,6 @@ pub mod plugin_view;
 pub mod proxy_rules;
 pub mod rpc;
 pub mod settings;
-pub mod share;
 pub mod shell_open;
 pub mod shortcuts;
 pub mod sound;
@@ -36,25 +35,24 @@ pub use agent::{
     AuthVerificationDto, CUSTOM_CATEGORIES_PREF_KEY, CaptureCreateGroupParams,
     CapturePreviewParams, CaptureResolveParams, CategoryRouteDto, CategoryRuleDto,
     CloudConnectionDto, CloudConnectionState, CloudDevice, CloudEndpointDto,
-    CloudEndpointSetParams, CloudOrder, CloudPack, CloudPlan, CloudPlanCampaign,
-    CloudPlanCampaignStage, CloudProductKind, CloudProfile, CloudReferralCode,
-    CloudReferralCodesResult, CloudReferralRecord, CloudReferralRecordsResult, CloudReferralRule,
-    CloudReferralSummary, CloudReferralValidateResult, CloudSubscription, CloudUser,
-    CloudUserStatus, CustomCategoryDto, DiagnosticCheckDto, DiagnosticLevel,
-    DiagnosticRepairParams, DiagnosticsReportDto, Entitlements, FILE_ICON_PER_FILE_EXTENSIONS,
-    GatewayPatchParams, GatewayStatusDto, LinkAddressParams, LinkApproveParams,
-    LinkControlCredentialDto, LinkDeviceParams, LinkDiscoveryParams, LinkDispatchParams,
-    LinkDispatchResult, LinkPairBeginParams, LinkPairFinishParams, LinkPairingCodeDto,
-    LinkPairingRequestDto, LinkRenameParams, LinkStopPairingParams, LogExportParams,
-    LogExportResult, LogPathsDto, OriginIdCheckResult, PLATFORM_COPY_TASK_FILES_MAX, PathStyle,
-    PendingCaptureDto, PlatformCopyTaskFilesParams, PlatformFileIconDto, PlatformFileIconParams,
-    PlatformIntegrationDto, PlatformOpenPathParams, PlatformToggleParams,
-    PlatformUrlProtocolParams, PluginFavoriteResultDto, PluginFavoriteSetRequest,
-    PluginFavoritesDto, PowerArmParams, PowerStatusDto, ReleaseNoteDto, RemoteCommandAction,
-    RemoteCommandParams, RemoteDispatchParams, RemoteDispatchResult, RemoteTaskDto,
-    RemoteTaskStatus, ShellStatusDto, SyncLocalOnlyParams, SyncStatusDto, TrayUnavailableReason,
-    UpdateCheckParams, UpdateFailure, UpdateInstallKind, UpdateManualReason, UpdatePhase,
-    UpdateStatusDto,
+    CloudEndpointSetParams, CloudOrder, CloudPlan, CloudPlanCampaign, CloudPlanCampaignStage,
+    CloudProfile, CloudReferralCode, CloudReferralCodesResult, CloudReferralRecord,
+    CloudReferralRecordsResult, CloudReferralRule, CloudReferralSummary,
+    CloudReferralValidateResult, CloudSubscription, CloudUser, CloudUserStatus, CustomCategoryDto,
+    DiagnosticCheckDto, DiagnosticLevel, DiagnosticRepairParams, DiagnosticsReportDto,
+    Entitlements, FILE_ICON_PER_FILE_EXTENSIONS, GatewayPatchParams, GatewayStatusDto,
+    LinkAddressParams, LinkApproveParams, LinkControlCredentialDto, LinkDeviceParams,
+    LinkDiscoveryParams, LinkDispatchParams, LinkDispatchResult, LinkPairBeginParams,
+    LinkPairFinishParams, LinkPairingCodeDto, LinkPairingRequestDto, LinkRenameParams,
+    LinkStopPairingParams, LogExportParams, LogExportResult, LogPathsDto, OriginIdCheckResult,
+    PLATFORM_COPY_TASK_FILES_MAX, PathStyle, PendingCaptureDto, PlatformCopyTaskFilesParams,
+    PlatformFileIconDto, PlatformFileIconParams, PlatformIntegrationDto, PlatformOpenPathParams,
+    PlatformToggleParams, PlatformUrlProtocolParams, PluginFavoriteResultDto,
+    PluginFavoriteSetRequest, PluginFavoritesDto, PowerArmParams, PowerStatusDto, ReleaseNoteDto,
+    RemoteCommandAction, RemoteCommandParams, RemoteDispatchParams, RemoteDispatchResult,
+    RemoteTaskDto, RemoteTaskStatus, ShellStatusDto, SyncLocalOnlyParams, SyncStatusDto,
+    TrayUnavailableReason, UpdateCheckParams, UpdateFailure, UpdateInstallKind, UpdateManualReason,
+    UpdatePhase, UpdateStatusDto,
 };
 pub use cloud_notify::{
     CLOUD_NOTIFY_EMAIL_MAX_ADDRESSES, CLOUD_NOTIFY_RECENT_DELIVERIES,
@@ -160,25 +158,6 @@ pub use settings::{
     custom_theme_id, custom_theme_key, daemon_config_to_value, is_custom_theme_id,
     is_icon_pack_ref, setting_spec, setting_value_kind, sync_scope_key, validate_value,
     value_to_daemon_config,
-};
-pub use share::{
-    DISPLAY_BYTES_CAP, SHARE_STATE_RECEIVE_RECORDS, ShareAppealDto, ShareAppealParams,
-    ShareAppealStatus, ShareCloudState, ShareConfigDto, ShareConnectionMode, ShareContributionDto,
-    ShareConvertToCloudParams, ShareCreateParams, ShareDiagnosticsDto, ShareDiagnosticsParams,
-    ShareDismissPendingParams, ShareDto, ShareEarnDto, ShareExitBehavior, ShareFileDto,
-    ShareGrantDto, ShareGrantSource, ShareHashingDto, ShareHomeRelayDto, ShareIdParams,
-    ShareKindUsageDto, ShareLocalConfigDto, ShareLogLevel, ShareLogLineDto, ShareLogsDto,
-    ShareLogsParams, ShareMode, ShareNatType, ShareNetReportDto, ShareNetSnapshotDto,
-    ShareNetStatusDto, SharePathEventDto, SharePathKind, SharePathSummaryDto,
-    SharePolicySummaryDto, ShareProgressDto, ShareProvideState, ShareReceiveParams,
-    ShareReceiveRecordDto, ShareReceiveRecordsPage, ShareReceiveRecordsParams,
-    ShareReceiveResultDto, ShareReceiveStatus, ShareReceiverDto, ShareRelayDto, ShareReportParams,
-    ShareReportReason, ShareResolveDto, ShareResolveParams, ShareSessionBytesDto,
-    ShareSessionDetailDto, ShareSessionKillParams, ShareSessionRole, ShareSessionSampleDto,
-    ShareSessionSummaryDto, ShareSourcesDto, ShareStateDto, ShareStatus, ShareStopProvidingParams,
-    ShareSwarmBlock, ShareSwarmServedFileDto, ShareSwitchToBridgeParams, ShareTaskFactsDto,
-    ShareTierDto, ShareTrafficKind, ShareUpdateParams, ShareUploadDto, ShareUploadStatus,
-    ShareUsageDto, ShareUsageEnforcedDto,
 };
 pub use table_sync::{
     InvalidPageCursor, LoadedTables, TABLE_SYNC_BACKLOG_LIMIT, TASK_PAGE_DEFAULT_LIMIT,

@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluxdown_protocol::{
-    CloudOrder, CloudPlan, CloudProductKind, CloudProfile, CloudReferralValidateResult,
-    CloudSubscription, RpcErrorData, ShareTrafficKind, method,
+    CloudOrder, CloudPlan, CloudProfile, CloudReferralValidateResult, CloudSubscription,
+    RpcErrorData, method,
 };
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, FluxIcon, QrPalette, button, caption_number, card,
-    dialog_scroll_body, dialog_title, icon_button, loading_button, qr_image, segmented_tabs,
-    tabular_numbers, tooltip_view,
+    dialog_scroll_body, dialog_title, icon_button, loading_button, qr_image, tabular_numbers,
+    tooltip_view,
 };
 use fluxdown_ui_theme::{SemanticThemeTokens, active_theme};
 use gpui::{
@@ -34,10 +34,10 @@ use gpui_component::{
 use crate::{
     AccountCommand,
     billing::{
-        CardState, PollAction, campaign_progress, card_state, format_capacity, format_countdown,
-        format_local_date, format_minor, is_subscription_plan, normalize_code, owned_price,
-        owned_sort, pack_plans, payable, plan_icon, poll_action, price_display, purchasable_plans,
-        remaining_secs, validate_reason_key,
+        CardState, PollAction, campaign_progress, card_state, format_countdown, format_local_date,
+        format_minor, is_subscription_plan, normalize_code, owned_price, owned_sort, payable,
+        plan_icon, poll_action, price_display, purchasable_plans, remaining_secs,
+        validate_reason_key,
     },
     errors::{ErrorContext, error_text},
     host::AccountHost,
@@ -105,39 +105,6 @@ enum Poll {
     Paid(Box<CloudOrder>),
 }
 
-/// 购买对话框的页签。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PurchaseTab {
-    Membership,
-    Packs,
-}
-
-impl PurchaseTab {
-    fn index(self) -> usize {
-        match self {
-            Self::Membership => 0,
-            Self::Packs => 1,
-        }
-    }
-
-    fn from_index(index: usize) -> Self {
-        if index == 1 {
-            Self::Packs
-        } else {
-            Self::Membership
-        }
-    }
-}
-
-/// 流量包类型 → 文案键（与「额度与贡献」页的流量名共用）。
-fn pack_kind_key(kind: ShareTrafficKind) -> &'static str {
-    match kind {
-        ShareTrafficKind::Swarm => "shareUsageKindSwarm",
-        ShareTrafficKind::Upload => "shareUsageKindUpload",
-        ShareTrafficKind::Download | ShareTrafficKind::Unknown => "shareUsageKindDownload",
-    }
-}
-
 struct PlanPurchaseDialog {
     host: Entity<AccountHost>,
     referral_input: Entity<InputState>,
@@ -151,26 +118,18 @@ struct PlanPurchaseDialog {
     busy: bool,
     paying: Option<Paying>,
     paid_plan: SharedString,
-    /// 刚支付的是流量包（成功页换文案）。
-    paid_pack: bool,
-    tab: PurchaseTab,
     closed: bool,
     /// 异步流程代数：任何新流程（加载 / 支付）或关闭都会自增，旧任务发现不一致即退出。
     flow: u64,
     _input_subscription: Subscription,
 }
 
-pub(crate) fn open(
-    host: &Entity<AccountHost>,
-    tab: PurchaseTab,
-    window: &mut Window,
-    cx: &mut App,
-) {
+pub(crate) fn open(host: &Entity<AccountHost>, window: &mut Window, cx: &mut App) {
     if host.read(cx).controller.session().is_none() {
         return;
     }
     let host = host.clone();
-    let view = cx.new(|cx| PlanPurchaseDialog::new(host, tab, window, cx));
+    let view = cx.new(|cx| PlanPurchaseDialog::new(host, window, cx));
     view.update(cx, |this, cx| this.load(window, cx));
     window.open_dialog(cx, move |dialog, _, cx| {
         let state = view.read(cx);
@@ -206,12 +165,7 @@ pub(crate) fn open(
 }
 
 impl PlanPurchaseDialog {
-    fn new(
-        host: Entity<AccountHost>,
-        tab: PurchaseTab,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(host: Entity<AccountHost>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let placeholder = t(
             host.read(cx).translator().read(cx),
             "accountPlanReferralCodePlaceholder",
@@ -255,8 +209,6 @@ impl PlanPurchaseDialog {
             busy: false,
             paying: None,
             paid_plan: SharedString::default(),
-            paid_pack: false,
-            tab,
             closed: false,
             flow: 0,
             _input_subscription,
@@ -361,10 +313,6 @@ impl PlanPurchaseDialog {
                     Ok(plans) => {
                         this.plans = plans;
                         this.catalog = Catalog::Ready;
-                        // 云端没有上架流量包：页签整体隐藏，落回会员页。
-                        if pack_plans(&this.plans).is_empty() {
-                            this.tab = PurchaseTab::Membership;
-                        }
                     }
                     Err(error) => {
                         this.catalog = Catalog::Failed(this.fail_text(&error, cx));
@@ -408,16 +356,6 @@ impl PlanPurchaseDialog {
             return;
         }
         self.selected = Some(code.to_owned());
-        self.notice = None;
-        cx.notify();
-    }
-
-    fn set_tab(&mut self, tab: PurchaseTab, cx: &mut Context<Self>) {
-        if self.busy || self.tab == tab {
-            return;
-        }
-        self.tab = tab;
-        self.selected = None;
         self.notice = None;
         cx.notify();
     }
@@ -627,10 +565,6 @@ impl PlanPurchaseDialog {
                                 return;
                             }
                             this.flow += 1;
-                            this.paid_pack = this.plans.iter().any(|plan| {
-                                plan.code == order.plan_code
-                                    && plan.product_kind == CloudProductKind::Pack
-                            });
                             this.paid_plan = SharedString::from(if order.plan_name.is_empty() {
                                 order.plan_code
                             } else {
@@ -693,13 +627,10 @@ impl PlanPurchaseDialog {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let ready = matches!(self.catalog, Catalog::Ready);
-        let visible: Vec<CloudPlan> = match self.tab {
-            PurchaseTab::Membership => purchasable_plans(&self.plans),
-            PurchaseTab::Packs => pack_plans(&self.plans),
-        }
-        .into_iter()
-        .cloned()
-        .collect();
+        let visible: Vec<CloudPlan> = purchasable_plans(&self.plans)
+            .into_iter()
+            .cloned()
+            .collect();
         let max_height = window.viewport_size().height * LIST_MAX_HEIGHT_RATIO;
 
         let list = match &self.catalog {
@@ -712,35 +643,29 @@ impl PlanPurchaseDialog {
             }
             Catalog::Ready => {
                 let mut cards: Vec<gpui::AnyElement> = Vec::new();
-                if self.tab == PurchaseTab::Membership {
-                    let (periodic, lifetime): (Vec<&CloudPlan>, Vec<&CloudPlan>) =
-                        visible.iter().partition(|plan| is_subscription_plan(plan));
-                    let grouped = !periodic.is_empty() && !lifetime.is_empty();
-                    for (key, group) in [
-                        ("accountPurchaseGroupLifetime", lifetime),
-                        ("accountPurchaseGroupCards", periodic),
-                    ] {
-                        if group.is_empty() {
-                            continue;
-                        }
-                        if grouped {
-                            cards.push(
-                                div()
-                                    .w_full()
-                                    .text_size(tokens.typography.xs.size)
-                                    .line_height(tokens.typography.xs.line_height)
-                                    .text_color(tokens.colors.muted_foreground)
-                                    .child(self.text(key, cx))
-                                    .into_any_element(),
-                            );
-                        }
-                        for plan in group {
-                            cards.push(self.render_plan_card(plan, tokens, cx).into_any_element());
-                        }
+                let (periodic, lifetime): (Vec<&CloudPlan>, Vec<&CloudPlan>) =
+                    visible.iter().partition(|plan| is_subscription_plan(plan));
+                let grouped = !periodic.is_empty() && !lifetime.is_empty();
+                for (key, group) in [
+                    ("accountPurchaseGroupLifetime", lifetime),
+                    ("accountPurchaseGroupCards", periodic),
+                ] {
+                    if group.is_empty() {
+                        continue;
                     }
-                } else {
-                    for plan in &visible {
-                        cards.push(self.render_pack_card(plan, tokens, cx).into_any_element());
+                    if grouped {
+                        cards.push(
+                            div()
+                                .w_full()
+                                .text_size(tokens.typography.xs.size)
+                                .line_height(tokens.typography.xs.line_height)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(self.text(key, cx))
+                                .into_any_element(),
+                        );
+                    }
+                    for plan in group {
+                        cards.push(self.render_plan_card(plan, tokens, cx).into_any_element());
                     }
                 }
                 dialog_scroll_body(
@@ -753,31 +678,10 @@ impl PlanPurchaseDialog {
             }
         };
 
-        let tab_labels = [
-            self.text("accountPurchaseTabMembership", cx),
-            self.text("accountPurchaseTabPacks", cx),
-        ];
-        let weak = cx.weak_entity();
         v_flex()
             .w_full()
             .min_h_0()
             .gap(tokens.spacing.md)
-            .when(ready && !pack_plans(&self.plans).is_empty(), |this| {
-                this.child(h_flex().w_full().child(segmented_tabs(
-                    "plan-purchase-tabs",
-                    tab_labels,
-                    self.tab.index(),
-                    move |index, _, cx| {
-                        let Ok(()) = weak.update(cx, |this, cx| {
-                            this.set_tab(PurchaseTab::from_index(index), cx);
-                        }) else {
-                            // 对话框已释放，结束这次回调。
-                            return;
-                        };
-                    },
-                    cx,
-                )))
-            })
             .child(list)
             .when(ready && !visible.is_empty(), |this| {
                 this.child(
@@ -808,12 +712,11 @@ impl PlanPurchaseDialog {
             if self.state_of_plan(plan, cx) == CardState::Renewable {
                 buy_label = self.text("accountRenew", cx).to_string();
             }
-            let credit =
-                if plan.product_kind == CloudProductKind::Pack || is_subscription_plan(plan) {
-                    0
-                } else {
-                    self.credit_minor
-                };
+            let credit = if is_subscription_plan(plan) {
+                0
+            } else {
+                self.credit_minor
+            };
             buy_label = format!(
                 "{buy_label} · {}",
                 format_minor(payable(plan, credit), &plan.currency)
@@ -830,11 +733,7 @@ impl PlanPurchaseDialog {
                     .text_size(tokens.typography.xs.size)
                     .line_height(tokens.typography.xs.line_height)
                     .text_color(tokens.colors.muted_foreground)
-                    .child(if self.tab == PurchaseTab::Membership {
-                        self.text("accountPlanOneTime", cx)
-                    } else {
-                        SharedString::default()
-                    }),
+                    .child(self.text("accountPlanOneTime", cx)),
             )
             .child(
                 button(
@@ -1258,152 +1157,6 @@ impl PlanPurchaseDialog {
             .child(price_column)
     }
 
-    /// 流量包卡片：左图标块 / 中名称 + 容量（含类型名）+ 有效期 / 右价格区；始终可选，不涉及抵扣。
-    fn render_pack_card(
-        &self,
-        plan: &CloudPlan,
-        tokens: &SemanticThemeTokens,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = active_theme(cx);
-        let extended = theme.extended().clone();
-        let components = theme.components();
-        let accent = tokens.colors.accent_foreground;
-        let plan_color = parse_hex_color(&plan.color).unwrap_or(accent);
-        let selected = self.selected.as_deref() == Some(plan.code.as_str());
-        let price = price_display(plan, CardState::Available, 0);
-        let row_hover = extended.colors.row_hover;
-        let text_sm = tokens.typography.sm;
-        let text_xs = tokens.typography.xs;
-        let code = plan.code.clone();
-
-        let mut details: Vec<SharedString> = Vec::new();
-        if let Some(pack) = &plan.pack {
-            let kind = SharedString::from(self.text(pack_kind_key(pack.kind), cx).to_string());
-            details.push(t_with(
-                self.host.read(cx).translator().read(cx),
-                "accountPackCapacity",
-                &[("bytes", &format_capacity(pack.bytes)), ("kind", &kind)],
-            ));
-            details.push(t_with(
-                self.host.read(cx).translator().read(cx),
-                "accountPackValidity",
-                &[("days", &pack.valid_days.to_string())],
-            ));
-        }
-
-        let mut price_column = v_flex()
-            .flex_none()
-            .items_end()
-            .gap(tokens.spacing.xxs)
-            .child(
-                div()
-                    .text_size(tokens.typography.lg.size)
-                    .line_height(tokens.typography.lg.line_height)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .font_features(tabular_numbers())
-                    .text_color(tokens.colors.foreground)
-                    .child(price.main.clone()),
-            );
-        if let Some(strike) = &price.strike {
-            price_column = price_column.child(
-                div()
-                    .text_size(text_xs.size)
-                    .line_height(text_xs.line_height)
-                    .font_features(tabular_numbers())
-                    .line_through()
-                    .text_color(extended.colors.text_tertiary)
-                    .child(strike.clone()),
-            );
-        }
-        if let Some(label) = &price.stage_label {
-            price_column = price_column.child(
-                div()
-                    .text_size(text_xs.size)
-                    .line_height(text_xs.line_height)
-                    .text_color(tokens.colors.muted_foreground)
-                    .child(label.clone()),
-            );
-        }
-
-        div()
-            .id(SharedString::from(format!("pack-card-{}", plan.code)))
-            .w_full()
-            .flex()
-            .items_start()
-            .gap(tokens.spacing.md)
-            .p(tokens.spacing.md)
-            .rounded(components.card_radius)
-            .border(extended.stroke.thin)
-            .border_color(if selected {
-                accent
-            } else {
-                extended.colors.hairline
-            })
-            .bg(if selected {
-                accent.opacity(SELECTED_TINT_ALPHA)
-            } else {
-                tokens.colors.surface
-            })
-            .when(!selected, |this| {
-                this.hover(move |style| style.bg(row_hover))
-            })
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.select(&code, cx);
-            }))
-            .child(
-                div()
-                    .flex_none()
-                    .size(extended.icon.lg * 2.)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(tokens.radius.md)
-                    .bg(plan_color.opacity(ICON_TINT_ALPHA))
-                    .child(
-                        Icon::new(FluxIcon::Package)
-                            .size(extended.icon.lg)
-                            .text_color(plan_color),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(tokens.spacing.xs)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(text_sm.size)
-                            .line_height(text_sm.line_height)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(tokens.colors.foreground)
-                            .child(plan.name.clone()),
-                    )
-                    .children(details.into_iter().map(|line| {
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(text_xs.size)
-                            .line_height(text_xs.line_height)
-                            .text_color(tokens.colors.muted_foreground)
-                            .child(line)
-                    }))
-                    .when(!plan.description.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .text_size(text_xs.size)
-                                .line_height(text_xs.line_height)
-                                .text_color(tokens.colors.muted_foreground)
-                                .child(plan.description.clone()),
-                        )
-                    }),
-            )
-            .child(price_column)
-    }
-
     fn render_paying(
         &self,
         tokens: &SemanticThemeTokens,
@@ -1595,14 +1348,7 @@ impl PlanPurchaseDialog {
                     .line_height(extended.title.line_height)
                     .font_weight(extended.title.weight)
                     .text_color(tokens.colors.foreground)
-                    .child(self.text(
-                        if self.paid_pack {
-                            "accountPackPaid"
-                        } else {
-                            "accountPlanPaidSuccess"
-                        },
-                        cx,
-                    )),
+                    .child(self.text("accountPlanPaidSuccess", cx)),
             )
             .child(
                 div()

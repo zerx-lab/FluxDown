@@ -44,9 +44,6 @@ pub mod power;
 pub mod remote;
 pub mod runtime;
 pub mod server_mode;
-#[cfg(feature = "share-p2p")]
-pub mod share;
-pub mod share_link;
 pub mod shell;
 mod signed_envelope;
 pub mod sniff_rules;

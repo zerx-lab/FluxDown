@@ -212,7 +212,6 @@ mod tests {
             message: String::new(),
             retryable,
             unreachable,
-            details: None,
         }
     }
 

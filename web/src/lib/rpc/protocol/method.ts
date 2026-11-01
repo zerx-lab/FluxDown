@@ -268,36 +268,6 @@ export const METHOD = {
   AGENT_CLOUD_NOTIFY_DELIVERIES: 'agent.cloudNotify.deliveries',
   AGENT_CLOUD_NOTIFY_SEND_EMAIL_CODE: 'agent.cloudNotify.sendEmailCode',
   AGENT_CLOUD_NOTIFY_VERIFY_EMAIL: 'agent.cloudNotify.verifyEmail',
-  /** FluxMesh（临时文件分享）：仅当 hello 带 `agent.share` 能力时可用。 */
-  AGENT_SHARE_CONFIG: 'agent.share.config',
-  AGENT_SHARE_SET_LOCAL_CONFIG: 'agent.share.setLocalConfig',
-  AGENT_SHARE_CREATE: 'agent.share.create',
-  AGENT_SHARE_LIST: 'agent.share.list',
-  AGENT_SHARE_UPDATE: 'agent.share.update',
-  AGENT_SHARE_STOP: 'agent.share.stop',
-  /** 重新开始已停止 / 已过期的分享（同 id、同链接，重新分配取件码）。 */
-  AGENT_SHARE_RESUME: 'agent.share.resume',
-  /** 删除分享记录（分享中的先停止）。 */
-  AGENT_SHARE_DELETE: 'agent.share.delete',
-  AGENT_SHARE_RESOLVE: 'agent.share.resolve',
-  AGENT_SHARE_RECEIVE: 'agent.share.receive',
-  AGENT_SHARE_DISMISS_PENDING: 'agent.share.dismissPending',
-  AGENT_SHARE_RECEIVE_RECORDS: 'agent.share.receiveRecords',
-  /** 把接收任务切到实时桥接；任务继续运行，其 `pathKind` 在分块经桥接 / CDN 流动后变为 `bridge` / `cdn`。 */
-  AGENT_SHARE_SWITCH_TO_BRIDGE: 'agent.share.switchToBridge',
-  AGENT_SHARE_DIAGNOSTICS: 'agent.share.diagnostics',
-  AGENT_SHARE_USAGE_REFRESH: 'agent.share.usageRefresh',
-  AGENT_SHARE_LOGS: 'agent.share.logs',
-  AGENT_SHARE_SESSION_KILL: 'agent.share.sessionKill',
-  /** 把实时分享转为云端暂存（需登录）；预检通过后立即返回 `cloudState = uploading`，上传在 agent 后台进行。 */
-  AGENT_SHARE_CONVERT_TO_CLOUD: 'agent.share.convertToCloud',
-  /** 删除云端副本（上传中则先取消）；分享回到实时模式。 */
-  AGENT_SHARE_DELETE_CLOUD_COPY: 'agent.share.deleteCloudCopy',
-  AGENT_SHARE_STOP_PROVIDING: 'agent.share.stopProviding',
-  /** 举报分享（按原因枚举，agent 用本机 endpoint 私钥签名）。 */
-  AGENT_SHARE_REPORT: 'agent.share.report',
-  /** 申诉已下架的分享，返回更新后的分享。 */
-  AGENT_SHARE_APPEAL: 'agent.share.appeal',
 
   /** 服务端推送通知，params 为 EventFrame。 */
   SERVICE_EVENT: 'service.event',
@@ -330,7 +300,5 @@ export const CAPABILITY_AGENT_OPEN_TASK_FILES = 'agent.openTaskFiles';
  * 只在本机来源 + 桌面构建 + 有图形会话时下发；远程 / NAS 连接没有（浏览器无法把文件写进系统剪贴板）。
  */
 export const CAPABILITY_AGENT_COPY_TASK_FILES = 'agent.copyTaskFiles';
-/** 本 agent 编入了FluxMesh服务（`agent.share.*`）；条件能力，未编入FluxMesh的构建不下发。 */
-export const CAPABILITY_AGENT_SHARE = 'agent.share';
 /** 客户端能力：可处理交互选择（HLS/BT/变体），放入握手 capabilities。 */
 export const CAPABILITY_CLIENT_SELECTIONS = 'client.selections';

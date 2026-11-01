@@ -18,7 +18,6 @@ use crate::model::{
     devices::{DeviceEntry, local_device_id, other_devices},
     file_conflict::FileConflictSet,
     group_tree::{GroupAggregate, GroupMeta},
-    share::ShareFacts,
 };
 
 /// 本机偏好：新建下载对话框上次使用的保存目录（设备本地，不进云同步）。
@@ -29,6 +28,9 @@ pub const REMEMBER_LAST_SAVE_DIR_PREF: &str = "download.remember_last_save_dir";
 pub const SAVE_DIR_HISTORY_PREF: &str = "download.save_dir_history";
 /// 本机偏好：是否记录并在新建下载中列出保存目录历史（缺省开启；设备本地）。
 pub const SAVE_DIR_HISTORY_ENABLED_PREF: &str = "download.save_dir_history_enabled";
+/// 本机偏好：按分类记住的手动保存目录（`{分类 id: 字符串数组}`，最新在前；设备本地，不进云
+/// 同步，与保存目录历史共用开关与清空）。
+pub const CATEGORY_SAVE_DIR_HISTORY_PREF: &str = "download.category_save_dir_history";
 /// 本机偏好：下载限速最近自定义值（KB/s 整数数组，最新在前；设备本地，不进云同步）。
 pub const SPEED_LIMIT_RECENT_PREF: &str = "download.speed_limit_recent_kbps";
 /// 本机偏好：上传限速最近自定义值（KB/s 整数数组，最新在前；设备本地，不进云同步）。
@@ -478,8 +480,6 @@ impl DownloadsController {
         if self.stale {
             self.task_runtime.clear();
         }
-        self.store
-            .replace_share(ShareFacts::from_state(&snapshot.share));
         self.rebuild_all();
         self.rebuild_remote();
     }
@@ -546,10 +546,6 @@ impl DownloadsController {
                 self.set_preferences(&preferences.values);
                 true
             }
-            AgentEvent::ShareChanged(state) => {
-                self.store.replace_share(ShareFacts::from_state(state))
-            }
-            AgentEvent::ShareProgress(progress) => self.store.apply_share_progress(progress),
             AgentEvent::Daemon(event) => self.apply_daemon_event(event),
             _ => false,
         }
@@ -2438,85 +2434,5 @@ mod tests {
         assert!(controller.store().remote().is_empty());
         assert!(controller.other_devices().is_empty());
         assert_eq!(controller.local_device_id(), None);
-    }
-
-    fn share_state(
-        path_kind: fluxdown_protocol::SharePathKind,
-    ) -> fluxdown_protocol::ShareStateDto {
-        let mut state = fluxdown_protocol::ShareStateDto {
-            available: true,
-            can_send: true,
-            ..fluxdown_protocol::ShareStateDto::default()
-        };
-        state.task_facts.insert(
-            "t1".into(),
-            fluxdown_protocol::ShareTaskFactsDto {
-                is_share_receive: true,
-                path_kind,
-                session_id: Some("s1".into()),
-                ..fluxdown_protocol::ShareTaskFactsDto::default()
-            },
-        );
-        state
-    }
-
-    #[test]
-    fn share_facts_follow_snapshot_changed_and_progress_events() {
-        use fluxdown_protocol::{SharePathKind, ShareProgressDto};
-        let mut controller = DownloadsController::new(Arc::new(NullPort));
-        assert!(!controller.store().share().available());
-
-        let snapshot = fluxdown_protocol::AgentSnapshot {
-            share: share_state(SharePathKind::Relay),
-            ..fluxdown_protocol::AgentSnapshot::default()
-        };
-        controller.replace_snapshot(&snapshot);
-        {
-            let share = controller.store().share();
-            assert!(share.available() && share.can_send());
-            assert_eq!(
-                share.task("t1").map(|facts| facts.path_kind),
-                Some(SharePathKind::Relay)
-            );
-        }
-
-        // 整体替换：内容相同不算变化（不触发表格重绘），内容变了才算。
-        assert!(
-            !controller.apply_event(&agent(AgentEvent::ShareChanged(share_state(
-                SharePathKind::Relay
-            ))))
-        );
-        assert!(
-            controller.apply_event(&agent(AgentEvent::ShareChanged(share_state(
-                SharePathKind::DirectLan
-            ))))
-        );
-
-        // 进度只刷新匹配会话的路径；路径没变的高频帧不重绘。
-        let progress = |session: &str, path_kind| {
-            agent(AgentEvent::ShareProgress(ShareProgressDto {
-                session_id: session.into(),
-                path_kind,
-                ..ShareProgressDto::default()
-            }))
-        };
-        assert!(!controller.apply_event(&progress("other", SharePathKind::Relay)));
-        assert!(!controller.apply_event(&progress("s1", SharePathKind::DirectLan)));
-        assert!(controller.apply_event(&progress("s1", SharePathKind::Relay)));
-        assert_eq!(
-            controller
-                .store()
-                .share()
-                .task("t1")
-                .map(|facts| facts.path_kind),
-            Some(SharePathKind::Relay)
-        );
-
-        // FluxMesh不可用：入口门控随之关闭。
-        controller.apply_event(&agent(AgentEvent::ShareChanged(
-            fluxdown_protocol::ShareStateDto::default(),
-        )));
-        assert!(!controller.store().share().available());
-        assert!(!controller.store().share().is_share_receive("t1"));
     }
 }

@@ -14,7 +14,7 @@ ZerxLabBot 翻译自动化（`i18n` 任务）翻译 `assets/i18n/tr.json` 时必
 
 ## 不翻译（原样保留）
 
-FluxDown、FluxMesh、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、aria2、yt-dlp、FFmpeg、HLS、DASH、M3U8、RSS、Webhook、Telegram、WebDAV、SMB、DHT、UPnP、uTP、PEX、HTTP、HTTPS、FTP、SOCKS5、URL、API、MCP、JSON、CLI、NAS、Docker、Windows、macOS、Linux、Android、iOS、Chrome、Edge、Firefox、Safari、GitHub、Torrent、Magnet（磁力链接写 `Magnet bağlantısı`）。
+FluxDown、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、aria2、yt-dlp、FFmpeg、HLS、DASH、M3U8、RSS、Webhook、Telegram、WebDAV、SMB、DHT、UPnP、uTP、PEX、HTTP、HTTPS、FTP、SOCKS5、URL、API、MCP、JSON、CLI、NAS、Docker、Windows、macOS、Linux、Android、iOS、Chrome、Edge、Firefox、Safari、GitHub、Torrent、Magnet（磁力链接写 `Magnet bağlantısı`）。
 
 ## 词汇对照
 

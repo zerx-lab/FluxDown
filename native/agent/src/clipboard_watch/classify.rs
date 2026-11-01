@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 
-use fluxdown_protocol::capture_link::{percent_decode, share_ref};
+use fluxdown_protocol::capture_link::percent_decode;
 use reqwest::Url;
 
 /// 内置监视扩展名（小写、不带点）。刻意不含 `ts`（TypeScript）、图片、txt、md、html。
@@ -113,10 +113,6 @@ impl WatchedExtensions {
 
 /// L0 判定一条候选链接。
 pub fn classify(link: &str, extensions: &WatchedExtensions) -> Verdict {
-    // FluxMesh分享链接（`https://fluxdown.com/s/<slug>` 无监视扩展名）原样接受，不走 URL 启发式。
-    if share_ref(link).is_some() {
-        return Verdict::Accept;
-    }
     let lower = link.to_ascii_lowercase();
     if lower.starts_with("magnet:") {
         return accept_if(lower.contains("xt=urn:btih:") || lower.contains("xt=urn:btmh:"));
@@ -310,26 +306,6 @@ mod tests {
         }
         for link in &fixture.probe {
             assert_eq!(classify(link, &extensions), Verdict::NeedsProbe, "{link}");
-        }
-    }
-
-    #[test]
-    fn share_links_are_accepted_without_watched_extension() {
-        use fluxdown_protocol::capture_link::normalize_capture_url;
-
-        let extensions = WatchedExtensions::default();
-        for link in [
-            "https://fluxdown.com/s/AbC-123_x",
-            "https://FluxDown.com/s/abc/",
-            "https://fluxdown.zerx.dev/s/abc?from=x",
-            "fluxdown://share/abc",
-        ] {
-            assert_eq!(classify(link, &extensions), Verdict::Accept, "{link}");
-            assert_eq!(normalize_capture_url(link), link, "{link}");
-        }
-        // 非官网主机或缺 slug 的同形链接仍按普通 URL 判定。
-        for link in ["https://example.com/s/abc", "https://fluxdown.com/s/"] {
-            assert_eq!(classify(link, &extensions), Verdict::Reject, "{link}");
         }
     }
 

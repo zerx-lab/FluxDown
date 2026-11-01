@@ -190,10 +190,6 @@ pub async fn start_embedded(
         cdn_task,
         bt_guard_task,
         notify_task,
-        #[cfg(feature = "share-p2p")]
-        share,
-        #[cfg(feature = "share-p2p")]
-        share_task,
     } = match start_cloud_services(
         // 宿主进程的环境不属于 agent：地址只取构建期注入值，缺省为本地默认。
         fluxcloud_base_url(None, option_env!("FLUXCLOUD_BASE_URL")),
@@ -233,8 +229,6 @@ pub async fn start_embedded(
             ),
         ),
     ];
-    #[cfg(feature = "share-p2p")]
-    tasks.push(("share", share_task));
 
     let link = enable_link.then(|| {
         crate::link::LinkService::new(crate::link::LinkServiceParts {
@@ -255,20 +249,11 @@ pub async fn start_embedded(
         ));
     }
 
-    #[cfg(feature = "share-p2p")]
-    let share_links: Option<Arc<dyn crate::share_link::ShareLinkSink>> = share
-        .clone()
-        .map(|service| service as Arc<dyn crate::share_link::ShareLinkSink>);
-    #[cfg(not(feature = "share-p2p"))]
-    let share_links: Option<Arc<dyn crate::share_link::ShareLinkSink>> = None;
-    #[cfg(feature = "share-p2p")]
-    if let Some(service) = &share {
-        lifecycle.set_before_quit(service.clone());
-    }
-    let capture = Arc::new(
-        crate::capture::CaptureService::new(daemon.clone(), events.clone(), shell.clone())
-            .with_share_links(share_links),
-    );
+    let capture = Arc::new(crate::capture::CaptureService::new(
+        daemon.clone(),
+        events.clone(),
+        shell.clone(),
+    ));
     // 兼容 API 不存在：开关恒关、令牌为空，诊断省略网关 / 兼容 API / 硬盘休眠检查。
     let api_switches = Arc::new(fluxdown_api::server::ApiRuntimeSwitches::new(
         false, false, false, false, false,
@@ -320,10 +305,6 @@ pub async fn start_embedded(
     .with_local_log_export();
     if let Some(link) = &link {
         gateway = gateway.with_link(link.clone());
-    }
-    #[cfg(feature = "share-p2p")]
-    {
-        gateway = gateway.with_share(share);
     }
     let service = Arc::new(gateway);
     tasks.push((

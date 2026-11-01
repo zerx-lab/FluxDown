@@ -42,26 +42,6 @@ impl fluxdown_ui_extensions::ExtensionsPort for AgentExtensionsPort {
     }
 }
 
-pub struct AgentSharePort {
-    client: Arc<AgentClient>,
-}
-
-impl AgentSharePort {
-    pub fn new(client: Arc<AgentClient>) -> Self {
-        Self { client }
-    }
-}
-
-impl fluxdown_ui_share::SharePort for AgentSharePort {
-    fn call(
-        &self,
-        method: &'static str,
-        params: serde_json::Value,
-    ) -> fluxdown_ui_share::PortFuture<serde_json::Value> {
-        self.client.call(method, Some(params))
-    }
-}
-
 /// 插件界面脚本的 `fluxdown.call`：方法名来自脚本（运行期字符串），白名单在 capability 内校验。
 pub struct AgentPluginUiPort {
     client: Arc<AgentClient>,

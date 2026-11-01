@@ -17,8 +17,8 @@ import {
   type BtGuardErrorKey,
   type BtGuardSelf,
 } from "@/lib/bt-guard";
-import { isRecord } from "@/lib/share-landing";
-import TurnstileWidget, { type TurnstileHandle } from "../share/TurnstileWidget";
+import { isRecord } from "@/lib/is-record";
+import TurnstileWidget, { type TurnstileHandle } from "./TurnstileWidget";
 
 export interface BtGuardLabels {
   check: {

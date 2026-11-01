@@ -52,18 +52,6 @@ export const legal = defineMessages({
           ],
         },
         {
-          id: "share",
-          title: "File Sharing (FluxMesh)",
-          body: "FluxMesh is used only when you share a completed download or receive a shared file. Files are transferred directly between devices over an encrypted peer-to-peer connection whenever possible, otherwise through FluxDown relay servers that cannot read the content. When you use it, we process:",
-          items: [
-            "<strong>Share records:</strong> for each share, the file names, sizes, content hashes (BLAKE3), the link, pickup code, expiry and claim count, plus the sharing device and account. Receivers can receive without an account; their device's random network ID, device name, IP address and its approximate location (country, region, city and ISP looked up on our servers) are recorded as access history for the share owner and for abuse handling.",
-            "<strong>Network address records:</strong> the random network ID of each device taking part in sharing and the network addresses it publishes (relay server and direct IP addresses) are stored on FluxDown's own address servers so peers can find each other. We do not use third-party discovery services.",
-            "<strong>Network and transfer diagnostics:</strong> the same diagnostics the app shows you on the Network Diagnostics and Transfer Diagnostics pages are also sent to FluxDown while sharing or receiving: NAT type, IPv4/IPv6 availability, public IP addresses and their approximate location, relay latencies, peer-to-peer connection counters, and per-transfer connection paths, round-trip times, throughput, packet loss and errors. When your device provides content to other devices through Swarm sharing, each such connection is a transfer too: in addition to the above, it includes the random network ID of the receiving device, the share concerned, and which contents you provided to it (file hashes, without file names or paths) with how many bytes and chunks of each were sent. Network snapshots are sent only when they change during sharing activity; transfer details are sent every few seconds while a transfer runs and once when it ends. Nothing is sent when you are not sharing or receiving, and no other download tasks, URLs or folders are included.",
-            "<strong>Swarm metering:</strong> for Swarm transfers, both the providing and the receiving device report per-peer byte counts (the random network ID of the other device and the number of bytes, without file names or paths). This data is used to cross-check and calculate Swarm boost usage and contribution, and is kept for the same period as the transfer session.",
-            "<strong>Retention:</strong> access history, network diagnostics and transfer details are deleted after a period set on our servers (30 days by default); the history of published network addresses after 90 days by default. When a share ends its pickup code is released immediately; the share record stays in the owner's share history.",
-          ],
-        },
-        {
           id: "bt-guard",
           title: "BT Leech Protection Evidence Reports",
           body: 'The BT leech protection feature can optionally report evidence about abusive BitTorrent peers to FluxDown so that a shared, signed block list can be built. <strong>It is off by default, and nothing is reported unless you are signed in and have explicitly turned on the evidence reporting switch.</strong> Detection itself runs only on your device. If you turn reporting on, we process:',
@@ -230,12 +218,10 @@ export const legal = defineMessages({
           items: [],
         },
         {
-          id: "fluxmesh-traffic",
-          title: "FluxMesh Traffic & Plans",
-          body: "These rules apply to the monthly allowances, traffic packs and plans that come with FluxCloud.",
+          id: "plans",
+          title: "Plans & Membership Cards",
+          body: "These rules apply to the plans that come with FluxCloud.",
           items: [
-            "Monthly allowances are granted per calendar month in Beijing time (UTC+8); whether unused allowance carries over is stated on each plan.",
-            "Traffic packs can be used until they expire. Expired packs are void, and packs already delivered are non-refundable.",
             "Membership cards are bought for a period and renewed manually; they never auto-renew and are never charged automatically. Renewing the same card extends it from its current end date. When a card expires you automatically return to your permanent plan's entitlements. Time that has already taken effect is non-refundable.",
             "For plans marked as entitlement-locked, published entitlements can only be increased, never reduced; the plan page states whether a plan is locked.",
             "Plans are for your own use. Reselling, sharing accounts or abuse (including bulk automated downloading) may result in restricted or revoked entitlements.",
@@ -360,18 +346,6 @@ export const legal = defineMessages({
             "<strong>云端推送（需主动开启，桌面端与服务器端）：</strong>开启后会发送任务事件（文件名、大小、状态、错误与队列名），用于投递邮件或 Telegram 通知。下载地址与保存目录只有在您分别开启对应选项时才会包含。事件保留 7 天。",
             "<strong>下载线路质量：</strong>登录期间，应用会上报下载服务器的连接测量数据（服务器主机名、IP 地址、连接耗时、吞吐量与是否成功），用于为 FluxDown 选择更快的线路。其中绝不包含链接路径、查询参数、文件名或令牌。",
             "<strong>套餐：</strong>如果您在桌面应用或网站上购买可选套餐，我们会在账户中保存订单记录（套餐、金额与状态）。移动应用不提供任何购买。",
-          ],
-        },
-        {
-          id: "share",
-          title: "文件分享（FluxMesh）",
-          body: "只有当您分享已完成的下载或接收他人分享的文件时才会使用 FluxMesh。文件尽量在设备之间通过加密的点对点连接直接传输，无法直连时经由 FluxDown 自建中继服务器转发，中继无法读取内容。使用 FluxMesh 时，我们会处理：",
-          items: [
-            "<strong>分享记录：</strong>每个分享的文件名、大小、内容哈希（BLAKE3）、链接、取件码、有效期与领取次数，以及分享所用的设备和账户。未登录也可以接收；接收方设备的随机网络 ID、设备名、IP 地址及其大致归属（由我们服务器查询的国家、省份、城市与运营商）会作为访问记录保存，供分享者查看和处理滥用。",
-            "<strong>网络地址记录：</strong>参与分享的设备的随机网络 ID 及其公布的网络地址（中继服务器与直连 IP 地址）保存在 FluxDown 自建的地址服务器上，用于让双方互相找到。我们不使用第三方发现服务。",
-            "<strong>网络与传输诊断：</strong>应用在「网络诊断」「传输诊断」页面向您展示的同一份诊断数据，在分享或接收期间也会发送给 FluxDown：NAT 类型、IPv4 / IPv6 可用性、公网 IP 及其大致归属、各中继延迟、点对点连接计数，以及每次传输的连接路径、往返时延、速率、丢包与错误。当您的设备通过「共享」向其他设备提供内容时，每条连接同样是一次传输：除上述数据外，还包括对端设备的随机网络 ID、所属分享，以及您向该设备提供了哪些内容（文件哈希，不含文件名与路径）、各发送了多少字节与数据块。网络快照只在分享活动期间发生变化时发送；传输详情在传输进行中每隔几秒发送一次、结束时发送一次。不分享也不接收时不发送任何内容，也不包含其他下载任务、链接或目录。",
-            "<strong>共享计量：</strong>通过「共享」传输时，收发双方各自上报逐对端的字节数（对端设备的随机网络 ID 与字节数，不含文件名与路径）。这些数据用于核对并计算共享加速额度的消耗与贡献，保存期限与传输会话一致。",
-            "<strong>保存期限：</strong>访问记录、网络诊断与传输详情按服务器设定的期限（默认 30 天）后删除；公布网络地址的历史默认保留 90 天。分享结束后取件码立即释放，分享记录保留在分享者的分享历史中。",
           ],
         },
         {
@@ -540,12 +514,10 @@ export const legal = defineMessages({
           items: [],
         },
         {
-          id: "fluxmesh-traffic",
-          title: "FluxMesh 流量与套餐",
-          body: "以下规则适用于 FluxCloud 的每月赠送额度、流量包与套餐。",
+          id: "plans",
+          title: "套餐与会员卡",
+          body: "以下规则适用于 FluxCloud 的套餐。",
           items: [
-            "每月赠送额度按北京时间自然月发放，可结转的以套餐说明为准。",
-            "流量包在有效期内可用，过期作废，已发放的不退款。",
             "会员卡按周期购买、手动续费，不会自动续费或自动扣款；续费同一张卡时从当前到期时间顺延。到期后自动回到永久套餐的权益。已生效的时长不退款。",
             "开启「权益锁定」的套餐，已公示权益只增不减；是否锁定以套餐页标注为准。",
             "套餐限本人使用，转售、共享账号或滥用（含批量自动化下载）可限制或回收权益。",

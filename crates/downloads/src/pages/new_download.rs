@@ -15,7 +15,7 @@ use probe::LinkProbe;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -24,9 +24,9 @@ use std::{
 use crate::{
     components::threads_risk::threads_risk_callout,
     controller::{
-        DownloadsCommand, DownloadsPort, DownloadsResult, LAST_DOWNLOAD_TARGET_PREF,
-        LAST_SAVE_DIR_PREF, REMEMBER_LAST_SAVE_DIR_PREF, SAVE_DIR_HISTORY_ENABLED_PREF,
-        SAVE_DIR_HISTORY_PREF,
+        CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
+        LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF, REMEMBER_LAST_SAVE_DIR_PREF,
+        SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF,
     },
     model::{
         devices::{DeviceEntry, DeviceKind, DispatchTarget, other_devices, resolve_target},
@@ -35,13 +35,15 @@ use crate::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
             ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
             UrlEntry, append_entries, build_requests, capture_entry, checksum_spec,
-            compose_request, custom_segments, detect_ua_preset, is_pickup_code, manual_proxy_url,
-            parse_entries, parse_input, share_note, ua_preset_keys, ua_preset_value,
+            compose_request, custom_segments, detect_ua_preset, manual_proxy_url, parse_entries,
+            parse_input, ua_preset_keys, ua_preset_value,
         },
-        save_dir_category::{CategoryMode, NewDownloadCategory, category_options},
-        save_dir_history::{read_save_dir_history, record_save_dir, save_dir_choices},
+        save_dir_category::{CategoryMode, NewDownloadCategory, category_options, dir_untouched},
+        save_dir_history::{
+            CategorySaveDirHistory, read_category_save_dir_history, read_save_dir_history,
+            record_category_save_dir, record_save_dir, save_dir_choices,
+        },
     },
-    pages::downloads::IdOpener,
     strings::NewDownloadStrings,
     submission::{
         CapturedTask, NewDownloadSubmission, RemoteItem, RemoteSubmission, TorrentFileOptions,
@@ -101,6 +103,8 @@ pub struct NewDownloadContext {
     pub save_dir: String,
     /// 保存目录历史（最新在前）；`None` = 偏好关闭，不列出也不记录。
     pub save_dir_history: Option<Vec<String>>,
+    /// 按分类记住的手动保存目录（与历史同一开关）；`None` = 偏好关闭，不列出也不记录。
+    pub category_save_dir_history: Option<CategorySaveDirHistory>,
     /// 「开始下载」默认落入的队列。
     pub queue_id: String,
     /// 线程数初值；0 = 自动。
@@ -121,8 +125,6 @@ pub struct NewDownloadContext {
     pub targets: Vec<DeviceEntry>,
     /// 「下载到」初值：设备本地偏好里上次的目标（目标已不存在则为本机）。
     pub target: DispatchTarget,
-    /// 云端取件码位数（0 = 未知，按默认 6 位）：输入里整行恰为该位数的数字识别为取件码。
-    pub pickup_code_length: u8,
 }
 
 /// 从 agent 快照投影「新建下载」环境（无主窗口时的外部捕获确认、菜单入口共用规则）。
@@ -140,7 +142,6 @@ pub fn new_download_context_from_snapshot(snapshot: &AgentSnapshot) -> NewDownlo
             snapshot.cloud_connection.state == fluxdown_protocol::CloudConnectionState::Connected,
             true,
         ),
-        snapshot.share.policy_summary.pickup_code_length,
     )
 }
 
@@ -166,7 +167,6 @@ pub(crate) fn build_new_download_context(
     queues: &[QueueDto],
     selected_queue: Option<&str>,
     targets: Vec<DeviceEntry>,
-    pickup_code_length: u8,
 ) -> NewDownloadContext {
     let config_str = |key: &str| config.get(key).map_or("", |value| value.trim());
     let remember = preferences
@@ -198,11 +198,14 @@ pub(crate) fn build_new_download_context(
     } else {
         config_str("default_segments").parse::<i32>().unwrap_or(0)
     };
-    let save_dir_history = preferences
+    let history_enabled = preferences
         .get(SAVE_DIR_HISTORY_ENABLED_PREF)
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true)
-        .then(|| read_save_dir_history(preferences.get(SAVE_DIR_HISTORY_PREF)));
+        .unwrap_or(true);
+    let save_dir_history =
+        history_enabled.then(|| read_save_dir_history(preferences.get(SAVE_DIR_HISTORY_PREF)));
+    let category_save_dir_history = history_enabled
+        .then(|| read_category_save_dir_history(preferences.get(CATEGORY_SAVE_DIR_HISTORY_PREF)));
     let target = preferences
         .get(LAST_DOWNLOAD_TARGET_PREF)
         .and_then(serde_json::Value::as_str)
@@ -216,6 +219,7 @@ pub(crate) fn build_new_download_context(
     NewDownloadContext {
         save_dir: save_dir.to_owned(),
         save_dir_history,
+        category_save_dir_history,
         queue_id: queue_id.to_owned(),
         segments,
         queues: queues
@@ -232,7 +236,6 @@ pub(crate) fn build_new_download_context(
         initial_urls: Vec::new(),
         targets,
         target,
-        pickup_code_length,
     }
 }
 
@@ -282,12 +285,6 @@ pub struct NewDownloadView {
     on_submit: NewDownloadSubmit,
     urls: Entity<TextareaState>,
     entries: Vec<UrlEntry>,
-    /// 输入里的FluxMesh分享链接（不是下载链接：交给接收确认流程）。
-    share_links: Vec<String>,
-    /// 本表单已交给接收流程的分享链接：不重复交出。
-    share_handed: HashSet<String>,
-    /// 宿主提供的接收入口；`None` = 本构建 / 本窗口不能接收FluxMesh。
-    open_share_receive: Option<IdOpener>,
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
     captures: Vec<PendingCaptureDto>,
     save_dir: Entity<InputState>,
@@ -324,8 +321,9 @@ pub struct NewDownloadView {
     save_dir_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// 保存目录的分类模式（默认自动）；仅 `context.category_route` 存在时有意义。
     category_mode: CategoryMode,
-    /// 自动模式上一次写入目录框的值：目录框仍等于它说明用户没手动改过，可继续跟随。
-    category_auto_dir: Option<String>,
+    /// 表单上一次写入目录框的值（自动跟随 / 切换分类模式 / 捕获带来的系统目录）：目录框仍
+    /// 等于它说明用户没手动改过——自动模式据此继续跟随、提交时才挂分类路由。
+    category_written_dir: Option<String>,
     /// 自动模式按当前输入预测出的分类目录（触发器显示命中分类）；变化时同步更新，渲染只读。
     category_predicted: Option<String>,
 }
@@ -407,9 +405,6 @@ impl NewDownloadView {
             on_submit,
             urls,
             entries: Vec::new(),
-            share_links: Vec::new(),
-            share_handed: HashSet::new(),
-            open_share_receive: None,
             captures: Vec::new(),
             save_dir,
             custom_threads,
@@ -431,7 +426,7 @@ impl NewDownloadView {
             save_dir_menu_open: false,
             save_dir_bounds: Rc::default(),
             category_mode: CategoryMode::Auto,
-            category_auto_dir: None,
+            category_written_dir: None,
             category_predicted: None,
         };
         this.refresh_entries(window, cx);
@@ -566,13 +561,8 @@ impl NewDownloadView {
     }
 
     fn refresh_entries(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let parsed = parse_input(
-            &self.urls.read(cx).value(),
-            false,
-            self.context.pickup_code_length,
-        );
+        let parsed = parse_input(&self.urls.read(cx).value(), false);
         self.entries = parsed.entries;
-        self.share_links = parsed.share_links;
         self.sync_site_auth(window, cx);
         self.sync_hints(parsed.hints, window, cx);
         self.sync_probe(window, cx);
@@ -607,14 +597,15 @@ impl NewDownloadView {
                 .find(|save_dir| !save_dir.is_empty())
         {
             let save_dir = save_dir.to_owned();
-            // 捕获方带来的分类目录视为自动写入值：之后仍可跟随文件名变化。
+            // 捕获方带来的系统目录（初始目录 / 分类目录）视为表单写入值：之后仍可跟随文件名
+            // 变化、提交照常路由；其他目录按用户选择处理。
             if self
                 .context
                 .category_route
                 .as_ref()
-                .is_some_and(|route| route.is_category_dir(&save_dir))
+                .is_some_and(|route| route.follows(&save_dir, &self.context.save_dir))
             {
-                self.category_auto_dir = Some(save_dir.clone());
+                self.category_written_dir = Some(save_dir.clone());
             }
             self.save_dir
                 .update(cx, |input, cx| input.set_value(save_dir, window, cx));
@@ -818,72 +809,6 @@ impl NewDownloadView {
         }
     }
 
-    /// 注入「打开接收确认」入口（参数为分享链接原文）；窗口由 app 创建，所以经此注入，
-    /// 而不是挤进 [`NewDownloadContext`]（它是可比较的纯数据）。
-    pub fn set_open_share_receive(&mut self, opener: Option<IdOpener>, cx: &mut Context<Self>) {
-        self.open_share_receive = opener;
-        cx.notify();
-    }
-
-    /// 宿主当前是否提供接收入口。
-    pub fn has_share_receive(&self) -> bool {
-        self.open_share_receive.is_some()
-    }
-
-    /// 尚未交给接收流程的分享链接（输入顺序）。
-    fn pending_share_links(&self) -> impl Iterator<Item = &String> {
-        self.share_links
-            .iter()
-            .filter(|link| !self.share_handed.contains(*link))
-    }
-
-    /// 输入里只有分享链接、没有普通下载链接：提交按钮变为「接收」。
-    fn share_only(&self) -> bool {
-        self.entries.is_empty() && !self.share_links.is_empty()
-    }
-
-    /// 「接收」可点：仅分享链接、宿主有接收入口、有尚未交出的链接。
-    fn can_receive_share(&self) -> bool {
-        self.share_only()
-            && self.open_share_receive.is_some()
-            && !self.picking
-            && !self.preview_gate.is_active()
-            && self.manifest.is_none()
-            && self.pending_share_links().next().is_some()
-    }
-
-    /// 把第一条未交出的分享链接交给接收确认（一次只处理一条）；没有可交的链接或宿主没有
-    /// 接收入口时返回 `false`。
-    fn hand_off_share_link(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(open) = self.open_share_receive.clone() else {
-            return false;
-        };
-        let Some(link) = self.pending_share_links().next().cloned() else {
-            return false;
-        };
-        self.share_handed.insert(link.clone());
-        open(link, window, cx);
-        true
-    }
-
-    /// 链接框下的分享链接提示：`(文案, 是否错误)`。宿主没有接收入口时给出「不可用」说明
-    /// （分享链接既不会被当成下载链接，也无处可接收）。
-    fn share_note_text(&self) -> Option<(SharedString, bool)> {
-        if self.share_links.is_empty() {
-            return None;
-        }
-        if self.open_share_receive.is_none() {
-            return Some((self.strings.share_unavailable_note.clone(), true));
-        }
-        let pending = self.pending_share_links().count();
-        let pending_codes = self
-            .pending_share_links()
-            .filter(|item| is_pickup_code(item))
-            .count();
-        share_note(self.entries.len(), pending, pending_codes)
-            .map(|note| (self.strings.format_share_note(note), false))
-    }
-
     fn target_label(&self, entry: &DeviceEntry) -> SharedString {
         let status = match entry.online {
             Some(true) => &self.strings.device_online,
@@ -957,6 +882,7 @@ impl NewDownloadView {
         let NewDownloadContext {
             save_dir,
             save_dir_history,
+            category_save_dir_history,
             queue_id,
             segments,
             queues,
@@ -964,15 +890,23 @@ impl NewDownloadView {
             category_options,
             custom_categories,
             manual_proxy_url,
-            pickup_code_length,
             ..
         } = context;
+        let current = self.save_dir.read(cx).value().to_string();
         if save_dir != self.context.save_dir
-            && *self.save_dir.read(cx).value() == *self.context.save_dir
+            && current == self.context.save_dir
+            && dir_untouched(
+                &current,
+                &self.context.save_dir,
+                self.category_written_dir.as_deref(),
+            )
         {
             let value = save_dir.clone();
             self.save_dir
                 .update(cx, |input, cx| input.set_value(value, window, cx));
+            if self.category_written_dir.is_some() {
+                self.category_written_dir = Some(save_dir.trim().to_owned());
+            }
         }
         let previous_segments = self.context.segments;
         if segments != previous_segments
@@ -989,6 +923,7 @@ impl NewDownloadView {
         }
         self.context.save_dir = save_dir;
         self.context.save_dir_history = save_dir_history;
+        self.context.category_save_dir_history = category_save_dir_history;
         self.context.queue_id = queue_id;
         self.context.segments = segments;
         self.context.queues = queues;
@@ -1005,25 +940,41 @@ impl NewDownloadView {
             self.category_mode = CategoryMode::Auto;
         }
         self.context.manual_proxy_url = manual_proxy_url;
-        if self.context.pickup_code_length != pickup_code_length {
-            self.context.pickup_code_length = pickup_code_length;
-            self.refresh_entries(window, cx);
-        }
         self.sync_category(window, cx);
         cx.notify();
     }
 
-    /// 把一次本机提交的保存目录记入历史（偏好关闭时不记）；尽力而为，失败只做诊断记录。
+    /// 把一次本机提交的保存目录记入历史（偏好关闭时不记）；目录是用户手动选的且表单当前
+    /// 对应某个分类时，另记入该分类的目录记忆。尽力而为，失败只做诊断记录。
     fn record_save_dir_history(&mut self, dir: &str, cx: &mut Context<Self>) {
-        let Some(history) = self.context.save_dir_history.as_mut() else {
+        if let Some(history) = self.context.save_dir_history.as_mut()
+            && let Some(next) = record_save_dir(history, dir)
+        {
+            let value = serde_json::Value::from(next.clone());
+            *history = next;
+            self.write_local_preference(SAVE_DIR_HISTORY_PREF, value, cx);
+        }
+        if self.save_dir_untouched(cx) {
+            return;
+        }
+        let Some(category) = self.memory_category().map(str::to_owned) else {
             return;
         };
-        let Some(next) = record_save_dir(history, dir) else {
+        let Some(history) = self.context.category_save_dir_history.as_mut() else {
             return;
         };
-        let value = serde_json::Value::from(next.clone());
+        let Some(next) = record_category_save_dir(history, &category, dir) else {
+            return;
+        };
+        let value = match serde_json::to_value(&next) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("category save dir history encode failed: {error}");
+                return;
+            }
+        };
         *history = next;
-        self.write_local_preference(SAVE_DIR_HISTORY_PREF, value, cx);
+        self.write_local_preference(CATEGORY_SAVE_DIR_HISTORY_PREF, value, cx);
     }
 
     /// 设备本地偏好写入：尽力而为，失败只做诊断记录。
@@ -1106,22 +1057,9 @@ impl NewDownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 只有分享链接：提交 = 打开接收确认；链接交完后关窗，还有剩余则留在表单里继续。
-        if self.share_only() {
-            if self.can_receive_share() && self.hand_off_share_link(window, cx) {
-                if self.pending_share_links().next().is_none() {
-                    window.remove_window();
-                } else {
-                    cx.notify();
-                }
-            }
-            return;
-        }
         if !self.can_submit(cx) {
             return;
         }
-        // 混合输入：分享链接先交给接收确认，普通链接照常提交。
-        self.hand_off_share_link(window, cx);
         // 远端目标没有队列 / 稍后下载：只有立即开始一条路径。
         if let Some(entry) = self.target_entry().cloned() {
             if !later && queue_override.is_none() {
@@ -1170,11 +1108,12 @@ impl NewDownloadView {
                 common: Box::new(common),
                 items: tasks,
                 captures,
+                // 自动模式且目录框未被手改才按分类路由；用户改过的目录原样使用。
                 category_route: self
                     .context
                     .category_route
                     .clone()
-                    .filter(|_| self.category_mode == CategoryMode::Auto),
+                    .filter(|_| self.routes_by_category(cx)),
                 offered_save_dir,
             },
             window,
@@ -1629,16 +1568,8 @@ impl NewDownloadView {
                     }),
             )
             .child(url_box)
-            .when(
-                has_text && count == 0 && self.share_links.is_empty(),
-                |this| this.child(field_error(self.strings.no_valid_url.clone(), cx)),
-            )
-            .when_some(self.share_note_text(), |this, (text, is_error)| {
-                this.child(if is_error {
-                    field_error(text, cx).into_any_element()
-                } else {
-                    field_hint(text, cx).into_any_element()
-                })
+            .when(has_text && count == 0, |this| {
+                this.child(field_error(self.strings.no_valid_url.clone(), cx))
             })
             .children(self.render_probe_status(cx))
             .when(!self.captures.is_empty() && !self.is_remote(), |this| {
@@ -1769,12 +1700,17 @@ impl NewDownloadView {
         )
     }
 
-    /// 保存目录历史（偏好关闭时为空）中除当前输入以外的目录。
+    /// 下拉候选（偏好关闭时为空）：先列当前分类记住的目录，再列全局历史，排除当前输入。
     fn save_dir_choices(&self, cx: &App) -> Vec<SharedString> {
         let Some(history) = self.context.save_dir_history.as_deref() else {
             return Vec::new();
         };
-        save_dir_choices(history, &self.save_dir.read(cx).value())
+        let category = self
+            .memory_category()
+            .zip(self.context.category_save_dir_history.as_ref())
+            .and_then(|(category, memory)| memory.get(category))
+            .map_or(&[][..], Vec::as_slice);
+        save_dir_choices(category, history, &self.save_dir.read(cx).value())
             .into_iter()
             .map(|dir| SharedString::from(dir.to_owned()))
             .collect()
@@ -2242,7 +2178,7 @@ impl NewDownloadView {
     fn render_footer(&self, cx: &mut Context<Self>) -> Div {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
-        let enabled = self.can_submit(cx) || self.can_receive_share();
+        let enabled = self.can_submit(cx);
         let later_queue = self.queue_label(fluxdown_protocol::LATER_QUEUE_ID);
         let start_queue = self.queue_label(&self.context.queue_id);
         // 分体按钮：两半统一控件高度（`Size::Size` 让右侧箭头半成为 `density.control` 见方，
@@ -2265,20 +2201,7 @@ impl NewDownloadView {
                     .control(cx)
                     .on_click(|_, window, _| window.remove_window()),
             )
-            .children(if self.share_only() {
-                // 只有分享链接：单个「接收」按钮，不走队列 / 稍后下载。
-                vec![
-                    Button::new("new-download-receive-share")
-                        .primary()
-                        .label(self.strings.share_receive.clone())
-                        .control(cx)
-                        .disabled(!enabled)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.submit(false, None, window, cx);
-                        }))
-                        .into_any_element(),
-                ]
-            } else if self.is_remote() {
+            .children(if self.is_remote() {
                 // 下发只有「立即开始」：没有队列，也没有稍后下载。
                 vec![
                     Button::new("new-download-start-remote")

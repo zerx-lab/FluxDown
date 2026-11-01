@@ -102,7 +102,7 @@ pub enum ViewEffect {
 }
 
 /// 插件可跳转的内置主界面页面（与 GPUI 活动栏路由 id、Web 活动栏条目 id 一致）。
-pub const NAV_BUILTIN_TARGETS: [&str; 4] = ["downloads", "rss", "webhooks", "share"];
+pub const NAV_BUILTIN_TARGETS: [&str; 3] = ["downloads", "rss", "webhooks"];
 
 /// `PluginViewClosed.reason`：插件经 `ctx.close()` 请求关闭承载该会话的容器。
 pub const VIEW_CLOSE_REASON_REQUESTED: &str = "requested";

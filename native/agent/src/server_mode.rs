@@ -298,9 +298,6 @@ pub fn run_blocking(host: crate::shell::ShellHost) -> AgentResult {
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
     );
     let subscriber = tracing_subscriber::registry().with(fmt_layer);
-    // iroh / FluxMesh tracing 另走内存环形缓冲（诊断页）。
-    #[cfg(feature = "share-p2p")]
-    let subscriber = subscriber.with(crate::share::logs::layer());
     if let Err(error) = subscriber.try_init() {
         // 嵌入式宿主可能已经设置订阅者；保留它，同时让 stderr 可观察未安装的原因。
         tracing::warn!(error = %error, "server tracing subscriber was not installed");

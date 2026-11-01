@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { CustomCategoryDto } from './rpc'
-import { autoFollowDir, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeFromPreference, routeSaveDir, wildcardMatches } from './categoryRoute'
+import { autoFollowDir, dirUntouched, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeFromPreference, routeSaveDir, wildcardMatches } from './categoryRoute'
 import type { CategoryRouteDto } from './rpc'
 
 declare const Bun: { file(path: URL): { json(): Promise<unknown> } }
@@ -107,11 +107,23 @@ describe('wildcardMatches / url 规则', () => {
 })
 
 describe('auto follow / mode', () => {
-  test('空、等于 offered、等于上次自动写入才跟随', () => {
+  test('空、等于程序最近写入值才跟随；从未写入时等于 offered', () => {
     expect(autoFollowDir('', '/d', null, '/v')).toBe('/v')
     expect(autoFollowDir(' /d ', '/d', null, '/v')).toBe('/v')
     expect(autoFollowDir('/v', '/d', '/v', null)).toBe('/d')
     expect(autoFollowDir('/custom', '/d', '/v', '/p')).toBeNull()
+  })
+
+  test('回归：自动命中分类目录后用户改回 offered，不被覆盖且提交不路由', () => {
+    // 自动写入 /v 后，用户手改回默认目录 /d：lastWritten=/v，不再视为未手改。
+    expect(dirUntouched('/d', '/d', '/v')).toBe(false)
+    expect(autoFollowDir('/d', '/d', '/v', '/p')).toBeNull()
+    // 用户改成另一个分类目录同理。
+    expect(dirUntouched('/p', '/d', '/v')).toBe(false)
+    // 未手改：等于 lastWritten 或为空。
+    expect(dirUntouched(' /v ', '/d', '/v')).toBe(true)
+    expect(dirUntouched('  ', '/d', '/v')).toBe(true)
+    expect(dirUntouched('/d', ' /d ', null)).toBe(true)
   })
 
   test('可选分类过滤与命中', () => {

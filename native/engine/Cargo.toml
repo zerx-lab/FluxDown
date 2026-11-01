@@ -65,10 +65,7 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32
 winreg = "0.55"
 
 [target."cfg(not(windows))".dependencies]
-# 固定 0.2.189（全工作区经此统一）：0.2.190 起 libc 把 Apple 路由 / in6 等符号收窄到仅 macOS，
-# FluxMesh依赖链 iroh → netwatch 0.19 / netdev 0.46 在 iOS 目标上编译失败（n0-computer/net-tools#261、
-# shellrow/netdev#192 未修），full flavor 的 build-core.sh 与 ios-sideload 打包随之失败。
-# 上游修复发布后放开；放开前跑 CI `ios-core`（或 cargo check -p fluxdown_mobile --target aarch64-apple-ios）。
+# 固定 0.2.189（全工作区经此统一）：放开前跑 CI `ios-core`（或 cargo check -p fluxdown_mobile --target aarch64-apple-ios）。
 libc = "=0.2.189"
 librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
 # native roots 保留 Linux/macOS 的本地 CA；bundled WebPKI roots 为 Android/iOS

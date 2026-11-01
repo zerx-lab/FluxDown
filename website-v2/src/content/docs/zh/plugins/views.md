@@ -187,7 +187,7 @@ flux.ui.view(id: string, def: {
 | `locale` | 会话打开时客户端的界面语言（如 `zh-CN`、`en`）；客户端未提供时为空字符串。用户之后切换语言不会更新它。 |
 | `refresh()` | 请求重新渲染该会话。把 `ctx` 保存起来（例如放进 `state`），就能在定时器、命令或事件处理函数里触发刷新。 |
 | `close()` | 关闭承载该视图的容器并结束会话：登录对话框（`auth`）、设置对话框（`settings`）或独立窗口。嵌入页面的视图（活动栏页、任务详情标签页）没有容器，改为显示「视图会话已结束」和**重新打开**按钮。重复调用不做任何事。可以在 `init` 里调用（例如用户已经登录）：客户端显示视图后立即关闭。 |
-| `navigate(target)` | 返回 Promise。让主窗口到前台并切换到某个页面。`target` 为 `"downloads"`、`"rss"`、`"webhooks"`、`"share"`，或用 `{ view: "<id>" }` 指向本插件的某个 `activity` 视图。未知目标会以 `navigate: unknown target …` reject；`{ view }` 不是本插件的 `activity` 视图时以 `navigate: view '<id>' is not an activity view of this plugin` reject；在 `close()` 之后调用会以 `navigate: the view has been closed; call navigate() before close()` reject。可以在 `init` 里调用。目标页面在该客户端不可用（例如 Web 端无法显示仅桌面实现的视图）时，客户端忽略该请求并记录警告日志。只影响打开该会话的那个客户端。 |
+| `navigate(target)` | 返回 Promise。让主窗口到前台并切换到某个页面。`target` 为 `"downloads"`、`"rss"`、`"webhooks"`，或用 `{ view: "<id>" }` 指向本插件的某个 `activity` 视图。未知目标会以 `navigate: unknown target …` reject；`{ view }` 不是本插件的 `activity` 视图时以 `navigate: view '<id>' is not an activity view of this plugin` reject；在 `close()` 之后调用会以 `navigate: the view has been closed; call navigate() before close()` reject。可以在 `init` 里调用。目标页面在该客户端不可用（例如 Web 端无法显示仅桌面实现的视图）时，客户端忽略该请求并记录警告日志。只影响打开该会话的那个客户端。 |
 
 `ViewContext`、`ViewEvent`、`ViewDefinition` 这些 TypeScript 类型由 `fluxdown-plugin-sdk` 导出（见 [SDK 参考](/docs/zh/plugins/sdk/)）。
 

@@ -1116,7 +1116,7 @@ impl PluginManager {
         self.check_view_session(identity, session)?;
         let route = match &target {
             serde_json::Value::String(s)
-                if ["downloads", "rss", "webhooks", "share"].contains(&s.as_str()) =>
+                if ["downloads", "rss", "webhooks"].contains(&s.as_str()) =>
             {
                 s.clone()
             }

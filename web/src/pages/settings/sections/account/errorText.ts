@@ -45,28 +45,6 @@ export const REASON_KEYS: Partial<Record<ErrorReason, string>> = {
   peerOffline: 'errReasonPeerOffline',
   peerOutdated: 'errReasonPeerOutdated',
   linkUnavailable: 'errReasonLinkUnavailable',
-  shareUnavailable: 'errReasonShareUnavailable',
-  shareNotFound: 'errReasonShareNotFound',
-  shareExpired: 'errReasonShareExpired',
-  shareStopped: 'errReasonShareStopped',
-  shareCodeInvalid: 'errReasonShareCodeInvalid',
-  shareRateLimited: 'errReasonShareRateLimited',
-  shareTurnstileRequired: 'errReasonShareTurnstileRequired',
-  shareFileChanged: 'errReasonShareFileChanged',
-  shareSenderOffline: 'errReasonShareSenderOffline',
-  shareTaskNotShareable: 'errReasonShareTaskNotShareable',
-  shareBridgeUnavailable: 'errReasonShareBridgeUnavailable',
-  shareQuotaExceeded: 'errReasonShareQuotaExceeded',
-  shareCloudNotReady: 'errReasonShareCloudNotReady',
-  shareTrafficExhausted: 'errReasonShareTrafficExhausted',
-  shareCloudUnavailable: 'errReasonShareCloudUnavailable',
-  shareOwnShare: 'errReasonShareOwnShare',
-  shareSourceMissing: 'errReasonShareSourceMissing',
-  shareSwarmLocked: 'errReasonShareSwarmLocked',
-  shareSwarmQuotaExhausted: 'errReasonShareSwarmQuotaExhausted',
-  shareSwarmLoginRequired: 'errReasonShareSwarmLoginRequired',
-  shareStrikeLimited: 'errReasonShareStrikeLimited',
-  shareAppealExists: 'errReasonShareAppealExists',
   subscriptionConflict: 'errReasonSubscriptionConflict',
   paymentDisabled: 'accountPlanErrorPaymentDisabled',
   paymentGatewayFailed: 'accountPlanErrorGateway',
@@ -111,18 +89,4 @@ export function accountErrorKey(error: unknown, context: AccountErrorContext = '
   if (context === 'pairing' && code === 'invalidArgument') return 'localPairingAddressInvalid'
   if ((context === 'login' || context === 'register') && code === 'invalidArgument') return 'accountErrorValidation'
   return codeKey(error)
-}
-
-/** 带插值参数的错误文案：`shareStrikeLimited` 把 `error.data.field`（RFC 3339 解除时刻）本地格式化填入 `{time}`，缺失 / 非法时降级为空串。 */
-export function accountErrorText(
-  t: (key: string, params?: Record<string, string | number>) => string,
-  error: unknown,
-  context: AccountErrorContext = 'generic',
-): string {
-  const key = accountErrorKey(error, context)
-  if (error instanceof RpcError && error.reason === 'shareStrikeLimited') {
-    const ms = Date.parse(error.data?.field ?? '')
-    return t(key, { time: Number.isFinite(ms) ? new Date(ms).toLocaleString() : '' })
-  }
-  return t(key)
 }

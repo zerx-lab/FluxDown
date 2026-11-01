@@ -13,7 +13,7 @@ const COUNTRY: Record<string, string> = {
 };
 const signatures: string[] = [];
 const PASS_SECRET = "pass-secret";
-// 与 share-proxy.test.ts / download-pass.test.ts 共用同一进程的模块表：bun 的 mock.module 首次注册后导出名集合即固定，此处必须含全部 astro:env/server 导出。
+// 与 bt-guard-proxy.test.ts / download-pass.test.ts 共用同一进程的模块表：bun 的 mock.module 首次注册后导出名集合即固定，此处必须含全部 astro:env/server 导出。
 mock.module("astro:env/server", () => ({
   GITHUB_TOKEN: "", GITHUB_REPO: "owner/repo", FLUXCLOUD_API_BASE: "", DOWNLOAD_PASS_SECRET: PASS_SECRET,
 }));

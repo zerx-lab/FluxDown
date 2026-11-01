@@ -84,8 +84,6 @@ pub struct GatewayService {
     /// 嵌入宿主：`exportLogs` 的目标路径由同进程 App 给出（应用沙盒内），server 模式下仍放行。
     local_log_export: bool,
     link: Option<Arc<LinkService>>,
-    #[cfg(feature = "share-p2p")]
-    share: Option<Arc<crate::share::ShareService>>,
     /// 访问密钥被改时递增：以旧密钥认证的 `/rpc` 会话据此重新校验，失效即断开。
     access_key_epoch: tokio::sync::watch::Sender<u64>,
     gateway_patch_lock: tokio::sync::Mutex<()>,
@@ -153,8 +151,6 @@ impl GatewayService {
             server_mode: false,
             local_log_export: false,
             link: None,
-            #[cfg(feature = "share-p2p")]
-            share: None,
             access_key_epoch: tokio::sync::watch::Sender::new(0),
             gateway_patch_lock: tokio::sync::Mutex::new(()),
             listener_control: restart::GatewayControl::new(),
@@ -185,47 +181,6 @@ impl GatewayService {
             self.hello.capabilities.push(capability);
         }
         self
-    }
-
-    /// 装配FluxMesh服务（`agent.share.*`）。只有服务存在时才下发 `agent.share` 能力。
-    #[cfg(feature = "share-p2p")]
-    #[must_use]
-    pub fn with_share(mut self, share: Option<Arc<crate::share::ShareService>>) -> Self {
-        if share.is_some() {
-            let capability = method::CAPABILITY_AGENT_SHARE.to_owned();
-            if !self.hello.capabilities.contains(&capability) {
-                self.hello.capabilities.push(capability);
-            }
-        }
-        self.share = share;
-        self
-    }
-
-    #[cfg(feature = "share-p2p")]
-    async fn share_rpc(
-        &self,
-        method_name: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, RpcErrorData> {
-        match &self.share {
-            Some(share) => share.rpc(method_name, params).await,
-            None => Err(Self::share_unavailable()),
-        }
-    }
-
-    /// 未编入FluxMesh：明确报不可用，不做假成功。
-    #[cfg(not(feature = "share-p2p"))]
-    async fn share_rpc(
-        &self,
-        _method_name: &str,
-        _params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, RpcErrorData> {
-        Err(Self::share_unavailable())
-    }
-
-    fn share_unavailable() -> RpcErrorData {
-        RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
-            .with_reason(fluxdown_protocol::ErrorReason::ShareUnavailable)
     }
 
     /// 构造 RPC 响应，并把连接级上下文（「本机来源」判定、会话凭据）透传给 [`Self::dispatch_with`]。
@@ -655,31 +610,6 @@ impl GatewayService {
                 // 互联服务未装配（如精简测试网关）：明确报不支持，不做假成功。
                 None => Err(RpcErrorData::new(ApplicationErrorCode::Unsupported, false)),
             },
-            // FluxMesh（`agent.share.*`）：服务未编入 / 未装配时统一报 `ShareUnavailable`。
-            method::AGENT_SHARE_CONFIG
-            | method::AGENT_SHARE_SET_LOCAL_CONFIG
-            | method::AGENT_SHARE_CREATE
-            | method::AGENT_SHARE_LIST
-            | method::AGENT_SHARE_UPDATE
-            | method::AGENT_SHARE_STOP
-            | method::AGENT_SHARE_RESUME
-            | method::AGENT_SHARE_DELETE
-            | method::AGENT_SHARE_RESOLVE
-            | method::AGENT_SHARE_RECEIVE
-            | method::AGENT_SHARE_DISMISS_PENDING
-            | method::AGENT_SHARE_RECEIVE_RECORDS
-            | method::AGENT_SHARE_SWITCH_TO_BRIDGE
-            | method::AGENT_SHARE_DIAGNOSTICS
-            | method::AGENT_SHARE_LOGS
-            | method::AGENT_SHARE_SESSION_KILL
-            | method::AGENT_SHARE_CONVERT_TO_CLOUD
-            | method::AGENT_SHARE_DELETE_CLOUD_COPY
-            | method::AGENT_SHARE_REPORT
-            | method::AGENT_SHARE_APPEAL
-            | method::AGENT_SHARE_USAGE_REFRESH
-            | method::AGENT_SHARE_STOP_PROVIDING => {
-                self.share_rpc(&request.method, request.params).await
-            }
             method::AGENT_CAPTURE_SUBMIT => {
                 self.capture_submit(params_or_empty(request.params)).await
             }
@@ -1213,13 +1143,6 @@ impl GatewayService {
     ) -> Result<serde_json::Value, RpcErrorData> {
         let order_no = required_string(&params, "orderNo")?;
         let result = self.cloud.order(&order_no).await;
-        #[cfg(feature = "share-p2p")]
-        if let (Ok(order), Some(share)) = (&result, &self.share)
-            && order.get("status").and_then(serde_json::Value::as_str) == Some("paid")
-        {
-            let share = share.clone();
-            tokio::spawn(async move { share.on_order_paid().await });
-        }
         cloud_value(result)
     }
 
@@ -1731,7 +1654,7 @@ fn capture_value<T: serde::Serialize>(
             ApplicationErrorCode::InvalidArgument,
             false,
         )),
-        Err(CaptureError::Daemon(error) | CaptureError::Share(error)) => Err(error),
+        Err(CaptureError::Daemon(error)) => Err(error),
         Err(CaptureError::Json(_)) => Err(RpcErrorData::new(
             ApplicationErrorCode::InvalidArgument,
             false,
@@ -2504,7 +2427,6 @@ fn lane_for(method_name: &str) -> Lane {
     } else if method_name == fluxdown_protocol::method::AGENT_DIAGNOSTICS_REPAIR {
         Lane::Repair
     } else if method_name.starts_with("agent.link.")
-        || method_name.starts_with("agent.share.")
         || method_name == method::AGENT_SOUND_PREVIEW
         || method_name.starts_with("agent.diagnostics.")
     {

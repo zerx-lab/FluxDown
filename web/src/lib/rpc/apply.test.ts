@@ -13,8 +13,6 @@ import type {
   DaemonEvent,
   DaemonSnapshot,
   QueuePositionDto,
-  ShareProgressDto,
-  ShareStateDto,
   TaskDto,
   TaskRuntimeDto,
   WebhookDeliveryDto,
@@ -303,72 +301,6 @@ describe('apply cloud notify', () => {
       recentDeliveries: [],
       recentNextCursor: null,
     })
-  })
-})
-
-describe('apply share', () => {
-  const receiver = (sessionId: string) => ({
-    sessionId,
-    deviceName: 'Laptop',
-    pathKind: 'relay',
-    rateBps: 0,
-    bytes: 0,
-    progress: 0,
-    startedAt: '2026-10-27T00:00:00Z',
-  })
-  const state = {
-    enabled: true,
-    available: true,
-    canSend: true,
-    shares: [{ id: 's1', activeReceivers: [receiver('x'), receiver('y')] }],
-    taskFacts: {
-      t1: { isShareReceive: true, pathKind: 'relay', sessionId: 'x' },
-      t2: { isShareReceive: true, pathKind: 'relay', sessionId: 'z' },
-    },
-  } as unknown as ShareStateDto
-  const progress = (sessionId: string, bytes: number): ShareProgressDto => ({
-    sessionId,
-    pathKind: 'directWan',
-    rateBps: bytes,
-    bytes,
-    progress: 0.5,
-  })
-
-  test('shareChanged replaces the whole section', () => {
-    const initial = { daemon: daemon([]) } as unknown as AgentSnapshot
-    const next = applyAgentEvent(initial, { type: 'shareChanged', data: state })
-    expect(next.share).toBe(state)
-  })
-
-  test('shareProgress refreshes the matching receiver and task facts, leaves the rest untouched', () => {
-    const initial = { share: state, daemon: daemon([]) } as unknown as AgentSnapshot
-    const next = applyAgentEvent(initial, { type: 'shareProgress', data: progress('x', 10) })
-    const share = next.share as ShareStateDto
-    expect(share.shares[0]?.activeReceivers[0]).toMatchObject({ sessionId: 'x', pathKind: 'directWan', rateBps: 10, bytes: 10, progress: 0.5 })
-    expect(share.shares[0]?.activeReceivers[1]).toBe(state.shares[0]?.activeReceivers[1])
-    expect(share.taskFacts.t1?.pathKind).toBe('directWan')
-    expect(share.taskFacts.t2).toBe(state.taskFacts.t2)
-    // 原快照不被改写。
-    expect(state.shares[0]?.activeReceivers[0]?.bytes).toBe(0)
-  })
-
-  test('shareProgress for an unknown session or before any share state keeps references', () => {
-    const initial = { share: state, daemon: daemon([]) } as unknown as AgentSnapshot
-    expect(applyAgentEvent(initial, { type: 'shareProgress', data: progress('nope', 1) })).toBe(initial)
-    const bare = { daemon: daemon([]) } as unknown as AgentSnapshot
-    expect(applyAgentEvent(bare, { type: 'shareProgress', data: progress('x', 1) })).toBe(bare)
-  })
-
-  test('a later shareProgress fully replaces an earlier one for the same session', () => {
-    const initial = { share: state, daemon: daemon([]) } as unknown as AgentSnapshot
-    const events: AgentEvent[] = [
-      { type: 'shareProgress', data: progress('x', 10) },
-      { type: 'shareProgress', data: progress('y', 4) },
-      { type: 'shareProgress', data: progress('x', 20) },
-    ]
-    const both = applyAgentEvents(initial, events)
-    const merged = applyAgentEvents(initial, [events[1] as AgentEvent, events[2] as AgentEvent])
-    expect(both.share).toEqual(merged.share)
   })
 })
 

@@ -27929,8 +27929,8 @@ declare module "fluxdown" {
   export function toast(level: "info" | "success" | "warning" | "error", text: string): void;
   /** 关闭承载本视图的容器（登录弹窗、设置弹窗或独立窗口）并返回 `true`；活动栏页 / 任务详情 tab 等无法关闭的嵌入页返回 `false`。关闭在当前事件处理结束后执行。 */
   export function close(): boolean;
-  /** 切到 FluxDown 主界面的某个页面并把主窗口带到前台：`"downloads" | "rss" | "webhooks" | "share"` 为内置页，`{ view }` 为本插件 `location` 为 `activity` 的视图 id。目标形状非法或页面不存在时同步抛错。 */
-  export function navigate(target: "downloads" | "rss" | "webhooks" | "share" | { view: string }): void;
+  /** 切到 FluxDown 主界面的某个页面并把主窗口带到前台：`"downloads" | "rss" | "webhooks"` 为内置页，`{ view }` 为本插件 `location` 为 `activity` 的视图 id。目标形状非法或页面不存在时同步抛错。 */
+  export function navigate(target: "downloads" | "rss" | "webhooks" | { view: string }): void;
 }
 
 /**

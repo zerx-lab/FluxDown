@@ -15,7 +15,6 @@ export * from './queue';
 export * from './rpc';
 export * from './rss';
 export * from './selection';
-export * from './share';
 export * from './task';
 export * from './table';
 export * from './webhook';

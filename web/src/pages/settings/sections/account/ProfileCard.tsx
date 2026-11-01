@@ -10,12 +10,10 @@ import type { AgentSessionDto } from '../../../../lib/rpc'
 import { Button, Card, CheckRow, ConfirmFooter, Dialog, FieldError, FieldHint, Form, FormField, Icon, Input, Switch, Tooltip, toast } from '../../../../ui'
 import { setPref, usePrefBoolean } from '../../kit'
 import { SHOW_REFERRAL_PREF } from '../referral/pref'
-import { localDate, packPlans } from './billing'
+import { localDate } from './billing'
 import { accountErrorKey } from './errorText'
 import { PlanBadge } from './PlanBadge'
 import { PlanDialog } from './PlanDialog'
-import { takePlanRequest } from './planRequest'
-import type { PlanDialogTab } from './planRequest'
 import { canEditOriginId, OriginIdEditor, trimmedNickname, validNickname } from './profileEditing'
 function displayName(session: AgentSessionDto): string {
   const nickname = session.user.nickname.trim()
@@ -150,7 +148,7 @@ export function ProfileCard({ session, disabled }: { session: AgentSessionDto; d
   const [refreshing, setRefreshing] = useState(false)
   const [errorKey, setErrorKey] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ kind: 'nickname' | 'originId'; userId: string } | null>(null)
-  const [planOpen, setPlanOpen] = useState<PlanDialogTab | null>(() => takePlanRequest())
+  const [planOpen, setPlanOpen] = useState(false)
   const showReferral = usePrefBoolean(SHOW_REFERRAL_PREF, false)
   const originEditable = canEditOriginId(session)
   const activeEditing = !disabled && editing?.userId === session.user.id ? editing.kind : null
@@ -164,20 +162,6 @@ export function ProfileCard({ session, disabled }: { session: AgentSessionDto; d
     return () => window.clearTimeout(timer)
   }, [copied])
 
-  // 云端是否上架了可购买的流量包；没有时隐藏「流量包」按钮（加载前 / 失败按无处理）。
-  const [packsAvailable, setPacksAvailable] = useState(false)
-  const [catalogVersion, setCatalogVersion] = useState(0)
-  useEffect(() => {
-    let alive = true
-    void rpc.agent.plan.list().then(
-      (catalog) => { if (alive) setPacksAvailable(packPlans(catalog).length > 0) },
-      (error: unknown) => {
-        console.warn('[plan] plan.list for pack button failed', error)
-        if (alive) setPacksAvailable(false)
-      },
-    )
-    return () => { alive = false }
-  }, [session.user.id, catalogVersion])
 
   const name = displayName(session)
   const initial = [...name.trim()][0]?.toUpperCase()
@@ -187,7 +171,6 @@ export function ProfileCard({ session, disabled }: { session: AgentSessionDto; d
     if (refreshing) return
     setRefreshing(true)
     setErrorKey(null)
-    setCatalogVersion((value) => value + 1)
     try {
       await rpc.agent.auth.refreshProfile()
       await rpc.agent.device.list()
@@ -272,12 +255,7 @@ export function ProfileCard({ session, disabled }: { session: AgentSessionDto; d
             {t('accountSubscriptionUntil', { date: localDate(session.activeSubscription.endsAt) ?? '' })}
           </span>
         ) : null}
-        {packsAvailable ? (
-          <Button className="ml-auto" disabled={disabled} onClick={() => setPlanOpen('packs')}>
-            {t('accountPackBuy')}
-          </Button>
-        ) : null}
-        <Button variant="primary" className={packsAvailable ? undefined : 'ml-auto'} disabled={disabled} onClick={() => setPlanOpen('membership')}>
+        <Button variant="primary" className="ml-auto" disabled={disabled} onClick={() => setPlanOpen(true)}>
           {t('accountPlanUpgrade')}
         </Button>
       </div>
@@ -289,7 +267,7 @@ export function ProfileCard({ session, disabled }: { session: AgentSessionDto; d
         <Switch checked={showReferral} disabled={disabled} onCheckedChange={(next) => setPref(SHOW_REFERRAL_PREF, next)} aria-label={t('accountFeatureReferral')} />
       </div>
       {errorKey ? <FieldError>{t(errorKey)}</FieldError> : null}
-      {planOpen && !disabled ? <PlanDialog session={session} initialTab={planOpen} onClose={() => setPlanOpen(null)} /> : null}
+      {planOpen && !disabled ? <PlanDialog session={session} onClose={() => setPlanOpen(false)} /> : null}
       {activeEditing === 'nickname' ? <NicknameDialog key={session.user.id} current={session.user.nickname} onClose={() => setEditing(null)} /> : null}
       {activeEditing === 'originId' && session.entitlements.originIdEdit === true ? <OriginIdDialog key={session.user.id} session={session} onClose={() => setEditing(null)} /> : null}
     </Card>

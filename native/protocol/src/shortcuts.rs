@@ -662,13 +662,6 @@ pub const SHORTCUT_SPECS: &[ShortcutSpec] = &[
         &["ctrl-i"],
     ),
     app(
-        "share_selected",
-        DownloadList,
-        "shortcutActionShareSelected",
-        &["alt-super-s"],
-        &["ctrl-alt-s"],
-    ),
-    app(
         "cycle_density",
         DownloadList,
         "shortcutActionCycleDensity",
