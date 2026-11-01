@@ -50,11 +50,9 @@ struct MenuEntry {
 }
 
 impl NewDownloadView {
-    /// 分类选择器可见：有可路由的分类、有可选目录，且目标是本机。
+    /// 分类选择器只对本机表单展示；自动 / 不分类即使没有可选分类也有意义。
     fn category_picker_visible(&self) -> bool {
-        self.context.category_route.is_some()
-            && !self.context.category_options.is_empty()
-            && !self.is_remote()
+        !self.is_remote()
     }
 
     /// 快捷添加的网址规则在本表单内生效：追加进分类列表并重算路由 / 候选，模式回「自动」
@@ -141,11 +139,12 @@ impl NewDownloadView {
 
     /// 目录框是否仍是表单写入的值（用户没手动改过），见 [`dir_untouched`]。
     pub(super) fn save_dir_untouched(&self, cx: &App) -> bool {
-        dir_untouched(
-            &self.save_dir.read(cx).value(),
-            &self.context.save_dir,
-            self.category_written_dir.as_deref(),
-        )
+        !self.category_dir_manually_edited
+            && dir_untouched(
+                &self.save_dir.read(cx).value(),
+                &self.context.save_dir,
+                self.category_written_dir.as_deref(),
+            )
     }
 
     /// 提交是否挂分类路由：自动模式且目录框未被手改。
@@ -170,18 +169,14 @@ impl NewDownloadView {
         }
     }
 
-    /// 预测输入变化后调用：刷新预测结果，`Auto` 模式下让目录框跟随。没有分类路由时什么都不做
-    /// （表单行为与未配置分类目录时完全一致）。
+    /// 预测输入变化后更新预测结果；自动模式仅在目录未被用户手动指定时跟随。
     pub(super) fn sync_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.context.category_route.is_none() {
-            return;
-        }
         let predicted = self.predict_category_dir(cx);
         if self.category_predicted != predicted {
             self.category_predicted.clone_from(&predicted);
             cx.notify();
         }
-        if self.category_mode != CategoryMode::Auto {
+        if self.category_mode != CategoryMode::Auto || self.category_dir_manually_edited {
             return;
         }
         let current = self.save_dir.read(cx).value().to_string();
@@ -212,6 +207,7 @@ impl NewDownloadView {
                 let predicted = self.predict_category_dir(cx);
                 let target = predicted.clone().unwrap_or(offered);
                 self.category_predicted = predicted;
+                self.category_dir_manually_edited = false;
                 target
             }
             CategoryMode::NoCategory => offered,

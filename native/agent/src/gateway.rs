@@ -1251,7 +1251,12 @@ impl GatewayService {
             })?;
         capture_value(
             self.capture
-                .resolve(&params.transaction_id, params.accepted, params.request)
+                .resolve(
+                    &params.transaction_id,
+                    params.accepted,
+                    params.disable_category_route,
+                    params.request,
+                )
                 .await,
         )
     }

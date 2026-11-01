@@ -973,6 +973,9 @@ impl PendingCaptureDto {
 pub struct CaptureResolveParams {
     pub transaction_id: String,
     pub accepted: bool,
+    /// 即使目录等于捕获表单的预填分类目录，也显式禁用分类路由。
+    #[serde(default, skip_serializing_if = "crate::daemon::is_false")]
+    pub disable_category_route: bool,
     /// 确认时官方 UI 表单产出的建任务参数（`None` = 按捕获原请求建任务）。
     ///
     /// agent 以捕获原请求为底合并：`url` / `method` / `body` / `audioUrl` 恒取捕获值；
@@ -1680,6 +1683,7 @@ mod capture_dto_tests {
         .expect("deserialize without request");
         assert_eq!(params.transaction_id, "tx-1");
         assert!(params.accepted);
+        assert!(!params.disable_category_route);
         assert!(params.request.is_none());
     }
 

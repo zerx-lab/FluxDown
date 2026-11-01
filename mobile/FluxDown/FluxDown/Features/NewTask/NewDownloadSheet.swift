@@ -399,7 +399,7 @@ private struct NewDownloadContent: View {
     private func destinationSection(_ entries: [UrlEntry]) -> some View {
         let options = categoryOptions
         return Section {
-            if !options.isEmpty { categoryPicker(options) }
+            categoryPicker(options)
             if container.isLocalHost {
                 LabeledContent(L("saveDir")) {
                     Text(form.saveDir.isEmpty ? LocalPaths.documents.path : form.saveDir)
@@ -410,7 +410,7 @@ private struct NewDownloadContent: View {
                         .textSelection(.enabled)
                 }
             } else {
-                TextField(L("saveDir"), text: $form.saveDir)
+                TextField(L("saveDir"), text: saveDirBinding)
                     .font(.callout.monospaced())
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -423,13 +423,13 @@ private struct NewDownloadContent: View {
             }
             renameField(entries)
         } footer: {
-            if !options.isEmpty, let hint = categoryHint { Text(hint) }
+            if let hint = categoryHint { Text(hint) }
         }
     }
 
     // MARK: 分类
 
-    /// 能产生分类路由的分类（可见、非「全部」、目录非空）；为空 = 不显示选择器、行为与无分类时一致。
+    /// 能产生分类路由的分类（可见、非「全部」、目录非空）；没有具体分类时仍显示「自动 / 不分类」。
     private var categoryOptions: [CustomCategoryDto] {
         SaveDirCategoryState.options(CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.preferenceKey]))
     }
@@ -463,6 +463,15 @@ private struct NewDownloadContent: View {
                 return form.categoryState.mode
             },
             set: { form.selectCategory($0, options: options, session: container.session) }
+        )
+    }
+    private var saveDirBinding: Binding<String> {
+        Binding(
+            get: { form.saveDir },
+            set: {
+                form.saveDir = $0
+                form.markSaveDirManual()
+            }
         )
     }
 

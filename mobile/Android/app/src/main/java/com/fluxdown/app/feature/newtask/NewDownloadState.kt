@@ -95,7 +95,7 @@ internal class AdvancedState {
 internal class NewDownloadState(
     prefill: String,
     defaultSaveDir: String,
-    /** 表单首次给出的、未经分类预填的保存目录；随新建请求提交，由 Rust 按分类规则决定是否路由。 */
+    /** 表单首次给出的、未经分类预填的保存目录；仅自动路由时随请求提交。 */
     private val offeredSaveDir: String,
     defaultQueueId: String,
     defaultSegments: Int,
@@ -105,6 +105,7 @@ internal class NewDownloadState(
 ) {
     var urlText by mutableStateOf(prefill)
     var saveDir by mutableStateOf(defaultSaveDir)
+        private set
     var rename by mutableStateOf("")
     var queueId by mutableStateOf(defaultQueueId)
     var threadMode by mutableStateOf(
@@ -137,6 +138,7 @@ internal class NewDownloadState(
     private val initialSaveDir = defaultSaveDir
     /** 表单最近一次由程序写入目录框的值（自动跟随 / 切换模式）；null = 尚未写过。 */
     private var lastWritten: String? = null
+    private var manuallySelectedSaveDir = false
 
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
@@ -243,16 +245,23 @@ internal class NewDownloadState(
      * [force] = 从其他模式切回时无条件重算。
      */
     fun syncAuto(force: Boolean = false) {
-        if (mode != SaveDirMode.Auto || categoryOptions.isEmpty()) return
+        if (mode != SaveDirMode.Auto || manuallySelectedSaveDir || categoryOptions.isEmpty()) return
         if (!force && !untouched()) return
         val target = predictedDir() ?: offeredSaveDir.trim()
         if (saveDir != target) saveDir = target
         lastWritten = target
     }
 
+    /** 保存目录由用户键入或浏览选择；其值不再被自动预测覆盖，也不触发自动分类路由。 */
+    fun setSaveDirManually(dir: String) {
+        saveDir = dir
+        manuallySelectedSaveDir = true
+    }
+
     fun selectMode(next: SaveDirMode) {
         when (next) {
             SaveDirMode.Auto -> {
+                manuallySelectedSaveDir = false
                 mode = next
                 syncAuto(force = true)
             }
@@ -332,8 +341,8 @@ internal class NewDownloadState(
                 httpUser = if (authOk) adv.httpUser.trim() else "",
                 httpPassword = if (authOk) adv.httpPassword else "",
                 saveSiteAuth = authOk && adv.saveSiteAuth,
-                // 仅「自动」且目录框未被手改才交给 Rust 路由；手改 = 与「不分类」一致，目录原样
-                offeredSaveDir = offeredSaveDir.takeIf { mode == SaveDirMode.Auto && untouched() },
+                // 仅自动且未显式手动选择目录时交给 Rust 路由；手动选择包括等于默认目录。
+                offeredSaveDir = offeredSaveDir.takeIf { mode == SaveDirMode.Auto && !manuallySelectedSaveDir && untouched() }
             )
         }
     }

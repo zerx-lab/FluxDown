@@ -1473,6 +1473,13 @@ impl RemoteTaskService {
                     message: error.to_string(),
                 })?,
         );
+        let category_route = if save_dir.is_none() {
+            self.events.inspect(|snapshot| {
+                crate::category_dir::category_route(&snapshot.preferences.values)
+            })
+        } else {
+            None
+        };
         let result = self
             .daemon
             .call_detailed::<DaemonCreateTaskParams, Value>(
@@ -1483,7 +1490,7 @@ impl RemoteTaskService {
                     unattended: true,
                     hint_file_size: None,
                     name_hint: None,
-                    category_route: None,
+                    category_route,
                 }),
             )
             .await
@@ -5020,6 +5027,70 @@ mod tests {
             .collect::<Vec<_>>();
         ids.sort_unstable();
         assert_eq!(ids, ["r-canceled", "r-fresh", "r-live"]);
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn cloud_receive_uses_preference_category_route_only_without_explicit_directory() {
+        let harness = Harness::with_daemon("receive_category_route", command_mock).await;
+        harness
+            .service
+            .events
+            .publish(AgentEvent::PreferencesChanged(
+                fluxdown_protocol::AgentPreferencesDto {
+                    revision: 1,
+                    values: [(
+                        fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY.to_owned(),
+                        json!([
+                            {
+                                "id": "binary",
+                                "name": "Binary",
+                                "extensions": ["bin"],
+                                "saveDir": "/category/bin"
+                            }
+                        ]),
+                    )]
+                    .into(),
+                },
+            ));
+        let task = remote_task(json!({
+            "id": "r-category",
+            "url": "https://example.com/file.bin",
+            "fileName": "file.bin",
+            "status": "pending"
+        }));
+        let epoch = harness.service.cloud.request_epoch();
+
+        assert!(
+            harness
+                .service
+                .create_local_task(&task, None, epoch)
+                .await
+                .is_err()
+        );
+        let explicit_dir = harness.dir.join("explicit").to_string_lossy().into_owned();
+        assert!(
+            harness
+                .service
+                .create_local_task(&task, Some(explicit_dir), epoch)
+                .await
+                .is_err()
+        );
+        let calls = harness.daemon_calls.lock().await;
+        let create_params = calls
+            .iter()
+            .filter(|(method, _)| method == fluxdown_protocol::method::DAEMON_TASK_CREATE)
+            .map(|(_, params)| {
+                serde_json::from_value::<fluxdown_protocol::DaemonCreateTaskParams>(
+                    params.clone().expect("task creation params"),
+                )
+                .expect("decode task creation params")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(create_params.len(), 2);
+        assert!(create_params[0].category_route.is_some());
+        assert!(create_params[1].category_route.is_none());
+        drop(calls);
         harness.finish().await;
     }
 
