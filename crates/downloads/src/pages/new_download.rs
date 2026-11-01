@@ -24,9 +24,9 @@ use std::{
 use crate::{
     components::threads_risk::threads_risk_callout,
     controller::{
-        DownloadsCommand, DownloadsPort, DownloadsResult, LAST_DOWNLOAD_TARGET_PREF,
-        LAST_SAVE_DIR_PREF, REMEMBER_LAST_SAVE_DIR_PREF, SAVE_DIR_HISTORY_ENABLED_PREF,
-        SAVE_DIR_HISTORY_PREF,
+        CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
+        LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF, REMEMBER_LAST_SAVE_DIR_PREF,
+        SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF,
     },
     model::{
         devices::{DeviceEntry, DeviceKind, DispatchTarget, other_devices, resolve_target},
@@ -38,8 +38,11 @@ use crate::{
             compose_request, custom_segments, detect_ua_preset, manual_proxy_url, parse_entries,
             parse_input, ua_preset_keys, ua_preset_value,
         },
-        save_dir_category::{CategoryMode, NewDownloadCategory, category_options},
-        save_dir_history::{read_save_dir_history, record_save_dir, save_dir_choices},
+        save_dir_category::{CategoryMode, NewDownloadCategory, category_options, dir_untouched},
+        save_dir_history::{
+            CategorySaveDirHistory, read_category_save_dir_history, read_save_dir_history,
+            record_category_save_dir, record_save_dir, save_dir_choices,
+        },
     },
     strings::NewDownloadStrings,
     submission::{
@@ -100,6 +103,8 @@ pub struct NewDownloadContext {
     pub save_dir: String,
     /// 保存目录历史（最新在前）；`None` = 偏好关闭，不列出也不记录。
     pub save_dir_history: Option<Vec<String>>,
+    /// 按分类记住的手动保存目录（与历史同一开关）；`None` = 偏好关闭，不列出也不记录。
+    pub category_save_dir_history: Option<CategorySaveDirHistory>,
     /// 「开始下载」默认落入的队列。
     pub queue_id: String,
     /// 线程数初值；0 = 自动。
@@ -193,11 +198,14 @@ pub(crate) fn build_new_download_context(
     } else {
         config_str("default_segments").parse::<i32>().unwrap_or(0)
     };
-    let save_dir_history = preferences
+    let history_enabled = preferences
         .get(SAVE_DIR_HISTORY_ENABLED_PREF)
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true)
-        .then(|| read_save_dir_history(preferences.get(SAVE_DIR_HISTORY_PREF)));
+        .unwrap_or(true);
+    let save_dir_history =
+        history_enabled.then(|| read_save_dir_history(preferences.get(SAVE_DIR_HISTORY_PREF)));
+    let category_save_dir_history = history_enabled
+        .then(|| read_category_save_dir_history(preferences.get(CATEGORY_SAVE_DIR_HISTORY_PREF)));
     let target = preferences
         .get(LAST_DOWNLOAD_TARGET_PREF)
         .and_then(serde_json::Value::as_str)
@@ -211,6 +219,7 @@ pub(crate) fn build_new_download_context(
     NewDownloadContext {
         save_dir: save_dir.to_owned(),
         save_dir_history,
+        category_save_dir_history,
         queue_id: queue_id.to_owned(),
         segments,
         queues: queues
@@ -312,8 +321,9 @@ pub struct NewDownloadView {
     save_dir_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// 保存目录的分类模式（默认自动）；仅 `context.category_route` 存在时有意义。
     category_mode: CategoryMode,
-    /// 自动模式上一次写入目录框的值：目录框仍等于它说明用户没手动改过，可继续跟随。
-    category_auto_dir: Option<String>,
+    /// 表单上一次写入目录框的值（自动跟随 / 切换分类模式 / 捕获带来的系统目录）：目录框仍
+    /// 等于它说明用户没手动改过——自动模式据此继续跟随、提交时才挂分类路由。
+    category_written_dir: Option<String>,
     /// 自动模式按当前输入预测出的分类目录（触发器显示命中分类）；变化时同步更新，渲染只读。
     category_predicted: Option<String>,
 }
@@ -416,7 +426,7 @@ impl NewDownloadView {
             save_dir_menu_open: false,
             save_dir_bounds: Rc::default(),
             category_mode: CategoryMode::Auto,
-            category_auto_dir: None,
+            category_written_dir: None,
             category_predicted: None,
         };
         this.refresh_entries(window, cx);
@@ -587,14 +597,15 @@ impl NewDownloadView {
                 .find(|save_dir| !save_dir.is_empty())
         {
             let save_dir = save_dir.to_owned();
-            // 捕获方带来的分类目录视为自动写入值：之后仍可跟随文件名变化。
+            // 捕获方带来的系统目录（初始目录 / 分类目录）视为表单写入值：之后仍可跟随文件名
+            // 变化、提交照常路由；其他目录按用户选择处理。
             if self
                 .context
                 .category_route
                 .as_ref()
-                .is_some_and(|route| route.is_category_dir(&save_dir))
+                .is_some_and(|route| route.follows(&save_dir, &self.context.save_dir))
             {
-                self.category_auto_dir = Some(save_dir.clone());
+                self.category_written_dir = Some(save_dir.clone());
             }
             self.save_dir
                 .update(cx, |input, cx| input.set_value(save_dir, window, cx));
@@ -871,6 +882,7 @@ impl NewDownloadView {
         let NewDownloadContext {
             save_dir,
             save_dir_history,
+            category_save_dir_history,
             queue_id,
             segments,
             queues,
@@ -880,12 +892,21 @@ impl NewDownloadView {
             manual_proxy_url,
             ..
         } = context;
+        let current = self.save_dir.read(cx).value().to_string();
         if save_dir != self.context.save_dir
-            && *self.save_dir.read(cx).value() == *self.context.save_dir
+            && current == self.context.save_dir
+            && dir_untouched(
+                &current,
+                &self.context.save_dir,
+                self.category_written_dir.as_deref(),
+            )
         {
             let value = save_dir.clone();
             self.save_dir
                 .update(cx, |input, cx| input.set_value(value, window, cx));
+            if self.category_written_dir.is_some() {
+                self.category_written_dir = Some(save_dir.trim().to_owned());
+            }
         }
         let previous_segments = self.context.segments;
         if segments != previous_segments
@@ -902,6 +923,7 @@ impl NewDownloadView {
         }
         self.context.save_dir = save_dir;
         self.context.save_dir_history = save_dir_history;
+        self.context.category_save_dir_history = category_save_dir_history;
         self.context.queue_id = queue_id;
         self.context.segments = segments;
         self.context.queues = queues;
@@ -922,17 +944,37 @@ impl NewDownloadView {
         cx.notify();
     }
 
-    /// 把一次本机提交的保存目录记入历史（偏好关闭时不记）；尽力而为，失败只做诊断记录。
+    /// 把一次本机提交的保存目录记入历史（偏好关闭时不记）；目录是用户手动选的且表单当前
+    /// 对应某个分类时，另记入该分类的目录记忆。尽力而为，失败只做诊断记录。
     fn record_save_dir_history(&mut self, dir: &str, cx: &mut Context<Self>) {
-        let Some(history) = self.context.save_dir_history.as_mut() else {
+        if let Some(history) = self.context.save_dir_history.as_mut()
+            && let Some(next) = record_save_dir(history, dir)
+        {
+            let value = serde_json::Value::from(next.clone());
+            *history = next;
+            self.write_local_preference(SAVE_DIR_HISTORY_PREF, value, cx);
+        }
+        if self.save_dir_untouched(cx) {
+            return;
+        }
+        let Some(category) = self.memory_category().map(str::to_owned) else {
             return;
         };
-        let Some(next) = record_save_dir(history, dir) else {
+        let Some(history) = self.context.category_save_dir_history.as_mut() else {
             return;
         };
-        let value = serde_json::Value::from(next.clone());
+        let Some(next) = record_category_save_dir(history, &category, dir) else {
+            return;
+        };
+        let value = match serde_json::to_value(&next) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("category save dir history encode failed: {error}");
+                return;
+            }
+        };
         *history = next;
-        self.write_local_preference(SAVE_DIR_HISTORY_PREF, value, cx);
+        self.write_local_preference(CATEGORY_SAVE_DIR_HISTORY_PREF, value, cx);
     }
 
     /// 设备本地偏好写入：尽力而为，失败只做诊断记录。
@@ -1066,11 +1108,12 @@ impl NewDownloadView {
                 common: Box::new(common),
                 items: tasks,
                 captures,
+                // 自动模式且目录框未被手改才按分类路由；用户改过的目录原样使用。
                 category_route: self
                     .context
                     .category_route
                     .clone()
-                    .filter(|_| self.category_mode == CategoryMode::Auto),
+                    .filter(|_| self.routes_by_category(cx)),
                 offered_save_dir,
             },
             window,
@@ -1657,12 +1700,17 @@ impl NewDownloadView {
         )
     }
 
-    /// 保存目录历史（偏好关闭时为空）中除当前输入以外的目录。
+    /// 下拉候选（偏好关闭时为空）：先列当前分类记住的目录，再列全局历史，排除当前输入。
     fn save_dir_choices(&self, cx: &App) -> Vec<SharedString> {
         let Some(history) = self.context.save_dir_history.as_deref() else {
             return Vec::new();
         };
-        save_dir_choices(history, &self.save_dir.read(cx).value())
+        let category = self
+            .memory_category()
+            .zip(self.context.category_save_dir_history.as_ref())
+            .and_then(|(category, memory)| memory.get(category))
+            .map_or(&[][..], Vec::as_slice);
+        save_dir_choices(category, history, &self.save_dir.read(cx).value())
             .into_iter()
             .map(|dir| SharedString::from(dir.to_owned()))
             .collect()

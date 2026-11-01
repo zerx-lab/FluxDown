@@ -28,6 +28,9 @@ pub const REMEMBER_LAST_SAVE_DIR_PREF: &str = "download.remember_last_save_dir";
 pub const SAVE_DIR_HISTORY_PREF: &str = "download.save_dir_history";
 /// 本机偏好：是否记录并在新建下载中列出保存目录历史（缺省开启；设备本地）。
 pub const SAVE_DIR_HISTORY_ENABLED_PREF: &str = "download.save_dir_history_enabled";
+/// 本机偏好：按分类记住的手动保存目录（`{分类 id: 字符串数组}`，最新在前；设备本地，不进云
+/// 同步，与保存目录历史共用开关与清空）。
+pub const CATEGORY_SAVE_DIR_HISTORY_PREF: &str = "download.category_save_dir_history";
 /// 本机偏好：下载限速最近自定义值（KB/s 整数数组，最新在前；设备本地，不进云同步）。
 pub const SPEED_LIMIT_RECENT_PREF: &str = "download.speed_limit_recent_kbps";
 /// 本机偏好：上传限速最近自定义值（KB/s 整数数组，最新在前；设备本地，不进云同步）。

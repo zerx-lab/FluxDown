@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { autoFollowDir, dirUntouched, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -36,7 +36,16 @@ import type { NewDownloadSession } from './store'
 import { isTorrentFile, submitTorrentFiles } from './torrents'
 import { SaveDirCombo } from './SaveDirCombo'
 import { CategoryPicker } from './CategoryPicker'
-import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory, recordSaveDir, saveDirChoices } from '../../../lib/saveDirHistory'
+import {
+  CATEGORY_SAVE_DIR_HISTORY_PREF,
+  SAVE_DIR_HISTORY_ENABLED_PREF,
+  SAVE_DIR_HISTORY_PREF,
+  readCategorySaveDirHistory,
+  readSaveDirHistory,
+  recordCategorySaveDir,
+  recordSaveDir,
+  saveDirChoices,
+} from '../../../lib/saveDirHistory'
 import { accountErrorKey } from '../../settings/sections/account/errorText'
 import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue, summarizeDispatch } from './target'
 import type { RemoteTarget } from './target'
@@ -104,6 +113,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const historyEnabled = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_ENABLED_PREF] !== false, true)
   const historyValue = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_PREF], undefined)
   const saveDirHistory = useMemo(() => (historyEnabled ? readSaveDirHistory(historyValue) : null), [historyEnabled, historyValue])
+  const categoryHistoryValue = useAgent((snapshot) => snapshot.preferences.values[CATEGORY_SAVE_DIR_HISTORY_PREF], undefined)
+  const categoryHistory = useMemo(() => readCategorySaveDirHistory(categoryHistoryValue), [categoryHistoryValue])
 
   const [text, setText] = useState(() => session.initialUrls.join('\n'))
   const [captures, setCaptures] = useState<PendingCaptureDto[]>([])
@@ -176,24 +187,24 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
   const categoryOptions = useMemo(() => pickableCategories(categories), [categories])
   const [categoryMode, setCategoryMode] = useState<CategoryPickMode>({ kind: 'auto' })
-  /** 上一次自动写入目录框的值；用户手改后与之不等，不再覆盖。 */
-  const lastAutoDir = useRef<string | null>(null)
+  /** 程序最近一次写入目录框的值（自动跟随 / 切换模式 / 捕获预填）；目录框与之不等即视为用户手改。 */
+  const lastWrittenDir = useRef<string | null>(null)
   const categoryShown = categoryRoute !== null && !target
   const predictedName = rename.trim() !== '' ? rename.trim() : (entries[0]?.fileName ?? '')
   const predictedUrl = entries[0]?.url ?? ''
   const predictedDir = categoryShown && categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
     if (!categoryShown || categoryMode.kind !== 'auto') return
-    const next = autoFollowDir(saveDir, context.saveDir, lastAutoDir.current, predictedDir)
+    const next = autoFollowDir(saveDir, context.saveDir, lastWrittenDir.current, predictedDir)
     if (next === null) return
-    lastAutoDir.current = next
+    lastWrittenDir.current = next
     if (next !== saveDir) setSaveDir(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在预测输入 / 模式变化时跟随，目录框当前值取渲染时快照
   }, [categoryShown, categoryMode.kind, predictedDir])
   const pickCategory = (mode: CategoryPickMode) => {
     setCategoryMode(mode)
     const next = modeDir(mode, categoryOptions, context.saveDir, predictedDir)
-    lastAutoDir.current = mode.kind === 'auto' ? next : null
+    lastWrittenDir.current = next
     setSaveDir(next)
   }
 
@@ -212,7 +223,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       if (current.trim() === '') {
         const dir = fresh.map((capture) => capture.saveDir.trim()).find((value) => value !== '')
         if (dir) {
-          lastAutoDir.current = dir
+          // 仅「系统给的」目录（等于表单初始目录或某分类目录）才算程序写入；否则视为用户手选。
+          if (categoryRoute === null || routeFollows(categoryRoute, dir, context.saveDir)) lastWrittenDir.current = dir
           setSaveDir(dir)
         }
       }
@@ -325,8 +337,16 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     return map
   }
 
-  // 保存目录历史（偏好关闭时为空）中除当前输入以外的目录，交给组合框下拉。
-  const saveDirOptions = saveDirHistory ? saveDirChoices(saveDirHistory, saveDir) : []
+  // 分类记忆键：指定分类 = 该分类；自动 = 命中分类；不分类 / 无分类选择器 = 无。
+  const memoryCategoryId = !categoryShown
+    ? null
+    : categoryMode.kind === 'category'
+      ? categoryMode.id
+      : categoryMode.kind === 'auto'
+        ? (matchedCategory(categoryOptions, predictedDir)?.id ?? null)
+        : null
+  // 保存目录历史（偏好关闭时为空）：该分类记忆在前、全局历史在后，排除当前输入，交给组合框下拉。
+  const saveDirOptions = saveDirHistory ? saveDirChoices(memoryCategoryId ? (categoryHistory[memoryCategoryId] ?? []) : [], saveDirHistory, saveDir) : []
 
   const draftOptions = (later: boolean, queueOverride: string | undefined): DraftOptions => ({
     saveDir: saveDir.trim(),
@@ -353,6 +373,11 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     if (prefs[SAVE_DIR_HISTORY_ENABLED_PREF] !== false) {
       const next = recordSaveDir(readSaveDirHistory(prefs[SAVE_DIR_HISTORY_PREF]), dir)
       if (next) values[SAVE_DIR_HISTORY_PREF] = next
+      // 分类记忆：有分类键且目录框被手改时，记到该分类名下。
+      if (memoryCategoryId && !dirUntouched(saveDir, context.saveDir, lastWrittenDir.current)) {
+        const nextByCategory = recordCategorySaveDir(readCategorySaveDirHistory(prefs[CATEGORY_SAVE_DIR_HISTORY_PREF]), memoryCategoryId, dir)
+        if (nextByCategory) values[CATEGORY_SAVE_DIR_HISTORY_PREF] = nextByCategory
+      }
     }
     void rpc.agent.preferences.patch({ values, sync: false }).catch(() => undefined)
   }
@@ -475,9 +500,9 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       )
       const { items } = batch
       let { common } = batch
-      // 分类路由：只对本机提交生效；目录仍是表单初始值 / 分类目录时交给引擎按文件名定落点；
-      // 分类下拉选了「不分类」/ 指定分类时用户已显式定目录，不路由。
-      const route = categoryShown && categoryMode.kind === 'auto' ? categoryRoute : null
+      // 分类路由：只对本机提交生效；仅「自动」且目录框未被手改时交给引擎按文件名定落点；
+      // 目录被手改 / 选了「不分类」/ 指定分类时用户已显式定目录，不路由。
+      const route = categoryShown && categoryMode.kind === 'auto' && dirUntouched(saveDir, context.saveDir, lastWrittenDir.current) ? categoryRoute : null
       const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
       if (followed) common = { ...common, saveDir: routeBaseDir(followed, options.saveDir, context.saveDir) }
       const controller = new AbortController()

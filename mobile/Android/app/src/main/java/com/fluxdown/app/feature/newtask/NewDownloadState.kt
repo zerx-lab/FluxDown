@@ -135,7 +135,8 @@ internal class NewDownloadState(
     val advanced = AdvancedState()
 
     private val initialSaveDir = defaultSaveDir
-    private var lastAuto: String? = null
+    /** 表单最近一次由程序写入目录框的值（自动跟随 / 切换模式）；null = 尚未写过。 */
+    private var lastWritten: String? = null
 
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
@@ -164,7 +165,7 @@ internal class NewDownloadState(
 
     /** 有未提交内容：关闭前需要确认。 */
     val isDirty: Boolean
-        get() = urlText.isNotBlank() || rename.isNotBlank() || (saveDir != initialSaveDir && saveDir != lastAuto) ||
+        get() = urlText.isNotBlank() || rename.isNotBlank() || (saveDir != initialSaveDir && saveDir != lastWritten) ||
             mode != SaveDirMode.Auto || queueId != initialQueueId ||
             targetId != initialTargetId || remoteSaveDir.isNotBlank() ||
             advanced.modified(single = true, singleHttp = true).isNotEmpty()
@@ -229,17 +230,24 @@ internal class NewDownloadState(
         return categoryOptions.firstOrNull { it.saveDir == dir }
     }
 
+    /** 目录框未被手改：为空 / 等于最近一次程序写入值；尚未写过则等于 offered。 */
+    private fun untouched(): Boolean {
+        val current = saveDir.trim()
+        if (current.isEmpty()) return true
+        val written = lastWritten?.takeIf { it.isNotEmpty() }
+        return current == (written ?: offeredSaveDir.trim())
+    }
+
     /**
-     * 自动模式下按预测目录改写目录框：当前值为空 / 等于 offered / 等于上次自动写入值才覆盖（用户手改后不再覆盖）；
+     * 自动模式下按预测目录改写目录框：仅目录框未被手改（[untouched]）才覆盖；
      * [force] = 从其他模式切回时无条件重算。
      */
     fun syncAuto(force: Boolean = false) {
         if (mode != SaveDirMode.Auto || categoryOptions.isEmpty()) return
-        val current = saveDir.trim()
-        if (!force && current.isNotEmpty() && current != offeredSaveDir && current != lastAuto) return
-        val target = predictedDir() ?: offeredSaveDir
+        if (!force && !untouched()) return
+        val target = predictedDir() ?: offeredSaveDir.trim()
         if (saveDir != target) saveDir = target
-        lastAuto = target
+        lastWritten = target
     }
 
     fun selectMode(next: SaveDirMode) {
@@ -251,11 +259,13 @@ internal class NewDownloadState(
             SaveDirMode.None -> {
                 mode = next
                 saveDir = offeredSaveDir
+                lastWritten = offeredSaveDir.trim()
             }
             is SaveDirMode.Category -> {
                 val dir = categoryOptions.firstOrNull { it.id == next.id }?.saveDir ?: return
                 mode = next
                 saveDir = dir
+                lastWritten = dir
             }
         }
     }
@@ -322,7 +332,8 @@ internal class NewDownloadState(
                 httpUser = if (authOk) adv.httpUser.trim() else "",
                 httpPassword = if (authOk) adv.httpPassword else "",
                 saveSiteAuth = authOk && adv.saveSiteAuth,
-                offeredSaveDir = offeredSaveDir.takeIf { mode == SaveDirMode.Auto },
+                // 仅「自动」且目录框未被手改才交给 Rust 路由；手改 = 与「不分类」一致，目录原样
+                offeredSaveDir = offeredSaveDir.takeIf { mode == SaveDirMode.Auto && untouched() },
             )
         }
     }
