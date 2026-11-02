@@ -14,6 +14,7 @@ import type { SiteProfile } from "./site-profiles";
 import { RemoteSettingsStore } from "./remote-settings";
 import type { RemoteSettings } from "./remote-settings";
 import type { RemotePingResult, RemoteServerConfig } from "./remote-server";
+import { SNIFF_MAX_RESOURCES_DEFAULT, normalizeSniffMaxResources } from "./sniff-limit";
 
 /**
  * 拦截模式：
@@ -86,6 +87,11 @@ export interface FluxDownSettings {
   floatButtonPosition: "top-right" | "top-left" | "bottom-right" | "bottom-left";
   /** 是否在资源列表中显示低置信度项 */
   showLowConfidence: boolean;
+  /**
+   * 单页面 DOM 扫描最多上报的资源数（#288：长列表页无节制扫描会卡顿）。fetch / XHR 嗅探到的媒体不计入。
+   * 取值经 `normalizeSniffMaxResources`（utils/sniff-limit.ts）规整到 1…99999。
+   */
+  sniffMaxResources: number;
 
   // === 失败回退与询问 ===
 
@@ -265,6 +271,7 @@ const DEFAULT_SETTINGS: FluxDownSettings = {
   floatButtonPosition: "top-right",
   showLowConfidence: false,
   sniffImages: false,
+  sniffMaxResources: SNIFF_MAX_RESOURCES_DEFAULT,
 
   // 失败回退与询问
   fallbackOnReject: true,
@@ -429,6 +436,7 @@ export function migrateSettings(raw: unknown): FluxDownSettings {
   if ((merged.interceptMode as string) === "extension") {
     merged.interceptMode = "smart";
   }
+  merged.sniffMaxResources = normalizeSniffMaxResources(merged.sniffMaxResources);
   return merged;
 }
 

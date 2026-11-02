@@ -79,4 +79,6 @@ public enum HostNoticeName {
     public static let linkIncomingPairing = "linkIncomingPairing"
     /// `WsServerMsg::TaskCdnEvent { taskId, kind, host, nodes, ip, reason, … }`。
     public static let taskCdnEvent = "taskCdnEvent"
+    /// `DaemonEvent::BtGuardChanged`：防吸血条目 / 状态变化，载荷恒为 `null`，据此重新拉取 `daemon.bt.guard.*`。
+    public static let btGuardChanged = "btGuardChanged"
 }

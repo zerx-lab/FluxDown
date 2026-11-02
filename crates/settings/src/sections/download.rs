@@ -64,21 +64,29 @@ fn save_location_section(ctx: &SectionContext) -> SettingsSection {
         ))
 }
 
-/// 新建下载保存目录历史（设备本地偏好，与 `fluxdown_ui_downloads` 的
-/// `SAVE_DIR_HISTORY_PREF` / `SAVE_DIR_HISTORY_ENABLED_PREF` 同键）。
+/// 新建下载保存目录历史与分类目录记忆（设备本地偏好，与 `fluxdown_ui_downloads` 的
+/// `SAVE_DIR_HISTORY_PREF` / `CATEGORY_SAVE_DIR_HISTORY_PREF` / `SAVE_DIR_HISTORY_ENABLED_PREF`
+/// 同键）。
 const SAVE_DIR_HISTORY_PREF: &str = "download.save_dir_history";
+const CATEGORY_SAVE_DIR_HISTORY_PREF: &str = "download.category_save_dir_history";
 const SAVE_DIR_HISTORY_ENABLED_PREF: &str = "download.save_dir_history_enabled";
 
-/// 清空保存目录历史：写墓碑移除偏好；没有记录时按钮置灰。
+/// 清空保存目录历史（含分类目录记忆）：两个键各写墓碑移除偏好；都没有记录时按钮置灰。
 fn clear_save_dir_history_control(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let label = ctx.t("clearSaveDirHistoryAction");
     Control::custom(move |disabled, _key, _window, cx: &mut App| {
-        let empty = store
-            .read(cx)
-            .pref(SAVE_DIR_HISTORY_PREF)
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(Vec::is_empty);
+        let empty = {
+            let store = store.read(cx);
+            store
+                .pref(SAVE_DIR_HISTORY_PREF)
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty)
+                && store
+                    .pref(CATEGORY_SAVE_DIR_HISTORY_PREF)
+                    .and_then(serde_json::Value::as_object)
+                    .is_none_or(serde_json::Map::is_empty)
+        };
         let clear_store = store.clone();
         button(
             "download-clear-save-dir-history",
@@ -89,6 +97,7 @@ fn clear_save_dir_history_control(ctx: &SectionContext) -> Control {
         .on_click(move |_, _, cx| {
             clear_store.update(cx, |store, cx| {
                 store.set_pref(SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
+                store.set_pref(CATEGORY_SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
             });
         })
         .disabled(disabled || empty)

@@ -90,8 +90,12 @@ pub(crate) fn refresh_request_ttls(requests: &mut [LinkPairingRequestDto]) {
 /// 本机建下载任务的入口（生产实现走 daemon；测试注入记录型实现）。
 #[async_trait]
 pub trait LinkTaskCreator: Send + Sync {
-    /// 以「无人值守」方式创建任务，返回任务 ID。
-    async fn create_task(&self, request: CreateTaskRequest) -> Result<String, ApiError>;
+    /// 以「无人值守」方式创建接收任务，处理可选本机分类路由并返回任务 ID。
+    async fn create_task_with_route(
+        &self,
+        request: CreateTaskRequest,
+        category_route: Option<fluxdown_protocol::CategoryRouteDto>,
+    ) -> Result<String, ApiError>;
 }
 
 /// 经 daemon JSON-RPC 创建任务。
@@ -108,7 +112,11 @@ impl DaemonTaskCreator {
 
 #[async_trait]
 impl LinkTaskCreator for DaemonTaskCreator {
-    async fn create_task(&self, request: CreateTaskRequest) -> Result<String, ApiError> {
+    async fn create_task_with_route(
+        &self,
+        request: CreateTaskRequest,
+        category_route: Option<fluxdown_protocol::CategoryRouteDto>,
+    ) -> Result<String, ApiError> {
         let created: Value = self
             .daemon
             .call_detailed(
@@ -120,7 +128,7 @@ impl LinkTaskCreator for DaemonTaskCreator {
                     unattended: true,
                     hint_file_size: None,
                     name_hint: None,
-                    category_route: None,
+                    category_route,
                 }),
             )
             .await
@@ -1638,16 +1646,26 @@ impl LinkService {
         file_name: &str,
         save_dir: Option<String>,
     ) -> Result<String, ApiError> {
+        let route = if save_dir.is_none() {
+            self.events.inspect(|snapshot| {
+                crate::category_dir::category_route(&snapshot.preferences.values)
+            })
+        } else {
+            None
+        };
         let first = build_task_request(url, file_name, save_dir.as_deref().unwrap_or_default())?;
-        match self.tasks.create_task(first).await {
+        match self.tasks.create_task_with_route(first, route).await {
             Ok(task_id) => Ok(task_id),
             Err(error) if save_dir.is_some() => {
                 tracing::warn!(
                     error = %error,
                     "link task rejected with the requested directory; retrying with the default directory"
                 );
+                let route = self.events.inspect(|snapshot| {
+                    crate::category_dir::category_route(&snapshot.preferences.values)
+                });
                 self.tasks
-                    .create_task(build_task_request(url, file_name, "")?)
+                    .create_task_with_route(build_task_request(url, file_name, "")?, route)
                     .await
             }
             Err(error) => Err(error),

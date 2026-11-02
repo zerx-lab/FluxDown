@@ -16,8 +16,8 @@ use gpui_component::{Icon, h_flex, table::TableState, v_flex};
 use super::{
     CELL_PADDING_X, DownloadColumnKind, DownloadTableDelegate, GroupBucket, PROGRESS_GAP,
     PROGRESS_LABEL_WIDTH, ROW_ACTION_SIZE, ROW_GROUP, SELECT_CELL_GROUP, SELECTED_INSET_X,
-    SelectModifiers, TABLE_TRAILING_GUTTER, VisibleRow, meta_cell, percent_label, row_at,
-    status_color,
+    SelectModifiers, VisibleRow, meta_cell, percent_label, row_at, status_color,
+    wrap_row_action_strip,
 };
 use crate::{
     components::group_visuals::{group_counts_line, group_folder_icon},
@@ -886,24 +886,7 @@ impl DownloadTableDelegate {
                 })
                 .child(Icon::new(icon).size(extended.icon.md))
         });
-        Some(
-            h_flex()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                // 父节点是右侧留白列：浮层右缘对齐其左缘，即单元格可视区右缘。
-                .right(px(TABLE_TRAILING_GUTTER))
-                .gap(tokens.spacing.xxs)
-                .pl(tokens.spacing.xs)
-                .bg(extended.colors.row_hover)
-                .invisible()
-                .group_hover(ROW_GROUP, |style| style.visible())
-                .when(selected, |this| {
-                    this.child(div().absolute().inset_0().bg(tokens.colors.accent))
-                })
-                .children(buttons)
-                .into_any_element(),
-        )
+        Some(wrap_row_action_strip(selected, buttons, cx))
     }
 
     /// 目录行单元格：选择列只画树轨，文件名列为展开箭头 + 文件夹图标 + 压缩路径 + 文件数与

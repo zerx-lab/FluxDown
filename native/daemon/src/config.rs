@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
+#[cfg(feature = "bt")]
+use fluxdown_engine::bt_guard::{BtGuardConfig, DownloadingMaxAction, RuleMode};
 use fluxdown_protocol::{
     DaemonConfigError, is_public_daemon_config_key, normalize_daemon_config_patch,
 };
@@ -292,6 +294,83 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
     }
 }
 
+/// 从持久化配置构建 BT 防吸血配置（`bt_guard_*` 键，值域见 `fluxdown_protocol::DAEMON_CONFIG_FIELDS`）。
+///
+/// 缺失或无法解析的值回落到 [`BtGuardConfig::default`]（即契约默认值）；写入路径已由
+/// [`validate_config_patch`] 校验，这里只防御旧库 / 手改库里的脏值。全部键热生效：
+/// 不在 `invalidate_bt_session` 的监听类键之列，不会重建 BT 会话。
+#[cfg(feature = "bt")]
+#[must_use]
+pub fn bt_guard_config_from_map(cfg: &HashMap<String, String>) -> BtGuardConfig {
+    let defaults = BtGuardConfig::default();
+    let flag = |key: &str, default: bool| -> bool {
+        match cfg.get(key).map(|value| value.trim()) {
+            Some("true" | "1") => true,
+            Some("false" | "0") => false,
+            _ => default,
+        }
+    };
+    let number = |key: &str, min: u64, max: u64| -> Option<u64> {
+        cfg.get(key)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| (min..=max).contains(value))
+    };
+    let rule = |key: &str, default: RuleMode| -> RuleMode {
+        cfg.get(key)
+            .and_then(|value| value.trim().parse::<RuleMode>().ok())
+            .unwrap_or(default)
+    };
+    // 数值范围与 `daemon_config.rs` 键目录一致；范围外视为脏值回落默认。
+    let as_u32 = |value: Option<u64>, default: u32| {
+        value
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(default)
+    };
+    BtGuardConfig {
+        enabled: flag("bt_guard_enabled", defaults.enabled),
+        rule_excessive: rule("bt_guard_rule_excessive", defaults.rule_excessive),
+        rule_rerequest: rule("bt_guard_rule_rerequest", defaults.rule_rerequest),
+        rule_rewind: rule("bt_guard_rule_rewind", defaults.rule_rewind),
+        rule_lag: rule("bt_guard_rule_lag", defaults.rule_lag),
+        rule_fingerprint: rule("bt_guard_rule_fingerprint", defaults.rule_fingerprint),
+        cloud_mode: rule("bt_guard_cloud_mode", defaults.cloud_mode),
+        excess_ratio_pct: as_u32(
+            number("bt_guard_excess_ratio_pct", 110, 1000),
+            defaults.excess_ratio_pct,
+        ),
+        min_torrent_mib: number("bt_guard_min_torrent_mib", 0, 1_048_576)
+            .unwrap_or(defaults.min_torrent_mib),
+        rewind_tolerance_pct: as_u32(
+            number("bt_guard_rewind_tolerance_pct", 0, 100),
+            defaults.rewind_tolerance_pct,
+        ),
+        throttle_kib: as_u32(
+            number("bt_guard_throttle_kib", 1, 1_048_576),
+            defaults.throttle_kib,
+        ),
+        ban_base_hours: as_u32(
+            number("bt_guard_ban_base_hours", 1, 720),
+            defaults.ban_base_hours,
+        ),
+        ban_max_days: as_u32(
+            number("bt_guard_ban_max_days", 1, 365),
+            defaults.ban_max_days,
+        ),
+        downloading_max_action: cfg
+            .get("bt_guard_downloading_max_action")
+            .and_then(|value| value.trim().parse::<DownloadingMaxAction>().ok())
+            .unwrap_or(defaults.downloading_max_action),
+        skip_private: flag("bt_guard_skip_private", defaults.skip_private),
+        skip_lan: flag("bt_guard_skip_lan", defaults.skip_lan),
+        ipv6_prefix: number("bt_guard_ipv6_prefix", 48, 128)
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(defaults.ipv6_prefix),
+        filter_urls: cfg.get("bt_guard_filter_urls").cloned().unwrap_or_default(),
+        cloud_enabled: flag("bt_guard_cloud_enabled", defaults.cloud_enabled),
+        report_enabled: flag("bt_guard_report_enabled", defaults.report_enabled),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
@@ -478,6 +557,168 @@ mod tests {
 
         map.insert("bt_enabled".to_string(), "true".to_string());
         assert!(super::bt_config_from_map(&map).enabled, "explicit true");
+    }
+
+    fn patch(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn guard_patch_is_normalized_but_not_recoded_to_engine_numeric_booleans() {
+        let normalized = validate_config_patch(&patch(&[
+            ("bt_guard_enabled", "0"),
+            ("bt_guard_rule_lag", " enforce "),
+            ("bt_guard_ipv6_prefix", " 56 "),
+            ("bt_guard_report_enabled", "1"),
+            (
+                "bt_guard_filter_urls",
+                "  https://a.test/x\nhttps://b.test/y  ",
+            ),
+        ]))
+        .expect("valid guard patch");
+        assert_eq!(normalized["bt_guard_enabled"], "false");
+        assert_eq!(normalized["bt_guard_rule_lag"], "enforce");
+        assert_eq!(normalized["bt_guard_ipv6_prefix"], "56");
+        assert_eq!(normalized["bt_guard_report_enabled"], "true");
+        assert_eq!(
+            normalized["bt_guard_filter_urls"],
+            "https://a.test/x\nhttps://b.test/y"
+        );
+    }
+
+    #[test]
+    fn guard_patch_rejects_bad_values() {
+        for (key, value) in [
+            ("bt_guard_excess_ratio_pct", "109"),
+            ("bt_guard_ipv6_prefix", "47"),
+            ("bt_guard_ipv6_prefix", "129"),
+            ("bt_guard_throttle_kib", "0"),
+            ("bt_guard_rule_rewind", "ban"),
+            ("bt_guard_downloading_max_action", "enforce"),
+            ("bt_guard_enabled", "yes"),
+        ] {
+            assert!(
+                matches!(
+                    validate_config_patch(&patch(&[(key, value)])),
+                    Err(ConfigError::InvalidValue { .. })
+                ),
+                "{key}={value}"
+            );
+        }
+        // 任一键非法即整体失败，合法键不落库。
+        assert!(
+            validate_config_patch(&patch(&[
+                ("bt_guard_enabled", "true"),
+                ("bt_guard_ban_max_days", "366"),
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn guard_filter_urls_are_visible_in_the_public_config() {
+        let mut all = std::collections::HashMap::new();
+        all.insert(
+            "bt_guard_filter_urls".to_owned(),
+            "https://a.test".to_owned(),
+        );
+        let public = public_config_values(&all);
+        assert!(public.contains_key("bt_guard_filter_urls"));
+    }
+
+    #[cfg(feature = "bt")]
+    #[test]
+    fn guard_config_defaults_match_the_contract() {
+        let cfg = super::bt_guard_config_from_map(&std::collections::HashMap::new());
+        assert_eq!(cfg, fluxdown_engine::bt_guard::BtGuardConfig::default());
+        assert!(cfg.enabled);
+        assert_eq!(cfg.rule_excessive.as_str(), "observe");
+        assert_eq!(cfg.cloud_mode.as_str(), "observe");
+        assert_eq!(cfg.excess_ratio_pct, 200);
+        assert_eq!(cfg.min_torrent_mib, 64);
+        assert_eq!(cfg.rewind_tolerance_pct, 7);
+        assert_eq!(cfg.throttle_kib, 32);
+        assert_eq!(cfg.ban_base_hours, 24);
+        assert_eq!(cfg.ban_max_days, 30);
+        assert_eq!(cfg.downloading_max_action.as_str(), "throttle");
+        assert!(cfg.skip_private && cfg.skip_lan && cfg.cloud_enabled);
+        assert_eq!(cfg.ipv6_prefix, 64);
+        assert!(cfg.filter_urls.is_empty());
+        assert!(!cfg.report_enabled);
+    }
+
+    #[cfg(feature = "bt")]
+    #[test]
+    fn guard_config_maps_every_key_from_a_validated_patch() {
+        let normalized = validate_config_patch(&patch(&[
+            ("bt_guard_enabled", "false"),
+            ("bt_guard_rule_excessive", "enforce"),
+            ("bt_guard_rule_rerequest", "off"),
+            ("bt_guard_rule_rewind", "enforce"),
+            ("bt_guard_rule_lag", "off"),
+            ("bt_guard_rule_fingerprint", "enforce"),
+            ("bt_guard_cloud_mode", "enforce"),
+            ("bt_guard_excess_ratio_pct", "350"),
+            ("bt_guard_min_torrent_mib", "0"),
+            ("bt_guard_rewind_tolerance_pct", "15"),
+            ("bt_guard_throttle_kib", "128"),
+            ("bt_guard_ban_base_hours", "2"),
+            ("bt_guard_ban_max_days", "9"),
+            ("bt_guard_downloading_max_action", "ban"),
+            ("bt_guard_skip_private", "false"),
+            ("bt_guard_skip_lan", "false"),
+            ("bt_guard_ipv6_prefix", "48"),
+            ("bt_guard_filter_urls", "https://a.test/x"),
+            ("bt_guard_cloud_enabled", "false"),
+            ("bt_guard_report_enabled", "true"),
+        ]))
+        .expect("valid patch");
+        let all: std::collections::HashMap<String, String> = normalized.into_iter().collect();
+        let cfg = super::bt_guard_config_from_map(&all);
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.rule_excessive.as_str(), "enforce");
+        assert_eq!(cfg.rule_rerequest.as_str(), "off");
+        assert_eq!(cfg.rule_rewind.as_str(), "enforce");
+        assert_eq!(cfg.rule_lag.as_str(), "off");
+        assert_eq!(cfg.rule_fingerprint.as_str(), "enforce");
+        assert_eq!(cfg.cloud_mode.as_str(), "enforce");
+        assert_eq!(cfg.excess_ratio_pct, 350);
+        assert_eq!(cfg.min_torrent_mib, 0);
+        assert_eq!(cfg.rewind_tolerance_pct, 15);
+        assert_eq!(cfg.throttle_kib, 128);
+        assert_eq!(cfg.ban_base_hours, 2);
+        assert_eq!(cfg.ban_max_days, 9);
+        assert_eq!(cfg.downloading_max_action.as_str(), "ban");
+        assert!(!cfg.skip_private && !cfg.skip_lan && !cfg.cloud_enabled);
+        assert_eq!(cfg.ipv6_prefix, 48);
+        assert_eq!(cfg.filter_urls, "https://a.test/x");
+        assert!(cfg.report_enabled);
+    }
+
+    #[cfg(feature = "bt")]
+    #[test]
+    fn guard_config_falls_back_to_defaults_on_dirty_stored_values() {
+        let dirty: std::collections::HashMap<String, String> = [
+            ("bt_guard_enabled", "maybe"),
+            ("bt_guard_rule_lag", "ban"),
+            ("bt_guard_excess_ratio_pct", "5"),
+            ("bt_guard_min_torrent_mib", "-1"),
+            ("bt_guard_throttle_kib", "0"),
+            ("bt_guard_ban_max_days", "99999"),
+            ("bt_guard_ipv6_prefix", "300"),
+            ("bt_guard_downloading_max_action", "off"),
+            ("bt_guard_rewind_tolerance_pct", "abc"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        assert_eq!(
+            super::bt_guard_config_from_map(&dirty),
+            fluxdown_engine::bt_guard::BtGuardConfig::default()
+        );
     }
 }
 

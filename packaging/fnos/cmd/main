@@ -31,8 +31,9 @@ start_server() {
 	# 多个 data-share 以 : 分隔；本包只声明一个（fluxdown），取第一个。
 	save_dir="${TRIM_DATA_SHARE_PATHS%%:*}"
 	# FLUXDOWN_INSTALL_SOURCE：二进制归应用中心管理，应用内更新只提示安装新 fpk。
+	# [::] = IPv4 + IPv6 双栈：FN Connect 经 [::1] 转发、DDNS 常解析到 IPv6；无 IPv6 时 agent 退回 0.0.0.0。
 	FLUXDOWN_DATA_DIR="$TRIM_PKGVAR" \
-	FLUXDOWN_BIND="0.0.0.0:${PORT}" \
+	FLUXDOWN_BIND="[::]:${PORT}" \
 	FLUXDOWN_INSTALL_SOURCE=fnos \
 	FLUXDOWN_SAVE_DIR="$save_dir" \
 		"$BIN_DIR/fluxdown-agent" --server >> "$LOG_FILE" 2>&1 &

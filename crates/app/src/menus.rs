@@ -333,7 +333,7 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&Window) + 'static) {
 /// 确认「下载将暂停」。只退出界面、保留后台，走关闭窗口（托盘驻留时）。
 pub fn request_quit(cx: &mut App) {
     if Desktop::active_task_count(cx) == 0 {
-        crate::lifecycle::quit_everything_gated(cx);
+        crate::lifecycle::quit_everything(cx);
         return;
     }
     cx.defer(|cx| {
@@ -344,8 +344,8 @@ pub fn request_quit(cx: &mut App) {
             return;
         };
         if let Err(error) = window.update(cx, |_, window, cx| {
-            confirm_active_tasks(window, cx, |window, cx| {
-                crate::lifecycle::quit_everything_in(window, cx);
+            confirm_active_tasks(window, cx, |_window, cx| {
+                crate::lifecycle::quit_everything(cx);
             });
         }) {
             log::debug!("view or window released before lifecycle update: {error:#}");

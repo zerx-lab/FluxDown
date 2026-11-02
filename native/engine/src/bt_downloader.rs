@@ -32,7 +32,7 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttr
 use bytes::Bytes;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ConnectionOptions, ListenerMode,
-    ListenerOptions, ManagedTorrent, PeerConnectionOptions, Session, SessionOptions,
+    ListenerOptions, ManagedTorrent, PeerConnectionOptions, PeerPolicy, Session, SessionOptions,
     SessionPersistenceConfig,
 };
 
@@ -638,12 +638,18 @@ impl SharedBtSession {
     ///
     /// `bt_config` contains user-configurable BT settings (DHT, UPnP, ports,
     /// custom trackers).
+    ///
+    /// `peer_policy` is installed on the librqbit session (admission before
+    /// every connection, per-event upload verdicts); `None` keeps every peer
+    /// welcome. It cannot change after construction — behaviour changes go
+    /// through the policy object itself (see `bt_guard`).
     pub fn new(
         default_save_dir: &str,
         app_data_dir: &str,
         speed_limit_bps: u64,
         upload_limit_bps: u64,
         bt_config: &BtConfig,
+        peer_policy: Option<Arc<dyn PeerPolicy>>,
     ) -> Result<Self, DownloadError> {
         // BT 每个文件、每个 peer 常驻 FD；macOS GUI 启动的软限制仅 256，
         // 多文件种子或多任务会撞 EMFILE 并连带拖垮同进程的 SQLite/HTTP。
@@ -791,6 +797,7 @@ impl SharedBtSession {
             }),
             // 连接中与已连接共用此上限，见 `BT_PEER_LIMIT`。
             peer_limit: Some(BT_PEER_LIMIT),
+            peer_policy: peer_policy.clone(),
             ..Default::default()
         };
         let start_session = |dht: bool| -> anyhow::Result<Arc<Session>> {
@@ -1580,6 +1587,9 @@ impl Drop for InflightGuard {
 
 impl Drop for SharedBtSession {
     fn drop(&mut self) {
+        // 会话级后台任务（防吸血的重连 / 云名单 / 订阅节拍）监听此信号；`shutdown`
+        // 之外的释放路径（测试、异常退出）同样要让它们停下。幂等。
+        self.closing.cancel();
         let Some(runtime) = self.runtime.take() else {
             return;
         };
@@ -6036,7 +6046,7 @@ mod tests {
             ..Default::default()
         };
 
-        let session = super::SharedBtSession::new(&work_string, &work_string, 0, 0, &config)
+        let session = super::SharedBtSession::new(&work_string, &work_string, 0, 0, &config, None)
             .expect("the free successor port must allow BT session creation");
         let listen_addr = session
             .session
@@ -6047,6 +6057,106 @@ mod tests {
         drop(session);
         drop(occupied);
         std::fs::remove_dir_all(work).expect("the BT session test directory must be removable");
+    }
+
+    /// 生产构造路径：策略对象经 `SharedBtSession::new` 装进 librqbit 会话——被封禁的地址在握手前
+    /// 就被拒绝（计入拦截数）、受限队列速率在挂接时下发、会话关停后宿主的会话任务随之结束。
+    #[test]
+    fn session_with_the_guard_policy_refuses_banned_peers_and_stops_with_the_session() {
+        use crate::bt_guard::{BtGuard, BtGuardConfig, BtGuardHost, FilterAction, NewEntry};
+        use std::io::Read as _;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let guard = Arc::new(BtGuard::new(BtGuardConfig {
+            skip_lan: false,
+            throttle_kib: 48,
+            ..BtGuardConfig::default()
+        }));
+        let host = runtime.block_on(async {
+            let db = crate::db::Db::connect("sqlite::memory:")
+                .await
+                .expect("memory db");
+            BtGuardHost::new(
+                Arc::clone(&guard),
+                db,
+                Arc::new(crate::NoopSink),
+                crate::proxy_config::ProxyConfig::default(),
+            )
+        });
+        guard
+            .add_entry(NewEntry {
+                cidr: "127.0.0.1/32".to_owned(),
+                action: FilterAction::Ban,
+                duration_secs: None,
+                reason: String::new(),
+            })
+            .expect("ban entry");
+
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("probe port")
+            .local_addr()
+            .expect("probe addr")
+            .port();
+        let work = unique_test_dir("guard_policy_session");
+        std::fs::create_dir_all(&work).expect("test directory");
+        let work_string = work.to_string_lossy().into_owned();
+        let config = super::BtConfig {
+            enable_dht: false,
+            enable_upnp: false,
+            port_start: port,
+            port_end: port,
+            ..Default::default()
+        };
+        let session = Arc::new(
+            super::SharedBtSession::new(
+                &work_string,
+                &work_string,
+                0,
+                0,
+                &config,
+                Some(host.policy()),
+            )
+            .expect("BT session with a policy"),
+        );
+        let bound = session
+            .session()
+            .listen_addr()
+            .expect("listener address")
+            .port();
+        runtime.block_on(async { host.attach(&session.session(), session.closing_token()) });
+        assert!(host.session_active());
+        assert_eq!(
+            session
+                .session()
+                .throttled_upload_bps()
+                .map(std::num::NonZeroU32::get),
+            Some(48 * 1024)
+        );
+
+        // 被封禁的回环地址：连接被接受后立即丢弃（读到 EOF / 复位），不会进入握手。
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", bound)).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        let mut buf = [0u8; 1];
+        assert!(matches!(stream.read(&mut buf), Ok(0) | Err(_)));
+        assert_eq!(guard.stats().blocked_connections, 1);
+
+        session.shutdown();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while host.session_active() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the guard session task must stop with the session"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        runtime.block_on(host.shutdown());
+        drop(session);
+        drop(runtime);
+        std::fs::remove_dir_all(work).expect("remove test directory");
     }
 
     // -------------------------------------------------------------------------
@@ -6125,7 +6235,7 @@ mod tests {
             port_end: port.max(1024).saturating_add(8),
             ..Default::default()
         };
-        let session = super::SharedBtSession::new(&work_string, &work_string, 0, 0, &config)
+        let session = super::SharedBtSession::new(&work_string, &work_string, 0, 0, &config, None)
             .expect("BT session");
         session.runtime_handle.block_on(async {
             assert!(session.pause_task("t1").await.is_ok());

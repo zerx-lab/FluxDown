@@ -37,18 +37,24 @@ use crate::state::{AgentState, CloudCredentials, StateStore};
 #[derive(Default)]
 struct RecordingTasks {
     attempts: StdMutex<Vec<CreateTaskRequest>>,
+    routes: StdMutex<Vec<Option<fluxdown_protocol::CategoryRouteDto>>>,
     reject_with_dir: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
 impl LinkTaskCreator for RecordingTasks {
-    async fn create_task(&self, request: CreateTaskRequest) -> Result<String, ApiError> {
+    async fn create_task_with_route(
+        &self,
+        request: CreateTaskRequest,
+        category_route: Option<fluxdown_protocol::CategoryRouteDto>,
+    ) -> Result<String, ApiError> {
         let mut attempts = self.attempts.lock().unwrap();
         let reject = self
             .reject_with_dir
             .load(std::sync::atomic::Ordering::Relaxed)
             && !request.save_dir.is_empty();
         attempts.push(request);
+        self.routes.lock().unwrap().push(category_route);
         if reject {
             return Err(ApiError::Internal("directory not writable".to_owned()));
         }
@@ -201,7 +207,14 @@ impl Node {
             device_name: label.to_owned(),
             ..AgentState::default()
         }));
-        let events = AgentEventHub::new(AgentSnapshot::default());
+        let mut snapshot = AgentSnapshot::default();
+        snapshot.preferences.values.insert(
+            fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY.to_owned(),
+            serde_json::json!([
+                {"id":"bin","name":"Binary","extensions":["bin"],"saveDir":"category-bin"}
+            ]),
+        );
+        let events = AgentEventHub::new(snapshot);
         events.replace_daemon_snapshot(DaemonSnapshot {
             config: DaemonConfigSnapshot {
                 revision: 1,
@@ -653,6 +666,13 @@ async fn receiver_falls_back_to_default_dir_and_retries_without_dir() {
         .unwrap();
     assert_eq!(responder.attempts()[0].save_dir, "");
     assert_eq!(responder.attempts().len(), 1);
+    {
+        let routes = responder.tasks.routes.lock().unwrap();
+        assert!(
+            routes[0].is_some(),
+            "foreign-style directory fallback enables routing"
+        );
+    }
 
     // 带目录建任务失败 → 去掉目录重试一次，任务仍然建成。
     responder
@@ -670,6 +690,15 @@ async fn receiver_falls_back_to_default_dir_and_retries_without_dir() {
     assert_eq!(attempts.len(), 3);
     assert_eq!(attempts[1].save_dir, dir);
     assert_eq!(attempts[2].save_dir, "");
+    let routes = responder.tasks.routes.lock().unwrap();
+    assert!(
+        routes[1].is_none(),
+        "explicit usable directory disables routing"
+    );
+    assert!(
+        routes[2].is_some(),
+        "unavailable directory fallback enables routing"
+    );
 }
 
 #[tokio::test]

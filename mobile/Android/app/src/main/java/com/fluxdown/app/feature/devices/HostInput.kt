@@ -1,6 +1,6 @@
 package com.fluxdown.app.feature.devices
 
-/** 默认监听端口：`fluxdown-agent --server` 缺省 `0.0.0.0:17800`（`native/agent/src/server_mode.rs::DEFAULT_BIND`）。 */
+/** 默认监听端口：`fluxdown-agent --server` 缺省 `[::]:17800`（`native/agent/src/server_mode.rs::DEFAULT_BIND`）。 */
 private const val DEFAULT_HTTP_PORT = 17800
 private const val DEFAULT_HTTPS_PORT = 443
 

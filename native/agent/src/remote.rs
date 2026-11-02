@@ -152,8 +152,6 @@ pub struct RemoteTaskService {
     ws_handshaking: AtomicBool,
     /// 云端 SSE 里推送相关的事件（`notify.changed` / `notify.delivery` / 重连 / `resync`）转交云端推送模块。
     notify_feed: Option<crate::cloud_notify::NotifyFeed>,
-    /// FluxMesh事件（`share.claimed` / `share.sessionKill` / `share.changed`）原样转交FluxMesh服务；未编入FluxMesh时为空。
-    share_feed: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
     runtime: Mutex<Runtime>,
 }
 
@@ -181,7 +179,6 @@ impl RemoteTaskService {
             ws_pong_seen: AtomicBool::new(false),
             ws_handshaking: AtomicBool::new(false),
             notify_feed: None,
-            share_feed: None,
             runtime: Mutex::new(Runtime::default()),
         }
     }
@@ -190,13 +187,6 @@ impl RemoteTaskService {
     #[must_use]
     pub fn with_notify_feed(mut self, feed: crate::cloud_notify::NotifyFeed) -> Self {
         self.notify_feed = Some(feed);
-        self
-    }
-
-    /// 接入FluxMesh服务：SSE 里的FluxMesh事件转交给它处理。
-    #[must_use]
-    pub fn with_share_feed(mut self, feed: tokio::sync::mpsc::UnboundedSender<Value>) -> Self {
-        self.share_feed = Some(feed);
         self
     }
 
@@ -1108,13 +1098,6 @@ impl RemoteTaskService {
                 }
                 return Ok(Some(SseEnd::Resync));
             }
-            "share.claimed" | "share.sessionKill" | "share.changed" | "share.usage" => {
-                if let Some(feed) = &self.share_feed
-                    && feed.send(event.clone()).is_err()
-                {
-                    tracing::debug!("share service is gone; share event dropped");
-                }
-            }
             _ => {}
         }
         Ok(None)
@@ -1490,6 +1473,13 @@ impl RemoteTaskService {
                     message: error.to_string(),
                 })?,
         );
+        let category_route = if save_dir.is_none() {
+            self.events.inspect(|snapshot| {
+                crate::category_dir::category_route(&snapshot.preferences.values)
+            })
+        } else {
+            None
+        };
         let result = self
             .daemon
             .call_detailed::<DaemonCreateTaskParams, Value>(
@@ -1500,7 +1490,7 @@ impl RemoteTaskService {
                     unattended: true,
                     hint_file_size: None,
                     name_hint: None,
-                    category_route: None,
+                    category_route,
                 }),
             )
             .await
@@ -2497,7 +2487,6 @@ fn socket_error_end(event: &Value) -> Result<SseEnd, RemoteError> {
             },
             retryable: false,
             unreachable: false,
-            details: None,
         })),
         "presence_connection_missing" => Ok(SseEnd::Resync),
         other => Err(RemoteError::Protocol(format!(
@@ -5038,6 +5027,70 @@ mod tests {
             .collect::<Vec<_>>();
         ids.sort_unstable();
         assert_eq!(ids, ["r-canceled", "r-fresh", "r-live"]);
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn cloud_receive_uses_preference_category_route_only_without_explicit_directory() {
+        let harness = Harness::with_daemon("receive_category_route", command_mock).await;
+        harness
+            .service
+            .events
+            .publish(AgentEvent::PreferencesChanged(
+                fluxdown_protocol::AgentPreferencesDto {
+                    revision: 1,
+                    values: [(
+                        fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY.to_owned(),
+                        json!([
+                            {
+                                "id": "binary",
+                                "name": "Binary",
+                                "extensions": ["bin"],
+                                "saveDir": "/category/bin"
+                            }
+                        ]),
+                    )]
+                    .into(),
+                },
+            ));
+        let task = remote_task(json!({
+            "id": "r-category",
+            "url": "https://example.com/file.bin",
+            "fileName": "file.bin",
+            "status": "pending"
+        }));
+        let epoch = harness.service.cloud.request_epoch();
+
+        assert!(
+            harness
+                .service
+                .create_local_task(&task, None, epoch)
+                .await
+                .is_err()
+        );
+        let explicit_dir = harness.dir.join("explicit").to_string_lossy().into_owned();
+        assert!(
+            harness
+                .service
+                .create_local_task(&task, Some(explicit_dir), epoch)
+                .await
+                .is_err()
+        );
+        let calls = harness.daemon_calls.lock().await;
+        let create_params = calls
+            .iter()
+            .filter(|(method, _)| method == fluxdown_protocol::method::DAEMON_TASK_CREATE)
+            .map(|(_, params)| {
+                serde_json::from_value::<fluxdown_protocol::DaemonCreateTaskParams>(
+                    params.clone().expect("task creation params"),
+                )
+                .expect("decode task creation params")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(create_params.len(), 2);
+        assert!(create_params[0].category_route.is_some());
+        assert!(create_params[1].category_route.is_none());
+        drop(calls);
         harness.finish().await;
     }
 

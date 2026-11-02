@@ -13,7 +13,7 @@ ZerxLabBot 翻譯自動化（`i18n` 任務）翻譯 `assets/i18n/zh-TW.json` 時
 
 ## 不翻譯（原樣保留）
 
-FluxDown、FluxMesh、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、ED2K、aria2、yt-dlp、FFmpeg、HLS、DASH、M3U8、RSS、Webhook、Telegram、WebDAV、SMB、DHT、UPnP、uTP、PEX、Tracker、HTTP、HTTPS、FTP、SOCKS5、URL、API、MCP、JSON、CLI、NAS、Docker、Windows、macOS、Linux、Android、iOS、Chrome、Edge、Firefox、Safari、GitHub、QR Code（「二维码」譯作 QR Code）。
+FluxDown、FluxCloud、ZerxLabBot、BitTorrent、BT、eD2K、ED2K、aria2、yt-dlp、FFmpeg、HLS、DASH、M3U8、RSS、Webhook、Telegram、WebDAV、SMB、DHT、UPnP、uTP、PEX、Tracker、HTTP、HTTPS、FTP、SOCKS5、URL、API、MCP、JSON、CLI、NAS、Docker、Windows、macOS、Linux、Android、iOS、Chrome、Edge、Firefox、Safari、GitHub、QR Code（「二维码」譯作 QR Code）。
 
 ## 詞彙對照
 

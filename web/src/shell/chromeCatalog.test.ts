@@ -11,7 +11,7 @@ describe('dynamic chrome catalog', () => {
     setPluginChromeSpecs([spec])
     expect(notified).toBe(1)
     expect(getChromeCatalog().length).toBe(CHROME_CATALOG.length + 1)
-    expect(normalizeLayout(null, getChromeCatalog()).railTop).toEqual(['downloads', 'rss', 'webhooks', 'share', 'plugin:a@x:dash'])
+    expect(normalizeLayout(null, getChromeCatalog()).railTop).toEqual(['downloads', 'rss', 'webhooks', 'plugin:a@x:dash'])
     // 存储里把插件项放到标题栏，目录带着它时被找回
     const stored = { titleLeading: ['plugin:a@x:dash'] }
     expect(normalizeLayout(stored, getChromeCatalog()).titleLeading).toEqual(['plugin:a@x:dash'])

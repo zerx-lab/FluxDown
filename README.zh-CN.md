@@ -109,7 +109,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 打开 `http://<服务器>:17800/`，在首次运行向导中设置访问密钥。密钥须为 8–128 个 ASCII 可见字符，同时包含字母和数字。请先在可信网络完成初始化，再对外开放服务；远程访问应使用 HTTPS 反向代理。
 
-- server 模式默认监听 `0.0.0.0:17800`，可通过 `FLUXDOWN_BIND` 修改。
+- server 模式默认监听 `[::]:17800`（IPv4 + IPv6，无 IPv6 时退回 `0.0.0.0`），可通过 `FLUXDOWN_BIND` 修改。
 - 无人值守部署可通过部署环境或密钥管理器提供 `FLUXDOWN_TOKEN`，不要将真实密钥写进提交的文件。它仅在尚未设置密钥时初始化生效。
 - 持久化 `/data`（数据库、日志、访问密钥）与 `/root/Downloads`（下载文件）。自带 Compose 配置使用命名数据卷，下载目录映射到宿主机的 `docker/downloads/`。
 - 若下载盘需要休眠，建议把 `/data` 放在 SSD 或缓存池。

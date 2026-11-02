@@ -8,8 +8,8 @@
 //! - **仅 agent 退出**（SIGTERM / Ctrl-C）：只取消 agent，daemon 继续运行，UI 可重拉 agent。
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -24,14 +24,6 @@ const DAEMON_EXIT_BUDGET: Duration = Duration::from_secs(20);
 /// daemon 未连接或无响应时，`system.shutdown` 调用本身的上限。
 const DAEMON_SHUTDOWN_CALL_BUDGET: Duration = Duration::from_secs(5);
 
-/// 完全退出（不含重启）开始前的收尾：在 daemon 还活着时执行，返回后才继续关停。
-/// 实现自己负责有界等待——退出流程不会再替它设超时。
-#[async_trait::async_trait]
-pub trait BeforeQuit: Send + Sync {
-    /// 执行收尾。
-    async fn before_quit(&self);
-}
-
 pub struct Lifecycle {
     cancel: CancellationToken,
     quit_requested: AtomicBool,
@@ -40,7 +32,6 @@ pub struct Lifecycle {
     supervisor: Arc<DaemonSupervisor>,
     daemon_data_dir: PathBuf,
     shutdown_config: Option<DaemonClientConfig>,
-    before_quit: OnceLock<Arc<dyn BeforeQuit>>,
 }
 
 impl Lifecycle {
@@ -59,7 +50,6 @@ impl Lifecycle {
             supervisor,
             daemon_data_dir,
             shutdown_config: None,
-            before_quit: OnceLock::new(),
         }
     }
 
@@ -68,13 +58,6 @@ impl Lifecycle {
     pub fn with_shutdown_config(mut self, config: DaemonClientConfig) -> Self {
         self.shutdown_config = Some(config);
         self
-    }
-
-    /// 登记退出前收尾（FluxMesh：退出时把仍有接收方的实时分享转为云端暂存）。只接受第一次登记。
-    pub fn set_before_quit(&self, hook: Arc<dyn BeforeQuit>) {
-        if self.before_quit.set(hook).is_err() {
-            tracing::warn!("a before-quit hook is already registered");
-        }
     }
 
     /// 是否处于完全退出流程（决定 UI 连接的关闭原因）。
@@ -123,11 +106,6 @@ impl Lifecycle {
 
     async fn run_quit(&self) {
         tracing::info!("full quit requested: stopping fluxdownd before fluxdown-agent");
-        if !self.restart_requested.load(Ordering::Acquire)
-            && let Some(hook) = self.before_quit.get()
-        {
-            hook.before_quit().await;
-        }
         self.supervisor.stop();
         let call = self
             .daemon

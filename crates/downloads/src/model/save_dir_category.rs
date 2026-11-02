@@ -128,19 +128,39 @@ pub(crate) fn matched_category<'a>(
     options.iter().find(|option| option.save_dir == predicted)
 }
 
-/// 「自动」模式下预测输入变化时目录框应改成的值：目录框当前值（去空白）为空、等于初始目录
-/// 或等于上一次自动写入值才跟随，返回 `预测目录 ?? 初始目录`；用户手动改过则返回 `None`。
+/// 目录框是否仍是表单写入的值（用户没手动改过）：当前值（去空白）为空；表单写过目录框时
+/// 等于上一次写入值 `last_written`；尚未写过时等于初始目录。用户改回初始目录也算手改。
+pub(crate) fn dir_untouched(current: &str, offered: &str, last_written: Option<&str>) -> bool {
+    let current = current.trim();
+    current.is_empty()
+        || last_written.map_or(current == offered.trim(), |written| written == current)
+}
+
+/// 「自动」模式下预测输入变化时目录框应改成的值：只有保存目录仍遵循自动意图时才跟随。
 pub(crate) fn auto_follow_target(
     current: &str,
     offered: &str,
-    last_auto: Option<&str>,
+    last_written: Option<&str>,
     predicted: Option<&str>,
+    manually_edited: bool,
 ) -> Option<String> {
-    let current = current.trim();
-    let offered = offered.trim();
-    let following =
-        current.is_empty() || current == offered || last_auto.is_some_and(|auto| auto == current);
-    following.then(|| predicted.unwrap_or(offered).to_owned())
+    save_dir_untouched(current, offered, last_written, manually_edited)
+        .then(|| predicted.unwrap_or(offered.trim()).to_owned())
+}
+
+/// Whether the save-directory field still follows automatic intent.
+pub(crate) fn save_dir_untouched(
+    current: &str,
+    offered: &str,
+    last_written: Option<&str>,
+    manually_edited: bool,
+) -> bool {
+    !manually_edited && dir_untouched(current, offered, last_written)
+}
+
+/// Whether category routing is eligible for this selection state.
+pub(crate) fn category_route_eligible(mode: &CategoryMode, save_dir_untouched: bool) -> bool {
+    *mode == CategoryMode::Auto && save_dir_untouched
 }
 
 /// 常见的二级公共后缀（`co.uk` 这类）：三段域名以它结尾时注册域占两段，最左段不是子域，
@@ -261,8 +281,9 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        auto_follow_target, category_options, matched_category, predict_save_dir,
-        suggest_rule_name, suggest_url_pattern,
+        CategoryMode, auto_follow_target, category_options, category_route_eligible, dir_untouched,
+        matched_category, predict_save_dir, save_dir_untouched, suggest_rule_name,
+        suggest_url_pattern,
     };
 
     #[test]
@@ -443,32 +464,76 @@ mod tests {
     }
 
     #[test]
+    fn manual_directory_intent_survives_prediction_and_default_changes() {
+        let mode = CategoryMode::Auto;
+        for chosen in ["/downloads", "/videos"] {
+            for offered in ["/downloads", "/new-default"] {
+                // 手选旧默认目录或分类目录，即使路径仍等于程序写入值，也不得覆盖或路由。
+                assert_eq!(
+                    auto_follow_target(chosen, offered, Some(chosen), Some("/programs"), true),
+                    None
+                );
+                assert!(!category_route_eligible(
+                    &mode,
+                    save_dir_untouched(chosen, offered, Some(chosen), true),
+                ));
+
+                // 显式重选「自动」清除手动意图，恢复预测；写回的目录可继续参与提交路由。
+                let restored =
+                    auto_follow_target(chosen, offered, Some(chosen), Some("/programs"), false)
+                        .expect("automatic directory follows the new prediction");
+                assert_eq!(restored, "/programs");
+                assert!(category_route_eligible(
+                    &mode,
+                    save_dir_untouched(&restored, offered, Some(&restored), false),
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn auto_follow_only_while_the_user_has_not_edited_the_directory() {
-        // 空 / 等于初始目录 / 等于上次自动写入值：跟随预测（无预测回到初始目录）。
+        // 空 / 尚未写过时等于初始目录 / 等于上次写入值：跟随预测（无预测回到初始目录）。
         assert_eq!(
-            auto_follow_target("", "/dl", None, Some("/programs")).as_deref(),
+            auto_follow_target("", "/dl", None, Some("/programs"), false).as_deref(),
             Some("/programs")
         );
         assert_eq!(
-            auto_follow_target(" /dl ", "/dl", None, None).as_deref(),
+            auto_follow_target(" /dl ", "/dl", None, None, false).as_deref(),
             Some("/dl")
         );
         assert_eq!(
-            auto_follow_target("/programs", "/dl", Some("/programs"), Some("/videos")).as_deref(),
+            auto_follow_target(
+                "/programs",
+                "/dl",
+                Some("/programs"),
+                Some("/videos"),
+                false
+            )
+            .as_deref(),
             Some("/videos")
         );
         assert_eq!(
-            auto_follow_target("/programs", "/dl", Some("/programs"), None).as_deref(),
+            auto_follow_target("/programs", "/dl", Some("/programs"), None, false).as_deref(),
             Some("/dl")
         );
-        // 用户手动改过：不覆盖。
+        // Explicit manual edits and edits back to an earlier value must not be overwritten.
         assert_eq!(
-            auto_follow_target("/mine", "/dl", Some("/programs"), Some("/videos")),
+            auto_follow_target("/mine", "/dl", Some("/programs"), Some("/videos"), true),
             None
         );
         assert_eq!(
-            auto_follow_target("/programs", "/dl", None, Some("/videos")),
+            auto_follow_target("/programs", "/dl", None, Some("/videos"), true),
             None
         );
+        assert_eq!(
+            auto_follow_target("/dl", "/dl", Some("/programs"), Some("/videos"), true),
+            None
+        );
+        assert!(!dir_untouched("/dl", "/dl", Some("/programs")));
+        // 改成另一个分类的目录同样算手改。
+        assert!(!dir_untouched("/videos", "/dl", Some("/programs")));
+        assert!(dir_untouched(" /programs ", "/dl", Some("/programs")));
+        assert!(dir_untouched("  ", "/dl", Some("/programs")));
     }
 }

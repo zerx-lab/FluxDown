@@ -54,4 +54,6 @@ object HostNotice {
     const val componentResult = "componentResult"
     const val linkIncomingPairing = "linkIncomingPairing"
     const val taskCdnEvent = "taskCdnEvent"
+    /** `DaemonEvent::BtGuardChanged`：BT 防吸血条目 / 状态变化（载荷恒为 `null`），收到后重新拉取 `daemon.bt.guard.*`。 */
+    const val btGuardChanged = "btGuardChanged"
 }

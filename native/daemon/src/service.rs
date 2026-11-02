@@ -52,6 +52,9 @@ pub struct DaemonService {
     ytdlp_installing: AtomicBool,
     actor: DaemonActorHandle,
     demo_url: Option<String>,
+    /// BT 防吸血宿主（`daemon.bt.guard.*`）；未接线时这些方法答 `unavailable`。
+    #[cfg(feature = "bt")]
+    bt_guard: Option<Arc<fluxdown_engine::bt_guard::BtGuardHost>>,
 }
 
 impl DaemonService {
@@ -94,6 +97,8 @@ impl DaemonService {
             ytdlp_installing: AtomicBool::new(false),
             actor,
             demo_url: None,
+            #[cfg(feature = "bt")]
+            bt_guard: None,
         }
     }
 
@@ -101,6 +106,14 @@ impl DaemonService {
     #[must_use]
     pub fn with_demo_url(mut self, demo_url: Option<String>) -> Self {
         self.demo_url = demo_url;
+        self
+    }
+
+    /// 接入 BT 防吸血宿主（`daemon.bt.guard.*` 的数据面）。
+    #[cfg(feature = "bt")]
+    #[must_use]
+    pub fn with_bt_guard(mut self, bt_guard: Arc<fluxdown_engine::bt_guard::BtGuardHost>) -> Self {
+        self.bt_guard = Some(bt_guard);
         self
     }
 
@@ -1353,6 +1366,31 @@ impl DaemonService {
                     .map_err(|error| internal_error(format!("{error:#}")))?;
                 to_value(fluxdown_engine_protocol::egress_plan_to_dto(plan))
             }
+            #[cfg(feature = "bt")]
+            method::DAEMON_BT_GUARD_STATE
+            | method::DAEMON_BT_GUARD_ENTRIES_LIST
+            | method::DAEMON_BT_GUARD_ENTRIES_ADD
+            | method::DAEMON_BT_GUARD_ENTRIES_REMOVE
+            | method::DAEMON_BT_GUARD_EVENTS_LIST
+            | method::DAEMON_BT_GUARD_EXPORT
+            | method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH
+            | method::DAEMON_BT_GUARD_CLOUD_APPLY
+            | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN => {
+                self.bt_guard_call(is_local_agent, method_name, params)
+                    .await
+            }
+            #[cfg(not(feature = "bt"))]
+            method::DAEMON_BT_GUARD_STATE
+            | method::DAEMON_BT_GUARD_ENTRIES_LIST
+            | method::DAEMON_BT_GUARD_ENTRIES_ADD
+            | method::DAEMON_BT_GUARD_ENTRIES_REMOVE
+            | method::DAEMON_BT_GUARD_EVENTS_LIST
+            | method::DAEMON_BT_GUARD_EXPORT
+            | method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH
+            | method::DAEMON_BT_GUARD_CLOUD_APPLY
+            | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN => Err(unsupported_error(
+                "daemon was built without BitTorrent support",
+            )),
             method::DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH => {
                 match self
                     .actor
@@ -2482,7 +2520,7 @@ fn require_local_agent(is_local_agent: bool) -> Result<(), RpcErrorObject> {
         Ok(())
     } else {
         Err(RpcErrorObject::application(
-            "migration methods are restricted to the local agent",
+            "this method is restricted to the local agent",
             RpcErrorData::new(ApplicationErrorCode::Unauthorized, false),
         ))
     }
@@ -2630,6 +2668,11 @@ fn unsupported_error(message: &str) -> RpcErrorObject {
 #[cfg(feature = "plugins")]
 #[path = "plugin_host_rpc.rs"]
 mod plugin_host_rpc;
+
+/// BT 防吸血 RPC（`daemon.bt.guard.*`）。同样作为子模块编译。
+#[cfg(feature = "bt")]
+#[path = "bt_guard_rpc.rs"]
+mod bt_guard_rpc;
 
 #[cfg(test)]
 mod tests {
@@ -2961,6 +3004,7 @@ mod tests {
         method_name == fluxdown_protocol::method::DAEMON_GROUP_RESOLVE_PREVIEW
             || method_name.starts_with("daemon.plugin.")
             || method_name.starts_with("daemon.component.")
+            || (cfg!(not(feature = "bt")) && method_name.starts_with("daemon.bt.guard."))
     }
 }
 

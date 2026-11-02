@@ -29,9 +29,13 @@ use crate::service::{
     ApiError, ApiHost, LiveSpeed, TaskEvent, TaskEventKind, UNKNOWN_ENDPOINT_MESSAGE,
 };
 use fluxdown_protocol::daemon::{
+    BtGuardEntriesAddParams, BtGuardEntriesListDto, BtGuardEntriesListParams, BtGuardEntryDto,
+    BtGuardEventDto, BtGuardEventsListDto, BtGuardEventsListParams, BtGuardStateDto,
     CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, QueueDto,
     ResolvePreviewRequest, ResolvePreviewResponse, TaskDto,
 };
+
+mod bt_guard;
 
 // ---------------------------------------------------------------------------
 // MockHost：记录调用、返回可配置结果
@@ -66,6 +70,13 @@ struct MockHostInner {
     group_continued: Vec<String>,
     resolve_preview_requests: Vec<ResolvePreviewRequest>,
     resolve_preview_response: Option<ResolvePreviewResponse>,
+    bt_state: BtGuardStateDto,
+    bt_entries_lists: Vec<BtGuardEntriesListParams>,
+    bt_added: Vec<BtGuardEntriesAddParams>,
+    bt_removed: Vec<i64>,
+    bt_add_error: Option<ApiError>,
+    bt_remove_error: Option<ApiError>,
+    bt_events_lists: Vec<BtGuardEventsListParams>,
 }
 
 struct MockHost {
@@ -200,6 +211,38 @@ impl MockHost {
         self.inner.lock().unwrap().resolve_preview_requests.clone()
     }
 
+    fn with_bt_state(mut self, state: BtGuardStateDto) -> Self {
+        self.inner.get_mut().unwrap().bt_state = state;
+        self
+    }
+
+    /// 一次性：下一次 `bt_guard_entries_add` 返回该错误。
+    fn with_bt_add_error(mut self, err: ApiError) -> Self {
+        self.inner.get_mut().unwrap().bt_add_error = Some(err);
+        self
+    }
+
+    /// 一次性：下一次 `bt_guard_entry_remove` 返回该错误。
+    fn set_bt_remove_error(&self, err: ApiError) {
+        self.inner.lock().unwrap().bt_remove_error = Some(err);
+    }
+
+    fn bt_entries_lists(&self) -> Vec<BtGuardEntriesListParams> {
+        self.inner.lock().unwrap().bt_entries_lists.clone()
+    }
+
+    fn bt_added(&self) -> Vec<BtGuardEntriesAddParams> {
+        self.inner.lock().unwrap().bt_added.clone()
+    }
+
+    fn bt_removed(&self) -> Vec<i64> {
+        self.inner.lock().unwrap().bt_removed.clone()
+    }
+
+    fn bt_events_lists(&self) -> Vec<BtGuardEventsListParams> {
+        self.inner.lock().unwrap().bt_events_lists.clone()
+    }
+
     /// 模拟宿主检测到一次任务状态迁移，广播对应事件。若本实例未启用事件订阅
     /// （[`Self::without_task_events`]）或当前没有任何 WS 会话已订阅时记录生命周期日志。
     fn emit_event(&self, task_id: &str, kind: TaskEventKind) {
@@ -301,6 +344,66 @@ impl ApiHost for MockHost {
 
     async fn list_queues(&self) -> Result<Vec<QueueDto>, ApiError> {
         Ok(self.inner.lock().unwrap().queues.clone())
+    }
+
+    async fn bt_guard_state(&self) -> Result<BtGuardStateDto, ApiError> {
+        Ok(self.inner.lock().unwrap().bt_state.clone())
+    }
+
+    async fn bt_guard_entries_list(
+        &self,
+        params: BtGuardEntriesListParams,
+    ) -> Result<BtGuardEntriesListDto, ApiError> {
+        self.inner.lock().unwrap().bt_entries_lists.push(params);
+        Ok(BtGuardEntriesListDto {
+            total: 1,
+            items: vec![bt_guard::entry(7, "manual", "1.2.3.4/32", "ban")],
+        })
+    }
+
+    async fn bt_guard_entries_add(
+        &self,
+        params: BtGuardEntriesAddParams,
+    ) -> Result<BtGuardEntryDto, ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(e) = inner.bt_add_error.take() {
+            return Err(e);
+        }
+        let layer = if params.action == "allow" {
+            "allow"
+        } else {
+            "manual"
+        };
+        let created = bt_guard::entry(8, layer, &params.cidr, &params.action);
+        inner.bt_added.push(params);
+        Ok(created)
+    }
+
+    async fn bt_guard_entry_remove(&self, entry_id: i64) -> Result<(), ApiError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(e) = inner.bt_remove_error.take() {
+            return Err(e);
+        }
+        inner.bt_removed.push(entry_id);
+        Ok(())
+    }
+
+    async fn bt_guard_events_list(
+        &self,
+        params: BtGuardEventsListParams,
+    ) -> Result<BtGuardEventsListDto, ApiError> {
+        self.inner.lock().unwrap().bt_events_lists.push(params);
+        Ok(BtGuardEventsListDto {
+            total: 1,
+            items: vec![BtGuardEventDto {
+                id: 1,
+                at: 1_761_900_000,
+                kind: "enforce".to_string(),
+                ip_group: "1.2.3.4".to_string(),
+                rule: "excessive".to_string(),
+                ..BtGuardEventDto::default()
+            }],
+        })
     }
 
     async fn submit_external(&self, req: DownloadRequest) -> Result<(), ApiError> {

@@ -101,6 +101,8 @@ enum SettingsIndex {
         "download.userAgent": ["searchKeywordsUserAgent"],
         "logs.maxSize": ["searchKeywordsLogExport"],
         "logs.export": ["searchKeywordsLogExport"],
+        "btGuard.enabled": ["btGuardKeywords"],
+        "btGuard.bans": ["btGuardKeywords"],
     ]
 
     /// `, | ，` 分隔的别名词表 → 词。

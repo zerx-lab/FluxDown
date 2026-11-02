@@ -40,13 +40,13 @@ import {
 } from "./settings-cache";
 import { installSniff } from "./sniff";
 import { loadServiceWorkerScopes } from "./sw-scopes";
-import { allFrames, installTabState } from "./tab-state";
+import { allFrames, installTabState, setSniffLimit } from "./tab-state";
 import { installTaskListeners } from "./tasks";
 import { updateIcon } from "./toolbar";
 
 const LEGACY_PENDING_QUEUE_KEY = "pendingDownloadQueue";
 
-/** 设置变化 / 启动预热：图标、下载栏隐藏、拦截监听的注册状态。 */
+/** 设置变化 / 启动预热：图标、下载栏隐藏、拦截监听的注册状态、每 tab 资源上限。 */
 function applyInterceptState(): void {
   getCachedSettings()
     .then((s) => {
@@ -54,6 +54,7 @@ function applyInterceptState(): void {
       // 同类产品（IDM/Motrix/FDM）共同使用的策略：拦截启用时隐藏下载 UI。
       syncDownloadShelfState(s.enabled);
       setInterceptListenersActive(s.enabled);
+      setSniffLimit(s.sniffMaxResources);
     })
     .catch((e) => {
       logWarn("[FluxDown] Settings cache warmup failed (non-fatal):", e);

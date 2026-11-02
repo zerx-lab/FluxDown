@@ -24,7 +24,6 @@ fluxdown_api = { version = "0.1.0", path = "../api" }
 fluxdown_link = { version = "0.1.0", path = "../link" }
 fluxdown_logfile = { version = "0.1.0", path = "../logfile" }
 fluxdown_protocol = { path = "../protocol" }
-fluxdown_share = { version = "0.1.0", path = "../share", optional = true }
 fluxdown_ui_i18n = { version = "0.1.0", path = "../../crates/i18n", optional = true }
 fs2 = "0.4.3"
 futures-util = "0.3.32"
@@ -35,6 +34,7 @@ regex = "1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+socket2 = "0.6.5"
 tao = { version = "0.37", default-features = false, optional = true }
 tar = "0.4"
 thiserror = "2"
@@ -117,9 +117,3 @@ desktop = [
 # 见 build.rs / src/web_assets.rs。未启用时 `--server` 仍可用 `FLUXDOWN_WEBROOT` 磁盘托管，
 # 否则对前端请求回 503 提示页。
 web-ui = []
-
-# FluxMesh（临时文件分享，iroh P2P）：默认开启，桌面 / headless server 官方构建都编入。
-# 移动端经 `fluxdown_mobile` 的 `share-p2p` 转发（iOS 商店 flavor `--no-default-features` 剔除 iroh）。
-# 关闭后不下发 `agent.share` 能力，`agent.share.*` 恒报 `shareUnavailable`，分享链接不会落成下载任务。
-default = ["share-p2p"]
-share-p2p = ["dep:fluxdown_share", "dep:blake3"]

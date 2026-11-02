@@ -2,7 +2,7 @@
 // 后续「设置页」agent：为每个分类提供真实的 `Component`（替换 `SettingsCategoryStub`）。
 // 路由 `/settings/$category` 的 `$category` 即这里的 `id`。
 
-import { Code, Download, Gauge, Gift, Globe, HardDrive, Info, Magnet, Package, Palette, Settings, Share2, User } from 'lucide-react'
+import { Code, Download, Gauge, Gift, Globe, HardDrive, Info, Magnet, Package, Palette, Settings, User } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { AboutSettings } from './sections/about'
@@ -17,7 +17,6 @@ import { Ed2kSettings } from './sections/ed2k'
 import { GeneralSettings } from './sections/general'
 import { ProxySettings } from './sections/proxy'
 import { ReferralSettings } from './sections/referral'
-import { ShareSettings } from './sections/share'
 
 export type SettingsCategoryId =
   | 'general'
@@ -29,7 +28,6 @@ export type SettingsCategoryId =
   | 'ed2k'
   | 'proxy'
   | 'api'
-  | 'share'
   | 'extensions'
   | 'doctor'
   | 'about'
@@ -55,7 +53,6 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
   { id: 'ed2k', labelKey: 'settingsCatEd2k', descKey: 'settingsCatEd2kDesc', icon: HardDrive, Component: Ed2kSettings },
   { id: 'proxy', labelKey: 'settingsCatProxy', descKey: 'settingsCatProxyDesc', icon: Globe, Component: ProxySettings },
   { id: 'api', labelKey: 'settingsCatApiService', descKey: 'settingsCatApiServiceDesc', icon: Code, Component: ApiSettings },
-  { id: 'share', labelKey: 'settingsCatShare', descKey: 'settingsCatShareDesc', icon: Share2, Component: ShareSettings },
   { id: 'extensions', labelKey: 'settingsCatExtensions', descKey: 'settingsCatExtensionsDesc', icon: Package, Component: ExtensionsSettings },
   { id: 'doctor', labelKey: 'settingsCatDoctor', descKey: 'settingsCatDoctorDesc', icon: Gauge, Component: DoctorSettings },
   { id: 'about', labelKey: 'settingsCatAbout', descKey: 'settingsCatAboutDesc', icon: Info, Component: AboutSettings },

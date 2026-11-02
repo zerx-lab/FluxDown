@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import { SAVE_DIR_HISTORY_LIMIT, readSaveDirHistory, recordSaveDir, saveDirChoices } from './saveDirHistory'
+import { SAVE_DIR_HISTORY_LIMIT, readCategorySaveDirHistory, readSaveDirHistory, recordCategorySaveDir, recordSaveDir, saveDirChoices } from './saveDirHistory'
 
 interface Fixture {
   limit: number
   read: { name: string; value: unknown; expected: string[] }[]
   record: { name: string; history: string[]; dir: string; expected: string[] | null }[]
-  choices: { name: string; history: string[]; current: string; expected: string[] }[]
+  choices: { name: string; category: string[]; history: string[]; current: string; expected: string[] }[]
+  categoryRead: { name: string; value: unknown; expected: Record<string, string[]> }[]
+  categoryRecord: { name: string; history: Record<string, string[]>; category: string; dir: string; expected: Record<string, string[]> | null }[]
 }
 
 // 与 crates/downloads/tests/fixtures 共用同一份用例（运行期读取：Docker 构建上下文不含 crates/）。
@@ -29,7 +31,17 @@ describe('save dir history (shared fixtures)', () => {
   }
   for (const item of fixture.choices) {
     test(`choices: ${item.name}`, () => {
-      expect(saveDirChoices(item.history, item.current)).toEqual(item.expected)
+      expect(saveDirChoices(item.category, item.history, item.current)).toEqual(item.expected)
+    })
+  }
+  for (const item of fixture.categoryRead) {
+    test(`categoryRead: ${item.name}`, () => {
+      expect(readCategorySaveDirHistory(item.value)).toEqual(item.expected)
+    })
+  }
+  for (const item of fixture.categoryRecord) {
+    test(`categoryRecord: ${item.name}`, () => {
+      expect(recordCategorySaveDir(item.history, item.category, item.dir)).toEqual(item.expected)
     })
   }
 })

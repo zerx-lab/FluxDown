@@ -40,7 +40,7 @@ start_server() {
 	mkdir -p "$VAR_DIR"
 	# FLUXDOWN_INSTALL_SOURCE：二进制归套件中心管理，应用内更新只提示安装新 spk
 	FLUXDOWN_DATA_DIR="$VAR_DIR" \
-	FLUXDOWN_BIND="0.0.0.0:17800" \
+	FLUXDOWN_BIND="[::]:17800" \
 	FLUXDOWN_INSTALL_SOURCE=synology \
 	FLUXDOWN_SAVE_DIR="$(resolve_share_dir)" \
 		"$TARGET_DIR/bin/fluxdown-agent" --server >> "$LOG_FILE" 2>&1 &

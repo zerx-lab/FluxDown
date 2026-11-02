@@ -156,13 +156,22 @@ export function matchedCategory(options: readonly CustomCategoryDto[], predicted
 }
 
 /**
- * Auto 模式下预测输入变化时目录框应改写成的值；不应覆盖（用户手改过）返回 null。
- * 目录框为空、等于 offered、或等于上一次自动写入值才跟随。
+ * 目录框是否仍是「程序给的」（未被用户手改）：空、等于程序最近一次写入值；
+ * 表单尚未写过目录框（lastWritten 为空）时等于 offered。
  */
-export function autoFollowDir(current: string, offered: string, lastAuto: string | null, predicted: string | null): string | null {
+export function dirUntouched(current: string, offered: string, lastWritten: string | null): boolean {
   const dir = current.trim()
-  if (dir !== '' && dir !== offered.trim() && dir !== lastAuto) return null
-  return predicted ?? offered
+  if (dir === '') return true
+  if (lastWritten !== null && lastWritten !== '') return dir === lastWritten
+  return dir === offered.trim()
+}
+
+/**
+ * Auto 模式下预测输入变化时目录框应改写成的值；用户手改过（非 `dirUntouched`）返回 null。
+ */
+export function autoFollowDir(current: string, offered: string, lastWritten: string | null, predicted: string | null, manuallyChosen = false): string | null {
+  if (manuallyChosen || !dirUntouched(current, offered, lastWritten)) return null
+  return predicted ?? offered.trim()
 }
 
 /** 模式对应的目录框值（Auto 取预测或 offered）。 */
@@ -171,4 +180,14 @@ export function modeDir(mode: CategoryPickMode, categories: readonly CustomCateg
   if (mode.kind === 'none') return offered
   const category = categories.find((item) => item.id === mode.id)
   return category ? category.saveDir.trim() : offered
+}
+/** Route is submitted only while Auto is active and the directory still follows the offered/category route. */
+export function eligibleRoute(
+  route: CategoryRouteDto | null,
+  mode: CategoryPickMode,
+  manuallyChosen: boolean,
+  submitted: string,
+  offered: string,
+): CategoryRouteDto | null {
+  return route !== null && mode.kind === 'auto' && !manuallyChosen && routeFollows(route, submitted, offered) ? route : null
 }

@@ -12,13 +12,15 @@ public enum SaveDirCategoryMode: Sendable, Hashable {
 /// 经 `HostSession.categorySaveDir` 取得预测目录，这里只负责选项 / 自动跟随 / 模式切换的判定）。
 public struct SaveDirCategoryState: Sendable, Equatable {
     public private(set) var mode: SaveDirCategoryMode = .auto
-    /// 上一次由「自动」写入目录框的值；目录框等于它视为用户没有手动改过。
-    public private(set) var lastAutoDir: String?
+    /// 表单最近一次由程序写入目录框的值；目录框等于它视为用户没有手动改过。
+    public private(set) var lastWritten: String?
+    /// 保存目录由用户手动编辑/选择后，自动预测不再覆盖，提交也不再请求自动路由。
+    public private(set) var hasManualSaveDir = false
 
     /// - Parameter initialDir: 打开表单时目录框的值（外部预填的分类目录也视为自动写入值）。
     public init(initialDir: String = "") {
         let dir = Self.trimmed(initialDir)
-        lastAutoDir = dir.isEmpty ? nil : dir
+        lastWritten = dir.isEmpty ? nil : dir
     }
 
     // MARK: 选项
@@ -47,17 +49,27 @@ public struct SaveDirCategoryState: Sendable, Equatable {
 
     // MARK: 状态转移
 
-    /// 预测输入变化（含打开表单）：「自动」模式下目录框仍是系统给的值（空 / 等于初始目录 / 等于上次
-    /// 自动写入值）时跟随预测；返回应写入目录框的新值，nil = 不改（非「自动」或用户手动改过目录）。
-    public mutating func follow(dir: String, offered: String, predicted: String?) -> String? {
-        guard mode == .auto else { return nil }
+    /// 目录框是否仍是系统给的值；空或等于 `lastWritten`，尚未写入则比较初始目录。
+    public func untouched(dir: String, offered: String) -> Bool {
         let current = Self.trimmed(dir)
-        let base = Self.trimmed(offered)
-        guard current.isEmpty || current == base || current == lastAutoDir else { return nil }
+        if current.isEmpty { return true }
+        if let last = lastWritten, !last.isEmpty { return current == last }
+        return current == Self.trimmed(offered)
+    }
+
+    /// 预测输入变化（含打开表单）：「自动」模式下目录框未被手改（见 `untouched`）时跟随预测；
+    /// 返回应写入目录框的新值，nil = 不改（非「自动」或用户手动改过目录，含显式改回默认目录）。
+    public mutating func follow(dir: String, offered: String, predicted: String?) -> String? {
+        guard mode == .auto, !hasManualSaveDir, untouched(dir: dir, offered: offered) else { return nil }
         let guess = Self.trimmed(predicted ?? "")
-        let next = guess.isEmpty ? base : guess
-        lastAutoDir = next
+        let next = guess.isEmpty ? Self.trimmed(offered) : guess
+        lastWritten = next
         return next
+    }
+
+    /// 标记目录框的显式编辑或目录选择；即使选中的值等于初始目录也必须阻止路由。
+    public mutating func markSaveDirManual() {
+        hasManualSaveDir = true
     }
 
     /// 用户选了新模式：返回应写入目录框的新值，nil = 选择无效（所选分类已不在选项里），模式保持不变。
@@ -74,23 +86,27 @@ public struct SaveDirCategoryState: Sendable, Equatable {
         switch newMode {
         case .auto:
             mode = .auto
+            hasManualSaveDir = false
             let guess = Self.trimmed(predicted ?? "")
             let next = guess.isEmpty ? base : guess
-            lastAutoDir = next
+            lastWritten = next
             return next
         case .noCategory:
             mode = .noCategory
+            lastWritten = base
             return base
         case let .category(id):
             guard let entry = options.first(where: { $0.id == id }) else { return nil }
             mode = newMode
-            return Self.trimmed(entry.saveDir)
+            let next = Self.trimmed(entry.saveDir)
+            lastWritten = next
+            return next
         }
     }
 
-    /// 提交用的 `offeredSaveDir`：只有「自动」沿用初始目录交给 Rust 路由；其余模式不路由。
-    public func offeredSaveDir(initial: String) -> String? {
-        mode == .auto ? initial : nil
+    /// 提交用 offeredSaveDir：仅自动模式且未手动选择目录时请求自动路由。
+    public func offeredSaveDir(dir: String, initial: String) -> String? {
+        mode == .auto && !hasManualSaveDir && untouched(dir: dir, offered: initial) ? initial : nil
     }
 
     private static func trimmed(_ text: String) -> String {

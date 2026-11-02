@@ -1,11 +1,12 @@
-//! 站点默认插件：多个插件的 resolver 匹配同一站点时，用户记住的（或无人值守下载自动选用、
-//! 待确认的）插件。仅在列表非空时渲染；读 / 改均走 `daemon.plugin.siteDefaults` /
-//! `daemon.plugin.setSiteDefault`。
+//! 站点默认插件子页：多个插件的 resolver 匹配同一站点时，用户记住的（或无人值守下载自动选用、
+//! 待确认的）插件。读 / 改均走 `daemon.plugin.siteDefaults` / `daemon.plugin.setSiteDefault`；
+//! 每次进入子页重新读取。
 
 use std::collections::HashSet;
 
 use fluxdown_protocol::{ApplicationErrorCode, PluginDto, PluginSiteDefaultDto, RpcErrorData};
-use fluxdown_ui_components::{BusyExt as _, ControlExt as _};
+use fluxdown_ui_components::{BusyExt as _, ControlExt as _, FluxIcon};
+use fluxdown_ui_theme::active_theme;
 use gpui::{
     Anchor, Context, IntoElement, ParentElement, SharedString, Styled, Window,
     prelude::FluentBuilder as _, px,
@@ -24,13 +25,15 @@ use super::{
 };
 use crate::{ExtensionsView, error_text, ui};
 
-/// 站点默认插件区的视图状态。
+/// 站点默认插件子页的视图状态。
 #[derive(Default)]
 pub(crate) struct SiteDefaultsUi {
-    /// 本次进入插件页是否已发起读取。
+    /// 本次进入子页是否已发起读取。
     pub requested: bool,
     pub loading: bool,
     pub entries: Vec<PluginSiteDefaultDto>,
+    /// 至少成功读到过一次（含 daemon 不支持）；此前列表为空不代表没有记录，不显示空状态。
+    pub loaded: bool,
     /// 有写操作在途的站点（禁用该行控件）。
     pub busy: HashSet<String>,
     /// `busy` 中由「移除」发起的站点（仅「移除」按钮转圈，其余写操作转「确认」）。
@@ -84,10 +87,14 @@ impl ExtensionsView {
                 let state = &mut this.plugins.site_defaults;
                 state.loading = false;
                 match result {
-                    Ok(entries) => state.entries = entries,
-                    // 不带插件的 daemon：没有该功能，区块保持隐藏。
+                    Ok(entries) => {
+                        state.entries = entries;
+                        state.loaded = true;
+                    }
+                    // 不带插件的 daemon：没有该功能，按空列表显示空状态。
                     Err(error) if error.code == ApplicationErrorCode::Unsupported => {
                         state.entries.clear();
+                        state.loaded = true;
                     }
                     // 其余失败保留已有列表；断连类失败在 daemon 恢复后自动重试一次。
                     Err(error) => {
@@ -154,16 +161,60 @@ impl ExtensionsView {
         .detach();
     }
 
-    /// 列表为空时返回 `None`（整块不渲染）。
+    /// 「站点默认插件」子页：标题说明 + 记录列表（为空时空状态）。
     pub(crate) fn render_site_defaults(
-        &self,
-        frame: Frame<'_>,
-        cx: &Context<Self>,
-    ) -> Option<gpui::Div> {
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.ensure_site_defaults_loaded(window, cx);
+        let theme = active_theme(cx);
+        let frame = Frame {
+            translator: self.translator.read(cx),
+            tokens: theme.tokens(),
+            extended: theme.extended(),
+            components: theme.components(),
+            stale: self.controller.is_stale(),
+        };
+        let translator = frame.translator;
+        let state = &self.plugins.site_defaults;
+        let body = if !state.entries.is_empty() {
+            Some(list_card(self.site_default_rows(frame, cx), frame, cx).into_any_element())
+        } else if !state.loaded {
+            // 尚未成功读取（在途 / 断连 / 失败）：不谎称「暂无记录」。
+            None
+        } else {
+            Some(
+                ui::empty_state(
+                    FluxIcon::Package,
+                    translator.text("pluginSiteDefaultsEmpty").to_owned(),
+                    None,
+                    frame,
+                )
+                .into_any_element(),
+            )
+        };
+        v_flex()
+            .w_full()
+            .gap(frame.tokens.spacing.md)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(frame.tokens.spacing.xxs)
+                    .child(ui::title_text(
+                        translator.text("pluginSiteDefaultsTitle").to_owned(),
+                        frame,
+                    ))
+                    .child(ui::meta_text(
+                        translator.text("pluginSiteDefaultsDesc").to_owned(),
+                        frame,
+                    )),
+            )
+            .children(body)
+    }
+
+    fn site_default_rows(&self, frame: Frame<'_>, cx: &Context<Self>) -> Vec<gpui::AnyElement> {
         let entries = &self.plugins.site_defaults.entries;
-        if entries.is_empty() {
-            return None;
-        }
         let Frame {
             translator,
             tokens,
@@ -172,7 +223,7 @@ impl ExtensionsView {
         } = frame;
         let plugins = self.controller.plugins();
         let view = cx.entity();
-        let rows = entries
+        entries
             .iter()
             .enumerate()
             .map(|(index, entry)| {
@@ -300,25 +351,6 @@ impl ExtensionsView {
                     })
                     .into_any_element()
             })
-            .collect::<Vec<_>>();
-        Some(
-            v_flex()
-                .w_full()
-                .gap(tokens.spacing.sm)
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap(tokens.spacing.xxs)
-                        .child(ui::title_text(
-                            translator.text("pluginSiteDefaultsTitle").to_owned(),
-                            frame,
-                        ))
-                        .child(ui::meta_text(
-                            translator.text("pluginSiteDefaultsDesc").to_owned(),
-                            frame,
-                        )),
-                )
-                .child(list_card(rows, frame, cx)),
-        )
+            .collect()
     }
 }

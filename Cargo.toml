@@ -6,7 +6,6 @@
 [workspace]
 resolver = "3"
 members = ["native/*", "crates/*", "scripts/desktop-dev"]
-exclude = ["poc/iroh-demo"]
 
 [workspace.package]
 edition = "2024"
@@ -46,11 +45,12 @@ unwrap_used = "deny"
 wildcard_imports = "deny"
 
 [patch.crates-io]
-# zerx-lab/rqbit main = 上游 ikatson/rqbit main（v9.0.1 之后，同步至 2026-10-28）+ lingdiansr MSE
+# zerx-lab/rqbit 分支 fluxdown/peer-policy = 上游 ikatson/rqbit main（v9.0.1 之后，同步至 2026-10-28）+ lingdiansr MSE
 # + Android HTTPS 修复（bundled webpki 根替代需 JNI 初始化的 rustls-platform-verifier，否则 Android 上任何
 # https tracker 都会 panic 掉磁力解析）+ tracker panic 隔离 + 握手超时下发到 Live 种子的 peer 连接
-# + 初检末尾到达的暂停不再丢失（校验完落 Paused 而非转 Live）。
-librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "a41133bae95234dd2bab895fc71024fd4b3f6b2a" }
+# + 初检末尾到达的暂停不再丢失（校验完落 Paused 而非转 Live）+ BT 防吸血 PeerPolicy 钩子
+# （peer_policy.rs：admit / readmit / 事件 / 限速·Choke·断开）+ 始终发冗余 HAVE + 发送前丢弃已 Cancel 的块。
+librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "958b5feecf365d6edb712fe15ce4084235552f9a" }
 # 上游 main 已修、crates.io 0.7.0 未发布：Windows 上 UDP recv_from 因先前 send_to 收到 ICMP
 # 端口不可达而报 WSAECONNRESET(10054) 时，0.7.0 的 uTP 分发循环直接退出，整个会话的 uTP 失效。
 # 上游发布含该修复的版本后删除本条。

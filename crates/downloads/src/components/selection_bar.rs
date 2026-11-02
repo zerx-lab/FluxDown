@@ -287,15 +287,6 @@ impl DownloadView {
                 cx,
             ));
         }
-        if let Some(button) = self.share_button(
-            "download-selection-share",
-            self.selected_share_control(cx),
-            icon_size,
-            |this, window, cx| this.share_selected(window, cx),
-            cx,
-        ) {
-            actions.push(button);
-        }
         actions.push(self.selection_delete_menu(cx));
         let clear = self.icon_action(
             "download-selection-clear",

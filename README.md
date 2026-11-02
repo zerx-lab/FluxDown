@@ -109,7 +109,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 Open `http://<server>:17800/` and set an access key in the first-run wizard. The key must contain 8–128 visible ASCII characters, including both a letter and a digit. Set it up on a trusted network before exposing the service; use an HTTPS reverse proxy for remote access.
 
-- Server mode listens on `0.0.0.0:17800` by default; override it with `FLUXDOWN_BIND`.
+- Server mode listens on `[::]:17800` (IPv4 + IPv6, falling back to `0.0.0.0` without IPv6) by default; override it with `FLUXDOWN_BIND`.
 - For unattended setup, supply `FLUXDOWN_TOKEN` through your deployment environment or secret manager, not a committed file. It initializes the key only if one has not already been set.
 - Persist `/data` for the database, logs and access key, and `/root/Downloads` for downloads. The supplied Compose file uses a named data volume and `docker/downloads/` on the host.
 - Prefer SSD/cache storage for `/data` if download disks need to sleep.

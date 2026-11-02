@@ -6,6 +6,7 @@
 
 use std::{
     cell::Cell,
+    collections::HashSet,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -34,10 +35,15 @@ use super::{DetailTab, TaskDetailView, rate_text};
 use crate::{
     controller::{DownloadsCommand, DownloadsResult, PortFuture},
     flags::flag_slot,
+    model::bt_guard::{
+        BanChoice, GuardMenuAction, PeerAction, PeerGuard, Suspicion, action_text, any_guard,
+        entry_params, rules_text, tooltip_text,
+    },
     model::bt_trackers::{
         TrackerCounts, TrackerFilter, TrackerSort, TrackerSortKey, next_sort, tracker_view,
     },
     model::{RowKey, TaskState, format_bytes},
+    strings::error_text,
 };
 
 /// 轮询间隔。
@@ -68,6 +74,11 @@ const COL_TRANSPORT: f32 = 60.;
 const COL_BYTES: f32 = 84.;
 const COL_SPEED: f32 = 92.;
 const COL_SPEED_STACK: f32 = 96.;
+const COL_GUARD_BYTES: f32 = 88.;
+const COL_GUARD_STATE: f32 = 164.;
+const COL_GUARD_ACTION: f32 = 150.;
+/// 连接表并排防吸血三列所需的最小内容宽度（界面缩放前的 px）。
+const GUARD_COLUMNS_MIN_WIDTH: f32 = 1_180.;
 /// 国旗槽位宽度（界面缩放前的 px；高 = 宽 × 3/4，即 16×12）。
 const FLAG_WIDTH: f32 = 16.;
 
@@ -234,6 +245,162 @@ pub(super) fn peer_sub_line(peer: &BtPeerDto) -> String {
     parts.join(" · ")
 }
 
+// ───────────────────────── 防吸血 ─────────────────────────
+
+/// 防吸血三列的表头文案。
+struct GuardHeaderText {
+    uploaded: SharedString,
+    state: SharedString,
+    action: SharedString,
+}
+
+/// 连接行右键菜单里的防吸血命令。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuardCommand {
+    /// 给该 IP 组加封禁 / 限速 / 白名单条目。
+    Entry(GuardMenuAction),
+    /// 打开证据对话框。
+    Evidence,
+}
+
+type GuardHandler = Rc<dyn Fn(BtPeerDto, GuardCommand, &mut Window, &mut App)>;
+
+/// 右键菜单里防吸血项的文案（按 [`BanChoice::ALL`] 顺序的封禁项）。
+struct GuardMenuLabels {
+    bans: [SharedString; 4],
+    throttle: SharedString,
+    allow: SharedString,
+    evidence: SharedString,
+}
+
+/// 连接行右键菜单里防吸血部分所需的一切（菜单打开时才用）。
+#[derive(Clone)]
+struct GuardMenu {
+    peer: BtPeerDto,
+    labels: Rc<GuardMenuLabels>,
+    handler: GuardHandler,
+    /// 该 IP 组有动作在途：条目类菜单项禁用。
+    busy: bool,
+}
+
+/// 一个连接的防吸血展示格（文案已本地化、颜色已选定）。
+struct PeerGuardCells {
+    /// 宽屏并排三列；否则只有地址旁徽标、悬浮提示与第二行的命中规则。
+    columns: bool,
+    delivered: u64,
+    suspicion: Option<(SharedString, Hsla)>,
+    rules: SharedString,
+    action: Option<(SharedString, Hsla)>,
+    tooltip: SharedString,
+    /// 中 / 窄布局第二行追加的命中规则文字。
+    sub: String,
+}
+
+/// 嫌疑等级的文字 / 描边色：弱 = 提示，中 = 警示，强 = 危险。
+fn suspicion_color(look: &Look, suspicion: Suspicion) -> Hsla {
+    match suspicion {
+        Suspicion::Strong => look.destructive,
+        Suspicion::Medium => look.warning,
+        Suspicion::Weak => look.info,
+        Suspicion::None => look.muted,
+    }
+}
+
+/// 处置色：仅观察（本应执行而未执行）用弱化色，封禁危险色，限速 / 停止上传警示色。
+fn action_color(look: &Look, guard: &PeerGuard<'_>) -> Hsla {
+    if guard.observe_only {
+        look.muted
+    } else if guard.action == PeerAction::Banned {
+        look.destructive
+    } else {
+        look.warning
+    }
+}
+
+fn peer_guard_cells(
+    peer: &BtPeerDto,
+    look: &Look,
+    translator: &Translator,
+    columns: bool,
+) -> Option<PeerGuardCells> {
+    let guard = PeerGuard::of(peer)?;
+    let suspicion = (guard.suspicion > Suspicion::None).then(|| {
+        (
+            SharedString::from(translator.text(guard.suspicion.label_key()).to_owned()),
+            suspicion_color(look, guard.suspicion),
+        )
+    });
+    let action = action_text(translator, &guard)
+        .map(|label| (SharedString::from(label), action_color(look, &guard)));
+    let rules = rules_text(translator, guard.rules);
+    Some(PeerGuardCells {
+        columns,
+        delivered: guard.delivered,
+        suspicion,
+        rules: SharedString::from(rules.clone()),
+        action,
+        tooltip: SharedString::from(tooltip_text(translator, &guard)),
+        sub: rules,
+    })
+}
+
+fn tinted_chip(look: &Look, text: SharedString, color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .px(look.xs)
+        .rounded(look.radius)
+        .border_1()
+        .border_color(color)
+        .text_size(look.caption_size)
+        .line_height(look.caption_line)
+        .text_color(color)
+        .whitespace_nowrap()
+        .child(text)
+}
+
+/// 地址旁的徽标（窄于三列宽度时）：有处置显示处置，否则显示嫌疑等级。
+fn guard_badge(look: &Look, cells: &PeerGuardCells) -> Option<Div> {
+    cells
+        .action
+        .as_ref()
+        .or(cells.suspicion.as_ref())
+        .map(|(label, color)| tinted_chip(look, label.clone(), *color))
+}
+
+/// 「嫌疑 / 命中规则」列：嫌疑徽标 + 规则名；两者皆无为 `—`。
+fn guard_state_cell(look: &Look, cells: &PeerGuardCells) -> Div {
+    if cells.suspicion.is_none() && cells.rules.is_empty() {
+        return div().text_color(look.tertiary).child(DASH);
+    }
+    h_flex()
+        .items_center()
+        .gap(look.xs)
+        .min_w_0()
+        .when_some(cells.suspicion.clone(), |this, (label, color)| {
+            this.child(tinted_chip(look, label, color))
+        })
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_color(look.muted)
+                .child(cells.rules.clone()),
+        )
+}
+
+/// 「处置」列：处置徽标；放行为 `—`。
+fn guard_action_cell(look: &Look, cells: &PeerGuardCells) -> Div {
+    match &cells.action {
+        Some((label, color)) => h_flex().child(tinted_chip(look, label.clone(), *color)),
+        None => div().text_color(look.tertiary).child(DASH),
+    }
+}
+
+/// 宽布局下是否有足够宽度并排防吸血三列（`width` 为界面缩放前的 px）。
+fn guard_columns_fit(width: f32) -> bool {
+    width >= GUARD_COLUMNS_MIN_WIDTH
+}
+
 fn span_text(translator: &Translator, span: Span) -> String {
     let value = span.value.to_string();
     match span.unit {
@@ -279,6 +446,8 @@ pub(super) struct BtLive {
     last_render: Option<Instant>,
     /// 内容区宽度（实际 px），由 canvas 量得。
     width: Rc<Cell<f32>>,
+    /// 正在执行加封禁 / 限速 / 加白的 IP 组：其右键动作禁用，防重复点击。
+    guard_pending: HashSet<String>,
     /// Tracker 页筛选 / 排序（视图偏好，切换任务保留）。
     tracker_filter: TrackerFilter,
     tracker_sort: Option<TrackerSort>,
@@ -299,6 +468,7 @@ impl Default for BtLive {
             generation: 0,
             last_render: None,
             width: Rc::default(),
+            guard_pending: HashSet::new(),
             tracker_filter: TrackerFilter::default(),
             tracker_sort: None,
             tracker_view: Vec::new(),
@@ -309,6 +479,11 @@ impl Default for BtLive {
 }
 
 impl BtLive {
+    /// 登记某 IP 组的在途防吸血动作；已在途返回 `false`。
+    fn try_begin_guard(&mut self, group: &str) -> bool {
+        self.guard_pending.insert(group.to_owned())
+    }
+
     /// 切换任务：丢弃数据并作废在途循环。
     pub(super) fn reset(&mut self) {
         self.status = None;
@@ -722,6 +897,70 @@ fn copy_menu(row: gpui::Stateful<Div>, items: Vec<CopyItem>) -> AnyElement {
     .into_any_element()
 }
 
+/// 连接行右键菜单：逐项复制，其后（有防吸血信息时）是封禁 / 限速 / 加白 / 查看证据。
+fn peer_menu(
+    row: gpui::Stateful<Div>,
+    items: Vec<CopyItem>,
+    guard: Option<GuardMenu>,
+) -> AnyElement {
+    if items.is_empty() && guard.is_none() {
+        return row.into_any_element();
+    }
+    row.context_menu(move |menu, _window, _cx| {
+        let mut menu = items.iter().fold(menu, |menu, item| {
+            let item = item.clone();
+            menu.item(
+                PopupMenuItem::new(item.label.clone())
+                    .icon(FluxIcon::Copy)
+                    .on_click(move |_, window, cx| {
+                        copy_to_clipboard(&item.value, item.done.as_ref(), window, cx);
+                    }),
+            )
+        });
+        let Some(guard) = &guard else {
+            return menu;
+        };
+        let entry_item = |label: &SharedString, icon: FluxIcon, action: GuardMenuAction| {
+            let (peer, handler) = (guard.peer.clone(), Rc::clone(&guard.handler));
+            PopupMenuItem::new(label.clone())
+                .disabled(guard.busy)
+                .icon(icon)
+                .on_click(move |_, window, cx| {
+                    handler(peer.clone(), GuardCommand::Entry(action), window, cx);
+                })
+        };
+        menu = menu.separator();
+        for (choice, label) in BanChoice::ALL.iter().zip(guard.labels.bans.iter()) {
+            menu = menu.item(entry_item(
+                label,
+                FluxIcon::X,
+                GuardMenuAction::Ban(*choice),
+            ));
+        }
+        menu = menu
+            .item(entry_item(
+                &guard.labels.throttle,
+                FluxIcon::Gauge,
+                GuardMenuAction::Throttle,
+            ))
+            .item(entry_item(
+                &guard.labels.allow,
+                FluxIcon::CircleCheck,
+                GuardMenuAction::Allow,
+            ))
+            .separator();
+        let (peer, handler) = (guard.peer.clone(), Rc::clone(&guard.handler));
+        menu.item(
+            PopupMenuItem::new(guard.labels.evidence.clone())
+                .icon(FluxIcon::Search)
+                .on_click(move |_, window, cx| {
+                    handler(peer.clone(), GuardCommand::Evidence, window, cx);
+                }),
+        )
+    })
+    .into_any_element()
+}
+
 /// 表头点击排序回调（参数为被点的列）。
 type SortHandler = Rc<dyn Fn(&TrackerSortKey, &mut Window, &mut App)>;
 
@@ -1028,9 +1267,8 @@ fn peer_header(look: &Look, layout: BtLayout, text: &PeerHeaderText) -> Option<D
     let down_speed = header_cell(look, text.down_speed.clone(), Some(COL_SPEED), true);
     let up_speed = header_cell(look, text.up_speed.clone(), Some(COL_SPEED), true);
     match layout {
-        BtLayout::Wide => Some(header_row(
-            look,
-            vec![
+        BtLayout::Wide => {
+            let mut cells = vec![
                 addr,
                 header_cell(look, text.client.clone(), Some(COL_CLIENT), false),
                 transport,
@@ -1038,8 +1276,29 @@ fn peer_header(look: &Look, layout: BtLayout, text: &PeerHeaderText) -> Option<D
                 header_cell(look, text.uploaded.clone(), Some(COL_BYTES), true),
                 down_speed,
                 up_speed,
-            ],
-        )),
+            ];
+            if let Some(guard) = &text.guard {
+                cells.push(header_cell(
+                    look,
+                    guard.uploaded.clone(),
+                    Some(COL_GUARD_BYTES),
+                    true,
+                ));
+                cells.push(header_cell(
+                    look,
+                    guard.state.clone(),
+                    Some(COL_GUARD_STATE),
+                    false,
+                ));
+                cells.push(header_cell(
+                    look,
+                    guard.action.clone(),
+                    Some(COL_GUARD_ACTION),
+                    false,
+                ));
+            }
+            Some(header_row(look, cells))
+        }
         BtLayout::Medium => Some(header_row(
             look,
             vec![addr, transport, down_speed, up_speed],
@@ -1056,6 +1315,8 @@ struct PeerHeaderText {
     uploaded: SharedString,
     down_speed: SharedString,
     up_speed: SharedString,
+    /// 防吸血三列的表头；`None` = 不显示这三列。
+    guard: Option<GuardHeaderText>,
 }
 
 fn speed_el(look: &Look, bps: u64, active_color: Hsla) -> Div {
@@ -1084,11 +1345,17 @@ fn peer_country(peer: &BtPeerDto) -> Option<&str> {
         .filter(|code| !code.is_empty())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one row needs the peer, its flag/guard cells, the context menu and the layout inputs"
+)]
 fn peer_row_el(
     index: usize,
     peer: &BtPeerDto,
     flag: AnyElement,
     copy_label: &SharedString,
+    guard: Option<&PeerGuardCells>,
+    menu: Option<GuardMenu>,
     look: &Look,
     layout: BtLayout,
     last: bool,
@@ -1116,6 +1383,9 @@ fn peer_row_el(
             let tip = SharedString::from(code.to_ascii_uppercase());
             this.tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
         });
+    let badge = guard
+        .filter(|cells| !cells.columns)
+        .and_then(|cells| guard_badge(look, cells));
     let addr_cell = move |id_index: usize| {
         h_flex()
             .items_center()
@@ -1123,8 +1393,19 @@ fn peer_row_el(
             .min_w_0()
             .child(flag_el)
             .child(addr_el(id_index))
+            .when_some(badge, |this, badge| this.child(badge))
     };
-    let sub = peer_sub_line(peer);
+    let sub = match guard.filter(|cells| !cells.columns && !cells.sub.is_empty()) {
+        Some(cells) => {
+            let base = peer_sub_line(peer);
+            if base.is_empty() {
+                cells.sub.clone()
+            } else {
+                format!("{base} · {}", cells.sub)
+            }
+        }
+        None => peer_sub_line(peer),
+    };
     let sub_el = || {
         div()
             .min_w_0()
@@ -1169,7 +1450,16 @@ fn peer_row_el(
                 look,
                 peer.up_bps,
                 look.success,
-            ))),
+            )))
+            .when_some(guard.filter(|cells| cells.columns), |row, cells| {
+                row.child(
+                    fixed(look, COL_GUARD_BYTES)
+                        .text_right()
+                        .child(bytes_el(look, cells.delivered)),
+                )
+                .child(fixed(look, COL_GUARD_STATE).child(guard_state_cell(look, cells)))
+                .child(fixed(look, COL_GUARD_ACTION).child(guard_action_cell(look, cells)))
+            }),
         BtLayout::Medium => h_flex()
             .items_center()
             .gap(look.sm)
@@ -1246,14 +1536,18 @@ fn peer_row_el(
         .hover({
             let hover = look.hover;
             move |style| style.bg(hover)
+        })
+        .when_some(guard.map(|cells| cells.tooltip.clone()), |this, tip| {
+            this.tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
         });
-    copy_menu(
+    peer_menu(
         row,
         vec![CopyItem {
             label: copy_label.clone(),
             value: addr,
             done: None,
         }],
+        menu,
     )
 }
 
@@ -1367,15 +1661,76 @@ impl TaskDetailView {
         }
     }
 
-    fn bt_layout(&self, window: &Window, look: &Look) -> BtLayout {
+    /// 内容区宽度（界面缩放前的 px）；尚未量到时用窗口宽度估计一次（停靠面板 ≤ 窗口宽）。
+    fn bt_width(&self, window: &Window, look: &Look) -> f32 {
         let measured = self.bt.width.get();
-        // 尚未量到：用窗口宽度估计一次（停靠面板 ≤ 窗口宽）。
         let width = if measured > 0. {
             measured
         } else {
             window.viewport_size().width.as_f32()
         };
-        BtLayout::for_width(width / look.scale.max(0.01))
+        width / look.scale.max(0.01)
+    }
+
+    fn bt_layout(&self, window: &Window, look: &Look) -> BtLayout {
+        BtLayout::for_width(self.bt_width(window, look))
+    }
+
+    /// 连接行右键菜单的防吸血命令：加封禁 / 限速 / 白名单条目，或打开证据对话框。
+    fn bt_guard_command(
+        &mut self,
+        peer: BtPeerDto,
+        command: GuardCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let action = match command {
+            GuardCommand::Evidence => {
+                crate::pages::task_bt_guard_evidence::open(
+                    self.translator.clone(),
+                    std::sync::Arc::clone(&self.port),
+                    peer,
+                    window,
+                    cx,
+                );
+                return;
+            }
+            GuardCommand::Entry(action) => action,
+        };
+        let Some(params) = entry_params(&peer.ip_group, action) else {
+            return;
+        };
+        let group = params.cidr.clone();
+        // 同一 IP 组已有动作在途：忽略重复点击。
+        let key = peer.ip_group.trim().to_owned();
+        if !self.bt.try_begin_guard(&key) {
+            return;
+        }
+        cx.notify();
+        let pending = self.port.execute(DownloadsCommand::BtGuardAddEntry(params));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = pending.await;
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                this.bt.guard_pending.remove(&key);
+                cx.notify();
+                let translator = this.translator.read(cx);
+                let notification = match result {
+                    Ok(_) => Notification::success(
+                        translator.text_with(action.success_key(), &[("group", &group)]),
+                    ),
+                    Err(error) => Notification::error(format!(
+                        "{}: {}",
+                        translator.text("btGuardPeerActionFailed"),
+                        error_text(translator, &error)
+                    )),
+                };
+                window.push_notification(notification, cx);
+            }) else {
+                // 视图或窗口已释放。
+                return;
+            };
+        })
+        .detach();
     }
 
     /// 页签外框：量宽 canvas + 失败提示行 + 内容。`fill` = 撑满页签高度（内容自带虚拟滚动）。
@@ -1404,6 +1759,8 @@ impl TaskDetailView {
                             // 只在布局档变化时重绘，避免滚动条出没带来的抖动。
                             if BtLayout::for_width(previous / scale)
                                 != BtLayout::for_width(measured / scale)
+                                || guard_columns_fit(previous / scale)
+                                    != guard_columns_fit(measured / scale)
                             {
                                 cx.notify(entity_id);
                             }
@@ -1645,8 +2002,9 @@ impl TaskDetailView {
             };
             return self.bt_frame(content, false, &look, cx);
         };
+        let guard_busy = &self.bt.guard_pending;
         let running = self.bt_task_running();
-        let translator = self.translator.read(cx);
+        let translator = self.translator.read(cx).clone();
         let t = |key: &str| SharedString::from(translator.text(key).to_owned());
         let counts = status.peer_counts;
         let summary = SharedString::from(translator.text_with(
@@ -1659,6 +2017,9 @@ impl TaskDetailView {
                 ("dead", &counts.dead.to_string()),
             ],
         ));
+        let columns = layout == BtLayout::Wide
+            && any_guard(&status.peers)
+            && guard_columns_fit(self.bt_width(window, &look));
         let header = PeerHeaderText {
             addr: t("btPeerAddr"),
             client: t("btPeerClient"),
@@ -1667,8 +2028,29 @@ impl TaskDetailView {
             uploaded: t("btPeerUploaded"),
             down_speed: t("btPeerDownSpeed"),
             up_speed: t("btPeerUpSpeed"),
+            guard: columns.then(|| GuardHeaderText {
+                uploaded: t("btGuardPeerUploaded"),
+                state: SharedString::from(format!(
+                    "{} / {}",
+                    translator.text("btGuardPeerSuspicion"),
+                    translator.text("btGuardPeerRules")
+                )),
+                action: t("btGuardPeerAction"),
+            }),
         };
         let copy_label = t("btCopyPeerAddr");
+        let menu_labels = Rc::new(GuardMenuLabels {
+            bans: BanChoice::ALL.map(|choice| t(choice.label_key())),
+            throttle: t("btGuardPeerThrottle"),
+            allow: t("btGuardPeerAllow"),
+            evidence: t("btGuardPeerViewEvidence"),
+        });
+        let view = cx.entity();
+        let handler: GuardHandler = Rc::new(move |peer, command, window, cx| {
+            view.update(cx, |this, cx| {
+                this.bt_guard_command(peer, command, window, cx);
+            });
+        });
         let empty = t(if running {
             "btPeersEmpty"
         } else {
@@ -1692,11 +2074,20 @@ impl TaskDetailView {
                     window,
                     cx,
                 );
+                let guard = peer_guard_cells(peer, &look, &translator, columns);
+                let menu = guard.is_some().then(|| GuardMenu {
+                    peer: peer.clone(),
+                    labels: Rc::clone(&menu_labels),
+                    handler: Rc::clone(&handler),
+                    busy: guard_busy.contains(peer.ip_group.trim()),
+                });
                 table = table.child(peer_row_el(
                     index,
                     peer,
                     flag,
                     &copy_label,
+                    guard.as_ref(),
+                    menu,
                     &look,
                     layout,
                     index + 1 == peers.len(),
@@ -1882,5 +2273,28 @@ mod tests {
         assert_eq!(peer_sub_line(&peer), "qBittorrent/5.0");
         peer.client.clear();
         assert_eq!(peer_sub_line(&peer), "");
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::{BtLive, GUARD_COLUMNS_MIN_WIDTH, guard_columns_fit};
+
+    #[test]
+    fn guard_action_is_single_flight_per_group() {
+        let mut bt = BtLive::default();
+        assert!(bt.try_begin_guard("1.2.3.4"));
+        assert!(!bt.try_begin_guard("1.2.3.4"));
+        assert!(bt.try_begin_guard("5.6.7.8"));
+        bt.guard_pending.remove("1.2.3.4");
+        assert!(bt.try_begin_guard("1.2.3.4"));
+    }
+
+    #[test]
+    fn guard_columns_need_the_wide_threshold() {
+        assert!(!guard_columns_fit(0.));
+        assert!(!guard_columns_fit(GUARD_COLUMNS_MIN_WIDTH - 1.));
+        assert!(guard_columns_fit(GUARD_COLUMNS_MIN_WIDTH));
+        assert!(guard_columns_fit(4_000.));
     }
 }

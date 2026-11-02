@@ -38,7 +38,7 @@ pub fn open(cx: &mut App, task_id: String) {
     let key = WindowKey::TaskDetail(task_id.clone());
     WindowRegistry::open_or_focus(cx, key, options, move |window, cx| {
         let downloads_port = Arc::new(AgentDownloadsPort::new(client.clone()));
-        let mut host = DownloadHostActions {
+        let host = DownloadHostActions {
             open_group_window: Some(Rc::new(|group_id, _window, cx| {
                 crate::windows::group_detail::open(cx, group_id);
             })),
@@ -46,8 +46,6 @@ pub fn open(cx: &mut App, task_id: String) {
             plugin_tab_view: Some(crate::plugin_contributions::tab_view_factory()),
             ..DownloadHostActions::default()
         };
-        let share_hub = Desktop::global(cx).share_hub.clone();
-        crate::share_host::extend_download_actions(&mut host, &share_hub);
         let detail = cx.new(|cx| {
             TaskDetailView::new(
                 translator.clone(),

@@ -614,23 +614,6 @@ public enum AccountRules {
         case "taskStateConflict": "errReasonTaskStateConflict"
         case "taskDeviceMismatch": "errReasonTaskDeviceMismatch"
         case "saveDirUnavailable": "errReasonSaveDirUnavailable"
-        case "shareUnavailable": "errReasonShareUnavailable"
-        case "shareNotFound": "errReasonShareNotFound"
-        case "shareExpired": "errReasonShareExpired"
-        case "shareStopped": "errReasonShareStopped"
-        case "shareCodeInvalid": "errReasonShareCodeInvalid"
-        case "shareRateLimited": "errReasonShareRateLimited"
-        case "shareTurnstileRequired": "errReasonShareTurnstileRequired"
-        case "shareFileChanged": "errReasonShareFileChanged"
-        case "shareSenderOffline": "errReasonShareSenderOffline"
-        case "shareTaskNotShareable": "errReasonShareTaskNotShareable"
-        case "shareBridgeUnavailable": "errReasonShareBridgeUnavailable"
-        case "shareQuotaExceeded": "errReasonShareQuotaExceeded"
-        case "shareCloudNotReady": "errReasonShareCloudNotReady"
-        case "shareTrafficExhausted": "errReasonShareTrafficExhausted"
-        case "shareCloudUnavailable": "errReasonShareCloudUnavailable"
-        case "shareOwnShare": "errReasonShareOwnShare"
-        case "shareSourceMissing": "errReasonShareSourceMissing"
         default: nil
         }
     }

@@ -20,33 +20,14 @@ pub enum DiscoveryKind {
     Manual,
 }
 
-/// 到达一台**已知**设备数据面的连接策略。
+/// 到达一台**已知**设备数据面的连接方式：只有网络可达直连，无 NAT 穿透。
 ///
-/// **可扩展性核心**：v1 仅实现 [`TransportKind::Direct`]（网络可达直连，无打洞）。
-/// 未来的 NAT 穿透策略（iroh QUIC 打洞、云中继）作为新变体加入，并各自实现
-/// [`crate::transport::Transport`] trait，注册进
-/// [`crate::transport::TransportStack`] 的优先级链——配对协议、数据面调度、
-/// UI 全部只依赖 trait 抽象，新增打洞方式**不触碰本 seam 以上任何代码**。
+/// 作为 [`PeerCandidate::kind`] 写入已配对设备名册与配对报文（序列化为 `"Direct"`），
+/// 保留枚举形态以维持该线格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportKind {
-    /// 网络可达直连：直接拨号候选 `ip:port`（或完整 URL），无 NAT 穿透。v1 唯一实现。
+    /// 网络可达直连：直接拨号候选 `ip:port`（或完整 URL）。
     Direct,
-    /// iroh QUIC 打洞（未来）。占位——尚未实现，仅保留 seam。
-    Iroh,
-    /// 云中继兜底（未来）。占位——尚未实现，仅保留 seam。
-    Relay,
-}
-
-impl TransportKind {
-    /// 稳定字符串标签（日志 / 候选记录序列化）。
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TransportKind::Direct => "direct",
-            TransportKind::Iroh => "iroh",
-            TransportKind::Relay => "relay",
-        }
-    }
 }
 
 /// 一台在网络上被发现、**尚未配对**的设备。
@@ -73,8 +54,7 @@ pub struct DiscoveredPeer {
 pub struct PeerCandidate {
     /// 该候选走哪种传输。
     pub kind: TransportKind,
-    /// 地址（Direct = `ip:port` 或完整 `http(s)://host[:port][/base]`，见
-    /// [`crate::address::PeerAddress`]；未来 iroh = node id；relay = relay url + route）。
+    /// 地址：`ip:port` 或完整 `http(s)://host[:port][/base]`，见 [`crate::address::PeerAddress`]。
     pub address: String,
 }
 
@@ -172,13 +152,10 @@ impl PeerRecord {
         self.fingerprint.chars().take(12).collect()
     }
 
-    /// 首个 Direct 候选地址（供数据面拼 base_url）。
+    /// 首个候选地址（供数据面拼 base_url）。
     #[must_use]
     pub fn direct_address(&self) -> Option<&str> {
-        self.candidates
-            .iter()
-            .find(|c| c.kind == TransportKind::Direct)
-            .map(|c| c.address.as_str())
+        self.candidates.first().map(|c| c.address.as_str())
     }
 
     /// 生效展示名：本机备注名优先，否则对端自报名。

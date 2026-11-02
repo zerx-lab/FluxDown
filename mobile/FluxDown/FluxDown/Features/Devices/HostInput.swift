@@ -16,7 +16,7 @@ nonisolated enum KeyIssue: Equatable {
 
 /// 主机地址与访问密钥的输入规则（逐条移植 Android `HostInput.kt`）。
 enum HostInput {
-    /// 默认监听端口：`fluxdown-agent --server` 缺省 `0.0.0.0:17800`（`native/agent/src/server_mode.rs::DEFAULT_BIND`）。
+    /// 默认监听端口：`fluxdown-agent --server` 缺省 `[::]:17800`（`native/agent/src/server_mode.rs::DEFAULT_BIND`）。
     static let defaultHttpPort = 17800
     static let defaultHttpsPort = 443
     static let accessKeyMinLength = 8

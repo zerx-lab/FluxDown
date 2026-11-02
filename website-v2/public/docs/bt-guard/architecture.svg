@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" width="960" height="600" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <title id="t">FluxDown BT anti-leech architecture</title>
+  <desc id="d">Peers connect to librqbit fork hooks, which call the engine bt_guard module. The engine talks through daemon RPC to the agent, which serves clients and syncs with FluxCloud; the website self-check page reads FluxCloud.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9fb3d1"/></marker>
+    <style>
+      .box{fill:#1f2a3d;stroke:#4a6285;stroke-width:1.5}
+      .hl{fill:#243a2f;stroke:#4f9a73;stroke-width:1.5}
+      .cl{fill:#3a2d44;stroke:#9a6fb8;stroke-width:1.5}
+      .t{fill:#e8eef8;font-size:14px;font-weight:600}
+      .s{fill:#b4c3da;font-size:12px}
+      .l{fill:#9fb3d1;font-size:11px}
+      .ln{stroke:#9fb3d1;stroke-width:1.6;fill:none}
+    </style>
+  </defs>
+  <rect width="960" height="600" rx="14" fill="#141b29"/>
+
+  <rect class="box" x="30" y="40" width="150" height="70" rx="8"/>
+  <text class="t" x="105" y="70" text-anchor="middle">Peers</text>
+  <text class="s" x="105" y="92" text-anchor="middle">BitTorrent</text>
+
+  <rect class="box" x="230" y="40" width="250" height="150" rx="8"/>
+  <text class="t" x="355" y="66" text-anchor="middle">librqbit fork hooks</text>
+  <text class="s" x="355" y="94" text-anchor="middle">admit / readmit (allow or refuse)</text>
+  <text class="s" x="355" y="114" text-anchor="middle">on_event (handshake, bitfield, HAVE,</text>
+  <text class="s" x="355" y="130" text-anchor="middle">request, cancel, uploaded)</text>
+  <text class="s" x="355" y="152" text-anchor="middle">upload scheduling</text>
+  <text class="s" x="355" y="172" text-anchor="middle">throttle / choke / disconnect</text>
+
+  <rect class="hl" x="530" y="40" width="400" height="150" rx="8"/>
+  <text class="t" x="730" y="66" text-anchor="middle">Engine: bt_guard</text>
+  <text class="s" x="730" y="94" text-anchor="middle">6 rules (off / observe / enforce)</text>
+  <text class="s" x="730" y="114" text-anchor="middle">ledger per (infohash, IP group)</text>
+  <text class="s" x="730" y="134" text-anchor="middle">layers: allow &gt; manual &gt; auto / cloud / file</text>
+  <text class="s" x="730" y="154" text-anchor="middle">host pump (batched) → database</text>
+  <text class="s" x="730" y="174" text-anchor="middle">cloud-list guards, filter subscriptions</text>
+
+  <path class="ln" marker-end="url(#a)" d="M180 75H230"/>
+  <path class="ln" marker-start="url(#a)" marker-end="url(#a)" d="M480 115H530"/>
+  <text class="l" x="505" y="106" text-anchor="middle">verdict</text>
+
+  <rect class="box" x="530" y="250" width="400" height="60" rx="8"/>
+  <text class="t" x="730" y="276" text-anchor="middle">Daemon RPC</text>
+  <text class="s" x="730" y="296" text-anchor="middle">daemon.bt.guard.* · events (changed, refresh wanted, evidence ready)</text>
+  <path class="ln" marker-start="url(#a)" marker-end="url(#a)" d="M730 190V250"/>
+
+  <rect class="box" x="530" y="370" width="400" height="90" rx="8"/>
+  <text class="t" x="730" y="396" text-anchor="middle">Agent</text>
+  <text class="s" x="730" y="418" text-anchor="middle">cloud list sync + ed25519 verification</text>
+  <text class="s" x="730" y="436" text-anchor="middle">evidence reporting · gateway / REST /api/v1/bt/guard/*</text>
+  <path class="ln" marker-start="url(#a)" marker-end="url(#a)" d="M730 310V370"/>
+
+  <rect class="box" x="30" y="370" width="440" height="90" rx="8"/>
+  <text class="t" x="250" y="396" text-anchor="middle">Clients</text>
+  <text class="s" x="250" y="418" text-anchor="middle">Desktop (GPUI) · Web · Android · iOS</text>
+  <text class="s" x="250" y="436" text-anchor="middle">settings, block list, event log, peer columns (desktop / web)</text>
+  <path class="ln" marker-start="url(#a)" marker-end="url(#a)" d="M530 415H470"/>
+
+  <rect class="cl" x="30" y="510" width="660" height="70" rx="8"/>
+  <text class="t" x="360" y="534" text-anchor="middle">FluxCloud</text>
+  <text class="s" x="360" y="554" text-anchor="middle">evidence intake (HMAC) · consensus + manual approval · community data sync</text>
+  <text class="s" x="360" y="570" text-anchor="middle">signed publishing · admin console · self-check / appeal API</text>
+  <path class="ln" marker-start="url(#a)" marker-end="url(#a)" d="M730 460V545H690"/>
+  <text class="l" x="740" y="500">signed list ↓ · evidence ↑</text>
+
+  <rect class="box" x="740" y="510" width="190" height="70" rx="8"/>
+  <text class="t" x="835" y="540" text-anchor="middle">Website /bt-guard</text>
+  <text class="s" x="835" y="560" text-anchor="middle">self-check and appeal</text>
+  <path class="ln" marker-end="url(#a)" d="M740 560H690" transform="translate(0 5)"/>
+</svg>

@@ -1,3 +1,5 @@
+import { GUARD_COLUMNS_MIN_WIDTH, peerGuardView } from '../../../lib/btGuard'
+import type { PeerGuardView } from '../../../lib/btGuard'
 import { normalizeCountry } from '../../../lib/flags/flags'
 import type { BtPeerDto, BtPeerTransport, BtTrackerDto, BtTrackerStatus } from '../../../lib/rpc'
 import type { TaskState } from '../model/task'
@@ -202,25 +204,31 @@ export function trackerLayout(width: number): TrackerLayout {
 
 // ── Peers ──
 
-export type PeerColumn = 'addr' | 'client' | 'transport' | 'downloaded' | 'uploaded' | 'downBps' | 'upBps'
+export type PeerColumn = 'addr' | 'client' | 'transport' | 'downloaded' | 'uploaded' | 'downBps' | 'upBps' | 'groupDelivered' | 'suspicion' | 'action'
 
 export type PeerLayout = 'card' | 'compact' | 'full'
 
-/** 容器宽度 → 连接版式：<480 卡片；<780 紧凑（隐藏客户端 / 上传量）；其余全列。 */
-export function peerLayout(width: number): PeerLayout {
+/**
+ * 容器宽度 → 连接版式：<480 卡片；<780 紧凑（隐藏客户端 / 上传量）；其余全列。
+ * 带防吸血列（IP 组送达 / 嫌疑 / 处置，最小宽度合计见 `GUARD_COLUMNS_MIN_WIDTH`）时全列版式要求更宽，否则退回紧凑。
+ */
+export function peerLayout(width: number, guard = false): PeerLayout {
   if (width < 480) return 'card'
-  if (width < 780) return 'compact'
+  if (width < (guard ? GUARD_COLUMNS_MIN_WIDTH : 780)) return 'compact'
   return 'full'
 }
 
-export function peerColumns(layout: PeerLayout): PeerColumn[] {
+/** `guard` = 防吸血数据可用（任一 peer 带 IP 组）：追加 IP 组送达量 / 嫌疑 / 处置列。 */
+export function peerColumns(layout: PeerLayout, guard = false): PeerColumn[] {
   switch (layout) {
     case 'card':
       return ['addr', 'transport', 'downBps', 'upBps']
     case 'compact':
-      return ['addr', 'transport', 'downloaded', 'downBps', 'upBps']
+      return guard ? ['addr', 'transport', 'downloaded', 'downBps', 'upBps', 'action'] : ['addr', 'transport', 'downloaded', 'downBps', 'upBps']
     case 'full':
-      return ['addr', 'client', 'transport', 'downloaded', 'uploaded', 'downBps', 'upBps']
+      return guard
+        ? ['addr', 'client', 'transport', 'downloaded', 'uploaded', 'downBps', 'upBps', 'groupDelivered', 'suspicion', 'action']
+        : ['addr', 'client', 'transport', 'downloaded', 'uploaded', 'downBps', 'upBps']
   }
 }
 
@@ -239,6 +247,13 @@ export interface PeerRow {
   uploaded: number
   downBps: number
   upBps: number
+  /** 防吸血字段（旧 daemon / 未启用时为无嫌疑、放行）。 */
+  guard: PeerGuardView
+}
+
+/** 是否有 peer 带防吸血 IP 组（决定是否显示防吸血列）。 */
+export function hasGuardData(rows: readonly Pick<PeerRow, 'guard'>[]): boolean {
+  return rows.some((row) => row.guard.ipGroup !== '')
 }
 
 /** 取前 `MAX_PEER_ROWS` 条（服务端顺序）；`key` = 地址，重复地址追加序号保证唯一。 */
@@ -257,6 +272,7 @@ export function mapPeerRows(peers: readonly BtPeerDto[]): { rows: PeerRow[]; tot
       uploaded: p.uploaded,
       downBps: p.downBps,
       upBps: p.upBps,
+      guard: peerGuardView(p),
     }
   })
   return { rows, total: peers.length }

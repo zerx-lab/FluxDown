@@ -179,51 +179,6 @@ pub enum ErrorReason {
     ReferralPlanExcluded,
     /// 推介：自定义推荐码已被占用。
     ReferralCodeTaken,
-    /// FluxMesh：本构建未编入FluxMesh、agent FluxMesh服务未运行、本机开关未开启，或云端关闭了FluxMesh。
-    ShareUnavailable,
-    /// FluxMesh：分享不存在（取件码 / 链接无对应分享，或不是本人的分享）。
-    ShareNotFound,
-    /// FluxMesh：分享已过期。
-    ShareExpired,
-    /// FluxMesh：分享已被分享方或后台停止。
-    ShareStopped,
-    /// FluxMesh：取件码 / 分享链接格式不正确。
-    ShareCodeInvalid,
-    /// FluxMesh：取件码尝试过于频繁，被云端限流。
-    ShareRateLimited,
-    /// FluxMesh：云端要求先完成人机验证（Turnstile）再重试 resolve。
-    ShareTurnstileRequired,
-    /// FluxMesh：分享方已修改或删除源文件（数据面 `changed`）。
-    ShareFileChanged,
-    /// FluxMesh：实时分享的分享方当前不在线。
-    ShareSenderOffline,
-    /// FluxMesh：任务不能分享（未完成、文件缺失或远程任务）。
-    ShareTaskNotShareable,
-    /// FluxMesh：没有可用的桥接（分享方不在线、没有在线网关，或云端不允许该身份走桥接）。
-    ShareBridgeUnavailable,
-    /// FluxMesh：分享数量、领取次数或流量超出套餐额度。
-    ShareQuotaExceeded,
-    /// FluxMesh：云端暂存副本尚未就绪（未转暂存、上传未完成或已被删除）。
-    ShareCloudNotReady,
-    /// FluxMesh：云端流量额度耗尽（桥接 / CDN 下载或上传）。
-    ShareTrafficExhausted,
-    /// FluxMesh：云端暂存不可用（存储未配置或服务暂不可用）。
-    ShareCloudUnavailable,
-    /// FluxMesh：取件码指向本机自己发起的分享（iroh 端点不能连接自身）。
-    ShareOwnShare,
-    /// FluxMesh：本机源文件已缺失或已被修改，分享无法继续 / 重新开始，只能删除。
-    ShareSourceMissing,
-    /// FluxMesh：管理员已关闭并锁定该分享的共享，不能再打开。
-    ShareSwarmLocked,
-    /// FluxMesh：本月共享加速额度已用完（任务仍可从分享方直连下完）。
-    ShareSwarmQuotaExhausted,
-    /// FluxMesh：共享加速需要登录（云端关闭了游客共享加速）。
-    ShareSwarmLoginRequired,
-    /// FluxMesh：所有者近期被下架次数达到上限，暂停发起 / 恢复分享。`RpcErrorData.field`
-    /// 携带解除时刻（RFC 3339），UI 据此填充文案里的时间。
-    ShareStrikeLimited,
-    /// FluxMesh：该分享已申诉过（每个下架分享只能申诉一次）。
-    ShareAppealExists,
     /// 对端发送了本端不认识的原因。
     #[serde(other)]
     Unknown,

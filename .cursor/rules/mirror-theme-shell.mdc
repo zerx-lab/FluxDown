@@ -1,0 +1,11 @@
+---
+description: 主题 token 注册表、文件图标包与 chrome 布局模型改动须同步官网 / Web 镜像与共享夹具
+globs: **/crates/theme/src/**,**/website-v2/src/lib/gpui-theme/**,**/crates/icon_pack/**,**/assets/icon-packs/**,**/web/src/lib/icon-pack/**,**/crates/shell/src/chrome_layout.rs,**/crates/app/src/chrome_layout.rs,**/crates/shell/tests/**,**/web/src/shell/chromeLayout.ts,**/web/src/shell/chromeCatalog.ts
+alwaysApply: false
+---
+
+# mirror-theme-shell（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/mirror-theme-shell.md`](mdc:.omp/rules/mirror-theme-shell.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

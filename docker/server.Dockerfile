@@ -103,7 +103,7 @@ WORKDIR /app
 COPY --from=server /usr/local/bin/fluxdown-agent /usr/local/bin/fluxdownd /app/
 # FLUXDOWN_BIND / FLUXDOWN_DATABASE_URL / FLUXDOWN_DEMO / FLUXDOWN_LANG 等见 native/agent 的 server 模式说明
 # FLUXDOWN_INSTALL_SOURCE：容器内替换二进制会随重建丢失，应用内更新改为提示拉取新镜像。
-ENV FLUXDOWN_BIND=0.0.0.0:17800 \
+ENV FLUXDOWN_BIND=[::]:17800 \
     FLUXDOWN_DATA_DIR=/data \
     FLUXDOWN_INSTALL_SOURCE=docker
 VOLUME /data

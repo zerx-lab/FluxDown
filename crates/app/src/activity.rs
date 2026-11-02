@@ -17,11 +17,9 @@ use crate::app::Desktop;
 const DOWNLOADS_ID: &str = "downloads";
 const RSS_ID: &str = "rss";
 const WEBHOOKS_ID: &str = "webhooks";
-const SHARE_ID: &str = "share";
 pub(crate) const DOWNLOADS_ROUTE: RouteId = RouteId::new(DOWNLOADS_ID);
 pub(crate) const RSS_ROUTE: RouteId = RouteId::new(RSS_ID);
 pub(crate) const WEBHOOKS_ROUTE: RouteId = RouteId::new(WEBHOOKS_ID);
-pub(crate) const SHARE_ROUTE: RouteId = RouteId::new(SHARE_ID);
 
 /// 活动栏条目，按自上而下顺序（路由在上，动作在下）。
 ///
@@ -32,17 +30,15 @@ pub(crate) enum ActivityEntry {
     Downloads,
     Rss,
     Webhooks,
-    Share,
     Account,
     Settings,
 }
 
 impl ActivityEntry {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::Downloads,
         Self::Rss,
         Self::Webhooks,
-        Self::Share,
         Self::Account,
         Self::Settings,
     ];
@@ -53,7 +49,6 @@ impl ActivityEntry {
             Self::Downloads => "activity-downloads",
             Self::Rss => "activity-rss",
             Self::Webhooks => "activity-webhooks",
-            Self::Share => "activity-share",
             Self::Account => "activity-account",
             Self::Settings => "activity-settings",
         }
@@ -65,7 +60,6 @@ impl ActivityEntry {
             Self::Downloads => DOWNLOADS_ID,
             Self::Rss => RSS_ID,
             Self::Webhooks => WEBHOOKS_ID,
-            Self::Share => SHARE_ID,
             Self::Account => "account",
             Self::Settings => "settings",
         }
@@ -77,7 +71,6 @@ impl ActivityEntry {
             Self::Downloads => fluxdown_ui_i18n::keys::MOBILE_NAV_DOWNLOADS,
             Self::Rss => "sidebarRss",
             Self::Webhooks => "pushNavTitle",
-            Self::Share => "shareNavTitle",
             Self::Account => "settingsCatAccount",
             Self::Settings => fluxdown_ui_i18n::keys::SETTINGS,
         }
@@ -89,7 +82,6 @@ impl ActivityEntry {
             Self::Downloads => Some(DOWNLOADS_ROUTE),
             Self::Rss => Some(RSS_ROUTE),
             Self::Webhooks => Some(WEBHOOKS_ROUTE),
-            Self::Share => Some(SHARE_ROUTE),
             Self::Account | Self::Settings => None,
         }
     }
@@ -107,11 +99,6 @@ impl ActivityEntry {
                 pref_key: "ui.show_activity_webhooks",
                 title_key: "showActivityWebhooks",
                 desc_key: "showActivityWebhooksDesc",
-            }),
-            Self::Share => Some(ActivityBarToggle {
-                pref_key: "ui.show_activity_share",
-                title_key: "showActivityShare",
-                desc_key: "showActivityShareDesc",
             }),
             Self::Account => Some(ActivityBarToggle {
                 pref_key: "ui.show_activity_account",
@@ -131,22 +118,19 @@ pub(crate) fn toggles() -> Vec<ActivityBarToggle> {
 }
 
 /// 偏好 → 活动栏可选入口可见性；幂等，窗口创建与每次偏好快照/事件都走这里。
-/// FluxMesh入口还要求 agent 端FluxMesh可用（未编入 / 云端关闭时整个入口隐藏）。
 pub(crate) fn apply_visibility(
     shell: &mut ShellView,
     preferences: &BTreeMap<String, serde_json::Value>,
     cx: &mut Context<ShellView>,
 ) {
-    let share_available = Desktop::global(cx).share_hub.read(cx).available();
     for entry in ActivityEntry::ALL {
         let Some(toggle) = entry.toggle() else {
             continue;
         };
-        let preferred = preferences
+        let visible = preferences
             .get(toggle.pref_key)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
-        let visible = preferred && (entry != ActivityEntry::Share || share_available);
         shell.set_entry_visible(entry.button_id(), visible, cx);
     }
 }

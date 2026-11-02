@@ -238,6 +238,8 @@ pub async fn run_with(
         ))
     });
     let service_db = engine.db.clone();
+    #[cfg(feature = "bt")]
+    let service_bt_guard = engine.manager.bt_guard().clone();
     let service_data_dir = data_dir.clone();
     #[cfg(feature = "plugins")]
     let service_plugin_manager = engine.manager.plugin_manager();
@@ -298,20 +300,21 @@ pub async fn run_with(
         load_or_create_token(&data_dir, process_config.token_file_override.as_deref()).await?;
     let blobs = Arc::new(BlobStore::open(data_dir.join("daemon-blobs")).await?);
     let hello = crate::service_hello(uuid::Uuid::new_v4().to_string(), runtime_capabilities(true));
-    let service = Arc::new(
-        DaemonService::new(
-            hello,
-            events,
-            selections,
-            blobs.clone(),
-            actor.clone(),
-            service_db,
-            service_data_dir,
-            #[cfg(feature = "plugins")]
-            service_plugin_manager,
-        )
-        .with_demo_url(process_config.demo_url.clone()),
-    );
+    let service = DaemonService::new(
+        hello,
+        events,
+        selections,
+        blobs.clone(),
+        actor.clone(),
+        service_db,
+        service_data_dir,
+        #[cfg(feature = "plugins")]
+        service_plugin_manager,
+    )
+    .with_demo_url(process_config.demo_url.clone());
+    #[cfg(feature = "bt")]
+    let service = service.with_bt_guard(service_bt_guard);
+    let service = Arc::new(service);
     service
         .initialize_dynamic_projection()
         .await
@@ -796,6 +799,10 @@ fn apply_manager_settings(engine: &mut Engine, config: &HashMap<String, String>)
         u32::try_from(i32_config(config, "completed_record_retention_days", 0).clamp(0, 3650))
             .unwrap_or(0),
     );
+    #[cfg(feature = "bt")]
+    engine
+        .manager
+        .set_bt_guard_config(crate::config::bt_guard_config_from_map(config));
 }
 
 fn configured_save_dir(config: &HashMap<String, String>, fallback: String) -> String {

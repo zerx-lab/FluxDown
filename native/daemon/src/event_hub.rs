@@ -764,6 +764,19 @@ impl fluxdown_engine::events::EventSink for DaemonEngineEventSink {
                 ));
                 return;
             }
+            EngineEvent::BtGuardChanged => {
+                self.0.publish(DaemonEvent::BtGuardChanged);
+                return;
+            }
+            EngineEvent::BtGuardCloudRefreshWanted { have_sequence } => {
+                self.0
+                    .publish(DaemonEvent::BtGuardCloudRefreshWanted { have_sequence });
+                return;
+            }
+            EngineEvent::BtGuardEvidenceReady { count } => {
+                self.0.publish(DaemonEvent::BtGuardEvidenceReady { count });
+                return;
+            }
             _ => {}
         }
 

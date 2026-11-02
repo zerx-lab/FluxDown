@@ -1,0 +1,18 @@
+---
+description: FluxDown 粘性红线（git 授权、分支模型、用户拍板的产品决定）；跨仓额外根目录
+alwaysApply: true
+---
+
+# 粘性红线（Cursor 薄适配）
+
+完整正文见 [`.omp/RULES.md`](mdc:.omp/RULES.md)。**每次请求都必须遵守该文件全文**；本适配器不复制正文。若上下文中尚未加载，先 Read `.omp/RULES.md`。
+
+## 跨仓相关根（来自 `.omp/config.yml` workspace.additionalDirectories）
+
+跨仓契约改动时把下列目录视为相关根（相对本仓库根；契约以对方仓源码为准）：
+
+- `../FluxCloud`
+- `../fluxdown-plugin-index`
+- `../fluxdown-sniff-rules`
+
+不要把契约正文迁入 `.cursor/`；`.omp/` 仍是唯一事实源。

@@ -7,12 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluxdown_protocol::{
-    AgentEvent, AgentPreferencesDto, AgentSnapshot, ApplicationErrorCode, ComponentStatusDto,
-    ConnPolicySummaryDto, DaemonConfigPatch, DaemonConfigSnapshot, DaemonEvent,
-    DiagnosticsReportDto, ErrorReason, GatewayPatchParams, GatewayStatusDto,
-    PlatformIntegrationDto, PluginDto, QueueDto, RpcErrorData, ServiceEvent, SettingOwner,
-    ShellStatusDto, SiteAuthEntryDto, SyncStatusDto, SystemProxyDto, UpdateStatusDto,
-    WebhookDeliveryDto, method, setting_spec, setting_value_kind, value_to_daemon_config,
+    AgentEvent, AgentPreferencesDto, AgentSnapshot, ApplicationErrorCode,
+    BtGuardFilterSourcesRefreshDto, BtGuardStateDto, ComponentStatusDto, ConnPolicySummaryDto,
+    DaemonConfigPatch, DaemonConfigSnapshot, DaemonEvent, DiagnosticsReportDto, ErrorReason,
+    GatewayPatchParams, GatewayStatusDto, PlatformIntegrationDto, PluginDto, QueueDto,
+    RpcErrorData, ServiceEvent, SettingOwner, ShellStatusDto, SiteAuthEntryDto, SyncStatusDto,
+    SystemProxyDto, UpdateStatusDto, WebhookDeliveryDto, method, setting_spec, setting_value_kind,
+    value_to_daemon_config,
 };
 use fluxdown_ui_components::BusyHold;
 use gpui::{Context, SharedString};
@@ -28,6 +29,8 @@ pub(crate) use cloud_notify::CloudDeliveryLog;
 
 /// 本地编辑到写回 RPC 的合并窗口。
 const FLUSH_DEBOUNCE: Duration = Duration::from_millis(250);
+/// `load_attempts` 里防吸血总览的加载闸门（渲染期按需加载，`BtGuardChanged` 后重新放行）。
+pub(crate) const BT_GUARD_STATE_LOAD: &str = "btGuardState";
 /// daemon 修订冲突时的自动重试上限。
 const MAX_CONFLICT_RETRIES: u8 = 3;
 /// Doctor 上一次修复结果（`{key, ok}`，`key` 为 i18n 键）在 `transient` 里的键。
@@ -140,6 +143,10 @@ pub struct SettingsStore {
     conn_policy: Option<ConnPolicySummaryDto>,
     system_proxy: Option<SystemProxyDto>,
     update: UpdateStatusDto,
+    /// BT 防吸血总览（`daemon.bt.guard.state`）；按需加载，`BtGuardChanged` 后重新放行加载。
+    bt_guard: Option<BtGuardStateDto>,
+    /// 每收到一次 `BtGuardChanged` +1：条目 / 事件面板据此重新拉取。
+    bt_guard_revision: u64,
     /// 真正在途的动作；内部去重 / 自动加载闸门只看它（[`Self::in_flight`]）。
     busy: BTreeSet<&'static str>,
     /// 每个动作的最短可见「进行中」：本机 RPC 常在一帧内返回，没有它按钮转圈根本画不出来。
@@ -196,6 +203,8 @@ impl SettingsStore {
             conn_policy: None,
             system_proxy: None,
             update: UpdateStatusDto::default(),
+            bt_guard: None,
+            bt_guard_revision: 0,
             busy: BTreeSet::new(),
             busy_holds: BTreeMap::new(),
             busy_tags: BTreeMap::new(),
@@ -266,6 +275,10 @@ impl SettingsStore {
             }
             AgentEvent::Daemon(DaemonEvent::PluginsChanged(plugins)) => {
                 self.plugins.clone_from(plugins)
+            }
+            AgentEvent::Daemon(DaemonEvent::BtGuardChanged) => {
+                self.bt_guard_revision = self.bt_guard_revision.wrapping_add(1);
+                self.load_attempts.remove(BT_GUARD_STATE_LOAD);
             }
             AgentEvent::Daemon(DaemonEvent::ComponentsChanged(components)) => {
                 self.components.clone_from(components)
@@ -1035,6 +1048,66 @@ impl SettingsStore {
         }
     }
 
+    // ───────────────────────── BT 防吸血 ─────────────────────────
+
+    #[must_use]
+    pub fn bt_guard_state(&self) -> Option<&BtGuardStateDto> {
+        self.bt_guard.as_ref()
+    }
+    #[must_use]
+    pub fn bt_guard_revision(&self) -> u64 {
+        self.bt_guard_revision
+    }
+    /// 本地动作（添加 / 解除 / 加白）成功后立即通知条目 / 事件面板与总览刷新，不依赖事件回流。
+    pub fn bump_bt_guard_revision(&mut self, cx: &mut Context<Self>) {
+        self.bt_guard_revision = self.bt_guard_revision.wrapping_add(1);
+        self.load_attempts.remove(BT_GUARD_STATE_LOAD);
+        cx.notify();
+    }
+    pub fn load_bt_guard_state(&mut self, cx: &mut Context<Self>) {
+        self.load_attempts.insert(BT_GUARD_STATE_LOAD);
+        self.call_with(
+            "btGuardState",
+            method::DAEMON_BT_GUARD_STATE,
+            json!({}),
+            cx,
+            Self::absorb_bt_guard_state,
+        );
+    }
+    fn absorb_bt_guard_state(
+        &mut self,
+        result: Result<Value, RpcErrorData>,
+        cx: &mut Context<Self>,
+    ) {
+        // RPC 失败已由 `call_with` 记入 `last_error`；闸门保持置位，避免渲染期反复重发，
+        // 由「重新加载」按钮或 `BtGuardChanged` 重新放行。
+        let Ok(value) = result else { return };
+        match decode_wire::<BtGuardStateDto>(value) {
+            Some(state) => self.bt_guard = Some(state),
+            None => self.set_error(SettingsErrorKind::Failed, "", cx),
+        }
+    }
+    /// 立即刷新过滤文件订阅（慢方法：会拉取网络）；结果里的订阅状态直接并入总览。
+    pub fn refresh_bt_guard_filter_sources(&mut self, cx: &mut Context<Self>) {
+        self.call_with(
+            "btGuardFilterRefresh",
+            method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
+            json!({}),
+            cx,
+            |this, result, cx| {
+                let Ok(value) = result else { return };
+                match decode_wire::<BtGuardFilterSourcesRefreshDto>(value) {
+                    Some(refreshed) => {
+                        if let Some(state) = &mut this.bt_guard {
+                            state.filter_sources = refreshed.sources;
+                        }
+                    }
+                    None => this.set_error(SettingsErrorKind::Failed, "", cx),
+                }
+            },
+        );
+    }
+
     pub fn load_conn_policy(&mut self, cx: &mut Context<Self>) {
         self.call_with(
             "connPolicy",
@@ -1288,6 +1361,11 @@ fn preference_is_synced(key: &str) -> bool {
     setting_spec(key).is_some_and(|spec| spec.owner != SettingOwner::Excluded)
 }
 
+/// 解码 daemon 响应；形状不符返回 `None`（调用方据此显示错误，不得静默吞掉）。
+fn decode_wire<T: serde::de::DeserializeOwned>(value: Value) -> Option<T> {
+    serde_json::from_value(value).ok()
+}
+
 /// daemon wire 字符串 → 云同步目录键的 JSON 值。
 fn daemon_string_to_json(spec_key: &str, wire: &str) -> Value {
     match setting_value_kind(spec_key) {
@@ -1522,5 +1600,17 @@ mod tests {
         assert!(preference_is_synced("appearance.theme_mode"));
         assert!(preference_is_synced("bt.enable_dht"));
         assert!(preference_is_synced("custom_categories"));
+    }
+
+    #[test]
+    fn malformed_guard_state_is_detected_not_swallowed() {
+        use super::decode_wire;
+        assert!(decode_wire::<fluxdown_protocol::BtGuardStateDto>(json!("nope")).is_none());
+        assert!(
+            decode_wire::<fluxdown_protocol::BtGuardStateDto>(json!({"enabled": "x"})).is_none()
+        );
+        assert!(
+            decode_wire::<fluxdown_protocol::BtGuardFilterSourcesRefreshDto>(json!([1])).is_none()
+        );
     }
 }

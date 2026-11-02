@@ -3,13 +3,13 @@ title: API 总览
 description: FluxDown 的 HTTP API——五组路由、鉴权方式,以及它与 headless 服务器的关系。
 section: api
 order: 1
-sourceHash: "7fc5e6bae5f1"
+sourceHash: "5361a8e27802"
 ---
 
 FluxDown 的 HTTP API 供扩展、用户脚本、aria2 客户端与自动化工具使用；不要把 aria2 的 `/jsonrpc` 与官方客户端的 `/rpc` 混为一谈。
 
 - **桌面客户端**默认监听 `127.0.0.1:17800`。GPUI 的本地服务设置可开启局域网访问（`local_server_lan_enabled`），改为 `0.0.0.0`，下次启动生效；并非永远只监听回环。管理 API 与 MCP 默认关闭，脚本接管与 aria2 默认开启。
-- **[headless 服务器](/docs/zh/headless-server/setup/)**由同目录的 `fluxdown-agent --server` 与 `fluxdownd` 提供，监听地址只由 `FLUXDOWN_BIND` 决定（默认 `0.0.0.0:17800`）。全新安装默认开启兼容分组，但**未设置访问密钥不等于匿名开放**；Web 界面经 agent 的 `/rpc` 管理下载。
+- **[headless 服务器](/docs/zh/headless-server/setup/)**由同目录的 `fluxdown-agent --server` 与 `fluxdownd` 提供，监听地址只由 `FLUXDOWN_BIND` 决定（默认 `[::]:17800`，IPv4 + IPv6）。全新安装默认开启兼容分组，但**未设置访问密钥不等于匿名开放**；Web 界面经 agent 的 `/rpc` 管理下载。
 
 ## 五组路由
 
@@ -24,6 +24,8 @@ FluxDown 的 HTTP API 供扩展、用户脚本、aria2 客户端与自动化工�
 headless 首次设置完成前，`/download`、`/download/batch` 与 `/jsonrpc`（POST 和 WS 升级）返回 **HTTP 403**，消息为 `setup required: set the access key first`，名单方法也不能绕过；管理 API 与 MCP 同样拒绝空密钥。Web 页面、探活与首次设置接口仍可访问（启动就绪前 setup 接口可能返回 503）。完成初始化或用合规的 `FLUXDOWN_TOKEN` 预置密钥后，兼容入口才按各自开关工作。
 
 管理分组开启时可取 `GET /api/v1/openapi.json`（免鉴权的纯接口描述）。旧 `fluxdown-server` 的扩展 REST（`/api/v1/config`、队列增删改、stats、fs/list、components、webhooks、logs、`/api/v1/ws`、`/api/v1/token/regenerate`）已不在新宿主提供；请使用 Web 界面或 `/rpc`。免鉴权的 `GET /api/v1/setup/status` 与 `POST /api/v1/setup` 仅负责首次初始化，后者只在密钥尚未设置时接受。
+
+BT 防吸血路由位于同一管理分组的 `/api/v1/bt/guard/{state,entries,events}`,见 [BT 防吸血](/docs/zh/protocols/bt-guard/#rest-api)。
 
 ## 鉴权方式
 

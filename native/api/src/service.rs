@@ -10,13 +10,15 @@ use tokio::sync::broadcast;
 use async_trait::async_trait;
 
 use fluxdown_protocol::daemon::{
-    CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
-    LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmOutcome,
-    LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPairRevealRequest,
-    LinkPairRevealResponse, LinkPingInfo, MarketEntryDto, PluginAuthRequest, PluginAuthResponse,
-    PluginDto, QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, RssItemActionRequest,
-    RssItemDto, RssSourceDto, RssValidateRequest, RssValidateResponse, SiteAuthCredentialDto,
-    SiteAuthEntryDto, SiteAuthSaveRequest, TaskDto,
+    BtGuardEntriesAddParams, BtGuardEntriesListDto, BtGuardEntriesListParams, BtGuardEntryDto,
+    BtGuardEventsListDto, BtGuardEventsListParams, BtGuardStateDto, CreateGroupRequest,
+    CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse, LinkDeviceInfo,
+    LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmOutcome, LinkPairConfirmRequest,
+    LinkPairHelloRequest, LinkPairHelloResponse, LinkPairRevealRequest, LinkPairRevealResponse,
+    LinkPingInfo, MarketEntryDto, PluginAuthRequest, PluginAuthResponse, PluginDto, QueueDto,
+    ResolvePreviewRequest, ResolvePreviewResponse, RssItemActionRequest, RssItemDto, RssSourceDto,
+    RssValidateRequest, RssValidateResponse, SiteAuthCredentialDto, SiteAuthEntryDto,
+    SiteAuthSaveRequest, TaskDto,
 };
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组
@@ -411,6 +413,48 @@ pub trait ApiHost: Send + Sync {
         Err(rss_unsupported())
     }
 
+    // -- BT 防吸血（默认降级：不支持的宿主报错）--
+
+    /// 防吸血状态总览（开关 / 今日统计 / 云名单状态 / 过滤订阅 / 各层条目数）。
+    async fn bt_guard_state(&self) -> Result<BtGuardStateDto, ApiError> {
+        Err(bt_guard_unsupported())
+    }
+
+    /// 过滤条目分页。参数已由 HTTP 层校验（层 / 规则取值、`limit` 范围）。
+    async fn bt_guard_entries_list(
+        &self,
+        params: BtGuardEntriesListParams,
+    ) -> Result<BtGuardEntriesListDto, ApiError> {
+        let _ = params;
+        Err(bt_guard_unsupported())
+    }
+
+    /// 手动添加条目：`action == allow` 进白名单层，其余进手动层。CIDR 非法 →
+    /// [`ApiError::BadRequest`]。
+    async fn bt_guard_entries_add(
+        &self,
+        params: BtGuardEntriesAddParams,
+    ) -> Result<BtGuardEntryDto, ApiError> {
+        let _ = params;
+        Err(bt_guard_unsupported())
+    }
+
+    /// 移除一个条目。条目不存在 → [`ApiError::NotFound`]；云名单层条目不可删 →
+    /// [`ApiError::BadRequest`]（应改为加白）。
+    async fn bt_guard_entry_remove(&self, entry_id: i64) -> Result<(), ApiError> {
+        let _ = entry_id;
+        Err(bt_guard_unsupported())
+    }
+
+    /// 事件日志分页（按时间降序）。
+    async fn bt_guard_events_list(
+        &self,
+        params: BtGuardEventsListParams,
+    ) -> Result<BtGuardEventsListDto, ApiError> {
+        let _ = params;
+        Err(bt_guard_unsupported())
+    }
+
     // -- P2P 设备互联（默认降级：不支持的宿主报错 / ping 信息返回 None）--
 
     /// `/ping` 透出的本机设备互联身份（无鉴权）。默认 `None`（不支持 link 的宿主
@@ -586,6 +630,11 @@ fn groups_unsupported() -> ApiError {
 /// 未支持 RSS 订阅的宿主的统一错误。
 fn rss_unsupported() -> ApiError {
     ApiError::Internal("rss subscriptions not supported by this host".to_string())
+}
+
+/// 未支持 BT 防吸血的宿主的统一错误。
+fn bt_guard_unsupported() -> ApiError {
+    ApiError::Internal("bt guard not supported by this host".to_string())
 }
 
 /// 未支持设备互联的宿主（如纯 aria2 客户端 / mobile）的统一错误。

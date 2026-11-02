@@ -145,7 +145,6 @@ impl CloudError {
             message,
             retryable: false,
             unreachable: false,
-            details: None,
         }
     }
 }

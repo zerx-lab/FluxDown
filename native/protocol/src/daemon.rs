@@ -354,7 +354,7 @@ pub struct BtTrackerDto {
 }
 
 /// 一个已连接 peer。
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BtPeerDto {
@@ -376,6 +376,420 @@ pub struct BtPeerDto {
     /// peer 所在国家（ISO 3166-1 两位大写码）；国家库未就绪 / 内网 / 未收录缺省。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+    /// 防吸血 IP 组文本（IPv4 `1.2.3.4`，IPv6 `2001:db8::/64`）；防吸血未启用 / 旧 daemon 缺省为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ip_group: String,
+    /// 该 IP 组在本任务累计送达给我方的字节。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub group_delivered_bytes: u64,
+    /// 嫌疑等级：`none` / `weak` / `medium` / `strong`；未评估缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspicion: Option<String>,
+    /// 命中的规则 id（`excessive` / `rerequest` / `rewind` / `lag` / `fingerprint` / `cloud`）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
+    /// 当前处置：`allow` / `throttle` / `choke` / `banned`。
+    #[serde(default = "default_peer_action")]
+    pub action: String,
+    /// `true` = 命中规则但处于「仅观察」，`action` 为本应执行的动作而未真正执行。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub observe_only: bool,
+}
+
+impl Default for BtPeerDto {
+    fn default() -> Self {
+        Self {
+            addr: String::new(),
+            client: String::new(),
+            transport: String::new(),
+            downloaded: 0,
+            uploaded: 0,
+            down_bps: 0,
+            up_bps: 0,
+            country: None,
+            ip_group: String::new(),
+            group_delivered_bytes: 0,
+            suspicion: None,
+            rules: Vec::new(),
+            action: default_peer_action(),
+            observe_only: false,
+        }
+    }
+}
+
+fn default_peer_action() -> String {
+    BT_GUARD_PEER_ACTION_ALLOW.to_owned()
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// [`BtPeerDto::action`] 取值：放行。
+pub const BT_GUARD_PEER_ACTION_ALLOW: &str = "allow";
+/// 过滤条目所在层（优先级 allow > manual > auto / cloud / file）。
+pub const BT_GUARD_LAYERS: &[&str] = &["allow", "manual", "auto", "cloud", "file"];
+/// 过滤条目动作。
+pub const BT_GUARD_ENTRY_ACTIONS: &[&str] = &["allow", "ban", "choke", "throttle"];
+/// 规则 id（事件 / 条目 / 证据共用）。
+pub const BT_GUARD_RULES: &[&str] = &[
+    "excessive",
+    "rerequest",
+    "rewind",
+    "lag",
+    "fingerprint",
+    "cloud",
+];
+/// 条目 / 事件列表单页上限。
+pub const BT_GUARD_LIST_MAX_LIMIT: u32 = 500;
+/// 条目 / 事件列表默认页大小。
+pub const BT_GUARD_LIST_DEFAULT_LIMIT: u32 = 100;
+/// `daemon.bt.guard.entries.remove` 单次 id 数上限。
+pub const BT_GUARD_REMOVE_MAX_IDS: usize = 1000;
+
+fn default_guard_limit() -> u32 {
+    BT_GUARD_LIST_DEFAULT_LIMIT
+}
+
+/// 今日（本地日）统计。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardStatsDto {
+    /// 仅观察命中数。
+    pub today_observed: u64,
+    /// 已执行处置数。
+    pub today_enforced: u64,
+    /// 因封禁被拒绝的连接数。
+    pub today_blocked_connections: u64,
+    /// choke / throttle 丢弃或受限的上传请求字节之和。
+    pub today_refused_bytes: u64,
+}
+
+/// 云名单状态。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardCloudStatusDto {
+    /// 当前已应用文档序号；0 = 无。
+    pub sequence: u64,
+    /// 文档应用时间（unix 秒）；0 = 无。
+    pub updated_at: i64,
+    /// 文档过期时间（unix 秒）；0 = 无。
+    pub expires_at: i64,
+    /// 云层 IP 条目数。
+    pub entries: u32,
+    /// 客户端指纹规则数。
+    pub client_rules: u32,
+    /// 文档已过期，云层停用。
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// 最近一份被拒绝文档的原因；成功应用后清空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected_reason: Option<String>,
+    /// 文档要求展示的署名行（CC BY 4.0 等）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attribution: Vec<String>,
+}
+
+/// 过滤文件订阅状态。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardFilterSourceDto {
+    pub url: String,
+    pub ok: bool,
+    pub entries: u32,
+    /// 最近一次成功时间（unix 秒）；0 = 从未成功。
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 各层未过期条目数。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardCountsDto {
+    pub allow: u32,
+    pub manual: u32,
+    pub auto: u32,
+    pub cloud: u32,
+    pub file: u32,
+}
+
+/// `daemon.bt.guard.state` 结果。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardStateDto {
+    /// `bt_guard_enabled`。
+    pub enabled: bool,
+    /// BT 会话存活（防吸血仅在会话内生效）。
+    pub session_active: bool,
+    pub stats: BtGuardStatsDto,
+    pub cloud: BtGuardCloudStatusDto,
+    pub filter_sources: Vec<BtGuardFilterSourceDto>,
+    pub counts: BtGuardCountsDto,
+}
+
+/// 一条过滤条目。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEntryDto {
+    pub id: i64,
+    /// 见 [`BT_GUARD_LAYERS`]。
+    pub layer: String,
+    /// `1.2.3.4` / `1.2.3.0/24` / `2001:db8::/64`。
+    pub cidr: String,
+    /// 见 [`BT_GUARD_ENTRY_ACTIONS`]。
+    pub action: String,
+    /// 触发规则 id（见 [`BT_GUARD_RULES`]）；手动条目为 `manual`、订阅文件条目为 `file`；其余可为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rule: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    /// 证据摘要（JSON）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
+    pub evidence: Option<Value>,
+    /// 来源（`auto` / `user` / 订阅 URL / `cloud:community` 等）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    pub created_at: i64,
+    /// 到期 unix 秒；缺省 = 永久。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// 距到期的剩余秒数（服务端按当前时间折算，≥ 0）；永久缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_secs: Option<i64>,
+}
+
+/// `daemon.bt.guard.entries.list` 参数。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEntriesListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    /// 对 cidr / reason 的子串搜索。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// 只返回 CIDR 覆盖该 IP 的条目（含云 / 订阅层的宽网段）；与其他过滤叠加。非法 IP → `invalidArgument`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contains_ip: Option<String>,
+    #[serde(default)]
+    pub offset: u32,
+    /// 1..=[`BT_GUARD_LIST_MAX_LIMIT`]，缺省 [`BT_GUARD_LIST_DEFAULT_LIMIT`]。
+    #[serde(default = "default_guard_limit")]
+    pub limit: u32,
+}
+
+impl Default for BtGuardEntriesListParams {
+    fn default() -> Self {
+        Self {
+            layer: None,
+            rule: None,
+            query: None,
+            contains_ip: None,
+            offset: 0,
+            limit: BT_GUARD_LIST_DEFAULT_LIMIT,
+        }
+    }
+}
+
+/// `daemon.bt.guard.entries.list` 结果。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEntriesListDto {
+    /// 满足过滤条件的总数（不受分页影响）。
+    pub total: u64,
+    pub items: Vec<BtGuardEntryDto>,
+}
+
+/// `daemon.bt.guard.entries.add` 参数。`action == allow` 进白名单层，其余进手动层。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEntriesAddParams {
+    pub cidr: String,
+    /// 见 [`BT_GUARD_ENTRY_ACTIONS`]。
+    pub action: String,
+    /// 有效期秒数；缺省 = 永久。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<i64>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `daemon.bt.guard.entries.remove` 参数。云层条目拒绝删除（`invalidArgument`），应改为加白。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEntriesRemoveParams {
+    pub ids: Vec<i64>,
+}
+
+/// `daemon.bt.guard.entries.remove` 结果。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEntriesRemoveDto {
+    pub removed: u32,
+}
+
+/// 事件日志一行。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEventDto {
+    pub id: i64,
+    pub at: i64,
+    /// 事件类型：`observed` / `enforced` / `probe` / `probe_cleared` / `entry_added` /
+    /// `entry_removed` / `cloud_applied` / `cloud_rejected` / `filter_applied`。
+    pub kind: String,
+    pub ip_group: String,
+    /// 种子 infohash（40 hex）；无关种子的事件为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub info_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rule: String,
+    /// 规则当时的模式（`observe` / `enforce`）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// `daemon.bt.guard.events.list` 参数。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEventsListParams {
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default = "default_guard_limit")]
+    pub limit: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// 只返回该对端组的事件。可以是 IP（`1.2.3.4`、`2001:db8::1`）或组文本（`2001:db8::/64`）；
+    /// daemon 按当前 IPv6 前缀规范化后精确匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_group: Option<String>,
+}
+
+impl Default for BtGuardEventsListParams {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: BT_GUARD_LIST_DEFAULT_LIMIT,
+            rule: None,
+            kind: None,
+            ip_group: None,
+        }
+    }
+}
+
+/// `daemon.bt.guard.events.list` 结果（按时间降序）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEventsListDto {
+    pub total: u64,
+    pub items: Vec<BtGuardEventDto>,
+}
+
+/// `daemon.bt.guard.export` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardExportParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+}
+
+/// `daemon.bt.guard.export` 结果：每行 `cidr # layer rule reason expires`。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardExportDto {
+    pub text: String,
+    pub lines: u32,
+}
+
+/// `daemon.bt.guard.filterSources.refresh` 结果。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardFilterSourcesRefreshDto {
+    pub sources: Vec<BtGuardFilterSourceDto>,
+}
+
+/// `daemon.bt.guard.cloud.apply` 参数（仅 agent 调用，agent 已验签）。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardCloudApplyParams {
+    /// 原始签名信封 JSON 文本（仅校验长度；daemon 不保存，agent 自己缓存并在重启后重放）。
+    pub envelope: String,
+    pub sequence: u64,
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub verified_payload: Value,
+}
+
+/// `daemon.bt.guard.cloud.apply` 结果。拒绝（序号回滚 / 差异防护等）不是 RPC 错误：保留上一份并
+/// 以 `rejectedReason` 说明。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardCloudApplyDto {
+    pub applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected_reason: Option<String>,
+    pub status: BtGuardCloudStatusDto,
+}
+
+/// 待上报的一条证据（字段与 FluxCloud `POST /api/v1/bt-guard/evidence` 的 item 一致）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEvidenceItemDto {
+    pub ip_group: String,
+    /// `excessive` / `rerequest` / `rewind` / `lag` / `fingerprint`。
+    pub rule: String,
+    /// `strong` / `medium` / `weak`。
+    pub strength: String,
+    /// 40 位十六进制 infohash（FluxCloud 收到后立即 HMAC）。
+    pub info_hash: String,
+    pub torrent_size: u64,
+    pub delivered_bytes: u64,
+    pub dup_bytes: u64,
+    pub ratio_milli: u64,
+    pub rerequests: u32,
+    pub rewind_permille: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub peer_id_prefix: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client: String,
+    pub first_seen: i64,
+    pub last_seen: i64,
+}
+
+/// `daemon.bt.guard.evidence.drain` 结果。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardEvidenceDrainDto {
+    pub items: Vec<BtGuardEvidenceItemDto>,
 }
 
 /// peer 数量汇总。

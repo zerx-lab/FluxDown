@@ -22,7 +22,7 @@ start() {
 	mkdir -p "$QPKG_ROOT/data"
 	# FLUXDOWN_INSTALL_SOURCE：二进制归 App Center 管理，应用内更新只提示安装新 qpkg
 	FLUXDOWN_DATA_DIR="$QPKG_ROOT/data" \
-	FLUXDOWN_BIND="0.0.0.0:17800" \
+	FLUXDOWN_BIND="[::]:17800" \
 	FLUXDOWN_INSTALL_SOURCE=qnap \
 		"$QPKG_ROOT/fluxdown-agent" --server >> "$QPKG_ROOT/data/server.log" 2>&1 &
 	echo $! > "$PIDFILE"

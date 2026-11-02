@@ -74,6 +74,8 @@ pub const NOTICE_COMPONENT_RESULT: &str = "componentResult";
 pub const NOTICE_LINK_INCOMING_PAIRING: &str = "linkIncomingPairing";
 /// `WsServerMsg::TaskCdnEvent`。
 pub const NOTICE_TASK_CDN_EVENT: &str = "taskCdnEvent";
+/// `DaemonEvent::BtGuardChanged`：BT 防吸血条目 / 状态变化，载荷恒为 `null`，宿主端据此重新拉取 `daemon.bt.guard.*`。
+pub const NOTICE_BT_GUARD_CHANGED: &str = "btGuardChanged";
 
 /// 分区：与上方键一一对应，顺序即 [`Section::index`]。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,7 +230,11 @@ pub(crate) fn affected(event: &AgentEvent) -> &'static [Section] {
             | DaemonEvent::ConfigChanged(_)
             | DaemonEvent::RuntimeStatsChanged(_)
             | DaemonEvent::SelectionPending(_)
-            | DaemonEvent::SelectionResolved { .. } => &[],
+            | DaemonEvent::SelectionResolved { .. }
+            // 云名单刷新 / 证据上报只由 agent 消费；`BtGuardChanged` 走通知而非分区。
+            | DaemonEvent::BtGuardChanged
+            | DaemonEvent::BtGuardCloudRefreshWanted { .. }
+            | DaemonEvent::BtGuardEvidenceReady { .. } => &[],
         },
         AgentEvent::SessionChanged(_) => SESSION_GROUP,
         AgentEvent::SyncChanged(_) => &[Section::AgentSync],
@@ -249,9 +255,6 @@ pub(crate) fn affected(event: &AgentEvent) -> &'static [Section] {
         | AgentEvent::CaptureTasksStarted(_)
         // 外部恢复任务只驱动桌面提示窗口，移动端既无分区也不发通知。
         | AgentEvent::CaptureTasksResumed(_)
-        // FluxMesh暂不进移动端（桌面 / Web 先行）：既无分区也不发通知。
-        | AgentEvent::ShareChanged(_)
-        | AgentEvent::ShareProgress(_)
         // 远端主机的应用内更新只在其桌面 / Web 界面操作，移动端不暴露分区。
         | AgentEvent::UpdateChanged(_)
         | AgentEvent::SessionRevoked(_) => &[],
@@ -273,6 +276,9 @@ pub(crate) fn notice(event: &AgentEvent) -> Option<(String, String)> {
             NOTICE_TASK_ACTIVITY_ADDED,
             serde_json::to_string(activity),
         )),
+        AgentEvent::Daemon(DaemonEvent::BtGuardChanged) => {
+            Some((NOTICE_BT_GUARD_CHANGED.to_owned(), "null".to_owned()))
+        }
         AgentEvent::Daemon(DaemonEvent::Engine(message)) => engine_notice(message),
         _ => None,
     }
@@ -333,5 +339,25 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{}: {error}", section.key()));
         }
         assert_eq!(rendered[Section::AgentSession.index()], "null");
+    }
+
+    #[test]
+    fn bt_guard_changed_is_a_null_notice_and_touches_no_section() {
+        use fluxdown_protocol::{AgentEvent, DaemonEvent};
+
+        let event = AgentEvent::Daemon(DaemonEvent::BtGuardChanged);
+        assert!(super::affected(&event).is_empty());
+        assert_eq!(
+            super::notice(&event),
+            Some((super::NOTICE_BT_GUARD_CHANGED.to_owned(), "null".to_owned()))
+        );
+        for agent_only in [
+            DaemonEvent::BtGuardCloudRefreshWanted { have_sequence: 1 },
+            DaemonEvent::BtGuardEvidenceReady { count: 2 },
+        ] {
+            let event = AgentEvent::Daemon(agent_only);
+            assert!(super::affected(&event).is_empty());
+            assert!(super::notice(&event).is_none());
+        }
     }
 }

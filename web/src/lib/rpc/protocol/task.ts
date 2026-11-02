@@ -358,7 +358,22 @@ export interface BtPeerDto {
   upBps: number;
   /** ISO 3166-1 alpha-2 国家码（大写）；未知 / 私网 / 地理库未就绪时缺省。 */
   country?: string;
+  /** 防吸血 IP 组文本（IPv4 `1.2.3.4`，IPv6 `2001:db8::/64`）；未启用 / 旧 daemon 缺省。 */
+  ipGroup?: string;
+  /** 该 IP 组在本任务累计送达给我方的字节；缺省 = 0。 */
+  groupDeliveredBytes?: number;
+  /** 嫌疑等级；未评估缺省。 */
+  suspicion?: BtPeerSuspicion;
+  /** 命中的规则 id（`BtGuardRule`）。 */
+  rules?: string[];
+  /** 处置：`allow` / `throttle` / `choke` / `banned`；缺省 = `allow`。 */
+  action?: BtPeerAction;
+  /** 命中规则但处于「仅观察」：`action` 为本应执行而未执行的动作。 */
+  observeOnly?: boolean;
 }
+
+export type BtPeerSuspicion = 'none' | 'weak' | 'medium' | 'strong';
+export type BtPeerAction = 'allow' | 'throttle' | 'choke' | 'banned';
 
 /** peer 池各状态计数（`BtPeerCountsDto`）。 */
 export interface BtPeerCountsDto {

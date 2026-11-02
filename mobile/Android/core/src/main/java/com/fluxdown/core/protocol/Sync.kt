@@ -5,7 +5,7 @@ import kotlin.math.max
 /*
  * 云端配置同步（`agent.sync.get|enable|disable|now|setLocalOnly`）。镜像 `native/protocol/src/agent.rs::SyncStatusDto`
  * / `SyncLocalOnlyParams`（同 iOS `Sync.swift`）；范围分组与状态优先级镜像 Web `account/syncGroups.ts`
- * （键表 = `settings.rs::SYNC_SETTING_SPECS` 共 56 键，与 [SettingsCatalog] 的同步目录一一对应）。
+ * （键表 = `settings.rs::SYNC_SETTING_SPECS`，含 19 个 `bt.guard.*`，与 [SettingsCatalog] 的同步目录一一对应）。
  */
 
 /** `agent.sync` 分区 / `agent.sync.get|setLocalOnly` 结果。 */
@@ -125,6 +125,12 @@ object SyncRules {
                 "bt.seed_ratio_limit", "bt.seed_post_ratio_limit", "bt.seed_time_limit_minutes",
                 "bt.seed_inactive_time_limit_minutes", "bt.seed_limit_operator", "bt.seed_then_action",
                 "bt.seed_max_active",
+                "bt.guard.enabled", "bt.guard.rule_excessive", "bt.guard.rule_rerequest", "bt.guard.rule_rewind",
+                "bt.guard.rule_lag", "bt.guard.rule_fingerprint", "bt.guard.cloud_mode", "bt.guard.excess_ratio_pct",
+                "bt.guard.min_torrent_mib", "bt.guard.rewind_tolerance_pct", "bt.guard.throttle_kib",
+                "bt.guard.ban_base_hours", "bt.guard.ban_max_days", "bt.guard.downloading_max_action",
+                "bt.guard.skip_private", "bt.guard.skip_lan", "bt.guard.ipv6_prefix", "bt.guard.filter_urls",
+                "bt.guard.cloud_enabled",
             ),
         ),
         SyncGroup(

@@ -70,6 +70,8 @@ public enum SettingsCatalog {
     public static let btSeedTimeUnits = ["minutes", "hours", "days"]
     public static let btSeedLimitOperators = ["or", "and"]
     public static let btSeedThenActions = ["stop", "delete", "delete_files"]
+    public static let btGuardModes = ["off", "observe", "enforce"]
+    public static let btGuardDownloadingActions = ["observe", "throttle", "choke", "ban"]
     public static let btMseModes = ["disabled", "enabled", "forced"]
     public static let proxyModes = ["none", "system", "manual", "auto"]
     public static let proxyTypes = ["http", "https", "socks4", "socks5"]
@@ -124,6 +126,27 @@ public enum SettingsCatalog {
         daemon("bt_seed_inactive_time_limit_unit", .choice(btSeedTimeUnits), "minutes"),
         daemon("bt_seed_limit_operator", .choice(btSeedLimitOperators), "or"),
         daemon("bt_seed_then_action", .choice(btSeedThenActions), "stop"),
+        // BT 防吸血（热更新；`bt_guard_report_enabled` 设备本地不同步）
+        daemon("bt_guard_enabled", .bool, "true"),
+        daemon("bt_guard_rule_excessive", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_rerequest", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_rewind", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_lag", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_fingerprint", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_cloud_mode", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_excess_ratio_pct", .integer(min: 110, max: 1000), "200"),
+        daemon("bt_guard_min_torrent_mib", .integer(min: 0, max: 1_048_576), "64"),
+        daemon("bt_guard_rewind_tolerance_pct", .integer(min: 0, max: 100), "7"),
+        daemon("bt_guard_throttle_kib", .integer(min: 1, max: 1_048_576), "32"),
+        daemon("bt_guard_ban_base_hours", .integer(min: 1, max: 720), "24"),
+        daemon("bt_guard_ban_max_days", .integer(min: 1, max: 365), "30"),
+        daemon("bt_guard_downloading_max_action", .choice(btGuardDownloadingActions), "throttle"),
+        daemon("bt_guard_skip_private", .bool, "true"),
+        daemon("bt_guard_skip_lan", .bool, "true"),
+        daemon("bt_guard_ipv6_prefix", .integer(min: 48, max: 128), "64"),
+        daemon("bt_guard_filter_urls", .text, ""),
+        daemon("bt_guard_cloud_enabled", .bool, "true"),
+        daemon("bt_guard_report_enabled", .bool, "false"),
         // ED2K
         daemon("ed2k_enable_kad", .bool, "true"),
         daemon("ed2k_enable_upnp", .bool, "true"),
@@ -236,6 +259,25 @@ public enum SettingsCatalog {
         "bt_seed_limit_operator": "bt.seed_limit_operator",
         "bt_seed_then_action": "bt.seed_then_action",
         "bt_seed_max_active": "bt.seed_max_active",
+        "bt_guard_enabled": "bt.guard.enabled",
+        "bt_guard_rule_excessive": "bt.guard.rule_excessive",
+        "bt_guard_rule_rerequest": "bt.guard.rule_rerequest",
+        "bt_guard_rule_rewind": "bt.guard.rule_rewind",
+        "bt_guard_rule_lag": "bt.guard.rule_lag",
+        "bt_guard_rule_fingerprint": "bt.guard.rule_fingerprint",
+        "bt_guard_cloud_mode": "bt.guard.cloud_mode",
+        "bt_guard_excess_ratio_pct": "bt.guard.excess_ratio_pct",
+        "bt_guard_min_torrent_mib": "bt.guard.min_torrent_mib",
+        "bt_guard_rewind_tolerance_pct": "bt.guard.rewind_tolerance_pct",
+        "bt_guard_throttle_kib": "bt.guard.throttle_kib",
+        "bt_guard_ban_base_hours": "bt.guard.ban_base_hours",
+        "bt_guard_ban_max_days": "bt.guard.ban_max_days",
+        "bt_guard_downloading_max_action": "bt.guard.downloading_max_action",
+        "bt_guard_skip_private": "bt.guard.skip_private",
+        "bt_guard_skip_lan": "bt.guard.skip_lan",
+        "bt_guard_ipv6_prefix": "bt.guard.ipv6_prefix",
+        "bt_guard_filter_urls": "bt.guard.filter_urls",
+        "bt_guard_cloud_enabled": "bt.guard.cloud_enabled",
         "ed2k_enable_kad": "ed2k.enable_kad",
         "ed2k_enable_upnp": "ed2k.enable_upnp",
         "ed2k_server_list": "ed2k.server_list",

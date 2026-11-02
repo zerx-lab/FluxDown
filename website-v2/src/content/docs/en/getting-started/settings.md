@@ -83,6 +83,27 @@ A configured template always takes priority over auto-detection; if it fails to 
 
 Some BT changes require restarting the BT engine to take effect (FluxDown shows a reminder in this category). DHT and UPnP are always enabled internally and have no separate toggle. Proxy settings (below) don't apply to BitTorrent downloads.
 
+### Anti-Leech, Block list and Event log
+
+*Settings → BitTorrent* also has three tabs for [BT Anti-Leech](/docs/en/protocols/bt-guard/):
+
+| Setting | Purpose | Default |
+|---|---|---|
+| Anti-leech protection | Master switch for the whole BT engine; takes effect immediately. | On |
+| Detection rules (excessive upload, re-requesting owned pieces, progress rewind, progress lag, client fingerprint) and Cloud blocklist mode | Off / Observe only / Enforce per rule. | Observe only |
+| Excessive upload ratio / Minimum torrent size | Trigger threshold and the smallest torrent the rule applies to. | 200% / 64 MiB |
+| Rewind tolerance | Share of held pieces a reconnecting peer may drop. | 7% |
+| Throttled upload speed | Upload speed shared by all throttled peers. | 32 KiB/s |
+| First ban duration / Longest ban duration | Each repeat offence multiplies the ban by 4. | 24 hours / 30 days |
+| Action limit while downloading | Strongest action on tasks that are still downloading. | Throttle |
+| Skip private torrents / Skip local network peers | Exemptions. | On / On |
+| IPv6 grouping prefix | IPv6 peers are grouped by this prefix length. | 64 |
+| Use the cloud blocklist | Fetch and locally verify the signed list from FluxCloud. | On |
+| Subscription URLs | Plain-text IP lists, one URL per line. | Empty |
+| Share evidence with FluxCloud | Report peers that trigger rules; needs a signed-in account and consent. | Off |
+
+The **Block list** tab lets you browse, search, add, release, allow-list and export entries; the **Event log** tab shows what each rule observed or enforced.
+
 ## eD2K
 
 | Setting | Purpose | Default |

@@ -175,8 +175,6 @@ pub struct CaptureService {
     shell: Arc<ShellState>,
     /// 最近的事务结局（最新在队尾）；std 锁只在内存操作期间短持有，不跨 await。
     outcomes: std::sync::Mutex<VecDeque<(String, CaptureOutcome)>>,
-    /// 分享链接（`fluxdown://share/…`、`https://fluxdown.com/s/…`）的出口。
-    share_links: Option<Arc<dyn crate::share_link::ShareLinkSink>>,
 }
 
 impl CaptureService {
@@ -188,18 +186,7 @@ impl CaptureService {
             pending: Mutex::new(VecDeque::new()),
             shell,
             outcomes: std::sync::Mutex::new(VecDeque::new()),
-            share_links: None,
         }
-    }
-
-    /// 接入分享链接出口（FluxMesh服务）；缺省没有，分享链接按「FluxMesh不可用」拒绝。
-    #[must_use]
-    pub fn with_share_links(
-        mut self,
-        sink: Option<Arc<dyn crate::share_link::ShareLinkSink>>,
-    ) -> Self {
-        self.share_links = sink;
-        self
     }
 
     fn record_outcome(&self, id: &str, outcome: CaptureOutcome) {
@@ -264,11 +251,6 @@ impl CaptureService {
             .into_iter()
             .flat_map(split_batch)
             .collect::<Vec<_>>();
-        // 分享链接不是下载地址：交给FluxMesh服务。免打扰的外部接管直接接收全部文件，
-        // 否则只解析并等 UI 确认；绝不落成一条损坏的下载任务。
-        let (share_requests, requests): (Vec<_>, Vec<_>) = requests
-            .into_iter()
-            .partition(|request| fluxdown_protocol::capture_link::is_share_link(&request.url));
         let (policy, route) = self.events.inspect(|snapshot| {
             let preferences = &snapshot.preferences.values;
             (
@@ -276,26 +258,8 @@ impl CaptureService {
                 crate::category_dir::category_route(preferences),
             )
         });
-        // `Direct`（系统打开 / 拖入）与 `External`（扩展 / NMH）都是用户主动交来的链接，按免打扰偏好分流；
-        // `Prompt`（剪贴板监听）恒走确认。
-        let silent_share = origin != CaptureOrigin::Prompt && policy.silent;
-        for request in &share_requests {
-            let Some(sink) = &self.share_links else {
-                return Err(CaptureError::Share(
-                    RpcErrorData::new(ApplicationErrorCode::Unavailable, false)
-                        .with_reason(fluxdown_protocol::ErrorReason::ShareUnavailable),
-                ));
-            };
-            let result = if silent_share {
-                sink.receive_link(&request.url, policy.remembered_save_dir.as_deref())
-                    .await
-            } else {
-                sink.open_link(&request.url).await
-            };
-            result.map_err(CaptureError::Share)?;
-        }
         if requests.is_empty() {
-            return Ok(json!({ "taskIds": [], "share": !share_requests.is_empty() }));
+            return Ok(json!({ "taskIds": [] }));
         }
         if origin == CaptureOrigin::Direct {
             return self.create_all(requests, None, true, None).await;
@@ -566,6 +530,7 @@ impl CaptureService {
         &self,
         transaction_id: &str,
         accepted: bool,
+        disable_category_route: bool,
         confirmed: Option<CreateTaskRequest>,
     ) -> Result<Value, CaptureError> {
         let CaptureTransaction {
@@ -594,7 +559,7 @@ impl CaptureService {
             Some(confirmed) => merge_confirmed_request(request, confirmed),
             None => captured_create_request(request),
         };
-        if let Some(plan) = category {
+        if !disable_category_route && let Some(plan) = category {
             let (offered, remembered) = self.events.inspect(|snapshot| {
                 let policy = ExternalPolicy::from_preferences(&snapshot.preferences.values);
                 (
@@ -912,8 +877,6 @@ pub enum CaptureError {
     InvalidGroup,
     #[error("daemon capture create failed: {0:?}")]
     Daemon(fluxdown_protocol::RpcErrorData),
-    #[error("share link was not accepted: {0:?}")]
-    Share(fluxdown_protocol::RpcErrorData),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
@@ -1082,58 +1045,6 @@ mod tests {
         assert!(capture.list().await.is_empty());
     }
 
-    #[derive(Default)]
-    struct RecordingSink(std::sync::Mutex<Vec<String>>);
-
-    #[async_trait::async_trait]
-    impl crate::share_link::ShareLinkSink for RecordingSink {
-        async fn open_link(&self, link: &str) -> Result<(), fluxdown_protocol::RpcErrorData> {
-            self.0.lock().expect("lock").push(format!("open {link}"));
-            Ok(())
-        }
-
-        async fn receive_link(
-            &self,
-            link: &str,
-            save_dir: Option<&str>,
-        ) -> Result<(), fluxdown_protocol::RpcErrorData> {
-            self.0
-                .lock()
-                .expect("lock")
-                .push(format!("receive {link} {save_dir:?}"));
-            Ok(())
-        }
-    }
-
-    async fn share_calls(prefs: serde_json::Value, origin: CaptureOrigin) -> Vec<String> {
-        let sink = std::sync::Arc::new(RecordingSink::default());
-        let capture = service(prefs).with_share_links(Some(sink.clone()));
-        let mut request = captured();
-        request.url = "fluxdown://share/abc".to_owned();
-        capture.submit(request, origin).await.expect("share link");
-        assert!(capture.list().await.is_empty());
-        sink.0.lock().expect("lock").clone()
-    }
-
-    #[tokio::test]
-    async fn share_link_receives_directly_only_for_silent_non_prompt_capture() {
-        let silent = json!({ "download.silent_download": true });
-        for origin in [CaptureOrigin::External, CaptureOrigin::Direct] {
-            assert_eq!(
-                share_calls(silent.clone(), origin).await,
-                ["receive fluxdown://share/abc None"]
-            );
-            assert_eq!(
-                share_calls(json!({}), origin).await,
-                ["open fluxdown://share/abc"]
-            );
-        }
-        assert_eq!(
-            share_calls(silent, CaptureOrigin::Prompt).await,
-            ["open fluxdown://share/abc"]
-        );
-    }
-
     #[tokio::test]
     async fn oversized_batch_is_rejected_whole_without_partial_enqueue() {
         let capture = service(json!({}));
@@ -1182,6 +1093,77 @@ mod tests {
         let mut spec = captured_create_request(captured());
         plan.apply(&mut spec, None);
         assert_eq!(spec.request.save_dir, "");
+    }
+
+    #[tokio::test]
+    async fn manual_category_directory_disables_capture_route() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (capture, mut calls, _events, stop, server) = daemon_service().await;
+            capture.events.publish(AgentEvent::PreferencesChanged(
+                fluxdown_protocol::AgentPreferencesDto {
+                    revision: 1,
+                    values: [(
+                        fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY.to_owned(),
+                        json!([{
+                            "id": "bin",
+                            "name": "Binary",
+                            "extensions": ["bin"],
+                            "position": 1,
+                            "saveDir": "/category"
+                        }]),
+                    )]
+                    .into(),
+                },
+            ));
+            let mut original = captured();
+            original.save_dir.clear();
+            let queued = capture
+                .submit(original, CaptureOrigin::External)
+                .await
+                .expect("queue capture");
+            let transaction_id = queued["transactionIds"][0]
+                .as_str()
+                .expect("transaction id")
+                .to_owned();
+            let confirming = {
+                let capture = capture.clone();
+                tokio::spawn(async move {
+                    capture
+                        .resolve(
+                            &transaction_id,
+                            true,
+                            true,
+                            Some(form(json!({
+                                "url": "https://example.com/a.bin",
+                                "saveDir": "/category"
+                            }))),
+                        )
+                        .await
+                })
+            };
+            let (request, reply) = calls.recv().await.expect("task create RPC");
+            assert_eq!(
+                request.method,
+                fluxdown_protocol::method::DAEMON_TASK_CREATE
+            );
+            let params: fluxdown_protocol::DaemonCreateTaskParams =
+                serde_json::from_value(request.params.expect("task create params"))
+                    .expect("decode task create params");
+            assert_eq!(params.request.save_dir, "/category");
+            assert!(params.category_route.is_none());
+            reply
+                .send(Ok(json!({"taskId": "manual-category"})))
+                .expect("daemon reply");
+            confirming
+                .await
+                .expect("confirmation task")
+                .expect("confirm capture");
+            stop.send(()).expect("stop test daemon");
+            drop(capture);
+            server.await.expect("daemon server");
+        })
+        .await
+        .expect("manual capture category lifecycle");
     }
 
     #[test]
@@ -1385,11 +1367,11 @@ mod tests {
             ));
             assert_eq!(capture.list().await.len(), 1);
             capture
-                .resolve(&id, false, None)
+                .resolve(&id, false, false, None)
                 .await
                 .expect("legacy rejection");
             assert!(matches!(
-                capture.resolve(&id, false, None).await,
+                capture.resolve(&id, false, false, None).await,
                 Err(CaptureError::NotFound)
             ));
         }
@@ -1441,7 +1423,7 @@ mod tests {
             assert_eq!(capture.list().await.len(), 1);
         }
         capture
-            .resolve(&id, false, None)
+            .resolve(&id, false, false, None)
             .await
             .expect("transaction remains rejectable");
     }
@@ -1783,7 +1765,7 @@ mod tests {
                 assert!(!wire.contains(secret), "{secret}");
             }
             assert_eq!(capture.list().await[0].transaction_id, id);
-            capture.resolve(&id, false, None).await.expect("still rejectable");
+            capture.resolve(&id, false, false, None).await.expect("still rejectable");
             assert!(calls.try_recv().is_err(), "preview did not create any task");
             stop.send(()).expect("stop test daemon");
             drop(capture);
@@ -1813,7 +1795,7 @@ mod tests {
             assert_eq!(request.method, fluxdown_protocol::method::DAEMON_GROUP_CREATE);
             for accepted in [false, true] {
                 assert!(matches!(
-                    capture.resolve(&id, accepted, Some(form(json!({ "url": "" })))).await,
+                    capture.resolve(&id, accepted, false, Some(form(json!({ "url": "" })))).await,
                     Err(CaptureError::Busy)
                 ));
             }
@@ -1840,7 +1822,7 @@ mod tests {
                 Err(CaptureError::NotFound)
             ));
             assert!(matches!(
-                capture.resolve(&id, true, None).await,
+                capture.resolve(&id, true, false, None).await,
                 Err(CaptureError::NotFound)
             ));
             assert!(calls.try_recv().is_err(), "no duplicate group or ordinary task");

@@ -17,7 +17,6 @@ import { PluginAuthDialog } from './PluginAuthDialog'
 import { GrantConsentDialog, RiskBadge } from './PluginConsentDialog'
 import { PluginDetailDialog } from './PluginDetailDialog'
 import { PluginSettingsDialog } from './PluginSettingsDialog'
-import { SiteDefaultsCard } from './SiteDefaultsCard'
 import { liveDialogPlugins, postInstallConsent } from './logic'
 import type { ConsentSet } from './logic'
 
@@ -280,8 +279,6 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
           ))}
         </ListCard>
       )}
-
-      <SiteDefaultsCard plugins={plugins} stale={stale} />
 
       <MarketSection
         stale={stale}

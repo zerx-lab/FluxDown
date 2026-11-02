@@ -339,6 +339,21 @@ pub enum EngineEvent {
     /// 与毫秒时间戳；daemon 映射为 `DaemonEvent::TaskNotice`，只由 agent 消费，
     /// 不转发给任何 UI。不关心的宿主直接忽略。
     TaskNotice(crate::webhook::TaskNotice),
+
+    /// BT 防吸血的条目 / 状态发生变化（条目增删、云名单 / 订阅应用、新的观察或处置记录）。
+    /// daemon 映射为 `DaemonEvent::BtGuardChanged`，UI 据此重新拉取 `daemon.bt.guard.*`。
+    /// 引擎侧已合并防抖，不会逐个对端事件各发一条。
+    BtGuardChanged,
+
+    /// BT 会话启动时与存活期间每 6 小时发出：请 agent 刷新云名单。`have_sequence` 为当前
+    /// 已应用文档的序号（0 = 无）。云名单关闭（`bt_guard_cloud_enabled=false` /
+    /// `bt_guard_cloud_mode=off`）或防吸血关闭时不发。daemon 映射为
+    /// `DaemonEvent::BtGuardCloudRefreshWanted`，只供 agent 消费。
+    BtGuardCloudRefreshWanted { have_sequence: u64 },
+
+    /// 待上报证据队列有新增（仅 `bt_guard_report_enabled` 时累积）。`count` 为队列当前条数。
+    /// daemon 映射为 `DaemonEvent::BtGuardEvidenceReady`，只供 agent 消费。
+    BtGuardEvidenceReady { count: u32 },
 }
 
 /// 引擎事件的接收端,由宿主实现并注入 [`crate::Engine`]。

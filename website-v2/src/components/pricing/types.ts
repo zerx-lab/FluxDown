@@ -28,9 +28,6 @@ export interface CloudPlan {
   /** Missing = purchasable (older catalog responses). Delisted-but-shown plans are false. */
   purchasable?: boolean;
   campaign: CloudCampaign | null;
-  /** Missing = membership (older catalog responses). */
-  productKind?: "membership" | "pack";
-  pack?: { kind: "swarm" | "download" | "upload"; bytes: number; validDays: number } | null;
   /** Membership card period in days; missing / null = permanent plan. */
   billingPeriodDays?: number | null;
 }

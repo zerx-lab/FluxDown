@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FluxDown API",
-    "description": "FluxDown HTTP API，用于提交下载、管理任务和连接自动化客户端。本机默认地址为 `http://127.0.0.1:17800`，端口可在「设置 → API 服务」中修改。\n\n## 接入方式\n\n- **脚本接管（takeover）**：接收浏览器脚本提交的下载请求，进入下载确认流程；需提供 `X-FluxDown-Client` 请求头。\n- **aria2**：提供兼容的 JSON-RPC 接口，可连接 AriaNg 等 aria2 客户端。\n- **MCP**：供 AI 客户端查询和调用下载工具。\n- **管理 API（management）**：直接创建和管理下载任务，无需界面确认；支持队列查询与站点凭据管理。\n- **任务组、插件与 RSS**：管理多文件下载、插件和自动订阅下载。\n- **设备互联（link）**：发现、配对设备，并向已配对设备发送下载任务。\n\n## 访问认证\n\n管理 API、MCP、任务组、插件和 RSS 接口必须提供访问令牌：使用 `Authorization: Bearer <token>` 或 `X-FluxDown-Token: <token>` 请求头。设备互联的配对和设备通信接口使用独立认证机制，具体要求见各接口说明。",
+    "description": "FluxDown HTTP API，用于提交下载、管理任务和连接自动化客户端。本机默认地址为 `http://127.0.0.1:17800`，端口可在「设置 → API 服务」中修改。\n\n## 接入方式\n\n- **脚本接管（takeover）**：接收浏览器脚本提交的下载请求，进入下载确认流程；需提供 `X-FluxDown-Client` 请求头。\n- **aria2**：提供兼容的 JSON-RPC 接口，可连接 AriaNg 等 aria2 客户端。\n- **MCP**：供 AI 客户端查询和调用下载工具。\n- **管理 API（management）**：直接创建和管理下载任务，无需界面确认；支持队列查询与站点凭据管理。\n- **任务组、插件与 RSS**：管理多文件下载、插件和自动订阅下载。\n- **BT 防吸血（bt）**：查看防吸血状态与事件日志，管理封禁、限速与白名单条目。\n- **设备互联（link）**：发现、配对设备，并向已配对设备发送下载任务。\n\n## 访问认证\n\n管理 API、MCP、任务组、插件和 RSS 接口必须提供访问令牌：使用 `Authorization: Bearer <token>` 或 `X-FluxDown-Token: <token>` 请求头。设备互联的配对和设备通信接口使用独立认证机制，具体要求见各接口说明。",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -16,6 +16,387 @@
     }
   ],
   "paths": {
+    "/api/v1/bt/guard/entries": {
+      "get": {
+        "tags": [
+          "bt"
+        ],
+        "summary": "列出防吸血过滤条目",
+        "description": "分页返回各层（白名单 / 手动 / 自动 / 云名单 / 订阅文件）未过期条目，可按层、触发规则与\n关键词（cidr / reason 子串）过滤。",
+        "operationId": "api_bt_guard_entries_list",
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "query",
+            "description": "按层过滤：`allow` / `manual` / `auto` / `cloud` / `file`。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rule",
+            "in": "query",
+            "description": "按触发规则过滤：`excessive` / `rerequest` / `rewind` / `lag` / `fingerprint` / `cloud`。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "对 cidr / reason 的子串搜索。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "containsIp",
+            "in": "query",
+            "description": "只返回 CIDR 覆盖该 IP 的条目（含云名单 / 订阅层的宽网段）；非法 IP → 400。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "起始偏移，默认 0。",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "页大小，1..=500，默认 100。",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "条目分页",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BtGuardEntriesListDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "过滤参数或页大小非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "bt"
+        ],
+        "summary": "手动添加防吸血条目",
+        "description": "`action` 为 `allow` 时进白名单层（永远优先于其他层），其余（`ban` / `choke` / `throttle`）\n进手动层。`cidr` 可为单个 IP 或网段；`durationSecs` 缺省表示永久。返回创建的条目。",
+        "operationId": "api_bt_guard_entries_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BtGuardEntriesAddParams"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "已添加",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BtGuardEntryDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法（cidr 为空或非法、action 未知、durationSecs 非正）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/bt/guard/entries/{id}": {
+      "delete": {
+        "tags": [
+          "bt"
+        ],
+        "summary": "移除防吸血条目",
+        "description": "任意非云名单层的条目都可移除（含自动封禁，即「解封」）。云名单层条目不可删除（400），\n应改为添加 `allow` 条目覆盖。",
+        "operationId": "api_bt_guard_entry_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "条目 ID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已移除",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ID 非法，或条目属于云名单层",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "条目不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/bt/guard/events": {
+      "get": {
+        "tags": [
+          "bt"
+        ],
+        "summary": "获取防吸血事件日志",
+        "description": "按时间降序分页返回命中 / 处置 / 解封 / 探测等事件（保留最近 5000 条）。",
+        "operationId": "api_bt_guard_events_list",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "起始偏移，默认 0。",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "页大小，1..=500，默认 100。",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "rule",
+            "in": "query",
+            "description": "按规则过滤：`excessive` / `rerequest` / `rewind` / `lag` / `fingerprint` / `cloud`。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "按事件类型过滤：`observed` / `enforced` / `probe` / `probe_cleared` / `entry_added` /\n`entry_removed` / `cloud_applied` / `cloud_rejected` / `filter_applied`。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ipGroup",
+            "in": "query",
+            "description": "只返回该对端组的事件：IP（`1.2.3.4`、`2001:db8::1`）或组文本（`2001:db8::/64`）。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "事件分页",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BtGuardEventsListDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "过滤参数或页大小非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/bt/guard/state": {
+      "get": {
+        "tags": [
+          "bt"
+        ],
+        "summary": "获取防吸血状态",
+        "description": "总开关、BT 会话是否存活、今日统计、云名单状态（序号 / 过期 / 条目数 / 署名）、过滤文件订阅\n状态与各层未过期条目数。",
+        "operationId": "api_bt_guard_state",
+        "responses": {
+          "200": {
+            "description": "防吸血状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BtGuardStateDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
     "/api/v1/groups": {
       "get": {
         "tags": [
@@ -3390,6 +3771,399 @@
           }
         }
       },
+      "BtGuardCloudStatusDto": {
+        "type": "object",
+        "description": "云名单状态。",
+        "required": [
+          "sequence",
+          "updatedAt",
+          "expiresAt",
+          "entries",
+          "clientRules",
+          "stale"
+        ],
+        "properties": {
+          "attribution": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "文档要求展示的署名行（CC BY 4.0 等）。"
+          },
+          "clientRules": {
+            "type": "integer",
+            "format": "int32",
+            "description": "客户端指纹规则数。",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "云层 IP 条目数。",
+            "minimum": 0
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "文档过期时间（unix 秒）；0 = 无。"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rejectedReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "最近一份被拒绝文档的原因；成功应用后清空。"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "当前已应用文档序号；0 = 无。",
+            "minimum": 0
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "文档已过期，云层停用。"
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "文档应用时间（unix 秒）；0 = 无。"
+          }
+        }
+      },
+      "BtGuardCountsDto": {
+        "type": "object",
+        "description": "各层未过期条目数。",
+        "required": [
+          "allow",
+          "manual",
+          "auto",
+          "cloud",
+          "file"
+        ],
+        "properties": {
+          "allow": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "auto": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "cloud": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "file": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "manual": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "BtGuardEntriesAddParams": {
+        "type": "object",
+        "description": "`daemon.bt.guard.entries.add` 参数。`action == allow` 进白名单层，其余进手动层。",
+        "required": [
+          "cidr",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "见 [`BT_GUARD_ENTRY_ACTIONS`]。"
+          },
+          "cidr": {
+            "type": "string"
+          },
+          "durationSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "有效期秒数；缺省 = 永久。"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "BtGuardEntriesListDto": {
+        "type": "object",
+        "description": "`daemon.bt.guard.entries.list` 结果。",
+        "required": [
+          "total",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BtGuardEntryDto"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "满足过滤条件的总数（不受分页影响）。",
+            "minimum": 0
+          }
+        }
+      },
+      "BtGuardEntryDto": {
+        "type": "object",
+        "description": "一条过滤条目。",
+        "required": [
+          "id",
+          "layer",
+          "cidr",
+          "action",
+          "createdAt"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "见 [`BT_GUARD_ENTRY_ACTIONS`]。"
+          },
+          "cidr": {
+            "type": "string",
+            "description": "`1.2.3.4` / `1.2.3.0/24` / `2001:db8::/64`。"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "evidence": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "证据摘要（JSON）。"
+          },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "到期 unix 秒；缺省 = 永久。"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "layer": {
+            "type": "string",
+            "description": "见 [`BT_GUARD_LAYERS`]。"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "remainingSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "距到期的剩余秒数（服务端按当前时间折算，≥ 0）；永久缺省。"
+          },
+          "rule": {
+            "type": "string",
+            "description": "触发规则 id（见 [`BT_GUARD_RULES`]）；手动条目为 `manual`、订阅文件条目为 `file`；其余可为空。"
+          },
+          "source": {
+            "type": "string",
+            "description": "来源（`auto` / `user` / 订阅 URL / `cloud:community` 等）。"
+          }
+        }
+      },
+      "BtGuardEventDto": {
+        "type": "object",
+        "description": "事件日志一行。",
+        "required": [
+          "id",
+          "at",
+          "kind",
+          "ipGroup"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "infoHash": {
+            "type": "string",
+            "description": "种子 infohash（40 hex）；无关种子的事件为空。"
+          },
+          "ipGroup": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "事件类型：`observed` / `enforced` / `probe` / `probe_cleared` / `entry_added` /\n`entry_removed` / `cloud_applied` / `cloud_rejected` / `filter_applied`。"
+          },
+          "mode": {
+            "type": "string",
+            "description": "规则当时的模式（`observe` / `enforce`）。"
+          },
+          "rule": {
+            "type": "string"
+          }
+        }
+      },
+      "BtGuardEventsListDto": {
+        "type": "object",
+        "description": "`daemon.bt.guard.events.list` 结果（按时间降序）。",
+        "required": [
+          "total",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BtGuardEventDto"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "BtGuardFilterSourceDto": {
+        "type": "object",
+        "description": "过滤文件订阅状态。",
+        "required": [
+          "url",
+          "ok",
+          "entries",
+          "updatedAt"
+        ],
+        "properties": {
+          "entries": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "最近一次成功时间（unix 秒）；0 = 从未成功。"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "BtGuardStateDto": {
+        "type": "object",
+        "description": "`daemon.bt.guard.state` 结果。",
+        "required": [
+          "enabled",
+          "sessionActive",
+          "stats",
+          "cloud",
+          "filterSources",
+          "counts"
+        ],
+        "properties": {
+          "cloud": {
+            "$ref": "#/components/schemas/BtGuardCloudStatusDto"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/BtGuardCountsDto"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "`bt_guard_enabled`。"
+          },
+          "filterSources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BtGuardFilterSourceDto"
+            }
+          },
+          "sessionActive": {
+            "type": "boolean",
+            "description": "BT 会话存活（防吸血仅在会话内生效）。"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/BtGuardStatsDto"
+          }
+        }
+      },
+      "BtGuardStatsDto": {
+        "type": "object",
+        "description": "今日（本地日）统计。",
+        "required": [
+          "todayObserved",
+          "todayEnforced",
+          "todayBlockedConnections",
+          "todayRefusedBytes"
+        ],
+        "properties": {
+          "todayBlockedConnections": {
+            "type": "integer",
+            "format": "int64",
+            "description": "因封禁被拒绝的连接数。",
+            "minimum": 0
+          },
+          "todayEnforced": {
+            "type": "integer",
+            "format": "int64",
+            "description": "已执行处置数。",
+            "minimum": 0
+          },
+          "todayObserved": {
+            "type": "integer",
+            "format": "int64",
+            "description": "仅观察命中数。",
+            "minimum": 0
+          },
+          "todayRefusedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "choke / throttle 丢弃或受限的上传请求字节之和。",
+            "minimum": 0
+          }
+        }
+      },
       "ChangeTaskUrlRequest": {
         "type": "object",
         "description": "更换任务下载源地址请求体。",
@@ -5474,7 +6248,7 @@
         "properties": {
           "autoRoute": {
             "type": "string",
-            "description": "`ProxyMode::Auto` 的任务级最终链路（可追溯性）：`direct` /\n`direct:sampled` / `direct:pinned` / `direct:failover` /\n`proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n候选来源后缀 `:system`/`:manual`）；空 = 非 Auto 模式。"
+            "description": "Auto 路由或站点规则标签（可追溯性）：Auto 为 `direct` /\n`direct:sampled` / `direct:pinned` / `direct:failover` /\n`proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n`rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。"
           },
           "checksum": {
             "type": "string",
@@ -5674,6 +6448,10 @@
     {
       "name": "rss",
       "description": "RSS 订阅与自动下载"
+    },
+    {
+      "name": "bt",
+      "description": "BT 防吸血：状态、过滤条目与事件日志"
     },
     {
       "name": "link",

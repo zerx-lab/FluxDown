@@ -55,7 +55,8 @@ pub const MAX_SYNC_VALUE_BYTES: usize = 64 * 1024;
 
 /// 保留旧客户端云同步键，另含 GPUI 专属的 `ui.show_activity_*`、
 /// `custom_categories`（自定义分类，推送时剥离各设备不同的 `saveDir`）、[`CUSTOM_THEMES_KEY`]
-/// （自定义主题集合）与 [`FILE_ICON_PACK_KEY`]（GPUI / Web 文件图标包），共 59 个。
+/// （自定义主题集合）与 [`FILE_ICON_PACK_KEY`]（GPUI / Web 文件图标包），共 59 个；
+/// 另含 19 个 `bt.guard.*`（BT 防吸血；`bt_guard_report_enabled` 设备本地，不进目录）。
 pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("appearance.theme_mode", Preferences),
     spec!("appearance.dark_theme", Preferences),
@@ -139,6 +140,45 @@ pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("bt.seed_limit_operator", Daemon, "bt_seed_limit_operator"),
     spec!("bt.seed_then_action", Daemon, "bt_seed_then_action"),
     spec!("bt.seed_max_active", Daemon, "bt_seed_max_active"),
+    spec!("bt.guard.enabled", Daemon, "bt_guard_enabled"),
+    spec!("bt.guard.rule_excessive", Daemon, "bt_guard_rule_excessive"),
+    spec!("bt.guard.rule_rerequest", Daemon, "bt_guard_rule_rerequest"),
+    spec!("bt.guard.rule_rewind", Daemon, "bt_guard_rule_rewind"),
+    spec!("bt.guard.rule_lag", Daemon, "bt_guard_rule_lag"),
+    spec!(
+        "bt.guard.rule_fingerprint",
+        Daemon,
+        "bt_guard_rule_fingerprint"
+    ),
+    spec!("bt.guard.cloud_mode", Daemon, "bt_guard_cloud_mode"),
+    spec!(
+        "bt.guard.excess_ratio_pct",
+        Daemon,
+        "bt_guard_excess_ratio_pct"
+    ),
+    spec!(
+        "bt.guard.min_torrent_mib",
+        Daemon,
+        "bt_guard_min_torrent_mib"
+    ),
+    spec!(
+        "bt.guard.rewind_tolerance_pct",
+        Daemon,
+        "bt_guard_rewind_tolerance_pct"
+    ),
+    spec!("bt.guard.throttle_kib", Daemon, "bt_guard_throttle_kib"),
+    spec!("bt.guard.ban_base_hours", Daemon, "bt_guard_ban_base_hours"),
+    spec!("bt.guard.ban_max_days", Daemon, "bt_guard_ban_max_days"),
+    spec!(
+        "bt.guard.downloading_max_action",
+        Daemon,
+        "bt_guard_downloading_max_action"
+    ),
+    spec!("bt.guard.skip_private", Daemon, "bt_guard_skip_private"),
+    spec!("bt.guard.skip_lan", Daemon, "bt_guard_skip_lan"),
+    spec!("bt.guard.ipv6_prefix", Daemon, "bt_guard_ipv6_prefix"),
+    spec!("bt.guard.filter_urls", Daemon, "bt_guard_filter_urls"),
+    spec!("bt.guard.cloud_enabled", Daemon, "bt_guard_cloud_enabled"),
     spec!("ed2k.enable_kad", Daemon, "ed2k_enable_kad"),
     spec!("ed2k.enable_upnp", Daemon, "ed2k_enable_upnp"),
     spec!("ed2k.server_list", Daemon, "ed2k_server_list"),
@@ -280,6 +320,21 @@ pub fn validate_value(key: &str, value: &Value) -> Result<(), String> {
         "bt.seed_then_action" if !matches!(value, "stop" | "delete" | "delete_files") => {
             Err(format!("{key} has unknown value"))
         }
+        "bt.guard.rule_excessive"
+        | "bt.guard.rule_rerequest"
+        | "bt.guard.rule_rewind"
+        | "bt.guard.rule_lag"
+        | "bt.guard.rule_fingerprint"
+        | "bt.guard.cloud_mode"
+            if !matches!(value, "off" | "observe" | "enforce") =>
+        {
+            Err(format!("{key} has unknown value"))
+        }
+        "bt.guard.downloading_max_action"
+            if !matches!(value, "observe" | "throttle" | "choke" | "ban") =>
+        {
+            Err(format!("{key} has unknown value"))
+        }
         _ => Ok(()),
     }
 }
@@ -384,6 +439,10 @@ fn boolean_key(key: &str) -> bool {
             | "bt.enable_upnp"
             | "bt.enable_utp"
             | "bt.tracker_sub_enabled"
+            | "bt.guard.enabled"
+            | "bt.guard.skip_private"
+            | "bt.guard.skip_lan"
+            | "bt.guard.cloud_enabled"
             | "ed2k.enable_kad"
             | "ed2k.enable_upnp"
             | "ed2k.server_sub_enabled"
@@ -404,6 +463,13 @@ fn integer_key(key: &str) -> bool {
             | "bt.seed_time_limit_minutes"
             | "bt.seed_inactive_time_limit_minutes"
             | "bt.seed_max_active"
+            | "bt.guard.excess_ratio_pct"
+            | "bt.guard.min_torrent_mib"
+            | "bt.guard.rewind_tolerance_pct"
+            | "bt.guard.throttle_kib"
+            | "bt.guard.ban_base_hours"
+            | "bt.guard.ban_max_days"
+            | "bt.guard.ipv6_prefix"
     )
 }
 
@@ -421,6 +487,13 @@ fn integer_range(key: &str) -> (i64, i64) {
         "download.cdn_max_nodes" => (0, 8),
         "download.max_auto_retries" => (-1, 20),
         "download.auto_retry_delay_secs" => (0, 86_400),
+        "bt.guard.excess_ratio_pct" => (110, 1000),
+        "bt.guard.min_torrent_mib" => (0, 1_048_576),
+        "bt.guard.rewind_tolerance_pct" => (0, 100),
+        "bt.guard.throttle_kib" => (1, 1_048_576),
+        "bt.guard.ban_base_hours" => (1, 720),
+        "bt.guard.ban_max_days" => (1, 365),
+        "bt.guard.ipv6_prefix" => (48, 128),
         _ => (0, i64::MAX),
     }
 }
@@ -439,14 +512,14 @@ mod tests {
 
     #[test]
     fn catalog_has_exact_unique_flutter_count_and_namespaced_daemon_mapping() {
-        assert_eq!(SYNC_SETTING_SPECS.len(), 60);
+        assert_eq!(SYNC_SETTING_SPECS.len(), 79);
         assert_eq!(
             SYNC_SETTING_SPECS
                 .iter()
                 .map(|spec| spec.key)
                 .collect::<HashSet<_>>()
                 .len(),
-            60
+            79
         );
         let spec = setting_spec("download.max_concurrent_tasks").expect("download spec");
         assert_eq!(spec.owner, SettingOwner::Daemon);
@@ -555,5 +628,101 @@ mod tests {
         // 转义计入上限：引号在线上翻倍成 `\"`。
         let quotes = format!(r#"{{"pad":"{}"}}"#, "\\\"".repeat(MAX_SYNC_VALUE_BYTES / 3));
         assert!(validate_value(spec.key, &json!(quotes)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bt_guard_tests {
+    use serde_json::json;
+
+    use super::{SYNC_SETTING_SPECS, SettingOwner, setting_spec, validate_value};
+    use crate::daemon_config::{
+        DaemonConfigKind, daemon_config_field, normalize_daemon_config_value,
+    };
+
+    #[test]
+    fn guard_specs_map_to_daemon_keys_with_matching_kinds() {
+        let specs: Vec<_> = SYNC_SETTING_SPECS
+            .iter()
+            .filter(|spec| spec.key.starts_with("bt.guard."))
+            .collect();
+        assert_eq!(specs.len(), 19);
+        for spec in specs {
+            assert_eq!(spec.owner, SettingOwner::Daemon, "{}", spec.key);
+            assert_eq!(
+                spec.storage_key,
+                format!("bt_guard_{}", &spec.key["bt.guard.".len()..]),
+                "{}",
+                spec.key
+            );
+            let field = daemon_config_field(spec.storage_key).expect("daemon field");
+            // 同步层与 daemon 目录的值域必须一致：daemon 默认值能过同步校验。
+            let wire = match field.kind {
+                DaemonConfigKind::Bool => json!(field.default == "true"),
+                DaemonConfigKind::Integer { .. } => json!(field.default.parse::<i64>().unwrap()),
+                _ => json!(field.default),
+            };
+            assert!(validate_value(spec.key, &wire).is_ok(), "{}", spec.key);
+        }
+    }
+
+    #[test]
+    fn guard_ranges_match_daemon_catalog() {
+        for (key, lo, hi) in [
+            ("excess_ratio_pct", 110_i64, 1000_i64),
+            ("min_torrent_mib", 0, 1_048_576),
+            ("rewind_tolerance_pct", 0, 100),
+            ("throttle_kib", 1, 1_048_576),
+            ("ban_base_hours", 1, 720),
+            ("ban_max_days", 1, 365),
+            ("ipv6_prefix", 48, 128),
+        ] {
+            let sync = format!("bt.guard.{key}");
+            let daemon = format!("bt_guard_{key}");
+            assert!(validate_value(&sync, &json!(lo)).is_ok(), "{sync}");
+            assert!(validate_value(&sync, &json!(hi)).is_ok(), "{sync}");
+            assert!(validate_value(&sync, &json!(lo - 1)).is_err(), "{sync}");
+            assert!(validate_value(&sync, &json!(hi + 1)).is_err(), "{sync}");
+            assert!(validate_value(&sync, &json!("1")).is_err(), "{sync}");
+            assert!(normalize_daemon_config_value(&daemon, &lo.to_string()).is_ok());
+            assert!(normalize_daemon_config_value(&daemon, &(lo - 1).to_string()).is_err());
+            assert!(normalize_daemon_config_value(&daemon, &(hi + 1).to_string()).is_err());
+        }
+    }
+
+    #[test]
+    fn guard_enums_and_booleans_are_validated() {
+        for key in [
+            "rule_excessive",
+            "rule_rerequest",
+            "rule_rewind",
+            "rule_lag",
+            "rule_fingerprint",
+            "cloud_mode",
+        ] {
+            let sync = format!("bt.guard.{key}");
+            for ok in ["off", "observe", "enforce"] {
+                assert!(validate_value(&sync, &json!(ok)).is_ok(), "{sync}={ok}");
+            }
+            assert!(validate_value(&sync, &json!("ban")).is_err(), "{sync}");
+            assert!(validate_value(&sync, &json!(true)).is_err(), "{sync}");
+        }
+        for ok in ["observe", "throttle", "choke", "ban"] {
+            assert!(validate_value("bt.guard.downloading_max_action", &json!(ok)).is_ok());
+        }
+        assert!(validate_value("bt.guard.downloading_max_action", &json!("enforce")).is_err());
+        for key in ["enabled", "skip_private", "skip_lan", "cloud_enabled"] {
+            let sync = format!("bt.guard.{key}");
+            assert!(validate_value(&sync, &json!(true)).is_ok(), "{sync}");
+            assert!(validate_value(&sync, &json!("true")).is_err(), "{sync}");
+        }
+        assert!(validate_value("bt.guard.filter_urls", &json!("https://a\nhttps://b")).is_ok());
+        assert!(validate_value("bt.guard.filter_urls", &json!(1)).is_err());
+    }
+
+    #[test]
+    fn device_local_and_read_only_guard_keys_are_not_synced() {
+        assert!(setting_spec("bt.guard.report_enabled").is_none());
+        assert!(setting_spec("bt.guard.cloud_cache").is_none());
     }
 }

@@ -132,7 +132,7 @@ export interface ViewEvent {
 }
 
 /** Navigation target: a built-in page, or an `activity` view of this plugin. */
-export type NavigateTarget = "downloads" | "rss" | "webhooks" | "share" | { view: string };
+export type NavigateTarget = "downloads" | "rss" | "webhooks" | { view: string };
 
 export interface ViewContext {
   /** Unique id of this open view session. */

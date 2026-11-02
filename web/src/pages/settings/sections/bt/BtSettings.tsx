@@ -1,4 +1,4 @@
-// BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种（GPUI `sections/bt.rs`）。
+// BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种、防吸血（设置 / 封禁名单 / 事件日志）（GPUI `sections/bt.rs`）。
 
 import { useT } from '../../../../i18n'
 import { daemonConfigField } from '../../../../lib/rpc'
@@ -19,6 +19,9 @@ import {
   useDaemonValue,
 } from '../../kit'
 import { ListEditorRow, SubscriptionStatusRow } from '../subscription'
+import { GuardBansTab } from './guard/GuardBans'
+import { GuardEventsTab } from './guard/GuardEvents'
+import { GuardSettingsTab } from './guard/GuardSettings'
 
 function BasicTab({ btEnabled }: { btEnabled: boolean }) {
   const t = useT()
@@ -143,6 +146,9 @@ export function BtSettings() {
     tabs.push(
       { id: 'tracker', label: t('settingsTabTracker'), content: <TrackerTab /> },
       { id: 'seeding', label: t('settingsTabSeeding'), content: <SeedingTab /> },
+      { id: 'guard', label: t('btGuardTab'), content: <GuardSettingsTab /> },
+      { id: 'guardBans', label: t('btGuardTabBans'), content: <GuardBansTab /> },
+      { id: 'guardEvents', label: t('btGuardTabEvents'), content: <GuardEventsTab /> },
     )
   }
   return (

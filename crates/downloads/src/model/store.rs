@@ -7,9 +7,7 @@ use std::{
 };
 
 use super::{
-    CategoryIndex, DownloadTaskView, RowKey, TaskState,
-    counts::SidebarCounts,
-    share::{ShareControl, ShareFacts, ShareHostCaps, ShareRow, share_control},
+    CategoryIndex, DownloadTaskView, RowKey, TaskState, counts::SidebarCounts,
     view_prefs::ViewSortKey,
 };
 
@@ -73,72 +71,9 @@ pub(crate) struct TaskStore {
     pausable: Cell<usize>,
     resumable_seeds: Cell<usize>,
     paused_by_queue: RefCell<HashMap<String, usize>>,
-    /// FluxMesh在下载页的投影（可用性 + 任务事实），由 controller 随快照 / 事件写入。
-    share: RefCell<ShareFacts>,
-    /// 宿主注入了哪些FluxMesh入口。
-    share_host: Cell<ShareHostCaps>,
 }
 
 impl TaskStore {
-    pub(crate) fn share_host(&self) -> ShareHostCaps {
-        self.share_host.get()
-    }
-
-    pub(crate) fn set_share_host(&self, caps: ShareHostCaps) {
-        if self.share_host.replace(caps) != caps {
-            self.bump();
-        }
-    }
-
-    /// FluxMesh在本构建可用且宿主提供了「分享」入口：为 `false` 时一切分享控件隐藏。
-    pub(crate) fn share_entry_visible(&self) -> bool {
-        self.share_host.get().send && self.share.borrow().available()
-    }
-
-    /// 选区（任务 key 列表）的「分享」入口呈现。
-    pub(crate) fn share_control(&self, keys: &[RowKey]) -> ShareControl {
-        let rows: Vec<ShareRow> = keys
-            .iter()
-            .filter_map(|key| {
-                self.get(key).map(|row| ShareRow {
-                    is_local: key.is_local(),
-                    state: row.state,
-                    file_missing: row.is_file_missing(),
-                })
-            })
-            .collect();
-        // 选区里有已消失的任务：按剩余任务判定；全部消失即隐藏。
-        let share = self.share.borrow();
-        share_control(self.share_entry_visible(), share.can_send(), &rows)
-    }
-
-    /// FluxMesh投影（只读）。
-    pub(crate) fn share(&self) -> Ref<'_, ShareFacts> {
-        self.share.borrow()
-    }
-
-    /// 整体替换FluxMesh投影；内容变了才使读者失效并返回 `true`。
-    pub(crate) fn replace_share(&self, facts: ShareFacts) -> bool {
-        if *self.share.borrow() == facts {
-            return false;
-        }
-        *self.share.borrow_mut() = facts;
-        self.bump();
-        true
-    }
-
-    /// 应用一条会话进度；任务事实真的变了才使读者失效并返回 `true`。
-    pub(crate) fn apply_share_progress(
-        &self,
-        progress: &fluxdown_protocol::ShareProgressDto,
-    ) -> bool {
-        let changed = self.share.borrow_mut().apply_progress(progress);
-        if changed {
-            self.bump();
-        }
-        changed
-    }
-
     /// 载入态（见字段说明）；`None` = 表完整。
     pub(crate) fn loading(&self) -> Option<usize> {
         self.loading.get()

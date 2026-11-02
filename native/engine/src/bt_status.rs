@@ -468,6 +468,8 @@ pub struct PeerRow {
     pub up_bps: u64,
     /// ISO 3166-1 国家码（大写）；库未就绪 / 内网 / 未收录为 `None`。
     pub country: Option<String>,
+    /// 防吸血研判（该连接已被 guard 观察到时才有）。
+    pub insight: Option<crate::bt_guard::PeerInsight>,
 }
 
 /// peer 数量汇总（来自 librqbit）。
@@ -808,6 +810,7 @@ mod tests {
             down_bps: 0,
             up_bps: 0,
             country: None,
+            insight: None,
         };
         let mut first = [row(0, 0)];
         apply_speeds("speed-task", &mut first);

@@ -1,0 +1,11 @@
+---
+description: Windows 拉起控制台子进程必须设 CREATE_NO_WINDOW，避免闪现黑窗口
+globs: native/**/*.rs
+alwaysApply: false
+---
+
+# windows-no-console-window（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/windows-no-console-window.md`](mdc:.omp/rules/windows-no-console-window.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

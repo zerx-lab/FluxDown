@@ -1,7 +1,7 @@
 import SwiftUI
 #if FULL_FLAVOR
 
-/// 设置页页签选择（BT：常规 · Tracker · 做种；eD2K：常规 · 服务器）。
+/// 设置页页签选择（BT：常规 · Tracker · 做种 · 防吸血；eD2K：常规 · 服务器）。
 /// 常规字号下是分段控件（列表首行，无行底）；辅助功能字号下换成菜单，避免标题被截断。
 struct BtSettingsTabPicker<Tab: Hashable & Identifiable & CaseIterable>: View where Tab.AllCases: RandomAccessCollection {
     let title: String

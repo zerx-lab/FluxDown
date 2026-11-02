@@ -15,6 +15,9 @@ pub mod bt_config;
 /// BitTorrent 会话与下载实现（librqbit）。仅 `bt` feature 下编译。
 #[cfg(feature = "bt")]
 pub mod bt_downloader;
+/// BT 防吸血（peer 行为检测 / 封禁账本 / 云名单应用）。与 `bt` feature 同门控。
+#[cfg(feature = "bt")]
+pub mod bt_guard;
 /// 本机文件做种：为磁盘上已有的文件 / 文件夹生成或匹配种子并登记为做种任务。
 #[cfg(feature = "bt")]
 pub mod bt_local_seed;
@@ -405,6 +408,11 @@ impl Engine {
         manager.load_webhook_endpoints().await;
         // 回灌投递日志：面板在重启后仍能看到「昨晚那批到底发出去没有」。
         manager.webhook().attach_db(db.clone()).await;
+        // 防吸血：恢复条目 / 账本 / strike。失败不阻断引擎启动（本次从空状态开始，错误已记日志）。
+        #[cfg(feature = "bt")]
+        if let Err(error) = manager.bt_guard().load().await {
+            logger::report_warning("bt-guard", "load persisted state", &error);
+        }
         Ok(Self {
             db,
             write_guard: Arc::new(write_guard),

@@ -5,6 +5,18 @@ import { call } from '../client';
 import { normalizeTask } from '../normalize';
 import { METHOD } from '../protocol';
 import type {
+  BtGuardEntriesAddParams,
+  BtGuardEntriesListDto,
+  BtGuardEntriesListParams,
+  BtGuardEntriesRemoveDto,
+  BtGuardEntriesRemoveParams,
+  BtGuardEntryDto,
+  BtGuardEventsListDto,
+  BtGuardEventsListParams,
+  BtGuardExportDto,
+  BtGuardExportParams,
+  BtGuardFilterSourcesRefreshDto,
+  BtGuardStateDto,
   ComponentInstallParams,
   ComponentParams,
   ComponentStatusDto,
@@ -348,6 +360,22 @@ const bt = {
   trackerSubscription: {
     refresh: () =>
       call<TrackerSubRefreshResponse>(METHOD.DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
+  },
+  /** 防吸血。`cloud.apply` / `evidence.drain` 是 agent 内部方法，这里刻意不封装。 */
+  guard: {
+    state: () => call<BtGuardStateDto>(METHOD.DAEMON_BT_GUARD_STATE),
+    entries: {
+      list: (params: BtGuardEntriesListParams) => call<BtGuardEntriesListDto>(METHOD.DAEMON_BT_GUARD_ENTRIES_LIST, params),
+      add: (params: BtGuardEntriesAddParams) => call<BtGuardEntryDto>(METHOD.DAEMON_BT_GUARD_ENTRIES_ADD, params),
+      remove: (params: BtGuardEntriesRemoveParams) => call<BtGuardEntriesRemoveDto>(METHOD.DAEMON_BT_GUARD_ENTRIES_REMOVE, params),
+    },
+    events: {
+      list: (params: BtGuardEventsListParams) => call<BtGuardEventsListDto>(METHOD.DAEMON_BT_GUARD_EVENTS_LIST, params),
+    },
+    export: (params: BtGuardExportParams) => call<BtGuardExportDto>(METHOD.DAEMON_BT_GUARD_EXPORT, params),
+    /** 立即抓取全部过滤文件订阅（逐个 HTTP 拉取，可能较慢）。 */
+    filterSourcesRefresh: () =>
+      call<BtGuardFilterSourcesRefreshDto>(METHOD.DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   },
 };
 

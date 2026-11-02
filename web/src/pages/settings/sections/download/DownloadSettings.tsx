@@ -28,7 +28,7 @@ import {
   setPref,
   useSettingsReadOnly,
 } from '../../kit'
-import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory } from '../../../../lib/saveDirHistory'
+import { CATEGORY_SAVE_DIR_HISTORY_PREF, SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readCategorySaveDirHistory, readSaveDirHistory } from '../../../../lib/saveDirHistory'
 import { RateLimitRow } from './RateLimitField'
 import { DirPickerDialog } from './DirPickerDialog'
 import { UserAgentRow } from './UserAgentField'
@@ -81,14 +81,19 @@ function SaveLocationSection() {
   )
 }
 
-/** 清空新建下载的保存目录历史（设备本地偏好，写 null 移除）；没有记录时按钮置灰。 */
+/** 清空新建下载的保存目录历史与分类目录记忆（设备本地偏好，写 null 移除）；两者都没有记录时按钮置灰。 */
 function ClearSaveDirHistoryRow() {
   const t = useT()
   const readOnly = useSettingsReadOnly()
-  const empty = readSaveDirHistory(usePrefRaw(SAVE_DIR_HISTORY_PREF)).length === 0
+  const historyEmpty = readSaveDirHistory(usePrefRaw(SAVE_DIR_HISTORY_PREF)).length === 0
+  const categoryEmpty = Object.keys(readCategorySaveDirHistory(usePrefRaw(CATEGORY_SAVE_DIR_HISTORY_PREF))).length === 0
+  const clear = () => {
+    setPref(SAVE_DIR_HISTORY_PREF, null)
+    setPref(CATEGORY_SAVE_DIR_HISTORY_PREF, null)
+  }
   return (
     <SettingsRow title={t('clearSaveDirHistory')} description={optionalText(t, 'clearSaveDirHistoryDesc')}>
-      <Button variant="outline" className="shrink-0" disabled={readOnly || empty} onClick={() => setPref(SAVE_DIR_HISTORY_PREF, null)}>
+      <Button variant="outline" className="shrink-0" disabled={readOnly || (historyEmpty && categoryEmpty)} onClick={clear}>
         {t('clearSaveDirHistoryAction')}
       </Button>
     </SettingsRow>

@@ -1,0 +1,40 @@
+---
+/**
+ * /bt-guard（en）与 /zh/bt-guard（zh）— BT 防吸血名单自查与申诉。
+ *
+ * 静态外壳（可被索引，不含任何个人信息）；访客自己的结果由 BtGuardSelfCheck 在浏览器里经同源代理
+ * `GET /api/cloud/bt-guard/self` 现取（FluxCloud 按请求来源 IP 回答，不支持查询任意 IP），
+ * 申诉走 `POST /api/cloud/bt-guard/appeal`。
+ */
+import Layout from "@/layouts/Layout.astro";
+import PageHeader from "@/components/site/PageHeader.astro";
+import BtGuardSelfCheck from "@/components/btguard/BtGuardSelfCheck";
+import { href, langStaticPaths, resolveLang } from "@/i18n/routing";
+import { btGuard } from "@/i18n/messages/btGuard";
+
+export const getStaticPaths = langStaticPaths;
+const lang = resolveLang(Astro.params.lang);
+const t = btGuard[lang];
+---
+
+<Layout lang={lang} title={t.meta.title} description={t.meta.description}>
+  <PageHeader eyebrow={t.eyebrow} title={t.title} lede={t.lede} />
+
+  <section class="frame">
+    <div class="section flex flex-col gap-6">
+      <h2 class="h3">{t.check.heading}</h2>
+      <BtGuardSelfCheck client:load lang={lang} labels={{ check: t.check, appeal: t.appeal }} />
+    </div>
+    <div class="rule"></div>
+    <div class="section flex flex-col gap-4">
+      <h2 class="h3">{t.howHeading}</h2>
+      <ul class="flex max-w-[640px] list-disc flex-col gap-2 pl-5 text-muted">
+        {t.how.map((line) => <li>{line}</li>)}
+      </ul>
+      <p class="text-sm text-muted">{t.attribution}</p>
+      <p class="text-sm">
+        <a class="link" href={href("/privacy", lang) + "#bt-guard"}>{t.privacyLink}</a>
+      </p>
+    </div>
+  </section>
+</Layout>

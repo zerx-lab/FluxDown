@@ -43,9 +43,8 @@ import { sendAction } from "@/utils/messaging";
 import { isPageChange } from "@/utils/page-nav";
 import { normalizeHlsPlaylist } from "@/utils/hls-playlist";
 import type { ResourceMessagePayload } from "@/utils/resource-types";
+import { normalizeSniffMaxResources } from "@/utils/sniff-limit";
 
-/** #288：单页面已上报资源数上限——长列表页无节制上报 / 扫描会导致页面卡顿。 */
-const MAX_RESOURCES_PER_PAGE = 200;
 const REPORT_BATCH_MS = 200;
 const MUTATION_FLUSH_DELAY_MS = 200;
 const DOM_RULE_THROTTLE_MS = 1000;
@@ -119,6 +118,8 @@ export default defineContentScript({
     };
 
     const sniffActive = (): boolean => config?.sniff !== false;
+    /** 单页 DOM 上报上限（#288）；收到配置前 / 旧 background 未下发时用默认值。 */
+    const resourceLimit = (): number => normalizeSniffMaxResources(config?.sniffMaxResources);
 
     // ===== 媒体元素跟踪 =====
     const tracker = new MediaTracker({
@@ -149,7 +150,8 @@ export default defineContentScript({
     // ===== 资源上报（合批 + 单页上限） =====
     const reportedUrls = new Set<string>();
     let reportedCount = 0;
-    let capReached = false;
+    /** 上限随配置变化：调高后 applyConfig → refreshSniffState 重新扫描并接上观察。 */
+    const capReached = (): boolean => reportedCount >= resourceLimit();
     let queue: ResourceMessagePayload[] = [];
     let flushTimer: number | undefined;
 
@@ -164,21 +166,22 @@ export default defineContentScript({
     function reportResources(list: ResourceMessagePayload[]): void {
       if (!sniffActive()) return;
       for (const r of list) {
-        // 200 条上限只计 DOM 来源；fetch/XHR 嗅探到的媒体不应被首屏 a[href] 挤掉
+        // 上限只计 DOM 来源；fetch/XHR 嗅探到的媒体不应被首屏 a[href] 挤掉
         const fromHook = r.detectedBy === "fetch-intercept" || r.detectedBy === "xhr-intercept";
-        if (!fromHook && capReached) continue;
+        if (!fromHook && capReached()) continue;
         if (reportedUrls.has(r.url)) continue;
         reportedUrls.add(r.url);
-        // 整体清空防 SPA 长时间运行内存增长；background 有基于 dedupeKey 的去重兜底
-        if (reportedUrls.size > 500) reportedUrls.clear();
+        // 整体清空防 SPA 长时间运行内存增长；background 有基于 dedupeKey 的去重兜底。
+        // 阈值须高于上限，否则清空后重扫到的同一批链接会被重复计数、提前触顶。
+        if (reportedUrls.size > Math.max(500, resourceLimit() * 2)) reportedUrls.clear();
         r.pageUrl ||= location.href;
         queue.push(r);
-        if (!fromHook && ++reportedCount >= MAX_RESOURCES_PER_PAGE) capReached = true;
+        if (!fromHook) reportedCount++;
       }
       if (queue.length > 0 && flushTimer === undefined) {
         flushTimer = window.setTimeout(flushReports, REPORT_BATCH_MS);
       }
-      if (capReached) domSniff.disconnect();
+      if (capReached()) domSniff.disconnect();
     }
 
     // ===== DOM 嗅探（扫描 + MutationObserver + dom 规则 + 内嵌 DASH） =====
@@ -196,7 +199,7 @@ export default defineContentScript({
       let domRuleLast = 0;
 
       const observer = new MutationObserver((mutations) => {
-        if (capReached) return;
+        if (capReached()) return;
         for (const m of mutations) {
           for (const node of m.addedNodes) if (node.nodeType === 1) pendingAdded.add(node as Element);
           if (m.type === "attributes" && m.target.nodeType === 1 && isMediaishElement(m.target as Element)) {
@@ -226,7 +229,7 @@ export default defineContentScript({
 
       function flush(): void {
         handle = undefined;
-        if (capReached || !sniffActive()) {
+        if (capReached() || !sniffActive()) {
           pendingAdded.clear();
           pendingAttr.clear();
           return;
@@ -311,7 +314,7 @@ export default defineContentScript({
       }
 
       function connect(): void {
-        if (observing || capReached) return;
+        if (observing || capReached()) return;
         observing = true;
         observer.observe(document.documentElement, MUTATION_OBSERVER_OPTIONS);
       }
@@ -337,10 +340,9 @@ export default defineContentScript({
           observer.disconnect();
           observing = false;
         },
-        /** SPA 路由切换：重置单页上限，必要时重新连接观察（新页面重新计数）。 */
+        /** SPA 路由切换：重置单页计数，必要时重新连接观察（新页面重新计数）。 */
         resetForNavigation(): void {
           reportedCount = 0;
-          capReached = false;
           seenDomHits.clear();
           inlineDashSignature = "";
           reportedUrls.clear();

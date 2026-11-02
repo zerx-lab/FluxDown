@@ -1,0 +1,11 @@
+---
+description: FluxDown 下一代 daemon/agent/protocol 本机服务边界、状态所有权、JSON-RPC 契约与旧宿主迁移规则
+globs: native/**
+alwaysApply: false
+---
+
+# local-service-architecture（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/local-service-architecture.md`](mdc:.omp/rules/local-service-architecture.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

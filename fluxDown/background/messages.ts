@@ -223,6 +223,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
       bypassKey: settings.enabled ? settings.bypassKey : "off",
       warmOnLinkPress: settings.enabled && profile.intercept !== "never",
       sniffImages: settings.sniffImages,
+      sniffMaxResources: settings.sniffMaxResources,
       classify: engine.classifyRules(),
     };
     return config;

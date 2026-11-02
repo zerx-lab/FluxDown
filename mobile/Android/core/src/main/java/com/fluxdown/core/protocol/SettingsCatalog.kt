@@ -52,6 +52,8 @@ object SettingsCatalog {
     val fileMissingActions = listOf("keep", "delete")
     val btSeedTimeUnits = listOf("minutes", "hours", "days")
     val btSeedLimitOperators = listOf("or", "and")
+    val btGuardModes = listOf("off", "observe", "enforce")
+    val btGuardDownloadingActions = listOf("observe", "throttle", "choke", "ban")
     val btSeedThenActions = listOf("stop", "delete", "delete_files")
     val btMseModes = listOf("disabled", "enabled", "forced")
     val proxyModes = listOf("none", "system", "manual", "auto")
@@ -120,6 +122,27 @@ object SettingsCatalog {
         daemon("bt_seed_inactive_time_limit_unit", choice(btSeedTimeUnits), "minutes"),
         daemon("bt_seed_limit_operator", choice(btSeedLimitOperators), "or"),
         daemon("bt_seed_then_action", choice(btSeedThenActions), "stop"),
+        // BT 防吸血（热更新；`bt_guard_report_enabled` 设备本地不同步）
+        daemon("bt_guard_enabled", bool, "true"),
+        daemon("bt_guard_rule_excessive", choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_rerequest", choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_rewind", choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_lag", choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_fingerprint", choice(btGuardModes), "observe"),
+        daemon("bt_guard_cloud_mode", choice(btGuardModes), "observe"),
+        daemon("bt_guard_excess_ratio_pct", int(110, 1000), "200"),
+        daemon("bt_guard_min_torrent_mib", int(0, 1_048_576), "64"),
+        daemon("bt_guard_rewind_tolerance_pct", int(0, 100), "7"),
+        daemon("bt_guard_throttle_kib", int(1, 1_048_576), "32"),
+        daemon("bt_guard_ban_base_hours", int(1, 720), "24"),
+        daemon("bt_guard_ban_max_days", int(1, 365), "30"),
+        daemon("bt_guard_downloading_max_action", choice(btGuardDownloadingActions), "throttle"),
+        daemon("bt_guard_skip_private", bool, "true"),
+        daemon("bt_guard_skip_lan", bool, "true"),
+        daemon("bt_guard_ipv6_prefix", int(48, 128), "64"),
+        daemon("bt_guard_filter_urls", text, ""),
+        daemon("bt_guard_cloud_enabled", bool, "true"),
+        daemon("bt_guard_report_enabled", bool, "false"),
         // ED2K
         daemon("ed2k_enable_kad", bool, "true"),
         daemon("ed2k_enable_upnp", bool, "true"),
@@ -201,7 +224,7 @@ object SettingsCatalog {
     /** 自定义主题集合的范围键：只承载分组 / 本机专属开关，从不承载值（逐主题键 `appearance.custom_themes.<id>`）。 */
     const val customThemesScopeKey = "appearance.custom_themes"
 
-    /** daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，29 项）。 */
+    /** daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，49 项，含 19 个 `bt.guard.*`）。 */
     val daemonSyncNames: Map<String, String> = mapOf(
         "max_concurrent_tasks" to "download.max_concurrent_tasks",
         "default_segments" to "download.default_segments",
@@ -228,6 +251,25 @@ object SettingsCatalog {
         "bt_seed_limit_operator" to "bt.seed_limit_operator",
         "bt_seed_then_action" to "bt.seed_then_action",
         "bt_seed_max_active" to "bt.seed_max_active",
+        "bt_guard_enabled" to "bt.guard.enabled",
+        "bt_guard_rule_excessive" to "bt.guard.rule_excessive",
+        "bt_guard_rule_rerequest" to "bt.guard.rule_rerequest",
+        "bt_guard_rule_rewind" to "bt.guard.rule_rewind",
+        "bt_guard_rule_lag" to "bt.guard.rule_lag",
+        "bt_guard_rule_fingerprint" to "bt.guard.rule_fingerprint",
+        "bt_guard_cloud_mode" to "bt.guard.cloud_mode",
+        "bt_guard_excess_ratio_pct" to "bt.guard.excess_ratio_pct",
+        "bt_guard_min_torrent_mib" to "bt.guard.min_torrent_mib",
+        "bt_guard_rewind_tolerance_pct" to "bt.guard.rewind_tolerance_pct",
+        "bt_guard_throttle_kib" to "bt.guard.throttle_kib",
+        "bt_guard_ban_base_hours" to "bt.guard.ban_base_hours",
+        "bt_guard_ban_max_days" to "bt.guard.ban_max_days",
+        "bt_guard_downloading_max_action" to "bt.guard.downloading_max_action",
+        "bt_guard_skip_private" to "bt.guard.skip_private",
+        "bt_guard_skip_lan" to "bt.guard.skip_lan",
+        "bt_guard_ipv6_prefix" to "bt.guard.ipv6_prefix",
+        "bt_guard_filter_urls" to "bt.guard.filter_urls",
+        "bt_guard_cloud_enabled" to "bt.guard.cloud_enabled",
         "ed2k_enable_kad" to "ed2k.enable_kad",
         "ed2k_enable_upnp" to "ed2k.enable_upnp",
         "ed2k_server_list" to "ed2k.server_list",
