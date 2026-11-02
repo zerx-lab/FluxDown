@@ -62,6 +62,7 @@
 - **二段解析任务绝不能以原始链接起跑**：组成员 / 插件订阅条目的 `url` 是分享页，绑定被清空（卸载、旧版 fail-closed 行、忽略插件重试）后起跑会把 HTML 存成文件。起跑 / 恢复 / 解析回流都要先重绑、无插件即 fail-closed，`ignoreRetry` 对其拒绝 → `native/engine/src/download_manager.rs::{rebind_second_stage,fail_second_stage_unavailable}`、回归 `native/engine/tests/engine/plugin_state_freshness.rs`。
 - **预解析与建组必须用同一个插件**：成员任务曾在建组时按 `route_resolver` 重选（含非 multi 插件、字母序取首个），与预解析用的 `match_multi_resolver` 不一致就把 `resolverItem` 交给别的插件。客户端回传 `ResolvePreviewResponse.pluginId` → `CreateGroupRequest.resolverPluginId`（GPUI / Web / iOS） → `download_manager.rs::plugin_bind_resolver`。
 - **插件解析出的媒体直链常绑定解析时的出口 IP（googlevideo `ip=`、网盘签名链接），下载必须走同一出口**：Auto 下解析曾恒直连、下载却按先验 / 多路径 / 换路走代理，换路重试时还先重新解析（仍直连）再强制走代理，结果 403 且 403 不触发换路；站点规则又只按媒体链接匹配，`youtube.com` 规则管不到 googlevideo。现在解析按源链接制定出口计划并在 Auto 断网时换路重跑，下载以源链接定出口、Auto 下单路径钉在解析所用路径、禁用多网卡；Auto 换路判据来自 bridge 的类型化观测（被墙时多为墙钟超时而非插件抛错文案）→ `native/engine/src/plugin/call_egress.rs`、`native/engine/src/plugin/manager.rs::run_planned`、`native/engine/src/download_manager.rs::{resolve_egress_plan,absorb_resolve_egress,take_start_route}`，回归 `native/engine/tests/engine/plugin_resolve_egress.rs`。
+- **插件卸载必须删除该 identity 的全部安装副本，并在重载后核对无残留**：安装扫描只认 manifest 的 identity、不认目录名，`plugins/` 下目录名不同的同 identity 副本（手动解压的旧版本）也会被加载；`purge` 曾只删「第一个失败副本」或 `plugins/<identity>` 之一，重载后另一份重新出现而卸载报成功（要点两次；唯一副本目录名 ≠ identity 时永远删不掉）→ `native/engine/src/plugin/manager.rs::{purge,installed_copies_of}`、回归 `native/engine/tests/engine/plugin_purge_auth_flow.rs::uninstall_removes_*`。
 
 ## daemon / agent 本机服务
 

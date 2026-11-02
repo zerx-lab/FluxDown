@@ -1892,39 +1892,85 @@ impl PluginManager {
 
     /// 删目录 + 清 `plugin.<identity>.` 前缀全部 config 键 + 重载。仅供
     /// [`Self::uninstall`] 使用。
+    ///
+    /// 安装目录扫描只认 manifest 的 identity、不认目录名，同一 identity 可能有多个
+    /// 安装副本（`plugins/<identity>` 之外还有手动解压、目录名不同的副本）。这里删除
+    /// 全部非 dev 副本；只删一个会让重载后剩下的副本重新出现、卸载却报成功。
     async fn purge(&self, identity: &str) -> Result<(), PluginError> {
-        // 删安装目录（dev 不删源，仅删配置键）。
-        let failed_plugin = self
-            .failed_plugins
-            .read()
-            .await
-            .iter()
-            .find(|plugin| plugin.identity == identity && !plugin.dev_mode)
-            .map(|plugin| (false, plugin.dir.to_path_buf()));
-        let dir = match &failed_plugin {
-            Some((true, _)) => None,
-            Some((false, dir)) => Some(dir.clone()),
-            None if is_valid_identity(identity) => Some(self.root.join(identity)),
-            None => {
-                return Err(PluginError::ManifestInvalid(
-                    "插件 identity 非法，拒绝拼接卸载路径".to_string(),
-                ));
+        // dev 不删源，仅删配置键；dev 登记若恰好指向安装根目录内，扫描会把它当作
+        // 安装副本一并删除（与被 dev 顶替的安装副本同一语义）。
+        let dirs = self.installed_copies_of(identity).await;
+        if dirs.is_empty() && !is_valid_identity(identity) {
+            return Err(PluginError::ManifestInvalid(
+                "插件 identity 非法，拒绝拼接卸载路径".to_string(),
+            ));
+        }
+        for dir in &dirs {
+            if let Err(error) = tokio::fs::remove_dir_all(dir).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                // 删除目录可能已部分成功，返回原错误前重建可执行快照。
+                self.load_all().await;
+                return Err(PluginError::Runtime(format!(
+                    "删除插件目录 {} 失败: {error}",
+                    dir.display()
+                )));
             }
-        };
-        if let Some(dir) = dir
-            && dir.exists()
-            && let Err(error) = tokio::fs::remove_dir_all(&dir).await
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            // 删除目录可能已部分成功，返回原错误前重建可执行快照。
-            self.load_all().await;
-            return Err(PluginError::Runtime(format!("删除插件目录失败: {error}")));
         }
         let result = self.purge_config(identity).await;
         // 配置枚举/删除失败也必须重载：安装目录已删除，不能继续消费旧 JS 缓存。
         // 重载只负责收尾，卸载仍返回配置清理的原始错误。
         self.load_all().await;
-        result
+        result?;
+        // 仍有同 identity 的副本（如另一条 dev 登记的 manifest 也声明了它）时如实报错，
+        // 不让 UI 显示「已卸载」而列表里还留着它。
+        let residual = self.installed_copies_of(identity).await;
+        let dev_residual = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .any(|p| p.dev && p.manifest.identity == identity)
+            || self
+                .failed_plugins
+                .read()
+                .await
+                .iter()
+                .any(|p| p.dev_mode && p.identity == identity);
+        if !residual.is_empty() || dev_residual {
+            return Err(PluginError::Runtime(format!(
+                "插件 {identity} 卸载后仍有残留副本，请检查插件目录与开发模式登记"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 该 identity 当前存在的全部安装副本目录（已加载 / 失败 / 被顶替的非 dev 副本，
+    /// 外加约定位置 `plugins/<identity>`），去重。
+    async fn installed_copies_of(&self, identity: &str) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut push = |dir: PathBuf| {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        };
+        for plugin in self.plugins.read().await.iter() {
+            if !plugin.dev && plugin.manifest.identity == identity {
+                push(plugin.dir.clone());
+            }
+        }
+        for plugin in self.failed_plugins.read().await.iter() {
+            if !plugin.dev_mode && plugin.identity == identity {
+                push(plugin.dir.to_path_buf());
+            }
+        }
+        if is_valid_identity(identity) {
+            let conventional = self.root.join(identity);
+            if conventional.exists() {
+                push(conventional);
+            }
+        }
+        dirs
     }
 
     async fn purge_config(&self, identity: &str) -> Result<(), PluginError> {
