@@ -13,6 +13,7 @@ mod shortcut_record;
 mod store;
 mod theme_library;
 mod ui;
+pub mod update_button;
 pub mod update_prompt;
 pub mod update_view;
 mod view;
@@ -23,6 +24,7 @@ pub use search::{SettingsSearchEntry, SettingsTarget, search_index};
 pub use shortcut_display::{shortcut_label, shortcut_recording};
 pub use store::{SettingsError, SettingsErrorKind, SettingsStore};
 pub use theme_library::sync_theme_library;
+pub use update_button::{OpenUpdatePrompt, UpdateButton};
 pub use update_prompt::{
     UPDATE_PROMPT_WINDOW_HEIGHT, UPDATE_PROMPT_WINDOW_WIDTH, UpdatePromptEvent, UpdatePromptView,
 };

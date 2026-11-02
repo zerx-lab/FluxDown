@@ -6,7 +6,7 @@ use fluxdown_ui_account::AccountRailButton;
 use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::{DownloadHostActions, DownloadView};
 use fluxdown_ui_rss::RssView;
-use fluxdown_ui_settings::{PushHost, PushView};
+use fluxdown_ui_settings::{PushHost, PushView, UpdateButton};
 use fluxdown_ui_shell::{ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options};
 use gpui::{App, AppContext as _, Window, WindowHandle, px, size};
 use gpui_component::{Icon, Root};
@@ -149,8 +149,17 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
             }),
         };
         let shell = cx.new(|cx| ShellView::new(translator.clone(), routes, actions, chrome, cx));
+        let update_button = cx.new(|cx| {
+            UpdateButton::new(
+                translator.clone(),
+                settings_store.clone(),
+                Rc::new(crate::windows::update_prompt::open),
+                cx,
+            )
+        });
         shell.update(cx, |shell, cx| {
             shell.observe_widget_source(&downloads, cx);
+            shell.set_status_accessory(Some(update_button.into()), cx);
             let preferences = Desktop::preferences(cx).clone();
             activity::apply_visibility(shell, &preferences, cx);
             crate::chrome_layout::apply(shell, &preferences, cx);

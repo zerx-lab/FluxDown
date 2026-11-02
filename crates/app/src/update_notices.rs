@@ -1,26 +1,14 @@
-//! 应用内更新提示：「发现新版本」提醒窗口的开窗时机、菜单「检查更新…」的结果，以及安装失败 /
-//! 已更新的一次性通知。
+//! 应用内更新提示：菜单「检查更新…」的结果与「已更新」的一次性通知。
 //!
-//! 状态唯一来源是 agent（`AgentSnapshot.update` / `UpdateChanged`）。提醒窗口电平触发：每次
-//! 更新状态 / 偏好变化都按 [`update_prompt::is_due`] 重新判定，到期且窗口未开就开窗；「稍后提示」
-//! 到期由本地定时器补一次判定。界面不在运行时由 agent 按同一判定拉起界面（`--capture`）。
-//! 用户关闭提醒窗口（「稍后提示」或关闭按钮）而提醒仍到期时，记为稍后提示。
+//! 新版本由 agent 在后台下载，只经主窗口顶栏的更新按钮（`fluxdown_ui_settings::UpdateTitleButton`）
+//! 呈现，界面从不为新版本自动弹窗或抢焦点；更新窗口只在用户主动时打开。
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use fluxdown_protocol::{
-    AgentEvent, ServiceEvent, UpdatePhase, UpdateStatusDto, method, update_prompt,
-};
-use fluxdown_ui_settings::{update_prompt::install_in_flight, update_view};
-use gpui::{App, Global, Task};
+use fluxdown_protocol::{UpdatePhase, UpdateStatusDto, method};
+use fluxdown_ui_settings::update_view;
+use gpui::{App, Global};
 use gpui_component::{WindowExt as _, notification::Notification};
-use serde_json::Value;
 
-use crate::{
-    app::Desktop,
-    session::SessionSignal,
-    windows::{WindowKey, WindowRegistry},
-};
+use crate::{app::Desktop, windows::WindowRegistry};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Notice {
@@ -28,132 +16,13 @@ struct Notice {
     error: bool,
 }
 
+/// 承载窗口尚不存在时暂存的提示。
 #[derive(Default)]
-struct UpdateNotices {
-    /// 上一份状态里「用户已要求安装」（正在安装，或下载完成后立即安装）。
-    install_in_flight: bool,
-    /// 「稍后提示」到期时重新判定的定时器；替换即取消上一个。
-    remind_timer: Option<Task<()>>,
-    /// 承载窗口尚不存在时暂存的提示。
-    pending: Vec<Notice>,
-}
+struct PendingNotices(Vec<Notice>);
 
-impl Global for UpdateNotices {}
+impl Global for PendingNotices {}
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-/// 安装请求失败：上一份状态里用户已要求安装，这一份落到 `Failed`。
-fn install_failed(previous_in_flight: bool, status: &UpdateStatusDto) -> bool {
-    previous_in_flight && status.phase == UpdatePhase::Failed
-}
-
-/// 订阅会话：快照与更新 / 偏好事件都走同一判定。须在 `SettingsStore` 接入会话之后安装，
-/// 读到的状态与偏好才是本帧的。
-pub(crate) fn install(cx: &mut App) {
-    cx.set_global(UpdateNotices::default());
-    reconcile(cx);
-    let session = Desktop::global(cx).session.clone();
-    cx.subscribe(&session, |_, signal, cx| match signal {
-        SessionSignal::Snapshot(_) => reconcile(cx),
-        SessionSignal::Event(frame) => {
-            if let ServiceEvent::Agent(
-                AgentEvent::UpdateChanged(_) | AgentEvent::PreferencesChanged(_),
-            ) = &frame.event
-            {
-                reconcile(cx);
-            }
-        }
-        SessionSignal::Stale
-        | SessionSignal::Fatal(_)
-        | SessionSignal::ServiceStopped
-        | SessionSignal::ServiceFailed(_) => {}
-    })
-    .detach();
-}
-
-fn reconcile(cx: &mut App) {
-    let store = Desktop::global(cx).settings_store.clone();
-    let (status, skipped, remind_after) = {
-        let store = store.read(cx);
-        let preferences = store.preferences();
-        (
-            store.update_status().clone(),
-            update_prompt::skipped_version(preferences).map(str::to_owned),
-            update_prompt::remind_after_ms(preferences),
-        )
-    };
-    let state = cx.global_mut::<UpdateNotices>();
-    let previous = std::mem::replace(&mut state.install_in_flight, install_in_flight(&status));
-    state.remind_timer = None;
-    if install_failed(previous, &status) && !WindowRegistry::is_open(cx, &WindowKey::UpdatePrompt) {
-        // 提醒窗口开着时失败原因就显示在窗口里。
-        let message = Desktop::global(cx)
-            .translator
-            .read(cx)
-            .text(update_view::failure_key(status.failure))
-            .to_owned();
-        show(
-            Notice {
-                message,
-                error: true,
-            },
-            cx,
-        );
-    }
-    let Some(version) = update_prompt::prompt_version(&status) else {
-        return;
-    };
-    if skipped.as_deref() == Some(version) {
-        return;
-    }
-    let now = now_ms();
-    match remind_after.filter(|after| *after > now) {
-        Some(after) => schedule_reminder(after - now, cx),
-        None => {
-            if !WindowRegistry::is_open(cx, &WindowKey::UpdatePrompt) {
-                crate::windows::update_prompt::open(cx);
-            }
-        }
-    }
-}
-
-fn schedule_reminder(delay_ms: u64, cx: &mut App) {
-    let timer = cx.spawn(async move |cx| {
-        cx.background_executor()
-            .timer(Duration::from_millis(delay_ms))
-            .await;
-        cx.update(reconcile);
-    });
-    cx.global_mut::<UpdateNotices>().remind_timer = Some(timer);
-}
-
-/// 提醒窗口已关闭：未跳过、未在安装且提醒仍到期 → 记为「稍后提示」。
-pub(crate) fn prompt_closed(cx: &mut App) {
-    let store = Desktop::global(cx).settings_store.clone();
-    let snooze = {
-        let store = store.read(cx);
-        let status = store.update_status();
-        !install_in_flight(status)
-            && !store.in_flight("updateInstall")
-            && update_prompt::is_due(status, store.preferences(), now_ms())
-    };
-    if !snooze {
-        return;
-    }
-    let after = now_ms().saturating_add(update_prompt::REMIND_LATER_MS);
-    store.update(cx, |store, cx| {
-        store.set_pref(update_prompt::REMIND_AFTER_KEY, Value::from(after), cx);
-    });
-    schedule_reminder(update_prompt::REMIND_LATER_MS, cx);
-}
-
-/// 菜单「检查更新…」：有新版本即打开提醒窗口（不受跳过 / 稍后提示限制）；否则通知结果。
+/// 菜单「检查更新…」：有新版本即打开更新窗口（不受跳过限制）；否则通知结果。
 pub(crate) fn check_now(cx: &mut App) {
     let future = Desktop::global(cx)
         .client
@@ -208,7 +77,7 @@ pub(crate) fn show_installed(cx: &mut App) {
 
 /// 主窗口就绪后补弹窗口尚不存在时暂存的提示。
 pub(crate) fn replay_pending(cx: &mut App) {
-    let pending = std::mem::take(&mut cx.global_mut::<UpdateNotices>().pending);
+    let pending = std::mem::take(&mut cx.default_global::<PendingNotices>().0);
     for notice in pending {
         show(notice, cx);
     }
@@ -216,7 +85,7 @@ pub(crate) fn replay_pending(cx: &mut App) {
 
 fn show(notice: Notice, cx: &mut App) {
     let Some(handle) = WindowRegistry::overlay_window(cx) else {
-        cx.global_mut::<UpdateNotices>().pending.push(notice);
+        cx.default_global::<PendingNotices>().0.push(notice);
         return;
     };
     let built = notice.clone();
@@ -231,32 +100,6 @@ fn show(notice: Notice, cx: &mut App) {
         })
         .is_ok();
     if !shown {
-        cx.global_mut::<UpdateNotices>().pending.push(notice);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn status(phase: UpdatePhase) -> UpdateStatusDto {
-        UpdateStatusDto {
-            phase,
-            latest_version: "2.0.0".to_owned(),
-            has_update: true,
-            ..UpdateStatusDto::default()
-        }
-    }
-
-    #[test]
-    fn failure_only_notifies_after_an_install_request() {
-        let failed = status(UpdatePhase::Failed);
-        assert!(!install_failed(false, &failed));
-        assert!(install_failed(true, &failed));
-        let mut pending = status(UpdatePhase::Downloading);
-        assert!(!install_in_flight(&pending));
-        pending.install_pending = true;
-        assert!(install_in_flight(&pending));
-        assert!(install_in_flight(&status(UpdatePhase::Installing)));
+        cx.default_global::<PendingNotices>().0.push(notice);
     }
 }

@@ -396,7 +396,6 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
         crate::windows::file_conflict::install(cx);
         crate::plugin_notices::install(cx);
         crate::plugin_contributions::install(cx);
-        crate::update_notices::install(cx);
         crate::service_notices::install(cx);
         if launch.after_update {
             after_session_settled(cx, crate::update_notices::show_installed);

@@ -54,7 +54,7 @@ pub enum WindowKey {
     GroupDetail(String),
     /// 独立下载进度 / 完成窗口（每任务一个）。
     Progress(String),
-    /// 「发现新版本」提醒（不依赖主窗口，托盘驻留时由 agent 拉起界面后单独弹出）。
+    /// 更新窗口（不依赖主窗口）：只在用户主动时打开（菜单「检查更新…」、顶栏更新按钮）。
     UpdatePrompt,
     /// 插件桌面界面（contributes.views 的 desktop 入口，gpui-shell 运行），key 为 `<identity>/<viewId>`。
     Plugin(String),
@@ -114,10 +114,8 @@ impl WindowRegistry {
             registry.confirming.remove(&window_id);
             (registry.open.is_empty(), key)
         };
-        match closed_key {
-            Some(WindowKey::Completion) => crate::completion_windows::window_closed(cx),
-            Some(WindowKey::UpdatePrompt) => crate::update_notices::prompt_closed(cx),
-            _ => {}
+        if let Some(WindowKey::Completion) = closed_key {
+            crate::completion_windows::window_closed(cx);
         }
         if last_closed {
             crate::lifecycle::quit_ui(cx);

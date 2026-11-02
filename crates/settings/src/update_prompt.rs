@@ -1,9 +1,8 @@
-//! 「发现新版本」提醒窗口内容：版本信息、状态行、更新说明，以及「跳过此版本 / 稍后提示 /
-//! 立即更新」三个选择。
+//! 更新窗口内容：版本信息、状态行、更新说明，以及「跳过此版本 / 稍后再说 / 立即更新」三个选择。
 //!
+//! 只在用户主动时打开（菜单「检查更新…」、顶栏更新按钮的手动升级 / 失败状态），从不自动弹出。
 //! 状态全部来自 app 常驻的 [`SettingsStore`]（agent 推送的 `UpdateStatusDto` + 偏好），视图只
-//! 渲染与转发动作；开窗时机与「稍后提示」的记录由 app 决定：本视图在用户作出不需要窗口继续存在
-//! 的选择时发出 [`UpdatePromptEvent::Close`]，宿主关窗时若提醒仍到期即记为稍后提示（关闭按钮同理）。
+//! 渲染与转发动作；用户作出不需要窗口继续存在的选择时发出 [`UpdatePromptEvent::Close`]。
 //! 点「立即更新」后窗口保持打开，显示下载 / 安装进度直到服务重启。
 
 use fluxdown_protocol::{UpdatePhase, UpdateStatusDto, update_prompt};
@@ -28,7 +27,7 @@ pub const UPDATE_PROMPT_WINDOW_HEIGHT: f32 = 460.;
 
 /// 视图对宿主的事件。
 pub enum UpdatePromptEvent {
-    /// 关闭承载窗口（已跳过 / 稍后提示 / 转去官网手动下载）。
+    /// 关闭承载窗口（已跳过 / 稍后再说 / 转去官网手动下载）。
     Close,
 }
 
@@ -185,7 +184,7 @@ impl Render for UpdatePromptView {
                     .child(
                         button(
                             "update-prompt-later",
-                            SharedString::from(translator.text("updateRemindLater").to_owned()),
+                            SharedString::from(translator.text("updateLater").to_owned()),
                             ButtonVariant::Secondary,
                             cx,
                         )

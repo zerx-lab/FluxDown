@@ -1164,6 +1164,16 @@ impl SettingsStore {
         );
     }
 
+    /// 后台下载并校验更新包（不安装）；就绪后由用户点「重启以更新」安装。
+    pub fn download_update(&mut self, cx: &mut Context<Self>) {
+        self.call_update(
+            "updateDownload",
+            method::AGENT_UPDATE_DOWNLOAD,
+            json!({}),
+            cx,
+        );
+    }
+
     /// 「更新并重启」：包未就绪时 agent 先下载再安装；成功后 agent 随即整体重启，连接会被
     /// `service-quit` 关闭，这类 `Unavailable` 属预期，不当作错误展示。
     pub fn install_update(&mut self, cx: &mut Context<Self>) {

@@ -389,6 +389,9 @@ pub struct ShellView {
     pub(crate) stored_layout: Option<Value>,
     /// Windows / Linux 标题栏内的应用菜单；`None` = 不显示（宿主按偏好注入，macOS 恒为 `None`）。
     menu_bar: Option<Entity<AppMenuBar>>,
+    /// 状态栏固定附件（宿主注入，如更新按钮）：不进 chrome 布局，恒在状态栏最右；
+    /// 视图自己决定是否有内容。状态栏因无条目收起时不显示。
+    pub(crate) status_accessory: Option<AnyView>,
 }
 
 impl ShellView {
@@ -428,6 +431,7 @@ impl ShellView {
             window: None,
             stored_layout: None,
             menu_bar: None,
+            status_accessory: None,
         }
     }
 
@@ -553,6 +557,12 @@ impl ShellView {
             return;
         }
         self.menu_bar = menu_bar;
+        cx.notify();
+    }
+
+    /// 设置状态栏固定附件；`None` 移除。
+    pub fn set_status_accessory(&mut self, accessory: Option<AnyView>, cx: &mut Context<Self>) {
+        self.status_accessory = accessory;
         cx.notify();
     }
 
