@@ -1,8 +1,9 @@
 // Entry-point helpers. The engine looks up fixed globals after evaluating each script
-// (`resolve`, `onStart`/`onError`/`onDone`/`onMetaProbed`/`onCancel`, `authenticate`, `subscribe`);
+// (`resolve`, `onStart`/`onError`/`onDone`/`onMetaProbed`/`onCancel`, `authenticate`, `subscribe`, `archive`);
 // these helpers install your functions there so entry files can be ES modules that the CLI bundles
 // into classic scripts. The resident `main` script registers through `flux.*` instead.
 import type {
+  ArchiveFn,
   AuthFn,
   HookHandlers,
   InterceptContext,
@@ -41,6 +42,12 @@ export function defineAuth(fn: AuthFn): AuthFn {
 /** Installs `globalThis.subscribe` (manifest `subscriptions[].entry`). */
 export function defineSubscription(fn: SubscribeFn): SubscribeFn {
   install("subscribe", fn);
+  return fn;
+}
+
+/** Installs `globalThis.archive` (manifest `contributes.archive`, needs the `archive` permission). */
+export function defineArchive(fn: ArchiveFn): ArchiveFn {
+  install("archive", fn);
   return fn;
 }
 
