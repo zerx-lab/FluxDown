@@ -171,11 +171,8 @@ pub trait TaskInterceptor: Send + Sync {
     fn entries(&self) -> &[InterceptorEntry];
     /// 任务持久化的原始 URL。
     fn source_url(&self) -> &str;
-    /// 是否存在已启用的归档插件。
-    fn has_archivers(&self) -> bool {
-        false
-    }
-    /// 按文件名选择可选的归档子目录。
+    /// 按文件名询问已启用的归档插件，返回分类目录下的单层子目录名。`Ok(None)` = 不归档；
+    /// `Err` = 有插件失败且无人给出合法目录名（原因供任务活动展示）。
     async fn archive_folder(&self, _file_name: &str) -> Result<Option<String>, String> {
         Ok(None)
     }

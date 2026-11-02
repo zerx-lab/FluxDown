@@ -199,10 +199,16 @@ impl QuickJsScriptRuntime {
         let wall_pause = Arc::new(super::runtime::WallPause::default());
         let wall_pause_bridge = wall_pause.clone();
         let exec = ctx.async_with(async move |ctx| -> Result<String, PluginError> {
-            if let Some(bridge) = bridge.filter(|_| entry_owned != "archive") {
+            if entry_owned == "archive" {
+                // 归档回调只拿到日志：不注入任何网络 / 存储 / 任务 / 进程桥。
+                if let Some(bridge) = &bridge {
+                    inject_log(&ctx, bridge, &plugin_id)
+                        .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
+                }
+            } else if let Some(bridge) = &bridge {
                 inject_bridge(
                     &ctx,
-                    &bridge,
+                    bridge,
                     &plugin_id,
                     retry_task_id,
                     artifact_task_id,
@@ -217,25 +223,21 @@ impl QuickJsScriptRuntime {
                 )
                 .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
             }
-            // Archive does not receive plugin/app metadata or host APIs.
             set_json_global(&ctx, "__flux_settings_json", &settings_json)?;
+            // 归档回调不下发插件 / App 元数据。
             if entry_owned != "archive" {
                 set_json_global(&ctx, "__flux_info", &info_json)?;
             }
             set_json_global(&ctx, "__flux_arg", &arg_json)?;
 
-            // Archive exposes only typed settings; no ordinary host facade is installed.
-            if entry_owned == "archive" {
-                ctx.eval::<rquickjs::Value, _>(
-                    "globalThis.flux = { settings: __flux_settings_json };",
-                )
-                .catch(&ctx)
-                .map_err(|e| PluginError::Runtime(format!("archive flux 初始化失败: {e}")))?;
+            let prelude = if entry_owned == "archive" {
+                ARCHIVE_PRELUDE
             } else {
-                ctx.eval::<rquickjs::Value, _>(FLUX_PRELUDE)
-                    .catch(&ctx)
-                    .map_err(|e| PluginError::Runtime(format!("flux 门面初始化失败: {e}")))?;
-            }
+                FLUX_PRELUDE
+            };
+            ctx.eval::<rquickjs::Value, _>(prelude)
+                .catch(&ctx)
+                .map_err(|e| PluginError::Runtime(format!("flux 门面初始化失败: {e}")))?;
             ctx.eval::<rquickjs::Value, _>(source.as_bytes())
                 .catch(&ctx)
                 .map_err(|e| caught_error(e, PluginError::CompileFailed))?;
@@ -398,6 +400,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
         plugin: &PluginScript,
         req: ArchiveRequest,
         settings_json: String,
+        bridge: Arc<dyn PluginBridge>,
         budget: ExecutionBudget,
     ) -> Result<Option<ArchiveResult>, PluginError> {
         let _permit = tokio::time::timeout(
@@ -416,10 +419,11 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 false,
                 arg_json,
                 settings_json,
-                info_json(&plugin.identity, &plugin.version, &plugin.app_version),
+                // 归档回调不注入 `__flux_info`。
+                String::new(),
                 None,
                 None,
-                None,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 HostContext::default(),
@@ -761,6 +765,26 @@ fn build_entry_wrapper(entry: &str, is_resolve: bool) -> String {
     }
 }
 
+/// 注入同步 `__flux_log(level, msg)`：写插件日志，是归档回调唯一可用的宿主函数。
+pub(super) fn inject_log(
+    ctx: &Ctx<'_>,
+    bridge: &Arc<dyn PluginBridge>,
+    plugin_id: &str,
+) -> Result<(), rquickjs::Error> {
+    let b = bridge.clone();
+    let pid = plugin_id.to_string();
+    let f = Function::new(ctx.clone(), move |level: String, msg: String| {
+        let lvl = match level.as_str() {
+            "warn" => PluginLogLevel::Warn,
+            "error" => PluginLogLevel::Error,
+            _ => PluginLogLevel::Info,
+        };
+        b.log(&pid, lvl, &msg);
+    })?
+    .with_name("__flux_log")?;
+    ctx.globals().set("__flux_log", f)
+}
+
 /// 注入低层 `__flux_*` 桥接函数（异步 fetch/storage、同步 log/requestRetry；
 /// 授权时另注入异步 `__flux_ffmpeg_*`）。`interrupt_ns` 供 ffmpeg 调用把子进程
 /// 挂起时长补进中断预算。
@@ -1025,21 +1049,7 @@ pub(super) fn inject_bridge(
         globals.set("__flux_fs_list", f)?;
     }
 
-    // __flux_log(level, msg) -> ()（同步）
-    {
-        let b = bridge.clone();
-        let pid = plugin_id.to_string();
-        let f = Function::new(ctx.clone(), move |level: String, msg: String| {
-            let lvl = match level.as_str() {
-                "warn" => PluginLogLevel::Warn,
-                "error" => PluginLogLevel::Error,
-                _ => PluginLogLevel::Info,
-            };
-            b.log(&pid, lvl, &msg);
-        })?
-        .with_name("__flux_log")?;
-        globals.set("__flux_log", f)?;
-    }
+    inject_log(ctx, bridge, plugin_id)?;
 
     // __flux_request_retry(delayStr) -> ()（同步；仅 onError 生效）
     {
@@ -1390,6 +1400,28 @@ pub(super) const FLUX_PRELUDE: &str = r#"
     warn: (...a) => __flux_log('warn', __args2str(a)),
     error: (...a) => __flux_log('error', __args2str(a)),
     debug: (...a) => __flux_log('info', __args2str(a)),
+  };
+})();
+"#;
+
+/// 归档回调门面：只有类型化设置与写插件日志的 `flux.logger` / `console`（`__flux_log`
+/// 由 [`inject_log`] 注入），没有网络、存储、文件、任务或进程能力。
+pub(super) const ARCHIVE_PRELUDE: &str = r#"
+(function () {
+  const __args2str = (a) => a.map(x => {
+    try { return typeof x === 'string' ? x : JSON.stringify(x); } catch (e) { return String(x); }
+  }).join(' ');
+  const __log = (level) => (...a) => __flux_log(level, __args2str(a));
+  globalThis.flux = {
+    settings: __flux_settings_json,
+    logger: { info: __log('info'), warn: __log('warn'), error: __log('error') },
+  };
+  globalThis.console = {
+    log: __log('info'),
+    info: __log('info'),
+    warn: __log('warn'),
+    error: __log('error'),
+    debug: __log('info'),
   };
 })();
 "#;
@@ -1780,18 +1812,64 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(rt.resolve_sema.available_permits(), base);
     }
+
+    /// 测试桩：只记录日志，其余同 [`NullBridge`]。
+    #[derive(Default)]
+    struct LogBridge(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl PluginBridge for LogBridge {
+        async fn http_request(
+            &self,
+            _plugin_id: &str,
+            _req: BridgeHttpRequest,
+        ) -> Result<BridgeHttpResponse, PluginError> {
+            Err(PluginError::Runtime("no network in test".to_string()))
+        }
+        async fn storage_get(&self, _plugin_id: &str, _key: &str) -> Option<String> {
+            None
+        }
+        async fn storage_set(
+            &self,
+            _plugin_id: &str,
+            _key: &str,
+            _value: String,
+        ) -> Result<(), PluginError> {
+            Ok(())
+        }
+        fn log(&self, plugin_id: &str, level: PluginLogLevel, message: &str) {
+            let level = match level {
+                PluginLogLevel::Warn => "warn",
+                PluginLogLevel::Error => "error",
+                PluginLogLevel::Info => "info",
+            };
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{plugin_id} {level} {message}"));
+        }
+        fn request_retry(&self, _plugin_id: &str, _task_id: &str, _delay_ms: u64) {}
+    }
+
+    /// 归档回调可异步、可读设置、可写日志（`console` 与 `flux.logger`），但拿不到任何
+    /// 其他宿主能力与插件元数据。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn archive_is_async_and_exposes_only_settings_facade() {
+    async fn archive_is_async_and_exposes_only_settings_and_logging() {
         let rt = QuickJsScriptRuntime::new(1).expect("runtime");
         let script = PluginScript {
             identity: "test@archive".to_string(),
-            source: "globalThis.archive = async ctx => ({ folderName: \
-                     typeof flux.fetch + ':' + flux.settings.label + ':' + ctx.fileName });"
+            source: "globalThis.archive = async ctx => { \
+                     console.log('name', ctx.fileName); flux.logger.warn({ n: 1 }); \
+                     const absent = ['fetch', 'storage', 'info', 'task', 'fs', 'ffmpeg', \
+                     'ytdlp', 'auth', 'rpc', 'ui'].filter(k => flux[k] !== undefined); \
+                     return { folderName: absent.length + ':' + typeof __flux_fetch + ':' \
+                     + flux.settings.label + ':' + ctx.fileName }; };"
                 .to_string(),
             entry_fn_hint: PluginEntryKind::Archive,
             version: "1.0.0".to_string(),
             app_version: "0.0.0".to_string(),
         };
+        let bridge = Arc::new(LogBridge::default());
         let result = rt
             .invoke_archive(
                 &script,
@@ -1799,6 +1877,7 @@ mod tests {
                     file_name: "episode.mkv".to_string(),
                 },
                 "{\"label\":\"Anime\"}".to_string(),
+                bridge.clone(),
                 ExecutionBudget {
                     timeout: Duration::from_secs(2),
                     memory_limit_bytes: 16 * 1024 * 1024,
@@ -1808,7 +1887,14 @@ mod tests {
             .expect("archive invocation");
         assert_eq!(
             result.expect("archive result").folder_name,
-            "undefined:Anime:episode.mkv"
+            "0:undefined:Anime:episode.mkv"
+        );
+        assert_eq!(
+            *bridge.0.lock().unwrap(),
+            vec![
+                "test@archive info name episode.mkv".to_string(),
+                "test@archive warn {\"n\":1}".to_string(),
+            ]
         );
     }
 }
