@@ -2952,7 +2952,10 @@ mod tests {
         assert_eq!(status["data"]["statuses"][&id], "pending");
         assert_eq!(status["data"]["statuses"]["missing"], "unknown");
 
-        capture.resolve(&id, false, None).await.expect("reject");
+        capture
+            .resolve(&id, false, false, None)
+            .await
+            .expect("reject");
         let status = exchange(
             &mut client,
             json!({"action": "capture_status", "msg_id": 4, "transactionIds": [id]}),

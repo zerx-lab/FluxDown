@@ -169,6 +169,10 @@ final class NewDownloadForm {
             saveDir = dir
         }
     }
+    /// 保存目录文本框由用户编辑时调用；显式选择初始目录也必须关闭自动路由。
+    func markSaveDirManual() {
+        categoryState.markSaveDirManual()
+    }
 
     /// 有未提交内容：关闭前需要确认。
     var isDirty: Bool {

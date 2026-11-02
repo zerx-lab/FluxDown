@@ -443,7 +443,7 @@ private fun NewDownloadContent(
     }
     val pickDirectory = com.fluxdown.app.ui.rememberLocalDirectoryPicker { path ->
         if (container.host.value is HostRef.Local && target == null && !form.submitting) {
-            form.saveDir = path
+            form.setSaveDirManually(path)
         }
     }
 
@@ -563,10 +563,7 @@ private fun NewDownloadContent(
             return@Column
         }
 
-        // 分类：仅在存在可路由的分类目录时显示（隐藏时行为与此前一致）
-        if (form.categoryOptions.isNotEmpty()) {
-            CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
-        }
+        CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
 
         // 保存目录
         val saveDirShown = remember(form.saveDir, remoteHost) {
@@ -574,7 +571,7 @@ private fun NewDownloadContent(
         }
         FluxField(
             value = saveDirShown,
-            onValueChange = { form.saveDir = it },
+            onValueChange = { form.setSaveDirManually(it) },
             label = str(R.string.saveDir),
             mono = remoteHost,
             readOnly = !remoteHost,

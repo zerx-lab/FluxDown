@@ -38,7 +38,9 @@ use crate::{
             compose_request, custom_segments, detect_ua_preset, manual_proxy_url, parse_entries,
             parse_input, ua_preset_keys, ua_preset_value,
         },
-        save_dir_category::{CategoryMode, NewDownloadCategory, category_options, dir_untouched},
+        save_dir_category::{
+            CategoryMode, NewDownloadCategory, category_options, save_dir_untouched,
+        },
         save_dir_history::{
             CategorySaveDirHistory, read_category_save_dir_history, read_save_dir_history,
             record_category_save_dir, record_save_dir, save_dir_choices,
@@ -319,11 +321,13 @@ pub struct NewDownloadView {
     save_dir_menu_open: bool,
     /// 保存目录组合框上一帧的窗口坐标，用于判定外部点击是否落在输入框上。
     save_dir_bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// 保存目录的分类模式（默认自动）；仅 `context.category_route` 存在时有意义。
+    /// 保存目录的分类模式（默认自动）。
     category_mode: CategoryMode,
     /// 表单上一次写入目录框的值（自动跟随 / 切换分类模式 / 捕获带来的系统目录）：目录框仍
     /// 等于它说明用户没手动改过——自动模式据此继续跟随、提交时才挂分类路由。
     category_written_dir: Option<String>,
+    /// 用户手动编辑过目录时禁止提交分类路由；重新选择「自动」可恢复。
+    category_dir_manually_edited: bool,
     /// 自动模式按当前输入预测出的分类目录（触发器显示命中分类）；变化时同步更新，渲染只读。
     category_predicted: Option<String>,
 }
@@ -427,6 +431,7 @@ impl NewDownloadView {
             save_dir_bounds: Rc::default(),
             category_mode: CategoryMode::Auto,
             category_written_dir: None,
+            category_dir_manually_edited: false,
             category_predicted: None,
         };
         this.refresh_entries(window, cx);
@@ -488,6 +493,16 @@ impl NewDownloadView {
             )
             .detach();
         }
+        cx.subscribe_in(
+            &self.save_dir,
+            window,
+            |this, _, event: &InputEvent, _, _| {
+                if let InputEvent::Change = event {
+                    this.category_dir_manually_edited = true;
+                }
+            },
+        )
+        .detach();
         // 重命名框是自动分类的预测输入之一；探测预填走 `set_value`（不发 Change），由探测同步处理。
         cx.subscribe_in(
             &self.rename,
@@ -895,10 +910,11 @@ impl NewDownloadView {
         let current = self.save_dir.read(cx).value().to_string();
         if save_dir != self.context.save_dir
             && current == self.context.save_dir
-            && dir_untouched(
+            && save_dir_untouched(
                 &current,
                 &self.context.save_dir,
                 self.category_written_dir.as_deref(),
+                self.category_dir_manually_edited,
             )
         {
             let value = save_dir.clone();
@@ -1307,6 +1323,7 @@ impl NewDownloadView {
             let Ok(()) = this.update_in(cx, |this, window, cx| {
                 this.picking = false;
                 if let Some(path) = picked {
+                    this.category_dir_manually_edited = true;
                     this.save_dir
                         .update(cx, |input, cx| input.set_value(path, window, cx));
                 }
@@ -1770,6 +1787,7 @@ impl NewDownloadView {
                             .hover(move |style| style.bg(hover))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 let value = dir.clone();
+                                this.category_dir_manually_edited = true;
                                 this.save_dir
                                     .update(cx, |input, cx| input.set_value(value, window, cx));
                                 this.save_dir_menu_open = false;

@@ -419,12 +419,13 @@ async fn receive_and_ack_windows(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
+    #[cfg(unix)]
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{
-        ActivateMessage, Endpoint, LISTENER_RETRY_MAX, Listener, SendError, listener_retry_delay,
-        send_to_primary,
-    };
+    use super::{ActivateMessage, LISTENER_RETRY_MAX, SendError, listener_retry_delay};
+    #[cfg(unix)]
+    use super::{Endpoint, Listener, send_to_primary};
 
     #[test]
     fn listener_backoff_doubles_and_is_capped() {
@@ -435,6 +436,7 @@ mod tests {
         assert_eq!(listener_retry_delay(u32::MAX), LISTENER_RETRY_MAX);
     }
 
+    #[cfg(unix)]
     fn test_dir(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -526,7 +528,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn pipe_busy_is_retryable() {
-        let error = SendError::Io(io::Error::from_raw_os_error(231));
+        let error = SendError::Io(std::io::Error::from_raw_os_error(231));
         assert!(error.is_retryable());
     }
 

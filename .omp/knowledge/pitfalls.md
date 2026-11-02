@@ -68,6 +68,9 @@
 
 另见 AGENTS.md §4：本机端口默认宽松显式严格（WSAEACCES 回退）、远程控制凭据与会话撤销、空闲静默、遥测只有两条匿名事件。
 
+- **云端 / LAN 接收任务必须在接收端填入本机分类路由，只有显式保存目录才禁用**：远端只传链接 / 文件名与可选目标目录，空目录及跨平台目录回退到默认目录时不能漏掉 daemon 建任务 RPC 的分类路由 → `native/agent/src/remote.rs::create_local_task`、`native/agent/src/link/service.rs::create_local_task`，回归 `cloud_receive_uses_preference_category_route_only_without_explicit_directory` / `receiver_falls_back_to_default_dir_and_retries_without_dir`。
+- **捕获确认必须显式传递用户禁用自动分类的意图**：仅比较目录值无法区分自动预填与用户手动选回同一目录，确认请求用 `disableCategoryRoute` 阻止 agent 在完成阶段重新启用分类 → `native/agent/src/capture.rs::resolve`、`crates/downloads/src/submission.rs`，回归 `manual_category_directory_disables_capture_route`。
+
 - **回环 daemon 的 HTTP 客户端必须 `.no_proxy()`**：否则会话凭据与文件字节会经环境 / 系统代理离开本机 → `native/agent/src/capture.rs::DaemonBlobClient::new`。
 - **macOS 上 reqwest 的「系统代理」不读 `ExceptionsList`**：hyper-util `Matcher::from_system` 只取 SCDynamicStore 的 HTTP / HTTPS 地址，直连名单只认 `NO_PROXY` 环境变量（GUI 进程没有）→ 回环、局域网、`.local` 全进代理；本机开 Clash 时 agent 连 127.0.0.1 的云端 / 更新 / 网关测试因此失败。agent 外网客户端一律经 `system_proxy::follow_system` 显式装配（环回恒直连 + `NO_PROXY` + 系统槽并入例外列表，其余照常走代理），不得裸用 reqwest 默认代理；引擎 System 模式同样把 `ExceptionsList` 归一化进 `no_proxy_list` → `native/agent/src/system_proxy.rs`（`LazyHttpClient`、`Network::SystemDefault`）、`native/engine/src/proxy_config.rs::parse_scutil_exceptions`、回归 `system_proxy_bypasses_only_exceptions_and_loopback`。
 - **客户端 WebSocket 的帧上限与消息上限必须一起放宽到 `MAX_INBOUND_RPC_MESSAGE_BYTES`**：tungstenite 默认 16 MiB；snapshot 与整表替换事件只带头部、任务表经 `system.taskPage` 分页，新增大应答不要回到「单帧带全量」。桌面、agent、移动端远端三处连接都必须应用同一常量 → `native/protocol/src/rpc.rs::MAX_INBOUND_RPC_MESSAGE_BYTES`、`crates/app/src/agent_client.rs`、`native/agent/src/daemon_client.rs`、`native/mobile/src/remote.rs`。

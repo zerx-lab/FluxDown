@@ -51,6 +51,20 @@ struct SaveDirCategoryTests {
         // 用户手动改过：不再覆盖。
         #expect(state.follow(dir: "/mine", offered: "/default", predicted: "/Programs") == nil)
     }
+    @Test func explicitlyEditedDirectoryDisablesRoutingEvenWhenItEqualsDefaultOrCategoryDir() {
+        let options = SaveDirCategoryState.options(list)
+        for dir in ["/default", "/Programs", "/mine"] {
+            var state = SaveDirCategoryState(initialDir: "/default")
+            state.markSaveDirManual()
+            #expect(state.follow(dir: dir, offered: "/default", predicted: "/Videos") == nil)
+            #expect(state.offeredSaveDir(dir: dir, initial: "/default") == nil)
+        }
+
+        var category = SaveDirCategoryState(initialDir: "/default")
+        category.markSaveDirManual()
+        #expect(category.select(.auto, offered: "/default", options: options, predicted: "/Programs") == "/Programs")
+        #expect(category.offeredSaveDir(dir: "/Programs", initial: "/default") == "/default")
+    }
 
     @Test func openingWithAPrefilledCategoryDirCountsAsAutoWritten() {
         var state = SaveDirCategoryState(initialDir: "/Programs")

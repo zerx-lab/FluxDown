@@ -501,6 +501,7 @@ fn ignore_captures(captures: Vec<PendingCaptureDto>, port: &AgentDownloadsPort, 
             CaptureResolveParams {
                 transaction_id: capture.transaction_id,
                 accepted: false,
+                disable_category_route: true,
                 request: None,
             },
         )));

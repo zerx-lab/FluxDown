@@ -27,8 +27,8 @@ use gpui_component::{
 
 use super::NewDownloadView;
 use crate::model::save_dir_category::{
-    CategoryMode, auto_follow_target, category_options, dir_untouched, matched_category,
-    predict_save_dir,
+    CategoryMode, auto_follow_target, category_options, category_route_eligible, matched_category,
+    predict_save_dir, save_dir_untouched,
 };
 
 /// 分类下拉触发器定宽（图标 + 名称 + chevron）。
@@ -50,11 +50,9 @@ struct MenuEntry {
 }
 
 impl NewDownloadView {
-    /// 分类选择器可见：有可路由的分类、有可选目录，且目标是本机。
+    /// 分类选择器只对本机表单展示；自动 / 不分类即使没有可选分类也有意义。
     fn category_picker_visible(&self) -> bool {
-        self.context.category_route.is_some()
-            && !self.context.category_options.is_empty()
-            && !self.is_remote()
+        !self.is_remote()
     }
 
     /// 快捷添加的网址规则在本表单内生效：追加进分类列表并重算路由 / 候选，模式回「自动」
@@ -141,16 +139,17 @@ impl NewDownloadView {
 
     /// 目录框是否仍是表单写入的值（用户没手动改过），见 [`dir_untouched`]。
     pub(super) fn save_dir_untouched(&self, cx: &App) -> bool {
-        dir_untouched(
+        save_dir_untouched(
             &self.save_dir.read(cx).value(),
             &self.context.save_dir,
             self.category_written_dir.as_deref(),
+            self.category_dir_manually_edited,
         )
     }
 
     /// 提交是否挂分类路由：自动模式且目录框未被手改。
     pub(super) fn routes_by_category(&self, cx: &App) -> bool {
-        self.category_mode == CategoryMode::Auto && self.save_dir_untouched(cx)
+        category_route_eligible(&self.category_mode, self.save_dir_untouched(cx))
     }
 
     /// 分类目录记忆的键：显式所选分类，或自动模式命中（触发器显示）的分类；不分类 / 无命中 /
@@ -170,18 +169,14 @@ impl NewDownloadView {
         }
     }
 
-    /// 预测输入变化后调用：刷新预测结果，`Auto` 模式下让目录框跟随。没有分类路由时什么都不做
-    /// （表单行为与未配置分类目录时完全一致）。
+    /// 预测输入变化后更新预测结果；自动模式仅在目录未被用户手动指定时跟随。
     pub(super) fn sync_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.context.category_route.is_none() {
-            return;
-        }
         let predicted = self.predict_category_dir(cx);
         if self.category_predicted != predicted {
             self.category_predicted.clone_from(&predicted);
             cx.notify();
         }
-        if self.category_mode != CategoryMode::Auto {
+        if self.category_mode != CategoryMode::Auto || self.category_dir_manually_edited {
             return;
         }
         let current = self.save_dir.read(cx).value().to_string();
@@ -190,6 +185,7 @@ impl NewDownloadView {
             &self.context.save_dir,
             self.category_written_dir.as_deref(),
             predicted.as_deref(),
+            self.category_dir_manually_edited,
         ) else {
             return;
         };
@@ -199,7 +195,7 @@ impl NewDownloadView {
     }
 
     /// 下拉选择：`Auto` 立即按当前输入重算并写入；其余模式直接写目录框。写入值都记为
-    /// 表单写入值，之后用户再改即视为手改。
+    /// 表单写入值并清除手动标记（任一模式都是显式选择），之后用户再改即视为手改。
     fn set_category_mode(
         &mut self,
         mode: CategoryMode,
@@ -228,6 +224,7 @@ impl NewDownloadView {
                 dir
             }
         };
+        self.category_dir_manually_edited = false;
         self.set_save_dir_text(&target, window, cx);
         self.category_written_dir = Some(target);
         self.category_mode = mode;

@@ -530,6 +530,7 @@ impl CaptureService {
         &self,
         transaction_id: &str,
         accepted: bool,
+        disable_category_route: bool,
         confirmed: Option<CreateTaskRequest>,
     ) -> Result<Value, CaptureError> {
         let CaptureTransaction {
@@ -558,7 +559,7 @@ impl CaptureService {
             Some(confirmed) => merge_confirmed_request(request, confirmed),
             None => captured_create_request(request),
         };
-        if let Some(plan) = category {
+        if !disable_category_route && let Some(plan) = category {
             let (offered, remembered) = self.events.inspect(|snapshot| {
                 let policy = ExternalPolicy::from_preferences(&snapshot.preferences.values);
                 (
@@ -1094,6 +1095,77 @@ mod tests {
         assert_eq!(spec.request.save_dir, "");
     }
 
+    #[tokio::test]
+    async fn manual_category_directory_disables_capture_route() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (capture, mut calls, _events, stop, server) = daemon_service().await;
+            capture.events.publish(AgentEvent::PreferencesChanged(
+                fluxdown_protocol::AgentPreferencesDto {
+                    revision: 1,
+                    values: [(
+                        fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY.to_owned(),
+                        json!([{
+                            "id": "bin",
+                            "name": "Binary",
+                            "extensions": ["bin"],
+                            "position": 1,
+                            "saveDir": "/category"
+                        }]),
+                    )]
+                    .into(),
+                },
+            ));
+            let mut original = captured();
+            original.save_dir.clear();
+            let queued = capture
+                .submit(original, CaptureOrigin::External)
+                .await
+                .expect("queue capture");
+            let transaction_id = queued["transactionIds"][0]
+                .as_str()
+                .expect("transaction id")
+                .to_owned();
+            let confirming = {
+                let capture = capture.clone();
+                tokio::spawn(async move {
+                    capture
+                        .resolve(
+                            &transaction_id,
+                            true,
+                            true,
+                            Some(form(json!({
+                                "url": "https://example.com/a.bin",
+                                "saveDir": "/category"
+                            }))),
+                        )
+                        .await
+                })
+            };
+            let (request, reply) = calls.recv().await.expect("task create RPC");
+            assert_eq!(
+                request.method,
+                fluxdown_protocol::method::DAEMON_TASK_CREATE
+            );
+            let params: fluxdown_protocol::DaemonCreateTaskParams =
+                serde_json::from_value(request.params.expect("task create params"))
+                    .expect("decode task create params");
+            assert_eq!(params.request.save_dir, "/category");
+            assert!(params.category_route.is_none());
+            reply
+                .send(Ok(json!({"taskId": "manual-category"})))
+                .expect("daemon reply");
+            confirming
+                .await
+                .expect("confirmation task")
+                .expect("confirm capture");
+            stop.send(()).expect("stop test daemon");
+            drop(capture);
+            server.await.expect("daemon server");
+        })
+        .await
+        .expect("manual capture category lifecycle");
+    }
+
     #[test]
     fn batch_request_splits_per_url_sharing_only_request_context() {
         let mut batch = captured();
@@ -1295,11 +1367,11 @@ mod tests {
             ));
             assert_eq!(capture.list().await.len(), 1);
             capture
-                .resolve(&id, false, None)
+                .resolve(&id, false, false, None)
                 .await
                 .expect("legacy rejection");
             assert!(matches!(
-                capture.resolve(&id, false, None).await,
+                capture.resolve(&id, false, false, None).await,
                 Err(CaptureError::NotFound)
             ));
         }
@@ -1351,7 +1423,7 @@ mod tests {
             assert_eq!(capture.list().await.len(), 1);
         }
         capture
-            .resolve(&id, false, None)
+            .resolve(&id, false, false, None)
             .await
             .expect("transaction remains rejectable");
     }
@@ -1693,7 +1765,7 @@ mod tests {
                 assert!(!wire.contains(secret), "{secret}");
             }
             assert_eq!(capture.list().await[0].transaction_id, id);
-            capture.resolve(&id, false, None).await.expect("still rejectable");
+            capture.resolve(&id, false, false, None).await.expect("still rejectable");
             assert!(calls.try_recv().is_err(), "preview did not create any task");
             stop.send(()).expect("stop test daemon");
             drop(capture);
@@ -1723,7 +1795,7 @@ mod tests {
             assert_eq!(request.method, fluxdown_protocol::method::DAEMON_GROUP_CREATE);
             for accepted in [false, true] {
                 assert!(matches!(
-                    capture.resolve(&id, accepted, Some(form(json!({ "url": "" })))).await,
+                    capture.resolve(&id, accepted, false, Some(form(json!({ "url": "" })))).await,
                     Err(CaptureError::Busy)
                 ));
             }
@@ -1750,7 +1822,7 @@ mod tests {
                 Err(CaptureError::NotFound)
             ));
             assert!(matches!(
-                capture.resolve(&id, true, None).await,
+                capture.resolve(&id, true, false, None).await,
                 Err(CaptureError::NotFound)
             ));
             assert!(calls.try_recv().is_err(), "no duplicate group or ordinary task");

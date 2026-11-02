@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { CustomCategoryDto } from './rpc'
-import { autoFollowDir, dirUntouched, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeFromPreference, routeSaveDir, wildcardMatches } from './categoryRoute'
+import { autoFollowDir, dirUntouched, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeFromPreference, routeSaveDir, wildcardMatches } from './categoryRoute'
 import type { CategoryRouteDto } from './rpc'
 
 declare const Bun: { file(path: URL): { json(): Promise<unknown> } }
@@ -124,6 +124,22 @@ describe('auto follow / mode', () => {
     expect(dirUntouched(' /v ', '/d', '/v')).toBe(true)
     expect(dirUntouched('  ', '/d', '/v')).toBe(true)
     expect(dirUntouched('/d', ' /d ', null)).toBe(true)
+  })
+
+  test('手选默认 / 分类目录后重命名保持目录且不路由；重新选 Auto 恢复跟随', () => {
+    const route: CategoryRouteDto = { rules: [{ matchMode: 'extension', extensions: ['zip'], saveDir: '/category' }] }
+    const options = [cat('zip', { extensions: ['zip'], saveDir: '/category' })]
+    for (const chosen of ['/default', '/category']) {
+      let manuallyChosen = true
+      let currentDir = chosen
+      expect(autoFollowDir(currentDir, '/default', chosen, '/renamed', manuallyChosen)).toBeNull()
+      expect(eligibleRoute(route, { kind: 'auto' }, manuallyChosen, currentDir, '/default')).toBeNull()
+
+      manuallyChosen = false // pickCategory({ kind: 'auto' }) clears manual intent
+      currentDir = modeDir({ kind: 'auto' }, options, '/default', '/category')
+      expect(autoFollowDir(currentDir, '/default', currentDir, '/renamed', manuallyChosen)).toBe('/renamed')
+      expect(eligibleRoute(route, { kind: 'auto' }, manuallyChosen, currentDir, '/default')).toBe(route)
+    }
   })
 
   test('可选分类过滤与命中', () => {

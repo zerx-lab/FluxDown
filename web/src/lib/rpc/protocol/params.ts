@@ -539,6 +539,8 @@ export type CaptureSubmitResult =
 export interface CaptureResolveParams {
   transactionId: string;
   accepted: boolean;
+  /** 显式指定时，即使目录等于捕获表单的预填分类目录也禁止分类路由。 */
+  disableCategoryRoute?: boolean;
   /** 确认时表单产出的建任务参数；省略 = 按捕获原请求建任务。 */
   request?: CreateTaskRequest | null;
 }

@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, dirUntouched, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { autoFollowDir, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -189,23 +189,30 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const [categoryMode, setCategoryMode] = useState<CategoryPickMode>({ kind: 'auto' })
   /** 程序最近一次写入目录框的值（自动跟随 / 切换模式 / 捕获预填）；目录框与之不等即视为用户手改。 */
   const lastWrittenDir = useRef<string | null>(null)
-  const categoryShown = categoryRoute !== null && !target
+  /** 用户直接编辑/浏览选择后明确优先于自动路由，包括目录恰为默认或分类目录。 */
+  const saveDirManuallyChosen = useRef(false)
+  const categoryShown = !target
   const predictedName = rename.trim() !== '' ? rename.trim() : (entries[0]?.fileName ?? '')
   const predictedUrl = entries[0]?.url ?? ''
-  const predictedDir = categoryShown && categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
+  const predictedDir = categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
     if (!categoryShown || categoryMode.kind !== 'auto') return
-    const next = autoFollowDir(saveDir, context.saveDir, lastWrittenDir.current, predictedDir)
+    const next = autoFollowDir(saveDir, context.saveDir, lastWrittenDir.current, predictedDir, saveDirManuallyChosen.current)
     if (next === null) return
     lastWrittenDir.current = next
     if (next !== saveDir) setSaveDir(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在预测输入 / 模式变化时跟随，目录框当前值取渲染时快照
   }, [categoryShown, categoryMode.kind, predictedDir])
   const pickCategory = (mode: CategoryPickMode) => {
+    saveDirManuallyChosen.current = false
     setCategoryMode(mode)
     const next = modeDir(mode, categoryOptions, context.saveDir, predictedDir)
     lastWrittenDir.current = next
     setSaveDir(next)
+  }
+  const chooseSaveDir = (dir: string) => {
+    saveDirManuallyChosen.current = true
+    setSaveDir(dir)
   }
 
   // ── 外部捕获并入表单 ──
@@ -223,8 +230,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       if (current.trim() === '') {
         const dir = fresh.map((capture) => capture.saveDir.trim()).find((value) => value !== '')
         if (dir) {
-          // 仅「系统给的」目录（等于表单初始目录或某分类目录）才算程序写入；否则视为用户手选。
-          if (categoryRoute === null || routeFollows(categoryRoute, dir, context.saveDir)) lastWrittenDir.current = dir
+          // 非默认 / 分类目录的捕获目录是显式选择；不得再被 Auto 路由覆盖。
+          const followsRoute = categoryRoute !== null && routeFollows(categoryRoute, dir, context.saveDir)
+          saveDirManuallyChosen.current = !followsRoute && dir !== context.saveDir
+          if (followsRoute || dir === context.saveDir) lastWrittenDir.current = dir
           setSaveDir(dir)
         }
       }
@@ -236,7 +245,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       const kept = prev.filter((capture) => pendingCaptures.some((pending) => pending.transactionId === capture.transactionId))
       return kept.length === prev.length ? prev : kept
     })
-  }, [pendingCaptures])
+  }, [pendingCaptures, categoryRoute, context.saveDir])
 
   // 关闭 / 取消时，仍未确认的捕获一并忽略（agent 不留悬挂事务）。
   useEffect(
@@ -374,7 +383,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       const next = recordSaveDir(readSaveDirHistory(prefs[SAVE_DIR_HISTORY_PREF]), dir)
       if (next) values[SAVE_DIR_HISTORY_PREF] = next
       // 分类记忆：有分类键且目录框被手改时，记到该分类名下。
-      if (memoryCategoryId && !dirUntouched(saveDir, context.saveDir, lastWrittenDir.current)) {
+      if (memoryCategoryId && saveDirManuallyChosen.current) {
         const nextByCategory = recordCategorySaveDir(readCategorySaveDirHistory(prefs[CATEGORY_SAVE_DIR_HISTORY_PREF]), memoryCategoryId, dir)
         if (nextByCategory) values[CATEGORY_SAVE_DIR_HISTORY_PREF] = nextByCategory
       }
@@ -443,6 +452,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         )
         if (token !== resolveToken.current) return // 用户取消了探测
         if (!preview.error && preview.items.length > 0) {
+          // Manifest group.create has no categoryRoute; preserve exactly what the form displays.
           setManifest({
             preview,
             sourceUrl: single.url,
@@ -480,7 +490,12 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         continue
       }
       try {
-        await rpc.agent.capture.resolve({ transactionId: capture.transactionId, accepted: true, request })
+        await rpc.agent.capture.resolve({
+          transactionId: capture.transactionId,
+          accepted: true,
+          disableCategoryRoute: eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir) === null,
+          request,
+        })
         consumed.add(capture.transactionId)
       } catch (error) {
         retained.push({ index, error })
@@ -500,10 +515,9 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       )
       const { items } = batch
       let { common } = batch
-      // 分类路由：只对本机提交生效；仅「自动」且目录框未被手改时交给引擎按文件名定落点；
-      // 目录被手改 / 选了「不分类」/ 指定分类时用户已显式定目录，不路由。
-      const route = categoryShown && categoryMode.kind === 'auto' && dirUntouched(saveDir, context.saveDir, lastWrittenDir.current) ? categoryRoute : null
-      const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
+      // 分类路由：只对本机提交生效；目录仍是表单初始值 / 分类目录时交给引擎按文件名定落点；
+      // 分类下拉选了「不分类」/ 指定分类时用户已显式定目录，不路由。
+      const followed = eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir)
       if (followed) common = { ...common, saveDir: routeBaseDir(followed, options.saveDir, context.saveDir) }
       const controller = new AbortController()
       importAbort.current = controller
@@ -847,7 +861,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               <InputWithAction
                 input={
                   <div className="flex flex-wrap items-center gap-2">
-                    {categoryShown ? <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} /> : null}
+                    <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} />
                     <div className="min-w-[14rem] flex-1">
                       <SaveDirCombo
                         id="new-download-save-dir"
@@ -855,7 +869,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
                         placeholder={t('selectSaveDir')}
                         choices={saveDirOptions}
                         label={t('saveDirRecent')}
-                        onChange={setSaveDir}
+                        onChange={chooseSaveDir}
                       />
                     </div>
                   </div>
@@ -1045,7 +1059,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           }}
         />
       ) : null}
-      <FsPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} initialPath={saveDir} onSelect={setSaveDir} />
+      <FsPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} initialPath={saveDir} onSelect={chooseSaveDir} />
     </>
   )
 }
