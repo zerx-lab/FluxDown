@@ -4,7 +4,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Pause, Play, RotateCw } from 'lucide-react'
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { MouseEvent } from 'react'
+import type { MouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { Checkbox, ContextMenuArea, Icon, Tooltip } from '../../../ui'
@@ -204,7 +204,13 @@ const TaskRow = memo(function TaskRow(props: RowProps) {
         <div className="relative flex shrink-0 items-center justify-center self-stretch" style={{ width: selectionColumnWidth(density) }}>
           {depth > 0 ? <span aria-hidden className="pointer-events-none absolute inset-y-0 left-1/2 w-px bg-hairline" /> : null}
           {anySelected ? (
-            <div className="relative flex p-1" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+            <div
+              data-no-sweep
+              className="relative flex p-1"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
               <Checkbox checked={selected} onCheckedChange={() => onToggle(view)} aria-label={view.name} />
             </div>
           ) : (
@@ -213,7 +219,9 @@ const TaskRow = memo(function TaskRow(props: RowProps) {
               <div
                 role="button"
                 aria-label={props.rowActionLabels.select}
+                data-no-sweep
                 className="group/sel flex size-full cursor-pointer items-center justify-center"
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation()
                   onToggle(view)
@@ -355,6 +363,8 @@ export function TaskTable() {
   const pluginCommands = usePluginTaskCommands()
   const pluginCommandsRef = useRef(pluginCommands)
   pluginCommandsRef.current = pluginCommands
+  // 划选超过这个位移才改选区，避免普通单击被当成拖拽。
+  const blockSweepClick = useRef(false)
   const onClick = useCallback((event: MouseEvent, view: DownloadTaskView) => {
     ctxRef.current.clickSelect(view.key, { shift: event.shiftKey, secondary: event.ctrlKey || event.metaKey })
   }, [])
@@ -379,6 +389,45 @@ export function TaskTable() {
   }, [])
   const onGroupClick = useCallback((event: MouseEvent, row: GroupFolderRow) => {
     ctxRef.current.clickGroup(row, { shift: event.shiftKey, secondary: event.ctrlKey || event.metaKey })
+  }, [])
+  // 整行都是划选。浏览器拿不到 daemon 磁盘上的文件，不能把任务拖进访达 / 资源管理器。
+  // PC 端文件名列拖出文件，其他列划选，见 `classify_row_press`。
+  const beginSweep = useCallback((event: ReactPointerEvent, index: number) => {
+    if (event.button !== 0) return
+    if (event.target instanceof Element && event.target.closest('[data-no-sweep]')) return
+    blockSweepClick.current = false
+    const originX = event.clientX
+    const originY = event.clientY
+    const additive = event.ctrlKey || event.metaKey
+    const fromAnchor = event.shiftKey
+    const base = additive ? new Set(ctxRef.current.selected) : null
+    let active = false
+    let last = index
+    const move = (moveEvent: PointerEvent) => {
+      const dx = moveEvent.clientX - originX
+      const dy = moveEvent.clientY - originY
+      if (!active && dx * dx + dy * dy < 36) return
+      active = true
+      blockSweepClick.current = true
+      const list = scrollRef.current
+      if (list) {
+        const rect = list.getBoundingClientRect()
+        if (moveEvent.clientY < rect.top + 36) list.scrollTop -= 18
+        else if (moveEvent.clientY > rect.bottom - 24) list.scrollTop += 18
+      }
+      const hit = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest('[data-sweep-index]')
+      const next = hit instanceof HTMLElement ? Number(hit.dataset.sweepIndex) : last
+      if (!Number.isInteger(next)) return
+      last = next
+      ctxRef.current.sweepSelect(index, next, { additive, fromAnchor, base })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      if (!active) blockSweepClick.current = false
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
   }, [])
   // 组菜单在打开时才构建；可用项按全组成员（`groupTotals`）判定。
   const getGroupMenu = useCallback((row: GroupFolderRow) => {
@@ -554,6 +603,14 @@ export function TaskTable() {
               <div
                 key={item.key}
                 data-index={item.index}
+                data-sweep-index={item.index}
+                onPointerDown={(event) => beginSweep(event, item.index)}
+                onClickCapture={(event) => {
+                  if (!blockSweepClick.current) return
+                  blockSweepClick.current = false
+                  event.stopPropagation()
+                  event.preventDefault()
+                }}
                 ref={virtualizer.measureElement}
                 className="absolute left-0 top-0 w-full"
                 style={{

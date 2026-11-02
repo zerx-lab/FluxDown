@@ -67,7 +67,9 @@ export function RowActionsBar({ selected, children }: { selected: boolean; child
           )}
           style={fadeMask}
         />
-        <div className="relative flex items-center gap-0.5">{children}</div>
+        <div data-no-sweep className="relative flex items-center gap-0.5" onPointerDown={(event) => event.stopPropagation()}>
+          {children}
+        </div>
       </div>
     </div>
   )

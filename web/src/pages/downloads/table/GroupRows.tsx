@@ -265,7 +265,13 @@ export function GroupRowView(props: GroupRowProps) {
         />
         <div className="relative flex shrink-0 items-center justify-center self-stretch" style={{ width: selectionColumnWidth(density) }}>
           {multiSelect ? (
-            <div className="flex p-1" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+            <div
+              data-no-sweep
+              className="flex p-1"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
               <Checkbox checked={check} onCheckedChange={() => onToggleSelected(row)} aria-label={row.name} />
             </div>
           ) : (
@@ -273,7 +279,9 @@ export function GroupRowView(props: GroupRowProps) {
               <div
                 role="button"
                 aria-label={labels.select}
+                data-no-sweep
                 className="group/sel flex size-full cursor-pointer items-center justify-center"
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation()
                   onToggleSelected(row)

@@ -13,7 +13,7 @@ use fluxdown_ui_theme::active_theme;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Edges, Entity, FocusHandle, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, Pixels, Render, ScrollEvent, SharedString, Stateful,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div, linear_color_stop,
     linear_gradient, prelude::FluentBuilder as _, px,
 };
@@ -793,9 +793,17 @@ pub(crate) struct DownloadTableDelegate {
     /// 在右侧留白上挂行悬停操作（留白始终贴可视区右缘，横向滚动时按钮不随末列移出视口）。
     trailing_actions: Option<groups::Entity>,
     selection_anchor: Option<RowKey>,
-    /// 显式多选模式：仅 Cmd/Ctrl+点击或全选进入，普通单击 / 清空选择退出；
+    /// 显式多选模式：Cmd/Ctrl+点击、全选或划选多行进入，普通单击 / 清空选择退出；
     /// 行首复选框只在该模式且有选中项时显示（与 Web `multiSelect` 对齐）。
     multi_select: bool,
+    /// 左键按住拖过任务行时的划选；`None` 表示没有进行中的手势。
+    row_sweep: Option<RowSweep>,
+    /// 这次左键是否按在文件拖出把手上。行在捕获阶段清掉，把手在捕获阶段置位，
+    /// 行冒泡阶段的 [`Self::begin_row_sweep`] 读完即清。父捕获早于子捕获，所以不会
+    /// 把同一次按下的置位清掉；没被读走的残留由下一次按下的行捕获清掉。
+    press_on_file_handle: bool,
+    /// 划选已经改过选区，或文件拖放仍在进行：随后落到同一行的单击不再覆盖成单选。
+    suppress_sweep_click: bool,
     /// 已提交删除、尚未从列表消失的本地任务 id：行渲染时变淡，且不可再被选中 / 批量操作。
     pending_delete: HashSet<String>,
     filter: TableFilter,
@@ -870,6 +878,9 @@ impl DownloadTableDelegate {
             trailing_actions: None,
             selection_anchor: None,
             multi_select: false,
+            row_sweep: None,
+            press_on_file_handle: false,
+            suppress_sweep_click: false,
             pending_delete: HashSet::new(),
             filter: TableFilter::Download(DownloadFilter::ALL),
             query: String::new(),
@@ -1887,6 +1898,163 @@ impl DownloadTableDelegate {
         self.selection_anchor = Some(key);
     }
 
+    /// 划选落在 `[from, to]`（可见行下标，含端点）上的任务。`additive` 时并入 `base`。
+    /// 组行展开为其全部成员；目录行与分组标题不贡献任务。
+    pub(crate) fn apply_row_sweep(
+        &mut self,
+        from: usize,
+        to: usize,
+        additive: bool,
+        base: &HashSet<RowKey>,
+    ) {
+        let (start, end) = if from <= to { (from, to) } else { (to, from) };
+        let mut selected = if additive {
+            base.clone()
+        } else {
+            HashSet::new()
+        };
+        let mut anchor = None;
+        if start < self.visible.len() {
+            for ix in start..=end.min(self.visible.len().saturating_sub(1)) {
+                self.push_sweep_keys(ix, &mut selected, &mut anchor);
+            }
+        }
+        let multiple = selected.len() > 1 || (additive && !selected.is_empty());
+        self.selected_tasks = selected;
+        self.multi_select = multiple;
+        self.focused_group = None;
+        if let Some(anchor) = anchor {
+            self.selection_anchor = Some(anchor);
+        }
+    }
+
+    fn push_sweep_keys(
+        &self,
+        ix: usize,
+        selected: &mut HashSet<RowKey>,
+        anchor: &mut Option<RowKey>,
+    ) {
+        let ids: Vec<RowId> = match self.visible.get(ix) {
+            Some(VisibleRow::Task(id) | VisibleRow::Member { id, .. }) => vec![*id],
+            Some(VisibleRow::Group(group)) => self
+                .group_rows
+                .get(*group)
+                .map(|group| group.members.clone())
+                .unwrap_or_default(),
+            Some(VisibleRow::GroupDir { .. } | VisibleRow::GroupHeader { .. }) | None => return,
+        };
+        for id in ids {
+            let Some(row) = self.store.row(id) else {
+                continue;
+            };
+            if self.is_pending_delete(&row.key) {
+                continue;
+            }
+            let key = row.key.clone();
+            *anchor = Some(key.clone());
+            selected.insert(key);
+        }
+    }
+
+    /// 锚点所在可见行：任务行 / 成员行优先，否则是包含该成员的组行。
+    fn row_index_of_key(&self, key: &RowKey) -> Option<usize> {
+        let mut group_hit = None;
+        for (ix, row) in self.visible.iter().enumerate() {
+            match row {
+                VisibleRow::Task(id) | VisibleRow::Member { id, .. } => {
+                    if self.store.row(*id).is_some_and(|row| row.key == *key) {
+                        return Some(ix);
+                    }
+                }
+                VisibleRow::Group(group) => {
+                    if group_hit.is_none()
+                        && self.group_rows.get(*group).is_some_and(|group| {
+                            group
+                                .members
+                                .iter()
+                                .any(|id| self.store.row(*id).is_some_and(|row| row.key == *key))
+                        })
+                    {
+                        group_hit = Some(ix);
+                    }
+                }
+                VisibleRow::GroupDir { .. } | VisibleRow::GroupHeader { .. } => {}
+            }
+        }
+        group_hit
+    }
+
+    pub(super) fn begin_row_sweep(&mut self, row_ix: usize, event: &MouseDownEvent, cx: &App) {
+        let on_handle = self.press_on_file_handle;
+        self.press_on_file_handle = false;
+        self.suppress_sweep_click = false;
+        let modifiers = SelectModifiers::from_event(event.modifiers, cx);
+        // 文件名列的按下由把手截断，不会进到这里。其余列都是划选，不需要修饰键。
+        if classify_row_press(on_handle) == RowPress::FileDrag {
+            self.row_sweep = None;
+            return;
+        }
+        let mut origin_ix = row_ix;
+        if modifiers.shift
+            && let Some(anchor) = self.selection_anchor.clone()
+            && let Some(ix) = self.row_index_of_key(&anchor)
+        {
+            origin_ix = ix;
+        }
+        self.row_sweep = Some(RowSweep {
+            origin_ix,
+            origin_pos: event.position,
+            additive: modifiers.toggle,
+            base: if modifiers.toggle {
+                self.selected_tasks.clone()
+            } else {
+                HashSet::new()
+            },
+            active: false,
+        });
+    }
+
+    /// 指针移到 `row_ix`。返回选区是否变化。文件拖放进行时没有划选会话，本方法直接返回。
+    pub(super) fn drag_sweep_to(&mut self, row_ix: usize, event: &MouseMoveEvent) -> bool {
+        let Some(sweep) = self.row_sweep.as_mut() else {
+            return false;
+        };
+        if !sweep.active {
+            let delta = event.position - sweep.origin_pos;
+            if !sweep_past_slop(delta) {
+                return false;
+            }
+            sweep.active = true;
+            self.suppress_sweep_click = true;
+        }
+        let Some(sweep) = self.row_sweep.as_ref() else {
+            return false;
+        };
+        if !sweep.active {
+            return false;
+        }
+        let origin = sweep.origin_ix;
+        let additive = sweep.additive;
+        let base = sweep.base.clone();
+        let before = self.selected_tasks.clone();
+        self.apply_row_sweep(origin, row_ix, additive, &base);
+        self.selected_tasks != before
+    }
+
+    pub(super) fn finish_row_sweep(&mut self) {
+        self.row_sweep = None;
+    }
+
+    pub(super) fn note_file_drag_started(&mut self) {
+        self.suppress_sweep_click = true;
+    }
+
+    pub(super) fn take_sweep_suppress(&mut self, cx: &App) -> bool {
+        let suppressed = self.suppress_sweep_click || cx.has_active_drag();
+        self.suppress_sweep_click = false;
+        suppressed
+    }
+
     pub(crate) fn row_key_at(&self, row_ix: usize) -> Option<RowKey> {
         match self.visible.get(row_ix)? {
             VisibleRow::Task(id) | VisibleRow::Member { id, .. } => {
@@ -2019,6 +2187,25 @@ impl DownloadTableDelegate {
                 }
             })
             .collect()
+    }
+
+    /// 能拖出到系统文件管理器的行：本地、已完成、文件仍在，且不在删除中。
+    fn dragged_tasks(
+        &self,
+        task: &DownloadTaskView,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Option<DraggedTasks> {
+        if self.is_pending_delete(&task.key) || !task.has_local_file() {
+            return None;
+        }
+        Some(DraggedTasks {
+            anchor: task.key.clone(),
+            kind: task.kind,
+            name_fold: SharedString::from(task.name_fold.clone()),
+            name: SharedString::from(task.name.clone()),
+            table: cx.weak_entity(),
+            host: self.host.clone(),
+        })
     }
 
     pub(crate) fn toggle_group_collapsed(&mut self, key: &str) {
@@ -2188,12 +2375,15 @@ impl DownloadTableDelegate {
         );
         let toggle = cx.listener(move |table, _: &ClickEvent, _, cx| {
             cx.stop_propagation();
+            if table.delegate_mut().take_sweep_suppress(cx) {
+                return;
+            }
             table.delegate_mut().toggle_multi_select(key.clone());
             cx.notify();
         });
         if !checkbox_pinned {
             let tooltip = self.strings.select_task_tooltip.clone();
-            // 不拦截 mouse_down：从图标处仍可拖出文件；点击（未拖动）才进入多选。
+            // 选择列只负责点进多选。拖出文件只在文件名列，避免和图标点击抢手势。
             return div()
                 .id(("download-task-select-cell", row_ix))
                 .group(SELECT_CELL_GROUP)
@@ -2245,6 +2435,50 @@ impl DownloadTableDelegate {
                     .child(checkbox),
             )
             .into_any_element()
+    }
+
+    /// 文件名列。文件还在下载目录时，这一整列是拖出把手（任意方向，不用修饰键）。
+    /// 其他列的按下留给行划选。单击文件名仍选中该行。
+    fn render_file_name_cell(
+        &self,
+        row_ix: usize,
+        task: &DownloadTaskView,
+        depth: u8,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let body = if depth == 0 {
+            self.task_cell(DownloadColumnKind::FileName, task, cx)
+        } else {
+            let icon = task_file_icon(task, self.file_icon_size(cx), window, cx);
+            h_flex()
+                .size_full()
+                .min_w_0()
+                .gap(active_theme(cx).tokens().spacing.sm)
+                .when(depth > 1, |this| this.child(self.dir_member_indent(cx)))
+                .child(icon)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(self.render_file_cell(task, cx)),
+                )
+                .into_any_element()
+        };
+        let Some(dragged) = self.dragged_tasks(task, cx) else {
+            return body;
+        };
+        Self::arm_file_drag(
+            div()
+                .id(("download-name-drag", row_ix))
+                .size_full()
+                .min_w_0(),
+            dragged,
+            cx,
+        )
+        .child(body)
+        .into_any_element()
     }
 
     /// 文件名列：名称 + 双行密度的副标题（宽松密度用 [`Self::relaxed_meta`]，其余为
@@ -2590,6 +2824,9 @@ impl DownloadTableDelegate {
     ) -> AnyElement {
         let key = key.to_owned();
         let on_click = cx.listener(move |table, _: &ClickEvent, _, cx| {
+            if table.delegate_mut().take_sweep_suppress(cx) {
+                return;
+            }
             let delegate = table.delegate_mut();
             delegate.toggle_group_collapsed(&key);
             delegate.refresh_view();
@@ -2609,7 +2846,7 @@ impl DownloadTableDelegate {
         let tokens = theme.tokens();
         let extended = theme.extended();
         let tertiary = extended.colors.text_tertiary;
-        div()
+        let row = div()
             .id(("download-group-header", row_ix))
             .size_full()
             .flex()
@@ -2649,8 +2886,8 @@ impl DownloadTableDelegate {
                             .text_color(tertiary)
                             .child(count.to_string()),
                     ),
-            )
-            .into_any_element()
+            );
+        Self::arm_row_sweep(row, row_ix, false, cx).into_any_element()
     }
 
     /// 选中集合 → 任务事实；选择滞后于存储事件时任一键缺失即返回 `None`。
@@ -2993,6 +3230,60 @@ impl DownloadTableDelegate {
             DownloadView::open_group_in_window,
         ))
     }
+
+    /// `start`：这次按下可以开始划选。分组标题 / 目录行只跟踪经过，避免按下就改选区。
+    pub(super) fn arm_row_sweep(
+        row: Stateful<Div>,
+        row_ix: usize,
+        start: bool,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let row = if start {
+            row.capture_any_mouse_down(cx.listener(|table, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Left {
+                    table.delegate_mut().press_on_file_handle = false;
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |table, event: &MouseDownEvent, _, cx| {
+                    table.delegate_mut().begin_row_sweep(row_ix, event, cx);
+                }),
+            )
+        } else {
+            row
+        };
+        row.on_mouse_move(cx.listener(move |table, event: &MouseMoveEvent, _, cx| {
+            if table.delegate_mut().drag_sweep_to(row_ix, event) {
+                cx.notify();
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|table, _: &MouseUpEvent, _, _| {
+                table.delegate_mut().finish_row_sweep();
+            }),
+        )
+    }
+
+    /// 文件拖出把手：捕获阶段记下按下，冒泡阶段截断，行划选看不到这次按下。
+    /// gpui 超过约 2px 即启动拖放，方向不限，所以把手不能和划选共用一次移动。
+    fn arm_file_drag(
+        cell: Stateful<Div>,
+        dragged: DraggedTasks,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        cell.capture_any_mouse_down(cx.listener(|table, event: &MouseDownEvent, _, _| {
+            if event.button == MouseButton::Left {
+                table.delegate_mut().press_on_file_handle = true;
+            }
+        }))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_drag(dragged, |dragged, click_offset, _, cx| {
+            dragged.preview(click_offset, cx)
+        })
+        .external_drag_payload(|dragged: &DraggedTasks, _, cx| dragged.external_payload(cx))
+    }
 }
 
 impl TableDelegate for DownloadTableDelegate {
@@ -3252,16 +3543,7 @@ impl TableDelegate for DownloadTableDelegate {
                 return div().id(("download-group-row", row_ix)).h(row_height);
             }
         };
-        let Some((key, drag_visual)) = self.store.row(id).map(|row| {
-            let drag_visual = row.has_local_file().then(|| {
-                (
-                    row.kind,
-                    SharedString::from(row.name_fold.clone()),
-                    SharedString::from(row.name.clone()),
-                )
-            });
-            (row.key.clone(), drag_visual)
-        }) else {
+        let Some(key) = self.store.row(id).map(|row| row.key.clone()) else {
             return div().id(("download-task-row", row_ix)).h(row_height);
         };
         let selected = self.selected_tasks.contains(&key);
@@ -3270,17 +3552,6 @@ impl TableDelegate for DownloadTableDelegate {
             theme.tokens().colors.accent,
             theme.components().task_row_radius,
         );
-        // 已完成且文件仍在下载目录的行可按住拖到系统文件管理器 / 桌面。
-        let dragged = drag_visual
-            .filter(|_| !pending)
-            .map(|(kind, name_fold, name)| DraggedTasks {
-                anchor: key.clone(),
-                kind,
-                name_fold,
-                name,
-                table: cx.weak_entity(),
-                host: self.host.clone(),
-            });
         // 双击：已完成打开文件，其余打开详情。独立于选择监听注册（普通闭包，不占用表格
         // 实体），这样 DownloadView 处理时可以自由读写表格状态。
         let activate = self.host.clone().filter(|_| !pending).map(|host| {
@@ -3300,7 +3571,7 @@ impl TableDelegate for DownloadTableDelegate {
         });
         self.trailing_actions = Some(groups::Entity::Task(id));
 
-        div()
+        let row = div()
             .id(("download-task-row", row_ix))
             .h(row_height)
             .group(ROW_GROUP)
@@ -3324,19 +3595,17 @@ impl TableDelegate for DownloadTableDelegate {
                     }),
             )
             .on_click(cx.listener(move |table, event: &ClickEvent, _, cx| {
+                if table.delegate_mut().take_sweep_suppress(cx) {
+                    return;
+                }
                 table.delegate_mut().select_task(
                     key.clone(),
                     SelectModifiers::from_event(event.modifiers(), cx),
                 );
                 cx.notify();
             }))
-            .when_some(activate, |this, activate| this.on_click(activate))
-            .when_some(dragged, |this, dragged| {
-                this.on_drag(dragged, |dragged, click_offset, _, cx| {
-                    dragged.preview(click_offset, cx)
-                })
-                .external_drag_payload(|dragged: &DraggedTasks, _, cx| dragged.external_payload(cx))
-            })
+            .when_some(activate, |this, activate| this.on_click(activate));
+        Self::arm_row_sweep(row, row_ix, true, cx)
     }
 
     fn render_td(
@@ -3383,27 +3652,10 @@ impl TableDelegate for DownloadTableDelegate {
         let Some(kind) = self.shown_column(col_ix).map(|column| column.kind) else {
             return div().into_any_element();
         };
-        if kind == DownloadColumnKind::FileName && depth > 0 {
-            // 组内成员：文件图标从选择列挪进文件名列（落在组行展开箭头的位置），整行比
-            // 组行右移一级；目录之下的成员再缩进一级。
-            let icon = task_file_icon(task, self.file_icon_size(cx), window, cx);
-            h_flex()
-                .size_full()
-                .min_w_0()
-                .gap(active_theme(cx).tokens().spacing.sm)
-                .when(depth > 1, |this| this.child(self.dir_member_indent(cx)))
-                .child(icon)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .child(self.render_file_cell(task, cx)),
-                )
-                .into_any_element()
-        } else {
-            self.task_cell(kind, task, cx)
+        if kind == DownloadColumnKind::FileName {
+            return self.render_file_name_cell(row_ix, task, depth, window, cx);
         }
+        self.task_cell(kind, task, cx)
     }
 
     /// 右侧留白与选择列内含的左侧留白对称；任务 / 组行在此挂行悬停操作（见
@@ -3480,6 +3732,38 @@ impl TableDelegate for DownloadTableDelegate {
             Some(VisibleRow::GroupDir { .. } | VisibleRow::GroupHeader { .. }) | None => menu,
         }
     }
+}
+
+/// 左键划选会话。文件名列的按下不进这里。
+struct RowSweep {
+    origin_ix: usize,
+    origin_pos: Point<Pixels>,
+    additive: bool,
+    base: HashSet<RowKey>,
+    active: bool,
+}
+
+/// 一次行内左键按下归谁。文件名列是拖出，其他列是划选；都不需要修饰键。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowPress {
+    /// 文件名列：任意方向交给平台文件拖放。
+    FileDrag,
+    /// 其余列：划选。
+    Sweep,
+}
+
+fn classify_row_press(on_file_name: bool) -> RowPress {
+    if on_file_name {
+        RowPress::FileDrag
+    } else {
+        RowPress::Sweep
+    }
+}
+
+fn sweep_past_slop(delta: Point<Pixels>) -> bool {
+    let dx = f32::from(delta.x);
+    let dy = f32::from(delta.y);
+    dx * dx + dy * dy > 36.
 }
 
 /// 单击选择时的修饰键语义：`toggle` = 平台次要键（macOS Cmd / 其他 Ctrl，运行期按 `App` 判定），
@@ -4193,9 +4477,10 @@ mod tests {
     use fluxdown_ui_i18n::{I18nCatalog, I18nError};
 
     use super::{
-        DownloadColumnKind, DownloadTableDelegate, DownloadsCommand, RowAction, SelectModifiers,
-        SelectionSummary, TableFilter, ToolbarCommand, VisibleRow, group_by_key, is_seeding_row,
-        percent_label, row_actions, seeding_upload_speed, task_command,
+        DownloadColumnKind, DownloadTableDelegate, DownloadsCommand, RowAction, RowPress,
+        SelectModifiers, SelectionSummary, TableFilter, ToolbarCommand, VisibleRow,
+        classify_row_press, group_by_key, is_seeding_row, percent_label, row_actions,
+        seeding_upload_speed, task_command,
     };
     use crate::{
         model::{
@@ -4729,6 +5014,25 @@ mod tests {
         );
         assert_eq!(delegate.selected_tasks.len(), 4);
         Ok(())
+    }
+
+    #[test]
+    fn drag_sweep_selects_the_closed_row_span_and_can_add() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[1, 1, 1, 1])?;
+        delegate.apply_row_sweep(0, 2, false, &HashSet::new());
+        assert_eq!(delegate.selected_tasks.len(), 3);
+        assert!(delegate.in_multi_select());
+        let kept = delegate.selected_tasks.clone();
+        delegate.apply_row_sweep(3, 3, true, &kept);
+        assert_eq!(delegate.selected_tasks.len(), 4);
+        Ok(())
+    }
+
+    /// 文件名列是拖出，其他列是划选。两种都不用修饰键。
+    #[test]
+    fn file_name_column_drags_the_file_and_other_columns_sweep() {
+        assert_eq!(classify_row_press(true), RowPress::FileDrag);
+        assert_eq!(classify_row_press(false), RowPress::Sweep);
     }
 
     fn width_of(delegate: &DownloadTableDelegate, kind: DownloadColumnKind) -> Option<f32> {

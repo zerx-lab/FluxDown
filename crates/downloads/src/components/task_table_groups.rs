@@ -466,7 +466,8 @@ impl DownloadTableDelegate {
         let selected = self.group_check_state(ix) == CheckState::Checked;
         let group_id = group.id.clone();
         let hover = theme.extended().colors.row_hover;
-        row.group(ROW_GROUP)
+        let row = row
+            .group(ROW_GROUP)
             .relative()
             .child(div().absolute().inset_0().bg(theme.tokens().colors.surface))
             .child(
@@ -483,6 +484,9 @@ impl DownloadTableDelegate {
                     }),
             )
             .on_click(cx.listener(move |table, event: &ClickEvent, _, cx| {
+                if table.delegate_mut().take_sweep_suppress(cx) {
+                    return;
+                }
                 let modifiers = event.modifiers();
                 let delegate = table.delegate_mut();
                 if event.click_count() == 2 && !modifiers.secondary(cx) && !modifiers.shift {
@@ -492,7 +496,8 @@ impl DownloadTableDelegate {
                     delegate.select_group(&group_id, SelectModifiers::from_event(modifiers, cx));
                 }
                 cx.notify();
-            }))
+            }));
+        DownloadTableDelegate::arm_row_sweep(row, row_ix, true, cx)
     }
 
     /// 目录行容器：单击切换该目录折叠；不参与选择。
@@ -512,7 +517,8 @@ impl DownloadTableDelegate {
         };
         let path = path.clone();
         let hover = theme.extended().colors.row_hover;
-        row.group(ROW_GROUP)
+        let row = row
+            .group(ROW_GROUP)
             .relative()
             .cursor_pointer()
             .child(div().absolute().inset_0().bg(theme.tokens().colors.surface))
@@ -527,11 +533,15 @@ impl DownloadTableDelegate {
                     .group_hover(ROW_GROUP, move |style| style.bg(hover)),
             )
             .on_click(cx.listener(move |table, _: &ClickEvent, _, cx| {
+                if table.delegate_mut().take_sweep_suppress(cx) {
+                    return;
+                }
                 let delegate = table.delegate_mut();
                 delegate.toggle_group_dir(&group_id, &path);
                 delegate.refresh_view();
                 cx.notify();
-            }))
+            }));
+        DownloadTableDelegate::arm_row_sweep(row, row_ix, false, cx)
     }
 
     /// 组行单元格：选择列为文件夹图标 / 复选框，文件名列为展开箭头 + 组名 + 计数行，
