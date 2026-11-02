@@ -78,10 +78,13 @@ pub struct ResolveRequest {
 
 pub type ArchiveRequest = crate::model::ArchiveContext;
 
-/// Archive callback output; folderName is validated by the host.
+/// Archive callback output; directory components are validated by the host.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ArchiveResult {
+    /// Relative path components below the task's authorized default directory.
+    pub directories: Vec<String>,
+    /// Legacy single-component output from existing plugins.
     pub folder_name: String,
 }
 
@@ -708,12 +711,26 @@ pub trait HostEvents: Send + Sync {
     fn timer(&self, identity: &str, id: u32, delay: Duration);
     /// 取消尚未触发的定时器。
     fn timer_clear(&self, identity: &str, id: u32);
-    /// `flux.settings.update`。
+    /// `flux.settings.update()`，默认实现明确拒绝未配置的宿主。
     async fn settings_update(
         &self,
-        identity: &str,
-        entries: Vec<(String, String)>,
-    ) -> Result<(), PluginError>;
+        _identity: &str,
+        _entries: Vec<(String, String)>,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::Runtime(
+            "plugin settings update is unsupported".to_string(),
+        ))
+    }
+    /// Retrieve or refresh this plugin's signed archive rule pack.
+    async fn archive_rules(
+        &self,
+        _identity: &str,
+        _refresh: bool,
+    ) -> Result<serde_json::Value, PluginError> {
+        Err(PluginError::Runtime(
+            "archive rule management is unsupported".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------

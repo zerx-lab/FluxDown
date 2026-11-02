@@ -84,6 +84,7 @@ export const METHOD = {
   DAEMON_LINK_PROBE: 'daemon.link.probe',
 
   DAEMON_PLUGIN_LIST: 'daemon.plugin.list',
+  DAEMON_PLUGIN_ARCHIVE_RULES: 'daemon.plugin.archiveRules',
   DAEMON_PLUGIN_SNIFF_RULES: 'daemon.plugin.sniffRules',
   DAEMON_PLUGIN_PAGE_SCRIPTS: 'daemon.plugin.pageScripts',
   DAEMON_PLUGIN_PAGE_SCRIPT_SOURCE: 'daemon.plugin.pageScriptSource',

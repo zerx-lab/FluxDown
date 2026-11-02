@@ -40,10 +40,40 @@ class NewDownloadStateCategoryTest {
         form.syncAuto()
         assertEquals("/dl/Video", form.saveDir)
 
-        form.saveDir = "/custom"
+        form.setSaveDirManually("/custom")
         form.rename = "setup.exe"
         form.syncAuto()
         assertEquals("/custom", form.saveDir)
+        assertNull(requestOffered(form))
+    }
+
+    @Test fun manuallyChoosingDefaultOrCategoryDirectoryDisablesRoutingUntilAutoSelected() {
+        val form = form("https://x.test/a.exe")
+
+        form.setSaveDirManually("/dl")
+        form.rename = "setup.exe"
+        form.syncAuto()
+        assertEquals("/dl", form.saveDir)
+        assertNull(requestOffered(form))
+
+        form.setSaveDirManually("/dl/Video")
+        form.rename = "movie.mp4"
+        form.syncAuto()
+        assertEquals("/dl/Video", form.saveDir)
+        assertNull(requestOffered(form))
+
+        form.selectMode(SaveDirMode.Auto)
+        assertEquals("/dl/Programs", form.saveDir)
+        assertEquals("/dl", requestOffered(form))
+    }
+
+    @Test fun manuallyChosenOrdinaryDirectoryDoesNotFollowLaterRename() {
+        val form = form("https://x.test/a.exe")
+        form.setSaveDirManually("/custom")
+        form.rename = "movie.mp4"
+        form.syncAuto()
+        assertEquals("/custom", form.saveDir)
+        assertNull(requestOffered(form))
     }
 
     @Test fun unmatchedNameFallsBackToOffered() {

@@ -111,7 +111,7 @@ pub struct NewDownloadContext {
     pub manual_proxy_url: String,
     /// 预填链接（拖放）。
     pub initial_urls: Vec<String>,
-    /// 分类目录路由（偏好 `custom_categories`）；`None` = 没有分类配置目录。
+    /// 默认目录下的授权路由；空规则仍允许插件归档。`None` 表示明确停用路由。
     pub category_route: Option<fluxdown_protocol::CategoryRouteDto>,
     /// 保存目录分类下拉的候选（同一偏好投影：可见、非 `all`、配置了目录的分类，按 `position`）。
     pub category_options: Vec<NewDownloadCategory>,
@@ -322,8 +322,10 @@ pub struct NewDownloadView {
     save_dir_menu_open: bool,
     /// 保存目录组合框上一帧的窗口坐标，用于判定外部点击是否落在输入框上。
     save_dir_bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// 保存目录的分类模式（默认自动）；仅 `context.category_route` 存在时有意义。
+    /// 保存目录的分类模式（默认自动）。
     category_mode: CategoryMode,
+    /// 用户手动编辑过目录时禁止提交分类路由；重新选择「自动」可恢复。
+    category_dir_manually_edited: bool,
     /// 自动模式上一次写入目录框的值：目录框仍等于它说明用户没手动改过，可继续跟随。
     category_auto_dir: Option<String>,
     /// 自动模式按当前输入预测出的分类目录（触发器显示命中分类）；变化时同步更新，渲染只读。
@@ -431,6 +433,7 @@ impl NewDownloadView {
             save_dir_menu_open: false,
             save_dir_bounds: Rc::default(),
             category_mode: CategoryMode::Auto,
+            category_dir_manually_edited: false,
             category_auto_dir: None,
             category_predicted: None,
         };
@@ -493,6 +496,16 @@ impl NewDownloadView {
             )
             .detach();
         }
+        cx.subscribe_in(
+            &self.save_dir,
+            window,
+            |this, _, event: &InputEvent, _, _| {
+                if let InputEvent::Change = event {
+                    this.category_dir_manually_edited = true;
+                }
+            },
+        )
+        .detach();
         // 重命名框是自动分类的预测输入之一；探测预填走 `set_value`（不发 Change），由探测同步处理。
         cx.subscribe_in(
             &self.rename,
@@ -1170,11 +1183,9 @@ impl NewDownloadView {
                 common: Box::new(common),
                 items: tasks,
                 captures,
-                category_route: self
-                    .context
-                    .category_route
-                    .clone()
-                    .filter(|_| self.category_mode == CategoryMode::Auto),
+                category_route: self.context.category_route.clone().filter(|_| {
+                    self.category_mode == CategoryMode::Auto && !self.category_dir_manually_edited
+                }),
                 offered_save_dir,
             },
             window,
@@ -1368,6 +1379,7 @@ impl NewDownloadView {
             let Ok(()) = this.update_in(cx, |this, window, cx| {
                 this.picking = false;
                 if let Some(path) = picked {
+                    this.category_dir_manually_edited = true;
                     this.save_dir
                         .update(cx, |input, cx| input.set_value(path, window, cx));
                 }

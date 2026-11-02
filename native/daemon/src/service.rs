@@ -1186,6 +1186,8 @@ impl DaemonService {
                 Ok(json!({ "ok": true }))
             }
             #[cfg(feature = "plugins")]
+            method::DAEMON_PLUGIN_ARCHIVE_RULES => self.plugin_host_call(method_name, params).await,
+            #[cfg(feature = "plugins")]
             method::DAEMON_PLUGIN_VIEW_OPEN
             | method::DAEMON_PLUGIN_VIEW_EVENT
             | method::DAEMON_PLUGIN_VIEW_CLOSE
@@ -1219,6 +1221,7 @@ impl DaemonService {
             | method::DAEMON_PLUGIN_MARKET_LIST
             | method::DAEMON_PLUGIN_MARKET_INSTALL
             | method::DAEMON_PLUGIN_IGNORE_RETRY
+            | method::DAEMON_PLUGIN_ARCHIVE_RULES
             | method::DAEMON_PLUGIN_SITE_DEFAULTS
             | method::DAEMON_PLUGIN_SET_SITE_DEFAULT
             | method::DAEMON_PLUGIN_CONSENT

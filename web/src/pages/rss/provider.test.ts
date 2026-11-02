@@ -21,7 +21,7 @@ function plugin(identity: string, name: string, providers: string[], over: Parti
     resolverUrls: [],
     loadStatus: 'Loaded',
     loadError: '',
-    contributions: { views: [], commands: [], sniffRules: false, pageScripts: [] },
+    contributions: { views: [], commands: [], sniffRules: false, archiveRules: false, pageScripts: [] },
     risk: 'standard',
     consentPending: [],
     consentPendingHosts: [],

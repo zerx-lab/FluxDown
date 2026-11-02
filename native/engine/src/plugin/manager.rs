@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -33,13 +33,14 @@ use super::runtime::{
     ResolveResult, ScriptRuntime, SubscriptionRequest,
 };
 
+#[path = "archive_rules_manager.rs"]
+mod archive_rules_manager;
 #[path = "host_manager.rs"]
 mod host_manager;
 #[path = "interceptors.rs"]
 mod interceptors;
 #[path = "routing.rs"]
 pub mod routing;
-
 /// 连续超时/超内存达到该次数 → 自动熔断禁用。
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
@@ -350,9 +351,16 @@ pub struct PluginManager {
     site_prompts: routing::SitePromptLocks,
     /// 插件包修订号（见 [`super::package_revision`]）。
     package_revisions: super::package_revision::PackageRevisions,
-    /// 串行化 [`Self::publish_state`]：快照与发射在同一把锁内，事件顺序即状态顺序，
-    /// 较旧的快照永远不会盖过较新的。
+    /// Serializes publication so state snapshots and emitted events stay ordered.
     publish_lock: tokio::sync::Mutex<()>,
+    /// Cache of validated archive rule packs; matching never performs I/O.
+    archive_rule_packs:
+        tokio::sync::RwLock<HashMap<String, super::archive_rules::VerifiedArchiveRules>>,
+    /// Per-plugin serialized signed archive-rule refreshes.
+    archive_rule_locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Wakes the idle updater when a plugin's enabled rule feeds change.
+    archive_rule_updates_notify: Arc<tokio::sync::Notify>,
+    archive_rule_updates_started: AtomicBool,
     /// 全局出口来源（引擎装配时注入）：非任务调用（预解析 / 订阅 / 登录 / 宿主加速改写）
     /// 据此制定出口计划。未注入（单测里的 null bridge）时调用走 bridge 的全局出口、不换路。
     egress_source: std::sync::RwLock<Option<Arc<super::bridge::EngineBridge>>>,
@@ -427,6 +435,10 @@ impl PluginManager {
             host: host_manager::HostState::new(),
             site_prompts: routing::SitePromptLocks::default(),
             package_revisions: super::package_revision::PackageRevisions::new(),
+            archive_rule_locks: tokio::sync::Mutex::new(HashMap::new()),
+            archive_rule_packs: tokio::sync::RwLock::new(HashMap::new()),
+            archive_rule_updates_notify: Arc::new(tokio::sync::Notify::new()),
+            archive_rule_updates_started: AtomicBool::new(false),
             publish_lock: tokio::sync::Mutex::new(()),
             egress_source: std::sync::RwLock::new(None),
         }
@@ -463,6 +475,61 @@ impl PluginManager {
     /// 专用运行时 handle，供 off-actor worker spawn（禁止裸 tokio::spawn）。
     pub fn runtime_handle(&self) -> tokio::runtime::Handle {
         self.runtime.spawn_handle()
+    }
+    /// Start a weak-manager updater; it sleeps without periodic work when no signed feeds are enabled.
+    pub(crate) fn start_archive_rule_updates(self: &Arc<Self>) {
+        if self
+            .archive_rule_updates_started
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let notify = Arc::clone(&self.archive_rule_updates_notify);
+        self.runtime.spawn_handle().spawn(async move {
+            loop {
+                let Some(manager) = weak.upgrade() else {
+                    return;
+                };
+                let identities: Vec<String> = manager
+                    .plugins
+                    .read()
+                    .await
+                    .iter()
+                    .filter(|plugin| plugin.enabled)
+                    .filter_map(|plugin| {
+                        plugin
+                            .manifest
+                            .contributes
+                            .as_ref()
+                            .and_then(|contributes| contributes.archive_rules.as_ref())
+                            .filter(|rules| rules.update_url.is_some())
+                            .map(|_| plugin.manifest.identity.clone())
+                    })
+                    .collect();
+                if identities.is_empty() {
+                    drop(manager);
+                    notify.notified().await;
+                    continue;
+                }
+                for identity in identities {
+                    let Some(manager) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Err(error) = manager.archive_rules_status(&identity, false).await {
+                        log_info!("[plugin] archive rules update for {identity} failed: {error}");
+                    }
+                }
+                let Some(manager) = weak.upgrade() else {
+                    return;
+                };
+                drop(manager);
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_secs(24 * 60 * 60)) => {},
+                    _ = notify.notified() => {},
+                }
+            }
+        });
     }
 
     /// 宿主并发上限变化时同步 resolve 并发容量（见 [`ScriptRuntime::set_resolve_capacity`]）。
@@ -531,8 +598,29 @@ impl PluginManager {
 
         *self.plugins.write().await = Arc::new(deduped);
         *self.failed_plugins.write().await = Arc::new(failed);
+        let active_archive_rules: HashSet<String> = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .filter(|plugin| plugin.enabled)
+            .filter(|plugin| {
+                plugin
+                    .manifest
+                    .contributes
+                    .as_ref()
+                    .is_some_and(|contributes| contributes.archive_rules.is_some())
+            })
+            .map(|plugin| plugin.manifest.identity.clone())
+            .collect();
+        self.archive_rule_packs
+            .write()
+            .await
+            .retain(|identity, _| active_archive_rules.contains(identity));
         // 宿主对账：被禁用 / 卸载 / manifest 或 main 源码变化的插件，其宿主立即释放。
         self.reconcile_hosts().await;
+        self.initialize_archive_rule_packs().await;
+        self.archive_rule_updates_notify.notify_one();
     }
 
     /// 加载单个插件目录。失败记 warn 并保留诊断信息（不阻塞其他插件）。
@@ -639,6 +727,19 @@ impl PluginManager {
                 Err(e) => Err(PluginError::ManifestInvalid(format!(
                     "sniffRules '{rules}' 读取失败: {e}"
                 ))),
+            };
+        }
+        if file_check.is_ok()
+            && let Some(rules) = manifest
+                .contributes
+                .as_ref()
+                .and_then(|contributes| contributes.archive_rules.as_ref())
+        {
+            file_check = match super::archive_rules::read_bounded(&dir.join(&rules.entry)).await {
+                Ok(bytes) => manifest.validate_archive_rules_content(|path| {
+                    (path == rules.entry).then(|| bytes.clone())
+                }),
+                Err(error) => Err(error),
             };
         }
         if file_check.is_ok()
@@ -3685,6 +3786,61 @@ mod tests {
         );
         manager.load_all().await;
         (manager, sink, root)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signed_archive_rules_seed_is_loaded_for_matching() {
+        let identity = "acme@archive-rules";
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-archive-rules-{}", uuid::Uuid::new_v4()));
+        let plugin_dir = root.join(identity);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let payload = "{\"format\":\"fluxdown-archive-rules\",\"schemaVersion\":1,\"sequence\":1,\"rules\":[{\"id\":\"first\",\"folderName\":\"Series\",\"match\":{\"extensions\":[\"mkv\"]}}]}";
+        let signature = "887d638fd517b304863762f7bb28d77366d47ff9631e76a0ced3c8d7191edb4664863ac908417e4880cbff89df6cee94cbad21afe9429573694530d6920db402";
+        let public_key = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8";
+        let envelope = format!(
+            "{{\"payload\":{},\"signature\":\"{}\"}}",
+            serde_json::to_string(payload).unwrap(),
+            signature
+        );
+        std::fs::write(plugin_dir.join("archive-rules.json"), envelope).unwrap();
+
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        let manager = PluginManager::new(
+            Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
+            Arc::new(NullBridge),
+            db,
+            root.clone(),
+            "1.0.0".to_string(),
+            Arc::new(CaptureSink::default()),
+        );
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(crate::plugin::manifest::ArchiveRulesDecl {
+                entry: "archive-rules.json".to_string(),
+                public_key: public_key.to_string(),
+                update_url: None,
+            }),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+
+        manager.archive_rules_status(identity, false).await.unwrap();
+        let matched = manager
+            .archive_rule_match(
+                identity,
+                &crate::model::ArchiveContext {
+                    file_name: "episode.MKV".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            matched,
+            Some(("Series".to_string(), "first".to_string(), 1))
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn revoked_set(identity: &str, version: &str) -> HashSet<(String, String)> {

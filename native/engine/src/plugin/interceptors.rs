@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{EXTERNAL_TOOL_HOOK_BUDGET, PluginManager, build_typed_settings_json, value_of};
+use super::{
+    EXTERNAL_TOOL_HOOK_BUDGET, LoadedPlugin, PluginManager, build_typed_settings_json, value_of,
+};
 use crate::intercept::{InterceptStage, InterceptorEntry, TaskEgressView, TaskInterceptor};
 use crate::plugin::audit::PluginAuditRow;
 use crate::plugin::call_egress::CallEgress;
@@ -62,8 +64,7 @@ impl PluginManager {
                 && p.manifest
                     .contributes
                     .as_ref()
-                    .and_then(|c| c.archive.as_ref())
-                    .is_some()
+                    .is_some_and(|c| c.archive.is_some() || c.archive_rules.is_some())
         });
         if entries.is_empty() && !has_archivers {
             return crate::intercept::noop();
@@ -190,11 +191,58 @@ impl PluginManager {
         ));
         result
     }
-    pub(super) async fn archive_folder(
+    async fn matching_archive_rules(
+        &self,
+        snapshot: &[LoadedPlugin],
+        context: &crate::model::ArchiveContext,
+        task_id: &str,
+    ) -> Option<String> {
+        let mut plugins: Vec<_> = snapshot
+            .iter()
+            .filter(|plugin| {
+                plugin.enabled
+                    && plugin.manifest.has_permission(PERMISSION_ARCHIVE)
+                    && plugin
+                        .manifest
+                        .contributes
+                        .as_ref()
+                        .and_then(|contributes| contributes.archive_rules.as_ref())
+                        .is_some()
+            })
+            .collect();
+        plugins.sort_by(|left, right| left.manifest.identity.cmp(&right.manifest.identity));
+        let mut bounded_context = context.clone();
+        if !bounded_context.header_hex.as_deref().is_some_and(|header| {
+            (2..=8192).contains(&header.len())
+                && header.len() % 2 == 0
+                && header.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            bounded_context.header_hex = None;
+        }
+        for plugin in plugins {
+            let identity = &plugin.manifest.identity;
+            if let Some((folder, rule_id, sequence)) =
+                self.archive_rule_match(identity, &bounded_context).await
+            {
+                self.audit.record(PluginAuditRow::new(
+                    identity,
+                    "daemon",
+                    "archive.rules",
+                    task_id,
+                    "ok",
+                    format!("rule={rule_id} sequence={sequence}"),
+                ));
+                return Some(folder);
+            }
+        }
+        None
+    }
+
+    pub(super) async fn archive_directories(
         &self,
         context: crate::model::ArchiveContext,
         task_id: &str,
-    ) -> Result<Option<String>, PluginError> {
+    ) -> Result<Option<crate::model::ArchiveDirectories>, PluginError> {
         let snapshot = self.plugins.read().await.clone();
         let mut candidates: Vec<_> = snapshot
             .iter()
@@ -270,14 +318,26 @@ impl PluginManager {
                 None,
             )
             .await;
-            let (outcome, detail) = match &result {
-                Ok(Some(value))
-                    if !crate::category_route::valid_archive_folder(&value.folder_name) =>
-                {
-                    ("error", "invalid folderName".to_string())
+            let directories = result.as_ref().ok().and_then(|value| {
+                value.as_ref().and_then(|value| {
+                    crate::category_route::normalize_archive_directories(
+                        &value.directories,
+                        &value.folder_name,
+                    )
+                    .map(|components| crate::model::ArchiveDirectories {
+                        legacy: value.directories.is_empty(),
+                        components,
+                    })
+                })
+            });
+            let invalid = matches!(&result, Ok(Some(_))) && directories.is_none();
+            let (outcome, detail) = if invalid {
+                ("error", "invalid directories".to_string())
+            } else {
+                match &result {
+                    Ok(_) => ("ok", String::new()),
+                    Err(error) => ("error", error.to_string()),
                 }
-                Ok(_) => ("ok", String::new()),
-                Err(error) => ("error", error.to_string()),
             };
             self.audit.record(PluginAuditRow::new(
                 &plugin.manifest.identity,
@@ -287,19 +347,25 @@ impl PluginManager {
                 outcome,
                 &detail,
             ));
-            match result {
-                Ok(Some(result))
-                    if crate::category_route::valid_archive_folder(&result.folder_name) =>
-                {
-                    return Ok(Some(result.folder_name));
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => {}
-                Err(error) => log_info!(
+            if let Some(directories) = directories {
+                return Ok(Some(directories));
+            }
+            if let Err(error) = result {
+                log_info!(
                     "[plugin] archive {} failed: {error}",
                     plugin.manifest.identity
-                ),
+                );
             }
+        }
+        // User-authored archive callbacks keep precedence; signed packs provide the deterministic fallback.
+        if let Some(folder) = self
+            .matching_archive_rules(&snapshot, &context, task_id)
+            .await
+        {
+            return Ok(Some(crate::model::ArchiveDirectories {
+                components: vec![folder],
+                legacy: true,
+            }));
         }
         Ok(None)
     }
@@ -338,10 +404,10 @@ impl TaskInterceptor for PluginTaskInterceptor {
         self.has_archivers
     }
 
-    async fn archive_folder(
+    async fn archive_directories(
         &self,
         context: crate::model::ArchiveContext,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<crate::model::ArchiveDirectories>, String> {
         if !self.has_archivers {
             return Ok(None);
         }
@@ -350,7 +416,7 @@ impl TaskInterceptor for PluginTaskInterceptor {
         let handle = self
             .pm
             .runtime_handle()
-            .spawn(async move { pm.archive_folder(context, &task_id).await });
+            .spawn(async move { pm.archive_directories(context, &task_id).await });
         let mut guard = AbortGuard(handle);
         match (&mut guard.0).await {
             Ok(Ok(folder)) => Ok(folder),

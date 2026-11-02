@@ -13,6 +13,7 @@ use gpui_component::WindowExt as _;
 #[derive(Default)]
 pub struct LivePlugins {
     plugins: Vec<PluginDto>,
+    stale: bool,
 }
 
 impl LivePlugins {
@@ -22,10 +23,20 @@ impl LivePlugins {
             .find(|plugin| plugin.identity == identity)
     }
 
-    /// 整体替换并通知所有跟随中的对话框。
-    pub fn replace(&mut self, plugins: &[PluginDto], cx: &mut Context<Self>) {
-        self.plugins = plugins.to_vec();
-        cx.notify();
+    /// 整体替换；断连时保留最后快照，只更新 stale 标记。
+    pub fn replace(&mut self, plugins: &[PluginDto], stale: bool, cx: &mut Context<Self>) {
+        if !stale {
+            self.plugins = plugins.to_vec();
+        }
+        let changed = self.stale != stale || !stale;
+        self.stale = stale;
+        if changed {
+            cx.notify();
+        }
+    }
+
+    pub fn is_stale(&self) -> bool {
+        self.stale
     }
 }
 

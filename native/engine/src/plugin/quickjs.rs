@@ -1797,6 +1797,7 @@ mod tests {
                     file_name: "episode.mkv".to_string(),
                     metadata: None,
                     is_group: false,
+                    header_hex: None,
                 },
                 "{\"label\":\"Anime\"}".to_string(),
                 ExecutionBudget {

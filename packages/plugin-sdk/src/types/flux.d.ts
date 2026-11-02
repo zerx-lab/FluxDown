@@ -112,6 +112,19 @@ export interface FluxYtdlp {
   run(spec: ToolSpec): Promise<ToolOutcome>;
 }
 
+/** Status of a publisher-signed archive classification rules pack. */
+export interface ArchiveRulesStatus {
+  sequence: number;
+  ruleCount: number;
+  lastCheckedAt: number | null;
+  lastUpdatedAt: number | null;
+  lastError: string | null;
+  updateUrl: string | null;
+  automaticUpdates: boolean;
+  /** Publisher key pinned by the manifest. */
+  publicKey: string;
+}
+
 // ---------------------------------------------------------------------------
 // HOST_PRELUDE (resident `main` script)
 // ---------------------------------------------------------------------------
@@ -340,6 +353,11 @@ export interface Flux {
   ffmpeg?: FluxFfmpeg;
   ffprobe?: FluxFfprobe;
   ytdlp?: FluxYtdlp;
+  /** Available only to archive-capable plugins with `contributes.archiveRules`. */
+  archiveRules?: {
+    status(): Promise<ArchiveRulesStatus>;
+    update(): Promise<ArchiveRulesStatus>;
+  };
 }
 
 /** The `flux` facade of the resident `main` script (received by `defineMain`). */
@@ -392,9 +410,12 @@ export interface ArchiveContext {
   metadata?: ArchiveMetadata;
   isGroup?: boolean;
 }
-/** Archive destination directory name (`folderName` is one path component). */
+/** Archive destination: safe components relative to the task's authorized default directory. */
 export interface ArchiveResult {
-  folderName: string;
+  /** At most 8 safe components; joined relative path is at most 180 UTF-8 bytes. */
+  directories?: string[];
+  /** Legacy single-category child result retained for existing plugins. */
+  folderName?: string;
 }
 
 export interface ResolveVariant {

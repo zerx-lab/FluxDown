@@ -29,8 +29,8 @@ const cat = (id: string, patch: Partial<CustomCategoryDto> = {}): CustomCategory
 })
 
 describe('routeFromCategories', () => {
-  test('没有任何目录 → null', () => {
-    expect(routeFromCategories([cat('all', { builtinType: 'all' }), cat('v', { extensions: ['mp4'] })])).toBeNull()
+  test('没有分类目录时仍返回授权的空规则路由', () => {
+    expect(routeFromCategories([cat('all', { builtinType: 'all' }), cat('v', { extensions: ['mp4'] })])).toEqual({ rules: [] })
   })
 
   test('other 无目录：无目录的普通分类省略，有目录的保留', () => {

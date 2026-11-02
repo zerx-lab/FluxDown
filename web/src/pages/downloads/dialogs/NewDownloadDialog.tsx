@@ -202,12 +202,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const [categoryMode, setCategoryMode] = useState<CategoryPickMode>({ kind: 'auto' })
   /** 上一次自动写入目录框的值；用户手改后与之不等，不再覆盖。 */
   const lastAutoDir = useRef<string | null>(null)
-  const categoryShown = categoryRoute !== null && !target
+  /** 用户直接编辑/浏览选择后明确优先于自动路由，包括目录恰为默认或分类目录。 */
+  const saveDirManuallyChosen = useRef(false)
+  const categoryShown = !target
   const predictedName = rename.trim() !== '' ? rename.trim() : (entries[0]?.fileName ?? '')
   const predictedUrl = entries[0]?.url ?? ''
-  const predictedDir = categoryShown && categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
+  const predictedDir = categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
-    if (!categoryShown || categoryMode.kind !== 'auto') return
+    if (!categoryShown || categoryMode.kind !== 'auto' || saveDirManuallyChosen.current) return
     const next = autoFollowDir(saveDir, context.saveDir, lastAutoDir.current, predictedDir)
     if (next === null) return
     lastAutoDir.current = next
@@ -215,10 +217,15 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在预测输入 / 模式变化时跟随，目录框当前值取渲染时快照
   }, [categoryShown, categoryMode.kind, predictedDir])
   const pickCategory = (mode: CategoryPickMode) => {
+    saveDirManuallyChosen.current = false
     setCategoryMode(mode)
     const next = modeDir(mode, categoryOptions, context.saveDir, predictedDir)
     lastAutoDir.current = mode.kind === 'auto' ? next : null
     setSaveDir(next)
+  }
+  const chooseSaveDir = (dir: string) => {
+    saveDirManuallyChosen.current = true
+    setSaveDir(dir)
   }
 
   // ── 外部捕获并入表单 ──
@@ -447,7 +454,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         )
         if (token !== resolveToken.current) return // 用户取消了探测
         if (!preview.error && preview.items.length > 0) {
-          const route = categoryShown && categoryMode.kind === 'auto' ? categoryRoute : null
+          const route = categoryShown && categoryMode.kind === 'auto' && !saveDirManuallyChosen.current ? categoryRoute : null
           const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
           setManifest({
             preview,
@@ -488,7 +495,18 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         continue
       }
       try {
-        await rpc.agent.capture.resolve({ transactionId: capture.transactionId, accepted: true, request })
+        await rpc.agent.capture.resolve({
+          transactionId: capture.transactionId,
+          accepted: true,
+          disableCategoryRoute: !(
+            categoryShown &&
+            categoryMode.kind === 'auto' &&
+            !saveDirManuallyChosen.current &&
+            categoryRoute !== null &&
+            routeFollows(categoryRoute, options.saveDir, context.saveDir)
+          ),
+          request,
+        })
         consumed.add(capture.transactionId)
       } catch (error) {
         retained.push({ index, error })
@@ -510,7 +528,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       let { common } = batch
       // 分类路由：只对本机提交生效；目录仍是表单初始值 / 分类目录时交给引擎按文件名定落点；
       // 分类下拉选了「不分类」/ 指定分类时用户已显式定目录，不路由。
-      const route = categoryShown && categoryMode.kind === 'auto' ? categoryRoute : null
+      const route = categoryShown && categoryMode.kind === 'auto' && !saveDirManuallyChosen.current ? categoryRoute : null
       const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
       if (followed) common = { ...common, saveDir: routeBaseDir(followed, options.saveDir, context.saveDir) }
       const controller = new AbortController()
@@ -866,7 +884,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               <InputWithAction
                 input={
                   <div className="flex flex-wrap items-center gap-2">
-                    {categoryShown ? <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} /> : null}
+                    <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} />
                     <div className="min-w-[14rem] flex-1">
                       <SaveDirCombo
                         id="new-download-save-dir"
@@ -874,7 +892,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
                         placeholder={t('selectSaveDir')}
                         choices={saveDirOptions}
                         label={t('saveDirRecent')}
-                        onChange={setSaveDir}
+                        onChange={chooseSaveDir}
                       />
                     </div>
                   </div>
@@ -1064,7 +1082,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           }}
         />
       ) : null}
-      <FsPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} initialPath={saveDir} onSelect={setSaveDir} />
+      <FsPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} initialPath={saveDir} onSelect={chooseSaveDir} />
     </>
   )
 }

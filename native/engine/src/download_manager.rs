@@ -14380,6 +14380,8 @@ impl DownloadManager {
             .map(|item| (item.file_name.as_str(), spec.source_url.as_str()))
             .collect();
         if let Some(route) = spec.category_route.as_ref() {
+            let mut route = route.clone();
+            route.base_dir.clone_from(&spec.base_save_dir);
             let interceptor = self
                 .task_interceptor("", &spec.source_url, &spec.source_url)
                 .await;
@@ -14389,7 +14391,7 @@ impl DownloadManager {
                 &item_names,
                 &spec.source_url,
                 spec.archive_metadata.as_ref(),
-                route,
+                &route,
                 interceptor.as_ref(),
             )
             .await;

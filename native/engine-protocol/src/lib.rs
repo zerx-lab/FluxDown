@@ -666,6 +666,7 @@ fn plugin_contributions_to_dto(
             })
             .collect(),
         sniff_rules: contributes.sniff_rules.is_some(),
+        archive_rules: contributes.archive_rules.is_some(),
         page_scripts: contributes
             .page_scripts
             .iter()

@@ -63,6 +63,17 @@ pub struct ArchiveContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ArchiveMetadata>,
     pub is_group: bool,
+    /// Bounded hexadecimal file prefix for host-side signed rule matching.
+    /// Never serialized to arbitrary plugin scripts.
+    #[serde(skip)]
+    pub header_hex: Option<String>,
+}
+
+/// Validated archive destination returned by a plugin, with legacy-shape provenance.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveDirectories {
+    pub components: Vec<String>,
+    pub legacy: bool,
 }
 
 /// 持久化任务信息。

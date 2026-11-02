@@ -96,6 +96,30 @@ pub struct PluginSetSiteDefaultParams {
     #[serde(default)]
     pub identity: Option<String>,
 }
+/// `daemon.plugin.archiveRules`：读取已验证包状态；`refresh` 请求显式刷新。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginArchiveRulesParams {
+    pub identity: String,
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// Verified signed archive-rule pack status returned by `daemon.plugin.archiveRules`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginArchiveRulesDto {
+    pub sequence: u64,
+    pub rule_count: usize,
+    pub last_checked_at: Option<u64>,
+    pub last_updated_at: Option<u64>,
+    pub last_error: Option<String>,
+    pub public_key: String,
+    pub update_url: Option<String>,
+    pub automatic_updates: bool,
+}
 
 /// 文件已存在时可选的处理动作。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -1180,6 +1204,9 @@ pub struct PluginContributionsDto {
     /// 是否贡献浏览器扩展嗅探规则。
     #[serde(default)]
     pub sniff_rules: bool,
+    /// Whether the plugin contributes signed archive classification rules.
+    #[serde(default)]
+    pub archive_rules: bool,
     /// 浏览器页面脚本声明（供授权 / 详情界面展示将在哪些网站运行脚本）。
     #[serde(default)]
     pub page_scripts: Vec<PluginPageScriptDeclDto>,

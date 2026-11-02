@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use fluxdown_protocol::{CUSTOM_CATEGORIES_PREF_KEY, CategoryRouteDto, CategoryRuleDto};
 use serde_json::Value;
 
-/// 偏好中的分类路由规则；没有任何可见分类配置目录时为 `None`。
+/// 偏好中的授权路由；无分类规则时仍返回空规则路由，供插件归档分类使用。
 pub(crate) fn category_route(preferences: &BTreeMap<String, Value>) -> Option<CategoryRouteDto> {
     CategoryRouteDto::from_preference(preferences.get(CUSTOM_CATEGORIES_PREF_KEY))
 }

@@ -94,7 +94,7 @@ pub enum NewDownloadSubmission {
         common: Box<CreateTaskRequest>,
         items: Vec<CreateTaskItem>,
         captures: Vec<CapturedTask>,
-        /// 本机分类目录路由；`None` = 不路由（没有分类配置目录）。
+        /// 本机授权路由；空规则路由也允许插件归档分类，`None` 表示显式不路由。
         category_route: Option<CategoryRouteDto>,
         /// 表单初始保存目录（未做任何分类预填），用于判定用户是否改过目录。
         offered_save_dir: String,
@@ -242,6 +242,7 @@ impl NewDownloadSubmission {
                 let mut common = *common;
                 let category_route =
                     route_for_batch(&mut common, category_route, &offered_save_dir);
+                let disable_category_route = category_route.is_none();
                 SubmissionPlan {
                     batch: (!items.is_empty()).then_some(TaskBatch {
                         common,
@@ -254,6 +255,7 @@ impl NewDownloadSubmission {
                             DownloadsCommand::CaptureResolve(Box::new(CaptureResolveParams {
                                 transaction_id: capture.transaction_id,
                                 accepted: true,
+                                disable_category_route,
                                 request: Some(capture.request),
                             }))
                         })
@@ -328,6 +330,7 @@ impl NewDownloadSubmission {
                     DownloadsCommand::CaptureResolve(Box::new(CaptureResolveParams {
                         transaction_id,
                         accepted: false,
+                        disable_category_route: true,
                         request: None,
                     }))
                 }));
@@ -703,6 +706,7 @@ fn capture_rejection(command: &DownloadsCommand) -> Option<DownloadsCommand> {
             DownloadsCommand::CaptureResolve(Box::new(CaptureResolveParams {
                 transaction_id: params.transaction_id.clone(),
                 accepted: false,
+                disable_category_route: true,
                 request: None,
             })),
         ),
@@ -1734,6 +1738,30 @@ mod tests {
         let (route_out, save_dir, _) = routed_plan("/elsewhere", "/downloads", Some(route()));
         assert_eq!(route_out, None);
         assert_eq!(save_dir, "/elsewhere");
+    }
+
+    #[test]
+    fn capture_confirmation_disables_category_route_after_manual_directory_choice() {
+        fn disable_flag(route: Option<CategoryRouteDto>, save_dir: &str) -> bool {
+            let plan = NewDownloadSubmission::Tasks {
+                common: Box::new(blank_request(save_dir)),
+                items: Vec::new(),
+                captures: vec![CapturedTask {
+                    transaction_id: "capture".to_owned(),
+                    request: blank_request(save_dir),
+                }],
+                category_route: route,
+                offered_save_dir: "/downloads".to_owned(),
+            }
+            .plan();
+            let Some(DownloadsCommand::CaptureResolve(params)) = plan.commands.first() else {
+                panic!("capture confirmation command");
+            };
+            params.disable_category_route
+        }
+
+        assert!(!disable_flag(Some(route()), "/downloads"));
+        assert!(disable_flag(None, "/data/video"));
     }
 
     #[test]

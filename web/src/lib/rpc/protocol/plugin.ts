@@ -62,6 +62,8 @@ export interface PluginContributionsDto {
   commands: PluginCommandDeclDto[];
   /** 是否贡献浏览器扩展嗅探规则。 */
   sniffRules: boolean;
+  /** Whether the plugin contributes signed archive classification rules. */
+  archiveRules: boolean;
   /** 浏览器页面脚本声明（授权 / 详情界面展示将在哪些网站运行脚本）。 */
   pageScripts: PluginPageScriptDeclDto[];
 }
@@ -76,6 +78,23 @@ export interface PluginPageScriptDeclDto {
 }
 
 /** 站点默认插件条目（`daemon.plugin.siteDefaults`，按 site 排序）。 */
+/** `daemon.plugin.archiveRules` parameters. */
+export interface PluginArchiveRulesParams {
+  identity: string;
+  refresh?: boolean;
+}
+
+/** Status of the publisher-signed classification pack; never includes rule contents. */
+export interface PluginArchiveRulesDto {
+  sequence: number;
+  ruleCount: number;
+  lastCheckedAt: number | null;
+  lastUpdatedAt: number | null;
+  lastError: string | null;
+  publicKey: string;
+  updateUrl: string | null;
+  automaticUpdates: boolean;
+}
 export interface PluginSiteDefaultDto {
   site: string;
   /** 当前默认插件 identity。 */

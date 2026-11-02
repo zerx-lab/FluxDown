@@ -22,6 +22,7 @@
 - **凭据刷新上限只计「连续无效换发」，不计累计次数**：多连接共用每请求一次性令牌时，「每次运行最多 5 次」很快耗尽，任务以 403 失败。各请求点成功后 `DownloadSpec::confirm` 记录身份可用；插件看到的 `refreshCount` 仍是累计值 → `native/engine/src/intercept/refresh.rs::MAX_UNCONFIRMED_REFRESHES`、`native/engine/src/downloader.rs`（`ledger.unconfirmed`）。
 - **带子目录的文件名必须在落库前并入 `save_dir`**：下载器只把 `file_name` 当单个组件清洗（防穿越），否则子目录被压平成 `子目录_文件名`（#716）；BT 名字另有语义不拆 → `native/engine/src/download_manager.rs`（`is_bt` / `has_subdir` 分支）。
 - **用户重命名的新名必须是 `naming::sanitize_filename` 的不动点**：HTTP / FTP / HLS / DASH / eD2K 续传都按清洗后的名字重建 `<名>.fdownloading`，`a:b.iso`、`CON.txt`、以点结尾、超 200 字节这类名字改名后续传找不到临时文件，进度归零并遗留孤儿临时文件；BT 一律拒绝改名（落盘名由完成布局 + `bt_custom_name` 决定，四端菜单按 `can_rename` 隐藏） → `native/engine/src/download_manager.rs::rename_task`、回归 `rename_task_rejects_conflict_active_bt_and_invalid`；客户端门控 `crates/downloads/src/components/task_table.rs::TaskMenuFacts::can_rename` ↔ `web/src/pages/downloads/model/taskEdit.ts::canRename`。
+- **来源元数据不等于目录移动授权**：解析器可把 `archiveMetadata` 持久化到 `tasks.category_route`，即使用户已手选目录；完成期必须检查非空 `base_dir`，不能因 JSON 存在就执行插件目录规划，否则显式目录任务可能被搬走。任务组的现代 `directories` 输出也必须以授权基础目录为根，而不是已经拼过组名的 fallback → `category_route.rs::relocate_completed` / `archive_group_root`、`download_manager.rs::create_task_group`；回归 `plugin_interceptors::{explicit_save_directory_bypasses_archive_callback,archive_plugin_group_preserves_member_tree_under_authorized_base}`。
 - **HLS 小响应拉取不得在共享 client 上设全局 timeout，播放列表首行带 BOM 要先剥**：全局 timeout 会误伤普通 HTTP 长下载；`m3u8_rs` 要求首行就是 `#EXTM3U` → `native/engine/src/hls_downloader.rs::fetch_small` / `trim_playlist_prefix`。
 - **下载结束到完成帧之间有长收尾（remux / mux / 插件后处理）的协议，必须在收尾前发一帧「总量 = 已落盘」且能越过 manager 节流的帧**：manager 对状态 1 帧按 `MIN_DART_INTERVAL_MS`（500ms）节流，被吞的帧不会补发；HLS 写完最后一段的帧常落在节流窗口内，ffmpeg 转封装期间界面一直停在 9x%。携带非空 `file_name` 的帧必定转发；进度估值另须保证「有未落盘段 < 100%、全部落盘 = 100%」→ `native/engine/src/hls_downloader.rs::run_hls_download_inner`（「全部分段已落盘」注释段）、`hls_downloader/size_estimate.rs`、回归 `vod_progress_estimates_total_and_converges_to_actual_bytes`。
 - **订阅源正文无有效 tracker 必须算该源失败**：HTML 错误页或空页若当「成功 + 空列表」，会覆盖宿主缓存并在刷新间隔内丢光订阅 tracker → `native/engine/src/tracker_subscription.rs::parse_source_body`。
@@ -67,6 +68,8 @@
 
 另见 AGENTS.md §4：本机端口默认宽松显式严格（WSAEACCES 回退）、远程控制凭据与会话撤销、空闲静默、遥测只有两条匿名事件。
 
+- **云端 / LAN 接收任务必须在接收端填入本机分类路由，只有显式保存目录才禁用**：远端发起端只传链接 / 文件名与可选目标目录，空目录及跨平台目录回退到默认目录时不能把分类配置漏在 daemon 建任务 RPC 之外 → `native/agent/src/remote.rs::create_local_task`、`native/agent/src/link/service.rs::create_local_task`、回归 `cloud_receive_uses_preference_category_route_only_without_explicit_directory` / `receiver_falls_back_to_default_dir_and_retries_without_dir`。
+
 - **回环 daemon 的 HTTP 客户端必须 `.no_proxy()`**：否则会话凭据与文件字节会经环境 / 系统代理离开本机 → `native/agent/src/capture.rs::DaemonBlobClient::new`。
 - **macOS 上 reqwest 的「系统代理」不读 `ExceptionsList`**：hyper-util `Matcher::from_system` 只取 SCDynamicStore 的 HTTP / HTTPS 地址，直连名单只认 `NO_PROXY` 环境变量（GUI 进程没有）→ 回环、局域网、`.local` 全进代理；本机开 Clash 时 agent 连 127.0.0.1 的云端 / 更新 / 网关测试因此失败。agent 外网客户端一律经 `system_proxy::follow_system` 显式装配（环回恒直连 + `NO_PROXY` + 系统槽并入例外列表，其余照常走代理），不得裸用 reqwest 默认代理；引擎 System 模式同样把 `ExceptionsList` 归一化进 `no_proxy_list` → `native/agent/src/system_proxy.rs`（`LazyHttpClient`、`Network::SystemDefault`）、`native/engine/src/proxy_config.rs::parse_scutil_exceptions`、回归 `system_proxy_bypasses_only_exceptions_and_loopback`。
 - **客户端 WebSocket 的帧上限与消息上限必须一起放宽到 `MAX_INBOUND_RPC_MESSAGE_BYTES`**：tungstenite 默认 16 MiB；snapshot 与整表替换事件只带头部、任务表经 `system.taskPage` 分页，新增大应答不要回到「单帧带全量」。桌面、agent、移动端远端三处连接都必须应用同一常量 → `native/protocol/src/rpc.rs::MAX_INBOUND_RPC_MESSAGE_BYTES`、`crates/app/src/agent_client.rs`、`native/agent/src/daemon_client.rs`、`native/mobile/src/remote.rs`。
@@ -82,6 +85,8 @@
 ## GPUI（gpui-fast 保留模式）
 
 另见 AGENTS.md §4：render 读的状态必须在 entity / global / `ListState` / `ScrollHandle` 内，父 view notify 不再重建子 view，渲染期不得无条件写 entity / global。
+
+- **插件详情的归档规则状态直接复用 protocol DTO**：`fluxdown_ui_extensions` 没有直接依赖 serde，另写 `Deserialize` 镜像会导致编译失败并让 wire 字段漂移；市场详情通过 `PluginDetail::default` 补齐仅已安装插件才有的状态 → `crates/extensions/src/components/plugin_detail.rs`（`PluginArchiveRulesDto` / `PluginDetail::from_market`）。
 
 - **渲染期要「先读后写」，值没变就不 `update`**：gpui-fast 把渲染期的 entity 写入记为外部修改，每帧写会让读该状态的其他 view（如 shell 顶栏）每帧重建 → `crates/components/src/sidebar/mod.rs`（`sample` 后的只读分支）、`crates/downloads/src/components/sidebar_layout.rs`。
 - **事件回调里写表格状态前先读，没变化就返回**：没有高亮行时每次左键都写表格，会让 gpui-fast 把表格记为已变化 → `crates/downloads/src/components/task_table.rs`（`right_clicked_row().is_none()` 早退）。

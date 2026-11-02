@@ -24,7 +24,7 @@ sourceHash: "030845cf7731"
 | `intercept` | 拦截器：读取并修改匹配任务的链接、请求头、Cookie 与请求体，控制连接数，跳过探测，在下载中途换发凭据，改写或过滤流媒体分片，选择画质或 DASH Period，在完成前处理下载文件，并在任务失败后请求重试。见[拦截器指南](/docs/zh/plugins/interceptors-guide/)。 |
 | `desktop` | 以**完全信任**运行桌面原生脚本（见下文）。 |
 | `pageScripts` | 通过 FluxDown 浏览器扩展，在 `contributes.pageScripts` 列出的网站中运行插件脚本，风险**完全**（见[浏览器中的页面脚本](#浏览器中的页面脚本)）。 |
-| `archive` | 允许 `contributes.archive` 使用已知文件名与可选来源元数据选择一个安全的单层子目录。回调不会收到 URL、路径或凭据，也不能访问文件、网络、任务或进程。 |
+| `archive` | 允许 `contributes.archive` 使用已知文件名与可选来源元数据选择安全子目录；`contributes.archiveRules` 提供发布者签名分类规则。不会暴露 URL、路径或凭据；规则是数据而非可执行代码。`archiveRules.updateUrl` 主机名会纳入网络授权。 |
 
 订阅 provider、hooks、resolver 与可移植视图本身不需要额外权限。
 

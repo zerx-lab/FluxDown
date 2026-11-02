@@ -14,6 +14,8 @@ use super::runtime::PluginError;
 const MAX_TOTAL_UNCOMPRESSED: u64 = 50 * 1024 * 1024;
 /// 条目数上限。
 const MAX_ENTRIES: usize = 200;
+/// Signed archive rule seeds are read through a hard byte cap before verification.
+const MAX_ARCHIVE_RULE_SEED_BYTES: usize = super::archive_rules::MAX_PACK_BYTES;
 
 /// 从 zip 字节安装到 `<root>/<identity>/`，返回 identity。
 pub fn install_from_zip(root: &Path, bytes: &[u8]) -> Result<String, PluginError> {
@@ -44,6 +46,7 @@ pub(crate) fn install_from_zip_with_backup(
         // 剥壳：若根无 manifest.json 但唯一子目录含，则以该子目录为根。
         let src_root = resolve_pkg_root(&tmp)?;
         let manifest = read_manifest(&src_root)?;
+        validate_archive_rules_seed(&manifest, &src_root)?;
         check_manifest(&manifest)?;
         let identity = manifest.identity.clone();
         install_staged_dir(root, &src_root, identity)
@@ -75,6 +78,7 @@ pub(crate) fn install_from_dir_with_backup(
     path: &Path,
 ) -> Result<InstallOutcome, PluginError> {
     let manifest = read_manifest(path)?;
+    validate_archive_rules_seed(&manifest, path)?;
     let identity = manifest.identity.clone();
     std::fs::create_dir_all(root)
         .map_err(|e| PluginError::ManifestInvalid(format!("创建插件根目录失败: {e}")))?;
@@ -159,6 +163,41 @@ fn read_manifest(dir: &Path) -> Result<PluginManifest, PluginError> {
     let manifest = PluginManifest::parse(&bytes)?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+fn validate_archive_rules_seed(manifest: &PluginManifest, dir: &Path) -> Result<(), PluginError> {
+    let Some(rules) = manifest
+        .contributes
+        .as_ref()
+        .and_then(|contributes| contributes.archive_rules.as_ref())
+    else {
+        return Ok(());
+    };
+    let path = dir.join(&rules.entry);
+    let file = std::fs::File::open(&path).map_err(|error| {
+        PluginError::ManifestInvalid(format!(
+            "archiveRules seed '{}' 读取失败: {error}",
+            rules.entry
+        ))
+    })?;
+    let read_limit = u64::try_from(MAX_ARCHIVE_RULE_SEED_BYTES + 1)
+        .map_err(|error| PluginError::ManifestInvalid(error.to_string()))?;
+    let mut bytes = Vec::with_capacity(MAX_ARCHIVE_RULE_SEED_BYTES);
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            PluginError::ManifestInvalid(format!(
+                "archiveRules seed '{}' 读取失败: {error}",
+                rules.entry
+            ))
+        })?;
+    if bytes.len() > MAX_ARCHIVE_RULE_SEED_BYTES {
+        return Err(PluginError::ManifestInvalid(format!(
+            "archiveRules seed '{}' 超过 {} 字节",
+            rules.entry, MAX_ARCHIVE_RULE_SEED_BYTES
+        )));
+    }
+    manifest.validate_archive_rules_content(|entry| (entry == rules.entry).then(|| bytes.clone()))
 }
 
 /// 解压 zip 到 `dest`，逐条防穿越 + 累计体积/条目上限。

@@ -95,7 +95,7 @@ internal class AdvancedState {
 internal class NewDownloadState(
     prefill: String,
     defaultSaveDir: String,
-    /** 表单首次给出的、未经分类预填的保存目录；随新建请求提交，由 Rust 按分类规则决定是否路由。 */
+    /** 表单首次给出的、未经分类预填的保存目录；仅自动路由时随请求提交。 */
     private val offeredSaveDir: String,
     defaultQueueId: String,
     defaultSegments: Int,
@@ -105,6 +105,7 @@ internal class NewDownloadState(
 ) {
     var urlText by mutableStateOf(prefill)
     var saveDir by mutableStateOf(defaultSaveDir)
+        private set
     var rename by mutableStateOf("")
     var queueId by mutableStateOf(defaultQueueId)
     var threadMode by mutableStateOf(
@@ -136,6 +137,7 @@ internal class NewDownloadState(
 
     private val initialSaveDir = defaultSaveDir
     private var lastAuto: String? = null
+    private var manuallySelectedSaveDir = false
 
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
@@ -230,11 +232,11 @@ internal class NewDownloadState(
     }
 
     /**
-     * 自动模式下按预测目录改写目录框：当前值为空 / 等于 offered / 等于上次自动写入值才覆盖（用户手改后不再覆盖）；
-     * [force] = 从其他模式切回时无条件重算。
+     * 自动模式下按预测目录改写目录框；仅覆盖自动预填值。显式用户目录编辑后保持不动，
+     * 直到用户切回自动模式。
      */
     fun syncAuto(force: Boolean = false) {
-        if (mode != SaveDirMode.Auto || categoryOptions.isEmpty()) return
+        if (mode != SaveDirMode.Auto || manuallySelectedSaveDir || categoryOptions.isEmpty()) return
         val current = saveDir.trim()
         if (!force && current.isNotEmpty() && current != offeredSaveDir && current != lastAuto) return
         val target = predictedDir() ?: offeredSaveDir
@@ -242,9 +244,16 @@ internal class NewDownloadState(
         lastAuto = target
     }
 
+    /** 保存目录由用户键入或浏览选择；其值不再被自动预测覆盖，也不触发自动分类路由。 */
+    fun setSaveDirManually(dir: String) {
+        saveDir = dir
+        manuallySelectedSaveDir = true
+    }
+
     fun selectMode(next: SaveDirMode) {
         when (next) {
             SaveDirMode.Auto -> {
+                manuallySelectedSaveDir = false
                 mode = next
                 syncAuto(force = true)
             }
@@ -322,7 +331,7 @@ internal class NewDownloadState(
                 httpUser = if (authOk) adv.httpUser.trim() else "",
                 httpPassword = if (authOk) adv.httpPassword else "",
                 saveSiteAuth = authOk && adv.saveSiteAuth,
-                offeredSaveDir = offeredSaveDir.takeIf { mode == SaveDirMode.Auto },
+                offeredSaveDir = offeredSaveDir.takeIf { mode == SaveDirMode.Auto && !manuallySelectedSaveDir },
             )
         }
     }

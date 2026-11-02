@@ -165,6 +165,19 @@ export function isValidNetworkHost(host: unknown): host is string {
   return host.split(".").every((label) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
 }
 
+function isPublicHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.hash) return false;
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith("[") || host.includes(":")) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function unknownKeys(errors: string[], where: string, value: Obj, allowed: readonly string[]) {
   for (const key of Object.keys(value)) {
     if (!allowed.includes(key)) errors.push(`${where}: 未知字段 ${key}`);
@@ -413,7 +426,7 @@ function checkContributes(
   const contributes = manifest.contributes;
   if (contributes === undefined || contributes === null) return;
   if (!isObject(contributes)) return void errors.push("contributes 须为对象");
-  unknownKeys(errors, "contributes", contributes, ["views", "commands", "sniffRules", "pageScripts", "archive"]);
+  unknownKeys(errors, "contributes", contributes, ["views", "commands", "sniffRules", "pageScripts", "archive", "archiveRules"]);
   const hasMain = manifest.main !== undefined && manifest.main !== null;
 
   const views = contributes.views ?? [];
@@ -516,6 +529,29 @@ function checkContributes(
       if (!hasExtension(archive, [".js"])) errors.push(`archive '${archive}' 扩展名须为 .js`);
       if (!hasPermission(permissions, "archive")) errors.push("声明 archive 时 permissions 必须包含 archive");
       if (!inPackage(files, archive)) errors.push(`包内缺少文件 '${archive}'`);
+    }
+  }
+  const archiveRules = contributes.archiveRules;
+  if (archiveRules !== undefined && archiveRules !== null) {
+    if (!isObject(archiveRules)) {
+      errors.push("archiveRules 须为对象");
+    } else {
+      unknownKeys(errors, "archiveRules", archiveRules, ["entry", "publicKey", "updateUrl"]);
+      const entry = archiveRules.entry;
+      if (typeof entry !== "string" || !isSafeRelativePath(entry)) {
+        errors.push(`archiveRules entry 路径 '${String(entry)}' 非法`);
+      } else {
+        if (!hasExtension(entry, [".json"])) errors.push("archiveRules entry 扩展名须为 .json");
+        if (!inPackage(files, entry)) errors.push(`包内缺少文件 '${entry}'`);
+      }
+      if (typeof archiveRules.publicKey !== "string" || !/^[0-9a-fA-F]{64}$/.test(archiveRules.publicKey)) {
+        errors.push("archiveRules publicKey 须为 64 位十六进制 Ed25519 公钥");
+      }
+      if (!hasPermission(permissions, "archive")) errors.push("声明 archiveRules 时 permissions 必须包含 archive");
+      if (archiveRules.updateUrl !== undefined && archiveRules.updateUrl !== null &&
+          (typeof archiveRules.updateUrl !== "string" || !isPublicHttpsUrl(archiveRules.updateUrl))) {
+        errors.push("archiveRules updateUrl 须为无凭据、无片段的公开 HTTPS URL");
+      }
     }
   }
 
@@ -798,13 +834,24 @@ export function riskOf(manifest: { permissions?: readonly string[] | null }): Pl
   return permissions.some((p) => elevated.includes(p)) ? "elevated" : "standard";
 }
 
-/** Sorted, de-duplicated union of every view's `desktop.networkHosts`. */
+/** Sorted, de-duplicated union of desktop hosts and archive rule update URL hosts. */
 export function networkHostsOf(manifest: {
-  contributes?: { views?: readonly { desktop?: { networkHosts?: readonly string[] | null } | null }[] | null } | null;
+  contributes?: {
+    views?: readonly { desktop?: { networkHosts?: readonly string[] | null } | null }[] | null;
+    archiveRules?: { updateUrl?: string | null } | null;
+  } | null;
 }): string[] {
   const hosts = new Set<string>();
   for (const view of manifest.contributes?.views ?? []) {
     for (const host of view.desktop?.networkHosts ?? []) hosts.add(host);
+  }
+  const updateUrl = manifest.contributes?.archiveRules?.updateUrl;
+  if (updateUrl) {
+    try {
+      hosts.add(new URL(updateUrl).hostname);
+    } catch {
+      // Invalid declarations are rejected by manifest validation.
+    }
   }
   // Rust sorts `String`s bytewise; hostnames are ASCII, so code-unit order is identical.
   return [...hosts].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -836,6 +883,9 @@ export function packageFilesOf(manifest: Obj): string[] {
       }
     }
     if (typeof contributes.archive === "string") files.push(contributes.archive);
+    if (isObject(contributes.archiveRules) && typeof contributes.archiveRules.entry === "string") {
+      files.push(contributes.archiveRules.entry);
+    }
   }
   return files;
 }
@@ -862,6 +912,66 @@ export function validateSniffPack(content: string | Uint8Array): ValidationResul
     errors.push("sniffRules rules 须为数组");
   } else if (pack.rules.length > SNIFF_PACK_MAX_RULES) {
     errors.push(`sniffRules 至多 ${SNIFF_PACK_MAX_RULES} 条规则`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+const ARCHIVE_RULES_MAX_BYTES = 512 * 1024;
+export function validateArchiveRulesPack(content: string | Uint8Array): ValidationResult {
+  const errors: string[] = [];
+  const size = typeof content === "string" ? utf8Length(content) : content.byteLength;
+  if (size > ARCHIVE_RULES_MAX_BYTES) return { ok: false, errors: [`archiveRules 文件超过 ${ARCHIVE_RULES_MAX_BYTES} 字节`] };
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(typeof content === "string" ? content : new TextDecoder("utf-8", { fatal: true }).decode(content));
+  } catch (err) {
+    return { ok: false, errors: [`archiveRules JSON 解析失败: ${(err as Error).message}`] };
+  }
+  if (!isObject(envelope) || Object.keys(envelope).sort().join(",") !== "payload,signature" ||
+      typeof envelope.payload !== "string" || typeof envelope.signature !== "string" ||
+      !/^[0-9a-fA-F]{128}$/.test(envelope.signature)) {
+    return { ok: false, errors: ["archiveRules 须为包含 payload 与 128 位十六进制 signature 的 JSON envelope"] };
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(envelope.payload);
+  } catch (err) {
+    return { ok: false, errors: [`archiveRules payload JSON 解析失败: ${(err as Error).message}`] };
+  }
+  if (!isObject(payload)) return { ok: false, errors: ["archiveRules payload 须为对象"] };
+  unknownKeys(errors, "archiveRules payload", payload, ["format", "schemaVersion", "sequence", "rules"]);
+  if (payload.format !== "fluxdown-archive-rules" || payload.schemaVersion !== 1 ||
+      !Number.isSafeInteger(payload.sequence) || (payload.sequence as number) < 1 ||
+      !Array.isArray(payload.rules) || payload.rules.length < 1 || payload.rules.length > 500) {
+    errors.push("archiveRules payload 格式、schemaVersion、sequence 或 rules 无效");
+  } else {
+    const seen = new Set<string>();
+    for (const rule of payload.rules) {
+      if (!isObject(rule)) { errors.push("archiveRules rule 须为对象"); continue; }
+      unknownKeys(errors, "archiveRules rule", rule, ["id", "folderName", "match"]);
+      if (typeof rule.id !== "string" || !/^[a-z0-9_-]{1,64}$/.test(rule.id) || seen.has(rule.id)) errors.push("archiveRules rule id 无效或重复");
+      if (typeof rule.id === "string") seen.add(rule.id);
+      if (typeof rule.folderName !== "string" || rule.folderName.length < 1 || utf8Length(rule.folderName) > 180 ||
+          /[\/\\:\u0000-\u001f\u007f]/.test(rule.folderName) || rule.folderName === "." || rule.folderName === "..") {
+        errors.push("archiveRules folderName 非法");
+      }
+      if (!isObject(rule.match)) { errors.push("archiveRules match 须为对象"); continue; }
+      const matcher = rule.match;
+      unknownKeys(errors, "archiveRules match", matcher, ["fileName", "extensions", "metadata", "headerHex"]);
+      if (Object.keys(matcher).length === 0) errors.push("archiveRules match 至少需要一个条件");
+      if (matcher.fileName !== undefined && (typeof matcher.fileName !== "string" || !/^[\x00-\x7f]{1,256}$/.test(matcher.fileName))) errors.push("archiveRules fileName glob 无效");
+      if (matcher.extensions !== undefined && (!Array.isArray(matcher.extensions) || matcher.extensions.length < 1 || matcher.extensions.length > 64 ||
+          matcher.extensions.some((ext) => typeof ext !== "string" || !/^[a-zA-Z0-9]{1,32}$/.test(ext)))) errors.push("archiveRules extensions 无效");
+      if (matcher.headerHex !== undefined && (typeof matcher.headerHex !== "string" || !/^(?:[0-9a-fA-F]{2}){1,4096}$/.test(matcher.headerHex))) errors.push("archiveRules headerHex 无效");
+      if (matcher.metadata !== undefined) {
+        const allowed = ["platform", "mediaKind", "creatorId", "creatorName", "seriesId", "seriesTitle", "collectionId", "collectionTitle"];
+        if (!isObject(matcher.metadata)) errors.push("archiveRules metadata 须为对象");
+        else {
+          unknownKeys(errors, "archiveRules metadata", matcher.metadata, allowed);
+          if (Object.keys(matcher.metadata).length === 0 || Object.values(matcher.metadata).some((v) => typeof v !== "string" || v.length === 0 || utf8Length(v) > 256)) errors.push("archiveRules metadata predicates 无效");
+        }
+      }
+    }
   }
   return { ok: errors.length === 0, errors };
 }
@@ -964,6 +1074,10 @@ export function validatePackage(manifest: unknown, files: PackageFiles): Validat
   // A missing or illegal path is already reported by validateManifest; only present files are read.
   const rules = typeof contributes.sniffRules === "string" ? read(contributes.sniffRules) : undefined;
   if (rules !== undefined) errors.push(...validateSniffPack(rules).errors);
+  const archiveRules = isObject(contributes.archiveRules) && typeof contributes.archiveRules.entry === "string"
+    ? read(contributes.archiveRules.entry)
+    : undefined;
+  if (archiveRules !== undefined) errors.push(...validateArchiveRulesPack(archiveRules).errors);
   for (const view of Array.isArray(contributes.views) ? contributes.views : []) {
     const icon = isObject(view) && typeof view.icon === "string" ? read(view.icon) : undefined;
     if (icon !== undefined) errors.push(...validateViewIcon(String((view as Obj).id), icon).errors);

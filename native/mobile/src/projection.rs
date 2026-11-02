@@ -82,7 +82,7 @@ impl Projection {
         &self.epoch
     }
 
-    /// 当前偏好 `custom_categories` 构建的分类路由；没有任何分类配置目录时为 `None`。
+    /// 当前偏好构建的授权路由；无分类规则时为空规则路由，仍支持插件归档分类。
     pub(crate) fn category_route(&self) -> Option<CategoryRouteDto> {
         CategoryRouteDto::from_preference(
             self.snapshot
