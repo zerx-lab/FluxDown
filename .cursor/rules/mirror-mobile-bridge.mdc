@@ -1,0 +1,11 @@
+---
+description: UniFFI DTO / 通用分区 / reducer / 内置分类基线改动须同步 Android 与 iOS 映射层
+globs: **/native/mobile/src/**,**/native/protocol/src/agent.rs,**/native/protocol/src/event.rs,**/native/protocol/src/method.rs,**/native/protocol/src/settings.rs,**/native/protocol/src/daemon_config.rs,**/mobile/Android/core/src/main/java/com/fluxdown/core/model/**,**/mobile/Android/core/src/main/java/com/fluxdown/core/host/**,**/mobile/Android/core/src/main/java/com/fluxdown/core/store/**,**/mobile/Android/core/src/main/java/com/fluxdown/core/protocol/**,**/mobile/Android/bridge/src/**,**/mobile/FluxDown/FluxKit/Sources/FluxDomain/**,**/mobile/FluxDown/FluxKit/Sources/FluxBridge/**
+alwaysApply: false
+---
+
+# mirror-mobile-bridge（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/mirror-mobile-bridge.md`](mdc:.omp/rules/mirror-mobile-bridge.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

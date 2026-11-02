@@ -14,8 +14,9 @@
 |核心契约|本文件|会话开头|
 |路径规则|`.omp/rules/*.md`（`globs` + `interruptMode: never`）|**编辑命中路径时自动注入**：镜像契约 `mirror-*`（§5）、领域细则、补丁陷阱；也可随时 `read rule://<名>`|
 |流式拦截|`.omp/rules/*.md`（正则 / AST 条件）|输出命中违规写法时打断：unwrap、unsafe、忽错、禁用命令、硬编码文案|
-|执行前拦截|`.omp/hooks/pre/guard.ts`|工具调用前硬拒：tag 推送、`--no-verify`、强推、测试 `--workspace`、子代理全量门禁|
+|执行前拦截|`.omp/hooks/pre/guard.ts`（判定在 `hooks/lib/check_bash.mjs`）|工具调用前硬拒：tag 推送、`--no-verify`、强推、测试 `--workspace`、子代理全量门禁|
 |知识附录|`.omp/knowledge/*.md`|按需 `read`|
+|Cursor 薄适配|`.cursor/**`|Cursor 会话：规则 / hooks / skills / commands 只指向 `.omp/`，**不复制正文**（约定见 `.cursor/README.md`）|
 
 |要查什么|读哪个|
 |---|---|
@@ -27,7 +28,7 @@
 |**「要加 X 改哪里」全表 —— 动手前先查**|`.omp/knowledge/extension-points.md`|
 |按领域收拢的已验证踩坑 —— **改某领域前先读对应小节**，修复新坑同回合补一条（带坐标）|`.omp/knowledge/pitfalls.md`|
 
-改本文件或 `.omp/**` 时 `rule://agent-docs-maintenance` 自动注入（分层归属、维护约定、同改矩阵）。项目知识只进上述各层（随仓分发），不依赖本机 omp memory 后端。
+改本文件、`.omp/**` 或 `.cursor/**` 时 `rule://agent-docs-maintenance` 自动注入（分层归属、维护约定、同改矩阵）。项目知识只进上述各层（随仓分发），不依赖本机 omp memory 后端；Cursor 侧契约仍以 `.omp/` 为唯一事实源。
 
 **单一事实源坐标**（要改契约先来这里）：
 

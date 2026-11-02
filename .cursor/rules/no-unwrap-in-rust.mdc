@@ -1,0 +1,11 @@
+---
+description: 非测试 Rust 代码禁止 unwrap/expect（clippy deny 级）
+globs: native/**/*.rs,crates/**/*.rs
+alwaysApply: false
+---
+
+# no-unwrap-in-rust（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/no-unwrap-in-rust.md`](mdc:.omp/rules/no-unwrap-in-rust.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

@@ -1,0 +1,11 @@
+---
+description: 分类保存目录路由、新建下载分类选择器与一键分类目录名推导须四端同语义
+globs: **/native/engine/src/category_route.rs,**/native/engine/src/fixtures/category_route_cases.json,**/native/agent/src/category_dir.rs,**/crates/downloads/src/model/save_dir_category.rs,**/crates/downloads/src/pages/new_download/category.rs,**/crates/downloads/src/submission.rs,**/web/src/lib/categoryRoute.ts,**/web/src/lib/category-dir.ts,**/web/src/pages/downloads/dialogs/CategoryPicker.tsx,**/web/src/pages/downloads/dialogs/NewDownloadDialog.tsx,**/native/mobile/src/session.rs,**/mobile/Android/core/src/main/java/com/fluxdown/core/protocol/Categories.kt,**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/newtask/NewDownloadState.kt,**/mobile/FluxDown/FluxKit/Sources/FluxDomain/Model/SaveDirCategory.swift,**/crates/downloads/src/model/categories.rs,**/web/src/pages/downloads/model/categories.ts,**/mobile/Android/core/src/main/java/com/fluxdown/core/model/Category.kt,**/mobile/FluxDown/FluxKit/Sources/FluxDomain/Model/TaskCategory.swift
+alwaysApply: false
+---
+
+# mirror-category-route（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/mirror-category-route.md`](mdc:.omp/rules/mirror-category-route.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。
