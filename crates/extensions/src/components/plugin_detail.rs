@@ -131,6 +131,10 @@ pub fn permission_label(translator: &Translator, permission: &str) -> (String, S
             translator.text("pluginPermPageScriptsName").to_owned(),
             translator.text("pluginPermPageScriptsDesc").to_owned(),
         ),
+        "archive" => (
+            translator.text("pluginPermArchiveName").to_owned(),
+            translator.text("pluginPermArchiveDesc").to_owned(),
+        ),
         other => (
             other.to_owned(),
             translator.text("pluginPermUnknownDesc").to_owned(),

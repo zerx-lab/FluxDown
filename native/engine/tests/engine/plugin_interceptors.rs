@@ -2,6 +2,8 @@
 //! - A：`prepare` 改写的请求身份与并发在探测自适应、失败后重试中持续生效，且不落库；
 //!   `failed` 阶段请求重试。
 //! - B：HLS `segments` 按标签过滤分片（被丢弃分片从不请求）；`finalize` 的 `fail` 让任务失败。
+//! - 归档插件：分类目录（含「其他」兜底）下叠加子目录、失败回退并记任务活动、已保存的
+//!   选择优先于插件当前答案。
 //!
 //! 仅 `plugins` feature 下编译运行。
 
@@ -76,6 +78,41 @@ async fn install_plugin(engine: &Engine, dir: &Path, identity: &str, stages: &st
         .await
         .expect("grant consent");
     pm.set_enabled(&id, true).await.expect("enable");
+}
+
+const ARCHIVE_ANIME: &str =
+    r#"globalThis.archive = async ({fileName}) => ({folderName:"Anime Title"});"#;
+
+/// 写 dev 归档插件（无 URL 拦截器）并安装、授权、启用。
+async fn install_archive_plugin(engine: &Engine, dir: &Path, script: &str) {
+    tokio::fs::create_dir_all(dir).await.expect("mkdir plugin");
+    tokio::fs::write(
+        dir.join("manifest.json"),
+        r#"{
+            "identity":"tester@archive",
+            "name":"Archive test",
+            "version":"1.0.0",
+            "permissions":["archive"],
+            "main":{"entry":"main.js"},
+            "contributes":{"archive":"archive.js"}
+        }"#,
+    )
+    .await
+    .expect("write manifest");
+    tokio::fs::write(dir.join("main.js"), "")
+        .await
+        .expect("write main");
+    tokio::fs::write(dir.join("archive.js"), script)
+        .await
+        .expect("write archive entry");
+    let pm = engine.manager.plugin_manager().expect("plugin manager");
+    let id = pm.install_dev(dir).await.expect("install archive plugin");
+    pm.grant_consent(&id, &["archive".to_string()], &[])
+        .await
+        .expect("grant archive permission");
+    pm.set_enabled(&id, true)
+        .await
+        .expect("enable archive plugin");
 }
 
 async fn plugin_notes(engine: &Engine, task_id: &str) -> Vec<String> {
@@ -1002,5 +1039,171 @@ async fn prepare_max_range_bytes_applies_on_every_run() {
         "activity log must name the changed field: {notes:?}"
     );
 
+    cleanup(&work).await;
+}
+
+/// 用 `route` 建单段任务并跑到完成收尾，返回最终任务记录。
+async fn run_routed_task(
+    work: &Path,
+    script: &str,
+    file_name: &str,
+    route: fluxdown_engine::category_route::CategoryRoute,
+) -> (Engine, fluxdown_engine::model::TaskInfo, Arc<Vec<u8>>) {
+    tokio::fs::create_dir_all(work).await.expect("mkdir work");
+    let body = Arc::new(vec![0x5a; 4096]);
+    let armed = Arc::new(AtomicBool::new(false));
+    let (port, _server) = spawn_range_server(body.clone(), armed);
+    let mut engine = make_engine(work).await;
+    install_archive_plugin(&engine, &work.join("archive_plugin"), script).await;
+    let mut done_rx = engine.manager.take_done_rx().expect("done channel");
+    let task_id = engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: format!("http://127.0.0.1:{port}/episode"),
+            save_dir: work.to_string_lossy().into_owned(),
+            file_name: file_name.to_string(),
+            segments: 1,
+            category_route: Some(route),
+            ..Default::default()
+        })
+        .await
+        .expect("create task");
+    let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
+        .await
+        .expect("task finishes")
+        .expect("done channel open");
+    engine.manager.on_task_done(&done).await;
+    let task = engine.db.load_task_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_eq!(task.file_name, file_name, "archive routing must not rename");
+    (engine, task, body)
+}
+
+fn mkv_route(category_dir: &Path) -> fluxdown_engine::category_route::CategoryRoute {
+    fluxdown_engine::category_route::CategoryRoute {
+        rules: vec![fluxdown_engine::category_route::CategoryRule {
+            match_mode: "extension".to_string(),
+            extensions: vec!["mkv".to_string()],
+            save_dir: category_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_nests_download_under_matched_category_without_renaming() {
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-route-{}", uniq()));
+    let category_dir = work.join("Videos");
+    let file_name = "The Expanse S02E03.mkv";
+    let (engine, task, body) =
+        run_routed_task(&work, ARCHIVE_ANIME, file_name, mkv_route(&category_dir)).await;
+    assert_eq!(
+        Path::new(&task.save_dir),
+        category_dir.join("Anime Title").as_path(),
+        "archive folder must remain nested below the FD category"
+    );
+    assert_eq!(
+        tokio::fs::read(category_dir.join("Anime Title").join(file_name))
+            .await
+            .expect("read archived file"),
+        *body
+    );
+    assert!(
+        !work.join(file_name).exists(),
+        "file must not be left in the unclassified root"
+    );
+    assert!(
+        plugin_notes(&engine, &task.task_id)
+            .await
+            .iter()
+            .any(|n| n.contains("Anime Title")),
+        "the chosen folder is shown in task activity"
+    );
+    cleanup(&work).await;
+}
+
+/// 插件抛错与返回不安全目录名都不影响下载：文件留在分类目录，原因写进任务活动。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_failures_fall_back_to_category_dir_with_activity_note() {
+    for (label, script, note) in [
+        (
+            "throws",
+            r#"globalThis.archive = () => { throw new Error("no match"); };"#,
+            "no match",
+        ),
+        (
+            "unsafe",
+            r#"globalThis.archive = () => ({ folderName: "../escape" });"#,
+            "不合法",
+        ),
+    ] {
+        let work = std::env::temp_dir().join(format!("fluxdown-archive-{label}-{}", uniq()));
+        let category_dir = work.join("Videos");
+        let file_name = "Show 01.mkv";
+        let (engine, task, _) =
+            run_routed_task(&work, script, file_name, mkv_route(&category_dir)).await;
+        assert_eq!(Path::new(&task.save_dir), category_dir.as_path(), "{label}");
+        assert!(category_dir.join(file_name).exists(), "{label}");
+        assert!(!work.join("escape").exists(), "{label}: no path escape");
+        let notes = plugin_notes(&engine, &task.task_id).await;
+        assert!(
+            notes.iter().any(|n| n.contains(note)),
+            "{label}: activity must explain the fallback, got {notes:?}"
+        );
+        cleanup(&work).await;
+    }
+}
+
+/// 「其他」兜底目录也是分类目录：归档子目录挂在它下面。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_applies_under_other_fallback_dir() {
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-other-{}", uniq()));
+    let other_dir = work.join("Other");
+    let route = fluxdown_engine::category_route::CategoryRoute {
+        other_dir: other_dir.to_string_lossy().into_owned(),
+        ..mkv_route(&work.join("Videos"))
+    };
+    let (_engine, task, _) = run_routed_task(&work, ARCHIVE_ANIME, "Show 01.ass", route).await;
+    assert_eq!(
+        Path::new(&task.save_dir),
+        other_dir.join("Anime Title").as_path()
+    );
+    cleanup(&work).await;
+}
+
+/// 已保存的归档选择优先于插件当前答案（插件更新不拆散任务），并随分类目录变化迁移。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saved_archive_choice_is_reused_and_follows_category_dir() {
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-saved-{}", uniq()));
+    let category_dir = work.join("Videos");
+    let route = fluxdown_engine::category_route::CategoryRoute {
+        archive: Some(fluxdown_engine::category_route::ArchiveRoute {
+            category_dir: work.join("OldVideos").to_string_lossy().into_owned(),
+            folder_name: "Saved Title".to_string(),
+        }),
+        ..mkv_route(&category_dir)
+    };
+    let (engine, task, _) = run_routed_task(&work, ARCHIVE_ANIME, "Show 01.mkv", route).await;
+    assert_eq!(
+        Path::new(&task.save_dir),
+        category_dir.join("Saved Title").as_path()
+    );
+    assert!(!category_dir.join("Anime Title").exists());
+    let stored = engine
+        .db
+        .load_task_category_route(&task.task_id)
+        .await
+        .expect("load route");
+    let stored: fluxdown_engine::category_route::CategoryRoute =
+        serde_json::from_str(&stored).expect("stored route json");
+    assert_eq!(
+        stored.archive,
+        Some(fluxdown_engine::category_route::ArchiveRoute {
+            category_dir: category_dir.to_string_lossy().into_owned(),
+            folder_name: "Saved Title".to_string(),
+        }),
+        "persisted archive follows the new category dir"
+    );
     cleanup(&work).await;
 }

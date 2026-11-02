@@ -3,7 +3,7 @@ title: 权限、授权与审计
 description: 各插件权限授予什么、风险等级与授权如何运作（界面与无界面两种方式）、市场如何校验插件包、哪些操作会被审计，以及「完全信任」的含义。
 section: plugins
 order: 14
-sourceHash: "aa0641a7c25f"
+sourceHash: "f5432dde9f63"
 ---
 
 插件并非被沙箱限制到毫无用处：它可以申请很强的能力。FluxDown 的规则是：每项能力都必须在 manifest 里**声明**，在生效之前**展示给你并由你批准**，并**记入**审计日志。
@@ -24,6 +24,7 @@ sourceHash: "aa0641a7c25f"
 | `intercept` | 拦截器：读取并修改匹配任务的链接、请求头、Cookie 与请求体，控制连接数，跳过探测，在下载中途换发凭据，改写或过滤流媒体分片，选择画质或 DASH Period，在完成前处理下载文件，并在任务失败后请求重试。见[拦截器指南](/docs/zh/plugins/interceptors-guide/)。 |
 | `desktop` | 以**完全信任**运行桌面原生脚本（见下文）。 |
 | `pageScripts` | 通过 FluxDown 浏览器扩展，在 `contributes.pageScripts` 列出的网站中运行插件脚本，风险**完全**（见[浏览器中的页面脚本](#浏览器中的页面脚本)）。 |
+| `archive` | 允许 `contributes.archive` 根据文件名在任务的分类文件夹内选择一个子文件夹。它可以读取插件设置并写入插件日志，不能访问文件、网络、任务或进程。风险：**较高**。 |
 
 订阅 provider、hooks、resolver 与可移植视图本身不需要额外权限。
 
@@ -34,7 +35,7 @@ sourceHash: "aa0641a7c25f"
 | 等级 | 条件 | 显示为 |
 |---|---|---|
 | **标准** | 没有任何权限。 | — |
-| **较高** | 含 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`background`、`intercept` 任一项。 | 警告徽标 |
+| **较高** | 含 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`background`、`intercept`、`archive` 任一项。 | 警告徽标 |
 | **完全** | 含 `desktop` 或 `pageScripts`。 | 危险徽标 |
 
 徽标显示在已安装的插件和市场列表上。

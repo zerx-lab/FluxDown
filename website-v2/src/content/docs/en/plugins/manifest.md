@@ -31,13 +31,14 @@ This page is the field-by-field reference. For a guided walkthrough see [Your fi
   "main": { "entry": "main.js", "events": ["onDone"], "background": false },
   "contributes": {
     "views": [{ "id": "dashboard", "title": "Dashboard", "location": "activity" }],
-    "commands": [{ "id": "refresh", "title": "Refresh", "palette": true }]
+    "commands": [{ "id": "refresh", "title": "Refresh", "palette": true }],
+    "archive": "archive.js"
   },
   "settings": [
     { "key": "quality", "title": "Preferred quality", "type": "string", "widget": "select",
       "options": [ { "value": "hd", "label": "HD" }, { "value": "sd", "label": "SD" } ], "default": "hd" }
   ],
-  "permissions": []
+  "permissions": ["archive"]
 }
 ```
 
@@ -60,7 +61,7 @@ A plugin may declare any combination of `resolvers`, `subscriptions`, `hooks`, `
 | `interceptors` | no | object | Task interceptors (request rewrite, segment filtering, post-processing). See [`interceptors`](#interceptors). |
 | `auth` | no | object | Platform login entry. See [`auth`](#auth). |
 | `main` | no | object | Always-on script for portable views, commands and background logic. See [`main`](#main). |
-| `contributes` | no | object | Views, commands, browser sniff rules and page scripts. See [`contributes`](#contributes). |
+| `contributes` | no | object | Views, commands, archive classification, browser sniff rules and page scripts. See [`contributes`](#contributes). |
 | `permissions` | no | array | Capability grants; unknown values are rejected. See [`permissions`](#permissions). |
 | `settings` | no | array | Declarative settings fields. See [`settings[]`](#settings). |
 
@@ -218,12 +219,26 @@ Validation runs after `auth`, in this order: `entry` path → `stages` non-empty
                 "portable": true, "icon": "icons/dashboard.svg" }],
     "commands": [{ "id": "refresh", "title": "Refresh", "palette": true, "taskMenu": false }],
     "sniffRules": "rules.json",
-    "pageScripts": [{ "id": "hello", "title": "Hello", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }]
+    "pageScripts": [{ "id": "hello", "title": "Hello", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }],
+    "archive": "archive.js"
   }
 }
 ```
 
-Empty `views` / `commands` arrays are the same as leaving them out.
+Empty `views` / `commands` arrays are the same as leaving them out. `archive` chooses a subfolder for category-routed tasks once the file name is known; it never renames files or takes over the save root.
+
+### `archive`
+
+`contributes.archive` is a package-relative path to a `.js` file and requires `permissions: ["archive"]` (**Elevated** risk). Rules:
+
+- The path must be package-relative: no `..`, no absolute path or drive letter.
+- The extension must be `.js`; `.mjs` is rejected.
+- The file must exist in the package.
+- At install the script is compile-checked like the other entries: it is evaluated once in a bare context where `flux` and `console` do not exist, so top-level code must not call them.
+
+Hosts that predate this key and permission reject the plugin as an invalid manifest (unknown key and unknown permission), so set `minAppVersion` to the next release or later.
+
+The entry is `globalThis.archive = (ctx) => result` with `ctx = { fileName }`. It returns `{ folderName: string }`, or `null` / `undefined` for no folder, and may be sync or async. It is called only for tasks that use category routing, when routing picks a category directory (a matching rule that has a directory, or the "Other" fallback directory); the saved folder is reused afterwards and the file name is never changed. The script only has `flux.settings`, `flux.logger` and `console`. The full behaviour (call timing, multiple plugins, `folderName` rules, failures, limits) is in the [API reference](/docs/en/plugins/api-reference/#archivectx).
 
 ### `views[]`
 
@@ -364,6 +379,7 @@ Extra host capabilities a plugin opts into. Empty or omitted = the base sandbox 
 | `pageScripts` | Run the plugin's scripts on the web pages listed in `contributes.pageScripts` (Full risk). |
 | `background` | Keep `main` running with the daemon (`main.background`). |
 | `intercept` | Declare `interceptors` to read and change a task's request, segments, quality and finished file while it runs. |
+| `archive` | Declare `contributes.archive`: choose one subfolder inside the task's category folder from the file name. It can read plugin settings and write the plugin log; it has no file, network, task or process access (Elevated risk). |
 
 Unknown values fail the whole manifest. Risk levels, consent and audit are explained in [Permissions, Consent & Audit](/docs/en/plugins/permissions/); the API behind each permission is in the [API reference](/docs/en/plugins/api-reference/).
 
@@ -376,6 +392,7 @@ Permissions that a declaration depends on:
 | any `views[].desktop` | `desktop` |
 | `contributes.sniffRules` | `browserRules` |
 | `contributes.pageScripts` (non-empty) | `pageScripts` |
+| `contributes.archive` | `archive` |
 
 (`tasks`, `ffmpeg` and `ytdlp` are checked when the API is called, not by the manifest.)
 
@@ -447,15 +464,15 @@ The manifest is validated when the plugin is installed and every time it is load
 
 ### Order of checks
 
-identity format → `name` non-empty → `version` format → `minAppVersion` format → `icon` path safety → at most one resolver → resolver `entry` path, non-empty `match.urls`, `timeoutMs ≠ 0`, `memoryLimitMb ≠ 0` → at most one subscription → `providerId` format and not `rss`, `entry` path, `timeoutMs ≠ 0` → hooks `entry` path, non-empty valid `events`, non-empty `match.urls` if present → auth `entry` path, `auth` permission present, `timeoutMs ≠ 0` → `main` (path, `.js`, valid `events`, `background` permission) → `contributes` (view and command limits and ids, `settings` location at most once, `portable` only with `desktop`, `main` required for portable views and commands, desktop entry and size and hosts rules, `desktop` permission, view `icon` path / `.svg` extension, `sniffRules` path / extension / `browserRules` permission, then `pageScripts`: at most 16 → `pageScripts` permission → per script: `id` format and uniqueness, `title` length, `matches` count and patterns, `excludeMatches` count and patterns, `js` count, safe `.js` paths, no duplicates) → `settings` (keys unique, per-field rules and widget × type matrix) → every `permissions` value known.
+identity format → `name` non-empty → `version` format → `minAppVersion` format → `icon` path safety → at most one resolver → resolver `entry` path, non-empty `match.urls`, `timeoutMs ≠ 0`, `memoryLimitMb ≠ 0` → at most one subscription → `providerId` format and not `rss`, `entry` path, `timeoutMs ≠ 0` → hooks `entry` path, non-empty valid `events`, non-empty `match.urls` if present → auth `entry` path, `auth` permission present, `timeoutMs ≠ 0` → `main` (path, `.js`, valid `events`, `background` permission) → `contributes` (view and command limits and ids, `settings` location at most once, `portable` only with `desktop`, `main` required for portable views and commands, desktop entry and size and hosts rules, `desktop` permission, view `icon` path / `.svg` extension, `sniffRules` path / extension / `browserRules` permission, `archive` package-relative path / `.js` extension / `archive` permission, then `pageScripts`: at most 16 → `pageScripts` permission → per script: `id` format and uniqueness, `title` length, `matches` count and patterns, `excludeMatches` count and patterns, `js` count, safe `.js` paths, no duplicates) → `settings` (keys unique, per-field rules and widget × type matrix) → every `permissions` value known.
 
 ### Files that must exist
 
-At install and load time the package must contain every declared entry script (`resolvers[0].entry`, `hooks.entry`, `auth.entry`, `subscriptions[0].entry`, `main.entry`), every `desktop.entry`, every view `icon` (which must also pass the icon content check above), the `sniffRules` file (which must also pass the content check above) and every file listed in a page script's `js` (each at most 256 KiB of valid UTF-8, at most 384 KiB per script once joined). A missing file is reported as `包内缺少文件 '<path>'` (“the package is missing file '<path>'”); an entry script that exists but cannot be read as UTF-8 text is reported as `读取入口文件 '<path>' 失败: …` (“failed to read entry file”). This applies to dev-mode plugins too: the plugin is listed as **Load failed** instead of failing later, on the first call.
+At install and load time the package must contain every declared entry script (`resolvers[0].entry`, `hooks.entry`, `auth.entry`, `subscriptions[0].entry`, `main.entry`, `contributes.archive`), every `desktop.entry`, every view `icon` (which must also pass the icon content check above), the `sniffRules` file (which must also pass the content check above) and every file listed in a page script's `js` (each at most 256 KiB of valid UTF-8, at most 384 KiB per script once joined). A missing file is reported as `包内缺少文件 '<path>'` (“the package is missing file '<path>'”); an entry script that exists but cannot be read as UTF-8 text is reported as `读取入口文件 '<path>' 失败: …` (“failed to read entry file”). This applies to dev-mode plugins too: the plugin is listed as **Load failed** instead of failing later, on the first call.
 
 ### Compile checks at install
 
-Syntax errors are rejected at install time rather than discovered on the first download. The compile check covers the **resolver, hooks, auth and subscription** entry scripts (up to four, one per declared kind). It does **not** cover `main` (compiled on demand) or desktop scripts (never compiled by the engine). Each `settings[].pattern` is also compiled as a JavaScript RegExp at install time; an invalid pattern rejects the install.
+Syntax errors are rejected at install time rather than discovered on the first download. The compile check covers the **resolver, hooks, interceptors, auth, subscription and archive** entry scripts (up to six, one per declared kind). Each script is evaluated once in a bare context where `flux` and `console` do not exist, so top-level code must not call them. It does **not** cover `main` (compiled on demand) or desktop scripts (never compiled by the engine). Each `settings[].pattern` is also compiled as a JavaScript RegExp at install time; an invalid pattern rejects the install.
 
 A failed install changes nothing: a first install leaves no folder behind, and an update restores the previous version.
 

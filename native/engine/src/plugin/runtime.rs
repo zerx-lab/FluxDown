@@ -45,6 +45,8 @@ pub enum PluginEntryKind {
     Main,
     /// 拦截入口：`globalThis.intercept`。
     Intercept,
+    /// Pure archive callback: `globalThis.archive({fileName})`.
+    Archive,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,20 @@ pub struct ResolveRequest {
     /// 变体收敛静默取默认（不为 N 个子任务弹 N 个选择框）。引擎不解释具体格式，
     /// 由发起方（前端固定选择/引擎自动裂变）与插件约定（D5 契约）。
     pub resolver_item: String,
+}
+
+/// Input to the pure archive callback.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveRequest {
+    pub file_name: String,
+}
+
+/// Archive callback output; folderName is validated by the host.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ArchiveResult {
+    pub folder_name: String,
 }
 
 /// 一次平台登录动作。`action` 为 `begin`、`poll`、`cancel`、`logout` 或 `status`。
@@ -733,6 +749,17 @@ pub trait ScriptRuntime: Send + Sync {
         budget: ExecutionBudget,
         host: HostContext,
     ) -> Result<Option<ResolveResult>, PluginError>;
+
+    /// 调用隔离的 `globalThis.archive(ctx)`：只注入 `bridge` 的日志能力
+    /// （`flux.logger` / `console`），不提供任何网络、存储、文件、任务或进程接口。
+    async fn invoke_archive(
+        &self,
+        plugin: &PluginScript,
+        req: ArchiveRequest,
+        settings_json: String,
+        bridge: Arc<dyn PluginBridge>,
+        budget: ExecutionBudget,
+    ) -> Result<Option<ArchiveResult>, PluginError>;
 
     /// 调用 `globalThis.intercept(ctx)`（下载拦截平面）。`Ok(None)` = 不改动；
     /// `Ok(Some(raw))` 为插件返回值的 JSON 文本。`long_running` 走外部工具信号量

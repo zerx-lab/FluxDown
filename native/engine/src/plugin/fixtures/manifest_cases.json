@@ -80,6 +80,66 @@
   "risk": "elevated"
  },
  {
+  "name": "archive permission elevated",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": { "archive": "archive.js" }
+  },
+  "files": ["archive.js"],
+  "ok": true,
+  "risk": "elevated"
+ },
+ {
+  "name": "archive requires permission",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "contributes": { "archive": "archive.js" }
+  },
+  "files": ["archive.js"],
+  "ok": false
+ },
+ {
+  "name": "archive requires js extension",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": { "archive": "archive.mjs" }
+  },
+  "files": ["archive.mjs"],
+  "ok": false
+ },
+ {
+  "name": "archive path must stay inside package",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": { "archive": "../archive.js" }
+  },
+  "files": ["../archive.js"],
+  "ok": false
+ },
+ {
+  "name": "archive file missing",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": { "archive": "archive.js" }
+  },
+  "files": [],
+  "ok": false
+ },
+ {
   "name": "unknown permission",
   "manifest": {
    "identity": "a@b",

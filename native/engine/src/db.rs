@@ -4842,6 +4842,15 @@ impl Db {
                 .await?;
         Ok(route.unwrap_or_default())
     }
+    /// 持久化单个任务的分类与归档路由选择。
+    pub async fn set_task_category_route(&self, id: &str, route: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET category_route = $1 WHERE id = $2")
+            .bind(route)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 
     /// 任务落库的非 GET 请求方法（空串 = GET / 任务不存在）。
     pub async fn load_task_request_method(&self, id: &str) -> Result<String, DbError> {

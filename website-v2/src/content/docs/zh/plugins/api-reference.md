@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "56e403845992"
+sourceHash: "c62f1a407306"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -28,6 +28,42 @@ sourceHash: "56e403845992"
 | [`authenticate(ctx)`](#authenticatectx) | 宿主驱动一次登录动作（`begin` / `poll` / `cancel` / `logout` / `status`）。 | `auth.entry` + 权限 `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) 对象 |
 | [`subscribe(ctx)`](#subscribectx) | 属于你的 provider 的订阅源被刷新。 | `subscriptions[0]` | `subscriptions[0].entry` | 规范化的订阅内容对象 |
 | [`main`](#main-常驻脚本) | daemon（或某个视图）激活你的常驻脚本。 | `main` | `main.entry` | —（用于注册处理器） |
+| [`archive(ctx)`](#archivectx) | 使用分类路由的任务选中了某个分类目录（命中规则的目录，或“其他”兜底目录）时；开始时调用，若尚未选出文件夹则完成时再调用。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ folderName }`、`null` 或 `undefined` |
+
+### `archive(ctx)`
+
+```js
+import { defineArchive } from "fluxdown-plugin-sdk/runtime";
+
+defineArchive(({ fileName }) => {
+  if (/\.(mkv|mp4)$/i.test(fileName)) return { folderName: "Videos by plugin" };
+  return null;
+});
+```
+
+回调会根据最终文件名，在**任务的分类目录内选择一个子文件夹**。它从不修改文件名：最终路径是 `<categoryDir>/<folderName>/<fileName>`。`ctx` 是 `{ fileName }`；函数可以是同步或异步，返回 `{ folderName: string }`，或用 `null` / `undefined` 表示不使用子文件夹。每次调用使用全新的 QuickJS 运行时。
+
+**archive 脚本里有什么。** 只有 `flux.settings`（类型化的插件设置）、`flux.logger.info|warn|error` 和 `console.log|info|warn|error|debug`（logger 与 `console` 都写入插件日志）。没有 `flux.info`、`flux.storage`、`flux.fetch`、`flux.fs`、`flux.task`、`flux.ffmpeg`、`flux.ytdlp`、`flux.auth`、`flux.rpc` / `flux.ui`，也没有任何文件、网络、任务或进程接口。顶层代码不能调用 `flux` 或 `console`：安装时脚本会在一个两者都不存在的空白上下文里做编译检查。
+
+**何时调用。** 只对使用分类路由的任务，并且只在路由选中某个分类目录时调用：命中且带目录的分类规则，或“其他”兜底目录。用户明确选择的保存目录会绕过它。
+
+- 在下载开始写入之前，用最终文件名调用。对 HLS 和 DASH，这是预测的 `<stem>.mp4` 文件名。
+- 如果开始时没有选出文件夹，则在完成时再用最终文件名询问一次。
+- 一旦选出文件夹，它会随任务保存，并在暂停 / 恢复、重启和完成时复用。不会再次询问插件，所以插件更新绝不会把一个任务拆开。
+- 如果之后分类目录变了（规则被编辑），保存的文件夹会跟随新的分类目录。如果规则完全不再匹配，任务保持在它已保存的归档文件夹里。
+
+**多个 archive 插件**按 `identity` 升序依次调用；第一个有效的 `folderName` 生效。
+
+**`folderName` 规则。** 名称只做校验，从不自动修正。名称无效意味着该插件的答复被忽略，转而尝试下一个插件。有效的名称：
+
+- 非空，且至多 180 个 UTF-8 字节；
+- 不是 `.` 或 `..`；
+- 不含 `/`、`\`、`:` 或控制字符；
+- 本身已经是干净的文件名，即不会被 FluxDown 的文件名清洗器改动。这排除了 `<>"|?*`、首尾的空格和点、Windows 保留设备名（`CON`、`NUL`、`COM1` ……，带扩展名也一样）以及不可见的格式字符。
+
+**失败从不让下载失败。** 抛出异常、超时、过载、返回类型无效、`folderName` 无效，或缺少必填的插件设置项（该插件被跳过），都意味着不使用子文件夹：文件留在分类目录里。原因会写入任务的活动日志和插件审计日志。超时和内存超限会计入[熔断](#熔断)。
+
+**限制。** 每次调用 5 秒；内存上限等于 resolver 的预算；整个应用内最多同时运行 2 个 archive 调用；调用最多等待 3 秒获取名额，否则作为过载被跳过。archive 插件依次运行，所以延迟会累加。见[运行时限制](#运行时限制)。
 
 脚本如何运行：
 
@@ -36,7 +72,7 @@ sourceHash: "56e403845992"
 - 文件顶层代码在**每次**调用时、入口之前都会执行。顶层抛出异常会让这次调用以 `脚本编译失败: …` 失败。
 - `resolve`、`authenticate`、`subscribe` 未定义时，调用失败，错误信息含 `入口 resolve 未定义`（`authenticate` / `subscribe` 同理）。**钩子**未定义则被静默跳过。
 - `resolve`、`authenticate`、`subscribe` 的返回值会被 `JSON.stringify` 后交给宿主解析：请直接返回普通对象，不要返回已经序列化的 JSON 字符串（会被二次编码，校验失败）。`undefined`、函数、symbol 会被 `JSON.stringify` 丢弃。
-- 类型化的 `flux.settings`、`flux.info` 和入口参数会在脚本运行前注入。
+- 类型化的 `flux.settings`、`flux.info` 和入口参数会在脚本运行前注入。`archive` 入口只会得到 `flux.settings`、`flux.logger`、`console` 和它的参数（见 [`archive(ctx)`](#archivectx)）。
 
 ### `resolve(ctx)`
 
@@ -271,20 +307,21 @@ flux.timers.setInterval(() => flux.logger.info("tick"), 60000);
 
 ## 各入口里有哪些 `flux` 接口
 
-注入的 `flux` 对象在所有入口中都一样，除非下表另有说明。「权限」指清单的 `permissions` 里必须声明对应项；没声明时该属性是 `undefined`（用 `if (flux.ytdlp)` 判断）。
+注入的 `flux` 对象在所有入口中都一样，除非下表另有说明。`archive` 入口是例外：它运行在最小沙箱里，只有 `flux.settings`、`flux.logger` 和 `console`；下表其余各行在那里都不存在（`flux.info`、`flux.storage`、`flux.fetch`、`flux.fs`、`flux.task`、`flux.ffmpeg`、`flux.ffprobe`、`flux.ytdlp`、`flux.auth`、`flux.ui` / `rpc` 及其余接口，以及任何文件、网络、任务或进程接口）。「权限」指清单的 `permissions` 里必须声明对应项；没声明时该属性是 `undefined`（用 `if (flux.ytdlp)` 判断）。
 
-| 接口 | `resolve` | 钩子（`onDone` 以外） | `onDone` | `authenticate` | `subscribe` | `main` |
-|---|---|---|---|---|---|---|
-| `flux.fetch` | 有 | 有 | 有 | 有 | 有 | 有 |
-| `flux.storage`、`flux.fs` | 有 | 有 | 有 | 有 | 有 | 有 |
-| `flux.settings`、`flux.info`、`flux.logger`、`console` | 有 | 有 | 有 | 有 | 有 | 有 |
-| `flux.auth` | 权限 `auth` | 权限 `auth` | 权限 `auth` | 始终有（入口本身要求 `auth`） | 权限 `auth` | 权限 `auth` |
-| `flux.task.requestRetry` | 无效果（警告） | 仅 `onError` | 无效果 | 无效果 | 无效果 | 无效果 |
-| `flux.task.recordArtifact` | reject | reject | 可用 | reject | reject | reject |
-| `flux.ffmpeg`、`flux.ffprobe` | `undefined` | 权限 `ffmpeg`：对象存在，`run` 会 reject，`ffmpeg.available()` 可用 | 权限 `ffmpeg`，`run` 可用 | `undefined` | `undefined` | 权限 `ffmpeg`：对象存在，`run` 会 reject |
-| `flux.ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** | 权限 `ytdlp` | 权限 `ytdlp` |
-| `flux.ui`、`commands`、`rpc`、`events`、`timers`、`settings.update` | — | — | — | — | — | 有 |
-| `flux.tasks` | — | — | — | — | — | 权限 `tasks` |
+| 接口 | `resolve` | 钩子（`onDone` 以外） | `onDone` | `authenticate` | `subscribe` | `main` | `archive` |
+|---|---|---|---|---|---|---|---|
+| `flux.fetch` | 有 | 有 | 有 | 有 | 有 | 有 | **`undefined`** |
+| `flux.storage`、`flux.fs` | 有 | 有 | 有 | 有 | 有 | 有 | **`undefined`** |
+| `flux.settings`、`flux.logger`、`console` | 有 | 有 | 有 | 有 | 有 | 有 | 有 |
+| `flux.info` | 有 | 有 | 有 | 有 | 有 | 有 | **`undefined`** |
+| `flux.auth` | 权限 `auth` | 权限 `auth` | 权限 `auth` | 始终有（入口本身要求 `auth`） | 权限 `auth` | 权限 `auth` | **`undefined`** |
+| `flux.task.requestRetry` | 无效果（警告） | 仅 `onError` | 无效果 | 无效果 | 无效果 | 无效果 | **`undefined`** |
+| `flux.task.recordArtifact` | reject | reject | 可用 | reject | reject | reject | **`undefined`** |
+| `flux.ffmpeg`、`flux.ffprobe` | `undefined` | 权限 `ffmpeg`：对象存在，`run` 会 reject，`ffmpeg.available()` 可用 | 权限 `ffmpeg`，`run` 可用 | `undefined` | `undefined` | 权限 `ffmpeg`：对象存在，`run` 会 reject | `undefined` |
+| `flux.ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** |
+| `flux.ui`、`commands`、`rpc`、`events`、`timers`、`settings.update` | — | — | — | — | — | 有 | **`undefined`** |
+| `flux.tasks` | — | — | — | — | — | 权限 `tasks` | **`undefined`** |
 
 `flux.auth.*` 和 `flux.fetch` 的 `authRef` 选项都需要在 `permissions` 里声明 `auth`；没有该权限却显式传入 `authRef`，`flux.fetch` 会 reject（见[错误](#你会遇到的错误)）。
 
@@ -590,6 +627,7 @@ globalThis.resolve = async (ctx) => {
 | `subscribe` | 默认 10 秒；`subscriptions[0].timeoutMs` 会替换它，上限 30 秒 | 相同 | 64 MB |
 | `authenticate` | 默认 30 秒；`auth.timeoutMs` 会替换它，上限 30 秒 | 相同 | 64 MB |
 | 钩子 | 5 秒 | 5 秒 | 32 MB |
+| `archive` | 5 秒 | 5 秒 | 与 `resolve` 默认值相同（64 MB） |
 | 拥有 `ytdlp` 权限（任何钩子）或拥有 `ffmpeg` 权限（在 `onDone` 中）的插件的钩子 | 约 30 分钟（1830 秒） | 30 秒 | 32 MB |
 | `main`（每次调用：渲染、命令、事件、定时器、rpc） | 30 秒 | 2 秒 | 整个运行时 64 MB |
 
@@ -614,13 +652,14 @@ globalThis.resolve = async (ctx) => {
 
 - `resolve` 和 `subscribe` 共用一个池。其大小跟随应用的并发下载上限（不低于运行时的 worker 数，worker 至多 4 个）。调用最多等待 **3 秒**获取空闲名额，超时则以 `插件运行时过载（并发已满）` 失败（fail-closed，任务进入错误状态）。
 - `authenticate` 有自己的池，容量 **2**，等待同样是 3 秒，所以登录轮询永远不会饿死 resolve。
+- `archive` 在整个应用内有自己的池，容量 **2**。调用最多等待 **3 秒**获取名额，超时则作为过载被跳过（不使用子文件夹，下载不受影响）。
 - 钩子使用大小等于 worker 数（至多 4）的池。池满时，后续的钩子通知会被**丢弃**（记为 `钩子并发已满，本次钩子被丢弃`），不会排队。
 - 拥有 `ffmpeg` 或 `ytdlp` 权限的插件，其钩子使用同样大小的独立池。池忙时，最多有 **64** 个通知排队等待；超出则丢弃（`外部工具钩子排队已满，本次钩子被丢弃`）。
 - `main` 每个插件一次只处理一个调用；调用按顺序排队。
 
 ### 熔断
 
-`resolve`、`subscribe` 或 `main` 的调用中，**连续** 3 次超时（`脚本执行超时`）或超内存（`脚本超出内存上限`）会自动禁用该插件。应用会弹出通知，插件保持关闭直到被手动重新启用。任何其他结果——成功，或其他类型的错误（如非法返回值、网络失败）——都会把计数清零。
+`resolve`、`subscribe`、`archive` 或 `main` 的调用中，**连续** 3 次超时（`脚本执行超时`）或超内存（`脚本超出内存上限`）会自动禁用该插件。应用会弹出通知，插件保持关闭直到被手动重新启用。任何其他结果——成功，或其他类型的错误（如非法返回值、网络失败）——都会把计数清零。
 
 不计入的：钩子（它们的超时和内存错误只记录日志）、`authenticate` 和过载拒绝。`main` 里的超时或内存溢出还会销毁运行时；下次调用会启动一个全新的运行时，**内存中的所有状态都会丢失**。
 
@@ -636,7 +675,7 @@ globalThis.resolve = async (ctx) => {
 |---|---|
 | `脚本编译失败: …` | 语法错误，或脚本顶层抛出了异常。 |
 | `插件运行时错误: …` | 你的代码抛了异常，或某个被 reject 的 `await` 没有捕获。冒号后面是你的错误文本。函数不存在时包含 `入口 resolve 未定义`。 |
-| `脚本执行超时` | 超出墙钟或 CPU 预算。计入熔断（对 `resolve` / `subscribe` / `main`）。 |
+| `脚本执行超时` | 超出墙钟或 CPU 预算。计入熔断（对 `resolve` / `subscribe` / `archive` / `main`）。 |
 | `脚本超出内存上限` | 超出内存限制。计入熔断。 |
 | `插件运行时过载（并发已满）` | 3 秒内没有空闲名额。见[并发与过载](#并发与过载)。 |
 | `缺少必填设置项: 插件 <id> 需先配置「<title>」` | `required` 设置没有值。请让用户填写。 |

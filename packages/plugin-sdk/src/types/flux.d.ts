@@ -374,6 +374,19 @@ export interface ResolveContext {
   resolverItem: string;
 }
 
+/** `archive(ctx)` argument: the final file name (HLS/DASH: the predicted `<stem>.mp4`). */
+export interface ArchiveContext {
+  fileName: string;
+}
+
+/**
+ * Archive result: one subfolder inside the task's category directory. The name is validated,
+ * never auto-corrected; an invalid name is ignored and the next archive plugin is tried.
+ */
+export interface ArchiveResult {
+  folderName: string;
+}
+
 export interface ResolveVariant {
   label: string;
   url: string;
@@ -474,6 +487,8 @@ export type ResolveFn = (ctx: ResolveContext) => Awaitable<ResolveResult | null 
 export type AuthFn = (ctx: AuthContext) => Awaitable<AuthResult>;
 /** Returns the normalized subscription payload (at most 1000 items). */
 export type SubscribeFn = (ctx: SubscribeContext) => Awaitable<SubscribeResult>;
+/** Returns a subfolder name, or `null` / `undefined` for none (sync or async). */
+export type ArchiveFn = (ctx: ArchiveContext) => Awaitable<ArchiveResult | null | undefined>;
 
 // ---- Interceptor plane (manifest `interceptors`; entry `globalThis.intercept(ctx)`) ----
 
@@ -739,6 +754,8 @@ export interface HookHandlers {
 declare global {
   /** The plugin runtime facade. */
   const flux: Flux;
+  /** Archive entry (`contributes.archive`, `archive` permission); the sandbox has only `flux.settings`, `flux.logger` and `console`. */
+  function archive(ctx: ArchiveContext): Awaitable<ArchiveResult | null | undefined>;
   /**
    * Console routed to the plugin log. Declared as a plain variable: do not enable the DOM
    * lib in plugin projects (the QuickJS host has no DOM).

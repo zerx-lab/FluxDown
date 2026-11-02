@@ -176,6 +176,9 @@ pub struct LoadedPlugin {
     intercept_cache: Option<String>,
     auth_cache: Option<String>,
     subscription_cache: Option<String>,
+    /// 归档入口绝对路径与非 dev 模式的源码缓存。
+    archive_entry: Option<PathBuf>,
+    archive_cache: Option<String>,
     /// `main` 入口绝对路径（若声明）。
     main_entry: Option<PathBuf>,
     /// 非 dev 模式的 `main` 源码缓存。
@@ -205,6 +208,13 @@ impl LoadedPlugin {
         match (&self.intercept_entry, self.dev) {
             (Some(p), true) => tokio::fs::read_to_string(p).await.ok(),
             (Some(_), false) => self.intercept_cache.clone(),
+            (None, _) => None,
+        }
+    }
+    async fn archive_source(&self) -> Option<String> {
+        match (&self.archive_entry, self.dev) {
+            (Some(path), true) => tokio::fs::read_to_string(path).await.ok(),
+            (Some(_), false) => self.archive_cache.clone(),
             (None, _) => None,
         }
     }
@@ -597,6 +607,11 @@ impl PluginManager {
         let resolver_entry = manifest.resolvers.first().map(|r| dir.join(&r.entry));
         let hooks_entry = manifest.hooks.as_ref().map(|h| dir.join(&h.entry));
         let intercept_entry = manifest.interceptors.as_ref().map(|i| dir.join(&i.entry));
+        let archive_entry = manifest
+            .contributes
+            .as_ref()
+            .and_then(|c| c.archive.as_ref())
+            .map(|p| dir.join(p));
         let auth_entry = manifest.auth.as_ref().map(|a| dir.join(&a.entry));
         let subscription_entry = manifest.subscriptions.first().map(|s| dir.join(&s.entry));
 
@@ -734,9 +749,29 @@ impl PluginManager {
         )
         .await
         .map_err(fail)?;
-        let (resolver_cache, hooks_cache, auth_cache, subscription_cache, intercept_cache) = if dev
+        let archive_source = read_entry(
+            dir,
+            manifest
+                .contributes
+                .as_ref()
+                .and_then(|c| c.archive.as_deref()),
+        )
+        .await
+        .map_err(fail)?;
+        if let Some(source) = archive_source.as_deref()
+            && let Err(error) = self.runtime.check_compile(source)
         {
-            (None, None, None, None, None)
+            return Err(fail(format!("archive 脚本编译失败: {error}")));
+        }
+        let (
+            resolver_cache,
+            hooks_cache,
+            auth_cache,
+            subscription_cache,
+            intercept_cache,
+            archive_cache,
+        ) = if dev {
+            (None, None, None, None, None, None)
         } else {
             (
                 resolver_source,
@@ -744,6 +779,7 @@ impl PluginManager {
                 auth_source,
                 subscription_source,
                 intercept_source,
+                archive_source,
             )
         };
 
@@ -787,11 +823,13 @@ impl PluginManager {
             resolver_entry,
             hooks_entry,
             intercept_entry,
+            archive_entry,
             auth_entry,
             subscription_entry,
             resolver_cache,
             hooks_cache,
             intercept_cache,
+            archive_cache,
             auth_cache,
             subscription_cache,
             main_entry,
@@ -1826,6 +1864,7 @@ impl PluginManager {
             p.auth_source().await,
             p.subscription_source().await,
             p.intercept_source().await,
+            p.archive_source().await,
         ]
         .into_iter()
         .flatten()
@@ -3217,11 +3256,13 @@ mod tests {
             resolver_entry: None,
             hooks_entry: None,
             intercept_entry: None,
+            archive_entry: None,
             auth_entry: None,
             subscription_entry: None,
             resolver_cache: None,
             hooks_cache: None,
             intercept_cache: None,
+            archive_cache: None,
             auth_cache: None,
             subscription_cache: None,
             main_entry: None,
@@ -3229,6 +3270,39 @@ mod tests {
             view_icons: Vec::new(),
             timeout_streak: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    #[tokio::test]
+    async fn task_interceptors_follow_identity_order_not_load_order() {
+        let (manager, _sink, root) = revoke_fixture().await;
+        let manager = Arc::new(manager);
+        let mut plugins = Vec::new();
+        for identity in ["z@last", "a@first"] {
+            let mut plugin = test_loaded_plugin(identity, false, "/unused");
+            plugin.manifest.permissions = vec!["intercept".to_string()];
+            plugin.manifest.interceptors = Some(
+                serde_json::from_value(serde_json::json!({
+                    "entry": "intercept.js",
+                    "stages": ["prepare"],
+                    "match": { "urls": ["https://example.com/*"] }
+                }))
+                .unwrap(),
+            );
+            plugins.push(plugin);
+        }
+        *manager.plugins.write().await = Arc::new(plugins);
+        let interceptor = manager
+            .task_interceptor("task", "https://example.com/file.bin", "")
+            .await;
+        let identities: Vec<_> = interceptor
+            .entries()
+            .iter()
+            .map(|entry| entry.identity.as_str())
+            .collect();
+        assert_eq!(identities, ["a@first", "z@last"]);
+        drop(interceptor);
+        drop(manager);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // 476#1：同 identity 的安装目录 + dev 注册只保留一条（dev 覆盖安装目录），

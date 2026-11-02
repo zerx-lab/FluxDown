@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "af2f46fd3b3a"
+sourceHash: "8a6af81a734f"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -32,13 +32,14 @@ sourceHash: "af2f46fd3b3a"
   "main": { "entry": "main.js", "events": ["onDone"], "background": false },
   "contributes": {
     "views": [{ "id": "dashboard", "title": "看板", "location": "activity" }],
-    "commands": [{ "id": "refresh", "title": "刷新", "palette": true }]
+    "commands": [{ "id": "refresh", "title": "刷新", "palette": true }],
+    "archive": "archive.js"
   },
   "settings": [
     { "key": "quality", "title": "偏好画质", "type": "string", "widget": "select",
       "options": [ { "value": "hd", "label": "高清" }, { "value": "sd", "label": "标清" } ], "default": "hd" }
   ],
-  "permissions": []
+  "permissions": ["archive"]
 }
 ```
 
@@ -61,7 +62,7 @@ sourceHash: "af2f46fd3b3a"
 | `interceptors` | 否 | object | 任务拦截器（请求改写、分片过滤、后处理）。见 [`interceptors`](#interceptors)。 |
 | `auth` | 否 | object | 平台登录入口。见 [`auth`](#auth)。 |
 | `main` | 否 | object | 常驻脚本，承载可移植视图、命令与后台逻辑。见 [`main`](#main)。 |
-| `contributes` | 否 | object | 视图、命令、浏览器嗅探规则与页面脚本。见 [`contributes`](#contributes)。 |
+| `contributes` | 否 | object | 视图、命令、归档分类、浏览器嗅探规则与页面脚本。见 [`contributes`](#contributes)。 |
 | `permissions` | 否 | array | 能力授权，未知值一律拒绝。见 [`permissions`](#permissions)。 |
 | `settings` | 否 | array | 声明式设置项。见 [`settings[]`](#settings)。 |
 
@@ -219,12 +220,26 @@ hooks 在下载生命周期事件发生时运行你的代码。
                 "portable": true, "icon": "icons/dashboard.svg" }],
     "commands": [{ "id": "refresh", "title": "刷新", "palette": true, "taskMenu": false }],
     "sniffRules": "rules.json",
-    "pageScripts": [{ "id": "hello", "title": "你好", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }]
+    "pageScripts": [{ "id": "hello", "title": "你好", "matches": ["https://*.example.com/*"], "js": ["page/hello.js"] }],
+    "archive": "archive.js"
   }
 }
 ```
 
-`views` / `commands` 为空数组等同于不声明。
+`views` / `commands` 为空数组等同于不声明。`archive` 会在文件名已知后为跟随分类路由的任务选择一个子文件夹；它不会改文件名，也不会接管保存根目录。
+
+### `archive`
+
+`contributes.archive` 是指向包内 `.js` 文件的包内相对路径，且必须声明 `permissions: ["archive"]`（风险**较高**）。规则：
+
+- 路径必须是包内相对路径：不能含 `..`，不能是绝对路径或带盘符。
+- 扩展名必须是 `.js`；`.mjs` 会被拒绝。
+- 文件必须存在于包内。
+- 安装时会像其他入口一样做编译检查：脚本会在一个没有 `flux` 和 `console` 的空白上下文里求值一次，所以顶层代码不能调用它们。
+
+支持该键和权限之前的旧版宿主会把它们当作无效 manifest 拒绝（未知键、未知权限），所以请把 `minAppVersion` 设为下一个版本或更高。
+
+入口是 `globalThis.archive = (ctx) => result`，其中 `ctx = { fileName }`。它返回 `{ folderName: string }`，或用 `null` / `undefined` 表示不使用子文件夹，可以是同步或异步函数。仅当任务使用分类路由、且路由选中了某个分类目录（命中且带目录的分类规则，或“其他”兜底目录）时才会调用；选定的文件夹之后会被复用，文件名永远不会被改变。脚本里只有 `flux.settings`、`flux.logger` 和 `console`。完整行为（调用时机、多个插件、`folderName` 规则、失败处理、限制）见 [API 参考](/docs/zh/plugins/api-reference/#archivectx)。
 
 ### `views[]`
 
@@ -365,6 +380,7 @@ hooks 在下载生命周期事件发生时运行你的代码。
 | `desktop` | 允许桌面脚本（`contributes.views[].desktop`）在桌面进程内以完全信任运行。 |
 | `background` | 允许 `main` 随 daemon 常驻（`main.background`）。 |
 | `intercept` | 允许声明 `interceptors`，在任务运行时读取并修改其请求、分片、画质与完成后的文件。 |
+| `archive` | 声明 `contributes.archive`：根据文件名在任务的分类文件夹内选择一个子文件夹。它可以读取插件设置并写入插件日志，不能访问文件、网络、任务或进程（风险较高）。 |
 
 未知值会让整份 manifest 失败。风险等级、授权与审计见[权限、授权与审计](/docs/zh/plugins/permissions/)；各权限背后的接口见 [API 参考](/docs/zh/plugins/api-reference/)。
 
@@ -377,6 +393,7 @@ hooks 在下载生命周期事件发生时运行你的代码。
 | 任一 `views[].desktop` | `desktop` |
 | `contributes.sniffRules` | `browserRules` |
 | `contributes.pageScripts`（非空） | `pageScripts` |
+| `contributes.archive` | `archive` |
 
 （`tasks`、`ffmpeg`、`ytdlp` 在调用接口时才检查，manifest 校验不要求。）
 
@@ -448,15 +465,15 @@ manifest 在安装时和每次加载时都会校验。校验失败的插件不�
 
 ### 检查顺序
 
-identity 格式 → `name` 非空 → `version` 格式 → `minAppVersion` 格式 → `icon` 路径安全 → resolver 至多一个 → resolver 的 `entry` 路径、`match.urls` 非空、`timeoutMs ≠ 0`、`memoryLimitMb ≠ 0` → subscription 至多一个 → `providerId` 格式且不是 `rss`、`entry` 路径、`timeoutMs ≠ 0` → hooks 的 `entry` 路径、`events` 非空且合法、`match.urls`（如有）非空 → auth 的 `entry` 路径、含 `auth` 权限、`timeoutMs ≠ 0` → `main`（路径、`.js`、`events` 合法、`background` 权限）→ `contributes`（视图与命令的数量上限和 id、`settings` 位置至多一个、`portable` 只能与 `desktop` 同时声明、可移植视图与命令要求 `main`、desktop 的入口 / 尺寸 / 主机规则、`desktop` 权限、视图 `icon` 的路径 / `.svg` 扩展名、`sniffRules` 的路径 / 扩展名 / `browserRules` 权限，然后是 `pageScripts`：至多 16 条 → `pageScripts` 权限 → 逐条脚本：`id` 格式与唯一性、`title` 长度、`matches` 数量与模式、`excludeMatches` 数量与模式、`js` 数量、安全的 `.js` 路径、不重复）→ `settings`（key 唯一、逐字段规则与 widget × type 矩阵）→ `permissions` 全为已知值。
+identity 格式 → `name` 非空 → `version` 格式 → `minAppVersion` 格式 → `icon` 路径安全 → resolver 至多一个 → resolver 的 `entry` 路径、`match.urls` 非空、`timeoutMs ≠ 0`、`memoryLimitMb ≠ 0` → subscription 至多一个 → `providerId` 格式且不是 `rss`、`entry` 路径、`timeoutMs ≠ 0` → hooks 的 `entry` 路径、`events` 非空且合法、`match.urls`（如有）非空 → auth 的 `entry` 路径、含 `auth` 权限、`timeoutMs ≠ 0` → `main`（路径、`.js`、`events` 合法、`background` 权限）→ `contributes`（视图与命令的数量上限和 id、`settings` 位置至多一个、`portable` 只能与 `desktop` 同时声明、可移植视图与命令要求 `main`、desktop 的入口 / 尺寸 / 主机规则、`desktop` 权限、视图 `icon` 的路径 / `.svg` 扩展名、`sniffRules` 的路径 / 扩展名 / `browserRules` 权限、`archive` 的包内相对路径 / `.js` 扩展名 / `archive` 权限，然后是 `pageScripts`：至多 16 条 → `pageScripts` 权限 → 逐条脚本：`id` 格式与唯一性、`title` 长度、`matches` 数量与模式、`excludeMatches` 数量与模式、`js` 数量、安全的 `.js` 路径、不重复）→ `settings`（key 唯一、逐字段规则与 widget × type 矩阵）→ `permissions` 全为已知值。
 
 ### 必须存在的文件
 
-安装与加载时，包内必须有每个已声明的入口脚本（`resolvers[0].entry`、`hooks.entry`、`auth.entry`、`subscriptions[0].entry`、`main.entry`）、每个 `desktop.entry`、每个视图 `icon`（还要通过上文的图标内容检查）、`sniffRules` 指向的文件（后者还要通过上文的内容检查），以及页面脚本 `js` 列出的每个文件（每个不超过 256 KiB 且为合法 UTF-8，同一条脚本拼接后不超过 384 KiB）。缺失时的错误是「包内缺少文件 '<路径>'」；入口脚本存在但无法按 UTF-8 文本读取时，错误是「读取入口文件 '<路径>' 失败: …」。开发模式插件同样适用：插件会被列为**加载失败**，而不是等到第一次调用时才出错。
+安装与加载时，包内必须有每个已声明的入口脚本（`resolvers[0].entry`、`hooks.entry`、`auth.entry`、`subscriptions[0].entry`、`main.entry`、`contributes.archive`）、每个 `desktop.entry`、每个视图 `icon`（还要通过上文的图标内容检查）、`sniffRules` 指向的文件（后者还要通过上文的内容检查），以及页面脚本 `js` 列出的每个文件（每个不超过 256 KiB 且为合法 UTF-8，同一条脚本拼接后不超过 384 KiB）。缺失时的错误是「包内缺少文件 '<路径>'」；入口脚本存在但无法按 UTF-8 文本读取时，错误是「读取入口文件 '<路径>' 失败: …」。开发模式插件同样适用：插件会被列为**加载失败**，而不是等到第一次调用时才出错。
 
 ### 安装时的编译检查
 
-语法错误会在安装时当场拒绝，而不是等到第一次下载才发现。编译检查覆盖 **resolver、hooks、auth、subscription** 四类入口脚本（按声明的种类，最多四个），**不**包括 `main`（按需编译）和桌面脚本（引擎从不编译）。每个 `settings[].pattern` 也会在安装时按 JavaScript RegExp 编译一次，不合法则拒绝安装。
+语法错误会在安装时当场拒绝，而不是等到第一次下载才发现。编译检查覆盖 **resolver、hooks、interceptors、auth、订阅和 archive** 入口脚本（按声明的种类，最多六个）。每个脚本会在一个没有 `flux` 和 `console` 的空白上下文里求值一次，所以顶层代码不能调用它们。**不**包括 `main`（按需编译）和桌面脚本（引擎从不编译）。每个 `settings[].pattern` 也会在安装时按 JavaScript RegExp 编译一次，不合法则拒绝安装。
 
 安装失败不会留下任何改动：首次安装不会留下目录，更新则恢复到旧版本。
 

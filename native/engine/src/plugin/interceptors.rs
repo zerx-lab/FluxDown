@@ -1,20 +1,23 @@
 //! 下载拦截平面的插件侧：按任务挑选匹配插件，并把各阶段调用转给脚本运行时。
 
+use crate::logger::log_warn;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{EXTERNAL_TOOL_HOOK_BUDGET, PluginManager, build_typed_settings_json, value_of};
+use super::{
+    EXTERNAL_TOOL_HOOK_BUDGET, LoadedPlugin, PluginManager, build_typed_settings_json, value_of,
+};
 use crate::intercept::{InterceptStage, InterceptorEntry, TaskEgressView, TaskInterceptor};
 use crate::plugin::audit::PluginAuditRow;
 use crate::plugin::call_egress::CallEgress;
 use crate::plugin::manifest::{
-    InterceptFailure, PERMISSION_AUTH, PERMISSION_FFMPEG, PERMISSION_INTERCEPT, PERMISSION_YTDLP,
-    url_glob_match,
+    InterceptFailure, PERMISSION_ARCHIVE, PERMISSION_AUTH, PERMISSION_FFMPEG, PERMISSION_INTERCEPT,
+    PERMISSION_YTDLP, url_glob_match,
 };
 use crate::plugin::quickjs::HARD_TIMEOUT_CEILING;
 use crate::plugin::runtime::{
-    ExecutionBudget, HostContext, PluginEntryKind, PluginError, PluginScript,
+    ArchiveRequest, ExecutionBudget, HostContext, PluginEntryKind, PluginError, PluginScript,
 };
 
 /// 未声明 `timeoutMs` 时的单次调用超时。
@@ -55,15 +58,25 @@ impl PluginManager {
                 })
             })
             .collect();
-        if entries.is_empty() {
+        entries.sort_by(|a, b| a.identity.cmp(&b.identity));
+        let has_archivers = snapshot.iter().any(|p| {
+            p.enabled
+                && p.manifest.has_permission(PERMISSION_ARCHIVE)
+                && p.manifest
+                    .contributes
+                    .as_ref()
+                    .and_then(|c| c.archive.as_ref())
+                    .is_some()
+        });
+        if entries.is_empty() && !has_archivers {
             return crate::intercept::noop();
         }
-        entries.sort_by(|a, b| a.identity.cmp(&b.identity));
         Arc::new(PluginTaskInterceptor {
             pm: self.clone(),
             task_id: task_id.to_string(),
             source_url: source_url.to_string(),
             entries,
+            has_archivers,
             egress: std::sync::Mutex::new(None),
         })
     }
@@ -180,6 +193,129 @@ impl PluginManager {
         ));
         result
     }
+    /// 按 identity 升序询问已启用的归档插件，返回首个合法目录名。没有插件给出合法目录名
+    /// 时，若有插件失败（缺必填设置、抛错、超时、过载、返回非法值或不安全的目录名），
+    /// 以 `Err` 返回逐条原因供任务活动展示；全部明确放弃（返回空）时为 `Ok(None)`。
+    pub(super) async fn archive_folder(
+        &self,
+        file_name: &str,
+        task_id: &str,
+    ) -> Result<Option<String>, String> {
+        let snapshot = self.plugins.read().await.clone();
+        let mut candidates: Vec<_> = snapshot
+            .iter()
+            .filter(|plugin| {
+                plugin.enabled
+                    && plugin.manifest.has_permission(PERMISSION_ARCHIVE)
+                    && plugin
+                        .manifest
+                        .contributes
+                        .as_ref()
+                        .and_then(|contributes| contributes.archive.as_ref())
+                        .is_some()
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.manifest.identity.cmp(&b.manifest.identity));
+        let mut problems = Vec::new();
+        for plugin in candidates {
+            let identity = &plugin.manifest.identity;
+            let problem = match self.archive_one(plugin, file_name, task_id).await {
+                Ok(Some(folder_name))
+                    if crate::category_route::valid_archive_folder(&folder_name) =>
+                {
+                    return Ok(Some(folder_name));
+                }
+                Ok(Some(folder_name)) => format!("返回的目录名 {folder_name:?} 不合法"),
+                Ok(None) => continue,
+                Err(problem) => problem,
+            };
+            log_warn!("[plugin] archive {identity} skipped: {problem}");
+            problems.push(format!("{identity}：{problem}"));
+        }
+        if problems.is_empty() {
+            Ok(None)
+        } else {
+            Err(problems.join("；"))
+        }
+    }
+
+    /// 调用单个归档插件并记审计与熔断；`Err` 为可展示的失败原因。
+    async fn archive_one(
+        &self,
+        plugin: &LoadedPlugin,
+        file_name: &str,
+        task_id: &str,
+    ) -> Result<Option<String>, String> {
+        let identity = &plugin.manifest.identity;
+        let audit = |outcome: &str, detail: &str| {
+            self.audit.record(PluginAuditRow::new(
+                identity, "daemon", "archive", task_id, outcome, detail,
+            ));
+        };
+        let Some(source) = plugin.archive_source().await else {
+            audit("error", "archive entry unavailable");
+            return Err("归档脚本不可读".to_string());
+        };
+        let values = self.load_setting_values(identity).await;
+        if let Some(field) = plugin
+            .manifest
+            .settings
+            .iter()
+            .find(|field| field.required && value_of(&values, field).is_none())
+        {
+            audit("error", "required setting missing");
+            return Err(format!("需先配置「{}」", field.title));
+        }
+        let settings_json = build_typed_settings_json(&plugin.manifest, &values);
+        let script = PluginScript {
+            identity: identity.clone(),
+            source,
+            entry_fn_hint: PluginEntryKind::Archive,
+            version: plugin.manifest.version.clone(),
+            app_version: self.app_version.clone(),
+        };
+        let result = self
+            .runtime
+            .invoke_archive(
+                &script,
+                ArchiveRequest {
+                    file_name: file_name.to_string(),
+                },
+                settings_json,
+                self.bridge.clone(),
+                ExecutionBudget {
+                    timeout: DEFAULT_INTERCEPT_TIMEOUT,
+                    memory_limit_bytes: self.resolve_budget.memory_limit_bytes,
+                },
+            )
+            .await;
+        self.note_execution(
+            identity,
+            &plugin.timeout_streak,
+            result.as_ref().err(),
+            None,
+        )
+        .await;
+        match result {
+            Ok(Some(value)) => {
+                if crate::category_route::valid_archive_folder(&value.folder_name) {
+                    audit("ok", "");
+                } else {
+                    audit("error", "invalid folderName");
+                }
+                Ok(Some(value.folder_name))
+            }
+            Ok(None) => {
+                audit("ok", "");
+                Ok(None)
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                audit("error", &detail);
+                Err(detail)
+            }
+        }
+    }
 }
 
 /// `Drop` 时中止底层任务：调用方丢弃 future 即终止 JS 与外部子进程。
@@ -197,6 +333,7 @@ struct PluginTaskInterceptor {
     task_id: String,
     source_url: String,
     entries: Vec<InterceptorEntry>,
+    has_archivers: bool,
     /// 任务当前出口（见 [`crate::intercept::sync_egress`]）；`None` = 全局出口。
     egress: std::sync::Mutex<Option<TaskEgressView>>,
 }
@@ -209,6 +346,23 @@ impl TaskInterceptor for PluginTaskInterceptor {
 
     fn source_url(&self) -> &str {
         &self.source_url
+    }
+    async fn archive_folder(&self, file_name: &str) -> Result<Option<String>, String> {
+        if !self.has_archivers {
+            return Ok(None);
+        }
+        let pm = self.pm.clone();
+        let task_id = self.task_id.clone();
+        let file_name = file_name.to_string();
+        let handle = self
+            .pm
+            .runtime_handle()
+            .spawn(async move { pm.archive_folder(&file_name, &task_id).await });
+        let mut guard = AbortGuard(handle);
+        match (&mut guard.0).await {
+            Ok(result) => result,
+            Err(error) => Err(format!("插件运行时任务异常: {error}")),
+        }
     }
 
     fn set_egress(&self, egress: TaskEgressView) {

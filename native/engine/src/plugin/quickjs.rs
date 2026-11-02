@@ -23,9 +23,10 @@ use rquickjs::{
 use tokio::sync::Semaphore;
 
 use super::runtime::{
-    AuthRequest, AuthResult, ExecutionBudget, FfmpegSpec, HostContext, HostEvents, PluginBridge,
-    PluginEntryKind, PluginError, PluginEvent, PluginHost, PluginLogLevel, PluginScript,
-    PluginTaskPort, ResolveRequest, ResolveResult, ScriptRuntime, SubscriptionRequest, YtdlpSpec,
+    ArchiveRequest, ArchiveResult, AuthRequest, AuthResult, ExecutionBudget, FfmpegSpec,
+    HostContext, HostEvents, PluginBridge, PluginEntryKind, PluginError, PluginEvent, PluginHost,
+    PluginLogLevel, PluginScript, PluginTaskPort, ResolveRequest, ResolveResult, ScriptRuntime,
+    SubscriptionRequest, YtdlpSpec,
 };
 
 /// 硬顶（**CPU/中断**预算）：单次调用的 JS 字节码执行不得跨过该墙——interrupt
@@ -41,6 +42,8 @@ const RESOLVE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 /// 轮询是低频交互式调用，不该也不需要和 resolve 抢同一组 permit（否则高频轮询
 /// 会把正常下载任务的 resolve 挤到 `Overloaded`）。
 const AUTH_CONCURRENCY: usize = 2;
+/// 归档脚本的独立并发上限，避免不可信脚本耗尽其他调用平面的运行时资源。
+const ARCHIVE_CONCURRENCY: usize = 2;
 /// resolve 返回 null/undefined 的哨兵。
 const NULL_SENTINEL: &str = "__FLUX_NULL__";
 /// storage.get 无值的哨兵。
@@ -77,6 +80,8 @@ pub struct QuickJsScriptRuntime {
     /// auth 平面独立信号量（M-2）：与 resolve/subscription 物理隔离，登录轮询
     /// 不会挤占正常下载任务的 resolve permit，反之亦然。
     auth_sema: Arc<Semaphore>,
+    /// 归档脚本使用独立信号量，限制不可信脚本运行时的并发数。
+    archive_sema: Arc<Semaphore>,
 }
 
 impl Drop for QuickJsScriptRuntime {
@@ -113,6 +118,7 @@ impl QuickJsScriptRuntime {
             ext_hook_sema: Arc::new(Semaphore::new(workers.max(1))),
             ext_hook_waiters: Arc::new(AtomicUsize::new(0)),
             auth_sema: Arc::new(Semaphore::new(AUTH_CONCURRENCY)),
+            archive_sema: Arc::new(Semaphore::new(ARCHIVE_CONCURRENCY)),
         })
     }
 
@@ -156,7 +162,7 @@ impl QuickJsScriptRuntime {
         info_json: String,
         retry_task_id: Option<String>,
         artifact_task_id: Option<String>,
-        bridge: Arc<dyn PluginBridge>,
+        bridge: Option<Arc<dyn PluginBridge>>,
         plugin_id: String,
         budget: ExecutionBudget,
         host: HostContext,
@@ -193,30 +199,43 @@ impl QuickJsScriptRuntime {
         let wall_pause = Arc::new(super::runtime::WallPause::default());
         let wall_pause_bridge = wall_pause.clone();
         let exec = ctx.async_with(async move |ctx| -> Result<String, PluginError> {
-            inject_bridge(
-                &ctx,
-                &bridge,
-                &plugin_id,
-                retry_task_id,
-                artifact_task_id,
-                ffmpeg_permitted,
-                ffmpeg_root,
-                ytdlp_permitted,
-                auth_permitted,
-                private_network_allowed,
-                egress,
-                interrupt_ns_bridge,
-                wall_pause_bridge,
-            )
-            .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
-
-            // 注入类型化设置 / info / 入口参数。
+            if entry_owned == "archive" {
+                // 归档回调只拿到日志：不注入任何网络 / 存储 / 任务 / 进程桥。
+                if let Some(bridge) = &bridge {
+                    inject_log(&ctx, bridge, &plugin_id)
+                        .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
+                }
+            } else if let Some(bridge) = &bridge {
+                inject_bridge(
+                    &ctx,
+                    bridge,
+                    &plugin_id,
+                    retry_task_id,
+                    artifact_task_id,
+                    ffmpeg_permitted,
+                    ffmpeg_root,
+                    ytdlp_permitted,
+                    auth_permitted,
+                    private_network_allowed,
+                    egress,
+                    interrupt_ns_bridge,
+                    wall_pause_bridge,
+                )
+                .map_err(|e| PluginError::Runtime(format!("注入 flux 失败: {e}")))?;
+            }
             set_json_global(&ctx, "__flux_settings_json", &settings_json)?;
-            set_json_global(&ctx, "__flux_info", &info_json)?;
+            // 归档回调不下发插件 / App 元数据。
+            if entry_owned != "archive" {
+                set_json_global(&ctx, "__flux_info", &info_json)?;
+            }
             set_json_global(&ctx, "__flux_arg", &arg_json)?;
 
-            // 先建 flux/console 门面，再 eval 插件源码（定义 globalThis 入口）。
-            ctx.eval::<rquickjs::Value, _>(FLUX_PRELUDE)
+            let prelude = if entry_owned == "archive" {
+                ARCHIVE_PRELUDE
+            } else {
+                FLUX_PRELUDE
+            };
+            ctx.eval::<rquickjs::Value, _>(prelude)
                 .catch(&ctx)
                 .map_err(|e| PluginError::Runtime(format!("flux 门面初始化失败: {e}")))?;
             ctx.eval::<rquickjs::Value, _>(source.as_bytes())
@@ -361,7 +380,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 None,
                 None,
-                bridge,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 host,
@@ -374,6 +393,48 @@ impl ScriptRuntime for QuickJsScriptRuntime {
         let result: ResolveResult = serde_json::from_str(&raw)
             .map_err(|e| PluginError::InvalidOutput(format!("resolve 返回值非法: {e}")))?;
         Ok(Some(result))
+    }
+
+    async fn invoke_archive(
+        &self,
+        plugin: &PluginScript,
+        req: ArchiveRequest,
+        settings_json: String,
+        bridge: Arc<dyn PluginBridge>,
+        budget: ExecutionBudget,
+    ) -> Result<Option<ArchiveResult>, PluginError> {
+        let _permit = tokio::time::timeout(
+            RESOLVE_ACQUIRE_TIMEOUT,
+            self.archive_sema.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| PluginError::Overloaded)?
+        .map_err(|_| PluginError::Overloaded)?;
+        let arg_json =
+            serde_json::to_string(&req).map_err(|e| PluginError::Runtime(e.to_string()))?;
+        let result = self
+            .run_script(
+                plugin.source.clone(),
+                "archive",
+                false,
+                arg_json,
+                settings_json,
+                // 归档回调不注入 `__flux_info`。
+                String::new(),
+                None,
+                None,
+                Some(bridge),
+                plugin.identity.clone(),
+                budget,
+                HostContext::default(),
+            )
+            .await?;
+        if result == NULL_SENTINEL {
+            return Ok(None);
+        }
+        serde_json::from_str(&result)
+            .map(Some)
+            .map_err(|e| PluginError::InvalidOutput(format!("archive 返回值非法: {e}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -415,7 +476,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 None,
                 artifact_task_id,
-                bridge,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 host,
@@ -460,7 +521,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 None,
                 None,
-                bridge,
+                Some(bridge),
                 plugin.identity.clone(),
                 budget,
                 host,
@@ -506,7 +567,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
             info_json,
             None,
             None,
-            bridge,
+            Some(bridge),
             plugin.identity.clone(),
             budget,
             host,
@@ -592,7 +653,7 @@ impl ScriptRuntime for QuickJsScriptRuntime {
                 info_json,
                 retry_task_id,
                 artifact_task_id,
-                bridge,
+                Some(bridge),
                 identity.clone(),
                 budget,
                 host,
@@ -688,7 +749,7 @@ pub(super) fn set_json_global(ctx: &Ctx<'_>, name: &str, json: &str) -> Result<(
 /// 构建调用入口函数并 stringify 结果的 wrapper。
 fn build_entry_wrapper(entry: &str, is_resolve: bool) -> String {
     let entry_lit = serde_json::to_string(entry).unwrap_or_else(|_| "\"resolve\"".to_string());
-    if is_resolve {
+    if entry == "archive" || is_resolve {
         format!(
             "(async () => {{ const __fn = globalThis[{entry_lit}]; \
              if (typeof __fn !== 'function') throw new Error('入口 '+{entry_lit}+' 未定义'); \
@@ -702,6 +763,26 @@ fn build_entry_wrapper(entry: &str, is_resolve: bool) -> String {
              return ''; }})()"
         )
     }
+}
+
+/// 注入同步 `__flux_log(level, msg)`：写插件日志，是归档回调唯一可用的宿主函数。
+pub(super) fn inject_log(
+    ctx: &Ctx<'_>,
+    bridge: &Arc<dyn PluginBridge>,
+    plugin_id: &str,
+) -> Result<(), rquickjs::Error> {
+    let b = bridge.clone();
+    let pid = plugin_id.to_string();
+    let f = Function::new(ctx.clone(), move |level: String, msg: String| {
+        let lvl = match level.as_str() {
+            "warn" => PluginLogLevel::Warn,
+            "error" => PluginLogLevel::Error,
+            _ => PluginLogLevel::Info,
+        };
+        b.log(&pid, lvl, &msg);
+    })?
+    .with_name("__flux_log")?;
+    ctx.globals().set("__flux_log", f)
 }
 
 /// 注入低层 `__flux_*` 桥接函数（异步 fetch/storage、同步 log/requestRetry；
@@ -968,21 +1049,7 @@ pub(super) fn inject_bridge(
         globals.set("__flux_fs_list", f)?;
     }
 
-    // __flux_log(level, msg) -> ()（同步）
-    {
-        let b = bridge.clone();
-        let pid = plugin_id.to_string();
-        let f = Function::new(ctx.clone(), move |level: String, msg: String| {
-            let lvl = match level.as_str() {
-                "warn" => PluginLogLevel::Warn,
-                "error" => PluginLogLevel::Error,
-                _ => PluginLogLevel::Info,
-            };
-            b.log(&pid, lvl, &msg);
-        })?
-        .with_name("__flux_log")?;
-        globals.set("__flux_log", f)?;
-    }
+    inject_log(ctx, bridge, plugin_id)?;
 
     // __flux_request_retry(delayStr) -> ()（同步；仅 onError 生效）
     {
@@ -1337,6 +1404,28 @@ pub(super) const FLUX_PRELUDE: &str = r#"
 })();
 "#;
 
+/// 归档回调门面：只有类型化设置与写插件日志的 `flux.logger` / `console`（`__flux_log`
+/// 由 [`inject_log`] 注入），没有网络、存储、文件、任务或进程能力。
+pub(super) const ARCHIVE_PRELUDE: &str = r#"
+(function () {
+  const __args2str = (a) => a.map(x => {
+    try { return typeof x === 'string' ? x : JSON.stringify(x); } catch (e) { return String(x); }
+  }).join(' ');
+  const __log = (level) => (...a) => __flux_log(level, __args2str(a));
+  globalThis.flux = {
+    settings: __flux_settings_json,
+    logger: { info: __log('info'), warn: __log('warn'), error: __log('error') },
+  };
+  globalThis.console = {
+    log: __log('info'),
+    info: __log('info'),
+    warn: __log('warn'),
+    error: __log('error'),
+    debug: __log('info'),
+  };
+})();
+"#;
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1345,9 +1434,9 @@ mod tests {
 
     use super::QuickJsScriptRuntime;
     use crate::plugin::runtime::{
-        AuthRequest, BridgeHttpRequest, BridgeHttpResponse, ExecutionBudget, HostContext,
-        PluginBridge, PluginEntryKind, PluginError, PluginLogLevel, PluginScript, ResolveRequest,
-        ResolveResult, ScriptRuntime, SubscriptionRequest,
+        ArchiveRequest, AuthRequest, BridgeHttpRequest, BridgeHttpResponse, ExecutionBudget,
+        HostContext, PluginBridge, PluginEntryKind, PluginError, PluginLogLevel, PluginScript,
+        ResolveRequest, ResolveResult, ScriptRuntime, SubscriptionRequest,
     };
 
     /// 测试桩：全空实现（OOM 测试不触网/不落盘）。
@@ -1722,5 +1811,90 @@ mod tests {
         drop(held);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(rt.resolve_sema.available_permits(), base);
+    }
+
+    /// 测试桩：只记录日志，其余同 [`NullBridge`]。
+    #[derive(Default)]
+    struct LogBridge(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl PluginBridge for LogBridge {
+        async fn http_request(
+            &self,
+            _plugin_id: &str,
+            _req: BridgeHttpRequest,
+        ) -> Result<BridgeHttpResponse, PluginError> {
+            Err(PluginError::Runtime("no network in test".to_string()))
+        }
+        async fn storage_get(&self, _plugin_id: &str, _key: &str) -> Option<String> {
+            None
+        }
+        async fn storage_set(
+            &self,
+            _plugin_id: &str,
+            _key: &str,
+            _value: String,
+        ) -> Result<(), PluginError> {
+            Ok(())
+        }
+        fn log(&self, plugin_id: &str, level: PluginLogLevel, message: &str) {
+            let level = match level {
+                PluginLogLevel::Warn => "warn",
+                PluginLogLevel::Error => "error",
+                PluginLogLevel::Info => "info",
+            };
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{plugin_id} {level} {message}"));
+        }
+        fn request_retry(&self, _plugin_id: &str, _task_id: &str, _delay_ms: u64) {}
+    }
+
+    /// 归档回调可异步、可读设置、可写日志（`console` 与 `flux.logger`），但拿不到任何
+    /// 其他宿主能力与插件元数据。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_is_async_and_exposes_only_settings_and_logging() {
+        let rt = QuickJsScriptRuntime::new(1).expect("runtime");
+        let script = PluginScript {
+            identity: "test@archive".to_string(),
+            source: "globalThis.archive = async ctx => { \
+                     console.log('name', ctx.fileName); flux.logger.warn({ n: 1 }); \
+                     const absent = ['fetch', 'storage', 'info', 'task', 'fs', 'ffmpeg', \
+                     'ytdlp', 'auth', 'rpc', 'ui'].filter(k => flux[k] !== undefined); \
+                     return { folderName: absent.length + ':' + typeof __flux_fetch + ':' \
+                     + flux.settings.label + ':' + ctx.fileName }; };"
+                .to_string(),
+            entry_fn_hint: PluginEntryKind::Archive,
+            version: "1.0.0".to_string(),
+            app_version: "0.0.0".to_string(),
+        };
+        let bridge = Arc::new(LogBridge::default());
+        let result = rt
+            .invoke_archive(
+                &script,
+                ArchiveRequest {
+                    file_name: "episode.mkv".to_string(),
+                },
+                "{\"label\":\"Anime\"}".to_string(),
+                bridge.clone(),
+                ExecutionBudget {
+                    timeout: Duration::from_secs(2),
+                    memory_limit_bytes: 16 * 1024 * 1024,
+                },
+            )
+            .await
+            .expect("archive invocation");
+        assert_eq!(
+            result.expect("archive result").folder_name,
+            "0:undefined:Anime:episode.mkv"
+        );
+        assert_eq!(
+            *bridge.0.lock().unwrap(),
+            vec![
+                "test@archive info name episode.mkv".to_string(),
+                "test@archive warn {\"n\":1}".to_string(),
+            ]
+        );
     }
 }

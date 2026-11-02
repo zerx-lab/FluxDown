@@ -27,6 +27,42 @@ Conventions:
 | [`authenticate(ctx)`](#authenticatectx) | The host drives a login (`begin` / `poll` / `cancel` / `logout` / `status`). | `auth.entry` + permission `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) object |
 | [`subscribe(ctx)`](#subscribectx) | A subscription source of your provider is refreshed. | `subscriptions[0]` | `subscriptions[0].entry` | Normalized feed object |
 | [`main`](#the-main-script) | The daemon (or a view) activates your resident script. | `main` | `main.entry` | — (registers handlers) |
+| [`archive(ctx)`](#archivectx) | A category-routed task has a category directory (a matching rule's directory, or the "Other" fallback); called at start and, if no folder was chosen, at completion. | `contributes.archive` + permission `archive` | The `.js` file named by `contributes.archive` | `{ folderName }`, `null` or `undefined` |
+
+### `archive(ctx)`
+
+```js
+import { defineArchive } from "fluxdown-plugin-sdk/runtime";
+
+defineArchive(({ fileName }) => {
+  if (/\.(mkv|mp4)$/i.test(fileName)) return { folderName: "Videos by plugin" };
+  return null;
+});
+```
+
+The callback chooses **one subfolder inside the task's category directory** from the final file name. It never changes the file name: the final path is `<categoryDir>/<folderName>/<fileName>`. `ctx` is `{ fileName }`; the function may be sync or async and returns `{ folderName: string }`, or `null` / `undefined` for no subfolder. Each call uses a fresh QuickJS runtime.
+
+**What exists in the archive script.** Only `flux.settings` (typed plugin settings), `flux.logger.info|warn|error` and `console.log|info|warn|error|debug` (the logger and `console` both write to the plugin log). There is no `flux.info`, `flux.storage`, `flux.fetch`, `flux.fs`, `flux.task`, `flux.ffmpeg`, `flux.ytdlp`, `flux.auth` or `flux.rpc` / `flux.ui`, and no file, network, task or process API. Top-level code must not call `flux` or `console`: at install the script is compile-checked in a bare context where neither exists.
+
+**When it is called.** Only for tasks that use category routing, and only when routing picks a category directory: either a matching category rule that has a directory, or the "Other" fallback directory. An explicitly chosen save directory bypasses it.
+
+- It is called before the download starts writing, with the final file name. For HLS and DASH this is the predicted `<stem>.mp4` name.
+- If no folder was chosen at start, it is asked once more at completion, with the final file name.
+- Once a folder is chosen it is saved with the task and reused for pause/resume, restart and completion. The plugin is not asked again, so a plugin update never splits a task.
+- If the category directory changes later (rules edited), the saved folder follows the new category directory. If the rules no longer match at all, the task stays in its saved archive folder.
+
+**Several archive plugins** are called in ascending `identity` order; the first valid `folderName` wins.
+
+**`folderName` rules.** The name is validated, never auto-corrected. An invalid name means that plugin's answer is ignored and the next plugin is tried. A valid name:
+
+- is non-empty and at most 180 UTF-8 bytes;
+- is not `.` or `..`;
+- contains no `/`, `\`, `:` or control characters;
+- is already a clean file name, unchanged by FluxDown's filename sanitizer. That excludes `<>"|?*`, leading or trailing spaces and dots, Windows reserved device names (`CON`, `NUL`, `COM1`, … also with an extension) and invisible formatting characters.
+
+**Failures never fail the download.** A throw, timeout, overload, invalid return type, invalid `folderName`, or a missing required plugin setting (the plugin is skipped) all mean no subfolder: the file stays in the category directory. The reason is written to the task's activity log and to the plugin audit log. Timeouts and memory-limit hits count toward the [circuit breaker](#circuit-breaker).
+
+**Limits.** 5 s per call; memory limit equal to the resolver budget; at most 2 archive calls run concurrently across the whole app; a call waits at most 3 s for a slot, otherwise it is skipped as overloaded. Archive plugins run one after another, so their delays add up. See [Runtime limits](#runtime-limits).
 
 How scripts are run:
 
@@ -35,7 +71,7 @@ How scripts are run:
 - Code at the top level of the file runs on **every** call, before the entry. An exception thrown at the top level fails the call with `脚本编译失败: …`.
 - If `resolve`, `authenticate` or `subscribe` is not defined the call fails with an error containing `入口 resolve 未定义` (respectively `authenticate` / `subscribe`). A **hook** that is not defined is silently skipped.
 - For `resolve`, `authenticate` and `subscribe` the return value is serialized with `JSON.stringify` and parsed by the host: return a plain object. Do not return an already-stringified JSON string (it would be encoded twice and fail validation). `undefined`, functions and symbols are dropped by `JSON.stringify`.
-- Typed `flux.settings` values, `flux.info` and the entry argument are injected before your script runs.
+- Typed `flux.settings` values, `flux.info` and the entry argument are injected before your script runs. The `archive` entry gets only `flux.settings`, `flux.logger`, `console` and its argument (see [`archive(ctx)`](#archivectx)).
 
 ### `resolve(ctx)`
 
@@ -270,20 +306,21 @@ The registration APIs (`flux.ui`, `flux.commands`, `flux.rpc`, `flux.events`, `f
 
 ## Which `flux` APIs exist where
 
-The injected `flux` object is the same for all entries except where this table says otherwise. "perm" means the manifest `permissions` entry must be declared; without it the property is `undefined` (guard with `if (flux.ytdlp)`).
+The injected `flux` object is the same for all entries except where this table says otherwise. The `archive` entry is the exception: it runs in a minimal sandbox that only has `flux.settings`, `flux.logger` and `console`; every other row below is absent there (`flux.info`, `flux.storage`, `flux.fetch`, `flux.fs`, `flux.task`, `flux.ffmpeg`, `flux.ffprobe`, `flux.ytdlp`, `flux.auth`, `flux.ui` / `rpc` and the rest, and any file, network, task or process API). "perm" means the manifest `permissions` entry must be declared; without it the property is `undefined` (guard with `if (flux.ytdlp)`).
 
-| API | `resolve` | Hooks (not `onDone`) | `onDone` | `authenticate` | `subscribe` | `main` |
-|---|---|---|---|---|---|---|
-| `flux.fetch` | yes | yes | yes | yes | yes | yes |
-| `flux.storage`, `flux.fs` | yes | yes | yes | yes | yes | yes |
-| `flux.settings`, `flux.info`, `flux.logger`, `console` | yes | yes | yes | yes | yes | yes |
-| `flux.auth` | perm `auth` | perm `auth` | perm `auth` | always (the entry requires `auth`) | perm `auth` | perm `auth` |
-| `flux.task.requestRetry` | no effect (warning) | `onError` only | no effect | no effect | no effect | no effect |
-| `flux.task.recordArtifact` | rejects | rejects | yes | rejects | rejects | rejects |
-| `flux.ffmpeg`, `flux.ffprobe` | `undefined` | perm `ffmpeg`: object exists, `run` rejects, `ffmpeg.available()` works | perm `ffmpeg`, `run` works | `undefined` | `undefined` | perm `ffmpeg`: object exists, `run` rejects |
-| `flux.ytdlp` | perm `ytdlp` | perm `ytdlp` | perm `ytdlp` | **`undefined`** | perm `ytdlp` | perm `ytdlp` |
-| `flux.ui`, `commands`, `rpc`, `events`, `timers`, `settings.update` | — | — | — | — | — | yes |
-| `flux.tasks` | — | — | — | — | — | perm `tasks` |
+| API | `resolve` | Hooks (not `onDone`) | `onDone` | `authenticate` | `subscribe` | `main` | `archive` |
+|---|---|---|---|---|---|---|---|
+| `flux.fetch` | yes | yes | yes | yes | yes | yes | **`undefined`** |
+| `flux.storage`, `flux.fs` | yes | yes | yes | yes | yes | yes | **`undefined`** |
+| `flux.settings`, `flux.logger`, `console` | yes | yes | yes | yes | yes | yes | yes |
+| `flux.info` | yes | yes | yes | yes | yes | yes | **`undefined`** |
+| `flux.auth` | perm `auth` | perm `auth` | perm `auth` | always (the entry requires `auth`) | perm `auth` | perm `auth` | **`undefined`** |
+| `flux.task.requestRetry` | no effect (warning) | `onError` only | no effect | no effect | no effect | no effect | **`undefined`** |
+| `flux.task.recordArtifact` | rejects | rejects | yes | rejects | rejects | rejects | **`undefined`** |
+| `flux.ffmpeg`, `flux.ffprobe` | `undefined` | perm `ffmpeg`: object exists, `run` rejects, `ffmpeg.available()` works | perm `ffmpeg`, `run` works | `undefined` | `undefined` | perm `ffmpeg`: object exists, `run` rejects | `undefined` |
+| `flux.ytdlp` | perm `ytdlp` | perm `ytdlp` | perm `ytdlp` | **`undefined`** | perm `ytdlp` | perm `ytdlp` | **`undefined`** |
+| `flux.ui`, `commands`, `rpc`, `events`, `timers`, `settings.update` | — | — | — | — | — | yes | **`undefined`** |
+| `flux.tasks` | — | — | — | — | — | perm `tasks` | **`undefined`** |
 
 `flux.auth.*` and the `authRef` option of `flux.fetch` need `auth` in `permissions`; passing an explicit `authRef` without it makes `flux.fetch` reject (see [Errors](#errors-you-will-see)).
 
@@ -589,6 +626,7 @@ Budgets are per call. "CPU budget" is the time your JavaScript may execute; time
 | `subscribe` | 10 s default; `subscriptions[0].timeoutMs` replaces it, 30 s ceiling | same | 64 MB |
 | `authenticate` | 30 s default; `auth.timeoutMs` replaces it, 30 s ceiling | same | 64 MB |
 | Hooks | 5 s | 5 s | 32 MB |
+| `archive` | 5 s | 5 s | Same as the `resolve` default (64 MB) |
 | Hooks of a plugin with `ytdlp` permission (any hook), or `ffmpeg` permission in `onDone` | ~30 min (1830 s) | 30 s | 32 MB |
 | `main` (per call: render, command, event, timer, rpc) | 30 s | 2 s | 64 MB for the whole runtime |
 
@@ -613,13 +651,14 @@ Other fixed limits:
 
 - `resolve` and `subscribe` share one pool. Its size follows the app's concurrent-download limit (never below the runtime's worker count, at most 4 workers). A call waits up to **3 s** for a free slot; after that it fails with `插件运行时过载（并发已满）` (fail-closed, the task enters the error state).
 - `authenticate` has its own pool of **2** with the same 3 s wait, so login polling can never starve resolves.
+- `archive` has its own pool of **2** for the whole app. A call waits up to **3 s** for a slot; after that it is skipped as overloaded (no subfolder, the download is not affected).
 - Hooks use a pool the size of the worker count (at most 4). When it is full, further hook notifications are **dropped** (logged as `钩子并发已满，本次钩子被丢弃`), never queued.
 - Hooks of plugins with `ffmpeg` or `ytdlp` permission use a separate pool of the same size. When it is busy, up to **64** notifications wait in a queue; beyond that the notification is dropped (`外部工具钩子排队已满，本次钩子被丢弃`).
 - `main` handles one call at a time per plugin; calls are queued in order.
 
 ### Circuit breaker
 
-Three **consecutive** timeouts (`脚本执行超时`) or memory-limit hits (`脚本超出内存上限`) in `resolve`, `subscribe` or `main` calls auto-disable the plugin. The app shows a notice and the plugin stays off until it is re-enabled manually. Any other outcome — a success, or a different error such as an invalid return value or a network failure — resets the count to zero.
+Three **consecutive** timeouts (`脚本执行超时`) or memory-limit hits (`脚本超出内存上限`) in `resolve`, `subscribe`, `archive` or `main` calls auto-disable the plugin. The app shows a notice and the plugin stays off until it is re-enabled manually. Any other outcome — a success, or a different error such as an invalid return value or a network failure — resets the count to zero.
 
 Not counted: hooks (their timeouts and memory errors are only logged), `authenticate` and overload rejections. A timeout or out-of-memory error in `main` also destroys the runtime; the next call starts a fresh one and **all in-memory state is lost**.
 
@@ -635,7 +674,7 @@ For `resolve` the task shows `[插件] <identity>: <message>`.
 |---|---|
 | `脚本编译失败: …` | Syntax error, or an exception thrown at the top level of the script. |
 | `插件运行时错误: …` | Your code threw, or a rejected `await` was not caught. The text after the colon is your error. Includes `入口 resolve 未定义` when the function does not exist. |
-| `脚本执行超时` | Wall-clock or CPU budget exceeded. Counts toward the circuit breaker (for `resolve` / `subscribe` / `main`). |
+| `脚本执行超时` | Wall-clock or CPU budget exceeded. Counts toward the circuit breaker (for `resolve` / `subscribe` / `archive` / `main`). |
 | `脚本超出内存上限` | Memory limit exceeded. Counts toward the circuit breaker. |
 | `插件运行时过载（并发已满）` | No free slot within 3 s. See [Concurrency](#concurrency-and-overload). |
 | `缺少必填设置项: 插件 <id> 需先配置「<title>」` | A `required` setting has no value. Ask the user to fill it in. |

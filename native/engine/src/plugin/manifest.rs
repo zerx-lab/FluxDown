@@ -382,6 +382,9 @@ pub struct ContributesDecl {
     /// 浏览器页面脚本（0..=16 条），需 `pageScripts` 权限。
     #[serde(default)]
     pub page_scripts: Vec<PageScriptDecl>,
+    /// 归档脚本（相对路径，`.js`），需 `archive` 权限。
+    #[serde(default)]
+    pub archive: Option<String>,
 }
 
 /// 插件风险等级（由权限推导）。
@@ -490,8 +493,10 @@ pub const PERMISSION_BACKGROUND: &str = "background";
 pub const PERMISSION_INTERCEPT: &str = "intercept";
 /// 浏览器页面脚本权限名（风险 Full：脚本在用户任意匹配网页内运行）。
 pub const PERMISSION_PAGE_SCRIPTS: &str = "pageScripts";
+/// 归档脚本权限名。
+pub const PERMISSION_ARCHIVE: &str = "archive";
 /// 合法能力权限（manifest `permissions`）。
-pub const VALID_PERMISSIONS: [&str; 9] = [
+pub const VALID_PERMISSIONS: [&str; 10] = [
     PERMISSION_FFMPEG,
     PERMISSION_YTDLP,
     PERMISSION_AUTH,
@@ -501,6 +506,7 @@ pub const VALID_PERMISSIONS: [&str; 9] = [
     PERMISSION_BACKGROUND,
     PERMISSION_INTERCEPT,
     PERMISSION_PAGE_SCRIPTS,
+    PERMISSION_ARCHIVE,
 ];
 
 impl PluginManifest {
@@ -764,6 +770,7 @@ impl PluginManifest {
                     | PERMISSION_BROWSER_RULES
                     | PERMISSION_BACKGROUND
                     | PERMISSION_INTERCEPT
+                    | PERMISSION_ARCHIVE
             )
         }) {
             PluginRisk::Elevated
@@ -803,6 +810,7 @@ impl PluginManifest {
             files.extend(c.views.iter().filter_map(|v| v.icon.clone()));
             files.extend(c.sniff_rules.iter().cloned());
             files.extend(c.page_scripts.iter().flat_map(|s| s.js.iter().cloned()));
+            files.extend(c.archive.iter().cloned());
         }
         files
     }
@@ -962,6 +970,17 @@ fn validate_contributes(m: &PluginManifest) -> Result<(), PluginError> {
         }
         if !m.has_permission(PERMISSION_BROWSER_RULES) {
             return manifest_err("声明 sniffRules 时 permissions 必须包含 browserRules".into());
+        }
+    }
+    if let Some(entry) = &c.archive {
+        if !is_safe_relative_path(entry) {
+            return manifest_err(format!("archive 路径 '{entry}' 非法"));
+        }
+        if !has_extension(entry, &[".js"]) {
+            return manifest_err(format!("archive '{entry}' 扩展名须为 .js"));
+        }
+        if !m.has_permission(PERMISSION_ARCHIVE) {
+            return manifest_err("声明 archive 时 permissions 必须包含 archive".into());
         }
     }
     validate_page_scripts(m, c)?;

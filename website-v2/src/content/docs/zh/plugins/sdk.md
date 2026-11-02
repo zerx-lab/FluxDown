@@ -3,7 +3,7 @@ title: 插件 SDK 与 CLI
 description: fluxdown-plugin-sdk 参考——create/build/validate/pack/dev 命令行、项目配置、运行时辅助函数、JSX 运行时、随包类型与 manifest 校验器 API。
 section: plugins
 order: 13
-sourceHash: "e7118aef9c60"
+sourceHash: "05badbca13f5"
 ---
 
 `fluxdown-plugin-sdk` 是用 TypeScript 编写 FluxDown 插件的工具链：带类型的 `flux.*`、用于[可移植视图](/docs/zh/plugins/views/)的 JSX 运行时、与引擎和插件索引同一套的 manifest 校验器，以及负责打包、校验、封装 `.fxplug` 的 CLI。
@@ -153,11 +153,11 @@ my-plugin/
 
 引擎安装 zip 时同样限制 200 个条目和 50 MB（解压后）。插件市场另外把单个包限制在 10 MB 以内，见[打包与市场](/docs/zh/plugins/packaging/)。
 
-严格模式（CLI 里始终开启）比应用本身多两条要求，插件索引也同样强制：`version` 与 `minAppVersion` 必须是纯粹的三段数字 `主版本.次版本.修订号`（不带 `v` 前缀，不带预发布或构建后缀，不含前导零）；以及每个 resolver、hooks、auth、订阅入口和 `icon` 都必须存在于包内。（应用在安装时只要求 `main`、`desktop` 和 `sniffRules` 文件存在。）
+严格模式（CLI 里始终开启）比应用本身多两条要求，插件索引也同样强制：`version` 与 `minAppVersion` 必须是纯粹的三段数字 `主版本.次版本.修订号`（不带 `v` 前缀，不带预发布或构建后缀，不含前导零）；以及每个 resolver、hooks、auth、订阅入口和 `icon` 都必须存在于包内。（应用在安装时只要求 `main` 入口、`desktop` 入口、视图图标、`sniffRules` 文件、页面脚本文件和 `contributes.archive` 文件存在。）
 
 ## 入口辅助函数
 
-引擎在求值脚本之后会读取固定的全局名：`resolve`、`onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`、`authenticate`、`subscribe`。`fluxdown-plugin-sdk/runtime` 里的辅助函数会（用 `Reflect.set(globalThis, …)`）把你的函数赋给这些全局名，所以每个入口文件都可以写成普通模块。每个辅助函数都会原样返回你传入的函数。
+引擎在求值脚本之后会读取固定的全局名：`resolve`、`onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`、`authenticate`、`subscribe`、`intercept` 和 `archive`。`fluxdown-plugin-sdk/runtime` 里的辅助函数会（用 `Reflect.set(globalThis, …)`）把你的函数赋给这些全局名，所以每个入口文件都可以写成普通模块。每个辅助函数都会原样返回你传入的函数。
 
 | 辅助函数 | 安装的全局名 | 使引擎调用它的 manifest 字段 |
 |---|---|---|
@@ -166,6 +166,7 @@ my-plugin/
 | `defineInterceptors(handlers: InterceptHandlers)` | `globalThis.intercept`，按 `ctx.stage` 分派到 `handlers` 中同名阶段的处理函数（`prepare`、`probed`、`refresh`、`selectVariant`、`selectPeriod`、`segments`、`liveSegments`、`finalize`、`failed`）；没有对应处理函数时返回 `undefined` | `interceptors.entry`（需要 `intercept` 权限；订阅哪些阶段由 `interceptors.stages` 决定） |
 | `defineAuth(fn: AuthFn)` | `globalThis.authenticate` | `auth.entry`（需要 `auth` 权限） |
 | `defineSubscription(fn: SubscribeFn)` | `globalThis.subscribe` | `subscriptions[].entry` |
+| `defineArchive(fn: ArchiveFn)` | `globalThis.archive`；`fn` 接收 `ctx: ArchiveContext`（`{ fileName }`），同步或异步返回 `ArchiveResult`（`{ folderName }`）、`null` 或 `undefined` | `contributes.archive`（需要 `archive` 权限）；脚本里只有 `flux.settings`、`flux.logger` 和 `console` |
 | `defineMain(setup: (flux: MainFlux) => void)` | 不安装任何全局名——它**立即同步地**用 `main` 脚本的门面（`MainFlux`）调用 `setup(flux)`，因此视图、命令、rpc 处理器、事件和定时器都在脚本求值期间完成注册 | `main.entry` |
 
 ```ts
@@ -220,7 +221,7 @@ defineMain((flux) => {
 
 ## 随包类型
 
-- `flux` 及其子接口（`Flux`、`FluxFetchOptions` 等）、入口上下文与返回值（`ResolveContext`、`ResolveResult`、`AuthContext`、`AuthResult`、`SubscribeContext`、`HookHandlers` 等）、`ViewEvent`、`ViewContext`、`ViewDefinition`、`FluxEvent`，以及全部视图类型与 JSX 内置元素——来自 `fluxdown-plugin-sdk`。
+- `flux` 及其子接口（`Flux`、`FluxFetchOptions` 等）、入口上下文与返回值（`ResolveContext`、`ResolveResult`、`AuthContext`、`AuthResult`、`SubscribeContext`、`ArchiveContext`、`ArchiveResult`、`HookHandlers` 等）、`ViewEvent`、`ViewContext`、`ViewDefinition`、`FluxEvent`，以及全部视图类型与 JSX 内置元素——来自 `fluxdown-plugin-sdk`。
 - `ThemeTokenPath`——`fluxdown.theme().tokens` 能解析的每一个主题 token 路径，由主题注册表生成。
 - `fluxdown-plugin-sdk/types/desktop`——桌面界面脚本（`gpui-kit` 等）的类型声明，由桌面运行时生成。
 
@@ -253,9 +254,9 @@ networkHostsOf(manifest);  // 所有视图的 desktop.networkHosts 的去重并�
 |---|---|
 | `validateManifest(manifest, files, options?)` | `manifest: unknown`，`files?: Set<string>`（包内相对路径，用 `/`；省略时跳过文件存在性检查），`options.strict?: boolean`（strict 模式需要 `files`；缺省时只返回一条要求提供 `files` 的错误，不会抛异常）。返回 `{ ok: boolean; errors: string[] }`，包含发现的**全部**错误。信息为中文，与引擎一致。 |
 | `validateSniffPack(content)` | `content: string \| Uint8Array`；返回 `{ ok, errors }`。 |
-| `riskOf(manifest)` | `permissions` 含 `desktop` 或 `pageScripts` 时为 `"full"`；含 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`background` 中任意一个时为 `"elevated"`；否则为 `"standard"`。 |
+| `riskOf(manifest)` | `permissions` 含 `desktop` 或 `pageScripts` 时为 `"full"`；含 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`background`、`intercept`、`archive` 中任意一个时为 `"elevated"`；否则为 `"standard"`。 |
 | `networkHostsOf(manifest)` | `contributes.views[].desktop.networkHosts` 的去重并集，已排序。 |
-| `packageFilesOf(manifest)` | 安装时必须存在的文件：`main.entry`、每个 `desktop.entry`、`sniffRules`、每个 `pageScripts[].js` 文件。 |
+| `packageFilesOf(manifest)` | 安装时必须存在的文件：`main.entry`、每个 `desktop.entry`、每个视图 `icon`、`sniffRules`、每个 `pageScripts[].js` 文件以及 `contributes.archive`。 |
 | `isSafeRelativePath`、`isValidIdentity`、`isValidNetworkHost` | 校验器内部使用的判定函数。 |
 | `VALID_PERMISSIONS`、`VALID_EVENTS`、`VIEW_LOCATIONS` | 封闭的取值列表。 |
 | `WINDOW_SIZE_MIN`/`MAX`（240 / 4096）、`NETWORK_HOSTS_MAX`（64）、`VIEWS_MAX`（16）、`COMMANDS_MAX`（32）、`TITLE_MAX_CHARS`（40）、`SNIFF_PACK_MAX_BYTES`（256 KiB）、`SNIFF_PACK_MAX_RULES`（500）、`SNIFF_PACK_FORMAT` | 校验所用的上限常量。 |

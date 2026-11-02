@@ -3,7 +3,7 @@ title: 调试与排错
 description: 插件日志在哪、怎么搜；每种改动之后该做什么；以及你会遇到的报错信息、原因与解决办法对照表。
 section: plugins
 order: 9
-sourceHash: "158dc2a39164"
+sourceHash: "b1d7b186aa7d"
 ---
 
 这一页写给「出问题了」的时刻：去哪里看、插件的各种状态是什么意思、某个改动需要什么操作，以及最有用的——**报错信息**与它们的原因。
@@ -136,7 +136,7 @@ resolver、拦截器、订阅 provider 或 `main` 调用中，**连续** 3 次�
 | `resolver timeoutMs 不可为 0` | `timeoutMs` 为 `0`（`auth` 与 `subscription` 同样会检查）。 | 用正整数，实际生效最多 30000。 |
 | `hooks.events 不可为空` | `hooks` 没有事件。 | 至少列出一个事件。 |
 | `未知事件 '…'，合法：[…]` | 不是 `onStart`、`onError`、`onDone`、`onMetaProbed`、`onCancel` 之一。 | 改正名称（`main.events` 同样适用，其信息为 `main.events 未知事件 '…'，合法：[…]`）。 |
-| `未知权限 '…'，合法：[…]` | 权限名不存在。 | 使用 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`desktop`、`background`、`intercept`、`pageScripts` 之一。 |
+| `未知权限 '…'，合法：[…]` | 权限名不存在。 | 使用 `ffmpeg`、`ytdlp`、`auth`、`tasks`、`browserRules`、`desktop`、`background`、`intercept`、`pageScripts`、`archive` 之一。 |
 | `声明 auth.entry 时 permissions 必须包含 auth` | 声明了 `auth` 却没有 `auth` 权限。 | 把 `"auth"` 加进 `permissions`。 |
 | `声明 sniffRules 时 permissions 必须包含 browserRules` | 有嗅探规则却没有对应权限。 | 加上 `"browserRules"`。 |
 | `main.background 为 true 时 permissions 必须包含 background` | `main.background` 为 `true` 却没有 `background` 权限。 | 加上 `"background"`。 |
@@ -160,7 +160,7 @@ resolver、拦截器、订阅 provider 或 `main` 调用中，**连续** 3 次�
 | `view '<id>' icon 超过 16384 字节` / `view '<id>' icon 不是合法 UTF-8` | 图标文件超过 16 KiB，或不是 UTF-8 文本。 | 精简 SVG；以 UTF-8 保存。 |
 | `view '<id>' icon 不是 SVG 文档` | 去掉可选的 BOM 与空白后，文件不以 `<svg` 或 `<?xml` 开头，或不含 `<svg`。 | 提供真正的 SVG 文件。 |
 | `需要 App ≥ X，当前 Y` | `minAppVersion` 比你的应用新。 | 升级 FluxDown，或降低 `minAppVersion`。 |
-| `脚本编译失败: …` | resolver、hooks、interceptors、auth 或订阅脚本有语法错误——**或者在顶层就抛了异常**。检查时会在一个没有 `flux` 和 `console` 的空白上下文里把脚本求值一次。 | 修正语法；把所有 `flux.*` / `console.*` 调用挪进入口函数。TypeScript 项目请运行 `npm run typecheck`，并确认产物已重新构建。 |
+| `脚本编译失败: …` | resolver、hooks、interceptors、auth、订阅或 archive 脚本有语法错误——**或者在顶层就抛了异常**。检查时会在一个没有 `flux` 和 `console` 的空白上下文里把脚本求值一次。 | 修正语法；把所有 `flux.*` / `console.*` 调用挪进入口函数。TypeScript 项目请运行 `npm run typecheck`，并确认产物已重新构建。 |
 | `安装后未能加载插件（校验失败或版本门槛不满足）` | 上面这些检查在安装过程中失败了；如果有旧版本，已经被恢复。 | 看日志里更早的几行，找到真正的原因。 |
 | `读取 manifest 失败: …` / `读取 manifest.json 失败: …` | 你选的文件夹里没有 `manifest.json`。 | 选**直接包含** `manifest.json` 的那个文件夹——SDK 项目是 `dist/`，不是项目根目录。 |
 | `zip 内未找到根 manifest.json` | zip 根目录（或它唯一的顶层文件夹）里没有 `manifest.json`。 | 压缩 `dist/` 的*内容*；`npm run pack` 会正确处理。 |

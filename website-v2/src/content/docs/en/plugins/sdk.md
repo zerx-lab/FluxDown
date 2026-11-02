@@ -152,11 +152,11 @@ The generated `tsconfig.json`:
 
 The engine applies the same 200-entry and 50 MB (uncompressed) limits when it installs a zip. The plugin market additionally caps packages at 10 MB; see [Packaging & market](/docs/en/plugins/packaging/).
 
-Strict mode (always on in the CLI) is stricter than the app in two ways, which the plugin index also enforces: `version` and `minAppVersion` must be a plain three-part number `MAJOR.MINOR.PATCH` (no `v` prefix, no pre-release or build suffix, no leading zeros), and every resolver, hooks, auth and subscription entry and the `icon` must exist in the package. (The app only requires `main`, `desktop` and `sniffRules` files at install time.)
+Strict mode (always on in the CLI) is stricter than the app in two ways, which the plugin index also enforces: `version` and `minAppVersion` must be a plain three-part number `MAJOR.MINOR.PATCH` (no `v` prefix, no pre-release or build suffix, no leading zeros), and every resolver, hooks, auth and subscription entry and the `icon` must exist in the package. (At install time the app only requires the `main` entry, `desktop` entries, view icons, the `sniffRules` file, page script files and the `contributes.archive` file.)
 
 ## Entry-point helpers
 
-The engine reads fixed globals after evaluating a script: `resolve`, `onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`, `authenticate`, `subscribe`. The helpers in `fluxdown-plugin-sdk/runtime` assign your functions to those globals (with `Reflect.set(globalThis, …)`), so each entry file can be an ordinary module. Each helper returns the function(s) you passed.
+The engine reads fixed globals after evaluating a script: `resolve`, `onStart` / `onError` / `onDone` / `onMetaProbed` / `onCancel`, `authenticate`, `subscribe`, `intercept` and `archive`. The helpers in `fluxdown-plugin-sdk/runtime` assign your functions to those globals (with `Reflect.set(globalThis, …)`), so each entry file can be an ordinary module. Each helper returns the function(s) you passed.
 
 | Helper | Installs | Manifest field that makes the engine call it |
 |---|---|---|
@@ -165,6 +165,7 @@ The engine reads fixed globals after evaluating a script: `resolve`, `onStart` /
 | `defineInterceptors(handlers: InterceptHandlers)` | `globalThis.intercept`, dispatching on `ctx.stage` to the same-named handler in `handlers` (`prepare`, `probed`, `refresh`, `selectVariant`, `selectPeriod`, `segments`, `liveSegments`, `finalize`, `failed`); returns `undefined` when there is no handler | `interceptors.entry` (needs the `intercept` permission; which stages fire is set by `interceptors.stages`) |
 | `defineAuth(fn: AuthFn)` | `globalThis.authenticate` | `auth.entry` (needs the `auth` permission) |
 | `defineSubscription(fn: SubscribeFn)` | `globalThis.subscribe` | `subscriptions[].entry` |
+| `defineArchive(fn: ArchiveFn)` | `globalThis.archive`; `fn` takes `ctx: ArchiveContext` (`{ fileName }`) and returns `ArchiveResult` (`{ folderName }`), `null` or `undefined`, sync or async | `contributes.archive` (needs the `archive` permission); the script only has `flux.settings`, `flux.logger` and `console` |
 | `defineMain(setup: (flux: MainFlux) => void)` | nothing — it calls `setup(flux)` **immediately and synchronously** with the `main`-script facade (`MainFlux`), so views, commands, rpc handlers, events and timers are registered while the script is evaluated | `main.entry` |
 
 ```ts
@@ -219,7 +220,7 @@ defineMain((flux) => {
 
 ## Types shipped
 
-- `flux` and its sub-APIs (`Flux`, `FluxFetchOptions`, …), the entry contexts and results (`ResolveContext`, `ResolveResult`, `AuthContext`, `AuthResult`, `SubscribeContext`, `HookHandlers`, …), `ViewEvent`, `ViewContext`, `ViewDefinition`, `FluxEvent`, and all view types and intrinsic elements — from `fluxdown-plugin-sdk`.
+- `flux` and its sub-APIs (`Flux`, `FluxFetchOptions`, …), the entry contexts and results (`ResolveContext`, `ResolveResult`, `AuthContext`, `AuthResult`, `SubscribeContext`, `ArchiveContext`, `ArchiveResult`, `HookHandlers`, …), `ViewEvent`, `ViewContext`, `ViewDefinition`, `FluxEvent`, and all view types and intrinsic elements — from `fluxdown-plugin-sdk`.
 - `ThemeTokenPath` — every theme token path that `fluxdown.theme().tokens` resolves, generated from the theme registry.
 - `fluxdown-plugin-sdk/types/desktop` — declarations for desktop UI scripts (`gpui-kit` and friends), generated from the desktop runtime.
 
@@ -252,9 +253,9 @@ networkHostsOf(manifest);  // sorted union of every view's desktop.networkHosts
 |---|---|
 | `validateManifest(manifest, files, options?)` | `manifest: unknown`, `files?: Set<string>` (package-relative paths with `/`; when omitted, file-existence checks are skipped), `options.strict?: boolean` (strict mode needs `files`; without it you get a single error asking for it, not a crash). Returns `{ ok: boolean; errors: string[] }` with **every** error found. Messages are in Chinese, mirroring the engine. |
 | `validateSniffPack(content)` | `content: string \| Uint8Array`; returns `{ ok, errors }`. |
-| `riskOf(manifest)` | `"full"` when `permissions` contains `desktop` or `pageScripts`; `"elevated"` for any of `ffmpeg`, `ytdlp`, `auth`, `tasks`, `browserRules`, `background`; otherwise `"standard"`. |
+| `riskOf(manifest)` | `"full"` when `permissions` contains `desktop` or `pageScripts`; `"elevated"` for any of `ffmpeg`, `ytdlp`, `auth`, `tasks`, `browserRules`, `background`, `intercept`, `archive`; otherwise `"standard"`. |
 | `networkHostsOf(manifest)` | sorted, de-duplicated union of `contributes.views[].desktop.networkHosts`. |
-| `packageFilesOf(manifest)` | the files that must exist at install: `main.entry`, each `desktop.entry`, `sniffRules`, every `pageScripts[].js` file. |
+| `packageFilesOf(manifest)` | the files that must exist at install: `main.entry`, each `desktop.entry`, each view `icon`, `sniffRules`, every `pageScripts[].js` file and `contributes.archive`. |
 | `isSafeRelativePath`, `isValidIdentity`, `isValidNetworkHost` | the predicates the validator uses. |
 | `VALID_PERMISSIONS`, `VALID_EVENTS`, `VIEW_LOCATIONS` | the closed value lists. |
 | `WINDOW_SIZE_MIN`/`MAX` (240 / 4096), `NETWORK_HOSTS_MAX` (64), `VIEWS_MAX` (16), `COMMANDS_MAX` (32), `TITLE_MAX_CHARS` (40), `SNIFF_PACK_MAX_BYTES` (256 KiB), `SNIFF_PACK_MAX_RULES` (500), `SNIFF_PACK_FORMAT` | limits used by the checks. |

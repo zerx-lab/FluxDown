@@ -53,6 +53,7 @@ pub fn category_route_to_engine(
             })
             .collect(),
         other_dir: route.other_dir,
+        archive: None,
     }
 }
 

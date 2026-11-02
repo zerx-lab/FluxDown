@@ -238,7 +238,7 @@ function validate(root: string): void {
   if (errors.length) throw new CliError(`validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
   const review = reviewOf(readJson(join(root, "dist", "manifest.json")) as Record<string, unknown>);
   const hosts = review.networkHosts;
-  console.log(`valid (risk: ${review.risk}${hosts.length ? `, network hosts: ${hosts.join(", ")}` : ""})`);
+  console.log(`valid (risk: ${review.risk}${review.archiveEntry ? `, archive: ${review.archiveEntry}` : ""}${hosts.length ? `, network hosts: ${hosts.join(", ")}` : ""})`);
 }
 
 // ---------------------------------------------------------------------------
