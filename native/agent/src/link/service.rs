@@ -1654,11 +1654,7 @@ impl LinkService {
             None
         };
         let first = build_task_request(url, file_name, save_dir.as_deref().unwrap_or_default())?;
-        match self
-            .tasks
-            .create_task_with_route(first, route.clone())
-            .await
-        {
+        match self.tasks.create_task_with_route(first, route).await {
             Ok(task_id) => Ok(task_id),
             Err(error) if save_dir.is_some() => {
                 tracing::warn!(
