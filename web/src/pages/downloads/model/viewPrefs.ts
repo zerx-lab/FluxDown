@@ -64,7 +64,8 @@ const DEFAULT_WIDTH: Record<ColumnKind, number> = {
   speed: 90,
   eta: 84,
   status: 140,
-  created: 150,
+  // `YYYY-MM-DD HH:MM:SS` + 左右内边距；与 GPUI `DownloadColumnKind` 对齐。
+  created: 164,
   protocol: 64,
   source: 148,
   queue: 88,
@@ -77,7 +78,7 @@ export const MIN_WIDTH: Record<ColumnKind, number> = {
   speed: 72,
   eta: 64,
   status: 84,
-  created: 140,
+  created: 152,
   protocol: 56,
   source: 96,
   queue: 72,

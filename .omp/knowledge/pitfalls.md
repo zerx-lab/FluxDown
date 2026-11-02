@@ -94,6 +94,7 @@
 - **弹层 / 滚动区的高度上限不能写固定 px**：行高（`density().nav_row` 等）随字体度量与界面缩放抬升，固定 `max_h(px(420.))` 在放大后装不下末行，「重置为默认列」被裁到滚动区底边外、看着像显示不全；上限按行高倍数推导，再按窗口可见高度收紧 → `crates/downloads/src/components/title_bar.rs`（`VIEW_MENU_MAX_BODY_ROWS`）。
 - **Windows 上汉字缺字回退按系统区域、不按应用语言，且 Windows 列字体用本地化名**：`.SystemUIFont` 在台湾版是正黑体（只覆盖繁体），简体专用字由 DirectWrite 按 zh-TW 回退到明体，界面割裂、细笔画破碎（#1003）；中文界面主字体按界面语言换成雅黑 UI / 正黑体 UI，并由 Root 插件给每个窗口根节点挂汉字回退链。判断字体是否安装不能拿英文名比 `all_font_names`（会是「微軟正黑體 UI」），改为解析后比族名 → `crates/theme/src/cjk.rs`、偏好推导 `crates/app/src/app.rs::han_font_preference`。
 - **按钮「进行中」转圈对本机 RPC 不可见、纯文字按钮 `.loading()` 不画转圈**：本机 RPC 常在一帧内返回，`loading` 真→假之间没有任何一帧被绘制，点了像没反应；gpui-component `Button::loading` 只替换前置图标，无图标按钮只变得不可点。手动点击的异步按钮一律用 `loading_button` / `loading_icon_button` / `BusyExt::busy` 画转圈，并在点击时 `BusyHold::start` 保证 ≥`MIN_BUSY_VISIBLE`（后台轮询 / 自动加载不启动，否则每轮都转）；设置 store 的 `call_with` / `cloud_call` 已内置，渲染读 `is_busy`，去重 / 自动加载闸门读 `in_flight` → `crates/components/src/busy.rs`、`crates/settings/src/store.rs::begin_busy`。
+- **行悬停操作浮层不得直接用半透明 `row_hover` / `accent` 作底**：默认最右列是「创建时间」，浮层从右侧留白列向左盖住末列；半透明底会让时间与图标叠成「双层字」。底色须 `surface.blend(选中/悬停)` 不透明，并加左侧渐隐；Web 同行用 surface + accent/row-hover 分层 + mask → `crates/downloads/src/components/task_table.rs::wrap_row_action_strip`、`web/src/pages/downloads/table/rowParts.tsx::RowActionsBar`。
 
 ## Web SPA
 
