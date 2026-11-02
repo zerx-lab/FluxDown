@@ -195,7 +195,7 @@ impl NewDownloadView {
     }
 
     /// 下拉选择：`Auto` 立即按当前输入重算并写入；其余模式直接写目录框。写入值都记为
-    /// 表单写入值，之后用户再改即视为手改。
+    /// 表单写入值并清除手动标记（任一模式都是显式选择），之后用户再改即视为手改。
     fn set_category_mode(
         &mut self,
         mode: CategoryMode,
@@ -208,7 +208,6 @@ impl NewDownloadView {
                 let predicted = self.predict_category_dir(cx);
                 let target = predicted.clone().unwrap_or(offered);
                 self.category_predicted = predicted;
-                self.category_dir_manually_edited = false;
                 target
             }
             CategoryMode::NoCategory => offered,
@@ -225,6 +224,7 @@ impl NewDownloadView {
                 dir
             }
         };
+        self.category_dir_manually_edited = false;
         self.set_save_dir_text(&target, window, cx);
         self.category_written_dir = Some(target);
         self.category_mode = mode;
