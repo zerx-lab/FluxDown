@@ -443,36 +443,6 @@ impl ShellState {
         }
     }
 
-    /// 新版本提醒：托盘驻留且没有 UI 连接时拉起界面（`--capture` 只开提醒窗口，不开主窗口），
-    /// 界面在运行时由它自己按同一判定开窗。非驻留时没有 UI 就没有后台，不拉起。
-    fn reconcile_update_prompt(&self, now: Instant) {
-        let due_version = self.events.inspect(|snapshot| {
-            fluxdown_protocol::update_prompt::is_due(
-                &snapshot.update,
-                &snapshot.preferences.values,
-                unix_ms(),
-            )
-            .then(|| snapshot.update.latest_version.clone())
-        });
-        {
-            let mut launches = self.launches();
-            let Some(version) = due_version else {
-                launches.update_settled();
-                return;
-            };
-            if self.ui_clients() > 0
-                || !self.tray_visible.load(Ordering::Acquire)
-                || !launches.update_due(now, &version)
-            {
-                return;
-            }
-            launches.begin_update(now, &version);
-        }
-        if let Err(error) = self.launch_tracked(&["--capture"]) {
-            tracing::warn!(error = %error, "could not launch desktop for update prompt");
-        }
-    }
-
     /// 拉起已在 [`UiLaunches`] 登记的桌面进程；进程退出（或没能启动）时释放登记并唤醒控制循环
     /// 重新判定。
     fn launch_tracked(&self, args: &[&str]) -> Result<(), crate::platform::PlatformError> {
@@ -628,7 +598,6 @@ pub async fn run_controller(
         if !lifecycle.quit_requested() {
             state.reconcile_prompt(Instant::now());
             state.reconcile_task_windows(Instant::now());
-            state.reconcile_update_prompt(Instant::now());
         }
         #[cfg(feature = "desktop")]
         {
@@ -829,14 +798,6 @@ fn snapshot_is_idle(snapshot: &AgentSnapshot) -> bool {
         && snapshot.pending_captures.is_empty()
         && snapshot.daemon.pending_selections.is_empty()
         && snapshot.power.armed_delay_secs.is_none()
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 /// 是否有必须由界面承载的待确认交互：外部捕获恒需要；引擎选择只在托盘驻留、由 agent 代为订阅

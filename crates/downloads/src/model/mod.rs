@@ -1,4 +1,5 @@
 pub(crate) mod aria2c;
+pub(crate) mod bt_guard;
 pub(crate) mod bt_trackers;
 pub(crate) mod categories;
 pub(crate) mod counts;
@@ -15,7 +16,6 @@ pub(crate) mod refresh_gate;
 pub(crate) mod row_order;
 pub(crate) mod save_dir_category;
 pub(crate) mod save_dir_history;
-pub(crate) mod share;
 pub(crate) mod shutdown;
 pub(crate) mod source_composition;
 pub(crate) mod speed_limit_recent;

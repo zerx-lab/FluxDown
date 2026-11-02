@@ -1,14 +1,12 @@
 # FluxDown — robots.txt
 # 策略:欢迎所有搜索引擎 + 主流 AI 爬虫抓取公开内容(推广目标是被搜索与 AI 引用),
-# 屏蔽 /api/ 动态端点与FluxMesh分享页 /s/(私人分享链接,页面本身另有 noindex + X-Robots-Tag)。
+# 屏蔽 /api/ 动态端点。
 # IndexNow key 见 public/<key>.txt。
 # 带具体 User-agent 的分组不会继承 `*` 分组,所以 Disallow 必须在每个分组里重复。
 
 User-agent: *
 Allow: /
 Disallow: /api/
-Disallow: /s/
-Disallow: /zh/s/
 
 # --- AI / LLM 爬虫:显式放行,便于被 AI 搜索与回答引用 ---
 User-agent: GPTBot
@@ -23,7 +21,5 @@ User-agent: Applebot-Extended
 User-agent: Bytespider
 Allow: /
 Disallow: /api/
-Disallow: /s/
-Disallow: /zh/s/
 
 Sitemap: https://fluxdown.com/sitemap-index.xml

@@ -8,7 +8,7 @@
 ///
 /// 覆盖：URL userinfo、Telegram bot 令牌路径、令牌/密钥类 query 参数、超长 query、
 /// Cookie / Authorization 头、代理账号密码、用户目录（Linux `/home/<name>/`、
-/// Windows `X:\Users\<name>\`）、FluxMesh ticket / 本机适配器令牌 / 访客令牌 / 取件码。
+/// Windows `X:\Users\<name>\`）。
 pub const SANITIZE_PATTERNS: &[(&str, &str)] = &[
     (r"(?i)([\w+.-]+://)[^:/\s@]+:[^@\s]+@", "$1***@"),
     // Telegram bot 令牌在路径里：/bot<id>:<token>/
@@ -29,28 +29,6 @@ pub const SANITIZE_PATTERNS: &[(&str, &str)] = &[
     ),
     (
         r"(?i)(proxy[_\s]?(?:password|username)\s*[=:]\s*)\S+",
-        "$1[REDACTED]",
-    ),
-    // FluxMesh：ticket 键值（`ticket=a.b`、`"ticket":"a.b"`），值为 base64url 两段（含更多段）令牌。
-    (
-        r#"(?i)(\bticket["']?\s*[=:]\s*["']?)[\w-]+(?:\.[\w-]+)+"#,
-        "$1[REDACTED]",
-    ),
-    // FluxMesh：无键名的 ticket / JWT 形态载荷串（`eyJ…` payload.signature）。
-    (r"\beyJ[\w-]*\.[\w-]+(?:\.[\w-]+)?", "[REDACTED]"),
-    // FluxMesh：本机适配器 URL `http://127.0.0.1:<port>/<32 位十六进制令牌>/<序号>`，只抹令牌。
-    (
-        r"(?i)(https?://127\.0\.0\.1:\d+/)[0-9a-f]{32}(/\d+)",
-        "$1[REDACTED]$2",
-    ),
-    // FluxMesh：访客令牌键值。
-    (
-        r#"(?i)(guest[_-]?token["']?\s*[=:]\s*["']?)[^\s&,"')\]}>]+"#,
-        "$1[REDACTED]",
-    ),
-    // FluxMesh：取件码仅在带键名时抹除（6 位数字无键名太易误伤）。
-    (
-        r#"(?i)(pickup[_-]?code["']?\s*[=:]\s*["']?)[^\s&,"')\]}>]+"#,
         "$1[REDACTED]",
     ),
     (r"/home/[^/\s]+/", "/home/***/"),

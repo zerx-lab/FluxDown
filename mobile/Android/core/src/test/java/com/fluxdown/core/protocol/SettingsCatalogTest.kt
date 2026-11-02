@@ -3,6 +3,7 @@ package com.fluxdown.core.protocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,10 +13,60 @@ class SettingsCatalogTest {
 
     @Test
     fun syncCatalogMatchesRustSpecCount() {
-        // SYNC_SETTING_SPECS（native/protocol/src/settings.rs）：30 个 daemon 键 + 29 个偏好键 + 1 个集合范围键 = 60
-        assertEquals(30, SettingsCatalog.daemonSyncNames.size)
+        // SYNC_SETTING_SPECS（native/protocol/src/settings.rs）：49 个 daemon 键（含 19 个 bt.guard.*）+ 29 个偏好键 + 1 个集合范围键
+        assertEquals(49, SettingsCatalog.daemonSyncNames.size)
         assertEquals(29, SettingsCatalog.syncedPreferenceKeys.size)
         assertEquals(SettingsCatalog.daemonSyncNames.size, SettingsCatalog.syncNameToDaemonKey.size)
+    }
+
+    @Test
+    fun btGuardKeysMirrorContract() {
+        val guard = SettingsCatalog.daemonFields.filter { it.key.startsWith("bt_guard_") }
+        // 20 个 daemon 键：19 个同步 + 设备本地上报开关
+        assertEquals(20, guard.size)
+        val synced = SettingsCatalog.daemonSyncNames.filterKeys { it.startsWith("bt_guard_") }
+        assertEquals(19, synced.size)
+        synced.forEach { (daemonKey, syncName) ->
+            assertEquals("bt.guard." + daemonKey.removePrefix("bt_guard_"), syncName)
+        }
+        assertFalse(SettingsCatalog.isSynced("bt_guard_report_enabled"))
+        assertNull(SettingsCatalog.field("bt_guard_cloud_cache"))
+        assertTrue(rejected("bt_guard_cloud_cache", "{}"))
+        assertEquals("false", SettingsCatalog.defaultWire("bt_guard_report_enabled"))
+        assertEquals("observe", SettingsCatalog.defaultWire("bt_guard_rule_lag"))
+        assertEquals("200", SettingsCatalog.defaultWire("bt_guard_excess_ratio_pct"))
+        assertEquals("throttle", SettingsCatalog.defaultWire("bt_guard_downloading_max_action"))
+    }
+
+    @Test
+    fun btGuardValueRangesMatchDaemon() {
+        assertEquals("enforce", ok("bt_guard_rule_rewind", " enforce "))
+        assertTrue(rejected("bt_guard_rule_rewind", "ban"))
+        assertTrue(rejected("bt_guard_cloud_mode", ""))
+        assertEquals("ban", ok("bt_guard_downloading_max_action", "ban"))
+        assertTrue(rejected("bt_guard_downloading_max_action", "off"))
+        assertEquals("110", ok("bt_guard_excess_ratio_pct", "110"))
+        assertTrue(rejected("bt_guard_excess_ratio_pct", "109"))
+        assertTrue(rejected("bt_guard_excess_ratio_pct", "1001"))
+        assertEquals("0", ok("bt_guard_min_torrent_mib", "0"))
+        assertTrue(rejected("bt_guard_min_torrent_mib", "1048577"))
+        assertTrue(rejected("bt_guard_rewind_tolerance_pct", "101"))
+        assertTrue(rejected("bt_guard_throttle_kib", "0"))
+        assertTrue(rejected("bt_guard_ban_base_hours", "721"))
+        assertTrue(rejected("bt_guard_ban_max_days", "366"))
+        assertEquals("48", ok("bt_guard_ipv6_prefix", "48"))
+        assertTrue(rejected("bt_guard_ipv6_prefix", "47"))
+        assertTrue(rejected("bt_guard_ipv6_prefix", "129"))
+    }
+
+    @Test
+    fun btGuardSyncedKeyRoutesThroughPreferencesButReportFlagStaysOnDaemon() {
+        val result = SettingsWritePlan.make(
+            mapOf("bt_guard_rule_lag" to "enforce", "bt_guard_report_enabled" to "true"),
+        )
+        val plan = (result as SettingsWritePlan.Result.Ok).plan
+        assertEquals(mapOf("bt_guard_report_enabled" to "true"), plan.daemon)
+        assertEquals(setOf("bt.guard.rule_lag"), plan.syncedPreferences.keys)
     }
 
     @Test

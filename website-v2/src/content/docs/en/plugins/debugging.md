@@ -135,7 +135,7 @@ The engine reports these with the prefix `manifest 非法: ` (“manifest invali
 | `resolver timeoutMs 不可为 0` | `timeoutMs` is `0` (also checked for `auth` and `subscription`). | Use a positive integer, at most 30000 effective. |
 | `hooks.events 不可为空` | `hooks` without events. | List at least one event. |
 | `未知事件 '…'，合法：[…]` | Not one of `onStart`, `onError`, `onDone`, `onMetaProbed`, `onCancel`. | Fix the name (also applies to `main.events`). |
-| `未知权限 '…'，合法：[…]` | A permission name that does not exist. | Use one of `ffmpeg`, `ytdlp`, `auth`, `tasks`, `browserRules`, `desktop`, `background`, `intercept`, `pageScripts`. |
+| `未知权限 '…'，合法：[…]` | A permission name that does not exist. | Use one of `ffmpeg`, `ytdlp`, `auth`, `tasks`, `browserRules`, `desktop`, `background`, `intercept`, `pageScripts`, `archive`. |
 | `声明 auth.entry 时 permissions 必须包含 auth` | `auth` without the `auth` permission. | Add `"auth"` to `permissions`. |
 | `声明 sniffRules 时 permissions 必须包含 browserRules` | Sniff rules without the permission. | Add `"browserRules"`. |
 | `main.background 为 true 时 permissions 必须包含 background` | `main.background` is `true` without the `background` permission. | Add `"background"`. |
@@ -159,7 +159,7 @@ The engine reports these with the prefix `manifest 非法: ` (“manifest invali
 | `view '<id>' icon 超过 16384 字节` / `view '<id>' icon 不是合法 UTF-8` | The icon file is larger than 16 KiB or is not UTF-8 text. | Minify the SVG; save it as UTF-8. |
 | `view '<id>' icon 不是 SVG 文档` | After an optional BOM and whitespace the file does not start with `<svg` or `<?xml`, or contains no `<svg`. | Provide a real SVG file. |
 | `需要 App ≥ X，当前 Y` (“requires app ≥ X, current Y”) | `minAppVersion` is newer than your app. | Update FluxDown or lower `minAppVersion`. |
-| `脚本编译失败: …` (“script compile failed”) | A resolver, hooks, interceptors, auth or subscription script has a syntax error — **or throws at top level**. The check evaluates the script once in a bare context where `flux` and `console` do not exist. | Fix the syntax; move every `flux.*` / `console.*` call into an entry function. For TypeScript projects, run `npm run typecheck` and check that the bundle was rebuilt. |
+| `脚本编译失败: …` (“script compile failed”) | A resolver, hooks, interceptors, auth, subscription or archive script has a syntax error — **or throws at top level**. The check evaluates the script once in a bare context where `flux` and `console` do not exist. | Fix the syntax; move every `flux.*` / `console.*` call into an entry function. For TypeScript projects, run `npm run typecheck` and check that the bundle was rebuilt. |
 | `安装后未能加载插件（校验失败或版本门槛不满足）` (“the plugin could not be loaded after install (validation failed or version gate not met)”) | The checks above failed during install; the previous version, if any, was restored. | Read the earlier lines in the log for the actual reason. |
 | `读取 manifest 失败: …` / `读取 manifest.json 失败: …` | `manifest.json` is not in the folder you picked. | Pick the folder that **directly** contains `manifest.json` — for SDK projects `dist/`, not the project root. |
 | `zip 内未找到根 manifest.json` | The zip has no `manifest.json` at its root (or in its single top-level folder). | Zip the *contents* of `dist/`; `npm run pack` does this correctly. |
@@ -211,7 +211,7 @@ All of these appear as `[插件] <identity>: <message>`. Messages from the host 
 
 - The pattern did not match. Patterns compare against the full URL, case-insensitively; `*` is the only wildcard; the text before the first `*` must be a prefix of the URL and the text after the last `*` a suffix. `example.com/*` does **not** match `https://example.com/x` — use `*://example.com/*`.
 - The plugin is disabled, still **Authorization required**, or not loaded.
-- Another plugin was chosen. If several plugins match, FluxDown asks once and may remember the choice; check **Plugins → Site default plugins**. Unattended downloads use the site default or the plugin with the smallest identity.
+- Another plugin was chosen. If several plugins match, FluxDown asks once and may remember the choice; check **Settings → Extensions → Site Defaults**. Unattended downloads use the site default or the plugin with the smallest identity.
 - The URL is added in a way that skips plugins — check by adding the link in the normal **New download** dialog.
 
 Also see the [resolver walkthrough](/docs/en/plugins/your-first-plugin/#5-test-and-debug).

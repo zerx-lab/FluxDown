@@ -145,7 +145,7 @@ export interface ViewEvent {
 }
 
 /** Navigation target: a built-in page, or an `activity` view of this plugin. */
-export type NavigateTarget = "downloads" | "rss" | "webhooks" | "share" | { view: string };
+export type NavigateTarget = "downloads" | "rss" | "webhooks" | { view: string };
 
 export interface ViewContext {
   /** Unique id of this open view session. */
@@ -404,7 +404,7 @@ export interface ArchiveMetadata {
   collectionTitle?: string;
 }
 
-/** `archive(ctx)` argument. */
+/** `archive(ctx)` argument: the final file name (HLS/DASH: the predicted `<stem>.mp4`). */
 export interface ArchiveContext {
   fileName: string;
   metadata?: ArchiveMetadata;
@@ -520,6 +520,8 @@ export type ResolveFn = (ctx: ResolveContext) => Awaitable<ResolveResult | null 
 export type AuthFn = (ctx: AuthContext) => Awaitable<AuthResult>;
 /** Returns the normalized subscription payload (at most 1000 items). */
 export type SubscribeFn = (ctx: SubscribeContext) => Awaitable<SubscribeResult>;
+/** Returns a subfolder name, or `null` / `undefined` for none (sync or async). */
+export type ArchiveFn = (ctx: ArchiveContext) => Awaitable<ArchiveResult | null | undefined>;
 
 // ---- Interceptor plane (manifest `interceptors`; entry `globalThis.intercept(ctx)`) ----
 
@@ -785,8 +787,8 @@ export interface HookHandlers {
 declare global {
   /** The plugin runtime facade. */
   const flux: Flux;
-  /** Archive contribution entry point, requiring the `archive` permission. */
-  function archive(ctx: ArchiveContext): ArchiveResult | null;
+  /** Archive entry (`contributes.archive`, `archive` permission); the sandbox has only `flux.settings`, `flux.logger` and `console`. */
+  function archive(ctx: ArchiveContext): Awaitable<ArchiveResult | null | undefined>;
   /**
    * Console routed to the plugin log. Declared as a plain variable: do not enable the DOM
    * lib in plugin projects (the QuickJS host has no DOM).

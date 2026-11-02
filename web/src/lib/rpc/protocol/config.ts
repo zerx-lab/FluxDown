@@ -165,6 +165,10 @@ export const FILE_MISSING_ACTIONS = ['keep', 'delete'] as const;
 export const BT_SEED_LIMIT_OPERATORS = ['or', 'and'] as const;
 export const BT_SEED_THEN_ACTIONS = ['stop', 'delete', 'delete_files'] as const;
 export const BT_MSE_MODES = ['disabled', 'enabled', 'forced'] as const;
+/** 防吸血规则 / 云名单模式。 */
+export const BT_GUARD_MODES = ['off', 'observe', 'enforce'] as const;
+/** 防吸血：下载中任务的动作上限。 */
+export const BT_GUARD_DOWNLOADING_ACTIONS = ['observe', 'throttle', 'choke', 'ban'] as const;
 export const PROXY_MODES = ['none', 'system', 'manual', 'auto'] as const;
 export const PROXY_TYPES = ['http', 'https', 'socks4', 'socks5'] as const;
 
@@ -257,6 +261,28 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   oneOf('bt_seed_inactive_time_limit_unit', 'minutes', BT_SEED_TIME_UNITS),
   oneOf('bt_seed_limit_operator', 'or', BT_SEED_LIMIT_OPERATORS),
   oneOf('bt_seed_then_action', 'stop', BT_SEED_THEN_ACTIONS),
+  // BT 防吸血（热更新）
+  bool('bt_guard_enabled', 'true'),
+  oneOf('bt_guard_rule_excessive', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_rerequest', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_rewind', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_lag', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_fingerprint', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_cloud_mode', 'observe', BT_GUARD_MODES),
+  int('bt_guard_excess_ratio_pct', '200', 110, 1000),
+  int('bt_guard_min_torrent_mib', '64', 0, 1_048_576),
+  int('bt_guard_rewind_tolerance_pct', '7', 0, 100),
+  int('bt_guard_throttle_kib', '32', 1, 1_048_576),
+  int('bt_guard_ban_base_hours', '24', 1, 720),
+  int('bt_guard_ban_max_days', '30', 1, 365),
+  oneOf('bt_guard_downloading_max_action', 'throttle', BT_GUARD_DOWNLOADING_ACTIONS),
+  bool('bt_guard_skip_private', 'true'),
+  bool('bt_guard_skip_lan', 'true'),
+  int('bt_guard_ipv6_prefix', '64', 48, 128),
+  text('bt_guard_filter_urls'),
+  bool('bt_guard_cloud_enabled', 'true'),
+  // 设备本地：不进云同步
+  bool('bt_guard_report_enabled', 'false'),
   // ED2K
   bool('ed2k_enable_kad', 'true'),
   bool('ed2k_enable_upnp', 'true'),

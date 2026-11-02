@@ -19,7 +19,7 @@ pub use components::title_bar::{
     DownloadPageWidget, DownloadSearchBox, DownloadTitleBar, DownloadViewMenu,
 };
 pub use controller::{
-    DownloadsCommand, DownloadsController, DownloadsPort, DownloadsResult,
+    BtGuardEvidence, DownloadsCommand, DownloadsController, DownloadsPort, DownloadsResult,
     LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF, PortFuture, QueueFields,
     REMEMBER_LAST_SAVE_DIR_PREF, SeedLimits, TorrentShare,
 };

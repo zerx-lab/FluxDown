@@ -277,6 +277,24 @@ impl AgentDownloadsPort {
                         .await?;
                     return Ok(DownloadsResult::BtStatus(status));
                 }
+                DownloadsCommand::BtGuardAddEntry(params) => {
+                    (method::DAEMON_BT_GUARD_ENTRIES_ADD, serialize(params)?)
+                }
+                DownloadsCommand::BtGuardEvidence { ip_group } => {
+                    let (entries_params, events_params) = evidence_params(&ip_group);
+                    let entries: fluxdown_protocol::BtGuardEntriesListDto = client
+                        .call(method::DAEMON_BT_GUARD_ENTRIES_LIST, Some(entries_params))
+                        .await?;
+                    let events: fluxdown_protocol::BtGuardEventsListDto = client
+                        .call(method::DAEMON_BT_GUARD_EVENTS_LIST, Some(events_params))
+                        .await?;
+                    return Ok(DownloadsResult::BtGuardEvidence(
+                        fluxdown_ui_downloads::BtGuardEvidence {
+                            entries: entries.items,
+                            events: events.items,
+                        },
+                    ));
+                }
                 DownloadsCommand::FileIcon(params) => {
                     let icon: fluxdown_protocol::PlatformFileIconDto = client
                         .call(method::AGENT_PLATFORM_FILE_ICON, Some(params))
@@ -629,6 +647,27 @@ fn serialize<T: serde::Serialize>(value: T) -> Result<Value, fluxdown_protocol::
     serde_json::to_value(value).map_err(|_| internal_error())
 }
 
+/// 「查看证据」的两次查询参数：条目取覆盖该 IP 的全部名单条目，事件按 IP 组精确过滤，均由 daemon 筛选。
+fn evidence_params(
+    ip_group: &str,
+) -> (
+    fluxdown_protocol::BtGuardEntriesListParams,
+    fluxdown_protocol::BtGuardEventsListParams,
+) {
+    (
+        fluxdown_protocol::BtGuardEntriesListParams {
+            contains_ip: Some(ip_group.to_owned()),
+            limit: fluxdown_protocol::BT_GUARD_LIST_MAX_LIMIT,
+            ..Default::default()
+        },
+        fluxdown_protocol::BtGuardEventsListParams {
+            ip_group: Some(ip_group.to_owned()),
+            limit: fluxdown_protocol::BT_GUARD_LIST_MAX_LIMIT,
+            ..Default::default()
+        },
+    )
+}
+
 fn internal_error() -> fluxdown_protocol::RpcErrorData {
     fluxdown_protocol::RpcErrorData::new(fluxdown_protocol::ApplicationErrorCode::Internal, false)
 }
@@ -681,6 +720,19 @@ fn torrent_file_params(
         }
     }
     params
+}
+
+#[cfg(test)]
+mod evidence_params_tests {
+    use super::evidence_params;
+
+    #[test]
+    fn evidence_queries_are_filtered_by_the_daemon() {
+        let (entries, events) = evidence_params("2001:db8::/64");
+        assert_eq!(entries.contains_ip.as_deref(), Some("2001:db8::/64"));
+        assert!(entries.query.is_none());
+        assert_eq!(events.ip_group.as_deref(), Some("2001:db8::/64"));
+    }
 }
 
 #[cfg(test)]

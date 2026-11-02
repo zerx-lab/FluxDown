@@ -129,6 +129,17 @@ struct SettingsBtEd2kTests {
         #expect(!old.isEmpty)
     }
 
+    @Test func expiryTimeShowsFutureAsAbsoluteDateNotNow() {
+        let now = Date(timeIntervalSince1970: 1_759_700_000)
+        // 修复前走 text()：未来时间被夹成 now →「now / 0 秒前」，无法看出何时过期。
+        let future = SubscriptionTime.expiryText(unix: 1_759_700_000 + 3 * 86_400, now: now, languageCode: "en")
+        #expect(!future.contains("now") && !future.contains("ago") && !future.contains("in "))
+        #expect(future.contains("2025"))
+        #expect(future != SubscriptionTime.text(unix: 1_759_700_000 + 3 * 86_400, now: now, languageCode: "en"))
+        let past = SubscriptionTime.expiryText(unix: 1_759_700_000 - 3 * 3600, now: now, languageCode: "en")
+        #expect(past.contains("3 hours ago"))
+    }
+
     // MARK: 读数
 
     @Test func btReadoutListsActiveFeatures() {

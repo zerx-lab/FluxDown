@@ -6,17 +6,17 @@ import Testing
 struct PreferencesProtocolTests {
     // MARK: - 同步目录
 
-    @Test func syncCatalogMirrorsFiftyEightSpecs() {
-        // iOS 镜像 58 项：30 个 daemon 键 + 27 个偏好 / agent 键 + 集合范围键 `appearance.custom_themes`
-        // （Rust 目录 60 项，多出的 `ui.show_activity_account` 与 `appearance.file_icon_pack` 是 GPUI / Web 专属，
+    @Test func syncCatalogMirrorsSeventySevenSpecs() {
+        // iOS 镜像 77 项：49 个 daemon 键（含 19 个 `bt.guard.*`）+ 27 个偏好 / agent 键 + 集合范围键 `appearance.custom_themes`
+        // （Rust 目录 79 项，多出的 `ui.show_activity_account` 与 `appearance.file_icon_pack` 是 GPUI / Web 专属，
         // iOS 尚未镜像）。
-        #expect(SettingsCatalog.daemonSyncNames.count == 30)
+        #expect(SettingsCatalog.daemonSyncNames.count == 49)
         #expect(SettingsCatalog.syncedPreferenceKeys.count == 27)
-        #expect(SettingsCatalog.daemonSyncNames.count + SettingsCatalog.syncedPreferenceKeys.count + 1 == 58)
+        #expect(SettingsCatalog.daemonSyncNames.count + SettingsCatalog.syncedPreferenceKeys.count + 1 == 77)
         #expect(SettingsCatalog.syncedPreferenceKeys.contains("custom_categories"))
         #expect(!SettingsCatalog.syncedPreferenceKeys.contains(SettingsCatalog.customThemesScopeKey))
         #expect(SettingsCatalog.syncNameToDaemonKey["download.max_concurrent_tasks"] == "max_concurrent_tasks")
-        #expect(SettingsCatalog.syncNameToDaemonKey.count == 30)
+        #expect(SettingsCatalog.syncNameToDaemonKey.count == 49)
     }
 
     @Test func everySyncedDaemonKeyIsAWritableDaemonField() throws {

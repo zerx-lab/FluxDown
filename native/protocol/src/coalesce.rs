@@ -20,8 +20,6 @@ enum Key {
     Runtime(String),
     Segments(String),
     RuntimeStats,
-    /// 单个FluxMesh会话的进度 / 路径刷新（后帧完整取代前帧）。
-    ShareSession(String),
     Queue,
 }
 
@@ -156,7 +154,7 @@ impl FrameQueue {
 fn key_task(key: &Key) -> Option<&str> {
     match key {
         Key::Progress(task) | Key::Runtime(task) | Key::Segments(task) => Some(task),
-        Key::RuntimeStats | Key::Queue | Key::ShareSession(_) => None,
+        Key::RuntimeStats | Key::Queue => None,
     }
 }
 
@@ -199,13 +197,9 @@ fn touch(frame: &EventFrame) -> Touch<'_> {
             | AgentEvent::PowerChanged(_)
             | AgentEvent::UpdateChanged(_)
             | AgentEvent::CloudNotifyChanged(_)
-            | AgentEvent::ShareChanged(_)
             | AgentEvent::CaptureTasksStarted(_)
             | AgentEvent::CaptureTasksResumed(_)
             | AgentEvent::SessionRevoked(_) => Touch::None,
-            AgentEvent::ShareProgress(progress) => {
-                Touch::Keyed(Key::ShareSession(progress.session_id.clone()))
-            }
         },
     }
 }
@@ -243,7 +237,10 @@ fn daemon_touch(event: &DaemonEvent) -> Touch<'_> {
         | DaemonEvent::TaskNotice(_)
         | DaemonEvent::PluginViewFrame(_)
         | DaemonEvent::PluginViewClosed { .. }
-        | DaemonEvent::PluginToast { .. } => Touch::None,
+        | DaemonEvent::PluginToast { .. }
+        | DaemonEvent::BtGuardChanged
+        | DaemonEvent::BtGuardCloudRefreshWanted { .. }
+        | DaemonEvent::BtGuardEvidenceReady { .. } => Touch::None,
     }
 }
 
@@ -308,14 +305,6 @@ fn engine_touch(message: &WsServerMsg) -> Touch<'_> {
 /// 把同一实体的前帧 `earlier` 并入后帧 `later`（原地改写后帧）；返回 `true` 表示后帧已
 /// 完整代表二者，前帧可丢弃——结果与先后应用二者等价。返回 `false` 时后帧未被改动。
 fn merge(earlier: &EventFrame, later: &mut EventFrame) -> bool {
-    // 同一会话的进度刷新是完整取代：后帧覆盖前帧写过的全部字段。
-    if let (
-        ServiceEvent::Agent(AgentEvent::ShareProgress(old)),
-        ServiceEvent::Agent(AgentEvent::ShareProgress(new)),
-    ) = (&earlier.event, &later.event)
-    {
-        return old.session_id == new.session_id;
-    }
     let (Some(previous), Some(next)) = (daemon_event(earlier), daemon_event_mut(later)) else {
         return false;
     };
@@ -649,84 +638,6 @@ mod tests {
         assert_eq!(sent[1].previous, None);
         assert_eq!(judge_frame("e", 4, &sent[0]), FrameVerdict::Accept);
         assert_eq!(judge_frame("e", 3, &sent[0]), FrameVerdict::Resync);
-    }
-
-    fn share_frame(sequence: u64, event: AgentEvent) -> EventFrame {
-        EventFrame {
-            epoch: "e".to_owned(),
-            sequence,
-            previous: None,
-            event: ServiceEvent::Agent(event),
-        }
-    }
-
-    fn share_progress(session: &str, bytes: u64) -> AgentEvent {
-        AgentEvent::ShareProgress(crate::ShareProgressDto {
-            session_id: session.to_owned(),
-            path_kind: crate::SharePathKind::DirectWan,
-            rate_bps: bytes,
-            bytes,
-            progress: 0.5,
-        })
-    }
-
-    fn share_base() -> crate::AgentSnapshot {
-        let mut snapshot = crate::AgentSnapshot::default();
-        snapshot.share.shares.push(crate::ShareDto {
-            id: "s1".to_owned(),
-            active_receivers: ["x", "y"]
-                .into_iter()
-                .map(|session| crate::ShareReceiverDto {
-                    session_id: session.to_owned(),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        });
-        snapshot
-    }
-
-    #[test]
-    fn share_progress_merges_per_session_and_stays_equivalent() {
-        let frames = vec![
-            share_frame(1, share_progress("x", 10)),
-            share_frame(2, share_progress("y", 5)),
-            share_frame(3, share_progress("x", 20)),
-            share_frame(4, AgentEvent::ShareChanged(share_base().share)),
-            share_frame(5, share_progress("x", 30)),
-            share_frame(6, share_progress("y", 9)),
-        ];
-        let mut queue = FrameQueue::new();
-        for frame in frames.iter().cloned() {
-            queue.push(frame);
-        }
-        let sent = drain(&mut queue);
-        // 1 并入 3；3 并入 5（中间的整体替换不阻断：它完整取代旧状态）；2 并入 6。
-        assert_eq!(
-            sent.iter().map(|frame| frame.sequence).collect::<Vec<_>>(),
-            [4, 5, 6]
-        );
-
-        let apply = |frames: &[EventFrame]| {
-            let mut snapshot = share_base();
-            for frame in frames {
-                let ServiceEvent::Agent(event) = &frame.event else {
-                    unreachable!()
-                };
-                crate::apply_agent_event(&mut snapshot, event);
-            }
-            snapshot.share
-        };
-        assert_eq!(apply(&sent), apply(&frames));
-    }
-
-    #[test]
-    fn share_progress_does_not_merge_across_a_snapshot_replacement() {
-        let mut queue = FrameQueue::new();
-        queue.push(share_frame(1, share_progress("x", 10)));
-        queue.push(share_frame(2, AgentEvent::DaemonConnectionChanged(true)));
-        queue.push(share_frame(3, share_progress("x", 20)));
-        assert_eq!(drain(&mut queue).len(), 3);
     }
 
     #[test]

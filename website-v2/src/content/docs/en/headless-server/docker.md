@@ -145,9 +145,17 @@ Every Server release ships native fnOS app packages — no Docker required:
 
 In-app update only announces new versions; it never replaces the binaries. Manually install the newer `.fpk` from the App Center over the existing install — the database, access key, and settings are kept.
 
+### Remote access (DDNS / FN Connect)
+
+FluxDown listens on port `17800` over both IPv4 and IPv6 by default, so fnOS DDNS (which often resolves to IPv6) and FN Connect forwarding both reach `http://<domain>:17800` with no reverse proxy or WebSocket pass-through needed. If it is unreachable from the internet:
+
+- Run `ss -ltn | grep 17800` on the NAS: it should show `*:17800` or `[::]:17800`. Only `0.0.0.0:17800` means an older version — upgrade the `.fpk`.
+- If DDNS resolves to IPv4, forward port `17800` to the NAS on your router; this needs a public IPv4 address.
+- Make sure the modem/router IPv6 inbound firewall and the fnOS firewall allow `17800`.
+
 ## Exposing it safely
 
-The image binds `0.0.0.0:17800` inside the container, mapped to the host. As with any headless deployment, the access key is the only thing guarding full remote control — see the [reverse proxy & TLS guidance](/docs/en/headless-server/setup/) before exposing it beyond a trusted LAN.
+The image binds `[::]:17800` inside the container (IPv4 + IPv6, falling back to `0.0.0.0` when the container has no IPv6), mapped to the host. As with any headless deployment, the access key is the only thing guarding full remote control — see the [reverse proxy & TLS guidance](/docs/en/headless-server/setup/) before exposing it beyond a trusted LAN.
 
 ## Next steps
 

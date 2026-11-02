@@ -104,16 +104,17 @@ fn install_capture_failure_notices(cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut pending = failures.borrow_and_update().clone();
         loop {
-            if let Some(error) = pending.take() {
+            if pending.take().is_some() {
                 cx.update(|cx| {
                     crate::windows::main::reveal(cx);
                     let Some(main) = WindowRegistry::handle(cx, &WindowKey::Main) else {
                         return;
                     };
-                    let message = fluxdown_ui_share::error_text(
-                        Desktop::global(cx).translator.read(cx),
-                        &error,
-                    );
+                    let message = Desktop::global(cx)
+                        .translator
+                        .read(cx)
+                        .text("localServiceActionFailed")
+                        .to_owned();
                     if let Err(error) = main.update(cx, |_, window, cx| {
                         window.push_notification(Notification::error(message), cx);
                     }) {
@@ -443,8 +444,6 @@ fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCap
                     cx,
                 )
             });
-            let share_hub = Desktop::global(cx).share_hub.clone();
-            crate::share_host::bind_share_receive(&form, &share_hub, cx);
             if !captures.is_empty() {
                 form.update(cx, |form, cx| form.add_captures(captures, window, cx));
             }

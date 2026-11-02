@@ -162,7 +162,6 @@ impl ExtensionsView {
     ) -> impl IntoElement {
         self.ensure_market_loaded(window, cx);
         self.ensure_favorites_loaded(window, cx);
-        self.ensure_site_defaults_loaded(window, cx);
         let search = self.ensure_market_search(window, cx);
         self.schedule_ready_consents(window, cx);
         let query = search.read(cx).value().to_string();
@@ -258,7 +257,6 @@ impl ExtensionsView {
             } else {
                 list_card(installed, frame, cx)
             })
-            .children(self.render_site_defaults(frame, cx))
             .child(
                 v_flex()
                     .w_full()

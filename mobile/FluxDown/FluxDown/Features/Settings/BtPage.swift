@@ -13,6 +13,15 @@ struct BtPage: View {
     @Environment(SettingsFocus.self) private var focus
 
     @SceneStorage("settings.bt.tab") private var tab: BtSettingsTab = .general
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var guardModel = BtGuardStateStore()
+    @State private var guardReload = 0
+
+    private struct GuardPollKey: Hashable {
+        let active: Bool
+        let visible: Bool
+        let token: Int
+    }
 
     var body: some View {
         let form = editor.form
@@ -30,10 +39,18 @@ struct BtPage: View {
                 case .general: generalSections(form, readOnly: readOnly)
                 case .tracker: trackerSections(form, readOnly: readOnly)
                 case .seeding: seedingSections(form, readOnly: readOnly)
+                case .antiLeech: BtGuardTab(model: guardModel, reload: { guardReload += 1 })
                 }
             }
         }
         .fluxAnimation(.smooth, value: form)
+        // 防吸血状态轮询挂在页面层（不随 Form 行滚动取消）：仅在前台且防吸血页签可见时运行；
+        // 回到前台 / 切回页签 / 收到 `btGuardChanged` 都会重启并立即加载一次。
+        .task(id: GuardPollKey(active: scenePhase == .active, visible: btOn && shownTab == .antiLeech, token: guardReload)) {
+            guard scenePhase == .active, btOn, shownTab == .antiLeech else { return }
+            await guardModel.poll(container.session)
+        }
+        .modifier(BtGuardChangeObserver { guardReload += 1 })
         // 搜索命中：先切到目标行所在页签（reveal 在 350ms 后才滚动，页签内容此时已渲染）。
         .onChange(of: focus.target, initial: true) { _, target in
             if let target, let owner = BtSettingsRow.tab(forRowID: target) { tab = owner }
@@ -237,12 +254,19 @@ extension BtPage {
     /// 设置搜索索引：每个页签的所有可见行（与页面渲染共用 `BtSettingsRow.isVisible`）。
     static func searchEntries(_ ctx: SettingsSearchContext) -> [SettingsEntry] {
         let name = L("settingsCatBt")
-        return BtSettingsRow.allCases.filter { $0.isVisible(in: ctx.form) }.map { row in
+        let basic = BtSettingsRow.allCases.filter { $0.isVisible(in: ctx.form) }.map { row in
             SettingsEntry(
                 item: row.item, route: .bt, breadcrumb: "\(name) › \(L(row.tab.titleKey))",
                 symbol: "point.3.connected.trianglepath.dotted"
             )
         }
+        let leech = BtGuardRow.visible(ctx.form).map { row in
+            SettingsEntry(
+                item: row.item, route: .bt, breadcrumb: "\(name) › \(L(BtSettingsTab.antiLeech.titleKey))",
+                symbol: "shield.lefthalf.filled"
+            )
+        }
+        return basic + leech
     }
 
     /// 设置首页该分类行的读数（nil = 使用分类说明文案）。

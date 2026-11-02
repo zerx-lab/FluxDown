@@ -180,12 +180,13 @@ struct LinkProtocolTests {
 
     @Test func syncGroupsPartitionTheFullCatalogWithoutOverlap() {
         let all = SyncRules.groups.flatMap(\.keys)
-        #expect(all.count == 58)
+        #expect(all.count == 77)
         #expect(all.contains("bt.enabled"))
         #expect(Set(all).count == all.count)
         #expect(SyncRules.groups.map(\.id) == SyncGroup.ID.allCases)
         #expect(all.contains("custom_categories"))
         #expect(all.contains("bt.seed_max_active"))
+        #expect(all.contains("bt.guard.cloud_enabled"))
     }
 
     @Test func relativeSyncTime() {

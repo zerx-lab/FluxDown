@@ -460,14 +460,20 @@ impl ProcessGuard {
     }
 
     fn wait_for_success(&mut self, timeout: Duration) {
+        self.wait_for_exit(timeout, true);
+    }
+
+    fn wait_for_exit(&mut self, timeout: Duration, require_success: bool) {
         let child = self.child.as_mut().expect("daemon child");
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(status) = child.try_wait().expect("wait for fluxdownd") {
-                assert!(
-                    status.success(),
-                    "fluxdownd exited unsuccessfully: {status}"
-                );
+                if require_success {
+                    assert!(
+                        status.success(),
+                        "fluxdownd exited unsuccessfully: {status}"
+                    );
+                }
                 self.child = None;
                 return;
             }
@@ -489,7 +495,8 @@ impl ProcessGuard {
             #[cfg(not(unix))]
             child.kill().expect("terminate fluxdownd");
         }
-        self.wait_for_success(timeout);
+        // Windows kill is forced termination, not the graceful shutdown tested above.
+        self.wait_for_exit(timeout, cfg!(unix));
     }
 }
 

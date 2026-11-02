@@ -551,6 +551,8 @@ const zhCN = {
   "options.sniff.imagesDesc": "检测网页中的大图片资源（>100KB）",
   "options.sniff.lowConfidence": "显示低置信度资源",
   "options.sniff.lowConfidenceDesc": "在资源列表中同时显示判断把握较低的项目",
+  "options.sniff.maxResources": "单页嗅探上限",
+  "options.sniff.maxResourcesDesc": "页面链接扫描到这么多条后停止（1–{max}）。数值过大时长列表页可能变卡；网络请求中嗅探到的媒体不计入。",
   "options.sites.desc": "为单个站点覆盖全局行为：是否接管下载、是否嗅探、悬浮球与浮钮，以及保存目录。站点配置对其子域同样生效。",
   "options.sites.colHost": "站点",
   "options.sites.colIntercept": "接管",

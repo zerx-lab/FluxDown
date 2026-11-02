@@ -8,7 +8,7 @@ import Foundation
 
 /// BT 页签（GPUI `bt.rs` 的 basic / tracker / seeding）。
 nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
-    case general, tracker, seeding
+    case general, tracker, seeding, antiLeech
 
     var id: String { rawValue }
 
@@ -17,6 +17,7 @@ nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
         case .general: "settingsTabGeneral"
         case .tracker: "settingsTabTracker"
         case .seeding: "settingsTabSeeding"
+        case .antiLeech: "btGuardTab"
         }
     }
 }
@@ -169,9 +170,99 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         isEnabled(in: form) ? BtSettingsTab.allCases : [.general]
     }
 
-    /// 搜索定位：行 id 所在页签。
+    /// 搜索定位：行 id 所在页签（防吸血行属于防吸血页签）。
     static func tab(forRowID id: String) -> BtSettingsTab? {
-        allCases.first { $0.id == id }?.tab
+        if BtGuardRow.allCases.contains(where: { $0.id == id }) { return .antiLeech }
+        return allCases.first { $0.id == id }?.tab
+    }
+}
+
+// MARK: - 防吸血（移动端子集）
+
+/// 防吸血页签的设置行：总开关 · 各规则模式 · 云名单（开关 / 模式）· 证据上报开关 · 封禁名单入口。
+/// 阈值 / 处置阶梯 / 豁免 / 过滤文件订阅 / 事件日志只在桌面与 Web 提供。
+nonisolated enum BtGuardRow: String, CaseIterable, Identifiable {
+    case enabled
+    case ruleExcessive, ruleRerequest, ruleRewind, ruleLag, ruleFingerprint
+    case cloudEnabled, cloudMode
+    case reportEnabled
+    case bans
+
+    var id: String { "btGuard.\(rawValue)" }
+
+    /// 规则模式行（off / observe / enforce）。
+    static let ruleRows: [BtGuardRow] = [.ruleExcessive, .ruleRerequest, .ruleRewind, .ruleLag, .ruleFingerprint]
+
+    /// 对应的 daemon 配置键；封禁名单入口不读写配置，借总开关键参与可见性判定。
+    var configKey: String {
+        switch self {
+        case .enabled, .bans: "bt_guard_enabled"
+        case .ruleExcessive: "bt_guard_rule_excessive"
+        case .ruleRerequest: "bt_guard_rule_rerequest"
+        case .ruleRewind: "bt_guard_rule_rewind"
+        case .ruleLag: "bt_guard_rule_lag"
+        case .ruleFingerprint: "bt_guard_rule_fingerprint"
+        case .cloudEnabled: "bt_guard_cloud_enabled"
+        case .cloudMode: "bt_guard_cloud_mode"
+        case .reportEnabled: "bt_guard_report_enabled"
+        }
+    }
+
+    var titleKey: String {
+        switch self {
+        case .enabled: "btGuardEnabled"
+        case .ruleExcessive: "btGuardRuleExcessive"
+        case .ruleRerequest: "btGuardRuleRerequest"
+        case .ruleRewind: "btGuardRuleRewind"
+        case .ruleLag: "btGuardRuleLag"
+        case .ruleFingerprint: "btGuardRuleFingerprint"
+        case .cloudEnabled: "btGuardCloudEnabled"
+        case .cloudMode: "btGuardCloudMode"
+        case .reportEnabled: "btGuardReportEnabled"
+        case .bans: "btGuardTabBans"
+        }
+    }
+
+    var detailKey: String? {
+        switch self {
+        case .enabled: "btGuardEnabledDesc"
+        case .ruleExcessive: "btGuardRuleExcessiveDesc"
+        case .ruleRerequest: "btGuardRuleRerequestDesc"
+        case .ruleRewind: "btGuardRuleRewindDesc"
+        case .ruleLag: "btGuardRuleLagDesc"
+        case .ruleFingerprint: "btGuardRuleFingerprintDesc"
+        case .cloudEnabled: "btGuardCloudEnabledDesc"
+        case .reportEnabled: "btGuardReportEnabledDesc"
+        case .cloudMode, .bans: nil
+        }
+    }
+
+    var item: SettingsItem {
+        SettingsItem(id: id, key: configKey, titleKey: titleKey, detailKey: detailKey)
+    }
+
+    /// 规则模式选项（`btGuardModeOff` / `Observe` / `Enforce`）。
+    static let modeOptions: [(id: String, labelKey: String)] = [
+        ("off", "btGuardModeOff"), ("observe", "btGuardModeObserve"), ("enforce", "btGuardModeEnforce"),
+    ]
+
+    /// 防吸血页签的行可见：配置已加载且 BT 总开关开启（旧主机缺键同样走目录默认值，数据区另行报错）。
+    func isVisible(in form: SettingsConfigForm) -> Bool {
+        form.has(configKey) && BtSettingsRow.isEnabled(in: form)
+    }
+
+    static func visible(_ form: SettingsConfigForm) -> [BtGuardRow] {
+        allCases.filter { $0.isVisible(in: form) }
+    }
+
+    /// 防吸血总开关；缺键按目录默认（开启）。
+    static func isGuardEnabled(in form: SettingsConfigForm) -> Bool {
+        form.bool(BtGuardRow.enabled.configKey)
+    }
+
+    /// 云名单模式行是否可编辑：总开关与云名单开关都开启。
+    static func cloudModeEditable(in form: SettingsConfigForm) -> Bool {
+        isGuardEnabled(in: form) && form.bool(BtGuardRow.cloudEnabled.configKey)
     }
 }
 
@@ -487,6 +578,14 @@ enum SubscriptionTime {
             formatter.dateTimeStyle = .named
             return formatter.localizedString(for: min(date, now), relativeTo: now)
         }
+        return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale))
+    }
+
+    /// 「有效期至」：未来时间显示绝对日期时间（不夹成 now）；已过期沿用 ``text(unix:now:languageCode:)`` 的相对文案。
+    static func expiryText(unix: Int64, now: Date = Date(), languageCode: String = L10n.shared.locale) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(unix))
+        guard date > now else { return text(unix: unix, now: now, languageCode: languageCode) }
+        let locale = Locale(identifier: languageCode)
         return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale))
     }
 }

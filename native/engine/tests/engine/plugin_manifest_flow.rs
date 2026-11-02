@@ -226,8 +226,7 @@ async fn recv_preview_ready(
 /// 场景 1：裂变端到端。单任务命中 resolver → 初段返回 2-item 清单 → 引擎
 /// 自动裂变为组（母任务原地改写 + 1 个兄弟任务），二段 resolve 各自取得
 /// 真实直链并完成下载；两文件落盘于 `组根/vids/`，组行存在，母任务 ID 不变。
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fission_end_to_end_creates_group_and_downloads_members() {
+async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
     let work = std::env::temp_dir().join(format!("fluxdown-manifest-it-{}", uuid_like()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir work");
     let (port, _srv) = spawn_server();
@@ -246,10 +245,13 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
 
     let pm = engine.manager.plugin_manager().expect("pm installed");
     pm.install_from_dir(&plugin_src).await.expect("install");
-    let manifest_json = r#"{"name":"share_bundle","items":[
-        {"id":"f1","name":"a.mp4","path":"vids","size":100},
-        {"id":"f2","name":"b.mp4","path":"vids","size":200}
-    ]}"#;
+    let manifest_json = serde_json::json!({
+        "name": manifest_name,
+        "items": [
+            {"id":"f1","name":"a.mp4","path":"vids","size":100},
+            {"id":"f2","name":"b.mp4","path":"vids","size":200}
+        ]
+    });
     pm.update_settings(
         "test@multiresolver",
         &[
@@ -289,7 +291,7 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
     let groups = engine.db.load_all_groups().await.expect("load groups");
     assert_eq!(groups.len(), 1, "exactly one group must be created");
     let group = &groups[0];
-    assert_eq!(group.name, "share_bundle");
+    assert_eq!(group.name, expected_group_name);
     assert_eq!(group.source_url, "http://share.test/album/xyz");
 
     let member_ids = engine
@@ -304,8 +306,8 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
     );
 
     // 两文件落盘于 组根/vids/，内容正确。
-    let a_path = work.join("share_bundle").join("vids").join("a.mp4");
-    let b_path = work.join("share_bundle").join("vids").join("b.mp4");
+    let a_path = work.join(expected_group_name).join("vids").join("a.mp4");
+    let b_path = work.join(expected_group_name).join("vids").join("b.mp4");
     assert_eq!(
         tokio::fs::read(&a_path).await.expect("read a.mp4"),
         FILE_BODY
@@ -330,6 +332,16 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
     {
         eprintln!("best-effort test directory cleanup: {error}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fission_end_to_end_creates_group_and_downloads_members() {
+    run_fission_download("share_bundle", "share_bundle").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unnamed_manifest_group_uses_first_member_name_as_its_root() {
+    run_fission_download("", "a.mp4").await;
 }
 
 /// 场景 2：`begin_resolve_preview` 只读——命中声明 `multi=true` 的 resolver

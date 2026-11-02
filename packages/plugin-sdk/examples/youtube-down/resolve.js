@@ -62,7 +62,7 @@ return jsc;
 })();
 "use strict";
 (() => {
-  // packages/plugin-sdk/examples/youtube-down/src/clients.js
+  // examples/youtube-down/src/clients.js
   var SAFARI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)";
   var CLIENTS = {
     tv_samsung: {
@@ -139,7 +139,7 @@ return jsc;
     return names.length ? [...new Set(names)] : null;
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/query.js
+  // examples/youtube-down/src/query.js
   function decode(text) {
     try {
       return decodeURIComponent(text.replace(/\+/g, " "));
@@ -176,7 +176,7 @@ return jsc;
     return `${path}?${parts.join("&")}`;
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/formats.js
+  // examples/youtube-down/src/formats.js
   var MAX_VIDEO_OPTIONS = 9;
   var VIDEO_CODECS = /* @__PURE__ */ new Set(["avc1", "avc2", "avc3", "avc4", "vp9", "vp8", "hev1", "hev2", "h263", "h264", "mp4v", "hvc1", "av1", "theora", "dvh1", "dvhe"]);
   var AUDIO_CODECS = /* @__PURE__ */ new Set(["flac", "mp4a", "opus", "vorbis", "mp3", "aac", "ac-4", "ac-3", "ec-3", "eac3", "dtsc", "dtse", "dtsh", "dtsl"]);
@@ -408,7 +408,7 @@ return jsc;
     };
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/sha1.js
+  // examples/youtube-down/src/sha1.js
   function utf8Bytes(text) {
     const out = [];
     for (let i = 0; i < text.length; i++) {
@@ -483,7 +483,7 @@ return jsc;
     return [h0, h1, h2, h3, h4].map((h) => (h >>> 0).toString(16).padStart(8, "0")).join("");
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/cookies.js
+  // examples/youtube-down/src/cookies.js
   var YOUTUBE_DOMAIN_RE = /(^|\.)youtube\.com$/i;
   function looksNetscape(text) {
     return /^# (Netscape )?HTTP Cookie File/m.test(text) || /^[^\t\n]+\t(TRUE|FALSE)\t[^\t\n]*\t(TRUE|FALSE)\t/m.test(text);
@@ -593,7 +593,7 @@ return jsc;
     return out.length ? out.join(" ") : null;
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/innertube.js
+  // examples/youtube-down/src/innertube.js
   var ORIGIN = "https://www.youtube.com";
   function extractYtcfg(html) {
     const m = /ytcfg\.set\s*\(\s*({.+?})\s*\)\s*;/.exec(html || "");
@@ -736,7 +736,7 @@ return jsc;
     }
   };
 
-  // packages/plugin-sdk/examples/youtube-down/src/playability.js
+  // examples/youtube-down/src/playability.js
   function textOf(node) {
     if (!node) return "";
     if (typeof node === "string") return node;
@@ -793,7 +793,7 @@ return jsc;
     };
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/player.js
+  // examples/youtube-down/src/player.js
   var EJS_VERSION = "0.8.0";
   var INDEX_KEY = "ejs.players";
   var FILE_PREFIX = "ejs-player-";
@@ -946,7 +946,7 @@ return jsc;
     }
   };
 
-  // packages/plugin-sdk/examples/youtube-down/src/playlist.js
+  // examples/youtube-down/src/playlist.js
   var VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
   var BROWSE_PARAMS = "wgYCCAA=";
   var UNAVAILABLE_TITLES = /* @__PURE__ */ new Set(["[Private video]", "[Deleted video]", "[Unavailable video]"]);
@@ -1041,7 +1041,7 @@ return jsc;
     return { title, author, entries };
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/target.js
+  // examples/youtube-down/src/target.js
   var VIDEO_ID_RE2 = /^[A-Za-z0-9_-]{11}$/;
   var LIST_ID_RE = /^[A-Za-z0-9_-]{2,64}$/;
   var PRESETS = ["best", "2160", "1440", "1080", "720", "480", "360", "audio"];
@@ -1070,7 +1070,7 @@ return jsc;
     return { videoId, preset: PRESETS.includes(preset) ? preset : "best" };
   }
 
-  // packages/plugin-sdk/examples/youtube-down/src/main.js
+  // examples/youtube-down/src/main.js
   var ITEM_PRESETS = [
     { id: "best", label: "最高画质" },
     { id: "1080", label: "≤ 1080p" },

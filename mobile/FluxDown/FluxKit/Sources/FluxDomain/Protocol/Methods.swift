@@ -133,6 +133,24 @@ public enum HostMethod {
     public static let daemonEgressPlan = "daemon.egress.plan"
     public static let daemonBtTrackerSubscriptionRefresh = "daemon.bt.trackerSubscription.refresh"
     public static let daemonEd2kServerSubscriptionRefresh = "daemon.ed2k.serverSubscription.refresh"
+    /// BT 防吸血状态总览（`BtGuardState`）。
+    public static let daemonBtGuardState = "daemon.bt.guard.state"
+    /// 过滤条目分页（`BtGuardEntriesListParams` → `BtGuardEntriesPage`）。
+    public static let daemonBtGuardEntriesList = "daemon.bt.guard.entries.list"
+    /// 手动添加条目 / 白名单（`BtGuardEntriesAddParams` → `BtGuardEntry`）。
+    public static let daemonBtGuardEntriesAdd = "daemon.bt.guard.entries.add"
+    /// 按 id 移除条目（`BtGuardEntriesRemoveParams` → `BtGuardEntriesRemoveResult`）；云层条目被拒绝，应改为加白。
+    public static let daemonBtGuardEntriesRemove = "daemon.bt.guard.entries.remove"
+    /// 事件日志分页。
+    public static let daemonBtGuardEventsList = "daemon.bt.guard.events.list"
+    /// 导出条目文本（`BtGuardExportParams` → `BtGuardExportResult`）。慢方法。
+    public static let daemonBtGuardExport = "daemon.bt.guard.export"
+    /// 立即刷新过滤文件订阅（无参 → `BtGuardFilterSourcesRefresh`）。慢方法。
+    public static let daemonBtGuardFilterSourcesRefresh = "daemon.bt.guard.filterSources.refresh"
+    /// 仅 agent 调用：已验签的云名单整层替换。移动端不得调用（`native/mobile` 通用通道会拒绝）。
+    public static let daemonBtGuardCloudApply = "daemon.bt.guard.cloud.apply"
+    /// 仅 agent 调用：弹出待上报证据。移动端不得调用（`native/mobile` 通用通道会拒绝）。
+    public static let daemonBtGuardEvidenceDrain = "daemon.bt.guard.evidence.drain"
     public static let daemonDiagnosticsDescribe = "daemon.diagnostics.describe"
     public static let daemonDiagnosticsPrepareLogExport = "daemon.diagnostics.prepareLogExport"
     /// Doctor 动态探测：在 daemon 进程内真实写入各下载目录 / 数据目录并运行外部组件，
@@ -214,26 +232,6 @@ public enum HostMethod {
     public static let agentLinkDispatch = "agent.link.dispatch"
     /// `LinkDeviceParams` → `LinkControlCredentialDto`：向本机 agent 申请对某已配对主机的设备控制凭据（仅 `controllable && !revoked`）。
     public static let agentLinkControlCredential = "agent.link.controlCredential"
-    /// FluxMesh（`agent.share.*`）：仅当主机 hello 带 `agent.share` 能力时可用；移动端暂不使用，常量只为与 `method.rs` 一一对应。
-    public static let agentShareConfig = "agent.share.config"
-    public static let agentShareSetLocalConfig = "agent.share.setLocalConfig"
-    public static let agentShareCreate = "agent.share.create"
-    public static let agentShareList = "agent.share.list"
-    public static let agentShareUpdate = "agent.share.update"
-    public static let agentShareStop = "agent.share.stop"
-    public static let agentShareResume = "agent.share.resume"
-    public static let agentShareDelete = "agent.share.delete"
-    public static let agentShareResolve = "agent.share.resolve"
-    public static let agentShareReceive = "agent.share.receive"
-    public static let agentShareReceiveRecords = "agent.share.receiveRecords"
-    public static let agentShareDismissPending = "agent.share.dismissPending"
-    public static let agentShareSwitchToBridge = "agent.share.switchToBridge"
-    public static let agentShareDiagnostics = "agent.share.diagnostics"
-    public static let agentShareLogs = "agent.share.logs"
-    public static let agentShareSessionKill = "agent.share.sessionKill"
-    public static let agentShareConvertToCloud = "agent.share.convertToCloud"
-    public static let agentShareDeleteCloudCopy = "agent.share.deleteCloudCopy"
-    public static let agentShareStopProviding = "agent.share.stopProviding"
     public static let agentPlanList = "agent.plan.list"
     public static let agentOrderCreate = "agent.order.create"
     public static let agentOrderGet = "agent.order.get"
@@ -325,7 +323,5 @@ public enum HostCapability {
     public static let agentOpenTaskFiles = "agent.openTaskFiles"
     /// 按连接下发：本连接可把任务产物写入 agent 所在主机的系统剪贴板（`agent.platform.copyTaskFiles`）。
     public static let agentCopyTaskFiles = "agent.copyTaskFiles"
-    /// 本主机编入了FluxMesh服务（`agent.share.*`）；移动端暂不使用。
-    public static let agentShare = "agent.share"
     public static let clientSelections = "client.selections"
 }

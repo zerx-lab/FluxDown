@@ -166,7 +166,7 @@ impl GatewayControl {
                                 Err(RestartError::Failed("a listener replacement is already prepared".to_owned()))
                             } else {
                                 let address = SocketAddr::new(active.bound.ip(), port);
-                                match TcpListener::bind(address).await {
+                                match crate::runtime::bind_gateway_socket(address) {
                                     Err(error) => Err(RestartError::Bind(error)),
                                     Ok(listener) => match start_listener(listener, &app, &mut tasks) {
                                         Err(error) => Err(RestartError::Failed(error.to_string())),
@@ -295,8 +295,14 @@ impl axum::serve::Listener for TrackedListener {
     type Io = TcpStream;
     type Addr = SocketAddr;
 
+    /// 双栈 socket 把 IPv4 对端报成 `::ffff:a.b.c.d`；还原成 IPv4，回环判定、按来源限流与
+    /// 反代信任名单都只认规范形式。
     async fn accept(&mut self) -> (TcpStream, SocketAddr) {
-        axum::serve::Listener::accept(&mut self.listener).await
+        let (stream, peer) = axum::serve::Listener::accept(&mut self.listener).await;
+        (
+            stream,
+            SocketAddr::new(peer.ip().to_canonical(), peer.port()),
+        )
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -422,4 +428,43 @@ pub(super) async fn probe(bound: SocketAddr, bearer: &str) -> io::Result<()> {
             "gateway authenticated readiness timed out",
         )
     })?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 双栈监听上的 IPv4 客户端必须以 IPv4 形式出现在 `ConnectInfo` 里，否则回环判定、
+    /// 按来源限流与反代信任名单都会把 `::ffff:127.0.0.1` 当成陌生 IPv6 地址。
+    #[tokio::test]
+    async fn dual_stack_listener_reports_ipv4_peers_canonically() {
+        use axum::extract::ConnectInfo;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = crate::runtime::bind_gateway_socket("[::]:0".parse().expect("wildcard"))
+            .expect("dual-stack bind");
+        let port = listener.local_addr().expect("bound address").port();
+        let app = Router::new().route(
+            "/peer",
+            axum::routing::get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move {
+                peer.ip().to_string()
+            }),
+        );
+        let mut tasks = JoinSet::new();
+        let mut running = start_listener(listener, &app, &mut tasks).expect("serve");
+        let mut stream = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("IPv4 connect");
+        stream
+            .write_all(b"GET /peer HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("send request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("read response");
+        assert!(response.ends_with("\r\n\r\n127.0.0.1"), "{response}");
+        running.stop().await;
+    }
 }

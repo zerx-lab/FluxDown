@@ -29,9 +29,9 @@ interruptMode: never
 
 → `web/src/pages/downloads/dialogs/model.ts::captureEntry`：同一判定逐条对齐（`a%20b.zip` 与 `a b.zip` 视为相同），两端新建框显示一致
 
-## `crates/downloads/src/model/save_dir_history.rs`（新建下载保存目录历史：设备本地偏好 `download.save_dir_history` 字符串数组，最新在前 / 去重 / 封顶 10；`download.save_dir_history_enabled` 缺省开，关闭即不列出不记录；只记本机提交）
+## `crates/downloads/src/model/save_dir_history.rs`（新建下载保存目录历史：设备本地偏好 `download.save_dir_history` 字符串数组，最新在前 / 去重 / 封顶 10；分类目录记忆 `download.category_save_dir_history` = `{分类 id: 同规则数组}`，只在表单对应分类（指定分类 / 自动命中）且目录被手改时记，下拉先列该分类记忆再列全局历史；`download.save_dir_history_enabled` 缺省开，关闭即两者都不列出不记录；只记本机提交）
 
-→ `web/src/lib/saveDirHistory.ts` 逐条对齐，Rust 与 `saveDirHistory.test.ts` 共用 `crates/downloads/tests/fixtures/save_dir_history_cases.json`；两端设置「保存位置」分组同位（开关 + 清空 = 写 null）
+→ `web/src/lib/saveDirHistory.ts` 逐条对齐，Rust 与 `saveDirHistory.test.ts` 共用 `crates/downloads/tests/fixtures/save_dir_history_cases.json`；两端设置「保存位置」分组同位（开关 + 清空 = 两个键都写 null）；移动端无历史下拉，不镜像
 
 ## `crates/downloads/src/model/speed_limit_recent.rs`（状态栏限速最近自定义值：设备本地偏好 `download.speed_limit_recent_kbps` / `download.upload_limit_recent_kbps` 整数数组 KB/s，最新在前 / 去重 / 封顶 3，丢弃 ≤0 与内置预设 1/5/10/50 MB/s，非法项丢弃）
 

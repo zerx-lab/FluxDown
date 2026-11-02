@@ -6,12 +6,12 @@
 // - 单条 http(s) 链接先 `daemon.group.resolvePreview` 探测插件多文件清单，命中则进入清单选择建任务组；
 // - 外部捕获（`agent.capture.*`）作为链接行并入表单，提交时经 `agent.capture.resolve` 确认，关闭时未确认的一并忽略。
 
-import { ChevronDown, ChevronRight, FileText, FolderOpen, Plus, Share2, Sprout, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, FolderOpen, Plus, Sprout, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { autoFollowDir, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -36,11 +36,17 @@ import type { NewDownloadSession } from './store'
 import { isTorrentFile, submitTorrentFiles } from './torrents'
 import { SaveDirCombo } from './SaveDirCombo'
 import { CategoryPicker } from './CategoryPicker'
-import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory, recordSaveDir, saveDirChoices } from '../../../lib/saveDirHistory'
+import {
+  CATEGORY_SAVE_DIR_HISTORY_PREF,
+  SAVE_DIR_HISTORY_ENABLED_PREF,
+  SAVE_DIR_HISTORY_PREF,
+  readCategorySaveDirHistory,
+  readSaveDirHistory,
+  recordCategorySaveDir,
+  recordSaveDir,
+  saveDirChoices,
+} from '../../../lib/saveDirHistory'
 import { accountErrorKey } from '../../settings/sections/account/errorText'
-import { extractShareItems, isPickupCodeItem, parseShareLink, removeShareItem, shareNoticeKey } from '../../share/model'
-import { usePickupCodeLength, useShareAvailable } from '../../share/state'
-import { openShareReceive } from '../../share/store'
 import { buildRemoteTargets, checkRemoteSaveDir, dispatchRoute, LOCAL_TARGET, linkDispatchParams, pathExample, remoteDispatchParams, resolveTargetValue, summarizeDispatch } from './target'
 import type { RemoteTarget } from './target'
 import { queueLabel } from './utils'
@@ -107,6 +113,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const historyEnabled = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_ENABLED_PREF] !== false, true)
   const historyValue = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_PREF], undefined)
   const saveDirHistory = useMemo(() => (historyEnabled ? readSaveDirHistory(historyValue) : null), [historyEnabled, historyValue])
+  const categoryHistoryValue = useAgent((snapshot) => snapshot.preferences.values[CATEGORY_SAVE_DIR_HISTORY_PREF], undefined)
+  const categoryHistory = useMemo(() => readCategorySaveDirHistory(categoryHistoryValue), [categoryHistoryValue])
 
   const [text, setText] = useState(() => session.initialUrls.join('\n'))
   const [captures, setCaptures] = useState<PendingCaptureDto[]>([])
@@ -142,18 +150,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const txtInput = useRef<HTMLInputElement>(null)
   const resolveToken = useRef(0)
 
-  const shareAvailable = useShareAvailable()
-  const shareActive = shareAvailable && target === null
-  const pickupLength = usePickupCodeLength()
-  // 待接收项 = 分享链接 + 取件码（逐行识别、按值去重）：不进下载条目，交给接收确认。
-  const shareItems = useMemo(() => extractShareItems(text, pickupLength), [text, pickupLength])
-  const hasShareInput = shareItems.length > 0
   const parsed = useMemo(() => parseInput(text, false), [text])
-  // FluxMesh可用时分享链接（含 `https://…/s/<slug>` 形式）不当作普通下载链接。
-  const entries = useMemo(
-    () => (shareActive ? parsed.entries.filter((entry) => parseShareLink(entry.url) === null) : parsed.entries),
-    [parsed.entries, shareActive],
-  )
+  const entries = parsed.entries
 
   // aria2c 命令带出的 Cookie / UA / 请求头回填到高级字段（规则同桌面端，见 `aria2c.ts`）：
   // 与上次处理的 hints 相同则不处理；用户编辑过的字段 / 行不再覆盖。
@@ -181,18 +179,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const allMagnet = count > 0 && entries.every((entry) => isMagnetUrl(entry.url))
   const busy = phase !== 'idle' || busyFiles
   const remoteDirCheck = target ? checkRemoteSaveDir(remoteSaveDir, target.pathStyle) : 'ok'
-  const canSubmit = !busy && (count > 0 ? (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '') : shareActive && hasShareInput)
-  const shareNotice = shareNoticeKey(count, shareItems.length, shareItems.filter(isPickupCodeItem).length, shareAvailable && target === null)
-
-  /** 把第一个待接收项（分享链接或取件码）交给接收确认框并从输入里拿走；输入已空（无其它条目、无更多待接收项）时关闭本对话框。 */
-  const receiveShare = () => {
-    const first = shareItems[0]
-    if (first === undefined) return
-    openShareReceive(first)
-    const rest = removeShareItem(text, first, pickupLength)
-    if (count === 0 && extractShareItems(rest, pickupLength).length === 0) closeNewDownload()
-    else setText(rest)
-  }
+  const canSubmit = !busy && count > 0 && (target ? remoteDirCheck === 'ok' : saveDir.trim() !== '')
 
   // ── 分类下拉：Auto 模式下目录框跟随识别出的文件名（规则见 `lib/categoryRoute.ts`）──
   const categoriesPref = useAgent((snapshot) => snapshot.preferences.values[CUSTOM_CATEGORIES_PREF_KEY], undefined)
@@ -200,8 +187,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
   const categoryOptions = useMemo(() => pickableCategories(categories), [categories])
   const [categoryMode, setCategoryMode] = useState<CategoryPickMode>({ kind: 'auto' })
-  /** 上一次自动写入目录框的值；用户手改后与之不等，不再覆盖。 */
-  const lastAutoDir = useRef<string | null>(null)
+  /** 程序最近一次写入目录框的值（自动跟随 / 切换模式 / 捕获预填）；目录框与之不等即视为用户手改。 */
+  const lastWrittenDir = useRef<string | null>(null)
   /** 用户直接编辑/浏览选择后明确优先于自动路由，包括目录恰为默认或分类目录。 */
   const saveDirManuallyChosen = useRef(false)
   const categoryShown = !target
@@ -209,10 +196,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const predictedUrl = entries[0]?.url ?? ''
   const predictedDir = categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
-    if (!categoryShown || categoryMode.kind !== 'auto' || saveDirManuallyChosen.current) return
-    const next = autoFollowDir(saveDir, context.saveDir, lastAutoDir.current, predictedDir)
+    if (!categoryShown || categoryMode.kind !== 'auto') return
+    const next = autoFollowDir(saveDir, context.saveDir, lastWrittenDir.current, predictedDir, saveDirManuallyChosen.current)
     if (next === null) return
-    lastAutoDir.current = next
+    lastWrittenDir.current = next
     if (next !== saveDir) setSaveDir(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在预测输入 / 模式变化时跟随，目录框当前值取渲染时快照
   }, [categoryShown, categoryMode.kind, predictedDir])
@@ -220,7 +207,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     saveDirManuallyChosen.current = false
     setCategoryMode(mode)
     const next = modeDir(mode, categoryOptions, context.saveDir, predictedDir)
-    lastAutoDir.current = mode.kind === 'auto' ? next : null
+    lastWrittenDir.current = next
     setSaveDir(next)
   }
   const chooseSaveDir = (dir: string) => {
@@ -243,7 +230,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       if (current.trim() === '') {
         const dir = fresh.map((capture) => capture.saveDir.trim()).find((value) => value !== '')
         if (dir) {
-          lastAutoDir.current = dir
+          // 非默认 / 分类目录的捕获目录是显式选择；不得再被 Auto 路由覆盖。
+          const followsRoute = categoryRoute !== null && routeFollows(categoryRoute, dir, context.saveDir)
+          saveDirManuallyChosen.current = !followsRoute && dir !== context.saveDir
+          if (followsRoute || dir === context.saveDir) lastWrittenDir.current = dir
           setSaveDir(dir)
         }
       }
@@ -255,7 +245,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       const kept = prev.filter((capture) => pendingCaptures.some((pending) => pending.transactionId === capture.transactionId))
       return kept.length === prev.length ? prev : kept
     })
-  }, [pendingCaptures])
+  }, [pendingCaptures, categoryRoute, context.saveDir])
 
   // 关闭 / 取消时，仍未确认的捕获一并忽略（agent 不留悬挂事务）。
   useEffect(
@@ -356,8 +346,16 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     return map
   }
 
-  // 保存目录历史（偏好关闭时为空）中除当前输入以外的目录，交给组合框下拉。
-  const saveDirOptions = saveDirHistory ? saveDirChoices(saveDirHistory, saveDir) : []
+  // 分类记忆键：指定分类 = 该分类；自动 = 命中分类；不分类 / 无分类选择器 = 无。
+  const memoryCategoryId = !categoryShown
+    ? null
+    : categoryMode.kind === 'category'
+      ? categoryMode.id
+      : categoryMode.kind === 'auto'
+        ? (matchedCategory(categoryOptions, predictedDir)?.id ?? null)
+        : null
+  // 保存目录历史（偏好关闭时为空）：该分类记忆在前、全局历史在后，排除当前输入，交给组合框下拉。
+  const saveDirOptions = saveDirHistory ? saveDirChoices(memoryCategoryId ? (categoryHistory[memoryCategoryId] ?? []) : [], saveDirHistory, saveDir) : []
 
   const draftOptions = (later: boolean, queueOverride: string | undefined): DraftOptions => ({
     saveDir: saveDir.trim(),
@@ -384,6 +382,11 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     if (prefs[SAVE_DIR_HISTORY_ENABLED_PREF] !== false) {
       const next = recordSaveDir(readSaveDirHistory(prefs[SAVE_DIR_HISTORY_PREF]), dir)
       if (next) values[SAVE_DIR_HISTORY_PREF] = next
+      // 分类记忆：有分类键且目录框被手改时，记到该分类名下。
+      if (memoryCategoryId && saveDirManuallyChosen.current) {
+        const nextByCategory = recordCategorySaveDir(readCategorySaveDirHistory(prefs[CATEGORY_SAVE_DIR_HISTORY_PREF]), memoryCategoryId, dir)
+        if (nextByCategory) values[CATEGORY_SAVE_DIR_HISTORY_PREF] = nextByCategory
+      }
     }
     void rpc.agent.preferences.patch({ values, sync: false }).catch(() => undefined)
   }
@@ -421,11 +424,6 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   const submit = async (later: boolean, queueOverride?: string) => {
     if (!canSubmit) return
-    // 分享链接走接收确认框（永不直接建任务）；其余链接照常下载。
-    if (shareActive && hasShareInput) {
-      receiveShare()
-      if (count === 0) return
-    }
     if (target) {
       await submitRemote(target)
       return
@@ -454,8 +452,8 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         )
         if (token !== resolveToken.current) return // 用户取消了探测
         if (!preview.error && preview.items.length > 0) {
-          const route = categoryShown && categoryMode.kind === 'auto' && !saveDirManuallyChosen.current ? categoryRoute : null
-          const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
+          const followed = eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir)
+          // Group creation accepts categoryRoute; retain the form's base directory and routing policy.
           setManifest({
             preview,
             sourceUrl: single.url,
@@ -498,13 +496,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         await rpc.agent.capture.resolve({
           transactionId: capture.transactionId,
           accepted: true,
-          disableCategoryRoute: !(
-            categoryShown &&
-            categoryMode.kind === 'auto' &&
-            !saveDirManuallyChosen.current &&
-            categoryRoute !== null &&
-            routeFollows(categoryRoute, options.saveDir, context.saveDir)
-          ),
+          disableCategoryRoute: eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir) === null,
           request,
         })
         consumed.add(capture.transactionId)
@@ -528,8 +520,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       let { common } = batch
       // 分类路由：只对本机提交生效；目录仍是表单初始值 / 分类目录时交给引擎按文件名定落点；
       // 分类下拉选了「不分类」/ 指定分类时用户已显式定目录，不路由。
-      const route = categoryShown && categoryMode.kind === 'auto' && !saveDirManuallyChosen.current ? categoryRoute : null
-      const followed = route !== null && routeFollows(route, options.saveDir, context.saveDir) ? route : null
+      const followed = eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir)
       if (followed) common = { ...common, saveDir: routeBaseDir(followed, options.saveDir, context.saveDir) }
       const controller = new AbortController()
       importAbort.current = controller
@@ -785,18 +776,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               }}
               className="font-mono text-xs"
             />
-            {text.trim() !== '' && count === 0 && !(shareActive && hasShareInput) ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
-            {shareNotice ? (
-              <div className="flex items-start gap-2 rounded-md border border-hairline bg-chrome px-2.5 py-2 text-xs text-muted-foreground">
-                <Icon icon={Share2} className="mt-0.5 shrink-0 text-text-tertiary" />
-                <span className="min-w-0 flex-1">{t(shareNotice, { count: shareItems.length })}</span>
-                {shareActive ? (
-                  <Button variant="outline" disabled={busy} onClick={receiveShare}>
-                    {t('shareReceive')}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
+            {text.trim() !== '' && count === 0 ? <FieldError>{t('newDownloadNoValidUrl')}</FieldError> : null}
             {captures.length > 0 ? <FieldHint>{t('newDownloadCaptureContextHint')}</FieldHint> : null}
             {notice ? <FieldError className="break-all">{notice}</FieldError> : null}
             {failures.map((failure, index) => (
@@ -884,7 +864,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               <InputWithAction
                 input={
                   <div className="flex flex-wrap items-center gap-2">
-                    <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} />
+                    {categoryOptions.length > 0 ? <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} /> : null}
                     <div className="min-w-[14rem] flex-1">
                       <SaveDirCombo
                         id="new-download-save-dir"

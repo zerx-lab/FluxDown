@@ -4,7 +4,6 @@
 import type { JsonValue } from './common';
 import type { ErrorReason } from './error';
 import type { CreateGroupRequest } from './queue';
-import type { ShareTrafficKind } from './share';
 import type { CreateTaskRequest } from './task';
 
 // ── 账号 ──
@@ -56,15 +55,6 @@ export interface CloudPlanCampaign {
   effectivePriceMinor: number;
 }
 
-export type CloudProductKind = 'membership' | 'pack' | 'unknown';
-
-/** 流量包规格（`productKind = 'pack'`）。 */
-export interface CloudPack {
-  kind: ShareTrafficKind;
-  bytes: number;
-  validDays: number;
-}
-
 /** 套餐（`agent.plan.list` 元素）。金额单位为「分」（`*Minor`）。 */
 export interface CloudPlan {
   code: string;
@@ -85,9 +75,6 @@ export interface CloudPlan {
   sort: number;
   campaign: CloudPlanCampaign | null;
   purchasable: boolean;
-  /** 旧服务端缺失视为 `membership`。 */
-  productKind?: CloudProductKind;
-  pack?: CloudPack | null;
   /** 周期会员卡周期天数；null / 缺失 = 永久套餐。 */
   billingPeriodDays?: number | null;
 }

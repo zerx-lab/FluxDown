@@ -244,7 +244,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'bind', T('Listen address'),
 			T('HTTP listen address in host:port form.'));
-		o.placeholder = '0.0.0.0:17800';
+		o.placeholder = '[::]:17800';
 		o.rmempty = true;
 
 		o = s.option(form.Value, 'data_dir', T('Data directory'),

@@ -566,6 +566,9 @@ const en: Record<MessageKey, string> = {
   "options.sniff.imagesDesc": "Detect large images on web pages (>100KB)",
   "options.sniff.lowConfidence": "Show Low-confidence Resources",
   "options.sniff.lowConfidenceDesc": "Also list items the detector is less sure about",
+  "options.sniff.maxResources": "Max Resources per Page",
+  "options.sniff.maxResourcesDesc":
+    "Stop scanning page links after this many items (1–{max}). Very large values may slow down long list pages. Media caught from network requests is not counted.",
   "options.sites.desc": "Override the global behaviour per site: whether to take over downloads, sniff, show the dot and float button, and where to save. A site entry also applies to its subdomains.",
   "options.sites.colHost": "Site",
   "options.sites.colIntercept": "Intercept",

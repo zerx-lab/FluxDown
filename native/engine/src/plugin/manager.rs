@@ -167,19 +167,19 @@ pub struct LoadedPlugin {
     hooks_entry: Option<PathBuf>,
     /// interceptors 入口绝对路径（若声明）。
     intercept_entry: Option<PathBuf>,
-    /// 已安装模式下的各脚本源码缓存；dev 插件每次按路径重读。
+    /// auth 入口绝对路径（若声明）。
+    auth_entry: Option<PathBuf>,
+    /// subscription provider 入口绝对路径（若声明）。
+    subscription_entry: Option<PathBuf>,
+    /// 非 dev 模式的缓存源码（加载时读入）。
     resolver_cache: Option<String>,
     hooks_cache: Option<String>,
     intercept_cache: Option<String>,
     auth_cache: Option<String>,
     subscription_cache: Option<String>,
-    /// Archive callback entry path and installed source cache.
+    /// 归档入口绝对路径与非 dev 模式的源码缓存。
     archive_entry: Option<PathBuf>,
     archive_cache: Option<String>,
-    /// auth 入口绝对路径（若声明）。
-    auth_entry: Option<PathBuf>,
-    /// subscription provider 入口绝对路径（若声明）。
-    subscription_entry: Option<PathBuf>,
     /// `main` 入口绝对路径（若声明）。
     main_entry: Option<PathBuf>,
     /// 非 dev 模式的 `main` 源码缓存。
@@ -355,7 +355,10 @@ pub struct PluginManager {
     publish_lock: tokio::sync::Mutex<()>,
     /// Cache of validated archive rule packs; matching never performs I/O.
     archive_rule_packs:
-        tokio::sync::RwLock<HashMap<String, super::archive_rules::VerifiedArchiveRules>>,
+        tokio::sync::RwLock<HashMap<String, Arc<super::archive_rules::VerifiedArchiveRules>>>,
+    /// Poll diagnostics stay in memory; unchanged rule checks never persist state.
+    archive_rule_status:
+        tokio::sync::RwLock<HashMap<String, archive_rules_manager::ArchiveRuleCache>>,
     /// Per-plugin serialized signed archive-rule refreshes.
     archive_rule_locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Wakes the idle updater when a plugin's enabled rule feeds change.
@@ -437,6 +440,7 @@ impl PluginManager {
             package_revisions: super::package_revision::PackageRevisions::new(),
             archive_rule_locks: tokio::sync::Mutex::new(HashMap::new()),
             archive_rule_packs: tokio::sync::RwLock::new(HashMap::new()),
+            archive_rule_status: tokio::sync::RwLock::new(HashMap::new()),
             archive_rule_updates_notify: Arc::new(tokio::sync::Notify::new()),
             archive_rule_updates_started: AtomicBool::new(false),
             publish_lock: tokio::sync::Mutex::new(()),
@@ -598,25 +602,9 @@ impl PluginManager {
 
         *self.plugins.write().await = Arc::new(deduped);
         *self.failed_plugins.write().await = Arc::new(failed);
-        let active_archive_rules: HashSet<String> = self
-            .plugins
-            .read()
-            .await
-            .iter()
-            .filter(|plugin| plugin.enabled)
-            .filter(|plugin| {
-                plugin
-                    .manifest
-                    .contributes
-                    .as_ref()
-                    .is_some_and(|contributes| contributes.archive_rules.is_some())
-            })
-            .map(|plugin| plugin.manifest.identity.clone())
-            .collect();
-        self.archive_rule_packs
-            .write()
-            .await
-            .retain(|identity, _| active_archive_rules.contains(identity));
+        self.archive_rule_status.write().await.clear();
+        // A new declaration must be revalidated before any cached rules can match.
+        self.archive_rule_packs.write().await.clear();
         // 宿主对账：被禁用 / 卸载 / manifest 或 main 源码变化的插件，其宿主立即释放。
         self.reconcile_hosts().await;
         self.initialize_archive_rule_packs().await;
@@ -2032,39 +2020,85 @@ impl PluginManager {
 
     /// 删目录 + 清 `plugin.<identity>.` 前缀全部 config 键 + 重载。仅供
     /// [`Self::uninstall`] 使用。
+    ///
+    /// 安装目录扫描只认 manifest 的 identity、不认目录名，同一 identity 可能有多个
+    /// 安装副本（`plugins/<identity>` 之外还有手动解压、目录名不同的副本）。这里删除
+    /// 全部非 dev 副本；只删一个会让重载后剩下的副本重新出现、卸载却报成功。
     async fn purge(&self, identity: &str) -> Result<(), PluginError> {
-        // 删安装目录（dev 不删源，仅删配置键）。
-        let failed_plugin = self
-            .failed_plugins
-            .read()
-            .await
-            .iter()
-            .find(|plugin| plugin.identity == identity && !plugin.dev_mode)
-            .map(|plugin| (false, plugin.dir.to_path_buf()));
-        let dir = match &failed_plugin {
-            Some((true, _)) => None,
-            Some((false, dir)) => Some(dir.clone()),
-            None if is_valid_identity(identity) => Some(self.root.join(identity)),
-            None => {
-                return Err(PluginError::ManifestInvalid(
-                    "插件 identity 非法，拒绝拼接卸载路径".to_string(),
-                ));
+        // dev 不删源，仅删配置键；dev 登记若恰好指向安装根目录内，扫描会把它当作
+        // 安装副本一并删除（与被 dev 顶替的安装副本同一语义）。
+        let dirs = self.installed_copies_of(identity).await;
+        if dirs.is_empty() && !is_valid_identity(identity) {
+            return Err(PluginError::ManifestInvalid(
+                "插件 identity 非法，拒绝拼接卸载路径".to_string(),
+            ));
+        }
+        for dir in &dirs {
+            if let Err(error) = tokio::fs::remove_dir_all(dir).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                // 删除目录可能已部分成功，返回原错误前重建可执行快照。
+                self.load_all().await;
+                return Err(PluginError::Runtime(format!(
+                    "删除插件目录 {} 失败: {error}",
+                    dir.display()
+                )));
             }
-        };
-        if let Some(dir) = dir
-            && dir.exists()
-            && let Err(error) = tokio::fs::remove_dir_all(&dir).await
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            // 删除目录可能已部分成功，返回原错误前重建可执行快照。
-            self.load_all().await;
-            return Err(PluginError::Runtime(format!("删除插件目录失败: {error}")));
         }
         let result = self.purge_config(identity).await;
         // 配置枚举/删除失败也必须重载：安装目录已删除，不能继续消费旧 JS 缓存。
         // 重载只负责收尾，卸载仍返回配置清理的原始错误。
         self.load_all().await;
-        result
+        result?;
+        // 仍有同 identity 的副本（如另一条 dev 登记的 manifest 也声明了它）时如实报错，
+        // 不让 UI 显示「已卸载」而列表里还留着它。
+        let residual = self.installed_copies_of(identity).await;
+        let dev_residual = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .any(|p| p.dev && p.manifest.identity == identity)
+            || self
+                .failed_plugins
+                .read()
+                .await
+                .iter()
+                .any(|p| p.dev_mode && p.identity == identity);
+        if !residual.is_empty() || dev_residual {
+            return Err(PluginError::Runtime(format!(
+                "插件 {identity} 卸载后仍有残留副本，请检查插件目录与开发模式登记"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 该 identity 当前存在的全部安装副本目录（已加载 / 失败 / 被顶替的非 dev 副本，
+    /// 外加约定位置 `plugins/<identity>`），去重。
+    async fn installed_copies_of(&self, identity: &str) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut push = |dir: PathBuf| {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        };
+        for plugin in self.plugins.read().await.iter() {
+            if !plugin.dev && plugin.manifest.identity == identity {
+                push(plugin.dir.clone());
+            }
+        }
+        for plugin in self.failed_plugins.read().await.iter() {
+            if !plugin.dev_mode && plugin.identity == identity {
+                push(plugin.dir.to_path_buf());
+            }
+        }
+        if is_valid_identity(identity) {
+            let conventional = self.root.join(identity);
+            if conventional.exists() {
+                push(conventional);
+            }
+        }
+        dirs
     }
 
     async fn purge_config(&self, identity: &str) -> Result<(), PluginError> {
@@ -3344,17 +3378,50 @@ mod tests {
             archive_entry: None,
             auth_entry: None,
             subscription_entry: None,
-            main_entry: None,
             resolver_cache: None,
             hooks_cache: None,
             intercept_cache: None,
             archive_cache: None,
             auth_cache: None,
             subscription_cache: None,
+            main_entry: None,
             main_cache: None,
             view_icons: Vec::new(),
             timeout_streak: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    #[tokio::test]
+    async fn task_interceptors_follow_identity_order_not_load_order() {
+        let (manager, _sink, root) = revoke_fixture().await;
+        let manager = Arc::new(manager);
+        let mut plugins = Vec::new();
+        for identity in ["z@last", "a@first"] {
+            let mut plugin = test_loaded_plugin(identity, false, "/unused");
+            plugin.manifest.permissions = vec!["intercept".to_string()];
+            plugin.manifest.interceptors = Some(
+                serde_json::from_value(serde_json::json!({
+                    "entry": "intercept.js",
+                    "stages": ["prepare"],
+                    "match": { "urls": ["https://example.com/*"] }
+                }))
+                .unwrap(),
+            );
+            plugins.push(plugin);
+        }
+        *manager.plugins.write().await = Arc::new(plugins);
+        let interceptor = manager
+            .task_interceptor("task", "https://example.com/file.bin", "")
+            .await;
+        let identities: Vec<_> = interceptor
+            .entries()
+            .iter()
+            .map(|entry| entry.identity.as_str())
+            .collect();
+        assert_eq!(identities, ["a@first", "z@last"]);
+        drop(interceptor);
+        drop(manager);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // 476#1：同 identity 的安装目录 + dev 注册只保留一条（dev 覆盖安装目录），
@@ -3839,6 +3906,293 @@ mod tests {
         assert_eq!(
             matched,
             Some(("Series".to_string(), "first".to_string(), 1))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn signed_rule_pack(key: &ed25519_dalek::SigningKey, sequence: u64, id: &str) -> Vec<u8> {
+        use ed25519_dalek::Signer;
+
+        let payload = serde_json::json!({
+            "format": "fluxdown-archive-rules",
+            "schemaVersion": 1,
+            "sequence": sequence,
+            "rules": [{
+                "id": id,
+                "folderName": format!("Folder-{id}"),
+                "match": {"extensions": ["mkv"]}
+            }]
+        })
+        .to_string();
+        let signature = key.sign(payload.as_bytes());
+        serde_json::json!({
+            "payload": payload,
+            "signature": hex::encode(signature.to_bytes())
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_rule_refresh_persists_only_verified_promotions() {
+        use ed25519_dalek::SigningKey;
+
+        let identity = "acme@archive-refresh";
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-archive-refresh-{}", uuid::Uuid::new_v4()));
+        let plugin_dir = root.join(identity);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+        let seed = signed_rule_pack(&signing_key, 1, "seed");
+        std::fs::write(plugin_dir.join("archive-rules.json"), &seed).unwrap();
+
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        let manager = PluginManager::new(
+            Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
+            Arc::new(NullBridge),
+            db,
+            root.clone(),
+            "1.0.0".to_string(),
+            Arc::new(CaptureSink::default()),
+        );
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        let declaration = crate::plugin::manifest::ArchiveRulesDecl {
+            entry: "archive-rules.json".to_string(),
+            public_key: public_key.clone(),
+            update_url: None,
+        };
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(declaration.clone()),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+        manager.archive_rules_status(identity, false).await.unwrap();
+        // Reject even byte-identical writes: raw-value equality alone cannot prove idle silence.
+        for sql in [
+            "CREATE TRIGGER reject_archive_poll_insert BEFORE INSERT ON config \
+             BEGIN SELECT RAISE(ABORT, 'idle archive refresh attempted a config write'); END",
+            "CREATE TRIGGER reject_archive_poll_update BEFORE UPDATE ON config \
+             BEGIN SELECT RAISE(ABORT, 'idle archive refresh attempted a config write'); END",
+            "CREATE TRIGGER reject_archive_poll_delete BEFORE DELETE ON config \
+             BEGIN SELECT RAISE(ABORT, 'idle archive refresh attempted a config write'); END",
+        ] {
+            sqlx::query(sql).execute(manager.db.pool()).await.unwrap();
+        }
+
+        let cache_key = format!("plugin.{identity}.archive_rules.cache");
+        let watermark_key = format!("plugin.{identity}.archive_rules.watermark");
+        let original_cache = manager.db.get_config(&cache_key).await.unwrap().unwrap();
+        let original_watermark = manager
+            .db
+            .get_config(&watermark_key)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut cache = manager
+            .archive_rule_status
+            .read()
+            .await
+            .get(identity)
+            .unwrap()
+            .clone();
+        let url = "https://updates.example.invalid/archive-rules.json";
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Err(PluginError::Runtime("offline".to_string())),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Ok(b"{invalid signature}".to_vec()),
+                15,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Ok(seed.clone()),
+                20,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cache.last_error, None);
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Ok(signed_rule_pack(&signing_key, 1, "equivocation")),
+                30,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        for sql in [
+            "DROP TRIGGER reject_archive_poll_insert",
+            "DROP TRIGGER reject_archive_poll_update",
+            "DROP TRIGGER reject_archive_poll_delete",
+        ] {
+            sqlx::query(sql).execute(manager.db.pool()).await.unwrap();
+        }
+
+        let promoted = signed_rule_pack(&signing_key, 2, "promoted");
+        let verified = manager
+            .process_archive_rule_update(identity, &declaration, url, &mut cache, Ok(promoted), 40)
+            .await
+            .unwrap()
+            .expect("higher sequence must be promoted");
+        assert_eq!(cache.sequence, 2);
+        assert_eq!(cache.last_error, None);
+        let persisted_cache_raw = manager.db.get_config(&cache_key).await.unwrap().unwrap();
+        let persisted_cache: serde_json::Value =
+            serde_json::from_str(&persisted_cache_raw).unwrap();
+        assert_eq!(persisted_cache["sequence"], 2);
+        assert!(persisted_cache["lastCheckedAt"].is_null());
+        assert!(persisted_cache["lastError"].is_null());
+        let persisted_watermark: serde_json::Value = serde_json::from_str(
+            &manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted_watermark["sequence"], 2);
+        assert_eq!(persisted_watermark["digest"], cache.digest);
+        manager
+            .archive_rule_packs
+            .write()
+            .await
+            .insert(identity.to_string(), Arc::new(verified));
+        manager
+            .archive_rule_status
+            .write()
+            .await
+            .insert(identity.to_string(), cache);
+        manager
+            .db
+            .set_config(&cache_key, "malformed")
+            .await
+            .unwrap();
+        let status = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(status["sequence"], 2);
+        manager
+            .db
+            .set_config(&cache_key, &persisted_cache_raw)
+            .await
+            .unwrap();
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            signed_rule_pack(&signing_key, 3, "bundled-upgrade"),
+        )
+        .unwrap();
+        manager.archive_rule_packs.write().await.remove(identity);
+        manager.archive_rule_status.write().await.remove(identity);
+        let upgraded = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(upgraded["sequence"], 3);
+        let upgraded_watermark: serde_json::Value = serde_json::from_str(
+            &manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(upgraded_watermark["sequence"], 3);
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            b"invalid replacement",
+        )
+        .unwrap();
+        manager.archive_rule_status.write().await.remove(identity);
+        manager.initialize_archive_rule_packs().await;
+        assert!(
+            manager
+                .archive_rule_match(
+                    identity,
+                    &crate::model::ArchiveContext {
+                        file_name: "video.mkv".to_owned(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_none(),
+            "a failed declaration reload must not keep matching the old rule pack"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

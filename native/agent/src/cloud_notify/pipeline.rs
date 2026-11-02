@@ -426,7 +426,6 @@ mod tests {
             message: String::new(),
             retryable: true,
             unreachable: false,
-            details: None,
         };
         assert!(is_retryable(&server));
         let rejected = CloudError {
@@ -435,7 +434,6 @@ mod tests {
             message: String::new(),
             retryable: false,
             unreachable: false,
-            details: None,
         };
         assert!(!is_retryable(&rejected));
     }

@@ -238,9 +238,6 @@ impl Projection {
             | AgentEvent::UpdateChanged(_)
             | AgentEvent::CaptureTasksStarted(_)
             | AgentEvent::CaptureTasksResumed(_)
-            // FluxMesh（`agent.share.*`）暂不进移动端：只推进投影，不下发分区 / 通知。
-            | AgentEvent::ShareChanged(_)
-            | AgentEvent::ShareProgress(_)
             | AgentEvent::SessionRevoked(_) => {
                 apply_agent_event(&mut self.snapshot, event);
                 Vec::new()
@@ -287,6 +284,10 @@ impl Projection {
             | DaemonEvent::ComponentsChanged(_)
             | DaemonEvent::WebhooksChanged(_)
             | DaemonEvent::WebhooksCleared
+            // BT 防吸血：状态变化经 `Notice` 通知宿主刷新；云名单 / 证据事件只由 agent 消费。
+            | DaemonEvent::BtGuardChanged
+            | DaemonEvent::BtGuardCloudRefreshWanted { .. }
+            | DaemonEvent::BtGuardEvidenceReady { .. }
             | DaemonEvent::RssChanged { .. } => None,
             // 整表替换 / 宣告重载：投影已进入加载态，下发「加载态」快照（`tasks_loading = true`）。
             DaemonEvent::SnapshotReplaced(_) | DaemonEvent::TablesReloading { .. } => {
@@ -1185,26 +1186,6 @@ mod tests {
             }),
         ));
         assert_eq!(notice, FrameOutcome::Applied(Vec::new()));
-    }
-
-    #[test]
-    fn share_events_advance_the_projection_but_never_reach_mobile() {
-        let mut projection = projection(1, Vec::new());
-        let state = fluxdown_protocol::ShareStateDto {
-            available: true,
-            ..Default::default()
-        };
-        let changed = projection.accept(frame(2, AgentEvent::ShareChanged(state)));
-        assert_eq!(changed, FrameOutcome::Applied(Vec::new()));
-        let progress = projection.accept(frame(
-            3,
-            AgentEvent::ShareProgress(fluxdown_protocol::ShareProgressDto {
-                session_id: "s".to_owned(),
-                ..Default::default()
-            }),
-        ));
-        assert_eq!(progress, FrameOutcome::Applied(Vec::new()));
-        assert!(projection.snapshot.share.available);
     }
 
     #[test]

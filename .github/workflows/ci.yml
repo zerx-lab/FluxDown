@@ -201,7 +201,7 @@ jobs:
           - name: mobile
             packages: "-p fluxdown_mobile"
           - name: gpui
-            packages: "-p fluxdown_ui_account -p fluxdown_ui_app -p fluxdown_ui_command_palette -p fluxdown_ui_components -p fluxdown_ui_downloads -p fluxdown_ui_extensions -p fluxdown_ui_i18n -p fluxdown_ui_plugin_ui -p fluxdown_ui_rss -p fluxdown_ui_settings -p fluxdown_ui_share -p fluxdown_ui_shell -p fluxdown_ui_theme"
+            packages: "-p fluxdown_ui_account -p fluxdown_ui_app -p fluxdown_ui_command_palette -p fluxdown_ui_components -p fluxdown_ui_downloads -p fluxdown_ui_extensions -p fluxdown_ui_i18n -p fluxdown_ui_plugin_ui -p fluxdown_ui_rss -p fluxdown_ui_settings -p fluxdown_ui_shell -p fluxdown_ui_theme"
     steps:
       - uses: actions/checkout@v4
 
@@ -344,8 +344,7 @@ jobs:
           :app:assembleDebug :app:lintDebug
 
   # 发布对齐：iOS 核心（fluxdown_mobile）只在 ios-sideload / ios-testflight 打包时交叉编译，
-  # Linux 门禁覆盖不到 Apple 移动目标的 cfg（libc 0.2.190 把路由 / in6 符号收窄到仅 macOS，
-  # FluxMesh iroh → netwatch / netdev 因此只在 iOS 上编译失败）。两种 flavor 与 build-core.sh 同参数，
+  # Linux 门禁覆盖不到 Apple 移动目标的 cfg（librqbit 等依赖在 iOS 上的条件编译）。两种 flavor 与 build-core.sh 同参数，
   # check 级（不链接、不生成 xcframework），几分钟内完成。
   ios-core:
     name: iOS core cross-check (full + store)

@@ -80,6 +80,8 @@ The last option sends the current page's own URL to FluxDown — useful when the
 
 FluxDown continuously scans each page for downloadable resources — video and audio elements, streaming manifests (HLS `.m3u8`, DASH `.mpd`), subtitles, and links or network responses that look like files — combining a DOM scan with live monitoring of the page's network activity. Detected items are classified (video, audio, document, archive, image, torrent, stream, subtitle, magnet link, other) and lightly filtered, so the list stays about real downloadable content instead of every icon, ad ping, or preload fragment: very small files are dropped per type, tracker/analytics traffic is ignored, and raw streaming segments stay hidden unless they're large enough to plausibly be a real file on their own. Image sniffing is off by default, so ordinary page images don't clutter the results.
 
+Links found by scanning the page are capped at 200 per page by default, so very long list pages stay responsive. If a page has more files than that (for example a model library with hundreds of entries), raise **Max Resources per Page** under **Resource Sniffing** in the options page (up to 99999). Media caught from network requests doesn't count toward this limit.
+
 What counts as a downloadable resource is decided by sniffing rules. If a site isn't detected correctly, you can write your own rule under **Sniffing Rules** in the options page — see the [Sniffing Rules Reference](/docs/en/browser-extension/sniff-rules/).
 
 Two pieces of on-page UI surface what's found:

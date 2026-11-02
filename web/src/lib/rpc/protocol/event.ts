@@ -16,7 +16,6 @@ import type {
   SyncStatusDto,
   UpdateStatusDto,
 } from './agent';
-import type { ShareProgressDto, ShareStateDto } from './share';
 import type { ErrorReason } from './error';
 import type { DaemonConfigSnapshot, DaemonRuntimeStatsDto } from './config';
 import type { ComponentStatusDto, PluginDto } from './plugin';
@@ -79,8 +78,6 @@ export interface AgentSnapshot {
   power: PowerStatusDto;
   /** 旧快照缺失时视为默认（上报关、无概览）。 */
   cloudNotify?: CloudNotifyStateDto;
-  /** FluxMesh分区；旧快照缺失时视为 `available: false`。 */
-  share?: ShareStateDto;
 }
 
 /** `system.snapshot` 主体（`role` 相邻标记，`snapshot` 为内容）。 */
@@ -130,7 +127,13 @@ export type DaemonEvent =
   /** 可移植视图会话已结束（`reason`：`closed` / `expired` / `pluginUnloaded` / `requested`）；不改变快照。 */
   | { type: 'pluginViewClosed'; data: { session: string; reason: string } }
   /** 插件经 `flux.ui.toast` 请求的提示；不改变快照。 */
-  | { type: 'pluginToast'; data: { identity: string; level: string; text: string } };
+  | { type: 'pluginToast'; data: { identity: string; level: string; text: string } }
+  /** BT 防吸血条目 / 状态变化：UI 据此重新拉取 `daemon.bt.guard.*`；不改变快照。 */
+  | { type: 'btGuardChanged' }
+  /** daemon 请求 agent 刷新云名单：只供 agent 消费，不转发给 UI，不改变快照。 */
+  | { type: 'btGuardCloudRefreshWanted'; data: { haveSequence: number } }
+  /** 待上报证据已累积：只供 agent 消费，不转发给 UI，不改变快照。 */
+  | { type: 'btGuardEvidenceReady'; data: { count: number } };
 
 /** agent 自有或转发的状态变化事件（`type` + `data` 相邻标记）。 */
 export type AgentEvent =
@@ -160,11 +163,7 @@ export type AgentEvent =
   /** 外部来源恢复的已有任务 ID（插件页面脚本恢复；一次性通知，不进快照）。 */
   | { type: 'captureTasksResumed'; data: string[] }
   /** 云端推送状态整体替换。 */
-  | { type: 'cloudNotifyChanged'; data: CloudNotifyStateDto }
-  /** FluxMesh分区整体替换。 */
-  | { type: 'shareChanged'; data: ShareStateDto }
-  /** 单个FluxMesh会话的进度 / 路径刷新（同 sessionId 的后帧完整取代前帧）。 */
-  | { type: 'shareProgress'; data: ShareProgressDto };
+  | { type: 'cloudNotifyChanged'; data: CloudNotifyStateDto };
 
 /** `service.event` 事件主体（`service` + `event` 相邻标记）。 */
 export type ServiceEvent =

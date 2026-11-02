@@ -43,7 +43,7 @@ use super::text::{
     MAX_NAME_CHARS, MAX_PLATFORM_CHARS, MAX_VERSION_CHARS, is_valid_cloud_device_id,
     sanitize_optional, sanitize_text,
 };
-use super::transport::{PeerConn, TransportStack};
+use super::transport::{DirectTransport, PeerConn};
 use super::types::{
     DiscoveredPeer, DiscoveryKind, MAX_DIRECT_CANDIDATES, PeerCandidate, PeerInfo, PeerRecord,
     TransportKind,
@@ -238,7 +238,7 @@ pub struct LinkManager {
     store: Arc<dyn LinkStorage>,
     /// 响应方持有本机自报信息（设备名 / 云设备 ID，运行期可变）。
     responder: PairingResponder,
-    transport: TransportStack,
+    transport: DirectTransport,
     client: reqwest::Client,
     api_port: AtomicU16,
     reachable: bool,
@@ -331,7 +331,7 @@ impl LinkManager {
         let identity = Self::load_or_create_identity(storage.as_ref()).await?;
         let client = wire::http_client();
         let responder = PairingResponder::new(identity.clone(), clean_self_info(self_info));
-        let transport = TransportStack::direct_only(client.clone());
+        let transport = DirectTransport::new(client.clone());
         let mgr = Arc::new(Self {
             identity,
             store: storage,

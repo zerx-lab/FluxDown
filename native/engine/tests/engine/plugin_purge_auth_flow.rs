@@ -405,3 +405,73 @@ async fn uninstall_config_failure_invalidates_removed_resolver_and_preserves_oth
         .await
         .expect("remove isolated test directory");
 }
+
+/// 安装扫描只认 manifest identity、不认目录名：`plugins/<identity>` 之外再有一份
+/// 目录名不同的同 identity 副本（手动解压的旧版本），一次卸载必须把两份都删掉，
+/// 否则重载后剩下的副本重新出现、卸载却报成功（要点两次才删干净）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uninstall_removes_every_installed_copy_of_identity() {
+    let work = std::env::temp_dir().join(format!("fluxdown-purge-copies-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir");
+    let engine = make_engine(&work).await;
+    let pm = engine.manager.plugin_manager().expect("pm installed");
+    let identity = "tester@copies";
+
+    let src = work.join("copies-src");
+    write_resolver_plugin(&src, identity, "copies.test").await;
+    pm.install_from_dir(&src).await.expect("install package");
+    let stray = work.join("plugins").join("Old-Copy");
+    write_resolver_plugin(&stray, identity, "copies.test").await;
+    pm.load_all().await;
+    assert_eq!(
+        pm.list()
+            .await
+            .iter()
+            .filter(|p| p.identity == identity)
+            .count(),
+        2,
+        "both copies are listed before uninstall"
+    );
+
+    pm.uninstall(identity).await.expect("uninstall");
+
+    assert!(
+        pm.list().await.iter().all(|p| p.identity != identity),
+        "a single uninstall must remove every copy"
+    );
+    assert!(!stray.exists());
+    assert!(!work.join("plugins").join(identity).exists());
+
+    drop(pm);
+    drop(engine);
+    tokio::fs::remove_dir_all(&work)
+        .await
+        .expect("remove isolated test directory");
+}
+
+/// 唯一副本的目录名不等于 identity 时，卸载删的必须是它真实所在的目录，而不是
+/// 不存在的 `plugins/<identity>`（此前永远删不掉）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uninstall_removes_copy_whose_directory_name_differs_from_identity() {
+    let work = std::env::temp_dir().join(format!("fluxdown-purge-misnamed-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir");
+    let engine = make_engine(&work).await;
+    let pm = engine.manager.plugin_manager().expect("pm installed");
+    let identity = "tester@misnamed";
+
+    let stray = work.join("plugins").join("Misnamed-Plugin");
+    write_resolver_plugin(&stray, identity, "misnamed.test").await;
+    pm.load_all().await;
+    assert!(pm.list().await.iter().any(|p| p.identity == identity));
+
+    pm.uninstall(identity).await.expect("uninstall");
+
+    assert!(pm.list().await.iter().all(|p| p.identity != identity));
+    assert!(!stray.exists());
+
+    drop(pm);
+    drop(engine);
+    tokio::fs::remove_dir_all(&work)
+        .await
+        .expect("remove isolated test directory");
+}

@@ -10,7 +10,7 @@ import java.util.Locale
 // ───────────────────────────── BitTorrent ─────────────────────────────
 
 /** BT 页签（GPUI `bt.rs` 的 basic / tracker / seeding）。 */
-enum class BtSettingsTab { General, Tracker, Seeding }
+enum class BtSettingsTab { General, Tracker, Seeding, Guard }
 
 /**
  * BT 页的每一行（GPUI 顺序）。页面渲染与设置搜索共用同一份可见性判定。
@@ -39,7 +39,27 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
         "bt_seed_inactive_time_limit_unit",
     ),
     SeedOperator("seedOperator", BtSettingsTab.Seeding, "bt_seed_limit_operator"),
-    SeedThenAction("seedThenAction", BtSettingsTab.Seeding, "bt_seed_then_action");
+    SeedThenAction("seedThenAction", BtSettingsTab.Seeding, "bt_seed_then_action"),
+    GuardEnabled("guardEnabled", BtSettingsTab.Guard, "bt_guard_enabled"),
+    GuardRuleExcessive("guardRuleExcessive", BtSettingsTab.Guard, "bt_guard_rule_excessive"),
+    GuardRuleRerequest("guardRuleRerequest", BtSettingsTab.Guard, "bt_guard_rule_rerequest"),
+    GuardRuleRewind("guardRuleRewind", BtSettingsTab.Guard, "bt_guard_rule_rewind"),
+    GuardRuleLag("guardRuleLag", BtSettingsTab.Guard, "bt_guard_rule_lag"),
+    GuardRuleFingerprint("guardRuleFingerprint", BtSettingsTab.Guard, "bt_guard_rule_fingerprint"),
+    GuardExcessRatio("guardExcessRatio", BtSettingsTab.Guard, "bt_guard_excess_ratio_pct"),
+    GuardMinTorrent("guardMinTorrent", BtSettingsTab.Guard, "bt_guard_min_torrent_mib"),
+    GuardRewindTolerance("guardRewindTolerance", BtSettingsTab.Guard, "bt_guard_rewind_tolerance_pct"),
+    GuardThrottle("guardThrottle", BtSettingsTab.Guard, "bt_guard_throttle_kib"),
+    GuardBanBase("guardBanBase", BtSettingsTab.Guard, "bt_guard_ban_base_hours"),
+    GuardBanMax("guardBanMax", BtSettingsTab.Guard, "bt_guard_ban_max_days"),
+    GuardDownloadingMax("guardDownloadingMax", BtSettingsTab.Guard, "bt_guard_downloading_max_action"),
+    GuardSkipPrivate("guardSkipPrivate", BtSettingsTab.Guard, "bt_guard_skip_private"),
+    GuardSkipLan("guardSkipLan", BtSettingsTab.Guard, "bt_guard_skip_lan"),
+    GuardIpv6Prefix("guardIpv6Prefix", BtSettingsTab.Guard, "bt_guard_ipv6_prefix"),
+    GuardCloudEnabled("guardCloudEnabled", BtSettingsTab.Guard, "bt_guard_cloud_enabled"),
+    GuardCloudMode("guardCloudMode", BtSettingsTab.Guard, "bt_guard_cloud_mode"),
+    GuardFilterUrls("guardFilterUrls", BtSettingsTab.Guard, "bt_guard_filter_urls"),
+    GuardReportEnabled("guardReportEnabled", BtSettingsTab.Guard, "bt_guard_report_enabled");
 
     /** 与 iOS 一致的行 id（`bt.<slug>`）。 */
     val id: String get() = "bt.$slug"
@@ -47,7 +67,15 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
     fun isVisible(form: SettingsForm): Boolean {
         if (!form.has(configKey)) return false
         if (this != Enabled && !form.bool(Enabled.configKey)) return false
-        return if (tab == BtSettingsTab.Seeding && this != SeedEnabled) form.bool(SeedEnabled.configKey) else true
+        return when (tab) {
+            BtSettingsTab.Seeding -> this == SeedEnabled || form.bool(SeedEnabled.configKey)
+            BtSettingsTab.Guard -> when (this) {
+                GuardEnabled -> true
+                GuardCloudMode -> form.bool(GuardEnabled.configKey) && form.bool(GuardCloudEnabled.configKey)
+                else -> form.bool(GuardEnabled.configKey)
+            }
+            else -> true
+        }
     }
 
     companion object {

@@ -7,17 +7,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useT } from '../../../../i18n'
 import { cn } from '../../../../lib/cn'
 import { copyText } from '../../../../lib/copy'
-import { formatQuotaBytes, trafficKindKey } from '../../../share/model'
 import { RpcError, rpc } from '../../../../lib/rpc'
 import type { AgentSessionDto, CloudOrder, CloudPlan, CloudSubscription } from '../../../../lib/rpc'
-import { Badge, Button, ConfirmFooter, Dialog, DialogFooter, Icon, Input, ProgressBar, SegmentedTabs, Spinner } from '../../../../ui'
+import { Badge, Button, ConfirmFooter, Dialog, DialogFooter, Icon, Input, ProgressBar, Spinner } from '../../../../ui'
 import {
   localDate,
   campaignProgress,
   formatCountdown,
   formatMinor,
   normalizeReferralCode,
-  packPlans,
   ownedPriceMinor,
   payableMinor,
   baseSortOf,
@@ -34,7 +32,6 @@ import {
 import type { PlanCardState, PlanIconName } from './billing'
 import { accountErrorKey } from './errorText'
 import { PlanBadge } from './PlanBadge'
-import type { PlanDialogTab } from './planRequest'
 import { parseBadgeColor } from './planBadgeText'
 import { encodeQrChallengeImage } from '../extensions/challengeImage'
 
@@ -47,7 +44,7 @@ type Load =
   | { status: 'error' }
   | { status: 'ready'; catalog: CloudPlan[]; credit: number; currentCode: string | null; subscription: CloudSubscription | null }
 
-type Step = { kind: 'select' } | { kind: 'paying'; order: CloudOrder; plan: CloudPlan } | { kind: 'success'; planName: string; pack: boolean }
+type Step = { kind: 'select' } | { kind: 'paying'; order: CloudOrder; plan: CloudPlan } | { kind: 'success'; planName: string }
 
 /** 传输层瞬断 / 服务端声明可重试的错误：轮询继续下一轮。 */
 function pollRetryable(error: unknown): boolean {
@@ -114,14 +111,6 @@ function PlanCard({ plan, state, credit, selected, onSelect, ordinal, conflict }
           {state === 'current' || state === 'renewable' ? <Badge tone="accent">{t('accountPlanCurrent')}</Badge> : null}
           {state === 'tierBlocked' || state === 'creditBlocked' ? <Badge>{t('accountPlanLowerTier')}</Badge> : null}
         </span>
-        {plan.pack ? (
-          <span className="flex flex-col gap-0.5 text-xs text-foreground">
-            <span className="tabular">
-              {t('accountPackCapacity', { bytes: formatQuotaBytes(plan.pack.bytes), kind: trafficKindKey(plan.pack.kind) ? t(trafficKindKey(plan.pack.kind) ?? '') : '' })}
-            </span>
-            <span className="text-muted-foreground">{t('accountPackValidity', { days: plan.pack.validDays })}</span>
-          </span>
-        ) : null}
         {isSubscriptionPlan(plan) ? <span className="text-xs text-muted-foreground tabular">{t('accountPeriodDays', { days: plan.billingPeriodDays ?? 0 })}</span> : null}
         {plan.description ? <span className="text-xs text-muted-foreground">{plan.description}</span> : null}
         {plan.highlights.length > 0 ? (
@@ -267,9 +256,8 @@ function PayingStep({ order, plan, onPaid, onBack }: { order: CloudOrder; plan: 
   )
 }
 
-export function PlanDialog({ session, initialTab = 'membership', onClose }: { session: AgentSessionDto; initialTab?: PlanDialogTab; onClose: () => void }) {
+export function PlanDialog({ session, onClose }: { session: AgentSessionDto; onClose: () => void }) {
   const t = useT()
-  const [requestedTab, setTab] = useState<PlanDialogTab>(initialTab)
   const [load, setLoad] = useState<Load>({ status: 'loading' })
   const [step, setStep] = useState<Step>({ kind: 'select' })
   const [selected, setSelected] = useState<string | null>(null)
@@ -350,15 +338,12 @@ export function PlanDialog({ session, initialTab = 'membership', onClose }: { se
   )
 
   const onPaid = useCallback(
-    (order: CloudOrder) => setStep((prev) => ({ kind: 'success', planName: order.planName, pack: prev.kind === 'paying' && prev.plan.productKind === 'pack' })),
+    (order: CloudOrder) => setStep({ kind: 'success', planName: order.planName }),
     [],
   )
 
   const ready = load.status === 'ready' ? load : null
-  // 云端没有上架流量包：页签整体隐藏，落回会员页。
-  const hasPacks = ready !== null && packPlans(ready.catalog).length > 0
-  const tab: PlanDialogTab = hasPacks ? requestedTab : 'membership'
-  const plans = ready ? (tab === 'packs' ? packPlans(ready.catalog) : purchasablePlans(ready.catalog)) : []
+  const plans = ready ? purchasablePlans(ready.catalog) : []
   const owned = ready ? ownedPriceMinor(ready.catalog, ready.currentCode) : 0
   const baseSort = ready ? baseSortOf(ready.catalog, ready.currentCode) : null
   const stateOf = (plan: CloudPlan, r: NonNullable<typeof ready>): PlanCardState => planCardState(plan, r.currentCode, owned, r.credit, r.subscription, baseSort)
@@ -392,7 +377,7 @@ export function PlanDialog({ session, initialTab = 'membership', onClose }: { se
         <div className="flex size-16 items-center justify-center rounded-full bg-success/15 text-success">
           <CheckCheck className="size-8" strokeWidth={1.75} />
         </div>
-        <div className="text-title font-semibold text-foreground">{t(step.pack ? 'accountPackPaid' : 'accountPlanPaidSuccess')}</div>
+        <div className="text-title font-semibold text-foreground">{t('accountPlanPaidSuccess')}</div>
         {step.planName ? <div className="text-sm text-muted-foreground">{step.planName}</div> : null}
       </div>
     )
@@ -400,7 +385,7 @@ export function PlanDialog({ session, initialTab = 'membership', onClose }: { se
     footer = (
       <ConfirmFooter
         cancelLabel={t('cancel')}
-        okLabel={chosen && chosenAvailable && ready ? `${t(chosenState === 'renewable' ? 'accountRenew' : 'accountPlanBuy')} ${formatMinor(payableMinor(chosen, tab === 'packs' || isSubscriptionPlan(chosen) ? 0 : ready.credit), chosen.currency)}` : t('accountPlanBuy')}
+        okLabel={chosen && chosenAvailable && ready ? `${t(chosenState === 'renewable' ? 'accountRenew' : 'accountPlanBuy')} ${formatMinor(payableMinor(chosen, isSubscriptionPlan(chosen) ? 0 : ready.credit), chosen.currency)}` : t('accountPlanBuy')}
         onCancel={onClose}
         onOk={() => chosen && void buy(chosen)}
         okDisabled={!chosenAvailable}
@@ -410,22 +395,6 @@ export function PlanDialog({ session, initialTab = 'membership', onClose }: { se
     )
     body = (
       <div className="flex flex-col gap-3">
-        {hasPacks ? (
-          <SegmentedTabs
-            aria-label={t('accountPlanDialogTitle')}
-            value={tab}
-            onValueChange={(next) => {
-              setTab(next)
-              setSelected(null)
-              setNotice(null)
-            }}
-            className="self-start"
-            items={[
-              { value: 'membership', label: t('accountPurchaseTabMembership') },
-              { value: 'packs', label: t('accountPurchaseTabPacks') },
-            ]}
-          />
-        ) : null}
         {load.status === 'loading' ? <SkeletonCards /> : null}
         {load.status === 'error' ? (
           <div className="flex flex-col items-center gap-2 py-8 text-center">
@@ -436,13 +405,13 @@ export function PlanDialog({ session, initialTab = 'membership', onClose }: { se
         {ready && plans.length === 0 ? <div className="py-8 text-center text-sm text-muted-foreground">{t('accountPlanEmpty')}</div> : null}
         {ready && plans.length > 0 ? (
           <div role="radiogroup" className="flex flex-col gap-2">
-            {(tab === 'packs' ? [{ key: 'packs', title: null, items: plans }] : [
+            {[
               { key: 'lifetime', title: t('accountPurchaseGroupLifetime'), items: lifetimePlans(plans) },
               { key: 'cards', title: t('accountPurchaseGroupCards'), items: cardPlans(plans) },
-            ]).map((group) =>
+            ].map((group) =>
               group.items.length === 0 ? null : (
                 <div key={group.key} className="flex flex-col gap-2">
-                  {group.title && cardPlans(plans).length > 0 ? <div className="text-xs font-medium text-muted-foreground">{group.title}</div> : null}
+                  {cardPlans(plans).length > 0 ? <div className="text-xs font-medium text-muted-foreground">{group.title}</div> : null}
                   {group.items.map((plan) => {
                     const state = stateOf(plan, ready)
                     return (
@@ -450,7 +419,7 @@ export function PlanDialog({ session, initialTab = 'membership', onClose }: { se
                         key={plan.code}
                         plan={plan}
                         state={state}
-                        credit={tab === 'packs' ? 0 : ready.credit}
+                        credit={ready.credit}
                         selected={selected === plan.code}
                         ordinal={state === 'current' ? session.user.membershipOrdinal : null}
                         conflict={state === 'tierBlocked' && isSubscriptionPlan(plan) && ready.subscription !== null}

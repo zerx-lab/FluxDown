@@ -3770,6 +3770,9 @@ pub struct DownloadManager {
     /// Wrapped in `Arc` so spawned download tasks can cache handles.
     #[cfg(feature = "bt")]
     bt_session: Option<Arc<SharedBtSession>>,
+    /// BT 防吸血宿主：策略对象在会话创建时注入 librqbit，配置热更新不重建会话。
+    #[cfg(feature = "bt")]
+    bt_guard: Arc<crate::bt_guard::BtGuardHost>,
     /// Default save directory used to initialise the BT session.
     default_save_dir: String,
     /// Application data directory (exe dir) for BT persistence files.
@@ -4031,6 +4034,16 @@ impl DownloadManager {
         // 克隆，不额外开连接）。
         let (rss_db, rss_sink) = (db.clone(), sink.clone());
         let webhook = Arc::new(crate::webhook::WebhookDispatcher::new(&proxy_config));
+        // 防吸血宿主：持有 guard、策略对象与事件泵（空闲时不占任何唤醒源）。
+        #[cfg(feature = "bt")]
+        let bt_guard = Arc::new(crate::bt_guard::BtGuardHost::new(
+            Arc::new(crate::bt_guard::BtGuard::new(
+                crate::bt_guard::BtGuardConfig::default(),
+            )),
+            db.clone(),
+            sink.clone(),
+            proxy_config.clone(),
+        ));
         // 投递日志变化要能推给宿主，打开着的日志面板才会活着更新
         // （「模拟一次下载完成」按钮全靠这条推送给出反馈）。
         webhook.set_sink(sink.clone());
@@ -4054,6 +4067,8 @@ impl DownloadManager {
             upload_limit_bps,
             #[cfg(feature = "bt")]
             bt_session: None,
+            #[cfg(feature = "bt")]
+            bt_guard,
             default_save_dir,
             app_data_dir,
             data_dir,
@@ -5053,8 +5068,13 @@ impl DownloadManager {
         let group_id = Uuid::new_v4().to_string();
         let group_name = if !manifest.name.is_empty() {
             manifest.name.clone()
-        } else {
+        } else if !task.file_name.is_empty() {
             task.file_name.clone()
+        } else {
+            manifest
+                .items
+                .first()
+                .map_or_else(String::new, |item| item.name.clone())
         };
         let fallback_group_dir = if group_name.is_empty() {
             manifest_base.to_owned()
@@ -5850,6 +5870,8 @@ impl DownloadManager {
         self.client = new_client;
         self.invalidate_system_client();
         self.proxy_config = config;
+        #[cfg(feature = "bt")]
+        self.bt_guard.set_proxy(self.proxy_config.clone());
         // 仅 `useProxy` 端点用得上，但出口变了就得跟着重建。
         self.webhook.set_proxy_config(&self.proxy_config);
         // 插件 `flux.fetch` / yt-dlp 与下载任务同一出口（GitHub 加速等测速请求随之换代理）。
@@ -5877,6 +5899,8 @@ impl DownloadManager {
     pub fn set_proxy_rules(&mut self, rules: Option<Arc<crate::proxy_rules::ProxyRuleSet>>) {
         let count = rules.as_ref().map_or(0, |r| r.len());
         self.proxy_config.rules = rules;
+        #[cfg(feature = "bt")]
+        self.bt_guard.set_proxy(self.proxy_config.clone());
         // 插件 `flux.fetch` / yt-dlp 同样按规则选出口。
         #[cfg(feature = "plugins")]
         if let Some(bridge) = &self.plugin_bridge
@@ -5953,6 +5977,18 @@ impl DownloadManager {
     /// Get a reference to the current proxy configuration.
     pub fn proxy_config(&self) -> &ProxyConfig {
         &self.proxy_config
+    }
+
+    /// 防吸血宿主（引擎级，随 manager 存亡；会话级状态在 BT 会话建立时挂接）。
+    #[cfg(feature = "bt")]
+    pub fn bt_guard(&self) -> &Arc<crate::bt_guard::BtGuardHost> {
+        &self.bt_guard
+    }
+
+    /// 热更新防吸血配置：不重建 BT 会话（受限队列速率、规则模式、云名单 / 订阅开关即时生效）。
+    #[cfg(feature = "bt")]
+    pub fn set_bt_guard_config(&self, config: crate::bt_guard::BtGuardConfig) {
+        self.bt_guard.set_config(config);
     }
 
     /// Update global user-agent string.  Rebuilds the shared HTTP client so
@@ -6150,8 +6186,16 @@ impl DownloadManager {
                 let save_dir = self.default_save_dir.clone();
                 let data_dir = self.app_data_dir.clone();
                 let config = self.bt_config.clone();
+                let policy = self.bt_guard.policy();
                 let session = tokio::task::spawn_blocking(move || {
-                    SharedBtSession::new(&save_dir, &data_dir, speed_limit, upload_limit, &config)
+                    SharedBtSession::new(
+                        &save_dir,
+                        &data_dir,
+                        speed_limit,
+                        upload_limit,
+                        &config,
+                        Some(policy),
+                    )
                 })
                 .await
                 .map_err(|e| {
@@ -6164,6 +6208,8 @@ impl DownloadManager {
                 session
                     .seeding_manager()
                     .set_cap(self.bt_config.seed_max_active);
+                self.bt_guard
+                    .attach(&session.session(), session.closing_token());
                 self.bt_session = Some(session);
             }
             Ok(())
@@ -13386,6 +13432,10 @@ impl DownloadManager {
             &crate::bt_status::snapshot(&info_hash),
         );
 
+        let guard_hash: Option<[u8; 20]> = hex::decode(&info_hash)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok());
+        let guard = self.bt_guard.guard();
         let mut peers: Vec<PeerRow> = Vec::new();
         let mut counts = PeerCounts::default();
         let handle = match &self.bt_session {
@@ -13404,6 +13454,11 @@ impl DownloadManager {
                     .into_iter()
                     .map(|(addr, stats)| {
                         let country = crate::geoip::lookup_addr(&addr);
+                        let insight = guard_hash.and_then(|hash| {
+                            addr.parse::<std::net::SocketAddr>()
+                                .ok()
+                                .and_then(|socket| guard.peer_insight(&hash, socket))
+                        });
                         PeerRow {
                             addr,
                             client: stats.client_name.unwrap_or_default(),
@@ -13416,6 +13471,7 @@ impl DownloadManager {
                             down_bps: 0,
                             up_bps: 0,
                             country,
+                            insight,
                         }
                     })
                     .collect();
@@ -14141,6 +14197,9 @@ impl DownloadManager {
                 crate::logger::report_error("download-manager", "join BT shutdown worker", &error);
             }
         }
+        // BT 会话已关停（含其 Disconnected 回调）：停泵并做防吸血最终落库。
+        #[cfg(feature = "bt")]
+        self.bt_guard.shutdown().await;
     }
 }
 
@@ -14362,6 +14421,11 @@ impl DownloadManager {
         }
     }
 
+    /// 创建任务组并以组根目录为基准保留各成员的相对路径。
+    ///
+    /// `category_route` 只授权自动目录规划；显式保存目录不附带路由。
+    /// `archive_metadata` 为组级来源信息，插件只在组根调用一次。
+    /// 清单为空或持久化失败时返回 `None`，成功时返回组 ID。
     pub async fn create_task_group(&mut self, spec: CreateGroupSpec) -> Option<String> {
         if spec.items.is_empty() {
             return None;

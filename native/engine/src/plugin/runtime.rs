@@ -768,12 +768,14 @@ pub trait ScriptRuntime: Send + Sync {
         host: HostContext,
     ) -> Result<Option<ResolveResult>, PluginError>;
 
-    /// Invoke the isolated, capability-free archive callback.
+    /// 调用隔离的 `globalThis.archive(ctx)`：只注入 `bridge` 的日志能力
+    /// （`flux.logger` / `console`），不提供任何网络、存储、文件、任务或进程接口。
     async fn invoke_archive(
         &self,
         plugin: &PluginScript,
         req: ArchiveRequest,
         settings_json: String,
+        bridge: Arc<dyn PluginBridge>,
         budget: ExecutionBudget,
     ) -> Result<Option<ArchiveResult>, PluginError>;
 

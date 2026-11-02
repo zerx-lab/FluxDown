@@ -45,6 +45,10 @@ pub const FILE_MISSING_ACTIONS: &[&str] = &["keep", "delete"];
 pub const BT_SEED_LIMIT_OPERATORS: &[&str] = &["or", "and"];
 pub const BT_SEED_THEN_ACTIONS: &[&str] = &["stop", "delete", "delete_files"];
 pub const BT_MSE_MODES: &[&str] = &["disabled", "enabled", "forced"];
+/// BT 防吸血规则 / 云名单的执行模式。
+pub const BT_GUARD_MODES: &[&str] = &["off", "observe", "enforce"];
+/// BT 防吸血：下载中任务的动作上限。
+pub const BT_GUARD_DOWNLOADING_ACTIONS: &[&str] = &["observe", "throttle", "choke", "ban"];
 pub const PROXY_MODES: &[&str] = &["none", "system", "manual", "auto"];
 pub const PROXY_TYPES: &[&str] = &["http", "https", "socks4", "socks5"];
 
@@ -225,6 +229,93 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::Enum(BT_SEED_THEN_ACTIONS),
         "stop",
     ),
+    // ── BT 防吸血（全部热更新，不重建 BT 会话）──
+    field("bt_guard_enabled", DaemonConfigKind::Bool, "true"),
+    field(
+        "bt_guard_rule_excessive",
+        DaemonConfigKind::Enum(BT_GUARD_MODES),
+        "observe",
+    ),
+    field(
+        "bt_guard_rule_rerequest",
+        DaemonConfigKind::Enum(BT_GUARD_MODES),
+        "observe",
+    ),
+    field(
+        "bt_guard_rule_rewind",
+        DaemonConfigKind::Enum(BT_GUARD_MODES),
+        "observe",
+    ),
+    field(
+        "bt_guard_rule_lag",
+        DaemonConfigKind::Enum(BT_GUARD_MODES),
+        "observe",
+    ),
+    field(
+        "bt_guard_rule_fingerprint",
+        DaemonConfigKind::Enum(BT_GUARD_MODES),
+        "observe",
+    ),
+    field(
+        "bt_guard_cloud_mode",
+        DaemonConfigKind::Enum(BT_GUARD_MODES),
+        "observe",
+    ),
+    field(
+        "bt_guard_excess_ratio_pct",
+        DaemonConfigKind::Integer {
+            min: 110,
+            max: 1000,
+        },
+        "200",
+    ),
+    field(
+        "bt_guard_min_torrent_mib",
+        DaemonConfigKind::Integer {
+            min: 0,
+            max: 1_048_576,
+        },
+        "64",
+    ),
+    field(
+        "bt_guard_rewind_tolerance_pct",
+        DaemonConfigKind::Integer { min: 0, max: 100 },
+        "7",
+    ),
+    field(
+        "bt_guard_throttle_kib",
+        DaemonConfigKind::Integer {
+            min: 1,
+            max: 1_048_576,
+        },
+        "32",
+    ),
+    field(
+        "bt_guard_ban_base_hours",
+        DaemonConfigKind::Integer { min: 1, max: 720 },
+        "24",
+    ),
+    field(
+        "bt_guard_ban_max_days",
+        DaemonConfigKind::Integer { min: 1, max: 365 },
+        "30",
+    ),
+    field(
+        "bt_guard_downloading_max_action",
+        DaemonConfigKind::Enum(BT_GUARD_DOWNLOADING_ACTIONS),
+        "throttle",
+    ),
+    field("bt_guard_skip_private", DaemonConfigKind::Bool, "true"),
+    field("bt_guard_skip_lan", DaemonConfigKind::Bool, "true"),
+    field(
+        "bt_guard_ipv6_prefix",
+        DaemonConfigKind::Integer { min: 48, max: 128 },
+        "64",
+    ),
+    field("bt_guard_filter_urls", DaemonConfigKind::Text, ""),
+    field("bt_guard_cloud_enabled", DaemonConfigKind::Bool, "true"),
+    // 设备本地（不进云同步）：是否向 FluxCloud 上报命中规则的对端证据。
+    field("bt_guard_report_enabled", DaemonConfigKind::Bool, "false"),
     // ── ED2K ──
     field("ed2k_enable_kad", DaemonConfigKind::Bool, "true"),
     field("ed2k_enable_upnp", DaemonConfigKind::Bool, "true"),
@@ -532,5 +623,78 @@ mod tests {
         );
         assert!(normalize_daemon_config_value("log_max_size_mb", "0").is_err());
         assert!(normalize_daemon_config_value("log_max_size_mb", "1025").is_err());
+    }
+
+    #[test]
+    fn bt_guard_keys_have_contract_ranges_and_defaults() {
+        let ok = |k: &str, v: &str| normalize_daemon_config_value(k, v).is_ok();
+        for (key, lo, hi) in [
+            ("bt_guard_excess_ratio_pct", 110, 1000),
+            ("bt_guard_min_torrent_mib", 0, 1_048_576),
+            ("bt_guard_rewind_tolerance_pct", 0, 100),
+            ("bt_guard_throttle_kib", 1, 1_048_576),
+            ("bt_guard_ban_base_hours", 1, 720),
+            ("bt_guard_ban_max_days", 1, 365),
+            ("bt_guard_ipv6_prefix", 48, 128),
+        ] {
+            assert!(ok(key, &lo.to_string()), "{key} min");
+            assert!(ok(key, &hi.to_string()), "{key} max");
+            assert!(!ok(key, &(lo - 1).to_string()), "{key} below min");
+            assert!(!ok(key, &(hi + 1).to_string()), "{key} above max");
+            assert!(!ok(key, "abc"), "{key} non-numeric");
+        }
+        for (key, default) in [
+            ("bt_guard_enabled", "true"),
+            ("bt_guard_rule_excessive", "observe"),
+            ("bt_guard_rule_rerequest", "observe"),
+            ("bt_guard_rule_rewind", "observe"),
+            ("bt_guard_rule_lag", "observe"),
+            ("bt_guard_rule_fingerprint", "observe"),
+            ("bt_guard_cloud_mode", "observe"),
+            ("bt_guard_excess_ratio_pct", "200"),
+            ("bt_guard_min_torrent_mib", "64"),
+            ("bt_guard_rewind_tolerance_pct", "7"),
+            ("bt_guard_throttle_kib", "32"),
+            ("bt_guard_ban_base_hours", "24"),
+            ("bt_guard_ban_max_days", "30"),
+            ("bt_guard_downloading_max_action", "throttle"),
+            ("bt_guard_skip_private", "true"),
+            ("bt_guard_skip_lan", "true"),
+            ("bt_guard_ipv6_prefix", "64"),
+            ("bt_guard_filter_urls", ""),
+            ("bt_guard_cloud_enabled", "true"),
+            ("bt_guard_report_enabled", "false"),
+        ] {
+            assert_eq!(daemon_config_default(key), default, "{key}");
+        }
+    }
+
+    #[test]
+    fn bt_guard_enums_are_validated() {
+        for mode in ["off", "observe", "enforce"] {
+            assert_eq!(
+                normalize_daemon_config_value("bt_guard_rule_lag", &format!(" {mode} ")).as_deref(),
+                Ok(mode)
+            );
+            assert!(normalize_daemon_config_value("bt_guard_cloud_mode", mode).is_ok());
+        }
+        assert!(normalize_daemon_config_value("bt_guard_rule_lag", "ban").is_err());
+        assert!(normalize_daemon_config_value("bt_guard_cloud_mode", "").is_err());
+        for action in ["observe", "throttle", "choke", "ban"] {
+            assert!(
+                normalize_daemon_config_value("bt_guard_downloading_max_action", action).is_ok()
+            );
+        }
+        assert!(normalize_daemon_config_value("bt_guard_downloading_max_action", "off").is_err());
+        assert!(is_public_daemon_config_key("bt_guard_filter_urls"));
+    }
+
+    #[test]
+    fn bt_guard_report_flag_is_device_local() {
+        assert!(
+            crate::settings::SYNC_SETTING_SPECS
+                .iter()
+                .all(|spec| spec.storage_key != "bt_guard_report_enabled")
+        );
     }
 }

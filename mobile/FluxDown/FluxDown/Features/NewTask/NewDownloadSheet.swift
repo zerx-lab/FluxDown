@@ -399,7 +399,9 @@ private struct NewDownloadContent: View {
     private func destinationSection(_ entries: [UrlEntry]) -> some View {
         let options = categoryOptions
         return Section {
-            categoryPicker(options)
+            if !options.isEmpty {
+                categoryPicker(options)
+            }
             if container.isLocalHost {
                 LabeledContent(L("saveDir")) {
                     Text(form.saveDir.isEmpty ? LocalPaths.documents.path : form.saveDir)

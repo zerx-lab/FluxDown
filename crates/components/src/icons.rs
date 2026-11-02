@@ -120,7 +120,6 @@ flux_icons! {
     Search => "search",
     Shield => "shield",
     Settings => "settings",
-    Share2 => "share-2",
     SlidersHorizontal => "sliders-horizontal",
     Smartphone => "smartphone",
     Subtitles => "subtitles",

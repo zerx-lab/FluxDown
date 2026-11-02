@@ -1,7 +1,7 @@
-//! 「发现新版本」提醒窗口：独立的辅助窗口，不依赖主窗口存在。开窗时机见
-//! [`crate::update_notices`]；内容与动作见 [`UpdatePromptView`]。
+//! 更新窗口：独立的辅助窗口，不依赖主窗口存在；内容与动作见 [`UpdatePromptView`]。
 //!
-//! 层级与下载完成窗口一致：托盘驻留时由 agent 拉起的界面常是后台应用，提醒连同应用一起置前。
+//! 只在用户主动时打开（菜单「检查更新…」、顶栏更新按钮的手动升级 / 失败状态），所以连同应用
+//! 一起置前；新版本本身只经顶栏更新按钮呈现，从不自动开窗。
 
 use fluxdown_ui_settings::{
     UPDATE_PROMPT_WINDOW_HEIGHT, UPDATE_PROMPT_WINDOW_WIDTH, UpdatePromptEvent, UpdatePromptView,

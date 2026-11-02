@@ -563,7 +563,9 @@ private fun NewDownloadContent(
             return@Column
         }
 
-        CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
+        if (form.categoryOptions.isNotEmpty()) {
+            CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
+        }
 
         // 保存目录
         val saveDirShown = remember(form.saveDir, remoteHost) {

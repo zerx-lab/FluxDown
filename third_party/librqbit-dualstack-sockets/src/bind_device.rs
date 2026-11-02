@@ -24,7 +24,7 @@ impl BindDevice {
     }
 
     #[cfg(windows)]
-    pub fn new_from_name(name: &str) -> crate::Result<Self> {
+    pub fn new_from_name(_name: &str) -> crate::Result<Self> {
         Err(Error::BindDeviceNotSupported)
     }
 

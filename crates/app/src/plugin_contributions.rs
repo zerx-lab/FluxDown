@@ -30,7 +30,7 @@ use gpui_component::{Icon, WindowExt as _, notification::Notification};
 use serde_json::{Value, json};
 
 use crate::{
-    activity::{DOWNLOADS_ROUTE, RSS_ROUTE, SHARE_ROUTE, WEBHOOKS_ROUTE},
+    activity::{DOWNLOADS_ROUTE, RSS_ROUTE, WEBHOOKS_ROUTE},
     app::Desktop,
     capability_ports::AgentPluginUiPort,
     session::{SessionSignal, agent_body},
@@ -366,7 +366,6 @@ fn resolve_route(
         "downloads" => return Ok(DOWNLOADS_ROUTE),
         "rss" => return Ok(RSS_ROUTE),
         "webhooks" => return Ok(WEBHOOKS_ROUTE),
-        "share" => return Ok(SHARE_ROUTE),
         _ => {}
     }
     let Some(view) = route.strip_prefix(&format!("plugin:{identity}:")) else {
@@ -643,7 +642,6 @@ mod tests {
             ("downloads", DOWNLOADS_ROUTE),
             ("rss", RSS_ROUTE),
             ("webhooks", WEBHOOKS_ROUTE),
-            ("share", SHARE_ROUTE),
         ] {
             assert_eq!(resolve_route("d@x", id, &contributions), Ok(expected));
         }

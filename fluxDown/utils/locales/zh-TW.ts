@@ -553,6 +553,8 @@ const zhTW = {
   "options.sniff.imagesDesc": "偵測網頁中的大型圖片資源（>100KB）",
   "options.sniff.lowConfidence": "顯示低可信度資源",
   "options.sniff.lowConfidenceDesc": "在資源清單中同時顯示判斷把握較低的項目",
+  "options.sniff.maxResources": "單頁嗅探上限",
+  "options.sniff.maxResourcesDesc": "頁面連結掃描到這麼多筆後停止（1–{max}）。數值過大時長清單頁可能變慢；網路請求中嗅探到的媒體不計入。",
   "options.sites.desc": "為單一站點覆寫全域行為：是否接管下載、是否嗅探、懸浮球與浮鈕，以及儲存目錄。站點設定對其子網域同樣生效。",
   "options.sites.colHost": "站點",
   "options.sites.colIntercept": "接管",

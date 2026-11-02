@@ -98,7 +98,7 @@ flux.ui.view("hello", {
 | `props` | 为「带参数打开视图」预留。当前客户端始终传入 `{}`。 |
 | `refresh()` | 请求重新渲染本会话。请求会被合并；同一会话每 100 ms 最多渲染一次。 |
 | `close()` | 关闭承载该视图的对话框或独立窗口并结束会话。嵌入页面的视图（活动栏页、任务详情标签页）只会显示「已结束」和**重新打开**按钮。重复调用无副作用；可以在 `init` 里调用。 |
-| `navigate(target)` | `"downloads"`、`"rss"`、`"webhooks"`、`"share"` 或 `{ view }`（本插件的某个 `activity` 视图）。让主窗口到前台并切换页面；目标非法或在 `close()` 之后调用时，返回的 Promise 会 reject。可以在 `init` 里调用。客户端无法显示目标页面时忽略该请求并记录警告日志。只影响打开该视图的那个客户端。示例：`await flux.tasks.create(...)` 之后调用 `await ctx.navigate("downloads")`。 |
+| `navigate(target)` | `"downloads"`、`"rss"`、`"webhooks"` 或 `{ view }`（本插件的某个 `activity` 视图）。让主窗口到前台并切换页面；目标非法或在 `close()` 之后调用时，返回的 Promise 会 reject。可以在 `init` 里调用。客户端无法显示目标页面时忽略该请求并记录警告日志。只影响打开该视图的那个客户端。示例：`await flux.tasks.create(...)` 之后调用 `await ctx.navigate("downloads")`。 |
 
 > **子节点只能是节点，不能是字符串。**`h("stack", {}, "hello")` 是非法的。文本要放进 `text` 节点：`h("text", { text: "hello" })`。要求字符串的属性也必须传字符串：`text: 5` 会被拒绝，请用 `String(5)`。
 

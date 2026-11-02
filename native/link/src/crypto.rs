@@ -290,7 +290,7 @@ pub fn open_link_body(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Option<Vec<u
 /// 密钥永不上网络；只发送 HMAC 标签 + 明文 method/path/ts/nonce + 请求体，对端用存储
 /// 的同一 `link_secret` 重算比对（常量时间）。body 摘要纳入签名，防止 on-path 攻击者
 /// 保留头部改写请求体；**收发双方指纹**纳入签名，两个方向共用同一 `link_secret` 也无法把
-/// 一方发出的请求原样反射给自己。适配任意传输（Direct/未来 iroh/relay）。
+/// 一方发出的请求原样反射给自己。
 ///
 /// # Examples
 ///

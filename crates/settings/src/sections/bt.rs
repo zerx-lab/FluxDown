@@ -8,7 +8,7 @@ use gpui::{App, IntoElement as _, ParentElement as _, SharedString, Styled as _,
 use gpui_component::h_flex;
 
 use super::{
-    SectionContext,
+    SectionContext, bt_guard,
     subscription::{self, ListFormat},
 };
 use crate::ui::{
@@ -38,6 +38,9 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
                 SettingsTab::new("seeding", ctx.t("settingsTabSeeding"))
                     .section(seeding_section(ctx, cx)),
             );
+        for tab in bt_guard::tabs(ctx, cx) {
+            page = page.tab(tab);
+        }
     }
     page
 }

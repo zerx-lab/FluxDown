@@ -135,4 +135,15 @@ describe("设置迁移", () => {
     expect("excludeDomains" in migrated).toBe(false);
     expect(migrateSettings(null)).toEqual(DEFAULT_SETTINGS);
   });
+
+  test("migrateSettings 把单页嗅探上限规整到 1…99999，缺失 / 非法回退 200", () => {
+    expect(migrateSettings({}).sniffMaxResources).toBe(200);
+    expect(migrateSettings({ sniffMaxResources: 249 }).sniffMaxResources).toBe(249);
+    expect(migrateSettings({ sniffMaxResources: 99999 }).sniffMaxResources).toBe(99999);
+    expect(migrateSettings({ sniffMaxResources: 1_000_000 }).sniffMaxResources).toBe(99999);
+    expect(migrateSettings({ sniffMaxResources: 0 }).sniffMaxResources).toBe(1);
+    expect(migrateSettings({ sniffMaxResources: 12.6 }).sniffMaxResources).toBe(13);
+    expect(migrateSettings({ sniffMaxResources: "500" }).sniffMaxResources).toBe(200);
+    expect(migrateSettings({ sniffMaxResources: Number.NaN }).sniffMaxResources).toBe(200);
+  });
 });

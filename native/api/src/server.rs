@@ -435,6 +435,16 @@ fn register_core(state: AppState) -> Router<AppState> {
             .route(routes::API_RSS_ITEMS, get(api_list_rss_items))
             .route(routes::API_RSS_ITEM_ACTION, post(api_rss_item_action))
             .route(routes::API_RSS_VALIDATE, post(api_validate_rss_feed))
+            .route(routes::API_BT_GUARD_STATE, get(api_bt_guard_state))
+            .route(
+                routes::API_BT_GUARD_ENTRIES,
+                get(api_bt_guard_entries_list).post(api_bt_guard_entries_add),
+            )
+            .route(
+                routes::API_BT_GUARD_ENTRY,
+                axum::routing::delete(api_bt_guard_entry_remove),
+            )
+            .route(routes::API_BT_GUARD_EVENTS, get(api_bt_guard_events_list))
             .route(routes::API_PLUGINS, get(api_list_plugins))
             .route(routes::API_PLUGINS_INSTALL, post(api_install_plugin))
             .route(
@@ -2460,6 +2470,287 @@ pub(crate) async fn api_validate_rss_feed(
     }
     match state.host.validate_rss_feed(req).await {
         Ok(resp) => Json(resp).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BT 防吸血（/api/v1/bt/guard/*，全强制 token）
+// ---------------------------------------------------------------------------
+
+/// 获取防吸血状态
+///
+/// 总开关、BT 会话是否存活、今日统计、云名单状态（序号 / 过期 / 条目数 / 署名）、过滤文件订阅
+/// 状态与各层未过期条目数。
+#[utoipa::path(get, path = "/api/v1/bt/guard/state", tag = "bt",
+    responses(
+        (status = 200, description = "防吸血状态", body = fluxdown_protocol::daemon::BtGuardStateDto),
+        (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_bt_guard_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.bt_guard_state().await {
+        Ok(dto) => Json(dto).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub(crate) struct BtGuardEntriesQuery {
+    /// 按层过滤：`allow` / `manual` / `auto` / `cloud` / `file`。
+    layer: Option<String>,
+    /// 按触发规则过滤：`excessive` / `rerequest` / `rewind` / `lag` / `fingerprint` / `cloud`。
+    rule: Option<String>,
+    /// 对 cidr / reason 的子串搜索。
+    query: Option<String>,
+    /// 只返回 CIDR 覆盖该 IP 的条目（含云名单 / 订阅层的宽网段）；非法 IP → 400。
+    contains_ip: Option<String>,
+    /// 起始偏移，默认 0。
+    offset: Option<u32>,
+    /// 页大小，1..=500，默认 100。
+    limit: Option<u32>,
+}
+
+/// 条目 / 事件列表 `rule` 过滤的合法取值：检测规则 id 加上手动 / 订阅文件条目的来源规则
+/// （`manual` / `file`，条目 `rule` 字段在这两层使用）。
+pub(crate) const BT_GUARD_FILTER_RULES: &[&str] = &[
+    "excessive",
+    "rerequest",
+    "rewind",
+    "lag",
+    "fingerprint",
+    "cloud",
+    "manual",
+    "file",
+];
+
+/// 取可选的枚举型过滤参数：空串视为未提供，取值不在 `allowed` 内 → `Err(参数名)`。
+fn enum_filter(
+    value: Option<String>,
+    allowed: &[&str],
+    name: &'static str,
+) -> Result<Option<String>, &'static str> {
+    match value.filter(|value| !value.is_empty()) {
+        Some(value) if !allowed.contains(&value.as_str()) => Err(name),
+        other => Ok(other),
+    }
+}
+
+/// 校验页大小：缺省取默认值，超出 `1..=BT_GUARD_LIST_MAX_LIMIT` → `None`。
+fn guard_page_limit(limit: Option<u32>) -> Option<u32> {
+    let limit = limit.unwrap_or(fluxdown_protocol::BT_GUARD_LIST_DEFAULT_LIMIT);
+    (1..=fluxdown_protocol::BT_GUARD_LIST_MAX_LIMIT)
+        .contains(&limit)
+        .then_some(limit)
+}
+
+/// 列出防吸血过滤条目
+///
+/// 分页返回各层（白名单 / 手动 / 自动 / 云名单 / 订阅文件）未过期条目，可按层、触发规则与
+/// 关键词（cidr / reason 子串）过滤。
+#[utoipa::path(get, path = "/api/v1/bt/guard/entries", tag = "bt",
+    params(BtGuardEntriesQuery),
+    responses(
+        (status = 200, description = "条目分页", body = fluxdown_protocol::daemon::BtGuardEntriesListDto),
+        (status = 400, description = "过滤参数或页大小非法", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_bt_guard_entries_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<BtGuardEntriesQuery>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let Some(limit) = guard_page_limit(q.limit) else {
+        return result_response(
+            StatusCode::BAD_REQUEST,
+            false,
+            "limit must be within 1..=500",
+        );
+    };
+    let layer = match enum_filter(q.layer, fluxdown_protocol::BT_GUARD_LAYERS, "layer") {
+        Ok(layer) => layer,
+        Err(name) => {
+            return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid {name}"));
+        }
+    };
+    let rule = match enum_filter(q.rule, BT_GUARD_FILTER_RULES, "rule") {
+        Ok(rule) => rule,
+        Err(name) => {
+            return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid {name}"));
+        }
+    };
+    let contains_ip = match q.contains_ip.filter(|ip| !ip.is_empty()) {
+        Some(ip) if ip.parse::<std::net::IpAddr>().is_err() => {
+            return result_response(StatusCode::BAD_REQUEST, false, "invalid containsIp");
+        }
+        other => other,
+    };
+    let params = fluxdown_protocol::daemon::BtGuardEntriesListParams {
+        layer,
+        rule,
+        query: q.query.filter(|query| !query.is_empty()),
+        contains_ip,
+        offset: q.offset.unwrap_or(0),
+        limit,
+    };
+    match state.host.bt_guard_entries_list(params).await {
+        Ok(dto) => Json(dto).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 手动添加防吸血条目
+///
+/// `action` 为 `allow` 时进白名单层（永远优先于其他层），其余（`ban` / `choke` / `throttle`）
+/// 进手动层。`cidr` 可为单个 IP 或网段；`durationSecs` 缺省表示永久。返回创建的条目。
+#[utoipa::path(post, path = "/api/v1/bt/guard/entries", tag = "bt",
+    request_body = fluxdown_protocol::daemon::BtGuardEntriesAddParams,
+    responses(
+        (status = 200, description = "已添加", body = fluxdown_protocol::daemon::BtGuardEntryDto),
+        (status = 400, description = "载荷非法（cidr 为空或非法、action 未知、durationSecs 非正）", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_bt_guard_entries_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let params: fluxdown_protocol::daemon::BtGuardEntriesAddParams =
+        match serde_json::from_slice(&body) {
+            Ok(params) => params,
+            Err(e) => {
+                return result_response(
+                    StatusCode::BAD_REQUEST,
+                    false,
+                    &format!("invalid bt guard entry payload: {e}"),
+                );
+            }
+        };
+    if params.cidr.trim().is_empty() {
+        return result_response(StatusCode::BAD_REQUEST, false, "cidr is required");
+    }
+    if !fluxdown_protocol::BT_GUARD_ENTRY_ACTIONS.contains(&params.action.as_str()) {
+        return result_response(StatusCode::BAD_REQUEST, false, "invalid action");
+    }
+    if params.duration_secs.is_some_and(|secs| secs <= 0) {
+        return result_response(
+            StatusCode::BAD_REQUEST,
+            false,
+            "durationSecs must be positive",
+        );
+    }
+    match state.host.bt_guard_entries_add(params).await {
+        Ok(dto) => Json(dto).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 移除防吸血条目
+///
+/// 任意非云名单层的条目都可移除（含自动封禁，即「解封」）。云名单层条目不可删除（400），
+/// 应改为添加 `allow` 条目覆盖。
+#[utoipa::path(delete, path = "/api/v1/bt/guard/entries/{id}", tag = "bt",
+    params(("id" = i64, Path, description = "条目 ID")),
+    responses(
+        (status = 200, description = "已移除", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 400, description = "ID 非法，或条目属于云名单层", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 404, description = "条目不存在", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_bt_guard_entry_remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let Some(entry_id) = id.parse::<i64>().ok().filter(|id| *id > 0) else {
+        return result_response(StatusCode::BAD_REQUEST, false, "invalid entry id");
+    };
+    ack(state.host.bt_guard_entry_remove(entry_id).await)
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub(crate) struct BtGuardEventsQuery {
+    /// 起始偏移，默认 0。
+    offset: Option<u32>,
+    /// 页大小，1..=500，默认 100。
+    limit: Option<u32>,
+    /// 按规则过滤：`excessive` / `rerequest` / `rewind` / `lag` / `fingerprint` / `cloud`。
+    rule: Option<String>,
+    /// 按事件类型过滤：`observed` / `enforced` / `probe` / `probe_cleared` / `entry_added` /
+    /// `entry_removed` / `cloud_applied` / `cloud_rejected` / `filter_applied`。
+    kind: Option<String>,
+    /// 只返回该对端组的事件：IP（`1.2.3.4`、`2001:db8::1`）或组文本（`2001:db8::/64`）。
+    ip_group: Option<String>,
+}
+
+/// 获取防吸血事件日志
+///
+/// 按时间降序分页返回命中 / 处置 / 解封 / 探测等事件（保留最近 5000 条）。
+#[utoipa::path(get, path = "/api/v1/bt/guard/events", tag = "bt",
+    params(BtGuardEventsQuery),
+    responses(
+        (status = 200, description = "事件分页", body = fluxdown_protocol::daemon::BtGuardEventsListDto),
+        (status = 400, description = "过滤参数或页大小非法", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_bt_guard_events_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<BtGuardEventsQuery>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let Some(limit) = guard_page_limit(q.limit) else {
+        return result_response(
+            StatusCode::BAD_REQUEST,
+            false,
+            "limit must be within 1..=500",
+        );
+    };
+    let rule = match enum_filter(q.rule, BT_GUARD_FILTER_RULES, "rule") {
+        Ok(rule) => rule,
+        Err(name) => {
+            return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid {name}"));
+        }
+    };
+    let params = fluxdown_protocol::daemon::BtGuardEventsListParams {
+        offset: q.offset.unwrap_or(0),
+        limit,
+        rule,
+        kind: q.kind.filter(|kind| !kind.is_empty()),
+        ip_group: q.ip_group.filter(|group| !group.is_empty()),
+    };
+    match state.host.bt_guard_events_list(params).await {
+        Ok(dto) => Json(dto).into_response(),
         Err(e) => e.into_response(),
     }
 }

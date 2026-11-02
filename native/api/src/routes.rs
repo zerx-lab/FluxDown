@@ -99,6 +99,17 @@ pub const API_RSS_ITEM_ACTION: &str = "/api/v1/rss/{id}/items/action";
 /// 只读验证一个 feed 地址（POST，新建订阅向导）。
 pub const API_RSS_VALIDATE: &str = "/api/v1/rss/validate";
 
+// -- BT 防吸血（均需 management token）--
+
+/// 防吸血状态总览（GET）：开关 / 今日统计 / 云名单状态 / 过滤订阅 / 各层条目数。
+pub const API_BT_GUARD_STATE: &str = "/api/v1/bt/guard/state";
+/// 过滤条目（GET 分页列出；POST 手动添加封禁 / 限速 / 阻塞或白名单条目）。
+pub const API_BT_GUARD_ENTRIES: &str = "/api/v1/bt/guard/entries";
+/// 单个过滤条目（DELETE 移除；云名单层条目不可删，应改为加白）。
+pub const API_BT_GUARD_ENTRY: &str = "/api/v1/bt/guard/entries/{id}";
+/// 防吸血事件日志（GET 分页，按时间降序）。
+pub const API_BT_GUARD_EVENTS: &str = "/api/v1/bt/guard/events";
+
 /// P2P 设备互联：发起配对握手（POST，无 token 鉴权，由一次性配对码守卫）。
 pub const API_LINK_PAIR_HELLO: &str = "/api/v1/link/pair/hello";
 /// P2P 设备互联：揭示发起方在 hello 里承诺过的临时公钥（POST，无 token 鉴权，由
@@ -215,6 +226,12 @@ pub fn rss_items_path(source_id: &str) -> String {
 #[must_use]
 pub fn rss_item_action_path(source_id: &str) -> String {
     format!("{API_RSS}/{source_id}/items/action")
+}
+
+/// 生成单个防吸血过滤条目路径（客户端用）。
+#[must_use]
+pub fn bt_guard_entry_path(entry_id: i64) -> String {
+    format!("{API_BT_GUARD_ENTRIES}/{entry_id}")
 }
 
 /// 生成单个已配对设备路径（客户端用）。

@@ -1,0 +1,11 @@
+---
+description: RSS 过滤 / 文件名解析 / Webhook 事件与端点 / 线程数风险档 / 代理直连名单归一化 / 站点代理规则改动须同步 Web、扩展、agent 与各端
+globs: **/native/engine/src/rss/filter.rs,**/web/src/pages/rss/filter.ts,**/web/src/pages/rss/filter.test.ts,**/native/engine/src/naming/**,**/fluxDown/utils/filename.ts,**/fluxDown/utils/filename.test.ts,**/native/engine/src/webhook.rs,**/crates/settings/src/sections/webhook.rs,**/web/src/pages/webhooks/endpoints.ts,**/native/protocol/src/daemon_config.rs,**/native/engine/src/segment_coordinator.rs,**/web/src/lib/threadsRisk.ts,**/native/engine/src/proxy_config.rs,**/native/agent/src/system_proxy.rs,**/native/engine/src/proxy_rules.rs,**/native/protocol/src/proxy_rules.rs,**/web/src/lib/proxyRules.ts,**/web/src/lib/proxyRules.test.ts,**/web/src/lib/taskRoute.ts,**/web/src/lib/taskRoute.test.ts,**/crates/downloads/src/model/task_route.rs,**/crates/settings/src/sections/proxy_rules.rs,**/crates/settings/src/sections/proxy_rule_dialog.rs,**/mobile/Android/core/src/main/java/com/fluxdown/core/protocol/ProxyRules.kt,**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/task/TaskDetailFormat.kt,**/mobile/FluxDown/FluxKit/Sources/FluxDomain/Protocol/ProxyRules.swift,**/mobile/FluxDown/FluxDown/Features/Task/TaskDetailText.swift
+alwaysApply: false
+---
+
+# mirror-engine-logic（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/mirror-engine-logic.md`](mdc:.omp/rules/mirror-engine-logic.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

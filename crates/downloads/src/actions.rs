@@ -40,8 +40,6 @@ actions!(
         ChangeSelectedSegments,
         /// 校验选中的已完成 BT 任务（右键「完整性校验」）。
         VerifySelected,
-        /// 分享选中的已完成任务（右键「分享」、选择条、命令面板）。
-        ShareSelected,
         RedownloadSelected,
         ToggleBoostSelected,
         FocusSearch,

@@ -286,11 +286,6 @@ class AccountTest {
         )
         assertEquals("errReasonPairingTimeout", AccountRules.errorKeyForReason("pairingTimeout", AccountErrorContext.Pairing))
         assertEquals("errReasonPeerClockSkew", AccountRules.errorKeyForReason("peerClockSkew", AccountErrorContext.Pairing))
-        assertEquals("errReasonShareSenderOffline", AccountRules.errorKeyForReason("shareSenderOffline", AccountErrorContext.General))
-        assertEquals("errReasonShareBridgeUnavailable", AccountRules.errorKeyForReason("shareBridgeUnavailable", AccountErrorContext.General))
-        assertEquals("errReasonShareCloudNotReady", AccountRules.errorKeyForReason("shareCloudNotReady", AccountErrorContext.General))
-        assertEquals("errReasonShareTrafficExhausted", AccountRules.errorKeyForReason("shareTrafficExhausted", AccountErrorContext.General))
-        assertEquals("errReasonShareCloudUnavailable", AccountRules.errorKeyForReason("shareCloudUnavailable", AccountErrorContext.General))
         assertEquals("localPairingAddressInvalid", key(err(HostErrorCode.InvalidArgument), AccountErrorContext.Pairing))
         assertEquals("localServiceDisconnected", key(err(HostErrorCode.Timeout), general))
         // 不可重试的 unavailable 不是「云端网络不通」。

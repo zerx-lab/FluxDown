@@ -20,9 +20,6 @@ const noindexPathnames = new Set([
   // 产品短片录制舞台
   "/film",
   "/zh/film",
-  // FluxMesh说明页(分享落地页 /s/<slug> 是 SSR 动态页,不在静态路径里)
-  "/s",
-  "/zh/s",
 ]);
 
 // 构建时刻(ISO8601),用作 sitemap lastmod —— 每次部署刷新站点 freshness 信号。

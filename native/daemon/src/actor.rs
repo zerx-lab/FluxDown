@@ -1681,7 +1681,7 @@ fn bt_status_to_dto(
     view: fluxdown_engine::bt_status::BtStatusView,
 ) -> fluxdown_protocol::BtStatusDto {
     use fluxdown_engine::bt_status::{TrackerSource, TrackerState};
-    use fluxdown_protocol::{BtPeerDto, BtTrackerDto, BtTrackerSource, BtTrackerStatus};
+    use fluxdown_protocol::{BtTrackerDto, BtTrackerSource, BtTrackerStatus};
     let available = fluxdown_engine::bt_status::installed();
     fluxdown_protocol::BtStatusDto {
         dht_enabled: view.dht_enabled,
@@ -1731,21 +1731,37 @@ fn bt_status_to_dto(
                 }
             })
             .collect(),
-        peers: view
-            .peers
-            .into_iter()
-            .map(|peer| BtPeerDto {
-                addr: peer.addr,
-                client: peer.client,
-                transport: peer.transport,
-                downloaded: peer.downloaded,
-                uploaded: peer.uploaded,
-                down_bps: peer.down_bps,
-                up_bps: peer.up_bps,
-                country: peer.country,
-            })
-            .collect(),
+        peers: view.peers.into_iter().map(peer_row_to_dto).collect(),
     }
+}
+
+/// 一个 peer 行 → wire DTO；防吸血研判（若该连接已被观察到）一并带出。
+#[cfg(feature = "bt")]
+fn peer_row_to_dto(peer: fluxdown_engine::bt_status::PeerRow) -> fluxdown_protocol::BtPeerDto {
+    let mut dto = fluxdown_protocol::BtPeerDto {
+        addr: peer.addr,
+        client: peer.client,
+        transport: peer.transport,
+        downloaded: peer.downloaded,
+        uploaded: peer.uploaded,
+        down_bps: peer.down_bps,
+        up_bps: peer.up_bps,
+        country: peer.country,
+        ..fluxdown_protocol::BtPeerDto::default()
+    };
+    if let Some(insight) = peer.insight {
+        dto.ip_group = insight.ip_group;
+        dto.group_delivered_bytes = insight.group_delivered_bytes;
+        dto.suspicion = Some(insight.suspicion.to_owned());
+        dto.rules = insight
+            .rules
+            .iter()
+            .map(|rule| (*rule).to_owned())
+            .collect();
+        dto.action = insight.action.to_owned();
+        dto.observe_only = insight.observe_only;
+    }
+    dto
 }
 
 #[cfg(feature = "bt")]
@@ -2303,6 +2319,13 @@ async fn apply_live_config<'a>(
             engine.manager.invalidate_bt_session().await;
         }
     }
+    // 防吸血配置全部热生效：不在监听类键之列，不重建 BT 会话。
+    #[cfg(feature = "bt")]
+    if keys.iter().any(|key| key.starts_with("bt_guard_")) {
+        engine
+            .manager
+            .set_bt_guard_config(crate::config::bt_guard_config_from_map(all));
+    }
     if keys.contains(&"webhook.endpoints")
         && let Some(value) = all.get("webhook.endpoints")
     {
@@ -2839,6 +2862,168 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor bt disabled test directory removal failed: {error}");
         }
+    }
+
+    /// 防吸血的 19 个设置键全部热生效：patch 之后 guard 配置立即变化，只读节奏（BT 会话）不被触碰；
+    /// 其余 `bt_*` 键的 patch 不影响 guard 配置。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn bt_guard_settings_apply_live_through_a_config_patch() {
+        use fluxdown_engine::bt_guard::{DownloadingMaxAction, RuleMode};
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_guard_patch_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create guard patch test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        assert_eq!(
+            *engine.manager.bt_guard().config(),
+            fluxdown_engine::bt_guard::BtGuardConfig::default()
+        );
+
+        let patch = |pairs: &[(&str, &str)]| ActorOperation::PatchConfig {
+            expected_revision: 0,
+            values: pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+        };
+        let revision_of = |result: Result<super::ActorResult, ActorError>| match result {
+            Ok(super::ActorResult::Config(snapshot)) => snapshot.revision,
+            Ok(_) => panic!("unexpected actor result"),
+            Err(error) => panic!("patch failed: {error}"),
+        };
+        let first = revision_of(
+            execute_operation(
+                patch(&[
+                    ("bt_guard_enabled", "false"),
+                    ("bt_guard_rule_excessive", "enforce"),
+                    ("bt_guard_rule_rerequest", "off"),
+                    ("bt_guard_rule_rewind", "enforce"),
+                    ("bt_guard_rule_lag", "off"),
+                    ("bt_guard_rule_fingerprint", "enforce"),
+                    ("bt_guard_cloud_mode", "enforce"),
+                    ("bt_guard_excess_ratio_pct", "350"),
+                    ("bt_guard_min_torrent_mib", "0"),
+                    ("bt_guard_rewind_tolerance_pct", "15"),
+                    ("bt_guard_throttle_kib", "128"),
+                    ("bt_guard_ban_base_hours", "2"),
+                    ("bt_guard_ban_max_days", "9"),
+                    ("bt_guard_downloading_max_action", "ban"),
+                    ("bt_guard_skip_private", "false"),
+                    ("bt_guard_skip_lan", "false"),
+                    ("bt_guard_ipv6_prefix", "48"),
+                    ("bt_guard_filter_urls", "https://a.test/list.txt"),
+                    ("bt_guard_cloud_enabled", "false"),
+                    ("bt_guard_report_enabled", "true"),
+                ]),
+                &mut engine,
+                &events,
+            )
+            .await,
+        );
+        let config = engine.manager.bt_guard().config();
+        assert!(!config.enabled);
+        assert_eq!(config.rule_excessive, RuleMode::Enforce);
+        assert_eq!(config.rule_rerequest, RuleMode::Off);
+        assert_eq!(config.rule_rewind, RuleMode::Enforce);
+        assert_eq!(config.rule_lag, RuleMode::Off);
+        assert_eq!(config.rule_fingerprint, RuleMode::Enforce);
+        assert_eq!(config.cloud_mode, RuleMode::Enforce);
+        assert_eq!(config.excess_ratio_pct, 350);
+        assert_eq!(config.min_torrent_mib, 0);
+        assert_eq!(config.rewind_tolerance_pct, 15);
+        assert_eq!(config.throttle_kib, 128);
+        assert_eq!(config.ban_base_hours, 2);
+        assert_eq!(config.ban_max_days, 9);
+        assert_eq!(config.downloading_max_action, DownloadingMaxAction::Ban);
+        assert!(!config.skip_private && !config.skip_lan && !config.cloud_enabled);
+        assert_eq!(config.ipv6_prefix, 48);
+        assert_eq!(config.filter_urls, "https://a.test/list.txt");
+        assert!(config.report_enabled);
+        assert!(
+            !engine.manager.bt_guard().session_active(),
+            "patching guard settings never creates or rebuilds a BT session"
+        );
+
+        // 其余 bt_* 键的 patch 不改 guard 配置。
+        let mut op = patch(&[("bt_seed_max_active", "3")]);
+        if let ActorOperation::PatchConfig {
+            expected_revision, ..
+        } = &mut op
+        {
+            *expected_revision = first;
+        }
+        revision_of(execute_operation(op, &mut engine, &events).await);
+        assert_eq!(*engine.manager.bt_guard().config(), *config);
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor guard patch test directory removal failed: {error}");
+        }
+    }
+
+    /// peer 行 → DTO：有防吸血研判时带出全部新字段，没有时保持旧字段与默认值。
+    #[cfg(feature = "bt")]
+    #[test]
+    fn peer_rows_carry_the_guard_insight_into_the_dto() {
+        use fluxdown_engine::bt_guard::PeerInsight;
+        let row = |insight| fluxdown_engine::bt_status::PeerRow {
+            addr: "203.0.113.9:6881".to_owned(),
+            client: "Xunlei".to_owned(),
+            transport: "tcp".to_owned(),
+            downloaded: 1,
+            uploaded: 2,
+            down_bps: 3,
+            up_bps: 4,
+            country: Some("CN".to_owned()),
+            insight,
+        };
+        let plain = super::peer_row_to_dto(row(None));
+        assert_eq!(plain.addr, "203.0.113.9:6881");
+        assert_eq!((plain.downloaded, plain.uploaded), (1, 2));
+        assert_eq!(plain.country.as_deref(), Some("CN"));
+        assert_eq!(plain.action, "allow");
+        assert!(plain.ip_group.is_empty() && plain.suspicion.is_none() && plain.rules.is_empty());
+        assert!(!plain.observe_only);
+
+        let flagged = super::peer_row_to_dto(row(Some(PeerInsight {
+            ip_group: "203.0.113.9".to_owned(),
+            group_delivered_bytes: 4096,
+            suspicion: "strong",
+            rules: vec!["excessive", "rerequest"],
+            action: "banned",
+            observe_only: true,
+        })));
+        assert_eq!(flagged.ip_group, "203.0.113.9");
+        assert_eq!(flagged.group_delivered_bytes, 4096);
+        assert_eq!(flagged.suspicion.as_deref(), Some("strong"));
+        assert_eq!(flagged.rules, vec!["excessive", "rerequest"]);
+        assert_eq!(flagged.action, "banned");
+        assert!(flagged.observe_only);
     }
 
     /// `daemon.task.setSegments`：暂停任务改线程数后落库且状态不变；不存在 / 已完成任务

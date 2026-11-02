@@ -18,7 +18,6 @@ import { kindLabel, STATUS_TEXT, statusDetail, statusLabel, taskStatusClass } fr
 import type { Translate } from './text'
 import { usePluginTaskCommands } from '../../plugins/usePluginContributions'
 import { buildGroupMenu, buildTaskMenu } from './menus'
-import { SourceBadge } from '../../share'
 import { SegmentProgress } from './SegmentProgress'
 import { TaskEmpty } from './TaskEmpty'
 import { TaskLoading } from './TaskLoading'
@@ -98,7 +97,6 @@ const TaskCard = memo(function TaskCard({ t, view, depth, conflict, selected, an
           <div className="tabular mt-1 flex min-w-0 items-center gap-1.5 text-xs">
             <span className={cn('shrink-0', taskStatusClass(view))}>{statusLabel(t, view)}</span>
             {conflict ? <ConflictBadge t={t} /> : null}
-            {view.source === 'local' ? <SourceBadge taskId={view.taskId} taskState={view.state} /> : null}
             {view.state === 'completed' ? (
               <span className="truncate text-text-tertiary">{meta}</span>
             ) : detail ? (

@@ -126,6 +126,12 @@ public enum SyncRules {
             "bt.seed_ratio_limit", "bt.seed_post_ratio_limit", "bt.seed_time_limit_minutes",
             "bt.seed_inactive_time_limit_minutes", "bt.seed_limit_operator", "bt.seed_then_action",
             "bt.seed_max_active",
+            "bt.guard.enabled", "bt.guard.rule_excessive", "bt.guard.rule_rerequest", "bt.guard.rule_rewind",
+            "bt.guard.rule_lag", "bt.guard.rule_fingerprint", "bt.guard.cloud_mode", "bt.guard.excess_ratio_pct",
+            "bt.guard.min_torrent_mib", "bt.guard.rewind_tolerance_pct", "bt.guard.throttle_kib",
+            "bt.guard.ban_base_hours", "bt.guard.ban_max_days", "bt.guard.downloading_max_action",
+            "bt.guard.skip_private", "bt.guard.skip_lan", "bt.guard.ipv6_prefix", "bt.guard.filter_urls",
+            "bt.guard.cloud_enabled",
         ]),
         SyncGroup(id: .ed2k, labelKey: "syncScopeEd2k", keys: [
             "ed2k.enable_kad", "ed2k.enable_upnp", "ed2k.server_list", "ed2k.server_sub_enabled", "ed2k.server_sub_urls",

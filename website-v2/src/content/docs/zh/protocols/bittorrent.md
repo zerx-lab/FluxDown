@@ -3,7 +3,7 @@ title: BitTorrent
 description: 内置 magnet 与 .torrent 下载,支持 DHT、UPnP、内置 Tracker 与文件选择。
 section: protocols
 order: 2
-sourceHash: "c3d897e30020"
+sourceHash: "ff770ea58628"
 ---
 
 FluxDown 内置了 BitTorrent 引擎(基于 librqbit)——不需要另外装一个 BT 客户端。它同时支持 magnet 链接与 `.torrent` 文件,默认开启 DHT 和 UPnP,自带一份精选的公共 Tracker 列表,多文件种子还能在下载开始前逐个选择文件。
@@ -40,6 +40,10 @@ FluxDown 内置 **25 个公共 Tracker**,经过精选以获得较好的全球覆
 
 种子下载依靠 BitTorrent 自身基于分片(piece)的校验机制续传:关闭 FluxDown、断电或崩溃都不会丢失已校验过的分片——只有崩溃时正在传输中的那一片需要重新获取。
 
+## 防吸血保护
+
+FluxDown 会观察对端的吸血行为——反复下载同样的数据、伪造进度、已知吸血客户端——并可对其观察、限速、停止上传或封禁。所有规则默认处于**仅观察**模式,私有种子与局域网对端豁免,并提供分层封禁名单与签名云名单。详见 [BT 防吸血](/docs/zh/protocols/bt-guard/)。
+
 ## 相关设置
 
 | 设置项 | 位置 |
@@ -47,6 +51,7 @@ FluxDown 内置 **25 个公共 Tracker**,经过精选以获得较好的全球覆
 | 监听端口范围 | 设置 → BitTorrent |
 | Tracker 列表 | 设置 → BitTorrent |
 | Tracker 订阅 | 设置 → BitTorrent |
+| 防吸血、封禁名单、事件日志 | 设置 → BitTorrent(标签页) |
 | 关联 .torrent 文件 | 设置 → 通用 |
 
 ## 常见问题与限制
@@ -55,4 +60,4 @@ FluxDown 内置 **25 个公共 Tracker**,经过精选以获得较好的全球覆
 
 **添加更多 Tracker 会不会丢掉内置的那些?** 社区订阅不会——它们会和你正在使用的列表合并。但手动编辑的自定义 Tracker 列表会**替换**内置的 25 个,而不是追加;如果想保留部分内置 Tracker,请把它们也写进你的列表。
 
-**种子下载完后 FluxDown 会继续做种吗?** FluxDown 的设计定位是下载工具,没有提供专门的做种/分享率管理界面。
+**种子下载完后 FluxDown 会继续做种吗?** 会。下载完成的种子默认继续做种,并出现在下载列表的**做种中**筛选下;分享率、做种时长、最大同时做种任务数等限制在*设置 → BitTorrent*中。若想保护上传带宽不被只下不传的对端占用,见 [BT 防吸血](/docs/zh/protocols/bt-guard/)。

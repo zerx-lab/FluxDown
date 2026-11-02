@@ -6,15 +6,7 @@ export const pricing = defineMessages({
     meta: {
       title: "Pricing — FluxDown",
       description:
-        "FluxDown premium cloud plans: permanent plans, membership cards and traffic packs. The desktop app itself stays free and open source.",
-    },
-    packs: {
-      title: "Traffic packs",
-      lede: "Buy once, use any time before it expires. Your plan's monthly allowance is used first, then packs — the one expiring soonest goes first.",
-      validDays: (n: number) => `valid ${n} days`,
-      kindDownload: "official traffic",
-      kindSwarm: "swarm boost",
-      kindUpload: "cloud upload",
+        "FluxDown premium cloud plans: permanent plans and membership cards. The desktop app itself stays free and open source.",
     },
     cards: {
       title: "Membership cards",
@@ -23,8 +15,8 @@ export const pricing = defineMessages({
     },
     hero: {
       eyebrow: "Pricing",
-      title: "Core cloud: <em>permanent, card or pack</em>",
-      lede: "The app is free and open source. Core cloud comes as permanent plans (pay once), membership cards (a period at a time, renewed manually, never auto-charged) and traffic packs (consumable).",
+      title: "Core cloud: <em>permanent or card</em>",
+      lede: "The app is free and open source. Core cloud comes as permanent plans (pay once) and membership cards (a period at a time, renewed manually, never auto-charged).",
       why: "Why paid plans?",
       vote: "Vote on the price",
     },
@@ -69,7 +61,7 @@ export const pricing = defineMessages({
           "Works on all your devices",
         ],
       },
-      freeNote: "Permanent plans, membership cards and traffic packs only cover cloud services — the FluxDown app itself is free and open source.",
+      freeNote: "Permanent plans and membership cards only cover cloud services — the FluxDown app itself is free and open source.",
     },
     compare: {
       eyebrow: "Compare",
@@ -100,27 +92,19 @@ export const pricing = defineMessages({
           desc: "Sign-in is entirely optional — every core download feature works without an account. An account only powers cloud extras.",
         },
         {
-          title: "Permanent plans, cards and packs",
-          desc: "A permanent plan is bought once and covers account, sync, task dispatch and similar core cloud. A membership card is bought for a period and renewed by hand — no auto-renewal, no automatic charge — and you return to your permanent plan's benefits when it expires. Traffic packs are consumable and stack.",
+          title: "Permanent plans and cards",
+          desc: "A permanent plan is bought once and covers account, sync, task dispatch and similar core cloud. A membership card is bought for a period and renewed by hand — no auto-renewal, no automatic charge — and you return to your permanent plan's benefits when it expires.",
         },
         {
           title: "Add-ons sold separately",
-          desc: "Storage and other features whose cost scales with usage may be billed separately — as a membership card, a traffic pack or by usage — and will be announced beforehand.",
-        },
-        {
-          title: "What is Swarm boost and how do I earn it?",
-          desc: "Swarm boost fetches pieces from other users' shares to speed things up and uses your monthly Swarm boost allowance. When it runs out you keep downloading straight from the sharer — still to completion, and we never slow down direct downloads from the sharer. Files you provide to others earn extra allowance once both sides' byte counts are cross-checked. Monthly allowance, earn rate and caps depend on your plan and are set by the operator; the Usage & contribution page in the app shows your actual numbers.",
-        },
-        {
-          title: "What does priority when providers are busy mean?",
-          desc: "A provider can serve only so many connections at once. When busy, some slots are reserved for members and for users with enough recent contribution; others may need to retry a little later. This affects Swarm boost only — direct downloads from the sharer are never slowed down. The number of reserved slots and the contribution threshold are set by the operator.",
+          desc: "Storage and other features whose cost scales with usage may be billed separately — as a membership card or by usage — and will be announced beforehand.",
         },
       ],
     },
     voteCta: {
       eyebrow: "Community",
       title: "Pricing poll & discussion",
-      desc: "Plan types are settled — permanent plans, membership cards and traffic packs — but you can still vote on price points and share your thoughts.",
+      desc: "Plan types are settled — permanent plans and membership cards — but you can still vote on price points and share your thoughts.",
       link: "Join the discussion",
       why: "Why paid plans?",
     },
@@ -204,15 +188,7 @@ export const pricing = defineMessages({
   zh: {
     meta: {
       title: "定价 — FluxDown",
-      description: "FluxDown 高级云端套餐：永久套餐、会员卡与流量包。桌面应用本体永久免费开源。",
-    },
-    packs: {
-      title: "流量包",
-      lede: "一次购买，有效期内随时使用；套餐每月赠送的额度用完后自动使用，先到期的先用。",
-      validDays: (n: number) => `${n} 天内有效`,
-      kindDownload: "官方加速流量",
-      kindSwarm: "共享加速额度",
-      kindUpload: "云端上传流量",
+      description: "FluxDown 高级云端套餐：永久套餐与会员卡。桌面应用本体永久免费开源。",
     },
     cards: {
       title: "会员卡",
@@ -221,8 +197,8 @@ export const pricing = defineMessages({
     },
     hero: {
       eyebrow: "定价",
-      title: "基础云端，<em>永久、会员卡、流量包</em>",
-      lede: "应用本体免费开源。基础云端分为永久套餐（一次付费）、会员卡（按周期购买、手动续费、不自动扣款）和流量包（消耗品）。",
+      title: "基础云端，<em>永久套餐与会员卡</em>",
+      lede: "应用本体免费开源。基础云端分为永久套餐（一次付费）和会员卡（按周期购买、手动续费、不自动扣款）。",
       why: "为什么要收费？",
       vote: "为价格投票",
     },
@@ -262,7 +238,7 @@ export const pricing = defineMessages({
         lifetimeDesc: "一次付费，解锁当前基础云端能力。全设备可用。",
         lifetimeFeatures: ["一次付费，永久使用当前基础云端", "包含当前全部基础云端能力", "已购功能持续可用", "所有设备通用"],
       },
-      freeNote: "永久套餐、会员卡与流量包只针对云端服务——FluxDown 应用本体免费开源。",
+      freeNote: "永久套餐与会员卡只针对云端服务——FluxDown 应用本体免费开源。",
     },
     compare: {
       eyebrow: "对比",
@@ -293,27 +269,19 @@ export const pricing = defineMessages({
           desc: "登录与账户完全可选——全部基础下载功能无需登录即可使用，账户只用于云端增值能力。",
         },
         {
-          title: "永久套餐、会员卡与流量包",
-          desc: "永久套餐一次付费，覆盖账号、同步、任务下发等基础云端；会员卡按周期购买、手动续费，不自动续费、不自动扣款，到期后回到永久套餐的权益；流量包是消耗品，可叠加。",
+          title: "永久套餐与会员卡",
+          desc: "永久套餐一次付费，覆盖账号、同步、任务下发等基础云端；会员卡按周期购买、手动续费，不自动续费、不自动扣款，到期后回到永久套餐的权益。",
         },
         {
           title: "附加另购",
-          desc: "像网盘扩容这类跟着用量涨成本的功能，可能会以会员卡、流量包或按量方式单独收费，并会提前说明。",
-        },
-        {
-          title: "共享加速额度是什么？怎样赚取？",
-          desc: "共享加速是从其他用户的共享中取块来提速，会消耗每月的共享加速额度；额度用完后只从分享方直连下载，仍能下完，不会对分享方直连降速。你把已下载的文件提供给他人，经收发双方核实的字节可以换成额外额度。各套餐的月额度、赚取比例与上限由运营在后台配置，以应用内「额度与贡献」页显示为准。",
-        },
-        {
-          title: "提供方繁忙时优先是什么？",
-          desc: "提供方的连接数有限，繁忙时会为会员和近期贡献达标的用户保留一部分连接名额，其余用户在满载时可能需要稍后重试。这只影响共享加速，不会对分享方直连降速。保留名额数与贡献门槛由运营配置。",
+          desc: "像网盘扩容这类跟着用量涨成本的功能，可能会以会员卡或按量方式单独收费，并会提前说明。",
         },
       ],
     },
     voteCta: {
       eyebrow: "社区",
       title: "价格投票与讨论仍在进行",
-      desc: "套餐类型已确定——永久套餐、会员卡与流量包——但你仍可以为价位投票、分享想法。",
+      desc: "套餐类型已确定——永久套餐与会员卡——但你仍可以为价位投票、分享想法。",
       link: "参与投票与讨论",
       why: "为什么要收费？",
     },
