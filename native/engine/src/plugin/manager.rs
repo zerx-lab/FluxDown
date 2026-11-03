@@ -3934,6 +3934,88 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_rule_public_key_rotation_resets_trust_watermark() {
+        use ed25519_dalek::SigningKey;
+
+        let identity = "acme@archive-rotate-key";
+        let root = std::env::temp_dir().join(format!(
+            "fluxdown-archive-rotate-key-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let plugin_dir = root.join(identity);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let old_key = SigningKey::from_bytes(&[11; 32]);
+        let new_key = SigningKey::from_bytes(&[13; 32]);
+        let old_public = hex::encode(old_key.verifying_key().to_bytes());
+        let new_public = hex::encode(new_key.verifying_key().to_bytes());
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            signed_rule_pack(&old_key, 9, "old"),
+        )
+        .unwrap();
+
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        let manager = PluginManager::new(
+            Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
+            Arc::new(NullBridge),
+            db,
+            root.clone(),
+            "1.0.0".to_string(),
+            Arc::new(CaptureSink::default()),
+        );
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(crate::plugin::manifest::ArchiveRulesDecl {
+                entry: "archive-rules.json".to_string(),
+                public_key: old_public,
+                update_url: None,
+            }),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+        let bootstrapped = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(bootstrapped["sequence"], 9);
+
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            signed_rule_pack(&new_key, 1, "rotated"),
+        )
+        .unwrap();
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(crate::plugin::manifest::ArchiveRulesDecl {
+                entry: "archive-rules.json".to_string(),
+                public_key: new_public.clone(),
+                update_url: None,
+            }),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+        manager.archive_rule_packs.write().await.remove(identity);
+        manager.archive_rule_status.write().await.remove(identity);
+
+        let rotated = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(rotated["sequence"], 1);
+        assert_eq!(rotated["publicKey"], new_public);
+        let matched = manager
+            .archive_rule_match(
+                identity,
+                &crate::model::ArchiveContext {
+                    file_name: "episode.mkv".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            matched,
+            Some(("Folder-rotated".to_string(), "rotated".to_string(), 1))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn archive_rule_refresh_persists_only_verified_promotions() {
         use ed25519_dalek::SigningKey;
 

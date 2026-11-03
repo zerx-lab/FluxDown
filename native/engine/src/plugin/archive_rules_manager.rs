@@ -37,6 +37,25 @@ pub(super) struct ArchiveRuleCache {
 struct RuleWatermark {
     sequence: u64,
     digest: String,
+    /// Publisher key that produced this sequence lineage. Empty for pre-key-binding
+    /// watermarks; a non-empty value that disagrees with the current declaration ends
+    /// the lineage so a rotated key can bootstrap from its seed again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    public_key: String,
+}
+
+impl RuleWatermark {
+    fn for_pack(sequence: u64, digest: impl Into<String>, public_key: &str) -> Self {
+        Self {
+            sequence,
+            digest: digest.into(),
+            public_key: public_key.to_owned(),
+        }
+    }
+
+    fn matches_key(&self, public_key: &str) -> bool {
+        self.public_key.is_empty() || self.public_key == public_key
+    }
 }
 
 const MAX_CACHE_JSON_BYTES: usize = MAX_PACK_BYTES + 32 * 1024;
@@ -113,10 +132,11 @@ impl PluginManager {
                 )
                 .await?
         {
-            watermark = Some(RuleWatermark {
-                sequence: seed.sequence,
-                digest: seed.digest.clone(),
-            });
+            watermark = Some(RuleWatermark::for_pack(
+                seed.sequence,
+                seed.digest.clone(),
+                &declaration.public_key,
+            ));
             cache = Some(seed);
             active_verified = Some(Arc::new(verified));
         }
@@ -307,10 +327,8 @@ impl PluginManager {
                 "插件 {identity} 已停用或规则声明已变更"
             )));
         }
-        let trusted = RuleWatermark {
-            sequence: seed.sequence,
-            digest: seed.digest.clone(),
-        };
+        let trusted =
+            RuleWatermark::for_pack(seed.sequence, seed.digest.clone(), &declaration.public_key);
         self.persist_archive_rules(keys.0, keys.1, &seed, &trusted)
             .await?;
         Ok((seed, verified))
@@ -359,10 +377,8 @@ impl PluginManager {
                 "插件 {identity} 已停用或规则声明已变更"
             )));
         }
-        let trusted = RuleWatermark {
-            sequence: seed.sequence,
-            digest: seed.digest.clone(),
-        };
+        let trusted =
+            RuleWatermark::for_pack(seed.sequence, seed.digest.clone(), &declaration.public_key);
         self.persist_archive_rules(keys.0, keys.1, &seed, &trusted)
             .await?;
         Ok(Some((seed, verified)))
@@ -380,17 +396,32 @@ impl PluginManager {
             && watermark.is_none_or(|stored| {
                 cache.sequence > stored.sequence
                     || (cache.sequence == stored.sequence && cache.digest != stored.digest)
+                    || (!stored.public_key.is_empty() && stored.public_key != cache.public_key)
             })
         {
-            let trusted = RuleWatermark {
-                sequence: cache.sequence,
-                digest: cache.digest.clone(),
-            };
+            let trusted =
+                RuleWatermark::for_pack(cache.sequence, cache.digest.clone(), &cache.public_key);
             self.persist_archive_rules(cache_key, watermark_key, cache, &trusted)
                 .await?;
         }
         Ok(())
     }
+
+    async fn clear_archive_rule_trust(
+        &self,
+        cache_key: &str,
+        watermark_key: &str,
+    ) -> Result<(), PluginError> {
+        self.db
+            .delete_config(cache_key)
+            .await
+            .map_err(|error| PluginError::Runtime(error.to_string()))?;
+        self.db
+            .delete_config(watermark_key)
+            .await
+            .map_err(|error| PluginError::Runtime(error.to_string()))
+    }
+
     async fn validated_archive_rule_cache(
         &self,
         identity: &str,
@@ -412,6 +443,21 @@ impl PluginManager {
             (cache, watermark) = self
                 .load_archive_rule_cache(identity, cache_key, watermark_key)
                 .await?;
+        }
+        let cache_key_mismatch = cache
+            .as_ref()
+            .is_some_and(|current| current.public_key != public_key);
+        let watermark_key_mismatch = watermark
+            .as_ref()
+            .is_some_and(|stored| !stored.matches_key(public_key));
+        if cache_key_mismatch || watermark_key_mismatch {
+            // Rotating the publisher key ends the previous sequence lineage.
+            self.clear_archive_rule_trust(cache_key, watermark_key)
+                .await?;
+            if cache_key_mismatch {
+                cache = None;
+            }
+            watermark = None;
         }
         let mut verified_cache = None;
         if let Some(current) = cache.as_ref() {
@@ -449,7 +495,7 @@ impl PluginManager {
                     let (_, trusted) = self
                         .load_archive_rule_cache(identity, cache_key, watermark_key)
                         .await?;
-                    watermark = trusted;
+                    watermark = trusted.filter(|stored| stored.matches_key(public_key));
                 }
                 cache = None;
             }
@@ -561,10 +607,11 @@ impl PluginManager {
                                 "插件 {identity} 已停用或规则声明已变更"
                             )));
                         }
-                        let trusted = RuleWatermark {
-                            sequence: promoted.sequence,
-                            digest: promoted.digest.clone(),
-                        };
+                        let trusted = RuleWatermark::for_pack(
+                            promoted.sequence,
+                            promoted.digest.clone(),
+                            &declaration.public_key,
+                        );
                         self.persist_archive_rules(
                             &format!("plugin.{identity}.archive_rules.cache"),
                             &format!("plugin.{identity}.archive_rules.watermark"),
