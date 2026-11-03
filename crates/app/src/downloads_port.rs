@@ -531,7 +531,7 @@ impl AgentDownloadsPort {
                                 .await?
                         }
                     };
-                    return Ok(DownloadsResult::Preview(preview));
+                    return Ok(DownloadsResult::Preview(Box::new(preview)));
                 }
                 DownloadsCommand::CreateGroup {
                     mut request,

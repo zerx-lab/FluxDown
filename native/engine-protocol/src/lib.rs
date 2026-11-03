@@ -54,6 +54,41 @@ pub fn category_route_to_engine(
             .collect(),
         other_dir: route.other_dir,
         archive: None,
+        archive_metadata: None,
+    }
+}
+
+/// Convert root archive metadata across the engine/wire boundary.
+#[must_use]
+pub fn archive_metadata_to_dto(
+    value: fluxdown_engine::model::ArchiveMetadata,
+) -> fluxdown_protocol::daemon::ArchiveMetadataDto {
+    fluxdown_protocol::daemon::ArchiveMetadataDto {
+        platform: value.platform,
+        media_kind: value.media_kind,
+        creator_id: value.creator_id,
+        creator_name: value.creator_name,
+        series_id: value.series_id,
+        series_title: value.series_title,
+        collection_id: value.collection_id,
+        collection_title: value.collection_title,
+    }
+}
+
+/// Convert root archive metadata from the wire into the engine model.
+#[must_use]
+pub fn archive_metadata_to_engine(
+    value: fluxdown_protocol::daemon::ArchiveMetadataDto,
+) -> fluxdown_engine::model::ArchiveMetadata {
+    fluxdown_engine::model::ArchiveMetadata {
+        platform: value.platform,
+        media_kind: value.media_kind,
+        creator_id: value.creator_id,
+        creator_name: value.creator_name,
+        series_id: value.series_id,
+        series_title: value.series_title,
+        collection_id: value.collection_id,
+        collection_title: value.collection_title,
     }
 }
 
@@ -631,6 +666,7 @@ fn plugin_contributions_to_dto(
             })
             .collect(),
         sniff_rules: contributes.sniff_rules.is_some(),
+        archive_rules: contributes.archive_rules.is_some(),
         page_scripts: contributes
             .page_scripts
             .iter()

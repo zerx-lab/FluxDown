@@ -215,6 +215,16 @@ impl HostEvents for HostEventsImpl {
         };
         manager.host_settings_update(identity, entries).await
     }
+    async fn archive_rules(
+        &self,
+        identity: &str,
+        refresh: bool,
+    ) -> Result<serde_json::Value, PluginError> {
+        let Some(manager) = self.manager.upgrade() else {
+            return Err(PluginError::Runtime("plugin manager stopped".to_string()));
+        };
+        manager.archive_rules_status(identity, refresh).await
+    }
 
     fn close_view(&self, identity: &str, session: &str) -> Result<(), PluginError> {
         let Some(manager) = self.manager.upgrade() else {

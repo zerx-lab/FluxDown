@@ -4197,6 +4197,26 @@ mod tests {
     #[tokio::test]
     async fn every_canonical_agent_method_reaches_a_real_dispatch_branch() {
         let harness = TestGateway::new("dispatch").await;
+        // An accepting loopback server avoids platform-dependent refused-connect latency.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind cloud fixture");
+        let address = listener.local_addr().expect("cloud fixture address");
+        let cloud_base = format!("http://{address}");
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let stop = shutdown.clone();
+        let cloud_server = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new())
+                .with_graceful_shutdown(stop.cancelled_owned())
+                .await
+                .expect("serve cloud fixture");
+        });
+        harness
+            .service
+            .cloud
+            .set_endpoint(&cloud_base)
+            .await
+            .expect("set cloud fixture endpoint");
         let service = &harness.service;
 
         for (index, method_name) in fluxdown_protocol::method::ALL_METHODS
@@ -4208,6 +4228,8 @@ mod tests {
             // 版本检查会真的访问官方站点；用非法渠道让它在触网前返回 InvalidArgument。
             let params = if method_name == fluxdown_protocol::method::AGENT_UPDATE_CHECK {
                 serde_json::json!({ "channel": "offline-test" })
+            } else if method_name == fluxdown_protocol::method::AGENT_CLOUD_ENDPOINT_SET {
+                serde_json::json!({ "baseUrl": &cloud_base })
             } else {
                 serde_json::json!({})
             };
@@ -4232,6 +4254,8 @@ mod tests {
             }
         }
         harness.finish().await;
+        shutdown.cancel();
+        cloud_server.await.expect("join cloud fixture");
     }
 
     /// `daemon.bt.guard.cloud.apply` 携带「agent 已验签」的云名单、`daemon.bt.guard.evidence.drain` 弹出

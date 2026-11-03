@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use fluxdown_protocol::{CUSTOM_CATEGORIES_PREF_KEY, CategoryRouteDto, CategoryRuleDto};
 use serde_json::Value;
 
-/// 偏好中的分类路由规则；没有任何可见分类配置目录时为 `None`。
+/// 偏好中的授权路由；无分类规则时仍返回空规则路由，供插件归档分类使用。
 pub(crate) fn category_route(preferences: &BTreeMap<String, Value>) -> Option<CategoryRouteDto> {
     CategoryRouteDto::from_preference(preferences.get(CUSTOM_CATEGORIES_PREF_KEY))
 }
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_categories_are_ignored_and_no_dir_means_no_route() {
+    fn hidden_categories_are_ignored() {
         let mut hidden = category("music", None, &["flac"], "/music-hidden", 1);
         hidden["visible"] = json!(false);
         let preferences = prefs(json!([
@@ -235,16 +235,6 @@ mod tests {
         assert_eq!(
             save_dir(&preferences, "", "https://x.test/a/My%20Song.flac?x=1").as_deref(),
             Some("/music")
-        );
-        assert_eq!(
-            category_route(&prefs(json!([category(
-                "audio",
-                Some("audio"),
-                &["flac"],
-                "",
-                1
-            )]))),
-            None
         );
     }
 }

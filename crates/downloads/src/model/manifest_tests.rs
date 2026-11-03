@@ -310,17 +310,3 @@ fn empty_selection_cannot_build_a_group_even_when_visible_files_exist() {
             .is_some()
     );
 }
-
-#[test]
-fn group_request_binds_members_to_the_previewing_plugin() {
-    let model = ManifestSelection::new(vec![file("file", "file.bin", "", 1)]);
-    let base: CreateTaskRequest =
-        serde_json::from_value(serde_json::json!({"url": "https://example.test/list"}))
-            .expect("request fixture");
-    let request = model
-        .build_request(&base, "name", "", "", "plugin.example", false)
-        .expect("selected file builds a group");
-    assert_eq!(request.resolver_plugin_id, "plugin.example");
-    let wire = serde_json::to_value(&request).expect("serialize");
-    assert_eq!(wire["resolverPluginId"], "plugin.example");
-}

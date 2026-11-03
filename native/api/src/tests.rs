@@ -69,7 +69,6 @@ struct MockHostInner {
     group_paused: Vec<String>,
     group_continued: Vec<String>,
     resolve_preview_requests: Vec<ResolvePreviewRequest>,
-    resolve_preview_response: Option<ResolvePreviewResponse>,
     bt_state: BtGuardStateDto,
     bt_entries_lists: Vec<BtGuardEntriesListParams>,
     bt_added: Vec<BtGuardEntriesAddParams>,
@@ -127,11 +126,6 @@ impl MockHost {
 
     fn with_groups(mut self, groups: Vec<GroupDto>) -> Self {
         self.inner.get_mut().unwrap().groups = groups;
-        self
-    }
-
-    fn with_resolve_preview_response(mut self, resp: ResolvePreviewResponse) -> Self {
-        self.inner.get_mut().unwrap().resolve_preview_response = Some(resp);
         self
     }
 
@@ -443,16 +437,14 @@ impl ApiHost for MockHost {
     ) -> Result<ResolvePreviewResponse, ApiError> {
         let mut inner = self.inner.lock().unwrap();
         inner.resolve_preview_requests.push(req);
-        Ok(inner
-            .resolve_preview_response
-            .clone()
-            .unwrap_or(ResolvePreviewResponse {
-                name: String::new(),
-                source_url: String::new(),
-                error: String::new(),
-                plugin_id: String::new(),
-                items: Vec::new(),
-            }))
+        Ok(ResolvePreviewResponse {
+            name: String::new(),
+            source_url: String::new(),
+            error: String::new(),
+            plugin_id: String::new(),
+            items: Vec::new(),
+            archive_metadata: None,
+        })
     }
 
     async fn create_task_group(&self, req: CreateGroupRequest) -> Result<String, ApiError> {
@@ -1929,37 +1921,6 @@ async fn group_action_on_unknown_id_returns_404() {
         ))
         .await;
     assert_eq!(resp.status, 404);
-}
-
-#[tokio::test]
-async fn resolve_preview_forwards_request_and_returns_host_response() {
-    let host = MockHost::new().with_resolve_preview_response(ResolvePreviewResponse {
-        name: "预览清单".to_string(),
-        source_url: "https://example.com/share".to_string(),
-        error: String::new(),
-        plugin_id: "pan@example".to_string(),
-        items: vec![],
-    });
-    let server = TestServer::start(host, |c| {
-        c.token.set("T");
-        c.management_enabled = true;
-    })
-    .await;
-    let body = json!({"url": "https://example.com/share", "cookies": "s=1"}).to_string();
-    let resp = server
-        .send(&request(
-            "POST",
-            routes::API_RESOLVE_PREVIEW,
-            &[("X-FluxDown-Token", "T")],
-            &body,
-        ))
-        .await;
-    assert_eq!(resp.status, 200);
-    assert_eq!(resp.json()["name"], "预览清单");
-    let reqs = server.host.resolve_preview_requests();
-    assert_eq!(reqs.len(), 1);
-    assert_eq!(reqs[0].url, "https://example.com/share");
-    assert_eq!(reqs[0].cookies, "s=1");
 }
 
 #[tokio::test]

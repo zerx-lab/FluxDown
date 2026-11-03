@@ -40,6 +40,42 @@ pub fn is_always_running_queue(queue_id: &str) -> bool {
     queue_id == MAIN_QUEUE_ID
 }
 
+/// Source-provided archive classification hints. These are descriptive metadata only:
+/// never credentials, URLs, or filesystem paths.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ArchiveMetadata {
+    pub platform: String,
+    pub media_kind: String,
+    pub creator_id: String,
+    pub creator_name: String,
+    pub series_id: String,
+    pub series_title: String,
+    pub collection_id: String,
+    pub collection_title: String,
+}
+
+/// Context passed to archive-folder plugins.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveContext {
+    pub file_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ArchiveMetadata>,
+    pub is_group: bool,
+    /// Bounded hexadecimal file prefix for host-side signed rule matching.
+    /// Never serialized to arbitrary plugin scripts.
+    #[serde(skip)]
+    pub header_hex: Option<String>,
+}
+
+/// Validated archive destination returned by a plugin, with legacy-shape provenance.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveDirectories {
+    pub components: Vec<String>,
+    pub legacy: bool,
+}
+
 /// 持久化任务信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskInfo {

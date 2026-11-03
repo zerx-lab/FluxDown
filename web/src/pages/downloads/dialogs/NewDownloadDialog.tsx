@@ -452,12 +452,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         )
         if (token !== resolveToken.current) return // 用户取消了探测
         if (!preview.error && preview.items.length > 0) {
-          // Manifest group.create has no categoryRoute; preserve exactly what the form displays.
+          const followed = eligibleRoute(categoryRoute, categoryMode, saveDirManuallyChosen.current, options.saveDir, context.saveDir)
+          // Group creation accepts categoryRoute; retain the form's base directory and routing policy.
           setManifest({
             preview,
             sourceUrl: single.url,
             base: {
-              saveDir: options.saveDir,
+              saveDir: followed ? routeBaseDir(followed, options.saveDir, context.saveDir) : options.saveDir,
+              offeredSaveDir: context.saveDir,
               // 「稍后下载」触发的清单：主按钮仍是「开始下载」，必须落到开始队列而非稍后队列。
               queueId: later ? context.queueId : options.queueId,
               segments: options.segments,
@@ -466,6 +468,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               proxyUrl: options.proxyUrl,
               headers: options.headers,
               ignoreTlsErrors: options.ignoreTlsErrors,
+              categoryRoute: followed ?? undefined,
             },
           })
           setPhase('idle')
@@ -861,7 +864,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               <InputWithAction
                 input={
                   <div className="flex flex-wrap items-center gap-2">
-                    <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} />
+                    {categoryOptions.length > 0 ? <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} /> : null}
                     <div className="min-w-[14rem] flex-1">
                       <SaveDirCombo
                         id="new-download-save-dir"

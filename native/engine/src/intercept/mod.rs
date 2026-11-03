@@ -171,9 +171,15 @@ pub trait TaskInterceptor: Send + Sync {
     fn entries(&self) -> &[InterceptorEntry];
     /// 任务持久化的原始 URL。
     fn source_url(&self) -> &str;
-    /// 按文件名询问已启用的归档插件，返回分类目录下的单层子目录名。`Ok(None)` = 不归档；
-    /// `Err` = 有插件失败且无人给出合法目录名（原因供任务活动展示）。
-    async fn archive_folder(&self, _file_name: &str) -> Result<Option<String>, String> {
+    /// Whether an enabled archive callback is available.
+    fn has_archivers(&self) -> bool {
+        false
+    }
+    /// Resolve relative archive directory components using source metadata and group context.
+    async fn archive_directories(
+        &self,
+        _context: crate::model::ArchiveContext,
+    ) -> Result<Option<crate::model::ArchiveDirectories>, String> {
         Ok(None)
     }
     /// 任务当前出口变化（见 [`sync_egress`]）；之后的调用按它选插件请求出口。未同步过的

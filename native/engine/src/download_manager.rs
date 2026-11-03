@@ -3079,6 +3079,10 @@ pub struct CreateGroupSpec {
     /// [`NewTaskSpec::resolver_plugin_id`]。空 = 旧客户端，成员按预览同款规则
     /// （`match_multi_resolver`）选插件。
     pub resolver_plugin_id: String,
+    /// Shared source metadata for archive routing of the group as a whole.
+    pub archive_metadata: Option<crate::model::ArchiveMetadata>,
+    /// Optional caller-authorized category routing.
+    pub category_route: Option<crate::category_route::CategoryRoute>,
 }
 
 /// [`DownloadManager::spawn_resolve_preview`] 的一次性结果，经 `oneshot`
@@ -3088,6 +3092,7 @@ pub struct CreateGroupSpec {
 pub struct ResolvePreviewOutcome {
     pub name: String,
     pub items: Vec<crate::model::ManifestItemInfo>,
+    pub archive_metadata: Option<crate::model::ArchiveMetadata>,
     /// 无错误时为空。
     pub error: String,
     /// 产出清单的插件 identity（`match_multi_resolver` 的选择）；无清单时为空。
@@ -3102,6 +3107,7 @@ impl ResolvePreviewOutcome {
         Self {
             name: String::new(),
             items: Vec::new(),
+            archive_metadata: None,
             error: String::new(),
             plugin_id: String::new(),
         }
@@ -3113,6 +3119,7 @@ impl ResolvePreviewOutcome {
             name: String::new(),
             items: Vec::new(),
             error,
+            archive_metadata: None,
             plugin_id: String::new(),
         }
     }
@@ -4350,6 +4357,7 @@ impl DownloadManager {
                 preview_id,
                 name: outcome.name,
                 source_url: url,
+                archive_metadata: outcome.archive_metadata,
                 items: outcome.items,
                 error: outcome.error,
             });
@@ -4407,6 +4415,7 @@ impl DownloadManager {
             let outcome = match result {
                 Ok(Some(res)) => match res.manifest {
                     Some(manifest) => ResolvePreviewOutcome {
+                        archive_metadata: manifest.archive_metadata,
                         name: manifest.name,
                         items: manifest
                             .items
@@ -4742,6 +4751,22 @@ impl DownloadManager {
 
         match out.result {
             Ok(applied) => {
+                if let Some(metadata) = applied.as_ref().and_then(|result| {
+                    result
+                        .manifest
+                        .as_ref()
+                        .and_then(|manifest| manifest.archive_metadata.as_ref())
+                        .or(result.archive_metadata.as_ref())
+                }) && let Err(error) =
+                    crate::category_route::persist_archive_metadata(&self.db, &task_id, metadata)
+                        .await
+                {
+                    crate::logger::report_warning(
+                        "download-manager",
+                        "persist archive metadata",
+                        &error,
+                    );
+                }
                 // 清单裂变（外部无 UI 入口自动展开，D6）：resolve 结果携带 manifest
                 // 时不进入正常 Start/Resume 分派，改走 apply_manifest_fission（单
                 // 条目原地改写 / 多条目单事务裂变为组）。Start 与 Resume 两种 kind
@@ -5046,10 +5071,41 @@ impl DownloadManager {
         } else if !task.file_name.is_empty() {
             task.file_name.clone()
         } else {
-            manifest.items[0].name.clone()
+            manifest
+                .items
+                .first()
+                .map_or_else(String::new, |item| item.name.clone())
         };
-        let group_save_dir =
-            join_manifest_path(manifest_base, &naming::sanitize_filename(&group_name));
+        let fallback_group_dir = if group_name.is_empty() {
+            manifest_base.to_owned()
+        } else {
+            join_manifest_path(manifest_base, &naming::sanitize_filename(&group_name))
+        };
+        let group_items: Vec<(&str, &str)> = manifest
+            .items
+            .iter()
+            .map(|item| (item.name.as_str(), task.url.as_str()))
+            .collect();
+        let root_metadata = manifest.archive_metadata.as_ref().or_else(|| {
+            route
+                .as_ref()
+                .and_then(|route| route.archive_metadata.as_ref())
+        });
+        let group_save_dir = if let Some(route) = route.as_ref() {
+            let interceptor = self.task_interceptor(&task_id, &task.url, &task.url).await;
+            crate::category_route::archive_group_root(
+                &fallback_group_dir,
+                &group_name,
+                &group_items,
+                &task.url,
+                root_metadata,
+                route,
+                interceptor.as_ref(),
+            )
+            .await
+        } else {
+            fallback_group_dir
+        };
 
         let total_size: i64 = manifest
             .items
@@ -14365,17 +14421,16 @@ impl DownloadManager {
         }
     }
 
-    /// 建组：`items` 为空直接返回 `None`（不建空组；即便单条目也走本方法而非
-    /// 平任务——设计文档 §7.3「选中 1 项也建组」，平任务无法携带
-    /// `resolver_item` 规格选择）。落盘目标 = `base_save_dir/sanitize(group_name)
-    /// /item.rel_path`（`group_name` 为空则直接用 `base_save_dir`）。逐成员经
-    /// [`Self::create_task`] 创建，复用其全部并发/队列/resolver 落库/
-    /// fail-closed 逻辑；结束后广播任务快照与组列表。
+    /// 创建任务组并以组根目录为基准保留各成员的相对路径。
+    ///
+    /// `category_route` 只授权自动目录规划；显式保存目录不附带路由。
+    /// `archive_metadata` 为组级来源信息，插件只在组根调用一次。
+    /// 清单为空或持久化失败时返回 `None`，成功时返回组 ID。
     pub async fn create_task_group(&mut self, spec: CreateGroupSpec) -> Option<String> {
         if spec.items.is_empty() {
             return None;
         }
-        let group_save_dir = if spec.group_name.trim().is_empty() {
+        let mut group_save_dir = if spec.group_name.trim().is_empty() {
             spec.base_save_dir.clone()
         } else {
             PathBuf::from(&spec.base_save_dir)
@@ -14383,6 +14438,28 @@ impl DownloadManager {
                 .to_string_lossy()
                 .into_owned()
         };
+        let item_names: Vec<(&str, &str)> = spec
+            .items
+            .iter()
+            .map(|item| (item.file_name.as_str(), spec.source_url.as_str()))
+            .collect();
+        if let Some(route) = spec.category_route.as_ref() {
+            let mut route = route.clone();
+            route.base_dir.clone_from(&spec.base_save_dir);
+            let interceptor = self
+                .task_interceptor("", &spec.source_url, &spec.source_url)
+                .await;
+            group_save_dir = crate::category_route::archive_group_root(
+                &group_save_dir,
+                &spec.group_name,
+                &item_names,
+                &spec.source_url,
+                spec.archive_metadata.as_ref(),
+                &route,
+                interceptor.as_ref(),
+            )
+            .await;
+        }
         let group_id = Uuid::new_v4().to_string();
         if let Err(e) = self
             .db

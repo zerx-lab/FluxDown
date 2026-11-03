@@ -322,6 +322,7 @@ pub trait ApiHost: Send + Sync {
             error: String::new(),
             plugin_id: String::new(),
             items: Vec::new(),
+            archive_metadata: None,
         })
     }
 

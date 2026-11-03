@@ -323,7 +323,8 @@ pub enum DownloadsResult {
     BtStatus(fluxdown_protocol::BtStatusDto),
     /// `BtGuardEvidence` 的名单条目与事件。
     BtGuardEvidence(BtGuardEvidence),
-    Preview(fluxdown_protocol::ResolvePreviewResponse),
+    /// Rare, metadata-heavy payload stays boxed so every command result remains small.
+    Preview(Box<fluxdown_protocol::ResolvePreviewResponse>),
     /// `FileIcon` 的 PNG 字节。
     FileIcon(Vec<u8>),
     /// `CreateMany` 的逐条结果（与请求条目同序）。

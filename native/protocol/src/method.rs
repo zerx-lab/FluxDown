@@ -103,6 +103,8 @@ pub const DAEMON_RSS_VALIDATE: &str = "daemon.rss.validate";
 pub const DAEMON_LINK_PROBE: &str = "daemon.link.probe";
 
 pub const DAEMON_PLUGIN_LIST: &str = "daemon.plugin.list";
+/// 查询或手动刷新已签名的插件分类规则（可能访问网络）。
+pub const DAEMON_PLUGIN_ARCHIVE_RULES: &str = "daemon.plugin.archiveRules";
 pub const DAEMON_PLUGIN_SNIFF_RULES: &str = "daemon.plugin.sniffRules";
 /// 插件页面脚本索引（`PluginPageScriptsDto`）：浏览器扩展据此注册 / 更新 / 注销用户脚本。
 pub const DAEMON_PLUGIN_PAGE_SCRIPTS: &str = "daemon.plugin.pageScripts";
@@ -470,6 +472,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_LINK_PROBE,
     DAEMON_PLUGIN_LIST,
     DAEMON_PLUGIN_SNIFF_RULES,
+    DAEMON_PLUGIN_ARCHIVE_RULES,
     DAEMON_PLUGIN_PAGE_SCRIPTS,
     DAEMON_PLUGIN_PAGE_SCRIPT_SOURCE,
     DAEMON_PLUGIN_AUTH,
@@ -647,6 +650,7 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_COMPONENT_LIST_VERSIONS,
     DAEMON_COMPONENT_INSTALL,
     DAEMON_PLUGIN_AUTH,
+    DAEMON_PLUGIN_ARCHIVE_RULES,
     DAEMON_PLUGIN_INSTALL,
     DAEMON_PLUGIN_INSTALL_DEV,
     DAEMON_PLUGIN_MARKET_LIST,

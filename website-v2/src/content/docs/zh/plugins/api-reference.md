@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "c62f1a407306"
+sourceHash: "4329e9d0c5b4"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -28,42 +28,18 @@ sourceHash: "c62f1a407306"
 | [`authenticate(ctx)`](#authenticatectx) | 宿主驱动一次登录动作（`begin` / `poll` / `cancel` / `logout` / `status`）。 | `auth.entry` + 权限 `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) 对象 |
 | [`subscribe(ctx)`](#subscribectx) | 属于你的 provider 的订阅源被刷新。 | `subscriptions[0]` | `subscriptions[0].entry` | 规范化的订阅内容对象 |
 | [`main`](#main-常驻脚本) | daemon（或某个视图）激活你的常驻脚本。 | `main` | `main.entry` | —（用于注册处理器） |
-| [`archive(ctx)`](#archivectx) | 使用分类路由的任务选中了某个分类目录（命中规则的目录，或“其他”兜底目录）时；开始时调用，若尚未选出文件夹则完成时再调用。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ folderName }`、`null` 或 `undefined` |
+| [`archive(ctx)`](#archivectx) | 授权默认保存目录的任务进入路由时调用，不要求命中分类规则。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ directories }`、旧格式 `{ folderName }` 或 `null` |
 
 ### `archive(ctx)`
 
-```js
-import { defineArchive } from "fluxdown-plugin-sdk/runtime";
+这是一个纯本地分类回调，可使用已知文件名与可选来源元数据；不解析 URL，也不访问文件或网络。宿主会对使用授权默认保存目录的任务调用它，不依赖普通分类规则是否命中。用户明确指定保存目录时跳过；BitTorrent 与 eD2K 任务不会移动。每次调用使用新的 QuickJS 运行时，可读取 `flux.settings`，但没有 `flux.fetch`、文件系统、任务或进程接口。
 
-defineArchive(({ fileName }) => {
-  if (/\.(mkv|mp4)$/i.test(fileName)) return { folderName: "Videos by plugin" };
-  return null;
-});
-```
+`ctx` 形如 `{ fileName, metadata?, isGroup }`。`fileName` 是当前已知文件名；`metadata` 可选，字段为 `platform`、`mediaKind`（`""`、`"series"` 或 `"post"`）、`creatorId`、`creatorName`、`seriesId`、`seriesTitle`、`collectionId`、`collectionTitle`。每个标签最多 180 UTF-8 字节，且不得含控制字符。这些是来源元数据，不代表读取文件语义内容；宿主不会通过此元数据暴露 URL、本地路径或凭据。
 
-回调会根据最终文件名，在**任务的分类目录内选择一个子文件夹**。它从不修改文件名：最终路径是 `<categoryDir>/<folderName>/<fileName>`。`ctx` 是 `{ fileName }`；函数可以是同步或异步，返回 `{ folderName: string }`，或用 `null` / `undefined` 表示不使用子文件夹。每次调用使用全新的 QuickJS 运行时。
+对于任务组，`isGroup` 为 true，宿主只在组根路由一次，成员路径与文件名保持不变。返回 `null` / `undefined` 表示不改变目录；也可返回 `{ directories: ["视频", "哔哩哔哩", "创作者", "合集"] }`，每项是一个安全路径分量，最多 8 层，且相对任务获准使用的默认保存目录，而非分类目录。已有插件仍可返回 `{ folderName: "The Expanse" }`，其原有的分类子目录语义保持不变。空值或不安全输出会被忽略（fail-open），不会使任务失败。多个插件按 identity 排序，首个有效结果生效；目录决定会持久化供恢复和完成期复用，原文件名不变。
+拼接后的相对目录最长 180 UTF-8 字节；绝对路径、路径穿越、不安全分量及逃出根目录的链接均会被拒绝。
 
-**archive 脚本里有什么。** 只有 `flux.settings`（类型化的插件设置）、`flux.logger.info|warn|error` 和 `console.log|info|warn|error|debug`（logger 与 `console` 都写入插件日志）。没有 `flux.info`、`flux.storage`、`flux.fetch`、`flux.fs`、`flux.task`、`flux.ffmpeg`、`flux.ytdlp`、`flux.auth`、`flux.rpc` / `flux.ui`，也没有任何文件、网络、任务或进程接口。顶层代码不能调用 `flux` 或 `console`：安装时脚本会在一个两者都不存在的空白上下文里做编译检查。
-
-**何时调用。** 只对使用分类路由的任务，并且只在路由选中某个分类目录时调用：命中且带目录的分类规则，或“其他”兜底目录。用户明确选择的保存目录会绕过它。
-
-- 在下载开始写入之前，用最终文件名调用。对 HLS 和 DASH，这是预测的 `<stem>.mp4` 文件名。
-- 如果开始时没有选出文件夹，则在完成时再用最终文件名询问一次。
-- 一旦选出文件夹，它会随任务保存，并在暂停 / 恢复、重启和完成时复用。不会再次询问插件，所以插件更新绝不会把一个任务拆开。
-- 如果之后分类目录变了（规则被编辑），保存的文件夹会跟随新的分类目录。如果规则完全不再匹配，任务保持在它已保存的归档文件夹里。
-
-**多个 archive 插件**按 `identity` 升序依次调用；第一个有效的 `folderName` 生效。
-
-**`folderName` 规则。** 名称只做校验，从不自动修正。名称无效意味着该插件的答复被忽略，转而尝试下一个插件。有效的名称：
-
-- 非空，且至多 180 个 UTF-8 字节；
-- 不是 `.` 或 `..`；
-- 不含 `/`、`\`、`:` 或控制字符；
-- 本身已经是干净的文件名，即不会被 FluxDown 的文件名清洗器改动。这排除了 `<>"|?*`、首尾的空格和点、Windows 保留设备名（`CON`、`NUL`、`COM1` ……，带扩展名也一样）以及不可见的格式字符。
-
-**失败从不让下载失败。** 抛出异常、超时、过载、返回类型无效、`folderName` 无效，或缺少必填的插件设置项（该插件被跳过），都意味着不使用子文件夹：文件留在分类目录里。原因会写入任务的活动日志和插件审计日志。超时和内存超限会计入[熔断](#熔断)。
-
-**限制。** 每次调用 5 秒；内存上限等于 resolver 的预算；整个应用内最多同时运行 2 个 archive 调用；调用最多等待 3 秒获取名额，否则作为过载被跳过。archive 插件依次运行，所以延迟会累加。见[运行时限制](#运行时限制)。
+常驻 `main` 脚本可调用 `flux.archiveRules.status()` 查询当前已验证规则包状态，或调用 `flux.archiveRules.update()` 显式请求更新；两者均要求 `archive` 权限及 `contributes.archiveRules` 声明。规则是由固定发布者公钥验证的有界签名 JSON。启用自动更新后每日检查；获取或验证失败会保留最后一份已验证规则，新规则不会重新分类历史文件。
 
 脚本如何运行：
 
@@ -111,7 +87,9 @@ defineArchive(({ fileName }) => {
 | `rangeSupported` | boolean | `true` 表示你保证解析后的主机支持 HTTP Range 请求（例如 googlevideo）。与 `ephemeral` 同时使用时，FluxDown 仍然跳过探测，但会立即规划完整的多段下载，而不是保守的单流起步。默认 `false`：没有探测时，Range 能力由首个响应判断。 |
 | `variants` | array | 多个画质 / 格式选项，见[变体](#变体variants)。 |
 | `defaultVariantIndex` | integer | 默认变体（选择弹窗 60 秒超时、免打扰、无界面运行时使用）。越界回退到 `0`。默认 `0`。 |
-| `manifest` | object | 多文件结果，见[清单结果](#清单结果manifest)。与 `url`、`variants`、`audioUrl` 互斥。 |
+| `manifest` | object | 多文件结果，见[清单结果](#清单结果manifest)，包括其可选根字段 `archiveMetadata`。与 `url`、`variants`、`audioUrl` 互斥。 |
+
+普通 resolve 结果也可在顶层返回 `archiveMetadata`。结果为 manifest 且 resolve 结果与 manifest 根都提供元数据时，以 manifest 的 `archiveMetadata` 为准。
 
 解析之后，FluxDown 会重新检查*解析后*的 URL 来选择协议引擎——resolver 可以返回 HLS 播放列表、磁力链接或 FTP URL，由对应的引擎接手。
 
@@ -154,6 +132,7 @@ defineArchive(({ fileName }) => {
 ```text
 { name?, items: [{ id, name, path?, size?, kind?, variants?: [{ id, label, size? }] }] }
 ```
+`manifest.archiveMetadata` 是可选的根级来源元数据。resolve 结果与 manifest 根同时提供元数据时，以 manifest 值为准。它仅是来源元数据，不会提取文件内容。
 
 | 字段 | 规则 |
 |---|---|

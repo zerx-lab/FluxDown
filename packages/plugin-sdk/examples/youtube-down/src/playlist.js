@@ -79,8 +79,9 @@ export async function fetchPlaylist(session, playlistId, limit) {
     const alert = alertText(first);
     throw new Error(alert ? `播放列表不可访问：${alert}` : "播放列表不存在，或需要登录才能查看");
   }
-  const md = (first.metadata && first.metadata.playlistMetadataRenderer) || {};
-  const title = textOf(md.title) || playlistId;
+  const metadata = (first.metadata && first.metadata.playlistMetadataRenderer) || {};
+  const title = textOf(metadata.title) || playlistId;
+  const author = textOf(metadata.author);
   const seen = new Set();
   const entries = [];
   const take = (page) => {
@@ -100,5 +101,5 @@ export async function fetchPlaylist(session, playlistId, limit) {
     page = parsePage(next.onResponseReceivedActions || next.onResponseReceivedEndpoints || next.continuationContents || []);
     take(page);
   }
-  return { title, entries };
+  return { title, author, entries };
 }

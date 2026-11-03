@@ -14,7 +14,7 @@ public struct SaveDirCategoryState: Sendable, Equatable {
     public private(set) var mode: SaveDirCategoryMode = .auto
     /// 表单最近一次由程序写入目录框的值；目录框等于它视为用户没有手动改过。
     public private(set) var lastWritten: String?
-    /// 保存目录由用户手动编辑/选择后，自动预测不再覆盖，提交也不再请求自动路由。
+    /// 保存目录由用户手动编辑/选择后，自动预测不再覆盖，提交也不再请求 Rust 自动路由。
     public private(set) var hasManualSaveDir = false
 
     /// - Parameter initialDir: 打开表单时目录框的值（外部预填的分类目录也视为自动写入值）。
@@ -25,8 +25,7 @@ public struct SaveDirCategoryState: Sendable, Equatable {
 
     // MARK: 选项
 
-    /// 下拉里的具体分类：可见、非「全部」、目录非空，按 `position` 排序（含配了目录的「其他」）。
-    /// 非空 ⇔ 分类路由存在（Rust `CategoryRouteDto::from_categories` 为 Some），选择器据此显隐。
+    /// 分类选项的非空性独立于默认目录授权路由；授权路由即使无分类规则也存在。
     public static func options(_ categories: [CustomCategoryDto]) -> [CustomCategoryDto] {
         categories
             .filter { $0.visible && !$0.isAll && !trimmed($0.saveDir).isEmpty }

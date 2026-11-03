@@ -23,7 +23,7 @@ This page covers the user-facing model and the rules a plugin author needs to kn
 | `intercept` | Interceptors: read and change the URL, request headers, cookies and body of matching tasks, control their connection count, skip the probe, swap credentials mid-download, rewrite or filter streaming segments, choose the quality or DASH Period, process the file before completion, and ask for a retry after a task fails. See the [Interceptors guide](/docs/en/plugins/interceptors-guide/). |
 | `desktop` | Run native desktop scripts with **full trust** (see below). |
 | `pageScripts` | Run the plugin's scripts on the websites it lists in `contributes.pageScripts`, through the FluxDown browser extension, with **Full** risk (see [Page scripts](#page-scripts-in-the-browser)). |
-| `archive` | Let `contributes.archive` choose one subfolder inside the task's category folder from the file name. It can read plugin settings and write the plugin log; it cannot access files, the network, tasks or processes. Risk: **Elevated**. |
+| `archive` | Let `contributes.archive` choose safe directories from the known filename and optional source metadata. New `directories` are relative to the authorized default directory; legacy `folderName` remains a category child. `contributes.archiveRules` supplies publisher-signed data, not executable code; no URLs, paths or credentials are exposed. An `archiveRules.updateUrl` hostname is included in network consent. The callback can read settings and write plugin logs, but cannot access files, network, tasks or processes. Risk: **Elevated**. |
 
 Subscription providers, hooks, resolvers and portable views need no permission of their own.
 

@@ -50,9 +50,9 @@ struct MenuEntry {
 }
 
 impl NewDownloadView {
-    /// 分类选择器只对本机表单展示；自动 / 不分类即使没有可选分类也有意义。
+    /// 只在本机且至少有一个可选分类时显示选择器；内部授权路由独立保留。
     fn category_picker_visible(&self) -> bool {
-        !self.is_remote()
+        !self.is_remote() && !self.context.category_options.is_empty()
     }
 
     /// 快捷添加的网址规则在本表单内生效：追加进分类列表并重算路由 / 候选，模式回「自动」

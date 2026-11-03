@@ -9,6 +9,7 @@ import {
   validatePageScriptFiles,
   validateViewIcon,
   validateSniffPack,
+  validateArchiveRulesPack,
   VALID_PERMISSIONS,
   type PluginRisk,
 } from "./manifest";
@@ -176,6 +177,29 @@ describe("validatePackage", () => {
     expect(validatePackage(manifest, good)).toEqual({ ok: true, errors: [] });
     const bad = files({ "main.js": "", "v.svg": "<html/>", "rules.json": "{}", "p.js": "1" });
     expect(validatePackage(manifest, bad).errors).toEqual(["sniffRules format 须为 fluxdown-sniff-pack", "view 'v' icon 不是 SVG 文档"]);
+  });
+
+  test("checks signed archive rules envelope syntax and package contents", () => {
+    const payload = JSON.stringify({
+      format: "fluxdown-archive-rules",
+      schemaVersion: 1,
+      sequence: 1,
+      rules: [{ id: "series", folderName: "Series", match: { extensions: ["mkv"] } }],
+    });
+    const seed = JSON.stringify({ payload, signature: "a".repeat(128) });
+    expect(validateArchiveRulesPack(seed).ok).toBe(true);
+    const manifest = {
+      ...base,
+      permissions: ["archive"],
+      contributes: {
+        archiveRules: {
+          entry: "rules.json",
+          publicKey: "a".repeat(64),
+        },
+      },
+    };
+    expect(validatePackage(manifest, files({ "main.js": "", "rules.json": seed }))).toEqual({ ok: true, errors: [] });
+    expect(validatePackage(manifest, files({ "main.js": "", "rules.json": "{}" })).ok).toBe(false);
   });
 
   test("backslash paths resolve to the forward-slash package entry", () => {

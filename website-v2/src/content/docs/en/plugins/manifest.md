@@ -225,16 +225,16 @@ Validation runs after `auth`, in this order: `entry` path → `stages` non-empty
 }
 ```
 
-Empty `views` / `commands` arrays are the same as leaving them out. `archive` chooses a subfolder for category-routed tasks once the file name is known; it never renames files or takes over the save root.
+Empty `views` / `commands` arrays are the same as leaving them out. `archive` chooses a child folder for category-routed tasks from the known filename and optional source metadata; it does not rename files or take over the save root.
 
 ### `archive`
 
-`contributes.archive` is a package-relative path to a `.js` file and requires `permissions: ["archive"]` (**Elevated** risk). Rules:
+`contributes.archive` names an in-package `.js` file and requires `permissions: ["archive"]`. The host calls `globalThis.archive({ fileName, metadata?, isGroup })` when the task follows authorized default-directory routing, including when no category matches; an explicitly chosen save directory bypasses it. `metadata` may carry `platform`, `mediaKind`, `creatorId`, `creatorName`, `seriesId`, `seriesTitle`, `collectionId` and `collectionTitle`. Each value is a label limited to 180 UTF-8 bytes, with no control characters. This is source metadata, not file-content recognition; URLs, local paths and credentials are not exposed. `flux.settings` is available, but network, filesystem, task and process APIs are not.
 
-- The path must be package-relative: no `..`, no absolute path or drive letter.
-- The extension must be `.js`; `.mjs` is rejected.
-- The file must exist in the package.
-- At install the script is compile-checked like the other entries: it is evaluated once in a bare context where `flux` and `console` do not exist, so top-level code must not call them.
+For groups the callback runs once at the root, with `isGroup: true`; member relative paths and filenames are preserved. Return `null` / `undefined`, or `{ directories: ["Video", "Bilibili", "Creator", "Collection"] }` to create a relative directory below the authorized download base. Up to 8 safe components are allowed, with a joined relative path of at most 180 UTF-8 bytes. Legacy `{ folderName: "The Expanse" }` keeps its single-child behavior under a matched category; group category routing still requires every member to share that category. Empty or invalid output is ignored (fail-open), without failing the download. The first valid result in plugin-identity order wins. The folder decision is persisted and reused on resume and completion; the downloaded filename is unchanged. Multi-level output requires a host implementing this callback extension; do not assume older released hosts support it.
+### `archiveRules`
+
+`contributes.archiveRules` declares a bounded JSON classification pack verified against a publisher-pinned Ed25519 public key. `entry` is a safe package-relative `.json` file; the signed seed is validated during package installation. `publicKey` is 64 hexadecimal characters. Optional `updateUrl` must be a public HTTPS URL without credentials or a fragment; its hostname is included in the consent network-host list. Updates are checked daily when automatic updates are enabled and can also be requested explicitly or manually. A failed fetch or verification retains the last verified rules. Rules only classify future eligible files; they never reclassify historic files.
 
 Hosts that predate this key and permission reject the plugin as an invalid manifest (unknown key and unknown permission), so set `minAppVersion` to the next release or later.
 

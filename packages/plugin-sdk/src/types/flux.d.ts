@@ -112,6 +112,19 @@ export interface FluxYtdlp {
   run(spec: ToolSpec): Promise<ToolOutcome>;
 }
 
+/** Status of a publisher-signed archive classification rules pack. */
+export interface ArchiveRulesStatus {
+  sequence: number;
+  ruleCount: number;
+  lastCheckedAt: number | null;
+  lastUpdatedAt: number | null;
+  lastError: string | null;
+  updateUrl: string | null;
+  automaticUpdates: boolean;
+  /** Publisher key pinned by the manifest. */
+  publicKey: string;
+}
+
 // ---------------------------------------------------------------------------
 // HOST_PRELUDE (resident `main` script)
 // ---------------------------------------------------------------------------
@@ -340,6 +353,11 @@ export interface Flux {
   ffmpeg?: FluxFfmpeg;
   ffprobe?: FluxFfprobe;
   ytdlp?: FluxYtdlp;
+  /** Available only to archive-capable plugins with `contributes.archiveRules`. */
+  archiveRules?: {
+    status(): Promise<ArchiveRulesStatus>;
+    update(): Promise<ArchiveRulesStatus>;
+  };
 }
 
 /** The `flux` facade of the resident `main` script (received by `defineMain`). */
@@ -374,17 +392,30 @@ export interface ResolveContext {
   resolverItem: string;
 }
 
+/** Root-level, source-provided archive hints; never credentials, URLs, or paths. */
+export interface ArchiveMetadata {
+  platform?: string;
+  mediaKind?: string;
+  creatorId?: string;
+  creatorName?: string;
+  seriesId?: string;
+  seriesTitle?: string;
+  collectionId?: string;
+  collectionTitle?: string;
+}
+
 /** `archive(ctx)` argument: the final file name (HLS/DASH: the predicted `<stem>.mp4`). */
 export interface ArchiveContext {
   fileName: string;
+  metadata?: ArchiveMetadata;
+  isGroup?: boolean;
 }
-
-/**
- * Archive result: one subfolder inside the task's category directory. The name is validated,
- * never auto-corrected; an invalid name is ignored and the next archive plugin is tried.
- */
+/** Archive destination: safe components relative to the task's authorized default directory. */
 export interface ArchiveResult {
-  folderName: string;
+  /** At most 8 safe components; joined relative path is at most 180 UTF-8 bytes. */
+  directories?: string[];
+  /** Legacy single-category child result retained for existing plugins. */
+  folderName?: string;
 }
 
 export interface ResolveVariant {
@@ -427,7 +458,9 @@ export interface ResolveResult {
   /** Request overlay applied to this task's every run (same shape as the `prepare` result). */
   request?: RequestPatch;
   /** Multi-file listing; mutually exclusive with `url` / `variants` / `audioUrl`. */
-  manifest?: { name?: string; items: ManifestItem[] };
+  manifest?: { name?: string; items: ManifestItem[]; archiveMetadata?: ArchiveMetadata };
+  /** Root metadata shared by this resolver result and its manifest items. */
+  archiveMetadata?: ArchiveMetadata;
 }
 
 /** `authenticate(ctx)` argument. */

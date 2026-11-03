@@ -524,6 +524,29 @@ fn inject_host_bridge(
         .with_name("__flux_settings_update")?;
         globals.set("__flux_settings_update", f)?;
     }
+    // __flux_archive_rules(refresh) -> Promise<string(JSON)>
+    {
+        let ev = events.clone();
+        let pid = identity.to_string();
+        let dl = interrupt_ns.clone();
+        let f = Function::new(
+            ctx.clone(),
+            Async(move |refresh: bool| {
+                let ev = ev.clone();
+                let pid = pid.clone();
+                let dl = dl.clone();
+                async move {
+                    let payload = match credited(&dl, ev.archive_rules(&pid, refresh)).await {
+                        Ok(value) => serde_json::json!({ "value": value }),
+                        Err(error) => serde_json::json!({ "__fluxError": plain_error(&error) }),
+                    };
+                    Ok::<String, rquickjs::Error>(payload.to_string())
+                }
+            }),
+        )?
+        .with_name("__flux_archive_rules")?;
+        globals.set("__flux_archive_rules", f)?;
+    }
 
     // __flux_task_port(method, paramsJson) -> Promise<String(JSON)>（仅 tasks 权限）
     if let Some(port) = task_port {
@@ -713,6 +736,19 @@ const HOST_PRELUDE: &str = r#"
       if (r.__fluxError) throw new Error(r.__fluxError);
     }),
   });
+  const archiveRules = Object.freeze({
+    status: () => __flux_archive_rules(false).then((s) => {
+      const r = JSON.parse(s);
+      if (r.__fluxError) throw new Error(r.__fluxError);
+      return r.value;
+    }),
+    update: () => __flux_archive_rules(true).then((s) => {
+      const r = JSON.parse(s);
+      if (r.__fluxError) throw new Error(r.__fluxError);
+      return r.value;
+    }),
+  });
+  Object.defineProperty(flux, "archiveRules", { value: archiveRules });
   if (typeof __flux_task_port === 'function') {
     const call = (method, params) => __flux_task_port(method, JSON.stringify(params || {})).then((s) => {
       const r = JSON.parse(s);

@@ -125,4 +125,17 @@ class NewDownloadStateCategoryTest {
         assertEquals("/dl/Video", form.saveDir)
         assertNull(requestOffered(form))
     }
+    @Test fun noPickerOptionsKeepDefaultDirectoryRoutingAuthorized() {
+        val form = NewDownloadState(
+            prefill = "https://x.test/a.exe",
+            defaultSaveDir = "/dl",
+            offeredSaveDir = "/dl",
+            defaultQueueId = "",
+            defaultSegments = 0,
+            categories = emptyList(),
+        )
+
+        assertEquals(emptyList<CustomCategoryDto>(), form.categoryOptions)
+        assertEquals("/dl", requestOffered(form))
+    }
 }

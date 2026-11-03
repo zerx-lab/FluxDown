@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "8a6af81a734f"
+sourceHash: "e9272ccb553c"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -226,16 +226,16 @@ hooks 在下载生命周期事件发生时运行你的代码。
 }
 ```
 
-`views` / `commands` 为空数组等同于不声明。`archive` 会在文件名已知后为跟随分类路由的任务选择一个子文件夹；它不会改文件名，也不会接管保存根目录。
+`views` / `commands` 为空数组等同于不声明。`archive` 会依据已知文件名及可选来源元数据，为跟随分类路由的任务选择子目录；它不改文件名，也不接管保存根目录。
 
 ### `archive`
 
-`contributes.archive` 是指向包内 `.js` 文件的包内相对路径，且必须声明 `permissions: ["archive"]`（风险**较高**）。规则：
+`contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。任务获准跟随默认保存目录时，宿主调用 `globalThis.archive({ fileName, metadata?, isGroup })`，不要求既有分类命中；用户明确选择其他保存目录时不调用。`metadata` 可包含 `platform`、`mediaKind`、`creatorId`、`creatorName`、`seriesId`、`seriesTitle`、`collectionId` 与 `collectionTitle`。每个值是最多 180 UTF-8 字节且不含控制字符的标签。这些是来源元数据，不进行文件内容识别；URL、本地路径与凭据不会暴露。`flux.settings` 可读，网络、文件系统、任务与进程接口不可用。
 
-- 路径必须是包内相对路径：不能含 `..`，不能是绝对路径或带盘符。
-- 扩展名必须是 `.js`；`.mjs` 会被拒绝。
-- 文件必须存在于包内。
-- 安装时会像其他入口一样做编译检查：脚本会在一个没有 `flux` 和 `console` 的空白上下文里求值一次，所以顶层代码不能调用它们。
+任务组只在组根调用一次，并带 `isGroup: true`；成员相对路径与文件名保持不变。返回 `null` / `undefined`，或 `{ directories: ["视频", "哔哩哔哩", "创作者", "合集"] }`，在已授权的下载基础目录下创建相对多级目录。最多 8 个安全分量，拼接后的相对目录不超过 180 UTF-8 字节。旧 `{ folderName: "The Expanse" }` 仍追加在命中的分类目录下；整组旧分类路由仍要求所有成员属于同一分类。空值或非法输出会被忽略（fail-open），不会让下载失败；首个按插件 identity 排序的有效结果生效。恢复及完成期复用已保存的目录决定，原文件名不变。多级输出需要实现此扩展的宿主，不应假定旧正式版已支持。
+### `archiveRules`
+
+`contributes.archiveRules` 声明有界 JSON 分类规则包，并使用发布者固定的 Ed25519 公钥验证。`entry` 是安全的包内相对 `.json` 路径；安装时会校验签名种子文件。`publicKey` 为 64 位十六进制字符串。可选 `updateUrl` 必须是无凭据、无片段的公网 HTTPS URL，其主机名会加入授权网络主机列表。启用自动更新后每日检查，也可显式或手动触发更新。获取或验证失败时保留最后一份已验证规则。规则只用于分类未来符合条件的文件，不会重新分类历史文件。
 
 支持该键和权限之前的旧版宿主会把它们当作无效 manifest 拒绝（未知键、未知权限），所以请把 `minAppVersion` 设为下一个版本或更高。
 

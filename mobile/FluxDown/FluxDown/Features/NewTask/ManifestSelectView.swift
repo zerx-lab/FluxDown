@@ -11,9 +11,9 @@ nonisolated enum ManifestSource: Hashable {
     case daemon(preview: ResolvePreviewResponse, sourceUrl: String)
 }
 
-/// 组级请求选项：沿用 N1 表单里已填的值，下发给全部子任务。
 nonisolated struct ManifestBaseOptions: Hashable {
     var saveDir = ""
+    var offeredSaveDir: String?
     var queueId = ""
     var segments: Int32 = 0
     var cookies = ""
@@ -33,7 +33,8 @@ nonisolated struct ManifestBaseOptions: Hashable {
         queueId: String,
         startPaused: Bool,
         items: [GroupItemRequest],
-        resolverPluginId: String
+        resolverPluginId: String,
+        archiveMetadata: ArchiveMetadataDto?
     ) -> CreateGroupRequest {
         CreateGroupRequest(
             sourceUrl: sourceUrl,
@@ -49,7 +50,8 @@ nonisolated struct ManifestBaseOptions: Hashable {
             ignoreTlsErrors: ignoreTls,
             startPaused: startPaused,
             items: items,
-            resolverPluginId: resolverPluginId
+            resolverPluginId: resolverPluginId,
+            archiveMetadata: archiveMetadata
         )
     }
 }
@@ -64,6 +66,7 @@ final class ManifestSelectModel {
     let sourceUrl: String
     /// 预览产出清单的插件 id，建组时回传以绑定同一插件。
     let resolverPluginId: String
+    let archiveMetadata: ArchiveMetadataDto?
     var selection: ManifestSelection
     var groupName: String
     var search = ""
@@ -76,6 +79,7 @@ final class ManifestSelectModel {
             manifestName = preview.name
             self.sourceUrl = sourceUrl
             resolverPluginId = preview.pluginId
+            archiveMetadata = preview.archiveMetadata
             selection = ManifestSelection(items: preview.items)
             groupName = ManifestSelection.defaultGroupName(manifestName: preview.name, sourceUrl: sourceUrl)
         }
@@ -142,12 +146,13 @@ final class ManifestSelectModel {
             queueId: queueId,
             startPaused: startPaused,
             items: selection.requestItems(),
-            resolverPluginId: resolverPluginId
+            resolverPluginId: resolverPluginId,
+            archiveMetadata: archiveMetadata
         )
         let session = container.session
         let count = request.items.count
         do throws(HostError) {
-            let _: CreateGroupResponse = try await session.call(HostMethod.daemonGroupCreate, params: request)
+            let _: CreateGroupResponse = try await session.createGroup(request, offeredSaveDir: base.offeredSaveDir)
         } catch {
             FluxHaptic.error.play()
             toasts.show(text: ErrorText.describe(error), tone: .error, systemImage: "exclamationmark.circle")

@@ -112,4 +112,10 @@ struct SaveDirCategoryTests {
         // 目录清空仍视为未手改。
         #expect(state.follow(dir: " ", offered: "/default", predicted: "/Videos") == "/Videos")
     }
+    @Test func emptyPickerOptionsDoNotDisableInternalDefaultDirectoryRouting() {
+        let options = SaveDirCategoryState.options([])
+        let state = SaveDirCategoryState(initialDir: "/default")
+        #expect(options.isEmpty)
+        #expect(state.offeredSaveDir(dir: "/default", initial: "/default") == "/default")
+    }
 }

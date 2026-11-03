@@ -858,6 +858,7 @@ impl ExtensionsView {
                                     detail_translator.clone(),
                                     None,
                                     None,
+                                    None,
                                     window,
                                     cx,
                                 );
@@ -1667,11 +1668,13 @@ impl ExtensionsView {
         let Some(plugin) = self.controller.plugin(identity) else {
             return;
         };
-        let detail = PluginDetail::from_plugin(plugin);
+        let mut detail = PluginDetail::from_plugin(plugin);
+        detail.stale = self.controller.is_stale();
         let translator = self.translator.read(cx).clone();
         let choices = plugin_choices(self.controller.plugins());
         let audit_translator = self.translator.clone();
         let port = self.controller.port().clone();
+        let archive_port = port.clone();
         let identity = identity.to_owned();
         let open_audit: OpenAudit = Rc::new(move |window, cx| {
             open_plugin_audit(
@@ -1688,6 +1691,7 @@ impl ExtensionsView {
             translator,
             Some(open_audit),
             Some(self.live_plugins.clone()),
+            Some(archive_port),
             window,
             cx,
         );

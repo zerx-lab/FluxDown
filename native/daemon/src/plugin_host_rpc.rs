@@ -1,15 +1,15 @@
 //! 常驻插件宿主的 RPC：可移植视图会话（open / event / close / snapshot / keepalive）、
 //! 命令与 invoke。作为 `service` 的子模块编译，复用其私有辅助函数。
 
+use super::{DaemonService, internal_error, invalid_argument, parse_params, to_value};
 use fluxdown_engine::plugin::PluginError;
 use fluxdown_protocol::{
-    PluginCommandParams, PluginInvokeParams, PluginPageInvokeParams, PluginPageInvokeResultDto,
-    PluginViewEventParams, PluginViewKeepaliveParams, PluginViewOpenParams, PluginViewOpenedDto,
-    PluginViewSessionParams, PluginViewSnapshotDto, RpcErrorObject, method, normalize_view,
+    PluginArchiveRulesParams, PluginCommandParams, PluginInvokeParams, PluginPageInvokeParams,
+    PluginPageInvokeResultDto, PluginViewEventParams, PluginViewKeepaliveParams,
+    PluginViewOpenParams, PluginViewOpenedDto, PluginViewSessionParams, PluginViewSnapshotDto,
+    RpcErrorObject, method, normalize_view,
 };
 use serde_json::{Map, Value, json};
-
-use super::{DaemonService, internal_error, invalid_argument, parse_params, to_value};
 
 /// 宿主可预期的失败（插件不存在 / 未启用 / 视图未声明 / 脚本抛错）按参数错误返回；
 /// 超时、内存超限、并发过载等运行时故障按内部错误返回。
@@ -34,6 +34,17 @@ impl DaemonService {
     ) -> Result<Value, RpcErrorObject> {
         let manager = self.plugin_manager()?;
         match method_name {
+            method::DAEMON_PLUGIN_ARCHIVE_RULES => {
+                let params = parse_params::<PluginArchiveRulesParams>(params)?;
+                let value = manager
+                    .archive_rules_status(&params.identity, params.refresh)
+                    .await
+                    .map_err(|error| host_error("identity", &error))?;
+                let status =
+                    serde_json::from_value::<fluxdown_protocol::PluginArchiveRulesDto>(value)
+                        .map_err(|error| internal_error(error.to_string()))?;
+                to_value(status)
+            }
             method::DAEMON_PLUGIN_VIEW_OPEN => {
                 let params = parse_params::<PluginViewOpenParams>(params)?;
                 let (session, raw) = manager

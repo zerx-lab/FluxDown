@@ -28,6 +28,7 @@
 //!   Auto 换路），解析与下载同出口的源头。
 //! - [`manager`]：`PluginManager`（Arc 共享，插件装载/启停/resolve/notify）。
 
+mod archive_rules;
 pub mod audit;
 pub mod bridge;
 pub mod call_egress;

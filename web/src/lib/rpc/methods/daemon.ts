@@ -42,6 +42,8 @@ import type {
   InstalledPlugin,
   MarketEntryDto,
   OkResult,
+  PluginArchiveRulesDto,
+  PluginArchiveRulesParams,
   PluginAuthRequest,
   PluginAuthResponse,
   PluginDto,
@@ -293,6 +295,8 @@ const plugin = {
     call<InstalledPlugin>(METHOD.DAEMON_PLUGIN_RELOAD_DEV, params, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   uninstall: (params: PluginIdentityParams) =>
     call<OkResult>(METHOD.DAEMON_PLUGIN_UNINSTALL, params),
+  archiveRules: (params: PluginArchiveRulesParams) =>
+    call<PluginArchiveRulesDto>(METHOD.DAEMON_PLUGIN_ARCHIVE_RULES, params, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   marketList: () => call<MarketEntryDto[]>(METHOD.DAEMON_PLUGIN_MARKET_LIST, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   marketInstall: (params: PluginMarketInstallParams) =>
     call<InstalledPlugin>(METHOD.DAEMON_PLUGIN_MARKET_INSTALL, params, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),

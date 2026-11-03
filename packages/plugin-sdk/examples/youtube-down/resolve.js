@@ -786,6 +786,8 @@ return jsc;
     const live = (key) => details.some((d) => d[key] === true);
     return {
       title: first((d) => d.title) || "",
+      creatorId: first((d) => d.channelId) || "",
+      creatorName: first((d) => d.author) || "",
       duration: Number(first((d) => d.lengthSeconds)) || 0,
       liveStatus: live("isPostLiveDvr") ? "post_live" : live("isLive") ? "is_live" : live("isUpcoming") ? "is_upcoming" : ""
     };
@@ -1014,8 +1016,9 @@ return jsc;
       const alert = alertText(first);
       throw new Error(alert ? `播放列表不可访问：${alert}` : "播放列表不存在，或需要登录才能查看");
     }
-    const md = first.metadata && first.metadata.playlistMetadataRenderer || {};
-    const title = textOf2(md.title) || playlistId;
+    const metadata = first.metadata && first.metadata.playlistMetadataRenderer || {};
+    const title = textOf2(metadata.title) || playlistId;
+    const author = textOf2(metadata.author);
     const seen = /* @__PURE__ */ new Set();
     const entries = [];
     const take = (page2) => {
@@ -1035,7 +1038,7 @@ return jsc;
       page = parsePage(next.onResponseReceivedActions || next.onResponseReceivedEndpoints || next.continuationContents || []);
       take(page);
     }
-    return { title, entries };
+    return { title, author, entries };
   }
 
   // examples/youtube-down/src/target.js
@@ -1156,6 +1159,9 @@ return jsc;
     }
     const { info, formats } = extracted;
     const base = sanitizeFileName(info.title, videoId);
+    const archiveMetadata = { platform: "youtube", mediaKind: "post" };
+    if (info.creatorId) archiveMetadata.creatorId = String(info.creatorId);
+    if (info.creatorName) archiveMetadata.creatorName = String(info.creatorName);
     const options = buildOptions(formats, String(flux.settings.codec || "compat"), base);
     if (options.length === 0) throw new Error("没有可直接下载的格式（可能被风控或需要登录 Cookie）");
     const chosen = pickOption(options, preset);
@@ -1168,7 +1174,8 @@ return jsc;
       totalBytes: top.totalBytes || void 0,
       // googlevideo 直链带签名与过期时间：跳过探测（探测会浪费一次性直链），并担保支持 Range。
       ephemeral: true,
-      rangeSupported: true
+      rangeSupported: true,
+      archiveMetadata
     };
     if (interactive && preset === "ask" && options.length > 1) {
       result.variants = options.map(toVariant);
@@ -1180,7 +1187,7 @@ return jsc;
     const started = Date.now();
     const session = new Session(cookieText(ctx));
     const limit = Math.min(1e3, Math.max(1, Math.floor(Number(flux.settings.playlistLimit) || 200)));
-    const { title, entries } = await fetchPlaylist(session, playlistId, limit);
+    const { title, author, entries } = await fetchPlaylist(session, playlistId, limit);
     if (entries.length === 0) throw new Error("播放列表为空，或其中的视频都不可用");
     const quality = String(flux.settings.quality || "ask");
     const first = ITEM_PRESETS.find((p) => p.id === quality) || ITEM_PRESETS[0];
@@ -1199,7 +1206,9 @@ return jsc;
         flux.logger.warn("[youtube-down] 播放器预热失败（子任务会各自重试）:", e.message);
       }
     }
-    return { manifest: { name: sanitizeFileName(title, playlistId), items } };
+    return {
+      manifest: { name: sanitizeFileName(title, playlistId), items, archiveMetadata: { platform: "youtube", mediaKind: "post", collectionId: playlistId, collectionTitle: title, ...author ? { creatorName: author } : {} } }
+    };
   }
   globalThis.resolve = async (ctx) => {
     const item = parseItem(ctx.resolverItem);

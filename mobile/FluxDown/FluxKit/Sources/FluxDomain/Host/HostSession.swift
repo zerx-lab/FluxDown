@@ -77,6 +77,23 @@ public extension HostSession {
     func callVoid(_ method: String) async throws(HostError) {
         _ = try await call(method, params: nil)
     }
+    /// Creates a manifest group. `offeredSaveDir` is non-wire authorization context: Rust
+    /// applies the host's current category routing only when the submitted directory follows it.
+    func createGroup(_ request: CreateGroupRequest, offeredSaveDir: String?) async throws(HostError) -> CreateGroupResponse {
+        let encoded = try ProtocolJSON.encode(request, what: "daemon.group.create params")
+        var object = try ProtocolJSON.decode(JSONValue.self, from: encoded, what: "daemon.group.create params")
+        guard case var .object(fields) = object else {
+            throw HostError(.internal, message: "group request must encode as an object")
+        }
+        if let offeredSaveDir {
+            fields["_offeredSaveDir"] = .string(offeredSaveDir)
+        }
+        object = .object(fields)
+        let data = try ProtocolJSON.encode(object, what: "daemon.group.create params")
+        let responseData = try await call(HostMethod.daemonGroupCreate, params: data)
+        return try ProtocolJSON.decode(CreateGroupResponse.self, from: responseData, what: "daemon.group.create result")
+    }
+
 }
 
 private func encodeParams(_ params: (some Encodable)?, method: String) throws(HostError) -> Data? {

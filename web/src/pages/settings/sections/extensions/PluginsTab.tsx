@@ -4,7 +4,7 @@ import { FolderOpen, Info, Package, RotateCw, ScrollText, Settings, Trash2 } fro
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../../../i18n'
 import { METHOD, call, rpc, uploadBlob, useDaemon } from '../../../../lib/rpc'
-import type { DaemonSnapshot, InstalledPlugin, PluginDto } from '../../../../lib/rpc'
+import type { DaemonSnapshot, InstalledPlugin, PluginArchiveRulesDto, PluginDto } from '../../../../lib/rpc'
 import { Badge, Button, Card, ConfirmFooter, Dialog, EmptyState, FormField, Input, InputWithAction, Switch, confirmDialog, toast } from '../../../../ui'
 import { hasPluginSettings } from '../../../plugins/contributions'
 import { BlockTitle, ExtLink, IconButton, ListCard, ListRow } from './common'
@@ -40,6 +40,9 @@ type DetailTarget = { kind: 'installed'; identity: string } | { kind: 'market'; 
 export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean; active: boolean; onGoToComponents: () => void }) {
   const t = useT()
   const plugins = useDaemon(selectPlugins, EMPTY_PLUGINS)
+  const [archiveStatus, setArchiveStatus] = useState<PluginArchiveRulesDto | null>(null)
+  const [archiveBusy, setArchiveBusy] = useState(false)
+  const [archiveMessage, setArchiveMessage] = useState<'success' | 'error' | null>(null)
   const [devMode, setDevMode] = useState(true)
   const [devDir, setDevDir] = useState('')
   const [installingDir, setInstallingDir] = useState(false)
@@ -68,6 +71,49 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   const authPlugin = live.auth
   const consentPlugin = live.consent
   const shownDetail: PluginDetail | null = detail?.kind === 'market' ? detail.detail : live.detail ? detailFromPlugin(live.detail) : null
+  const archivePlugin = detail?.kind === 'installed' ? live.detail : null
+  const archiveRequest = useRef(0)
+  useEffect(() => {
+    const request = ++archiveRequest.current
+    let active = true
+    setArchiveStatus(null)
+    setArchiveMessage(null)
+    if (!archivePlugin?.contributions.archiveRules || stale) {
+      setArchiveBusy(false)
+      return () => { active = false }
+    }
+    setArchiveBusy(true)
+    void rpc.daemon.plugin.archiveRules({ identity: archivePlugin.identity }).then((status) => {
+      if (active && archiveRequest.current === request) {
+        setArchiveStatus(status)
+        setArchiveBusy(false)
+      }
+    }).catch(() => {
+      if (active && archiveRequest.current === request) {
+        setArchiveMessage('error')
+        setArchiveBusy(false)
+      }
+    })
+    return () => { active = false }
+  }, [archivePlugin?.identity, archivePlugin?.contributions.archiveRules, archivePlugin?.enabled, stale])
+  const refreshArchiveRules = async () => {
+    if (!archivePlugin || archiveBusy || !archivePlugin.enabled) return
+    const request = ++archiveRequest.current
+    const identity = archivePlugin.identity
+    setArchiveBusy(true)
+    setArchiveMessage(null)
+    try {
+      const status = await rpc.daemon.plugin.archiveRules({ identity, refresh: true })
+      if (archiveRequest.current === request) {
+        setArchiveStatus(status)
+        setArchiveMessage('success')
+      }
+    } catch {
+      if (archiveRequest.current === request) setArchiveMessage('error')
+    } finally {
+      if (archiveRequest.current === request) setArchiveBusy(false)
+    }
+  }
 
   /** 操作发起时已安装的插件 identity（引擎在应答前就广播新插件表，应答后再看快照已分不出是安装还是更新）。 */
   const installedIdentities = (): ReadonlySet<string> => new Set(pluginsRef.current.map((item) => item.identity))
@@ -293,6 +339,11 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         detail={shownDetail}
         onClose={() => setDetail(null)}
         onAudit={shownDetail && plugins.some((item) => item.identity === shownDetail.identity) ? (identity) => setAudit({ identity }) : undefined}
+        archiveRules={archivePlugin?.contributions.archiveRules ? archiveStatus : null}
+        archiveDisabled={!archivePlugin?.enabled || archiveBusy || stale}
+        archiveBusy={archiveBusy}
+        archiveMessage={archiveMessage}
+        onArchiveRefresh={() => void refreshArchiveRules()}
       />
       <PluginSettingsDialog plugin={settingsPlugin} onClose={() => setSettingsIdentity(null)} />
       <PluginAuthDialog plugin={authPlugin} onClose={() => setAuthIdentity(null)} />

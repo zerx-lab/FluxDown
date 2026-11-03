@@ -47,7 +47,7 @@ function fakeYouTube(state: { player: string; byClient: Record<string, unknown> 
 
 const okResponse = {
   playabilityStatus: { status: "OK" },
-  videoDetails: { videoId: VIDEO, title: "Never: Gonna/Give", lengthSeconds: "200" },
+  videoDetails: { videoId: VIDEO, title: "Never: Gonna/Give", lengthSeconds: "200", channelId: "UCfixture", author: "Fixture Artist" },
   streamingData: {
     adaptiveFormats: [
       {
@@ -78,6 +78,7 @@ describe("video resolve", () => {
     const state = { player: "abcd1234", byClient: { TVHTML5: okResponse, VISIONOS: botCheck } };
     const shim = installFlux(fakeYouTube(state), { quality: "ask" });
     const out = await resolve({ url: `https://youtu.be/${VIDEO}` });
+    expect(out).toMatchObject({ archiveMetadata: { platform: "youtube", mediaKind: "post", creatorId: "UCfixture", creatorName: "Fixture Artist" } });
     expect(out).toMatchObject({ fileName: "Never Gonna Give.mp4", ephemeral: true, rangeSupported: true });
     expect(urlParam(out!.url, "sig")).toBe("1GIS");
     expect(urlParam(out!.url, "n")).toBe("N(nA)");

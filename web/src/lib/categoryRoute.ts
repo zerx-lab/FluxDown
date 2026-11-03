@@ -5,8 +5,8 @@ import { categoriesFromPreference } from '../pages/downloads/model/categories'
 import { compileEngineRegex } from '../pages/rss/filter'
 import type { CategoryRouteDto, CustomCategoryDto } from './rpc'
 
-/** 由分类列表（已按 position 排序）构建路由；没有任何分类配置目录时为 null。 */
-export function routeFromCategories(categories: readonly CustomCategoryDto[]): CategoryRouteDto | null {
+/** 由分类列表构建已授权路由；没有分类目录时也返回空规则路由，供插件归档分类使用。 */
+export function routeFromCategories(categories: readonly CustomCategoryDto[]): CategoryRouteDto {
   const visible = categories.filter((category) => category.visible)
   const otherDir = visible.find((category) => category.builtinType === 'other')?.saveDir.trim() ?? ''
   const rules = visible
@@ -20,13 +20,11 @@ export function routeFromCategories(categories: readonly CustomCategoryDto[]): C
       if (dir !== '') rule.saveDir = dir
       return rule
     })
-  const routes = otherDir !== '' || rules.some((rule) => (rule.saveDir ?? '') !== '')
-  if (!routes) return null
   return otherDir !== '' ? { rules, otherDir } : { rules }
 }
 
 /** 由 `custom_categories` 偏好值构建路由。 */
-export function routeFromPreference(value: unknown): CategoryRouteDto | null {
+export function routeFromPreference(value: unknown): CategoryRouteDto {
   return routeFromCategories(categoriesFromPreference(value))
 }
 

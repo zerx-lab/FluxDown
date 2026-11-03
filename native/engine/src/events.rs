@@ -238,6 +238,7 @@ pub enum EngineEvent {
         name: String,
         source_url: String,
         items: Vec<ManifestItemInfo>,
+        archive_metadata: Option<crate::model::ArchiveMetadata>,
         /// 无错误时为空。
         error: String,
     },

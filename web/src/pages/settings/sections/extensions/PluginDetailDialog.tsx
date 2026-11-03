@@ -1,8 +1,9 @@
 // 插件详情对话框：已安装插件与市场条目共用（manifest 级信息 + 权限 + 使用须知）。
 
 import type { ReactNode } from 'react'
+import type { PluginArchiveRulesDto } from '../../../../lib/rpc'
+import { Badge, Button, ConfirmFooter, Dialog, toast } from '../../../../ui'
 import { useT } from '../../../../i18n'
-import { Badge, Button, ConfirmFooter, Dialog } from '../../../../ui'
 import { ExtLink } from './common'
 import type { PluginDetail } from './detail'
 import { permissionKeys, safeHttpUrl, yankedLabelKey } from './logic'
@@ -24,11 +25,21 @@ export function PluginDetailDialog({
   detail,
   onClose,
   onAudit,
+  archiveRules,
+  archiveDisabled = true,
+  archiveBusy = false,
+  archiveMessage = null,
+  onArchiveRefresh,
 }: {
   detail: PluginDetail | null
   onClose: () => void
   /** 已安装插件才提供：打开该插件的审计记录。 */
   onAudit?: (identity: string) => void
+  archiveRules?: PluginArchiveRulesDto | null
+  archiveDisabled?: boolean
+  archiveBusy?: boolean
+  archiveMessage?: 'success' | 'error' | null
+  onArchiveRefresh?: () => void
 }) {
   const t = useT()
   const shown = detail
@@ -104,6 +115,33 @@ export function PluginDetailDialog({
                   <div className="break-all text-xs text-muted-foreground">{script.matches.join(', ')}</div>
                 </div>
               ))}
+            </>
+          ) : null}
+          {archiveRules || archiveBusy || archiveMessage ? (
+            <>
+              <SectionTitle>{t('pluginArchiveRulesTitle')}</SectionTitle>
+              {archiveRules ? (
+                <>
+                  <InfoRow label={t('pluginArchiveRulesSequence')}>{archiveRules.sequence}</InfoRow>
+                  <InfoRow label={t('pluginArchiveRulesCount')}>{archiveRules.ruleCount}</InfoRow>
+                  {archiveRules.lastCheckedAt !== null ? <InfoRow label={t('pluginArchiveRulesLastChecked')}>{new Date(archiveRules.lastCheckedAt).toLocaleString()}</InfoRow> : null}
+                  {archiveRules.lastUpdatedAt !== null ? <InfoRow label={t('pluginArchiveRulesLastUpdated')}>{new Date(archiveRules.lastUpdatedAt).toLocaleString()}</InfoRow> : null}
+                  {archiveRules.lastError ? <InfoRow label={t('pluginArchiveRulesError')}>{archiveRules.lastError}</InfoRow> : null}
+                  <InfoRow label={t('pluginArchiveRulesUpdateUrl')}>{archiveRules.updateUrl ?? t('pluginArchiveRulesNone')}</InfoRow>
+                  <InfoRow label={t('pluginArchiveRulesAutomatic')}>{t(archiveRules.automaticUpdates ? 'pluginArchiveRulesEnabled' : 'pluginArchiveRulesDisabled')}</InfoRow>
+                  <InfoRow label={t('pluginArchiveRulesPublicKey')}>
+                    <div className="flex min-w-0 items-start gap-2">
+                      <code className="min-w-0 break-all">{archiveRules.publicKey}</code>
+                      <Button variant="outline" onClick={() => void navigator.clipboard.writeText(archiveRules.publicKey).then(() => toast.success(t('pluginArchiveRulesCopied'))).catch(() => toast.error(t('pluginArchiveRulesCopyFailed')))}>{t('pluginArchiveRulesCopy')}</Button>
+                    </div>
+                  </InfoRow>
+                </>
+              ) : archiveBusy ? <div className="text-xs text-muted-foreground">{t('pluginArchiveRulesRefreshing')}</div> : null}
+              <div className="flex items-center gap-2 pt-1">
+                <Button variant="outline" disabled={archiveDisabled || archiveBusy} onClick={onArchiveRefresh}>{archiveBusy ? t('pluginArchiveRulesRefreshing') : t('pluginArchiveRulesRefresh')}</Button>
+                {archiveMessage === 'success' ? <span className="text-xs text-muted-foreground">{t('pluginArchiveRulesRefreshSuccess')}</span> : null}
+                {archiveMessage === 'error' ? <span className="text-xs text-destructive">{t('pluginArchiveRulesRefreshError')}</span> : null}
+              </div>
             </>
           ) : null}
           <SectionTitle>{t('pluginDetailUsage')}</SectionTitle>

@@ -26,6 +26,8 @@
 //! `fixtures/category_route_cases.json`。`url` 模式按通配符（`*` 任意串、`?` 单字符、
 //! 不分大小写、锚定完整匹配整个网址）匹配来源网址；网址规则固定优先于扩展名 / 正则
 //! 分类（不看列表位置），网址规则之间与文件名规则之间各自按列表顺序取首条命中。
+//!
+//! Signed rule packs can additionally match a bounded local file header at completion.
 
 use std::path::Path;
 
@@ -50,26 +52,26 @@ pub struct CategoryRoute {
     /// 归档插件选定的子目录；选定后续传、重启与完成收尾都沿用，不再询问插件。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<ArchiveRoute>,
+    /// Source metadata is persisted alongside the authorized route so resume does not
+    /// need to rerun the resolver or infer a title from a member filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_metadata: Option<crate::model::ArchiveMetadata>,
 }
 
-/// 归档插件选定的单层子目录，挂在分类目录之下。
+/// Persisted archive destination chosen for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveRoute {
-    /// 分类路由选中的目录（命中的分类或「其他」兜底）；归档目录始终是它的子目录。
+    /// Category-root target used by existing `folderName` callbacks.
     pub category_dir: String,
-    /// 经安全校验的单层目录名。
+    /// Legacy single-component result, retained for existing plugins.
     pub folder_name: String,
-}
-
-impl ArchiveRoute {
-    /// 归档落点 `<category_dir>/<folder_name>`。
-    fn dir(&self) -> String {
-        Path::new(&self.category_dir)
-            .join(&self.folder_name)
-            .to_string_lossy()
-            .into_owned()
-    }
+    /// New nested destination relative to the authorized task base directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<String>,
+    /// Authorized task base directory for modern `directories` results.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_dir: String,
 }
 
 /// [`CategoryRoute::rules`] 的单条普通分类。
@@ -153,13 +155,16 @@ impl CategoryRoute {
         }
         match serde_json::from_str::<CategoryRoute>(text) {
             Ok(mut route) => {
-                if route
-                    .archive
-                    .as_ref()
-                    .is_some_and(|archive| !valid_archive_folder(&archive.folder_name))
-                {
+                if route.archive.as_ref().is_some_and(|archive| {
+                    if archive.directories.is_empty() {
+                        !valid_archive_folder(&archive.folder_name)
+                    } else {
+                        !valid_archive_directories(&archive.directories)
+                            || archive.base_dir != route.base_dir
+                    }
+                }) {
                     log_warn!(
-                        "[category-route] task {task_id}: ignoring unsafe stored archive folder"
+                        "[category-route] task {task_id}: ignoring unsafe stored archive destination"
                     );
                     route.archive = None;
                 }
@@ -176,6 +181,121 @@ impl CategoryRoute {
     pub(crate) fn to_column(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
+}
+/// Persist source metadata in the existing route JSON, including route-less tasks.
+/// A route-less JSON object has an empty base directory and therefore cannot redirect.
+#[cfg(feature = "plugins")]
+pub(crate) async fn persist_archive_metadata(
+    db: &crate::db::Db,
+    task_id: &str,
+    metadata: &crate::model::ArchiveMetadata,
+) -> Result<(), crate::db::DbError> {
+    let column = db.load_task_category_route(task_id).await?;
+    let mut route = match CategoryRoute::from_column(task_id, &column) {
+        Some(route) => route,
+        None if column.is_empty() => CategoryRoute::default(),
+        None => return Ok(()),
+    };
+    route.archive_metadata = Some(metadata.clone());
+    let column = route.to_column().map_err(|error| {
+        crate::db::DbError::InvalidConfig(format!("category route serialization failed: {error}"))
+    })?;
+    db.set_task_category_route(task_id, &column).await
+}
+
+/// Route a complete group at one root. Modern callback destinations use the authorized fallback
+/// directory regardless of category matches; legacy folderName results keep category-child behavior.
+pub(crate) async fn archive_group_root(
+    fallback: &str,
+    group_name: &str,
+    item_names: &[(&str, &str)],
+    source_url: &str,
+    metadata: Option<&crate::model::ArchiveMetadata>,
+    route: &CategoryRoute,
+    interceptor: &dyn crate::intercept::TaskInterceptor,
+) -> String {
+    let mut categories = item_names
+        .iter()
+        .map(|(name, url)| route.save_dir_for(name, url, source_url).map(str::to_owned));
+    let category_dir = categories
+        .next()
+        .flatten()
+        .filter(|dir| categories.all(|category| category.as_deref() == Some(dir.as_str())));
+    let result = if interceptor.has_archivers() {
+        match interceptor
+            .archive_directories(crate::model::ArchiveContext {
+                file_name: group_name.to_owned(),
+                metadata: metadata.cloned(),
+                is_group: true,
+                header_hex: None,
+            })
+            .await
+        {
+            Ok(Some(result)) if valid_archive_directories(&result.components) => Some(result),
+            Ok(Some(_)) => {
+                log_warn!("[category-route] group archive plugin returned unsafe directories");
+                None
+            }
+            Ok(None) => None,
+            Err(error) => {
+                log_warn!("[category-route] group archive plugin failed open: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(result) = result
+        && (!result.legacy || category_dir.is_some())
+    {
+        let base = if result.legacy {
+            category_dir.as_deref().unwrap_or(fallback)
+        } else if route.base_dir.is_empty() {
+            fallback
+        } else {
+            &route.base_dir
+        };
+        let mut components = result.components;
+        if result.legacy {
+            let clean_group_name = if group_name.is_empty() {
+                String::new()
+            } else {
+                crate::naming::sanitize_filename(group_name)
+            };
+            if !clean_group_name.is_empty()
+                && !clean_group_name.eq_ignore_ascii_case(&components[0])
+            {
+                components.push(clean_group_name);
+            }
+        }
+        if valid_archive_directories(&components) {
+            let archive = ArchiveRoute {
+                category_dir: base.to_owned(),
+                folder_name: String::new(),
+                directories: components,
+                base_dir: base.to_owned(),
+            };
+            match ensure_archive_target(&archive).await {
+                Ok(target) => return target,
+                Err(error) => {
+                    log_warn!("[category-route] group archive destination rejected: {error:#}")
+                }
+            }
+        }
+    }
+    category_dir.map_or_else(
+        || fallback.to_owned(),
+        |directory| {
+            if group_name.is_empty() {
+                directory
+            } else {
+                Path::new(&directory)
+                    .join(crate::naming::sanitize_filename(group_name))
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        },
+    )
 }
 
 impl CategoryRule {
@@ -281,6 +401,9 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
             return None;
         }
     };
+    if route.base_dir.is_empty() {
+        return None;
+    }
     let row = match p.db.load_task_by_id(&p.task_id).await {
         Ok(Some(row)) => row,
         Ok(None) => return None,
@@ -293,20 +416,101 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
         return None;
     }
     let source = source_address(&row.origin_url, &row.url);
-    let target = match route.save_dir_for(&row.file_name, &row.url, source) {
-        Some(category_dir) => {
-            let category_dir = category_dir.to_owned();
-            match archive_target(p, &mut route, category_dir, &row.file_name).await {
-                Ok(target) => target,
-                Err(error) => {
-                    crate::logger::report_error("category-route", "persist archive route", &error);
-                    return None;
-                }
+    let category_dir = route
+        .save_dir_for(&row.file_name, &row.url, source)
+        .map(str::to_owned);
+    let notes = crate::intercept::ActivityNotes::of(p);
+    let mut target = category_dir
+        .clone()
+        .unwrap_or_else(|| route.base_dir.clone());
+    let mut route_changed = false;
+    if let Some(mut archive) = route.archive.clone() {
+        if archive.directories.is_empty()
+            && let Some(category_dir) = category_dir.as_ref()
+            && archive.category_dir != *category_dir
+        {
+            archive.category_dir.clone_from(category_dir);
+            route_changed = true;
+        }
+        target = archive_target(&archive);
+        route.archive = Some(archive);
+    } else if p.interceptor.has_archivers() {
+        match p
+            .interceptor
+            .archive_directories(crate::model::ArchiveContext {
+                file_name: row.file_name.clone(),
+                metadata: route.archive_metadata.clone(),
+                is_group: false,
+                header_hex: match read_archive_header_hex(
+                    &Path::new(&row.save_dir).join(&row.file_name),
+                )
+                .await
+                {
+                    Ok(header) => header,
+                    Err(error) => {
+                        crate::logger::report_warning(
+                            "category-route",
+                            "read archive classification header",
+                            &error,
+                        );
+                        None
+                    }
+                },
+            })
+            .await
+        {
+            Ok(Some(result))
+                if valid_archive_directories(&result.components)
+                    && (!result.legacy || category_dir.is_some()) =>
+            {
+                let modern = !result.legacy;
+                let archive = ArchiveRoute {
+                    category_dir: category_dir
+                        .clone()
+                        .unwrap_or_else(|| route.base_dir.clone()),
+                    folder_name: if modern {
+                        String::new()
+                    } else {
+                        result.components[0].clone()
+                    },
+                    directories: if modern {
+                        result.components
+                    } else {
+                        Vec::new()
+                    },
+                    base_dir: if modern {
+                        route.base_dir.clone()
+                    } else {
+                        String::new()
+                    },
+                };
+                target = archive_target(&archive);
+                route.archive = Some(archive);
+                route_changed = true;
+            }
+            Ok(Some(_)) => {
+                notes.add("忽略不安全或不适用的归档目录".to_owned()).await;
+            }
+            Ok(None) => {}
+            Err(error) => notes.add(format!("归档插件未能识别文件名：{error}")).await,
+        }
+    }
+    if route_changed && let Err(error) = persist_route(p, &route).await {
+        crate::logger::report_error("category-route", "persist archive route", &error);
+        return None;
+    }
+    if let Some(archive) = route.archive.as_ref() {
+        match ensure_archive_target(archive).await {
+            Ok(verified) => target = verified,
+            Err(error) => {
+                log_warn!(
+                    "[category-route] task {} rejected archive destination: {error}",
+                    p.task_id
+                );
+                return None;
             }
         }
-        // 规则更新后不再命中：已归档的任务留在原归档目录，不拆散。
-        None => route.archive.as_ref()?.dir(),
-    };
+    }
     if same_dir(&target, &row.save_dir).await {
         return None;
     }
@@ -438,18 +642,94 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
     let source = source_address(&row.origin_url, &row.url);
     let output = output_name(&p.file_name, &p.url);
     let name = output.as_deref().unwrap_or(&p.file_name);
-    let target = match route.save_dir_for(name, &p.url, source) {
-        // 归档插件与分类判断看同一个成品名（HLS / DASH 为转封装后的 `.mp4`）。
-        Some(category_dir) => {
-            let category_dir = category_dir.to_owned();
-            archive_target(p, &mut route, category_dir, name).await?
+    let category_dir = route.save_dir_for(name, &p.url, source).map(str::to_owned);
+    let mut target = category_dir
+        .clone()
+        .unwrap_or_else(|| route.base_dir.clone());
+    let mut route_changed = false;
+    if let Some(archive) = route.archive.as_mut() {
+        if archive.directories.is_empty()
+            && let Some(category_dir) = category_dir.as_ref()
+            && archive.category_dir != *category_dir
+        {
+            archive.category_dir.clone_from(category_dir);
+            route_changed = true;
         }
-        // 规则更新后未命中：已归档的任务留在原归档目录，不拆散。
-        None => route
-            .archive
-            .as_ref()
-            .map_or_else(|| route.base_dir.clone(), ArchiveRoute::dir),
-    };
+        target = archive_target(archive);
+    } else if p.interceptor.has_archivers() {
+        match p
+            .interceptor
+            .archive_directories(crate::model::ArchiveContext {
+                file_name: name.to_owned(),
+                metadata: route.archive_metadata.clone(),
+                is_group: !row.group_id.is_empty(),
+                header_hex: None,
+            })
+            .await
+        {
+            Ok(Some(result))
+                if valid_archive_directories(&result.components)
+                    && (!result.legacy || category_dir.is_some()) =>
+            {
+                let modern = !result.legacy;
+                let archive = ArchiveRoute {
+                    category_dir: category_dir
+                        .clone()
+                        .unwrap_or_else(|| route.base_dir.clone()),
+                    folder_name: if modern {
+                        String::new()
+                    } else {
+                        result.components[0].clone()
+                    },
+                    directories: if modern {
+                        result.components
+                    } else {
+                        Vec::new()
+                    },
+                    base_dir: if modern {
+                        route.base_dir.clone()
+                    } else {
+                        String::new()
+                    },
+                };
+                target = archive_target(&archive);
+                route.archive = Some(archive);
+                route_changed = true;
+                crate::intercept::ActivityNotes::of(p)
+                    .add(format!("归档插件选定目录「{target}」"))
+                    .await;
+            }
+            Ok(Some(_)) => log_warn!(
+                "[category-route] task {} ignored unsafe or inapplicable archive directories",
+                p.task_id
+            ),
+            Ok(None) => {}
+            Err(error) => {
+                log_warn!(
+                    "[category-route] task {} archive plugin failed open: {error}",
+                    p.task_id
+                );
+                crate::intercept::ActivityNotes::of(p)
+                    .add(format!("归档插件未选定目录，文件留在原目录（{error}）"))
+                    .await;
+            }
+        }
+    }
+    if route_changed {
+        persist_route(p, &route).await?;
+    }
+    if let Some(archive) = route.archive.as_ref() {
+        match ensure_archive_target(archive).await {
+            Ok(verified) => target = verified,
+            Err(error) => {
+                log_warn!(
+                    "[category-route] task {} rejected archive destination: {error}",
+                    p.task_id
+                );
+                return Ok(());
+            }
+        }
+    }
     if same_dir(&target, &p.save_dir).await {
         return Ok(());
     }
@@ -464,59 +744,6 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
     Ok(())
 }
 
-/// 分类目录 `category_dir` 下的实际落点。已保存的归档目录直接沿用，插件不再参与（分类
-/// 目录变了则随之迁移并持久化）；否则询问归档插件，合法的选择持久化到任务路由。不归档
-/// 时就是分类目录本身。插件侧任何失败只记任务活动，不影响下载；仅持久化失败返回错误。
-async fn archive_target(
-    p: &DownloadParams,
-    route: &mut CategoryRoute,
-    category_dir: String,
-    file_name: &str,
-) -> Result<String, crate::db::DbError> {
-    if let Some(archive) = route.archive.as_mut() {
-        if archive.category_dir == category_dir {
-            return Ok(archive.dir());
-        }
-        archive.category_dir = category_dir;
-        let target = archive.dir();
-        persist_route(p, route).await?;
-        return Ok(target);
-    }
-    let notes = crate::intercept::ActivityNotes::of(p);
-    match p.interceptor.archive_folder(file_name).await {
-        Ok(Some(folder_name)) if valid_archive_folder(&folder_name) => {
-            let archive = ArchiveRoute {
-                category_dir,
-                folder_name,
-            };
-            let target = archive.dir();
-            notes
-                .add(format!("归档插件选定子目录「{}」", archive.folder_name))
-                .await;
-            route.archive = Some(archive);
-            persist_route(p, route).await?;
-            Ok(target)
-        }
-        Ok(Some(folder_name)) => {
-            notes
-                .add(format!("已忽略不合法的归档目录名 {folder_name:?}"))
-                .await;
-            Ok(category_dir)
-        }
-        Ok(None) => Ok(category_dir),
-        Err(error) => {
-            log_warn!(
-                "[category-route] task {} archive plugins chose no folder: {error}",
-                p.task_id
-            );
-            notes
-                .add(format!("归档插件未选定子目录，文件留在分类目录（{error}）"))
-                .await;
-            Ok(category_dir)
-        }
-    }
-}
-
 async fn persist_route(
     p: &DownloadParams,
     route: &CategoryRoute,
@@ -527,7 +754,40 @@ async fn persist_route(
     p.db.set_task_category_route(&p.task_id, &column).await
 }
 
-/// 归档插件输出必须是单个已清洗的目录分量，拒绝路径、设备名及任何会被引擎改写的名字。
+/// Normalize new nested output and legacy `folderName` into validated path components.
+#[cfg(any(feature = "plugins", test))]
+pub(crate) fn normalize_archive_directories(
+    directories: &[String],
+    legacy_folder: &str,
+) -> Option<Vec<String>> {
+    if directories.is_empty() {
+        return valid_archive_folder(legacy_folder).then(|| vec![legacy_folder.to_owned()]);
+    }
+    valid_archive_directories(directories).then(|| directories.to_vec())
+}
+
+fn valid_archive_directories(directories: &[String]) -> bool {
+    !directories.is_empty()
+        && directories.len() <= 8
+        && directories.iter().all(|part| valid_archive_folder(part))
+        && directories.iter().map(String::len).sum::<usize>() + directories.len() - 1 <= 180
+}
+
+fn archive_target(archive: &ArchiveRoute) -> String {
+    let (base, parts): (&str, &[String]) = if !archive.directories.is_empty() {
+        (&archive.base_dir, &archive.directories)
+    } else {
+        (
+            &archive.category_dir,
+            std::slice::from_ref(&archive.folder_name),
+        )
+    };
+    parts
+        .iter()
+        .fold(Path::new(base).to_path_buf(), |path, part| path.join(part))
+        .to_string_lossy()
+        .into_owned()
+}
 pub(crate) fn valid_archive_folder(folder: &str) -> bool {
     !folder.is_empty()
         && folder.len() <= 180
@@ -586,6 +846,66 @@ async fn move_into(
     }
     Ok(chosen)
 }
+async fn ensure_archive_target(archive: &ArchiveRoute) -> std::io::Result<String> {
+    let base = if archive.directories.is_empty() {
+        Path::new(&archive.category_dir)
+    } else {
+        Path::new(&archive.base_dir)
+    };
+    tokio::fs::create_dir_all(base).await?;
+    let canonical_base = tokio::fs::canonicalize(base).await?;
+    let parts: &[String] = if archive.directories.is_empty() {
+        std::slice::from_ref(&archive.folder_name)
+    } else {
+        &archive.directories
+    };
+    let mut path = base.to_path_buf();
+    for part in parts {
+        path.push(part);
+        match tokio::fs::symlink_metadata(&path).await {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "archive destination contains a symbolic link",
+                ));
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "archive destination component is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match tokio::fs::create_dir(&path).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // Another task may create the same author/collection directory.
+                        let metadata = tokio::fs::symlink_metadata(&path).await?;
+                        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                "archive destination changed to a non-directory or symbolic link",
+                            ));
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        if !tokio::fs::canonicalize(&path)
+            .await?
+            .starts_with(&canonical_base)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "archive destination escapes its authorized base directory",
+            ));
+        }
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
 
 /// 分块复制并逐块检查取消；完成后同步落盘并带上源文件的修改时间（「使用服务器文件时间」）。
 async fn copy_cancellable(
@@ -633,9 +953,32 @@ async fn remove_staging(staging: &Path) {
     }
 }
 
+/// Read at most 4 KiB from the finished file for signed rule matching.
+async fn read_archive_header_hex(path: &Path) -> Result<Option<String>, std::io::Error> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::with_capacity(4096);
+    file.take(4096).read_to_end(&mut bytes).await?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let mut header = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(header, "{byte:02x}").map_err(std::io::Error::other)?;
+    }
+    Ok(Some(header))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ArchiveRoute, CategoryRoute, valid_archive_folder};
+    #[cfg(unix)]
+    use super::ensure_archive_target;
+    use super::{
+        ArchiveRoute, CategoryRoute, normalize_archive_directories, valid_archive_directories,
+        valid_archive_folder,
+    };
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -722,6 +1065,13 @@ mod tests {
         let route = CategoryRoute {
             base_dir: "/downloads".into(),
             other_dir: "/other".into(),
+            archive_metadata: Some(crate::model::ArchiveMetadata {
+                platform: "bilibili".into(),
+                media_kind: "series".into(),
+                series_id: "42".into(),
+                series_title: "Series".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let text = route.to_column().expect("encode route");
@@ -766,11 +1116,82 @@ mod tests {
     }
 
     #[test]
+    fn archive_directories_are_bounded_safe_components() {
+        let safe = vec!["视频".to_owned(), "哔哩哔哩".to_owned(), "作者".to_owned()];
+        assert!(valid_archive_directories(&safe));
+        assert!(normalize_archive_directories(&safe, "").is_some());
+        assert!(normalize_archive_directories(&[], "Legacy").is_some());
+        assert!(normalize_archive_directories(&["..".to_owned()], "").is_none());
+        assert!(normalize_archive_directories(&vec!["x".into(); 9], "").is_none());
+        assert!(normalize_archive_directories(&["x".repeat(181)], "").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn archive_destinations_can_be_created_concurrently() {
+        let root = std::env::temp_dir().join(format!(
+            "fluxdown-archive-parallel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let archive = ArchiveRoute {
+            base_dir: root.to_string_lossy().into_owned(),
+            category_dir: String::new(),
+            folder_name: String::new(),
+            directories: vec!["视频".into(), "作者".into(), "合集".into()],
+        };
+        let mut jobs = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let archive = archive.clone();
+            jobs.spawn(async move { super::ensure_archive_target(&archive).await });
+        }
+        let expected = root.join("视频/作者/合集");
+        while let Some(result) = jobs.join_next().await {
+            let path = result
+                .expect("creation task joins")
+                .expect("shared path creation succeeds");
+            assert_eq!(std::path::Path::new(&path), expected.as_path());
+        }
+        assert!(
+            tokio::fs::metadata(&expected)
+                .await
+                .expect("created directory")
+                .is_dir()
+        );
+        tokio::fs::remove_dir_all(root)
+            .await
+            .expect("remove shared destination");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_destination_rejects_symlink_escape() {
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-archive-symlink-{}", uuid::Uuid::new_v4()));
+        let base = root.join("authorized");
+        let outside = root.join("outside");
+        tokio::fs::create_dir_all(&base).await.expect("create base");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("create outside");
+        std::os::unix::fs::symlink(&outside, base.join("link")).expect("create symlink");
+        let archive = ArchiveRoute {
+            category_dir: base.to_string_lossy().into_owned(),
+            folder_name: String::new(),
+            directories: vec!["link".into(), "escape".into()],
+            base_dir: base.to_string_lossy().into_owned(),
+        };
+        assert!(ensure_archive_target(&archive).await.is_err());
+        assert!(!outside.join("escape").exists());
+        tokio::fs::remove_dir_all(root).await.expect("cleanup");
+    }
+
+    #[test]
     fn stored_archive_route_rejects_path_components() {
         let route = CategoryRoute {
             archive: Some(ArchiveRoute {
                 category_dir: "/downloads/video".into(),
                 folder_name: "../outside".into(),
+                directories: Vec::new(),
+                base_dir: String::new(),
             }),
             ..Default::default()
         };
@@ -845,5 +1266,79 @@ mod tests {
         if let Err(error) = tokio::fs::remove_dir_all(&root).await {
             tracing::warn!(%error, "test directory cleanup failed");
         }
+    }
+
+    #[tokio::test]
+    async fn groups_route_only_when_every_member_has_the_same_category() {
+        let route = CategoryRoute {
+            rules: vec![
+                super::CategoryRule {
+                    extensions: vec!["mp4".into()],
+                    save_dir: "/video".into(),
+                    ..Default::default()
+                },
+                super::CategoryRule {
+                    extensions: vec!["srt".into()],
+                    save_dir: "/subtitles".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let interceptor = crate::intercept::NoopInterceptor;
+        let common = super::archive_group_root(
+            "/base/group",
+            "group",
+            &[
+                ("a.mp4", "https://host/a.mp4"),
+                ("b.mp4", "https://host/b.mp4"),
+            ],
+            "https://host/list",
+            None,
+            &route,
+            &interceptor,
+        )
+        .await;
+        assert_eq!(
+            std::path::Path::new(&common),
+            std::path::Path::new("/video").join("group")
+        );
+        let mixed = super::archive_group_root(
+            "/base/group",
+            "group",
+            &[
+                ("a.mp4", "https://host/a.mp4"),
+                ("b.srt", "https://host/b.srt"),
+            ],
+            "https://host/list",
+            None,
+            &route,
+            &interceptor,
+        )
+        .await;
+        assert_eq!(mixed, "/base/group");
+    }
+    #[tokio::test]
+    async fn archive_header_read_is_bounded_to_four_kibibytes() {
+        let path = std::env::temp_dir().join(format!(
+            "fluxdown-archive-header-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&path, vec![0xab; 4096 + 128])
+            .await
+            .expect("write header fixture");
+        let header = super::read_archive_header_hex(&path)
+            .await
+            .expect("read bounded archive header")
+            .expect("nonempty file header");
+        assert_eq!(header.len(), 4096 * 2);
+        assert!(
+            header
+                .chars()
+                .all(|character| character == 'a' || character == 'b')
+        );
+        tokio::fs::remove_file(path)
+            .await
+            .expect("remove header fixture");
     }
 }

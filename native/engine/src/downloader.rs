@@ -9680,8 +9680,8 @@ mod single_resume_tests {
                 user_agent: String::new(),
                 data_dir_override: Some(dir.clone()),
                 database_url: Some(format!(
-                    "sqlite://{}?mode=rwc",
-                    dir.join("route.db").display()
+                    "sqlite:{}?mode=rwc",
+                    dir.join("route.db").to_string_lossy().replace('\\', "/")
                 )),
             },
             Arc::new(NoopSink),

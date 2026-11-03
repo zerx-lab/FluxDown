@@ -3771,6 +3771,44 @@
           }
         }
       },
+      "ArchiveMetadataDto": {
+        "type": "object",
+        "description": "插件提供的根媒体提示。只作为分类提示，不含凭据、URL 或路径。",
+        "properties": {
+          "collectionId": {
+            "type": "string",
+            "default": ""
+          },
+          "collectionTitle": {
+            "type": "string",
+            "default": ""
+          },
+          "creatorId": {
+            "type": "string",
+            "default": ""
+          },
+          "creatorName": {
+            "type": "string",
+            "default": ""
+          },
+          "mediaKind": {
+            "type": "string",
+            "default": ""
+          },
+          "platform": {
+            "type": "string",
+            "default": ""
+          },
+          "seriesId": {
+            "type": "string",
+            "default": ""
+          },
+          "seriesTitle": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
       "BtGuardCloudStatusDto": {
         "type": "object",
         "description": "云名单状态。",
@@ -4164,6 +4202,50 @@
           }
         }
       },
+      "CategoryRouteDto": {
+        "type": "object",
+        "description": "分类保存目录路由：外部捕获未指定保存目录时，agent 把 `custom_categories` 中与落点\n有关的规则随 `daemon.task.create` 交给 daemon；引擎建任务时按初始名定初始目录，\n下载完成、最终文件名确定后（插件改名、按响应推断的名字、HLS 转封装后的 `.mp4`）\n再按同一规则复核并把产物移入命中分类的目录。任务组成员与 BT / eD2K 任务不参与。\n\n匹配语义（唯一事实源为 agent `category_dir.rs` 与引擎 `category_route.rs`，两端共用\n夹具 `native/engine/src/fixtures/category_route_cases.json`）：网址规则固定优先于\n扩展名 / 正则分类（不看列表位置），网址规则之间按列表顺序取首个配置了目录且命中的；\n未被网址规则认领的任务再按文件名规则取首个配置了目录且命中的普通分类；都不命中时\n取「其他」的目录。",
+        "properties": {
+          "otherDir": {
+            "type": "string",
+            "description": "「其他」分类的目录；空 = 不兜底。"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoryRuleDto"
+            },
+            "description": "可见普通分类（按 `position`），只保留会影响落点的条目。"
+          }
+        }
+      },
+      "CategoryRuleDto": {
+        "type": "object",
+        "description": "[`CategoryRouteDto`] 的单条普通分类规则。",
+        "properties": {
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "matchMode": {
+            "type": "string",
+            "description": "`extension` | `regex` | `url`。"
+          },
+          "regexPattern": {
+            "type": "string"
+          },
+          "saveDir": {
+            "type": "string",
+            "description": "空 = 该分类不改变落点，只用于阻止「其他」兜底。"
+          },
+          "urlPattern": {
+            "type": "string",
+            "description": "`url` 模式的通配符模式；语义与 [`CustomCategoryDto::url_pattern`] 一致。"
+          }
+        }
+      },
       "ChangeTaskUrlRequest": {
         "type": "object",
         "description": "更换任务下载源地址请求体。",
@@ -4181,6 +4263,28 @@
         "type": "object",
         "description": "创建多文件任务组请求（`POST /api/v1/groups`）。`items` 不可为空\n（空数组 → 400）。\n\n# Examples\n",
         "properties": {
+          "archiveMetadata": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ArchiveMetadataDto",
+                "description": "Root metadata shared by all selected members, never per item."
+              }
+            ]
+          },
+          "categoryRoute": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CategoryRouteDto",
+                "description": "Classification routing, omitted for callers using an explicit save directory."
+              }
+            ]
+          },
           "cookies": {
             "type": "string"
           },
@@ -5243,6 +5347,10 @@
         "type": "object",
         "description": "插件贡献点（镜像 `engine::plugin::ContributesDecl`）。",
         "properties": {
+          "archiveRules": {
+            "type": "boolean",
+            "description": "Whether the plugin contributes signed archive classification rules."
+          },
           "commands": {
             "type": "array",
             "items": {
@@ -5761,6 +5869,17 @@
           "sourceUrl"
         ],
         "properties": {
+          "archiveMetadata": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ArchiveMetadataDto",
+                "description": "Root-level source metadata shared by all preview items."
+              }
+            ]
+          },
           "error": {
             "type": "string",
             "description": "无错误时为空。"

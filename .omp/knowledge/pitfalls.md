@@ -22,6 +22,7 @@
 - **凭据刷新上限只计「连续无效换发」，不计累计次数**：多连接共用每请求一次性令牌时，「每次运行最多 5 次」很快耗尽，任务以 403 失败。各请求点成功后 `DownloadSpec::confirm` 记录身份可用；插件看到的 `refreshCount` 仍是累计值 → `native/engine/src/intercept/refresh.rs::MAX_UNCONFIRMED_REFRESHES`、`native/engine/src/downloader.rs`（`ledger.unconfirmed`）。
 - **带子目录的文件名必须在落库前并入 `save_dir`**：下载器只把 `file_name` 当单个组件清洗（防穿越），否则子目录被压平成 `子目录_文件名`（#716）；BT 名字另有语义不拆 → `native/engine/src/download_manager.rs`（`is_bt` / `has_subdir` 分支）。
 - **用户重命名的新名必须是 `naming::sanitize_filename` 的不动点**：HTTP / FTP / HLS / DASH / eD2K 续传都按清洗后的名字重建 `<名>.fdownloading`，`a:b.iso`、`CON.txt`、以点结尾、超 200 字节这类名字改名后续传找不到临时文件，进度归零并遗留孤儿临时文件；BT 一律拒绝改名（落盘名由完成布局 + `bt_custom_name` 决定，四端菜单按 `can_rename` 隐藏） → `native/engine/src/download_manager.rs::rename_task`、回归 `rename_task_rejects_conflict_active_bt_and_invalid`；客户端门控 `crates/downloads/src/components/task_table.rs::TaskMenuFacts::can_rename` ↔ `web/src/pages/downloads/model/taskEdit.ts::canRename`。
+- **来源元数据不等于目录移动授权**：解析器可把 `archiveMetadata` 持久化到 `tasks.category_route`，即使用户已手选目录；完成期必须检查非空 `base_dir`，不能因 JSON 存在就执行插件目录规划，否则显式目录任务可能被搬走。任务组的现代 `directories` 输出也必须以授权基础目录为根，而不是已经拼过组名的 fallback → `category_route.rs::relocate_completed` / `archive_group_root`、`download_manager.rs::create_task_group`；回归 `plugin_interceptors::{explicit_save_directory_bypasses_archive_callback,archive_plugin_group_preserves_member_tree_under_authorized_base}`。
 - **HLS 小响应拉取不得在共享 client 上设全局 timeout，播放列表首行带 BOM 要先剥**：全局 timeout 会误伤普通 HTTP 长下载；`m3u8_rs` 要求首行就是 `#EXTM3U` → `native/engine/src/hls_downloader.rs::fetch_small` / `trim_playlist_prefix`。
 - **下载结束到完成帧之间有长收尾（remux / mux / 插件后处理）的协议，必须在收尾前发一帧「总量 = 已落盘」且能越过 manager 节流的帧**：manager 对状态 1 帧按 `MIN_DART_INTERVAL_MS`（500ms）节流，被吞的帧不会补发；HLS 写完最后一段的帧常落在节流窗口内，ffmpeg 转封装期间界面一直停在 9x%。携带非空 `file_name` 的帧必定转发；进度估值另须保证「有未落盘段 < 100%、全部落盘 = 100%」→ `native/engine/src/hls_downloader.rs::run_hls_download_inner`（「全部分段已落盘」注释段）、`hls_downloader/size_estimate.rs`、回归 `vod_progress_estimates_total_and_converges_to_actual_bytes`。
 - **订阅源正文无有效 tracker 必须算该源失败**：HTML 错误页或空页若当「成功 + 空列表」，会覆盖宿主缓存并在刷新间隔内丢光订阅 tracker → `native/engine/src/tracker_subscription.rs::parse_source_body`。
@@ -52,7 +53,9 @@
 
 - **QuickJS 抛 `null` 要按异常值识别为 OOM**：内存紧贴上限时 QuickJS 连 `"out of memory"` 错误对象都分配不出，改抛 `null`，字符串匹配的 `reclassify_oom` 认不出，该次 OOM 不计入熔断；必须在仍持有异常值时判定（代价：插件主动 `throw null` 也计 OOM） → `native/engine/src/plugin/quickjs.rs::caught_error`、回归 `null_exception_sentinel_counts_as_memory_limit_exceeded`。
 - **拦截器链必须显式按 identity 升序排序，不能依赖插件加载顺序**：目录遍历和去重都不保证 identity 顺序，后续插件会看到前一个插件改写后的请求，乱序会改变下载行为 → `native/engine/src/plugin/interceptors.rs::PluginManager::task_interceptor`；回归 `plugin::manager::tests::task_interceptors_follow_identity_order_not_load_order`。
-- **归档回调处于下载起跑 / 完成的等待路径，必须限制并发与耗时**：独立 `ARCHIVE_CONCURRENCY` 信号量最多运行 2 个实例，单次获取许可最多等待 3 秒，脚本执行预算为 5 秒；多个归档插件依次执行，延迟可累加，超时 / 内存超限计入现有熔断，不能把“纯本地回调”等同于零延迟 → `native/engine/src/plugin/quickjs.rs::{ARCHIVE_CONCURRENCY,invoke_archive}`、`native/engine/src/plugin/interceptors.rs::PluginManager::archive_folder`。
+- **签名 archiveRules 公钥轮换必须清掉旧 watermark / cache**：只丢弃旧公钥缓存却保留高序号水位时，新钥 seed 从较小 sequence 起步会永久 bootstrap 失败 → `plugin/archive_rules_manager.rs::validated_archive_rule_cache`（`RuleWatermark.public_key` + `clear_archive_rule_trust`）；回归 `archive_rule_public_key_rotation_resets_trust_watermark`。
+- **归档回调处于下载起跑 / 完成的等待路径，必须限制并发与耗时**：独立 `ARCHIVE_CONCURRENCY` 信号量最多运行 2 个实例，单次获取许可最多等待 3 秒，脚本执行预算为 5 秒；多个归档插件依次执行，延迟可累加，超时 / 内存超限计入现有熔断，不能把“纯本地回调”等同于零延迟 → `native/engine/src/plugin/quickjs.rs::{ARCHIVE_CONCURRENCY,invoke_archive}`、`native/engine/src/plugin/interceptors.rs::PluginManager::archive_directories`。
+- **规则库轮询失败或未发现新版本时不能写配置，即使写入字节不变**：检查时间与错误只留内存；仅验签通过的新包晋升才原子持久化包与序号水位，否则每日检查会唤醒 NAS 磁盘。回归用 SQLite 拒写触发器捕获同值写入 → `native/engine/src/plugin/archive_rules_manager.rs::process_archive_rule_update`、`plugin::manager::tests::archive_rule_refresh_persists_only_verified_promotions`。
 - **QuickJS 宿主预置的 JSON 全局值不能再次 `JSON.parse`**：`set_json_global` 已把值解析成 JS 对象；再次 parse 会把对象转为 `"[object Object]"` 并让调用失败 → `native/engine/src/plugin/quickjs.rs::set_json_global`。
 - **外部工具子进程要补全登录 shell 的 PATH**：macOS 从 Dock / 访达启动只继承 `/usr/bin:/bin:/usr/sbin:/sbin`，yt-dlp 找不到 node / bun，带 Cookie 解析 YouTube 报 "The page needs to be reloaded"；取 PATH 的等待不计入插件脚本墙钟 → `native/engine/src/plugin/tool_path.rs::apply_full_path_env`（`read_login_shell_path` / `merge_path_lists`）。
 - **插件安装期校验必须覆盖拦截器入口脚本**：只校验主入口会让拦截器语法错误的插件装上后运行期才炸 → `native/engine/src/plugin/manager.rs`、回归 `native/engine/tests/engine/plugin_interceptors.rs::broken_interceptor_script_is_rejected_at_install`。
@@ -64,6 +67,8 @@
 - **插件状态变化必须经 `PluginManager::publish_state` 广播，不能只发 `PluginAutoDisabled`**：熔断曾只发 `PluginAutoDisabled`，GPUI 贡献点（任务右键命令 / 详情页签 / 活动页）只认 `PluginsChanged` 而一直残留；插件 `flux.settings.update`、站点默认写入也曾无事件，两端显示旧值。新写入点一律在结束时调 `publish_state`，daemon handler 不再自己发 → `native/engine/src/plugin/manager.rs::publish_state`、回归 `circuit_breaker_trip_publishes_disabled_state_before_notice` / `host_settings_update_publishes_new_values`。
 - **二段解析任务绝不能以原始链接起跑**：组成员 / 插件订阅条目的 `url` 是分享页，绑定被清空（卸载、旧版 fail-closed 行、忽略插件重试）后起跑会把 HTML 存成文件。起跑 / 恢复 / 解析回流都要先重绑、无插件即 fail-closed，`ignoreRetry` 对其拒绝 → `native/engine/src/download_manager.rs::{rebind_second_stage,fail_second_stage_unavailable}`、回归 `native/engine/tests/engine/plugin_state_freshness.rs`。
 - **预解析与建组必须用同一个插件**：成员任务曾在建组时按 `route_resolver` 重选（含非 multi 插件、字母序取首个），与预解析用的 `match_multi_resolver` 不一致就把 `resolverItem` 交给别的插件。客户端回传 `ResolvePreviewResponse.pluginId` → `CreateGroupRequest.resolverPluginId`（GPUI / Web / iOS） → `download_manager.rs::plugin_bind_resolver`。
+- **可移植视图节点标识用 `p.key`，事件读取 `ev.node` 的最后一段，不能写 `p.id` / `ev.id`**：`id` 会被规范化器作为未知 prop 拒绝，设置页完全打不开；归档分类插件已在真实宿主复现并修复 → `native/protocol/src/plugin_view/normalize.rs::{normalize_view,child_segment}`、`native/engine/src/plugin/quickjs_host.rs::HOST_PRELUDE`。
+- **常驻 main 的 `flux.settings` 是启动快照，不能把写入完成当成快照对象已被替换**：保存分组选项后直接重读它会让实时预览继续用旧规则；视图保留自己的已确认配置，先校验副本、等 `flux.settings.update` 成功后再推进状态，失败不修改原 aliases/rules → `native/engine/src/plugin/quickjs_host.rs::HOST_PRELUDE`（settings.update）、分类插件 `main.js::updateSettings/updatePreview`。
 - **插件解析出的媒体直链常绑定解析时的出口 IP（googlevideo `ip=`、网盘签名链接），下载必须走同一出口**：Auto 下解析曾恒直连、下载却按先验 / 多路径 / 换路走代理，换路重试时还先重新解析（仍直连）再强制走代理，结果 403 且 403 不触发换路；站点规则又只按媒体链接匹配，`youtube.com` 规则管不到 googlevideo。现在解析按源链接制定出口计划并在 Auto 断网时换路重跑，下载以源链接定出口、Auto 下单路径钉在解析所用路径、禁用多网卡；Auto 换路判据来自 bridge 的类型化观测（被墙时多为墙钟超时而非插件抛错文案）→ `native/engine/src/plugin/call_egress.rs`、`native/engine/src/plugin/manager.rs::run_planned`、`native/engine/src/download_manager.rs::{resolve_egress_plan,absorb_resolve_egress,take_start_route}`，回归 `native/engine/tests/engine/plugin_resolve_egress.rs`。
 - **插件卸载必须删除该 identity 的全部安装副本，并在重载后核对无残留**：安装扫描只认 manifest 的 identity、不认目录名，`plugins/` 下目录名不同的同 identity 副本（手动解压的旧版本）也会被加载；`purge` 曾只删「第一个失败副本」或 `plugins/<identity>` 之一，重载后另一份重新出现而卸载报成功（要点两次；唯一副本目录名 ≠ identity 时永远删不掉）→ `native/engine/src/plugin/manager.rs::{purge,installed_copies_of}`、回归 `native/engine/tests/engine/plugin_purge_auth_flow.rs::uninstall_removes_*`。
 
@@ -71,8 +76,10 @@
 
 另见 AGENTS.md §4：本机端口默认宽松显式严格（WSAEACCES 回退）、远程控制凭据与会话撤销、空闲静默、遥测只有两条匿名事件。
 
-- **云端 / LAN 接收任务必须在接收端填入本机分类路由，只有显式保存目录才禁用**：远端只传链接 / 文件名与可选目标目录，空目录及跨平台目录回退到默认目录时不能漏掉 daemon 建任务 RPC 的分类路由 → `native/agent/src/remote.rs::create_local_task`、`native/agent/src/link/service.rs::create_local_task`，回归 `cloud_receive_uses_preference_category_route_only_without_explicit_directory` / `receiver_falls_back_to_default_dir_and_retries_without_dir`。
+- **归档能力扩展不能顺带改变云端 / LAN 被动接收任务的分类策略**：这两类任务沿用既有 `category_route: None`，不得因接收端存在分类偏好而自动附加路由；默认目录跟随授权只在原本支持该交互的建任务入口传递 → `native/agent/src/remote.rs::create_local_task`、`native/agent/src/link/service.rs`（`DaemonTaskCreator`）。
 - **捕获确认必须显式传递用户禁用自动分类的意图**：仅比较目录值无法区分自动预填与用户手动选回同一目录，确认请求用 `disableCategoryRoute` 阻止 agent 在完成阶段重新启用分类 → `native/agent/src/capture.rs::resolve`、`crates/downloads/src/submission.rs`，回归 `manual_category_directory_disables_capture_route`。
+- **进程测试要区分强杀回收与优雅关停**：Windows `Child::kill` 不是正常退出，不能复用要求成功退出码的断言；`system.shutdown` 与 Unix SIGTERM 仍必须成功退出 → `native/daemon/tests/daemon/process_contract.rs::ProcessGuard::{terminate,wait_for_success,wait_for_exit}`。
+- **方法分发测试不要依赖关闭端口的拒连耗时**：Windows 的本机拒连可能超过 2 秒；云端调用使用实际监听的临时回环服务器，并在测试 `agent.cloud.endpointSet` 时保持该地址，防止空参数把后续调用重置回关闭端口 → `native/agent/src/gateway.rs::tests::every_canonical_agent_method_reaches_a_real_dispatch_branch`。
 
 - **回环 daemon 的 HTTP 客户端必须 `.no_proxy()`**：否则会话凭据与文件字节会经环境 / 系统代理离开本机 → `native/agent/src/capture.rs::DaemonBlobClient::new`。
 - **macOS 上 reqwest 的「系统代理」不读 `ExceptionsList`**：hyper-util `Matcher::from_system` 只取 SCDynamicStore 的 HTTP / HTTPS 地址，直连名单只认 `NO_PROXY` 环境变量（GUI 进程没有）→ 回环、局域网、`.local` 全进代理；本机开 Clash 时 agent 连 127.0.0.1 的云端 / 更新 / 网关测试因此失败。agent 外网客户端一律经 `system_proxy::follow_system` 显式装配（环回恒直连 + `NO_PROXY` + 系统槽并入例外列表，其余照常走代理），不得裸用 reqwest 默认代理；引擎 System 模式同样把 `ExceptionsList` 归一化进 `no_proxy_list` → `native/agent/src/system_proxy.rs`（`LazyHttpClient`、`Network::SystemDefault`）、`native/engine/src/proxy_config.rs::parse_scutil_exceptions`、回归 `system_proxy_bypasses_only_exceptions_and_loopback`。
@@ -87,6 +94,8 @@
 ## GPUI（gpui-fast 保留模式）
 
 另见 AGENTS.md §4：render 读的状态必须在 entity / global / `ListState` / `ScrollHandle` 内，父 view notify 不再重建子 view，渲染期不得无条件写 entity / global。
+
+- **插件详情的归档规则状态直接复用 protocol DTO**：`fluxdown_ui_extensions` 没有直接依赖 serde，另写 `Deserialize` 镜像会导致编译失败并让 wire 字段漂移；市场详情通过 `PluginDetail::default` 补齐仅已安装插件才有的状态 → `crates/extensions/src/components/plugin_detail.rs`（`PluginArchiveRulesDto` / `PluginDetail::from_market`）。
 
 - **渲染期要「先读后写」，值没变就不 `update`**：gpui-fast 把渲染期的 entity 写入记为外部修改，每帧写会让读该状态的其他 view（如 shell 顶栏）每帧重建 → `crates/components/src/sidebar/mod.rs`（`sample` 后的只读分支）、`crates/downloads/src/components/sidebar_layout.rs`。
 - **事件回调里写表格状态前先读，没变化就返回**：没有高亮行时每次左键都写表格，会让 gpui-fast 把表格记为已变化 → `crates/downloads/src/components/task_table.rs`（`right_clicked_row().is_none()` 早退）。
@@ -160,5 +169,6 @@
 - **暂停 / 删除 / 重新下载清盘要给「写入方还没松手」留重试窗口**：`pause_task_silent` 只取消 token 不等 spawned task 退出，Windows 上被写入方持有的文件 `remove_file` 直接失败；残留的 `.fdownloading` 会被下一轮当成可续传数据，「从零重下」的承诺就破了 → `native/engine/src/download_manager.rs::remove_file_retrying`。
 - **测试删目录前必须先关连接池**：Windows 上 sqlite 文件句柄未释放时 `remove_dir_all` 静默失败，残留目录曾在 temp 累积 1400+ 个，并导致陈旧库被继承的历史 flaky → `native/engine/src/db.rs::close_test_db`（测试辅助）。
 - **自更新替换文件要把杀毒 / 搜索索引的短暂占用当瞬时错误重试**（拒绝访问、共享冲突、锁冲突、映射节被占用）→ `native/agent/src/update/install/replace.rs::is_transient`。
+- **Node/Bun 文件 URL 必须用 `fileURLToPath` 转本地路径，不能取 `.pathname`**：Windows 下后者保留 `/D:/…`，SDK 构建及 CLI 子进程报找不到模块；子进程用 `process.execPath` 而非依赖 PATH 上另有 `bun` → `packages/plugin-sdk/scripts/build.ts`、`src/cli.test.ts`。
 - **局域网对端下发的保存目录（接单目录）必须拒绝 UNC / 设备命名空间路径与 `..` 段**：Windows 上对 `\\host\share`、`\\?\`、`\\.\` 创建目录会主动触发对外 SMB 认证 → `native/agent/src/link/service.rs::is_plain_local_dir`（由 `resolve_receive_dir` 调用，云端接单与局域网互联共用）。
 - **原生消息主机清单在 Windows 经 `%ComSpec% /d /c` 启动**：`ComSpec` 配置值不可用时浏览器起不来 NMH，诊断要能检出并修复 → `native/agent/src/diagnostics.rs`（`ComSpec` 段）。

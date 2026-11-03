@@ -112,11 +112,10 @@ impl ExtensionsView {
 
     /// 把控制器的最新插件列表推给已打开的对话框；断连期间列表不可信，保持上一份已知状态。
     fn sync_live_plugins(&self, cx: &mut Context<Self>) {
-        if self.controller.is_stale() {
-            return;
-        }
-        self.live_plugins
-            .update(cx, |live, cx| live.replace(self.controller.plugins(), cx));
+        let stale = self.controller.is_stale();
+        self.live_plugins.update(cx, |live, cx| {
+            live.replace(self.controller.plugins(), stale, cx);
+        });
     }
 
     /// 注入插件视图工厂（app 在装配时调用）。
@@ -192,6 +191,7 @@ impl ExtensionsView {
                 .to_owned(),
         );
         self.controller.mark_stale();
+        self.sync_live_plugins(cx);
         cx.notify();
     }
 

@@ -117,7 +117,7 @@ pub struct NewDownloadContext {
     pub manual_proxy_url: String,
     /// 预填链接（拖放）。
     pub initial_urls: Vec<String>,
-    /// 分类目录路由（偏好 `custom_categories`）；`None` = 没有分类配置目录。
+    /// 默认目录下的授权路由；空规则仍允许插件归档。`None` 表示明确停用路由。
     pub category_route: Option<fluxdown_protocol::CategoryRouteDto>,
     /// 保存目录分类下拉的候选（同一偏好投影：可见、非 `all`、配置了目录的分类，按 `position`）。
     pub category_options: Vec<NewDownloadCategory>,

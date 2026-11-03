@@ -4307,5 +4307,73 @@
   },
   "files": ["main.js", "auth.js"],
   "ok": false
+ },
+ {
+  "name": "archive rules valid and adds update host",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": {
+    "archiveRules": {
+     "entry": "archive-rules.json",
+     "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "updateUrl": "https://rules.example.com/v1/rules.json"
+    }
+   }
+  },
+  "files": ["archive-rules.json"],
+  "ok": true,
+  "risk": "elevated",
+  "networkHosts": ["rules.example.com"]
+ },
+ {
+  "name": "archive rules require archive permission",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "contributes": {
+    "archiveRules": {
+     "entry": "archive-rules.json",
+     "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   }
+  },
+  "files": ["archive-rules.json"],
+  "ok": false
+ },
+ {
+  "name": "archive rules require json entry and hex public key",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": {
+    "archiveRules": { "entry": "rules.txt", "publicKey": "not-a-key" }
+   }
+  },
+  "files": ["rules.txt"],
+  "ok": false
+ },
+ {
+  "name": "archive rules update url must be public https",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["archive"],
+   "contributes": {
+    "archiveRules": {
+     "entry": "archive-rules.json",
+     "publicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "updateUrl": "http://localhost/rules.json"
+    }
+   }
+  },
+  "files": ["archive-rules.json"],
+  "ok": false
  }
 ]

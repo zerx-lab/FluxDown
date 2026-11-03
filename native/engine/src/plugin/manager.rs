@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -33,13 +33,14 @@ use super::runtime::{
     ResolveResult, ScriptRuntime, SubscriptionRequest,
 };
 
+#[path = "archive_rules_manager.rs"]
+mod archive_rules_manager;
 #[path = "host_manager.rs"]
 mod host_manager;
 #[path = "interceptors.rs"]
 mod interceptors;
 #[path = "routing.rs"]
 pub mod routing;
-
 /// 连续超时/超内存达到该次数 → 自动熔断禁用。
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
@@ -350,9 +351,19 @@ pub struct PluginManager {
     site_prompts: routing::SitePromptLocks,
     /// 插件包修订号（见 [`super::package_revision`]）。
     package_revisions: super::package_revision::PackageRevisions,
-    /// 串行化 [`Self::publish_state`]：快照与发射在同一把锁内，事件顺序即状态顺序，
-    /// 较旧的快照永远不会盖过较新的。
+    /// Serializes publication so state snapshots and emitted events stay ordered.
     publish_lock: tokio::sync::Mutex<()>,
+    /// Cache of validated archive rule packs; matching never performs I/O.
+    archive_rule_packs:
+        tokio::sync::RwLock<HashMap<String, Arc<super::archive_rules::VerifiedArchiveRules>>>,
+    /// Poll diagnostics stay in memory; unchanged rule checks never persist state.
+    archive_rule_status:
+        tokio::sync::RwLock<HashMap<String, archive_rules_manager::ArchiveRuleCache>>,
+    /// Per-plugin serialized signed archive-rule refreshes.
+    archive_rule_locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Wakes the idle updater when a plugin's enabled rule feeds change.
+    archive_rule_updates_notify: Arc<tokio::sync::Notify>,
+    archive_rule_updates_started: AtomicBool,
     /// 全局出口来源（引擎装配时注入）：非任务调用（预解析 / 订阅 / 登录 / 宿主加速改写）
     /// 据此制定出口计划。未注入（单测里的 null bridge）时调用走 bridge 的全局出口、不换路。
     egress_source: std::sync::RwLock<Option<Arc<super::bridge::EngineBridge>>>,
@@ -427,6 +438,11 @@ impl PluginManager {
             host: host_manager::HostState::new(),
             site_prompts: routing::SitePromptLocks::default(),
             package_revisions: super::package_revision::PackageRevisions::new(),
+            archive_rule_locks: tokio::sync::Mutex::new(HashMap::new()),
+            archive_rule_packs: tokio::sync::RwLock::new(HashMap::new()),
+            archive_rule_status: tokio::sync::RwLock::new(HashMap::new()),
+            archive_rule_updates_notify: Arc::new(tokio::sync::Notify::new()),
+            archive_rule_updates_started: AtomicBool::new(false),
             publish_lock: tokio::sync::Mutex::new(()),
             egress_source: std::sync::RwLock::new(None),
         }
@@ -463,6 +479,61 @@ impl PluginManager {
     /// 专用运行时 handle，供 off-actor worker spawn（禁止裸 tokio::spawn）。
     pub fn runtime_handle(&self) -> tokio::runtime::Handle {
         self.runtime.spawn_handle()
+    }
+    /// Start a weak-manager updater; it sleeps without periodic work when no signed feeds are enabled.
+    pub(crate) fn start_archive_rule_updates(self: &Arc<Self>) {
+        if self
+            .archive_rule_updates_started
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let notify = Arc::clone(&self.archive_rule_updates_notify);
+        self.runtime.spawn_handle().spawn(async move {
+            loop {
+                let Some(manager) = weak.upgrade() else {
+                    return;
+                };
+                let identities: Vec<String> = manager
+                    .plugins
+                    .read()
+                    .await
+                    .iter()
+                    .filter(|plugin| plugin.enabled)
+                    .filter_map(|plugin| {
+                        plugin
+                            .manifest
+                            .contributes
+                            .as_ref()
+                            .and_then(|contributes| contributes.archive_rules.as_ref())
+                            .filter(|rules| rules.update_url.is_some())
+                            .map(|_| plugin.manifest.identity.clone())
+                    })
+                    .collect();
+                if identities.is_empty() {
+                    drop(manager);
+                    notify.notified().await;
+                    continue;
+                }
+                for identity in identities {
+                    let Some(manager) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Err(error) = manager.archive_rules_status(&identity, false).await {
+                        log_info!("[plugin] archive rules update for {identity} failed: {error}");
+                    }
+                }
+                let Some(manager) = weak.upgrade() else {
+                    return;
+                };
+                drop(manager);
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_secs(24 * 60 * 60)) => {},
+                    _ = notify.notified() => {},
+                }
+            }
+        });
     }
 
     /// 宿主并发上限变化时同步 resolve 并发容量（见 [`ScriptRuntime::set_resolve_capacity`]）。
@@ -531,8 +602,13 @@ impl PluginManager {
 
         *self.plugins.write().await = Arc::new(deduped);
         *self.failed_plugins.write().await = Arc::new(failed);
+        self.archive_rule_status.write().await.clear();
+        // A new declaration must be revalidated before any cached rules can match.
+        self.archive_rule_packs.write().await.clear();
         // 宿主对账：被禁用 / 卸载 / manifest 或 main 源码变化的插件，其宿主立即释放。
         self.reconcile_hosts().await;
+        self.initialize_archive_rule_packs().await;
+        self.archive_rule_updates_notify.notify_one();
     }
 
     /// 加载单个插件目录。失败记 warn 并保留诊断信息（不阻塞其他插件）。
@@ -639,6 +715,19 @@ impl PluginManager {
                 Err(e) => Err(PluginError::ManifestInvalid(format!(
                     "sniffRules '{rules}' 读取失败: {e}"
                 ))),
+            };
+        }
+        if file_check.is_ok()
+            && let Some(rules) = manifest
+                .contributes
+                .as_ref()
+                .and_then(|contributes| contributes.archive_rules.as_ref())
+        {
+            file_check = match super::archive_rules::read_bounded(&dir.join(&rules.entry)).await {
+                Ok(bytes) => manifest.validate_archive_rules_content(|path| {
+                    (path == rules.entry).then(|| bytes.clone())
+                }),
+                Err(error) => Err(error),
             };
         }
         if file_check.is_ok()
@@ -2788,6 +2877,9 @@ fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem
 /// [`ResolveRequest::resolver_item`] 非空）不可返回 `manifest`（防递归裂变，
 /// D6/§7.6）。全 fail-closed：任一违规整体拒绝该次 resolve 结果。
 fn validate_resolve_output(res: &ResolveResult, second_stage: bool) -> Result<(), PluginError> {
+    if let Some(metadata) = &res.archive_metadata {
+        validate_archive_metadata(metadata)?;
+    }
     if let Some(manifest) = &res.manifest {
         if second_stage {
             return Err(PluginError::InvalidOutput(
@@ -2873,7 +2965,34 @@ fn check_output_url(url: &str) -> Result<(), PluginError> {
 /// 字符（给 `save_dir` 前缀留余量，规避 Windows `MAX_PATH` 260 限制）；
 /// kind ∈ {"", "file"}；per-item variants ≤50，variant id/label 非空。
 /// fail-closed：任一条目违规拒绝整个 manifest（不做部分放行）。
+fn validate_archive_metadata(metadata: &crate::model::ArchiveMetadata) -> Result<(), PluginError> {
+    if !matches!(metadata.media_kind.as_str(), "" | "series" | "post") {
+        return Err(PluginError::InvalidOutput(
+            "archiveMetadata.mediaKind must be empty, series, or post".to_string(),
+        ));
+    }
+    for (field, value) in [
+        ("platform", &metadata.platform),
+        ("creatorId", &metadata.creator_id),
+        ("creatorName", &metadata.creator_name),
+        ("seriesId", &metadata.series_id),
+        ("seriesTitle", &metadata.series_title),
+        ("collectionId", &metadata.collection_id),
+        ("collectionTitle", &metadata.collection_title),
+    ] {
+        if value.len() > 180 || value.chars().any(char::is_control) {
+            return Err(PluginError::InvalidOutput(format!(
+                "archiveMetadata.{field} exceeds limit or contains controls"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_manifest(m: &ResolveManifest) -> Result<(), PluginError> {
+    if let Some(metadata) = &m.archive_metadata {
+        validate_archive_metadata(metadata)?;
+    }
     if m.items.is_empty() || m.items.len() > 1000 {
         return Err(PluginError::InvalidOutput(format!(
             "manifest items 数量非法: {}（须 1..=1000）",
@@ -3452,10 +3571,54 @@ mod tests {
             manifest: Some(ResolveManifest {
                 name: "share".into(),
                 items: vec![item("f1", "a.mp4", "sub")],
+                ..Default::default()
             }),
             ..Default::default()
         };
         assert!(validate_resolve_output(&res, false).is_ok());
+    }
+    #[test]
+    fn archive_metadata_is_validated_on_resolve_and_manifest() {
+        let valid = crate::model::ArchiveMetadata {
+            media_kind: "series".into(),
+            series_title: "Series".into(),
+            ..Default::default()
+        };
+        let direct = ResolveResult {
+            archive_metadata: Some(valid.clone()),
+            url: "https://cdn.example/file.mp4".into(),
+            ..Default::default()
+        };
+        assert!(validate_resolve_output(&direct, false).is_ok());
+        let invalid = crate::model::ArchiveMetadata {
+            media_kind: "unknown".into(),
+            ..Default::default()
+        };
+        assert!(
+            validate_resolve_output(
+                &ResolveResult {
+                    archive_metadata: Some(invalid),
+                    url: "https://cdn.example/file.mp4".into(),
+                    ..Default::default()
+                },
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_resolve_output(
+                &ResolveResult {
+                    manifest: Some(ResolveManifest {
+                        archive_metadata: Some(valid),
+                        items: vec![item("id", "file.mp4", "")],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                false
+            )
+            .is_ok()
+        );
     }
 
     /// manifest 与 url/variants/audioUrl 互斥 → 各自拒绝。
@@ -3690,6 +3853,430 @@ mod tests {
         );
         manager.load_all().await;
         (manager, sink, root)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signed_archive_rules_seed_is_loaded_for_matching() {
+        let identity = "acme@archive-rules";
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-archive-rules-{}", uuid::Uuid::new_v4()));
+        let plugin_dir = root.join(identity);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let payload = "{\"format\":\"fluxdown-archive-rules\",\"schemaVersion\":1,\"sequence\":1,\"rules\":[{\"id\":\"first\",\"folderName\":\"Series\",\"match\":{\"extensions\":[\"mkv\"]}}]}";
+        let signature = "887d638fd517b304863762f7bb28d77366d47ff9631e76a0ced3c8d7191edb4664863ac908417e4880cbff89df6cee94cbad21afe9429573694530d6920db402";
+        let public_key = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8";
+        let envelope = format!(
+            "{{\"payload\":{},\"signature\":\"{}\"}}",
+            serde_json::to_string(payload).unwrap(),
+            signature
+        );
+        std::fs::write(plugin_dir.join("archive-rules.json"), envelope).unwrap();
+
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        let manager = PluginManager::new(
+            Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
+            Arc::new(NullBridge),
+            db,
+            root.clone(),
+            "1.0.0".to_string(),
+            Arc::new(CaptureSink::default()),
+        );
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(crate::plugin::manifest::ArchiveRulesDecl {
+                entry: "archive-rules.json".to_string(),
+                public_key: public_key.to_string(),
+                update_url: None,
+            }),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+
+        manager.archive_rules_status(identity, false).await.unwrap();
+        let matched = manager
+            .archive_rule_match(
+                identity,
+                &crate::model::ArchiveContext {
+                    file_name: "episode.MKV".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            matched,
+            Some(("Series".to_string(), "first".to_string(), 1))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn signed_rule_pack(key: &ed25519_dalek::SigningKey, sequence: u64, id: &str) -> Vec<u8> {
+        use ed25519_dalek::Signer;
+
+        let payload = serde_json::json!({
+            "format": "fluxdown-archive-rules",
+            "schemaVersion": 1,
+            "sequence": sequence,
+            "rules": [{
+                "id": id,
+                "folderName": format!("Folder-{id}"),
+                "match": {"extensions": ["mkv"]}
+            }]
+        })
+        .to_string();
+        let signature = key.sign(payload.as_bytes());
+        serde_json::json!({
+            "payload": payload,
+            "signature": hex::encode(signature.to_bytes())
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_rule_public_key_rotation_resets_trust_watermark() {
+        use ed25519_dalek::SigningKey;
+
+        let identity = "acme@archive-rotate-key";
+        let root = std::env::temp_dir().join(format!(
+            "fluxdown-archive-rotate-key-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let plugin_dir = root.join(identity);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let old_key = SigningKey::from_bytes(&[11; 32]);
+        let new_key = SigningKey::from_bytes(&[13; 32]);
+        let old_public = hex::encode(old_key.verifying_key().to_bytes());
+        let new_public = hex::encode(new_key.verifying_key().to_bytes());
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            signed_rule_pack(&old_key, 9, "old"),
+        )
+        .unwrap();
+
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        let manager = PluginManager::new(
+            Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
+            Arc::new(NullBridge),
+            db,
+            root.clone(),
+            "1.0.0".to_string(),
+            Arc::new(CaptureSink::default()),
+        );
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(crate::plugin::manifest::ArchiveRulesDecl {
+                entry: "archive-rules.json".to_string(),
+                public_key: old_public,
+                update_url: None,
+            }),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+        let bootstrapped = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(bootstrapped["sequence"], 9);
+
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            signed_rule_pack(&new_key, 1, "rotated"),
+        )
+        .unwrap();
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(crate::plugin::manifest::ArchiveRulesDecl {
+                entry: "archive-rules.json".to_string(),
+                public_key: new_public.clone(),
+                update_url: None,
+            }),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+        manager.archive_rule_packs.write().await.remove(identity);
+        manager.archive_rule_status.write().await.remove(identity);
+
+        let rotated = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(rotated["sequence"], 1);
+        assert_eq!(rotated["publicKey"], new_public);
+        let matched = manager
+            .archive_rule_match(
+                identity,
+                &crate::model::ArchiveContext {
+                    file_name: "episode.mkv".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            matched,
+            Some(("Folder-rotated".to_string(), "rotated".to_string(), 1))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_rule_refresh_persists_only_verified_promotions() {
+        use ed25519_dalek::SigningKey;
+
+        let identity = "acme@archive-refresh";
+        let root =
+            std::env::temp_dir().join(format!("fluxdown-archive-refresh-{}", uuid::Uuid::new_v4()));
+        let plugin_dir = root.join(identity);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+        let seed = signed_rule_pack(&signing_key, 1, "seed");
+        std::fs::write(plugin_dir.join("archive-rules.json"), &seed).unwrap();
+
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        let manager = PluginManager::new(
+            Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
+            Arc::new(NullBridge),
+            db,
+            root.clone(),
+            "1.0.0".to_string(),
+            Arc::new(CaptureSink::default()),
+        );
+        let mut plugin = test_loaded_plugin(identity, false, &plugin_dir.to_string_lossy());
+        plugin.manifest.permissions.push("archive".to_string());
+        let declaration = crate::plugin::manifest::ArchiveRulesDecl {
+            entry: "archive-rules.json".to_string(),
+            public_key: public_key.clone(),
+            update_url: None,
+        };
+        plugin.manifest.contributes = Some(crate::plugin::manifest::ContributesDecl {
+            archive_rules: Some(declaration.clone()),
+            ..Default::default()
+        });
+        *manager.plugins.write().await = Arc::new(vec![plugin]);
+        manager.archive_rules_status(identity, false).await.unwrap();
+        // Reject even byte-identical writes: raw-value equality alone cannot prove idle silence.
+        for sql in [
+            "CREATE TRIGGER reject_archive_poll_insert BEFORE INSERT ON config \
+             BEGIN SELECT RAISE(ABORT, 'idle archive refresh attempted a config write'); END",
+            "CREATE TRIGGER reject_archive_poll_update BEFORE UPDATE ON config \
+             BEGIN SELECT RAISE(ABORT, 'idle archive refresh attempted a config write'); END",
+            "CREATE TRIGGER reject_archive_poll_delete BEFORE DELETE ON config \
+             BEGIN SELECT RAISE(ABORT, 'idle archive refresh attempted a config write'); END",
+        ] {
+            sqlx::query(sql).execute(manager.db.pool()).await.unwrap();
+        }
+
+        let cache_key = format!("plugin.{identity}.archive_rules.cache");
+        let watermark_key = format!("plugin.{identity}.archive_rules.watermark");
+        let original_cache = manager.db.get_config(&cache_key).await.unwrap().unwrap();
+        let original_watermark = manager
+            .db
+            .get_config(&watermark_key)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut cache = manager
+            .archive_rule_status
+            .read()
+            .await
+            .get(identity)
+            .unwrap()
+            .clone();
+        let url = "https://updates.example.invalid/archive-rules.json";
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Err(PluginError::Runtime("offline".to_string())),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Ok(b"{invalid signature}".to_vec()),
+                15,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Ok(seed.clone()),
+                20,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cache.last_error, None);
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        manager
+            .process_archive_rule_update(
+                identity,
+                &declaration,
+                url,
+                &mut cache,
+                Ok(signed_rule_pack(&signing_key, 1, "equivocation")),
+                30,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.db.get_config(&cache_key).await.unwrap().as_deref(),
+            Some(original_cache.as_str())
+        );
+        assert_eq!(
+            manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(original_watermark.as_str())
+        );
+
+        for sql in [
+            "DROP TRIGGER reject_archive_poll_insert",
+            "DROP TRIGGER reject_archive_poll_update",
+            "DROP TRIGGER reject_archive_poll_delete",
+        ] {
+            sqlx::query(sql).execute(manager.db.pool()).await.unwrap();
+        }
+
+        let promoted = signed_rule_pack(&signing_key, 2, "promoted");
+        let verified = manager
+            .process_archive_rule_update(identity, &declaration, url, &mut cache, Ok(promoted), 40)
+            .await
+            .unwrap()
+            .expect("higher sequence must be promoted");
+        assert_eq!(cache.sequence, 2);
+        assert_eq!(cache.last_error, None);
+        let persisted_cache_raw = manager.db.get_config(&cache_key).await.unwrap().unwrap();
+        let persisted_cache: serde_json::Value =
+            serde_json::from_str(&persisted_cache_raw).unwrap();
+        assert_eq!(persisted_cache["sequence"], 2);
+        assert!(persisted_cache["lastCheckedAt"].is_null());
+        assert!(persisted_cache["lastError"].is_null());
+        let persisted_watermark: serde_json::Value = serde_json::from_str(
+            &manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted_watermark["sequence"], 2);
+        assert_eq!(persisted_watermark["digest"], cache.digest);
+        manager
+            .archive_rule_packs
+            .write()
+            .await
+            .insert(identity.to_string(), Arc::new(verified));
+        manager
+            .archive_rule_status
+            .write()
+            .await
+            .insert(identity.to_string(), cache);
+        manager
+            .db
+            .set_config(&cache_key, "malformed")
+            .await
+            .unwrap();
+        let status = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(status["sequence"], 2);
+        manager
+            .db
+            .set_config(&cache_key, &persisted_cache_raw)
+            .await
+            .unwrap();
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            signed_rule_pack(&signing_key, 3, "bundled-upgrade"),
+        )
+        .unwrap();
+        manager.archive_rule_packs.write().await.remove(identity);
+        manager.archive_rule_status.write().await.remove(identity);
+        let upgraded = manager.archive_rules_status(identity, false).await.unwrap();
+        assert_eq!(upgraded["sequence"], 3);
+        let upgraded_watermark: serde_json::Value = serde_json::from_str(
+            &manager
+                .db
+                .get_config(&watermark_key)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(upgraded_watermark["sequence"], 3);
+        std::fs::write(
+            plugin_dir.join("archive-rules.json"),
+            b"invalid replacement",
+        )
+        .unwrap();
+        manager.archive_rule_status.write().await.remove(identity);
+        manager.initialize_archive_rule_packs().await;
+        assert!(
+            manager
+                .archive_rule_match(
+                    identity,
+                    &crate::model::ArchiveContext {
+                        file_name: "video.mkv".to_owned(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_none(),
+            "a failed declaration reload must not keep matching the old rule pack"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn revoked_set(identity: &str, version: &str) -> HashSet<(String, String)> {

@@ -76,17 +76,15 @@ pub struct ResolveRequest {
     pub resolver_item: String,
 }
 
-/// Input to the pure archive callback.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ArchiveRequest {
-    pub file_name: String,
-}
+pub type ArchiveRequest = crate::model::ArchiveContext;
 
-/// Archive callback output; folderName is validated by the host.
+/// Archive callback output; directory components are validated by the host.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ArchiveResult {
+    /// Relative path components below the task's authorized default directory.
+    pub directories: Vec<String>,
+    /// Legacy single-component output from existing plugins.
     pub folder_name: String,
 }
 
@@ -166,6 +164,9 @@ pub struct ResolveResult {
     /// fail-closed 强制）。仅初段解析（[`ResolveRequest::resolver_item`] 为空）
     /// 可返回；二段返回会被拒绝（防递归裂变）。`None` = 单直链旧语义。
     pub manifest: Option<ResolveManifest>,
+    /// Validated descriptive source metadata for classification.
+    pub archive_metadata: Option<crate::model::ArchiveMetadata>,
+
     /// 请求改写补丁（与拦截器 `prepare` 返回值同形），每次运行都重新应用，
     /// 失败即任务失败。`extraHeaders` 作为整表替换并入同一补丁。
     pub request: Option<crate::intercept::RequestPatch>,
@@ -182,6 +183,9 @@ pub struct ResolveManifest {
     /// 文件夹名/组名（gopeed `Res.Name` 同义）。空 = 由宿主用母任务文件名/
     /// 首个条目名兜底（引擎自动裂变路径的语义，见 `on_resolve_ready`）。
     pub name: String,
+    /// Root-level source classification hints shared by all manifest items.
+    pub archive_metadata: Option<crate::model::ArchiveMetadata>,
+
     /// 清单条目，1..=1000。
     pub items: Vec<ManifestItem>,
 }
@@ -707,12 +711,26 @@ pub trait HostEvents: Send + Sync {
     fn timer(&self, identity: &str, id: u32, delay: Duration);
     /// 取消尚未触发的定时器。
     fn timer_clear(&self, identity: &str, id: u32);
-    /// `flux.settings.update`。
+    /// `flux.settings.update()`，默认实现明确拒绝未配置的宿主。
     async fn settings_update(
         &self,
-        identity: &str,
-        entries: Vec<(String, String)>,
-    ) -> Result<(), PluginError>;
+        _identity: &str,
+        _entries: Vec<(String, String)>,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::Runtime(
+            "plugin settings update is unsupported".to_string(),
+        ))
+    }
+    /// Retrieve or refresh this plugin's signed archive rule pack.
+    async fn archive_rules(
+        &self,
+        _identity: &str,
+        _refresh: bool,
+    ) -> Result<serde_json::Value, PluginError> {
+        Err(PluginError::Runtime(
+            "archive rule management is unsupported".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -27,42 +27,18 @@ Conventions:
 | [`authenticate(ctx)`](#authenticatectx) | The host drives a login (`begin` / `poll` / `cancel` / `logout` / `status`). | `auth.entry` + permission `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) object |
 | [`subscribe(ctx)`](#subscribectx) | A subscription source of your provider is refreshed. | `subscriptions[0]` | `subscriptions[0].entry` | Normalized feed object |
 | [`main`](#the-main-script) | The daemon (or a view) activates your resident script. | `main` | `main.entry` | — (registers handlers) |
-| [`archive(ctx)`](#archivectx) | A category-routed task has a category directory (a matching rule's directory, or the "Other" fallback); called at start and, if no folder was chosen, at completion. | `contributes.archive` + permission `archive` | The `.js` file named by `contributes.archive` | `{ folderName }`, `null` or `undefined` |
+| [`archive(ctx)`](#archivectx) | An authorized default-directory task reaches routing; no category match is required. | `contributes.archive` + permission `archive` | The `.js` file named by `contributes.archive` | `{ directories }`, legacy `{ folderName }`, or `null` |
 
 ### `archive(ctx)`
 
-```js
-import { defineArchive } from "fluxdown-plugin-sdk/runtime";
+This local-only callback classifies using the known filename and optional source metadata; it does not resolve URLs or access files or the network. The host invokes it for tasks following the authorized default save directory, independently of ordinary category matches. An explicitly selected save directory bypasses it. BitTorrent and eD2K tasks are never moved. Each call uses a fresh QuickJS runtime. It can read `flux.settings`, but has no `flux.fetch`, filesystem, task or process APIs.
 
-defineArchive(({ fileName }) => {
-  if (/\.(mkv|mp4)$/i.test(fileName)) return { folderName: "Videos by plugin" };
-  return null;
-});
-```
+`ctx` is `{ fileName, metadata?, isGroup }`. `fileName` is the known filename; `metadata` is optional source metadata (`platform`, `mediaKind` (`""`, `"series"` or `"post"`), `creatorId`, `creatorName`, `seriesId`, `seriesTitle`, `collectionId`, `collectionTitle`). Each label is limited to 180 UTF-8 bytes and must not contain control characters. This is source metadata only: the archive callback cannot inspect semantic file contents. The host does not expose URLs, local paths or credentials through this metadata.
 
-The callback chooses **one subfolder inside the task's category directory** from the final file name. It never changes the file name: the final path is `<categoryDir>/<folderName>/<fileName>`. `ctx` is `{ fileName }`; the function may be sync or async and returns `{ folderName: string }`, or `null` / `undefined` for no subfolder. Each call uses a fresh QuickJS runtime.
+For a group, `isGroup` is true and routing is performed once at the group root; member paths and filenames remain unchanged. Return `null` / `undefined` to leave the task unchanged, or `{ directories: ["Video", "Bilibili", "Creator", "Collection"] }`; each entry is one safe path component, up to 8 levels. These paths are relative to the task's authorized default directory, not a category directory. Existing plugins may continue returning `{ folderName: "The Expanse" }`, which keeps its category-child behavior. Empty or unsafe output is ignored (fail-open) and does not fail the download. The first valid result in plugin-identity order wins. The directory decision is persisted for resume and completion; the downloaded filename is unchanged.
+The joined relative directory path is limited to 180 UTF-8 bytes; absolute paths, traversal, unsafe components and escaping directory links are rejected.
 
-**What exists in the archive script.** Only `flux.settings` (typed plugin settings), `flux.logger.info|warn|error` and `console.log|info|warn|error|debug` (the logger and `console` both write to the plugin log). There is no `flux.info`, `flux.storage`, `flux.fetch`, `flux.fs`, `flux.task`, `flux.ffmpeg`, `flux.ytdlp`, `flux.auth` or `flux.rpc` / `flux.ui`, and no file, network, task or process API. Top-level code must not call `flux` or `console`: at install the script is compile-checked in a bare context where neither exists.
-
-**When it is called.** Only for tasks that use category routing, and only when routing picks a category directory: either a matching category rule that has a directory, or the "Other" fallback directory. An explicitly chosen save directory bypasses it.
-
-- It is called before the download starts writing, with the final file name. For HLS and DASH this is the predicted `<stem>.mp4` name.
-- If no folder was chosen at start, it is asked once more at completion, with the final file name.
-- Once a folder is chosen it is saved with the task and reused for pause/resume, restart and completion. The plugin is not asked again, so a plugin update never splits a task.
-- If the category directory changes later (rules edited), the saved folder follows the new category directory. If the rules no longer match at all, the task stays in its saved archive folder.
-
-**Several archive plugins** are called in ascending `identity` order; the first valid `folderName` wins.
-
-**`folderName` rules.** The name is validated, never auto-corrected. An invalid name means that plugin's answer is ignored and the next plugin is tried. A valid name:
-
-- is non-empty and at most 180 UTF-8 bytes;
-- is not `.` or `..`;
-- contains no `/`, `\`, `:` or control characters;
-- is already a clean file name, unchanged by FluxDown's filename sanitizer. That excludes `<>"|?*`, leading or trailing spaces and dots, Windows reserved device names (`CON`, `NUL`, `COM1`, … also with an extension) and invisible formatting characters.
-
-**Failures never fail the download.** A throw, timeout, overload, invalid return type, invalid `folderName`, or a missing required plugin setting (the plugin is skipped) all mean no subfolder: the file stays in the category directory. The reason is written to the task's activity log and to the plugin audit log. Timeouts and memory-limit hits count toward the [circuit breaker](#circuit-breaker).
-
-**Limits.** 5 s per call; memory limit equal to the resolver budget; at most 2 archive calls run concurrently across the whole app; a call waits at most 3 s for a slot, otherwise it is skipped as overloaded. Archive plugins run one after another, so their delays add up. See [Runtime limits](#runtime-limits).
+In a resident `main` script, `flux.archiveRules.status()` reads the current verified-pack status and `flux.archiveRules.update()` explicitly requests an update; both require `archive` permission and `contributes.archiveRules`. A pinned publisher key verifies bounded signed JSON. Automatic checks run daily when enabled. Fetch or verification failures retain the last verified pack, and new rules never reclassify historic files.
 
 How scripts are run:
 
@@ -110,7 +86,9 @@ Return `null` or `undefined` to pass through: FluxDown downloads `ctx.url` uncha
 | `rangeSupported` | boolean | `true` = you guarantee the resolved host honours HTTP Range requests (e.g. googlevideo). Combined with `ephemeral`, FluxDown still skips the probe but plans a full multi-segment download right away instead of the conservative single-stream start. Default `false`: without a probe, Range capability is learned from the first response. |
 | `variants` | array | Multiple quality/format choices — see [Variants](#variants). |
 | `defaultVariantIndex` | integer | Which variant is the default (used on the 60 s picker timeout, do-not-disturb and headless runs). Out-of-range values fall back to `0`. Default `0`. |
-| `manifest` | object | A multi-file result — see [Manifests](#manifest-results). Mutually exclusive with `url`, `variants` and `audioUrl`. |
+| `manifest` | object | A multi-file result — see [Manifests](#manifest-results), including its optional root `archiveMetadata`. Mutually exclusive with `url`, `variants` and `audioUrl`. |
+
+`archiveMetadata` may also be returned at the top level of a normal resolve result. If the result is a manifest and both the resolve result and manifest root provide metadata, the manifest's `archiveMetadata` takes precedence.
 
 After resolution, FluxDown re-examines the *resolved* URL to pick the protocol engine — a resolver may return an HLS playlist, a magnet link or an FTP URL and the right engine takes over.
 
@@ -153,6 +131,7 @@ A manifest describes several files in one result (a share link, a cloud-drive fo
 ```text
 { name?, items: [{ id, name, path?, size?, kind?, variants?: [{ id, label, size? }] }] }
 ```
+`manifest.archiveMetadata` is optional root-level source metadata. When both the resolve result and manifest root supply metadata, the manifest value takes precedence. It is source metadata only, not file-content extraction.
 
 | Field | Rule |
 |---|---|

@@ -1181,6 +1181,8 @@ async fn saved_archive_choice_is_reused_and_follows_category_dir() {
         archive: Some(fluxdown_engine::category_route::ArchiveRoute {
             category_dir: work.join("OldVideos").to_string_lossy().into_owned(),
             folder_name: "Saved Title".to_string(),
+            directories: Vec::new(),
+            base_dir: String::new(),
         }),
         ..mkv_route(&category_dir)
     };
@@ -1202,8 +1204,273 @@ async fn saved_archive_choice_is_reused_and_follows_category_dir() {
         Some(fluxdown_engine::category_route::ArchiveRoute {
             category_dir: category_dir.to_string_lossy().into_owned(),
             folder_name: "Saved Title".to_string(),
+            directories: Vec::new(),
+            base_dir: String::new(),
         }),
         "persisted archive follows the new category dir"
     );
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_routes_nested_directories_from_authorized_base() {
+    nested_archive_download(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_nested_directories_preserve_existing_files() {
+    nested_archive_download(true).await;
+}
+
+async fn nested_archive_download(collision: bool) {
+    use fluxdown_engine::category_route::CategoryRoute;
+
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-nested-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir work");
+    let body = Arc::new(vec![0x6b; 4096]);
+    let armed = Arc::new(AtomicBool::new(false));
+    let (port, _server) = spawn_range_server(body.clone(), armed);
+    let mut engine = make_engine(&work).await;
+    let archive_js = std::env::var_os("FLUXDOWN_TEST_ARCHIVE_SCRIPT")
+        .map(std::fs::read_to_string)
+        .transpose()
+        .expect("read optional compiled archive script")
+        .unwrap_or_else(|| {
+            r#"globalThis.archive = async () => ({directories:["视频","哔哩哔哩","小猪仔步履不停","小猪仔评财报"]});"#
+                .to_owned()
+        });
+    install_archive_plugin(&engine, &work.join("archive_plugin"), &archive_js).await;
+    let mut done_rx = engine.manager.take_done_rx().expect("done channel");
+    let name = "clip.mp4";
+    let expected = work.join("视频/哔哩哔哩/小猪仔步履不停/小猪仔评财报");
+    if collision {
+        tokio::fs::create_dir_all(&expected)
+            .await
+            .expect("create existing destination");
+        tokio::fs::write(expected.join(name), b"existing unrelated content")
+            .await
+            .expect("write destination conflict");
+    }
+    let task_id = engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: format!("http://127.0.0.1:{port}/episode"),
+            save_dir: work.to_string_lossy().into_owned(),
+            file_name: name.to_owned(),
+            segments: 1,
+            category_route: Some(CategoryRoute {
+                archive_metadata: Some(fluxdown_engine::model::ArchiveMetadata {
+                    platform: "bilibili".to_owned(),
+                    media_kind: "post".to_owned(),
+                    creator_id: "3707002469485044".to_owned(),
+                    creator_name: "小猪仔步履不停".to_owned(),
+                    series_id: String::new(),
+                    series_title: String::new(),
+                    collection_id: "8878655".to_owned(),
+                    collection_title: "小猪仔评财报".to_owned(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .expect("create task");
+    let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
+        .await
+        .expect("task finishes")
+        .expect("done channel open");
+    engine.manager.on_task_done(&done).await;
+    let task = engine.db.load_task_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_eq!(Path::new(&task.save_dir), expected.as_path());
+    assert_eq!(
+        tokio::fs::read(expected.join(&task.file_name))
+            .await
+            .unwrap(),
+        *body
+    );
+    if collision {
+        assert_ne!(task.file_name, name);
+        assert_eq!(
+            tokio::fs::read(expected.join(name)).await.unwrap(),
+            b"existing unrelated content"
+        );
+    } else {
+        assert_eq!(task.file_name, name);
+    }
+    assert!(!work.join(name).exists());
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_save_directory_bypasses_archive_callback() {
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-explicit-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir work");
+    let body = Arc::new(vec![0x7c; 4096]);
+    let armed = Arc::new(AtomicBool::new(false));
+    let (port, _server) = spawn_range_server(body.clone(), armed);
+    let mut engine = make_engine(&work).await;
+    install_archive_plugin(
+        &engine,
+        &work.join("archive_plugin"),
+        r#"globalThis.archive = async () => ({directories:["must","not","be","used"]});"#,
+    )
+    .await;
+    let mut done_rx = engine.manager.take_done_rx().expect("done channel");
+    let name = "manual.mkv";
+    let save_dir = work.join("picked").to_string_lossy().into_owned();
+    let task_id = engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: format!("http://127.0.0.1:{port}/episode"),
+            save_dir: save_dir.clone(),
+            file_name: name.to_owned(),
+            segments: 1,
+            start_paused: true,
+            ..Default::default()
+        })
+        .await
+        .expect("create task");
+    // Resolver metadata may be retained without granting permission to redirect a manual task.
+    engine.db.set_task_category_route(
+        &task_id,
+        r#"{"archiveMetadata":{"platform":"bilibili","mediaKind":"post","creatorName":"Manual creator"}}"#,
+    ).await.expect("persist metadata without route authorization");
+    engine.manager.resume_task(&task_id).await;
+    let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
+        .await
+        .expect("task finishes")
+        .expect("done channel open");
+    engine.manager.on_task_done(&done).await;
+    let task = engine.db.load_task_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_eq!(task.save_dir, save_dir);
+    assert_eq!(
+        tokio::fs::read(work.join("picked").join(name))
+            .await
+            .unwrap(),
+        *body
+    );
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_unsafe_directories_do_not_escape_base() {
+    use fluxdown_engine::category_route::CategoryRoute;
+
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-unsafe-{}", uniq()));
+    tokio::fs::create_dir_all(&work).await.expect("mkdir work");
+    let body = Arc::new(vec![0x2a; 4096]);
+    let armed = Arc::new(AtomicBool::new(false));
+    let (port, _server) = spawn_range_server(body.clone(), armed);
+    let mut engine = make_engine(&work).await;
+    install_archive_plugin(
+        &engine,
+        &work.join("archive_plugin"),
+        r#"globalThis.archive = async () => ({directories:["..","escape"]});"#,
+    )
+    .await;
+    let mut done_rx = engine.manager.take_done_rx().expect("done channel");
+    let name = "unsafe.mkv";
+    let task_id = engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: format!("http://127.0.0.1:{port}/episode"),
+            save_dir: work.to_string_lossy().into_owned(),
+            file_name: name.to_owned(),
+            segments: 1,
+            category_route: Some(CategoryRoute::default()),
+            ..Default::default()
+        })
+        .await
+        .expect("create task");
+    let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
+        .await
+        .expect("task finishes")
+        .expect("done channel open");
+    engine.manager.on_task_done(&done).await;
+    let task = engine.db.load_task_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_eq!(Path::new(&task.save_dir), work.as_path());
+    assert_eq!(tokio::fs::read(work.join(name)).await.unwrap(), *body);
+    assert!(!work.parent().unwrap().join("escape").exists());
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_group_preserves_member_tree_under_authorized_base() {
+    use fluxdown_engine::category_route::CategoryRoute;
+    use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec};
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-group-{}", uniq()));
+    tokio::fs::create_dir_all(&work)
+        .await
+        .expect("create group work");
+    let body = Arc::new(vec![0x6c; 4096]);
+    let (port, _server) = spawn_range_server(body.clone(), Arc::new(AtomicBool::new(false)));
+    let mut engine = make_engine(&work).await;
+    let script = std::env::var_os("FLUXDOWN_TEST_ARCHIVE_SCRIPT")
+        .map(std::fs::read_to_string).transpose().expect("read real plugin")
+        .unwrap_or_else(|| r#"globalThis.archive = ctx => ({directories:["视频","哔哩哔哩",ctx.metadata.creatorName,ctx.metadata.collectionTitle]});"#.to_owned());
+    install_archive_plugin(&engine, &work.join("archive_plugin"), &script).await;
+    let mut done_rx = engine.manager.take_done_rx().expect("done channel");
+    let group_id = engine
+        .manager
+        .create_task_group(CreateGroupSpec {
+            source_url: format!("http://127.0.0.1:{port}/collection"),
+            group_name: "Original collection".to_owned(),
+            base_save_dir: work.to_string_lossy().into_owned(),
+            segments: 1,
+            category_route: Some(CategoryRoute::default()),
+            archive_metadata: Some(fluxdown_engine::model::ArchiveMetadata {
+                platform: "bilibili".to_owned(),
+                media_kind: "post".to_owned(),
+                creator_name: "小猪仔步履不停".to_owned(),
+                collection_title: "小猪仔评财报".to_owned(),
+                ..Default::default()
+            }),
+            items: vec![
+                GroupItemSpec {
+                    file_name: "one.mp4".to_owned(),
+                    rel_path: "chapter/one".to_owned(),
+                    ..Default::default()
+                },
+                GroupItemSpec {
+                    file_name: "two.mp4".to_owned(),
+                    rel_path: "chapter/two".to_owned(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .expect("create group");
+    let expected = work.join("视频/哔哩哔哩/小猪仔步履不停/小猪仔评财报");
+    let group = engine
+        .db
+        .load_group_by_id(&group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(Path::new(&group.save_dir), expected.as_path());
+    for _ in 0..2 {
+        let done = tokio::time::timeout(Duration::from_secs(60), done_rx.recv())
+            .await
+            .expect("group member finishes")
+            .expect("done channel open");
+        engine.manager.on_task_done(&done).await;
+    }
+    assert_eq!(
+        tokio::fs::read(expected.join("chapter/one/one.mp4"))
+            .await
+            .unwrap(),
+        *body
+    );
+    assert_eq!(
+        tokio::fs::read(expected.join("chapter/two/two.mp4"))
+            .await
+            .unwrap(),
+        *body
+    );
+    assert!(!work.join("Original collection").exists());
     cleanup(&work).await;
 }

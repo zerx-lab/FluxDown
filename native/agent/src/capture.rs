@@ -422,6 +422,7 @@ impl CaptureService {
                 error: String::new(),
                 plugin_id: String::new(),
                 items: Vec::new(),
+                archive_metadata: None,
             });
         }
         let source_url = request.url.clone();
@@ -463,11 +464,13 @@ impl CaptureService {
             let mut request = merge_group_request(transaction.request.clone(), request, &context)?;
             // 任务组落在默认目录：预填的是按捕获名（多为分享页地址）算出的分类目录，不代表组内
             // 文件；用户未改选目录时换回表单默认目录，组内文件也不再逐个按后缀分类。
+            request.category_route = None;
             if let Some(plan) = &transaction.category
                 && !offered.is_empty()
                 && plan.route.is_category_dir(request.save_dir.trim())
             {
                 request.save_dir = offered;
+                request.category_route = Some(plan.route.clone());
             }
             let claim = transaction
                 .group_creation

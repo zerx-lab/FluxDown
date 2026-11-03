@@ -94,7 +94,7 @@ pub enum NewDownloadSubmission {
         common: Box<CreateTaskRequest>,
         items: Vec<CreateTaskItem>,
         captures: Vec<CapturedTask>,
-        /// 本机分类目录路由；`None` = 不路由（没有分类配置目录）。
+        /// 本机授权路由；空规则路由也允许插件归档分类，`None` 表示显式不路由。
         category_route: Option<CategoryRouteDto>,
         /// 表单初始保存目录（未做任何分类预填），用于判定用户是否改过目录。
         offered_save_dir: String,

@@ -550,9 +550,21 @@ function forgetSession(session) {
 // 视图：设置页（扩展 → 插件 → 设置 → 「插件设置」tab）
 // ---------------------------------------------------------------------------
 flux.ui.view("settings", {
-  init(ctx) {
+  async init(ctx) {
     openViews.add(ctx);
-    return { greeting: String(flux.settings.greeting), saved: "", session: ctx.session };
+    const state = {
+      greeting: String(flux.settings.greeting),
+      saved: "",
+      archiveRules: null,
+      archiveRulesError: "",
+      session: ctx.session,
+    };
+    try {
+      state.archiveRules = await flux.archiveRules.status();
+    } catch (error) {
+      state.archiveRulesError = String(error);
+    }
+    return state;
   },
   render(state) {
     return h(
@@ -563,6 +575,18 @@ flux.ui.view("settings", {
         title: "自定义设置视图",
         text: "这里由插件自己渲染；「基础设置」tab 是 manifest.settings 自动生成的表单。",
       }),
+      h("text", {
+        text: state.archiveRules
+          ? `分类规则 v${state.archiveRules.sequence} · ${state.archiveRules.ruleCount} 条`
+          : state.archiveRulesError || "分类规则状态不可用",
+        tone: state.archiveRulesError ? "danger" : "muted",
+      }),
+      h(
+        "stack",
+        { direction: "row", gap: "sm" },
+        h("button", { key: "rules-status", text: "读取分类规则状态", variant: "outline" }),
+        h("button", { key: "rules-update", text: "手动更新分类规则", variant: "outline" }),
+      ),
       h("input", { key: "greeting", value: state.greeting, placeholder: "问候语" }),
       h(
         "stack",
@@ -579,6 +603,17 @@ flux.ui.view("settings", {
   async event(state, ev) {
     const id = ev.node.split("/").pop();
     if (ev.type === "change" && id === "greeting") state.greeting = ev.value;
+    if (ev.type === "press" && (id === "rules-status" || id === "rules-update")) {
+      state.archiveRulesError = "";
+      try {
+        state.archiveRules =
+          id === "rules-update"
+            ? await flux.archiveRules.update()
+            : await flux.archiveRules.status();
+      } catch (error) {
+        state.archiveRulesError = String(error);
+      }
+    }
     if (ev.type === "submit" && id === "greeting") state.greeting = ev.value;
     if (ev.type === "press" && id === "save") {
       await flux.settings.update({ greeting: state.greeting });

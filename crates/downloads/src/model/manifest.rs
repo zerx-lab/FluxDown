@@ -445,8 +445,10 @@ impl ManifestSelection {
             extra_headers: base.headers.clone().unwrap_or_default(),
             ignore_tls_errors: base.ignore_tls_errors,
             start_paused,
-            resolver_plugin_id: resolver_plugin_id.to_owned(),
             items,
+            resolver_plugin_id: resolver_plugin_id.to_owned(),
+            archive_metadata: None,
+            category_route: None,
         })
     }
 }

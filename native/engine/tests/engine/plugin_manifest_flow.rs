@@ -226,8 +226,7 @@ async fn recv_preview_ready(
 /// 场景 1：裂变端到端。单任务命中 resolver → 初段返回 2-item 清单 → 引擎
 /// 自动裂变为组（母任务原地改写 + 1 个兄弟任务），二段 resolve 各自取得
 /// 真实直链并完成下载；两文件落盘于 `组根/vids/`，组行存在，母任务 ID 不变。
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fission_end_to_end_creates_group_and_downloads_members() {
+async fn run_fission_download(manifest_name: &str, expected_group_name: &str) {
     let work = std::env::temp_dir().join(format!("fluxdown-manifest-it-{}", uuid_like()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir work");
     let (port, _srv) = spawn_server();
@@ -246,10 +245,13 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
 
     let pm = engine.manager.plugin_manager().expect("pm installed");
     pm.install_from_dir(&plugin_src).await.expect("install");
-    let manifest_json = r#"{"name":"share_bundle","items":[
-        {"id":"f1","name":"a.mp4","path":"vids","size":100},
-        {"id":"f2","name":"b.mp4","path":"vids","size":200}
-    ]}"#;
+    let manifest_json = serde_json::json!({
+        "name": manifest_name,
+        "items": [
+            {"id":"f1","name":"a.mp4","path":"vids","size":100},
+            {"id":"f2","name":"b.mp4","path":"vids","size":200}
+        ]
+    });
     pm.update_settings(
         "test@multiresolver",
         &[
@@ -289,7 +291,7 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
     let groups = engine.db.load_all_groups().await.expect("load groups");
     assert_eq!(groups.len(), 1, "exactly one group must be created");
     let group = &groups[0];
-    assert_eq!(group.name, "share_bundle");
+    assert_eq!(group.name, expected_group_name);
     assert_eq!(group.source_url, "http://share.test/album/xyz");
 
     let member_ids = engine
@@ -304,8 +306,8 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
     );
 
     // 两文件落盘于 组根/vids/，内容正确。
-    let a_path = work.join("share_bundle").join("vids").join("a.mp4");
-    let b_path = work.join("share_bundle").join("vids").join("b.mp4");
+    let a_path = work.join(expected_group_name).join("vids").join("a.mp4");
+    let b_path = work.join(expected_group_name).join("vids").join("b.mp4");
     assert_eq!(
         tokio::fs::read(&a_path).await.expect("read a.mp4"),
         FILE_BODY
@@ -330,6 +332,16 @@ async fn fission_end_to_end_creates_group_and_downloads_members() {
     {
         eprintln!("best-effort test directory cleanup: {error}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fission_end_to_end_creates_group_and_downloads_members() {
+    run_fission_download("share_bundle", "share_bundle").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unnamed_manifest_group_uses_first_member_name_as_its_root() {
+    run_fission_download("", "a.mp4").await;
 }
 
 /// 场景 2：`begin_resolve_preview` 只读——命中声明 `multi=true` 的 resolver
@@ -672,4 +684,193 @@ async fn update_settings_rejects_with_field_key() {
     {
         eprintln!("best-effort test directory cleanup: {error}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_archive_groups_preserve_paths_and_explicit_directory_choice() -> std::io::Result<()>
+{
+    use fluxdown_engine::category_route::{CategoryRoute, CategoryRule};
+    use fluxdown_engine::model::ArchiveMetadata;
+
+    let work = std::env::temp_dir().join(format!("fluxdown-source-archive-{}", uuid_like()));
+    tokio::fs::create_dir_all(&work).await.expect("create work");
+    let mut engine = Engine::new(
+        engine_config(&work),
+        Arc::new(NoopSink),
+        Arc::new(NoopSelection),
+    )
+    .await
+    .expect("engine");
+    let archive_dir = work.join("archive-plugin");
+    tokio::fs::create_dir_all(&archive_dir)
+        .await
+        .expect("archive directory");
+    tokio::fs::write(
+        archive_dir.join("manifest.json"),
+        r#"{"identity":"test@source-archive","name":"Source archive","version":"1.0.0","permissions":["archive"],"contributes":{"archive":"archive.js"}}"#,
+    )
+    .await
+    .expect("archive manifest");
+    tokio::fs::write(
+        archive_dir.join("archive.js"),
+        "globalThis.archive = ctx => ctx.isGroup && ctx.metadata?.creatorName ? {folderName:ctx.metadata.creatorName} : null;",
+    )
+    .await
+    .expect("archive source");
+    let pm = engine.manager.plugin_manager().expect("plugin manager");
+    let identity = pm
+        .install_from_dir(&archive_dir)
+        .await
+        .expect("archive install");
+    pm.grant_consent(&identity, &["archive".to_owned()], &[])
+        .await
+        .expect("archive consent");
+    pm.set_enabled(&identity, true)
+        .await
+        .expect("archive enable");
+    let video_dir = work.join("videos");
+    let route = CategoryRoute {
+        base_dir: work.to_string_lossy().into_owned(),
+        rules: vec![CategoryRule {
+            extensions: vec!["mp4".to_owned()],
+            save_dir: video_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let metadata = ArchiveMetadata {
+        platform: "source".to_owned(),
+        media_kind: "post".to_owned(),
+        creator_id: "42".to_owned(),
+        creator_name: "Creator".to_owned(),
+        ..Default::default()
+    };
+    let make_spec = |name: &str, authorized: bool| CreateGroupSpec {
+        source_url: "http://share.test/album/source".to_owned(),
+        group_name: name.to_owned(),
+        base_save_dir: work.join("manual").to_string_lossy().into_owned(),
+        archive_metadata: Some(metadata.clone()),
+        category_route: authorized.then(|| route.clone()),
+        start_paused: true,
+        items: vec![GroupItemSpec {
+            file_name: "one.mp4".to_owned(),
+            rel_path: "extras".to_owned(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    for (name, authorized, expected) in [
+        ("Playlist", true, video_dir.join("Creator").join("Playlist")),
+        ("Creator", true, video_dir.join("Creator")),
+        ("Custom", false, work.join("manual").join("Custom")),
+    ] {
+        let id = engine
+            .manager
+            .create_task_group(make_spec(name, authorized))
+            .await
+            .expect("create group");
+        let groups = engine.db.load_all_groups().await.expect("groups");
+        let group = groups
+            .iter()
+            .find(|group| group.group_id == id)
+            .expect("group");
+        assert_eq!(std::path::Path::new(&group.save_dir), expected);
+        let tasks = engine.db.load_all_tasks().await.expect("tasks");
+        let member = tasks
+            .iter()
+            .find(|task| task.group_id == id)
+            .expect("member");
+        assert_eq!(
+            std::path::Path::new(&member.save_dir),
+            expected.join("extras")
+        );
+        assert_eq!(member.status, 2);
+    }
+
+    let resolver_dir = work.join("resolver-plugin");
+    write_manifest_plugin(&resolver_dir).await;
+    pm.install_from_dir(&resolver_dir)
+        .await
+        .expect("resolver install");
+    let manifest = serde_json::json!({
+        "name":"Automatic",
+        "archiveMetadata": metadata,
+        "items":[
+            {"id":"a","name":"a.mp4","path":"parts","size":11000000000_i64},
+            {"id":"b","name":"b.mp4","path":"parts","size":11000000000_i64}
+        ]
+    });
+    pm.update_settings(
+        "test@multiresolver",
+        &[("manifestJson".to_owned(), manifest.to_string())],
+    )
+    .await
+    .expect("resolver settings");
+    let mut resolve_rx = engine.manager.take_resolve_rx().expect("resolve channel");
+    let mother = engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: "http://share.test/album/source".to_owned(),
+            save_dir: work.to_string_lossy().into_owned(),
+            category_route: Some(route),
+            ..Default::default()
+        })
+        .await
+        .expect("create source task");
+    let outcome = tokio::time::timeout(Duration::from_secs(10), resolve_rx.recv())
+        .await
+        .expect("resolve timeout")
+        .expect("resolve outcome");
+    engine.manager.on_resolve_ready(outcome).await;
+    let automatic = video_dir.join("Creator").join("Automatic");
+    let persisted = engine
+        .db
+        .load_task_by_id(&mother)
+        .await
+        .expect("load mother")
+        .expect("mother");
+    assert_eq!(
+        std::path::Path::new(&persisted.save_dir),
+        automatic.join("parts")
+    );
+    assert_eq!(persisted.status, 2);
+    drop(pm);
+    drop(engine);
+
+    let restarted = Engine::new(
+        engine_config(&work),
+        Arc::new(NoopSink),
+        Arc::new(NoopSelection),
+    )
+    .await
+    .expect("restart engine");
+    let persisted = restarted
+        .db
+        .load_task_by_id(&mother)
+        .await
+        .expect("reload mother")
+        .expect("mother after restart");
+    assert_eq!(
+        std::path::Path::new(&persisted.save_dir),
+        automatic.join("parts")
+    );
+    let groups = restarted.db.load_all_groups().await.expect("reload groups");
+    assert!(
+        groups
+            .iter()
+            .any(|group| std::path::Path::new(&group.save_dir) == automatic)
+    );
+    drop(restarted);
+    // QuickJS shuts its worker runtime down in the background; its audit writer may
+    // briefly retain SQLite handles on Windows after the last engine is dropped.
+    let mut cleanup_attempt = 0;
+    while let Err(error) = tokio::fs::remove_dir_all(&work).await {
+        if !cfg!(windows) || !matches!(error.raw_os_error(), Some(32 | 33)) || cleanup_attempt == 2
+        {
+            return Err(error);
+        }
+        cleanup_attempt += 1;
+        tokio::time::sleep(Duration::from_secs(1 << cleanup_attempt)).await;
+    }
+    Ok(())
 }

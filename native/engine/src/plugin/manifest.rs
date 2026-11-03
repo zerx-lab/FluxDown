@@ -368,7 +368,17 @@ pub struct PageScriptDecl {
     pub all_frames: bool,
 }
 
-/// 贡献点。空数组等同未声明。
+/// Signed archive classification rules; requires the existing `archive` permission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArchiveRulesDecl {
+    pub entry: String,
+    pub public_key: String,
+    #[serde(default)]
+    pub update_url: Option<String>,
+}
+
+/// Contributions. Empty arrays are equivalent to absent declarations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContributesDecl {
@@ -385,6 +395,9 @@ pub struct ContributesDecl {
     /// 归档脚本（相对路径，`.js`），需 `archive` 权限。
     #[serde(default)]
     pub archive: Option<String>,
+    /// Independently updateable, publisher-signed archive classification rules.
+    #[serde(default)]
+    pub archive_rules: Option<ArchiveRulesDecl>,
 }
 
 /// 插件风险等级（由权限推导）。
@@ -787,6 +800,14 @@ impl PluginManifest {
             .flat_map(|c| c.views.iter())
             .filter_map(|v| v.desktop.as_ref())
             .flat_map(|d| d.network_hosts.iter().cloned())
+            .chain(
+                self.contributes
+                    .iter()
+                    .filter_map(|c| c.archive_rules.as_ref())
+                    .filter_map(|rules| rules.update_url.as_ref())
+                    .filter_map(|url| url::Url::parse(url).ok())
+                    .filter_map(|url| url.host_str().map(str::to_owned)),
+            )
             .collect();
         hosts.sort();
         hosts.dedup();
@@ -811,6 +832,7 @@ impl PluginManifest {
             files.extend(c.sniff_rules.iter().cloned());
             files.extend(c.page_scripts.iter().flat_map(|s| s.js.iter().cloned()));
             files.extend(c.archive.iter().cloned());
+            files.extend(c.archive_rules.iter().map(|rules| rules.entry.clone()));
         }
         files
     }
@@ -823,6 +845,24 @@ impl PluginManifest {
             }
         }
         Ok(())
+    }
+
+    /// Validate the signed archive rules seed package content.
+    pub fn validate_archive_rules_content(
+        &self,
+        read: impl Fn(&str) -> Option<Vec<u8>>,
+    ) -> Result<(), PluginError> {
+        let Some(rules) = self
+            .contributes
+            .as_ref()
+            .and_then(|c| c.archive_rules.as_ref())
+        else {
+            return Ok(());
+        };
+        let bytes = read(&rules.entry).ok_or_else(|| {
+            PluginError::ManifestInvalid(format!("包内缺少文件 '{}'", rules.entry))
+        })?;
+        super::archive_rules::VerifiedArchiveRules::verify(&bytes, &rules.public_key).map(|_| ())
     }
 }
 
@@ -981,6 +1021,28 @@ fn validate_contributes(m: &PluginManifest) -> Result<(), PluginError> {
         }
         if !m.has_permission(PERMISSION_ARCHIVE) {
             return manifest_err("声明 archive 时 permissions 必须包含 archive".into());
+        }
+    }
+    if let Some(rules) = &c.archive_rules {
+        if !is_safe_relative_path(&rules.entry) {
+            return manifest_err(format!("archiveRules entry 路径 '{}' 非法", rules.entry));
+        }
+        if !has_extension(&rules.entry, &[".json"]) {
+            return manifest_err("archiveRules entry 扩展名须为 .json".into());
+        }
+        if rules.public_key.len() != 64 || !rules.public_key.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return manifest_err("archiveRules publicKey 须为 64 位十六进制 Ed25519 公钥".into());
+        }
+        if !m.has_permission(PERMISSION_ARCHIVE) {
+            return manifest_err("声明 archiveRules 时 permissions 必须包含 archive".into());
+        }
+        if let Some(update_url) = &rules.update_url
+            && !is_valid_archive_update_url(update_url)
+        {
+            return manifest_err(
+                "archiveRules updateUrl 须为无凭据、无片段的公开 HTTPS URL".into(),
+            );
         }
     }
     validate_page_scripts(m, c)?;
@@ -1256,6 +1318,30 @@ fn is_valid_network_host(host: &str) -> bool {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     })
+}
+
+fn is_valid_archive_update_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return super::bridge::is_globally_routable_unicast(ip);
+    }
+    let host = host.to_ascii_lowercase();
+    host != "localhost"
+        && !host.ends_with(".localhost")
+        && !host.ends_with(".local")
+        && is_valid_network_host(&host)
 }
 
 /// 逐字段校验 widget×type 矩阵与值域约束。

@@ -247,7 +247,7 @@ fn is_v6_routable(ip: Ipv6Addr) -> bool {
 /// 主机名）时报 [`GuardError::BlockedHost`]——这是守卫拦截而不是网络故障，Auto 不得据此
 /// 换代理重跑（代理侧解析会绕开守卫）。例外：全落在 198.18.0.0/15 的是 TUN 代理的 fake-ip
 /// 应答，直连本就走不通，按网络故障交给换路。
-struct GuardResolver;
+pub(super) struct GuardResolver;
 
 impl reqwest::dns::Resolve for GuardResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {

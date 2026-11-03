@@ -94,6 +94,59 @@ public struct PreviewItemDto: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+
+/// Host preference-derived category routing supplied to group creation by Rust.
+public struct CategoryRouteDto: Codable, Sendable, Hashable {
+    public var rules: [CategoryRuleDto]
+    public var otherDir: String
+
+    public init(rules: [CategoryRuleDto] = [], otherDir: String = "") {
+        self.rules = rules
+        self.otherDir = otherDir
+    }
+}
+
+public struct CategoryRuleDto: Codable, Sendable, Hashable {
+    public var matchMode: String
+    public var extensions: [String]
+    public var regexPattern: String
+    public var urlPattern: String
+    public var saveDir: String
+
+    public init(matchMode: String = "extension", extensions: [String] = [], regexPattern: String = "", urlPattern: String = "", saveDir: String = "") {
+        self.matchMode = matchMode
+        self.extensions = extensions
+        self.regexPattern = regexPattern
+        self.urlPattern = urlPattern
+        self.saveDir = saveDir
+    }
+}
+/// Root source metadata shared by every manifest item.
+public struct ArchiveMetadataDto: Codable, Sendable, Hashable {
+    public var platform: String
+    public var mediaKind: String
+    public var creatorId: String
+    public var creatorName: String
+    public var seriesId: String
+    public var seriesTitle: String
+    public var collectionId: String
+    public var collectionTitle: String
+
+    public init(
+        platform: String = "", mediaKind: String = "", creatorId: String = "", creatorName: String = "",
+        seriesId: String = "", seriesTitle: String = "", collectionId: String = "", collectionTitle: String = ""
+    ) {
+        self.platform = platform
+        self.mediaKind = mediaKind
+        self.creatorId = creatorId
+        self.creatorName = creatorName
+        self.seriesId = seriesId
+        self.seriesTitle = seriesTitle
+        self.collectionId = collectionId
+        self.collectionTitle = collectionTitle
+    }
+}
+
 /// `items` 与 `error` 均为空 = 插件未返回清单（回退普通建任务）；`error` 非空 = 预解析失败（同样回退，`error` 供提示）。
 public struct ResolvePreviewResponse: Codable, Sendable, Hashable {
     public var name: String
@@ -102,16 +155,18 @@ public struct ResolvePreviewResponse: Codable, Sendable, Hashable {
     public var items: [PreviewItemDto]
     /// 产出清单的插件 id；无清单时为空。建组时回填 `CreateGroupRequest.resolverPluginId`。
     public var pluginId: String
+    public var archiveMetadata: ArchiveMetadataDto?
 
-    public init(name: String = "", sourceUrl: String = "", error: String = "", items: [PreviewItemDto] = [], pluginId: String = "") {
+    public init(name: String = "", sourceUrl: String = "", error: String = "", items: [PreviewItemDto] = [], pluginId: String = "", archiveMetadata: ArchiveMetadataDto? = nil) {
         self.name = name
         self.sourceUrl = sourceUrl
         self.error = error
         self.items = items
         self.pluginId = pluginId
+        self.archiveMetadata = archiveMetadata
     }
 
-    private enum CodingKeys: String, CodingKey { case name, sourceUrl, error, items, pluginId }
+    private enum CodingKeys: String, CodingKey { case name, sourceUrl, error, items, pluginId, archiveMetadata }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -120,6 +175,7 @@ public struct ResolvePreviewResponse: Codable, Sendable, Hashable {
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
         items = try c.decodeIfPresent([PreviewItemDto].self, forKey: .items) ?? []
         pluginId = try c.decodeIfPresent(String.self, forKey: .pluginId) ?? ""
+        archiveMetadata = try c.decodeIfPresent(ArchiveMetadataDto.self, forKey: .archiveMetadata)
     }
 
     /// 命中清单：无错误且有条目。
@@ -159,6 +215,10 @@ public struct CreateGroupRequest: Codable, Sendable, Hashable {
     public var items: [GroupItemRequest]
     /// 预览清单的产出插件（`ResolvePreviewResponse.pluginId`）；空 = 引擎按预览同规则自选。
     public var resolverPluginId: String
+    /// Routing is populated by the mobile HostSession from current host preferences.
+    public var categoryRoute: CategoryRouteDto?
+    /// Root source metadata shared by all group members.
+    public var archiveMetadata: ArchiveMetadataDto?
 
     public init(
         sourceUrl: String = "",
@@ -174,7 +234,9 @@ public struct CreateGroupRequest: Codable, Sendable, Hashable {
         ignoreTlsErrors: Bool = false,
         startPaused: Bool = false,
         items: [GroupItemRequest],
-        resolverPluginId: String = ""
+        resolverPluginId: String = "",
+        archiveMetadata: ArchiveMetadataDto? = nil,
+        categoryRoute: CategoryRouteDto? = nil
     ) {
         self.sourceUrl = sourceUrl
         self.groupName = groupName
@@ -188,8 +250,10 @@ public struct CreateGroupRequest: Codable, Sendable, Hashable {
         self.extraHeaders = extraHeaders
         self.ignoreTlsErrors = ignoreTlsErrors
         self.startPaused = startPaused
-        self.items = items
         self.resolverPluginId = resolverPluginId
+        self.items = items
+        self.categoryRoute = categoryRoute
+        self.archiveMetadata = archiveMetadata
     }
 }
 

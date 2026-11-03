@@ -96,6 +96,30 @@ pub struct PluginSetSiteDefaultParams {
     #[serde(default)]
     pub identity: Option<String>,
 }
+/// `daemon.plugin.archiveRules`：读取已验证包状态；`refresh` 请求显式刷新。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginArchiveRulesParams {
+    pub identity: String,
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// Verified signed archive-rule pack status returned by `daemon.plugin.archiveRules`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginArchiveRulesDto {
+    pub sequence: u64,
+    pub rule_count: usize,
+    pub last_checked_at: Option<u64>,
+    pub last_updated_at: Option<u64>,
+    pub last_error: Option<String>,
+    pub public_key: String,
+    pub update_url: Option<String>,
+    pub automatic_updates: bool,
+}
 
 /// 文件已存在时可选的处理动作。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -1594,6 +1618,9 @@ pub struct PluginContributionsDto {
     /// 是否贡献浏览器扩展嗅探规则。
     #[serde(default)]
     pub sniff_rules: bool,
+    /// Whether the plugin contributes signed archive classification rules.
+    #[serde(default)]
+    pub archive_rules: bool,
     /// 浏览器页面脚本声明（供授权 / 详情界面展示将在哪些网站运行脚本）。
     #[serde(default)]
     pub page_scripts: Vec<PluginPageScriptDeclDto>,
@@ -1983,6 +2010,20 @@ pub struct GroupItemRequest {
     #[serde(default)]
     pub size: i64,
 }
+/// 插件提供的根媒体提示。只作为分类提示，不含凭据、URL 或路径。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", default)]
+pub struct ArchiveMetadataDto {
+    pub platform: String,
+    pub media_kind: String,
+    pub creator_id: String,
+    pub creator_name: String,
+    pub series_id: String,
+    pub series_title: String,
+    pub collection_id: String,
+    pub collection_title: String,
+}
 
 /// 创建多文件任务组请求（`POST /api/v1/groups`）。`items` 不可为空
 /// （空数组 → 400）。
@@ -2031,6 +2072,12 @@ pub struct CreateGroupRequest {
     /// fail-closed 落库；空 = 旧客户端，引擎按预解析同一规则（仅 `multi` resolver）重新选择。
     #[serde(default)]
     pub resolver_plugin_id: String,
+    /// Root metadata shared by all selected members, never per item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_metadata: Option<ArchiveMetadataDto>,
+    /// Classification routing, omitted for callers using an explicit save directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_route: Option<crate::agent::CategoryRouteDto>,
     /// 组成员清单（不可为空，见本类型文档）。
     #[serde(default)]
     pub items: Vec<GroupItemRequest>,
@@ -2082,6 +2129,9 @@ pub struct ResolvePreviewResponse {
     pub plugin_id: String,
     #[serde(default)]
     pub items: Vec<PreviewItemDto>,
+    /// Root-level source metadata shared by all preview items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_metadata: Option<ArchiveMetadataDto>,
 }
 
 /// [`ResolvePreviewResponse::items`] 的单个清单条目。

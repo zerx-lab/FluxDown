@@ -258,6 +258,7 @@ internal class NewDownloadState(
         manuallySelectedSaveDir = true
     }
 
+
     fun selectMode(next: SaveDirMode) {
         when (next) {
             SaveDirMode.Auto -> {

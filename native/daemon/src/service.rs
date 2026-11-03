@@ -485,6 +485,9 @@ impl DaemonService {
                                     .into_iter()
                                     .map(manifest_item_to_preview_dto)
                                     .collect(),
+                                archive_metadata: outcome
+                                    .archive_metadata
+                                    .map(fluxdown_engine_protocol::archive_metadata_to_dto),
                             })
                         }
                         Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
@@ -1196,6 +1199,8 @@ impl DaemonService {
                 Ok(json!({ "ok": true }))
             }
             #[cfg(feature = "plugins")]
+            method::DAEMON_PLUGIN_ARCHIVE_RULES => self.plugin_host_call(method_name, params).await,
+            #[cfg(feature = "plugins")]
             method::DAEMON_PLUGIN_VIEW_OPEN
             | method::DAEMON_PLUGIN_VIEW_EVENT
             | method::DAEMON_PLUGIN_VIEW_CLOSE
@@ -1229,6 +1234,7 @@ impl DaemonService {
             | method::DAEMON_PLUGIN_MARKET_LIST
             | method::DAEMON_PLUGIN_MARKET_INSTALL
             | method::DAEMON_PLUGIN_IGNORE_RETRY
+            | method::DAEMON_PLUGIN_ARCHIVE_RULES
             | method::DAEMON_PLUGIN_SITE_DEFAULTS
             | method::DAEMON_PLUGIN_SET_SITE_DEFAULT
             | method::DAEMON_PLUGIN_CONSENT
@@ -1836,6 +1842,12 @@ impl DaemonService {
                 })
                 .collect(),
             resolver_plugin_id: request.resolver_plugin_id,
+            archive_metadata: request
+                .archive_metadata
+                .map(fluxdown_engine_protocol::archive_metadata_to_engine),
+            category_route: request
+                .category_route
+                .map(fluxdown_engine_protocol::category_route_to_engine),
         }
     }
 }

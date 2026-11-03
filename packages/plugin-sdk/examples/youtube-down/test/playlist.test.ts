@@ -33,7 +33,7 @@ describe("playlist pages", () => {
   test("follows continuations up to the limit, skipping unavailable and duplicate videos", async () => {
     const pages: Record<string, unknown> = {
       first: {
-        metadata: { playlistMetadataRenderer: { title: "Mix" } },
+        metadata: { playlistMetadataRenderer: { title: "Mix", author: "Fixture Curator" } },
         contents: { tabs: [lockup("aaaaaaaaaaa", "A"), lockup("bbbbbbbbbbb"), continuation("t1")] },
       },
       t1: { onResponseReceivedActions: [{ appendContinuationItemsAction: { continuationItems: [lockup("aaaaaaaaaaa", "A again"), lockup("ddddddddddd", "[Private video]"), lockup("eeeeeeeeeee", "E"), continuation("t2")] } }] },
@@ -47,7 +47,7 @@ describe("playlist pages", () => {
       },
     ]);
     const result = await fetchPlaylist(new Session(""), "PLx", 3);
-    expect(result).toEqual({ title: "Mix", entries: [{ id: "aaaaaaaaaaa", title: "A" }, { id: "eeeeeeeeeee", title: "E" }, { id: "fffffffffff", title: "F" }] });
+    expect(result).toEqual({ title: "Mix", author: "Fixture Curator", entries: [{ id: "aaaaaaaaaaa", title: "A" }, { id: "eeeeeeeeeee", title: "E" }, { id: "fffffffffff", title: "F" }] });
     const first = JSON.parse(shim.requests[0]!.body ?? "{}");
     expect(first).toMatchObject({ browseId: "VLPLx", params: "wgYCCAA=", context: { client: { clientName: "WEB" } } });
 

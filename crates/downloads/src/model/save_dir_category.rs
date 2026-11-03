@@ -464,6 +464,13 @@ mod tests {
     }
 
     #[test]
+    fn empty_picker_options_do_not_remove_automatic_route_authorization() {
+        let options = category_options(&[]);
+        assert!(options.is_empty());
+        assert!(category_route_eligible(&CategoryMode::Auto, true));
+    }
+
+    #[test]
     fn manual_directory_intent_survives_prediction_and_default_changes() {
         let mode = CategoryMode::Auto;
         for chosen in ["/downloads", "/videos"] {

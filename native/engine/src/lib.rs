@@ -397,6 +397,7 @@ impl Engine {
                 audit,
             ));
             pm.load_all().await;
+            pm.start_archive_rule_updates();
             manager.rss.set_fallback_provider(pm.subscription_router());
             manager.install_plugin_manager(pm, engine_bridge);
         }
