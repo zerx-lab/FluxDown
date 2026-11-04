@@ -64,8 +64,6 @@ export const cloudPromoCopy = {
     ends: (label: string) => `until ${label}`,
     heroBadge: "Pro permanent · CN¥99 · list CN¥129",
     annText: "Cloud Pro permanent: CN¥99 through Nov 10 (list CN¥129).",
-    pricingHeroLede:
-      "The app stays free and open source. Cloud Pro permanent is CN¥99 through Nov 10 (list CN¥129); membership cards renew manually, never auto-charged.",
     finalCta: "Pro · CN¥99 until Nov 10",
   },
   zh: {
@@ -78,8 +76,6 @@ export const cloudPromoCopy = {
     ends: (label: string) => `${label} 截止`,
     heroBadge: "专业版永久 · ¥99 · 定价 ¥129",
     annText: "云端专业版永久：¥99（定价 ¥129），11 月 10 日截止。",
-    pricingHeroLede:
-      "应用本体免费开源。云端专业版永久套餐 11 月 10 日前成交价 ¥99（定价 ¥129）；会员卡按周期购买、手动续费、不自动扣款。",
     finalCta: "专业版 · 11 月 10 日前 ¥99",
   },
 } as const;
