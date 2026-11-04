@@ -39,43 +39,32 @@ export function formatPromoYuan(minor: number, lang: Lang): string {
   return lang === "zh" ? `¥${whole}` : `CN¥${whole}`;
 }
 
-/** 截止日短标签（首页条 / 定价条）。 */
-export function formatPromoEndLabel(lang: Lang): string {
-  const d = new Date(CLOUD_PROMO.endAt);
-  if (lang === "zh") {
-    return `${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日`;
-  }
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  }).format(d);
+/** 无障碍完整句（aria-label），不含截止日——可见 UI 不写日期。 */
+export function promoAriaLine(lang: Lang, sale: string, list: string): string {
+  return cloudPromoCopy[lang].line(sale, list);
 }
 
 export const cloudPromoCopy = {
   en: {
     badge: "Limited",
     product: "Cloud Pro · permanent",
-    /** 无障碍完整句（aria-label）。 */
-    line: (sale: string, list: string, end: string) =>
-      `Cloud Pro permanent ${sale} (list ${list}), ends ${end}`,
+    line: (sale: string, list: string) =>
+      `Cloud Pro permanent ${sale} (list ${list})`,
     cta: "Details",
     ctaBuy: "Buy",
-    ends: (label: string) => `until ${label}`,
     heroBadge: "Pro permanent · CN¥99 · list CN¥129",
-    annText: "Cloud Pro permanent: CN¥99 through Nov 10 (list CN¥129).",
-    finalCta: "Pro · CN¥99 until Nov 10",
+    annText: "Cloud Pro permanent: CN¥99 (list CN¥129).",
+    finalCta: "Pro · CN¥99",
   },
   zh: {
     badge: "限时",
     product: "云端专业版 · 永久",
-    line: (sale: string, list: string, end: string) =>
-      `云端专业版永久 ${sale}（定价 ${list}），${end} 截止`,
+    line: (sale: string, list: string) =>
+      `云端专业版永久 ${sale}（定价 ${list}）`,
     cta: "详情",
     ctaBuy: "购买",
-    ends: (label: string) => `${label} 截止`,
     heroBadge: "专业版永久 · ¥99 · 定价 ¥129",
-    annText: "云端专业版永久：¥99（定价 ¥129），11 月 10 日截止。",
-    finalCta: "专业版 · 11 月 10 日前 ¥99",
+    annText: "云端专业版永久：¥99（定价 ¥129）。",
+    finalCta: "专业版 · ¥99",
   },
 } as const;

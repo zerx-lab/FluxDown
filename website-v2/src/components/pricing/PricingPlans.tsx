@@ -3,7 +3,7 @@ import { ArrowRight, Check, Zap } from "lucide-react";
 import type { Lang } from "@/i18n/config";
 import { pricing } from "@/i18n/messages/pricing";
 import { BrandIcon } from "@/components/icons/brand";
-import { formatDate, formatMinor } from "@/components/pay/money";
+import { formatMinor } from "@/components/pay/money";
 import { PlanBadge, PlanRibbon } from "./PlanBadge";
 import WebPurchase from "./WebPurchase";
 import type { CloudPlan } from "./types";
@@ -11,7 +11,6 @@ import { withBase } from "@/lib/base";
 import {
   CLOUD_PROMO,
   cloudPromoCopy,
-  formatPromoEndLabel,
   formatPromoYuan,
   isCloudPromoActive,
 } from "@/lib/cloud-promo";
@@ -74,7 +73,7 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
     const promoOn = isCloudPromoActive();
     const sale = promoOn ? formatPromoYuan(CLOUD_PROMO.salePriceMinor, lang) : t.tbd;
     const list = promoOn ? formatPromoYuan(CLOUD_PROMO.listPriceMinor, lang) : undefined;
-    const promoNote = promoOn ? cloudPromoCopy[lang].ends(formatPromoEndLabel(lang)) : undefined;
+    const promoNote = promoOn ? cloudPromoCopy[lang].badge : undefined;
     cells.push(
       <PlanShell key="fb-free" tag={t.cloudTag} name={t.fallback.freeName} price={t.free} desc={t.fallback.freeDesc} />,
       <PlanShell
@@ -179,7 +178,6 @@ function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
       price={priceMinor === 0 ? t.free : formatMinor(priceMinor, plan.currency, lang)}
       strike={c != null && c.effectivePriceMinor < plan.priceMinor ? formatMinor(plan.priceMinor, plan.currency, lang) : undefined}
       period={priceMinor > 0 ? (isCard(plan) ? pricing[lang].cards.period(plan.billingPeriodDays ?? 0) : t.oneTime) : undefined}
-      note={c?.endAt ? t.campaignEnds(formatDate(c.endAt, lang)) : undefined}
       campaign={
         c && (
           <div className="mb-5 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border border-accent/30 bg-accent-soft px-3 py-2 text-xs">
