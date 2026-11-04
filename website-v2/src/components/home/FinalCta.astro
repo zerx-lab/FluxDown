@@ -41,8 +41,14 @@ const promo = promoOn ? cloudPromoCopy[lang] : null;
         </a>
         {
           promo && (
-            <a href={href(CLOUD_PROMO.planPath, lang)} class="btn btn-secondary btn-lg" data-cloud-promo data-ends-at={CLOUD_PROMO.endAt}>
-              {promo.finalCta}
+            <a
+              href={href(CLOUD_PROMO.planPath, lang)}
+              class="btn btn-secondary btn-lg"
+              data-cloud-promo
+              data-ends-at={CLOUD_PROMO.endAt}
+              data-promo-fill="finalCta"
+            >
+              <span data-promo-text>{promo.product}</span>
             </a>
           )
         }

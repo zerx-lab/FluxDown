@@ -1,23 +1,20 @@
 /**
- * 官网云端专业版限时促销（展示层单一事实源）。
+ * 官网云端专业版限时促销（展示层）。
  *
- * 成交价仍以 FluxCloud 套餐 list + 销售活动为准；本文件只驱动首页 / 定价页 /
- * 公告条的文案与可见性。改价或改期只动这里，并同步后台：
- *   - 专业版 list = listPriceMinor
- *   - 活动一档 effective = salePriceMinor，endAt 对齐本文件
+ * 可见价一律跟 FluxCloud 公开目录里的专业版（`planCode`）走：
+ *   list = plan.priceMinor
+ *   sale = campaign?.effectivePriceMinor ?? list
+ * 本文件只管：绑哪个套餐、促销条展示窗口、文案模板。
+ * 改价只改后台套餐 / 销售活动，不必再改这里的数字。
  */
 import type { Lang } from "@/i18n/config";
 
 export const CLOUD_PROMO = {
-  id: "pro-list-129-sale-99",
-  /** 专业版 list（分）。 */
-  listPriceMinor: 12_900,
-  /** 活动成交价（分）。 */
-  salePriceMinor: 9_900,
-  currency: "CNY",
+  /** 与 FluxCloud catalog `code` 对齐。 */
+  planCode: "pro",
   /**
-   * 含 11 月 10 日当天（上海 23:59:59）。
-   * 「11 月 10 号前」按营销惯例覆盖截止日当天。
+   * 促销条 / Hero / CTA 展示窗口截止（含当天上海 23:59:59）。
+   * 与成交价无关；成交价以 catalog 活动为准。
    */
   endAt: "2026-11-10T15:59:59.000Z",
   /** 公告 / 埋点 id，与 announcements 条目共用。 */
@@ -27,44 +24,76 @@ export const CLOUD_PROMO = {
 
 export type CloudPromo = typeof CLOUD_PROMO;
 
+export type PromoPrices = {
+  listMinor: number;
+  saleMinor: number;
+  currency: string;
+  hasDiscount: boolean;
+};
+
+/** 目录条目 → 促销展示价；非目标套餐或无效价返回 null。 */
+export function promoPricesFromPlan(plan: {
+  code: string;
+  priceMinor: number;
+  currency?: string | null;
+  campaign?: { effectivePriceMinor: number } | null;
+}): PromoPrices | null {
+  if (plan.code !== CLOUD_PROMO.planCode) return null;
+  if (!Number.isFinite(plan.priceMinor) || plan.priceMinor < 0) return null;
+  const listMinor = plan.priceMinor;
+  const rawSale = plan.campaign?.effectivePriceMinor;
+  const saleMinor =
+    rawSale != null && Number.isFinite(rawSale) && rawSale >= 0 ? rawSale : listMinor;
+  return {
+    listMinor,
+    saleMinor,
+    currency: (plan.currency && plan.currency.trim()) || "CNY",
+    hasDiscount: saleMinor < listMinor,
+  };
+}
+
 export function isCloudPromoActive(nowMs: number = Date.now()): boolean {
   const end = Date.parse(CLOUD_PROMO.endAt);
   return Number.isFinite(end) && nowMs <= end;
 }
 
-/** 分 → 展示价（CNY 无小数时不带 .00）。 */
-export function formatPromoYuan(minor: number, lang: Lang): string {
+/** 分 → 展示价（与定价卡同口径：整元无小数）。 */
+export function formatPromoYuan(minor: number, currency: string, lang: Lang): string {
+  const cur = (currency || "CNY").toUpperCase();
   const yuan = minor / 100;
   const whole = Number.isInteger(yuan) ? String(yuan) : yuan.toFixed(2);
-  return lang === "zh" ? `¥${whole}` : `CN¥${whole}`;
-}
-
-/** 无障碍完整句（aria-label），不含截止日——可见 UI 不写日期。 */
-export function promoAriaLine(lang: Lang, sale: string, list: string): string {
-  return cloudPromoCopy[lang].line(sale, list);
+  if (cur === "CNY") return lang === "zh" ? `¥${whole}` : `CN¥${whole}`;
+  return lang === "zh" ? `${whole} ${cur}` : `${cur} ${whole}`;
 }
 
 export const cloudPromoCopy = {
   en: {
     badge: "Limited",
     product: "Cloud Pro · permanent",
-    line: (sale: string, list: string) =>
-      `Cloud Pro permanent ${sale} (list ${list})`,
+    line: (sale: string, list: string | null) =>
+      list ? `Cloud Pro permanent ${sale} (list ${list})` : `Cloud Pro permanent ${sale}`,
     cta: "Details",
     ctaBuy: "Buy",
-    heroBadge: "Pro permanent · CN¥99 · list CN¥129",
-    annText: "Cloud Pro permanent: CN¥99 (list CN¥129).",
-    finalCta: "Pro · CN¥99",
+    heroBadge: (sale: string, list: string | null) =>
+      list ? `Pro permanent · ${sale} · list ${list}` : `Pro permanent · ${sale}`,
+    /** 公告列表不写死价，避免与目录脱节。 */
+    annText: "Cloud Pro permanent is on a limited offer — see Pricing.",
+    finalCta: (sale: string) => `Pro · ${sale}`,
   },
   zh: {
     badge: "限时",
     product: "云端专业版 · 永久",
-    line: (sale: string, list: string) =>
-      `云端专业版永久 ${sale}（定价 ${list}）`,
+    line: (sale: string, list: string | null) =>
+      list ? `云端专业版永久 ${sale}（定价 ${list}）` : `云端专业版永久 ${sale}`,
     cta: "详情",
     ctaBuy: "购买",
-    heroBadge: "专业版永久 · ¥99 · 定价 ¥129",
-    annText: "云端专业版永久：¥99（定价 ¥129）。",
-    finalCta: "专业版 · ¥99",
+    heroBadge: (sale: string, list: string | null) =>
+      list ? `专业版永久 · ${sale} · 定价 ${list}` : `专业版永久 · ${sale}`,
+    annText: "云端专业版永久限时优惠，详见定价页。",
+    finalCta: (sale: string) => `专业版 · ${sale}`,
   },
 } as const;
+
+export function promoAriaLine(lang: Lang, sale: string, list: string | null): string {
+  return cloudPromoCopy[lang].line(sale, list);
+}

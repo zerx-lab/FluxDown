@@ -61,9 +61,15 @@ const versions = [
     <div class="hero-copy">
       {
         promo ? (
-          <a href={href(CLOUD_PROMO.planPath, lang)} class="hero-badge hero-badge--promo" data-cloud-promo data-ends-at={CLOUD_PROMO.endAt}>
+          <a
+            href={href(CLOUD_PROMO.planPath, lang)}
+            class="hero-badge hero-badge--promo"
+            data-cloud-promo
+            data-ends-at={CLOUD_PROMO.endAt}
+            data-promo-fill="heroBadge"
+          >
             <span class="hero-badge-tag">{promo.badge}</span>
-            <span>{promo.heroBadge}</span>
+            <span data-promo-text>{promo.product}</span>
             <ArrowRight size={13} strokeWidth={2} />
           </a>
         ) : (

@@ -8,12 +8,7 @@ import { PlanBadge, PlanRibbon } from "./PlanBadge";
 import WebPurchase from "./WebPurchase";
 import type { CloudPlan } from "./types";
 import { withBase } from "@/lib/base";
-import {
-  CLOUD_PROMO,
-  cloudPromoCopy,
-  formatPromoYuan,
-  isCloudPromoActive,
-} from "@/lib/cloud-promo";
+import { cloudPromoCopy, isCloudPromoActive } from "@/lib/cloud-promo";
 
 interface Props {
   lang: Lang;
@@ -71,19 +66,15 @@ export default function PricingPlans({ lang, downloadHref, sourceHref }: Props) 
     for (const plan of catalog.plans.filter((p) => !isCard(p))) cells.push(<CloudPlanCell key={plan.code} plan={plan} lang={lang} />);
   } else {
     const promoOn = isCloudPromoActive();
-    const sale = promoOn ? formatPromoYuan(CLOUD_PROMO.salePriceMinor, lang) : t.tbd;
-    const list = promoOn ? formatPromoYuan(CLOUD_PROMO.listPriceMinor, lang) : undefined;
-    const promoNote = promoOn ? cloudPromoCopy[lang].badge : undefined;
     cells.push(
       <PlanShell key="fb-free" tag={t.cloudTag} name={t.fallback.freeName} price={t.free} desc={t.fallback.freeDesc} />,
       <PlanShell
         key="fb-life"
         tag={t.cloudTag}
         name={t.fallback.lifetimeName}
-        price={sale}
-        strike={list}
+        price={t.tbd}
         period={t.oneTime}
-        note={promoNote}
+        note={promoOn ? cloudPromoCopy[lang].badge : undefined}
         desc={t.fallback.lifetimeDesc}
         features={t.fallback.lifetimeFeatures}
         featured
