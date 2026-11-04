@@ -95,7 +95,7 @@ jobs:
   #   mobile/Android/**      → 原生 Android（mobile）
   #   docker/**              → 服务器（部署文件变更需重发镜像）
   #   mobile/FluxDown/**、.github/workflows/ios-sideload.yml → 原生 iOS 侧载 IPA（ios；商店构建另走 ios-testflight.yml）
-  #   website-v2/**          → 官网（独立走 deploy-website-v2.yml 部署，不发 release）；其中 src/lib/gpui-theme/** 被 Web SPA 构建引用 → 服务器（server）
+  #   website-v2/**          → 官网（服务器手动跑 website-v2/deploy.sh，不发 release）；其中 src/lib/gpui-theme/** 被 Web SPA 构建引用 → 服务器（server）
   #   website/**             → 已删除的 v1 旧站：删除提交与历史 tag 区间的 diff 仍会列出它，不触发任何构建
   #   docs/**、*.md          → 纯文档，不触发任何构建
   #   其余任何路径            → 桌面客户端（app）
@@ -321,7 +321,7 @@ jobs:
                 website-v2/src/lib/gpui-theme/*) SERVER=true ;;
                 assets/icon-packs/*) APP=true; SERVER=true ;;
                 assets/flags/*)      APP=true; SERVER=true ;;
-                # 官网独立部署（deploy-website-v2.yml），不发 release；gpui-theme 例外已在上方先匹配。
+                # 官网不走 release（服务器手动 deploy.sh）；gpui-theme 例外已在上方先匹配。
                 # website/ 是已删除的 v1 旧站：删除提交与历史 tag 区间的 diff 仍会列出它，同样不触发构建
                 website-v2/*|website/*) ;;
                 # 插件 SDK 走独立的 plugin-sdk-release.yml，不触发桌面/服务器重建
