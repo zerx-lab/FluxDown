@@ -4,18 +4,22 @@ import Layout from "@/layouts/Layout.astro";
 import PageHeader from "@/components/site/PageHeader.astro";
 import PricingPlans from "@/components/pricing/PricingPlans";
 import CompareTable from "@/components/pricing/CompareTable.astro";
+import CloudPromoBanner from "@/components/site/CloudPromoBanner.astro";
 import { langStaticPaths, resolveLang, href } from "@/i18n/routing";
 import { pricing } from "@/i18n/messages/pricing";
 import { SAME_AS } from "@/lib/seo";
+import { cloudPromoCopy, isCloudPromoActive } from "@/lib/cloud-promo";
 
 export const getStaticPaths = langStaticPaths;
 const lang = resolveLang(Astro.params.lang);
 const t = pricing[lang];
 const serif = (s: string) => s.replace(/<em>(.*?)<\/em>/g, '<span class="serif">$1</span>');
+const heroLede = isCloudPromoActive() ? cloudPromoCopy[lang].pricingHeroLede : t.hero.lede;
 ---
 
 <Layout lang={lang} title={t.meta.title} description={t.meta.description}>
-  <PageHeader eyebrow={t.hero.eyebrow} title={t.hero.title} lede={t.hero.lede}>
+  <CloudPromoBanner lang={lang} variant="pricing" />
+  <PageHeader eyebrow={t.hero.eyebrow} title={t.hero.title} lede={heroLede}>
     <a class="btn btn-secondary" href={href("/pricing/why", lang)}>
       {t.hero.why}
       <ArrowRight size={15} aria-hidden="true" />

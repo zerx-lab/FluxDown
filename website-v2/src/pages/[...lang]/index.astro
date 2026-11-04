@@ -14,6 +14,7 @@ import Everywhere from "@/components/home/Everywhere.astro";
 import Extend from "@/components/home/Extend.astro";
 import Privacy from "@/components/home/Privacy.astro";
 import FinalCta from "@/components/home/FinalCta.astro";
+import CloudPromoBanner from "@/components/site/CloudPromoBanner.astro";
 import FilmModal from "@/components/home/FilmModal.astro";
 import { langStaticPaths, resolveLang } from "@/i18n/routing";
 import { home } from "@/i18n/messages/home";
@@ -24,6 +25,7 @@ const t = home[lang];
 ---
 
 <Layout lang={lang} title={t.meta.title} description={t.meta.description}>
+  <CloudPromoBanner lang={lang} variant="home" />
   <Hero lang={lang} />
   <Stats lang={lang} />
   <Engine lang={lang} />
