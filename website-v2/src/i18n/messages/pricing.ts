@@ -6,7 +6,7 @@ export const pricing = defineMessages({
     meta: {
       title: "Pricing — FluxDown",
       description:
-        "FluxDown premium cloud plans: permanent plans and membership cards. The desktop app itself stays free and open source.",
+        "FluxDown premium cloud permanent plans. The desktop app itself stays free and open source.",
     },
     cards: {
       title: "Membership cards",
@@ -15,8 +15,8 @@ export const pricing = defineMessages({
     },
     hero: {
       eyebrow: "Pricing",
-      title: "Core cloud: <em>permanent or card</em>",
-      lede: "The app is free and open source. Core cloud comes as permanent plans (pay once) and membership cards (a period at a time, renewed manually, never auto-charged).",
+      title: "Core cloud: <em>pay once</em>",
+      lede: "The app is free and open source. Core cloud is sold as permanent plans — pay once, unlock on all your devices.",
       why: "Why paid plans?",
       vote: "Vote on the price",
     },
@@ -61,7 +61,7 @@ export const pricing = defineMessages({
           "Works on all your devices",
         ],
       },
-      freeNote: "Permanent plans and membership cards only cover cloud services — the FluxDown app itself is free and open source.",
+      freeNote: "Permanent cloud plans only cover cloud services — the FluxDown app itself is free and open source.",
     },
     compare: {
       eyebrow: "Compare",
@@ -92,19 +92,19 @@ export const pricing = defineMessages({
           desc: "Sign-in is entirely optional — every core download feature works without an account. An account only powers cloud extras.",
         },
         {
-          title: "Permanent plans and cards",
-          desc: "A permanent plan is bought once and covers account, sync, task dispatch and similar core cloud. A membership card is bought for a period and renewed by hand — no auto-renewal, no automatic charge — and you return to your permanent plan's benefits when it expires.",
+          title: "Permanent plans",
+          desc: "A permanent plan is bought once and covers account, sync, task dispatch and similar core cloud. Purchased benefits stay on the account.",
         },
         {
           title: "Add-ons sold separately",
-          desc: "Storage and other features whose cost scales with usage may be billed separately — as a membership card or by usage — and will be announced beforehand.",
+          desc: "Storage and other features whose cost scales with usage may be billed separately and will be announced beforehand.",
         },
       ],
     },
     voteCta: {
       eyebrow: "Community",
       title: "Pricing poll & discussion",
-      desc: "Plan types are settled — permanent plans and membership cards — but you can still vote on price points and share your thoughts.",
+      desc: "You can still vote on price points and share your thoughts on permanent cloud plans.",
       link: "Join the discussion",
       why: "Why paid plans?",
     },
@@ -188,7 +188,7 @@ export const pricing = defineMessages({
   zh: {
     meta: {
       title: "定价 — FluxDown",
-      description: "FluxDown 高级云端套餐：永久套餐与会员卡。桌面应用本体永久免费开源。",
+      description: "FluxDown 高级云端永久套餐。桌面应用本体永久免费开源。",
     },
     cards: {
       title: "会员卡",
@@ -197,8 +197,8 @@ export const pricing = defineMessages({
     },
     hero: {
       eyebrow: "定价",
-      title: "基础云端，<em>永久套餐与会员卡</em>",
-      lede: "应用本体免费开源。基础云端分为永久套餐（一次付费）和会员卡（按周期购买、手动续费、不自动扣款）。",
+      title: "基础云端，<em>一次买断</em>",
+      lede: "应用本体免费开源。基础云端以永久套餐售卖——一次付费，全设备解锁。",
       why: "为什么要收费？",
       vote: "为价格投票",
     },
@@ -238,7 +238,7 @@ export const pricing = defineMessages({
         lifetimeDesc: "一次付费，解锁当前基础云端能力。全设备可用。",
         lifetimeFeatures: ["一次付费，永久使用当前基础云端", "包含当前全部基础云端能力", "已购功能持续可用", "所有设备通用"],
       },
-      freeNote: "永久套餐与会员卡只针对云端服务——FluxDown 应用本体免费开源。",
+      freeNote: "永久套餐只针对云端服务——FluxDown 应用本体免费开源。",
     },
     compare: {
       eyebrow: "对比",
@@ -269,19 +269,19 @@ export const pricing = defineMessages({
           desc: "登录与账户完全可选——全部基础下载功能无需登录即可使用，账户只用于云端增值能力。",
         },
         {
-          title: "永久套餐与会员卡",
-          desc: "永久套餐一次付费，覆盖账号、同步、任务下发等基础云端；会员卡按周期购买、手动续费，不自动续费、不自动扣款，到期后回到永久套餐的权益。",
+          title: "永久套餐",
+          desc: "永久套餐一次付费，覆盖账号、同步、任务下发等基础云端；已购权益留在账户上。",
         },
         {
           title: "附加另购",
-          desc: "像网盘扩容这类跟着用量涨成本的功能，可能会以会员卡或按量方式单独收费，并会提前说明。",
+          desc: "像网盘扩容这类跟着用量涨成本的功能，可能会单独收费，并会提前说明。",
         },
       ],
     },
     voteCta: {
       eyebrow: "社区",
       title: "价格投票与讨论仍在进行",
-      desc: "套餐类型已确定——永久套餐与会员卡——但你仍可以为价位投票、分享想法。",
+      desc: "你仍可以为永久套餐的价位投票、分享想法。",
       link: "参与投票与讨论",
       why: "为什么要收费？",
     },
