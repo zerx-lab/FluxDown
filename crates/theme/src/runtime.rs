@@ -71,11 +71,10 @@ impl ResolvedTheme {
     /// （「全圆」圆角除外）。
     #[must_use]
     pub fn from_tokens(tokens: &ResolvedModeTokens, scale: f32) -> Self {
-        let text = TextStyleToken {
-            size: px(0.),
-            line_height: px(0.),
-            weight: FontWeight::NORMAL,
-        };
+        let mut text = TextStyleToken::default();
+        text.size = px(0.);
+        text.line_height = px(0.);
+        text.weight = FontWeight::NORMAL;
         let mut theme = Self {
             base: SemanticThemeTokens::default(),
             extended: ExtendedTokens {

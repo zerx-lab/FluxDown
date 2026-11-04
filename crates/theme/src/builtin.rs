@@ -2,10 +2,7 @@
 //! 以及 `extends: "builtin:*"` 的取值。
 
 use gpui::{FontWeight, Hsla, Rgba, px, rgb};
-use gpui_base::{
-    ColorTokens, RadiusTokens, SemanticThemeTokens, ShadowTokens, SpacingTokens, TextStyleToken,
-    TypographyTokens,
-};
+use gpui_base::{ColorTokens, SemanticThemeTokens, ShadowTokens, TextStyleToken, TypographyTokens};
 use gpui_component::ThemeMode;
 
 use crate::runtime::semantic_slot;
@@ -257,29 +254,30 @@ fn graphite_overrides(chrome: &GraphiteChrome) -> Vec<(&'static str, TokenValue)
 fn semantic_tokens(colors: ColorTokens) -> SemanticThemeTokens {
     // 桌面正文基线 13/18（macOS 正文字号，Windows/Linux 桌面列表同样取 13），
     // gpui-component 的 rem 也取 `sm`，因此整套 rem 工具类随之对齐。
-    let typography = TypographyTokens {
-        sans: SANS_FONT_SENTINEL.into(),
-        mono: MONO_FONT_SENTINEL.into(),
-        sm: TextStyleToken {
-            size: px(13.),
-            line_height: px(18.),
-            weight: FontWeight::NORMAL,
-        },
-        ..TypographyTokens::default()
-    };
+    // gpui-base 0.9 起 token 结构体为 `#[non_exhaustive]`，只能 Default 后写字段。
+    let mut typography = TypographyTokens::default();
+    typography.sans = SANS_FONT_SENTINEL.into();
+    typography.mono = MONO_FONT_SENTINEL.into();
+    typography.sm = text_style_token(13., 18.);
 
-    SemanticThemeTokens {
-        colors,
-        radius: RadiusTokens::default(),
-        spacing: SpacingTokens::default(),
-        typography,
-        shadow: ShadowTokens::elevations(Hsla {
-            h: 0.,
-            s: 0.,
-            l: 0.,
-            a: SHADOW_ALPHA,
-        }),
-    }
+    let mut tokens = SemanticThemeTokens::default();
+    tokens.colors = colors;
+    tokens.typography = typography;
+    tokens.shadow = ShadowTokens::elevations(Hsla {
+        h: 0.,
+        s: 0.,
+        l: 0.,
+        a: SHADOW_ALPHA,
+    });
+    tokens
+}
+
+fn text_style_token(size: f32, line_height: f32) -> TextStyleToken {
+    let mut style = TextStyleToken::default();
+    style.size = px(size);
+    style.line_height = px(line_height);
+    style.weight = FontWeight::NORMAL;
+    style
 }
 
 /// 预设中映射到 Base token 的 Layer0 颜色。
@@ -401,28 +399,28 @@ const TEXT_SELECTION_ALPHA: f32 = 0.3;
 /// Layer0 → Base 语义 token 的固定映射。
 fn color_tokens(palette: &Palette) -> ColorTokens {
     let accent = color(palette.accent);
-    ColorTokens {
-        background: color(palette.background),
-        foreground: color(palette.text_primary),
-        surface: color(palette.surface1),
-        surface_foreground: color(palette.text_primary),
-        primary: accent,
-        primary_foreground: palette
-            .accent_foreground
-            .map_or_else(|| foreground_for(accent), color),
-        secondary: color(palette.surface2),
-        secondary_foreground: color(palette.text_primary),
-        muted: color(palette.surface2),
-        muted_foreground: color(palette.text_secondary),
-        accent: accent.alpha(f32::from(palette.accent_background_alpha) / 255.),
-        accent_foreground: accent,
-        destructive: color(palette.status_error),
-        destructive_foreground: color(0xFFFFFF),
-        border: color(palette.border),
-        input: color(palette.border),
-        ring: accent,
-        selection: accent.alpha(TEXT_SELECTION_ALPHA),
-    }
+    let mut tokens = ColorTokens::default();
+    tokens.background = color(palette.background);
+    tokens.foreground = color(palette.text_primary);
+    tokens.surface = color(palette.surface1);
+    tokens.surface_foreground = color(palette.text_primary);
+    tokens.primary = accent;
+    tokens.primary_foreground = palette
+        .accent_foreground
+        .map_or_else(|| foreground_for(accent), color);
+    tokens.secondary = color(palette.surface2);
+    tokens.secondary_foreground = color(palette.text_primary);
+    tokens.muted = color(palette.surface2);
+    tokens.muted_foreground = color(palette.text_secondary);
+    tokens.accent = accent.alpha(f32::from(palette.accent_background_alpha) / 255.);
+    tokens.accent_foreground = accent;
+    tokens.destructive = color(palette.status_error);
+    tokens.destructive_foreground = color(0xFFFFFF);
+    tokens.border = color(palette.border);
+    tokens.input = color(palette.border);
+    tokens.ring = accent;
+    tokens.selection = accent.alpha(TEXT_SELECTION_ALPHA);
+    tokens
 }
 
 /// 用户强调色覆盖的 token 路径：`apply_accent` 重算的全部 `ColorTokens` 字段。
