@@ -49,10 +49,16 @@
   color: var(--fd-danger);
 }
 
+/* 弹层位置（left/top）、max-width、max-height 由 FloatButton 的 positionPop 按视口内联写入：
+ * 与按钮对齐 → 翻转 → 夹进视口；这里只给首帧前的兜底值。
+ * 宽度规则与改动前等价：原来 right:0 + width:auto 的 shrink-to-fit 可用宽度只有按钮宽度，
+ * 结果恒为 min-content（再受 min-width / max-width / .fd-qp 的 max-width:280px 约束，长标题仍在 280px 处省略）；
+ * 改成 left 定位后可用宽度会随 left 变化，故显式写 min-content 保持尺寸不变。 */
 .fd-float-pop {
   position: absolute;
-  right: 0;
+  left: 0;
   top: calc(100% + 6px);
+  width: min-content;
   min-width: min(220px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   max-height: 280px;
@@ -63,9 +69,10 @@
   box-shadow: var(--fd-shadow);
 }
 
-.fd-float-pop.fd-flip {
-  top: auto;
-  bottom: calc(100% + 6px);
+/* 只让弹层自身滚动，避免与 QualityPicker 自带的 max-height 形成双层滚动 */
+.fd-float-pop .fd-qp {
+  max-height: none;
+  overflow-y: visible;
 }
 
 /* 触屏（无 hover）：按钮 / 菜单项放大到可舒适点按，菜单高度随视口收敛（横屏矮视口）。
