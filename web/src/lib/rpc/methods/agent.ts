@@ -304,7 +304,7 @@ const update = {
 };
 
 const power = {
-  /** 完成后关机；无活跃任务时被拒绝（invalidArgument）。 */
+  /** 定时关机 / 睡眠：没有任务时立即倒计时；`delaySecs = 0` 无任务时不受理（`armed: false`）。 */
   arm: (params: PowerArmParams) => call<PowerArmResult>(METHOD.AGENT_POWER_ARM, params),
   disarm: () => call<OkResult>(METHOD.AGENT_POWER_DISARM),
 };

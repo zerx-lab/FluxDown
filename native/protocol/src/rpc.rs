@@ -26,9 +26,10 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// `TaskDto` 默认值字段不再上线（反序列化须容忍缺省），v18–v24 曾承载的临时文件分享协议已整体移除，
 /// v25 增加周期会员卡：`CloudPlan.billingPeriodDays`、`CloudProfile` / `AgentSessionDto.activeSubscription`、
 /// `ErrorReason::SubscriptionConflict`，v26 增加 BT 防吸血：`daemon.bt.guard.*` 方法、
-/// `DaemonEvent::{BtGuardChanged, BtGuardCloudRefreshWanted, BtGuardEvidenceReady}` 与 `BtPeerDto` 嫌疑字段
+/// `DaemonEvent::{BtGuardChanged, BtGuardCloudRefreshWanted, BtGuardEvidenceReady}` 与 `BtPeerDto` 嫌疑字段，
+/// v27 增加定时睡眠与无任务定时：`PowerArmParams.action` / `PowerStatusDto.action`
 /// （纯增量，旧客户端忽略未知字段与方法）。
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 /// 旧客户端不能解析 v19 起的协议语义，必须在握手时拒绝混用。
 pub const MIN_PROTOCOL_VERSION: u32 = 19;
 /// 服务收到 `system.shutdown` 而退出时的 WebSocket 关闭原因：客户端据此停止重连与重拉。

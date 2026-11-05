@@ -705,23 +705,40 @@ pub struct ShellStatusDto {
     pub global_shortcuts: crate::shortcuts::GlobalShortcutsStatusDto,
 }
 
-/// 完成后关机的调度状态（agent 拥有状态机与执行）。
+/// 定时电源操作：到点关机还是睡眠（挂起到内存）。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum PowerAction {
+    #[default]
+    Shutdown,
+    Sleep,
+}
+
+/// 定时关机 / 睡眠的调度状态（agent 拥有状态机与执行）。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerStatusDto {
     /// 已排定的延迟（秒）；`None` = 未启用。
     pub armed_delay_secs: Option<u64>,
-    /// 全部任务结束、真正开始倒计时后的剩余秒数；等待任务完成阶段为 `None`。
+    /// 全部任务结束（或排定时本就没有任务）、真正开始倒计时后的剩余秒数；等待任务完成阶段为 `None`。
     pub countdown_remaining_secs: Option<u64>,
+    /// 已排定的操作；未启用时为默认值（旧 agent 缺省 = 关机）。
+    #[serde(default)]
+    pub action: PowerAction,
 }
 
-/// `agent.power.arm` 参数：全部任务完成后再等待 `delay_secs` 秒关机（0 = 立即）。
+/// `agent.power.arm` 参数：没有任务时立即开始倒计时，否则全部任务完成后再等待 `delay_secs`
+/// 秒执行 `action`。`delay_secs = 0`（完成后立即）只在有任务时接受。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerArmParams {
     pub delay_secs: u64,
+    /// 缺省 = 关机（旧客户端）。
+    #[serde(default)]
+    pub action: PowerAction,
 }
 
 /// agent 配置同步状态投影。

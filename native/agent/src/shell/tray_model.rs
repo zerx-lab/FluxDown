@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fluxdown_protocol::app_icon::AppIconChoice;
-use fluxdown_protocol::{AgentSnapshot, PowerStatusDto};
+use fluxdown_protocol::{AgentSnapshot, PowerAction, PowerStatusDto};
 use fluxdown_ui_i18n::{I18nCatalog, Translator};
 use serde_json::Value;
 
@@ -114,17 +114,21 @@ fn cached_icon(
 }
 
 /// macOS 不给状态栏项设 tooltip（#953：macOS 27 上 tooltip 收不到移出事件而常驻），
-/// 倒计时改挂在「取消关机」菜单项上。
+/// 倒计时改挂在「取消关机 / 睡眠」菜单项上。
 const COUNTDOWN_IN_MENU: bool = cfg!(target_os = "macos");
 
 fn build(translator: &Translator, inputs: &Inputs, countdown_in_menu: bool) -> TrayModel {
+    let (countdown_key, cancel_key) = match inputs.power.action {
+        PowerAction::Shutdown => ("shutdownCountdown", "trayCancelShutdown"),
+        PowerAction::Sleep => ("sleepCountdown", "trayCancelSleep"),
+    };
     let remaining = inputs.power.countdown_remaining_secs.map(format_remaining);
     let tooltip = remaining.as_ref().map_or_else(
         || DEFAULT_TOOLTIP.to_owned(),
-        |time| translator.text_with("shutdownCountdown", &[("time", time)]),
+        |time| translator.text_with(countdown_key, &[("time", time)]),
     );
     let cancel_shutdown = inputs.power.armed_delay_secs.map(|_| {
-        let label = translator.text("trayCancelShutdown");
+        let label = translator.text(cancel_key);
         match remaining.as_ref() {
             Some(time) if countdown_in_menu => format!("{label} ({time})"),
             _ => label.to_owned(),
@@ -166,6 +170,7 @@ mod tests {
             power: PowerStatusDto {
                 armed_delay_secs: Some(60),
                 countdown_remaining_secs: Some(65),
+                action: PowerAction::Shutdown,
             },
             icon: AppIconChoice::Default,
         };
@@ -190,31 +195,41 @@ mod tests {
     /// 查表缺键时 `Translator` 回退为键名；托盘文案必须全部存在于 en / zh 基线。
     #[test]
     fn menu_labels_exist_in_both_baselines() {
-        let inputs = Inputs {
-            visible: true,
-            locale: None,
-            power: PowerStatusDto {
-                armed_delay_secs: Some(0),
-                countdown_remaining_secs: Some(1),
-            },
-            icon: AppIconChoice::Default,
-        };
-        for locale in ["en", "zh"] {
-            let model = build(&translator(locale), &inputs, false);
-            for (label, key) in [
-                (model.show_window.as_str(), "trayShowWindow"),
-                (model.pause_all.as_str(), "pauseAll"),
-                (model.resume_all.as_str(), "resumeAll"),
-                (model.restart.as_str(), "trayRestart"),
-                (model.quit.as_str(), "trayExit"),
-                (
-                    model.cancel_shutdown.as_deref().unwrap_or_default(),
-                    "trayCancelShutdown",
-                ),
-            ] {
-                assert_ne!(label, key, "{locale} is missing {key}");
+        for (action, countdown_key, cancel_key) in [
+            (
+                PowerAction::Shutdown,
+                "shutdownCountdown",
+                "trayCancelShutdown",
+            ),
+            (PowerAction::Sleep, "sleepCountdown", "trayCancelSleep"),
+        ] {
+            let inputs = Inputs {
+                visible: true,
+                locale: None,
+                power: PowerStatusDto {
+                    armed_delay_secs: Some(0),
+                    countdown_remaining_secs: Some(1),
+                    action,
+                },
+                icon: AppIconChoice::Default,
+            };
+            for locale in ["en", "zh"] {
+                let model = build(&translator(locale), &inputs, false);
+                for (label, key) in [
+                    (model.show_window.as_str(), "trayShowWindow"),
+                    (model.pause_all.as_str(), "pauseAll"),
+                    (model.resume_all.as_str(), "resumeAll"),
+                    (model.restart.as_str(), "trayRestart"),
+                    (model.quit.as_str(), "trayExit"),
+                    (
+                        model.cancel_shutdown.as_deref().unwrap_or_default(),
+                        cancel_key,
+                    ),
+                ] {
+                    assert_ne!(label, key, "{locale} is missing {key}");
+                }
+                assert!(!model.tooltip.contains(countdown_key), "{locale}");
             }
-            assert!(!model.tooltip.contains("shutdownCountdown"), "{locale}");
         }
     }
 

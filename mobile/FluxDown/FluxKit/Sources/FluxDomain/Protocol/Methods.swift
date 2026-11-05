@@ -280,7 +280,7 @@ public enum HostMethod {
     public static let agentUpdateDownload = "agent.update.download"
     public static let agentUpdateInstall = "agent.update.install"
     public static let agentUpdateCancel = "agent.update.cancel"
-    /// 完成后关机：`{delaySecs}`；无活跃任务时拒绝（`InvalidArgument`）。
+    /// 定时关机 / 睡眠：`{delaySecs, action}` → `{armed}`；没有任务时立即倒计时，`delaySecs = 0` 仅有任务时受理。
     public static let agentPowerArm = "agent.power.arm"
     public static let agentPowerDisarm = "agent.power.disarm"
     public static let agentCloudNotifyGet = "agent.cloudNotify.get"

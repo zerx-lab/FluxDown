@@ -48,7 +48,7 @@ pub use agent::{
     PLATFORM_COPY_TASK_FILES_MAX, PathStyle, PendingCaptureDto, PlatformCopyTaskFilesParams,
     PlatformFileIconDto, PlatformFileIconParams, PlatformIntegrationDto, PlatformOpenPathParams,
     PlatformToggleParams, PlatformUrlProtocolParams, PluginFavoriteResultDto,
-    PluginFavoriteSetRequest, PluginFavoritesDto, PowerArmParams, PowerStatusDto,
+    PluginFavoriteSetRequest, PluginFavoritesDto, PowerAction, PowerArmParams, PowerStatusDto,
     PrivatePluginInstallRequest, PrivatePluginListDto, ReleaseNoteDto, RemoteCommandAction,
     RemoteCommandParams, RemoteDispatchParams, RemoteDispatchResult, RemoteTaskDto,
     RemoteTaskStatus, ShellStatusDto, SyncLocalOnlyParams, SyncStatusDto, TrayUnavailableReason,

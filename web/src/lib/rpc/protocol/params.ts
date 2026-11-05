@@ -1,7 +1,7 @@
 // 各方法的 params / 非 DTO 结果类型（按 wire 名归类）。
 // daemon 端的 id 参数在服务端带别名（`id` / `taskId` / `queueId` / `groupId` 等价），这里统一用语义名。
 
-import type { RemoteTaskDto } from './agent';
+import type { PowerAction, RemoteTaskDto } from './agent';
 import type { JsonValue } from './common';
 import type { ComponentKind, ComponentStatusDto } from './plugin';
 import type { ServiceHello } from './rpc';
@@ -383,8 +383,10 @@ export interface PreferencesPatchResult {
 }
 
 export interface PowerArmParams {
-  /** 全部任务完成后再等待的秒数（0 = 立即）。 */
+  /** 倒计时秒数：没有任务时立即开始，否则全部任务完成后开始（0 = 完成后立即，仅有任务时接受）。 */
   delaySecs: number;
+  /** 缺省 = shutdown。 */
+  action?: PowerAction;
 }
 
 export interface PowerArmResult {

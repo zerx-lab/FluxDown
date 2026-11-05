@@ -457,12 +457,17 @@ export interface ShellStatusDto {
   globalShortcuts?: GlobalShortcutsStatusDto;
 }
 
-/** 完成后关机状态。 */
+/** 定时电源操作：关机或睡眠。 */
+export type PowerAction = 'shutdown' | 'sleep';
+
+/** 定时关机 / 睡眠状态。 */
 export interface PowerStatusDto {
   /** 已排定的延迟（秒）；null = 未启用。 */
   armedDelaySecs: number | null;
-  /** 全部任务结束、开始倒计时后的剩余秒数；等待任务完成阶段为 null。 */
+  /** 全部任务结束（或排定时本就没有任务）、开始倒计时后的剩余秒数；等待任务完成阶段为 null。 */
   countdownRemainingSecs: number | null;
+  /** 已排定的操作；未启用时为默认值（旧 agent 缺省 = shutdown）。 */
+  action?: PowerAction;
 }
 
 export interface SyncStatusDto {

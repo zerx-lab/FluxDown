@@ -269,7 +269,7 @@ object HostMethod {
     const val agentUpdateDownload = "agent.update.download"
     const val agentUpdateInstall = "agent.update.install"
     const val agentUpdateCancel = "agent.update.cancel"
-    /** 完成后关机：`{delaySecs}`；无活跃任务时拒绝（`InvalidArgument`）。 */
+    /** 定时关机 / 睡眠：`{delaySecs, action}` → `{armed}`；没有任务时立即倒计时，`delaySecs = 0` 仅有任务时受理。 */
     const val agentPowerArm = "agent.power.arm"
     const val agentPowerDisarm = "agent.power.disarm"
     const val agentCloudNotifyGet = "agent.cloudNotify.get"

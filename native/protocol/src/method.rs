@@ -378,7 +378,8 @@ pub const AGENT_UPDATE_DOWNLOAD: &str = "agent.update.download";
 pub const AGENT_UPDATE_INSTALL: &str = "agent.update.install";
 /// 取消进行中的下载与待安装请求，返回 `UpdateStatusDto`。
 pub const AGENT_UPDATE_CANCEL: &str = "agent.update.cancel";
-/// 完成后关机：`{delaySecs}`；无活跃任务时拒绝（`InvalidArgument`）。
+/// 定时关机 / 睡眠：`{delaySecs, action}` → `{armed}`；没有任务时立即开始倒计时，
+/// `delaySecs = 0` 只在有任务（活跃 / 排队 / 待重试）时接受，否则 `armed = false`。
 pub const AGENT_POWER_ARM: &str = "agent.power.arm";
 pub const AGENT_POWER_DISARM: &str = "agent.power.disarm";
 
