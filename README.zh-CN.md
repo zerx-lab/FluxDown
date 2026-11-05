@@ -28,7 +28,7 @@
 
 [**官网**](https://fluxdown.com) · [**下载**](https://fluxdown.com/#download) · [**更新日志**](https://fluxdown.com/changelog) · [**常见问题**](https://fluxdown.com/faq) · [**反馈**](https://fluxdown.com/feedback)
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** | [日本語](README.ja.md)
 
 </div>
 

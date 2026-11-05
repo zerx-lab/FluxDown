@@ -44,6 +44,7 @@ use crate::lifecycle::Lifecycle;
 use crate::link::LinkService;
 use crate::platform::PlatformError;
 use crate::power::PowerService;
+use crate::private_plugin::PrivatePluginService;
 use crate::remote::{RemoteError, RemoteTaskService};
 use crate::server_mode::ServerHandle;
 use crate::shell::ShellState;
@@ -71,6 +72,7 @@ pub struct GatewayService {
     notify: Arc<CloudNotifyService>,
     capture: Arc<CaptureService>,
     blobs: Arc<DaemonBlobClient>,
+    private_plugins: PrivatePluginService,
     diagnostics: Arc<DiagnosticsService>,
     update: Arc<UpdateService>,
     state: Arc<tokio::sync::Mutex<crate::state::AgentState>>,
@@ -118,6 +120,8 @@ impl GatewayService {
             events.clone(),
             Arc::clone(&local.notifier),
         );
+        let private_plugins =
+            PrivatePluginService::new(Arc::clone(&cloud), Arc::clone(&daemon), Arc::clone(&blobs));
         Self {
             daemon,
             events,
@@ -128,6 +132,7 @@ impl GatewayService {
             notify,
             capture,
             blobs,
+            private_plugins,
             diagnostics,
             update,
             state,
@@ -457,6 +462,17 @@ impl GatewayService {
                 let request =
                     parse_params::<fluxdown_protocol::PluginFavoriteSetRequest>(request.params)?;
                 cloud_value(self.cloud.set_plugin_favorite(request).await)
+            }
+            method::AGENT_PRIVATE_PLUGIN_LIST => {
+                self.private_plugins.list().await.and_then(to_value)
+            }
+            method::AGENT_PRIVATE_PLUGIN_INSTALL => {
+                let request =
+                    parse_params::<fluxdown_protocol::PrivatePluginInstallRequest>(request.params)?;
+                self.private_plugins
+                    .install(request)
+                    .await
+                    .and_then(to_value)
             }
             method::AGENT_REFERRAL_SUMMARY => {
                 cloud_value(self.cloud.referral("/summary", Method::GET, None).await)
@@ -2315,10 +2331,17 @@ impl GatewayService {
 ///   绕过签名替换封禁名单。
 /// - `daemon.bt.guard.evidence.drain`：弹出待上报证据；证据只能经 `bt_guard` 模块（遥测红线例外）
 ///   上报，任意客户端取走会让证据丢失，且泄露对端 IP 与 infohash。
+/// - `daemon.plugin.installPrivate`：来源标记 `private` 只能由 agent 在校验过 FluxCloud 票据包的
+///   sha256 之后写入；放开它等于让任意客户端把任意包标成「私有商店」来源。
+/// - `daemon.plugin.revokePrivate`：撤回清单与授权范围来自 FluxCloud 私有目录；任意客户端可借它把已装
+///   私有插件封锁为 `Revoked`（升级前不可再启用），或伪造 `scope` 解除既有封锁。
 fn internal_daemon_method(method_name: &str) -> bool {
     matches!(
         method_name,
-        method::DAEMON_BT_GUARD_CLOUD_APPLY | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN
+        method::DAEMON_BT_GUARD_CLOUD_APPLY
+            | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN
+            | method::DAEMON_PLUGIN_INSTALL_PRIVATE
+            | method::DAEMON_PLUGIN_REVOKE_PRIVATE
     )
 }
 
@@ -2399,7 +2422,12 @@ fn lane_for(method_name: &str) -> Lane {
             Lane::Daemon
         };
     }
-    if method_name == method::AGENT_CAPTURE_PREVIEW {
+    // 私有包安装 = 云端目录 + 下载（分钟级）+ daemon 安装：与慢 daemon 调用同道并发下发，
+    // 不占用串行的 Cloud 通道（登录 / 设备 / 同步等不能被它堵住）。目录 `list` 仍走 Cloud。
+    if matches!(
+        method_name,
+        method::AGENT_CAPTURE_PREVIEW | method::AGENT_PRIVATE_PLUGIN_INSTALL
+    ) {
         return Lane::DaemonSlow;
     }
     if method_name == method::AGENT_CAPTURE_CREATE_GROUP {
@@ -2412,7 +2440,7 @@ fn lane_for(method_name: &str) -> Lane {
     ) {
         return Lane::Icon;
     }
-    const CLOUD_PREFIXES: [&str; 10] = [
+    const CLOUD_PREFIXES: [&str; 11] = [
         "agent.auth.",
         "agent.profile.",
         "agent.device.",
@@ -2420,6 +2448,7 @@ fn lane_for(method_name: &str) -> Lane {
         "agent.order.",
         "agent.referral.",
         "agent.pluginFavorite.",
+        "agent.privatePlugin.",
         "agent.remote.",
         "agent.sync.",
         "agent.update.",
@@ -4259,7 +4288,8 @@ mod tests {
     }
 
     /// `daemon.bt.guard.cloud.apply` 携带「agent 已验签」的云名单、`daemon.bt.guard.evidence.drain` 弹出
-    /// 待上报证据：两者只有 agent 自己的 `bt_guard` 模块调用，经 Gateway 的任何会话（本机 UI、访问密钥、
+    /// 待上报证据、`daemon.plugin.{installPrivate,revokePrivate}` 只接受 agent 校验过的 FluxCloud 私有包 /
+    /// 撤回清单：它们只有 agent 自己的模块调用，经 Gateway 的任何会话（本机 UI、访问密钥、
     /// 配对设备）一律拒绝；其余 `daemon.bt.guard.*` 照常透传给 daemon。
     #[tokio::test]
     async fn bt_guard_internal_daemon_methods_are_denied_to_every_session_kind() {
@@ -4269,6 +4299,8 @@ mod tests {
         let internal = [
             method::DAEMON_BT_GUARD_CLOUD_APPLY,
             method::DAEMON_BT_GUARD_EVIDENCE_DRAIN,
+            method::DAEMON_PLUGIN_INSTALL_PRIVATE,
+            method::DAEMON_PLUGIN_REVOKE_PRIVATE,
         ];
         let forwarded = [
             method::DAEMON_BT_GUARD_STATE,
@@ -4546,9 +4578,15 @@ mod tests {
         for name in [
             fluxdown_protocol::method::AGENT_PLUGIN_FAVORITE_LIST,
             fluxdown_protocol::method::AGENT_PLUGIN_FAVORITE_SET,
+            fluxdown_protocol::method::AGENT_PRIVATE_PLUGIN_LIST,
         ] {
             assert!(matches!(lane_for(name), Lane::Cloud), "{name}");
         }
+        // 分钟级的私有包安装不占用串行的 Cloud 通道。
+        assert!(matches!(
+            lane_for(fluxdown_protocol::method::AGENT_PRIVATE_PLUGIN_INSTALL),
+            Lane::DaemonSlow
+        ));
     }
 
     #[tokio::test]

@@ -375,6 +375,9 @@ pub enum PluginError {
     /// 错误归因到具体字段，`message` 是面向用户的原因。
     #[error("{message}")]
     InvalidSetting { key: String, message: String },
+    /// 公开渠道的安装撞上了私有商店来源的同标识插件。
+    #[error("插件 {0} 由 FluxCloud 私有商店安装，公开渠道不能覆盖它")]
+    PrivateSource(String),
 }
 
 // ---------------------------------------------------------------------------

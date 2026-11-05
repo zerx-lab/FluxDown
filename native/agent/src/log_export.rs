@@ -461,6 +461,7 @@ mod tests {
                    gotify POST https://push.example.com/message?token=abc123&x=1\n\
                    proxy http://user:hunter2@proxy.local:8080 via /home/alice/.config\n\
                    Cookie: sid=abcdef\nAuthorization: Bearer topsecret\n\
+                   private plugin GET https://cloud.example.com/api/v1/private-plugins/packages/TkT-9f8e7d6c5b4a (120s)\n\
                    C:\\Users\\Bob\\AppData\\fluxdown\n";
         let cleaned = String::from_utf8(sanitize_text(log.as_bytes())).expect("utf8");
         for leaked in [
@@ -471,12 +472,14 @@ mod tests {
             "sid=abcdef",
             "topsecret",
             "Bob",
+            "TkT-9f8e7d6c5b4a",
         ] {
             assert!(!cleaned.contains(leaked), "{leaked} leaked: {cleaned}");
         }
         // 排障需要的主机与错误上下文保留。
         assert!(cleaned.contains("api.telegram.org"));
         assert!(cleaned.contains("push.example.com"));
+        assert!(cleaned.contains("/api/v1/private-plugins/packages/[REDACTED]"));
         assert!(cleaned.contains("proxy.local:8080"));
     }
 

@@ -15,6 +15,36 @@ fn installable(entry: &MarketEntryDto) -> bool {
     entry.yanked == "none"
 }
 
+/// 私有商店条目的渠道标记（`MarketEntryDto.channel`）；公开市场条目无此字段。
+const PRIVATE_CHANNEL: &str = "private";
+
+/// 条目来自私有商店（`agent.privatePlugin.list`）。
+pub fn is_private_entry(entry: &MarketEntryDto) -> bool {
+    entry.channel.as_deref() == Some(PRIVATE_CHANNEL)
+}
+
+/// 插件由私有商店安装（`PluginDto.source == "private"`）；空 / 其他值 = 公开市场 / 本机包 / 旧版安装。
+pub fn is_private_install(plugin: &PluginDto) -> bool {
+    plugin.source == PRIVATE_CHANNEL
+}
+
+/// 安装 / 更新所走的目录渠道：决定重新拉取哪份目录、调用哪个安装方法。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarketChannel {
+    Public,
+    Private,
+}
+
+impl MarketChannel {
+    pub fn of(entry: &MarketEntryDto) -> Self {
+        if is_private_entry(entry) {
+            Self::Private
+        } else {
+            Self::Public
+        }
+    }
+}
+
 /// 每个插件一条：最新可安装版本；全部撤回（下架）的插件不出现在市场列表中。
 /// 顺序保持各插件在索引中首次出现的位置。
 pub fn latest_per_plugin(entries: &[MarketEntryDto]) -> Vec<MarketEntryDto> {
@@ -67,6 +97,31 @@ pub fn filter_market<'a>(entries: &'a [MarketEntryDto], query: &str) -> Vec<&'a 
                 || entry.tags.iter().any(|tag| hit(tag))
         })
         .collect()
+}
+
+/// 分页切片：`items` 的前 `limit` 条可见，`remaining` = 其后还没展开的条数（0 = 不再显示「显示更多」）。
+/// 公开市场与专属插件区共用；`limit` 超过总数时全部可见、`remaining` 为 0。
+pub fn page_of<T>(items: &[T], limit: usize) -> (&[T], usize) {
+    let shown = limit.min(items.len());
+    (&items[..shown], items.len() - shown)
+}
+
+/// 专属插件区条目数达到该值才出现搜索框：少量条目一眼可见，不占一行输入框。
+pub const PRIVATE_SEARCH_MIN_ENTRIES: usize = 8;
+
+/// 专属插件区是否显示搜索框（`total` = 可装条目数，未过滤）。
+pub fn private_search_visible(total: usize) -> bool {
+    total >= PRIVATE_SEARCH_MIN_ENTRIES
+}
+
+/// 专属插件区过滤：搜索框不可见时忽略 `query`（残留的关键字不能在看不见的输入框里隐藏条目），
+/// 可见时与公开市场同一规则（[`filter_market`]）。
+pub fn filter_private<'a>(entries: &'a [MarketEntryDto], query: &str) -> Vec<&'a MarketEntryDto> {
+    if private_search_visible(entries.len()) {
+        filter_market(entries, query)
+    } else {
+        entries.iter().collect()
+    }
 }
 
 /// 市场列表排序方式；仅内存态，不持久化。
@@ -165,11 +220,15 @@ pub enum MarketAction {
     Unavailable,
 }
 
-/// 开发模式插件的源码由本地目录管理，不从市场覆盖。
+/// 开发模式插件的源码由本地目录管理，不从市场覆盖；私有商店安装的插件不被公开市场条目
+/// 覆盖（公开行按「已安装」处理），其更新只取自私有条目。
 pub fn market_action(entry: &MarketEntryDto, installed: Option<&PluginDto>) -> MarketAction {
     match installed {
         None if installable(entry) => MarketAction::Install,
         None => MarketAction::Unavailable,
+        Some(plugin) if is_private_install(plugin) && !is_private_entry(entry) => {
+            MarketAction::Installed
+        }
         Some(plugin)
             if !plugin.dev_mode
                 && installable(entry)
@@ -179,6 +238,27 @@ pub fn market_action(entry: &MarketEntryDto, installed: Option<&PluginDto>) -> M
         }
         Some(_) => MarketAction::Installed,
     }
+}
+
+/// 私有条目的安装将替换本机同 id 的非私有插件（公开市场 / 本机包安装的；dev 副本不算）：
+/// 权限确认弹窗据此追加替换警示，且即使没有新增权限也要弹出确认。
+pub fn replaces_local_plugin(entry: &MarketEntryDto, installed: Option<&PluginDto>) -> bool {
+    is_private_entry(entry)
+        && installed.is_some_and(|plugin| !plugin.dev_mode && !is_private_install(plugin))
+}
+
+/// 已安装插件的可用更新：私有商店安装的插件只看私有目录条目，其余只看公开目录条目。
+pub fn available_update<'a>(
+    plugin: &PluginDto,
+    public: Option<&'a MarketEntryDto>,
+    private: Option<&'a MarketEntryDto>,
+) -> Option<&'a MarketEntryDto> {
+    let candidate = if is_private_install(plugin) {
+        private
+    } else {
+        public
+    };
+    candidate.filter(|entry| market_action(entry, Some(plugin)) == MarketAction::Update)
 }
 
 /// 需要用户确认的权限：新装取条目全部权限，更新只取已安装版本没有的新增权限。
@@ -213,8 +293,9 @@ pub fn confirmation_holds(
             .all(|host| confirmed_hosts.contains(host))
 }
 
-/// 已安装版本在市场中的撤回标记（`deprecated` / `vulnerable` / `malicious`）；未撤回或
-/// 市场无此版本返回 `None`。
+/// 已安装版本在目录中的撤回标记（`deprecated` / `vulnerable` / `malicious`）；未撤回或
+/// 目录无此版本返回 `None`。私有商店安装的插件只匹配私有条目，其余只匹配公开条目，
+/// 调用方传哪份目录都不会串用另一份的撤回信息。
 pub fn installed_version_yanked<'a>(
     entries: &'a [MarketEntryDto],
     plugin: &PluginDto,
@@ -222,9 +303,14 @@ pub fn installed_version_yanked<'a>(
     if plugin.dev_mode {
         return None;
     }
+    let private = is_private_install(plugin);
     entries
         .iter()
-        .find(|entry| entry.plugin_id == plugin.identity && entry.version == plugin.version)
+        .find(|entry| {
+            is_private_entry(entry) == private
+                && entry.plugin_id == plugin.identity
+                && entry.version == plugin.version
+        })
         .map(|entry| entry.yanked.as_str())
         .filter(|yanked| !yanked.is_empty() && *yanked != "none")
 }
@@ -338,8 +424,9 @@ mod tests {
     use fluxdown_protocol::{MarketEntryDto, PluginDto};
 
     use super::{
-        MARKET_MAX_AGE, MarketAction, confirmation_holds, filter_market, installed_version_yanked,
-        latest_per_plugin, market_action, market_needs_load, permissions_to_confirm, version_newer,
+        MARKET_MAX_AGE, MarketAction, MarketChannel, available_update, confirmation_holds,
+        filter_market, installed_version_yanked, latest_per_plugin, market_action,
+        market_needs_load, permissions_to_confirm, replaces_local_plugin, version_newer,
     };
 
     #[test]
@@ -485,6 +572,8 @@ mod tests {
             tags: Vec::new(),
             permissions: Vec::new(),
             network_hosts: Vec::new(),
+            channel: None,
+            expires_at: None,
         }
     }
 
@@ -513,6 +602,7 @@ mod tests {
             network_hosts: Vec::new(),
             package_dir: None,
             package_revision: 0,
+            source: String::new(),
         }
     }
 
@@ -633,6 +723,149 @@ mod tests {
         ));
     }
 
+    fn private_entry(id: &str, version: &str, sequence: u64, yanked: &str) -> MarketEntryDto {
+        let mut built = entry(id, version, sequence, yanked);
+        built.channel = Some("private".to_owned());
+        built
+    }
+
+    fn private_plugin(id: &str, version: &str) -> PluginDto {
+        let mut built = plugin(id, version, false, &[]);
+        built.source = "private".to_owned();
+        built
+    }
+
+    #[test]
+    fn private_entries_follow_the_public_action_rules() {
+        let latest = private_entry("a@acme", "1.2.0", 3, "none");
+        assert_eq!(market_action(&latest, None), MarketAction::Install);
+        assert_eq!(
+            market_action(&latest, Some(&private_plugin("a@acme", "1.0.0"))),
+            MarketAction::Update
+        );
+        assert_eq!(
+            market_action(&latest, Some(&private_plugin("a@acme", "1.2.0"))),
+            MarketAction::Installed
+        );
+        // 私有条目替换同名的公开 / 本机安装：照常给出更新。
+        assert_eq!(
+            market_action(&latest, Some(&plugin("a@acme", "1.0.0", false, &[]))),
+            MarketAction::Update
+        );
+        assert_eq!(
+            market_action(&latest, Some(&plugin("a@acme", "1.0.0", true, &[]))),
+            MarketAction::Installed
+        );
+    }
+
+    #[test]
+    fn public_rows_never_update_a_private_install() {
+        let public = entry("a@acme", "9.0.0", 9, "none");
+        assert_eq!(
+            market_action(&public, Some(&private_plugin("a@acme", "1.0.0"))),
+            MarketAction::Installed
+        );
+        // 公开条目对非私有安装的行为不变。
+        assert_eq!(
+            market_action(&public, Some(&plugin("a@acme", "1.0.0", false, &[]))),
+            MarketAction::Update
+        );
+        assert_eq!(market_action(&public, None), MarketAction::Install);
+    }
+
+    #[test]
+    fn installed_update_comes_from_the_matching_catalog_only() {
+        let public = entry("a@acme", "9.0.0", 9, "none");
+        let private = private_entry("a@acme", "2.0.0", 2, "none");
+        let installed_private = private_plugin("a@acme", "1.0.0");
+        let installed_public = plugin("a@acme", "1.0.0", false, &[]);
+        let picked = available_update(&installed_private, Some(&public), Some(&private));
+        assert_eq!(picked.map(|e| e.version.as_str()), Some("2.0.0"));
+        let picked = available_update(&installed_public, Some(&public), Some(&private));
+        assert_eq!(picked.map(|e| e.version.as_str()), Some("9.0.0"));
+        // 私有目录没有该插件（授权被收回 / 尚未加载）：不回落到公开版本。
+        assert!(available_update(&installed_private, Some(&public), None).is_none());
+        // 已是最新：无更新。
+        assert!(
+            available_update(
+                &private_plugin("a@acme", "2.0.0"),
+                Some(&public),
+                Some(&private)
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn yanked_badge_never_crosses_catalogs() {
+        let entries = [
+            entry("a@acme", "1.0.0", 1, "malicious"),
+            private_entry("a@acme", "1.0.0", 2, "vulnerable"),
+            private_entry("b@acme", "1.0.0", 3, "deprecated"),
+        ];
+        assert_eq!(
+            installed_version_yanked(&entries, &private_plugin("a@acme", "1.0.0")),
+            Some("vulnerable")
+        );
+        assert_eq!(
+            installed_version_yanked(&entries, &plugin("a@acme", "1.0.0", false, &[])),
+            Some("malicious")
+        );
+        // 公开索引里有同 id 同版本的撤回记录，但私有安装只认私有条目。
+        let public_only = [entry("a@acme", "1.0.0", 1, "malicious")];
+        assert_eq!(
+            installed_version_yanked(&public_only, &private_plugin("a@acme", "1.0.0")),
+            None
+        );
+        // 私有条目不污染公开安装的判断。
+        let private_only = [private_entry("b@acme", "1.0.0", 3, "deprecated")];
+        assert_eq!(
+            installed_version_yanked(&private_only, &plugin("b@acme", "1.0.0", false, &[])),
+            None
+        );
+    }
+
+    #[test]
+    fn private_install_over_a_local_plugin_is_flagged_as_a_replacement() {
+        let private = private_entry("a@acme", "2.0.0", 2, "none");
+        let public = entry("a@acme", "2.0.0", 2, "none");
+        // 本机已有公开 / 本机包安装的同 id 插件：需要警示。
+        assert!(replaces_local_plugin(
+            &private,
+            Some(&plugin("a@acme", "1.0.0", false, &[]))
+        ));
+        // 全新安装、已是私有来源（普通升级）、dev 副本：不警示。
+        assert!(!replaces_local_plugin(&private, None));
+        assert!(!replaces_local_plugin(
+            &private,
+            Some(&private_plugin("a@acme", "1.0.0"))
+        ));
+        assert!(!replaces_local_plugin(
+            &private,
+            Some(&plugin("a@acme", "1.0.0", true, &[]))
+        ));
+        // 公开条目永不触发该警示。
+        assert!(!replaces_local_plugin(
+            &public,
+            Some(&plugin("a@acme", "1.0.0", false, &[]))
+        ));
+    }
+
+    #[test]
+    fn channel_follows_the_entry_marker() {
+        assert_eq!(
+            MarketChannel::of(&private_entry("a@acme", "1.0.0", 1, "none")),
+            MarketChannel::Private
+        );
+        assert_eq!(
+            MarketChannel::of(&entry("a@acme", "1.0.0", 1, "none")),
+            MarketChannel::Public
+        );
+        let mut other = entry("a@acme", "1.0.0", 1, "none");
+        other.channel = Some("beta".to_owned());
+        assert_eq!(MarketChannel::of(&other), MarketChannel::Public);
+    }
+
     #[test]
     fn installed_version_yank_is_reported_even_when_a_fix_exists() {
         let entries = [
@@ -686,5 +919,62 @@ mod tests {
         assert_eq!(ids("media"), vec!["video.dl"]);
         assert_eq!(ids("grabs"), vec!["video.dl"]);
         assert!(ids("nothing").is_empty());
+    }
+
+    #[test]
+    fn page_of_shows_the_first_limit_items_and_counts_the_rest() {
+        const PAGE: usize = 50;
+        let items = (0..=PAGE * 2 + 20).collect::<Vec<_>>();
+        let at = |len: usize, limit: usize| {
+            let (visible, remaining) = super::page_of(&items[..len], limit);
+            (visible.len(), remaining)
+        };
+        // 0 条：没有可见项，也没有「显示更多」。
+        assert_eq!(at(0, PAGE), (0, 0));
+        // 恰好一页：全部可见，按钮隐藏。
+        assert_eq!(at(PAGE, PAGE), (PAGE, 0));
+        // 多一条：按钮出现，剩余 1。
+        assert_eq!(at(PAGE + 1, PAGE), (PAGE, 1));
+        // 点两次「显示更多」后到达最后一条。
+        assert_eq!(at(PAGE * 2 + 20, PAGE * 2), (PAGE * 2, 20));
+        assert_eq!(at(PAGE * 2 + 20, PAGE * 3), (PAGE * 2 + 20, 0));
+        // limit 远大于总数（目录刷新后变短）：全部可见，不 panic。
+        assert_eq!(at(3, PAGE * 4), (3, 0));
+        // 可见的是前缀，顺序不变。
+        let (visible, _) = super::page_of(&items[..PAGE + 1], PAGE);
+        assert_eq!(visible.last(), Some(&(PAGE - 1)));
+    }
+
+    #[test]
+    fn private_search_appears_only_for_long_catalogs_and_is_ignored_when_hidden() {
+        use super::{PRIVATE_SEARCH_MIN_ENTRIES, filter_private, private_search_visible};
+
+        assert!(!private_search_visible(0));
+        assert!(!private_search_visible(PRIVATE_SEARCH_MIN_ENTRIES - 1));
+        assert!(private_search_visible(PRIVATE_SEARCH_MIN_ENTRIES));
+
+        let make = |count: usize| {
+            (0..count)
+                .map(|index| {
+                    let mut built = entry(&format!("p{index}@acme"), "1.0.0", 1, "none");
+                    built.name = format!("Plugin {index}");
+                    built
+                })
+                .collect::<Vec<_>>()
+        };
+        // 搜索框不可见：残留关键字不得把条目过滤掉。
+        let few = make(PRIVATE_SEARCH_MIN_ENTRIES - 1);
+        assert_eq!(filter_private(&few, "nothing-matches").len(), few.len());
+        // 可见：与公开市场同规则；全部被滤掉得到空，空查询保留全部。
+        let many = make(120);
+        assert_eq!(filter_private(&many, "").len(), 120);
+        assert_eq!(filter_private(&many, "  PLUGIN 119").len(), 1);
+        assert!(filter_private(&many, "nothing-matches").is_empty());
+        // 长名称与 CJK 名称同样可命中。
+        let mut long = entry("long@acme", "1.0.0", 1, "none");
+        long.name = format!("{}专属插件", "很长的名字".repeat(40));
+        let mut with_long = make(PRIVATE_SEARCH_MIN_ENTRIES);
+        with_long.push(long);
+        assert_eq!(filter_private(&with_long, "专属").len(), 1);
     }
 }

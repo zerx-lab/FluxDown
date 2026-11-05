@@ -103,9 +103,11 @@ WORKDIR /app
 COPY --from=server /usr/local/bin/fluxdown-agent /usr/local/bin/fluxdownd /app/
 # FLUXDOWN_BIND / FLUXDOWN_DATABASE_URL / FLUXDOWN_DEMO / FLUXDOWN_LANG 等见 native/agent 的 server 模式说明
 # FLUXDOWN_INSTALL_SOURCE：容器内替换二进制会随重建丢失，应用内更新改为提示拉取新镜像。
+# MIMALLOC_PURGE_DELAY=0：释放的内存立即归还系统（mimalloc 只在启动时读取；daemon 继承）。
 ENV FLUXDOWN_BIND=[::]:17800 \
     FLUXDOWN_DATA_DIR=/data \
-    FLUXDOWN_INSTALL_SOURCE=docker
+    FLUXDOWN_INSTALL_SOURCE=docker \
+    MIMALLOC_PURGE_DELAY=0
 VOLUME /data
 EXPOSE 17800
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

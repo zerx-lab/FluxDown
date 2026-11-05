@@ -17,6 +17,20 @@ pub enum SupervisorError {
     Spawn(String),
 }
 
+/// mimalloc 回收策略：释放的内存立即归还系统（默认 1s 延迟，且只在之后还有分配器
+/// 活动时才真正归还；空闲静默的 daemon 在一次大块收尾后会长期占着峰值 RSS）。
+/// mimalloc 只在进程启动时读环境变量，所以由拉起方注入；父进程已设置时沿用其值。
+const ALLOCATOR_ENV: [(&str, &str); 1] = [("MIMALLOC_PURGE_DELAY", "0")];
+
+/// 父环境里尚未设置的分配器变量。
+fn allocator_env(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> impl Iterator<Item = (&'static str, &'static str)> {
+    ALLOCATOR_ENV
+        .into_iter()
+        .filter(move |(key, _)| lookup(key).is_none())
+}
+
 #[derive(Default)]
 struct SupervisorState {
     generation: u64,
@@ -94,6 +108,7 @@ impl DaemonSupervisor {
             command.env("FLUXDOWN_DAEMON_BIND", bind_addr.to_string());
         }
         command
+            .envs(allocator_env(|key| std::env::var_os(key)))
             .envs(self.extra_env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -442,5 +457,15 @@ mod tests {
         // 用户名未知：宁可不结束也不能不带用户过滤。
         assert_eq!(taskkill_args(Some("WORKGROUP"), None), None);
         assert_eq!(taskkill_args(Some("WORKGROUP"), Some("")), None);
+    }
+
+    #[test]
+    fn allocator_env_respects_values_already_set_by_the_parent() {
+        let injected: Vec<_> = allocator_env(|_| None).collect();
+        assert_eq!(injected, vec![("MIMALLOC_PURGE_DELAY", "0")]);
+        let overridden = allocator_env(|key| {
+            (key == "MIMALLOC_PURGE_DELAY").then(|| std::ffi::OsString::from("250"))
+        });
+        assert_eq!(overridden.count(), 0);
     }
 }

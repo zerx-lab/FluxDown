@@ -1,9 +1,11 @@
 // 扩展页共用的几个版式小积木。
 
+import { Search, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useT } from '../../../../i18n'
 import { cn } from '../../../../lib/cn'
-import { Button, Card, Icon, Tooltip } from '../../../../ui'
+import { Button, Card, Icon, Input, Tooltip } from '../../../../ui'
 import { safeHttpUrl } from './logic'
 
 /** 图标按钮：桌面悬浮提示，触屏靠 aria-label；命中区随指针档位放大。次要图标灰，`destructive` 悬浮变危险色。 */
@@ -58,6 +60,32 @@ export function ExtLink({ href, className }: { href: string; className?: string 
 /** 列表卡片：一张 surface 卡片内纵向排列各行，行间 hairline 分隔。 */
 export function ListCard({ children }: { children: ReactNode }) {
   return <Card className="flex w-full flex-col overflow-hidden [&>*+*]:border-t [&>*+*]:border-hairline">{children}</Card>
+}
+
+/** 市场式搜索框（公开市场与专属插件区共用）：搜索图标 / 清除按钮；`onChange` 收到清除后的空串。 */
+export function MarketSearchInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const t = useT()
+  return (
+    <Input
+      inputMode="search"
+      className="coarse:pr-12"
+      value={value}
+      placeholder={t('marketSearchPlaceholder')}
+      aria-label={t('marketSearchPlaceholder')}
+      onChange={(event) => onChange(event.target.value)}
+      trailing={
+        value === '' ? (
+          <span className="pr-2 text-text-tertiary">
+            <Icon icon={Search} size="md" />
+          </span>
+        ) : (
+          <Button variant="ghost" iconOnly className="text-muted-foreground hover:text-foreground" aria-label={t('componentsManualPathClear')} onClick={() => onChange('')}>
+            <Icon icon={X} size="md" />
+          </Button>
+        )
+      }
+    />
+  )
 }
 
 /** 列表行：信息块吃满剩余宽度，操作区在窄屏自动换到下一行。 */

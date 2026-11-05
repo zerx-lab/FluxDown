@@ -1,32 +1,28 @@
 // 插件市场：`daemon.plugin.marketList` 拉取索引，前端关键字过滤 + 分页展开，`marketInstall` 安装。
 
-import { CircleAlert, Info, Package, Search, Star, X } from 'lucide-react'
+import { CircleAlert, Package, Search, Star } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '../../../../i18n'
-import { cn } from '../../../../lib/cn'
 import { RpcError, rpc, useAgent } from '../../../../lib/rpc'
 import type { InstalledPlugin, MarketEntryDto, PluginDto } from '../../../../lib/rpc'
-import { Badge, Button, EmptyState, Icon, Input, Select, Spinner, Tooltip } from '../../../../ui'
-import { BlockTitle, ExtLink, IconButton, ListCard, ListRow } from './common'
-import { detailFromMarket } from './detail'
+import { Button, EmptyState, Icon, Select, Spinner } from '../../../../ui'
+import { BlockTitle, ListCard, MarketSearchInput } from './common'
 import type { PluginDetail } from './detail'
 import { extensionErrorText } from './errors'
 import {
   MARKET_PAGE_SIZE,
   arrangeMarket,
   filterMarket,
-  hostsToConfirm,
   installedVersionYanked,
   latestPerPlugin,
   marketAction,
   marketNeedsLoad,
-  permissionsToConfirm,
-  riskOf,
+  pageOf,
   yankedLabelKey,
 } from './logic'
 import type { ConsentSet, MarketLoadState, MarketSort } from './logic'
-import { PluginConsentDialog, RiskBadge } from './PluginConsentDialog'
-import type { ConsentView } from './PluginConsentDialog'
+import { MarketEntryRow } from './MarketEntryRow'
+import { useMarketInstall } from './useMarketInstall'
 
 interface MarketState {
   loading: boolean
@@ -41,6 +37,7 @@ export function MarketSection({
   onInstalled,
   onInstallFailed,
   onShowDetail,
+  onRefresh,
 }: {
   stale: boolean
   /** 插件页当前可见（组件页隐藏时为 false）；进入时检查目录是否过期。 */
@@ -49,13 +46,13 @@ export function MarketSection({
   onInstalled: (result: InstalledPlugin, confirmed: ConsentSet | null, updating: boolean) => void | Promise<void>
   onInstallFailed: (error: unknown) => void
   onShowDetail: (detail: PluginDetail) => void
+  /** 点「刷新」时同步通知外层（触发专属插件目录一起重拉）。 */
+  onRefresh: () => void
 }) {
   const t = useT()
   const [market, setMarket] = useState<MarketState>({ loading: false, error: null, entries: [] })
   const [query, setQuery] = useState('')
   const [limit, setLimit] = useState(MARKET_PAGE_SIZE)
-  const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
-  const [confirm, setConfirm] = useState<{ view: ConsentView; resolve: (ok: boolean) => void } | null>(null)
   const loadState = useRef<MarketLoadState>({ requested: false, retryOnReconnect: false, failed: false, loadedAt: null })
   const inflight = useRef<Promise<void> | null>(null)
   const signedIn = useAgent((snapshot) => snapshot.session !== null && snapshot.session !== undefined, false)
@@ -87,7 +84,6 @@ export function MarketSection({
       const entries = await rpc.daemon.plugin.marketList()
       loadState.current = { ...loadState.current, failed: false, loadedAt: Date.now() }
       setMarket({ loading: false, error: null, entries })
-      setLimit(MARKET_PAGE_SIZE)
     } catch (error) {
       // 断连 / 超时类失败：连接恢复后自动重试一次；其他失败保持手动刷新。
       const transport = error instanceof RpcError && (error.appCode === 'unavailable' || error.appCode === 'timeout')
@@ -122,45 +118,13 @@ export function MarketSection({
     if (marketNeedsLoad(loadState.current, Date.now())) void loadRef.current()
   }, [active, stale])
 
-  const install = async (entry: MarketEntryDto, installed: PluginDto | undefined) => {
-    const pluginId = entry.pluginId
-    if (pending.has(pluginId)) return
-    const permissions = permissionsToConfirm(entry, installed)
-    const networkHosts = hostsToConfirm(entry, installed)
-    const confirmed: ConsentSet = { permissions, networkHosts }
-    if (permissions.length > 0 || networkHosts.length > 0) {
-      const updating = installed !== undefined
-      const name = entry.name === '' ? pluginId : entry.name
-      const ok = await new Promise<boolean>((resolve) => {
-        setConfirm({
-          resolve,
-          view: {
-            title: t(updating ? 'pluginPermConfirmUpdateTitle' : 'pluginPermConfirmInstallTitle', { name }),
-            intro: t(updating ? 'pluginPermConfirmUpdateBody' : 'pluginPermConfirmInstallBody', { version: entry.version }),
-            permissions,
-            networkHosts,
-            risk: riskOf(entry.permissions),
-            okLabel: t(updating ? 'pluginPermConfirmUpdateOk' : 'pluginPermConfirmInstallOk'),
-          },
-        })
-      })
-      if (!ok) return
-    }
-    setPending((current) => new Set(current).add(pluginId))
-    try {
-      await onInstalled(await rpc.daemon.plugin.marketInstall({ pluginId, version: entry.version }), confirmed, installed !== undefined)
-    } catch (error) {
-      // 用户确认的版本已不是最新：刷新目录，让下一次点击按新版本重新确认权限。
-      if (error instanceof RpcError && error.reason === 'marketVersionChanged') await load()
-      onInstallFailed(error)
-    } finally {
-      setPending((current) => {
-        const next = new Set(current)
-        next.delete(pluginId)
-        return next
-      })
-    }
-  }
+  // 用户确认的版本已不是最新：刷新目录，让下一次点击按新版本重新确认权限。
+  const { pending, install, dialog } = useMarketInstall({
+    run: (entry) => rpc.daemon.plugin.marketInstall({ pluginId: entry.pluginId, version: entry.version }),
+    onInstalled,
+    onInstallFailed,
+    reloadCatalog: load,
+  })
 
   const installedById = useMemo(() => new Map(plugins.map((plugin) => [plugin.identity, plugin])), [plugins])
   const mineSet = useMemo(() => new Set(mine), [mine])
@@ -190,12 +154,12 @@ export function MarketSection({
     }
   }
 
-  const favoritesOnly = favoritesOnlyRaw && signedIn
+  const favoritesOnly = favoritesOnlyRaw && signedIn && !favorites.failed
   const filtered = useMemo(
     () => arrangeMarket(filterMarket(latestPerPlugin(market.entries), query), sort, counts, mineSet, favoritesOnly),
     [market.entries, query, sort, counts, mineSet, favoritesOnly],
   )
-  const remaining = Math.max(0, filtered.length - limit)
+  const { visible, remaining } = pageOf(filtered, limit)
 
   let body
   if (market.loading && market.entries.length === 0) {
@@ -217,27 +181,12 @@ export function MarketSection({
   } else {
     body = (
       <>
-        <Input
-          inputMode="search"
-          className="coarse:pr-12"
+        <MarketSearchInput
           value={query}
-          placeholder={t('marketSearchPlaceholder')}
-          aria-label={t('marketSearchPlaceholder')}
-          onChange={(event) => {
-            setQuery(event.target.value)
+          onChange={(next) => {
+            setQuery(next)
             setLimit(MARKET_PAGE_SIZE)
           }}
-          trailing={
-            query === '' ? (
-              <span className="pr-2 text-text-tertiary">
-                <Icon icon={Search} size="md" />
-              </span>
-            ) : (
-              <Button variant="ghost" iconOnly className="text-muted-foreground hover:text-foreground" aria-label={t('componentsManualPathClear')} onClick={() => setQuery('')}>
-                <Icon icon={X} size="md" />
-              </Button>
-            )
-          }
         />
         <div className="flex flex-wrap items-center gap-2">
           <div className="w-44">
@@ -259,7 +208,7 @@ export function MarketSection({
             variant={favoritesOnly ? 'primary' : 'outline'}
             icon={Star}
             aria-pressed={favoritesOnly}
-            disabled={!signedIn}
+            disabled={!signedIn || favorites.failed}
             title={signedIn ? undefined : t('marketFavoriteLoginRequired')}
             onClick={() => {
               setFavoritesOnly((current) => !current)
@@ -274,67 +223,27 @@ export function MarketSection({
           <EmptyState icon={favoritesOnly && query.trim() === '' ? Star : Search} title={t(favoritesOnly && query.trim() === '' ? 'marketFavoritesEmpty' : 'marketSearchNoResult')} />
         ) : (
           <ListCard>
-            {filtered.slice(0, limit).map((entry) => {
+            {visible.map((entry) => {
               const installedPlugin = installedById.get(entry.pluginId)
-              const action = marketAction(entry, installedPlugin)
-              const isPending = pending.has(entry.pluginId)
-              const yankedKey = yankedLabelKey(entry.yanked)
               const installedYanked = installedPlugin ? installedVersionYanked(market.entries, installedPlugin) : null
-              const installedYankedKey = installedYanked ? yankedLabelKey(installedYanked) : null
               return (
-                <ListRow
+                <MarketEntryRow
                   key={entry.pluginId}
-                  info={
-                    <>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="min-w-0 break-words text-sm font-medium text-foreground">{entry.name === '' ? entry.pluginId : entry.name}</span>
-                        <span className="tabular text-xs text-muted-foreground">v{entry.version}</span>
-                        {entry.author ? <span className="text-xs text-muted-foreground">{entry.author}</span> : null}
-                        {yankedKey ? <Badge tone="destructive">{t(yankedKey)}</Badge> : null}
-                        {installedYankedKey ? <Badge tone="destructive">{t('pluginInstalledVersionYanked', { label: t(installedYankedKey) })}</Badge> : null}
-                        <RiskBadge risk={riskOf(entry.permissions)} />
-                      </div>
-                      {entry.homepage ? <ExtLink href={entry.homepage} /> : null}
-                      {entry.description ? <div className="line-clamp-2 break-words text-xs text-muted-foreground">{entry.description}</div> : null}
-                    </>
-                  }
-                  actions={
-                    <>
-                      <Tooltip content={favoriteTitle(entry.pluginId)}>
-                        <Button
-                          variant="ghost"
-                          aria-label={favoriteTitle(entry.pluginId)}
-                          aria-pressed={mineSet.has(entry.pluginId)}
-                          disabled={favoriteDisabled || favPending.has(entry.pluginId)}
-                          loading={favPending.has(entry.pluginId)}
-                          onClick={() => void toggleFavorite(entry.pluginId)}
-                          className={cn('gap-1 px-2 tabular', mineSet.has(entry.pluginId) ? 'text-accent-text' : 'text-muted-foreground hover:text-foreground')}
-                        >
-                          {favPending.has(entry.pluginId) ? null : <Icon icon={Star} size="md" className={mineSet.has(entry.pluginId) ? 'fill-current' : undefined} />}
-                          {(counts[entry.pluginId] ?? 0) > 0 ? <span className="text-xs">{counts[entry.pluginId]}</span> : null}
-                        </Button>
-                      </Tooltip>
-                      <IconButton icon={Info} label={t('pluginDetailDescription')} onClick={() => onShowDetail(detailFromMarket(entry))} />
-                      <Button
-                        variant="outline"
-                        loading={isPending}
-                        disabled={action === 'installed' || action === 'unavailable' || stale}
-                        onClick={() => void install(entry, installedPlugin)}
-                      >
-                        {isPending
-                          ? t(action === 'update' ? 'marketUpdatingButton' : 'marketInstallingButton')
-                          : t(
-                              action === 'install'
-                                ? 'marketInstallButton'
-                                : action === 'update'
-                                  ? 'marketUpdateButton'
-                                  : action === 'installed'
-                                    ? 'marketInstalledButton'
-                                    : 'marketUnavailableButton',
-                            )}
-                      </Button>
-                    </>
-                  }
+                  entry={entry}
+                  action={marketAction(entry, installedPlugin)}
+                  pending={pending.has(entry.pluginId)}
+                  installDisabled={stale}
+                  installedYankedKey={installedYanked ? yankedLabelKey(installedYanked) : null}
+                  favorite={{
+                    title: favoriteTitle(entry.pluginId),
+                    pressed: mineSet.has(entry.pluginId),
+                    disabled: favoriteDisabled,
+                    loading: favPending.has(entry.pluginId),
+                    count: counts[entry.pluginId] ?? 0,
+                    onToggle: () => void toggleFavorite(entry.pluginId),
+                  }}
+                  onInstall={() => void install(entry, installedPlugin)}
+                  onShowDetail={onShowDetail}
                 />
               )
             })}
@@ -357,23 +266,22 @@ export function MarketSection({
         title={t('marketSectionTitle')}
         description={t('marketSectionDesc')}
         trailing={
-          <Button variant="ghost" loading={market.loading} disabled={stale} onClick={() => void load()}>
+          <Button
+            variant="ghost"
+            loading={market.loading}
+            disabled={stale}
+            onClick={() => {
+              void load()
+              // 刷新 = 公开市场 + 专属目录一起重拉（与 GPUI 一致）。
+              onRefresh()
+            }}
+          >
             {t('marketRefreshTooltip')}
           </Button>
         }
       />
       {body}
-      <PluginConsentDialog
-        consent={confirm?.view ?? null}
-        onCancel={() => {
-          confirm?.resolve(false)
-          setConfirm(null)
-        }}
-        onOk={() => {
-          confirm?.resolve(true)
-          setConfirm(null)
-        }}
-      />
+      {dialog}
     </section>
   )
 }

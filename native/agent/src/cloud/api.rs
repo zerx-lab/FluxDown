@@ -221,6 +221,35 @@ impl CloudApi {
             .await
     }
 
+    /// `GET /private-plugins`（账号鉴权）：当前账号被授权的私有插件目录与撤回清单。
+    pub(crate) async fn private_plugins(&self) -> Result<PrivateCatalogBody, CloudError> {
+        self.client
+            .authenticated_epoch::<Value, _>(
+                Method::GET,
+                "/api/v1/private-plugins",
+                None,
+                self.request_epoch(),
+            )
+            .await
+    }
+
+    /// `POST /private-plugins/{pluginId}/download`（账号鉴权）：为某个授权版本换一张单次下载票据。
+    /// 无授权 / 版本不存在统一 404。
+    pub(crate) async fn private_plugin_ticket(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<PrivateDownloadTicket, CloudError> {
+        self.client
+            .authenticated_epoch(
+                Method::POST,
+                &format!("/api/v1/private-plugins/{}/download", encode(plugin_id)),
+                Some(&serde_json::json!({ "version": version })),
+                self.request_epoch(),
+            )
+            .await
+    }
+
     pub async fn create_order<P: Serialize>(&self, body: &P) -> Result<Value, CloudError> {
         self.authed(Method::POST, "/api/v1/orders", Some(body))
             .await
@@ -606,6 +635,41 @@ impl CloudApi {
             .authenticated_epoch(method, path, body, self.request_epoch())
             .await
     }
+}
+
+/// `GET /private-plugins` 响应（`revision` 等未使用字段忽略）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrivateCatalogBody {
+    #[serde(default)]
+    pub entries: Vec<fluxdown_protocol::MarketEntryDto>,
+    #[serde(default)]
+    pub revoked: Vec<PrivateRevokedBody>,
+    /// 该账号存在授权行（含过期、软撤销）的全部 pluginId。字段缺失（旧版云端）= `None`，
+    /// 与「存在但为空」的 `Some([])` 不同：`None` 时客户端不得解封任何撤回。
+    #[serde(default)]
+    pub scope: Option<Vec<String>>,
+}
+
+/// 撤回清单项：用户授权范围内被标记的版本。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrivateRevokedBody {
+    pub plugin_id: String,
+    pub version: String,
+    #[serde(default)]
+    pub yanked: String,
+}
+
+/// `POST /private-plugins/{pluginId}/download` 响应。票据本身只存在于 `url` 里，是单次凭据：
+/// 不实现 `Debug`，不进入日志。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrivateDownloadTicket {
+    /// 相对 API 根的路径：`/api/v1/private-plugins/packages/{ticket}`。
+    pub url: String,
+    pub content_hash: String,
+    pub bytes: u64,
 }
 
 /// `GET /plugins/favorites/counts` 响应。

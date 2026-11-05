@@ -21,9 +21,11 @@ start() {
 	fi
 	mkdir -p "$QPKG_ROOT/data"
 	# FLUXDOWN_INSTALL_SOURCE：二进制归 App Center 管理，应用内更新只提示安装新 qpkg
+	# MIMALLOC_PURGE_DELAY=0：释放的内存立即归还系统（daemon 继承）
 	FLUXDOWN_DATA_DIR="$QPKG_ROOT/data" \
 	FLUXDOWN_BIND="[::]:17800" \
 	FLUXDOWN_INSTALL_SOURCE=qnap \
+	MIMALLOC_PURGE_DELAY=0 \
 		"$QPKG_ROOT/fluxdown-agent" --server >> "$QPKG_ROOT/data/server.log" 2>&1 &
 	echo $! > "$PIDFILE"
 }

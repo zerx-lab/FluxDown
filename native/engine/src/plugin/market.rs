@@ -59,6 +59,8 @@ pub enum MarketError {
     AllMirrorsFailed,
     #[error("市场最新版本已变化: 确认的是 {expected}，当前为 {actual}")]
     VersionChanged { expected: String, actual: String },
+    #[error("插件 {0} 由 FluxCloud 私有商店安装，公开市场不能覆盖它")]
+    PrivateSource(String),
     #[error(transparent)]
     Plugin(#[from] PluginError),
 }
@@ -297,6 +299,9 @@ impl MarketClient {
         entry: &MarketEntry,
         allow_yanked: bool,
     ) -> Result<String, MarketError> {
+        if self.manager.is_private_source(&entry.plugin_id).await? {
+            return Err(MarketError::PrivateSource(entry.plugin_id.clone()));
+        }
         if entry.yanked == "malicious" {
             return Err(MarketError::Yanked("malicious".to_string()));
         }
@@ -304,10 +309,18 @@ impl MarketClient {
             return Err(MarketError::Yanked(entry.yanked.clone()));
         }
         let bytes = self.download_verified(entry).await?;
+        // 联网前的快速拒绝在上面；这里把「公开路径不得覆盖私有来源」下沉到安装锁内重查，
+        // 关闭检查与落盘之间的窗口。
         let identity = self
             .manager
-            .install_from_zip_checked(bytes, |manifest| verify_package_claim(entry, manifest))
-            .await?;
+            .install_from_zip_checked(bytes, true, |manifest| {
+                verify_package_claim(entry, manifest)
+            })
+            .await
+            .map_err(|error| match error {
+                PluginError::PrivateSource(id) => MarketError::PrivateSource(id),
+                other => MarketError::Plugin(other),
+            })?;
         Ok(identity)
     }
 
@@ -465,6 +478,36 @@ impl MarketClient {
             })
             .unwrap_or_default()
     }
+}
+
+/// 安装 FluxCloud 私有商店的包（`daemon.plugin.installPrivate`）：不经 [`MarketClient`]、不碰公开索引
+/// 高水位。`bytes` 的 sha256 必须等于条目 `content_hash`，包内 manifest 的 identity / version /
+/// 权限 / 网络主机按与公开市场相同的 [`verify_package_claim`] 核对（先于替换旧版本），成功后记录
+/// 来源 `private`。非 `yanked == "none"` 的条目一律拒绝。
+pub async fn install_private_package(
+    manager: &PluginManager,
+    bytes: Vec<u8>,
+    entry: &MarketEntry,
+) -> Result<String, MarketError> {
+    if entry.yanked != "none" {
+        return Err(MarketError::Yanked(entry.yanked.clone()));
+    }
+    if bytes.len() > MAX_FXPLUG_BYTES {
+        return Err(MarketError::TooLarge);
+    }
+    let expected = entry
+        .content_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(&entry.content_hash)
+        .to_ascii_lowercase();
+    let actual = sha256_hex(&bytes);
+    if actual != expected {
+        return Err(MarketError::HashMismatch { expected, actual });
+    }
+    let identity = manager
+        .install_private_checked(bytes, |manifest| verify_package_claim(entry, manifest))
+        .await?;
+    Ok(identity)
 }
 
 /// 日志仅保留 URL 的 scheme、域名/端口和路径，绝不带凭据/query/fragment。

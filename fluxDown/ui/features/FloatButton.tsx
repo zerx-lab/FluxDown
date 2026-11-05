@@ -6,7 +6,7 @@
  * 滚动时按钮跟随（#275）；全屏时把 UI 重挂到全屏元素内。
  */
 import { render } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import type { ContentScriptContext } from "wxt/utils/content-script-context";
 import { createShadowRootUi, type ShadowRootContentScriptUi } from "wxt/utils/content-script-ui/shadow-root";
@@ -20,6 +20,7 @@ import { ToastHost, showToast } from "@/ui/components/Toast";
 import { useT } from "@/ui/i18n";
 import { useThemeAttr } from "@/ui/theme";
 import { initI18n } from "@/utils/i18n";
+import { clamp, placePopover, type PopRect } from "@/utils/popover-position";
 import { sendAction } from "@/utils/messaging";
 import { QualityPicker } from "./QualityPicker";
 import { variantLabel } from "./labels";
@@ -61,8 +62,43 @@ function httpSrcOf(el: HTMLMediaElement): string {
   return /^https?:/i.test(src) ? src : "";
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(value, Math.max(min, max)));
+/** 弹层高度上限（与 float.css 一致）；触屏另限视口一半（横屏矮视口）。 */
+const POP_MAX_HEIGHT = 280;
+const POP_GAP = 6;
+
+/** 视口可用尺寸（排除滚动条）；怪异模式下 documentElement 的 client 尺寸不是视口，退回 inner*。 */
+function viewportSize(): { width: number; height: number } {
+  const de = document.documentElement;
+  const standards = document.compatMode !== "BackCompat";
+  return {
+    width: standards && de.clientWidth > 0 ? de.clientWidth : window.innerWidth,
+    height: standards && de.clientHeight > 0 ? de.clientHeight : window.innerHeight,
+  };
+}
+
+/**
+ * 把弹层摆进视口。弹层是 `.fd-float-wrap`（position:fixed、左上角在 translate 的视口坐标）的绝对定位子元素，
+ * 所以视口坐标减去按钮左上角即相对偏移。内容超出 height 时由弹层自身滚动。
+ */
+function positionPop(pop: HTMLElement, anchor: PopRect, align: "start" | "end", coarse: boolean): void {
+  const viewport = viewportSize();
+  const borders = pop.offsetHeight - pop.clientHeight;
+  const p = placePopover({
+    anchor,
+    size: { width: pop.offsetWidth, height: pop.scrollHeight + borders },
+    viewport,
+    align,
+    prefer: "below",
+    gap: POP_GAP,
+    margin: POP_MARGIN,
+    maxHeight: coarse ? Math.min(POP_MAX_HEIGHT, viewport.height / 2) : POP_MAX_HEIGHT,
+  });
+  pop.style.right = "auto";
+  pop.style.bottom = "auto";
+  pop.style.left = `${Math.round(p.left - anchor.left)}px`;
+  pop.style.top = `${Math.round(p.top - anchor.top)}px`;
+  pop.style.maxWidth = `${Math.floor(p.maxWidth)}px`;
+  pop.style.maxHeight = `${Math.floor(p.height)}px`;
 }
 
 interface FloatRootProps {
@@ -80,7 +116,6 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
   const [target, setTarget] = useState<TrackedMedia | null>(null);
   const [rows, setRows] = useState<CandidateRow[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [flip, setFlip] = useState(false);
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [, setTick] = useState(0);
   /** 用户在菜单里选了「本页隐藏」/「本站不再显示」。 */
@@ -292,13 +327,9 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
           const top = clamp(y0, 4, vh - bh - 4);
           wrap.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
           wrap.style.visibility = "visible";
-          // 触屏窄屏：菜单优先右对齐按钮，放不下时整体夹进视口，避免左右溢出
-          const pop = popRef.current;
-          if (coarse && pop) {
-            const pw = pop.offsetWidth;
-            const want = clamp(left + bw - pw, POP_MARGIN, vw - pw - POP_MARGIN);
-            pop.style.right = "auto";
-            pop.style.left = `${Math.round(want - left)}px`;
+          // 弹层：与按钮对齐，空间不够时翻转 / 夹进视口（打开瞬间由 layout effect 同步一次）
+          if (popRef.current) {
+            positionPop(popRef.current, { left: Math.round(left), top: Math.round(top), width: bw, height: bh }, atRight ? "end" : "start", coarse);
           }
         }
       }
@@ -308,6 +339,16 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, [el, showBtn, position, coarse]);
+
+  // 弹层刚挂载时（下一帧位置循环之前）同步摆好，避免先以默认位置闪一帧
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const pop = popRef.current;
+    if (!menuOpen || !wrap || !pop) return;
+    const r = wrap.getBoundingClientRect();
+    const atRight = position === "top-right" || position === "bottom-right";
+    positionPop(pop, { left: r.left, top: r.top, width: r.width, height: r.height }, atRight ? "end" : "start", coarse);
+  }, [menuOpen, position, coarse]);
 
   // ===== 弹层：点击外部 / Esc 关闭 =====
   useEffect(() => {
@@ -389,13 +430,6 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
       void send(() => sendAction({ action: "downloadUrls", urls: [directSrc], referrer: location.href }));
       return;
     }
-    const wrap = wrapRef.current;
-    if (wrap) {
-      const r = wrap.getBoundingClientRect();
-      const below = window.innerHeight - r.bottom;
-      // 触屏（含横屏矮视口）：下方放不下时，仅当上方空间更大才翻转
-      setFlip(coarse ? below < 300 && r.top > below : r.bottom + 300 > window.innerHeight);
-    }
     setMenuOpen((open) => !open);
   };
 
@@ -459,7 +493,7 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
           <span class="fd-float-label">{state === "done" ? t("float.done") : label}</span>
         </button>
         {menuOpen ? (
-          <div ref={popRef} class={`fd-float-pop${flip ? " fd-flip" : ""}`} onClick={stop}>
+          <div ref={popRef} class="fd-float-pop" onClick={stop}>
             <QualityPicker
               rows={rows}
               onDone={() => {

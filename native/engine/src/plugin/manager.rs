@@ -137,11 +137,16 @@ impl PluginLoadStatus {
     }
 }
 
-/// 安装前的启停相关 config 键快照（失败时原样恢复）。
+/// config 键 `plugin.<identity>.source` 的取值：FluxCloud 私有商店安装。键缺省 = 公开市场 / 本机包 /
+/// 旧版安装（兼容既有数据，不需要迁移）。公开市场路径（`MarketClient`、撤回轮询）不触碰该来源的插件。
+pub const SOURCE_PRIVATE: &str = "private";
+
+/// 安装前的启停与来源相关 config 键快照（失败时原样恢复）。
 struct InstallState {
     enabled: Option<String>,
     disabled_reason: Option<String>,
     revoked_version: Option<String>,
+    source: Option<String>,
 }
 
 /// 读取已安装目录 manifest 的版本（决定安装后的启停规则，读不到即安装失败）。
@@ -313,6 +318,8 @@ pub struct PluginInfo {
     pub package_revision: u64,
     /// 插件包绝对目录；仅已加载插件为 Some。
     pub package_dir: Option<String>,
+    /// 安装来源：空 = 公开市场 / 本机包 / 旧版安装（及 dev 副本）；[`SOURCE_PRIVATE`] = 私有商店。
+    pub source: String,
 }
 
 /// 目录或 dev 配置仍存在、但没有进入运行时快照的插件。
@@ -344,6 +351,8 @@ pub struct PluginManager {
     /// 串行化 `load_all`：扫描 + 整表替换非原子，交错的两次重载会用旧快照
     /// 覆盖新的启停/熔断状态。
     load_lock: tokio::sync::Mutex<()>,
+    /// 串行化安装（落盘 → 来源重查 → 写来源 → 加载），让「公开安装不得覆盖私有来源」的检查原子。
+    install_lock: tokio::sync::Mutex<()>,
     audit: super::audit::AuditLog,
     /// 常驻宿主（`main`）的运行态：宿主表、视图会话、定时器、任务端口。
     host: host_manager::HostState,
@@ -444,6 +453,7 @@ impl PluginManager {
             archive_rule_updates_notify: Arc::new(tokio::sync::Notify::new()),
             archive_rule_updates_started: AtomicBool::new(false),
             publish_lock: tokio::sync::Mutex::new(()),
+            install_lock: tokio::sync::Mutex::new(()),
             egress_source: std::sync::RwLock::new(None),
         }
     }
@@ -1663,28 +1673,81 @@ impl PluginManager {
     // 安装 / 卸载 / 启停 / 设置
     // ---------------------------------------------------------------------
 
-    /// 从 zip 字节安装。
+    /// 从 zip 字节安装（本机包：来源标记清除）。
     pub async fn install_from_zip(&self, bytes: Vec<u8>) -> Result<String, PluginError> {
-        let outcome = super::install::install_from_zip_with_backup(&self.root, &bytes, |_| Ok(()))?;
-        self.finish_install_outcome(outcome).await
+        self.install_zip_serialized(bytes, |_| Ok(()), None, false)
+            .await
     }
 
     /// 与 [`Self::install_from_zip`] 相同，但在 manifest 校验通过后、替换旧版本前
     /// 先运行 `check_manifest`（市场安装用它核对包内 manifest 与索引条目一致）。
+    ///
+    /// `forbid_private`：公开市场路径声明「不得覆盖私有商店来源的插件」，在持有安装锁时重查
+    /// `plugin.<id>.source`，命中即回滚并返回 [`PluginError::PrivateSource`]（联网前的快速拒绝之外的原子兜底）。
     pub(crate) async fn install_from_zip_checked(
+        &self,
+        bytes: Vec<u8>,
+        forbid_private: bool,
+        check_manifest: impl FnOnce(&super::manifest::PluginManifest) -> Result<(), PluginError>,
+    ) -> Result<String, PluginError> {
+        self.install_zip_serialized(bytes, check_manifest, None, forbid_private)
+            .await
+    }
+
+    /// FluxCloud 私有商店安装：与 [`Self::install_from_zip_checked`] 相同的校验与回滚，
+    /// 成功后记录来源 `private`（与启停状态同一回滚边界）。
+    pub(crate) async fn install_private_checked(
         &self,
         bytes: Vec<u8>,
         check_manifest: impl FnOnce(&super::manifest::PluginManifest) -> Result<(), PluginError>,
     ) -> Result<String, PluginError> {
+        self.install_zip_serialized(bytes, check_manifest, Some(SOURCE_PRIVATE), false)
+            .await
+    }
+
+    /// 所有 zip 安装的唯一入口：`install_lock` 串行化「落盘 → 来源重查 → 写来源 → 加载」，
+    /// 公开安装与私有安装不可能交错。
+    async fn install_zip_serialized(
+        &self,
+        bytes: Vec<u8>,
+        check_manifest: impl FnOnce(&super::manifest::PluginManifest) -> Result<(), PluginError>,
+        source: Option<&'static str>,
+        forbid_private: bool,
+    ) -> Result<String, PluginError> {
+        let _serial = self.install_lock.lock().await;
         let outcome =
             super::install::install_from_zip_with_backup(&self.root, &bytes, check_manifest)?;
-        self.finish_install_outcome(outcome).await
+        if forbid_private {
+            let identity = outcome.identity().to_string();
+            let refusal = match self.is_private_source(&identity).await {
+                Ok(true) => Some(PluginError::PrivateSource(identity)),
+                Ok(false) => None,
+                Err(error) => Some(error),
+            };
+            if let Some(error) = refusal {
+                self.rollback_install_outcome(&outcome).await;
+                return Err(error);
+            }
+        }
+        self.finish_install_outcome(outcome, source).await
+    }
+
+    /// 已装插件是否来自私有商店（读 `plugin.<identity>.source`）。
+    pub async fn is_private_source(&self, identity: &str) -> Result<bool, PluginError> {
+        Ok(self
+            .db
+            .get_config(&format!("plugin.{identity}.source"))
+            .await
+            .map_err(|e| PluginError::Runtime(e.to_string()))?
+            .as_deref()
+            == Some(SOURCE_PRIVATE))
     }
 
     /// 从目录安装（不剥壳，path 须直接含 manifest.json）。
     pub async fn install_from_dir(&self, path: &Path) -> Result<String, PluginError> {
+        let _serial = self.install_lock.lock().await;
         let outcome = super::install::install_from_dir_with_backup(&self.root, path)?;
-        self.finish_install_outcome(outcome).await
+        self.finish_install_outcome(outcome, None).await
     }
 
     /// dev 安装（写 plugin.dev.<identity>=abs(path)，不拷贝）。
@@ -1798,8 +1861,9 @@ impl PluginManager {
     async fn finish_install_outcome(
         &self,
         outcome: super::install::InstallOutcome,
+        source: Option<&'static str>,
     ) -> Result<String, PluginError> {
-        let result = self.finish_install_outcome_inner(outcome).await;
+        let result = self.finish_install_outcome_inner(outcome, source).await;
         self.publish_state().await;
         result
     }
@@ -1807,6 +1871,7 @@ impl PluginManager {
     async fn finish_install_outcome_inner(
         &self,
         outcome: super::install::InstallOutcome,
+        source: Option<&'static str>,
     ) -> Result<String, PluginError> {
         let identity = outcome.identity().to_string();
         let previous_version = self.installed_version(&identity).await;
@@ -1824,7 +1889,12 @@ impl PluginManager {
                 return Err(error);
             }
         };
-        if let Err(error) = self.finish_install(&identity, &new_version, &prior).await {
+        // 来源标记与启停状态同属安装前快照：任一步失败都连同目录一起回滚。
+        let finished = match self.write_install_source(&identity, source).await {
+            Ok(()) => self.finish_install(&identity, &new_version, &prior).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = finished {
             // 升级失败恢复旧目录；新装失败只删本次新建的目录。设置/KV 与同 identity
             // 的 dev 登记不是这次安装写的，绝不能清；启停相关键恢复到安装前的值。
             self.restore_install_state(&identity, &prior).await;
@@ -1845,7 +1915,7 @@ impl PluginManager {
                 new_version.clone(),
                 format!("{previous} -> {new_version}"),
             ),
-            _ => self.audit_event(&identity, "install", new_version, ""),
+            _ => self.audit_event(&identity, "install", new_version, source.unwrap_or("")),
         }
         Ok(identity)
     }
@@ -1873,6 +1943,7 @@ impl PluginManager {
             enabled: get("enabled").await?,
             disabled_reason: get("disabled_reason").await?,
             revoked_version: get("revoked_version").await?,
+            source: get("source").await?,
         })
     }
 
@@ -1882,6 +1953,7 @@ impl PluginManager {
             ("enabled", &prior.enabled),
             ("disabled_reason", &prior.disabled_reason),
             ("revoked_version", &prior.revoked_version),
+            ("source", &prior.source),
         ] {
             let key = format!("plugin.{identity}.{suffix}");
             let result = match value {
@@ -1892,6 +1964,20 @@ impl PluginManager {
                 crate::logger::report_error("plugin", "restore_install_state", &error);
             }
         }
+    }
+
+    /// 写入（`Some`）或清除（`None`）`plugin.<identity>.source`：来源始终反映最近一次安装的渠道。
+    async fn write_install_source(
+        &self,
+        identity: &str,
+        source: Option<&'static str>,
+    ) -> Result<(), PluginError> {
+        let key = format!("plugin.{identity}.source");
+        match source {
+            Some(source) => self.db.set_config(&key, source).await,
+            None => self.db.delete_config(&key).await,
+        }
+        .map_err(|e| PluginError::Runtime(e.to_string()))
     }
 
     /// 安装共同后续：enabled 规则（按新包版本，先于加载写入）+ 整表重载 + compile 校验。
@@ -2215,26 +2301,76 @@ impl PluginManager {
             .and_then(|p| p.manifest.as_ref().map(|m| m.version.clone()))
     }
 
+    /// `list()` 展示用的来源标记；dev 副本恒为空，读取失败按公开来源展示并记录。
+    async fn listed_source(&self, identity: &str, dev: bool) -> String {
+        if dev {
+            return String::new();
+        }
+        match self.is_private_source(identity).await {
+            Ok(true) => SOURCE_PRIVATE.to_string(),
+            Ok(false) => String::new(),
+            Err(error) => {
+                crate::logger::report_error("plugin", "read_install_source", &error);
+                String::new()
+            }
+        }
+    }
+
     /// 按市场索引撤回已装插件：(identity, version) 命中即禁用（Revoked）并记录 revoked_version；
     /// 已记录但不再命中的只清除 revoked_version（保持禁用，由用户手动启用）。返回是否有变化。
+    /// 来源为私有商店的插件不在此列（它们的撤回只由 [`Self::apply_private_revocations`] 处理）。
     pub async fn apply_market_revocations(
         &self,
         revoked: &std::collections::HashSet<(String, String)>,
     ) -> Result<bool, PluginError> {
+        self.apply_revocations(revoked, false, None).await
+    }
+
+    /// 按 FluxCloud 私有目录的撤回清单禁用**来源为私有商店**的已装插件，语义同公开撤回
+    /// （`Revoked` 禁用、`revoked_version`、`PluginAutoDisabled`，被撤回版本不可再启用）。
+    ///
+    /// `scope` 是云端声明的「该账号曾有授权的插件集合」，只有它存在时清单才是该集合内插件的
+    /// **权威全集**，此时才允许解封：来源私有、`identity ∈ scope`、因私有撤回被封锁且记录的
+    /// `(identity, revoked_version) ∉ revoked` 的插件被解除封锁（运营已把 malicious 改回）。
+    /// 解封只清除 `revoked_version` 与 `Revoked` 标记：撤回会覆盖用户先前的启停原因，无法区分
+    /// 「撤回前是手动禁用」，所以保守地保持禁用（原因改为 `Manual`），由用户手动启用。
+    /// `scope = None`（旧版云端不下发）或插件在 scope 之外（例如换号登录）一律不解封，只增不清。
+    pub async fn apply_private_revocations(
+        &self,
+        revoked: &std::collections::HashSet<(String, String)>,
+        scope: Option<&std::collections::HashSet<String>>,
+    ) -> Result<bool, PluginError> {
+        self.apply_revocations(revoked, true, scope).await
+    }
+
+    /// `private` 选定作用的来源范围：`false` = 非私有来源（公开 / 本机包 / 旧版），`true` = 私有商店。
+    async fn apply_revocations(
+        &self,
+        revoked: &std::collections::HashSet<(String, String)>,
+        private: bool,
+        scope: Option<&std::collections::HashSet<String>>,
+    ) -> Result<bool, PluginError> {
         let loaded = self.plugins.read().await.clone();
         let failed = self.failed_plugins.read().await.clone();
-        let mut targets: Vec<(String, String)> = Vec::new();
+        let mut candidates: Vec<(String, String)> = Vec::new();
         for p in loaded.iter().filter(|p| !p.dev) {
-            targets.push((p.manifest.identity.clone(), p.manifest.version.clone()));
+            candidates.push((p.manifest.identity.clone(), p.manifest.version.clone()));
         }
         for p in failed.iter().filter(|p| !p.dev_mode) {
             if let Some(manifest) = &p.manifest {
-                targets.push((p.identity.clone(), manifest.version.clone()));
+                candidates.push((p.identity.clone(), manifest.version.clone()));
+            }
+        }
+        let mut targets: Vec<(String, String)> = Vec::with_capacity(candidates.len());
+        for (identity, version) in candidates {
+            if self.is_private_source(&identity).await? == private {
+                targets.push((identity, version));
             }
         }
 
         let mut newly_revoked: Vec<(String, String)> = Vec::new();
         let mut changed = false;
+        let mut lifted: Vec<(String, String)> = Vec::new();
         for (identity, version) in targets {
             let key = format!("plugin.{identity}.revoked_version");
             let recorded = self
@@ -2264,11 +2400,29 @@ impl PluginManager {
                     .map_err(|e| PluginError::Runtime(e.to_string()))?;
                 newly_revoked.push((identity, version));
                 changed = true;
-            } else if recorded.is_some() {
+            } else if !private && recorded.is_some() {
                 self.db
                     .delete_config(&key)
                     .await
                     .map_err(|e| PluginError::Runtime(e.to_string()))?;
+                changed = true;
+            } else if private
+                && let Some(recorded) = recorded
+                && scope.is_some_and(|scope| scope.contains(&identity))
+                && !revoked.contains(&(identity.clone(), recorded.clone()))
+            {
+                // 先降级为手动禁用、后清标记：中途失败时标记仍在，下一轮同步会重试；
+                // 标记已清而原因仍是 Revoked 的状态不会由本路径产生。
+                let (_, reason) = self.plugin_state(&identity).await;
+                if reason == DisabledReason::Revoked {
+                    self.write_enabled(&identity, false, DisabledReason::Manual)
+                        .await?;
+                }
+                self.db
+                    .delete_config(&key)
+                    .await
+                    .map_err(|e| PluginError::Runtime(e.to_string()))?;
+                lifted.push((identity, recorded));
                 changed = true;
             }
         }
@@ -2278,12 +2432,32 @@ impl PluginManager {
             self.publish_state().await;
         }
         for (identity, version) in newly_revoked {
-            self.audit_event(&identity, "revoked", version, "market revocation");
+            self.audit_event(
+                &identity,
+                "revoked",
+                version,
+                if private {
+                    "private revocation"
+                } else {
+                    "market revocation"
+                },
+            );
             self.sink.emit(EngineEvent::PluginAutoDisabled {
                 identity: identity.clone(),
                 reason: DisabledReason::Revoked.as_str().to_string(),
             });
-            log_info!("[plugin] {identity} 已被插件市场撤回，已自动禁用");
+            log_info!(
+                "[plugin] {identity} 已被{}撤回，已自动禁用",
+                if private {
+                    "私有商店"
+                } else {
+                    "插件市场"
+                }
+            );
+        }
+        for (identity, version) in lifted {
+            self.audit_event(&identity, "unrevoked", version, "private revocation lifted");
+            log_info!("[plugin] {identity} 的私有商店撤回已解除，保持禁用，可手动启用");
         }
         Ok(changed)
     }
@@ -2462,6 +2636,7 @@ impl PluginManager {
                 consent_pending_hosts: loaded_pending.1,
                 package_revision: self.package_revisions.get(&p.manifest.identity),
                 package_dir: Some(p.dir.to_string_lossy().into_owned()),
+                source: self.listed_source(&p.manifest.identity, p.dev).await,
             });
         }
         for p in failed_snapshot.iter() {
@@ -2550,6 +2725,7 @@ impl PluginManager {
                 consent_pending_hosts: failed_pending.1,
                 package_revision: self.package_revisions.get(&p.identity),
                 package_dir: None,
+                source: self.listed_source(&p.identity, p.dev_mode).await,
             });
         }
         out.sort_by(|a, b| a.identity.cmp(&b.identity));

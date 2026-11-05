@@ -1146,6 +1146,55 @@ impl DaemonService {
                 })
             }
             #[cfg(feature = "plugins")]
+            method::DAEMON_PLUGIN_INSTALL_PRIVATE => {
+                let params = parse_params::<fluxdown_protocol::PluginInstallPrivateParams>(params)?;
+                if params.entry.channel.as_deref() != Some("private") {
+                    return Err(invalid_argument(
+                        "entry",
+                        "private plugin entry must declare channel \"private\"",
+                    ));
+                }
+                let bytes = self
+                    .blobs
+                    .read(&params.blob_id, BlobKind::Plugin)
+                    .await
+                    .map_err(|error| invalid_argument("blobId", &error.to_string()))?;
+                let entry = fluxdown_engine_protocol::market_entry_from_dto(params.entry);
+                let identity = fluxdown_engine::plugin::install_private_package(
+                    self.plugin_manager()?,
+                    bytes,
+                    &entry,
+                )
+                .await
+                .map_err(|error| market_error(&error))?;
+                self.blobs
+                    .consume(&params.blob_id, BlobKind::Plugin)
+                    .await
+                    .map_err(|error| internal_error(format!("{error:#}")))?;
+                let missing_components = self.plugin_missing_components(&identity).await;
+                to_value(fluxdown_protocol::InstalledPlugin {
+                    identity,
+                    missing_components,
+                })
+            }
+            #[cfg(feature = "plugins")]
+            method::DAEMON_PLUGIN_REVOKE_PRIVATE => {
+                let params = parse_params::<fluxdown_protocol::PluginRevokePrivateParams>(params)?;
+                let revoked: std::collections::HashSet<(String, String)> = params
+                    .revoked
+                    .into_iter()
+                    .map(|item| (item.plugin_id, item.version))
+                    .collect();
+                // 撤回结果由引擎经 `PluginsChanged` / `PluginAutoDisabled` 广播，这里无需再发。
+                let scope: Option<std::collections::HashSet<String>> =
+                    params.scope.map(|scope| scope.into_iter().collect());
+                self.plugin_manager()?
+                    .apply_private_revocations(&revoked, scope.as_ref())
+                    .await
+                    .map_err(|error| internal_error(format!("{error:#}")))?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(feature = "plugins")]
             method::DAEMON_PLUGIN_IGNORE_RETRY => {
                 let params = parse_params::<TaskIdParams>(params)?;
                 if self.task(&params.task_id).is_none() {
@@ -2637,6 +2686,15 @@ fn market_error(error: &fluxdown_engine::plugin::MarketError) -> RpcErrorObject 
             false,
             ErrorReason::PluginPackageInvalid,
         ),
+        // 无细分原因：UI 正常路径不会走到（私有来源的插件不显示公开更新），退回「冲突」通用文案。
+        MarketError::PrivateSource(_) => {
+            let message = error.to_string();
+            fluxdown_engine::log_warn!("[plugin-market] {message}");
+            return RpcErrorObject::application(
+                message,
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false),
+            );
+        }
     };
     let message = error.to_string();
     fluxdown_engine::log_warn!("[plugin-market] {message}");

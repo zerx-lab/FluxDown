@@ -193,6 +193,7 @@
 				en,
 				Base,
 				es,
+				ru,
 				tr,
 				"zh-Hans",
 				"zh-Hant",

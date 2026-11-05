@@ -66,6 +66,8 @@ pub mod intercept;
 pub mod logger;
 /// 下载来源标记（Windows Zone.Identifier / macOS quarantine）。
 pub mod mark_of_the_web;
+/// 按本机有效内存（物理内存与 cgroup 限额取小）分档的缓冲预算。
+pub(crate) mod mem_budget;
 pub mod meta_prober;
 pub mod model;
 /// 多网卡聚合下载：网卡枚举、链路规划与出口绑定。
@@ -117,6 +119,8 @@ pub mod thunder;
 #[cfg(feature = "bt")]
 pub mod tracker_subscription;
 pub mod transfer_activity;
+/// 流式 MPEG-TS → MP4 重封装（HLS 收尾的 ffmpeg 兜底；内存占用与文件体积无关）。
+pub(crate) mod ts_remux;
 /// 用户主目录下的系统标准目录（下载目录：Windows 已知文件夹 / XDG user-dirs）。
 pub mod user_dirs;
 

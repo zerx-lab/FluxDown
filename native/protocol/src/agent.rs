@@ -472,6 +472,28 @@ pub struct PluginFavoriteResultDto {
     pub count: u64,
 }
 
+/// `agent.privatePlugin.list`：FluxCloud 私有商店中当前账号被授权的条目。
+///
+/// 未登录时不发任何云请求，返回 `signedIn:false` 与空列表；已登录但无授权同样是空列表。
+/// 条目复用 [`MarketEntryDto`]（`channel == "private"`，`mirrors` 恒空，`expiresAt` 为授权到期时间）。
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PrivatePluginListDto {
+    pub signed_in: bool,
+    pub entries: Vec<crate::daemon::MarketEntryDto>,
+}
+
+/// `agent.privatePlugin.install`：`version` = 用户确认权限时看到的版本；云端当前可装版本不一致时
+/// 以 `marketVersionChanged` 拒绝，由客户端刷新目录后重新确认。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PrivatePluginInstallRequest {
+    pub plugin_id: String,
+    pub version: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
