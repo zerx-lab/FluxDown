@@ -102,9 +102,10 @@ function UpdateRow() {
     }
   }
 
-  const lines = status ? [statusLine(status), manualLine(status)].flatMap((line) => (line ? [updateLineText(t, line)] : [])) : []
-  const url = status ? manualUrl(status) : null
   const checking = busy === 'check' || status?.phase === 'checking'
+  // 「检查中」由检查按钮的 loading 承担，状态行不再重复显示。
+  const lines = status ? [checking ? null : statusLine(status), manualLine(status)].flatMap((line) => (line ? [updateLineText(t, line)] : [])) : []
+  const url = status ? manualUrl(status) : null
 
   return (
     <>
