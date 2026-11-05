@@ -343,13 +343,11 @@ mod pipe {
     }
 
     impl PipeHandle {
-        pub fn connect(pipe_name: &str) -> Option<Self> {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(pipe_name)
-                .ok()?;
-            Some(PipeHandle { file })
+        /// Open the App's Named Pipe. `NotFound` means the App is not running; any other error
+        /// (notably `PermissionDenied` for a pipe created by an elevated App) is worth logging.
+        pub fn connect(pipe_name: &str) -> io::Result<Self> {
+            let file = OpenOptions::new().read(true).write(true).open(pipe_name)?;
+            Ok(PipeHandle { file })
         }
 
         pub fn write_message(&mut self, data: &[u8]) -> io::Result<()> {
@@ -399,11 +397,14 @@ mod pipe {
     }
 
     impl PipeHandle {
-        /// Connect to the FluxDown Unix socket. Returns None if the app is not running.
-        pub fn connect(_ignored: &str) -> Option<Self> {
-            let path = socket_path()?;
-            let stream = UnixStream::connect(&path).ok()?;
-            Some(PipeHandle { stream })
+        /// Connect to the FluxDown Unix socket. `NotFound` / `ConnectionRefused` mean the app
+        /// is not running.
+        pub fn connect(_ignored: &str) -> io::Result<Self> {
+            let path = socket_path().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "home directory is unavailable")
+            })?;
+            let stream = UnixStream::connect(&path)?;
+            Ok(PipeHandle { stream })
         }
 
         pub fn write_message(&mut self, data: &[u8]) -> io::Result<()> {
@@ -710,16 +711,76 @@ fn ipc_address() -> String {
     }
 }
 
+/// Connect errors that only mean "the App is not running" (no endpoint, or a stale Unix socket).
+fn app_not_running(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Log text for a failed connect. `PermissionDenied` means the endpoint exists but this relay may
+/// not open it: on Windows the App was started elevated (its pipe then belongs to Administrators).
+fn describe_connect_error(error: &io::Error) -> String {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        format!(
+            "{error}; the App is probably running as administrator, quit it from the tray and start it normally"
+        )
+    } else {
+        error.to_string()
+    }
+}
+
+thread_local! {
+    /// Last connect failure written to the log, so a polling popup does not repeat it.
+    static LOGGED_CONNECT_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+fn log_connect_error(error: &io::Error) {
+    let message = format!("ipc connect failed ({})", describe_connect_error(error));
+    LOGGED_CONNECT_ERROR.with(|logged| {
+        let mut logged = logged.borrow_mut();
+        if logged.as_deref() != Some(message.as_str()) {
+            log(&message);
+            *logged = Some(message);
+        }
+    });
+}
+
+/// One direct connect attempt (never launches the App). Unexpected failures are logged once.
+fn connect_direct(addr: &str) -> Result<pipe::PipeHandle, io::Error> {
+    let result = pipe::PipeHandle::connect(addr);
+    match &result {
+        Ok(_) => LOGGED_CONNECT_ERROR.with(|logged| *logged.borrow_mut() = None),
+        Err(error) if !app_not_running(error) => log_connect_error(error),
+        Err(_) => {}
+    }
+    result
+}
+
 /// Try to connect to the IPC endpoint. If unavailable, launch the App
 /// (subject to cooldown) and poll at a fixed 50ms interval until the
 /// endpoint appears or the timeout is reached.
+///
+/// On Windows an endpoint that exists but refuses this relay (`PermissionDenied`) is
+/// not "App not running": a named pipe vanishes with its server, so the refusing
+/// server is alive (elevated) and launching another App instance cannot help (it
+/// finds the running one and exits); fail fast instead of waiting out the launch
+/// timeout. On Unix the same error can be a stale root-owned socket that a freshly
+/// launched agent replaces, so the launch path stays.
 fn connect_with_auto_launch(last_launch: &mut Option<Instant>) -> Option<pipe::PipeHandle> {
     let addr = ipc_address();
 
     // Fast path: App is already running.
-    if let Some(p) = pipe::PipeHandle::connect(&addr) {
-        log("ipc connected (fast path)");
-        return Some(p);
+    match connect_direct(&addr) {
+        Ok(p) => {
+            log("ipc connected (fast path)");
+            return Some(p);
+        }
+        Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
+            return None;
+        }
+        Err(_) => {}
     }
 
     // Cooldown: don't re-launch too quickly (prevents crash-loop).
@@ -751,21 +812,24 @@ fn connect_with_auto_launch(last_launch: &mut Option<Instant>) -> Option<pipe::P
     // sleep-first back-off adds its full interval to every cold start.
     let deadline = Instant::now() + std::time::Duration::from_millis(APP_LAUNCH_TIMEOUT_MS);
 
-    loop {
-        if let Some(p) = pipe::PipeHandle::connect(&addr) {
-            let elapsed = last_launch.map_or(0, |t| t.elapsed().as_millis() as u64);
-            log(&format!("ipc connected after {}ms", elapsed));
-            return Some(p);
-        }
-
-        if Instant::now() >= deadline {
-            break;
+    let last_error = loop {
+        match pipe::PipeHandle::connect(&addr) {
+            Ok(p) => {
+                let elapsed = last_launch.map_or(0, |t| t.elapsed().as_millis() as u64);
+                log(&format!("ipc connected after {}ms", elapsed));
+                return Some(p);
+            }
+            Err(error) if Instant::now() >= deadline => break error,
+            Err(_) => {}
         }
 
         std::thread::sleep(std::time::Duration::from_millis(PIPE_POLL_INTERVAL_MS));
-    }
+    };
 
-    log("ipc connect timed out after launch");
+    log(&format!(
+        "ipc connect timed out after launch (last error: {})",
+        describe_connect_error(&last_error)
+    ));
     None
 }
 
@@ -786,7 +850,7 @@ fn reconnect_and_resend(
     last_launch: &mut Option<Instant>,
 ) -> Option<pipe::PipeHandle> {
     let mut p = if is_no_launch {
-        pipe::PipeHandle::connect(&ipc_address())?
+        connect_direct(&ipc_address()).ok()?
     } else {
         connect_with_auto_launch(last_launch)?
     };
@@ -882,7 +946,7 @@ fn relay() -> io::Result<()> {
         // status/query checks).
         if pipe.is_none() {
             pipe = if is_no_launch {
-                pipe::PipeHandle::connect(&ipc_address())
+                connect_direct(&ipc_address()).ok()
             } else {
                 connect_with_auto_launch(&mut last_launch)
             };

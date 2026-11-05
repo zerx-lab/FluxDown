@@ -21,6 +21,20 @@ fn main() -> fluxdown_agent::runtime::AgentResult {
         fluxdown_agent::logging::finish(&result);
         return result;
     }
+    // 以管理员身份运行的安装器经这个一次性模式拉起桌面（见 platform/elevation.rs）。
+    #[cfg(windows)]
+    if let Some((flag, desktop_args)) = args.split_first()
+        && flag == fluxdown_agent::platform::elevation::LAUNCH_DESKTOP_ARG
+    {
+        fluxdown_agent::logging::init_desktop();
+        let result = fluxdown_agent::platform::elevation::launch_desktop(desktop_args).map_err(
+            |error| -> Box<dyn std::error::Error + Send + Sync> {
+                std::io::Error::other(error).into()
+            },
+        );
+        fluxdown_agent::logging::finish(&result);
+        return result;
+    }
     // `--server`：headless 服务器形态（NAS / Docker）。不启动托盘、不接入桌面集成，
     // 监听地址、访问密钥、Web UI 等全部来自 `FLUXDOWN_*` 环境变量。
     if args.iter().any(|arg| arg == "--server") {
@@ -38,6 +52,15 @@ fn main() -> fluxdown_agent::runtime::AgentResult {
         .iter()
         .any(|arg| arg == fluxdown_agent::platform::AUTOSTART_ARG);
     fluxdown_agent::logging::init_desktop();
+    // 提权（UAC 完整令牌）的常驻 agent 建的管道浏览器中继打不开：交给未提权实例后退出。
+    #[cfg(windows)]
+    if fluxdown_agent::platform::elevation::hand_off_if_elevated(&args)
+        == fluxdown_agent::platform::elevation::Startup::HandedOff
+    {
+        let result = Ok(());
+        fluxdown_agent::logging::finish(&result);
+        return result;
+    }
     let result = {
         #[cfg(feature = "desktop")]
         {

@@ -67,8 +67,9 @@ const CHECK_NMH_POLICY: &str = "nmh_policy";
 const CHECK_NMH_COMSPEC: &str = "nmh_comspec";
 /// 类 Unix：属于其他用户的 NMH 启动脚本 / 清单（以后的自动注册改不了）。
 const CHECK_NMH_OWNERSHIP: &str = "nmh_ownership";
-/// 类 Unix 桌面：FluxDown 正以 root 运行。
-#[cfg(unix)]
+/// 桌面宿主以提权身份运行：类 Unix 为 root；Windows 为 UAC 完整管理员令牌（浏览器中继连不上
+/// 本进程的命名管道，经它打开的文件也以管理员身份运行）。
+#[cfg(any(unix, windows))]
 const CHECK_ELEVATED_RUN: &str = "elevated_run";
 
 /// 提示码；UI 映射 `doctorHint{Camel}`。
@@ -124,6 +125,8 @@ const HINT_NMH_COMSPEC_INVALID: &str = "nmh_comspec_invalid";
 const HINT_NMH_COMSPEC_RESTART: &str = "nmh_comspec_restart";
 #[cfg(unix)]
 const HINT_RUNNING_ELEVATED: &str = "running_elevated";
+#[cfg(windows)]
+const HINT_RUNNING_AS_ADMIN: &str = "running_as_admin";
 
 /// 修复动作；UI 映射 `doctorAction{Camel}`，并作为 `repair` 的 `action`。
 pub const ACTION_REREGISTER: &str = "reregister";
@@ -592,7 +595,7 @@ impl DiagnosticsService {
         }
     }
 
-    /// 开机自启、系统通知与是否以 root 运行（只读注册表 / 文件 / 会话总线，放进阻塞线程）。
+    /// 开机自启、系统通知与是否以提权身份运行（只读注册表 / 文件 / 会话总线 / 令牌，放进阻塞线程）。
     async fn probe_desktop(&self) -> Vec<DiagnosticCheckDto> {
         if self.desktop.is_none() {
             return Vec::new();
@@ -605,6 +608,12 @@ impl DiagnosticsService {
             #[cfg(unix)]
             if crate::permission::effective_uid().is_ok_and(|uid| uid == 0) {
                 checks.push(elevated_run_check());
+            }
+            #[cfg(windows)]
+            match crate::platform::elevation::running_elevated() {
+                Ok(true) => checks.push(elevated_run_check()),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(%error, "could not read UAC elevation for the doctor"),
             }
             checks.push(autostart_check(crate::platform::autostart_state()));
             checks.push(notification_check(
@@ -1155,15 +1164,23 @@ fn notification_check(
     check(CHECK_NOTIFICATIONS, "", level, detail, hint, repair)
 }
 
-/// 类 Unix 桌面以 root 运行：写出的文件都属于 root，回到普通身份后改不动。
-#[cfg(unix)]
+/// 以提权身份运行的桌面宿主。类 Unix root：写出的文件都属于 root，回到普通身份后改不动；
+/// Windows 完整管理员令牌：启动时降权失败才会出现（见 `platform::elevation`）。
+#[cfg(any(unix, windows))]
 fn elevated_run_check() -> DiagnosticCheckDto {
+    #[cfg(unix)]
+    let (detail, hint) = ("fluxdown-agent is running as root", HINT_RUNNING_ELEVATED);
+    #[cfg(windows)]
+    let (detail, hint) = (
+        "fluxdown-agent is running elevated (administrator token)",
+        HINT_RUNNING_AS_ADMIN,
+    );
     check(
         CHECK_ELEVATED_RUN,
         "",
         DiagnosticLevel::Warn,
-        "fluxdown-agent is running as root".to_owned(),
-        HINT_RUNNING_ELEVATED,
+        detail.to_owned(),
+        hint,
         None,
     )
 }
