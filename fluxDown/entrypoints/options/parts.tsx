@@ -18,6 +18,22 @@ export function PanelShell(props: { title: string; desc?: string; children?: Com
   );
 }
 
+/**
+ * 面板内分组：组标题 + 一组设置行。语义相反或相互独立的设置（如「拦截范围」与「排除规则」）
+ * 分进不同组，避免相邻行被读成同一规则的从属项。
+ */
+export function SettingGroup(props: { title: string; desc?: string; children?: ComponentChildren }): JSX.Element {
+  return (
+    <section class="opt-group">
+      <div class="opt-group-head">
+        <h2 class="opt-group-title">{props.title}</h2>
+        {props.desc ? <p class="opt-group-desc">{props.desc}</p> : null}
+      </div>
+      {props.children}
+    </section>
+  );
+}
+
 interface SettingRowProps {
   title: string;
   desc?: string;

@@ -101,12 +101,15 @@ const en: Record<MessageKey, string> = {
   "options.general.notifyRemoteTitle": "Remote Task Notifications",
   "options.general.notifyRemoteDesc":
     "Show a desktop notification when a task is sent to the remote server (created / failed)",
+  "options.general.groupInterface": "Interface",
+  "options.general.groupNotify": "Notifications",
+  "options.general.groupAdvanced": "Advanced",
 
   // Intercept rules
   "options.nav.rules": "Sniffing Rules",
   "options.rules.extTitle": "File Extensions",
   "options.rules.extDesc":
-    "Downloads matching these extensions are intercepted (positive match in Smart mode). Add your own below; built-in entries cannot be removed",
+    "Downloads matching these extensions are intercepted. Add your own below; built-in entries cannot be removed",
   "options.rules.extPlaceholder": "e.g. .epub",
   "options.rules.add": "Add",
   "options.rules.builtinExts": "Built-in extensions",
@@ -116,7 +119,7 @@ const en: Record<MessageKey, string> = {
   "options.rules.extAdded": "Added {ext}",
   "options.rules.mimeTitle": "MIME Types",
   "options.rules.mimeDesc":
-    "Responses matching these MIME types are intercepted in Smart mode. A trailing slash matches the whole family (e.g. video/)",
+    "Responses matching these MIME types are intercepted. A trailing slash matches the whole family (e.g. video/)",
   "options.rules.mimePlaceholder": "e.g. application/epub+zip or video/",
   "options.rules.mimeInvalid":
     "Invalid format, e.g. application/epub+zip or video/",
@@ -124,7 +127,7 @@ const en: Record<MessageKey, string> = {
   "options.rules.mimeResetDone": "Default MIME list restored",
   "options.rules.excludeExtTitle": "Excluded Extensions",
   "options.rules.excludeExtDesc":
-    "Downloads matching these extensions are never intercepted, even if they also match the include rules above (e.g. .torrent, .crx)",
+    "Downloads matching these extensions are never intercepted (e.g. .torrent, .crx)",
   "options.rules.excludeExtPlaceholder": "e.g. .torrent",
   "options.rules.minFileSizeCustom": "Custom",
   "options.rules.minFileSizeCustomPlaceholder": "Custom size (MB)",
@@ -522,6 +525,12 @@ const en: Record<MessageKey, string> = {
   "options.about.github": "GitHub Repository",
   "options.about.releases": "Releases & Downloads",
   "options.about.feedback": "Feedback",
+  "options.intercept.groupBasic": "Basics",
+  "options.intercept.groupInclude": "What to Intercept",
+  "options.intercept.groupIncludeDesc": "In Smart mode, a download is intercepted when it matches any extension or MIME type below; \"Intercept All\" mode ignores this group",
+  "options.intercept.groupExclude": "Exclusions",
+  "options.intercept.groupExcludeDesc": "Downloads matching any condition below always go to the browser, overriding the intercept mode and the rules above",
+  "options.intercept.groupFallback": "Failures & Cancellations",
   "options.intercept.enabled": "Download Interception",
   "options.intercept.enabledDesc": "Master switch: when off, every download is left to the browser",
   "options.intercept.mode": "Intercept Mode",
@@ -546,6 +555,9 @@ const en: Record<MessageKey, string> = {
   "options.intercept.askExcludeDesc": "When downloads from one site are cancelled 3 or more times within 7 days, ask whether to stop intercepting that site",
   "options.intercept.contextMenu": "Context menu",
   "options.intercept.contextMenuDesc": "Add \"Download with FluxDown\" entries to the page context menu",
+  "options.sniff.groupDetect": "Detection",
+  "options.sniff.groupEntry": "In-page Entry Points",
+  "options.sniff.groupEntryDesc": "These entry points are hidden when Resource Sniffing is off",
   "options.sniff.enabled": "Resource Sniffing",
   "options.sniff.enabledDesc": "Detect downloadable resources on web pages; turning it off hides the in-page entry points (applies to newly opened pages)",
   "options.sniff.pageDot": "In-page Floating Dot",
