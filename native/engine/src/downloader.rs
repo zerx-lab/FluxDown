@@ -4810,8 +4810,9 @@ async fn run_download_inner(
     // 故 file_len == effective_total_bytes 自然成立、不会误杀。
     if effective_total_bytes > 0 && !decompressed_single {
         if actual_use_segments {
-            // Multi-segment: file is pre-allocated via set_len() so metadata
-            // size always == total_bytes.  Check actual progress from DB instead.
+            // Multi-segment: file size is no progress signal — preallocated
+            // files are total_bytes up front, grow-on-write files (non-sparse
+            // filesystems) reach it once the tail lands.  Check DB progress.
             let segs = p.db.load_segments(&p.task_id).await?;
             let seg_total: i64 = segs.iter().map(|s| s.downloaded_bytes).sum();
             if seg_total < effective_total_bytes {

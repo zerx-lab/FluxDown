@@ -41,6 +41,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
+mod file_layout;
 mod multipath;
 mod request_path;
 mod splice_audit;
@@ -1667,6 +1668,19 @@ pub async fn run_coordinated_download(
         initial_segment_count
     };
 
+    // 落盘布局：非稀疏文件系统（FAT32 / exFAT SD 卡等）上整文件预分配与高偏移
+    // 起写都要同步写零，起步延迟随文件大小线性增长（#974）。须先于建段：布局
+    // 决定新建段数与续传完整性判据。
+    let file_layout = file_layout::detect(dest, total_bytes as u64).await?;
+    if !file_layout.preallocates() {
+        log_info!(
+            "[coordinator] task {} 目标文件系统延伸需写零：不预分配，贴近 EOF 推进写入（窗口 {} 字节）",
+            task_id,
+            file_layout::FRONTIER_WINDOW_BYTES
+        );
+    }
+    let rebuild_plan_count = file_layout.fresh_plan_count(initial_segment_count);
+
     // ----- 0.5 夺取段行布局属主权 --------------------------------------------
     // 必须先于 load_segments/建行：从这一刻起，旧 spawn 迟到的段进度写入
     // （update_segment_progress_bounded 的 epoch 存在性守卫）全类失效——
@@ -1688,10 +1702,13 @@ pub async fn run_coordinated_download(
         // worker（IDM 式先单流后升级）；若不支持，这个段本身就覆盖整个
         // 文件，plain GET 流一路下完——**不存在**"预切段在吸收合并落地前
         // 被旧预算截断"的竞速（预算从一开始就是全文件）。
+        //
+        // GrowOnWrite 布局同样只建一个段，原因不同：均匀分段的高偏移起点会立即
+        // 触发大范围零填充，改由拆分逐个贴近前沿放出连接。
         let plan_count = if size_is_estimate {
             1
         } else {
-            initial_segment_count
+            rebuild_plan_count
         };
         let (fresh, db_segs) = build_fresh_segments(plan_count, total_bytes);
         segments = fresh;
@@ -1824,10 +1841,10 @@ pub async fn run_coordinated_download(
                     threshold
                 );
                 db.delete_segments(task_id).await?;
-                let (fresh, db_segs) = build_fresh_segments(initial_segment_count, total_bytes);
+                let (fresh, db_segs) = build_fresh_segments(rebuild_plan_count, total_bytes);
                 segments = fresh;
                 db.insert_segments(task_id, &db_segs).await?;
-                next_index = initial_segment_count;
+                next_index = rebuild_plan_count;
                 if scope.owns_task_total {
                     db.update_task_total_bytes(task_id, total_bytes).await?;
                 }
@@ -1863,10 +1880,10 @@ pub async fn run_coordinated_download(
         // size changed so db_total > total_bytes above).
         // Safest recovery: wipe segments and start fresh.
         db.delete_segments(task_id).await?;
-        let (fresh, db_segs) = build_fresh_segments(initial_segment_count, total_bytes);
+        let (fresh, db_segs) = build_fresh_segments(rebuild_plan_count, total_bytes);
         segments = fresh;
         db.insert_segments(task_id, &db_segs).await?;
-        next_index = initial_segment_count;
+        next_index = rebuild_plan_count;
         // update_task_total_bytes may have set tasks.total_bytes to db_total earlier
         // (db_total <= total_bytes path).  After a fresh reset the canonical size is
         // total_bytes (from probe), so re-sync.
@@ -1893,6 +1910,9 @@ pub async fn run_coordinated_download(
     // 文件存在，则上一会话必然已执行过预分配（预分配先于任何 worker 写入），
     // 故 file_len 本应 >= effective_total_bytes；若更短即为外部损坏，重置是安全的，
     // 且因合规续传文件恒 >= effective_total_bytes 而不会误伤。
+    //
+    // GrowOnWrite 布局不预分配，合规文件只保证覆盖已落库的最高写入位置
+    // （durable 水位只在 fsync 覆盖后推进），判据随之换成该高水位。
     {
         let db_downloaded: i64 = segments.values().map(|s| s.downloaded_bytes).sum();
         let file_len = match tokio::fs::metadata(dest).await {
@@ -1900,17 +1920,22 @@ pub async fn run_coordinated_download(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => return Err(error.into()),
         };
-        // 与 effective_total_bytes 比较（而非更弱的 db_downloaded）：预分配后合规
+        let required_len = if file_layout.preallocates() {
+            effective_total_bytes
+        } else {
+            written_high_water(&segments)
+        };
+        // 与 required_len 比较（而非更弱的 db_downloaded）：预分配后合规
         // 续传文件长度恒 >= effective_total_bytes，低于即为外部截断/删除。
         if db_downloaded > 0
-            && (file_len == 0 || file_len < db_downloaded || file_len < effective_total_bytes)
+            && (file_len == 0 || file_len < db_downloaded || file_len < required_len)
         {
             log_info!(
                 "[coordinator] task {} file integrity mismatch: file_len={}, db_downloaded={}, expected>={}. Resetting.",
                 task_id,
                 file_len,
                 db_downloaded,
-                effective_total_bytes
+                required_len
             );
             for seg in segments.values_mut() {
                 seg.downloaded_bytes = 0;
@@ -1938,8 +1963,12 @@ pub async fn run_coordinated_download(
     // ----- 2. Pre-allocate file to full size --------------------------------
     // 平台策略（fallocate / SetFileInformationByHandle / set_len 回退）见
     // preallocate_file_len——就地扩容（TrueSizeLarger）复用同一助手延长文件。
+    // GrowOnWrite 布局跳过：文件随写入增长（见 file_layout 模块文档）。
     truncate_stale_tail(dest, effective_total_bytes as u64).await?;
-    preallocate_file_len(dest, effective_total_bytes as u64, &temp_file_guard).await?;
+    if file_layout.preallocates() {
+        preallocate_file_len(dest, effective_total_bytes as u64, &temp_file_guard).await?;
+    }
+    let split_window = file_layout.split_window();
 
     // ----- 3. Shared state for progress reporting ---------------------------
     let total_downloaded = Arc::new(AtomicI64::new(
@@ -2465,7 +2494,7 @@ pub async fn run_coordinated_download(
                                 &mut next_index,
                                 effective_total_bytes,
                                 current_min_split,
-                                split_cost(&request_path, conn_bps_hint),
+                                split_cost(&request_path, conn_bps_hint, split_window),
                             )
                         };
 
@@ -2564,8 +2593,14 @@ pub async fn run_coordinated_download(
                                 }
                                 // 物理扩容临时文件（逻辑 EOF + 尽量物理分配）。
                                 // 失败（如 ENOSPC）是致命错误：停 workers 上报。
-                                if let Err(e) =
-                                    preallocate_file_len(dest, reported_total as u64, &temp_file_guard).await
+                                // GrowOnWrite 布局不扩容：尾段写入时文件自然增长。
+                                if file_layout.preallocates()
+                                    && let Err(e) = preallocate_file_len(
+                                        dest,
+                                        reported_total as u64,
+                                        &temp_file_guard,
+                                    )
+                                    .await
                                 {
                                     log_info!(
                                         "[coordinator] task {} 就地扩容预分配失败: {}",
@@ -2681,7 +2716,7 @@ pub async fn run_coordinated_download(
                                     &mut next_index,
                                     effective_total_bytes,
                                     current_min_split,
-                                    split_cost(&request_path, conn_bps_hint),
+                                    split_cost(&request_path, conn_bps_hint, split_window),
                                 )
                             };
                             if let Some(next) = next_work {
@@ -2770,7 +2805,7 @@ pub async fn run_coordinated_download(
                                     &mut next_index,
                                     effective_total_bytes,
                                     current_min_split,
-                                    split_cost(&request_path, conn_bps_hint),
+                                    split_cost(&request_path, conn_bps_hint, split_window),
                                 )
                             };
                             if let Some(next) = next_work {
@@ -3157,7 +3192,7 @@ pub async fn run_coordinated_download(
                                 &mut next_index,
                                 effective_total_bytes,
                                 current_min_split,
-                                split_cost(&request_path, conn_bps_hint),
+                                split_cost(&request_path, conn_bps_hint, split_window),
                             )
                         };
                         if let Some(next) = next_work {
@@ -3269,7 +3304,7 @@ pub async fn run_coordinated_download(
                         &mut segments,
                         &mut next_index,
                         current_min_split,
-                        split_cost(&request_path, conn_bps_hint),
+                        split_cost(&request_path, conn_bps_hint, split_window),
                     )
                     .or_else(|| {
                         if current_min_split > TAIL_MIN_SPLIT_BYTES {
@@ -3289,7 +3324,7 @@ pub async fn run_coordinated_download(
                                     &mut segments,
                                     &mut next_index,
                                     TAIL_MIN_SPLIT_BYTES,
-                                    split_cost(&request_path, conn_bps_hint),
+                                    split_cost(&request_path, conn_bps_hint, split_window),
                                 )
                             } else {
                                 None
@@ -3351,7 +3386,7 @@ pub async fn run_coordinated_download(
                             &mut next_index,
                             effective_total_bytes,
                             current_min_split,
-                            split_cost(&request_path, conn_bps_hint),
+                            split_cost(&request_path, conn_bps_hint, split_window),
                         )
                     {
                         let new_seg_idx = next.assignment.seg_index;
@@ -3399,7 +3434,7 @@ pub async fn run_coordinated_download(
                                 &mut next_index,
                                 effective_total_bytes,
                                 current_min_split,
-                                split_cost(&request_path, conn_bps_hint),
+                                split_cost(&request_path, conn_bps_hint, split_window),
                             ) else {
                                 break;
                             };
@@ -3512,7 +3547,7 @@ pub async fn run_coordinated_download(
                         &mut segments,
                         &mut next_index,
                         2 * crate::path_scheduler::EXPLORE_MIN_PIECE,
-                        split_cost(&request_path, conn_bps_hint),
+                        split_cost(&request_path, conn_bps_hint, split_window),
                     )
                 {
                     let new_seg_idx = next.assignment.seg_index;
@@ -3818,7 +3853,7 @@ pub async fn run_coordinated_download(
                                 &mut next_index,
                                 effective_total_bytes,
                                 current_min_split,
-                                split_cost(&request_path, conn_bps_hint),
+                                split_cost(&request_path, conn_bps_hint, split_window),
                             ) else {
                                 break;
                             };
@@ -4427,6 +4462,17 @@ fn build_fresh_segments(count: i32, total_bytes: i64) -> FreshSegments {
 // Segment coverage validation
 // ---------------------------------------------------------------------------
 
+/// 已记账写入的最高文件偏移（不含）：各段 `start + downloaded` 的最大值。
+/// GrowOnWrite 布局下合规续传文件至少有这么长。
+fn written_high_water(segments: &BTreeMap<i32, LiveSegment>) -> i64 {
+    segments
+        .values()
+        .filter(|s| s.downloaded_bytes > 0)
+        .map(|s| s.start_byte + s.downloaded_bytes)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Verify that segment ranges cover `[0, total_bytes-1]` with no gaps/overlaps.
 fn validate_coverage(
     segments: &BTreeMap<i32, LiveSegment>,
@@ -4600,12 +4646,20 @@ struct SplitCost {
     /// 逐段速率尚无样本（首个完整采样窗之前、短任务全程）时的单连接速率估计：
     /// 近期总吞吐 / 在传分段数。
     conn_bps: Option<f64>,
+    /// 持有者保留量上限（[`file_layout::FileLayout::split_window`]）：随写增长的文件上，帮手
+    /// 必须紧贴持有者起写，否则高偏移首写会零填充整个间隙。`None` = 不限。
+    max_keep: Option<i64>,
 }
 
-fn split_cost(request_path: &RequestPath, conn_bps: Option<f64>) -> SplitCost {
+fn split_cost(
+    request_path: &RequestPath,
+    conn_bps: Option<f64>,
+    max_keep: Option<i64>,
+) -> SplitCost {
     SplitCost {
         setup_secs: request_path.setup_secs(),
         conn_bps,
+        max_keep,
     }
 }
 
@@ -4614,7 +4668,8 @@ fn split_cost(request_path: &RequestPath, conn_bps: Option<f64>) -> SplitCost {
 /// 最多），按持有者与帮手（当前最快连接）的速率比例切分剩余区间使双方同时
 /// 完成（DEMS 均衡完成；速率未知时为中点），并计入帮手的请求建立耗时：持有者
 /// 在帮手收到首字节前就能下完时不拆（见
-/// [`crate::path_scheduler::split_keep_with_setup`]）。返回
+/// [`crate::path_scheduler::split_keep_with_setup`]），保留量再受
+/// `cost.max_keep` 封顶。返回
 /// `(段索引, 当前位置, 剩余字节, 拆分点)`；无可拆段或拆分点非法 → `None`。
 fn plan_split(
     segments: &BTreeMap<i32, LiveSegment>,
@@ -4657,6 +4712,7 @@ fn plan_split(
         helper_bps,
         cost.setup_secs,
     )?;
+    let keep = cost.max_keep.map_or(keep, |window| keep.min(window));
     let split_point = current_pos + keep;
     // Validate: split_point must be within (current_pos, end_byte].
     // This guarantees both halves are non-empty.
@@ -8218,6 +8274,7 @@ mod tests {
         let slow_setup = SplitCost {
             setup_secs: 1.2,
             conn_bps: Some(512.0 * 1024.0),
+            max_keep: None,
         };
         let mut segs = BTreeMap::new();
         segs.insert(0, make_seg(0, 0, remaining - 1, 0, SegState::Active));
@@ -8246,6 +8303,42 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    /// 随写增长的文件（exFAT SD 卡，#974）：每次拆分帮手都紧贴持有者一个窗口
+    /// 起写，连续扩容后所有起写点都落在前沿附近，而不是跳到剩余区间中点
+    /// （高偏移首写会零填充整个间隙）。不限窗口时仍按中点均衡拆分。
+    #[test]
+    fn windowed_split_keeps_helpers_adjacent_to_the_write_frontier() {
+        let total: i64 = 1024 * 1024 * 1024;
+        let window = super::file_layout::FRONTIER_WINDOW_BYTES;
+        let cost = SplitCost {
+            max_keep: Some(window),
+            ..SplitCost::default()
+        };
+        let mut segs = BTreeMap::new();
+        segs.insert(0, make_seg(0, 0, total - 1, 0, SegState::Active));
+        let mut next_idx = 1;
+        for step in 1..=4 {
+            let next = find_next_work(&mut segs, &mut next_idx, total, MIN_SPLIT_BYTES, cost)
+                .expect("tail segment must split");
+            assert_eq!(next.assignment.actual_start, step * window, "split #{step}");
+            assert_eq!(next.assignment.seg_end, total - 1);
+        }
+        validate_coverage(&segs, total).expect("windowed splits keep exact coverage");
+
+        let mut segs = BTreeMap::new();
+        segs.insert(0, make_seg(0, 0, total - 1, 0, SegState::Active));
+        let mut next_idx = 1;
+        let next = find_next_work(
+            &mut segs,
+            &mut next_idx,
+            total,
+            MIN_SPLIT_BYTES,
+            SplitCost::default(),
+        )
+        .expect("split");
+        assert_eq!(next.assignment.actual_start, total / 2);
     }
 
     /// dynamic_min_split_bytes returns expected thresholds at boundary speeds.
