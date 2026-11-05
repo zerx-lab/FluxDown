@@ -34,6 +34,11 @@ pub const DAEMON_TASK_SET_SEED_LIMITS: &str = "daemon.task.setSeedLimits";
 /// 重哈希落盘数据，只读。慢方法：耗时与数据量成正比，同一任务同时只跑一个（`conflict`），
 /// 非已完成 BT 任务返回 `invalidArgument`，任务不存在返回 `notFound`。
 pub const DAEMON_TASK_VERIFY: &str = "daemon.task.verify";
+/// 已完成任务落盘文件的哈希（`DaemonTaskHashParams` → `TaskHashResult`）：读整个文件计算
+/// 摘要并记入任务的 `fileHash`（随任务行发布）。慢方法：耗时与文件大小成正比，同一任务同时
+/// 只跑一个（`conflict`）；未完成 / 文件丢失 / 产物不是单个文件返回 `invalidArgument`，计算
+/// 期间任务被重新下载返回 `taskStateConflict`，任务不存在返回 `notFound`。
+pub const DAEMON_TASK_HASH: &str = "daemon.task.hash";
 /// 本机做种（`DaemonSeedLocalParams` → `{taskId}`）：把 daemon 主机上已有的文件 / 文件夹
 /// （可选现成 `.torrent`）登记为已完成并开始做种。无现成种子时需要为数据做哈希，慢方法；
 /// BT 被禁用或路径 / 种子不匹配返回 `invalidArgument`。
@@ -438,6 +443,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_RESCAN,
     DAEMON_TASK_SET_SEED_LIMITS,
     DAEMON_TASK_VERIFY,
+    DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_TORRENT_SHARE,
     DAEMON_TASK_BT_STATUS,
@@ -693,6 +699,7 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_DIAGNOSTICS_PROBE,
     DAEMON_DIAGNOSTICS_FIX_COMPONENT,
     DAEMON_TASK_VERIFY,
+    DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_EGRESS_PLAN,
 ];

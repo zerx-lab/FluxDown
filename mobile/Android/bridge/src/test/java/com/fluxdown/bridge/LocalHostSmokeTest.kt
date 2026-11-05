@@ -193,28 +193,31 @@ class LocalHostSmokeTest {
             host.patchPreferences(plan.syncedPreferences, sync = true)
             val revision = host.patchPreferences(plan.localPreferences, sync = false)
 
+            // 两个条件在同一次收集里累积判定：信号流是单队列拉取，`first {}` 会丢弃不匹配的信号。
+            // 本机偏好的 SectionChanged 常先于 daemon 的 ConfigChanged 到达（后者经 daemon→agent
+            // 异步转发），分两次 `first {}` 等待会让前一次把它丢掉，后一次永远等不到。
+            var sawConfig = false
+            var section: String? = null
             withTimeout(step) {
                 host.signals.first { signal ->
-                    (signal is HostSignal.Event && signal.event is HostEvent.ConfigChanged &&
-                        (signal.event as HostEvent.ConfigChanged).values["max_concurrent_tasks"] == "7") ||
-                        (signal is HostSignal.Snapshot && signal.snapshot.config["max_concurrent_tasks"] == "7")
-                }
-            }
-            val prefs = withTimeout(step) {
-                host.signals.first { signal ->
-                    val json = when (signal) {
-                        is HostSignal.Event -> (signal.event as? HostEvent.SectionChanged)
-                            ?.takeIf { it.name == HostSection.agentPreferences }?.json
-                        is HostSignal.Snapshot -> signal.snapshot.sections[HostSection.agentPreferences]
-                        else -> null
+                    if (!sawConfig) {
+                        sawConfig = (signal is HostSignal.Event && signal.event is HostEvent.ConfigChanged &&
+                            (signal.event as HostEvent.ConfigChanged).values["max_concurrent_tasks"] == "7") ||
+                            (signal is HostSignal.Snapshot && signal.snapshot.config["max_concurrent_tasks"] == "7")
                     }
-                    AgentPreferences.parse(json).bool("download.silent_skip_selection", false)
+                    if (section == null) {
+                        val json = when (signal) {
+                            is HostSignal.Event -> (signal.event as? HostEvent.SectionChanged)
+                                ?.takeIf { it.name == HostSection.agentPreferences }?.json
+                            is HostSignal.Snapshot -> signal.snapshot.sections[HostSection.agentPreferences]
+                            else -> null
+                        }
+                        if (AgentPreferences.parse(json).bool("download.silent_skip_selection", false)) {
+                            section = json
+                        }
+                    }
+                    sawConfig && section != null
                 }
-            }
-            val section = when (prefs) {
-                is HostSignal.Event -> (prefs.event as HostEvent.SectionChanged).json
-                is HostSignal.Snapshot -> prefs.snapshot.sections.getValue(HostSection.agentPreferences)
-                else -> error("unreachable")
             }
             assertTrue(AgentPreferences.parse(section).revision >= revision)
         } finally {

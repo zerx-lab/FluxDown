@@ -136,6 +136,7 @@ fn task_dto_serializes_camel_case_with_correct_values() {
         ignore_tls_errors: false,
         file_missing: false,
         completed_at: String::new(),
+        file_hash: String::new(),
         referrer: String::new(),
         group_id: "g1".to_string(),
         rss_source_id: String::new(),

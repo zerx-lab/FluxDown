@@ -3,12 +3,12 @@ description: GPUI 下载页纯模型（新建/菜单/排序/任务组/来源构�
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
-  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,source_composition,devices,file_rescan,bt_trackers}.rs'
+  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
   - '**/crates/downloads/src/components/{task_table,task_table_groups}.rs'
   - '**/crates/downloads/src/pages/{task_edit,task_verify,task_detail}.rs'
   - '**/crates/downloads/tests/fixtures/**'
   - '**/web/src/pages/downloads/**'
-  - '**/web/src/lib/{saveDirHistory,speedLimitRecent,rescanThrottle}.ts'
+  - '**/web/src/lib/{saveDirHistory,speedLimitRecent,rescanThrottle,fileHash}.ts'
   - '**/mobile/Android/core/src/main/java/com/fluxdown/core/model/Models.kt'
   - '**/mobile/Android/core/src/main/java/com/fluxdown/core/protocol/Devices.kt'
   - '**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/downloads/DownloadsModel.kt'
@@ -76,6 +76,10 @@ interruptMode: never
 ## 文件跟踪重扫节流（`crates/downloads/src/model/file_rescan.rs::RescanThrottle`）
 
 → `web/src/lib/rescanThrottle.ts`（`RescanThrottle`）：逐条对齐 10s 冷却 / 尾沿排队 / 合并 / 尾沿后重计冷却；测试复用同组用例（`rescanThrottle.test.ts`）
+
+## `crates/downloads/src/model/file_hash.rs`（详情「文件哈希」行：算法展示名 `hash_algorithm_label`、与用户校验和比对 `file_hash_matches_checksum`）
+
+→ `web/src/lib/fileHash.ts::{hashAlgorithmLabel, fileHashMatchesChecksum}` 逐条对齐（算法名去 `-` 小写归一、校验和只剥同算法 `<algo>:` 前缀、hex 忽略大小写；任一侧空 / 不可解析 / 算法不同 = 不比较），两端测试覆盖同一组用例；设置页算法下拉的四个技术名（`crates/settings/src/sections/download.rs` 本地映射）同此
 
 ## `crates/downloads/src/model/bt_trackers.rs`（详情 Tracker 页：状态筛选标签 + 计数、表头三态排序，DHT 伪行固定不参与；稳定排序、缺省值垫底）
 

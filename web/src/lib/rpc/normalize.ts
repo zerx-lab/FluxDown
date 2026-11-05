@@ -32,6 +32,7 @@ const TASK_DEFAULTS: Omit<TaskDto, TaskDtoRequiredKey> = Object.freeze({
   ignoreTlsErrors: false,
   fileMissing: false,
   completedAt: '',
+  fileHash: '',
   referrer: '',
   groupId: '',
   rssSourceId: '',

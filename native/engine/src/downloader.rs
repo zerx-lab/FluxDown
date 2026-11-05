@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db::Db;
 use crate::events::EventSink;
+use crate::file_hash::HashAlgorithm;
 use crate::logger::{log_info, log_warn};
 use crate::naming::{extract_filename, name_from_url, sanitize_filename};
 use crate::output;
@@ -3717,18 +3718,6 @@ pub async fn run_download(mut params: DownloadParams) {
     }
 }
 
-/// Hex-digit length expected for each supported checksum algorithm's digest.
-/// Must stay in lockstep with the hashers dispatched in [`verify_checksum`].
-fn checksum_hex_len(algo: &str) -> Option<usize> {
-    match algo {
-        "md5" => Some(32),
-        "sha1" => Some(40),
-        "sha256" => Some(64),
-        "sha512" => Some(128),
-        _ => None,
-    }
-}
-
 /// Normalize a user-provided checksum spec into the canonical `algo=hex`
 /// form consumed by [`verify_checksum`].
 ///
@@ -3752,13 +3741,9 @@ pub fn normalize_checksum_spec(spec: &str) -> Result<String, String> {
     let algo_raw = spec[..sep].trim().to_lowercase();
     let hash_raw = spec[sep + 1..].trim();
 
-    let algo = match algo_raw.as_str() {
-        "sha-256" | "sha256" => "sha256",
-        "sha-512" | "sha512" => "sha512",
-        "sha-1" | "sha1" => "sha1",
-        "md5" => "md5",
-        other => return Err(format!("unsupported checksum algorithm: {}", other)),
-    };
+    let algorithm = HashAlgorithm::parse(&algo_raw)
+        .ok_or_else(|| format!("unsupported checksum algorithm: {}", algo_raw))?;
+    let algo = algorithm.as_str();
 
     // Strip a redundant "<algo>:" prefix pasted onto the hash itself — only
     // when it names the *same* algorithm already selected via `algo=`.
@@ -3781,7 +3766,7 @@ pub fn normalize_checksum_spec(spec: &str) -> Result<String, String> {
     if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("checksum hash is not valid hex: {}", hash));
     }
-    let expected_len = checksum_hex_len(algo).unwrap_or(0);
+    let expected_len = algorithm.hex_len();
     if hash.len() != expected_len {
         return Err(format!(
             "checksum hash length mismatch for {}: expected {} hex chars, got {}",
@@ -3800,8 +3785,9 @@ pub fn normalize_checksum_spec(spec: &str) -> Result<String, String> {
 /// Supported algorithms: `sha-256`/`sha256`, `sha-512`/`sha512`, `sha-1`/`sha1`, `md5`.
 /// `spec` is passed through [`normalize_checksum_spec`] first, which also
 /// strips a redundant `<algo>:` prefix pasted onto the hash value.
-/// Returns `Ok(())` if the digest matches, or `Err(DownloadError::ChecksumMismatch)` if not.
-async fn verify_checksum(path: &Path, spec: &str) -> Result<(), DownloadError> {
+/// Returns the normalized `algo=hex` spec (= the file's hash record) if the digest
+/// matches, or `Err(DownloadError::ChecksumMismatch)` if not.
+async fn verify_checksum(path: &Path, spec: &str) -> Result<String, DownloadError> {
     let normalized = normalize_checksum_spec(spec).map_err(DownloadError::Other)?;
     let (algo, expected_hex) = normalized.split_once('=').ok_or_else(|| {
         DownloadError::Other(format!(
@@ -3809,69 +3795,18 @@ async fn verify_checksum(path: &Path, spec: &str) -> Result<(), DownloadError> {
             normalized
         ))
     })?;
-    let algo_owned = algo.to_string();
-    let expected_hex = expected_hex.to_string();
-
+    let algorithm = HashAlgorithm::parse(algo).ok_or_else(|| {
+        DownloadError::Other(format!(
+            "internal: unsupported normalized algorithm: {algo}"
+        ))
+    })?;
     let path_owned = path.to_path_buf();
-
-    let actual_hex = tokio::task::spawn_blocking(move || -> Result<String, DownloadError> {
-        use std::io::Read;
-        let mut file = std::fs::File::open(&path_owned)?;
-        let mut buf = vec![0u8; 1024 * 1024]; // 1 MiB read buffer
-        match algo_owned.as_str() {
-            "sha256" => {
-                use sha2::Digest;
-                let mut h = sha2::Sha256::new();
-                loop {
-                    let n = file.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    h.update(&buf[..n]);
-                }
-                Ok(hex::encode(h.finalize()))
-            }
-            "sha512" => {
-                use sha2::Digest;
-                let mut h = sha2::Sha512::new();
-                loop {
-                    let n = file.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    h.update(&buf[..n]);
-                }
-                Ok(hex::encode(h.finalize()))
-            }
-            "sha1" => {
-                use sha1::Digest;
-                let mut h = sha1::Sha1::new();
-                loop {
-                    let n = file.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    h.update(&buf[..n]);
-                }
-                Ok(hex::encode(h.finalize()))
-            }
-            "md5" => {
-                use md5::Digest;
-                let mut h = md5::Md5::new();
-                loop {
-                    let n = file.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    h.update(&buf[..n]);
-                }
-                Ok(hex::encode(h.finalize()))
-            }
-            _ => Err(DownloadError::Other("unreachable algo branch".to_string())),
-        }
+    let actual_hex = tokio::task::spawn_blocking(move || {
+        crate::file_hash::hash_file(&path_owned, algorithm, || false)
     })
     .await
-    .map_err(|e| DownloadError::Other(format!("checksum thread panicked: {}", e)))??;
+    .map_err(|e| DownloadError::Other(format!("checksum thread panicked: {}", e)))?
+    .map_err(|e| DownloadError::Other(format!("checksum: {e}")))?;
 
     if actual_hex != expected_hex {
         return Err(DownloadError::ChecksumMismatch(format!(
@@ -3879,7 +3814,7 @@ async fn verify_checksum(path: &Path, spec: &str) -> Result<(), DownloadError> {
             expected_hex, actual_hex
         )));
     }
-    Ok(())
+    Ok(normalized)
 }
 
 /// Run the segment advisor to compute the task's connection cap (Auto mode).
@@ -4908,18 +4843,30 @@ async fn run_download_inner(
         // 传输错误），此时残留一个完整大小、内容错误的临时文件毫无意义——既
         // 占用磁盘，又会让后续 resume 基于 existing_len 做出错误判断。删除它，
         // 让下次重试从干净状态开始。删除失败仅记日志，不掩盖原始 checksum 错误。
-        if let Err(e) = verify_checksum(&temp_path, &p.checksum).await {
-            if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
-                log_info!(
-                    "[download] task {} checksum failed; could not remove corrupt temp {}: {}",
-                    p.task_id,
-                    temp_path.display(),
-                    rm_err
-                );
+        let verified = match verify_checksum(&temp_path, &p.checksum).await {
+            Ok(verified) => verified,
+            Err(e) => {
+                if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
+                    log_info!(
+                        "[download] task {} checksum failed; could not remove corrupt temp {}: {}",
+                        p.task_id,
+                        temp_path.display(),
+                        rm_err
+                    );
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
+        };
         log_info!("[download] task {} checksum ok", p.task_id);
+        // 校验通过的摘要就是落盘文件的哈希：记为文件哈希，免去完成后再读一遍整个文件。
+        // 记录失败只影响展示（用户可再手动计算），不让已通过校验的下载失败。
+        if let Err(error) = p.db.set_task_file_hash(&p.task_id, &verified).await {
+            log_warn!(
+                "[download] task {} could not record verified file hash: {:#}",
+                p.task_id,
+                error
+            );
+        }
     }
 
     // F034: rename 前对临时文件做 sync_all，确保内核页缓存已持久化到存储介质。

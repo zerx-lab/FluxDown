@@ -268,6 +268,7 @@ export function groupSortView(
     groupId: group.groupId,
     errorMessage: '',
     fileMissing: false,
+    fileHash: '',
     seedingStatus: 0,
     uploadedBytes: 0,
     boosted: aggregate.boosted,

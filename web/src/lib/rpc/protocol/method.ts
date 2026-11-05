@@ -31,6 +31,8 @@ export const METHOD = {
   DAEMON_TASK_RESCAN: 'daemon.task.rescan',
   DAEMON_TASK_SET_SEED_LIMITS: 'daemon.task.setSeedLimits',
   DAEMON_TASK_VERIFY: 'daemon.task.verify',
+  /** 已完成任务落盘文件的哈希（`DaemonTaskHashParams` → `TaskHashResult`）。慢方法。 */
+  DAEMON_TASK_HASH: 'daemon.task.hash',
   DAEMON_TASK_SEED_LOCAL: 'daemon.task.seedLocal',
   DAEMON_TASK_TORRENT_SHARE: 'daemon.task.torrentShare',
   DAEMON_TASK_PAUSE_MANY: 'daemon.task.pauseMany',

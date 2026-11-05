@@ -105,6 +105,9 @@ pub struct TaskInfo {
     /// 任务结束时间，Unix seconds 时间戳（空 = 尚未完成）。
     /// 记录下载真正完成（status→3）的时刻，不含插件 hook 后处理耗时。
     pub completed_at: String,
+    /// 落盘文件的哈希记录，格式 `algo=hexhash`（空 = 尚未计算）。完成时由校验和
+    /// 校验或「下载完成后计算哈希」写入，也可按需计算；重新下载时清空。
+    pub file_hash: String,
     /// 配置的分段（线程）数。0 = 自动（segment_advisor 动态计算）。
     /// 供 UI 展示与「创建后改线程数」编辑；与运行时实际分片数可能不同。
     pub segments: i32,

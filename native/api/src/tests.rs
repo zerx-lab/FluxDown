@@ -505,6 +505,7 @@ fn sample_task(id: &str, status: i32) -> TaskDto {
         ignore_tls_errors: false,
         file_missing: false,
         completed_at: String::new(),
+        file_hash: String::new(),
         referrer: String::new(),
         group_id: String::new(),
         rss_source_id: String::new(),

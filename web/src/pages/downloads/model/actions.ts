@@ -339,6 +339,26 @@ export async function verifyTaskIntegrity(view: DownloadTaskView): Promise<void>
   }
 }
 
+/**
+ * 计算已完成任务的文件哈希。成功不提示（行随 TaskChanged 更新）；失败按冲突原因提示，
+ * `notify = false`（详情打开即算）不提示，行内回落为「计算」按钮。
+ */
+export async function computeTaskFileHash(view: DownloadTaskView, algorithm: string, notify = true): Promise<void> {
+  const name = view.name
+  try {
+    await rpc.daemon.task.hash(view.taskId, algorithm)
+  } catch (error) {
+    if (!notify) return
+    if (error instanceof RpcError && error.is('conflict') && error.reason === 'taskStateConflict') {
+      toast.error(t('fileHashChanged', { name }))
+    } else if (error instanceof RpcError && error.is('conflict') && !error.reason) {
+      toast.warning(t('fileHashBusy', { name }))
+    } else {
+      toast.error(t('fileHashFailed', { name, error: rpcErrorText(error, t) }))
+    }
+  }
+}
+
 // ── 任务组 ──
 
 export const pauseGroup = (groupId: string) => guarded(() => rpc.daemon.group.pause({ groupId }))

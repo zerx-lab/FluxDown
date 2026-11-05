@@ -1374,6 +1374,7 @@ mod tests {
             ignore_tls_errors: false,
             file_missing: false,
             completed_at: String::new(),
+            file_hash: String::new(),
             segments: 0,
             queue_order: 1,
             uploaded_bytes: 0,

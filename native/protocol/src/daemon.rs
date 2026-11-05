@@ -309,6 +309,25 @@ pub struct DaemonSeedLocalParams {
     pub unlimited: bool,
 }
 
+/// `daemon.task.hash` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonTaskHashParams {
+    pub task_id: String,
+    /// 摘要算法：[`crate::HASH_ALGORITHMS`] 之一（也接受 `sha-256` 等带连字符写法）。
+    pub algorithm: String,
+}
+
+/// `daemon.task.hash` 结果。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct TaskHashResult {
+    /// 记入任务的哈希，格式同 [`TaskDto::file_hash`]。
+    pub file_hash: String,
+}
+
 /// `daemon.task.seedLocal` 结果。`duplicate = true` 表示同一个种子（info hash）已被另一任务
 /// 持有，**未**创建新任务：`taskId` 是已有任务，`existingName` 是它的显示名（可能为空）。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1183,6 +1202,11 @@ pub struct TaskDto {
     /// 记录下载真正完成（status→3）的时刻，不含插件 hook 后处理耗时。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub completed_at: String,
+    /// 落盘文件的哈希记录，格式 `algo=hexhash`（小写，`algo` ∈ [`crate::HASH_ALGORITHMS`]；
+    /// 空 = 尚未计算）。校验和校验通过、下载完成后自动计算或 `daemon.task.hash` 写入；
+    /// 重新下载时清空。只对 status=3 有意义。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_hash: String,
     /// Source page URL captured by the browser extension (empty = none).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub referrer: String,

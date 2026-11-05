@@ -72,6 +72,8 @@ export interface DownloadTaskView {
   groupId: string
   errorMessage: string
   fileMissing: boolean
+  /** 落盘文件哈希 `algo=hex`；空 = 尚未计算。远程任务恒空。 */
+  fileHash: string
   seedingStatus: number
   uploadedBytes: number
   boosted: boolean
@@ -242,6 +244,7 @@ export function buildLocalView(
     groupId: task.groupId,
     errorMessage: task.errorMessage,
     fileMissing: task.fileMissing,
+    fileHash: task.fileHash,
     seedingStatus: task.seedingStatus,
     uploadedBytes: task.uploadedBytes,
     boosted,
@@ -287,6 +290,7 @@ export function buildRemoteView(task: RemoteTaskDto): DownloadTaskView {
     groupId: '',
     errorMessage: task.error ?? '',
     fileMissing: false,
+    fileHash: '',
     seedingStatus: 0,
     uploadedBytes: 0,
     boosted: false,

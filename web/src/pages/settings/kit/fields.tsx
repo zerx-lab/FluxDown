@@ -224,11 +224,28 @@ export function DaemonTextRow({
   )
 }
 
-/** 枚举下拉：选项取自协议目录，文案键 `{labelPrefix}{CamelValue}`。 */
-export function DaemonEnumRow({ configKey, titleKey, descKey, labelPrefix, disabled }: RowText & { configKey: string; labelPrefix: string; disabled?: boolean }) {
+/** 枚举下拉：选项取自协议目录。文案优先 `labels`，否则 `{labelPrefix}{CamelValue}`。 */
+export function DaemonEnumRow({
+  configKey,
+  titleKey,
+  descKey,
+  labelPrefix,
+  labels,
+  disabled,
+}: RowText & {
+  configKey: string
+  /** i18n 键前缀；与 `labels` 二选一。 */
+  labelPrefix?: string
+  /** 显式选项文案（技术名等不走 i18n）。缺省项回退 `labelPrefix` 或原值。 */
+  labels?: Readonly<Record<string, string>>
+  disabled?: boolean
+}) {
   const { t, title, description } = useRowText({ titleKey, descKey })
   const value = useDaemonValue(configKey)
-  const options = (daemonConfigField(configKey)?.options ?? []).map((option) => ({ value: option, label: t(`${labelPrefix}${camel(option)}`) }))
+  const options = (daemonConfigField(configKey)?.options ?? []).map((option) => ({
+    value: option,
+    label: labels?.[option] ?? (labelPrefix !== undefined ? t(`${labelPrefix}${camel(option)}`) : option),
+  }))
   return (
     <SettingsRow title={title} description={description} disabled={disabled}>
       <DropdownField value={value} options={options} aria-label={title} onValueChange={(next) => setDaemon(configKey, next)} />

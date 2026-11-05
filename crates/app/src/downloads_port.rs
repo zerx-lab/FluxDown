@@ -340,6 +340,15 @@ impl AgentDownloadsPort {
                         .await?;
                     return Ok(DownloadsResult::TaskVerify(result));
                 }
+                DownloadsCommand::HashTask { task_id, algorithm } => {
+                    let result = client
+                        .call(
+                            method::DAEMON_TASK_HASH,
+                            Some(json!({ "taskId": task_id, "algorithm": algorithm })),
+                        )
+                        .await?;
+                    return Ok(DownloadsResult::TaskHash(result));
+                }
                 DownloadsCommand::TorrentShare {
                     task_id,
                     include_torrent,

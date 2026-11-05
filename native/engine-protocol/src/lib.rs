@@ -243,6 +243,7 @@ pub fn task_info_to_dto(task: TaskInfo) -> TaskDto {
         ignore_tls_errors: task.ignore_tls_errors,
         file_missing: task.file_missing,
         completed_at: task.completed_at,
+        file_hash: task.file_hash,
         referrer: task.referrer,
         group_id: task.group_id,
         rss_source_id: task.rss_source_id,

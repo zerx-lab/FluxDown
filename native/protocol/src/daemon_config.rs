@@ -51,6 +51,8 @@ pub const BT_GUARD_MODES: &[&str] = &["off", "observe", "enforce"];
 pub const BT_GUARD_DOWNLOADING_ACTIONS: &[&str] = &["observe", "throttle", "choke", "ban"];
 pub const PROXY_MODES: &[&str] = &["none", "system", "manual", "auto"];
 pub const PROXY_TYPES: &[&str] = &["http", "https", "socks4", "socks5"];
+/// 文件哈希算法（`hash_algorithm`、`daemon.task.hash`、任务 `fileHash` 的 `algo`）。
+pub const HASH_ALGORITHMS: &[&str] = &["md5", "sha1", "sha256", "sha512"];
 
 /// 单任务连接（线程）数上限：设置、队列默认值与新建任务共用；
 /// 与引擎 `segment_coordinator::MAX_SEGMENTS` 保持一致。
@@ -139,6 +141,13 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
     ),
     // 空闲（无活动/排队任务）时是否仍执行周期性文件跟踪扫描；默认关闭以免唤醒 NAS 硬盘。
     field("idle_file_scan", DaemonConfigKind::Bool, "false"),
+    // 下载完成后计算落盘文件的哈希（单文件产物；已由校验和校验得到哈希的任务不重复计算）。
+    field("hash_after_download", DaemonConfigKind::Bool, "false"),
+    field(
+        "hash_algorithm",
+        DaemonConfigKind::Enum(HASH_ALGORITHMS),
+        "sha256",
+    ),
     field("global_user_agent", DaemonConfigKind::Text, ""),
     field("default_queue_id", DaemonConfigKind::Text, ""),
     field("domain_conn_caps", DaemonConfigKind::ReadOnly, ""),

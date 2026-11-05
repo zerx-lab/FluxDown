@@ -110,6 +110,11 @@ pub enum ActorOperation {
     VerifyTask {
         task_id: String,
     },
+    /// 已完成任务落盘文件的哈希（off-actor 读盘，actor 内写回）。
+    HashTask {
+        task_id: String,
+        algorithm: fluxdown_engine::file_hash::HashAlgorithm,
+    },
     CreateQueue {
         name: String,
         speed_limit_kbps: i64,
@@ -281,6 +286,7 @@ pub enum ActorResult {
     WebhookSimulation(usize),
     WebhookTest(Box<fluxdown_engine::webhook::WebhookDelivery>),
     TaskVerify(fluxdown_protocol::TaskVerifyResult),
+    TaskHash(fluxdown_protocol::TaskHashResult),
     SeedLocal(fluxdown_protocol::SeedLocalResultDto),
     TorrentShare(Box<fluxdown_protocol::TorrentShareDto>),
     BtStatus(Box<fluxdown_protocol::BtStatusDto>),
@@ -341,6 +347,11 @@ pub enum MaintenanceEvent {
         outcome: Result<Vec<u8>, String>,
         ack: oneshot::Sender<Result<ActorResult, ActorError>>,
     },
+    /// `daemon.task.hash` 的计算结果：写回与任务行发布在 actor 内。
+    FileHash {
+        outcome: fluxdown_engine::file_hash::FileHashOutcome,
+        ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+    },
 }
 
 /// 从 `DownloadManager` 一次性取出的全部宿主回流接收端。
@@ -349,6 +360,8 @@ pub struct EngineReceivers {
     pub retry: mpsc::Receiver<String>,
     pub plugin: mpsc::UnboundedReceiver<PluginEvent>,
     pub missing_cleanup: mpsc::Receiver<Vec<String>>,
+    /// 「下载完成后计算哈希」的结果回流。
+    pub file_hash: mpsc::UnboundedReceiver<fluxdown_engine::file_hash::FileHashOutcome>,
 }
 
 /// daemon actor 命令入口。
@@ -510,6 +523,12 @@ async fn run_actor(
             }
             Some(event) = maintenance_rx.recv() => {
                 commit_maintenance(event, &mut engine).await;
+            }
+            Some(outcome) = receivers.file_hash.recv() => {
+                let task_id = outcome.task_id().to_owned();
+                if let Err(error) = engine.manager.commit_file_hash(outcome).await {
+                    log_auto_file_hash_error(&task_id, &error);
+                }
             }
             Some(ids) = receivers.missing_cleanup.recv() => {
                 // 删除事实由 delete_tasks_batch 自己发布（TasksDeleted），无需再推全量快照。
@@ -809,6 +828,28 @@ async fn dispatch_operation(
                     .is_err()
                 {
                     tracing::debug!("integrity check caller disconnected before rejection");
+                }
+            }
+        }
+        ActorOperation::HashTask { task_id, algorithm } => {
+            match engine.manager.file_hash_future(&task_id, algorithm).await {
+                Ok(future) => {
+                    let maintenance_tx = maintenance_tx.clone();
+                    tokio::spawn(async move {
+                        let outcome = future.await;
+                        if maintenance_tx
+                            .send(MaintenanceEvent::FileHash { outcome, ack })
+                            .is_err()
+                        {
+                            // Actor 已关闭，结果不写回；回执随事件丢弃，等待者收到 Unavailable。
+                            tracing::debug!("daemon actor closed before file hash commit");
+                        }
+                    });
+                }
+                Err(error) => {
+                    if ack.send(Err(file_hash_error(error))).is_err() {
+                        tracing::debug!("file hash caller disconnected before rejection");
+                    }
                 }
             }
         }
@@ -1401,6 +1442,7 @@ async fn execute_operation(
         | ActorOperation::RssValidate { .. }
         | ActorOperation::LinkProbe { .. }
         | ActorOperation::VerifyTask { .. }
+        | ActorOperation::HashTask { .. }
         | ActorOperation::WebhookTest { .. }
         | ActorOperation::TestProxy { .. } => unreachable!("handled off actor"),
         ActorOperation::WebhookDeliveries => {
@@ -1510,11 +1552,7 @@ async fn migration_ack(engine: &Engine, marker: &str, revision: u64) -> Result<(
         .map_err(|error| ActorError::Operation(format!("{error:#}")))
 }
 
-async fn commit_maintenance(
-    event: MaintenanceEvent,
-    #[cfg_attr(not(any(feature = "bt", feature = "ed2k")), allow(unused_variables))]
-    engine: &mut Engine,
-) {
+async fn commit_maintenance(event: MaintenanceEvent, engine: &mut Engine) {
     match event {
         #[cfg(feature = "bt")]
         MaintenanceEvent::Tracker { outcome, ack } => {
@@ -1554,6 +1592,19 @@ async fn commit_maintenance(
                 }
             }
         }
+        MaintenanceEvent::FileHash { outcome, ack } => {
+            let result = engine
+                .manager
+                .commit_file_hash(outcome)
+                .await
+                .map(|file_hash| {
+                    ActorResult::TaskHash(fluxdown_protocol::TaskHashResult { file_hash })
+                })
+                .map_err(file_hash_error);
+            if ack.send(result).is_err() {
+                tracing::debug!("file hash caller disconnected before result");
+            }
+        }
     }
 }
 
@@ -1579,6 +1630,36 @@ async fn commit_ed2k_nodes(
         .await
         .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     Ok(ActorResult::Unit)
+}
+
+fn file_hash_error(error: fluxdown_engine::file_hash::FileHashError) -> ActorError {
+    use fluxdown_engine::file_hash::FileHashError;
+    match error {
+        FileHashError::NotFound => ActorError::NotFound,
+        FileHashError::NotEligible => ActorError::InvalidArgument(error.to_string()),
+        FileHashError::Busy => ActorError::Conflict(error.to_string()),
+        // 取消只来自删除 / 重新下载 / 关停：对调用方即「任务已变化」，不是计算失败。
+        FileHashError::Stale | FileHashError::Cancelled => {
+            ActorError::TaskStateConflict(error.to_string())
+        }
+        FileHashError::Failed(_) => ActorError::Operation(error.to_string()),
+    }
+}
+
+/// 自动哈希没有调用方等待：任务在计算期间被删除 / 重新下载、产物是目录属正常，只记调试日志。
+fn log_auto_file_hash_error(task_id: &str, error: &fluxdown_engine::file_hash::FileHashError) {
+    use fluxdown_engine::file_hash::FileHashError;
+    match error {
+        FileHashError::Stale
+        | FileHashError::Cancelled
+        | FileHashError::NotFound
+        | FileHashError::NotEligible => {
+            tracing::debug!(task_id, %error, "auto file hash discarded");
+        }
+        FileHashError::Busy | FileHashError::Failed(_) => {
+            tracing::warn!(task_id, %error, "auto file hash failed");
+        }
+    }
 }
 
 #[cfg(feature = "bt")]
@@ -2264,6 +2345,11 @@ async fn apply_live_config<'a>(
             all.get("idle_file_scan")
                 .is_some_and(|value| value == "true" || value == "1"),
         );
+    }
+    if keys.contains(&"hash_after_download") || keys.contains(&"hash_algorithm") {
+        engine
+            .manager
+            .set_hash_after_download(crate::runtime::hash_after_download(all));
     }
     if keys.contains(&"completed_record_retention_days") {
         engine.manager.set_completed_record_retention_days(
@@ -3216,6 +3302,170 @@ mod tests {
         drop(engine);
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor verify test directory removal failed: {error}");
+        }
+    }
+
+    /// `daemon.task.hash`：已完成单文件任务经 off-actor 计算、maintenance 回流写回并返回
+    /// `algo=hex`；未完成 / 目录产物 / 不存在分别映射为参数错误 / 参数错误 / NotFound；
+    /// 计算期间被重新下载的结果不写回（TaskStateConflict），哈希记录随重新下载清空。
+    #[tokio::test]
+    async fn hash_task_records_digest_and_discards_results_of_restarted_tasks() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_hash_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(dir.join("folder"))
+            .await
+            .expect("create hash test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let (maintenance_tx, mut maintenance_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::fs::write(dir.join("hello.txt"), b"hello")
+            .await
+            .expect("write landed file");
+        for (id, name, status) in [
+            ("done", "hello.txt", 3),
+            ("again", "hello.txt", 3),
+            ("paused", "hello.txt", 2),
+            ("folder", "folder", 3),
+        ] {
+            engine
+                .db
+                .insert_task(
+                    id,
+                    "https://example.invalid/a",
+                    name,
+                    &dir_text,
+                    1,
+                    0,
+                    "",
+                    "",
+                    "",
+                    1,
+                )
+                .await
+                .expect("insert task");
+            engine
+                .db
+                .update_task_status(id, status, "")
+                .await
+                .expect("set status");
+        }
+
+        let sha256 = fluxdown_engine::file_hash::HashAlgorithm::Sha256;
+        let (ack, response) = tokio::sync::oneshot::channel();
+        super::dispatch_operation(
+            ActorOperation::HashTask {
+                task_id: "done".to_owned(),
+                algorithm: sha256,
+            },
+            ack,
+            &mut engine,
+            &events,
+            &maintenance_tx,
+        )
+        .await;
+        let event = maintenance_rx
+            .recv()
+            .await
+            .expect("hash result reflows to actor");
+        super::commit_maintenance(event, &mut engine).await;
+        let expected =
+            "sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned();
+        match response.await.expect("hash acknowledged") {
+            Ok(super::ActorResult::TaskHash(result)) => assert_eq!(result.file_hash, expected),
+            _ => panic!("completed single-file task must be hashed"),
+        }
+        let done = engine
+            .db
+            .load_task_by_id("done")
+            .await
+            .expect("load done")
+            .expect("done exists");
+        assert_eq!(done.file_hash, expected);
+
+        // 计算期间任务被重新下载：结果作废，不写回。
+        let job = engine
+            .manager
+            .file_hash_future("again", sha256)
+            .await
+            .expect("eligible");
+        engine
+            .db
+            .update_task_status("again", 1, "")
+            .await
+            .expect("restart");
+        assert_eq!(
+            engine.manager.commit_file_hash(job.await).await,
+            Err(fluxdown_engine::file_hash::FileHashError::Stale)
+        );
+        // 已记录的哈希随重新下载清空。
+        engine
+            .db
+            .update_task_status("done", 1, "")
+            .await
+            .expect("restart done");
+        let restarted = engine
+            .db
+            .load_task_by_id("done")
+            .await
+            .expect("load restarted")
+            .expect("restarted exists");
+        assert_eq!(restarted.file_hash, "");
+
+        // 同步拒绝（DB 判定）直接回执；目录产物在读盘线程里判定，经 maintenance 回流后回执。
+        let mut reject = async |task_id: &str| {
+            let (ack, mut response) = tokio::sync::oneshot::channel();
+            super::dispatch_operation(
+                ActorOperation::HashTask {
+                    task_id: task_id.to_owned(),
+                    algorithm: sha256,
+                },
+                ack,
+                &mut engine,
+                &events,
+                &maintenance_tx,
+            )
+            .await;
+            tokio::select! {
+                result = &mut response => result.expect("rejection acknowledged"),
+                Some(event) = maintenance_rx.recv() => {
+                    super::commit_maintenance(event, &mut engine).await;
+                    response.await.expect("rejection acknowledged")
+                }
+            }
+        };
+        for id in ["paused", "folder", "again"] {
+            assert!(
+                matches!(reject(id).await, Err(ActorError::InvalidArgument(_))),
+                "{id} is not eligible"
+            );
+        }
+        assert!(matches!(reject("missing").await, Err(ActorError::NotFound)));
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor hash test directory removal failed: {error}");
         }
     }
 

@@ -12,6 +12,7 @@ import { canChangeSegments, canChangeUrl } from '../model/taskEdit'
 import { openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
 import { routeLabel } from '../../../lib/taskRoute'
 import { CopyButton, SourcePageLink } from './CopyButton'
+import { FileHashRow } from './FileHashRow'
 import { DetailRow } from './DetailRow'
 import { SourcesSection } from './SourcesSection'
 
@@ -34,8 +35,8 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
   const t = useT()
   const { queueName } = useDownloads()
   const dto = view.dto
-  const notSet = t('detailNotSet')
-  const checksum = dto && dto.checksum !== '' ? dto.checksum : notSet
+  // 期望哈希只在填写过时展示（与 GPUI 一致：多数任务没有，「未设置」一行是噪音）。
+  const checksum = dto?.checksum ?? ''
   const proxy = dto && dto.proxyUrl !== '' ? dto.proxyUrl : t('detailFollowGlobal')
   const queueLabel = view.queueId === '' ? '' : (queueName(view.queueId) ?? view.queueId)
   const completed = view.state === 'completed'
@@ -81,7 +82,8 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           </div>
         </DetailRow>
         <DetailRow label={t('taskQueueLabel')}>{queueLabel}</DetailRow>
-        <DetailRow label={t('taskChecksum')}>{checksum}</DetailRow>
+        {checksum !== '' ? <DetailRow label={t('taskChecksum')}>{checksum}</DetailRow> : null}
+        {view.source === 'local' && completed ? <FileHashRow view={view} /> : null}
         <DetailRow label={t('taskProxy')}>{proxy}</DetailRow>
         {dto && dto.autoRoute !== '' ? <DetailRow label={t('taskRoute')}>{routeLabel(t, dto.autoRoute)}</DetailRow> : null}
         {dto?.ignoreTlsErrors ? <DetailRow label={t('taskIgnoreTlsErrors')}>✓</DetailRow> : null}

@@ -50,6 +50,7 @@ sealed interface Normalized {
 object SettingsCatalog {
     val fileExistsBehaviors = listOf("rename", "overwrite", "skip", "ask")
     val fileMissingActions = listOf("keep", "delete")
+    val hashAlgorithms = listOf("md5", "sha1", "sha256", "sha512")
     val btSeedTimeUnits = listOf("minutes", "hours", "days")
     val btSeedLimitOperators = listOf("or", "and")
     val btGuardModes = listOf("off", "observe", "enforce")
@@ -95,6 +96,8 @@ object SettingsCatalog {
         daemon("file_missing_action", choice(fileMissingActions), "keep"),
         daemon("completed_record_retention_days", int(0, 3650), "0"),
         daemon("idle_file_scan", bool, "false"),
+        daemon("hash_after_download", bool, "false"),
+        daemon("hash_algorithm", choice(hashAlgorithms), "sha256"),
         daemon("global_user_agent", text, ""),
         daemon("default_queue_id", text, ""),
         daemon("domain_conn_caps", readOnly, ""),

@@ -62,6 +62,8 @@ export interface TaskDto {
   fileMissing: boolean;
   /** 下载完成时刻 Unix 秒（字符串，空 = 尚未完成）。 */
   completedAt: string;
+  /** 落盘文件哈希，格式 `algo=hex`（小写；空 = 尚未计算）。只对 status=3 有意义。 */
+  fileHash: string;
   /** 浏览器扩展捕获的来源页面 URL（空 = 无）。 */
   referrer: string;
   /** 所属任务组 ID（空 = 不属于任何组）。 */
@@ -255,6 +257,18 @@ export interface TaskVerifyResult {
   badPieces: number;
   skippedPieces: number;
   damagedFiles: string[];
+}
+
+/** `daemon.task.hash` 参数。`algorithm` 为 HASH_ALGORITHMS 之一。 */
+export interface DaemonTaskHashParams {
+  taskId: string;
+  algorithm: string;
+}
+
+/** `daemon.task.hash` 结果。 */
+export interface TaskHashResult {
+  /** 记入任务的哈希，格式同 `TaskDto.fileHash`。 */
+  fileHash: string;
 }
 
 /** `daemon.task.createMany` 单次调用的条目上限（`CREATE_TASKS_MAX_ITEMS`）；更大的导入须按块拆分。 */

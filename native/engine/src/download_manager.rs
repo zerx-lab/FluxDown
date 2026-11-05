@@ -3900,7 +3900,19 @@ pub struct DownloadManager {
     bt_paused_idle_since: Option<std::time::Instant>,
     /// 已完成 BT 任务的在途完整性校验（删除任务 / 关停时取消）。
     #[cfg(feature = "bt")]
-    integrity_checks: crate::bt_verify::IntegrityChecks,
+    integrity_checks: crate::task_jobs::TaskJobs,
+    /// 在途文件哈希作业（按需与下载完成后自动；删除任务 / 关停时取消）。
+    file_hash_jobs: crate::task_jobs::TaskJobs,
+    /// 下载完成后自动计算哈希所用算法（config `hash_after_download` /
+    /// `hash_algorithm`）；`None` = 关闭。
+    hash_after_download: Option<crate::file_hash::HashAlgorithm>,
+    /// 文件哈希的并发闸门（自动与手动共用）：同时只读一个文件，批量完成或连续打开详情时
+    /// 逐个读盘，不与下载争抢磁盘带宽。
+    file_hash_gate: Arc<Semaphore>,
+    /// 自动哈希结果回流发送端：结果由宿主 actor 经 [`Self::commit_file_hash`] 写回。
+    file_hash_tx: mpsc::UnboundedSender<crate::file_hash::FileHashOutcome>,
+    /// 自动哈希结果回流接收端（仅取一次，交给宿主 actor）。
+    file_hash_rx: Option<mpsc::UnboundedReceiver<crate::file_hash::FileHashOutcome>>,
     /// System 代理模式下按系统代理指纹缓存的全局 client（见 `global_client`）。
     system_client: std::sync::Mutex<Option<(String, Client)>>,
     /// 后台元数据探测的并发闸门（见 [`META_PROBE_CONCURRENCY`]）。
@@ -4040,6 +4052,7 @@ impl DownloadManager {
         let (done_tx, done_rx) = mpsc::channel(8192);
         let (retry_tx, retry_rx) = mpsc::channel(32);
         let (missing_cleanup_tx, missing_cleanup_rx) = mpsc::channel(8);
+        let (file_hash_tx, file_hash_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "plugins")]
         let (resolve_tx, resolve_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "plugins")]
@@ -4139,7 +4152,12 @@ impl DownloadManager {
             #[cfg(feature = "bt")]
             bt_paused_idle_since: None,
             #[cfg(feature = "bt")]
-            integrity_checks: crate::bt_verify::IntegrityChecks::default(),
+            integrity_checks: crate::task_jobs::TaskJobs::default(),
+            file_hash_jobs: crate::task_jobs::TaskJobs::default(),
+            hash_after_download: None,
+            file_hash_gate: Arc::new(Semaphore::new(1)),
+            file_hash_tx,
+            file_hash_rx: Some(file_hash_rx),
             system_client: std::sync::Mutex::new(None),
             probe_gate: Arc::new(Semaphore::new(META_PROBE_CONCURRENCY)),
             probes_outstanding: Arc::new(AtomicUsize::new(0)),
@@ -4186,6 +4204,15 @@ impl DownloadManager {
     /// 通道会被填满，扫描侧的 `try_send` 静默失败——行为安全。
     pub fn take_missing_cleanup_rx(&mut self) -> Option<mpsc::Receiver<Vec<String>>> {
         self.missing_cleanup_rx.take()
+    }
+
+    /// 取出「下载完成后计算哈希」的结果回流接收端：宿主 actor 收到后调用
+    /// [`Self::commit_file_hash`]。宿主不取时结果留在通道里不写回；只有经
+    /// [`Self::set_hash_after_download`] 开启自动哈希的宿主才会产生结果。
+    pub fn take_file_hash_rx(
+        &mut self,
+    ) -> Option<mpsc::UnboundedReceiver<crate::file_hash::FileHashOutcome>> {
+        self.file_hash_rx.take()
     }
 
     // ===================================================================
@@ -5822,6 +5849,12 @@ impl DownloadManager {
     /// window-focus / manual rescan triggers are unaffected.
     pub fn set_idle_file_scan(&mut self, on: bool) {
         self.idle_file_scan = on;
+    }
+
+    /// 下载完成后自动计算哈希（config `hash_after_download` + `hash_algorithm`）；
+    /// `None` = 关闭。已带哈希记录（如校验和校验通过）的任务不再重复计算。
+    pub fn set_hash_after_download(&mut self, algorithm: Option<crate::file_hash::HashAlgorithm>) {
+        self.hash_after_download = algorithm;
     }
 
     /// 更新已完成记录保留天数（config `completed_record_retention_days`，0 = 永不）。
@@ -7877,6 +7910,18 @@ impl DownloadManager {
                             });
                         }
                     }
+                }
+            }
+
+            // 文件哈希：校验和校验通过时下载器已把哈希写进库，但完成只经进度帧发布（不含
+            // 该字段），在此补发完整任务行；没有记录且开启「下载完成后计算哈希」时排队计算。
+            // 放在插件 onDone 通知之后：onDone 可能移动 / 改写文件。
+            if task.status == 3 {
+                if !task.file_hash.is_empty() {
+                    self.sink
+                        .emit(EngineEvent::TaskChanged(Box::new(task.clone())));
+                } else if let Some(algorithm) = self.hash_after_download {
+                    self.spawn_auto_file_hash(task_id, algorithm).await;
                 }
             }
 
@@ -11238,6 +11283,8 @@ impl DownloadManager {
             );
             return;
         }
+        // 在途哈希读的是即将被删除的上一次产物：立即停止并作废其结果。
+        self.file_hash_jobs.cancel(task_id);
 
         // 1. 先停掉在途 spawn（含尚未起飞的排队项）。静默暂停路径已处理
         //    token cancel / active_tasks 摘除 / pending_queue 摘除 / 落 paused。
@@ -12578,6 +12625,7 @@ impl DownloadManager {
 
         #[cfg(feature = "bt")]
         self.integrity_checks.cancel(task_id);
+        self.file_hash_jobs.cancel(task_id);
         // Remove from pending queue if queued.
         if let Some(pos) = self.pending_queue.iter().position(|q| q.task_id == task_id) {
             self.pending_queue.remove(pos);
@@ -13021,6 +13069,7 @@ impl DownloadManager {
             hls_downloader::request_discard(task_id);
             #[cfg(feature = "bt")]
             self.integrity_checks.cancel(task_id);
+            self.file_hash_jobs.cancel(task_id);
             let handle = self
                 .active_tasks
                 .remove(task_id.as_str())
@@ -14228,6 +14277,7 @@ impl DownloadManager {
         self.flush_seed_times().await;
         #[cfg(feature = "bt")]
         self.integrity_checks.cancel_all();
+        self.file_hash_jobs.cancel_all();
         let mut handles = Vec::new();
         for (_task_id, entry) in self.active_tasks.drain() {
             entry.token.cancel();
@@ -14273,6 +14323,7 @@ impl Drop for DownloadManager {
         self.pending_queue.clear();
         #[cfg(feature = "bt")]
         self.integrity_checks.cancel_all();
+        self.file_hash_jobs.cancel_all();
 
         // Shut down the BT session on a dedicated thread to avoid deadlock.
         // `SharedBtSession::shutdown()` calls `runtime.block_on()`, which
@@ -15356,6 +15407,156 @@ impl DownloadManager {
             },
             guard,
         ))
+    }
+
+    /// 已完成任务落盘文件的哈希（`daemon.task.hash` 与下载完成后自动计算共用）：资格校验与
+    /// 登记在 actor 内完成（只读 DB，不碰磁盘），返回的 future 先排队等文件哈希闸门（同时
+    /// 只读一个文件；排队期间被取消即放弃），再在阻塞线程上判定文件并读盘，可在 actor 之外
+    /// `await`；结果须交回 actor 由 [`Self::commit_file_hash`] 写回。同一任务同时只跑一个，
+    /// 删除 / 重新下载任务或引擎关停时取消。只支持单个常规文件（多文件 BT 的目录产物、文件
+    /// 不存在均为 `NotEligible`，在 future 的结果里给出）。
+    pub async fn file_hash_future(
+        &self,
+        task_id: &str,
+        algorithm: crate::file_hash::HashAlgorithm,
+    ) -> Result<
+        impl Future<Output = crate::file_hash::FileHashOutcome> + Send + use<>,
+        crate::file_hash::FileHashError,
+    > {
+        use crate::file_hash::{FileHashError, FileHashOutcome, hash_file, hash_spec};
+
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await
+            .map_err(|error| FileHashError::Failed(format!("{error:#}")))?
+            .ok_or(FileHashError::NotFound)?;
+        if task.status != 3 || task.file_missing {
+            return Err(FileHashError::NotEligible);
+        }
+        let path =
+            task_target_path(&task.save_dir, &task.file_name).ok_or(FileHashError::NotEligible)?;
+        let guard = self
+            .file_hash_jobs
+            .begin(task_id)
+            .ok_or(FileHashError::Busy)?;
+        let gate = self.file_hash_gate.clone();
+        let completed_at = task.completed_at;
+        let task_id = task.task_id;
+        Ok(async move {
+            let token = guard.token();
+            let _permit = tokio::select! {
+                permit = gate.acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    // 闸门只在引擎内部持有、从不关闭；关闭即引擎已拆除。
+                    Err(_) => {
+                        return FileHashOutcome {
+                            task_id,
+                            completed_at,
+                            result: Err(FileHashError::Cancelled),
+                        };
+                    }
+                },
+                () = token.cancelled() => {
+                    return FileHashOutcome {
+                        task_id,
+                        completed_at,
+                        result: Err(FileHashError::Cancelled),
+                    };
+                }
+            };
+            log_info!(
+                "[manager] file hash started: task={} algorithm={}",
+                task_id,
+                algorithm.as_str()
+            );
+            let worker_token = token.clone();
+            let joined = tokio::task::spawn_blocking(move || {
+                hash_file(&path, algorithm, || worker_token.is_cancelled())
+            })
+            .await;
+            // 读完最后一块后才被取消（删除 / 重新下载）同样作废：结果描述的可能已不是本次完成。
+            let cancelled = token.is_cancelled();
+            drop(guard);
+            let result = match joined {
+                Ok(_) if cancelled => Err(FileHashError::Cancelled),
+                Ok(result) => result.map(|hex| hash_spec(algorithm, &hex)),
+                Err(error) => Err(FileHashError::Failed(format!(
+                    "hash worker failed: {error}"
+                ))),
+            };
+            if let Err(error) = &result {
+                log_info!("[manager] file hash ended: task={} {}", task_id, error);
+            }
+            FileHashOutcome {
+                task_id,
+                completed_at,
+                result,
+            }
+        })
+    }
+
+    /// 写回一次哈希作业的结果（宿主 actor 内调用）：仅当任务仍是计算开始时那一次完成
+    /// 时写入，并发布完整任务行；期间被重新下载 / 删除返回 [`FileHashError::Stale`]。
+    /// 成功返回 `algo=hex` 记录。
+    ///
+    /// [`FileHashError::Stale`]: crate::file_hash::FileHashError::Stale
+    pub async fn commit_file_hash(
+        &self,
+        outcome: crate::file_hash::FileHashOutcome,
+    ) -> Result<String, crate::file_hash::FileHashError> {
+        use crate::file_hash::FileHashError;
+
+        let crate::file_hash::FileHashOutcome {
+            task_id,
+            completed_at,
+            result,
+        } = outcome;
+        let spec = result?;
+        let committed = self
+            .db
+            .commit_task_file_hash(&task_id, &completed_at, &spec)
+            .await
+            .map_err(|error| FileHashError::Failed(format!("{error:#}")))?;
+        if !committed {
+            return Err(FileHashError::Stale);
+        }
+        log_info!("[manager] file hash recorded: task={} {}", task_id, spec);
+        match self.db.load_task_by_id(&task_id).await {
+            Ok(Some(task)) => self.sink.emit(EngineEvent::TaskChanged(Box::new(task))),
+            Ok(None) => {}
+            Err(error) => log_warn!(
+                "[manager] file hash {}: recorded but reloading the task failed: {:#}",
+                task_id,
+                error
+            ),
+        }
+        Ok(spec)
+    }
+
+    /// 下载完成后自动计算哈希：登记作业后排队等闸门，结果经 `file_hash_tx` 回流宿主
+    /// actor。已在手动计算的任务直接跳过；目录产物在读盘线程里判定为 `NotEligible`。
+    async fn spawn_auto_file_hash(
+        &self,
+        task_id: &str,
+        algorithm: crate::file_hash::HashAlgorithm,
+    ) {
+        use crate::file_hash::FileHashError;
+
+        let job = match self.file_hash_future(task_id, algorithm).await {
+            Ok(job) => job,
+            Err(FileHashError::NotEligible | FileHashError::Busy) => return,
+            Err(error) => {
+                log_warn!("[manager] auto file hash {}: {}", task_id, error);
+                return;
+            }
+        };
+        let tx = self.file_hash_tx.clone();
+        tokio::spawn(async move {
+            if tx.send(job.await).is_err() {
+                tracing::debug!("auto file hash receiver closed before commit");
+            }
+        });
     }
 
     /// RSS off-actor 回流的唯一入口（宿主 actor 的 `rss_rx` 分支调用）。
@@ -16973,6 +17174,216 @@ mod tests {
             );
         }
         (mgr, retry_rx)
+    }
+
+    /// 「下载完成后计算哈希」：完成的单文件任务算出哈希并经回流写回、发布任务行；
+    /// 已有记录（校验和校验通过）的任务与目录产物不计算。
+    #[tokio::test]
+    async fn completion_hashes_single_files_without_a_hash_record() {
+        let dir = std::env::temp_dir().join(format!("fluxdown-auto-hash-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("folder")).expect("fixture dir");
+        std::fs::write(dir.join("hello.txt"), b"hello").expect("fixture file");
+        let save_dir = dir.to_string_lossy().into_owned();
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        for (id, name) in [
+            ("plain", "hello.txt"),
+            ("verified", "hello.txt"),
+            ("folder", "folder"),
+        ] {
+            db.insert_task(
+                id,
+                "https://example.com/a",
+                name,
+                &save_dir,
+                1,
+                5,
+                "",
+                "",
+                "",
+                1,
+            )
+            .await
+            .expect("insert task");
+        }
+        db.set_task_file_hash("verified", "md5=5d41402abc4b2a76b9719d911017c592")
+            .await
+            .expect("verified hash");
+        for id in ["plain", "verified", "folder"] {
+            db.update_task_status(id, 3, "").await.expect("complete");
+        }
+        let sink = Arc::new(RecordingSink::new());
+        let mut mgr = DownloadManager::new(
+            db,
+            DownloadManagerConfig {
+                max_concurrent: 3,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.clone(),
+                app_data_dir: String::new(),
+                data_dir: std::env::temp_dir(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            sink.clone(),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+        mgr.set_hash_after_download(Some(crate::file_hash::HashAlgorithm::Sha256));
+        let mut hashes = mgr.take_file_hash_rx().expect("file hash receiver");
+        for (generation, id) in (1u64..).zip(["plain", "verified", "folder"]) {
+            mgr.active_tasks.insert(
+                id.to_string(),
+                ActiveTaskEntry {
+                    token: CancellationToken::new(),
+                    generation,
+                    handle: None,
+                    is_bt: false,
+                    queue_id: String::new(),
+                },
+            );
+            mgr.on_task_done(&TaskDone {
+                task_id: id.to_string(),
+                generation,
+                reserved_temp_path: None,
+                phase: TaskDonePhase::Finished,
+            })
+            .await;
+        }
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), hashes.recv())
+            .await
+            .expect("hash finishes")
+            .expect("hash outcome");
+        assert_eq!(outcome.task_id(), "plain");
+        let expected = "sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+        assert_eq!(mgr.commit_file_hash(outcome).await.as_deref(), Ok(expected));
+        let row = |id: &'static str| {
+            let db = mgr.db.clone();
+            async move { db.load_task_by_id(id).await.expect("load").expect("row") }
+        };
+        assert_eq!(row("plain").await.file_hash, expected);
+        assert_eq!(
+            row("verified").await.file_hash,
+            "md5=5d41402abc4b2a76b9719d911017c592"
+        );
+        assert_eq!(row("folder").await.file_hash, "");
+        assert!(
+            sink.events().iter().any(|event| matches!(
+                event,
+                EngineEvent::TaskChanged(task) if task.task_id == "plain" && task.file_hash == expected
+            )),
+            "recorded hash must be published with the task row"
+        );
+        assert!(
+            sink.events().iter().any(|event| matches!(
+                event,
+                EngineEvent::TaskChanged(task)
+                    if task.task_id == "verified"
+                        && task.file_hash == "md5=5d41402abc4b2a76b9719d911017c592"
+            )),
+            "a hash recorded during download must reach clients on completion"
+        );
+        // 目录产物在读盘线程里判定：回流 NotEligible，不写回。
+        let folder = tokio::time::timeout(std::time::Duration::from_secs(5), hashes.recv())
+            .await
+            .expect("folder check finishes")
+            .expect("folder outcome");
+        assert_eq!(folder.task_id(), "folder");
+        assert_eq!(
+            mgr.commit_file_hash(folder).await,
+            Err(crate::file_hash::FileHashError::NotEligible)
+        );
+        assert!(
+            hashes.try_recv().is_err(),
+            "a task with a hash record is not hashed again"
+        );
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("cleanup {}: {error}", dir.display());
+        }
+    }
+
+    /// 手动计算（`daemon.task.hash`，详情打开即算）与自动计算共用一个闸门：闸门被占用时
+    /// 不读盘、排队等待；排队期间删除任务即放弃。
+    #[tokio::test]
+    async fn manual_file_hash_waits_for_the_shared_gate() {
+        let dir = std::env::temp_dir().join(format!("fluxdown-hash-gate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        std::fs::write(dir.join("hello.txt"), b"hello").expect("fixture file");
+        let save_dir = dir.to_string_lossy().into_owned();
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        for id in ["a", "b"] {
+            db.insert_task(
+                id,
+                "https://example.com/a",
+                "hello.txt",
+                &save_dir,
+                1,
+                5,
+                "",
+                "",
+                "",
+                1,
+            )
+            .await
+            .expect("insert task");
+            db.update_task_status(id, 3, "").await.expect("complete");
+        }
+        let mgr = DownloadManager::new(
+            db,
+            DownloadManagerConfig {
+                max_concurrent: 3,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.clone(),
+                app_data_dir: String::new(),
+                data_dir: std::env::temp_dir(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            Arc::new(RecordingSink::new()),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+        let held = mgr
+            .file_hash_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("gate permit");
+        let sha256 = crate::file_hash::HashAlgorithm::Sha256;
+        let mut a = Box::pin(mgr.file_hash_future("a", sha256).await.expect("job a"));
+        let b = mgr.file_hash_future("b", sha256).await.expect("job b");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut a)
+                .await
+                .is_err(),
+            "a hash must not read the disk while another holds the gate"
+        );
+        mgr.file_hash_jobs.cancel("b");
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(5), b)
+            .await
+            .expect("queued job observes cancellation");
+        assert!(matches!(
+            cancelled.result,
+            Err(crate::file_hash::FileHashError::Cancelled)
+        ));
+        drop(held);
+        let done = tokio::time::timeout(std::time::Duration::from_secs(5), a)
+            .await
+            .expect("hash finishes once the gate frees");
+        assert_eq!(
+            done.result.as_deref(),
+            Ok("sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("cleanup {}: {error}", dir.display());
+        }
     }
 
     #[tokio::test]

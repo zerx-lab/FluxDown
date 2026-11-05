@@ -6,6 +6,7 @@ pub(crate) mod counts;
 pub(crate) mod devices;
 pub(crate) mod dispatch;
 pub(crate) mod file_conflict;
+pub(crate) mod file_hash;
 pub(crate) mod file_rescan;
 pub(crate) mod group_tree;
 pub(crate) mod manifest;
@@ -359,6 +360,8 @@ pub(crate) struct DownloadTaskView {
     /// 该任务有待确认的「文件已存在」请求（任务表「待确认」角标）。
     pub(crate) conflict_pending: bool,
     pub(crate) file_missing: bool,
+    /// 落盘文件哈希，格式 `algo=hex`（空 = 尚未计算）。只对已完成的本地任务有意义。
+    pub(crate) file_hash: String,
     pub(crate) seeding_status: i32,
     pub(crate) uploaded_bytes: i64,
     pub(crate) boosted: bool,
@@ -395,6 +398,7 @@ impl DownloadTaskView {
         view.group_id.clone_from(&task.group_id);
         view.error_message.clone_from(&task.error_message);
         view.file_missing = task.file_missing;
+        view.file_hash.clone_from(&task.file_hash);
         view.seeding_status = task.seeding_status;
         view.uploaded_bytes = task.uploaded_bytes;
         view.boosted = boosted;
@@ -496,6 +500,7 @@ impl DownloadTaskView {
             error_message: String::new(),
             conflict_pending: false,
             file_missing: false,
+            file_hash: String::new(),
             seeding_status: 0,
             uploaded_bytes: 0,
             boosted: false,

@@ -96,6 +96,7 @@ import type {
   SelectionResolutionDto,
   SetSeedLimitsParams,
   TaskVerifyResult,
+  TaskHashResult,
   TorrentShareDto,
   SiteAuthCredentialDto,
   SiteAuthDeleteParams,
@@ -115,6 +116,7 @@ import type {
   TaskSetSegmentsParams,
   TaskDtoWire,
   DaemonSeedLocalParams,
+  DaemonTaskHashParams,
   DaemonTorrentShareParams,
   TaskIdParams,
   TaskIdsParams,
@@ -129,8 +131,8 @@ import type {
 /** 服务端逐源串行拉取镜像（每源 20s），最坏远超默认 30s。 */
 const SLOW_MIRROR_TIMEOUT_MS = 120_000;
 
-/** BT 完整性校验需读盘比对全部分块，耗时随数据量增长。 */
-const VERIFY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+/** 读盘类慢方法（完整性校验、文件哈希、本机做种）耗时与数据量成正比。 */
+const SLOW_DISK_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 // `daemon.task.list` 在任务数超过 5000 时服务端报错（需分页），Web 不再封装：任务表一律来自
 // store 的快照 + `system.taskPage` 载入。
@@ -163,13 +165,18 @@ const task = {
     call<OkResult>(METHOD.DAEMON_TASK_SET_SEED_LIMITS, params),
   /** 本机做种：生成种子并哈希校验全部数据，耗时与数据量成正比；使用 6 小时超时，创建类提交不重试。 */
   seedLocal: (params: DaemonSeedLocalParams) =>
-    call<SeedLocalResult>(METHOD.DAEMON_TASK_SEED_LOCAL, params, { timeoutMs: VERIFY_TIMEOUT_MS }),
+    call<SeedLocalResult>(METHOD.DAEMON_TASK_SEED_LOCAL, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
   /** BT 任务的磁力链接（含 tracker）与可选 .torrent 字节（base64）。 */
   torrentShare: (params: DaemonTorrentShareParams) =>
     call<TorrentShareDto>(METHOD.DAEMON_TASK_TORRENT_SHARE, params),
   /** BT 完整性校验：耗时与数据量成正比，使用 6 小时超时。 */
   verify: (params: TaskIdParams) =>
-    call<TaskVerifyResult>(METHOD.DAEMON_TASK_VERIFY, params, { timeoutMs: VERIFY_TIMEOUT_MS }),
+    call<TaskVerifyResult>(METHOD.DAEMON_TASK_VERIFY, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
+  /** 已完成任务的文件哈希：读整个文件，耗时与文件大小成正比。 */
+  hash: (taskId: string, algorithm: string) => {
+    const params: DaemonTaskHashParams = { taskId, algorithm }
+    return call<TaskHashResult>(METHOD.DAEMON_TASK_HASH, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS })
+  },
   /** 批量操作：一次请求、整批只推一次任务快照（逐条调用会撞上 agent 的通道上限）。 */
   pauseMany: (taskIds: string[]) => {
     const params: TaskIdsParams = { taskIds };

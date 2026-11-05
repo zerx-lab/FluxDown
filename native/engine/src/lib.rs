@@ -55,6 +55,8 @@ pub mod ed2k;
 pub mod egress;
 pub mod events;
 pub mod file_exists;
+/// 已完成任务落盘文件的哈希（按需计算 / 下载完成后自动计算）。
+pub mod file_hash;
 pub mod ftp_downloader;
 /// IP → 国家（peer 国旗）：最小 MaxMind DB 读取器 + DB-IP 国家库按月下载。
 #[cfg(feature = "bt")]
@@ -112,6 +114,8 @@ pub mod speed_limiter;
 /// 通用订阅 provider 接口（RSS 与插件订阅共用）。
 pub mod subscription;
 pub mod task_activity;
+/// 按任务登记的只读后台作业（同一任务同类作业唯一、可取消）。
+pub(crate) mod task_jobs;
 mod temp_file_guard;
 /// `thunder://` 链接解析（迅雷专有 base64 封装：`AA<真实地址>ZZ`）。
 pub mod thunder;

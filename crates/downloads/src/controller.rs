@@ -141,6 +141,12 @@ pub enum DownloadsCommand {
     VerifyTask {
         task_id: String,
     },
+    /// 已完成任务的文件哈希（`daemon.task.hash`，慢方法）：结果为
+    /// [`DownloadsResult::TaskHash`]；同一任务计算在途时为 `conflict`。
+    HashTask {
+        task_id: String,
+        algorithm: String,
+    },
     /// BT 任务的分享材料（`daemon.task.torrentShare`）：结果为
     /// [`DownloadsResult::TorrentShare`]。
     TorrentShare {
@@ -331,6 +337,8 @@ pub enum DownloadsResult {
     CreateMany(fluxdown_protocol::DaemonCreateTasksResult),
     /// `VerifyTask` 的校验报告。
     TaskVerify(fluxdown_protocol::TaskVerifyResult),
+    /// `HashTask` 写入的文件哈希（`algo=hex`）。
+    TaskHash(fluxdown_protocol::TaskHashResult),
     /// `TorrentShare` 的磁力链接与（按需）已解码的 `.torrent` 字节。
     TorrentShare(TorrentShare),
 }

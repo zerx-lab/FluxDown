@@ -34,6 +34,7 @@ const DEFAULTS = {
   ignoreTlsErrors: false,
   fileMissing: false,
   completedAt: '',
+  fileHash: '',
   referrer: '',
   groupId: '',
   rssSourceId: '',

@@ -125,7 +125,8 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
     } else {
         WindowKind::Floating
     };
-    // 开窗前取：开窗后新窗口本身会成为活动窗口。
+    // 开窗前取：开窗后新窗口本身会成为活动窗口。Linux / FreeBSD 不请求注意（见下方），不取。
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     let app_was_active = cx.active_window().is_some();
     options.is_resizable = is_bt;
     // 只有 BT 文件列表可调尺寸，记住用户调整后的尺寸；画质 / 变体选择固定尺寸。

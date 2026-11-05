@@ -162,6 +162,8 @@ export interface Ed2kServerSubRefreshResponse {
 export const BT_SEED_TIME_UNITS = ['minutes', 'hours', 'days'] as const;
 export const FILE_EXISTS_BEHAVIORS = ['rename', 'overwrite', 'skip', 'ask'] as const;
 export const FILE_MISSING_ACTIONS = ['keep', 'delete'] as const;
+/** 文件哈希算法（`hash_algorithm`、`daemon.task.hash`、任务 `fileHash` 的 `algo`）。 */
+export const HASH_ALGORITHMS = ['md5', 'sha1', 'sha256', 'sha512'] as const;
 export const BT_SEED_LIMIT_OPERATORS = ['or', 'and'] as const;
 export const BT_SEED_THEN_ACTIONS = ['stop', 'delete', 'delete_files'] as const;
 export const BT_MSE_MODES = ['disabled', 'enabled', 'forced'] as const;
@@ -234,6 +236,8 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   oneOf('file_missing_action', 'keep', FILE_MISSING_ACTIONS),
   int('completed_record_retention_days', '0', 0, 3650),
   bool('idle_file_scan', 'false'),
+  bool('hash_after_download', 'false'),
+  oneOf('hash_algorithm', 'sha256', HASH_ALGORITHMS),
   text('global_user_agent'),
   text('default_queue_id'),
   readOnly('domain_conn_caps'),

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useT } from '../../../../i18n'
+import { HASH_ALGORITHM_LABELS } from '../../../../lib/fileHash'
 import { LATER_QUEUE_ID, MAIN_QUEUE_ID, rpc, useDaemon } from '../../../../lib/rpc'
 import type { QueueDto } from '../../../../lib/rpc'
 import { rpcErrorText } from '../../../../lib/rpcErrorText'
@@ -139,6 +140,8 @@ function BehaviorSection() {
       <DaemonEnumRow configKey="file_missing_action" titleKey="fileMissingAction" descKey="fileMissingActionDesc" labelPrefix="fileMissing" />
       <RetentionRow />
       <DaemonSwitchRow configKey="idle_file_scan" titleKey="idleFileScan" descKey="idleFileScanDesc" />
+      <DaemonSwitchRow configKey="hash_after_download" titleKey="hashAfterDownload" descKey="hashAfterDownloadDesc" />
+      <DaemonEnumRow configKey="hash_algorithm" titleKey="hashAlgorithm" descKey="hashAlgorithmDesc" labels={HASH_ALGORITHM_LABELS} />
       <DefaultQueueRow />
     </SettingsSection>
   )

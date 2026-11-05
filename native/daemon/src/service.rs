@@ -365,6 +365,28 @@ impl DaemonService {
                     Err(error) => Err(actor_error(error)),
                 }
             }
+            method::DAEMON_TASK_HASH => {
+                let params = parse_params::<fluxdown_protocol::DaemonTaskHashParams>(params)?;
+                let algorithm = fluxdown_engine::file_hash::HashAlgorithm::parse(&params.algorithm)
+                    .ok_or_else(|| {
+                        invalid_argument(
+                            "algorithm",
+                            &format!("unsupported hash algorithm: {}", params.algorithm),
+                        )
+                    })?;
+                match self
+                    .actor
+                    .execute(ActorOperation::HashTask {
+                        task_id: params.task_id,
+                        algorithm,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::TaskHash(result)) => to_value(result),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
             method::DAEMON_TASK_PAUSE_MANY => {
                 let params = parse_params::<DaemonTaskIdsParams>(params)?;
                 self.execute_unit(ActorOperation::PauseTasks {

@@ -67,6 +67,7 @@ public enum SettingsCatalog {
 
     public static let fileExistsBehaviors = ["rename", "overwrite", "skip", "ask"]
     public static let fileMissingActions = ["keep", "delete"]
+    public static let hashAlgorithms = ["md5", "sha1", "sha256", "sha512"]
     public static let btSeedTimeUnits = ["minutes", "hours", "days"]
     public static let btSeedLimitOperators = ["or", "and"]
     public static let btSeedThenActions = ["stop", "delete", "delete_files"]
@@ -99,6 +100,8 @@ public enum SettingsCatalog {
         daemon("file_missing_action", .choice(fileMissingActions), "keep"),
         daemon("completed_record_retention_days", .integer(min: 0, max: 3650), "0"),
         daemon("idle_file_scan", .bool, "false"),
+        daemon("hash_after_download", .bool, "false"),
+        daemon("hash_algorithm", .choice(hashAlgorithms), "sha256"),
         daemon("global_user_agent", .text, ""),
         daemon("default_queue_id", .text, ""),
         daemon("domain_conn_caps", .readOnly, ""),

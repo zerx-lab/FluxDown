@@ -714,6 +714,10 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
         .manager
         .take_missing_cleanup_rx()
         .ok_or_else(|| std::io::Error::other("missing cleanup receiver already taken"))?;
+    let file_hash = engine
+        .manager
+        .take_file_hash_rx()
+        .ok_or_else(|| std::io::Error::other("file hash receiver already taken"))?;
     let (plugin_tx, plugin) = tokio::sync::mpsc::unbounded_channel();
     #[cfg(feature = "plugins")]
     {
@@ -754,6 +758,7 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
         retry,
         plugin,
         missing_cleanup,
+        file_hash,
     })
 }
 
@@ -796,6 +801,9 @@ fn apply_manager_settings(engine: &mut Engine, config: &HashMap<String, String>)
     engine
         .manager
         .set_idle_file_scan(bool_config(config, "idle_file_scan", false));
+    engine
+        .manager
+        .set_hash_after_download(hash_after_download(config));
     engine.manager.set_completed_record_retention_days(
         u32::try_from(i32_config(config, "completed_record_retention_days", 0).clamp(0, 3650))
             .unwrap_or(0),
@@ -812,6 +820,20 @@ fn configured_save_dir(config: &HashMap<String, String>, fallback: String) -> St
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or(fallback)
+}
+
+/// 「下载完成后计算哈希」开关与算法 → 引擎设置；关闭或算法无法识别时为 `None`。
+pub(crate) fn hash_after_download(
+    config: &HashMap<String, String>,
+) -> Option<fluxdown_engine::file_hash::HashAlgorithm> {
+    if !bool_config(config, "hash_after_download", false) {
+        return None;
+    }
+    let algorithm = config.get("hash_algorithm").map_or(
+        fluxdown_protocol::daemon_config_default("hash_algorithm"),
+        String::as_str,
+    );
+    fluxdown_engine::file_hash::HashAlgorithm::parse(algorithm)
 }
 
 fn bool_config(config: &HashMap<String, String>, key: &str, fallback: bool) -> bool {

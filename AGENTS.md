@@ -186,4 +186,5 @@ cd mobile/FluxDown && xcodebuild build -project FluxDown.xcodeproj -scheme FluxD
 - 复用已有 trait / error 类型；单文件 >600 行考虑拆分，单函数 >80 行需说明。
 - **一个 crate 只有一个集成测试二进制**：`tests/<名>/main.rs` + 按领域分模块，不新建 `tests/*.rs`；feature 门控模块文件头写 `#![cfg(feature = "…")]`。
 - **并行子代理**：子代理只跑自己改动 crate 的精准命令（`cargo check|clippy|nextest run -p <crate>`）；全量 clippy、无 `-p` 的构建 / 测试、gradlew / xcodebuild / `build-core.sh` 由主会话或 `build-verifier` 串行跑一次（`guard.ts` 强制），子代理在报告里写明需要跑的命令。
+- **高风险路径（主会话实现，不派 `task` 任务）**：`native/engine/src/{download_manager,bt_downloader,downloader,db}.rs`、`native/{protocol,daemon}/**`、`native/agent/src/{server_mode,egress}.rs` 与鉴权 / 凭据代码、`installer/**`。
 - 查文档：`cargo path <crate>` 本地源码 > docs.rs > web 搜索。新增 / 改 public API、trait、error 类型、unsafe / FFI / 性能关键路径、新增 crate、写 doc comment 前先读 `rust-router` skill。

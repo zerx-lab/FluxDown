@@ -6406,6 +6406,10 @@
           "errorMessage": {
             "type": "string"
           },
+          "fileHash": {
+            "type": "string",
+            "description": "落盘文件的哈希记录，格式 `algo=hexhash`（小写，`algo` ∈ [`crate::HASH_ALGORITHMS`]；\n空 = 尚未计算）。校验和校验通过、下载完成后自动计算或 `daemon.task.hash` 写入；\n重新下载时清空。只对 status=3 有意义。"
+          },
           "fileMissing": {
             "type": "boolean",
             "description": "文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false。"
