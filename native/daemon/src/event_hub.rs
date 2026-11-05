@@ -144,6 +144,32 @@ impl DaemonEventHub {
         self.publish_locked(&mut state, DaemonEvent::RuntimeStatsChanged(stats));
     }
 
+    /// 写回 `save_dir` 所在卷的剩余空间探测结果；数值不变不发布。
+    ///
+    /// `configured` 是探测开始时读到的 `default_save_dir` 原值：探测期间保存目录已被改掉
+    /// 就丢弃结果（那次配置变化会触发新的探测），避免旧目录的读数覆盖新目录。
+    pub fn set_disk_free(&self, configured: Option<&str>, save_dir: String, free: Option<u64>) {
+        let mut state = lock_or_recover(&self.state);
+        if state
+            .snapshot
+            .config
+            .values
+            .get("default_save_dir")
+            .map(String::as_str)
+            != configured
+        {
+            return;
+        }
+        let current = &state.snapshot.runtime_stats;
+        if current.disk_free_bytes == free && current.save_dir == save_dir {
+            return;
+        }
+        let mut stats = current.clone();
+        stats.disk_free_bytes = free;
+        stats.save_dir = save_dir;
+        self.publish_locked(&mut state, DaemonEvent::RuntimeStatsChanged(stats));
+    }
+
     fn publish_locked(&self, state: &mut EventState, event: DaemonEvent) -> EventFrame {
         let frame = self.publish_locked_at(state, event, Instant::now());
         self.start_expiry(state);

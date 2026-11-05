@@ -319,6 +319,7 @@ pub async fn run_with(
         .initialize_dynamic_projection()
         .await
         .map_err(|error| std::io::Error::other(error.message))?;
+    crate::disk_free::spawn_watcher(service.events().clone(), cancel.clone());
     // 常驻插件宿主：先装好 `flux.tasks` 出口，再启动 background 宿主。宿主启动不阻塞
     // 控制面就绪（单个插件的 main 初始化最长 30 s）。
     #[cfg(feature = "plugins")]
