@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import com.fluxdown.fluxui.icons.FluxIcon
+import com.fluxdown.fluxui.icons.FluxIcons
 import com.fluxdown.fluxui.theme.FluxScaleGroup
 import com.fluxdown.fluxui.theme.FluxText
 import com.fluxdown.fluxui.theme.FluxTheme
@@ -54,7 +55,8 @@ data class SelectionDockAction(
  * 布局同 [FluxDock]：占满父容器宽度、高为主题 dockHeight，本体宽 = 容器宽 − [reservedEnd]（右侧留给 [FluxOrb] 的“退出选择”球）；
  * Expanded 档浮在列表区底部居中时传 `reservedEnd = 0.dp` 并给 `modifier` 加 `widthIn(max = 560.dp)`。
  *
- * - 计数块：`mono 17 / 600` 数字（accentHi）+ micro 标签（[selectAllLabel] / 全选后 [deselectAllLabel]），点按 → [onToggleAll]。
+ * - 计数块：首行 [FluxIcons.CheckCheck]（18，全选后 accentHi、否则 inkMuted）+ `mono 17 / 600` 数字（accentHi），
+ *   次行 micro 标签（[selectAllLabel] / 全选后 [deselectAllLabel]），点按 → [onToggleAll]。
  * - 动作：48×48（图标 20 + micro 文字），`fontScale ≥ 1.3` 只显示图标（描述保留）；放不下时横向滚动。
  * - 出入场：`translateY 18→0、scale .94→1`（`liquid`）。
  * - a11y：计数块 `liveRegion = Polite` 播报“已选 N 项”。
@@ -118,7 +120,17 @@ fun SelectionDock(
                     },
                 verticalArrangement = Arrangement.Center,
             ) {
-                FluxText(count.toString(), modifier = Modifier.clearAndSetSemantics { }, style = numStyle, color = c.accentHi, maxLines = 1, softWrap = false)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FluxIcon(FluxIcons.CheckCheck, null, size = 18.dp, tint = if (allSelected) c.accentHi else c.inkMuted)
+                    FluxText(
+                        count.toString(),
+                        modifier = Modifier.padding(start = 6.dp).clearAndSetSemantics { },
+                        style = numStyle,
+                        color = c.accentHi,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
                 if (!iconOnly) {
                     FluxText(
                         if (allSelected) deselectAllLabel else selectAllLabel,
