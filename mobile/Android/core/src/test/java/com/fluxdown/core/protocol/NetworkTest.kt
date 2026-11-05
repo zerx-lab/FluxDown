@@ -52,33 +52,25 @@ class NetworkTest {
         )
         assertEquals(
             ProxyTestRequest("socks5", "10.0.0.2", "1080", "u", "p"),
-            NetworkProxyTest.request(NetworkProxyMode.Manual, f, null),
+            NetworkProxyTest.manual(f),
         )
     }
 
     @Test
     fun manualRequestDefaultsTypeToHttp() {
         val f = form(mapOf("proxy_host" to "h", "proxy_port" to "1"))
-        assertEquals("http", NetworkProxyTest.request(NetworkProxyMode.Manual, f, null)?.proxyType)
+        assertEquals("http", NetworkProxyTest.manual(f).proxyType)
     }
 
     @Test
     fun systemRequestNeedsADetectedProxyAndSendsNoCredentials() {
-        val f = form(mapOf("proxy_username" to "u", "proxy_password" to "p"))
         val detected = SystemProxyDto(true, "http", "192.168.1.2", 7890, "localhost")
         assertEquals(
             ProxyTestRequest("http", "192.168.1.2", "7890"),
-            NetworkProxyTest.request(NetworkProxyMode.System, f, detected),
+            NetworkProxyTest.system(detected),
         )
-        assertNull(NetworkProxyTest.request(NetworkProxyMode.System, f, SystemProxyDto()))
-        assertNull(NetworkProxyTest.request(NetworkProxyMode.System, f, null))
-    }
-
-    @Test
-    fun noneAndAutoHaveNothingToTest() {
-        val f = form(mapOf("proxy_host" to "h", "proxy_port" to "1"))
-        assertNull(NetworkProxyTest.request(NetworkProxyMode.None, f, null))
-        assertNull(NetworkProxyTest.request(NetworkProxyMode.Auto, f, null))
+        assertNull(NetworkProxyTest.system(SystemProxyDto()))
+        assertNull(NetworkProxyTest.system(null))
     }
 
     @Test
@@ -94,20 +86,18 @@ class NetworkTest {
     // ── 行目录 ──
 
     @Test
-    fun rowVisibilityFollowsModeAndConfigLoad() {
+    fun rowVisibilityFollowsConfigLoad() {
         val siteAuth = listOf(NetworkRow.SiteAuth, NetworkRow.SiteAuthAdd, NetworkRow.SiteAuthClear)
-        assertEquals(siteAuth, NetworkRow.visible(NetworkProxyMode.None, false))
+        assertEquals(siteAuth, NetworkRow.visible(false))
 
-        val none = NetworkRow.visible(NetworkProxyMode.None, true)
-        assertEquals(
-            listOf(NetworkRow.Mode, NetworkRow.Rules, NetworkRow.RulesAdd, NetworkRow.RulesTest) + siteAuth,
-            none,
-        )
-        assertEquals(none, NetworkRow.visible(NetworkProxyMode.System, true))
-        assertEquals(none, NetworkRow.visible(NetworkProxyMode.Auto, true))
-
-        val manual = NetworkRow.visible(NetworkProxyMode.Manual, true)
-        assertTrue(NetworkRow.Host in manual && NetworkRow.Password in manual && NetworkRow.Test in manual)
+        val loaded = listOf(
+            NetworkRow.Mode,
+            NetworkRow.Type, NetworkRow.Host, NetworkRow.Port,
+            NetworkRow.Username, NetworkRow.Password, NetworkRow.NoList, NetworkRow.Test,
+            NetworkRow.Rules, NetworkRow.RulesAdd, NetworkRow.RulesTest,
+        ) + siteAuth
+        assertEquals(loaded, NetworkRow.visible(true))
+        assertTrue(NetworkRow.Host in loaded && NetworkRow.Test in loaded)
     }
 
     @Test

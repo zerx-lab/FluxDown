@@ -33,9 +33,17 @@ final class NetworkProxyModel {
     }
 
     private(set) var detection: Detection = .idle
-    private(set) var test: Test = .idle
-    /// 每次重置 / 新测试 +1：丢弃过期（请求参数已变或已切主机）的测试结果。
-    private var testGeneration = 0
+    /// 手动分组与系统分组的测试结果互相独立：改一边的参数不会清掉另一边。
+    private(set) var manualTest: Test = .idle
+    private(set) var systemTest: Test = .idle
+    /// 每次重置 / 新测试 +1：丢弃过期（请求参数已变或已切主机）的测试结果。两路各计各的。
+    private var manualGeneration = 0
+    private var systemGeneration = 0
+
+    enum TestSource {
+        case manual
+        case system
+    }
 
     /// `daemon.config.systemProxy`：进入系统代理模式 / 页面出现 / 重试时重新检测。
     func detect(using session: any HostSession) async {
@@ -50,32 +58,75 @@ final class NetworkProxyModel {
         }
     }
 
-    /// 参数（模式 / 类型 / 地址 / 端口 / 凭据）或主机变化后，旧结果不再代表当前配置。
-    func resetTest() {
-        guard test != .idle else { return }
-        testGeneration += 1
-        test = .idle
+    /// 该来源的参数或主机变化后，旧结果不再代表当前配置。另一来源不受影响。
+    func resetTest(_ source: TestSource) {
+        switch source {
+        case .manual:
+            guard manualTest != .idle else { return }
+            manualGeneration += 1
+            manualTest = .idle
+        case .system:
+            guard systemTest != .idle else { return }
+            systemGeneration += 1
+            systemTest = .idle
+        }
+    }
+
+    func resetTests() {
+        resetTest(.manual)
+        resetTest(.system)
     }
 
     /// `daemon.config.proxyTest`（慢方法）：测试期间页面其余部分保持可交互。
-    func runTest(_ request: ProxyTestRequest, using session: any HostSession) async {
-        guard test != .running else { return }
-        testGeneration += 1
-        let generation = testGeneration
-        test = .running
-        let next: Test
+    func runTest(_ request: ProxyTestRequest, source: TestSource, using session: any HostSession) async {
+        let generation = beginTest(source)
+        guard let generation else { return }
+        let next = await perform(request, using: session)
+        guard isCurrent(generation, source: source) else { return }
+        finish(next, source: source)
+    }
+
+    /// 已在跑则返回 nil，调用方不再发第二次。
+    private func beginTest(_ source: TestSource) -> Int? {
+        switch source {
+        case .manual:
+            guard manualTest != .running else { return nil }
+            manualGeneration += 1
+            manualTest = .running
+            return manualGeneration
+        case .system:
+            guard systemTest != .running else { return nil }
+            systemGeneration += 1
+            systemTest = .running
+            return systemGeneration
+        }
+    }
+
+    private func isCurrent(_ generation: Int, source: TestSource) -> Bool {
+        switch source {
+        case .manual: generation == manualGeneration
+        case .system: generation == systemGeneration
+        }
+    }
+
+    private func finish(_ next: Test, source: TestSource) {
+        switch source {
+        case .manual: manualTest = next
+        case .system: systemTest = next
+        }
+    }
+
+    private func perform(_ request: ProxyTestRequest, using session: any HostSession) async -> Test {
         do throws(HostError) {
             let response: ProxyTestResponse = try await session.call(HostMethod.daemonConfigProxyTest, params: request)
-            next = .success(latencyMs: response.latencyMs)
+            return .success(latencyMs: response.latencyMs)
         } catch {
-            next = .failure(detail: NetworkProxyTest.failureDetail(
+            return .failure(detail: NetworkProxyTest.failureDetail(
                 message: error.message,
                 fallback: ErrorText.describe(error),
                 tlsHint: L("proxyTestTlsEndpointHint")
             ))
         }
-        guard generation == testGeneration else { return }
-        test = next
     }
 }
 

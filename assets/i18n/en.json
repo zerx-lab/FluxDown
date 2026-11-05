@@ -1192,6 +1192,7 @@
   "proxyModeSystemDesc": "Read from system settings",
   "proxyModeManual": "Manual",
   "proxyModeManualDesc": "Custom proxy server",
+  "proxyManualKeptDesc": "Not used as the global proxy in the current mode, but your entries are kept and still used by Auto mode as an alternative path, and by site rules and tasks set to Manual proxy.",
   "proxyModeAuto": "Auto (Recommended)",
   "proxyModeAutoDesc": "Starts direct without blocking and treats every available manual and system proxy as a parallel path. Each path is measured with real segments whose bytes go straight into the file, connections flow to the faster path, slow connections hand off at the current byte, and direct and proxy can be combined. Direct still keeps multi-CDN acceleration.",
   "taskRoute": "Route",

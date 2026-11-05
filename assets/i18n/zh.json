@@ -1192,6 +1192,7 @@
   "proxyModeSystemDesc": "从系统设置读取",
   "proxyModeManual": "手动配置",
   "proxyModeManualDesc": "自定义代理服务器",
+  "proxyManualKeptDesc": "当前模式不把它当作全局代理，但填写的内容会一直保留，并用于：「自动」模式的备选路径，以及站点规则和任务的「手动代理」出口。",
   "proxyModeAuto": "自动（推荐）",
   "proxyModeAutoDesc": "直连无阻塞起飞，同时把手动代理与系统代理当作并行路径：以真实分段实测各路径速度，采样数据直接写入文件不浪费；连接自动流向更快的路径，慢连接在当前位置即时交接，可直连与代理叠加提速。直连仍保留多 CDN 加速。",
   "taskRoute": "链路",

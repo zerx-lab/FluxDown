@@ -29,9 +29,10 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     match mode.as_str() {
         "auto" => sections.push(auto_desc_section(ctx)),
         "system" => sections.push(system_section(ctx, cx)),
-        "manual" => sections.push(manual_section(ctx)),
         _ => {}
     }
+    // 手动服务器在任何模式下都可编辑：「自动」把它当备选路径，站点规则与任务的「手动代理」出口也读它。
+    sections.push(manual_section(ctx, mode == "manual"));
     sections.push(proxy_rules::group(ctx, cx));
     sections.push(site_auth::group(ctx, cx));
     SettingsPage::new(
@@ -147,7 +148,7 @@ fn system_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
     section
 }
 
-fn manual_section(ctx: &SectionContext) -> SettingsSection {
+fn manual_section(ctx: &SectionContext, active: bool) -> SettingsSection {
     let types = vec![
         (SharedString::from("http"), SharedString::from("HTTP")),
         (SharedString::from("https"), SharedString::from("HTTPS")),
@@ -156,7 +157,11 @@ fn manual_section(ctx: &SectionContext) -> SettingsSection {
     ];
     SettingsSection::new()
         .title(ctx.t("proxyModeManual"))
-        .subtitle(ctx.t("proxyModeManualDesc"))
+        .subtitle(ctx.t(if active {
+            "proxyModeManualDesc"
+        } else {
+            "proxyManualKeptDesc"
+        }))
         .row(ctx.item("proxyType", None, ctx.daemon_dropdown("proxy_type", types)))
         .row(ctx.item(
             "proxyHost",
@@ -240,17 +245,36 @@ enum ProxyTestSource {
     System,
 }
 
+impl ProxyTestSource {
+    /// 手动与系统两行可同屏（系统模式），按钮 id、忙碌键与结果键各自独立。
+    fn keys(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Manual => (
+                "proxy-test-manual",
+                "proxyTestManual",
+                "proxy_test_result_manual",
+            ),
+            Self::System => (
+                "proxy-test-system",
+                "proxyTestSystem",
+                "proxy_test_result_system",
+            ),
+        }
+    }
+}
+
 fn test_control(ctx: &SectionContext, source: ProxyTestSource) -> Control {
     let store = ctx.store();
     let label = ctx.t("proxyTestConnection");
     let testing = ctx.t("proxyTesting");
     let translator = ctx.translator.clone();
+    let (button_id, busy_key, result_key) = source.keys();
     Control::custom(move |_disabled, _key, _window, cx: &mut App| {
         let tokens = active_theme(cx).tokens();
-        let busy = store.read(cx).is_busy("proxyTest");
+        let busy = store.read(cx).is_busy(busy_key);
         let result = store
             .read(cx)
-            .transient("proxy_test_result")
+            .transient(result_key)
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
         let click_store = store.clone();
@@ -260,7 +284,7 @@ fn test_control(ctx: &SectionContext, source: ProxyTestSource) -> Control {
             .child(meta_text(cx).child(SharedString::from(result.unwrap_or_default())))
             .child(
                 loading_button(
-                    "proxy-test",
+                    button_id,
                     if busy { testing.clone() } else { label.clone() },
                     ButtonVariant::Secondary,
                     busy,
@@ -292,7 +316,7 @@ fn test_control(ctx: &SectionContext, source: ProxyTestSource) -> Control {
                                 }
                             };
                             store.call_with(
-                                "proxyTest",
+                                busy_key,
                                 method::DAEMON_CONFIG_PROXY_TEST,
                                 params,
                                 cx,
@@ -311,7 +335,7 @@ fn test_control(ctx: &SectionContext, source: ProxyTestSource) -> Control {
                                             &[("error", &rpc_error_text(&translator, &error))],
                                         ),
                                     };
-                                    store.set_transient("proxy_test_result", json!(text), cx);
+                                    store.set_transient(result_key, json!(text), cx);
                                 },
                             );
                         });

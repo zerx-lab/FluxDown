@@ -1,4 +1,4 @@
-// 代理（crates/settings/src/sections/proxy.rs）：模式 / 系统代理只读信息 / 手动服务器 / 连通性测试 / 站点凭据。
+// 代理（crates/settings/src/sections/proxy.rs）：模式 / 系统代理只读信息 / 手动服务器（任何模式可编辑）/ 连通性测试 / 站点凭据。
 
 import { useEffect, useState } from 'react'
 import { useT } from '../../../../i18n'
@@ -141,11 +141,12 @@ function SystemSection() {
   )
 }
 
-function ManualSection() {
+/** 手动服务器在任何模式下都可编辑：「自动」把它当备选路径，站点规则与任务的「手动代理」出口也读它。 */
+function ManualSection({ active }: { active: boolean }) {
   const t = useT()
   const type = useDaemonValue('proxy_type')
   return (
-    <SettingsSection title={t('proxyModeManual')} subtitle={t('proxyModeManualDesc')}>
+    <SettingsSection title={t('proxyModeManual')} subtitle={t(active ? 'proxyModeManualDesc' : 'proxyManualKeptDesc')}>
       <SettingsRow title={t('proxyType')}>
         <DropdownField value={type} options={TYPES} aria-label={t('proxyType')} onValueChange={(next) => setDaemon('proxy_type', next)} />
       </SettingsRow>
@@ -200,7 +201,7 @@ export function ProxySettings() {
         </SettingsSection>
       ) : null}
       {current === 'system' ? <SystemSection /> : null}
-      {current === 'manual' ? <ManualSection /> : null}
+      <ManualSection active={current === 'manual'} />
       <ProxyRulesGroup />
       <SiteAuthGroup />
     </SettingsPage>
