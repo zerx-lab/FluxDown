@@ -145,6 +145,8 @@
 - **「打开文件」要区分「当前查看的主机」与「任务所属的引擎」**：远端主机的 `saveDir` 是主机磁盘路径，`fileMissing` 也由主机 daemon 按主机磁盘算，只看 `Completed && !fileMissing` 会给远端任务显示「打开」并按本机路径报「文件不存在」；反过来，完成提示 / 通知里的本机任务（含 PC 下发到本机的）在用户正查看远端主机时仍须能打开，不能套当前主机门控 → `mobile/Android/app/src/main/java/com/fluxdown/app/actions/TaskActions.kt`（`hasLocalFile` / `open` 走当前主机门控，`openLocalFile` 供本机任务来源调用）、`feature/downloads/DownloadsView.kt::localHost`（行环钮文案），iOS 同规则见 `TaskActions.swift::hasLocalFile`、`DownloadsRowText.swift::ringAction`。
 - **会话信号流结束必须落到失败态，不能静默停在最后一帧**：Rust `next_signal` 返回 `None`（驱动意外退出等）时 `RustHostSession` 的流正常完成，`HostStore` 若什么都不做就冻结在上一帧——上一帧是加载态快照时首页永久骨架、无横幅无日志，只有重启能恢复。`HostStore.attach` 在流结束且未见 Fatal、未被 detach 取消时补发 Fatal；UniFFI `InternalException` 继承 `kotlin.Exception` 而非 `RuntimeException`，须按 `Exception` 捕获；连接 / 载入态切换记入 `app-events.log`，`fluxdown_mobile` 在 agent 默认日志名单内（重连原因）→ `mobile/Android/core/.../store/HostStore.kt::attach`（回归 `HostStoreTest.signalStreamEnding…`）、`app/.../FluxApplication.kt::connectionSummary`、iOS `FluxDomain/Store/HostStore.swift::attach`、`native/agent/src/logging.rs::FIRST_PARTY_TARGETS`。
 
+- **多行链接输入框不能用 `KeyboardType.Uri`**：Compose 对多行框虽加 `TYPE_TEXT_FLAG_MULTI_LINE` + `IME_FLAG_NO_ENTER_ACTION`，但小米 / 搜狗 / 百度等输入法见到 `TYPE_TEXT_VARIATION_URI` 就固定给「前往」键、回车不换行（#1010）；多行框一律 `KeyboardType.Text` + `ImeAction.Default`，单行 URL 框不受影响 → `mobile/Android/app/src/main/java/com/fluxdown/app/feature/newtask/NewDownloadSheet.kt`（批量链接框）。
+
 ## iOS
 
 另见 AGENTS.md §4：iOS 构建依赖 `third_party/librqbit-dualstack-sockets`、商店 flavor 以 `--no-default-features` 剔除 BT / eD2K。
