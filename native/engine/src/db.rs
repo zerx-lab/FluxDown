@@ -5516,13 +5516,16 @@ impl Db {
 
     /// 更换任务下载源地址（`change_task_url` 专用）并标记 `source_changed`；不触碰
     /// 分段/进度行（`task_segments` 按 `task_id` 索引，与 `url` 无关）。续传时由
-    /// [`Self::settle_source_change`] 决定已下进度能否沿用。
+    /// [`Self::settle_source_change`] 决定已下进度能否沿用。用户换上的是普通链接：同时
+    /// 清掉浏览器接管时记录的非 GET 方法（`request_method`），新地址按 GET 续传。
     pub async fn update_task_url(&self, task_id: &str, url: &str) -> Result<(), DbError> {
-        sqlx::query("UPDATE tasks SET url = $1, source_changed = 1 WHERE id = $2")
-            .bind(url)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE tasks SET url = $1, source_changed = 1, request_method = '' WHERE id = $2",
+        )
+        .bind(url)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

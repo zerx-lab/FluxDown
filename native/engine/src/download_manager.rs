@@ -1671,7 +1671,7 @@ fn ask_support(
     } else if dash_downloader::is_dash_url(url) || is_ed2k_url(url) {
         AskSupport::NoSkip
     } else if non_get_request {
-        // 答复后以恢复路径重入，而非 GET 任务的恢复会被拒绝（请求体不落库），不能询问。
+        // 答复后以恢复路径重入；非 GET 请求体只在内存，引擎重启后无法重入，不能询问。
         AskSupport::None
     } else {
         AskSupport::WithSkip
@@ -1690,19 +1690,19 @@ async fn persist_start_name(
 }
 
 /// 序幕的探测能否直接用下载器的完整探测代替 `meta_prober` 的裸 HEAD：仅限 fresh、
-/// 非 hint、无音轨对的 HTTP(S) GET 类任务——恰好是 `run_download` 会自己探测的那一类。
-/// FTP / HLS / DASH / BT / ed2k、非 GET（POST 等重放有副作用）与 hint（探测会作废
-/// 一次性 URL）仍走 `meta_prober` 或不探测，行为不变。
+/// 非 hint、无音轨对的 HTTP(S) 任务——恰好是 `run_download` 会自己做单请求探测的那一类。
+/// 非 GET（表单 POST 等）同样在此发出它唯一的一次提交，响应留作数据连接。FTP / HLS /
+/// DASH / BT / ed2k 与 hint（探测会作废一次性 URL）仍走 `meta_prober` 或不探测。
 fn prelude_shares_downloader_probe(params: &DownloadParams) -> bool {
-    downloader::single_get_probe_applies(params)
+    downloader::held_probe_applies(params)
 }
 
 /// 启动序幕的名称 / 大小探测。
 ///
 /// 满足 [`prelude_shares_downloader_probe`] 的任务用与下载相同的 client / spec 跑
-/// `resolve_file_info_held_get`：只发【一个】plain GET（无 HEAD、无 Range 0-0，一次性
-/// URL 的令牌不被探测消耗），响应头给出名称 / 大小，响应本身保留为第一条数据连接；
-/// 含传输抖动重试与 UA / Referer 自适应。成功后：
+/// `resolve_file_info_held`：只发【一个】与数据下载同规格的请求（GET 类无 HEAD、无 Range
+/// 0-0，一次性 URL 的令牌不被探测消耗；非 GET 按原 method + body 只提交一次），响应头给出
+/// 名称 / 大小，响应本身保留为第一条数据连接；含传输抖动重试与 UA / Referer 自适应。成功后：
 /// - 名称 / 大小按 [`crate::meta_prober::ProbedMeta::from_file_info`] 派生（HTML
 ///   页面不产出名字）；
 /// - 自适应后的 spec 与下载器一样即时落库，并连同 `FileInfo` 与保留的响应存入
@@ -1727,7 +1727,7 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
     let resolved = if crate::auto_probe::applies(params) {
         // Auto 多路径：起飞路径不及时应答 / 断在传输层时并行放出备选路径，
         // 胜出路径就地接管 params（client、代理配置、路由上下文与标签）。
-        match crate::auto_probe::race_probe(params, downloader::ProbeKind::HeldGet).await {
+        match crate::auto_probe::race_probe(params, downloader::ProbeKind::Held).await {
             Err(downloader::DownloadError::Cancelled) => {
                 return crate::meta_prober::ProbedMeta::default();
             }
@@ -1737,14 +1737,14 @@ async fn probe_start_meta(params: &mut DownloadParams) -> crate::meta_prober::Pr
                 held: Some(held),
             }) => Ok((info, adapted, held)),
             Ok(_) => Err(downloader::DownloadError::Other(
-                "single GET probe returned no response".to_string(),
+                "single probe request returned no response".to_string(),
             )),
             Err(error) => Err(error),
         }
     } else {
         tokio::select! {
             _ = params.cancel_token.cancelled() => return crate::meta_prober::ProbedMeta::default(),
-            r = downloader::resolve_file_info_held_get(
+            r = downloader::resolve_file_info_held(
                 &params.client,
                 &params.url,
                 &params.spec,
@@ -3125,6 +3125,19 @@ impl ResolvePreviewOutcome {
     }
 }
 
+/// 浏览器接管的非 GET 请求事务（方法 + 请求体），只存本进程内存：请求体常带凭据
+/// （OneDrive 打包下载的 `pacToken`），不落库。同一引擎生命周期内的自动重试 / 手动
+/// 恢复据此原样重放整个事务并从 0 重下——服务端按原 method 逐跳重定向（301 / 302 /
+/// 303 改 GET、307 / 308 保持），每次重放的跳转终点与响应体都可能不同（重新生成的
+/// 打包、换发的签名直链），已下字节没有可靠的拼接依据。引擎重启后条目不在，恢复照旧
+/// 以 [`downloader::POST_ONLY_RESUME_MESSAGE`] 失败。
+#[derive(Clone)]
+struct ReplayableRequest {
+    /// 与 `tasks.request_method` 同一规范化值（见 `downloader::persisted_request_method`）。
+    method: String,
+    body: Option<downloader::CapturedRequestBody>,
+}
+
 /// Information needed to start a queued task later.
 struct QueuedTask {
     task_id: String,
@@ -3863,6 +3876,9 @@ pub struct DownloadManager {
     /// key = task_id，value = 已自动重试次数。
     /// 超过 `max_auto_retries` 后不再重试，保持 error 状态等用户手动恢复。
     auto_retry_counts: HashMap<String, u32>,
+    /// 浏览器接管的非 GET 任务的请求事务，供同一进程内重试 / 恢复重放（见
+    /// [`ReplayableRequest`]）。完成、删除、换源时移除。
+    replayable_requests: HashMap<String, ReplayableRequest>,
     /// 拦截器 failed 阶段插件重试的独立额度账本（与 `auto_retry_counts` 互不影响）。
     #[cfg(feature = "plugins")]
     intercept_retry_counts: HashMap<String, u32>,
@@ -4096,6 +4112,7 @@ impl DownloadManager {
             priority_task_id: None,
             auto_paused_ids: Vec::new(),
             auto_retry_counts: HashMap::new(),
+            replayable_requests: HashMap::new(),
             #[cfg(feature = "plugins")]
             intercept_retry_counts: HashMap::new(),
             #[cfg(feature = "plugins")]
@@ -7747,6 +7764,8 @@ impl DownloadManager {
                 self.intercept_retry_counts.remove(task_id);
                 self.auto_failover_pending.remove(task_id);
                 self.auto_failover_attempts.remove(task_id);
+                // 已完成的非 GET 事务不再重放：请求体常带凭据，不在内存多留。
+                self.replayable_requests.remove(task_id);
                 // 来源标记：插件 onDone 可能移动/改写文件，须在通知前打上。后台执行，
                 // 不阻塞 actor；BT 多文件产物是目录，由模块递归展开。
                 // 开启「使用服务器文件时间」时标记不得刷掉服务器时间（Windows NTFS
@@ -9408,8 +9427,18 @@ impl DownloadManager {
             resolver_item,
             resolver_plugin_id,
             is_bt,
+            request_method,
             ..
         } = task;
+        if !request_method.is_empty() {
+            self.replayable_requests.insert(
+                task_id.clone(),
+                ReplayableRequest {
+                    method: request_method,
+                    body: body.clone(),
+                },
+            );
+        }
 
         // Webhook：task.created（落库成功后，早于任何早退分支；`url` 用真实
         // 来源而非 torrent-file:// 哨兵）。
@@ -11721,25 +11750,44 @@ impl DownloadManager {
             (None, None, false, 0, false)
         };
 
-        // 浏览器 POST 接管的任务：请求体（常含一次性令牌）不落库，无法重放；改发
-        // GET（HEAD + Range 探测）对只收 POST 的端点必然 405，对表单端点则会下到
-        // 错误内容。恢复 / 重试一律明确失败，提示回浏览器重新发起。插件 resolve
-        // 已给出新的请求（`plugin_resolved`）时不受此限。
+        // 浏览器 POST 接管的任务：请求体（常含令牌）不落库。同一引擎生命周期内仍在内存的
+        // 请求事务（[`ReplayableRequest`]）原样重放并从 0 重下；不在（引擎已重启）时
+        // 改发 GET（HEAD + Range 探测）对只收 POST 的端点必然 405，对表单端点则会下到
+        // 错误内容，因此明确失败，提示回浏览器重新发起。插件 resolve 已给出新的请求
+        // （`plugin_resolved`）时不受此限。
         #[cfg(feature = "plugins")]
         let request_replaced = plugin_resolved;
         #[cfg(not(feature = "plugins"))]
         let request_replaced = false;
+        let mut replay: Option<ReplayableRequest> = None;
         if !request_replaced {
             match self.db.load_task_request_method(task_id).await {
                 Ok(method) if !method.is_empty() => {
-                    log_info!(
-                        "[manager] resume_task {}: started by a {} request whose body is not \
-                         persisted — refusing to resume",
-                        task_id,
-                        method
-                    );
-                    self.fail_post_only_resume(task_id, &task).await;
-                    return;
+                    match self
+                        .replayable_requests
+                        .get(task_id)
+                        .filter(|request| request.method == method)
+                    {
+                        Some(request) => {
+                            log_info!(
+                                "[manager] resume_task {}: replaying the captured {} request \
+                                 from the start (non-GET responses cannot be range-resumed)",
+                                task_id,
+                                method
+                            );
+                            replay = Some(request.clone());
+                        }
+                        None => {
+                            log_info!(
+                                "[manager] resume_task {}: started by a {} request whose body is \
+                                 no longer available — refusing to resume",
+                                task_id,
+                                method
+                            );
+                            self.fail_post_only_resume(task_id, &task).await;
+                            return;
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => crate::logger::report_error(
@@ -12221,6 +12269,9 @@ impl DownloadManager {
             } else {
                 resume_hint
             };
+            // 重放非 GET 请求事务：探测发出的就是那唯一一次提交（单请求探测，响应即数据
+            // 连接），库里的大小属于上一次响应，不能当 hint 跳过它。
+            let resume_hint = if replay.is_some() { 0 } else { resume_hint };
 
             // 多 CDN 聚合输入与主请求使用同一份恢复 UA。
             let cdn = self.cdn_task_input(task.ignore_tls_errors, &task_proxy, &resume_user_agent);
@@ -12260,7 +12311,7 @@ impl DownloadManager {
             } else {
                 crate::file_exists::OverwritePolicy::Never
             };
-            let support = ask_support(&task.url, audio_url.is_some(), false);
+            let support = ask_support(&task.url, audio_url.is_some(), replay.is_some());
             let interceptor = self.task_interceptor(&tid, &source_url, &task.url).await;
             let run_meta = crate::intercept::RunMeta {
                 proxy_url: task.proxy_url.clone(),
@@ -12277,7 +12328,9 @@ impl DownloadManager {
                 save_dir: task.save_dir,
                 file_name: task.file_name,
                 segment_count: seg_count,
-                is_resume: !fresh,
+                // 重放的非 GET 事务从 0 重下（`is_resume: false` → 截断临时文件、不复用
+                // 上一次响应的大小与 validator），理由见 [`ReplayableRequest`]。
+                is_resume: !fresh && replay.is_none(),
                 db: self.db.clone(),
                 client: task_client,
                 progress_tx: self.progress_tx.clone(),
@@ -12292,16 +12345,20 @@ impl DownloadManager {
                 selector: self.selector.clone(),
                 checksum: task.checksum,
                 extra_headers: resume_extra_headers.clone(),
-                // 请求体不落库，走到这里的必是 GET 任务（非 GET 任务已在体首以
-                // POST_ONLY_RESUME_MESSAGE 失败）。cookies/referrer/extra_headers
-                // 从 DB 恢复，保住鉴权站点的 resume。
+                // 请求体不落库：非 GET 任务只有在内存仍有请求事务（`replay`）时走到这里，
+                // 其余已在体首以 POST_ONLY_RESUME_MESSAGE 失败。cookies/referrer/
+                // extra_headers 从 DB 恢复，保住鉴权站点的 resume。
                 spec: {
+                    let (method, body) = match replay {
+                        Some(request) => (Some(request.method), request.body),
+                        None => (None, None),
+                    };
                     let mut spec = downloader::RequestSpec::from_captured(
-                        None,
+                        method.as_deref(),
                         resume_cookies,
                         resume_referrer,
                         resume_extra_headers,
-                        None,
+                        body,
                     );
                     spec.egress = egress_router;
                     spec
@@ -12515,6 +12572,7 @@ impl DownloadManager {
         self.intercept_retry_counts.remove(task_id);
         self.auto_failover_pending.remove(task_id);
         self.auto_failover_attempts.remove(task_id);
+        self.replayable_requests.remove(task_id);
         self.retry_unschedule(task_id);
         self.clear_pending_resolve(task_id);
 
@@ -13030,6 +13088,9 @@ impl DownloadManager {
         if !deleted.is_empty() {
             match self.db.delete_tasks_batch(&deleted).await {
                 Ok(sources) => {
+                    for task_id in &deleted {
+                        self.replayable_requests.remove(task_id);
+                    }
                     self.broadcast_deleted_rss_sources(sources).await;
                     self.prune_group_dirs(group_dirs, &deleted).await;
                 }
@@ -14852,6 +14913,8 @@ impl DownloadManager {
         self.intercept_retry_counts.remove(task_id);
         self.auto_failover_pending.remove(task_id);
         self.auto_failover_attempts.remove(task_id);
+        // 换上的是普通链接（库里的非 GET 方法已随换源清空）：旧表单事务不再适用。
+        self.replayable_requests.remove(task_id);
         log_info!(
             "[manager] change_task_url {}: '{}' -> '{}'",
             task_id,
