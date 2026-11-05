@@ -42,6 +42,8 @@ pub mod manifest;
 pub mod market;
 mod package_revision;
 pub mod page_scripts;
+#[cfg(test)]
+mod private_install_tests;
 pub mod quickjs;
 pub mod quickjs_host;
 pub mod runtime;
@@ -49,9 +51,11 @@ pub mod semver;
 pub mod sniff_pack;
 mod tool_path;
 pub use manager::routing;
-pub use manager::{DisabledReason, LoadedPlugin, PluginInfo, PluginLoadStatus, PluginManager};
+pub use manager::{
+    DisabledReason, LoadedPlugin, PluginInfo, PluginLoadStatus, PluginManager, SOURCE_PRIVATE,
+};
 pub use manifest::{PluginManifest, SettingField, SettingType, SettingWidget, SubscriptionDecl};
-pub use market::{MarketClient, MarketEntry, MarketError, MarketIndex};
+pub use market::{MarketClient, MarketEntry, MarketError, MarketIndex, install_private_package};
 pub use runtime::{
     AuthRequest, AuthResult, CancelReason, ExecutionBudget, HostCall, HostEvents, HostFuture,
     HostReply, ManifestItem, ManifestVariant, PluginBridge, PluginError, PluginEvent, PluginHost,

@@ -3,6 +3,7 @@
 
 import type { JsonValue } from './common';
 import type { ErrorReason } from './error';
+import type { MarketEntryDto } from './plugin';
 import type { CreateGroupRequest } from './queue';
 import type { CreateTaskRequest } from './task';
 
@@ -275,6 +276,18 @@ export interface PluginFavoritesDto {
 export interface PluginFavoriteSetRequest {
   pluginId: string;
   favorited: boolean;
+}
+
+/** 私有插件目录：未登录 `signedIn=false` 且 `entries` 为空；条目 `channel === 'private'`，`mirrors` 恒空。 */
+export interface PrivatePluginListDto {
+  signedIn: boolean;
+  entries: MarketEntryDto[];
+}
+
+/** `version` = 用户确认权限时看到的版本；云端当前可装版本不一致时以 `marketVersionChanged` 拒绝。 */
+export interface PrivatePluginInstallRequest {
+  pluginId: string;
+  version: string;
 }
 
 export interface PluginFavoriteResultDto {

@@ -22,7 +22,7 @@ export const legal = defineMessages({
       },
       eyebrow: "Legal · Privacy",
       title: "Privacy <em>Policy</em>",
-      updated: "October 2026",
+      updated: "November 2026",
       intro:
         'FluxDown ("we", "our", or "the software") is committed to protecting your privacy. This Privacy Policy explains what information we collect, what we do not collect, and how your data is handled when you use the FluxDown desktop application, the FluxDown mobile apps for iOS and Android, the browser extension, the optional FluxDown account, and this website.',
       sections: [
@@ -49,6 +49,7 @@ export const legal = defineMessages({
             "<strong>Cloud notifications (opt-in, desktop and server):</strong> if you enable them, task events (file name, size, status, error and queue name) are sent so we can deliver email or Telegram notifications. Download URLs and save folders are only included if you turn on those options separately. Events are kept for 7 days.",
             "<strong>Download route quality:</strong> while signed in, the app reports connection measurements for download servers (server host name, IP address, connection time, throughput and success) so FluxDown can choose faster routes. These measurements never include URL paths, query strings, file names or tokens.",
             "<strong>Plans:</strong> if you buy an optional plan on the desktop app or the website, we keep the order record (plan, amount and status) with your account. The mobile apps do not offer purchases.",
+            "<strong>Private extension grants and download records:</strong> if an administrator enables a private extension (an extension built for specific customers) for your account, we store the grant (the extension, its validity period and whether it was revoked) and a record of each download of that private extension's package (your account, the extension and version, and the time). Download records are deleted automatically after 365 days, and they do not include your IP address or device information. This data is used only to check that you are entitled to the extension, to safely withdraw a version that turns out to be malicious (the app receives the withdrawal list for extensions you were granted, including after a grant is revoked), and for access auditing. It does not involve your own downloads or download history.",
           ],
         },
         {
@@ -116,7 +117,7 @@ export const legal = defineMessages({
           items: [
             "Sign out at any time, or remove individual devices from your account, in the app's account settings.",
             "Turn settings sync, cloud notifications and the anonymous usage counters on or off in settings.",
-            'Delete your FluxDown account at any time in the app: Settings → Account → Delete Account (confirmed with your password or an email code). This permanently removes your account, signed-in devices, synced settings, sent links and notification settings. Order records are kept only where we are legally required to. Files you downloaded stay on your device. If you cannot access the app, contact us through the <a href="{feedback}">Feedback page</a> from your account email.',
+            'Delete your FluxDown account at any time in the app: Settings → Account → Delete Account (confirmed with your password or an email code). This permanently removes your account, signed-in devices, synced settings, sent links, notification settings and private extension grants, and deletes your private extension download records. Administrators\' operation logs of granting and revoking access are kept for security auditing but are no longer linked to your account. Order records are kept only where we are legally required to. Files you downloaded stay on your device. If you cannot access the app, contact us through the <a href="{feedback}">Feedback page</a> from your account email.',
           ],
         },
         {
@@ -319,7 +320,7 @@ export const legal = defineMessages({
       },
       eyebrow: "法律 · 隐私",
       title: "隐私<em>政策</em>",
-      updated: "2026 年 10 月",
+      updated: "2026 年 11 月",
       intro:
         "FluxDown（以下简称「我们」或「本软件」）致力于保护您的隐私。本隐私政策说明了当您使用 FluxDown 桌面应用、iOS 与 Android 移动应用、浏览器扩展、可选的 FluxDown 账户和本网站时，我们收集哪些信息、不收集哪些信息以及如何处理您的数据。",
       sections: [
@@ -346,6 +347,7 @@ export const legal = defineMessages({
             "<strong>云端推送（需主动开启，桌面端与服务器端）：</strong>开启后会发送任务事件（文件名、大小、状态、错误与队列名），用于投递邮件或 Telegram 通知。下载地址与保存目录只有在您分别开启对应选项时才会包含。事件保留 7 天。",
             "<strong>下载线路质量：</strong>登录期间，应用会上报下载服务器的连接测量数据（服务器主机名、IP 地址、连接耗时、吞吐量与是否成功），用于为 FluxDown 选择更快的线路。其中绝不包含链接路径、查询参数、文件名或令牌。",
             "<strong>套餐：</strong>如果您在桌面应用或网站上购买可选套餐，我们会在账户中保存订单记录（套餐、金额与状态）。移动应用不提供任何购买。",
+            "<strong>私有扩展授权与下载记录：</strong>如果管理员为您的账户开通了某个私有扩展（面向特定客户定制的扩展），我们会保存授权记录（扩展、有效期、是否已撤销），以及每次下载该私有扩展安装包的记录（您的账户、扩展与版本、下载时间）。下载记录保留 365 天后自动删除；这些记录不包含您的 IP 地址或设备信息。这些数据只用于三件事：校验您是否有权获取该扩展；在某个版本被判定为恶意时安全撤回（应用会收到您曾获授权的扩展的撤回清单，授权被撤销后同样如此）；以及访问审计。该功能不涉及您自己的下载内容或下载历史。",
           ],
         },
         {
@@ -413,7 +415,7 @@ export const legal = defineMessages({
           items: [
             "随时在应用的账户设置中退出登录，或从账户中移除单台设备。",
             "在设置中开启或关闭设置同步、云端推送与匿名使用计数。",
-            '您可以随时在应用中删除 FluxDown 账户：设置 → 账户 → 删除账户（需验证密码或邮箱验证码）。删除后，账户、已登录设备、同步的设置、发送的链接与推送设置将被永久移除；仅在法律要求时保留订单记录。已下载的文件仍保留在您的设备上。如果无法使用应用，请用账户邮箱通过<a href="{feedback}">反馈页面</a>联系我们。',
+            '您可以随时在应用中删除 FluxDown 账户：设置 → 账户 → 删除账户（需验证密码或邮箱验证码）。删除后，账户、已登录设备、同步的设置、发送的链接、推送设置与私有扩展授权将被永久移除，您的私有扩展下载记录也会一并删除；管理员对授权与撤销的操作日志会保留用于安全审计，但不再与您的账户关联；仅在法律要求时保留订单记录。已下载的文件仍保留在您的设备上。如果无法使用应用，请用账户邮箱通过<a href="{feedback}">反馈页面</a>联系我们。',
           ],
         },
         {

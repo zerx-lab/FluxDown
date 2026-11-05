@@ -15,7 +15,7 @@ use crate::plugin::runtime::{
     BridgeHttpRequest, BridgeHttpResponse, PluginBridge, PluginError, PluginLogLevel,
 };
 
-const ID: &str = "acme@demo";
+pub(super) const ID: &str = "acme@demo";
 
 struct NullBridge;
 
@@ -49,9 +49,9 @@ impl EventSink for NullSink {
     fn emit(&self, _event: EngineEvent) {}
 }
 
-struct Fixture {
-    manager: PluginManager,
-    db: Db,
+pub(super) struct Fixture {
+    pub(super) manager: Arc<PluginManager>,
+    pub(super) db: Db,
     root: PathBuf,
 }
 
@@ -63,24 +63,24 @@ impl Drop for Fixture {
     }
 }
 
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     let root = std::env::temp_dir().join(format!("fluxdown-consent-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     let db = Db::connect("sqlite::memory:").await.unwrap();
-    let manager = PluginManager::new(
+    let manager = Arc::new(PluginManager::new(
         Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
         Arc::new(NullBridge),
         db.clone(),
         root.clone(),
         "1.0.0".to_string(),
         Arc::new(NullSink),
-    );
+    ));
     // 首次加载写迁移标记；此后安装的插件不再自动获得授权。
     manager.load_all().await;
     Fixture { manager, db, root }
 }
 
-fn fxplug(version: &str, permissions: &[&str]) -> Vec<u8> {
+pub(super) fn fxplug(version: &str, permissions: &[&str]) -> Vec<u8> {
     let manifest = serde_json::json!({
         "identity": ID, "name": "Demo", "version": version, "permissions": permissions,
     });

@@ -5165,11 +5165,25 @@
           "author": {
             "type": "string"
           },
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "渠道标记：公开市场条目无此字段；FluxCloud 私有目录恒为 `\"private\"`。"
+          },
           "contentHash": {
             "type": "string"
           },
           "description": {
             "type": "string"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "私有条目的授权到期时间（RFC 3339）；缺省 / `null` = 永久（公开条目恒缺省）。"
           },
           "homepage": {
             "type": "string"
@@ -5531,6 +5545,10 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "source": {
+            "type": "string",
+            "description": "安装来源：空 = 公开市场 / 本机包 / 旧版安装；`\"private\"` = FluxCloud 私有商店\n（不受公开市场更新 / 撤回影响，由私有目录单独对账）。"
           },
           "subscriptionProviderIds": {
             "type": "array",

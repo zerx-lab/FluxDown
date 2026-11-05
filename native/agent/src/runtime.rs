@@ -368,7 +368,15 @@ async fn run_agent(
     ));
     let blobs = Arc::new(crate::capture::DaemonBlobClient::new(&daemon_config)?);
     // 已装插件的市场撤回：低频触发 daemon 拉索引（桌面与 server 宿主；embedded 不接入）。
-    crate::plugin_revocation::spawn(daemon.clone(), cancel.clone());
+    crate::plugin_revocation::spawn(
+        daemon.clone(),
+        Arc::new(crate::private_plugin::PrivatePluginService::new(
+            Arc::new(cloud_api.clone()),
+            daemon.clone(),
+            blobs.clone(),
+        )),
+        cancel.clone(),
+    );
     let nmh_task = if server.is_some() {
         // server 模式没有浏览器扩展中继：不启动 NMH IPC 也不注册 native messaging host；
         // 占位任务永不完成，退出时 abort。

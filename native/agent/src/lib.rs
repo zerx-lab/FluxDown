@@ -41,6 +41,7 @@ pub mod permission;
 pub mod platform;
 pub mod plugin_revocation;
 pub mod power;
+pub mod private_plugin;
 pub mod remote;
 pub mod runtime;
 pub mod server_mode;

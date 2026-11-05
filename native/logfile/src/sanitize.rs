@@ -6,13 +6,18 @@
 
 /// 日志/导出文本脱敏规则，依次对全文套用。
 ///
-/// 覆盖：URL userinfo、Telegram bot 令牌路径、令牌/密钥类 query 参数、超长 query、
-/// Cookie / Authorization 头、代理账号密码、用户目录（Linux `/home/<name>/`、
+/// 覆盖：URL userinfo、Telegram bot 令牌路径、FluxCloud 私有插件下载票据路径、令牌/密钥类 query 参数、
+/// 超长 query、Cookie / Authorization 头、代理账号密码、用户目录（Linux `/home/<name>/`、
 /// Windows `X:\Users\<name>\`）。
 pub const SANITIZE_PATTERNS: &[(&str, &str)] = &[
     (r"(?i)([\w+.-]+://)[^:/\s@]+:[^@\s]+@", "$1***@"),
     // Telegram bot 令牌在路径里：/bot<id>:<token>/
     (r"(?i)(/bot)\d+:[\w-]+", "$1[REDACTED]"),
+    // FluxCloud 私有插件包下载票据在路径里：/api/v1/private-plugins/packages/<ticket>
+    (
+        r"(?i)(/private-plugins/packages/)[^/?#\s,)\]}>]+",
+        "$1[REDACTED]",
+    ),
     // 令牌/密钥类 query 参数，无论值长短。
     (
         r"(?i)([?&](?:[\w.-]*(?:token|key|secret|password|passwd|pwd|sig|signature|auth|credential)[\w.-]*)=)[^&\s,)\]}>]+",

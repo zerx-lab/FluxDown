@@ -398,6 +398,7 @@ mod tests {
             consent_pending_hosts: Vec::new(),
             package_revision: 0,
             package_dir: Some(dir.to_string_lossy().into_owned()),
+            source: String::new(),
         }
     }
 

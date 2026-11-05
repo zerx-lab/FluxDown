@@ -110,8 +110,8 @@ An auto-disabled plugin shows a notice in the app and an **Auto-disabled** badge
 
 Open **Settings → Extensions → Plugins** in the desktop app or the Web UI. Three ways in:
 
-- **Install .fxplug / .zip plugin** — upload a `.fxplug` file (a zip of the plugin folder, see [Packaging](/docs/en/plugins/packaging/)). In the Web UI the file is picked in your browser and uploaded to the host.
-- **Install from directory (dev mode)** — point at a folder containing `manifest.json`. FluxDown records the folder path instead of copying it. The **Dev mode** switch only controls whether this input is shown (on by default); with it off you can still upload a zip or use the market. Dev plugins show a **Dev** badge and a **Reload** button, see below.
+- **Install .fxplug / .zip plugin** — upload a `.fxplug` file (a zip of the plugin folder, see [Packaging](/docs/en/plugins/packaging/)). In the Web UI the file is picked in your browser and uploaded to the host. Shown only while the **Dev mode** switch is on (see below).
+- **Install from directory (dev mode)** — point at a folder containing `manifest.json`. FluxDown records the folder path instead of copying it. The **Dev mode** switch (off by default, not remembered between visits) controls whether the whole install area — this directory input together with **Install .fxplug / .zip plugin** — is shown; with it off, install from the plugin market. Dev plugins show a **Dev** badge and a **Reload** button, see below.
 - **Plugin market** — browse and install published plugins from the in-app market.
 
 The path you type for directory install is a path **on the machine that runs FluxDown's background service**, not on the machine with the browser. With a desktop app these are the same machine. For a headless server or Docker container, use a path inside the server or container — for example, bind-mount your `dist/` folder into the container and enter the in-container path.

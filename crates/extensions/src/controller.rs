@@ -400,6 +400,23 @@ impl ExtensionsController {
         )
     }
 
+    /// 私有商店目录：未登录 agent 不发云请求，返回 `signedIn: false`。
+    pub fn private_plugins(&self) -> PortFuture<serde_json::Value> {
+        self.call(method::AGENT_PRIVATE_PLUGIN_LIST, serde_json::json!({}))
+    }
+
+    /// 从私有商店安装 / 更新；`version` = 用户确认权限时看到的版本，云端可装版本已变化时 agent 拒绝。
+    pub fn private_install(
+        &self,
+        plugin_id: String,
+        version: String,
+    ) -> PortFuture<serde_json::Value> {
+        self.call(
+            method::AGENT_PRIVATE_PLUGIN_INSTALL,
+            serde_json::json!({ "pluginId": plugin_id, "version": version }),
+        )
+    }
+
     pub fn component_status(&self, kind: ComponentKind) -> PortFuture<serde_json::Value> {
         self.call(
             method::DAEMON_COMPONENT_GET,
