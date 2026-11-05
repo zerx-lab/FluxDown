@@ -118,12 +118,14 @@ The **Block list** tab lets you browse, search, add, release, allow-list and exp
 
 | Setting | Purpose | Default |
 |---|---|---|
-| Mode | No Proxy, System Proxy (read from OS settings), or Manual. | No Proxy |
-| Type *(Manual mode)* | HTTP, HTTPS, SOCKS4, or SOCKS5. | HTTP |
-| Server Address / Port *(Manual mode)* | The proxy server's host and port. | Empty |
-| Username / Password *(Manual mode)* | Optional proxy authentication. | Empty |
-| Bypass List | Comma-separated addresses that skip the proxy entirely. | Empty |
-| Test Connection | Verifies the configured proxy and reports latency or an error. | — |
+| Mode | No Proxy, System Proxy (read from OS settings), Manual, or Auto (starts direct and races the configured proxies). | No Proxy |
+| Type | HTTP, HTTPS, SOCKS4, or SOCKS5. | HTTP |
+| Server Address / Port | The manual proxy server's host and port. | Empty |
+| Username / Password | Optional proxy authentication. | Empty |
+| Bypass List | Comma-separated addresses that skip the manual proxy. | Empty |
+| Test Connection | Verifies the manual proxy server (or the detected system proxy) and reports latency or an error. | — |
+
+The manual server fields stay editable in every mode and are kept when you switch modes: Manual uses them as the global proxy, Auto tries them as an alternative path, and site rules or tasks set to *Manual proxy* use them too.
 
 Proxy settings apply to HTTP/HTTPS/FTP/eD2K downloads only — BitTorrent downloads always connect directly.
 
