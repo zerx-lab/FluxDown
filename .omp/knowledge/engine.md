@@ -99,6 +99,12 @@
   免 VDL 零填充写放大）。完成期全量重哈希只在 fastresume 污点时执行（add 时
   存在既有 `.bitv` / 经缓存句柄跨暂停恢复 / 完成重试）；无污点任务的 have-bits
   全部有磁盘依据（全量初检读盘 / Live 写盘后读回校验），完成即时。
+- **BT 文件选择窗可改保存目录（#994）**：`SelectionKind::Bt.save_dir` 预填任务当前目录，
+  `SelectionOutcome::Bt.save_dir` 仅在去空白后非空且不同于预填时下发（GPUI / Web 同规则，移动端恒不下发）。
+  Path B 在 `add_torrent` 之后才弹窗，staging（`save_dir/.bt_stage_<id>`）已绑定旧目录，所以改目录 =
+  先建新目录 → 删本任务 librqbit 条目与旧 staging → `set_task_location` + 保存选择并发布位置 →
+  `run_bt_download` 以新目录、Path A/S 重跑一轮（不再弹窗）。建目录失败 / 新目录落在旧 staging 内
+  均报错、库内位置不变，重试会重新询问。
 - **做种交互（对齐 qBittorrent）**（`bt_seeding.rs`）：完成即自动做种（`bt_seed_enabled`，默认开；
   关闭时完成即落 `seeding_status=4` UserStopped）。完成态 BT 任务的「暂停」= 停止做种（1 / 8 → 4），
   「继续」= 恢复做种（2..=7），其余完成态的继续一律忽略（#935）。**达限停止（2 / 3 / 7）的手动继续 =

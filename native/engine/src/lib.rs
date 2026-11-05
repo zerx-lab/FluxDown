@@ -567,8 +567,9 @@ impl EventSink for NoopSink {
 ///
 /// `select_hls_quality` 返回带宽最高的变体索引(与
 /// `hls_downloader`/`dash_downloader` 内部 `auto_select_best` 的既有语义
-/// 一致);`select_bt_files` 返回空 vec —— 复用 `bt_downloader.rs` 现状
-/// "空 vec = 下载全部文件"的既有语义,不引入新含义。
+/// 一致);`select_bt_files` 返回空 [`selection::BtFileChoice`] —— 复用
+/// `bt_downloader.rs` 现状"空 indices = 下载全部文件"的既有语义,不引入新含义。
+/// `save_dir` 为 `None` 表示沿用任务当前目录。
 ///
 /// `provide_hls_selection`/`provide_bt_selection` 是空操作:没有调用方在
 /// 等待,投递答案无事可做。
@@ -578,12 +579,15 @@ impl EventSink for NoopSink {
 /// ```
 /// # async fn run() {
 /// use fluxdown_engine::NoopSelection;
-/// use fluxdown_engine::selection::{HostSelection, SelectionOutcome};
+/// use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome};
 /// use std::time::Duration;
 ///
 /// let selector = NoopSelection;
-/// let outcome = selector.select_bt_files("task1", &[], None).await;
-/// assert_eq!(outcome, SelectionOutcome::NoSelectorConfigured(vec![]));
+/// let outcome = selector.select_bt_files("task1", &[], "", None).await;
+/// assert_eq!(
+///     outcome,
+///     SelectionOutcome::NoSelectorConfigured(BtFileChoice::default())
+/// );
 /// # }
 /// ```
 pub struct NoopSelection;
@@ -609,9 +613,10 @@ impl HostSelection for NoopSelection {
         &self,
         _task_id: &str,
         _files: &[BtFileEntry],
+        _save_dir: &str,
         _timeout: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>> {
-        SelectionOutcome::NoSelectorConfigured(Vec::new())
+    ) -> SelectionOutcome<selection::BtFileChoice> {
+        SelectionOutcome::NoSelectorConfigured(selection::BtFileChoice::default())
     }
     async fn select_resolve_variant(
         &self,

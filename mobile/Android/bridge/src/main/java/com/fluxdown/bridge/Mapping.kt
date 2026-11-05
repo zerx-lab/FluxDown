@@ -238,7 +238,7 @@ internal fun SelectionRequestDto.toCore() = SelectionRequest(
 
 internal fun SelectionKindDto.toCore(): SelectionKind = when (this) {
     is SelectionKindDto.Hls -> SelectionKind.Hls(options.map { HlsOption(it.index, it.bandwidth, it.width, it.height) })
-    is SelectionKindDto.Bt -> SelectionKind.Bt(files.map { BtFile(it.index, it.path, it.size) })
+    is SelectionKindDto.Bt -> SelectionKind.Bt(files.map { BtFile(it.index, it.path, it.size) }, saveDir)
     is SelectionKindDto.Variant -> SelectionKind.Variant(
         options.map {
             VariantOption(it.index, it.label, it.container, it.bandwidth, it.width, it.height, it.totalBytes)
@@ -274,7 +274,7 @@ internal fun FileExistsAction.toDto(): FileExistsActionDto = when (this) {
 
 internal fun SelectionOutcomeDto.toCore(): SelectionOutcome = when (this) {
     is SelectionOutcomeDto.Hls -> SelectionOutcome.Hls(index)
-    is SelectionOutcomeDto.Bt -> SelectionOutcome.Bt(indices)
+    is SelectionOutcomeDto.Bt -> SelectionOutcome.Bt(indices, saveDir)
     is SelectionOutcomeDto.Variant -> SelectionOutcome.Variant(index)
     is SelectionOutcomeDto.FileExists -> SelectionOutcome.FileExists(action.toCore())
     is SelectionOutcomeDto.Cancelled -> SelectionOutcome.Cancelled
@@ -283,7 +283,7 @@ internal fun SelectionOutcomeDto.toCore(): SelectionOutcome = when (this) {
 
 internal fun SelectionOutcome.toDto(): SelectionOutcomeDto = when (this) {
     is SelectionOutcome.Hls -> SelectionOutcomeDto.Hls(index)
-    is SelectionOutcome.Bt -> SelectionOutcomeDto.Bt(indices)
+    is SelectionOutcome.Bt -> SelectionOutcomeDto.Bt(indices, saveDir)
     is SelectionOutcome.Variant -> SelectionOutcomeDto.Variant(index)
     is SelectionOutcome.FileExists -> SelectionOutcomeDto.FileExists(action.toDto())
     is SelectionOutcome.Plugin -> SelectionOutcomeDto.Plugin(identity, remember)

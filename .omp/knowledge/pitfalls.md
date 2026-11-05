@@ -114,6 +114,7 @@
 - **按钮「进行中」转圈对本机 RPC 不可见、纯文字按钮 `.loading()` 不画转圈**：本机 RPC 常在一帧内返回，`loading` 真→假之间没有任何一帧被绘制，点了像没反应；gpui-component `Button::loading` 只替换前置图标，无图标按钮只变得不可点。手动点击的异步按钮一律用 `loading_button` / `loading_icon_button` / `BusyExt::busy` 画转圈，并在点击时 `BusyHold::start` 保证 ≥`MIN_BUSY_VISIBLE`（后台轮询 / 自动加载不启动，否则每轮都转）；设置 store 的 `call_with` / `cloud_call` 已内置，渲染读 `is_busy`，去重 / 自动加载闸门读 `in_flight` → `crates/components/src/busy.rs`、`crates/settings/src/store.rs::begin_busy`。
 - **划选不能按移动方向和文件拖出分家**：gpui 的 `on_drag` 超过 2px 就在冒泡阶段启动并 `stop_propagation`，随后再 `stop_active_drag` 也来不及——拖到窗口上沿或下沿的文件夹会被划选吃掉。按下位置决定手势：文件名列任意方向拖出已有文件，其他列划选，都不用修饰键 → `crates/downloads/src/components/task_table.rs::classify_row_press`、回归 `file_name_column_drags_the_file_and_other_columns_sweep`。
 - **行悬停操作浮层不得直接用半透明 `row_hover` / `accent` 作底**：默认最右列是「创建时间」，浮层从右侧留白列向左盖住末列；半透明底会让时间与图标叠成「双层字」。底色须 `surface.blend(选中/悬停)` 不透明，并加左侧渐隐；Web 同行用 surface + accent/row-hover 分层 + mask → `crates/downloads/src/components/task_table.rs::wrap_row_action_strip`、`web/src/pages/downloads/table/rowParts.tsx::RowActionsBar`。
+- **有「浏览」系统选择器的窗口不能用 `WindowKind::Floating`**：gpui-fast macOS 把 Floating 设为 `NSFloatingWindowLevel`，`prompt_for_paths` 的系统面板在普通层级，会被压在窗口下面（Windows 的 Floating 是普通窗口，不受影响）；需要选目录 / 文件的窗口用 `Normal`，只读确认类小窗才置顶。改成 `Normal` 后窗口不会再自己浮到其他应用之上，引擎主动弹出的窗口（用户可能已切走）要在开窗后 `bring_to_front`，应用原本不在前台再 `request_attention` 兜底 → `crates/app/src/windows/selection.rs::open`（BT 文件选择窗，#994）。
 
 ## Web SPA
 

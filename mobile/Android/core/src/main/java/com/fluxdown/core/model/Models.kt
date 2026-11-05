@@ -187,7 +187,7 @@ data class SelectionRequest(
 
 sealed interface SelectionKind {
     data class Hls(val options: List<HlsOption>) : SelectionKind
-    data class Bt(val files: List<BtFile>) : SelectionKind
+    data class Bt(val files: List<BtFile>, val saveDir: String = "") : SelectionKind
     data class Variant(val options: List<VariantOption>) : SelectionKind
     /** 多个启用插件的解析器都匹配同一 URL：让用户选一个（`candidates` 按 identity 升序）。 */
     data class Plugin(val site: String, val url: String, val candidates: List<PluginCandidate>) : SelectionKind
@@ -225,7 +225,7 @@ data class VariantOption(
 
 sealed interface SelectionOutcome {
     data class Hls(val index: Int) : SelectionOutcome
-    data class Bt(val indices: List<Int>) : SelectionOutcome
+    data class Bt(val indices: List<Int>, val saveDir: String? = null) : SelectionOutcome
     data class Variant(val index: Int) : SelectionOutcome
     data class Plugin(val identity: String, val remember: Boolean) : SelectionOutcome
     data class FileExists(val action: FileExistsAction) : SelectionOutcome

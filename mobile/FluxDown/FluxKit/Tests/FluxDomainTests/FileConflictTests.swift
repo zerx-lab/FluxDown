@@ -13,7 +13,7 @@ struct FileConflictTests {
     }
 
     private let btRequest = SelectionRequest(
-        requestId: "bt", taskId: "t-bt", kind: .bt([]), defaultChoice: .cancelled, deadlineUnixMs: 0
+        requestId: "bt", taskId: "t-bt", kind: .bt([], saveDir: ""), defaultChoice: .cancelled, deadlineUnixMs: 0
     )
 
     @Test func fileConflictsAreSplitFromOtherSelectionKindsInHostOrder() {

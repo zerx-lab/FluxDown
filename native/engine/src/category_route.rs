@@ -800,7 +800,7 @@ pub(crate) fn valid_archive_folder(folder: &str) -> bool {
 
 /// 两个目录是否同一处：字面相同，或都存在且规范化后相同（大小写不敏感的文件系统、
 /// 符号链接、`..`）。同一目录内「移动」会被占名协议当成冲突而编号改名，必须先排除。
-async fn same_dir(a: &str, b: &str) -> bool {
+pub(crate) async fn same_dir(a: &str, b: &str) -> bool {
     if Path::new(a) == Path::new(b) {
         return true;
     }

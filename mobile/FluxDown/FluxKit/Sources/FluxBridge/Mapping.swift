@@ -163,8 +163,8 @@ extension SelectionKindDto {
         switch self {
         case let .hls(options):
             .hls(options.map { HlsOption(index: $0.index, bandwidth: $0.bandwidth, width: $0.width, height: $0.height) })
-        case let .bt(files):
-            .bt(files.map { BtFile(index: $0.index, path: $0.path, size: $0.size) })
+        case let .bt(files, saveDir):
+            .bt(files.map { BtFile(index: $0.index, path: $0.path, size: $0.size) }, saveDir: saveDir)
         case let .variant(options):
             .variant(options.map {
                 VariantOption(
@@ -199,7 +199,7 @@ extension SelectionOutcomeDto {
     var domain: SelectionOutcome {
         switch self {
         case let .hls(index): .hls(index: index)
-        case let .bt(indices): .bt(indices: indices)
+        case let .bt(indices, saveDir): .bt(indices: indices, saveDir: saveDir)
         case let .variant(index): .variant(index: index)
         case let .fileExists(action): .fileExists(action: action.domain)
         case let .plugin(identity, remember): .plugin(identity: identity, remember: remember)
@@ -212,7 +212,7 @@ extension SelectionOutcome {
     var dto: SelectionOutcomeDto {
         switch self {
         case let .hls(index): .hls(index: index)
-        case let .bt(indices): .bt(indices: indices)
+        case let .bt(indices, saveDir): .bt(indices: indices, saveDir: saveDir)
         case let .variant(index): .variant(index: index)
         case let .fileExists(action): .fileExists(action: action.dto)
         case let .plugin(identity, remember): .plugin(identity: identity, remember: remember)

@@ -16,7 +16,7 @@ use fluxdown_engine::bt_config::BtConfig;
 use fluxdown_engine::download_manager::NewTaskSpec;
 use fluxdown_engine::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption};
 use fluxdown_engine::proxy_config::ProxyConfig;
-use fluxdown_engine::selection::{HostSelection, SelectionOutcome};
+use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome};
 use fluxdown_engine::{Engine, EngineConfig, NoopSink};
 
 const FILE_BODY: &[u8] = b"fluxdown variant cancel payload\n";
@@ -112,9 +112,10 @@ impl HostSelection for ScriptedVariants {
         &self,
         _: &str,
         _: &[BtFileEntry],
+        _: &str,
         _: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>> {
-        SelectionOutcome::NoSelectorConfigured(Vec::new())
+    ) -> SelectionOutcome<BtFileChoice> {
+        SelectionOutcome::NoSelectorConfigured(BtFileChoice::default())
     }
     async fn select_resolve_variant(
         &self,

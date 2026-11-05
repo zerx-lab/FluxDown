@@ -10,6 +10,7 @@ import com.fluxdown.core.host.ImportProgress
 import com.fluxdown.core.host.ImportRetry
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.ImportUpdate
+import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.FileExistsAction
 import com.fluxdown.core.model.QueueOrderEntry
 import com.fluxdown.core.model.PluginCandidate
@@ -119,7 +120,8 @@ class MappingTest {
     fun selectionOutcomesRoundTrip() {
         val outcomes = listOf(
             SelectionOutcome.Hls(2),
-            SelectionOutcome.Bt(listOf(0, 3)),
+            SelectionOutcome.Bt(listOf(0, 3), saveDir = "/new"),
+            SelectionOutcome.Bt(listOf(1), saveDir = null),
             SelectionOutcome.Variant(1),
             SelectionOutcome.Plugin("com.x.a", remember = true),
             SelectionOutcome.Plugin("com.x.b", remember = false),
@@ -171,6 +173,15 @@ class MappingTest {
             ),
             dto.toCore(),
         )
+    }
+
+    @Test
+    fun btKindKeepsSaveDir() {
+        val dto = SelectionKindDto.Bt(
+            files = listOf(BtFileDto(0, "a.bin", 12L)),
+            saveDir = "/data",
+        )
+        assertEquals(SelectionKind.Bt(listOf(BtFile(0, "a.bin", 12)), "/data"), dto.toCore())
     }
 
     @Test

@@ -436,8 +436,11 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
         &self,
         task_id: &str,
         files: &[fluxdown_engine::model::BtFileEntry],
+        save_dir: &str,
         timeout: Option<std::time::Duration>,
-    ) -> fluxdown_engine::selection::SelectionOutcome<Vec<i32>> {
+    ) -> fluxdown_engine::selection::SelectionOutcome<fluxdown_engine::selection::BtFileChoice>
+    {
+        let default_choice = fluxdown_engine::selection::BtFileChoice::default();
         let effective_timeout = timeout.unwrap_or(DEFAULT_BT_SELECTION_TIMEOUT);
         let request_id = uuid::Uuid::new_v4().to_string();
         let request = SelectionRequestDto {
@@ -449,27 +452,41 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                     .cloned()
                     .map(fluxdown_engine_protocol::bt_file_entry_to_dto)
                     .collect(),
+                save_dir: save_dir.to_owned(),
             },
             default_choice: SelectionOutcome::Bt {
                 indices: Vec::new(),
+                save_dir: None,
             },
             deadline_unix_ms: deadline_unix_ms(effective_timeout),
         };
         match self.begin(request) {
             SelectionWait::Immediate(_) => {
-                fluxdown_engine::selection::SelectionOutcome::NoSelectorConfigured(Vec::new())
+                fluxdown_engine::selection::SelectionOutcome::NoSelectorConfigured(default_choice)
             }
             SelectionWait::Pending(receiver) => {
                 match tokio::time::timeout(effective_timeout, receiver).await {
-                    Ok(Ok(SelectionOutcome::Bt { indices })) => {
-                        fluxdown_engine::selection::SelectionOutcome::UserChose(indices)
+                    Ok(Ok(SelectionOutcome::Bt { indices, save_dir })) => {
+                        fluxdown_engine::selection::SelectionOutcome::UserChose(
+                            fluxdown_engine::selection::BtFileChoice {
+                                indices,
+                                save_dir: nonempty_save_dir(save_dir),
+                            },
+                        )
                     }
                     Ok(Ok(SelectionOutcome::Cancelled)) => {
-                        fluxdown_engine::selection::SelectionOutcome::UserChose(vec![-1])
+                        fluxdown_engine::selection::SelectionOutcome::UserChose(
+                            fluxdown_engine::selection::BtFileChoice {
+                                indices: vec![-1],
+                                save_dir: None,
+                            },
+                        )
                     }
                     _ => {
                         let _ = self.timeout(&request_id);
-                        fluxdown_engine::selection::SelectionOutcome::TimedOutDefaulted(Vec::new())
+                        fluxdown_engine::selection::SelectionOutcome::TimedOutDefaulted(
+                            default_choice,
+                        )
                     }
                 }
             }
@@ -541,6 +558,7 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
             SelectionType::Bt,
             SelectionOutcome::Bt {
                 indices: selected_indices,
+                save_dir: None,
             },
         ) {
             Ok(()) => {}
@@ -709,6 +727,16 @@ fn deadline_unix_ms(timeout: std::time::Duration) -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+fn nonempty_save_dir(save_dir: Option<String>) -> Option<String> {
+    save_dir.and_then(|dir| {
+        let trimmed = dir.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
 }
 
 fn selection_type(kind: &SelectionKind) -> SelectionType {
@@ -1169,6 +1197,179 @@ mod tests {
             })
         );
         assert_eq!(lock_pending_len(&manager), 0);
+    }
+    #[tokio::test]
+    async fn bt_selection_forwards_save_dir_and_filters_blank() {
+        use fluxdown_engine::model::BtFileEntry;
+        use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome as Engine};
+        use fluxdown_protocol::{DaemonEvent, ServiceEvent};
+
+        let files = vec![BtFileEntry {
+            index: 0,
+            path: "a.bin".to_owned(),
+            size: 1,
+        }];
+        let manager = manager();
+        assert_eq!(
+            manager.select_bt_files("t", &files, "/data", None).await,
+            Engine::NoSelectorConfigured(BtFileChoice::default())
+        );
+
+        manager.subscribe("c".to_owned());
+        let mut frames = manager.events.subscribe();
+        let waiter = {
+            let manager = manager.clone();
+            let files = files.clone();
+            tokio::spawn(async move {
+                manager
+                    .select_bt_files(
+                        "t",
+                        &files,
+                        "/data/bt",
+                        Some(std::time::Duration::from_secs(5)),
+                    )
+                    .await
+            })
+        };
+        let request = loop {
+            let frame = frames.recv().await.expect("selection event");
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+                break request;
+            }
+        };
+        assert!(matches!(
+            &request.kind,
+            SelectionKind::Bt { save_dir, .. } if save_dir == "/data/bt"
+        ));
+        assert!(matches!(
+            request.default_choice,
+            SelectionOutcome::Bt { ref indices, save_dir: None } if indices.is_empty()
+        ));
+        manager
+            .resolve(SelectionResolutionDto {
+                request_id: request.request_id,
+                outcome: SelectionOutcome::Bt {
+                    indices: vec![0, 2],
+                    save_dir: Some("  /movies  ".to_owned()),
+                },
+            })
+            .expect("resolve moved dir");
+        assert_eq!(
+            waiter.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![0, 2],
+                save_dir: Some("/movies".to_owned()),
+            })
+        );
+
+        let blank = {
+            let manager = manager.clone();
+            let files = files.clone();
+            tokio::spawn(async move {
+                manager
+                    .select_bt_files(
+                        "t",
+                        &files,
+                        "/data/bt",
+                        Some(std::time::Duration::from_secs(5)),
+                    )
+                    .await
+            })
+        };
+        let request_id = loop {
+            let frame = frames.recv().await.expect("blank selection event");
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+                break request.request_id;
+            }
+        };
+        manager
+            .resolve(SelectionResolutionDto {
+                request_id,
+                outcome: SelectionOutcome::Bt {
+                    indices: vec![1],
+                    save_dir: Some("   ".to_owned()),
+                },
+            })
+            .expect("resolve blank dir");
+        assert_eq!(
+            blank.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![1],
+                save_dir: None,
+            })
+        );
+
+        let cancelled = {
+            let manager = manager.clone();
+            let files = files.clone();
+            tokio::spawn(async move {
+                manager
+                    .select_bt_files(
+                        "t",
+                        &files,
+                        "/data/bt",
+                        Some(std::time::Duration::from_secs(5)),
+                    )
+                    .await
+            })
+        };
+        let request_id = loop {
+            let frame = frames.recv().await.expect("cancel selection event");
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+                break request.request_id;
+            }
+        };
+        manager
+            .resolve(SelectionResolutionDto {
+                request_id,
+                outcome: SelectionOutcome::Cancelled,
+            })
+            .expect("resolve cancel");
+        assert_eq!(
+            cancelled.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![-1],
+                save_dir: None,
+            })
+        );
+
+        let provided = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                manager
+                    .select_bt_files(
+                        "late",
+                        &files,
+                        "/data/bt",
+                        Some(std::time::Duration::from_secs(5)),
+                    )
+                    .await
+            })
+        };
+        while lock_pending_len(&manager) == 0 {
+            tokio::task::yield_now().await;
+        }
+        manager.provide_bt_selection("late", vec![3]);
+        assert_eq!(
+            provided.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![3],
+                save_dir: None,
+            })
+        );
+
+        let timed_out = manager
+            .select_bt_files(
+                "slow",
+                &[],
+                "/data/bt",
+                Some(std::time::Duration::from_millis(20)),
+            )
+            .await;
+        assert_eq!(
+            timed_out,
+            Engine::TimedOutDefaulted(BtFileChoice::default())
+        );
     }
 
     fn lock_pending_len(manager: &DaemonSelection) -> usize {

@@ -832,10 +832,21 @@ mod tests {
                 "r1".to_owned(),
                 SelectionOutcomeDto::Bt {
                     indices: vec![0, 2],
+                    save_dir: None,
                 },
             )
             .await
             .expect("resolve");
+        session
+            .resolve_selection(
+                "r1b".to_owned(),
+                SelectionOutcomeDto::Bt {
+                    indices: vec![1],
+                    save_dir: Some("/new".to_owned()),
+                },
+            )
+            .await
+            .expect("relocate");
         session
             .resolve_selection("r2".to_owned(), SelectionOutcomeDto::Cancelled)
             .await
@@ -856,11 +867,15 @@ mod tests {
         );
         assert_eq!(
             calls[1].1,
-            json!({ "requestId": "r2", "outcome": { "kind": "cancelled" } })
+            json!({ "requestId": "r1b", "outcome": { "kind": "bt", "indices": [1], "saveDir": "/new" } })
         );
-        assert_eq!(calls[2].0, "daemon.config.patch");
         assert_eq!(
             calls[2].1,
+            json!({ "requestId": "r2", "outcome": { "kind": "cancelled" } })
+        );
+        assert_eq!(calls[3].0, "daemon.config.patch");
+        assert_eq!(
+            calls[3].1,
             json!({ "expectedRevision": 7, "values": { "max_concurrent": "3" } })
         );
     }

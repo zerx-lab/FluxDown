@@ -16468,9 +16468,10 @@ mod tests {
                     &self,
                     _: &str,
                     _: &[crate::model::BtFileEntry],
+                    _: &str,
                     _: Option<std::time::Duration>,
-                ) -> SelectionOutcome<Vec<i32>> {
-                    SelectionOutcome::UserChose(vec![])
+                ) -> SelectionOutcome<crate::selection::BtFileChoice> {
+                    SelectionOutcome::NoSelectorConfigured(crate::selection::BtFileChoice::default())
                 }
                 async fn select_resolve_variant(
                     &self,

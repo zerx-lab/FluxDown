@@ -19,7 +19,7 @@ struct NotificationTrackerTests {
     }
 
     private static func selection(_ id: String) -> SelectionRequest {
-        SelectionRequest(requestId: id, taskId: "t-\(id)", kind: .bt([]), defaultChoice: .cancelled, deadlineUnixMs: 0)
+        SelectionRequest(requestId: id, taskId: "t-\(id)", kind: .bt([], saveDir: ""), defaultChoice: .cancelled, deadlineUnixMs: 0)
     }
 
     private static let now: Int64 = 1_760_000_000

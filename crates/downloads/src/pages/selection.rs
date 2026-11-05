@@ -4,6 +4,8 @@
 //! （见 `crate::windows::selection`，app 侧）；窗口的开启/关闭由 app 监听会话事件
 //! 完成，本视图只负责收集用户选择并调用 `daemon.selection.resolve`。
 //! `FileExists` 不走本视图，由 [`crate::FileConflictView`] 聚合承载。
+//! BT 文件选择带「保存目录」：预填任务当前目录，用户改了才在答复里带回，
+//! 引擎在真正下载前搬目录并重开任务。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -14,19 +16,21 @@ use fluxdown_protocol::{
     SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
 };
 use fluxdown_ui_components::{
-    BusyExt as _, CheckState, ControlExt as _, check_mark, check_row, field_hint, tabular_numbers,
+    BusyExt as _, CheckState, ControlExt as _, FluxIcon, check_mark, check_row, field_hint,
+    form_field, input_with_action, tabular_numbers,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, InteractiveElement as _,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled,
+    Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     Disableable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    input::{Input, InputEvent, InputState},
     notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
@@ -39,13 +43,16 @@ use crate::{
 
 mod plugin_choice;
 
-/// 单个交互选择请求的独立弹窗内容。
 pub struct SelectionView {
     strings: SelectionStrings,
     request: SelectionRequestDto,
     task_name: String,
     port: Arc<dyn DownloadsPort>,
     state: SelectionState,
+    /// BT 保存目录输入；其它选择种类没有。
+    save_dir_input: Option<Entity<InputState>>,
+    /// 系统目录选择器打开中，避免重入。
+    picking_save_dir: bool,
     submitting: bool,
 }
 
@@ -57,6 +64,8 @@ enum SelectionState {
     Bt {
         files: Vec<BtFileDto>,
         selected: HashSet<i32>,
+        /// 请求预填的当前保存目录。空串 = 旧 daemon 未带目录。
+        save_dir: String,
     },
     Variant {
         options: Vec<ResolveVariantOptionDto>,
@@ -90,14 +99,18 @@ impl SelectionPlan {
                 };
                 SelectionState::Hls { options, selected }
             }
-            SelectionKind::Bt { files } => {
+            SelectionKind::Bt { files, save_dir } => {
                 let selected = match &request.default_choice {
-                    SelectionOutcome::Bt { indices } if !indices.is_empty() => {
+                    SelectionOutcome::Bt { indices, .. } if !indices.is_empty() => {
                         indices.iter().copied().collect()
                     }
                     _ => files.iter().map(|file| file.index).collect(),
                 };
-                SelectionState::Bt { files, selected }
+                SelectionState::Bt {
+                    files,
+                    selected,
+                    save_dir,
+                }
             }
             SelectionKind::Variant { options } => {
                 let selected = match request.default_choice {
@@ -130,19 +143,46 @@ impl SelectionPlan {
 
 impl SelectionView {
     /// 按计划初始化默认选择，并启动每秒刷新一次的倒计时。
+    /// BT 选择额外建保存目录输入框（预填请求里的当前目录；旧 daemon 为空，只显示占位）。
     pub fn new(
         translator: Entity<Translator>,
         request: SelectionRequestDto,
         plan: SelectionPlan,
         task_name: String,
         port: Arc<dyn DownloadsPort>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let strings = SelectionStrings::from_translator(translator.read(cx));
         let state = plan.state;
-        cx.observe(&translator, |this, translator, cx| {
+        let save_dir_input = match &state {
+            SelectionState::Bt { save_dir, .. } => {
+                let initial = save_dir.clone();
+                let placeholder = strings.save_dir_placeholder.clone();
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(initial)
+                        .placeholder(placeholder)
+                });
+                // 确认按钮是否可点取决于目录是否为空，输入变化必须重绘。
+                cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                })
+                .detach();
+                Some(input)
+            }
+            _ => None,
+        };
+        cx.observe_in(&translator, window, |this, translator, window, cx| {
             this.strings = SelectionStrings::from_translator(translator.read(cx));
+            if let Some(input) = &this.save_dir_input {
+                let placeholder = this.strings.save_dir_placeholder.clone();
+                input.update(cx, |input, cx| {
+                    input.set_placeholder(placeholder, window, cx)
+                });
+            }
             cx.notify();
         })
         .detach();
@@ -161,6 +201,8 @@ impl SelectionView {
             task_name,
             port,
             state,
+            save_dir_input,
+            picking_save_dir: false,
             submitting: false,
         }
     }
@@ -176,22 +218,31 @@ impl SelectionView {
     }
 
     /// 引擎把空 BT 选择回退为全部文件，所以全不选时不允许确认（与 web 一致）。
-    fn can_confirm(&self) -> bool {
+    /// 保存目录是否可空见 [`bt_save_dir_confirmable`]。
+    fn can_confirm(&self, cx: &App) -> bool {
         match &self.state {
-            SelectionState::Bt { selected, .. } => !selected.is_empty(),
+            SelectionState::Bt {
+                selected, save_dir, ..
+            } => {
+                !selected.is_empty()
+                    && bt_save_dir_confirmable(save_dir, &self.save_dir_input_value(cx))
+            }
             SelectionState::Plugin { selected, .. } => !selected.is_empty(),
             _ => true,
         }
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_confirm() {
+        if !self.can_confirm(cx) {
             return;
         }
         let outcome = match &self.state {
             SelectionState::Hls { selected, .. } => SelectionOutcome::Hls { index: *selected },
-            SelectionState::Bt { selected, .. } => SelectionOutcome::Bt {
+            SelectionState::Bt {
+                selected, save_dir, ..
+            } => SelectionOutcome::Bt {
                 indices: selected.iter().copied().collect(),
+                save_dir: bt_save_dir_outcome(save_dir, &self.save_dir_input_value(cx)),
             },
             SelectionState::Variant { selected, .. } => {
                 SelectionOutcome::Variant { index: *selected }
@@ -240,6 +291,85 @@ impl SelectionView {
             };
         })
         .detach();
+    }
+
+    fn save_dir_input_value(&self, cx: &App) -> SharedString {
+        self.save_dir_input
+            .as_ref()
+            .map(|input| input.read(cx).value())
+            .unwrap_or_default()
+    }
+
+    /// 系统目录选择器只能选本机目录。打开期间禁止重入；选中后写入输入框。
+    fn pick_save_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picking_save_dir || self.submitting || self.save_dir_input.is_none() {
+            return;
+        }
+        self.picking_save_dir = true;
+        cx.notify();
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(self.strings.save_dir_placeholder.clone()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            // 取消不是失败；选择器本身出错或通道断开才提示，不把错误吞掉。
+            let (picked, failed) = match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    (paths.first().map(|path| path.display().to_string()), false)
+                }
+                Ok(Ok(None)) => (None, false),
+                Ok(Err(_)) => (None, true),
+                Err(_) => (None, true),
+            };
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                this.picking_save_dir = false;
+                if let Some(path) = picked
+                    && let Some(input) = &this.save_dir_input
+                {
+                    input.update(cx, |input, cx| input.set_value(path, window, cx));
+                }
+                if failed {
+                    window.push_notification(
+                        Notification::error(this.strings.file_picker_error.clone()),
+                        cx,
+                    );
+                }
+                // set_value 不发 Change，确认按钮是否可点要靠这次重绘。
+                cx.notify();
+            }) else {
+                // 视图或窗口已释放，不再回写异步结果。
+                return;
+            };
+        })
+        .detach();
+    }
+
+    /// 保存目录在全选工具栏之上：标签 + 输入框 + 浏览。长路径留在输入框里滚动，不撑开窗口。
+    fn render_save_dir(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let input = self.save_dir_input.as_ref()?;
+        Some(
+            form_field(
+                self.strings.save_dir.clone(),
+                input_with_action(
+                    Input::new(input).control(cx).w_full(),
+                    Button::new("bt-save-dir-browse")
+                        .outline()
+                        .icon(FluxIcon::FolderOpen)
+                        .label(self.strings.browse.clone())
+                        .control(cx)
+                        .disabled(self.picking_save_dir || self.submitting)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.pick_save_dir(window, cx);
+                        })),
+                    cx,
+                ),
+                None,
+                cx,
+            )
+            .flex_none(),
+        )
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
@@ -307,9 +437,9 @@ impl SelectionView {
                 .overflow_y_scroll()
                 .child(self.render_hls(options, *selected, cx))
                 .into_any_element(),
-            SelectionState::Bt { files, selected } => {
-                self.render_bt(files, selected, cx).into_any_element()
-            }
+            SelectionState::Bt {
+                files, selected, ..
+            } => self.render_bt(files, selected, cx).into_any_element(),
             SelectionState::Variant { options, selected } => div()
                 .id("selection-variant-scroll")
                 .size_full()
@@ -455,7 +585,10 @@ impl SelectionView {
                     .control(cx)
                     .label(self.strings.select_all.clone())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt { files, selected } = &mut this.state {
+                        if let SelectionState::Bt {
+                            files, selected, ..
+                        } = &mut this.state
+                        {
                             *selected = files.iter().map(|file| file.index).collect();
                         }
                         cx.notify();
@@ -547,11 +680,13 @@ impl SelectionView {
                 .when(checked, |row| row.bg(tokens.colors.accent))
             }))
             .overflow_y_scrollbar();
+        // 保存目录在全选工具栏之上，不进文件列表的滚动区。
         v_flex()
             .size_full()
             .gap(tokens.spacing.sm)
             .px(tokens.spacing.md)
             .pb(tokens.spacing.md)
+            .children(self.render_save_dir(cx))
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(list))
     }
@@ -566,7 +701,10 @@ impl SelectionView {
                 .auto_default_in
                 .replace("{seconds}", &remaining.to_string()),
         );
-        let confirm_label = if let SelectionState::Bt { files, selected } = &self.state {
+        let confirm_label = if let SelectionState::Bt {
+            files, selected, ..
+        } = &self.state
+        {
             let size: i64 = files
                 .iter()
                 .filter(|file| selected.contains(&file.index))
@@ -613,7 +751,7 @@ impl SelectionView {
                             .control(cx)
                             .label(confirm_label)
                             .busy(self.submitting)
-                            .disabled(self.submitting || !self.can_confirm())
+                            .disabled(self.submitting || !self.can_confirm(cx))
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.confirm(window, cx);
                             })),
@@ -661,6 +799,10 @@ struct SelectionStrings {
     select_all: SharedString,
     deselect_all: SharedString,
     selected_count: SharedString,
+    save_dir: SharedString,
+    save_dir_placeholder: SharedString,
+    browse: SharedString,
+    file_picker_error: SharedString,
     confirm: SharedString,
     cancel: SharedString,
     auto_default_in: SharedString,
@@ -687,6 +829,10 @@ impl SelectionStrings {
             select_all: shared(translator.text("btFileSelectAll")),
             deselect_all: shared(translator.text("deselectAll")),
             selected_count: shared(translator.text("selectedCount")),
+            save_dir: shared(translator.text("saveDir")),
+            save_dir_placeholder: shared(translator.text("selectSaveDir")),
+            browse: shared(translator.text("browse")),
+            file_picker_error: shared(translator.text("filePickerErrorNative")),
             confirm: shared(translator.text("confirm")),
             cancel: shared(translator.text("cancel")),
             auto_default_in: shared(translator.text("selectionAutoDefaultIn")),
@@ -705,4 +851,119 @@ fn now_unix_ms() -> i64 {
         .map_or(0, |duration| {
             i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
         })
+}
+
+/// 保存目录输入是否允许确认。
+///
+/// 请求带了当前目录时，去空白后必须非空（清空不能确认，避免空路径开下）。
+/// 请求没带目录（旧 daemon，`initial` 去空白后为空）时，空输入也允许确认，
+/// 答复里 `save_dir = None`，引擎沿用任务当前目录。
+fn bt_save_dir_confirmable(initial: &str, input: &str) -> bool {
+    initial.trim().is_empty() || !input.trim().is_empty()
+}
+
+/// 把保存目录输入收成 [`SelectionOutcome::Bt`] 的 `save_dir`。
+///
+/// `Some` 仅当去空白后非空，且与预填目录（同样只去首尾空白，不改大小写、不换分隔符）
+/// 不同：引擎据此在真正下载前搬到新目录并重开任务。未改、只改了首尾空白、或空输入
+/// 都是 `None`（沿用当前目录）。
+#[must_use]
+fn bt_save_dir_outcome(initial: &str, input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed == initial.trim() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bt_save_dir_confirmable, bt_save_dir_outcome};
+
+    #[test]
+    fn unchanged_dir_keeps_current() {
+        assert_eq!(bt_save_dir_outcome("/data", "/data"), None);
+        assert_eq!(bt_save_dir_outcome(r"D:\Movies", r"D:\Movies"), None);
+        assert_eq!(
+            bt_save_dir_outcome(r"\\nas\share\下载", r"\\nas\share\下载"),
+            None
+        );
+    }
+
+    #[test]
+    fn changed_dir_is_sent_trimmed() {
+        assert_eq!(
+            bt_save_dir_outcome("/data", "/new"),
+            Some("/new".to_owned())
+        );
+        assert_eq!(
+            bt_save_dir_outcome("/data", "  /new  "),
+            Some("/new".to_owned())
+        );
+        assert_eq!(
+            bt_save_dir_outcome("/storage/emulated/0/Download", "/sdcard/Movies"),
+            Some("/sdcard/Movies".to_owned())
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_not_a_change() {
+        assert_eq!(bt_save_dir_outcome("/data", "  /data  "), None);
+        assert_eq!(bt_save_dir_outcome("  /data  ", "/data"), None);
+        assert_eq!(
+            bt_save_dir_outcome(
+                "/var/mobile/Containers/Data/Application/uuid/Documents",
+                "  /var/mobile/Containers/Data/Application/uuid/Documents  "
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_input_keeps_current() {
+        assert_eq!(bt_save_dir_outcome("/data", ""), None);
+        assert_eq!(bt_save_dir_outcome("/data", "   "), None);
+        assert_eq!(bt_save_dir_outcome("", ""), None);
+        assert_eq!(bt_save_dir_outcome("", "   "), None);
+    }
+
+    #[test]
+    fn empty_initial_with_typed_dir_is_sent() {
+        assert_eq!(
+            bt_save_dir_outcome("", "  /picked  "),
+            Some("/picked".to_owned())
+        );
+        assert_eq!(
+            bt_save_dir_outcome("", "  C:\\Users\\zero\\Downloads  "),
+            Some("C:\\Users\\zero\\Downloads".to_owned())
+        );
+    }
+
+    #[test]
+    fn path_text_is_sent_as_typed_beyond_trimming() {
+        // 客户端只去首尾空白、不做路径规范化：内部空格与末尾分隔符原样带回，
+        // 是否同一目录由引擎（`normalize_save_dir`）判定。
+        assert_eq!(
+            bt_save_dir_outcome("/data", "/data/My  Movies"),
+            Some("/data/My  Movies".to_owned())
+        );
+        assert_eq!(
+            bt_save_dir_outcome(r"D:\Movies", "D:\\Movies\\"),
+            Some("D:\\Movies\\".to_owned())
+        );
+    }
+
+    #[test]
+    fn confirmable_requires_dir_unless_old_daemon() {
+        assert!(!bt_save_dir_confirmable("/data", ""));
+        assert!(!bt_save_dir_confirmable("/data", "   "));
+        assert!(bt_save_dir_confirmable("/data", "/data"));
+        assert!(bt_save_dir_confirmable("/data", "/new"));
+        // 旧 daemon 没带目录：空输入仍可确认（答复 None）。
+        assert!(bt_save_dir_confirmable("", ""));
+        assert!(bt_save_dir_confirmable("", "   "));
+        assert!(bt_save_dir_confirmable("  ", ""));
+        assert!(bt_save_dir_confirmable("", r"D:\Movies"));
+    }
 }

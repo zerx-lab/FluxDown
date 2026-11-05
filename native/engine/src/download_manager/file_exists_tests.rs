@@ -11,7 +11,7 @@ use super::*;
 use crate::events::{EngineEvent, EventSink};
 use crate::file_exists::{ExistsDecision, OverwritePolicy};
 use crate::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption};
-use crate::selection::{FileConflict, FileExistsChoice, SelectionOutcome};
+use crate::selection::{BtFileChoice, FileConflict, FileExistsChoice, SelectionOutcome};
 
 struct NullSink;
 
@@ -59,9 +59,10 @@ impl HostSelection for FakeSelector {
         &self,
         _task_id: &str,
         _files: &[BtFileEntry],
+        _save_dir: &str,
         _timeout: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>> {
-        SelectionOutcome::NoSelectorConfigured(Vec::new())
+    ) -> SelectionOutcome<BtFileChoice> {
+        SelectionOutcome::NoSelectorConfigured(BtFileChoice::default())
     }
 
     async fn select_resolve_variant(

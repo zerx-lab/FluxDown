@@ -357,7 +357,7 @@ public struct SelectionRequest: Sendable, Hashable, Identifiable {
 
 public enum SelectionKind: Sendable, Hashable {
     case hls([HlsOption])
-    case bt([BtFile])
+    case bt([BtFile], saveDir: String)
     case variant([VariantOption])
     case fileExists(FileConflict)
     case plugin(site: String, url: String, candidates: [PluginCandidate])
@@ -434,7 +434,7 @@ public struct VariantOption: Sendable, Hashable {
 
 public enum SelectionOutcome: Sendable, Hashable {
     case hls(index: Int32)
-    case bt(indices: [Int32])
+    case bt(indices: [Int32], saveDir: String?)
     case variant(index: Int32)
     case fileExists(action: FileExistsAction)
     case plugin(identity: String, remember: Bool)

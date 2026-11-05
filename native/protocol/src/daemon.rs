@@ -17,8 +17,12 @@ pub enum SelectionKind {
     Hls {
         options: Vec<HlsQualityOptionDto>,
     },
+    /// BT 文件选择。`save_dir` = 任务当前保存目录（主机路径，供选择窗预填；旧 daemon 缺省）。
+    #[serde(rename_all = "camelCase")]
     Bt {
         files: Vec<BtFileDto>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        save_dir: String,
     },
     Variant {
         options: Vec<ResolveVariantOptionDto>,
@@ -146,8 +150,12 @@ pub enum SelectionOutcome {
     Hls {
         index: i32,
     },
+    /// 应答 [`SelectionKind::Bt`]：`save_dir` 非空且不同于任务当前目录时，引擎丢弃已暂存的
+    /// 数据、把任务改到该目录后重新开始；缺省 = 沿用当前目录。
     Bt {
         indices: Vec<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        save_dir: Option<String>,
     },
     Variant {
         index: i32,

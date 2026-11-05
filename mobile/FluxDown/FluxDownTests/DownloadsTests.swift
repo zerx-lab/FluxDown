@@ -1095,7 +1095,7 @@ struct DownloadsRowTextTests {
         func request(_ id: String, _ kind: SelectionKind) -> SelectionRequest {
             SelectionRequest(requestId: id, taskId: "t", kind: kind, defaultChoice: .cancelled, deadlineUnixMs: 0)
         }
-        let hidden = [request("b", .bt([])), request("p", .plugin(site: "s", url: "u", candidates: [])), request("v", .variant([]))]
+        let hidden = [request("b", .bt([], saveDir: "")), request("p", .plugin(site: "s", url: "u", candidates: [])), request("v", .variant([]))]
         #expect(hidden.presentable.isEmpty)
         #expect(PendingSelection.make(hidden) { _ in nil } == nil)
         // 队首被剔除时横幅落到下一条可处理的请求（HLS 照常）。
@@ -1135,7 +1135,7 @@ struct DownloadsRowTextTests {
         #expect(many?.titleKey == "fileConflictTitleMany" && many?.titleCount == 2)
         #expect(many?.deadlineUnixMs == 5 && many?.countdownKey == "fileConflictAutoRenameIn")
 
-        let bt = SelectionRequest(requestId: "bt", taskId: "t", kind: .bt([]), defaultChoice: .cancelled, deadlineUnixMs: 1)
+        let bt = SelectionRequest(requestId: "bt", taskId: "t", kind: .bt([], saveDir: ""), defaultChoice: .cancelled, deadlineUnixMs: 1)
         #if FULL_FLAVOR
         #expect(PendingSelection.make([bt]) { _ in "x" }?.route == .selection(requestId: "bt"))
         #else

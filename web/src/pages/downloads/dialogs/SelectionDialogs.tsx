@@ -7,13 +7,16 @@
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useT } from '../../../i18n'
-import { rpc, useTasks } from '../../../lib/rpc'
+import { rpc, useAgent, useTasks } from '../../../lib/rpc'
 import type { BtFileDto, HlsQualityOptionDto, ResolveVariantOptionDto, SelectionKind, SelectionOutcome, SelectionRequestDto } from '../../../lib/rpc'
-import { Button, Checkbox, Dialog, DialogFooter, FieldHint, Icon, Input } from '../../../ui'
+import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory, saveDirChoices } from '../../../lib/saveDirHistory'
+import { Button, Checkbox, Dialog, DialogFooter, FieldHint, FormField, Icon, Input } from '../../../ui'
 import { toastRpcError } from '../../../lib/rpcToast'
 import { cn } from '../../../lib/cn'
 import { formatBytes, useNow } from './utils'
 import { PluginChoiceDialog } from './PluginChoiceDialog'
+import { SaveDirCombo } from './SaveDirCombo'
+import { btSelectionCanConfirm, btSelectionSaveDir } from './btSelection'
 
 type ChoiceKind = Exclude<SelectionKind, { type: 'fileExists' | 'plugin' }>
 
@@ -47,6 +50,11 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
     if (choice.kind === 'bt' && choice.indices.length > 0) return new Set(choice.indices)
     return new Set(kind.type === 'bt' ? kind.files.map((file) => file.index) : [])
   })
+  const btPrefill = kind.type === 'bt' ? (kind.saveDir ?? '') : ''
+  const [btSaveDir, setBtSaveDir] = useState(btPrefill)
+  const historyEnabled = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_ENABLED_PREF] !== false, true)
+  const historyValue = useAgent((snapshot) => snapshot.preferences.values[SAVE_DIR_HISTORY_PREF], undefined)
+  const saveDirHistory = useMemo(() => (historyEnabled ? readSaveDirHistory(historyValue) : []), [historyEnabled, historyValue])
 
   const task = tasks.find((item) => item.taskId === request.taskId)
   const taskName = task?.fileName || task?.originUrl || task?.url || ''
@@ -67,7 +75,10 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
   const confirm = () => {
     if (kind.type === 'hls') void resolve({ kind: 'hls', index: hlsIndex })
     else if (kind.type === 'variant') void resolve({ kind: 'variant', index: variantIndex })
-    else void resolve({ kind: 'bt', indices: [...btSelected].sort((a, b) => a - b) })
+    else {
+      const saveDir = btSelectionSaveDir(btPrefill, btSaveDir)
+      void resolve({ kind: 'bt', indices: [...btSelected].sort((a, b) => a - b), ...(saveDir ? { saveDir } : {}) })
+    }
   }
 
   let title: string
@@ -86,7 +97,7 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
   // BT：`indices` 为空数组在协议里表示「全部文件」，所以没有勾选时必须禁用确认。
   const btSize = kind.type === 'bt' ? kind.files.filter((file) => btSelected.has(file.index)).reduce((sum, file) => sum + Math.max(0, file.size), 0) : 0
   const confirmLabel = kind.type === 'bt' ? t('btFileSelectConfirm', { count: btSelected.size, size: formatBytes(btSize) }) : t('confirm')
-  const canConfirm = kind.type !== 'bt' || btSelected.size > 0
+  const canConfirm = kind.type !== 'bt' || btSelectionCanConfirm(btPrefill, btSaveDir, btSelected.size)
 
   return (
     <Dialog
@@ -119,7 +130,19 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
       ) : kind.type === 'variant' ? (
         <VariantOptions options={kind.options} value={variantIndex} onChange={setVariantIndex} />
       ) : (
-        <BtFiles files={kind.files} selected={btSelected} onSelectedChange={setBtSelected} />
+        <div className="flex flex-col gap-3">
+          <FormField label={t('saveDir')} htmlFor="bt-selection-save-dir">
+            <SaveDirCombo
+              id="bt-selection-save-dir"
+              value={btSaveDir}
+              placeholder={t('selectSaveDir')}
+              choices={saveDirChoices([], saveDirHistory, btSaveDir)}
+              label={t('saveDirRecent')}
+              onChange={setBtSaveDir}
+            />
+          </FormField>
+          <BtFiles files={kind.files} selected={btSelected} onSelectedChange={setBtSelected} />
+        </div>
       )}
     </Dialog>
   )

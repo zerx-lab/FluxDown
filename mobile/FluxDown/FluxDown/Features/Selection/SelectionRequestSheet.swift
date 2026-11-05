@@ -63,7 +63,7 @@ private struct SelectionHost: View {
         let task = container.store.state.task(request.taskId)
         switch request.kind {
         #if FULL_FLAVOR
-        case let .bt(files):
+        case let .bt(files, _):
             BtSelectionView(request: request, files: files, task: task, resolver: resolver, close: { dismiss() })
                 .id(request.requestId)
         case let .variant(options):
@@ -126,7 +126,7 @@ private struct BtSelectionView: View {
         self.close = close
         let root = buildBtTree(files)
         var defaults: [Int32] = []
-        if case let .bt(indices) = request.defaultChoice { defaults = indices }
+        if case let .bt(indices, _) = request.defaultChoice { defaults = indices }
         let start = initialBtSelection(files: files, defaultIndices: defaults)
         _timing = State(initialValue: SelectionTiming(request))
         _tree = State(initialValue: root)
@@ -183,7 +183,7 @@ private struct BtSelectionView: View {
                     Button {
                         resolver.resolve(
                             request,
-                            .bt(indices: selected.sorted()),
+                            .bt(indices: selected.sorted(), saveDir: nil),
                             successToast: L("mobileDownloadStarted"),
                             userInitiated: true,
                             onSuccess: close

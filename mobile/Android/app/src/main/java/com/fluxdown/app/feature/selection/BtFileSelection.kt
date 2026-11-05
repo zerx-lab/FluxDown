@@ -183,7 +183,7 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
                     {
                         ui.resolver.resolve(
                             request,
-                            SelectionOutcome.Bt(selected.toList().sorted()),
+                            SelectionOutcome.Bt(selected.toList().sorted(), saveDir = null),
                             startedText,
                             userInitiated = true,
                         )
