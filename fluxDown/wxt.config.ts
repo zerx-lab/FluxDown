@@ -135,6 +135,13 @@ export default defineConfig({
         },
       },
     },
+    // Firefox MV3 默认扩展页 CSP 为 "script-src 'self'; upgrade-insecure-requests;"，会把
+    // background / 选项页对用户自部署远程服务器（如 http://192.168.1.10:17800）的请求强制升级为
+    // https 而失败（#1025）。显式声明同等 script-src、去掉 upgrade-insecure-requests；
+    // Chromium 默认 CSP 无此指令，不改。
+    ...(browser === "firefox"
+      ? { content_security_policy: { extension_pages: "script-src 'self';" } }
+      : {}),
     // 描述经 _locales 跟随浏览器语言；浏览器快捷键页已按扩展分组，无需再加扩展名前缀。
     // 打开侧边栏：Firefox 用内置 `_execute_sidebar_action`（浏览器直接切换 sidebar_action）；
     // Chromium 无内置命令，以自定义命令在 background 中调用 sidePanel.open。
