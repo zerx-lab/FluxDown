@@ -47,7 +47,6 @@ thiserror = "2.0"
 tokio = { version = "1.45.0", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "fs", "net", "io-util", "process"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
-ts2mp4 = "0.3"
 url = "2"
 uuid = { version = "1", features = ["v4", "v7"] }
 # 插件 zip 安装（跨桌面/服务端；仅 plugins feature 开启时启用）
@@ -78,6 +77,7 @@ if-addrs = "0.15"
 
 [dev-dependencies]
 http = "1.4.0"
+ts2mp4 = "0.3"
 
 [features]
 # 默认关闭；desktop/server 构建显式开启，mobile（Android/iOS）保持关闭以免背 JS 引擎债。

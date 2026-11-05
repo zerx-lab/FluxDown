@@ -25,10 +25,12 @@ start_service() {
 	# agent 在 --server 模式下拉起同级 fluxdownd，SIGTERM 时一并关停 daemon
 	procd_set_param command "$PROG" --server
 	# FLUXDOWN_INSTALL_SOURCE：二进制归 opkg / apk 管理，应用内更新只提示安装新包
+	# MIMALLOC_PURGE_DELAY=0：释放的内存立即归还系统（daemon 继承）
 	procd_set_param env \
 		FLUXDOWN_BIND="$bind" \
 		FLUXDOWN_DATA_DIR="$data_dir" \
-		FLUXDOWN_INSTALL_SOURCE=openwrt
+		FLUXDOWN_INSTALL_SOURCE=openwrt \
+		MIMALLOC_PURGE_DELAY=0
 	# 非空 token：预置访问密钥并每次启动强制覆盖；留空则由 Web 界面首次访问时设置
 	if [ -n "$token" ]; then
 		procd_append_param env FLUXDOWN_TOKEN="$token" FLUXDOWN_TOKEN_FORCE=1

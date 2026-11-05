@@ -686,15 +686,14 @@ CREATE TABLE IF NOT EXISTS bt_guard_cloud_meta (
 /// checkpoint 时同步；进程崩溃不丢已提交事务，仅整机掉电可能丢失最近
 /// 数秒的提交（数据库本身不会损坏）。下载进度/任务元数据可由续传重建，
 /// 换来批量导入与进度落库的 fsync 开销归零。
-/// cache_size=-16384（16MiB，负值单位为 KiB）：23 万任务级别的库里 UUID 主键
-/// 的 B 树随机访问，512KiB 页缓存几乎必然未命中并反复 pread；16MiB 足以容纳
-/// 常用索引的热页。内存取舍：该值是「每连接」上限且按需增长（空库不预占），
-/// 连接池上限 5 条，最坏占用 = 5 × 16MiB，对桌面/NAS/手机均可接受，
-/// 因此不按平台区分，避免出现两套行为。
+/// cache_size（负值单位为 KiB）：23 万任务级别的库里 UUID 主键的 B 树随机访问，
+/// 512KiB 页缓存几乎必然未命中并反复 pread；标准档 16MiB 足以容纳常用索引的热页。
+/// 该值是「每连接」上限且按需增长（空库不预占），连接池上限 5 条；按本机有效内存
+/// 分档（[`crate::mem_budget`]：<1.5GiB 取 4MiB、<3GiB 取 8MiB），在 after_connect
+/// 中单独设置。
 const SQLITE_PRAGMAS: &str = "PRAGMA journal_mode=WAL;\
  PRAGMA synchronous=NORMAL;\
  PRAGMA busy_timeout=5000;\
- PRAGMA cache_size=-16384;\
  PRAGMA temp_store=MEMORY;\
  PRAGMA mmap_size=0;\
  PRAGMA wal_autocheckpoint=1000;";
@@ -1370,6 +1369,13 @@ impl Db {
                 Box::pin(async move {
                     if conn.backend_name() == "SQLite" {
                         sqlx::raw_sql(SQLITE_PRAGMAS).execute(&mut *conn).await?;
+                        let cache = format!(
+                            "PRAGMA cache_size=-{};",
+                            crate::mem_budget::current().sqlite_cache_kib
+                        );
+                        sqlx::raw_sql(AssertSqlSafe(cache))
+                            .execute(&mut *conn)
+                            .await?;
                     }
                     Ok(())
                 })

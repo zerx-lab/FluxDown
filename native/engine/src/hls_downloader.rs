@@ -362,10 +362,6 @@ const DEFAULT_HLS_CONCURRENCY: usize = 8;
 /// 先跑这么远;更大只会让暂停 / 出错时丢弃的内存缓冲变多。
 const REORDER_AHEAD_PER_CONNECTION: usize = 8;
 
-/// 乱序缓冲字节上限:已下载、待按序写盘的分段达到它后暂停派发(队首段永远放行)。
-/// 在途分段不计入,内存峰值约为它加上并发数 × 单段大小。
-const REORDER_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
-
 /// 续传检查点节流间隔。检查点只声明"已完整落盘的连续前缀",落后不影响正确性
 /// (续传时截断到检查点、重下其后的段),退出时另行补写最新前缀。
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(DB_SAVE_INTERVAL_SECS);
@@ -2889,11 +2885,6 @@ async fn finalize_recording(
 // TS → MP4 remux (best-effort)
 // ---------------------------------------------------------------------------
 
-/// 内存转换兜底(ffmpeg 不可用或失败时)的体积上限。ts2mp4 会在内存里同时持有整份
-/// TS 与多份中间产物(峰值为文件体积的数倍),收紧到 192MB 以避免低内存设备在收尾
-/// 阶段 OOM;超限时保留 .ts。ffmpeg 流复制不读入内存,不受此限。
-const MAX_REMUX_BYTES: u64 = 192 * 1024 * 1024;
-
 /// remux 需要 dest 卷至少还有 `file_len`(mp4 产物 ≈ ts 体积,仅重封装
 /// 无转码)+ 安全余量——remux 期间 `.ts` 与 `.mp4` 并存,峰值 ≈ 2x。
 /// `avail=None`(网络盘/权限/超时,无法探测)按放行处理:预检是优化,
@@ -2910,11 +2901,12 @@ fn remux_space_ok(avail: Option<u64>, file_len: u64) -> bool {
 /// 目录/删除失败仍走既有失败路径(保留 .ts)。
 ///
 /// `is_fmp4`(#682):播放列表带 EXT-X-MAP,`.ts` 里装的已经是分片 MP4
-/// (ftyp+moov+[moof+mdat]*),不做 TS→MP4 转换,跳过体积/空间预检,只按同一
+/// (ftyp+moov+[moof+mdat]*),不做 TS→MP4 转换,跳过空间预检,只按同一
 /// 套 dedup + 原子占名协议把文件改名为 `.mp4`;失败同样保留 `.ts`。
 ///
-/// `ffmpeg = Some`:TS→MP4 优先走 ffmpeg 流复制(`-c copy`,不把整文件读进内存);
-/// 取消时保留 `.ts`;ffmpeg 执行失败才退回内存 ts2mp4,并受 [`MAX_REMUX_BYTES`] 限制。
+/// `ffmpeg = Some`:TS→MP4 优先走 ffmpeg 流复制(`-c copy`);取消时保留 `.ts`。
+/// ffmpeg 不可用或执行失败时走 [`crate::ts_remux`] 流式重封装:两遍顺序读 TS,
+/// 内存只与单帧大小相关,不随文件体积增长,因此不设体积上限。
 async fn remux_ts_to_mp4(
     ts_path: &std::path::Path,
     task_id: &str,
@@ -2976,23 +2968,14 @@ async fn remux_ts_to_mp4(
             Err(DownloadError::Cancelled) => return None,
             Err(e) => {
                 log_info!(
-                    "[hls] task {} ffmpeg remux failed: {}, falling back to in-memory remux",
+                    "[hls] task {} ffmpeg remux failed: {}, falling back to streaming remux",
                     task_id,
                     e
                 );
             }
         }
     }
-    if !is_fmp4 && !ffmpeg_done && file_len > MAX_REMUX_BYTES {
-        log_info!(
-            "[hls] task {} skipping TS→MP4 remux: file is {} bytes (limit {}), keeping .ts",
-            task_id,
-            file_len,
-            MAX_REMUX_BYTES
-        );
-        return None;
-    }
-
+    let cancel_inner = cancel.clone();
     match tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
         // fMP4:待改名的源就是 .ts 本身;否则转换产物先落 tmp。
         let src = if is_fmp4 {
@@ -3000,11 +2983,7 @@ async fn remux_ts_to_mp4(
         } else if ffmpeg_done {
             mp4_tmp_inner.clone()
         } else {
-            let ts_data = std::fs::read(&ts_owned)?;
-            let mp4_data = ts2mp4::convert_ts_to_mp4(&ts_data)?;
-            drop(ts_data);
-            std::fs::write(&mp4_tmp_inner, &mp4_data)?;
-            drop(mp4_data);
+            crate::ts_remux::remux_file(&ts_owned, &mp4_tmp_inner, &cancel_inner)?;
             mp4_tmp_inner.clone()
         };
         // 原子占名(同 `downloader::claim_rename` 协议,此处在阻塞线程内走
@@ -3067,16 +3046,21 @@ async fn remux_ts_to_mp4(
             if is_fmp4 {
                 log_info!("[hls] task {} fMP4 output renamed .ts -> .mp4", task_id);
             } else {
-                log_info!("[hls] task {} remuxed TS -> MP4", task_id);
+                let mode = if ffmpeg_done { "ffmpeg" } else { "streaming" };
+                log_info!("[hls] task {} remuxed TS -> MP4 ({})", task_id, mode);
             }
             Some(mp4_path)
         }
         Ok(Err(e)) => {
-            log_info!(
-                "[hls] task {} MP4 remux failed: {}, keeping .ts",
-                task_id,
-                e
-            );
+            if cancel.is_cancelled() {
+                tracing::debug!(task_id, "HLS remux cancelled; keeping .ts");
+            } else {
+                log_info!(
+                    "[hls] task {} MP4 remux failed: {}, keeping .ts",
+                    task_id,
+                    e
+                );
+            }
             if let Err(error) = tokio::fs::remove_file(&mp4_tmp).await
                 && error.kind() != std::io::ErrorKind::NotFound
             {
@@ -5095,7 +5079,9 @@ struct WindowState {
 /// 网络并发与按序写盘之间的乱序窗口。
 ///
 /// 段下载完即归还连接许可,数据在这里等待按序写盘;派发只受窗口约束:领先写盘
-/// 位置不超过 `max_ahead` 段,且缓冲字节未达 [`REORDER_BUFFER_BYTES`]。队首段永远
+/// 位置不超过 `max_ahead` 段,且缓冲字节未达按本机内存分档的
+/// [`crate::mem_budget::MemoryBudget::hls_reorder_bytes`](在途分段不计入,内存峰值约为
+/// 它加上并发数 × 单段大小)。队首段永远
 /// 放行:派发严格按序,队首段一定已经派发,预算再满也不会卡住 writer。
 struct ReorderWindow {
     state: watch::Sender<WindowState>,
@@ -5114,7 +5100,7 @@ impl ReorderWindow {
             max_ahead: concurrency
                 .max(1)
                 .saturating_mul(REORDER_AHEAD_PER_CONNECTION),
-            budget: REORDER_BUFFER_BYTES,
+            budget: crate::mem_budget::current().hls_reorder_bytes,
         }
     }
 
@@ -6777,6 +6763,65 @@ v360.m3u8\n\
         let probe = probe_streams(&ffmpeg, &mp4);
         assert!(
             probe.contains("Video:") && probe.contains("Audio:"),
+            "{probe}"
+        );
+        std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
+    }
+
+    /// 无 ffmpeg 时走流式重封装:产出可播放的音视频 MP4,源 `.ts` 与临时文件都不留残。
+    #[tokio::test]
+    async fn remux_without_ffmpeg_streams_h264_ts_into_playable_mp4() {
+        let Some(ffmpeg) = std::env::var_os("FLUXDOWN_TEST_FFMPEG").map(std::path::PathBuf::from)
+        else {
+            eprintln!("[skip] 未设置 FLUXDOWN_TEST_FFMPEG，跳过流式 remux 真实素材");
+            return;
+        };
+        let dir = scratch_dir("remux_streaming");
+        let ts = dir.join("clip.ts");
+        let encoded = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-loglevel", "error"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=25:duration=3",
+            ])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=3",
+            ])
+            .args(["-c:v", "libx264", "-c:a", "aac", "-f", "mpegts"])
+            .arg(&ts)
+            .status()
+            .is_ok_and(|status| status.success());
+        if !encoded {
+            eprintln!("[skip] ffmpeg 无法编码 H.264 测试素材");
+            std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
+            return;
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let mp4 = super::remux_ts_to_mp4(
+            &ts,
+            "t",
+            &crate::file_exists::OverwritePolicy::Never,
+            false,
+            None,
+            &cancel,
+        )
+        .await;
+
+        let Some(mp4) = mp4 else {
+            panic!("streaming remux must produce an mp4");
+        };
+        assert_eq!(mp4.file_name().and_then(|n| n.to_str()), Some("clip.mp4"));
+        assert!(ts.exists(), "remux 不删除源 .ts,由调用方在落库后清理");
+        assert!(!dir.join("clip.mp4.tmp").exists());
+        let probe = probe_streams(&ffmpeg, &mp4);
+        assert!(
+            probe.contains("Video: h264") && probe.contains("Audio: aac"),
             "{probe}"
         );
         std::fs::remove_dir_all(&dir).expect("remove HLS fixture directory");
