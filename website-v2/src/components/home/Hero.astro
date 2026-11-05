@@ -43,6 +43,7 @@ const versions = [
   { id: "linux", brand: "linux", label: t.moreItems.linux, hint: "AppImage · deb · Arch" },
   { id: "server", brand: "docker", label: t.moreItems.server, hint: "Docker · NAS" },
   { id: "android", brand: "android", label: t.moreItems.android, hint: "APK" },
+  { id: "ios", brand: "apple", label: t.moreItems.ios, hint: "TestFlight · IPA" },
   { id: "cli", icon: Terminal, label: t.moreItems.cli, hint: "CLI" },
   { id: "extension", icon: Puzzle, label: t.moreItems.extension, hint: "Chrome · Edge · Firefox" },
 ] as const;
@@ -73,7 +74,7 @@ const versions = [
             <ArrowRight size={13} strokeWidth={2} />
           </a>
         ) : (
-          <a href={href("/announcements/gpui-client", lang)} class="hero-badge">
+          <a href={href("/changelog", lang)} class="hero-badge">
             <span class="hero-badge-tag">{t.badge}</span>
             <span>{t.badgeText}</span>
             <ArrowRight size={13} strokeWidth={2} />
