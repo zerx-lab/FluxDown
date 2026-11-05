@@ -1,17 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Download, Layers, Link2 } from 'lucide-react'
+import { Copy, Download, Layers, Link2 } from 'lucide-react'
 import { useT } from '../../../i18n'
 import { Button, Icon, Tooltip } from '../../../ui'
 import { copyText } from '../../../lib/copy'
 import { useDownloads } from '../state'
 import { taskStateLabel } from '../table/text'
 import { copyUrls, downloadViewsFiles, isDownloadable } from '../model/actions'
-import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourceSite } from '../model/task'
+import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourcePageUrl, sourceSite } from '../model/task'
 import { localizeTaskError } from '../model/taskError'
 import type { DownloadTaskView, TaskState } from '../model/task'
 import { canChangeSegments, canChangeUrl } from '../model/taskEdit'
 import { openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
 import { routeLabel } from '../../../lib/taskRoute'
+import { CopyButton, SourcePageLink } from './CopyButton'
 import { DetailRow } from './DetailRow'
 import { SourcesSection } from './SourcesSection'
 
@@ -28,31 +28,6 @@ function formatEta(t: ReturnType<typeof useT>, seconds: number): string {
   if (seconds < 60) return t('etaSeconds', { n: String(seconds) })
   if (seconds < 3600) return t('etaMinutes', { n: String(Math.floor(seconds / 60)) })
   return t('etaHours', { n: (seconds / 3600).toFixed(1) })
-}
-
-function CopyErrorButton({ message }: { message: string }) {
-  const t = useT()
-  const [copied, setCopied] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => clearTimeout(timer.current), [])
-  const label = copied ? t('detailErrorCopied') : t('detailCopyError')
-  return (
-    <Tooltip content={label}>
-      <Button
-        variant="ghost"
-        iconOnly
-        aria-label={label}
-        onClick={() => {
-          copyText(message)
-          setCopied(true)
-          clearTimeout(timer.current)
-          timer.current = setTimeout(() => setCopied(false), 1500)
-        }}
-      >
-        <Icon icon={copied ? Check : Copy} />
-      </Button>
-    </Tooltip>
-  )
 }
 
 export function GeneralTab({ view }: { view: DownloadTaskView }) {
@@ -73,8 +48,9 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
       <div className="flex min-w-0 flex-[1_1_18.75rem] flex-col">
         <div className="flex flex-col gap-0.5 pb-2">
           <div className="min-w-0 truncate text-sm font-medium">{view.name}</div>
-          <div className="text-xs text-muted-foreground">
-            {PROTOCOL_LABEL[view.protocol]} · {sourceSite(view)}
+          <div className="flex min-w-0 gap-1 text-xs text-muted-foreground">
+            <span className="shrink-0">{PROTOCOL_LABEL[view.protocol]} ·</span>
+            <SourcePageLink text={sourceSite(view)} url={sourcePageUrl(view)} className="min-w-0 truncate" />
           </div>
           {view.boosted ? <div className="text-xs text-warning">{t('detailBoostActive')}</div> : null}
         </div>
@@ -113,7 +89,7 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           <DetailRow label={t('infoError')}>
             <div className="flex items-center gap-1">
               <span className="min-w-0 flex-1 break-all text-destructive">{localizeTaskError(t, view.errorMessage)}</span>
-              <CopyErrorButton message={localizeTaskError(t, view.errorMessage)} />
+              <CopyButton text={localizeTaskError(t, view.errorMessage)} label={t('detailCopyError')} copiedLabel={t('detailErrorCopied')} />
             </div>
           </DetailRow>
         ) : null}

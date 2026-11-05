@@ -564,6 +564,15 @@ impl DownloadTaskView {
         if host.is_empty() { &self.site } else { host }
     }
 
+    /// 可在浏览器打开的来源页：仅 `http(s)://` 且有 host 的 `referrer`。
+    /// `referrer` 来自浏览器捕获 / API，不可信；`file://`、`javascript:` 等交给系统打开
+    /// 会触发本地文件或协议处理器，只能复制不能点开。
+    pub(crate) fn source_page_url(&self) -> Option<&str> {
+        let (scheme, _) = self.referrer.split_once("://")?;
+        let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        (web && !url_host(&self.referrer).is_empty()).then_some(self.referrer.as_str())
+    }
+
     /// 文件扩展名（小写，无点）。
     pub(crate) fn extension(&self) -> Option<&str> {
         (!self.file_extension.is_empty()).then_some(self.file_extension.as_ref())
@@ -808,6 +817,32 @@ mod tests {
         assert_eq!(url_host("https://u:p@host.example:443/x"), "host.example");
         assert_eq!(url_host("http://[::1]:80/"), "::1");
         assert_eq!(url_host("magnet:?xt=abc"), "");
+    }
+
+    #[test]
+    fn source_page_url_only_opens_http_pages_with_host() {
+        let page = |referrer: &str| DownloadTaskView {
+            referrer: referrer.to_owned(),
+            ..local_task(1, 0, false)
+        };
+        for web in [
+            "https://a.example/p?q=1",
+            "HTTP://a.example",
+            "http://[::1]:8080/",
+        ] {
+            assert_eq!(page(web).source_page_url(), Some(web));
+        }
+        for blocked in [
+            "",
+            "https://",
+            "file:///etc/passwd",
+            "javascript:alert(1)//https://x",
+            "ftp://a.example/",
+            "chrome-extension://abc/page.html",
+            " https://a.example/",
+        ] {
+            assert_eq!(page(blocked).source_page_url(), None, "{blocked}");
+        }
     }
 
     #[test]

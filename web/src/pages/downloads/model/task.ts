@@ -312,6 +312,17 @@ export function sourceSite(view: DownloadTaskView): string {
   return host === '' ? view.site : host
 }
 
+/**
+ * 可在浏览器打开的来源页：仅 `http(s)://` 且有 host 的 referrer（与 GPUI `source_page_url` 一致）。
+ * referrer 来自浏览器捕获 / API，不可信；其他协议（`javascript:`、`file:` …）只显示与复制。
+ */
+export function sourcePageUrl(view: Pick<DownloadTaskView, 'referrer'>): string | null {
+  const split = view.referrer.indexOf('://')
+  if (split < 0) return null
+  const scheme = view.referrer.slice(0, split).toLowerCase()
+  return (scheme === 'http' || scheme === 'https') && urlHost(view.referrer) !== '' ? view.referrer : null
+}
+
 /** 本地任务实时并发连接数（远程 / 未连接为 null）。 */
 export function activeTransfers(view: DownloadTaskView): number | null {
   if (!view.runtimeConnected || view.source !== 'local') return null

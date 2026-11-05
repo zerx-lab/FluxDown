@@ -8,6 +8,8 @@
 mod activity;
 #[path = "task_detail_bt.rs"]
 mod bt;
+#[path = "task_detail_source.rs"]
+mod source_page;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -186,6 +188,8 @@ pub struct TaskDetailView {
     error_copied: u32,
     /// 日志「复制全部」按钮的反馈代次，语义同 `error_copied`。
     log_copied: u32,
+    /// 高级页「来源页」复制按钮的反馈代次，语义同 `error_copied`。
+    source_page_copied: u32,
 }
 
 impl EventEmitter<TaskDetailEvent> for TaskDetailView {}
@@ -310,6 +314,7 @@ impl TaskDetailView {
             seed_baseline: None,
             error_copied: 0,
             log_copied: 0,
+            source_page_copied: 0,
         };
         Self::spawn_speed_ticker(cx);
         this
@@ -371,6 +376,7 @@ impl TaskDetailView {
         self.closed = false;
         self.error_copied = 0;
         self.log_copied = 0;
+        self.source_page_copied = 0;
         self.seed_baseline = None;
         self.fetch_activity(cx);
         cx.notify();
@@ -1305,13 +1311,7 @@ impl TaskDetailView {
                                 .child(SharedString::from(row.name.clone())),
                         )
                     })
-                    .child(
-                        div()
-                            .text_size(tokens.typography.xs.size)
-                            .line_height(tokens.typography.xs.line_height)
-                            .text_color(tokens.colors.muted_foreground)
-                            .child(format!("{} · {}", row.protocol.label(), row.source_site())),
-                    )
+                    .child(self.render_source_line(&row, cx))
                     .when(boosted, |this| {
                         this.child(
                             div()
@@ -2254,11 +2254,8 @@ impl TaskDetailView {
             return div().into_any_element();
         };
         let dto = self.current_dto();
-        let referrer = if row.referrer.is_empty() {
-            self.t(cx, "detailNotSet")
-        } else {
-            SharedString::from(row.referrer.clone())
-        };
+        let referrer = SharedString::from(row.referrer.clone());
+        let referrer_is_web = row.source_page_url().is_some();
         let proxy = dto
             .map(|dto| dto.proxy_url.clone())
             .filter(|value| !value.is_empty())
@@ -2271,7 +2268,7 @@ impl TaskDetailView {
             .map(|route| route_label(route, self.translator.read(cx)));
         drop(row);
         let mut list = v_flex()
-            .child(detail_row(self.t(cx, "infoSourcePage"), referrer, cx))
+            .child(self.render_source_page_row(referrer, referrer_is_web, cx))
             .child(detail_row(self.t(cx, "taskProxy"), proxy, cx));
         if let Some(route) = route {
             list = list.child(detail_row(self.t(cx, "taskRoute"), route, cx));
