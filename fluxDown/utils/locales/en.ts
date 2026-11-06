@@ -286,6 +286,7 @@ const en: Record<MessageKey, string> = {
   "popup.task.remove": "Remove",
   "popup.task.open": "Open",
   "popup.task.reveal": "Show in Folder",
+  "popup.task.fileMissing": "File missing",
   "popup.task.paused": "Paused",
   "popup.task.pending": "Pending",
   "popup.task.preparing": "Preparing",

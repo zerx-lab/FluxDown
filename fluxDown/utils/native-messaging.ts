@@ -132,6 +132,8 @@ export interface TaskBrief {
   errorMessage?: string;
   /** Unix 秒级时间戳（字符串），与 Rust 端 TaskDto.createdAt 格式一致 */
   createdAt: string;
+  /** 已完成任务的落盘文件已被删除 / 移走（主程序维护）；缺省 = 未缺失。仅 true 时由 App 发出。 */
+  fileMissing?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────
