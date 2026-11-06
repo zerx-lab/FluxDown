@@ -141,7 +141,7 @@ private data class SelectionCaps(val canResume: Boolean, val canPause: Boolean) 
  */
 @Composable
 fun DownloadsSelectionDock(modifier: Modifier) {
-    SelectionDockContent(modifier, reservedEnd = FluxTheme.space.dockHeight + 12.dp)
+    SelectionDockContent(modifier, reservedEnd = FluxTheme.space.dockHeight + FluxTheme.space.dockOrbGap)
 }
 
 /** expanded 档：由列表栏自己浮在底部居中（壳层在该档不放坞与球）。 */
@@ -243,7 +243,7 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
         visible = selecting && !(paneOpen && count <= 1),
         modifier = modifier,
         reservedEnd = reservedEnd,
-        selectAllLabel = stringResource(R.string.mobileSelectAllLabel),
+        selectAllLabel = stringResource(R.string.selectAll),
         deselectAllLabel = stringResource(R.string.deselectAll),
         countDescription = { selectedFmt.fill("n" to it) },
         allSelectedDescription = stringResource(R.string.mobileSelectionAllOn),

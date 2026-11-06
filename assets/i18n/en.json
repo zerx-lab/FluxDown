@@ -2942,7 +2942,6 @@
   "mobileFilterEmptySub": "No tasks match the current filters.",
   "mobileEmptyDownloadsSub": "Tap the orb to add a download, or paste a link from the clipboard.",
   "mobileDockMove": "Move",
-  "mobileSelectAllLabel": "Selected · select all",
   "mobileSelectionAllOn": "All selected",
   "mobileSelectionAllOff": "Not all selected",
   "mobileSelectionToolbar": "Batch actions",

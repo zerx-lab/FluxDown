@@ -152,6 +152,7 @@
 - **测试里对同一 `HostSession.signals` 连续多次 `first {}` 等待会丢事件**：信号流是单队列拉取（`next_signal`），`first {}` 会消费并丢弃所有不匹配的信号；本机偏好的 `SectionChanged` 常先于经 daemon→agent 异步转发的 `ConfigChanged` 到达，被前一次等待丢掉后后一次永远等不到（CI 偶发 90s 超时）。多个条件必须在同一次收集里累积判定（同 `ConfigEditor` 等待归约后的 store 状态）→ `mobile/Android/bridge/src/test/.../LocalHostSmokeTest.kt::preferencesChannelWritesSyncedDaemonKeysAndLocalPreferences`。
 
 - **多行链接输入框不能用 `KeyboardType.Uri`**：Compose 对多行框虽加 `TYPE_TEXT_FLAG_MULTI_LINE` + `IME_FLAG_NO_ENTER_ACTION`，但小米 / 搜狗 / 百度等输入法见到 `TYPE_TEXT_VARIATION_URI` 就固定给「前往」键、回车不换行（#1010）；多行框一律 `KeyboardType.Text` + `ImeAction.Default`，单行 URL 框不受影响 → `mobile/Android/app/src/main/java/com/fluxdown/app/feature/newtask/NewDownloadSheet.kt`（批量链接框）。
+- **真模糊玻璃面采样的背景源必须不透明**：页面级 `fluxBackdropSource` 常只录透明的列表（画布 / 颗粒在壳层），模糊副本透明处会让下方清晰文字透过玻璃显出来；推入页内的玻璃面又拿不到舞台级源（壳层对页面内容提供 null 防 RenderNode 环），不自建页面级源就静默退化为实色。`GlassNode` 在副本下先垫 `canvas`；推入页浮层自建源并只对浮层提供 `LocalFluxBackdrop` → `mobile/Android/fluxui/src/main/java/com/fluxdown/fluxui/material/FluxGlass.kt::GlassNode.draw`、`app/.../feature/rss/RssItemsScreen.kt`（选择坞）、`feature/downloads/DownloadsScreen.kt`（`listBackdrop`）。
 
 ## iOS
 

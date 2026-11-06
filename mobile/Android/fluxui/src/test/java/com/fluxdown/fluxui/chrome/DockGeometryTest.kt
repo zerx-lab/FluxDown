@@ -98,4 +98,27 @@ class DockGeometryTest {
         assertEquals(geometry.starts[3], geometry.indicatorStart)
         assertEquals(geometry.widths[3], geometry.indicatorWidth)
     }
+
+    @Test
+    fun selectionSlotsFillDockWithoutClippingAnyButton() {
+        val out = IntArray(4)
+        // 都放得进等分槽：等分且无尾差，每格不窄于最宽按钮。
+        for (avail in listOf(200, 201, 203, 299)) {
+            val natural = intArrayOf(50, 44, 48, 44)
+            assertEquals(avail, selectionSlotWidths(avail, natural, out))
+            assertEquals(avail, out.sum())
+            assertTrue(out.max() - out.min() <= 1)
+            assertTrue(out.all { it >= natural.max() })
+        }
+        // 「取消全选」类长标签超出等分槽但总和放得下：各按钮不短于自然宽，剩余均分，总宽铺满。
+        val wide = intArrayOf(110, 48, 48, 48)
+        assertEquals(300, selectionSlotWidths(300, wide, out))
+        assertEquals(300, out.sum())
+        for (i in wide.indices) assertTrue(out[i] >= wide[i])
+        // 放不下（窄屏 / 大数量动作）：保持自然宽并超出，由外层横向滚动。
+        val crowded = intArrayOf(60, 52, 52, 52)
+        assertEquals(216, selectionSlotWidths(200, crowded, out))
+        assertArrayEquals(crowded, out)
+        assertEquals(0, selectionSlotWidths(100, IntArray(0), IntArray(0)))
+    }
 }

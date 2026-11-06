@@ -85,10 +85,11 @@ private val DockIcon = 24.dp
 private val DockLabelGap = 2.dp
 
 /**
- * 浮动导航坞：常驻的实色胶囊（柔和投影 + 细边界），不随滚动收起。
- * 各项等宽、图标在上标签在下；选中项由 accentLo 胶囊托底，图标与标签转为 accentHi，胶囊随选中弹簧滑动。
+ * 浮动导航坞：常驻的毛玻璃胶囊（[floatingChromeSurface]：真模糊 + 顶沿高光 + 向下软投影），不随滚动收起。
+ * 尺寸对齐 iOS 26 标签栏：高 62、内边距 4、图标 24、标签 10sp；各项等宽、图标在上标签在下；
+ * 选中项由 accentLo 胶囊托底，图标与标签转为 accentHi，胶囊随选中弹簧滑动。
  *
- * 本组件在父容器内**占满宽度、固定为主题 dockHeight 高**；坞本体宽 = 容器宽 − [reservedEnd]（球位 + 间距 12）。
+ * 本组件在父容器内**占满宽度、固定为主题 dockHeight 高**；坞本体宽 = 容器宽 − [reservedEnd]（球位 + dockOrbGap）。
  * 由应用负责摆放，系统导航栏上方留 8dp。
  *
  * - [hidden]：推入页 / Expanded 隐藏（`alpha 0、translateY 30dp`，退场结束后移出组合）。
@@ -104,7 +105,7 @@ fun FluxDock(
     modifier: Modifier = Modifier,
     hidden: Boolean = false,
     selectionMode: Boolean = false,
-    reservedEnd: Dp = FluxTheme.space.dockHeight + 12.dp,
+    reservedEnd: Dp = FluxTheme.space.dockHeight + FluxTheme.space.dockOrbGap,
     contentDescription: String = "主导航",
 ) {
     if (items.isEmpty()) return
@@ -151,8 +152,8 @@ private fun DockBody(
     val itemHeight = dockHeight - DockPad * 2
     val n = items.size
 
-    val labelStyle = remember(type) { dockLabelStyle(type.sized(type.weight(type.sm, 500), 12f, FluxScaleGroup.Ks)) }
-    val selectedLabelStyle = remember(type) { dockLabelStyle(type.sized(type.weight(type.sm, 600), 12f, FluxScaleGroup.Ks)) }
+    val labelStyle = remember(type) { dockLabelStyle(type.sized(type.weight(type.sm, 500), 10f, FluxScaleGroup.Ks)) }
+    val selectedLabelStyle = remember(type) { dockLabelStyle(type.sized(type.weight(type.sm, 600), 10f, FluxScaleGroup.Ks)) }
     val measurer = rememberTextMeasurer()
     val showLabels = remember(items, selectedLabelStyle, density, measurer, itemHeight) {
         val heights = IntArray(items.size) {
@@ -314,7 +315,7 @@ private fun DockLabel(text: String, style: TextStyle, color: Color, alpha: () ->
     )
 }
 
-/** 徽标压在图标右上角，带一圈坞面色描边与图标分开。 */
+/** 徽标压在图标右上角，带一圈 `glassSolid4` 描边（与玻璃坞面同色系）与图标分开。 */
 @Composable
 private fun BoxScope.DockBadgeView(badge: FluxDockBadge) {
     val c = FluxTheme.colors

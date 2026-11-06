@@ -2942,7 +2942,6 @@
   "mobileFilterEmptySub": "当前筛选条件下没有任务。",
   "mobileEmptyDownloadsSub": "点按新建球，或从剪贴板粘贴链接开始。",
   "mobileDockMove": "移动",
-  "mobileSelectAllLabel": "已选 · 全选",
   "mobileSelectionAllOn": "已全选",
   "mobileSelectionAllOff": "未全选",
   "mobileSelectionToolbar": "批量操作",

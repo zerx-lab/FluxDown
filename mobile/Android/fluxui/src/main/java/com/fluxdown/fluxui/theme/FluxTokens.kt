@@ -46,8 +46,10 @@ class FluxSpace(
     /** compact 16dp；medium / expanded 20dp（由 FluxTheme 按窗口宽度注入）。 */
     val screenMargin: Dp = 16.dp,
     val touch: Dp = 48.dp,
-    /** 导航坞与新建球的常态高度（坞内图标在上、标签在下）。 */
-    val dockHeight: Dp = 64.dp,
+    /** 导航坞、选择坞与新建球的常态高度，对齐 iOS 26 标签栏（高 62、内边距 4、图标 24、标签 10）。 */
+    val dockHeight: Dp = 62.dp,
+    /** 坞与右侧新建球之间的间距（iOS 标签栏与搜索 / 新建圆同为 8）。 */
+    val dockOrbGap: Dp = 8.dp,
     /** 有坞页面底部留白：坞高 + 底距 8 + 内容气隙 16；页面另加系统导航栏 inset。 */
     val dockClearance: Dp = dockHeight + 24.dp,
     /** 推入页（无坞）内容底部留白。 */
