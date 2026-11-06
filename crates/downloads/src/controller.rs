@@ -136,6 +136,13 @@ pub enum DownloadsCommand {
         task_id: String,
         segments: i32,
     },
+    /// 修改 BT 任务选片（`daemon.task.setPiecePicking`）：缺省字段保持不变。
+    /// 每个任务一次调用；不存在或非 BT 返回 `notFound`。
+    SetPiecePicking {
+        task_id: String,
+        sequential: Option<bool>,
+        first_last_pieces_first: Option<bool>,
+    },
     /// 已完成 BT 任务的完整性校验（`daemon.task.verify`，慢方法）：结果为
     /// [`DownloadsResult::TaskVerify`]；同一任务校验在途时为 `conflict`。
     VerifyTask {

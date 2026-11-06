@@ -72,6 +72,10 @@ export interface DownloadTaskView {
   groupId: string
   errorMessage: string
   fileMissing: boolean
+  /** BT 按顺序下载；远程 / 非 BT 为 false。 */
+  btSequential: boolean
+  /** BT 先下载首尾分块；远程 / 非 BT 为 false。 */
+  btFirstLastPiecesFirst: boolean
   /** 落盘文件哈希 `algo=hex`；空 = 尚未计算。远程任务恒空。 */
   fileHash: string
   seedingStatus: number
@@ -244,6 +248,8 @@ export function buildLocalView(
     groupId: task.groupId,
     errorMessage: task.errorMessage,
     fileMissing: task.fileMissing,
+    btSequential: task.btSequential,
+    btFirstLastPiecesFirst: task.btFirstLastPiecesFirst,
     fileHash: task.fileHash,
     seedingStatus: task.seedingStatus,
     uploadedBytes: task.uploadedBytes,
@@ -290,6 +296,8 @@ export function buildRemoteView(task: RemoteTaskDto): DownloadTaskView {
     groupId: '',
     errorMessage: task.error ?? '',
     fileMissing: false,
+    btSequential: false,
+    btFirstLastPiecesFirst: false,
     fileHash: '',
     seedingStatus: 0,
     uploadedBytes: 0,

@@ -40,6 +40,12 @@ actions!(
         ChangeSelectedSegments,
         /// 校验选中的已完成 BT 任务（右键「完整性校验」）。
         VerifySelected,
+        /// 把选中 BT 任务的下载顺序设为最稀有优先（`sequential: false`）。
+        SetRarestFirstSelected,
+        /// 把选中 BT 任务的下载顺序设为按顺序下载（`sequential: true`）。
+        SetSequentialSelected,
+        /// 切换选中 BT 任务的「先下载首尾文件块」（右键勾选）。
+        ToggleFirstLastPiecesSelected,
         RedownloadSelected,
         ToggleBoostSelected,
         FocusSearch,

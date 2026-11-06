@@ -353,6 +353,15 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_SET_PIECE_PICKING => {
+                let params = parse_params::<fluxdown_protocol::SetTaskPiecePickingParams>(params)?;
+                self.execute_unit(ActorOperation::SetTaskPiecePicking {
+                    task_id: params.task_id,
+                    sequential: params.sequential,
+                    first_last_pieces_first: params.first_last_pieces_first,
+                })
+                .await
+            }
             method::DAEMON_TASK_VERIFY => {
                 let params = parse_params::<IdParams>(params)?;
                 match self

@@ -139,6 +139,14 @@ pub(crate) struct DownloadStrings {
     pub(crate) seed_local_err_path_required: SharedString,
     /// 右键「完整性校验」（已完成 BT 任务）。
     pub(crate) verify_integrity: SharedString,
+    /// 右键「选片方式」分组标题（不可点击；其下为顺序单选 + 首尾勾选）。
+    pub(crate) bt_piece_picking: SharedString,
+    /// 右键「最稀有优先」（未完成 BT 任务；与「按顺序下载」互斥，缺省选中）。
+    pub(crate) bt_rarest_first: SharedString,
+    /// 右键「按顺序下载」（未完成 BT 任务；与「最稀有优先」互斥）。
+    pub(crate) bt_sequential: SharedString,
+    /// 右键「先下载首尾文件块」（未完成 BT 任务，可与任一顺序组合）。
+    pub(crate) bt_first_last_pieces: SharedString,
     pub(crate) redownload_task: SharedString,
     pub(crate) copy_url: SharedString,
     pub(crate) copy_magnet: SharedString,
@@ -333,6 +341,10 @@ impl DownloadStrings {
             seed_local_started: shared(translator.text("seedLocalStarted")),
             seed_local_err_path_required: shared(translator.text("seedLocalErrPathRequired")),
             verify_integrity: shared(translator.text("verifyTaskIntegrity")),
+            bt_piece_picking: shared(translator.text("btPiecePicking")),
+            bt_rarest_first: shared(translator.text("btRarestFirst")),
+            bt_sequential: shared(translator.text("btSequentialDownload")),
+            bt_first_last_pieces: shared(translator.text("btFirstLastPiecesFirst")),
             redownload_task: shared(translator.text("redownloadTask")),
             copy_url: shared(translator.text("copyUrl")),
             copy_magnet: shared(translator.text("btCopyMagnet")),

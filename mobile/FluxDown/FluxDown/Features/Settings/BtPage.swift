@@ -100,6 +100,15 @@ struct BtPage: View {
             if container.isLocalHost { Text(L("btMobileFootnote")) }
         }
         .disabled(readOnly)
+        if BtSettingsRow.pieceOrder.isVisible(in: form) || BtSettingsRow.firstLastPiecesFirst.isVisible(in: form) {
+            Section(L("btNewTasksSection")) {
+                if BtSettingsRow.pieceOrder.isVisible(in: form) { BtPieceOrderRow() }
+                if BtSettingsRow.firstLastPiecesFirst.isVisible(in: form) {
+                    ConfigToggleRow(item: BtSettingsRow.firstLastPiecesFirst.item)
+                }
+            }
+            .disabled(readOnly)
+        }
     }
 
     // MARK: Tracker
@@ -240,6 +249,61 @@ private struct BtMseModePage: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(mode == current ? .isSelected : [])
+                }
+            }
+            .disabled(store.state.isReadOnly)
+        }
+        .fluxAnimation(.smooth, value: current)
+    }
+}
+
+// MARK: - 选片方式
+
+/// `bt_piece_order`：推入单选页（两项带说明）。行内显示当前选项。
+private struct BtPieceOrderRow: View {
+    @Environment(ConfigEditor.self) private var editor
+
+    var body: some View {
+        let item = BtSettingsRow.pieceOrder.item
+        let current = BtPieceOrder(rawValue: editor.form.string(item.key, default: BtPieceOrder.rarest.rawValue)) ?? .rarest
+        NavigationLink {
+            BtPieceOrderPage()
+        } label: {
+            LabeledContent {
+                Text(L(current.titleKey))
+            } label: {
+                SettingsText(title: item.title, synced: item.isSynced)
+            }
+        }
+        .settingsRow(item.id, failureKey: item.key)
+    }
+}
+
+private struct BtPieceOrderPage: View {
+    @Environment(ConfigEditor.self) private var editor
+    @Environment(HostStore.self) private var store
+
+    var body: some View {
+        let key = BtSettingsRow.pieceOrder.configKey
+        let current = BtPieceOrder(rawValue: editor.form.string(key, default: BtPieceOrder.rarest.rawValue)) ?? .rarest
+        SettingsPage(title: L("btPieceOrder"), showsReadOnlyBanner: true) {
+            Section {
+                ForEach(BtPieceOrder.allCases) { order in
+                    Button {
+                        editor.set(key, order.rawValue)
+                    } label: {
+                        HStack(spacing: 12) {
+                            SettingsText(title: L(order.titleKey), detail: L(order.detailKey))
+                            Spacer(minLength: 8)
+                            if order == current {
+                                Image(systemName: FluxSymbol.done).fontWeight(.semibold).foregroundStyle(.tint)
+                            }
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(order == current ? .isSelected : [])
                 }
             }
             .disabled(store.state.isReadOnly)

@@ -30,6 +30,9 @@ pub const DAEMON_TASK_PAUSE_ALL: &str = "daemon.task.pauseAll";
 pub const DAEMON_TASK_RESUME_ALL: &str = "daemon.task.resumeAll";
 pub const DAEMON_TASK_RESCAN: &str = "daemon.task.rescan";
 pub const DAEMON_TASK_SET_SEED_LIMITS: &str = "daemon.task.setSeedLimits";
+/// 修改 BT 任务的选片方式（`SetTaskPiecePickingParams`，缺省字段不变），活动任务热生效；
+/// 不存在或非 BT 的任务返回 `notFound`。
+pub const DAEMON_TASK_SET_PIECE_PICKING: &str = "daemon.task.setPiecePicking";
 /// 已完成 BT 任务的完整性校验（`{taskId}` → `TaskVerifyResult`）：按种子 piece 表全量
 /// 重哈希落盘数据，只读。慢方法：耗时与数据量成正比，同一任务同时只跑一个（`conflict`），
 /// 非已完成 BT 任务返回 `invalidArgument`，任务不存在返回 `notFound`。
@@ -442,6 +445,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_RESUME_ALL,
     DAEMON_TASK_RESCAN,
     DAEMON_TASK_SET_SEED_LIMITS,
+    DAEMON_TASK_SET_PIECE_PICKING,
     DAEMON_TASK_VERIFY,
     DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,

@@ -81,6 +81,8 @@ export const DAEMON_SYNC_KEYS: Readonly<Record<string, string>> = {
   bt_enable_upnp: 'bt.enable_upnp',
   bt_enable_utp: 'bt.enable_utp',
   bt_custom_trackers: 'bt.custom_trackers',
+  bt_piece_order: 'bt.piece_order',
+  bt_first_last_pieces_first: 'bt.first_last_pieces_first',
   bt_tracker_sub_enabled: 'bt.tracker_sub_enabled',
   bt_tracker_sub_urls: 'bt.tracker_sub_urls',
   bt_seed_ratio_limit: 'bt.seed_ratio_limit',

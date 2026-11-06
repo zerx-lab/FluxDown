@@ -45,6 +45,10 @@ interruptMode: never
 
 → `web/src/pages/downloads/model/taskEdit.ts::{canRename, canChangeUrl, canChangeSegments, canVerifyIntegrity, parseTaskSegments}` + `table/menus.ts` 与 `detail/GeneralTab.tsx` 两处入口 + `dialogs/TaskEditDialogs.tsx`（`resumeIfFailed`）+ `model/actions.ts::verifyTaskIntegrity`；换链源仅 http(s)/ftp（对齐引擎 `change_task_url`）；重命名 = 本地非 BT 且非下载 / 准备中（对齐引擎 `rename_task`），Android `actions/TaskActions.kt` 与 iOS `Actions/TaskMenu.swift` 同条件（`!status.isActive && protocol != Bt`）
 
+## `crates/downloads/src/components/task_table.rs` 的 BT 选片菜单纯模型（`piece_picking_*`）（「选片方式」`btPiecePicking` 分组，用户 2026-11-06 决定：下载顺序二选一 = 单选「最稀有优先」`btRarestFirst`（`btSequential=false`，默认）/「按顺序下载」，全部所选一致才点亮对应项、混选两项都不点亮，点选逐任务只对状态不同的任务发 `sequential`；「先下载首尾文件块」是可叠加的独立复选框，全部已开才打勾，点击设为 `!全部已开` 只发 `firstLastPiecesFirst`。所选全部为本机未完成 BT 任务才显示；位于单任务编辑项之后、「重新下载」之前；能嵌套的端用子菜单，GPUI 表格菜单 / Android `FluxMenu` 用不可点击标题 + 子行；单选画空圆 / 圆点、复选画空框 / 勾选框，两态都画）
+
+→ Web `web/src/pages/downloads/model/taskEdit.ts::{canSetPiecePicking, pieceOrder, pieceOrderTargets, pieceSequentialParams, pieceOptionAllOn, pieceEndsParams}` + `table/menus.ts` + `model/actions.ts::{setPieceOrder, setFirstLastPieces}`；Android `actions/TaskActions.kt::piecePickingMenu`（单任务菜单 + 多选长按菜单）；iOS `FluxDomain/Protocol/Tasks.swift::PiecePickingMenu` + `Actions/TaskMenu.swift` / `Features/Downloads/DownloadsListScreen.swift`（只在 `FULL_FLAVOR` 编入）。GPUI `is_local` 排除的是云端远程任务行；移动端没有该行类型，**不用** `isLocalHost`（那只表示文件在这台手机上，会错藏正在控制的远端 PC）。移动端按 URL 小写判断 `magnet:` / `torrent-file://`，未完成才显示；批量切换逐任务捕获错误、全部尝试后再 toast 一次。各端测试覆盖同一组显示 / 顺序 / 勾选用例
+
 ## `crates/downloads/src/model/dispatch.rs::remote_action_applies`（远程命令适用状态）
 
 → `web/src/pages/downloads/model/batchPlan.ts::remoteCan`；未知状态一律不可控制

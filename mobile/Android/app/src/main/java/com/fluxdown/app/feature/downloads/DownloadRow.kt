@@ -115,6 +115,7 @@ internal fun DownloadRow(
     val id = item.id
     val nav = LocalNavigator.current
     val actions = LocalTaskActions.current
+
     val overlays = LocalFluxOverlays.current
     val view = LocalDownloadsView.current
     val haptics = FluxTheme.haptics
@@ -227,14 +228,19 @@ internal fun DownloadRow(
                         }
                     },
                     onLongClick = {
-                        if (nav.selecting) {
-                            nav.toggleSelected(id)
+                        val c = coords[0]
+                        val pickingMenu = if (nav.selecting && id in nav.selection && nav.selection.size > 1) {
+                            actions.piecePickingMenuItems(nav.selection)
                         } else {
-                            val c = coords[0]
-                            if (c != null && c.isAttached) {
-                                val cur = latest
-                                overlays.showMenu(c.boundsInRoot(), actions.menuItems(cur.task, cur.boosted) { nav.enterSelection(id) })
-                            }
+                            emptyList()
+                        }
+                        if (pickingMenu.isNotEmpty() && c != null && c.isAttached) {
+                            overlays.showMenu(c.boundsInRoot(), pickingMenu)
+                        } else if (nav.selecting) {
+                            nav.toggleSelected(id)
+                        } else if (c != null && c.isAttached) {
+                            val cur = latest
+                            overlays.showMenu(c.boundsInRoot(), actions.menuItems(cur.task, cur.boosted) { nav.enterSelection(id) })
                         }
                     },
                     onRingClick = { actions.primary(latest.task) },

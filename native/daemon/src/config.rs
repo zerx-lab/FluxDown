@@ -291,6 +291,12 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
             .map(String::as_str)
             .map(BtMseMode::from)
             .unwrap_or_default(),
+        sequential: cfg
+            .get("bt_piece_order")
+            .is_some_and(|value| value == "sequential"),
+        first_last_pieces_first: cfg
+            .get("bt_first_last_pieces_first")
+            .is_some_and(|value| value == "true"),
     }
 }
 

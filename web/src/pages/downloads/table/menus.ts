@@ -4,8 +4,10 @@
 
 import {
   AppWindow,
+  Circle,
   CircleAlert,
   CircleCheck,
+  CircleDot,
   Copy,
   Download,
   FileDown,
@@ -18,6 +20,7 @@ import {
   PanelRight,
   Pen,
   Play,
+  Square,
   SquareCheck,
   RotateCw,
   Rows3,
@@ -60,10 +63,12 @@ import {
   retryFailedInGroup,
   revealTaskFile,
   toggleBoost,
+  setPieceOrder,
+  setFirstLastPieces,
   verifyTaskIntegrity,
 } from '../model/actions'
 import { remoteCan } from '../model/batchPlan'
-import { canChangeSegments, canChangeUrl, canRename, canVerifyIntegrity } from '../model/taskEdit'
+import { canChangeSegments, canChangeUrl, canRename, canSetPiecePicking, canVerifyIntegrity, pieceOptionAllOn, pieceOrder } from '../model/taskEdit'
 import { canPause, canResumeSeeding } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
@@ -202,6 +207,38 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
       label: t('verifyTaskIntegrity'),
       icon: ShieldCheck,
       onSelect: () => void verifyTaskIntegrity(only),
+    })
+  }
+  if (canSetPiecePicking(views)) {
+    const order = pieceOrder(views)
+    const endsOn = pieceOptionAllOn(views)
+    entries.push({
+      type: 'sub',
+      key: 'btPiecePicking',
+      label: t('btPiecePicking'),
+      entries: [
+        {
+          type: 'item',
+          key: 'btRarestFirst',
+          label: t('btRarestFirst'),
+          icon: order === 'rarest' ? CircleDot : Circle,
+          onSelect: () => void setPieceOrder(views, false),
+        },
+        {
+          type: 'item',
+          key: 'btSequential',
+          label: t('btSequentialDownload'),
+          icon: order === 'sequential' ? CircleDot : Circle,
+          onSelect: () => void setPieceOrder(views, true),
+        },
+        {
+          type: 'item',
+          key: 'btFirstLastPiecesFirst',
+          label: t('btFirstLastPiecesFirst'),
+          icon: endsOn ? SquareCheck : Square,
+          onSelect: () => void setFirstLastPieces(views, endsOn),
+        },
+      ],
     })
   }
   if (views.every(canRedownload)) {

@@ -1277,6 +1277,12 @@ pub struct TaskDto {
     /// 任务级做种上传限速（字节/秒），0 = 未设置（跟随全局）。
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub seed_upload_limit_bps: i64,
+    /// BT 选片：按文件顺序下载（qBittorrent「按顺序下载」）。false = 最稀有优先。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bt_sequential: bool,
+    /// BT 选片：先下载每个选中文件首尾各 1% 的块（qBittorrent「先下载首尾文件块」）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bt_first_last_pieces_first: bool,
 }
 
 // `TaskDto` 默认值字段不上线：二十万任务的全表传输里它们占了约三分之一字节。反序列化端
@@ -1820,6 +1826,20 @@ pub struct ChangeTaskUrlParams {
 pub struct SetTaskSegmentsParams {
     pub task_id: String,
     pub segments: i32,
+}
+
+/// `daemon.task.setPiecePicking` 参数：修改 BT 任务的选片方式（对齐 qBittorrent 右键
+/// 「按顺序下载」「先下载首尾文件块」）。缺省字段保持不变；两项都关 = 最稀有优先。
+/// 下载中的任务从下一个请求的块起生效，其余状态下次开始时生效。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskPiecePickingParams {
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequential: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_last_pieces_first: Option<bool>,
 }
 
 /// `daemon.task.verify` 结论。

@@ -49,6 +49,7 @@ import com.fluxdown.core.protocol.HostSection
 import com.fluxdown.core.protocol.Json
 import kotlinx.coroutines.delay
 import com.fluxdown.core.protocol.BtMseMode
+import com.fluxdown.core.protocol.BtPieceOrder
 import com.fluxdown.core.protocol.BtPortRange
 import com.fluxdown.core.protocol.BtReadout
 import com.fluxdown.core.protocol.BtSettingsRow
@@ -72,6 +73,7 @@ import com.fluxdown.fluxui.theme.FluxTheme
 
 // LazyColumn 项 key（搜索定位用，与 [btSearchEntries] 共用）
 private const val K_GENERAL = "general"
+private const val K_NEW_TASKS = "new-tasks"
 private const val K_TRACKER_LIST = "tracker-list"
 private const val K_TRACKER_SUB = "tracker-sub"
 private const val K_SEED_MAIN = "seed-main"
@@ -84,6 +86,7 @@ private fun itemKeyOf(row: BtSettingsRow): String = when (row.tab) {
     BtSettingsTab.Guard -> guardItemKeyOf(row)
     else -> when (row) {
         BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode -> K_GENERAL
+        BtSettingsRow.PieceOrder, BtSettingsRow.FirstLastPiecesFirst -> K_NEW_TASKS
         BtSettingsRow.CustomTrackers -> K_TRACKER_LIST
         BtSettingsRow.TrackerSub, BtSettingsRow.TrackerSubUrls, BtSettingsRow.TrackerSubStatus -> K_TRACKER_SUB
         BtSettingsRow.SeedEnabled, BtSettingsRow.SeedMaxActive, BtSettingsRow.AutoReseed -> K_SEED_MAIN
@@ -108,6 +111,8 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.PortStart -> R.string.btListenPortStart
     BtSettingsRow.PortEnd -> R.string.btListenPortEnd
     BtSettingsRow.MseMode -> R.string.btMseMode
+    BtSettingsRow.PieceOrder -> R.string.btPieceOrder
+    BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefault
     BtSettingsRow.CustomTrackers -> R.string.btTrackerList
     BtSettingsRow.TrackerSub -> R.string.btTrackerSub
     BtSettingsRow.TrackerSubUrls -> R.string.btTrackerSubUrls
@@ -152,6 +157,8 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.Utp -> R.string.btEnableUtpDesc
     BtSettingsRow.PortStart -> R.string.btListenPortDesc
     BtSettingsRow.MseMode -> R.string.btMseModeDesc
+    BtSettingsRow.PieceOrder -> R.string.btPieceOrderDesc
+    BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefaultDesc
     BtSettingsRow.CustomTrackers -> R.string.btTrackerListDesc
     BtSettingsRow.TrackerSub -> R.string.btTrackerSubDesc
     BtSettingsRow.TrackerSubUrls -> R.string.btTrackerSubUrlsDesc
@@ -280,6 +287,9 @@ internal fun BtPage() {
                 when (tab) {
                     BtSettingsTab.General -> {
                         flowItem(index++, gate, K_GENERAL) { GeneralSection(ctx) }
+                        if (BtSettingsRow.PieceOrder.isVisible(form) || BtSettingsRow.FirstLastPiecesFirst.isVisible(form)) {
+                            flowItem(index++, gate, K_NEW_TASKS) { NewTasksSection(ctx) }
+                        }
                     }
                     BtSettingsTab.Tracker -> {
                         if (BtSettingsRow.CustomTrackers.isVisible(form)) {
@@ -389,6 +399,40 @@ private fun GeneralSection(ctx: SettingsCtx) {
         }
     }
 }
+
+@Composable
+private fun NewTasksSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    val pieceLabels = mapOf(
+        "rarest" to (str(R.string.btPieceOrderRarest) to str(R.string.btPieceOrderRarestDesc)),
+        "sequential" to (str(R.string.btPieceOrderSequential) to str(R.string.btPieceOrderSequentialDesc)),
+    )
+    GlassSection(title = str(R.string.btNewTasksSection)) {
+        if (BtSettingsRow.PieceOrder.isVisible(form)) {
+            settingChoice(
+                ctx, BtSettingsRow.PieceOrder.configKey, R.string.btPieceOrder, R.string.btPieceOrderDesc,
+                id = BtSettingsRow.PieceOrder.id,
+            ) {
+                BtPieceOrderOptions(pieceLabels)
+            }
+        }
+        if (BtSettingsRow.FirstLastPiecesFirst.isVisible(form)) {
+            settingSwitch(
+                ctx,
+                BtSettingsRow.FirstLastPiecesFirst.configKey,
+                R.string.btFirstLastPiecesFirstDefault,
+                R.string.btFirstLastPiecesFirstDefaultDesc,
+                id = BtSettingsRow.FirstLastPiecesFirst.id,
+            )
+        }
+    }
+}
+
+private fun BtPieceOrderOptions(labels: Map<String, Pair<String, String>>): List<SelectOption<String>> =
+    BtPieceOrder.all.map { wire ->
+        val (title, hint) = labels[wire] ?: (wire to "")
+        SelectOption(wire, title, hint = hint.ifEmpty { null })
+    }
 
 private fun BtMseModeOptions(labels: Map<String, Pair<String, String>>): List<SelectOption<String>> =
     BtMseMode.all.map { wire ->

@@ -1387,6 +1387,8 @@ mod tests {
             seed_time_limit_minutes: -2,
             seed_inactive_time_limit_minutes: -2,
             seed_upload_limit_bps: 0,
+            bt_sequential: false,
+            bt_first_last_pieces_first: false,
             referrer: String::new(),
             group_id: String::new(),
             rss_source_id: String::new(),

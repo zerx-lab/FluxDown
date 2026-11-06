@@ -23,6 +23,7 @@ import com.fluxdown.core.update.UpdateFailure
 import com.fluxdown.core.update.UpdateManualReason
 import com.fluxdown.core.update.UpdatePhase
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -72,6 +73,15 @@ class MappingTest {
         assertEquals(6L, task.sourceBytes.total)
         assertEquals(1_700_000_000L, task.createdAt)
         assertEquals(TaskStatus.Unknown, task(status = 99, seeding = 99).toCore().status)
+        assertFalse(task.btSequential)
+        assertFalse(task.btFirstLastPiecesFirst)
+    }
+
+    @Test
+    fun taskDtoMapsPiecePickingFlags() {
+        val task = task(status = 1, seeding = 0, btSequential = true, btFirstLastPiecesFirst = true).toCore()
+        assertTrue(task.btSequential)
+        assertTrue(task.btFirstLastPiecesFirst)
     }
 
     @Test
@@ -344,11 +354,17 @@ class MappingTest {
         sections = emptyMap(),
     )
 
-    private fun task(status: Int, seeding: Int) = TaskDto(
+    private fun task(
+        status: Int,
+        seeding: Int,
+        btSequential: Boolean = false,
+        btFirstLastPiecesFirst: Boolean = false,
+    ) = TaskDto(
         taskId = "t1", url = "https://example.com/a.bin", originUrl = "", fileName = "a.bin", saveDir = "/data",
         status = status, downloadedBytes = 5, totalBytes = 10, errorMessage = "", createdAt = 1_700_000_000,
         completedAt = 0, queueId = "main", groupId = "", rssSourceId = "", fileMissing = false, autoRoute = "",
         sourceCdn = 1, sourceProxy = 2, sourceNic = 3, uploadedBytes = 0, seedingStatus = seeding,
         seedingMessage = "", seedingTimeSecs = 0,
+        btSequential = btSequential, btFirstLastPiecesFirst = btFirstLastPiecesFirst,
     )
 }

@@ -331,6 +331,18 @@ impl AgentDownloadsPort {
                     method::DAEMON_TASK_SET_SEGMENTS,
                     serialize(fluxdown_protocol::SetTaskSegmentsParams { task_id, segments })?,
                 ),
+                DownloadsCommand::SetPiecePicking {
+                    task_id,
+                    sequential,
+                    first_last_pieces_first,
+                } => (
+                    method::DAEMON_TASK_SET_PIECE_PICKING,
+                    serialize(fluxdown_protocol::SetTaskPiecePickingParams {
+                        task_id,
+                        sequential,
+                        first_last_pieces_first,
+                    })?,
+                ),
                 DownloadsCommand::VerifyTask { task_id } => {
                     let result = client
                         .call(

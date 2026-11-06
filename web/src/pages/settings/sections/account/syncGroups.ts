@@ -84,6 +84,8 @@ export const SYNC_GROUPS: readonly SyncGroup[] = [
       'bt.enable_upnp',
       'bt.enable_utp',
       'bt.custom_trackers',
+      'bt.piece_order',
+      'bt.first_last_pieces_first',
       'bt.tracker_sub_enabled',
       'bt.tracker_sub_urls',
       'bt.seed_ratio_limit',

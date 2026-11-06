@@ -22,6 +22,9 @@ import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskProtocol
 import com.fluxdown.core.model.TaskStatus
+import com.fluxdown.core.protocol.HostMethod
+import com.fluxdown.core.protocol.callUnit
+import com.fluxdown.core.protocol.jsonObjectOmitNulls
 import com.fluxdown.core.store.HostStore
 import com.fluxdown.fluxui.controls.FluxField
 import com.fluxdown.fluxui.icons.FluxIcons
@@ -298,13 +301,13 @@ class TaskActions(
     }
 
     /**
-     * 长按菜单 / 详情“更多”菜单，顺序沿用 PC `MenuEntry`：
-     * 打开 / 继续·暂停 / 优先 / 复制链接 / 分享 / 重命名 / 更换下载源 / 移动到队列 / 选择 / 删除。
+     * 长按菜单 / 详情“更多”菜单。选片分组紧跟单任务编辑项（重命名 / 更换下载源），
+     * 位于重新下载与复制链接之前。顺序是单选（最稀有优先 / 按顺序下载，混选都不点亮）；
+     * 首尾文件块是独立复选框（全部开启才勾上，点击设为反值）。
      */
     fun menuItems(task: Task, boosted: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
         val st = task.status
         if (hasLocalFile(task)) add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
-        if (canRedownload(task)) add(FluxMenuItem.Action(s(R.string.redownloadTask), { confirmRedownload(task) }, FluxIcons.RotateCw))
         if (task.canResume) add(FluxMenuItem.Action(s(R.string.resume), { resume(listOf(task.taskId)) }, FluxIcons.Play))
         if (task.canPause) add(FluxMenuItem.Action(s(R.string.pause), { pause(listOf(task.taskId)) }, FluxIcons.Pause))
         // 只有未结束的任务能优先下载（主机对已完成 / 失败任务拒绝 Boost）。
@@ -312,15 +315,150 @@ class TaskActions(
             add(FluxMenuItem.Action(s(if (boosted) R.string.cancelBoost else R.string.boostDownload), { boost(task, boosted) }, FluxIcons.Zap, checked = boosted))
         }
         add(FluxMenuItem.Divider)
-        add(FluxMenuItem.Action(s(R.string.copyUrl), { copyLink(task) }, FluxIcons.Copy))
-        add(FluxMenuItem.Action(s(R.string.mobileShareLink), { shareLink(task) }, FluxIcons.Share2))
+        val beforeEdit = size
         if (!st.isActive && task.protocol != TaskProtocol.Bt) add(FluxMenuItem.Action(s(R.string.renameTask), { rename(task) }, FluxIcons.Pen))
         if (st == TaskStatus.Failed || st == TaskStatus.Paused) add(FluxMenuItem.Action(s(R.string.mobileChangeUrl), { changeUrl(task) }, FluxIcons.Link))
+        piecePickingState(listOf(task))?.let { picking ->
+            if (size > beforeEdit) add(FluxMenuItem.Divider)
+            addAll(piecePickingItems(listOf(task), picking))
+        }
+        if (canRedownload(task)) add(FluxMenuItem.Action(s(R.string.redownloadTask), { confirmRedownload(task) }, FluxIcons.RotateCw))
+        add(FluxMenuItem.Action(s(R.string.copyUrl), { copyLink(task) }, FluxIcons.Copy))
+        add(FluxMenuItem.Action(s(R.string.mobileShareLink), { shareLink(task) }, FluxIcons.Share2))
         if (st != TaskStatus.Completed) add(FluxMenuItem.Action(s(R.string.moveToQueueAction), { moveToQueue(listOf(task.taskId)) }, FluxIcons.Rows3))
         if (onSelect != null) add(FluxMenuItem.Action(s(R.string.mobileMenuSelect), onSelect, FluxIcons.CheckCheck))
         add(FluxMenuItem.Divider)
         add(FluxMenuItem.Action(s(R.string.delete), { confirmDelete(listOf(task)) }, FluxIcons.Trash2, destructive = true))
     }
+
+    /** 全部所选任务都是未完成 BT 时非 null（含正在控制的远端 PC / 服务器主机）。 */
+    fun piecePickingState(tasks: List<Task>): PiecePickingMenu? = piecePickingMenu(tasks)
+
+    /**
+     * 每个任务一次 `daemon.task.setPiecePicking`，只带被切换的字段。
+     * 单任务失败不中断其余任务；有失败时最后走既有 RPC toast 一次。
+     */
+    fun setPiecePicking(tasks: List<Task>, sequential: Boolean? = null, firstLastPiecesFirst: Boolean? = null) {
+        if (tasks.isEmpty() || (sequential == null && firstLastPiecesFirst == null)) return
+        if (!guard()) return
+        scope.launch {
+            var first: HostException? = null
+            val host = session()
+            for (task in tasks) {
+                try {
+                    host.callUnit(
+                        HostMethod.daemonTaskSetPiecePicking,
+                        jsonObjectOmitNulls(
+                            "taskId" to task.taskId,
+                            "sequential" to sequential,
+                            "firstLastPiecesFirst" to firstLastPiecesFirst,
+                        ),
+                    )
+                } catch (e: HostException) {
+                    if (first == null) first = e
+                }
+            }
+            val failed = first ?: return@launch
+            haptics.reject()
+            overlays.toast(errorText(failed), FluxToastKind.Error)
+        }
+    }
+
+    /** 多选长按：自己读当前主机任务表。「选片方式」分组（顺序单选 + 首尾复选）；条件不满足时为空。 */
+    fun piecePickingMenuItems(taskIds: Set<String>): List<FluxMenuItem> {
+        if (taskIds.size < 2) return emptyList()
+        val tasks = store.state.value.tasks.filter { it.taskId in taskIds }
+        if (tasks.size < 2) return emptyList()
+        val picking = piecePickingMenu(tasks) ?: return emptyList()
+        return piecePickingItems(tasks, picking)
+    }
+
+
+    private fun piecePickingItems(tasks: List<Task>, picking: PiecePickingMenu): List<FluxMenuItem> {
+        fun order(label: String, sequential: Boolean, selected: Boolean) = FluxMenuItem.Action(
+            label,
+            {
+                val change = piecePickingOrderChange(tasks, sequential) ?: return@Action
+                setPiecePicking(change.tasks, sequential = change.sequential)
+            },
+            if (selected) FluxIcons.CircleDot else FluxIcons.Circle,
+            checked = selected,
+            showTrailingCheck = false,
+            radio = true,
+        )
+        return listOf(
+            FluxMenuItem.Header(s(R.string.btPiecePicking)),
+            order(s(R.string.btRarestFirst), sequential = false, selected = picking.order == PiecePickingOrder.Rarest),
+            order(s(R.string.btSequentialDownload), sequential = true, selected = picking.order == PiecePickingOrder.Sequential),
+            FluxMenuItem.Action(
+                s(R.string.btFirstLastPiecesFirst),
+                { setPiecePicking(tasks, firstLastPiecesFirst = picking.firstLastTarget) },
+                if (picking.firstLastOn) FluxIcons.SquareCheck else FluxIcons.Square,
+                checked = picking.firstLastOn,
+                showTrailingCheck = false,
+            ),
+        )
+    }
 }
 
 val LocalTaskActions = staticCompositionLocalOf<TaskActions> { error("TaskActions missing") }
+
+/**
+ * BT 选片菜单事实：每个任务都是未完成的 BT（`magnet:` / `torrent-file://`，大小写不敏感）时显示。
+ * 不看「文件是否在这台手机上」：正在控制的远端主机同样走 `daemon.task.setPiecePicking`。
+ *
+ * 下载顺序是单选：全部 `btSequential=false` 为最稀有优先（引擎默认），全部为 true 为按顺序下载，
+ * 混选两项都不点亮。点选只对状态不同的任务发 `sequential`。首尾文件块仍是独立复选框：
+ * 勾选 = 全部开启，点击目标是勾选态的反值，且只发 `firstLastPiecesFirst`。
+ */
+enum class PiecePickingOrder {
+    Rarest,
+    Sequential,
+    Mixed,
+}
+
+data class PiecePickingMenu(
+    val order: PiecePickingOrder,
+    val firstLastOn: Boolean,
+) {
+    val firstLastTarget: Boolean get() = !firstLastOn
+}
+
+/**
+ * 把下载顺序设为 [sequential] 时要下发的任务。已是该状态的任务跳过；全部已是目标时返回 null（不发 RPC）。
+ * [PiecePickingOrderChange.fields] 只有 `sequential`。
+ */
+data class PiecePickingOrderChange(
+    val tasks: List<Task>,
+    val sequential: Boolean,
+) {
+    val fields: Map<String, Boolean>
+        get() = mapOf("sequential" to sequential)
+}
+
+fun piecePickingOrderChange(tasks: List<Task>, sequential: Boolean): PiecePickingOrderChange? {
+    val changed = tasks.filter { it.btSequential != sequential }
+    if (changed.isEmpty()) return null
+    return PiecePickingOrderChange(changed, sequential)
+}
+
+fun piecePickingMenu(tasks: List<Task>): PiecePickingMenu? {
+    if (tasks.isEmpty()) return null
+    if (tasks.any { task ->
+            val url = task.url.lowercase()
+            val bt = url.startsWith("magnet:") || url.startsWith("torrent-file://")
+            !bt || task.status == TaskStatus.Completed
+        }
+    ) {
+        return null
+    }
+    val order = when {
+        tasks.all { !it.btSequential } -> PiecePickingOrder.Rarest
+        tasks.all { it.btSequential } -> PiecePickingOrder.Sequential
+        else -> PiecePickingOrder.Mixed
+    }
+    return PiecePickingMenu(
+        order = order,
+        firstLastOn = tasks.all { it.btFirstLastPiecesFirst },
+    )
+}

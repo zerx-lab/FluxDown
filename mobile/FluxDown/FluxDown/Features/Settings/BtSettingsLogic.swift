@@ -26,7 +26,7 @@ nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
 /// 做种「时长 + 单位」两个 PC 行在移动端合成一行（各自仍写回两个键）。
 nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     case enabled
-    case dht, upnp, utp, portStart, portEnd, mseMode
+    case dht, upnp, utp, portStart, portEnd, mseMode, pieceOrder, firstLastPiecesFirst
     case customTrackers, trackerSub, trackerSubUrls, trackerSubStatus
     case seedEnabled, seedMaxActive, autoReseed, seedRatio, seedPostRatio
     case seedTimeLimit, seedInactiveTimeLimit, seedOperator, seedThenAction
@@ -35,7 +35,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
 
     var tab: BtSettingsTab {
         switch self {
-        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode: .general
+        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode, .pieceOrder, .firstLastPiecesFirst: .general
         case .customTrackers, .trackerSub, .trackerSubUrls, .trackerSubStatus: .tracker
         default: .seeding
         }
@@ -50,6 +50,8 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .portStart: "bt_port_start"
         case .portEnd: "bt_port_end"
         case .mseMode: "bt_mse_mode"
+        case .pieceOrder: "bt_piece_order"
+        case .firstLastPiecesFirst: "bt_first_last_pieces_first"
         case .customTrackers: "bt_custom_trackers"
         case .trackerSub: "bt_tracker_sub_enabled"
         case .trackerSubUrls: "bt_tracker_sub_urls"
@@ -93,6 +95,8 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .portStart: "btListenPortStart"
         case .portEnd: "btListenPortEnd"
         case .mseMode: "btMseMode"
+        case .pieceOrder: "btPieceOrder"
+        case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefault"
         case .customTrackers: "btTrackerList"
         case .trackerSub: "btTrackerSub"
         case .trackerSubUrls: "btTrackerSubUrls"
@@ -118,6 +122,8 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .utp: "btEnableUtpDesc"
         case .portStart: "btListenPortDesc"
         case .mseMode: "btMseModeDesc"
+        case .pieceOrder: "btPieceOrderDesc"
+        case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefaultDesc"
         case .customTrackers: "btTrackerListDesc"
         case .trackerSub: "btTrackerSubDesc"
         case .trackerSubUrls: "btTrackerSubUrlsDesc"
@@ -293,6 +299,27 @@ nonisolated enum BtMseMode: String, CaseIterable, Identifiable {
         case .disabled: "btMseModeDisabledDesc"
         case .enabled: "btMseModeEnabledDesc"
         case .forced: "btMseModeForcedDesc"
+        }
+    }
+}
+
+/// 新任务选片顺序（`bt_piece_order`）：值 → 标题 / 说明。默认最稀有优先。
+nonisolated enum BtPieceOrder: String, CaseIterable, Identifiable {
+    case rarest, sequential
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .rarest: "btPieceOrderRarest"
+        case .sequential: "btPieceOrderSequential"
+        }
+    }
+
+    var detailKey: String {
+        switch self {
+        case .rarest: "btPieceOrderRarestDesc"
+        case .sequential: "btPieceOrderSequentialDesc"
         }
     }
 }

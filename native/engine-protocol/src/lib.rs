@@ -261,6 +261,8 @@ pub fn task_info_to_dto(task: TaskInfo) -> TaskDto {
         seed_time_limit_minutes: task.seed_time_limit_minutes,
         seed_inactive_time_limit_minutes: task.seed_inactive_time_limit_minutes,
         seed_upload_limit_bps: task.seed_upload_limit_bps,
+        bt_sequential: task.bt_sequential,
+        bt_first_last_pieces_first: task.bt_first_last_pieces_first,
     }
 }
 

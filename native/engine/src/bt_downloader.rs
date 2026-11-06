@@ -32,8 +32,8 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttr
 use bytes::Bytes;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ConnectionOptions, ListenerMode,
-    ListenerOptions, ManagedTorrent, PeerConnectionOptions, PeerPolicy, Session, SessionOptions,
-    SessionPersistenceConfig,
+    ListenerOptions, ManagedTorrent, PeerConnectionOptions, PeerPolicy, PiecePicking, Session,
+    SessionOptions, SessionPersistenceConfig,
 };
 
 /// Alias for librqbit's `BtHandle` (`Arc<ManagedTorrent>`).
@@ -617,6 +617,12 @@ pub struct SharedBtSession {
     /// 来自「全量初检读盘」或「Live 下载的写盘后读回校验」，完成期重哈希
     /// 是纯冗余，可以跳过。
     fastresume_tainted: Mutex<HashSet<String>>,
+    /// task_id → 选片方式（缺省 = 最稀有优先）。宿主在启动 BT 任务与用户改选项时登记；
+    /// 每次 [`Self::store_handle`] 都按它重设句柄（librqbit 自持久化里的旧值不作数）。
+    /// 句柄的设定只在持有本锁时进行，入册与改选项交错也落最后一次的值。
+    /// [`Self::delete_task`] 不清登记：改保存目录等内部重挂载也走它，随后同一轮下载不经
+    /// manager 重新登记就再次入册；登记随会话释放，已删任务的残留条目只占几个字节。
+    piece_picking: Mutex<HashMap<String, PiecePicking>>,
     /// Folder holding librqbit persistence files (session.json, `{hash}.bitv`,
     /// `{hash}.torrent`).  Kept so that `clear_stale_fastresume` can remove a
     /// `.bitv` whose staging data no longer exists (BUG-BT-PHANTOM-PIECES).
@@ -972,6 +978,7 @@ impl SharedBtSession {
             pause_epochs: Mutex::new(HashMap::new()),
             pending_pauses: Mutex::new(HashMap::new()),
             fastresume_tainted: Mutex::new(HashSet::new()),
+            piece_picking: Mutex::new(HashMap::new()),
             persistence_folder,
         })
     }
@@ -1140,7 +1147,34 @@ impl SharedBtSession {
         self.handles
             .lock()
             .await
-            .insert(task_id.to_string(), handle);
+            .insert(task_id.to_string(), handle.clone());
+        // 入册之后再取选片方式：与 `set_task_piece_picking`（先登记、再找句柄）交错时，
+        // 两边总有一边看到对方，且都在本锁内设定句柄。
+        let picking = self.piece_picking.lock().await;
+        handle.set_piece_picking(picking.get(task_id).copied().unwrap_or_default());
+    }
+
+    /// 登记任务的选片方式，并立即作用于已入册的句柄（下载中从下一个请求的块起生效）。
+    pub async fn set_task_piece_picking(&self, task_id: &str, picking: PiecePicking) {
+        let mut map = self.piece_picking.lock().await;
+        if picking == PiecePicking::default() {
+            map.remove(task_id);
+        } else {
+            map.insert(task_id.to_owned(), picking);
+        }
+        if let Some(handle) = self.handles.lock().await.get(task_id) {
+            handle.set_piece_picking(picking);
+        }
+    }
+
+    /// 任务登记的选片方式（未登记 = 最稀有优先），供 add 时烘焙进 `AddTorrentOptions`。
+    pub async fn task_piece_picking(&self, task_id: &str) -> PiecePicking {
+        self.piece_picking
+            .lock()
+            .await
+            .get(task_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Pause a BT torrent by task_id.  The handle stays cached so that
@@ -1500,6 +1534,7 @@ impl SharedBtSession {
         self.pause_epochs.lock().await.remove(task_id);
         self.pending_pauses.lock().await.remove(task_id);
         self.fastresume_tainted.lock().await.remove(task_id);
+        // 选片登记保留（见 `piece_picking` 字段注释）。
         crate::bt_partfile::remove_sidecar(&self.parts_sidecar_path(task_id));
         Ok(handle.is_some())
     }
@@ -3564,6 +3599,14 @@ impl BtSelectionStrategy {
     }
 }
 
+/// 任务落库的 BT 选片方式（两项都关 = 最稀有优先）。
+pub fn task_piece_picking(task: &crate::model::TaskInfo) -> PiecePicking {
+    PiecePicking {
+        sequential: task.bt_sequential,
+        first_last_pieces_first: task.bt_first_last_pieces_first,
+    }
+}
+
 /// Build the librqbit add options for a fresh torrent. Baking the known subset
 /// into `only_files` here (not via a post-add `update_only_files`) is the fix
 /// for the Initializing race (#90); the production add site must go through this.
@@ -4201,6 +4244,7 @@ async fn readd_if_output_folder_mismatch(
         })?;
     shared_bt.unregister_torrent_id(handle.id()).await;
     let mut opts = build_add_torrent_options(strategy, stage_dir_str.to_owned(), upload_limit_bps);
+    opts.piece_picking = shared_bt.task_piece_picking(task_id).await;
     let input = shared_bt.add_input(&source, &mut opts);
     let is_magnet = source.is_magnet();
     let add_abort = Arc::new(tokio::sync::Notify::new());
@@ -4439,6 +4483,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
         }
         let mut add_opts =
             build_add_torrent_options(&selection_strategy, stage_dir_str.clone(), upload_limit_bps);
+        add_opts.piece_picking = shared_bt.task_piece_picking(&task_id).await;
         let add_input = shared_bt.add_input(&torrent_source, &mut add_opts);
 
         log_info!(
@@ -6966,6 +7011,7 @@ mod tests {
                 pause_epochs: Mutex::new(HashMap::new()),
                 pending_pauses: Mutex::new(HashMap::new()),
                 fastresume_tainted: Mutex::new(HashSet::new()),
+                piece_picking: Mutex::new(HashMap::new()),
                 persistence_folder,
             })
         }
@@ -7727,6 +7773,66 @@ mod tests {
             });
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove bad-dir fixture");
+        }
+
+        /// 选片方式以宿主登记为准：入册时按登记重设句柄（盖掉 add 选项或 librqbit 自持久化
+        /// 里的旧值），改选项立即作用于已入册句柄，内部删除（改保存目录重挂载）不丢登记。
+        #[test]
+        fn registered_piece_picking_drives_stored_and_live_handles() {
+            use librqbit::PiecePicking;
+            let root = super::unique_test_dir("piece_picking");
+            let shared_bt = local_session(&root);
+            shared_bt.runtime_handle.block_on(async {
+                let sequential = PiecePicking {
+                    sequential: true,
+                    ..Default::default()
+                };
+                shared_bt
+                    .set_task_piece_picking("selection-task", sequential)
+                    .await;
+                parked_stage(&shared_bt, &root).await;
+                let handle = shared_bt
+                    .cached_handle("selection-task")
+                    .await
+                    .expect("stored handle");
+                assert_eq!(handle.piece_picking(), sequential, "applied on store");
+
+                let first_last = PiecePicking {
+                    first_last_pieces_first: true,
+                    ..Default::default()
+                };
+                shared_bt
+                    .set_task_piece_picking("selection-task", first_last)
+                    .await;
+                assert_eq!(handle.piece_picking(), first_last, "applied while stored");
+
+                shared_bt
+                    .set_task_piece_picking("selection-task", PiecePicking::default())
+                    .await;
+                // A stale value the handle came back with (librqbit's own persistence).
+                handle.set_piece_picking(sequential);
+                shared_bt
+                    .store_handle("selection-task", handle.clone())
+                    .await;
+                assert_eq!(handle.piece_picking(), PiecePicking::default());
+
+                // The internal delete of a save-directory move re-adds within the same
+                // download round, without the manager registering again: the choice stays.
+                shared_bt
+                    .set_task_piece_picking("selection-task", sequential)
+                    .await;
+                shared_bt
+                    .delete_task("selection-task", false)
+                    .await
+                    .expect("cleanup");
+                assert_eq!(
+                    shared_bt.task_piece_picking("selection-task").await,
+                    sequential,
+                    "an internal delete keeps the registered picking"
+                );
+            });
+            drop(shared_bt);
+            std::fs::remove_dir_all(root).expect("remove piece picking fixture");
         }
     }
 

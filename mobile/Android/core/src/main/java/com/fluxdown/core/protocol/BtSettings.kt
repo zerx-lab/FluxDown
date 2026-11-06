@@ -24,6 +24,8 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
     PortStart("portStart", BtSettingsTab.General, "bt_port_start"),
     PortEnd("portEnd", BtSettingsTab.General, "bt_port_end"),
     MseMode("mseMode", BtSettingsTab.General, "bt_mse_mode"),
+    PieceOrder("pieceOrder", BtSettingsTab.General, "bt_piece_order"),
+    FirstLastPiecesFirst("firstLastPiecesFirst", BtSettingsTab.General, "bt_first_last_pieces_first"),
     CustomTrackers("customTrackers", BtSettingsTab.Tracker, "bt_custom_trackers"),
     TrackerSub("trackerSub", BtSettingsTab.Tracker, "bt_tracker_sub_enabled"),
     TrackerSubUrls("trackerSubUrls", BtSettingsTab.Tracker, "bt_tracker_sub_urls"),
@@ -103,6 +105,13 @@ object BtPortRange {
 object BtMseMode {
     const val DEFAULT = "enabled"
     val all: List<String> get() = SettingsCatalog.btMseModes
+    fun normalize(wire: String?): String = wire?.trim()?.takeIf { it in all } ?: DEFAULT
+}
+
+/** 新建任务选片顺序的 wire 值；未知值按「最稀有优先」处理。 */
+object BtPieceOrder {
+    const val DEFAULT = "rarest"
+    val all: List<String> get() = SettingsCatalog.btPieceOrders
     fun normalize(wire: String?): String = wire?.trim()?.takeIf { it in all } ?: DEFAULT
 }
 

@@ -167,6 +167,8 @@ export const HASH_ALGORITHMS = ['md5', 'sha1', 'sha256', 'sha512'] as const;
 export const BT_SEED_LIMIT_OPERATORS = ['or', 'and'] as const;
 export const BT_SEED_THEN_ACTIONS = ['stop', 'delete', 'delete_files'] as const;
 export const BT_MSE_MODES = ['disabled', 'enabled', 'forced'] as const;
+/** 新建 BT 任务的默认选片方式：最稀有优先 / 按顺序下载。 */
+export const BT_PIECE_ORDERS = ['rarest', 'sequential'] as const;
 /** 防吸血规则 / 云名单模式。 */
 export const BT_GUARD_MODES = ['off', 'observe', 'enforce'] as const;
 /** 防吸血：下载中任务的动作上限。 */
@@ -250,6 +252,8 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   int('bt_port_end', '6891', 1, 65_535),
   oneOf('bt_mse_mode', 'enabled', BT_MSE_MODES),
   text('bt_custom_trackers'),
+  oneOf('bt_piece_order', 'rarest', BT_PIECE_ORDERS),
+  bool('bt_first_last_pieces_first', 'false'),
   bool('bt_tracker_sub_enabled', 'true'),
   text('bt_tracker_sub_urls'),
   readOnly('bt_tracker_sub_cache'),

@@ -95,6 +95,10 @@ export interface TaskDto {
   seedInactiveTimeLimitMinutes: number;
   /** 做种上传限速（字节/秒），0 = 未设置（跟随全局）。 */
   seedUploadLimitBps: number;
+  /** BT 按顺序下载分块（缺省 false；非 BT 恒 false）。 */
+  btSequential: boolean;
+  /** BT 先下载首尾分块（缺省 false；非 BT 恒 false）。 */
+  btFirstLastPiecesFirst: boolean;
   /** 持久化的加速路径字节。 */
   sourceBytes: TaskSourceBytesDto;
 }

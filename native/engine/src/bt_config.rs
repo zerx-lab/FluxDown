@@ -82,6 +82,12 @@ pub struct BtConfig {
     /// MSE (Message Stream Encryption) policy for BT peer connections.
     /// Emergency escape hatch settable via config API/CLI; no Settings UI.
     pub mse_mode: BtMseMode,
+    /// 新建 BT 任务的默认选片方式（`bt_piece_order`）：`true` = 按顺序下载，默认 `false` =
+    /// 最稀有优先。只作用于此后新建的任务。
+    pub sequential: bool,
+    /// 新建 BT 任务默认开启「先下载首尾文件块」（`bt_first_last_pieces_first`，默认关）。
+    /// 只作用于此后新建的任务。
+    pub first_last_pieces_first: bool,
 }
 
 impl BtConfig {
@@ -116,6 +122,8 @@ impl Default for BtConfig {
             seed_then_action: "stop".to_string(),
             seed_max_active: 0,
             mse_mode: BtMseMode::Enabled,
+            sequential: false,
+            first_last_pieces_first: false,
         }
     }
 }

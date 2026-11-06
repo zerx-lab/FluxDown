@@ -74,6 +74,7 @@ public enum SettingsCatalog {
     public static let btGuardModes = ["off", "observe", "enforce"]
     public static let btGuardDownloadingActions = ["observe", "throttle", "choke", "ban"]
     public static let btMseModes = ["disabled", "enabled", "forced"]
+    public static let btPieceOrders = ["rarest", "sequential"]
     public static let proxyModes = ["none", "system", "manual", "auto"]
     public static let proxyTypes = ["http", "https", "socks4", "socks5"]
     public static let themeModes = ["system", "light", "dark"]
@@ -114,6 +115,8 @@ public enum SettingsCatalog {
         daemon("bt_port_end", .integer(min: 1, max: 65_535), "6891"),
         daemon("bt_mse_mode", .choice(btMseModes), "enabled"),
         daemon("bt_custom_trackers", .text, ""),
+        daemon("bt_piece_order", .choice(btPieceOrders), "rarest"),
+        daemon("bt_first_last_pieces_first", .bool, "false"),
         daemon("bt_tracker_sub_enabled", .bool, "true"),
         daemon("bt_tracker_sub_urls", .text, ""),
         daemon("bt_tracker_sub_cache", .readOnly, ""),
@@ -235,7 +238,7 @@ public enum SettingsCatalog {
     /// 自定义主题集合的范围键：只承载分组 / 本机专属开关，从不承载值（逐主题键 `appearance.custom_themes.<id>`）。
     public static let customThemesScopeKey = "appearance.custom_themes"
 
-    /// daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，29 项）。
+    /// daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，51 项）。
     public static let daemonSyncNames: [String: String] = [
         "max_concurrent_tasks": "download.max_concurrent_tasks",
         "default_segments": "download.default_segments",
@@ -253,6 +256,8 @@ public enum SettingsCatalog {
         "bt_enable_upnp": "bt.enable_upnp",
         "bt_enable_utp": "bt.enable_utp",
         "bt_custom_trackers": "bt.custom_trackers",
+        "bt_piece_order": "bt.piece_order",
+        "bt_first_last_pieces_first": "bt.first_last_pieces_first",
         "bt_tracker_sub_enabled": "bt.tracker_sub_enabled",
         "bt_tracker_sub_urls": "bt.tracker_sub_urls",
         "bt_seed_ratio_limit": "bt.seed_ratio_limit",

@@ -65,6 +65,10 @@ data class Task(
     val seedingStatus: SeedingStatus = SeedingStatus.None,
     val seedingMessage: String = "",
     val seedingTimeSecs: Long = 0,
+    /** BT 选片：按顺序下载。缺省 / 旧快照为 false。 */
+    val btSequential: Boolean = false,
+    /** BT 选片：先下载首尾文件块。缺省 / 旧快照为 false。 */
+    val btFirstLastPiecesFirst: Boolean = false,
 ) {
     /** 复制链接：读 originUrl，空则回退 url（torrent 任务的 url 是哨兵）。 */
     val shareUrl: String get() = originUrl.ifEmpty { url }

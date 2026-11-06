@@ -43,6 +43,10 @@ pub struct TaskDto {
     pub seeding_status: i32,
     pub seeding_message: String,
     pub seeding_time_secs: i64,
+    /// BT 选片：按顺序下载（`daemon.task.setPiecePicking` 的 `sequential`）。
+    pub bt_sequential: bool,
+    /// BT 选片：先下载首尾文件块（`daemon.task.setPiecePicking` 的 `firstLastPiecesFirst`）。
+    pub bt_first_last_pieces_first: bool,
 }
 
 impl From<&proto::TaskDto> for TaskDto {
@@ -71,6 +75,8 @@ impl From<&proto::TaskDto> for TaskDto {
             seeding_status: task.seeding_status,
             seeding_message: task.seeding_message.clone(),
             seeding_time_secs: task.seeding_time_secs,
+            bt_sequential: task.bt_sequential,
+            bt_first_last_pieces_first: task.bt_first_last_pieces_first,
         }
     }
 }

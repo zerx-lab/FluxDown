@@ -86,10 +86,21 @@
 - **uTP（`bt_enable_utp`，默认开）**：开启时监听模式为 `TcpAndUtp`，出站并发拨 TCP + uTP；
   #825 实测在上限 512 基础上稳态再翻倍，代价是 UDP 收发的系统态 CPU 明显更高（上游仍标为
   experimental）。改动经 daemon 重建共享会话生效。librqbit 来自 `zerx-lab/rqbit`（当前 rev 在分支 `fluxdown/peer-policy`：
-  上游 main + MSE + Android HTTPS + 握手超时下发 + 初检末尾暂停不丢失 + 防吸血 `PeerPolicy` 钩子），升级上游时在 fork 新开
+  上游 main + MSE + Android HTTPS + 握手超时下发 + 初检末尾暂停不丢失 + 防吸血 `PeerPolicy` 钩子 + 最稀有优先选片），升级上游时在 fork 新开
   `fluxdown/*` 分支合并上游并推送，再改根 `Cargo.toml` 的 rev（`zerx/main` 停在 00374a6d，不再是事实源）。`librqbit-utp` 临时 patch 到上游 git main：
   crates.io 0.7.0 的分发循环遇 Windows `WSAECONNRESET(10054)` 即退出，整个会话 uTP 失效；
   上游发版后删 patch。
+- **BT 选片（对齐 qBittorrent / libtorrent piece picker）**：fork `crates/librqbit/src/piece_picker.rs`。默认最稀有优先：
+  每片可用度 = 连接中 peer 的位图计数（`PeerStates.availability`，位图到达 / HAVE 时计入，peer 离开 Live 时按入账方式扣回；
+  位图到达即满的 peer 记一次「种子」而非逐片计数），平局按每次开局随机盐打散；已有 < 4 片时纯随机（libtorrent
+  `initial_picker_threshold`）。任务级两项（`tasks.bt_sequential` / `bt_first_last_pieces_first`，`daemon.task.setPiecePicking`
+  部分更新，GPUI / Web / Android / iOS 右键菜单可勾选）：按顺序 = 选中文件按文件名排序后逐片；首尾 = 每个选中文件首尾各
+  ceil(1% 文件大小 / 片长) 片优先于一切（qBittorrent `applyFirstLastPiecePriority`）。流式播放的预读片仍最先，偷慢 peer 的片不变。
+  设置（BT「常规」页「新任务」分组，云同步）：`bt_piece_order`（rarest 默认 / sequential，用户 2026-11-06 决定提供）与
+  `bt_first_last_pieces_first`（默认关）= 此后新建 BT 任务的默认选片方式（建档 `PreparedTask` 落库，已建任务不变）。
+  右键菜单「选片方式」：最稀有优先 / 按顺序下载二选一 + 首尾独立复选。
+  宿主侧以 `SharedBtSession` 的登记为准：启动 BT 任务时由 manager 按 DB 登记，`store_handle` 每次入册都按登记重设句柄
+  （盖掉 librqbit 自持久化里的旧值），改选项在同一把锁内作用于已入册句柄，下载中从下一个请求的块起生效。
 - **BT 会话保活与完成校验**：`maybe_release_bt_session` 在存在「已暂停的未完成
   torrent（句柄在册）」时**不拆**共享会话——resume 走 `unpause`（Paused→Live
   零校验秒恢复）；全部 BT 任务终态化（完成/删除且无做种）才释放。初检中暂停由

@@ -1,4 +1,4 @@
-//! BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种。
+//! BitTorrent：基础（DHT/UPnP/端口）、新任务默认选片、Tracker（列表 + 订阅）、做种。
 
 use fluxdown_ui_components::FluxIcon;
 use std::rc::Rc;
@@ -26,7 +26,8 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     )
     .tab(
         SettingsTab::new("basic", ctx.t("settingsTabGeneral"))
-            .section(basic_section(ctx, bt_enabled)),
+            .section(basic_section(ctx, bt_enabled))
+            .section(new_tasks_section(ctx, bt_enabled)),
     );
     if bt_enabled {
         page = page
@@ -83,6 +84,26 @@ fn basic_section(ctx: &SectionContext, bt_enabled: bool) -> SettingsSection {
             "btMseMode",
             Some("btMseModeDesc"),
             ctx.daemon_enum_dropdown("bt_mse_mode", "btMseMode"),
+        ))
+}
+
+/// 新建任务的默认选片。热更新，不重建 BT 会话，因此不带重启提示。
+/// BT 关闭时整组隐藏（与基础页其余行同一门槛）。
+fn new_tasks_section(ctx: &SectionContext, bt_enabled: bool) -> SettingsSection {
+    if !bt_enabled {
+        return SettingsSection::new();
+    }
+    SettingsSection::new()
+        .title(ctx.t("btNewTasksSection"))
+        .row(ctx.item(
+            "btPieceOrder",
+            Some("btPieceOrderDesc"),
+            ctx.daemon_enum_dropdown("bt_piece_order", "btPieceOrder"),
+        ))
+        .row(ctx.item(
+            "btFirstLastPiecesFirstDefault",
+            Some("btFirstLastPiecesFirstDefaultDesc"),
+            ctx.daemon_switch("bt_first_last_pieces_first"),
         ))
 }
 

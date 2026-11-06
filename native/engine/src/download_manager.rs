@@ -2918,6 +2918,9 @@ struct PreparedTask {
     /// 显式绑定的插件建档时不可用（见 [`DownloadManager::plugin_bind_resolver`]）。
     resolver_fail_closed: bool,
     is_bt: bool,
+    /// BT 任务建档时按设置落选片方式（`bt_piece_order` / `bt_first_last_pieces_first`）。
+    bt_sequential: bool,
+    bt_first_last_pieces_first: bool,
     /// `tasks.category_route` 列值（空串 = 不路由）。
     category_route: String,
     /// `tasks.request_method` 列值（空串 = GET；见 `downloader::persisted_request_method`）。
@@ -2986,6 +2989,8 @@ impl PreparedTask {
             category_route: &self.category_route,
             request_method: &self.request_method,
             torrent_file_bytes: &self.torrent_file_bytes,
+            bt_sequential: self.bt_sequential,
+            bt_first_last_pieces_first: self.bt_first_last_pieces_first,
         }
     }
 }
@@ -6849,6 +6854,38 @@ impl DownloadManager {
         }
     }
 
+    /// 修改 BT 任务的选片方式（`None` = 该项不变），对齐 qBittorrent 右键「按顺序下载」
+    /// 「先下载首尾文件块」；两项都关 = 最稀有优先。落库后若 BT 会话在，登记到会话并
+    /// 热改已入册的句柄（下载中从下一个请求的块起生效）；否则下次启动时烘焙。
+    ///
+    /// 返回 `Ok(false)` 表示任务不存在或不是 BT 任务。
+    pub async fn set_task_piece_picking(
+        &self,
+        task_id: &str,
+        sequential: Option<bool>,
+        first_last_pieces_first: Option<bool>,
+    ) -> Result<bool, crate::db::DbError> {
+        let Some(task) = self.db.load_task_by_id(task_id).await? else {
+            return Ok(false);
+        };
+        if !is_bt_url(&task.url) {
+            return Ok(false);
+        }
+        self.db
+            .set_task_piece_picking(task_id, sequential, first_last_pieces_first)
+            .await?;
+        #[cfg(feature = "bt")]
+        if let Some(bt) = &self.bt_session {
+            let picking = librqbit::PiecePicking {
+                sequential: sequential.unwrap_or(task.bt_sequential),
+                first_last_pieces_first: first_last_pieces_first
+                    .unwrap_or(task.bt_first_last_pieces_first),
+            };
+            bt.set_task_piece_picking(task_id, picking).await;
+        }
+        Ok(true)
+    }
+
     /// 用最新 `bt_config` 重建共享会话，或在 BT 被禁用时释放它。只有监听类
     /// 设置（端口 / DHT / UPnP / uTP / MSE）与启用开关走这里；tracker 列表经
     /// [`Self::set_bt_config`] 热生效，不重建。
@@ -9408,6 +9445,8 @@ impl DownloadManager {
             resolver_choice_pending,
             resolver_fail_closed,
             is_bt,
+            bt_sequential: is_bt && self.bt_config.sequential,
+            bt_first_last_pieces_first: is_bt && self.bt_config.first_last_pieces_first,
             category_route,
             request_method,
         }))
@@ -10625,7 +10664,15 @@ impl DownloadManager {
                     // per-torrent 热更 API）；行刚插入时任务级通常为 0，恢复/
                     // 续种路径会带上用户后来设置的值。
                     upload_limit_bps: match self.db.load_task_by_id(&task_id).await {
-                        Ok(Some(t)) => self.effective_task_upload_bps(&t),
+                        Ok(Some(t)) => {
+                            bt_ref
+                                .set_task_piece_picking(
+                                    &task_id,
+                                    bt_downloader::task_piece_picking(&t),
+                                )
+                                .await;
+                            self.effective_task_upload_bps(&t)
+                        }
                         _ => 0,
                     },
                 };
@@ -12151,6 +12198,9 @@ impl DownloadManager {
                 };
 
                 let upload_limit_bps = self.effective_task_upload_bps(&task);
+                bt_ref
+                    .set_task_piece_picking(&tid, bt_downloader::task_piece_picking(&task))
+                    .await;
                 let bt_params = BtDownloadParams {
                     task_id: tid.clone(),
                     torrent_source,
@@ -17799,6 +17849,88 @@ mod tests {
             crate::logger::report_warning("download-manager-test", "remove test directory", &error);
         }
     }
+    /// 设置里的选片方式默认值（按顺序下载 / 先下载首尾文件块）只作用于此后新建的 BT
+    /// 任务：HTTP 任务不带，改回默认后新建的 BT 任务不带，已建任务不随设置变化。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn piece_picking_defaults_apply_to_new_bt_tasks_only() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let temp_dir = std::env::temp_dir();
+        let mut mgr = DownloadManager::new(
+            db,
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: temp_dir.to_string_lossy().into_owned(),
+                app_data_dir: temp_dir.to_string_lossy().into_owned(),
+                data_dir: temp_dir.clone(),
+                bt_config: BtConfig {
+                    enabled: true,
+                    sequential: true,
+                    first_last_pieces_first: true,
+                    ..Default::default()
+                },
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            Arc::new(RecordingSink::new()),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+        let spec = |url: &str| NewTaskSpec {
+            url: url.to_string(),
+            save_dir: temp_dir.to_string_lossy().into_owned(),
+            start_paused: true,
+            ..Default::default()
+        };
+        let magnet = |hash: &str| format!("magnet:?xt=urn:btih:{hash}&dn=test");
+
+        let bt_on = mgr
+            .create_task(spec(&magnet("da39a3ee5e6b4b0d3255bfef95601890afd80709")))
+            .await
+            .expect("BT task");
+        let http = mgr
+            .create_task(spec("https://example.com/file.zip"))
+            .await
+            .expect("HTTP task");
+        mgr.set_bt_config(BtConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let bt_off = mgr
+            .create_task(spec(&magnet("0123456789abcdef0123456789abcdef01234567")))
+            .await
+            .expect("BT task");
+
+        let db = &mgr.db;
+        let picking = async |id: String| {
+            let task = db
+                .load_task_by_id(&id)
+                .await
+                .expect("load task")
+                .expect("task exists");
+            (task.bt_sequential, task.bt_first_last_pieces_first)
+        };
+        assert_eq!(
+            picking(bt_on).await,
+            (true, true),
+            "new BT task takes the defaults"
+        );
+        assert_eq!(
+            picking(http).await,
+            (false, false),
+            "HTTP tasks never carry them"
+        );
+        assert_eq!(
+            picking(bt_off).await,
+            (false, false),
+            "the settings only affect later tasks"
+        );
+    }
+
     #[cfg(feature = "bt")]
     #[tokio::test]
     async fn bt_disabled_setting_rejects_task_creation_and_session() {

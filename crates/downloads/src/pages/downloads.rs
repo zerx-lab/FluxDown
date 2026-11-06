@@ -13,13 +13,15 @@ use crate::{
         DeleteSelected, DeleteSelectedWithFiles, EnterMultiSelect, FocusSearch, KEY_CONTEXT,
         NewDownload, OpenQueueManager, OpenSelected, OpenSelectedInWindow, OpenTorrentFile,
         PauseAll, PauseSelected, RedownloadSelected, RenameSelected, ResumeAll, ResumeSelected,
-        RevealSelected, SeedLocal, SelectAllTasks, ShowSelectedDetail, ToggleBoostSelected,
-        ToggleDetailPanel, TogglePauseSelected,
+        RevealSelected, SeedLocal, SelectAllTasks, SetRarestFirstSelected, SetSequentialSelected,
+        ShowSelectedDetail, ToggleBoostSelected, ToggleDetailPanel, ToggleFirstLastPiecesSelected,
+        TogglePauseSelected,
     },
     components::{
         task_table::{
             DownloadTableDelegate, SelectModifiers, SelectionSummary, TableFilter, ToolbarCommand,
-            spawn_midnight_refresh, task_menu_facts_for,
+            piece_picking_order_targets, piece_picking_toggle_target, spawn_midnight_refresh,
+            task_menu_facts_for,
         },
         title_bar::{DownloadSearchBox, DownloadTitleBar, DownloadViewMenu},
     },
@@ -2158,6 +2160,78 @@ impl DownloadView {
         );
     }
 
+    fn on_set_rarest_first_selected(
+        &mut self,
+        _: &SetRarestFirstSelected,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_piece_picking_order(false, cx);
+    }
+
+    fn on_set_sequential_selected(
+        &mut self,
+        _: &SetSequentialSelected,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_piece_picking_order(true, cx);
+    }
+
+    fn on_toggle_first_last_pieces_selected(
+        &mut self,
+        _: &ToggleFirstLastPiecesSelected,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let store = self.controller.store();
+        let facts: Vec<_> = selected
+            .iter()
+            .filter_map(|key| task_menu_facts_for(store, key))
+            .collect();
+        let Some(value) = piece_picking_toggle_target(&facts) else {
+            return;
+        };
+        let commands = selected
+            .into_iter()
+            .filter(|key| key.is_local())
+            .map(|key| DownloadsCommand::SetPiecePicking {
+                task_id: key.task_id().to_owned(),
+                sequential: None,
+                first_last_pieces_first: Some(value),
+            })
+            .collect();
+        self.execute_commands(commands, cx);
+    }
+
+    /// 右键 / 应用菜单选片顺序：只对尚未处于目标顺序的本机未完成 BT 任务下发，
+    /// 每任务一次，只带 `sequential`。全体已是目标值则不下发。
+    fn set_piece_picking_order(&mut self, sequential: bool, cx: &mut Context<Self>) {
+        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let store = self.controller.store();
+        let rows: Vec<_> = selected
+            .into_iter()
+            .filter_map(|key| task_menu_facts_for(store, &key).map(|facts| (key, facts)))
+            .collect();
+        let facts: Vec<_> = rows.iter().map(|(_, facts)| *facts).collect();
+        let targets = piece_picking_order_targets(&facts, sequential);
+        if targets.is_empty() {
+            return;
+        }
+        let commands = targets
+            .into_iter()
+            .filter_map(|index| rows.get(index))
+            .filter(|(key, _)| key.is_local())
+            .map(|(key, _)| DownloadsCommand::SetPiecePicking {
+                task_id: key.task_id().to_owned(),
+                sequential: Some(sequential),
+                first_last_pieces_first: None,
+            })
+            .collect();
+        self.execute_commands(commands, cx);
+    }
+
     fn on_cycle_density(&mut self, _: &CycleDensity, window: &mut Window, cx: &mut Context<Self>) {
         if Self::guard_letter_key(window, cx) {
             self.run_page_command(PageCommand::CycleDensity, window, cx);
@@ -2586,6 +2660,9 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_change_selected_url))
             .on_action(cx.listener(Self::on_change_selected_segments))
             .on_action(cx.listener(Self::on_verify_selected))
+            .on_action(cx.listener(Self::on_set_rarest_first_selected))
+            .on_action(cx.listener(Self::on_set_sequential_selected))
+            .on_action(cx.listener(Self::on_toggle_first_last_pieces_selected))
             .on_action(cx.listener(Self::on_toggle_detail_panel))
             .on_drop(cx.listener(Self::on_paths_dropped))
             .drag_over::<ExternalPaths>(|style, _, _, cx| {

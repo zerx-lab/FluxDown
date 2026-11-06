@@ -427,6 +427,14 @@ struct DownloadsListScreen: View {
                     .disabled(!caps.canPause)
                 Button(L("moveToQueueAction"), systemImage: FluxSymbol.queue) { actions.moveToQueue(caps.moveIds) }
                     .disabled(!caps.canMove)
+                #if FULL_FLAVOR
+                let picking = PiecePickingMenu.facts(tasks: model.selectedTasks())
+                if picking.shown {
+                    Menu(L("moreActions"), systemImage: FluxSymbol.more) {
+                        PiecePickingMenuItems(facts: picking)
+                    }
+                }
+                #endif
                 Button(L("copyUrl"), systemImage: FluxSymbol.copy) { copyLinks(model.selectedTasks()) }
                     .disabled(model.selection.isEmpty)
             }

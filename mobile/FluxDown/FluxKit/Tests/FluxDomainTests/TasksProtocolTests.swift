@@ -342,4 +342,110 @@ struct TasksProtocolTests {
         #expect(TaskErrorMessage.displayText("connection reset", localize: { _ in "x" }) == "connection reset")
         #expect(TaskErrorMessage.displayText(TaskErrorMessage.postOnlyResume, localize: { "L:" + $0 }) == "L:taskErrorPostOnlyResume")
     }
+
+    // MARK: BT 选片
+
+    @Test func piecePickingParamsOmitNilFields() throws {
+        let sequential = SetTaskPiecePickingParams(taskId: "t1", sequential: false)
+        let sequentialJson = try ProtocolJSON.decode(JSONValue.self, from: ProtocolJSON.encode(sequential, what: "p"), what: "p")
+        #expect(Set(sequentialJson.objectValue?.keys.map { $0 } ?? []) == ["sequential", "taskId"])
+        #expect(sequentialJson["sequential"]?.boolValue == false)
+        #expect(sequentialJson["firstLastPiecesFirst"] == nil)
+
+        let firstLast = SetTaskPiecePickingParams(taskId: "t1", firstLastPiecesFirst: true)
+        let firstLastJson = try ProtocolJSON.decode(JSONValue.self, from: ProtocolJSON.encode(firstLast, what: "p"), what: "p")
+        #expect(Set(firstLastJson.objectValue?.keys.map { $0 } ?? []) == ["firstLastPiecesFirst", "taskId"])
+        #expect(firstLastJson["sequential"] == nil)
+
+        let roundTrip = try ProtocolJSON.decode(SetTaskPiecePickingParams.self, from: ProtocolJSON.encode(sequential, what: "p"), what: "p")
+        #expect(roundTrip == sequential)
+        #expect(roundTrip.firstLastPiecesFirst == nil)
+    }
+
+    @Test func piecePickingMenuShownOnlyForIncompleteBt() {
+        let magnet = bt("m", .downloading, url: "magnet:?xt=urn:btih:abc")
+        let uppercase = bt("u", .downloading, url: "MAGNET:?xt=urn:btih:ABC")
+        let torrent = bt("f", .paused, url: "torrent-file://abc", sequential: true, firstLast: true)
+        let http = bt("h", .downloading, url: "https://x/a.bin")
+        let done = bt("d", .completed, url: "magnet:?xt=urn:btih:abc", sequential: true)
+        let ed2k = bt("e", .downloading, url: "ed2k://|file|a|1|/")
+
+        #expect(PiecePickingMenu.facts(tasks: [magnet]).shown)
+        #expect(PiecePickingMenu.facts(tasks: [uppercase]).shown)
+        #expect(PiecePickingMenu.facts(tasks: [torrent]).shown)
+        #expect(!PiecePickingMenu.facts(tasks: [http]).shown)
+        #expect(!PiecePickingMenu.facts(tasks: [done]).shown)
+        #expect(!PiecePickingMenu.facts(tasks: [ed2k]).shown)
+        #expect(!PiecePickingMenu.facts(tasks: [magnet, http]).shown)
+        #expect(!PiecePickingMenu.facts(tasks: []).shown)
+        #expect(PiecePickingMenu.facts(tasks: [http]).taskIds.isEmpty)
+    }
+
+    @Test func piecePickingOrderSelectsAllOrNeitherAndSetSkipsUnchanged() {
+        let off = bt("a", .downloading)
+        let alsoOff = bt("b", .pending)
+        let sequential = bt("c", .paused, sequential: true)
+        let sequentialEnds = bt("d", .failed, sequential: true, firstLast: true)
+
+        let defaults = PiecePickingMenu.facts(tasks: [off, alsoOff])
+        #expect(defaults.shown && defaults.order == .rarest && !defaults.firstLastOn)
+        #expect(defaults.settingSequential(false).isEmpty)
+        #expect(defaults.settingSequential(true) == [
+            SetTaskPiecePickingParams(taskId: "a", sequential: true),
+            SetTaskPiecePickingParams(taskId: "b", sequential: true),
+        ])
+        #expect(defaults.settingSequential(true).allSatisfy { $0.sequential == true && $0.firstLastPiecesFirst == nil })
+
+        let allSequential = PiecePickingMenu.facts(tasks: [sequential, sequentialEnds])
+        #expect(allSequential.order == .sequential && !allSequential.firstLastOn)
+        #expect(allSequential.settingSequential(true).isEmpty)
+        #expect(allSequential.settingSequential(false) == [
+            SetTaskPiecePickingParams(taskId: "c", sequential: false),
+            SetTaskPiecePickingParams(taskId: "d", sequential: false),
+        ])
+        #expect(allSequential.settingSequential(false).allSatisfy { $0.firstLastPiecesFirst == nil })
+
+        let mixed = PiecePickingMenu.facts(tasks: [off, sequential, sequentialEnds])
+        #expect(mixed.order == .mixed)
+        #expect(mixed.settingSequential(true) == [
+            SetTaskPiecePickingParams(taskId: "a", sequential: true),
+        ])
+        #expect(mixed.settingSequential(false) == [
+            SetTaskPiecePickingParams(taskId: "c", sequential: false),
+            SetTaskPiecePickingParams(taskId: "d", sequential: false),
+        ])
+        #expect(mixed.settingSequential(false).allSatisfy { $0.sequential == false && $0.firstLastPiecesFirst == nil })
+
+        // 首尾勾选与顺序无关：混合未勾，点击把全部设为开，且只带该字段；全开则翻成关。
+        let endsOn = bt("e", .downloading, firstLast: true)
+        let endsMixed = PiecePickingMenu.facts(tasks: [off, endsOn])
+        #expect(endsMixed.order == .rarest && !endsMixed.firstLastOn)
+        #expect(endsMixed.togglingFirstLast() == [
+            SetTaskPiecePickingParams(taskId: "a", firstLastPiecesFirst: true),
+            SetTaskPiecePickingParams(taskId: "e", firstLastPiecesFirst: true),
+        ])
+        #expect(endsMixed.togglingFirstLast().allSatisfy { $0.sequential == nil })
+        let endsAllOn = PiecePickingMenu.facts(tasks: [endsOn, bt("f", .paused, sequential: true, firstLast: true)])
+        #expect(endsAllOn.order == .mixed && endsAllOn.firstLastOn)
+        #expect(endsAllOn.togglingFirstLast().map(\.firstLastPiecesFirst) == [false, false])
+        #expect(endsAllOn.togglingFirstLast().allSatisfy { $0.sequential == nil })
+
+        let hidden = PiecePickingMenu.facts(tasks: [bt("h", .downloading, url: "https://x/a.bin")])
+        #expect(hidden.order == .mixed)
+        #expect(hidden.settingSequential(true).isEmpty && hidden.settingSequential(false).isEmpty)
+        #expect(hidden.togglingFirstLast().isEmpty)
+    }
+
+    private func bt(
+        _ id: String,
+        _ status: TaskStatus,
+        url: String = "magnet:?xt=urn:btih:1",
+        sequential: Bool = false,
+        firstLast: Bool = false
+    ) -> DownloadTask {
+        DownloadTask(
+            taskId: id, url: url, fileName: id, status: status,
+            btSequential: sequential, btFirstLastPiecesFirst: firstLast
+        )
+    }
 }

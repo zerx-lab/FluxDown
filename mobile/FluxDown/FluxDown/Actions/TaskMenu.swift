@@ -4,7 +4,7 @@ import QuickLook
 import SwiftUI
 
 /// 任务上下文菜单 / 详情「更多」菜单的内容，顺序沿用 PC `MenuEntry`（同 Android `TaskActions.menuItems`）：
-/// 打开 / 重新下载 / 继续·暂停 / 优先 ─ 复制链接 / 分享 / 重命名 / 更换下载源 / 移动到队列 / 选择 ─ 删除。
+/// 打开 / 继续·暂停 / 优先 ─ 重命名 / 更换下载源 ─（未完成 BT）选片 ─ 重新下载 / 复制链接 / 分享 / 移动到队列 / 选择 ─ 删除。
 struct TaskMenuItems: View {
     let task: DownloadTask
     /// 当前是否为优先任务（`HostState.priorityTaskId`）。
@@ -12,6 +12,7 @@ struct TaskMenuItems: View {
     /// 列表多选入口（详情页不传）。
     var onSelect: (() -> Void)?
 
+    @Environment(AppContainer.self) private var container
     @Environment(TaskActions.self) private var actions
     @Environment(\.confirmTaskDelete) private var confirmDelete
 
@@ -21,9 +22,6 @@ struct TaskMenuItems: View {
             if actions.hasLocalFile(task) {
                 Button(L("openFile"), systemImage: FluxSymbol.openFile) { actions.open(task) }
                 Button(L("mobileShowInFiles"), systemImage: FluxSymbol.folder) { actions.showInFiles(task) }
-            }
-            if actions.canRedownload(task) {
-                Button(L("redownloadTask"), systemImage: FluxSymbol.retry) { actions.confirmRedownload(task) }
             }
             if status == .paused || status == .failed || task.presentsResumeSeeding {
                 Button(L("resume"), systemImage: FluxSymbol.resume) { actions.resume([task.taskId]) }
@@ -38,15 +36,23 @@ struct TaskMenuItems: View {
                 }
             }
         }
+        if showsEditItems {
+            Section {
+                if !status.isActive, task.protocol != .bt {
+                    Button(L("renameTask"), systemImage: FluxSymbol.edit) { actions.rename(task) }
+                }
+                if status == .failed || status == .paused {
+                    Button(L("mobileChangeUrl"), systemImage: FluxSymbol.link) { actions.changeUrl(task) }
+                }
+            }
+        }
+        piecePickingSection
         Section {
+            if actions.canRedownload(task) {
+                Button(L("redownloadTask"), systemImage: FluxSymbol.retry) { actions.confirmRedownload(task) }
+            }
             Button(L("copyUrl"), systemImage: FluxSymbol.copy) { actions.copyLink(task) }
             ShareLink(item: task.shareUrl) { Label(L("mobileShareLink"), systemImage: FluxSymbol.share) }
-            if !status.isActive, task.protocol != .bt {
-                Button(L("renameTask"), systemImage: FluxSymbol.edit) { actions.rename(task) }
-            }
-            if status == .failed || status == .paused {
-                Button(L("mobileChangeUrl"), systemImage: FluxSymbol.link) { actions.changeUrl(task) }
-            }
             if status != .completed {
                 Button(L("moveToQueueAction"), systemImage: FluxSymbol.queue) { actions.moveToQueue([task.taskId]) }
             }
@@ -58,7 +64,52 @@ struct TaskMenuItems: View {
             Button(L("delete"), systemImage: FluxSymbol.delete, role: .destructive) { confirmDelete?.confirm([task]) }
         }
     }
+
+    /// 重命名 / 换链都没有时不留空段（与 Android 编辑项分隔线同条件）。
+    private var showsEditItems: Bool {
+        let status = task.status
+        return (!status.isActive && task.protocol != .bt) || status == .failed || status == .paused
+    }
+
+    #if FULL_FLAVOR
+    @ViewBuilder
+    private var piecePickingSection: some View {
+        let facts = PiecePickingMenu.facts(tasks: [task])
+        if facts.shown {
+            Section {
+                PiecePickingMenuItems(facts: facts)
+            }
+        }
+    }
+    #else
+    private var piecePickingSection: some View { EmptyView() }
+    #endif
 }
+
+#if FULL_FLAVOR
+/// 「选片方式」子菜单：最稀有优先 / 按顺序下载（单选）+ 先下载首尾文件块（独立勾选）。
+/// 单选态来自 `PiecePickingMenu.order`（混选两项都不点亮）；关态也画空圆 / 空框。
+/// 点顺序只发状态不同的任务的 `sequential`；点首尾只发该字段。
+struct PiecePickingMenuItems: View {
+    let facts: PiecePickingMenu
+
+    @Environment(TaskActions.self) private var actions
+
+    var body: some View {
+        Menu(L("btPiecePicking"), systemImage: "square.grid.3x3") {
+            Button { actions.setPiecePicking(facts.settingSequential(false)) } label: {
+                Label(L("btRarestFirst"), systemImage: facts.order == .rarest ? "largecircle.fill.circle" : "circle")
+            }
+            Button { actions.setPiecePicking(facts.settingSequential(true)) } label: {
+                Label(L("btSequentialDownload"), systemImage: facts.order == .sequential ? "largecircle.fill.circle" : "circle")
+            }
+            Button { actions.setPiecePicking(facts.togglingFirstLast()) } label: {
+                Label(L("btFirstLastPiecesFirst"), systemImage: facts.firstLastOn ? "checkmark.square" : "square")
+            }
+        }
+    }
+}
+#endif
 
 // MARK: - 删除确认
 

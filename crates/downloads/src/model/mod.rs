@@ -365,6 +365,10 @@ pub(crate) struct DownloadTaskView {
     pub(crate) seeding_status: i32,
     pub(crate) uploaded_bytes: i64,
     pub(crate) boosted: bool,
+    /// BT 选片：按顺序下载（`TaskDto::bt_sequential`；缺省 false = 最稀有优先）。
+    pub(crate) bt_sequential: bool,
+    /// BT 选片：先下载首尾文件块（`TaskDto::bt_first_last_pieces_first`）。
+    pub(crate) bt_first_last_pieces_first: bool,
     /// 远程任务的目标设备 id（`CloudDevice::device_id`；本地任务为空）。
     pub(crate) to_device: String,
     /// 远程任务的云端原始状态（本地任务为 `None`）；`Canceled` / `Unknown` 无法用
@@ -402,6 +406,8 @@ impl DownloadTaskView {
         view.seeding_status = task.seeding_status;
         view.uploaded_bytes = task.uploaded_bytes;
         view.boosted = boosted;
+        view.bt_sequential = task.bt_sequential;
+        view.bt_first_last_pieces_first = task.bt_first_last_pieces_first;
         view
     }
 
@@ -504,6 +510,8 @@ impl DownloadTaskView {
             seeding_status: 0,
             uploaded_bytes: 0,
             boosted: false,
+            bt_sequential: false,
+            bt_first_last_pieces_first: false,
             to_device: String::new(),
             remote_status: None,
         }

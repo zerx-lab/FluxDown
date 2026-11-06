@@ -28,6 +28,8 @@ object HostMethod {
     const val daemonTaskChangeUrl = "daemon.task.changeUrl"
     /** 修改任务线程数（`SetTaskSegmentsParams`），已下进度保留；完成或不存在的任务返回 `not-found`。 */
     const val daemonTaskSetSegments = "daemon.task.setSegments"
+    /** 切换 BT 选片（`SetTaskPiecePickingParams`）：省略的字段保持不变；非 BT 或不存在返回 `not-found`。 */
+    const val daemonTaskSetPiecePicking = "daemon.task.setPiecePicking"
     const val daemonTaskDelete = "daemon.task.delete"
     const val daemonTaskPauseAll = "daemon.task.pauseAll"
     const val daemonTaskResumeAll = "daemon.task.resumeAll"

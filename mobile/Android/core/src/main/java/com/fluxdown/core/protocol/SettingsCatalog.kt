@@ -57,6 +57,7 @@ object SettingsCatalog {
     val btGuardDownloadingActions = listOf("observe", "throttle", "choke", "ban")
     val btSeedThenActions = listOf("stop", "delete", "delete_files")
     val btMseModes = listOf("disabled", "enabled", "forced")
+    val btPieceOrders = listOf("rarest", "sequential")
     val proxyModes = listOf("none", "system", "manual", "auto")
     val proxyTypes = listOf("http", "https", "socks4", "socks5")
     val themeModes = listOf("system", "light", "dark")
@@ -110,6 +111,8 @@ object SettingsCatalog {
         daemon("bt_port_end", int(1, 65_535), "6891"),
         daemon("bt_mse_mode", choice(btMseModes), "enabled"),
         daemon("bt_custom_trackers", text, ""),
+        daemon("bt_piece_order", choice(btPieceOrders), "rarest"),
+        daemon("bt_first_last_pieces_first", bool, "false"),
         daemon("bt_tracker_sub_enabled", bool, "true"),
         daemon("bt_tracker_sub_urls", text, ""),
         daemon("bt_tracker_sub_cache", readOnly, ""),
@@ -227,7 +230,7 @@ object SettingsCatalog {
     /** 自定义主题集合的范围键：只承载分组 / 本机专属开关，从不承载值（逐主题键 `appearance.custom_themes.<id>`）。 */
     const val customThemesScopeKey = "appearance.custom_themes"
 
-    /** daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，49 项，含 19 个 `bt.guard.*`）。 */
+    /** daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，51 项，含 19 个 `bt.guard.*`）。 */
     val daemonSyncNames: Map<String, String> = mapOf(
         "max_concurrent_tasks" to "download.max_concurrent_tasks",
         "default_segments" to "download.default_segments",
@@ -245,6 +248,8 @@ object SettingsCatalog {
         "bt_enable_upnp" to "bt.enable_upnp",
         "bt_enable_utp" to "bt.enable_utp",
         "bt_custom_trackers" to "bt.custom_trackers",
+        "bt_piece_order" to "bt.piece_order",
+        "bt_first_last_pieces_first" to "bt.first_last_pieces_first",
         "bt_tracker_sub_enabled" to "bt.tracker_sub_enabled",
         "bt_tracker_sub_urls" to "bt.tracker_sub_urls",
         "bt_seed_ratio_limit" to "bt.seed_ratio_limit",

@@ -174,6 +174,8 @@ internal fun TaskDto.toCore() = Task(
     seedingStatus = SeedingStatus.of(seedingStatus),
     seedingMessage = seedingMessage,
     seedingTimeSecs = seedingTimeSecs,
+    btSequential = btSequential,
+    btFirstLastPiecesFirst = btFirstLastPiecesFirst,
 )
 
 internal fun SegmentDto.toCore() = Segment(

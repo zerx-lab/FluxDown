@@ -114,6 +114,7 @@ import type {
   TaskDeleteParams,
   TaskChangeUrlParams,
   TaskSetSegmentsParams,
+  TaskSetPiecePickingParams,
   TaskDtoWire,
   DaemonSeedLocalParams,
   DaemonTaskHashParams,
@@ -156,6 +157,9 @@ const task = {
   /** 修改线程数：已下进度保留；下载中任务由引擎静默暂停 → 改配置 → 恢复。 */
   setSegments: (params: TaskSetSegmentsParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_SET_SEGMENTS, params),
+  /** BT 选块：只传本次切换的字段，另一项保持不变。 */
+  setPiecePicking: (params: TaskSetPiecePickingParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_SET_PIECE_PICKING, params),
   delete: (params: TaskDeleteParams) => call<OkResult>(METHOD.DAEMON_TASK_DELETE, params),
   pauseAll: () => call<OkResult>(METHOD.DAEMON_TASK_PAUSE_ALL),
   resumeAll: () => call<OkResult>(METHOD.DAEMON_TASK_RESUME_ALL),

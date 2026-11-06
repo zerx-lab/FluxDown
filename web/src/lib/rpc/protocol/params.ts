@@ -49,6 +49,13 @@ export interface TaskSetSegmentsParams {
   segments: number;
 }
 
+/** `daemon.task.setPiecePicking`：省略的字段保持不变。 */
+export interface TaskSetPiecePickingParams {
+  taskId: string;
+  sequential?: boolean;
+  firstLastPiecesFirst?: boolean;
+}
+
 export interface TaskDeleteParams {
   taskId: string;
   /** 同时删除磁盘文件，缺省 false。 */

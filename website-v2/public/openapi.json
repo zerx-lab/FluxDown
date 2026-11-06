@@ -6387,6 +6387,14 @@
             "type": "string",
             "description": "Auto 路由或站点规则标签（可追溯性）：Auto 为 `direct` /\n`direct:sampled` / `direct:pinned` / `direct:failover` /\n`proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n`rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。"
           },
+          "btFirstLastPiecesFirst": {
+            "type": "boolean",
+            "description": "BT 选片：先下载每个选中文件首尾各 1% 的块（qBittorrent「先下载首尾文件块」）。"
+          },
+          "btSequential": {
+            "type": "boolean",
+            "description": "BT 选片：按文件顺序下载（qBittorrent「按顺序下载」）。false = 最稀有优先。"
+          },
           "checksum": {
             "type": "string",
             "description": "Checksum spec，格式 `algo=hexhash`（空 = 跳过校验）。"

@@ -81,6 +81,11 @@ pub enum ActorOperation {
         task_id: String,
         segments: i32,
     },
+    SetTaskPiecePicking {
+        task_id: String,
+        sequential: Option<bool>,
+        first_last_pieces_first: Option<bool>,
+    },
     DeleteTask {
         task_id: String,
         delete_files: bool,
@@ -1178,6 +1183,22 @@ async fn execute_operation(
                 return Err(ActorError::NotFound);
             }
             // 非活跃任务引擎只改库不推事件：补一次快照让客户端看到新线程数。
+            engine.manager.send_tasks_snapshot().await;
+        }
+        ActorOperation::SetTaskPiecePicking {
+            task_id,
+            sequential,
+            first_last_pieces_first,
+        } => {
+            let updated = engine
+                .manager
+                .set_task_piece_picking(&task_id, sequential, first_last_pieces_first)
+                .await
+                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+            if !updated {
+                return Err(ActorError::NotFound);
+            }
+            // 引擎只改库与会话、不推事件：补一次快照让客户端看到新的选片方式。
             engine.manager.send_tasks_snapshot().await;
         }
         ActorOperation::DeleteTask {
@@ -3196,6 +3217,97 @@ mod tests {
         drop(engine);
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor set segments test directory removal failed: {error}");
+        }
+    }
+
+    /// `daemon.task.setPiecePicking`：BT 任务按缺省字段做部分更新并落库；不存在 / 非 BT
+    /// 任务映射为 `NotFound`，不改库。
+    #[tokio::test]
+    async fn set_task_piece_picking_updates_bt_tasks_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_piece_picking_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create piece picking test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let set = |task_id: &str, sequential: Option<bool>, first_last: Option<bool>| {
+            ActorOperation::SetTaskPiecePicking {
+                task_id: task_id.to_owned(),
+                sequential,
+                first_last_pieces_first: first_last,
+            }
+        };
+        for (id, url) in [
+            (
+                "bt",
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            ),
+            ("http", "https://example.invalid/a.bin"),
+        ] {
+            engine
+                .db
+                .insert_task(id, url, "a.bin", &dir_text, 0, 0, "", "", "", 2)
+                .await
+                .expect("insert task");
+        }
+        let picking = |task: fluxdown_engine::model::TaskInfo| {
+            (task.bt_sequential, task.bt_first_last_pieces_first)
+        };
+
+        execute_operation(set("bt", Some(true), None), &mut engine, &events)
+            .await
+            .expect("BT task accepts sequential");
+        execute_operation(set("bt", None, Some(true)), &mut engine, &events)
+            .await
+            .expect("BT task accepts first and last pieces first");
+        let bt = engine
+            .db
+            .load_task_by_id("bt")
+            .await
+            .expect("load bt")
+            .expect("bt exists");
+        assert_eq!(picking(bt), (true, true));
+
+        for id in ["missing", "http"] {
+            assert!(matches!(
+                execute_operation(set(id, Some(true), Some(true)), &mut engine, &events).await,
+                Err(ActorError::NotFound)
+            ));
+        }
+        let http = engine
+            .db
+            .load_task_by_id("http")
+            .await
+            .expect("load http")
+            .expect("http exists");
+        assert_eq!(picking(http), (false, false), "non-BT task is untouched");
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor piece picking test directory removal failed: {error}");
         }
     }
 

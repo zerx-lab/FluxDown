@@ -26,19 +26,31 @@ import { GuardSettingsTab } from './guard/GuardSettings'
 function BasicTab({ btEnabled }: { btEnabled: boolean }) {
   const t = useT()
   return (
-    <SettingsSection title={t('settingsTabGeneral')} subtitle={t('btSettingsRestartHint')}>
-      <DaemonSwitchRow configKey="bt_enabled" titleKey="btEnabled" descKey="btEnabledDesc" />
+    <>
+      <SettingsSection title={t('settingsTabGeneral')} subtitle={t('btSettingsRestartHint')}>
+        <DaemonSwitchRow configKey="bt_enabled" titleKey="btEnabled" descKey="btEnabledDesc" />
+        {btEnabled ? (
+          <>
+            <DaemonSwitchRow configKey="bt_enable_dht" titleKey="btEnableDht" descKey="btEnableDhtDesc" />
+            <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
+            <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />
+            <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
+            <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
+            <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
+          </>
+        ) : null}
+      </SettingsSection>
       {btEnabled ? (
-        <>
-          <DaemonSwitchRow configKey="bt_enable_dht" titleKey="btEnableDht" descKey="btEnableDhtDesc" />
-          <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
-          <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />
-          <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
-          <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
-          <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
-        </>
+        <SettingsSection title={t('btNewTasksSection')}>
+          <DaemonEnumRow configKey="bt_piece_order" titleKey="btPieceOrder" descKey="btPieceOrderDesc" labelPrefix="btPieceOrder" />
+          <DaemonSwitchRow
+            configKey="bt_first_last_pieces_first"
+            titleKey="btFirstLastPiecesFirstDefault"
+            descKey="btFirstLastPiecesFirstDefaultDesc"
+          />
+        </SettingsSection>
       ) : null}
-    </SettingsSection>
+    </>
   )
 }
 

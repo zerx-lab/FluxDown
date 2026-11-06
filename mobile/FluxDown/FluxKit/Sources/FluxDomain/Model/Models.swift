@@ -85,6 +85,10 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
     public var seedingStatus: SeedingStatus
     public var seedingMessage: String
     public var seedingTimeSecs: Int64
+    /// BT 选片：按顺序下载。缺省 / 非 BT = false。
+    public var btSequential: Bool
+    /// BT 选片：先下载首尾文件块。缺省 / 非 BT = false。
+    public var btFirstLastPiecesFirst: Bool
 
     public init(
         taskId: String,
@@ -107,7 +111,9 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
         uploadedBytes: Int64 = 0,
         seedingStatus: SeedingStatus = .none,
         seedingMessage: String = "",
-        seedingTimeSecs: Int64 = 0
+        seedingTimeSecs: Int64 = 0,
+        btSequential: Bool = false,
+        btFirstLastPiecesFirst: Bool = false
     ) {
         self.taskId = taskId
         self.url = url
@@ -130,6 +136,8 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
         self.seedingStatus = seedingStatus
         self.seedingMessage = seedingMessage
         self.seedingTimeSecs = seedingTimeSecs
+        self.btSequential = btSequential
+        self.btFirstLastPiecesFirst = btFirstLastPiecesFirst
     }
 
     public var id: String { taskId }

@@ -268,6 +268,8 @@ export function groupSortView(
     groupId: group.groupId,
     errorMessage: '',
     fileMissing: false,
+    btSequential: false,
+    btFirstLastPiecesFirst: false,
     fileHash: '',
     seedingStatus: 0,
     uploadedBytes: 0,

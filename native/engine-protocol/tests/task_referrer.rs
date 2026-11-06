@@ -34,6 +34,8 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
         seed_time_limit_minutes: -2,
         seed_inactive_time_limit_minutes: -2,
         seed_upload_limit_bps: 2048,
+        bt_sequential: true,
+        bt_first_last_pieces_first: false,
         referrer: "https://example.com/page".to_owned(),
         group_id: String::new(),
         rss_source_id: String::new(),
@@ -44,9 +46,12 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
     let dto = fluxdown_engine_protocol::task_info_to_dto(info);
     assert_eq!(dto.referrer, "https://example.com/page");
     assert_eq!(dto.seed_upload_limit_bps, 2048);
+    assert!(dto.bt_sequential && !dto.bt_first_last_pieces_first);
     let json = serde_json::to_string(&dto)?;
     assert!(json.contains(r#""referrer":"https://example.com/page""#));
     assert!(json.contains(r#""seedUploadLimitBps":2048"#));
+    assert!(json.contains(r#""btSequential":true"#));
+    assert!(!json.contains("btFirstLastPiecesFirst"));
     Ok(())
 }
 
@@ -81,6 +86,8 @@ fn task_dto_json_carries_persisted_source_bytes() -> Result<(), serde_json::Erro
         seed_time_limit_minutes: -2,
         seed_inactive_time_limit_minutes: -2,
         seed_upload_limit_bps: 0,
+        bt_sequential: false,
+        bt_first_last_pieces_first: false,
         referrer: String::new(),
         group_id: String::new(),
         rss_source_id: String::new(),

@@ -436,6 +436,10 @@ pub(crate) struct TaskMenuFacts {
     pub(crate) is_torrent_sentinel: bool,
     /// BT 任务（`magnet:` 链接或 `torrent-file://` 哨兵）：不支持更换链接 / 修改线程数。
     pub(crate) is_bt: bool,
+    /// BT 选片：按顺序下载。仅本地 BT 行有意义；远程 / 非 BT 为 false。
+    pub(crate) bt_sequential: bool,
+    /// BT 选片：先下载每个选中文件的首尾块。
+    pub(crate) bt_first_last_pieces_first: bool,
     /// `url` 是 http(s) / ftp 链接（引擎 `change_task_url` 仅接受这些源）。
     pub(crate) url_replaceable: bool,
     /// 失败态、错误消息带插件重试前缀且非任务组成员（组成员的原始链接是分享页，daemon 拒绝忽略重试）。
@@ -528,6 +532,8 @@ pub(crate) fn task_menu_facts_for(store: &TaskStore, key: &RowKey) -> Option<Tas
         file_missing: row.is_file_missing(),
         is_seeding: row.is_seeding(),
         can_resume_seeding: row.can_resume_seeding(),
+        bt_sequential: row.bt_sequential,
+        bt_first_last_pieces_first: row.bt_first_last_pieces_first,
     })
 }
 
@@ -550,6 +556,12 @@ pub(crate) enum MenuEntry {
     ChangeSegments,
     /// 完整性校验（单选；条件见 [`TaskMenuFacts::can_verify_integrity`]）。
     VerifyIntegrity,
+    /// 最稀有优先（本地未完成 BT；可多选。选中态见 [`piece_picking_order`]）。
+    RarestFirst,
+    /// 按顺序下载（条件同 [`MenuEntry::RarestFirst`]；与最稀有优先互斥）。
+    SequentialDownload,
+    /// 先下载首尾文件块（条件同 [`MenuEntry::RarestFirst`]；可与任一顺序组合）。
+    FirstLastPiecesFirst,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
     CopyMagnet,
     /// 导出 .torrent 文件（单选；条件同 [`MenuEntry::CopyMagnet`]）。
@@ -635,6 +647,11 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
             items.push(MenuEntry::VerifyIntegrity);
         }
     }
+    if piece_picking_visible(selection) {
+        items.push(MenuEntry::RarestFirst);
+        items.push(MenuEntry::SequentialDownload);
+        items.push(MenuEntry::FirstLastPiecesFirst);
+    }
     if selection.iter().all(|task| {
         task.is_local
             && matches!(task.state, TaskState::Completed | TaskState::Failed)
@@ -703,6 +720,66 @@ fn separator_index(items: &[MenuEntry]) -> usize {
         .iter()
         .position(|entry| *entry == MenuEntry::Separator)
         .unwrap_or(items.len())
+}
+
+/// 选区全体都是本机、未完成的 BT 任务时才显示选片项（交集语义，可多选）。
+pub(crate) fn piece_picking_visible(selection: &[TaskMenuFacts]) -> bool {
+    !selection.is_empty()
+        && selection
+            .iter()
+            .all(|task| task.is_local && task.is_bt && task.state != TaskState::Completed)
+}
+
+/// 选片顺序：全体一致才点亮对应单选；混合或不可见选区为 [`PiecePickingOrder::Mixed`]。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PiecePickingOrder {
+    /// 全体 `bt_sequential == false`（缺省：最稀有优先）。
+    Rarest,
+    /// 全体 `bt_sequential == true`。
+    Sequential,
+    /// 选区有的开、有的关，或选区不满足显示条件（两个单选都不选）。
+    Mixed,
+}
+
+/// 选区的下载顺序。空选区与不可见选区视为混合（不下发、不点亮）。
+pub(crate) fn piece_picking_order(selection: &[TaskMenuFacts]) -> PiecePickingOrder {
+    if !piece_picking_visible(selection) {
+        return PiecePickingOrder::Mixed;
+    }
+    if selection.iter().all(|task| task.bt_sequential) {
+        PiecePickingOrder::Sequential
+    } else if selection.iter().all(|task| !task.bt_sequential) {
+        PiecePickingOrder::Rarest
+    } else {
+        PiecePickingOrder::Mixed
+    }
+}
+
+/// 把顺序设为 `sequential` 时需要下发的任务下标。已是该状态的跳过；
+/// 选区不可见或全体已是目标值时为空（不下发）。只改 `sequential` 字段。
+pub(crate) fn piece_picking_order_targets(
+    selection: &[TaskMenuFacts],
+    sequential: bool,
+) -> Vec<usize> {
+    if !piece_picking_visible(selection) {
+        return Vec::new();
+    }
+    selection
+        .iter()
+        .enumerate()
+        .filter(|(_, task)| task.bt_sequential != sequential)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// 「先下载首尾文件块」勾选态：选区里该项全部为开才勾上（混合视为未勾）。
+pub(crate) fn piece_picking_checked(selection: &[TaskMenuFacts]) -> bool {
+    !selection.is_empty() && selection.iter().all(|task| task.bt_first_last_pieces_first)
+}
+
+/// 点击首尾勾选后应写入的值：`!all_on`。选区不满足显示条件时为 `None`（不下发）。
+pub(crate) fn piece_picking_toggle_target(selection: &[TaskMenuFacts]) -> Option<bool> {
+    piece_picking_visible(selection).then(|| !piece_picking_checked(selection))
 }
 
 /// 分组头菜单项的外观：普通图标项，或破坏性项（图标与文字取主题 `destructive` 色）。
@@ -3006,6 +3083,11 @@ impl DownloadTableDelegate {
                 FluxIcon::Shield,
                 Box::new(crate::actions::VerifySelected),
             ),
+            MenuEntry::RarestFirst
+            | MenuEntry::SequentialDownload
+            | MenuEntry::FirstLastPiecesFirst => {
+                self.piece_picking_menu_item(menu, entry, selected)
+            }
             MenuEntry::Redownload => menu.menu_with_icon(
                 self.strings.redownload_task.clone(),
                 FluxIcon::RotateCw,
@@ -3057,6 +3139,61 @@ impl DownloadTableDelegate {
             ),
             MenuEntry::Plugin(index) => self.append_plugin_command(menu, index, selected),
         }
+    }
+
+    /// 选片三项：标题不可点（这里拿不到 `Context<PopupMenu>`，不能建子菜单）。
+    /// 顺序两项画圆点单选，首尾画方框，关闭时也看得见状态。
+    fn piece_picking_menu_item(
+        &self,
+        menu: PopupMenu,
+        entry: MenuEntry,
+        selected: &[RowKey],
+    ) -> PopupMenu {
+        let facts: Vec<_> = selected
+            .iter()
+            .filter_map(|key| self.task_menu_facts(key))
+            .collect();
+        let order = piece_picking_order(&facts);
+        let (label, icon, action): (SharedString, FluxIcon, Box<dyn gpui::Action>) = match entry {
+            MenuEntry::RarestFirst => (
+                self.strings.bt_rarest_first.clone(),
+                if order == PiecePickingOrder::Rarest {
+                    FluxIcon::CircleDot
+                } else {
+                    FluxIcon::Circle
+                },
+                Box::new(crate::actions::SetRarestFirstSelected),
+            ),
+            MenuEntry::SequentialDownload => (
+                self.strings.bt_sequential.clone(),
+                if order == PiecePickingOrder::Sequential {
+                    FluxIcon::CircleDot
+                } else {
+                    FluxIcon::Circle
+                },
+                Box::new(crate::actions::SetSequentialSelected),
+            ),
+            MenuEntry::FirstLastPiecesFirst => (
+                self.strings.bt_first_last_pieces.clone(),
+                if piece_picking_checked(&facts) {
+                    FluxIcon::SquareCheck
+                } else {
+                    FluxIcon::Square
+                },
+                Box::new(crate::actions::ToggleFirstLastPiecesSelected),
+            ),
+            _ => return menu,
+        };
+        let menu = if matches!(entry, MenuEntry::RarestFirst) {
+            menu.item(
+                PopupMenuItem::new(self.strings.bt_piece_picking.clone())
+                    .icon(FluxIcon::ListFilter)
+                    .disabled(true),
+            )
+        } else {
+            menu
+        };
+        menu.menu_with_icon(label, icon, action)
     }
 }
 
@@ -5939,8 +6076,9 @@ mod tests {
 #[cfg(test)]
 mod context_menu_tests {
     use super::{
-        MenuEntry, PLUGIN_ERROR_PREFIX, TaskMenuFacts, context_menu_items, is_bt_url,
-        is_replaceable_url, task_menu_entries,
+        MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, TaskMenuFacts, context_menu_items,
+        is_bt_url, is_replaceable_url, piece_picking_checked, piece_picking_order,
+        piece_picking_order_targets, piece_picking_toggle_target, task_menu_entries,
     };
     use crate::model::TaskState;
 
@@ -5953,6 +6091,8 @@ mod context_menu_tests {
             boosted: false,
             is_torrent_sentinel: false,
             is_bt: false,
+            bt_sequential: false,
+            bt_first_last_pieces_first: false,
             url_replaceable: true,
             is_plugin_retry_error: false,
             file_missing: false,
@@ -6111,6 +6251,27 @@ mod context_menu_tests {
     }
 
     #[test]
+    fn piece_picking_facts_follow_the_task_dto_and_default_off() {
+        use fluxdown_protocol::TaskDto;
+
+        use super::task_menu_facts_for;
+        use crate::model::{DownloadTaskView, RowKey, TaskStore};
+
+        let store = TaskStore::default();
+        let dto: TaskDto = serde_json::from_value(serde_json::json!({
+            "taskId": "bt", "url": "magnet:?xt=urn:btih:abc", "fileName": "a",
+            "saveDir": "/tmp", "status": 1, "downloadedBytes": 0, "totalBytes": 10,
+            "errorMessage": "", "createdAt": "1", "proxyUrl": "", "queueId": "",
+            "checksum": "", "btSequential": true
+        }))
+        .expect("task");
+        store.push_local(DownloadTaskView::local(&dto, None, false));
+        let facts = task_menu_facts_for(&store, &RowKey::Local("bt".to_owned())).expect("facts");
+        assert!(facts.bt_sequential);
+        assert!(!facts.bt_first_last_pieces_first);
+    }
+
+    #[test]
     fn boost_toggles_label_by_boosted_state() {
         let mut boosted = task(true, TaskState::Downloading);
         boosted.boosted = true;
@@ -6244,6 +6405,134 @@ mod context_menu_tests {
             );
         }
         assert!(!context_menu_items(&[bt, bt]).contains(&MenuEntry::VerifyIntegrity));
+    }
+
+    fn unfinished_bt(state: TaskState) -> TaskMenuFacts {
+        let mut facts = task(true, state);
+        facts.is_bt = true;
+        facts.url_replaceable = false;
+        facts
+    }
+
+    #[test]
+    fn piece_picking_shows_for_local_unfinished_bt_and_hides_otherwise() {
+        for state in [
+            TaskState::Downloading,
+            TaskState::Paused,
+            TaskState::Pending,
+            TaskState::Failed,
+        ] {
+            let items = context_menu_items(&[unfinished_bt(state)]);
+            let at = items
+                .iter()
+                .position(|entry| *entry == MenuEntry::RarestFirst)
+                .expect("unfinished local BT offers piece picking");
+            assert_eq!(
+                items.get(at + 1),
+                Some(&MenuEntry::SequentialDownload),
+                "{state:?}"
+            );
+            assert_eq!(
+                items.get(at + 2),
+                Some(&MenuEntry::FirstLastPiecesFirst),
+                "{state:?}"
+            );
+            let next = if state == TaskState::Failed {
+                MenuEntry::Redownload
+            } else {
+                MenuEntry::CopyUrl
+            };
+            assert_eq!(items.get(at + 3), Some(&next), "{state:?}");
+        }
+
+        let pair = [
+            unfinished_bt(TaskState::Paused),
+            unfinished_bt(TaskState::Downloading),
+        ];
+        assert!(context_menu_items(&pair).contains(&MenuEntry::RarestFirst));
+        assert!(context_menu_items(&pair).contains(&MenuEntry::SequentialDownload));
+        assert!(context_menu_items(&pair).contains(&MenuEntry::FirstLastPiecesFirst));
+
+        let mut completed = unfinished_bt(TaskState::Completed);
+        completed.is_torrent_sentinel = true;
+        let mut remote = unfinished_bt(TaskState::Paused);
+        remote.is_local = false;
+        let mixed = [
+            unfinished_bt(TaskState::Paused),
+            task(true, TaskState::Paused),
+        ];
+        for selection in [
+            &[completed][..],
+            &[remote][..],
+            &[task(true, TaskState::Downloading)][..],
+            &mixed[..],
+            &[][..],
+        ] {
+            let items = context_menu_items(selection);
+            assert!(!items.contains(&MenuEntry::RarestFirst), "{selection:?}");
+            assert!(
+                !items.contains(&MenuEntry::SequentialDownload),
+                "{selection:?}"
+            );
+            assert!(
+                !items.contains(&MenuEntry::FirstLastPiecesFirst),
+                "{selection:?}"
+            );
+            assert!(piece_picking_order_targets(selection, true).is_empty());
+            assert!(piece_picking_toggle_target(selection).is_none());
+        }
+    }
+
+    #[test]
+    fn piece_picking_order_is_unanimous_and_set_skips_matches() {
+        let off = unfinished_bt(TaskState::Failed);
+        let mut sequential = unfinished_bt(TaskState::Paused);
+        sequential.bt_sequential = true;
+        let mut both = unfinished_bt(TaskState::Downloading);
+        both.bt_sequential = true;
+        both.bt_first_last_pieces_first = true;
+        let mut first_last_only = unfinished_bt(TaskState::Pending);
+        first_last_only.bt_first_last_pieces_first = true;
+
+        // 缺省（全体 sequential=false）选中最稀有优先，即使首尾已开。
+        assert_eq!(
+            piece_picking_order(&[off, first_last_only]),
+            PiecePickingOrder::Rarest
+        );
+        assert_eq!(
+            piece_picking_order(&[sequential, both]),
+            PiecePickingOrder::Sequential
+        );
+        assert_eq!(
+            piece_picking_order(&[off, sequential]),
+            PiecePickingOrder::Mixed
+        );
+        assert_eq!(piece_picking_order(&[]), PiecePickingOrder::Mixed);
+
+        // 设为最稀有优先只改尚未关闭 sequential 的任务；已是目标值则不下发。
+        assert_eq!(
+            piece_picking_order_targets(&[off, sequential, both], false),
+            vec![1, 2]
+        );
+        assert!(piece_picking_order_targets(&[off, first_last_only], false).is_empty());
+        // 设为按顺序下载只改尚未打开 sequential 的任务。
+        assert_eq!(
+            piece_picking_order_targets(&[sequential, off, first_last_only], true),
+            vec![1, 2]
+        );
+        assert!(piece_picking_order_targets(&[sequential, both], true).is_empty());
+
+        // 首尾勾选仍是独立开关：全部已开才勾，点击写入 !all_on。
+        assert!(piece_picking_checked(&[both, both]));
+        assert!(!piece_picking_checked(&[both, sequential]));
+        assert!(!piece_picking_checked(&[off]));
+        assert_eq!(piece_picking_toggle_target(&[both, sequential]), Some(true));
+        assert_eq!(piece_picking_toggle_target(&[both, both]), Some(false));
+        // 混合视为未勾，点击把全体设为开。
+        assert_eq!(
+            piece_picking_toggle_target(&[off, first_last_only]),
+            Some(true)
+        );
     }
 
     #[test]

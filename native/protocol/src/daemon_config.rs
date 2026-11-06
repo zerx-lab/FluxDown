@@ -45,6 +45,8 @@ pub const FILE_MISSING_ACTIONS: &[&str] = &["keep", "delete"];
 pub const BT_SEED_LIMIT_OPERATORS: &[&str] = &["or", "and"];
 pub const BT_SEED_THEN_ACTIONS: &[&str] = &["stop", "delete", "delete_files"];
 pub const BT_MSE_MODES: &[&str] = &["disabled", "enabled", "forced"];
+/// 新建 BT 任务的默认选片方式：最稀有优先 / 按顺序下载。
+pub const BT_PIECE_ORDERS: &[&str] = &["rarest", "sequential"];
 /// BT 防吸血规则 / 云名单的执行模式。
 pub const BT_GUARD_MODES: &[&str] = &["off", "observe", "enforce"];
 /// BT 防吸血：下载中任务的动作上限。
@@ -178,6 +180,18 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         "enabled",
     ),
     field("bt_custom_trackers", DaemonConfigKind::Text, ""),
+    // 新建 BT 任务的默认选片方式与「先下载首尾文件块」；只作用于此后新建的任务，
+    // 单个任务经 `daemon.task.setPiecePicking` 修改。
+    field(
+        "bt_piece_order",
+        DaemonConfigKind::Enum(BT_PIECE_ORDERS),
+        "rarest",
+    ),
+    field(
+        "bt_first_last_pieces_first",
+        DaemonConfigKind::Bool,
+        "false",
+    ),
     field("bt_tracker_sub_enabled", DaemonConfigKind::Bool, "true"),
     field("bt_tracker_sub_urls", DaemonConfigKind::Text, ""),
     field("bt_tracker_sub_cache", DaemonConfigKind::ReadOnly, ""),

@@ -51,6 +51,8 @@ const DEFAULTS = {
   seedTimeLimitMinutes: -2,
   seedInactiveTimeLimitMinutes: -2,
   seedUploadLimitBps: 0,
+  btSequential: false,
+  btFirstLastPiecesFirst: false,
   sourceBytes: { cdnBytes: 0, proxyBytes: 0, nicBytes: 0 },
 }
 

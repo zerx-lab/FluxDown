@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     seed_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_inactive_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_upload_limit_bps INTEGER NOT NULL DEFAULT 0,
-    seed_limits_exempt INTEGER NOT NULL DEFAULT 0
+    seed_limits_exempt INTEGER NOT NULL DEFAULT 0,
+    bt_sequential INTEGER NOT NULL DEFAULT 0,
+    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -439,7 +441,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     seed_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_inactive_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_upload_limit_bps BIGINT NOT NULL DEFAULT 0,
-    seed_limits_exempt INTEGER NOT NULL DEFAULT 0
+    seed_limits_exempt INTEGER NOT NULL DEFAULT 0,
+    bt_sequential INTEGER NOT NULL DEFAULT 0,
+    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -838,6 +842,11 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
             .try_get("seed_inactive_time_limit_minutes")
             .unwrap_or(-2),
         seed_upload_limit_bps: row.try_get("seed_upload_limit_bps").unwrap_or(0),
+        bt_sequential: row.try_get::<i32, _>("bt_sequential").unwrap_or(0) != 0,
+        bt_first_last_pieces_first: row
+            .try_get::<i32, _>("bt_first_last_pieces_first")
+            .unwrap_or(0)
+            != 0,
         referrer: row.try_get("referrer").unwrap_or_default(),
         group_id: row.try_get("group_id").unwrap_or_default(),
         rss_source_id: row.try_get("rss_source_id").unwrap_or_default(),
@@ -851,7 +860,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
 
 /// 新建任务的完整落库行（[`Db::insert_new_tasks`]）。
 ///
@@ -892,6 +901,9 @@ pub struct NewTaskRow<'a> {
     pub request_method: &'a str,
     /// `.torrent` 字节；非空时同事务写入 `torrent_files`。
     pub torrent_file_bytes: &'a [u8],
+    /// BT 选片（新任务按设置默认值落库）：按顺序下载 / 先下载首尾文件块。
+    pub bt_sequential: bool,
+    pub bt_first_last_pieces_first: bool,
 }
 
 /// 批量建任务的幂等记录（[`Db::insert_new_tasks`] 与任务行同事务写入）。
@@ -1648,6 +1660,16 @@ impl Db {
         // 用户再次停止做种）。不进 `TASK_COLUMNS`，只经专用访问器读写。
         self.add_column_if_missing("tasks", "seed_limits_exempt", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        // BT 选片方式（对齐 qBittorrent 右键「按顺序下载」「先下载首尾文件块」；
+        // 都为 0 = 最稀有优先）。add 时烘焙，live 句柄经 SharedBtSession 热改。
+        self.add_column_if_missing("tasks", "bt_sequential", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "bt_first_last_pieces_first",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
         // 队列级上传限速（KB/s；0 = 不限）。BT add/re-add 时与任务级
         // 覆盖一起折算成 librqbit 上传上限，见 download_manager。
         self.add_column_if_missing("queues", "upload_limit_kbps", "BIGINT NOT NULL DEFAULT 0")
@@ -1845,9 +1867,10 @@ impl Db {
                 "INSERT INTO tasks (id, url, file_name, name_inferred, save_dir, segments, status, error_message, \
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, cookies, referrer, \
                  extra_headers, origin_url, audio_url, resolver_plugin_id, group_id, resolver_item, unattended, \
-                 bt_selected_files, resolver_choice_pending, category_route, request_method) \
+                 bt_selected_files, resolver_choice_pending, category_route, request_method, \
+                 bt_sequential, bt_first_last_pieces_first) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, \
-                 $20, $21, $22, $23, $24, $25, $26, $27)",
+                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)",
             )
             .bind(row.id)
             .bind(row.url)
@@ -1876,6 +1899,8 @@ impl Db {
             .bind(i32::from(row.resolver_choice_pending))
             .bind(row.category_route)
             .bind(row.request_method)
+            .bind(i32::from(row.bt_sequential))
+            .bind(i32::from(row.bt_first_last_pieces_first))
             .execute(&mut *tx)
             .await?;
             if !row.torrent_file_bytes.is_empty() {
@@ -2457,6 +2482,25 @@ impl Db {
         .bind(seed_time_limit_minutes.max(-2))
         .bind(inactive_time_limit_minutes.max(-2))
         .bind(upload_limit_bps.max(0))
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 写入任务的 BT 选片方式（`None` = 该项不变）。
+    pub async fn set_task_piece_picking(
+        &self,
+        task_id: &str,
+        sequential: Option<bool>,
+        first_last_pieces_first: Option<bool>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET bt_sequential = COALESCE($1, bt_sequential), \
+             bt_first_last_pieces_first = COALESCE($2, bt_first_last_pieces_first) WHERE id = $3",
+        )
+        .bind(sequential.map(i32::from))
+        .bind(first_last_pieces_first.map(i32::from))
         .bind(task_id)
         .execute(&self.pool)
         .await?;
@@ -3677,6 +3721,8 @@ impl Db {
             // MSE 三态逃生开关（disabled/enabled/forced），无 UI，经 config API/CLI 可设。
             ("bt_mse_mode", "enabled"),
             ("bt_custom_trackers", ""),
+            ("bt_piece_order", "rarest"),
+            ("bt_first_last_pieces_first", "false"),
             // Tracker 订阅：默认启用，订阅社区流行的两个精选列表
             // （XIU2/TrackersListCollection + ngosang/trackerslist）。
             // cache 由订阅刷新流程写入，updated_at=0 表示从未更新。
@@ -6613,6 +6659,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn piece_picking_update_leaves_the_omitted_option_alone() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "t-bt").await;
+        let load = || async {
+            let task = db
+                .load_task_by_id("t-bt")
+                .await
+                .expect("load task")
+                .expect("task exists");
+            (task.bt_sequential, task.bt_first_last_pieces_first)
+        };
+        assert_eq!(load().await, (false, false), "rarest first by default");
+
+        db.set_task_piece_picking("t-bt", Some(true), None)
+            .await
+            .expect("set sequential");
+        assert_eq!(load().await, (true, false));
+        db.set_task_piece_picking("t-bt", None, Some(true))
+            .await
+            .expect("set first and last");
+        assert_eq!(load().await, (true, true));
+        db.set_task_piece_picking("t-bt", Some(false), None)
+            .await
+            .expect("clear sequential");
+        assert_eq!(load().await, (false, true));
+
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
     async fn set_task_group_and_resolver_item_roundtrip() {
         let (db, dir) = open_test_db().await;
         insert_task(&db, "t1").await;
@@ -9535,6 +9611,8 @@ mod tests {
             category_route: "",
             request_method: "",
             torrent_file_bytes: &[],
+            bt_sequential: false,
+            bt_first_last_pieces_first: false,
         }
     }
 

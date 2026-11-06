@@ -90,6 +90,17 @@ pub fn build_menus(translator: &Translator) -> Vec<Menu> {
         MenuItem::action(t(translator, "webChangeUrl"), dl::ChangeSelectedUrl),
         MenuItem::action(t(translator, "editThreads"), dl::ChangeSelectedSegments),
         MenuItem::action(t(translator, "verifyTaskIntegrity"), dl::VerifySelected),
+        MenuItem::submenu(Menu::new(t(translator, "btPiecePicking")).items([
+            MenuItem::action(t(translator, "btRarestFirst"), dl::SetRarestFirstSelected),
+            MenuItem::action(
+                t(translator, "btSequentialDownload"),
+                dl::SetSequentialSelected,
+            ),
+            MenuItem::action(
+                t(translator, "btFirstLastPiecesFirst"),
+                dl::ToggleFirstLastPiecesSelected,
+            ),
+        ])),
         MenuItem::action(t(translator, "redownloadTask"), dl::RedownloadSelected),
         MenuItem::action(t(translator, "boostDownload"), dl::ToggleBoostSelected),
         MenuItem::action(t(translator, "menuOpenInWindow"), dl::OpenSelectedInWindow),
@@ -250,6 +261,9 @@ fn install_download_fallbacks(cx: &mut App) {
     forward_to_downloads::<dl::ChangeSelectedUrl>(cx);
     forward_to_downloads::<dl::ChangeSelectedSegments>(cx);
     forward_to_downloads::<dl::VerifySelected>(cx);
+    forward_to_downloads::<dl::SetRarestFirstSelected>(cx);
+    forward_to_downloads::<dl::SetSequentialSelected>(cx);
+    forward_to_downloads::<dl::ToggleFirstLastPiecesSelected>(cx);
     forward_to_downloads::<dl::RedownloadSelected>(cx);
     forward_to_downloads::<dl::ToggleBoostSelected>(cx);
     forward_to_downloads::<dl::OpenSelectedInWindow>(cx);

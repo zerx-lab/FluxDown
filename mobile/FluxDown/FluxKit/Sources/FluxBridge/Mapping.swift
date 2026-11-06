@@ -69,7 +69,9 @@ extension TaskDto {
             uploadedBytes: uploadedBytes,
             seedingStatus: SeedingStatus(wire: seedingStatus),
             seedingMessage: seedingMessage,
-            seedingTimeSecs: seedingTimeSecs
+            seedingTimeSecs: seedingTimeSecs,
+            btSequential: btSequential,
+            btFirstLastPiecesFirst: btFirstLastPiecesFirst
         )
     }
 }

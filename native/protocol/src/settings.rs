@@ -119,6 +119,12 @@ pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("bt.enable_upnp", Daemon, "bt_enable_upnp"),
     spec!("bt.enable_utp", Daemon, "bt_enable_utp"),
     spec!("bt.custom_trackers", Daemon, "bt_custom_trackers"),
+    spec!("bt.piece_order", Daemon, "bt_piece_order"),
+    spec!(
+        "bt.first_last_pieces_first",
+        Daemon,
+        "bt_first_last_pieces_first"
+    ),
     spec!("bt.tracker_sub_enabled", Daemon, "bt_tracker_sub_enabled"),
     spec!("bt.tracker_sub_urls", Daemon, "bt_tracker_sub_urls"),
     spec!("bt.seed_ratio_limit", Daemon, "bt_seed_ratio_limit"),
@@ -314,6 +320,9 @@ pub fn validate_value(key: &str, value: &Value) -> Result<(), String> {
         "general.update_channel" if !matches!(value, "stable" | "frontier") => {
             Err(format!("{key} has unknown value"))
         }
+        "bt.piece_order" if !matches!(value, "rarest" | "sequential") => {
+            Err(format!("{key} has unknown value"))
+        }
         "bt.seed_limit_operator" if !matches!(value, "or" | "and") => {
             Err(format!("{key} has unknown value"))
         }
@@ -439,6 +448,7 @@ fn boolean_key(key: &str) -> bool {
             | "bt.enable_upnp"
             | "bt.enable_utp"
             | "bt.tracker_sub_enabled"
+            | "bt.first_last_pieces_first"
             | "bt.guard.enabled"
             | "bt.guard.skip_private"
             | "bt.guard.skip_lan"
@@ -512,14 +522,14 @@ mod tests {
 
     #[test]
     fn catalog_has_exact_unique_flutter_count_and_namespaced_daemon_mapping() {
-        assert_eq!(SYNC_SETTING_SPECS.len(), 79);
+        assert_eq!(SYNC_SETTING_SPECS.len(), 81);
         assert_eq!(
             SYNC_SETTING_SPECS
                 .iter()
                 .map(|spec| spec.key)
                 .collect::<HashSet<_>>()
                 .len(),
-            79
+            81
         );
         let spec = setting_spec("download.max_concurrent_tasks").expect("download spec");
         assert_eq!(spec.owner, SettingOwner::Daemon);

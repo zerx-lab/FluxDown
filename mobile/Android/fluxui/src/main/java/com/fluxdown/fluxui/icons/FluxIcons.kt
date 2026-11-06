@@ -48,6 +48,7 @@ object FluxIcons {
     val CircleAlert: ImageVector by lazy { fluxIcon("circle-alert", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "M12 8L12 12", "M12 16L12.01 16") }
     val CircleArrowDown: ImageVector by lazy { fluxIcon("circle-arrow-down", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "M12 8v8", "m8 12 4 4 4-4") }
     val CircleCheck: ImageVector by lazy { fluxIcon("circle-check", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "m16 9-5.5 5.5L8 12") }
+    val CircleDot: ImageVector by lazy { fluxIcon("circle-dot", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0Z") }
     val CircleHelp: ImageVector by lazy { fluxIcon("circle-help", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3", "M12 17h.01") }
     val CirclePause: ImageVector by lazy { fluxIcon("circle-pause", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "M10 15L10 9", "M14 15L14 9") }
     val CircleUser: ImageVector by lazy { fluxIcon("circle-user", false, "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z", "M9 10a3 3 0 1 0 6 0a3 3 0 1 0 -6 0Z", "M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662") }
@@ -170,6 +171,7 @@ object FluxIcons {
     val SortDesc: ImageVector by lazy { fluxIcon("sort-desc", false, "m3 16 4 4 4-4", "M7 20V4", "M11 4h10", "M11 8h7", "M11 12h4") }
     val Sparkles: ImageVector by lazy { fluxIcon("sparkles", false, "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z") }
     val Square: ImageVector by lazy { fluxIcon("square", false, "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z") }
+    val SquareCheck: ImageVector by lazy { fluxIcon("square-check", false, "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z", "m9 12 2 2 4-4") }
     val SquarePen: ImageVector by lazy { fluxIcon("square-pen", false, "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7", "M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z") }
     val SquareTerminal: ImageVector by lazy { fluxIcon("square-terminal", false, "m7 11 2-2-2-2", "M11 13h4", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2Z") }
     val Stethoscope: ImageVector by lazy { fluxIcon("stethoscope", false, "M11 2v2", "M5 2v2", "M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1", "M8 15a6 6 0 0 0 12 0v-3", "M18 10a2 2 0 1 0 4 0a2 2 0 1 0 -4 0Z") }

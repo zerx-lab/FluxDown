@@ -21,6 +21,7 @@ import { rpcErrorKind, rpcErrorText } from '../../../lib/rpcErrorText'
 import { planTaskCommand } from './batchPlan'
 import { folderAnchorMember } from './groupTree'
 import { PLUGIN_ERROR_PREFIX, shareUrl } from './task'
+import { pieceEndsParams, pieceOrderTargets, pieceSequentialParams } from './taskEdit'
 import type { DownloadTaskView } from './task'
 
 async function guarded(work: () => Promise<unknown>): Promise<boolean> {
@@ -125,6 +126,18 @@ export function toggleBoost(view: DownloadTaskView): Promise<boolean> {
 /** 更换链接 / 修改线程数成功后，失败任务立即重试（暂停 / 等待保持原状态）；重试失败 toast。 */
 export async function resumeIfFailed(taskId: string, wasFailed: boolean): Promise<boolean> {
   return wasFailed ? guarded(() => rpc.daemon.task.resume({ taskId })) : true
+}
+
+/** BT 下载顺序：只对状态不同的任务发 `sequential`；已一致则不下发。 */
+export function setPieceOrder(views: readonly DownloadTaskView[], sequential: boolean): Promise<boolean> {
+  const targets = pieceOrderTargets(views, sequential)
+  if (targets.length === 0) return Promise.resolve(true)
+  return guardedAll(targets.map((view) => () => rpc.daemon.task.setPiecePicking(pieceSequentialParams(view.taskId, sequential))))
+}
+
+/** BT 先下载首尾：每个任务一次调用，只传该字段。失败走统一 toast。 */
+export function setFirstLastPieces(views: readonly DownloadTaskView[], allOn: boolean): Promise<boolean> {
+  return guardedAll(views.map((view) => () => rpc.daemon.task.setPiecePicking(pieceEndsParams(view.taskId, allOn))))
 }
 
 export function isPluginRetryError(view: DownloadTaskView): boolean {

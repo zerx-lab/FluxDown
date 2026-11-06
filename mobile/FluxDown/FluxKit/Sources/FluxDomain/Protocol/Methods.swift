@@ -34,6 +34,8 @@ public enum HostMethod {
     public static let daemonTaskResumeAll = "daemon.task.resumeAll"
     public static let daemonTaskRescan = "daemon.task.rescan"
     public static let daemonTaskSetSeedLimits = "daemon.task.setSeedLimits"
+    /// 修改 BT 任务选片方式（`SetTaskPiecePickingParams`，缺省字段不变）；不存在或非 BT 返回 `notFound`。
+    public static let daemonTaskSetPiecePicking = "daemon.task.setPiecePicking"
     public static let daemonTaskVerify = "daemon.task.verify"
     /// 已完成任务落盘文件的哈希（`{taskId, algorithm}` → `{fileHash}`），结果同时记入任务 `fileHash`。
     public static let daemonTaskHash = "daemon.task.hash"

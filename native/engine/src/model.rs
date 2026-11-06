@@ -139,6 +139,10 @@ pub struct TaskInfo {
     /// 在 torrent 加入 librqbit 会话时烘焙生效（下载开始 / 重启续种 /
     /// 句柄丢失后重新挂载）；已 live 的句柄不热改。
     pub seed_upload_limit_bps: i64,
+    /// BT 选片：按文件顺序下载（对齐 qBittorrent「按顺序下载」）。默认 false = 最稀有优先。
+    pub bt_sequential: bool,
+    /// BT 选片：先下载每个选中文件首尾各 1% 的块（对齐 qBittorrent「先下载首尾文件块」）。
+    pub bt_first_last_pieces_first: bool,
     /// Source page URL captured by the browser extension (empty = none).
     pub referrer: String,
     /// 所属任务组 ID（空 = 不属于任何组）。多文件任务组裂变/建组时写入；

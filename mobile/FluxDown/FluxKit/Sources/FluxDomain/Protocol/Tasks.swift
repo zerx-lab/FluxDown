@@ -238,6 +238,96 @@ public struct SetSeedLimitsParams: Codable, Sendable, Hashable {
     }
 }
 
+/// `daemon.task.setPiecePicking`：省略的字段保持不变。`nil` 不写键（serde `Option` = None）。
+public struct SetTaskPiecePickingParams: Codable, Sendable, Hashable {
+    public var taskId: String
+    public var sequential: Bool?
+    public var firstLastPiecesFirst: Bool?
+
+    public init(taskId: String, sequential: Bool? = nil, firstLastPiecesFirst: Bool? = nil) {
+        self.taskId = taskId
+        self.sequential = sequential
+        self.firstLastPiecesFirst = firstLastPiecesFirst
+    }
+}
+
+/// 任务菜单「选片方式」：下载顺序单选 + 「先下载首尾文件块」独立勾选。
+///
+/// 仅当所选任务全部是未完成的 BT（`magnet:` / `torrent-file://`，大小写不敏感）时显示。
+/// 不看文件是否在这台手机上：正在控制的远端主机同样走 `daemon.task.setPiecePicking`。
+/// 顺序：全体 `btSequential == false` 为最稀有优先（缺省），全体为 true 为按顺序下载；
+/// 混选或菜单不显示时两项都不点亮。点选只对状态不同的任务发 `sequential`。
+/// 「先下载首尾文件块」勾选 = 全部已开；点击把该项设为 `!allOn`，且只发送该字段。
+public struct PiecePickingMenu: Sendable, Hashable {
+    /// 下载顺序。全体一致才点亮对应单选；混合或不可见为 ``mixed``。
+    public enum Order: Sendable, Hashable {
+        /// 全体 `btSequential == false`（缺省：最稀有优先）。
+        case rarest
+        /// 全体 `btSequential == true`。
+        case sequential
+        /// 有的开、有的关，或菜单不显示（两个单选都不选）。
+        case mixed
+    }
+
+    public var shown: Bool
+    /// 全部所选任务都开了「先下载首尾文件块」。
+    public var firstLastOn: Bool
+    public var taskIds: [String]
+    /// 当前 `btSequential == true` 的任务。与 `taskIds` 一起决定顺序，并跳过已是目标值的任务。
+    private var sequentialTaskIds: Set<String>
+
+    /// 全体一致才点亮；空选区与不可见选区为 ``Order/mixed``。
+    public var order: Order {
+        guard shown, !taskIds.isEmpty else { return .mixed }
+        if taskIds.allSatisfy({ sequentialTaskIds.contains($0) }) { return .sequential }
+        if taskIds.allSatisfy({ !sequentialTaskIds.contains($0) }) { return .rarest }
+        return .mixed
+    }
+
+    public init(shown: Bool, firstLastOn: Bool, taskIds: [String], sequentialTaskIds: Set<String> = []) {
+        self.shown = shown
+        self.firstLastOn = firstLastOn
+        self.taskIds = taskIds
+        self.sequentialTaskIds = sequentialTaskIds
+    }
+
+    public static func facts(tasks: [DownloadTask]) -> PiecePickingMenu {
+        let eligible = !tasks.isEmpty && tasks.allSatisfy(Self.isEligible)
+        guard eligible else {
+            return PiecePickingMenu(shown: false, firstLastOn: false, taskIds: [])
+        }
+        return PiecePickingMenu(
+            shown: true,
+            firstLastOn: tasks.allSatisfy(\.btFirstLastPiecesFirst),
+            taskIds: tasks.map(\.taskId),
+            sequentialTaskIds: Set(tasks.filter(\.btSequential).map(\.taskId))
+        )
+    }
+
+    /// 把下载顺序设为 `sequential`（`false` = 最稀有优先）。只带 `sequential`；
+    /// 已是该状态的任务跳过。菜单不显示或全体已是目标值时为空（不下发）。
+    public func settingSequential(_ sequential: Bool) -> [SetTaskPiecePickingParams] {
+        guard shown else { return [] }
+        return taskIds.compactMap { id in
+            guard sequentialTaskIds.contains(id) != sequential else { return nil }
+            return SetTaskPiecePickingParams(taskId: id, sequential: sequential)
+        }
+    }
+
+    /// 把「先下载首尾文件块」设为当前全开态的反面；只带 `firstLastPiecesFirst`。
+    public func togglingFirstLast() -> [SetTaskPiecePickingParams] {
+        guard shown else { return [] }
+        let next = !firstLastOn
+        return taskIds.map { SetTaskPiecePickingParams(taskId: $0, firstLastPiecesFirst: next) }
+    }
+
+    private static func isEligible(_ task: DownloadTask) -> Bool {
+        guard task.status != .completed else { return false }
+        let url = task.url.lowercased()
+        return url.hasPrefix("magnet:") || url.hasPrefix("torrent-file://")
+    }
+}
+
 /// `daemon.task.get` 结果（`TaskDto`）里与做种限制相关的字段；缺字段时按旧主机默认（跟随全局）。
 public struct TaskSeedLimits: Decodable, Sendable, Hashable {
     public var seedRatioLimitMilli: Int64

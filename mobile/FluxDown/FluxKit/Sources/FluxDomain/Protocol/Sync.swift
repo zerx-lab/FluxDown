@@ -1,7 +1,8 @@
 import Foundation
 
 // 云端配置同步（`agent.sync.*`）。镜像 `native/protocol/src/agent.rs::SyncStatusDto` / `SyncLocalOnlyParams`；
-// 范围分组与状态优先级镜像 Web `account/syncGroups.ts`（键表 = `settings.rs::SYNC_SETTING_SPECS` 共 56 键）。
+// 范围分组与状态优先级镜像 Web `account/syncGroups.ts`（iOS 键表 79 项；Rust `SYNC_SETTING_SPECS` 81 项，
+// 多出的 `ui.show_activity_account` 与 `appearance.file_icon_pack` 尚未镜像）。
 
 /// `agent.sync` 分区 / `agent.sync.get|setLocalOnly` 结果。
 public struct SyncStatusDto: Sendable, Hashable, Codable {
@@ -121,7 +122,8 @@ public enum SyncRules {
             "download.notify_on_complete", "download.silent_download", "download.keep_awake",
         ]),
         SyncGroup(id: .bt, labelKey: "syncScopeBt", keys: [
-            "bt.enabled", "bt.enable_dht", "bt.enable_upnp", "bt.enable_utp", "bt.custom_trackers", "bt.tracker_sub_enabled",
+            "bt.enabled", "bt.enable_dht", "bt.enable_upnp", "bt.enable_utp", "bt.custom_trackers",
+            "bt.piece_order", "bt.first_last_pieces_first", "bt.tracker_sub_enabled",
             "bt.tracker_sub_urls",
             "bt.seed_ratio_limit", "bt.seed_post_ratio_limit", "bt.seed_time_limit_minutes",
             "bt.seed_inactive_time_limit_minutes", "bt.seed_limit_operator", "bt.seed_then_action",
