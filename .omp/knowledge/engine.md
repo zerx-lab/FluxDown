@@ -85,9 +85,10 @@
   可用 peer 仅 5–10）；连接中数量由 `connect_rate` × 超时另行约束。下调前先实测。
 - **uTP（`bt_enable_utp`，默认开）**：开启时监听模式为 `TcpAndUtp`，出站并发拨 TCP + uTP；
   #825 实测在上限 512 基础上稳态再翻倍，代价是 UDP 收发的系统态 CPU 明显更高（上游仍标为
-  experimental）。改动经 daemon 重建共享会话生效。librqbit 来自 `zerx-lab/rqbit`（当前 rev 在分支 `fluxdown/peer-policy`：
-  上游 main + MSE + Android HTTPS + 握手超时下发 + 初检末尾暂停不丢失 + 防吸血 `PeerPolicy` 钩子 + 最稀有优先选片），升级上游时在 fork 新开
-  `fluxdown/*` 分支合并上游并推送，再改根 `Cargo.toml` 的 rev（`zerx/main` 停在 00374a6d，不再是事实源）。`librqbit-utp` 临时 patch 到上游 git main：
+  experimental）。改动经 daemon 重建共享会话生效。librqbit 来自 `zerx-lab/rqbit` 分支 `fluxdown/main`（FluxDown 补丁分支：
+  上游 main + MSE + Android HTTPS + 握手超时下发 + 初检末尾暂停不丢失 + 防吸血 `PeerPolicy` 钩子 + 最稀有优先选片）。升级上游时在该分支
+  合并 `upstream/main` 并推送（不变基、不强推，FluxDown 历史钉过的 rev 都须仍是它的祖先），再改根 `Cargo.toml` 的 rev；fork 的 `main` 只跟上游同步，不是事实源；
+  `upstream/*` 分支各对应一个给 ikatson/rqbit 的开放 PR，同步上游也用合并。`librqbit-utp` 临时 patch 到上游 git main：
   crates.io 0.7.0 的分发循环遇 Windows `WSAECONNRESET(10054)` 即退出，整个会话 uTP 失效；
   上游发版后删 patch。
 - **BT 选片（对齐 qBittorrent / libtorrent piece picker）**：fork `crates/librqbit/src/piece_picker.rs`。默认最稀有优先：
@@ -143,7 +144,7 @@
   （`ipGroup` / `groupDeliveredBytes` / `suspicion` / `rules` / `action` / `observeOnly`，来自 `BtGuard::peer_insight`）。与 qBittorrent 的差距：
   无增删 / 编辑 tracker、无强制重新汇报、无 peer 进度 / flags、tracker 无 seeds / leeches / 完成数（librqbit 不提供）。
 - **BT 防吸血**（`bt_guard/`，经 rqbit fork 的 `PeerPolicy` 钩子接入 `SharedBtSession::new`）：规则、处置阶梯、分层封禁、持久化与空闲静默约束见
-  `ops.md`「已实现（BT 防吸血）」条；改 rqbit fork 先在 `fluxdown/peer-policy` 分支提交再更新根 `Cargo.toml` 的 rev。
+  `ops.md`「已实现（BT 防吸血）」条；改 rqbit fork 先在 `fluxdown/main` 分支提交再更新根 `Cargo.toml` 的 rev。
 - **peer 国旗**（`geoip.rs`，对齐 qBittorrent）：DB-IP「国家 lite」`.mmdb`（CC BY 4.0，关于页署名）+ 自带最小 MaxMind DB 读取器（零依赖，24/28/32 位记录，
   真实库 IPv4/IPv6 回归见 `FLUXDOWN_TEST_MMDB`）。有人查看 peer 列表（`bt_status`）才触发 `ensure_background`：当月文件 `<data_dir>/geoip/dbip-country-lite-YYYY-MM.mmdb`
   不在就经统一出口（`egress::RoutedClients`）下载 `https://download.db-ip.com/free/<name>.gz`（当月未发布回退上月），解压校验后原子落盘并清旧文件，失败 1 小时内不重试；
