@@ -15,6 +15,7 @@ import { QuickDownload } from "./QuickDownload";
 import { formatBytes, formatSpeed, progressPercent } from "@/ui/format";
 import { useT } from "@/ui/i18n";
 import "./features.css";
+import { isCompletedFileMissing } from "./task-state";
 
 /** popup ↔ background 的任务对象（与 background/tasks.ts 一致）。 */
 interface TaskBrief {
@@ -26,6 +27,7 @@ interface TaskBrief {
   speed: number;
   errorMessage?: string;
   createdAt: string;
+  fileMissing?: boolean;
 }
 
 interface NmhTasksResponse {
@@ -208,25 +210,29 @@ export function TaskList(props: Props): JSX.Element {
       {completed.length > 0 ? (
         <section class="fd-group">
           <h4 class="fd-group-title">{t("popup.tasks.completed")}</h4>
-          {completed.map((task) => (
-            <div class="fd-task" key={task.taskId}>
-              <Icon name="checkCircle" size={18} class="fd-ok" />
-              <div class="fd-task-main">
-                <div class="fd-row-title" title={task.fileName}>
-                  {task.fileName}
+          {completed.map((task) => {
+            const missing = isCompletedFileMissing(task);
+            return (
+              <div class="fd-task" key={task.taskId}>
+                <Icon name={missing ? "alert" : "checkCircle"} size={18} class={missing ? "" : "fd-ok"} />
+                <div class="fd-task-main">
+                  <div class="fd-row-title" title={task.fileName}>
+                    {task.fileName}
+                  </div>
+                  <div class="fd-task-meta">
+                    <span>{formatBytes(task.totalBytes > 0 ? task.totalBytes : task.downloadedBytes)}</span>
+                  </div>
+                  {missing ? <div class="fd-task-error">{t("popup.task.fileMissing")}</div> : null}
                 </div>
-                <div class="fd-task-meta">
-                  <span>{formatBytes(task.totalBytes > 0 ? task.totalBytes : task.downloadedBytes)}</span>
-                </div>
+                <Button size="sm" variant="ghost" disabled={missing} onClick={() => void fileOp("open", task.taskId)}>
+                  {t("popup.task.open")}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void fileOp("reveal", task.taskId)}>
+                  {t("popup.task.reveal")}
+                </Button>
               </div>
-              <Button size="sm" variant="ghost" onClick={() => void fileOp("open", task.taskId)}>
-                {t("popup.task.open")}
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => void fileOp("reveal", task.taskId)}>
-                {t("popup.task.reveal")}
-              </Button>
-            </div>
-          ))}
+            );
+          })}
         </section>
       ) : null}
     </div>

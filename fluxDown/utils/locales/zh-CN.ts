@@ -273,6 +273,7 @@ const zhCN = {
   "popup.task.remove": "删除",
   "popup.task.open": "打开",
   "popup.task.reveal": "目录",
+  "popup.task.fileMissing": "文件已丢失",
   "popup.task.paused": "已暂停",
   "popup.task.pending": "等待中",
   "popup.task.preparing": "准备中",

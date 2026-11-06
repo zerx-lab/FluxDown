@@ -275,6 +275,7 @@ const zhTW = {
   "popup.task.remove": "刪除",
   "popup.task.open": "開啟",
   "popup.task.reveal": "資料夾",
+  "popup.task.fileMissing": "檔案已遺失",
   "popup.task.paused": "已暫停",
   "popup.task.pending": "等待中",
   "popup.task.preparing": "準備中",
