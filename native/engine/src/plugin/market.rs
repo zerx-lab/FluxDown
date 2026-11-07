@@ -202,9 +202,10 @@ impl MarketClient {
 
     /// 拉取索引（逐源 failover，首个成功者胜出）。校验 sequence 不回退（防回滚）。
     pub async fn fetch_index(&self) -> Result<MarketIndex, MarketError> {
+        let mirror_base = crate::components::component_mirror_base(&self.db).await;
         let mut last_err = MarketError::AllMirrorsFailed;
         for src in &self.sources {
-            match self.fetch_index_from(src).await {
+            match self.fetch_index_from(src, &mirror_base).await {
                 Ok(idx) => {
                     if let Err(error) = self.check_and_update_watermark(&idx).await {
                         log_warn!(
@@ -227,7 +228,29 @@ impl MarketClient {
         Err(last_err)
     }
 
-    async fn fetch_index_from(&self, url: &str) -> Result<MarketIndex, MarketError> {
+    /// 先试用户配置的 GitHub 镜像（`component_mirror_base`，#847），任何失败（网络、
+    /// 非 2xx、超限、解析）回退原地址，不让一次镜像故障拖垮索引加载。
+    async fn fetch_index_from(
+        &self,
+        url: &str,
+        mirror_base: &str,
+    ) -> Result<MarketIndex, MarketError> {
+        if let Some(mirrored) = user_mirror_url(url, mirror_base)
+            && mirror_url_allowed(&mirrored)
+        {
+            match self.fetch_index_url(&mirrored).await {
+                Ok(idx) => return Ok(idx),
+                Err(error) => log_warn!(
+                    "[market] index mirror={} failed, falling back to {}: {error:#}",
+                    safe_url(&mirrored),
+                    safe_url(url)
+                ),
+            }
+        }
+        self.fetch_index_url(url).await
+    }
+
+    async fn fetch_index_url(&self, url: &str) -> Result<MarketIndex, MarketError> {
         let client = self.clients.client(url).await.map_err(client_build_error)?;
         let mut resp = client.get(url).send().await.map_err(network_error)?;
         if !resp.status().is_success() {
@@ -333,6 +356,7 @@ impl MarketClient {
             .to_ascii_lowercase();
         // 下载错误不能盖掉已确认的内容错误；所有镜像仍继续尝试。
         let mut verification_error = None;
+        let user_mirror_base = crate::components::component_mirror_base(&self.db).await;
         for url in &entry.mirrors {
             // 镜像白名单：https-only（防降级）+ 字面量 IP 必须可全局路由（联邦
             // 索引的镜像 URL 不可全信，挡「把环回/内网地址伪装成镜像」的 SSRF
@@ -347,10 +371,20 @@ impl MarketClient {
                 );
                 continue;
             }
-            // 插件改写（如 GitHub 加速）只换来源，内容仍由 content_hash 钉住；改写地址
-            // 同样过镜像守卫，失败或内容不符回退原镜像地址。索引不经插件（它是完整性锚）。
+            // 来源优先级：用户配置的 GitHub 镜像（#847）→ 插件改写（如 GitHub 加速）→ 原地址。
+            // 两种改写都只换来源，内容仍由 content_hash 钉住；改写地址同样过镜像守卫，
+            // 失败或内容不符回退下一来源。索引不经插件（它是完整性锚）。
             let route = self.egress.route_verified(url).await;
-            for attempt in route.attempts() {
+            let mut attempts = Vec::new();
+            if let Some(mirrored) = user_mirror_url(url, &user_mirror_base) {
+                attempts.push(crate::egress::EgressAttempt {
+                    url: mirrored,
+                    headers: Vec::new(),
+                    plugin: None,
+                });
+            }
+            attempts.extend(route.attempts());
+            for attempt in attempts {
                 if !mirror_url_allowed(&attempt.url) {
                     log_warn!(
                         "[market] plugin={:?} version={:?} source={} rewritten by {:?} rejected by URL guard",
@@ -608,6 +642,26 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// 用户配置的 GitHub 镜像（`component_mirror_base`，#847）对 `url` 的改写地址；不适用
+/// （未配置、非 GitHub 地址、镜像非 https）返回 `None`。`raw.githubusercontent.com` 先换成
+/// 等价的 `github.com/<owner>/<repo>/raw/<ref>/<path>`（GitHub 自身会重定向到 raw），
+/// 这样默认索引源也能走与 Release 资产相同的前缀镜像。
+fn user_mirror_url(url: &str, mirror_base: &str) -> Option<String> {
+    let web = github_raw_to_web(url);
+    crate::components::https_mirror_url(web.as_deref().unwrap_or(url), mirror_base)
+}
+
+/// `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` →
+/// `https://github.com/<owner>/<repo>/raw/<ref>/<path>`；路径不足 4 段（无文件）不转换。
+fn github_raw_to_web(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://raw.githubusercontent.com/")?;
+    let mut parts = rest.splitn(3, '/');
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    let tail = parts.next().filter(|s| s.contains('/'))?;
+    Some(format!("https://github.com/{owner}/{repo}/raw/{tail}"))
+}
+
 /// 镜像 URL 白名单：https-only + 字面量 IP host 必须可全局路由。
 ///
 /// hostname 不做 DNS 级过滤（自托管 LAN 索引经 hostname 仍可用，v1 取舍）；
@@ -640,8 +694,62 @@ fn parsed_url_allowed(parsed: &url::Url) -> bool {
 mod tests {
     use super::{
         MarketError, MarketIndex, check_expected_version, mirror_url_allowed, safe_error_chain,
-        safe_url, sha256_hex,
+        safe_url, sha256_hex, user_mirror_url,
     };
+
+    const MIRROR: &str = "https://gh.example.com/gh";
+
+    #[test]
+    fn user_mirror_rewrites_github_release_assets_and_raw_index() {
+        assert_eq!(
+            user_mirror_url(
+                "https://github.com/zerx-lab/p/releases/download/v1/a.fxplug",
+                MIRROR
+            )
+            .as_deref(),
+            Some("https://gh.example.com/gh/zerx-lab/p/releases/download/v1/a.fxplug")
+        );
+        // 默认索引源 raw.githubusercontent.com → github.com 的 raw 等价路径再走前缀镜像。
+        assert_eq!(
+            user_mirror_url(super::DEFAULT_INDEX_SOURCES[0], MIRROR).as_deref(),
+            Some("https://gh.example.com/gh/zerx-lab/fluxdown-plugin-index/raw/main/index.json")
+        );
+        // 带斜杠的分支名 / 子目录原样保留在 raw/ 之后。
+        assert_eq!(
+            user_mirror_url(
+                "https://raw.githubusercontent.com/o/r/refs/heads/dev/sub/index.json",
+                MIRROR
+            )
+            .as_deref(),
+            Some("https://gh.example.com/gh/o/r/raw/refs/heads/dev/sub/index.json")
+        );
+    }
+
+    #[test]
+    fn user_mirror_skips_non_github_unset_and_insecure() {
+        // 非 GitHub 源（jsdelivr / 自托管）保持原多源回退，不改写。
+        assert_eq!(
+            user_mirror_url(super::DEFAULT_INDEX_SOURCES[1], MIRROR),
+            None
+        );
+        assert_eq!(
+            user_mirror_url("https://cdn.example.com/a.fxplug", MIRROR),
+            None
+        );
+        // 未配置 / 空白 = 不改写。
+        assert_eq!(user_mirror_url(super::DEFAULT_INDEX_SOURCES[0], ""), None);
+        assert_eq!(user_mirror_url(super::DEFAULT_INDEX_SOURCES[0], "  "), None);
+        // http 镜像一律忽略（防明文降级）。
+        assert_eq!(
+            user_mirror_url("https://github.com/o/r/a.fxplug", "http://gh.example.com"),
+            None
+        );
+        // raw 地址缺文件段（仅 owner/repo/ref）不转换。
+        assert_eq!(
+            user_mirror_url("https://raw.githubusercontent.com/o/r/main", MIRROR),
+            None
+        );
+    }
 
     #[test]
     fn diagnostics_keep_causes_but_strip_all_url_secrets() {
