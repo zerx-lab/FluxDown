@@ -3424,7 +3424,7 @@
   "speedUnitGbps": "GB/s",
   "mobileSpeedPresets": "Speed presets",
   "mobileComponentMirrorBase": "Download mirror",
-  "mobileComponentMirrorBaseDesc": "Optional HTTPS base URL of a GitHub release mirror used when downloading FFmpeg and yt-dlp. Leave empty to download directly.",
+  "mobileComponentMirrorBaseDesc": "Optional HTTPS base URL of a GitHub mirror used when downloading FFmpeg and yt-dlp, and by the plugin marketplace (index and plugin packages) on hosts that support plugins. Leave empty to download directly.",
   "mobileComponentMirrorBasePlaceholder": "https://mirror.example.com/github",
   "mobileBtAndroidFootnote": "Android may suspend background network activity. Seeding and UPnP port mapping work most reliably while the app is open or the download service is running.",
   "mobileEd2kNodesDatUrl": "nodes.dat URL",

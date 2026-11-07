@@ -3424,7 +3424,7 @@
   "speedUnitGbps": "GB/s",
   "mobileSpeedPresets": "速度预设",
   "mobileComponentMirrorBase": "下载镜像",
-  "mobileComponentMirrorBaseDesc": "可选的 GitHub Release 镜像 HTTPS 基址，下载 FFmpeg 与 yt-dlp 时使用；留空则直接下载。",
+  "mobileComponentMirrorBaseDesc": "可选的 GitHub 镜像 HTTPS 基址，下载 FFmpeg 与 yt-dlp 时使用；支持插件的主机上，插件市场（索引与插件包）也会使用；留空则直接下载。",
   "mobileComponentMirrorBasePlaceholder": "https://mirror.example.com/github",
   "mobileBtAndroidFootnote": "Android 可能会限制后台网络活动。做种与 UPnP 端口映射在应用打开或下载服务运行时最稳定。",
   "mobileEd2kNodesDatUrl": "nodes.dat 地址",
