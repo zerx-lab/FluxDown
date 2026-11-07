@@ -600,9 +600,11 @@ impl DiagnosticsService {
         if self.desktop.is_none() {
             return Vec::new();
         }
-        let notify_enabled = self
-            .events
-            .inspect(crate::background_effects::notify_on_complete);
+        // 完成或失败任一通知开启都需要系统通知权限。
+        let notify_enabled = self.events.inspect(|snapshot| {
+            crate::background_effects::notify_on_complete(snapshot)
+                || crate::background_effects::notify_on_failure(snapshot)
+        });
         tokio::task::spawn_blocking(move || {
             let mut checks = Vec::with_capacity(3);
             #[cfg(unix)]
