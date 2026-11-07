@@ -3,12 +3,74 @@ title: 服务器部署
 description: 从源码构建并运行 headless FluxDown 服务器(fluxdown-agent --server + fluxdownd),了解全部环境变量并安全地对外暴露。
 section: headless-server
 order: 1
-sourceHash: "f2915bfc0e0e"
+sourceHash: "d86b98e4740e"
 ---
 
 headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下载守护进程:没有桌面界面、托盘或文件关联。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过编译进 `fluxdown-agent` 的 Web 界面和 JSON-RPC 端点(`/rpc`,与桌面客户端同一协议)暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版是**同一目录下的两个二进制**——`fluxdown-agent`(内嵌 Web 界面)与 `fluxdownd`。请把它们放在同一目录:agent 会把 `fluxdownd` 作为子进程拉起,并在收到 `SIGTERM`/`SIGINT` 时一并关停它。
 
-多数部署场景下，预编译 Docker 镜像是最省事的方式——见 [Docker 与 NAS](/docs/zh/headless-server/docker/)。本页介绍从工作区源码用 Cargo 构建并运行，以及对两种方式都适用的配置。
+多数部署场景下，预编译 Docker 镜像是最省事的方式——见 [Docker 与 NAS](/docs/zh/headless-server/docker/)。Windows 直接用预编译 zip，无需编译——见下一节。本页其余部分介绍从工作区源码用 Cargo 构建并运行，以及对所有方式都适用的配置。
+
+## Windows:直接运行预编译包
+
+Windows 不需要编译，也不需要安装。步骤：
+
+1. 到 [GitHub Releases](https://github.com/zerx-lab/FluxDown/releases) 下载 `FluxDown-Server-<版本>-windows-x64.zip`(ARM 设备用 `windows-arm64`),解压到固定目录,例如 `D:\FluxDown\`。压缩包里是一个 `fluxdown-server-<版本>-<平台>\` 文件夹,内含 `fluxdown-agent.exe` 与 `fluxdownd.exe`,**两者必须留在同一目录**。
+2. 在 PowerShell 里进入该目录,先设置环境变量再启动(变量含义见下文[环境变量](#环境变量),都可省略):
+
+   ```powershell
+   cd D:\FluxDown\fluxdown-server-<版本>-windows-x64
+   $env:FLUXDOWN_DATA_DIR = "D:\FluxDown\data"      # 数据目录:建议固定、可备份
+   $env:FLUXDOWN_SAVE_DIR = "D:\Downloads"          # 首次启动的默认保存目录
+   .\fluxdown-agent.exe --server
+   ```
+
+3. 浏览器打开 `http://localhost:17800/`,在「初始化 FluxDown Server」向导里设置访问密钥(见[首次运行](#首次运行在-web-界面设置访问密钥))。
+
+几点和 Linux 不同:
+
+- Windows 发布版的 `fluxdown-agent.exe` 是 GUI 子程序:**不弹控制台窗口,也没有控制台日志输出**,PowerShell 里执行完命令会立即返回,服务在后台运行。能否访问以浏览器是否打开得了 `http://localhost:17800/` 为准,进程可在任务管理器或 `Get-Process fluxdown-agent, fluxdownd` 里看到。
+- 默认监听 `[::]:17800`(所有网卡)。要让局域网内其它设备访问,需放行 Windows 防火墙的入站规则(管理员 PowerShell):
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "FluxDown Server" -Direction Inbound -Program "D:\FluxDown\fluxdown-server-<版本>-windows-x64\fluxdown-agent.exe" -Action Allow
+  ```
+
+  只在本机使用时设 `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`。对外暴露前务必先完成访问密钥初始化,见下文[安全地对外暴露](#安全地对外暴露反向代理与-tls)。
+- 未设置 `FLUXDOWN_DATA_DIR` 时,数据在 `%LOCALAPPDATA%\FluxDown\`(随运行它的账户变化),见下文数据目录表。以计划任务用 `SYSTEM` 账户运行时务必显式设置。
+- Windows 没有 `SIGTERM`,而这个程序没有控制台,无法用 Ctrl+C 退出;**停止就是强制结束进程**:`Stop-Process -Name fluxdown-agent, fluxdownd`。停之前建议先在 Web 界面暂停任务。
+
+### 开机自启 / 常驻
+
+FluxDown Server 本身**不是原生 Windows 服务**(没有 `sc create` 能用的服务入口)。需要开机自动运行时,用系统自带的「任务计划程序」。先在固定位置建一个启动脚本 `D:\FluxDown\start-server.cmd`(环境变量写在这里,计划任务本身带不了环境变量):
+
+```bat
+@echo off
+set FLUXDOWN_DATA_DIR=D:\FluxDown\data
+set FLUXDOWN_SAVE_DIR=D:\Downloads
+cd /d D:\FluxDown\fluxdown-server-<版本>-windows-x64
+start "" /wait fluxdown-agent.exe --server
+```
+
+`start /wait` 让脚本一直等到服务退出,计划任务因此能把它当作「仍在运行」。然后在**管理员** PowerShell 里注册任务(开机即启动、不依赖登录、崩溃后自动重试、不限制运行时长):
+
+```powershell
+$action    = New-ScheduledTaskAction -Execute "D:\FluxDown\start-server.cmd"
+$trigger   = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+             -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+Register-ScheduledTask -TaskName "FluxDown Server" -Action $action -Trigger $trigger `
+             -Principal $principal -Settings $settings
+
+Start-ScheduledTask -TaskName "FluxDown Server"   # 立即启动,不必重启
+```
+
+说明:
+
+- `SYSTEM` 账户访问不到映射网络盘(如 `Z:\`)和当前用户的目录;下载目录在网络共享或用户目录下时,把 `-UserId "SYSTEM" -LogonType ServiceAccount` 换成 `-UserId $env:USERNAME -LogonType S4U`(同样开机即启动,无需交互登录),或改用 `-AtLogOn` 触发器随用户登录启动。
+- 停止或取消:`Stop-ScheduledTask -TaskName "FluxDown Server"` 后再 `Stop-Process -Name fluxdown-agent, fluxdownd`(结束计划任务不一定带走后台进程);`Unregister-ScheduledTask -TaskName "FluxDown Server" -Confirm:$false` 删除任务。
+- 升级:先停止并结束进程,再用新压缩包覆盖 `fluxdown-agent.exe` 与 `fluxdownd.exe`,数据目录不变。
+- 若需要原生 Windows 服务,可用第三方服务包装器,但这不是官方支持的部署方式。
 
 ## 构建与运行
 

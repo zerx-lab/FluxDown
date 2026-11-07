@@ -7,7 +7,69 @@ order: 1
 
 The headless server is `fluxdown-agent --server` plus its sibling `fluxdownd` download daemon: no desktop UI, no tray, no file associations. It exposes the same Rust engine (HTTP/HTTPS, FTP, BitTorrent, HLS, DASH) through a Web UI baked into the `fluxdown-agent` executable and a JSON-RPC endpoint (`/rpc`, the same protocol the desktop client uses), so you can run it on a NAS, a home server, or a VPS and manage downloads remotely from a browser. Releases ship **two binaries in one folder** — `fluxdown-agent` (with the Web UI embedded) and `fluxdownd`. Keep them in the same directory: the agent starts `fluxdownd` as a child process, and stops it again on `SIGTERM`/`SIGINT`.
 
-For most deployments the prebuilt Docker image is the easiest path — see [Docker & NAS](/docs/en/headless-server/docker/). This page covers building and running from the workspace source with Cargo, plus configuration that applies to both.
+For most deployments the prebuilt Docker image is the easiest path — see [Docker & NAS](/docs/en/headless-server/docker/). On Windows, use the prebuilt zip — no compiling needed; see the next section. The rest of this page covers building and running from the workspace source with Cargo, plus configuration that applies to every method.
+
+## Windows: run the prebuilt package
+
+Windows needs neither a build nor an installer. Steps:
+
+1. Download `FluxDown-Server-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/zerx-lab/FluxDown/releases) (`windows-arm64` on ARM devices) and extract it to a fixed folder such as `D:\FluxDown\`. The archive holds one `fluxdown-server-<version>-<platform>\` folder containing `fluxdown-agent.exe` and `fluxdownd.exe`; **keep both in the same directory**.
+2. In PowerShell, go to that folder, set environment variables, then start the agent (see [Environment variables](#environment-variables); all optional):
+
+   ```powershell
+   cd D:\FluxDown\fluxdown-server-<version>-windows-x64
+   $env:FLUXDOWN_DATA_DIR = "D:\FluxDown\data"      # data dir: pick a stable, backed-up path
+   $env:FLUXDOWN_SAVE_DIR = "D:\Downloads"          # default save dir, applied on first start
+   .\fluxdown-agent.exe --server
+   ```
+
+3. Open `http://localhost:17800/` in a browser and set the access key in the Initialize FluxDown Server wizard (see [First run](#first-run-set-the-access-key-in-the-web-ui)).
+
+Differences from Linux:
+
+- The Windows release `fluxdown-agent.exe` is a GUI-subsystem program: **no console window and no console log output**; PowerShell returns immediately and the server keeps running in the background. Check that `http://localhost:17800/` opens in a browser, or look for the processes in Task Manager / `Get-Process fluxdown-agent, fluxdownd`.
+- The default bind is `[::]:17800` (all interfaces). To reach it from other devices on the LAN, allow it through Windows Firewall (elevated PowerShell):
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "FluxDown Server" -Direction Inbound -Program "D:\FluxDown\fluxdown-server-<version>-windows-x64\fluxdown-agent.exe" -Action Allow
+  ```
+
+  For local-only use, set `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`. Finish access-key setup before exposing it, see [Exposing it safely](#exposing-it-safely-reverse-proxy--tls) below.
+- Without `FLUXDOWN_DATA_DIR`, data goes to `%LOCALAPPDATA%\FluxDown\` (which depends on the account running it), see the data directory table below. Always set it explicitly when running as `SYSTEM` from a scheduled task.
+- Windows has no `SIGTERM`, and this program has no console to press Ctrl+C in, so **stopping means force-ending the processes**: `Stop-Process -Name fluxdown-agent, fluxdownd`. Pause your tasks in the Web UI first.
+
+### Start at boot / keep it running
+
+FluxDown Server is **not a native Windows service** (there is no service entry point for `sc create`). To start it automatically, use the built-in Task Scheduler. First create a launcher script at a fixed path, `D:\FluxDown\start-server.cmd` (environment variables go here, since a scheduled task cannot carry them itself):
+
+```bat
+@echo off
+set FLUXDOWN_DATA_DIR=D:\FluxDown\data
+set FLUXDOWN_SAVE_DIR=D:\Downloads
+cd /d D:\FluxDown\fluxdown-server-<version>-windows-x64
+start "" /wait fluxdown-agent.exe --server
+```
+
+`start /wait` keeps the script alive until the server exits, so Task Scheduler sees the task as still running. Then register the task from an **elevated** PowerShell (starts at boot, no login needed, retries after a crash, no run-time limit):
+
+```powershell
+$action    = New-ScheduledTaskAction -Execute "D:\FluxDown\start-server.cmd"
+$trigger   = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+             -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+Register-ScheduledTask -TaskName "FluxDown Server" -Action $action -Trigger $trigger `
+             -Principal $principal -Settings $settings
+
+Start-ScheduledTask -TaskName "FluxDown Server"   # start now, no reboot needed
+```
+
+Notes:
+
+- The `SYSTEM` account cannot see mapped network drives (such as `Z:\`) or a user's profile folders. If your download folder is on a network share or under a user profile, replace `-UserId "SYSTEM" -LogonType ServiceAccount` with `-UserId $env:USERNAME -LogonType S4U` (still starts at boot without an interactive login), or use an `-AtLogOn` trigger so it starts when the user signs in.
+- To stop or remove: `Stop-ScheduledTask -TaskName "FluxDown Server"`, then `Stop-Process -Name fluxdown-agent, fluxdownd` (ending the task does not necessarily take the background processes with it); `Unregister-ScheduledTask -TaskName "FluxDown Server" -Confirm:$false` deletes the task.
+- Upgrading: stop and end the processes, then overwrite `fluxdown-agent.exe` and `fluxdownd.exe` from the new archive; the data directory is untouched.
+- If you need a native Windows service you can use a third-party service wrapper, but that is not an officially supported setup.
 
 ## Build and run
 
