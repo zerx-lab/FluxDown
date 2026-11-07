@@ -3,7 +3,7 @@ title: 服务器部署
 description: 从源码构建并运行 headless FluxDown 服务器(fluxdown-agent --server + fluxdownd),了解全部环境变量并安全地对外暴露。
 section: headless-server
 order: 1
-sourceHash: "3413cc450cf6"
+sourceHash: "9962c38f1f08"
 ---
 
 headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下载守护进程:没有桌面界面、托盘或文件关联。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过编译进 `fluxdown-agent` 的 Web 界面和 JSON-RPC 端点(`/rpc`,与桌面客户端同一协议)暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版是**同一目录下的两个二进制**——`fluxdown-agent`(内嵌 Web 界面)与 `fluxdownd`。请把它们放在同一目录:agent 会把 `fluxdownd` 作为子进程拉起,并在收到 `SIGTERM`/`SIGINT` 时一并关停它。
@@ -35,6 +35,8 @@ Windows 不需要编译,也不需要安装。步骤:
   New-NetFirewallRule -DisplayName "FluxDown Server" -Direction Inbound -Program "D:\FluxDown\server\fluxdown-agent.exe" -Action Allow -Profile Private
   ```
 
+  Windows 经常把新网络归为**公用**,此时这条规则不生效,局域网访问会无声失败。先用 `Get-NetConnectionProfile` 确认(看 `NetworkCategory`);若显示 `Public` 且你信任该网络,用 `Set-NetConnectionProfile -InterfaceAlias "<列表里的名称>" -NetworkCategory Private` 改成专用。
+
   只在本机使用时设 `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`。对外暴露前务必先完成访问密钥初始化,见下文[安全地对外暴露](#安全地对外暴露反向代理与-tls)。若同一台机器上还装了 FluxDown 桌面版,请给服务器换一个端口(例如 `$env:FLUXDOWN_BIND = "[::]:17900"`),避免两者在 17800 上冲突。
 - 未设置 `FLUXDOWN_DATA_DIR` 时,数据位置**随运行它的账户而定**,并且分在两处:引擎数据在 `%LOCALAPPDATA%\FluxDown\`,agent 状态(含访问密钥与设备身份)在 `%APPDATA%\zerx\FluxDown\data\agent`。请始终显式设置 `FLUXDOWN_DATA_DIR`(引擎数据在其根目录,agent 状态在 `<根目录>\agent`),这样备份、迁移才不会漏掉东西。
 - Windows 没有 `SIGTERM`,而这个程序没有控制台,无法用 Ctrl+C 退出;**停止就是强制结束进程**。先在 Web 界面暂停任务,再在 PowerShell 里执行(按路径过滤,不会误伤本机安装的 FluxDown 桌面版;服务以其它账户运行时请用管理员 PowerShell):
@@ -60,11 +62,28 @@ Add-LocalGroupMember -Group Users -Member fluxdown
 New-Item -ItemType Directory -Force D:\FluxDown\data, D:\Downloads | Out-Null
 icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)M"    # 数据目录:修改权限
 icacls D:\Downloads     /grant "fluxdown:(OI)(CI)M"    # 保存目录:修改权限
+
+# 服务器目录:只有 SYSTEM 和 Administrators 保留完全控制,fluxdown 账户只有读取和执行
+icacls D:\FluxDown\server /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "fluxdown:(OI)(CI)RX"
 ```
 
-这个账户需要对数据目录和每个下载目录有写权限,对 `D:\FluxDown\server\` 只需读取和执行(见下文「升级」)。如果之后任务因登录错误无法启动,在 `secpol.msc` → 本地策略 → 用户权限分配里给该账户加上「作为批处理作业登录」。
+这个账户需要对数据目录和每个下载目录有写权限,对 `D:\FluxDown\server\` 只需读取和执行。上面最后一条 `icacls` 去掉了该目录的权限继承:新建的数据盘根目录通常给 *Authenticated Users* 「修改」权限并向下继承,不收紧的话专用账户(以及任何本地用户)都能改写程序文件。请不要省略。
 
-**2. 创建启动脚本** `D:\FluxDown\start-server.cmd`(环境变量写在这里,计划任务本身带不了环境变量)。循环会在服务退出 10 秒后重新拉起它,这就是崩溃自愈:
+计划任务以「批处理作业」方式登录,这项权限默认只有 Administrators、Backup Operators 和 Performance Log Users 拥有。如果注册或启动任务时报登录错误(`0x80070569`),请把这项权限授予该账户:
+
+- **Windows 专业版 / 企业版 / 教育版:**`secpol.msc` → 本地策略 → 用户权限分配 →「作为批处理作业登录」→ 添加 `fluxdown`。
+- **Windows 家庭版**没有 `secpol.msc`,改用 `secedit` 把该账户的 SID 加进策略(管理员 PowerShell):
+
+  ```powershell
+  $sid = (Get-LocalUser fluxdown).SID.Value
+  $inf = "$env:TEMP\rights.inf"
+  secedit /export /cfg $inf /areas USER_RIGHTS
+  (Get-Content $inf) -replace '^(SeBatchLogonRight\s*=.*)$', ('$1,*' + $sid) | Set-Content $inf -Encoding Unicode
+  secedit /configure /db "$env:TEMP\rights.sdb" /cfg $inf /areas USER_RIGHTS
+  Remove-Item $inf, "$env:TEMP\rights.sdb"
+  ```
+
+**2. 创建启动脚本** `D:\FluxDown\server\start-server.cmd`(环境变量写在这里,计划任务本身带不了环境变量;放在已收紧权限的服务器目录里,其它本地用户就改不了专用账户要执行的脚本)。请用管理员身份创建,例如以管理员身份启动记事本。循环会在服务退出 10 秒后重新拉起它,这就是崩溃自愈:
 
 ```bat
 @echo off
@@ -79,12 +98,13 @@ goto loop
 
 `start /wait` 让脚本一直等到服务退出,计划任务因此能把它当作「仍在运行」;`ping -n 11` 相当于暂停 10 秒,与 `timeout` 不同,没有控制台时也能工作。
 
-**3. 注册任务**(管理员 PowerShell;开机即启动、不依赖登录、以专用账户的标准权限运行、不限制运行时长):
+**3. 注册任务**(管理员 PowerShell;开机即启动、不依赖登录、以专用账户的标准权限运行、不限制运行时长、接电池也照常运行、用正常 CPU 优先级而不是计划任务默认的 7(低于正常)):
 
 ```powershell
-$action   = New-ScheduledTaskAction -Execute "D:\FluxDown\start-server.cmd"
+$action   = New-ScheduledTaskAction -Execute "D:\FluxDown\server\start-server.cmd"
 $trigger  = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -StartWhenAvailable
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -StartWhenAvailable `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Priority 5
 Register-ScheduledTask -TaskName "FluxDown Server" -Action $action -Trigger $trigger -Settings $settings `
   -User "$env:COMPUTERNAME\fluxdown" -Password $cred.GetNetworkCredential().Password -RunLevel Limited
 
@@ -97,7 +117,7 @@ Start-ScheduledTask -TaskName "FluxDown Server"   # 立即启动,不必重启
 
 - **下载目录在网络共享上:**映射盘符(如 `Z:\`)只存在于交互会话里,开机任务看不到。请改用 UNC 路径(`\\nas\share\downloads`)作为保存目录,并确保共享端给 `fluxdown` 账户授权(例如在 NAS 上建一个同名同密码的账户)。不要为此改用 `-LogonType S4U`:Microsoft 文档明确说明 S4U 登录无法访问网络和加密文件。如果只希望在你登录期间运行,可以改用 `-AtLogOn` 触发器配合你自己的账户(`-LogonType Interactive`)。
 - **停止或取消:**先执行 `Stop-ScheduledTask -TaskName "FluxDown Server"`(否则循环会把服务重新拉起),再用上文的 `Get-Process … | Stop-Process` 结束残留进程(结束计划任务不一定带走后台进程);`Unregister-ScheduledTask -TaskName "FluxDown Server" -Confirm:$false` 删除任务。
-- **升级:**Windows 服务器二进制支持应用内更新(Web 界面 → 设置 → 关于),这要求运行账户对 `D:\FluxDown\server\` 有写权限。更新会自行重启服务,与循环脚本会互相抢占,所以这种部署下建议手动升级:`Stop-ScheduledTask`、结束进程,用新压缩包里的 `fluxdown-agent.exe` 与 `fluxdownd.exe` 覆盖 `D:\FluxDown\server\` 里的同名文件,再 `Start-ScheduledTask`。数据目录不变。
+- **升级:**因为服务器目录对 `fluxdown` 账户是只读的(步骤 1),这种部署下**不要使用 Web 界面的应用内更新**:账户没有写权限,即使有,它自动重启服务也会与循环脚本互相抢占。请手动升级:`Stop-ScheduledTask`、结束进程,用新压缩包里的 `fluxdown-agent.exe` 与 `fluxdownd.exe`(在管理员 shell 里)覆盖 `D:\FluxDown\server\` 里的同名文件,再 `Start-ScheduledTask`。数据目录不变。
 - 若需要原生 Windows 服务,可用第三方服务包装器,但这不是官方支持的部署方式。
 
 ## 构建与运行

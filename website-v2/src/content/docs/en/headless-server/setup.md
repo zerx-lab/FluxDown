@@ -34,6 +34,8 @@ Differences from Linux:
   New-NetFirewallRule -DisplayName "FluxDown Server" -Direction Inbound -Program "D:\FluxDown\server\fluxdown-agent.exe" -Action Allow -Profile Private
   ```
 
+  Windows often classifies a new network as **Public**, where this rule does not apply and LAN access fails silently. Check with `Get-NetConnectionProfile` (look at `NetworkCategory`); if it says `Public` and you trust the network, switch it with `Set-NetConnectionProfile -InterfaceAlias "<name from the list>" -NetworkCategory Private`.
+
   For local-only use, set `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`. Finish access-key setup before exposing it, see [Exposing it safely](#exposing-it-safely-reverse-proxy--tls) below. If the FluxDown desktop app is installed on the same machine, give the server a different port (for example `$env:FLUXDOWN_BIND = "[::]:17900"`) so the two don't collide on 17800.
 - Without `FLUXDOWN_DATA_DIR` the location **depends on the account running it** and is split in two: engine data in `%LOCALAPPDATA%\FluxDown\`, agent state (including the access key and device identity) in `%APPDATA%\zerx\FluxDown\data\agent`. Always set `FLUXDOWN_DATA_DIR` explicitly (engine data goes in its root, agent state in `<root>\agent`), so backups and migrations get everything.
 - Windows has no `SIGTERM`, and this program has no console to press Ctrl+C in, so **stopping means force-ending the processes**. Pause your tasks in the Web UI first, then run this in PowerShell (the path filter leaves a desktop FluxDown install alone; use an elevated shell if the server runs under another account):
@@ -59,11 +61,28 @@ Add-LocalGroupMember -Group Users -Member fluxdown
 New-Item -ItemType Directory -Force D:\FluxDown\data, D:\Downloads | Out-Null
 icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)M"    # data dir: modify
 icacls D:\Downloads     /grant "fluxdown:(OI)(CI)M"    # save dir: modify
+
+# server dir: only SYSTEM and Administrators keep full control, the fluxdown account gets read & execute
+icacls D:\FluxDown\server /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "fluxdown:(OI)(CI)RX"
 ```
 
-The account needs write access to the data directory and to every download folder, and only read & execute on `D:\FluxDown\server\` (see Upgrading below). If the task later fails to start with a logon error, grant the account **Log on as a batch job** in `secpol.msc` → Local Policies → User Rights Assignment.
+The account needs write access to the data directory and to every download folder, and only read & execute on `D:\FluxDown\server\`. The `icacls` line above removes inheritance on that folder: a freshly created data drive typically gives *Authenticated Users* "Modify" on its root, inherited by every subfolder, which would let the dedicated account (and any other local user) overwrite the program files. Do not skip it.
 
-**2. Create a launcher script** at `D:\FluxDown\start-server.cmd` (environment variables go here, since a scheduled task cannot carry them itself). The loop restarts the server 10 seconds after it exits, which is the crash self-healing:
+The task logs on as a batch job, a right that by default only Administrators, Backup Operators and Performance Log Users hold. If registering or starting the task fails with a logon error (`0x80070569`), grant the right to the account:
+
+- **Windows Pro / Enterprise / Education:** `secpol.msc` → Local Policies → User Rights Assignment → *Log on as a batch job* → add `fluxdown`.
+- **Windows Home** has no `secpol.msc`. Add the account's SID to the policy with `secedit` instead (elevated PowerShell):
+
+  ```powershell
+  $sid = (Get-LocalUser fluxdown).SID.Value
+  $inf = "$env:TEMP\rights.inf"
+  secedit /export /cfg $inf /areas USER_RIGHTS
+  (Get-Content $inf) -replace '^(SeBatchLogonRight\s*=.*)$', ('$1,*' + $sid) | Set-Content $inf -Encoding Unicode
+  secedit /configure /db "$env:TEMP\rights.sdb" /cfg $inf /areas USER_RIGHTS
+  Remove-Item $inf, "$env:TEMP\rights.sdb"
+  ```
+
+**2. Create a launcher script** at `D:\FluxDown\server\start-server.cmd` (environment variables go here, since a scheduled task cannot carry them itself; it sits in the locked-down server folder so other local users cannot edit what the dedicated account runs). Create it from the elevated shell, for example in Notepad started as administrator. The loop restarts the server 10 seconds after it exits, which is the crash self-healing:
 
 ```bat
 @echo off
@@ -78,12 +97,13 @@ goto loop
 
 `start /wait` keeps the script alive until the server exits, so Task Scheduler sees the task as still running; `ping -n 11` is a 10-second pause that, unlike `timeout`, also works without a console.
 
-**3. Register the task** (elevated PowerShell; starts at boot, no login needed, runs as the dedicated account with standard rights, no run-time limit):
+**3. Register the task** (elevated PowerShell; starts at boot, no login needed, runs as the dedicated account with standard rights, no run-time limit, keeps running on battery power, normal CPU priority instead of the task default of 7, which is below normal):
 
 ```powershell
-$action   = New-ScheduledTaskAction -Execute "D:\FluxDown\start-server.cmd"
+$action   = New-ScheduledTaskAction -Execute "D:\FluxDown\server\start-server.cmd"
 $trigger  = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -StartWhenAvailable
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -StartWhenAvailable `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Priority 5
 Register-ScheduledTask -TaskName "FluxDown Server" -Action $action -Trigger $trigger -Settings $settings `
   -User "$env:COMPUTERNAME\fluxdown" -Password $cred.GetNetworkCredential().Password -RunLevel Limited
 
@@ -96,7 +116,7 @@ Notes:
 
 - **Download folder on a network share:** a mapped drive letter (such as `Z:\`) only exists inside an interactive session and is invisible to a boot-time task. Use the UNC path (`\\nas\share\downloads`) as the save directory instead, and make sure the share grants access to the `fluxdown` account (for example a same-name account with the same password on the NAS). Do not switch to `-LogonType S4U` for this: Microsoft documents that S4U logons have no access to the network or to encrypted files. If you only want it to run while you are signed in, a `-AtLogOn` trigger with your own account (`-LogonType Interactive`) is the alternative.
 - **Stop or remove:** run `Stop-ScheduledTask -TaskName "FluxDown Server"` first (otherwise the loop restarts the server), then end any leftover processes with the `Get-Process … | Stop-Process` command above (ending the task does not necessarily take the background processes with it). `Unregister-ScheduledTask -TaskName "FluxDown Server" -Confirm:$false` deletes the task.
-- **Upgrading:** the Windows server binary supports in-app update (Web UI → Settings → About), which needs the account to have write access to `D:\FluxDown\server\`. Since the update restarts the server by itself, it would race with the loop script, so with this setup we recommend a manual upgrade: `Stop-ScheduledTask`, end the processes, overwrite `fluxdown-agent.exe` and `fluxdownd.exe` in `D:\FluxDown\server\` with the new ones from the archive, then `Start-ScheduledTask`. The data directory is untouched.
+- **Upgrading:** because the server folder is read-only for the `fluxdown` account (step 1), **do not use the Web UI in-app update** with this setup: it cannot write there and, even where it could, its automatic restart would race with the loop script. Upgrade manually instead: `Stop-ScheduledTask`, end the processes, overwrite `fluxdown-agent.exe` and `fluxdownd.exe` in `D:\FluxDown\server\` with the new ones from the archive (from an elevated shell), then `Start-ScheduledTask`. The data directory is untouched.
 - If you need a native Windows service you can use a third-party service wrapper, but that is not an officially supported setup.
 
 ## Build and run
