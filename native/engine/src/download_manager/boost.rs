@@ -239,9 +239,15 @@ impl DownloadManager {
         let Some(priority) = self.priority_task_id.as_deref() else {
             return;
         };
+        // 内部重建连接（改线程数 / 换全局出口）暂停后挂起的恢复：旧 writer 收尾即重新起飞，
+        // 仍算在途。
         let in_flight = self.active_tasks.contains_key(priority)
             || self.has_pending_resolve(priority)
-            || self.pending_queue.iter().any(|q| q.task_id == priority);
+            || self.pending_queue.iter().any(|q| q.task_id == priority)
+            || self
+                .pending_pauses
+                .get(priority)
+                .is_some_and(|pending| pending.resume_requested);
         if in_flight {
             return;
         }
