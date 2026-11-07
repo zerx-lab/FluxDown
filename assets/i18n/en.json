@@ -1142,6 +1142,8 @@
   "selectDefaultSaveDir": "Select default save directory",
   "rememberLastSaveDir": "Remember Last Save Location",
   "rememberLastSaveDirDesc": "Use the last download location as the default for new downloads instead of the fixed directory",
+  "rememberLastDownloadTarget": "Remember Last Download Target",
+  "rememberLastDownloadTargetDesc": "Restore the device chosen for the previous download in \"Download to\" of New Download. When off, new downloads always default to this device. Stored on this device only",
   "saveDirHistory": "Remember Save Path History",
   "saveDirHistoryDesc": "List recently used folders in the save directory dropdown of New Download. Stored on this device only",
   "clearSaveDirHistory": "Save Path History",

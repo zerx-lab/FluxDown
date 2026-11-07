@@ -53,6 +53,11 @@ fn save_location_section(ctx: &SectionContext) -> SettingsSection {
             ctx.pref_switch("download.remember_last_save_dir", false),
         ))
         .row(ctx.item(
+            "rememberLastDownloadTarget",
+            Some("rememberLastDownloadTargetDesc"),
+            ctx.pref_switch(REMEMBER_LAST_TARGET_PREF, false),
+        ))
+        .row(ctx.item(
             "saveDirHistory",
             Some("saveDirHistoryDesc"),
             ctx.pref_switch(SAVE_DIR_HISTORY_ENABLED_PREF, true),
@@ -70,6 +75,9 @@ fn save_location_section(ctx: &SectionContext) -> SettingsSection {
 const SAVE_DIR_HISTORY_PREF: &str = "download.save_dir_history";
 const CATEGORY_SAVE_DIR_HISTORY_PREF: &str = "download.category_save_dir_history";
 const SAVE_DIR_HISTORY_ENABLED_PREF: &str = "download.save_dir_history_enabled";
+/// 新建下载是否恢复上次「下载到」目标设备（设备本地偏好，与 `fluxdown_ui_downloads` 的
+/// `REMEMBER_LAST_TARGET_PREF` 同键；缺省关闭 = 默认本机）。
+const REMEMBER_LAST_TARGET_PREF: &str = "download.remember_last_target";
 
 /// 清空保存目录历史（含分类目录记忆）：两个键各写墓碑移除偏好；都没有记录时按钮置灰。
 fn clear_save_dir_history_control(ctx: &SectionContext) -> Control {

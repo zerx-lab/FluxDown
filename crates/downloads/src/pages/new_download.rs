@@ -26,7 +26,7 @@ use crate::{
     controller::{
         CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
         LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF, REMEMBER_LAST_SAVE_DIR_PREF,
-        SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF,
+        REMEMBER_LAST_TARGET_PREF, SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF,
     },
     model::{
         devices::{DeviceEntry, DeviceKind, DispatchTarget, other_devices, resolve_target},
@@ -208,13 +208,22 @@ pub(crate) fn build_new_download_context(
         history_enabled.then(|| read_save_dir_history(preferences.get(SAVE_DIR_HISTORY_PREF)));
     let category_save_dir_history = history_enabled
         .then(|| read_category_save_dir_history(preferences.get(CATEGORY_SAVE_DIR_HISTORY_PREF)));
-    let target = preferences
-        .get(LAST_DOWNLOAD_TARGET_PREF)
-        .and_then(serde_json::Value::as_str)
-        .and_then(DispatchTarget::from_pref)
-        // `link:<fp>` 已挂接到云条目时解析为该云条目；目标已不存在则回退本机。
-        .and_then(|target| resolve_target(target, &targets))
-        .unwrap_or_default();
+    // 上次目标只在开关开启时恢复（缺省关闭，默认本机）；`link:<fp>` 已挂接到云条目时解析为
+    // 该云条目，目标已不存在则回退本机。
+    let remember_target = preferences
+        .get(REMEMBER_LAST_TARGET_PREF)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let target = if remember_target {
+        preferences
+            .get(LAST_DOWNLOAD_TARGET_PREF)
+            .and_then(serde_json::Value::as_str)
+            .and_then(DispatchTarget::from_pref)
+            .and_then(|target| resolve_target(target, &targets))
+            .unwrap_or_default()
+    } else {
+        DispatchTarget::Local
+    };
     let categories = fluxdown_protocol::CustomCategoryDto::from_preference(
         preferences.get(fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY),
     );
@@ -2303,4 +2312,68 @@ fn has_extension(path: &std::path::Path, extensions: &[&str]) -> bool {
                 .iter()
                 .any(|candidate| extension.eq_ignore_ascii_case(candidate))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::{Value, json};
+
+    use super::build_new_download_context;
+    use crate::model::devices::{DeviceEntry, DeviceKind, DispatchTarget};
+
+    fn device(id: &str) -> DeviceEntry {
+        DeviceEntry {
+            id: id.to_owned(),
+            kind: DeviceKind::Cloud,
+            link_fingerprint: None,
+            link_online: None,
+            label: id.to_owned(),
+            online: Some(false),
+            default_save_dir: None,
+            path_style: None,
+        }
+    }
+
+    fn initial_target(prefs: &[(&str, Value)], targets: Vec<DeviceEntry>) -> DispatchTarget {
+        let preferences: BTreeMap<String, Value> = prefs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect();
+        build_new_download_context(&BTreeMap::new(), "/dl", &preferences, &[], None, targets).target
+    }
+
+    #[test]
+    fn last_target_ignored_unless_remember_enabled() {
+        let last = ("download.last_target", json!("cloud:phone"));
+        assert_eq!(
+            initial_target(std::slice::from_ref(&last), vec![device("phone")]),
+            DispatchTarget::Local
+        );
+        assert_eq!(
+            initial_target(
+                &[last, ("download.remember_last_target", json!(false))],
+                vec![device("phone")]
+            ),
+            DispatchTarget::Local
+        );
+    }
+
+    #[test]
+    fn last_target_restored_when_remember_enabled() {
+        let prefs = [
+            ("download.last_target", json!("cloud:phone")),
+            ("download.remember_last_target", json!(true)),
+        ];
+        assert_eq!(
+            initial_target(&prefs, vec![device("phone")]),
+            DispatchTarget::Cloud("phone".to_owned())
+        );
+        // 记录的设备已不在候选里：回退本机。
+        assert_eq!(
+            initial_target(&prefs, vec![device("tablet")]),
+            DispatchTarget::Local
+        );
+    }
 }
