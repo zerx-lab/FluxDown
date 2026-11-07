@@ -13,11 +13,11 @@ For most deployments the prebuilt Docker image is the easiest path — see [Dock
 
 Windows needs neither a build nor an installer. Steps:
 
-1. Download `FluxDown-Server-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/zerx-lab/FluxDown/releases) (`windows-arm64` on ARM devices) and extract it to a fixed folder such as `D:\FluxDown\`. The archive holds one `fluxdown-server-<version>-<platform>\` folder containing `fluxdown-agent.exe` and `fluxdownd.exe`; **keep both in the same directory**.
+1. Download `FluxDown-Server-<version>-windows-x64.zip` from the [download page](/download/) or [GitHub Releases](https://github.com/zerx-lab/FluxDown/releases) (`windows-arm64` on ARM devices). The archive holds one `fluxdown-server-<version>-<platform>\` folder containing `fluxdown-agent.exe` and `fluxdownd.exe`. Move those two files into a fixed folder **without a version number**, such as `D:\FluxDown\server\`, and **keep both in the same directory** (a fixed path means the launcher script and firewall rule below survive upgrades).
 2. In PowerShell, go to that folder, set environment variables, then start the agent (see [Environment variables](#environment-variables); all optional):
 
    ```powershell
-   cd D:\FluxDown\fluxdown-server-<version>-windows-x64
+   cd D:\FluxDown\server
    $env:FLUXDOWN_DATA_DIR = "D:\FluxDown\data"      # data dir: pick a stable, backed-up path
    $env:FLUXDOWN_SAVE_DIR = "D:\Downloads"          # default save dir, applied on first start
    .\fluxdown-agent.exe --server
@@ -28,47 +28,75 @@ Windows needs neither a build nor an installer. Steps:
 Differences from Linux:
 
 - The Windows release `fluxdown-agent.exe` is a GUI-subsystem program: **no console window and no console log output**; PowerShell returns immediately and the server keeps running in the background. Check that `http://localhost:17800/` opens in a browser, or look for the processes in Task Manager / `Get-Process fluxdown-agent, fluxdownd`.
-- The default bind is `[::]:17800` (all interfaces). To reach it from other devices on the LAN, allow it through Windows Firewall (elevated PowerShell):
+- The default bind is `[::]:17800` (all interfaces). To reach it from other devices on the LAN, allow it through Windows Firewall (elevated PowerShell; `-Profile Private` keeps it closed on public networks):
 
   ```powershell
-  New-NetFirewallRule -DisplayName "FluxDown Server" -Direction Inbound -Program "D:\FluxDown\fluxdown-server-<version>-windows-x64\fluxdown-agent.exe" -Action Allow
+  New-NetFirewallRule -DisplayName "FluxDown Server" -Direction Inbound -Program "D:\FluxDown\server\fluxdown-agent.exe" -Action Allow -Profile Private
   ```
 
-  For local-only use, set `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`. Finish access-key setup before exposing it, see [Exposing it safely](#exposing-it-safely-reverse-proxy--tls) below.
-- Without `FLUXDOWN_DATA_DIR`, data goes to `%LOCALAPPDATA%\FluxDown\` (which depends on the account running it), see the data directory table below. Always set it explicitly when running as `SYSTEM` from a scheduled task.
-- Windows has no `SIGTERM`, and this program has no console to press Ctrl+C in, so **stopping means force-ending the processes**: `Stop-Process -Name fluxdown-agent, fluxdownd`. Pause your tasks in the Web UI first.
+  For local-only use, set `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`. Finish access-key setup before exposing it, see [Exposing it safely](#exposing-it-safely-reverse-proxy--tls) below. If the FluxDown desktop app is installed on the same machine, give the server a different port (for example `$env:FLUXDOWN_BIND = "[::]:17900"`) so the two don't collide on 17800.
+- Without `FLUXDOWN_DATA_DIR` the location **depends on the account running it** and is split in two: engine data in `%LOCALAPPDATA%\FluxDown\`, agent state (including the access key and device identity) in `%APPDATA%\zerx\FluxDown\data\agent`. Always set `FLUXDOWN_DATA_DIR` explicitly (engine data goes in its root, agent state in `<root>\agent`), so backups and migrations get everything.
+- Windows has no `SIGTERM`, and this program has no console to press Ctrl+C in, so **stopping means force-ending the processes**. Pause your tasks in the Web UI first, then run this in PowerShell (the path filter leaves a desktop FluxDown install alone; use an elevated shell if the server runs under another account):
+
+  ```powershell
+  Get-Process fluxdown-agent, fluxdownd -ErrorAction SilentlyContinue |
+    Where-Object Path -like 'D:\FluxDown\server\*' | Stop-Process
+  ```
 
 ### Start at boot / keep it running
 
-FluxDown Server is **not a native Windows service** (there is no service entry point for `sc create`). To start it automatically, use the built-in Task Scheduler. First create a launcher script at a fixed path, `D:\FluxDown\start-server.cmd` (environment variables go here, since a scheduled task cannot carry them itself):
+FluxDown Server is **not a native Windows service** (there is no service entry point for `sc create`). To start it automatically, use the built-in Task Scheduler.
+
+> **Do not run it as `SYSTEM` or as an administrator.** The access key is effectively full control of the host: the Web UI can point the save directory anywhere and the server has no save-directory sandbox, so anyone holding the key (or exploiting a bug) could write into `System32` or an all-users startup folder and run it with the server's privileges. Use a dedicated standard (non-admin) local account, the same least-privilege idea as the dedicated `fluxdown` user in the Linux systemd example.
+
+**1. Create the dedicated account and grant folder access** (elevated PowerShell, one time):
+
+```powershell
+$cred = Get-Credential -UserName fluxdown -Message "Set a password for the dedicated FluxDown account"
+New-LocalUser -Name fluxdown -Password $cred.Password -PasswordNeverExpires -UserMayNotChangePassword
+Add-LocalGroupMember -Group Users -Member fluxdown
+
+New-Item -ItemType Directory -Force D:\FluxDown\data, D:\Downloads | Out-Null
+icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)M"    # data dir: modify
+icacls D:\Downloads     /grant "fluxdown:(OI)(CI)M"    # save dir: modify
+```
+
+The account needs write access to the data directory and to every download folder, and only read & execute on `D:\FluxDown\server\` (see Upgrading below). If the task later fails to start with a logon error, grant the account **Log on as a batch job** in `secpol.msc` → Local Policies → User Rights Assignment.
+
+**2. Create a launcher script** at `D:\FluxDown\start-server.cmd` (environment variables go here, since a scheduled task cannot carry them itself). The loop restarts the server 10 seconds after it exits, which is the crash self-healing:
 
 ```bat
 @echo off
 set FLUXDOWN_DATA_DIR=D:\FluxDown\data
 set FLUXDOWN_SAVE_DIR=D:\Downloads
-cd /d D:\FluxDown\fluxdown-server-<version>-windows-x64
+cd /d D:\FluxDown\server
+:loop
 start "" /wait fluxdown-agent.exe --server
+ping -n 11 127.0.0.1 >nul
+goto loop
 ```
 
-`start /wait` keeps the script alive until the server exits, so Task Scheduler sees the task as still running. Then register the task from an **elevated** PowerShell (starts at boot, no login needed, retries after a crash, no run-time limit):
+`start /wait` keeps the script alive until the server exits, so Task Scheduler sees the task as still running; `ping -n 11` is a 10-second pause that, unlike `timeout`, also works without a console.
+
+**3. Register the task** (elevated PowerShell; starts at boot, no login needed, runs as the dedicated account with standard rights, no run-time limit):
 
 ```powershell
-$action    = New-ScheduledTaskAction -Execute "D:\FluxDown\start-server.cmd"
-$trigger   = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
-             -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
-Register-ScheduledTask -TaskName "FluxDown Server" -Action $action -Trigger $trigger `
-             -Principal $principal -Settings $settings
+$action   = New-ScheduledTaskAction -Execute "D:\FluxDown\start-server.cmd"
+$trigger  = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -StartWhenAvailable
+Register-ScheduledTask -TaskName "FluxDown Server" -Action $action -Trigger $trigger -Settings $settings `
+  -User "$env:COMPUTERNAME\fluxdown" -Password $cred.GetNetworkCredential().Password -RunLevel Limited
 
 Start-ScheduledTask -TaskName "FluxDown Server"   # start now, no reboot needed
 ```
 
+Task Scheduler's own `-RestartCount` / `-RestartInterval` only retry when the task fails to **launch**; once the action has started, any later exit counts as a finished run, so they don't recover a crashed server. That is why the loop lives in the script.
+
 Notes:
 
-- The `SYSTEM` account cannot see mapped network drives (such as `Z:\`) or a user's profile folders. If your download folder is on a network share or under a user profile, replace `-UserId "SYSTEM" -LogonType ServiceAccount` with `-UserId $env:USERNAME -LogonType S4U` (still starts at boot without an interactive login), or use an `-AtLogOn` trigger so it starts when the user signs in.
-- To stop or remove: `Stop-ScheduledTask -TaskName "FluxDown Server"`, then `Stop-Process -Name fluxdown-agent, fluxdownd` (ending the task does not necessarily take the background processes with it); `Unregister-ScheduledTask -TaskName "FluxDown Server" -Confirm:$false` deletes the task.
-- Upgrading: stop and end the processes, then overwrite `fluxdown-agent.exe` and `fluxdownd.exe` from the new archive; the data directory is untouched.
+- **Download folder on a network share:** a mapped drive letter (such as `Z:\`) only exists inside an interactive session and is invisible to a boot-time task. Use the UNC path (`\\nas\share\downloads`) as the save directory instead, and make sure the share grants access to the `fluxdown` account (for example a same-name account with the same password on the NAS). Do not switch to `-LogonType S4U` for this: Microsoft documents that S4U logons have no access to the network or to encrypted files. If you only want it to run while you are signed in, a `-AtLogOn` trigger with your own account (`-LogonType Interactive`) is the alternative.
+- **Stop or remove:** run `Stop-ScheduledTask -TaskName "FluxDown Server"` first (otherwise the loop restarts the server), then end any leftover processes with the `Get-Process … | Stop-Process` command above (ending the task does not necessarily take the background processes with it). `Unregister-ScheduledTask -TaskName "FluxDown Server" -Confirm:$false` deletes the task.
+- **Upgrading:** the Windows server binary supports in-app update (Web UI → Settings → About), which needs the account to have write access to `D:\FluxDown\server\`. Since the update restarts the server by itself, it would race with the loop script, so with this setup we recommend a manual upgrade: `Stop-ScheduledTask`, end the processes, overwrite `fluxdown-agent.exe` and `fluxdownd.exe` in `D:\FluxDown\server\` with the new ones from the archive, then `Start-ScheduledTask`. The data directory is untouched.
 - If you need a native Windows service you can use a third-party service wrapper, but that is not an officially supported setup.
 
 ## Build and run
