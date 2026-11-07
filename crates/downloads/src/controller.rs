@@ -38,6 +38,9 @@ pub const UPLOAD_LIMIT_RECENT_PREF: &str = "download.upload_limit_recent_kbps";
 /// 本机偏好：新建下载「下载到」上次选择的目标（`local` / `cloud:<id>` / `link:<fp>`），
 /// 设备本地，不进云同步。
 pub const LAST_DOWNLOAD_TARGET_PREF: &str = "download.last_target";
+/// 本机偏好：新建下载「下载到」是否恢复上次的目标设备（缺省关闭 = 总是默认本机；设备
+/// 本地，不进云同步）。
+pub const REMEMBER_LAST_TARGET_PREF: &str = "download.remember_last_target";
 
 pub type PortFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, fluxdown_protocol::RpcErrorData>> + Send + 'static>>;
