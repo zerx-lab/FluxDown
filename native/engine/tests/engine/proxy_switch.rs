@@ -13,6 +13,7 @@ use std::time::Duration;
 use fluxdown_engine::bt_config::BtConfig;
 use fluxdown_engine::download_manager::NewTaskSpec;
 use fluxdown_engine::proxy_config::{ProxyConfig, ProxyMode, ProxyType};
+use fluxdown_engine::proxy_rules::ProxyRuleSet;
 use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -232,6 +233,10 @@ impl Harness {
     }
 
     async fn create(&mut self, file_name: &str, proxy_url: String) -> String {
+        self.create_in(file_name, proxy_url, String::new()).await
+    }
+
+    async fn create_in(&mut self, file_name: &str, proxy_url: String, queue_id: String) -> String {
         self.engine
             .manager
             .create_task(NewTaskSpec {
@@ -240,10 +245,49 @@ impl Harness {
                 file_name: file_name.to_string(),
                 segments: 2,
                 proxy_url,
+                queue_id,
                 ..Default::default()
             })
             .await
             .expect("create_task")
+    }
+
+    /// 新建并发上限为 `max_concurrent` 的队列，返回其 ID。
+    async fn create_queue(&mut self, name: &str, max_concurrent: i32) -> String {
+        self.engine
+            .manager
+            .create_queue(
+                name.to_string(),
+                0,
+                0,
+                max_concurrent,
+                String::new(),
+                0,
+                String::new(),
+            )
+            .await;
+        self.engine
+            .db
+            .load_all_queues()
+            .await
+            .expect("load queues")
+            .into_iter()
+            .find(|queue| queue.name == name)
+            .expect("queue created")
+            .queue_id
+    }
+
+    /// 回灌 writer 退出信号，直到 `task_ids` 每个都收到过一条（到达顺序不定）。
+    async fn pump_all(&mut self, task_ids: &[&str]) {
+        let mut pending: Vec<&str> = task_ids.to_vec();
+        while !pending.is_empty() {
+            let done = tokio::time::timeout(Duration::from_secs(10), self.done_rx.recv())
+                .await
+                .expect("paused downloader should stop")
+                .expect("done channel should stay open");
+            pending.retain(|task_id| *task_id != done.task_id);
+            self.engine.manager.on_task_done(&done).await;
+        }
     }
 
     /// 与生产 actor 一样把 writer 退出信号交回 manager（暂停后挂起的恢复在此起飞），
@@ -493,4 +537,109 @@ async fn proxy_switch_keeps_boost() {
     );
     assert_eq!(h.status(&yielded).await, 2, "yielded task stays paused");
     h.finish(&[&boosted, &yielded]).await;
+}
+
+/// 并发占满且有排队任务时切换代理：重建连接的两个任务在旧 writer 收尾前仍占着自己的
+/// 槽位，先收尾的那个恢复后不得把另一个的槽位让给排队任务。
+async fn assert_switch_keeps_queue_order(mut h: Harness, new: &FakeProxy, ids: [String; 3]) {
+    let [a, b, c] = ids;
+    h.wait_segment_progress(&a).await;
+    h.wait_segment_progress(&b).await;
+    assert_eq!(h.status(&c).await, 0, "third task waits in the queue");
+
+    h.engine
+        .manager
+        .set_proxy_config(new.config())
+        .await
+        .expect("switch proxy");
+    h.pump_all(&[&a, &b]).await;
+    // 新一代下载器起跑后才把库写回 downloading；排队任务若被放进来，被挤掉的那个会停在 0。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let states = (h.status(&a).await, h.status(&b).await, h.status(&c).await);
+        if states.0 == 1 && states.1 == 1 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "reconnected tasks keep their slots, got (a, b, c) = {states:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        h.status(&c).await,
+        0,
+        "the queued task keeps waiting behind the reconnected tasks"
+    );
+    wait_until("running tasks reconnect via the new proxy", || {
+        new.origin_requests() > 0
+    })
+    .await;
+    assert_resumed_from_offsets(new);
+    h.finish(&[&a, &b, &c]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proxy_switch_keeps_global_slots_ahead_of_queue() {
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("global_slots", old.config()).await;
+    h.engine.manager.set_max_concurrent(2).await;
+    let a = h.create("a.bin", String::new()).await;
+    let b = h.create("b.bin", String::new()).await;
+    let c = h.create("c.bin", String::new()).await;
+    assert_switch_keeps_queue_order(h, &new, [a, b, c]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proxy_switch_keeps_queue_slots_ahead_of_queue() {
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("queue_slots", old.config()).await;
+    let queue = h.create_queue("proxy-switch", 2).await;
+    let a = h.create_in("a.bin", String::new(), queue.clone()).await;
+    let b = h.create_in("b.bin", String::new(), queue.clone()).await;
+    let c = h.create_in("c.bin", String::new(), queue).await;
+    assert_switch_keeps_queue_order(h, &new, [a, b, c]).await;
+}
+
+/// 站点规则钉住出口的任务（跟随全局、规则首条命中）：全局出口变化不改变它的实际出口，
+/// 不得打断。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rule_pinned_task_ignores_global_switch() {
+    let pinned = FakeProxy::start().await;
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let raw = format!(
+        r#"[{{"id":"r1","enabled":true,"name":"","match":"domain","pattern":"{ORIGIN_HOST}","action":"custom","proxy":"http://127.0.0.1:{}"}}]"#,
+        pinned.port
+    );
+    let rules = Arc::new(ProxyRuleSet::compile(&raw, &ProxyConfig::default()));
+    assert_eq!(rules.len(), 1, "the rule compiles");
+    let with_rules = |config: ProxyConfig| ProxyConfig {
+        rules: Some(Arc::clone(&rules)),
+        ..config
+    };
+    let mut h = Harness::new("rule", with_rules(old.config())).await;
+    let task_id = h.create("file.bin", String::new()).await;
+    h.wait_segment_progress(&task_id).await;
+    assert!(
+        pinned.origin_requests() > 0,
+        "the rule carries the download"
+    );
+    assert_eq!(old.origin_requests(), 0, "global proxy is bypassed");
+
+    h.engine
+        .manager
+        .set_proxy_config(with_rules(new.config()))
+        .await
+        .expect("switch proxy");
+    h.assert_not_interrupted(Duration::from_secs(2)).await;
+    assert_eq!(
+        new.origin_requests(),
+        0,
+        "rule-pinned task stays on its proxy"
+    );
+    assert_eq!(h.status(&task_id).await, 1, "task keeps downloading");
+    h.finish(&[&task_id]).await;
 }
