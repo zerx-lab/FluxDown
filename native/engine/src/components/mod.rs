@@ -27,12 +27,13 @@ use std::path::PathBuf;
 /// `ghproxy`/`gh-proxy` 类反代的基址），非空时替换掉请求 URL 里的
 /// `https://api.github.com` 或 `https://github.com` 前缀（含 Release JSON
 /// 查询与资产直链下载两条路径）。空值（默认）= 不改写，直连 GitHub。
+/// 插件市场（索引与插件包下载，#847）复用同一配置。
 pub const CONFIG_COMPONENT_MIRROR_BASE: &str = "component_mirror_base";
 
 /// 把 `url` 的 `https://api.github.com` / `https://github.com` 前缀替换为
 /// `mirror_base`（trim 首尾空白与末尾 `/`）。`mirror_base` 为空则原样返回。
 /// 纯函数，不做网络/IO，便于测试。
-#[cfg(any(feature = "components", test))]
+#[cfg(any(feature = "components", feature = "plugins", test))]
 pub(crate) fn apply_component_mirror(url: &str, mirror_base: &str) -> String {
     let mirror_base = mirror_base.trim().trim_end_matches('/');
     if mirror_base.is_empty() {
@@ -49,7 +50,7 @@ pub(crate) fn apply_component_mirror(url: &str, mirror_base: &str) -> String {
 /// 读取用户配置的组件镜像基址（[`CONFIG_COMPONENT_MIRROR_BASE`]）；未设置
 /// 或读取失败均返回空串（= 不改写，直连 GitHub），不让配置读取失败阻断
 /// 安装流程。
-#[cfg(feature = "components")]
+#[cfg(any(feature = "components", feature = "plugins"))]
 pub(crate) async fn component_mirror_base(db: &crate::db::Db) -> String {
     db.get_config(CONFIG_COMPONENT_MIRROR_BASE)
         .await
@@ -255,7 +256,7 @@ pub(crate) async fn fetch_github_json_with_mirror(
 
 /// 镜像改写后的 URL：仅当确实改写且镜像为 https 才返回；http 镜像一律忽略
 /// （退回直连），避免明文链路上的篡改/降级。
-#[cfg(any(feature = "components", test))]
+#[cfg(any(feature = "components", feature = "plugins", test))]
 pub(crate) fn https_mirror_url(url: &str, mirror_base: &str) -> Option<String> {
     let mirrored = apply_component_mirror(url, mirror_base);
     (mirrored != url && mirrored.to_ascii_lowercase().starts_with("https://")).then_some(mirrored)
