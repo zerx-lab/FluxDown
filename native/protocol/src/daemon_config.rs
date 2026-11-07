@@ -192,6 +192,8 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::Bool,
         "false",
     ),
+    // 「选择要下载的文件」对话框 60 秒无人答复时按默认（全部文件）开始；关闭后一直等用户选择。
+    field("bt_selection_auto_default", DaemonConfigKind::Bool, "true"),
     field("bt_tracker_sub_enabled", DaemonConfigKind::Bool, "true"),
     field("bt_tracker_sub_urls", DaemonConfigKind::Text, ""),
     field("bt_tracker_sub_cache", DaemonConfigKind::ReadOnly, ""),

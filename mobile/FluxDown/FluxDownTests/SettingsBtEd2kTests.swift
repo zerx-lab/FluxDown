@@ -61,7 +61,7 @@ struct SettingsBtEd2kTests {
         #expect(BtSettingsRow.allCases.allSatisfy { !$0.isVisible(in: unloaded) })
         #expect(Ed2kSettingsRow.allCases.allSatisfy { !$0.isVisible(in: unloaded) })
         let loaded = form(["bt_enable_dht": "true"])
-        #expect(BtSettingsRow.visible(in: .general, loaded).count == 9)
+        #expect(BtSettingsRow.visible(in: .general, loaded).count == 10)
         #expect(Ed2kSettingsRow.visible(in: .servers, loaded).count == 4)
     }
 

@@ -382,9 +382,35 @@ impl DaemonSelection {
             }
         });
     }
+
+    /// BT 文件选择的等待上限：调用方显式给的优先；否则按 `bt_selection_auto_default`
+    /// 取 60 秒或不设上限（`None`）。
+    fn bt_selection_timeout(
+        &self,
+        requested: Option<std::time::Duration>,
+    ) -> Option<std::time::Duration> {
+        if requested.is_some() {
+            return requested;
+        }
+        // 写入经 `normalize_daemon_config_value` 规范化为 "true" / "false"；旧库或手改库的
+        // "0" 同样视为关闭，其余值按默认（开启）。
+        let auto_default = self.events.inspect(|snapshot| {
+            let value = snapshot
+                .config
+                .values
+                .get(BT_SELECTION_AUTO_DEFAULT_KEY)
+                .map_or_else(
+                    || fluxdown_protocol::daemon_config_default(BT_SELECTION_AUTO_DEFAULT_KEY),
+                    String::as_str,
+                );
+            !matches!(value.trim(), "false" | "0")
+        });
+        auto_default.then_some(DEFAULT_BT_SELECTION_TIMEOUT)
+    }
 }
 
 const DEFAULT_BT_SELECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const BT_SELECTION_AUTO_DEFAULT_KEY: &str = "bt_selection_auto_default";
 
 #[async_trait::async_trait]
 impl fluxdown_engine::selection::HostSelection for DaemonSelection {
@@ -441,7 +467,7 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
     ) -> fluxdown_engine::selection::SelectionOutcome<fluxdown_engine::selection::BtFileChoice>
     {
         let default_choice = fluxdown_engine::selection::BtFileChoice::default();
-        let effective_timeout = timeout.unwrap_or(DEFAULT_BT_SELECTION_TIMEOUT);
+        let effective_timeout = self.bt_selection_timeout(timeout);
         let request_id = uuid::Uuid::new_v4().to_string();
         let request = SelectionRequestDto {
             request_id: request_id.clone(),
@@ -458,15 +484,21 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                 indices: Vec::new(),
                 save_dir: None,
             },
-            deadline_unix_ms: deadline_unix_ms(effective_timeout),
+            deadline_unix_ms: effective_timeout
+                .map_or(fluxdown_protocol::SELECTION_NO_DEADLINE, deadline_unix_ms),
         };
         match self.begin(request) {
             SelectionWait::Immediate(_) => {
                 fluxdown_engine::selection::SelectionOutcome::NoSelectorConfigured(default_choice)
             }
             SelectionWait::Pending(receiver) => {
-                match tokio::time::timeout(effective_timeout, receiver).await {
-                    Ok(Ok(SelectionOutcome::Bt { indices, save_dir })) => {
+                // 无上限时只等终局：答复、任务暂停 / 删除、最后一个订阅者离开或 daemon 关闭都会送达。
+                let answer = match effective_timeout {
+                    Some(limit) => tokio::time::timeout(limit, receiver).await.ok(),
+                    None => Some(receiver.await),
+                };
+                match answer {
+                    Some(Ok(SelectionOutcome::Bt { indices, save_dir })) => {
                         fluxdown_engine::selection::SelectionOutcome::UserChose(
                             fluxdown_engine::selection::BtFileChoice {
                                 indices,
@@ -474,7 +506,7 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                             },
                         )
                     }
-                    Ok(Ok(SelectionOutcome::Cancelled)) => {
+                    Some(Ok(SelectionOutcome::Cancelled)) => {
                         fluxdown_engine::selection::SelectionOutcome::UserChose(
                             fluxdown_engine::selection::BtFileChoice {
                                 indices: vec![-1],
@@ -1369,6 +1401,107 @@ mod tests {
         assert_eq!(
             timed_out,
             Engine::TimedOutDefaulted(BtFileChoice::default())
+        );
+    }
+
+    async fn next_pending(
+        frames: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+    ) -> SelectionRequestDto {
+        use fluxdown_protocol::{DaemonEvent, ServiceEvent};
+        loop {
+            let frame = frames.recv().await.expect("selection event");
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+                break request;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bt_selection_auto_default_switch_controls_deadline() {
+        use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome as Engine};
+        use fluxdown_protocol::SELECTION_NO_DEADLINE;
+
+        // 默认开启：60 秒截止。
+        let manager = manager();
+        manager.subscribe("c".to_owned());
+        let mut frames = manager.events.subscribe();
+        let waiter = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.select_bt_files("t", &[], "/data", None).await })
+        };
+        let before = super::deadline_unix_ms(std::time::Duration::ZERO);
+        let request = next_pending(&mut frames).await;
+        assert!(request.has_deadline());
+        let remaining = request.deadline_unix_ms - before;
+        assert!(
+            (50_000..=61_000).contains(&remaining),
+            "default deadline ≈ 60s, got {remaining}ms"
+        );
+        manager.cancel_task("t");
+        waiter.await.expect("join");
+
+        // 关闭：无截止，一直等到用户答复。
+        let mut snapshot = DaemonSnapshot::default();
+        snapshot
+            .config
+            .values
+            .insert("bt_selection_auto_default".to_owned(), "false".to_owned());
+        let manager = DaemonSelection::new(DaemonEventHub::new(snapshot, 16));
+        manager.subscribe("c".to_owned());
+        let mut frames = manager.events.subscribe();
+        let waiter = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.select_bt_files("t", &[], "/data", None).await })
+        };
+        let request = next_pending(&mut frames).await;
+        assert_eq!(request.deadline_unix_ms, SELECTION_NO_DEADLINE);
+        assert!(!request.has_deadline());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished());
+        assert_eq!(lock_pending_len(&manager), 1);
+        manager
+            .resolve(SelectionResolutionDto {
+                request_id: request.request_id,
+                outcome: SelectionOutcome::Bt {
+                    indices: vec![0],
+                    save_dir: None,
+                },
+            })
+            .expect("resolve");
+        assert_eq!(
+            waiter.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![0],
+                save_dir: None,
+            })
+        );
+
+        // 关闭时调用方显式给的上限仍然生效。
+        let timed_out = manager
+            .select_bt_files(
+                "slow",
+                &[],
+                "/data",
+                Some(std::time::Duration::from_millis(20)),
+            )
+            .await;
+        assert_eq!(
+            timed_out,
+            Engine::TimedOutDefaulted(BtFileChoice::default())
+        );
+
+        // 关闭后最后一个订阅者离开，等待者按默认值结束，不会永久挂起。
+        let waiter = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.select_bt_files("t", &[], "/data", None).await })
+        };
+        while lock_pending_len(&manager) == 0 {
+            tokio::task::yield_now().await;
+        }
+        manager.unsubscribe("c");
+        assert_eq!(
+            waiter.await.expect("join"),
+            Engine::UserChose(BtFileChoice::default())
         );
     }
 

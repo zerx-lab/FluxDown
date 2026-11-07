@@ -1434,6 +1434,8 @@
   "btPieceOrderSequentialDesc": "按文件顺序逐块下载，文件按名称排序。",
   "btFirstLastPiecesFirstDefault": "先下载首尾文件块",
   "btFirstLastPiecesFirstDefaultDesc": "新建的 BT 任务先下载每个选中文件首尾各 1% 的块（每端至少 1 块），再下载其余部分。只作用于此后新建的任务；单个任务可在右键菜单中修改",
+  "btSelectionAutoDefault": "文件选择 60 秒后自动选择默认项",
+  "btSelectionAutoDefaultDesc": "「选择要下载的文件」对话框 60 秒内无人选择时，按默认下载全部文件。关闭后对话框一直等待你选择",
   "btListenPort": "监听端口范围",
   "btListenPortDesc": "用于接收 BT 连接的端口范围",
   "btListenPortStart": "起始端口",

@@ -113,6 +113,7 @@ object SettingsCatalog {
         daemon("bt_custom_trackers", text, ""),
         daemon("bt_piece_order", choice(btPieceOrders), "rarest"),
         daemon("bt_first_last_pieces_first", bool, "false"),
+        daemon("bt_selection_auto_default", bool, "true"),
         daemon("bt_tracker_sub_enabled", bool, "true"),
         daemon("bt_tracker_sub_urls", text, ""),
         daemon("bt_tracker_sub_cache", readOnly, ""),

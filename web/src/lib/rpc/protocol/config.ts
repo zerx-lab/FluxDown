@@ -254,6 +254,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   text('bt_custom_trackers'),
   oneOf('bt_piece_order', 'rarest', BT_PIECE_ORDERS),
   bool('bt_first_last_pieces_first', 'false'),
+  bool('bt_selection_auto_default', 'true'),
   bool('bt_tracker_sub_enabled', 'true'),
   text('bt_tracker_sub_urls'),
   readOnly('bt_tracker_sub_cache'),
