@@ -5436,6 +5436,61 @@ async fn send_cancellable(
     }
 }
 
+/// 单流响应在已知声明长度下未兑现时的停滞错误。只陈述观察到的事实（已收 / 声明 /
+/// 差额），不推断服务端为何少发；文案保留 `download stalled: no data received for Ns`
+/// 前缀，`net_failure` 的停滞判定与自动重试白名单照旧命中。
+///
+/// `declared_end` 是响应自身声明的终点（文件偏移，续传时含已有部分）；压缩响应
+/// 与无 Content-Length 的响应为 `None`。
+fn single_stall_error(
+    stall_secs: u64,
+    body_start: i64,
+    downloaded: i64,
+    declared_end: Option<i64>,
+) -> DownloadError {
+    let received = downloaded.saturating_sub(body_start);
+    let message = match declared_end {
+        Some(end) if downloaded < end => format!(
+            "download stalled: no data received for {stall_secs}s with the response incomplete: \
+             {downloaded} of {end} bytes declared by the response received \
+             ({} bytes short)",
+            end - downloaded
+        ),
+        _ if received == 0 => format!(
+            "download stalled: no data received for {stall_secs}s after the response headers \
+             (no body bytes yet)"
+        ),
+        _ => format!(
+            "download stalled: no data received for {stall_secs}s after {received} body bytes"
+        ),
+    };
+    DownloadError::Other(message)
+}
+
+/// 单流响应体读取失败（连接提前结束 / 被重置）。已知声明长度且尚未收齐时，
+/// 在原错误前明确标出「响应不完整」及已收 / 声明字节数；`incomplete download`
+/// 同时是自动重试白名单词。保留原 `ErrorKind`，其余情况原样透传。
+fn single_body_error(
+    e: std::io::Error,
+    downloaded: i64,
+    declared_end: Option<i64>,
+) -> DownloadError {
+    match declared_end {
+        Some(end) if downloaded < end => DownloadError::Io(std::io::Error::new(
+            e.kind(),
+            format!(
+                "incomplete download: response body ended after {downloaded} of {end} bytes \
+                 declared by the response ({} bytes short): {e}{}",
+                end - downloaded,
+                // 新 io::Error 的 payload 是 String、没有 source；根因链在这里就拼进文案，
+                // 外层 `format_error_chain(src.source())` 不会重复打印。
+                format_error_chain(StdError::source(&e))
+            ),
+        )),
+        _ => DownloadError::Io(e),
+    }
+}
+
 async fn persist_single_progress(
     file: &mut tokio::io::BufWriter<File>,
     db: &Db,
@@ -5937,6 +5992,10 @@ async fn download_single_once(
     // Treat size as unknown so progress reports don't show wrong percentages
     // and the final integrity check is skipped.
     let total_bytes = if encoding.is_some() { 0 } else { total_bytes };
+    // 响应自身声明的终点：压缩响应的长度是压缩后大小，与落盘字节无可比性。
+    let body_start = downloaded;
+    let declared_end =
+        (encoding.is_none() && response_content_length >= 0).then_some(response_content_length);
     let reading = TransferTracker::new().start(0);
     // This is an authoritative baseline, not a lossy UI sample: the actual
     // response may have rejected Range and truncated the old partial file.
@@ -5981,10 +6040,12 @@ async fn download_single_once(
                         if let Err(cleanup_error) = persist_single_progress(&mut file, db, task_id, downloaded).await {
                             crate::logger::report_warning("http-download", "persist progress after stall", &cleanup_error);
                         }
-                        return Err(DownloadError::Other(format!(
-                            "download stalled: no data received for {}s",
-                            CHUNK_STALL_TIMEOUT.as_secs()
-                        )));
+                        return Err(single_stall_error(
+                            CHUNK_STALL_TIMEOUT.as_secs(),
+                            body_start,
+                            downloaded,
+                            declared_end,
+                        ));
                     }
                 };
                 match chunk {
@@ -6047,7 +6108,7 @@ async fn download_single_once(
                         if let Err(cleanup_error) = checkpoint {
                             crate::logger::report_warning("http-download", "persist progress after read failure", &cleanup_error);
                         }
-                        return Err(DownloadError::Io(e));
+                        return Err(single_body_error(e, downloaded, declared_end));
                     }
                     None => break,
                 }
@@ -10427,6 +10488,82 @@ mod single_resume_tests {
         let (res, on_disk) = resume(port, partial, full.len() as i64, true).await;
         assert!(res.is_err());
         assert_eq!(on_disk, partial);
+    }
+
+    /// 服务器在 Content-Length 未满足时关闭连接：错误必须点明响应不完整并带上已收 /
+    /// 声明字节数，保留已收数据，仍属可自动重试的瞬时错误。
+    #[tokio::test]
+    async fn premature_eof_reports_incomplete_response_with_byte_counts() {
+        let body = data(38);
+        let mut raw =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n".to_vec();
+        raw.extend_from_slice(&body);
+        let port = spawn_http(move |_| raw.clone()).await;
+        let (res, on_disk) = resume(port, b"", 100, false).await;
+        let err = res.unwrap_err();
+        let message = err.to_string();
+        // 按落库方式（downloader 单流错误收尾）拼出完整文案：根因链不能丢。
+        let stored = format!(
+            "{message}{}",
+            std::error::Error::source(&err)
+                .map(|s| super::format_error_chain(s.source()))
+                .unwrap_or_default()
+        );
+        assert!(
+            stored.contains("end of file before message length reached"),
+            "{stored}"
+        );
+        assert!(message.contains("incomplete download"), "{message}");
+        assert!(message.contains("38 of 100 bytes"), "{message}");
+        assert!(message.contains("62 bytes short"), "{message}");
+        assert!(crate::download_manager::is_retriable_error(&message));
+        assert_eq!(on_disk, body);
+    }
+
+    fn stall_message(
+        body_start: i64,
+        downloaded: i64,
+        declared_end: Option<i64>,
+    ) -> (DownloadError, String) {
+        let error = super::single_stall_error(10, body_start, downloaded, declared_end);
+        let message = error.to_string();
+        (error, message)
+    }
+
+    /// 已知声明长度且差额未补齐：给出已收 / 声明 / 差额；不下「服务器写错长度」的结论。
+    #[test]
+    fn stall_before_declared_length_reports_shortfall() {
+        let (error, message) = stall_message(0, 150_468, Some(150_530));
+        assert!(
+            message.starts_with("download stalled: no data received for 10s"),
+            "{message}"
+        );
+        assert!(message.contains("150468 of 150530 bytes"), "{message}");
+        assert!(message.contains("62 bytes short"), "{message}");
+        // 停滞分类与自动重试判据不因新文案失效。
+        assert_eq!(
+            crate::net_failure::classify_download_error(&error),
+            Some(crate::net_failure::NetFailure::Stalled)
+        );
+        assert!(crate::download_manager::is_retriable_error(&message));
+        // 续传响应的声明终点是文件偏移，差额按偏移计。
+        let (_, resumed) = stall_message(1_000, 1_500, Some(5_000));
+        assert!(resumed.contains("1500 of 5000 bytes"), "{resumed}");
+        assert!(resumed.contains("3500 bytes short"), "{resumed}");
+    }
+
+    /// 无声明长度 / 压缩响应只报停滞事实；首字节前后分开表述，且不出现「不完整」断言。
+    #[test]
+    fn stall_without_declared_shortfall_only_reports_facts() {
+        let (_, first_byte) = stall_message(0, 0, None);
+        assert!(first_byte.contains("no body bytes yet"), "{first_byte}");
+        let (_, mid) = stall_message(0, 4_096, None);
+        assert!(mid.contains("after 4096 body bytes"), "{mid}");
+        assert!(!mid.contains("incomplete"), "{mid}");
+        let (_, full) = stall_message(0, 100, Some(100));
+        assert!(!full.contains("incomplete"), "{full}");
+        // 已收满声明长度但服务器没关连接：只陈述事实。
+        assert!(full.contains("after 100 body bytes"), "{full}");
     }
 
     #[tokio::test]
