@@ -12,9 +12,10 @@ use std::time::Duration;
 
 use fluxdown_engine::bt_config::BtConfig;
 use fluxdown_engine::download_manager::NewTaskSpec;
+use fluxdown_engine::events::{EngineEvent, EventSink};
 use fluxdown_engine::proxy_config::{ProxyConfig, ProxyMode, ProxyType};
 use fluxdown_engine::proxy_rules::ProxyRuleSet;
-use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
+use fluxdown_engine::{Engine, EngineConfig, NoopSelection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::Receiver;
@@ -193,10 +194,27 @@ async fn conn(
     stream.shutdown().await
 }
 
+/// 记录引擎发出的 `queue.*` 语义事件（Webhook / 云端推送 / 提示音的共同来源）。
+#[derive(Default)]
+struct QueueEdgeSink {
+    edges: Mutex<Vec<String>>,
+}
+
+impl EventSink for QueueEdgeSink {
+    fn emit(&self, event: EngineEvent) {
+        if let EngineEvent::TaskNotice(notice) = event
+            && notice.event.starts_with("queue.")
+        {
+            self.edges.lock().unwrap().push(notice.event);
+        }
+    }
+}
+
 struct Harness {
     engine: Engine,
     done_rx: Receiver<fluxdown_engine::download_manager::TaskDone>,
     work: std::path::PathBuf,
+    sink: Arc<QueueEdgeSink>,
 }
 
 impl Harness {
@@ -218,7 +236,8 @@ impl Harness {
             data_dir_override: Some(work.clone()),
             database_url: None,
         };
-        let mut engine = Engine::new(config, Arc::new(NoopSink), Arc::new(NoopSelection))
+        let sink = Arc::new(QueueEdgeSink::default());
+        let mut engine = Engine::new(config, sink.clone(), Arc::new(NoopSelection))
             .await
             .expect("engine");
         if let Some(mut rx) = engine.manager.take_progress_rx() {
@@ -229,7 +248,12 @@ impl Harness {
             engine,
             done_rx,
             work,
+            sink,
         }
+    }
+
+    fn queue_edges(&self) -> Vec<String> {
+        self.sink.edges.lock().unwrap().clone()
     }
 
     async fn create(&mut self, file_name: &str, proxy_url: String) -> String {
@@ -319,6 +343,18 @@ impl Harness {
             .await
             .expect("load task")
             .map_or(-1, |task| task.status)
+    }
+
+    /// 等到任务的新一代下载器起跑（库写回 downloading）。
+    async fn wait_downloading(&self, task_id: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        while self.status(task_id).await != 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out: task {task_id} back to downloading"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// 等到任务已有分段行且每段续传起点都 > 0（首段已落库进度），重建连接后不应再有 0 起点。
@@ -601,6 +637,54 @@ async fn proxy_switch_keeps_queue_slots_ahead_of_queue() {
     let b = h.create_in("b.bin", String::new(), queue.clone()).await;
     let c = h.create_in("c.bin", String::new(), queue).await;
     assert_switch_keeps_queue_order(h, &new, [a, b, c]).await;
+}
+
+/// 换全局出口 / 改线程数的内部「暂停 → 恢复」不是队列忙闲变化：队列唯一在途任务重建
+/// 连接前后不得出现 `queue.drained` 或额外的 `queue.started`（误报的 Webhook / 云端推送 /
+/// 「队列完成」提示音）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconnect_emits_no_queue_edges() {
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("queue_edges", old.config()).await;
+    let task_id = h.create("file.bin", String::new()).await;
+    h.wait_segment_progress(&task_id).await;
+    assert_eq!(h.queue_edges(), ["queue.started"]);
+
+    h.engine
+        .manager
+        .set_proxy_config(new.config())
+        .await
+        .expect("switch proxy");
+    assert_eq!(h.queue_edges(), ["queue.started"], "no drained on pause");
+    h.pump_done(&task_id).await;
+    wait_until("running task reconnects via the new proxy", || {
+        new.origin_requests() > 0
+    })
+    .await;
+    h.wait_downloading(&task_id).await;
+    assert_eq!(h.queue_edges(), ["queue.started"], "proxy switch: no edges");
+
+    assert!(
+        h.engine
+            .manager
+            .set_task_segments(&task_id, 4)
+            .await
+            .expect("set segments")
+    );
+    assert_eq!(h.queue_edges(), ["queue.started"], "no drained on pause");
+    h.pump_done(&task_id).await;
+    h.wait_downloading(&task_id).await;
+    assert_eq!(
+        h.queue_edges(),
+        ["queue.started"],
+        "segment change: no edges"
+    );
+
+    // 用户真的暂停唯一在途任务：队列清空照常发 drained。
+    h.engine.manager.pause_task(&task_id).await;
+    assert_eq!(h.queue_edges(), ["queue.started", "queue.drained"]);
+    h.finish(&[&task_id]).await;
 }
 
 /// 站点规则钉住出口的任务（跟随全局、规则首条命中）：全局出口变化不改变它的实际出口，
