@@ -3,7 +3,7 @@ title: 服务器部署
 description: 从源码构建并运行 headless FluxDown 服务器(fluxdown-agent --server + fluxdownd),了解全部环境变量并安全地对外暴露。
 section: headless-server
 order: 1
-sourceHash: "9962c38f1f08"
+sourceHash: "d8748e5cddf6"
 ---
 
 headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下载守护进程:没有桌面界面、托盘或文件关联。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过编译进 `fluxdown-agent` 的 Web 界面和 JSON-RPC 端点(`/rpc`,与桌面客户端同一协议)暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版是**同一目录下的两个二进制**——`fluxdown-agent`(内嵌 Web 界面)与 `fluxdownd`。请把它们放在同一目录:agent 会把 `fluxdownd` 作为子进程拉起,并在收到 `SIGTERM`/`SIGINT` 时一并关停它。
@@ -12,7 +12,7 @@ headless 服务器 = `fluxdown-agent --server` 加上同级的 `fluxdownd` 下�
 
 ## Windows:直接运行预编译包
 
-Windows 不需要编译,也不需要安装。步骤:
+FluxDown 本身不需要编译,也不需要安装,但需要一个压缩包里没有的运行库:请先安装 **Microsoft Visual C++ 2015–2022 Redistributable**(x64 主机装 x64,ARM64 主机装 ARM64),到 Microsoft Learn 的 [Latest supported Visual C++ Redistributable downloads](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) 页面下载。干净的 Windows 上没有它,缺了它两个可执行文件都会立即退出。然后:
 
 1. 从[下载页](/zh/download/)或 [GitHub Releases](https://github.com/zerx-lab/FluxDown/releases) 下载 `FluxDown-Server-<版本>-windows-x64.zip`(ARM 设备用 `windows-arm64`)。压缩包里是一个 `fluxdown-server-<版本>-<平台>\` 文件夹,内含 `fluxdown-agent.exe` 与 `fluxdownd.exe`。把这两个文件移到一个**不带版本号**的固定目录,例如 `D:\FluxDown\server\`,**两者必须留在同一目录**(路径固定,下文的启动脚本和防火墙规则才不会随升级失效)。
 2. 在 PowerShell 里进入该目录,先设置环境变量再启动(变量含义见下文[环境变量](#环境变量),都可省略):
@@ -24,10 +24,11 @@ Windows 不需要编译,也不需要安装。步骤:
    .\fluxdown-agent.exe --server
    ```
 
-3. 浏览器打开 `http://localhost:17800/`,在「初始化 FluxDown Server」向导里设置访问密钥(见[首次运行](#首次运行在-web-界面设置访问密钥))。
+3. 浏览器打开 `http://localhost:17800/`,在「欢迎使用 FluxDown」页面设置访问密钥(见[首次运行](#首次运行在-web-界面设置访问密钥))。
 
 几点和 Linux 不同:
 
+- **先决条件:Microsoft Visual C++ 运行库。**压缩包不带 VC++ 运行库。如果进程启动后马上消失,或 Windows 报找不到 `VCRUNTIME140.dll` / 退出码 `0xC0000135`,就是缺它:按上文安装 Redistributable。(下文的计划任务部署里这个故障是无声的:启动脚本只会每 10 秒重试一次。)
 - Windows 发布版的 `fluxdown-agent.exe` 是 GUI 子系统程序:**不弹控制台窗口,也没有控制台日志输出**,PowerShell 里执行完命令会立即返回,服务在后台运行。能否访问以浏览器是否打开得了 `http://localhost:17800/` 为准,进程可在任务管理器或 `Get-Process fluxdown-agent, fluxdownd` 里看到。
 - 默认监听 `[::]:17800`(所有网卡)。要让局域网内其它设备访问,需放行 Windows 防火墙的入站规则(管理员 PowerShell;`-Profile Private` 让公用网络下仍保持关闭):
 
@@ -38,7 +39,7 @@ Windows 不需要编译,也不需要安装。步骤:
   Windows 经常把新网络归为**公用**,此时这条规则不生效,局域网访问会无声失败。先用 `Get-NetConnectionProfile` 确认(看 `NetworkCategory`);若显示 `Public` 且你信任该网络,用 `Set-NetConnectionProfile -InterfaceAlias "<列表里的名称>" -NetworkCategory Private` 改成专用。
 
   只在本机使用时设 `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`。对外暴露前务必先完成访问密钥初始化,见下文[安全地对外暴露](#安全地对外暴露反向代理与-tls)。若同一台机器上还装了 FluxDown 桌面版,请给服务器换一个端口(例如 `$env:FLUXDOWN_BIND = "[::]:17900"`),避免两者在 17800 上冲突。
-- 未设置 `FLUXDOWN_DATA_DIR` 时,数据位置**随运行它的账户而定**,并且分在两处:引擎数据在 `%LOCALAPPDATA%\FluxDown\`,agent 状态(含访问密钥与设备身份)在 `%APPDATA%\zerx\FluxDown\data\agent`。请始终显式设置 `FLUXDOWN_DATA_DIR`(引擎数据在其根目录,agent 状态在 `<根目录>\agent`),这样备份、迁移才不会漏掉东西。
+- 未设置 `FLUXDOWN_DATA_DIR` 时,数据位置**随运行它的账户而定**,并且分在两处:引擎数据在 `%LOCALAPPDATA%\FluxDown\`,agent 状态(含访问密钥与设备身份)在 `%APPDATA%\zerx\FluxDown\data\agent`。请始终显式设置 `FLUXDOWN_DATA_DIR`(引擎数据在其根目录,agent 状态在 `<根目录>\agent`),这样备份、迁移才不会漏掉东西。打算之后改用下文的计划任务时,请让这次试跑使用另一个数据目录,或按下文「已经手动运行过」的步骤处理:首次启动会把数据目录锁给运行它的账户。
 - Windows 没有 `SIGTERM`,而这个程序没有控制台,无法用 Ctrl+C 退出;**停止就是强制结束进程**。先在 Web 界面暂停任务,再在 PowerShell 里执行(按路径过滤,不会误伤本机安装的 FluxDown 桌面版;服务以其它账户运行时请用管理员 PowerShell):
 
   ```powershell
@@ -60,14 +61,22 @@ New-LocalUser -Name fluxdown -Password $cred.Password -PasswordNeverExpires -Use
 Add-LocalGroupMember -Group Users -Member fluxdown
 
 New-Item -ItemType Directory -Force D:\FluxDown\data, D:\Downloads | Out-Null
-icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)M"    # 数据目录:修改权限
+icacls D:\FluxDown\data /setowner fluxdown
+icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)F"    # 数据目录:完全控制
 icacls D:\Downloads     /grant "fluxdown:(OI)(CI)M"    # 保存目录:修改权限
 
 # 服务器目录:只有 SYSTEM 和 Administrators 保留完全控制,fluxdown 账户只有读取和执行
 icacls D:\FluxDown\server /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "fluxdown:(OI)(CI)RX"
 ```
 
-这个账户需要对数据目录和每个下载目录有写权限,对 `D:\FluxDown\server\` 只需读取和执行。上面最后一条 `icacls` 去掉了该目录的权限继承:新建的数据盘根目录通常给 *Authenticated Users* 「修改」权限并向下继承,不收紧的话专用账户(以及任何本地用户)都能改写程序文件。请不要省略。
+这个账户需要对数据目录有**完全控制**权限,对每个下载目录有写权限,对 `D:\FluxDown\server\` 只需读取和执行。数据目录的完全控制不能省:`fluxdownd` 首次启动时会把数据目录收紧为只有运行它的账户可访问(`icacls … /inheritance:r`),这需要「修改权限」这一项,而「修改」权限里没有它;同时把目录所有者交给该账户,则与目录的创建方式无关。缺了它,daemon 起不来,启动脚本每 10 秒重启一次,却没有任何提示。因此启动之后**只有 `fluxdown` 账户能访问数据目录**,备份请在管理员 shell 里进行(被拒绝时先执行 `takeown /f D:\FluxDown\data /r /a`)。服务器目录那条 `icacls` 去掉了该目录的权限继承:新建的数据盘根目录通常给 *Authenticated Users* 「修改」权限并向下继承,不收紧的话专用账户(以及任何本地用户)都能改写程序文件。请不要省略。
+
+**如果已经用这个数据目录手动运行过**(上一节),那次运行已经把 `D:\FluxDown\data` 及其 `agent\` 子目录锁给了试跑用的账户,向导里设置的访问密钥也存放在那里,`fluxdown` 读不到。请先停止进程(用上文的命令),再在管理员 shell 里恢复继承,然后重新执行上面两条 `icacls D:\FluxDown\data`。或者让试跑使用另一个数据目录。
+
+```powershell
+takeown /f D:\FluxDown\data /r /a    # 把所有者改为 Administrators;下面的重置不报拒绝访问时可跳过
+icacls D:\FluxDown\data /reset /T /C
+```
 
 计划任务以「批处理作业」方式登录,这项权限默认只有 Administrators、Backup Operators 和 Performance Log Users 拥有。如果注册或启动任务时报登录错误(`0x80070569`),请把这项权限授予该账户:
 
@@ -98,7 +107,7 @@ goto loop
 
 `start /wait` 让脚本一直等到服务退出,计划任务因此能把它当作「仍在运行」;`ping -n 11` 相当于暂停 10 秒,与 `timeout` 不同,没有控制台时也能工作。
 
-**3. 注册任务**(管理员 PowerShell;开机即启动、不依赖登录、以专用账户的标准权限运行、不限制运行时长、接电池也照常运行、用正常 CPU 优先级而不是计划任务默认的 7(低于正常)):
+**3. 注册任务**(管理员 PowerShell,**与步骤 1 在同一个会话里执行**,因为用到 `$cred`;若是新开的会话,先执行 `$cred = Get-Credential -UserName fluxdown -Message "输入 FluxDown 专用账户的密码"`。开机即启动、不依赖登录、以专用账户的标准权限运行、不限制运行时长、接电池也照常运行、用正常 CPU 优先级而不是计划任务默认的 7(低于正常)):
 
 ```powershell
 $action   = New-ScheduledTaskAction -Execute "D:\FluxDown\server\start-server.cmd"

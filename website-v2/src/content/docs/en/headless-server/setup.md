@@ -11,7 +11,7 @@ For most deployments the prebuilt Docker image is the easiest path — see [Dock
 
 ## Windows: run the prebuilt package
 
-Windows needs neither a build nor an installer. Steps:
+Windows needs no build and no installer for FluxDown itself, but it does need a runtime the zip does not include: install the **Microsoft Visual C++ 2015–2022 Redistributable** first (x64 on x64 hosts, ARM64 on ARM64 hosts) from Microsoft Learn's [Latest supported Visual C++ Redistributable downloads](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) page. A clean Windows lacks it, and both executables exit immediately without it. Then:
 
 1. Download `FluxDown-Server-<version>-windows-x64.zip` from the [download page](/download/) or [GitHub Releases](https://github.com/zerx-lab/FluxDown/releases) (`windows-arm64` on ARM devices). The archive holds one `fluxdown-server-<version>-<platform>\` folder containing `fluxdown-agent.exe` and `fluxdownd.exe`. Move those two files into a fixed folder **without a version number**, such as `D:\FluxDown\server\`, and **keep both in the same directory** (a fixed path means the launcher script and firewall rule below survive upgrades).
 2. In PowerShell, go to that folder, set environment variables, then start the agent (see [Environment variables](#environment-variables); all optional):
@@ -23,10 +23,11 @@ Windows needs neither a build nor an installer. Steps:
    .\fluxdown-agent.exe --server
    ```
 
-3. Open `http://localhost:17800/` in a browser and set the access key in the Initialize FluxDown Server wizard (see [First run](#first-run-set-the-access-key-in-the-web-ui)).
+3. Open `http://localhost:17800/` in a browser and set the access key on the “Welcome to FluxDown” page (see [First run](#first-run-set-the-access-key-in-the-web-ui)).
 
 Differences from Linux:
 
+- **Prerequisite: Microsoft Visual C++ Redistributable.** The zip does not bundle the VC++ runtime. If the processes vanish right after starting, or Windows reports `VCRUNTIME140.dll` not found / exit code `0xC0000135`, it is missing: install the Redistributable as described above. (In the scheduled-task setup below this failure is silent: the launcher script just keeps retrying every 10 seconds.)
 - The Windows release `fluxdown-agent.exe` is a GUI-subsystem program: **no console window and no console log output**; PowerShell returns immediately and the server keeps running in the background. Check that `http://localhost:17800/` opens in a browser, or look for the processes in Task Manager / `Get-Process fluxdown-agent, fluxdownd`.
 - The default bind is `[::]:17800` (all interfaces). To reach it from other devices on the LAN, allow it through Windows Firewall (elevated PowerShell; `-Profile Private` keeps it closed on public networks):
 
@@ -37,7 +38,7 @@ Differences from Linux:
   Windows often classifies a new network as **Public**, where this rule does not apply and LAN access fails silently. Check with `Get-NetConnectionProfile` (look at `NetworkCategory`); if it says `Public` and you trust the network, switch it with `Set-NetConnectionProfile -InterfaceAlias "<name from the list>" -NetworkCategory Private`.
 
   For local-only use, set `$env:FLUXDOWN_BIND = "127.0.0.1:17800"`. Finish access-key setup before exposing it, see [Exposing it safely](#exposing-it-safely-reverse-proxy--tls) below. If the FluxDown desktop app is installed on the same machine, give the server a different port (for example `$env:FLUXDOWN_BIND = "[::]:17900"`) so the two don't collide on 17800.
-- Without `FLUXDOWN_DATA_DIR` the location **depends on the account running it** and is split in two: engine data in `%LOCALAPPDATA%\FluxDown\`, agent state (including the access key and device identity) in `%APPDATA%\zerx\FluxDown\data\agent`. Always set `FLUXDOWN_DATA_DIR` explicitly (engine data goes in its root, agent state in `<root>\agent`), so backups and migrations get everything.
+- Without `FLUXDOWN_DATA_DIR` the location **depends on the account running it** and is split in two: engine data in `%LOCALAPPDATA%\FluxDown\`, agent state (including the access key and device identity) in `%APPDATA%\zerx\FluxDown\data\agent`. Always set `FLUXDOWN_DATA_DIR` explicitly (engine data goes in its root, agent state in `<root>\agent`), so backups and migrations get everything. If you plan to move to the scheduled task below, either use a different data directory for this trial run or follow the "already ran it by hand" steps there: the first start locks the data directory to the account that ran it.
 - Windows has no `SIGTERM`, and this program has no console to press Ctrl+C in, so **stopping means force-ending the processes**. Pause your tasks in the Web UI first, then run this in PowerShell (the path filter leaves a desktop FluxDown install alone; use an elevated shell if the server runs under another account):
 
   ```powershell
@@ -59,14 +60,22 @@ New-LocalUser -Name fluxdown -Password $cred.Password -PasswordNeverExpires -Use
 Add-LocalGroupMember -Group Users -Member fluxdown
 
 New-Item -ItemType Directory -Force D:\FluxDown\data, D:\Downloads | Out-Null
-icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)M"    # data dir: modify
+icacls D:\FluxDown\data /setowner fluxdown
+icacls D:\FluxDown\data /grant "fluxdown:(OI)(CI)F"    # data dir: full control
 icacls D:\Downloads     /grant "fluxdown:(OI)(CI)M"    # save dir: modify
 
 # server dir: only SYSTEM and Administrators keep full control, the fluxdown account gets read & execute
 icacls D:\FluxDown\server /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "fluxdown:(OI)(CI)RX"
 ```
 
-The account needs write access to the data directory and to every download folder, and only read & execute on `D:\FluxDown\server\`. The `icacls` line above removes inheritance on that folder: a freshly created data drive typically gives *Authenticated Users* "Modify" on its root, inherited by every subfolder, which would let the dedicated account (and any other local user) overwrite the program files. Do not skip it.
+The account needs **full control** of the data directory, write access to every download folder, and only read & execute on `D:\FluxDown\server\`. Full control on the data directory is required, not optional: on first start `fluxdownd` locks the data directory down to the account running it (`icacls … /inheritance:r`), which needs the "change permissions" right that "Modify" lacks; owning the folder as well makes that independent of how it was created. Without it the daemon fails to start and the launcher script restarts it every 10 seconds, silently. As a result, once started, **only the `fluxdown` account can access the data directory**; back it up from an elevated shell (use `takeown /f D:\FluxDown\data /r /a` first if access is denied). The server-folder `icacls` line removes inheritance on that folder: a freshly created data drive typically gives *Authenticated Users* "Modify" on its root, inherited by every subfolder, which would let the dedicated account (and any other local user) overwrite the program files. Do not skip it.
+
+**If you already ran the server by hand with this data directory** (the previous section), that run has already locked `D:\FluxDown\data` and its `agent\` subfolder to the account used for the trial, and the access key set in the wizard is stored there, out of reach of `fluxdown`. Stop the processes first (command above), then restore inheritance from an elevated shell and run the two `icacls D:\FluxDown\data` lines above afterwards. Alternatively, use a different data directory for the trial run.
+
+```powershell
+takeown /f D:\FluxDown\data /r /a    # make Administrators the owner; skip if the reset below works without it
+icacls D:\FluxDown\data /reset /T /C
+```
 
 The task logs on as a batch job, a right that by default only Administrators, Backup Operators and Performance Log Users hold. If registering or starting the task fails with a logon error (`0x80070569`), grant the right to the account:
 
@@ -97,7 +106,7 @@ goto loop
 
 `start /wait` keeps the script alive until the server exits, so Task Scheduler sees the task as still running; `ping -n 11` is a 10-second pause that, unlike `timeout`, also works without a console.
 
-**3. Register the task** (elevated PowerShell; starts at boot, no login needed, runs as the dedicated account with standard rights, no run-time limit, keeps running on battery power, normal CPU priority instead of the task default of 7, which is below normal):
+**3. Register the task** (elevated PowerShell, **the same session as step 1** since it uses `$cred`; in a new session run `$cred = Get-Credential -UserName fluxdown -Message "Enter the FluxDown account password"` first. Starts at boot, no login needed, runs as the dedicated account with standard rights, no run-time limit, keeps running on battery power, normal CPU priority instead of the task default of 7, which is below normal):
 
 ```powershell
 $action   = New-ScheduledTaskAction -Execute "D:\FluxDown\server\start-server.cmd"
