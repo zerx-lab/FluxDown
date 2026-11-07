@@ -12,6 +12,8 @@
 //! 错误类型（[`ComponentError`]）与安装底座（[`download_to_file`]/[`fetch_github_json`]）。
 
 mod ffmpeg;
+#[cfg(feature = "components")]
+mod segmented;
 mod ytdlp;
 
 pub use ffmpeg::*;
@@ -374,9 +376,10 @@ pub(crate) async fn fetch_versions_json(
     fetch_github_json_with_mirror(clients, github_url, mirror_base).await
 }
 
-/// 流式下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
+/// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
 /// `progress(downloaded, total)` 上报进度（total=0 未知）。ffmpeg 归档 / yt-dlp
-/// 单二进制安装共用；每 256KB 上报一次避免信号风暴。
+/// 单二进制安装共用；每 256KB 上报一次避免信号风暴。服务器支持 Range 时多段并发、
+/// 单段断点重试，否则单流（见 [`segmented`]，#453）。
 ///
 /// 依次尝试：用户配置的 [`CONFIG_COMPONENT_MIRROR_BASE`] 镜像（675#1，仅 https）→
 /// 统一出口的插件改写地址（[`crate::egress::Egress::route_verified`]，如 GitHub 加速）→
@@ -438,50 +441,8 @@ async fn download_to_file_from(
     dest: &std::path::Path,
     progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<String, ComponentError> {
-    use futures_util::StreamExt;
-    use sha2::{Digest, Sha256};
-    use tokio::io::AsyncWriteExt;
-
     let client = client_for(clients, &attempt.url).await?;
-    let mut request = client.get(&attempt.url).header("User-Agent", "FluxDown");
-    for (name, value) in &attempt.headers {
-        request = request.header(name.as_str(), value.as_str());
-    }
-    let resp = request
-        .send()
-        .await
-        .map_err(|e| ComponentError::Http(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(ComponentError::Http(format!(
-            "download returned {}",
-            resp.status()
-        )));
-    }
-    let total = resp.content_length().unwrap_or(0);
-    let mut file = tokio::fs::File::create(dest)
-        .await
-        .map_err(|e| ComponentError::Io(e.to_string()))?;
-    let mut hasher = Sha256::new();
-    let mut stream = resp.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut last_report: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| ComponentError::Http(e.to_string()))?;
-        hasher.update(&chunk);
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| ComponentError::Io(e.to_string()))?;
-        downloaded += chunk.len() as u64;
-        if downloaded - last_report >= 256 * 1024 || downloaded == total {
-            progress(downloaded, total);
-            last_report = downloaded;
-        }
-    }
-    file.flush()
-        .await
-        .map_err(|e| ComponentError::Io(e.to_string()))?;
-    progress(downloaded, total);
-    Ok(hex::encode(hasher.finalize()))
+    segmented::fetch_to_file(&client, attempt, dest, progress, &segmented::SEGMENT_POLICY).await
 }
 
 /// 组件安装的 HTTP 客户端集合：统一出口按当前全局代理与站点规则装配。

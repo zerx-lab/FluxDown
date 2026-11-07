@@ -242,7 +242,7 @@
   **删除任务不触发自动重下**：单删/批删在同一事务清空 RSS 条目的任务回链，将原 `Downloaded` 改为 `Ignored`（已读），其余处置状态保留；不能退回 `New`，否则下一轮自动抓取会重新派发。提交后仅向受影响订阅广播条目快照及源计数，手动下载仍对任何状态开放。
 
 ### 受管组件子系统（`components/`，`components` feature）
-外部二进制 **ffmpeg + yt-dlp** 的按需安装器/解析器（**不打包**，合规边界——用户在设置「组件」页触发下载）。解析优先级 `manual`（config path）→ `managed`（`<data_dir>/bin/`）→ `system` PATH，wire 为 `ComponentSource{Manual,Managed,System,None}`。ffmpeg = BtbN 静态归档（取单文件，macOS 不支持受管）；yt-dlp = 单平台二进制（全平台）。版本列表经官方镜像 `fluxdown.com/api/components`（旧版客户端用旧域名 `fluxdown.zerx.dev`，两域同源）+ GitHub 兜底。**被两处消费**：插件 `flux.ffmpeg`/`flux.ytdlp` 能力面 + 设置「组件」UI。
+外部二进制 **ffmpeg + yt-dlp** 的按需安装器/解析器（**不打包**，合规边界——用户在设置「组件」页触发下载）。解析优先级 `manual`（config path）→ `managed`（`<data_dir>/bin/`）→ `system` PATH，wire 为 `ComponentSource{Manual,Managed,System,None}`。ffmpeg = BtbN 静态归档（取单文件，macOS 不支持受管）；yt-dlp = 单平台二进制（全平台）。版本列表经官方镜像 `fluxdown.com/api/components`（旧版客户端用旧域名 `fluxdown.zerx.dev`，两域同源）+ GitHub 兜底。**被两处消费**：插件 `flux.ffmpeg`/`flux.ytdlp` 能力面 + 设置「组件」UI。载荷下载（`components/segmented.rs`，#453）：`Range: bytes=0-0` 探测 → 206 且总长已知、未压缩时预分配并按 `SEGMENT_POLICY`（≤4 段、每段 ≥2MiB）并发 Range 写入，单段断流 / 30s 停滞 / 5xx·408·429 从断点退避重试（3 次，2s 起倍增），任一段最终失败整体回退单流；探测回 200 则直接把该响应当单流消费。哈希对落盘文件读回计算，多来源（用户镜像 → 插件改写 → 原址）回退与「不符即删」不变。不进任务列表、不跨安装续传。
 
 ---
 
