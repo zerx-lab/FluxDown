@@ -582,7 +582,7 @@ const en: Record<MessageKey, string> = {
   "options.sniff.maxResources": "Max Resources per Page",
   "options.sniff.maxResourcesDesc":
     "Stop scanning page links after this many items (1–{max}). Very large values may slow down long list pages. Media caught from network requests is not counted.",
-  "options.sites.desc": "Override the global behaviour per site: whether to take over downloads, sniff, show the dot and float button, and where to save. A site entry also applies to its subdomains.",
+  "options.sites.desc": "Override the global behaviour per site: whether to take over downloads, sniff, show the dot and float button, and where to save. A site entry also applies to its subdomains. For private or intranet IPs, enter a CIDR range such as 10.0.0.0/8, 192.168.0.0/16 or fd00::/8; an exact IP entry takes priority over a range, and the longest matching range wins.",
   "options.sites.colHost": "Site",
   "options.sites.colIntercept": "Intercept",
   "options.sites.colSniff": "Sniff",

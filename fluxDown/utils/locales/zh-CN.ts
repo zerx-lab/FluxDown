@@ -566,7 +566,7 @@ const zhCN = {
   "options.sniff.lowConfidenceDesc": "在资源列表中同时显示判断把握较低的项目",
   "options.sniff.maxResources": "单页嗅探上限",
   "options.sniff.maxResourcesDesc": "页面链接扫描到这么多条后停止（1–{max}）。数值过大时长列表页可能变卡；网络请求中嗅探到的媒体不计入。",
-  "options.sites.desc": "为单个站点覆盖全局行为：是否接管下载、是否嗅探、悬浮球与浮钮，以及保存目录。站点配置对其子域同样生效。",
+  "options.sites.desc": "为单个站点覆盖全局行为：是否接管下载、是否嗅探、悬浮球与浮钮，以及保存目录。站点配置对其子域同样生效。内网 / 私有 IP 可填 CIDR 网段，如 10.0.0.0/8、192.168.0.0/16、fd00::/8；精确 IP 优先于网段，多个网段命中时取前缀最长者。",
   "options.sites.colHost": "站点",
   "options.sites.colIntercept": "接管",
   "options.sites.colSniff": "嗅探",
