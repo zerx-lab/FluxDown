@@ -5480,8 +5480,11 @@ fn single_body_error(
             e.kind(),
             format!(
                 "incomplete download: response body ended after {downloaded} of {end} bytes \
-                 declared by the response ({} bytes short): {e}",
-                end - downloaded
+                 declared by the response ({} bytes short): {e}{}",
+                end - downloaded,
+                // 新 io::Error 的 payload 是 String、没有 source；根因链在这里就拼进文案，
+                // 外层 `format_error_chain(src.source())` 不会重复打印。
+                format_error_chain(StdError::source(&e))
             ),
         )),
         _ => DownloadError::Io(e),
@@ -10497,7 +10500,19 @@ mod single_resume_tests {
         raw.extend_from_slice(&body);
         let port = spawn_http(move |_| raw.clone()).await;
         let (res, on_disk) = resume(port, b"", 100, false).await;
-        let message = res.unwrap_err().to_string();
+        let err = res.unwrap_err();
+        let message = err.to_string();
+        // 按落库方式（downloader 单流错误收尾）拼出完整文案：根因链不能丢。
+        let stored = format!(
+            "{message}{}",
+            std::error::Error::source(&err)
+                .map(|s| super::format_error_chain(s.source()))
+                .unwrap_or_default()
+        );
+        assert!(
+            stored.contains("end of file before message length reached"),
+            "{stored}"
+        );
         assert!(message.contains("incomplete download"), "{message}");
         assert!(message.contains("38 of 100 bytes"), "{message}");
         assert!(message.contains("62 bytes short"), "{message}");
@@ -10547,6 +10562,8 @@ mod single_resume_tests {
         assert!(!mid.contains("incomplete"), "{mid}");
         let (_, full) = stall_message(0, 100, Some(100));
         assert!(!full.contains("incomplete"), "{full}");
+        // 已收满声明长度但服务器没关连接：只陈述事实。
+        assert!(full.contains("after 100 body bytes"), "{full}");
     }
 
     #[tokio::test]
