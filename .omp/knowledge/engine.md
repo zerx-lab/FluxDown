@@ -117,6 +117,10 @@
   先建新目录 → 删本任务 librqbit 条目与旧 staging → `set_task_location` + 保存选择并发布位置 →
   `run_bt_download` 以新目录、Path A/S 重跑一轮（不再弹窗）。建目录失败 / 新目录落在旧 staging 内
   均报错、库内位置不变，重试会重新询问。
+- **BT 文件选择的自动默认（#885）**：引擎以 `timeout: None` 询问，等待上限由 daemon `selection.rs::bt_selection_timeout`
+  决定：daemon 配置 `bt_selection_auto_default`（默认开）= 60s 后按默认（全部文件）开始；关闭 = 请求
+  `deadline_unix_ms = SELECTION_NO_DEADLINE`（i64::MAX），只等终局（答复 / 任务暂停删除 / 最后订阅者离开 / 关闭）。
+  四端凭 `has_deadline`（Web `hasSelectionDeadline`，JSON 失真后按 ≥ `MAX_SAFE_INTEGER` 判）隐藏倒计时、不自动答复。
 - **做种交互（对齐 qBittorrent）**（`bt_seeding.rs`）：完成即自动做种（`bt_seed_enabled`，默认开；
   关闭时完成即落 `seeding_status=4` UserStopped）。完成态 BT 任务的「暂停」= 停止做种（1 / 8 → 4），
   「继续」= 恢复做种（2..=7），其余完成态的继续一律忽略（#935）。**达限停止（2 / 3 / 7）的手动继续 =

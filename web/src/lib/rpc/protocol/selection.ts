@@ -84,6 +84,7 @@ export interface SelectionRequestDto {
   kind: SelectionKind;
   /** 超时自动采用的默认选择。 */
   defaultChoice: SelectionOutcome;
+  /** 自动采用默认值的时刻；`SELECTION_NO_DEADLINE`（i64::MAX）= 不自动决定，见 {@link hasSelectionDeadline}。 */
   deadlineUnixMs: number;
 }
 
@@ -91,4 +92,12 @@ export interface SelectionRequestDto {
 export interface SelectionResolutionDto {
   requestId: string;
   outcome: SelectionOutcome;
+}
+
+/**
+ * 是否有自动决定的截止时刻（镜像 Rust `SelectionRequestDto::has_deadline`）。
+ * 「无截止」在 wire 上是 i64::MAX，JSON 解析成 number 后失真，按 ≥ MAX_SAFE_INTEGER 判定。
+ */
+export function hasSelectionDeadline(request: Pick<SelectionRequestDto, 'deadlineUnixMs'>): boolean {
+  return request.deadlineUnixMs < Number.MAX_SAFE_INTEGER
 }

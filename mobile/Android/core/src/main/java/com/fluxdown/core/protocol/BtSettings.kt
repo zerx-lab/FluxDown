@@ -26,6 +26,7 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
     MseMode("mseMode", BtSettingsTab.General, "bt_mse_mode"),
     PieceOrder("pieceOrder", BtSettingsTab.General, "bt_piece_order"),
     FirstLastPiecesFirst("firstLastPiecesFirst", BtSettingsTab.General, "bt_first_last_pieces_first"),
+    SelectionAutoDefault("selectionAutoDefault", BtSettingsTab.General, "bt_selection_auto_default"),
     CustomTrackers("customTrackers", BtSettingsTab.Tracker, "bt_custom_trackers"),
     TrackerSub("trackerSub", BtSettingsTab.Tracker, "bt_tracker_sub_enabled"),
     TrackerSubUrls("trackerSubUrls", BtSettingsTab.Tracker, "bt_tracker_sub_urls"),

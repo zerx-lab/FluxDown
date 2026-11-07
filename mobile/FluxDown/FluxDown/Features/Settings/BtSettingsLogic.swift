@@ -26,7 +26,7 @@ nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
 /// 做种「时长 + 单位」两个 PC 行在移动端合成一行（各自仍写回两个键）。
 nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     case enabled
-    case dht, upnp, utp, portStart, portEnd, mseMode, pieceOrder, firstLastPiecesFirst
+    case dht, upnp, utp, portStart, portEnd, mseMode, pieceOrder, firstLastPiecesFirst, selectionAutoDefault
     case customTrackers, trackerSub, trackerSubUrls, trackerSubStatus
     case seedEnabled, seedMaxActive, autoReseed, seedRatio, seedPostRatio
     case seedTimeLimit, seedInactiveTimeLimit, seedOperator, seedThenAction
@@ -35,7 +35,8 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
 
     var tab: BtSettingsTab {
         switch self {
-        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode, .pieceOrder, .firstLastPiecesFirst: .general
+        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode, .pieceOrder, .firstLastPiecesFirst,
+             .selectionAutoDefault: .general
         case .customTrackers, .trackerSub, .trackerSubUrls, .trackerSubStatus: .tracker
         default: .seeding
         }
@@ -52,6 +53,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .mseMode: "bt_mse_mode"
         case .pieceOrder: "bt_piece_order"
         case .firstLastPiecesFirst: "bt_first_last_pieces_first"
+        case .selectionAutoDefault: "bt_selection_auto_default"
         case .customTrackers: "bt_custom_trackers"
         case .trackerSub: "bt_tracker_sub_enabled"
         case .trackerSubUrls: "bt_tracker_sub_urls"
@@ -97,6 +99,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .mseMode: "btMseMode"
         case .pieceOrder: "btPieceOrder"
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefault"
+        case .selectionAutoDefault: "btSelectionAutoDefault"
         case .customTrackers: "btTrackerList"
         case .trackerSub: "btTrackerSub"
         case .trackerSubUrls: "btTrackerSubUrls"
@@ -124,6 +127,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .mseMode: "btMseModeDesc"
         case .pieceOrder: "btPieceOrderDesc"
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefaultDesc"
+        case .selectionAutoDefault: "btSelectionAutoDefaultDesc"
         case .customTrackers: "btTrackerListDesc"
         case .trackerSub: "btTrackerSubDesc"
         case .trackerSubUrls: "btTrackerSubUrlsDesc"

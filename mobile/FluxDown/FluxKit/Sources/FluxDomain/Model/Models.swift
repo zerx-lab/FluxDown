@@ -338,7 +338,7 @@ public struct RuntimeStats: Sendable, Hashable {
     }
 }
 
-/// 引擎发起的选择请求（X1–X3），到期按 `defaultChoice` 处理。
+/// 引擎发起的选择请求（X1–X3），到期按 `defaultChoice` 处理；`noDeadline` = 不自动处理。
 public struct SelectionRequest: Sendable, Hashable, Identifiable {
     public var requestId: String
     public var taskId: String
@@ -361,6 +361,12 @@ public struct SelectionRequest: Sendable, Hashable, Identifiable {
     }
 
     public var id: String { requestId }
+
+    /// 「无截止」（protocol `SELECTION_NO_DEADLINE` = i64::MAX）：用户关闭了 BT 选择的自动选择默认项。
+    public static let noDeadline: Int64 = .max
+
+    /// 有自动按默认项处理的截止时刻（否则不显示倒计时、不自动答复）。
+    public var hasDeadline: Bool { deadlineUnixMs != Self.noDeadline }
 }
 
 public enum SelectionKind: Sendable, Hashable {

@@ -117,11 +117,14 @@ final class SelectionResolver {
 // MARK: - 共用 UI
 
 /// 倒计时基准：首次出现时固定 `total`，环按 deadline 重算（重建视图不会重置）。
+/// `enabled == false`：请求无截止（用户关闭了自动选择默认项），不显示倒计时、不自动答复。
 struct SelectionTiming {
     let deadline: Date
     let total: TimeInterval
+    let enabled: Bool
 
     init(_ request: SelectionRequest) {
+        enabled = request.hasDeadline
         deadline = Date(timeIntervalSince1970: TimeInterval(request.deadlineUnixMs) / 1000)
         total = max(deadline.timeIntervalSinceNow, 1)
     }
@@ -159,22 +162,24 @@ struct SelectionBar<Primary: View>: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .bottomBar) {
-            HStack(spacing: 8) {
-                CountdownRing(
-                    deadline: timing.deadline,
-                    total: timing.total,
-                    label: { L("selectionAutoDefaultIn", ["seconds": $0]) },
-                    onExpire: onExpire
-                )
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    let seconds = max(0, Int(timing.deadline.timeIntervalSince(context.date).rounded(.up)))
-                    Text(L("selectionAutoDefaultIn", ["seconds": seconds]))
-                        .font(.footnote)
-                        .monospacedDigit()
-                        .lineLimit(2)
-                        .foregroundStyle(seconds <= 5 ? Color.fdStatusWarningText : Color.secondary)
+            if timing.enabled {
+                HStack(spacing: 8) {
+                    CountdownRing(
+                        deadline: timing.deadline,
+                        total: timing.total,
+                        label: { L("selectionAutoDefaultIn", ["seconds": $0]) },
+                        onExpire: onExpire
+                    )
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let seconds = max(0, Int(timing.deadline.timeIntervalSince(context.date).rounded(.up)))
+                        Text(L("selectionAutoDefaultIn", ["seconds": seconds]))
+                            .font(.footnote)
+                            .monospacedDigit()
+                            .lineLimit(2)
+                            .foregroundStyle(seconds <= 5 ? Color.fdStatusWarningText : Color.secondary)
+                    }
+                    .accessibilityHidden(true)
                 }
-                .accessibilityHidden(true)
             }
         }
         ToolbarSpacer(.flexible, placement: .bottomBar)

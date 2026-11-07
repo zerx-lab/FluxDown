@@ -180,14 +180,22 @@ data class RuntimeStats(
     val retryPendingTasks: Int = 0,
 )
 
-/** 引擎发起的选择请求（X1–X3），到期按 [defaultChoice] 处理。 */
+/** 引擎发起的选择请求（X1–X3），到期按 [defaultChoice] 处理；[NO_DEADLINE] = 不自动处理。 */
 data class SelectionRequest(
     val requestId: String,
     val taskId: String,
     val kind: SelectionKind,
     val defaultChoice: SelectionOutcome,
     val deadlineUnixMs: Long,
-)
+) {
+    /** 有自动按默认项处理的截止时刻（否则不显示倒计时、不自动答复）。 */
+    val hasDeadline: Boolean get() = deadlineUnixMs != NO_DEADLINE
+
+    companion object {
+        /** 「无截止」（protocol `SELECTION_NO_DEADLINE` = i64::MAX）：用户关闭了 BT 选择的自动选择默认项。 */
+        const val NO_DEADLINE: Long = Long.MAX_VALUE
+    }
+}
 
 sealed interface SelectionKind {
     data class Hls(val options: List<HlsOption>) : SelectionKind
