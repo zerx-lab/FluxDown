@@ -90,19 +90,23 @@ impl NotifyFeed {
     }
 }
 
-/// daemon 事件进入 agent 的唯一分流点：`TaskNotice` 只交给云端推送与（桌面宿主的）提示音，
-/// 其余照常并入 agent 事件流。
+/// daemon 事件进入 agent 的唯一分流点：`TaskNotice` 只交给云端推送与（桌面宿主的）提示音 /
+/// 失败通知，其余照常并入 agent 事件流。
 /// 因此 UI 订阅者永远看不到 `TaskNotice`（其载荷含任务元数据，是否上报由本机开关决定）。
 pub(crate) fn route_daemon_event(
     events: &AgentEventHub,
     notices: &NoticeSender,
     sounds: Option<&crate::sound::SoundSender>,
+    failures: Option<&crate::failure_notice::FailureSender>,
     event: fluxdown_protocol::DaemonEvent,
 ) {
     match event {
         fluxdown_protocol::DaemonEvent::TaskNotice(notice) => {
             if let Some(sounds) = sounds {
                 crate::sound::offer(sounds, &notice);
+            }
+            if let Some(failures) = failures {
+                crate::failure_notice::offer(failures, &notice);
             }
             if let Err(error) = notices.try_send(notice) {
                 tracing::warn!(error = %error, "cloud notify intake unavailable; dropped a task notice");

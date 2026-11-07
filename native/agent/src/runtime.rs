@@ -258,21 +258,32 @@ async fn run_agent(
     // 提示音只在桌面宿主播放：headless server 没有「本机用户」，不发声。
     let (sound_tx, sound_task) =
         crate::sound::start(events.clone(), cancel.clone(), server.is_none());
+    // 失败通知同样只在桌面宿主发：headless server 没有「本机用户」，也没有对应设置项。
+    let (failure_tx, failure_rx) = if server.is_none() {
+        let (tx, rx) = crate::failure_notice::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let event_task = spawn_daemon_projection(
         daemon_events,
         events.clone(),
         notice_tx,
         sound_tx,
+        failure_tx,
         cancel.clone(),
     );
     let notifier = Arc::new(crate::notification::Notifier::new(
         paths.agent_data_dir.clone(),
     ));
-    let effects_task = tokio::spawn(
+    let effects =
         crate::background_effects::BackgroundEffects::new(events.clone(), notifier.clone())
-            .with_completion_sound(server.is_none())
-            .run(cancel.clone()),
-    );
+            .with_completion_sound(server.is_none());
+    let effects = match failure_rx {
+        Some(failure_rx) => effects.with_failure_notices(failure_rx),
+        None => effects,
+    };
+    let effects_task = tokio::spawn(effects.run(cancel.clone()));
 
     let shared_state = Arc::new(tokio::sync::Mutex::new(state));
     // 局域网直连（L1）：先建服务，legacy 迁移完成后由 readiness 任务 `start`；
@@ -765,6 +776,7 @@ pub(crate) fn spawn_daemon_projection(
     events: AgentEventHub,
     notices: crate::cloud_notify::NoticeSender,
     sounds: Option<crate::sound::SoundSender>,
+    failures: Option<crate::failure_notice::FailureSender>,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -783,7 +795,7 @@ pub(crate) fn spawn_daemon_projection(
                         }
                         DaemonClientEvent::Event(frame) => {
                             if let ServiceEvent::Daemon(event) = frame.event {
-                                crate::cloud_notify::route_daemon_event(&events, &notices, sounds.as_ref(), event);
+                                crate::cloud_notify::route_daemon_event(&events, &notices, sounds.as_ref(), failures.as_ref(), event);
                             }
                         }
                         DaemonClientEvent::Stale => {
