@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fluxdown_protocol::{CreateGroupRequest, CreateTaskRequest, GroupItemRequest, PreviewItemDto};
 
+use super::view_prefs::natural_cmp;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ManifestStat {
     pub count: usize,
@@ -346,7 +348,13 @@ impl ManifestSelection {
             self.row_files
                 .extend((0..self.items.len()).filter(|index| self.visible[*index]));
         } else {
-            for &child in self.directories[self.cwd].children.values() {
+            let mut children: Vec<(&str, usize)> = self.directories[self.cwd]
+                .children
+                .iter()
+                .map(|(name, child)| (name.as_str(), *child))
+                .collect();
+            children.sort_by(|(left, _), (right, _)| natural_cmp(left, right));
+            for (_, child) in children {
                 if self.stats[child].count == 0 {
                     continue;
                 }
@@ -383,9 +391,7 @@ impl ManifestSelection {
         let sizes = &self.sizes;
         self.row_files.sort_by(|a, b| {
             let name = || {
-                items[*a]
-                    .name
-                    .cmp(&items[*b].name)
+                natural_cmp(&items[*a].name, &items[*b].name)
                     .then_with(|| items[*a].id.cmp(&items[*b].id))
             };
             match self.sort {

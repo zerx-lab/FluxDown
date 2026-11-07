@@ -8,8 +8,10 @@
 // v1.6 裁决：画质规格策略（variants）不在本弹窗——resolverItem 恒为 `item.id`（不带 `@variantId`），
 // 规格选择留给插件默认档。
 //
-// 排序说明：目录名/文件名排序用普通字符串比较（UTF-16 code unit 序），非 locale-aware collation。
+// 排序说明：目录名/文件名按自然序（连续数字段按数值比较，`2 < 10`，与 GPUI `natural_cmp` 一致），
+// 不做大小写折叠，非 locale-aware collation。
 
+import { compareNatural } from '../model/viewPrefs'
 import type { GroupItemRequest, PreviewItemDto } from '../../../lib/rpc'
 
 // =============================================================================
@@ -180,10 +182,15 @@ function fileSizeRank(item: PreviewItemDto): number {
   return item.size === 0 ? -1 : item.size
 }
 
+/** 与 GPUI `natural_cmp` 同义：数字段按数值比较，各段等价（`a01` / `a1`）时按原串定序。 */
+function compareNaturalName(a: string, b: string): number {
+  return compareNatural(a, b) || (a < b ? -1 : a > b ? 1 : 0)
+}
+
 function sortFiles(files: PreviewItemDto[], key: ManifestSortKey): PreviewItemDto[] {
   const list = [...files]
   if (key === 'size') list.sort((a, b) => fileSizeRank(b) - fileSizeRank(a))
-  else list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  else list.sort((a, b) => compareNaturalName(a.name, b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   return list
 }
 
@@ -216,7 +223,7 @@ export function manifestRowsAt({ items, cwd, selectedItemIds, extFilter, search,
   }
 
   const rows: ManifestRow[] = []
-  const dirNames = [...node.dirs.keys()].sort()
+  const dirNames = [...node.dirs.keys()].sort(compareNaturalName)
   for (const name of dirNames) {
     let childPath = effectiveCwd === '' ? name : `${effectiveCwd}/${name}`
     let child = node.dirs.get(name)!
