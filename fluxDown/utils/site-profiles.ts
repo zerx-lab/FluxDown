@@ -6,6 +6,8 @@
  * 存储于 `storage.local` 的 `fluxdown_site_profiles`（`Record<host, SiteProfile>`）。
  */
 import { browser } from "wxt/browser";
+import { cidrContains, formatCidr, looksLikeCidr, parseCidr, parseIp } from "./cidr";
+import type { Cidr } from "./cidr";
 import { normalizeDomain } from "./domain-exclusion";
 
 export const SITE_PROFILES_KEY = "fluxdown_site_profiles";
@@ -48,12 +50,25 @@ export function parseSiteProfile(value: unknown): SiteProfile | null {
   };
 }
 
-/** 归一化整张表：key 经 normalizeDomain，非法项丢弃。 */
+/**
+ * 站点配置 key 归一化：合法 CIDR（`10.0.0.0/8`、`fd00::/8`）转规范网络地址写法，
+ * 其余按 normalizeDomain；形如 CIDR 但非法（`10.0.0.0/33`）返回 null，不退化成域名。
+ */
+export function normalizeSiteKey(input: string): string | null {
+  const text = input.trim().toLowerCase();
+  if (!text.includes("://") && looksLikeCidr(text)) {
+    const cidr = parseCidr(text);
+    return cidr ? formatCidr(cidr) : null;
+  }
+  return normalizeDomain(text);
+}
+
+/** 归一化整张表：key 经 normalizeSiteKey，非法项丢弃。 */
 export function parseSiteProfiles(raw: unknown): Record<string, SiteProfile> {
   const out: Record<string, SiteProfile> = {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw)) {
-    const host = normalizeDomain(key);
+    const host = normalizeSiteKey(key);
     const profile = parseSiteProfile(value);
     if (host && profile) out[host] = profile;
   }
@@ -65,9 +80,9 @@ export async function loadSiteProfiles(): Promise<Record<string, SiteProfile>> {
   return parseSiteProfiles(stored[SITE_PROFILES_KEY]);
 }
 
-/** 写入（或 `null` 删除）一个 host 的配置；host 经 normalizeDomain，非法时抛错。 */
+/** 写入（或 `null` 删除）一个 host / CIDR 网段的配置；key 经 normalizeSiteKey，非法时抛错。 */
 export async function saveSiteProfile(host: string, p: SiteProfile | null): Promise<void> {
-  const key = normalizeDomain(host);
+  const key = normalizeSiteKey(host);
   if (!key) throw new Error(`invalid host: ${host}`);
   const profiles = await loadSiteProfiles();
   if (p === null) {
@@ -84,7 +99,8 @@ export async function saveSiteProfiles(profiles: Record<string, SiteProfile>): P
 }
 
 /**
- * 取 host 生效的配置：所有满足 `h === k || h.endsWith("." + k)` 的 key 中最长者；
+ * 取 host 生效的配置。域名 host：所有满足 `h === k || h.endsWith("." + k)` 的 key 中最长者。
+ * IP 字面量 host：精确 key > 包含它的最长前缀 CIDR key > 域名后缀 key。
  * 无命中返回默认配置与 `key: null`。
  */
 export function profileFor(
@@ -93,10 +109,22 @@ export function profileFor(
 ): { key: string | null; profile: SiteProfileFields } {
   const h = normalizeDomain(host);
   if (!h) return { key: null, profile: DEFAULT_SITE_PROFILE };
-  let best: string | null = null;
-  for (const k of Object.keys(profiles)) {
-    if ((h === k || h.endsWith(`.${k}`)) && (best === null || k.length > best.length)) {
-      best = k;
+  const keys = Object.keys(profiles);
+  let best: string | null = Object.hasOwn(profiles, h) ? h : null;
+  const ip = best === null ? parseIp(h) : null;
+  if (ip) {
+    let bestCidr: Cidr | null = null;
+    for (const k of keys) {
+      const cidr = parseCidr(k);
+      if (cidr && cidrContains(cidr, ip) && (bestCidr === null || cidr.prefix > bestCidr.prefix)) {
+        best = k;
+        bestCidr = cidr;
+      }
+    }
+  }
+  if (best === null) {
+    for (const k of keys) {
+      if (h.endsWith(`.${k}`) && (best === null || k.length > best.length)) best = k;
     }
   }
   if (best === null) return { key: null, profile: DEFAULT_SITE_PROFILE };
