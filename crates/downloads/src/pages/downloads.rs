@@ -524,12 +524,16 @@ impl DownloadView {
     }
 
     /// 「新建下载」表单的环境快照：保存目录 / 默认队列 / 线程数初值与队列候选；
-    /// 队列优先侧栏当前筛选（规则见 [`build_new_download_context`]）。
+    /// 队列、「下载到」设备优先侧栏当前筛选（规则见 [`build_new_download_context`]）。
     #[must_use]
     pub fn new_download_context(&self) -> NewDownloadContext {
         let controller = &self.controller;
         let selected_queue = match &self.selected_item {
             SidebarSelection::Queue(queue_id) => Some(queue_id.as_str()),
+            _ => None,
+        };
+        let selected_device = match &self.selected_item {
+            SidebarSelection::Device(id) => Some(id.as_str()),
             _ => None,
         };
         build_new_download_context(
@@ -538,6 +542,7 @@ impl DownloadView {
             controller.preferences(),
             controller.queues(),
             selected_queue,
+            selected_device,
             controller.other_devices(),
         )
     }
