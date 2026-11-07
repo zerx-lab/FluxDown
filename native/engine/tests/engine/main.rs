@@ -37,6 +37,7 @@ mod plugin_ytdlp;
 mod plugin_ytdlp_ffmpeg;
 mod post_only;
 mod proxy_rules;
+mod proxy_switch;
 mod realtest;
 mod rss_pipeline;
 mod site_auth_flow;

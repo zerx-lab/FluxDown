@@ -701,6 +701,18 @@ fn is_ed2k_url(url: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ed2k://"))
 }
 
+/// 两份全局代理配置的出口是否相同（站点规则不计：规则单独变化走
+/// [`DownloadManager::set_proxy_rules`]，不重建运行中任务的连接）。
+fn same_global_egress(a: &ProxyConfig, b: &ProxyConfig) -> bool {
+    a.mode == b.mode
+        && a.proxy_type == b.proxy_type
+        && a.host == b.host
+        && a.port == b.port
+        && a.username == b.username
+        && a.password == b.password
+        && a.no_proxy_list == b.no_proxy_list
+}
+
 /// 本构建是否会因 eD2K 被编译期剔除而拒绝该新建任务（含解出 ed2k 地址的
 /// thunder 链接）。有 `ed2k` feature 时恒为 `false`。
 ///
@@ -5906,11 +5918,15 @@ impl DownloadManager {
     }
 
     /// Update proxy configuration.  Rebuilds the shared HTTP client so that
-    /// all **new** downloads use the updated proxy settings.  Already-running
-    /// downloads keep their existing client and are unaffected.
+    /// all **new** downloads use the updated proxy settings.
+    ///
+    /// 全局出口确有变化时（模式 / 端点 / 凭据 / 直连名单，不含站点规则），运行中且
+    /// 跟随全局代理的 HTTP / FTP 任务会被静默**暂停 → 恢复**以按新出口重建连接
+    /// （进度保留，同 [`Self::set_task_segments`]）；任务级固定代理、BT 与 eD2K
+    /// 任务不动。出口未变的重复保存不打断任何任务。
     ///
     /// Returns `Err` if the new client cannot be built (e.g. invalid SOCKS URL).
-    pub fn set_proxy_config(
+    pub async fn set_proxy_config(
         &mut self,
         config: ProxyConfig,
     ) -> Result<(), downloader::DownloadError> {
@@ -5922,6 +5938,7 @@ impl DownloadManager {
             config.port,
         );
         let new_client = downloader::build_client(&config, &self.global_user_agent)?;
+        let egress_changed = !same_global_egress(&self.proxy_config, &config);
         self.client = new_client;
         self.invalidate_system_client();
         self.proxy_config = config;
@@ -5945,7 +5962,50 @@ impl DownloadManager {
         self.auto_failover_pending.clear();
         self.auto_failover_attempts.clear();
         crate::route_health::clear_all(&self.db);
+        if egress_changed {
+            self.reconnect_global_proxy_tasks().await;
+        }
         Ok(())
+    }
+
+    /// 让运行中、跟随全局代理的任务按当前全局出口重建连接（[`Self::set_proxy_config`]
+    /// 调用）。只处理已 spawn 下载器的活跃任务：排队中、等待重试、off-actor 解析中的
+    /// 任务起跑时本就按新出口构建 client。
+    async fn reconnect_global_proxy_tasks(&mut self) {
+        let running: Vec<String> = self
+            .active_tasks
+            .iter()
+            .filter(|(_, entry)| entry.handle.is_some() && !entry.is_bt)
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+        for task_id in running {
+            let task = match self.db.load_task_by_id(&task_id).await {
+                Ok(Some(task)) => task,
+                Ok(None) => continue,
+                Err(error) => {
+                    crate::logger::report_error(
+                        "download-manager",
+                        "load task for proxy reconnect",
+                        &error,
+                    );
+                    continue;
+                }
+            };
+            if !task.proxy_url.is_empty()
+                || is_bt_url(&task.url)
+                || is_ed2k_url(&task.url)
+                || !matches!(task.status, 1 | 5)
+            {
+                continue;
+            }
+            log_info!(
+                "[manager] task {} 跟随全局代理，按新出口重建连接（进度保留）",
+                task_id
+            );
+            // 静默暂停保留槽位，随后的恢复在旧 writer 退出（TaskDone）后起飞。
+            self.pause_task_keep_slot(&task_id).await;
+            self.resume_task(&task_id).await;
+        }
     }
 
     /// 只替换站点代理规则（`proxy_rules` 单独变化时）。全局出口不变，因此**不**

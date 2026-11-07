@@ -2399,6 +2399,7 @@ async fn apply_live_config<'a>(
             .set_proxy_config(fluxdown_engine::proxy_config::ProxyConfig::from_config_map(
                 all,
             ))
+            .await
             .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     } else if keys.contains(&rules_key) {
         engine.manager.set_proxy_rules(
