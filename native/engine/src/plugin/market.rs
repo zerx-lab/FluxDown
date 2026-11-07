@@ -143,7 +143,7 @@ pub struct MarketClient {
     manager: std::sync::Arc<PluginManager>,
     db: Db,
     clients: crate::egress::RoutedClients,
-    /// 包下载专用：重定向逐跳复查 https 与字面量 IP 守卫（初始 URL 的
+    /// 包下载与索引的镜像尝试专用：重定向逐跳复查 https 与字面量 IP 守卫（初始 URL 的
     /// `mirror_url_allowed` 只管第一跳）。
     download_clients: crate::egress::RoutedClients,
     /// 宿主自身下载的统一出口：包（content_hash 钉住）可经插件改写来源（如 GitHub 加速）。
@@ -228,44 +228,58 @@ impl MarketClient {
         Err(last_err)
     }
 
-    /// 先试用户配置的 GitHub 镜像（`component_mirror_base`，#847），任何失败（网络、
-    /// 非 2xx、超限、解析）或镜像返回旧索引（sequence 低于本地高水位，反代缓存常见）都
-    /// 回退原地址，不让镜像故障或陈旧缓存拖垮索引加载。原地址返回的回退仍由
-    /// `fetch_index` 的防回滚判定作为硬错误处理。
+    /// 索引是完整性锚（包 `content_hash`、下载地址、授权展示的 permissions 都来自它），
+    /// 所以先直连原地址，只有失败（网络 / 非 2xx / 超限 / 解析）才试用户配置的 GitHub
+    /// 镜像（`component_mirror_base`，#847；与组件校验和 `fetch_expected_sha256` 同序）。
+    /// 镜像这次尝试走带重定向守卫的 `download_clients`，且镜像返回旧索引（sequence 低于
+    /// 本地高水位，反代缓存常见）视为镜像失败。原地址返回的回退仍由 `fetch_index` 的
+    /// 防回滚判定作为硬错误处理。
     async fn fetch_index_from(
         &self,
         url: &str,
         mirror_base: &str,
     ) -> Result<MarketIndex, MarketError> {
-        if let Some(mirrored) = user_mirror_url(url, mirror_base)
-            && mirror_url_allowed(&mirrored)
-        {
-            match self.fetch_index_url(&mirrored).await {
+        let mut last_err = None;
+        for attempt in index_attempts(url, mirror_base) {
+            let is_mirror = attempt != url;
+            let clients = if is_mirror {
+                &self.download_clients
+            } else {
+                &self.clients
+            };
+            match self.fetch_index_url(clients, &attempt).await {
+                Ok(idx) if !is_mirror => return Ok(idx),
                 Ok(idx) => {
                     let watermark = self.read_watermark(&idx.index_id).await?;
                     if mirror_index_acceptable(idx.sequence, watermark) {
                         return Ok(idx);
                     }
                     log_warn!(
-                        "[market] index mirror={} is stale (sequence {} < watermark {}), falling back to {}",
-                        safe_url(&mirrored),
+                        "[market] index mirror={} is stale (sequence {} < watermark {}), ignoring",
+                        safe_url(&attempt),
                         idx.sequence,
-                        watermark,
-                        safe_url(url)
+                        watermark
                     );
                 }
-                Err(error) => log_warn!(
-                    "[market] index mirror={} failed, falling back to {}: {error:#}",
-                    safe_url(&mirrored),
-                    safe_url(url)
-                ),
+                Err(error) => {
+                    log_warn!(
+                        "[market] index {}={} failed: {error:#}",
+                        if is_mirror { "mirror" } else { "source" },
+                        safe_url(&attempt)
+                    );
+                    last_err = Some(error);
+                }
             }
         }
-        self.fetch_index_url(url).await
+        Err(last_err.unwrap_or(MarketError::AllMirrorsFailed))
     }
 
-    async fn fetch_index_url(&self, url: &str) -> Result<MarketIndex, MarketError> {
-        let client = self.clients.client(url).await.map_err(client_build_error)?;
+    async fn fetch_index_url(
+        &self,
+        clients: &crate::egress::RoutedClients,
+        url: &str,
+    ) -> Result<MarketIndex, MarketError> {
+        let client = clients.client(url).await.map_err(client_build_error)?;
         let mut resp = client.get(url).send().await.map_err(network_error)?;
         if !resp.status().is_success() {
             return Err(MarketError::Network(format!(
@@ -664,9 +678,18 @@ fn user_mirror_url(url: &str, mirror_base: &str) -> Option<String> {
 }
 
 /// 镜像返回的索引是否可接受：sequence 不低于本地高水位。镜像（GitHub 反代）常缓存旧
-/// 文件，旧索引不是攻击证据，应回退原地址；原地址返回的回退才是硬错误。
+/// 文件，旧索引不是攻击证据，应忽略并保留直连的结果；直连返回的回退才是硬错误。
 fn mirror_index_acceptable(sequence: u64, watermark: u64) -> bool {
     sequence >= watermark
+}
+
+/// 索引源 `url` 的请求顺序：先直连原地址（索引是完整性锚，不让第三方镜像先于上游），
+/// 仅直连失败才轮到用户 GitHub 镜像（`component_mirror_base`，#847；与组件校验和同序）。
+/// 镜像地址须适用（https、GitHub 前缀）并过 [`mirror_url_allowed`]。
+fn index_attempts(url: &str, mirror_base: &str) -> Vec<String> {
+    let mut attempts = vec![url.to_string()];
+    attempts.extend(user_mirror_url(url, mirror_base).filter(|m| mirror_url_allowed(m)));
+    attempts
 }
 
 /// 插件包单个镜像地址的请求顺序：用户 GitHub 镜像（#847，仅适用时）→ 插件改写（`route`
@@ -730,15 +753,47 @@ fn parsed_url_allowed(parsed: &url::Url) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        MarketError, MarketIndex, check_expected_version, mirror_index_acceptable,
+        MarketError, MarketIndex, check_expected_version, index_attempts, mirror_index_acceptable,
         mirror_url_allowed, package_attempts, safe_error_chain, safe_url, sha256_hex,
         user_mirror_url,
     };
     use crate::egress::EgressAttempt;
 
     #[test]
+    fn index_attempts_direct_first_then_mirror() {
+        let raw = super::DEFAULT_INDEX_SOURCES[0];
+        // 完整性锚：直连在前、镜像在后。
+        assert_eq!(
+            index_attempts(raw, MIRROR),
+            vec![
+                raw.to_string(),
+                "https://gh.example.com/gh/zerx-lab/fluxdown-plugin-index/raw/main/index.json"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn index_attempts_direct_only_when_mirror_not_applicable() {
+        let raw = super::DEFAULT_INDEX_SOURCES[0];
+        let jsdelivr = super::DEFAULT_INDEX_SOURCES[1];
+        // 未配置 / http 镜像 / 非 GitHub 源：只有直连。
+        assert_eq!(index_attempts(raw, ""), vec![raw.to_string()]);
+        assert_eq!(
+            index_attempts(raw, "http://gh.example.com"),
+            vec![raw.to_string()]
+        );
+        assert_eq!(index_attempts(jsdelivr, MIRROR), vec![jsdelivr.to_string()]);
+        // 镜像基址指向环回 / 内网字面量 IP：过 URL 守卫被剔除。
+        assert_eq!(
+            index_attempts(raw, "https://127.0.0.1:8443/gh"),
+            vec![raw.to_string()]
+        );
+    }
+
+    #[test]
     fn mirror_index_acceptable_only_when_not_below_watermark() {
-        // 镜像缓存了旧索引（seq 3 < 高水位 5）→ 不接受，回退原地址。
+        // 镜像缓存了旧索引（seq 3 < 高水位 5）→ 不接受。
         assert!(!mirror_index_acceptable(3, 5));
         // 持平（同版本重复拉取）与更新均接受；首次（高水位 0）接受。
         assert!(mirror_index_acceptable(5, 5));
