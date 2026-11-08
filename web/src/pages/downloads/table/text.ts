@@ -127,9 +127,10 @@ export function statusDetail(t: Translate, view: DownloadTaskView): string | nul
 /**
  * 宽松密度文件名列副标题（移植 task_table.rs 的 `relaxed_meta`，旧 Flutter 默认布局）：已完成为
  * 「大小 · 类别 · 站点」；未完成为「已下 / 总量 [· 速度（仅下载中且 > 0）] · 站点」（总量未知只给已下）。
- * 未知字段直接省略；百分比与剩余时间在独立列里，不在这里重复。
+ * 未知字段直接省略；百分比与剩余时间在独立列里，不在这里重复。`hideSource`（设置「隐藏任务来源」）
+ * 为真时去掉站点，其余字段保留。
  */
-export function relaxedMeta(t: Translate, view: DownloadTaskView): string {
+export function relaxedMeta(t: Translate, view: DownloadTaskView, hideSource = false): string {
   const parts: string[] = []
   if (view.state === 'completed') {
     if (view.sizeBytes > 0) parts.push(formatBytes(view.sizeBytes))
@@ -138,8 +139,27 @@ export function relaxedMeta(t: Translate, view: DownloadTaskView): string {
     parts.push(bytesProgress(view))
     if (view.state === 'downloading' && view.speed !== null && view.speed > 0) parts.push(`${formatBytes(view.speed)}/s`)
   }
-  const site = sourceSite(view)
+  const site = shownSourceSite(view, hideSource)
   if (site !== '') parts.push(site)
   return parts.join(' · ')
+}
+
+/** 副标题里展示的来源站点：用户选择隐藏来源（设置「隐藏任务来源」）时为空串（对应 GPUI `shown_source_site`）。 */
+export function shownSourceSite(view: DownloadTaskView, hideSource: boolean): string {
+  return hideSource ? '' : sourceSite(view)
+}
+
+/** 非宽松密度文件名列副标题：「类别 · 站点」，隐藏来源时只留类别（对应 GPUI `file_cell_meta`）。 */
+export function fileCellMeta(t: Translate, view: DownloadTaskView, hideSource: boolean): string {
+  const category = kindLabel(t, view.kind)
+  const site = shownSourceSite(view, hideSource)
+  return site === '' ? category : `${category} · ${site}`
+}
+
+/** 移动端卡片副标题：类别 · 站点 · 大小，空字段省略；隐藏来源时去掉站点。 */
+export function cardMeta(t: Translate, view: DownloadTaskView, hideSource: boolean): string {
+  return [kindLabel(t, view.kind), shownSourceSite(view, hideSource), view.sizeBytes > 0 ? formatBytes(view.sizeBytes) : '']
+    .filter((part) => part !== '')
+    .join(' · ')
 }
 

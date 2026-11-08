@@ -2,15 +2,17 @@
 
 import { LoaderCircle } from 'lucide-react'
 import { cn } from '../../../lib/cn'
+import { usePrefBool } from '../../../lib/rpc'
 import { FileIcon } from '../../../lib/icon-pack'
 import { Badge, Icon, Tooltip } from '../../../ui'
 import { reopenFileConflicts } from '../dialogs/fileConflict'
-import { percentLabel, sourceSite } from '../model/task'
+import { percentLabel } from '../model/task'
 import { localizeTaskError } from '../model/taskError'
 import type { DownloadTaskView } from '../model/task'
+import { HIDE_TASK_SOURCE_PREF } from '../model/viewPrefs'
 import type { ViewDensity } from '../model/viewPrefs'
 import { SegmentProgress } from './SegmentProgress'
-import { kindLabel, relaxedMeta, statusDetail, statusLabel, taskStatusClass } from './text'
+import { fileCellMeta, relaxedMeta, statusDetail, statusLabel, taskStatusClass } from './text'
 import type { Translate } from './text'
 
 /** 文件图标边长：常规与 GPUI 选择列紧凑档同为 `icon.lg`，宽松密度放进 32px 底块。 */
@@ -34,10 +36,9 @@ export function KindGlyph({ view, className, tile = false }: { view: DownloadTas
 export function FileCell({ t, view, density, conflict }: { t: Translate; view: DownloadTaskView; density: ViewDensity; conflict: boolean }) {
   const twoLine = density !== 'compact'
   const relaxed = density === 'relaxed'
-  const site = sourceSite(view)
-  const category = kindLabel(t, view.kind)
+  const hideSource = usePrefBool(HIDE_TASK_SOURCE_PREF, false)
   // 宽松（旧 Flutter 默认布局）：名称中等字重 + 新副标题；其余密度：类别 · 站点。
-  const subtitle = relaxed ? relaxedMeta(t, view) : site === '' ? category : `${category} · ${site}`
+  const subtitle = relaxed ? relaxedMeta(t, view, hideSource) : fileCellMeta(t, view, hideSource)
   return (
     <div className="flex min-w-0 flex-col justify-center">
       <FileName t={t} view={view} className={relaxed ? 'text-sm font-medium' : 'text-sm'} conflict={conflict} />

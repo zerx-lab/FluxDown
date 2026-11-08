@@ -1034,15 +1034,21 @@ impl DownloadView {
     /// 「隐藏任务来源」偏好 → 表格副标题与停靠详情副标题。独立于 [`Self::load_view_prefs`] 的
     /// 视图偏好去重：它是单独的偏好键，变化后只重画，不触发视图重算。
     fn sync_hide_source(&mut self, cx: &mut Context<Self>) {
+        self.sync_detail_hide_source(cx);
         let hide = self.controller.hide_task_source();
-        if let Some(detail) = self.detail.clone() {
-            detail.update(cx, |detail, cx| detail.set_hide_source(hide, cx));
-        }
         self.table_state.update(cx, |table, cx| {
             if table.delegate_mut().set_hide_source(hide) {
                 cx.notify();
             }
         });
+    }
+
+    /// 只把「隐藏任务来源」偏好同步给停靠详情（切换 / 新建详情面板时用，表格不受影响）。
+    fn sync_detail_hide_source(&mut self, cx: &mut Context<Self>) {
+        let hide = self.controller.hide_task_source();
+        if let Some(detail) = self.detail.clone() {
+            detail.update(cx, |detail, cx| detail.set_hide_source(hide, cx));
+        }
     }
 
     /// 偏好 → 表格视图设置；无偏好时用默认视图。
@@ -1372,7 +1378,7 @@ impl DownloadView {
                 self.detail = Some(detail);
             }
         }
-        self.sync_hide_source(cx);
+        self.sync_detail_hide_source(cx);
         self.sync_detail_panel(cx);
         cx.notify();
     }
