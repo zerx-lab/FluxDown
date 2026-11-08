@@ -19,6 +19,8 @@
 //! - 单次调用严格 per-call fetch 上限退化为**全局并发 fetch 上限**（对宿主保护更强）。
 //! - 配置代理时 DNS 由代理侧解析，[`GuardResolver`] 不参与（hostname 级过滤失效；
 //!   字面量 IP 前置校验与逐跳重定向校验仍然生效）。代理由用户显式配置，视为可信出口。
+//!   DNS 应答全部是 198.18.0.0/15 fake-ip 时同理，视为 TUN 代理出口原样放行（见
+//!   [`guard_filter`]）：真实目标由 TUN 代理软件解析。
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -32,6 +34,7 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::db::Db;
 use crate::logger::{log_error, log_info, log_warn};
+use crate::multi_nic::is_fake_ip;
 use crate::proxy_config::ProxyConfig;
 
 use super::call_egress::{CallEgress, NetObserver};
@@ -285,17 +288,6 @@ fn guard_filter(resolved: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, GuardError
         return Ok(resolved);
     }
     Err(GuardError::BlockedHost)
-}
-
-/// TUN 代理 fake-ip 段（198.18.0.0/15，RFC 2544 基准测试段）。
-fn is_fake_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            o[0] == 198 && (o[1] & 0xfe) == 18
-        }
-        IpAddr::V6(_) => false,
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2139,6 +2131,19 @@ mod tests {
     fn guard_filter_empty_answer_stays_empty() {
         assert_eq!(guard_filter(Vec::new()).ok(), Some(Vec::new()));
     }
+
+    #[test]
+    fn guard_filter_treats_ipv4_mapped_fake_ip_as_fake_ip() {
+        // sing-box inet6_range 等给出的 IPv4-mapped 应答与 v4 fake-ip 混合：整体视为 TUN 应答
+        let resolved = vec![sa("198.18.0.42"), sa("::ffff:198.19.0.7")];
+        assert_eq!(guard_filter(resolved.clone()).ok(), Some(resolved));
+        // mapped 的内网地址不是 fake-ip，仍拦截
+        assert!(matches!(
+            guard_filter(vec![sa("::ffff:198.18.0.1"), sa("::ffff:10.0.0.1")]),
+            Err(GuardError::BlockedHost)
+        ));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn fs_write_protects_new_and_existing_sensitive_files()
