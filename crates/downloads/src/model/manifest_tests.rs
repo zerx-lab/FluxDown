@@ -310,3 +310,57 @@ fn empty_selection_cannot_build_a_group_even_when_visible_files_exist() {
             .is_some()
     );
 }
+
+fn row_labels(model: &ManifestSelection) -> Vec<String> {
+    model
+        .rows()
+        .iter()
+        .map(|row| match row {
+            ManifestRow::Directory { label, .. } => format!("dir:{label}"),
+            ManifestRow::File { index, .. } => model.items()[*index].name.clone(),
+        })
+        .collect()
+}
+
+#[test]
+fn name_sort_orders_numeric_file_and_directory_names_naturally() {
+    let model = ManifestSelection::new(vec![
+        file("a", "10", "", 1),
+        file("b", "100", "", 1),
+        file("c", "2", "", 1),
+        file("d", "1", "", 1),
+        file("e", "20", "", 1),
+        file("f", "101", "", 1),
+        file("g", "x", "10", 1),
+        file("h", "x", "2", 1),
+        file("i", "x", "1", 1),
+    ]);
+    assert_eq!(
+        row_labels(&model),
+        [
+            "dir:1", "dir:2", "dir:10", "1", "2", "10", "20", "100", "101"
+        ]
+    );
+}
+
+#[test]
+fn name_sort_keeps_text_digit_runs_and_same_name_ids_stable() {
+    let model = ManifestSelection::new(vec![
+        file("z", "a10.bin", "", 1),
+        file("y", "a2.bin", "", 1),
+        file("x", "dup", "", 1),
+        file("w", "dup", "", 1),
+    ]);
+    assert_eq!(row_labels(&model), ["a2.bin", "a10.bin", "dup", "dup"]);
+    let dup_ids: Vec<_> = model
+        .rows()
+        .iter()
+        .filter_map(|row| match row {
+            ManifestRow::File { index, .. } if model.items()[*index].name == "dup" => {
+                Some(model.items()[*index].id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dup_ids, ["w", "x"]);
+}
