@@ -176,9 +176,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在命令头部信息变化时回填，表单当前值取渲染时快照
   }, [parsed.hints])
 
-  // 单条外部捕获：把捕获的来源页带入「来源页」框（规则同上，`planFieldFill`；批量时清掉带入值，
-  // 各捕获由 agent 沿用自己的来源页）。带入的值在折叠的「高级」里，展开让用户看得到发出去的内容。
-  const referrerHint = capturedReferrer(entries, captures)
+  // 「来源页」框只有这一份回填记录（`planFieldFill`）：aria2c 命令带 `--referer` / `Referer` 头时用命令的值，
+  // 否则单条外部捕获取捕获的来源页；两者都没有时清掉带入值（批量各捕获由 agent 沿用自己的来源页）。
+  // 带入的值在折叠的「高级」里，展开让用户看得到发出去的内容。
+  const referrerHint = parsed.hints.referrer || capturedReferrer(entries, captures)
   const lastReferrerHint = useRef('')
   const referrerFilled = useRef<string | null>(null)
   useEffect(() => {

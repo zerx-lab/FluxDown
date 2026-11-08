@@ -612,7 +612,7 @@ impl NewDownloadView {
         let parsed = parse_input(&self.urls.read(cx).value(), false);
         self.entries = parsed.entries;
         self.sync_site_auth(window, cx);
-        self.sync_referrer(window, cx);
+        self.sync_referrer(&parsed.hints.referrer, window, cx);
         self.sync_hints(parsed.hints, window, cx);
         self.sync_probe(window, cx);
         cx.notify();
@@ -712,11 +712,21 @@ impl NewDownloadView {
         self.captures.iter().find(|capture| capture.url == url)
     }
 
-    /// 单条捕获链接：把捕获的来源页带入「来源页」框（规则同 aria2c 头部回填：只在框为空 /
-    /// 仍是上次带入值时写，用户填过的绝不覆盖；不再是单条捕获时清掉带入值，批量各捕获由
-    /// agent 沿用自己的来源页）。带入的值在折叠的「高级」里，展开让用户看得到发出去的内容。
-    fn sync_referrer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let hint = captured_referrer(&self.entries, &self.captures);
+    /// 「来源页」框只有这一份回填记录：aria2c 命令带 `--referer` / `Referer` 头时用命令的值，
+    /// 否则单条捕获链接取捕获的来源页（规则同 aria2c 头部回填：只在框为空 / 仍是上次带入值时
+    /// 写，用户填过的绝不覆盖；两者都没有时清掉带入值，批量各捕获由 agent 沿用自己的来源页）。
+    /// 带入的值在折叠的「高级」里，展开让用户看得到发出去的内容。
+    fn sync_referrer(
+        &mut self,
+        command_referrer: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = if command_referrer.is_empty() {
+            captured_referrer(&self.entries, &self.captures)
+        } else {
+            command_referrer
+        };
         if hint == self.referrer_hint {
             return;
         }

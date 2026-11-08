@@ -6,7 +6,7 @@
 // - 同一命令多个 URI 是同一文件的镜像，只取第一个；`-Z` / `--force-sequential` 时每个 URI 各成一条；
 //   磁力 / ed2k / thunder 不是镜像，各成一条；
 // - `-o` / `--out`（仅单条）→ 文件名，`--checksum`（仅单条、引擎支持的算法且哈希合法）→ 校验；
-// - `--header` / `--referer` / `-U` / `--user-agent` 收集为 RequestHints，由表单回填高级字段；
+// - `--header` / `--referer` / `-U` / `--user-agent` 收集为 RequestHints，由表单回填高级字段（`Referer` 进「来源页」专门字段，不再作自定义请求头）；
 // - `-i` / `--input-file` 读取本地文件，无法处理 → 该命令不产出条目。
 
 import type { UrlEntry } from './model'
@@ -17,18 +17,21 @@ export interface RequestHints {
   cookie: string
   /** `-U` / `--user-agent` / `User-Agent` 头（后出现者生效）。 */
   userAgent: string
-  /** 其余请求头（含 `Referer`），按首次出现顺序，同名（忽略大小写）后者覆盖前者。 */
+  /** `--referer` / `Referer` 头（后出现者生效），回填「来源页」框。 */
+  referrer: string
+  /** 其余请求头，按首次出现顺序，同名（忽略大小写）后者覆盖前者。 */
   headers: Array<[string, string]>
 }
 
 export function emptyHints(): RequestHints {
-  return { cookie: '', userAgent: '', headers: [] }
+  return { cookie: '', userAgent: '', referrer: '', headers: [] }
 }
 
 export function hintsEqual(a: RequestHints, b: RequestHints): boolean {
   return (
     a.cookie === b.cookie &&
     a.userAgent === b.userAgent &&
+    a.referrer === b.referrer &&
     a.headers.length === b.headers.length &&
     a.headers.every(([name, value], index) => name === b.headers[index][0] && value === b.headers[index][1])
   )
@@ -69,7 +72,7 @@ function addRawHeader(hints: RequestHints, raw: string): void {
   } else if (lower === 'user-agent') {
     hints.userAgent = value
   } else if (lower === 'referer') {
-    setHeader(hints, 'Referer', value)
+    hints.referrer = value
   } else {
     setHeader(hints, name, value)
   }
@@ -458,7 +461,7 @@ class Scan {
 
   private setReferer(value: string | null): void {
     const v = value === null ? '' : rustTrim(value)
-    if (v !== '') setHeader(this.hints, 'Referer', v)
+    if (v !== '') this.hints.referrer = v
   }
 
   private setUserAgent(value: string | null): void {
