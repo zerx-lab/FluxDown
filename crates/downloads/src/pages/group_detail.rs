@@ -124,6 +124,7 @@ impl GroupDetailView {
     }
 
     fn refresh_table(&mut self, cx: &mut Context<Self>) {
+        let hide_source = self.controller.hide_task_source();
         let queues: Vec<(String, String)> = self
             .controller
             .queues()
@@ -133,6 +134,7 @@ impl GroupDetailView {
         self.table_state.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             delegate.set_queue_names(queues);
+            delegate.set_hide_source(hide_source);
             delegate.refresh_view();
             // 行变化只需重绘；列配置未变时不重建 `col_groups`，保住用户拖拽的列宽。
             if delegate.take_columns_dirty() {
