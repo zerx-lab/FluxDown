@@ -7392,6 +7392,24 @@ impl DownloadManager {
             .filter(|pending| pending.resume_requested && !pending.is_bt)
     }
 
+    /// 挂着恢复请求的暂停（重建连接的 flush 窗口）：任务已离开 `active_tasks`、库里是暂停态，
+    /// 旧 writer 收尾后自动恢复。批量暂停 / 「全部暂停」/ 停止队列 / Boost 让位必须把它们当作
+    /// 运行中处理（逐个走 `pause_task_silent` 撤销挂起的恢复），否则这次暂停被静默丢弃、
+    /// TaskDone 后任务又被拉起。
+    pub fn pending_resume_task_ids(&self) -> Vec<String> {
+        self.pending_pauses
+            .iter()
+            .filter(|(_, pending)| pending.resume_requested)
+            .map(|(task_id, _)| task_id.clone())
+            .collect()
+    }
+
+    fn has_pending_resume(&self, task_id: &str) -> bool {
+        self.pending_pauses
+            .get(task_id)
+            .is_some_and(|pending| pending.resume_requested)
+    }
+
     /// Whether the named queue `queue_id` has room for another task.
     /// Returns true when:
     ///   - The queue has no max_concurrent limit (0), OR
@@ -14408,6 +14426,15 @@ impl DownloadManager {
         for tid in &active {
             self.pause_task_silent(tid).await;
         }
+        // 重建连接 flush 窗口内的任务（见 `pending_resume_task_ids`）：暂停 = 撤销挂起的恢复。
+        let reconnecting: Vec<String> = self
+            .pending_resume_task_ids()
+            .into_iter()
+            .filter(|id| idset.contains(id.as_str()))
+            .collect();
+        for tid in &reconnecting {
+            self.pause_task_silent(tid).await;
+        }
         // 做种/排队做种的任务（status=3）既不在 pending_queue 也不在
         // active_tasks，单独收集，逐个走 pause_task_silent 的做种分支
         // （停止做种 → UserStopped）。
@@ -14430,6 +14457,7 @@ impl DownloadManager {
         let handled: HashSet<&str> = queued
             .iter()
             .chain(&active)
+            .chain(&reconnecting)
             .chain(&seeding)
             .map(String::as_str)
             .collect();
@@ -14453,7 +14481,12 @@ impl DownloadManager {
                 priority_task_id: String::new(),
                 auto_paused_count: 0,
             });
-        } else if queued.is_empty() && active.is_empty() && seeding.is_empty() && !failed_paused {
+        } else if queued.is_empty()
+            && active.is_empty()
+            && reconnecting.is_empty()
+            && seeding.is_empty()
+            && !failed_paused
+        {
             return; // 全员本就非活跃非排队非做种非失败：保持既往完全无操作、无广播。
         }
         if !queued.is_empty() {
@@ -15349,6 +15382,14 @@ impl DownloadManager {
             self.retry_scheduled
                 .iter()
                 .filter(|(_, queue)| **queue == queue_id)
+                .map(|(id, _)| id.clone()),
+        );
+        // 重建连接 flush 窗口内的任务（已不在 active_tasks）：不暂停的话旧 writer 收尾后
+        // 会在已停止的队列里自动恢复。
+        to_pause.extend(
+            self.pending_pauses
+                .iter()
+                .filter(|(_, pending)| pending.resume_requested && pending.queue_id == queue_id)
                 .map(|(id, _)| id.clone()),
         );
         log_info!(
@@ -20337,6 +20378,44 @@ mod tests {
             "用户暂停后槽位立即让给排队任务"
         );
         cancel_all_active(&mgr);
+    }
+
+    /// 重建连接 flush 窗口内的任务已离开 `active_tasks`：批量暂停、停止队列、Boost 让位都必须
+    /// 撤销它挂起的恢复，否则旧 writer 的 TaskDone 到达后任务又自己跑起来。
+    #[tokio::test]
+    async fn batch_pauses_cancel_pending_reconnect_resume() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.seed_builtin_queues().await.expect("seed");
+        for (id, queue) in [("a", ""), ("b", "later"), ("x", ""), ("t", "")] {
+            insert_paused_task_in_queue(&db, id, queue).await;
+            db.update_task_status(id, 1, "").await.expect("active");
+        }
+        let mut mgr = sched_manager(&db, 8);
+        mgr.load_queues().await;
+        for (generation, (id, queue)) in [("a", ""), ("b", "later"), ("x", ""), ("t", "")]
+            .into_iter()
+            .enumerate()
+        {
+            occupy_slot(&mut mgr, id, generation as u64 + 1, queue, false);
+            mgr.pause_task_for_reconnect(id).await;
+            mgr.resume_task(id).await;
+            assert!(mgr.has_pending_resume(id), "{id} 应挂着重建连接的恢复");
+        }
+
+        mgr.batch_pause(&["a".to_string()]).await;
+        assert!(!mgr.has_pending_resume("a"), "批量暂停必须撤销挂起的恢复");
+
+        mgr.stop_queue("later".to_string()).await;
+        assert!(!mgr.has_pending_resume("b"), "停止队列必须撤销挂起的恢复");
+
+        // Boost 处于窗口内的 t：t 视为已在途（不取消 Boost），窗口内的 x 让位暂停。
+        mgr.set_priority_task("t".to_string()).await.expect("boost");
+        assert_eq!(mgr.priority_task_id.as_deref(), Some("t"));
+        assert!(mgr.has_pending_resume("t"));
+        assert!(!mgr.has_pending_resume("x"), "Boost 让位必须撤销挂起的恢复");
+        assert!(mgr.auto_paused_ids.iter().any(|id| id == "x"));
     }
 
     /// 下载器已写入完成态、TaskDone 尚未消费时，暂停/取消不得把成品改写成
