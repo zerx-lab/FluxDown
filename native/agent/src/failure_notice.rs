@@ -50,12 +50,8 @@ fn failed_task(notice: &TaskNoticeDto) -> Option<FailedTask> {
     }
     let task = notice.task.as_ref()?;
     let name = if task.file_name.trim().is_empty() {
-        // 尚未解析出文件名就失败：退回不带查询串 / 片段的地址（令牌常在其中）。
-        task.url
-            .split(['?', '#'])
-            .next()
-            .unwrap_or_default()
-            .to_owned()
+        // 尚未解析出文件名就失败：退回不带 userinfo / 查询串 / 片段的地址（口令与令牌常在其中）。
+        redact_urls(&task.url, true)
     } else {
         task.file_name.clone()
     };
@@ -72,6 +68,8 @@ fn reason_summary(raw: &str) -> String {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or_default();
+    // reqwest 的状态错误形如 `... for url (https://host/p?token=...)`：先脱敏再截断。
+    let line = redact_urls(line, false);
     let mut chars = line.chars();
     let head: String = chars.by_ref().take(REASON_MAX_CHARS).collect();
     if chars.next().is_some() {
@@ -79,6 +77,34 @@ fn reason_summary(raw: &str) -> String {
     } else {
         head
     }
+}
+
+/// 去掉文本里每个 URL 的 userinfo、query 与 fragment（令牌 / 签名 / 口令常在其中）；
+/// `keep_path` 为假时路径也丢弃（令牌也可能内嵌在路径里），只留 `scheme://host[:port]`。
+fn redact_urls(text: &str, keep_path: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((head, after)) = rest.split_once("://") {
+        out.push_str(head);
+        out.push_str("://");
+        let end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '(' | '\'' | '"' | '<' | '>'))
+            .unwrap_or(after.len());
+        let (url, tail) = after.split_at_checked(end).unwrap_or((after, ""));
+        let authority_end = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let (authority, path) = url.split_at_checked(authority_end).unwrap_or((url, ""));
+        out.push_str(
+            authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host),
+        );
+        if keep_path {
+            out.push_str(path.split(['?', '#']).next().unwrap_or_default());
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 失败通知文案：单个任务标题「下载失败」、正文「文件名 + 换行 + 原因」；多个任务标题
@@ -163,6 +189,25 @@ mod tests {
                 name: "https://x/a.bin".to_owned(),
                 reason: String::new(),
             })
+        );
+    }
+
+    #[test]
+    fn urls_in_reason_and_name_lose_secrets() {
+        assert_eq!(
+            reason_summary(
+                "HTTP status client error (403 Forbidden) for url (https://u:p@h.example:8080/a/b.bin?token=s3cret#f)"
+            ),
+            "HTTP status client error (403 Forbidden) for url (https://h.example:8080)"
+        );
+        let (sender, mut receiver) = channel();
+        offer(
+            &sender,
+            &notice("task.failed", "", "ftp://u:p@h/dir/a.bin?sig=1", ""),
+        );
+        assert_eq!(
+            receiver.try_recv().ok().map(|f| f.name).as_deref(),
+            Some("ftp://h/dir/a.bin")
         );
     }
 
