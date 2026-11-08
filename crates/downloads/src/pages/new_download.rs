@@ -125,7 +125,8 @@ pub struct NewDownloadContext {
     pub custom_categories: Vec<fluxdown_protocol::CustomCategoryDto>,
     /// 「下载到」候选：账号其他设备 + 已配对设备（本机始终可选，不在其中）；空 = 不显示选择器。
     pub targets: Vec<DeviceEntry>,
-    /// 「下载到」初值：设备本地偏好里上次的目标（目标已不存在则为本机）。
+    /// 「下载到」初值：侧栏当前选中的设备 > 上次的目标（须开启 `download.remember_last_target`）>
+    /// 本机（目标已不存在则回退）。
     pub target: DispatchTarget,
 }
 
@@ -137,6 +138,7 @@ pub fn new_download_context_from_snapshot(snapshot: &AgentSnapshot) -> NewDownlo
         &snapshot.daemon.runtime_stats.save_dir,
         &snapshot.preferences.values,
         &snapshot.daemon.queues,
+        None,
         None,
         new_download_targets(
             &snapshot.cloud_devices,
@@ -162,12 +164,15 @@ pub fn new_download_targets(
 /// 偏好 `remember_last_save_dir` 开启且有记录时沿用上次目录，否则用全局
 /// 默认（`default_save_dir`，空则 daemon 运行时目录）；队列优先 `selected_queue`，其次配置
 /// `default_queue_id`，最后主队列；线程数优先队列 `default_segments`，其次全局配置。
+/// 「下载到」优先侧栏当前选中的设备（`selected_device`：`local` = 本机，`all` 与已不存在的设备
+/// 不参与），其次上次目标记忆（仅偏好 `download.remember_last_target` 开启时），最后本机。
 pub(crate) fn build_new_download_context(
     config: &BTreeMap<String, String>,
     runtime_save_dir: &str,
     preferences: &BTreeMap<String, serde_json::Value>,
     queues: &[QueueDto],
     selected_queue: Option<&str>,
+    selected_device: Option<&str>,
     targets: Vec<DeviceEntry>,
 ) -> NewDownloadContext {
     let config_str = |key: &str| config.get(key).map_or("", |value| value.trim());
@@ -208,22 +213,30 @@ pub(crate) fn build_new_download_context(
         history_enabled.then(|| read_save_dir_history(preferences.get(SAVE_DIR_HISTORY_PREF)));
     let category_save_dir_history = history_enabled
         .then(|| read_category_save_dir_history(preferences.get(CATEGORY_SAVE_DIR_HISTORY_PREF)));
-    // 上次目标只在开关开启时恢复（缺省关闭，默认本机）；`link:<fp>` 已挂接到云条目时解析为
-    // 该云条目，目标已不存在则回退本机。
+    // 「下载到」初值：侧栏选中设备 > 上次目标记忆（仅 `download.remember_last_target` 开启时，
+    // 缺省关闭）> 本机。`link:<fp>` 已挂接到云条目时解析为该云条目；目标已不存在则回退本机。
     let remember_target = preferences
         .get(REMEMBER_LAST_TARGET_PREF)
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let target = if remember_target {
+    let remembered_target = || {
+        if !remember_target {
+            return None;
+        }
         preferences
             .get(LAST_DOWNLOAD_TARGET_PREF)
             .and_then(serde_json::Value::as_str)
             .and_then(DispatchTarget::from_pref)
             .and_then(|target| resolve_target(target, &targets))
-            .unwrap_or_default()
-    } else {
-        DispatchTarget::Local
     };
+    let target = selected_device
+        .and_then(|id| match id {
+            crate::model::SidebarSelection::LOCAL_DEVICE => Some(DispatchTarget::Local),
+            crate::model::SidebarSelection::ALL_DEVICES => None,
+            id => resolve_target(DispatchTarget::Cloud(id.to_owned()), &targets),
+        })
+        .or_else(remembered_target)
+        .unwrap_or_default();
     let categories = fluxdown_protocol::CustomCategoryDto::from_preference(
         preferences.get(fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY),
     );
@@ -2315,13 +2328,13 @@ fn has_extension(path: &std::path::Path, extensions: &[&str]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+mod context_tests {
     use std::collections::BTreeMap;
 
-    use serde_json::{Value, json};
+    use serde_json::json;
 
-    use super::build_new_download_context;
-    use crate::model::devices::{DeviceEntry, DeviceKind, DispatchTarget};
+    use super::*;
+    use crate::model::devices::DeviceKind;
 
     fn device(id: &str) -> DeviceEntry {
         DeviceEntry {
@@ -2330,50 +2343,119 @@ mod tests {
             link_fingerprint: None,
             link_online: None,
             label: id.to_owned(),
-            online: Some(false),
+            online: Some(true),
             default_save_dir: None,
             path_style: None,
         }
     }
 
-    fn initial_target(prefs: &[(&str, Value)], targets: Vec<DeviceEntry>) -> DispatchTarget {
-        let preferences: BTreeMap<String, Value> = prefs
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), value.clone()))
-            .collect();
-        build_new_download_context(&BTreeMap::new(), "/dl", &preferences, &[], None, targets).target
+    /// `last` = 上次目标记忆；`remember` = 记忆开关（`None` = 未设置）；`selected` = 侧栏选中设备。
+    fn target_for(
+        last: Option<&str>,
+        remember: Option<bool>,
+        selected: Option<&str>,
+        targets: Vec<DeviceEntry>,
+    ) -> DispatchTarget {
+        let mut preferences = BTreeMap::new();
+        if let Some(last) = last {
+            preferences.insert(LAST_DOWNLOAD_TARGET_PREF.to_owned(), json!(last));
+        }
+        if let Some(remember) = remember {
+            preferences.insert(REMEMBER_LAST_TARGET_PREF.to_owned(), json!(remember));
+        }
+        build_new_download_context(
+            &BTreeMap::new(),
+            "/data",
+            &preferences,
+            &[],
+            None,
+            selected,
+            targets,
+        )
+        .target
+    }
+
+    fn cloud(id: &str) -> DispatchTarget {
+        DispatchTarget::Cloud(id.to_owned())
     }
 
     #[test]
     fn last_target_ignored_unless_remember_enabled() {
-        let last = ("download.last_target", json!("cloud:phone"));
+        for remember in [None, Some(false)] {
+            assert_eq!(
+                target_for(Some("cloud:phone"), remember, None, vec![device("phone")]),
+                DispatchTarget::Local
+            );
+        }
+    }
+
+    #[test]
+    fn last_target_restored_when_remember_enabled() {
         assert_eq!(
-            initial_target(std::slice::from_ref(&last), vec![device("phone")]),
-            DispatchTarget::Local
+            target_for(Some("cloud:phone"), Some(true), None, vec![device("phone")]),
+            cloud("phone")
         );
+        // 记录的设备已不在候选里：回退本机。
         assert_eq!(
-            initial_target(
-                &[last, ("download.remember_last_target", json!(false))],
-                vec![device("phone")]
+            target_for(
+                Some("cloud:phone"),
+                Some(true),
+                None,
+                vec![device("tablet")]
             ),
             DispatchTarget::Local
         );
     }
 
     #[test]
-    fn last_target_restored_when_remember_enabled() {
-        let prefs = [
-            ("download.last_target", json!("cloud:phone")),
-            ("download.remember_last_target", json!(true)),
-        ];
+    fn sidebar_device_overrides_remembered_target_regardless_of_switch() {
+        for remember in [None, Some(false), Some(true)] {
+            let targets = vec![device("dev-a"), device("dev-b")];
+            assert_eq!(
+                target_for(Some("cloud:dev-a"), remember, Some("dev-b"), targets),
+                cloud("dev-b")
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_local_overrides_remembered_remote_target() {
         assert_eq!(
-            initial_target(&prefs, vec![device("phone")]),
-            DispatchTarget::Cloud("phone".to_owned())
-        );
-        // 记录的设备已不在候选里：回退本机。
-        assert_eq!(
-            initial_target(&prefs, vec![device("tablet")]),
+            target_for(
+                Some("cloud:dev-a"),
+                Some(true),
+                Some(crate::model::SidebarSelection::LOCAL_DEVICE),
+                vec![device("dev-a")]
+            ),
             DispatchTarget::Local
         );
+    }
+
+    #[test]
+    fn sidebar_all_or_missing_device_falls_back_to_gated_memory() {
+        for selected in [crate::model::SidebarSelection::ALL_DEVICES, "gone"] {
+            assert_eq!(
+                target_for(
+                    Some("cloud:dev-a"),
+                    Some(true),
+                    Some(selected),
+                    vec![device("dev-a")]
+                ),
+                cloud("dev-a")
+            );
+            assert_eq!(
+                target_for(
+                    Some("cloud:dev-a"),
+                    None,
+                    Some(selected),
+                    vec![device("dev-a")]
+                ),
+                DispatchTarget::Local
+            );
+            assert_eq!(
+                target_for(None, Some(true), Some(selected), vec![device("dev-a")]),
+                DispatchTarget::Local
+            );
+        }
     }
 }
