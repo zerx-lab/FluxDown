@@ -701,6 +701,40 @@ fn is_ed2k_url(url: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ed2k://"))
 }
 
+/// 两份全局代理配置的出口是否相同（站点规则不计：规则单独变化走
+/// [`DownloadManager::set_proxy_rules`]，不重建运行中任务的连接）。
+fn same_global_egress(a: &ProxyConfig, b: &ProxyConfig) -> bool {
+    a.mode == b.mode
+        && a.proxy_type == b.proxy_type
+        && a.host == b.host
+        && a.port == b.port
+        && a.username == b.username
+        && a.password == b.password
+        && a.no_proxy_list == b.no_proxy_list
+}
+
+/// 运行中任务的出口是否由站点规则钉住、且换全局配置前后规则给出同一出口（此时全局出口
+/// 变化不改变它的实际出口，无需重建连接）。本次起跑走的是规则出口（`auto_route` 为
+/// `rule:*`）才算；规则在四种模式下都首条命中，`direct` / `system` / `custom` 动作与全局
+/// 设置无关，`manual` 动作随全局手动字段变化（规则集按新手动字段重编，出口不再相同）。
+fn egress_pinned_by_rule(
+    task: &crate::model::TaskInfo,
+    old_rules: Option<&crate::proxy_rules::ProxyRuleSet>,
+    new_rules: Option<&crate::proxy_rules::ProxyRuleSet>,
+) -> bool {
+    if !crate::auto_proxy::route::is_rule_label(&task.auto_route) {
+        return false;
+    }
+    let url = task.url.as_str();
+    match (
+        old_rules.and_then(|rules| rules.first_match(url)),
+        new_rules.and_then(|rules| rules.first_match(url)),
+    ) {
+        (Some(old), Some(new)) => old.egress().same_as(new.egress()),
+        _ => false,
+    }
+}
+
 /// 本构建是否会因 eD2K 被编译期剔除而拒绝该新建任务（含解出 ed2k 地址的
 /// thunder 链接）。有 `ed2k` feature 时恒为 `false`。
 ///
@@ -3467,6 +3501,10 @@ struct PendingPause {
     generation: u64,
     notify: bool,
     resume_requested: bool,
+    /// 暂停前的队列归属与是否 BT：挂起恢复（`resume_requested`）的 HTTP / FTP 任务
+    /// 继续占用全局与队列并发槽位，见 [`DownloadManager::pending_resume_slots`]。
+    queue_id: String,
+    is_bt: bool,
 }
 
 /// off-actor resolve 的种类（start 或 resume 侧再入）。
@@ -5906,11 +5944,16 @@ impl DownloadManager {
     }
 
     /// Update proxy configuration.  Rebuilds the shared HTTP client so that
-    /// all **new** downloads use the updated proxy settings.  Already-running
-    /// downloads keep their existing client and are unaffected.
+    /// all **new** downloads use the updated proxy settings.
+    ///
+    /// 全局出口确有变化时（模式 / 端点 / 凭据 / 直连名单，不含站点规则），运行中、
+    /// 跟随全局代理且**能按已有分段断点续传**的 HTTP / FTP 任务会被静默**暂停 → 恢复**
+    /// 以按新出口重建连接（各段从已下载偏移续传，同 [`Self::set_task_segments`]；
+    /// Boost 不受影响）。范围见 [`Self::reconnect_global_proxy_tasks`]；出口未变的重复
+    /// 保存不打断任何任务。
     ///
     /// Returns `Err` if the new client cannot be built (e.g. invalid SOCKS URL).
-    pub fn set_proxy_config(
+    pub async fn set_proxy_config(
         &mut self,
         config: ProxyConfig,
     ) -> Result<(), downloader::DownloadError> {
@@ -5922,6 +5965,8 @@ impl DownloadManager {
             config.port,
         );
         let new_client = downloader::build_client(&config, &self.global_user_agent)?;
+        let egress_changed = !same_global_egress(&self.proxy_config, &config);
+        let old_rules = self.proxy_config.rules.clone();
         self.client = new_client;
         self.invalidate_system_client();
         self.proxy_config = config;
@@ -5945,7 +5990,103 @@ impl DownloadManager {
         self.auto_failover_pending.clear();
         self.auto_failover_attempts.clear();
         crate::route_health::clear_all(&self.db);
+        if egress_changed {
+            self.reconnect_global_proxy_tasks(old_rules.as_deref())
+                .await;
+        }
         Ok(())
+    }
+
+    /// 让运行中、跟随全局代理的任务按当前全局出口重建连接（[`Self::set_proxy_config`]
+    /// 调用）。只处理已 spawn 下载器的活跃任务：排队中、等待重试、off-actor 解析中的
+    /// 任务起跑时本就按新出口构建 client。
+    ///
+    /// 打断一次必须不丢进度、不重新解析，见 [`Self::reconnect_preserves_progress`]；
+    /// 不满足的任务（单流 / 源站不支持 Range、HLS / DASH、插件解析、任务级固定代理、
+    /// BT / eD2K）保持旧连接，下次起跑自然用上新出口。出口由站点规则钉住且新旧规则给出
+    /// 同一出口的任务（`old_rules` 是换配置前的规则集）不受全局出口影响，同样不打断。
+    async fn reconnect_global_proxy_tasks(
+        &mut self,
+        old_rules: Option<&crate::proxy_rules::ProxyRuleSet>,
+    ) {
+        let running: Vec<String> = self
+            .active_tasks
+            .iter()
+            .filter(|(_, entry)| entry.handle.is_some() && !entry.is_bt)
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+        for task_id in running {
+            let task = match self.db.load_task_by_id(&task_id).await {
+                Ok(Some(task)) => task,
+                Ok(None) => continue,
+                Err(error) => {
+                    crate::logger::report_error(
+                        "download-manager",
+                        "load task for proxy reconnect",
+                        &error,
+                    );
+                    continue;
+                }
+            };
+            if egress_pinned_by_rule(&task, old_rules, self.proxy_config.rules.as_deref()) {
+                continue;
+            }
+            match self.reconnect_preserves_progress(&task).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    log_info!(
+                        "[manager] task {} 无法按已有分段续传（探测中 / 单流 / 需重新解析），保持旧出口至下次起跑",
+                        task_id
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    crate::logger::report_error(
+                        "download-manager",
+                        "check proxy reconnect eligibility",
+                        &error,
+                    );
+                    continue;
+                }
+            }
+            log_info!(
+                "[manager] task {} 跟随全局代理，按新出口重建连接（分段续传）",
+                task_id
+            );
+            // 静默暂停保留槽位与 Boost，随后的恢复在旧 writer 退出（TaskDone）后起飞。
+            self.pause_task_for_reconnect(&task_id).await;
+            self.resume_task(&task_id).await;
+        }
+    }
+
+    /// 运行中任务被换出口重建连接时能否原样续传：跟随全局代理的普通 HTTP / FTP 任务，
+    /// 且本任务已有分段行、Range 能力已验证（分段行只在确认可 Range 的多段下载中落库，
+    /// 恢复时各段从 `start_byte + downloaded_bytes` 续传）。单流任务的续传能力不落库，
+    /// 源站不支持 Range 时恢复会从 0 重下，一律不打断。HLS / DASH（含直播录制）与
+    /// 插件解析任务恢复要重新解析、可能产生录制缺口，同样不打断。
+    async fn reconnect_preserves_progress(
+        &self,
+        task: &crate::model::TaskInfo,
+    ) -> Result<bool, crate::db::DbError> {
+        let url = task.url.as_str();
+        if !task.proxy_url.is_empty()
+            || !matches!(task.status, 1 | 5)
+            || is_bt_url(url)
+            || is_ed2k_url(url)
+            || hls_downloader::is_hls_url(url)
+            || dash_downloader::is_dash_url(url)
+        {
+            return Ok(false);
+        }
+        let id = task.task_id.as_str();
+        if self.db.load_audio_url(id).await?.is_some()
+            || !self.db.get_task_resolver(id).await?.is_empty()
+            || !self.db.get_task_resolver_item(id).await?.is_empty()
+        {
+            return Ok(false);
+        }
+        Ok(self.db.get_task_range_verified(id).await?
+            && !self.db.load_segments(id).await?.is_empty())
     }
 
     /// 只替换站点代理规则（`proxy_rules` 单独变化时）。全局出口不变，因此**不**
@@ -6006,14 +6147,15 @@ impl DownloadManager {
 
         // 活跃任务：先暂停当前 spawn（取消 + 落 paused），改配置后再恢复，
         // 让新 worker_cap 立即生效。全程在 current_thread actor 内串行，无竞态。
-        // 静默暂停——这是实现细节，用户看到的是「改了线程数」，不是「暂停了」。
+        // 静默暂停——这是实现细节，用户看到的是「改了线程数」，不是「暂停了」；
+        // 也不结束该任务的 Boost。
         if was_active {
-            self.pause_task_keep_slot(task_id).await;
+            self.pause_task_for_reconnect(task_id).await;
         }
         if let Err(e) = self.db.update_task_segments(task_id, seg).await {
-            // 放弃恢复：补做暂停时被跳过的 drain，避免空槽位卡住排队任务。
+            // 放弃恢复：任务停在暂停态。
             if was_active {
-                self.drain_queue().await;
+                self.abandon_reconnect_resume(task_id).await;
             }
             return Err(e);
         }
@@ -6182,7 +6324,9 @@ impl DownloadManager {
     /// 必须在任务**进入**（`enqueue_persisted_task` / `resume_task_inner`）与
     /// **离开**（`on_task_done` / `pause_task` / `delete_task`）活跃·待启动集合
     /// 的每个汇合点调用：两侧配合构成边沿触发，同一次忙碌/空闲不会重复通知。
-    /// 已排程自动重试的任务视为仍占用，否则退避间隙会误报一次清空。
+    /// 已排程自动重试的任务视为仍占用，否则退避间隙会误报一次清空；挂起恢复的暂停
+    /// （内部重建连接的「暂停 → 恢复」，或 flush 窗口内又被恢复）同理，旧 writer 收尾即
+    /// 重新起飞。
     fn sync_queue_occupancy(&mut self) {
         let mut occupied: HashSet<String> = self
             .active_tasks
@@ -6191,6 +6335,12 @@ impl DownloadManager {
             .collect();
         occupied.extend(self.pending_queue.queue_ids().cloned());
         occupied.extend(self.retry_scheduled.values().cloned());
+        occupied.extend(
+            self.pending_pauses
+                .values()
+                .filter(|pending| pending.resume_requested)
+                .map(|pending| pending.queue_id.clone()),
+        );
         let drained: Vec<String> = self
             .occupied_queues
             .difference(&occupied)
@@ -7229,7 +7379,35 @@ impl DownloadManager {
             .iter()
             .filter(|(id, e)| !e.is_bt && !self.is_awaiting_decision(id, e.generation))
             .count();
-        http_ftp_active < self.max_concurrent
+        http_ftp_active + self.pending_resume_slots().count() < self.max_concurrent
+    }
+
+    /// 挂起恢复的暂停（内部重建连接的「暂停 → 恢复」，或 flush 窗口内又被恢复）：旧
+    /// writer 一收尾就重新起飞，期间仍占着它的 HTTP / FTP 全局与队列并发槽位。不计入的话，
+    /// 同批重建的任务里先收尾的那个恢复后会 drain，把后者的槽位让给排队任务，后者回来时
+    /// 已无容量而被挤进队尾。
+    fn pending_resume_slots(&self) -> impl Iterator<Item = &PendingPause> {
+        self.pending_pauses
+            .values()
+            .filter(|pending| pending.resume_requested && !pending.is_bt)
+    }
+
+    /// 挂着恢复请求的暂停（重建连接的 flush 窗口）：任务已离开 `active_tasks`、库里是暂停态，
+    /// 旧 writer 收尾后自动恢复。批量暂停 / 「全部暂停」/ 停止队列 / Boost 让位必须把它们当作
+    /// 运行中处理（逐个走 `pause_task_silent` 撤销挂起的恢复），否则这次暂停被静默丢弃、
+    /// TaskDone 后任务又被拉起。
+    pub fn pending_resume_task_ids(&self) -> Vec<String> {
+        self.pending_pauses
+            .iter()
+            .filter(|(_, pending)| pending.resume_requested)
+            .map(|(task_id, _)| task_id.clone())
+            .collect()
+    }
+
+    fn has_pending_resume(&self, task_id: &str) -> bool {
+        self.pending_pauses
+            .get(task_id)
+            .is_some_and(|pending| pending.resume_requested)
     }
 
     /// Whether the named queue `queue_id` has room for another task.
@@ -7260,7 +7438,11 @@ impl DownloadManager {
                     && e.queue_id.as_str() == queue_id
                     && !self.is_awaiting_decision(id, e.generation)
             })
-            .count();
+            .count()
+            + self
+                .pending_resume_slots()
+                .filter(|pending| pending.queue_id == queue_id)
+                .count();
         active_in_queue < queue_max as usize
     }
 
@@ -11015,32 +11197,73 @@ impl DownloadManager {
     /// 必须走 [`Self::pause_task_silent`]——设计明确要求全局暂停不触发通知，
     /// 否则千级批量任务会给用户连发一屏推送。
     pub async fn pause_task(&mut self, task_id: &str) {
-        self.pause_task_inner(task_id, true, true).await;
+        self.pause_task_inner(task_id, true, true, false).await;
     }
 
     /// 内部/批量暂停：行为与 [`Self::pause_task`] 完全一致，只是不发 webhook。
     async fn pause_task_silent(&mut self, task_id: &str) {
-        self.pause_task_inner(task_id, false, true).await;
+        self.pause_task_inner(task_id, false, true, false).await;
     }
 
-    /// 「暂停后立刻恢复」的内部流程（改分段数 / 重新下载）专用：静默暂停，
+    /// 「暂停后立刻恢复」的内部流程（重新下载）专用：静默暂停，
     /// 但**不**把让出的槽位 drain 给排队头部，否则随后的 resume 只能挂起
     /// `resume_requested`，待旧 spawn 收尾时已无容量而被挂到队尾。
     /// 调用方必须随后调用 resume（其自身会 drain），或在放弃恢复时自行 drain。
     async fn pause_task_keep_slot(&mut self, task_id: &str) {
-        self.pause_task_inner(task_id, false, false).await;
+        self.pause_task_inner(task_id, false, false, false).await;
     }
 
-    async fn pause_task_inner(&mut self, task_id: &str, notify: bool, drain_freed_slot: bool) {
+    /// 只为重建下载连接的内部「暂停 → 恢复」（改线程数 / 换全局出口）：同
+    /// [`Self::pause_task_keep_slot`] 保留槽位，且暂停 Boost 目标时**不**结束 Boost——
+    /// 用户没有暂停它，让位任务必须继续让位。恢复请求在暂停时就挂上（`resume_requested`），
+    /// 任务全程算作占用它的队列：唯一在途任务也不会发出 `queue.drained` / `queue.started`
+    /// 误报边沿（见 [`Self::sync_queue_occupancy`]）。[`Self::reconcile_priority`] 同样把它
+    /// 视作仍在途。调用方必须随后调用 resume；放弃恢复时调用
+    /// [`Self::abandon_reconnect_resume`]。
+    async fn pause_task_for_reconnect(&mut self, task_id: &str) {
+        self.pause_task_inner(task_id, false, false, true).await;
+    }
+
+    /// 放弃 [`Self::pause_task_for_reconnect`] 之后的恢复：撤销挂起的恢复请求，任务停在
+    /// 暂停态；补做暂停时跳过的 drain 与队列占用重算，Boost 目标按 Boost 守卫结束 Boost。
+    async fn abandon_reconnect_resume(&mut self, task_id: &str) {
+        if let Some(pending) = self.pending_pauses.get_mut(task_id) {
+            pending.resume_requested = false;
+        }
+        self.drain_queue().await;
+        if self.priority_task_id.as_deref() == Some(task_id) {
+            self.clear_priority().await;
+        }
+        self.sync_queue_occupancy();
+    }
+
+    /// `reconnect`：见 [`Self::pause_task_for_reconnect`]。
+    async fn pause_task_inner(
+        &mut self,
+        task_id: &str,
+        notify: bool,
+        drain_freed_slot: bool,
+        reconnect: bool,
+    ) {
         self.clear_pending_resolve(task_id);
         self.retry_unschedule(task_id);
         // A repeated pause while the previous generation is still flushing is
         // idempotent. Preserve an explicit notification request, but do not
         // publish the stale DB snapshot as a terminal paused frame.
         if let Some(pending) = self.pending_pauses.get_mut(task_id) {
+            if reconnect {
+                // 内部重建连接随即恢复：挂上恢复请求，队列占用不变。
+                pending.resume_requested = true;
+                return;
+            }
             // 最后一次用户意图是暂停：撤销 flush 窗口内挂起的恢复请求。
-            pending.resume_requested = false;
+            let released_slot = std::mem::replace(&mut pending.resume_requested, false);
             pending.notify |= notify;
+            // 挂起的恢复一直占着槽位（`pending_resume_slots`）；撤销后即让给排队任务，
+            // 与首次暂停的 drain 语义一致。保留槽位的内部暂停不 drain（随后即恢复）。
+            if released_slot && drain_freed_slot {
+                self.drain_queue().await;
+            }
             self.sync_queue_occupancy();
             return;
         }
@@ -11092,7 +11315,9 @@ impl DownloadManager {
                     PendingPause {
                         generation,
                         notify,
-                        resume_requested: false,
+                        resume_requested: reconnect,
+                        queue_id: entry.queue_id.clone(),
+                        is_bt: entry.is_bt,
                     },
                 );
             }
@@ -11136,7 +11361,8 @@ impl DownloadManager {
             }
 
             // Boost 守卫：若用户手动暂停了当前优先任务，取消 Boost 并恢复其他任务
-            if self.priority_task_id.as_deref() == Some(task_id) {
+            // （内部重建连接的暂停随即恢复，不算离场）。
+            if !reconnect && self.priority_task_id.as_deref() == Some(task_id) {
                 self.clear_priority().await;
             }
             // NOTE: do NOT call maybe_release_bt_session() here.
@@ -11144,7 +11370,11 @@ impl DownloadManager {
             // The spawned task may still be running while it flushes progress.
             // Its TaskDone finalizes pending_pauses and only then allows a
             // requested resume or BT session release.
-            self.sync_queue_occupancy();
+            // 内部重建连接紧接着恢复（恢复路径自己重算占用）：此处不重算，免得无下载器的
+            // 解析占位任务在暂停与恢复之间留出一次 `queue.drained` 边沿。
+            if !reconnect {
+                self.sync_queue_occupancy();
+            }
             return;
         }
 
@@ -14196,6 +14426,15 @@ impl DownloadManager {
         for tid in &active {
             self.pause_task_silent(tid).await;
         }
+        // 重建连接 flush 窗口内的任务（见 `pending_resume_task_ids`）：暂停 = 撤销挂起的恢复。
+        let reconnecting: Vec<String> = self
+            .pending_resume_task_ids()
+            .into_iter()
+            .filter(|id| idset.contains(id.as_str()))
+            .collect();
+        for tid in &reconnecting {
+            self.pause_task_silent(tid).await;
+        }
         // 做种/排队做种的任务（status=3）既不在 pending_queue 也不在
         // active_tasks，单独收集，逐个走 pause_task_silent 的做种分支
         // （停止做种 → UserStopped）。
@@ -14218,6 +14457,7 @@ impl DownloadManager {
         let handled: HashSet<&str> = queued
             .iter()
             .chain(&active)
+            .chain(&reconnecting)
             .chain(&seeding)
             .map(String::as_str)
             .collect();
@@ -14241,7 +14481,12 @@ impl DownloadManager {
                 priority_task_id: String::new(),
                 auto_paused_count: 0,
             });
-        } else if queued.is_empty() && active.is_empty() && seeding.is_empty() && !failed_paused {
+        } else if queued.is_empty()
+            && active.is_empty()
+            && reconnecting.is_empty()
+            && seeding.is_empty()
+            && !failed_paused
+        {
             return; // 全员本就非活跃非排队非做种非失败：保持既往完全无操作、无广播。
         }
         if !queued.is_empty() {
@@ -14547,6 +14792,11 @@ impl DownloadManager {
         for entry in self.active_tasks.values_mut() {
             if entry.queue_id == queue_id {
                 entry.queue_id = MAIN_QUEUE_ID.to_owned();
+            }
+        }
+        for pending in self.pending_pauses.values_mut() {
+            if pending.queue_id == queue_id {
+                pending.queue_id = MAIN_QUEUE_ID.to_owned();
             }
         }
         self.pending_queue.reassign_queue(&queue_id, MAIN_QUEUE_ID);
@@ -15044,6 +15294,10 @@ impl DownloadManager {
         if let Some(entry) = self.active_tasks.get_mut(&task_id) {
             entry.queue_id = queue_id.clone();
         }
+        // flush 窗口内挂起恢复的任务同样按新队列占槽。
+        if let Some(pending) = self.pending_pauses.get_mut(&task_id) {
+            pending.queue_id = queue_id.clone();
+        }
         // 若任务仍在 pending_queue 等待中,同步更新其 queue_id;否则 drain_queue 会用
         // 陈旧 queue_id 做 has_queue_capacity 门控,do_start_task 又据其选定限速器与
         // 写入 active 条目,导致任务实际跑在旧队列下、并发/限速归错队列且与 DB/UI 不一致。
@@ -15128,6 +15382,14 @@ impl DownloadManager {
             self.retry_scheduled
                 .iter()
                 .filter(|(_, queue)| **queue == queue_id)
+                .map(|(id, _)| id.clone()),
+        );
+        // 重建连接 flush 窗口内的任务（已不在 active_tasks）：不暂停的话旧 writer 收尾后
+        // 会在已停止的队列里自动恢复。
+        to_pause.extend(
+            self.pending_pauses
+                .iter()
+                .filter(|(_, pending)| pending.resume_requested && pending.queue_id == queue_id)
                 .map(|(id, _)| id.clone()),
         );
         log_info!(
@@ -20085,6 +20347,77 @@ mod tests {
         );
     }
 
+    /// 重建连接（暂停 → 恢复）挂起期间，该任务仍占着自己的槽位，排队任务不得补位；
+    /// 用户在 flush 窗口内暂停它（撤销挂起的恢复）则立即让出槽位给排队任务。
+    #[tokio::test]
+    async fn pending_reconnect_resume_holds_slot_until_user_pause() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.seed_builtin_queues().await.expect("seed");
+        insert_paused_task_in_queue(&db, "a", "").await;
+        db.update_task_status("a", 1, "").await.expect("active");
+        insert_paused_task_in_queue(&db, "q", "").await;
+        let mut mgr = sched_manager(&db, 1);
+        occupy_slot(&mut mgr, "a", 3, "", false);
+        mgr.resume_task("q").await;
+        assert!(mgr.pending_queue.iter().any(|queued| queued.task_id == "q"));
+
+        mgr.pause_task_for_reconnect("a").await;
+        mgr.resume_task("a").await;
+        assert!(!mgr.has_capacity(), "挂起恢复的任务仍占槽位");
+        mgr.drain_queue().await;
+        assert!(
+            !mgr.active_tasks.contains_key("q"),
+            "排队任务不得占用重建连接任务的槽位"
+        );
+
+        mgr.pause_task("a").await;
+        assert!(
+            mgr.active_tasks.contains_key("q"),
+            "用户暂停后槽位立即让给排队任务"
+        );
+        cancel_all_active(&mgr);
+    }
+
+    /// 重建连接 flush 窗口内的任务已离开 `active_tasks`：批量暂停、停止队列、Boost 让位都必须
+    /// 撤销它挂起的恢复，否则旧 writer 的 TaskDone 到达后任务又自己跑起来。
+    #[tokio::test]
+    async fn batch_pauses_cancel_pending_reconnect_resume() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.seed_builtin_queues().await.expect("seed");
+        for (id, queue) in [("a", ""), ("b", "later"), ("x", ""), ("t", "")] {
+            insert_paused_task_in_queue(&db, id, queue).await;
+            db.update_task_status(id, 1, "").await.expect("active");
+        }
+        let mut mgr = sched_manager(&db, 8);
+        mgr.load_queues().await;
+        for (generation, (id, queue)) in [("a", ""), ("b", "later"), ("x", ""), ("t", "")]
+            .into_iter()
+            .enumerate()
+        {
+            occupy_slot(&mut mgr, id, generation as u64 + 1, queue, false);
+            mgr.pause_task_for_reconnect(id).await;
+            mgr.resume_task(id).await;
+            assert!(mgr.has_pending_resume(id), "{id} 应挂着重建连接的恢复");
+        }
+
+        mgr.batch_pause(&["a".to_string()]).await;
+        assert!(!mgr.has_pending_resume("a"), "批量暂停必须撤销挂起的恢复");
+
+        mgr.stop_queue("later".to_string()).await;
+        assert!(!mgr.has_pending_resume("b"), "停止队列必须撤销挂起的恢复");
+
+        // Boost 处于窗口内的 t：t 视为已在途（不取消 Boost），窗口内的 x 让位暂停。
+        mgr.set_priority_task("t".to_string()).await.expect("boost");
+        assert_eq!(mgr.priority_task_id.as_deref(), Some("t"));
+        assert!(mgr.has_pending_resume("t"));
+        assert!(!mgr.has_pending_resume("x"), "Boost 让位必须撤销挂起的恢复");
+        assert!(mgr.auto_paused_ids.iter().any(|id| id == "x"));
+    }
+
     /// 下载器已写入完成态、TaskDone 尚未消费时，暂停/取消不得把成品改写成
     /// paused/cancelled，也不得摘掉 active 条目（完成收尾要靠它的世代匹配）。
     #[tokio::test]
@@ -20868,6 +21201,47 @@ mod tests {
             ["t1", "t2", "t3", "t4", "t5"]
         );
         assert!(mgr.auto_paused_ids.is_empty());
+        cancel_all_active(&mgr);
+    }
+
+    /// 重建连接（换全局出口 / 改线程数）暂停 Boost 目标后挂起恢复：旧 writer 收尾前若有
+    /// 别的任务回流触发 `reconcile_priority`，Boost 不得被当作「目标已离场」结束；
+    /// 用户暂停（无挂起恢复）照常结束 Boost。
+    #[tokio::test]
+    async fn reconcile_priority_keeps_boost_while_reconnect_resume_is_pending() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.seed_builtin_queues().await.expect("seed");
+        insert_paused_task_in_queue(&db, "yielded", "").await;
+        let mut mgr = sched_manager(&db, 1);
+        mgr.priority_task_id = Some("boosted".into());
+        mgr.record_auto_paused("yielded");
+        mgr.pending_pauses.insert(
+            "boosted".into(),
+            PendingPause {
+                generation: 1,
+                notify: false,
+                resume_requested: true,
+                queue_id: String::new(),
+                is_bt: false,
+            },
+        );
+
+        mgr.reconcile_priority().await;
+        assert_eq!(mgr.priority_task_id.as_deref(), Some("boosted"));
+        assert_eq!(mgr.auto_paused_ids, vec!["yielded".to_string()]);
+        assert!(!mgr.active_tasks.contains_key("yielded"));
+
+        if let Some(pending) = mgr.pending_pauses.get_mut("boosted") {
+            pending.resume_requested = false;
+        }
+        mgr.reconcile_priority().await;
+        assert!(
+            mgr.priority_task_id.is_none(),
+            "no pending resume → boost ends"
+        );
+        assert!(mgr.active_tasks.contains_key("yielded"));
         cancel_all_active(&mgr);
     }
 
