@@ -568,7 +568,7 @@ const zhTW = {
   "options.sniff.lowConfidenceDesc": "在資源清單中同時顯示判斷把握較低的項目",
   "options.sniff.maxResources": "單頁嗅探上限",
   "options.sniff.maxResourcesDesc": "頁面連結掃描到這麼多筆後停止（1–{max}）。數值過大時長清單頁可能變慢；網路請求中嗅探到的媒體不計入。",
-  "options.sites.desc": "為單一站點覆寫全域行為：是否接管下載、是否嗅探、懸浮球與浮鈕，以及儲存目錄。站點設定對其子網域同樣生效。",
+  "options.sites.desc": "為單一站點覆寫全域行為：是否接管下載、是否嗅探、懸浮球與浮鈕，以及儲存目錄。站點設定對其子網域同樣生效。內網 / 私有 IP 可填 CIDR 網段，如 10.0.0.0/8、192.168.0.0/16、fd00::/8；精確 IP 優先於網段，多個網段命中時取前綴最長者。",
   "options.sites.colHost": "站點",
   "options.sites.colIntercept": "接管",
   "options.sites.colSniff": "嗅探",
