@@ -143,7 +143,7 @@ pub struct MarketClient {
     manager: std::sync::Arc<PluginManager>,
     db: Db,
     clients: crate::egress::RoutedClients,
-    /// 包下载专用：重定向逐跳复查 https 与字面量 IP 守卫（初始 URL 的
+    /// 包下载与索引的镜像尝试专用：重定向逐跳复查 https 与字面量 IP 守卫（初始 URL 的
     /// `mirror_url_allowed` 只管第一跳）。
     download_clients: crate::egress::RoutedClients,
     /// 宿主自身下载的统一出口：包（content_hash 钉住）可经插件改写来源（如 GitHub 加速）。
@@ -202,11 +202,12 @@ impl MarketClient {
 
     /// 拉取索引（逐源 failover，首个成功者胜出）。校验 sequence 不回退（防回滚）。
     pub async fn fetch_index(&self) -> Result<MarketIndex, MarketError> {
+        let mirror_base = crate::components::component_mirror_base(&self.db).await;
         let mut last_err = MarketError::AllMirrorsFailed;
         for src in &self.sources {
-            match self.fetch_index_from(src).await {
-                Ok(idx) => {
-                    if let Err(error) = self.check_and_update_watermark(&idx).await {
+            match self.fetch_index_from(src, &mirror_base).await {
+                Ok((idx, origin)) => {
+                    if let Err(error) = self.check_and_update_watermark(&idx, origin).await {
                         log_warn!(
                             "[market] index source={} rejected: {error:#}",
                             safe_url(src)
@@ -227,8 +228,58 @@ impl MarketClient {
         Err(last_err)
     }
 
-    async fn fetch_index_from(&self, url: &str) -> Result<MarketIndex, MarketError> {
-        let client = self.clients.client(url).await.map_err(client_build_error)?;
+    /// 索引是完整性锚（包 `content_hash`、下载地址、授权展示的 permissions 都来自它），
+    /// 所以先直连原地址，只有失败（网络 / 非 2xx / 超限 / 解析）才试用户配置的 GitHub
+    /// 镜像（`component_mirror_base`，#847；与组件校验和 `fetch_expected_sha256` 同序）。
+    /// 镜像这次尝试走带重定向守卫的 `download_clients`，且镜像返回旧索引（sequence 低于
+    /// 本地高水位，反代缓存常见）视为镜像失败。原地址返回的回退仍由 `fetch_index` 的
+    /// 防回滚判定作为硬错误处理；镜像结果不推进高水位（见 [`next_watermark`]）。
+    async fn fetch_index_from(
+        &self,
+        url: &str,
+        mirror_base: &str,
+    ) -> Result<(MarketIndex, IndexOrigin), MarketError> {
+        let mut last_err = None;
+        for attempt in index_attempts(url, mirror_base) {
+            let is_mirror = attempt != url;
+            let clients = if is_mirror {
+                &self.download_clients
+            } else {
+                &self.clients
+            };
+            match self.fetch_index_url(clients, &attempt).await {
+                Ok(idx) if !is_mirror => return Ok((idx, IndexOrigin::Direct)),
+                Ok(idx) => {
+                    let watermark = self.read_watermark(&idx.index_id).await?;
+                    if mirror_index_acceptable(idx.sequence, watermark) {
+                        return Ok((idx, IndexOrigin::Mirror));
+                    }
+                    log_warn!(
+                        "[market] index mirror={} is stale (sequence {} < watermark {}), ignoring",
+                        safe_url(&attempt),
+                        idx.sequence,
+                        watermark
+                    );
+                }
+                Err(error) => {
+                    log_warn!(
+                        "[market] index {}={} failed: {error:#}",
+                        if is_mirror { "mirror" } else { "source" },
+                        safe_url(&attempt)
+                    );
+                    last_err = Some(error);
+                }
+            }
+        }
+        Err(last_err.unwrap_or(MarketError::AllMirrorsFailed))
+    }
+
+    async fn fetch_index_url(
+        &self,
+        clients: &crate::egress::RoutedClients,
+        url: &str,
+    ) -> Result<MarketIndex, MarketError> {
+        let client = clients.client(url).await.map_err(client_build_error)?;
         let mut resp = client.get(url).send().await.map_err(network_error)?;
         if !resp.status().is_success() {
             return Err(MarketError::Network(format!(
@@ -255,25 +306,29 @@ impl MarketClient {
             .map_err(|e| MarketError::IndexParse(e.to_string()))
     }
 
-    /// per-index_id 高水位防回滚：索引 sequence 不得低于本地已见最高值。
-    async fn check_and_update_watermark(&self, idx: &MarketIndex) -> Result<(), MarketError> {
-        let key = format!("market.{}.sequence", idx.index_id);
-        let watermark: u64 = self
+    /// 本地已见的该索引最高 sequence；从未见过为 0。
+    async fn read_watermark(&self, index_id: &str) -> Result<u64, MarketError> {
+        let key = format!("market.{index_id}.sequence");
+        Ok(self
             .db
             .get_config(&key)
             .await
             .map_err(|e| PluginError::Runtime(format!("读取市场高水位失败: {e:#}")))?
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        if idx.sequence < watermark {
-            return Err(MarketError::SequenceRollback {
-                seen: idx.sequence,
-                watermark,
-            });
-        }
-        if idx.sequence > watermark {
+            .unwrap_or(0))
+    }
+
+    /// per-index_id 高水位防回滚：索引 sequence 不得低于本地已见最高值；只有直连结果推进高水位。
+    async fn check_and_update_watermark(
+        &self,
+        idx: &MarketIndex,
+        origin: IndexOrigin,
+    ) -> Result<(), MarketError> {
+        let key = format!("market.{}.sequence", idx.index_id);
+        let watermark = self.read_watermark(&idx.index_id).await?;
+        if let Some(next) = next_watermark(idx.sequence, watermark, origin)? {
             self.db
-                .set_config(&key, &idx.sequence.to_string())
+                .set_config(&key, &next.to_string())
                 .await
                 .map_err(|e| PluginError::Runtime(format!("写入市场高水位失败: {e:#}")))?;
         }
@@ -333,6 +388,7 @@ impl MarketClient {
             .to_ascii_lowercase();
         // 下载错误不能盖掉已确认的内容错误；所有镜像仍继续尝试。
         let mut verification_error = None;
+        let user_mirror_base = crate::components::component_mirror_base(&self.db).await;
         for url in &entry.mirrors {
             // 镜像白名单：https-only（防降级）+ 字面量 IP 必须可全局路由（联邦
             // 索引的镜像 URL 不可全信，挡「把环回/内网地址伪装成镜像」的 SSRF
@@ -347,10 +403,12 @@ impl MarketClient {
                 );
                 continue;
             }
-            // 插件改写（如 GitHub 加速）只换来源，内容仍由 content_hash 钉住；改写地址
-            // 同样过镜像守卫，失败或内容不符回退原镜像地址。索引不经插件（它是完整性锚）。
+            // 来源优先级：用户配置的 GitHub 镜像（#847）→ 插件改写（如 GitHub 加速）→ 原地址。
+            // 两种改写都只换来源，内容仍由 content_hash 钉住；改写地址同样过镜像守卫，
+            // 失败或内容不符回退下一来源。索引不经插件（它是完整性锚）。
             let route = self.egress.route_verified(url).await;
-            for attempt in route.attempts() {
+            let attempts = package_attempts(url, &user_mirror_base, route.attempts());
+            for attempt in attempts {
                 if !mirror_url_allowed(&attempt.url) {
                     log_warn!(
                         "[market] plugin={:?} version={:?} source={} rewritten by {:?} rejected by URL guard",
@@ -608,6 +666,84 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// 用户配置的 GitHub 镜像（`component_mirror_base`，#847）对 `url` 的改写地址；不适用
+/// （未配置、非 GitHub 地址、镜像非 https）返回 `None`。`raw.githubusercontent.com` 先换成
+/// 等价的 `github.com/<owner>/<repo>/raw/<ref>/<path>`（GitHub 自身会重定向到 raw），
+/// 这样默认索引源也能走与 Release 资产相同的前缀镜像。
+fn user_mirror_url(url: &str, mirror_base: &str) -> Option<String> {
+    let web = github_raw_to_web(url);
+    crate::components::https_mirror_url(web.as_deref().unwrap_or(url), mirror_base)
+}
+
+/// 镜像返回的索引是否可接受：sequence 不低于本地高水位。镜像（GitHub 反代）常缓存旧
+/// 文件，旧索引不是攻击证据，应忽略并保留直连的结果；直连返回的回退才是硬错误。
+fn mirror_index_acceptable(sequence: u64, watermark: u64) -> bool {
+    sequence >= watermark
+}
+
+/// 索引取自哪里：直连索引源，或直连失败后的用户 GitHub 镜像。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexOrigin {
+    Direct,
+    Mirror,
+}
+
+/// 防回滚判定与高水位推进：sequence 低于高水位是回滚（硬错误）；更高时只有直连结果推进
+/// 高水位，返回要写入的新值。镜像只补可用性、不改写防回滚状态——否则恶意或出错的镜像报出
+/// 超大 sequence 后，真实上游索引会被永久判为回滚，且没有重置入口。
+fn next_watermark(
+    sequence: u64,
+    watermark: u64,
+    origin: IndexOrigin,
+) -> Result<Option<u64>, MarketError> {
+    if sequence < watermark {
+        return Err(MarketError::SequenceRollback {
+            seen: sequence,
+            watermark,
+        });
+    }
+    Ok((origin == IndexOrigin::Direct && sequence > watermark).then_some(sequence))
+}
+
+/// 索引源 `url` 的请求顺序：先直连原地址（索引是完整性锚，不让第三方镜像先于上游），
+/// 仅直连失败才轮到用户 GitHub 镜像（`component_mirror_base`，#847；与组件校验和同序）。
+/// 镜像地址须适用（https、GitHub 前缀）并过 [`mirror_url_allowed`]。
+fn index_attempts(url: &str, mirror_base: &str) -> Vec<String> {
+    let mut attempts = vec![url.to_string()];
+    attempts.extend(user_mirror_url(url, mirror_base).filter(|m| mirror_url_allowed(m)));
+    attempts
+}
+
+/// 插件包单个镜像地址的请求顺序：用户 GitHub 镜像（#847，仅适用时）→ 插件改写（`route`
+/// 里的尝试，原地址在其末尾兜底）。
+fn package_attempts(
+    url: &str,
+    mirror_base: &str,
+    route_attempts: Vec<crate::egress::EgressAttempt>,
+) -> Vec<crate::egress::EgressAttempt> {
+    let mut attempts = Vec::with_capacity(route_attempts.len() + 1);
+    if let Some(mirrored) = user_mirror_url(url, mirror_base) {
+        attempts.push(crate::egress::EgressAttempt {
+            url: mirrored,
+            headers: Vec::new(),
+            plugin: None,
+        });
+    }
+    attempts.extend(route_attempts);
+    attempts
+}
+
+/// `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` →
+/// `https://github.com/<owner>/<repo>/raw/<ref>/<path>`；路径不足 4 段（无文件）不转换。
+fn github_raw_to_web(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://raw.githubusercontent.com/")?;
+    let mut parts = rest.splitn(3, '/');
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    let tail = parts.next().filter(|s| s.contains('/'))?;
+    Some(format!("https://github.com/{owner}/{repo}/raw/{tail}"))
+}
+
 /// 镜像 URL 白名单：https-only + 字面量 IP host 必须可全局路由。
 ///
 /// hostname 不做 DNS 级过滤（自托管 LAN 索引经 hostname 仍可用，v1 取舍）；
@@ -639,9 +775,176 @@ fn parsed_url_allowed(parsed: &url::Url) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        MarketError, MarketIndex, check_expected_version, mirror_url_allowed, safe_error_chain,
-        safe_url, sha256_hex,
+        IndexOrigin, MarketError, MarketIndex, check_expected_version, index_attempts,
+        mirror_index_acceptable, mirror_url_allowed, next_watermark, package_attempts,
+        safe_error_chain, safe_url, sha256_hex, user_mirror_url,
     };
+    use crate::egress::EgressAttempt;
+
+    #[test]
+    fn index_attempts_direct_first_then_mirror() {
+        let raw = super::DEFAULT_INDEX_SOURCES[0];
+        // 完整性锚：直连在前、镜像在后。
+        assert_eq!(
+            index_attempts(raw, MIRROR),
+            vec![
+                raw.to_string(),
+                "https://gh.example.com/gh/zerx-lab/fluxdown-plugin-index/raw/main/index.json"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn index_attempts_direct_only_when_mirror_not_applicable() {
+        let raw = super::DEFAULT_INDEX_SOURCES[0];
+        let jsdelivr = super::DEFAULT_INDEX_SOURCES[1];
+        // 未配置 / http 镜像 / 非 GitHub 源：只有直连。
+        assert_eq!(index_attempts(raw, ""), vec![raw.to_string()]);
+        assert_eq!(
+            index_attempts(raw, "http://gh.example.com"),
+            vec![raw.to_string()]
+        );
+        assert_eq!(index_attempts(jsdelivr, MIRROR), vec![jsdelivr.to_string()]);
+        // 镜像基址指向环回 / 内网字面量 IP：过 URL 守卫被剔除。
+        assert_eq!(
+            index_attempts(raw, "https://127.0.0.1:8443/gh"),
+            vec![raw.to_string()]
+        );
+    }
+
+    #[test]
+    fn mirror_index_acceptable_only_when_not_below_watermark() {
+        // 镜像缓存了旧索引（seq 3 < 高水位 5）→ 不接受。
+        assert!(!mirror_index_acceptable(3, 5));
+        // 持平（同版本重复拉取）与更新均接受；首次（高水位 0）接受。
+        assert!(mirror_index_acceptable(5, 5));
+        assert!(mirror_index_acceptable(6, 5));
+        assert!(mirror_index_acceptable(0, 0));
+    }
+
+    #[test]
+    fn only_direct_index_advances_watermark() {
+        assert_eq!(
+            next_watermark(7, 5, IndexOrigin::Direct).ok(),
+            Some(Some(7))
+        );
+        assert_eq!(next_watermark(5, 5, IndexOrigin::Direct).ok(), Some(None));
+        // 镜像报出更高 sequence：接受本次结果，但不写入高水位，真实上游随后不被判回滚。
+        assert_eq!(
+            next_watermark(u64::MAX, 5, IndexOrigin::Mirror).ok(),
+            Some(None)
+        );
+        assert!(matches!(
+            next_watermark(3, 5, IndexOrigin::Direct),
+            Err(MarketError::SequenceRollback {
+                seen: 3,
+                watermark: 5
+            })
+        ));
+        assert!(next_watermark(3, 5, IndexOrigin::Mirror).is_err());
+    }
+
+    fn attempt(url: &str, plugin: Option<&str>) -> EgressAttempt {
+        EgressAttempt {
+            url: url.to_string(),
+            headers: if plugin.is_some() {
+                vec![("x-k".to_string(), "v".to_string())]
+            } else {
+                Vec::new()
+            },
+            plugin: plugin.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn package_attempts_orders_user_mirror_then_plugin_then_original() {
+        let gh = "https://github.com/o/r/releases/download/v1/a.fxplug";
+        let rewritten = attempt("https://plugin-cdn.example.com/a.fxplug", Some("gh-accel"));
+        let original = attempt(gh, None);
+        let got = package_attempts(gh, MIRROR, vec![rewritten.clone(), original.clone()]);
+        assert_eq!(
+            got,
+            vec![
+                attempt(
+                    "https://gh.example.com/gh/o/r/releases/download/v1/a.fxplug",
+                    None
+                ),
+                rewritten,
+                original,
+            ]
+        );
+    }
+
+    #[test]
+    fn package_attempts_matches_baseline_when_mirror_not_applicable() {
+        let gh = "https://github.com/o/r/releases/download/v1/a.fxplug";
+        let route = vec![attempt(gh, None)];
+        // 未配置镜像、http 镜像：与基线（仅 route 的尝试）一致。
+        assert_eq!(package_attempts(gh, "", route.clone()), route);
+        assert_eq!(
+            package_attempts(gh, "http://gh.example.com", route.clone()),
+            route
+        );
+        // 非 GitHub 地址不插入镜像。
+        let cdn = "https://cdn.example.com/a.fxplug";
+        let route = vec![attempt(cdn, None)];
+        assert_eq!(package_attempts(cdn, MIRROR, route.clone()), route);
+    }
+
+    const MIRROR: &str = "https://gh.example.com/gh";
+
+    #[test]
+    fn user_mirror_rewrites_github_release_assets_and_raw_index() {
+        assert_eq!(
+            user_mirror_url(
+                "https://github.com/zerx-lab/p/releases/download/v1/a.fxplug",
+                MIRROR
+            )
+            .as_deref(),
+            Some("https://gh.example.com/gh/zerx-lab/p/releases/download/v1/a.fxplug")
+        );
+        // 默认索引源 raw.githubusercontent.com → github.com 的 raw 等价路径再走前缀镜像。
+        assert_eq!(
+            user_mirror_url(super::DEFAULT_INDEX_SOURCES[0], MIRROR).as_deref(),
+            Some("https://gh.example.com/gh/zerx-lab/fluxdown-plugin-index/raw/main/index.json")
+        );
+        // 带斜杠的分支名 / 子目录原样保留在 raw/ 之后。
+        assert_eq!(
+            user_mirror_url(
+                "https://raw.githubusercontent.com/o/r/refs/heads/dev/sub/index.json",
+                MIRROR
+            )
+            .as_deref(),
+            Some("https://gh.example.com/gh/o/r/raw/refs/heads/dev/sub/index.json")
+        );
+    }
+
+    #[test]
+    fn user_mirror_skips_non_github_unset_and_insecure() {
+        // 非 GitHub 源（jsdelivr / 自托管）保持原多源回退，不改写。
+        assert_eq!(
+            user_mirror_url(super::DEFAULT_INDEX_SOURCES[1], MIRROR),
+            None
+        );
+        assert_eq!(
+            user_mirror_url("https://cdn.example.com/a.fxplug", MIRROR),
+            None
+        );
+        // 未配置 / 空白 = 不改写。
+        assert_eq!(user_mirror_url(super::DEFAULT_INDEX_SOURCES[0], ""), None);
+        assert_eq!(user_mirror_url(super::DEFAULT_INDEX_SOURCES[0], "  "), None);
+        // http 镜像一律忽略（防明文降级）。
+        assert_eq!(
+            user_mirror_url("https://github.com/o/r/a.fxplug", "http://gh.example.com"),
+            None
+        );
+        // raw 地址缺文件段（仅 owner/repo/ref）不转换。
+        assert_eq!(
+            user_mirror_url("https://raw.githubusercontent.com/o/r/main", MIRROR),
+            None
+        );
+    }
 
     #[test]
     fn diagnostics_keep_causes_but_strip_all_url_secrets() {

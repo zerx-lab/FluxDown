@@ -375,7 +375,7 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
     // ── 受管组件手动路径（空 = 自动解析）──
     field("component.ffmpeg.path", DaemonConfigKind::Text, ""),
     field("component.ytdlp.path", DaemonConfigKind::Text, ""),
-    // 组件下载镜像基址（空 = 直连 GitHub）；只接受 https。
+    // 组件下载与插件市场（索引 / 插件包）的 GitHub 镜像基址（空 = 直连 GitHub）；只接受 https。
     field("component_mirror_base", DaemonConfigKind::Text, ""),
     // ── 日志 ──
     // 日志目录总大小上限（MB），daemon 启动与每次配置提交后应用到引擎 logger。
