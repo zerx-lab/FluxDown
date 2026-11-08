@@ -19,6 +19,8 @@
 //! - 单次调用严格 per-call fetch 上限退化为**全局并发 fetch 上限**（对宿主保护更强）。
 //! - 配置代理时 DNS 由代理侧解析，[`GuardResolver`] 不参与（hostname 级过滤失效；
 //!   字面量 IP 前置校验与逐跳重定向校验仍然生效）。代理由用户显式配置，视为可信出口。
+//!   DNS 应答全部是 198.18.0.0/15 fake-ip 时同理，视为 TUN 代理出口原样放行（见
+//!   [`guard_filter`]）：真实目标由 TUN 代理软件解析。
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -32,6 +34,7 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::db::Db;
 use crate::logger::{log_error, log_info, log_warn};
+use crate::multi_nic::is_fake_ip;
 use crate::proxy_config::ProxyConfig;
 
 use super::call_egress::{CallEgress, NetObserver};
@@ -243,10 +246,9 @@ fn is_v6_routable(ip: Ipv6Addr) -> bool {
     true
 }
 
-/// 守卫用自定义 DNS 解析器：解析后仅保留可全局路由的地址。解析出地址却全被过滤（内网
-/// 主机名）时报 [`GuardError::BlockedHost`]——这是守卫拦截而不是网络故障，Auto 不得据此
-/// 换代理重跑（代理侧解析会绕开守卫）。例外：全落在 198.18.0.0/15 的是 TUN 代理的 fake-ip
-/// 应答，直连本就走不通，按网络故障交给换路。
+/// 守卫用自定义 DNS 解析器：解析后仅保留可全局路由的地址（过滤规则见 [`guard_filter`]）。
+/// 解析出地址却全被过滤（内网主机名）时报 [`GuardError::BlockedHost`]——这是守卫拦截而不是
+/// 网络故障，Auto 不得据此换代理重跑（代理侧解析会绕开守卫）。
 pub(super) struct GuardResolver;
 
 impl reqwest::dns::Resolve for GuardResolver {
@@ -255,31 +257,37 @@ impl reqwest::dns::Resolve for GuardResolver {
         Box::pin(async move {
             let resolved: Vec<SocketAddr> =
                 tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
-            let filtered: Vec<SocketAddr> = resolved
-                .iter()
-                .copied()
-                .filter(|sa| is_globally_routable_unicast(sa.ip()))
-                .collect();
-            if filtered.is_empty() && !resolved.iter().all(|sa| is_fake_ip(sa.ip())) {
-                return Err(
-                    Box::new(GuardError::BlockedHost) as Box<dyn std::error::Error + Send + Sync>
-                );
-            }
-            let iter: reqwest::dns::Addrs = Box::new(filtered.into_iter());
+            let kept = guard_filter(resolved)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            let iter: reqwest::dns::Addrs = Box::new(kept.into_iter());
             Ok(iter)
         })
     }
 }
 
-/// TUN 代理 fake-ip 段（198.18.0.0/15，RFC 2544 基准测试段）。
-fn is_fake_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            o[0] == 198 && (o[1] & 0xfe) == 18
-        }
-        IpAddr::V6(_) => false,
+/// DNS 应答过滤：
+/// - 含可全局路由地址：只保留这些（混合应答里的内网地址丢弃）；
+/// - 全落在 198.18.0.0/15：这是 TUN 代理（Clash / sing-box 等）的 fake-ip 应答，该段正是
+///   经 TUN 入隧道、由代理软件还原域名的地址，原样交给连接器；丢弃会让连接器拿到空地址表，
+///   报 "tcp connect error: Network unreachable"，TUN 下直连必败；
+/// - 其余全是内网 / 保留段：[`GuardError::BlockedHost`]；
+/// - 空应答：原样返回空表（由连接器报错，与解析失败同属网络故障）。
+fn guard_filter(resolved: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, GuardError> {
+    if resolved.is_empty() {
+        return Ok(resolved);
     }
+    let routable: Vec<SocketAddr> = resolved
+        .iter()
+        .copied()
+        .filter(|sa| is_globally_routable_unicast(sa.ip()))
+        .collect();
+    if !routable.is_empty() {
+        return Ok(routable);
+    }
+    if resolved.iter().all(|sa| is_fake_ip(sa.ip())) {
+        return Ok(resolved);
+    }
+    Err(GuardError::BlockedHost)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2083,12 +2091,59 @@ fn has_percent_env_var(v: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        YTDLP_STDOUT_CAP_MAX, YTDLP_STDOUT_CAP_MIN, arg_reject_reason, clamp_cap,
-        collect_response_headers, is_globally_routable_unicast, normalize_explicit_auth_ref,
-        parse_cap, plugin_workspace, truncate_utf8, validate_ffmpeg_args, validate_ytdlp_args,
-        ytdlp_args_reject_reason, ytdlp_stdout_cap,
+        GuardError, YTDLP_STDOUT_CAP_MAX, YTDLP_STDOUT_CAP_MIN, arg_reject_reason, clamp_cap,
+        collect_response_headers, guard_filter, is_globally_routable_unicast,
+        normalize_explicit_auth_ref, parse_cap, plugin_workspace, truncate_utf8,
+        validate_ffmpeg_args, validate_ytdlp_args, ytdlp_args_reject_reason, ytdlp_stdout_cap,
     };
-    use std::net::IpAddr;
+    use std::net::{IpAddr, SocketAddr};
+
+    fn sa(ip: &str) -> SocketAddr {
+        SocketAddr::new(ip.parse::<IpAddr>().unwrap(), 0)
+    }
+
+    #[test]
+    fn guard_filter_passes_all_fake_ip_through_for_tun() {
+        let resolved = vec![sa("198.18.0.42"), sa("198.19.255.1")];
+        assert_eq!(guard_filter(resolved.clone()).ok(), Some(resolved));
+    }
+
+    #[test]
+    fn guard_filter_keeps_only_public_in_mixed_answer() {
+        let resolved = vec![sa("198.18.0.42"), sa("142.250.80.46"), sa("10.0.0.1")];
+        assert_eq!(guard_filter(resolved).ok(), Some(vec![sa("142.250.80.46")]));
+    }
+
+    #[test]
+    fn guard_filter_blocks_internal_only_answers() {
+        for set in [
+            vec![sa("10.0.0.1")],
+            vec![sa("127.0.0.1"), sa("192.168.1.5")],
+            // fake-ip 与内网混合不构成 TUN 应答，仍拦截
+            vec![sa("198.18.0.1"), sa("10.0.0.1")],
+            vec![sa("::1")],
+        ] {
+            assert!(matches!(guard_filter(set), Err(GuardError::BlockedHost)));
+        }
+    }
+
+    #[test]
+    fn guard_filter_empty_answer_stays_empty() {
+        assert_eq!(guard_filter(Vec::new()).ok(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn guard_filter_treats_ipv4_mapped_fake_ip_as_fake_ip() {
+        // sing-box inet6_range 等给出的 IPv4-mapped 应答与 v4 fake-ip 混合：整体视为 TUN 应答
+        let resolved = vec![sa("198.18.0.42"), sa("::ffff:198.19.0.7")];
+        assert_eq!(guard_filter(resolved.clone()).ok(), Some(resolved));
+        // mapped 的内网地址不是 fake-ip，仍拦截
+        assert!(matches!(
+            guard_filter(vec![sa("::ffff:198.18.0.1"), sa("::ffff:10.0.0.1")]),
+            Err(GuardError::BlockedHost)
+        ));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn fs_write_protects_new_and_existing_sensitive_files()

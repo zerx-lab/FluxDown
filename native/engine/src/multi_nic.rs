@@ -146,8 +146,9 @@ pub struct PreparedLinks {
 // 纯判据
 // ---------------------------------------------------------------------------
 
-/// fake-IP 段（RFC 2544 基准测试段，Clash/sing-box 等 TUN 代理的默认 fake-IP）。
-fn is_fake_ip(ip: IpAddr) -> bool {
+/// fake-IP 段（RFC 2544 基准测试段，Clash/sing-box 等 TUN 代理的默认 fake-IP）。含
+/// IPv4-mapped IPv6。插件 fetch 守卫（`plugin::bridge::guard_filter`）共用此判定。
+pub(crate) fn is_fake_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let o = v4.octets();

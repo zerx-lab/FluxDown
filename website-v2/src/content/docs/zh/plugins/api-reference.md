@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "4329e9d0c5b4"
+sourceHash: "426a6413a002"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -332,7 +332,7 @@ HTTP 客户端。`opts`：
 | 规则 | 值 |
 |---|---|
 | 协议 | 仅 `http` / `https` |
-| 目标地址 | 仅限公网可路由地址。环回、局域网、链路本地、CGNAT、文档 / 基准测试地址段和云元数据 IP 都被拦截——对字面量 URL、DNS 解析结果（因此能防 DNS rebinding）以及每一跳重定向都会检查。用户在应用里配置了代理时，DNS 由代理解析，只有字面量 IP 与重定向检查生效。 |
+| 目标地址 | 仅限公网可路由地址。环回、局域网、链路本地、CGNAT、文档 / 基准测试地址段和云元数据 IP 都被拦截——对字面量 URL、DNS 解析结果（因此能防 DNS rebinding）以及每一跳重定向都会检查。用户在应用里配置了代理时，DNS 由代理解析，只有字面量 IP 与重定向检查生效。例外：DNS 应答全部落在 198.18.0.0/15（Clash / sing-box 等 TUN 代理的 fake-ip）时按 TUN 隧道放行，由代理软件解析真实目标，此时与配置代理相同，只有字面量 IP 与重定向检查生效。 |
 | 开发模式例外 | 通过「从目录安装（开发模式）」加载的插件不受上述公网限制，可访问 `localhost`、局域网等地址，便于连接本机服务联调。它与其他插件一样遵循代理设置与站点规则，只是环回、局域网私网段与本地域名（`.local`、`.lan`、`.home.arpa`、`.internal`）恒直连；正式安装的插件行为不变。 |
 | 响应体上限 | 8 MB，超出截断 |
 | 单请求超时 | 10 秒 |

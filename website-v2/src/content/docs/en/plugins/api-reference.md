@@ -331,7 +331,7 @@ Guard rails, all enforced host-side:
 | Rule | Value |
 |---|---|
 | Schemes | `http` / `https` only |
-| Destinations | Publicly routable addresses only. Loopback, LAN, link-local, CGNAT, documentation/benchmark ranges and cloud-metadata IPs are blocked — checked against the literal URL, at DNS resolution (so DNS rebinding is covered), and again on every redirect hop. When the user has configured a proxy in the app, DNS is resolved by the proxy and only the literal-IP and redirect checks apply. |
+| Destinations | Publicly routable addresses only. Loopback, LAN, link-local, CGNAT, documentation/benchmark ranges and cloud-metadata IPs are blocked — checked against the literal URL, at DNS resolution (so DNS rebinding is covered), and again on every redirect hop. When the user has configured a proxy in the app, DNS is resolved by the proxy and only the literal-IP and redirect checks apply. Exception: when the DNS answer falls entirely within 198.18.0.0/15 (fake-IP from TUN proxies such as Clash / sing-box), the request is let through into the TUN tunnel and the proxy software resolves the real target; as with a configured proxy, only the literal-IP and redirect checks apply. |
 | Dev-mode exception | Plugins loaded through "Install from directory (developer mode)" are not subject to the public-address restriction: they can reach `localhost`, LAN hosts, etc. so they can talk to local services during development. They follow the same proxy settings and site rules as other plugins, except that loopback, private LAN ranges and local domains (`.local`, `.lan`, `.home.arpa`, `.internal`) are always reached directly. Normally installed plugins are unchanged. |
 | Response body cap | 8 MB, then truncated |
 | Per-request timeout | 10 s |
