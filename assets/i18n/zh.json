@@ -1142,6 +1142,8 @@
   "selectDefaultSaveDir": "选择默认保存目录",
   "rememberLastSaveDir": "跟随上次保存位置",
   "rememberLastSaveDirDesc": "开启后新建下载默认使用上次下载的保存位置，而非固定的默认目录",
+  "rememberLastDownloadTarget": "跟随上次下载目标设备",
+  "rememberLastDownloadTargetDesc": "开启后新建下载的「下载到」恢复上次选择的设备；关闭时新建下载始终默认下载到本机。仅保存在本设备",
   "saveDirHistory": "记住历史保存路径",
   "saveDirHistoryDesc": "在新建下载的保存目录下拉中列出最近使用过的路径，仅保存在本设备",
   "clearSaveDirHistory": "历史保存路径",
