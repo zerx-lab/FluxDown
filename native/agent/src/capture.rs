@@ -54,8 +54,9 @@ impl CaptureOutcome {
 /// 捕获来源，决定是否需要用户确认。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureOrigin {
-    /// 本机用户显式交来的链接（系统打开链接、拖入）：直接建任务。
-    Direct,
+    /// 系统默认处理程序交来的链接（`magnet:` / `ed2k://` / 直链）：遵循「免打扰下载」偏好——
+    /// 开启时全选、不二次选择直接建任务；关闭时排入确认队列，由官方 UI 弹新建下载窗口。
+    SystemOpen,
     /// 浏览器扩展 / 用户脚本 / NMH 等外部接管：按「免打扰下载」偏好静默或确认。
     External,
     /// 需要用户过目的探测结果（剪贴板监听）：恒入确认队列。
@@ -226,10 +227,10 @@ impl CaptureService {
             .collect()
     }
 
-    /// 按来源分流：`Direct` 与开启免打扰的 `External` 直接提交 daemon，其余排入确认队列（外壳
+    /// 按来源分流：开启免打扰的 `SystemOpen` / `External` 直接提交 daemon，其余排入确认队列（外壳
     /// 控制循环据快照在没有 UI 时拉起官方 UI）。批量请求（换行连接的多 URL）先拆成逐条请求。
     ///
-    /// 保存目录优先级：捕获方指定 > 分类目录 > （仅静默）跟随上次 > daemon 默认（原生移动端 `SilentCapture` 同序）。
+    /// 保存目录优先级：捕获方指定 > 分类目录 > （仅 `External` 静默）跟随上次 > daemon 默认（原生移动端 `SilentCapture` 同序）。
     /// 捕获方未指定目录时分类目录由 daemon 按初始名与下载完成时的最终文件名确定（[`CategoryPlan`]）；
     /// 确认路径把按捕获名命中的分类目录写进待确认摘要，官方表单据此预填。
     pub async fn submit(
@@ -261,7 +262,7 @@ impl CaptureService {
         if requests.is_empty() {
             return Ok(json!({ "taskIds": [] }));
         }
-        if origin == CaptureOrigin::Direct {
+        if origin == CaptureOrigin::SystemOpen && policy.silent {
             return self.create_all(requests, None, true, None).await;
         }
         if origin == CaptureOrigin::External && policy.silent {
@@ -987,8 +988,8 @@ mod tests {
 
     use super::{
         CaptureError, CaptureOrigin, CaptureService, CategoryPlan, DownloadRequest, ExternalPolicy,
-        captured_create_request, into_preview_request, merge_confirmed_request,
-        merge_group_request, pending_capture_dto, split_batch,
+        SILENT_DOWNLOAD_PREF, captured_create_request, into_preview_request,
+        merge_confirmed_request, merge_group_request, pending_capture_dto, split_batch,
     };
 
     fn preferences(
@@ -1044,6 +1045,32 @@ mod tests {
     async fn silent_external_capture_creates_directly_instead_of_prompting() {
         let capture = service(json!({ "download.silent_download": true }));
         let result = capture.submit(captured(), CaptureOrigin::External).await;
+        assert!(matches!(result, Err(super::CaptureError::Daemon(_))));
+        assert!(capture.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn system_open_follows_silent_download_preference() {
+        // 免打扰关闭：系统打开的链接入确认队列（弹新建下载窗口），不建任务。
+        let capture = service(json!({ "download.silent_download": false }));
+        let queued = capture
+            .submit(captured(), CaptureOrigin::SystemOpen)
+            .await
+            .expect("queued for confirmation");
+        assert_eq!(queued["transactionIds"].as_array().map(Vec::len), Some(1));
+        assert_eq!(capture.list().await.len(), 1);
+
+        // 偏好缺省视同关闭。
+        let capture = service(json!({}));
+        capture
+            .submit(captured(), CaptureOrigin::SystemOpen)
+            .await
+            .expect("queued for confirmation");
+        assert_eq!(capture.list().await.len(), 1);
+
+        // 免打扰开启：直接提交 daemon（断开的 daemon 下失败即证明走了建任务路径），不入队。
+        let capture = service(json!({ "download.silent_download": true }));
+        let result = capture.submit(captured(), CaptureOrigin::SystemOpen).await;
         assert!(matches!(result, Err(super::CaptureError::Daemon(_))));
         assert!(capture.list().await.is_empty());
     }
@@ -1614,12 +1641,20 @@ mod tests {
     async fn capture_notifications_preserve_single_intents_and_batch_boundaries() {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (capture, mut calls, daemon_events, stop, server) = daemon_service().await;
+            capture.events.publish(AgentEvent::PreferencesChanged(
+                fluxdown_protocol::AgentPreferencesDto {
+                    revision: 1,
+                    values: [(SILENT_DOWNLOAD_PREF.to_owned(), json!(true))].into(),
+                },
+            ));
             let (mut events, _) = capture.events.subscribe_and_snapshot();
             let single = {
                 let capture = Arc::clone(&capture);
-                tokio::spawn(
-                    async move { capture.submit(get_capture(), CaptureOrigin::Direct).await },
-                )
+                tokio::spawn(async move {
+                    capture
+                        .submit(get_capture(), CaptureOrigin::SystemOpen)
+                        .await
+                })
             };
             let (request, reply) = calls.recv().await.expect("single create");
             assert_eq!(
@@ -1643,7 +1678,10 @@ mod tests {
                     let capture = Arc::clone(&capture);
                     tokio::spawn(async move {
                         capture
-                            .submit_many(vec![get_capture(), get_capture()], CaptureOrigin::Direct)
+                            .submit_many(
+                                vec![get_capture(), get_capture()],
+                                CaptureOrigin::SystemOpen,
+                            )
                             .await
                     })
                 };

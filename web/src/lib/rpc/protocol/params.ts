@@ -530,7 +530,7 @@ export type OpenAssociation = 'torrent' | 'magnet' | 'ed2k';
 export interface CaptureSubmitParams {
   /** 外部下载请求。 */
   request: DownloadRequest;
-  /** true = 直接建任务；缺省 false = 恒排入确认队列。 */
+  /** true = 系统打开的链接：按「免打扰下载」偏好直接建任务，偏好关闭则排入确认队列；缺省 false = 恒排入确认队列。 */
   silent?: boolean;
   association?: OpenAssociation;
 }
