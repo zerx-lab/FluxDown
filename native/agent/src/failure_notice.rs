@@ -51,7 +51,8 @@ fn failed_task(notice: &TaskNoticeDto) -> Option<FailedTask> {
     let task = notice.task.as_ref()?;
     let name = if task.file_name.trim().is_empty() {
         // 尚未解析出文件名就失败：退回不带 userinfo / 查询串 / 片段的地址（口令与令牌常在其中）。
-        redact_urls(&task.url, true)
+        // 先整体截掉查询串：`magnet:?…` 没有 `//`，`redact_urls` 认不出它。
+        redact_urls(task.url.split(['?', '#']).next().unwrap_or_default(), true)
     } else {
         task.file_name.clone()
     };
@@ -81,16 +82,21 @@ fn reason_summary(raw: &str) -> String {
 
 /// 去掉文本里每个 URL 的 userinfo、query 与 fragment（令牌 / 签名 / 口令常在其中）；
 /// `keep_path` 为假时路径也丢弃（令牌也可能内嵌在路径里），只留 `scheme://host[:port]`。
+/// 只认 `scheme://` 形态；`magnet:?…` 这类没有 `//` 的地址由调用方先截掉查询串。
 fn redact_urls(text: &str, keep_path: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some((head, after)) = rest.split_once("://") {
         out.push_str(head);
         out.push_str("://");
+        // URL 只在空白 / 引号 / 尖括号处结束（路径里的裸括号仍属 URL，否则其后的 query 会
+        // 被当作普通文本保留）；reqwest 文案 `for url (https://…)` 收尾的右括号原样放回。
         let end = after
-            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '(' | '\'' | '"' | '<' | '>'))
+            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '<' | '>'))
             .unwrap_or(after.len());
-        let (url, tail) = after.split_at_checked(end).unwrap_or((after, ""));
+        let (segment, tail) = after.split_at_checked(end).unwrap_or((after, ""));
+        let url = segment.trim_end_matches(')');
+        let closing = segment.get(url.len()..).unwrap_or_default();
         let authority_end = url.find(['/', '?', '#']).unwrap_or(url.len());
         let (authority, path) = url.split_at_checked(authority_end).unwrap_or((url, ""));
         out.push_str(
@@ -101,6 +107,7 @@ fn redact_urls(text: &str, keep_path: bool) -> String {
         if keep_path {
             out.push_str(path.split(['?', '#']).next().unwrap_or_default());
         }
+        out.push_str(closing);
         rest = tail;
     }
     out.push_str(rest);
@@ -208,6 +215,25 @@ mod tests {
         assert_eq!(
             receiver.try_recv().ok().map(|f| f.name).as_deref(),
             Some("ftp://h/dir/a.bin")
+        );
+        // 磁力链没有 `//`：整段查询串（含百分号编码的 tracker passkey）都不得进通知。
+        offer(
+            &sender,
+            &notice(
+                "task.failed",
+                "",
+                "magnet:?xt=urn:btih:abc&tr=http%3A%2F%2Ft%2Fa%3Fpasskey%3DSECRET",
+                "",
+            ),
+        );
+        assert_eq!(
+            receiver.try_recv().ok().map(|f| f.name).as_deref(),
+            Some("magnet:")
+        );
+        // 路径里的裸括号不截断 URL；多个 URL 各自脱敏。
+        assert_eq!(
+            reason_summary("GET http://h/a(tok)?x=SECRET failed, see https://[::1]:80/p?k=v"),
+            "GET http://h failed, see https://[::1]:80"
         );
     }
 
