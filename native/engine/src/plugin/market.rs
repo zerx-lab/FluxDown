@@ -206,8 +206,8 @@ impl MarketClient {
         let mut last_err = MarketError::AllMirrorsFailed;
         for src in &self.sources {
             match self.fetch_index_from(src, &mirror_base).await {
-                Ok(idx) => {
-                    if let Err(error) = self.check_and_update_watermark(&idx).await {
+                Ok((idx, origin)) => {
+                    if let Err(error) = self.check_and_update_watermark(&idx, origin).await {
                         log_warn!(
                             "[market] index source={} rejected: {error:#}",
                             safe_url(src)
@@ -233,12 +233,12 @@ impl MarketClient {
     /// 镜像（`component_mirror_base`，#847；与组件校验和 `fetch_expected_sha256` 同序）。
     /// 镜像这次尝试走带重定向守卫的 `download_clients`，且镜像返回旧索引（sequence 低于
     /// 本地高水位，反代缓存常见）视为镜像失败。原地址返回的回退仍由 `fetch_index` 的
-    /// 防回滚判定作为硬错误处理。
+    /// 防回滚判定作为硬错误处理；镜像结果不推进高水位（见 [`next_watermark`]）。
     async fn fetch_index_from(
         &self,
         url: &str,
         mirror_base: &str,
-    ) -> Result<MarketIndex, MarketError> {
+    ) -> Result<(MarketIndex, IndexOrigin), MarketError> {
         let mut last_err = None;
         for attempt in index_attempts(url, mirror_base) {
             let is_mirror = attempt != url;
@@ -248,11 +248,11 @@ impl MarketClient {
                 &self.clients
             };
             match self.fetch_index_url(clients, &attempt).await {
-                Ok(idx) if !is_mirror => return Ok(idx),
+                Ok(idx) if !is_mirror => return Ok((idx, IndexOrigin::Direct)),
                 Ok(idx) => {
                     let watermark = self.read_watermark(&idx.index_id).await?;
                     if mirror_index_acceptable(idx.sequence, watermark) {
-                        return Ok(idx);
+                        return Ok((idx, IndexOrigin::Mirror));
                     }
                     log_warn!(
                         "[market] index mirror={} is stale (sequence {} < watermark {}), ignoring",
@@ -318,19 +318,17 @@ impl MarketClient {
             .unwrap_or(0))
     }
 
-    /// per-index_id 高水位防回滚：索引 sequence 不得低于本地已见最高值。
-    async fn check_and_update_watermark(&self, idx: &MarketIndex) -> Result<(), MarketError> {
+    /// per-index_id 高水位防回滚：索引 sequence 不得低于本地已见最高值；只有直连结果推进高水位。
+    async fn check_and_update_watermark(
+        &self,
+        idx: &MarketIndex,
+        origin: IndexOrigin,
+    ) -> Result<(), MarketError> {
         let key = format!("market.{}.sequence", idx.index_id);
         let watermark = self.read_watermark(&idx.index_id).await?;
-        if idx.sequence < watermark {
-            return Err(MarketError::SequenceRollback {
-                seen: idx.sequence,
-                watermark,
-            });
-        }
-        if idx.sequence > watermark {
+        if let Some(next) = next_watermark(idx.sequence, watermark, origin)? {
             self.db
-                .set_config(&key, &idx.sequence.to_string())
+                .set_config(&key, &next.to_string())
                 .await
                 .map_err(|e| PluginError::Runtime(format!("写入市场高水位失败: {e:#}")))?;
         }
@@ -683,6 +681,30 @@ fn mirror_index_acceptable(sequence: u64, watermark: u64) -> bool {
     sequence >= watermark
 }
 
+/// 索引取自哪里：直连索引源，或直连失败后的用户 GitHub 镜像。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexOrigin {
+    Direct,
+    Mirror,
+}
+
+/// 防回滚判定与高水位推进：sequence 低于高水位是回滚（硬错误）；更高时只有直连结果推进
+/// 高水位，返回要写入的新值。镜像只补可用性、不改写防回滚状态——否则恶意或出错的镜像报出
+/// 超大 sequence 后，真实上游索引会被永久判为回滚，且没有重置入口。
+fn next_watermark(
+    sequence: u64,
+    watermark: u64,
+    origin: IndexOrigin,
+) -> Result<Option<u64>, MarketError> {
+    if sequence < watermark {
+        return Err(MarketError::SequenceRollback {
+            seen: sequence,
+            watermark,
+        });
+    }
+    Ok((origin == IndexOrigin::Direct && sequence > watermark).then_some(sequence))
+}
+
 /// 索引源 `url` 的请求顺序：先直连原地址（索引是完整性锚，不让第三方镜像先于上游），
 /// 仅直连失败才轮到用户 GitHub 镜像（`component_mirror_base`，#847；与组件校验和同序）。
 /// 镜像地址须适用（https、GitHub 前缀）并过 [`mirror_url_allowed`]。
@@ -753,9 +775,9 @@ fn parsed_url_allowed(parsed: &url::Url) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        MarketError, MarketIndex, check_expected_version, index_attempts, mirror_index_acceptable,
-        mirror_url_allowed, package_attempts, safe_error_chain, safe_url, sha256_hex,
-        user_mirror_url,
+        IndexOrigin, MarketError, MarketIndex, check_expected_version, index_attempts,
+        mirror_index_acceptable, mirror_url_allowed, next_watermark, package_attempts,
+        safe_error_chain, safe_url, sha256_hex, user_mirror_url,
     };
     use crate::egress::EgressAttempt;
 
@@ -799,6 +821,28 @@ mod tests {
         assert!(mirror_index_acceptable(5, 5));
         assert!(mirror_index_acceptable(6, 5));
         assert!(mirror_index_acceptable(0, 0));
+    }
+
+    #[test]
+    fn only_direct_index_advances_watermark() {
+        assert_eq!(
+            next_watermark(7, 5, IndexOrigin::Direct).ok(),
+            Some(Some(7))
+        );
+        assert_eq!(next_watermark(5, 5, IndexOrigin::Direct).ok(), Some(None));
+        // 镜像报出更高 sequence：接受本次结果，但不写入高水位，真实上游随后不被判回滚。
+        assert_eq!(
+            next_watermark(u64::MAX, 5, IndexOrigin::Mirror).ok(),
+            Some(None)
+        );
+        assert!(matches!(
+            next_watermark(3, 5, IndexOrigin::Direct),
+            Err(MarketError::SequenceRollback {
+                seen: 3,
+                watermark: 5
+            })
+        ));
+        assert!(next_watermark(3, 5, IndexOrigin::Mirror).is_err());
     }
 
     fn attempt(url: &str, plugin: Option<&str>) -> EgressAttempt {
