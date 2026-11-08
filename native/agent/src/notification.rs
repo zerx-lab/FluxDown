@@ -187,6 +187,13 @@ impl Notifier {
         }
     }
 
+    /// 阻塞发送一条下载失败通知；`silent` 为真时抑制系统提示音（失败提示音由 agent 自己播放）。
+    pub(crate) fn show_failure(&self, title: &str, body: &str, silent: bool) {
+        if let Err(error) = self.send(title, body, None, silent) {
+            tracing::warn!(%error, "could not show failure notification");
+        }
+    }
+
     #[cfg(target_os = "macos")]
     fn send(
         &self,
@@ -444,6 +451,8 @@ pub fn rss_auto_download_text(
 pub fn english_text(key: &str, count: Option<usize>) -> String {
     let template = match key {
         "downloadCompleted" => "Download Complete",
+        "subtitleError" => "Download Failed",
+        "batchDownloadFailed" => "{count} Downloads Failed",
         "openFile" => "Open File",
         "openFolder" => "Open Folder",
         "rssAutoDownloadedToast" => "RSS added {count} download(s)",

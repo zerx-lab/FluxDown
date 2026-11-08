@@ -13,6 +13,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::event_hub::AgentEventHub;
+use crate::failure_notice::{
+    FailedTask, FailureReceiver, NOTIFY_ON_FAIL_DEFAULT, NOTIFY_ON_FAIL_PREF, failure_text,
+};
 use crate::notification::{
     NoticeText, Notifier, completion_path, completion_text, english_text, rss_auto_download_text,
 };
@@ -26,8 +29,10 @@ pub struct BackgroundEffects {
     events: AgentEventHub,
     notifier: Arc<Notifier>,
     action_text: NoticeText,
-    /// agent 自己播放「下载完成」提示音（桌面宿主）；为真且该提示音已启用时，完成通知静音。
+    /// agent 自己播放提示音（桌面宿主）；为真且对应提示音已启用时，完成 / 失败通知静音。
     completion_sound_owned: bool,
+    /// 下载失败通知的来源（桌面宿主）；`None` = 不发失败通知。
+    failures: Option<FailureReceiver>,
     #[cfg(feature = "desktop")]
     translator: Option<fluxdown_ui_i18n::Translator>,
 }
@@ -44,6 +49,14 @@ struct PendingCompletions {
     flush_at: Option<Instant>,
 }
 
+/// 防抖中尚未发出的失败通知。
+#[derive(Default)]
+struct PendingFailures {
+    tasks: Vec<FailedTask>,
+    started_at: Option<Instant>,
+    flush_at: Option<Instant>,
+}
+
 impl BackgroundEffects {
     /// `notifier`：与网关共用的系统通知投递器。
     #[must_use]
@@ -53,6 +66,7 @@ impl BackgroundEffects {
             notifier,
             action_text: NoticeText::default(),
             completion_sound_owned: false,
+            failures: None,
             #[cfg(feature = "desktop")]
             translator: match fluxdown_ui_i18n::I18nCatalog::load_embedded() {
                 Ok(catalog) => {
@@ -73,10 +87,20 @@ impl BackgroundEffects {
         self
     }
 
+    /// 接入下载失败通知：`receiver` 收到的失败任务合并成一条系统通知（受
+    /// `desktop.notify_on_fail` 约束）。不接入则不发失败通知（headless / 移动端）。
+    #[must_use]
+    pub(crate) fn with_failure_notices(mut self, receiver: FailureReceiver) -> Self {
+        self.failures = Some(receiver);
+        self
+    }
+
     pub async fn run(mut self, cancel: CancellationToken) {
         let (mut receiver, snapshot) = self.events.subscribe_and_snapshot();
+        let mut failures = self.failures.take();
         let mut awake = AwakeState::default();
         let mut pending = PendingCompletions::default();
+        let mut failed = PendingFailures::default();
         let mut tracker = TaskTracker::default();
         {
             let initial = agent_snapshot(snapshot);
@@ -94,9 +118,21 @@ impl BackgroundEffects {
                     None => std::future::pending().await,
                 }
             };
+            let failure_flush_at = failed.flush_at;
+            let failure_flush = async move {
+                match failure_flush_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 () = flush => self.flush(&mut pending),
+                () = failure_flush => self.flush_failures(&mut failed),
+                next = recv_failure(&mut failures) => match next {
+                    Some(task) => failed.push(task, Instant::now()),
+                    None => failures = None,
+                },
                 event = receiver.recv() => {
                     let frame = match &event {
                         Ok(frame) => {
@@ -230,6 +266,57 @@ impl BackgroundEffects {
     ) -> Option<(String, String)> {
         completion_text(file_names, english_text)
     }
+
+    /// 把防抖中的失败合并成一条系统通知发出；发送前再次检查开关（防抖期间用户可能关掉）。
+    fn flush_failures(&mut self, pending: &mut PendingFailures) {
+        let batch = std::mem::take(pending);
+        let owned = self.completion_sound_owned;
+        let (enabled, locale, silent) = self.events.inspect(|snapshot| {
+            (
+                notify_on_failure(snapshot),
+                locale_preference(snapshot),
+                owned
+                    && crate::sound::setting(snapshot, crate::sound::SoundKind::TaskFailed)
+                        .is_enabled(),
+            )
+        });
+        if !enabled {
+            return;
+        }
+        let Some((title, body)) = self.failure_notice(&batch.tasks, locale) else {
+            return;
+        };
+        let notifier = Arc::clone(&self.notifier);
+        tokio::task::spawn_blocking(move || notifier.show_failure(&title, &body, silent));
+    }
+
+    #[cfg(feature = "desktop")]
+    fn failure_notice(
+        &mut self,
+        tasks: &[FailedTask],
+        locale: Option<String>,
+    ) -> Option<(String, String)> {
+        let Some(translator) = self.translator.as_mut() else {
+            return failure_text(tasks, english_text);
+        };
+        translator.set_locale(&locale.unwrap_or_else(fluxdown_ui_i18n::system_locale));
+        let translator = &*translator;
+        failure_text(tasks, |key, count| match count {
+            Some(count) => translator.text_with(key, &[("count", &count.to_string())]),
+            None => translator.text(key).to_owned(),
+        })
+    }
+
+    /// headless 构建不带文案目录：固定英文。
+    #[cfg(not(feature = "desktop"))]
+    #[allow(clippy::unused_self)]
+    fn failure_notice(
+        &mut self,
+        tasks: &[FailedTask],
+        _locale: Option<String>,
+    ) -> Option<(String, String)> {
+        failure_text(tasks, english_text)
+    }
 }
 
 impl PendingCompletions {
@@ -244,6 +331,23 @@ impl PendingCompletions {
         self.locale = locale;
         let started_at = *self.started_at.get_or_insert(now);
         self.flush_at = Some((now + NOTIFY_DEBOUNCE).min(started_at + NOTIFY_MAX_WAIT));
+    }
+}
+
+impl PendingFailures {
+    /// 并入一个失败任务并重排发送时刻：规则同 [`PendingCompletions::push`]。
+    fn push(&mut self, task: FailedTask, now: Instant) {
+        self.tasks.push(task);
+        let started_at = *self.started_at.get_or_insert(now);
+        self.flush_at = Some((now + NOTIFY_DEBOUNCE).min(started_at + NOTIFY_MAX_WAIT));
+    }
+}
+
+/// 取下一个失败任务；未接入失败通知时永远挂起。通道关闭返回 `None`。
+async fn recv_failure(receiver: &mut Option<FailureReceiver>) -> Option<FailedTask> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -542,6 +646,11 @@ pub(crate) fn notify_on_complete(snapshot: &AgentSnapshot) -> bool {
     )
 }
 
+/// 下载失败通知开关（设备本地偏好，缺省开启；与完成通知互不影响）。
+pub(crate) fn notify_on_failure(snapshot: &AgentSnapshot) -> bool {
+    preference_bool(snapshot, NOTIFY_ON_FAIL_PREF, NOTIFY_ON_FAIL_DEFAULT)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -553,9 +662,9 @@ mod tests {
     use fluxdown_protocol::{AgentEvent, DaemonEvent, EventFrame, ServiceEvent, WsServerMsg};
 
     use super::{
-        Change, CompletedFile, KEEP_AWAKE_DEFAULT, KEEP_AWAKE_PREF, NOTIFY_DEBOUNCE,
-        NOTIFY_MAX_WAIT, PendingCompletions, TaskTracker, change_for, locale_preference,
-        notify_on_complete, observe, preference_bool,
+        Change, CompletedFile, FailedTask, KEEP_AWAKE_DEFAULT, KEEP_AWAKE_PREF, NOTIFY_DEBOUNCE,
+        NOTIFY_MAX_WAIT, PendingCompletions, PendingFailures, TaskTracker, change_for,
+        locale_preference, notify_on_complete, notify_on_failure, observe, preference_bool,
     };
 
     #[test]
@@ -842,6 +951,47 @@ mod tests {
             .insert("download.keep_awake".to_owned(), json!(true));
         assert!(!notify_on_complete(&snapshot));
         assert!(should_keep_awake_pref(&snapshot));
+    }
+
+    #[test]
+    fn failure_notification_defaults_on_and_is_independent_of_completion() {
+        let mut snapshot = AgentSnapshot::default();
+        assert!(notify_on_failure(&snapshot));
+        snapshot
+            .preferences
+            .values
+            .insert("desktop.notify_on_fail".to_owned(), json!(false));
+        assert!(!notify_on_failure(&snapshot));
+        assert!(notify_on_complete(&snapshot));
+        snapshot
+            .preferences
+            .values
+            .insert("download.notify_on_complete".to_owned(), json!(false));
+        snapshot
+            .preferences
+            .values
+            .insert("desktop.notify_on_fail".to_owned(), json!(true));
+        assert!(notify_on_failure(&snapshot));
+    }
+
+    #[test]
+    fn failure_batches_debounce_but_never_wait_past_the_cap() {
+        let failed = || FailedTask {
+            name: "a.bin".to_owned(),
+            reason: String::new(),
+        };
+        let start = tokio::time::Instant::now();
+        let mut pending = PendingFailures::default();
+        pending.push(failed(), start);
+        assert_eq!(pending.flush_at, Some(start + NOTIFY_DEBOUNCE));
+        // 持续有失败：每次顺延，但不超过首个失败起算的上限。
+        let mut now = start;
+        while now < start + NOTIFY_MAX_WAIT {
+            now += Duration::from_millis(500);
+            pending.push(failed(), now);
+        }
+        assert_eq!(pending.flush_at, Some(start + NOTIFY_MAX_WAIT));
+        assert_eq!(pending.tasks.len(), 7);
     }
 
     fn should_keep_awake_pref(snapshot: &AgentSnapshot) -> bool {

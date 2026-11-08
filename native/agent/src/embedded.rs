@@ -219,11 +219,12 @@ pub async fn start_embedded(
         ("power", tokio::spawn(power.clone().run(cancel.clone()))),
         (
             "daemon event projection",
-            // 嵌入式宿主（移动端）由平台自己处理提示音：不接入 agent 提示音。
+            // 嵌入式宿主（移动端）由平台自己处理提示音与失败通知：不接入 agent 侧。
             spawn_daemon_projection(
                 daemon_events,
                 events.clone(),
                 notice_tx,
+                None,
                 None,
                 cancel.clone(),
             ),

@@ -568,11 +568,13 @@ async fn task_notice_is_never_forwarded_to_ui_subscribers() {
     let (mut ui, _) = events.subscribe_and_snapshot();
     let (sender, mut receiver) = notice_channel();
     let (sound_sender, mut sound_receiver) = crate::sound::channel();
+    let (failure_sender, mut failure_receiver) = crate::failure_notice::channel();
 
     route_daemon_event(
         &events,
         &sender,
         Some(&sound_sender),
+        Some(&failure_sender),
         DaemonEvent::TaskNotice(notice("d1", "task.completed")),
     );
     assert!(ui.try_recv().is_err(), "TaskNotice 不得出现在 agent 事件流");
@@ -585,11 +587,35 @@ async fn task_notice_is_never_forwarded_to_ui_subscribers() {
         .try_recv()
         .expect("notice reaches the cloud module");
     assert_eq!(routed.delivery_id, "d1");
+    assert!(
+        failure_receiver.try_recv().is_err(),
+        "完成事件不进入失败通知"
+    );
+
+    route_daemon_event(
+        &events,
+        &sender,
+        Some(&sound_sender),
+        Some(&failure_sender),
+        DaemonEvent::TaskNotice(notice("d2", "task.failed")),
+    );
+    assert!(ui.try_recv().is_err(), "失败事件同样不进入 agent 事件流");
+    assert_eq!(
+        failure_receiver.try_recv().ok().map(|failed| failed.name),
+        Some("ubuntu.iso".to_owned()),
+        "失败通知模块收到 task.failed"
+    );
+    assert_eq!(
+        receiver.try_recv().ok().map(|routed| routed.delivery_id),
+        Some("d2".to_owned()),
+        "云端推送照常收到"
+    );
 
     // 其余 daemon 事件照常转发。
     route_daemon_event(
         &events,
         &sender,
+        None,
         None,
         DaemonEvent::TaskDeleted {
             task_id: "t".to_owned(),
@@ -626,7 +652,7 @@ async fn plugin_view_events_are_forwarded_verbatim_to_ui_subscribers() {
         },
     ];
     for event in sent.iter().cloned() {
-        route_daemon_event(&events, &sender, None, event);
+        route_daemon_event(&events, &sender, None, None, event);
     }
     for expected in sent {
         let frame = ui
