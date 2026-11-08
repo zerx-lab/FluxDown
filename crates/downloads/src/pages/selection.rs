@@ -186,15 +186,18 @@ impl SelectionView {
             cx.notify();
         })
         .detach();
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
+        // 倒计时走字；无截止（用户关闭了自动选择默认项）时没有可更新的内容，不每秒重绘文件列表。
+        if request.has_deadline() {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        }
         Self {
             strings,
             request,

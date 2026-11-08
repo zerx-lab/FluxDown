@@ -41,7 +41,9 @@ function defaultIndex(request: SelectionRequestDto, kind: 'hls' | 'variant', fir
 function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind: ChoiceKind }) {
   const t = useT()
   const tasks = useTasks()
-  const now = useNow(1000)
+  const hasDeadline = hasSelectionDeadline(request)
+  // 无截止（用户关闭了自动选择默认项）时不显示倒计时，也不必每秒重绘文件列表。
+  const now = useNow(hasDeadline ? 1000 : null)
   const [submitting, setSubmitting] = useState(false)
   const [hlsIndex, setHlsIndex] = useState(() => defaultIndex(request, 'hls', kind.type === 'hls' ? (kind.options[0]?.index ?? 0) : 0))
   const [variantIndex, setVariantIndex] = useState(() => defaultIndex(request, 'variant', kind.type === 'variant' ? (kind.options[0]?.index ?? 0) : 0))
@@ -58,8 +60,7 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
 
   const task = tasks.find((item) => item.taskId === request.taskId)
   const taskName = task?.fileName || task?.originUrl || task?.url || ''
-  // 无截止（用户关闭了自动选择默认项）时不显示倒计时。
-  const remaining = hasSelectionDeadline(request) ? Math.max(0, Math.floor((request.deadlineUnixMs - now) / 1000)) : null
+  const remaining = hasDeadline ? Math.max(0, Math.floor((request.deadlineUnixMs - now) / 1000)) : null
   const cancellable = kind.type !== 'hls'
 
   const resolve = async (next: SelectionOutcome) => {

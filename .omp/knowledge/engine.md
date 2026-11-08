@@ -119,8 +119,12 @@
   均报错、库内位置不变，重试会重新询问。
 - **BT 文件选择的自动默认（#885）**：引擎以 `timeout: None` 询问，等待上限由 daemon `selection.rs::bt_selection_timeout`
   决定：daemon 配置 `bt_selection_auto_default`（默认开）= 60s 后按默认（全部文件）开始；关闭 = 请求
-  `deadline_unix_ms = SELECTION_NO_DEADLINE`（i64::MAX），只等终局（答复 / 任务暂停删除 / 最后订阅者离开 / 关闭）。
-  四端凭 `has_deadline`（Web `hasSelectionDeadline`，JSON 失真后按 ≥ `MAX_SAFE_INTEGER` 判）隐藏倒计时、不自动答复。
+  `deadline_unix_ms = SELECTION_NO_DEADLINE`（i64::MAX），只等用户答复，或以「取消」终结（任务删除 / 暂停事件、daemon 关闭；
+  BT 取消 = 任务暂停，继续时重新询问），**从不替用户采用默认值**：最后一个订阅者离开（Web 刷新 / 断线、桌面关窗且托盘不可见）
+  时请求留在 `pending_selections`，下一个客户端从快照接着作答（`PendingSelection::has_deadline`）。等待期间任务占用下载槽位
+  （设置描述已写明）；发起询问时没有任何订阅者（无界面）仍立即按默认开始，同旧语义。引擎在询问前复核 `cancelled`：
+  暂停落在元数据等待循环两次检查之间时不再询问，直接摘句柄按取消返回（回归 `bt_selection_is_not_requested_when_task_already_paused`）。
+  四端凭 `has_deadline`（Web `hasSelectionDeadline`，JSON 失真后按 ≥ `MAX_SAFE_INTEGER` 判）隐藏倒计时、不自动答复、不启动每秒走字。
 - **做种交互（对齐 qBittorrent）**（`bt_seeding.rs`）：完成即自动做种（`bt_seed_enabled`，默认开；
   关闭时完成即落 `seeding_status=4` UserStopped）。完成态 BT 任务的「暂停」= 停止做种（1 / 8 → 4），
   「继续」= 恢复做种（2..=7），其余完成态的继续一律忽略（#935）。**达限停止（2 / 3 / 7）的手动继续 =

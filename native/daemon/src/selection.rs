@@ -34,6 +34,9 @@ struct PendingSelection {
     file_exists_actions: Vec<FileExistsAction>,
     /// 仅 Plugin：可选插件 identity；其余类型为空。
     plugin_candidates: Vec<String>,
+    /// 请求是否带自动解析的截止时刻。无截止（用户关闭了 BT「自动选择默认项」）的请求只等用户：
+    /// 最后一个订阅者离开时保持待处理，daemon 关闭时以取消终结，都不替用户采用默认值。
+    has_deadline: bool,
     sender: oneshot::Sender<SelectionOutcome>,
 }
 
@@ -86,7 +89,10 @@ impl DaemonSelection {
             .insert(connection_id);
     }
 
-    /// 移除连接；最后一个订阅者离开时所有待选择立即采用各自默认值。
+    /// 移除连接；最后一个订阅者离开时，有截止的待选择立即采用各自默认值。
+    ///
+    /// 无截止的请求保持待处理：它仍在快照的 `pending_selections` 里，下一个连上的客户端
+    /// （Web 刷新 / 重连、重新打开的桌面窗口）照常看到并作答。
     pub fn unsubscribe(&self, connection_id: &str) {
         let resolved_ids = {
             let mut state = lock_or_recover(&self.state);
@@ -94,14 +100,20 @@ impl DaemonSelection {
             if !state.subscribers.is_empty() {
                 return;
             }
-            let pending = std::mem::take(&mut state.pending);
-            let mut ids = Vec::with_capacity(pending.len());
-            for (id, selection) in pending {
+            let ids: Vec<String> = state
+                .pending
+                .iter()
+                .filter(|(_, pending)| pending.has_deadline)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &ids {
+                let Some(selection) = state.pending.remove(id) else {
+                    continue;
+                };
                 if selection.sender.send(selection.default_choice).is_err() {
                     tracing::debug!(request_id = %id, "selection waiter disconnected before default resolution");
                 }
                 remember_resolved(&mut state.resolved, id.clone());
-                ids.push(id);
             }
             ids
         };
@@ -137,6 +149,7 @@ impl DaemonSelection {
                         .collect(),
                     _ => Vec::new(),
                 },
+                has_deadline: request.has_deadline(),
                 sender,
             },
         );
@@ -208,14 +221,20 @@ impl DaemonSelection {
         Some(default_choice)
     }
 
-    /// 将仍待处理的选择全部按默认值终结，供 daemon 关闭路径调用。
-    pub fn resolve_all_defaults(&self) {
+    /// daemon 关闭路径：终结全部待处理选择。有截止的采用默认值；无截止的不替用户选择，
+    /// BT / 变体等以「取消」终结（任务暂停，继续时重新询问），HLS 没有取消语义仍取默认。
+    pub fn resolve_all_for_shutdown(&self) {
         let ids = {
             let mut state = lock_or_recover(&self.state);
             let pending = std::mem::take(&mut state.pending);
             let mut ids = Vec::with_capacity(pending.len());
             for (id, selection) in pending {
-                if selection.sender.send(selection.default_choice).is_err() {
+                let outcome = if selection.has_deadline || selection.kind == SelectionType::Hls {
+                    selection.default_choice
+                } else {
+                    SelectionOutcome::Cancelled
+                };
+                if selection.sender.send(outcome).is_err() {
                     tracing::debug!(request_id = %id, "selection waiter disconnected during daemon shutdown");
                 }
                 remember_resolved(&mut state.resolved, id.clone());
@@ -492,7 +511,8 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                 fluxdown_engine::selection::SelectionOutcome::NoSelectorConfigured(default_choice)
             }
             SelectionWait::Pending(receiver) => {
-                // 无上限时只等终局：答复、任务暂停 / 删除、最后一个订阅者离开或 daemon 关闭都会送达。
+                // 无上限时只等终局：用户答复、任务删除 / 暂停事件（取消），或 daemon 关闭（取消）。
+                // 最后一个订阅者离开不会终结它，下一个客户端连上后继续作答。
                 let answer = match effective_timeout {
                     Some(limit) => tokio::time::timeout(limit, receiver).await.ok(),
                     None => Some(receiver.await),
@@ -838,6 +858,9 @@ mod tests {
         DaemonSelection::new(DaemonEventHub::new(DaemonSnapshot::default(), 16))
     }
 
+    /// 有截止的请求（2100-01-01）；`SELECTION_NO_DEADLINE` 另有「不自动解析」语义，夹具不用它。
+    const FIXTURE_DEADLINE_UNIX_MS: i64 = 4_102_444_800_000;
+
     fn hls_request(id: &str) -> SelectionRequestDto {
         SelectionRequestDto {
             request_id: id.to_owned(),
@@ -846,7 +869,7 @@ mod tests {
                 options: Vec::new(),
             },
             default_choice: SelectionOutcome::Hls { index: 0 },
-            deadline_unix_ms: i64::MAX,
+            deadline_unix_ms: FIXTURE_DEADLINE_UNIX_MS,
         }
     }
 
@@ -914,7 +937,7 @@ mod tests {
                 options: Vec::new(),
             },
             default_choice: SelectionOutcome::Variant { index: 1 },
-            deadline_unix_ms: i64::MAX,
+            deadline_unix_ms: FIXTURE_DEADLINE_UNIX_MS,
         }
     }
 
@@ -1061,7 +1084,7 @@ mod tests {
             default_choice: SelectionOutcome::FileExists {
                 action: FileExistsAction::Rename,
             },
-            deadline_unix_ms: i64::MAX,
+            deadline_unix_ms: FIXTURE_DEADLINE_UNIX_MS,
         }
     }
 
@@ -1441,12 +1464,7 @@ mod tests {
         waiter.await.expect("join");
 
         // 关闭：无截止，一直等到用户答复。
-        let mut snapshot = DaemonSnapshot::default();
-        snapshot
-            .config
-            .values
-            .insert("bt_selection_auto_default".to_owned(), "false".to_owned());
-        let manager = DaemonSelection::new(DaemonEventHub::new(snapshot, 16));
+        let manager = no_deadline_manager();
         manager.subscribe("c".to_owned());
         let mut frames = manager.events.subscribe();
         let waiter = {
@@ -1489,20 +1507,105 @@ mod tests {
             timed_out,
             Engine::TimedOutDefaulted(BtFileChoice::default())
         );
+    }
 
-        // 关闭后最后一个订阅者离开，等待者按默认值结束，不会永久挂起。
-        let waiter = {
+    fn no_deadline_manager() -> DaemonSelection {
+        let mut snapshot = DaemonSnapshot::default();
+        snapshot
+            .config
+            .values
+            .insert("bt_selection_auto_default".to_owned(), "false".to_owned());
+        DaemonSelection::new(DaemonEventHub::new(snapshot, 16))
+    }
+
+    #[tokio::test]
+    async fn no_deadline_bt_selection_survives_last_subscriber_leaving() {
+        use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome as Engine};
+
+        let manager = no_deadline_manager();
+        manager.subscribe("tab".to_owned());
+        let mut frames = manager.events.subscribe();
+        let bt = {
             let manager = manager.clone();
-            tokio::spawn(async move { manager.select_bt_files("t", &[], "/data", None).await })
+            tokio::spawn(async move { manager.select_bt_files("bt", &[], "/data", None).await })
         };
-        while lock_pending_len(&manager) == 0 {
+        let request = next_pending(&mut frames).await;
+        let variant = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                manager
+                    .select_resolve_variant("v", &[], 0, std::time::Duration::from_secs(30))
+                    .await
+            })
+        };
+        while lock_pending_len(&manager) < 2 {
             tokio::task::yield_now().await;
         }
-        manager.unsubscribe("c");
+
+        // Web 刷新 / 断线：最后一个订阅者离开。有截止的请求照旧取默认值。
+        manager.unsubscribe("tab");
+        assert_eq!(variant.await.expect("join"), Engine::UserChose(0));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!bt.is_finished(), "no-deadline request must not default");
+        assert_eq!(lock_pending_len(&manager), 1);
+        assert!(manager.events.inspect(|snapshot| {
+            snapshot
+                .pending_selections
+                .iter()
+                .any(|pending| pending.request_id == request.request_id)
+        }));
+
+        // 下一个客户端从快照拿到请求并作答。
+        manager.subscribe("tab-reloaded".to_owned());
+        manager
+            .resolve(SelectionResolutionDto {
+                request_id: request.request_id,
+                outcome: SelectionOutcome::Bt {
+                    indices: vec![1],
+                    save_dir: None,
+                },
+            })
+            .expect("answer after reconnect");
         assert_eq!(
-            waiter.await.expect("join"),
-            Engine::UserChose(BtFileChoice::default())
+            bt.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![1],
+                save_dir: None,
+            })
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_no_deadline_bt_selection_instead_of_defaulting() {
+        use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome as Engine};
+
+        let manager = no_deadline_manager();
+        manager.subscribe("c".to_owned());
+        let bt = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.select_bt_files("bt", &[], "/data", None).await })
+        };
+        let variant = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                manager
+                    .select_resolve_variant("v", &[], 0, std::time::Duration::from_secs(30))
+                    .await
+            })
+        };
+        while lock_pending_len(&manager) < 2 {
+            tokio::task::yield_now().await;
+        }
+        manager.resolve_all_for_shutdown();
+        assert_eq!(
+            bt.await.expect("join"),
+            Engine::UserChose(BtFileChoice {
+                indices: vec![-1],
+                save_dir: None,
+            })
+        );
+        assert_eq!(variant.await.expect("join"), Engine::UserChose(0));
+        assert_eq!(lock_pending_len(&manager), 0);
     }
 
     fn lock_pending_len(manager: &DaemonSelection) -> usize {

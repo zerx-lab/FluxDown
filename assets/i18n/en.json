@@ -1435,7 +1435,7 @@
   "btFirstLastPiecesFirstDefault": "Download First and Last Pieces First",
   "btFirstLastPiecesFirstDefaultDesc": "New BT tasks download the first and last 1% of every selected file (at least one piece each) before the rest. Applies to tasks added from now on; change a single task from its context menu",
   "btSelectionAutoDefault": "Auto-Select Default Files After 60 Seconds",
-  "btSelectionAutoDefaultDesc": "If the \"Select Files to Download\" dialog gets no answer within 60 seconds, start downloading all files. Turn off to keep the dialog open until you choose",
+  "btSelectionAutoDefaultDesc": "If the \"Select Files to Download\" dialog gets no answer within 60 seconds, start downloading all files. Turn off to keep the dialog open until you choose; the task keeps its download slot while waiting",
   "btListenPort": "Listen Port Range",
   "btListenPortDesc": "Port range for incoming BT connections",
   "btListenPortStart": "Start Port",

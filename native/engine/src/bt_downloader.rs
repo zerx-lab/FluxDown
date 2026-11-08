@@ -4955,6 +4955,19 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
             })
             .unwrap_or_default();
 
+        // 暂停若落在元数据等待循环两次检查之间而 add 同时完成，任务会带着取消态走到这里。
+        // 这时再询问只会挂出一个无主的对话框（宿主可以不设上限地等），按「暂停期间未作答」
+        // 处理：丢弃未确认选择的句柄，恢复时重新 add 并重新询问。从这里到宿主登记请求之间
+        // 没有 await。
+        if cancelled.load(Ordering::SeqCst) {
+            log_info!(
+                "[BT] task={} paused before file selection → not asking",
+                short_id(&task_id)
+            );
+            shared_bt.delete_task(&task_id, false).await?;
+            return Err(DownloadError::Cancelled);
+        }
+
         {
             let state = dialog_pause_state.clone();
             let session = session.clone();
@@ -7268,6 +7281,101 @@ mod tests {
         #[test]
         fn bt_selection_user_cancel_stays_cancelled_with_live_session() {
             exercise_dialog_exit(DialogExit::Cancel);
+        }
+
+        // 暂停已落在询问之前（元数据等待循环的检查之间暂停、add 同时完成）：不得再询问，
+        // 否则宿主可能为已暂停的任务一直挂着一个对话框；句柄摘掉，恢复时重新询问。
+        #[test]
+        fn bt_selection_is_not_requested_when_task_already_paused() {
+            let root = super::unique_test_dir("selection_after_pause");
+            let save_dir = root.join("save");
+            std::fs::create_dir_all(&save_dir).expect("fixture save directory");
+            let shared_bt = local_session(&root);
+            shared_bt.runtime_handle.block_on(async {
+                let db = Db::open(&root).await.expect("fixture DB");
+                db.insert_task(
+                    "selection-task",
+                    "bt://local-fixture",
+                    "selection",
+                    &save_dir.to_string_lossy(),
+                    STATUS_DOWNLOADING,
+                    0,
+                    "",
+                    "",
+                    "",
+                    0,
+                )
+                .await
+                .expect("insert BT task");
+                let torrent = local_torrent(&root, "selection", 2, 16_384).await;
+                let stage = bt_stage_dir(&save_dir.to_string_lossy(), "selection-task");
+                std::fs::create_dir_all(&stage).expect("selection staging");
+                let mut opts = build_add_torrent_options(
+                    &BtSelectionStrategy::All,
+                    stage.to_string_lossy().into_owned(),
+                    0,
+                );
+                opts.paused = true;
+                let handle = match shared_bt
+                    .session
+                    .add_torrent(AddTorrent::from_bytes(torrent.clone()), Some(opts))
+                    .await
+                    .expect("add torrent")
+                {
+                    AddTorrentResponse::Added(_, handle) => handle,
+                    _ => panic!("torrent must be newly added"),
+                };
+                shared_bt
+                    .store_handle("selection-task", handle.clone())
+                    .await;
+                shared_bt
+                    .register_torrent_id(handle.id(), "selection-task")
+                    .await;
+
+                let cancelled = Arc::new(AtomicBool::new(true));
+                let selector = Arc::new(DialogChoice {
+                    shared_bt: shared_bt.clone(),
+                    cancelled: cancelled.clone(),
+                    pause_on_choice: false,
+                    indices: vec![-1],
+                    save_dir: None,
+                    seen_save_dir: Mutex::new(String::new()),
+                    observed_handle: Mutex::new(None),
+                    answer_delay: Duration::ZERO,
+                });
+                let (mut params, _progress_rx) = inner_params(
+                    &shared_bt,
+                    &db,
+                    &save_dir,
+                    &torrent,
+                    &cancelled,
+                    selector.clone(),
+                );
+                // 已拿到句柄、选择尚未确认：与「add 与暂停同时完成」后的状态一致。
+                params.existing_handle = Some(handle.clone());
+                let result =
+                    tokio::time::timeout(Duration::from_secs(10), bt_download_inner(params))
+                        .await
+                        .expect("paused selection path timed out");
+                assert!(
+                    matches!(result, Err(DownloadError::Cancelled)),
+                    "{result:?}"
+                );
+                assert!(
+                    selector.observed_handle.lock().await.is_none(),
+                    "file selection must not be requested for a paused task"
+                );
+                assert!(shared_bt.cached_handle("selection-task").await.is_none());
+                assert!(shared_bt.session.get(handle.id().into()).is_none());
+                assert_eq!(
+                    db.load_bt_selected_files("selection-task")
+                        .await
+                        .expect("selection row"),
+                    None
+                );
+            });
+            drop(shared_bt);
+            std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
 
         // 新建任务的部分选择（或带 padding 文件种子上的「全选」）走 post-add 应用：
