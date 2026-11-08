@@ -1356,7 +1356,7 @@
   "taskCookieBatchDesc": "Batch: empty = each item keeps its own captured cookies; filled = overrides all",
   "taskCookiePlaceholder": "e.g. name=value; name2=value2",
   "taskReferrer": "Source page (Referer)",
-  "taskReferrerDesc": "Sent as the Referer header; some sites reject direct links without it. Filled in automatically for browser captures (empty = none)",
+  "taskReferrerDesc": "Sent as the Referer header; some sites reject direct links without it. Filled in automatically for browser captures. When empty, manually added links send none and browser captures keep their captured source page",
   "taskReferrerPlaceholder": "e.g. https://example.com/video/123",
   "taskChecksum": "Hash Verification",
   "taskChecksumDesc": "Verify file integrity after download (empty = skip)",

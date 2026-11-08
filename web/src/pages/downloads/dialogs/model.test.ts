@@ -28,7 +28,7 @@ describe('capturedReferrer', () => {
     expect(capturedReferrer([{ url: 'https://other.example/z', fileName: '', checksum: '' }], [page])).toBe('')
   })
 
-  test('占位 / 非 http(s) / 无 host 不带入，scheme 不分大小写', () => {
+  test('占位 / 非 http(s) / `://` 后为空不带入，scheme 不分大小写', () => {
     for (const junk of ['', 'about:client', 'file:///etc/passwd', 'javascript://x', 'https://']) {
       expect(capturedReferrer(one, [{ url: 'https://a.example/x', referrer: junk }])).toBe('')
     }

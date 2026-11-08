@@ -1356,7 +1356,7 @@
   "taskCookieBatchDesc": "批量下载：留空 = 各条目使用自己捕获的 Cookie；填写 = 覆盖整批",
   "taskCookiePlaceholder": "例如 name=value; name2=value2",
   "taskReferrer": "来源页（Referer）",
-  "taskReferrerDesc": "作为 Referer 请求头发送，部分站点没有它会拒绝直链；浏览器捕获时自动带入（留空则不发送）",
+  "taskReferrerDesc": "作为 Referer 请求头发送，部分站点没有它会拒绝直链。浏览器捕获时自动带入；留空时，手动添加的链接不发送，浏览器捕获的链接沿用捕获的来源页",
   "taskReferrerPlaceholder": "例如 https://example.com/video/123",
   "taskChecksum": "哈希校验",
   "taskChecksumDesc": "下载完成后校验文件完整性（留空则跳过）",
