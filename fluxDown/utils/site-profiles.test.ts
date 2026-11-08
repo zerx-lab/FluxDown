@@ -110,7 +110,9 @@ describe("normalizeSiteKey", () => {
     expect(normalizeSiteKey("10.0.0/8")).toBeNull();
     expect(normalizeSiteKey("300.0.0.0/8")).toBeNull();
     expect(normalizeSiteKey("fd00::/129")).toBeNull();
-    expect(normalizeSiteKey("10.0.0.0/")).not.toBe("10.0.0.0/");
+    expect(normalizeSiteKey("10.0.0.0/")).toBe("10.0.0.0");
+    // 数字点分样式仍判非法，不退化成 `normalizeDomain` 解析出的主机 1.2.0.3。
+    expect(normalizeSiteKey("1.2.3/8")).toBeNull();
   });
 
   test("普通域名与带路径 / scheme 的输入保持原有行为", () => {
@@ -118,6 +120,9 @@ describe("normalizeSiteKey", () => {
     expect(normalizeSiteKey("https://Example.com/a/b")).toBe("example.com");
     expect(normalizeSiteKey("http://10.0.0.1/8")).toBe("10.0.0.1");
     expect(normalizeSiteKey("example.com/8")).toBe("example.com");
+    // 由十六进制字母组成的域名带数字路径不是 CIDR。
+    expect(normalizeSiteKey("add.de/12")).toBe("add.de");
+    expect(normalizeSiteKey("dead.beef/1")).toBe("dead.beef");
   });
 });
 

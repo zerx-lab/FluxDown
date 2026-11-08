@@ -107,7 +107,11 @@ export function formatCidr(cidr: Cidr): string {
   return `${host.slice(1, -1)}/${cidr.prefix}`;
 }
 
-/** 形如 CIDR 的输入（IP 字符样式 + `/` + 纯数字）：此时解析失败应判非法，不能当域名处理。 */
+/**
+ * 形如 CIDR 的输入（点分十进制样式或含两个以上冒号的 IPv6 样式 + `/` + 纯数字）：此时解析失败
+ * 应判非法，不能当域名处理。地址部分不按十六进制字符集放宽，否则 `add.de/12` 这类由 a-f 组成的
+ * 域名带数字路径会被误判。
+ */
 export function looksLikeCidr(text: string): boolean {
-  return /^[\[\]0-9a-f:.]+\/\d+$/i.test(text);
+  return /^(?:\d+(?:\.\d+){0,3}|\[?[0-9a-f]*:[0-9a-f]*:[0-9a-f:.]*\]?)\/\d+$/i.test(text);
 }
