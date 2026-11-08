@@ -511,8 +511,13 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                 fluxdown_engine::selection::SelectionOutcome::NoSelectorConfigured(default_choice)
             }
             SelectionWait::Pending(receiver) => {
-                // 无上限时只等终局：用户答复、任务删除 / 暂停事件（取消），或 daemon 关闭（取消）。
-                // 最后一个订阅者离开不会终结它，下一个客户端连上后继续作答。
+                // 任务暂停 / 删除时引擎丢弃本 future（与取消信号竞争）；守卫保证待选项随之
+                // 撤销并广播 SelectionResolved。无截止的请求终结只靠它、用户答复或 daemon 关闭。
+                let _guard = PendingGuard {
+                    selection: self,
+                    request_id,
+                };
+                // 最后一个订阅者离开不会终结无截止的请求，下一个客户端连上后继续作答。
                 let answer = match effective_timeout {
                     Some(limit) => tokio::time::timeout(limit, receiver).await.ok(),
                     None => Some(receiver.await),
@@ -534,12 +539,10 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                             },
                         )
                     }
-                    _ => {
-                        let _ = self.timeout(&request_id);
-                        fluxdown_engine::selection::SelectionOutcome::TimedOutDefaulted(
-                            default_choice,
-                        )
-                    }
+                    // 超时：守卫在返回时撤销仍待处理的请求并广播。
+                    _ => fluxdown_engine::selection::SelectionOutcome::TimedOutDefaulted(
+                        default_choice,
+                    ),
                 }
             }
         }
@@ -1606,6 +1609,48 @@ mod tests {
         );
         assert_eq!(variant.await.expect("join"), Engine::UserChose(0));
         assert_eq!(lock_pending_len(&manager), 0);
+    }
+
+    // 关闭自动默认后请求不设截止：任务暂停 / 删除时引擎丢弃等待 future，这是它唯一的
+    // 非答复终结路径。丢弃后待选项必须撤销、广播 SelectionResolved，快照里不再挂着。
+    #[tokio::test]
+    async fn dropping_no_deadline_bt_wait_withdraws_and_broadcasts() {
+        use fluxdown_engine::selection::HostSelection;
+        use fluxdown_protocol::{DaemonEvent, ServiceEvent};
+
+        let manager = no_deadline_manager();
+        manager.subscribe("c".to_owned());
+        let mut frames = manager.events.subscribe();
+        let waiter = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.select_bt_files("bt", &[], "/data", None).await })
+        };
+        let request = next_pending(&mut frames).await;
+        assert!(!request.has_deadline());
+        waiter.abort();
+        assert!(waiter.await.expect_err("aborted").is_cancelled());
+
+        assert_eq!(lock_pending_len(&manager), 0);
+        let resolved = loop {
+            let frame = frames.recv().await.expect("selection event");
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionResolved { request_id }) = frame.event
+            {
+                break request_id;
+            }
+        };
+        assert_eq!(resolved, request.request_id);
+        assert!(
+            manager
+                .events
+                .inspect(|snapshot| snapshot.pending_selections.is_empty())
+        );
+        assert!(matches!(
+            manager.resolve(SelectionResolutionDto {
+                request_id: request.request_id,
+                outcome: SelectionOutcome::Cancelled,
+            }),
+            Err(SelectionError::Conflict)
+        ));
     }
 
     fn lock_pending_len(manager: &DaemonSelection) -> usize {

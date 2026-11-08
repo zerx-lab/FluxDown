@@ -1800,6 +1800,7 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
             progress_tx: progress_tx.clone(),
             sink: sink.clone(),
             cancelled: cancelled_clone.clone(),
+            cancel_token: params.cancel_token.clone(),
             session: session.clone(),
             shared_bt: shared_bt.clone(),
             existing_handle: existing_handle.take(),
@@ -1881,6 +1882,9 @@ struct BtInnerParams {
     progress_tx: mpsc::Sender<ProgressUpdate>,
     sink: Arc<dyn EventSink>,
     cancelled: Arc<AtomicBool>,
+    /// 任务的取消信号（暂停 / 删除）。`cancelled` 只能轮询；需要与长时间等待竞争的
+    /// 阶段（文件选择询问，宿主可以不设上限地等）用它及时退出。
+    cancel_token: CancellationToken,
     session: Arc<Session>,
     shared_bt: Arc<SharedBtSession>,
     existing_handle: Option<BtHandle>,
@@ -4324,6 +4328,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
         progress_tx,
         sink,
         cancelled,
+        cancel_token,
         session,
         shared_bt,
         existing_handle,
@@ -5023,9 +5028,25 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
         // `timeout: None` 保留现状"无限等待"语义——由 HostSelection 的具体
         // 实现(各宿主 daemon 内的 HostSelection 实现)决定是否在内部包一个
         // 较长但有限的超时,engine 侧不臆断产品行为。
-        let outcome = selector
-            .select_bt_files(&task_id, &bt_files, &save_dir, None)
-            .await;
+        //
+        // 询问与取消信号竞争：宿主可以不设上限地等（daemon 关闭「自动选择默认项」），
+        // 暂停 / 删除不能指望对方答复或超时才结束——否则任务停在「准备中」、暂停帧
+        // 要等 TaskDone 才发，恢复也被挡住。取消时丢弃询问 future（宿主据此撤销待选项
+        // 并通知客户端关闭对话框），按「暂停期间未作答」处理：摘掉句柄，恢复时重新 add
+        // 并重新询问。答复与取消同时就绪时优先答复，交给下面「暂停期间已作答」落库。
+        let outcome = tokio::select! {
+            biased;
+            outcome = selector.select_bt_files(&task_id, &bt_files, &save_dir, None) => outcome,
+            () = cancel_token.cancelled() => {
+                log_info!(
+                    "[BT] task={} paused during file selection → withdrawing the request",
+                    short_id(&task_id)
+                );
+                dialog_pause_state.store(DIALOG_PAUSE_DONE_KEEP, Ordering::SeqCst);
+                shared_bt.delete_task(&task_id, false).await?;
+                return Err(DownloadError::Cancelled);
+            }
+        };
         match &outcome {
             SelectionOutcome::UserChose(choice) => {
                 log_info!(
@@ -7089,6 +7110,7 @@ mod tests {
                     custom_name: String::new(),
                     selector,
                     upload_limit_bps: 0,
+                    cancel_token: tokio_util::sync::CancellationToken::new(),
                 },
                 progress_rx,
             )

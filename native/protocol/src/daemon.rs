@@ -172,8 +172,8 @@ pub enum SelectionOutcome {
 }
 
 /// [`SelectionRequestDto::deadline_unix_ms`] 的「无截止」取值：daemon 不会自动按默认值解析，
-/// 一直等到客户端答复，或任务删除 / 暂停、daemon 关闭时以取消终结；最后一个订阅者离开时也保持待处理。
-/// 客户端据此隐藏倒计时。
+/// 一直等到客户端答复；任务暂停 / 删除时引擎放弃询问，daemon 随之撤销请求（广播 `SelectionResolved`）；
+/// daemon 关闭时以取消终结；最后一个订阅者离开时保持待处理。客户端据此隐藏倒计时。
 /// JSON 里按 `i64::MAX` 序列化；JavaScript 解析后会失真为 ≥ `Number.MAX_SAFE_INTEGER` 的数。
 pub const SELECTION_NO_DEADLINE: i64 = i64::MAX;
 
