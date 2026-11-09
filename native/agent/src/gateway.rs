@@ -1242,14 +1242,15 @@ impl GatewayService {
             tracing::debug!(error = %error, "rejected capture request");
             RpcErrorData::new(ApplicationErrorCode::InvalidArgument, false)
         })?;
-        // 本机调用方：`silent=true`（系统打开链接 / 拖入）直接建任务；否则（剪贴板监听）
-        // 恒请用户确认。外部接管走 HTTP / NMH，由 `CaptureOrigin::External` 按免打扰偏好分流。
+        // 本机调用方：`silent=true` 是系统打开的链接（桌面 / 外壳交来），按「免打扰下载」偏好
+        // 直接建任务或排入确认队列（`SystemOpen`）；否则（剪贴板监听）恒请用户确认。外部接管走
+        // HTTP / NMH，由 `CaptureOrigin::External` 分流。
         let silent = params
             .get("silent")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
         let origin = if silent {
-            crate::capture::CaptureOrigin::Direct
+            crate::capture::CaptureOrigin::SystemOpen
         } else {
             crate::capture::CaptureOrigin::Prompt
         };
