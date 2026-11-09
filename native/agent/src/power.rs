@@ -18,8 +18,12 @@ use crate::event_hub::AgentEventHub;
 /// 状态刷新 / 到点检查间隔。
 const TICK: Duration = Duration::from_secs(1);
 
-/// 相邻 tick 的墙钟间隔达到该值即判定系统挂起过（`TICK` 为 1s，余量吸收调度停顿）。
+/// 判定为「系统挂起过」的最小时长（`TICK` 为 1s，余量吸收调度停顿）。
 const RESUME_GAP: Duration = Duration::from_secs(30);
+
+/// `Instant` 是否把系统睡眠时间计入：Windows（QPC）计入；Linux（`CLOCK_MONOTONIC`）与
+/// macOS（`CLOCK_UPTIME_RAW`）不计入，所以后两者能用「墙钟 − `Instant`」量出挂起时长。
+const MONOTONIC_COUNTS_SLEEP: bool = cfg!(windows);
 
 pub struct PowerService {
     state: Mutex<PowerState>,
@@ -55,8 +59,10 @@ impl PowerService {
 
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(TICK);
-        // Instant 在 Linux / macOS 上不含睡眠时间，只能用墙钟判断系统是否挂起过。
+        // 同时记墙钟与 Instant：进程 / 定时器被停顿或延后（macOS App Nap 等）时两者同步前进，
+        // 只有系统挂起才让墙钟领先 Instant，据此区分「睡过」与「被延后」。
         let mut last_wall = SystemTime::now();
+        let mut last_mono = Instant::now();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
@@ -65,9 +71,15 @@ impl PowerService {
             }
             // 必须先于 advance：唤醒后第一个 tick 若恰好无任务，会直接到点执行。
             let wall_now = SystemTime::now();
-            let gap = wall_gap(last_wall, wall_now);
+            let mono_now = Instant::now();
+            let gap = suspended_time(
+                wall_gap(last_wall, wall_now),
+                mono_now.saturating_duration_since(last_mono),
+                MONOTONIC_COUNTS_SLEEP,
+            );
             last_wall = wall_now;
-            if self.lock().on_wall_gap(gap) {
+            last_mono = mono_now;
+            if self.lock().on_suspended(gap) {
                 tracing::info!(
                     gap_secs = gap.as_secs(),
                     "system suspend detected; cancelled the scheduled power action"
@@ -158,10 +170,11 @@ impl PowerState {
         Some(armed.action)
     }
 
-    /// 墙钟相邻两次检查的间隔 `gap` 不小于 [`RESUME_GAP`] 视为系统刚睡眠 / 休眠后唤醒：
-    /// 已排定的操作（含倒计时）一律取消，返回是否取消了东西。排定针对的是当时那次无人值守
-    /// 会话，唤醒可能在数小时后，此时任务继续、用户已不记得该设置，不能再替他关机。
-    fn on_wall_gap(&mut self, gap: Duration) -> bool {
+    /// 相邻两次检查之间系统挂起的时长 `gap`（见 [`suspended_time`]）不小于 [`RESUME_GAP`]
+    /// 视为系统刚睡眠 / 休眠后唤醒：已排定的操作（含倒计时）一律取消，返回是否取消了东西。
+    /// 排定针对的是当时那次无人值守会话，唤醒可能在数小时后，此时任务继续、用户已不记得
+    /// 该设置，不能再替他关机。
+    fn on_suspended(&mut self, gap: Duration) -> bool {
         if gap < RESUME_GAP || self.armed.is_none() {
             return false;
         }
@@ -183,6 +196,17 @@ impl PowerState {
 /// 两次墙钟读数之间经过的时间；时钟被往回拨时记为 0。
 fn wall_gap(previous: SystemTime, now: SystemTime) -> Duration {
     now.duration_since(previous).unwrap_or(Duration::ZERO)
+}
+
+/// 相邻两次检查之间系统挂起的时长。`monotonic_counts_sleep` 为假时 `Instant` 不含睡眠，
+/// 挂起时长 = 墙钟间隔 − `Instant` 间隔；进程停顿 / 定时器延后让两者同步前进，差值≈0，
+/// 不会误判。为真（Windows）时两者都含睡眠、差值恒≈0，只能直接用墙钟间隔。
+fn suspended_time(wall: Duration, monotonic: Duration, monotonic_counts_sleep: bool) -> Duration {
+    if monotonic_counts_sleep {
+        wall
+    } else {
+        wall.saturating_sub(monotonic)
+    }
 }
 
 /// `(活跃任务数, 仍在等待的任务数)`：等待 = 排队 + 已排程自动重试、尚未重新派发的任务，
@@ -410,7 +434,7 @@ mod tests {
         let now = Instant::now();
         // 等待任务完成期间睡眠。
         state.arm(Duration::from_secs(60), SHUTDOWN, true, now);
-        assert!(state.on_wall_gap(RESUME_GAP));
+        assert!(state.on_suspended(RESUME_GAP));
         assert_eq!(state.status(now), PowerStatusDto::default());
         // 唤醒后任务全部完成也不得再关机。
         assert_eq!(state.advance(0, 0, now + Duration::from_secs(600)), None);
@@ -421,7 +445,7 @@ mod tests {
         let mut state = PowerState::new();
         let now = Instant::now();
         state.arm(Duration::from_secs(60), SHUTDOWN, false, now);
-        assert!(state.on_wall_gap(Duration::from_secs(3 * 3600)));
+        assert!(state.on_suspended(Duration::from_secs(3 * 3600)));
         assert_eq!(state.status(now), PowerStatusDto::default());
     }
 
@@ -429,9 +453,9 @@ mod tests {
     fn short_gap_or_idle_state_is_untouched() {
         let mut state = PowerState::new();
         let now = Instant::now();
-        assert!(!state.on_wall_gap(Duration::from_secs(3600)));
+        assert!(!state.on_suspended(Duration::from_secs(3600)));
         state.arm(Duration::from_secs(60), SHUTDOWN, true, now);
-        assert!(!state.on_wall_gap(RESUME_GAP - Duration::from_millis(1)));
+        assert!(!state.on_suspended(RESUME_GAP - Duration::from_millis(1)));
         assert_eq!(state.status(now).armed_delay_secs, Some(60));
     }
 
@@ -446,5 +470,38 @@ mod tests {
             wall_gap(base, base - Duration::from_secs(7)),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn process_stall_is_not_a_suspend() {
+        // 进程 / 定时器被延后 35s（macOS App Nap、SIGSTOP）：墙钟与 Instant 同步前进。
+        let stall = Duration::from_secs(35);
+        assert_eq!(suspended_time(stall, stall, false), Duration::ZERO);
+        let mut state = PowerState::new();
+        state.arm(Duration::from_secs(60), SHUTDOWN, true, Instant::now());
+        assert!(!state.on_suspended(suspended_time(stall, stall, false)));
+        assert_eq!(state.status(Instant::now()).armed_delay_secs, Some(60));
+    }
+
+    #[test]
+    fn suspend_is_wall_minus_monotonic_when_instant_skips_sleep() {
+        // 墙钟前进 35s、Instant 只前进 1s：睡过 34s。
+        let gap = suspended_time(Duration::from_secs(35), Duration::from_secs(1), false);
+        assert_eq!(gap, Duration::from_secs(34));
+        let mut state = PowerState::new();
+        state.arm(Duration::from_secs(60), SHUTDOWN, true, Instant::now());
+        assert!(state.on_suspended(gap));
+        // Instant 反常领先墙钟（时钟被往回拨）不得下溢。
+        assert_eq!(
+            suspended_time(Duration::ZERO, Duration::from_secs(5), false),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn suspend_falls_back_to_wall_gap_when_instant_counts_sleep() {
+        // Windows：Instant 含睡眠，两者同步前进，只能直接用墙钟间隔。
+        let gap = Duration::from_secs(3 * 3600);
+        assert_eq!(suspended_time(gap, gap, true), gap);
     }
 }
