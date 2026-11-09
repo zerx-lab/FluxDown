@@ -114,6 +114,8 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::TaskStateConflict => "errReasonTaskStateConflict",
         ErrorReason::TaskDeviceMismatch => "errReasonTaskDeviceMismatch",
         ErrorReason::SaveDirUnavailable => "errReasonSaveDirUnavailable",
+        ErrorReason::TaskFilesInUse => "errReasonTaskFilesInUse",
+        ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
         | ErrorReason::PlanNotPurchasable
@@ -442,6 +444,8 @@ mod tests {
             ErrorReason::TaskStateConflict,
             ErrorReason::TaskDeviceMismatch,
             ErrorReason::SaveDirUnavailable,
+            ErrorReason::TaskFilesInUse,
+            ErrorReason::TaskFilesNotDeleted,
         ];
         let contexts = [
             ErrorContext::General,
