@@ -8,7 +8,7 @@
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use fluxdown_protocol::{AgentEvent, DaemonRuntimeStatsDto, PowerAction, PowerStatusDto};
 use tokio_util::sync::CancellationToken;
@@ -17,6 +17,9 @@ use crate::event_hub::AgentEventHub;
 
 /// 状态刷新 / 到点检查间隔。
 const TICK: Duration = Duration::from_secs(1);
+
+/// 相邻 tick 的墙钟间隔达到该值即判定系统挂起过（`TICK` 为 1s，余量吸收调度停顿）。
+const RESUME_GAP: Duration = Duration::from_secs(30);
 
 pub struct PowerService {
     state: Mutex<PowerState>,
@@ -52,11 +55,24 @@ impl PowerService {
 
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(TICK);
+        // Instant 在 Linux / macOS 上不含睡眠时间，只能用墙钟判断系统是否挂起过。
+        let mut last_wall = SystemTime::now();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 _ = interval.tick() => {}
+            }
+            // 必须先于 advance：唤醒后第一个 tick 若恰好无任务，会直接到点执行。
+            let wall_now = SystemTime::now();
+            let gap = wall_gap(last_wall, wall_now);
+            last_wall = wall_now;
+            if self.lock().on_wall_gap(gap) {
+                tracing::info!(
+                    gap_secs = gap.as_secs(),
+                    "system suspend detected; cancelled the scheduled power action"
+                );
+                self.publish();
             }
             let (active, pending) = self
                 .events
@@ -142,6 +158,17 @@ impl PowerState {
         Some(armed.action)
     }
 
+    /// 墙钟相邻两次检查的间隔 `gap` 不小于 [`RESUME_GAP`] 视为系统刚睡眠 / 休眠后唤醒：
+    /// 已排定的操作（含倒计时）一律取消，返回是否取消了东西。排定针对的是当时那次无人值守
+    /// 会话，唤醒可能在数小时后，此时任务继续、用户已不记得该设置，不能再替他关机。
+    fn on_wall_gap(&mut self, gap: Duration) -> bool {
+        if gap < RESUME_GAP || self.armed.is_none() {
+            return false;
+        }
+        self.disarm();
+        true
+    }
+
     fn status(&self, now: Instant) -> PowerStatusDto {
         PowerStatusDto {
             armed_delay_secs: self.armed.map(|armed| armed.delay.as_secs()),
@@ -151,6 +178,11 @@ impl PowerState {
             action: self.armed.map(|armed| armed.action).unwrap_or_default(),
         }
     }
+}
+
+/// 两次墙钟读数之间经过的时间；时钟被往回拨时记为 0。
+fn wall_gap(previous: SystemTime, now: SystemTime) -> Duration {
+    now.duration_since(previous).unwrap_or(Duration::ZERO)
 }
 
 /// `(活跃任务数, 仍在等待的任务数)`：等待 = 排队 + 已排程自动重试、尚未重新派发的任务，
@@ -370,5 +402,49 @@ mod tests {
         state.disarm();
         assert_eq!(state.status(now), PowerStatusDto::default());
         assert_eq!(state.advance(0, 0, now + Duration::from_secs(120)), None);
+    }
+
+    #[test]
+    fn sleep_gap_cancels_a_pending_action() {
+        let mut state = PowerState::new();
+        let now = Instant::now();
+        // 等待任务完成期间睡眠。
+        state.arm(Duration::from_secs(60), SHUTDOWN, true, now);
+        assert!(state.on_wall_gap(RESUME_GAP));
+        assert_eq!(state.status(now), PowerStatusDto::default());
+        // 唤醒后任务全部完成也不得再关机。
+        assert_eq!(state.advance(0, 0, now + Duration::from_secs(600)), None);
+    }
+
+    #[test]
+    fn sleep_gap_cancels_a_running_countdown() {
+        let mut state = PowerState::new();
+        let now = Instant::now();
+        state.arm(Duration::from_secs(60), SHUTDOWN, false, now);
+        assert!(state.on_wall_gap(Duration::from_secs(3 * 3600)));
+        assert_eq!(state.status(now), PowerStatusDto::default());
+    }
+
+    #[test]
+    fn short_gap_or_idle_state_is_untouched() {
+        let mut state = PowerState::new();
+        let now = Instant::now();
+        assert!(!state.on_wall_gap(Duration::from_secs(3600)));
+        state.arm(Duration::from_secs(60), SHUTDOWN, true, now);
+        assert!(!state.on_wall_gap(RESUME_GAP - Duration::from_millis(1)));
+        assert_eq!(state.status(now).armed_delay_secs, Some(60));
+    }
+
+    #[test]
+    fn wall_gap_ignores_backward_clock_jumps() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert_eq!(
+            wall_gap(base, base + Duration::from_secs(7)),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            wall_gap(base, base - Duration::from_secs(7)),
+            Duration::ZERO
+        );
     }
 }
