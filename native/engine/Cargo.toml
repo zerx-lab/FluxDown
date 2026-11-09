@@ -34,6 +34,12 @@ rand = "0.9"
 # 与 feed-rs 同版本：feed 扩展命名空间（Mikan `<torrent><pubDate>`）的二次扫描。
 quick-xml = { version = "0.41", features = ["encoding"] }
 regex = "1"
+# 全平台 rustls（Windows 同样不用 native-tls / schannel：其 ClientHello 缺 status_request 与 ALPN，
+# 部分 Cloudflare WAF 直接 403，#1072）。代码侧另经 `downloader::client_builder` 显式选 rustls，
+# 防 Windows 桌面构建里 agent 打开的 reqwest 默认 native-tls 经 feature 合并抢回默认后端。
+# native roots 保留系统 CA（Windows 证书库 / Linux / macOS）；bundled WebPKI roots 为 Android/iOS
+# 提供公共 CA 兜底，避免系统证书探测返回空库时所有 HTTPS 请求 UnknownIssuer。
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
 # 与 gpui-shell 同一 Longbridge `quickjs-jit` 分叉（rquickjs API；以 `rquickjs` 名引用）。禁止叠加
 # `rust-alloc` / `allocator`（`set_memory_limit` 会静默失效）；`parallel` 必带（Async* 的 Send/Sync）。
 rquickjs = { package = "quickjs-jit", version = "0.14.1", features = ["full-async", "parallel"], optional = true }
@@ -59,7 +65,6 @@ ed25519-dalek = { version = "3", default-features = false, features = ["fast"], 
 
 [target."cfg(windows)".dependencies]
 librqbit = { version = "9", default-features = false, features = ["default-tls"], optional = true }
-reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "json", "socks"] }
 # 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 winreg = "0.55"
@@ -68,9 +73,6 @@ winreg = "0.55"
 # 固定 0.2.189（全工作区经此统一）：放开前跑 CI `ios-core`（或 cargo check -p fluxdown_mobile --target aarch64-apple-ios）。
 libc = "=0.2.189"
 librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
-# native roots 保留 Linux/macOS 的本地 CA；bundled WebPKI roots 为 Android/iOS
-# 提供公共 CA 兜底，避免系统证书探测返回空库时所有 HTTPS 请求 UnknownIssuer。
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
 
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 if-addrs = "0.15"
