@@ -6,7 +6,7 @@
 //! - 位置参数里的下载链接：同一命令多个 URI 是同一文件的镜像，只取第一个；`-Z` /
 //!   `--force-sequential` 时每个 URI 各成一条；磁力 / ed2k / thunder 不是镜像，各成一条；
 //! - `-o` / `--out`（仅单条）→ 文件名，`--checksum`（仅单条、引擎支持的算法且哈希合法）→ 校验；
-//! - `--header` / `--referer` / `-U` / `--user-agent` 收集为 [`RequestHints`]，由表单回填高级字段；
+//! - `--header` / `--referer` / `-U` / `--user-agent` 收集为 [`RequestHints`]，由表单回填高级字段（`Referer` 进「来源页」专门字段，不再作自定义请求头）；
 //! - 其余选项（含带值的 `-d` / `-x` / `-s` / `-k` / `--load-cookies` 等）安全忽略，其值不会被当成链接；
 //! - `-i` / `--input-file` 读取本地文件，无法处理 → 该命令不产出条目。
 
@@ -21,7 +21,9 @@ pub(crate) struct RequestHints {
     pub(crate) cookie: String,
     /// `-U` / `--user-agent` / `User-Agent` 头（后出现者生效）。
     pub(crate) user_agent: String,
-    /// 其余请求头（含 `Referer`），按首次出现顺序，同名（忽略大小写）后者覆盖前者。
+    /// `--referer` / `Referer` 头（后出现者生效），回填「来源页」框。
+    pub(crate) referrer: String,
+    /// 其余请求头，按首次出现顺序，同名（忽略大小写）后者覆盖前者。
     pub(crate) headers: Vec<(String, String)>,
 }
 
@@ -54,7 +56,7 @@ impl RequestHints {
         } else if name.eq_ignore_ascii_case("user-agent") {
             value.clone_into(&mut self.user_agent);
         } else if name.eq_ignore_ascii_case("referer") {
-            self.set_header("Referer", value);
+            value.clone_into(&mut self.referrer);
         } else {
             self.set_header(name, value);
         }
@@ -397,7 +399,7 @@ impl Scan {
 
     fn set_referer(&mut self, value: Option<&str>) {
         if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
-            self.hints.set_header("Referer", value);
+            value.clone_into(&mut self.hints.referrer);
         }
     }
 
@@ -724,10 +726,8 @@ mod tests {
         )
         .expect("command");
         assert_eq!(command.entries, [entry("https://a.example/x")]);
-        assert_eq!(
-            command.hints.headers,
-            [("Referer".to_owned(), "https://ref.example/".to_owned())]
-        );
+        assert_eq!(command.hints.referrer, "https://ref.example/");
+        assert!(command.hints.headers.is_empty());
         // `--` 之后全是位置参数。
         assert_eq!(
             urls("aria2c -- https://a.example/x"),
@@ -755,10 +755,8 @@ mod tests {
             RequestHints {
                 cookie: "a=1; b=2".to_owned(),
                 user_agent: "Agent/2.0".to_owned(),
-                headers: vec![
-                    ("X-Token".to_owned(), "t2".to_owned()),
-                    ("Referer".to_owned(), "https://r.example/".to_owned()),
-                ],
+                referrer: "https://r.example/".to_owned(),
+                headers: vec![("X-Token".to_owned(), "t2".to_owned())],
             }
         );
         assert_eq!(

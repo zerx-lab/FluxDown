@@ -29,14 +29,15 @@ use crate::{
         REMEMBER_LAST_TARGET_PREF, SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF,
     },
     model::{
+        aria2c::{FieldFill, plan_field_fill},
         devices::{DeviceEntry, DeviceKind, DispatchTarget, other_devices, resolve_target},
         dispatch::{RemoteDirCheck, check_remote_save_dir},
         new_download::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
             ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
-            UrlEntry, append_entries, build_requests, capture_entry, checksum_spec,
-            compose_request, custom_segments, detect_ua_preset, manual_proxy_url, parse_entries,
-            parse_input, ua_preset_keys, ua_preset_value,
+            UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
+            checksum_spec, compose_request, custom_segments, detect_ua_preset, manual_proxy_url,
+            parse_entries, parse_input, ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{
             CategoryMode, NewDownloadCategory, category_options, save_dir_untouched,
@@ -329,6 +330,11 @@ pub struct NewDownloadView {
     ua_preset: &'static str,
     user_agent: Entity<InputState>,
     cookie: Entity<TextareaState>,
+    referrer: Entity<InputState>,
+    /// 上次自动带入「来源页」的捕获来源页（`plan_field_fill` 的回填记录）；`None` = 没带入过。
+    referrer_filled: Option<String>,
+    /// 上一次处理过的捕获来源页：不变时不重复处理，用户清空带入值后不会被无关输入填回。
+    referrer_hint: String,
     hash_algorithm: &'static str,
     checksum: Entity<InputState>,
     headers: Vec<HeaderRow>,
@@ -417,6 +423,9 @@ impl NewDownloadView {
             threads: ThreadChoice::from_segments(context.segments),
             rename,
             http_user: Self::input(strings.http_auth_user.clone(), window, cx),
+            referrer: Self::input(strings.referrer_placeholder.clone(), window, cx),
+            referrer_filled: None,
+            referrer_hint: String::new(),
             custom_proxy: Self::input(strings.proxy_placeholder.clone(), window, cx),
             user_agent: Self::input(strings.user_agent_desc.clone(), window, cx),
             checksum: Self::input(strings.checksum_placeholder.clone(), window, cx),
@@ -501,6 +510,7 @@ impl NewDownloadView {
             &self.remote_save_dir,
             &self.custom_threads,
             &self.rename,
+            &self.referrer,
         ] {
             cx.subscribe_in(
                 input,
@@ -572,6 +582,7 @@ impl NewDownloadView {
             (&self.http_password, &strings.http_auth_password),
             (&self.custom_proxy, &strings.proxy_placeholder),
             (&self.user_agent, &strings.user_agent_desc),
+            (&self.referrer, &strings.referrer_placeholder),
             (&self.checksum, &strings.checksum_placeholder),
         ]
         .into_iter()
@@ -601,6 +612,7 @@ impl NewDownloadView {
         let parsed = parse_input(&self.urls.read(cx).value(), false);
         self.entries = parsed.entries;
         self.sync_site_auth(window, cx);
+        self.sync_referrer(&parsed.hints.referrer, window, cx);
         self.sync_hints(parsed.hints, window, cx);
         self.sync_probe(window, cx);
         cx.notify();
@@ -698,6 +710,44 @@ impl NewDownloadView {
 
     fn capture_for(&self, url: &str) -> Option<&PendingCaptureDto> {
         self.captures.iter().find(|capture| capture.url == url)
+    }
+
+    /// 「来源页」框只有这一份回填记录：aria2c 命令带 `--referer` / `Referer` 头时用命令的值，
+    /// 否则单条捕获链接取捕获的来源页（规则同 aria2c 头部回填：只在框为空 / 仍是上次带入值时
+    /// 写，用户填过的绝不覆盖；两者都没有时清掉带入值，批量各捕获由 agent 沿用自己的来源页）。
+    /// 带入的值在折叠的「高级」里，展开让用户看得到发出去的内容。
+    fn sync_referrer(
+        &mut self,
+        command_referrer: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = if command_referrer.is_empty() {
+            captured_referrer(&self.entries, &self.captures)
+        } else {
+            command_referrer
+        };
+        if hint == self.referrer_hint {
+            return;
+        }
+        let hint = hint.to_owned();
+        let current = self.referrer.read(cx).value().to_string();
+        match plan_field_fill(&current, self.referrer_filled.as_deref(), &hint) {
+            FieldFill::Keep => {}
+            FieldFill::Forget => self.referrer_filled = None,
+            FieldFill::Set(value) => {
+                self.referrer
+                    .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+                self.referrer_filled = Some(value);
+                self.advanced_open = true;
+            }
+            FieldFill::Clear => {
+                self.referrer
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.referrer_filled = None;
+            }
+        }
+        self.referrer_hint = hint;
     }
 
     /// 单条链接且是带 `Authorization` 的浏览器捕获：沿用浏览器认证，不回填站点凭据。
@@ -1071,6 +1121,7 @@ impl NewDownloadView {
             save_dir: self.save_dir.read(cx).value().trim().to_owned(),
             segments: self.segments(cx),
             cookies: self.cookie.read(cx).value().trim().to_owned(),
+            referrer: self.referrer.read(cx).value().trim().to_owned(),
             proxy_url: self.proxy_choice.wire(
                 &self.context.manual_proxy_url,
                 &self.custom_proxy.read(cx).value(),
@@ -2040,6 +2091,15 @@ impl NewDownloadView {
         )
     }
 
+    fn render_referrer(&self, cx: &mut Context<Self>) -> Div {
+        form_field(
+            self.strings.referrer.clone(),
+            Input::new(&self.referrer).control(cx).w_full(),
+            Some(self.strings.referrer_desc.clone()),
+            cx,
+        )
+    }
+
     fn render_checksum(&self, cx: &mut Context<Self>) -> Div {
         let options = HASH_ALGORITHMS
             .iter()
@@ -2195,6 +2255,7 @@ impl NewDownloadView {
                 .child(self.render_proxy(cx))
                 .child(self.render_user_agent(cx))
                 .child(self.render_cookie(cx))
+                .child(self.render_referrer(cx))
                 .child(self.render_checksum(cx))
                 .child(self.render_headers(cx))
                 .child(option_group(options, cx)),

@@ -254,11 +254,26 @@ export function checksumSpec(algorithm: string, hash: string): string {
   return trimmed === '' ? '' : `${algorithm}=${trimmed}`
 }
 
+/**
+ * 新建框「来源页」的自动带入值（对齐 GPUI `captured_referrer`）：仅「单条链接且是带 http(s) 来源页的外部捕获」
+ * 时取捕获的来源页；批量时返回空，各捕获由 agent 沿用自己的来源页（表单填了值才整批覆盖）。
+ * `about:client` 之类非 http(s) 的占位值、`://` 后为空的值不是真实来源页，不带入。
+ */
+export function capturedReferrer(entries: readonly UrlEntry[], captures: readonly { url: string; referrer: string }[]): string {
+  if (entries.length !== 1) return ''
+  const referrer = rustTrim(captures.find((capture) => capture.url === entries[0].url)?.referrer ?? '')
+  const sep = referrer.indexOf('://')
+  if (sep < 0) return ''
+  const scheme = asciiLower(referrer.slice(0, sep))
+  return (scheme === 'http' || scheme === 'https') && referrer.length > sep + 3 ? referrer : ''
+}
+
 /** 整批共享的表单选项。`rename` / HTTP 认证 / 高级面板校验值只作用于单条提交。 */
 export interface DraftOptions {
   saveDir: string
   segments: number
   cookies: string
+  referrer: string
   proxyUrl: string
   userAgent: string
   queueId: string
@@ -286,7 +301,7 @@ export function buildRequests(entries: readonly UrlEntry[], options: DraftOption
     saveDir: options.saveDir,
     segments: options.segments,
     cookies: options.cookies,
-    referrer: '',
+    referrer: options.referrer,
     proxyUrl: options.proxyUrl,
     userAgent: options.userAgent,
     queueId: options.queueId,

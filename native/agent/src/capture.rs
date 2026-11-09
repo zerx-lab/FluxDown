@@ -718,12 +718,20 @@ fn captured_create_request(request: DownloadRequest) -> CaptureCreate {
     }
 }
 
+/// 表单来源页非空且与捕获的来源页（去首尾空白）不同 = 用户改过，捕获的 `Referer` 头须让位。
+fn referrer_edited(form: &str, captured: &str) -> bool {
+    let form = form.trim();
+    !form.is_empty() && form != captured.trim()
+}
+
 /// 官方 UI 表单结果合并进捕获原请求（规则见 `CaptureResolveParams::request`）。
 ///
 /// 表单看不到的请求上下文（method / body / 音频轨）与事务身份（url）恒取捕获值；
 /// 表单留空的字段回退捕获值；请求头以捕获为底、表单同名覆盖，表单填了 UA 时去掉
-/// 捕获的 `User-Agent` 头。表单的 HTTP 认证原样保留：引擎对非空 `httpUser` 注入的
-/// `Authorization` 会覆盖捕获头，留空则沿用浏览器头 / 已保存站点凭据。
+/// 捕获的 `User-Agent` 头，表单来源页非空且与捕获的不同时去掉捕获的 `Referer` 头
+/// （引擎优先取请求头里的 `Referer`，不去掉则用户的修改不生效；留空或未改则保留浏览器
+/// 真实发出的 `Referer`，它可能与记录的来源页不同）。表单的 HTTP 认证原样保留：引擎对非空
+/// `httpUser` 注入的 `Authorization` 会覆盖捕获头，留空则沿用浏览器头 / 已保存站点凭据。
 fn merge_confirmed_request(
     captured: DownloadRequest,
     mut confirmed: CreateTaskRequest,
@@ -746,10 +754,14 @@ fn merge_confirmed_request(
     };
     fill_if_blank(&mut confirmed.save_dir, base.save_dir);
     fill_if_blank(&mut confirmed.cookies, base.cookies);
+    let referrer_edited = referrer_edited(&confirmed.referrer, &base.referrer);
     fill_if_blank(&mut confirmed.referrer, base.referrer);
     let mut headers = base.headers.unwrap_or_default();
     if !confirmed.user_agent.trim().is_empty() {
         headers.retain(|name, _| !name.eq_ignore_ascii_case("user-agent"));
+    }
+    if referrer_edited {
+        headers.retain(|name, _| !name.eq_ignore_ascii_case("referer"));
     }
     for (name, value) in confirmed.headers.take().unwrap_or_default() {
         headers.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
@@ -797,10 +809,14 @@ fn merge_group_request(
     }
     request.source_url = base.url;
     fill_if_blank(&mut request.cookies, base.cookies);
+    let referrer_edited = referrer_edited(&request.referrer, &base.referrer);
     fill_if_blank(&mut request.referrer, base.referrer);
     let mut headers = base.headers.unwrap_or_default();
     if !request.user_agent.trim().is_empty() {
         headers.retain(|name, _| !name.eq_ignore_ascii_case("user-agent"));
+    }
+    if referrer_edited {
+        headers.retain(|name, _| !name.eq_ignore_ascii_case("referer"));
     }
     for (name, value) in request.extra_headers {
         headers.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
@@ -2060,6 +2076,100 @@ mod tests {
             headers.get("Authorization").map(String::as_str),
             Some("Basic YTpi")
         );
+    }
+
+    fn captured_with_referer_header() -> DownloadRequest {
+        let mut request = get_capture();
+        request
+            .headers
+            .get_or_insert_default()
+            .insert("referer".to_owned(), "https://example.com/root/".to_owned());
+        request
+    }
+
+    fn referer_header(headers: &Option<HashMap<String, String>>) -> Option<&str> {
+        headers
+            .as_ref()?
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("referer"))
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn edited_referrer_replaces_captured_referer_header() {
+        let merged = merge_confirmed_request(
+            captured_with_referer_header(),
+            form(json!({ "url": "", "referrer": "https://edited.example/other" })),
+        )
+        .request;
+        assert_eq!(merged.referrer, "https://edited.example/other");
+        assert_eq!(referer_header(&merged.headers), None);
+        // 表单自带 Referer 头仍按同名覆盖规则保留。
+        let merged = merge_confirmed_request(
+            captured_with_referer_header(),
+            form(json!({
+                "url": "",
+                "referrer": "https://edited.example/other",
+                "headers": { "Referer": "https://explicit.example/" },
+            })),
+        )
+        .request;
+        assert_eq!(
+            referer_header(&merged.headers),
+            Some("https://explicit.example/")
+        );
+    }
+
+    #[test]
+    fn unchanged_or_blank_referrer_keeps_captured_referer_header() {
+        for referrer in [
+            "",
+            "  ",
+            "https://example.com/page",
+            " https://example.com/page ",
+        ] {
+            let merged = merge_confirmed_request(
+                captured_with_referer_header(),
+                form(json!({ "url": "", "referrer": referrer })),
+            )
+            .request;
+            assert_eq!(
+                referer_header(&merged.headers),
+                Some("https://example.com/root/"),
+                "{referrer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_edited_referrer_replaces_captured_referer_header() {
+        let context = form(json!({ "url": "" }));
+        let mut edited = group();
+        edited.referrer = "https://edited.example/other".to_owned();
+        let merged = merge_group_request(captured_with_referer_header(), edited, &context)
+            .expect("merge edited group");
+        assert_eq!(merged.referrer, "https://edited.example/other");
+        assert!(
+            !merged
+                .extra_headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("referer"))
+        );
+        for referrer in ["", "https://example.com/page"] {
+            let mut kept = group();
+            kept.referrer = referrer.to_owned();
+            let merged = merge_group_request(captured_with_referer_header(), kept, &context)
+                .expect("merge kept group");
+            assert_eq!(
+                merged
+                    .extra_headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("referer"))
+                    .map(|(_, value)| value.as_str()),
+                Some("https://example.com/root/"),
+                "{referrer:?}"
+            );
+        }
     }
 
     /// 读到请求头结束与整个请求体为止，返回头部文本（小写化便于断言）。

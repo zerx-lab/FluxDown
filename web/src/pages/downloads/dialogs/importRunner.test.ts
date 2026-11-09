@@ -289,6 +289,7 @@ describe('buildBatch', () => {
     saveDir: '/dl',
     segments: 4,
     cookies: '',
+    referrer: 'https://site.example/video/1',
     proxyUrl: '',
     userAgent: '',
     queueId: 'main',
@@ -305,7 +306,7 @@ describe('buildBatch', () => {
   test('单条：重命名 / 校验值进条目，认证进 common', () => {
     const { common: shared, items: built } = buildBatch([{ url: 'https://a/x', fileName: 'out.bin', checksum: 'md5=1' }], options)
     expect(built).toEqual([{ url: 'https://a/x', fileName: 'renamed.bin', checksum: 'sha256=abc' }])
-    expect(shared).toMatchObject({ url: '', fileName: '', checksum: '', saveDir: '/dl', httpUser: 'u', httpPassword: 'p', saveSiteAuth: true })
+    expect(shared).toMatchObject({ url: '', fileName: '', checksum: '', saveDir: '/dl', httpUser: 'u', httpPassword: 'p', saveSiteAuth: true, referrer: 'https://site.example/video/1' })
   })
 
   test('多条：只用条目自带选项，common 不带认证', () => {
