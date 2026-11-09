@@ -13,10 +13,17 @@ mock.module("@/utils/native-messaging", () => ({
     return sharedReply;
   },
 }));
+// 与 sender.test.ts 共享同一进程内的 mock.module：这里必须列全 download-dispatch 的导出，
+// 否则 sender / breaker 等模块（已被先加载）重链接时会因缺失具名导出而报错。
 mock.module("@/utils/download-dispatch", () => ({
   checkFluxDownAvailable: async () => true,
+  checkFluxDownAvailableWithRetry: async () => true,
+  checkRemoteAvailable: async () => false,
   effectiveRemoteMode: async () => "off",
   isUnreachableFailure: () => false,
+  sendBatchDownloadRequest: async () => ({ success: true }),
+  sendDownloadRequest: async () => ({ success: true }),
+  warmupNativeHost: () => {},
 }));
 mock.module("wxt/browser", () => ({
   browser: {

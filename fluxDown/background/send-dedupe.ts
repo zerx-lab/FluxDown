@@ -60,3 +60,12 @@ export function createSendDeduper<T extends { success: boolean }>(
     },
   };
 }
+
+/**
+ * 去重键 = 方法 + URL + 请求体。同一端点（OA / 导出接口）的不同表单 POST 是不同下载，
+ * 只按 URL 去重会把第二个下载当成重复、复用第一次的成功结果，调用方随即取消浏览器下载项，
+ * 用户的第二个下载被静默丢弃。`record` 取自 `lookupRequestRecord`（GET 不回传 method）。
+ */
+export function interceptDedupeKey(url: string, record: { method?: string; body?: unknown }): string {
+  return `${record.method ?? "GET"} ${url} ${JSON.stringify(record.body ?? null)}`;
+}
