@@ -3355,7 +3355,7 @@
   "speedUnitGbps": "GB/s",
   "mobileSpeedPresets": "速度預設",
   "mobileComponentMirrorBase": "下載鏡像站",
-  "mobileComponentMirrorBaseDesc": "選填的 GitHub Release 鏡像站 HTTPS 基底網址，下載 FFmpeg 與 yt-dlp 時使用；留空則直接下載。",
+  "mobileComponentMirrorBaseDesc": "選填的 GitHub 鏡像站 HTTPS 基底網址，下載 FFmpeg 與 yt-dlp 時使用；支援外掛的主機上，外掛市集（索引與外掛套件）也會使用；留空則直接下載。",
   "mobileComponentMirrorBasePlaceholder": "https://mirror.example.com/github",
   "mobileBtAndroidFootnote": "Android 可能會限制背景網路活動。做種與 UPnP 連接埠對映在應用程式開啟或下載服務執行時最穩定。",
   "mobileEd2kNodesDatUrl": "nodes.dat 位址",
@@ -3761,5 +3761,18 @@
   "detailOpenSourcePage": "開啟來源頁",
   "detailCopySourcePage": "複製來源頁",
   "detailSourcePageCopied": "已複製來源頁",
-  "doctorHintRunningAsAdmin": "FluxDown 正以系統管理員身分執行：瀏覽器擴充功能無法連線，經它開啟的檔案也會以系統管理員身分執行。請從系統匣完全結束 FluxDown，再正常啟動（不要選「以系統管理員身分執行」）"
+  "doctorHintRunningAsAdmin": "FluxDown 正以系統管理員身分執行：瀏覽器擴充功能無法連線，經它開啟的檔案也會以系統管理員身分執行。請從系統匣完全結束 FluxDown，再正常啟動（不要選「以系統管理員身分執行」）",
+  "notifyOnFailure": "失敗通知",
+  "notifyOnFailureDesc": "任務在自動重試用盡後仍失敗時彈出系統通知，顯示檔名與失敗原因。僅對本裝置生效",
+  "taskListDisplay": "任務清單",
+  "hideTaskSource": "隱藏任務來源",
+  "hideTaskSourceDesc": "不在下載清單與任務詳情的檔名下方顯示來源網站；檔名、大小等其他資訊保留",
+  "rememberLastDownloadTarget": "記住上次下載目標裝置",
+  "rememberLastDownloadTargetDesc": "開啟後新增下載的「下載到」會還原上次選擇的裝置；關閉時新增下載一律預設下載到本機。僅儲存在本裝置",
+  "taskReferrer": "來源頁（Referer）",
+  "taskReferrerDesc": "作為 Referer 請求標頭傳送，部分網站沒有它會拒絕直鏈。瀏覽器擷取時自動帶入；留空時，手動新增的連結不傳送，瀏覽器擷取的連結沿用擷取的來源頁",
+  "taskReferrerPlaceholder": "例如 https://example.com/video/123",
+  "btSelectionAutoDefault": "檔案選擇 60 秒後自動選擇預設項",
+  "btSelectionAutoDefaultDesc": "「選擇要下載的檔案」對話框 60 秒內無人選擇時，按預設下載全部檔案。關閉後對話框會一直等待你選擇，等待期間任務停在「準備中」；沒有開啟任何 FluxDown 視窗或網頁時，仍會立即下載全部檔案",
+  "batchDownloadFailed": "{count} 個任務下載失敗"
 }
