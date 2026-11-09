@@ -25,8 +25,8 @@ import { ManifestSelectDialog } from './ManifestSelectDialog'
 import type { ManifestBaseOptions } from './ManifestSelectDialog'
 import { DEFAULT_HASH_ALGORITHM, HASH_ALGORITHMS, MAX_THREADS, PROXY_CHOICES, THREAD_PRESETS, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT, UA_PRESET_KEYS } from './model'
 import type { DraftOptions, ProxyChoice, ThreadChoice, UrlEntry } from './model'
-import { appendEntries, buildBatch, buildRequests, captureEntry, checksumSpec, customSegments, detectUaPreset, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments, uaPresetValue } from './model'
-import { applyHints, emptyHints, emptyTracking, hintsEqual } from './aria2c'
+import { appendEntries, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, detectUaPreset, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments, uaPresetValue } from './model'
+import { applyHints, emptyHints, emptyTracking, hintsEqual, planFieldFill } from './aria2c'
 import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
 import type { ImportProgress } from './importRunner'
@@ -132,6 +132,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const [uaPreset, setUaPreset] = useState(UA_PRESET_DEFAULT)
   const [userAgent, setUserAgent] = useState('')
   const [cookie, setCookie] = useState('')
+  const [referrer, setReferrer] = useState('')
   const [hashAlgorithm, setHashAlgorithm] = useState(DEFAULT_HASH_ALGORITHM)
   const [checksum, setChecksum] = useState('')
   const [headers, setHeaders] = useState<HeaderRow[]>([])
@@ -174,6 +175,29 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     if (result.filled) setAdvancedOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在命令头部信息变化时回填，表单当前值取渲染时快照
   }, [parsed.hints])
+
+  // 「来源页」框只有这一份回填记录（`planFieldFill`）：aria2c 命令带 `--referer` / `Referer` 头时用命令的值，
+  // 否则单条外部捕获取捕获的来源页；两者都没有时清掉带入值（批量各捕获由 agent 沿用自己的来源页）。
+  // 带入的值在折叠的「高级」里，展开让用户看得到发出去的内容。
+  const referrerHint = parsed.hints.referrer || capturedReferrer(entries, captures)
+  const lastReferrerHint = useRef('')
+  const referrerFilled = useRef<string | null>(null)
+  useEffect(() => {
+    if (referrerHint === lastReferrerHint.current) return
+    lastReferrerHint.current = referrerHint
+    const plan = planFieldFill(referrer, referrerFilled.current, referrerHint)
+    if (plan.kind === 'forget') {
+      referrerFilled.current = null
+    } else if (plan.kind === 'set') {
+      setReferrer(plan.value)
+      referrerFilled.current = plan.value
+      setAdvancedOpen(true)
+    } else if (plan.kind === 'clear') {
+      setReferrer('')
+      referrerFilled.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在捕获来源页变化时处理，表单当前值取渲染时快照
+  }, [referrerHint])
   const count = entries.length
   const batch = count > 1
   const allMagnet = count > 0 && entries.every((entry) => isMagnetUrl(entry.url))
@@ -361,6 +385,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     saveDir: saveDir.trim(),
     segments,
     cookies: cookie.trim(),
+    referrer: referrer.trim(),
     proxyUrl: proxyWire(proxyChoice, manualProxy, customProxy),
     userAgent: userAgent.trim(),
     queueId: queueOverride ?? (later ? LATER_QUEUE_ID : context.queueId),
@@ -445,6 +470,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           {
             url: single.url,
             cookies: options.cookies || undefined,
+            referrer: options.referrer || undefined,
             userAgent: options.userAgent || undefined,
             extraHeaders: Object.keys(options.headers).length > 0 ? options.headers : undefined,
           },
@@ -464,6 +490,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               queueId: later ? context.queueId : options.queueId,
               segments: options.segments,
               cookies: options.cookies,
+              referrer: options.referrer,
               userAgent: options.userAgent,
               proxyUrl: options.proxyUrl,
               headers: options.headers,
@@ -985,6 +1012,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
                 <FormField label={t('taskCookie')} htmlFor="new-download-cookie" hint={t('taskCookieDesc')}>
                   <Textarea id="new-download-cookie" rows={3} value={cookie} spellCheck={false} placeholder={t('taskCookiePlaceholder')} onChange={(event) => setCookie(event.target.value)} />
+                </FormField>
+
+                <FormField label={t('taskReferrer')} htmlFor="new-download-referrer" hint={t('taskReferrerDesc')}>
+                  <Input id="new-download-referrer" value={referrer} placeholder={t('taskReferrerPlaceholder')} spellCheck={false} onChange={(event) => setReferrer(event.target.value)} />
                 </FormField>
 
                 <FormField label={t('taskChecksum')} hint={t('taskChecksumDesc')}>

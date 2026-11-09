@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use fluxdown_protocol::{CreateTaskItem, CreateTaskRequest, MAX_TASK_SEGMENTS};
+use fluxdown_protocol::{CreateTaskItem, CreateTaskRequest, MAX_TASK_SEGMENTS, PendingCaptureDto};
 
 use super::aria2c::{RequestHints, join_continuations, parse_command};
 
@@ -463,12 +463,34 @@ pub(crate) fn checksum_spec(algorithm: &str, hash: &str) -> String {
     }
 }
 
+/// 新建框「来源页」的自动带入值：仅「单条链接且是带 http(s) 来源页的外部捕获」时取捕获的
+/// 来源页；批量时返回空，各捕获由 agent 沿用自己的来源页（表单填了值才整批覆盖）。
+/// `about:client` 之类非 http(s) 的占位值、`://` 后为空的值不是真实来源页，不带入。
+pub(crate) fn captured_referrer<'a>(
+    entries: &[UrlEntry],
+    captures: &'a [PendingCaptureDto],
+) -> &'a str {
+    let [entry] = entries else { return "" };
+    captures
+        .iter()
+        .find(|capture| capture.url == entry.url)
+        .map(|capture| capture.referrer.trim())
+        .filter(|referrer| {
+            referrer.split_once("://").is_some_and(|(scheme, rest)| {
+                (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+                    && !rest.is_empty()
+            })
+        })
+        .unwrap_or("")
+}
+
 /// 整批共享的表单选项。`rename` / HTTP 认证 / 高级面板校验值只作用于单条提交。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DraftOptions {
     pub(crate) save_dir: String,
     pub(crate) segments: i32,
     pub(crate) cookies: String,
+    pub(crate) referrer: String,
     pub(crate) proxy_url: String,
     pub(crate) user_agent: String,
     pub(crate) queue_id: String,
@@ -550,7 +572,7 @@ pub(crate) fn build_requests(entries: &[UrlEntry], options: &DraftOptions) -> Bu
         save_dir: options.save_dir.clone(),
         segments: options.segments,
         cookies: options.cookies.clone(),
-        referrer: String::new(),
+        referrer: options.referrer.clone(),
         proxy_url: options.proxy_url.clone(),
         user_agent: options.user_agent.clone(),
         queue_id: options.queue_id.clone(),
@@ -581,11 +603,103 @@ pub(crate) fn build_requests(entries: &[UrlEntry], options: &DraftOptions) -> Bu
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
+    use fluxdown_protocol::PendingCaptureDto;
+
     use super::{
         DraftOptions, ProxyChoice, ThreadChoice, UrlEntry, append_entries, build_requests,
-        capture_entry, checksum_spec, custom_segments, detect_ua_preset, manual_proxy_url,
-        parse_entries, parse_input,
+        capture_entry, captured_referrer, checksum_spec, custom_segments, detect_ua_preset,
+        manual_proxy_url, parse_entries, parse_input,
     };
+
+    fn capture(url: &str, referrer: &str) -> PendingCaptureDto {
+        PendingCaptureDto {
+            transaction_id: format!("tx-{url}"),
+            url: url.to_owned(),
+            file_name: String::new(),
+            created_at_unix_ms: 0,
+            file_size: 0,
+            referrer: referrer.to_owned(),
+            save_dir: String::new(),
+            has_cookies: false,
+            header_names: Vec::new(),
+        }
+    }
+
+    fn entry_of(url: &str) -> UrlEntry {
+        UrlEntry {
+            url: url.to_owned(),
+            ..UrlEntry::default()
+        }
+    }
+
+    #[test]
+    fn referrer_reaches_the_shared_request_and_empty_stays_empty() {
+        let entry = entry_of("https://a.example/x");
+        let filled = build_requests(
+            std::slice::from_ref(&entry),
+            &DraftOptions {
+                referrer: "https://site.example/video/1".to_owned(),
+                ..DraftOptions::default()
+            },
+        );
+        assert_eq!(filled.common.referrer, "https://site.example/video/1");
+        assert_eq!(
+            filled.request_for(&filled.items[0]).referrer,
+            "https://site.example/video/1"
+        );
+        let batch = build_requests(
+            &[entry.clone(), entry_of("https://b.example/y")],
+            &DraftOptions {
+                referrer: "https://site.example/p".to_owned(),
+                ..DraftOptions::default()
+            },
+        );
+        assert_eq!(batch.common.referrer, "https://site.example/p");
+        let plain = build_requests(&[entry], &DraftOptions::default());
+        assert_eq!(plain.common.referrer, "");
+    }
+
+    #[test]
+    fn captured_referrer_only_prefills_single_capture_with_web_page() {
+        let one = [entry_of("https://a.example/x")];
+        let two = [
+            entry_of("https://a.example/x"),
+            entry_of("https://b.example/y"),
+        ];
+        let page = capture("https://a.example/x", " https://site.example/v/1 ");
+        assert_eq!(
+            captured_referrer(&one, std::slice::from_ref(&page)),
+            "https://site.example/v/1"
+        );
+        // 批量：留空，由 agent 让各捕获沿用自己的来源页。
+        assert_eq!(captured_referrer(&two, std::slice::from_ref(&page)), "");
+        // 单条但不是捕获（手填链接）。
+        assert_eq!(
+            captured_referrer(&[entry_of("https://other.example/z")], &[page]),
+            ""
+        );
+        // 浏览器占位 / 非 http(s) / `://` 后为空不是真实来源页。
+        for junk in [
+            "",
+            "about:client",
+            "file:///etc/passwd",
+            "javascript://x",
+            "https://",
+        ] {
+            assert_eq!(
+                captured_referrer(&one, &[capture("https://a.example/x", junk)]),
+                "",
+                "{junk}"
+            );
+        }
+        assert_eq!(
+            captured_referrer(
+                &one,
+                &[capture("https://a.example/x", "HTTP://Site.example/")]
+            ),
+            "HTTP://Site.example/"
+        );
+    }
 
     #[test]
     fn append_entries_keeps_existing_text_verbatim_and_skips_known_urls() {

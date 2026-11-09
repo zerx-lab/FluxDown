@@ -29,6 +29,10 @@ interruptMode: never
 
 → `web/src/pages/downloads/dialogs/model.ts::captureEntry`：同一判定逐条对齐（`a%20b.zip` 与 `a b.zip` 视为相同），两端新建框显示一致
 
+## `crates/downloads/src/model/new_download.rs::captured_referrer`（新建框「来源页」框自动带入：仅单条且带 http(s) 来源页的外部捕获才带入，批量留空由 agent 让各捕获沿用自己的来源页；框只有一份回填记录（`NewDownloadView::sync_referrer`）：aria2c 命令的 `--referer` / `Referer` 头（`RequestHints.referrer`，不再进自定义请求头）非空就用它，否则用捕获来源页；回填走 `aria2c::plan_field_fill`，用户填过的不覆盖；`DraftOptions.referrer` 填了整批覆盖，捕获确认时 agent `merge_confirmed_request` / `merge_group_request`：表单空取捕获值，表单非空且与捕获不同时同时去掉捕获的 `Referer` 请求头（引擎优先取请求头里的 Referer），未改 / 留空保留捕获头）
+
+→ `web/src/pages/downloads/dialogs/model.ts::capturedReferrer` + `NewDownloadDialog.tsx`（`planFieldFill`，`parsed.hints.referrer || capturedReferrer`）+ `aria2c.ts`（`RequestHints.referrer`）；清单预解析 / 建组（`ManifestBaseOptions.referrer`）同带；移动端（`mobileReferrer`）本来就有来源页字段
+
 ## `crates/downloads/src/model/save_dir_history.rs`（新建下载保存目录历史：设备本地偏好 `download.save_dir_history` 字符串数组，最新在前 / 去重 / 封顶 10；分类目录记忆 `download.category_save_dir_history` = `{分类 id: 同规则数组}`，只在表单对应分类（指定分类 / 自动命中）且目录被手改时记，下拉先列该分类记忆再列全局历史；`download.save_dir_history_enabled` 缺省开，关闭即两者都不列出不记录；只记本机提交）
 
 → `web/src/lib/saveDirHistory.ts` 逐条对齐，Rust 与 `saveDirHistory.test.ts` 共用 `crates/downloads/tests/fixtures/save_dir_history_cases.json`；两端设置「保存位置」分组同位（开关 + 清空 = 两个键都写 null）；移动端无历史下拉，不镜像
