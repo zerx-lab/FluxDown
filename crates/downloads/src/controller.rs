@@ -756,6 +756,12 @@ impl DownloadsController {
             .unwrap_or(default)
     }
 
+    /// 设置「隐藏任务来源」是否开启。
+    #[must_use]
+    pub(crate) fn hide_task_source(&self) -> bool {
+        self.preference_bool(crate::model::view_prefs::HIDE_TASK_SOURCE_PREF, false)
+    }
+
     pub fn execute(&self, command: DownloadsCommand) -> PortFuture<DownloadsResult> {
         if self.stale {
             return Box::pin(async {

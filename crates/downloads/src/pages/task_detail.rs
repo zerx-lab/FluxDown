@@ -161,6 +161,9 @@ pub struct TaskDetailView {
     /// 停靠模式由宿主经 [`Self::sync`] 提供；窗口模式来自私有 controller。
     dto: Option<TaskDto>,
     queue_names: Vec<(String, String)>,
+    /// 停靠面板：宿主同步的「隐藏任务来源」偏好；窗口模式读私有 controller 的偏好，见
+    /// [`Self::source_hidden`]。
+    hide_source: bool,
     /// 客户端 1 Hz 实时采样环（仅做种页上传曲线使用）。
     speed_history: VecDeque<(Instant, u64)>,
     /// daemon 持久化的全生命周期速度曲线与统计（速度页）。
@@ -313,6 +316,7 @@ impl TaskDetailView {
             plugin_views: HashMap::new(),
             dto: None,
             queue_names: Vec::new(),
+            hide_source: false,
             speed_history: VecDeque::new(),
             speed_stats: None,
             speed_fetching: false,
@@ -446,6 +450,22 @@ impl TaskDetailView {
         if self.queue_names != queues {
             self.queue_names = queues;
             cx.notify();
+        }
+    }
+
+    /// 停靠面板：宿主同步「隐藏任务来源」偏好。
+    pub(crate) fn set_hide_source(&mut self, hide: bool, cx: &mut Context<Self>) {
+        if self.hide_source != hide {
+            self.hide_source = hide;
+            cx.notify();
+        }
+    }
+
+    /// 副标题是否隐藏来源站点：窗口模式实时读私有 controller 的偏好（偏好事件已触发重绘）。
+    pub(super) fn source_hidden(&self) -> bool {
+        match &self.controller {
+            Some(controller) => controller.hide_task_source(),
+            None => self.hide_source,
         }
     }
 

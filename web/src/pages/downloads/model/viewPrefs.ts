@@ -5,6 +5,8 @@ import { STATE_RANK } from './task'
 import type { DownloadTaskView, TaskState } from './task'
 
 export const VIEW_PREFS_KEY = 'desktop.downloads.view'
+/** 设备本地偏好（缺省关，GPUI 与 Web 共用）：下载列表 / 详情副标题不展示来源站点（对应 GPUI `HIDE_TASK_SOURCE_PREF`）。 */
+export const HIDE_TASK_SOURCE_PREF = 'ui.hide_task_source'
 
 export type ViewDensity = 'comfortable' | 'compact' | 'relaxed'
 export type ViewGroupBy = 'none' | 'status' | 'date' | 'type' | 'queue' | 'site'
