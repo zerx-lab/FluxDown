@@ -100,11 +100,15 @@ struct BtPage: View {
             if container.isLocalHost { Text(L("btMobileFootnote")) }
         }
         .disabled(readOnly)
-        if BtSettingsRow.pieceOrder.isVisible(in: form) || BtSettingsRow.firstLastPiecesFirst.isVisible(in: form) {
+        if BtSettingsRow.pieceOrder.isVisible(in: form) || BtSettingsRow.firstLastPiecesFirst.isVisible(in: form)
+            || BtSettingsRow.selectionAutoDefault.isVisible(in: form) {
             Section(L("btNewTasksSection")) {
                 if BtSettingsRow.pieceOrder.isVisible(in: form) { BtPieceOrderRow() }
                 if BtSettingsRow.firstLastPiecesFirst.isVisible(in: form) {
                     ConfigToggleRow(item: BtSettingsRow.firstLastPiecesFirst.item)
+                }
+                if BtSettingsRow.selectionAutoDefault.isVisible(in: form) {
+                    ConfigToggleRow(item: BtSettingsRow.selectionAutoDefault.item)
                 }
             }
             .disabled(readOnly)

@@ -7,7 +7,7 @@
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useT } from '../../../i18n'
-import { rpc, useAgent, useTasks } from '../../../lib/rpc'
+import { hasSelectionDeadline, rpc, useAgent, useTasks } from '../../../lib/rpc'
 import type { BtFileDto, HlsQualityOptionDto, ResolveVariantOptionDto, SelectionKind, SelectionOutcome, SelectionRequestDto } from '../../../lib/rpc'
 import { SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF, readSaveDirHistory, saveDirChoices } from '../../../lib/saveDirHistory'
 import { Button, Checkbox, Dialog, DialogFooter, FieldHint, FormField, Icon, Input } from '../../../ui'
@@ -41,7 +41,9 @@ function defaultIndex(request: SelectionRequestDto, kind: 'hls' | 'variant', fir
 function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind: ChoiceKind }) {
   const t = useT()
   const tasks = useTasks()
-  const now = useNow(1000)
+  const hasDeadline = hasSelectionDeadline(request)
+  // 无截止（用户关闭了自动选择默认项）时不显示倒计时，也不必每秒重绘文件列表。
+  const now = useNow(hasDeadline ? 1000 : null)
   const [submitting, setSubmitting] = useState(false)
   const [hlsIndex, setHlsIndex] = useState(() => defaultIndex(request, 'hls', kind.type === 'hls' ? (kind.options[0]?.index ?? 0) : 0))
   const [variantIndex, setVariantIndex] = useState(() => defaultIndex(request, 'variant', kind.type === 'variant' ? (kind.options[0]?.index ?? 0) : 0))
@@ -58,7 +60,7 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
 
   const task = tasks.find((item) => item.taskId === request.taskId)
   const taskName = task?.fileName || task?.originUrl || task?.url || ''
-  const remaining = Math.max(0, Math.floor((request.deadlineUnixMs - now) / 1000))
+  const remaining = hasDeadline ? Math.max(0, Math.floor((request.deadlineUnixMs - now) / 1000)) : null
   const cancellable = kind.type !== 'hls'
 
   const resolve = async (next: SelectionOutcome) => {
@@ -111,7 +113,7 @@ function SelectionDialog({ request, kind }: { request: SelectionRequestDto; kind
       description={taskName ? `${description} · ${taskName}` : description}
       footer={
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <FieldHint className="tabular">{t('selectionAutoDefaultIn', { seconds: remaining })}</FieldHint>
+          {remaining === null ? <span /> : <FieldHint className="tabular">{t('selectionAutoDefaultIn', { seconds: remaining })}</FieldHint>}
           <DialogFooter className="ml-auto">
             {cancellable ? (
               <Button variant="outline" disabled={submitting} onClick={() => void resolve({ kind: 'cancelled' })}>

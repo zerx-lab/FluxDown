@@ -171,6 +171,12 @@ pub enum SelectionOutcome {
     Cancelled,
 }
 
+/// [`SelectionRequestDto::deadline_unix_ms`] 的「无截止」取值：daemon 不会自动按默认值解析，
+/// 一直等到客户端答复；任务暂停 / 删除时引擎放弃询问，daemon 随之撤销请求（广播 `SelectionResolved`）；
+/// daemon 关闭时以取消终结；最后一个订阅者离开时保持待处理。客户端据此隐藏倒计时。
+/// JSON 里按 `i64::MAX` 序列化；JavaScript 解析后会失真为 ≥ `Number.MAX_SAFE_INTEGER` 的数。
+pub const SELECTION_NO_DEADLINE: i64 = i64::MAX;
+
 /// daemon 向已订阅连接发布的待选择请求。
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -180,7 +186,16 @@ pub struct SelectionRequestDto {
     pub task_id: String,
     pub kind: SelectionKind,
     pub default_choice: SelectionOutcome,
+    /// 到点由 daemon 按 `default_choice` 自动解析的时刻；[`SELECTION_NO_DEADLINE`] = 不自动解析。
     pub deadline_unix_ms: i64,
+}
+
+impl SelectionRequestDto {
+    /// 是否有自动解析的截止时刻（否则客户端不显示倒计时）。
+    #[must_use]
+    pub fn has_deadline(&self) -> bool {
+        self.deadline_unix_ms != SELECTION_NO_DEADLINE
+    }
 }
 
 /// 客户端对待选择请求的终局答复。

@@ -18759,6 +18759,186 @@ mod tests {
         (work, port)
     }
 
+    /// 永不答复的 BT 文件选择宿主（等价于 daemon 关闭「自动选择默认项」后的无截止等待）；
+    /// 记下询问时刻与询问 future 是否被丢弃（daemon 据此撤销待选项）。
+    #[cfg(feature = "bt")]
+    #[derive(Default)]
+    struct NeverAnsweringSelection {
+        asked: tokio::sync::Notify,
+        withdrawn: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[cfg(feature = "bt")]
+    struct WithdrawOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    #[cfg(feature = "bt")]
+    impl Drop for WithdrawOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "bt")]
+    #[async_trait::async_trait]
+    impl crate::selection::HostSelection for NeverAnsweringSelection {
+        async fn select_hls_quality(
+            &self,
+            _: &str,
+            _: &[crate::model::HlsQualityOption],
+            _: std::time::Duration,
+        ) -> crate::selection::SelectionOutcome<i32> {
+            panic!("BT fixture must not request HLS selection");
+        }
+
+        async fn select_bt_files(
+            &self,
+            _: &str,
+            _: &[crate::model::BtFileEntry],
+            _: &str,
+            _: Option<std::time::Duration>,
+        ) -> crate::selection::SelectionOutcome<crate::selection::BtFileChoice> {
+            let _withdraw = WithdrawOnDrop(self.withdrawn.clone());
+            self.asked.notify_one();
+            std::future::pending().await
+        }
+
+        async fn select_resolve_variant(
+            &self,
+            _: &str,
+            _: &[crate::model::ResolveVariantOption],
+            _: i32,
+            _: std::time::Duration,
+        ) -> crate::selection::SelectionOutcome<i32> {
+            panic!("BT fixture must not request variant selection");
+        }
+
+        fn provide_hls_selection(&self, _: &str, _: i32) {
+            panic!("BT fixture does not accept HLS answers");
+        }
+
+        fn provide_bt_selection(&self, _: &str, _: Vec<i32>) {
+            panic!("BT fixture never receives answers");
+        }
+
+        fn provide_variant_selection(&self, _: &str, _: i32) {
+            panic!("BT fixture does not accept variant answers");
+        }
+    }
+
+    /// #885：宿主可以不设上限地等文件选择。对话框打开时暂停必须及时生效——下载器
+    /// 放弃询问并退出（TaskDone），随后发出暂停帧；否则任务停在「准备中」、恢复被挡住。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn pause_during_unanswered_bt_file_selection_finishes_task() {
+        let (work, port) = bt_test_dir("pause_during_selection");
+        let content = work.join("pair");
+        std::fs::create_dir_all(&content).expect("torrent content");
+        for index in 0..2u8 {
+            std::fs::write(
+                content.join(format!("file-{index}.bin")),
+                vec![index.wrapping_add(7); 32 * 1024],
+            )
+            .expect("torrent source file");
+        }
+        let torrent = librqbit::create_torrent(
+            &content,
+            librqbit::CreateTorrentOptions {
+                name: Some("pair"),
+                piece_length: Some(16 * 1024),
+                ..Default::default()
+            },
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .expect("create torrent")
+        .as_bytes()
+        .expect("torrent bytes");
+        let save = work.join("save");
+        std::fs::create_dir_all(&save).expect("save dir");
+
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let selector = Arc::new(NeverAnsweringSelection::default());
+        let mut mgr = DownloadManager::new(
+            db,
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: work.to_string_lossy().into_owned(),
+                app_data_dir: work.to_string_lossy().into_owned(),
+                data_dir: work.clone(),
+                bt_config: bt_test_config(port),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            Arc::new(RecordingSink::new()),
+            selector.clone(),
+        )
+        .expect("construct manager");
+        let mut progress_rx = mgr.take_progress_rx().expect("progress receiver");
+        let mut done_rx = mgr.take_done_rx().expect("done receiver");
+        let task_id = mgr
+            .create_task(NewTaskSpec {
+                save_dir: save.to_string_lossy().into_owned(),
+                torrent_file_bytes: torrent.to_vec(),
+                ..Default::default()
+            })
+            .await
+            .expect("create torrent task");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            selector.asked.notified(),
+        )
+        .await
+        .expect("file selection must be requested");
+
+        mgr.pause_task(&task_id).await;
+        let done = loop {
+            let done = tokio::time::timeout(std::time::Duration::from_secs(10), done_rx.recv())
+                .await
+                .expect("paused downloader must finish while the dialog is unanswered")
+                .expect("done channel open");
+            if done.task_id == task_id && done.phase == TaskDonePhase::Finished {
+                break done;
+            }
+        };
+        assert!(
+            selector.withdrawn.load(std::sync::atomic::Ordering::SeqCst),
+            "the unanswered request must be dropped so the host withdraws it"
+        );
+        mgr.on_task_done(&done).await;
+
+        let mut paused_frames = 0;
+        while let Ok(update) = progress_rx.try_recv() {
+            if update.task_id == task_id && update.status == 2 {
+                paused_frames += 1;
+            }
+        }
+        assert!(paused_frames > 0, "a paused frame must follow the pause");
+        let task = mgr
+            .db
+            .load_task_by_id(&task_id)
+            .await
+            .expect("load task")
+            .expect("task row");
+        assert_eq!(task.status, 2);
+        assert_eq!(
+            mgr.db
+                .load_bt_selected_files(&task_id)
+                .await
+                .expect("selection row"),
+            None,
+            "unanswered selection is asked again on resume"
+        );
+
+        mgr.shutdown().await;
+        if let Err(error) = std::fs::remove_dir_all(&work) {
+            tracing::debug!(%error, "BT pause-during-selection test directory cleanup skipped");
+        }
+    }
+
     /// #939 现场：启动续种的本地数据校验尚在途时，会话因监听类设置变更重建。
     /// 任务必须在新会话上继续做种（对齐 qBittorrent：改设置不打断做种），
     /// 旧会话连同其 runtime 必须真正释放（不 panic、不留继续上传的僵尸会话），
