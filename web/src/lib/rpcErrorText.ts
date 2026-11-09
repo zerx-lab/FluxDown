@@ -37,6 +37,8 @@ export function rpcErrorText(error: unknown, t: TFunction): string {
   switch (error.data?.reason) {
     case 'gatewayPortInUse': return t('apiServicePortInUse')
     case 'gatewayRestartFailed': return t('apiServiceRestartFailed')
+    case 'taskFilesInUse': return t('errReasonTaskFilesInUse')
+    case 'taskFilesNotDeleted': return t('errReasonTaskFilesNotDeleted')
   }
   const kind = rpcErrorKind(error)
   const base = t(RPC_ERROR_KEYS[kind])

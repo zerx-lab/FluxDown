@@ -2851,6 +2851,8 @@
   "errReasonTaskStateConflict": "The task's current state doesn't allow this action.",
   "errReasonTaskDeviceMismatch": "Only the target device can update this task.",
   "errReasonSaveDirUnavailable": "The folder isn't available on the target device. Use an absolute path in its format, or leave it empty.",
+  "errReasonTaskFilesInUse": "Couldn't delete the file because another program is using it. The task was kept; close that program and try again.",
+  "errReasonTaskFilesNotDeleted": "Couldn't delete the task's files (check permissions and that the disk is available). The task was kept; try again later.",
   "errReasonPairingCodeInvalid": "The pairing code is wrong or has expired.",
   "errReasonPairingTimeout": "The other device didn't confirm in time. Start again and approve the request on that device.",
   "errReasonPeerClockSkew": "The two devices' clocks differ too much. Turn on automatic date & time on both devices and try again.",

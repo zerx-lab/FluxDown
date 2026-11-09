@@ -41,7 +41,7 @@ use crate::{
     },
     controller::{DownloadsCommand, DownloadsController, DownloadsPort},
     model::{DownloadTaskView, RowKey, TaskProtocol, TaskState, format_bytes},
-    strings::DownloadStrings,
+    strings::{DownloadStrings, error_text},
 };
 
 /// 窗口最小宽度（逻辑像素），进度与完成视图共用。
@@ -295,11 +295,15 @@ impl ProgressWindowView {
     ) {
         let future = self.port.execute(command);
         cx.spawn(async move |this, cx| {
-            let failed = future.await.is_err();
+            let result = future.await;
 
             let Ok(()) = this.update(cx, |this, cx| {
-                if failed {
-                    this.last_error = Some(this.strings.action_failed.clone());
+                if let Err(error) = result {
+                    // 按 reason 给出原因（如删除时文件被占用、任务已保留）。
+                    this.last_error = Some(SharedString::from(error_text(
+                        this.translator.read(cx),
+                        &error,
+                    )));
                     cx.notify();
                     return;
                 }

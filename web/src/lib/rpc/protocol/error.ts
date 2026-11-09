@@ -60,6 +60,8 @@ export type ErrorReason =
   | 'taskStateConflict'
   | 'taskDeviceMismatch'
   | 'saveDirUnavailable'
+  | 'taskFilesInUse'
+  | 'taskFilesNotDeleted'
   | 'pairingCodeInvalid'
   | 'pairingSessionExpired'
   | 'pairingTimeout'

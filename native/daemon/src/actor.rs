@@ -314,6 +314,9 @@ pub enum ActorError {
     /// 任务当前状态不允许该操作（如对已完成 / 失败任务设优先下载）。
     #[error("task state conflict: {0}")]
     TaskStateConflict(String),
+    /// 删除被拒：任务文件删不掉，任务记录已保留（`in_use` = 文件正被其他程序占用）。
+    #[error("{message}")]
+    TaskFilesKept { in_use: bool, message: String },
 }
 
 /// daemon actor 命令。
@@ -1205,8 +1208,10 @@ async fn execute_operation(
             task_id,
             delete_files,
         } => {
-            engine.manager.delete_task(&task_id, delete_files).await;
+            let result = engine.manager.delete_task(&task_id, delete_files).await;
+            // 失败时任务也已被取消 / 移出排队，同样推送快照。
             engine.manager.send_tasks_snapshot().await;
+            result.map_err(delete_task_error)?;
         }
         ActorOperation::PauseAll => {
             let mut ids = pause_all_task_ids(&engine.db).await?;
@@ -2496,11 +2501,26 @@ fn batch_delete_result(
 ) -> Result<(), ActorError> {
     match result {
         Ok(outcome) if outcome.failed == 0 => Ok(()),
-        Ok(outcome) => Err(ActorError::Operation(format!(
-            "{} task(s) kept because their files could not be removed ({} deleted)",
-            outcome.failed, outcome.deleted
-        ))),
+        Ok(outcome) => Err(ActorError::TaskFilesKept {
+            in_use: outcome.files_in_use,
+            message: format!(
+                "{} task(s) kept because their files could not be removed ({} deleted)",
+                outcome.failed, outcome.deleted
+            ),
+        }),
         Err(error) => Err(ActorError::Operation(format!("{error:#}"))),
+    }
+}
+
+/// 单任务删除被拒 → 操作结果：文件清理失败回报「任务已保留」及是否被占用，其余为操作失败。
+fn delete_task_error(error: fluxdown_engine::download_manager::DeleteTaskError) -> ActorError {
+    use fluxdown_engine::download_manager::DeleteTaskError;
+    match &error {
+        DeleteTaskError::Cleanup(_) => ActorError::TaskFilesKept {
+            in_use: error.is_file_in_use(),
+            message: format!("task kept: {error}"),
+        },
+        DeleteTaskError::Record(_) => ActorError::Operation(error.to_string()),
     }
 }
 
@@ -3220,6 +3240,90 @@ mod tests {
         drop(engine);
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor set segments test directory removal failed: {error}");
+        }
+    }
+
+    /// `daemon.task.delete`：文件删不掉时回报「任务已保留」而不是成功，任务记录与文件都在
+    /// （#986：此前单任务删除吞掉清理失败，客户端误以为已删除）。
+    #[tokio::test]
+    async fn delete_task_reports_kept_task_when_files_cannot_be_removed() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_delete_kept_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        // 「文件」实为非空目录：remove_file 必然失败（非占用类错误）。
+        tokio::fs::create_dir_all(dir.join("locked.bin"))
+            .await
+            .expect("create undeletable target");
+        tokio::fs::write(dir.join("locked.bin").join("payload"), b"keep")
+            .await
+            .expect("write payload");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        engine
+            .db
+            .insert_task(
+                "done",
+                "https://example.invalid/locked.bin",
+                "locked.bin",
+                &dir_text,
+                8,
+                0,
+                "",
+                "",
+                "",
+                3,
+            )
+            .await
+            .expect("insert task");
+
+        let result = execute_operation(
+            ActorOperation::DeleteTask {
+                task_id: "done".to_owned(),
+                delete_files: true,
+            },
+            &mut engine,
+            &events,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ActorError::TaskFilesKept { in_use: false, .. })),
+            "failed file removal must be reported as a kept task"
+        );
+        assert!(
+            engine
+                .db
+                .load_task_by_id("done")
+                .await
+                .expect("load task")
+                .is_some(),
+            "task record is kept"
+        );
+        assert!(dir.join("locked.bin").join("payload").exists());
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor delete kept test directory removal failed: {error}");
         }
     }
 

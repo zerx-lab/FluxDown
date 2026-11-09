@@ -87,7 +87,11 @@ async fn delete_files_on_never_started_task_keeps_foreign_file() {
     let mut engine = make_engine(&work).await;
     let id = create_later_task(&mut engine, &save_dir, "a.bin").await;
 
-    engine.manager.delete_task(&id, true).await;
+    engine
+        .manager
+        .delete_task(&id, true)
+        .await
+        .expect("delete task");
 
     // 任务记录已删，但别人的同名成品必须原封不动。
     assert!(engine.db.load_task_by_id(&id).await.expect("db").is_none());
@@ -122,7 +126,11 @@ async fn delete_files_on_completed_task_removes_its_product() {
         .await
         .expect("mark completed");
 
-    engine.manager.delete_task(&id, true).await;
+    engine
+        .manager
+        .delete_task(&id, true)
+        .await
+        .expect("delete task");
 
     assert!(
         !product.exists(),
@@ -238,7 +246,11 @@ async fn delete_files_keeps_file_named_by_another_task() {
         .await
         .expect("mark completed");
 
-    engine.manager.delete_task(&completed, true).await;
+    engine
+        .manager
+        .delete_task(&completed, true)
+        .await
+        .expect("delete task");
     assert!(
         shared.exists(),
         "file still named by another task must survive"
@@ -311,7 +323,11 @@ async fn delete_files_removes_hls_audio_sidecar_and_checkpoints() {
         .await
         .expect("audio checkpoint");
 
-    engine.manager.delete_task(&id, true).await;
+    engine
+        .manager
+        .delete_task(&id, true)
+        .await
+        .expect("delete task");
 
     assert!(!video.exists(), "video product must be removed");
     assert!(!audio.exists(), "hls audio sidecar must be removed");

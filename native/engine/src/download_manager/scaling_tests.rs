@@ -217,7 +217,7 @@ async fn pending_counts_stay_consistent_through_pause_delete_move_start_and_fini
     assert!(manager.pending_queue.counts_match_recount());
     assert_eq!(manager.pending_queue.queued_in(&slow), 2);
 
-    manager.delete_task(&m2, false).await;
+    manager.delete_task(&m2, false).await.expect("delete task");
     assert_eq!(manager.pending_queue.len(), 4);
     assert!(manager.pending_queue.counts_match_recount());
     assert_eq!(manager.pending_queue.queued_in(MAIN_QUEUE_ID), 2);

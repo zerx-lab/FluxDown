@@ -1098,6 +1098,8 @@ pub(crate) fn error_text(
         ErrorReason::TaskStateConflict => Some("errReasonTaskStateConflict"),
         ErrorReason::TaskDeviceMismatch => Some("errReasonTaskDeviceMismatch"),
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
+        ErrorReason::TaskFilesInUse => Some("errReasonTaskFilesInUse"),
+        ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),

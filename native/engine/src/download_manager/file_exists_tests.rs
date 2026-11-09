@@ -339,7 +339,7 @@ async fn skip_answer_adopts_existing_file_and_survives_restart_and_delete() {
         .await
         .expect("create");
     fx2.pump_until_status(&id2, 3).await;
-    fx2.mgr.delete_task(&id2, true).await;
+    fx2.mgr.delete_task(&id2, true).await.expect("delete task");
     assert_eq!(
         std::fs::read(fx2.dir.join("b.bin")).expect("adopted file survives"),
         b"keep me"

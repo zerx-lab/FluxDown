@@ -78,11 +78,15 @@ class TaskActions(
     }
 
     /** 先按 reason（`ErrorReason` wire 名）本地化，再按 code 回退。 */
-    fun errorText(e: HostException): String = when (e.code) {
-        HostErrorCode.Conflict -> s(R.string.localServiceConflict)
-        HostErrorCode.InvalidArgument -> s(R.string.localServiceInvalidArgument)
-        HostErrorCode.Unavailable, HostErrorCode.Timeout -> s(R.string.localServiceDisconnected)
-        else -> s(R.string.localServiceActionFailed)
+    fun errorText(e: HostException): String = when (e.reason) {
+        "taskFilesInUse" -> s(R.string.errReasonTaskFilesInUse)
+        "taskFilesNotDeleted" -> s(R.string.errReasonTaskFilesNotDeleted)
+        else -> when (e.code) {
+            HostErrorCode.Conflict -> s(R.string.localServiceConflict)
+            HostErrorCode.InvalidArgument -> s(R.string.localServiceInvalidArgument)
+            HostErrorCode.Unavailable, HostErrorCode.Timeout -> s(R.string.localServiceDisconnected)
+            else -> s(R.string.localServiceActionFailed)
+        }
     }
 
     // ── 单任务 / 批量 ──────────────────────────────────────────────────────
