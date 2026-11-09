@@ -341,14 +341,16 @@ struct DownloadsListScreen: View {
         }
     }
 
-    /// 待处理选择请求：标题 + 任务名 + 实时倒计时；「选择」→ X 面板（含已被划走的请求）。
+    /// 待处理选择请求：标题 + 任务名 + 实时倒计时（无截止的请求不显示倒计时）；「选择」→ X 面板（含已被划走的请求）。
     private func selectionBanner(_ request: PendingSelection) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let remaining = max(0, Int((Double(request.deadlineUnixMs) / 1000 - context.date.timeIntervalSince1970).rounded(.up)))
             let heading = request.titleCount.map { L(request.titleKey, ["count": $0]) } ?? L(request.titleKey)
             let title = request.taskName.isEmpty ? heading : heading + " · " + request.taskName
+            let countdown = request.deadlineUnixMs == SelectionRequest.noDeadline
+                ? "" : "\n" + L(request.countdownKey, ["seconds": remaining])
             Banner(
-                text: title + "\n" + L(request.countdownKey, ["seconds": remaining]),
+                text: title + countdown,
                 tone: .info,
                 systemImage: "checklist",
                 action: BannerAction(title: L("mobileMenuSelect")) {

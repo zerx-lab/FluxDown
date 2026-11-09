@@ -42,10 +42,11 @@ export function mapEngineError(error: unknown, table: Readonly<Record<string, st
   return null
 }
 
-/** 每 `intervalMs` 刷新一次的当前时间戳（ms）。 */
-export function useNow(intervalMs = 1000): number {
+/** 每 `intervalMs` 刷新一次的当前时间戳（ms）；`null` = 不需要走字（不启动定时器）。 */
+export function useNow(intervalMs: number | null = 1000): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
+    if (intervalMs === null) return
     const timer = setInterval(() => setNow(Date.now()), intervalMs)
     return () => clearInterval(timer)
   }, [intervalMs])

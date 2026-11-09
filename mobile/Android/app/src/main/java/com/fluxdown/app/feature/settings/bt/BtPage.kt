@@ -86,7 +86,7 @@ private fun itemKeyOf(row: BtSettingsRow): String = when (row.tab) {
     BtSettingsTab.Guard -> guardItemKeyOf(row)
     else -> when (row) {
         BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode -> K_GENERAL
-        BtSettingsRow.PieceOrder, BtSettingsRow.FirstLastPiecesFirst -> K_NEW_TASKS
+        BtSettingsRow.PieceOrder, BtSettingsRow.FirstLastPiecesFirst, BtSettingsRow.SelectionAutoDefault -> K_NEW_TASKS
         BtSettingsRow.CustomTrackers -> K_TRACKER_LIST
         BtSettingsRow.TrackerSub, BtSettingsRow.TrackerSubUrls, BtSettingsRow.TrackerSubStatus -> K_TRACKER_SUB
         BtSettingsRow.SeedEnabled, BtSettingsRow.SeedMaxActive, BtSettingsRow.AutoReseed -> K_SEED_MAIN
@@ -113,6 +113,7 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.MseMode -> R.string.btMseMode
     BtSettingsRow.PieceOrder -> R.string.btPieceOrder
     BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefault
+    BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefault
     BtSettingsRow.CustomTrackers -> R.string.btTrackerList
     BtSettingsRow.TrackerSub -> R.string.btTrackerSub
     BtSettingsRow.TrackerSubUrls -> R.string.btTrackerSubUrls
@@ -159,6 +160,7 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.MseMode -> R.string.btMseModeDesc
     BtSettingsRow.PieceOrder -> R.string.btPieceOrderDesc
     BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefaultDesc
+    BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefaultDesc
     BtSettingsRow.CustomTrackers -> R.string.btTrackerListDesc
     BtSettingsRow.TrackerSub -> R.string.btTrackerSubDesc
     BtSettingsRow.TrackerSubUrls -> R.string.btTrackerSubUrlsDesc
@@ -287,7 +289,9 @@ internal fun BtPage() {
                 when (tab) {
                     BtSettingsTab.General -> {
                         flowItem(index++, gate, K_GENERAL) { GeneralSection(ctx) }
-                        if (BtSettingsRow.PieceOrder.isVisible(form) || BtSettingsRow.FirstLastPiecesFirst.isVisible(form)) {
+                        if (BtSettingsRow.PieceOrder.isVisible(form) || BtSettingsRow.FirstLastPiecesFirst.isVisible(form) ||
+                            BtSettingsRow.SelectionAutoDefault.isVisible(form)
+                        ) {
                             flowItem(index++, gate, K_NEW_TASKS) { NewTasksSection(ctx) }
                         }
                     }
@@ -423,6 +427,15 @@ private fun NewTasksSection(ctx: SettingsCtx) {
                 R.string.btFirstLastPiecesFirstDefault,
                 R.string.btFirstLastPiecesFirstDefaultDesc,
                 id = BtSettingsRow.FirstLastPiecesFirst.id,
+            )
+        }
+        if (BtSettingsRow.SelectionAutoDefault.isVisible(form)) {
+            settingSwitch(
+                ctx,
+                BtSettingsRow.SelectionAutoDefault.configKey,
+                R.string.btSelectionAutoDefault,
+                R.string.btSelectionAutoDefaultDesc,
+                id = BtSettingsRow.SelectionAutoDefault.id,
             )
         }
     }

@@ -501,7 +501,7 @@ async fn run_actor(
                         .await;
                     }
                     DaemonCommand::Shutdown { ack } => {
-                        selections.resolve_all_defaults();
+                        selections.resolve_all_for_shutdown();
                         cancel.cancel();
                         if ack.send(()).is_err() {
                             tracing::debug!("daemon shutdown caller disconnected before acknowledgement");
@@ -571,7 +571,7 @@ async fn run_actor(
         Ok(Err(error)) => tracing::error!(%error, "daemon speed history flush failed"),
         Err(_) => tracing::error!("daemon speed history flush timed out"),
     }
-    selections.resolve_all_defaults();
+    selections.resolve_all_for_shutdown();
     commands.close();
     while let Some(command) = commands.recv().await {
         match command {

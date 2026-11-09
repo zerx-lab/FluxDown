@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::{DownloadTaskView, TaskState};
 
 pub(crate) const VIEW_PREFS_KEY: &str = "desktop.downloads.view";
+/// 设备本地偏好（缺省关）：任务列表 / 详情副标题不展示来源站点；设置「通用 › 任务列表」写入，
+/// `crates/settings/src/sections/general.rs` 重复声明同名键（设置能力不依赖下载能力）。
+pub(crate) const HIDE_TASK_SOURCE_PREF: &str = "ui.hide_task_source";
 /// 宽松密度行高 = 旧 Flutter 默认列表的 64px（Web `rowHeightClass` 同值）。字号放大到舒适行
 /// 本身超过它时取舒适行高，保证两行文字不被裁切。
 const RELAXED_ROW_HEIGHT: f32 = 64.;

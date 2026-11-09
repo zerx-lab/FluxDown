@@ -117,6 +117,19 @@
   先建新目录 → 删本任务 librqbit 条目与旧 staging → `set_task_location` + 保存选择并发布位置 →
   `run_bt_download` 以新目录、Path A/S 重跑一轮（不再弹窗）。建目录失败 / 新目录落在旧 staging 内
   均报错、库内位置不变，重试会重新询问。
+- **BT 文件选择的自动默认（#885）**：引擎以 `timeout: None` 询问，等待上限由 daemon `selection.rs::bt_selection_timeout`
+  决定：daemon 配置 `bt_selection_auto_default`（默认开）= 60s 后按默认（全部文件）开始；关闭 = 请求
+  `deadline_unix_ms = SELECTION_NO_DEADLINE`（i64::MAX），只等用户答复，**从不替用户采用默认值**：最后一个订阅者离开
+  （Web 刷新 / 断线、桌面关窗且托盘不可见）时请求留在 `pending_selections`，下一个客户端从快照接着作答
+  （`PendingSelection::has_deadline`）；daemon 关闭以「取消」终结（继续时重新询问）。发起询问时没有任何订阅者（无界面）
+  仍立即按默认开始，同旧语义。等待期间任务停在「准备中」；BT 不占并发槽位（`has_capacity` 排除 BT），无「占槽」问题。
+  **暂停 / 删除的终结路径在引擎**：pause 只取消 token、暂停帧要等 TaskDone，daemon 的 `observe_frame` 看不到它，所以
+  `bt_download_inner` Path B 用 `select!` 让询问与 `BtInnerParams::cancel_token` 竞争（答复优先），取消即丢弃询问、
+  摘句柄按 `Cancelled` 退出（继续时重新 add 并询问）；daemon `select_bt_files` 的 `PendingGuard` 在 future 被丢弃时撤销
+  待选项并广播 `SelectionResolved`（回归 `pause_during_unanswered_bt_file_selection_finishes_task`、
+  `dropping_no_deadline_bt_wait_withdraws_and_broadcasts`）。询问前另复核 `cancelled`：暂停落在元数据等待循环两次检查之间时
+  不再询问（回归 `bt_selection_is_not_requested_when_task_already_paused`）。
+  四端凭 `has_deadline`（Web `hasSelectionDeadline`，JSON 失真后按 ≥ `MAX_SAFE_INTEGER` 判）隐藏倒计时、不自动答复、不启动每秒走字。
 - **做种交互（对齐 qBittorrent）**（`bt_seeding.rs`）：完成即自动做种（`bt_seed_enabled`，默认开；
   关闭时完成即落 `seeding_status=4` UserStopped）。完成态 BT 任务的「暂停」= 停止做种（1 / 8 → 4），
   「继续」= 恢复做种（2..=7），其余完成态的继续一律忽略（#935）。**达限停止（2 / 3 / 7）的手动继续 =

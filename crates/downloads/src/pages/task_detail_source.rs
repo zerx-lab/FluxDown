@@ -41,8 +41,19 @@ impl TaskDetailView {
     }
 
     /// 常规页副标题「协议 · 来源站点」：来源页可打开时站点名即链接，悬停显示完整地址。
+    /// 设置「隐藏任务来源」开启时只留协议；高级页「来源页」行是用户主动展开的明细，不受影响。
     pub(super) fn render_source_line(&self, row: &DownloadTaskView, cx: &App) -> Div {
         let tokens = active_theme(cx).tokens().clone();
+        let line = h_flex()
+            .min_w_0()
+            .gap(tokens.spacing.xs)
+            .text_size(tokens.typography.xs.size)
+            .line_height(tokens.typography.xs.line_height)
+            .text_color(tokens.colors.muted_foreground)
+            .child(div().flex_none().child(row.protocol.label()));
+        if self.source_hidden() {
+            return line;
+        }
         let site = SharedString::from(row.source_site().to_owned());
         let site = match row.source_page_url() {
             Some(url) => source_page_link(
@@ -55,14 +66,7 @@ impl TaskDetailView {
             ),
             None => site.into_any_element(),
         };
-        h_flex()
-            .min_w_0()
-            .gap(tokens.spacing.xs)
-            .text_size(tokens.typography.xs.size)
-            .line_height(tokens.typography.xs.line_height)
-            .text_color(tokens.colors.muted_foreground)
-            .child(div().flex_none().child(row.protocol.label()))
-            .child(div().flex_none().child("·"))
+        line.child(div().flex_none().child("·"))
             .child(div().min_w_0().truncate().child(site))
     }
 

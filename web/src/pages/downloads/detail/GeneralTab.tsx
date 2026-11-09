@@ -1,5 +1,6 @@
 import { Copy, Download, Layers, Link2 } from 'lucide-react'
 import { useT } from '../../../i18n'
+import { usePrefBool } from '../../../lib/rpc'
 import { Button, Icon, Tooltip } from '../../../ui'
 import { copyText } from '../../../lib/copy'
 import { useDownloads } from '../state'
@@ -9,6 +10,7 @@ import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourcePageUr
 import { localizeTaskError } from '../model/taskError'
 import type { DownloadTaskView, TaskState } from '../model/task'
 import { canChangeSegments, canChangeUrl } from '../model/taskEdit'
+import { HIDE_TASK_SOURCE_PREF } from '../model/viewPrefs'
 import { openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
 import { routeLabel } from '../../../lib/taskRoute'
 import { CopyButton, SourcePageLink } from './CopyButton'
@@ -34,6 +36,7 @@ function formatEta(t: ReturnType<typeof useT>, seconds: number): string {
 export function GeneralTab({ view }: { view: DownloadTaskView }) {
   const t = useT()
   const { queueName } = useDownloads()
+  const hideSource = usePrefBool(HIDE_TASK_SOURCE_PREF, false)
   const dto = view.dto
   // 期望哈希只在填写过时展示（与 GPUI 一致：多数任务没有，「未设置」一行是噪音）。
   const checksum = dto?.checksum ?? ''
@@ -50,8 +53,14 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
         <div className="flex flex-col gap-0.5 pb-2">
           <div className="min-w-0 truncate text-sm font-medium">{view.name}</div>
           <div className="flex min-w-0 gap-1 text-xs text-muted-foreground">
-            <span className="shrink-0">{PROTOCOL_LABEL[view.protocol]} ·</span>
-            <SourcePageLink text={sourceSite(view)} url={sourcePageUrl(view)} className="min-w-0 truncate" />
+            {hideSource ? (
+              <span className="shrink-0">{PROTOCOL_LABEL[view.protocol]}</span>
+            ) : (
+              <>
+                <span className="shrink-0">{PROTOCOL_LABEL[view.protocol]} ·</span>
+                <SourcePageLink text={sourceSite(view)} url={sourcePageUrl(view)} className="min-w-0 truncate" />
+              </>
+            )}
           </div>
           {view.boosted ? <div className="text-xs text-warning">{t('detailBoostActive')}</div> : null}
         </div>

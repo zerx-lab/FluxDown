@@ -105,6 +105,11 @@ fn new_tasks_section(ctx: &SectionContext, bt_enabled: bool) -> SettingsSection 
             Some("btFirstLastPiecesFirstDefaultDesc"),
             ctx.daemon_switch("bt_first_last_pieces_first"),
         ))
+        .row(ctx.item(
+            "btSelectionAutoDefault",
+            Some("btSelectionAutoDefaultDesc"),
+            ctx.daemon_switch("bt_selection_auto_default"),
+        ))
 }
 
 fn tracker_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {

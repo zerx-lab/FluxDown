@@ -186,15 +186,18 @@ impl SelectionView {
             cx.notify();
         })
         .detach();
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
+        // 倒计时走字；无截止（用户关闭了自动选择默认项）时没有可更新的内容，不每秒重绘文件列表。
+        if request.has_deadline() {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        }
         Self {
             strings,
             request,
@@ -212,9 +215,11 @@ impl SelectionView {
         !matches!(self.state, SelectionState::Hls { .. })
     }
 
-    fn remaining_seconds(&self) -> i64 {
-        let now = now_unix_ms();
-        ((self.request.deadline_unix_ms - now) / 1000).max(0)
+    /// 距截止的整秒数；无截止（用户关闭了自动选择默认项）为 `None`，页脚不显示倒计时。
+    fn remaining_seconds(&self) -> Option<i64> {
+        self.request
+            .has_deadline()
+            .then(|| ((self.request.deadline_unix_ms - now_unix_ms()) / 1000).max(0))
     }
 
     /// 引擎把空 BT 选择回退为全部文件，所以全不选时不允许确认（与 web 一致）。
@@ -695,12 +700,13 @@ impl SelectionView {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
         let extended = theme.extended().clone();
-        let remaining = self.remaining_seconds();
-        let countdown = SharedString::from(
-            self.strings
-                .auto_default_in
-                .replace("{seconds}", &remaining.to_string()),
-        );
+        let countdown = self.remaining_seconds().map(|remaining| {
+            SharedString::from(
+                self.strings
+                    .auto_default_in
+                    .replace("{seconds}", &remaining.to_string()),
+            )
+        });
         let confirm_label = if let SelectionState::Bt {
             files, selected, ..
         } = &self.state
@@ -729,7 +735,9 @@ impl SelectionView {
             .bg(extended.colors.chrome)
             .border_t(extended.stroke.thin)
             .border_color(extended.colors.hairline)
-            .child(field_hint(countdown, cx).font_features(tabular_numbers()))
+            .child(countdown.map_or_else(div, |countdown| {
+                field_hint(countdown, cx).font_features(tabular_numbers())
+            }))
             .child(
                 h_flex()
                     .gap(tokens.spacing.sm)

@@ -886,6 +886,9 @@ pub(crate) struct DownloadTableDelegate {
     filter: TableFilter,
     query: String,
     prefs: ViewPrefs,
+    /// 设置「隐藏任务来源」：文件名列副标题不再附来源站点（设备本地偏好，
+    /// 见 [`crate::model::view_prefs::HIDE_TASK_SOURCE_PREF`]）。
+    hide_source: bool,
     /// queue_id → 名称（列 / 分组标签）。
     queue_names: Vec<(String, String)>,
     /// group_id → 组元信息；为空时不折叠任务组（如组详情窗口的成员表）。
@@ -962,6 +965,7 @@ impl DownloadTableDelegate {
             filter: TableFilter::Download(DownloadFilter::ALL),
             query: String::new(),
             prefs: ViewPrefs::default(),
+            hide_source: false,
             queue_names: Vec::new(),
             groups: HashMap::new(),
             group_rows: Vec::new(),
@@ -1059,6 +1063,11 @@ impl DownloadTableDelegate {
         self.columns_dirty = true;
         self.prefs = prefs;
         self.view_dirty = true;
+    }
+
+    /// 同步「隐藏任务来源」偏好；返回是否变化（变化后行副标题要重画）。
+    pub(crate) fn set_hide_source(&mut self, hide: bool) -> bool {
+        std::mem::replace(&mut self.hide_source, hide) != hide
     }
 
     pub(crate) fn prefs_mut(&mut self) -> &mut ViewPrefs {
@@ -2375,8 +2384,7 @@ impl DownloadTableDelegate {
                 parts.push(format!("{}/s", format_bytes(speed)));
             }
         }
-        let site = task.source_site();
-        if !site.is_empty() {
+        if let Some(site) = self.shown_source_site(task) {
             parts.push(site.to_owned());
         }
         parts.join(" · ")
@@ -2558,8 +2566,29 @@ impl DownloadTableDelegate {
         .into_any_element()
     }
 
-    /// 文件名列：名称 + 双行密度的副标题（宽松密度用 [`Self::relaxed_meta`]，其余为
-    /// 「类别 · 站点」）。
+    /// 副标题里展示的来源站点：站点为空或用户选择隐藏来源时为 `None`。
+    fn shown_source_site<'a>(&self, task: &'a DownloadTaskView) -> Option<&'a str> {
+        let site = task.source_site();
+        (!self.hide_source && !site.is_empty()).then_some(site)
+    }
+
+    /// 文件名列的副标题（仅双行密度）：宽松密度用 [`Self::relaxed_meta`]，其余为
+    /// 「类别 · 站点」；隐藏来源时去掉站点，类别保留。
+    fn file_cell_meta(&self, task: &DownloadTaskView) -> Option<SharedString> {
+        if !self.prefs.density.two_line() || task.metadata_pending {
+            return None;
+        }
+        if self.prefs.density == ViewDensity::Relaxed {
+            return Some(SharedString::from(self.relaxed_meta(task)));
+        }
+        let category = self.kind_label(task.kind);
+        Some(match self.shown_source_site(task) {
+            Some(site) => SharedString::from(format!("{category} · {site}")),
+            None => category,
+        })
+    }
+
+    /// 文件名列：名称 + 双行密度的副标题（[`Self::file_cell_meta`]）。
     fn render_file_cell(&self, task: &DownloadTaskView, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -2579,18 +2608,7 @@ impl DownloadTableDelegate {
                 },
             )
         };
-        let meta = (self.prefs.density.two_line() && !task.metadata_pending).then(|| {
-            if self.prefs.density == ViewDensity::Relaxed {
-                return SharedString::from(self.relaxed_meta(task));
-            }
-            let category = self.kind_label(task.kind);
-            let site = task.source_site();
-            if site.is_empty() {
-                category
-            } else {
-                SharedString::from(format!("{category} · {site}"))
-            }
-        });
+        let meta = self.file_cell_meta(task);
         v_flex()
             .size_full()
             .min_w_0()
@@ -4669,6 +4687,42 @@ mod tests {
         let mut delegate = DownloadTableDelegate::new(strings, store);
         delegate.refresh_view();
         Ok(delegate)
+    }
+
+    #[test]
+    fn hide_source_drops_site_from_subtitle_but_keeps_category() -> Result<(), I18nError> {
+        use crate::model::view_prefs::ViewDensity;
+
+        let mut delegate = delegate(&[3])?;
+        let task = delegate
+            .store
+            .get(&RowKey::Local("t0".into()))
+            .expect("task t0")
+            .clone();
+        let category = delegate.kind_label(task.kind).to_string();
+
+        for density in [ViewDensity::Comfortable, ViewDensity::Relaxed] {
+            delegate.prefs_mut().density = density;
+            delegate.set_hide_source(false);
+            let shown = delegate.file_cell_meta(&task).map(String::from);
+            assert!(
+                shown
+                    .as_deref()
+                    .is_some_and(|text| text.contains("example.com")),
+                "{density:?}: {shown:?}"
+            );
+
+            assert!(delegate.set_hide_source(true));
+            let hidden = delegate.file_cell_meta(&task).map(String::from);
+            assert!(
+                hidden.as_deref().is_some_and(|text| {
+                    !text.contains("example.com") && text.contains(&category)
+                }),
+                "{density:?}: {hidden:?}"
+            );
+            assert!(!delegate.set_hide_source(true));
+        }
+        Ok(())
     }
 
     #[test]

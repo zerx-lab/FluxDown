@@ -48,6 +48,11 @@ function BasicTab({ btEnabled }: { btEnabled: boolean }) {
             titleKey="btFirstLastPiecesFirstDefault"
             descKey="btFirstLastPiecesFirstDefaultDesc"
           />
+          <DaemonSwitchRow
+            configKey="bt_selection_auto_default"
+            titleKey="btSelectionAutoDefault"
+            descKey="btSelectionAutoDefaultDesc"
+          />
         </SettingsSection>
       ) : null}
     </>

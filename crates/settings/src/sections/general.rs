@@ -41,10 +41,15 @@ pub(crate) fn page(
     }
     sections.extend([
         sidebar_section(ctx),
+        task_list_section(ctx),
         activity_bar_section(ctx, activity_bar),
     ]);
     page.sections(sections)
 }
+
+/// 设备本地偏好 `ui.hide_task_source`（缺省关，不进同步目录；GPUI 与 Web 共用）：下载列表 /
+/// 详情副标题不展示来源站点。与下载能力的 `HIDE_TASK_SOURCE_PREF` 同名（设置能力不依赖下载能力）。
+const HIDE_TASK_SOURCE_PREF: &str = "ui.hide_task_source";
 
 /// 标题栏应用菜单栏显隐：设备本地偏好 `ui.show_menu_bar`（不进同步目录，缺省隐藏），
 /// 由 app 投影到 shell。
@@ -195,6 +200,16 @@ fn sidebar_section(ctx: &SectionContext) -> SettingsSection {
             "showSidebarDevice",
             Some("showSidebarDeviceDesc"),
             show_sidebar_device_field(ctx),
+        ))
+}
+
+fn task_list_section(ctx: &SectionContext) -> SettingsSection {
+    SettingsSection::new()
+        .title(ctx.t("taskListDisplay"))
+        .row(ctx.item(
+            "hideTaskSource",
+            Some("hideTaskSourceDesc"),
+            ctx.pref_switch(HIDE_TASK_SOURCE_PREF, false),
         ))
 }
 
