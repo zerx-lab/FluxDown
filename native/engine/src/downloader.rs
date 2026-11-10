@@ -1281,6 +1281,16 @@ fn build_client_inner(
     Ok(builder.build()?)
 }
 
+/// 引擎对外 HTTPS client 的起点：显式选 rustls 后端。
+///
+/// 不能依赖 reqwest 的默认后端：Windows 桌面包把 agent（reqwest 默认 features 含
+/// native-tls）与 daemon 同一次编译，feature 合并后默认后端是 schannel，ClientHello
+/// 不带 `status_request` 与 ALPN，部分 Cloudflare WAF 直接 403（#1072）。rustls 恒带
+/// `status_request`，ALPN 按 HTTP 版本设置（`http1_only` 时为 `http/1.1`）。
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+    Client::builder().use_rustls_tls()
+}
+
 /// 共享 HTTP 客户端装配；调用方可追加自己的超时与重定向守卫后再构建。
 pub(crate) fn build_client_builder(
     proxy_config: &crate::proxy_config::ProxyConfig,
@@ -1294,7 +1304,7 @@ pub(crate) fn build_client_builder(
     } else {
         user_agent
     };
-    let mut builder = Client::builder()
+    let mut builder = client_builder()
         .user_agent(ua)
         // TLS defaults to strict verification. Only a task whose confirmation
         // dialog explicitly enabled the insecure option reaches `true` here.

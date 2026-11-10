@@ -1722,7 +1722,7 @@ fn url_host(url: &str) -> Option<String> {
 /// 把签名与自定义令牌头转发出去；也不启用 cookie。
 fn build_webhook_client(proxy_config: &ProxyConfig) -> Result<Client, reqwest::Error> {
     use crate::proxy_config::{ProxyMode, detect_system_proxy};
-    let mut builder = Client::builder()
+    let mut builder = crate::downloader::client_builder()
         .user_agent(format!("FluxDown/{}", env!("FLUXDOWN_APP_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15));

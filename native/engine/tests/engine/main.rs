@@ -42,4 +42,5 @@ mod realtest;
 mod rss_pipeline;
 mod site_auth_flow;
 mod task_referrer_snapshot;
+mod tls_client_hello;
 mod unattended_selection;

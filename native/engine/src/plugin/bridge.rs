@@ -596,7 +596,7 @@ fn build_client(
         (true, false) => "开发模式",
         (true, true) => "开发模式认证",
     };
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::downloader::client_builder()
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {
