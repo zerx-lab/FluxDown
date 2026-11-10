@@ -72,6 +72,7 @@ pub(crate) struct TaskStore {
     /// 增量维护。
     pausable: Cell<usize>,
     resumable_seeds: Cell<usize>,
+    failed: Cell<usize>,
     paused_by_queue: RefCell<HashMap<String, usize>>,
     /// FluxMesh在下载页的投影（可用性 + 任务事实），由 controller 随快照 / 事件写入。
     share: RefCell<ShareFacts>,
@@ -302,6 +303,10 @@ impl TaskStore {
         self.resumable_seeds.get()
     }
 
+    pub(crate) fn failed_count(&self) -> usize {
+        self.failed.get()
+    }
+
     /// 各队列里的暂停任务数（只含非零项）。
     pub(crate) fn paused_by_queue(&self) -> Ref<'_, HashMap<String, usize>> {
         self.paused_by_queue.borrow()
@@ -363,7 +368,7 @@ impl TaskStore {
                     Self::adjust(&self.resumable_seeds, add);
                 }
             }
-            TaskState::Failed => {}
+            TaskState::Failed => Self::adjust(&self.failed, add),
         }
         let mut bound = self.bound_counts.borrow_mut();
         if let Some(categories) = bound.categories.clone() {
@@ -379,6 +384,7 @@ impl TaskStore {
     fn rebuild_aggregates(&self, rows: &[DownloadTaskView]) {
         self.pausable.set(0);
         self.resumable_seeds.set(0);
+        self.failed.set(0);
         self.paused_by_queue.borrow_mut().clear();
         *self.bound_counts.borrow_mut() = BoundCounts::default();
         for row in rows {

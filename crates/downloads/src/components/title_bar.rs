@@ -1,4 +1,4 @@
-//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「新建」图标主按钮，紧跟侧栏切换按钮），
+//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「下载任务」主按钮），
 //! 以及作为 chrome 布局条目摆放的搜索框 [`DownloadSearchBox`] 与「视图」选项菜单
 //! [`DownloadViewMenu`]（可在顶栏内移动、可隐藏，见 [`DownloadPageWidget`]）。
 //!
@@ -7,10 +7,7 @@
 
 use std::rc::Rc;
 
-use fluxdown_ui_components::{
-    CheckState, ControlExt as _, FluxIcon, check_mark, segmented_tabs, toolbar_action_button,
-    tooltip_view,
-};
+use fluxdown_ui_components::{CheckState, ControlExt as _, FluxIcon, check_mark, segmented_tabs};
 use fluxdown_ui_i18n::{Translator, keys};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -163,7 +160,7 @@ impl DownloadPageWidget {
     }
 }
 
-/// 下载页的顶栏插槽：「新建」图标主按钮。
+/// 下载页的顶栏插槽：「下载任务」主按钮。
 pub struct DownloadTitleBar {
     view: WeakEntity<DownloadView>,
     translator: Entity<Translator>,
@@ -178,39 +175,26 @@ impl DownloadTitleBar {
 impl Render for DownloadTitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let new_label =
-            SharedString::from(self.translator.read(cx).text(keys::NEW_DOWNLOAD).to_owned());
+            SharedString::from(self.translator.read(cx).text("downloadTask").to_owned());
         let view = self.view.clone();
-        // 图标按钮紧跟 shell 的侧栏切换按钮；无侧栏的页面里它自然贴到交通灯之后，不依赖内容区对齐。
         h_flex()
-            .size_full()
-            .min_w_0()
+            .h_full()
+            .flex_none()
             .items_center()
+            .gap(active_theme(cx).tokens().spacing.xs)
             .child(interactive(
-                div()
-                    .id("download-create-tooltip")
-                    .flex_none()
-                    .tooltip({
-                        let label = new_label.clone();
-                        move |window, cx| tooltip_view(label.clone(), window, cx)
-                    })
-                    .child(
-                        toolbar_action_button(
-                            "download-create",
-                            new_label,
-                            Icon::new(FluxIcon::Plus).size(active_theme(cx).extended().icon.md),
-                            false,
-                            false,
-                            cx,
-                        )
-                        .on_click(move |_, window, cx| {
-                            let Ok(()) =
-                                view.update(cx, |view, cx| view.open_new_download(window, cx))
-                            else {
-                                // 视图已释放，结束这次回调而不再更新状态。
-                                return;
-                            };
-                        }),
-                    ),
+                Button::new("download-create")
+                    .label(new_label)
+                    .icon(Icon::new(FluxIcon::Plus).size(active_theme(cx).extended().icon.md))
+                    .primary()
+                    .control(cx)
+                    .rounded(active_theme(cx).tokens().radius.md)
+                    .on_click(move |_, window, cx| {
+                        let Ok(()) = view.update(cx, |view, cx| view.open_new_download(window, cx))
+                        else {
+                            return;
+                        };
+                    }),
             ))
     }
 }

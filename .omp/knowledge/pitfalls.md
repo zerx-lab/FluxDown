@@ -86,6 +86,7 @@
 
 另见 AGENTS.md §4：render 读的状态必须在 entity / global / `ListState` / `ScrollHandle` 内，父 view notify 不再重建子 view，渲染期不得无条件写 entity / global。
 
+- **顶栏主操作插槽不能占满横向空间**：`size_full()` 或把插槽单独包在 `flex_1()` 容器中，会把紧随其后的暂停 / 开始控件挤到搜索框旁；主按钮根节点用 `h_full().flex_none()`，弹性留白统一放在左区控件之后 → `crates/downloads/src/components/title_bar.rs::DownloadTitleBar::render`、`crates/shell/src/view.rs::render_title_bar`。
 - **插件详情的归档规则状态直接复用 protocol DTO**：`fluxdown_ui_extensions` 没有直接依赖 serde，另写 `Deserialize` 镜像会导致编译失败并让 wire 字段漂移；市场详情通过 `PluginDetail::default` 补齐仅已安装插件才有的状态 → `crates/extensions/src/components/plugin_detail.rs`（`PluginArchiveRulesDto` / `PluginDetail::from_market`）。
 
 - **渲染期要「先读后写」，值没变就不 `update`**：gpui-fast 把渲染期的 entity 写入记为外部修改，每帧写会让读该状态的其他 view（如 shell 顶栏）每帧重建 → `crates/components/src/sidebar/mod.rs`（`sample` 后的只读分支）、`crates/downloads/src/components/sidebar_layout.rs`。

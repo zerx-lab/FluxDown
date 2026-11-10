@@ -526,6 +526,22 @@ impl DownloadView {
         }
     }
 
+    pub(crate) fn retry_failed_blocker(&self, cx: &App) -> Option<SharedString> {
+        if self.controller.tables_loading() {
+            return Some(self.strings.tasks_loading_title.clone());
+        }
+        let key = if self.controller.is_stale() {
+            "localServiceDisconnected"
+        } else if self.controller.store().failed_count() == 0 {
+            "retryFailedUnavailable"
+        } else {
+            return None;
+        };
+        Some(SharedString::from(
+            self.translator.read(cx).text(key).to_owned(),
+        ))
+    }
+
     /// 创建挂到 shell 统一顶栏的下载页插槽（「新建」按钮）。
     pub fn new_title_bar(&self, cx: &mut Context<Self>) -> Entity<DownloadTitleBar> {
         let view = cx.weak_entity();
