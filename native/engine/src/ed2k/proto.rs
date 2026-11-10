@@ -279,6 +279,20 @@ impl RequestParts {
         }
     }
 
+    /// 编码为完整线上帧。`OP_REQUESTPARTS_I64` 属 eMule 扩展协议，必须以
+    /// [`PROTO_EMULE`] 发出；以 `0xE3` 发出时 eMule/aMule 视为未知包静默丢弃，
+    /// >4GB 文件永远收不到数据。
+    #[must_use]
+    pub fn to_frame(&self) -> Vec<u8> {
+        let (opcode, payload) = self.encode();
+        let proto = if self.large_file {
+            PROTO_EMULE
+        } else {
+            PROTO_EDONKEY
+        };
+        frame_with_proto(proto, opcode, &payload)
+    }
+
     /// 从 payload 解码（`large_file` 决定字段宽度）。
     ///
     /// # Errors

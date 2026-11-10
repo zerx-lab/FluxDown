@@ -9,6 +9,7 @@
 
 pub mod client;
 pub mod hash;
+pub(crate) mod identity;
 pub mod kad;
 pub mod link;
 pub mod peer;
@@ -32,7 +33,7 @@ use tokio::task::JoinSet;
 use crate::downloader::{DownloadError, DownloadParams, ProgressUpdate, SegmentProgressInfo};
 use crate::ed2k::client::{Source, shared_client};
 use crate::ed2k::link::{Ed2kLink, parse_ed2k_link};
-use crate::ed2k::peer::download_block_on_stream;
+use crate::ed2k::peer::PeerSession;
 use crate::ed2k::server::{PeerAddr, parse_server_list};
 use crate::logger::log_info;
 use crate::output;
@@ -49,9 +50,16 @@ pub struct Ed2kBlockError {
     pub source: DownloadError,
 }
 
-/// 单个块下载任务的 join 结果：`(block_index, 源, 成功 md4 | 失败 DownloadError)`。
-/// 源随结果回传，供调度层按失败类型对该源退避或拉黑。
-type BlockJoinResult = (u64, Source, Result<[u8; 16], DownloadError>);
+/// 单个块下载任务的 join 结果：`(block_index, 源, 仍可复用的连接, 本次是否向对端
+/// 申请过上传槽, 成功 md4 | 失败 DownloadError)`。源随结果回传，供调度层按失败类型
+/// 对该源退避或拉黑。
+type BlockJoinResult = (
+    u64,
+    Source,
+    Option<PeerSession>,
+    bool,
+    Result<[u8; 16], DownloadError>,
+);
 
 /// 无用户设置时的默认并发 peer 数（`segment_count <= 0` → 此值）。
 pub const DEFAULT_ED2K_CONCURRENCY: usize = 4;
@@ -113,6 +121,9 @@ const SOURCE_RETRY_JITTER: Duration = Duration::from_secs(5);
 /// 实测真实网络全程 ~18s（bootstrap 3s + FindNode 收敛 + SearchSources），
 /// 20s 会截断 SearchSources 阶段；各阶段空闲即提前退出，上限放宽无额外代价。
 const KAD_FIND_TIMEOUT: Duration = Duration::from_secs(45);
+/// 对同一源两次申请上传槽（`OP_STARTUPLOADREQ`）的最小间隔。eMule 把 10 分钟内
+/// 的重复申请记为坏请求，累计 4 次封 IP 2 小时；留 1 分钟余量。
+const REASK_INTERVAL: Duration = Duration::from_secs(11 * 60);
 /// 旁路进度上报周期。
 const PROGRESS_TICK: Duration = Duration::from_millis(200);
 
@@ -462,6 +473,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
     }));
 
     let hashset_cache: Arc<OnceCell<Vec<[u8; 16]>>> = Arc::new(OnceCell::new());
+    crate::ed2k::identity::ensure_user_hash(&params.db).await?;
     let client = shared_client();
     // 客户端配置：监听端口/UPnP/Kad 开关来自 DB。
     let listen_port = params
@@ -520,6 +532,10 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
     let mut finalize_retries: u32 = 0;
     let mut round_robin: usize = 0;
     let mut hashset_persisted = false;
+    // 各源空闲中的已握手连接：一个块下完后放回，下一个块直接复用，不重新申请槽位。
+    let mut idle: HashMap<Source, PeerSession> = HashMap::new();
+    // 各源最近一次申请上传槽的时刻（见 [`REASK_INTERVAL`]）。
+    let mut asked_at: HashMap<Source, tokio::time::Instant> = HashMap::new();
 
     let outcome: Result<i64, DownloadError> = 'outer: loop {
         let mut pending = match blocks.lock() {
@@ -553,11 +569,25 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
         let mut join: JoinSet<BlockJoinResult> = JoinSet::new();
         let mut ready = Vec::with_capacity(concurrency);
         let mut updates = Vec::with_capacity(concurrency);
+        // 正在连接 / 传输中的源：每个源同时只占一条连接。eMule 按 user hash + IP
+        // 认客户端，同一客户端的第二条连接会顶掉前一条，并发多连只会全部被断开。
+        let mut busy: HashSet<Source> = HashSet::new();
 
         let inner: Result<(), DownloadError> = 'download: loop {
             if params.cancel_token.is_cancelled() {
                 break Err(DownloadError::Cancelled);
             }
+            // 不可选的源 = 在途 ∪（无空闲连接且仍在重询冷却期内）。
+            let now = tokio::time::Instant::now();
+            let mut unavailable = busy.clone();
+            unavailable.extend(
+                asked_at
+                    .iter()
+                    .filter(|(src, at)| {
+                        !idle.contains_key(*src) && now.duration_since(**at) < REASK_INTERVAL
+                    })
+                    .map(|(src, _)| *src),
+            );
             while join.len() < concurrency && !pending.is_empty() {
                 // 在队列头部窗口内找第一个存在可用源的块：队首块可能只有被
                 // 声明缺该块的源，不应阻塞后面的块。
@@ -571,6 +601,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                                 &sources,
                                 &backoff,
                                 &integrity_bl,
+                                &unavailable,
                                 &lacks,
                                 block,
                                 &mut round_robin,
@@ -579,6 +610,9 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         });
                 let Some((pos, src)) = picked else { break };
                 let Some(bi) = pending.remove(pos) else { break };
+                busy.insert(src);
+                unavailable.insert(src);
+                let session = idle.remove(&src);
                 let file_hash = link.root_hash;
                 let dest = temp_path.clone();
                 let cancel = params.cancel_token.clone();
@@ -592,35 +626,44 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     // 连接/握手/排队可能阻塞数十秒且不看 cancel，整体与 cancel 竞速，
                     // 使暂停/删除立即生效（drop 会关闭 socket）。
                     let work = async {
-                        // HighID 直连 / LowID 经服务器 callback 中转，拿到已连接流后拉块。
-                        match client.connect_source(src).await {
-                            Ok(stream) => {
-                                let _connection = connected.start(bi as i32);
-                                download_block_on_stream(
-                                    stream,
-                                    &file_hash,
-                                    bi,
-                                    total_bytes,
-                                    part_size,
-                                    large_file,
-                                    &dest,
-                                    &cancel,
-                                    &lim,
-                                    &hc,
-                                    &pg,
-                                    &tracker,
-                                )
-                                .await
+                        let (mut session, asked) = match session {
+                            Some(session) => (session, false),
+                            None => {
+                                // HighID 直连 / LowID 经服务器 callback 中转。
+                                let stream = match client.connect_source(src).await {
+                                    Ok(stream) => stream,
+                                    Err(error) => return (None, false, Err(error)),
+                                };
+                                match PeerSession::open(stream, &file_hash, &cancel).await {
+                                    Ok(session) => (session, true),
+                                    Err(error) => return (None, error.asked, Err(error.source)),
+                                }
                             }
-                            Err(e) => Err(e),
-                        }
+                        };
+                        let _connection = connected.start(bi as i32);
+                        let result = session
+                            .download_block(
+                                &file_hash,
+                                bi,
+                                total_bytes,
+                                part_size,
+                                large_file,
+                                &dest,
+                                &cancel,
+                                &lim,
+                                &hc,
+                                &pg,
+                                &tracker,
+                            )
+                            .await;
+                        (Some(session), asked, result)
                     };
-                    let r = tokio::select! {
+                    let (session, asked, r) = tokio::select! {
                         biased;
-                        () = cancel.cancelled() => Err(DownloadError::Cancelled),
-                        r = work => r,
+                        () = cancel.cancelled() => (None, false, Err(DownloadError::Cancelled)),
+                        out = work => out,
                     };
-                    (bi, src, r)
+                    (bi, src, session, asked, r)
                 });
             }
 
@@ -710,6 +753,33 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     backoff.clear();
                     lacks.clear();
                     source_retries = 0;
+                    // 所有源都在重询冷却期内：等到最早一个到期再继续，不反复
+                    // 登录服务器 / 查 Kad 空转。
+                    let now = tokio::time::Instant::now();
+                    let wake = sources
+                        .iter()
+                        .map(|src| match asked_at.get(src) {
+                            Some(at) if !idle.contains_key(src) => *at + REASK_INTERVAL,
+                            _ => now,
+                        })
+                        .min();
+                    if let Some(wake) = wake
+                        && wake > now
+                    {
+                        log_info!(
+                            "[ed2k] task {} all {} sources asked recently; next slot request in {}s",
+                            task_id,
+                            sources.len(),
+                            (wake - now).as_secs()
+                        );
+                        tokio::select! {
+                            biased;
+                            () = params.cancel_token.cancelled() => {
+                                break 'outer Err(DownloadError::Cancelled)
+                            }
+                            () = tokio::time::sleep_until(wake) => {}
+                        }
+                    }
                 } else {
                     source_retries += 1;
                     if source_retries < MAX_SOURCE_RETRIES
@@ -772,7 +842,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                 std::iter::once(joined)
                     .chain(std::iter::from_fn(|| join.try_join_next()))
                     .filter_map(Result::ok)
-                    .map(|(index, source, result)| {
+                    .map(|(index, source, session, asked, result)| {
                         let checked = result.map(|md4| {
                             if is_single {
                                 md4 == link.root_hash
@@ -783,11 +853,11 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                                     == Some(&md4)
                             }
                         });
-                        (index, source, checked)
+                        (index, source, session, asked, checked)
                     }),
             );
             updates.clear();
-            updates.extend(ready.iter().filter_map(|(index, _, result)| {
+            updates.extend(ready.iter().filter_map(|(index, _, _, _, result)| {
                 if matches!(result, Ok(true)) {
                     let (start, end) = hash::part_span(*index, total_bytes, part_size);
                     Some((*index, BLOCK_VERIFIED, (end - start) as i64, false))
@@ -819,7 +889,20 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     }
                 }
             }
-            for (bi, src, res) in ready.drain(..) {
+            for (bi, src, session, asked, res) in ready.drain(..) {
+                busy.remove(&src);
+                if asked {
+                    asked_at.insert(src, tokio::time::Instant::now());
+                }
+                // 块校验通过或对端只是缺这一块：连接仍持有上传槽，留给下一个块。
+                let reusable = match &res {
+                    Ok(verified) => *verified,
+                    Err(DownloadError::Ed2k(message)) => message == peer::PEER_LACKS_BLOCK,
+                    Err(_) => false,
+                };
+                if reusable && let Some(session) = session {
+                    idle.insert(src, session);
+                }
                 // 未校验的部分字节不作为恢复状态。
                 if let Ok(mut map) = progress.lock() {
                     map.remove(&bi);
@@ -967,12 +1050,13 @@ impl Drop for AbortOnDrop {
 /// 单次选源时在待下载队列头部检视的块数上限。
 const PICK_WINDOW: usize = 64;
 
-/// 轮转为块 `block` 选取一个不在 `backoff ∪ integrity_bl` 且未声明缺该块的源；
+/// 轮转为块 `block` 选取一个不在 `backoff ∪ integrity_bl ∪ busy` 且未声明缺该块的源；
 /// 无可用源返回 `None`。
 fn pick_source(
     sources: &[Source],
     backoff: &HashSet<Source>,
     integrity_bl: &HashSet<Source>,
+    busy: &HashSet<Source>,
     lacks: &HashSet<(Source, u64)>,
     block: u64,
     round_robin: &mut usize,
@@ -984,7 +1068,10 @@ fn pick_source(
         let idx = *round_robin % sources.len();
         *round_robin = round_robin.wrapping_add(1);
         let src = sources[idx];
-        if !backoff.contains(&src) && !integrity_bl.contains(&src) && !lacks.contains(&(src, block))
+        if !backoff.contains(&src)
+            && !integrity_bl.contains(&src)
+            && !busy.contains(&src)
+            && !lacks.contains(&(src, block))
         {
             return Some(src);
         }
@@ -1315,19 +1402,26 @@ mod tests {
         let bl: HashSet<_> = [b].into_iter().collect();
         let mut rr = 0;
         let none = HashSet::new();
+        let none_busy = HashSet::new();
         assert_eq!(
-            super::pick_source(&sources, &backoff, &bl, &none, 0, &mut rr),
+            super::pick_source(&sources, &backoff, &bl, &none_busy, &none, 0, &mut rr),
             Some(c)
         );
         // c 声明缺块 0：块 0 无源可用，块 1 仍可用 c。
         let lacks: HashSet<_> = [(c, 0u64)].into_iter().collect();
         assert_eq!(
-            super::pick_source(&sources, &backoff, &bl, &lacks, 0, &mut rr),
+            super::pick_source(&sources, &backoff, &bl, &none_busy, &lacks, 0, &mut rr),
             None
         );
         assert_eq!(
-            super::pick_source(&sources, &backoff, &bl, &lacks, 1, &mut rr),
+            super::pick_source(&sources, &backoff, &bl, &none_busy, &lacks, 1, &mut rr),
             Some(c)
+        );
+        // c 正在传输：不再为其它块选它。
+        let busy = HashSet::from([c]);
+        assert_eq!(
+            super::pick_source(&sources, &backoff, &bl, &busy, &none, 1, &mut rr),
+            None
         );
     }
 
@@ -1564,6 +1658,49 @@ mod tests {
         }
     }
 
+    // --- peer 层：>4GB 文件的 I64 请求必须走 eMule 扩展协议头，否则对端不发数据 ---
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn peer_large_file_requests_use_emule_protocol() {
+        let data: Vec<u8> = (0..321u32).map(|i| (i % 256) as u8).collect();
+        let total = data.len() as u64;
+        let root = root_hash(&data, hash::PART_SIZE);
+        let peer = match MockPeer::spawn(data.clone(), hash::PART_SIZE, PeerFault::None).await {
+            Ok(p) => p,
+            Err(e) => panic!("spawn mock peer failed: {e}"),
+        };
+        let dir = it_scratch_dir("peer_large_proto");
+        let dest = dir.join("out.tmp");
+        prep_dest(&dest, total).await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            download_block_from_peer(
+                peer.peer_addr(),
+                &root,
+                0,
+                total,
+                hash::PART_SIZE,
+                true,
+                &dest,
+                &new_cancel(),
+                &no_limit(),
+                fresh_hashset_cache(),
+                empty_progress(),
+            ),
+        )
+        .await;
+        match result {
+            Ok(Ok((_, md4))) => assert_eq!(md4, root),
+            Ok(Err(e)) => panic!("large-file download failed: {e:?}"),
+            Err(_) => panic!("peer never answered I64 part request"),
+        }
+        if let Err(error) = std::fs::remove_dir_all(&dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::log_warn!("[ED2K tests] fixture cleanup failed: {}", error);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn peer_body_activity_starts_after_negotiation_and_stops_at_eof() {
         let data = b"actual peer body".to_vec();
@@ -1689,6 +1826,71 @@ mod tests {
             "hashset cache must be populated after first block"
         );
 
+        let on_disk = match tokio::fs::read(&dest).await {
+            Ok(b) => b,
+            Err(e) => panic!("read dest failed: {e}"),
+        };
+        assert_eq!(on_disk, data);
+
+        if let Err(error) = std::fs::remove_dir_all(&dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::log_warn!("[ED2K tests] fixture cleanup failed: {}", error);
+        }
+    }
+
+    // --- peer 层：一条连接连续下多个块，只向对端申请一次上传槽 ---
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn peer_session_downloads_all_blocks_with_one_slot_request() {
+        let part_size: u64 = 256;
+        let data: Vec<u8> = (0..800u32).map(|i| (i % 251) as u8).collect();
+        let total = data.len() as u64;
+        let root = root_hash(&data, part_size);
+        let peer = match MockPeer::spawn(data.clone(), part_size, PeerFault::None).await {
+            Ok(p) => p,
+            Err(e) => panic!("spawn mock peer failed: {e}"),
+        };
+        let dir = it_scratch_dir("peer_session");
+        let dest = dir.join("out.tmp");
+        prep_dest(&dest, total).await;
+
+        let stream = match tokio::net::TcpStream::connect(peer.addr).await {
+            Ok(stream) => stream,
+            Err(e) => panic!("connect mock peer failed: {e}"),
+        };
+        let cancel = new_cancel();
+        let mut session = match super::PeerSession::open(stream, &root, &cancel).await {
+            Ok(session) => session,
+            Err(e) => panic!("open session failed: {:?}", e.source),
+        };
+        let cache = fresh_hashset_cache();
+        let progress = empty_progress();
+        let limiter = no_limit();
+        let tracker = super::TransferTracker::new();
+        for block_index in 0..hash::part_count(total, part_size) {
+            let md4 = match session
+                .download_block(
+                    &root,
+                    block_index,
+                    total,
+                    part_size,
+                    false,
+                    &dest,
+                    &cancel,
+                    &limiter,
+                    &cache,
+                    &progress,
+                    &tracker,
+                )
+                .await
+            {
+                Ok(md4) => md4,
+                Err(e) => panic!("block {block_index} failed: {e:?}"),
+            };
+            let (s, e) = hash::part_span(block_index, total, part_size);
+            assert_eq!(md4, hash::hash_part(&data[s as usize..e as usize]));
+        }
+        assert_eq!(peer.slot_requests.load(Ordering::Relaxed), 1);
         let on_disk = match tokio::fs::read(&dest).await {
             Ok(b) => b,
             Err(e) => panic!("read dest failed: {e}"),

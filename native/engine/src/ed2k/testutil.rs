@@ -10,6 +10,7 @@
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -83,6 +84,8 @@ pub enum PeerFault {
 pub struct MockPeer {
     /// 监听地址（`127.0.0.1:<临时端口>`）。
     pub addr: SocketAddr,
+    /// 收到的 `OP_STARTUPLOADREQ` 总数（真实 eMule 对重复申请计坏请求并封禁）。
+    pub slot_requests: Arc<AtomicUsize>,
     handle: JoinHandle<()>,
 }
 
@@ -102,17 +105,24 @@ impl MockPeer {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let addr = listener.local_addr()?;
         let data = Arc::new(file_data);
+        let slot_requests = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&slot_requests);
         let handle = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let d = Arc::clone(&data);
+                let counter = Arc::clone(&counter);
                 tokio::spawn(async move {
-                    if let Err(error) = serve_peer(stream, d, part_size, fault).await {
+                    if let Err(error) = serve_peer(stream, d, part_size, fault, counter).await {
                         tracing::debug!(%error, "ED2K mock peer connection ended");
                     }
                 });
             }
         });
-        Ok(Self { addr, handle })
+        Ok(Self {
+            addr,
+            slot_requests,
+            handle,
+        })
     }
 
     /// 本 peer 的 [`PeerAddr`]（供 [`crate::ed2k::peer::download_block_from_peer`]）。
@@ -130,15 +140,16 @@ async fn serve_peer(
     data: Arc<Vec<u8>>,
     part_size: u64,
     fault: PeerFault,
+    slot_requests: Arc<AtomicUsize>,
 ) -> Result<(), DownloadError> {
     let total = data.len() as u64;
     let mut fired = false;
     loop {
-        let (_proto, opcode, payload) = match proto::read_frame(&mut stream, MAX_SERVER_FRAME).await
-        {
-            Ok(f) => f,
-            Err(_) => return Ok(()), // 对端关闭。
-        };
+        let (proto_byte, opcode, payload) =
+            match proto::read_frame(&mut stream, MAX_SERVER_FRAME).await {
+                Ok(f) => f,
+                Err(_) => return Ok(()), // 对端关闭。
+            };
         match opcode {
             OP_HELLO => {
                 let mut p = Vec::new();
@@ -174,6 +185,7 @@ async fn serve_peer(
                     .map_err(DownloadError::Io)?;
             }
             OP_STARTUPLOADREQ => {
+                slot_requests.fetch_add(1, Ordering::Relaxed);
                 // 直接授予上传槽。
                 stream
                     .write_all(&proto::frame(OP_ACCEPTUPLOADREQ, &[]))
@@ -201,7 +213,10 @@ async fn serve_peer(
                     .await
                     .map_err(DownloadError::Io)?;
             }
-            OP_REQUESTPARTS | OP_REQUESTPARTS_I64 => {
+            // 与 eMule 一致：I64 请求只在扩展协议（0xC5）下识别，0xE3 下的同 opcode 静默忽略。
+            OP_REQUESTPARTS | OP_REQUESTPARTS_I64
+                if (opcode == OP_REQUESTPARTS_I64) == (proto_byte == PROTO_EMULE) =>
+            {
                 if fault == PeerFault::DelayBody && !fired {
                     fired = true;
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
