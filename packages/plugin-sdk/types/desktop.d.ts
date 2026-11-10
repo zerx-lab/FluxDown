@@ -1,6 +1,6 @@
 // Auto-generated — add `gpui-kit.d.ts` to your .gitignore.
 //
-// The built-in modules, as TypeScript declarations, for gpui-shell 0.9.0.
+// The built-in modules, as TypeScript declarations, for gpui-shell 0.9.1.
 // Do not edit: gpui-shell rewrites this on every run, in every directory that
 // imports one of them, from the runtime that is about to execute the script. A
 // committed copy could only ever be the stale one.
@@ -608,7 +608,7 @@ declare module "gpui-kit" {
    * belongs to the render pass that built it; storing one and using it
    * again throws, which no type can prevent.
    */
-  export type Element = NativeElement | import("gpui-component").SpinnerElement | import("gpui-component").SeparatorElement | import("gpui-component").SkeletonElement | import("gpui-component").AttachmentElement | import("gpui-component").BubbleElement | import("gpui-component").MarkerElement | import("gpui-component").MessageElement | import("gpui-component").ShimmerTextElement | import("gpui-component").MessageScrollerElement | import("gpui-component").EmptyElement | import("gpui-component").EmptyHeaderElement | import("gpui-component").EmptyMediaElement | import("gpui-component").EmptyTitleElement | import("gpui-component").EmptyDescriptionElement | import("gpui-component").EmptyContentElement | import("gpui-component").InputGroupElement | import("gpui-component").InputGroupAddonElement | import("gpui-component").InputGroupButtonElement | import("gpui-component").InputGroupInputElement | import("gpui-component").InputGroupTextareaElement | import("gpui-component").InputGroupTextElement | import("gpui-component").ButtonElement | import("gpui-component").CheckboxElement | import("gpui-component").SwitchElement | import("gpui-component").ToggleElement | import("gpui-component").BadgeElement | import("gpui-component").TagElement | import("gpui-component").LabelElement | import("gpui-component").LinkElement | import("gpui-component").KbdElement | import("gpui-component").ListElement | import("gpui-component").ComboboxElement | import("gpui-component").SelectElement | import("gpui-component").DataTableElement | import("gpui-component").AlertElement | import("gpui-component").BreadcrumbElement | import("gpui-component").ClipboardElement | import("gpui-component").GroupBoxElement | import("gpui-component").RatingElement | import("gpui-component").StatusBarElement | import("gpui-component").TitleBarElement | import("gpui-component").ToolbarElement | import("gpui-component").AvatarElement | import("gpui-component").CollapsibleElement | import("gpui-component").PaginationElement | import("gpui-component").ProgressElement | import("gpui-component").RadioElement | import("gpui-component").AccordionItemElement | import("gpui-component").AccordionElement | import("gpui-component").RadioGroupElement | import("gpui-component").TabElement | import("gpui-component").TabBarElement | import("gpui-component").StepperItemElement | import("gpui-component").StepperElement | import("gpui-component").TooltipElement | import("gpui-component").MenuItemElement | import("gpui-component").MenuSeparatorElement | import("gpui-component").MenuElement | import("gpui-component").MenuBarElement | import("gpui-component").TreeItemElement | import("gpui-component").TreeElement | import("gpui-component").CommandItemElement | import("gpui-component").CommandGroupElement | import("gpui-component").CommandSeparatorElement | import("gpui-component").CommandElement | import("gpui-component").NativeMenuItemElement | import("gpui-component").NativeMenuSeparatorElement | import("gpui-component").NativeMenuTriggerElement | import("gpui-component").DialogElement | import("gpui-component").AlertDialogElement | import("gpui-component").SheetElement | import("gpui-component").NotificationElement | import("gpui-component").HoverCardElement | import("gpui-component").PopoverElement | import("gpui-component").DropdownMenuElement | import("gpui-component").InputElement | import("gpui-component").NumberInputElement | import("gpui-component").OtpInputElement | import("gpui-component").SliderElement | import("gpui-component").ColorPickerElement | import("gpui-component").CalendarElement | import("gpui-component").DatePickerElement | import("gpui-component").TimeFieldElement | import("gpui-component").TextareaElement | import("gpui-component").ResizablePanelElement | import("gpui-component").ResizableElement | import("gpui-component").ImageElement | import("gpui-component").EditorElement | import("gpui-component").DiffElement | import("gpui-component").ScrollElement | import("gpui-component").ScrollbarElement | import("gpui-component").SettingItemElement | import("gpui-component").SettingGroupElement | import("gpui-component").SettingPageElement | import("gpui-component").SettingsElement | import("gpui-component").DescriptionItemElement | import("gpui-component").DescriptionListElement | import("gpui-component").FieldElement | import("gpui-component").FormElement | import("gpui-component").TableHeaderElement | import("gpui-component").TableBodyElement | import("gpui-component").TableFooterElement | import("gpui-component").TableRowElement | import("gpui-component").TableHeadElement | import("gpui-component").TableCellElement | import("gpui-component").TableCaptionElement | import("gpui-component").TableElement | import("gpui-component").IconElement | import("gpui-component").SidebarMenuItemElement | import("gpui-component").SidebarMenuElement | import("gpui-component").SidebarHeaderElement | import("gpui-component").SidebarFooterElement | import("gpui-component").SidebarElement | import("gpui-component").SidebarToggleButtonElement | import("gpui-component").TextElement | import("gpui-component").DropdownButtonElement | import("gpui-component").BarChartElement | import("gpui-component").LineChartElement | import("gpui-component").AreaChartElement | import("gpui-component").PieChartElement | import("gpui-component").RadarChartElement | import("gpui-component").CarouselElement | import("gpui-component").CarouselContentElement | import("gpui-component").CarouselItemElement | import("gpui-component").CarouselPreviousElement | import("gpui-component").CarouselNextElement | import("gpui-component").CarouselPaginationElement | import("gpui-component").CarouselPaginationItemElement | import("gpui-component").QuestionnaireChoiceElement | import("gpui-component").QuestionnaireItemElement | import("gpui-component").QuestionnaireInputElement | import("gpui-component").QuestionnaireElement;
+  export type Element = NativeElement | import("gpui-component").SpinnerElement | import("gpui-component").SeparatorElement | import("gpui-component").SkeletonElement | import("gpui-component").AttachmentElement | import("gpui-component").BubbleElement | import("gpui-component").MarkerElement | import("gpui-component").MessageElement | import("gpui-component").ShimmerTextElement | import("gpui-component").MessageScrollerElement | import("gpui-component").EmptyElement | import("gpui-component").EmptyHeaderElement | import("gpui-component").EmptyMediaElement | import("gpui-component").EmptyTitleElement | import("gpui-component").EmptyDescriptionElement | import("gpui-component").EmptyContentElement | import("gpui-component").InputGroupElement | import("gpui-component").InputGroupAddonElement | import("gpui-component").InputGroupButtonElement | import("gpui-component").InputGroupInputElement | import("gpui-component").InputGroupTextareaElement | import("gpui-component").InputGroupTextElement | import("gpui-component").ButtonElement | import("gpui-component").CheckboxElement | import("gpui-component").SwitchElement | import("gpui-component").ToggleElement | import("gpui-component").BadgeElement | import("gpui-component").TagElement | import("gpui-component").LabelElement | import("gpui-component").LinkElement | import("gpui-component").KbdElement | import("gpui-component").ListElement | import("gpui-component").ComboboxElement | import("gpui-component").SelectElement | import("gpui-component").DataTableElement | import("gpui-component").AlertElement | import("gpui-component").BreadcrumbElement | import("gpui-component").ClipboardElement | import("gpui-component").GroupBoxElement | import("gpui-component").RatingElement | import("gpui-component").StatusBarElement | import("gpui-component").TitleBarElement | import("gpui-component").ToolbarElement | import("gpui-component").AvatarElement | import("gpui-component").CollapsibleElement | import("gpui-component").PaginationElement | import("gpui-component").ProgressElement | import("gpui-component").RadioElement | import("gpui-component").AccordionItemElement | import("gpui-component").AccordionElement | import("gpui-component").RadioGroupElement | import("gpui-component").TabElement | import("gpui-component").TabBarElement | import("gpui-component").StepperItemElement | import("gpui-component").StepperElement | import("gpui-component").TooltipElement | import("gpui-component").MenuItemElement | import("gpui-component").MenuSeparatorElement | import("gpui-component").MenuElement | import("gpui-component").MenuBarElement | import("gpui-component").TreeItemElement | import("gpui-component").TreeElement | import("gpui-component").CommandItemElement | import("gpui-component").CommandGroupElement | import("gpui-component").CommandSeparatorElement | import("gpui-component").CommandElement | import("gpui-component").NativeMenuItemElement | import("gpui-component").NativeMenuSeparatorElement | import("gpui-component").NativeMenuTriggerElement | import("gpui-component").DialogElement | import("gpui-component").AlertDialogElement | import("gpui-component").SheetElement | import("gpui-component").NotificationElement | import("gpui-component").HoverCardElement | import("gpui-component").PopoverElement | import("gpui-component").DropdownMenuElement | import("gpui-component").InputElement | import("gpui-component").NumberInputElement | import("gpui-component").OtpInputElement | import("gpui-component").SliderElement | import("gpui-component").ColorPickerElement | import("gpui-component").CalendarElement | import("gpui-component").DatePickerElement | import("gpui-component").TimeFieldElement | import("gpui-component").TextareaElement | import("gpui-component").ResizablePanelElement | import("gpui-component").ResizableElement | import("gpui-component").ImageElement | import("gpui-component").EditorElement | import("gpui-component").DiffElement | import("gpui-component").ScrollElement | import("gpui-component").ScrollbarElement | import("gpui-component").SettingItemElement | import("gpui-component").SettingGroupElement | import("gpui-component").SettingPageElement | import("gpui-component").SettingsElement | import("gpui-component").DescriptionItemElement | import("gpui-component").DescriptionListElement | import("gpui-component").FieldElement | import("gpui-component").FormElement | import("gpui-component").TableHeaderElement | import("gpui-component").TableBodyElement | import("gpui-component").TableFooterElement | import("gpui-component").TableRowElement | import("gpui-component").TableHeadElement | import("gpui-component").TableCellElement | import("gpui-component").TableCaptionElement | import("gpui-component").TableElement | import("gpui-component").IconElement | import("gpui-component").SidebarMenuItemElement | import("gpui-component").SidebarMenuElement | import("gpui-component").SidebarHeaderElement | import("gpui-component").SidebarFooterElement | import("gpui-component").SidebarElement | import("gpui-component").SidebarToggleButtonElement | import("gpui-component").TextElement | import("gpui-component").DropdownButtonElement | import("gpui-component").BarChartElement | import("gpui-component").LineChartElement | import("gpui-component").AreaChartElement | import("gpui-component").PieChartElement | import("gpui-component").RadarChartElement | import("gpui-component").CarouselElement | import("gpui-component").CarouselContentElement | import("gpui-component").CarouselItemElement | import("gpui-component").CarouselPreviousElement | import("gpui-component").CarouselNextElement | import("gpui-component").CarouselPaginationElement | import("gpui-component").CarouselPaginationItemElement | import("gpui-component").GridLayoutElement | import("gpui-component").GridItemElement | import("gpui-component").GridDragHandleElement | import("gpui-component").QuestionnaireChoiceElement | import("gpui-component").QuestionnaireItemElement | import("gpui-component").QuestionnaireInputElement | import("gpui-component").QuestionnaireElement;
 
   /** The fluent builder returned by native and Base element factories. */
   export interface NativeElement {
@@ -620,7 +620,9 @@ declare module "gpui-kit" {
      */
     map<Self extends Element, T>(this: Self, transform: (element: Self) => T): T;
     /**
-     * Adds one child. The child is consumed; using it again throws.
+     * Adds one child. The child is consumed; using it again throws. A
+     * description nests at most 64 levels, counting filled slots; the call
+     * that would go deeper throws.
      *
      * A **string is an element**, exactly as `&str`, `String` and
      * `SharedString` implement `IntoElement` in GPUI: `.child("hello")` is how
@@ -629,7 +631,9 @@ declare module "gpui-kit" {
      * An `Entity` from `cx.new(...)` is a child too, the way an `Entity<V>` is
      * renderable in GPUI — that is how a retained nested view is mounted. One
      * entity may appear once per parent snapshot; a second mount in the same
-     * description is refused before any of it is published.
+     * description is refused before any of it is published. Views mounted
+     * inside one another may span 65 levels together, one more for each view;
+     * a mount past that, or inside the view itself, draws nothing.
      */
     child<Self extends Element>(this: Self, child: Element | Entity | string | number | boolean): Self;
     /** Adds several children, in order. */
@@ -1132,6 +1136,15 @@ declare module "gpui-kit" {
      * and ignores this.
      */
     id<Self extends Element>(this: Self, name: string): Self;
+    /**
+     * Names this element as a group, so that `group_hover(name, declare)` on
+     * an element inside it styles that element while the pointer is over this
+     * one. GPUI `InteractiveElement::group`.
+     *
+     * The name need not be unique: a group hover follows the nearest ancestor
+     * with its name, so every row of a list can be `group("row")`.
+     */
+    group<Self extends Element>(this: Self, name: string): Self;
     /** Owns wheel and touch scrolling on both axes for overflowing children. */
     overflow_scroll<Self extends Element>(this: Self): Self;
     /** Owns horizontal wheel and touch scrolling for overflowing children. */
@@ -1307,6 +1320,21 @@ declare module "gpui-kit" {
     active<Self extends Element>(this: Self, declare: (el: NativeElement) => NativeElement | void): Self;
     /** Styles applied while the element has focus. */
     focus<Self extends Element>(this: Self, declare: (el: NativeElement) => NativeElement | void): Self;
+    /**
+     * Styles applied while the pointer is over the nearest ancestor named
+     * `name` with `group(name)`, rather than over this element: an action
+     * that appears when its row is hovered. `declare` receives a detached
+     * element that collects the styles, exactly as `hover` does; its return
+     * value is ignored. GPUI `InteractiveElement::group_hover`.
+     *
+     * It is a style, not a handler, so a virtual list's item renderer may use
+     * it. With no ancestor of that name the styles never apply. A second call
+     * replaces the first. A group hover that changes the element's size or
+     * position needs a stable identity, `.id(...)`, because GPUI lays the
+     * element out from its own state; one that only paints, such as an
+     * opacity or a color, does not.
+     */
+    group_hover<Self extends Element>(this: Self, name: string, declare: (el: NativeElement) => NativeElement | void): Self;
     /**
      * Displays the tab at `index` in `group` when this element is clicked.
      *
@@ -21022,6 +21050,8 @@ declare module "gpui-base" {
    * collapsing each broken run into an ellipsis. `visible_pages` defaults to
    * seven and is clamped to a minimum of five; a total of one page or fewer
    * answers an empty list, because a control for a single page is not one.
+   * Throws for a page number above 4294967295 or `visible_pages` above
+   * 1000000.
    *
    * An ellipsis names the pages it stands for, inclusive on both ends, so it
    * can be a "jump to" control rather than inert text.
@@ -22206,6 +22236,16 @@ declare module "gpui-component" {
    * Retained Carousel selection, axis, looping, and interaction state.
    */
   export const CarouselState: { (item_count: number, selected_index?: number, axis?: "horizontal" | "vertical", looping?: boolean): CarouselState; new: (item_count: number, selected_index?: number, axis?: "horizontal" | "vertical", looping?: boolean) => CarouselState };
+  /**
+   * Retained GridLayout areas, rules, selection, and drag state. Items join it with the placement their GridItem declares and keep the place the user gives them.
+   */
+  export interface GridLayoutState { readonly __gpuiComponentState: unique symbol;
+    /** Releases the state and its subscriptions now rather than with the application. Returns `false` when it was already released; a method called afterwards throws. Not allowed during render. */
+    release(): boolean }
+  /**
+   * Retained GridLayout areas, rules, selection, and drag state. Items join it with the placement their GridItem declares and keep the place the user gives them.
+   */
+  export const GridLayoutState: { (cols?: number, compaction?: "vertical" | "horizontal" | "none"): GridLayoutState; new: (cols?: number, compaction?: "vertical" | "horizontal" | "none") => GridLayoutState };
   /**
    * A cycling loading spinner.
    */
@@ -23475,7 +23515,7 @@ declare module "gpui-component" {
      */
     disabled(disabled: boolean): LinkElement;
     /**
-     * Sets the external URL opened when activated.
+     * Sets the absolute HTTP(S) URL opened when activated.
      */
     href(href: string): LinkElement;
     /**
@@ -27408,6 +27448,169 @@ declare module "gpui-component" {
    */
   export const CarouselPaginationItem: { new(id: string, index: number, state: CarouselState): CarouselPaginationItemElement; new: (id: string, index: number, state: CarouselState) => CarouselPaginationItemElement };
   /**
+   * A grid whose items the user drags and resizes; accepts only GridItem children. Style its gaps with gap, gap_x and gap_y.
+   */
+  export type GridLayoutElement = Omit<NativeElement, "accessibility_label" | "cols" | "compaction" | "row_height" | "prevent_collision" | "draggable" | "resizable" | "reflow" | "on_change" | "on_select" | "disabled" | "selected" | "on_click" | "role" | "transition"> & {
+    /**
+     * Sets the name announced by accessibility clients.
+     */
+    accessibility_label(accessibility_label: string): GridLayoutElement;
+    /**
+     * Sets the number of equal columns the width is divided into.
+     */
+    cols(value: number): GridLayoutElement;
+    /**
+     * Sets the direction items float toward when space opens up, or none to leave them where they are put.
+     */
+    compaction(compaction: "vertical" | "horizontal" | "none"): GridLayoutElement;
+    /**
+     * Sets the height of one row in rems, so rows follow the application's zoom.
+     */
+    row_height(value: number): GridLayoutElement;
+    /**
+     * Refuses a move or resize that would overlap another item instead of pushing it.
+     */
+    prevent_collision(prevent_collision: boolean): GridLayoutElement;
+    /**
+     * Controls whether items can be moved.
+     */
+    draggable(draggable: boolean): GridLayoutElement;
+    /**
+     * Controls whether items can be resized.
+     */
+    resizable(resizable: boolean): GridLayoutElement;
+    /**
+     * Shows the items over this many columns without changing the stored layout — a one-column stack for a narrow window. The grid is read-only while reflowed.
+     */
+    reflow(value: number): GridLayoutElement;
+    /**
+     * Reports the whole layout, one [id, col, row, col_span, row_span] entry per item, after the user moves or resizes an item.
+     */
+    on_change(callback: (layout: [id: string, col: number, row: number, col_span: number, row_span: number][], cx: Context) => void): GridLayoutElement;
+    /**
+     * Reports the item the user selects, by pressing it or with Tab, once per change.
+     */
+    on_select(callback: (id: string, cx: Context) => void): GridLayoutElement;
+    /**
+     * Not available on this component: `GridLayout` does not declare `disabled`, and the runtime refuses it.
+     */
+    disabled(unavailable: never): never;
+    /**
+     * Not available on this component: `GridLayout` does not declare `selected`, and the runtime refuses it.
+     */
+    selected(unavailable: never): never;
+    /**
+     * Not available on this component: `GridLayout` does not declare `on_click`, and the runtime refuses it.
+     */
+    on_click(unavailable: never): never;
+    /**
+     * Not available on this component: `GridLayout` does not declare `role`, and the runtime refuses it.
+     */
+    role(unavailable: never): never;
+    /**
+     * Not available on this component: `GridLayout` does not declare `transition`, and the runtime refuses it.
+     */
+    transition(unavailable: never): never;
+  }
+  /**
+   * A grid whose items the user drags and resizes; accepts only GridItem children. Style its gaps with gap, gap_x and gap_y.
+   */
+  export const GridLayout: { new(id: string, state: GridLayoutState): GridLayoutElement; new: (id: string, state: GridLayoutState) => GridLayoutElement };
+  /**
+   * One GridLayout item that accepts ordinary content children.
+   */
+  export type GridItemElement = Omit<NativeElement, "accessibility_label" | "col" | "row" | "col_span" | "row_span" | "min_span" | "max_span" | "locked" | "drag_handle_only" | "disabled" | "selected" | "on_click" | "role" | "transition"> & {
+    /**
+     * Sets the name announced by accessibility clients.
+     */
+    accessibility_label(accessibility_label: string): GridItemElement;
+    /**
+     * Sets the leading column, from zero, the item takes when it first joins the grid.
+     */
+    col(value: number): GridItemElement;
+    /**
+     * Sets the top row, from zero, the item takes when it first joins the grid.
+     */
+    row(value: number): GridItemElement;
+    /**
+     * Sets how many columns the item covers when it first joins the grid.
+     */
+    col_span(value: number): GridItemElement;
+    /**
+     * Sets how many rows the item covers when it first joins the grid.
+     */
+    row_span(value: number): GridItemElement;
+    /**
+     * Sets the fewest columns and rows a resize may leave the item.
+     */
+    min_span(col_span: number, row_span: number): GridItemElement;
+    /**
+     * Sets the most columns and rows a resize may give the item.
+     */
+    max_span(col_span: number, row_span: number): GridItemElement;
+    /**
+     * Locks the item in place; other items flow around it.
+     */
+    locked(locked: boolean): GridItemElement;
+    /**
+     * Moves the item only from a GridDragHandle inside it.
+     */
+    drag_handle_only(drag_handle_only: boolean): GridItemElement;
+    /**
+     * Not available on this component: `GridItem` does not declare `disabled`, and the runtime refuses it.
+     */
+    disabled(unavailable: never): never;
+    /**
+     * Not available on this component: `GridItem` does not declare `selected`, and the runtime refuses it.
+     */
+    selected(unavailable: never): never;
+    /**
+     * Not available on this component: `GridItem` does not declare `on_click`, and the runtime refuses it.
+     */
+    on_click(unavailable: never): never;
+    /**
+     * Not available on this component: `GridItem` does not declare `role`, and the runtime refuses it.
+     */
+    role(unavailable: never): never;
+    /**
+     * Not available on this component: `GridItem` does not declare `transition`, and the runtime refuses it.
+     */
+    transition(unavailable: never): never;
+  }
+  /**
+   * One GridLayout item that accepts ordinary content children.
+   */
+  export const GridItem: { new(id: string): GridItemElement; new: (id: string) => GridItemElement };
+  /**
+   * The part of a GridItem the pointer moves it by, for an item set to drag_handle_only.
+   */
+  export type GridDragHandleElement = Omit<NativeElement, "disabled" | "selected" | "on_click" | "role" | "transition"> & {
+    /**
+     * Not available on this component: `GridDragHandle` does not declare `disabled`, and the runtime refuses it.
+     */
+    disabled(unavailable: never): never;
+    /**
+     * Not available on this component: `GridDragHandle` does not declare `selected`, and the runtime refuses it.
+     */
+    selected(unavailable: never): never;
+    /**
+     * Not available on this component: `GridDragHandle` does not declare `on_click`, and the runtime refuses it.
+     */
+    on_click(unavailable: never): never;
+    /**
+     * Not available on this component: `GridDragHandle` does not declare `role`, and the runtime refuses it.
+     */
+    role(unavailable: never): never;
+    /**
+     * Not available on this component: `GridDragHandle` does not declare `transition`, and the runtime refuses it.
+     */
+    transition(unavailable: never): never;
+  }
+  /**
+   * The part of a GridItem the pointer moves it by, for an item set to drag_handle_only.
+   */
+  export const GridDragHandle: { new(state: GridLayoutState, item: string): GridDragHandleElement; new: (state: GridLayoutState, item: string) => GridDragHandleElement };
+  /**
    * Typed answer data for one questionnaire choice; style is rejected.
    */
   export type QuestionnaireChoiceElement = Omit<NativeElement, "description" | "disabled" | "default_selected" | "selected" | "on_click" | "role" | "transition"> & {
@@ -27628,7 +27831,10 @@ declare module "gpui-fps" {
   export interface FpsMonitorOptions {
     /** Corner or edge of the window. Default `top_right`. */
     anchor?: Anchor;
-    /** Frame budget in milliseconds, for the FRAME grading and the chart's scale. */
+    /**
+     * Frame budget in milliseconds, for the FRAME grading and the chart's
+     * scale. Positive, and no longer than a `Duration` holds.
+     */
     frame_budget?: number;
   }
 
@@ -27773,7 +27979,7 @@ declare module "process" {
     arch: string;
     /**
      * Common variables (`HOME`, `USER`, `HOSTNAME`, `LANG`, `TZ`, `PATH`,
-     * `EDITOR`, `DISPLAY`, `HTTP_PROXY`, the XDG directories…), plus those
+     * `EDITOR`, `DISPLAY`, `NO_PROXY`, the XDG directories…), plus those
      * `capabilities.process.env` names, when set; names match regardless of
      * case. Every other variable is absent. A fresh copy on each read; assigning to
      * it changes nothing.

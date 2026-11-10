@@ -16,14 +16,14 @@ edition = "2024"
 # 升级时 gpui-kit 各包取同一发布版，gpui-fast 取该版 gpui-kit `Cargo.toml` 锁定的同一版本。
 # 渲染读取的状态须在 entity / global / ListState / ScrollHandle 内，改了要 notify 读者；
 # 排查界面陈旧时用 `GPUI_VIEW_RETENTION=0`（关复用）/ `GPUI_SCROLL_LAYERS=0`（关滚动图层）对照。
-gpui = { package = "gpui-fast", version = "0.1.13" }
-gpui_platform = { package = "gpui-fast-platform", version = "0.1.13", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-base = { version = "0.9.0", features = ["gpui-fast"] }
-gpui-component = { version = "0.9.0", features = ["gpui-fast"] }
-gpui-component-assets = { package = "gpui-kit-assets", version = "0.9.0", features = ["gpui-fast"] }
+gpui = { package = "gpui-fast", version = "0.1.14" }
+gpui_platform = { package = "gpui-fast-platform", version = "0.1.14", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-base = { version = "0.9.1", features = ["gpui-fast"] }
+gpui-component = { version = "0.9.1", features = ["gpui-fast"] }
+gpui-component-assets = { package = "gpui-kit-assets", version = "0.9.1", features = ["gpui-fast"] }
 # GPUI Shell（gpui-kit 的 JS 插件 UI 运行时）：与上面的 gpui-kit 组件同一发布版。关 `webview`（会引入 wry），
 # 保留 `quickjs` 引擎与 `components` 组件目录。其 QuickJS 走 crates.io `quickjs-jit`（engine 插件运行时同用）。
-gpui-shell = { version = "0.9.0", default-features = false, features = ["quickjs", "components", "gpui-fast"] }
+gpui-shell = { version = "0.9.1", default-features = false, features = ["quickjs", "components", "gpui-fast"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1"
 thiserror = "2.0"
