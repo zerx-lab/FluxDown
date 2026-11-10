@@ -525,6 +525,7 @@ async function executeFallbackIntercept(
         mimeType: itemInfo.mime,
         originalUrl,
         origin: "intercept",
+        downloadId,
       })
     ).success;
   } catch (e) {
@@ -667,6 +668,7 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
           // for request headers and captured form transactions.
           originalUrl: downloadUrl !== url ? url : undefined,
           origin: manual ? undefined : "intercept",
+          downloadId: downloadItem.id,
           channel: manual?.channel,
         })
       ).success;
