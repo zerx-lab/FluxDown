@@ -11,7 +11,10 @@ use gpui::{App, ParentElement as _, SharedString, Styled as _, Window};
 use gpui_component::h_flex;
 
 use super::SectionContext;
-use crate::ui::{Control, Getter, Setter, dropdown_button, meta_text, render_number};
+use crate::ui::{
+    Control, DROPDOWN_MIN_WIDTH, Getter, NUMBER_WIDTH, Setter, dropdown_button, meta_text,
+    render_number,
+};
 
 const KEY: &str = "completed_record_retention_days";
 /// 会话内「处于自定义模式」标记（transient，不落库）。
@@ -56,8 +59,9 @@ pub(super) fn control(ctx: &SectionContext) -> Control {
         (SharedString::from(CUSTOM_ID), ctx.t("retentionCustom")),
     ];
     let unit = ctx.t("retentionDaysUnit");
-    Control::custom(
-        move |disabled, row_key, window: &mut Window, cx: &mut App| {
+    Control::field(
+        DROPDOWN_MIN_WIDTH,
+        move |disabled, row_key, width, window: &mut Window, cx: &mut App| {
             let current = store.read(cx).daemon_i64(KEY);
             let custom_flag = store
                 .read(cx)
@@ -71,7 +75,7 @@ pub(super) fn control(ctx: &SectionContext) -> Control {
                 &options,
                 SharedString::from(mode.clone()),
                 disabled,
-                false,
+                width,
                 Rc::new(move |choice: SharedString, cx: &mut App| {
                     if disabled {
                         return;
@@ -123,7 +127,7 @@ pub(super) fn control(ctx: &SectionContext) -> Control {
                         &set,
                         disabled,
                         &SharedString::from(format!("{row_key}-{KEY}-custom")),
-                        false,
+                        Some(active_theme(cx).text_extent(NUMBER_WIDTH)),
                         window,
                         cx,
                     ))

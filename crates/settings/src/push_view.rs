@@ -20,7 +20,9 @@ use crate::model::cloud_notify::{
 use crate::sections::cloud_push::{self, CloudPage};
 use crate::sections::{SectionContext, webhook};
 use crate::store::{SettingsErrorKind, SettingsStore};
-use crate::ui::{CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT, meta_text, page_heading};
+use crate::ui::{
+    CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT, field_width_of, meta_text, page_heading,
+};
 
 /// 宿主 / 页面内的窗口动作回调。
 pub type WindowAction = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -249,12 +251,13 @@ impl Render for PushView {
                     webhook::endpoints_group(&ctx, try_cloud, cx),
                     webhook::delivery_log_group(&ctx, cx),
                 ];
+                let field_width = field_width_of(&sections, cx);
                 v_flex()
                     .w_full()
                     .gap(tokens.spacing.lg)
                     .children(sections.iter().enumerate().map(|(index, section)| {
                         section
-                            .render("webhooks", index, window, cx)
+                            .render("webhooks", index, field_width, window, cx)
                             .into_any_element()
                     }))
                     .into_any_element()

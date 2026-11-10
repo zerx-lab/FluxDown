@@ -42,8 +42,8 @@ use crate::model::bt_guard::{
 use crate::port::PortFuture;
 use crate::store::{SettingsStore, rpc_error_text};
 use crate::ui::{
-    SettingsRow, SettingsSection, body_text, dropdown_button, empty_state, meta_text, row_button,
-    row_loading_button,
+    DROPDOWN_MIN_WIDTH, SettingsRow, SettingsSection, body_text, dropdown_button, empty_state,
+    meta_text, row_button, row_loading_button,
 };
 
 /// 搜索框输入后等待多久再请求，避免逐字符打 RPC。
@@ -536,7 +536,7 @@ impl BansPanel {
             &options,
             SharedString::from(current.unwrap_or_default()),
             false,
-            false,
+            Some(active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH)),
             Rc::new(move |value: SharedString, cx: &mut App| {
                 view.update(cx, |this, cx| apply(this, &value, cx));
             }),

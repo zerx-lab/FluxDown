@@ -12,8 +12,8 @@ use super::{
     subscription::{self, ListFormat},
 };
 use crate::ui::{
-    Control, Getter, Setter, SettingsPage, SettingsSection, SettingsTab, UNIT_DROPDOWN_WIDTH,
-    dropdown_button, render_number,
+    Control, Getter, NUMBER_WIDTH, Setter, SettingsPage, SettingsSection, SettingsTab,
+    UNIT_DROPDOWN_WIDTH, dropdown_button, render_number,
 };
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
@@ -239,7 +239,7 @@ fn time_units(ctx: &SectionContext) -> Vec<(SharedString, SharedString)> {
 }
 
 /// 时长限制：数字 + 单位下拉并排（0 = 不限）。数字按所选单位解读，单位与数字同行，
-/// 用户一眼可见量纲。
+/// 用户一眼可见量纲。数字框取 Tab 统一字段宽度，单位下拉跟在右侧。
 fn duration_control(
     ctx: &SectionContext,
     value_key: &'static str,
@@ -247,8 +247,9 @@ fn duration_control(
 ) -> Control {
     let store = ctx.store();
     let options = time_units(ctx);
-    Control::custom(
-        move |disabled, row_key, window: &mut Window, cx: &mut App| {
+    Control::field(
+        NUMBER_WIDTH,
+        move |disabled, row_key, width, window: &mut Window, cx: &mut App| {
             let gap = active_theme(cx).tokens().spacing.sm;
             let get_store = store.clone();
             let set_store = store.clone();
@@ -267,7 +268,7 @@ fn duration_control(
                 &set,
                 disabled,
                 &SharedString::from(format!("{row_key}-{value_key}")),
-                false,
+                width,
                 window,
                 cx,
             );
@@ -277,7 +278,7 @@ fn duration_control(
                 &options,
                 SharedString::from(store.read(cx).daemon_str(unit_key)),
                 disabled,
-                true,
+                None,
                 Rc::new(move |value: SharedString, cx: &mut App| {
                     unit_store.update(cx, |store, cx| {
                         store.set_daemon(unit_key, value.to_string(), cx);

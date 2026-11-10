@@ -29,7 +29,10 @@ use crate::model::bt_guard::{
     reload_limit,
 };
 use crate::store::SettingsStore;
-use crate::ui::{SettingsRow, SettingsSection, body_text, dropdown_button, empty_state, meta_text};
+use crate::ui::{
+    DROPDOWN_MIN_WIDTH, SettingsRow, SettingsSection, body_text, dropdown_button, empty_state,
+    meta_text,
+};
 
 // 列宽（界面缩放前的 px，经 `text_extent` 伸缩）。
 const COL_TIME: f32 = 132.;
@@ -225,7 +228,7 @@ impl EventsPanel {
             &options,
             SharedString::from(current.unwrap_or_default()),
             false,
-            false,
+            Some(active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH)),
             Rc::new(move |value: SharedString, cx: &mut App| {
                 view.update(cx, |this, cx| apply(this, &value, cx));
             }),

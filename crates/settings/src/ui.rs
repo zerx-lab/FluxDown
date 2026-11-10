@@ -6,9 +6,11 @@
 //!   说明只占一行，超出时截断，完整内容收进标题旁信息图标的悬浮提示；
 //! - 右侧控件一律统一档 [`fluxdown_ui_theme::CONTROL_HEIGHT`]（28）：按钮 / 输入走 `ControlExt::control`，下拉为
 //!   outline + caret，数字输入同高；横排行最小行高 = `density.control` + [`ROW_MIN_PADDING`]；
-//!   宽度只用 [`INPUT_WIDTH`] / [`INPUT_WIDE_WIDTH`] / [`NUMBER_WIDTH`] / [`DROPDOWN_MIN_WIDTH`] 四档（均为 100% 基准值，经 `text_extent` 随字号缩放；数字旁的单位下拉用
-//!   [`UNIT_DROPDOWN_WIDTH`]）；开关保持 `Switch`。数字带物理量时必须显示单位（[`Control::unit`] 固定单位，
-//!   或数字 + 单位下拉）。
+//!   开关保持 `Switch`。数字带物理量时必须显示单位（[`Control::unit`] 固定单位，或数字 + 单位下拉）。
+//! - 字段宽度按 Tab 统一：横排行的数字 / 输入 / 下拉 / [`Control::field`] 各报一个宽度档
+//!   （[`NUMBER_WIDTH`] / [`INPUT_WIDTH`] / [`DROPDOWN_MIN_WIDTH`]，均为 100% 基准值，经 `text_extent`
+//!   随字号缩放），同一 Tab 内全部字段取其中最宽档，使一屏内输入框与下拉同宽；不同 Tab 各取各的。
+//!   单位跟在字段框右侧，不计入字段宽度；数字旁的单位下拉固定 [`UNIT_DROPDOWN_WIDTH`]。
 //! - 列表行内操作（上移 / 下移 / 测试 / 删除…）同高：[`row_button`] / [`row_icon_button`] 只额外禁止被长文本挤压。
 
 use std::cell::RefCell;
@@ -20,8 +22,8 @@ use fluxdown_ui_components::{
 use fluxdown_ui_theme::active_theme;
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, Div, ElementId, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, canvas, div, prelude::FluentBuilder as _, px,
+    IntoElement, ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, canvas, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Disableable as _, Icon, WindowExt as _,
@@ -35,9 +37,8 @@ use gpui_component::{
 
 /// 行内文本输入框宽度档位。
 pub(crate) const INPUT_WIDTH: f32 = 240.;
-/// 行内数字输入框宽度档位：数字框只放得下 5~6 位数字，比下拉窄；旁边的物理量单位
-/// （固定后缀或单位下拉）紧随其后。
-pub(crate) const NUMBER_WIDTH: f32 = 104.;
+/// 行内数字输入框宽度档位：扣掉两侧 −/+ 步进按钮后放得下 6 位数字（端口、限速值）。
+pub(crate) const NUMBER_WIDTH: f32 = 136.;
 /// 行内下拉按钮的最小宽度档位（文案更长时自然撑开）。
 pub(crate) const DROPDOWN_MIN_WIDTH: f32 = 160.;
 /// 数字输入旁单位下拉（KB/s、MB/s…）的固定宽度。
@@ -204,6 +205,10 @@ pub(crate) type Getter<T> = Rc<dyn Fn(&App) -> T>;
 pub(crate) type Setter<T> = Rc<dyn Fn(T, &mut App)>;
 /// 自定义渲染：`(disabled, key, window, cx)`。
 type Renderer = Rc<dyn Fn(bool, &SharedString, &mut Window, &mut App) -> AnyElement>;
+/// 字段渲染：`(disabled, key, width, window, cx)`；`width` = 所在 Tab 的统一字段宽度，
+/// `None` 表示竖排行（字段占满行宽）。
+type FieldRenderer =
+    Rc<dyn Fn(bool, &SharedString, Option<Pixels>, &mut Window, &mut App) -> AnyElement>;
 
 /// 一行设置的右侧控件。
 #[derive(Clone)]
@@ -231,6 +236,12 @@ pub(crate) enum Control {
         set: Setter<SharedString>,
     },
     Custom(Renderer),
+    /// 自绘字段（端口 / 令牌输入、字体选择、数字 + 单位下拉…）：按 `tier` 参与 Tab
+    /// 统一宽度，渲染时收到统一后的宽度。
+    Field {
+        tier: f32,
+        render: FieldRenderer,
+    },
 }
 
 impl Control {
@@ -301,6 +312,32 @@ impl Control {
         Self::Custom(Rc::new(move |disabled, key, window, cx| {
             render(disabled, key, window, cx).into_any_element()
         }))
+    }
+
+    /// 自绘字段：`tier` 为本字段需要的宽度档（如 [`INPUT_WIDTH`]），闭包收到所在 Tab
+    /// 统一后的字段宽度（`None` = 竖排占满）。
+    pub(crate) fn field<F, E>(tier: f32, render: F) -> Self
+    where
+        E: IntoElement,
+        F: Fn(bool, &SharedString, Option<Pixels>, &mut Window, &mut App) -> E + 'static,
+    {
+        Self::Field {
+            tier,
+            render: Rc::new(move |disabled, key, width, window, cx| {
+                render(disabled, key, width, window, cx).into_any_element()
+            }),
+        }
+    }
+
+    /// 参与 Tab 统一宽度的宽度档；开关与自定义控件不参与。
+    fn field_tier(&self) -> Option<f32> {
+        match self {
+            Self::Number { .. } => Some(NUMBER_WIDTH),
+            Self::Input { .. } => Some(INPUT_WIDTH),
+            Self::Dropdown { .. } => Some(DROPDOWN_MIN_WIDTH),
+            Self::Field { tier, .. } => Some(*tier),
+            Self::Switch { .. } | Self::Custom(_) => None,
+        }
     }
 }
 
@@ -385,9 +422,11 @@ pub(crate) struct SettingsRow {
     keywords: Vec<SharedString>,
     disabled: bool,
     vertical: bool,
-    /// `None` 表示整行自渲染（[`Self::custom`]）。
+    /// `None` 表示整行自渲染（[`Self::custom`] / [`Self::custom_field`]）。
     control: Option<Control>,
-    full: Option<Renderer>,
+    full: Option<FieldRenderer>,
+    /// 整行自渲染里字段的宽度档（[`Self::custom_field`]），参与 Tab 统一宽度。
+    full_tier: Option<f32>,
     /// 行下方的附加区（随值动态出现的提示等）；每帧调用，可返回空元素。
     footer: Option<Renderer>,
     /// 显式高度权重；双列切分用。
@@ -406,6 +445,7 @@ impl SettingsRow {
             vertical: false,
             control: Some(control),
             full: None,
+            full_tier: None,
             footer: None,
             weight: None,
         }
@@ -417,6 +457,18 @@ impl SettingsRow {
         E: IntoElement,
         F: Fn(bool, &SharedString, &mut Window, &mut App) -> E + 'static,
     {
+        Self::custom_field(None, move |disabled, key, _, window, cx| {
+            render(disabled, key, window, cx)
+        })
+    }
+
+    /// 含一个字段的整行自渲染：`tier` 参与 Tab 统一宽度（`None` 不参与），闭包收到统一后的
+    /// 字段宽度。
+    pub(crate) fn custom_field<F, E>(tier: Option<f32>, render: F) -> Self
+    where
+        E: IntoElement,
+        F: Fn(bool, &SharedString, Option<Pixels>, &mut Window, &mut App) -> E + 'static,
+    {
         Self {
             title: SharedString::default(),
             description: None,
@@ -426,9 +478,10 @@ impl SettingsRow {
             disabled: false,
             vertical: false,
             control: None,
-            full: Some(Rc::new(move |disabled, key, window, cx| {
-                render(disabled, key, window, cx).into_any_element()
+            full: Some(Rc::new(move |disabled, key, width, window, cx| {
+                render(disabled, key, width, window, cx).into_any_element()
             })),
+            full_tier: tier,
             footer: None,
             weight: None,
         }
@@ -522,9 +575,22 @@ impl SettingsRow {
         })
     }
 
+    /// 参与 Tab 统一宽度的字段宽度档；竖排行的字段占满行宽，不参与。
+    fn field_tier(&self) -> Option<f32> {
+        if self.vertical {
+            return None;
+        }
+        if self.full.is_some() {
+            return self.full_tier;
+        }
+        self.control.as_ref().and_then(Control::field_tier)
+    }
+
+    /// `field_width`：所在 Tab 的统一字段宽度。
     fn render(
         &self,
         key: SharedString,
+        field_width: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> gpui::Stateful<gpui::Div> {
@@ -548,14 +614,15 @@ impl SettingsRow {
             })
             .when(disabled, |this| this.opacity(0.5));
 
+        let width = (!self.vertical).then_some(field_width);
         if let Some(full) = self.full.clone() {
-            return row.child(full(disabled, &key, window, cx));
+            return row.child(full(disabled, &key, width, window, cx));
         }
 
         let control = self
             .control
             .clone()
-            .map(|control| render_control(&control, disabled, &key, self.vertical, window, cx));
+            .map(|control| render_control(&control, disabled, &key, width, window, cx));
         // 描述只占一行：超出时截断，完整内容收进标题旁信息图标的悬浮提示。
         // 是否超出由描述容器 prepaint 时实测（取决于窗口宽度与控件宽度），只在变化时回写。
         let overflow = self.description.as_ref().map(|_| {
@@ -720,16 +787,18 @@ fn description_overflows(
     line.width > available
 }
 
+/// `width`：横排行为所在 Tab 的统一字段宽度；`None` = 竖排行，字段占满行宽。
 fn render_control(
     control: &Control,
     disabled: bool,
     key: &SharedString,
-    vertical: bool,
+    width: Option<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     match control {
         Control::Custom(render) => render(disabled, key, window, cx),
+        Control::Field { render, .. } => render(disabled, key, width, window, cx),
         Control::Switch { get, set } => {
             let checked = get(cx);
             let set = set.clone();
@@ -748,41 +817,36 @@ fn render_control(
             unit,
         } => {
             let number = render_number(
-                *min, *max, *step, get, set, disabled, key, vertical, window, cx,
+                *min, *max, *step, get, set, disabled, key, width, window, cx,
             );
             match unit {
                 None => number,
-                Some(unit) => with_unit_suffix(number, unit.clone(), vertical, cx),
+                Some(unit) => with_unit_suffix(number, unit.clone(), width.is_none(), cx),
             }
         }
-        Control::Input { get, set } => render_input(get, set, disabled, key, vertical, window, cx),
+        Control::Input { get, set } => render_input(get, set, disabled, key, width, window, cx),
         Control::Dropdown { options, get, set } => dropdown_button(
             format!("{key}-dropdown"),
             options,
             get(cx),
             disabled,
-            vertical,
+            width,
             set.clone(),
             cx,
         ),
     }
 }
 
-/// 数字输入 + 右侧固定单位文字。
-fn with_unit_suffix(
-    number: AnyElement,
-    unit: SharedString,
-    vertical: bool,
-    cx: &App,
-) -> AnyElement {
+/// 数字输入 + 右侧固定单位文字（单位不计入字段宽度）。
+fn with_unit_suffix(number: AnyElement, unit: SharedString, fill: bool, cx: &App) -> AnyElement {
     let tokens = active_theme(cx).tokens();
     h_flex()
         .gap(tokens.spacing.sm)
         .items_center()
-        .when(vertical, |this| this.w_full())
+        .when(fill, |this| this.w_full())
         .child(
             div()
-                .when(vertical, |this| this.flex_1().min_w_0())
+                .when(fill, |this| this.flex_1().min_w_0())
                 .child(number),
         )
         .child(meta_text(cx).flex_shrink_0().child(unit))
@@ -791,12 +855,13 @@ fn with_unit_suffix(
 
 /// 下拉选择按钮：当前值显示为 label，菜单项带勾选态；供 [`Control::Dropdown`]
 /// 与需要自定义值映射的分区（如 User-Agent 预设）共用同一视觉。
+/// `min_width`：最小宽度（文案更长时自然撑开）；`None` 占满父容器。
 pub(crate) fn dropdown_button(
     id: impl Into<SharedString>,
     options: &[(SharedString, SharedString)],
     current: SharedString,
     disabled: bool,
-    full_width: bool,
+    min_width: Option<Pixels>,
     set: Setter<SharedString>,
     cx: &App,
 ) -> AnyElement {
@@ -811,12 +876,9 @@ pub(crate) fn dropdown_button(
         .label(label)
         .dropdown_caret(true)
         .disabled(disabled)
-        .map(|this| {
-            if full_width {
-                this.w_full()
-            } else {
-                this.min_w(active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH))
-            }
+        .map(|this| match min_width {
+            Some(width) => this.min_w(width),
+            None => this.w_full(),
         })
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
             let current = current.clone();
@@ -847,7 +909,7 @@ fn render_input(
     set: &Setter<SharedString>,
     disabled: bool,
     key: &SharedString,
-    vertical: bool,
+    width: Option<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -891,12 +953,9 @@ fn render_input(
     Input::new(&state)
         .control(cx)
         .disabled(disabled)
-        .map(|this| {
-            if vertical {
-                this.w_full()
-            } else {
-                this.w(active_theme(cx).text_extent(INPUT_WIDTH))
-            }
+        .map(|this| match width {
+            Some(width) => this.w(width),
+            None => this.w_full(),
         })
         .into_any_element()
 }
@@ -917,6 +976,7 @@ struct NumberSlot {
     _subscriptions: Vec<gpui::Subscription>,
 }
 
+/// `width`：数字框宽度；`None` 占满父容器。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_number(
     min: f64,
@@ -926,7 +986,7 @@ pub(crate) fn render_number(
     set: &Setter<f64>,
     disabled: bool,
     key: &SharedString,
-    vertical: bool,
+    width: Option<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -1054,12 +1114,9 @@ pub(crate) fn render_number(
     NumberInput::new(&state)
         .control(cx)
         .disabled(disabled)
-        .map(|this| {
-            if vertical {
-                this.w_full()
-            } else {
-                this.w(active_theme(cx).text_extent(NUMBER_WIDTH))
-            }
+        .map(|this| match width {
+            Some(width) => this.w(width),
+            None => this.w_full(),
         })
         .into_any_element()
 }
@@ -1164,10 +1221,20 @@ impl SettingsSection {
                 .sum::<f32>()
     }
 
+    /// 本组横排字段的最宽档；无字段返回 `None`。
+    fn field_tier(&self) -> Option<f32> {
+        self.rows
+            .iter()
+            .filter_map(SettingsRow::field_tier)
+            .reduce(f32::max)
+    }
+
+    /// `field_width`：所在 Tab 的统一字段宽度（见 [`SettingsTab`]）。
     pub(crate) fn render(
         &self,
         key: &str,
         index: usize,
+        field_width: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
@@ -1195,7 +1262,7 @@ impl SettingsSection {
                 row.title
             ));
             *occurrence += 1;
-            card = card.child(row.render(row_key, window, cx));
+            card = card.child(row.render(row_key, field_width, window, cx));
         }
 
         let heading = (self.title.is_some() || self.subtitle.is_some()).then(|| {
@@ -1219,12 +1286,24 @@ impl SettingsSection {
     }
 }
 
-/// 分类页内的一个子 Tab。
+/// 一组分组共用的统一字段宽度：给不经 [`SettingsTab`] 直接渲染分组的独立页用。
+pub(crate) fn field_width_of(sections: &[SettingsSection], cx: &App) -> Pixels {
+    let tier = sections
+        .iter()
+        .filter_map(SettingsSection::field_tier)
+        .fold(NUMBER_WIDTH, f32::max);
+    active_theme(cx).text_extent(tier)
+}
+
+/// 分类页内的一个子 Tab。Tab 内横排字段（数字 / 输入 / 下拉 / 自绘字段）统一取各分组
+/// 字段宽度档的最大值，同屏字段同宽；不同 Tab 互不影响。
 #[derive(Clone)]
 pub(crate) struct SettingsTab {
     pub(crate) id: &'static str,
     pub(crate) label: SharedString,
     sections: Vec<SettingsSection>,
+    /// 统一字段宽度档（100% 基准值）；按完整分组计算，搜索过滤后沿用，宽度不随命中行跳变。
+    field_tier: f32,
     /// 由 capability 注入的整页视图（账户 / 扩展）。
     view: Option<gpui::AnyView>,
     /// 注入视图占满内容区高度并自管滚动（宿主不再包滚动容器）。
@@ -1237,6 +1316,7 @@ impl SettingsTab {
             id,
             label: label.into(),
             sections: Vec::new(),
+            field_tier: NUMBER_WIDTH,
             view: None,
             fill: false,
         }
@@ -1245,6 +1325,9 @@ impl SettingsTab {
     #[must_use]
     pub(crate) fn section(mut self, section: SettingsSection) -> Self {
         if !section.is_empty() {
+            if let Some(tier) = section.field_tier() {
+                self.field_tier = self.field_tier.max(tier);
+            }
             self.sections.push(section);
         }
         self
@@ -1286,6 +1369,7 @@ impl SettingsTab {
             id: self.id,
             label: self.label.clone(),
             sections,
+            field_tier: self.field_tier,
             view: None,
             fill: false,
         })
@@ -1312,6 +1396,7 @@ impl SettingsTab {
 
         let spacing = active_theme(cx).tokens().spacing;
         let gap = spacing.lg;
+        let field_width = active_theme(cx).text_extent(self.field_tier);
         // 列数由宿主测得的内容宽度决定：不能用 container_query（它把高度钉死成
         // 父级高度，内容无法撑开，滚动容器就永远没有可滚区）。
         if sections.len() < 2
@@ -1319,7 +1404,7 @@ impl SettingsTab {
         {
             let mut column = v_flex().w_full().gap(gap);
             for (index, section) in sections.iter().enumerate() {
-                column = column.child(section.render(key, index, window, cx));
+                column = column.child(section.render(key, index, field_width, window, cx));
             }
             return column.into_any_element();
         }
@@ -1339,7 +1424,7 @@ impl SettingsTab {
         let mut left = v_flex().flex_1().min_w_0().gap(gap);
         let mut right = v_flex().flex_1().min_w_0().gap(gap);
         for (index, section) in sections.iter().enumerate() {
-            let child = section.render(key, index, window, cx);
+            let child = section.render(key, index, field_width, window, cx);
             if index < split {
                 left = left.child(child);
             } else {
@@ -1463,7 +1548,64 @@ impl SettingsPage {
 
 #[cfg(test)]
 mod tests {
-    use super::format_number;
+    use super::{
+        Control, DROPDOWN_MIN_WIDTH, INPUT_WIDTH, NUMBER_WIDTH, SettingsRow, SettingsSection,
+        SettingsTab, format_number,
+    };
+    use gpui::SharedString;
+
+    fn number(title: &str) -> SettingsRow {
+        SettingsRow::new(
+            title,
+            Control::number(0.0, 65535.0, 1.0, |_| 0.0, |_, _| {}),
+        )
+    }
+
+    fn dropdown(title: &str) -> SettingsRow {
+        SettingsRow::new(
+            title,
+            Control::dropdown(Vec::new(), |_| SharedString::default(), |_, _| {}),
+        )
+    }
+
+    fn input(title: &str) -> SettingsRow {
+        SettingsRow::new(
+            title,
+            Control::input(|_| SharedString::default(), |_, _| {}),
+        )
+    }
+
+    #[test]
+    fn tab_fields_share_widest_tier_per_tab() {
+        let ports_and_select = SettingsTab::new("basic", "Basic")
+            .section(SettingsSection::new().row(number("Port")))
+            .section(SettingsSection::new().row(dropdown("Mode")));
+        assert_eq!(ports_and_select.field_tier, DROPDOWN_MIN_WIDTH);
+
+        let numbers_only = SettingsTab::new("seed", "Seed")
+            .section(SettingsSection::new().row(number("A")).row(number("B")));
+        assert_eq!(numbers_only.field_tier, NUMBER_WIDTH);
+
+        // 竖排行的字段占满行宽，不把同 Tab 的横排字段撑宽。
+        let vertical_input = SettingsTab::new("ui", "UI").section(
+            SettingsSection::new()
+                .row(dropdown("Mode"))
+                .row(input("Command").vertical()),
+        );
+        assert_eq!(vertical_input.field_tier, DROPDOWN_MIN_WIDTH);
+    }
+
+    #[test]
+    fn search_filter_keeps_tab_field_width() {
+        let tab = SettingsTab::new("proxy", "Proxy").section(
+            SettingsSection::new()
+                .row(dropdown("Type"))
+                .row(input("Host")),
+        );
+        let filtered = tab.filtered("type").expect("dropdown row should match");
+        assert_eq!(filtered.sections.len(), 1);
+        assert_eq!(filtered.field_tier, INPUT_WIDTH);
+    }
 
     #[test]
     fn number_text_hides_float_step_noise() {
