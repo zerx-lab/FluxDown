@@ -103,6 +103,10 @@ pub enum ErrorReason {
     TaskDeviceMismatch,
     /// 保存目录在目标设备上不可用（路径风格不符 / 非绝对路径 / 无法创建）。
     SaveDirUnavailable,
+    /// 删除任务：文件正被其他程序占用，无法删除；任务记录已保留。
+    TaskFilesInUse,
+    /// 删除任务：任务文件无法删除（权限 / 磁盘 / 清理超时等）；任务记录已保留。
+    TaskFilesNotDeleted,
     /// 局域网配对：配对码错误或已过期。
     PairingCodeInvalid,
     /// 局域网配对：配对会话不存在或已过期。

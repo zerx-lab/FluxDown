@@ -2604,6 +2604,17 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
                     .with_reason(fluxdown_protocol::ErrorReason::TaskStateConflict),
             )
         }
+        ActorCallError::Operation(ActorError::TaskFilesKept { in_use, message }) => {
+            let reason = if in_use {
+                fluxdown_protocol::ErrorReason::TaskFilesInUse
+            } else {
+                fluxdown_protocol::ErrorReason::TaskFilesNotDeleted
+            };
+            RpcErrorObject::application(
+                message,
+                RpcErrorData::new(ApplicationErrorCode::Internal, false).with_reason(reason),
+            )
+        }
     }
 }
 
@@ -2824,6 +2835,31 @@ mod tests {
         assert!(validate_queue_schedule(&schedule("main", false, "", "")).is_ok());
         assert!(validate_queue_stop("later").is_ok());
         assert!(validate_queue_schedule(&schedule("later", true, "08:00", "23:00")).is_ok());
+    }
+
+    /// 删除被拒（任务已保留）：按是否被占用给出不同 reason，message 保留系统原因。
+    #[test]
+    fn kept_task_deletion_maps_to_file_reasons() {
+        let reason = |in_use: bool| {
+            let error = super::actor_error(super::ActorCallError::Operation(
+                super::ActorError::TaskFilesKept {
+                    in_use,
+                    message: "task kept: os error 32".to_owned(),
+                },
+            ));
+            assert_eq!(error.message, "task kept: os error 32");
+            let data = error.data.expect("application error data");
+            assert!(!data.retryable);
+            data.reason
+        };
+        assert_eq!(
+            reason(true),
+            Some(fluxdown_protocol::ErrorReason::TaskFilesInUse)
+        );
+        assert_eq!(
+            reason(false),
+            Some(fluxdown_protocol::ErrorReason::TaskFilesNotDeleted)
+        );
     }
 
     fn create_many(edit: impl FnOnce(&mut Value)) -> DaemonCreateTasksParams {

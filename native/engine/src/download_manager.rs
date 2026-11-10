@@ -1266,6 +1266,42 @@ pub struct BatchDeleteOutcome {
     pub deleted: usize,
     /// 文件清理失败而保留的任务数。
     pub failed: usize,
+    /// 保留的任务里至少有一个是因为文件正被其他程序占用。
+    pub files_in_use: bool,
+}
+
+/// [`DownloadManager::delete_task`] 没有删除任务的原因；任务记录一律原样保留，可重试。
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteTaskError {
+    /// 磁盘文件或 BT 会话条目清理失败（文件被占用、无权限、磁盘不可用等）。
+    #[error("task files could not be removed: {0}")]
+    Cleanup(downloader::DownloadError),
+    /// 读取或删除任务记录失败。
+    #[error("task record could not be deleted: {0}")]
+    Record(downloader::DownloadError),
+}
+
+impl DeleteTaskError {
+    /// 清理失败是因为文件正被其他程序占用。
+    #[must_use]
+    pub fn is_file_in_use(&self) -> bool {
+        matches!(self, Self::Cleanup(error) if is_file_in_use_error(error))
+    }
+}
+
+/// 文件正被其他程序占用：Windows 共享 / 锁冲突（`ERROR_SHARING_VIOLATION` = 32、
+/// `ERROR_LOCK_VIOLATION` = 33，std 不归类），Unix `EBUSY` / `ETXTBSY`。
+fn is_file_in_use_error(error: &downloader::DownloadError) -> bool {
+    let downloader::DownloadError::Io(error) = error else {
+        return false;
+    };
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::ResourceBusy | std::io::ErrorKind::ExecutableFileBusy
+    ) {
+        return true;
+    }
+    cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33))
 }
 
 /// 批量删除中单个任务要清理的磁盘文件；在 actor 上按整批预读的库内事实算好，
@@ -6493,11 +6529,16 @@ impl DownloadManager {
                 match then_action {
                     crate::bt_seeding::SeedingThenAction::DeleteTask => {
                         // 行即将删除，不写只会随行消失的停止原因。
-                        self.delete_task(&task_id, false).await;
+                        if let Err(error) = self.delete_task(&task_id, false).await {
+                            // delete_task 已上报原因并保留任务。
+                            tracing::debug!(%error, "seeding limit deletion kept the task");
+                        }
                         continue;
                     }
                     crate::bt_seeding::SeedingThenAction::DeleteTaskAndFiles => {
-                        self.delete_task(&task_id, true).await;
+                        if let Err(error) = self.delete_task(&task_id, true).await {
+                            tracing::debug!(%error, "seeding limit deletion kept the task");
+                        }
                         continue;
                     }
                     crate::bt_seeding::SeedingThenAction::Stop => {
@@ -12893,7 +12934,16 @@ impl DownloadManager {
     /// If the task is actively downloading, the cancellation token is triggered
     /// first and we **await** the spawned task's JoinHandle so that all
     /// network connections and file handles are released before deletion.
-    pub async fn delete_task(&mut self, task_id: &str, delete_files: bool) {
+    ///
+    /// # Errors
+    ///
+    /// 文件清理（含移出 BT 会话）或任务记录读写失败时返回 [`DeleteTaskError`]，任务记录保留
+    /// （与 [`Self::delete_tasks_batch`] 对清理失败任务的处理一致），调用方据此提示用户。
+    pub async fn delete_task(
+        &mut self,
+        task_id: &str,
+        delete_files: bool,
+    ) -> Result<(), DeleteTaskError> {
         self.auto_retry_counts.remove(task_id);
         #[cfg(feature = "plugins")]
         self.intercept_retry_counts.remove(task_id);
@@ -12962,7 +13012,7 @@ impl DownloadManager {
                     &error,
                 );
                 self.drain_queue().await;
-                return;
+                return Err(DeleteTaskError::Record(error.into()));
             }
         };
         if let Some(t) = task {
@@ -13025,7 +13075,7 @@ impl DownloadManager {
                                     &error,
                                 );
                                 self.drain_queue().await;
-                                return;
+                                return Err(DeleteTaskError::Cleanup(error));
                             }
                         };
                         if !handle_found {
@@ -13051,7 +13101,7 @@ impl DownloadManager {
                                     &error,
                                 );
                                 self.drain_queue().await;
-                                return;
+                                return Err(DeleteTaskError::Cleanup(error));
                             }
                         }
                     } else {
@@ -13235,7 +13285,7 @@ impl DownloadManager {
             crate::logger::report_error("download-manager", "delete task files", &error);
             self.drain_queue().await;
             self.sync_queue_occupancy();
-            return;
+            return Err(DeleteTaskError::Cleanup(error));
         }
         // 任务行删除后就查不到组归属：先登记组成员目录，删除成功后清理留空的组目录。
         let group_dirs = if delete_files {
@@ -13249,7 +13299,7 @@ impl DownloadManager {
                 crate::logger::report_error("download-manager", "delete task record", &error);
                 self.drain_queue().await;
                 self.sync_queue_occupancy();
-                return;
+                return Err(DeleteTaskError::Record(error.into()));
             }
         }
         self.prune_group_dirs(group_dirs, &[task_id.to_string()])
@@ -13298,6 +13348,7 @@ impl DownloadManager {
         self.maybe_wal_checkpoint().await;
         #[cfg(feature = "bt")]
         self.maybe_release_bt_session().await;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -13386,6 +13437,7 @@ impl DownloadManager {
 
         let mut deleted = Vec::with_capacity(workers.len());
         let mut failed = 0;
+        let mut files_in_use = false;
         for (task_id, worker) in workers {
             let joined = worker.await;
             hls_downloader::clear_discard(task_id);
@@ -13397,6 +13449,7 @@ impl DownloadManager {
                         "clean up task before batch deletion",
                         &error,
                     );
+                    files_in_use |= is_file_in_use_error(&error);
                     failed += 1;
                 }
                 Err(error) => {
@@ -13450,6 +13503,7 @@ impl DownloadManager {
             let outcome = BatchDeleteOutcome {
                 deleted: deleted.len(),
                 failed,
+                files_in_use,
             };
             // 经 reporter 发出：排在这些任务已入队的进度帧之后，并顺带清理其内部状态表。
             if self
@@ -13472,7 +13526,11 @@ impl DownloadManager {
             return Ok(outcome);
         }
         self.finish_batch_deletion().await;
-        Ok(BatchDeleteOutcome { deleted: 0, failed })
+        Ok(BatchDeleteOutcome {
+            deleted: 0,
+            failed,
+            files_in_use,
+        })
     }
 
     /// 批量删除收尾：腾出的并发槽只在最后统一调度一次。
@@ -20323,7 +20381,15 @@ mod tests {
         std::fs::create_dir_all(dir.join("single")).expect("create undeletable file target");
         std::fs::write(dir.join("single").join("payload"), b"keep").expect("write payload");
         insert_task_at_status(&db, "single", &dir.to_string_lossy(), "single", 3).await;
-        manager.delete_task("single", true).await;
+        let error = manager
+            .delete_task("single", true)
+            .await
+            .expect_err("failed cleanup must be reported to the caller");
+        assert!(
+            matches!(error, DeleteTaskError::Cleanup(_)),
+            "cleanup failure must be distinguishable from record failures: {error}"
+        );
+        assert!(!error.is_file_in_use());
         assert!(
             db.load_task_by_id("single").await.expect("load").is_some(),
             "failed cleanup must retain the task for retry"
@@ -20352,7 +20418,8 @@ mod tests {
             outcome,
             BatchDeleteOutcome {
                 deleted: 1,
-                failed: 1
+                failed: 1,
+                files_in_use: false,
             }
         );
         assert!(
@@ -20389,6 +20456,31 @@ mod tests {
                 &error,
             );
         }
+    }
+
+    #[test]
+    fn file_in_use_is_told_apart_from_other_cleanup_failures() {
+        let cleanup =
+            |error: std::io::Error| DeleteTaskError::Cleanup(downloader::DownloadError::Io(error));
+        assert!(cleanup(std::io::ErrorKind::ResourceBusy.into()).is_file_in_use());
+        assert!(cleanup(std::io::ErrorKind::ExecutableFileBusy.into()).is_file_in_use());
+        assert!(!cleanup(std::io::ErrorKind::PermissionDenied.into()).is_file_in_use());
+        // Windows 共享冲突 / 锁冲突：std 不归类，只认原始错误码。
+        assert_eq!(
+            cleanup(std::io::Error::from_raw_os_error(32)).is_file_in_use(),
+            cfg!(windows)
+        );
+        assert_eq!(
+            cleanup(std::io::Error::from_raw_os_error(33)).is_file_in_use(),
+            cfg!(windows)
+        );
+        // 记录读写失败不是文件占用。
+        assert!(
+            !DeleteTaskError::Record(downloader::DownloadError::Io(
+                std::io::ErrorKind::ResourceBusy.into()
+            ))
+            .is_file_in_use()
+        );
     }
 
     #[tokio::test]
@@ -21570,7 +21662,7 @@ mod tests {
         )
         .expect("construct manager");
 
-        mgr.delete_task("t1", false).await;
+        mgr.delete_task("t1", false).await.expect("delete task");
         let first = sink.events();
         let items: Vec<_> = first
             .iter()

@@ -2851,6 +2851,8 @@
   "errReasonTaskStateConflict": "任务当前状态不允许该操作",
   "errReasonTaskDeviceMismatch": "只有目标设备可以更新该任务",
   "errReasonSaveDirUnavailable": "该目录在目标设备上不可用；请填写符合其路径格式的绝对路径，或留空使用默认目录",
+  "errReasonTaskFilesInUse": "文件正被其他程序占用，无法删除；任务已保留，关闭占用它的程序后重试",
+  "errReasonTaskFilesNotDeleted": "无法删除任务文件（请检查权限及磁盘是否可用）；任务已保留，可稍后重试",
   "errReasonPairingCodeInvalid": "配对码错误或已过期",
   "errReasonPairingTimeout": "对方未在时限内确认。请重新开始，并在对方设备上批准请求",
   "errReasonPeerClockSkew": "两台设备的时间相差过大。请在两台设备上开启自动设置日期与时间后重试",
