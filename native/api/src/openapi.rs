@@ -22,6 +22,7 @@ use utoipa::{Modify, OpenApi};
 - **MCP**：供 AI 客户端查询和调用下载工具。\n\
 - **管理 API（management）**：直接创建和管理下载任务，无需界面确认；支持队列查询与站点凭据管理。\n\
 - **任务组、插件与 RSS**：管理多文件下载、插件和自动订阅下载。\n\
+- **BT 防吸血（bt）**：查看防吸血状态与事件日志，管理封禁、限速与白名单条目。\n\
 - **设备互联（link）**：发现、配对设备，并向已配对设备发送下载任务。\n\n\
 ## 访问认证\n\n\
 管理 API、MCP、任务组、插件和 RSS 接口必须提供访问令牌：\
@@ -66,6 +67,11 @@ use utoipa::{Modify, OpenApi};
         crate::server::api_list_rss_items,
         crate::server::api_rss_item_action,
         crate::server::api_validate_rss_feed,
+        crate::server::api_bt_guard_state,
+        crate::server::api_bt_guard_entries_list,
+        crate::server::api_bt_guard_entries_add,
+        crate::server::api_bt_guard_entry_remove,
+        crate::server::api_bt_guard_events_list,
         crate::server::api_list_plugins,
         crate::server::api_install_plugin,
         crate::server::api_install_plugin_dev,
@@ -103,6 +109,7 @@ use utoipa::{Modify, OpenApi};
         (name = "groups", description = "任务组与文件预览"),
         (name = "plugins", description = "插件安装与管理"),
         (name = "rss", description = "RSS 订阅与自动下载"),
+        (name = "bt", description = "BT 防吸血：状态、过滤条目与事件日志"),
         (name = "link", description = "设备发现、配对与任务传输"),
     ),
     modifiers(&SecurityAddon)
@@ -185,6 +192,10 @@ mod tests {
             routes::API_RSS_ITEMS,
             routes::API_RSS_ITEM_ACTION,
             routes::API_RSS_VALIDATE,
+            routes::API_BT_GUARD_STATE,
+            routes::API_BT_GUARD_ENTRIES,
+            routes::API_BT_GUARD_ENTRY,
+            routes::API_BT_GUARD_EVENTS,
             routes::API_PLUGINS,
             routes::API_PLUGINS_INSTALL,
             routes::API_PLUGINS_INSTALL_DEV,

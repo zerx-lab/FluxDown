@@ -1,17 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Download, Layers, Link2 } from 'lucide-react'
+import { Copy, Download, Layers, Link2 } from 'lucide-react'
 import { useT } from '../../../i18n'
+import { usePrefBool } from '../../../lib/rpc'
 import { Button, Icon, Tooltip } from '../../../ui'
 import { copyText } from '../../../lib/copy'
 import { useDownloads } from '../state'
 import { taskStateLabel } from '../table/text'
 import { copyUrls, downloadViewsFiles, isDownloadable } from '../model/actions'
-import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourceSite } from '../model/task'
+import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourcePageUrl, sourceSite } from '../model/task'
 import { localizeTaskError } from '../model/taskError'
 import type { DownloadTaskView, TaskState } from '../model/task'
 import { canChangeSegments, canChangeUrl } from '../model/taskEdit'
+import { HIDE_TASK_SOURCE_PREF } from '../model/viewPrefs'
 import { openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
 import { routeLabel } from '../../../lib/taskRoute'
+import { CopyButton, SourcePageLink } from './CopyButton'
+import { FileHashRow } from './FileHashRow'
 import { DetailRow } from './DetailRow'
 import { SourcesSection } from './SourcesSection'
 
@@ -30,37 +33,13 @@ function formatEta(t: ReturnType<typeof useT>, seconds: number): string {
   return t('etaHours', { n: (seconds / 3600).toFixed(1) })
 }
 
-function CopyErrorButton({ message }: { message: string }) {
-  const t = useT()
-  const [copied, setCopied] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => clearTimeout(timer.current), [])
-  const label = copied ? t('detailErrorCopied') : t('detailCopyError')
-  return (
-    <Tooltip content={label}>
-      <Button
-        variant="ghost"
-        iconOnly
-        aria-label={label}
-        onClick={() => {
-          copyText(message)
-          setCopied(true)
-          clearTimeout(timer.current)
-          timer.current = setTimeout(() => setCopied(false), 1500)
-        }}
-      >
-        <Icon icon={copied ? Check : Copy} />
-      </Button>
-    </Tooltip>
-  )
-}
-
 export function GeneralTab({ view }: { view: DownloadTaskView }) {
   const t = useT()
   const { queueName } = useDownloads()
+  const hideSource = usePrefBool(HIDE_TASK_SOURCE_PREF, false)
   const dto = view.dto
-  const notSet = t('detailNotSet')
-  const checksum = dto && dto.checksum !== '' ? dto.checksum : notSet
+  // 期望哈希只在填写过时展示（与 GPUI 一致：多数任务没有，「未设置」一行是噪音）。
+  const checksum = dto?.checksum ?? ''
   const proxy = dto && dto.proxyUrl !== '' ? dto.proxyUrl : t('detailFollowGlobal')
   const queueLabel = view.queueId === '' ? '' : (queueName(view.queueId) ?? view.queueId)
   const completed = view.state === 'completed'
@@ -73,8 +52,15 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
       <div className="flex min-w-0 flex-[1_1_18.75rem] flex-col">
         <div className="flex flex-col gap-0.5 pb-2">
           <div className="min-w-0 truncate text-sm font-medium">{view.name}</div>
-          <div className="text-xs text-muted-foreground">
-            {PROTOCOL_LABEL[view.protocol]} · {sourceSite(view)}
+          <div className="flex min-w-0 gap-1 text-xs text-muted-foreground">
+            {hideSource ? (
+              <span className="shrink-0">{PROTOCOL_LABEL[view.protocol]}</span>
+            ) : (
+              <>
+                <span className="shrink-0">{PROTOCOL_LABEL[view.protocol]} ·</span>
+                <SourcePageLink text={sourceSite(view)} url={sourcePageUrl(view)} className="min-w-0 truncate" />
+              </>
+            )}
           </div>
           {view.boosted ? <div className="text-xs text-warning">{t('detailBoostActive')}</div> : null}
         </div>
@@ -105,7 +91,8 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           </div>
         </DetailRow>
         <DetailRow label={t('taskQueueLabel')}>{queueLabel}</DetailRow>
-        <DetailRow label={t('taskChecksum')}>{checksum}</DetailRow>
+        {checksum !== '' ? <DetailRow label={t('taskChecksum')}>{checksum}</DetailRow> : null}
+        {view.source === 'local' && completed ? <FileHashRow view={view} /> : null}
         <DetailRow label={t('taskProxy')}>{proxy}</DetailRow>
         {dto && dto.autoRoute !== '' ? <DetailRow label={t('taskRoute')}>{routeLabel(t, dto.autoRoute)}</DetailRow> : null}
         {dto?.ignoreTlsErrors ? <DetailRow label={t('taskIgnoreTlsErrors')}>✓</DetailRow> : null}
@@ -113,7 +100,7 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           <DetailRow label={t('infoError')}>
             <div className="flex items-center gap-1">
               <span className="min-w-0 flex-1 break-all text-destructive">{localizeTaskError(t, view.errorMessage)}</span>
-              <CopyErrorButton message={localizeTaskError(t, view.errorMessage)} />
+              <CopyButton text={localizeTaskError(t, view.errorMessage)} label={t('detailCopyError')} copiedLabel={t('detailErrorCopied')} />
             </div>
           </DetailRow>
         ) : null}

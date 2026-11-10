@@ -19,7 +19,7 @@ cargo build --release -p fluxdown_agent --features web-ui
 cargo build --release -p fluxdown_daemon
 # binaries in target/release/: fluxdown-agent and fluxdownd (.exe on Windows)
 
-# Run (default bind 0.0.0.0:17800)
+# Run (default bind [::]:17800, IPv4 + IPv6)
 ./target/release/fluxdown-agent --server
 ```
 
@@ -53,7 +53,7 @@ All configuration is read once at startup from environment variables. There is n
 
 | Variable | Default | Description |
 |---|---|---|
-| `FLUXDOWN_BIND` | `0.0.0.0:17800` | TCP address the HTTP/WebSocket server listens on. |
+| `FLUXDOWN_BIND` | `[::]:17800` | TCP address the HTTP/WebSocket server listens on. `[::]` accepts both IPv4 and IPv6 (needed for IPv6 DDNS and fnOS FN Connect) and falls back to `0.0.0.0` when the system has no IPv6; an explicit `0.0.0.0:<port>` listens on IPv4 only. |
 | `FLUXDOWN_DATA_DIR` | Platform auto-detected (see below) | Root data directory. The daemon/engine data (database, logs) live directly in it; the agent's own state lives in `<root>/agent`. |
 | `FLUXDOWN_SAVE_DIR` | unset — platform download directory | Initial default save directory, applied only on first start (seeded, by the daemon, when no `default_save_dir` is stored yet). A directory later chosen in Settings always wins. The Synology package uses it to point at the shared folder picked in the install wizard. |
 | `FLUXDOWN_DATABASE_URL` | unset — uses a SQLite file inside the data dir | Explicit connection string: `sqlite:/path/to/file.db` or `postgres://user:pass@host/db`. |
@@ -143,7 +143,7 @@ The connection string's scheme (`sqlite:` vs `postgres:`) selects the backend; b
 
 ## Exposing it safely (reverse proxy & TLS)
 
-`FLUXDOWN_BIND` defaults to `0.0.0.0:17800`, listening on every interface. Desktop defaults to loopback but can explicitly enable LAN; headless does not use that desktop LAN switch. **The deployment owner is responsible for the network boundary**:
+`FLUXDOWN_BIND` defaults to `[::]:17800`, listening on every interface over both IPv4 and IPv6. Desktop defaults to loopback but can explicitly enable LAN; headless does not use that desktop LAN switch. **The deployment owner is responsible for the network boundary**:
 
 - The management access key is the only thing standing between the internet and full remote control of your server (create/delete downloads, stream any completed file back). Treat it like a root password: don't share it, don't log it, rotate it if it may have leaked.
 - If the server is reachable beyond a trusted LAN, put it behind a reverse proxy (nginx, Caddy, Traefik) terminating TLS, and only expose HTTPS. The Web UI sends the key in a WebSocket sub-protocol header and, for file downloads, a query string; on plain HTTP that is visible to anyone on the network path.
@@ -178,7 +178,7 @@ Type=simple
 User=fluxdown
 Group=fluxdown
 WorkingDirectory=/opt/fluxdown
-Environment=FLUXDOWN_BIND=0.0.0.0:17800
+Environment=FLUXDOWN_BIND=[::]:17800
 Environment=FLUXDOWN_DATA_DIR=/var/lib/fluxdown
 ExecStart=/opt/fluxdown/fluxdown-agent --server
 Restart=on-failure

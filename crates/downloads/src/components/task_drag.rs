@@ -1,8 +1,9 @@
 //! 任务行拖出到系统文件管理器 / 桌面。
 //!
-//! 已完成且文件仍在下载目录的行可按住拖动；拖拽离开窗口时 gpui 把它提升为平台原生
-//! 文件拖拽（`external_drag_payload`）。gpui-pre 目前只有 macOS 与 Linux Wayland 实现
-//! 了该能力；其他平台（Windows、X11）拖出窗口无动作，窗口内拖拽也不改变任何状态。
+//! 已完成且文件仍在下载目录时，按住文件名列即可拖动（任意方向，包括窗口上沿或下沿
+//! 之外的文件夹），不用修饰键。其他列是划选。拖拽离开窗口时 gpui 把它提升为平台原生文件拖拽
+//! （`external_drag_payload`）。gpui-pre 目前只有 macOS 与 Linux Wayland 实现了该能力；
+//! 其他平台（Windows、X11）拖出窗口无动作，窗口内拖拽也不改变任何状态。
 
 use std::path::PathBuf;
 
@@ -47,7 +48,11 @@ impl DraggedTasks {
         cx: &mut App,
     ) -> Entity<TaskDragPreview> {
         let count = self.table.upgrade().map_or(1, |table| {
-            table.read(cx).delegate().drag_paths(&self.anchor).len()
+            table.update(cx, |table, _| {
+                // 拖放已经开始：随后的单击不再把选区改成这一行。
+                table.delegate_mut().note_file_drag_started();
+                table.delegate().drag_paths(&self.anchor).len()
+            })
         });
         let preview = TaskDragPreview {
             kind: self.kind,

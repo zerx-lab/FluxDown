@@ -3,7 +3,7 @@
 import type { JsonValue } from './common';
 
 /** 宿主内置跳转目标（`ctx.navigate` / `ViewEffect.navigate`）。 */
-export const NAV_BUILTIN_TARGETS = ['downloads', 'rss', 'webhooks', 'share'] as const;
+export const NAV_BUILTIN_TARGETS = ['downloads', 'rss', 'webhooks'] as const;
 
 /** `pluginViewClosed` 的 reason：插件调用了 `ctx.close()`。 */
 export const VIEW_CLOSE_REASON_REQUESTED = 'requested';

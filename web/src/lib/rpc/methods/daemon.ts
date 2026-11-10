@@ -5,6 +5,18 @@ import { call } from '../client';
 import { normalizeTask } from '../normalize';
 import { METHOD } from '../protocol';
 import type {
+  BtGuardEntriesAddParams,
+  BtGuardEntriesListDto,
+  BtGuardEntriesListParams,
+  BtGuardEntriesRemoveDto,
+  BtGuardEntriesRemoveParams,
+  BtGuardEntryDto,
+  BtGuardEventsListDto,
+  BtGuardEventsListParams,
+  BtGuardExportDto,
+  BtGuardExportParams,
+  BtGuardFilterSourcesRefreshDto,
+  BtGuardStateDto,
   ComponentInstallParams,
   ComponentParams,
   ComponentStatusDto,
@@ -84,6 +96,7 @@ import type {
   SelectionResolutionDto,
   SetSeedLimitsParams,
   TaskVerifyResult,
+  TaskHashResult,
   TorrentShareDto,
   SiteAuthCredentialDto,
   SiteAuthDeleteParams,
@@ -101,8 +114,10 @@ import type {
   TaskDeleteParams,
   TaskChangeUrlParams,
   TaskSetSegmentsParams,
+  TaskSetPiecePickingParams,
   TaskDtoWire,
   DaemonSeedLocalParams,
+  DaemonTaskHashParams,
   DaemonTorrentShareParams,
   TaskIdParams,
   TaskIdsParams,
@@ -117,8 +132,8 @@ import type {
 /** 服务端逐源串行拉取镜像（每源 20s），最坏远超默认 30s。 */
 const SLOW_MIRROR_TIMEOUT_MS = 120_000;
 
-/** BT 完整性校验需读盘比对全部分块，耗时随数据量增长。 */
-const VERIFY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+/** 读盘类慢方法（完整性校验、文件哈希、本机做种）耗时与数据量成正比。 */
+const SLOW_DISK_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 // `daemon.task.list` 在任务数超过 5000 时服务端报错（需分页），Web 不再封装：任务表一律来自
 // store 的快照 + `system.taskPage` 载入。
@@ -142,6 +157,9 @@ const task = {
   /** 修改线程数：已下进度保留；下载中任务由引擎静默暂停 → 改配置 → 恢复。 */
   setSegments: (params: TaskSetSegmentsParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_SET_SEGMENTS, params),
+  /** BT 选块：只传本次切换的字段，另一项保持不变。 */
+  setPiecePicking: (params: TaskSetPiecePickingParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_SET_PIECE_PICKING, params),
   delete: (params: TaskDeleteParams) => call<OkResult>(METHOD.DAEMON_TASK_DELETE, params),
   pauseAll: () => call<OkResult>(METHOD.DAEMON_TASK_PAUSE_ALL),
   resumeAll: () => call<OkResult>(METHOD.DAEMON_TASK_RESUME_ALL),
@@ -151,13 +169,18 @@ const task = {
     call<OkResult>(METHOD.DAEMON_TASK_SET_SEED_LIMITS, params),
   /** 本机做种：生成种子并哈希校验全部数据，耗时与数据量成正比；使用 6 小时超时，创建类提交不重试。 */
   seedLocal: (params: DaemonSeedLocalParams) =>
-    call<SeedLocalResult>(METHOD.DAEMON_TASK_SEED_LOCAL, params, { timeoutMs: VERIFY_TIMEOUT_MS }),
+    call<SeedLocalResult>(METHOD.DAEMON_TASK_SEED_LOCAL, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
   /** BT 任务的磁力链接（含 tracker）与可选 .torrent 字节（base64）。 */
   torrentShare: (params: DaemonTorrentShareParams) =>
     call<TorrentShareDto>(METHOD.DAEMON_TASK_TORRENT_SHARE, params),
   /** BT 完整性校验：耗时与数据量成正比，使用 6 小时超时。 */
   verify: (params: TaskIdParams) =>
-    call<TaskVerifyResult>(METHOD.DAEMON_TASK_VERIFY, params, { timeoutMs: VERIFY_TIMEOUT_MS }),
+    call<TaskVerifyResult>(METHOD.DAEMON_TASK_VERIFY, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
+  /** 已完成任务的文件哈希：读整个文件，耗时与文件大小成正比。 */
+  hash: (taskId: string, algorithm: string) => {
+    const params: DaemonTaskHashParams = { taskId, algorithm }
+    return call<TaskHashResult>(METHOD.DAEMON_TASK_HASH, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS })
+  },
   /** 批量操作：一次请求、整批只推一次任务快照（逐条调用会撞上 agent 的通道上限）。 */
   pauseMany: (taskIds: string[]) => {
     const params: TaskIdsParams = { taskIds };
@@ -352,6 +375,22 @@ const bt = {
   trackerSubscription: {
     refresh: () =>
       call<TrackerSubRefreshResponse>(METHOD.DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
+  },
+  /** 防吸血。`cloud.apply` / `evidence.drain` 是 agent 内部方法，这里刻意不封装。 */
+  guard: {
+    state: () => call<BtGuardStateDto>(METHOD.DAEMON_BT_GUARD_STATE),
+    entries: {
+      list: (params: BtGuardEntriesListParams) => call<BtGuardEntriesListDto>(METHOD.DAEMON_BT_GUARD_ENTRIES_LIST, params),
+      add: (params: BtGuardEntriesAddParams) => call<BtGuardEntryDto>(METHOD.DAEMON_BT_GUARD_ENTRIES_ADD, params),
+      remove: (params: BtGuardEntriesRemoveParams) => call<BtGuardEntriesRemoveDto>(METHOD.DAEMON_BT_GUARD_ENTRIES_REMOVE, params),
+    },
+    events: {
+      list: (params: BtGuardEventsListParams) => call<BtGuardEventsListDto>(METHOD.DAEMON_BT_GUARD_EVENTS_LIST, params),
+    },
+    export: (params: BtGuardExportParams) => call<BtGuardExportDto>(METHOD.DAEMON_BT_GUARD_EXPORT, params),
+    /** 立即抓取全部过滤文件订阅（逐个 HTTP 拉取，可能较慢）。 */
+    filterSourcesRefresh: () =>
+      call<BtGuardFilterSourcesRefreshDto>(METHOD.DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   },
 };
 

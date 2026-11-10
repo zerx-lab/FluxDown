@@ -27,7 +27,6 @@ fn canonical_capability_literals_are_exact_and_unique() {
         "agent.externalCapture",
         "agent.openTaskFiles",
         "agent.copyTaskFiles",
-        "agent.share",
     ];
     let client = &["client.selections"];
     assert_eq!(DAEMON_CAPABILITIES, daemon);

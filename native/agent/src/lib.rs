@@ -8,6 +8,7 @@ pub mod api_host;
 #[cfg(feature = "desktop")]
 mod app_icon;
 pub mod background_effects;
+pub mod bt_guard;
 mod bundle_watch;
 pub mod capture;
 mod category_dir;
@@ -25,6 +26,7 @@ pub mod egress;
 pub mod embedded;
 pub mod event_hub;
 mod event_pump;
+mod failure_notice;
 pub mod gateway;
 #[cfg(feature = "desktop")]
 mod hotkey;
@@ -40,13 +42,12 @@ pub mod permission;
 pub mod platform;
 pub mod plugin_revocation;
 pub mod power;
+pub mod private_plugin;
 pub mod remote;
 pub mod runtime;
 pub mod server_mode;
-#[cfg(feature = "share-p2p")]
-pub mod share;
-pub mod share_link;
 pub mod shell;
+mod signed_envelope;
 pub mod sniff_rules;
 mod sound;
 mod startup_failure;

@@ -20,7 +20,7 @@ cargo build --release -p fluxdown_agent --features web-ui
 cargo build --release -p fluxdown_daemon
 # 产物在 target/release/:fluxdown-agent 与 fluxdownd(Windows 下带 .exe)
 
-# 运行(默认监听 0.0.0.0:17800)
+# 运行(默认监听 [::]:17800,IPv4 + IPv6)
 ./target/release/fluxdown-agent --server
 ```
 
@@ -54,7 +54,7 @@ cargo build --release -p fluxdown_agent --features web-ui   # 把 web/dist 嵌�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `FLUXDOWN_BIND` | `0.0.0.0:17800` | HTTP/WebSocket 服务监听的 TCP 地址。 |
+| `FLUXDOWN_BIND` | `[::]:17800` | HTTP/WebSocket 服务监听的 TCP 地址。`[::]` 同时接收 IPv4 与 IPv6（IPv6 DDNS、飞牛 FN Connect 需要），系统不支持 IPv6 时自动退回 `0.0.0.0`；显式写 `0.0.0.0:<端口>` 则只监听 IPv4。 |
 | `FLUXDOWN_DATA_DIR` | 平台自动探测(见下表) | 数据根目录。daemon/引擎数据(数据库、日志)直接放在其中,agent 自己的状态放在 `<根目录>/agent`。 |
 | `FLUXDOWN_SAVE_DIR` | 未设置——平台下载目录 | 首次启动时播种的默认保存目录(仅在尚无 `default_save_dir` 时由 daemon 写入)。之后在设置页选过的目录永远优先。群晖套件用它指向安装向导里选定的共享文件夹。 |
 | `FLUXDOWN_DATABASE_URL` | 未设置——使用数据目录下的 SQLite 文件 | 显式连接串:`sqlite:/path/to/file.db` 或 `postgres://user:pass@host/db`。 |
@@ -144,7 +144,7 @@ FLUXDOWN_DATABASE_URL=postgres://fluxdown:password@localhost/fluxdown \
 
 ## 安全地对外暴露(反向代理与 TLS)
 
-`FLUXDOWN_BIND` 默认是 `0.0.0.0:17800`，监听所有网络接口；桌面则默认只绑回环，但可显式开启 LAN。headless 不受桌面 LAN 开关控制，**网络边界由部署者负责**：
+`FLUXDOWN_BIND` 默认是 `[::]:17800`，在所有网络接口上同时监听 IPv4 与 IPv6；桌面则默认只绑回环，但可显式开启 LAN。headless 不受桌面 LAN 开关控制，**网络边界由部署者负责**：
 
 - 管理访问密钥是互联网与"完全远程控制你的服务器"(创建/删除下载、取回任意已完成文件)之间唯一的屏障。把它当 root 密码对待:不要分享、不要打进日志,一旦怀疑泄露就重新生成。
 - 如果服务器需要在可信局域网之外访问,把它放在反向代理(nginx、Caddy、Traefik)之后终结 TLS,只对外暴露 HTTPS。Web 界面会把密钥放在 WebSocket 子协议头里(文件下载时放在查询字符串里),明文 HTTP 下会被网络路径上的任何人看到。
@@ -179,7 +179,7 @@ Type=simple
 User=fluxdown
 Group=fluxdown
 WorkingDirectory=/opt/fluxdown
-Environment=FLUXDOWN_BIND=0.0.0.0:17800
+Environment=FLUXDOWN_BIND=[::]:17800
 Environment=FLUXDOWN_DATA_DIR=/var/lib/fluxdown
 ExecStart=/opt/fluxdown/fluxdown-agent --server
 Restart=on-failure

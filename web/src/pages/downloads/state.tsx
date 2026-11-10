@@ -33,7 +33,7 @@ import { remoteCan } from './model/batchPlan'
 import { isDownloadable } from './model/actions'
 import type { SidebarCounts } from './model/counts'
 import { useLiveSpeeds } from './model/liveSpeeds'
-import { buildVisibleRows, dirCollapseKey, dominantCategory, groupFullySelected, groupsMatchingQuery, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
+import { buildVisibleRows, dirCollapseKey, dominantCategory, groupFullySelected, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './model/groupRows'
 import { makeAggregate } from './model/groupTree'
 import type { GroupAggregate, GroupCounts } from './model/groupTree'
@@ -122,6 +122,16 @@ export interface DownloadsContextValue {
   multiSelect: boolean
   /** 点击行：shift 连选，ctrl/cmd 切换，否则单选。 */
   clickSelect: (key: RowKey, modifiers: ClickModifiers) => void
+  /**
+   * 划选：按下行 `press` 到当前行 `current` 的可见行闭区间。
+   * `fromAnchor` 时起点改为选区锚点所在行；`additive` 时并入 `base`（按下时的选区）。
+   * 区间含多个任务，或并入已有选区时，进入显式多选。
+   */
+  sweepSelect: (
+    press: number,
+    current: number,
+    gesture: { additive: boolean; fromAnchor: boolean; base: ReadonlySet<RowKey> | null },
+  ) => void
   /** 只切换该行选中状态（复选框 / 移动端点选）。 */
   toggleSelected: (key: RowKey) => void
   /** 桌面表格行首复选框（与 GPUI `toggle_multi_select` 对齐）：未处于多选模式时以该行开启多选，否则切换该行。 */
@@ -507,6 +517,32 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   const multiModeRef = useRef(multiSelectMode)
   multiModeRef.current = multiSelectMode
 
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+
+  const sweepSelect = useCallback(
+    (
+      press: number,
+      current: number,
+      gesture: { additive: boolean; fromAnchor: boolean; base: ReadonlySet<RowKey> | null },
+    ) => {
+      const visible = rowsRef.current
+      let from = press
+      if (gesture.fromAnchor && anchor.current !== null) {
+        const anchored = rowIndexOfKey(visible, anchor.current)
+        if (anchored >= 0) from = anchored
+      }
+      const keys = keysInVisualSpan(visible, from, current)
+      setFocusedGroup(null)
+      const next = gesture.additive ? new Set(gesture.base) : new Set<RowKey>()
+      for (const key of keys) next.add(key)
+      setSelected(next.size === 0 ? EMPTY_SELECTED : next)
+      setMultiSelectMode(keys.length > 1 || (gesture.additive && next.size > 0))
+      anchor.current = keys[keys.length - 1] ?? anchor.current
+    },
+    [],
+  )
+
   const clickSelect = useCallback(
     (key: RowKey, modifiers: ClickModifiers) => {
       setFocusedGroup(null)
@@ -756,6 +792,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       summary,
       multiSelect,
       clickSelect,
+      sweepSelect,
       toggleSelected,
       toggleMultiSelect,
       enterMultiSelect,
@@ -807,6 +844,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       summary,
       multiSelect,
       clickSelect,
+      sweepSelect,
       toggleSelected,
       toggleMultiSelect,
       enterMultiSelect,

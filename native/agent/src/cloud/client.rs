@@ -40,6 +40,10 @@ pub(crate) type CloudSocket = tokio_tungstenite::WebSocketStream<reqwest::Upgrad
 /// 云端连接的 TCP keepalive 探测间隔。
 const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
+/// access token 剩余有效期不足该值时，发请求 / 建长连接前先单飞刷新，
+/// 避免重连时先吃一次 401 再刷新重放（服务端 access token 有效期 15 分钟）。
+const ACCESS_TOKEN_REFRESH_LEEWAY_SECS: i64 = 60;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestEpoch(u64);
 
@@ -85,7 +89,6 @@ impl CloudClient {
                 message: "account-scoped response belongs to an ended session".to_owned(),
                 retryable: false,
                 unreachable: false,
-                details: None,
             });
         }
         Ok(state)
@@ -292,14 +295,7 @@ impl CloudClient {
             .map(serde_json::to_value)
             .transpose()
             .map_err(|error| CloudError::invalid(error.to_string()))?;
-        let attempted = self
-            .lock_epoch(epoch)
-            .await?
-            .credentials
-            .as_ref()
-            .map(|credentials| credentials.access_token.clone())
-            .filter(|token| !token.is_empty())
-            .ok_or_else(CloudError::unauthorized)?;
+        let attempted = self.fresh_access_token(epoch).await?;
         let response = self
             .send_once(method.clone(), path, body.clone(), Some(&attempted))
             .await?;
@@ -651,6 +647,31 @@ impl CloudClient {
         }
     }
 
+    /// 取本次请求要用的 access token：持久化的过期时刻已进入刷新提前量时先单飞刷新。
+    /// `expires_at_unix <= 0` 表示过期时刻未知（旧状态文件），沿用 401 后刷新重放。
+    async fn fresh_access_token(&self, epoch: RequestEpoch) -> Result<String, CloudError> {
+        let (token, expires_at) = {
+            let state = self.lock_epoch(epoch).await?;
+            let credentials = state
+                .credentials
+                .as_ref()
+                .filter(|credentials| !credentials.access_token.is_empty())
+                .ok_or_else(CloudError::unauthorized)?;
+            (
+                credentials.access_token.clone(),
+                credentials.expires_at_unix,
+            )
+        };
+        if expires_at <= 0
+            || now_unix() < expires_at.saturating_sub(ACCESS_TOKEN_REFRESH_LEEWAY_SECS)
+        {
+            return Ok(token);
+        }
+        let fresh = self.refreshed_access_token(&token, epoch).await?;
+        drop(self.lock_epoch(epoch).await?);
+        Ok(fresh)
+    }
+
     async fn access_token(&self) -> Result<String, CloudError> {
         self.state
             .lock()
@@ -678,14 +699,7 @@ impl CloudClient {
         path: &str,
         epoch: RequestEpoch,
     ) -> Result<reqwest::Response, CloudError> {
-        let access_token = self
-            .lock_epoch(epoch)
-            .await?
-            .credentials
-            .as_ref()
-            .map(|credentials| credentials.access_token.clone())
-            .filter(|token| !token.is_empty())
-            .ok_or_else(CloudError::unauthorized)?;
+        let access_token = self.fresh_access_token(epoch).await?;
         let response = self.send_stream_once(path, &access_token, epoch).await?;
         if response.status() != StatusCode::UNAUTHORIZED {
             let result = ensure_success(response).await;
@@ -707,14 +721,7 @@ impl CloudClient {
         path: &str,
         epoch: RequestEpoch,
     ) -> Result<CloudSocket, CloudError> {
-        let access_token = self
-            .lock_epoch(epoch)
-            .await?
-            .credentials
-            .as_ref()
-            .map(|credentials| credentials.access_token.clone())
-            .filter(|token| !token.is_empty())
-            .ok_or_else(CloudError::unauthorized)?;
+        let access_token = self.fresh_access_token(epoch).await?;
         let socket = match self.send_socket_once(path, &access_token, epoch).await? {
             Some(socket) => socket,
             None => {
@@ -871,18 +878,6 @@ impl CloudClient {
         body: Option<Value>,
         bearer: Option<&str>,
     ) -> Result<reqwest::Response, CloudError> {
-        self.send_request(method, path, body, bearer, None).await
-    }
-
-    /// `send_once` 加可选 `If-None-Match`（条件 GET，如 `/share/config` 的 ETag 缓存）。
-    async fn send_request(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<Value>,
-        bearer: Option<&str>,
-        if_none_match: Option<&str>,
-    ) -> Result<reqwest::Response, CloudError> {
         let (device_id, device_name, platform) = self.device_identity().await;
         let client = self
             .http
@@ -898,9 +893,6 @@ impl CloudClient {
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
         }
-        if let Some(etag) = if_none_match {
-            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
-        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -911,48 +903,6 @@ impl CloudClient {
             .map_err(|error| CloudError::network(error_chain(&error)))?;
         self.observe_server_clock(&response, sent_at, unix_ms());
         Ok(response)
-    }
-
-    /// 带调用方自备 Bearer（FluxMesh游客会话令牌）的调用：令牌不属于账号会话，不做刷新重放。
-    pub(crate) async fn with_bearer<P: Serialize, R: DeserializeOwned>(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<&P>,
-        token: &str,
-    ) -> Result<R, CloudError> {
-        let body = body
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|error| CloudError::invalid(error.to_string()))?;
-        let response = self.send_once(method, path, body, Some(token)).await?;
-        decode(response).await
-    }
-
-    /// 公开 GET + 条件请求：`304` → `Ok(None)`；`200` → 正文与新的 `ETag`。
-    pub(crate) async fn public_conditional<R: DeserializeOwned>(
-        &self,
-        path: &str,
-        etag: Option<&str>,
-    ) -> Result<Option<(R, Option<String>)>, CloudError> {
-        let response = self
-            .send_request(Method::GET, path, None, None, etag)
-            .await?;
-        if response.status() == StatusCode::NOT_MODIFIED {
-            return Ok(None);
-        }
-        let new_etag = response
-            .headers()
-            .get(reqwest::header::ETAG)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let body = decode(response).await?;
-        Ok(Some((body, new_etag)))
-    }
-
-    /// 是否持有登录凭据（FluxMesh据此在账号鉴权与游客鉴权之间选择）。
-    pub(crate) async fn has_account(&self) -> bool {
-        self.is_authenticated().await
     }
 }
 
@@ -1039,7 +989,6 @@ fn websocket_unsupported(status: StatusCode, message: &str) -> CloudError {
         message: message.to_owned(),
         retryable: false,
         unreachable: false,
-        details: None,
     }
 }
 
@@ -1077,7 +1026,6 @@ fn error_from_body(status: u16, retryable: bool, body: &[u8]) -> CloudError {
             code: parsed.code,
             retryable,
             unreachable: false,
-            details: parsed.details.map(Box::new),
         },
         _ => {
             let text = String::from_utf8_lossy(body);
@@ -1093,7 +1041,6 @@ fn error_from_body(status: u16, retryable: bool, body: &[u8]) -> CloudError {
                 },
                 retryable,
                 unreachable: false,
-                details: None,
             }
         }
     }
@@ -1173,8 +1120,6 @@ pub struct CloudError {
     pub retryable: bool,
     /// 网络 / TLS / DNS / 超时：请求没能到达云端或响应没能读完。
     pub unreachable: bool,
-    /// 云端错误体里的 `details`（如 `swarm_quota_exhausted` 的 `retryAfterSecs`）。
-    pub details: Option<Box<serde_json::Value>>,
 }
 
 impl CloudError {
@@ -1195,7 +1140,6 @@ impl CloudError {
             message: "authentication required".to_owned(),
             retryable: false,
             unreachable: false,
-            details: None,
         }
     }
 
@@ -1206,7 +1150,6 @@ impl CloudError {
             message: "FluxCloud endpoint is fixed in release builds".to_owned(),
             retryable: false,
             unreachable: false,
-            details: None,
         }
     }
 
@@ -1218,7 +1161,6 @@ impl CloudError {
             message,
             retryable: true,
             unreachable: true,
-            details: None,
         }
     }
 
@@ -1230,7 +1172,6 @@ impl CloudError {
             message,
             retryable: false,
             unreachable: false,
-            details: None,
         }
     }
 
@@ -1245,7 +1186,6 @@ impl CloudError {
             message,
             retryable: false,
             unreachable: false,
-            details: None,
         }
     }
 
@@ -1493,6 +1433,101 @@ mod tests {
         drop(client);
         if let Err(error) = std::fs::remove_dir_all(&dir) {
             tracing::warn!(path = %dir.display(), error = %error, "remove refresh test directory");
+        }
+    }
+
+    #[derive(Clone)]
+    struct ExpiringState {
+        refreshes: Arc<AtomicUsize>,
+        rejected: Arc<AtomicUsize>,
+    }
+
+    async fn counting_protected(
+        State(state): State<ExpiringState>,
+        headers: HeaderMap,
+    ) -> Response {
+        let response = protected(headers).await;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            state.rejected.fetch_add(1, Ordering::SeqCst);
+        }
+        response
+    }
+
+    async fn counting_refresh(State(state): State<ExpiringState>) -> Response {
+        refresh(State(MockState {
+            refreshes: state.refreshes,
+        }))
+        .await
+    }
+
+    /// 过期时刻进入提前量：先刷新再发请求，服务端看不到旧 token；还远未过期则不刷新。
+    #[tokio::test]
+    async fn near_expiry_token_refreshes_before_request_without_401() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock cloud");
+        let address = listener.local_addr().expect("mock address");
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/api/v1/test", get(counting_protected))
+            .route("/api/v1/auth/refresh", post(counting_refresh))
+            .with_state(ExpiringState {
+                refreshes: refreshes.clone(),
+                rejected: rejected.clone(),
+            });
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve expiring mock");
+        });
+
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_cloud_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = Arc::new(StateStore::open(dir.clone()).await.expect("state store"));
+        let state = Arc::new(Mutex::new(AgentState {
+            device_id: "device1".to_owned(),
+            device_name: "Desktop".to_owned(),
+            platform: "linux".to_owned(),
+            credentials: Some(CloudCredentials {
+                access_token: "old-access".to_owned(),
+                refresh_token: "refresh".to_owned(),
+                expires_at_unix: super::now_unix() + super::ACCESS_TOKEN_REFRESH_LEEWAY_SECS / 2,
+                session: None,
+            }),
+            ..AgentState::default()
+        }));
+        let client = CloudClient::new(format!("http://{address}"), state.clone(), store)
+            .expect("cloud client");
+        let first = client
+            .authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None)
+            .await
+            .expect("request after proactive refresh");
+        assert_eq!(first["ok"], true);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(Ordering::SeqCst), 0);
+        let expires_at = state
+            .lock()
+            .await
+            .credentials
+            .as_ref()
+            .map(|credentials| credentials.expires_at_unix)
+            .expect("credentials kept");
+        assert!(expires_at > super::now_unix() + super::ACCESS_TOKEN_REFRESH_LEEWAY_SECS);
+
+        // 新 token 远未过期：后续请求直接使用，不再刷新。
+        client
+            .authenticated::<Value, Value>(reqwest::Method::GET, "/api/v1/test", None)
+            .await
+            .expect("request with fresh token");
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(Ordering::SeqCst), 0);
+        drop(client);
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!(path = %dir.display(), error = %error, "remove expiry test directory");
         }
     }
 
@@ -2384,7 +2419,6 @@ mod tests {
             message: String::new(),
             retryable: status == 429,
             unreachable: false,
-            details: None,
         };
         let cases = [
             (
@@ -2442,7 +2476,6 @@ mod tests {
             message: String::new(),
             retryable: false,
             unreachable: false,
-            details: None,
         };
         let cases = [
             (

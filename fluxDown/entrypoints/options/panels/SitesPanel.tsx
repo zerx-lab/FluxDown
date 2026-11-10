@@ -10,10 +10,10 @@ import { showToast } from "@/ui/components/Toast";
 import { TextInput } from "@/ui/components/TextInput";
 import { Toggle } from "@/ui/components/Toggle";
 import { useT } from "@/ui/i18n";
-import { normalizeDomain } from "@/utils/domain-exclusion";
 import {
   DEFAULT_SITE_PROFILE,
   SITE_PROFILES_KEY,
+  normalizeSiteKey,
   parseSiteProfiles,
   saveSiteProfile,
   type SiteProfileFields,
@@ -44,7 +44,7 @@ export function SitesPanel(props: SitesPanelProps): JSX.Element {
 
   useEffect(() => {
     if (!props.prefillHost) return;
-    const host = normalizeDomain(props.prefillHost) ?? props.prefillHost;
+    const host = normalizeSiteKey(props.prefillHost) ?? props.prefillHost;
     setEditing({ isNew: true, host, fields: { ...DEFAULT_SITE_PROFILE } });
     props.onPrefillConsumed();
   }, [props.prefillHost]);
@@ -53,7 +53,7 @@ export function SitesPanel(props: SitesPanelProps): JSX.Element {
 
   const save = async () => {
     if (!editing) return;
-    const key = normalizeDomain(editing.host);
+    const key = normalizeSiteKey(editing.host);
     if (!key) {
       showToast(t("domain.invalid", { domain: editing.host.trim() }), "error");
       return;

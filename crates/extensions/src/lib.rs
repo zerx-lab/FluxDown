@@ -55,22 +55,16 @@ pub trait ExtensionsPort: Send + Sync {
     ) -> PortFuture<serde_json::Value>;
 }
 
-/// 扩展分类的子页：插件与受管组件。
+/// 扩展分类的子页：插件、站点默认插件与受管组件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtensionsTab {
     Plugins,
+    SiteDefaults,
     Components,
 }
 
 impl ExtensionsTab {
-    const ALL: [Self; 2] = [Self::Plugins, Self::Components];
-
-    fn index(self) -> usize {
-        match self {
-            Self::Plugins => 0,
-            Self::Components => 1,
-        }
-    }
+    const ALL: [Self; 3] = [Self::Plugins, Self::SiteDefaults, Self::Components];
 }
 
 pub struct ExtensionsView {
@@ -90,9 +84,11 @@ pub struct ExtensionsView {
 pub enum ExtensionsEvent {
     /// 打开插件某个视图的桌面界面（`contributes.views[].desktop`，window 位置）。
     OpenPluginView {
-        plugin: fluxdown_protocol::PluginDto,
+        plugin: Box<fluxdown_protocol::PluginDto>,
         view: String,
     },
+    /// 打开账户页（专属插件区的登录入口；登录页由宿主决定）。
+    OpenAccount,
 }
 
 impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
@@ -140,6 +136,9 @@ impl ExtensionsView {
             .market
             .favorites
             .observe_session(snapshot.session.is_some());
+        self.plugins
+            .private
+            .observe_session(snapshot.session.is_some());
         cx.notify();
     }
 
@@ -170,11 +169,13 @@ impl ExtensionsView {
         }
         // 登录 / 登出以增量事件到达：刷新收藏（星标、「我的收藏」）无需重进设置页。
         let session_changed = match event {
-            ServiceEvent::Agent(AgentEvent::SessionChanged(session)) => self
-                .plugins
-                .market
-                .favorites
-                .observe_session(session.is_some()),
+            ServiceEvent::Agent(AgentEvent::SessionChanged(session)) => {
+                let signed_in = session.is_some();
+                let favorites = self.plugins.market.favorites.observe_session(signed_in);
+                // 专属插件目录随登录态一起失效；两者各自记录登录态，不能短路。
+                let private = self.plugins.private.observe_session(signed_in);
+                favorites || private
+            }
             _ => false,
         };
         if ExtensionsController::replaces_plugins(event) {
@@ -204,8 +205,10 @@ impl ExtensionsView {
     pub(crate) fn show_tab(&mut self, tab: ExtensionsTab, cx: &mut Context<Self>) {
         if self.tab != tab {
             self.tab = tab;
-            // 每次进入插件页都重新读取站点默认插件（下载过程中可能新增自动记录）。
-            self.plugins.site_defaults.requested = false;
+            // 每次进入站点默认子页都重新读取（下载过程中可能新增自动记录）。
+            if tab == ExtensionsTab::SiteDefaults {
+                self.invalidate_site_defaults();
+            }
             cx.notify();
         }
     }
@@ -258,16 +261,34 @@ pub(crate) fn error_text(translator: &Translator, error: &RpcErrorData) -> Strin
 
 impl Render for ExtensionsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 站点默认子页只在有记录时出现：常驻读取（仅失效后重读），当前停留在该页时保留标签，
+        // 避免移除最后一条记录时被弹走。
+        self.ensure_site_defaults_loaded(window, cx);
+        let show_site_defaults = !self.plugins.site_defaults.entries.is_empty()
+            || self.tab == ExtensionsTab::SiteDefaults;
+        let visible: Vec<ExtensionsTab> = ExtensionsTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != ExtensionsTab::SiteDefaults || show_site_defaults)
+            .collect();
         let tab = self.tab;
         let body = match tab {
             ExtensionsTab::Plugins => self.render_plugins(window, cx).into_any_element(),
+            ExtensionsTab::SiteDefaults => self.render_site_defaults(window, cx).into_any_element(),
             ExtensionsTab::Components => self.render_components(window, cx).into_any_element(),
         };
         let translator = self.translator.read(cx);
-        let labels = [
-            SharedString::from(translator.text("settingsCatPlugins").to_owned()),
-            SharedString::from(translator.text("settingsCatComponents").to_owned()),
-        ];
+        let labels: Vec<SharedString> = visible
+            .iter()
+            .map(|tab| {
+                let key = match tab {
+                    ExtensionsTab::Plugins => "settingsCatPlugins",
+                    ExtensionsTab::SiteDefaults => "pluginSiteDefaultsTab",
+                    ExtensionsTab::Components => "settingsCatComponents",
+                };
+                SharedString::from(translator.text(key).to_owned())
+            })
+            .collect();
+        let selected = visible.iter().position(|t| *t == tab).unwrap_or(0);
         let tokens = active_theme(cx).tokens();
         let (spacing, typography, destructive) = (
             tokens.spacing,
@@ -291,9 +312,9 @@ impl Render for ExtensionsView {
             .child(h_flex().w_full().child(segmented_tabs(
                 "extensions-tabs",
                 labels,
-                tab.index(),
+                selected,
                 move |index, _, cx| {
-                    if let Some(tab) = ExtensionsTab::ALL.get(index) {
+                    if let Some(tab) = visible.get(index) {
                         let Ok(()) = view.update(cx, |this, cx| this.show_tab(*tab, cx)) else {
                             // 扩展视图已释放，结束回调，不再更新状态。
                             return;

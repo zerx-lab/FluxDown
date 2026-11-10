@@ -83,12 +83,19 @@ impl DownloadManager {
         // which may already be downloading).
         // Note: each pause invokes drain_queue(), which could promote a
         // queued task to active.  We collect active IDs first, then pause them.
-        let active_ids: Vec<String> = self
+        // 重建连接 flush 窗口内的任务（`pending_resume_task_ids`）同样算活跃：不让位的话旧
+        // writer 收尾后会自动恢复，与优先任务并行下载。
+        let mut active_ids: Vec<String> = self
             .active_tasks
             .keys()
             .filter(|id| id.as_str() != task_id.as_str())
             .cloned()
             .collect();
+        active_ids.extend(
+            self.pending_resume_task_ids()
+                .into_iter()
+                .filter(|id| id.as_str() != task_id.as_str()),
+        );
         // 先按恢复优先级登记暂停顺序：先前活跃的任务在前，排队任务按原 FIFO 在后。
         // （暂停活跃任务时 drain_queue 会提拔排队头部，必须在此之前固定顺序。）
         let queued_before: Vec<String> = self
@@ -154,11 +161,11 @@ impl DownloadManager {
             }
         }
 
-        // 验证目标任务是否真的启动成功。
+        // 验证目标任务是否真的启动成功（或处于重建连接 flush 窗口、旧 writer 收尾即恢复）。
         // 若 do_resume_task / resume_task 内部出错（DB 读取失败、BT 初始化失败等），
         // 任务不会出现在 active_tokens 中。此时必须取消 boost 并恢复已暂停的任务，
         // 否则客户端会显示 boost 激活但实际无任务下载，产生莫名其妙的结果。
-        if !self.active_tasks.contains_key(&task_id) {
+        if !self.active_tasks.contains_key(&task_id) && !self.has_pending_resume(&task_id) {
             log_info!(
                 "[manager] boost: target task {} failed to start — cancelling boost mode",
                 task_id
@@ -239,9 +246,15 @@ impl DownloadManager {
         let Some(priority) = self.priority_task_id.as_deref() else {
             return;
         };
+        // 内部重建连接（改线程数 / 换全局出口）暂停后挂起的恢复：旧 writer 收尾即重新起飞，
+        // 仍算在途。
         let in_flight = self.active_tasks.contains_key(priority)
             || self.has_pending_resolve(priority)
-            || self.pending_queue.iter().any(|q| q.task_id == priority);
+            || self.pending_queue.iter().any(|q| q.task_id == priority)
+            || self
+                .pending_pauses
+                .get(priority)
+                .is_some_and(|pending| pending.resume_requested);
         if in_flight {
             return;
         }

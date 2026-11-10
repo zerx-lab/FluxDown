@@ -110,6 +110,37 @@ body {
   line-height: 1.5;
 }
 
+/* 设置分组：组标题隔开不同语义的设置行 */
+.opt-group {
+  margin-top: 36px;
+}
+
+.opt-group:first-of-type {
+  margin-top: 16px;
+}
+
+.opt-group-head {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--fd-border-strong);
+}
+
+.opt-group-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.opt-group-desc {
+  margin: 4px 0 0;
+  color: var(--fd-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.opt-group > .opt-row:last-child {
+  border-bottom: none;
+}
+
 /* 设置行：左侧标题 + 说明，右侧控件 */
 .opt-row {
   display: flex;

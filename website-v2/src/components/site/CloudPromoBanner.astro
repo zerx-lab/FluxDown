@@ -1,0 +1,145 @@
+---
+/**
+ * 云端专业版限时价：与顶栏公告同语系的单行条，整行可点进定价。
+ * 价签由 cloud-promo-live 按 catalog 专业版填充，不写死数字。
+ */
+import { ArrowRight } from "lucide-react";
+import type { Lang } from "@/i18n/config";
+import { href } from "@/i18n/routing";
+import { CLOUD_PROMO, cloudPromoCopy, isCloudPromoActive } from "@/lib/cloud-promo";
+
+interface Props {
+  lang: Lang;
+  /** home 与 pricing 共用同一细条；pricing 略强调「购买」文案 */
+  variant?: "home" | "pricing";
+}
+
+const { lang, variant = "home" } = Astro.props;
+if (!isCloudPromoActive()) {
+  return undefined as never;
+}
+
+const t = cloudPromoCopy[lang];
+const pricingHref = href(CLOUD_PROMO.planPath, lang);
+const cta = variant === "pricing" ? t.ctaBuy : t.cta;
+---
+
+<aside
+  class="cloud-promo"
+  data-cloud-promo
+  data-ends-at={CLOUD_PROMO.endAt}
+  aria-label={t.product}
+>
+  <a class="frame cloud-promo-inner" href={pricingHref}>
+    <span class="live-dot shrink-0" aria-hidden="true" />
+    <span class="cloud-promo-tag mono">{t.badge}</span>
+    <p class="cloud-promo-line">
+      <span class="cloud-promo-name">{t.product}</span>
+      <span class="cloud-promo-prices mono num" aria-hidden="true">
+        <span class="cloud-promo-sale" data-promo-sale></span>
+        <s class="cloud-promo-list" data-promo-list hidden></s>
+      </span>
+    </p>
+    <span class="cloud-promo-cta">
+      {cta}
+      <ArrowRight size={13} strokeWidth={2} aria-hidden="true" />
+    </span>
+  </a>
+</aside>
+
+<script>
+  import { bootCloudPromo } from "@/scripts/cloud-promo-live";
+  bootCloudPromo();
+</script>
+
+<style>
+  .cloud-promo {
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-sunken);
+    font-size: 13px;
+  }
+  .cloud-promo-inner {
+    display: flex;
+    align-items: center;
+    gap: 10px 12px;
+    min-height: 40px;
+    padding: 8px 16px;
+    color: var(--fg-muted);
+    transition: color 160ms;
+  }
+  .cloud-promo-inner:hover {
+    color: var(--fg);
+  }
+  .cloud-promo-tag {
+    flex: none;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 20px;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px var(--accent-line) inset;
+  }
+  .cloud-promo-line {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+    line-height: 1.35;
+  }
+  .cloud-promo-name {
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .cloud-promo-prices {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    font-variant-numeric: tabular-nums;
+    min-height: 1em;
+  }
+  .cloud-promo-sale:empty::before {
+    content: "· · ·";
+    color: var(--fg-subtle);
+    letter-spacing: 0.08em;
+  }
+  .cloud-promo-sale {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--accent-ink);
+  }
+  .cloud-promo-list {
+    font-size: 12.5px;
+    color: var(--fg-subtle);
+    text-decoration-thickness: 1px;
+  }
+  .cloud-promo-list[hidden] {
+    display: none;
+  }
+  .cloud-promo-cta {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    color: var(--accent-ink);
+  }
+  .cloud-promo-inner:hover .cloud-promo-cta :global(svg) {
+    transform: translateX(2px);
+  }
+  .cloud-promo-cta :global(svg) {
+    transition: transform 200ms var(--ease-out);
+  }
+  @media (max-width: 640px) {
+    .cloud-promo-inner {
+      padding-inline: 12px;
+    }
+  }
+</style>

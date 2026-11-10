@@ -88,7 +88,7 @@ What each part means:
 
 ## 4. Install in dev mode
 
-In the desktop app: **Settings → Extensions → Plugins**, make sure the **Dev mode** switch is on (it is by default), choose `my-resolver/` under **Install from directory (dev mode)** and press **Install**. In the Web UI the same field takes the path **on the machine that runs FluxDown**, not on the machine with the browser.
+In the desktop app: **Settings → Extensions → Plugins**, turn the **Dev mode** switch on (it is off by default; the install area appears once it is on), choose `my-resolver/` under **Install from directory (dev mode)** and press **Install**. In the Web UI the same field takes the path **on the machine that runs FluxDown**, not on the machine with the browser.
 
 Dev mode records your folder's path instead of copying it. The plugin row gets a **Dev** badge and a **Reload** button. This plugin declares no permissions, so it is enabled right away. (A plugin that declares permissions starts as **Authorization required**: the app opens an approval dialog, and the enable switch stays off until you grant them — see [Permissions](/docs/en/plugins/permissions/).)
 

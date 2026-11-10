@@ -53,7 +53,7 @@ fn options(default_label: SharedString, cx: &App) -> SearchableVec<FontOption> {
 pub(super) fn field(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let default_label = ctx.t("fontFamilyDefault");
-    Control::custom(move |disabled, key, window, cx| {
+    Control::field(INPUT_WIDTH, move |disabled, key, width, window, cx| {
         let slot = window.use_keyed_state(SharedString::from(format!("{key}-font-family")), cx, {
             let store = store.clone();
             let label = default_label.clone();
@@ -109,7 +109,7 @@ pub(super) fn field(ctx: &SectionContext) -> Control {
         // also scale their text, so keep the control height separate.
         Select::new(&select)
             .placeholder(placeholder)
-            .w(active_theme(cx).text_extent(INPUT_WIDTH))
+            .w(width.unwrap_or_else(|| active_theme(cx).text_extent(INPUT_WIDTH)))
             .with_size(Size::Large)
             .h(active_theme(cx).density().control)
             .py_0()

@@ -4,7 +4,7 @@ import { DOWNLOAD_PASS_COOKIE, issueDownloadPass, verifyDownloadPass } from "../
 const SECRET = "pass-secret";
 const IP = "114.114.114.114";
 let secret: string | undefined = SECRET;
-// 与 download-route.test.ts / share-proxy.test.ts 共用同一进程的模块表：导出名集合须与它们一致。
+// 与 download-route.test.ts / bt-guard-proxy.test.ts 共用同一进程的模块表：导出名集合须与它们一致。
 const configure = () => mock.module("astro:env/server", () => ({
   GITHUB_TOKEN: "", GITHUB_REPO: "owner/repo", FLUXCLOUD_API_BASE: "", DOWNLOAD_PASS_SECRET: secret,
 }));

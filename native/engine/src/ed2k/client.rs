@@ -684,7 +684,7 @@ fn parse_hello_client_id(proto_byte: u8, opcode: u8, payload: &[u8]) -> Option<u
 /// 构造 HELLOANSWER payload（user_hash + 本机 id/port/tag 计数=0）。
 fn build_hello_answer() -> Vec<u8> {
     let mut p = Vec::with_capacity(26);
-    p.extend_from_slice(&[0u8; 16]); // user hash
+    p.extend_from_slice(&crate::ed2k::identity::user_hash());
     p.extend_from_slice(&0u32.to_le_bytes()); // client id
     p.extend_from_slice(&0u16.to_le_bytes()); // port
     p.extend_from_slice(&0u32.to_le_bytes()); // tag count

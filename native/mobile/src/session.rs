@@ -208,15 +208,22 @@ fn encode<T: Serialize>(value: &T, what: &str) -> Result<Value, FluxError> {
         .map_err(|error| FluxError::internal(format!("encode {what} failed: {error}")))
 }
 
-/// 通用调用的前置校验：只放行 `daemon.*` / `agent.*`（`system.*` 属会话层，不对外开放），
-/// 参数必须是合法 JSON；JSON `null` 等同于无参数。
+/// 仅 agent 内部使用的方法：UI 通用通道不放行（云名单整层替换会绕过验签后的信任边界，
+/// 证据队列只能由已登录的 agent 上报流程弹出）。
+const AGENT_ONLY_METHODS: &[&str] = &[
+    fluxdown_protocol::method::DAEMON_BT_GUARD_CLOUD_APPLY,
+    fluxdown_protocol::method::DAEMON_BT_GUARD_EVIDENCE_DRAIN,
+];
+
+/// 通用调用的前置校验：只放行 `daemon.*` / `agent.*`（`system.*` 属会话层，不对外开放；
+/// [`AGENT_ONLY_METHODS`] 同样拒绝），参数必须是合法 JSON；JSON `null` 等同于无参数。
 fn prepare_call(method: &str, params_json: Option<&str>) -> Result<Option<Value>, FluxError> {
     let namespaced = ["daemon.", "agent."].iter().any(|prefix| {
         method
             .strip_prefix(prefix)
             .is_some_and(|rest| !rest.is_empty())
     });
-    if !namespaced {
+    if !namespaced || AGENT_ONLY_METHODS.contains(&method) {
         return Err(FluxError::invalid_argument(format!(
             "method {method:?} is not allowed: only daemon.* and agent.* can be called"
         )));
@@ -541,6 +548,28 @@ mod tests {
     use crate::error::{ErrorCodeDto, FluxError};
     use crate::testkit::{LinkHandle, Recorder, session_with_recorder};
 
+    #[test]
+    fn generic_call_rejects_agent_only_bt_guard_methods_but_allows_ui_ones() {
+        use fluxdown_protocol::method;
+        for blocked in [
+            method::DAEMON_BT_GUARD_CLOUD_APPLY,
+            method::DAEMON_BT_GUARD_EVIDENCE_DRAIN,
+        ] {
+            assert!(super::prepare_call(blocked, None).is_err(), "{blocked}");
+        }
+        for allowed in [
+            method::DAEMON_BT_GUARD_STATE,
+            method::DAEMON_BT_GUARD_ENTRIES_LIST,
+            method::DAEMON_BT_GUARD_ENTRIES_ADD,
+            method::DAEMON_BT_GUARD_ENTRIES_REMOVE,
+            method::DAEMON_BT_GUARD_EVENTS_LIST,
+            method::DAEMON_BT_GUARD_EXPORT,
+            method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
+        ] {
+            assert!(super::prepare_call(allowed, None).is_ok(), "{allowed}");
+        }
+    }
+
     fn request(url: &str) -> CreateTaskRequestDto {
         CreateTaskRequestDto {
             url: url.to_owned(),
@@ -803,10 +832,21 @@ mod tests {
                 "r1".to_owned(),
                 SelectionOutcomeDto::Bt {
                     indices: vec![0, 2],
+                    save_dir: None,
                 },
             )
             .await
             .expect("resolve");
+        session
+            .resolve_selection(
+                "r1b".to_owned(),
+                SelectionOutcomeDto::Bt {
+                    indices: vec![1],
+                    save_dir: Some("/new".to_owned()),
+                },
+            )
+            .await
+            .expect("relocate");
         session
             .resolve_selection("r2".to_owned(), SelectionOutcomeDto::Cancelled)
             .await
@@ -827,11 +867,15 @@ mod tests {
         );
         assert_eq!(
             calls[1].1,
-            json!({ "requestId": "r2", "outcome": { "kind": "cancelled" } })
+            json!({ "requestId": "r1b", "outcome": { "kind": "bt", "indices": [1], "saveDir": "/new" } })
         );
-        assert_eq!(calls[2].0, "daemon.config.patch");
         assert_eq!(
             calls[2].1,
+            json!({ "requestId": "r2", "outcome": { "kind": "cancelled" } })
+        );
+        assert_eq!(calls[3].0, "daemon.config.patch");
+        assert_eq!(
+            calls[3].1,
             json!({ "expectedRevision": 7, "values": { "max_concurrent": "3" } })
         );
     }

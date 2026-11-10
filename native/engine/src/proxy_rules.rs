@@ -345,6 +345,24 @@ impl RuleEgress {
     pub(crate) fn needs_detection(&self) -> bool {
         matches!(self, Self::System)
     }
+
+    /// 两个规则出口是否等价：`Direct` 与 `Manual(None)` 都是直连；`System` 只看系统代理，
+    /// 与全局设置无关；现成配置逐字段比较端点与凭据。
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Direct | Self::Manual(None), Self::Direct | Self::Manual(None))
+            | (Self::System, Self::System) => true,
+            (Self::Manual(Some(a)) | Self::Custom(a), Self::Manual(Some(b)) | Self::Custom(b)) => {
+                a.mode == b.mode
+                    && a.proxy_type == b.proxy_type
+                    && a.host == b.host
+                    && a.port == b.port
+                    && a.username == b.username
+                    && a.password == b.password
+            }
+            _ => false,
+        }
+    }
 }
 
 /// 一条已编译的启用规则。

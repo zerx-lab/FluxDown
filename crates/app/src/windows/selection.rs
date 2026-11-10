@@ -20,7 +20,8 @@ use crate::{
 };
 
 const HLS_VARIANT_SIZE: gpui::Size<gpui::Pixels> = size(px(520.), px(440.));
-const BT_SIZE: gpui::Size<gpui::Pixels> = size(px(760.), px(580.));
+// 标题下多一行保存目录，默认高度从 580 提到 640，避免文件列表被挤没。
+const BT_SIZE: gpui::Size<gpui::Pixels> = size(px(760.), px(640.));
 const PLUGIN_SIZE: gpui::Size<gpui::Pixels> = size(px(560.), px(560.));
 
 /// 订阅会话：回放启动时已挂起的选择，跟随新到达/已解决的请求开关窗口。
@@ -116,7 +117,17 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
     let mut options = auxiliary_window_options(translator.read(cx).text(title_key).to_owned());
     options.display_id = display_id;
     options.window_min_size = None;
-    options.kind = WindowKind::Floating;
+    // BT 窗口有「浏览」保存目录：macOS 的 Floating 是 NSFloatingWindowLevel，系统目录选择面板
+    // 处于普通层级，会被压在窗口下面（#994）。BT 用普通窗口（与新建下载一致），其余选择保持置顶；
+    // 普通窗口不会自己浮到其他应用之上，所以开窗后另行请求置前（见下方）。
+    options.kind = if is_bt {
+        WindowKind::Normal
+    } else {
+        WindowKind::Floating
+    };
+    // 开窗前取：开窗后新窗口本身会成为活动窗口。Linux / FreeBSD 不请求注意（见下方），不取。
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    let app_was_active = cx.active_window().is_some();
     options.is_resizable = is_bt;
     // 只有 BT 文件列表可调尺寸，记住用户调整后的尺寸；画质 / 变体选择固定尺寸。
     if is_bt {
@@ -129,7 +140,7 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
         )));
     }
 
-    WindowRegistry::open_or_focus(cx, key, options, move |window, cx| {
+    let opened = WindowRegistry::open_or_focus(cx, key, options, move |window, cx| {
         if !task_name.is_empty() {
             window.set_window_title(&task_name);
         }
@@ -161,6 +172,21 @@ fn open(cx: &mut App, request: SelectionRequestDto) {
         }
         root
     });
+    if is_bt && let Some(handle) = opened {
+        // 用户建完任务常已切去别的应用（磁力解析也可能要几十秒）：选择窗带倒计时、到期按默认
+        // 开始下载，必须让用户看见。请求激活应用并置前；系统可能拒绝抢前台（macOS 协同激活、
+        // Windows 前台锁），此时应用原本不在前台就再请求注意（程序坞弹跳 / 任务栏闪烁）。
+        // 窗口内没有默认获焦的输入框或回车确认，抢到焦点也不会吞掉用户在别处的按键。
+        if let Err(error) = handle.update(cx, |_, window, cx| {
+            crate::windows::bring_to_front(window, cx);
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            if !app_was_active {
+                window.request_attention();
+            }
+        }) {
+            log::debug!("BT selection window released before activation: {error:#}");
+        }
+    }
 }
 
 /// 从最近快照按 `task_id` 找文件名；找不到（元数据未落地/已删除）返回空串，

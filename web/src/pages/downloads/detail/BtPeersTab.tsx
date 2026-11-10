@@ -1,4 +1,5 @@
 import { Users } from 'lucide-react'
+import { useState } from 'react'
 import { useI18n, useT } from '../../../i18n'
 import { FLAG_URLS } from '../../../lib/flags/flagUrls'
 import { flagTitle, resolveFlagUrl } from '../../../lib/flags/flags'
@@ -8,7 +9,9 @@ import { formatBytes } from '../model/task'
 import type { TaskState } from '../model/task'
 import type { Translate } from '../table/text'
 import { copyEntry, PollError, RowCopyButton, SkeletonRows, useMeasuredRoot } from './btParts'
-import { mapPeerRows, peerColumns, peerLayout, peersEmptyKey, transportLabel } from './btStatus'
+import { PeerActionCell, PeerEvidenceDialog, PeerGuardSummary, SuspicionCell } from './BtPeerGuard'
+import { peerGuardMenu } from './peerGuardActions'
+import { hasGuardData, mapPeerRows, peerColumns, peerLayout, peersEmptyKey, transportLabel } from './btStatus'
 import type { PeerColumn, PeerLayout, PeerRow } from './btStatus'
 import { useBtStatus } from './useBtStatus'
 
@@ -22,6 +25,9 @@ const COLUMN_WIDTH: Record<PeerColumn, string> = {
   uploaded: '4.75rem',
   downBps: '5.5rem',
   upBps: '5.5rem',
+  groupDelivered: '5.5rem',
+  suspicion: 'minmax(8rem,1fr)',
+  action: 'minmax(5rem,0.7fr)',
 }
 
 const HEADER_KEY: Record<PeerColumn, string> = {
@@ -32,6 +38,9 @@ const HEADER_KEY: Record<PeerColumn, string> = {
   uploaded: 'btPeerUploaded',
   downBps: 'btPeerDownSpeed',
   upBps: 'btPeerUpSpeed',
+  groupDelivered: 'btGuardPeerUploaded',
+  suspicion: 'btGuardPeerSuspicion',
+  action: 'btGuardPeerAction',
 }
 
 const NUMERIC: Record<PeerColumn, boolean> = {
@@ -42,6 +51,9 @@ const NUMERIC: Record<PeerColumn, boolean> = {
   uploaded: true,
   downBps: true,
   upBps: true,
+  groupDelivered: true,
+  suspicion: false,
+  action: false,
 }
 
 const rate = (bps: number): string => (bps > 0 ? `${formatBytes(bps)}/s` : DASH)
@@ -79,6 +91,16 @@ function Cell({ column, row }: { column: PeerColumn; row: PeerRow }) {
       return <RateCell bps={row.downBps} />
     case 'upBps':
       return <RateCell bps={row.upBps} />
+    case 'groupDelivered':
+      return (
+        <span title={row.guard.ipGroup} className="tabular truncate text-right text-xs text-muted-foreground">
+          {row.guard.ipGroup === '' ? DASH : formatBytes(row.guard.groupDeliveredBytes)}
+        </span>
+      )
+    case 'suspicion':
+      return <SuspicionCell view={row.guard} />
+    case 'action':
+      return <PeerActionCell view={row.guard} />
   }
 }
 
@@ -100,8 +122,8 @@ function PeerFlag({ country }: { country: string }) {
   )
 }
 
-function Row({ row, layout, columns, t }: { row: PeerRow; layout: PeerLayout; columns: readonly PeerColumn[]; t: Translate }) {
-  const menu = [copyEntry(t('btCopyPeerAddr'), row.addr, null, t)]
+function Row({ row, layout, columns, t, onEvidence }: { row: PeerRow; layout: PeerLayout; columns: readonly PeerColumn[]; t: Translate; onEvidence: (row: PeerRow) => void }) {
+  const menu = [copyEntry(t('btCopyPeerAddr'), row.addr, null, t), ...peerGuardMenu(row, t, onEvidence)]
   const template = columns.map((c) => COLUMN_WIDTH[c]).join(' ')
 
   if (layout === 'card') {
@@ -126,6 +148,7 @@ function Row({ row, layout, columns, t }: { row: PeerRow; layout: PeerLayout; co
             </span>
           )}
         </div>
+        <PeerGuardSummary view={row.guard} />
       </ContextMenuArea>
     )
   }
@@ -146,6 +169,7 @@ function Row({ row, layout, columns, t }: { row: PeerRow; layout: PeerLayout; co
                     {row.client}
                   </span>
                 ) : null}
+                {layout === 'compact' ? <PeerGuardSummary view={row.guard} showAction={false} /> : null}
               </div>
               <RowCopyButton label={t('btCopyPeerAddr')} value={row.addr} doneKey={null} />
             </div>
@@ -177,9 +201,11 @@ export function BtPeersTab({ taskId, state, seeding }: { taskId: string; state: 
   const t = useT()
   const { data, error } = useBtStatus(taskId)
   const { ref, width } = useMeasuredRoot()
-  const layout = peerLayout(width)
-  const columns = peerColumns(layout)
   const { rows } = data ? mapPeerRows(data.peers) : { rows: [] }
+  const guard = hasGuardData(rows)
+  const layout = peerLayout(width, guard)
+  const columns = peerColumns(layout, guard)
+  const [evidenceRow, setEvidenceRow] = useState<PeerRow | null>(null)
   const counts = data?.peerCounts
 
   return (
@@ -198,10 +224,11 @@ export function BtPeersTab({ taskId, state, seeding }: { taskId: string; state: 
         <div className="flex flex-col">
           {layout === 'card' ? null : <Header columns={columns} t={t} />}
           {rows.map((row) => (
-            <Row key={row.key} row={row} layout={layout} columns={columns} t={t} />
+            <Row key={row.key} row={row} layout={layout} columns={columns} t={t} onEvidence={setEvidenceRow} />
           ))}
         </div>
       )}
+      <PeerEvidenceDialog row={evidenceRow} onClose={() => setEvidenceRow(null)} />
     </div>
   )
 }

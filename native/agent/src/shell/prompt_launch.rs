@@ -1,4 +1,4 @@
-//! agent 为待确认交互（外部捕获 / 引擎选择）、下载提示窗口与新版本提醒拉起官方 UI 的记账。
+//! agent 为待确认交互（外部捕获 / 引擎选择）与下载提示窗口拉起官方 UI 的记账。
 //!
 //! 确认拉起是电平触发的：外壳控制循环每一轮（事件、1s 节拍、UI 连接变化、拉起的进程退出）都按
 //! 快照重新判定「有待确认交互且没有 UI 连接」，而不是只在队列由空变非空的那一刻尝试一次。界面
@@ -35,9 +35,6 @@ pub(super) struct UiLaunches {
     task_attempts: u32,
     pending_tasks: VecDeque<String>,
     dropped_tasks: usize,
-    /// 正在为其提醒的新版本，及为它拉起界面的次数。
-    update_version: Option<String>,
-    update_attempts: u32,
 }
 
 impl UiLaunches {
@@ -113,36 +110,6 @@ impl UiLaunches {
         }
     }
 
-    /// 新版本提醒到期且没有 UI 连接时，现在是否应为它拉起界面。同一版本最多尝试
-    /// [`MAX_PROMPT_ATTEMPTS`] 次（桌面程序启动即崩溃时不无限重拉）；版本变化后重新计数。
-    pub(super) fn update_due(&self, now: Instant, version: &str) -> bool {
-        let attempts = if self.update_version.as_deref() == Some(version) {
-            self.update_attempts
-        } else {
-            0
-        };
-        self.running == 0
-            && attempts < MAX_PROMPT_ATTEMPTS
-            && self.hold_until.is_none_or(|until| now >= until)
-    }
-
-    /// 为新版本提醒发起一次拉起（在 spawn 之前登记）。
-    pub(super) fn begin_update(&mut self, now: Instant, version: &str) {
-        if self.update_version.as_deref() == Some(version) {
-            self.update_attempts = self.update_attempts.saturating_add(1);
-        } else {
-            self.update_version = Some(version.to_owned());
-            self.update_attempts = 1;
-        }
-        self.begin(now);
-    }
-
-    /// 提醒不再到期（已跳过 / 稍后提示 / 已安装或没有新版本）：下次到期重新计数。
-    pub(super) fn update_settled(&mut self) {
-        self.update_version = None;
-        self.update_attempts = 0;
-    }
-
     fn begin(&mut self, now: Instant) {
         self.running = self.running.saturating_add(1);
         self.hold(now);
@@ -203,37 +170,6 @@ mod tests {
             launches.begin_prompt(now);
             launches.finished();
         }
-    }
-
-    #[test]
-    fn update_prompt_stops_relaunching_a_crashing_desktop_until_version_or_due_changes() {
-        let start = Instant::now();
-        let mut launches = UiLaunches::default();
-        let mut now = start;
-        for _ in 0..MAX_PROMPT_ATTEMPTS {
-            now += HOLD;
-            assert!(launches.update_due(now, "2.0.0"));
-            launches.begin_update(now, "2.0.0");
-            assert!(
-                !launches.update_due(now + HOLD * 30, "2.0.0"),
-                "single flight"
-            );
-            launches.finished();
-        }
-        now += HOLD;
-        assert!(
-            !launches.update_due(now, "2.0.0"),
-            "capped for the same version"
-        );
-        assert!(
-            launches.update_due(now, "2.0.1"),
-            "a newer version starts over"
-        );
-        launches.update_settled();
-        assert!(
-            launches.update_due(now, "2.0.0"),
-            "next reminder starts over"
-        );
     }
 
     #[test]

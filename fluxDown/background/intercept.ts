@@ -38,6 +38,7 @@ import { sawNetworkRequest } from "./request-cache";
 import { fallbackAfterSendFailure, sendToFluxDown } from "./sender";
 import { getCachedProfiles, getCachedSettings, peekCachedProfiles, peekCachedSettings } from "./settings-cache";
 import { loadServiceWorkerScopes, peekServiceWorkerScopes } from "./sw-scopes";
+import { getTabPageUrl, whenRestored } from "./tab-state";
 import { logError, logWarn } from "@/utils/error-log";
 import { hasDownloadsApi } from "@/utils/platform";
 
@@ -54,6 +55,22 @@ export interface ResponseDownloadInfo {
   ts: number;
 }
 export const responseDownloadCache = new Map<string, ResponseDownloadInfo>();
+
+/**
+ * 发起下载导航的标签页当前页面 URL，只供站点配置（never / always）判定。
+ * 跨域 CDN 下载在来源站 `Referrer-Policy: same-origin`（Nexus Mods 等）时没有 referrer，
+ * downloadItem.referrer 为空；tab-state 记录的页面 URL 不受该策略影响。
+ * 不得当 Referer 发给引擎。
+ */
+function sourcePageUrlOf(urls: readonly (string | undefined)[]): string | undefined {
+  for (const u of urls) {
+    const tabId = u ? responseDownloadCache.get(u)?.tabId : undefined;
+    if (tabId === undefined || tabId < 0) continue;
+    const pageUrl = getTabPageUrl(tabId);
+    if (pageUrl) return pageUrl;
+  }
+  return undefined;
+}
 
 /** 下载 URL 的主机名（TLD 先验）；非法 URL 返回 undefined。 */
 export function urlHost(url: string): string | undefined {
@@ -367,6 +384,7 @@ async function handleResponseCacheHit(
         rc.contentType,
       ) || undefined,
     referrerUrl: originalItem.referrer || undefined,
+    pageUrl: getTabPageUrl(rc.tabId) || undefined,
   };
 
   const intercept = shouldIntercept(itemInfo, settings, await getCachedProfiles());
@@ -507,6 +525,7 @@ async function executeFallbackIntercept(
         mimeType: itemInfo.mime,
         originalUrl,
         origin: "intercept",
+        downloadId,
       })
     ).success;
   } catch (e) {
@@ -586,9 +605,16 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
       (cached && cached.fileSize > 0 ? cached.fileSize : undefined) ??
       -1;
     const filename = downloadItem.filename || cached?.filename || undefined;
-    const referrer = cached?.referrer || undefined;
+    const referrer = downloadItem.referrer || cached?.referrer || undefined;
     return {
-      itemInfo: { url, fileSize, mime, filename, referrerUrl: referrer },
+      itemInfo: {
+        url,
+        fileSize,
+        mime,
+        filename,
+        referrerUrl: referrer,
+        pageUrl: sourcePageUrlOf([url, downloadUrl]),
+      },
       referrer,
     };
   };
@@ -642,6 +668,7 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
           // for request headers and captured form transactions.
           originalUrl: downloadUrl !== url ? url : undefined,
           origin: manual ? undefined : "intercept",
+          downloadId: downloadItem.id,
           channel: manual?.channel,
         })
       ).success;
@@ -677,6 +704,8 @@ const handleDeterminingFilename: DeterminingFilenameListener = (
 
   const resolveWithLoadedSettings = async () => {
     try {
+      // 冷启动：tab-state 快照恢复前页面 URL 为空
+      await whenRestored();
       const settings = await getCachedSettings();
       if (
         !settings.enabled ||
@@ -1015,6 +1044,7 @@ const onDownloadHeadersBlocking = (
     mime: contentType || undefined,
     filename: dispositionFilename || undefined,
     referrerUrl: referrer,
+    pageUrl: getTabPageUrl(details.tabId) || undefined,
   };
   if (!shouldIntercept(itemInfo, settings, profiles)) return undefined;
 

@@ -264,6 +264,7 @@ async fn manual_proxy_routes_index_and_package_and_follows_latest_config() {
             port,
             ..ProxyConfig::default()
         })
+        .await
         .expect("set proxy");
     let client = engine
         .manager
@@ -303,6 +304,7 @@ async fn manual_proxy_routes_index_and_package_and_follows_latest_config() {
             port: next_port,
             ..ProxyConfig::default()
         })
+        .await
         .expect("update proxy");
     let next = engine
         .manager

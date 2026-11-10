@@ -162,9 +162,17 @@ export interface Ed2kServerSubRefreshResponse {
 export const BT_SEED_TIME_UNITS = ['minutes', 'hours', 'days'] as const;
 export const FILE_EXISTS_BEHAVIORS = ['rename', 'overwrite', 'skip', 'ask'] as const;
 export const FILE_MISSING_ACTIONS = ['keep', 'delete'] as const;
+/** 文件哈希算法（`hash_algorithm`、`daemon.task.hash`、任务 `fileHash` 的 `algo`）。 */
+export const HASH_ALGORITHMS = ['md5', 'sha1', 'sha256', 'sha512'] as const;
 export const BT_SEED_LIMIT_OPERATORS = ['or', 'and'] as const;
 export const BT_SEED_THEN_ACTIONS = ['stop', 'delete', 'delete_files'] as const;
 export const BT_MSE_MODES = ['disabled', 'enabled', 'forced'] as const;
+/** 新建 BT 任务的默认选片方式：最稀有优先 / 按顺序下载。 */
+export const BT_PIECE_ORDERS = ['rarest', 'sequential'] as const;
+/** 防吸血规则 / 云名单模式。 */
+export const BT_GUARD_MODES = ['off', 'observe', 'enforce'] as const;
+/** 防吸血：下载中任务的动作上限。 */
+export const BT_GUARD_DOWNLOADING_ACTIONS = ['observe', 'throttle', 'choke', 'ban'] as const;
 export const PROXY_MODES = ['none', 'system', 'manual', 'auto'] as const;
 export const PROXY_TYPES = ['http', 'https', 'socks4', 'socks5'] as const;
 
@@ -230,6 +238,8 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   oneOf('file_missing_action', 'keep', FILE_MISSING_ACTIONS),
   int('completed_record_retention_days', '0', 0, 3650),
   bool('idle_file_scan', 'false'),
+  bool('hash_after_download', 'false'),
+  oneOf('hash_algorithm', 'sha256', HASH_ALGORITHMS),
   text('global_user_agent'),
   text('default_queue_id'),
   readOnly('domain_conn_caps'),
@@ -242,6 +252,9 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   int('bt_port_end', '6891', 1, 65_535),
   oneOf('bt_mse_mode', 'enabled', BT_MSE_MODES),
   text('bt_custom_trackers'),
+  oneOf('bt_piece_order', 'rarest', BT_PIECE_ORDERS),
+  bool('bt_first_last_pieces_first', 'false'),
+  bool('bt_selection_auto_default', 'true'),
   bool('bt_tracker_sub_enabled', 'true'),
   text('bt_tracker_sub_urls'),
   readOnly('bt_tracker_sub_cache'),
@@ -257,6 +270,28 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   oneOf('bt_seed_inactive_time_limit_unit', 'minutes', BT_SEED_TIME_UNITS),
   oneOf('bt_seed_limit_operator', 'or', BT_SEED_LIMIT_OPERATORS),
   oneOf('bt_seed_then_action', 'stop', BT_SEED_THEN_ACTIONS),
+  // BT 防吸血（热更新）
+  bool('bt_guard_enabled', 'true'),
+  oneOf('bt_guard_rule_excessive', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_rerequest', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_rewind', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_lag', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_fingerprint', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_cloud_mode', 'observe', BT_GUARD_MODES),
+  int('bt_guard_excess_ratio_pct', '200', 110, 1000),
+  int('bt_guard_min_torrent_mib', '64', 0, 1_048_576),
+  int('bt_guard_rewind_tolerance_pct', '7', 0, 100),
+  int('bt_guard_throttle_kib', '32', 1, 1_048_576),
+  int('bt_guard_ban_base_hours', '24', 1, 720),
+  int('bt_guard_ban_max_days', '30', 1, 365),
+  oneOf('bt_guard_downloading_max_action', 'throttle', BT_GUARD_DOWNLOADING_ACTIONS),
+  bool('bt_guard_skip_private', 'true'),
+  bool('bt_guard_skip_lan', 'true'),
+  int('bt_guard_ipv6_prefix', '64', 48, 128),
+  text('bt_guard_filter_urls'),
+  bool('bt_guard_cloud_enabled', 'true'),
+  // 设备本地：不进云同步
+  bool('bt_guard_report_enabled', 'false'),
   // ED2K
   bool('ed2k_enable_kad', 'true'),
   bool('ed2k_enable_upnp', 'true'),
@@ -281,7 +316,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   // 受管组件手动路径（空 = 自动解析）
   text('component.ffmpeg.path'),
   text('component.ytdlp.path'),
-  // 组件下载镜像基址（空 = 直连 GitHub）；只接受 https
+  // 组件下载与插件市场（索引 / 插件包）的 GitHub 镜像基址（空 = 直连 GitHub）；只接受 https
   text('component_mirror_base'),
   // 日志目录总大小上限（MB）
   int('log_max_size_mb', '10', 1, 1024),

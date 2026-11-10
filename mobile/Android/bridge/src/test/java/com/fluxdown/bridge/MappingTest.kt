@@ -10,6 +10,7 @@ import com.fluxdown.core.host.ImportProgress
 import com.fluxdown.core.host.ImportRetry
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.ImportUpdate
+import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.FileExistsAction
 import com.fluxdown.core.model.QueueOrderEntry
 import com.fluxdown.core.model.PluginCandidate
@@ -22,6 +23,7 @@ import com.fluxdown.core.update.UpdateFailure
 import com.fluxdown.core.update.UpdateManualReason
 import com.fluxdown.core.update.UpdatePhase
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -71,6 +73,15 @@ class MappingTest {
         assertEquals(6L, task.sourceBytes.total)
         assertEquals(1_700_000_000L, task.createdAt)
         assertEquals(TaskStatus.Unknown, task(status = 99, seeding = 99).toCore().status)
+        assertFalse(task.btSequential)
+        assertFalse(task.btFirstLastPiecesFirst)
+    }
+
+    @Test
+    fun taskDtoMapsPiecePickingFlags() {
+        val task = task(status = 1, seeding = 0, btSequential = true, btFirstLastPiecesFirst = true).toCore()
+        assertTrue(task.btSequential)
+        assertTrue(task.btFirstLastPiecesFirst)
     }
 
     @Test
@@ -119,7 +130,8 @@ class MappingTest {
     fun selectionOutcomesRoundTrip() {
         val outcomes = listOf(
             SelectionOutcome.Hls(2),
-            SelectionOutcome.Bt(listOf(0, 3)),
+            SelectionOutcome.Bt(listOf(0, 3), saveDir = "/new"),
+            SelectionOutcome.Bt(listOf(1), saveDir = null),
             SelectionOutcome.Variant(1),
             SelectionOutcome.Plugin("com.x.a", remember = true),
             SelectionOutcome.Plugin("com.x.b", remember = false),
@@ -171,6 +183,15 @@ class MappingTest {
             ),
             dto.toCore(),
         )
+    }
+
+    @Test
+    fun btKindKeepsSaveDir() {
+        val dto = SelectionKindDto.Bt(
+            files = listOf(BtFileDto(0, "a.bin", 12L)),
+            saveDir = "/data",
+        )
+        assertEquals(SelectionKind.Bt(listOf(BtFile(0, "a.bin", 12)), "/data"), dto.toCore())
     }
 
     @Test
@@ -333,11 +354,17 @@ class MappingTest {
         sections = emptyMap(),
     )
 
-    private fun task(status: Int, seeding: Int) = TaskDto(
+    private fun task(
+        status: Int,
+        seeding: Int,
+        btSequential: Boolean = false,
+        btFirstLastPiecesFirst: Boolean = false,
+    ) = TaskDto(
         taskId = "t1", url = "https://example.com/a.bin", originUrl = "", fileName = "a.bin", saveDir = "/data",
         status = status, downloadedBytes = 5, totalBytes = 10, errorMessage = "", createdAt = 1_700_000_000,
         completedAt = 0, queueId = "main", groupId = "", rssSourceId = "", fileMissing = false, autoRoute = "",
         sourceCdn = 1, sourceProxy = 2, sourceNic = 3, uploadedBytes = 0, seedingStatus = seeding,
         seedingMessage = "", seedingTimeSecs = 0,
+        btSequential = btSequential, btFirstLastPiecesFirst = btFirstLastPiecesFirst,
     )
 }

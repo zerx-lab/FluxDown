@@ -52,6 +52,9 @@ pub struct DaemonService {
     ytdlp_installing: AtomicBool,
     actor: DaemonActorHandle,
     demo_url: Option<String>,
+    /// BT 防吸血宿主（`daemon.bt.guard.*`）；未接线时这些方法答 `unavailable`。
+    #[cfg(feature = "bt")]
+    bt_guard: Option<Arc<fluxdown_engine::bt_guard::BtGuardHost>>,
 }
 
 impl DaemonService {
@@ -94,6 +97,8 @@ impl DaemonService {
             ytdlp_installing: AtomicBool::new(false),
             actor,
             demo_url: None,
+            #[cfg(feature = "bt")]
+            bt_guard: None,
         }
     }
 
@@ -101,6 +106,14 @@ impl DaemonService {
     #[must_use]
     pub fn with_demo_url(mut self, demo_url: Option<String>) -> Self {
         self.demo_url = demo_url;
+        self
+    }
+
+    /// 接入 BT 防吸血宿主（`daemon.bt.guard.*` 的数据面）。
+    #[cfg(feature = "bt")]
+    #[must_use]
+    pub fn with_bt_guard(mut self, bt_guard: Arc<fluxdown_engine::bt_guard::BtGuardHost>) -> Self {
+        self.bt_guard = Some(bt_guard);
         self
     }
 
@@ -340,6 +353,15 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_SET_PIECE_PICKING => {
+                let params = parse_params::<fluxdown_protocol::SetTaskPiecePickingParams>(params)?;
+                self.execute_unit(ActorOperation::SetTaskPiecePicking {
+                    task_id: params.task_id,
+                    sequential: params.sequential,
+                    first_last_pieces_first: params.first_last_pieces_first,
+                })
+                .await
+            }
             method::DAEMON_TASK_VERIFY => {
                 let params = parse_params::<IdParams>(params)?;
                 match self
@@ -348,6 +370,28 @@ impl DaemonService {
                     .await
                 {
                     Ok(ActorResult::TaskVerify(result)) => to_value(result),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_TASK_HASH => {
+                let params = parse_params::<fluxdown_protocol::DaemonTaskHashParams>(params)?;
+                let algorithm = fluxdown_engine::file_hash::HashAlgorithm::parse(&params.algorithm)
+                    .ok_or_else(|| {
+                        invalid_argument(
+                            "algorithm",
+                            &format!("unsupported hash algorithm: {}", params.algorithm),
+                        )
+                    })?;
+                match self
+                    .actor
+                    .execute(ActorOperation::HashTask {
+                        task_id: params.task_id,
+                        algorithm,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::TaskHash(result)) => to_value(result),
                     Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
                     Err(error) => Err(actor_error(error)),
                 }
@@ -1133,6 +1177,55 @@ impl DaemonService {
                 })
             }
             #[cfg(feature = "plugins")]
+            method::DAEMON_PLUGIN_INSTALL_PRIVATE => {
+                let params = parse_params::<fluxdown_protocol::PluginInstallPrivateParams>(params)?;
+                if params.entry.channel.as_deref() != Some("private") {
+                    return Err(invalid_argument(
+                        "entry",
+                        "private plugin entry must declare channel \"private\"",
+                    ));
+                }
+                let bytes = self
+                    .blobs
+                    .read(&params.blob_id, BlobKind::Plugin)
+                    .await
+                    .map_err(|error| invalid_argument("blobId", &error.to_string()))?;
+                let entry = fluxdown_engine_protocol::market_entry_from_dto(params.entry);
+                let identity = fluxdown_engine::plugin::install_private_package(
+                    self.plugin_manager()?,
+                    bytes,
+                    &entry,
+                )
+                .await
+                .map_err(|error| market_error(&error))?;
+                self.blobs
+                    .consume(&params.blob_id, BlobKind::Plugin)
+                    .await
+                    .map_err(|error| internal_error(format!("{error:#}")))?;
+                let missing_components = self.plugin_missing_components(&identity).await;
+                to_value(fluxdown_protocol::InstalledPlugin {
+                    identity,
+                    missing_components,
+                })
+            }
+            #[cfg(feature = "plugins")]
+            method::DAEMON_PLUGIN_REVOKE_PRIVATE => {
+                let params = parse_params::<fluxdown_protocol::PluginRevokePrivateParams>(params)?;
+                let revoked: std::collections::HashSet<(String, String)> = params
+                    .revoked
+                    .into_iter()
+                    .map(|item| (item.plugin_id, item.version))
+                    .collect();
+                // 撤回结果由引擎经 `PluginsChanged` / `PluginAutoDisabled` 广播，这里无需再发。
+                let scope: Option<std::collections::HashSet<String>> =
+                    params.scope.map(|scope| scope.into_iter().collect());
+                self.plugin_manager()?
+                    .apply_private_revocations(&revoked, scope.as_ref())
+                    .await
+                    .map_err(|error| internal_error(format!("{error:#}")))?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(feature = "plugins")]
             method::DAEMON_PLUGIN_IGNORE_RETRY => {
                 let params = parse_params::<TaskIdParams>(params)?;
                 if self.task(&params.task_id).is_none() {
@@ -1359,6 +1452,31 @@ impl DaemonService {
                     .map_err(|error| internal_error(format!("{error:#}")))?;
                 to_value(fluxdown_engine_protocol::egress_plan_to_dto(plan))
             }
+            #[cfg(feature = "bt")]
+            method::DAEMON_BT_GUARD_STATE
+            | method::DAEMON_BT_GUARD_ENTRIES_LIST
+            | method::DAEMON_BT_GUARD_ENTRIES_ADD
+            | method::DAEMON_BT_GUARD_ENTRIES_REMOVE
+            | method::DAEMON_BT_GUARD_EVENTS_LIST
+            | method::DAEMON_BT_GUARD_EXPORT
+            | method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH
+            | method::DAEMON_BT_GUARD_CLOUD_APPLY
+            | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN => {
+                self.bt_guard_call(is_local_agent, method_name, params)
+                    .await
+            }
+            #[cfg(not(feature = "bt"))]
+            method::DAEMON_BT_GUARD_STATE
+            | method::DAEMON_BT_GUARD_ENTRIES_LIST
+            | method::DAEMON_BT_GUARD_ENTRIES_ADD
+            | method::DAEMON_BT_GUARD_ENTRIES_REMOVE
+            | method::DAEMON_BT_GUARD_EVENTS_LIST
+            | method::DAEMON_BT_GUARD_EXPORT
+            | method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH
+            | method::DAEMON_BT_GUARD_CLOUD_APPLY
+            | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN => Err(unsupported_error(
+                "daemon was built without BitTorrent support",
+            )),
             method::DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH => {
                 match self
                     .actor
@@ -2062,13 +2180,13 @@ fn component_name(component: fluxdown_protocol::ComponentKind) -> &'static str {
 impl DaemonService {
     async fn runtime_stats(&self) -> fluxdown_protocol::DaemonRuntimeStatsDto {
         let (save_dir, active_tasks, pending_tasks, stats) = self.events.inspect(|snapshot| {
-            let save_dir = snapshot
-                .config
-                .values
-                .get("default_save_dir")
-                .cloned()
-                .filter(|path| !path.trim().is_empty())
-                .unwrap_or_else(fluxdown_engine::user_dirs::download_dir_or_cwd);
+            let save_dir = crate::disk_free::stats_save_dir(
+                snapshot
+                    .config
+                    .values
+                    .get("default_save_dir")
+                    .map(String::as_str),
+            );
             let active = snapshot
                 .tasks
                 .iter()
@@ -2486,6 +2604,17 @@ fn actor_error(error: ActorCallError) -> RpcErrorObject {
                     .with_reason(fluxdown_protocol::ErrorReason::TaskStateConflict),
             )
         }
+        ActorCallError::Operation(ActorError::TaskFilesKept { in_use, message }) => {
+            let reason = if in_use {
+                fluxdown_protocol::ErrorReason::TaskFilesInUse
+            } else {
+                fluxdown_protocol::ErrorReason::TaskFilesNotDeleted
+            };
+            RpcErrorObject::application(
+                message,
+                RpcErrorData::new(ApplicationErrorCode::Internal, false).with_reason(reason),
+            )
+        }
     }
 }
 
@@ -2494,7 +2623,7 @@ fn require_local_agent(is_local_agent: bool) -> Result<(), RpcErrorObject> {
         Ok(())
     } else {
         Err(RpcErrorObject::application(
-            "migration methods are restricted to the local agent",
+            "this method is restricted to the local agent",
             RpcErrorData::new(ApplicationErrorCode::Unauthorized, false),
         ))
     }
@@ -2599,6 +2728,15 @@ fn market_error(error: &fluxdown_engine::plugin::MarketError) -> RpcErrorObject 
             false,
             ErrorReason::PluginPackageInvalid,
         ),
+        // 无细分原因：UI 正常路径不会走到（私有来源的插件不显示公开更新），退回「冲突」通用文案。
+        MarketError::PrivateSource(_) => {
+            let message = error.to_string();
+            fluxdown_engine::log_warn!("[plugin-market] {message}");
+            return RpcErrorObject::application(
+                message,
+                RpcErrorData::new(ApplicationErrorCode::Conflict, false),
+            );
+        }
     };
     let message = error.to_string();
     fluxdown_engine::log_warn!("[plugin-market] {message}");
@@ -2642,6 +2780,11 @@ fn unsupported_error(message: &str) -> RpcErrorObject {
 #[cfg(feature = "plugins")]
 #[path = "plugin_host_rpc.rs"]
 mod plugin_host_rpc;
+
+/// BT 防吸血 RPC（`daemon.bt.guard.*`）。同样作为子模块编译。
+#[cfg(feature = "bt")]
+#[path = "bt_guard_rpc.rs"]
+mod bt_guard_rpc;
 
 #[cfg(test)]
 mod tests {
@@ -2692,6 +2835,31 @@ mod tests {
         assert!(validate_queue_schedule(&schedule("main", false, "", "")).is_ok());
         assert!(validate_queue_stop("later").is_ok());
         assert!(validate_queue_schedule(&schedule("later", true, "08:00", "23:00")).is_ok());
+    }
+
+    /// 删除被拒（任务已保留）：按是否被占用给出不同 reason，message 保留系统原因。
+    #[test]
+    fn kept_task_deletion_maps_to_file_reasons() {
+        let reason = |in_use: bool| {
+            let error = super::actor_error(super::ActorCallError::Operation(
+                super::ActorError::TaskFilesKept {
+                    in_use,
+                    message: "task kept: os error 32".to_owned(),
+                },
+            ));
+            assert_eq!(error.message, "task kept: os error 32");
+            let data = error.data.expect("application error data");
+            assert!(!data.retryable);
+            data.reason
+        };
+        assert_eq!(
+            reason(true),
+            Some(fluxdown_protocol::ErrorReason::TaskFilesInUse)
+        );
+        assert_eq!(
+            reason(false),
+            Some(fluxdown_protocol::ErrorReason::TaskFilesNotDeleted)
+        );
     }
 
     fn create_many(edit: impl FnOnce(&mut Value)) -> DaemonCreateTasksParams {
@@ -2973,6 +3141,7 @@ mod tests {
         method_name == fluxdown_protocol::method::DAEMON_GROUP_RESOLVE_PREVIEW
             || method_name.starts_with("daemon.plugin.")
             || method_name.starts_with("daemon.component.")
+            || (cfg!(not(feature = "bt")) && method_name.starts_with("daemon.bt.guard."))
     }
 }
 

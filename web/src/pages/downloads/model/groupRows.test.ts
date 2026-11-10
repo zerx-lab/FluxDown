@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { GroupDto, TaskDto } from '../../../lib/rpc'
 import { CategoryIndex, builtinDefaults } from './categories'
 import { SELECTION_ALL } from './filters'
-import { buildVisibleRows, dirCollapseKey, dominantCategory, groupsMatchingQuery, selectGroupOnClick } from './groupRows'
+import { buildVisibleRows, dirCollapseKey, dominantCategory, groupsMatchingQuery, keysInVisualSpan, selectGroupOnClick } from './groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './groupRows'
 import { RowEngine } from './rowEngine'
 import type { TaskRow } from './rowEngine'
@@ -237,6 +237,22 @@ describe('group click selection', () => {
     expect(add).toMatchObject({ multiSelect: true, focusedGroup: null })
     const remove = selectGroupOnClick(state(['l:x', 'l:a', 'l:b']), 'g', members, sequence, { shift: false, secondary: true })
     expect([...remove.selected]).toEqual(['l:x'])
+  })
+
+  test('drag span keeps tasks in row order and expands a group row inside the span', () => {
+    const group = {
+      type: 'group',
+      orderedKeys: () => ['l:a', 'l:b'],
+    } as unknown as GroupFolderRow
+    const rows: VisibleRow[] = [
+      { type: 'task', key: 'l:x', view: {} as DownloadTaskView },
+      { type: 'bucket', key: 's', label: 'S', count: 1, collapsed: false },
+      group,
+      { type: 'member', key: 'l:b', row: { type: 'task', key: 'l:b', view: {} as DownloadTaskView }, depth: 1 },
+      { type: 'task', key: 'l:y', view: {} as DownloadTaskView },
+    ]
+    expect(keysInVisualSpan(rows, 4, 0)).toEqual(['l:x', 'l:a', 'l:b', 'l:y'])
+    expect(keysInVisualSpan(rows, 3, 3)).toEqual(['l:b'])
   })
 
   test('shift click ranges from the anchor to the last member over the visible sequence', () => {

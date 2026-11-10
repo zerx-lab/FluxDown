@@ -67,10 +67,14 @@ public enum SettingsCatalog {
 
     public static let fileExistsBehaviors = ["rename", "overwrite", "skip", "ask"]
     public static let fileMissingActions = ["keep", "delete"]
+    public static let hashAlgorithms = ["md5", "sha1", "sha256", "sha512"]
     public static let btSeedTimeUnits = ["minutes", "hours", "days"]
     public static let btSeedLimitOperators = ["or", "and"]
     public static let btSeedThenActions = ["stop", "delete", "delete_files"]
+    public static let btGuardModes = ["off", "observe", "enforce"]
+    public static let btGuardDownloadingActions = ["observe", "throttle", "choke", "ban"]
     public static let btMseModes = ["disabled", "enabled", "forced"]
+    public static let btPieceOrders = ["rarest", "sequential"]
     public static let proxyModes = ["none", "system", "manual", "auto"]
     public static let proxyTypes = ["http", "https", "socks4", "socks5"]
     public static let themeModes = ["system", "light", "dark"]
@@ -97,6 +101,8 @@ public enum SettingsCatalog {
         daemon("file_missing_action", .choice(fileMissingActions), "keep"),
         daemon("completed_record_retention_days", .integer(min: 0, max: 3650), "0"),
         daemon("idle_file_scan", .bool, "false"),
+        daemon("hash_after_download", .bool, "false"),
+        daemon("hash_algorithm", .choice(hashAlgorithms), "sha256"),
         daemon("global_user_agent", .text, ""),
         daemon("default_queue_id", .text, ""),
         daemon("domain_conn_caps", .readOnly, ""),
@@ -109,6 +115,9 @@ public enum SettingsCatalog {
         daemon("bt_port_end", .integer(min: 1, max: 65_535), "6891"),
         daemon("bt_mse_mode", .choice(btMseModes), "enabled"),
         daemon("bt_custom_trackers", .text, ""),
+        daemon("bt_piece_order", .choice(btPieceOrders), "rarest"),
+        daemon("bt_first_last_pieces_first", .bool, "false"),
+        daemon("bt_selection_auto_default", .bool, "true"),
         daemon("bt_tracker_sub_enabled", .bool, "true"),
         daemon("bt_tracker_sub_urls", .text, ""),
         daemon("bt_tracker_sub_cache", .readOnly, ""),
@@ -124,6 +133,27 @@ public enum SettingsCatalog {
         daemon("bt_seed_inactive_time_limit_unit", .choice(btSeedTimeUnits), "minutes"),
         daemon("bt_seed_limit_operator", .choice(btSeedLimitOperators), "or"),
         daemon("bt_seed_then_action", .choice(btSeedThenActions), "stop"),
+        // BT 防吸血（热更新；`bt_guard_report_enabled` 设备本地不同步）
+        daemon("bt_guard_enabled", .bool, "true"),
+        daemon("bt_guard_rule_excessive", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_rerequest", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_rewind", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_lag", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_rule_fingerprint", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_cloud_mode", .choice(btGuardModes), "observe"),
+        daemon("bt_guard_excess_ratio_pct", .integer(min: 110, max: 1000), "200"),
+        daemon("bt_guard_min_torrent_mib", .integer(min: 0, max: 1_048_576), "64"),
+        daemon("bt_guard_rewind_tolerance_pct", .integer(min: 0, max: 100), "7"),
+        daemon("bt_guard_throttle_kib", .integer(min: 1, max: 1_048_576), "32"),
+        daemon("bt_guard_ban_base_hours", .integer(min: 1, max: 720), "24"),
+        daemon("bt_guard_ban_max_days", .integer(min: 1, max: 365), "30"),
+        daemon("bt_guard_downloading_max_action", .choice(btGuardDownloadingActions), "throttle"),
+        daemon("bt_guard_skip_private", .bool, "true"),
+        daemon("bt_guard_skip_lan", .bool, "true"),
+        daemon("bt_guard_ipv6_prefix", .integer(min: 48, max: 128), "64"),
+        daemon("bt_guard_filter_urls", .text, ""),
+        daemon("bt_guard_cloud_enabled", .bool, "true"),
+        daemon("bt_guard_report_enabled", .bool, "false"),
         // ED2K
         daemon("ed2k_enable_kad", .bool, "true"),
         daemon("ed2k_enable_upnp", .bool, "true"),
@@ -209,7 +239,7 @@ public enum SettingsCatalog {
     /// 自定义主题集合的范围键：只承载分组 / 本机专属开关，从不承载值（逐主题键 `appearance.custom_themes.<id>`）。
     public static let customThemesScopeKey = "appearance.custom_themes"
 
-    /// daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，29 项）。
+    /// daemon 存储键 → 云同步键（`SYNC_SETTING_SPECS` 中 owner = Daemon，51 项）。
     public static let daemonSyncNames: [String: String] = [
         "max_concurrent_tasks": "download.max_concurrent_tasks",
         "default_segments": "download.default_segments",
@@ -227,6 +257,8 @@ public enum SettingsCatalog {
         "bt_enable_upnp": "bt.enable_upnp",
         "bt_enable_utp": "bt.enable_utp",
         "bt_custom_trackers": "bt.custom_trackers",
+        "bt_piece_order": "bt.piece_order",
+        "bt_first_last_pieces_first": "bt.first_last_pieces_first",
         "bt_tracker_sub_enabled": "bt.tracker_sub_enabled",
         "bt_tracker_sub_urls": "bt.tracker_sub_urls",
         "bt_seed_ratio_limit": "bt.seed_ratio_limit",
@@ -236,6 +268,25 @@ public enum SettingsCatalog {
         "bt_seed_limit_operator": "bt.seed_limit_operator",
         "bt_seed_then_action": "bt.seed_then_action",
         "bt_seed_max_active": "bt.seed_max_active",
+        "bt_guard_enabled": "bt.guard.enabled",
+        "bt_guard_rule_excessive": "bt.guard.rule_excessive",
+        "bt_guard_rule_rerequest": "bt.guard.rule_rerequest",
+        "bt_guard_rule_rewind": "bt.guard.rule_rewind",
+        "bt_guard_rule_lag": "bt.guard.rule_lag",
+        "bt_guard_rule_fingerprint": "bt.guard.rule_fingerprint",
+        "bt_guard_cloud_mode": "bt.guard.cloud_mode",
+        "bt_guard_excess_ratio_pct": "bt.guard.excess_ratio_pct",
+        "bt_guard_min_torrent_mib": "bt.guard.min_torrent_mib",
+        "bt_guard_rewind_tolerance_pct": "bt.guard.rewind_tolerance_pct",
+        "bt_guard_throttle_kib": "bt.guard.throttle_kib",
+        "bt_guard_ban_base_hours": "bt.guard.ban_base_hours",
+        "bt_guard_ban_max_days": "bt.guard.ban_max_days",
+        "bt_guard_downloading_max_action": "bt.guard.downloading_max_action",
+        "bt_guard_skip_private": "bt.guard.skip_private",
+        "bt_guard_skip_lan": "bt.guard.skip_lan",
+        "bt_guard_ipv6_prefix": "bt.guard.ipv6_prefix",
+        "bt_guard_filter_urls": "bt.guard.filter_urls",
+        "bt_guard_cloud_enabled": "bt.guard.cloud_enabled",
         "ed2k_enable_kad": "ed2k.enable_kad",
         "ed2k_enable_upnp": "ed2k.enable_upnp",
         "ed2k_server_list": "ed2k.server_list",

@@ -3,7 +3,6 @@ pub(crate) mod file_icon;
 pub(crate) mod group_visuals;
 pub(crate) mod segment_progress;
 pub(crate) mod selection_bar;
-pub(crate) mod share_badge;
 pub(crate) mod sidebar;
 pub(crate) mod sidebar_layout;
 pub(crate) mod status_bar;

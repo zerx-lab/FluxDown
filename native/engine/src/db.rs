@@ -14,6 +14,12 @@ use thiserror::Error;
 use crate::model::{GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
 
+mod bt_guard;
+pub use bt_guard::{
+    BT_GUARD_EVENT_RING, BtGuardBatch, BtGuardEntryOp, BtGuardEntryQuery, BtGuardEntryRow,
+    BtGuardEventQuery, BtGuardEventRow, BtGuardLedgerRow, BtGuardPrune, BtGuardStrikeRow,
+};
+
 #[derive(Error, Debug)]
 pub enum DbError {
     #[error("database error: {0}")]
@@ -122,6 +128,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
+    file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
     name_inferred INTEGER NOT NULL DEFAULT 0,
     resp_name TEXT NOT NULL DEFAULT '',
@@ -141,7 +148,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     seed_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_inactive_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_upload_limit_bps INTEGER NOT NULL DEFAULT 0,
-    seed_limits_exempt INTEGER NOT NULL DEFAULT 0
+    seed_limits_exempt INTEGER NOT NULL DEFAULT 0,
+    bt_sequential INTEGER NOT NULL DEFAULT 0,
+    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -328,6 +337,60 @@ CREATE TABLE IF NOT EXISTS task_create_batches (
     created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_create_batches_created ON task_create_batches(created_at);
+-- BT 防吸血（bt_guard）：过滤条目 / strike / 账本 / 事件环（语义见 bt_guard 模块）。
+-- 新表一律 CREATE IF NOT EXISTS：旧库升级即建，无需列迁移。
+CREATE TABLE IF NOT EXISTS bt_guard_entries (
+    id BIGINT PRIMARY KEY,
+    layer TEXT NOT NULL,
+    cidr TEXT NOT NULL,
+    action TEXT NOT NULL,
+    rule TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_bt_guard_entries_layer ON bt_guard_entries(layer, source);
+CREATE TABLE IF NOT EXISTS bt_guard_strikes (
+    ip_group TEXT PRIMARY KEY,
+    strikes BIGINT NOT NULL,
+    last_strike_at BIGINT NOT NULL,
+    last_ban_until BIGINT NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS bt_guard_ledger (
+    info_hash TEXT NOT NULL,
+    ip_group TEXT NOT NULL,
+    delivered_bytes BIGINT NOT NULL,
+    dup_bytes BIGINT NOT NULL,
+    delivered_bits BLOB NOT NULL,
+    claimed_bits BLOB NOT NULL,
+    rerequests BIGINT NOT NULL,
+    probed_at BIGINT NOT NULL DEFAULT 0,
+    first_seen BIGINT NOT NULL,
+    last_seen BIGINT NOT NULL,
+    lag_cleared_at BIGINT NOT NULL DEFAULT 0,
+    excess_baseline BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (info_hash, ip_group)
+);
+CREATE INDEX IF NOT EXISTS idx_bt_guard_ledger_seen ON bt_guard_ledger(last_seen);
+CREATE TABLE IF NOT EXISTS bt_guard_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at BIGINT NOT NULL,
+    kind TEXT NOT NULL,
+    ip_group TEXT NOT NULL DEFAULT '',
+    info_hash TEXT NOT NULL DEFAULT '',
+    rule TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bt_guard_events_group ON bt_guard_events(ip_group);
+-- 云名单文档元数据（单行 JSON：sequence / 时间 / 署名 / clientRules），随 flush 批次写入。
+CREATE TABLE IF NOT EXISTS bt_guard_cloud_meta (
+    id INTEGER PRIMARY KEY,
+    data TEXT NOT NULL
+);
 ";
 
 /// 建表 DDL（PostgreSQL 方言）。
@@ -358,6 +421,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     orig_last_modified TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     file_missing INTEGER NOT NULL DEFAULT 0,
+    file_hash TEXT NOT NULL DEFAULT '',
     range_verified INTEGER NOT NULL DEFAULT 1,
     name_inferred INTEGER NOT NULL DEFAULT 0,
     resp_name TEXT NOT NULL DEFAULT '',
@@ -377,7 +441,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     seed_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_inactive_time_limit_minutes INTEGER NOT NULL DEFAULT -2,
     seed_upload_limit_bps BIGINT NOT NULL DEFAULT 0,
-    seed_limits_exempt INTEGER NOT NULL DEFAULT 0
+    seed_limits_exempt INTEGER NOT NULL DEFAULT 0,
+    bt_sequential INTEGER NOT NULL DEFAULT 0,
+    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -563,6 +629,58 @@ CREATE TABLE IF NOT EXISTS task_create_batches (
     created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_create_batches_created ON task_create_batches(created_at);
+-- BT 防吸血（语义见 SQLITE_SCHEMA；字节列 BYTEA）。
+CREATE TABLE IF NOT EXISTS bt_guard_entries (
+    id BIGINT PRIMARY KEY,
+    layer TEXT NOT NULL,
+    cidr TEXT NOT NULL,
+    action TEXT NOT NULL,
+    rule TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_bt_guard_entries_layer ON bt_guard_entries(layer, source);
+CREATE TABLE IF NOT EXISTS bt_guard_strikes (
+    ip_group TEXT PRIMARY KEY,
+    strikes BIGINT NOT NULL,
+    last_strike_at BIGINT NOT NULL,
+    last_ban_until BIGINT NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS bt_guard_ledger (
+    info_hash TEXT NOT NULL,
+    ip_group TEXT NOT NULL,
+    delivered_bytes BIGINT NOT NULL,
+    dup_bytes BIGINT NOT NULL,
+    delivered_bits BYTEA NOT NULL,
+    claimed_bits BYTEA NOT NULL,
+    rerequests BIGINT NOT NULL,
+    probed_at BIGINT NOT NULL DEFAULT 0,
+    first_seen BIGINT NOT NULL,
+    last_seen BIGINT NOT NULL,
+    lag_cleared_at BIGINT NOT NULL DEFAULT 0,
+    excess_baseline BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (info_hash, ip_group)
+);
+CREATE INDEX IF NOT EXISTS idx_bt_guard_ledger_seen ON bt_guard_ledger(last_seen);
+CREATE TABLE IF NOT EXISTS bt_guard_events (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    at BIGINT NOT NULL,
+    kind TEXT NOT NULL,
+    ip_group TEXT NOT NULL DEFAULT '',
+    info_hash TEXT NOT NULL DEFAULT '',
+    rule TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bt_guard_events_group ON bt_guard_events(ip_group);
+CREATE TABLE IF NOT EXISTS bt_guard_cloud_meta (
+    id INTEGER PRIMARY KEY,
+    data TEXT NOT NULL
+);
 ";
 
 /// SQLite 连接级 PRAGMA（在 after_connect 钩子中对每个新连接执行）。
@@ -574,15 +692,14 @@ CREATE INDEX IF NOT EXISTS idx_task_create_batches_created ON task_create_batche
 /// checkpoint 时同步；进程崩溃不丢已提交事务，仅整机掉电可能丢失最近
 /// 数秒的提交（数据库本身不会损坏）。下载进度/任务元数据可由续传重建，
 /// 换来批量导入与进度落库的 fsync 开销归零。
-/// cache_size=-16384（16MiB，负值单位为 KiB）：23 万任务级别的库里 UUID 主键
-/// 的 B 树随机访问，512KiB 页缓存几乎必然未命中并反复 pread；16MiB 足以容纳
-/// 常用索引的热页。内存取舍：该值是「每连接」上限且按需增长（空库不预占），
-/// 连接池上限 5 条，最坏占用 = 5 × 16MiB，对桌面/NAS/手机均可接受，
-/// 因此不按平台区分，避免出现两套行为。
+/// cache_size（负值单位为 KiB）：23 万任务级别的库里 UUID 主键的 B 树随机访问，
+/// 512KiB 页缓存几乎必然未命中并反复 pread；标准档 16MiB 足以容纳常用索引的热页。
+/// 该值是「每连接」上限且按需增长（空库不预占），连接池上限 5 条；按本机有效内存
+/// 分档（[`crate::mem_budget`]：<1.5GiB 取 4MiB、<3GiB 取 8MiB），在 after_connect
+/// 中单独设置。
 const SQLITE_PRAGMAS: &str = "PRAGMA journal_mode=WAL;\
  PRAGMA synchronous=NORMAL;\
  PRAGMA busy_timeout=5000;\
- PRAGMA cache_size=-16384;\
  PRAGMA temp_store=MEMORY;\
  PRAGMA mmap_size=0;\
  PRAGMA wal_autocheckpoint=1000;";
@@ -710,6 +827,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         ignore_tls_errors: row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0) != 0,
         file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
         completed_at: row.try_get("completed_at").unwrap_or_default(),
+        file_hash: row.try_get("file_hash").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
         queue_order: row.try_get("queue_order").unwrap_or(0),
         uploaded_bytes: row.try_get("uploaded_bytes").unwrap_or_default(),
@@ -724,6 +842,11 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
             .try_get("seed_inactive_time_limit_minutes")
             .unwrap_or(-2),
         seed_upload_limit_bps: row.try_get("seed_upload_limit_bps").unwrap_or(0),
+        bt_sequential: row.try_get::<i32, _>("bt_sequential").unwrap_or(0) != 0,
+        bt_first_last_pieces_first: row
+            .try_get::<i32, _>("bt_first_last_pieces_first")
+            .unwrap_or(0)
+            != 0,
         referrer: row.try_get("referrer").unwrap_or_default(),
         group_id: row.try_get("group_id").unwrap_or_default(),
         rss_source_id: row.try_get("rss_source_id").unwrap_or_default(),
@@ -737,7 +860,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
 
 /// 新建任务的完整落库行（[`Db::insert_new_tasks`]）。
 ///
@@ -778,6 +901,9 @@ pub struct NewTaskRow<'a> {
     pub request_method: &'a str,
     /// `.torrent` 字节；非空时同事务写入 `torrent_files`。
     pub torrent_file_bytes: &'a [u8],
+    /// BT 选片（新任务按设置默认值落库）：按顺序下载 / 先下载首尾文件块。
+    pub bt_sequential: bool,
+    pub bt_first_last_pieces_first: bool,
 }
 
 /// 批量建任务的幂等记录（[`Db::insert_new_tasks`] 与任务行同事务写入）。
@@ -1258,6 +1384,13 @@ impl Db {
                 Box::pin(async move {
                     if conn.backend_name() == "SQLite" {
                         sqlx::raw_sql(SQLITE_PRAGMAS).execute(&mut *conn).await?;
+                        let cache = format!(
+                            "PRAGMA cache_size=-{};",
+                            crate::mem_budget::current().sqlite_cache_kib
+                        );
+                        sqlx::raw_sql(AssertSqlSafe(cache))
+                            .execute(&mut *conn)
+                            .await?;
                     }
                     Ok(())
                 })
@@ -1306,6 +1439,26 @@ impl Db {
         sqlx::raw_sql(schema).execute(&self.pool).await?;
 
         // --- Schema migrations（幂等，只为升级旧库；新库建表已含全量列） ---
+        // bt_guard：strike 衰减改按「最近一次封禁到期时刻」起算。
+        self.add_column_if_missing(
+            "bt_guard_strikes",
+            "last_ban_until",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        // bt_guard 账本：lag 清除时刻 / excessive 封禁基线。
+        self.add_column_if_missing(
+            "bt_guard_ledger",
+            "lag_cleared_at",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "bt_guard_ledger",
+            "excess_baseline",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
         // 订阅 provider 扩展：旧 RSS 源默认归入内置 `rss` provider。
         self.add_column_if_missing("rss_sources", "provider_id", "TEXT NOT NULL DEFAULT 'rss'")
             .await?;
@@ -1384,6 +1537,9 @@ impl Db {
         // 完成（status→3）的时刻，插件 onDone 等 hook 后处理不计入；任务
         // 重新开始下载（status→0/1/5）时清空，供重下后重新记录。
         self.add_column_if_missing("tasks", "completed_at", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        // 落盘文件的哈希记录（`algo=hex`，空 = 未计算）；维护规则见 `update_task_status`。
+        self.add_column_if_missing("tasks", "file_hash", "TEXT NOT NULL DEFAULT ''")
             .await?;
         // 队列内启动顺序（0 = 未显式排序，按 created_at 先来先启动）。
         self.add_column_if_missing("tasks", "queue_order", "INTEGER NOT NULL DEFAULT 0")
@@ -1504,6 +1660,16 @@ impl Db {
         // 用户再次停止做种）。不进 `TASK_COLUMNS`，只经专用访问器读写。
         self.add_column_if_missing("tasks", "seed_limits_exempt", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        // BT 选片方式（对齐 qBittorrent 右键「按顺序下载」「先下载首尾文件块」；
+        // 都为 0 = 最稀有优先）。add 时烘焙，live 句柄经 SharedBtSession 热改。
+        self.add_column_if_missing("tasks", "bt_sequential", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing(
+            "tasks",
+            "bt_first_last_pieces_first",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
         // 队列级上传限速（KB/s；0 = 不限）。BT add/re-add 时与任务级
         // 覆盖一起折算成 librqbit 上传上限，见 download_manager。
         self.add_column_if_missing("queues", "upload_limit_kbps", "BIGINT NOT NULL DEFAULT 0")
@@ -1701,9 +1867,10 @@ impl Db {
                 "INSERT INTO tasks (id, url, file_name, name_inferred, save_dir, segments, status, error_message, \
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, cookies, referrer, \
                  extra_headers, origin_url, audio_url, resolver_plugin_id, group_id, resolver_item, unattended, \
-                 bt_selected_files, resolver_choice_pending, category_route, request_method) \
+                 bt_selected_files, resolver_choice_pending, category_route, request_method, \
+                 bt_sequential, bt_first_last_pieces_first) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, \
-                 $20, $21, $22, $23, $24, $25, $26, $27)",
+                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)",
             )
             .bind(row.id)
             .bind(row.url)
@@ -1732,6 +1899,8 @@ impl Db {
             .bind(i32::from(row.resolver_choice_pending))
             .bind(row.category_route)
             .bind(row.request_method)
+            .bind(i32::from(row.bt_sequential))
+            .bind(i32::from(row.bt_first_last_pieces_first))
             .execute(&mut *tx)
             .await?;
             if !row.torrent_file_bytes.is_empty() {
@@ -1989,6 +2158,8 @@ impl Db {
     ///   不含 hook 耗时；重复写 3（幂等竞态）不会覆盖首次记录。
     /// - `status ∈ {0, 1, 5}`（重新排队/下载/准备）→ 清空，重下后重新记录。
     /// - 其余状态（暂停/错误）保持不变。
+    ///
+    /// `file_hash` 描述的是上一次落盘的文件：同样在 `status ∈ {0, 1, 5}` 时清空。
     pub async fn update_task_status(
         &self,
         id: &str,
@@ -2001,7 +2172,8 @@ impl Db {
                      WHEN $1 = 3 AND completed_at = '' THEN $3
                      WHEN $1 IN (0, 1, 5) THEN ''
                      ELSE completed_at
-                 END
+                 END,
+                 file_hash = CASE WHEN $1 IN (0, 1, 5) THEN '' ELSE file_hash END
              WHERE id = $4",
         )
         .bind(status)
@@ -2014,7 +2186,7 @@ impl Db {
     }
 
     /// 批量更新任务状态（同一状态写入多任务），`error_message` 统一清空；
-    /// `completed_at` 维护规则与 [`Db::update_task_status`] 一致。批量操作
+    /// `completed_at` / `file_hash` 维护规则与 [`Db::update_task_status`] 一致。批量操作
     /// （停止队列/批量暂停/批量恢复排队）专用：N 任务一条（分块）SQL，
     /// 取代逐任务 N 次 UPDATE。
     ///
@@ -2051,7 +2223,8 @@ impl Db {
                          WHEN $1 = 3 AND completed_at = '' THEN $2
                          WHEN $1 IN (0, 1, 5) THEN ''
                          ELSE completed_at
-                     END
+                     END,
+                     file_hash = CASE WHEN $1 IN (0, 1, 5) THEN '' ELSE file_hash END
                  WHERE id IN ({placeholders})"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql))
@@ -2063,6 +2236,36 @@ impl Db {
             query.execute(&self.pool).await?;
         }
         Ok(())
+    }
+
+    /// 记录任务落盘文件的哈希（`algo=hex`）。下载器在校验和校验通过时调用，此时
+    /// 任务尚在下载态，随后的完成写入（status→3）保留该值。
+    pub async fn set_task_file_hash(&self, id: &str, file_hash: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET file_hash = $1 WHERE id = $2")
+            .bind(file_hash)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 写回一次完成后的哈希计算结果：仅当任务仍是计算开始时那一次完成（status = 3 且
+    /// `completed_at` 未变）时写入。返回是否写入；期间被重新下载 / 删除则为 `false`。
+    pub async fn commit_task_file_hash(
+        &self,
+        id: &str,
+        completed_at: &str,
+        file_hash: &str,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET file_hash = $1 WHERE id = $2 AND status = 3 AND completed_at = $3",
+        )
+        .bind(file_hash)
+        .bind(id)
+        .bind(completed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// 更新任务的「文件已丢失」标志（文件跟踪）。仅当任务仍处于 completed
@@ -2279,6 +2482,25 @@ impl Db {
         .bind(seed_time_limit_minutes.max(-2))
         .bind(inactive_time_limit_minutes.max(-2))
         .bind(upload_limit_bps.max(0))
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 写入任务的 BT 选片方式（`None` = 该项不变）。
+    pub async fn set_task_piece_picking(
+        &self,
+        task_id: &str,
+        sequential: Option<bool>,
+        first_last_pieces_first: Option<bool>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET bt_sequential = COALESCE($1, bt_sequential), \
+             bt_first_last_pieces_first = COALESCE($2, bt_first_last_pieces_first) WHERE id = $3",
+        )
+        .bind(sequential.map(i32::from))
+        .bind(first_last_pieces_first.map(i32::from))
         .bind(task_id)
         .execute(&self.pool)
         .await?;
@@ -3499,6 +3721,8 @@ impl Db {
             // MSE 三态逃生开关（disabled/enabled/forced），无 UI，经 config API/CLI 可设。
             ("bt_mse_mode", "enabled"),
             ("bt_custom_trackers", ""),
+            ("bt_piece_order", "rarest"),
+            ("bt_first_last_pieces_first", "false"),
             // Tracker 订阅：默认启用，订阅社区流行的两个精选列表
             // （XIU2/TrackersListCollection + ngosang/trackerslist）。
             // cache 由订阅刷新流程写入，updated_at=0 表示从未更新。
@@ -5378,13 +5602,16 @@ impl Db {
 
     /// 更换任务下载源地址（`change_task_url` 专用）并标记 `source_changed`；不触碰
     /// 分段/进度行（`task_segments` 按 `task_id` 索引，与 `url` 无关）。续传时由
-    /// [`Self::settle_source_change`] 决定已下进度能否沿用。
+    /// [`Self::settle_source_change`] 决定已下进度能否沿用。用户换上的是普通链接：同时
+    /// 清掉浏览器接管时记录的非 GET 方法（`request_method`），新地址按 GET 续传。
     pub async fn update_task_url(&self, task_id: &str, url: &str) -> Result<(), DbError> {
-        sqlx::query("UPDATE tasks SET url = $1, source_changed = 1 WHERE id = $2")
-            .bind(url)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE tasks SET url = $1, source_changed = 1, request_method = '' WHERE id = $2",
+        )
+        .bind(url)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -6427,6 +6654,36 @@ mod tests {
             .expect("task exists");
         assert_eq!(task.seed_ratio_limit_milli, -2);
         assert_eq!(task.seed_upload_limit_bps, 0);
+
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn piece_picking_update_leaves_the_omitted_option_alone() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "t-bt").await;
+        let load = || async {
+            let task = db
+                .load_task_by_id("t-bt")
+                .await
+                .expect("load task")
+                .expect("task exists");
+            (task.bt_sequential, task.bt_first_last_pieces_first)
+        };
+        assert_eq!(load().await, (false, false), "rarest first by default");
+
+        db.set_task_piece_picking("t-bt", Some(true), None)
+            .await
+            .expect("set sequential");
+        assert_eq!(load().await, (true, false));
+        db.set_task_piece_picking("t-bt", None, Some(true))
+            .await
+            .expect("set first and last");
+        assert_eq!(load().await, (true, true));
+        db.set_task_piece_picking("t-bt", Some(false), None)
+            .await
+            .expect("clear sequential");
+        assert_eq!(load().await, (false, true));
 
         close_test_db(&db, dir).await;
     }
@@ -7576,6 +7833,70 @@ mod tests {
         close_test_db(&db, dir).await;
     }
 
+    /// file_hash 生命周期契约：
+    /// - 下载中由校验和校验写入的记录在完成（→3）后保留；暂停/错误（2/4）保持；
+    /// - 重新下载（0/1/5，单任务与批量）清空；
+    /// - 完成后的计算结果只在任务仍是同一次完成（status=3 且 completed_at 未变）时写回。
+    #[tokio::test]
+    async fn file_hash_survives_completion_and_clears_on_restart() {
+        let (db, dir) = open_test_db().await;
+        insert_task_with_size(&db, "h1", 1000).await;
+        let load = |db: Db| async move {
+            db.load_task_by_id("h1")
+                .await
+                .expect("load")
+                .expect("task exists")
+        };
+
+        db.update_task_status("h1", 1, "")
+            .await
+            .expect("downloading");
+        db.set_task_file_hash("h1", "md5=aa")
+            .await
+            .expect("verified");
+        db.update_task_status("h1", 3, "").await.expect("completed");
+        let done = load(db.clone()).await;
+        assert_eq!(done.file_hash, "md5=aa");
+        db.update_task_status("h1", 4, "boom").await.expect("error");
+        assert_eq!(load(db.clone()).await.file_hash, "md5=aa");
+
+        db.update_task_status("h1", 3, "")
+            .await
+            .expect("completed again");
+        assert!(
+            !db.commit_task_file_hash("h1", "stale-generation", "sha1=bb")
+                .await
+                .expect("commit stale"),
+            "a different completion must not be overwritten"
+        );
+        assert!(
+            db.commit_task_file_hash("h1", &done.completed_at, "sha1=bb")
+                .await
+                .expect("commit"),
+        );
+        assert_eq!(load(db.clone()).await.file_hash, "sha1=bb");
+
+        db.update_task_status("h1", 1, "").await.expect("restart");
+        assert_eq!(load(db.clone()).await.file_hash, "");
+        assert!(
+            !db.commit_task_file_hash("h1", &done.completed_at, "sha1=bb")
+                .await
+                .expect("commit after restart"),
+            "results of a restarted task must be discarded"
+        );
+
+        db.update_task_status("h1", 3, "")
+            .await
+            .expect("completed third");
+        db.set_task_file_hash("h1", "md5=cc").await.expect("set");
+        db.update_tasks_status_batch(&["h1".to_owned()], 0)
+            .await
+            .expect("batch requeue");
+        assert_eq!(load(db.clone()).await.file_hash, "");
+
+        close_test_db(&db, dir).await;
+    }
+
     /// update_tasks_status_batch：一条（分块）SQL 批量置状态——
     /// - 列出的任务全部更新、error_message 统一清空；
     /// - completed_at 维护规则与单任务 update_task_status 一致
@@ -8026,6 +8347,505 @@ mod tests {
             .is_empty()
         );
         db.delete_config("pg_smoke_key").await.expect("clean cfg");
+    }
+
+    /// pg 版 bt_guard 往返：BIGINT（> 4 GiB）/ BYTEA / NULL 过期 / ON CONFLICT upsert / 事件环。
+    /// 用时间戳派生的唯一 id / infohash / 规则名，对共享库无副作用（事件行除外，受环形上限约束）。
+    #[tokio::test]
+    #[ignore = "requires a running PostgreSQL instance (set PG_TEST_URL)"]
+    async fn pg_smoke_bt_guard_roundtrip() {
+        let url = std::env::var("PG_TEST_URL")
+            .unwrap_or_else(|_| "postgres://postgres:pw@localhost/postgres".to_owned());
+        let db = Db::connect(&url).await.expect("connect pg");
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let id_base = 9_000_000_000_000_i64 + i64::try_from(tag % 1_000_000_000).unwrap_or(0) * 4;
+        let hash = format!("{tag:040x}");
+        let rule = format!("pg_smoke_{tag}");
+        let row = |id: i64, expires: Option<i64>| BtGuardEntryRow {
+            id,
+            layer: "manual".to_owned(),
+            cidr: "203.0.113.7/32".to_owned(),
+            action: "ban".to_owned(),
+            rule: rule.clone(),
+            reason: format!("pg smoke {tag}"),
+            evidence: "{}".to_owned(),
+            source: "user".to_owned(),
+            created_at: 1_800_000_000,
+            expires_at: expires,
+        };
+        let bits: Vec<u8> = (0..=255u8).collect();
+        let batch = BtGuardBatch {
+            entry_ops: vec![
+                BtGuardEntryOp::Upsert(row(id_base, None)),
+                BtGuardEntryOp::Upsert(row(id_base + 1, Some(4_000_000_000))),
+                BtGuardEntryOp::Upsert(row(id_base, Some(5_000_000_000))),
+            ],
+            strikes: vec![BtGuardStrikeRow {
+                ip_group: format!("pg-smoke-{tag}"),
+                strikes: 2,
+                last_strike_at: 1_800_000_000,
+                last_ban_until: 1_800_086_400,
+            }],
+            ledgers: vec![BtGuardLedgerRow {
+                info_hash: hash.clone(),
+                ip_group: "203.0.113.7".to_owned(),
+                delivered_bytes: 5_000_000_000,
+                dup_bytes: 4_999_999_999,
+                delivered_bits: bits.clone(),
+                claimed_bits: vec![0xff, 0x00],
+                rerequests: 2,
+                probed_at: 0,
+                first_seen: 1_800_000_000,
+                last_seen: 1_800_000_000,
+                lag_cleared_at: 1_800_000_500,
+                excess_baseline: 4_000_000_000,
+            }],
+            events: (0..3)
+                .map(|i| BtGuardEventRow {
+                    id: 0,
+                    at: 1_800_000_000 + i,
+                    kind: "enforced".to_owned(),
+                    ip_group: "203.0.113.7".to_owned(),
+                    info_hash: hash.clone(),
+                    rule: rule.clone(),
+                    mode: "enforce".to_owned(),
+                    action: "ban".to_owned(),
+                    detail: "{}".to_owned(),
+                })
+                .collect(),
+            ..BtGuardBatch::default()
+        };
+        db.bt_guard_apply_batch(&batch).await.expect("apply");
+
+        let (total, rows) = db
+            .bt_guard_list_entries(&BtGuardEntryQuery {
+                rule: Some(rule.clone()),
+                limit: 10,
+                ..BtGuardEntryQuery::default()
+            })
+            .await
+            .expect("list entries");
+        assert_eq!(total, 2, "upsert on the same id must not duplicate");
+        assert_eq!(
+            rows[1].expires_at,
+            Some(5_000_000_000),
+            "second upsert wins"
+        );
+        assert_eq!(rows[0].expires_at, Some(4_000_000_000));
+        let none_expiry = db
+            .bt_guard_apply_batch(&BtGuardBatch {
+                entry_ops: vec![BtGuardEntryOp::Upsert(row(id_base + 2, None))],
+                ..BtGuardBatch::default()
+            })
+            .await;
+        none_expiry.expect("NULL expires_at");
+        let (_, rows) = db
+            .bt_guard_list_entries(&BtGuardEntryQuery {
+                query: Some(format!("PG SMOKE {tag}")),
+                limit: 10,
+                ..BtGuardEntryQuery::default()
+            })
+            .await
+            .expect("ilike query");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].expires_at, None);
+
+        let ledger = db
+            .bt_guard_load_ledger(1_800_000_000)
+            .await
+            .expect("ledger");
+        let mine = ledger
+            .iter()
+            .find(|r| r.info_hash == hash)
+            .expect("my ledger row");
+        assert_eq!(mine.delivered_bytes, 5_000_000_000);
+        assert_eq!(mine.delivered_bits, bits);
+        assert_eq!(mine.lag_cleared_at, 1_800_000_500);
+        assert_eq!(mine.excess_baseline, 4_000_000_000);
+        let strikes = db.bt_guard_load_strikes().await.expect("strikes");
+        assert!(
+            strikes
+                .iter()
+                .any(|s| s.ip_group == format!("pg-smoke-{tag}") && s.strikes == 2)
+        );
+        let (events, _) = db
+            .bt_guard_list_events(&BtGuardEventQuery {
+                rule: Some(rule.clone()),
+                limit: 10,
+                ..BtGuardEventQuery::default()
+            })
+            .await
+            .expect("events");
+        assert_eq!(events, 3);
+
+        db.bt_guard_apply_batch(&BtGuardBatch {
+            entry_ops: (0..3)
+                .map(|i| BtGuardEntryOp::Delete(id_base + i))
+                .collect(),
+            strike_deletes: vec![format!("pg-smoke-{tag}")],
+            ledger_deletes: vec![(hash, "203.0.113.7".to_owned())],
+            ..BtGuardBatch::default()
+        })
+        .await
+        .expect("clean");
+    }
+
+    /// flush 失败（连接池已关）必须保留待办写入，换一个可用库重试后全部落盘。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn bt_guard_flush_failure_requeues_pending_writes() {
+        use crate::bt_guard::{BtGuard, BtGuardConfig, FilterAction, NewEntry};
+        let (broken, broken_dir) = open_test_db().await;
+        let guard = BtGuard::new(BtGuardConfig::default());
+        guard
+            .add_entry(NewEntry {
+                cidr: "5.5.5.5".to_owned(),
+                action: FilterAction::Ban,
+                duration_secs: None,
+                reason: "t".to_owned(),
+            })
+            .expect("add");
+        guard.apply_filter_file("https://f.example/a", "7.7.7.0/24\n");
+        assert!(guard.needs_flush());
+        broken.pool.close().await;
+        let waker = Arc::new(tokio::sync::Notify::new());
+        guard.set_waker(Arc::clone(&waker));
+        assert!(guard.flush(&broken).await.is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), waker.notified())
+                .await
+                .is_ok(),
+            "a failed flush re-queues work and wakes the host"
+        );
+        assert!(
+            guard.needs_flush(),
+            "a failed flush must keep the pending writes"
+        );
+
+        let (healthy, healthy_dir) = open_test_db().await;
+        guard.flush(&healthy).await.expect("retry");
+        assert!(!guard.needs_flush());
+        let rows = healthy.bt_guard_load_entries(0).await.expect("entries");
+        assert_eq!(rows.len(), 2, "manual ban + file entry both landed");
+        let (events, _) = healthy
+            .bt_guard_list_events(&BtGuardEventQuery {
+                limit: 10,
+                ..BtGuardEventQuery::default()
+            })
+            .await
+            .expect("events");
+        assert_eq!(events, 2, "events queued before the failure are not lost");
+        close_test_db(&broken, broken_dir).await;
+        close_test_db(&healthy, healthy_dir).await;
+    }
+
+    /// 加载失败（账本表不可读）但库内最大条目 id 可查：新条目的 id 必须接在库内最大 id 之后，
+    /// 不得从 1 重新分配而覆盖库内已有条目。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn bt_guard_failed_load_still_allocates_ids_past_stored_entries() {
+        use crate::bt_guard::{BtGuard, BtGuardConfig, FilterAction, NewEntry};
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let rows = (1..=5)
+            .map(|id| BtGuardEntryRow {
+                id,
+                layer: "manual".to_owned(),
+                cidr: format!("203.0.113.{id}/32"),
+                action: "ban".to_owned(),
+                rule: "manual".to_owned(),
+                reason: format!("stored {id}"),
+                evidence: String::new(),
+                source: "user".to_owned(),
+                created_at: 1_800_000_000,
+                expires_at: None,
+            })
+            .map(BtGuardEntryOp::Upsert)
+            .collect();
+        db.bt_guard_apply_batch(&BtGuardBatch {
+            entry_ops: rows,
+            ..BtGuardBatch::default()
+        })
+        .await
+        .expect("seed");
+        sqlx::query("DROP TABLE bt_guard_ledger")
+            .execute(&db.pool)
+            .await
+            .expect("break the ledger table");
+
+        let guard = BtGuard::new(BtGuardConfig::default());
+        assert!(
+            guard.load(&db).await.is_err(),
+            "load must report the failure"
+        );
+        let added = guard
+            .add_entry(NewEntry {
+                cidr: "198.51.100.9".to_owned(),
+                action: FilterAction::Ban,
+                duration_secs: None,
+                reason: "new".to_owned(),
+            })
+            .expect("ids are still safe: the stored max id is known");
+        assert!(
+            added.id > 5,
+            "new id {} must not collide with stored ids",
+            added.id
+        );
+        sqlx::query(
+            "CREATE TABLE bt_guard_ledger (info_hash TEXT NOT NULL, ip_group TEXT NOT NULL, \
+             delivered_bytes BIGINT NOT NULL, dup_bytes BIGINT NOT NULL, \
+             delivered_bits BLOB NOT NULL, claimed_bits BLOB NOT NULL, rerequests BIGINT NOT NULL, \
+             probed_at BIGINT NOT NULL DEFAULT 0, first_seen BIGINT NOT NULL, \
+             last_seen BIGINT NOT NULL, lag_cleared_at BIGINT NOT NULL DEFAULT 0, \
+             excess_baseline BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (info_hash, ip_group))",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("repair the ledger table");
+        guard.flush(&db).await.expect("flush");
+        let stored = db.bt_guard_load_entries(0).await.expect("entries");
+        assert_eq!(stored.len(), 6, "no stored entry was overwritten");
+        assert!(stored.iter().any(|r| r.id == 3 && r.reason == "stored 3"));
+    }
+
+    /// 加载失败且连库内最大条目 id 也确认不了：禁止产生需落库的新条目，`add_entry` 返回错误，
+    /// flush 不写条目表（不会覆盖库内行）。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn bt_guard_failed_load_without_known_max_id_blocks_entry_writes() {
+        use crate::bt_guard::{BtGuard, BtGuardConfig, FilterAction, GuardError, NewEntry};
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        sqlx::query("DROP TABLE bt_guard_entries")
+            .execute(&db.pool)
+            .await
+            .expect("break the entries table");
+
+        let guard = BtGuard::new(BtGuardConfig::default());
+        assert!(guard.load(&db).await.is_err());
+        let result = guard.add_entry(NewEntry {
+            cidr: "198.51.100.9".to_owned(),
+            action: FilterAction::Ban,
+            duration_secs: None,
+            reason: "new".to_owned(),
+        });
+        assert!(
+            matches!(result, Err(GuardError::StoreUnavailable(_))),
+            "{result:?}"
+        );
+        assert_eq!(guard.counts().manual, 0, "nothing was added in memory");
+
+        // 自动封禁 / 订阅等内部路径产生的条目只留在内存：flush 丢弃条目写入、不覆盖库内行，
+        // 其余内容（事件）照常落库。
+        sqlx::query(
+            "CREATE TABLE bt_guard_entries (id INTEGER PRIMARY KEY, layer TEXT NOT NULL, \
+             cidr TEXT NOT NULL, action TEXT NOT NULL, rule TEXT NOT NULL, \
+             reason TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, \
+             created_at BIGINT NOT NULL, expires_at BIGINT)",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("repair");
+        guard.apply_filter_file("https://f.example/a", "7.7.7.0/24\n");
+        guard
+            .flush(&db)
+            .await
+            .expect("entry writes are dropped, the rest of the batch still lands");
+        assert!(!guard.needs_flush());
+        assert!(
+            db.bt_guard_load_entries(0)
+                .await
+                .expect("entries")
+                .is_empty(),
+            "no entry row was written while ids are unknown"
+        );
+        let (events, _) = db
+            .bt_guard_list_events(&BtGuardEventQuery {
+                limit: 10,
+                ..BtGuardEventQuery::default()
+            })
+            .await
+            .expect("events");
+        assert_eq!(events, 1, "the filter_applied event still landed");
+
+        // 成功的重新加载解除封锁。
+        guard.load(&db).await.expect("reload");
+        guard
+            .add_entry(NewEntry {
+                cidr: "198.51.100.9".to_owned(),
+                action: FilterAction::Ban,
+                duration_secs: None,
+                reason: "new".to_owned(),
+            })
+            .expect("writes are allowed again");
+    }
+
+    /// 启动加载失败期间：内存里的账本 / strike 不是库内状态的延续，不得覆盖库内记录
+    /// （事件照常落库）；重新加载成功后状态以库为准并解除门控。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn bt_guard_failed_load_gates_ledger_and_strike_writes_until_reload() {
+        use crate::bt_guard::{BtGuard, BtGuardConfig, GuardCtx, GuardEvent, IpGroup, RuleMode};
+        const NOW: i64 = 1_800_000_000;
+        let hash = [7u8; 20];
+        let ctx = |ip: &str| GuardCtx {
+            info_hash: hash,
+            addr: std::net::SocketAddr::new(ip.parse().expect("ip"), 6881),
+            private: false,
+            total_length: 100 << 20,
+            piece_length: 1 << 20,
+            num_pieces: 100,
+            we_are_seeding: true,
+        };
+        let request = |piece: u32| GuardEvent::Request {
+            piece,
+            begin: 0,
+            length: 16384,
+            peer_claims_piece: true,
+        };
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.bt_guard_apply_batch(&BtGuardBatch {
+            strikes: vec![BtGuardStrikeRow {
+                ip_group: "1.2.3.4".to_owned(),
+                strikes: 3,
+                last_strike_at: NOW - 10,
+                last_ban_until: NOW + 100,
+            }],
+            ledgers: vec![BtGuardLedgerRow {
+                info_hash: hex::encode(hash),
+                ip_group: "1.2.3.4".to_owned(),
+                delivered_bytes: 5_000_000,
+                dup_bytes: 0,
+                delivered_bits: vec![0xff],
+                claimed_bits: vec![0xff],
+                rerequests: 0,
+                probed_at: 0,
+                first_seen: NOW - 100,
+                last_seen: NOW - 10,
+                lag_cleared_at: 0,
+                excess_baseline: 0,
+            }],
+            ..BtGuardBatch::default()
+        })
+        .await
+        .expect("seed");
+        // load 的最后一个查询失败：此时内存状态尚未被替换。
+        sqlx::query("DROP TABLE bt_guard_cloud_meta")
+            .execute(&db.pool)
+            .await
+            .expect("break the meta table");
+
+        let cfg = BtGuardConfig {
+            rule_rerequest: RuleMode::Enforce,
+            ..BtGuardConfig::default()
+        };
+        let guard = BtGuard::with_clock(cfg, Arc::new(|| NOW));
+        assert!(guard.load(&db).await.is_err());
+        assert!(guard.load_failed());
+        // 加载失败期间同一个组再犯：内存里 strike=1、账本从零开始。
+        let bad = ctx("1.2.3.4");
+        guard.on_event_at(&bad, request(1), NOW);
+        guard.on_event_at(&bad, request(2), NOW);
+        assert!(guard.is_banned("1.2.3.4".parse().expect("ip")));
+        sqlx::query(
+            "CREATE TABLE bt_guard_cloud_meta (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("repair");
+        guard.flush_all(&db).await.expect("flush");
+        let strikes = db.bt_guard_load_strikes().await.expect("strikes");
+        assert_eq!(strikes.len(), 1);
+        assert_eq!(strikes[0].strikes, 3, "stored strike is not overwritten");
+        let ledgers = db.bt_guard_load_ledger(0).await.expect("ledger");
+        assert_eq!(ledgers.len(), 1);
+        assert_eq!(
+            ledgers[0].delivered_bytes, 5_000_000,
+            "stored ledger is not overwritten"
+        );
+        let (events, _) = db
+            .bt_guard_list_events(&BtGuardEventQuery {
+                limit: 10,
+                ..BtGuardEventQuery::default()
+            })
+            .await
+            .expect("events");
+        assert!(events >= 1, "events are still persisted");
+        assert!(!guard.needs_flush_all(), "gated marks are discarded");
+
+        // 重新加载成功：状态来自库，门控解除。
+        guard.load(&db).await.expect("reload");
+        assert!(!guard.load_failed());
+        let group: IpGroup = "1.2.3.4".parse().expect("group");
+        assert_eq!(guard.strikes_of(&group), 3);
+        assert_eq!(guard.group_delivered_bytes(&hash, &group), Some(5_000_000));
+        let other = ctx("5.6.7.8");
+        guard.on_event_at(
+            &other,
+            GuardEvent::Uploaded {
+                piece: 0,
+                begin: 0,
+                length: 16384,
+            },
+            NOW,
+        );
+        guard.flush_all(&db).await.expect("flush after reload");
+        let ledgers = db.bt_guard_load_ledger(0).await.expect("ledger");
+        assert!(
+            ledgers.iter().any(|r| r.ip_group == "5.6.7.8"),
+            "ledger writes resume after a successful load"
+        );
+    }
+
+    /// 账本被 LRU 淘汰（排队删除）后又重建，期间一次落库失败被还原：最终库中必须有新账本。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn bt_guard_rebuilt_ledger_survives_a_failed_flush_restore() {
+        use crate::bt_guard::{BtGuard, BtGuardConfig, GuardCtx, GuardEvent};
+        const NOW: i64 = 1_800_000_000;
+        let ip = |i: u32| format!("23.0.{}.{}", i / 256, i % 256);
+        let ctx = |i: u32| GuardCtx {
+            info_hash: [9u8; 20],
+            addr: std::net::SocketAddr::new(ip(i).parse().expect("ip"), 6881),
+            private: false,
+            total_length: 100_000 << 20,
+            piece_length: 1 << 20,
+            num_pieces: 100_000,
+            we_are_seeding: true,
+        };
+        let upload = |length: u32| GuardEvent::Uploaded {
+            piece: 0,
+            begin: 0,
+            length,
+        };
+        let healthy = Db::connect("sqlite::memory:").await.expect("healthy db");
+        let broken = Db::connect("sqlite::memory:").await.expect("broken db");
+        let guard = BtGuard::with_clock(BtGuardConfig::default(), Arc::new(|| NOW + 5000));
+        // 332 组 = 该规模种子的账本上限；全部落库后干净。
+        for i in 0..332u32 {
+            guard.on_event_at(&ctx(i), upload(16384), NOW + i64::from(i));
+        }
+        guard.flush_all(&healthy).await.expect("flush");
+        // 组 0 被淘汰（干净 → 排队删除），本次落库在坏库上失败并被还原。
+        guard.on_event_at(&ctx(332), upload(16384), NOW + 1000);
+        broken.pool.close().await;
+        assert!(guard.flush_all(&broken).await.is_err());
+        // 组 0 回来，账本从零重建；再向好库落库。
+        guard.on_event_at(&ctx(0), upload(32768), NOW + 1001);
+        guard.flush_all(&healthy).await.expect("retry");
+        let rows = healthy.bt_guard_load_ledger(0).await.expect("ledger");
+        let rebuilt = rows
+            .iter()
+            .find(|r| r.ip_group == ip(0))
+            .expect("rebuilt ledger exists");
+        assert_eq!(rebuilt.delivered_bytes, 32768);
     }
 
     // -----------------------------------------------------------------------
@@ -8791,6 +9611,8 @@ mod tests {
             category_route: "",
             request_method: "",
             torrent_file_bytes: &[],
+            bt_sequential: false,
+            bt_first_last_pieces_first: false,
         }
     }
 

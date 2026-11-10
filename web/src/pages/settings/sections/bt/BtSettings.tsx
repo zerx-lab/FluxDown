@@ -1,4 +1,4 @@
-// BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种（GPUI `sections/bt.rs`）。
+// BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种、防吸血（设置 / 封禁名单 / 事件日志）（GPUI `sections/bt.rs`）。
 
 import { useT } from '../../../../i18n'
 import { daemonConfigField } from '../../../../lib/rpc'
@@ -19,23 +19,43 @@ import {
   useDaemonValue,
 } from '../../kit'
 import { ListEditorRow, SubscriptionStatusRow } from '../subscription'
+import { GuardBansTab } from './guard/GuardBans'
+import { GuardEventsTab } from './guard/GuardEvents'
+import { GuardSettingsTab } from './guard/GuardSettings'
 
 function BasicTab({ btEnabled }: { btEnabled: boolean }) {
   const t = useT()
   return (
-    <SettingsSection title={t('settingsTabGeneral')} subtitle={t('btSettingsRestartHint')}>
-      <DaemonSwitchRow configKey="bt_enabled" titleKey="btEnabled" descKey="btEnabledDesc" />
+    <>
+      <SettingsSection title={t('settingsTabGeneral')} subtitle={t('btSettingsRestartHint')}>
+        <DaemonSwitchRow configKey="bt_enabled" titleKey="btEnabled" descKey="btEnabledDesc" />
+        {btEnabled ? (
+          <>
+            <DaemonSwitchRow configKey="bt_enable_dht" titleKey="btEnableDht" descKey="btEnableDhtDesc" />
+            <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
+            <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />
+            <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
+            <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
+            <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
+          </>
+        ) : null}
+      </SettingsSection>
       {btEnabled ? (
-        <>
-          <DaemonSwitchRow configKey="bt_enable_dht" titleKey="btEnableDht" descKey="btEnableDhtDesc" />
-          <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
-          <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />
-          <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
-          <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
-          <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
-        </>
+        <SettingsSection title={t('btNewTasksSection')}>
+          <DaemonEnumRow configKey="bt_piece_order" titleKey="btPieceOrder" descKey="btPieceOrderDesc" labelPrefix="btPieceOrder" />
+          <DaemonSwitchRow
+            configKey="bt_first_last_pieces_first"
+            titleKey="btFirstLastPiecesFirstDefault"
+            descKey="btFirstLastPiecesFirstDefaultDesc"
+          />
+          <DaemonSwitchRow
+            configKey="bt_selection_auto_default"
+            titleKey="btSelectionAutoDefault"
+            descKey="btSelectionAutoDefaultDesc"
+          />
+        </SettingsSection>
       ) : null}
-    </SettingsSection>
+    </>
   )
 }
 
@@ -143,6 +163,9 @@ export function BtSettings() {
     tabs.push(
       { id: 'tracker', label: t('settingsTabTracker'), content: <TrackerTab /> },
       { id: 'seeding', label: t('settingsTabSeeding'), content: <SeedingTab /> },
+      { id: 'guard', label: t('btGuardTab'), content: <GuardSettingsTab /> },
+      { id: 'guardBans', label: t('btGuardTabBans'), content: <GuardBansTab /> },
+      { id: 'guardEvents', label: t('btGuardTabEvents'), content: <GuardEventsTab /> },
     )
   }
   return (

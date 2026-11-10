@@ -111,10 +111,17 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Check: DesktopIconAlreadyExists
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec
+; Setup started elevated ("Run as administrator", an elevated winget): runasoriginaluser has no
+; original user to fall back to, so a direct launch would hand the administrator token to the
+; desktop and the agent it starts, whose pipes the browser relay then cannot open (#951 / #787).
+; `fluxdown-agent --launch-desktop` starts the desktop unelevated through the shell instead
+; (native/agent/src/platform/elevation.rs).
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec; Check: not IsAdmin
+Filename: "{app}\{#MyAgentExeName}"; Parameters: "--launch-desktop"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Check: IsAdmin
 ; Silent (auto-)update: relaunch the UI. `--after-update` makes the desktop wait for the
 ; previous instance to finish exiting instead of forwarding activation to it.
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--after-update"; Flags: nowait skipifdoesntexist skipifnotsilent runasoriginaluser
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--after-update"; Flags: nowait skipifdoesntexist skipifnotsilent runasoriginaluser; Check: not IsAdmin
+Filename: "{app}\{#MyAgentExeName}"; Parameters: "--launch-desktop --after-update"; Flags: nowait skipifdoesntexist skipifnotsilent; Check: IsAdmin
 
 [Registry]
 ; Autostart launches the resident agent (tray), same value the agent writes itself
@@ -381,7 +388,9 @@ end;
 { PrepareToInstall force-kills every FluxDown process before the legacy
   migration. When that migration aborts a silent (auto-)update, nothing would
   bring the app back: the agent that started setup has already exited. Start
-  whichever install is still there so the user is not left without FluxDown. }
+  whichever install is still there so the user is not left without FluxDown.
+  This runs before [Files], so the agent on disk is the previous release that
+  does not know `--launch-desktop`: launch the desktop directly. }
 procedure RelaunchAfterAbortedUpdate;
 var
   ResultCode: Integer;

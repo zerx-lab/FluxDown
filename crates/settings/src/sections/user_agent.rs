@@ -79,125 +79,131 @@ pub(crate) fn row(ctx: &SectionContext) -> SettingsRow {
     let description = ctx.t("userAgentDesc");
     let render_title = title.clone();
     let render_description = description.clone();
-    let mut row = SettingsRow::custom(move |disabled, key, window: &mut Window, cx: &mut App| {
-        let tokens = active_theme(cx).tokens();
-        let current = store.read(cx).daemon_str(UA_KEY);
-        let preset = detect_preset(&current);
-        let custom_active = store
-            .read(cx)
-            .transient("ua_custom_mode")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-            || preset == "custom";
+    let mut row = SettingsRow::custom_field(
+        Some(DROPDOWN_MIN_WIDTH),
+        move |disabled, key, width, window: &mut Window, cx: &mut App| {
+            let tokens = active_theme(cx).tokens();
+            let current = store.read(cx).daemon_str(UA_KEY);
+            let preset = detect_preset(&current);
+            let custom_active = store
+                .read(cx)
+                .transient("ua_custom_mode")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || preset == "custom";
 
-        let selected_key: SharedString = if custom_active {
-            SharedString::from("custom")
-        } else {
-            SharedString::from(preset)
-        };
-        let select_store = store.clone();
-        let dropdown = dropdown_button(
-            format!("{key}-preset-dropdown"),
-            &options,
-            selected_key,
-            disabled,
-            true,
-            Rc::new(move |value: SharedString, cx: &mut App| {
-                select_store.update(cx, |store, cx| match value.as_ref() {
-                    "default" => {
-                        store.set_transient("ua_custom_mode", serde_json::json!(false), cx);
-                        store.set_daemon(UA_KEY, "", cx);
-                    }
-                    "custom" => {
-                        store.set_transient("ua_custom_mode", serde_json::json!(true), cx);
-                    }
-                    preset_key => {
-                        store.set_transient("ua_custom_mode", serde_json::json!(false), cx);
-                        if let Some((_, ua)) = UA_PRESETS.iter().find(|(k, _)| *k == preset_key) {
-                            store.set_daemon(UA_KEY, *ua, cx);
+            let selected_key: SharedString = if custom_active {
+                SharedString::from("custom")
+            } else {
+                SharedString::from(preset)
+            };
+            let select_store = store.clone();
+            let dropdown = dropdown_button(
+                format!("{key}-preset-dropdown"),
+                &options,
+                selected_key,
+                disabled,
+                None,
+                Rc::new(move |value: SharedString, cx: &mut App| {
+                    select_store.update(cx, |store, cx| match value.as_ref() {
+                        "default" => {
+                            store.set_transient("ua_custom_mode", serde_json::json!(false), cx);
+                            store.set_daemon(UA_KEY, "", cx);
                         }
+                        "custom" => {
+                            store.set_transient("ua_custom_mode", serde_json::json!(true), cx);
+                        }
+                        preset_key => {
+                            store.set_transient("ua_custom_mode", serde_json::json!(false), cx);
+                            if let Some((_, ua)) = UA_PRESETS.iter().find(|(k, _)| *k == preset_key)
+                            {
+                                store.set_daemon(UA_KEY, *ua, cx);
+                            }
+                        }
+                    });
+                }),
+                cx,
+            );
+
+            // 以卡片实际可用宽度换行，而非按窗口单双列猜测控件空间。
+            let header = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .w_full()
+                .gap_x(tokens.spacing.lg)
+                .gap_y(tokens.spacing.sm)
+                .child(
+                    v_flex()
+                        .flex_grow(1.)
+                        .flex_basis(active_theme(cx).text_extent(INPUT_WIDTH))
+                        .min_w_0()
+                        .gap(tokens.spacing.xxs)
+                        .child(body_text(cx).child(render_title.clone()))
+                        .child(meta_text(cx).child(render_description.clone())),
+                )
+                .child(
+                    div()
+                        .w(width
+                            .unwrap_or_else(|| active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH)))
+                        .max_w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .child(dropdown),
+                );
+            let mut column = v_flex()
+                .w_full()
+                .min_w_0()
+                .gap(tokens.spacing.sm)
+                .child(header);
+            if custom_active {
+                let slot =
+                    window.use_keyed_state(SharedString::from(format!("{key}-custom")), cx, {
+                        let store = store.clone();
+                        let current = SharedString::from(current.clone());
+                        let placeholder = placeholder.clone();
+                        move |window, cx| {
+                            let input = cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .default_value(current.clone())
+                                    .placeholder(placeholder)
+                            });
+                            let _subscription = cx.subscribe(
+                                &input,
+                                move |slot: &mut CustomSlot, input, event: &InputEvent, cx| {
+                                    if matches!(event, InputEvent::Change | InputEvent::Blur) {
+                                        let value = input.read(cx).value();
+                                        if value != slot.last_synced {
+                                            slot.last_synced = value.clone();
+                                            store.update(cx, |store, cx| {
+                                                store.set_daemon(UA_KEY, value.to_string(), cx)
+                                            });
+                                        }
+                                    }
+                                },
+                            );
+                            CustomSlot {
+                                input,
+                                last_synced: current,
+                                _subscription,
+                            }
+                        }
+                    });
+                let current = SharedString::from(current);
+                slot.update(cx, |slot, cx| {
+                    // daemon 对 Text 键 trim 归一化；按 trim 比较，避免逐字输入的尾随空格被回写抹掉。
+                    if slot.last_synced.trim() != current.trim() {
+                        slot.last_synced = current.clone();
+                        slot.input
+                            .update(cx, |input, cx| input.set_value(current.clone(), window, cx));
                     }
                 });
-            }),
-            cx,
-        );
-
-        // 以卡片实际可用宽度换行，而非按窗口单双列猜测控件空间。
-        let header = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .w_full()
-            .gap_x(tokens.spacing.lg)
-            .gap_y(tokens.spacing.sm)
-            .child(
-                v_flex()
-                    .flex_grow(1.)
-                    .flex_basis(active_theme(cx).text_extent(INPUT_WIDTH))
-                    .min_w_0()
-                    .gap(tokens.spacing.xxs)
-                    .child(body_text(cx).child(render_title.clone()))
-                    .child(meta_text(cx).child(render_description.clone())),
-            )
-            .child(
-                div()
-                    .w(active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH))
-                    .max_w_full()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .child(dropdown),
-            );
-        let mut column = v_flex()
-            .w_full()
-            .min_w_0()
-            .gap(tokens.spacing.sm)
-            .child(header);
-        if custom_active {
-            let slot = window.use_keyed_state(SharedString::from(format!("{key}-custom")), cx, {
-                let store = store.clone();
-                let current = SharedString::from(current.clone());
-                let placeholder = placeholder.clone();
-                move |window, cx| {
-                    let input = cx.new(|cx| {
-                        InputState::new(window, cx)
-                            .default_value(current.clone())
-                            .placeholder(placeholder)
-                    });
-                    let _subscription = cx.subscribe(
-                        &input,
-                        move |slot: &mut CustomSlot, input, event: &InputEvent, cx| {
-                            if matches!(event, InputEvent::Change | InputEvent::Blur) {
-                                let value = input.read(cx).value();
-                                if value != slot.last_synced {
-                                    slot.last_synced = value.clone();
-                                    store.update(cx, |store, cx| {
-                                        store.set_daemon(UA_KEY, value.to_string(), cx)
-                                    });
-                                }
-                            }
-                        },
-                    );
-                    CustomSlot {
-                        input,
-                        last_synced: current,
-                        _subscription,
-                    }
-                }
-            });
-            let current = SharedString::from(current);
-            slot.update(cx, |slot, cx| {
-                // daemon 对 Text 键 trim 归一化；按 trim 比较，避免逐字输入的尾随空格被回写抹掉。
-                if slot.last_synced.trim() != current.trim() {
-                    slot.last_synced = current.clone();
-                    slot.input
-                        .update(cx, |input, cx| input.set_value(current.clone(), window, cx));
-                }
-            });
-            let input = slot.read(cx).input.clone();
-            column = column.child(Input::new(&input).control(cx).w_full().disabled(disabled));
-        }
-        column.into_any_element()
-    });
+                let input = slot.read(cx).input.clone();
+                column = column.child(Input::new(&input).control(cx).w_full().disabled(disabled));
+            }
+            column.into_any_element()
+        },
+    );
     // 自渲染不丢失设置搜索所需的标题与说明。
     row.title = title;
     row.description(description)

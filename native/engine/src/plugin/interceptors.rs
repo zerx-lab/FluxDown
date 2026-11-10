@@ -1,6 +1,6 @@
 //! 下载拦截平面的插件侧：按任务挑选匹配插件，并把各阶段调用转给脚本运行时。
 
-use crate::logger::log_info;
+use crate::logger::log_warn;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +34,7 @@ impl PluginManager {
         current_url: &str,
     ) -> Arc<dyn TaskInterceptor> {
         let snapshot = self.plugins.read().await.clone();
-        let entries: Vec<InterceptorEntry> = snapshot
+        let mut entries: Vec<InterceptorEntry> = snapshot
             .iter()
             .filter(|p| p.enabled && p.manifest.has_permission(PERMISSION_INTERCEPT))
             .filter_map(|p| {
@@ -58,6 +58,7 @@ impl PluginManager {
                 })
             })
             .collect();
+        entries.sort_by(|a, b| a.identity.cmp(&b.identity));
         let has_archivers = snapshot.iter().any(|p| {
             p.enabled
                 && p.manifest.has_permission(PERMISSION_ARCHIVE)
@@ -211,18 +212,20 @@ impl PluginManager {
             })
             .collect();
         plugins.sort_by(|left, right| left.manifest.identity.cmp(&right.manifest.identity));
-        let mut bounded_context = context.clone();
-        if !bounded_context.header_hex.as_deref().is_some_and(|header| {
-            (2..=8192).contains(&header.len())
+        let bounded_context = context.header_hex.as_deref().and_then(|header| {
+            let valid = (2..=8192).contains(&header.len())
                 && header.len() % 2 == 0
-                && header.bytes().all(|byte| byte.is_ascii_hexdigit())
-        }) {
-            bounded_context.header_hex = None;
-        }
+                && header.bytes().all(|byte| byte.is_ascii_hexdigit());
+            (!valid).then(|| crate::model::ArchiveContext {
+                header_hex: None,
+                ..context.clone()
+            })
+        });
+        let context = bounded_context.as_ref().unwrap_or(context);
         for plugin in plugins {
             let identity = &plugin.manifest.identity;
             if let Some((folder, rule_id, sequence)) =
-                self.archive_rule_match(identity, &bounded_context).await
+                self.archive_rule_match(identity, context).await
             {
                 self.audit.record(PluginAuditRow::new(
                     identity,
@@ -238,11 +241,12 @@ impl PluginManager {
         None
     }
 
+    /// Ask callbacks in identity order, then signed rules; retain failures for task activity.
     pub(super) async fn archive_directories(
         &self,
         context: crate::model::ArchiveContext,
         task_id: &str,
-    ) -> Result<Option<crate::model::ArchiveDirectories>, PluginError> {
+    ) -> Result<Option<crate::model::ArchiveDirectories>, String> {
         let snapshot = self.plugins.read().await.clone();
         let mut candidates: Vec<_> = snapshot
             .iter()
@@ -258,106 +262,17 @@ impl PluginManager {
             })
             .collect();
         candidates.sort_by(|a, b| a.manifest.identity.cmp(&b.manifest.identity));
+        let mut problems = Vec::new();
         for plugin in candidates {
-            let Some(source) = plugin.archive_source().await else {
-                log_info!(
-                    "[plugin] archive {} entry unavailable",
-                    plugin.manifest.identity
-                );
-                self.audit.record(PluginAuditRow::new(
-                    &plugin.manifest.identity,
-                    "daemon",
-                    "archive",
-                    task_id,
-                    "error",
-                    "archive entry unavailable",
-                ));
-                continue;
+            let identity = &plugin.manifest.identity;
+            let problem = match self.archive_one(plugin, &context, task_id).await {
+                Ok(Some(directories)) => return Ok(Some(directories)),
+                Ok(None) => continue,
+                Err(problem) => problem,
             };
-            let values = self.load_setting_values(&plugin.manifest.identity).await;
-            if plugin
-                .manifest
-                .settings
-                .iter()
-                .any(|field| field.required && value_of(&values, field).is_none())
-            {
-                self.audit.record(PluginAuditRow::new(
-                    &plugin.manifest.identity,
-                    "daemon",
-                    "archive",
-                    task_id,
-                    "error",
-                    "required setting missing",
-                ));
-                continue;
-            }
-            let settings_json = build_typed_settings_json(&plugin.manifest, &values);
-            let script = PluginScript {
-                identity: plugin.manifest.identity.clone(),
-                source,
-                entry_fn_hint: PluginEntryKind::Archive,
-                version: plugin.manifest.version.clone(),
-                app_version: self.app_version.clone(),
-            };
-            let result = self
-                .runtime
-                .invoke_archive(
-                    &script,
-                    context.clone(),
-                    settings_json,
-                    ExecutionBudget {
-                        timeout: DEFAULT_INTERCEPT_TIMEOUT,
-                        memory_limit_bytes: self.resolve_budget.memory_limit_bytes,
-                    },
-                )
-                .await;
-            self.note_execution(
-                &plugin.manifest.identity,
-                &plugin.timeout_streak,
-                result.as_ref().err(),
-                None,
-            )
-            .await;
-            let directories = result.as_ref().ok().and_then(|value| {
-                value.as_ref().and_then(|value| {
-                    crate::category_route::normalize_archive_directories(
-                        &value.directories,
-                        &value.folder_name,
-                    )
-                    .map(|components| crate::model::ArchiveDirectories {
-                        legacy: value.directories.is_empty(),
-                        components,
-                    })
-                })
-            });
-            let invalid = matches!(&result, Ok(Some(_))) && directories.is_none();
-            let (outcome, detail) = if invalid {
-                ("error", "invalid directories".to_string())
-            } else {
-                match &result {
-                    Ok(_) => ("ok", String::new()),
-                    Err(error) => ("error", error.to_string()),
-                }
-            };
-            self.audit.record(PluginAuditRow::new(
-                &plugin.manifest.identity,
-                "daemon",
-                "archive",
-                task_id,
-                outcome,
-                &detail,
-            ));
-            if let Some(directories) = directories {
-                return Ok(Some(directories));
-            }
-            if let Err(error) = result {
-                log_info!(
-                    "[plugin] archive {} failed: {error}",
-                    plugin.manifest.identity
-                );
-            }
+            log_warn!("[plugin] archive {identity} skipped: {problem}");
+            problems.push(format!("{identity}：{problem}"));
         }
-        // User-authored archive callbacks keep precedence; signed packs provide the deterministic fallback.
         if let Some(folder) = self
             .matching_archive_rules(&snapshot, &context, task_id)
             .await
@@ -367,7 +282,97 @@ impl PluginManager {
                 legacy: true,
             }));
         }
-        Ok(None)
+        if problems.is_empty() {
+            Ok(None)
+        } else {
+            Err(problems.join("；"))
+        }
+    }
+
+    /// 调用单个归档插件并记审计与熔断；`Err` 为可展示的失败原因。
+    async fn archive_one(
+        &self,
+        plugin: &LoadedPlugin,
+        context: &crate::model::ArchiveContext,
+        task_id: &str,
+    ) -> Result<Option<crate::model::ArchiveDirectories>, String> {
+        let identity = &plugin.manifest.identity;
+        let audit = |outcome: &str, detail: &str| {
+            self.audit.record(PluginAuditRow::new(
+                identity, "daemon", "archive", task_id, outcome, detail,
+            ));
+        };
+        let Some(source) = plugin.archive_source().await else {
+            audit("error", "archive entry unavailable");
+            return Err("归档脚本不可读".to_string());
+        };
+        let values = self.load_setting_values(identity).await;
+        if let Some(field) = plugin
+            .manifest
+            .settings
+            .iter()
+            .find(|field| field.required && value_of(&values, field).is_none())
+        {
+            audit("error", "required setting missing");
+            return Err(format!("需先配置「{}」", field.title));
+        }
+        let settings_json = build_typed_settings_json(&plugin.manifest, &values);
+        let script = PluginScript {
+            identity: identity.clone(),
+            source,
+            entry_fn_hint: PluginEntryKind::Archive,
+            version: plugin.manifest.version.clone(),
+            app_version: self.app_version.clone(),
+        };
+        let result = self
+            .runtime
+            .invoke_archive(
+                &script,
+                context.clone(),
+                settings_json,
+                self.bridge.clone(),
+                ExecutionBudget {
+                    timeout: DEFAULT_INTERCEPT_TIMEOUT,
+                    memory_limit_bytes: self.resolve_budget.memory_limit_bytes,
+                },
+            )
+            .await;
+        self.note_execution(
+            identity,
+            &plugin.timeout_streak,
+            result.as_ref().err(),
+            None,
+        )
+        .await;
+        match result {
+            Ok(Some(value)) => {
+                match crate::category_route::normalize_archive_directories(
+                    &value.directories,
+                    &value.folder_name,
+                ) {
+                    Some(components) => {
+                        audit("ok", "");
+                        Ok(Some(crate::model::ArchiveDirectories {
+                            legacy: value.directories.is_empty(),
+                            components,
+                        }))
+                    }
+                    None => {
+                        audit("error", "invalid directories");
+                        Err("返回的归档目录不合法".to_owned())
+                    }
+                }
+            }
+            Ok(None) => {
+                audit("ok", "");
+                Ok(None)
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                audit("error", &detail);
+                Err(detail)
+            }
+        }
     }
 }
 
@@ -419,8 +424,7 @@ impl TaskInterceptor for PluginTaskInterceptor {
             .spawn(async move { pm.archive_directories(context, &task_id).await });
         let mut guard = AbortGuard(handle);
         match (&mut guard.0).await {
-            Ok(Ok(folder)) => Ok(folder),
-            Ok(Err(error)) => Err(error.to_string()),
+            Ok(result) => result,
             Err(error) => Err(format!("插件运行时任务异常: {error}")),
         }
     }

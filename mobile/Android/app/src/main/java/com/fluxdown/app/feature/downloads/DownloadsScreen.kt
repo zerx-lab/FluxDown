@@ -425,7 +425,12 @@ private fun DownloadsHeader(expanded: Boolean) {
     val customized = view.prefs?.customized == true || view.filter.queueId != null
 
     FluxHeader(
-        title = if (expanded) view.filter.folder.label() else str(R.string.mobileNavDownloads),
+        // 多选时标题换成计数（同 iOS 选择模式的导航栏标题），选择坞里只放动作
+        title = when {
+            nav.selecting -> str(R.string.selectedCount, "n" to nav.selection.size)
+            expanded -> view.filter.folder.label()
+            else -> str(R.string.mobileNavDownloads)
+        },
         subtitle = if (expanded) str(R.string.nTasks, "n" to view.facets.matching) else null,
         modifier = Modifier.padding(horizontal = margin),
         hostPill = {
@@ -536,6 +541,7 @@ private fun BoxScope.TopStripHost(tracker: ListTracker, topInset: androidx.compo
         pauseDescription = str(R.string.pauseAll),
         resumeDescription = str(R.string.resumeAll),
         waveform = { Waveform(samples = wave, mini = true) },
+        label = if (nav.selecting) str(R.string.selectedCount, "n" to nav.selection.size) else null,
     )
 }
 

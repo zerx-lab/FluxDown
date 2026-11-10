@@ -9,7 +9,6 @@ export const CHROME_CATALOG: readonly ChromeItemSpec[] = [
   { id: 'downloads', defaultZone: 'railTop', families: ['rail', 'title', 'status'], fixed: true },
   { id: 'rss', defaultZone: 'railTop', families: ['rail', 'title', 'status'] },
   { id: 'webhooks', defaultZone: 'railTop', families: ['rail', 'title', 'status'] },
-  { id: 'share', defaultZone: 'railTop', families: ['rail', 'title', 'status'] },
   { id: 'account', defaultZone: 'railBottom', families: ['rail', 'title'] },
   { id: 'settings', defaultZone: 'railBottom', families: ['rail', 'title', 'status'], fixed: true },
   { id: 'downloadSpeed', defaultZone: 'statusLeading', families: ['title', 'status'] },

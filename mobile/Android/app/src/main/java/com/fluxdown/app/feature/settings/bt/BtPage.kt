@@ -11,7 +11,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,7 +41,15 @@ import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.SettingsPage
+import com.fluxdown.app.shell.LocalAppContainer
+import com.fluxdown.app.shell.hostState
+import com.fluxdown.core.protocol.AgentSessionDto
+import com.fluxdown.core.protocol.HostNotice
+import com.fluxdown.core.protocol.HostSection
+import com.fluxdown.core.protocol.Json
+import kotlinx.coroutines.delay
 import com.fluxdown.core.protocol.BtMseMode
+import com.fluxdown.core.protocol.BtPieceOrder
 import com.fluxdown.core.protocol.BtPortRange
 import com.fluxdown.core.protocol.BtReadout
 import com.fluxdown.core.protocol.BtSettingsRow
@@ -60,17 +73,25 @@ import com.fluxdown.fluxui.theme.FluxTheme
 
 // LazyColumn 项 key（搜索定位用，与 [btSearchEntries] 共用）
 private const val K_GENERAL = "general"
+private const val K_NEW_TASKS = "new-tasks"
 private const val K_TRACKER_LIST = "tracker-list"
 private const val K_TRACKER_SUB = "tracker-sub"
 private const val K_SEED_MAIN = "seed-main"
 private const val K_SEED_LIMITS = "seed-limits"
 
-private fun itemKeyOf(row: BtSettingsRow): String = when (row) {
-    BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode -> K_GENERAL
-    BtSettingsRow.CustomTrackers -> K_TRACKER_LIST
-    BtSettingsRow.TrackerSub, BtSettingsRow.TrackerSubUrls, BtSettingsRow.TrackerSubStatus -> K_TRACKER_SUB
-    BtSettingsRow.SeedEnabled, BtSettingsRow.SeedMaxActive, BtSettingsRow.AutoReseed -> K_SEED_MAIN
-    else -> K_SEED_LIMITS
+/** 封禁名单搜索框输入后的防抖，避免逐字请求主机。 */
+private const val SEARCH_DEBOUNCE_MS = 150L
+
+private fun itemKeyOf(row: BtSettingsRow): String = when (row.tab) {
+    BtSettingsTab.Guard -> guardItemKeyOf(row)
+    else -> when (row) {
+        BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode -> K_GENERAL
+        BtSettingsRow.PieceOrder, BtSettingsRow.FirstLastPiecesFirst, BtSettingsRow.SelectionAutoDefault -> K_NEW_TASKS
+        BtSettingsRow.CustomTrackers -> K_TRACKER_LIST
+        BtSettingsRow.TrackerSub, BtSettingsRow.TrackerSubUrls, BtSettingsRow.TrackerSubStatus -> K_TRACKER_SUB
+        BtSettingsRow.SeedEnabled, BtSettingsRow.SeedMaxActive, BtSettingsRow.AutoReseed -> K_SEED_MAIN
+        else -> K_SEED_LIMITS
+    }
 }
 
 @StringRes
@@ -78,6 +99,7 @@ private fun tabTitle(tab: BtSettingsTab): Int = when (tab) {
     BtSettingsTab.General -> R.string.settingsTabGeneral
     BtSettingsTab.Tracker -> R.string.settingsTabTracker
     BtSettingsTab.Seeding -> R.string.settingsTabSeeding
+    BtSettingsTab.Guard -> R.string.btGuardTab
 }
 
 @StringRes
@@ -89,6 +111,9 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.PortStart -> R.string.btListenPortStart
     BtSettingsRow.PortEnd -> R.string.btListenPortEnd
     BtSettingsRow.MseMode -> R.string.btMseMode
+    BtSettingsRow.PieceOrder -> R.string.btPieceOrder
+    BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefault
+    BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefault
     BtSettingsRow.CustomTrackers -> R.string.btTrackerList
     BtSettingsRow.TrackerSub -> R.string.btTrackerSub
     BtSettingsRow.TrackerSubUrls -> R.string.btTrackerSubUrls
@@ -102,6 +127,26 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.SeedInactiveTimeLimit -> R.string.btSeedInactiveTimeLimit
     BtSettingsRow.SeedOperator -> R.string.btSeedConditionsOperator
     BtSettingsRow.SeedThenAction -> R.string.btSeedThenAction
+    BtSettingsRow.GuardEnabled -> R.string.btGuardEnabled
+    BtSettingsRow.GuardRuleExcessive -> R.string.btGuardRuleExcessive
+    BtSettingsRow.GuardRuleRerequest -> R.string.btGuardRuleRerequest
+    BtSettingsRow.GuardRuleRewind -> R.string.btGuardRuleRewind
+    BtSettingsRow.GuardRuleLag -> R.string.btGuardRuleLag
+    BtSettingsRow.GuardRuleFingerprint -> R.string.btGuardRuleFingerprint
+    BtSettingsRow.GuardExcessRatio -> R.string.btGuardExcessRatio
+    BtSettingsRow.GuardMinTorrent -> R.string.btGuardMinTorrent
+    BtSettingsRow.GuardRewindTolerance -> R.string.btGuardRewindTolerance
+    BtSettingsRow.GuardThrottle -> R.string.btGuardThrottleKib
+    BtSettingsRow.GuardBanBase -> R.string.btGuardBanBaseHours
+    BtSettingsRow.GuardBanMax -> R.string.btGuardBanMaxDays
+    BtSettingsRow.GuardDownloadingMax -> R.string.btGuardDownloadingMaxAction
+    BtSettingsRow.GuardSkipPrivate -> R.string.btGuardSkipPrivate
+    BtSettingsRow.GuardSkipLan -> R.string.btGuardSkipLan
+    BtSettingsRow.GuardIpv6Prefix -> R.string.btGuardIpv6Prefix
+    BtSettingsRow.GuardCloudEnabled -> R.string.btGuardCloudEnabled
+    BtSettingsRow.GuardCloudMode -> R.string.btGuardCloudMode
+    BtSettingsRow.GuardFilterUrls -> R.string.btGuardFilterUrls
+    BtSettingsRow.GuardReportEnabled -> R.string.btGuardReportEnabled
 }
 
 /** 说明文案；时长行的「说明」只用于搜索（命中单位标题），页面不渲染。 */
@@ -113,6 +158,9 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.Utp -> R.string.btEnableUtpDesc
     BtSettingsRow.PortStart -> R.string.btListenPortDesc
     BtSettingsRow.MseMode -> R.string.btMseModeDesc
+    BtSettingsRow.PieceOrder -> R.string.btPieceOrderDesc
+    BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefaultDesc
+    BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefaultDesc
     BtSettingsRow.CustomTrackers -> R.string.btTrackerListDesc
     BtSettingsRow.TrackerSub -> R.string.btTrackerSubDesc
     BtSettingsRow.TrackerSubUrls -> R.string.btTrackerSubUrlsDesc
@@ -121,6 +169,24 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.AutoReseed -> R.string.btAutoReseedDesc
     BtSettingsRow.SeedTimeLimit -> R.string.btSeedTimeLimitUnit
     BtSettingsRow.SeedInactiveTimeLimit -> R.string.btSeedInactiveTimeLimitUnit
+    BtSettingsRow.GuardEnabled -> R.string.btGuardEnabledDesc
+    BtSettingsRow.GuardRuleExcessive -> R.string.btGuardRuleExcessiveDesc
+    BtSettingsRow.GuardRuleRerequest -> R.string.btGuardRuleRerequestDesc
+    BtSettingsRow.GuardRuleRewind -> R.string.btGuardRuleRewindDesc
+    BtSettingsRow.GuardRuleLag -> R.string.btGuardRuleLagDesc
+    BtSettingsRow.GuardRuleFingerprint -> R.string.btGuardRuleFingerprintDesc
+    BtSettingsRow.GuardExcessRatio -> R.string.btGuardExcessRatioDesc
+    BtSettingsRow.GuardMinTorrent -> R.string.btGuardMinTorrentDesc
+    BtSettingsRow.GuardRewindTolerance -> R.string.btGuardRewindToleranceDesc
+    BtSettingsRow.GuardThrottle -> R.string.btGuardThrottleKibDesc
+    BtSettingsRow.GuardBanBase -> R.string.btGuardBanBaseHoursDesc
+    BtSettingsRow.GuardDownloadingMax -> R.string.btGuardDownloadingMaxActionDesc
+    BtSettingsRow.GuardSkipPrivate -> R.string.btGuardSkipPrivateDesc
+    BtSettingsRow.GuardSkipLan -> R.string.btGuardSkipLanDesc
+    BtSettingsRow.GuardIpv6Prefix -> R.string.btGuardIpv6PrefixDesc
+    BtSettingsRow.GuardCloudEnabled -> R.string.btGuardCloudEnabledDesc
+    BtSettingsRow.GuardFilterUrls -> R.string.btGuardFilterUrlsDesc
+    BtSettingsRow.GuardReportEnabled -> R.string.btGuardReportEnabledDesc
     else -> null
 }
 
@@ -140,9 +206,52 @@ internal fun BtPage() {
     val visibleTabs = BtSettingsRow.visibleTabs(form)
     val tab = BtSettingsTab.entries[tabIndex].takeIf { it in visibleTabs } ?: BtSettingsTab.General
 
-    // 搜索命中：先切到目标行所在页签
+    // 防吸血：数据层、操作与浮层（只在防吸血页签可见且连接就绪时加载）
+    val container = LocalAppContainer.current
+    val scope = rememberCoroutineScope()
+    val model = remember(container.session, scope) { BtGuardModel(container.session, scope) }
+    val guardActions = rememberGuardActions(model, scope)
+    var viewIndex by rememberSaveable { mutableIntStateOf(0) }
+    val guardView = GuardView.entries[viewIndex]
+    var guardSheet by remember { mutableStateOf<GuardSheet?>(null) }
+    val host = hostState()
+    val sessionRaw by remember { derivedStateOf { host.value.sections[HostSection.agentSession] } }
+    val loggedIn = remember(sessionRaw) { AgentSessionDto.fromJson(Json.parseOrNull(sessionRaw)) != null }
+    val guardActive = tab == BtSettingsTab.Guard && form.isLoaded && !ctx.readOnly
+    // 可见子视图登记（只有当前可见的列表才随通知刷新）
+    LaunchedEffect(model, guardActive, guardView) {
+        model.markVisible(
+            entries = guardActive && guardView == GuardView.Bans,
+            events = guardActive && guardView == GuardView.Events,
+        )
+    }
+    // 通知订阅绑定生命周期：回到前台（STARTED）时先全量刷新一次，再随 btGuardChanged 增量刷新
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(model, guardActive, lifecycleOwner) {
+        if (!guardActive) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            model.onChanged()
+            container.store.notices.collect { if (it.name == HostNotice.btGuardChanged) model.onChanged() }
+        }
+    }
+    val bansVisible = guardActive && guardView == GuardView.Bans
+    LaunchedEffect(model, bansVisible, model.layer, model.rule, model.query) {
+        if (bansVisible) {
+            delay(SEARCH_DEBOUNCE_MS)
+            model.reloadEntries()
+        }
+    }
+    val eventsVisible = guardActive && guardView == GuardView.Events
+    LaunchedEffect(model, eventsVisible, model.eventKind, model.eventRule) {
+        if (eventsVisible) model.reloadEvents()
+    }
+
+    // 搜索命中：先切到目标行所在页签（防吸血行落在设置子视图）
     LaunchedEffect(focus.highlight) {
-        focus.highlight?.let { BtSettingsRow.tabForRowId(it) }?.let { tabIndex = it.ordinal }
+        focus.highlight?.let { BtSettingsRow.tabForRowId(it) }?.let {
+            tabIndex = it.ordinal
+            if (it == BtSettingsTab.Guard) viewIndex = GuardView.Settings.ordinal
+        }
     }
 
     // 起始端口被本机改到结束端口之上时，把结束端口一并抬到起始端口（只响应本机的待提交修改）
@@ -180,6 +289,11 @@ internal fun BtPage() {
                 when (tab) {
                     BtSettingsTab.General -> {
                         flowItem(index++, gate, K_GENERAL) { GeneralSection(ctx) }
+                        if (BtSettingsRow.PieceOrder.isVisible(form) || BtSettingsRow.FirstLastPiecesFirst.isVisible(form) ||
+                            BtSettingsRow.SelectionAutoDefault.isVisible(form)
+                        ) {
+                            flowItem(index++, gate, K_NEW_TASKS) { NewTasksSection(ctx) }
+                        }
                     }
                     BtSettingsTab.Tracker -> {
                         if (BtSettingsRow.CustomTrackers.isVisible(form)) {
@@ -208,11 +322,20 @@ internal fun BtPage() {
                             flowItem(index++, gate, K_SEED_LIMITS) { SeedLimitsSection(ctx) }
                         }
                     }
+                    BtSettingsTab.Guard -> {
+                        index = btGuardItems(
+                            start = index, gate = gate, ctx = ctx, model = model, actions = guardActions,
+                            view = guardView, loggedIn = loggedIn,
+                            onView = { viewIndex = it.ordinal },
+                            openSheet = { guardSheet = it },
+                        )
+                    }
                 }
                 flowItem(index++, gate, "legend") { FluxSectionFoot(legend) }
             }
         }
         PickerSheetHost(picker = picker, onDismiss = { picker = null })
+        GuardSheetHost(sheet = guardSheet, onDismiss = { guardSheet = null }, model = model)
     }
 }
 
@@ -280,6 +403,49 @@ private fun GeneralSection(ctx: SettingsCtx) {
         }
     }
 }
+
+@Composable
+private fun NewTasksSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    val pieceLabels = mapOf(
+        "rarest" to (str(R.string.btPieceOrderRarest) to str(R.string.btPieceOrderRarestDesc)),
+        "sequential" to (str(R.string.btPieceOrderSequential) to str(R.string.btPieceOrderSequentialDesc)),
+    )
+    GlassSection(title = str(R.string.btNewTasksSection)) {
+        if (BtSettingsRow.PieceOrder.isVisible(form)) {
+            settingChoice(
+                ctx, BtSettingsRow.PieceOrder.configKey, R.string.btPieceOrder, R.string.btPieceOrderDesc,
+                id = BtSettingsRow.PieceOrder.id,
+            ) {
+                BtPieceOrderOptions(pieceLabels)
+            }
+        }
+        if (BtSettingsRow.FirstLastPiecesFirst.isVisible(form)) {
+            settingSwitch(
+                ctx,
+                BtSettingsRow.FirstLastPiecesFirst.configKey,
+                R.string.btFirstLastPiecesFirstDefault,
+                R.string.btFirstLastPiecesFirstDefaultDesc,
+                id = BtSettingsRow.FirstLastPiecesFirst.id,
+            )
+        }
+        if (BtSettingsRow.SelectionAutoDefault.isVisible(form)) {
+            settingSwitch(
+                ctx,
+                BtSettingsRow.SelectionAutoDefault.configKey,
+                R.string.btSelectionAutoDefault,
+                R.string.btSelectionAutoDefaultDesc,
+                id = BtSettingsRow.SelectionAutoDefault.id,
+            )
+        }
+    }
+}
+
+private fun BtPieceOrderOptions(labels: Map<String, Pair<String, String>>): List<SelectOption<String>> =
+    BtPieceOrder.all.map { wire ->
+        val (title, hint) = labels[wire] ?: (wire to "")
+        SelectOption(wire, title, hint = hint.ifEmpty { null })
+    }
 
 private fun BtMseModeOptions(labels: Map<String, Pair<String, String>>): List<SelectOption<String>> =
     BtMseMode.all.map { wire ->

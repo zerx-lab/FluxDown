@@ -1,0 +1,11 @@
+---
+description: web 与桌面 App 的 UI 信息架构必须对齐（基准 = 桌面）
+globs: web/src/pages/settings/**
+alwaysApply: false
+---
+
+# dual-client-parity（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/dual-client-parity.md`](mdc:.omp/rules/dual-client-parity.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

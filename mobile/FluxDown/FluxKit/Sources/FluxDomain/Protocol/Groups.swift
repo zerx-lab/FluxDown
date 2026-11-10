@@ -234,6 +234,7 @@ public struct CreateGroupRequest: Codable, Sendable, Hashable {
         ignoreTlsErrors: Bool = false,
         startPaused: Bool = false,
         items: [GroupItemRequest],
+        resolverPluginId: String = "",
         archiveMetadata: ArchiveMetadataDto? = nil,
         categoryRoute: CategoryRouteDto? = nil
     ) {
@@ -249,6 +250,7 @@ public struct CreateGroupRequest: Codable, Sendable, Hashable {
         self.extraHeaders = extraHeaders
         self.ignoreTlsErrors = ignoreTlsErrors
         self.startPaused = startPaused
+        self.resolverPluginId = resolverPluginId
         self.items = items
         self.categoryRoute = categoryRoute
         self.archiveMetadata = archiveMetadata

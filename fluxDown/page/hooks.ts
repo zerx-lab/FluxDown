@@ -44,6 +44,7 @@ import {
   type ReportDetail,
   type SourceBufferBinding,
 } from "./bridge";
+import { wrapFetch } from "./fetch-hook";
 import { RecentResponses, hasAnyTag, propagate, tag, tagsOf } from "./provenance";
 
 /** 被包装的原函数（this 由调用点决定）。 */
@@ -654,39 +655,16 @@ export function start(): void {
   // ===== fetch =====
 
   const originalFetch = window.fetch;
-  const NativeRequest = window.Request;
-  if (typeof originalFetch === "function" && typeof NativeRequest === "function") {
-    window.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
-      // 与规范一致（fetch 第一步就是 `new Request(input, init)`）：同步固定请求，调用方之后改 init 不影响。
-      let request: Request;
-      try {
-        request = new NativeRequest(...args);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      const url = request.url;
-
-      try {
-        if (url && isStreamingUrl(url)) notify("fetch", url, streamMime(url));
-      } catch {
-        /* 嗅探绝不打断页面请求 */
-      }
-
-      // 原生 fetch 以绑定函数作为微任务回调发起，调用栈上没有本脚本的帧：页面自己被 CSP 拦下的请求
-      // （connect-src 违规等）在控制台的来源不再是 page-hooks.js，Chrome 不会把它记进扩展错误列表。
-      // 直接 `originalFetch.apply` 时栈顶是本包装函数，这些页面错误全都算到扩展头上。
-      const start = originalFetch.bind(this, request) as () => Promise<Response>;
-      return Promise.resolve()
-        .then(start)
-        .then((response) => {
-          try {
-            onFetchResponse(response, url);
-          } catch {
-            /* 不干扰原始响应 */
-          }
-          return response;
-        });
-    };
+  if (typeof originalFetch === "function") {
+    window.fetch = wrapFetch(originalFetch, {
+      baseUrl: () => document.baseURI,
+      sniffOn,
+      mediaEventsOn,
+      onRequest: (url) => {
+        if (isStreamingUrl(url)) notify("fetch", url, streamMime(url));
+      },
+      onResponse: onFetchResponse,
+    });
   }
 
   /**

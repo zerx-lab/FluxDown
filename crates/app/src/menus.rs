@@ -90,6 +90,17 @@ pub fn build_menus(translator: &Translator) -> Vec<Menu> {
         MenuItem::action(t(translator, "webChangeUrl"), dl::ChangeSelectedUrl),
         MenuItem::action(t(translator, "editThreads"), dl::ChangeSelectedSegments),
         MenuItem::action(t(translator, "verifyTaskIntegrity"), dl::VerifySelected),
+        MenuItem::submenu(Menu::new(t(translator, "btPiecePicking")).items([
+            MenuItem::action(t(translator, "btRarestFirst"), dl::SetRarestFirstSelected),
+            MenuItem::action(
+                t(translator, "btSequentialDownload"),
+                dl::SetSequentialSelected,
+            ),
+            MenuItem::action(
+                t(translator, "btFirstLastPiecesFirst"),
+                dl::ToggleFirstLastPiecesSelected,
+            ),
+        ])),
         MenuItem::action(t(translator, "redownloadTask"), dl::RedownloadSelected),
         MenuItem::action(t(translator, "boostDownload"), dl::ToggleBoostSelected),
         MenuItem::action(t(translator, "menuOpenInWindow"), dl::OpenSelectedInWindow),
@@ -250,6 +261,9 @@ fn install_download_fallbacks(cx: &mut App) {
     forward_to_downloads::<dl::ChangeSelectedUrl>(cx);
     forward_to_downloads::<dl::ChangeSelectedSegments>(cx);
     forward_to_downloads::<dl::VerifySelected>(cx);
+    forward_to_downloads::<dl::SetRarestFirstSelected>(cx);
+    forward_to_downloads::<dl::SetSequentialSelected>(cx);
+    forward_to_downloads::<dl::ToggleFirstLastPiecesSelected>(cx);
     forward_to_downloads::<dl::RedownloadSelected>(cx);
     forward_to_downloads::<dl::ToggleBoostSelected>(cx);
     forward_to_downloads::<dl::OpenSelectedInWindow>(cx);
@@ -333,7 +347,7 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&Window) + 'static) {
 /// 确认「下载将暂停」。只退出界面、保留后台，走关闭窗口（托盘驻留时）。
 pub fn request_quit(cx: &mut App) {
     if Desktop::active_task_count(cx) == 0 {
-        crate::lifecycle::quit_everything_gated(cx);
+        crate::lifecycle::quit_everything(cx);
         return;
     }
     cx.defer(|cx| {
@@ -344,8 +358,8 @@ pub fn request_quit(cx: &mut App) {
             return;
         };
         if let Err(error) = window.update(cx, |_, window, cx| {
-            confirm_active_tasks(window, cx, |window, cx| {
-                crate::lifecycle::quit_everything_in(window, cx);
+            confirm_active_tasks(window, cx, |_window, cx| {
+                crate::lifecycle::quit_everything(cx);
             });
         }) {
             log::debug!("view or window released before lifecycle update: {error:#}");

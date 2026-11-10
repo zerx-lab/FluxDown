@@ -768,6 +768,7 @@ impl ShellView {
                 .children(leading)
                 .child(div().flex_1())
                 .children(trailing)
+                .children(self.status_accessory.clone())
                 .context_menu(self.chrome_menu(cx))
                 .into_any_element(),
         )

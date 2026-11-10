@@ -62,6 +62,8 @@ export interface TaskDto {
   fileMissing: boolean;
   /** 下载完成时刻 Unix 秒（字符串，空 = 尚未完成）。 */
   completedAt: string;
+  /** 落盘文件哈希，格式 `algo=hex`（小写；空 = 尚未计算）。只对 status=3 有意义。 */
+  fileHash: string;
   /** 浏览器扩展捕获的来源页面 URL（空 = 无）。 */
   referrer: string;
   /** 所属任务组 ID（空 = 不属于任何组）。 */
@@ -93,6 +95,10 @@ export interface TaskDto {
   seedInactiveTimeLimitMinutes: number;
   /** 做种上传限速（字节/秒），0 = 未设置（跟随全局）。 */
   seedUploadLimitBps: number;
+  /** BT 按顺序下载分块（缺省 false；非 BT 恒 false）。 */
+  btSequential: boolean;
+  /** BT 先下载首尾分块（缺省 false；非 BT 恒 false）。 */
+  btFirstLastPiecesFirst: boolean;
   /** 持久化的加速路径字节。 */
   sourceBytes: TaskSourceBytesDto;
 }
@@ -257,6 +263,18 @@ export interface TaskVerifyResult {
   damagedFiles: string[];
 }
 
+/** `daemon.task.hash` 参数。`algorithm` 为 HASH_ALGORITHMS 之一。 */
+export interface DaemonTaskHashParams {
+  taskId: string;
+  algorithm: string;
+}
+
+/** `daemon.task.hash` 结果。 */
+export interface TaskHashResult {
+  /** 记入任务的哈希，格式同 `TaskDto.fileHash`。 */
+  fileHash: string;
+}
+
 /** `daemon.task.createMany` 单次调用的条目上限（`CREATE_TASKS_MAX_ITEMS`）；更大的导入须按块拆分。 */
 export const CREATE_TASKS_MAX_ITEMS = 512;
 /** `daemon.task.createMany` 幂等键 `batchId` 的最大长度（字节，`CREATE_TASKS_BATCH_ID_MAX_LEN`）。 */
@@ -358,7 +376,22 @@ export interface BtPeerDto {
   upBps: number;
   /** ISO 3166-1 alpha-2 国家码（大写）；未知 / 私网 / 地理库未就绪时缺省。 */
   country?: string;
+  /** 防吸血 IP 组文本（IPv4 `1.2.3.4`，IPv6 `2001:db8::/64`）；未启用 / 旧 daemon 缺省。 */
+  ipGroup?: string;
+  /** 该 IP 组在本任务累计送达给我方的字节；缺省 = 0。 */
+  groupDeliveredBytes?: number;
+  /** 嫌疑等级；未评估缺省。 */
+  suspicion?: BtPeerSuspicion;
+  /** 命中的规则 id（`BtGuardRule`）。 */
+  rules?: string[];
+  /** 处置：`allow` / `throttle` / `choke` / `banned`；缺省 = `allow`。 */
+  action?: BtPeerAction;
+  /** 命中规则但处于「仅观察」：`action` 为本应执行而未执行的动作。 */
+  observeOnly?: boolean;
 }
+
+export type BtPeerSuspicion = 'none' | 'weak' | 'medium' | 'strong';
+export type BtPeerAction = 'allow' | 'throttle' | 'choke' | 'banned';
 
 /** peer 池各状态计数（`BtPeerCountsDto`）。 */
 export interface BtPeerCountsDto {

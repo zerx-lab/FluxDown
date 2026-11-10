@@ -83,7 +83,7 @@ class BtSettingsTest {
         assertTrue(BtSettingsRow.entries.none { it.isVisible(unloaded) })
         assertTrue(Ed2kSettingsRow.entries.none { it.isVisible(unloaded) })
         val loaded = form(mapOf("bt_enable_dht" to "true"))
-        assertEquals(7, BtSettingsRow.visible(BtSettingsTab.General, loaded).size)
+        assertEquals(10, BtSettingsRow.visible(BtSettingsTab.General, loaded).size)
         assertEquals(5, Ed2kSettingsRow.visible(Ed2kSettingsTab.Servers, loaded).size)
     }
 

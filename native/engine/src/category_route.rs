@@ -14,6 +14,11 @@
 //!
 //! HLS / DASH 的成品是 MP4，前两步按 `<stem>.mp4` 预判（[`output_name`]）。
 //!
+//! 归档插件（`contributes.archive`）：第 2、3 步选中分类目录（命中的分类或「其他」兜底）时，
+//! 按同一个成品名询问插件，合法的单层子目录名叠加在分类目录之下并写回任务路由
+//! （[`CategoryRoute::archive`]）；之后续传、重启与完成收尾都沿用，插件不再参与。只改目录、
+//! 不改文件名；插件失败只记任务活动，文件留在分类目录（`archive_target`）。
+//!
 //! 不参与路由：BT / eD2K（做种与共享要求文件原地不动）、任务组成员（组以基准目录为根，成员
 //! 保持组内结构）、带子路径的单条目清单与 `out=子目录/名字`（相对结构由来源决定）。
 //!
@@ -44,7 +49,7 @@ pub struct CategoryRoute {
     pub rules: Vec<CategoryRule>,
     /// 「其他」分类的目录；空 = 不兜底。
     pub other_dir: String,
-    /// FD 分类命中后选定的附加归档目录；续传与完成收尾复用，不重新执行插件。
+    /// 归档插件选定的子目录；选定后续传、重启与完成收尾都沿用，不再询问插件。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<ArchiveRoute>,
     /// Source metadata is persisted alongside the authorized route so resume does not
@@ -176,13 +181,6 @@ impl CategoryRoute {
     pub(crate) fn to_column(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
-    fn to_db_column(&self) -> Result<String, crate::db::DbError> {
-        self.to_column().map_err(|error| {
-            crate::db::DbError::InvalidConfig(format!(
-                "category route serialization failed: {error}"
-            ))
-        })
-    }
 }
 /// Persist source metadata in the existing route JSON, including route-less tasks.
 /// A route-less JSON object has an empty base directory and therefore cannot redirect.
@@ -199,8 +197,10 @@ pub(crate) async fn persist_archive_metadata(
         None => return Ok(()),
     };
     route.archive_metadata = Some(metadata.clone());
-    db.set_task_category_route(task_id, &route.to_db_column()?)
-        .await
+    let column = route.to_column().map_err(|error| {
+        crate::db::DbError::InvalidConfig(format!("category route serialization failed: {error}"))
+    })?;
+    db.set_task_category_route(task_id, &column).await
 }
 
 /// Route a complete group at one root. Modern callback destinations use the authorized fallback
@@ -423,11 +423,14 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
     let mut target = category_dir
         .clone()
         .unwrap_or_else(|| route.base_dir.clone());
+    let mut route_changed = false;
     if let Some(mut archive) = route.archive.clone() {
         if archive.directories.is_empty()
             && let Some(category_dir) = category_dir.as_ref()
+            && archive.category_dir != *category_dir
         {
             archive.category_dir.clone_from(category_dir);
+            route_changed = true;
         }
         target = archive_target(&archive);
         route.archive = Some(archive);
@@ -483,25 +486,7 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
                 };
                 target = archive_target(&archive);
                 route.archive = Some(archive);
-                let column = match route.to_db_column() {
-                    Ok(column) => column,
-                    Err(error) => {
-                        crate::logger::report_warning(
-                            "category-route",
-                            "encode archive route",
-                            &error,
-                        );
-                        return None;
-                    }
-                };
-                if let Err(error) = p.db.set_task_category_route(&p.task_id, &column).await {
-                    crate::logger::report_warning(
-                        "category-route",
-                        "persist archive route",
-                        &error,
-                    );
-                    return None;
-                }
+                route_changed = true;
             }
             Ok(Some(_)) => {
                 notes.add("忽略不安全或不适用的归档目录".to_owned()).await;
@@ -509,6 +494,10 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
             Ok(None) => {}
             Err(error) => notes.add(format!("归档插件未能识别文件名：{error}")).await,
         }
+    }
+    if route_changed && let Err(error) = persist_route(p, &route).await {
+        crate::logger::report_error("category-route", "persist archive route", &error);
+        return None;
     }
     if let Some(archive) = route.archive.as_ref() {
         match ensure_archive_target(archive).await {
@@ -631,8 +620,11 @@ pub(crate) fn output_name(file_name: &str, url: &str) -> Option<String> {
     Some(format!("{stem}.mp4"))
 }
 
-/// 开始写盘前按当前最佳文件名重选目录。仅 FD 分类规则命中后才调用归档插件，
-/// 并把选定的单层归档目录持久化，以便续传不受插件更新影响。
+/// 开始写盘前按当前最佳文件名重选目录（见模块文档）：启动序幕定名（探测得到的服务器
+/// 文件名、按类型推断的名字、插件 resolve 改的名字）之后、「文件已存在」判断与去重
+/// 之前调用，只改任务记录，不移动任何文件。HLS 按转封装后的 `.mp4` 预判；未命中任何
+/// 分类时回到基准目录。路由选中分类目录（命中的分类或「其他」兜底）时经
+/// [`archive_target`] 叠加归档插件选定的子目录，并持久化选择以便续传与完成收尾复用。
 pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), crate::db::DbError> {
     if p.file_name.is_empty() {
         return Ok(());
@@ -654,13 +646,21 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
     let mut target = category_dir
         .clone()
         .unwrap_or_else(|| route.base_dir.clone());
-    if let Some(archive) = &route.archive {
+    let mut route_changed = false;
+    if let Some(archive) = route.archive.as_mut() {
+        if archive.directories.is_empty()
+            && let Some(category_dir) = category_dir.as_ref()
+            && archive.category_dir != *category_dir
+        {
+            archive.category_dir.clone_from(category_dir);
+            route_changed = true;
+        }
         target = archive_target(archive);
     } else if p.interceptor.has_archivers() {
         match p
             .interceptor
             .archive_directories(crate::model::ArchiveContext {
-                file_name: p.file_name.clone(),
+                file_name: name.to_owned(),
                 metadata: route.archive_metadata.clone(),
                 is_group: !row.group_id.is_empty(),
                 header_hex: None,
@@ -694,19 +694,29 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
                 };
                 target = archive_target(&archive);
                 route.archive = Some(archive);
-                p.db.set_task_category_route(&p.task_id, &route.to_db_column()?)
-                    .await?;
+                route_changed = true;
+                crate::intercept::ActivityNotes::of(p)
+                    .add(format!("归档插件选定目录「{target}」"))
+                    .await;
             }
             Ok(Some(_)) => log_warn!(
                 "[category-route] task {} ignored unsafe or inapplicable archive directories",
                 p.task_id
             ),
             Ok(None) => {}
-            Err(error) => log_warn!(
-                "[category-route] task {} archive plugin failed open: {error}",
-                p.task_id
-            ),
+            Err(error) => {
+                log_warn!(
+                    "[category-route] task {} archive plugin failed open: {error}",
+                    p.task_id
+                );
+                crate::intercept::ActivityNotes::of(p)
+                    .add(format!("归档插件未选定目录，文件留在原目录（{error}）"))
+                    .await;
+            }
         }
+    }
+    if route_changed {
+        persist_route(p, &route).await?;
     }
     if let Some(archive) = route.archive.as_ref() {
         match ensure_archive_target(archive).await {
@@ -732,6 +742,16 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
     p.save_dir = target;
     publish_location(p).await;
     Ok(())
+}
+
+async fn persist_route(
+    p: &DownloadParams,
+    route: &CategoryRoute,
+) -> Result<(), crate::db::DbError> {
+    let column = route.to_column().map_err(|error| {
+        crate::db::DbError::InvalidConfig(format!("category route serialization failed: {error}"))
+    })?;
+    p.db.set_task_category_route(&p.task_id, &column).await
 }
 
 /// Normalize new nested output and legacy `folderName` into validated path components.
@@ -768,7 +788,6 @@ fn archive_target(archive: &ArchiveRoute) -> String {
         .to_string_lossy()
         .into_owned()
 }
-
 pub(crate) fn valid_archive_folder(folder: &str) -> bool {
     !folder.is_empty()
         && folder.len() <= 180
@@ -781,7 +800,7 @@ pub(crate) fn valid_archive_folder(folder: &str) -> bool {
 
 /// 两个目录是否同一处：字面相同，或都存在且规范化后相同（大小写不敏感的文件系统、
 /// 符号链接、`..`）。同一目录内「移动」会被占名协议当成冲突而编号改名，必须先排除。
-async fn same_dir(a: &str, b: &str) -> bool {
+pub(crate) async fn same_dir(a: &str, b: &str) -> bool {
     if Path::new(a) == Path::new(b) {
         return true;
     }

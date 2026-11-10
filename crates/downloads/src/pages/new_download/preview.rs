@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_component::{WindowExt as _, button::Button, notification::Notification, v_flex};
 
-use super::{CategoryMode, NewDownloadView};
+use super::NewDownloadView;
 use crate::{
     controller::{DownloadsCommand, DownloadsResult},
     model::new_download::BuiltRequests,
@@ -147,7 +147,7 @@ impl NewDownloadView {
                 self.context
                     .category_route
                     .clone()
-                    .filter(|_| self.category_mode == CategoryMode::Auto && !self.is_remote()),
+                    .filter(|_| self.routes_by_category(cx) && !self.is_remote()),
                 self.context.save_dir.clone(),
                 submit,
                 back,

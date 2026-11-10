@@ -82,6 +82,8 @@ export interface PageConfig {
   warmOnLinkPress: boolean;
   /** settings.sniffImages：DOM 扫描是否把图片链接算作可下载。 */
   sniffImages: boolean;
+  /** settings.sniffMaxResources：单页 DOM 嗅探最多上报的资源数（fetch / XHR 嗅探不计入）。 */
+  sniffMaxResources: number;
   /**
    * 用户实际生效的 classify 规则（含覆盖 / 吊销 / 本地与插件规则，求值顺序）。页面 / 内容脚本据此
    * 用 `createClassifier` 判定类型；未收到配置前退回随包规则。

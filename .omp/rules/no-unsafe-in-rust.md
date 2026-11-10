@@ -51,6 +51,7 @@ repeatGap: 2
 |`native/agent/src/platform/macos_cf.rs`|CF/LaunchServices 单一所有权边界；调用方不得操作裸 CF 引用|
 |`native/agent/src/platform/`|系统图标、Shell 定位/关联变更、环境变量变更广播（`WM_SETTINGCHANGE`）、COM 生命周期；每项遵守上述约束|
 |`native/agent/src/notification/`|macOS UserNotifications ABI 与 Windows WinRT apartment；已有安全接口优先|
+|`native/agent/src/platform/elevation.rs`|Windows UAC 降权：`OpenProcessToken` + `GetTokenInformation(TokenElevationType)`（令牌句柄 RAII）只读本进程提权类型；经 `IShellWindows`→桌面视图→`IShellDispatch2::ShellExecute`（`windows` 类型化 COM，STA 守卫先于接口释放）以资源管理器令牌拉起本程序 / 同级桌面。只对拆分令牌的完整一半降权，新实例确认接手前旧进程不退出|
 |`native/agent/src/platform/hotkey/`|全局快捷键：Windows `RegisterHotKey` + `WH_KEYBOARD_LL`（专用消息循环线程，钩子只观察不吞键、仅在有双击绑定时安装）；macOS Carbon `RegisterEventHotKey` + `NSEvent` 全局监听 + `AXIsProcessTrustedWithOptions`（主线程）。Linux X11 / Wayland 用 x11rb / ashpd 安全 API，零 unsafe|
 |`native/agent/src/platform/app_icon/`|应用图标：Windows 跨进程 `WM_SETICON`（只认类名 `GpuiFast::Window` + 进程映像 = 同目录桌面程序，HICON 由 agent RAII 持有）、`.lnk` `IconLocation` 改写（`windows` 类型化 COM，目标 fail-closed）、`fluxdown-desktop.exe` 图标资源改写（`Begin/Update/EndUpdateResourceW` 只作用于同目录临时副本，句柄 RAII、失败丢弃；读资源用纯 Rust 有界 PE 解析，不碰 OS 映射；校验后 `MoveFileExW` 原子替换，从不改名运行中的 exe）；macOS `NSWorkspace.setIcon` 为安全 API；Linux X11 `_NET_WM_ICON` 用 x11rb 安全 API，零 unsafe|
 |`crates/app/src/app_icon.rs`（**`crates/*` 唯一例外**，用户 2026-10-30 决定）|macOS `NSApplication::setApplicationIconImage(Some(..))` 单个调用（objc2 因参数可为 `None` 标为 `unsafe fn`；Cmd-Tab / 强制退出窗口只读它，Dock tile 安全 API 覆盖不到）；主线程由 `MainThreadMarker` 证明、参数恒为 `Some`。不得扩到其他调用|

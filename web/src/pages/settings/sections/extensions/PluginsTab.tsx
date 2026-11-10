@@ -1,4 +1,4 @@
-// 插件子页：已安装插件管理（启用 / 设置 / 登录 / 卸载）+ 安装区（zip 上传 / 服务端开发目录）+ 插件市场。
+// 插件子页：已安装插件管理（启用 / 设置 / 登录 / 卸载）+ 安装区（zip 上传 / 服务端开发目录，仅开发模式显示）+ 专属插件 + 插件市场。
 
 import { FolderOpen, Info, Package, RotateCw, ScrollText, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -12,12 +12,12 @@ import { detailFromPlugin } from './detail'
 import type { PluginDetail } from './detail'
 import { extensionErrorText } from './errors'
 import { MarketSection } from './MarketSection'
+import { PrivateSection } from './PrivateSection'
 import { PluginAuditDialog } from './PluginAuditDialog'
 import { PluginAuthDialog } from './PluginAuthDialog'
 import { GrantConsentDialog, RiskBadge } from './PluginConsentDialog'
 import { PluginDetailDialog } from './PluginDetailDialog'
 import { PluginSettingsDialog } from './PluginSettingsDialog'
-import { SiteDefaultsCard } from './SiteDefaultsCard'
 import { liveDialogPlugins, postInstallConsent } from './logic'
 import type { ConsentSet } from './logic'
 
@@ -44,7 +44,9 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
   const [archiveStatus, setArchiveStatus] = useState<PluginArchiveRulesDto | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [archiveMessage, setArchiveMessage] = useState<'success' | 'error' | null>(null)
-  const [devMode, setDevMode] = useState(true)
+  const [devMode, setDevMode] = useState(false)
+  /** 「插件市场」刷新按钮点击计数；递增即让专属插件目录强制重拉。 */
+  const [privateRefresh, setPrivateRefresh] = useState(0)
   const [devDir, setDevDir] = useState('')
   const [installingDir, setInstallingDir] = useState(false)
   const [zipPhase, setZipPhase] = useState<ZipPhase>(null)
@@ -261,24 +263,24 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         }
       />
 
-      <Card className="flex flex-col gap-4 p-3">
-        <div>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".fxplug,.zip"
-            hidden
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              event.target.value = ''
-              if (file) void installZip(file)
-            }}
-          />
-          <Button variant="outline" icon={FolderOpen} loading={zipPhase !== null} disabled={stale} onClick={() => fileInput.current?.click()}>
-            {zipLabel}
-          </Button>
-        </div>
-        {devMode ? (
+      {devMode ? (
+        <Card className="flex flex-col gap-4 p-3">
+          <div>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".fxplug,.zip"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (file) void installZip(file)
+              }}
+            />
+            <Button variant="outline" icon={FolderOpen} loading={zipPhase !== null} disabled={stale} onClick={() => fileInput.current?.click()}>
+              {zipLabel}
+            </Button>
+          </div>
           <FormField label={t('pluginInstallDirLabel')} htmlFor="plugin-install-dir" hint={t('webPluginInstallDirHint')}>
             <InputWithAction
               input={
@@ -303,8 +305,8 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
               }
             />
           </FormField>
-        ) : null}
-      </Card>
+        </Card>
+      ) : null}
 
       {plugins.length === 0 ? (
         <EmptyState icon={Package} title={t('pluginsEmpty')} />
@@ -327,7 +329,15 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         </ListCard>
       )}
 
-      <SiteDefaultsCard plugins={plugins} stale={stale} />
+      <PrivateSection
+        stale={stale}
+        active={active}
+        plugins={plugins}
+        onInstalled={onInstalled}
+        onInstallFailed={onInstallFailed}
+        onShowDetail={(shown) => setDetail({ kind: 'market', detail: shown })}
+        refreshNonce={privateRefresh}
+      />
 
       <MarketSection
         stale={stale}
@@ -336,6 +346,7 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
         onInstalled={onInstalled}
         onInstallFailed={onInstallFailed}
         onShowDetail={(shown) => setDetail({ kind: 'market', detail: shown })}
+        onRefresh={() => setPrivateRefresh((count) => count + 1)}
       />
 
       <PluginDetailDialog

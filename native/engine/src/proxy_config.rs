@@ -1936,7 +1936,7 @@ pub async fn test_proxy_connection(
         proxy = proxy.basic_auth(proxy_username, proxy_password);
     }
 
-    let client = reqwest::Client::builder()
+    let client = crate::downloader::client_builder()
         .proxy(proxy)
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(15))

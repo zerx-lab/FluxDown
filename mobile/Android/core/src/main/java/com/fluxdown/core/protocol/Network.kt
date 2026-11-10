@@ -38,23 +38,20 @@ object NetworkPortInput {
 /** 连通性测试请求的组装与失败文案。 */
 object NetworkProxyTest {
     /**
-     * 各模式测试发送的内容（镜像 GPUI `proxy.rs::test_control` 与 Web `TestConnectionRow`）：
-     * - 手动：当前表单里的 `proxy_*` 五个键；
-     * - 系统：已检测到的系统代理（类型 / 地址 / 端口，无凭据）；未检测到则无可测；
-     * - 不使用 / 自动：没有确定的代理端点可测，返回 null（不显示按钮）。
+     * 连通性测试按来源组装（手动分组与系统分组各自一条，互不依赖当前 `proxy_mode`）：
+     * - [manual]：表单里的 `proxy_*` 五个键。任何模式下手动分组都可测；
+     * - [system]：已检测到的系统代理（类型 / 地址 / 端口，无凭据）；未检测到返回 null。
      */
-    fun request(mode: NetworkProxyMode, form: SettingsForm, system: SystemProxyDto?): ProxyTestRequest? = when (mode) {
-        NetworkProxyMode.Manual -> ProxyTestRequest(
-            proxyType = form.string("proxy_type", "http"),
-            host = form.string("proxy_host"),
-            port = form.string("proxy_port"),
-            username = form.string("proxy_username"),
-            password = form.string("proxy_password"),
-        )
-        NetworkProxyMode.System ->
-            if (system != null && system.detected) ProxyTestRequest(system.proxyType, system.host, system.port.toString()) else null
-        NetworkProxyMode.None, NetworkProxyMode.Auto -> null
-    }
+    fun manual(form: SettingsForm): ProxyTestRequest = ProxyTestRequest(
+        proxyType = form.string("proxy_type", "http"),
+        host = form.string("proxy_host"),
+        port = form.string("proxy_port"),
+        username = form.string("proxy_username"),
+        password = form.string("proxy_password"),
+    )
+
+    fun system(dto: SystemProxyDto?): ProxyTestRequest? =
+        if (dto != null && dto.detected) ProxyTestRequest(dto.proxyType, dto.host, dto.port.toString()) else null
 
     /** 失败详情：代理端点不接受 TLS 握手（把 HTTP 代理选成了 HTTPS）给出可操作的提示；否则取主机错误文案。 */
     fun failureDetail(message: String, fallback: String, tlsHint: String): String {
@@ -84,20 +81,20 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
     enum class Group { Mode, Manual, Rules, SiteAuth }
 
     /**
-     * 站点规则在任何模式下都生效，只需配置已加载。
-     * 手动配置分组需要主机配置已加载且模式为手动；代理模式行只需配置已加载；
+     * 站点规则、手动配置与代理模式行只需配置已加载。手动字段在所有模式下都显示
+     * （自动模式的备选路径、站点规则与任务级「手动代理」仍读这些字段），与当前模式无关。
      * 站点凭据走 `daemon.siteAuth.*`（`daemon.*` 恒可用），与配置是否已加载无关。
      */
-    fun isVisible(mode: NetworkProxyMode, isLoaded: Boolean): Boolean = when (group) {
+    fun isVisible(isLoaded: Boolean): Boolean = when (group) {
         Group.Mode -> isLoaded
-        Group.Manual -> isLoaded && mode == NetworkProxyMode.Manual
+        Group.Manual -> isLoaded
         Group.Rules -> isLoaded
         Group.SiteAuth -> true
     }
 
     companion object {
-        fun visible(mode: NetworkProxyMode, isLoaded: Boolean): List<NetworkRow> =
-            entries.filter { it.isVisible(mode, isLoaded) }
+        fun visible(isLoaded: Boolean): List<NetworkRow> =
+            entries.filter { it.isVisible(isLoaded) }
     }
 }
 

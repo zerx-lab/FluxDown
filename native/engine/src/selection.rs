@@ -48,6 +48,15 @@ impl<T> SelectionOutcome<T> {
     }
 }
 
+/// BT 文件选择的答复。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BtFileChoice {
+    /// 选中的文件下标。`[-1]` = 用户取消；空 = 全部文件。
+    pub indices: Vec<i32>,
+    /// 用户改选的保存目录（已 trim、非空）。`None` = 沿用当前目录。
+    pub save_dir: Option<String>,
+}
+
 /// 需要宿主介入的选择点:HLS 画质选择、BT 文件选择。
 ///
 /// 由宿主实现并注入 [`crate::Engine`]。方法采用 `async_trait`(而非原生
@@ -64,14 +73,17 @@ pub trait HostSelection: Send + Sync {
         timeout: Duration,
     ) -> SelectionOutcome<i32>;
 
-    /// 发起 BT 文件选择等待;`timeout` 为 `None` 时保留现状"无限等待"语义,
+    /// 发起 BT 文件选择等待。`save_dir` 是任务当前保存目录，供选择窗预填。
+    /// `timeout` 为 `None` 时保留现状"无限等待"语义,
     /// 为 `Some(d)` 时到期返回 `TimedOutDefaulted`（供宿主指定有限超时）。
+    /// 答复的 [`BtFileChoice::save_dir`] 为 `Some` 且与当前目录不同时，调用方在真正下载前迁目录。
     async fn select_bt_files(
         &self,
         task_id: &str,
         files: &[BtFileEntry],
+        save_dir: &str,
         timeout: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>>;
+    ) -> SelectionOutcome<BtFileChoice>;
 
     /// 发起插件 resolve 变体（画质/格式）选择等待；`timeout` 到期后返回
     /// `TimedOutDefaulted`（默认值 = 调用方传入的 `default_index`，通常为 0，

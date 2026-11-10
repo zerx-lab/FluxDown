@@ -39,6 +39,7 @@ import com.fluxdown.fluxui.theme.fluxPressable
  * - 槽位（左→右）：速度读数（`mono 15·km / 600` accentHi + 0.72em 单位）、[waveform] 迷你波形槽（占满剩余宽度，高 22dp）、
  *   [meta]（`monoS inkMuted`）、36dp 暂停 / 恢复钮（[allPaused] 时显示播放）。
  * - 点按整条 → [onClick]。无障碍：读数 / 波形 / 元信息合并为一句“实时下载速度 …”且**不设 liveRegion**；暂停钮独立。
+ * - [label] 非空（多选模式）：整条只显示这行文字（如「已选 3 项」，`h2` ink），不显示读数 / 波形 / 暂停钮，也不可点。
  * - 尺寸：满宽、高 46、圆角全圆；位置（left/right 12、top = 状态栏 − 4）由调用方摆放。
  */
 @Composable
@@ -56,6 +57,7 @@ fun FluxTopStrip(
     pauseDescription: String = "全部暂停",
     resumeDescription: String = "全部恢复",
     waveform: @Composable BoxScope.() -> Unit = {},
+    label: String? = null,
 ) {
     val motion = FluxTheme.motion
     val progressState = rememberUpdatedState(progress)
@@ -84,12 +86,23 @@ fun FluxTopStrip(
             .fillMaxWidth()
             .height(48.dp)
             .chromeFade(translateY = (-14).dp, scaleFrom = 0.96f, pivotY = 0f) { presence.progress.value }
-            .fluxPressable(onClick = onClick, scale = 0.98f, enabled = visible, role = Role.Button)
+            .then(if (label == null) Modifier.fluxPressable(onClick = onClick, scale = 0.98f, enabled = visible, role = Role.Button) else Modifier)
             .floatingChromeSurface(shape)
             .padding(start = 16.dp, end = 5.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (label != null) {
+            FluxText(
+                label,
+                modifier = Modifier.weight(1f),
+                style = type.h2,
+                color = c.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            return@Row
+        }
         Row(
             Modifier
                 .weight(1f)

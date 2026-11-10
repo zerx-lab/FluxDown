@@ -147,77 +147,81 @@ struct PortSlot {
 fn port_field(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let invalid = ctx.t("apiServicePortInvalid");
-    Control::custom(move |disabled, key, window: &mut Window, cx: &mut App| {
-        let snapshot = store.read(cx);
-        let gateway = snapshot.gateway();
-        let value = SharedString::from(gateway.port.to_string());
-        let busy = snapshot.is_busy("gateway");
-        let slot = window.use_keyed_state(SharedString::from(format!("{key}-port")), cx, {
-            let store = store.clone();
-            let value = value.clone();
-            let invalid = invalid.clone();
-            move |window, cx| {
-                let input = cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
-                let _subscription = cx.subscribe_in(
-                    &input,
-                    window,
-                    move |slot: &mut PortSlot, input, event: &InputEvent, window, cx| {
-                        if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. })
-                            || store.read(cx).in_flight("gateway")
-                            || !store.read(cx).gateway().port_editable
-                        {
-                            return;
-                        }
-                        let text = input.read(cx).value();
-                        let Ok(port) = text.trim().parse::<u16>() else {
-                            window.push_notification(Notification::error(invalid.clone()), cx);
-                            input.update(cx, |input, cx| {
-                                input.set_value(slot.last_synced.clone(), window, cx);
-                            });
-                            return;
-                        };
-                        if port < 1024 {
-                            window.push_notification(Notification::error(invalid.clone()), cx);
-                            input.update(cx, |input, cx| {
-                                input.set_value(slot.last_synced.clone(), window, cx);
-                            });
-                            return;
-                        }
-                        if port != store.read(cx).gateway().port {
-                            slot.submitted = true;
-                            store.update(cx, |store, cx| {
-                                store.patch_gateway(
-                                    GatewayPatchParams {
-                                        port: Some(port),
-                                        ..Default::default()
-                                    },
-                                    cx,
-                                );
-                            });
-                        }
-                    },
-                );
-                PortSlot {
-                    input,
-                    last_synced: value,
-                    submitted: false,
-                    _subscription,
+    Control::field(
+        NUMBER_WIDTH,
+        move |disabled, key, width, window: &mut Window, cx: &mut App| {
+            let snapshot = store.read(cx);
+            let gateway = snapshot.gateway();
+            let value = SharedString::from(gateway.port.to_string());
+            let busy = snapshot.is_busy("gateway");
+            let slot = window.use_keyed_state(SharedString::from(format!("{key}-port")), cx, {
+                let store = store.clone();
+                let value = value.clone();
+                let invalid = invalid.clone();
+                move |window, cx| {
+                    let input =
+                        cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                    let _subscription = cx.subscribe_in(
+                        &input,
+                        window,
+                        move |slot: &mut PortSlot, input, event: &InputEvent, window, cx| {
+                            if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. })
+                                || store.read(cx).in_flight("gateway")
+                                || !store.read(cx).gateway().port_editable
+                            {
+                                return;
+                            }
+                            let text = input.read(cx).value();
+                            let Ok(port) = text.trim().parse::<u16>() else {
+                                window.push_notification(Notification::error(invalid.clone()), cx);
+                                input.update(cx, |input, cx| {
+                                    input.set_value(slot.last_synced.clone(), window, cx);
+                                });
+                                return;
+                            };
+                            if port < 1024 {
+                                window.push_notification(Notification::error(invalid.clone()), cx);
+                                input.update(cx, |input, cx| {
+                                    input.set_value(slot.last_synced.clone(), window, cx);
+                                });
+                                return;
+                            }
+                            if port != store.read(cx).gateway().port {
+                                slot.submitted = true;
+                                store.update(cx, |store, cx| {
+                                    store.patch_gateway(
+                                        GatewayPatchParams {
+                                            port: Some(port),
+                                            ..Default::default()
+                                        },
+                                        cx,
+                                    );
+                                });
+                            }
+                        },
+                    );
+                    PortSlot {
+                        input,
+                        last_synced: value,
+                        submitted: false,
+                        _subscription,
+                    }
                 }
-            }
-        });
-        slot.update(cx, |slot, cx| {
-            if !busy && (slot.last_synced != value || slot.submitted) {
-                slot.last_synced = value.clone();
-                slot.submitted = false;
-                slot.input
-                    .update(cx, |input, cx| input.set_value(value, window, cx));
-            }
-        });
-        Input::new(&slot.read(cx).input)
-            .control(cx)
-            .w(active_theme(cx).text_extent(NUMBER_WIDTH))
-            .disabled(disabled || busy)
-    })
+            });
+            slot.update(cx, |slot, cx| {
+                if !busy && (slot.last_synced != value || slot.submitted) {
+                    slot.last_synced = value.clone();
+                    slot.submitted = false;
+                    slot.input
+                        .update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+            });
+            Input::new(&slot.read(cx).input)
+                .control(cx)
+                .w(width.unwrap_or_else(|| active_theme(cx).text_extent(NUMBER_WIDTH)))
+                .disabled(disabled || busy)
+        },
+    )
 }
 
 fn userscript_field(ctx: &SectionContext) -> Control {
@@ -313,176 +317,183 @@ fn token_field(ctx: &SectionContext) -> Control {
     let copy = ctx.t("apiServiceCopy");
     let copied = ctx.t("apiServiceCopied");
     let placeholder = ctx.t("proxyNotConfigured");
-    Control::custom(move |disabled, key, window: &mut Window, cx: &mut App| {
-        let theme = active_theme(cx);
-        let tokens = theme.tokens().clone();
-        let icon_size = theme.extended().icon.md;
-        let snapshot = store.read(cx);
-        let token: SharedString = snapshot
-            .transient("gateway_user_token")
-            .and_then(serde_json::Value::as_str)
-            .map(|token| SharedString::from(token.to_owned()))
-            .unwrap_or_default();
-        let busy = snapshot.is_busy("gateway") || snapshot.is_busy("gatewayToken");
-        let regenerating = snapshot.is_busy_tagged("gateway", "regenerateToken");
-        let clearing = snapshot.is_busy_tagged("gateway", "clearToken");
-        let just_copied = snapshot
-            .transient("gateway_token_copied")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        if snapshot.should_reveal_gateway_token() {
-            store.update(cx, |store, cx| store.reveal_gateway_token(cx));
-        }
-
-        let slot = window.use_keyed_state(SharedString::from(format!("{key}-token")), cx, {
-            let store = store.clone();
-            let token = token.clone();
-            let placeholder = placeholder.clone();
-            move |window, cx| {
-                let input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .default_value(token.clone())
-                        .placeholder(placeholder)
-                });
-                let _subscription = cx.subscribe(
-                    &input,
-                    move |slot: &mut TokenSlot, input, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                            let value =
-                                SharedString::from(input.read(cx).value().trim().to_owned());
-                            if value != slot.last_synced {
-                                slot.last_synced = value.clone();
-                                store.update(cx, |store, cx| {
-                                    store.patch_gateway(
-                                        GatewayPatchParams {
-                                            user_token: Some(value.to_string()),
-                                            ..Default::default()
-                                        },
-                                        cx,
-                                    );
-                                });
-                            }
-                        }
-                    },
-                );
-                TokenSlot {
-                    input,
-                    last_synced: token,
-                    _subscription,
-                }
+    Control::field(
+        INPUT_WIDTH,
+        move |disabled, key, width, window: &mut Window, cx: &mut App| {
+            let theme = active_theme(cx);
+            let tokens = theme.tokens().clone();
+            let icon_size = theme.extended().icon.md;
+            let snapshot = store.read(cx);
+            let token: SharedString = snapshot
+                .transient("gateway_user_token")
+                .and_then(serde_json::Value::as_str)
+                .map(|token| SharedString::from(token.to_owned()))
+                .unwrap_or_default();
+            let busy = snapshot.is_busy("gateway") || snapshot.is_busy("gatewayToken");
+            let regenerating = snapshot.is_busy_tagged("gateway", "regenerateToken");
+            let clearing = snapshot.is_busy_tagged("gateway", "clearToken");
+            let just_copied = snapshot
+                .transient("gateway_token_copied")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if snapshot.should_reveal_gateway_token() {
+                store.update(cx, |store, cx| store.reveal_gateway_token(cx));
             }
-        });
-        slot.update(cx, |slot, cx| {
-            if slot.last_synced != token {
-                slot.last_synced = token.clone();
-                slot.input
-                    .update(cx, |input, cx| input.set_value(token.clone(), window, cx));
-            }
-        });
-        let input = slot.read(cx).input.clone();
 
-        let copy_store = store.clone();
-        let copy_token = token.clone();
-        let generate_store = store.clone();
-        let clear_store = store.clone();
-        let copy_tooltip = if just_copied {
-            copied.clone()
-        } else {
-            copy.clone()
-        };
-        let generate_tooltip = generate.clone();
-        let clear_tooltip = clear.clone();
-        h_flex()
-            .flex_1()
-            .min_w_0()
-            .items_center()
-            .gap(tokens.spacing.sm)
-            .child(
-                Input::new(&input)
-                    .control(cx)
-                    .w(active_theme(cx).text_extent(INPUT_WIDTH))
-                    .disabled(disabled || busy),
-            )
-            .child(
-                icon_button(
-                    "api-token-copy",
-                    copy.clone(),
-                    Icon::new(FluxIcon::Copy).size(icon_size),
-                    ButtonVariant::Secondary,
-                    cx,
-                )
-                .disabled(token.is_empty())
-                .tooltip(move |window, cx| tooltip_view(copy_tooltip.clone(), window, cx))
-                .on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy_token.to_string()));
-                    copy_store.update(cx, |store, cx| {
-                        store.set_transient("gateway_token_copied", serde_json::json!(true), cx);
+            let slot = window.use_keyed_state(SharedString::from(format!("{key}-token")), cx, {
+                let store = store.clone();
+                let token = token.clone();
+                let placeholder = placeholder.clone();
+                move |window, cx| {
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .default_value(token.clone())
+                            .placeholder(placeholder)
                     });
-                    let reset = copy_store.clone();
-                    cx.spawn(async move |cx| {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(2))
-                            .await;
-                        reset.update(cx, |store, cx| {
+                    let _subscription = cx.subscribe(
+                        &input,
+                        move |slot: &mut TokenSlot, input, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                                let value =
+                                    SharedString::from(input.read(cx).value().trim().to_owned());
+                                if value != slot.last_synced {
+                                    slot.last_synced = value.clone();
+                                    store.update(cx, |store, cx| {
+                                        store.patch_gateway(
+                                            GatewayPatchParams {
+                                                user_token: Some(value.to_string()),
+                                                ..Default::default()
+                                            },
+                                            cx,
+                                        );
+                                    });
+                                }
+                            }
+                        },
+                    );
+                    TokenSlot {
+                        input,
+                        last_synced: token,
+                        _subscription,
+                    }
+                }
+            });
+            slot.update(cx, |slot, cx| {
+                if slot.last_synced != token {
+                    slot.last_synced = token.clone();
+                    slot.input
+                        .update(cx, |input, cx| input.set_value(token.clone(), window, cx));
+                }
+            });
+            let input = slot.read(cx).input.clone();
+
+            let copy_store = store.clone();
+            let copy_token = token.clone();
+            let generate_store = store.clone();
+            let clear_store = store.clone();
+            let copy_tooltip = if just_copied {
+                copied.clone()
+            } else {
+                copy.clone()
+            };
+            let generate_tooltip = generate.clone();
+            let clear_tooltip = clear.clone();
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap(tokens.spacing.sm)
+                .child(
+                    Input::new(&input)
+                        .control(cx)
+                        .w(width.unwrap_or_else(|| active_theme(cx).text_extent(INPUT_WIDTH)))
+                        .disabled(disabled || busy),
+                )
+                .child(
+                    icon_button(
+                        "api-token-copy",
+                        copy.clone(),
+                        Icon::new(FluxIcon::Copy).size(icon_size),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .disabled(token.is_empty())
+                    .tooltip(move |window, cx| tooltip_view(copy_tooltip.clone(), window, cx))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_token.to_string()));
+                        copy_store.update(cx, |store, cx| {
                             store.set_transient(
                                 "gateway_token_copied",
-                                serde_json::json!(false),
+                                serde_json::json!(true),
                                 cx,
                             );
                         });
-                    })
-                    .detach();
-                }),
-            )
-            .child(
-                loading_icon_button(
-                    "api-token-generate",
-                    generate.clone(),
-                    Icon::new(FluxIcon::RotateCw).size(icon_size),
-                    ButtonVariant::Secondary,
-                    regenerating,
-                    cx,
+                        let reset = copy_store.clone();
+                        cx.spawn(async move |cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_secs(2))
+                                .await;
+                            reset.update(cx, |store, cx| {
+                                store.set_transient(
+                                    "gateway_token_copied",
+                                    serde_json::json!(false),
+                                    cx,
+                                );
+                            });
+                        })
+                        .detach();
+                    }),
                 )
-                .disabled(disabled || busy)
-                .tooltip(move |window, cx| tooltip_view(generate_tooltip.clone(), window, cx))
-                .on_click(move |_, _, cx| {
-                    generate_store.update(cx, |store, cx| {
-                        store.patch_gateway(
-                            GatewayPatchParams {
-                                regenerate_user_token: true,
-                                ..Default::default()
-                            },
-                            cx,
-                        );
-                        store.tag_busy("gateway", "regenerateToken");
-                    });
-                }),
-            )
-            .child(
-                loading_icon_button(
-                    "api-token-clear",
-                    clear.clone(),
-                    Icon::new(FluxIcon::Trash2)
-                        .size(icon_size)
-                        .text_color(tokens.colors.destructive),
-                    ButtonVariant::Secondary,
-                    clearing,
-                    cx,
+                .child(
+                    loading_icon_button(
+                        "api-token-generate",
+                        generate.clone(),
+                        Icon::new(FluxIcon::RotateCw).size(icon_size),
+                        ButtonVariant::Secondary,
+                        regenerating,
+                        cx,
+                    )
+                    .disabled(disabled || busy)
+                    .tooltip(move |window, cx| tooltip_view(generate_tooltip.clone(), window, cx))
+                    .on_click(move |_, _, cx| {
+                        generate_store.update(cx, |store, cx| {
+                            store.patch_gateway(
+                                GatewayPatchParams {
+                                    regenerate_user_token: true,
+                                    ..Default::default()
+                                },
+                                cx,
+                            );
+                            store.tag_busy("gateway", "regenerateToken");
+                        });
+                    }),
                 )
-                .disabled(disabled || busy || token.is_empty())
-                .tooltip(move |window, cx| tooltip_view(clear_tooltip.clone(), window, cx))
-                .on_click(move |_, _, cx| {
-                    clear_store.update(cx, |store, cx| {
-                        store.patch_gateway(
-                            GatewayPatchParams {
-                                user_token: Some(String::new()),
-                                ..Default::default()
-                            },
-                            cx,
-                        );
-                        store.tag_busy("gateway", "clearToken");
-                    });
-                }),
-            )
-    })
+                .child(
+                    loading_icon_button(
+                        "api-token-clear",
+                        clear.clone(),
+                        Icon::new(FluxIcon::Trash2)
+                            .size(icon_size)
+                            .text_color(tokens.colors.destructive),
+                        ButtonVariant::Secondary,
+                        clearing,
+                        cx,
+                    )
+                    .disabled(disabled || busy || token.is_empty())
+                    .tooltip(move |window, cx| tooltip_view(clear_tooltip.clone(), window, cx))
+                    .on_click(move |_, _, cx| {
+                        clear_store.update(cx, |store, cx| {
+                            store.patch_gateway(
+                                GatewayPatchParams {
+                                    user_token: Some(String::new()),
+                                    ..Default::default()
+                                },
+                                cx,
+                            );
+                            store.tag_busy("gateway", "clearToken");
+                        });
+                    }),
+                )
+        },
+    )
 }

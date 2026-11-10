@@ -15,6 +15,11 @@ import { href } from "../../i18n/routing";
 import type { Lang } from "../../i18n/config";
 import { GITHUB_URL } from "../../lib/site-nav";
 import { withBase } from "../../lib/base";
+import {
+  CLOUD_PROMO,
+  cloudPromoCopy,
+  isCloudPromoActive,
+} from "../../lib/cloud-promo";
 
 interface Props {
   lang: Lang;
@@ -22,6 +27,8 @@ interface Props {
 const { lang } = Astro.props;
 const t = home[lang].hero;
 const actions = common[lang].actions;
+const promoOn = isCloudPromoActive();
+const promo = promoOn ? cloudPromoCopy[lang] : null;
 
 const osLabels = {
   mac: actions.downloadFor("macOS"),
@@ -36,6 +43,7 @@ const versions = [
   { id: "linux", brand: "linux", label: t.moreItems.linux, hint: "AppImage · deb · Arch" },
   { id: "server", brand: "docker", label: t.moreItems.server, hint: "Docker · NAS" },
   { id: "android", brand: "android", label: t.moreItems.android, hint: "APK" },
+  { id: "ios", brand: "apple", label: t.moreItems.ios, hint: "TestFlight · IPA" },
   { id: "cli", icon: Terminal, label: t.moreItems.cli, hint: "CLI" },
   { id: "extension", icon: Puzzle, label: t.moreItems.extension, hint: "Chrome · Edge · Firefox" },
 ] as const;
@@ -52,11 +60,27 @@ const versions = [
     <canvas class="hero-layer hero-particles" aria-hidden="true" data-flux></canvas>
 
     <div class="hero-copy">
-      <a href={href("/announcements/gpui-client", lang)} class="hero-badge">
-        <span class="hero-badge-tag">{t.badge}</span>
-        <span>{t.badgeText}</span>
-        <ArrowRight size={13} strokeWidth={2} />
-      </a>
+      {
+        promo ? (
+          <a
+            href={href(CLOUD_PROMO.planPath, lang)}
+            class="hero-badge hero-badge--promo"
+            data-cloud-promo
+            data-ends-at={CLOUD_PROMO.endAt}
+            data-promo-fill="heroBadge"
+          >
+            <span class="hero-badge-tag">{promo.badge}</span>
+            <span data-promo-text>{promo.product}</span>
+            <ArrowRight size={13} strokeWidth={2} />
+          </a>
+        ) : (
+          <a href={href("/changelog", lang)} class="hero-badge">
+            <span class="hero-badge-tag">{t.badge}</span>
+            <span>{t.badgeText}</span>
+            <ArrowRight size={13} strokeWidth={2} />
+          </a>
+        )
+      }
 
       <h1 class="display hero-title">
         <span class="block">{t.titleA}</span>
@@ -357,6 +381,10 @@ const versions = [
   }
   .hero-badge:hover :global(svg) {
     transform: translateX(3px);
+  }
+  /* 促销角标与默认 badge 同壳，仅文案换价，避免再叠一层实心促销块 */
+  .hero-badge--promo {
+    color: var(--fg-muted);
   }
   .hero-badge-tag {
     position: relative;

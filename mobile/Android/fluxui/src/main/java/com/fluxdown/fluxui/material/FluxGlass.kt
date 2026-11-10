@@ -218,7 +218,11 @@ private class GlassNode(var spec: GlassElement) : Modifier.Node(), DrawModifierN
             val d = origin - bd.originInRoot
             path.reset()
             path.addOutline(outline)
-            clipPath(path) { translate(-d.x, -d.y) { drawLayer(layer) } }
+            // 先垫画布：页面级背景源（只录列表）是透明的，不垫底时下方清晰的文字会从模糊副本的透明处透出来。
+            clipPath(path) {
+                drawRect(c.canvas)
+                translate(-d.x, -d.y) { drawLayer(layer) }
+            }
             drawOutline(outline, tint(s, c))
         } else {
             drawOutline(outline, solid(s, c))

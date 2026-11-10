@@ -5,6 +5,7 @@ import { useT } from '../../../../i18n'
 import { useAgent } from '../../../../lib/rpc'
 import { Switch } from '../../../../ui'
 import { mergeDevices } from '../../../downloads/model/devices'
+import { HIDE_TASK_SOURCE_PREF } from '../../../downloads/model/viewPrefs'
 import { PrefSwitchRow, SettingsPage, SettingsRow, SettingsSection, setPref, usePrefRaw } from '../../kit'
 
 /** `ui.show_sidebar_devices` 三态：未设置 = 登录或有其他设备（云 + 独立直连）时自动显示；开关显示有效值。 */
@@ -37,10 +38,12 @@ export function GeneralSettings() {
         <PrefSwitchRow prefKey="ui.show_sidebar_category" fallback titleKey="showSidebarCategory" descKey="showSidebarCategoryNestedDesc" />
         <SidebarDevicesRow />
       </SettingsSection>
+      <SettingsSection title={t('taskListDisplay')}>
+        <PrefSwitchRow prefKey={HIDE_TASK_SOURCE_PREF} fallback={false} titleKey="hideTaskSource" descKey="hideTaskSourceDesc" />
+      </SettingsSection>
       <SettingsSection title={t('activityBarSection')} subtitle={t('activityBarSectionDesc')}>
         <PrefSwitchRow prefKey="ui.show_activity_rss" fallback titleKey="showActivityRss" descKey="showActivityRssDesc" />
         <PrefSwitchRow prefKey="ui.show_activity_webhooks" fallback titleKey="showActivityWebhooks" descKey="showActivityWebhooksDesc" />
-        <PrefSwitchRow prefKey="ui.show_activity_share" fallback titleKey="showActivityShare" descKey="showActivityShareDesc" />
         <PrefSwitchRow prefKey="ui.show_activity_account" fallback titleKey="showActivityAccount" descKey="showActivityAccountDesc" />
       </SettingsSection>
     </SettingsPage>

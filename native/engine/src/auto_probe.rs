@@ -510,7 +510,7 @@ mod tests {
         let mut params = race_params(&url, &host, vec![system_proxy_path(proxy_port)]).await?;
 
         let started = std::time::Instant::now();
-        let probed = race_probe(&mut params, ProbeKind::HeldGet).await?;
+        let probed = race_probe(&mut params, ProbeKind::Held).await?;
         let elapsed = started.elapsed();
 
         assert!(
@@ -549,7 +549,7 @@ mod tests {
         let mut params = race_params(&url, &host, vec![system_proxy_path(proxy_port)]).await?;
 
         let started = std::time::Instant::now();
-        race_probe(&mut params, ProbeKind::HeldGet).await?;
+        race_probe(&mut params, ProbeKind::Held).await?;
         let elapsed = started.elapsed();
 
         assert!(elapsed >= STAGGER_COLD, "错峰内不得抢跑备选: {elapsed:?}");
@@ -573,7 +573,7 @@ mod tests {
         let host = format!("race-404-{proxy_port}.test");
         let mut params = race_params(&url, &host, vec![system_proxy_path(proxy_port)]).await?;
 
-        let result = race_probe(&mut params, ProbeKind::HeldGet).await;
+        let result = race_probe(&mut params, ProbeKind::Held).await;
 
         assert!(result.is_err(), "404 是服务器结论，不是路径问题");
         assert_eq!(

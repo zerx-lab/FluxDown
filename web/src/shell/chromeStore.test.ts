@@ -40,7 +40,7 @@ describe('chromeStore', () => {
     expect(setChromeItemHidden('rss', true)).toBe(true)
     expect(setChromeItemHidden('rss', true)).toBe(false)
     expect(stored().hidden).toEqual(['rss'])
-    expect(stored().railTop).toEqual(['downloads', 'rss', 'webhooks', 'share'])
+    expect(stored().railTop).toEqual(['downloads', 'rss', 'webhooks'])
     expect(moveChromeItem('rss', 'titleLeading', null)).toBe(true)
     expect(stored().hidden).toEqual(['rss'])
     expect(setChromeItemHidden('rss', false)).toBe(true)

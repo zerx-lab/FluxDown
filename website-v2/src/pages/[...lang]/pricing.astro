@@ -4,6 +4,7 @@ import Layout from "@/layouts/Layout.astro";
 import PageHeader from "@/components/site/PageHeader.astro";
 import PricingPlans from "@/components/pricing/PricingPlans";
 import CompareTable from "@/components/pricing/CompareTable.astro";
+import CloudPromoBanner from "@/components/site/CloudPromoBanner.astro";
 import { langStaticPaths, resolveLang, href } from "@/i18n/routing";
 import { pricing } from "@/i18n/messages/pricing";
 import { SAME_AS } from "@/lib/seo";
@@ -15,6 +16,7 @@ const serif = (s: string) => s.replace(/<em>(.*?)<\/em>/g, '<span class="serif">
 ---
 
 <Layout lang={lang} title={t.meta.title} description={t.meta.description}>
+  <CloudPromoBanner lang={lang} variant="pricing" />
   <PageHeader eyebrow={t.hero.eyebrow} title={t.hero.title} lede={t.hero.lede}>
     <a class="btn btn-secondary" href={href("/pricing/why", lang)}>
       {t.hero.why}

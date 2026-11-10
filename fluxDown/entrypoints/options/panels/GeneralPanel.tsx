@@ -10,7 +10,7 @@ import { saveTheme } from "@/ui/theme";
 import { exportConnectionDiagnostics } from "@/utils/connection-diagnostics";
 import { clearLocale, saveLocale } from "@/utils/i18n";
 import { settings, updateSettings, useLocalValue } from "../lib/store";
-import { PanelShell, SettingRow, ToggleRow } from "../parts";
+import { PanelShell, SettingGroup, SettingRow, ToggleRow } from "../parts";
 
 type LocaleChoice = "auto" | "zh-CN" | "zh-TW" | "en";
 type ThemeChoice = "system" | "light" | "dark";
@@ -51,65 +51,72 @@ export function GeneralPanel(): JSX.Element | null {
 
   return (
     <PanelShell title={t("options.nav.general")}>
-      <SettingRow title={t("options.general.languageTitle")} desc={t("options.general.languageDesc")}>
-        <Select<LocaleChoice>
-          value={locale}
-          onChange={changeLocale}
-          options={[
-            { value: "auto", label: t("options.general.languageAuto") },
-            { value: "zh-CN", label: "简体中文" },
-            { value: "zh-TW", label: "繁體中文（台灣）" },
-            { value: "en", label: "English" },
-          ]}
-        />
-      </SettingRow>
-
-      <SettingRow title={t("options.general.themeTitle")} desc={t("options.general.themeDesc")}>
-        <Select<ThemeChoice>
-          value={theme}
-          onChange={(v) => void saveTheme(v)}
-          options={[
-            { value: "system", label: t("options.theme.system") },
-            { value: "light", label: t("options.theme.light") },
-            { value: "dark", label: t("options.theme.dark") },
-          ]}
-        />
-      </SettingRow>
-
-      {platform.android ? null : (
-        <ToggleRow
-          title={t("options.general.notifyLocalTitle")}
-          desc={t("options.general.notifyLocalDesc")}
-          checked={s.notifyLocalTask}
-          onChange={(v) => void updateSettings({ notifyLocalTask: v })}
-        />
-      )}
-      <ToggleRow
-        title={t("options.general.notifyRemoteTitle")}
-        desc={t("options.general.notifyRemoteDesc")}
-        checked={s.notifyRemoteTask}
-        onChange={(v) => void updateSettings({ notifyRemoteTask: v })}
-      />
-      {platform.android ? null : (
-        <ToggleRow
-          title={t("options.protocol.label")}
-          desc={t("options.protocol.desc")}
-          checked={s.enableFluxdownProtocol}
-          onChange={(v) => void updateSettings({ enableFluxdownProtocol: v })}
-        />
-      )}
-
-      <SettingRow title={t("stats.title")} desc={t("options.general.statsDesc")} inline>
-        <Button onClick={() => void resetStats()}>{t("stats.reset")}</Button>
-      </SettingRow>
-
-      {platform.android ? null : (
-        <SettingRow title={t("diagnostics.title")} desc={t("diagnostics.description")} inline>
-          <Button disabled={exporting} onClick={() => void exportDiagnostics()}>
-            {exporting ? t("diagnostics.exporting") : t("diagnostics.export")}
-          </Button>
+      <SettingGroup title={t("options.general.groupInterface")}>
+        <SettingRow title={t("options.general.languageTitle")} desc={t("options.general.languageDesc")}>
+          <Select<LocaleChoice>
+            value={locale}
+            onChange={changeLocale}
+            options={[
+              { value: "auto", label: t("options.general.languageAuto") },
+              { value: "zh-CN", label: "简体中文" },
+              { value: "zh-TW", label: "繁體中文（台灣）" },
+              { value: "en", label: "English" },
+            ]}
+          />
         </SettingRow>
-      )}
+
+        <SettingRow title={t("options.general.themeTitle")} desc={t("options.general.themeDesc")}>
+          <Select<ThemeChoice>
+            value={theme}
+            onChange={(v) => void saveTheme(v)}
+            options={[
+              { value: "system", label: t("options.theme.system") },
+              { value: "light", label: t("options.theme.light") },
+              { value: "dark", label: t("options.theme.dark") },
+            ]}
+          />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title={t("options.general.groupNotify")}>
+        {platform.android ? null : (
+          <ToggleRow
+            title={t("options.general.notifyLocalTitle")}
+            desc={t("options.general.notifyLocalDesc")}
+            checked={s.notifyLocalTask}
+            onChange={(v) => void updateSettings({ notifyLocalTask: v })}
+          />
+        )}
+        <ToggleRow
+          title={t("options.general.notifyRemoteTitle")}
+          desc={t("options.general.notifyRemoteDesc")}
+          checked={s.notifyRemoteTask}
+          onChange={(v) => void updateSettings({ notifyRemoteTask: v })}
+        />
+      </SettingGroup>
+
+      <SettingGroup title={t("options.general.groupAdvanced")}>
+        {platform.android ? null : (
+          <ToggleRow
+            title={t("options.protocol.label")}
+            desc={t("options.protocol.desc")}
+            checked={s.enableFluxdownProtocol}
+            onChange={(v) => void updateSettings({ enableFluxdownProtocol: v })}
+          />
+        )}
+
+        <SettingRow title={t("stats.title")} desc={t("options.general.statsDesc")} inline>
+          <Button onClick={() => void resetStats()}>{t("stats.reset")}</Button>
+        </SettingRow>
+
+        {platform.android ? null : (
+          <SettingRow title={t("diagnostics.title")} desc={t("diagnostics.description")} inline>
+            <Button disabled={exporting} onClick={() => void exportDiagnostics()}>
+              {exporting ? t("diagnostics.exporting") : t("diagnostics.export")}
+            </Button>
+          </SettingRow>
+        )}
+      </SettingGroup>
     </PanelShell>
   );
 }

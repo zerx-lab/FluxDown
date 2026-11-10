@@ -43,10 +43,6 @@ struct RecordingTasks {
 
 #[async_trait]
 impl LinkTaskCreator for RecordingTasks {
-    async fn create_task(&self, request: CreateTaskRequest) -> Result<String, ApiError> {
-        self.create_task_with_route(request, None).await
-    }
-
     async fn create_task_with_route(
         &self,
         request: CreateTaskRequest,

@@ -95,7 +95,7 @@ jobs:
   #   mobile/Android/**      → 原生 Android（mobile）
   #   docker/**              → 服务器（部署文件变更需重发镜像）
   #   mobile/FluxDown/**、.github/workflows/ios-sideload.yml → 原生 iOS 侧载 IPA（ios；商店构建另走 ios-testflight.yml）
-  #   website-v2/**          → 官网（独立走 deploy-website-v2.yml 部署，不发 release）；其中 src/lib/gpui-theme/** 被 Web SPA 构建引用 → 服务器（server）
+  #   website-v2/**          → 官网（服务器手动跑 website-v2/deploy.sh，不发 release）；其中 src/lib/gpui-theme/** 被 Web SPA 构建引用 → 服务器（server）
   #   website/**             → 已删除的 v1 旧站：删除提交与历史 tag 区间的 diff 仍会列出它，不触发任何构建
   #   docs/**、*.md          → 纯文档，不触发任何构建
   #   其余任何路径            → 桌面客户端（app）
@@ -303,7 +303,6 @@ jobs:
                 # 服务器 = fluxdown-agent --server + fluxdownd；桌面 = fluxdown-desktop + 同一对进程
                 native/daemon/*|native/agent/*) APP=true; SERVER=true; MOBILE=true; IOS=true ;;
                 native/link/*)       APP=true; SERVER=true; MOBILE=true; IOS=true ;;
-                native/share/*)      APP=true; SERVER=true; MOBILE=true; IOS=true ;;
                 native/mobile/*)     MOBILE=true; IOS=true ;;
                 # GPUI 桌面客户端
                 crates/*)            APP=true ;;
@@ -322,7 +321,7 @@ jobs:
                 website-v2/src/lib/gpui-theme/*) SERVER=true ;;
                 assets/icon-packs/*) APP=true; SERVER=true ;;
                 assets/flags/*)      APP=true; SERVER=true ;;
-                # 官网独立部署（deploy-website-v2.yml），不发 release；gpui-theme 例外已在上方先匹配。
+                # 官网不走 release（服务器手动 deploy.sh）；gpui-theme 例外已在上方先匹配。
                 # website/ 是已删除的 v1 旧站：删除提交与历史 tag 区间的 diff 仍会列出它，同样不触发构建
                 website-v2/*|website/*) ;;
                 # 插件 SDK 走独立的 plugin-sdk-release.yml，不触发桌面/服务器重建
@@ -1312,8 +1311,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 钉 24.04：ubuntu-26.04 镜像启用 amd64v3 变体，gcc 默认 AVX2，C 依赖（mimalloc 等）
+          # 会编进无运行时分派的 AVX2 代码，NAS / 软路由的 J4125 等 CPU 启动即 SIGILL（0.6.4）。
           - platform: linux-x64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
@@ -1350,10 +1351,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # musl-gcc：ring/bundled-sqlite/zstd 等 C 依赖静态编译所需
+      # musl-gcc：ring/bundled-sqlite/zstd 等 C 依赖静态编译所需；qemu-user 供 x86-64 基线自检
       - name: Install musl toolchain (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools ${{ matrix.platform == 'linux-x64' && 'qemu-user' || '' }}
 
       - name: Restore Rust cache
         id: rust-cache
@@ -1375,16 +1376,25 @@ jobs:
           name: server-webroot
           path: webroot
 
-      # 产品版本由 FLUXDOWN_APP_VERSION 注入。
+      # 产品版本由 FLUXDOWN_APP_VERSION 注入。C 依赖经 cc 显式按 x86-64 基线编译，不随 runner
+      # 镜像的编译器默认值漂移（cc 不从 RUSTFLAGS 的 target-cpu 推导 -march）。
       - name: Build server binaries (agent + daemon)
         env:
           FLUXDOWN_ANALYTICS_APP_KEY: ${{ secrets.ANALYTICS_APP_KEY }}
           FLUXCLOUD_BASE_URL: ${{ secrets.FLUXCLOUD_BASE_URL }}
           FLUXDOWN_EMBED_WEBROOT: ${{ github.workspace }}/webroot
           FLUXDOWN_APP_VERSION: ${{ steps.version.outputs.VERSION }}
+          CFLAGS_x86_64_unknown_linux_musl: -march=x86-64 -mtune=generic
+          CXXFLAGS_x86_64_unknown_linux_musl: -march=x86-64 -mtune=generic
         run: |
           cargo build --release --locked -p fluxdown_agent --features web-ui --target ${{ matrix.target }}
           cargo build --release --locked -p fluxdown_daemon --target ${{ matrix.target }}
+
+      - name: Check x86-64 baseline (linux-x64)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          .github/scripts/check_x86_64_baseline.sh "target/${{ matrix.target }}/release/fluxdownd"
+          .github/scripts/check_x86_64_baseline.sh "target/${{ matrix.target }}/release/fluxdown-agent" --server
 
       - name: Save Rust cache
         if: github.ref_type != 'tag' && steps.rust-cache.outputs.cache-hit != 'true'
@@ -1568,8 +1578,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 钉 24.04 的原因同 build-server-binaries（ubuntu-26.04 amd64v3 → AVX2）。
           - platform: linux-x64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
@@ -1604,10 +1615,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # musl-gcc：ring 等 C 依赖静态编译所需
+      # musl-gcc：ring 等 C 依赖静态编译所需；qemu-user 供 x86-64 基线自检
       - name: Install musl toolchain (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools ${{ matrix.platform == 'linux-x64' && 'qemu-user' || '' }}
 
       - name: Restore Rust cache
         id: rust-cache
@@ -1624,7 +1635,13 @@ jobs:
       - name: Build CLI binary
         env:
           FLUXDOWN_APP_VERSION: ${{ steps.version.outputs.VERSION }}
+          CFLAGS_x86_64_unknown_linux_musl: -march=x86-64 -mtune=generic
+          CXXFLAGS_x86_64_unknown_linux_musl: -march=x86-64 -mtune=generic
         run: cargo build --release --locked -p fluxdown_cli --target ${{ matrix.target }}
+
+      - name: Check x86-64 baseline (linux-x64)
+        if: matrix.platform == 'linux-x64'
+        run: .github/scripts/check_x86_64_baseline.sh "target/${{ matrix.target }}/release/fluxdown" --version
 
       - name: Save Rust cache
         if: github.ref_type != 'tag' && steps.rust-cache.outputs.cache-hit != 'true'
@@ -2317,18 +2334,6 @@ jobs:
             rehearsal/SHA256SUMS.txt
             rehearsal/release-body.md
           if-no-files-found: warn
-
-  # ── 123 云盘镜像：发布成功后经东京服务器中转（pan123-upload.yml）──
-  # GitHub runner 直传 123 极慢，所以不在 upload-* 里做；发布已完成，这里失败只影响应用内更新的 123 下载源
-  # （回落 dl-cn / GitHub），补救：gh workflow run pan123-upload.yml -f tag=<tag>。远端已有同大小文件跳过。
-  mirror-pan123:
-    name: Mirror to 123pan
-    needs: [changes, publish-release]
-    if: ${{ !cancelled() && needs.changes.outputs.rehearsal == 'false' && needs.publish-release.result == 'success' }}
-    uses: ./.github/workflows/pan123-upload.yml
-    with:
-      tag: ${{ needs.changes.outputs.tag }}
-    secrets: inherit
 
   # ── 发布公告：草稿转正后推送到 Telegram 频道（t.me/fluxdown）──
   # release 由 GITHUB_TOKEN 发布，不会触发 on: release 事件，所以公告在本流水线内发送。

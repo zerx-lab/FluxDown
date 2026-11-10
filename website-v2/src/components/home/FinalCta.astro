@@ -7,6 +7,11 @@ import { common } from "../../i18n/messages/common";
 import { href } from "../../i18n/routing";
 import type { Lang } from "../../i18n/config";
 import { withBase } from "@/lib/base";
+import {
+  CLOUD_PROMO,
+  cloudPromoCopy,
+  isCloudPromoActive,
+} from "@/lib/cloud-promo";
 
 interface Props {
   lang: Lang;
@@ -14,6 +19,8 @@ interface Props {
 const { lang } = Astro.props;
 const t = home[lang].cta;
 const title = t.title.replace(/<em>(.*?)<\/em>/g, '<span class="serif accent-gradient">$1</span>');
+const promoOn = isCloudPromoActive();
+const promo = promoOn ? cloudPromoCopy[lang] : null;
 ---
 
 <section class="frame">
@@ -32,7 +39,20 @@ const title = t.title.replace(/<em>(.*?)<\/em>/g, '<span class="serif accent-gra
           {common[lang].actions.download}
           <span class="kbd">D</span>
         </a>
-        <a href={withBase(`/docs/${lang}/`)} class="btn btn-secondary btn-lg">
+        {
+          promo && (
+            <a
+              href={href(CLOUD_PROMO.planPath, lang)}
+              class="btn btn-secondary btn-lg"
+              data-cloud-promo
+              data-ends-at={CLOUD_PROMO.endAt}
+              data-promo-fill="finalCta"
+            >
+              <span data-promo-text>{promo.product}</span>
+            </a>
+          )
+        }
+        <a href={withBase(`/docs/${lang}/`)} class="btn btn-ghost btn-lg">
           <BookOpen size={15} strokeWidth={1.75} />
           {t.docs}
         </a>

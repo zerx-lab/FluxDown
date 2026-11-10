@@ -209,6 +209,23 @@ final class TaskActions {
         }
     }
 
+    /// 每个任务一次 `daemon.task.setPiecePicking`，只带被切换的字段。
+    /// 单任务失败不中断其余任务；有失败时最后走统一错误 Toast 一次。
+    func setPiecePicking(_ params: [SetTaskPiecePickingParams]) {
+        guard !params.isEmpty else { return }
+        run { session throws(HostError) in
+            var first: HostError?
+            for item in params {
+                do throws(HostError) {
+                    try await session.callVoid(HostMethod.daemonTaskSetPiecePicking, params: item)
+                } catch {
+                    if first == nil { first = error }
+                }
+            }
+            if let first { throw first }
+        }
+    }
+
     // MARK: 本地动作（不经主机）
 
     func copyLink(_ task: DownloadTask) {

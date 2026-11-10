@@ -1,7 +1,8 @@
 import Foundation
 
 // 云端配置同步（`agent.sync.*`）。镜像 `native/protocol/src/agent.rs::SyncStatusDto` / `SyncLocalOnlyParams`；
-// 范围分组与状态优先级镜像 Web `account/syncGroups.ts`（键表 = `settings.rs::SYNC_SETTING_SPECS` 共 56 键）。
+// 范围分组与状态优先级镜像 Web `account/syncGroups.ts`（iOS 键表 79 项；Rust `SYNC_SETTING_SPECS` 81 项，
+// 多出的 `ui.show_activity_account` 与 `appearance.file_icon_pack` 尚未镜像）。
 
 /// `agent.sync` 分区 / `agent.sync.get|setLocalOnly` 结果。
 public struct SyncStatusDto: Sendable, Hashable, Codable {
@@ -121,11 +122,18 @@ public enum SyncRules {
             "download.notify_on_complete", "download.silent_download", "download.keep_awake",
         ]),
         SyncGroup(id: .bt, labelKey: "syncScopeBt", keys: [
-            "bt.enabled", "bt.enable_dht", "bt.enable_upnp", "bt.enable_utp", "bt.custom_trackers", "bt.tracker_sub_enabled",
+            "bt.enabled", "bt.enable_dht", "bt.enable_upnp", "bt.enable_utp", "bt.custom_trackers",
+            "bt.piece_order", "bt.first_last_pieces_first", "bt.tracker_sub_enabled",
             "bt.tracker_sub_urls",
             "bt.seed_ratio_limit", "bt.seed_post_ratio_limit", "bt.seed_time_limit_minutes",
             "bt.seed_inactive_time_limit_minutes", "bt.seed_limit_operator", "bt.seed_then_action",
             "bt.seed_max_active",
+            "bt.guard.enabled", "bt.guard.rule_excessive", "bt.guard.rule_rerequest", "bt.guard.rule_rewind",
+            "bt.guard.rule_lag", "bt.guard.rule_fingerprint", "bt.guard.cloud_mode", "bt.guard.excess_ratio_pct",
+            "bt.guard.min_torrent_mib", "bt.guard.rewind_tolerance_pct", "bt.guard.throttle_kib",
+            "bt.guard.ban_base_hours", "bt.guard.ban_max_days", "bt.guard.downloading_max_action",
+            "bt.guard.skip_private", "bt.guard.skip_lan", "bt.guard.ipv6_prefix", "bt.guard.filter_urls",
+            "bt.guard.cloud_enabled",
         ]),
         SyncGroup(id: .ed2k, labelKey: "syncScopeEd2k", keys: [
             "ed2k.enable_kad", "ed2k.enable_upnp", "ed2k.server_list", "ed2k.server_sub_enabled", "ed2k.server_sub_urls",

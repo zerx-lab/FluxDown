@@ -13,8 +13,6 @@ import type {
   TaskDto,
   TaskRuntimeDto,
   WebhookDeliveryDto,
-  ShareProgressDto,
-  ShareStateDto,
   WsServerMsg,
 } from './protocol'
 
@@ -30,38 +28,6 @@ function isActiveStatus(status: number): boolean {
  */
 export function runtimeRetained(status: number): boolean {
   return status !== 3
-}
-
-/**
- * 应用一条FluxMesh会话进度（对应 Rust `ShareStateDto::apply_progress`）：刷新匹配 `sessionId` 的接收方行与
- * 任务事实的路径；未知会话原样返回。后帧完整取代前帧，所以同一会话的相邻帧可合并。
- */
-export function applyShareProgress(share: ShareStateDto, event: ShareProgressDto): ShareStateDto {
-  let changed = false
-  const shares = share.shares.map((item) => {
-    let touched = false
-    const activeReceivers = item.activeReceivers.map((receiver) => {
-      if (receiver.sessionId !== event.sessionId) return receiver
-      touched = true
-      return {
-        ...receiver,
-        pathKind: event.pathKind,
-        rateBps: event.rateBps,
-        bytes: event.bytes,
-        progress: event.progress,
-      }
-    })
-    if (!touched) return item
-    changed = true
-    return { ...item, activeReceivers }
-  })
-  let taskFacts = share.taskFacts
-  for (const [taskId, facts] of Object.entries(share.taskFacts)) {
-    if (facts.sessionId !== event.sessionId) continue
-    taskFacts = { ...taskFacts, [taskId]: { ...facts, pathKind: event.pathKind } }
-    changed = true
-  }
-  return changed ? { ...share, shares, taskFacts } : share
 }
 
 /** 投递日志保留上限（对应 Rust `WEBHOOK_DELIVERY_LIMIT`）。 */
@@ -744,6 +710,9 @@ function applyDaemonEventTo(draft: DaemonDraft, event: DaemonEvent): void {
     case 'pluginViewFrame':
     case 'pluginViewClosed':
     case 'pluginToast':
+    case 'btGuardChanged':
+    case 'btGuardCloudRefreshWanted':
+    case 'btGuardEvidenceReady':
       return
     case 'snapshotReplaced':
       // 载荷是头：整体替换投影（含 `taskTotal` / `queueTotal`），任务表随后分页载入。
@@ -988,13 +957,6 @@ function applyNonDaemonAgentEvent(snapshot: AgentSnapshot, event: Exclude<AgentE
       return { ...snapshot, power: event.data }
     case 'cloudNotifyChanged':
       return { ...snapshot, cloudNotify: event.data }
-    case 'shareChanged':
-      return { ...snapshot, share: event.data }
-    case 'shareProgress': {
-      if (!snapshot.share) return snapshot
-      const share = applyShareProgress(snapshot.share, event.data)
-      return share === snapshot.share ? snapshot : { ...snapshot, share }
-    }
     case 'captureTasksStarted':
     case 'captureTasksResumed':
     case 'sessionRevoked':

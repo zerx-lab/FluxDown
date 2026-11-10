@@ -7,10 +7,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
+use crate::task_jobs::TaskJobGuard;
 use bytes::Bytes;
-use tokio_util::sync::CancellationToken;
 
 use crate::bt_downloader::{
     VerifyFileSpec, VerifySource, torrent_relative_path_is_safe, verify_pieces_core,
@@ -73,63 +73,6 @@ pub enum BtIntegrityError {
     Internal(String),
 }
 
-/// 在途校验登记：同一任务同时只跑一个；删除任务 / 引擎关停时取消。
-#[derive(Clone, Default)]
-pub(crate) struct IntegrityChecks {
-    running: Arc<Mutex<HashMap<String, CancellationToken>>>,
-}
-
-impl IntegrityChecks {
-    /// 登记一次校验；该任务已有校验在跑时返回 `None`。
-    pub(crate) fn begin(&self, task_id: &str) -> Option<IntegrityCheckGuard> {
-        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        if running.contains_key(task_id) {
-            return None;
-        }
-        let token = CancellationToken::new();
-        running.insert(task_id.to_owned(), token.clone());
-        Some(IntegrityCheckGuard {
-            checks: self.clone(),
-            task_id: task_id.to_owned(),
-            token,
-        })
-    }
-
-    /// 取消该任务的在途校验（没有则无操作）。
-    pub(crate) fn cancel(&self, task_id: &str) {
-        let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(token) = running.get(task_id) {
-            token.cancel();
-        }
-    }
-
-    /// 取消全部在途校验。
-    pub(crate) fn cancel_all(&self) {
-        let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        for token in running.values() {
-            token.cancel();
-        }
-    }
-}
-
-/// 校验登记凭据：释放（完成或调用方丢弃 future）即取消并注销。
-pub(crate) struct IntegrityCheckGuard {
-    checks: IntegrityChecks,
-    task_id: String,
-    token: CancellationToken,
-}
-
-impl Drop for IntegrityCheckGuard {
-    fn drop(&mut self) {
-        self.token.cancel();
-        self.checks
-            .running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.task_id);
-    }
-}
-
 /// 种子元数据来源（按优先级）。
 pub(crate) struct MetadataSources {
     /// 会话中缓存句柄的种子字节（做种中 / 刚完成）。
@@ -156,9 +99,9 @@ pub(crate) struct LandedCheck {
 /// 校验在下一个 piece 处停止。
 pub(crate) async fn run(
     check: LandedCheck,
-    guard: IntegrityCheckGuard,
+    guard: TaskJobGuard,
 ) -> Result<BtIntegrityReport, BtIntegrityError> {
-    let token = guard.token.clone();
+    let token = guard.token();
     let task_id = check.task_id.clone();
     log_info!("[BT] integrity check started: task={}", task_id);
     let joined =
@@ -406,10 +349,7 @@ mod tests {
 
     use bytes::Bytes;
 
-    use super::{
-        BtIntegrityError, BtIntegrityStatus, IntegrityChecks, LandedCheck, MetadataSources,
-        check_landed,
-    };
+    use super::{BtIntegrityError, BtIntegrityStatus, LandedCheck, MetadataSources, check_landed};
 
     const PIECE: usize = 4;
 
@@ -652,21 +592,5 @@ mod tests {
         let error = check_landed(&check(&dir, "x.bin", None, Some(meta)), || true).unwrap_err();
         assert!(matches!(error, BtIntegrityError::Cancelled));
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// 同一任务同时只允许一个校验；凭据释放后可再次开始；取消会传到在途校验。
-    #[test]
-    fn registry_rejects_duplicates_and_propagates_cancel() {
-        let checks = IntegrityChecks::default();
-        let first = checks.begin("t").unwrap();
-        assert!(checks.begin("t").is_none());
-        let other = checks.begin("u").unwrap();
-        checks.cancel("t");
-        assert!(first.token.is_cancelled());
-        assert!(!other.token.is_cancelled());
-        drop(first);
-        let again = checks.begin("t").unwrap();
-        checks.cancel_all();
-        assert!(again.token.is_cancelled() && other.token.is_cancelled());
     }
 }

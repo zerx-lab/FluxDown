@@ -48,6 +48,41 @@ export function canVerifyIntegrity(view: EditFacts & Pick<DownloadTaskView, 'fil
   return view.source === 'local' && view.state === 'completed' && isBtUrl(view.url) && !view.fileMissing
 }
 
+/** 下载顺序：全部非顺序 = 最稀有（默认）；全部顺序 = 按顺序；混选或空选 = 两项都不点亮。 */
+export type PieceOrder = 'rarest' | 'sequential' | 'mixed'
+
+/** 「选片方式」：全部为本地、未完成的 BT 任务（多选取交集）。 */
+export function canSetPiecePicking(views: readonly EditFacts[]): boolean {
+  return views.length > 0 && views.every((view) => view.source === 'local' && view.state !== 'completed' && isBtUrl(view.url))
+}
+
+/** 所选任务的下载顺序。空选与混选都不点亮。 */
+export function pieceOrder(views: readonly Pick<DownloadTaskView, 'btSequential'>[]): PieceOrder {
+  if (views.length === 0) return 'mixed'
+  const sequential = views[0]!.btSequential
+  return views.every((view) => view.btSequential === sequential) ? (sequential ? 'sequential' : 'rarest') : 'mixed'
+}
+
+/** 需要改成目标顺序的任务；已是该状态的跳过。 */
+export function pieceOrderTargets<T extends Pick<DownloadTaskView, 'btSequential'>>(views: readonly T[], sequential: boolean): T[] {
+  return views.filter((view) => view.btSequential !== sequential)
+}
+
+/** 顺序只带 `sequential`。`false` = 最稀有优先。 */
+export function pieceSequentialParams(taskId: string, sequential: boolean): { taskId: string; sequential: boolean } {
+  return { taskId, sequential }
+}
+
+/** 「先下载首尾」是否全部打开（空选为 false）。 */
+export function pieceOptionAllOn(views: readonly Pick<DownloadTaskView, 'btFirstLastPiecesFirst'>[]): boolean {
+  return views.length > 0 && views.every((view) => view.btFirstLastPiecesFirst)
+}
+
+/** 首尾切换只带该字段，目标为「并非全部已开」。 */
+export function pieceEndsParams(taskId: string, allOn: boolean): { taskId: string; firstLastPiecesFirst: boolean } {
+  return { taskId, firstLastPiecesFirst: !allOn }
+}
+
 /** 线程数输入 → 线程数：`0..=MAX_TASK_SEGMENTS` 的整数（0 = 自动）；空串 / 非数字 / 超限 → null。 */
 export function parseTaskSegments(input: string): number | null {
   const text = input.trim()

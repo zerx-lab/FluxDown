@@ -66,6 +66,42 @@ export interface DirRow {
 /** 表格可见行：顶层任务行（引擎持有的稳定行对象）、桶标题、组行及其展开内容。 */
 export type VisibleRow = TaskRow | BucketRow | GroupFolderRow | MemberRow | DirRow
 
+/**
+ * 划选覆盖的任务键：闭区间 `[from, to]` 内的任务行 / 成员行，以及落在区间内的组行的全部成员
+ * （折叠组没有单独的成员行）。桶标题与目录行不贡献任务。顺序为行序，重复键只保留第一次。
+ */
+/** 锚点任务所在的可见行：优先任务行 / 成员行，否则落在包含该成员的组行。 */
+export function rowIndexOfKey(rows: readonly VisibleRow[], key: RowKey): number {
+  let groupHit = -1
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    if (!row) continue
+    if ((row.type === 'task' || row.type === 'member') && row.key === key) return index
+    if (row.type === 'group' && groupHit < 0 && row.orderedKeys().includes(key)) groupHit = index
+  }
+  return groupHit
+}
+
+export function keysInVisualSpan(rows: readonly VisibleRow[], from: number, to: number): RowKey[] {
+  if (rows.length === 0) return []
+  const start = Math.max(0, Math.min(from, to))
+  const end = Math.min(rows.length - 1, Math.max(from, to))
+  const keys: RowKey[] = []
+  const seen = new Set<RowKey>()
+  const add = (key: RowKey) => {
+    if (seen.has(key)) return
+    seen.add(key)
+    keys.push(key)
+  }
+  for (let index = start; index <= end; index += 1) {
+    const row = rows[index]
+    if (!row) continue
+    if (row.type === 'task' || row.type === 'member') add(row.key)
+    else if (row.type === 'group') for (const key of row.orderedKeys()) add(key)
+  }
+  return keys
+}
+
 export const groupRowKey = (groupId: string): string => `g:${groupId}`
 
 /** 目录折叠状态的集合键。 */

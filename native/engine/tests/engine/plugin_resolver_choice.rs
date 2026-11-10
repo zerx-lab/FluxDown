@@ -15,7 +15,7 @@ use fluxdown_engine::bt_config::BtConfig;
 use fluxdown_engine::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption};
 use fluxdown_engine::proxy_config::ProxyConfig;
 use fluxdown_engine::selection::{
-    HostSelection, PluginChoice, PluginChoiceRequest, SelectionOutcome,
+    BtFileChoice, HostSelection, PluginChoice, PluginChoiceRequest, SelectionOutcome,
 };
 use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
 
@@ -104,9 +104,10 @@ impl HostSelection for ChoosingSelection {
         &self,
         _: &str,
         _: &[BtFileEntry],
+        _: &str,
         _: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>> {
-        SelectionOutcome::NoSelectorConfigured(Vec::new())
+    ) -> SelectionOutcome<BtFileChoice> {
+        SelectionOutcome::NoSelectorConfigured(BtFileChoice::default())
     }
     async fn select_resolve_variant(
         &self,

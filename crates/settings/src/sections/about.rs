@@ -1,6 +1,6 @@
 //! 关于：版本、软件更新、日志导出、浏览器扩展与捐赠链接。
 
-use fluxdown_protocol::{ReleaseNoteDto, method};
+use fluxdown_protocol::{ReleaseNoteDto, UpdatePhase, method};
 use fluxdown_ui_components::{ButtonVariant, FluxIcon, button, loading_button};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -92,7 +92,7 @@ fn check_update_control(ctx: &SectionContext) -> Control {
     let translator = ctx.translator.clone();
     Control::custom(move |disabled, _key, _window, cx: &mut App| {
         let tokens = active_theme(cx).tokens();
-        let (status, checking, installing, cancelling) = {
+        let (status, busy_checking, installing, cancelling) = {
             let store = store.read(cx);
             (
                 store.update_status().clone(),
@@ -101,8 +101,10 @@ fn check_update_control(ctx: &SectionContext) -> Control {
                 store.is_busy("updateCancel"),
             )
         };
+        // 后台自动检查也让按钮转圈；「检查中」状态行由按钮 loading 承担，不再单独显示。
+        let checking = busy_checking || status.phase == UpdatePhase::Checking;
         let lines: Vec<SharedString> = [
-            update_view::status_line(&status),
+            update_view::status_line(&status).filter(|_| status.phase != UpdatePhase::Checking),
             update_view::manual_line(&status),
         ]
         .into_iter()

@@ -1,6 +1,6 @@
 //! 下载：保存位置、自定义分类、行为、连接与性能、自动重试、高级。
 
-use fluxdown_protocol::{HIGH_SEGMENTS_WARN_ABOVE, SEVERE_SEGMENTS_WARN_ABOVE};
+use fluxdown_protocol::{HASH_ALGORITHMS, HIGH_SEGMENTS_WARN_ABOVE, SEVERE_SEGMENTS_WARN_ABOVE};
 use fluxdown_ui_components::{
     ButtonVariant, CalloutTone, FluxIcon, RevealCallout, button, loading_button, tabular_numbers,
 };
@@ -53,6 +53,11 @@ fn save_location_section(ctx: &SectionContext) -> SettingsSection {
             ctx.pref_switch("download.remember_last_save_dir", false),
         ))
         .row(ctx.item(
+            "rememberLastDownloadTarget",
+            Some("rememberLastDownloadTargetDesc"),
+            ctx.pref_switch(REMEMBER_LAST_TARGET_PREF, false),
+        ))
+        .row(ctx.item(
             "saveDirHistory",
             Some("saveDirHistoryDesc"),
             ctx.pref_switch(SAVE_DIR_HISTORY_ENABLED_PREF, true),
@@ -64,21 +69,32 @@ fn save_location_section(ctx: &SectionContext) -> SettingsSection {
         ))
 }
 
-/// 新建下载保存目录历史（设备本地偏好，与 `fluxdown_ui_downloads` 的
-/// `SAVE_DIR_HISTORY_PREF` / `SAVE_DIR_HISTORY_ENABLED_PREF` 同键）。
+/// 新建下载保存目录历史与分类目录记忆（设备本地偏好，与 `fluxdown_ui_downloads` 的
+/// `SAVE_DIR_HISTORY_PREF` / `CATEGORY_SAVE_DIR_HISTORY_PREF` / `SAVE_DIR_HISTORY_ENABLED_PREF`
+/// 同键）。
 const SAVE_DIR_HISTORY_PREF: &str = "download.save_dir_history";
+const CATEGORY_SAVE_DIR_HISTORY_PREF: &str = "download.category_save_dir_history";
 const SAVE_DIR_HISTORY_ENABLED_PREF: &str = "download.save_dir_history_enabled";
+/// 新建下载是否恢复上次「下载到」目标设备（设备本地偏好，与 `fluxdown_ui_downloads` 的
+/// `REMEMBER_LAST_TARGET_PREF` 同键；缺省关闭 = 默认本机）。
+const REMEMBER_LAST_TARGET_PREF: &str = "download.remember_last_target";
 
-/// 清空保存目录历史：写墓碑移除偏好；没有记录时按钮置灰。
+/// 清空保存目录历史（含分类目录记忆）：两个键各写墓碑移除偏好；都没有记录时按钮置灰。
 fn clear_save_dir_history_control(ctx: &SectionContext) -> Control {
     let store = ctx.store();
     let label = ctx.t("clearSaveDirHistoryAction");
     Control::custom(move |disabled, _key, _window, cx: &mut App| {
-        let empty = store
-            .read(cx)
-            .pref(SAVE_DIR_HISTORY_PREF)
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(Vec::is_empty);
+        let empty = {
+            let store = store.read(cx);
+            store
+                .pref(SAVE_DIR_HISTORY_PREF)
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty)
+                && store
+                    .pref(CATEGORY_SAVE_DIR_HISTORY_PREF)
+                    .and_then(serde_json::Value::as_object)
+                    .is_none_or(serde_json::Map::is_empty)
+        };
         let clear_store = store.clone();
         button(
             "download-clear-save-dir-history",
@@ -89,6 +105,7 @@ fn clear_save_dir_history_control(ctx: &SectionContext) -> Control {
         .on_click(move |_, _, cx| {
             clear_store.update(cx, |store, cx| {
                 store.set_pref(SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
+                store.set_pref(CATEGORY_SAVE_DIR_HISTORY_PREF, serde_json::Value::Null, cx);
             });
         })
         .disabled(disabled || empty)
@@ -195,10 +212,44 @@ fn behavior_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
             ctx.daemon_switch("idle_file_scan"),
         ))
         .row(ctx.item(
+            "hashAfterDownload",
+            Some("hashAfterDownloadDesc"),
+            ctx.daemon_switch("hash_after_download"),
+        ))
+        .row(ctx.item(
+            "hashAlgorithm",
+            Some("hashAlgorithmDesc"),
+            ctx.daemon_dropdown("hash_algorithm", hash_algorithm_options()),
+        ))
+        .row(ctx.item(
             "defaultQueueSetting",
             Some("defaultQueueSettingDesc"),
             default_queue_control(ctx, cx),
         ))
+}
+
+/// 与 `fluxdown_ui_downloads` 的 `hash_algorithm_label` 同映射。设置 crate 不依赖下载
+/// crate，四值技术名在这里再写一份。
+fn hash_algorithm_options() -> Vec<(SharedString, SharedString)> {
+    HASH_ALGORITHMS
+        .iter()
+        .map(|algorithm| {
+            (
+                SharedString::from(*algorithm),
+                SharedString::from(hash_algorithm_label(algorithm)),
+            )
+        })
+        .collect()
+}
+
+fn hash_algorithm_label(algorithm: &str) -> String {
+    match algorithm {
+        "md5" => "MD5".to_owned(),
+        "sha1" => "SHA-1".to_owned(),
+        "sha256" => "SHA-256".to_owned(),
+        "sha512" => "SHA-512".to_owned(),
+        other => other.to_ascii_uppercase(),
+    }
 }
 
 fn default_queue_control(ctx: &SectionContext, cx: &mut App) -> Control {

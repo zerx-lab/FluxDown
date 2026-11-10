@@ -2,6 +2,7 @@
 
 mod auto_multipath;
 mod bt_file_selection;
+mod bt_guard;
 mod bt_parts_reseed;
 mod bt_sparse_add;
 mod change_url_resume;
@@ -36,8 +37,10 @@ mod plugin_ytdlp;
 mod plugin_ytdlp_ffmpeg;
 mod post_only;
 mod proxy_rules;
+mod proxy_switch;
 mod realtest;
 mod rss_pipeline;
 mod site_auth_flow;
 mod task_referrer_snapshot;
+mod tls_client_hello;
 mod unattended_selection;

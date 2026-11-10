@@ -70,4 +70,21 @@ struct SelectionMappingTests {
         let outcome = SelectionOutcome.plugin(identity: "b.two", remember: true)
         #expect(outcome.dto.domain == outcome)
     }
+
+    @Test func btSaveDirMapsBothWays() {
+        let dto = SelectionRequestDto(
+            requestId: "r3",
+            taskId: "t3",
+            kind: .bt(files: [BtFileDto(index: 0, path: "a.bin", size: 12)], saveDir: "/data"),
+            defaultChoice: .bt(indices: [0], saveDir: nil),
+            deadlineUnixMs: 9
+        )
+        let request = dto.domain
+        #expect(request.kind == .bt([BtFile(index: 0, path: "a.bin", size: 12)], saveDir: "/data"))
+        #expect(request.defaultChoice == .bt(indices: [0], saveDir: nil))
+        let relocate = SelectionOutcome.bt(indices: [0, 2], saveDir: "/new")
+        #expect(relocate.dto.domain == relocate)
+        let keep = SelectionOutcome.bt(indices: [1], saveDir: nil)
+        #expect(keep.dto.domain == keep)
+    }
 }

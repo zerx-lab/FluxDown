@@ -11,7 +11,9 @@ use gpui::{App, IntoElement as _, ParentElement as _, SharedString, Styled as _,
 use gpui_component::h_flex;
 
 use super::SectionContext;
-use crate::ui::{Control, Getter, Setter, UNIT_DROPDOWN_WIDTH, dropdown_button, render_number};
+use crate::ui::{
+    Control, Getter, NUMBER_WIDTH, Setter, UNIT_DROPDOWN_WIDTH, dropdown_button, render_number,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RateUnit {
@@ -118,8 +120,9 @@ pub(crate) fn control(ctx: &SectionContext, key: &'static str, unit_key: &'stati
             )
         })
         .collect();
-    Control::custom(
-        move |disabled, row_key, window: &mut Window, cx: &mut App| {
+    Control::field(
+        NUMBER_WIDTH,
+        move |disabled, row_key, width, window: &mut Window, cx: &mut App| {
             let gap = active_theme(cx).tokens().spacing.sm;
             let bytes = store.read(cx).daemon_i64(key);
             let chosen = store
@@ -152,7 +155,7 @@ pub(crate) fn control(ctx: &SectionContext, key: &'static str, unit_key: &'stati
                 &set,
                 disabled,
                 &SharedString::from(format!("{row_key}-{key}-{}", unit.id())),
-                false,
+                width,
                 window,
                 cx,
             );
@@ -163,7 +166,7 @@ pub(crate) fn control(ctx: &SectionContext, key: &'static str, unit_key: &'stati
                 &options,
                 SharedString::from(unit.id()),
                 disabled,
-                true,
+                None,
                 Rc::new(move |value: SharedString, cx: &mut App| {
                     let Some(next) = RateUnit::from_id(&value) else {
                         return;

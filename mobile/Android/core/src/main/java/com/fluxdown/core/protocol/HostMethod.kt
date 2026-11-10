@@ -28,12 +28,16 @@ object HostMethod {
     const val daemonTaskChangeUrl = "daemon.task.changeUrl"
     /** 修改任务线程数（`SetTaskSegmentsParams`），已下进度保留；完成或不存在的任务返回 `not-found`。 */
     const val daemonTaskSetSegments = "daemon.task.setSegments"
+    /** 切换 BT 选片（`SetTaskPiecePickingParams`）：省略的字段保持不变；非 BT 或不存在返回 `not-found`。 */
+    const val daemonTaskSetPiecePicking = "daemon.task.setPiecePicking"
     const val daemonTaskDelete = "daemon.task.delete"
     const val daemonTaskPauseAll = "daemon.task.pauseAll"
     const val daemonTaskResumeAll = "daemon.task.resumeAll"
     const val daemonTaskRescan = "daemon.task.rescan"
     const val daemonTaskSetSeedLimits = "daemon.task.setSeedLimits"
     const val daemonTaskVerify = "daemon.task.verify"
+    /** 已完成任务落盘文件的哈希（`{taskId, algorithm}` → `{fileHash}`），结果同时记入任务 `fileHash`。 */
+    const val daemonTaskHash = "daemon.task.hash"
     /** 批量暂停 / 恢复（`{taskIds}`）：整批只推一次任务快照；未知 id 忽略，空列表为空操作。 */
     const val daemonTaskPauseMany = "daemon.task.pauseMany"
     const val daemonTaskResumeMany = "daemon.task.resumeMany"
@@ -129,6 +133,17 @@ object HostMethod {
     const val daemonCdnConfigApply = "daemon.cdnConfig.apply"
     const val daemonEgressPlan = "daemon.egress.plan"
     const val daemonBtTrackerSubscriptionRefresh = "daemon.bt.trackerSubscription.refresh"
+    const val daemonBtGuardState = "daemon.bt.guard.state"
+    const val daemonBtGuardEntriesList = "daemon.bt.guard.entries.list"
+    const val daemonBtGuardEntriesAdd = "daemon.bt.guard.entries.add"
+    const val daemonBtGuardEntriesRemove = "daemon.bt.guard.entries.remove"
+    const val daemonBtGuardEventsList = "daemon.bt.guard.events.list"
+    const val daemonBtGuardExport = "daemon.bt.guard.export"
+    const val daemonBtGuardFilterSourcesRefresh = "daemon.bt.guard.filterSources.refresh"
+    /** 仅 agent 内部调用（已验签云名单整层替换）；UI 不得使用，原生桥通用通道会拒绝。 */
+    const val daemonBtGuardCloudApply = "daemon.bt.guard.cloud.apply"
+    /** 仅 agent 内部调用（弹出待上报证据）；UI 不得使用，原生桥通用通道会拒绝。 */
+    const val daemonBtGuardEvidenceDrain = "daemon.bt.guard.evidence.drain"
     const val daemonEd2kServerSubscriptionRefresh = "daemon.ed2k.serverSubscription.refresh"
     const val daemonDiagnosticsDescribe = "daemon.diagnostics.describe"
     const val daemonDiagnosticsPrepareLogExport = "daemon.diagnostics.prepareLogExport"
@@ -210,26 +225,6 @@ object HostMethod {
     const val agentLinkDispatch = "agent.link.dispatch"
     /** `LinkDeviceParams` → `LinkControlCredentialDto`：本机对已配对且可控制的主机签发设备专属控制凭据（仅发起方）。 */
     const val agentLinkControlCredential = "agent.link.controlCredential"
-    /** FluxMesh（`agent.share.*`）：仅当主机 hello 带 `agent.share` 能力时可用；移动端暂不使用，常量只为与 `method.rs` 一一对应。 */
-    const val agentShareConfig = "agent.share.config"
-    const val agentShareSetLocalConfig = "agent.share.setLocalConfig"
-    const val agentShareCreate = "agent.share.create"
-    const val agentShareList = "agent.share.list"
-    const val agentShareUpdate = "agent.share.update"
-    const val agentShareStop = "agent.share.stop"
-    const val agentShareResume = "agent.share.resume"
-    const val agentShareDelete = "agent.share.delete"
-    const val agentShareResolve = "agent.share.resolve"
-    const val agentShareReceive = "agent.share.receive"
-    const val agentShareReceiveRecords = "agent.share.receiveRecords"
-    const val agentShareDismissPending = "agent.share.dismissPending"
-    const val agentShareSwitchToBridge = "agent.share.switchToBridge"
-    const val agentShareDiagnostics = "agent.share.diagnostics"
-    const val agentShareLogs = "agent.share.logs"
-    const val agentShareSessionKill = "agent.share.sessionKill"
-    const val agentShareConvertToCloud = "agent.share.convertToCloud"
-    const val agentShareDeleteCloudCopy = "agent.share.deleteCloudCopy"
-    const val agentShareStopProviding = "agent.share.stopProviding"
     const val agentPlanList = "agent.plan.list"
     const val agentOrderCreate = "agent.order.create"
     const val agentOrderGet = "agent.order.get"
@@ -278,7 +273,7 @@ object HostMethod {
     const val agentUpdateDownload = "agent.update.download"
     const val agentUpdateInstall = "agent.update.install"
     const val agentUpdateCancel = "agent.update.cancel"
-    /** 完成后关机：`{delaySecs}`；无活跃任务时拒绝（`InvalidArgument`）。 */
+    /** 定时关机 / 睡眠：`{delaySecs, action}` → `{armed}`；没有任务时立即倒计时，`delaySecs = 0` 仅有任务时受理。 */
     const val agentPowerArm = "agent.power.arm"
     const val agentPowerDisarm = "agent.power.disarm"
     const val agentCloudNotifyGet = "agent.cloudNotify.get"
@@ -321,7 +316,5 @@ object HostCapability {
     const val agentOpenTaskFiles = "agent.openTaskFiles"
     /** 按连接下发：本连接可把任务产物写入 agent 所在主机的系统剪贴板（`agent.platform.copyTaskFiles`）。 */
     const val agentCopyTaskFiles = "agent.copyTaskFiles"
-    /** 本主机编入了FluxMesh服务（`agent.share.*`）；移动端暂不使用。 */
-    const val agentShare = "agent.share"
     const val clientSelections = "client.selections"
 }

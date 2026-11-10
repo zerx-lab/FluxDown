@@ -32,7 +32,6 @@ mod service_failure;
 mod service_notices;
 mod session;
 mod settings_port;
-mod share_host;
 #[cfg(windows)]
 mod shell_open;
 mod shortcuts;

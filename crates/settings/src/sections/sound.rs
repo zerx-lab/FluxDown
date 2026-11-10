@@ -24,7 +24,9 @@ use serde_json::json;
 
 use super::SectionContext;
 use crate::store::{SettingsStore, rpc_error_text};
-use crate::ui::{Control, Setter, SettingsSection, dropdown_button, meta_text, row_button};
+use crate::ui::{
+    Control, DROPDOWN_MIN_WIDTH, Setter, SettingsSection, dropdown_button, meta_text, row_button,
+};
 
 /// 自定义文件名文字的最大宽度档位（超出省略，完整路径在悬浮提示里）。
 const FILE_NAME_MAX_WIDTH: f32 = 150.;
@@ -130,94 +132,111 @@ fn control(ctx: &SectionContext, pref: &'static str) -> Control {
     ];
     let choose_label = ctx.t("soundChoose");
     let preview_label = ctx.t("soundPreview");
-    Control::custom(move |disabled, key, window, cx| {
-        let value = store.read(cx).pref_str(pref, SOUND_VALUE_OFF);
-        let mode = Mode::of(&value);
-        let off = mode == Mode::Off;
-        let window_handle = window.window_handle();
-        let theme = active_theme(cx);
-        let spacing = theme.tokens().spacing.sm;
-        let icon_size = theme.extended().icon.md;
+    Control::field(
+        DROPDOWN_MIN_WIDTH,
+        move |disabled, key, width, window, cx| {
+            let value = store.read(cx).pref_str(pref, SOUND_VALUE_OFF);
+            let mode = Mode::of(&value);
+            let off = mode == Mode::Off;
+            let window_handle = window.window_handle();
+            let theme = active_theme(cx);
+            let spacing = theme.tokens().spacing.sm;
+            let icon_size = theme.extended().icon.md;
 
-        let mut row = h_flex().items_center().gap(spacing);
-        if let Mode::Custom(path) = &mode {
-            let name = Path::new(path).file_name().map_or_else(
-                || (*path).to_owned(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            let full_path = SharedString::from((*path).to_owned());
-            row = row
-                .child(
-                    div()
-                        .id(SharedString::from(format!("{key}-file")))
-                        .min_w_0()
-                        .max_w(theme.text_extent(FILE_NAME_MAX_WIDTH))
-                        .tooltip(move |window, cx| tooltip_view(full_path.clone(), window, cx))
-                        .child(meta_text(cx).truncate().child(SharedString::from(name))),
-                )
-                .child(
-                    row_button(
-                        SharedString::from(format!("{key}-choose")),
-                        choose_label.clone(),
-                        ButtonVariant::Secondary,
-                        cx,
-                    )
-                    .disabled(disabled)
-                    .on_click({
-                        let store = store.clone();
-                        let translator = translator.clone();
-                        move |_, _, cx| {
-                            choose_file(store.clone(), pref, translator.clone(), window_handle, cx);
-                        }
-                    }),
+            let mut row = h_flex().items_center().gap(spacing);
+            if let Mode::Custom(path) = &mode {
+                let name = Path::new(path).file_name().map_or_else(
+                    || (*path).to_owned(),
+                    |name| name.to_string_lossy().into_owned(),
                 );
-        }
-        row = row.child(
-            icon_button(
-                SharedString::from(format!("{key}-preview")),
-                preview_label.clone(),
-                Icon::new(FluxIcon::Play).size(icon_size),
-                ButtonVariant::Secondary,
-                cx,
-            )
-            .disabled(disabled || off)
-            .tooltip({
-                let label = preview_label.clone();
-                move |window, cx| tooltip_view(label.clone(), window, cx)
-            })
-            .on_click({
+                let full_path = SharedString::from((*path).to_owned());
+                row = row
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{key}-file")))
+                            .min_w_0()
+                            .max_w(theme.text_extent(FILE_NAME_MAX_WIDTH))
+                            .tooltip(move |window, cx| tooltip_view(full_path.clone(), window, cx))
+                            .child(meta_text(cx).truncate().child(SharedString::from(name))),
+                    )
+                    .child(
+                        row_button(
+                            SharedString::from(format!("{key}-choose")),
+                            choose_label.clone(),
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .disabled(disabled)
+                        .on_click({
+                            let store = store.clone();
+                            let translator = translator.clone();
+                            move |_, _, cx| {
+                                choose_file(
+                                    store.clone(),
+                                    pref,
+                                    translator.clone(),
+                                    window_handle,
+                                    cx,
+                                );
+                            }
+                        }),
+                    );
+            }
+            row = row.child(
+                icon_button(
+                    SharedString::from(format!("{key}-preview")),
+                    preview_label.clone(),
+                    Icon::new(FluxIcon::Play).size(icon_size),
+                    ButtonVariant::Secondary,
+                    cx,
+                )
+                .disabled(disabled || off)
+                .tooltip({
+                    let label = preview_label.clone();
+                    move |window, cx| tooltip_view(label.clone(), window, cx)
+                })
+                .on_click({
+                    let store = store.clone();
+                    let translator = translator.clone();
+                    move |_, _, cx| {
+                        preview(store.clone(), pref, translator.clone(), window_handle, cx)
+                    }
+                }),
+            );
+            let set: Setter<SharedString> = {
                 let store = store.clone();
                 let translator = translator.clone();
-                move |_, _, cx| preview(store.clone(), pref, translator.clone(), window_handle, cx)
-            }),
-        );
-        let set: Setter<SharedString> = {
-            let store = store.clone();
-            let translator = translator.clone();
-            Rc::new(
-                move |selected: SharedString, cx: &mut App| match selected.as_ref() {
-                    MODE_OFF => write(&store, pref, SOUND_VALUE_OFF.to_owned(), cx),
-                    MODE_SYSTEM => write(&store, pref, SOUND_VALUE_SYSTEM.to_owned(), cx),
-                    _ => {
-                        // 已是自定义文件时重复选择不再弹出文件框；否则必须先选定文件才进入该状态。
-                        let current = store.read(cx).pref_str(pref, SOUND_VALUE_OFF);
-                        if !matches!(Mode::of(&current), Mode::Custom(_)) {
-                            choose_file(store.clone(), pref, translator.clone(), window_handle, cx);
+                Rc::new(
+                    move |selected: SharedString, cx: &mut App| match selected.as_ref() {
+                        MODE_OFF => write(&store, pref, SOUND_VALUE_OFF.to_owned(), cx),
+                        MODE_SYSTEM => write(&store, pref, SOUND_VALUE_SYSTEM.to_owned(), cx),
+                        _ => {
+                            // 已是自定义文件时重复选择不再弹出文件框；否则必须先选定文件才进入该状态。
+                            let current = store.read(cx).pref_str(pref, SOUND_VALUE_OFF);
+                            if !matches!(Mode::of(&current), Mode::Custom(_)) {
+                                choose_file(
+                                    store.clone(),
+                                    pref,
+                                    translator.clone(),
+                                    window_handle,
+                                    cx,
+                                );
+                            }
                         }
-                    }
-                },
-            )
-        };
-        row.child(dropdown_button(
-            SharedString::from(format!("{key}-mode")),
-            &options,
-            SharedString::from(mode.dropdown_value()),
-            disabled,
-            false,
-            set,
-            cx,
-        ))
-    })
+                    },
+                )
+            };
+            row.child(dropdown_button(
+                SharedString::from(format!("{key}-mode")),
+                &options,
+                SharedString::from(mode.dropdown_value()),
+                disabled,
+                width,
+                set,
+                cx,
+            ))
+        },
+    )
 }
 
 fn write(store: &Entity<SettingsStore>, pref: &'static str, value: String, cx: &mut App) {

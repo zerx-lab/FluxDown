@@ -1,0 +1,11 @@
+---
+description: 插件 manifest / 视图协议 / 贡献点授权 / 市场排序 / 嗅探规则层 / 页面脚本 / 扩展规则改动须同步 SDK、Web、扩展与外部仓
+globs: **/native/engine/src/plugin/**,**/packages/plugin-sdk/**,**/native/protocol/src/plugin_view/**,**/native/protocol/tests/fixtures/plugin_view_apply.json,**/web/src/lib/rpc/protocol/pluginView.ts,**/web/src/lib/rpc/protocol/plugin.ts,**/crates/plugin_ui/src/**,**/web/src/pages/plugins/**,**/crates/extensions/src/market.rs,**/crates/extensions/tests/fixtures/**,**/web/src/pages/settings/sections/extensions/**,**/native/agent/src/nmh.rs,**/fluxDown/rules/**,**/fluxDown/background/host.ts,**/fluxDown/background/rule-sync.ts,**/fluxDown/background/rules-store.ts,**/fluxDown/background/page-scripts/**,**/fluxDown/utils/nmh-dedicated.ts,**/website-v2/src/content/docs/*/plugins/**
+alwaysApply: false
+---
+
+# mirror-plugins（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/mirror-plugins.md`](mdc:.omp/rules/mirror-plugins.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

@@ -5,7 +5,8 @@ import SwiftUI
 /// X1 BT 文件 / X2 HLS 画质 / X3 插件变体：引擎发起的选择请求（`02-downloads.md` §16）。
 ///
 /// - 请求从 `state.selections` 消失即关闭（含其它设备已答复）。
-/// - 倒计时按 `deadlineUnixMs` 与当前时间重算（`CountdownRing`），到 0 以 `defaultChoice` 答复。
+/// - 倒计时按 `deadlineUnixMs` 与当前时间重算（`CountdownRing`），到 0 以 `defaultChoice` 答复；
+///   无截止（`hasDeadline == false`）时不显示倒计时、不自动答复。
 /// - X1 / X3 可取消（`.cancelled`，任务保持暂停）；X2 不可取消、不可划走。
 /// - 下拉关闭 ≠ 取消：请求仍待处理，由根视图记入 `dismissedSelections`，下载页横幅可重新打开。
 struct SelectionRequestSheet: View {
@@ -63,7 +64,7 @@ private struct SelectionHost: View {
         let task = container.store.state.task(request.taskId)
         switch request.kind {
         #if FULL_FLAVOR
-        case let .bt(files):
+        case let .bt(files, _):
             BtSelectionView(request: request, files: files, task: task, resolver: resolver, close: { dismiss() })
                 .id(request.requestId)
         case let .variant(options):
@@ -126,7 +127,7 @@ private struct BtSelectionView: View {
         self.close = close
         let root = buildBtTree(files)
         var defaults: [Int32] = []
-        if case let .bt(indices) = request.defaultChoice { defaults = indices }
+        if case let .bt(indices, _) = request.defaultChoice { defaults = indices }
         let start = initialBtSelection(files: files, defaultIndices: defaults)
         _timing = State(initialValue: SelectionTiming(request))
         _tree = State(initialValue: root)
@@ -183,7 +184,7 @@ private struct BtSelectionView: View {
                     Button {
                         resolver.resolve(
                             request,
-                            .bt(indices: selected.sorted()),
+                            .bt(indices: selected.sorted(), saveDir: nil),
                             successToast: L("mobileDownloadStarted"),
                             userInitiated: true,
                             onSuccess: close

@@ -19,9 +19,9 @@ pub use components::title_bar::{
     DownloadPageWidget, DownloadSearchBox, DownloadTitleBar, DownloadViewMenu,
 };
 pub use controller::{
-    DownloadsCommand, DownloadsController, DownloadsPort, DownloadsResult,
+    BtGuardEvidence, DownloadsCommand, DownloadsController, DownloadsPort, DownloadsResult,
     LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF, PortFuture, QueueFields,
-    REMEMBER_LAST_SAVE_DIR_PREF, SeedLimits, TorrentShare,
+    REMEMBER_LAST_SAVE_DIR_PREF, REMEMBER_LAST_TARGET_PREF, SeedLimits, TorrentShare,
 };
 pub use flags::{FlagAssets, flag_asset_path, flag_codes};
 pub use model::devices::{DeviceEntry, DeviceKind, DispatchTarget};

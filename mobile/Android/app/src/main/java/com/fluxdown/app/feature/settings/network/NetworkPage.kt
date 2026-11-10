@@ -124,7 +124,8 @@ internal fun NetworkPage() {
 
     val form = ctx.form
     val mode = NetworkProxyMode.of(form.value("proxy_mode"))
-    val request = NetworkProxyTest.request(mode, form, proxy.system)
+    val manualRequest = NetworkProxyTest.manual(form)
+    val systemRequest = NetworkProxyTest.system(proxy.system)
     val hostId = hostRef.id
     val rulesRaw = form.string("proxy_rules")
     val rules = remember(rulesRaw) { ProxyRule.parseList(rulesRaw) }
@@ -139,10 +140,11 @@ internal fun NetworkPage() {
     val clearTitle = str(R.string.settingsSiteAuthClearAll)
     val deleteTitle = str(R.string.settingsSiteAuthDelete)
 
-    // 测试参数（模式 / 类型 / 地址 / 端口 / 凭据 / 检测结果）或主机变化后，旧结果不再代表当前配置。
-    LaunchedEffect(request) { proxy.resetTest() }
+    // 两路测试参数各自变化后只作废自己的结果；主机变化两路都作废。
+    LaunchedEffect(manualRequest) { proxy.resetTest(NetworkProxyModel.TestSource.Manual) }
+    LaunchedEffect(systemRequest) { proxy.resetTest(NetworkProxyModel.TestSource.System) }
     LaunchedEffect(hostId) {
-        proxy.resetTest()
+        proxy.resetTests()
         proxy.resetDetection()
         rulesModel.reset()
     }
@@ -291,49 +293,27 @@ internal fun NetworkPage() {
                         }
                     }
                     NetworkProxyMode.System -> flowItem(index++, gate, "system") {
-                        SystemSection(ctx, proxy, request != null, onRetry = {
+                        SystemSection(ctx, proxy, systemRequest != null, onRetry = {
                             val session = container.session
                             scope.launch { proxy.detect(session, errorText) }
-                        }, onTest = { runTest(scope, container.session, proxy, request, errorText, tlsHint) })
+                        }, onTest = {
+                            runTest(scope, container.session, proxy, NetworkProxyModel.TestSource.System, systemRequest, errorText, tlsHint)
+                        })
                     }
-                    NetworkProxyMode.Manual -> flowItem(index++, gate, "manual") {
-                        GlassSection(
-                            title = str(R.string.proxyModeManual),
-                            footer = str(R.string.proxyModeManualDesc),
-                        ) {
-                            row {
-                                SettingRowBox(ctx, NetworkRow.Type.rowId, "proxy_type") {
-                                    FluxFieldRow(title = str(R.string.proxyType)) {
-                                        FluxSegmented(
-                                            options = ProxyTypes.map { SegOption(it, it.uppercase()) },
-                                            selected = form.string("proxy_type", "http"),
-                                            onSelect = { ctx.editor.set("proxy_type", it) },
-                                        )
-                                    }
-                                }
-                            }
-                            settingText(
-                                ctx, "proxy_host", R.string.proxyHost, null, R.string.proxyHostPlaceholder,
-                                id = NetworkRow.Host.rowId,
-                            )
-                            row { SettingRowBox(ctx, NetworkRow.Port.rowId, "proxy_port") { PortField(ctx) } }
-                            settingText(
-                                ctx, "proxy_username", R.string.proxyUsername, null, R.string.proxyUsernamePlaceholder,
-                                id = NetworkRow.Username.rowId, mono = false,
-                            )
-                            settingText(
-                                ctx, "proxy_password", R.string.proxyPassword, null, R.string.proxyPasswordPlaceholder,
-                                id = NetworkRow.Password.rowId, secret = true,
-                            )
-                            settingText(
-                                ctx, "proxy_no_list", R.string.proxyNoList, R.string.proxyNoListDesc,
-                                R.string.proxyNoListPlaceholder, id = NetworkRow.NoList.rowId,
-                            )
-                            if (request != null) {
-                                testRow(ctx, proxy.test) { runTest(scope, container.session, proxy, request, errorText, tlsHint) }
-                            }
-                        }
-                    }
+                    NetworkProxyMode.Manual -> Unit
+                }
+                // 手动字段在非手动模式下仍被使用（自动备选、站点规则、任务级手动代理），配置加载后始终可编辑。
+                flowItem(index++, gate, "manual") {
+                    ManualSection(
+                        ctx = ctx,
+                        footer = str(
+                            if (mode == NetworkProxyMode.Manual) R.string.proxyModeManualDesc else R.string.proxyManualKeptDesc,
+                        ),
+                        test = proxy.manualTest,
+                        onTest = {
+                            runTest(scope, container.session, proxy, NetworkProxyModel.TestSource.Manual, manualRequest, errorText, tlsHint)
+                        },
+                    )
                 }
                 // 站点规则在任何模式下都生效（包括「不使用代理」和「自动」）。
                 flowItem(index++, gate, "rules") {
@@ -406,12 +386,56 @@ private fun runTest(
     scope: kotlinx.coroutines.CoroutineScope,
     session: com.fluxdown.core.host.HostSession,
     proxy: NetworkProxyModel,
+    source: NetworkProxyModel.TestSource,
     request: com.fluxdown.core.protocol.ProxyTestRequest?,
     errorText: (com.fluxdown.core.host.HostException) -> String,
     tlsHint: String,
 ) {
     if (request == null) return
-    scope.launch { proxy.runTest(request, session, errorText, tlsHint) }
+    scope.launch { proxy.runTest(source, request, session, errorText, tlsHint) }
+}
+
+// ───────────────────────────── 手动代理服务器 ─────────────────────────────
+
+@Composable
+private fun ManualSection(
+    ctx: SettingsCtx,
+    footer: String,
+    test: NetworkProxyModel.Test,
+    onTest: () -> Unit,
+) {
+    val form = ctx.form
+    GlassSection(title = str(R.string.proxyModeManual), footer = footer) {
+        row {
+            SettingRowBox(ctx, NetworkRow.Type.rowId, "proxy_type") {
+                FluxFieldRow(title = str(R.string.proxyType)) {
+                    FluxSegmented(
+                        options = ProxyTypes.map { SegOption(it, it.uppercase()) },
+                        selected = form.string("proxy_type", "http"),
+                        onSelect = { ctx.editor.set("proxy_type", it) },
+                    )
+                }
+            }
+        }
+        settingText(
+            ctx, "proxy_host", R.string.proxyHost, null, R.string.proxyHostPlaceholder,
+            id = NetworkRow.Host.rowId,
+        )
+        row { SettingRowBox(ctx, NetworkRow.Port.rowId, "proxy_port") { PortField(ctx) } }
+        settingText(
+            ctx, "proxy_username", R.string.proxyUsername, null, R.string.proxyUsernamePlaceholder,
+            id = NetworkRow.Username.rowId, mono = false,
+        )
+        settingText(
+            ctx, "proxy_password", R.string.proxyPassword, null, R.string.proxyPasswordPlaceholder,
+            id = NetworkRow.Password.rowId, secret = true,
+        )
+        settingText(
+            ctx, "proxy_no_list", R.string.proxyNoList, R.string.proxyNoListDesc,
+            R.string.proxyNoListPlaceholder, id = NetworkRow.NoList.rowId,
+        )
+        testRow(ctx, NetworkRow.Test.rowId, test, onTest)
+    }
 }
 
 // ───────────────────────────── 系统代理 ─────────────────────────────
@@ -455,7 +479,7 @@ private fun SystemSection(
             if (dto.noList.isNotEmpty()) {
                 row { SettingRowBox(ctx, "network.system.noList", null) { FluxKeyValue(str(R.string.proxyNoList), dto.noList, mono = true) } }
             }
-            if (hasRequest) testRow(ctx, proxy.test, onTest)
+            if (hasRequest) testRow(ctx, "network.system.test", proxy.systemTest, onTest)
         }
     }
 }
@@ -463,9 +487,14 @@ private fun SystemSection(
 // ───────────────────────────── 测试连接 ─────────────────────────────
 
 /** `proxyTestConnection`：慢 RPC——行内转圈 + 「测试中…」，页面其余部分保持可交互；结果行成功 / 失败着色，失败伴随 REJECT 触感。 */
-private fun GlassSectionScope.testRow(ctx: SettingsCtx, test: NetworkProxyModel.Test, onRun: () -> Unit) {
+private fun GlassSectionScope.testRow(
+    ctx: SettingsCtx,
+    rowId: String,
+    test: NetworkProxyModel.Test,
+    onRun: () -> Unit,
+) {
     row(hasIcon = true) {
-        SettingRowBox(ctx, NetworkRow.Test.rowId, null) {
+        SettingRowBox(ctx, rowId, null) {
             val haptics = FluxTheme.haptics
             val running = test == NetworkProxyModel.Test.Running
             LaunchedEffect(test) {
@@ -614,10 +643,9 @@ private fun NetworkRow.itemKey(): String = when (group) {
     NetworkRow.Group.SiteAuth -> "siteAuth"
 }
 
-/** 本页所有可见行：代理模式；手动模式下的手动字段与测试按钮；站点凭据（标题 / 添加 / 全部清除）。系统模式的测试按钮取决于异步检测结果，不进索引。 */
+/** 本页所有可见行：代理模式；已加载配置下的手动字段与测试按钮（与当前模式无关）；站点凭据（标题 / 添加 / 全部清除）。系统模式的测试按钮取决于异步检测结果，不进索引。 */
 internal fun networkSearchEntries(ctx: SettingsSearchContext): List<SettingsEntry> {
-    val mode = NetworkProxyMode.of(ctx.form.value("proxy_mode"))
-    return NetworkRow.visible(mode, ctx.form.isLoaded).map { row ->
+    return NetworkRow.visible(ctx.form.isLoaded).map { row ->
         ctx.entry(
             id = row.rowId,
             page = SettingsPage.Network,

@@ -43,6 +43,10 @@ pub struct TaskDto {
     pub seeding_status: i32,
     pub seeding_message: String,
     pub seeding_time_secs: i64,
+    /// BT 选片：按顺序下载（`daemon.task.setPiecePicking` 的 `sequential`）。
+    pub bt_sequential: bool,
+    /// BT 选片：先下载首尾文件块（`daemon.task.setPiecePicking` 的 `firstLastPiecesFirst`）。
+    pub bt_first_last_pieces_first: bool,
 }
 
 impl From<&proto::TaskDto> for TaskDto {
@@ -71,6 +75,8 @@ impl From<&proto::TaskDto> for TaskDto {
             seeding_status: task.seeding_status,
             seeding_message: task.seeding_message.clone(),
             seeding_time_secs: task.seeding_time_secs,
+            bt_sequential: task.bt_sequential,
+            bt_first_last_pieces_first: task.bt_first_last_pieces_first,
         }
     }
 }
@@ -294,6 +300,8 @@ pub enum SelectionKindDto {
     },
     Bt {
         files: Vec<BtFileDto>,
+        /// 任务当前保存目录（主机路径，供选择窗预填；旧 daemon 为空串）。
+        save_dir: String,
     },
     Variant {
         options: Vec<VariantOptionDto>,
@@ -319,11 +327,24 @@ pub enum SelectionKindDto {
 /// `SelectionOutcome`。
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum SelectionOutcomeDto {
-    Hls { index: i32 },
-    Bt { indices: Vec<i32> },
-    Variant { index: i32 },
-    FileExists { action: FileExistsActionDto },
-    Plugin { identity: String, remember: bool },
+    Hls {
+        index: i32,
+    },
+    Bt {
+        indices: Vec<i32>,
+        /// 非空且不同于当前目录时引擎改目录后重开；`None` = 沿用。
+        save_dir: Option<String>,
+    },
+    Variant {
+        index: i32,
+    },
+    FileExists {
+        action: FileExistsActionDto,
+    },
+    Plugin {
+        identity: String,
+        remember: bool,
+    },
     Cancelled,
 }
 
@@ -341,7 +362,7 @@ impl From<&proto::SelectionKind> for SelectionKindDto {
                     })
                     .collect(),
             },
-            proto::SelectionKind::Bt { files } => Self::Bt {
+            proto::SelectionKind::Bt { files, save_dir } => Self::Bt {
                 files: files
                     .iter()
                     .map(|file| BtFileDto {
@@ -350,6 +371,7 @@ impl From<&proto::SelectionKind> for SelectionKindDto {
                         size: file.size,
                     })
                     .collect(),
+                save_dir: save_dir.clone(),
             },
             proto::SelectionKind::Variant { options } => Self::Variant {
                 options: options
@@ -407,8 +429,9 @@ impl From<&proto::SelectionOutcome> for SelectionOutcomeDto {
     fn from(outcome: &proto::SelectionOutcome) -> Self {
         match outcome {
             proto::SelectionOutcome::Hls { index } => Self::Hls { index: *index },
-            proto::SelectionOutcome::Bt { indices } => Self::Bt {
+            proto::SelectionOutcome::Bt { indices, save_dir } => Self::Bt {
                 indices: indices.clone(),
+                save_dir: save_dir.clone(),
             },
             proto::SelectionOutcome::Variant { index } => Self::Variant { index: *index },
             proto::SelectionOutcome::FileExists { action } => Self::FileExists {
@@ -427,7 +450,7 @@ impl From<SelectionOutcomeDto> for proto::SelectionOutcome {
     fn from(outcome: SelectionOutcomeDto) -> Self {
         match outcome {
             SelectionOutcomeDto::Hls { index } => Self::Hls { index },
-            SelectionOutcomeDto::Bt { indices } => Self::Bt { indices },
+            SelectionOutcomeDto::Bt { indices, save_dir } => Self::Bt { indices, save_dir },
             SelectionOutcomeDto::Variant { index } => Self::Variant { index },
             SelectionOutcomeDto::FileExists { action } => Self::FileExists {
                 action: action.into(),
@@ -939,7 +962,7 @@ impl From<CreateTaskRequestDto> for proto::CreateTaskRequest {
 mod tests {
     use serde_json::json;
 
-    use super::{CategoryDto, TaskDto, unix_secs};
+    use super::{CategoryDto, SelectionKindDto, SelectionOutcomeDto, TaskDto, unix_secs};
 
     fn task_json(
         overrides: serde_json::Value,
@@ -1007,5 +1030,42 @@ mod tests {
         );
         assert_eq!(list[0].regex_pattern, "");
         assert_eq!(list[1].regex_pattern, "\\.pdf$");
+    }
+
+    #[test]
+    fn bt_save_dir_maps_both_ways() {
+        let kind = fluxdown_protocol::SelectionKind::Bt {
+            files: vec![fluxdown_protocol::BtFileDto {
+                index: 0,
+                path: "a.bin".to_owned(),
+                size: 12,
+            }],
+            save_dir: "/data".to_owned(),
+        };
+        let mapped = SelectionKindDto::from(&kind);
+        assert!(matches!(
+            mapped,
+            SelectionKindDto::Bt { ref save_dir, .. } if save_dir == "/data"
+        ));
+
+        let outcome = SelectionOutcomeDto::Bt {
+            indices: vec![0, 2],
+            save_dir: Some("/new".to_owned()),
+        };
+        let wire = fluxdown_protocol::SelectionOutcome::from(outcome);
+        assert_eq!(
+            wire,
+            fluxdown_protocol::SelectionOutcome::Bt {
+                indices: vec![0, 2],
+                save_dir: Some("/new".to_owned()),
+            }
+        );
+        assert_eq!(
+            SelectionOutcomeDto::from(&wire),
+            SelectionOutcomeDto::Bt {
+                indices: vec![0, 2],
+                save_dir: Some("/new".to_owned()),
+            }
+        );
     }
 }

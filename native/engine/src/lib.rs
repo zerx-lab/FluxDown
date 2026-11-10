@@ -15,6 +15,9 @@ pub mod bt_config;
 /// BitTorrent 会话与下载实现（librqbit）。仅 `bt` feature 下编译。
 #[cfg(feature = "bt")]
 pub mod bt_downloader;
+/// BT 防吸血（peer 行为检测 / 封禁账本 / 云名单应用）。与 `bt` feature 同门控。
+#[cfg(feature = "bt")]
+pub mod bt_guard;
 /// 本机文件做种：为磁盘上已有的文件 / 文件夹生成或匹配种子并登记为做种任务。
 #[cfg(feature = "bt")]
 pub mod bt_local_seed;
@@ -52,6 +55,8 @@ pub mod ed2k;
 pub mod egress;
 pub mod events;
 pub mod file_exists;
+/// 已完成任务落盘文件的哈希（按需计算 / 下载完成后自动计算）。
+pub mod file_hash;
 pub mod ftp_downloader;
 /// IP → 国家（peer 国旗）：最小 MaxMind DB 读取器 + DB-IP 国家库按月下载。
 #[cfg(feature = "bt")]
@@ -63,6 +68,8 @@ pub mod intercept;
 pub mod logger;
 /// 下载来源标记（Windows Zone.Identifier / macOS quarantine）。
 pub mod mark_of_the_web;
+/// 按本机有效内存（物理内存与 cgroup 限额取小）分档的缓冲预算。
+pub(crate) mod mem_budget;
 pub mod meta_prober;
 pub mod model;
 /// 多网卡聚合下载：网卡枚举、链路规划与出口绑定。
@@ -107,6 +114,8 @@ pub mod speed_limiter;
 /// 通用订阅 provider 接口（RSS 与插件订阅共用）。
 pub mod subscription;
 pub mod task_activity;
+/// 按任务登记的只读后台作业（同一任务同类作业唯一、可取消）。
+pub(crate) mod task_jobs;
 mod temp_file_guard;
 /// `thunder://` 链接解析（迅雷专有 base64 封装：`AA<真实地址>ZZ`）。
 pub mod thunder;
@@ -114,6 +123,8 @@ pub mod thunder;
 #[cfg(feature = "bt")]
 pub mod tracker_subscription;
 pub mod transfer_activity;
+/// 流式 MPEG-TS → MP4 重封装（HLS 收尾的 ffmpeg 兜底；内存占用与文件体积无关）。
+pub(crate) mod ts_remux;
 /// 用户主目录下的系统标准目录（下载目录：Windows 已知文件夹 / XDG user-dirs）。
 pub mod user_dirs;
 
@@ -406,6 +417,11 @@ impl Engine {
         manager.load_webhook_endpoints().await;
         // 回灌投递日志：面板在重启后仍能看到「昨晚那批到底发出去没有」。
         manager.webhook().attach_db(db.clone()).await;
+        // 防吸血：恢复条目 / 账本 / strike。失败不阻断引擎启动（本次从空状态开始，错误已记日志）。
+        #[cfg(feature = "bt")]
+        if let Err(error) = manager.bt_guard().load().await {
+            logger::report_warning("bt-guard", "load persisted state", &error);
+        }
         Ok(Self {
             db,
             write_guard: Arc::new(write_guard),
@@ -555,8 +571,9 @@ impl EventSink for NoopSink {
 ///
 /// `select_hls_quality` 返回带宽最高的变体索引(与
 /// `hls_downloader`/`dash_downloader` 内部 `auto_select_best` 的既有语义
-/// 一致);`select_bt_files` 返回空 vec —— 复用 `bt_downloader.rs` 现状
-/// "空 vec = 下载全部文件"的既有语义,不引入新含义。
+/// 一致);`select_bt_files` 返回空 [`selection::BtFileChoice`] —— 复用
+/// `bt_downloader.rs` 现状"空 indices = 下载全部文件"的既有语义,不引入新含义。
+/// `save_dir` 为 `None` 表示沿用任务当前目录。
 ///
 /// `provide_hls_selection`/`provide_bt_selection` 是空操作:没有调用方在
 /// 等待,投递答案无事可做。
@@ -566,12 +583,15 @@ impl EventSink for NoopSink {
 /// ```
 /// # async fn run() {
 /// use fluxdown_engine::NoopSelection;
-/// use fluxdown_engine::selection::{HostSelection, SelectionOutcome};
+/// use fluxdown_engine::selection::{BtFileChoice, HostSelection, SelectionOutcome};
 /// use std::time::Duration;
 ///
 /// let selector = NoopSelection;
-/// let outcome = selector.select_bt_files("task1", &[], None).await;
-/// assert_eq!(outcome, SelectionOutcome::NoSelectorConfigured(vec![]));
+/// let outcome = selector.select_bt_files("task1", &[], "", None).await;
+/// assert_eq!(
+///     outcome,
+///     SelectionOutcome::NoSelectorConfigured(BtFileChoice::default())
+/// );
 /// # }
 /// ```
 pub struct NoopSelection;
@@ -597,9 +617,10 @@ impl HostSelection for NoopSelection {
         &self,
         _task_id: &str,
         _files: &[BtFileEntry],
+        _save_dir: &str,
         _timeout: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>> {
-        SelectionOutcome::NoSelectorConfigured(Vec::new())
+    ) -> SelectionOutcome<selection::BtFileChoice> {
+        SelectionOutcome::NoSelectorConfigured(selection::BtFileChoice::default())
     }
     async fn select_resolve_variant(
         &self,

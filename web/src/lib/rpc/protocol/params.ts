@@ -1,7 +1,7 @@
 // 各方法的 params / 非 DTO 结果类型（按 wire 名归类）。
 // daemon 端的 id 参数在服务端带别名（`id` / `taskId` / `queueId` / `groupId` 等价），这里统一用语义名。
 
-import type { RemoteTaskDto } from './agent';
+import type { PowerAction, RemoteTaskDto } from './agent';
 import type { JsonValue } from './common';
 import type { ComponentKind, ComponentStatusDto } from './plugin';
 import type { ServiceHello } from './rpc';
@@ -47,6 +47,13 @@ export interface TaskChangeUrlParams {
 export interface TaskSetSegmentsParams {
   taskId: string;
   segments: number;
+}
+
+/** `daemon.task.setPiecePicking`：省略的字段保持不变。 */
+export interface TaskSetPiecePickingParams {
+  taskId: string;
+  sequential?: boolean;
+  firstLastPiecesFirst?: boolean;
 }
 
 export interface TaskDeleteParams {
@@ -383,8 +390,10 @@ export interface PreferencesPatchResult {
 }
 
 export interface PowerArmParams {
-  /** 全部任务完成后再等待的秒数（0 = 立即）。 */
+  /** 倒计时秒数：没有任务时立即开始，否则全部任务完成后开始（0 = 完成后立即，仅有任务时接受）。 */
   delaySecs: number;
+  /** 缺省 = shutdown。 */
+  action?: PowerAction;
 }
 
 export interface PowerArmResult {
@@ -521,7 +530,7 @@ export type OpenAssociation = 'torrent' | 'magnet' | 'ed2k';
 export interface CaptureSubmitParams {
   /** 外部下载请求。 */
   request: DownloadRequest;
-  /** true = 直接建任务；缺省 false = 恒排入确认队列。 */
+  /** true = 系统打开的链接：按「免打扰下载」偏好直接建任务，偏好关闭则排入确认队列；缺省 false = 恒排入确认队列。 */
   silent?: boolean;
   association?: OpenAssociation;
 }

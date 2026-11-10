@@ -74,7 +74,7 @@ Scripts are loaded as classic scripts, not ES modules. Entry functions must end 
 - **Off the main loop.** Resolution runs on a dedicated thread pool; a slow script cannot freeze the app.
 - **Fail-closed.** If your script throws, times out, or returns garbage, the task goes to the *error* state with a message prefixed `[插件] <identity>:` (the marker means “plugin”). FluxDown never falls back to downloading the original page URL — that would save an HTML page as a video file. The user can explicitly bypass a broken plugin with **Ignore plugin retry** on the failed task.
 
-When several enabled plugins match the same URL, FluxDown asks the user which plugin to use the first time such a task starts (the dialog lists every matching plugin, sorted by `identity`) and can remember the choice as the site's default plugin; users manage these under Plugins → Site default plugins. Unattended downloads (RSS, remote dispatch, silent mode with follow-up choices skipped) never ask: they use the site's default plugin, otherwise the plugin with the lexicographically smallest `identity`.
+When several enabled plugins match the same URL, FluxDown asks the user which plugin to use the first time such a task starts (the dialog lists every matching plugin, sorted by `identity`) and can remember the choice as the site's default plugin; users manage these under Settings → Extensions → Site Defaults. Unattended downloads (RSS, remote dispatch, silent mode with follow-up choices skipped) never ask: they use the site's default plugin, otherwise the plugin with the lexicographically smallest `identity`.
 
 Tasks handled by a resolver skip the normal metadata probe, so if the same plugin also subscribes to `onMetaProbed`, that hook never fires for its own tasks (FluxDown logs a warning at load time).
 
@@ -110,8 +110,8 @@ An auto-disabled plugin shows a notice in the app and an **Auto-disabled** badge
 
 Open **Settings → Extensions → Plugins** in the desktop app or the Web UI. Three ways in:
 
-- **Install .fxplug / .zip plugin** — upload a `.fxplug` file (a zip of the plugin folder, see [Packaging](/docs/en/plugins/packaging/)). In the Web UI the file is picked in your browser and uploaded to the host.
-- **Install from directory (dev mode)** — point at a folder containing `manifest.json`. FluxDown records the folder path instead of copying it. The **Dev mode** switch only controls whether this input is shown (on by default); with it off you can still upload a zip or use the market. Dev plugins show a **Dev** badge and a **Reload** button, see below.
+- **Install .fxplug / .zip plugin** — upload a `.fxplug` file (a zip of the plugin folder, see [Packaging](/docs/en/plugins/packaging/)). In the Web UI the file is picked in your browser and uploaded to the host. Shown only while the **Dev mode** switch is on (see below).
+- **Install from directory (dev mode)** — point at a folder containing `manifest.json`. FluxDown records the folder path instead of copying it. The **Dev mode** switch (off by default, not remembered between visits) controls whether the whole install area — this directory input together with **Install .fxplug / .zip plugin** — is shown; with it off, install from the plugin market. Dev plugins show a **Dev** badge and a **Reload** button, see below.
 - **Plugin market** — browse and install published plugins from the in-app market.
 
 The path you type for directory install is a path **on the machine that runs FluxDown's background service**, not on the machine with the browser. With a desktop app these are the same machine. For a headless server or Docker container, use a path inside the server or container — for example, bind-mount your `dist/` folder into the container and enter the in-container path.

@@ -197,6 +197,8 @@ export interface PluginDto {
   packageDir?: string;
   /** 插件包修订号：包代码被替换（安装 / 升级 / dev 安装 / dev 重载）后变化，只做相等比较；旧 daemon 不下发。 */
   packageRevision?: number;
+  /** 安装来源：空 / 缺省 = 公开市场 / 本机包 / 旧版安装；`private` = FluxCloud 私有商店。 */
+  source?: string;
 }
 
 /** 插件平台登录请求。 */
@@ -247,6 +249,10 @@ export interface MarketEntryDto {
   permissions: string[];
   /** 插件桌面视图声明的网络主机。 */
   networkHosts: string[];
+  /** 渠道：公开市场条目缺省；FluxCloud 私有目录恒为 `private`。 */
+  channel?: string;
+  /** 私有条目的授权到期时间（RFC 3339）；缺省 / null = 永久。 */
+  expiresAt?: string | null;
 }
 
 /** daemon 托管组件标识。 */

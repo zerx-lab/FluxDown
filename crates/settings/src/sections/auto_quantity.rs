@@ -8,7 +8,9 @@ use gpui::{App, ParentElement as _, SharedString, Styled as _, Window};
 use gpui_component::h_flex;
 
 use super::SectionContext;
-use crate::ui::{Control, Getter, Setter, dropdown_button, render_number};
+use crate::ui::{
+    Control, DROPDOWN_MIN_WIDTH, Getter, NUMBER_WIDTH, Setter, dropdown_button, render_number,
+};
 
 fn custom_target(current: i64, remembered: Option<i64>, default: i64, max: i64) -> i64 {
     if current > 0 {
@@ -35,8 +37,9 @@ pub(super) fn control(
         (SharedString::from("auto"), ctx.t("auto")),
         (SharedString::from("custom"), ctx.t("customThreads")),
     ];
-    Control::custom(
-        move |disabled, row_key, window: &mut Window, cx: &mut App| {
+    Control::field(
+        DROPDOWN_MIN_WIDTH,
+        move |disabled, row_key, width, window: &mut Window, cx: &mut App| {
             let current = store.read(cx).daemon_i64(key);
             let mode_store = store.clone();
             let dropdown = dropdown_button(
@@ -44,7 +47,7 @@ pub(super) fn control(
                 &options,
                 SharedString::from(if current == 0 { "auto" } else { "custom" }),
                 disabled,
-                false,
+                width,
                 Rc::new(move |mode: SharedString, cx: &mut App| {
                     if disabled {
                         return;
@@ -106,7 +109,7 @@ pub(super) fn control(
                     &set,
                     disabled,
                     &SharedString::from(format!("{row_key}-{key}-custom")),
-                    false,
+                    Some(active_theme(cx).text_extent(NUMBER_WIDTH)),
                     window,
                     cx,
                 ));

@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -88,6 +89,9 @@ import com.fluxdown.fluxui.feedback.FluxEmpty
 import com.fluxdown.fluxui.feedback.FluxGlyph
 import com.fluxdown.fluxui.feedback.FluxSpinner
 import com.fluxdown.fluxui.icons.FluxIcons
+import com.fluxdown.fluxui.material.FluxBackdrop
+import com.fluxdown.fluxui.material.LocalFluxBackdrop
+import com.fluxdown.fluxui.material.fluxBackdropSource
 import com.fluxdown.fluxui.overlay.FluxBanner
 import com.fluxdown.fluxui.overlay.FluxBannerKind
 import com.fluxdown.fluxui.overlay.FluxMenuItem
@@ -201,13 +205,15 @@ fun RssItemsScreen(sourceId: String) {
             }
         }
     val openMore = { overlays.showMenu(moreRect.rect, moreMenu) }
-
+    val listBackdrop = remember { FluxBackdrop() }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Box(Modifier.widthIn(max = PageMaxWidth).fillMaxWidth().fillMaxHeight()) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
+                    // 页面级背景源：推入页里舞台级背景源取 null，选择坞要靠它采样列表做毛玻璃。
+                    .fluxBackdropSource(listBackdrop)
                     .then(if (swipe != null) Modifier.nestedScroll(swipe.nestedScrollConnection) else Modifier),
                 contentPadding = PaddingValues(
                     top = statusTop + PageHeadHeight + 4.dp,
@@ -270,7 +276,7 @@ fun RssItemsScreen(sourceId: String) {
             }
 
             FluxPageHead(
-                title = title,
+                title = if (model.selecting) str(R.string.rssSelectedCount, "n" to model.selection.size) else title,
                 modifier = Modifier.padding(top = statusTop),
                 onLead = { nav.pop() },
                 scrolled = scrolled,
@@ -294,35 +300,37 @@ fun RssItemsScreen(sourceId: String) {
 
             val selectedVisible = visible.count { it.guid in model.selection }
             val ignorable = model.items.filter { it.state == RssItemStatus.New && it.guid in model.selection }.map { it.guid }
-            SelectionDock(
-                count = model.selection.size,
-                total = visible.size,
-                onToggleAll = { model.setVisibleSelected(visible, selected = visible.isNotEmpty() && selectedVisible != visible.size) },
-                actions = listOf(
-                    SelectionDockAction(
-                        id = "ignore",
-                        label = str(R.string.rssIgnoreSelected),
-                        icon = FluxIcons.EyeOff,
-                        onClick = { model.act(ignorable, RssItemAction.Ignore) },
-                        enabled = canAct && ignorable.any { it !in model.busy },
+            CompositionLocalProvider(LocalFluxBackdrop provides listBackdrop) {
+                SelectionDock(
+                    count = model.selection.size,
+                    total = visible.size,
+                    onToggleAll = { model.setVisibleSelected(visible, selected = visible.isNotEmpty() && selectedVisible != visible.size) },
+                    actions = listOf(
+                        SelectionDockAction(
+                            id = "ignore",
+                            label = str(R.string.rssIgnoreSelected),
+                            icon = FluxIcons.EyeOff,
+                            onClick = { model.act(ignorable, RssItemAction.Ignore) },
+                            enabled = canAct && ignorable.any { it !in model.busy },
+                        ),
+                        SelectionDockAction(
+                            id = "download",
+                            label = str(R.string.rssDownloadSelected),
+                            icon = FluxIcons.Download,
+                            onClick = { model.act(model.selection.toList(), RssItemAction.Download) },
+                            enabled = canAct && model.selection.any { it !in model.busy },
+                        ),
                     ),
-                    SelectionDockAction(
-                        id = "download",
-                        label = str(R.string.rssDownloadSelected),
-                        icon = FluxIcons.Download,
-                        onClick = { model.act(model.selection.toList(), RssItemAction.Download) },
-                        enabled = canAct && model.selection.any { it !in model.busy },
-                    ),
-                ),
-                visible = model.selecting,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(start = margin, end = margin, bottom = navBottom + 8.dp),
-                reservedEnd = 0.dp,
-                selectAllLabel = str(R.string.rssSelectVisible),
-                deselectAllLabel = str(R.string.rssClearSelection),
-                countDescription = { appContext.str(R.string.rssSelectedCount, "n" to it) },
-            )
+                    visible = model.selecting,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = margin, end = margin, bottom = navBottom + 8.dp),
+                    reservedEnd = 0.dp,
+                    selectAllLabel = str(R.string.selectAll),
+                    deselectAllLabel = str(R.string.deselectAll),
+                    countDescription = { appContext.str(R.string.rssSelectedCount, "n" to it) },
+                )
+            }
         }
     }
 }

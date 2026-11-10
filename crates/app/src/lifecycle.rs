@@ -7,16 +7,13 @@
 //!
 //! agent 以 `service-quit` 关闭连接（例如托盘「退出」）时本进程同样立即退出且不再重拉 agent。
 
-use std::{rc::Rc, time::Duration};
+use std::time::Duration;
 
 use fluxdown_protocol::method;
-use gpui::{App, Global, Task, Window};
+use gpui::{App, Global, Task};
 use serde_json::Value;
 
-use crate::{
-    app::Desktop,
-    windows::{WindowKey, WindowRegistry},
-};
+use crate::{app::Desktop, windows::WindowRegistry};
 
 /// 关窗后仍须送达 agent 的请求（新建下载提交、外部捕获确认 / 忽略）数量。未完成前
 /// 「只退出界面」推迟到它们结束，避免最后一个窗口关闭后进程先退出、请求丢失。
@@ -86,43 +83,6 @@ pub fn quit_everything(cx: &mut App) {
         cx.update(|cx| cx.quit());
     })
     .detach();
-}
-
-/// 完全退出（已在某个窗口上下文里）：先让FluxMesh处理「实时分享仍有接收方没收完」（询问 / 自动转为云端暂存
-/// 并等上传完成），再 [`quit_everything`]。没有需要处理的分享时与 [`quit_everything`] 完全一致。
-/// 对话框延后一帧打开：调用方往往正处在另一个确认框的 `on_ok` 里，同帧开新框会被它的关闭连带收起。
-pub fn quit_everything_in(window: &mut Window, cx: &mut App) {
-    let hub = Desktop::global(cx).share_hub.clone();
-    if !fluxdown_ui_share::needs_exit_gate(&hub, cx) {
-        quit_everything(cx);
-        return;
-    }
-    window.defer(cx, move |window, cx| {
-        let proceed: fluxdown_ui_share::ExitContinuation = Rc::new(quit_everything);
-        fluxdown_ui_share::run_exit_gate(&hub, window, cx, proceed);
-    });
-}
-
-/// 完全退出（没有现成窗口上下文，如菜单 / ⌘Q）：同 [`quit_everything_in`]，对话框开在当前焦点窗口
-/// （没有就用主窗口）；找不到任何窗口时无处提问，直接退出。
-pub fn quit_everything_gated(cx: &mut App) {
-    let hub = Desktop::global(cx).share_hub.clone();
-    if !fluxdown_ui_share::needs_exit_gate(&hub, cx) {
-        quit_everything(cx);
-        return;
-    }
-    cx.defer(|cx| {
-        let Some(window) = WindowRegistry::focused_window(cx)
-            .or_else(|| WindowRegistry::handle(cx, &WindowKey::Main))
-        else {
-            quit_everything(cx);
-            return;
-        };
-        if let Err(error) = window.update(cx, |_, window, cx| quit_everything_in(window, cx)) {
-            log::debug!("window released before the share exit prompt: {error:#}");
-            quit_everything(cx);
-        }
-    });
 }
 
 /// 只退出界面（后台驻留）。延后一轮执行：同一轮里随窗口释放的视图（例如关窗时忽略

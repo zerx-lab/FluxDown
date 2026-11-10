@@ -8,6 +8,10 @@
 mod activity;
 #[path = "task_detail_bt.rs"]
 mod bt;
+#[path = "task_detail_hash.rs"]
+mod hash;
+#[path = "task_detail_source.rs"]
+mod source_page;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -23,7 +27,7 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, IconControlExt as _, form, form_field, segmented_tabs,
-    tabular_numbers, tooltip_view,
+    tabular_numbers,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -60,8 +64,9 @@ use crate::{
         SEED_LIMIT_FOLLOW_GLOBAL, SeedLimits,
     },
     model::{
-        DownloadTaskView, RowKey, TaskProtocol, TaskState, TaskStore, format_bytes,
-        share::ShareHostCaps,
+        DownloadTaskView, RowKey, TaskProtocol, TaskState, TaskStore,
+        file_hash::DEFAULT_HASH_ALGORITHM,
+        format_bytes,
         source_composition::{SourceKind, compose, format_percent},
         task_route::route_label,
     },
@@ -100,8 +105,6 @@ pub enum DetailMode {
 enum DetailTab {
     General,
     Speed,
-    /// FluxMesh接收任务的传输诊断（内容由宿主工厂提供）。
-    ShareDiagnostics,
     Seeding,
     /// BT 任务的 tracker 汇报状态。
     Trackers,
@@ -113,12 +116,11 @@ enum DetailTab {
     Plugin(u16),
 }
 
-/// 可见 tab 顺序：内置 tab（做种仅 BT 任务、传输诊断仅FluxMesh接收任务）后接全部插件 tab。
-fn visible_tabs(is_bt: bool, share_diagnostics: bool, plugin_tabs: usize) -> Vec<DetailTab> {
+/// 可见 tab 顺序：内置 tab（做种仅 BT 任务）后接全部插件 tab。
+fn visible_tabs(is_bt: bool, plugin_tabs: usize) -> Vec<DetailTab> {
     let builtin = [
         DetailTab::General,
         DetailTab::Speed,
-        DetailTab::ShareDiagnostics,
         DetailTab::Seeding,
         DetailTab::Trackers,
         DetailTab::Peers,
@@ -128,7 +130,6 @@ fn visible_tabs(is_bt: bool, share_diagnostics: bool, plugin_tabs: usize) -> Vec
     .into_iter()
     .filter(move |tab| match tab {
         DetailTab::Seeding | DetailTab::Trackers | DetailTab::Peers => is_bt,
-        DetailTab::ShareDiagnostics => share_diagnostics,
         _ => true,
     });
     let plugin = (0..u16::try_from(plugin_tabs).unwrap_or(u16::MAX)).map(DetailTab::Plugin);
@@ -156,11 +157,13 @@ pub struct TaskDetailView {
     /// 插件 tab 视图缓存：`(tab 下标, task_id)` → 视图。
     plugin_views: HashMap<(u16, String), AnyView>,
     /// 传输诊断页签视图缓存：任务 id → 视图。
-    share_views: HashMap<String, AnyView>,
     /// 完整 DTO（校验和 / 代理 / 做种详情等 `DownloadTaskView` 未覆盖的字段）。
     /// 停靠模式由宿主经 [`Self::sync`] 提供；窗口模式来自私有 controller。
     dto: Option<TaskDto>,
     queue_names: Vec<(String, String)>,
+    /// 停靠面板：宿主同步的「隐藏任务来源」偏好；窗口模式读私有 controller 的偏好，见
+    /// [`Self::source_hidden`]。
+    hide_source: bool,
     /// 客户端 1 Hz 实时采样环（仅做种页上传曲线使用）。
     speed_history: VecDeque<(Instant, u64)>,
     /// daemon 持久化的全生命周期速度曲线与统计（速度页）。
@@ -192,6 +195,20 @@ pub struct TaskDetailView {
     error_copied: u32,
     /// 日志「复制全部」按钮的反馈代次，语义同 `error_copied`。
     log_copied: u32,
+    /// 高级页「来源页」复制按钮的反馈代次，语义同 `error_copied`。
+    source_page_copied: u32,
+    /// 文件哈希算法选择。任务切换或行内 `fileHash` 算法变化时重置。
+    file_hash_algorithm: String,
+    /// 上次同步的任务 id，用来识别切换。
+    file_hash_task: Option<String>,
+    /// 上次同步的行内 `fileHash`，用来识别算法变化。
+    file_hash_noted: Option<String>,
+    /// 非零 = 复制按钮显示「已复制」。
+    file_hash_copied: u32,
+    /// 已为其排过「打开即计算」的任务 id：每次打开（含切换回来）只自动发起一次，失败后不反复重试。
+    file_hash_auto: Option<String>,
+    /// 打开即计算正在停留期（尚未发起请求）：行内照样显示「计算中」。
+    file_hash_pending: bool,
 }
 
 impl EventEmitter<TaskDetailEvent> for TaskDetailView {}
@@ -263,12 +280,6 @@ impl TaskDetailView {
             Some(controller) => Rc::clone(controller.store()),
             None => store.unwrap_or_default(),
         };
-        store.set_share_host(ShareHostCaps {
-            send: host.share_tasks.is_some(),
-            switch_bridge: host.share_switch_to_bridge.is_some(),
-            open_usage: host.share_open_usage.is_some(),
-            stop_providing: host.share_stop_providing.is_some(),
-        });
         let seed_ratio = Self::seed_input(window, cx, |t| parse_seed_ratio(t).is_some(), "1.00");
         let seed_post_ratio =
             Self::seed_input(window, cx, |t| parse_seed_ratio(t).is_some(), "1.00");
@@ -284,8 +295,9 @@ impl TaskDetailView {
             cx.notify();
         })
         .detach();
+        Self::observe_file_hash_inflight(cx);
 
-        let this = Self {
+        let mut this = Self {
             activity: ActivityFeed::new(task_id.clone()),
             bt: BtLive::default(),
             runtime: None,
@@ -302,9 +314,9 @@ impl TaskDetailView {
             tab: DetailTab::General,
             plugin_tabs: Vec::new(),
             plugin_views: HashMap::new(),
-            share_views: HashMap::new(),
             dto: None,
             queue_names: Vec::new(),
+            hide_source: false,
             speed_history: VecDeque::new(),
             speed_stats: None,
             speed_fetching: false,
@@ -323,7 +335,15 @@ impl TaskDetailView {
             seed_baseline: None,
             error_copied: 0,
             log_copied: 0,
+            source_page_copied: 0,
+            file_hash_algorithm: DEFAULT_HASH_ALGORITHM.to_owned(),
+            file_hash_task: None,
+            file_hash_noted: None,
+            file_hash_copied: 0,
+            file_hash_auto: None,
+            file_hash_pending: false,
         };
+        this.sync_file_hash(cx);
         Self::spawn_speed_ticker(cx);
         this
     }
@@ -369,7 +389,6 @@ impl TaskDetailView {
         self.task_id = task_id;
         self.tab = DetailTab::General;
         self.plugin_views.clear();
-        self.share_views.clear();
         self.dto = None;
         self.activity.switch_task(self.task_id.clone());
         self.bt.reset();
@@ -385,6 +404,13 @@ impl TaskDetailView {
         self.closed = false;
         self.error_copied = 0;
         self.log_copied = 0;
+        self.source_page_copied = 0;
+        self.file_hash_algorithm = DEFAULT_HASH_ALGORITHM.to_owned();
+        self.file_hash_task = None;
+        self.file_hash_noted = None;
+        self.file_hash_copied = 0;
+        self.file_hash_auto = None;
+        self.file_hash_pending = false;
         self.seed_baseline = None;
         self.fetch_activity(cx);
         cx.notify();
@@ -424,6 +450,22 @@ impl TaskDetailView {
         if self.queue_names != queues {
             self.queue_names = queues;
             cx.notify();
+        }
+    }
+
+    /// 停靠面板：宿主同步「隐藏任务来源」偏好。
+    pub(crate) fn set_hide_source(&mut self, hide: bool, cx: &mut Context<Self>) {
+        if self.hide_source != hide {
+            self.hide_source = hide;
+            cx.notify();
+        }
+    }
+
+    /// 副标题是否隐藏来源站点：窗口模式实时读私有 controller 的偏好（偏好事件已触发重绘）。
+    pub(super) fn source_hidden(&self) -> bool {
+        match &self.controller {
+            Some(controller) => controller.hide_task_source(),
+            None => self.hide_source,
         }
     }
 
@@ -474,6 +516,7 @@ impl TaskDetailView {
             self.close(cx);
             return;
         }
+        self.sync_file_hash(cx);
         cx.notify();
     }
 
@@ -1001,82 +1044,6 @@ impl TaskDetailView {
         };
         div().size_full().child(view).into_any_element()
     }
-    /// 「传输诊断」页签可见：宿主提供了页面工厂、FluxMesh可用，且本任务是FluxMesh接收任务。
-    fn share_diagnostics_visible(&self) -> bool {
-        let share = self.store.share();
-        self.host.share_diagnostics_view.is_some()
-            && share.available()
-            && share.is_share_receive(&self.task_id)
-    }
-
-    /// 传输诊断页签内容：按任务 id 缓存宿主工厂产出的视图。
-    fn render_share_diagnostics(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some(factory) = self.host.share_diagnostics_view.clone() else {
-            return div().into_any_element();
-        };
-        let view = match self.share_views.get(&self.task_id) {
-            Some(view) => view.clone(),
-            None => {
-                let view = factory(self.task_id.clone(), window, cx);
-                self.share_views.insert(self.task_id.clone(), view.clone());
-                view
-            }
-        };
-        div().size_full().child(view).into_any_element()
-    }
-
-    /// 「分享」：把本任务交给宿主打开分享面板。
-    fn share_this_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let keys = [RowKey::Local(self.task_id.clone())];
-        if !self.store.share_control(&keys).is_enabled() {
-            return;
-        }
-        if let Some(open) = self.host.share_tasks.clone() {
-            open(vec![self.task_id.clone()], window, cx);
-        }
-    }
-
-    /// 独立窗口头部的「分享」按钮：隐藏时 `None`；禁用时悬浮提示说明原因。
-    /// `labelled` = 带文字的按钮（完成态头部），否则图标按钮（进行中头部）。
-    fn share_head_button(&self, labelled: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let control = self
-            .store
-            .share_control(&[RowKey::Local(self.task_id.clone())]);
-        if !control.is_visible() {
-            return None;
-        }
-        let tip = match control.block() {
-            Some(block) => self.strings.share_disabled(block),
-            None => self.strings.share.clone(),
-        };
-        let button = if labelled {
-            Button::new("detail-share")
-                .outline()
-                .control(cx)
-                .icon(FluxIcon::Share2)
-                .label(self.strings.share.clone())
-        } else {
-            Button::new("detail-share")
-                .ghost()
-                .icon(FluxIcon::Share2)
-                .control_icon(cx)
-        }
-        .disabled(!control.is_enabled())
-        .on_click(cx.listener(|this, _, window, cx| this.share_this_task(window, cx)));
-        Some(
-            div()
-                .id("detail-share-tooltip")
-                .flex_none()
-                .tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
-                .child(button)
-                .into_any_element(),
-        )
-    }
-
     /// 替换插件贡献的 tab；旧视图缓存随之作废。当前选中的插件 tab 消失时回到「常规」。
     pub fn set_plugin_tabs(&mut self, mut tabs: Vec<PluginTaskTab>, cx: &mut Context<Self>) {
         tabs.truncate(usize::from(u16::MAX));
@@ -1100,7 +1067,6 @@ impl TaskDetailView {
             DetailTab::Seeding => "tabSeeding",
             DetailTab::Trackers => "btTabTrackers",
             DetailTab::Peers => "btTabPeers",
-            DetailTab::ShareDiagnostics => "detailTabShareDiagnostics",
             DetailTab::Log => "detailTabLog",
             DetailTab::Advanced => "detailTabAdvanced",
             DetailTab::Plugin(index) => {
@@ -1115,11 +1081,7 @@ impl TaskDetailView {
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = active_theme(cx).tokens().clone();
-        let tabs = visible_tabs(
-            self.is_bt(),
-            self.share_diagnostics_visible(),
-            self.plugin_tabs.len(),
-        );
+        let tabs = visible_tabs(self.is_bt(), self.plugin_tabs.len());
         let labels: Vec<SharedString> = tabs.iter().map(|tab| self.tab_label(*tab, cx)).collect();
         let selected = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
         let this = cx.weak_entity();
@@ -1228,8 +1190,7 @@ impl TaskDetailView {
                             .icon(FluxIcon::FolderOpen)
                             .label(self.strings.open_folder.clone())
                             .on_click(cx.listener(|this, _, _, cx| this.reveal(cx))),
-                    )
-                    .children(self.share_head_button(true, cx)),
+                    ),
             )
             .into_any_element()
     }
@@ -1348,8 +1309,7 @@ impl TaskDetailView {
                             .control_icon(cx)
                             .tooltip(self.strings.open_folder.clone())
                             .on_click(cx.listener(|this, _, _, cx| this.reveal(cx))),
-                    )
-                    .children(self.share_head_button(false, cx)),
+                    ),
             )
             .into_any_element()
     }
@@ -1362,13 +1322,12 @@ impl TaskDetailView {
             return div().into_any_element();
         };
         let dto = self.current_dto();
-        let not_set = self.t(cx, "detailNotSet");
         let follow_global = self.t(cx, "detailFollowGlobal");
+        // 期望哈希只在填写过时展示（多数任务没有，「未设置」一行是噪音）。
         let checksum = dto
             .map(|dto| dto.checksum.clone())
             .filter(|value| !value.is_empty())
-            .map(SharedString::from)
-            .unwrap_or_else(|| not_set.clone());
+            .map(SharedString::from);
         let proxy = dto
             .map(|dto| dto.proxy_url.clone())
             .filter(|value| !value.is_empty())
@@ -1402,13 +1361,7 @@ impl TaskDetailView {
                                 .child(SharedString::from(row.name.clone())),
                         )
                     })
-                    .child(
-                        div()
-                            .text_size(tokens.typography.xs.size)
-                            .line_height(tokens.typography.xs.line_height)
-                            .text_color(tokens.colors.muted_foreground)
-                            .child(format!("{} · {}", row.protocol.label(), row.source_site())),
-                    )
+                    .child(self.render_source_line(&row, cx))
                     .when(boosted, |this| {
                         this.child(
                             div()
@@ -1490,7 +1443,12 @@ impl TaskDetailView {
                     )),
             )
             .child(detail_row(self.t(cx, "taskQueueLabel"), queue_label, cx))
-            .child(detail_row(self.t(cx, "taskChecksum"), checksum, cx))
+            .when_some(checksum, |this, checksum| {
+                this.child(detail_row(self.t(cx, "taskChecksum"), checksum, cx))
+            })
+            .when(row.state == TaskState::Completed, |this| {
+                this.child(self.render_file_hash_row(&row, cx))
+            })
             .child(detail_row(self.t(cx, "taskProxy"), proxy, cx));
         if let Some(route) = route {
             list = list.child(detail_row(self.t(cx, "taskRoute"), route, cx));
@@ -2351,11 +2309,8 @@ impl TaskDetailView {
             return div().into_any_element();
         };
         let dto = self.current_dto();
-        let referrer = if row.referrer.is_empty() {
-            self.t(cx, "detailNotSet")
-        } else {
-            SharedString::from(row.referrer.clone())
-        };
+        let referrer = SharedString::from(row.referrer.clone());
+        let referrer_is_web = row.source_page_url().is_some();
         let proxy = dto
             .map(|dto| dto.proxy_url.clone())
             .filter(|value| !value.is_empty())
@@ -2368,7 +2323,7 @@ impl TaskDetailView {
             .map(|route| route_label(route, self.translator.read(cx)));
         drop(row);
         let mut list = v_flex()
-            .child(detail_row(self.t(cx, "infoSourcePage"), referrer, cx))
+            .child(self.render_source_page_row(referrer, referrer_is_web, cx))
             .child(detail_row(self.t(cx, "taskProxy"), proxy, cx));
         if let Some(route) = route {
             list = list.child(detail_row(self.t(cx, "taskRoute"), route, cx));
@@ -2419,13 +2374,6 @@ impl gpui::Render for TaskDetailView {
         if self.bt_tab_active() {
             self.bt_touch(cx);
         }
-        // 页签依赖的FluxMesh事实消失（任务不再是FluxMesh接收任务 / FluxMesh不可用）：回到「常规」并丢弃缓存。
-        if !self.share_diagnostics_visible() {
-            if self.tab == DetailTab::ShareDiagnostics {
-                self.tab = DetailTab::General;
-            }
-            self.share_views.clear();
-        }
         let body = match self.tab {
             DetailTab::General => self.render_general(cx),
             DetailTab::Speed => self.render_speed(cx),
@@ -2434,7 +2382,6 @@ impl gpui::Render for TaskDetailView {
             DetailTab::Peers => self.render_bt_peers(window, cx),
             DetailTab::Log => self.render_log(cx),
             DetailTab::Advanced => self.render_advanced(cx),
-            DetailTab::ShareDiagnostics => self.render_share_diagnostics(window, cx),
             DetailTab::Plugin(index) => self.render_plugin_tab(index, window, cx),
         };
         v_flex()
@@ -2471,7 +2418,8 @@ impl gpui::Render for TaskDetailView {
 /// 详情键值表的一行：左列标签（xs、三级文字，固定宽度），右列值（sm、正文色、等宽数字）。
 /// 标签沿用正文行高，使两列首行垂直居中对齐；值过长时在值列内换行而不挤压标签。
 /// 任务详情（常规 / 做种 / 高级）与任务组概览共用，保证所有详情窗口同一种键值排版。
-pub(crate) fn detail_row(label: SharedString, value: impl IntoElement, cx: &App) -> Div {
+/// 标签通常是文字；「文件哈希」行把算法下拉放在标签位。
+pub(crate) fn detail_row(label: impl IntoElement, value: impl IntoElement, cx: &App) -> Div {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     h_flex()
@@ -2810,7 +2758,7 @@ mod tests {
     #[test]
     fn plugin_tabs_follow_builtin_tabs() {
         assert_eq!(
-            visible_tabs(false, false, 2),
+            visible_tabs(false, 2),
             [
                 DetailTab::General,
                 DetailTab::Speed,
@@ -2821,11 +2769,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            visible_tabs(true, true, 0),
+            visible_tabs(true, 0),
             [
                 DetailTab::General,
                 DetailTab::Speed,
-                DetailTab::ShareDiagnostics,
                 DetailTab::Seeding,
                 DetailTab::Trackers,
                 DetailTab::Peers,
@@ -2833,9 +2780,6 @@ mod tests {
                 DetailTab::Advanced,
             ]
         );
-        // 传输诊断只给FluxMesh接收任务；不带插件 tab 时保持原顺序。
-        assert!(!visible_tabs(false, false, 0).contains(&DetailTab::ShareDiagnostics));
-        assert!(visible_tabs(false, true, 0).contains(&DetailTab::ShareDiagnostics));
     }
 
     #[test]

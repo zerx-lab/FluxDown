@@ -2,7 +2,6 @@ import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 import { bustApiCaches } from "../src/lib/api-cache";
 import { markReleaseViewer, recordUpdateAssets, resetReleaseViewers } from "../src/lib/download-gate";
 import { DOWNLOAD_PASS_COOKIE, issueDownloadPass } from "../src/lib/download-pass";
-import { resetDownloadBans } from "../src/lib/download-ban";
 
 let configured = true;
 let cdnConfigured = true;
@@ -14,7 +13,7 @@ const COUNTRY: Record<string, string> = {
 };
 const signatures: string[] = [];
 const PASS_SECRET = "pass-secret";
-// 与 share-proxy.test.ts / download-pass.test.ts 共用同一进程的模块表：bun 的 mock.module 首次注册后导出名集合即固定，此处必须含全部 astro:env/server 导出。
+// 与 bt-guard-proxy.test.ts / download-pass.test.ts 共用同一进程的模块表：bun 的 mock.module 首次注册后导出名集合即固定，此处必须含全部 astro:env/server 导出。
 mock.module("astro:env/server", () => ({
   GITHUB_TOKEN: "", GITHUB_REPO: "owner/repo", FLUXCLOUD_API_BASE: "", DOWNLOAD_PASS_SECRET: PASS_SECRET,
 }));
@@ -54,7 +53,6 @@ let sequence = 0;
 beforeEach(() => {
   bustApiCaches();
   resetReleaseViewers();
-  resetDownloadBans();
   markReleaseViewer(MAINLAND_IP);
   configured = true;
   cdnConfigured = true;
@@ -161,20 +159,6 @@ test("forced OSS outside mainland China goes to GitHub instead of the paid CDN",
   const response = await get("oss", `v${sequence}`, "app.zip", "8.8.8.8");
   expect(response.headers.get("X-Download-Source")).toBe("github");
   expect(signatures).toEqual([]);
-});
-
-test("an IP over the download limit gets 429 without touching GitHub or OSS", async () => {
-  for (let i = 0; i < 20; i++) {
-    expect((await get("github", `v${sequence}`, `file-${i}.zip`)).status).not.toBe(429);
-  }
-  requests = [];
-  const banned = await get("auto");
-  expect(banned.status).toBe(429);
-  expect(Number(banned.headers.get("Retry-After"))).toBe(12 * 3600);
-  expect(requests).toEqual([]);
-  expect(signatures).toEqual([]);
-  // 其他 IP 不受影响。
-  expect((await get("auto", `v${sequence}`, "app.zip", "8.8.8.8")).status).toBe(302);
 });
 
 test("mainland requests that never read the release manifest or come from scripts go to GitHub", async () => {

@@ -1,4 +1,4 @@
-//! BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种。
+//! BitTorrent：基础（DHT/UPnP/端口）、新任务默认选片、Tracker（列表 + 订阅）、做种。
 
 use fluxdown_ui_components::FluxIcon;
 use std::rc::Rc;
@@ -8,12 +8,12 @@ use gpui::{App, IntoElement as _, ParentElement as _, SharedString, Styled as _,
 use gpui_component::h_flex;
 
 use super::{
-    SectionContext,
+    SectionContext, bt_guard,
     subscription::{self, ListFormat},
 };
 use crate::ui::{
-    Control, Getter, Setter, SettingsPage, SettingsSection, SettingsTab, UNIT_DROPDOWN_WIDTH,
-    dropdown_button, render_number,
+    Control, Getter, NUMBER_WIDTH, Setter, SettingsPage, SettingsSection, SettingsTab,
+    UNIT_DROPDOWN_WIDTH, dropdown_button, render_number,
 };
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
@@ -26,7 +26,8 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     )
     .tab(
         SettingsTab::new("basic", ctx.t("settingsTabGeneral"))
-            .section(basic_section(ctx, bt_enabled)),
+            .section(basic_section(ctx, bt_enabled))
+            .section(new_tasks_section(ctx, bt_enabled)),
     );
     if bt_enabled {
         page = page
@@ -38,6 +39,9 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
                 SettingsTab::new("seeding", ctx.t("settingsTabSeeding"))
                     .section(seeding_section(ctx, cx)),
             );
+        for tab in bt_guard::tabs(ctx, cx) {
+            page = page.tab(tab);
+        }
     }
     page
 }
@@ -80,6 +84,31 @@ fn basic_section(ctx: &SectionContext, bt_enabled: bool) -> SettingsSection {
             "btMseMode",
             Some("btMseModeDesc"),
             ctx.daemon_enum_dropdown("bt_mse_mode", "btMseMode"),
+        ))
+}
+
+/// 新建任务的默认选片。热更新，不重建 BT 会话，因此不带重启提示。
+/// BT 关闭时整组隐藏（与基础页其余行同一门槛）。
+fn new_tasks_section(ctx: &SectionContext, bt_enabled: bool) -> SettingsSection {
+    if !bt_enabled {
+        return SettingsSection::new();
+    }
+    SettingsSection::new()
+        .title(ctx.t("btNewTasksSection"))
+        .row(ctx.item(
+            "btPieceOrder",
+            Some("btPieceOrderDesc"),
+            ctx.daemon_enum_dropdown("bt_piece_order", "btPieceOrder"),
+        ))
+        .row(ctx.item(
+            "btFirstLastPiecesFirstDefault",
+            Some("btFirstLastPiecesFirstDefaultDesc"),
+            ctx.daemon_switch("bt_first_last_pieces_first"),
+        ))
+        .row(ctx.item(
+            "btSelectionAutoDefault",
+            Some("btSelectionAutoDefaultDesc"),
+            ctx.daemon_switch("bt_selection_auto_default"),
         ))
 }
 
@@ -210,7 +239,7 @@ fn time_units(ctx: &SectionContext) -> Vec<(SharedString, SharedString)> {
 }
 
 /// 时长限制：数字 + 单位下拉并排（0 = 不限）。数字按所选单位解读，单位与数字同行，
-/// 用户一眼可见量纲。
+/// 用户一眼可见量纲。数字框取 Tab 统一字段宽度，单位下拉跟在右侧。
 fn duration_control(
     ctx: &SectionContext,
     value_key: &'static str,
@@ -218,8 +247,9 @@ fn duration_control(
 ) -> Control {
     let store = ctx.store();
     let options = time_units(ctx);
-    Control::custom(
-        move |disabled, row_key, window: &mut Window, cx: &mut App| {
+    Control::field(
+        NUMBER_WIDTH,
+        move |disabled, row_key, width, window: &mut Window, cx: &mut App| {
             let gap = active_theme(cx).tokens().spacing.sm;
             let get_store = store.clone();
             let set_store = store.clone();
@@ -238,7 +268,7 @@ fn duration_control(
                 &set,
                 disabled,
                 &SharedString::from(format!("{row_key}-{value_key}")),
-                false,
+                width,
                 window,
                 cx,
             );
@@ -248,7 +278,7 @@ fn duration_control(
                 &options,
                 SharedString::from(store.read(cx).daemon_str(unit_key)),
                 disabled,
-                true,
+                None,
                 Rc::new(move |value: SharedString, cx: &mut App| {
                     unit_store.update(cx, |store, cx| {
                         store.set_daemon(unit_key, value.to_string(), cx);

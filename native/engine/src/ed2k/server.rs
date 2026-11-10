@@ -211,10 +211,8 @@ fn encode_u32_tag(name: u8, value: u32) -> Vec<u8> {
 /// `listen_port` 为本机 TCP 监听端口：报 0 = 声明 LowID（不接收入站）；
 /// 报真实监听端口 = 请求 HighID（服务器验证可回连后分配公网 ID）。
 pub(crate) fn build_login_payload(listen_port: u16) -> Vec<u8> {
-    // 固定 user hash（leech-only 身份无实际意义，末两字节按 eMule 惯例标记）。
-    let mut user_hash = [0u8; 16];
-    user_hash[5] = 14;
-    user_hash[14] = 111;
+    // 每安装持久化的随机 user hash（共享固定哈希会被服务器拒绝 / 封禁）。
+    let user_hash = crate::ed2k::identity::user_hash();
 
     let flags = SRV_TCPFLG_COMPRESSION
         | SRV_TCPFLG_AUXPORT

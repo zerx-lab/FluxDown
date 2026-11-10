@@ -28,7 +28,8 @@ nonisolated enum P2PLink {
 
 nonisolated extension SelectionRequest {
     /// 本构建是否处理该选择请求。store 不含 BT 文件选择与插件（候选插件 / 插件变体）选择：这类请求不弹出、
-    /// 不提醒，由主机按超时默认值或其它客户端答复。
+    /// 不提醒，由其它客户端答复或主机按超时默认值解析；主机关闭了 BT「自动选择默认项」时 BT 请求没有超时，
+    /// 任务停在「准备中」直到其它客户端作答，或在本端暂停 / 删除（暂停会撤销请求，继续时重新询问）。
     var isPresentable: Bool {
         #if FULL_FLAVOR
         return true

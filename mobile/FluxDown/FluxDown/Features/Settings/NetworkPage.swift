@@ -35,7 +35,8 @@ struct NetworkPage: View {
         let mode = NetworkProxyMode(wire: form.value("proxy_mode"))
         let readOnly = store.state.isReadOnly
         let isLive = store.state.connection == .live
-        let request = NetworkProxyTest.request(mode: mode, form: form, system: proxy.detection.system)
+        let manualRequest = NetworkProxyTest.manual(form: form)
+        let systemRequest = NetworkProxyTest.system(dto: proxy.detection.system)
         let ruleCount = ProxyRule.enabledCount(form.value("proxy_rules"))
         SettingsPage(title: L("settingsCatProxy"), showsReadOnlyBanner: true) {
             if form.isLoaded {
@@ -50,15 +51,14 @@ struct NetworkPage: View {
                 .disabled(readOnly)
 
                 switch mode {
-                case .none:
-                    EmptyView()
                 case .auto:
                     autoSection
                 case .system:
-                    systemSection(request: request, readOnly: readOnly)
-                case .manual:
-                    manualSection(request: request, readOnly: readOnly)
+                    systemSection(request: systemRequest, readOnly: readOnly)
+                case .none, .manual:
+                    EmptyView()
                 }
+                manualSection(mode: mode, readOnly: readOnly)
                 if let rules {
                     ProxyRulesSection(model: rules, editMode: $rulesEditMode)
                 }
@@ -82,10 +82,11 @@ struct NetworkPage: View {
         .task(id: SiteAuthKey(hostID: container.host.id, isLive: isLive)) {
             await siteAuth.load(using: container.session, hostID: container.host.id)
         }
-        // 测试参数（模式 / 类型 / 地址 / 端口 / 凭据 / 检测结果）或主机变化后，旧结果不再代表当前配置。
-        .onChange(of: request) { _, _ in proxy.resetTest() }
+        // 两路测试参数各自变化才清各自的结果；切主机两路都清。
+        .onChange(of: manualRequest) { _, _ in proxy.resetTest(.manual) }
+        .onChange(of: systemRequest) { _, _ in proxy.resetTest(.system) }
         .onChange(of: container.host.id) { _, _ in
-            proxy.resetTest()
+            proxy.resetTests()
             rules?.resetExplain()
         }
         .onAppear { if rules == nil { rules = ProxyRulesModel(container: container) } }
@@ -155,7 +156,7 @@ struct NetworkPage: View {
                     SettingsInfoRow(title: L("proxyNoList"), value: dto.noList)
                         .settingsRow("network.system.noList")
                 }
-                if let request { testRow(request) }
+                if let request { testRow(request, test: proxy.systemTest, rowID: "network.system.test", source: .system) }
             }
         } header: {
             Text(L("proxyModeSystem"))
@@ -197,7 +198,7 @@ struct NetworkPage: View {
 
     // MARK: 手动
 
-    private func manualSection(request: ProxyTestRequest?, readOnly: Bool) -> some View {
+    private func manualSection(mode: NetworkProxyMode, readOnly: Bool) -> some View {
         Section {
             typeRow
             ConfigTextRow(
@@ -217,11 +218,11 @@ struct NetworkPage: View {
                 id: NetworkRow.noList.id, key: "proxy_no_list", title: L("proxyNoList"),
                 detail: L("proxyNoListDesc"), prompt: L("proxyNoListPlaceholder")
             )
-            if let request { testRow(request) }
+            testRow(NetworkProxyTest.manual(form: editor.form), test: proxy.manualTest, rowID: NetworkRow.test.id, source: .manual)
         } header: {
             Text(L("proxyModeManual"))
         } footer: {
-            Text(L("proxyModeManualDesc"))
+            Text(mode == .manual ? L("proxyModeManualDesc") : L("proxyManualKeptDesc"))
         }
         .disabled(readOnly)
         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -240,10 +241,12 @@ struct NetworkPage: View {
         }
     }
 
-    private func testRow(_ request: ProxyTestRequest) -> some View {
-        NetworkTestRow(test: proxy.test) {
+    private func testRow(
+        _ request: ProxyTestRequest, test: NetworkProxyModel.Test, rowID: String, source: NetworkProxyModel.TestSource
+    ) -> some View {
+        NetworkTestRow(test: test, rowID: rowID) {
             let session = container.session
-            Task { await proxy.runTest(request, using: session) }
+            Task { await proxy.runTest(request, source: source, using: session) }
         }
     }
 }
@@ -254,6 +257,7 @@ struct NetworkPage: View {
 /// 结果行成功 / 失败带图标与触感，延迟数字用 `numericText` 过渡，失败原因可长按选择复制。
 private struct NetworkTestRow: View {
     let test: NetworkProxyModel.Test
+    let rowID: String
     let run: () -> Void
 
     var body: some View {
@@ -264,7 +268,7 @@ private struct NetworkTestRow: View {
             )
             result
         }
-        .settingsRow(NetworkRow.test.id)
+        .settingsRow(rowID)
         .fluxAnimation(.smooth, value: test)
         .sensoryFeedback(trigger: test) { @Sendable _, new in
             switch new {
@@ -373,12 +377,11 @@ private struct NetworkPortRow: View {
 // MARK: - 搜索索引
 
 extension NetworkPage {
-    /// 本页所有可见行：代理模式；手动模式下的手动字段与测试按钮；站点凭据（标题 / 添加 / 全部清除）。
-    /// 系统模式的测试按钮取决于异步检测结果，不进索引。
+    /// 本页所有可见行：代理模式、手动字段与测试按钮、站点规则、站点凭据（标题 / 添加 / 全部清除）。
+    /// 手动字段在配置已加载时始终进索引，不随模式隐藏。系统模式的测试按钮取决于异步检测结果，不进索引。
     static func searchEntries(_ ctx: SettingsSearchContext) -> [SettingsEntry] {
         let name = L("settingsCatProxy")
-        let mode = NetworkProxyMode(wire: ctx.form.value("proxy_mode"))
-        return NetworkRow.visible(mode: mode, isLoaded: ctx.form.isLoaded).map { row in
+        return NetworkRow.visible(isLoaded: ctx.form.isLoaded).map { row in
             SettingsEntry(
                 id: row.id, route: .network, title: L(row.titleKey), detail: row.detailKey.map { L($0) } ?? "",
                 breadcrumb: row.titleKey == row.group.titleKey ? name : "\(name) › \(L(row.group.titleKey))",

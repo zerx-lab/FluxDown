@@ -6,6 +6,7 @@
  * - 关闭记录存 localStorage[`DISMISSED_KEY`](id 数组),与旧站同键,旧的关闭记录继续有效。
  */
 import type { Lang } from "@/i18n/config";
+import { CLOUD_PROMO, cloudPromoCopy } from "@/lib/cloud-promo";
 
 export type Localized = Record<Lang, string>;
 
@@ -20,6 +21,11 @@ export interface Announcement {
   id: string;
   /** ISO 日期 YYYY-MM-DD。 */
   date: string;
+  /**
+   * ISO 截止时刻；过期后公告条与「进行中」列表不再展示（仍可出现在历史列表时需保持 active 语义由调用方处理）。
+   * 缺省 = 无自动过期。
+   */
+  endsAt?: string;
   active: boolean;
   text: Localized;
   /** 无语言前缀的站内路径,渲染时经 `href()` 本地化。 */
@@ -34,6 +40,17 @@ export const DISMISSED_KEY = "fluxdown-dismissed-announcements";
 export const OFFICIAL_SITES = ["https://fluxdown.com", "https://www.fluxdown.com", "https://fluxdown.zerx.dev"] as const;
 
 export const ANNOUNCEMENTS: Announcement[] = [
+  {
+    id: CLOUD_PROMO.announcementId,
+    date: "2026-11-04",
+    active: true,
+    endsAt: CLOUD_PROMO.endAt,
+    link: CLOUD_PROMO.planPath,
+    text: {
+      en: cloudPromoCopy.en.annText,
+      zh: cloudPromoCopy.zh.annText,
+    },
+  },
   {
     id: "gpui-client",
     date: "2026-09-30",
@@ -116,17 +133,38 @@ export const ANNOUNCEMENTS: Announcement[] = [
 
 const byDateDesc = (a: Announcement, b: Announcement) => b.date.localeCompare(a.date);
 
-/** 列表顺序:进行中在前,各自按日期倒序。 */
-export function sortedAnnouncements(): Announcement[] {
-  return [...ANNOUNCEMENTS].sort((a, b) => (a.active === b.active ? byDateDesc(a, b) : a.active ? -1 : 1));
+function withinWindow(a: Announcement, nowMs = Date.now()): boolean {
+  if (!a.endsAt) return true;
+  const end = Date.parse(a.endsAt);
+  return Number.isFinite(end) && nowMs <= end;
 }
 
-/** 公告条候选:最新一条进行中、非弹窗公告。 */
-export function barAnnouncement(): Announcement | undefined {
-  return ANNOUNCEMENTS.filter((a) => a.active && !a.popup).sort(byDateDesc)[0];
+/** 列表用：标记是否仍在进行（含 endsAt 窗口）。 */
+export function isAnnouncementLive(a: Announcement, nowMs = Date.now()): boolean {
+  return a.active && withinWindow(a, nowMs);
+}
+
+/** 列表顺序:进行中在前,各自按日期倒序。 */
+export function sortedAnnouncements(nowMs = Date.now()): Announcement[] {
+  return [...ANNOUNCEMENTS].sort((a, b) => {
+    const aLive = isAnnouncementLive(a, nowMs);
+    const bLive = isAnnouncementLive(b, nowMs);
+    if (aLive !== bLive) return aLive ? -1 : 1;
+    return byDateDesc(a, b);
+  });
+}
+
+/** 公告条候选:最新一条进行中、非弹窗、未过 endsAt；促销由 CloudPromoBanner 独占顶栏下一条，避免双层同文。 */
+export function barAnnouncement(nowMs = Date.now()): Announcement | undefined {
+  return ANNOUNCEMENTS.filter(
+    (a) =>
+      isAnnouncementLive(a, nowMs) &&
+      !a.popup &&
+      a.id !== CLOUD_PROMO.announcementId,
+  ).sort(byDateDesc)[0];
 }
 
 /** 弹窗候选:进行中且带 popup 的公告(按日期倒序,客户端再排除已关闭的)。 */
-export function popupAnnouncements(): Announcement[] {
-  return ANNOUNCEMENTS.filter((a) => a.active && a.popup).sort(byDateDesc);
+export function popupAnnouncements(nowMs = Date.now()): Announcement[] {
+  return ANNOUNCEMENTS.filter((a) => isAnnouncementLive(a, nowMs) && a.popup).sort(byDateDesc);
 }

@@ -329,7 +329,7 @@ Import it by bare name inside a desktop script: `import { identity, taskId, call
 | `locale()` | `string` | The UI language, for example `zh-CN` or `en`. |
 | `toast(level, text)` | `void` | Shows a notification in the active window. `level` is `info`, `success`, `warning` or `error`. |
 | `close()` | `boolean` | Closes the container hosting this view (the login dialog of an `auth` view, the settings dialog, a stand-alone window) and returns `true`; the close is deferred until the current call returns. Views embedded in a page (activity page, task-detail tab) have no container: nothing happens and it returns `false`. |
-| `navigate(target)` | `void` | Brings the main window to the front and switches page. `target` is `"downloads"`, `"rss"`, `"webhooks"`, `"share"` or `{ view: "<id>" }` (an `activity` view of this plugin). Synchronous: an invalid shape throws `fluxdown.navigate: …`, and so does a target that is not one of this plugin's contributed activity-bar views. A valid target is executed deferred. |
+| `navigate(target)` | `void` | Brings the main window to the front and switches page. `target` is `"downloads"`, `"rss"`, `"webhooks"` or `{ view: "<id>" }` (an `activity` view of this plugin). Synchronous: an invalid shape throws `fluxdown.navigate: …`, and so does a target that is not one of this plugin's contributed activity-bar views. A valid target is executed deferred. |
 
 ### Error semantics
 

@@ -43,6 +43,30 @@ describe("shouldIntercept 站点配置", () => {
     ).toBe(false);
   });
 
+  test("never：referrer 被 Referrer-Policy 抹掉时，发起标签页主机仍命中（Nexus Mods 跨域 CDN 下载）", () => {
+    const profiles = { "www.nexusmods.com": profile("never") };
+    const url = "https://supporter-files.nexus-cdn.com/a.zip";
+    expect(shouldIntercept({ url }, settings, profiles)).toBe(true);
+    expect(
+      shouldIntercept({ url, pageUrl: "https://www.nexusmods.com/game/mods/1?tab=files" }, settings, profiles),
+    ).toBe(false);
+  });
+
+  test("never：真实 referrer 与标签页主机互不遮蔽，任一命中即放行", () => {
+    const profiles = { "example.com": profile("never") };
+    const url = "https://cdn.other.net/a.zip";
+    expect(
+      shouldIntercept({ url, referrerUrl: "https://example.com/", pageUrl: "https://elsewhere.org/" }, settings, profiles),
+    ).toBe(false);
+    expect(
+      shouldIntercept({ url, referrerUrl: "https://elsewhere.org/", pageUrl: "https://example.com/" }, settings, profiles),
+    ).toBe(false);
+  });
+
+  test("标签页 URL 无法解析时忽略，按下载 URL 判定", () => {
+    expect(shouldIntercept({ url: "https://cdn.other.net/a.zip", pageUrl: "not a url" }, settings, {})).toBe(true);
+  });
+
   test("always：跳过 smart 判定（无扩展名的 HTML 也接管）", () => {
     const url = "https://example.com/page";
     expect(shouldIntercept({ url, mime: "text/html", fileSize: 10 }, settings, {})).toBe(false);
@@ -134,5 +158,16 @@ describe("设置迁移", () => {
     expect(migrated.fallbackOnReject).toBe(true);
     expect("excludeDomains" in migrated).toBe(false);
     expect(migrateSettings(null)).toEqual(DEFAULT_SETTINGS);
+  });
+
+  test("migrateSettings 把单页嗅探上限规整到 1…99999，缺失 / 非法回退 200", () => {
+    expect(migrateSettings({}).sniffMaxResources).toBe(200);
+    expect(migrateSettings({ sniffMaxResources: 249 }).sniffMaxResources).toBe(249);
+    expect(migrateSettings({ sniffMaxResources: 99999 }).sniffMaxResources).toBe(99999);
+    expect(migrateSettings({ sniffMaxResources: 1_000_000 }).sniffMaxResources).toBe(99999);
+    expect(migrateSettings({ sniffMaxResources: 0 }).sniffMaxResources).toBe(1);
+    expect(migrateSettings({ sniffMaxResources: 12.6 }).sniffMaxResources).toBe(13);
+    expect(migrateSettings({ sniffMaxResources: "500" }).sniffMaxResources).toBe(200);
+    expect(migrateSettings({ sniffMaxResources: Number.NaN }).sniffMaxResources).toBe(200);
   });
 });

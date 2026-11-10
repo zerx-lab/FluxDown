@@ -14,8 +14,9 @@
 |核心契约|本文件|会话开头|
 |路径规则|`.omp/rules/*.md`（`globs` + `interruptMode: never`）|**编辑命中路径时自动注入**：镜像契约 `mirror-*`（§5）、领域细则、补丁陷阱；也可随时 `read rule://<名>`|
 |流式拦截|`.omp/rules/*.md`（正则 / AST 条件）|输出命中违规写法时打断：unwrap、unsafe、忽错、禁用命令、硬编码文案|
-|执行前拦截|`.omp/hooks/pre/guard.ts`|工具调用前硬拒：tag 推送、`--no-verify`、强推、测试 `--workspace`、子代理全量门禁|
+|执行前拦截|`.omp/hooks/pre/guard.ts`（判定在 `hooks/lib/check_bash.mjs`）|工具调用前硬拒：tag 推送、`--no-verify`、强推、测试 `--workspace`、子代理全量门禁|
 |知识附录|`.omp/knowledge/*.md`|按需 `read`|
+|Cursor 薄适配|`.cursor/**`|Cursor 会话：规则 / hooks / skills / commands 只指向 `.omp/`，**不复制正文**（约定见 `.cursor/README.md`）|
 
 |要查什么|读哪个|
 |---|---|
@@ -27,7 +28,7 @@
 |**「要加 X 改哪里」全表 —— 动手前先查**|`.omp/knowledge/extension-points.md`|
 |按领域收拢的已验证踩坑 —— **改某领域前先读对应小节**，修复新坑同回合补一条（带坐标）|`.omp/knowledge/pitfalls.md`|
 
-改本文件或 `.omp/**` 时 `rule://agent-docs-maintenance` 自动注入（分层归属、维护约定、同改矩阵）。项目知识只进上述各层（随仓分发），不依赖本机 omp memory 后端。
+改本文件、`.omp/**` 或 `.cursor/**` 时 `rule://agent-docs-maintenance` 自动注入（分层归属、维护约定、同改矩阵）。项目知识只进上述各层（随仓分发），不依赖本机 omp memory 后端；Cursor 侧契约仍以 `.omp/` 为唯一事实源。
 
 **单一事实源坐标**（要改契约先来这里）：
 
@@ -132,7 +133,7 @@ cd mobile/FluxDown && xcodebuild build -project FluxDown.xcodeproj -scheme FluxD
 - **空闲静默（NAS 硬盘休眠）**：无活动任务 / 做种 / 到期 RSS / 客户端请求时，daemon / agent 不得周期性读写 save_dir 或 data_dir；新周期任务须事件驱动、受空闲门控，或长周期且仅内容变化时写。
 - **宿主自身下载只走统一出口**（更新、受管组件、插件包、规则包、tracker / server.met 订阅等）：daemon / engine 用 `fluxdown_engine::egress`，agent 经 `daemon.egress.plan` + `native/agent/src/egress.rs`，禁止裸 `reqwest::Client::builder()`；仅有独立来源哈希 / 签名的载荷可交插件改写，失败回退原地址。
 - 引擎学习 / 遥测类 config 键（`cdn_node_health`、`auto_route_health`、`cdn_pending_reports`、`domain_conn_caps`）UI 不读写。
-- **遥测只有两条匿名部署事件**（`app_installed` 一次 + `app_active` 每日，`analytics_enabled` 门控），绝不采集下载 / 任务信息，不新增其他遥测点。**例外：FluxMesh网络与传输诊断**（用户 2026-10-27 决定「展示即上报」）——仅在发生FluxMesh分享 / 接收时，把客户端「网络诊断」与「传输诊断」展示的同一份结构化快照上报 FluxCloud，`native/agent/src/share/` 是唯一出口，不含分享以外的下载 / 任务信息；并用于共享加速额度结算（2026-10-29 扩展：收发双方各自上报逐对端字节数，云端交叉核实后计消耗与贡献，仍只含分享字节、不含文件名 / 路径 / 其他任务），状态变化或传输进行中才报（口径见 `ops.md`「设计文档实现状态」FluxMesh条与官网隐私政策）。**云端推送不是遥测**：本设备上报默认关、须 UI 显式同意、与 `analytics_enabled` 无关；默认只发文件名 / 大小 / 状态 / 错误 / 队列名，下载地址与保存目录各自单独开关（默认关）；`TaskNotice` 只由 agent 消费。
+- **遥测只有两条匿名部署事件**（`app_installed` 一次 + `app_active` 每日，`analytics_enabled` 门控），绝不采集下载 / 任务信息，不新增其他遥测点。**唯一例外：BT 防吸血证据**（用户 2026-10-31 决定）——只报命中检测规则的对端证据（IP 组 IPv4 /32、IPv6 /64，信号类型，送达量 / 种子体积等计量，时间段，客户端特征），不含文件名 / 路径 / 种子名 / 其他任务；infohash 只在 FluxCloud 以服务端密钥加盐散列后存储；私有种子不报；独立开关、默认关、须 UI 显式同意，与 `analytics_enabled` 无关（口径见 `ops.md` 防吸血条，上线时同改官网隐私政策）。**云端推送不是遥测**：本设备上报默认关、须 UI 显式同意、与 `analytics_enabled` 无关；默认只发文件名 / 大小 / 状态 / 错误 / 队列名，下载地址与保存目录各自单独开关（默认关）；`TaskNotice` 只由 agent 消费。
 - **插件页面脚本只经浏览器 `userScripts` API 执行**：扩展任何位置禁止 `eval` / `new Function` / 远程或拼接的 `<script>`；每个插件首次启用须用户在选项页显式确认；扩展不保存脚本源码副本；`fluxdown` 桥能力窄且固定。
 - 以上各条的落点、阻碍项与背景见 `hosts-and-api.md`（端口 / 凭据 / 空闲静默）、`ops.md`（云端推送）、`engine.md`（egress / naming / 做种）、`clients.md`（userScripts / iOS flavor）、`pitfalls.md`。
 - 命名歧义：`tracker_subscription.rs` / `ed2k/server_subscription.rs` 是 tracker / `server.met` 订阅，与 `rss/` 无关；官网 `api/webhooks/github` 是 GitHub 接收器，与 `engine/src/webhook.rs` 无关。
@@ -185,4 +186,5 @@ cd mobile/FluxDown && xcodebuild build -project FluxDown.xcodeproj -scheme FluxD
 - 复用已有 trait / error 类型；单文件 >600 行考虑拆分，单函数 >80 行需说明。
 - **一个 crate 只有一个集成测试二进制**：`tests/<名>/main.rs` + 按领域分模块，不新建 `tests/*.rs`；feature 门控模块文件头写 `#![cfg(feature = "…")]`。
 - **并行子代理**：子代理只跑自己改动 crate 的精准命令（`cargo check|clippy|nextest run -p <crate>`）；全量 clippy、无 `-p` 的构建 / 测试、gradlew / xcodebuild / `build-core.sh` 由主会话或 `build-verifier` 串行跑一次（`guard.ts` 强制），子代理在报告里写明需要跑的命令。
+- **高风险路径（主会话实现，不派 `task` 任务）**：`native/engine/src/{download_manager,bt_downloader,downloader,db}.rs`、`native/{protocol,daemon}/**`、`native/agent/src/{server_mode,egress}.rs` 与鉴权 / 凭据代码、`installer/**`。
 - 查文档：`cargo path <crate>` 本地源码 > docs.rs > web 搜索。新增 / 改 public API、trait、error 类型、unsafe / FFI / 性能关键路径、新增 crate、写 doc comment 前先读 `rust-router` skill。

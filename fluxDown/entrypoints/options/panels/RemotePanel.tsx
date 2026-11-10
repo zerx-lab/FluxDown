@@ -70,25 +70,6 @@ export function RemotePanel(): JSX.Element | null {
 
   return (
     <PanelShell title={t("options.nav.remote")}>
-      <SettingRow title={t("remote.mode")} desc={modeDesc}>
-        <select
-          class="fd-select opt-fill"
-          value={s.remoteMode}
-          aria-label={t("remote.mode")}
-          onChange={(e) => void updateSettings({ remoteMode: e.currentTarget.value as RemoteMode })}
-        >
-          <option value="off" selected={s.remoteMode === "off"}>
-            {t("remote.modeOff")}
-          </option>
-          <option value="fallback" disabled={!verified} selected={s.remoteMode === "fallback"}>
-            {t("remote.modeFallback")}
-          </option>
-          <option value="always" disabled={!verified} selected={s.remoteMode === "always"}>
-            {t("remote.modeAlways")}
-          </option>
-        </select>
-      </SettingRow>
-
       <SettingRow title={t("remote.serverUrl")} desc={t("options.remoteDesc")}>
         <TextInput
           value={url}
@@ -121,6 +102,26 @@ export function RemotePanel(): JSX.Element | null {
         <Button variant="primary" disabled={testing} onClick={() => void runTest()}>
           {t("remote.testConnection")}
         </Button>
+      </SettingRow>
+
+      {/* 模式依赖上方连接验证，放在验证之后：自上而下 填地址 → 测试 → 选模式 */}
+      <SettingRow title={t("remote.mode")} desc={modeDesc}>
+        <select
+          class="fd-select opt-fill"
+          value={s.remoteMode}
+          aria-label={t("remote.mode")}
+          onChange={(e) => void updateSettings({ remoteMode: e.currentTarget.value as RemoteMode })}
+        >
+          <option value="off" selected={s.remoteMode === "off"}>
+            {t("remote.modeOff")}
+          </option>
+          <option value="fallback" disabled={!verified} selected={s.remoteMode === "fallback"}>
+            {t("remote.modeFallback")}
+          </option>
+          <option value="always" disabled={!verified} selected={s.remoteMode === "always"}>
+            {t("remote.modeAlways")}
+          </option>
+        </select>
       </SettingRow>
     </PanelShell>
   );

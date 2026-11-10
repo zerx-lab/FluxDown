@@ -1,1 +1,0 @@
-export { ShareSettings } from './ShareSettings'

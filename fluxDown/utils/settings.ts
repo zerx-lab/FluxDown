@@ -14,6 +14,7 @@ import type { SiteProfile } from "./site-profiles";
 import { RemoteSettingsStore } from "./remote-settings";
 import type { RemoteSettings } from "./remote-settings";
 import type { RemotePingResult, RemoteServerConfig } from "./remote-server";
+import { SNIFF_MAX_RESOURCES_DEFAULT, normalizeSniffMaxResources } from "./sniff-limit";
 
 /**
  * 拦截模式：
@@ -86,6 +87,11 @@ export interface FluxDownSettings {
   floatButtonPosition: "top-right" | "top-left" | "bottom-right" | "bottom-left";
   /** 是否在资源列表中显示低置信度项 */
   showLowConfidence: boolean;
+  /**
+   * 单页面 DOM 扫描最多上报的资源数（#288：长列表页无节制扫描会卡顿）。fetch / XHR 嗅探到的媒体不计入。
+   * 取值经 `normalizeSniffMaxResources`（utils/sniff-limit.ts）规整到 1…99999。
+   */
+  sniffMaxResources: number;
 
   // === 失败回退与询问 ===
 
@@ -265,6 +271,7 @@ const DEFAULT_SETTINGS: FluxDownSettings = {
   floatButtonPosition: "top-right",
   showLowConfidence: false,
   sniffImages: false,
+  sniffMaxResources: SNIFF_MAX_RESOURCES_DEFAULT,
 
   // 失败回退与询问
   fallbackOnReject: true,
@@ -429,6 +436,7 @@ export function migrateSettings(raw: unknown): FluxDownSettings {
   if ((merged.interceptMode as string) === "extension") {
     merged.interceptMode = "smart";
   }
+  merged.sniffMaxResources = normalizeSniffMaxResources(merged.sniffMaxResources);
   return merged;
 }
 
@@ -508,6 +516,12 @@ export interface DownloadItemInfo {
    * 避免拦截后再次投递回同一远端形成死循环（#658）。
    */
   referrerUrl?: string;
+  /**
+   * 发起下载的标签页当前页面 URL（来自 tab-state，不受 Referrer-Policy 影响）。
+   * 只用于站点配置判定：Nexus 等站点 `same-origin` 策略让跨域 CDN 下载没有 referrer，
+   * 「本站不接管」只能靠它命中。不得作为 Referer 发给引擎。
+   */
+  pageUrl?: string;
 }
 
 /**
@@ -520,7 +534,7 @@ export function shouldIntercept(
 ): boolean {
   if (!settings.enabled) return false;
 
-  const { url, fileSize, mime, filename, referrerUrl } = item;
+  const { url, fileSize, mime, filename, referrerUrl, pageUrl } = item;
 
   // #658：FluxDown 远程 Web UI（settings.remoteUrl 指向的 fluxdown_server）上发起
   // 的"下载已完成文件到本地"请求，不应被扩展再次拦截并回投同一远端，
@@ -531,8 +545,8 @@ export function shouldIntercept(
     return false;
   }
 
-  // 站点配置：下载 URL 主机或来源页主机任一为 never 即放行（「不接管当前站点」
-  // 对托管在 CDN/对象存储上的下载同样有效）；任一为 always 则跳过 smart 判定。
+  // 站点配置：下载 URL 主机、来源页（referrer）主机或发起标签页主机任一为 never 即放行
+  // （「不接管当前站点」对托管在 CDN/对象存储上的下载同样有效）；任一为 always 则跳过 smart 判定。
   let forceIntercept = false;
   let urlHost: string;
   try {
@@ -542,11 +556,12 @@ export function shouldIntercept(
     return false;
   }
   const hosts = [urlHost];
-  if (referrerUrl) {
+  for (const source of [referrerUrl, pageUrl]) {
+    if (!source) continue;
     try {
-      hosts.push(new URL(referrerUrl).hostname);
+      hosts.push(new URL(source).hostname);
     } catch {
-      // referrer 解析失败：忽略
+      // 来源页解析失败：忽略
     }
   }
   for (const host of hosts) {

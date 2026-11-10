@@ -40,7 +40,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
@@ -68,6 +70,8 @@ sealed interface FluxMenuItem {
      * @param destructive 危险动作（coral 文字 / 图标）
      * @param keepOpen 点击后不关闭菜单
      * @param indent 缩进 38dp（子项）
+     * @param showTrailingCheck 为 false 时不画行尾勾。勾选态仍由 [checked] 暴露：默认 `Role.Checkbox` + `toggleableState`（行首图标已是方框）；[radio] 为 true 时改为 `Role.RadioButton` + `selected`（行首图标已是圆，两态都画）。
+     * @param radio 单选行。不画行尾勾；选中态走 `selected`，未选中也显式为 false。
      */
     @Immutable
     data class Action(
@@ -82,6 +86,8 @@ sealed interface FluxMenuItem {
         val keepOpen: Boolean = false,
         val indent: Boolean = false,
         val hintIsPath: Boolean = false,
+        val showTrailingCheck: Boolean = true,
+        val radio: Boolean = false,
     ) : FluxMenuItem
 
     @Immutable
@@ -243,11 +249,21 @@ private fun MenuRow(item: FluxMenuItem.Action, state: FluxOverlayState) {
                     item.onClick()
                 },
                 enabled = item.enabled,
-                role = Role.Button,
+                role = when {
+                    item.radio -> Role.RadioButton
+                    item.showTrailingCheck -> Role.Button
+                    else -> Role.Checkbox
+                },
                 interactionSource = source,
             )
             .background(if (pressed) colors.glass3 else Color.Transparent, FluxTheme.shapes.control)
-            .semantics { selected = item.checked }
+            .semantics {
+                if (item.radio || item.showTrailingCheck) {
+                    selected = item.checked
+                } else {
+                    toggleableState = ToggleableState(item.checked)
+                }
+            }
             .padding(start = if (item.indent) 38.dp else 12.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -264,6 +280,6 @@ private fun MenuRow(item: FluxMenuItem.Action, state: FluxOverlayState) {
             }
         }
         item.trailing?.let { FluxText(it, style = type.weight(type.monoS, 500, mono = true), color = colors.inkFaint, maxLines = 1) }
-        if (item.checked) FluxIcon(FluxIcons.Check, null, size = 18.dp, tint = colors.accentHi)
+        if (item.checked && item.showTrailingCheck && !item.radio) FluxIcon(FluxIcons.Check, null, size = 18.dp, tint = colors.accentHi)
     }
 }

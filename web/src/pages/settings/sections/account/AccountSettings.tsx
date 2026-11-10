@@ -15,7 +15,6 @@ import { PairedDevicesCard } from './PairedDevicesCard'
 import { LoginDialog, RegisterDialog } from './AuthDialogs'
 import { ProfileCard } from './ProfileCard'
 import { SecurityCard } from './SecurityCard'
-import { ShareUsageSection } from './ShareUsageSection'
 
 const NO_DEVICES: readonly CloudDevice[] = []
 const NO_LINKED: readonly LinkDeviceInfo[] = []
@@ -57,7 +56,6 @@ export function AccountSettings() {
   return (
     <SettingsPage title={t('settingsCatAccount')} description={t('settingsCatAccountDesc')}>
       {session ? <ProfileCard session={session} disabled={disabled} /> : <HeroCard disabled={disabled} />}
-      {session ? <ShareUsageSection /> : null}
       {session ? <SecurityCard session={session} disabled={disabled} /> : null}
       {session ? <DevicesCard devices={devices} disabled={disabled} connection={cloudConnection} maxOnline={maxOnlineDevices(session.entitlements)} /> : null}
       <PairedDevicesCard devices={linked} disabled={disabled} />

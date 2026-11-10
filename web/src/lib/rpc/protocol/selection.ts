@@ -40,7 +40,7 @@ export type FileExistsAction = 'rename' | 'overwrite' | 'skip';
 /** 选择种类，`type` 内部标记。 */
 export type SelectionKind =
   | { type: 'hls'; options: HlsQualityOptionDto[] }
-  | { type: 'bt'; files: BtFileDto[] }
+  | { type: 'bt'; files: BtFileDto[]; /** 任务当前保存目录（主机路径，供预填；旧 daemon 缺省）。 */ saveDir?: string }
   | { type: 'variant'; options: ResolveVariantOptionDto[] }
   | {
       type: 'fileExists';
@@ -71,7 +71,7 @@ export type SelectionKind =
  */
 export type SelectionOutcome =
   | { kind: 'hls'; index: number }
-  | { kind: 'bt'; indices: number[] }
+  | { kind: 'bt'; indices: number[]; /** 非空且不同于预填目录时改目录后重开；缺省 = 沿用。 */ saveDir?: string }
   | { kind: 'variant'; index: number }
   | { kind: 'fileExists'; action: FileExistsAction }
   | { kind: 'plugin'; identity: string; remember: boolean }
@@ -84,6 +84,7 @@ export interface SelectionRequestDto {
   kind: SelectionKind;
   /** 超时自动采用的默认选择。 */
   defaultChoice: SelectionOutcome;
+  /** 自动采用默认值的时刻；`SELECTION_NO_DEADLINE`（i64::MAX）= 不自动决定，见 {@link hasSelectionDeadline}。 */
   deadlineUnixMs: number;
 }
 
@@ -91,4 +92,12 @@ export interface SelectionRequestDto {
 export interface SelectionResolutionDto {
   requestId: string;
   outcome: SelectionOutcome;
+}
+
+/**
+ * 是否有自动决定的截止时刻（镜像 Rust `SelectionRequestDto::has_deadline`）。
+ * 「无截止」在 wire 上是 i64::MAX，JSON 解析成 number 后失真，按 ≥ MAX_SAFE_INTEGER 判定。
+ */
+export function hasSelectionDeadline(request: Pick<SelectionRequestDto, 'deadlineUnixMs'>): boolean {
+  return request.deadlineUnixMs < Number.MAX_SAFE_INTEGER
 }

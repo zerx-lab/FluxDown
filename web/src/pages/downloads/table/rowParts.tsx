@@ -43,17 +43,33 @@ export function TreeRails({ depth }: { depth: number }) {
 /**
  * 行悬停操作浮层（放在行末）：零宽 sticky 锚点贴住表格滚动区右缘，横向滚动时按钮不随末列移出视口
  * （与 GPUI 挂在右侧留白列上的浮层一致）；未溢出时锚点就在行末，位置与行内右缘相同。
+ *
+ * 底色 = surface 上叠选中 / 悬停色（与行一致），左侧 16px 渐隐，避免半透明盖住「创建时间」等末列文字透出。
  */
 export function RowActionsBar({ selected, children }: { selected: boolean; children: ReactNode }) {
+  const fadeMask = {
+    maskImage: 'linear-gradient(to right, transparent, #000 16px)',
+    WebkitMaskImage: 'linear-gradient(to right, transparent, #000 16px)',
+  } as const
   return (
     <div className="sticky right-1 w-0 shrink-0 self-stretch">
-      <div
-        className={cn(
-          'absolute inset-y-0 right-0 hidden items-center gap-0.5 rounded-r-[var(--fx-components-task-row-radius)] pl-1 pr-1 group-hover/row:flex',
-          selected ? 'bg-nav-selected' : 'bg-row-hover',
-        )}
-      >
-        {children}
+      <div className="absolute inset-y-0 right-0 hidden items-center gap-0.5 rounded-r-[var(--fx-components-task-row-radius)] pl-1 pr-1 group-hover/row:flex">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 -left-4 right-0 bg-surface"
+          style={fadeMask}
+        />
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-y-0 -left-4 right-0',
+            selected ? 'bg-accent' : 'bg-row-hover',
+          )}
+          style={fadeMask}
+        />
+        <div data-no-sweep className="relative flex items-center gap-0.5" onPointerDown={(event) => event.stopPropagation()}>
+          {children}
+        </div>
       </div>
     </div>
   )

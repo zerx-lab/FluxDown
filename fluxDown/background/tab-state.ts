@@ -24,11 +24,16 @@ import { getEngine } from "./rules-store";
 import { mergeRestoredTab } from "./tab-restore";
 import type { PersistedTab } from "./tab-restore";
 import { logWarn } from "@/utils/error-log";
+import { SNIFF_MAX_RESOURCES_DEFAULT, normalizeSniffMaxResources } from "@/utils/sniff-limit";
 
 const CONFIDENCE_ORDER: Record<ConfidenceLevel, number> = { high: 3, medium: 2, low: 1 };
 
-/** 每 tab 资源硬上限：防深扫 / 长会话 SPA 累积把内存与排序成本推高。 */
-const MAX_RESOURCES_PER_TAB = 500;
+/**
+ * 每 tab 资源硬上限：防深扫 / 长会话 SPA 累积把内存与排序成本推高。至少比单页 DOM 嗅探上限
+ * （settings.sniffMaxResources）多留 300 条给 webRequest / 钩子来源，否则调高上限也会被这里吃掉。
+ */
+const MIN_RESOURCES_PER_TAB = 500;
+const RESOURCES_PER_TAB_HEADROOM = 300;
 const MAX_MANIFESTS_PER_TAB = 8;
 /**
  * 分片类资源（m4s / ts 等、小于阈值的音视频）的单独上限：直播 / 长视频会持续产生分片，
@@ -36,7 +41,20 @@ const MAX_MANIFESTS_PER_TAB = 8;
  */
 const MAX_SEGMENTS_PER_TAB = 150;
 const MAX_HLS_PLAYLISTS_PER_TAB = 64;
-const MAX_PERSISTED_RESOURCES = 200;
+/**
+ * 持久化到 storage.session 的资源条数：跟随单页上限，但封顶 2000（session 配额 10 MB 由所有 tab 共享）。
+ * SW 回收后恢复的列表最多这么多条，页面上的 sensor 不会重报已报过的链接。
+ */
+const MIN_PERSISTED_RESOURCES = 200;
+const MAX_PERSISTED_RESOURCES = 2000;
+
+/** 当前设置下的单页 DOM 嗅探上限；由 background 入口在启动与设置变化时经 {@link setSniffLimit} 同步。 */
+let sniffLimit = SNIFF_MAX_RESOURCES_DEFAULT;
+
+export function setSniffLimit(value: number): void {
+  sniffLimit = normalizeSniffMaxResources(value);
+}
+
 const PERSIST_DEBOUNCE_MS = 1_000;
 const SESSION_KEY_PREFIX = "fluxdown_tab_";
 /** 每 tab 保留的历史播放会话数（推荐流里看过 / 预加载过的视频）。 */
@@ -558,7 +576,9 @@ export function ingestResources(
     };
     if (!isWorthShowing(resource)) continue;
     if (isSegmentLike(resource)) evictOldestSegments(state.resources, MAX_SEGMENTS_PER_TAB - 1);
-    if (state.resources.size >= MAX_RESOURCES_PER_TAB) evictLowest(state.resources);
+    if (state.resources.size >= Math.max(MIN_RESOURCES_PER_TAB, sniffLimit + RESOURCES_PER_TAB_HEADROOM)) {
+      evictLowest(state.resources);
+    }
     state.resources.set(id, resource);
     added++;
     changed = true;
@@ -762,7 +782,7 @@ function snapshotOf(tabId: number): PersistedTab | null {
   return {
     pageUrl: state.pageUrl,
     resources: getResources(tabId)
-      .slice(0, MAX_PERSISTED_RESOURCES)
+      .slice(0, Math.min(MAX_PERSISTED_RESOURCES, Math.max(MIN_PERSISTED_RESOURCES, sniffLimit)))
       .map(({ cookies: _cookies, ...rest }) => rest),
     manifests: getManifests(tabId),
     hlsPlaylists: getHlsPlaylists(tabId),

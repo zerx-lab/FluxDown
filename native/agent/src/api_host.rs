@@ -12,15 +12,18 @@ use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
-    ApplicationErrorCode, ChangeTaskUrlParams, CreateGroupRequest, CreateGroupResponse,
-    CreateTaskRequest, DaemonConfigPatch, DaemonCreateTaskParams, DownloadRequest, GroupDto,
-    InstallPluginDevRequest, InstalledPlugin, LinkAuth, LinkCodeResponse, LinkDeviceInfo,
-    LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmOutcome, LinkPairConfirmRequest,
-    LinkPairHelloRequest, LinkPairHelloResponse, LinkPairRevealRequest, LinkPairRevealResponse,
-    LinkPingInfo, MarketEntryDto, MarketInstallRequest, PluginAuthRequest, PluginAuthResponse,
-    PluginDto, QueueDto, ResolvePreviewRequest, ResolvePreviewResponse, RpcErrorObject,
-    RssItemActionRequest, RssItemDto, RssSourceDto, RssValidateRequest, RssValidateResponse,
-    SiteAuthCredentialDto, SiteAuthEntryDto, SiteAuthGetParams, SiteAuthSaveRequest, TaskDto,
+    ApplicationErrorCode, BtGuardEntriesAddParams, BtGuardEntriesListDto, BtGuardEntriesListParams,
+    BtGuardEntriesRemoveDto, BtGuardEntriesRemoveParams, BtGuardEntryDto, BtGuardEventsListDto,
+    BtGuardEventsListParams, BtGuardStateDto, ChangeTaskUrlParams, CreateGroupRequest,
+    CreateGroupResponse, CreateTaskRequest, DaemonConfigPatch, DaemonCreateTaskParams,
+    DownloadRequest, GroupDto, InstallPluginDevRequest, InstalledPlugin, LinkAuth,
+    LinkCodeResponse, LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse,
+    LinkPairConfirmOutcome, LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse,
+    LinkPairRevealRequest, LinkPairRevealResponse, LinkPingInfo, MarketEntryDto,
+    MarketInstallRequest, PluginAuthRequest, PluginAuthResponse, PluginDto, QueueDto,
+    ResolvePreviewRequest, ResolvePreviewResponse, RpcErrorObject, RssItemActionRequest,
+    RssItemDto, RssSourceDto, RssValidateRequest, RssValidateResponse, SiteAuthCredentialDto,
+    SiteAuthEntryDto, SiteAuthGetParams, SiteAuthSaveRequest, TaskDto,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -505,6 +508,49 @@ impl ApiHost for AgentApiHost {
         request: RssValidateRequest,
     ) -> Result<RssValidateResponse, ApiError> {
         self.rpc(method::DAEMON_RSS_VALIDATE, request).await
+    }
+
+    // -- BT 防吸血：只读与条目管理转发 daemon；云名单应用 / 证据弹出是 agent 内部方法，不在此暴露 --
+
+    async fn bt_guard_state(&self) -> Result<BtGuardStateDto, ApiError> {
+        self.rpc(method::DAEMON_BT_GUARD_STATE, json!({})).await
+    }
+
+    async fn bt_guard_entries_list(
+        &self,
+        params: BtGuardEntriesListParams,
+    ) -> Result<BtGuardEntriesListDto, ApiError> {
+        self.rpc(method::DAEMON_BT_GUARD_ENTRIES_LIST, params).await
+    }
+
+    async fn bt_guard_entries_add(
+        &self,
+        params: BtGuardEntriesAddParams,
+    ) -> Result<BtGuardEntryDto, ApiError> {
+        self.rpc(method::DAEMON_BT_GUARD_ENTRIES_ADD, params).await
+    }
+
+    /// daemon 的移除是批量且对不存在的 id 幂等；兼容 API 契约要求单个不存在的条目回 404。
+    async fn bt_guard_entry_remove(&self, entry_id: i64) -> Result<(), ApiError> {
+        let removed: BtGuardEntriesRemoveDto = self
+            .rpc(
+                method::DAEMON_BT_GUARD_ENTRIES_REMOVE,
+                BtGuardEntriesRemoveParams {
+                    ids: vec![entry_id],
+                },
+            )
+            .await?;
+        if removed.removed == 0 {
+            return Err(ApiError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn bt_guard_events_list(
+        &self,
+        params: BtGuardEventsListParams,
+    ) -> Result<BtGuardEventsListDto, ApiError> {
+        self.rpc(method::DAEMON_BT_GUARD_EVENTS_LIST, params).await
     }
 
     // -- 设备互联（局域网直连 L1）：全部交给 `LinkService` --

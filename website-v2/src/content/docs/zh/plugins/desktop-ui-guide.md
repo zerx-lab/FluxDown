@@ -330,7 +330,7 @@ export default class Inspector extends View {
 | `locale()` | `string` | 界面语言，例如 `zh-CN`、`en`。 |
 | `toast(level, text)` | `void` | 在当前活动窗口弹出通知。`level` 为 `info`、`success`、`warning` 或 `error`。 |
 | `close()` | `boolean` | 关闭承载该视图的容器（`auth` 视图的登录对话框、设置对话框、独立窗口）并返回 `true`；关闭会推迟到当前调用返回之后执行。嵌入页面的视图（活动栏页、任务详情标签页）没有容器：什么也不做并返回 `false`。 |
-| `navigate(target)` | `void` | 让主窗口到前台并切换页面。`target` 为 `"downloads"`、`"rss"`、`"webhooks"`、`"share"` 或 `{ view: "<id>" }`（本插件的某个 `activity` 视图）。同步执行：形状非法会抛出 `fluxdown.navigate: …`，目标不是本插件已贡献的活动栏视图时同样抛错；合法目标则推迟执行。 |
+| `navigate(target)` | `void` | 让主窗口到前台并切换页面。`target` 为 `"downloads"`、`"rss"`、`"webhooks"` 或 `{ view: "<id>" }`（本插件的某个 `activity` 视图）。同步执行：形状非法会抛出 `fluxdown.navigate: …`，目标不是本插件已贡献的活动栏视图时同样抛错；合法目标则推迟执行。 |
 
 ### 错误语义
 

@@ -238,6 +238,8 @@ pub async fn run_with(
         ))
     });
     let service_db = engine.db.clone();
+    #[cfg(feature = "bt")]
+    let service_bt_guard = engine.manager.bt_guard().clone();
     let service_data_dir = data_dir.clone();
     #[cfg(feature = "plugins")]
     let service_plugin_manager = engine.manager.plugin_manager();
@@ -298,24 +300,26 @@ pub async fn run_with(
         load_or_create_token(&data_dir, process_config.token_file_override.as_deref()).await?;
     let blobs = Arc::new(BlobStore::open(data_dir.join("daemon-blobs")).await?);
     let hello = crate::service_hello(uuid::Uuid::new_v4().to_string(), runtime_capabilities(true));
-    let service = Arc::new(
-        DaemonService::new(
-            hello,
-            events,
-            selections,
-            blobs.clone(),
-            actor.clone(),
-            service_db,
-            service_data_dir,
-            #[cfg(feature = "plugins")]
-            service_plugin_manager,
-        )
-        .with_demo_url(process_config.demo_url.clone()),
-    );
+    let service = DaemonService::new(
+        hello,
+        events,
+        selections,
+        blobs.clone(),
+        actor.clone(),
+        service_db,
+        service_data_dir,
+        #[cfg(feature = "plugins")]
+        service_plugin_manager,
+    )
+    .with_demo_url(process_config.demo_url.clone());
+    #[cfg(feature = "bt")]
+    let service = service.with_bt_guard(service_bt_guard);
+    let service = Arc::new(service);
     service
         .initialize_dynamic_projection()
         .await
         .map_err(|error| std::io::Error::other(error.message))?;
+    crate::disk_free::spawn_watcher(service.events().clone(), cancel.clone());
     // 常驻插件宿主：先装好 `flux.tasks` 出口，再启动 background 宿主。宿主启动不阻塞
     // 控制面就绪（单个插件的 main 初始化最长 30 s）。
     #[cfg(feature = "plugins")]
@@ -710,6 +714,10 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
         .manager
         .take_missing_cleanup_rx()
         .ok_or_else(|| std::io::Error::other("missing cleanup receiver already taken"))?;
+    let file_hash = engine
+        .manager
+        .take_file_hash_rx()
+        .ok_or_else(|| std::io::Error::other("file hash receiver already taken"))?;
     let (plugin_tx, plugin) = tokio::sync::mpsc::unbounded_channel();
     #[cfg(feature = "plugins")]
     {
@@ -750,6 +758,7 @@ fn take_engine_receivers(engine: &mut Engine) -> Result<EngineReceivers, std::io
         retry,
         plugin,
         missing_cleanup,
+        file_hash,
     })
 }
 
@@ -792,10 +801,17 @@ fn apply_manager_settings(engine: &mut Engine, config: &HashMap<String, String>)
     engine
         .manager
         .set_idle_file_scan(bool_config(config, "idle_file_scan", false));
+    engine
+        .manager
+        .set_hash_after_download(hash_after_download(config));
     engine.manager.set_completed_record_retention_days(
         u32::try_from(i32_config(config, "completed_record_retention_days", 0).clamp(0, 3650))
             .unwrap_or(0),
     );
+    #[cfg(feature = "bt")]
+    engine
+        .manager
+        .set_bt_guard_config(crate::config::bt_guard_config_from_map(config));
 }
 
 fn configured_save_dir(config: &HashMap<String, String>, fallback: String) -> String {
@@ -804,6 +820,20 @@ fn configured_save_dir(config: &HashMap<String, String>, fallback: String) -> St
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or(fallback)
+}
+
+/// 「下载完成后计算哈希」开关与算法 → 引擎设置；关闭或算法无法识别时为 `None`。
+pub(crate) fn hash_after_download(
+    config: &HashMap<String, String>,
+) -> Option<fluxdown_engine::file_hash::HashAlgorithm> {
+    if !bool_config(config, "hash_after_download", false) {
+        return None;
+    }
+    let algorithm = config.get("hash_algorithm").map_or(
+        fluxdown_protocol::daemon_config_default("hash_algorithm"),
+        String::as_str,
+    );
+    fluxdown_engine::file_hash::HashAlgorithm::parse(algorithm)
 }
 
 fn bool_config(config: &HashMap<String, String>, key: &str, fallback: bool) -> bool {

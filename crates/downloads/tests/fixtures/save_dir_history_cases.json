@@ -29,8 +29,37 @@
     }
   ],
   "choices": [
-    { "name": "excludes current", "history": ["/a", "/b", "/c"], "current": " /b ", "expected": ["/a", "/c"] },
-    { "name": "current not in history", "history": ["/a", "/b"], "current": "/x", "expected": ["/a", "/b"] },
-    { "name": "only current", "history": ["/a"], "current": "/a", "expected": [] }
+    { "name": "excludes current", "category": [], "history": ["/a", "/b", "/c"], "current": " /b ", "expected": ["/a", "/c"] },
+    { "name": "current not in history", "category": [], "history": ["/a", "/b"], "current": "/x", "expected": ["/a", "/b"] },
+    { "name": "only current", "category": [], "history": ["/a"], "current": "/a", "expected": [] },
+    {
+      "name": "category memory first, then global history, deduped, excluding current",
+      "category": ["/v2", "/v1", "/cur"],
+      "history": ["/v1", "/g", "/cur"],
+      "current": " /cur ",
+      "expected": ["/v2", "/v1", "/g"]
+    }
+  ],
+  "categoryRead": [
+    { "name": "missing", "value": null, "expected": {} },
+    { "name": "not an object", "value": ["/a"], "expected": {} },
+    {
+      "name": "each list parsed like read; blank ids, non-arrays and empty lists dropped",
+      "value": { "video": [" /v ", "", "/v", 3, "/w"], "": ["/x"], "audio": [], "doc": "/d" },
+      "expected": { "video": ["/v", "/w"] }
+    }
+  ],
+  "categoryRecord": [
+    { "name": "into empty", "history": {}, "category": "video", "dir": "/v", "expected": { "video": ["/v"] } },
+    {
+      "name": "other categories untouched",
+      "history": { "video": ["/v"], "audio": ["/a"] },
+      "category": "video",
+      "dir": " /w ",
+      "expected": { "video": ["/w", "/v"], "audio": ["/a"] }
+    },
+    { "name": "already first is unchanged", "history": { "video": ["/v"] }, "category": "video", "dir": "/v", "expected": null },
+    { "name": "blank dir is ignored", "history": {}, "category": "video", "dir": "  ", "expected": null },
+    { "name": "blank category is ignored", "history": {}, "category": "", "dir": "/v", "expected": null }
   ]
 }

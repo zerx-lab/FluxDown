@@ -39,6 +39,10 @@ FluxDown ships with **25 built-in public trackers**, curated for good global cov
 
 Torrent downloads resume using BitTorrent's own piece-based verification: closing FluxDown, losing power, or a crash never loses already-verified pieces — only the piece that was in flight at the time needs to be re-fetched.
 
+## Anti-leech protection
+
+FluxDown watches peers for leech behavior — re-downloading the same data, faking progress, known leech clients — and can observe, throttle, stop uploading to, or block them. Every rule starts in **Observe only** mode, private torrents and local-network peers are exempt, and a layered block list plus a signed cloud list are available. See [BT Anti-Leech](/docs/en/protocols/bt-guard/) for details.
+
 ## Related settings
 
 | Setting | Location |
@@ -46,6 +50,7 @@ Torrent downloads resume using BitTorrent's own piece-based verification: closin
 | Listen Port Range | Settings → BitTorrent |
 | Tracker List | Settings → BitTorrent |
 | Tracker Subscription | Settings → BitTorrent |
+| Anti-Leech, Block list, Event log | Settings → BitTorrent (tabs) |
 | Associate .torrent Files | Settings → General |
 
 ## Limitations & FAQ
@@ -54,4 +59,4 @@ Torrent downloads resume using BitTorrent's own piece-based verification: closin
 
 **Can I add more trackers without losing the built-in ones?** Yes for community subscriptions — those merge with whatever list you're using. A hand-edited custom Tracker List, however, replaces the built-in 25 rather than adding to them; include the ones you want to keep.
 
-**Does FluxDown seed after a torrent finishes?** FluxDown is built for downloading; it doesn't provide a dedicated seeding/ratio-management UI.
+**Does FluxDown seed after a torrent finishes?** Yes. Finished torrents keep seeding by default and appear under the **Seeding** filter in the download list; seeding limits (share ratio, seeding time, maximum active seeding tasks) are in *Settings → BitTorrent*. To protect your upload bandwidth from peers that only take, see [BT Anti-Leech](/docs/en/protocols/bt-guard/).

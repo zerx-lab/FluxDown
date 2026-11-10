@@ -4,7 +4,7 @@ import PageHeader from "@/components/site/PageHeader.astro";
 import { ArrowRight } from "lucide-react";
 import { announcements } from "@/i18n/messages/announcements";
 import { langStaticPaths, resolveLang, href } from "@/i18n/routing";
-import { sortedAnnouncements } from "@/lib/announcements";
+import { sortedAnnouncements, isAnnouncementLive } from "@/lib/announcements";
 
 export const getStaticPaths = langStaticPaths;
 const lang = resolveLang(Astro.params.lang);
@@ -30,12 +30,13 @@ const dateFormat = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
             <p class="eyebrow-plain mb-4">{t.count(items.length)}</p>
             <ol class="list">
               {items.map((item, i) => {
+                const live = isAnnouncementLive(item);
                 const inner = (
                   <>
                     <div class="meta">
-                      <span class:list={["status", item.active ? "is-active" : "is-ended"]}>
-                        {item.active && <span class="live-dot" aria-hidden="true" />}
-                        {item.active ? t.active : t.ended}
+                      <span class:list={["status", live ? "is-active" : "is-ended"]}>
+                        {live && <span class="live-dot" aria-hidden="true" />}
+                        {live ? t.active : t.ended}
                       </span>
                       <time class="mono num text-[12.5px] text-subtle" datetime={item.date}>
                         {dateFormat.format(new Date(`${item.date}T00:00:00Z`))}
@@ -51,7 +52,7 @@ const dateFormat = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
                   </>
                 );
                 return (
-                  <li id={item.id} data-reveal style={`--d:${Math.min(i, 6)}`} class:list={[!item.active && "ended"]}>
+                  <li id={item.id} data-reveal style={`--d:${Math.min(i, 6)}`} class:list={[!live && "ended"]}>
                     {item.link ? (
                       <a class="row spot" href={href(item.link, lang)}>
                         {inner}

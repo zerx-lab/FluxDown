@@ -136,6 +136,7 @@ fn task_dto_serializes_camel_case_with_correct_values() {
         ignore_tls_errors: false,
         file_missing: false,
         completed_at: String::new(),
+        file_hash: String::new(),
         referrer: String::new(),
         group_id: "g1".to_string(),
         rss_source_id: String::new(),
@@ -153,6 +154,8 @@ fn task_dto_serializes_camel_case_with_correct_values() {
         seed_time_limit_minutes: -2,
         seed_inactive_time_limit_minutes: -2,
         seed_upload_limit_bps: 0,
+        bt_sequential: false,
+        bt_first_last_pieces_first: false,
     };
     let v = serde_json::to_value(&dto).unwrap();
     assert_eq!(v["taskId"], "t1");
@@ -186,6 +189,8 @@ fn task_dto_serializes_camel_case_with_correct_values() {
         "seedTimeLimitMinutes",
         "seedInactiveTimeLimitMinutes",
         "seedUploadLimitBps",
+        "btSequential",
+        "btFirstLastPiecesFirst",
     ] {
         assert!(v.get(absent).is_none(), "{absent} must be omitted");
     }

@@ -1,0 +1,10 @@
+---
+description: 拦截项目禁止命令与 Rust 忽错门禁绕过
+alwaysApply: true
+---
+
+# forbidden-commands（Cursor 薄适配）
+
+完整规则正文见 [`.omp/rules/forbidden-commands.md`](mdc:.omp/rules/forbidden-commands.md)。
+
+编辑命中本规则路径时：**必须先 Read 该文件并遵守全文**；本适配器不复制正文。omp TTSR 流式打断在 Cursor 侧不可用，硬拦截见 `.cursor/hooks`（`forbidden-commands` / git 红线）。

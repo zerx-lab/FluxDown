@@ -13,7 +13,6 @@ import type { APIRoute } from "astro";
 import { DOWNLOAD_PASS_SECRET, GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
 import { getCached, setCached } from "@/lib/api-cache";
 import { getClientCountry, getClientIp } from "@/lib/client-ip";
-import { recordDownload } from "@/lib/download-ban";
 import { readDownloadPass, verifyDownloadPass } from "@/lib/download-pass";
 import { hasPan123Quota, isPan123Updater, isUpdateAsset, mayUseMirror, recordPan123Link } from "@/lib/download-gate";
 import { cdnConfigured, cdnDownloadUrl, ossConfigured, presignOssHeadUrl, releaseObjectKey } from "@/lib/oss";
@@ -112,17 +111,6 @@ export const GET: APIRoute = async ({ params, url, request, clientAddress }) => 
   const tag = url.searchParams.get("tag")?.trim() || "";
   const source = downloadSource(url.searchParams.get("source"));
   const ip = getClientIp(request, clientAddress);
-  const banned = recordDownload(ip, `${tag}/${filename}`);
-  if (banned > 0) {
-    return new Response(JSON.stringify({ error: "Too many downloads from this IP; try again later." }), {
-      status: 429,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-        "Retry-After": String(Math.ceil(banned / 1000)),
-      },
-    });
-  }
   const userAgent = request.headers.get("user-agent");
   const hasPass = !DOWNLOAD_PASS_SECRET || verifyDownloadPass(DOWNLOAD_PASS_SECRET, readDownloadPass(request), ip);
   const admitted = source !== "github" && mayUseMirror(ip, userAgent, hasPass);

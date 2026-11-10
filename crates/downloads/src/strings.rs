@@ -139,6 +139,14 @@ pub(crate) struct DownloadStrings {
     pub(crate) seed_local_err_path_required: SharedString,
     /// 右键「完整性校验」（已完成 BT 任务）。
     pub(crate) verify_integrity: SharedString,
+    /// 右键「选片方式」分组标题（不可点击；其下为顺序单选 + 首尾勾选）。
+    pub(crate) bt_piece_picking: SharedString,
+    /// 右键「最稀有优先」（未完成 BT 任务；与「按顺序下载」互斥，缺省选中）。
+    pub(crate) bt_rarest_first: SharedString,
+    /// 右键「按顺序下载」（未完成 BT 任务；与「最稀有优先」互斥）。
+    pub(crate) bt_sequential: SharedString,
+    /// 右键「先下载首尾文件块」（未完成 BT 任务，可与任一顺序组合）。
+    pub(crate) bt_first_last_pieces: SharedString,
     pub(crate) redownload_task: SharedString,
     pub(crate) copy_url: SharedString,
     pub(crate) copy_magnet: SharedString,
@@ -194,25 +202,6 @@ pub(crate) struct DownloadStrings {
     pub(crate) status_file_missing: SharedString,
     pub(crate) conflict_pending: SharedString,
     pub(crate) conflict_pending_tooltip: SharedString,
-    pub(crate) share: SharedString,
-    pub(crate) share_switch_bridge: SharedString,
-    pub(crate) share_providing_badge: SharedString,
-    pub(crate) share_stop_providing: SharedString,
-    pub(crate) share_swarm_quota_chip: SharedString,
-    pub(crate) share_swarm_login_chip: SharedString,
-    share_path_direct_lan: SharedString,
-    share_path_direct_wan: SharedString,
-    share_path_relay: SharedString,
-    share_path_cdn: SharedString,
-    share_path_bridge: SharedString,
-    share_path_swarm: SharedString,
-    share_peers: SharedString,
-    share_path_unknown: SharedString,
-    share_disabled_incomplete: SharedString,
-    share_disabled_missing: SharedString,
-    share_disabled_remote: SharedString,
-    share_disabled_signed_out: SharedString,
-    share_disabled_selection: SharedString,
     pub(crate) add_category: SharedString,
     pub(crate) edit_category: SharedString,
     pub(crate) hide_section: SharedString,
@@ -352,6 +341,10 @@ impl DownloadStrings {
             seed_local_started: shared(translator.text("seedLocalStarted")),
             seed_local_err_path_required: shared(translator.text("seedLocalErrPathRequired")),
             verify_integrity: shared(translator.text("verifyTaskIntegrity")),
+            bt_piece_picking: shared(translator.text("btPiecePicking")),
+            bt_rarest_first: shared(translator.text("btRarestFirst")),
+            bt_sequential: shared(translator.text("btSequentialDownload")),
+            bt_first_last_pieces: shared(translator.text("btFirstLastPiecesFirst")),
             redownload_task: shared(translator.text("redownloadTask")),
             copy_url: shared(translator.text("copyUrl")),
             copy_magnet: shared(translator.text("btCopyMagnet")),
@@ -401,25 +394,6 @@ impl DownloadStrings {
             status_file_missing: shared(translator.text("statusFileMissing")),
             conflict_pending: shared(translator.text("fileConflictPending")),
             conflict_pending_tooltip: shared(translator.text("fileConflictPendingTooltip")),
-            share: shared(translator.text("detailActionShare")),
-            share_switch_bridge: shared(translator.text("shareSwitchBridge")),
-            share_providing_badge: shared(translator.text("shareProvidingBadge")),
-            share_stop_providing: shared(translator.text("shareStopProviding")),
-            share_swarm_quota_chip: shared(translator.text("shareSwarmQuotaChip")),
-            share_swarm_login_chip: shared(translator.text("shareSwarmLoginChip")),
-            share_path_direct_lan: shared(translator.text("sharePathDirectLan")),
-            share_path_direct_wan: shared(translator.text("sharePathDirectWan")),
-            share_path_relay: shared(translator.text("sharePathRelay")),
-            share_path_cdn: shared(translator.text("shareBadgeCloud")),
-            share_path_bridge: shared(translator.text("shareBadgeBridge")),
-            share_path_swarm: shared(translator.text("sharePathSwarm")),
-            share_peers: shared(translator.text("shareBadgePeers")),
-            share_path_unknown: shared(translator.text("sharePathUnknown")),
-            share_disabled_incomplete: shared(translator.text("shareDisabledIncomplete")),
-            share_disabled_missing: shared(translator.text("shareDisabledMissing")),
-            share_disabled_remote: shared(translator.text("shareDisabledRemote")),
-            share_disabled_signed_out: shared(translator.text("shareDisabledSignedOut")),
-            share_disabled_selection: shared(translator.text("shareDisabledSelection")),
             add_category: shared(translator.text("addCategory")),
             edit_category: shared(translator.text("editCategory")),
             hide_section: shared(translator.text("hideSection")),
@@ -551,37 +525,6 @@ impl DownloadStrings {
     /// 组概览副标题：`任务组 · {status}`。
     pub(crate) fn format_group_subtitle(&self, status: &str) -> SharedString {
         SharedString::from(self.group_detail_subtitle.replace("{status}", status))
-    }
-
-    /// 分享入口被禁用时的悬浮提示。
-    pub(crate) fn share_disabled(&self, block: crate::model::share::ShareBlock) -> SharedString {
-        use crate::model::share::ShareBlock;
-        match block {
-            ShareBlock::Incomplete => self.share_disabled_incomplete.clone(),
-            ShareBlock::Missing => self.share_disabled_missing.clone(),
-            ShareBlock::Remote => self.share_disabled_remote.clone(),
-            ShareBlock::SignedOut => self.share_disabled_signed_out.clone(),
-            ShareBlock::Selection => self.share_disabled_selection.clone(),
-        }
-    }
-
-    /// FluxMesh接收任务的路径徽标文案。
-    pub(crate) fn share_path(&self, kind: fluxdown_protocol::SharePathKind) -> SharedString {
-        use fluxdown_protocol::SharePathKind;
-        match kind {
-            SharePathKind::DirectLan => self.share_path_direct_lan.clone(),
-            SharePathKind::DirectWan => self.share_path_direct_wan.clone(),
-            SharePathKind::Relay => self.share_path_relay.clone(),
-            SharePathKind::Cdn => self.share_path_cdn.clone(),
-            SharePathKind::Bridge => self.share_path_bridge.clone(),
-            SharePathKind::Swarm => self.share_path_swarm.clone(),
-            SharePathKind::Unknown => self.share_path_unknown.clone(),
-        }
-    }
-
-    /// `+{count} 台设备`。
-    pub(crate) fn format_share_peers(&self, count: u32) -> SharedString {
-        SharedString::from(self.share_peers.replace("{count}", &count.to_string()))
     }
 
     pub(crate) fn state_label(&self, state: crate::model::TaskState) -> SharedString {
@@ -782,12 +725,6 @@ pub(crate) struct NewDownloadStrings {
     probe_size_unknown: SharedString,
     pub(crate) probe_unavailable: SharedString,
     pub(crate) no_valid_url: SharedString,
-    pub(crate) share_receive: SharedString,
-    share_link_note: SharedString,
-    share_mixed_note: SharedString,
-    share_multiple_note: SharedString,
-    share_code_note: SharedString,
-    pub(crate) share_unavailable_note: SharedString,
     pub(crate) open_torrent: SharedString,
     pub(crate) select_torrent: SharedString,
     pub(crate) import_txt: SharedString,
@@ -839,6 +776,9 @@ pub(crate) struct NewDownloadStrings {
     pub(crate) cookie: SharedString,
     pub(crate) cookie_desc: SharedString,
     pub(crate) cookie_placeholder: SharedString,
+    pub(crate) referrer: SharedString,
+    pub(crate) referrer_desc: SharedString,
+    pub(crate) referrer_placeholder: SharedString,
     pub(crate) checksum: SharedString,
     pub(crate) checksum_desc: SharedString,
     pub(crate) checksum_placeholder: SharedString,
@@ -890,12 +830,6 @@ impl NewDownloadStrings {
             probe_size_unknown: shared(translator.text("newDownloadProbeSizeUnknown")),
             probe_unavailable: shared(translator.text("newDownloadProbeUnavailable")),
             no_valid_url: shared(translator.text("newDownloadNoValidUrl")),
-            share_receive: shared(translator.text("shareReceive")),
-            share_link_note: shared(translator.text("shareNewDownloadLink")),
-            share_mixed_note: shared(translator.text("shareNewDownloadMixed")),
-            share_multiple_note: shared(translator.text("shareNewDownloadMultiple")),
-            share_code_note: shared(translator.text("shareNewDownloadCode")),
-            share_unavailable_note: shared(translator.text("shareNewDownloadUnavailable")),
             open_torrent: shared(translator.text("openTorrentFile")),
             select_torrent: shared(translator.text("selectTorrentFile")),
             import_txt: shared(translator.text("importTxtFile")),
@@ -963,6 +897,9 @@ impl NewDownloadStrings {
             cookie: shared(translator.text("taskCookie")),
             cookie_desc: shared(translator.text("taskCookieDesc")),
             cookie_placeholder: shared(translator.text("taskCookiePlaceholder")),
+            referrer: shared(translator.text("taskReferrer")),
+            referrer_desc: shared(translator.text("taskReferrerDesc")),
+            referrer_placeholder: shared(translator.text("taskReferrerPlaceholder")),
             checksum: shared(translator.text("taskChecksum")),
             checksum_desc: shared(translator.text("taskChecksumDesc")),
             checksum_placeholder: shared(translator.text("taskChecksumPlaceholder")),
@@ -1006,23 +943,6 @@ impl NewDownloadStrings {
     /// `{count} 个链接`。
     pub(crate) fn format_url_count(&self, count: usize) -> SharedString {
         SharedString::from(self.url_count.replace("{count}", &count.to_string()))
-    }
-
-    /// 链接框下的分享链接提示。
-    pub(crate) fn format_share_note(
-        &self,
-        note: crate::model::new_download::ShareNote,
-    ) -> SharedString {
-        use crate::model::new_download::ShareNote;
-        match note {
-            ShareNote::Link => self.share_link_note.clone(),
-            ShareNote::Code => self.share_code_note.clone(),
-            ShareNote::Mixed => self.share_mixed_note.clone(),
-            ShareNote::Multiple(count) => SharedString::from(
-                self.share_multiple_note
-                    .replace("{count}", &count.to_string()),
-            ),
-        }
     }
 
     /// 分类显示名：内置项走 i18n，自定义项用 `name`。
@@ -1178,6 +1098,8 @@ pub(crate) fn error_text(
         ErrorReason::TaskStateConflict => Some("errReasonTaskStateConflict"),
         ErrorReason::TaskDeviceMismatch => Some("errReasonTaskDeviceMismatch"),
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
+        ErrorReason::TaskFilesInUse => Some("errReasonTaskFilesInUse"),
+        ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),

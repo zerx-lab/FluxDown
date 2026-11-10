@@ -1,12 +1,9 @@
 //! 签名信封校验：`{"payload": base64, "signatures": [{"keyId", "sig"}]}`。
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::{Signature, VerifyingKey};
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::keys::{RELEASE_KEYS, REVOCATION_KEYS};
+use crate::signed_envelope::{EnvelopeError, SigningKeyEntry, open_envelope};
 
 pub(crate) const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 const MAX_PACK_PAYLOAD_BYTES: usize = 400 * 1024;
@@ -30,6 +27,17 @@ pub enum SniffRuleError {
     Io(String),
     #[error("http error: {0}")]
     Http(String),
+}
+
+impl From<EnvelopeError> for SniffRuleError {
+    fn from(error: EnvelopeError) -> Self {
+        match error {
+            EnvelopeError::TooLarge => Self::TooLarge,
+            EnvelopeError::Envelope(message) => Self::Envelope(message),
+            EnvelopeError::Signature => Self::Signature,
+            EnvelopeError::Payload(message) => Self::Payload(message),
+        }
+    }
 }
 
 /// 文档种类，同时决定允许的签名密钥集合与 payload 结构。
@@ -63,8 +71,8 @@ impl DocKind {
 /// 验签公钥集合。生产使用 [`KeySet::production`]，测试注入自己的密钥。
 #[derive(Clone, Debug)]
 pub(crate) struct KeySet {
-    release: Vec<(String, [u8; 32])>,
-    revocation: Vec<(String, [u8; 32])>,
+    release: Vec<SigningKeyEntry>,
+    revocation: Vec<SigningKeyEntry>,
 }
 
 impl KeySet {
@@ -81,10 +89,7 @@ impl KeySet {
     }
 
     #[cfg(test)]
-    pub(crate) fn new(
-        release: Vec<(String, [u8; 32])>,
-        revocation: Vec<(String, [u8; 32])>,
-    ) -> Self {
+    pub(crate) fn new(release: Vec<SigningKeyEntry>, revocation: Vec<SigningKeyEntry>) -> Self {
         Self {
             release,
             revocation,
@@ -92,7 +97,7 @@ impl KeySet {
     }
 
     /// 允许签发该种类文档的公钥：吊销列表 = 发布密钥 ∪ 吊销密钥，其余只认发布密钥。
-    fn allowed(&self, kind: DocKind) -> impl Iterator<Item = &(String, [u8; 32])> {
+    fn allowed(&self, kind: DocKind) -> impl Iterator<Item = &SigningKeyEntry> + Clone {
         let revocation: &[(String, [u8; 32])] = if kind == DocKind::Revocations {
             &self.revocation
         } else {
@@ -109,75 +114,22 @@ pub(crate) struct VerifiedDoc {
     pub(crate) envelope: Vec<u8>,
 }
 
-#[derive(Deserialize)]
-struct Envelope {
-    payload: String,
-    signatures: Vec<EnvelopeSignature>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnvelopeSignature {
-    key_id: String,
-    sig: String,
-}
-
 pub(crate) fn verify_envelope(
     bytes: &[u8],
     kind: DocKind,
     keys: &KeySet,
 ) -> Result<VerifiedDoc, SniffRuleError> {
-    if bytes.len() > MAX_ENVELOPE_BYTES {
-        return Err(SniffRuleError::TooLarge);
-    }
-    let envelope: Envelope = serde_json::from_slice(bytes)
-        .map_err(|error| SniffRuleError::Envelope(error.to_string()))?;
-    let payload_bytes = STANDARD
-        .decode(envelope.payload.as_bytes())
-        .map_err(|error| SniffRuleError::Envelope(error.to_string()))?;
     let limit = if kind == DocKind::Revocations {
         MAX_REVOCATION_PAYLOAD_BYTES
     } else {
         MAX_PACK_PAYLOAD_BYTES
     };
-    if payload_bytes.len() > limit {
-        return Err(SniffRuleError::TooLarge);
-    }
-    if !signed_by_allowed_key(&envelope.signatures, &payload_bytes, kind, keys) {
-        return Err(SniffRuleError::Signature);
-    }
-    let payload: Value = serde_json::from_slice(&payload_bytes)
-        .map_err(|error| SniffRuleError::Payload(error.to_string()))?;
+    let payload = open_envelope(bytes, MAX_ENVELOPE_BYTES, limit, keys.allowed(kind))?;
     let sequence = validate_payload(&payload, kind)?;
     Ok(VerifiedDoc {
         sequence,
         payload,
         envelope: bytes.to_vec(),
-    })
-}
-
-fn signed_by_allowed_key(
-    signatures: &[EnvelopeSignature],
-    payload: &[u8],
-    kind: DocKind,
-    keys: &KeySet,
-) -> bool {
-    signatures.iter().any(|candidate| {
-        let Some((_, key)) = keys.allowed(kind).find(|(id, _)| *id == candidate.key_id) else {
-            return false;
-        };
-        let Ok(verifying) = VerifyingKey::from_bytes(key) else {
-            return false;
-        };
-        let Ok(raw) = STANDARD.decode(candidate.sig.as_bytes()) else {
-            return false;
-        };
-        let Ok(raw): Result<[u8; 64], _> = raw.try_into() else {
-            return false;
-        };
-        verifying
-            .verify_strict(payload, &Signature::from_bytes(&raw))
-            .is_ok()
     })
 }
 
@@ -227,21 +179,9 @@ fn validate_payload(payload: &Value, kind: DocKind) -> Result<u64, SniffRuleErro
     Ok(sequence)
 }
 
-/// 测试用：以 `key` 对 `payload` 原始字节签名并封装成信封。
+/// 测试用信封签名工具与 BT 防吸血云名单共用。
 #[cfg(test)]
-pub(crate) fn sign_envelope(
-    payload: &[u8],
-    key_id: &str,
-    key: &ed25519_dalek::SigningKey,
-) -> Vec<u8> {
-    use ed25519_dalek::Signer;
-    let signature = key.sign(payload);
-    serde_json::to_vec(&serde_json::json!({
-        "payload": STANDARD.encode(payload),
-        "signatures": [{"keyId": key_id, "sig": STANDARD.encode(signature.to_bytes())}],
-    }))
-    .expect("envelope json")
-}
+pub(crate) use crate::signed_envelope::sign_envelope;
 
 #[cfg(test)]
 mod tests {

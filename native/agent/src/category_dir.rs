@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_categories_are_ignored_and_no_dir_means_no_route() {
+    fn hidden_categories_are_ignored() {
         let mut hidden = category("music", None, &["flac"], "/music-hidden", 1);
         hidden["visible"] = json!(false);
         let preferences = prefs(json!([
@@ -235,16 +235,6 @@ mod tests {
         assert_eq!(
             save_dir(&preferences, "", "https://x.test/a/My%20Song.flac?x=1").as_deref(),
             Some("/music")
-        );
-        assert_eq!(
-            category_route(&prefs(json!([category(
-                "audio",
-                Some("audio"),
-                &["flac"],
-                "",
-                1
-            )]))),
-            None
         );
     }
 }

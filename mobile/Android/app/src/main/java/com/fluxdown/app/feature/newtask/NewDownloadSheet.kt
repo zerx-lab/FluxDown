@@ -464,10 +464,12 @@ private fun NewDownloadContent(
                 mono = true,
                 singleLine = false,
                 rows = 5,
+                // 多行批量链接框不能用 KeyboardType.Uri：小米 / 搜狗 / 百度等输入法对 URI 变体固定给「前往」键，
+                // 无视 TYPE_TEXT_FLAG_MULTI_LINE，回车换不了行（#1010）。Text + Default 才稳定出换行键。
                 keyboardOptions = KeyboardOptions(
                     capitalization = KeyboardCapitalization.None,
                     autoCorrectEnabled = false,
-                    keyboardType = KeyboardType.Uri,
+                    keyboardType = KeyboardType.Text,
                     imeAction = ImeAction.Default,
                 ),
                 error = when {
@@ -563,7 +565,9 @@ private fun NewDownloadContent(
             return@Column
         }
 
-        CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
+        if (form.categoryOptions.isNotEmpty()) {
+            CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
+        }
 
         // 保存目录
         val saveDirShown = remember(form.saveDir, remoteHost) {

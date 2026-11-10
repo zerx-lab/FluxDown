@@ -12,6 +12,8 @@
 //! 错误类型（[`ComponentError`]）与安装底座（[`download_to_file`]/[`fetch_github_json`]）。
 
 mod ffmpeg;
+#[cfg(feature = "components")]
+mod segmented;
 mod ytdlp;
 
 pub use ffmpeg::*;
@@ -25,12 +27,13 @@ use std::path::PathBuf;
 /// `ghproxy`/`gh-proxy` 类反代的基址），非空时替换掉请求 URL 里的
 /// `https://api.github.com` 或 `https://github.com` 前缀（含 Release JSON
 /// 查询与资产直链下载两条路径）。空值（默认）= 不改写，直连 GitHub。
+/// 插件市场（索引与插件包下载，#847）复用同一配置。
 pub const CONFIG_COMPONENT_MIRROR_BASE: &str = "component_mirror_base";
 
 /// 把 `url` 的 `https://api.github.com` / `https://github.com` 前缀替换为
 /// `mirror_base`（trim 首尾空白与末尾 `/`）。`mirror_base` 为空则原样返回。
 /// 纯函数，不做网络/IO，便于测试。
-#[cfg(any(feature = "components", test))]
+#[cfg(any(feature = "components", feature = "plugins", test))]
 pub(crate) fn apply_component_mirror(url: &str, mirror_base: &str) -> String {
     let mirror_base = mirror_base.trim().trim_end_matches('/');
     if mirror_base.is_empty() {
@@ -47,7 +50,7 @@ pub(crate) fn apply_component_mirror(url: &str, mirror_base: &str) -> String {
 /// 读取用户配置的组件镜像基址（[`CONFIG_COMPONENT_MIRROR_BASE`]）；未设置
 /// 或读取失败均返回空串（= 不改写，直连 GitHub），不让配置读取失败阻断
 /// 安装流程。
-#[cfg(feature = "components")]
+#[cfg(any(feature = "components", feature = "plugins"))]
 pub(crate) async fn component_mirror_base(db: &crate::db::Db) -> String {
     db.get_config(CONFIG_COMPONENT_MIRROR_BASE)
         .await
@@ -253,7 +256,7 @@ pub(crate) async fn fetch_github_json_with_mirror(
 
 /// 镜像改写后的 URL：仅当确实改写且镜像为 https 才返回；http 镜像一律忽略
 /// （退回直连），避免明文链路上的篡改/降级。
-#[cfg(any(feature = "components", test))]
+#[cfg(any(feature = "components", feature = "plugins", test))]
 pub(crate) fn https_mirror_url(url: &str, mirror_base: &str) -> Option<String> {
     let mirrored = apply_component_mirror(url, mirror_base);
     (mirrored != url && mirrored.to_ascii_lowercase().starts_with("https://")).then_some(mirrored)
@@ -374,9 +377,10 @@ pub(crate) async fn fetch_versions_json(
     fetch_github_json_with_mirror(clients, github_url, mirror_base).await
 }
 
-/// 流式下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
+/// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
 /// `progress(downloaded, total)` 上报进度（total=0 未知）。ffmpeg 归档 / yt-dlp
-/// 单二进制安装共用；每 256KB 上报一次避免信号风暴。
+/// 单二进制安装共用；每 256KB 上报一次避免信号风暴。服务器支持 Range 时多段并发、
+/// 单段断点重试，否则单流（见 [`segmented`]，#453）。
 ///
 /// 依次尝试：用户配置的 [`CONFIG_COMPONENT_MIRROR_BASE`] 镜像（675#1，仅 https）→
 /// 统一出口的插件改写地址（[`crate::egress::Egress::route_verified`]，如 GitHub 加速）→
@@ -438,50 +442,8 @@ async fn download_to_file_from(
     dest: &std::path::Path,
     progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<String, ComponentError> {
-    use futures_util::StreamExt;
-    use sha2::{Digest, Sha256};
-    use tokio::io::AsyncWriteExt;
-
     let client = client_for(clients, &attempt.url).await?;
-    let mut request = client.get(&attempt.url).header("User-Agent", "FluxDown");
-    for (name, value) in &attempt.headers {
-        request = request.header(name.as_str(), value.as_str());
-    }
-    let resp = request
-        .send()
-        .await
-        .map_err(|e| ComponentError::Http(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(ComponentError::Http(format!(
-            "download returned {}",
-            resp.status()
-        )));
-    }
-    let total = resp.content_length().unwrap_or(0);
-    let mut file = tokio::fs::File::create(dest)
-        .await
-        .map_err(|e| ComponentError::Io(e.to_string()))?;
-    let mut hasher = Sha256::new();
-    let mut stream = resp.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut last_report: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| ComponentError::Http(e.to_string()))?;
-        hasher.update(&chunk);
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| ComponentError::Io(e.to_string()))?;
-        downloaded += chunk.len() as u64;
-        if downloaded - last_report >= 256 * 1024 || downloaded == total {
-            progress(downloaded, total);
-            last_report = downloaded;
-        }
-    }
-    file.flush()
-        .await
-        .map_err(|e| ComponentError::Io(e.to_string()))?;
-    progress(downloaded, total);
-    Ok(hex::encode(hasher.finalize()))
+    segmented::fetch_to_file(&client, attempt, dest, progress, &segmented::SEGMENT_POLICY).await
 }
 
 /// 组件安装的 HTTP 客户端集合：统一出口按当前全局代理与站点规则装配。

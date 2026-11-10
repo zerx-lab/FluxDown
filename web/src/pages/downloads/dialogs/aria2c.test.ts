@@ -91,7 +91,8 @@ describe('aria2c 选项', () => {
       'aria2c -d /tmp/dl -x 16 -s16 -k 1M --load-cookies cookies.txt --all-proxy http://proxy:8080 --referer https://ref.example/ --conf-path=/etc/a.conf --continue true https://a.example/x',
     )
     expect(command.entries).toEqual([entry('https://a.example/x')])
-    expect(command.hints.headers).toEqual([['Referer', 'https://ref.example/']])
+    expect(command.hints.referrer).toBe('https://ref.example/')
+    expect(command.hints.headers).toEqual([])
     expect(urls('aria2c -- https://a.example/x')).toEqual(['https://a.example/x'])
     expect(urls('aria2c https://a.example/x && echo https://b.example/y')).toEqual(['https://a.example/x'])
     expect(urls('aria2c https://a.example/x?a=1&b=2')).toEqual(['https://a.example/x?a=1&b=2'])
@@ -104,10 +105,8 @@ describe('aria2c 选项', () => {
     expect(command.hints).toEqual({
       cookie: 'a=1; b=2',
       userAgent: 'Agent/2.0',
-      headers: [
-        ['X-Token', 't2'],
-        ['Referer', 'https://r.example/'],
-      ],
+      referrer: 'https://r.example/',
+      headers: [['X-Token', 't2']],
     })
     expect(cmd('aria2c https://a.example/x').hints).toEqual(emptyHints())
   })
@@ -185,25 +184,25 @@ describe('planFieldFill', () => {
 })
 
 describe('applyHints', () => {
-  const hints = (headers: Array<[string, string]>, cookie = '', userAgent = '') => ({ cookie, userAgent, headers })
+  const hints = (headers: Array<[string, string]>, cookie = '', userAgent = '') => ({ cookie, userAgent, referrer: '', headers })
   let seq = 0
   const nextId = () => (seq += 1)
 
   test('新增 / 更新 / 删除自己回填的请求头，不碰用户行', () => {
     let tracking: FillTracking = emptyTracking()
     let rows: HeaderRowLike[] = [{ id: 100, key: 'x-mine', value: 'u' }]
-    let r = applyHints({ cookie: '', userAgent: '', rows }, tracking, hints([['Referer', 'https://r/'], ['X-Mine', 'cmd']], 'a=1', 'UA/1'), nextId)
+    let r = applyHints({ cookie: '', userAgent: '', rows }, tracking, hints([['X-Ref', 'https://r/'], ['X-Mine', 'cmd']], 'a=1', 'UA/1'), nextId)
     expect(r.filled).toBe(true)
     expect(r.cookie).toBe('a=1')
     expect(r.userAgent).toBe('UA/1')
     expect(r.rows).toHaveLength(2)
     expect(r.rows[0]).toEqual({ id: 100, key: 'x-mine', value: 'u' })
-    expect(r.rows[1].key).toBe('Referer')
+    expect(r.rows[1].key).toBe('X-Ref')
 
     tracking = r.tracking
     rows = r.rows
-    r = applyHints({ cookie: r.cookie, userAgent: r.userAgent, rows }, tracking, hints([['referer', 'https://r2/']], 'a=2', ''), nextId)
-    expect(r.rows.find((row) => row.key === 'Referer')?.value).toBe('https://r2/')
+    r = applyHints({ cookie: r.cookie, userAgent: r.userAgent, rows }, tracking, hints([['x-ref', 'https://r2/']], 'a=2', ''), nextId)
+    expect(r.rows.find((row) => row.key === 'X-Ref')?.value).toBe('https://r2/')
     expect(r.cookie).toBe('a=2')
     expect(r.userAgent).toBe('')
     expect(r.rows.find((row) => row.id === 100)?.value).toBe('u')

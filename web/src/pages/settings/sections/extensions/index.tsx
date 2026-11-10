@@ -1,4 +1,4 @@
-// 设置 · 扩展：插件 / 组件两个子页（对应 GPUI `crates/extensions`）。
+// 设置 · 扩展：插件 / 站点默认 / 组件三个子页（对应 GPUI `crates/extensions`）。
 // 子页首次访问才挂载（版本列表 / 市场懒加载），之后保持挂载以保留输入、进度与列表状态。
 
 import { useState } from 'react'
@@ -8,8 +8,9 @@ import { SegmentedTabs } from '../../../../ui'
 import { SettingsPage } from '../../kit/layout'
 import { ComponentsTab } from './ComponentsTab'
 import { PluginsTab } from './PluginsTab'
+import { SiteDefaultsTab } from './SiteDefaultsTab'
 
-type ExtensionsTab = 'plugins' | 'components'
+type ExtensionsTab = 'plugins' | 'siteDefaults' | 'components'
 
 const selectDaemonConnected = (snapshot: { daemonConnected: boolean }) => snapshot.daemonConnected
 
@@ -36,12 +37,18 @@ export function ExtensionsSettings() {
         onValueChange={show}
         items={[
           { value: 'plugins', label: t('settingsCatPlugins') },
+          { value: 'siteDefaults', label: t('pluginSiteDefaultsTab') },
           { value: 'components', label: t('settingsCatComponents') },
         ]}
       />
       <div hidden={tab !== 'plugins'}>
         <PluginsTab stale={stale} active={tab === 'plugins'} onGoToComponents={() => show('components')} />
       </div>
+      {visited.has('siteDefaults') ? (
+        <div hidden={tab !== 'siteDefaults'}>
+          <SiteDefaultsTab stale={stale} active={tab === 'siteDefaults'} />
+        </div>
+      ) : null}
       {visited.has('components') ? (
         <div hidden={tab !== 'components'}>
           <ComponentsTab stale={stale} />

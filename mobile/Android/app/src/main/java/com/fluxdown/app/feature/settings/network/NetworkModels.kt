@@ -44,13 +44,19 @@ internal class NetworkProxyModel {
         data class Failure(val detail: String) : Test
     }
 
+    /** 手动分组与系统分组各测各的，结果互不覆盖。 */
+    enum class TestSource { Manual, System }
+
     var detection by mutableStateOf<Detection>(Detection.Idle)
         private set
-    var test by mutableStateOf<Test>(Test.Idle)
+    var manualTest by mutableStateOf<Test>(Test.Idle)
+        private set
+    var systemTest by mutableStateOf<Test>(Test.Idle)
         private set
 
-    /** 每次重置 / 新测试 +1：丢弃过期（请求参数已变或已切主机）的测试结果。 */
-    private var testGeneration = 0
+    /** 每次重置 / 新测试 +1：丢弃过期（请求参数已变或已切主机）的测试结果。两路世代独立。 */
+    private var manualGeneration = 0
+    private var systemGeneration = 0
     private var detectGeneration = 0
 
     /** 已检测到的系统代理（仅 `detected == true`）。 */
@@ -75,32 +81,61 @@ internal class NetworkProxyModel {
         detection = Detection.Idle
     }
 
-    /** 参数（模式 / 类型 / 地址 / 端口 / 凭据）或主机变化后，旧结果不再代表当前配置。 */
-    fun resetTest() {
-        if (test == Test.Idle) return
-        testGeneration++
-        test = Test.Idle
+    /** 该来源的参数或主机变化后，旧结果不再代表当前配置。另一路不受影响。 */
+    fun resetTest(source: TestSource) {
+        if (testOf(source) == Test.Idle) return
+        bump(source)
+        setTest(source, Test.Idle)
+    }
+
+    /** 主机切换：两路测试结果都作废。 */
+    fun resetTests() {
+        resetTest(TestSource.Manual)
+        resetTest(TestSource.System)
     }
 
     /** `daemon.config.proxyTest`（慢方法）：测试期间页面其余部分保持可交互。 */
     suspend fun runTest(
+        source: TestSource,
         request: ProxyTestRequest,
         session: HostSession,
         errorText: (HostException) -> String,
         tlsHint: String,
     ) {
-        if (test == Test.Running) return
-        val generation = ++testGeneration
-        test = Test.Running
+        if (testOf(source) == Test.Running) return
+        val generation = bump(source)
+        setTest(source, Test.Running)
         val next: Test = try {
             Test.Success(ProxyTestResponse.fromJson(session.callJson(HostMethod.daemonConfigProxyTest, request.toJson())).latencyMs)
         } catch (e: HostException) {
             Test.Failure(NetworkProxyTest.failureDetail(e.message.orEmpty(), errorText(e), tlsHint))
         } catch (c: kotlinx.coroutines.CancellationException) {
-            if (generation == testGeneration) test = Test.Idle
+            if (generation == generationOf(source)) setTest(source, Test.Idle)
             throw c
         }
-        if (generation == testGeneration) test = next
+        if (generation == generationOf(source)) setTest(source, next)
+    }
+
+    private fun testOf(source: TestSource): Test = when (source) {
+        TestSource.Manual -> manualTest
+        TestSource.System -> systemTest
+    }
+
+    private fun setTest(source: TestSource, value: Test) {
+        when (source) {
+            TestSource.Manual -> manualTest = value
+            TestSource.System -> systemTest = value
+        }
+    }
+
+    private fun bump(source: TestSource): Int = when (source) {
+        TestSource.Manual -> ++manualGeneration
+        TestSource.System -> ++systemGeneration
+    }
+
+    private fun generationOf(source: TestSource): Int = when (source) {
+        TestSource.Manual -> manualGeneration
+        TestSource.System -> systemGeneration
     }
 }
 

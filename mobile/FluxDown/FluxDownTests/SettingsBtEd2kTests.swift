@@ -61,7 +61,7 @@ struct SettingsBtEd2kTests {
         #expect(BtSettingsRow.allCases.allSatisfy { !$0.isVisible(in: unloaded) })
         #expect(Ed2kSettingsRow.allCases.allSatisfy { !$0.isVisible(in: unloaded) })
         let loaded = form(["bt_enable_dht": "true"])
-        #expect(BtSettingsRow.visible(in: .general, loaded).count == 7)
+        #expect(BtSettingsRow.visible(in: .general, loaded).count == 10)
         #expect(Ed2kSettingsRow.visible(in: .servers, loaded).count == 4)
     }
 
@@ -127,6 +127,17 @@ struct SettingsBtEd2kTests {
         let old = SubscriptionTime.text(unix: 1_759_700_000 - 30 * 86_400, now: now, languageCode: "en")
         #expect(!old.contains("ago"))
         #expect(!old.isEmpty)
+    }
+
+    @Test func expiryTimeShowsFutureAsAbsoluteDateNotNow() {
+        let now = Date(timeIntervalSince1970: 1_759_700_000)
+        // 修复前走 text()：未来时间被夹成 now →「now / 0 秒前」，无法看出何时过期。
+        let future = SubscriptionTime.expiryText(unix: 1_759_700_000 + 3 * 86_400, now: now, languageCode: "en")
+        #expect(!future.contains("now") && !future.contains("ago") && !future.contains("in "))
+        #expect(future.contains("2025"))
+        #expect(future != SubscriptionTime.text(unix: 1_759_700_000 + 3 * 86_400, now: now, languageCode: "en"))
+        let past = SubscriptionTime.expiryText(unix: 1_759_700_000 - 3 * 3600, now: now, languageCode: "en")
+        #expect(past.contains("3 hours ago"))
     }
 
     // MARK: 读数

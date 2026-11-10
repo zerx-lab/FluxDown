@@ -29,8 +29,35 @@ export function recordSaveDir(history: readonly string[], dir: string): string[]
   return [value, ...history.filter((known) => known !== value).slice(0, SAVE_DIR_HISTORY_LIMIT - 1)]
 }
 
-/** 下拉候选：历史中除当前输入以外的目录（保持最新在前）。 */
-export function saveDirChoices(history: readonly string[], current: string): string[] {
+/** 设备本地偏好：按分类 id 记忆手选目录（`{ [categoryId]: string[] }`）。 */
+export const CATEGORY_SAVE_DIR_HISTORY_PREF = 'download.category_save_dir_history'
+
+/** 解析分类记忆偏好：非对象为空；空串键丢弃，各列表按 `readSaveDirHistory` 解析，结果为空的键丢弃。 */
+export function readCategorySaveDirHistory(value: unknown): Record<string, string[]> {
+  const result: Record<string, string[]> = {}
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return result
+  for (const [id, list] of Object.entries(value)) {
+    if (id === '') continue
+    const dirs = readSaveDirHistory(list)
+    if (dirs.length > 0) result[id] = dirs
+  }
+  return result
+}
+
+/** 记录某分类下的一次手选目录；分类为空或该分类列表无需更新返回 null，其他分类不变。 */
+export function recordCategorySaveDir(history: Readonly<Record<string, readonly string[]>>, categoryId: string, dir: string): Record<string, string[]> | null {
+  if (categoryId === '') return null
+  const next = recordSaveDir(history[categoryId] ?? [], dir)
+  if (next === null) return null
+  return { ...Object.fromEntries(Object.entries(history).map(([id, list]) => [id, [...list]])), [categoryId]: next }
+}
+
+/** 下拉候选：先分类记忆、再全局历史，去重（保留首次），排除当前输入。 */
+export function saveDirChoices(category: readonly string[], history: readonly string[], current: string): string[] {
   const value = current.trim()
-  return history.filter((dir) => dir !== value)
+  const choices: string[] = []
+  for (const dir of [...category, ...history]) {
+    if (dir !== value && !choices.includes(dir)) choices.push(dir)
+  }
+  return choices
 }

@@ -11,7 +11,7 @@ use super::*;
 use crate::events::{EngineEvent, EventSink};
 use crate::file_exists::{ExistsDecision, OverwritePolicy};
 use crate::model::{BtFileEntry, HlsQualityOption, ResolveVariantOption};
-use crate::selection::{FileConflict, FileExistsChoice, SelectionOutcome};
+use crate::selection::{BtFileChoice, FileConflict, FileExistsChoice, SelectionOutcome};
 
 struct NullSink;
 
@@ -59,9 +59,10 @@ impl HostSelection for FakeSelector {
         &self,
         _task_id: &str,
         _files: &[BtFileEntry],
+        _save_dir: &str,
         _timeout: Option<Duration>,
-    ) -> SelectionOutcome<Vec<i32>> {
-        SelectionOutcome::NoSelectorConfigured(Vec::new())
+    ) -> SelectionOutcome<BtFileChoice> {
+        SelectionOutcome::NoSelectorConfigured(BtFileChoice::default())
     }
 
     async fn select_resolve_variant(
@@ -338,7 +339,7 @@ async fn skip_answer_adopts_existing_file_and_survives_restart_and_delete() {
         .await
         .expect("create");
     fx2.pump_until_status(&id2, 3).await;
-    fx2.mgr.delete_task(&id2, true).await;
+    fx2.mgr.delete_task(&id2, true).await.expect("delete task");
     assert_eq!(
         std::fs::read(fx2.dir.join("b.bin")).expect("adopted file survives"),
         b"keep me"

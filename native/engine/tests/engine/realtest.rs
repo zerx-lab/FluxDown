@@ -2651,6 +2651,50 @@ async fn layered_content_encoding_must_error_not_corrupt() {
 }
 
 // ---------------------------------------------------------------------------
+// 校验和校验通过 → 摘要记为任务的文件哈希（随后的完成写入保留它）
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn verified_checksum_is_recorded_as_file_hash() {
+    use sha2::Digest;
+
+    let work_dir = unique_dir("vhash");
+    if let Err(error) = tokio::fs::remove_dir_all(&work_dir).await {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "clean test path: {error}"
+        );
+    }
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let body = gen_body(300_000, 2024);
+    let hex = hex::encode(sha2::Sha256::digest(&body));
+    let server = start_server(Arc::new(ServerState::new(Arc::new(body), "etv"))).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).await.expect("db");
+    insert_simple_task(&db, &work_dir, "vh", &url, "out.bin", 2, 0).await;
+    let cancel = CancellationToken::new();
+    // 用户粘贴的大写 + 带连字符算法名：记录为规范化后的 `sha256=<小写>`。
+    let checksum = format!("SHA-256={}", hex.to_uppercase());
+    let (status, dest) = run_full(
+        &work_dir, &db, "vh", &url, "out.bin", 2, 0, false, &checksum, &cancel,
+    )
+    .await;
+    assert_eq!(status, 3, "matching checksum must complete");
+    assert!(dest.exists());
+    let task = db
+        .load_task_by_id("vh")
+        .await
+        .expect("load")
+        .expect("task exists");
+    assert_eq!(task.status, 3);
+    assert_eq!(task.file_hash, format!("sha256={hex}"));
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
 // BUG-HTTP-NO-CL-TRUNCATION：已知大小 + 无 Content-Length + 中途断流 → 截断文件被当成功
 // ---------------------------------------------------------------------------
 #[tokio::test(flavor = "current_thread")]

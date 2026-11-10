@@ -1,8 +1,6 @@
 package com.fluxdown.fluxui.chrome
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -18,6 +16,10 @@ import androidx.compose.ui.unit.dp
 import com.fluxdown.fluxui.theme.FluxSpring
 import com.fluxdown.fluxui.theme.FluxTheme
 import androidx.compose.ui.graphics.Shape
+import com.fluxdown.fluxui.material.FluxBlur
+import com.fluxdown.fluxui.material.FluxGlass
+import com.fluxdown.fluxui.material.FluxGlassKind
+import com.fluxdown.fluxui.material.fluxGlass
 import com.fluxdown.fluxui.material.fluxGlow
 import com.fluxdown.fluxui.material.softShadow
 
@@ -63,17 +65,16 @@ internal fun Modifier.chromeFade(
 }
 
 /**
- * 浮动 chrome（导航坞 / 选择坞 / 顶部读数条）的共同表面：最不透明的实色面 + 向下软投影 + 细边界。
- * 浅色几乎纯白、深色明显抬亮，投影把它从页面画布上托起；不透出正文，不使用模糊材质或辉光。
+ * 浮动 chrome（导航坞 / 选择坞 / 顶部读数条 / 退出选择球）的共同表面，对齐 iOS Liquid Glass `regular`：
+ * 真模糊玻璃（[FluxBlur.Regular] σ28 + 饱和度 1.4，底色 `glass2`）+ 0.5dp 顶沿高光与发丝线 + 向下软投影。
+ * 下方内容带色穿过、文字被糊掉不可辨；省电 / 过热 / Android 12 以下或没有背景源时退化为 `glassSolid2` 实色，信息结构不变。
+ * 必须位于 `fluxBackdropSource` 之后的兄弟层（用户 2026-11-06 决定改回毛玻璃，取代 2026-10-22 的实色底）。
  */
 @Composable
-internal fun Modifier.floatingChromeSurface(shape: Shape): Modifier {
-    val c = FluxTheme.colors
-    return this
+internal fun Modifier.floatingChromeSurface(shape: Shape): Modifier =
+    this
         .floatingChromeShadow(shape)
-        .background(c.glassSolid4, shape)
-        .border(0.5.dp, if (c.dark) c.hairlineStrong else c.hairline, shape)
-}
+        .fluxGlass(FluxGlass.G2, shape, FluxBlur.Regular, FluxGlassKind.Real, strongLine = FluxTheme.colors.dark)
 
 /** 浮动 chrome 与新建球共用的向下软投影（token 派生色，与 Toast 同一做法；Android 12 以下不画）。 */
 @Composable

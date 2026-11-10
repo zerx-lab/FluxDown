@@ -22,6 +22,7 @@ import { logError, logWarn } from "@/utils/error-log";
 import { hasDownloadsApi, isAndroidPlatform } from "@/utils/platform";
 import { ANDROID_UNSUPPORTED_MESSAGES } from "./android-handoff";
 import { openInHandoffTab } from "./handoff-tab";
+import { createSendDeduper, interceptDedupeKey } from "./send-dedupe";
 
 /**
  * 补上 request 阶段 headers 规则为该 URL 声明的请求头，只补缺失的名字（浏览器真实请求头优先）。
@@ -52,6 +53,8 @@ export interface SendInput {
   origin?: "intercept";
   /** 页面 host：用于查站点配置（保存目录）；缺省取 referrer / URL 的 host。 */
   pageHost?: string;
+  /** 触发本次发送的浏览器 download id（仅用于去重命中时的诊断日志）。 */
+  downloadId?: number;
 }
 
 export type SendOutcome = SendResult & { data?: unknown };
@@ -111,8 +114,31 @@ const rejectedSends = new Map<
 const REJECT_NOTIFY_INTERVAL_MS = 30_000;
 let _lastRejectNotifyAt = 0;
 
+// ===== 自动拦截的短窗去重（#1048） =====
+// 一次点击在部分 Chromium 分支会产生两个 download item，按 id 互斥拦不住；
+// 同 method + URL + 请求体在发送中 / 成功后 3s 内再次自动发送，复用第一次的结果（调用方照常取消多余的下载项）。
+const INTERCEPT_DEDUPE_WINDOW_MS = 3000;
+const interceptDeduper = createSendDeduper<SendOutcome>(INTERCEPT_DEDUPE_WINDOW_MS);
+
 // ===== 核心：发送下载请求到 FluxDown App =====
-export async function sendToFluxDown(input: SendInput): Promise<SendOutcome> {
+export function sendToFluxDown(input: SendInput): Promise<SendOutcome> {
+  // 只对自动拦截去重：用户从菜单 / 弹窗 / 面板显式发起的发送，重复点击就是想要两份。
+  if (input.origin !== "intercept" || input.channel) return deliverToFluxDown(input);
+  // 键必须在同步段（任何 await 之前）算出：deliverToFluxDown 之后会消费并清掉该 URL 的请求记录。
+  // 与 deliverToFluxDown 一致只认下载 URL 自身的记录，键才对应真正送出的 method / body。
+  const key = interceptDedupeKey(input.url, lookupRequestRecord(requestRecordCache, input.url));
+  const { promise, reused } = interceptDeduper.run(key, () => deliverToFluxDown(input));
+  if (reused) {
+    console.info(
+      "[FluxDown] duplicate intercept send suppressed:",
+      { url: input.url, downloadId: input.downloadId },
+      new Error("intercept dedupe").stack,
+    );
+  }
+  return promise;
+}
+
+async function deliverToFluxDown(input: SendInput): Promise<SendOutcome> {
   const { url, referrer, filename, fileSize, mimeType, originalUrl, storedCookies, storedHeaders, audioUrl, channel } = input;
   // === fluxdown:// 自定义协议模式 ===
   // 开启后跳过 NMH/远端投递，经协议 URL 唤起 FluxDown 客户端。

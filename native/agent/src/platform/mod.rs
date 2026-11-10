@@ -19,6 +19,8 @@ mod autostart;
 mod clipboard_files;
 #[cfg(feature = "desktop")]
 mod clipboard_seq;
+#[cfg(windows)]
+pub mod elevation;
 mod file_association;
 mod file_icon;
 #[cfg(feature = "desktop")]

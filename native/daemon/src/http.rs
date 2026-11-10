@@ -29,6 +29,8 @@ use crate::rpc::{DaemonAuth, MAX_SLOW_CALLS, RpcSession, SessionReply, SlowCalls
 use crate::service::DaemonService;
 
 const REQUEST_BODY_LIMIT: usize = 4 * 1024 * 1024;
+/// 插件包 blob 上限：与插件包体积上限（引擎 `MAX_FXPLUG_BYTES` / FluxCloud 私有包上限）一致。
+const PLUGIN_BLOB_LIMIT: usize = 10 * 1024 * 1024;
 /// WebSocket 单条消息上限：握手前任何对端都能发帧，不能沿用库默认的 64 MiB。
 const WS_MESSAGE_LIMIT: usize = 16 * 1024 * 1024;
 /// 握手帧只有几百字节；认证前超过该长度的帧直接断开。
@@ -69,7 +71,10 @@ pub async fn serve(
         .route("/rpc", get(rpc_upgrade))
         .route("/files/tasks/{task_id}", get(download_task_file))
         .route("/blobs/torrents", post(upload_torrent))
-        .route("/blobs/plugins", post(upload_plugin))
+        .route(
+            "/blobs/plugins",
+            post(upload_plugin).layer(axum::extract::DefaultBodyLimit::max(PLUGIN_BLOB_LIMIT)),
+        )
         .route("/exports/{export_id}", get(download_export))
         .layer(axum::extract::DefaultBodyLimit::max(REQUEST_BODY_LIMIT))
         .with_state(state);
@@ -147,24 +152,32 @@ async fn upload_torrent(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    upload_blob(&state, &headers, BlobKind::Torrent, body).await
+    upload_blob(
+        &state,
+        &headers,
+        BlobKind::Torrent,
+        REQUEST_BODY_LIMIT,
+        body,
+    )
+    .await
 }
 
 async fn upload_plugin(State(state): State<HttpState>, headers: HeaderMap, body: Body) -> Response {
-    upload_blob(&state, &headers, BlobKind::Plugin, body).await
+    upload_blob(&state, &headers, BlobKind::Plugin, PLUGIN_BLOB_LIMIT, body).await
 }
 
-/// 先鉴权再读取请求体：未授权请求不会让 daemon 缓冲最多 4 MiB。
+/// 先鉴权再读取请求体：未授权请求不会让 daemon 缓冲最多 `limit` 字节。
 async fn upload_blob(
     state: &HttpState,
     headers: &HeaderMap,
     kind: BlobKind,
+    limit: usize,
     body: Body,
 ) -> Response {
     if !authorized(headers, &state.auth) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let body = match axum::body::to_bytes(body, REQUEST_BODY_LIMIT).await {
+    let body = match axum::body::to_bytes(body, limit).await {
         Ok(body) => body,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { canChangeSegments, canChangeUrl, canRename, canVerifyIntegrity, isBtUrl, isReplaceableUrl, parseTaskSegments } from './taskEdit'
+import { canChangeSegments, canChangeUrl, canRename, canSetPiecePicking, canVerifyIntegrity, isBtUrl, isReplaceableUrl, parseTaskSegments, pieceEndsParams, pieceOptionAllOn, pieceOrder, pieceOrderTargets, pieceSequentialParams } from './taskEdit'
 import type { TaskState, TaskSource } from './task'
 
 function facts(state: TaskState, over: { source?: TaskSource; url?: string } = {}) {
@@ -95,5 +95,56 @@ describe('线程数输入解析', () => {
     for (const input of ['', '  ', 'abc', '-1', '513', '1.5', '99999999999999999999']) {
       expect(parseTaskSegments(input)).toBeNull()
     }
+  })
+})
+
+describe('BT 选块开关', () => {
+  const magnet = 'magnet:?xt=urn:btih:abc'
+  const torrent = 'torrent-file://local'
+  const row = (state: TaskState, over: { source?: TaskSource; url?: string; btSequential?: boolean; btFirstLastPiecesFirst?: boolean } = {}) => ({
+    ...facts(state, over),
+    btSequential: over.btSequential ?? false,
+    btFirstLastPiecesFirst: over.btFirstLastPiecesFirst ?? false,
+  })
+
+  test('仅全部为本地未完成 BT 时显示', () => {
+    expect(canSetPiecePicking([])).toBe(false)
+    expect(canSetPiecePicking([row('downloading', { url: magnet })])).toBe(true)
+    expect(canSetPiecePicking([row('paused', { url: torrent }), row('failed', { url: 'MAGNET:?xt=urn:btih:def' })])).toBe(true)
+    expect(canSetPiecePicking([row('completed', { url: magnet })])).toBe(false)
+    expect(canSetPiecePicking([row('downloading', { url: 'https://example.com/a.bin' })])).toBe(false)
+    expect(canSetPiecePicking([row('downloading', { source: 'remote', url: magnet })])).toBe(false)
+    expect(canSetPiecePicking([row('paused', { url: magnet }), row('downloading')])).toBe(false)
+  })
+
+  test('默认全关选最稀有，全顺序选顺序，混选与空选都不点亮', () => {
+    const off = row('paused', { url: torrent })
+    const on = row('downloading', { url: magnet, btSequential: true })
+    expect(pieceOrder([off, off])).toBe('rarest')
+    expect(pieceOrder([on, on])).toBe('sequential')
+    expect(pieceOrder([on, off])).toBe('mixed')
+    expect(pieceOrder([])).toBe('mixed')
+  })
+
+  test('设顺序只返回需要改的任务，参数只带 sequential', () => {
+    const off = { ...row('paused', { url: torrent }), taskId: 'off' }
+    const on = { ...row('downloading', { url: magnet, btSequential: true }), taskId: 'on' }
+    expect(pieceOrderTargets([off, on], true).map((view) => view.taskId)).toEqual(['off'])
+    expect(pieceOrderTargets([on, on], true)).toEqual([])
+    expect(pieceOrderTargets([off, on], false).map((view) => view.taskId)).toEqual(['on'])
+    expect(pieceSequentialParams('t1', false)).toEqual({ taskId: 't1', sequential: false })
+    expect(pieceSequentialParams('t1', true)).toEqual({ taskId: 't1', sequential: true })
+    expect('firstLastPiecesFirst' in pieceSequentialParams('t1', true)).toBe(false)
+  })
+
+  test('首尾勾选要求全部打开；切换只带该字段', () => {
+    const on = row('downloading', { url: magnet, btFirstLastPiecesFirst: true })
+    const off = row('paused', { url: torrent })
+    expect(pieceOptionAllOn([on, on])).toBe(true)
+    expect(pieceOptionAllOn([on, off])).toBe(false)
+    expect(pieceOptionAllOn([])).toBe(false)
+    expect(pieceEndsParams('t2', false)).toEqual({ taskId: 't2', firstLastPiecesFirst: true })
+    expect(pieceEndsParams('t2', true)).toEqual({ taskId: 't2', firstLastPiecesFirst: false })
+    expect('sequential' in pieceEndsParams('t2', true)).toBe(false)
   })
 })

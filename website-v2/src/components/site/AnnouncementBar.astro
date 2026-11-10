@@ -21,7 +21,14 @@ const t = {
 
 {
   item && (
-    <div class="ann-bar" id="announcement-bar" data-id={item.id} role="region" aria-label={t.label}>
+    <div
+      class="ann-bar"
+      id="announcement-bar"
+      data-id={item.id}
+      data-ends-at={item.endsAt ?? ""}
+      role="region"
+      aria-label={t.label}
+    >
       <div class="frame ann-inner">
         <span class="live-dot shrink-0" aria-hidden="true" />
         <time class="ann-date" datetime={item.date}>{item.date}</time>
@@ -52,6 +59,14 @@ const t = {
         var bar = document.getElementById("announcement-bar");
         if (!bar) return;
         var id = bar.getAttribute("data-id");
+        var endsAt = bar.getAttribute("data-ends-at");
+        if (endsAt) {
+          var endMs = Date.parse(endsAt);
+          if (Number.isFinite(endMs) && Date.now() > endMs) {
+            bar.remove();
+            return;
+          }
+        }
         function read() {
           try {
             var list = JSON.parse(localStorage.getItem(key) || "[]");
@@ -60,7 +75,7 @@ const t = {
             return [];
           }
         }
-        if (read().indexOf(id) !== -1) {
+        if (id && read().indexOf(id) !== -1) {
           bar.remove();
           return;
         }
@@ -68,7 +83,7 @@ const t = {
           var trigger = event.target.closest("[data-ann-dismiss]");
           if (!trigger) return;
           var list = read();
-          if (list.indexOf(id) === -1) list.push(id);
+          if (id && list.indexOf(id) === -1) list.push(id);
           try {
             localStorage.setItem(key, JSON.stringify(list));
           } catch (e) {}

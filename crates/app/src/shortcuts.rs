@@ -69,7 +69,6 @@ const ACTIONS: &[ActionBinding] = &[
     }),
     download_list("open_torrent_file", || Box::new(dl::OpenTorrentFile)),
     download_list("toggle_detail", || Box::new(dl::ToggleDetailPanel)),
-    download_list("share_selected", || Box::new(dl::ShareSelected)),
     download_list("cycle_density", || Box::new(dl::CycleDensity)),
     download_list("cycle_group", || Box::new(dl::CycleGroupBy)),
     download_list("cycle_sort", || Box::new(dl::CycleSort)),

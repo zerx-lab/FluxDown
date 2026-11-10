@@ -61,7 +61,7 @@ Click a task to open it. From top to bottom:
 A thin bar along the bottom of the window:
 
 - **Left** — a status dot (green while any task is active, gray when idle) with a label, the live combined download speed, and an "N active · N paused · N total" summary.
-- **Right** — a speed-limit popover (toggle plus presets of 128 KB/s / 512 KB/s / 1 MB/s / 2 MB/s / 5 MB/s, or a custom value), and a shutdown-after-completion popover (presets of 0/1/5/10/30 minutes with a live countdown once armed).
+- **Right** — a speed-limit popover (toggle plus presets of 128 KB/s / 512 KB/s / 1 MB/s / 2 MB/s / 5 MB/s, or a custom value), and a scheduled shutdown / sleep menu (pick Shut down or Sleep, then 1/5/10/30 minutes or a custom delay; with tasks running the countdown starts after they all finish and "Immediately when done" is also offered, otherwise it starts right away; a live countdown shows once armed).
 
 ## Keyboard Shortcuts
 

@@ -85,6 +85,10 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
     public var seedingStatus: SeedingStatus
     public var seedingMessage: String
     public var seedingTimeSecs: Int64
+    /// BT 选片：按顺序下载。缺省 / 非 BT = false。
+    public var btSequential: Bool
+    /// BT 选片：先下载首尾文件块。缺省 / 非 BT = false。
+    public var btFirstLastPiecesFirst: Bool
 
     public init(
         taskId: String,
@@ -107,7 +111,9 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
         uploadedBytes: Int64 = 0,
         seedingStatus: SeedingStatus = .none,
         seedingMessage: String = "",
-        seedingTimeSecs: Int64 = 0
+        seedingTimeSecs: Int64 = 0,
+        btSequential: Bool = false,
+        btFirstLastPiecesFirst: Bool = false
     ) {
         self.taskId = taskId
         self.url = url
@@ -130,6 +136,8 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
         self.seedingStatus = seedingStatus
         self.seedingMessage = seedingMessage
         self.seedingTimeSecs = seedingTimeSecs
+        self.btSequential = btSequential
+        self.btFirstLastPiecesFirst = btFirstLastPiecesFirst
     }
 
     public var id: String { taskId }
@@ -330,7 +338,7 @@ public struct RuntimeStats: Sendable, Hashable {
     }
 }
 
-/// 引擎发起的选择请求（X1–X3），到期按 `defaultChoice` 处理。
+/// 引擎发起的选择请求（X1–X3），到期按 `defaultChoice` 处理；`noDeadline` = 不自动处理。
 public struct SelectionRequest: Sendable, Hashable, Identifiable {
     public var requestId: String
     public var taskId: String
@@ -353,11 +361,17 @@ public struct SelectionRequest: Sendable, Hashable, Identifiable {
     }
 
     public var id: String { requestId }
+
+    /// 「无截止」（protocol `SELECTION_NO_DEADLINE` = i64::MAX）：用户关闭了 BT 选择的自动选择默认项。
+    public static let noDeadline: Int64 = .max
+
+    /// 有自动按默认项处理的截止时刻（否则不显示倒计时、不自动答复）。
+    public var hasDeadline: Bool { deadlineUnixMs != Self.noDeadline }
 }
 
 public enum SelectionKind: Sendable, Hashable {
     case hls([HlsOption])
-    case bt([BtFile])
+    case bt([BtFile], saveDir: String)
     case variant([VariantOption])
     case fileExists(FileConflict)
     case plugin(site: String, url: String, candidates: [PluginCandidate])
@@ -434,7 +448,7 @@ public struct VariantOption: Sendable, Hashable {
 
 public enum SelectionOutcome: Sendable, Hashable {
     case hls(index: Int32)
-    case bt(indices: [Int32])
+    case bt(indices: [Int32], saveDir: String?)
     case variant(index: Int32)
     case fileExists(action: FileExistsAction)
     case plugin(identity: String, remember: Bool)

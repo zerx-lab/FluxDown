@@ -41,6 +41,7 @@ export interface ManifestBaseOptions {
   queueId: string
   segments: number
   cookies: string
+  referrer: string
   userAgent: string
   proxyUrl: string
   headers: Record<string, string>
@@ -117,6 +118,7 @@ export function ManifestSelectDialog({
         queueId: queueId || undefined,
         segments: base.segments,
         cookies: base.cookies || undefined,
+        referrer: base.referrer || undefined,
         userAgent: base.userAgent || undefined,
         proxyUrl: base.proxyUrl || undefined,
         extraHeaders: Object.keys(base.headers).length > 0 ? base.headers : undefined,

@@ -4,8 +4,10 @@
 
 import {
   AppWindow,
+  Circle,
   CircleAlert,
   CircleCheck,
+  CircleDot,
   Copy,
   Download,
   FileDown,
@@ -18,11 +20,10 @@ import {
   PanelRight,
   Pen,
   Play,
+  Square,
   SquareCheck,
   RotateCw,
   Rows3,
-  Share2,
-  Square,
   ShieldCheck,
   Trash2,
   Zap,
@@ -62,16 +63,17 @@ import {
   retryFailedInGroup,
   revealTaskFile,
   toggleBoost,
+  setPieceOrder,
+  setFirstLastPieces,
   verifyTaskIntegrity,
 } from '../model/actions'
 import { remoteCan } from '../model/batchPlan'
-import { canChangeSegments, canChangeUrl, canRename, canVerifyIntegrity } from '../model/taskEdit'
+import { canChangeSegments, canChangeUrl, canRename, canSetPiecePicking, canVerifyIntegrity, pieceOptionAllOn, pieceOrder } from '../model/taskEdit'
 import { canPause, canResumeSeeding } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
 import type { GroupCounts } from '../model/groupTree'
 import { openChangeSegments, openChangeUrl, openGroupDetail, openRename } from '../dialogs'
-import { openSharePanel, peekSendState, peekShareTaskFacts, providingRecordId, stopProviding } from '../../share'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -183,24 +185,6 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
       onSelect: () => void copyTaskFiles(views),
     })
   }
-  // 分享：未编入FluxMesh时不出现；未完成 / 文件丢失 / 远程任务 / 未登录时置灰并在说明行给出原因（多选合成一个分享）。
-  const shareState = peekSendState(views)
-  if (shareState !== 'hidden') {
-    entries.push({
-      type: 'item',
-      key: 'share',
-      label: t('sharePanelTitle'),
-      icon: Share2,
-      disabled: shareState !== 'ok',
-      ...(shareState === 'ok' ? {} : { description: t(shareState) }),
-      onSelect: () => openSharePanel(views.map((view) => view.taskId)),
-    })
-  }
-  // 停止共享：单选且该接收任务的记录仍在共享（含已完成回传中的任务）。
-  const providingId = only ? providingRecordId(peekShareTaskFacts(only.taskId)) : null
-  if (providingId) {
-    entries.push({ type: 'item', key: 'stop-providing', label: t('shareStopProviding'), icon: Square, onSelect: () => void stopProviding(providingId, t) })
-  }
   if (only && canRename(only)) {
     entries.push({ type: 'item', key: 'rename', label: t('renameTask'), icon: Pen, onSelect: () => openRename(only.taskId) })
   }
@@ -223,6 +207,38 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
       label: t('verifyTaskIntegrity'),
       icon: ShieldCheck,
       onSelect: () => void verifyTaskIntegrity(only),
+    })
+  }
+  if (canSetPiecePicking(views)) {
+    const order = pieceOrder(views)
+    const endsOn = pieceOptionAllOn(views)
+    entries.push({
+      type: 'sub',
+      key: 'btPiecePicking',
+      label: t('btPiecePicking'),
+      entries: [
+        {
+          type: 'item',
+          key: 'btRarestFirst',
+          label: t('btRarestFirst'),
+          icon: order === 'rarest' ? CircleDot : Circle,
+          onSelect: () => void setPieceOrder(views, false),
+        },
+        {
+          type: 'item',
+          key: 'btSequential',
+          label: t('btSequentialDownload'),
+          icon: order === 'sequential' ? CircleDot : Circle,
+          onSelect: () => void setPieceOrder(views, true),
+        },
+        {
+          type: 'item',
+          key: 'btFirstLastPiecesFirst',
+          label: t('btFirstLastPiecesFirst'),
+          icon: endsOn ? SquareCheck : Square,
+          onSelect: () => void setFirstLastPieces(views, endsOn),
+        },
+      ],
     })
   }
   if (views.every(canRedownload)) {

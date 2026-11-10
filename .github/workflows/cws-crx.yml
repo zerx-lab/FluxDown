@@ -1,6 +1,6 @@
 name: Chrome Store CRX
 
-# 商店审核通过后，把 Chrome 网上应用店签名的 CRX 搬到同版本 GitHub Release（+ OSS / 123 云盘镜像），
+# 商店审核通过后，把 Chrome 网上应用店签名的 CRX 搬到同版本 GitHub Release（+ OSS 镜像），
 # 供无法直接打开商店的用户离线安装：商店签名包的扩展 ID 与商店一致，装好后由 Chrome 照常自动更新。
 # 审核异步完成，release.yml 推 tag 时拿不到新包，所以这里定时轮询。逻辑见 .github/scripts/cws_crx.py。
 on:
@@ -19,9 +19,6 @@ jobs:
   sync:
     name: Sync store-signed CRX
     runs-on: ubuntu-latest
-    outputs:
-      upload: ${{ steps.crx.outputs.upload }}
-      tag: ${{ steps.crx.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +45,3 @@ jobs:
           dir: release-assets
           access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
           access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-
-  # 123 云盘经东京服务器中转（见 pan123-upload.yml）；只传 CRX，其余资产已由发版时镜像。
-  mirror-pan123:
-    needs: sync
-    if: needs.sync.outputs.upload == 'true'
-    uses: ./.github/workflows/pan123-upload.yml
-    with:
-      tag: ${{ needs.sync.outputs.tag }}
-      pattern: "*-chrome.crx"
-    secrets: inherit

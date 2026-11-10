@@ -32,6 +32,7 @@ const TASK_DEFAULTS: Omit<TaskDto, TaskDtoRequiredKey> = Object.freeze({
   ignoreTlsErrors: false,
   fileMissing: false,
   completedAt: '',
+  fileHash: '',
   referrer: '',
   groupId: '',
   rssSourceId: '',
@@ -48,6 +49,8 @@ const TASK_DEFAULTS: Omit<TaskDto, TaskDtoRequiredKey> = Object.freeze({
   seedTimeLimitMinutes: SEED_LIMIT_INHERIT,
   seedInactiveTimeLimitMinutes: SEED_LIMIT_INHERIT,
   seedUploadLimitBps: 0,
+  btSequential: false,
+  btFirstLastPiecesFirst: false,
   sourceBytes: ZERO_SOURCE_BYTES,
 })
 

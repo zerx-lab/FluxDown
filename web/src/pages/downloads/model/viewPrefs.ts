@@ -5,6 +5,8 @@ import { STATE_RANK } from './task'
 import type { DownloadTaskView, TaskState } from './task'
 
 export const VIEW_PREFS_KEY = 'desktop.downloads.view'
+/** 设备本地偏好（缺省关，GPUI 与 Web 共用）：下载列表 / 详情副标题不展示来源站点（对应 GPUI `HIDE_TASK_SOURCE_PREF`）。 */
+export const HIDE_TASK_SOURCE_PREF = 'ui.hide_task_source'
 
 export type ViewDensity = 'comfortable' | 'compact' | 'relaxed'
 export type ViewGroupBy = 'none' | 'status' | 'date' | 'type' | 'queue' | 'site'
@@ -64,7 +66,8 @@ const DEFAULT_WIDTH: Record<ColumnKind, number> = {
   speed: 90,
   eta: 84,
   status: 140,
-  created: 150,
+  // `YYYY-MM-DD HH:MM:SS` + 左右内边距；与 GPUI `DownloadColumnKind` 对齐。
+  created: 164,
   protocol: 64,
   source: 148,
   queue: 88,
@@ -77,7 +80,7 @@ export const MIN_WIDTH: Record<ColumnKind, number> = {
   speed: 72,
   eta: 64,
   status: 84,
-  created: 140,
+  created: 152,
   protocol: 56,
   source: 96,
   queue: 72,
