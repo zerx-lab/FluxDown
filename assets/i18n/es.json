@@ -3374,7 +3374,7 @@
   "speedUnitGbps": "GB/s",
   "mobileSpeedPresets": "Velocidades predefinidas",
   "mobileComponentMirrorBase": "Espejo de descarga",
-  "mobileComponentMirrorBaseDesc": "URL base HTTPS opcional de un espejo de versiones de GitHub que se usa al descargar FFmpeg y yt-dlp. Déjala vacía para descargar directamente.",
+  "mobileComponentMirrorBaseDesc": "URL base HTTPS opcional de un espejo de GitHub que se usa al descargar FFmpeg y yt-dlp, y por el mercado de complementos (índice y paquetes de complementos) en los hosts que admiten complementos. Déjala vacía para descargar directamente.",
   "mobileComponentMirrorBasePlaceholder": "https://mirror.example.com/github",
   "mobileBtAndroidFootnote": "Android puede suspender la actividad de red en segundo plano. La siembra y la asignación de puertos UPnP funcionan de forma más fiable mientras la aplicación está abierta o el servicio de descarga se está ejecutando.",
   "mobileEd2kNodesDatUrl": "URL de nodes.dat",
@@ -3761,5 +3761,18 @@
   "detailOpenSourcePage": "Abrir página de origen",
   "detailCopySourcePage": "Copiar página de origen",
   "detailSourcePageCopied": "Página de origen copiada",
-  "doctorHintRunningAsAdmin": "FluxDown se está ejecutando como administrador, por lo que la extensión del navegador no puede conectarse a él y los archivos que abre también se ejecutan como administrador. Sal de FluxDown por completo desde la bandeja del sistema y ábrelo de forma normal (no con “Ejecutar como administrador”)"
+  "doctorHintRunningAsAdmin": "FluxDown se está ejecutando como administrador, por lo que la extensión del navegador no puede conectarse a él y los archivos que abre también se ejecutan como administrador. Sal de FluxDown por completo desde la bandeja del sistema y ábrelo de forma normal (no con “Ejecutar como administrador”)",
+  "notifyOnFailure": "Notificaciones de fallo",
+  "notifyOnFailureDesc": "Muestra una notificación del sistema cuando una tarea falla tras todos los reintentos automáticos, con el nombre del archivo y el motivo. Solo se aplica a este dispositivo",
+  "taskListDisplay": "Lista de tareas",
+  "hideTaskSource": "Ocultar origen de la tarea",
+  "hideTaskSourceDesc": "Oculta el sitio de origen mostrado bajo los nombres de archivo en la lista de descargas y en los detalles de la tarea. Se conservan el nombre, el tamaño y el resto de la información",
+  "rememberLastDownloadTarget": "Recordar el último destino de descarga",
+  "rememberLastDownloadTargetDesc": "Restaura el dispositivo elegido en la descarga anterior en “Descargar a” de Nueva descarga. Si está desactivado, las nuevas descargas siempre usan este dispositivo por defecto. Solo se guarda en este dispositivo",
+  "taskReferrer": "Página de origen (Referer)",
+  "taskReferrerDesc": "Se envía como cabecera Referer; algunos sitios rechazan los enlaces directos sin ella. Se rellena automáticamente en las capturas del navegador. Si está vacía, los enlaces añadidos a mano no envían ninguna y las capturas del navegador conservan su página de origen capturada",
+  "taskReferrerPlaceholder": "p. ej. https://example.com/video/123",
+  "btSelectionAutoDefault": "Seleccionar automáticamente los archivos predeterminados tras 60 segundos",
+  "btSelectionAutoDefaultDesc": "Si el diálogo “Seleccionar archivos para descargar” no recibe respuesta en 60 segundos, se empiezan a descargar todos los archivos. Desactívalo para dejar el diálogo abierto hasta que elijas; la tarea permanece en Preparando mientras espera. Si no hay ninguna ventana ni página web de FluxDown abierta, todos los archivos se empiezan a descargar de inmediato",
+  "batchDownloadFailed": "{count} descargas fallidas"
 }
