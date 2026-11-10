@@ -153,7 +153,9 @@ impl WindowRegistry {
         root.update(cx, |_, cx: &mut Context<V>| {
             cx.observe_window_bounds(window, move |_, window, cx| {
                 let value = capture(which, window, cx);
-                if value == last {
+                // 窗口销毁等时刻平台层可能报告非法边界（Windows 上为负边长），
+                // 不能覆盖已记下的有效记录，否则下次启动解析失败只能回退默认尺寸。
+                if !is_storable(which, &value) || value == last {
                     return;
                 }
                 last = value.clone();
@@ -299,6 +301,15 @@ fn display_uuid(display: &dyn PlatformDisplay) -> Option<String> {
     display.uuid().ok().map(|uuid| uuid.to_string())
 }
 
+/// 记录值能被恢复流程接受才值得保存：记位置的窗口按 `parse_frame`，只记尺寸的按 `parse_size`。
+fn is_storable(which: RememberedWindow, value: &Value) -> bool {
+    if which.remembers_position() {
+        parse_frame(value).is_some()
+    } else {
+        parse_size(value).is_some()
+    }
+}
+
 /// Windows 上最小化时 `window_bounds()` 按还原矩形报告 `Windowed`，
 /// 而平台的最大化标志在最小化后仍保持，两者任一为真都应记为最大化。
 fn resolve_maximized(bounds_maximized: bool, platform_maximized: bool) -> bool {
@@ -385,8 +396,8 @@ mod tests {
 
     use super::{
         RememberedWindow, StoredFrame, centered_in_area, fit_bounds, fit_size, frame_value,
-        parse_frame, parse_size, resolve_maximized, restore_in_area, restored_window_bounds,
-        select_display,
+        is_storable, parse_frame, parse_size, resolve_maximized, restore_in_area,
+        restored_window_bounds, select_display, size_value,
     };
 
     #[test]
@@ -395,6 +406,55 @@ mod tests {
         assert!(resolve_maximized(false, true));
         assert!(resolve_maximized(true, false));
         assert!(!resolve_maximized(false, false));
+    }
+
+    #[test]
+    fn invalid_captured_bounds_are_not_storable() {
+        // Windows 关窗时 GetWindowPlacement 失败，gpui 报告 (8,4,-16,-8)。
+        let broken = frame_value(rect(8., 4., -16., -8.), false, None);
+        assert!(!is_storable(RememberedWindow::Main, &broken));
+        assert!(!is_storable(RememberedWindow::Settings, &broken));
+        assert!(!is_storable(
+            RememberedWindow::Main,
+            &frame_value(rect(0., 0., 0., 0.), false, None)
+        ));
+        assert!(!is_storable(
+            RememberedWindow::Main,
+            &frame_value(rect(0., 0., 99., 600.), false, None)
+        ));
+        assert!(!is_storable(
+            RememberedWindow::Main,
+            &frame_value(rect(0., 0., 800., f32::NAN), false, None)
+        ));
+        assert!(!is_storable(
+            RememberedWindow::TaskDetail,
+            &size_value(size(px(-16.), px(-8.)))
+        ));
+        assert!(!is_storable(
+            RememberedWindow::TaskDetail,
+            &size_value(size(px(0.), px(300.)))
+        ));
+    }
+
+    #[test]
+    fn valid_captured_bounds_are_storable() {
+        assert!(is_storable(
+            RememberedWindow::Main,
+            &frame_value(rect(150., 120., 1111., 777.), false, Some("uuid"))
+        ));
+        assert!(is_storable(
+            RememberedWindow::Progress,
+            &frame_value(rect(-1900., 20., 640., 480.), true, None)
+        ));
+        assert!(is_storable(
+            RememberedWindow::BtSelection,
+            &size_value(size(px(700.), px(500.)))
+        ));
+        // 只记尺寸的窗口不看位置字段。
+        assert!(!is_storable(
+            RememberedWindow::Main,
+            &size_value(size(px(700.), px(500.)))
+        ));
     }
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds<gpui::Pixels> {
