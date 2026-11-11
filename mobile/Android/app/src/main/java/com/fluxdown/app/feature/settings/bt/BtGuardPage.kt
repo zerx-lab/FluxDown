@@ -360,7 +360,7 @@ private fun ThresholdsSection(ctx: SettingsCtx) {
         if (BtSettingsRow.GuardExcessRatio.isVisible(form)) {
             settingNumber(
                 ctx, BtSettingsRow.GuardExcessRatio.configKey, R.string.btGuardExcessRatio, R.string.btGuardExcessRatioDesc,
-                range = 110L..1000L, default = 200L, unit = R.string.btGuardUnitPercent, id = BtSettingsRow.GuardExcessRatio.id,
+                range = 110L..2000L, default = 200L, unit = R.string.btGuardUnitPercent, id = BtSettingsRow.GuardExcessRatio.id,
             )
         }
         if (BtSettingsRow.GuardMinTorrent.isVisible(form)) {

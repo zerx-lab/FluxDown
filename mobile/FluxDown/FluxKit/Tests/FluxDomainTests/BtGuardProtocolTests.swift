@@ -86,7 +86,7 @@ struct BtGuardProtocolTests {
         #expect(accepted("bt_guard_downloading_max_action", "off") == nil)
         #expect(accepted("bt_guard_excess_ratio_pct", "110") == "110")
         #expect(accepted("bt_guard_excess_ratio_pct", "109") == nil)
-        #expect(accepted("bt_guard_excess_ratio_pct", "1001") == nil)
+        #expect(accepted("bt_guard_excess_ratio_pct", "2001") == nil)
         #expect(accepted("bt_guard_min_torrent_mib", "0") == "0")
         #expect(accepted("bt_guard_min_torrent_mib", "1048577") == nil)
         #expect(accepted("bt_guard_rewind_tolerance_pct", "101") == nil)

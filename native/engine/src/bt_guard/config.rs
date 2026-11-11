@@ -79,7 +79,7 @@ pub struct BtGuardConfig {
     pub rule_lag: RuleMode,
     pub rule_fingerprint: RuleMode,
     pub cloud_mode: RuleMode,
-    /// 110..=1000
+    /// 110..=2000
     pub excess_ratio_pct: u32,
     /// 0..=1048576
     pub min_torrent_mib: u64,
@@ -133,7 +133,7 @@ impl Default for BtGuardConfig {
 impl BtGuardConfig {
     /// 钳制到契约范围（daemon 校验之外的兜底，保证内部算术不溢出、不除零）。
     pub fn sanitized(mut self) -> Self {
-        self.excess_ratio_pct = self.excess_ratio_pct.clamp(110, 1000);
+        self.excess_ratio_pct = self.excess_ratio_pct.clamp(110, 2000);
         self.min_torrent_mib = self.min_torrent_mib.min(1_048_576);
         self.rewind_tolerance_pct = self.rewind_tolerance_pct.min(100);
         self.throttle_kib = self.throttle_kib.clamp(1, 1_048_576);

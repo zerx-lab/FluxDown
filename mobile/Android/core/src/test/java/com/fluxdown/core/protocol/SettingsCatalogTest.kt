@@ -47,7 +47,7 @@ class SettingsCatalogTest {
         assertTrue(rejected("bt_guard_downloading_max_action", "off"))
         assertEquals("110", ok("bt_guard_excess_ratio_pct", "110"))
         assertTrue(rejected("bt_guard_excess_ratio_pct", "109"))
-        assertTrue(rejected("bt_guard_excess_ratio_pct", "1001"))
+        assertTrue(rejected("bt_guard_excess_ratio_pct", "2001"))
         assertEquals("0", ok("bt_guard_min_torrent_mib", "0"))
         assertTrue(rejected("bt_guard_min_torrent_mib", "1048577"))
         assertTrue(rejected("bt_guard_rewind_tolerance_pct", "101"))

@@ -497,7 +497,7 @@ fn integer_range(key: &str) -> (i64, i64) {
         "download.cdn_max_nodes" => (0, 8),
         "download.max_auto_retries" => (-1, 20),
         "download.auto_retry_delay_secs" => (0, 86_400),
-        "bt.guard.excess_ratio_pct" => (110, 1000),
+        "bt.guard.excess_ratio_pct" => (110, 2000),
         "bt.guard.min_torrent_mib" => (0, 1_048_576),
         "bt.guard.rewind_tolerance_pct" => (0, 100),
         "bt.guard.throttle_kib" => (1, 1_048_576),
@@ -679,7 +679,7 @@ mod bt_guard_tests {
     #[test]
     fn guard_ranges_match_daemon_catalog() {
         for (key, lo, hi) in [
-            ("excess_ratio_pct", 110_i64, 1000_i64),
+            ("excess_ratio_pct", 110_i64, 2000_i64),
             ("min_torrent_mib", 0, 1_048_576),
             ("rewind_tolerance_pct", 0, 100),
             ("throttle_kib", 1, 1_048_576),

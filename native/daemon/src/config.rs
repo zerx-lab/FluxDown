@@ -341,7 +341,7 @@ pub fn bt_guard_config_from_map(cfg: &HashMap<String, String>) -> BtGuardConfig 
         rule_fingerprint: rule("bt_guard_rule_fingerprint", defaults.rule_fingerprint),
         cloud_mode: rule("bt_guard_cloud_mode", defaults.cloud_mode),
         excess_ratio_pct: as_u32(
-            number("bt_guard_excess_ratio_pct", 110, 1000),
+            number("bt_guard_excess_ratio_pct", 110, 2000),
             defaults.excess_ratio_pct,
         ),
         min_torrent_mib: number("bt_guard_min_torrent_mib", 0, 1_048_576)

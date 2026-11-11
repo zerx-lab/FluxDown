@@ -278,7 +278,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   oneOf('bt_guard_rule_lag', 'observe', BT_GUARD_MODES),
   oneOf('bt_guard_rule_fingerprint', 'observe', BT_GUARD_MODES),
   oneOf('bt_guard_cloud_mode', 'observe', BT_GUARD_MODES),
-  int('bt_guard_excess_ratio_pct', '200', 110, 1000),
+  int('bt_guard_excess_ratio_pct', '200', 110, 2000),
   int('bt_guard_min_torrent_mib', '64', 0, 1_048_576),
   int('bt_guard_rewind_tolerance_pct', '7', 0, 100),
   int('bt_guard_throttle_kib', '32', 1, 1_048_576),

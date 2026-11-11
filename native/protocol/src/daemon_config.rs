@@ -290,7 +290,7 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         "bt_guard_excess_ratio_pct",
         DaemonConfigKind::Integer {
             min: 110,
-            max: 1000,
+            max: 2000,
         },
         "200",
     ),
@@ -654,7 +654,7 @@ mod tests {
     fn bt_guard_keys_have_contract_ranges_and_defaults() {
         let ok = |k: &str, v: &str| normalize_daemon_config_value(k, v).is_ok();
         for (key, lo, hi) in [
-            ("bt_guard_excess_ratio_pct", 110, 1000),
+            ("bt_guard_excess_ratio_pct", 110, 2000),
             ("bt_guard_min_torrent_mib", 0, 1_048_576),
             ("bt_guard_rewind_tolerance_pct", 0, 100),
             ("bt_guard_throttle_kib", 1, 1_048_576),
