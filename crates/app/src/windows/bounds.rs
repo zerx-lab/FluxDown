@@ -156,6 +156,13 @@ impl WindowRegistry {
                 if value == last {
                     return;
                 }
+                // gpui-fast 0.1.14 在 Windows 关窗时，HWND 销毁后仍派发一次边界回调，
+                // `GetWindowPlacement` 失败得到零尺寸矩形；恢复时读不回的值一律不记，
+                // 也不更新 `last`，否则会覆盖用户上一次的有效边界。
+                if !is_restorable(which, &value) {
+                    log::debug!("ignored unrestorable window bounds {key}: {value}");
+                    return;
+                }
                 last = value.clone();
                 {
                     let mut memory = memory.borrow_mut();
@@ -323,6 +330,15 @@ fn capture(which: RememberedWindow, window: &Window, cx: &App) -> Value {
     frame_value(rect, maximized, display.as_deref())
 }
 
+/// 记录能否被 [`WindowRegistry::restore_bounds`] 读回；与恢复共用同一套校验。
+fn is_restorable(which: RememberedWindow, value: &Value) -> bool {
+    if which.remembers_position() {
+        parse_frame(value).is_some()
+    } else {
+        parse_size(value).is_some()
+    }
+}
+
 fn size_value(size: Size<Pixels>) -> Value {
     json!({ "w": f64::from(size.width), "h": f64::from(size.height) })
 }
@@ -385,8 +401,8 @@ mod tests {
 
     use super::{
         RememberedWindow, StoredFrame, centered_in_area, fit_bounds, fit_size, frame_value,
-        parse_frame, parse_size, resolve_maximized, restore_in_area, restored_window_bounds,
-        select_display,
+        is_restorable, parse_frame, parse_size, resolve_maximized, restore_in_area,
+        restored_window_bounds, select_display, size_value,
     };
 
     #[test]
@@ -604,6 +620,30 @@ mod tests {
             Some(size(px(700.), px(500.)))
         );
         assert!(parse_size(&json!({"w": 700.0})).is_none());
+    }
+
+    #[test]
+    fn destroyed_window_captures_are_not_persisted() {
+        // Windows 关窗后 `GetWindowPlacement` 失败：全零矩形扣掉边框偏移得到零或负尺寸。
+        for degenerate in [rect(0., 0., 0., 0.), rect(8., 0., -16., -39.)] {
+            assert!(!is_restorable(
+                RememberedWindow::Main,
+                &frame_value(degenerate, false, Some("display-a"))
+            ));
+            assert!(!is_restorable(
+                RememberedWindow::TaskDetail,
+                &size_value(degenerate.size)
+            ));
+        }
+        let resized = rect(120., 80., 900., 560.);
+        assert!(is_restorable(
+            RememberedWindow::Settings,
+            &frame_value(resized, true, None)
+        ));
+        assert!(is_restorable(
+            RememberedWindow::NewDownload,
+            &size_value(resized.size)
+        ));
     }
 
     #[test]
