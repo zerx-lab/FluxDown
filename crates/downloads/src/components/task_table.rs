@@ -2075,7 +2075,8 @@ impl DownloadTableDelegate {
         self.press_on_file_handle = false;
         self.suppress_sweep_click = false;
         let modifiers = SelectModifiers::from_event(event.modifiers, cx);
-        // 文件名列的按下由把手截断，不会进到这里。其余列都是划选，不需要修饰键。
+        // 把手上的按下照常冒泡到行（行的单击 / 双击靠它），这里只是不为它开划选会话；
+        // 其余列都是划选，不需要修饰键。
         if classify_row_press(on_handle) == RowPress::FileDrag {
             self.row_sweep = None;
             return;
@@ -3421,8 +3422,12 @@ impl DownloadTableDelegate {
         )
     }
 
-    /// 文件拖出把手：捕获阶段记下按下，冒泡阶段截断，行划选看不到这次按下。
+    /// 文件拖出把手：捕获阶段记下按下，[`Self::begin_row_sweep`] 据此不开划选会话。
     /// gpui 超过约 2px 即启动拖放，方向不限，所以把手不能和划选共用一次移动。
+    ///
+    /// 按下不得在冒泡阶段截断：gpui 的单击由冒泡阶段的按下登记，截断后行的 `on_click`
+    /// 收不到，文件名列就点不中、双击也打不开。没移动就松开 = 行单击；拖起后的那次
+    /// 松开由 [`Self::note_file_drag_started`] 抑制，不改选区。
     fn arm_file_drag(
         cell: Stateful<Div>,
         dragged: DraggedTasks,
@@ -3433,7 +3438,6 @@ impl DownloadTableDelegate {
                 table.delegate_mut().press_on_file_handle = true;
             }
         }))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_drag(dragged, |dragged, click_offset, _, cx| {
             dragged.preview(click_offset, cx)
         })
@@ -4632,10 +4636,10 @@ mod tests {
     use fluxdown_ui_i18n::{I18nCatalog, I18nError};
 
     use super::{
-        DownloadColumnKind, DownloadTableDelegate, DownloadsCommand, RowAction, RowPress,
-        SelectModifiers, SelectionSummary, TableFilter, ToolbarCommand, VisibleRow,
-        classify_row_press, group_by_key, is_seeding_row, percent_label, row_actions,
-        seeding_upload_speed, task_command,
+        DownloadColumnKind, DownloadTableDelegate, DownloadsCommand, RowAction, SelectModifiers,
+        SelectionSummary, TableFilter, ToolbarCommand, VisibleRow, group_by_key, is_seeding_row,
+        percent_label, render_download_table, row_actions, seeding_upload_speed,
+        table_header_height, task_command,
     };
     use crate::{
         model::{
@@ -5219,11 +5223,115 @@ mod tests {
         Ok(())
     }
 
-    /// 文件名列是拖出，其他列是划选。两种都不用修饰键。
+    /// 文件名列是拖出把手，其他列是划选，都不用修饰键；把手上没移动就松开仍是单击选中。
     #[test]
-    fn file_name_column_drags_the_file_and_other_columns_sweep() {
-        assert_eq!(classify_row_press(true), RowPress::FileDrag);
-        assert_eq!(classify_row_press(false), RowPress::Sweep);
+    fn file_name_column_clicks_select_drags_the_file_and_other_columns_sweep()
+    -> Result<(), I18nError> {
+        use fluxdown_ui_theme::active_theme;
+        use gpui::{
+            AppContext as _, Context, Entity, IntoElement, Modifiers, MouseButton, MouseMoveEvent,
+            ParentElement as _, Pixels, Point, Render, Styled as _, TestApp, Window, div, point,
+            px,
+        };
+        use gpui_component::table::TableState;
+
+        struct Host {
+            table: Entity<TableState<DownloadTableDelegate>>,
+        }
+
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().child(render_download_table(
+                    "sweep-test-table",
+                    &self.table,
+                    cx,
+                ))
+            }
+        }
+
+        // 四个已完成且文件仍在的任务：文件名列都有拖出把手。
+        let delegate = delegate(&[3, 3, 3, 3])?;
+        let keys = delegate.visible_task_keys();
+        let mut app = TestApp::new();
+        app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+        });
+        let mut win = app.open_window(move |window, cx| Host {
+            table: cx.new(|cx| {
+                TableState::new(delegate, window, cx)
+                    .row_selectable(false)
+                    .col_selectable(false)
+            }),
+        });
+        // 首帧测得容器宽后帧外回填文件名列宽，再画一帧才是稳定布局。
+        for _ in 0..3 {
+            win.draw();
+            app.run_until_parked();
+        }
+
+        let (header, row, name_x, other_x) = win.read(|host, cx| {
+            let delegate = host.table.read(cx).delegate();
+            let selection = delegate.selection_column_width();
+            (
+                f32::from(table_header_height(cx)),
+                f32::from(
+                    delegate
+                        .prefs
+                        .density
+                        .row_height(active_theme(cx).density()),
+                ),
+                selection + 24.,
+                selection + delegate.applied_file_width.get() + 12.,
+            )
+        });
+        let at = |x: f32, row_ix: usize| -> Point<Pixels> {
+            point(px(x), px(header + row * (row_ix as f32 + 0.5)))
+        };
+        let selected = |win: &gpui::TestAppWindow<Host>| {
+            win.read(|host, cx| host.table.read(cx).delegate().selected_keys())
+        };
+        let drag_to = |win: &mut gpui::TestAppWindow<Host>, position: Point<Pixels>| {
+            win.simulate_event(MouseMoveEvent {
+                position,
+                modifiers: Modifiers::default(),
+                pressed_button: Some(MouseButton::Left),
+            });
+        };
+
+        // 把手上按下、不移动就松开：选中该行；再点另一行改选。
+        win.simulate_mouse_move(at(name_x, 0));
+        win.simulate_click(at(name_x, 0), MouseButton::Left);
+        assert_eq!(selected(&win), [keys[0].clone()]);
+        win.simulate_mouse_move(at(name_x, 1));
+        win.simulate_click(at(name_x, 1), MouseButton::Left);
+        assert_eq!(selected(&win), [keys[1].clone()]);
+
+        // 把手上按下后跨行移动：文件拖放，不划选；在别的行松开不改选区。
+        win.simulate_mouse_move(at(name_x, 0));
+        win.simulate_mouse_down(at(name_x, 0), MouseButton::Left);
+        drag_to(&mut win, at(name_x, 2));
+        assert!(app.read(|cx| cx.has_active_drag()));
+        win.simulate_mouse_up(at(name_x, 2), MouseButton::Left);
+        assert!(!app.read(|cx| cx.has_active_drag()));
+        assert_eq!(selected(&win), [keys[1].clone()]);
+
+        // 拖起后在同一行松开：这次单击被抑制，选区不变。
+        win.simulate_mouse_move(at(name_x, 0));
+        win.simulate_mouse_down(at(name_x, 0), MouseButton::Left);
+        drag_to(&mut win, at(name_x + 12., 0));
+        assert!(app.read(|cx| cx.has_active_drag()));
+        win.simulate_mouse_up(at(name_x + 12., 0), MouseButton::Left);
+        assert_eq!(selected(&win), [keys[1].clone()]);
+
+        // 其他列按下后跨行移动：划选经过的三行，不启动文件拖放。
+        win.simulate_mouse_move(at(other_x, 0));
+        win.simulate_mouse_down(at(other_x, 0), MouseButton::Left);
+        drag_to(&mut win, at(other_x, 2));
+        assert!(!app.read(|cx| cx.has_active_drag()));
+        win.simulate_mouse_up(at(other_x, 2), MouseButton::Left);
+        assert_eq!(selected(&win).len(), 3);
+        Ok(())
     }
 
     fn width_of(delegate: &DownloadTableDelegate, kind: DownloadColumnKind) -> Option<f32> {
