@@ -723,7 +723,7 @@ impl ShellView {
         })
     }
 
-    /// 顶栏区域（左侧在页面插槽之前，右侧在其后）。
+    /// 顶栏区域：左侧紧随页面主操作插槽，右侧位于弹性留白之后。
     pub(crate) fn render_title_zone(
         &self,
         zone: ChromeZone,

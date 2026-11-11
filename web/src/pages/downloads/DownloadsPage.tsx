@@ -6,7 +6,6 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useT } from '../../i18n'
 import { cn } from '../../lib/cn'
 import { Sheet, toast, useIsMobile } from '../../ui'
-import { TitleBarSlot } from '../../shell'
 import { SETTINGS_ERROR_KEYS, clearSettingsError, useSettingsError } from '../settings/kit/writeStore'
 import { DownloadDialogsHost, openNewDownload } from './dialogs'
 import { DetailPanel } from './detail'
@@ -266,9 +265,7 @@ function DownloadsBody() {
 export function DownloadsPage() {
   return (
     <DownloadsProvider>
-      <TitleBarSlot>
-        <DownloadsTitleBar />
-      </TitleBarSlot>
+      <DownloadsTitleBar />
       <DownloadsBody />
       <DownloadDialogsHost />
     </DownloadsProvider>

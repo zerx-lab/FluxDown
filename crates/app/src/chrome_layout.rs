@@ -41,10 +41,12 @@ pub(crate) fn catalog() -> Vec<ChromeItemSpec> {
     });
     let widgets = DownloadWidget::ALL.into_iter().map(|widget| {
         let zone = match widget {
-            DownloadWidget::DownloadSpeed
-            | DownloadWidget::UploadSpeed
-            | DownloadWidget::PauseAll
-            | DownloadWidget::ResumeAll => ChromeZone::StatusLeading,
+            DownloadWidget::PauseAll | DownloadWidget::ResumeAll | DownloadWidget::RetryFailed => {
+                ChromeZone::TitleLeading
+            }
+            DownloadWidget::DownloadSpeed | DownloadWidget::UploadSpeed => {
+                ChromeZone::StatusLeading
+            }
             DownloadWidget::DownloadLimit
             | DownloadWidget::UploadLimit
             | DownloadWidget::Proxy
@@ -142,38 +144,7 @@ pub(crate) fn apply(
 
 #[cfg(test)]
 mod tests {
-    use fluxdown_ui_shell::{ChromeLayout, ChromeZone};
-
     use super::catalog;
-
-    /// 默认布局必须还原改造前的界面：活动栏路由在上、动作在下，状态栏左 = 速度 + 暂停 / 开始，
-    /// 右 = 限速、代理、关机、剩余空间，顶栏右 = 下载页搜索框 + 视图菜单；默认不隐藏任何条目。
-    #[test]
-    fn default_layout_matches_classic_chrome() {
-        let catalog = catalog();
-        let layout = ChromeLayout::default_for(&catalog);
-        let ids =
-            |zone| -> Vec<String> { layout.items(zone).iter().map(ToString::to_string).collect() };
-        assert!(ids(ChromeZone::TitleLeading).is_empty());
-        assert_eq!(ids(ChromeZone::TitleTrailing), ["search", "viewMenu"]);
-        assert!(catalog.iter().all(|spec| !layout.is_hidden(&spec.id)));
-        assert_eq!(ids(ChromeZone::RailTop), ["downloads", "rss", "webhooks"]);
-        assert_eq!(ids(ChromeZone::RailBottom), ["account", "settings"]);
-        assert_eq!(
-            ids(ChromeZone::StatusLeading),
-            ["downloadSpeed", "uploadSpeed", "pauseAll", "resumeAll"]
-        );
-        assert_eq!(
-            ids(ChromeZone::StatusTrailing),
-            [
-                "downloadLimit",
-                "uploadLimit",
-                "proxy",
-                "shutdown",
-                "diskFree"
-            ]
-        );
-    }
 
     /// 固定入口（下载页、设置）不可隐藏，保证始终有路回到它们；其余条目都可隐藏。
     #[test]

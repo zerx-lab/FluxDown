@@ -1,5 +1,5 @@
 // Web 外壳条目目录：id / 默认区域 / 可放置的区域族。
-// 默认区域复现改造前的布局（顺序即目录顺序）；文本类条目（速度 / 剩余空间）放不进 48px 活动栏。
+// 默认区域与 GPUI 目录一致（顺序即目录顺序）；文本类条目（速度 / 剩余空间）放不进 48px 活动栏。
 // id 与 GPUI 共用（GPUI 另有 `shutdown`，Web 没有）。
 // `fixed` 条目（下载 / 设置）可移动但不能隐藏，保证主入口始终可达；插件条目可隐藏。
 
@@ -13,8 +13,9 @@ export const CHROME_CATALOG: readonly ChromeItemSpec[] = [
   { id: 'settings', defaultZone: 'railBottom', families: ['rail', 'title', 'status'], fixed: true },
   { id: 'downloadSpeed', defaultZone: 'statusLeading', families: ['title', 'status'] },
   { id: 'uploadSpeed', defaultZone: 'statusLeading', families: ['title', 'status'] },
-  { id: 'pauseAll', defaultZone: 'statusLeading', families: ['rail', 'title', 'status'] },
-  { id: 'resumeAll', defaultZone: 'statusLeading', families: ['rail', 'title', 'status'] },
+  { id: 'pauseAll', defaultZone: 'titleLeading', families: ['rail', 'title', 'status'] },
+  { id: 'resumeAll', defaultZone: 'titleLeading', families: ['rail', 'title', 'status'] },
+  { id: 'retryFailed', defaultZone: 'titleLeading', families: ['rail', 'title', 'status'] },
   { id: 'downloadLimit', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
   { id: 'uploadLimit', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
   { id: 'proxy', defaultZone: 'statusTrailing', families: ['rail', 'title', 'status'] },
@@ -27,6 +28,7 @@ export const WIDGET_LABEL_KEY: Readonly<Record<string, string>> = {
   uploadSpeed: 'chromeWidgetUploadSpeed',
   pauseAll: 'pauseAll',
   resumeAll: 'resumeAll',
+  retryFailed: 'retryFailed',
   downloadLimit: 'speedLimitTitle',
   uploadLimit: 'uploadLimit',
   proxy: 'statusBarProxyLabel',

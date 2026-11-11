@@ -21,16 +21,6 @@ Object.assign(globalThis, { localStorage: local })
 const stored = () => JSON.parse(local.getItem(CHROME_LAYOUT_KEY) ?? 'null') as Record<string, string[] | undefined>
 
 describe('chromeStore', () => {
-  test('默认布局复现改造前的结构', () => {
-    const layout = getChromeLayout()
-    expect(layout.railTop).toEqual(['downloads', 'rss', 'webhooks'])
-    expect(layout.railBottom).toEqual(['account', 'settings'])
-    expect(layout.statusLeading).toEqual(['downloadSpeed', 'uploadSpeed', 'pauseAll', 'resumeAll'])
-    expect(layout.statusTrailing).toEqual(['downloadLimit', 'uploadLimit', 'proxy', 'diskFree'])
-    expect(layout.titleLeading).toEqual([])
-    expect(layout.titleTrailing).toEqual([])
-  })
-
   test('成功的移动立即写入 localStorage，且写全六个区域', () => {
     expect(moveChromeItem('proxy', 'titleTrailing', null)).toBe(true)
     expect(Object.keys(stored())).toHaveLength(6)

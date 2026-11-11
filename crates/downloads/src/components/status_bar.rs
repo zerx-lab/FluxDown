@@ -1,5 +1,5 @@
-//! 下载能力提供给 shell 的可摆放控件：全局速度、全部暂停 / 全部开始、限速、代理、
-//! 定时关机 / 睡眠、剩余空间。默认摆在状态栏，用户可经 chrome 布局拖到顶栏 / 活动栏；
+//! 下载能力提供给 shell 的可摆放控件：全局速度、全部暂停 / 全部开始 / 失败重试、限速、代理、
+//! 定时关机 / 睡眠、剩余空间。全局任务操作默认摆在顶栏，其余在状态栏，可经 chrome 布局移动；
 //! 控件窗口级显示（不随路由切换消失），由 app 把 [`DownloadWidget`] 登记为 shell 控件。
 //!
 //! 下载限速走云同步偏好写入；上传限速与代理模式走 `DownloadsCommand::PatchConfig`
@@ -57,6 +57,7 @@ pub enum DownloadWidget {
     UploadSpeed,
     PauseAll,
     ResumeAll,
+    RetryFailed,
     DownloadLimit,
     UploadLimit,
     Proxy,
@@ -65,12 +66,13 @@ pub enum DownloadWidget {
 }
 
 impl DownloadWidget {
-    /// 默认顺序（状态栏自左向右）。
-    pub const ALL: [Self; 9] = [
+    /// 目录顺序；各控件的默认区域由宿主 chrome 目录决定。
+    pub const ALL: [Self; 10] = [
         Self::DownloadSpeed,
         Self::UploadSpeed,
         Self::PauseAll,
         Self::ResumeAll,
+        Self::RetryFailed,
         Self::DownloadLimit,
         Self::UploadLimit,
         Self::Proxy,
@@ -86,6 +88,7 @@ impl DownloadWidget {
             Self::UploadSpeed => "uploadSpeed",
             Self::PauseAll => "pauseAll",
             Self::ResumeAll => "resumeAll",
+            Self::RetryFailed => "retryFailed",
             Self::DownloadLimit => "downloadLimit",
             Self::UploadLimit => "uploadLimit",
             Self::Proxy => "proxy",
@@ -102,6 +105,7 @@ impl DownloadWidget {
             Self::UploadSpeed => "chromeWidgetUploadSpeed",
             Self::PauseAll => "pauseAll",
             Self::ResumeAll => "resumeAll",
+            Self::RetryFailed => "retryFailed",
             Self::DownloadLimit => "speedLimitTitle",
             Self::UploadLimit => "uploadLimit",
             Self::Proxy => "statusBarProxyLabel",
@@ -776,28 +780,34 @@ impl DownloadView {
         Some(trigger.into_any_element())
     }
 
-    /// 全部暂停 / 全部开始小图标按钮；不可用时置灰禁用，tooltip 改为说明原因
+    /// 全部暂停 / 全部开始 / 失败重试小图标按钮；不可用时置灰禁用，tooltip 改为说明原因
     /// （tooltip 挂在外层，禁用时仍可悬停）。
     fn render_status_action(
         &self,
         command: ToolbarCommand,
         view: WeakEntity<Self>,
         cx: &App,
-    ) -> AnyElement {
-        let (id, label, icon, blocker) = if matches!(command, ToolbarCommand::PauseAll) {
-            (
+    ) -> Option<AnyElement> {
+        let (id, label, icon, blocker) = match command {
+            ToolbarCommand::PauseAll => (
                 "status-pause-all",
                 self.strings.pause_all.clone(),
                 FluxIcon::Pause,
                 self.pause_all_blocker(),
-            )
-        } else {
-            (
+            ),
+            ToolbarCommand::ResumeAll => (
                 "status-resume-all",
                 self.strings.resume_all.clone(),
                 FluxIcon::Play,
                 self.resume_all_blocker(),
-            )
+            ),
+            ToolbarCommand::RetryFailed => (
+                "status-retry-failed",
+                SharedString::from(self.translator.read(cx).text("retryFailed").to_owned()),
+                FluxIcon::RotateCw,
+                self.retry_failed_blocker(cx),
+            ),
+            _ => return None,
         };
         let theme = active_theme(cx);
         let icon_size = theme.extended().icon.sm;
@@ -820,12 +830,14 @@ impl DownloadView {
                 return;
             };
         });
-        div()
-            .id(SharedString::from(format!("{id}-tooltip")))
-            .flex_none()
-            .tooltip(move |window, cx| tooltip_view(tooltip_label.clone(), window, cx))
-            .child(button)
-            .into_any_element()
+        Some(
+            div()
+                .id(SharedString::from(format!("{id}-tooltip")))
+                .flex_none()
+                .tooltip(move |window, cx| tooltip_view(tooltip_label.clone(), window, cx))
+                .child(button)
+                .into_any_element(),
+        )
     }
 
     /// 渲染一个可摆放控件（由 shell 在布局指定的位置调用）。`None` = 当前没有内容
@@ -850,10 +862,13 @@ impl DownloadView {
                 cx,
             )),
             DownloadWidget::PauseAll => {
-                Some(self.render_status_action(ToolbarCommand::PauseAll, view.clone(), cx))
+                self.render_status_action(ToolbarCommand::PauseAll, view.clone(), cx)
             }
             DownloadWidget::ResumeAll => {
-                Some(self.render_status_action(ToolbarCommand::ResumeAll, view.clone(), cx))
+                self.render_status_action(ToolbarCommand::ResumeAll, view.clone(), cx)
+            }
+            DownloadWidget::RetryFailed => {
+                self.render_status_action(ToolbarCommand::RetryFailed, view.clone(), cx)
             }
             DownloadWidget::DownloadLimit => {
                 Some(self.render_speed_limit_control(&DOWNLOAD_LIMIT, placement, view.clone(), cx))

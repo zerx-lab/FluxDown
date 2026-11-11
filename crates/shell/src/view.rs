@@ -622,15 +622,9 @@ impl ShellView {
                     .pr(if is_macos { spacing.md } else { spacing.sm })
                     .children(leading)
                     .children(sidebar_toggle)
+                    .children(slot)
                     .children(title_leading)
-                    .child(
-                        h_flex()
-                            .h_full()
-                            .flex_1()
-                            .min_w_0()
-                            .items_center()
-                            .children(slot),
-                    )
+                    .child(div().flex_1().min_w_0())
                     .children(title_trailing),
             )
     }

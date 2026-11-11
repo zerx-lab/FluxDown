@@ -3948,6 +3948,7 @@ pub(crate) enum ToolbarCommand {
     Pause,
     PauseAll,
     ResumeAll,
+    RetryFailed,
     Delete,
     Open,
     Reveal,
@@ -4061,7 +4062,8 @@ fn task_command(row: &DownloadTaskView, action: ToolbarCommand) -> Option<Downlo
             ToolbarCommand::Open
             | ToolbarCommand::Reveal
             | ToolbarCommand::PauseAll
-            | ToolbarCommand::ResumeAll => return None,
+            | ToolbarCommand::ResumeAll
+            | ToolbarCommand::RetryFailed => return None,
         };
         return row
             .remote_can(remote_action)
@@ -4089,7 +4091,9 @@ fn task_command(row: &DownloadTaskView, action: ToolbarCommand) -> Option<Downlo
         },
         ToolbarCommand::Open => DownloadsCommand::OpenTask { task_id },
         ToolbarCommand::Reveal => DownloadsCommand::RevealTask { task_id },
-        ToolbarCommand::PauseAll | ToolbarCommand::ResumeAll => return None,
+        ToolbarCommand::PauseAll | ToolbarCommand::ResumeAll | ToolbarCommand::RetryFailed => {
+            return None;
+        }
     })
 }
 
@@ -4429,6 +4433,7 @@ impl DownloadView {
         match action {
             ToolbarCommand::PauseAll => vec![DownloadsCommand::PauseAll],
             ToolbarCommand::ResumeAll => vec![DownloadsCommand::ResumeAll],
+            ToolbarCommand::RetryFailed => self.controller.retry_failed_commands(),
             ToolbarCommand::Open => commands_for(
                 self.table_state
                     .read(cx)

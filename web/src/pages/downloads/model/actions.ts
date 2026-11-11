@@ -382,6 +382,11 @@ export function retryFailedInGroup(views: readonly DownloadTaskView[], groupId: 
   return resumeViews(views.filter((view) => view.source === 'local' && view.groupId === groupId && view.state === 'failed'))
 }
 
+/** 全局失败重试仅接受当前本机失败任务；不影响筛选状态或远端任务。 */
+export function retryFailedViews(views: readonly DownloadTaskView[]): Promise<boolean> {
+  return resumeViews(views.filter((view) => view.source === 'local' && view.state === 'failed'))
+}
+
 export const deleteGroup = (groupId: string, deleteFiles: boolean) =>
   guarded(() => rpc.daemon.group.delete({ groupId, deleteFiles }))
 

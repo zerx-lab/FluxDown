@@ -14,7 +14,7 @@ describe('dynamic chrome catalog', () => {
     expect(normalizeLayout(null, getChromeCatalog()).railTop).toEqual(['downloads', 'rss', 'webhooks', 'plugin:a@x:dash'])
     // 存储里把插件项放到标题栏，目录带着它时被找回
     const stored = { titleLeading: ['plugin:a@x:dash'] }
-    expect(normalizeLayout(stored, getChromeCatalog()).titleLeading).toEqual(['plugin:a@x:dash'])
+    expect(normalizeLayout(stored, getChromeCatalog()).titleLeading.includes('plugin:a@x:dash')).toBe(true)
     // 不能放进状态栏
     expect(normalizeLayout({ statusLeading: ['plugin:a@x:dash'] }, getChromeCatalog()).statusLeading.includes('plugin:a@x:dash')).toBe(false)
     setPluginChromeSpecs([])

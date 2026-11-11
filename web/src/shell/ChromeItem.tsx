@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react'
 import { usePluginActivityEntries } from '../pages/plugins/usePluginContributions'
 import { ProxyControl } from '../pages/downloads/statusbar/ProxyControl'
 import { SpeedLimitControl } from '../pages/downloads/statusbar/SpeedLimitControl'
-import { DiskFreeCell, PauseAllButton, ResumeAllButton, SpeedCell } from '../pages/downloads/statusbar/StatusWidgets'
+import { DiskFreeCell, PauseAllButton, ResumeAllButton, RetryFailedButton, SpeedCell } from '../pages/downloads/statusbar/StatusWidgets'
 import type { WidgetProps } from '../pages/downloads/statusbar/widget'
 import { ACTIVITY_ENTRIES } from './activity'
 import { AccountItem, PluginItem, RouteItem } from './ActivityItem'
@@ -20,6 +20,8 @@ export function ChromeItem({ id, preview = false, ...position }: WidgetProps & {
       return <PauseAllButton {...position} />
     case 'resumeAll':
       return <ResumeAllButton {...position} />
+    case 'retryFailed':
+      return <RetryFailedButton {...position} />
     case 'downloadLimit':
       return <SpeedLimitControl icon={ArrowDown} titleKey="speedLimitTitle" configKey="speed_limit_bytes" {...position} />
     case 'uploadLimit':

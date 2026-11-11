@@ -3,13 +3,14 @@
 // 所以既能放进外壳的任意区域，也能用在移动端页面级状态栏。
 // `rail` 朝向：纯图标，数值写进气泡（活动栏只有 48px 宽，放不下文字）。
 
-import { ArrowDown, ArrowUp, HardDrive, Pause, Play } from 'lucide-react'
+import { ArrowDown, ArrowUp, HardDrive, Pause, Play, RotateCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
+import { useTaskTableStatus, useTasks } from '../../../lib/rpc'
 import { Icon, Tooltip } from '../../../ui'
-import { pauseAll, resumeAll } from '../model/actions'
-import { formatBytes } from '../model/task'
+import { pauseAll, resumeAll, retryFailedViews } from '../model/actions'
+import { buildLocalView, formatBytes, stateOfStatus } from '../model/task'
 import { ACTION_BUTTON, RAIL_BUTTON, resolveSide, useDaemonReady, useRuntimeStats } from './widget'
 import type { WidgetProps } from './widget'
 
@@ -82,4 +83,34 @@ export function PauseAllButton(props: WidgetProps) {
 
 export function ResumeAllButton(props: WidgetProps) {
   return <GlobalActionButton icon={Play} labelKey="resumeAll" action={resumeAll} {...props} />
+}
+
+/** 全局失败任务重试：点击时从完整本机任务快照重新筛选，绕过页面筛选 / 搜索。 */
+export function RetryFailedButton({ orientation = 'horizontal', side }: WidgetProps) {
+  const t = useT()
+  const tasks = useTasks()
+  const table = useTaskTableStatus()
+  const ready = useDaemonReady()
+  const hasFailed = tasks.some((task) => stateOfStatus(task.status) === 'failed')
+  const disabled = !ready || table.loading || !hasFailed
+  const label = hasFailed ? t('retryFailed') : t('retryFailedUnavailable')
+  const rail = orientation === 'rail'
+  return (
+    <Tooltip content={label} side={resolveSide(orientation, side)}>
+      <button
+        type="button"
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => {
+          const views = tasks
+            .filter((task) => stateOfStatus(task.status) === 'failed')
+            .map((task) => buildLocalView(task, null, false, null, undefined, ready))
+          void retryFailedViews(views)
+        }}
+        className={rail ? RAIL_BUTTON : ACTION_BUTTON}
+      >
+        <Icon icon={RotateCw} size={rail ? 'xl' : 'lg'} />
+      </button>
+    </Tooltip>
+  )
 }
