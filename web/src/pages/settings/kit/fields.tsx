@@ -69,12 +69,20 @@ export function NumberField({
         onChange={(event) => {
           const text = event.target.value
           setDraft(text)
+          // 输入中只提交范围内的值；删空、输到一半、越界的草稿留待失焦再钳制。
           const parsed = Number(text)
+          if (text.trim() === '' || !Number.isFinite(parsed)) return
+          const next = float ? parsed : Math.round(parsed)
+          if (next === clamp(next) && next !== value) onCommit(next)
+        }}
+        onBlur={() => {
+          const text = draft ?? ''
+          const parsed = Number(text)
+          setDraft(null)
           if (text.trim() === '' || !Number.isFinite(parsed)) return
           const next = float ? clamp(parsed) : clamp(Math.round(parsed))
           if (next !== value) onCommit(next)
         }}
-        onBlur={() => setDraft(null)}
       />
       {unit ? <span className="shrink-0 text-xs text-muted-foreground">{unit}</span> : null}
     </div>

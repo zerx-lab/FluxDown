@@ -2,15 +2,19 @@
 
 use fluxdown_protocol::method;
 use fluxdown_protocol::proxy_rules::{PROXY_RULES_KEY, enabled_proxy_rule_count};
-use fluxdown_ui_components::{ButtonVariant, FluxIcon, loading_button};
+use fluxdown_ui_components::{ButtonVariant, ControlExt as _, FluxIcon, loading_button};
 use fluxdown_ui_theme::active_theme;
-use gpui::{App, ParentElement, SharedString, Styled};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{App, AppContext as _, Entity, ParentElement, SharedString, Styled, Window};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, h_flex};
 use serde_json::json;
 
 use super::{SectionContext, proxy_rules, site_auth};
 use crate::store::rpc_error_text;
-use crate::ui::{Control, SettingsPage, SettingsRow, SettingsSection, body_text, meta_text};
+use crate::ui::{
+    Control, INPUT_WIDTH, SettingsPage, SettingsRow, SettingsSection, body_text, meta_text,
+};
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     let mode = ctx.store.read(cx).daemon_str("proxy_mode");
@@ -195,20 +199,100 @@ fn manual_section(ctx: &SectionContext, active: bool) -> SettingsSection {
         ))
 }
 
-/// 端口号输入：过滤非数字字符并夹取到 `1..=65535`。
+struct PortSlot {
+    input: Entity<InputState>,
+    /// 最近一次与 store 对齐的值；store 变化（同步 / 外部改动）时才回写输入框。
+    last_synced: SharedString,
+    _subscription: gpui::Subscription,
+}
+
+/// 输入中：只保留数字；空串或 `1..=65535` 内的值立即提交，越界（`0`、`70000`）留待失焦。
+fn live_port(text: &str) -> Option<String> {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return Some(digits);
+    }
+    digits
+        .parse::<u32>()
+        .is_ok_and(|port| (1..=65535).contains(&port))
+        .then_some(digits)
+}
+
+/// 失焦 / 回车：越界钳到 `1..=65535`（位数过长视同超上限），空串保持为空（未配置）。
+fn settle_port(text: &str) -> String {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return digits;
+    }
+    digits
+        .parse::<u32>()
+        .map_or(65535, |port| port.clamp(1, 65535))
+        .to_string()
+}
+
+/// 端口号输入：过滤非数字字符；越界值在失焦 / 回车时才夹取到 `1..=65535`，输入中可自由删改。
 fn proxy_port_control(ctx: &SectionContext) -> Control {
-    let get = ctx.store();
-    let set = ctx.store();
-    Control::input(
-        move |cx: &App| SharedString::from(get.read(cx).daemon_str("proxy_port")),
-        move |value: SharedString, cx: &mut App| {
-            let digits: String = value.chars().filter(char::is_ascii_digit).collect();
-            let clamped = digits
-                .parse::<u32>()
-                .ok()
-                .map(|port| port.clamp(1, 65535).to_string())
-                .unwrap_or_default();
-            set.update(cx, |store, cx| store.set_daemon("proxy_port", clamped, cx));
+    let store = ctx.store();
+    Control::field(
+        INPUT_WIDTH,
+        move |disabled, key, width, window: &mut Window, cx: &mut App| {
+            let value = SharedString::from(store.read(cx).daemon_str("proxy_port"));
+            let slot = window.use_keyed_state(SharedString::from(format!("{key}-port")), cx, {
+                let store = store.clone();
+                let value = value.clone();
+                move |window, cx| {
+                    let input =
+                        cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                    let _subscription = cx.subscribe_in(
+                        &input,
+                        window,
+                        move |slot: &mut PortSlot, input, event: &InputEvent, window, cx| {
+                            let text = input.read(cx).value();
+                            let next = match event {
+                                InputEvent::Change => live_port(&text),
+                                InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                                    Some(settle_port(&text))
+                                }
+                                _ => None,
+                            };
+                            let Some(next) = next else {
+                                return;
+                            };
+                            let next = SharedString::from(next);
+                            if next != text {
+                                input.update(cx, |input, cx| {
+                                    input.set_value(next.clone(), window, cx);
+                                });
+                            }
+                            if next != slot.last_synced {
+                                slot.last_synced = next.clone();
+                                store.update(cx, |store, cx| {
+                                    store.set_daemon("proxy_port", next.to_string(), cx);
+                                });
+                            }
+                        },
+                    );
+                    PortSlot {
+                        input,
+                        last_synced: value,
+                        _subscription,
+                    }
+                }
+            });
+            slot.update(cx, |slot, cx| {
+                if slot.last_synced != value {
+                    slot.last_synced = value.clone();
+                    slot.input
+                        .update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+            });
+            Input::new(&slot.read(cx).input)
+                .control(cx)
+                .disabled(disabled)
+                .map(|this| match width {
+                    Some(width) => this.w(width),
+                    None => this.w_full(),
+                })
         },
     )
 }
