@@ -34,6 +34,7 @@ use crate::{
         StatusFolderMotion, TaskState,
         file_rescan::{RescanDecision, RescanThrottle},
         group_tree::{GroupMeta, member_dir},
+        new_task_button::{NEW_TASK_BUTTON_PREF, NewTaskButtonStyle},
         refresh_gate::{RefreshGate, RefreshPlan, RefreshTrigger},
         view_prefs::{DetailPlacement, VIEW_PREFS_KEY, ViewPrefs},
     },
@@ -51,7 +52,8 @@ use fluxdown_ui_i18n::Translator;
 use gpui::{
     AnyView, AnyWindowHandle, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity,
     ExternalPaths, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement,
-    PathPromptOptions, Render, SharedString, Styled, Window, div, prelude::FluentBuilder as _, px,
+    PathPromptOptions, Render, SharedString, Styled, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Disableable as _, Icon, ResizableState, WindowExt as _,
@@ -227,6 +229,10 @@ pub struct DownloadView {
     prefs_loaded: bool,
     /// 最近一次应用 / 写出的视图偏好持久化值：未变化的偏好回流不重载。
     applied_view_prefs: Option<serde_json::Value>,
+    /// 顶栏「下载任务」主按钮插槽（宿主取走后由它持有）。
+    pub(crate) title_bar: Option<WeakEntity<DownloadTitleBar>>,
+    /// 最近一次应用 / 写出的主按钮外观偏好持久化值：未变化的偏好回流不覆盖本地切换。
+    pub(crate) applied_new_task_button: Option<serde_json::Value>,
     /// 停靠详情面板（`None` = 尚未选中过任何任务）。
     pub(crate) detail: Option<Entity<TaskDetailView>>,
     /// 停靠面板正在显示概览的任务组（经组行聚焦；优先于 `detail`）。
@@ -373,6 +379,8 @@ impl DownloadView {
             prefs_generation: Rc::new(Cell::new(0)),
             prefs_loaded: false,
             applied_view_prefs: None,
+            title_bar: None,
+            applied_new_task_button: None,
             detail: None,
             detail_group: None,
             detail_resizable_state: cx.new(|_| ResizableState::default()),
@@ -517,11 +525,16 @@ impl DownloadView {
         ))
     }
 
-    /// 创建挂到 shell 统一顶栏的下载页插槽（「新建」按钮）。
-    pub fn new_title_bar(&self, cx: &mut Context<Self>) -> Entity<DownloadTitleBar> {
+    /// 创建挂到 shell 统一顶栏的下载页插槽（「下载任务」主按钮）。
+    pub fn new_title_bar(&mut self, cx: &mut Context<Self>) -> Entity<DownloadTitleBar> {
         let view = cx.weak_entity();
         let translator = self.translator.clone();
-        cx.new(|_| DownloadTitleBar::new(view, translator))
+        let stored = self.controller.preference(NEW_TASK_BUTTON_PREF);
+        self.applied_new_task_button = stored.cloned();
+        let style = NewTaskButtonStyle::from_value(stored);
+        let title_bar = cx.new(|_| DownloadTitleBar::new(view, translator, style));
+        self.title_bar = Some(title_bar.downgrade());
+        title_bar
     }
 
     /// 创建顶栏搜索框（chrome 布局条目，由宿主注册为 shell 控件）。
@@ -1074,6 +1087,7 @@ impl DownloadView {
     /// 窗口内尚未写回的本地改动，表现为切换密度 / 分组 / 详情面板「无效」。
     fn load_view_prefs(&mut self, cx: &mut Context<Self>) {
         self.sync_hide_source(cx);
+        self.sync_new_task_button(cx);
         let prefs = match self.controller.preference(VIEW_PREFS_KEY) {
             Some(value) if self.applied_view_prefs.as_ref() == Some(value) => return,
             Some(value) => {

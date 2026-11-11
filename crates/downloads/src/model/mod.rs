@@ -11,6 +11,7 @@ pub(crate) mod file_rescan;
 pub(crate) mod group_tree;
 pub(crate) mod manifest;
 pub(crate) mod new_download;
+pub(crate) mod new_task_button;
 pub(crate) mod preview;
 pub(crate) mod progress_window;
 pub(crate) mod refresh_gate;

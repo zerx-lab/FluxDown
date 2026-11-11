@@ -1,4 +1,4 @@
-//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「下载任务」主按钮），
+//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「下载任务」主按钮，外观可在布局编辑模式下切换），
 //! 以及作为 chrome 布局条目摆放的搜索框 [`DownloadSearchBox`] 与「视图」选项菜单
 //! [`DownloadViewMenu`]（可在顶栏内移动、可隐藏，见 [`DownloadPageWidget`]）。
 //!
@@ -21,6 +21,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     popover::Popover,
     scroll::ScrollableElement as _,
     table::TableState,
@@ -29,8 +30,12 @@ use gpui_component::{
 
 use crate::{
     components::task_table::{DownloadTableDelegate, DraggedColumnMenuItem},
-    model::view_prefs::{
-        DetailPlacement, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
+    controller::DownloadsCommand,
+    model::{
+        new_task_button::{NEW_TASK_BUTTON_PREF, NewTaskButtonShape, NewTaskButtonStyle},
+        view_prefs::{
+            DetailPlacement, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
+        },
     },
     pages::downloads::DownloadView,
     strings::SEARCH_SHORTCUT_HINT,
@@ -160,42 +165,213 @@ impl DownloadPageWidget {
     }
 }
 
-/// 下载页的顶栏插槽：「下载任务」主按钮。
+/// 下载页的顶栏插槽：「下载任务」主按钮，外观见 [`NewTaskButtonStyle`]。
+/// 布局编辑模式下点击按钮弹出外观菜单，而不是打开新建下载。
 pub struct DownloadTitleBar {
     view: WeakEntity<DownloadView>,
     translator: Entity<Translator>,
+    style: NewTaskButtonStyle,
+    editing: bool,
 }
 
 impl DownloadTitleBar {
-    pub(crate) fn new(view: WeakEntity<DownloadView>, translator: Entity<Translator>) -> Self {
-        Self { view, translator }
+    pub(crate) fn new(
+        view: WeakEntity<DownloadView>,
+        translator: Entity<Translator>,
+        style: NewTaskButtonStyle,
+    ) -> Self {
+        Self {
+            view,
+            translator,
+            style,
+            editing: false,
+        }
     }
+
+    fn set_style(&mut self, style: NewTaskButtonStyle, cx: &mut Context<Self>) {
+        if self.style != style {
+            self.style = style;
+            cx.notify();
+        }
+    }
+
+    /// 跟随 shell 的布局编辑模式（宿主转发 `ChromeEditingChanged`）。
+    pub fn set_editing(&mut self, editing: bool, cx: &mut Context<Self>) {
+        if self.editing != editing {
+            self.editing = editing;
+            cx.notify();
+        }
+    }
+
+    fn text(&self, key: &str, cx: &App) -> SharedString {
+        SharedString::from(self.translator.read(cx).text(key).to_owned())
+    }
+
+    /// 编辑模式的外观菜单：形态单选 + 主色填充开关。
+    fn style_menu(
+        &self,
+        cx: &App,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let view = self.view.clone();
+        let style = self.style;
+        let title = self.text("newTaskButtonStyle", cx);
+        let shapes = [
+            (NewTaskButtonShape::Icon, self.text("newTaskButtonIcon", cx)),
+            (
+                NewTaskButtonShape::Label,
+                self.text("newTaskButtonText", cx),
+            ),
+        ];
+        let accent_label = self.text("newTaskButtonAccent", cx);
+        move |menu, _, _| {
+            let menu = shapes
+                .iter()
+                .fold(menu.label(title.clone()), |menu, (shape, label)| {
+                    let view = view.clone();
+                    let next = NewTaskButtonStyle {
+                        shape: *shape,
+                        ..style
+                    };
+                    menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(style.shape == *shape)
+                            .on_click(move |_, _, cx| apply_new_task_button_style(&view, next, cx)),
+                    )
+                });
+            let view = view.clone();
+            let next = NewTaskButtonStyle {
+                accent: !style.accent,
+                ..style
+            };
+            menu.separator().item(
+                PopupMenuItem::new(accent_label.clone())
+                    .checked(style.accent)
+                    .on_click(move |_, _, cx| apply_new_task_button_style(&view, next, cx)),
+            )
+        }
+    }
+}
+
+fn apply_new_task_button_style(
+    view: &WeakEntity<DownloadView>,
+    style: NewTaskButtonStyle,
+    cx: &mut App,
+) {
+    let Ok(()) = view.update(cx, |view, cx| view.set_new_task_button_style(style, cx)) else {
+        // 下载页已释放，无需保存外观。
+        return;
+    };
 }
 
 impl Render for DownloadTitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let new_label =
-            SharedString::from(self.translator.read(cx).text("downloadTask").to_owned());
-        let view = self.view.clone();
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        // 顶栏主按钮比统一控件矮一档：主色填充时整块底色可见，与 40px 顶栏留出上下呼吸。
+        let height = theme.density().control - tokens.spacing.xs;
+        let radius = tokens.radius.md;
+        let label = self.text("downloadTask", cx);
+        let icon = Icon::new(FluxIcon::Plus).size(theme.extended().icon.md);
+        let button = Button::new("download-create")
+            .icon(icon)
+            .map(|button| {
+                if self.style.accent {
+                    button.primary()
+                } else {
+                    button.ghost()
+                }
+            })
+            .rounded(radius);
+        let button = match self.style.shape {
+            NewTaskButtonShape::Icon => Styled::size(button.with_size(Size::Medium), height),
+            NewTaskButtonShape::Label => button.label(label.clone()).control(cx).h(height),
+        };
+        let tooltip = match (self.editing, self.style.shape) {
+            (true, _) => Some(self.text("newTaskButtonStyleHint", cx)),
+            (false, NewTaskButtonShape::Icon) => Some(label),
+            (false, NewTaskButtonShape::Label) => None,
+        };
+        let button = match tooltip {
+            Some(tooltip) => button.tooltip(tooltip),
+            None => button,
+        };
+        let content = if self.editing {
+            div()
+                .flex()
+                .p(tokens.spacing.xxs)
+                .rounded(tokens.radius.sm)
+                .border_1()
+                .border_dashed()
+                .border_color(tokens.colors.primary)
+                .child(button.dropdown_menu_with_anchor(Anchor::TopLeft, self.style_menu(cx)))
+                .into_any_element()
+        } else {
+            let view = self.view.clone();
+            button
+                .on_click(move |_, window, cx| {
+                    let Ok(()) = view.update(cx, |view, cx| view.open_new_download(window, cx))
+                    else {
+                        // 视图已释放，结束这次回调而不再更新状态。
+                        return;
+                    };
+                })
+                .into_any_element()
+        };
         h_flex()
             .h_full()
             .flex_none()
             .items_center()
-            .gap(active_theme(cx).tokens().spacing.xs)
-            .child(interactive(
-                Button::new("download-create")
-                    .label(new_label)
-                    .icon(Icon::new(FluxIcon::Plus).size(active_theme(cx).extended().icon.md))
-                    .primary()
-                    .control(cx)
-                    .rounded(active_theme(cx).tokens().radius.md)
-                    .on_click(move |_, window, cx| {
-                        let Ok(()) = view.update(cx, |view, cx| view.open_new_download(window, cx))
-                        else {
-                            return;
-                        };
-                    }),
-            ))
+            .child(interactive(content))
+    }
+}
+
+impl DownloadView {
+    /// 偏好 → 顶栏主按钮外观；只在持久化值变化时下发，自己写出的值回流不再覆盖。
+    pub(crate) fn sync_new_task_button(&mut self, cx: &mut Context<Self>) {
+        let value = self.controller.preference(NEW_TASK_BUTTON_PREF);
+        if self.applied_new_task_button.as_ref() == value {
+            return;
+        }
+        self.applied_new_task_button = value.cloned();
+        let style = NewTaskButtonStyle::from_value(value);
+        self.push_new_task_button_style(style, cx);
+    }
+
+    /// 编辑模式里选中新外观：立即生效并写入设备本地偏好；写入失败时回到已保存的外观。
+    fn set_new_task_button_style(&mut self, style: NewTaskButtonStyle, cx: &mut Context<Self>) {
+        let value = style.to_value();
+        self.applied_new_task_button = Some(value.clone());
+        self.push_new_task_button_style(style, cx);
+        let future = self
+            .controller
+            .execute(DownloadsCommand::SetLocalPreference {
+                key: NEW_TASK_BUTTON_PREF,
+                value,
+            });
+        cx.spawn(async move |this, cx| {
+            if future.await.is_ok() {
+                return;
+            }
+            let Ok(()) = this.update(cx, |this, cx| {
+                let stored = this.controller.preference(NEW_TASK_BUTTON_PREF);
+                this.applied_new_task_button = stored.cloned();
+                let stored = NewTaskButtonStyle::from_value(stored);
+                this.push_new_task_button_style(stored, cx);
+                this.last_error = Some(this.strings.action_failed.clone());
+                cx.notify();
+            }) else {
+                // 下载页已释放，无需回滚外观。
+                return;
+            };
+        })
+        .detach();
+    }
+
+    fn push_new_task_button_style(&self, style: NewTaskButtonStyle, cx: &mut Context<Self>) {
+        let Some(title_bar) = self.title_bar.as_ref().and_then(WeakEntity::upgrade) else {
+            return;
+        };
+        title_bar.update(cx, |title_bar, cx| title_bar.set_style(style, cx));
     }
 }
 

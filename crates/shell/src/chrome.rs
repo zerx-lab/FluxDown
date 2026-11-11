@@ -11,10 +11,10 @@ use fluxdown_ui_components::{
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, Entity, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, div, point, prelude::FluentBuilder as _, px,
-    size,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, div, point,
+    prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
     Icon, IconName, h_flex,
@@ -103,6 +103,13 @@ pub struct ShellChrome {
     pub on_layout_change: LayoutChangeHandler,
 }
 
+/// 布局编辑模式切换（`true` = 进入）：活跃路由的顶栏插槽据此显示自身的编辑态
+/// （插槽不进 [`ChromeLayout`]，其外观选项由页面自己保存）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChromeEditingChanged(pub bool);
+
+impl EventEmitter<ChromeEditingChanged> for ShellView {}
+
 /// 拖拽载荷：条目 id、预览文案与可进入的承载条（落点据此决定是否高亮）。
 #[derive(Clone)]
 struct ChromeDrag {
@@ -174,6 +181,7 @@ impl ShellView {
     pub fn set_editing(&mut self, editing: bool, cx: &mut Context<Self>) {
         if self.editing != editing {
             self.editing = editing;
+            cx.emit(ChromeEditingChanged(editing));
             cx.notify();
         }
     }

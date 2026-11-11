@@ -18,7 +18,8 @@ use gpui_component::TitleBar;
 
 pub use assets::*;
 pub use chrome::{
-    LayoutChangeHandler, ShellChrome, ShellWidget, ShellWidgetRender, ShellWidgetReveal,
+    ChromeEditingChanged, LayoutChangeHandler, ShellChrome, ShellWidget, ShellWidgetRender,
+    ShellWidgetReveal,
 };
 pub use chrome_layout::*;
 pub use view::*;

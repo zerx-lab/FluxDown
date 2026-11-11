@@ -7,7 +7,9 @@ use fluxdown_ui_components::FluxIcon;
 use fluxdown_ui_downloads::{DownloadHostActions, DownloadView};
 use fluxdown_ui_rss::RssView;
 use fluxdown_ui_settings::{PushHost, PushView, UpdateButton};
-use fluxdown_ui_shell::{ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options};
+use fluxdown_ui_shell::{
+    ChromeEditingChanged, ShellAction, ShellChrome, ShellRoute, ShellView, main_window_options,
+};
 use gpui::{App, AppContext as _, Window, WindowHandle, px, size};
 use gpui_component::{Icon, Root};
 
@@ -149,6 +151,18 @@ fn open_with(cx: &mut App, focus: bool) -> Option<WindowHandle<Root>> {
             }),
         };
         let shell = cx.new(|cx| ShellView::new(translator.clone(), routes, actions, chrome, cx));
+        // 页面插槽不进 chrome 布局：编辑模式下由插槽自己提供外观切换。
+        let title_bar_for_editing = downloads_title_bar.downgrade();
+        cx.subscribe(&shell, move |_, event: &ChromeEditingChanged, cx| {
+            let editing = event.0;
+            let Ok(()) = title_bar_for_editing.update(cx, |title_bar, cx| {
+                title_bar.set_editing(editing, cx);
+            }) else {
+                // 下载页插槽已随窗口释放，无需同步编辑态。
+                return;
+            };
+        })
+        .detach();
         let update_button = cx.new(|cx| {
             UpdateButton::new(
                 translator.clone(),
