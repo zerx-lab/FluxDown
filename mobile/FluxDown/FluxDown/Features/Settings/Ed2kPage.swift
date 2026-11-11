@@ -3,8 +3,9 @@ import FluxUI
 import SwiftUI
 #if FULL_FLAVOR
 
-/// S7 · eD2K 设置（常规 · 服务器）。行与 GPUI `sections/ed2k.rs` 同序同键同范围。
+/// S7 · eD2K 设置（常规 · 服务器 · Kad 节点）。行与 GPUI `sections/ed2k.rs` 同序同键同范围。
 /// `ed2k_server_list` 存逗号分隔的 `host:port`，编辑区每行一条，写回时按条目去空白并忽略大小写去重。
+/// `ed2k_nodes_dat_url` 与订阅地址一样按行存储；它是设备本地 daemon 键（不进云同步目录）。
 struct Ed2kPage: View {
     @Environment(HostStore.self) private var store
     @Environment(ConfigEditor.self) private var editor
@@ -25,6 +26,7 @@ struct Ed2kPage: View {
                 switch tab {
                 case .general: generalSection(form, readOnly: readOnly)
                 case .servers: serversSections(form, readOnly: readOnly)
+                case .kad: kadSection(form, readOnly: readOnly)
                 }
             }
         }
@@ -47,6 +49,7 @@ struct Ed2kPage: View {
                     item: Ed2kSettingsRow.listenPort.item, range: 0 ... 65_535, fallback: 0, specials: [0: L("auto")]
                 )
             }
+            if Ed2kSettingsRow.idCheck.isVisible(in: form) { Ed2kIdCheckRow() }
         }
         .disabled(readOnly)
     }
@@ -77,6 +80,71 @@ struct Ed2kPage: View {
                 if Ed2kSettingsRow.serverSubStatus.isVisible(in: form) { SubscriptionStatusRow(kind: .ed2kServers) }
             }
             .disabled(readOnly)
+        }
+    }
+
+    // MARK: Kad 节点
+
+    @ViewBuilder
+    private func kadSection(_ form: SettingsConfigForm, readOnly: Bool) -> some View {
+        if !Ed2kSettingsRow.visible(in: .kad, form).isEmpty {
+            Section {
+                if Ed2kSettingsRow.nodesSubUrls.isVisible(in: form) {
+                    ConfigLinesRow(
+                        item: Ed2kSettingsRow.nodesSubUrls.item, placeholder: L("ed2kNodesSubPlaceholder"),
+                        isEnabled: form.bool(Ed2kSettingsRow.kad.configKey)
+                    )
+                }
+                if Ed2kSettingsRow.nodesSubStatus.isVisible(in: form) { SubscriptionStatusRow(kind: .ed2kNodes) }
+            }
+            .disabled(readOnly)
+        }
+    }
+}
+
+/// HighID / LowID 检测行：调 `daemon.ed2k.idCheck`（慢方法），结果只存本行状态（离开页面即丢弃）。
+private struct Ed2kIdCheckRow: View {
+    @Environment(AppContainer.self) private var container
+
+    @State private var running = false
+    @State private var result: Ed2kIdCheckDisplay?
+
+    var body: some View {
+        let item = Ed2kSettingsRow.idCheck.item
+        VStack(alignment: .leading, spacing: 4) {
+            SettingsText(title: item.title, detail: item.detail)
+            switch result {
+            case let .ok(summary, lowHint):
+                SettingsStatusLine(text: summary, tone: lowHint == nil ? .success : .warning)
+                if let lowHint { Text(lowHint).font(.footnote).foregroundStyle(.secondary) }
+            case let .failed(text):
+                SettingsStatusLine(text: text, tone: .failure)
+            case nil:
+                EmptyView()
+            }
+            SettingsActionRow(
+                title: L("ed2kIdCheckRun"), runningTitle: L("ed2kIdCheckRunning"),
+                systemImage: "network", isRunning: running, action: run
+            )
+        }
+        .settingsRow(item.id)
+        .fluxAnimation(.smooth, value: result)
+    }
+
+    private func run() {
+        guard !running else { return }
+        running = true
+        Task {
+            do throws(HostError) {
+                let network: Ed2kNetworkDto = try await container.session.call(HostMethod.daemonEd2kIdCheck)
+                let display = Ed2kIdCheckDisplay.make(network)
+                result = display
+                if case .ok = display { FluxHaptic.success.play() } else { FluxHaptic.error.play() }
+            } catch {
+                result = .failure(ErrorText.describe(error))
+                FluxHaptic.error.play()
+            }
+            running = false
         }
     }
 }

@@ -162,44 +162,78 @@ fn textarea_field(
 pub(crate) enum SubscriptionKind {
     BtTrackers,
     Ed2kServers,
+    /// Kad 引导节点（nodes.dat）订阅。
+    Ed2kNodes,
+}
+
+/// 订阅条数从哪里读。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CountSource {
+    /// 数订阅缓存里的条目（按宿主写缓存时的拼接符）。
+    Cache {
+        key: &'static str,
+        format: ListFormat,
+    },
+    /// 宿主直接给出的整数键（缓存是二进制，无法按分隔符计数）。
+    Integer(&'static str),
+}
+
+impl CountSource {
+    fn count(self, store: &SettingsStore) -> u64 {
+        match self {
+            Self::Cache { key, format } => {
+                u64::try_from(format.count(&store.daemon_str(key))).unwrap_or(u64::MAX)
+            }
+            Self::Integer(key) => non_negative(store.daemon_i64(key)),
+        }
+    }
+}
+
+/// 整数条数：负数 / 哨兵按 0。
+fn non_negative(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
 }
 
 impl SubscriptionKind {
-    fn cache_key(self) -> &'static str {
+    fn count_source(self) -> CountSource {
         match self {
-            Self::BtTrackers => "bt_tracker_sub_cache",
-            Self::Ed2kServers => "ed2k_server_sub_cache",
-        }
-    }
-    /// 订阅缓存的存储格式（与宿主写缓存时的拼接符一致）。
-    fn cache_format(self) -> ListFormat {
-        match self {
-            Self::BtTrackers => ListFormat::Lines,
-            Self::Ed2kServers => ListFormat::Comma,
+            Self::BtTrackers => CountSource::Cache {
+                key: "bt_tracker_sub_cache",
+                format: ListFormat::Lines,
+            },
+            Self::Ed2kServers => CountSource::Cache {
+                key: "ed2k_server_sub_cache",
+                format: ListFormat::Comma,
+            },
+            Self::Ed2kNodes => CountSource::Integer("ed2k_nodes_dat_count"),
         }
     }
     fn updated_at_key(self) -> &'static str {
         match self {
             Self::BtTrackers => "bt_tracker_sub_updated_at",
             Self::Ed2kServers => "ed2k_server_sub_updated_at",
+            Self::Ed2kNodes => "ed2k_nodes_dat_updated_at",
         }
     }
     fn method(self) -> &'static str {
         match self {
             Self::BtTrackers => method::DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH,
             Self::Ed2kServers => method::DAEMON_ED2K_SERVER_SUBSCRIPTION_REFRESH,
+            Self::Ed2kNodes => method::DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH,
         }
     }
     fn action(self) -> &'static str {
         match self {
             Self::BtTrackers => "btTrackerRefresh",
             Self::Ed2kServers => "ed2kServerRefresh",
+            Self::Ed2kNodes => "ed2kNodesRefresh",
         }
     }
     fn prefix(self) -> &'static str {
         match self {
             Self::BtTrackers => "btTrackerSub",
             Self::Ed2kServers => "ed2kServerSub",
+            Self::Ed2kNodes => "ed2kNodesSub",
         }
     }
 }
@@ -220,9 +254,7 @@ pub(crate) fn status_item(
     SettingsRow::custom(move |_, _, _, cx: &mut App| {
         let tokens = active_theme(cx).tokens();
         let snapshot = store.read(cx);
-        let count = kind
-            .cache_format()
-            .count(&snapshot.daemon_str(kind.cache_key()));
+        let count = kind.count_source().count(snapshot);
         let updated_at = snapshot.daemon_i64(kind.updated_at_key());
         let busy = snapshot.is_busy(kind.action());
         let last_failed = snapshot
@@ -310,7 +342,38 @@ pub(crate) fn format_unix(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ListFormat;
+    use super::{CountSource, ListFormat, SubscriptionKind, non_negative};
+
+    #[test]
+    fn ed2k_nodes_count_reads_integer_key_others_count_cache() {
+        assert_eq!(
+            SubscriptionKind::Ed2kNodes.count_source(),
+            CountSource::Integer("ed2k_nodes_dat_count")
+        );
+        assert!(matches!(
+            SubscriptionKind::Ed2kServers.count_source(),
+            CountSource::Cache {
+                format: ListFormat::Comma,
+                ..
+            }
+        ));
+        assert!(matches!(
+            SubscriptionKind::BtTrackers.count_source(),
+            CountSource::Cache {
+                format: ListFormat::Lines,
+                ..
+            }
+        ));
+        assert_eq!(SubscriptionKind::Ed2kNodes.prefix(), "ed2kNodesSub");
+        assert_eq!(SubscriptionKind::Ed2kNodes.action(), "ed2kNodesRefresh");
+    }
+
+    #[test]
+    fn ed2k_nodes_integer_count_clamps_negative_to_zero() {
+        assert_eq!(non_negative(-1), 0);
+        assert_eq!(non_negative(0), 0);
+        assert_eq!(non_negative(1_234), 1_234);
+    }
 
     #[test]
     fn comma_list_is_edited_one_per_line() {

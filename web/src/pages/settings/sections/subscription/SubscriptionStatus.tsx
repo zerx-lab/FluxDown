@@ -8,27 +8,42 @@ import { SettingsCustomRow, useDaemonNumber, useDaemonValue } from '../../kit'
 import { formatUnix, listEntries } from './listFormat'
 import type { ListFormat } from './listFormat'
 
-export type SubscriptionKind = 'btTrackers' | 'ed2kServers'
+export type SubscriptionKind = 'btTrackers' | 'ed2kServers' | 'ed2kNodes'
 
-const SPEC = {
-  btTrackers: { cacheKey: 'bt_tracker_sub_cache', updatedKey: 'bt_tracker_sub_updated_at', format: 'lines', prefix: 'btTrackerSub' },
-  ed2kServers: { cacheKey: 'ed2k_server_sub_cache', updatedKey: 'ed2k_server_sub_updated_at', format: 'comma', prefix: 'ed2kServerSub' },
-} as const satisfies Record<SubscriptionKind, { cacheKey: string; updatedKey: string; format: ListFormat; prefix: string }>
+/** 条数来源：缓存列表按分隔符计数，或 daemon 直接给出的整数键（nodes.dat 是二进制缓存）。 */
+type CountSpec = { cacheKey: string; format: ListFormat } | { countKey: string }
+
+const SPEC: Record<SubscriptionKind, { count: CountSpec; updatedKey: string; prefix: string }> = {
+  btTrackers: { count: { cacheKey: 'bt_tracker_sub_cache', format: 'lines' }, updatedKey: 'bt_tracker_sub_updated_at', prefix: 'btTrackerSub' },
+  ed2kServers: { count: { cacheKey: 'ed2k_server_sub_cache', format: 'comma' }, updatedKey: 'ed2k_server_sub_updated_at', prefix: 'ed2kServerSub' },
+  ed2kNodes: { count: { countKey: 'ed2k_nodes_dat_count' }, updatedKey: 'ed2k_nodes_dat_updated_at', prefix: 'ed2kNodesSub' },
+}
 
 async function refresh(kind: SubscriptionKind): Promise<{ success: boolean; updatedAt: number }> {
-  const result = kind === 'btTrackers' ? await rpc.daemon.bt.trackerSubscription.refresh() : await rpc.daemon.ed2k.serverSubscription.refresh()
+  const result =
+    kind === 'btTrackers'
+      ? await rpc.daemon.bt.trackerSubscription.refresh()
+      : kind === 'ed2kServers'
+        ? await rpc.daemon.ed2k.serverSubscription.refresh()
+        : await rpc.daemon.ed2k.nodesSubscription.refresh()
   return { success: result.success, updatedAt: result.updatedAt }
+}
+
+function useSubscriptionCount(spec: CountSpec): number {
+  const raw = useDaemonValue('cacheKey' in spec ? spec.cacheKey : spec.countKey)
+  if ('cacheKey' in spec) return listEntries(spec.format, raw).length
+  const n = Number.parseInt(raw.trim(), 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
 }
 
 export function SubscriptionStatusRow({ kind }: { kind: SubscriptionKind }) {
   const t = useT()
   const spec = SPEC[kind]
-  const cache = useDaemonValue(spec.cacheKey)
+  const count = useSubscriptionCount(spec.count)
   const storedUpdatedAt = useDaemonNumber(spec.updatedKey)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   const [freshAt, setFreshAt] = useState(0)
-  const count = listEntries(spec.format, cache).length
   const updatedAt = Math.max(storedUpdatedAt, freshAt)
 
   const run = async () => {

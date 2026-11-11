@@ -93,6 +93,8 @@ struct SettingsBtEd2kTests {
         #expect(BtSettingsRow.tab(forRowID: "bt.seedThenAction") == .seeding)
         #expect(BtSettingsRow.tab(forRowID: "download.maxConcurrent") == nil)
         #expect(Ed2kSettingsRow.tab(forRowID: "ed2k.serverSubStatus") == .servers)
+        #expect(Ed2kSettingsRow.tab(forRowID: "ed2k.nodesSubUrls") == .kad)
+        #expect(Ed2kSettingsRow.tab(forRowID: "ed2k.idCheck") == .general)
     }
 
     @Test func portRangeRequiresEndAtLeastStart() {
@@ -108,6 +110,54 @@ struct SettingsBtEd2kTests {
         #expect(SubscriptionStatusModel.make(kind: .btTrackers, form: bt, fresh: nil) == .init(count: 2, updatedAt: 1_759_622_400))
         let ed2k = form(["ed2k_server_sub_cache": "1.1.1.1:1,2.2.2.2:2,3.3.3.3:3"])
         #expect(SubscriptionStatusModel.make(kind: .ed2kServers, form: ed2k, fresh: nil) == .init(count: 3, updatedAt: 0))
+        let nodes = form(["ed2k_nodes_dat_count": "321", "ed2k_nodes_dat_updated_at": "1759622400"])
+        #expect(SubscriptionStatusModel.make(kind: .ed2kNodes, form: nodes, fresh: nil) == .init(count: 321, updatedAt: 1_759_622_400))
+        #expect(SubscriptionStatusModel.make(kind: .ed2kNodes, form: form(["ed2k_nodes_dat_count": "x"]), fresh: nil) == .init(count: 0, updatedAt: 0))
+    }
+
+    @Test func kadTabRowsFollowTheCatalog() {
+        let f = form(["ed2k_nodes_dat_url": "https://a/nodes.dat\nhttps://b/nodes.dat", "ed2k_nodes_dat_count": "0"])
+        #expect(Ed2kSettingsRow.visible(in: .kad, f) == [.nodesSubUrls, .nodesSubStatus])
+        #expect(!Ed2kSettingsRow.nodesSubUrls.item.isSynced)
+        #expect(Ed2kSettingsRow.kad.item.isSynced)
+    }
+
+    // MARK: ID 检测
+
+    @Test func idCheckHighShowsSummaryWithoutHint() {
+        let dto = Ed2kNetworkDto(id: .high, server: "1.2.3.4:4661", listenPort: 4662, upnp: .mapped)
+        let expected = L("ed2kIdCheckResult", [
+            "id": L("ed2kIdHigh"), "server": "1.2.3.4:4661", "port": "4662", "upnp": L("ed2kUpnpMapped"),
+        ])
+        #expect(Ed2kIdCheckDisplay.make(dto) == .ok(summary: expected, lowHint: nil))
+    }
+
+    @Test func idCheckLowAddsTheLowIdHint() {
+        let dto = Ed2kNetworkDto(id: .low, server: "s:1", listenPort: 1, upnp: .failed)
+        guard case let .ok(summary, hint) = Ed2kIdCheckDisplay.make(dto) else {
+            Issue.record("expected ok")
+            return
+        }
+        #expect(summary.contains(L("ed2kIdLow")) && summary.contains(L("ed2kUpnpFailed")))
+        #expect(hint == L("ed2kIdLowHint"))
+    }
+
+    @Test func idCheckNoneOrFailureShowsFailedWithDetail() {
+        #expect(Ed2kIdCheckDisplay.make(Ed2kNetworkDto(id: .none, error: " all servers timed out ")) ==
+            .failed("\(L("ed2kIdCheckFailed")): all servers timed out"))
+        #expect(Ed2kIdCheckDisplay.make(Ed2kNetworkDto()) == .failed(L("ed2kIdCheckFailed")))
+        #expect(Ed2kIdCheckDisplay.failure("") == .failed(L("ed2kIdCheckFailed")))
+    }
+
+    @Test func idCheckDecodesWithOmittedFields() throws {
+        let dto = try JSONDecoder().decode(Ed2kNetworkDto.self, from: Data(#"{"id":"high","upnp":"weird","upnpEnabled":true}"#.utf8))
+        #expect(dto.id == .high && dto.upnp == .disabled && dto.listenPort == 0 && dto.server.isEmpty && dto.upnpEnabled)
+        let expected = L("ed2kIdCheckResult", [
+            "id": L("ed2kIdHigh"), "server": "—", "port": "—", "upnp": L("ed2kUpnpDisabled"),
+        ])
+        #expect(Ed2kIdCheckDisplay.make(dto) == .ok(summary: expected, lowHint: nil))
+        let empty = try JSONDecoder().decode(Ed2kNodesSubRefreshResponse.self, from: Data("{}".utf8))
+        #expect(empty.outcome == SubscriptionRefreshOutcome(success: false, count: 0, okSources: 0, totalSources: 0, updatedAt: 0, error: ""))
     }
 
     @Test func freshSuccessWinsOnlyWhenNewerThanTheSnapshot() {

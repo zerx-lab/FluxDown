@@ -47,18 +47,18 @@ use crate::{
 };
 
 /// 轮询间隔。
-const BT_POLL_INTERVAL: Duration = Duration::from_secs(2);
+pub(super) const BT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// 距最近一次渲染超过该时长即视为页签 / 面板已不可见，轮询循环退出。
-const BT_VISIBLE_GRACE: Duration = Duration::from_secs(5);
+pub(super) const BT_VISIBLE_GRACE: Duration = Duration::from_secs(5);
 /// 相对时间随 1 s 定时器重绘所需的「仍在显示」判定窗口。
-const BT_CLOCK_VISIBLE: Duration = Duration::from_millis(2_500);
+pub(super) const BT_CLOCK_VISIBLE: Duration = Duration::from_millis(2_500);
 /// 连接页最多渲染的 peer 数（服务端已按活跃度排序）。
-const BT_PEER_RENDER_CAP: usize = 200;
+pub(super) const BT_PEER_RENDER_CAP: usize = 200;
 /// 宽 / 中布局的分界宽度（界面缩放前的 px）。
 const WIDE_MIN_WIDTH: f32 = 800.;
 const MEDIUM_MIN_WIDTH: f32 = 520.;
 /// 用 `—` 表示未知 / 无。
-const DASH: &str = "—";
+pub(super) const DASH: &str = "—";
 /// tracker 虚拟列表视口外预渲染高度（px）。
 const TRACKER_LIST_OVERDRAW: f32 = 240.;
 /// 未量过的 tracker 行高估值（px），用于首帧总高与滚动条。
@@ -401,7 +401,7 @@ fn guard_columns_fit(width: f32) -> bool {
     width >= GUARD_COLUMNS_MIN_WIDTH
 }
 
-fn span_text(translator: &Translator, span: Span) -> String {
+pub(super) fn span_text(translator: &Translator, span: Span) -> String {
     let value = span.value.to_string();
     match span.unit {
         SpanUnit::Seconds => translator.text_with("etaSeconds", &[("n", &value)]),
@@ -411,7 +411,7 @@ fn span_text(translator: &Translator, span: Span) -> String {
     }
 }
 
-fn relative_text(translator: &Translator, time: RelativeTime) -> String {
+pub(super) fn relative_text(translator: &Translator, time: RelativeTime) -> String {
     match time {
         RelativeTime::Unknown => DASH.to_owned(),
         RelativeTime::Never => translator.text("btTrackerNever").to_owned(),
@@ -512,35 +512,35 @@ impl BtLive {
 
 /// 渲染用的主题取值（一次取出，避免在各行构造里反复读主题）。
 #[derive(Clone)]
-struct Look {
-    scale: f32,
-    xxs: Pixels,
-    xs: Pixels,
-    sm: Pixels,
-    radius: Pixels,
-    thin: Pixels,
-    icon_sm: Pixels,
-    xs_size: Pixels,
-    xs_line: Pixels,
-    sm_size: Pixels,
-    sm_line: Pixels,
-    caption_size: Pixels,
-    caption_line: Pixels,
-    mono: SharedString,
-    fg: Hsla,
-    muted: Hsla,
-    tertiary: Hsla,
-    destructive: Hsla,
-    success: Hsla,
-    info: Hsla,
-    warning: Hsla,
-    accent: Hsla,
-    hairline: Hsla,
-    hover: Hsla,
+pub(super) struct Look {
+    pub(super) scale: f32,
+    pub(super) xxs: Pixels,
+    pub(super) xs: Pixels,
+    pub(super) sm: Pixels,
+    pub(super) radius: Pixels,
+    pub(super) thin: Pixels,
+    pub(super) icon_sm: Pixels,
+    pub(super) xs_size: Pixels,
+    pub(super) xs_line: Pixels,
+    pub(super) sm_size: Pixels,
+    pub(super) sm_line: Pixels,
+    pub(super) caption_size: Pixels,
+    pub(super) caption_line: Pixels,
+    pub(super) mono: SharedString,
+    pub(super) fg: Hsla,
+    pub(super) muted: Hsla,
+    pub(super) tertiary: Hsla,
+    pub(super) destructive: Hsla,
+    pub(super) success: Hsla,
+    pub(super) info: Hsla,
+    pub(super) warning: Hsla,
+    pub(super) accent: Hsla,
+    pub(super) hairline: Hsla,
+    pub(super) hover: Hsla,
 }
 
 impl Look {
-    fn new(cx: &App) -> Self {
+    pub(super) fn new(cx: &App) -> Self {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
@@ -573,7 +573,7 @@ impl Look {
     }
 
     /// 随界面缩放 / 字号伸缩的固定尺寸。
-    fn ext(&self, base: f32) -> Pixels {
+    pub(super) fn ext(&self, base: f32) -> Pixels {
         px(base * self.scale)
     }
 
@@ -674,7 +674,7 @@ struct TrackerCopyText {
     error_copied: SharedString,
 }
 
-fn dot(look: &Look, color: Hsla) -> Div {
+pub(super) fn dot(look: &Look, color: Hsla) -> Div {
     div()
         .flex_none()
         .size(look.ext(8.))
@@ -682,7 +682,7 @@ fn dot(look: &Look, color: Hsla) -> Div {
         .bg(color)
 }
 
-fn chip(look: &Look, text: SharedString) -> Div {
+pub(super) fn chip(look: &Look, text: SharedString) -> Div {
     div()
         .flex_none()
         .px(look.xs)
@@ -696,7 +696,7 @@ fn chip(look: &Look, text: SharedString) -> Div {
         .child(text)
 }
 
-fn fixed(look: &Look, base: f32) -> Div {
+pub(super) fn fixed(look: &Look, base: f32) -> Div {
     div()
         .flex_none()
         .w(look.ext(base))
@@ -704,7 +704,12 @@ fn fixed(look: &Look, base: f32) -> Div {
         .overflow_hidden()
 }
 
-fn header_cell(look: &Look, label: SharedString, width: Option<f32>, right: bool) -> Div {
+pub(super) fn header_cell(
+    look: &Look,
+    label: SharedString,
+    width: Option<f32>,
+    right: bool,
+) -> Div {
     let cell = match width {
         Some(base) => fixed(look, base),
         None => div().flex_1().min_w_0().overflow_hidden(),
@@ -718,7 +723,7 @@ fn header_cell(look: &Look, label: SharedString, width: Option<f32>, right: bool
         .child(label)
 }
 
-fn header_row<E: IntoElement>(look: &Look, cells: Vec<E>) -> Div {
+pub(super) fn header_row<E: IntoElement>(look: &Look, cells: Vec<E>) -> Div {
     h_flex()
         .items_center()
         .gap(look.sm)
@@ -729,7 +734,7 @@ fn header_row<E: IntoElement>(look: &Look, cells: Vec<E>) -> Div {
         .children(cells)
 }
 
-fn table_frame(look: &Look) -> Div {
+pub(super) fn table_frame(look: &Look) -> Div {
     v_flex()
         .w_full()
         .rounded(look.radius)
@@ -738,7 +743,7 @@ fn table_frame(look: &Look) -> Div {
         .overflow_hidden()
 }
 
-fn note(look: &Look, text: SharedString, color: Hsla) -> Div {
+pub(super) fn note(look: &Look, text: SharedString, color: Hsla) -> Div {
     div()
         .text_size(look.xs_size)
         .line_height(look.xs_line)
@@ -779,7 +784,7 @@ fn warning_banner(look: &Look, text: SharedString) -> Div {
         )
 }
 
-fn empty_state(look: &Look, text: SharedString) -> Div {
+pub(super) fn empty_state(look: &Look, text: SharedString) -> Div {
     v_flex()
         .w_full()
         .items_center()
@@ -801,7 +806,7 @@ fn empty_state(look: &Look, text: SharedString) -> Div {
         )
 }
 
-fn skeleton_rows(look: &Look, count: usize) -> Div {
+pub(super) fn skeleton_rows(look: &Look, count: usize) -> Div {
     let mut frame = table_frame(look);
     for index in 0..count {
         frame = frame.child(
@@ -839,7 +844,7 @@ fn skeleton_rows(look: &Look, count: usize) -> Div {
 }
 
 /// 带悬浮完整内容的单行省略文本（中间省略，保留头尾）。
-fn ellipsis_cell(
+pub(super) fn ellipsis_cell(
     id: (&'static str, usize),
     text: SharedString,
     tip: Option<SharedString>,
@@ -859,13 +864,13 @@ fn ellipsis_cell(
 
 /// 一个「复制」菜单项：文案、复制内容、复制后的成功提示（`None` = 不提示）。
 #[derive(Clone)]
-struct CopyItem {
-    label: SharedString,
-    value: SharedString,
-    done: Option<SharedString>,
+pub(super) struct CopyItem {
+    pub(super) label: SharedString,
+    pub(super) value: SharedString,
+    pub(super) done: Option<SharedString>,
 }
 
-fn copy_to_clipboard(
+pub(super) fn copy_to_clipboard(
     value: &SharedString,
     done: Option<&SharedString>,
     window: &mut Window,
@@ -878,7 +883,7 @@ fn copy_to_clipboard(
 }
 
 /// 右键菜单：逐项复制。
-fn copy_menu(row: gpui::Stateful<Div>, items: Vec<CopyItem>) -> AnyElement {
+pub(super) fn copy_menu(row: gpui::Stateful<Div>, items: Vec<CopyItem>) -> AnyElement {
     if items.is_empty() {
         return row.into_any_element();
     }
@@ -1319,7 +1324,7 @@ struct PeerHeaderText {
     guard: Option<GuardHeaderText>,
 }
 
-fn speed_el(look: &Look, bps: u64, active_color: Hsla) -> Div {
+pub(super) fn speed_el(look: &Look, bps: u64, active_color: Hsla) -> Div {
     if bps == 0 {
         div().text_color(look.tertiary).child(DASH)
     } else {
@@ -1327,7 +1332,7 @@ fn speed_el(look: &Look, bps: u64, active_color: Hsla) -> Div {
     }
 }
 
-fn bytes_el(look: &Look, bytes: u64) -> Div {
+pub(super) fn bytes_el(look: &Look, bytes: u64) -> Div {
     div()
         .text_color(if bytes == 0 {
             look.tertiary

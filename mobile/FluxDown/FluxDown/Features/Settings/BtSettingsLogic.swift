@@ -411,7 +411,7 @@ extension BtSettingsRow {
 // MARK: - eD2K
 
 nonisolated enum Ed2kSettingsTab: String, CaseIterable, Identifiable {
-    case general, servers
+    case general, servers, kad
 
     var id: String { rawValue }
 
@@ -419,32 +419,38 @@ nonisolated enum Ed2kSettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: "settingsTabGeneral"
         case .servers: "settingsTabServers"
+        case .kad: "settingsTabKadNodes"
         }
     }
 }
 
 nonisolated enum Ed2kSettingsRow: String, CaseIterable, Identifiable {
-    case kad, upnp, listenPort
+    case kad, upnp, listenPort, idCheck
     case serverList, serverSub, serverSubUrls, serverSubStatus
+    case nodesSubUrls, nodesSubStatus
 
     var id: String { "ed2k.\(rawValue)" }
 
     var tab: Ed2kSettingsTab {
         switch self {
-        case .kad, .upnp, .listenPort: .general
-        default: .servers
+        case .kad, .upnp, .listenPort, .idCheck: .general
+        case .serverList, .serverSub, .serverSubUrls, .serverSubStatus: .servers
+        case .nodesSubUrls, .nodesSubStatus: .kad
         }
     }
 
+    /// 行绑定的配置键；`idCheck` 是动作行，借监听端口键判可见（daemon 支持 eD2K 监听即可检测）。
     var configKey: String {
         switch self {
         case .kad: "ed2k_enable_kad"
         case .upnp: "ed2k_enable_upnp"
-        case .listenPort: "ed2k_listen_port"
+        case .listenPort, .idCheck: "ed2k_listen_port"
         case .serverList: "ed2k_server_list"
         case .serverSub: "ed2k_server_sub_enabled"
         case .serverSubUrls: "ed2k_server_sub_urls"
         case .serverSubStatus: "ed2k_server_sub_cache"
+        case .nodesSubUrls: "ed2k_nodes_dat_url"
+        case .nodesSubStatus: "ed2k_nodes_dat_count"
         }
     }
 
@@ -453,10 +459,13 @@ nonisolated enum Ed2kSettingsRow: String, CaseIterable, Identifiable {
         case .kad: "ed2kEnableKad"
         case .upnp: "ed2kEnableUpnp"
         case .listenPort: "ed2kListenPort"
+        case .idCheck: "ed2kIdCheck"
         case .serverList: "ed2kServerList"
         case .serverSub: "ed2kServerSub"
         case .serverSubUrls: "ed2kServerSubUrls"
         case .serverSubStatus: "ed2kServerSubUpdateNow"
+        case .nodesSubUrls: "ed2kNodesSubUrls"
+        case .nodesSubStatus: "ed2kNodesSubUpdateNow"
         }
     }
 
@@ -465,10 +474,12 @@ nonisolated enum Ed2kSettingsRow: String, CaseIterable, Identifiable {
         case .kad: "ed2kEnableKadDesc"
         case .upnp: "ed2kEnableUpnpDesc"
         case .listenPort: "ed2kListenPortDesc"
+        case .idCheck: "ed2kIdCheckDesc"
         case .serverList: "ed2kServerListDesc"
         case .serverSub: "ed2kServerSubDesc"
         case .serverSubUrls: "ed2kServerSubUrlsDesc"
-        case .serverSubStatus: nil
+        case .nodesSubUrls: "ed2kNodesSubUrlsDesc"
+        case .serverSubStatus, .nodesSubStatus: nil
         }
     }
 
@@ -502,14 +513,16 @@ nonisolated enum Ed2kSettingsRow: String, CaseIterable, Identifiable {
 
 // MARK: - 订阅
 
-/// 订阅种类：存储键、列表格式与文案键（`btTrackerSub…` / `ed2kServerSub…`）。
+/// 订阅种类：存储键、条数来源与文案键（`btTrackerSub…` / `ed2kServerSub…` / `ed2kNodesSub…`）。
 nonisolated enum SubscriptionKind {
-    case btTrackers, ed2kServers
+    case btTrackers, ed2kServers, ed2kNodes
 
+    /// 条数来源键：BT / eD2K 服务器按缓存列表计数；Kad 节点读整数键 `ed2k_nodes_dat_count`。
     var cacheKey: String {
         switch self {
         case .btTrackers: "bt_tracker_sub_cache"
         case .ed2kServers: "ed2k_server_sub_cache"
+        case .ed2kNodes: "ed2k_nodes_dat_count"
         }
     }
 
@@ -517,13 +530,16 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "bt_tracker_sub_updated_at"
         case .ed2kServers: "ed2k_server_sub_updated_at"
+        case .ed2kNodes: "ed2k_nodes_dat_updated_at"
         }
     }
 
-    var format: SubscriptionListFormat {
+    /// 配置快照里的已缓存条数。
+    func storedCount(_ form: SettingsConfigForm) -> Int {
         switch self {
-        case .btTrackers: .lines
-        case .ed2kServers: .comma
+        case .btTrackers: SubscriptionListFormat.lines.count(form.string(cacheKey))
+        case .ed2kServers: SubscriptionListFormat.comma.count(form.string(cacheKey))
+        case .ed2kNodes: max(0, form.int(cacheKey, default: 0))
         }
     }
 
@@ -531,6 +547,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: BtSettingsRow.trackerSubStatus.id
         case .ed2kServers: Ed2kSettingsRow.serverSubStatus.id
+        case .ed2kNodes: Ed2kSettingsRow.nodesSubStatus.id
         }
     }
 
@@ -538,6 +555,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "btTrackerSubStatus"
         case .ed2kServers: "ed2kServerSubStatus"
+        case .ed2kNodes: "ed2kNodesSubStatus"
         }
     }
 
@@ -545,6 +563,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "btTrackerSubUpdatedAt"
         case .ed2kServers: "ed2kServerSubUpdatedAt"
+        case .ed2kNodes: "ed2kNodesSubUpdatedAt"
         }
     }
 
@@ -552,6 +571,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "btTrackerSubNeverUpdated"
         case .ed2kServers: "ed2kServerSubNeverUpdated"
+        case .ed2kNodes: "ed2kNodesSubNeverUpdated"
         }
     }
 
@@ -559,6 +579,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "btTrackerSubUpdateNow"
         case .ed2kServers: "ed2kServerSubUpdateNow"
+        case .ed2kNodes: "ed2kNodesSubUpdateNow"
         }
     }
 
@@ -566,6 +587,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "btTrackerSubUpdating"
         case .ed2kServers: "ed2kServerSubUpdating"
+        case .ed2kNodes: "ed2kNodesSubUpdating"
         }
     }
 
@@ -573,6 +595,7 @@ nonisolated enum SubscriptionKind {
         switch self {
         case .btTrackers: "btTrackerSubUpdateFailed"
         case .ed2kServers: "ed2kServerSubUpdateFailed"
+        case .ed2kNodes: "ed2kNodesSubUpdateFailed"
         }
     }
 }
@@ -587,12 +610,54 @@ nonisolated struct SubscriptionStatusModel: Equatable {
     static func make(
         kind: SubscriptionKind, form: SettingsConfigForm, fresh: SubscriptionRefreshOutcome?
     ) -> SubscriptionStatusModel {
-        let storedCount = kind.format.count(form.string(kind.cacheKey))
+        let storedCount = kind.storedCount(form)
         let storedAt = max(0, form.long(kind.updatedAtKey, default: 0))
         guard let fresh, fresh.success, fresh.updatedAt > storedAt else {
             return SubscriptionStatusModel(count: storedCount, updatedAt: storedAt)
         }
         return SubscriptionStatusModel(count: Int(clamping: fresh.count), updatedAt: fresh.updatedAt)
+    }
+}
+
+// MARK: - eD2K ID 检测
+
+/// 设置「常规」页 HighID / LowID 检测结果的展示（契约 §4）：结果只存页面状态，不落配置。
+nonisolated enum Ed2kIdCheckDisplay: Equatable {
+    /// 检测成功：`summary` = `ed2kIdCheckResult`；`lowHint` = LowID 时追加的提示。
+    case ok(summary: String, lowHint: String?)
+    /// `id == none` 或调用失败：`ed2kIdCheckFailed`（有错误详情时附上）。
+    case failed(String)
+
+    static func make(_ network: Ed2kNetworkDto) -> Ed2kIdCheckDisplay {
+        let idKey: String
+        switch network.id {
+        case .none: return failure(network.error)
+        case .high: idKey = "ed2kIdHigh"
+        case .low: idKey = "ed2kIdLow"
+        }
+        let server = network.server.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = L("ed2kIdCheckResult", [
+            "id": L(idKey),
+            "server": server.isEmpty ? "—" : server,
+            "port": network.listenPort == 0 ? "—" : String(network.listenPort),
+            "upnp": L(upnpKey(network.upnp)),
+        ])
+        return .ok(summary: summary, lowHint: network.id == .low ? L("ed2kIdLowHint") : nil)
+    }
+
+    /// 调用失败（传输 / daemon 错误）或未登录：详情为空时只显示失败文案。
+    static func failure(_ detail: String) -> Ed2kIdCheckDisplay {
+        let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .failed(detail.isEmpty ? L("ed2kIdCheckFailed") : "\(L("ed2kIdCheckFailed")): \(detail)")
+    }
+
+    static func upnpKey(_ state: Ed2kNetworkDto.UpnpState) -> String {
+        switch state {
+        case .disabled: "ed2kUpnpDisabled"
+        case .pending: "ed2kUpnpPending"
+        case .mapped: "ed2kUpnpMapped"
+        case .failed: "ed2kUpnpFailed"
+        }
     }
 }
 

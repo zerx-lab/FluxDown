@@ -42,6 +42,10 @@ pub enum ActorOperation {
     BtStatus {
         task_id: String,
     },
+    /// eD2K 任务实况（`daemon.task.ed2kStatus`）：源、服务器、Kad 节点与本机网络状态。
+    Ed2kStatus {
+        task_id: String,
+    },
     /// BT 任务的分享材料（`daemon.task.torrentShare`）。
     TorrentShare {
         task_id: String,
@@ -196,7 +200,16 @@ pub enum ActorOperation {
     },
     RefreshTrackerSubscription,
     RefreshEd2kServerSubscription,
+    /// 刷新 Kad 节点（nodes.dat）订阅（`daemon.ed2k.nodesSubscription.refresh` 与启动时）。
     RefreshEd2kNodes,
+    /// HighID / LowID 检测（`daemon.ed2k.idCheck`）。
+    Ed2kIdCheck {
+        params: fluxdown_protocol::Ed2kIdCheckParams,
+    },
+    /// Kad 引导（`daemon.ed2k.kadBootstrap`）。
+    Ed2kKadBootstrap {
+        params: fluxdown_protocol::Ed2kKadBootstrapParams,
+    },
     MigrationLinkExport,
     MigrationLinkAck {
         revision: u64,
@@ -280,6 +293,10 @@ pub enum ActorResult {
     CdnLease(Option<fluxdown_protocol::CdnReportLeaseDto>),
     TrackerRefresh(fluxdown_protocol::TrackerSubRefreshResponse),
     Ed2kRefresh(fluxdown_protocol::Ed2kServerSubRefreshResponse),
+    Ed2kNodesRefresh(fluxdown_protocol::Ed2kNodesSubRefreshResponse),
+    Ed2kNetwork(Box<fluxdown_protocol::Ed2kNetworkDto>),
+    Ed2kStatus(Box<fluxdown_protocol::Ed2kStatusDto>),
+    Ed2kKadBootstrap(Box<fluxdown_protocol::Ed2kKadBootstrapDto>),
     LinkMigration(fluxdown_protocol::LinkMigrationExport),
     GatewayMigration(fluxdown_protocol::GatewayMigrationExport),
     #[cfg(feature = "plugins")]
@@ -352,7 +369,12 @@ pub enum MaintenanceEvent {
     },
     #[cfg(feature = "ed2k")]
     Ed2kNodes {
-        outcome: Result<Vec<u8>, String>,
+        outcome: fluxdown_engine::ed2k::kad::NodesFetchOutcome,
+        ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+    },
+    #[cfg(feature = "ed2k")]
+    Ed2kKadBootstrap {
+        report: fluxdown_engine::ed2k::kad::BootstrapReport,
         ack: oneshot::Sender<Result<ActorResult, ActorError>>,
     },
     /// `daemon.task.hash` 的计算结果：写回与任务行发布在 actor 内。
@@ -530,7 +552,7 @@ async fn run_actor(
                 }
             }
             Some(event) = maintenance_rx.recv() => {
-                commit_maintenance(event, &mut engine).await;
+                commit_maintenance(event, &mut engine, &events).await;
             }
             Some(outcome) = receivers.file_hash.recv() => {
                 let task_id = outcome.task_id().to_owned();
@@ -732,16 +754,8 @@ async fn dispatch_operation(
         ActorOperation::RefreshEd2kNodes => {
             #[cfg(feature = "ed2k")]
             {
-                let url = match engine.db.get_config("ed2k_nodes_dat_url").await {
-                    Ok(Some(url)) if !url.trim().is_empty() => url,
-                    Ok(_) => {
-                        if ack.send(Ok(ActorResult::Unit)).is_err() {
-                            tracing::debug!(
-                                "ED2K nodes caller disconnected before acknowledgement"
-                            );
-                        }
-                        return;
-                    }
+                let urls = match engine.db.get_config("ed2k_nodes_dat_url").await {
+                    Ok(urls) => urls.unwrap_or_default(),
                     Err(error) => {
                         if ack
                             .send(Err(ActorError::Operation(format!("{error:#}"))))
@@ -755,7 +769,8 @@ async fn dispatch_operation(
                 let proxy = engine.manager.proxy_config().clone();
                 let maintenance_tx = maintenance_tx.clone();
                 tokio::spawn(async move {
-                    let outcome = fluxdown_engine::ed2k::kad::fetch_nodes_dat(&url, &proxy).await;
+                    let outcome =
+                        fluxdown_engine::ed2k::kad::fetch_nodes_subscriptions(&urls, &proxy).await;
                     if maintenance_tx
                         .send(MaintenanceEvent::Ed2kNodes { outcome, ack })
                         .is_err()
@@ -767,6 +782,108 @@ async fn dispatch_operation(
             }
             #[cfg(not(feature = "ed2k"))]
             reject_unsupported_maintenance(ack);
+        }
+        ActorOperation::Ed2kIdCheck { params } => {
+            #[cfg(feature = "ed2k")]
+            {
+                use fluxdown_engine::ed2k::client::IdCheckTarget;
+                use fluxdown_protocol::Ed2kIdCheckTarget;
+                let target = match params.target {
+                    Ed2kIdCheckTarget::Auto => IdCheckTarget::Auto,
+                    Ed2kIdCheckTarget::Session => IdCheckTarget::Session,
+                    Ed2kIdCheckTarget::List => IdCheckTarget::List,
+                    Ed2kIdCheckTarget::Server => IdCheckTarget::Server(params.server),
+                };
+                // 检测要等 UPnP 映射与服务器登录，可达数十秒：只在 actor 内取一份库句柄。
+                let db = engine.db.clone();
+                tokio::spawn(async move {
+                    let result = fluxdown_engine::ed2k::check_id(db, target)
+                        .await
+                        .map(|view| ActorResult::Ed2kNetwork(Box::new(ed2k_network_to_dto(view))))
+                        .map_err(|error| ActorError::Operation(format!("{error:#}")));
+                    if let Err(result) = ack.send(result) {
+                        match result {
+                            Err(ActorError::Operation(error)) => {
+                                tracing::warn!(%error, "ED2K id check failed after caller disconnected");
+                            }
+                            _ => tracing::debug!("ED2K id check caller disconnected before result"),
+                        }
+                    }
+                });
+            }
+            #[cfg(not(feature = "ed2k"))]
+            {
+                let _ = params;
+                reject_unsupported_maintenance(ack);
+            }
+        }
+        ActorOperation::Ed2kKadBootstrap { params } => {
+            #[cfg(feature = "ed2k")]
+            {
+                use fluxdown_engine::ed2k::kad::BootstrapSource;
+                use fluxdown_protocol::Ed2kKadBootstrapSource;
+                let source = match params.source {
+                    Ed2kKadBootstrapSource::Known => BootstrapSource::Known,
+                    Ed2kKadBootstrapSource::Url => BootstrapSource::Url(params.url),
+                    Ed2kKadBootstrapSource::Node => BootstrapSource::Node {
+                        host: params.host,
+                        port: params.port,
+                    },
+                };
+                // actor 内只读配置；取 nodes.dat、解析域名与 UDP 握手都在 actor 之外。
+                let inputs = async {
+                    let cached = fluxdown_engine::ed2k::load_nodes_dat(&engine.db).await?;
+                    let urls = engine
+                        .db
+                        .get_config("ed2k_nodes_dat_url")
+                        .await?
+                        .unwrap_or_default();
+                    let listen_port = engine
+                        .db
+                        .get_config("ed2k_listen_port")
+                        .await?
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .unwrap_or(0);
+                    Ok::<_, fluxdown_engine::db::DbError>((cached, urls, listen_port))
+                }
+                .await;
+                let (cached, urls, listen_port) = match inputs {
+                    Ok(inputs) => inputs,
+                    Err(error) => {
+                        if ack
+                            .send(Err(ActorError::Operation(format!("{error:#}"))))
+                            .is_err()
+                        {
+                            tracing::warn!(%error, "Kad bootstrap config read failed after caller disconnected");
+                        }
+                        return;
+                    }
+                };
+                let proxy = engine.manager.proxy_config().clone();
+                let maintenance_tx = maintenance_tx.clone();
+                tokio::spawn(async move {
+                    let report = fluxdown_engine::ed2k::kad::bootstrap(
+                        source,
+                        &cached,
+                        &urls,
+                        listen_port,
+                        &proxy,
+                    )
+                    .await;
+                    if maintenance_tx
+                        .send(MaintenanceEvent::Ed2kKadBootstrap { report, ack })
+                        .is_err()
+                    {
+                        // Actor 已关闭，未提交的结果丢弃并关闭回执，等待者收到 Unavailable。
+                        tracing::debug!("daemon actor closed before Kad bootstrap commit");
+                    }
+                });
+            }
+            #[cfg(not(feature = "ed2k"))]
+            {
+                let _ = params;
+                reject_unsupported_maintenance(ack);
+            }
         }
         ActorOperation::RssValidate {
             provider_id,
@@ -1063,6 +1180,31 @@ async fn execute_operation(
                 return Ok(ActorResult::BtStatus(Box::new(bt_status_to_dto(view))));
             }
             #[cfg(not(feature = "bt"))]
+            {
+                let _ = task_id;
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::Ed2kStatus { task_id } => {
+            #[cfg(feature = "ed2k")]
+            {
+                use fluxdown_engine::ed2k::status::StatusError;
+                let view =
+                    engine
+                        .manager
+                        .ed2k_status(&task_id)
+                        .await
+                        .map_err(|error| match error {
+                            StatusError::InvalidArgument(message) => {
+                                ActorError::InvalidArgument(message)
+                            }
+                            StatusError::Operation(message) => ActorError::Operation(message),
+                        })?;
+                return Ok(ActorResult::Ed2kStatus(Box::new(ed2k_status_to_dto(view))));
+            }
+            #[cfg(not(feature = "ed2k"))]
             {
                 let _ = task_id;
                 return Err(ActorError::InvalidArgument(
@@ -1467,6 +1609,8 @@ async fn execute_operation(
         ActorOperation::RefreshTrackerSubscription
         | ActorOperation::RefreshEd2kServerSubscription
         | ActorOperation::RefreshEd2kNodes
+        | ActorOperation::Ed2kIdCheck { .. }
+        | ActorOperation::Ed2kKadBootstrap { .. }
         | ActorOperation::RssValidate { .. }
         | ActorOperation::LinkProbe { .. }
         | ActorOperation::VerifyTask { .. }
@@ -1580,11 +1724,45 @@ async fn migration_ack(engine: &Engine, marker: &str, revision: u64) -> Result<(
         .map_err(|error| ActorError::Operation(format!("{error:#}")))
 }
 
-async fn commit_maintenance(event: MaintenanceEvent, engine: &mut Engine) {
+/// 以库里最新的公开配置广播 `ConfigChanged`（用户配置 revision 不变）。宿主自己写入的只读键
+/// （订阅缓存、条数、更新时间）只有经它才到达已连接的客户端。
+fn publish_public_config(all: &HashMap<String, String>, events: &crate::event_hub::DaemonEventHub) {
+    events.publish(fluxdown_protocol::DaemonEvent::ConfigChanged(
+        fluxdown_protocol::DaemonConfigSnapshot {
+            revision: all
+                .get("daemon_config_revision")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
+            values: crate::config::public_config_values(all),
+        },
+    ));
+}
+
+/// 订阅刷新落库后把新的缓存 / 更新时间推给客户端；读库失败只记日志（数据已落库，
+/// 客户端下次取快照时仍会看到）。
+#[cfg(any(feature = "bt", feature = "ed2k"))]
+async fn publish_subscription_config(engine: &Engine, events: &crate::event_hub::DaemonEventHub) {
+    match engine.db.get_all_config().await {
+        Ok(all) => publish_public_config(&all, events),
+        Err(error) => {
+            tracing::warn!(%error, "config read failed after subscription refresh; clients keep the previous snapshot");
+        }
+    }
+}
+
+async fn commit_maintenance(
+    event: MaintenanceEvent,
+    engine: &mut Engine,
+    #[cfg_attr(not(any(feature = "bt", feature = "ed2k")), allow(unused_variables))]
+    events: &crate::event_hub::DaemonEventHub,
+) {
     match event {
         #[cfg(feature = "bt")]
         MaintenanceEvent::Tracker { outcome, ack } => {
             let result = commit_tracker_refresh(outcome, engine).await;
+            if result.as_ref().is_ok_and(|response| response.success) {
+                publish_subscription_config(engine, events).await;
+            }
             if let Err(result) = ack.send(result.map(ActorResult::TrackerRefresh)) {
                 match result {
                     Err(ActorError::Operation(error)) => {
@@ -1599,7 +1777,10 @@ async fn commit_maintenance(event: MaintenanceEvent, engine: &mut Engine) {
         #[cfg(feature = "ed2k")]
         MaintenanceEvent::Ed2kNodes { outcome, ack } => {
             let result = commit_ed2k_nodes(outcome, engine).await;
-            if let Err(result) = ack.send(result) {
+            if result.as_ref().is_ok_and(|response| response.success) {
+                publish_subscription_config(engine, events).await;
+            }
+            if let Err(result) = ack.send(result.map(ActorResult::Ed2kNodesRefresh)) {
                 match result {
                     Err(ActorError::Operation(error)) => {
                         tracing::warn!(%error, "ED2K nodes commit failed after caller disconnected");
@@ -1609,8 +1790,25 @@ async fn commit_maintenance(event: MaintenanceEvent, engine: &mut Engine) {
             }
         }
         #[cfg(feature = "ed2k")]
+        MaintenanceEvent::Ed2kKadBootstrap { report, ack } => {
+            let result = commit_ed2k_kad_bootstrap(report, engine, events).await;
+            if let Err(result) =
+                ack.send(result.map(|dto| ActorResult::Ed2kKadBootstrap(Box::new(dto))))
+            {
+                match result {
+                    Err(ActorError::Operation(error)) => {
+                        tracing::warn!(%error, "Kad bootstrap commit failed after caller disconnected");
+                    }
+                    _ => tracing::debug!("Kad bootstrap commit caller disconnected before result"),
+                }
+            }
+        }
+        #[cfg(feature = "ed2k")]
         MaintenanceEvent::Ed2k { outcome, ack } => {
             let result = commit_ed2k_refresh(outcome, engine).await;
+            if result.as_ref().is_ok_and(|response| response.success) {
+                publish_subscription_config(engine, events).await;
+            }
             if let Err(result) = ack.send(result.map(ActorResult::Ed2kRefresh)) {
                 match result {
                     Err(ActorError::Operation(error)) => {
@@ -1636,28 +1834,272 @@ async fn commit_maintenance(event: MaintenanceEvent, engine: &mut Engine) {
     }
 }
 
+/// Kad 引导的提交：把确认存活 / 新告知 / 从网址取到的节点并入已知节点缓存（新的在前），
+/// 缓存有变化时广播公开配置。订阅更新时间不动——它只表示订阅地址上次拉取成功的时刻。
+#[cfg(feature = "ed2k")]
+async fn commit_ed2k_kad_bootstrap(
+    report: fluxdown_engine::ed2k::kad::BootstrapReport,
+    engine: &mut Engine,
+    events: &crate::event_hub::DaemonEventHub,
+) -> Result<fluxdown_protocol::Ed2kKadBootstrapDto, ActorError> {
+    let db_error =
+        |error: fluxdown_engine::db::DbError| ActorError::Operation(format!("{error:#}"));
+    let mut node_count = engine
+        .db
+        .get_config("ed2k_nodes_dat_count")
+        .await
+        .map_err(db_error)?
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    if !report.contacts.is_empty() {
+        let cached = fluxdown_engine::ed2k::load_nodes_dat(&engine.db)
+            .await
+            .map_err(db_error)?;
+        let (nodes_dat, merged) =
+            fluxdown_engine::ed2k::kad::merge_into_cache(report.contacts, &cached);
+        node_count = u32::try_from(merged).unwrap_or(u32::MAX);
+        let values = BTreeMap::from([
+            (
+                "ed2k_nodes_dat_cache".to_owned(),
+                base64::engine::general_purpose::STANDARD.encode(&nodes_dat),
+            ),
+            ("ed2k_nodes_dat_count".to_owned(), node_count.to_string()),
+        ]);
+        engine
+            .db
+            .set_config_batch_atomic(&values)
+            .await
+            .map_err(db_error)?;
+        publish_subscription_config(engine, events).await;
+    }
+    Ok(fluxdown_protocol::Ed2kKadBootstrapDto {
+        contacted: report.contacted,
+        responded: report.responded,
+        discovered: report.discovered,
+        node_count,
+        nodes: report.nodes.into_iter().map(ed2k_kad_node_to_dto).collect(),
+        error: report.error,
+    })
+}
+
+#[cfg(feature = "ed2k")]
+fn ed2k_kad_node_to_dto(
+    node: fluxdown_engine::ed2k::status::KadNodeRow,
+) -> fluxdown_protocol::Ed2kKadNodeDto {
+    use fluxdown_engine::ed2k::status::{KadNodeOrigin, KadNodeState};
+    use fluxdown_protocol::{Ed2kKadNodeOrigin, Ed2kKadNodeState};
+    fluxdown_protocol::Ed2kKadNodeDto {
+        addr: node.addr,
+        id: node.id,
+        origin: match node.origin {
+            KadNodeOrigin::Bootstrap => Ed2kKadNodeOrigin::Bootstrap,
+            KadNodeOrigin::Discovered => Ed2kKadNodeOrigin::Discovered,
+        },
+        state: match node.state {
+            KadNodeState::Known => Ed2kKadNodeState::Known,
+            KadNodeState::Queried => Ed2kKadNodeState::Queried,
+            KadNodeState::Responded => Ed2kKadNodeState::Responded,
+        },
+        tcp_port: node.tcp_port,
+        version: node.version,
+    }
+}
+
 #[cfg(feature = "ed2k")]
 async fn commit_ed2k_nodes(
-    outcome: Result<Vec<u8>, String>,
+    outcome: fluxdown_engine::ed2k::kad::NodesFetchOutcome,
     engine: &mut Engine,
-) -> Result<ActorResult, ActorError> {
-    let bytes = outcome.map_err(ActorError::Operation)?;
-    let values = BTreeMap::from([
-        (
-            "ed2k_nodes_dat_cache".to_owned(),
-            base64::engine::general_purpose::STANDARD.encode(bytes),
-        ),
-        (
-            "ed2k_nodes_dat_updated_at".to_owned(),
-            now_unix_secs().to_string(),
-        ),
-    ]);
-    engine
-        .db
-        .set_config_batch_atomic(&values)
-        .await
-        .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
-    Ok(ActorResult::Unit)
+) -> Result<fluxdown_protocol::Ed2kNodesSubRefreshResponse, ActorError> {
+    let db_error =
+        |error: fluxdown_engine::db::DbError| ActorError::Operation(format!("{error:#}"));
+    let config_i64 = |value: Option<String>| value.and_then(|value| value.parse::<i64>().ok());
+    let mut updated_at = config_i64(
+        engine
+            .db
+            .get_config("ed2k_nodes_dat_updated_at")
+            .await
+            .map_err(db_error)?,
+    )
+    .unwrap_or(0);
+    let mut node_count = config_i64(
+        engine
+            .db
+            .get_config("ed2k_nodes_dat_count")
+            .await
+            .map_err(db_error)?,
+    )
+    .unwrap_or(0);
+    // 全部源失败时保留旧缓存：过期的引导节点仍可能有存活的。
+    if outcome.is_success() {
+        updated_at = now_unix_secs();
+        node_count = i64::try_from(outcome.node_count).unwrap_or(i64::MAX);
+        let values = BTreeMap::from([
+            (
+                "ed2k_nodes_dat_cache".to_owned(),
+                base64::engine::general_purpose::STANDARD.encode(&outcome.nodes_dat),
+            ),
+            ("ed2k_nodes_dat_count".to_owned(), node_count.to_string()),
+            (
+                "ed2k_nodes_dat_updated_at".to_owned(),
+                updated_at.to_string(),
+            ),
+        ]);
+        engine
+            .db
+            .set_config_batch_atomic(&values)
+            .await
+            .map_err(db_error)?;
+    }
+    Ok(fluxdown_protocol::Ed2kNodesSubRefreshResponse {
+        success: outcome.is_success(),
+        node_count,
+        ok_sources: i64::try_from(outcome.ok_sources).unwrap_or(i64::MAX),
+        total_sources: i64::try_from(outcome.total_sources).unwrap_or(i64::MAX),
+        updated_at,
+        error: outcome.error,
+    })
+}
+
+#[cfg(feature = "ed2k")]
+fn ed2k_network_to_dto(
+    view: fluxdown_engine::ed2k::status::NetworkView,
+) -> fluxdown_protocol::Ed2kNetworkDto {
+    use fluxdown_engine::ed2k::status::{IdKind, UpnpState};
+    use fluxdown_protocol::{Ed2kIdKind, Ed2kUpnpStatus};
+    fluxdown_protocol::Ed2kNetworkDto {
+        id: match view.client.id {
+            IdKind::None => Ed2kIdKind::None,
+            IdKind::Low => Ed2kIdKind::Low,
+            IdKind::High => Ed2kIdKind::High,
+        },
+        client_id: view.client.client_id,
+        server: view.client.server,
+        listen_port: view.client.listen_port,
+        upnp: match view.client.upnp {
+            UpnpState::Disabled => Ed2kUpnpStatus::Disabled,
+            UpnpState::Pending => Ed2kUpnpStatus::Pending,
+            UpnpState::Mapped => Ed2kUpnpStatus::Mapped,
+            UpnpState::Failed => Ed2kUpnpStatus::Failed,
+        },
+        external_ip: view.client.external_ip,
+        upnp_enabled: view.upnp_enabled,
+        kad_enabled: view.kad_enabled,
+        kad_nodes: view.kad_nodes,
+        server_count: view.server_count,
+        error: view.error,
+    }
+}
+
+/// 引擎的 eD2K 任务实况 → wire DTO（引擎不依赖 protocol，转换放在 daemon 边界）。
+#[cfg(feature = "ed2k")]
+fn ed2k_status_to_dto(
+    view: fluxdown_engine::ed2k::status::Ed2kStatusView,
+) -> fluxdown_protocol::Ed2kStatusDto {
+    use fluxdown_engine::ed2k::status::{
+        KadPhase, PeerOrigin, PeerState, ServerOrigin, ServerState, TaskPhase,
+    };
+    use fluxdown_protocol::{
+        Ed2kKadDto, Ed2kKadPhase, Ed2kPeerCountsDto, Ed2kPeerDto, Ed2kPeerOrigin, Ed2kPeerState,
+        Ed2kServerDto, Ed2kServerSource, Ed2kServerStatus, Ed2kTaskPhase,
+    };
+    let task = view.task;
+    fluxdown_protocol::Ed2kStatusDto {
+        phase: match task.phase {
+            TaskPhase::Idle => Ed2kTaskPhase::Idle,
+            TaskPhase::Searching => Ed2kTaskPhase::Searching,
+            TaskPhase::Downloading => Ed2kTaskPhase::Downloading,
+            TaskPhase::Waiting => Ed2kTaskPhase::Waiting,
+            TaskPhase::Verifying => Ed2kTaskPhase::Verifying,
+        },
+        next_search_at: task.next_search_at,
+        file_hash: view.file_hash,
+        parts_total: view.parts_total,
+        parts_done: task.parts_done,
+        max_sources: task.max_sources,
+        segments: view.segments,
+        network: ed2k_network_to_dto(view.network),
+        peer_counts: Ed2kPeerCountsDto {
+            total: task.peer_counts.total,
+            transferring: task.peer_counts.transferring,
+            connected: task.peer_counts.connected,
+            queued: task.peer_counts.queued,
+            connecting: task.peer_counts.connecting,
+            cooldown: task.peer_counts.cooldown,
+            failed: task.peer_counts.failed,
+            banned: task.peer_counts.banned,
+        },
+        peers: task
+            .peers
+            .into_iter()
+            .map(|peer| Ed2kPeerDto {
+                addr: peer.addr,
+                low_id: peer.low_id,
+                origin: match peer.origin {
+                    PeerOrigin::Server => Ed2kPeerOrigin::Server,
+                    PeerOrigin::Kad => Ed2kPeerOrigin::Kad,
+                },
+                state: match peer.state {
+                    PeerState::Known => Ed2kPeerState::Known,
+                    PeerState::Connecting => Ed2kPeerState::Connecting,
+                    PeerState::Queued => Ed2kPeerState::Queued,
+                    PeerState::Transferring => Ed2kPeerState::Transferring,
+                    PeerState::Connected => Ed2kPeerState::Connected,
+                    PeerState::Cooldown => Ed2kPeerState::Cooldown,
+                    PeerState::Failed => Ed2kPeerState::Failed,
+                    PeerState::Banned => Ed2kPeerState::Banned,
+                },
+                queue_rank: peer.queue_rank,
+                client: peer.client,
+                nickname: peer.nickname,
+                downloaded: peer.downloaded,
+                down_bps: peer.down_bps,
+                parts: peer.parts,
+                part: peer.part,
+                message: peer.message,
+                retry_at: peer.retry_at,
+            })
+            .collect(),
+        servers: task
+            .servers
+            .into_iter()
+            .map(|server| Ed2kServerDto {
+                addr: server.addr,
+                source: match server.origin {
+                    ServerOrigin::Manual => Ed2kServerSource::Manual,
+                    ServerOrigin::Subscription => Ed2kServerSource::Subscription,
+                },
+                status: match server.state {
+                    ServerState::Querying => Ed2kServerStatus::Querying,
+                    ServerState::Working => Ed2kServerStatus::Working,
+                    ServerState::NotWorking => Ed2kServerStatus::NotWorking,
+                },
+                connected: server.connected,
+                sources: server.sources,
+                message: server.message,
+                last_query_at: server.last_query_at,
+            })
+            .collect(),
+        kad: Ed2kKadDto {
+            phase: match task.kad.phase {
+                KadPhase::Idle => Ed2kKadPhase::Idle,
+                KadPhase::Bootstrapping => Ed2kKadPhase::Bootstrapping,
+                KadPhase::FindingNodes => Ed2kKadPhase::FindingNodes,
+                KadPhase::Searching => Ed2kKadPhase::Searching,
+                KadPhase::Done => Ed2kKadPhase::Done,
+            },
+            bootstrap_nodes: task.kad.bootstrap_nodes,
+            responded: task.kad.responded,
+            discovered: task.kad.discovered,
+            sources: task.kad.sources,
+            last_search_at: task.kad.last_search_at,
+            nodes: task
+                .kad
+                .nodes
+                .into_iter()
+                .map(ed2k_kad_node_to_dto)
+                .collect(),
+        },
+    }
 }
 
 fn file_hash_error(error: fluxdown_engine::file_hash::FileHashError) -> ActorError {
@@ -2095,15 +2537,7 @@ async fn clear_conn_policy(
         .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     // 引擎的落盘是 fire-and-forget，快照以刚写入的空值为准。
     all.insert(DOMAIN_CONN_CAPS_KEY.to_owned(), String::new());
-    events.publish(fluxdown_protocol::DaemonEvent::ConfigChanged(
-        fluxdown_protocol::DaemonConfigSnapshot {
-            revision: all
-                .get("daemon_config_revision")
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0),
-            values: crate::config::public_config_values(&all),
-        },
-    ));
+    publish_public_config(&all, events);
     Ok(fluxdown_protocol::ConnPolicySummaryDto { domain_count: 0 })
 }
 
@@ -2433,6 +2867,14 @@ async fn apply_live_config<'a>(
         }) {
             engine.manager.invalidate_bt_session().await;
         }
+    }
+    // eD2K 设置热生效：UPnP 开关立即建立 / 撤销映射；服务器列表、Kad 开关与引导节点
+    // 订阅由各任务在下一轮找源前重读。监听端口只在监听器首次绑定时读取。
+    #[cfg(feature = "ed2k")]
+    if keys.iter().any(|key| key.starts_with("ed2k_")) {
+        fluxdown_engine::ed2k::apply_live_settings(&engine.db)
+            .await
+            .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
     }
     // 防吸血配置全部热生效：不在监听类键之列，不重建 BT 会话。
     #[cfg(feature = "bt")]
@@ -3243,6 +3685,219 @@ mod tests {
         }
     }
 
+    /// `daemon.task.ed2kStatus` 对未在运行的任务给出块进度 / 线程数设置 / 网络设置；改线程数
+    /// 不动任务状态；`daemon.ed2k.nodesSubscription.refresh` 的提交只在成功时替换缓存。
+    #[cfg(feature = "ed2k")]
+    #[tokio::test]
+    async fn ed2k_status_reads_idle_task_and_nodes_commit_keeps_cache_on_failure() {
+        const LINK: &str = "ed2k://|file|a.bin|20000000|0123456789ABCDEF0123456789ABCDEF|/";
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_ed2k_status_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create ed2k status test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        for (id, url) in [("ed2k", LINK), ("http", "https://example.invalid/a.bin")] {
+            engine
+                .db
+                .insert_task(id, url, "a.bin", &dir_text, 0, 0, "", "", "", 2)
+                .await
+                .expect("insert task");
+        }
+        let status = |task_id: &str| ActorOperation::Ed2kStatus {
+            task_id: task_id.to_owned(),
+        };
+
+        engine
+            .db
+            .set_config_batch_atomic(&BTreeMap::from([
+                (
+                    "ed2k_server_list".to_owned(),
+                    "1.1.1.1:4661,2.2.2.2:4661".to_owned(),
+                ),
+                (
+                    "ed2k_server_sub_cache".to_owned(),
+                    "2.2.2.2:4661,3.3.3.3:4661".to_owned(),
+                ),
+            ]))
+            .await
+            .expect("seed servers");
+        let Ok(super::ActorResult::Ed2kStatus(idle)) =
+            execute_operation(status("ed2k"), &mut engine, &events).await
+        else {
+            panic!("ed2k status of a paused task");
+        };
+        assert_eq!(idle.phase, fluxdown_protocol::Ed2kTaskPhase::Idle);
+        assert_eq!(idle.file_hash, "0123456789abcdef0123456789abcdef");
+        // 20 MB / 9.28 MB 每块 = 3 块，尚无已校验块。
+        assert_eq!((idle.parts_total, idle.parts_done), (3, 0));
+        assert_eq!((idle.segments, idle.max_sources), (0, 4));
+        assert!(idle.peers.is_empty() && idle.servers.is_empty());
+        assert_eq!(idle.network.id, fluxdown_protocol::Ed2kIdKind::None);
+        assert!(idle.network.kad_enabled && idle.network.upnp_enabled);
+        // 手填与订阅列表合并去重。
+        assert_eq!(idle.network.server_count, 3);
+        assert_eq!(idle.network.kad_nodes, 0);
+
+        for id in ["http", "missing"] {
+            assert!(matches!(
+                execute_operation(status(id), &mut engine, &events).await,
+                Err(ActorError::InvalidArgument(_))
+            ));
+        }
+
+        execute_operation(
+            ActorOperation::SetTaskSegments {
+                task_id: "ed2k".to_owned(),
+                segments: 6,
+            },
+            &mut engine,
+            &events,
+        )
+        .await
+        .expect("segments accepted");
+        let Ok(super::ActorResult::Ed2kStatus(resized)) =
+            execute_operation(status("ed2k"), &mut engine, &events).await
+        else {
+            panic!("ed2k status after resizing");
+        };
+        assert_eq!((resized.segments, resized.max_sources), (6, 6));
+        let task = engine
+            .db
+            .load_task_by_id("ed2k")
+            .await
+            .expect("load task")
+            .expect("task exists");
+        assert_eq!(task.status, 2, "resizing does not resume a paused task");
+
+        let fetched = |ok_sources: usize, nodes_dat: Vec<u8>, node_count: usize| {
+            fluxdown_engine::ed2k::kad::NodesFetchOutcome {
+                nodes_dat,
+                node_count,
+                ok_sources,
+                total_sources: 2,
+                error: if ok_sources == 0 {
+                    "a: timeout; b: http status 404".to_owned()
+                } else {
+                    String::new()
+                },
+            }
+        };
+        // 经 actor 的提交路径：落库后必须把新的只读键广播给已连接的客户端。
+        let (ack, committed) = tokio::sync::oneshot::channel();
+        super::commit_maintenance(
+            super::MaintenanceEvent::Ed2kNodes {
+                outcome: fetched(1, vec![1, 2, 3], 42),
+                ack,
+            },
+            &mut engine,
+            &events,
+        )
+        .await;
+        let Ok(Ok(super::ActorResult::Ed2kNodesRefresh(committed))) = committed.await else {
+            panic!("nodes commit acknowledged");
+        };
+        assert_eq!(
+            events.inspect(|snapshot| snapshot.config.values.get("ed2k_nodes_dat_count").cloned()),
+            Some("42".to_owned()),
+            "clients learn the new count through ConfigChanged"
+        );
+        assert!(committed.success);
+        assert_eq!((committed.node_count, committed.ok_sources), (42, 1));
+        assert!(committed.updated_at > 0);
+
+        let failed = super::commit_ed2k_nodes(fetched(0, Vec::new(), 0), &mut engine)
+            .await
+            .expect("commit failed fetch");
+        assert!(!failed.success);
+        assert_eq!(failed.error, "a: timeout; b: http status 404");
+        // 失败不清空缓存：条数与更新时间沿用上次成功的值。
+        assert_eq!(
+            (failed.node_count, failed.updated_at),
+            (42, committed.updated_at)
+        );
+        let cache = engine
+            .db
+            .get_config("ed2k_nodes_dat_cache")
+            .await
+            .expect("read cache");
+        assert_eq!(cache.as_deref(), Some("AQID"));
+        let Ok(super::ActorResult::Ed2kStatus(cached)) =
+            execute_operation(status("ed2k"), &mut engine, &events).await
+        else {
+            panic!("ed2k status after nodes commit");
+        };
+        assert_eq!(cached.network.kad_nodes, 42);
+
+        // Kad 引导的提交：存活节点并入已知节点缓存并广播新条数；没有节点可并入时缓存不动。
+        let contact = |last: u8| fluxdown_engine::ed2k::kad::proto::Contact {
+            id: fluxdown_engine::ed2k::kad::proto::KadId([last; 16]),
+            endpoint: fluxdown_engine::ed2k::kad::proto::Endpoint {
+                ip: std::net::Ipv4Addr::new(10, 0, 0, last),
+                udp_port: 4672,
+                tcp_port: 4662,
+            },
+            version: 9,
+        };
+        let bootstrapped = super::commit_ed2k_kad_bootstrap(
+            fluxdown_engine::ed2k::kad::BootstrapReport {
+                contacted: 2,
+                responded: 1,
+                discovered: 1,
+                contacts: vec![contact(1), contact(2)],
+                ..Default::default()
+            },
+            &mut engine,
+            &events,
+        )
+        .await
+        .expect("commit bootstrap");
+        assert_eq!((bootstrapped.responded, bootstrapped.node_count), (1, 2));
+        assert_eq!(
+            events.inspect(|snapshot| snapshot.config.values.get("ed2k_nodes_dat_count").cloned()),
+            Some("2".to_owned())
+        );
+        let unreachable = super::commit_ed2k_kad_bootstrap(
+            fluxdown_engine::ed2k::kad::BootstrapReport {
+                contacted: 2,
+                ..Default::default()
+            },
+            &mut engine,
+            &events,
+        )
+        .await
+        .expect("commit unreachable bootstrap");
+        assert_eq!((unreachable.responded, unreachable.node_count), (0, 2));
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor ed2k status test directory removal failed: {error}");
+        }
+    }
+
     /// `daemon.task.delete`：文件删不掉时回报「任务已保留」而不是成功，任务记录与文件都在
     /// （#986：此前单任务删除吞掉清理失败，客户端误以为已删除）。
     #[tokio::test]
@@ -3608,7 +4263,7 @@ mod tests {
             .recv()
             .await
             .expect("hash result reflows to actor");
-        super::commit_maintenance(event, &mut engine).await;
+        super::commit_maintenance(event, &mut engine, &events).await;
         let expected =
             "sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned();
         match response.await.expect("hash acknowledged") {
@@ -3669,7 +4324,7 @@ mod tests {
             tokio::select! {
                 result = &mut response => result.expect("rejection acknowledged"),
                 Some(event) = maintenance_rx.recv() => {
-                    super::commit_maintenance(event, &mut engine).await;
+                    super::commit_maintenance(event, &mut engine, &events).await;
                     response.await.expect("rejection acknowledged")
                 }
             }

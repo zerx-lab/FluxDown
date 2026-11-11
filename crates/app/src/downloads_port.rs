@@ -277,6 +277,18 @@ impl AgentDownloadsPort {
                         .await?;
                     return Ok(DownloadsResult::BtStatus(status));
                 }
+                DownloadsCommand::Ed2kStatus(params) => {
+                    let status: fluxdown_protocol::Ed2kStatusDto = client
+                        .call(method::DAEMON_TASK_ED2K_STATUS, Some(params))
+                        .await?;
+                    return Ok(DownloadsResult::Ed2kStatus(Box::new(status)));
+                }
+                DownloadsCommand::Ed2kIdCheck => {
+                    let network = client
+                        .call(method::DAEMON_ED2K_ID_CHECK, Some(json!({})))
+                        .await?;
+                    return Ok(DownloadsResult::Ed2kNetwork(network));
+                }
                 DownloadsCommand::BtGuardAddEntry(params) => {
                     (method::DAEMON_BT_GUARD_ENTRIES_ADD, serialize(params)?)
                 }

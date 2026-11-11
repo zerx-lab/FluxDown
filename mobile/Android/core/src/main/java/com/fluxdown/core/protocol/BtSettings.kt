@@ -171,18 +171,23 @@ object BtDuration {
 
 // ───────────────────────────── eD2K ─────────────────────────────
 
-enum class Ed2kSettingsTab { General, Servers }
+enum class Ed2kSettingsTab { General, Servers, Kad }
 
-/** eD2K 页的每一行。`nodesDatUrl` 为 Android 补充行（GPUI 有、iOS 未做）。 */
+/**
+ * eD2K 页的每一行（与 GPUI / Web 同序同键）。`IdCheck` 是动作行，不写配置：借监听端口键判定可见性
+ * （daemon 配置已加载才可检测）。
+ */
 enum class Ed2kSettingsRow(val slug: String, val tab: Ed2kSettingsTab, val configKey: String) {
     Kad("kad", Ed2kSettingsTab.General, "ed2k_enable_kad"),
     Upnp("upnp", Ed2kSettingsTab.General, "ed2k_enable_upnp"),
     ListenPort("listenPort", Ed2kSettingsTab.General, "ed2k_listen_port"),
+    IdCheck("idCheck", Ed2kSettingsTab.General, "ed2k_listen_port"),
     ServerList("serverList", Ed2kSettingsTab.Servers, "ed2k_server_list"),
     ServerSub("serverSub", Ed2kSettingsTab.Servers, "ed2k_server_sub_enabled"),
     ServerSubUrls("serverSubUrls", Ed2kSettingsTab.Servers, "ed2k_server_sub_urls"),
-    NodesDatUrl("nodesDatUrl", Ed2kSettingsTab.Servers, "ed2k_nodes_dat_url"),
-    ServerSubStatus("serverSubStatus", Ed2kSettingsTab.Servers, "ed2k_server_sub_cache");
+    ServerSubStatus("serverSubStatus", Ed2kSettingsTab.Servers, "ed2k_server_sub_cache"),
+    NodesSubUrls("nodesSubUrls", Ed2kSettingsTab.Kad, "ed2k_nodes_dat_url"),
+    NodesSubStatus("nodesSubStatus", Ed2kSettingsTab.Kad, "ed2k_nodes_dat_count");
 
     val id: String get() = "ed2k.$slug"
 
@@ -198,15 +203,19 @@ enum class Ed2kSettingsRow(val slug: String, val tab: Ed2kSettingsTab, val confi
 
 // ───────────────────────────── 订阅 ─────────────────────────────
 
-/** 订阅种类：存储键与列表格式。 */
+/**
+ * 订阅种类：存储键与列表格式。`format == null` 表示 [cacheKey] 直接存整数条数（Kad 节点：daemon 缓存的是
+ * 二进制 nodes.dat，只公开引导节点数）。
+ */
 enum class SubscriptionKind(
     val cacheKey: String,
     val updatedAtKey: String,
-    val format: SubscriptionListFormat,
+    val format: SubscriptionListFormat?,
     val rowId: String,
 ) {
     BtTrackers("bt_tracker_sub_cache", "bt_tracker_sub_updated_at", SubscriptionListFormat.Lines, BtSettingsRow.TrackerSubStatus.id),
     Ed2kServers("ed2k_server_sub_cache", "ed2k_server_sub_updated_at", SubscriptionListFormat.Comma, Ed2kSettingsRow.ServerSubStatus.id),
+    Ed2kNodes("ed2k_nodes_dat_count", "ed2k_nodes_dat_updated_at", null, Ed2kSettingsRow.NodesSubStatus.id),
 }
 
 /** 订阅状态的显示值：配置快照（缓存条数 / 更新时间）与本次刷新结果合并。 */
@@ -214,7 +223,8 @@ data class SubscriptionStatusModel(val count: Int, /** Unix 秒；0 = 从未更�
     companion object {
         /** 刷新结果可能先于配置快照到达：更新时间更晚的一方为准；失败的刷新不改变显示值（daemon 沿用旧缓存）。 */
         fun make(kind: SubscriptionKind, form: SettingsForm, fresh: SubscriptionRefreshOutcome?): SubscriptionStatusModel {
-            val storedCount = kind.format.count(form.string(kind.cacheKey))
+            val storedCount = kind.format?.count(form.string(kind.cacheKey))
+                ?: form.int(kind.cacheKey, 0).coerceAtLeast(0)
             val storedAt = maxOf(0L, form.long(kind.updatedAtKey, 0))
             if (fresh == null || !fresh.success || fresh.updatedAt <= storedAt) {
                 return SubscriptionStatusModel(storedCount, storedAt)

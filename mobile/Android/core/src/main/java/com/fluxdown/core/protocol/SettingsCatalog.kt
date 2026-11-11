@@ -160,6 +160,8 @@ object SettingsCatalog {
         daemon("ed2k_server_sub_cache", readOnly, ""),
         daemon("ed2k_server_sub_updated_at", readOnly, "0"),
         daemon("ed2k_nodes_dat_url", text, ""),
+        daemon("ed2k_nodes_dat_count", readOnly, "0"),
+        daemon("ed2k_nodes_dat_updated_at", readOnly, "0"),
         // 代理
         daemon("proxy_mode", choice(proxyModes), "none"),
         daemon("proxy_type", choice(proxyTypes), "http"),

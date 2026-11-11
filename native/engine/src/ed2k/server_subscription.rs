@@ -327,9 +327,16 @@ pub async fn fetch_server_subscriptions(
 /// ```
 #[must_use]
 pub fn normalize_subscription_url(src: &str) -> String {
+    unwrap_list_link(src, "serverlist")
+}
+
+/// 解开 eD2K 列表链接壳 `ed2k://|<kind>|<url>|/`（`kind` 为小写 ASCII，如 `serverlist` /
+/// `nodeslist`），取出内层 URL；不是该形态的输入去掉首尾空白后原样返回。
+pub(crate) fn unwrap_list_link(src: &str, kind: &str) -> String {
     let s = src.trim();
     let lower = s.to_ascii_lowercase();
-    if let Some(rest) = lower.strip_prefix("ed2k://|serverlist|") {
+    let prefix = format!("ed2k://|{kind}|");
+    if let Some(rest) = lower.strip_prefix(&prefix) {
         // 用小写前缀长度切原串（ASCII 前缀，字节偏移安全），保留内层大小写。
         let inner = &s[s.len() - rest.len()..];
         // 去掉尾部 `|/` 或 `|`。

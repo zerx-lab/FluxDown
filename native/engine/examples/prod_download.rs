@@ -36,17 +36,14 @@ async fn main() {
 
     let client = shared_client();
     client.configure(ClientConfig {
-        listen_port: 0,
-        udp_port: 0,
         servers,
-        enable_upnp: false,
-        enable_kad: false,
+        ..ClientConfig::default()
     });
 
     // 1. 真实 find_sources（多服务器并发聚合）。
     println!("calling find_sources...");
     let sources = match client.find_sources(&FILE_HASH, FILE_SIZE, false).await {
-        Ok(s) => s,
+        Ok(query) => query.sources,
         Err(e) => {
             println!("find_sources failed: {e}");
             return;

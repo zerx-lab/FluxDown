@@ -21,6 +21,7 @@ pub(crate) mod cloud_push;
 pub(crate) mod doctor;
 pub(crate) mod download;
 pub(crate) mod ed2k;
+mod ed2k_probe;
 mod font_family;
 pub(crate) mod general;
 mod icon_pack;

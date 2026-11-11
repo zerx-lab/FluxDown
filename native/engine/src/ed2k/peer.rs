@@ -29,6 +29,7 @@ use crate::ed2k::proto::{
     OP_STARTUPLOADREQ, PartRange, RequestParts,
 };
 use crate::ed2k::server::PeerAddr;
+use crate::ed2k::status::{PeerInfo, PeerLive};
 use crate::logger::log_info;
 use crate::speed_limiter::SpeedLimiter;
 use crate::transfer_activity::TransferTracker;
@@ -160,7 +161,7 @@ pub(crate) async fn download_block_on_stream(
     progress: &Arc<StdMutex<HashMap<u64, i64>>>,
     tracker: &TransferTracker,
 ) -> Result<[u8; 16], DownloadError> {
-    let mut session = PeerSession::open(stream, file_hash, cancel)
+    let mut session = PeerSession::open(stream, file_hash, cancel, Arc::default())
         .await
         .map_err(|error| error.source)?;
     session
@@ -198,6 +199,8 @@ pub(crate) struct PeerSession {
     stream: TcpStream,
     /// 对端 FILESTATUS 位图（空 = 持有整文件）。
     bitfield: Vec<u8>,
+    /// 该源的实况（阶段 / 排队名次 / 对端身份），供详情页读取。
+    live: Arc<PeerLive>,
 }
 
 impl PeerSession {
@@ -210,18 +213,39 @@ impl PeerSession {
         mut stream: TcpStream,
         file_hash: &[u8; 16],
         cancel: &CancellationToken,
+        live: Arc<PeerLive>,
     ) -> Result<Self, SessionOpenError> {
-        handshake(&mut stream, file_hash, cancel)
+        let info = handshake(&mut stream, file_hash, cancel)
             .await
             .map_err(|source| SessionOpenError {
                 asked: false,
                 source,
             })?;
+        live.set_info(info);
         let mut asked = false;
-        match negotiate_upload_slot(&mut stream, file_hash, cancel, &mut asked).await {
-            Ok(bitfield) => Ok(Self { stream, bitfield }),
+        match negotiate_upload_slot(&mut stream, file_hash, cancel, &mut asked, &live).await {
+            Ok(bitfield) => {
+                live.set_transferring();
+                Ok(Self {
+                    stream,
+                    bitfield,
+                    live,
+                })
+            }
             Err(source) => Err(SessionOpenError { asked, source }),
         }
+    }
+
+    /// 对端持有的块数（`parts_total` 为文件块总数；空位图 = 持有整文件）。
+    pub(crate) fn held_parts(&self, parts_total: u64) -> u32 {
+        let held = if self.bitfield.is_empty() {
+            parts_total
+        } else {
+            (0..parts_total)
+                .filter(|block| peer_has_block(&self.bitfield, *block))
+                .count() as u64
+        };
+        u32::try_from(held).unwrap_or(u32::MAX)
     }
 
     /// 在本连接上下载一个块。成功后连接仍可继续下载其它块；返回错误后
@@ -371,13 +395,17 @@ impl PeerSession {
                         .map(|a| a.to_string())
                         .unwrap_or_default();
                     log_info!("[ed2k-peer] {} queued, rank={}", remote, rank);
-                    wait_for_accept(stream).await?;
+                    self.live.set_queued(rank);
+                    wait_for_accept(stream, &self.live).await?;
+                    self.live.set_transferring();
                     resend = true;
                 }
                 Ed2kMessage::OutOfPartReqs => {
                     // 对端本次上传会话到上限：我方被放回其等待队列（不计入重询节流），
                     // 再次轮到时在同一连接上收到 ACCEPT。
-                    wait_for_accept(stream).await?;
+                    self.live.set_queued(0);
+                    wait_for_accept(stream, &self.live).await?;
+                    self.live.set_transferring();
                     resend = true;
                 }
                 Ed2kMessage::NoFile { .. } => {
@@ -438,13 +466,23 @@ fn build_hello_payload() -> Vec<u8> {
     payload
 }
 
-/// 握手：发合规 HELLO，收 HELLOANSWER。缺尾部 server endpoint 或缺能力 tag，
-/// 现代 peer 会视为畸形/异常客户端直接断开（实网验证）。
+/// `OP_HELLOANSWER` 里的昵称 tag。
+const CT_NAME: u8 = 0x01;
+/// `OP_HELLOANSWER` 里的 eMule 兼容客户端版本 tag：
+/// `compatible_client(8) | major(7) | minor(7) | update(3) | build(7)`。
+const CT_EMULE_VERSION: u8 = 0xFB;
+/// 握手应答里最多解析的 tag 数（真实客户端不超过十来个）。
+const MAX_HELLO_TAGS: u32 = 64;
+/// 昵称展示上限（字符）。
+const MAX_NICKNAME_CHARS: usize = 64;
+
+/// 握手：发合规 HELLO，收 HELLOANSWER 并取出对端身份。缺尾部 server endpoint 或缺
+/// 能力 tag，现代 peer 会视为畸形/异常客户端直接断开（实网验证）。
 async fn handshake(
     stream: &mut TcpStream,
     _file_hash: &[u8; 16],
     cancel: &CancellationToken,
-) -> Result<(), DownloadError> {
+) -> Result<PeerInfo, DownloadError> {
     let frame = proto::frame(OP_HELLO, &build_hello_payload());
     stream.write_all(&frame).await.map_err(DownloadError::Io)?;
 
@@ -458,8 +496,144 @@ async fn handshake(
     )
     .await
     .map_err(|_| DownloadError::Ed2k("peer handshake stalled".into()))??;
-    let _ = proto::dispatch(proto_byte, opcode, &payload, false)?;
-    Ok(())
+    match proto::dispatch(proto_byte, opcode, &payload, false)? {
+        Ed2kMessage::HelloAnswer { .. } => Ok(parse_hello_answer(&payload)),
+        _ => Ok(PeerInfo::default()),
+    }
+}
+
+/// 从 `OP_HELLOANSWER` 载荷（`user_hash(16) + client_id(4) + port(2) + tagCount(4) + tags…`）
+/// 取出昵称与客户端软件。只用于展示：任何一处越界 / 未知 tag 类型即停，返回已取到的部分。
+fn parse_hello_answer(payload: &[u8]) -> PeerInfo {
+    let mut nickname = String::new();
+    let mut emule_version = None;
+    let count = payload
+        .get(22..26)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map_or(0, u32::from_le_bytes);
+    let mut offset = 26;
+    for _ in 0..count.min(MAX_HELLO_TAGS) {
+        let Some((name, value, next)) = read_hello_tag(payload, offset) else {
+            break;
+        };
+        offset = next;
+        match (name, value) {
+            (CT_NAME, HelloTagValue::Str(bytes)) => {
+                nickname = String::from_utf8_lossy(bytes)
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(MAX_NICKNAME_CHARS)
+                    .collect::<String>()
+                    .trim()
+                    .to_owned();
+            }
+            (CT_EMULE_VERSION, HelloTagValue::U32(version)) => emule_version = Some(version),
+            _ => {}
+        }
+    }
+    PeerInfo {
+        client: client_software(emule_version),
+        nickname,
+    }
+}
+
+enum HelloTagValue<'a> {
+    Str(&'a [u8]),
+    U32(u32),
+    Other,
+}
+
+/// 读一个 eD2K tag，返回 `(单字节名, 值, 下一个 tag 的偏移)`；多字节名记 0。
+/// 支持标准名（`type + nameLen(u16) + name`）与紧凑名（`type|0x80 + id`）。
+fn read_hello_tag(bytes: &[u8], offset: usize) -> Option<(u8, HelloTagValue<'_>, usize)> {
+    let u16_at = |at: usize| -> Option<usize> {
+        let raw = <[u8; 2]>::try_from(bytes.get(at..at.checked_add(2)?)?).ok()?;
+        Some(usize::from(u16::from_le_bytes(raw)))
+    };
+    let type_byte = *bytes.get(offset)?;
+    let mut at = offset + 1;
+    let name = if type_byte & 0x80 != 0 {
+        let id = *bytes.get(at)?;
+        at += 1;
+        id
+    } else {
+        let len = u16_at(at)?;
+        at += 2;
+        let name = bytes.get(at..at.checked_add(len)?)?;
+        at += len;
+        match name {
+            [id] => *id,
+            _ => 0,
+        }
+    };
+    let (value, len) = match type_byte & 0x7f {
+        // hash16
+        0x01 => (HelloTagValue::Other, 16),
+        0x02 => {
+            let len = u16_at(at)?;
+            at += 2;
+            (
+                HelloTagValue::Str(bytes.get(at..at.checked_add(len)?)?),
+                len,
+            )
+        }
+        0x03 => {
+            let raw = <[u8; 4]>::try_from(bytes.get(at..at.checked_add(4)?)?).ok()?;
+            (HelloTagValue::U32(u32::from_le_bytes(raw)), 4)
+        }
+        // float32
+        0x04 => (HelloTagValue::Other, 4),
+        // bool / u8
+        0x05 | 0x09 => (HelloTagValue::Other, 1),
+        // blob：len(u32) + 数据
+        0x07 => {
+            let raw = <[u8; 4]>::try_from(bytes.get(at..at.checked_add(4)?)?).ok()?;
+            at += 4;
+            (
+                HelloTagValue::Other,
+                usize::try_from(u32::from_le_bytes(raw)).ok()?,
+            )
+        }
+        0x08 => (HelloTagValue::Other, 2),
+        0x0B => (HelloTagValue::Other, 8),
+        // str1..str16：长度编码在类型里
+        ty @ 0x11..=0x20 => {
+            let len = usize::from(ty - 0x10);
+            (
+                HelloTagValue::Str(bytes.get(at..at.checked_add(len)?)?),
+                len,
+            )
+        }
+        _ => return None,
+    };
+    let next = at.checked_add(len)?;
+    (next <= bytes.len()).then_some((name, value, next))
+}
+
+/// 由 `CT_EMULE_VERSION` 推出客户端软件名与版本；没有该 tag 的是原版 eDonkey 系客户端。
+fn client_software(emule_version: Option<u32>) -> String {
+    let Some(version) = emule_version else {
+        return "eDonkey".to_owned();
+    };
+    let compatible = version >> 24;
+    let major = (version >> 17) & 0x7f;
+    let minor = (version >> 10) & 0x7f;
+    let update = (version >> 7) & 0x07;
+    let name = match compatible {
+        // eMule 用字母表示修订号：0.50a。
+        0 => {
+            let letter = char::from(b'a' + u8::try_from(update).unwrap_or(0));
+            return format!("eMule {major}.{minor}{letter}");
+        }
+        1 => "cDonkey",
+        2 => "xMule",
+        3 => "aMule",
+        4 | 40 | 68 => "Shareaza",
+        10 | 152 => "MLDonkey",
+        20 => "lphant",
+        other => return format!("eD2K client #{other} {major}.{minor}.{update}"),
+    };
+    format!("{name} {major}.{minor}.{update}")
 }
 
 /// 编码 peer 用「特殊名」字符串 tag：`type(0x02) + nameLen(2=1) + name(1) + valLen(2) + val`。
@@ -491,6 +665,7 @@ async fn negotiate_upload_slot(
     file_hash: &[u8; 16],
     cancel: &CancellationToken,
     asked: &mut bool,
+    live: &PeerLive,
 ) -> Result<Vec<u8>, DownloadError> {
     // FileRequest（0x58）→ 期待 FileAnswer(0x59) / NoFile(0x48)。
     let req = proto::frame(OP_REQUESTFILENAME, file_hash);
@@ -539,7 +714,12 @@ async fn negotiate_upload_slot(
             }
             OP_QUEUERANK | proto::OP_QUEUERANKING => {
                 // 排队中：等待 ACCEPT（QUEUE_TIMEOUT 兜底）。
-                wait_for_accept(stream).await?;
+                let rank = match proto::dispatch(proto_byte, opcode, &payload, false) {
+                    Ok(Ed2kMessage::QueueRank(rank)) => rank,
+                    _ => 0,
+                };
+                live.set_queued(rank);
+                wait_for_accept(stream, live).await?;
                 return Ok(bitfield);
             }
             proto::OP_OUTOFPARTREQS => {
@@ -709,8 +889,8 @@ async fn accept_part(
     Ok(())
 }
 
-/// 等待 ACCEPTUPLOAD（排队后），QUEUE_TIMEOUT 兜底。
-async fn wait_for_accept(stream: &mut TcpStream) -> Result<(), DownloadError> {
+/// 等待 ACCEPTUPLOAD（排队后），QUEUE_TIMEOUT 兜底；期间对端更新的名次写入 `live`。
+async fn wait_for_accept(stream: &mut TcpStream, live: &PeerLive) -> Result<(), DownloadError> {
     let deadline = tokio::time::Instant::now() + QUEUE_TIMEOUT;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -725,8 +905,8 @@ async fn wait_for_accept(stream: &mut TcpStream) -> Result<(), DownloadError> {
         match frame {
             Ok(Ok((proto_byte, opcode, payload))) => {
                 match proto::dispatch(proto_byte, opcode, &payload, false)? {
-                    Ed2kMessage::QueueRank(_) => {} // 仍在排队。
-                    _ => return Ok(()),             // ACCEPT 或数据帧 → 退出等待。
+                    Ed2kMessage::QueueRank(rank) => live.set_queued(rank), // 仍在排队。
+                    _ => return Ok(()), // ACCEPT 或数据帧 → 退出等待。
                 }
             }
             Ok(Err(e)) => return Err(e),
@@ -784,6 +964,46 @@ mod tests {
         assert_eq!(u32::from_le_bytes([p[23], p[24], p[25], p[26]]), 4);
         let tag = super::encode_peer_u32_tag(0xFE, 1 << 4);
         assert!(p.windows(tag.len()).any(|w| w == tag.as_slice()));
+    }
+
+    #[test]
+    fn hello_answer_yields_nickname_and_client_software() {
+        use super::{encode_peer_string_tag, encode_peer_u32_tag, parse_hello_answer};
+        let header = |tag_count: u32| {
+            let mut payload = vec![0xAA; 16]; // user hash
+            payload.extend_from_slice(&1u32.to_le_bytes()); // client id
+            payload.extend_from_slice(&4662u16.to_le_bytes()); // port
+            payload.extend_from_slice(&tag_count.to_le_bytes());
+            payload
+        };
+
+        // eMule 0.50a：标准名 tag，昵称带首尾空白与控制字符。
+        let mut emule = header(3);
+        emule.extend_from_slice(&encode_peer_string_tag(0x01, "  小明\u{7}  "));
+        emule.extend_from_slice(&encode_peer_u32_tag(0x11, 0x3C));
+        emule.extend_from_slice(&encode_peer_u32_tag(0xFB, 50 << 10));
+        emule.extend_from_slice(&[0u8; 6]); // server ip + port
+        let info = parse_hello_answer(&emule);
+        assert_eq!(info.nickname, "小明");
+        assert_eq!(info.client, "eMule 0.50a");
+
+        // aMule 2.3.3：紧凑名 tag（type|0x80 + id）。
+        let mut amule = header(1);
+        amule.extend_from_slice(&[0x83, 0xFB]);
+        amule.extend_from_slice(&((3u32 << 24) | (2 << 17) | (3 << 10) | (3 << 7)).to_le_bytes());
+        assert_eq!(parse_hello_answer(&amule).client, "aMule 2.3.3");
+
+        // 载荷截断在版本 tag 中间：保留已取到的昵称，客户端按无版本 tag 处理。
+        let truncated = &emule[..emule.len() - 9];
+        let info = parse_hello_answer(truncated);
+        assert_eq!(info.nickname, "小明");
+        assert_eq!(info.client, "eDonkey");
+
+        // 声明的 tag 数远多于实际、未知 tag 类型、空载荷都不越界。
+        let mut lying = header(u32::MAX);
+        lying.extend_from_slice(&[0x7F, 0x01, 0x00, 0x01, 0xFF]);
+        assert!(parse_hello_answer(&lying).nickname.is_empty());
+        assert_eq!(parse_hello_answer(&[]).client, "eDonkey");
     }
 
     #[test]

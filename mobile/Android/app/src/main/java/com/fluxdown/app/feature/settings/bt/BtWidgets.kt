@@ -31,13 +31,20 @@ import com.fluxdown.app.feature.settings.PickerSpec
 import com.fluxdown.app.feature.settings.SettingFailure
 import com.fluxdown.app.feature.settings.SettingRowBox
 import com.fluxdown.app.feature.settings.SettingsCtx
+import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.core.host.HostException
 import com.fluxdown.core.protocol.BtDuration
 import com.fluxdown.core.protocol.BtDurationUnit
 import com.fluxdown.core.protocol.BtRatio
+import com.fluxdown.core.protocol.Ed2kIdCheckFormat
+import com.fluxdown.core.protocol.Ed2kIdCheckTexts
+import com.fluxdown.core.protocol.Ed2kIdKind
+import com.fluxdown.core.protocol.Ed2kNetworkDto
+import com.fluxdown.core.protocol.Ed2kNodesSubRefreshResponse
 import com.fluxdown.core.protocol.Ed2kServerSubRefreshResponse
+import com.fluxdown.core.protocol.Ed2kUpnpState
 import com.fluxdown.core.protocol.HostMethod
 import com.fluxdown.core.protocol.SubscriptionKind
 import com.fluxdown.core.protocol.SubscriptionListFormat
@@ -299,6 +306,10 @@ private fun textsFor(kind: SubscriptionKind) = when (kind) {
         R.string.ed2kServerSubStatus, R.string.ed2kServerSubUpdatedAt, R.string.ed2kServerSubNeverUpdated,
         R.string.ed2kServerSubUpdateNow, R.string.ed2kServerSubUpdating, R.string.ed2kServerSubUpdateFailed,
     )
+    SubscriptionKind.Ed2kNodes -> SubscriptionTexts(
+        R.string.ed2kNodesSubStatus, R.string.ed2kNodesSubUpdatedAt, R.string.ed2kNodesSubNeverUpdated,
+        R.string.ed2kNodesSubUpdateNow, R.string.ed2kNodesSubUpdating, R.string.ed2kNodesSubUpdateFailed,
+    )
 }
 
 private sealed interface RefreshPhase {
@@ -322,7 +333,7 @@ private fun relativeTimeText(unix: Long): String {
 }
 
 /**
- * 订阅状态行（BT Tracker / eD2K 服务器共用）：已订阅条数 + 更新时间（或失败原因）+「立即更新」。
+ * 订阅状态行（BT Tracker / eD2K 服务器 / Kad 节点共用）：已订阅条数 + 更新时间（或失败原因）+「立即更新」。
  * 数据来自只读的缓存 / 更新时间键；刷新调用慢 RPC，行内显示进度，页面其余部分保持可用。
  */
 internal fun GlassSectionScope.subscriptionStatusRow(ctx: SettingsCtx, kind: SubscriptionKind) {
@@ -364,11 +375,13 @@ private fun SubscriptionStatus(ctx: SettingsCtx, kind: SubscriptionKind) {
                     when (kind) {
                         SubscriptionKind.BtTrackers -> HostMethod.daemonBtTrackerSubscriptionRefresh
                         SubscriptionKind.Ed2kServers -> HostMethod.daemonEd2kServerSubscriptionRefresh
+                        SubscriptionKind.Ed2kNodes -> HostMethod.daemonEd2kNodesSubscriptionRefresh
                     },
                 )
                 val outcome = when (kind) {
                     SubscriptionKind.BtTrackers -> TrackerSubRefreshResponse.fromJson(raw).outcome
                     SubscriptionKind.Ed2kServers -> Ed2kServerSubRefreshResponse.fromJson(raw).outcome
+                    SubscriptionKind.Ed2kNodes -> Ed2kNodesSubRefreshResponse.fromJson(raw).outcome
                 }
                 fresh = outcome
                 if (outcome.success) {
@@ -402,6 +415,99 @@ private fun SubscriptionStatus(ctx: SettingsCtx, kind: SubscriptionKind) {
             icon = FluxIcons.RefreshCw,
             loading = phase == RefreshPhase.Refreshing,
             enabled = !ctx.readOnly,
+        )
+    }
+}
+
+// ───────────────────────────── eD2K ID 检测 ─────────────────────────────
+
+private sealed interface IdCheckPhase {
+    data object Idle : IdCheckPhase
+    data object Running : IdCheckPhase
+    data class Done(val net: Ed2kNetworkDto) : IdCheckPhase
+    data class Failed(val detail: String) : IdCheckPhase
+}
+
+/**
+ * HighID / LowID 检测行：调慢方法 `daemon.ed2k.idCheck`，结果只存本行状态（不落配置，离开页面即丢）。
+ * 结果文本由 [Ed2kIdCheckFormat] 统一格式化。
+ */
+internal fun GlassSectionScope.ed2kIdCheckRow(ctx: SettingsCtx, rowId: String) {
+    row {
+        SettingRowBox(ctx, rowId, null) {
+            Ed2kIdCheck(ctx)
+        }
+    }
+}
+
+@Composable
+private fun Ed2kIdCheck(ctx: SettingsCtx) {
+    val container = LocalAppContainer.current
+    val actions = LocalTaskActions.current
+    val scope = rememberCoroutineScope()
+    var phase by remember { mutableStateOf<IdCheckPhase>(IdCheckPhase.Idle) }
+    val high = str(R.string.ed2kIdHigh)
+    val low = str(R.string.ed2kIdLow)
+    val none = str(R.string.ed2kIdNone)
+    val upnpOff = str(R.string.ed2kUpnpDisabled)
+    val upnpPending = str(R.string.ed2kUpnpPending)
+    val upnpMapped = str(R.string.ed2kUpnpMapped)
+    val upnpFailed = str(R.string.ed2kUpnpFailed)
+    val resultTemplate = str(R.string.ed2kIdCheckResult)
+    val texts = Ed2kIdCheckTexts(
+        idLabel = {
+            when (it) {
+                Ed2kIdKind.High -> high
+                Ed2kIdKind.Low -> low
+                Ed2kIdKind.None -> none
+            }
+        },
+        upnpLabel = {
+            when (it) {
+                Ed2kUpnpState.Disabled -> upnpOff
+                Ed2kUpnpState.Pending -> upnpPending
+                Ed2kUpnpState.Mapped -> upnpMapped
+                Ed2kUpnpState.Failed -> upnpFailed
+            }
+        },
+        result = { id, server, port, upnp ->
+            resultTemplate.fill("id" to id, "server" to server, "port" to port, "upnp" to upnp)
+        },
+        lowHint = str(R.string.ed2kIdLowHint),
+        failed = str(R.string.ed2kIdCheckFailed),
+    )
+    val result = when (val p = phase) {
+        IdCheckPhase.Idle, IdCheckPhase.Running -> null
+        is IdCheckPhase.Done -> Ed2kIdCheckFormat.text(p.net, texts)
+        is IdCheckPhase.Failed -> Ed2kIdCheckFormat.failed(p.detail, texts)
+    }
+    val running = phase == IdCheckPhase.Running
+
+    fun run() {
+        if (running) return
+        phase = IdCheckPhase.Running
+        scope.launch {
+            phase = try {
+                IdCheckPhase.Done(Ed2kNetworkDto.fromJson(container.session.callJson(HostMethod.daemonEd2kIdCheck)))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: HostException) {
+                IdCheckPhase.Failed(actions.errorText(e))
+            }
+        }
+    }
+
+    Column {
+        FluxListRow(
+            title = str(R.string.ed2kIdCheck),
+            subtitle = result ?: str(R.string.ed2kIdCheckDesc),
+        )
+        FluxActionRow(
+            title = str(if (running) R.string.ed2kIdCheckRunning else R.string.ed2kIdCheckRun),
+            onClick = { run() },
+            icon = FluxIcons.RefreshCw,
+            loading = running,
+            enabled = !ctx.readOnly && !running,
         )
     }
 }

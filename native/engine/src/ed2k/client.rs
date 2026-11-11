@@ -41,6 +41,8 @@ use crate::ed2k::server::{
     PeerAddr, build_getsources_payload, build_login_payload, id_to_ipv4, read_until_found_sources,
     read_until_id_change,
 };
+use crate::ed2k::status::{ClientNetwork, IdKind, UpnpState};
+use crate::ed2k::upnp::UpnpMapping;
 use crate::logger::{log_error, log_info};
 
 /// 单次服务器登录超时。
@@ -62,6 +64,10 @@ const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// "多个 ED2K server 并发找源"）。
 const MAX_QUERY_SERVERS: usize = 12;
 
+/// HighID / LowID 检测等待 UPnP 映射结果的上限（IGD 查找自身约 10s 超时）。
+const UPNP_SETTLE_TIMEOUT: Duration = Duration::from_secs(12);
+const UPNP_SETTLE_POLL: Duration = Duration::from_millis(200);
+
 /// 一个已发现的源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
@@ -71,6 +77,39 @@ pub enum Source {
     LowId(u32),
 }
 
+/// 单台服务器的原始应答：`(host:port, 服务器返回的 (client_id, port) 列表 | 失败)`。
+type ServerAnswer = (String, Result<Vec<(u32, u16)>, DownloadError>);
+
+/// [`Ed2kClient::check_id`] 的检测目标。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum IdCheckTarget {
+    /// 已有服务器会话时报告它，否则同 [`IdCheckTarget::List`]。
+    #[default]
+    Auto,
+    /// 只报告当前会话，不发起连接。
+    Session,
+    /// 本轮找源会查询的服务器（手填 + 订阅）。
+    List,
+    /// 指定的一台服务器 `host:port`。
+    Server(String),
+}
+
+/// 一台服务器的找源结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerQuery {
+    /// `host:port`。
+    pub addr: String,
+    /// 返回的源数（跨服务器去重前），或登录 / 查询失败的原因。
+    pub result: Result<u32, String>,
+}
+
+/// [`Ed2kClient::find_sources`] 的结果：聚合去重后的源与各服务器的应答情况。
+#[derive(Debug, Clone, Default)]
+pub struct SourceQuery {
+    pub sources: Vec<Source>,
+    pub servers: Vec<ServerQuery>,
+}
+
 /// 客户端运行期配置（来自 DB config，由引擎宿主注入）。
 #[derive(Debug, Clone, Default)]
 pub struct ClientConfig {
@@ -78,12 +117,24 @@ pub struct ClientConfig {
     pub listen_port: u16,
     /// UDP 端口（Kad 用，本模块占位；0 = 让 OS 选）。
     pub udp_port: u16,
-    /// 服务器地址列表（`host:port`，手填+订阅合并后）。
+    /// 服务器地址列表（`host:port`，手填+订阅合并后，手填在前）。
     pub servers: Vec<String>,
+    /// `servers` 开头有多少项来自手填列表（其余来自订阅）。
+    pub manual_servers: usize,
     /// 是否启用 UPnP 端口映射（争取 NAT 后 HighID）。
     pub enable_upnp: bool,
     /// 是否启用 Kad DHT 找源。
     pub enable_kad: bool,
+}
+
+/// UPnP 映射的状态与句柄。
+#[derive(Default)]
+struct UpnpSlot {
+    state: UpnpState,
+    /// 映射句柄（drop 时停止续租）。
+    mapping: Option<UpnpMapping>,
+    /// 每次启停递增；迟到的映射结果据此丢弃。
+    generation: u64,
 }
 
 /// 队列顺序与服务器写入顺序一致；失败包不携带 client_id。
@@ -144,8 +195,8 @@ pub struct Ed2kClient {
     pending: PendingCallbacks,
     /// 已连通的服务器地址（重连/日志用）。
     connected_server: StdMutex<Option<String>>,
-    /// UPnP 映射句柄（drop 时移除映射）；仅 enable_upnp 时存在。
-    upnp: StdMutex<Option<crate::ed2k::upnp::UpnpMapping>>,
+    /// UPnP 映射状态与句柄；随 `enable_upnp` 设置启停。
+    upnp: StdMutex<UpnpSlot>,
 }
 
 static SHARED: OnceLock<Arc<Ed2kClient>> = OnceLock::new();
@@ -170,12 +221,13 @@ impl Ed2kClient {
             session_changed: Notify::new(),
             pending: Arc::new(StdMutex::new(VecDeque::new())),
             connected_server: StdMutex::new(None),
-            upnp: StdMutex::new(None),
+            upnp: StdMutex::new(UpnpSlot::default()),
         }
     }
 
-    /// 注入/更新配置（引擎宿主在启动与 config 变化时调用）。
-    pub fn configure(&self, config: ClientConfig) {
+    /// 注入/更新配置（任务起跑、每轮找源前与宿主改设置时调用）。UPnP 开关热生效：
+    /// 监听器已就绪时立即建立 / 撤销映射。监听端口只在监听器首次绑定时读取。
+    pub fn configure(self: &Arc<Self>, config: ClientConfig) {
         let mut guard = self.config.lock().unwrap_or_else(|poison| {
             log_error!(
                 "[ed2k-client] recovering poisoned configuration: {}",
@@ -186,7 +238,243 @@ impl Ed2kClient {
         });
         *guard = config;
         drop(guard);
+        self.sync_upnp(false);
         self.session_changed.notify_one();
+    }
+
+    /// 让 UPnP 映射与设置一致：启用且监听器已就绪 → 建立映射；关闭 → 停止续租
+    /// （已有映射在租约到期后失效）。`retry_failed` 为真时对上次失败的映射再试一次
+    /// （仅用户主动检测时；每轮找源都重试会反复广播 SSDP）。
+    fn sync_upnp(self: &Arc<Self>, retry_failed: bool) {
+        let port = u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0);
+        let (enabled, udp_port) = match self.config.lock() {
+            Ok(config) => (config.enable_upnp, config.udp_port),
+            Err(error) => {
+                log_error!("[ed2k-client] UPnP config lock poisoned: {}", error);
+                return;
+            }
+        };
+        let generation = {
+            let Ok(mut slot) = self.upnp.lock() else {
+                log_error!("[ed2k-client] UPnP state lock poisoned");
+                return;
+            };
+            if !enabled {
+                if slot.state != UpnpState::Disabled {
+                    slot.state = UpnpState::Disabled;
+                    slot.mapping = None;
+                    slot.generation += 1;
+                    log_info!("[ed2k-client] UPnP mapping disabled");
+                }
+                return;
+            }
+            let start = match slot.state {
+                UpnpState::Disabled => true,
+                UpnpState::Failed => retry_failed,
+                UpnpState::Pending | UpnpState::Mapped => false,
+            };
+            if port == 0 || !start {
+                return;
+            }
+            slot.state = UpnpState::Pending;
+            slot.generation += 1;
+            slot.generation
+        };
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let mapping = crate::ed2k::upnp::spawn_upnp(port, udp_port).await;
+            let mapped = {
+                let Ok(mut slot) = this.upnp.lock() else {
+                    log_error!("[ed2k-client] UPnP state lock poisoned");
+                    return;
+                };
+                if slot.generation != generation {
+                    // 映射期间设置被关闭或重启：丢弃这次结果（句柄 drop 即停止续租）。
+                    return;
+                }
+                match mapping {
+                    Some(mapping) => {
+                        log_info!(
+                            "[ed2k-client] UPnP mapping active (external ip: {:?})",
+                            mapping.external_ip()
+                        );
+                        slot.state = UpnpState::Mapped;
+                        slot.mapping = Some(mapping);
+                        true
+                    }
+                    None => {
+                        slot.state = UpnpState::Failed;
+                        false
+                    }
+                }
+            };
+            if mapped {
+                this.relogin_for_high_id().await;
+            }
+        });
+    }
+
+    /// UPnP 映射建好时会话若仍是 LowID（登录早于映射完成），断开会话让重连器用同一监听
+    /// 端口重新登录。LowID 会话没有待决回调（LowID 源只在本机 HighID 时使用），在途的
+    /// peer 连接不经过服务器，不受影响。
+    async fn relogin_for_high_id(&self) {
+        let mut guard = self.server_tx.lock().await;
+        if guard.is_none() || self.is_high_id() {
+            return;
+        }
+        let session = self.session_gen.load(Ordering::Relaxed);
+        *guard = None;
+        drop(guard);
+        log_info!("[ed2k-client] port mapped while LowID; re-logging in for HighID");
+        self.clear_session(session);
+    }
+
+    /// 运行期网络状态（不发起任何连接）。
+    #[must_use]
+    pub fn network(&self) -> ClientNetwork {
+        let client_id = self.client_id.load(Ordering::Relaxed);
+        let server = self
+            .connected_server
+            .lock()
+            .ok()
+            .and_then(|server| server.clone())
+            .unwrap_or_default();
+        let (upnp, external_ip) = match self.upnp.lock() {
+            Ok(slot) => (
+                slot.state,
+                slot.mapping
+                    .as_ref()
+                    .and_then(UpnpMapping::external_ip)
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+            ),
+            Err(_) => (UpnpState::Disabled, String::new()),
+        };
+        ClientNetwork {
+            id: IdKind::from_client_id(client_id),
+            client_id,
+            server,
+            listen_port: u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0),
+            upnp,
+            external_ip,
+        }
+    }
+
+    /// 当前配置的副本。
+    pub(crate) fn config_snapshot(&self) -> ClientConfig {
+        match self.config.lock() {
+            Ok(config) => config.clone(),
+            Err(poison) => poison.into_inner().clone(),
+        }
+    }
+
+    /// 本轮找源会查询的服务器（配置顺序的前 [`MAX_QUERY_SERVERS`] 台合法地址）。
+    pub(crate) fn query_targets(&self) -> Vec<String> {
+        let servers = match self.config.lock() {
+            Ok(config) => config.servers.clone(),
+            Err(_) => Vec::new(),
+        };
+        servers
+            .into_iter()
+            .filter(|server| parse_hostport(server).is_some())
+            .take(MAX_QUERY_SERVERS)
+            .collect()
+    }
+
+    /// 等 UPnP 映射出结果（成功 / 失败 / 未启用），最多 [`UPNP_SETTLE_TIMEOUT`]。
+    async fn wait_upnp_settled(&self) {
+        let deadline = tokio::time::Instant::now() + UPNP_SETTLE_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
+            let pending = self
+                .upnp
+                .lock()
+                .is_ok_and(|slot| slot.state == UpnpState::Pending);
+            if !pending {
+                return;
+            }
+            tokio::time::sleep(UPNP_SETTLE_POLL).await;
+        }
+    }
+
+    /// HighID / LowID 检测。[`IdCheckTarget::Session`] 只报告当前会话；其余目标在需要时用真实
+    /// 监听端口（启用 UPnP 时先等映射结果，上次映射失败则重试一次）并发登录目标服务器，
+    /// 取第一个应答分配的 ID 后全部断开——检测不建立也不改动任务共用的持久会话。
+    ///
+    /// # Errors
+    ///
+    /// 监听端口绑定失败、目标地址非法、没有配置服务器或全部服务器登录失败。
+    pub async fn check_id(
+        self: &Arc<Self>,
+        target: IdCheckTarget,
+    ) -> Result<ClientNetwork, DownloadError> {
+        let has_session = self.server_tx.lock().await.is_some();
+        let servers = match target {
+            IdCheckTarget::Session => return Ok(self.network()),
+            IdCheckTarget::Auto if has_session => return Ok(self.network()),
+            IdCheckTarget::Auto | IdCheckTarget::List => self.query_targets(),
+            IdCheckTarget::Server(server) => {
+                let server = server.trim().to_owned();
+                if parse_hostport(&server).is_none() {
+                    return Err(DownloadError::Ed2k(format!(
+                        "invalid server address: {server}"
+                    )));
+                }
+                vec![server]
+            }
+        };
+        let listen_port = self.ensure_listener().await?;
+        self.sync_upnp(true);
+        self.wait_upnp_settled().await;
+
+        let mut join: JoinSet<(String, Result<u32, DownloadError>)> = JoinSet::new();
+        for server in servers {
+            let Some((host, port)) = parse_hostport(&server) else {
+                continue;
+            };
+            join.spawn(async move {
+                let result = match tokio::time::timeout(
+                    SERVER_CONNECT_TIMEOUT,
+                    login_server(&host, port, listen_port),
+                )
+                .await
+                {
+                    // 取到 ID 即可：流在这里 drop，连接随之关闭。
+                    Ok(Ok((_stream, client_id))) => Ok(client_id),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(DownloadError::Ed2k("login timed out".into())),
+                };
+                (server, result)
+            });
+        }
+        let mut last_error = None;
+        while let Some(joined) = join.join_next().await {
+            match joined {
+                Ok((server, Ok(client_id))) => {
+                    log_info!(
+                        "[ed2k-client] id check via {}: client_id={:#x}",
+                        server,
+                        client_id
+                    );
+                    // 其余登录随 JoinSet drop 中止。
+                    return Ok(ClientNetwork {
+                        id: IdKind::from_client_id(client_id),
+                        client_id,
+                        server,
+                        ..self.network()
+                    });
+                }
+                Ok((server, Err(error))) => {
+                    log_info!("[ed2k-client] id check login {} failed: {}", server, error);
+                    last_error = Some(error);
+                }
+                Err(error) => {
+                    last_error = Some(DownloadError::Ed2k(format!(
+                        "id check login task failed: {error}"
+                    )));
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| DownloadError::Ed2k("no ed2k servers configured".into())))
     }
 
     pub(crate) fn begin_task(self: &Arc<Self>) -> ActiveTask {
@@ -301,26 +589,7 @@ impl Ed2kClient {
         log_info!("[ed2k-client] listener bound on port {}", port);
 
         // UPnP：若启用，映射监听端口争取 HighID（best-effort，失败回退 LowID）。
-        let (enable_upnp, udp_port) = {
-            let config = self.config.lock().map_err(|error| {
-                DownloadError::Ed2k(format!("UPnP config lock poisoned: {error}"))
-            })?;
-            (config.enable_upnp, config.udp_port)
-        };
-        if enable_upnp {
-            let this = Arc::clone(self);
-            tokio::spawn(async move {
-                if let Some(mapping) = crate::ed2k::upnp::spawn_upnp(port, udp_port).await {
-                    log_info!(
-                        "[ed2k-client] UPnP mapping active (external ip: {:?})",
-                        mapping.external_ip()
-                    );
-                    if let Ok(mut g) = this.upnp.lock() {
-                        *g = Some(mapping);
-                    }
-                }
-            });
-        }
+        self.sync_upnp(false);
         Ok(port)
     }
 
@@ -513,17 +782,18 @@ impl Ed2kClient {
         });
     }
 
-    /// 通过持久会话查询某文件的源，保留 HighID 与 LowID 两类。
+    /// 向多台服务器并发查询某文件的源，保留 HighID 与 LowID 两类，并报告各服务器的应答情况。
+    /// 个别服务器失败只体现在 [`SourceQuery::servers`] 里；全部失败时 `sources` 为空。
     ///
     /// # Errors
     ///
-    /// 无会话 / 查询超时 / socket 失败 → [`DownloadError`]。
+    /// 没有配置服务器 / 查询被取消或查询任务 panic → [`DownloadError`]。
     pub async fn find_sources(
         self: &Arc<Self>,
         file_hash: &[u8; 16],
         total_bytes: u64,
         large_file: bool,
-    ) -> Result<Vec<Source>, DownloadError> {
+    ) -> Result<SourceQuery, DownloadError> {
         // 保持持久会话（供 LowID callback 中转）+ 监听器就绪，best-effort。
         let listen_port = match self.ensure_listener().await {
             Ok(port) => port,
@@ -542,46 +812,44 @@ impl Ed2kClient {
             );
         }
 
-        let servers = self
-            .config
-            .lock()
-            .map_err(|error| DownloadError::Ed2k(format!("server config lock poisoned: {error}")))?
-            .servers
-            .clone();
+        let servers = self.query_targets();
         if servers.is_empty() {
             return Err(DownloadError::Ed2k("no ed2k servers configured".into()));
         }
 
         // 并发对多台服务器发 GETSOURCES 并聚合：不同服务器索引不同文件，
         // 单服务器常常没有目标文件（实测 45.82.80.155 无此文件而 77.42.68.79 有）。
-        let mut join: JoinSet<Result<Vec<(u32, u16)>, DownloadError>> = JoinSet::new();
-        for server in servers.into_iter().take(MAX_QUERY_SERVERS) {
+        let mut join: JoinSet<ServerAnswer> = JoinSet::new();
+        for server in servers {
             let Some((host, port)) = parse_hostport(&server) else {
                 continue;
             };
             let hash = *file_hash;
             join.spawn(async move {
-                query_one_server(&host, port, listen_port, &hash, total_bytes, large_file).await
+                let result =
+                    query_one_server(&host, port, listen_port, &hash, total_bytes, large_file)
+                        .await;
+                (server, result)
             });
         }
 
         let my_id = self.client_id.load(Ordering::Relaxed);
         let am_high = self.is_high_id();
         let mut seen: HashSet<Source> = HashSet::new();
-        let mut out = Vec::new();
-        let mut query_succeeded = false;
-        let mut first_error = None;
+        let mut query = SourceQuery::default();
         while let Some(res) = join.join_next().await {
-            let raw = match res {
-                Ok(Ok(sources)) => {
-                    query_succeeded = true;
-                    sources
-                }
-                Ok(Err(error)) => {
-                    log_info!("[ed2k-client] server source query failed: {}", error);
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
+            let (server, raw) = match res {
+                Ok((server, Ok(sources))) => (server, sources),
+                Ok((server, Err(error))) => {
+                    log_info!(
+                        "[ed2k-client] server {} source query failed: {}",
+                        server,
+                        error
+                    );
+                    query.servers.push(ServerQuery {
+                        addr: server,
+                        result: Err(error.to_string()),
+                    });
                     continue;
                 }
                 Err(error) if error.is_cancelled() => {
@@ -594,6 +862,10 @@ impl Ed2kClient {
                     )));
                 }
             };
+            query.servers.push(ServerQuery {
+                addr: server,
+                result: Ok(u32::try_from(raw.len()).unwrap_or(u32::MAX)),
+            });
             for (id, port) in raw {
                 if id >= LOWID_THRESHOLD {
                     if port == 0 || id == my_id {
@@ -604,25 +876,23 @@ impl Ed2kClient {
                         port,
                     });
                     if seen.insert(src) {
-                        out.push(src);
+                        query.sources.push(src);
                     }
                 } else if am_high {
                     // LowID 源仅在我方 HighID 时可用（经持久会话 callback 中转）。
                     let src = Source::LowId(id);
                     if seen.insert(src) {
-                        out.push(src);
+                        query.sources.push(src);
                     }
                 }
             }
         }
-        if !query_succeeded && let Some(error) = first_error {
-            return Err(error);
-        }
         log_info!(
-            "[ed2k-client] find_sources: {} sources aggregated across servers",
-            out.len()
+            "[ed2k-client] find_sources: {} sources aggregated across {} servers",
+            query.sources.len(),
+            query.servers.len()
         );
-        Ok(out)
+        Ok(query)
     }
 }
 
@@ -759,17 +1029,20 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
     use super::{
-        ClientConfig, Ed2kClient, RECONNECT_INITIAL_DELAY, RECONNECT_MAX_DELAY,
-        next_reconnect_delay,
+        ClientConfig, Ed2kClient, IdCheckTarget, RECONNECT_INITIAL_DELAY, RECONNECT_MAX_DELAY,
+        Source, next_reconnect_delay,
     };
     use crate::ed2k::proto::{
         self, MAX_SERVER_FRAME, OP_CALLBACK_FAIL, OP_CALLBACKREQUEST, OP_IDCHANGE, OP_LOGINREQUEST,
         OP_REJECT,
     };
+    use crate::ed2k::server::PeerAddr;
+    use crate::ed2k::status::IdKind;
+    use crate::ed2k::testutil::MockServer;
 
     async fn read_opcode(stream: &mut TcpStream) -> u8 {
         let (_, opcode, _) = tokio::time::timeout(
@@ -942,6 +1215,166 @@ mod tests {
         assert_eq!(read_opcode(&mut second).await, OP_LOGINREQUEST);
         drop(active);
         drop(second);
+    }
+
+    /// 接受一次登录并分配 `id`，返回这条连接。
+    async fn answer_login(listener: &TcpListener, id: u32) -> TcpStream {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("login")
+            .expect("accept");
+        assert_eq!(read_opcode(&mut stream).await, OP_LOGINREQUEST);
+        stream
+            .write_all(&proto::frame(OP_IDCHANGE, &id.to_le_bytes()))
+            .await
+            .expect("ID frame");
+        stream
+    }
+
+    async fn expect_closed(stream: &mut TcpStream) {
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte))
+            .await
+            .expect("connection must close");
+        assert!(matches!(read, Ok(0)), "expected EOF, got {read:?}");
+    }
+
+    #[tokio::test]
+    async fn id_check_reports_the_assigned_id_and_keeps_no_session_when_idle() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let server = listener.local_addr().expect("address").to_string();
+        let client = Arc::new(Ed2kClient::new());
+        client.listen_port.store(4662, Ordering::Relaxed);
+        client.configure(ClientConfig {
+            servers: vec![server.clone()],
+            ..ClientConfig::default()
+        });
+
+        let check = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move { client.check_id(IdCheckTarget::Auto).await }
+        });
+        let mut login = answer_login(&listener, 0x0100_0001).await;
+        let network = check.await.expect("join").expect("id check");
+        assert_eq!(network.id, IdKind::High);
+        assert_eq!(network.client_id, 0x0100_0001);
+        assert_eq!(network.server, server);
+        assert_eq!(network.listen_port, 4662);
+        // 没有活跃任务：检测用的连接已断开，客户端自身仍是未登录。
+        expect_closed(&mut login).await;
+        assert!(client.server_tx.lock().await.is_none());
+        assert_eq!(client.network().id, IdKind::None);
+
+        let check = tokio::spawn({
+            let client = Arc::clone(&client);
+            let target = IdCheckTarget::Server(server.clone());
+            async move { client.check_id(target).await }
+        });
+        let _login = answer_login(&listener, 77).await;
+        let network = check.await.expect("join").expect("id check");
+        assert_eq!((network.id, network.client_id), (IdKind::Low, 77));
+    }
+
+    #[tokio::test]
+    async fn id_check_fails_when_no_server_accepts_the_login() {
+        let client = Arc::new(Ed2kClient::new());
+        client.listen_port.store(4662, Ordering::Relaxed);
+        assert!(
+            client.check_id(IdCheckTarget::List).await.is_err(),
+            "no servers configured"
+        );
+        assert!(
+            client
+                .check_id(IdCheckTarget::Server("not-an-address".to_owned()))
+                .await
+                .is_err()
+        );
+        // 只看当前会话：没有会话不是错误，也不发起任何连接。
+        let idle = client
+            .check_id(IdCheckTarget::Session)
+            .await
+            .expect("session report");
+        assert_eq!(idle.id, IdKind::None);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        client.configure(ClientConfig {
+            servers: vec![listener.local_addr().expect("address").to_string()],
+            ..ClientConfig::default()
+        });
+        let check = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move { client.check_id(IdCheckTarget::List).await }
+        });
+        let (mut login, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("login")
+            .expect("accept");
+        assert_eq!(read_opcode(&mut login).await, OP_LOGINREQUEST);
+        login
+            .write_all(&proto::frame(OP_REJECT, &[]))
+            .await
+            .expect("reject");
+        assert!(check.await.expect("join").is_err());
+    }
+
+    #[tokio::test]
+    async fn port_mapping_upgrade_drops_only_a_low_id_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let connection = TcpStream::connect(listener.local_addr().expect("address"))
+            .await
+            .expect("connect");
+        let (mut server, _) = listener.accept().await.expect("accept");
+        let client = Arc::new(Ed2kClient::new());
+        let (reader, writer) = connection.into_split();
+        client.session_gen.store(1, Ordering::Relaxed);
+        *client.server_tx.lock().await = Some(writer);
+        client.spawn_server_reader(reader, 1);
+
+        client.client_id.store(0x0100_0001, Ordering::Relaxed);
+        client.relogin_for_high_id().await;
+        assert!(
+            client.server_tx.lock().await.is_some(),
+            "a HighID session is kept"
+        );
+
+        client.client_id.store(77, Ordering::Relaxed);
+        client.relogin_for_high_id().await;
+        assert!(client.server_tx.lock().await.is_none());
+        assert_eq!(client.network().id, IdKind::None);
+        expect_closed(&mut server).await;
+    }
+
+    #[tokio::test]
+    async fn find_sources_reports_every_server_outcome() {
+        let peer = PeerAddr {
+            ip: std::net::Ipv4Addr::new(10, 1, 2, 3),
+            port: 4662,
+        };
+        let good = MockServer::spawn(vec![peer]).await.expect("mock server");
+        // 端口 1 无人监听：登录立即失败。
+        let dead = "127.0.0.1:1".to_owned();
+        let client = Arc::new(Ed2kClient::new());
+        client.listen_port.store(4662, Ordering::Relaxed);
+        client.configure(ClientConfig {
+            servers: vec![good.server_string(), dead.clone()],
+            ..ClientConfig::default()
+        });
+
+        let query = client
+            .find_sources(&[7u8; 16], 1_000_000, false)
+            .await
+            .expect("one server answering is enough");
+        assert_eq!(query.sources, [Source::HighId(peer)]);
+        let result_of = |addr: &str| {
+            query
+                .servers
+                .iter()
+                .find(|server| server.addr == addr)
+                .map(|server| server.result.clone())
+                .expect("server row")
+        };
+        assert_eq!(result_of(&good.server_string()), Ok(1));
+        assert!(result_of(&dead).is_err());
     }
 
     #[test]

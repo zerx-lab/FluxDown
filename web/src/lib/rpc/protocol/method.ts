@@ -16,6 +16,8 @@ export const METHOD = {
   DAEMON_TASK_SPEED_HISTORY: 'daemon.task.speedHistory',
   /** BT 任务实况（`TaskIdParams` → `BtStatusDto`）：详情页 Tracker / 连接标签轮询；非 BT 任务 `invalidArgument`。 */
   DAEMON_TASK_BT_STATUS: 'daemon.task.btStatus',
+  /** eD2K 任务实况（`TaskIdParams` → `Ed2kStatusDto`）：详情页来源 / 网络标签轮询；非 eD2K 任务 `invalidArgument`。 */
+  DAEMON_TASK_ED2K_STATUS: 'daemon.task.ed2kStatus',
   DAEMON_TASK_CREATE: 'daemon.task.create',
   /** 批量建任务（`DaemonCreateTasksParams`）：整块一个事务、一次 `tasksChanged` 事件，按 `batchId` 幂等。 */
   DAEMON_TASK_CREATE_MANY: 'daemon.task.createMany',
@@ -150,6 +152,12 @@ export const METHOD = {
   DAEMON_BT_GUARD_CLOUD_APPLY: 'daemon.bt.guard.cloud.apply',
   DAEMON_BT_GUARD_EVIDENCE_DRAIN: 'daemon.bt.guard.evidence.drain',
   DAEMON_ED2K_SERVER_SUBSCRIPTION_REFRESH: 'daemon.ed2k.serverSubscription.refresh',
+  /** Kad 节点（nodes.dat）订阅立即刷新（慢方法）→ `Ed2kNodesSubRefreshResponse`。 */
+  DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH: 'daemon.ed2k.nodesSubscription.refresh',
+  /** HighID / LowID 检测（`Ed2kIdCheckParams?`，慢方法，可达 ~30 s）→ `Ed2kNetworkDto`。 */
+  DAEMON_ED2K_ID_CHECK: 'daemon.ed2k.idCheck',
+  /** Kad 引导（`Ed2kKadBootstrapParams` → `Ed2kKadBootstrapDto`，慢方法 ~30 s）。 */
+  DAEMON_ED2K_KAD_BOOTSTRAP: 'daemon.ed2k.kadBootstrap',
   DAEMON_DIAGNOSTICS_DESCRIBE: 'daemon.diagnostics.describe',
   DAEMON_DIAGNOSTICS_PREPARE_LOG_EXPORT: 'daemon.diagnostics.prepareLogExport',
   /** agent Doctor 专用：daemon 内真实写入下载 / 数据目录并运行外部组件。 */

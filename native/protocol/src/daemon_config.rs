@@ -361,7 +361,10 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::ReadOnly,
         "0",
     ),
+    // Kad 引导节点订阅：每行一个 nodes.dat 地址，多源合并去重。
     field("ed2k_nodes_dat_url", DaemonConfigKind::Text, ""),
+    field("ed2k_nodes_dat_count", DaemonConfigKind::ReadOnly, "0"),
+    field("ed2k_nodes_dat_updated_at", DaemonConfigKind::ReadOnly, "0"),
     // ── 代理 ──
     field("proxy_mode", DaemonConfigKind::Enum(PROXY_MODES), "none"),
     field("proxy_type", DaemonConfigKind::Enum(PROXY_TYPES), "http"),

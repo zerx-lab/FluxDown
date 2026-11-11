@@ -84,7 +84,12 @@ class BtSettingsTest {
         assertTrue(Ed2kSettingsRow.entries.none { it.isVisible(unloaded) })
         val loaded = form(mapOf("bt_enable_dht" to "true"))
         assertEquals(10, BtSettingsRow.visible(BtSettingsTab.General, loaded).size)
-        assertEquals(5, Ed2kSettingsRow.visible(Ed2kSettingsTab.Servers, loaded).size)
+        assertEquals(4, Ed2kSettingsRow.visible(Ed2kSettingsTab.General, loaded).size)
+        assertEquals(4, Ed2kSettingsRow.visible(Ed2kSettingsTab.Servers, loaded).size)
+        assertEquals(
+            listOf(Ed2kSettingsRow.NodesSubUrls, Ed2kSettingsRow.NodesSubStatus),
+            Ed2kSettingsRow.visible(Ed2kSettingsTab.Kad, loaded),
+        )
     }
 
     @Test fun rowKeysResolveInTheCatalogAndIdsAreUnique() {
@@ -102,6 +107,8 @@ class BtSettingsTest {
         assertEquals(BtSettingsTab.Seeding, BtSettingsRow.tabForRowId("bt.seedThenAction"))
         assertNull(BtSettingsRow.tabForRowId("download.maxConcurrent"))
         assertEquals(Ed2kSettingsTab.Servers, Ed2kSettingsRow.tabForRowId("ed2k.serverSubStatus"))
+        assertEquals(Ed2kSettingsTab.Kad, Ed2kSettingsRow.tabForRowId("ed2k.nodesSubUrls"))
+        assertEquals(Ed2kSettingsTab.General, Ed2kSettingsRow.tabForRowId("ed2k.idCheck"))
     }
 
     @Test fun portRangeRequiresEndAtLeastStart() {
@@ -117,6 +124,17 @@ class BtSettingsTest {
         assertEquals(SubscriptionStatusModel(2, 1_759_622_400), SubscriptionStatusModel.make(SubscriptionKind.BtTrackers, bt, null))
         val ed2k = form(mapOf("ed2k_server_sub_cache" to "1.1.1.1:1,2.2.2.2:2,3.3.3.3:3"))
         assertEquals(SubscriptionStatusModel(3, 0), SubscriptionStatusModel.make(SubscriptionKind.Ed2kServers, ed2k, null))
+        val nodes = form(mapOf("ed2k_nodes_dat_count" to "321", "ed2k_nodes_dat_updated_at" to "1759622400"))
+        assertEquals(SubscriptionStatusModel(321, 1_759_622_400), SubscriptionStatusModel.make(SubscriptionKind.Ed2kNodes, nodes, null))
+        val garbage = form(mapOf("ed2k_nodes_dat_count" to "-5"))
+        assertEquals(SubscriptionStatusModel(0, 0), SubscriptionStatusModel.make(SubscriptionKind.Ed2kNodes, garbage, null))
+    }
+
+    @Test fun nodesRefreshResponseIsLenient() {
+        val full = Json.parse("""{"success":true,"nodeCount":120,"okSources":1,"totalSources":2,"updatedAt":99,"error":""}""")
+        assertEquals(SubscriptionRefreshOutcome(true, 120, 1, 2, 99, ""), Ed2kNodesSubRefreshResponse.fromJson(full).outcome)
+        val empty = Json.parse("{}")
+        assertEquals(SubscriptionRefreshOutcome(false, 0, 0, 0, 0, ""), Ed2kNodesSubRefreshResponse.fromJson(empty).outcome)
     }
 
     @Test fun freshSuccessWinsOnlyWhenNewerThanTheSnapshot() {

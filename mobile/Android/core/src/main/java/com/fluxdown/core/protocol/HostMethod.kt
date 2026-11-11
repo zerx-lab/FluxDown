@@ -38,6 +38,8 @@ object HostMethod {
     const val daemonTaskVerify = "daemon.task.verify"
     /** 已完成任务落盘文件的哈希（`{taskId, algorithm}` → `{fileHash}`），结果同时记入任务 `fileHash`。 */
     const val daemonTaskHash = "daemon.task.hash"
+    /** eD2K 任务实况（`{taskId}` → `Ed2kStatusDto`）；非 eD2K 任务返回 `invalidArgument`。移动端暂不消费，列出仅为一一对应。 */
+    const val daemonTaskEd2kStatus = "daemon.task.ed2kStatus"
     /** 批量暂停 / 恢复（`{taskIds}`）：整批只推一次任务快照；未知 id 忽略，空列表为空操作。 */
     const val daemonTaskPauseMany = "daemon.task.pauseMany"
     const val daemonTaskResumeMany = "daemon.task.resumeMany"
@@ -145,6 +147,10 @@ object HostMethod {
     /** 仅 agent 内部调用（弹出待上报证据）；UI 不得使用，原生桥通用通道会拒绝。 */
     const val daemonBtGuardEvidenceDrain = "daemon.bt.guard.evidence.drain"
     const val daemonEd2kServerSubscriptionRefresh = "daemon.ed2k.serverSubscription.refresh"
+    /** 立即刷新 Kad 节点（nodes.dat）订阅（无参 → `Ed2kNodesSubRefreshResponse`）。慢方法。 */
+    const val daemonEd2kNodesSubscriptionRefresh = "daemon.ed2k.nodesSubscription.refresh"
+    /** HighID / LowID 检测（无参 → `Ed2kNetworkDto`）。慢方法（可达 ~30 s）。 */
+    const val daemonEd2kIdCheck = "daemon.ed2k.idCheck"
     const val daemonDiagnosticsDescribe = "daemon.diagnostics.describe"
     const val daemonDiagnosticsPrepareLogExport = "daemon.diagnostics.prepareLogExport"
     /** Doctor 动态探测：在 daemon 进程内真实写入各下载目录 / 数据目录并运行外部组件， 验证下载链路实际拥有的权限（agent 只读配置判断不出 TCC、只读挂载、隔离属性等）。 */

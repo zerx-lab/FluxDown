@@ -36,8 +36,11 @@ export default function ChangelogTimeline({ lang }: { lang: Lang }) {
   const locale = lang === "zh" ? "zh-CN" : "en-US";
   const dateFormat = new Intl.DateTimeFormat(locale, { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Shanghai" });
   const relative = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  // 按上海时区的日历日相减，与 dateFormat 同口径；按毫秒差四舍五入会把「昨天晚上」算成「今天」。
+  const dayKey = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Shanghai" });
+  const calendarDay = (d: Date) => Date.parse(`${dayKey.format(d)}T00:00:00Z`) / 86_400_000;
   const relativeLabel = (iso: string) => {
-    const days = Math.round((new Date(iso).getTime() - Date.now()) / 86_400_000);
+    const days = calendarDay(new Date(iso)) - calendarDay(new Date());
     if (Math.abs(days) < 30) return relative.format(days, "day");
     if (Math.abs(days) < 365) return relative.format(Math.round(days / 30), "month");
     return relative.format(Math.round(days / 365), "year");

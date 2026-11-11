@@ -19,6 +19,11 @@ struct PreferencesProtocolTests {
         #expect(SettingsCatalog.syncNameToDaemonKey.count == 51)
         #expect(SettingsCatalog.syncNameToDaemonKey["bt.piece_order"] == "bt_piece_order")
         #expect(SettingsCatalog.syncNameToDaemonKey["bt.first_last_pieces_first"] == "bt_first_last_pieces_first")
+        for key in ["ed2k_nodes_dat_count", "ed2k_nodes_dat_updated_at"] {
+            #expect(SettingsCatalog.field(key)?.kind == .readOnly, "\(key)")
+            #expect(!SettingsCatalog.isSynced(key), "\(key)")
+        }
+        #expect(!SettingsCatalog.isSynced("ed2k_nodes_dat_url"))
     }
 
     @Test func everySyncedDaemonKeyIsAWritableDaemonField() throws {

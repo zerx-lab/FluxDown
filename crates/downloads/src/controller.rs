@@ -106,6 +106,11 @@ pub enum DownloadsCommand {
     TaskSpeedHistory(fluxdown_protocol::TaskSpeedHistoryQuery),
     /// 读取 BT 任务的 peer / tracker 实况（`daemon.task.btStatus`），详情页轮询。
     BtStatus(fluxdown_protocol::DaemonBtStatusParams),
+    /// 读取 eD2K 任务的来源 / 服务器 / Kad / 本机网络实况（`daemon.task.ed2kStatus`），详情页轮询。
+    Ed2kStatus(fluxdown_protocol::DaemonEd2kStatusParams),
+    /// eD2K HighID / LowID 检测（`daemon.ed2k.idCheck`，慢方法），结果为
+    /// [`DownloadsResult::Ed2kNetwork`]。
+    Ed2kIdCheck,
     /// 防吸血：给 IP 组加封禁 / 限速 / 加白条目（`daemon.bt.guard.entries.add`），连接页右键菜单用。
     BtGuardAddEntry(fluxdown_protocol::BtGuardEntriesAddParams),
     /// 防吸血「查看证据」：读取该 IP 组相关的名单条目与近期事件，结果为
@@ -134,7 +139,7 @@ pub enum DownloadsCommand {
         url: String,
     },
     /// 修改线程数（`daemon.task.setSegments`）：`<= 0` = 自动，已下进度保留；
-    /// 下载中任务由引擎静默暂停 → 改配置 → 恢复。
+    /// 下载中任务由引擎静默暂停 → 改配置 → 恢复（eD2K 任务不暂停，直接热生效）。
     SetSegments {
         task_id: String,
         segments: i32,
@@ -337,6 +342,10 @@ pub enum DownloadsResult {
     TaskSpeedHistory(Option<fluxdown_protocol::TaskSpeedHistoryDto>),
     /// `BtStatus` 的 peer / tracker 实况。
     BtStatus(fluxdown_protocol::BtStatusDto),
+    /// `Ed2kStatus` 的 eD2K 实况（体积大，装箱保持结果枚举小）。
+    Ed2kStatus(Box<fluxdown_protocol::Ed2kStatusDto>),
+    /// `Ed2kIdCheck` 的本机网络状态。
+    Ed2kNetwork(fluxdown_protocol::Ed2kNetworkDto),
     /// `BtGuardEvidence` 的名单条目与事件。
     BtGuardEvidence(BtGuardEvidence),
     /// Rare, metadata-heavy payload stays boxed so every command result remains small.

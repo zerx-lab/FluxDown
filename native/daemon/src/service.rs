@@ -270,6 +270,20 @@ impl DaemonService {
                     Err(error) => Err(actor_error(error)),
                 }
             }
+            method::DAEMON_TASK_ED2K_STATUS => {
+                let params = parse_params::<fluxdown_protocol::DaemonEd2kStatusParams>(params)?;
+                match self
+                    .actor
+                    .execute(ActorOperation::Ed2kStatus {
+                        task_id: params.task_id,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::Ed2kStatus(status)) => to_value(*status),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
             method::DAEMON_TASK_TORRENT_SHARE => {
                 let params = parse_params::<fluxdown_protocol::DaemonTorrentShareParams>(params)?;
                 match self
@@ -1495,6 +1509,41 @@ impl DaemonService {
                     .await
                 {
                     Ok(ActorResult::Ed2kRefresh(response)) => to_value(response),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH => {
+                match self.actor.execute(ActorOperation::RefreshEd2kNodes).await {
+                    Ok(ActorResult::Ed2kNodesRefresh(response)) => to_value(response),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_ED2K_ID_CHECK => {
+                // 参数整体可省略（旧调用方 / 详情页）：等同 `auto`。
+                let params = match params {
+                    Some(Value::Null) | None => fluxdown_protocol::Ed2kIdCheckParams::default(),
+                    params => parse_params::<fluxdown_protocol::Ed2kIdCheckParams>(params)?,
+                };
+                match self
+                    .actor
+                    .execute(ActorOperation::Ed2kIdCheck { params })
+                    .await
+                {
+                    Ok(ActorResult::Ed2kNetwork(network)) => to_value(*network),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_ED2K_KAD_BOOTSTRAP => {
+                let params = parse_params::<fluxdown_protocol::Ed2kKadBootstrapParams>(params)?;
+                match self
+                    .actor
+                    .execute(ActorOperation::Ed2kKadBootstrap { params })
+                    .await
+                {
+                    Ok(ActorResult::Ed2kKadBootstrap(result)) => to_value(*result),
                     Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
                     Err(error) => Err(actor_error(error)),
                 }

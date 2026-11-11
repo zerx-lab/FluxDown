@@ -5,7 +5,7 @@ scope: "tool:edit, tool:write"
 globs:
   - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
   - '**/crates/downloads/src/components/{task_table,task_table_groups}.rs'
-  - '**/crates/downloads/src/pages/{task_edit,task_verify,task_detail}.rs'
+  - '**/crates/downloads/src/pages/{task_edit,task_verify,task_detail,task_detail_ed2k}.rs'
   - '**/crates/downloads/tests/fixtures/**'
   - '**/web/src/pages/downloads/**'
   - '**/web/src/lib/{saveDirHistory,speedLimitRecent,rescanThrottle,fileHash}.ts'
@@ -92,6 +92,10 @@ interruptMode: never
 ## `crates/downloads/src/model/bt_trackers.rs`（详情 Tracker 页：状态筛选标签 + 计数、表头三态排序，DHT 伪行固定不参与；稳定排序、缺省值垫底）
 
 → `web/src/pages/downloads/detail/btStatus.ts::{trackerCounts, trackerView, nextTrackerSort}`：逐条对齐，两端测试共用 `crates/downloads/tests/fixtures/bt_tracker_view_cases.json`（改规则先改用例）；两端列表都虚拟化（GPUI `ListState` 可变行高、Web `useVirtualizer` + `measureElement`）
+
+## `crates/downloads/src/pages/task_detail_ed2k.rs`（详情「来源 / 网络」页签的纯函数：源状态 → 文案、冷却 / 下次找源是否在未来、「同时连接来源数」选项与当前值归一、LowID 源地址展示）
+
+→ `web/src/pages/downloads/detail/ed2kStatus.ts` 逐条对齐（两端单测覆盖同一组边界：segments 为 0 / 9 / 负数、`retryAt` 已过期、`queueRank` 缺省、LowID 源无 `addr`）；HighID / LowID 与 UPnP 文案映射在 Web 另由设置页共用（`web/src/lib/ed2kNetwork.ts`）。两端都不重排 `peers`（服务端已按活跃度排序），渲染封顶 200 行；UPnP / Kad 开关写同步键 `ed2k.enable_upnp` / `ed2k.enable_kad`，「同时连接来源数」写 `daemon.task.setSegments`（当前值取 `Ed2kStatusDto.segments`，不是任务行）
 
 ## 扩展 → Android App 的外部唤起载荷（`fluxDown/utils/android-intent.ts`：包名 `ANDROID_PACKAGE`、extra 键 `ANDROID_EXTRA`、Intent URI 编码；`fluxdown://download?url=&filename=&cookies=&referrer=&headers=` 协议参数同理）
 

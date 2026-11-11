@@ -3,11 +3,12 @@ import FluxUI
 import SwiftUI
 #if FULL_FLAVOR
 
-/// 订阅状态行（BT Tracker / eD2K 服务器共用）：已订阅条数 + 更新时间（或失败原因）+「立即更新」。
+/// 订阅状态行（BT Tracker / eD2K 服务器 / Kad 节点共用）：已订阅条数 + 更新时间（或失败原因）+「立即更新」。
 ///
-/// 数据来自只读的 `*_sub_cache` / `*_sub_updated_at`（`daemon.config` 快照）；「立即更新」调用慢 RPC
-/// （`daemon.bt.trackerSubscription.refresh` / `daemon.ed2k.serverSubscription.refresh`，无参数），
-/// 行内显示进度，页面其余部分保持可用。刷新结果先于配置快照到达时按更新时间合并显示。
+/// 数据来自只读的 `*_sub_cache` / `*_sub_updated_at` / `ed2k_nodes_dat_{count,updated_at}`（`daemon.config` 快照）；
+/// 「立即更新」调用慢 RPC（`daemon.bt.trackerSubscription.refresh` / `daemon.ed2k.serverSubscription.refresh` /
+/// `daemon.ed2k.nodesSubscription.refresh`，无参数），行内显示进度，页面其余部分保持可用。
+/// 刷新结果先于配置快照到达时按更新时间合并显示。
 struct SubscriptionStatusRow: View {
     let kind: SubscriptionKind
 
@@ -81,6 +82,9 @@ struct SubscriptionStatusRow: View {
             return response.outcome
         case .ed2kServers:
             let response: Ed2kServerSubRefreshResponse = try await session.call(HostMethod.daemonEd2kServerSubscriptionRefresh)
+            return response.outcome
+        case .ed2kNodes:
+            let response: Ed2kNodesSubRefreshResponse = try await session.call(HostMethod.daemonEd2kNodesSubscriptionRefresh)
             return response.outcome
         }
     }

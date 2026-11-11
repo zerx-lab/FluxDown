@@ -1,8 +1,10 @@
 package com.fluxdown.core.protocol
 
 /*
- * BT Tracker / eD2K 服务器订阅（`daemon.bt.trackerSubscription.refresh` / `daemon.ed2k.serverSubscription.refresh`）。
- * 镜像 `native/protocol/src/daemon.rs`（TrackerSubRefreshResponse / Ed2kServerSubRefreshResponse）；两个方法都不带参数。
+ * BT Tracker / eD2K 服务器 / Kad 节点订阅（`daemon.bt.trackerSubscription.refresh` /
+ * `daemon.ed2k.serverSubscription.refresh` / `daemon.ed2k.nodesSubscription.refresh`）。
+ * 镜像 `native/protocol/src/daemon.rs`（TrackerSubRefreshResponse / Ed2kServerSubRefreshResponse /
+ * Ed2kNodesSubRefreshResponse）；三个方法都不带参数。
  * 列表型配置键的存储格式镜像 GPUI `sections/subscription.rs::ListFormat` 与 Web `listFormat.ts`。
  */
 
@@ -60,6 +62,30 @@ data class Ed2kServerSubRefreshResponse(
         fun fromJson(v: JsonValue): Ed2kServerSubRefreshResponse = Ed2kServerSubRefreshResponse(
             success = v.bool("success"),
             serverCount = v.long("serverCount"),
+            okSources = v.long("okSources"),
+            totalSources = v.long("totalSources"),
+            updatedAt = v.long("updatedAt"),
+            error = v.str("error"),
+        )
+    }
+}
+
+/** `daemon.ed2k.nodesSubscription.refresh` 结果。缺省宽松。 */
+data class Ed2kNodesSubRefreshResponse(
+    val success: Boolean = false,
+    val nodeCount: Long = 0,
+    val okSources: Long = 0,
+    val totalSources: Long = 0,
+    val updatedAt: Long = 0,
+    val error: String = "",
+) {
+    val outcome: SubscriptionRefreshOutcome
+        get() = SubscriptionRefreshOutcome(success, nodeCount, okSources, totalSources, updatedAt, error)
+
+    companion object {
+        fun fromJson(v: JsonValue): Ed2kNodesSubRefreshResponse = Ed2kNodesSubRefreshResponse(
+            success = v.bool("success"),
+            nodeCount = v.long("nodeCount"),
             okSources = v.long("okSources"),
             totalSources = v.long("totalSources"),
             updatedAt = v.long("updatedAt"),

@@ -9,6 +9,8 @@ import { isSeeding } from '../model/task'
 import { AdvancedTab } from './AdvancedTab'
 import { BtPeersTab } from './BtPeersTab'
 import { BtTrackersTab } from './BtTrackersTab'
+import { Ed2kNetworkTab } from './Ed2kNetworkTab'
+import { Ed2kSourcesTab } from './Ed2kSourcesTab'
 import { GeneralTab } from './GeneralTab'
 import { LogTab } from './LogTab'
 import { SeedingTab } from './SeedingTab'
@@ -24,11 +26,13 @@ function TaskDetail({ view }: { view: DownloadTaskView }) {
   const t = useT()
   const [tab, setTab] = useState<DetailTab>('general')
   const isBt = view.protocol === 'bt'
+  const isEd2k = view.protocol === 'ed2k'
   const pluginTabs = usePluginDetailTabs()
   const pluginTab = pluginTabs.find((item) => item.value === tab)
-  // 插件 tab 随插件卸载 / 禁用消失时回到常规；seeding 仅 BT 任务有。
+  // 插件 tab 随插件卸载 / 禁用消失时回到常规；seeding / trackers / peers 仅 BT、ed2kSources / ed2kNetwork 仅 eD2K 任务有。
   const active: DetailTab =
     ((tab === 'seeding' || tab === 'trackers' || tab === 'peers') && !isBt) ||
+    ((tab === 'ed2kSources' || tab === 'ed2kNetwork') && !isEd2k) ||
     (tab.startsWith('plugin:') && !pluginTab)
       ? 'general'
       : tab
@@ -41,6 +45,12 @@ function TaskDetail({ view }: { view: DownloadTaskView }) {
       ? [
           { value: 'trackers' as const, label: t('btTabTrackers') },
           { value: 'peers' as const, label: t('btTabPeers') },
+        ]
+      : []),
+    ...(isEd2k
+      ? [
+          { value: 'ed2kSources' as const, label: t('ed2kTabSources') },
+          { value: 'ed2kNetwork' as const, label: t('ed2kTabNetwork') },
         ]
       : []),
     { value: 'log' as const, label: t('detailTabLog') },
@@ -58,6 +68,8 @@ function TaskDetail({ view }: { view: DownloadTaskView }) {
         {active === 'seeding' ? <SeedingTab view={view} /> : null}
         {active === 'trackers' ? <BtTrackersTab taskId={view.taskId} /> : null}
         {active === 'peers' ? <BtPeersTab taskId={view.taskId} state={view.state} seeding={isSeeding(view)} /> : null}
+        {active === 'ed2kSources' ? <Ed2kSourcesTab taskId={view.taskId} /> : null}
+        {active === 'ed2kNetwork' ? <Ed2kNetworkTab view={view} /> : null}
         {active === 'log' ? <LogTab taskId={view.taskId} /> : null}
         {active === 'advanced' ? <AdvancedTab view={view} /> : null}
         {pluginTab && active === pluginTab.value ? (

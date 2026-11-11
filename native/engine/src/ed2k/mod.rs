@@ -16,6 +16,7 @@ pub mod peer;
 pub mod proto;
 pub mod server;
 pub mod server_subscription;
+pub mod status;
 pub mod upnp;
 
 #[cfg(test)]
@@ -31,10 +32,13 @@ use tokio::sync::OnceCell;
 use tokio::task::JoinSet;
 
 use crate::downloader::{DownloadError, DownloadParams, ProgressUpdate, SegmentProgressInfo};
-use crate::ed2k::client::{Source, shared_client};
+use crate::ed2k::client::{ClientConfig, Ed2kClient, Source, shared_client};
 use crate::ed2k::link::{Ed2kLink, parse_ed2k_link};
 use crate::ed2k::peer::PeerSession;
 use crate::ed2k::server::{PeerAddr, parse_server_list};
+use crate::ed2k::status::{
+    NetworkView, PeerCoarse, PeerLive, PeerOrigin, PeerSlot, ServerOrigin, TaskPhase,
+};
 use crate::logger::log_info;
 use crate::output;
 use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
@@ -165,6 +169,11 @@ impl BlockSnapshot {
             .filter_map(|(index, verified)| (!*verified).then_some(index as u64))
             .collect()
     }
+
+    fn verified_count(&self) -> u32 {
+        let count = self.verified.iter().filter(|verified| **verified).count();
+        u32::try_from(count).unwrap_or(u32::MAX)
+    }
 }
 
 fn check_download_space(available: Option<u64>, required: u64) -> Result<(), DownloadError> {
@@ -271,6 +280,261 @@ async fn prepare_temp_and_blocks(
     db.init_ed2k_blocks(task_id, hash::part_count(total_bytes, part_size))
         .await?;
     Ok(snapshot)
+}
+
+/// 读取 eD2K 客户端配置：监听端口、UPnP / Kad 开关，以及手填列表与订阅缓存合并去重后的
+/// 服务器（手填在前）。
+///
+/// # Errors
+///
+/// 读库失败。
+pub async fn load_client_config(db: &crate::db::Db) -> Result<ClientConfig, crate::db::DbError> {
+    let flag = |value: Option<String>| value.is_none_or(|value| value == "true");
+    let mut servers =
+        parse_server_list(&db.get_config("ed2k_server_list").await?.unwrap_or_default());
+    let manual_servers = servers.len();
+    let mut seen: HashSet<String> = servers.iter().cloned().collect();
+    for server in parse_server_list(
+        &db.get_config("ed2k_server_sub_cache")
+            .await?
+            .unwrap_or_default(),
+    ) {
+        if seen.insert(server.clone()) {
+            servers.push(server);
+        }
+    }
+    Ok(ClientConfig {
+        listen_port: db
+            .get_config("ed2k_listen_port")
+            .await?
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(0),
+        udp_port: 0,
+        servers,
+        manual_servers,
+        enable_upnp: flag(db.get_config("ed2k_enable_upnp").await?),
+        enable_kad: flag(db.get_config("ed2k_enable_kad").await?),
+    })
+}
+
+/// 把库里的最新配置交给共享客户端并返回它。服务器列表暂时为空（订阅缓存失效重取期间）
+/// 时沿用客户端现有列表，只更新开关。
+async fn refresh_client_config(
+    db: &crate::db::Db,
+    client: &Arc<Ed2kClient>,
+) -> Result<ClientConfig, crate::db::DbError> {
+    let mut config = load_client_config(db).await?;
+    if config.servers.is_empty() {
+        let current = client.config_snapshot();
+        config.servers = current.servers;
+        config.manual_servers = current.manual_servers;
+    }
+    client.configure(config.clone());
+    Ok(config)
+}
+
+/// Kad 引导节点缓存（base64 的 `nodes.dat`，由宿主刷新订阅 / 引导时写入）；未缓存或内容损坏返回空。
+///
+/// # Errors
+///
+/// 读库失败。
+pub async fn load_nodes_dat(db: &crate::db::Db) -> Result<Vec<u8>, crate::db::DbError> {
+    use base64::Engine as _;
+    let Some(cached) = db
+        .get_config("ed2k_nodes_dat_cache")
+        .await?
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    match base64::engine::general_purpose::STANDARD.decode(&cached) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) => {
+            crate::log_warn!("[ed2k] invalid cached Kad bootstrap data: {}", error);
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// 缓存里的 Kad 引导节点数（宿主刷新订阅时写入 `ed2k_nodes_dat_count`）。
+async fn cached_node_count(db: &crate::db::Db) -> Result<u32, crate::db::DbError> {
+    Ok(db
+        .get_config("ed2k_nodes_dat_count")
+        .await?
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0))
+}
+
+/// 本机 eD2K 网络状态：共享客户端的运行期状态（ID 类型、会话服务器、监听端口、UPnP）加上
+/// 相关设置。不发起任何连接。
+///
+/// # Errors
+///
+/// 读库失败。
+pub async fn network_view(db: &crate::db::Db) -> Result<NetworkView, crate::db::DbError> {
+    let config = load_client_config(db).await?;
+    let kad_nodes = cached_node_count(db).await?;
+    Ok(NetworkView::compose(
+        shared_client().network(),
+        &config,
+        kad_nodes,
+    ))
+}
+
+/// HighID / LowID 检测（见 [`Ed2kClient::check_id`]）。会连接网络，耗时可达数十秒：持有引擎的
+/// actor 必须在 actor 之外等待它。检测失败（地址非法、全部登录失败）时结果的 `error` 非空、
+/// ID 类型为 [`status::IdKind::None`]——即使此刻另有任务会话，也不拿它冒充这次检测的结果。
+///
+/// # Errors
+///
+/// 读写库失败。
+pub async fn check_id(
+    db: crate::db::Db,
+    target: client::IdCheckTarget,
+) -> Result<NetworkView, DownloadError> {
+    crate::ed2k::identity::ensure_user_hash(&db).await?;
+    let client = shared_client();
+    let config = refresh_client_config(&db, &client).await?;
+    let kad_nodes = cached_node_count(&db).await?;
+    let (network, error) = match client.check_id(target).await {
+        Ok(network) => (network, String::new()),
+        Err(error) => (
+            status::ClientNetwork {
+                id: status::IdKind::None,
+                client_id: 0,
+                server: String::new(),
+                ..client.network()
+            },
+            error.to_string(),
+        ),
+    };
+    let mut view = NetworkView::compose(network, &config, kad_nodes);
+    view.error = error;
+    Ok(view)
+}
+
+/// 宿主改了 eD2K 设置后调用：把最新配置交给共享客户端。UPnP 开关立即生效；服务器列表、
+/// Kad 开关与引导节点缓存由各任务在下一轮找源前重读。
+///
+/// # Errors
+///
+/// 读库失败。
+pub async fn apply_live_settings(db: &crate::db::Db) -> Result<(), crate::db::DbError> {
+    refresh_client_config(db, &shared_client()).await?;
+    Ok(())
+}
+
+/// eD2K 任务实况：源、查询过的服务器、Kad 节点、块进度与本机网络状态。任务未在运行时
+/// 列表为空，块进度取自库里的块状态，网络状态仍给出。
+///
+/// # Errors
+///
+/// `task` 不是 eD2K 任务 → [`status::StatusError::InvalidArgument`]；读库失败 →
+/// [`status::StatusError::Operation`]。
+pub async fn task_status(
+    db: &crate::db::Db,
+    task: &crate::model::TaskInfo,
+) -> Result<status::Ed2kStatusView, status::StatusError> {
+    use status::StatusError;
+    let db_error = |error: crate::db::DbError| StatusError::Operation(format!("{error:#}"));
+    if !link::is_ed2k_url(&task.url) {
+        return Err(StatusError::InvalidArgument("not an eD2K task".to_owned()));
+    }
+    let link = parse_ed2k_link(&task.url)
+        .map_err(|error| StatusError::InvalidArgument(error.to_string()))?;
+    let parts_total =
+        u32::try_from(hash::part_count(link.total_bytes, hash::PART_SIZE)).unwrap_or(u32::MAX);
+    let network = network_view(db).await.map_err(db_error)?;
+    let task_view = match status::task_view(&task.task_id, &network.client.server) {
+        Some(view) => view,
+        None => {
+            let parts_done = if task.status == 3 {
+                parts_total
+            } else {
+                let rows = db.load_ed2k_blocks(&task.task_id).await.map_err(db_error)?;
+                let verified = rows
+                    .iter()
+                    .filter(|(_, state, _, _)| *state == BLOCK_VERIFIED)
+                    .count();
+                u32::try_from(verified).unwrap_or(u32::MAX)
+            };
+            status::TaskView {
+                parts_done,
+                max_sources: u32::try_from(ed2k_concurrency(task.segments, usize::MAX))
+                    .unwrap_or(u32::MAX),
+                ..status::TaskView::default()
+            }
+        }
+    };
+    Ok(status::Ed2kStatusView {
+        file_hash: hex::encode(link.root_hash),
+        parts_total,
+        segments: task.segments.max(0),
+        task: task_view,
+        network,
+    })
+}
+
+/// 调度循环当前的源状态（只读借用），用于发布详情页快照。
+struct SourceBoard<'a> {
+    sources: &'a [Source],
+    origins: &'a HashMap<Source, PeerOrigin>,
+    busy: &'a HashSet<Source>,
+    idle: &'a HashMap<Source, PeerSession>,
+    backoff: &'a HashSet<Source>,
+    banned: &'a HashSet<Source>,
+    asked_at: &'a HashMap<Source, tokio::time::Instant>,
+    live: &'a HashMap<Source, Arc<PeerLive>>,
+    errors: &'a HashMap<Source, String>,
+}
+
+impl SourceBoard<'_> {
+    fn slots(&self) -> Vec<PeerSlot> {
+        let now = tokio::time::Instant::now();
+        let unix_now = status::unix_now();
+        // 被拉黑的源在下一轮找源后不再出现在 `sources` 里，仍要列出。
+        let dropped_banned = self
+            .banned
+            .iter()
+            .filter(|source| !self.sources.contains(source));
+        self.sources
+            .iter()
+            .chain(dropped_banned)
+            .map(|source| {
+                let coarse = if self.banned.contains(source) {
+                    PeerCoarse::Banned
+                } else if self.busy.contains(source) {
+                    PeerCoarse::Busy
+                } else if self.idle.contains_key(source) {
+                    PeerCoarse::Connected
+                } else if self.backoff.contains(source) {
+                    PeerCoarse::Failed
+                } else {
+                    match self.asked_at.get(source) {
+                        Some(at) if now.duration_since(*at) < REASK_INTERVAL => {
+                            let left = REASK_INTERVAL - now.duration_since(*at);
+                            PeerCoarse::Cooldown(
+                                unix_now.saturating_add(i64::try_from(left.as_secs()).unwrap_or(0)),
+                            )
+                        }
+                        _ => PeerCoarse::Known,
+                    }
+                };
+                PeerSlot {
+                    source: *source,
+                    origin: self.origins.get(source).copied().unwrap_or_default(),
+                    coarse,
+                    live: self.live.get(source).cloned(),
+                    message: match coarse {
+                        PeerCoarse::Failed | PeerCoarse::Banned => {
+                            self.errors.get(source).cloned().unwrap_or_default()
+                        }
+                        _ => String::new(),
+                    },
+                }
+            })
+            .collect()
+    }
 }
 
 /// ED2K 下载编排入口（签名同 `run_ftp_download`：接受 [`DownloadParams`] 单参）。
@@ -436,26 +700,6 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
         return Err(DownloadError::Cancelled);
     }
 
-    // 服务器来源合并：用户手填列表（ed2k_server_list）+ 订阅缓存
-    // （ed2k_server_sub_cache，由宿主定期刷新 server.met 写入）。
-    let manual_cfg = params
-        .db
-        .get_config("ed2k_server_list")
-        .await?
-        .unwrap_or_default();
-    let sub_cfg = params
-        .db
-        .get_config("ed2k_server_sub_cache")
-        .await?
-        .unwrap_or_default();
-    let mut server_list = parse_server_list(&manual_cfg);
-    let mut seen: HashSet<String> = server_list.iter().cloned().collect();
-    for s in parse_server_list(&sub_cfg) {
-        if seen.insert(s.clone()) {
-            server_list.push(s);
-        }
-    }
-
     let progress: Arc<StdMutex<HashMap<u64, i64>>> = Arc::new(StdMutex::new(HashMap::new()));
     let tracker = TransferTracker::new();
     let connected = TransferTracker::new();
@@ -475,54 +719,17 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
     let hashset_cache: Arc<OnceCell<Vec<[u8; 16]>>> = Arc::new(OnceCell::new());
     crate::ed2k::identity::ensure_user_hash(&params.db).await?;
     let client = shared_client();
-    // 客户端配置：监听端口/UPnP/Kad 开关来自 DB。
-    let listen_port = params
-        .db
-        .get_config("ed2k_listen_port")
-        .await?
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(0);
-    let enable_upnp = params
-        .db
-        .get_config("ed2k_enable_upnp")
-        .await?
-        .map(|v| v == "true")
-        .unwrap_or(true);
-    let enable_kad = params
-        .db
-        .get_config("ed2k_enable_kad")
-        .await?
-        .map(|v| v == "true")
-        .unwrap_or(true);
-    client.configure(crate::ed2k::client::ClientConfig {
-        listen_port,
-        udp_port: 0,
-        servers: server_list.clone(),
-        enable_upnp,
-        enable_kad,
-    });
+    // 客户端配置：监听端口 / UPnP / Kad 开关与服务器列表来自 DB，每轮找源前重读，
+    // 设置改动对运行中的任务热生效。
+    refresh_client_config(&params.db, &client).await?;
     let _active_task = client.begin_task();
-    // Kad bootstrap 节点（nodes.dat，base64 缓存，由宿主后台刷新）。
-    let nodes_dat: Vec<u8> = if enable_kad {
-        use base64::Engine as _;
-        params
-            .db
-            .get_config("ed2k_nodes_dat_cache")
-            .await?
-            .filter(|s| !s.is_empty())
-            .and_then(
-                |s| match base64::engine::general_purpose::STANDARD.decode(&s) {
-                    Ok(bytes) => Some(bytes),
-                    Err(error) => {
-                        crate::log_warn!("[ed2k] invalid cached Kad bootstrap data: {}", error);
-                        None
-                    }
-                },
-            )
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // 详情页实况：任务退出（任何路径）时随 `registration` drop 撤销。
+    let registration = status::register(&task_id, params.segment_count, Arc::clone(&progress));
+    let live = Arc::clone(registration.live());
+    let parts_total = hash::part_count(total_bytes, part_size);
+    if let Ok(snapshot) = blocks.lock() {
+        live.set_parts_done(snapshot.verified_count());
+    }
     let mut sources: Vec<Source> = Vec::new();
     let mut source_retries: u32 = 0;
     let mut backoff: HashSet<Source> = HashSet::new();
@@ -536,6 +743,10 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
     let mut idle: HashMap<Source, PeerSession> = HashMap::new();
     // 各源最近一次申请上传槽的时刻（见 [`REASK_INTERVAL`]）。
     let mut asked_at: HashMap<Source, tokio::time::Instant> = HashMap::new();
+    // 详情页用：各源的发现途径、连接实况与最近一次失败原因（不参与调度判定）。
+    let mut origins: HashMap<Source, PeerOrigin> = HashMap::new();
+    let mut peer_live: HashMap<Source, Arc<PeerLive>> = HashMap::new();
+    let mut last_error: HashMap<Source, String> = HashMap::new();
 
     let outcome: Result<i64, DownloadError> = 'outer: loop {
         let mut pending = match blocks.lock() {
@@ -543,6 +754,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
             Err(_) => break 'outer Err(DownloadError::Ed2k("block snapshot lock poisoned".into())),
         };
         if pending.is_empty() {
+            live.set_phase(TaskPhase::Verifying, 0);
             match finalize_and_verify(&params.db, &task_id, &temp_path, &link, part_size).await {
                 Ok(()) => break 'outer Ok(total_bytes as i64),
                 Err(DownloadError::Ed2kIntegrity(_)) if finalize_retries < FINALIZE_MAX_RETRIES => {
@@ -550,6 +762,9 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     *blocks.lock().map_err(|_| {
                         DownloadError::Ed2k("block snapshot lock poisoned".into())
                     })? = BlockSnapshot::from_rows(total_bytes, part_size, &rows);
+                    if let Ok(snapshot) = blocks.lock() {
+                        live.set_parts_done(snapshot.verified_count());
+                    }
                     finalize_retries += 1;
                     if let Err(journal_error) = crate::task_activity::record(&params.db, params.sink.as_ref(), &task_id, "retry", format!("ED2K 完整性校验失败，重下坏块（第 {finalize_retries}/{FINALIZE_MAX_RETRIES} 轮）"), None).await {
                         crate::log_error!("[task-activity] failed to persist retry: {}", journal_error);
@@ -564,11 +779,9 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                 Err(e) => break 'outer Err(e),
             }
         }
-        let concurrency = ed2k_concurrency(params.segment_count, pending.len());
-        concurrency_limit.store(concurrency as u32, Ordering::Relaxed);
         let mut join: JoinSet<BlockJoinResult> = JoinSet::new();
-        let mut ready = Vec::with_capacity(concurrency);
-        let mut updates = Vec::with_capacity(concurrency);
+        let mut ready = Vec::with_capacity(MAX_ED2K_CONCURRENCY);
+        let mut updates = Vec::with_capacity(MAX_ED2K_CONCURRENCY);
         // 正在连接 / 传输中的源：每个源同时只占一条连接。eMule 按 user hash + IP
         // 认客户端，同一客户端的第二条连接会顶掉前一条，并发多连只会全部被断开。
         let mut busy: HashSet<Source> = HashSet::new();
@@ -577,6 +790,12 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
             if params.cancel_token.is_cancelled() {
                 break Err(DownloadError::Cancelled);
             }
+            // 线程数设置可在运行中改动：每个调度点重算上限。调小时不打断在途连接，
+            // 只是不再补新的；调大时下面的派发循环立即补足。
+            let concurrency = ed2k_concurrency(live.segment_count(), pending.len() + join.len());
+            let source_limit = u32::try_from(concurrency).unwrap_or(u32::MAX);
+            concurrency_limit.store(source_limit, Ordering::Relaxed);
+            live.set_max_sources(source_limit);
             // 不可选的源 = 在途 ∪（无空闲连接且仍在重询冷却期内）。
             let now = tokio::time::Instant::now();
             let mut unavailable = busy.clone();
@@ -622,6 +841,8 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                 let client = Arc::clone(&client);
                 let tracker = tracker.clone();
                 let connected = connected.clone();
+                let peer = Arc::clone(peer_live.entry(src).or_default());
+                peer.begin(bi, session.is_some());
                 join.spawn(async move {
                     // 连接/握手/排队可能阻塞数十秒且不看 cancel，整体与 cancel 竞速，
                     // 使暂停/删除立即生效（drop 会关闭 socket）。
@@ -634,8 +855,18 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                                     Ok(stream) => stream,
                                     Err(error) => return (None, false, Err(error)),
                                 };
-                                match PeerSession::open(stream, &file_hash, &cancel).await {
-                                    Ok(session) => (session, true),
+                                match PeerSession::open(
+                                    stream,
+                                    &file_hash,
+                                    &cancel,
+                                    Arc::clone(&peer),
+                                )
+                                .await
+                                {
+                                    Ok(session) => {
+                                        peer.set_parts(session.held_parts(parts_total));
+                                        (session, true)
+                                    }
                                     Err(error) => return (None, error.asked, Err(error.source)),
                                 }
                             }
@@ -666,41 +897,50 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     (bi, src, session, asked, r)
                 });
             }
+            live.publish_peers(
+                SourceBoard {
+                    sources: &sources,
+                    origins: &origins,
+                    busy: &busy,
+                    idle: &idle,
+                    backoff: &backoff,
+                    banned: &integrity_bl,
+                    asked_at: &asked_at,
+                    live: &peer_live,
+                    errors: &last_error,
+                }
+                .slots(),
+            );
+            if !join.is_empty() {
+                live.set_phase(TaskPhase::Downloading, 0);
+            }
 
             if join.is_empty() {
                 if pending.is_empty() {
                     break Ok(());
                 }
-                // 重读服务器列表并重配客户端：宿主后台刷新（含缓存版本失效重取）
-                // 完成后，本轮即可用上修正后的服务器，无需重启。
-                {
-                    let manual = params
-                        .db
-                        .get_config("ed2k_server_list")
-                        .await?
-                        .unwrap_or_default();
-                    let sub = params
-                        .db
-                        .get_config("ed2k_server_sub_cache")
-                        .await?
-                        .unwrap_or_default();
-                    let mut fresh = parse_server_list(&manual);
-                    let mut seen_srv: HashSet<String> = fresh.iter().cloned().collect();
-                    for s in parse_server_list(&sub) {
-                        if seen_srv.insert(s.clone()) {
-                            fresh.push(s);
-                        }
-                    }
-                    if !fresh.is_empty() {
-                        client.configure(crate::ed2k::client::ClientConfig {
-                            listen_port,
-                            udp_port: 0,
-                            servers: fresh,
-                            enable_upnp,
-                            enable_kad,
-                        });
-                    }
-                }
+                live.set_phase(TaskPhase::Searching, 0);
+                // 重读配置并重配客户端：宿主后台刷新订阅（含缓存版本失效重取）或用户改了
+                // 服务器列表 / UPnP / Kad 开关后，本轮即可用上，无需重启任务。
+                let config = refresh_client_config(&params.db, &client).await?;
+                let targets: Vec<(String, ServerOrigin)> = client
+                    .query_targets()
+                    .into_iter()
+                    .map(|addr| {
+                        let manual = config
+                            .servers
+                            .iter()
+                            .position(|server| server == &addr)
+                            .is_some_and(|index| index < config.manual_servers);
+                        let origin = if manual {
+                            ServerOrigin::Manual
+                        } else {
+                            ServerOrigin::Subscription
+                        };
+                        (addr, origin)
+                    })
+                    .collect();
+                live.servers_querying(&targets);
                 // 服务器找源（可能空/失败），Kad 作为去中心化补充。
                 // 竞速 cancel_token：删除/暂停任务时立即中止 ~96s 的服务器扫描，
                 // 避免 handle wait 超时 → 文件被占 → 僵尸任务复活。
@@ -710,21 +950,33 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     r = client.find_sources(&link.root_hash, total_bytes, large_file) => r,
                 };
                 let mut merged: Vec<Source> = match server_res {
-                    Ok(sources) => sources,
+                    Ok(query) => {
+                        live.servers_answered(&query.servers);
+                        query.sources
+                    }
                     Err(error) => {
+                        live.servers_answered(&[]);
                         log_info!("[ed2k] server source query failed; trying Kad: {}", error);
                         Vec::new()
                     }
                 };
-                if enable_kad && !nodes_dat.is_empty() {
+                origins.clear();
+                origins.extend(merged.iter().map(|source| (*source, PeerOrigin::Server)));
+                let nodes_dat = if config.enable_kad {
+                    load_nodes_dat(&params.db).await?
+                } else {
+                    Vec::new()
+                };
+                if !nodes_dat.is_empty() {
                     let kad_res = crate::ed2k::kad::node::find_sources_kad(
                         &link.root_hash,
                         total_bytes,
                         0,
-                        listen_port,
+                        config.listen_port,
                         &nodes_dat,
                         KAD_FIND_TIMEOUT,
                         &params.cancel_token,
+                        Some(live.kad()),
                     )
                     .await;
                     match kad_res {
@@ -734,6 +986,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                                 let src = Source::HighId(peer);
                                 if seen.insert(src) {
                                     merged.push(src);
+                                    origins.insert(src, PeerOrigin::Kad);
                                 }
                             }
                         }
@@ -753,6 +1006,21 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     backoff.clear();
                     lacks.clear();
                     source_retries = 0;
+                    last_error.retain(|source, _| integrity_bl.contains(source));
+                    live.publish_peers(
+                        SourceBoard {
+                            sources: &sources,
+                            origins: &origins,
+                            busy: &busy,
+                            idle: &idle,
+                            backoff: &backoff,
+                            banned: &integrity_bl,
+                            asked_at: &asked_at,
+                            live: &peer_live,
+                            errors: &last_error,
+                        }
+                        .slots(),
+                    );
                     // 所有源都在重询冷却期内：等到最早一个到期再继续，不反复
                     // 登录服务器 / 查 Kad 空转。
                     let now = tokio::time::Instant::now();
@@ -771,6 +1039,11 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                             task_id,
                             sources.len(),
                             (wake - now).as_secs()
+                        );
+                        live.set_phase(
+                            TaskPhase::Waiting,
+                            status::unix_now()
+                                .saturating_add(i64::try_from((wake - now).as_secs()).unwrap_or(0)),
                         );
                         tokio::select! {
                             biased;
@@ -815,15 +1088,19 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                     }
                     let jitter_ms = (u64::from(source_retries) * 137)
                         % (SOURCE_RETRY_JITTER.as_millis() as u64).max(1);
+                    let retry_delay = SOURCE_RETRY_DELAY + Duration::from_millis(jitter_ms);
+                    live.set_phase(
+                        TaskPhase::Waiting,
+                        status::unix_now()
+                            .saturating_add(i64::try_from(retry_delay.as_secs()).unwrap_or(0)),
+                    );
                     // 竞速 cancel：重试等待期间被删除/暂停应立即响应，不空等 60s。
                     tokio::select! {
                         biased;
                         () = params.cancel_token.cancelled() => {
                             break 'outer Err(DownloadError::Cancelled)
                         }
-                        () = tokio::time::sleep(
-                            SOURCE_RETRY_DELAY + Duration::from_millis(jitter_ms),
-                        ) => {}
+                        () = tokio::time::sleep(retry_delay) => {}
                     }
                 }
                 continue;
@@ -883,6 +1160,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                         for &(index, _, _, _) in &updates {
                             snapshot.set_verified(index, true, total_bytes, part_size);
                         }
+                        live.set_parts_done(snapshot.verified_count());
                     }
                     Err(_) => {
                         break Err(DownloadError::Ed2k("block snapshot lock poisoned".into()));
@@ -893,6 +1171,15 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                 busy.remove(&src);
                 if asked {
                     asked_at.insert(src, tokio::time::Instant::now());
+                }
+                if let Some(peer) = peer_live.get(&src) {
+                    let verified = if matches!(res, Ok(true)) {
+                        let (start, end) = hash::part_span(bi, total_bytes, part_size);
+                        end - start
+                    } else {
+                        0
+                    };
+                    peer.finish(verified);
                 }
                 // 块校验通过或对端只是缺这一块：连接仍持有上传槽，留给下一个块。
                 let reusable = match &res {
@@ -937,6 +1224,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                             }
                             *strikes.entry(bi).or_insert(0) += 1;
                             integrity_bl.insert(src);
+                            last_error.insert(src, format!("block {bi} failed MD4 verification"));
                             if strikes.get(&bi).copied().unwrap_or(0) >= BLOCK_MAX_RETRIES {
                                 break 'download Err(DownloadError::Ed2kIntegrity(format!(
                                     "block {bi} irrecoverable after {BLOCK_MAX_RETRIES} tries"
@@ -973,6 +1261,7 @@ async fn run_ed2k_download_inner(params: &DownloadParams) -> Result<(i64, String
                             );
                         }
                         // 完整性违规 → 拉黑该源；纯网络失败 → 退避。
+                        last_error.insert(src, source.to_string());
                         if matches!(source, DownloadError::Ed2kIntegrity(_)) {
                             log_info!(
                                 "[ed2k] block {} from {:?} INTEGRITY violation: {} — blacklisting",
@@ -1859,10 +2148,11 @@ mod tests {
             Err(e) => panic!("connect mock peer failed: {e}"),
         };
         let cancel = new_cancel();
-        let mut session = match super::PeerSession::open(stream, &root, &cancel).await {
-            Ok(session) => session,
-            Err(e) => panic!("open session failed: {:?}", e.source),
-        };
+        let mut session =
+            match super::PeerSession::open(stream, &root, &cancel, Arc::default()).await {
+                Ok(session) => session,
+                Err(e) => panic!("open session failed: {:?}", e.source),
+            };
         let cache = fresh_hashset_cache();
         let progress = empty_progress();
         let limiter = no_limit();

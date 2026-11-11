@@ -110,6 +110,12 @@ import type {
   TaskSpeedHistoryDto,
   TaskSpeedHistoryQuery,
   BtStatusDto,
+  Ed2kIdCheckParams,
+  Ed2kKadBootstrapDto,
+  Ed2kKadBootstrapParams,
+  Ed2kNetworkDto,
+  Ed2kNodesSubRefreshResponse,
+  Ed2kStatusDto,
   TaskDeleteManyParams,
   TaskDeleteParams,
   TaskChangeUrlParams,
@@ -145,6 +151,7 @@ const task = {
   speedHistory: (params: TaskSpeedHistoryQuery) =>
     call<TaskSpeedHistoryDto | null>(METHOD.DAEMON_TASK_SPEED_HISTORY, params),
   btStatus: (params: TaskIdParams) => call<BtStatusDto>(METHOD.DAEMON_TASK_BT_STATUS, params),
+  ed2kStatus: (params: TaskIdParams) => call<Ed2kStatusDto>(METHOD.DAEMON_TASK_ED2K_STATUS, params),
   create: (params: DaemonCreateTaskParams) => call<CreatedTask>(METHOD.DAEMON_TASK_CREATE, params),
   /** 批量建任务：一块（≤512 条）共享同一份选项，整块一个事务，按 `batchId` 幂等。 */
   createMany: (params: DaemonCreateTasksParams) =>
@@ -394,11 +401,22 @@ const bt = {
   },
 };
 
+/** HighID / LowID 检测与 Kad 引导：最坏约 30 s。 */
+const ED2K_PROBE_TIMEOUT_MS = 60_000;
+
 const ed2k = {
   serverSubscription: {
     refresh: () =>
       call<Ed2kServerSubRefreshResponse>(METHOD.DAEMON_ED2K_SERVER_SUBSCRIPTION_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   },
+  nodesSubscription: {
+    refresh: () =>
+      call<Ed2kNodesSubRefreshResponse>(METHOD.DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
+  },
+  /** 省略参数 = auto（发 `{}`）。 */
+  idCheck: (params?: Ed2kIdCheckParams) => call<Ed2kNetworkDto>(METHOD.DAEMON_ED2K_ID_CHECK, params ?? {}, { timeoutMs: ED2K_PROBE_TIMEOUT_MS }),
+  kadBootstrap: (params: Ed2kKadBootstrapParams) =>
+    call<Ed2kKadBootstrapDto>(METHOD.DAEMON_ED2K_KAD_BOOTSTRAP, params, { timeoutMs: ED2K_PROBE_TIMEOUT_MS }),
 };
 
 const diagnostics = {

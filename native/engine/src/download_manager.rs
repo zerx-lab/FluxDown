@@ -6181,6 +6181,22 @@ impl DownloadManager {
         let was_active = self.active_tasks.contains_key(task_id) || matches!(task.status, 1 | 5);
         let seg = if segments <= 0 { 0 } else { segments };
 
+        // eD2K：线程数只是「同时连接的源数」上限，调度循环在每个调度点读取，交给运行中的
+        // 任务即可热生效。暂停 → 恢复会丢掉全部已取得的上传槽与排队名次，并在重询冷却期内
+        // 无法重新申请。
+        #[cfg(feature = "ed2k")]
+        if is_ed2k_url(&task.url) {
+            self.db.update_task_segments(task_id, seg).await?;
+            let live = crate::ed2k::status::set_task_segments(task_id, seg);
+            log_info!(
+                "[manager] ed2k task {} 同时连接源数已改为 {}（running={}）",
+                task_id,
+                seg,
+                live
+            );
+            return Ok(true);
+        }
+
         // 活跃任务：先暂停当前 spawn（取消 + 落 paused），改配置后再恢复，
         // 让新 worker_cap 立即生效。全程在 current_thread actor 内串行，无竞态。
         // 静默暂停——这是实现细节，用户看到的是「改了线程数」，不是「暂停了」；
@@ -13948,6 +13964,26 @@ impl DownloadManager {
             trackers,
             peers,
         })
+    }
+
+    /// eD2K 任务实况：源、查询过的服务器、Kad 节点、块进度与本机网络状态
+    /// （见 [`crate::ed2k::task_status`]）。
+    ///
+    /// # Errors
+    /// 任务不存在、不是 eD2K 任务或读库失败。
+    #[cfg(feature = "ed2k")]
+    pub async fn ed2k_status(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::ed2k::status::Ed2kStatusView, crate::ed2k::status::StatusError> {
+        use crate::ed2k::status::StatusError;
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await
+            .map_err(|error| StatusError::Operation(format!("{error:#}")))?
+            .ok_or_else(|| StatusError::InvalidArgument("task not found".to_owned()))?;
+        crate::ed2k::task_status(&self.db, &task).await
     }
 
     /// BT 任务的分享材料：磁力链接（含种子自带与会话追加的 tracker）与可选 `.torrent` 字节。

@@ -28,7 +28,6 @@ import com.fluxdown.app.feature.settings.flowItem
 import com.fluxdown.app.feature.settings.rememberSettingsCtx
 import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.feature.settings.settingSwitch
-import com.fluxdown.app.feature.settings.settingText
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.SettingsPage
@@ -50,17 +49,20 @@ import com.fluxdown.fluxui.overlay.FluxBannerKind
 private const val K_GENERAL = "general"
 private const val K_SERVER_LIST = "server-list"
 private const val K_SERVER_SUB = "server-sub"
+private const val K_KAD_NODES = "kad-nodes"
 
 private fun itemKeyOf(row: Ed2kSettingsRow): String = when (row) {
-    Ed2kSettingsRow.Kad, Ed2kSettingsRow.Upnp, Ed2kSettingsRow.ListenPort -> K_GENERAL
+    Ed2kSettingsRow.Kad, Ed2kSettingsRow.Upnp, Ed2kSettingsRow.ListenPort, Ed2kSettingsRow.IdCheck -> K_GENERAL
     Ed2kSettingsRow.ServerList -> K_SERVER_LIST
-    else -> K_SERVER_SUB
+    Ed2kSettingsRow.ServerSub, Ed2kSettingsRow.ServerSubUrls, Ed2kSettingsRow.ServerSubStatus -> K_SERVER_SUB
+    Ed2kSettingsRow.NodesSubUrls, Ed2kSettingsRow.NodesSubStatus -> K_KAD_NODES
 }
 
 @StringRes
 private fun tabTitle(tab: Ed2kSettingsTab): Int = when (tab) {
     Ed2kSettingsTab.General -> R.string.settingsTabGeneral
     Ed2kSettingsTab.Servers -> R.string.settingsTabServers
+    Ed2kSettingsTab.Kad -> R.string.settingsTabKadNodes
 }
 
 @StringRes
@@ -68,11 +70,13 @@ private fun titleOf(row: Ed2kSettingsRow): Int = when (row) {
     Ed2kSettingsRow.Kad -> R.string.ed2kEnableKad
     Ed2kSettingsRow.Upnp -> R.string.ed2kEnableUpnp
     Ed2kSettingsRow.ListenPort -> R.string.ed2kListenPort
+    Ed2kSettingsRow.IdCheck -> R.string.ed2kIdCheck
     Ed2kSettingsRow.ServerList -> R.string.ed2kServerList
     Ed2kSettingsRow.ServerSub -> R.string.ed2kServerSub
     Ed2kSettingsRow.ServerSubUrls -> R.string.ed2kServerSubUrls
-    Ed2kSettingsRow.NodesDatUrl -> R.string.mobileEd2kNodesDatUrl
     Ed2kSettingsRow.ServerSubStatus -> R.string.ed2kServerSubUpdateNow
+    Ed2kSettingsRow.NodesSubUrls -> R.string.ed2kNodesSubUrls
+    Ed2kSettingsRow.NodesSubStatus -> R.string.ed2kNodesSubUpdateNow
 }
 
 @StringRes
@@ -80,16 +84,19 @@ private fun detailOf(row: Ed2kSettingsRow): Int? = when (row) {
     Ed2kSettingsRow.Kad -> R.string.ed2kEnableKadDesc
     Ed2kSettingsRow.Upnp -> R.string.ed2kEnableUpnpDesc
     Ed2kSettingsRow.ListenPort -> R.string.ed2kListenPortDesc
+    Ed2kSettingsRow.IdCheck -> R.string.ed2kIdCheckDesc
     Ed2kSettingsRow.ServerList -> R.string.ed2kServerListDesc
     Ed2kSettingsRow.ServerSub -> R.string.ed2kServerSubDesc
     Ed2kSettingsRow.ServerSubUrls -> R.string.ed2kServerSubUrlsDesc
-    Ed2kSettingsRow.NodesDatUrl -> R.string.mobileEd2kNodesDatUrlDesc
     Ed2kSettingsRow.ServerSubStatus -> null
+    Ed2kSettingsRow.NodesSubUrls -> R.string.ed2kNodesSubUrlsDesc
+    Ed2kSettingsRow.NodesSubStatus -> null
 }
 
 /**
- * S7 · eD2K 设置（常规 · 服务器）。行与 GPUI `sections/ed2k.rs` 同序同键同范围。
- * `ed2k_server_list` 存逗号分隔的 `host:port`，编辑区每行一条，写回时按条目去空白并忽略大小写去重。
+ * S7 · eD2K 设置（常规 · 服务器 · Kad 节点）。行与 GPUI `sections/ed2k.rs` 同序同键同范围。
+ * `ed2k_server_list` 存逗号分隔的 `host:port`，编辑区每行一条，写回时按条目去空白并忽略大小写去重；
+ * 两个订阅地址列表（服务器 / nodes.dat）均为换行分隔。
  */
 @Composable
 internal fun Ed2kPage() {
@@ -144,6 +151,11 @@ internal fun Ed2kPage() {
                             flowItem(index++, gate, K_SERVER_SUB) { ServerSubSection(ctx) }
                         }
                     }
+                    Ed2kSettingsTab.Kad -> {
+                        if (Ed2kSettingsRow.visible(Ed2kSettingsTab.Kad, form).isNotEmpty()) {
+                            flowItem(index++, gate, K_KAD_NODES) { KadNodesSection(ctx) }
+                        }
+                    }
                 }
                 flowItem(index++, gate, "legend") { FluxSectionFoot(legend) }
             }
@@ -174,6 +186,7 @@ private fun GeneralSection(ctx: SettingsCtx) {
                 range = 0L..65_535L, default = 0L, id = Ed2kSettingsRow.ListenPort.id,
             )
         }
+        if (Ed2kSettingsRow.IdCheck.isVisible(form)) ed2kIdCheckRow(ctx, Ed2kSettingsRow.IdCheck.id)
     }
 }
 
@@ -194,13 +207,22 @@ private fun ServerSubSection(ctx: SettingsCtx) {
                 enabled = form.bool(Ed2kSettingsRow.ServerSub.configKey),
             )
         }
-        if (Ed2kSettingsRow.NodesDatUrl.isVisible(form)) {
-            settingText(
-                ctx, Ed2kSettingsRow.NodesDatUrl.configKey, R.string.mobileEd2kNodesDatUrl, R.string.mobileEd2kNodesDatUrlDesc,
-                placeholder = R.string.mobileEd2kNodesDatUrlPlaceholder, id = Ed2kSettingsRow.NodesDatUrl.id,
+        if (Ed2kSettingsRow.ServerSubStatus.isVisible(form)) subscriptionStatusRow(ctx, SubscriptionKind.Ed2kServers)
+    }
+}
+
+@Composable
+private fun KadNodesSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    GlassSection {
+        if (Ed2kSettingsRow.NodesSubUrls.isVisible(form)) {
+            linesRow(
+                ctx, Ed2kSettingsRow.NodesSubUrls.id, Ed2kSettingsRow.NodesSubUrls.configKey,
+                R.string.ed2kNodesSubUrls, R.string.ed2kNodesSubUrlsDesc, R.string.ed2kNodesSubPlaceholder,
+                enabled = form.bool(Ed2kSettingsRow.Kad.configKey),
             )
         }
-        if (Ed2kSettingsRow.ServerSubStatus.isVisible(form)) subscriptionStatusRow(ctx, SubscriptionKind.Ed2kServers)
+        if (Ed2kSettingsRow.NodesSubStatus.isVisible(form)) subscriptionStatusRow(ctx, SubscriptionKind.Ed2kNodes)
     }
 }
 

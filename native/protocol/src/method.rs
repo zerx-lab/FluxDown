@@ -52,6 +52,9 @@ pub const DAEMON_TASK_TORRENT_SHARE: &str = "daemon.task.torrentShare";
 /// BT 任务实况（`DaemonBtStatusParams` → `BtStatusDto`）：peer 列表与逐 tracker 汇报状态，
 /// 供详情页轮询（对齐 qBittorrent 的 Peers / Trackers 页签）。非 BT 任务返回 `invalidArgument`。
 pub const DAEMON_TASK_BT_STATUS: &str = "daemon.task.btStatus";
+/// eD2K 任务实况（`DaemonEd2kStatusParams` → `Ed2kStatusDto`）：源列表、查询过的服务器、Kad 节点
+/// 与本机网络状态（HighID / LowID、UPnP），供详情页轮询。非 eD2K 任务返回 `invalidArgument`。
+pub const DAEMON_TASK_ED2K_STATUS: &str = "daemon.task.ed2kStatus";
 /// 批量暂停 / 恢复（`{taskIds}`）：整批只推一次任务快照；未知 id 忽略，空列表为空操作。
 pub const DAEMON_TASK_PAUSE_MANY: &str = "daemon.task.pauseMany";
 pub const DAEMON_TASK_RESUME_MANY: &str = "daemon.task.resumeMany";
@@ -207,6 +210,14 @@ pub const DAEMON_BT_GUARD_CLOUD_APPLY: &str = "daemon.bt.guard.cloud.apply";
 /// 仅 agent 调用：弹出待上报证据（`BtGuardEvidenceDrainDto`）。
 pub const DAEMON_BT_GUARD_EVIDENCE_DRAIN: &str = "daemon.bt.guard.evidence.drain";
 pub const DAEMON_ED2K_SERVER_SUBSCRIPTION_REFRESH: &str = "daemon.ed2k.serverSubscription.refresh";
+/// 立即刷新 Kad 节点（nodes.dat）订阅（无参 → `Ed2kNodesSubRefreshResponse`）。慢方法：会拉取网络。
+pub const DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH: &str = "daemon.ed2k.nodesSubscription.refresh";
+/// HighID / LowID 检测（`Ed2kIdCheckParams`，可省略 → `Ed2kNetworkDto`）：按目标报告当前会话，或用
+/// 真实监听端口（启用 UPnP 时先等映射结果）登录服务器取得分配的 ID 后断开。慢方法：会连接网络。
+pub const DAEMON_ED2K_ID_CHECK: &str = "daemon.ed2k.idCheck";
+/// Kad 引导（`Ed2kKadBootstrapParams` → `Ed2kKadBootstrapDto`）：向指定节点 / 网址取到的节点 /
+/// 已知节点发握手，报告应答情况并把存活节点并入已知节点缓存。慢方法：会连接网络。
+pub const DAEMON_ED2K_KAD_BOOTSTRAP: &str = "daemon.ed2k.kadBootstrap";
 pub const DAEMON_DIAGNOSTICS_DESCRIBE: &str = "daemon.diagnostics.describe";
 pub const DAEMON_DIAGNOSTICS_PREPARE_LOG_EXPORT: &str = "daemon.diagnostics.prepareLogExport";
 /// Doctor 动态探测：在 daemon 进程内真实写入各下载目录 / 数据目录并运行外部组件，
@@ -451,6 +462,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_TORRENT_SHARE,
     DAEMON_TASK_BT_STATUS,
+    DAEMON_TASK_ED2K_STATUS,
     DAEMON_TASK_PAUSE_MANY,
     DAEMON_TASK_RESUME_MANY,
     DAEMON_TASK_DELETE_MANY,
@@ -551,6 +563,9 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_BT_GUARD_EVIDENCE_DRAIN,
     DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH,
     DAEMON_ED2K_SERVER_SUBSCRIPTION_REFRESH,
+    DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH,
+    DAEMON_ED2K_ID_CHECK,
+    DAEMON_ED2K_KAD_BOOTSTRAP,
     DAEMON_DIAGNOSTICS_DESCRIBE,
     DAEMON_DIAGNOSTICS_PREPARE_LOG_EXPORT,
     DAEMON_DIAGNOSTICS_PROBE,
@@ -696,6 +711,9 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_WEBHOOK_TEST,
     DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH,
     DAEMON_ED2K_SERVER_SUBSCRIPTION_REFRESH,
+    DAEMON_ED2K_NODES_SUBSCRIPTION_REFRESH,
+    DAEMON_ED2K_ID_CHECK,
+    DAEMON_ED2K_KAD_BOOTSTRAP,
     DAEMON_BT_GUARD_EXPORT,
     DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
     DAEMON_BT_GUARD_CLOUD_APPLY,

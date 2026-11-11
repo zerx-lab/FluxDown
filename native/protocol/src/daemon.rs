@@ -491,6 +491,18 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
 /// [`BtPeerDto::action`] 取值：放行。
 pub const BT_GUARD_PEER_ACTION_ALLOW: &str = "allow";
 /// 过滤条目所在层（优先级 allow > manual > auto / cloud / file）。
@@ -880,6 +892,423 @@ pub struct BtStatusDto {
     pub peer_counts: BtPeerCountsDto,
     pub trackers: Vec<BtTrackerDto>,
     pub peers: Vec<BtPeerDto>,
+}
+
+/// `daemon.task.ed2kStatus` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonEd2kStatusParams {
+    pub task_id: String,
+}
+
+/// 本机在 eD2K 服务器上的 ID 类型：HighID 可被公网回连，LowID 位于 NAT / 防火墙之后。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kIdKind {
+    /// 当前没有登录任何服务器。
+    #[default]
+    None,
+    Low,
+    High,
+}
+
+/// eD2K 监听端口的 UPnP 映射状态。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kUpnpStatus {
+    /// 设置里未启用，或监听器尚未启动。
+    #[default]
+    Disabled,
+    /// 正在查找网关 / 建立映射。
+    Pending,
+    Mapped,
+    /// 没有 IGD 网关或映射被拒绝。
+    Failed,
+}
+
+/// 本机 eD2K 网络状态（进程级，所有 eD2K 任务共用）。`daemon.ed2k.idCheck` 的结果，
+/// 也是 [`Ed2kStatusDto::network`]。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kNetworkDto {
+    pub id: Ed2kIdKind,
+    /// 服务器分配的 client ID；未登录为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub client_id: u32,
+    /// 当前会话（或本次检测）所用服务器 `host:port`；没有为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server: String,
+    /// 实际监听的 TCP 端口；监听器未启动为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub listen_port: u16,
+    pub upnp: Ed2kUpnpStatus,
+    /// UPnP 网关报告的公网 IP；未知为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub external_ip: String,
+    pub upnp_enabled: bool,
+    pub kad_enabled: bool,
+    /// Kad 引导节点数（nodes.dat 订阅缓存）。
+    pub kad_nodes: u32,
+    /// 可用服务器数（手填 + 订阅，去重后）。
+    pub server_count: u32,
+    /// `daemon.ed2k.idCheck` 未能登录任何服务器时的原因；其余情况为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// `daemon.ed2k.idCheck` 的检测目标。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kIdCheckTarget {
+    /// 已登录服务器时报告当前会话，否则同 `list`。
+    #[default]
+    Auto,
+    /// 只报告当前会话，不发起连接；没有会话时结果的 `id` 为 `none`。
+    Session,
+    /// 向服务器列表（手填 + 订阅）并发登录，取第一个应答。
+    List,
+    /// 只向 `server` 指定的服务器登录。
+    Server,
+}
+
+/// `daemon.ed2k.idCheck` 参数（整体可省略，等同 `{target: "auto"}`）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kIdCheckParams {
+    #[serde(default)]
+    pub target: Ed2kIdCheckTarget,
+    /// `target = server` 时要登录的服务器 `host:port`（IP 或域名）；其余目标忽略。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server: String,
+}
+
+/// `daemon.ed2k.kadBootstrap` 的节点来源。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kKadBootstrapSource {
+    /// 已知节点（nodes.dat 缓存）。
+    #[default]
+    Known,
+    /// 先从网址取 nodes.dat（`url` 为空时用已配置的订阅地址），再联系取到的节点。
+    Url,
+    /// `host` + `port` 指定的单个节点。
+    Node,
+}
+
+/// `daemon.ed2k.kadBootstrap` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kKadBootstrapParams {
+    #[serde(default)]
+    pub source: Ed2kKadBootstrapSource,
+    /// `source = node`：节点的 IP 或域名。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
+    /// `source = node`：节点的 Kad UDP 端口。
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub port: u16,
+    /// `source = url`：nodes.dat 地址；空 = 用已配置的订阅地址。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+}
+
+/// `daemon.ed2k.kadBootstrap` 结果：一次真实的 Kad 引导握手。应答的节点与它们告知的节点
+/// 已并入已知节点缓存（`ed2k_nodes_dat_count` 随 `ConfigChanged` 更新）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kKadBootstrapDto {
+    /// 发过握手请求的节点数。
+    pub contacted: u32,
+    /// 应答的节点数；0 = Kad 网络当前不可达（或该节点已下线）。
+    pub responded: u32,
+    /// 应答里新告知的节点数。
+    pub discovered: u32,
+    /// 引导后已知节点缓存里的节点数。
+    pub node_count: u32,
+    /// 本次联系与发现的节点（应答的在前，至多 100 个）。
+    pub nodes: Vec<Ed2kKadNodeDto>,
+    /// 没有可联系的节点时的原因（地址无法解析、网址取不到节点、没有已知节点）；其余情况为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// eD2K 任务的运行阶段。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kTaskPhase {
+    /// 任务没有在运行。
+    #[default]
+    Idle,
+    /// 正在向服务器 / Kad 找源。
+    Searching,
+    Downloading,
+    /// 没有可用的源，等待下一轮找源或重询冷却结束（见 `nextSearchAt`）。
+    Waiting,
+    /// 全部块已下完，正在读盘终验。
+    Verifying,
+}
+
+/// 源的发现途径。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kPeerOrigin {
+    #[default]
+    Server,
+    Kad,
+}
+
+/// 源的连接状态。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kPeerState {
+    /// 已发现，尚未连接。
+    #[default]
+    Known,
+    /// 正在连接 / 握手 / 申请上传槽。
+    Connecting,
+    /// 在对端上传队列里排队（名次见 `queueRank`）。
+    Queued,
+    Transferring,
+    /// 持有上传槽的空闲连接，等待分配下一个块。
+    Connected,
+    /// 最近申请过上传槽，冷却到 `retryAt` 后才会再次申请。
+    Cooldown,
+    /// 连接 / 传输失败，本轮不再使用（原因见 `message`）。
+    Failed,
+    /// 发来的数据未通过校验，已拉黑。
+    Banned,
+}
+
+/// eD2K 任务的一个源。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kPeerDto {
+    /// HighID 源的 `ip:port`；LowID 源为空（见 `lowId`）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub addr: String,
+    /// LowID 源的 client ID（经服务器回调中转连接）；HighID 源为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub low_id: u32,
+    pub origin: Ed2kPeerOrigin,
+    pub state: Ed2kPeerState,
+    /// 对端上传队列名次；未排队为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub queue_rank: u32,
+    /// 对端客户端软件与版本（握手上报，如 `eMule 0.50a`）；未知为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client: String,
+    /// 对端昵称（握手上报）；未知为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nickname: String,
+    /// 从该源下载并通过校验的字节，加上当前块已收到的字节。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub downloaded: u64,
+    /// 下载速度（字节/秒），按相邻两次采样折算。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub down_bps: u64,
+    /// 对端持有的块数；尚未握手缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<u32>,
+    /// 正在从该源下载的块序号；未在传输缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<u32>,
+    /// 最近一次失败的原因；未失败为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+    /// 可以再次向该源申请上传槽的 unix 秒；不在冷却为 0。
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub retry_at: i64,
+}
+
+/// 源数量汇总（按 [`Ed2kPeerState`] 计数，`total` 为全部已知源）。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kPeerCountsDto {
+    pub total: u32,
+    pub transferring: u32,
+    pub connected: u32,
+    pub queued: u32,
+    pub connecting: u32,
+    pub cooldown: u32,
+    pub failed: u32,
+    pub banned: u32,
+}
+
+/// 服务器来源。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kServerSource {
+    /// 设置里手动填写。
+    #[default]
+    Manual,
+    /// server.met 订阅。
+    Subscription,
+}
+
+/// 服务器找源状态。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kServerStatus {
+    /// 正在登录 / 查询。
+    #[default]
+    Querying,
+    /// 最近一次查询成功（返回的源数见 `sources`，可能为 0）。
+    Working,
+    /// 最近一次登录或查询失败（原因见 `message`）。
+    NotWorking,
+}
+
+/// 本任务查询过的一台 eD2K 服务器。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kServerDto {
+    /// `host:port`。
+    pub addr: String,
+    pub source: Ed2kServerSource,
+    pub status: Ed2kServerStatus,
+    /// 本机当前登录的会话服务器（LowID 回调经它中转）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub connected: bool,
+    /// 最近一次查询返回的源数；尚无结果或失败缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sources: Option<u32>,
+    /// 失败原因；非失败为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+    /// 最近一次查询结束的 unix 秒；尚无结果为 0。
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub last_query_at: i64,
+}
+
+/// Kad 找源阶段。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kKadPhase {
+    /// 本次运行尚未做过 Kad 找源。
+    #[default]
+    Idle,
+    /// 向引导节点握手。
+    Bootstrapping,
+    /// 迭代查找离文件哈希最近的节点。
+    FindingNodes,
+    /// 向最近的节点查询源。
+    Searching,
+    /// 最近一轮已结束。
+    Done,
+}
+
+/// Kad 节点的来历。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kKadNodeOrigin {
+    /// nodes.dat 订阅里的引导节点。
+    #[default]
+    Bootstrap,
+    /// 其它节点在应答里告知的节点。
+    Discovered,
+}
+
+/// 本机与 Kad 节点的交互进度。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Ed2kKadNodeState {
+    /// 已发现，未向它发过请求。
+    #[default]
+    Known,
+    /// 已发请求，未收到应答。
+    Queried,
+    /// 收到过它的应答。
+    Responded,
+}
+
+/// 一个 Kad 节点。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kKadNodeDto {
+    /// `ip:udpPort`。
+    pub addr: String,
+    /// Kad ID（32 位小写十六进制）。
+    pub id: String,
+    pub origin: Ed2kKadNodeOrigin,
+    pub state: Ed2kKadNodeState,
+    /// 节点自报的 TCP 端口；未知为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub tcp_port: u16,
+    /// Kad 协议版本；未知为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub version: u8,
+}
+
+/// 任务的 Kad 找源实况。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kKadDto {
+    pub phase: Ed2kKadPhase,
+    /// 本轮使用的引导节点数。
+    pub bootstrap_nodes: u32,
+    /// 应答过的节点数。
+    pub responded: u32,
+    /// 经网络新发现的节点数（不含引导节点）。
+    pub discovered: u32,
+    /// 最近一轮经 Kad 找到的源数。
+    pub sources: u32,
+    /// 最近一轮结束的 unix 秒；尚未完成过为 0。
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub last_search_at: i64,
+    /// 离文件哈希最近的节点（按 XOR 距离升序，至多 100 个）。
+    pub nodes: Vec<Ed2kKadNodeDto>,
+}
+
+/// `daemon.task.ed2kStatus` 结果：任务的源、服务器、Kad 与本机网络实况。
+/// 任务未在运行时 `phase` 为 `idle`，`peers` / `servers` / `kad` 为空，`network` 仍有效。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kStatusDto {
+    pub phase: Ed2kTaskPhase,
+    /// 预计下一次找源 / 申请上传槽的 unix 秒；未知为 0。
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub next_search_at: i64,
+    /// 文件的 eD2K 哈希（32 位小写十六进制）。
+    pub file_hash: String,
+    /// 文件块总数（每块 9.28 MB）。
+    pub parts_total: u32,
+    /// 已下完并通过校验的块数。
+    pub parts_done: u32,
+    /// 当前生效的同时连接源数上限（由任务线程数推导，1..=8）。
+    pub max_sources: u32,
+    /// 任务的线程数设置（`daemon.task.setSegments` 写入的值）；0 = 自动。
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub segments: i32,
+    pub network: Ed2kNetworkDto,
+    pub peer_counts: Ed2kPeerCountsDto,
+    /// 已按活跃度排序（传输中 → 排队 → 连接中 → 其余）。
+    pub peers: Vec<Ed2kPeerDto>,
+    /// 本次运行查询过的服务器。
+    pub servers: Vec<Ed2kServerDto>,
+    pub kad: Ed2kKadDto,
 }
 /// `daemon.task.torrentShare` 参数。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -3372,7 +3801,7 @@ pub struct TrackerSubRefreshResponse {
     pub error: String,
 }
 
-/// ED2K 服务器订阅刷新结果（`POST /api/v1/ed2k/server-sub/refresh`）。
+/// ED2K 服务器订阅刷新结果（`daemon.ed2k.serverSubscription.refresh`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -3381,6 +3810,25 @@ pub struct Ed2kServerSubRefreshResponse {
     pub success: bool,
     /// 去重合并后的唯一服务器（`ip:port`）数。
     pub server_count: i64,
+    /// 成功拉取的源数。
+    pub ok_sources: i64,
+    /// 尝试的订阅源总数。
+    pub total_sources: i64,
+    /// 缓存更新时间（Unix 秒；本次未成功时沿用旧值）。
+    pub updated_at: i64,
+    /// 全部源失败时的错误摘要（成功时为空）。
+    pub error: String,
+}
+
+/// Kad 节点（nodes.dat）订阅刷新结果（`daemon.ed2k.nodesSubscription.refresh`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Ed2kNodesSubRefreshResponse {
+    /// 至少一个订阅源拉取成功。
+    pub success: bool,
+    /// 去重合并后的 Kad 引导节点数。
+    pub node_count: i64,
     /// 成功拉取的源数。
     pub ok_sources: i64,
     /// 尝试的订阅源总数。

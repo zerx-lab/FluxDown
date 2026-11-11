@@ -3753,12 +3753,14 @@ impl Db {
             ("ed2k_listen_port", "0"),
             ("ed2k_enable_upnp", "true"),
             ("ed2k_enable_kad", "true"),
-            // Kad bootstrap：nodes.dat 下载地址（社区维护）+ 缓存（base64）+ 更新时刻。
+            // Kad bootstrap：nodes.dat 订阅地址（每行一个，社区维护）+ 合并后的缓存
+            // （base64）+ 缓存里的节点数与更新时刻。
             (
                 "ed2k_nodes_dat_url",
                 "https://upd.emule-security.org/nodes.dat",
             ),
             ("ed2k_nodes_dat_cache", ""),
+            ("ed2k_nodes_dat_count", "0"),
             ("ed2k_nodes_dat_updated_at", "0"),
         ]);
         for (key, value) in &defaults {
@@ -3775,6 +3777,8 @@ impl Db {
         self.migrate_completed_at_backfill().await?;
         #[cfg(feature = "ed2k")]
         self.migrate_ed2k_server_sub_https().await?;
+        #[cfg(feature = "ed2k")]
+        self.backfill_ed2k_nodes_count().await?;
         Ok(())
     }
 
@@ -3893,6 +3897,37 @@ impl Db {
             .await?;
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "ed2k")]
+    /// `ed2k_nodes_dat_count` 晚于 `ed2k_nodes_dat_cache` 引入：已有缓存而条数仍为 0 时按缓存
+    /// 内容补上，否则订阅刷新成功之前界面会把可用的引导节点显示成 0 个。
+    async fn backfill_ed2k_nodes_count(&self) -> Result<(), DbError> {
+        use base64::Engine as _;
+        let count = self
+            .get_config("ed2k_nodes_dat_count")
+            .await?
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        if count > 0 {
+            return Ok(());
+        }
+        let Some(cache) = self
+            .get_config("ed2k_nodes_dat_cache")
+            .await?
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&cache) else {
+            return Ok(());
+        };
+        let cached = crate::ed2k::kad::proto::parse_nodes_dat(&bytes).len();
+        if cached > 0 {
+            self.set_config("ed2k_nodes_dat_count", &cached.to_string())
+                .await?;
+        }
         Ok(())
     }
 

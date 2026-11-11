@@ -140,6 +140,9 @@ fn dword_reverse(src: &[u8; 16]) -> [u8; 16] {
 }
 
 impl KadId {
+    /// 尚不知道 KadID 的节点（用户只给了地址）的占位值。真实 ID 是 128 位随机数，不会全零。
+    pub const UNKNOWN: KadId = KadId([0; 16]);
+
     /// 从内存字节序（如 ed2k 文件 hash）直接构造，不做变换。
     pub fn from_memory(bytes: &[u8; 16]) -> Self {
         KadId(*bytes)
@@ -532,6 +535,24 @@ pub fn decode_bootstrap_res(payload: &[u8]) -> Option<Vec<Contact>> {
     Some(contacts)
 }
 
+/// 应答包开头自报的节点身份（`BootstrapRes` / `HelloRes` 共用的头部）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeHeader {
+    pub id: KadId,
+    pub tcp_port: u16,
+    pub version: u8,
+}
+
+/// 解码 `BootstrapRes` / `HelloRes` 开头的 `KadID(16)+TCPPort(u16)+Version(1)`。
+pub fn decode_node_header(payload: &[u8]) -> Option<NodeHeader> {
+    let mut r = ByteReader::new(payload);
+    Some(NodeHeader {
+        id: KadId::decode(&mut r)?,
+        tcp_port: r.u16_le()?,
+        version: r.u8()?,
+    })
+}
+
 /// 解码 `Res`（FindNode 应答）payload → 联系点列表。
 pub fn decode_find_node_res(payload: &[u8]) -> Option<Vec<Contact>> {
     let mut r = ByteReader::new(payload);
@@ -632,6 +653,25 @@ pub fn parse_nodes_dat(bytes: &[u8]) -> Vec<Contact> {
         contacts.push(c);
     }
     contacts
+}
+
+/// 把联系点编码为旧格式 `nodes.dat`（`count(u32 LE) + count × Contact(25B)`），
+/// [`parse_nodes_dat`] 可原样读回。用于缓存多个订阅源合并后的引导联系点。
+///
+/// 旧格式以 `count != 0` 与新格式区分，无法表示 0 条：空列表编码为空字节。
+pub fn encode_nodes_dat(contacts: &[Contact]) -> Vec<u8> {
+    let Ok(count) = u32::try_from(contacts.len()) else {
+        return Vec::new();
+    };
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(4 + contacts.len() * CONTACT_WIRE_SIZE);
+    out.extend_from_slice(&count.to_le_bytes());
+    for contact in contacts {
+        contact.encode(&mut out);
+    }
+    out
 }
 
 #[cfg(test)]
