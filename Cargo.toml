@@ -50,8 +50,10 @@ wildcard_imports = "deny"
 # https tracker 都会 panic 掉磁力解析）+ tracker panic 隔离 + 握手超时下发到 Live 种子的 peer 连接
 # + 初检末尾到达的暂停不再丢失（校验完落 Paused 而非转 Live）+ BT 防吸血 PeerPolicy 钩子
 # （peer_policy.rs：admit / readmit / 事件 / 限速·Choke·断开）+ 始终发冗余 HAVE + 发送前丢弃已 Cancel 的块
-# + 最稀有优先选片 / 按顺序下载 / 先下首尾块（piece_picker.rs，上游 PR ikatson/rqbit#732）。
-librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "f4d199f4db734b40f94e22af10453dbf61c678c1" }
+# + 最稀有优先选片 / 按顺序下载 / 先下首尾块（piece_picker.rs，上游 PR ikatson/rqbit#732）
+# + 上传槽 choker：按贡献选对端、乐观解锁、按上传速率伸缩槽数；被对端 choke 时归还在途请求与片；
+# 等槽的静默连接不再被读超时断开（choker.rs，上游 PR ikatson/rqbit#737）。
+librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "088947e13108b3b0847423017ec348dbe3c0341d" }
 # 上游 main 已修、crates.io 0.7.0 未发布：Windows 上 UDP recv_from 因先前 send_to 收到 ICMP
 # 端口不可达而报 WSAECONNRESET(10054) 时，0.7.0 的 uTP 分发循环直接退出，整个会话的 uTP 失效。
 # 上游发布含该修复的版本后删除本条。
