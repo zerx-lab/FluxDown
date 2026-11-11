@@ -85,7 +85,8 @@ private const val SEARCH_DEBOUNCE_MS = 150L
 private fun itemKeyOf(row: BtSettingsRow): String = when (row.tab) {
     BtSettingsTab.Guard -> guardItemKeyOf(row)
     else -> when (row) {
-        BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode -> K_GENERAL
+        BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode,
+        BtSettingsRow.UploadSlots -> K_GENERAL
         BtSettingsRow.PieceOrder, BtSettingsRow.FirstLastPiecesFirst, BtSettingsRow.SelectionAutoDefault -> K_NEW_TASKS
         BtSettingsRow.CustomTrackers -> K_TRACKER_LIST
         BtSettingsRow.TrackerSub, BtSettingsRow.TrackerSubUrls, BtSettingsRow.TrackerSubStatus -> K_TRACKER_SUB
@@ -111,6 +112,7 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.PortStart -> R.string.btListenPortStart
     BtSettingsRow.PortEnd -> R.string.btListenPortEnd
     BtSettingsRow.MseMode -> R.string.btMseMode
+    BtSettingsRow.UploadSlots -> R.string.btUploadSlots
     BtSettingsRow.PieceOrder -> R.string.btPieceOrder
     BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefault
     BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefault
@@ -158,6 +160,7 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.Utp -> R.string.btEnableUtpDesc
     BtSettingsRow.PortStart -> R.string.btListenPortDesc
     BtSettingsRow.MseMode -> R.string.btMseModeDesc
+    BtSettingsRow.UploadSlots -> R.string.btUploadSlotsDesc
     BtSettingsRow.PieceOrder -> R.string.btPieceOrderDesc
     BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefaultDesc
     BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefaultDesc
@@ -400,6 +403,13 @@ private fun GeneralSection(ctx: SettingsCtx) {
             settingChoice(ctx, BtSettingsRow.MseMode.configKey, R.string.btMseMode, R.string.btMseModeDesc, id = BtSettingsRow.MseMode.id) {
                 BtMseModeOptions(mseLabels)
             }
+        }
+        if (BtSettingsRow.UploadSlots.isVisible(form)) {
+            settingStepper(
+                ctx, BtSettingsRow.UploadSlots.configKey, R.string.btUploadSlots, R.string.btUploadSlotsDesc,
+                range = 0..512, default = 0, zeroLabel = R.string.auto,
+                id = BtSettingsRow.UploadSlots.id,
+            )
         }
     }
 }

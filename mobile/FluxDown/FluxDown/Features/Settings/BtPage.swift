@@ -94,6 +94,11 @@ struct BtPage: View {
                 }
             }
             if BtSettingsRow.mseMode.isVisible(in: form) { BtMseModeRow() }
+            if BtSettingsRow.uploadSlots.isVisible(in: form) {
+                ConfigNumberRow(
+                    item: BtSettingsRow.uploadSlots.item, range: 0 ... 512, fallback: 0, specials: [0: L("auto")]
+                )
+            }
         } header: {
             Text(L("btSettingsRestartHint")).textCase(nil)
         } footer: {

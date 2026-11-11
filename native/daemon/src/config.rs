@@ -291,6 +291,10 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
             .map(String::as_str)
             .map(BtMseMode::from)
             .unwrap_or_default(),
+        upload_slots: cfg
+            .get("bt_upload_slots")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0),
         sequential: cfg
             .get("bt_piece_order")
             .is_some_and(|value| value == "sequential"),

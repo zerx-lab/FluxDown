@@ -261,6 +261,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   int('bt_port_start', '6881', 1, 65_535),
   int('bt_port_end', '6891', 1, 65_535),
   oneOf('bt_mse_mode', 'enabled', BT_MSE_MODES),
+  int('bt_upload_slots', '0', 0, 512),
   text('bt_custom_trackers'),
   oneOf('bt_piece_order', 'rarest', BT_PIECE_ORDERS),
   bool('bt_first_last_pieces_first', 'false'),

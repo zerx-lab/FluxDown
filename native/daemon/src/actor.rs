@@ -2851,7 +2851,7 @@ async fn apply_live_config<'a>(
         engine
             .manager
             .set_bt_config(crate::config::bt_config_from_map(all));
-        // 只有监听类设置需要重建会话；tracker 列表（自定义 / 订阅开关与地址）
+        // 只有会话级设置（监听类与上传槽数）需要重建会话；tracker 列表（自定义 / 订阅开关与地址）
         // 已由上面的 `set_bt_config` 热生效于新加入的种子。
         if keys.iter().any(|key| {
             matches!(
@@ -2863,6 +2863,7 @@ async fn apply_live_config<'a>(
                     | "bt_port_start"
                     | "bt_port_end"
                     | "bt_mse_mode"
+                    | "bt_upload_slots"
             )
         }) {
             engine.manager.invalidate_bt_session().await;

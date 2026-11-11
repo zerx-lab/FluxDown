@@ -109,8 +109,10 @@
   调用里 unchoke，持槽者断开 / NotInterested 立刻补位；拿槽不满 5 秒不参与重排。choke 即丢弃该连接已排队的上传
   （`UploadGate::set_choked`，限速队列与写队列里的块不读盘、不发送、不计上传量），choked 期间的请求静默忽略。
   槽数 = `SessionOptions::upload_slots`（会话级配置，每个种子各自计数）：`RateBased`（libtorrent rate based choker 的阈值，
-  最少 4 槽，1 MiB/s 约 22 槽、5 MiB/s 约 50 槽）/ `Fixed(n)` / `Unlimited`（旧行为）。引擎取
-  `bt_downloader.rs::BT_UPLOAD_SLOTS` = `RateBased`，没有用户设置项；要提供设置时再走设置键 + 四端同改。
+  最少 4 槽，1 MiB/s 约 22 槽、5 MiB/s 约 50 槽）/ `Fixed(n)` / `Unlimited`（旧行为）。设置键 `bt_upload_slots`
+  （BT「常规」页，四端同一行；整数 0–512，默认 0 = 自动 = `RateBased`，非零 = `Fixed(n)`，上限对齐 `BT_PEER_LIMIT`；
+  设备本地，不进云同步目录——合适的槽数取决于本机上行带宽）经 `BtConfig::upload_slots` →
+  `bt_downloader.rs::upload_slots`；会话级选项，改动走 `invalidate_bt_session` 重建会话生效。
   与防吸血的衔接见 ops.md 防吸血条（Throttle 不占槽、Choke 永不再给槽）。
   **被对端 choke**（`on_i_am_choked`）：对端 choke 即作废我们的全部在途请求（BEP 3），本端同步清空在途请求并把该对端占着的片
   放回队列给别的对端，解除 choke 后重新请求；请求循环发现片已不归自己（被偷 / 已归还）就换片。
@@ -187,8 +189,8 @@
 - **改设置不打断任务（对齐 qBittorrent）**：tracker 列表（自定义 / 订阅开关、地址、刷新结果）不进
   `SessionOptions::trackers`，由 `SharedBtSession::add_input` 在每次 add 注入（种子文件走
   `AddTorrentOptions::trackers`，磁力并入 `tr=`，librqbit 对磁力不认 opts.trackers），`set_bt_config`
-  热更新，只作用于新加入的种子，**不重建会话**。只有监听类键（`bt_enabled` / DHT / UPnP / uTP / 端口 /
-  MSE）走 `invalidate_bt_session`：先 cancel `closing` 令在途重新挂载放弃旧会话，合并「在途挂载
+  热更新，只作用于新加入的种子，**不重建会话**。只有会话级键（`bt_enabled` / DHT / UPnP / uTP / 端口 /
+  MSE / `bt_upload_slots`）走 `invalidate_bt_session`：先 cancel `closing` 令在途重新挂载放弃旧会话，合并「在途挂载
   （`reseeding_task_ids`，先读）+ 做种表」，关停旧会话（取消 librqbit 会话释放端口、在同步线程等最后
   引用释放），新会话上重新挂载全部做种并 `batch_resume` 被暂停的下载；禁用 BT 时才落「会话释放」/
   暂停。`SharedBtSession` 的 runtime 在 Drop 里按上下文关停（async 上下文 `shutdown_background`），

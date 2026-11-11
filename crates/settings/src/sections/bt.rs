@@ -85,6 +85,11 @@ fn basic_section(ctx: &SectionContext, bt_enabled: bool) -> SettingsSection {
             Some("btMseModeDesc"),
             ctx.daemon_enum_dropdown("bt_mse_mode", "btMseMode"),
         ))
+        .row(ctx.item(
+            "btUploadSlots",
+            Some("btUploadSlotsDesc"),
+            ctx.daemon_number("bt_upload_slots"),
+        ))
 }
 
 /// 新建任务的默认选片。热更新，不重建 BT 会话，因此不带重启提示。

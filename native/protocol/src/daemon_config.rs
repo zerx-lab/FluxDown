@@ -179,6 +179,14 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::Enum(BT_MSE_MODES),
         "enabled",
     ),
+    // 每个种子同时上传给多少个对端（上传槽）：0 = 自动（按上传速率伸缩，至少 4 个）。
+    // 上限 = 引擎每个种子的 peer 上限（`bt_downloader.rs::BT_PEER_LIMIT`），再大没有意义。
+    // 设备本地：合适的槽数取决于本机上行带宽，不进云同步目录。
+    field(
+        "bt_upload_slots",
+        DaemonConfigKind::Integer { min: 0, max: 512 },
+        "0",
+    ),
     field("bt_custom_trackers", DaemonConfigKind::Text, ""),
     // 新建 BT 任务的默认选片方式与「先下载首尾文件块」；只作用于此后新建的任务，
     // 单个任务经 `daemon.task.setPiecePicking` 修改。

@@ -110,6 +110,7 @@ object SettingsCatalog {
         daemon("bt_port_start", int(1, 65_535), "6881"),
         daemon("bt_port_end", int(1, 65_535), "6891"),
         daemon("bt_mse_mode", choice(btMseModes), "enabled"),
+        daemon("bt_upload_slots", int(0, 512), "0"),
         daemon("bt_custom_trackers", text, ""),
         daemon("bt_piece_order", choice(btPieceOrders), "rarest"),
         daemon("bt_first_last_pieces_first", bool, "false"),

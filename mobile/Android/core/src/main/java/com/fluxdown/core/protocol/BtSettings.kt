@@ -24,6 +24,7 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
     PortStart("portStart", BtSettingsTab.General, "bt_port_start"),
     PortEnd("portEnd", BtSettingsTab.General, "bt_port_end"),
     MseMode("mseMode", BtSettingsTab.General, "bt_mse_mode"),
+    UploadSlots("uploadSlots", BtSettingsTab.General, "bt_upload_slots"),
     PieceOrder("pieceOrder", BtSettingsTab.General, "bt_piece_order"),
     FirstLastPiecesFirst("firstLastPiecesFirst", BtSettingsTab.General, "bt_first_last_pieces_first"),
     SelectionAutoDefault("selectionAutoDefault", BtSettingsTab.General, "bt_selection_auto_default"),

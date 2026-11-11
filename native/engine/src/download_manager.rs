@@ -7093,8 +7093,8 @@ impl DownloadManager {
         Ok(true)
     }
 
-    /// 用最新 `bt_config` 重建共享会话，或在 BT 被禁用时释放它。只有监听类
-    /// 设置（端口 / DHT / UPnP / uTP / MSE）与启用开关走这里；tracker 列表经
+    /// 用最新 `bt_config` 重建共享会话，或在 BT 被禁用时释放它。只有会话级
+    /// 设置（端口 / DHT / UPnP / uTP / MSE / 上传槽数）与启用开关走这里；tracker 列表经
     /// [`Self::set_bt_config`] 热生效，不重建。
     ///
     /// 对齐 qBittorrent「改设置不打断任务」：BT 仍启用时，重建前在跑的 BT 下载

@@ -37,6 +37,7 @@ function BasicTab({ btEnabled }: { btEnabled: boolean }) {
             <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
             <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
             <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
+            <DaemonNumberRow configKey="bt_upload_slots" titleKey="btUploadSlots" descKey="btUploadSlotsDesc" />
           </>
         ) : null}
       </SettingsSection>

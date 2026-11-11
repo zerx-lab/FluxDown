@@ -26,7 +26,8 @@ nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
 /// 做种「时长 + 单位」两个 PC 行在移动端合成一行（各自仍写回两个键）。
 nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     case enabled
-    case dht, upnp, utp, portStart, portEnd, mseMode, pieceOrder, firstLastPiecesFirst, selectionAutoDefault
+    case dht, upnp, utp, portStart, portEnd, mseMode, uploadSlots
+    case pieceOrder, firstLastPiecesFirst, selectionAutoDefault
     case customTrackers, trackerSub, trackerSubUrls, trackerSubStatus
     case seedEnabled, seedMaxActive, autoReseed, seedRatio, seedPostRatio
     case seedTimeLimit, seedInactiveTimeLimit, seedOperator, seedThenAction
@@ -35,8 +36,8 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
 
     var tab: BtSettingsTab {
         switch self {
-        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode, .pieceOrder, .firstLastPiecesFirst,
-             .selectionAutoDefault: .general
+        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode, .uploadSlots, .pieceOrder,
+             .firstLastPiecesFirst, .selectionAutoDefault: .general
         case .customTrackers, .trackerSub, .trackerSubUrls, .trackerSubStatus: .tracker
         default: .seeding
         }
@@ -51,6 +52,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .portStart: "bt_port_start"
         case .portEnd: "bt_port_end"
         case .mseMode: "bt_mse_mode"
+        case .uploadSlots: "bt_upload_slots"
         case .pieceOrder: "bt_piece_order"
         case .firstLastPiecesFirst: "bt_first_last_pieces_first"
         case .selectionAutoDefault: "bt_selection_auto_default"
@@ -97,6 +99,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .portStart: "btListenPortStart"
         case .portEnd: "btListenPortEnd"
         case .mseMode: "btMseMode"
+        case .uploadSlots: "btUploadSlots"
         case .pieceOrder: "btPieceOrder"
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefault"
         case .selectionAutoDefault: "btSelectionAutoDefault"
@@ -125,6 +128,7 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         case .utp: "btEnableUtpDesc"
         case .portStart: "btListenPortDesc"
         case .mseMode: "btMseModeDesc"
+        case .uploadSlots: "btUploadSlotsDesc"
         case .pieceOrder: "btPieceOrderDesc"
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefaultDesc"
         case .selectionAutoDefault: "btSelectionAutoDefaultDesc"
