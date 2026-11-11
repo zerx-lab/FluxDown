@@ -91,7 +91,39 @@ pub struct BtConfig {
     /// 新建 BT 任务默认开启「先下载首尾文件块」（`bt_first_last_pieces_first`，默认关）。
     /// 只作用于此后新建的任务。
     pub first_last_pieces_first: bool,
+    /// 本地节点发现（LSD，`bt_enable_lsd`）。会话级，改动经重建共享会话生效。
+    pub enable_lsd: bool,
+    /// uTP 拥塞控制用 LEDBAT（`bt_utp_congestion` = `ledbat`，默认）：检测到链路排队就让路；
+    /// `false` = CUBIC，只按丢包退让。会话级。
+    pub utp_ledbat: bool,
+    /// 全部任务合计的连接数上限（`bt_max_connections`，连接中 + 已连接；`0` = 不限）。热生效。
+    pub max_connections: u32,
+    /// 每个任务的连接数上限（`bt_max_connections_per_torrent`，连接中 + 已连接）。热生效。
+    pub max_connections_per_torrent: u32,
+    /// HTTP 源（BEP 19 webseed，`bt_enable_webseed`）。会话级。
+    pub enable_webseed: bool,
+    /// tracker 汇报策略（BEP 12）：向所有层级汇报（`bt_announce_all_tiers`）。会话级。
+    pub announce_all_tiers: bool,
+    /// tracker 汇报策略：向层级内所有 tracker 汇报（`bt_announce_all_trackers`）。会话级。
+    pub announce_all_trackers: bool,
+    /// BT 经「代理」页的手动代理服务器出站（`bt_proxy_enabled`）。会话级；实际代理地址由
+    /// 管理器在建会话时从全局代理配置取。
+    pub proxy_enabled: bool,
+    /// 对端连接（与 DHT）也走代理（`bt_proxy_peers`）；`false` = 只有 tracker 与 HTTP 源走代理。
+    pub proxy_peers: bool,
+    /// I2P（`bt_i2p_enabled`）：经本机 I2P 路由的 SAM 桥下载 I2P 种子。会话级。
+    pub i2p_enabled: bool,
+    /// SAM 桥主机（`bt_i2p_sam_host`）。
+    pub i2p_sam_host: String,
+    /// SAM 桥端口（`bt_i2p_sam_port`）。
+    pub i2p_sam_port: u16,
+    /// I2P 种子同时允许明网对端（`bt_i2p_mixed`）。
+    pub i2p_mixed: bool,
 }
+
+/// 每个任务的连接数上限缺省值（`bt_max_connections_per_torrent` 的默认，见
+/// `bt_downloader.rs` 对 512 的说明：librqbit 的上限同时计「连接中」与「已连接」）。
+pub const DEFAULT_BT_PEER_LIMIT: u32 = 512;
 
 impl BtConfig {
     /// 本构建是否编译了 BitTorrent 后端（`bt` feature）。
@@ -128,6 +160,19 @@ impl Default for BtConfig {
             upload_slots: 0,
             sequential: false,
             first_last_pieces_first: false,
+            enable_lsd: true,
+            utp_ledbat: true,
+            max_connections: 0,
+            max_connections_per_torrent: DEFAULT_BT_PEER_LIMIT,
+            enable_webseed: true,
+            announce_all_tiers: true,
+            announce_all_trackers: true,
+            proxy_enabled: false,
+            proxy_peers: true,
+            i2p_enabled: false,
+            i2p_sam_host: "127.0.0.1".to_string(),
+            i2p_sam_port: 7656,
+            i2p_mixed: false,
         }
     }
 }

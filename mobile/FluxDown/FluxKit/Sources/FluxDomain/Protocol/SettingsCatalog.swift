@@ -75,6 +75,7 @@ public enum SettingsCatalog {
     public static let btGuardDownloadingActions = ["observe", "throttle", "choke", "ban"]
     public static let btMseModes = ["disabled", "enabled", "forced"]
     public static let btPieceOrders = ["rarest", "sequential"]
+    public static let btUtpCongestions = ["ledbat", "cubic"]
     public static let proxyModes = ["none", "system", "manual", "auto"]
     public static let proxyTypes = ["http", "https", "socks4", "socks5"]
     public static let themeModes = ["system", "light", "dark"]
@@ -115,6 +116,20 @@ public enum SettingsCatalog {
         daemon("bt_port_end", .integer(min: 1, max: 65_535), "6891"),
         daemon("bt_mse_mode", .choice(btMseModes), "enabled"),
         daemon("bt_upload_slots", .integer(min: 0, max: 512), "0"),
+        // BT 连接（设备本地，不进云同步目录）
+        daemon("bt_enable_lsd", .bool, "true"),
+        daemon("bt_utp_congestion", .choice(btUtpCongestions), "ledbat"),
+        daemon("bt_max_connections", .integer(min: 0, max: 65_535), "0"),
+        daemon("bt_max_connections_per_torrent", .integer(min: 1, max: 4096), "512"),
+        daemon("bt_enable_webseed", .bool, "true"),
+        daemon("bt_announce_all_tiers", .bool, "true"),
+        daemon("bt_announce_all_trackers", .bool, "true"),
+        daemon("bt_proxy_enabled", .bool, "false"),
+        daemon("bt_proxy_peers", .bool, "true"),
+        daemon("bt_i2p_enabled", .bool, "false"),
+        daemon("bt_i2p_sam_host", .text, "127.0.0.1"),
+        daemon("bt_i2p_sam_port", .integer(min: 1, max: 65_535), "7656"),
+        daemon("bt_i2p_mixed", .bool, "false"),
         daemon("bt_custom_trackers", .text, ""),
         daemon("bt_piece_order", .choice(btPieceOrders), "rarest"),
         daemon("bt_first_last_pieces_first", .bool, "false"),

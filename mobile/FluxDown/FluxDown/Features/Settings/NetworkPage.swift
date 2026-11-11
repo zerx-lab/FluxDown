@@ -59,6 +59,9 @@ struct NetworkPage: View {
                     EmptyView()
                 }
                 manualSection(mode: mode, readOnly: readOnly)
+                #if FULL_FLAVOR
+                btProxySection(form, readOnly: readOnly)
+                #endif
                 if let rules {
                     ProxyRulesSection(model: rules, editMode: $rulesEditMode)
                 }
@@ -228,6 +231,28 @@ struct NetworkPage: View {
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
+    #if FULL_FLAVOR
+    // MARK: BitTorrent
+
+    /// GPUI `proxy.rs::bt_section`：总开关；开启后显示「节点连接也走代理」与按手动代理配置给出的一条提示。
+    @ViewBuilder
+    private func btProxySection(_ form: SettingsConfigForm, readOnly: Bool) -> some View {
+        let rows = BtProxyRow.visible(form)
+        if !rows.isEmpty {
+            Section(L("proxyBtSection")) {
+                ForEach(rows) { row in
+                    ConfigToggleRow(item: row.item)
+                }
+                if let hint = BtProxyRow.hint(in: form) {
+                    SettingsStatusLine(text: L(hint), tone: .warning)
+                        .transition(.opacity)
+                }
+            }
+            .disabled(readOnly)
+        }
+    }
+    #endif
+
     /// HTTP / HTTPS / SOCKS4 / SOCKS5：分段控件；辅助功能字号下四段放不下，改用菜单。
     @ViewBuilder
     private var typeRow: some View {
@@ -381,13 +406,24 @@ extension NetworkPage {
     /// 手动字段在配置已加载时始终进索引，不随模式隐藏。系统模式的测试按钮取决于异步检测结果，不进索引。
     static func searchEntries(_ ctx: SettingsSearchContext) -> [SettingsEntry] {
         let name = L("settingsCatProxy")
-        return NetworkRow.visible(isLoaded: ctx.form.isLoaded).map { row in
+        let rows = NetworkRow.visible(isLoaded: ctx.form.isLoaded).map { row in
             SettingsEntry(
                 id: row.id, route: .network, title: L(row.titleKey), detail: row.detailKey.map { L($0) } ?? "",
                 breadcrumb: row.titleKey == row.group.titleKey ? name : "\(name) › \(L(row.group.titleKey))",
                 symbol: row.symbol
             )
         }
+        #if FULL_FLAVOR
+        let bt = BtProxyRow.visible(ctx.form).map { row in
+            SettingsEntry(
+                item: row.item, route: .network, breadcrumb: "\(name) › \(L("proxyBtSection"))",
+                symbol: "point.3.connected.trianglepath.dotted"
+            )
+        }
+        return rows + bt
+        #else
+        return rows
+        #endif
     }
 
     /// 设置首页读数：当前代理模式，启用站点规则时追加规则数（配置未加载时 nil）。

@@ -147,6 +147,11 @@ pub(crate) struct DownloadStrings {
     pub(crate) bt_sequential: SharedString,
     /// 右键「先下载首尾文件块」（未完成 BT 任务，可与任一顺序组合）。
     pub(crate) bt_first_last_pieces: SharedString,
+    /// 右键 BT 运维项：强制重新校验 / 移动到… / 任务限速… / 超级做种。
+    pub(crate) bt_force_recheck: SharedString,
+    pub(crate) bt_move_storage: SharedString,
+    pub(crate) bt_task_limits: SharedString,
+    pub(crate) bt_super_seeding: SharedString,
     pub(crate) redownload_task: SharedString,
     pub(crate) copy_url: SharedString,
     pub(crate) copy_magnet: SharedString,
@@ -345,6 +350,10 @@ impl DownloadStrings {
             bt_rarest_first: shared(translator.text("btRarestFirst")),
             bt_sequential: shared(translator.text("btSequentialDownload")),
             bt_first_last_pieces: shared(translator.text("btFirstLastPiecesFirst")),
+            bt_force_recheck: shared(translator.text("btForceRecheck")),
+            bt_move_storage: shared(translator.text("btMoveStorage")),
+            bt_task_limits: shared(translator.text("btTaskLimits")),
+            bt_super_seeding: shared(translator.text("btSuperSeeding")),
             redownload_task: shared(translator.text("redownloadTask")),
             copy_url: shared(translator.text("copyUrl")),
             copy_magnet: shared(translator.text("btCopyMagnet")),

@@ -75,6 +75,9 @@ class MappingTest {
         assertEquals(TaskStatus.Unknown, task(status = 99, seeding = 99).toCore().status)
         assertFalse(task.btSequential)
         assertFalse(task.btFirstLastPiecesFirst)
+        assertEquals(0L, task.btDownloadLimitBps)
+        assertEquals(0L, task.seedUploadLimitBps)
+        assertFalse(task.btSuperSeeding)
     }
 
     @Test
@@ -82,6 +85,17 @@ class MappingTest {
         val task = task(status = 1, seeding = 0, btSequential = true, btFirstLastPiecesFirst = true).toCore()
         assertTrue(task.btSequential)
         assertTrue(task.btFirstLastPiecesFirst)
+    }
+
+    @Test
+    fun taskDtoMapsBtLimitsAndSuperSeeding() {
+        // 超过 2 GiB/s 的值必须原样保留（Long，不截断成 Int）
+        val big = 3L * 1024 * 1024 * 1024
+        val task = task(status = 4, seeding = 1, btDownloadLimitBps = 524_288L, seedUploadLimitBps = big, btSuperSeeding = true)
+            .toCore()
+        assertEquals(524_288L, task.btDownloadLimitBps)
+        assertEquals(big, task.seedUploadLimitBps)
+        assertTrue(task.btSuperSeeding)
     }
 
     @Test
@@ -359,6 +373,9 @@ class MappingTest {
         seeding: Int,
         btSequential: Boolean = false,
         btFirstLastPiecesFirst: Boolean = false,
+        btDownloadLimitBps: Long = 0,
+        seedUploadLimitBps: Long = 0,
+        btSuperSeeding: Boolean = false,
     ) = TaskDto(
         taskId = "t1", url = "https://example.com/a.bin", originUrl = "", fileName = "a.bin", saveDir = "/data",
         status = status, downloadedBytes = 5, totalBytes = 10, errorMessage = "", createdAt = 1_700_000_000,
@@ -366,5 +383,6 @@ class MappingTest {
         sourceCdn = 1, sourceProxy = 2, sourceNic = 3, uploadedBytes = 0, seedingStatus = seeding,
         seedingMessage = "", seedingTimeSecs = 0,
         btSequential = btSequential, btFirstLastPiecesFirst = btFirstLastPiecesFirst,
+        btDownloadLimitBps = btDownloadLimitBps, seedUploadLimitBps = seedUploadLimitBps, btSuperSeeding = btSuperSeeding,
     )
 }

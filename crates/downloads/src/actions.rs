@@ -46,6 +46,14 @@ actions!(
         SetSequentialSelected,
         /// 切换选中 BT 任务的「先下载首尾文件块」（右键勾选）。
         ToggleFirstLastPiecesSelected,
+        /// 强制重新校验选中的未完成 BT 任务（右键「强制重新校验」）。
+        ForceRecheckSelected,
+        /// 把选中 BT 任务的数据移到新目录（右键「移动到…」）。
+        MoveStorageSelected,
+        /// 打开选中 BT 任务的任务级限速对话框（右键「任务限速…」）。
+        TaskLimitsSelected,
+        /// 切换选中 BT 任务的超级做种（右键勾选）。
+        ToggleSuperSeedingSelected,
         RedownloadSelected,
         ToggleBoostSelected,
         FocusSearch,

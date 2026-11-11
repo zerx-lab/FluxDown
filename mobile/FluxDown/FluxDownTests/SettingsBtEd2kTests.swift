@@ -61,8 +61,53 @@ struct SettingsBtEd2kTests {
         #expect(BtSettingsRow.allCases.allSatisfy { !$0.isVisible(in: unloaded) })
         #expect(Ed2kSettingsRow.allCases.allSatisfy { !$0.isVisible(in: unloaded) })
         let loaded = form(["bt_enable_dht": "true"])
-        #expect(BtSettingsRow.visible(in: .general, loaded).count == 11)
+        // 常规 = 总开关 + 新任务默认三行；监听 / 传输 / 来源 / 上限 / I2P 都在「连接」页签。
+        #expect(BtSettingsRow.visible(in: .general, loaded) == [.enabled, .pieceOrder, .firstLastPiecesFirst, .selectionAutoDefault])
+        // 默认 uTP 开（拥塞控制可见）、I2P 关（SAM 三行隐藏）。
+        #expect(BtSettingsRow.visible(in: .connection, loaded) == [
+            .portStart, .portEnd, .upnp,
+            .utp, .utpCongestion, .mseMode, .uploadSlots,
+            .dht, .lsd, .webseed,
+            .maxConnections, .maxConnectionsPerTorrent,
+            .i2pEnabled,
+        ])
+        #expect(BtSettingsRow.visible(in: .tracker, loaded).suffix(2) == [.announceAllTiers, .announceAllTrackers])
         #expect(Ed2kSettingsRow.visible(in: .servers, loaded).count == 4)
+    }
+
+    @Test func connectionRowsFollowTheirSwitches() {
+        let utpOff = form(["bt_enable_utp": "false"])
+        #expect(!BtSettingsRow.visible(in: .connection, utpOff).contains(.utpCongestion))
+        let i2pOn = form(["bt_i2p_enabled": "true"])
+        #expect(BtSettingsRow.visible(inSection: .i2p, i2pOn) == [.i2pEnabled, .i2pSamHost, .i2pSamPort, .i2pMixed])
+        #expect(BtSettingsRow.showsPortMappingStatus(in: form(["bt_enable_upnp": "true"])))
+        #expect(!BtSettingsRow.showsPortMappingStatus(in: form(["bt_enable_upnp": "false"])))
+        #expect(!BtSettingsRow.showsPortMappingStatus(in: form(["bt_enabled": "false", "bt_enable_upnp": "true"])))
+        #expect(!BtSettingsRow.showsPortMappingStatus(in: form([:])))
+    }
+
+    @Test func sectionsFollowGpuiOrder() {
+        #expect(BtSettingsSection.all(in: .connection) == [.listen, .transport, .sources, .limits, .i2p])
+        #expect(BtSettingsSection.all(in: .tracker) == [.trackers, .trackerSub, .announce])
+        #expect(BtSettingsRow.allCases.allSatisfy { $0.section.tab == $0.tab })
+    }
+
+    @Test func newConnectionKeysAreDeviceLocalWithContractDefaults() {
+        let defaults: [String: String] = [
+            "bt_enable_lsd": "true", "bt_utp_congestion": "ledbat", "bt_max_connections": "0",
+            "bt_max_connections_per_torrent": "512", "bt_enable_webseed": "true",
+            "bt_announce_all_tiers": "true", "bt_announce_all_trackers": "true",
+            "bt_proxy_enabled": "false", "bt_proxy_peers": "true", "bt_i2p_enabled": "false",
+            "bt_i2p_sam_host": "127.0.0.1", "bt_i2p_sam_port": "7656", "bt_i2p_mixed": "false",
+        ]
+        for (key, value) in defaults {
+            #expect(SettingsCatalog.defaultWire(key) == value, "\(key)")
+            #expect(!SettingsCatalog.isSynced(key), "\(key)")
+        }
+        #expect(BtSettingsRow.maxConnections.range == 0 ... 65_535)
+        #expect(BtSettingsRow.maxConnectionsPerTorrent.range == 1 ... 4_096)
+        #expect(BtSettingsRow.i2pSamPort.range == 1 ... 65_535)
+        #expect(BtUtpCongestion.allCases.map(\.rawValue) == ["ledbat", "cubic"])
     }
 
     @Test func btDisabledHidesEverythingButTheToggle() {
@@ -90,6 +135,9 @@ struct SettingsBtEd2kTests {
 
     @Test func searchTargetsMapToTheirTab() {
         #expect(BtSettingsRow.tab(forRowID: "bt.trackerSubUrls") == .tracker)
+        #expect(BtSettingsRow.tab(forRowID: "bt.announceAllTiers") == .tracker)
+        #expect(BtSettingsRow.tab(forRowID: "bt.portStart") == .connection)
+        #expect(BtSettingsRow.tab(forRowID: BtSettingsRow.portMappingStatusID) == .connection)
         #expect(BtSettingsRow.tab(forRowID: "bt.seedThenAction") == .seeding)
         #expect(BtSettingsRow.tab(forRowID: "download.maxConcurrent") == nil)
         #expect(Ed2kSettingsRow.tab(forRowID: "ed2k.serverSubStatus") == .servers)

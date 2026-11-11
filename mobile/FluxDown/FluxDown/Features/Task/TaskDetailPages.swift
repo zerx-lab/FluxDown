@@ -24,6 +24,17 @@ struct TaskDetailGeneralPage: View {
         Section {
             facts
         }
+        #if FULL_FLAVOR
+        if task.protocol == .bt {
+            Section {
+                NavigationLink {
+                    BtFilesScreen(taskId: task.taskId)
+                } label: {
+                    Label(L("btTabFiles"), systemImage: "doc.on.doc")
+                }
+            }
+        }
+        #endif
         Section {
             Button {
                 actions.copyLink(task)

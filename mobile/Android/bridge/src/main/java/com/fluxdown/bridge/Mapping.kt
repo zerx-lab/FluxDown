@@ -176,6 +176,9 @@ internal fun TaskDto.toCore() = Task(
     seedingTimeSecs = seedingTimeSecs,
     btSequential = btSequential,
     btFirstLastPiecesFirst = btFirstLastPiecesFirst,
+    btDownloadLimitBps = btDownloadLimitBps,
+    seedUploadLimitBps = seedUploadLimitBps,
+    btSuperSeeding = btSuperSeeding,
 )
 
 internal fun SegmentDto.toCore() = Segment(

@@ -29,6 +29,22 @@ export const METHOD = {
   DAEMON_TASK_SET_SEGMENTS: 'daemon.task.setSegments',
   /** BT 选块策略（`{taskId, sequential?, firstLastPiecesFirst?}`）；省略的字段保持不变。非 BT 或不存在返回 not-found。 */
   DAEMON_TASK_SET_PIECE_PICKING: 'daemon.task.setPiecePicking',
+  /** BT 文件表（`TaskIdParams` → `BtFilesDto`）：详情页「文件」页签轮询；非 BT 任务 `notFound`。 */
+  DAEMON_TASK_BT_FILES: 'daemon.task.btFiles',
+  /** BT 文件优先级（`SetTaskFilePrioritiesParams`，部分更新）。已完成 → `taskStateConflict`；无文件可下 → `invalidArgument`。 */
+  DAEMON_TASK_SET_FILE_PRIORITIES: 'daemon.task.setFilePriorities',
+  /** 重命名 BT 任务内的单个文件（`RenameBtFileParams`）。 */
+  DAEMON_TASK_RENAME_BT_FILE: 'daemon.task.renameBtFile',
+  /** 强制重新校验未完成的 BT 任务（`TaskIdParams`）；已完成 → `taskStateConflict`。 */
+  DAEMON_TASK_RECHECK: 'daemon.task.recheck',
+  /** 移动 BT 任务数据到新保存目录（`MoveTaskStorageParams`）。慢方法；目标已有同名文件 → `conflict`。 */
+  DAEMON_TASK_MOVE_STORAGE: 'daemon.task.moveStorage',
+  /** BT 任务级限速（`SetTaskBtLimitsParams`，缺省字段不变，0 = 不限）。 */
+  DAEMON_TASK_SET_BT_LIMITS: 'daemon.task.setBtLimits',
+  /** 超级做种开关（`SetTaskSuperSeedingParams`）。 */
+  DAEMON_TASK_SET_SUPER_SEEDING: 'daemon.task.setSuperSeeding',
+  /** 立即向 tracker 重新汇报（`TaskIdParams`）；任务未运行 → `taskStateConflict`。 */
+  DAEMON_TASK_REANNOUNCE: 'daemon.task.reannounce',
   DAEMON_TASK_DELETE: 'daemon.task.delete',
   DAEMON_TASK_PAUSE_ALL: 'daemon.task.pauseAll',
   DAEMON_TASK_RESUME_ALL: 'daemon.task.resumeAll',
@@ -141,6 +157,8 @@ export const METHOD = {
   DAEMON_EGRESS_PLAN: 'daemon.egress.plan',
 
   DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH: 'daemon.bt.trackerSubscription.refresh',
+  /** BT 监听端口与端口映射实况（无参 → `BtPortStatusDto`）：设置页「连接」可见时轮询。 */
+  DAEMON_BT_PORT_STATUS: 'daemon.bt.portStatus',
   DAEMON_BT_GUARD_STATE: 'daemon.bt.guard.state',
   DAEMON_BT_GUARD_ENTRIES_LIST: 'daemon.bt.guard.entries.list',
   DAEMON_BT_GUARD_ENTRIES_ADD: 'daemon.bt.guard.entries.add',

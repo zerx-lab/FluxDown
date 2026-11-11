@@ -1,6 +1,8 @@
-// BitTorrent：基础（DHT/UPnP/端口）、Tracker（列表 + 订阅）、做种、防吸血（设置 / 封禁名单 / 事件日志）（GPUI `sections/bt.rs`）。
+// BitTorrent：常规（开关 + 新任务默认）、连接（监听 / 传输 / 来源 / 上限 / I2P）、Tracker（列表 + 订阅 + 汇报策略）、
+// 做种、防吸血（设置 / 封禁名单 / 事件日志）（GPUI `sections/bt.rs`）。
 
 import { useT } from '../../../../i18n'
+import { Tooltip } from '../../../../ui'
 import { daemonConfigField } from '../../../../lib/rpc'
 import {
   DaemonEnumRow,
@@ -11,6 +13,7 @@ import {
   SettingsPage,
   SettingsRow,
   SettingsSection,
+  DaemonTextRow,
   camel,
   setDaemon,
   setDaemonNumber,
@@ -19,6 +22,8 @@ import {
   useDaemonValue,
 } from '../../kit'
 import { ListEditorRow, SubscriptionStatusRow } from '../subscription'
+import { portMappingSegments, portSegmentText } from './portStatus'
+import { usePortStatus } from './usePortStatus'
 import { GuardBansTab } from './guard/GuardBans'
 import { GuardEventsTab } from './guard/GuardEvents'
 import { GuardSettingsTab } from './guard/GuardSettings'
@@ -27,19 +32,8 @@ function BasicTab({ btEnabled }: { btEnabled: boolean }) {
   const t = useT()
   return (
     <>
-      <SettingsSection title={t('settingsTabGeneral')} subtitle={t('btSettingsRestartHint')}>
+      <SettingsSection title={t('settingsTabGeneral')}>
         <DaemonSwitchRow configKey="bt_enabled" titleKey="btEnabled" descKey="btEnabledDesc" />
-        {btEnabled ? (
-          <>
-            <DaemonSwitchRow configKey="bt_enable_dht" titleKey="btEnableDht" descKey="btEnableDhtDesc" />
-            <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
-            <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />
-            <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
-            <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
-            <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
-            <DaemonNumberRow configKey="bt_upload_slots" titleKey="btUploadSlots" descKey="btUploadSlotsDesc" />
-          </>
-        ) : null}
       </SettingsSection>
       {btEnabled ? (
         <SettingsSection title={t('btNewTasksSection')}>
@@ -60,23 +54,102 @@ function BasicTab({ btEnabled }: { btEnabled: boolean }) {
   )
 }
 
+/** 端口映射状态行：快照由本行挂载期间（「连接」页签可见且 UPnP 开）轮询；尚无快照时行内留空。 */
+function PortMappingRow() {
+  const t = useT()
+  const status = usePortStatus()
+  const segments = status ? portMappingSegments(status) : []
+  return (
+    <SettingsRow title={t('btPortMappingStatus')} vertical>
+      <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-0.5">
+        {segments.map((segment, index) => {
+          const { text, full } = portSegmentText(t, segment)
+          const label = <span className="block max-w-[320px] min-w-0 truncate text-xs text-muted-foreground">{text}</span>
+          return full === null ? (
+            <span key={index} className="min-w-0">{label}</span>
+          ) : (
+            <Tooltip key={index} content={<span className="whitespace-pre-line break-words">{full}</span>}>
+              <span className="min-w-0" title={full}>{label}</span>
+            </Tooltip>
+          )
+        })}
+      </div>
+    </SettingsRow>
+  )
+}
+
+/** 连接：监听、传输、来源、连接上限、I2P。除「连接上限」外的改动都会重建 BT 会话，提示挂在第一组。 */
+function ConnectionTab() {
+  const t = useT()
+  const upnp = useDaemonBool('bt_enable_upnp')
+  const utp = useDaemonBool('bt_enable_utp')
+  const i2p = useDaemonBool('bt_i2p_enabled')
+  return (
+    <>
+      <SettingsSection title={t('btSectionListen')} subtitle={t('btSettingsRestartHint')}>
+        <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
+        <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
+        <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
+        {upnp ? <PortMappingRow /> : null}
+      </SettingsSection>
+      <SettingsSection title={t('btSectionTransport')}>
+        <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />
+        {utp ? (
+          <DaemonEnumRow configKey="bt_utp_congestion" titleKey="btUtpCongestion" descKey="btUtpCongestionDesc" labelPrefix="btUtpCongestion" />
+        ) : null}
+        <DaemonEnumRow configKey="bt_mse_mode" titleKey="btMseMode" descKey="btMseModeDesc" labelPrefix="btMseMode" />
+        <DaemonNumberRow configKey="bt_upload_slots" titleKey="btUploadSlots" descKey="btUploadSlotsDesc" />
+      </SettingsSection>
+      <SettingsSection title={t('btSectionSources')}>
+        <DaemonSwitchRow configKey="bt_enable_dht" titleKey="btEnableDht" descKey="btEnableDhtDesc" />
+        <DaemonSwitchRow configKey="bt_enable_lsd" titleKey="btEnableLsd" descKey="btEnableLsdDesc" />
+        <DaemonSwitchRow configKey="bt_enable_webseed" titleKey="btEnableWebseed" descKey="btEnableWebseedDesc" />
+      </SettingsSection>
+      <SettingsSection title={t('btSectionLimits')}>
+        <DaemonNumberRow configKey="bt_max_connections" titleKey="btMaxConnections" descKey="btMaxConnectionsDesc" />
+        <DaemonNumberRow
+          configKey="bt_max_connections_per_torrent"
+          titleKey="btMaxConnectionsPerTorrent"
+          descKey="btMaxConnectionsPerTorrentDesc"
+        />
+      </SettingsSection>
+      <SettingsSection title={t('btSectionI2p')}>
+        <DaemonSwitchRow configKey="bt_i2p_enabled" titleKey="btI2pEnabled" descKey="btI2pEnabledDesc" />
+        {i2p ? (
+          <>
+            <DaemonTextRow configKey="bt_i2p_sam_host" titleKey="btI2pSamHost" />
+            <DaemonNumberRow configKey="bt_i2p_sam_port" titleKey="btI2pSamPort" />
+            <DaemonSwitchRow configKey="bt_i2p_mixed" titleKey="btI2pMixed" descKey="btI2pMixedDesc" />
+          </>
+        ) : null}
+      </SettingsSection>
+    </>
+  )
+}
+
 function TrackerTab() {
   const t = useT()
   const subEnabled = useDaemonBool('bt_tracker_sub_enabled')
   return (
-    <SettingsSection title={t('settingsTabTracker')}>
-      <ListEditorRow configKey="bt_custom_trackers" titleKey="btTrackerList" descKey="btTrackerListDesc" placeholderKey="btTrackerPlaceholder" format="lines" />
-      <DaemonSwitchRow configKey="bt_tracker_sub_enabled" titleKey="btTrackerSub" descKey="btTrackerSubDesc" />
-      <ListEditorRow
-        configKey="bt_tracker_sub_urls"
-        titleKey="btTrackerSubUrls"
-        descKey="btTrackerSubUrlsDesc"
-        placeholderKey="btTrackerSubPlaceholder"
-        format="lines"
-        disabled={!subEnabled}
-      />
-      <SubscriptionStatusRow kind="btTrackers" />
-    </SettingsSection>
+    <>
+      <SettingsSection title={t('settingsTabTracker')}>
+        <ListEditorRow configKey="bt_custom_trackers" titleKey="btTrackerList" descKey="btTrackerListDesc" placeholderKey="btTrackerPlaceholder" format="lines" />
+        <DaemonSwitchRow configKey="bt_tracker_sub_enabled" titleKey="btTrackerSub" descKey="btTrackerSubDesc" />
+        <ListEditorRow
+          configKey="bt_tracker_sub_urls"
+          titleKey="btTrackerSubUrls"
+          descKey="btTrackerSubUrlsDesc"
+          placeholderKey="btTrackerSubPlaceholder"
+          format="lines"
+          disabled={!subEnabled}
+        />
+        <SubscriptionStatusRow kind="btTrackers" />
+      </SettingsSection>
+      <SettingsSection title={t('btSectionAnnounce')}>
+        <DaemonSwitchRow configKey="bt_announce_all_tiers" titleKey="btAnnounceAllTiers" descKey="btAnnounceAllTiersDesc" />
+        <DaemonSwitchRow configKey="bt_announce_all_trackers" titleKey="btAnnounceAllTrackers" descKey="btAnnounceAllTrackersDesc" />
+      </SettingsSection>
+    </>
   )
 }
 
@@ -162,6 +235,7 @@ export function BtSettings() {
   ]
   if (btEnabled) {
     tabs.push(
+      { id: 'connection', label: t('settingsTabConnection'), content: <ConnectionTab /> },
       { id: 'tracker', label: t('settingsTabTracker'), content: <TrackerTab /> },
       { id: 'seeding', label: t('settingsTabSeeding'), content: <SeedingTab /> },
       { id: 'guard', label: t('btGuardTab'), content: <GuardSettingsTab /> },

@@ -5,12 +5,14 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.core.content.FileProvider
 import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
@@ -22,8 +24,14 @@ import com.fluxdown.core.host.HostSession
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskProtocol
 import com.fluxdown.core.model.TaskStatus
+import com.fluxdown.core.protocol.BtFilePriority
+import com.fluxdown.core.protocol.BtFilePriorityChange
+import com.fluxdown.core.protocol.BtTaskFile
+import com.fluxdown.core.protocol.BtTaskLimits
 import com.fluxdown.core.protocol.HostMethod
+import com.fluxdown.core.protocol.btFilePriorityChange
 import com.fluxdown.core.protocol.callUnit
+import com.fluxdown.core.protocol.jsonObject
 import com.fluxdown.core.protocol.jsonObjectOmitNulls
 import com.fluxdown.core.store.HostStore
 import com.fluxdown.fluxui.controls.FluxField
@@ -326,6 +334,11 @@ class TaskActions(
             if (size > beforeEdit) add(FluxMenuItem.Divider)
             addAll(piecePickingItems(listOf(task), picking))
         }
+        btTaskMenu(listOf(task))?.let { bt ->
+            val items = btTaskItems(listOf(task), bt)
+            if (items.isNotEmpty() && size > beforeEdit) add(FluxMenuItem.Divider)
+            addAll(items)
+        }
         if (canRedownload(task)) add(FluxMenuItem.Action(s(R.string.redownloadTask), { confirmRedownload(task) }, FluxIcons.RotateCw))
         add(FluxMenuItem.Action(s(R.string.copyUrl), { copyLink(task) }, FluxIcons.Copy))
         add(FluxMenuItem.Action(s(R.string.mobileShareLink), { shareLink(task) }, FluxIcons.Share2))
@@ -339,44 +352,152 @@ class TaskActions(
     fun piecePickingState(tasks: List<Task>): PiecePickingMenu? = piecePickingMenu(tasks)
 
     /**
-     * 每个任务一次 `daemon.task.setPiecePicking`，只带被切换的字段。
-     * 单任务失败不中断其余任务；有失败时最后走既有 RPC toast 一次。
+     * 对每个任务各发一次 RPC（[block]）：单任务失败不中断其余任务；有失败时最后走既有 RPC toast 一次，
+     * 全部成功才回调 [onAllOk]。
      */
-    fun setPiecePicking(tasks: List<Task>, sequential: Boolean? = null, firstLastPiecesFirst: Boolean? = null) {
-        if (tasks.isEmpty() || (sequential == null && firstLastPiecesFirst == null)) return
-        if (!guard()) return
+    private fun eachTask(tasks: List<Task>, onAllOk: (() -> Unit)? = null, block: suspend HostSession.(Task) -> Unit) {
+        if (tasks.isEmpty() || !guard()) return
         scope.launch {
             var first: HostException? = null
             val host = session()
             for (task in tasks) {
                 try {
-                    host.callUnit(
-                        HostMethod.daemonTaskSetPiecePicking,
-                        jsonObjectOmitNulls(
-                            "taskId" to task.taskId,
-                            "sequential" to sequential,
-                            "firstLastPiecesFirst" to firstLastPiecesFirst,
-                        ),
-                    )
+                    host.block(task)
                 } catch (e: HostException) {
                     if (first == null) first = e
                 }
             }
-            val failed = first ?: return@launch
+            val failed = first
+            if (failed == null) {
+                onAllOk?.invoke()
+                return@launch
+            }
             haptics.reject()
             overlays.toast(errorText(failed), FluxToastKind.Error)
         }
     }
 
-    /** 多选长按：自己读当前主机任务表。「选片方式」分组（顺序单选 + 首尾复选）；条件不满足时为空。 */
-    fun piecePickingMenuItems(taskIds: Set<String>): List<FluxMenuItem> {
+    /** 每个任务一次 `daemon.task.setPiecePicking`，只带被切换的字段。 */
+    fun setPiecePicking(tasks: List<Task>, sequential: Boolean? = null, firstLastPiecesFirst: Boolean? = null) {
+        if (sequential == null && firstLastPiecesFirst == null) return
+        eachTask(tasks) { task ->
+            callUnit(
+                HostMethod.daemonTaskSetPiecePicking,
+                jsonObjectOmitNulls(
+                    "taskId" to task.taskId,
+                    "sequential" to sequential,
+                    "firstLastPiecesFirst" to firstLastPiecesFirst,
+                ),
+            )
+        }
+    }
+
+    // ── BT 任务级（移动端子集：强制重新校验 / 任务限速 / 超级做种 / 文件优先级） ─────────
+    // 刻意不在移动端（PC / Web 有）：Tracker 页的层级 / 做种数 / 下载数列与「HTTP 源」（web seeds）列表、
+    // 移动存储（daemon.task.moveStorage）、文件重命名（daemon.task.renameBtFile）、文件多选批量改优先级、
+    // 制作种子的高级选项（版本 / 分块大小 / 私有 / web seeds / 注释 / 来源 / 输出路径）。
+    // 设置页的 BT 连接 / 汇报策略 / 代理 BT 分组与 PC 同键同序，不在此列。
+
+    /** `daemon.task.recheck`：每个未完成 BT 任务一次；单任务成功后提示「正在重新校验」。 */
+    fun recheck(tasks: List<Task>) {
+        val one = tasks.singleOrNull()
+        eachTask(
+            tasks,
+            onAllOk = one?.let { t ->
+                { overlays.toast(s(R.string.btForceRecheckStarted, "name" to t.fileName), FluxToastKind.Info, FluxIcons.ShieldCheck) }
+            },
+        ) { task -> callUnit(HostMethod.daemonTaskRecheck, jsonObject("taskId" to task.taskId)) }
+    }
+
+    /** `daemon.task.setSuperSeeding`：只对状态不同于 [enabled] 的任务下发。 */
+    fun setSuperSeeding(tasks: List<Task>, enabled: Boolean) {
+        eachTask(superSeedingChange(tasks, enabled)) { task ->
+            callUnit(HostMethod.daemonTaskSetSuperSeeding, jsonObject("taskId" to task.taskId, "enabled" to enabled))
+        }
+    }
+
+    /** 任务限速对话框：KiB/s，0 = 不限；只发改动的字段（`daemon.task.setBtLimits`）。 */
+    fun taskLimits(task: Task) {
+        if (!guard()) return
+        overlays.showDialog(
+            FluxDialogSpec(
+                title = s(R.string.btTaskLimitsTitle),
+                message = s(R.string.btTaskLimitHint),
+                icon = FluxIcons.Gauge,
+                buttons = emptyList(),
+                body = { TaskLimitsPrompt(task) },
+            ),
+        )
+    }
+
+    @Composable
+    private fun ColumnScope.TaskLimitsPrompt(task: Task) {
+        var down by remember { mutableStateOf(BtTaskLimits.kibText(task.btDownloadLimitBps)) }
+        var up by remember { mutableStateOf(BtTaskLimits.kibText(task.seedUploadLimitBps)) }
+        val unit = str(R.string.btGuardUnitKibps)
+        val numeric = KeyboardOptions(keyboardType = KeyboardType.Number)
+        FluxField(value = down, onValueChange = { down = limitDigits(it) }, label = str(R.string.btTaskLimitDownload), suffix = unit, mono = true, keyboardOptions = numeric)
+        FluxField(value = up, onValueChange = { up = limitDigits(it) }, label = str(R.string.btTaskLimitUpload), suffix = unit, mono = true, keyboardOptions = numeric)
+        com.fluxdown.fluxui.controls.FluxButton(
+            text = str(R.string.confirm),
+            onClick = {
+                when (val change = BtTaskLimits.change(task.taskId, task.btDownloadLimitBps, task.seedUploadLimitBps, down, up)) {
+                    BtTaskLimits.Result.Invalid -> haptics.reject()
+                    BtTaskLimits.Result.NoChange -> overlays.dismissDialog()
+                    is BtTaskLimits.Result.Send -> {
+                        overlays.dismissDialog()
+                        this@TaskActions.run(null) { callUnit(HostMethod.daemonTaskSetBtLimits, change.params) }
+                    }
+                }
+            },
+            variant = com.fluxdown.fluxui.controls.ButtonVariant.Primary,
+            fullWidth = true,
+        )
+    }
+
+    /**
+     * 把 [indices] 这些文件设为 [priority]（`daemon.task.setFilePriorities`，部分更新）。
+     * 会让全部文件都不下载时本地拦下并提示 `btFilesKeepOne`；[onSent] 在主机确认后回调（调用方据此刷新列表）。
+     */
+    fun setBtFilePriority(taskId: String, files: List<BtTaskFile>, indices: Set<Int>, priority: BtFilePriority, onSent: () -> Unit) {
+        when (val change = btFilePriorityChange(taskId, files, indices, priority)) {
+            BtFilePriorityChange.NoChange -> Unit
+            BtFilePriorityChange.KeepOne -> {
+                haptics.reject()
+                overlays.toast(s(R.string.btFilesKeepOne), FluxToastKind.Warn)
+            }
+            is BtFilePriorityChange.Send -> run(onSent) { callUnit(HostMethod.daemonTaskSetFilePriorities, change.params) }
+        }
+    }
+
+    /** 多选长按：自己读当前主机任务表。「选片方式」分组 + BT 批量项（重新校验 / 超级做种）；条件不满足时为空。 */
+    fun btBatchMenuItems(taskIds: Set<String>): List<FluxMenuItem> {
         if (taskIds.size < 2) return emptyList()
         val tasks = store.state.value.tasks.filter { it.taskId in taskIds }
         if (tasks.size < 2) return emptyList()
-        val picking = piecePickingMenu(tasks) ?: return emptyList()
-        return piecePickingItems(tasks, picking)
+        return buildList {
+            piecePickingMenu(tasks)?.let { addAll(piecePickingItems(tasks, it)) }
+            btTaskMenu(tasks)?.let { bt ->
+                val items = btTaskItems(tasks, bt)
+                if (items.isNotEmpty() && isNotEmpty()) add(FluxMenuItem.Divider)
+                addAll(items)
+            }
+        }
     }
 
+    private fun btTaskItems(tasks: List<Task>, bt: BtTaskMenu): List<FluxMenuItem> = buildList {
+        if (bt.recheck) add(FluxMenuItem.Action(s(R.string.btForceRecheck), { recheck(tasks) }, FluxIcons.ShieldCheck))
+        if (bt.limits) add(FluxMenuItem.Action(s(R.string.btTaskLimits), { taskLimits(tasks.single()) }, FluxIcons.Gauge))
+        add(
+            FluxMenuItem.Action(
+                s(R.string.btSuperSeeding),
+                { setSuperSeeding(tasks, bt.superSeedingTarget) },
+                if (bt.superSeedingOn) FluxIcons.SquareCheck else FluxIcons.Square,
+                checked = bt.superSeedingOn,
+                showTrailingCheck = false,
+            ),
+        )
+    }
 
     private fun piecePickingItems(tasks: List<Task>, picking: PiecePickingMenu): List<FluxMenuItem> {
         fun order(label: String, sequential: Boolean, selected: Boolean) = FluxMenuItem.Action(
@@ -446,16 +567,15 @@ fun piecePickingOrderChange(tasks: List<Task>, sequential: Boolean): PiecePickin
     return PiecePickingOrderChange(changed, sequential)
 }
 
+/** BT 任务：`magnet:` / `torrent-file://`（大小写不敏感）。含正在控制的远端 PC / 服务器主机上的任务。 */
+fun isBtTask(task: Task): Boolean {
+    val url = task.url.lowercase()
+    return url.startsWith("magnet:") || url.startsWith("torrent-file://")
+}
+
 fun piecePickingMenu(tasks: List<Task>): PiecePickingMenu? {
     if (tasks.isEmpty()) return null
-    if (tasks.any { task ->
-            val url = task.url.lowercase()
-            val bt = url.startsWith("magnet:") || url.startsWith("torrent-file://")
-            !bt || task.status == TaskStatus.Completed
-        }
-    ) {
-        return null
-    }
+    if (tasks.any { !isBtTask(it) || it.status == TaskStatus.Completed }) return null
     val order = when {
         tasks.all { !it.btSequential } -> PiecePickingOrder.Rarest
         tasks.all { it.btSequential } -> PiecePickingOrder.Sequential
@@ -466,3 +586,32 @@ fun piecePickingMenu(tasks: List<Task>): PiecePickingMenu? {
         firstLastOn = tasks.all { it.btFirstLastPiecesFirst },
     )
 }
+
+/**
+ * BT 任务级菜单事实（全部所选任务都是 BT 时非 null）：
+ * - [recheck]「强制重新校验」：全部未完成（已完成 / 做种中的任务用「校验」，主机对其返回 `taskStateConflict`）；
+ * - [limits]「任务限速…」：仅单选；
+ * - 「超级做种」复选：勾选 = 全部 `btSuperSeeding` 为真，点击目标是勾选态的反值（只发给状态不同的任务）。
+ */
+data class BtTaskMenu(
+    val recheck: Boolean,
+    val limits: Boolean,
+    val superSeedingOn: Boolean,
+) {
+    val superSeedingTarget: Boolean get() = !superSeedingOn
+}
+
+fun btTaskMenu(tasks: List<Task>): BtTaskMenu? {
+    if (tasks.isEmpty() || tasks.any { !isBtTask(it) }) return null
+    return BtTaskMenu(
+        recheck = tasks.none { it.status == TaskStatus.Completed },
+        limits = tasks.size == 1,
+        superSeedingOn = tasks.all { it.btSuperSeeding },
+    )
+}
+
+/** 超级做种要下发的任务：已是 [enabled] 的跳过。 */
+fun superSeedingChange(tasks: List<Task>, enabled: Boolean): List<Task> = tasks.filter { it.btSuperSeeding != enabled }
+
+/** 限速输入只收数字，最多 15 位（始终在 [BtTaskLimits.MAX_KIB] 内）。 */
+internal fun limitDigits(text: String): String = text.filter { it in '0'..'9' }.take(15)

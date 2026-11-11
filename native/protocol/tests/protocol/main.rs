@@ -2,6 +2,7 @@
 
 mod agent_wire_safety;
 mod bt_guard_wire;
+mod bt_ops_wire;
 mod error_literals;
 mod legacy_api_dto_wire;
 mod legacy_server_wire;

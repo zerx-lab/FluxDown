@@ -167,7 +167,7 @@ fn is_non_idempotent_submission(command: &DownloadsCommand) -> bool {
         DownloadsCommand::Create(_)
             | DownloadsCommand::CreateGroup { .. }
             | DownloadsCommand::SubmitTorrentFile { .. }
-            | DownloadsCommand::SeedLocal { .. }
+            | DownloadsCommand::SeedLocal(_)
             | DownloadsCommand::Redownload(..)
     ) || matches!(command, DownloadsCommand::CaptureResolve(params) if params.accepted)
 }
@@ -193,8 +193,8 @@ impl DownloadsPort for AgentDownloadsPort {
             DownloadsCommand::CaptureResolve(params) => {
                 params.request.as_ref().map(|request| request.url.clone())
             }
-            DownloadsCommand::SubmitTorrentFile { path, .. }
-            | DownloadsCommand::SeedLocal { path, .. } => Some(path.clone()),
+            DownloadsCommand::SubmitTorrentFile { path, .. } => Some(path.clone()),
+            DownloadsCommand::SeedLocal(params) => Some(params.path.clone()),
             DownloadsCommand::Redownload(request, _) => Some(request.url.clone()),
             _ => None,
         };
@@ -277,6 +277,15 @@ impl AgentDownloadsPort {
                         .await?;
                     return Ok(DownloadsResult::BtStatus(status));
                 }
+                DownloadsCommand::BtFiles { task_id } => {
+                    let files = client
+                        .call(
+                            method::DAEMON_TASK_BT_FILES,
+                            Some(json!({ "taskId": task_id })),
+                        )
+                        .await?;
+                    return Ok(DownloadsResult::BtFiles(files));
+                }
                 DownloadsCommand::Ed2kStatus(params) => {
                     let status: fluxdown_protocol::Ed2kStatusDto = client
                         .call(method::DAEMON_TASK_ED2K_STATUS, Some(params))
@@ -355,6 +364,27 @@ impl AgentDownloadsPort {
                         first_last_pieces_first,
                     })?,
                 ),
+                DownloadsCommand::SetFilePriorities(params) => {
+                    (method::DAEMON_TASK_SET_FILE_PRIORITIES, serialize(params)?)
+                }
+                DownloadsCommand::RenameBtFile(params) => {
+                    (method::DAEMON_TASK_RENAME_BT_FILE, serialize(params)?)
+                }
+                DownloadsCommand::RecheckTask { task_id } => {
+                    (method::DAEMON_TASK_RECHECK, json!({ "taskId": task_id }))
+                }
+                DownloadsCommand::MoveStorage(params) => {
+                    (method::DAEMON_TASK_MOVE_STORAGE, serialize(params)?)
+                }
+                DownloadsCommand::SetBtLimits(params) => {
+                    (method::DAEMON_TASK_SET_BT_LIMITS, serialize(params)?)
+                }
+                DownloadsCommand::SetSuperSeeding(params) => {
+                    (method::DAEMON_TASK_SET_SUPER_SEEDING, serialize(params)?)
+                }
+                DownloadsCommand::Reannounce { task_id } => {
+                    (method::DAEMON_TASK_REANNOUNCE, json!({ "taskId": task_id }))
+                }
                 DownloadsCommand::VerifyTask { task_id } => {
                     let result = client
                         .call(
@@ -399,20 +429,9 @@ impl AgentDownloadsPort {
                         },
                     ));
                 }
-                DownloadsCommand::SeedLocal {
-                    path,
-                    torrent_path,
-                    trackers,
-                    unlimited,
-                } => (
-                    method::DAEMON_TASK_SEED_LOCAL,
-                    serialize(fluxdown_protocol::DaemonSeedLocalParams {
-                        path,
-                        torrent_path,
-                        trackers,
-                        unlimited,
-                    })?,
-                ),
+                DownloadsCommand::SeedLocal(params) => {
+                    (method::DAEMON_TASK_SEED_LOCAL, serialize(*params)?)
+                }
                 DownloadsCommand::Delete {
                     task_id,
                     delete_files,

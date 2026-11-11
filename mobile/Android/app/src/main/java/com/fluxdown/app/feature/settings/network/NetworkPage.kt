@@ -38,12 +38,14 @@ import com.fluxdown.app.feature.settings.SettingsPageFrame
 import com.fluxdown.app.feature.settings.SettingsSearchContext
 import com.fluxdown.app.feature.settings.flowItem
 import com.fluxdown.app.feature.settings.rememberSettingsCtx
+import com.fluxdown.app.feature.settings.settingSwitch
 import com.fluxdown.app.feature.settings.settingText
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.SettingsPage
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
+import com.fluxdown.core.protocol.BtProxyHint
 import com.fluxdown.core.protocol.NetworkPortInput
 import com.fluxdown.core.protocol.NetworkProxyMode
 import com.fluxdown.core.protocol.NetworkProxyTest
@@ -315,6 +317,7 @@ internal fun NetworkPage() {
                         },
                     )
                 }
+                flowItem(index++, gate, "btProxy") { BtProxySection(ctx) }
                 // 站点规则在任何模式下都生效（包括「不使用代理」和「自动」）。
                 flowItem(index++, gate, "rules") {
                     ProxyRulesSection(
@@ -435,6 +438,51 @@ private fun ManualSection(
             R.string.proxyNoListPlaceholder, id = NetworkRow.NoList.rowId,
         )
         testRow(ctx, NetworkRow.Test.rowId, test, onTest)
+    }
+}
+
+// ───────────────────────────── BitTorrent ─────────────────────────────
+
+/** BitTorrent 走手动代理（GPUI `proxy.rs::bt_section`）：总开关；开启后「节点连接也走代理」+ 按手动代理配置给出的一条提示。 */
+@Composable
+private fun BtProxySection(ctx: SettingsCtx) {
+    val form = ctx.form
+    val hint = BtProxyHint.of(form)
+    val hintText = hint?.let {
+        str(
+            when (it) {
+                BtProxyHint.NoServer -> R.string.btProxyNoServer
+                BtProxyHint.UnsupportedType -> R.string.btProxyUnsupportedType
+                BtProxyHint.NoUdp -> R.string.btProxyNoUdp
+            },
+        )
+    }
+    GlassSection(title = str(R.string.proxyBtSection)) {
+        if (NetworkRow.BtProxyEnabled.isVisible(form)) {
+            settingSwitch(
+                ctx, "bt_proxy_enabled", R.string.btProxyEnabled, R.string.btProxyEnabledDesc,
+                id = NetworkRow.BtProxyEnabled.rowId,
+            )
+        }
+        if (NetworkRow.BtProxyPeers.isVisible(form)) {
+            settingSwitch(
+                ctx, "bt_proxy_peers", R.string.btProxyPeers, R.string.btProxyPeersDesc,
+                id = NetworkRow.BtProxyPeers.rowId,
+            )
+        }
+        if (hintText != null) {
+            custom(padded = true) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+                    FluxIcon(FluxIcons.Info, null, size = 18.dp, tint = FluxTheme.colors.inkMuted)
+                    FluxText(
+                        hintText,
+                        style = FluxTheme.type.sm,
+                        color = FluxTheme.colors.inkMuted,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -610,6 +658,8 @@ private fun NetworkRow.titleRes(): Int = when (this) {
     NetworkRow.Password -> R.string.proxyPassword
     NetworkRow.NoList -> R.string.proxyNoList
     NetworkRow.Test -> R.string.proxyTestConnection
+    NetworkRow.BtProxyEnabled -> R.string.btProxyEnabled
+    NetworkRow.BtProxyPeers -> R.string.btProxyPeers
     NetworkRow.Rules -> R.string.proxyRulesTitle
     NetworkRow.RulesAdd -> R.string.proxyRulesAdd
     NetworkRow.RulesTest -> R.string.proxyRouteTest
@@ -622,6 +672,8 @@ private fun NetworkRow.titleRes(): Int = when (this) {
 private fun NetworkRow.detailRes(): Int? = when (this) {
     NetworkRow.Mode -> R.string.proxySettingsDesc
     NetworkRow.NoList -> R.string.proxyNoListDesc
+    NetworkRow.BtProxyEnabled -> R.string.btProxyEnabledDesc
+    NetworkRow.BtProxyPeers -> R.string.btProxyPeersDesc
     NetworkRow.Rules -> R.string.proxyRulesDesc
     NetworkRow.RulesTest -> R.string.proxyRouteTestDesc
     NetworkRow.SiteAuth -> R.string.settingsSiteAuthDesc
@@ -632,6 +684,7 @@ private fun NetworkRow.detailRes(): Int? = when (this) {
 private fun NetworkRow.Group.titleRes(): Int = when (this) {
     NetworkRow.Group.Mode -> R.string.proxySettings
     NetworkRow.Group.Manual -> R.string.proxyModeManual
+    NetworkRow.Group.BtProxy -> R.string.proxyBtSection
     NetworkRow.Group.Rules -> R.string.proxyRulesTitle
     NetworkRow.Group.SiteAuth -> R.string.settingsSiteAuthTitle
 }
@@ -639,13 +692,14 @@ private fun NetworkRow.Group.titleRes(): Int = when (this) {
 private fun NetworkRow.itemKey(): String = when (group) {
     NetworkRow.Group.Mode -> "mode"
     NetworkRow.Group.Manual -> "manual"
+    NetworkRow.Group.BtProxy -> "btProxy"
     NetworkRow.Group.Rules -> "rules"
     NetworkRow.Group.SiteAuth -> "siteAuth"
 }
 
-/** 本页所有可见行：代理模式；已加载配置下的手动字段与测试按钮（与当前模式无关）；站点凭据（标题 / 添加 / 全部清除）。系统模式的测试按钮取决于异步检测结果，不进索引。 */
+/** 本页所有可见行：代理模式；已加载配置下的手动字段与测试按钮（与当前模式无关）；BitTorrent 分组；站点凭据（标题 / 添加 / 全部清除）。系统模式的测试按钮取决于异步检测结果，不进索引。 */
 internal fun networkSearchEntries(ctx: SettingsSearchContext): List<SettingsEntry> {
-    return NetworkRow.visible(ctx.form.isLoaded).map { row ->
+    return NetworkRow.visible(ctx.form).map { row ->
         ctx.entry(
             id = row.rowId,
             page = SettingsPage.Network,

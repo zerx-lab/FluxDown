@@ -3,6 +3,7 @@
 mod auto_multipath;
 mod bt_file_selection;
 mod bt_guard;
+mod bt_ops;
 mod bt_parts_reseed;
 mod bt_sparse_add;
 mod change_url_resume;

@@ -72,12 +72,15 @@ struct TaskMenuItems: View {
     }
 
     #if FULL_FLAVOR
+    /// BT 段：选片方式子菜单 + 强制重新校验 / 任务限速… / 超级做种（`BtTaskMenu`）。
     @ViewBuilder
     private var piecePickingSection: some View {
         let facts = PiecePickingMenu.facts(tasks: [task])
-        if facts.shown {
+        let bt = BtTaskMenu.facts(tasks: [task])
+        if facts.shown || !bt.isEmpty {
             Section {
-                PiecePickingMenuItems(facts: facts)
+                if facts.shown { PiecePickingMenuItems(facts: facts) }
+                BtTaskMenuItems(facts: bt)
             }
         }
     }
@@ -105,6 +108,29 @@ struct PiecePickingMenuItems: View {
             }
             Button { actions.setPiecePicking(facts.togglingFirstLast()) } label: {
                 Label(L("btFirstLastPiecesFirst"), systemImage: facts.firstLastOn ? "checkmark.square" : "square")
+            }
+        }
+    }
+}
+
+/// BT 任务动作（移动端子集）：强制重新校验（未完成）· 任务限速…（单选）· 超级做种（勾选；多选时全开才勾）；
+/// 文件优先级在详情「常规」页的「文件」入口。Tracker 列（层级 / 做种 / 下载数）与 HTTP 源、移动存储位置、
+/// 文件重命名、制作种子的选项仅桌面与 Web 提供（移动端没有 Tracker / Peers 页签，也不做种子）。
+struct BtTaskMenuItems: View {
+    let facts: BtTaskMenu
+
+    @Environment(TaskActions.self) private var actions
+
+    var body: some View {
+        if facts.showsRecheck {
+            Button(L("btForceRecheck"), systemImage: "checkmark.shield") { actions.recheck(facts.recheckTaskIds) }
+        }
+        if let task = facts.limitsTask {
+            Button(L("btTaskLimits"), systemImage: "speedometer") { actions.editBtLimits(task) }
+        }
+        if facts.showsSuperSeeding {
+            Toggle(isOn: Binding(get: { facts.superSeedingOn }, set: { _ in actions.setSuperSeeding(facts.togglingSuperSeeding()) })) {
+                Label(L("btSuperSeeding"), systemImage: "arrow.up.forward.circle")
             }
         }
     }

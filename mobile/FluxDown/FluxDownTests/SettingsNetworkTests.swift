@@ -110,6 +110,40 @@ struct SettingsNetworkTests {
         #expect(NetworkPage.readout(ctx([:])) == nil)
     }
 
+    // MARK: BitTorrent 代理
+
+    #if FULL_FLAVOR
+    @Test func btProxyRowsFollowTheMasterSwitch() {
+        #expect(BtProxyRow.visible(form([:])).isEmpty)
+        #expect(BtProxyRow.visible(form(["proxy_mode": "manual"])) == [.enabled])
+        #expect(BtProxyRow.visible(form(["bt_proxy_enabled": "true"])) == [.enabled, .peers])
+        for row in BtProxyRow.allCases {
+            #expect(SettingsCatalog.field(row.configKey)?.store == .daemon, "\(row)")
+            #expect(!SettingsCatalog.isSynced(row.configKey), "\(row)")
+        }
+    }
+
+    @Test func btProxyHintMatchesGpui() {
+        #expect(BtProxyRow.hint(proxyType: "socks5", host: "", port: "1080") == "btProxyNoServer")
+        #expect(BtProxyRow.hint(proxyType: "https", host: "proxy.lan", port: " ") == "btProxyNoServer")
+        #expect(BtProxyRow.hint(proxyType: "https", host: "proxy.lan", port: "443") == "btProxyUnsupportedType")
+        #expect(BtProxyRow.hint(proxyType: "http", host: "proxy.lan", port: "8080") == "btProxyNoUdp")
+        #expect(BtProxyRow.hint(proxyType: "socks4", host: "proxy.lan", port: "1080") == "btProxyNoUdp")
+        #expect(BtProxyRow.hint(proxyType: "socks5", host: "proxy.lan", port: "1080") == nil)
+        // 总开关关闭 / 未加载：不提示。
+        #expect(BtProxyRow.hint(in: form(["bt_proxy_enabled": "false"])) == nil)
+        #expect(BtProxyRow.hint(in: form([:])) == nil)
+        let on = form(["bt_proxy_enabled": "true", "proxy_type": "http", "proxy_host": "h", "proxy_port": "1"])
+        #expect(BtProxyRow.hint(in: on) == "btProxyNoUdp")
+    }
+
+    @Test func btProxyRowsAreIndexedForSearch() {
+        let ctx = SettingsSearchContext(form: form(["bt_proxy_enabled": "true"]), isLocalHost: true, capabilities: [])
+        let ids = NetworkPage.searchEntries(ctx).map(\.id)
+        #expect(ids.contains(BtProxyRow.enabled.id) && ids.contains(BtProxyRow.peers.id))
+    }
+    #endif
+
     // MARK: 站点凭据
 
     @Test func searchBoxAppearsFromSixEntries() {

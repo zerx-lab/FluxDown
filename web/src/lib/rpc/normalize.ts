@@ -51,6 +51,8 @@ const TASK_DEFAULTS: Omit<TaskDto, TaskDtoRequiredKey> = Object.freeze({
   seedUploadLimitBps: 0,
   btSequential: false,
   btFirstLastPiecesFirst: false,
+  btDownloadLimitBps: 0,
+  btSuperSeeding: false,
   sourceBytes: ZERO_SOURCE_BYTES,
 })
 

@@ -11,7 +11,7 @@ use serde_json::json;
 use super::cloud::{CloudDocument, CloudReject, build_cloud_layer};
 use super::config::{BtGuardConfig, RuleMode};
 use super::filter_file::{MAX_FILTER_ENTRIES_PER_SOURCE, parse_filter_file};
-use super::ip::{IpGroup, is_lan, normalize_ip};
+use super::ip::{IpGroup, is_exempt, normalize_ip};
 use super::layers::{DecideInput, Decided, Decision, Tables, decide};
 use super::model::{
     Entry, EvidenceItem, FilterAction, GuardAction, GuardStats, InfoHash, Layer, LayerCounts,
@@ -375,7 +375,7 @@ impl BtGuard {
             return true;
         }
         let ip = normalize_ip(ip);
-        if cfg.skip_lan && is_lan(ip) {
+        if is_exempt(ip, cfg.skip_lan) {
             return true;
         }
         let now = self.now();
@@ -404,7 +404,7 @@ impl BtGuard {
             return false;
         }
         let ip = normalize_ip(ip);
-        if cfg.skip_lan && is_lan(ip) {
+        if is_exempt(ip, cfg.skip_lan) {
             return false;
         }
         matches!(

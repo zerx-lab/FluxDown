@@ -1,4 +1,4 @@
-// 重命名文件 / 更换下载链接：单字段对话框，引擎稳定错误码映射为本地化文案。
+// 重命名文件 / 更换下载链接 / 修改线程数 / BT 移动数据 / BT 任务限速：任务级小对话框，引擎稳定错误码映射为本地化文案。
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -7,10 +7,12 @@ import { RpcError, TASK_STATUS, rpc, useTask, useTasksLoading } from '../../../l
 import { rpcErrorText } from '../../../lib/rpcErrorText'
 import type { TaskDto } from '../../../lib/rpc'
 import { ThreadsRiskCallout } from '../../../lib/ThreadsRiskCallout'
-import { ConfirmFooter, Dialog, FieldError, FieldHint, Form, FormField, Input, toast } from '../../../ui'
-import { resumeIfFailed } from '../model/actions'
-import { parseTaskSegments } from '../model/taskEdit'
-import { closeChangeSegments, closeChangeUrl, closeRename } from './store'
+import { ConfirmFooter, Dialog, FieldError, FieldHint, Form, FormField, Input, Spinner, toast } from '../../../ui'
+import { PathText } from '../../../ui/PathText'
+import { moveTaskStorage, resumeIfFailed } from '../model/actions'
+import { limitKibText, parseTaskSegments, taskLimitsParams } from '../model/taskEdit'
+import { FsPickerDialog } from './FsPickerDialog'
+import { closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
 import { mapEngineError } from './utils'
 
 /** 引擎稳定错误码 → 文案键（native/engine `rename_task` 契约，错误消息即错误码）。 */
@@ -231,6 +233,145 @@ function ChangeSegmentsBody({ taskId, failed }: { taskId: string; failed: boolea
         </FormField>
         <ThreadsRiskCallout segments={segments ?? 0} />
         <FieldHint>{t('editThreadsResetHint')}</FieldHint>
+        {error ? <FieldError className="break-all">{error}</FieldError> : null}
+        {/* 让回车提交：隐藏的提交按钮 */}
+        <button type="submit" className="hidden" tabIndex={-1} aria-hidden />
+      </Form>
+    </Dialog>
+  )
+}
+
+export function MoveStorageDialog({ taskId }: { taskId: string }) {
+  return (
+    <TaskScoped
+      taskId={taskId}
+      onClose={closeMoveStorage}
+      render={(task) => <MoveStorageBody taskId={taskId} name={task.fileName} saveDir={task.saveDir} />}
+    />
+  )
+}
+
+/**
+ * 「移动到…」：先用新建下载同款的服务端目录选择器选目标，再调用慢方法 `daemon.task.moveStorage`；
+ * 进行中显示加载态。关掉加载态不会中止移动，结果仍以 toast 反馈。
+ */
+function MoveStorageBody({ taskId, name, saveDir }: { taskId: string; name: string; saveDir: string }) {
+  const t = useT()
+  const [target, setTarget] = useState<string | null>(null)
+  // 选择器「确定」先回调 onSelect 再关闭自身：选定后的那次关闭不能把对话框整体关掉。
+  const chosen = useRef(false)
+  // 移动完成时对话框可能已被用户关掉（甚至又为别的任务打开）：只关闭自己。
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+
+  if (target === null) {
+    return (
+      <FsPickerDialog
+        open
+        title={t('btMoveStorageTitle')}
+        initialPath={saveDir}
+        onOpenChange={(open) => !open && !chosen.current && closeMoveStorage()}
+        onSelect={(path) => {
+          chosen.current = true
+          setTarget(path)
+          void moveTaskStorage(taskId, path).finally(() => {
+            if (alive.current) closeMoveStorage()
+          })
+        }}
+      />
+    )
+  }
+  return (
+    <Dialog open onOpenChange={(open) => !open && closeMoveStorage()} size="md" title={t('btMoveStorageTitle')}>
+      <div className="flex min-w-0 items-center gap-2 text-sm">
+        <Spinner />
+        <span className="min-w-0 break-all">{t('btMoveStorageWorking', { name })}</span>
+      </div>
+      <PathText path={target} className="mt-2 text-xs text-muted-foreground" />
+    </Dialog>
+  )
+}
+
+export function TaskLimitsDialog({ taskId }: { taskId: string }) {
+  return (
+    <TaskScoped
+      taskId={taskId}
+      onClose={closeTaskLimits}
+      render={(task) => (
+        <TaskLimitsBody taskId={taskId} initial={[limitKibText(task.btDownloadLimitBps), limitKibText(task.seedUploadLimitBps)]} />
+      )}
+    />
+  )
+}
+
+/** 任务级限速（KiB/s，0 = 不限）：初值取任务当前值，只下发改动的字段；未改直接关闭。 */
+function TaskLimitsBody({ taskId, initial }: { taskId: string; initial: readonly [string, string] }) {
+  const t = useT()
+  // 初值只在首次渲染时取：轮询 / 事件刷新任务行时不覆盖正在编辑的输入。
+  const [first] = useState(initial)
+  const [download, setDownload] = useState(first[0])
+  const [upload, setUpload] = useState(first[1])
+  const [error, setError] = useState('')
+  const [pending, setPending] = useState(false)
+
+  const confirm = async () => {
+    if (pending) return
+    const built = taskLimitsParams(taskId, first, [download, upload])
+    if (!built.ok) {
+      setError(t('btTaskLimitHint'))
+      return
+    }
+    if (built.params === null) {
+      closeTaskLimits()
+      return
+    }
+    setPending(true)
+    setError('')
+    try {
+      await rpc.daemon.task.setBtLimits(built.params)
+      closeTaskLimits()
+    } catch (err) {
+      setError(rpcErrorText(err, t))
+      setPending(false)
+    }
+  }
+
+  const field = (id: string, label: string, value: string, set: (next: string) => void) => (
+    <FormField label={label} htmlFor={id}>
+      <div className="flex items-center gap-2">
+        <Input
+          id={id}
+          value={value}
+          placeholder="0"
+          inputMode="numeric"
+          autoComplete="off"
+          onChange={(event) => {
+            set(event.target.value.replace(/\D/g, ''))
+            setError('')
+          }}
+        />
+        <span className="shrink-0 text-sm text-muted-foreground">{t('btGuardUnitKibps')}</span>
+      </div>
+    </FormField>
+  )
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => !open && closeTaskLimits()}
+      size="sm"
+      title={t('btTaskLimitsTitle')}
+      footer={<ConfirmFooter okLabel={t('confirm')} loading={pending} onCancel={closeTaskLimits} onOk={() => void confirm()} />}
+    >
+      <Form onSubmit={() => void confirm()}>
+        {field('task-limit-download', t('btTaskLimitDownload'), download, setDownload)}
+        {field('task-limit-upload', t('btTaskLimitUpload'), upload, setUpload)}
+        <FieldHint>{t('btTaskLimitHint')}</FieldHint>
         {error ? <FieldError className="break-all">{error}</FieldError> : null}
         {/* 让回车提交：隐藏的提交按钮 */}
         <button type="submit" className="hidden" tabIndex={-1} aria-hidden />

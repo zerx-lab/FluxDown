@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use fluxdown_protocol::{
     AgentEvent, AgentPreferencesDto, AgentSnapshot, ApplicationErrorCode,
-    BtGuardFilterSourcesRefreshDto, BtGuardStateDto, ComponentStatusDto, ConnPolicySummaryDto,
-    DaemonConfigPatch, DaemonConfigSnapshot, DaemonEvent, DiagnosticsReportDto, ErrorReason,
-    GatewayPatchParams, GatewayStatusDto, PlatformIntegrationDto, PluginDto, QueueDto,
-    RpcErrorData, ServiceEvent, SettingOwner, ShellStatusDto, SiteAuthEntryDto, SyncStatusDto,
-    SystemProxyDto, UpdateStatusDto, WebhookDeliveryDto, method, setting_spec, setting_value_kind,
-    value_to_daemon_config,
+    BtGuardFilterSourcesRefreshDto, BtGuardStateDto, BtPortStatusDto, ComponentStatusDto,
+    ConnPolicySummaryDto, DaemonConfigPatch, DaemonConfigSnapshot, DaemonEvent,
+    DiagnosticsReportDto, ErrorReason, GatewayPatchParams, GatewayStatusDto,
+    PlatformIntegrationDto, PluginDto, QueueDto, RpcErrorData, ServiceEvent, SettingOwner,
+    ShellStatusDto, SiteAuthEntryDto, SyncStatusDto, SystemProxyDto, UpdateStatusDto,
+    WebhookDeliveryDto, method, setting_spec, setting_value_kind, value_to_daemon_config,
 };
 use fluxdown_ui_components::BusyHold;
 use gpui::{Context, SharedString};
@@ -31,6 +31,8 @@ pub(crate) use cloud_notify::CloudDeliveryLog;
 const FLUSH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// `load_attempts` 里防吸血总览的加载闸门（渲染期按需加载，`BtGuardChanged` 后重新放行）。
 pub(crate) const BT_GUARD_STATE_LOAD: &str = "btGuardState";
+/// 端口映射状态轮询的在途标记（`busy` 集合里的动作名）。
+const BT_PORT_STATUS_ACTION: &str = "btPortStatus";
 /// daemon 修订冲突时的自动重试上限。
 const MAX_CONFLICT_RETRIES: u8 = 3;
 /// Doctor 上一次修复结果（`{key, ok}`，`key` 为 i18n 键）在 `transient` 里的键。
@@ -142,6 +144,8 @@ pub struct SettingsStore {
     site_auth: Vec<SiteAuthEntryDto>,
     conn_policy: Option<ConnPolicySummaryDto>,
     system_proxy: Option<SystemProxyDto>,
+    /// BT 端口映射实况（`daemon.bt.portStatus`）；BT「连接」页签可见时由视图轮询，失败保留旧值。
+    bt_port_status: Option<BtPortStatusDto>,
     update: UpdateStatusDto,
     /// BT 防吸血总览（`daemon.bt.guard.state`）；按需加载，`BtGuardChanged` 后重新放行加载。
     bt_guard: Option<BtGuardStateDto>,
@@ -202,6 +206,7 @@ impl SettingsStore {
             site_auth: Vec::new(),
             conn_policy: None,
             system_proxy: None,
+            bt_port_status: None,
             update: UpdateStatusDto::default(),
             bt_guard: None,
             bt_guard_revision: 0,
@@ -532,6 +537,10 @@ impl SettingsStore {
     #[must_use]
     pub fn system_proxy(&self) -> Option<&SystemProxyDto> {
         self.system_proxy.as_ref()
+    }
+    #[must_use]
+    pub fn bt_port_status(&self) -> Option<&BtPortStatusDto> {
+        self.bt_port_status.as_ref()
     }
     #[must_use]
     pub fn update_status(&self) -> &UpdateStatusDto {
@@ -1152,6 +1161,40 @@ impl SettingsStore {
             && let Ok(dto) = serde_json::from_value::<SystemProxyDto>(value)
         {
             self.system_proxy = Some(dto);
+        }
+    }
+
+    /// 端口映射状态轮询：不走 `call_with`——每 5 秒一次的后台刷新不能清掉 / 改写页面上的
+    /// 错误与提示横幅。上一轮仍在途则跳过；失败（含旧 daemon 无此方法）保留旧快照。
+    pub fn load_bt_port_status(&mut self, cx: &mut Context<Self>) {
+        if self.stale || self.in_flight(BT_PORT_STATUS_ACTION) {
+            return;
+        }
+        self.busy.insert(BT_PORT_STATUS_ACTION);
+        let future = self.port.call(method::DAEMON_BT_PORT_STATUS, json!({}));
+        cx.spawn(async move |this, cx| {
+            let result = future.await;
+            let Ok(()) = this.update(cx, |this, cx| {
+                this.busy.remove(BT_PORT_STATUS_ACTION);
+                this.absorb_bt_port_status(result, cx);
+            }) else {
+                // 设置视图或窗口已释放，结束回调，不再更新状态。
+                return;
+            };
+        })
+        .detach();
+    }
+    fn absorb_bt_port_status(
+        &mut self,
+        result: Result<Value, RpcErrorData>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Ok(value) = result
+            && let Ok(dto) = serde_json::from_value::<BtPortStatusDto>(value)
+            && self.bt_port_status.as_ref() != Some(&dto)
+        {
+            self.bt_port_status = Some(dto);
+            cx.notify();
         }
     }
 

@@ -440,6 +440,8 @@ pub(crate) struct TaskMenuFacts {
     pub(crate) bt_sequential: bool,
     /// BT 选片：先下载每个选中文件的首尾块。
     pub(crate) bt_first_last_pieces_first: bool,
+    /// BT 超级做种开关（`TaskDto::bt_super_seeding`）。
+    pub(crate) bt_super_seeding: bool,
     /// `url` 是 http(s) / ftp 链接（引擎 `change_task_url` 仅接受这些源）。
     pub(crate) url_replaceable: bool,
     /// 失败态、错误消息带插件重试前缀且非任务组成员（组成员的原始链接是分享页，daemon 拒绝忽略重试）。
@@ -534,6 +536,7 @@ pub(crate) fn task_menu_facts_for(store: &TaskStore, key: &RowKey) -> Option<Tas
         can_resume_seeding: row.can_resume_seeding(),
         bt_sequential: row.bt_sequential,
         bt_first_last_pieces_first: row.bt_first_last_pieces_first,
+        bt_super_seeding: row.bt_super_seeding,
     })
 }
 
@@ -562,6 +565,14 @@ pub(crate) enum MenuEntry {
     SequentialDownload,
     /// 先下载首尾文件块（条件同 [`MenuEntry::RarestFirst`]；可与任一顺序组合）。
     FirstLastPiecesFirst,
+    /// 强制重新校验（条件见 [`force_recheck_visible`]；可多选）。
+    ForceRecheck,
+    /// 移动任务数据到新目录（单选；条件见 [`move_storage_visible`]）。
+    MoveStorage,
+    /// 任务级 BT 限速对话框（单选；条件见 [`task_limits_visible`]）。
+    TaskSpeedLimits,
+    /// 超级做种勾选（可多选；条件见 [`super_seeding_visible`]）。
+    SuperSeeding,
     /// 复制磁力链接（单选；条件见 [`TaskMenuFacts::can_share_torrent`]）。
     CopyMagnet,
     /// 导出 .torrent 文件（单选；条件同 [`MenuEntry::CopyMagnet`]）。
@@ -651,6 +662,18 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         items.push(MenuEntry::RarestFirst);
         items.push(MenuEntry::SequentialDownload);
         items.push(MenuEntry::FirstLastPiecesFirst);
+    }
+    if force_recheck_visible(selection) {
+        items.push(MenuEntry::ForceRecheck);
+    }
+    if move_storage_visible(selection) {
+        items.push(MenuEntry::MoveStorage);
+    }
+    if task_limits_visible(selection) {
+        items.push(MenuEntry::TaskSpeedLimits);
+    }
+    if super_seeding_visible(selection) {
+        items.push(MenuEntry::SuperSeeding);
     }
     if selection.iter().all(|task| {
         task.is_local
@@ -780,6 +803,54 @@ pub(crate) fn piece_picking_checked(selection: &[TaskMenuFacts]) -> bool {
 /// 点击首尾勾选后应写入的值：`!all_on`。选区不满足显示条件时为 `None`（不下发）。
 pub(crate) fn piece_picking_toggle_target(selection: &[TaskMenuFacts]) -> Option<bool> {
     piece_picking_visible(selection).then(|| !piece_picking_checked(selection))
+}
+
+/// 「强制重新校验」：与选片项同条件（本机、未完成的 BT 任务，可多选）。
+pub(crate) fn force_recheck_visible(selection: &[TaskMenuFacts]) -> bool {
+    piece_picking_visible(selection)
+}
+
+/// 单选本机 BT 任务（任意状态）。
+fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
+    matches!(selection, [only] if only.is_local && only.is_bt)
+}
+
+/// 「移动到…」：恰好一个本机 BT 任务（任意状态，含已完成 / 做种）。
+pub(crate) fn move_storage_visible(selection: &[TaskMenuFacts]) -> bool {
+    single_local_bt(selection)
+}
+
+/// 「任务限速…」：恰好一个本机 BT 任务。
+pub(crate) fn task_limits_visible(selection: &[TaskMenuFacts]) -> bool {
+    single_local_bt(selection)
+}
+
+/// 「超级做种」：选区非空且全体为本机 BT 任务（交集语义，可多选）。
+pub(crate) fn super_seeding_visible(selection: &[TaskMenuFacts]) -> bool {
+    !selection.is_empty() && selection.iter().all(|task| task.is_local && task.is_bt)
+}
+
+/// 超级做种勾选态：选区全部已开才勾上（混合视为未勾）。
+pub(crate) fn super_seeding_checked(selection: &[TaskMenuFacts]) -> bool {
+    !selection.is_empty() && selection.iter().all(|task| task.bt_super_seeding)
+}
+
+/// 点击超级做种后应写入的值：`!all_on`。选区不满足显示条件时为 `None`（不下发）。
+pub(crate) fn super_seeding_toggle_target(selection: &[TaskMenuFacts]) -> Option<bool> {
+    super_seeding_visible(selection).then(|| !super_seeding_checked(selection))
+}
+
+/// 把超级做种设为 `enabled` 时需要下发的任务下标（已是目标值的跳过）。
+pub(crate) fn super_seeding_targets(selection: &[TaskMenuFacts], enabled: bool) -> Vec<usize> {
+    if !super_seeding_visible(selection) {
+        return Vec::new();
+    }
+    selection
+        .iter()
+        .enumerate()
+        .filter(|(_, task)| task.bt_super_seeding != enabled)
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// 分组头菜单项的外观：普通图标项，或破坏性项（图标与文字取主题 `destructive` 色）。
@@ -3106,6 +3177,36 @@ impl DownloadTableDelegate {
             | MenuEntry::SequentialDownload
             | MenuEntry::FirstLastPiecesFirst => {
                 self.piece_picking_menu_item(menu, entry, selected)
+            }
+            MenuEntry::ForceRecheck => menu.menu_with_icon(
+                self.strings.bt_force_recheck.clone(),
+                FluxIcon::RotateCw,
+                Box::new(crate::actions::ForceRecheckSelected),
+            ),
+            MenuEntry::MoveStorage => menu.menu_with_icon(
+                self.strings.bt_move_storage.clone(),
+                FluxIcon::FolderOpen,
+                Box::new(crate::actions::MoveStorageSelected),
+            ),
+            MenuEntry::TaskSpeedLimits => menu.menu_with_icon(
+                self.strings.bt_task_limits.clone(),
+                FluxIcon::Gauge,
+                Box::new(crate::actions::TaskLimitsSelected),
+            ),
+            MenuEntry::SuperSeeding => {
+                let facts: Vec<_> = selected
+                    .iter()
+                    .filter_map(|key| self.task_menu_facts(key))
+                    .collect();
+                menu.menu_with_icon(
+                    self.strings.bt_super_seeding.clone(),
+                    if super_seeding_checked(&facts) {
+                        FluxIcon::SquareCheck
+                    } else {
+                        FluxIcon::Square
+                    },
+                    Box::new(crate::actions::ToggleSuperSeedingSelected),
+                )
             }
             MenuEntry::Redownload => menu.menu_with_icon(
                 self.strings.redownload_task.clone(),
@@ -6244,8 +6345,10 @@ mod tests {
 mod context_menu_tests {
     use super::{
         MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, TaskMenuFacts, context_menu_items,
-        is_bt_url, is_replaceable_url, piece_picking_checked, piece_picking_order,
-        piece_picking_order_targets, piece_picking_toggle_target, task_menu_entries,
+        force_recheck_visible, is_bt_url, is_replaceable_url, move_storage_visible,
+        piece_picking_checked, piece_picking_order, piece_picking_order_targets,
+        piece_picking_toggle_target, super_seeding_checked, super_seeding_targets,
+        super_seeding_toggle_target, super_seeding_visible, task_limits_visible, task_menu_entries,
     };
     use crate::model::TaskState;
 
@@ -6260,6 +6363,7 @@ mod context_menu_tests {
             is_bt: false,
             bt_sequential: false,
             bt_first_last_pieces_first: false,
+            bt_super_seeding: false,
             url_replaceable: true,
             is_plugin_retry_error: false,
             file_missing: false,
@@ -6552,7 +6656,17 @@ mod context_menu_tests {
             .iter()
             .position(|entry| *entry == MenuEntry::VerifyIntegrity)
             .expect("completed BT task offers verification");
-        assert_eq!(items.get(at + 1), Some(&MenuEntry::Redownload));
+        assert_eq!(
+            items.get(at + 1..at + 5),
+            Some(
+                &[
+                    MenuEntry::MoveStorage,
+                    MenuEntry::TaskSpeedLimits,
+                    MenuEntry::SuperSeeding,
+                    MenuEntry::Redownload,
+                ][..]
+            )
+        );
 
         let mut missing = bt;
         missing.file_missing = true;
@@ -6609,7 +6723,19 @@ mod context_menu_tests {
             } else {
                 MenuEntry::CopyUrl
             };
-            assert_eq!(items.get(at + 3), Some(&next), "{state:?}");
+            assert_eq!(
+                items.get(at + 3..at + 8),
+                Some(
+                    &[
+                        MenuEntry::ForceRecheck,
+                        MenuEntry::MoveStorage,
+                        MenuEntry::TaskSpeedLimits,
+                        MenuEntry::SuperSeeding,
+                        next,
+                    ][..]
+                ),
+                "{state:?}"
+            );
         }
 
         let pair = [
@@ -6700,6 +6826,83 @@ mod context_menu_tests {
             piece_picking_toggle_target(&[off, first_last_only]),
             Some(true)
         );
+    }
+
+    #[test]
+    fn bt_ops_entries_follow_selection_rules() {
+        let unfinished = unfinished_bt(TaskState::Paused);
+        let mut completed = unfinished_bt(TaskState::Completed);
+        completed.is_seeding = true;
+        let mut remote = unfinished_bt(TaskState::Paused);
+        remote.is_local = false;
+        let http = task(true, TaskState::Paused);
+
+        // 强制重新校验：同选片条件（本机未完成 BT，可多选）。
+        assert!(force_recheck_visible(&[unfinished]));
+        assert!(force_recheck_visible(&[
+            unfinished,
+            unfinished_bt(TaskState::Failed)
+        ]));
+        for selection in [
+            &[completed][..],
+            &[remote][..],
+            &[http][..],
+            &[unfinished, completed][..],
+            &[][..],
+        ] {
+            assert!(!force_recheck_visible(selection), "{selection:?}");
+            assert!(
+                !context_menu_items(selection).contains(&MenuEntry::ForceRecheck),
+                "{selection:?}"
+            );
+        }
+
+        // 移动到… / 任务限速…：恰好一个本机 BT（含已完成 / 做种）。
+        for single in [unfinished, completed] {
+            assert!(move_storage_visible(&[single]));
+            assert!(task_limits_visible(&[single]));
+        }
+        for selection in [
+            &[remote][..],
+            &[http][..],
+            &[unfinished, completed][..],
+            &[][..],
+        ] {
+            assert!(!move_storage_visible(selection), "{selection:?}");
+            assert!(!task_limits_visible(selection), "{selection:?}");
+            let items = context_menu_items(selection);
+            assert!(!items.contains(&MenuEntry::MoveStorage), "{selection:?}");
+            assert!(
+                !items.contains(&MenuEntry::TaskSpeedLimits),
+                "{selection:?}"
+            );
+        }
+
+        // 超级做种：全体本机 BT，可多选、任意状态。
+        assert!(super_seeding_visible(&[unfinished, completed]));
+        assert!(context_menu_items(&[unfinished, completed]).contains(&MenuEntry::SuperSeeding));
+        for selection in [&[remote][..], &[http][..], &[unfinished, http][..], &[][..]] {
+            assert!(!super_seeding_visible(selection), "{selection:?}");
+            assert!(super_seeding_toggle_target(selection).is_none());
+            assert!(super_seeding_targets(selection, true).is_empty());
+        }
+    }
+
+    #[test]
+    fn super_seeding_check_and_toggle_skip_matching_tasks() {
+        let off = unfinished_bt(TaskState::Completed);
+        let mut on = unfinished_bt(TaskState::Paused);
+        on.bt_super_seeding = true;
+
+        assert!(super_seeding_checked(&[on, on]));
+        assert!(!super_seeding_checked(&[on, off]));
+        assert!(!super_seeding_checked(&[]));
+        assert_eq!(super_seeding_toggle_target(&[on, on]), Some(false));
+        // 混合视为未勾：点击全体打开，只下发尚未打开的任务。
+        assert_eq!(super_seeding_toggle_target(&[on, off]), Some(true));
+        assert_eq!(super_seeding_targets(&[on, off, off], true), vec![1, 2]);
+        assert_eq!(super_seeding_targets(&[on, off], false), vec![0]);
+        assert!(super_seeding_targets(&[on, on], true).is_empty());
     }
 
     #[test]

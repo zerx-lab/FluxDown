@@ -53,6 +53,8 @@ const DEFAULTS = {
   seedUploadLimitBps: 0,
   btSequential: false,
   btFirstLastPiecesFirst: false,
+  btDownloadLimitBps: 0,
+  btSuperSeeding: false,
   sourceBytes: { cdnBytes: 0, proxyBytes: 0, nicBytes: 0 },
 }
 
@@ -83,6 +85,15 @@ describe('normalizeTask', () => {
     expect(task.seedUploadLimitBps).toBe(1024)
     expect(task.sourceBytes).toEqual({ cdnBytes: 1, proxyBytes: 2, nicBytes: 3 })
     expect(task.queueOrder).toBe(7)
+  })
+
+  test('BT 任务级限速 / 超级做种：旧 daemon 不下发 → 0 / false；上线值原样保留', () => {
+    const old = normalizeTask(wire('t', { url: 'magnet:?xt=urn:btih:aa' }))
+    expect(old.btDownloadLimitBps).toBe(0)
+    expect(old.btSuperSeeding).toBe(false)
+    const set = normalizeTask(wire('t', { btDownloadLimitBps: 512_000, btSuperSeeding: true }))
+    expect(set.btDownloadLimitBps).toBe(512_000)
+    expect(set.btSuperSeeding).toBe(true)
   })
 
   test('幂等：已补齐的任务再归一化内容不变', () => {

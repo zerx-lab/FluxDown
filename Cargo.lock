@@ -7132,7 +7132,7 @@ dependencies = [
 [[package]]
 name = "librqbit"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7196,7 +7196,7 @@ dependencies = [
 [[package]]
 name = "librqbit-bencode"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "arrayvec",
@@ -7212,7 +7212,7 @@ dependencies = [
 [[package]]
 name = "librqbit-buffers"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "bytes",
  "librqbit-clone-to-owned",
@@ -7223,7 +7223,7 @@ dependencies = [
 [[package]]
 name = "librqbit-clone-to-owned"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "bytes",
 ]
@@ -7231,7 +7231,7 @@ dependencies = [
 [[package]]
 name = "librqbit-core"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7240,6 +7240,7 @@ dependencies = [
  "directories",
  "encoding_rs",
  "hex 0.4.3",
+ "httparse",
  "itertools 0.15.0",
  "librqbit-bencode",
  "librqbit-buffers",
@@ -7260,13 +7261,14 @@ dependencies = [
 [[package]]
 name = "librqbit-dht"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "backon",
  "bytes",
  "chrono",
  "dashmap",
+ "ed25519-dalek",
  "futures",
  "indexmap 2.14.2",
  "leaky-bucket",
@@ -7275,6 +7277,7 @@ dependencies = [
  "librqbit-clone-to-owned",
  "librqbit-core",
  "librqbit-dualstack-sockets",
+ "librqbit-sha1-wrapper",
  "parking_lot",
  "rand 0.10.3",
  "serde",
@@ -7305,7 +7308,7 @@ dependencies = [
 [[package]]
 name = "librqbit-lsd"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "atoi 3.1.1",
@@ -7324,7 +7327,7 @@ dependencies = [
 [[package]]
 name = "librqbit-peer-protocol"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "bitvec",
@@ -7344,7 +7347,7 @@ dependencies = [
 [[package]]
 name = "librqbit-sha1-wrapper"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "assert_cfg",
  "aws-lc-rs",
@@ -7354,13 +7357,14 @@ dependencies = [
 [[package]]
 name = "librqbit-tracker-comms"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "async-stream",
  "backon",
  "byteorder",
  "futures",
+ "httparse",
  "itertools 0.15.0",
  "librqbit-bencode",
  "librqbit-buffers",
@@ -7382,7 +7386,7 @@ dependencies = [
 [[package]]
 name = "librqbit-upnp"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=088947e13108b3b0847423017ec348dbe3c0341d#088947e13108b3b0847423017ec348dbe3c0341d"
+source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
 dependencies = [
  "anyhow",
  "bstr",
@@ -7403,7 +7407,7 @@ dependencies = [
 [[package]]
 name = "librqbit-utp"
 version = "0.7.0"
-source = "git+https://github.com/ikatson/librqbit-utp?rev=06e1c53c8df6edb2830d6aab64a6d4bed8479908#06e1c53c8df6edb2830d6aab64a6d4bed8479908"
+source = "git+https://github.com/zerx-lab/librqbit-utp?rev=f6d50980a637957e0084c6f1a21f86d531c01b76#f6d50980a637957e0084c6f1a21f86d531c01b76"
 dependencies = [
  "bitvec",
  "dontfrag",

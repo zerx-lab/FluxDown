@@ -1,5 +1,5 @@
 import { Copy } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
@@ -28,6 +28,43 @@ export function useMeasuredRoot(): { ref: RefObject<HTMLDivElement | null>; widt
   const ref = useRef<HTMLDivElement | null>(null)
   const width = useElementWidth(ref)
   return { ref, width }
+}
+
+/** 最近的可滚动祖先（overflow-y 为 auto / scroll）。 */
+function findScrollParent(el: HTMLElement): HTMLElement | null {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const overflowY = getComputedStyle(node).overflowY
+    if (overflowY === 'auto' || overflowY === 'scroll') return node
+  }
+  return null
+}
+
+/**
+ * 虚拟化列表的滚动容器是祖先面板：返回该祖先与 `scrollMargin`（列表顶部相对滚动内容顶部的偏移，
+ * 根节点 `rootRef` 尺寸变化时重算）。
+ */
+export function useAncestorScroller(
+  listRef: RefObject<HTMLElement | null>,
+  rootRef: RefObject<HTMLElement | null>,
+): { scrollEl: HTMLElement | null; scrollMargin: number } {
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null)
+  const [scrollMargin, setScrollMargin] = useState(0)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (list === null) return
+    const scroller = findScrollParent(list)
+    setScrollEl(scroller)
+    if (scroller === null) return
+    const update = () => {
+      const offset = list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+      setScrollMargin(Math.round(offset))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    if (rootRef.current) observer.observe(rootRef.current)
+    return () => observer.disconnect()
+  }, [listRef, rootRef])
+  return { scrollEl, scrollMargin }
 }
 
 /** 每秒更新的当前 unix 秒，让相对时间在两次轮询之间自行走字。 */

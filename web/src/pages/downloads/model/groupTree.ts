@@ -270,6 +270,7 @@ export function groupSortView(
     fileMissing: false,
     btSequential: false,
     btFirstLastPiecesFirst: false,
+    btSuperSeeding: false,
     fileHash: '',
     seedingStatus: 0,
     uploadedBytes: 0,

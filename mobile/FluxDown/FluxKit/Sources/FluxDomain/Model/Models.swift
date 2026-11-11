@@ -89,6 +89,12 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
     public var btSequential: Bool
     /// BT 选片：先下载首尾文件块。缺省 / 非 BT = false。
     public var btFirstLastPiecesFirst: Bool
+    /// 任务级 BT 下载限速（字节/秒，0 = 不限；`daemon.task.setBtLimits.downloadLimitBps`）。旧主机缺省 0。
+    public var btDownloadLimitBps: Int64
+    /// 任务级上传限速（字节/秒，0 = 不限；与 `setBtLimits.uploadLimitBps` / 做种限制的上传限速同一值）。
+    public var seedUploadLimitBps: Int64
+    /// 超级做种（`daemon.task.setSuperSeeding`）。旧主机缺省 false。
+    public var btSuperSeeding: Bool
 
     public init(
         taskId: String,
@@ -113,7 +119,10 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
         seedingMessage: String = "",
         seedingTimeSecs: Int64 = 0,
         btSequential: Bool = false,
-        btFirstLastPiecesFirst: Bool = false
+        btFirstLastPiecesFirst: Bool = false,
+        btDownloadLimitBps: Int64 = 0,
+        seedUploadLimitBps: Int64 = 0,
+        btSuperSeeding: Bool = false
     ) {
         self.taskId = taskId
         self.url = url
@@ -138,6 +147,9 @@ public struct DownloadTask: Sendable, Hashable, Identifiable {
         self.seedingTimeSecs = seedingTimeSecs
         self.btSequential = btSequential
         self.btFirstLastPiecesFirst = btFirstLastPiecesFirst
+        self.btDownloadLimitBps = btDownloadLimitBps
+        self.seedUploadLimitBps = seedUploadLimitBps
+        self.btSuperSeeding = btSuperSeeding
     }
 
     public var id: String { taskId }

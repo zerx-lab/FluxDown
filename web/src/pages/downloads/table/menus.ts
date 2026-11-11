@@ -16,6 +16,7 @@ import {
   Link2,
   Magnet,
   FolderOpen,
+  Gauge,
   Pause,
   PanelRight,
   Pen,
@@ -51,6 +52,7 @@ import {
   deleteViews,
   downloadViewsFiles,
   isDownloadable,
+  isMovingStorage,
   isPluginRetryError,
   moveViewsToQueue,
   openTaskFile,
@@ -65,15 +67,30 @@ import {
   toggleBoost,
   setPieceOrder,
   setFirstLastPieces,
+  setSuperSeeding,
+  forceRecheckViews,
   verifyTaskIntegrity,
 } from '../model/actions'
 import { remoteCan } from '../model/batchPlan'
-import { canChangeSegments, canChangeUrl, canRename, canSetPiecePicking, canVerifyIntegrity, pieceOptionAllOn, pieceOrder } from '../model/taskEdit'
+import {
+  canChangeSegments,
+  canChangeUrl,
+  canForceRecheck,
+  canMoveStorage,
+  canRename,
+  canSetPiecePicking,
+  canSetSuperSeeding,
+  canSetTaskLimits,
+  canVerifyIntegrity,
+  pieceOptionAllOn,
+  pieceOrder,
+  superSeedingAllOn,
+} from '../model/taskEdit'
 import { canPause, canResumeSeeding } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
 import type { GroupCounts } from '../model/groupTree'
-import { openChangeSegments, openChangeUrl, openGroupDetail, openRename } from '../dialogs'
+import { openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskLimits } from '../dialogs'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -239,6 +256,29 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
           onSelect: () => void setFirstLastPieces(views, endsOn),
         },
       ],
+    })
+  }
+  if (canForceRecheck(views)) {
+    entries.push({ type: 'item', key: 'btForceRecheck', label: t('btForceRecheck'), icon: RotateCw, onSelect: () => void forceRecheckViews(views) })
+  }
+  if (only && canMoveStorage(views)) {
+    // 同一任务的移动尚未结束时不再打开选择器（GPUI `bt_moving`）。
+    const onSelect = () => {
+      if (!isMovingStorage(only.taskId)) openMoveStorage(only.taskId)
+    }
+    entries.push({ type: 'item', key: 'btMoveStorage', label: t('btMoveStorage'), icon: FolderOpen, onSelect })
+  }
+  if (only && canSetTaskLimits(views)) {
+    entries.push({ type: 'item', key: 'btTaskLimits', label: t('btTaskLimits'), icon: Gauge, onSelect: () => openTaskLimits(only.taskId) })
+  }
+  if (canSetSuperSeeding(views)) {
+    const superOn = superSeedingAllOn(views)
+    entries.push({
+      type: 'check',
+      key: 'btSuperSeeding',
+      label: t('btSuperSeeding'),
+      checked: superOn,
+      onSelect: () => void setSuperSeeding(views, !superOn),
     })
   }
   if (views.every(canRedownload)) {

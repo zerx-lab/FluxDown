@@ -72,8 +72,8 @@ async fn reseed_with_parts_sidecar_passes_check_without_recreating_files() {
         &content_dir,
         CreateTorrentOptions {
             name: Some("parts-e2e"),
-            trackers: Vec::new(),
             piece_length: Some(piece_length),
+            ..Default::default()
         },
         &librqbit::spawn_utils::BlockingSpawner::new(1),
     )

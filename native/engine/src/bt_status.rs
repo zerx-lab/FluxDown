@@ -1,35 +1,21 @@
 //! BT 任务的运行时状态：peer 列表与 tracker 状态（对齐 qBittorrent 的 Peers / Trackers 页签）。
 //!
-//! librqbit 不暴露逐 tracker 的汇报状态，所以 tracker 状态由 [`layer`] 旁路采集：
-//! `librqbit_tracker_comms` 为每个 tracker 的监控任务开 `http_tracker` / `udp_tracker` span（带
-//! `tracker`、`info_hash` 字段），并在 announce 成功（info）/ 失败（debug）/ 休眠（debug）时
-//! 打事件。本层把这些事件折叠成 `(info_hash, tracker) -> 状态`。该层必须挂在宿主装的全局
-//! subscriber 上（自带每层过滤，不受主输出 `EnvFilter` 影响）；没挂时 [`installed`] 为
-//! `false`，调用方应显示「未知」而不是「未联系」。
+//! tracker 状态取自 librqbit 的逐 tracker 实况（`ManagedTorrent::trackers`：所在层级、汇报
+//! 状态、做种 / 下载人数、上次与下次汇报时间）；任务不在会话里时（未启动 / 重启后尚未恢复）
+//! 只能列出它会用到的 tracker，状态一律「未联系」。
 //!
 //! peer 列表取自 librqbit 的逐 peer 计数器；速度由相邻两次采样的字节差折算。
 
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-use tracing::field::{Field, Visit};
-use tracing::span::{Attributes, Id};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::Layer;
-use tracing_subscriber::filter::filter_fn;
-use tracing_subscriber::layer::Context;
-use tracing_subscriber::registry::LookupSpan;
-
-/// 表容量上限：超过即整体清空（正常使用远低于此，仅防异常增长）。
-const TABLE_CAP: usize = 20_000;
 
 /// 单个 tracker 的汇报状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackerState {
-    /// 监控任务已启动，尚无结果。
+    /// 还没有向它汇报过（任务未在跑，或它所在的层级当前不在用）。
+    NotContacted,
+    /// 正在汇报，尚无结果。
     Updating,
     /// 最近一次 announce 成功。
     Working,
@@ -37,107 +23,9 @@ pub enum TrackerState {
     NotWorking,
 }
 
-/// 一个 tracker 的采集结果。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TrackerEntry {
-    pub state: TrackerState,
-    /// 最近一次成功 announce 返回的 peer 数。
-    pub peers: Option<u64>,
-    /// 最近一次失败的简短归类（对齐 qBittorrent 的消息列，如 `Timed out`）；成功后清空。
-    pub message: String,
-    /// 最近一次失败的原始错误文本（供「复制错误」）；成功后清空。
-    pub detail: String,
-    /// 最近一次成功的 unix 秒，0 = 从未成功。
-    pub last_ok_at: i64,
-    /// 预计下次 announce 的 unix 秒，0 = 未知。
-    pub next_announce_at: i64,
-}
-
-type Key = (String, String);
-
-/// 同一 tracker 下单个端点（UDP 解析出的 v4 / v6 地址）的最近结果。
-#[derive(Clone, Debug)]
-enum Endpoint {
-    Ok { peers: Option<u64> },
-    Failed { message: String, detail: String },
-}
-
-/// UDP tracker 的端点数上限：超过即清空（DNS 换址后旧地址不无限累积）。
-const ENDPOINT_CAP: usize = 8;
-
-/// 表内一行：对外的聚合结果 + 逐端点的最近结果。
-struct Slot {
-    entry: TrackerEntry,
-    endpoints: HashMap<String, Endpoint>,
-}
-
-impl Slot {
-    fn new() -> Self {
-        Self {
-            entry: TrackerEntry {
-                state: TrackerState::Updating,
-                peers: None,
-                message: String::new(),
-                detail: String::new(),
-                last_ok_at: 0,
-                next_announce_at: 0,
-            },
-            endpoints: HashMap::new(),
-        }
-    }
-
-    /// 记录一个端点的结果并重算聚合状态（对齐 qBittorrent：任一端点正常即「正常」，
-    /// 全部失败才「无法连接」）。librqbit 对双栈 UDP tracker 并发向 v4 / v6 各发一次，
-    /// 若按最后一个事件覆盖，v6 不通时会把刚成功的 tracker 误报为失败。
-    fn record(&mut self, endpoint: String, result: Endpoint) {
-        if !endpoint.is_empty() {
-            // 解析失败等无地址事件只在尚无具体端点结果时有意义。
-            self.endpoints.remove("");
-        }
-        if self.endpoints.len() >= ENDPOINT_CAP && !self.endpoints.contains_key(&endpoint) {
-            self.endpoints.clear();
-        }
-        self.endpoints.insert(endpoint.clone(), result);
-        let best_peers = self
-            .endpoints
-            .values()
-            .filter_map(|result| match result {
-                Endpoint::Ok { peers } => Some(*peers),
-                Endpoint::Failed { .. } => None,
-            })
-            .reduce(|a, b| a.max(b));
-        let entry = &mut self.entry;
-        if let Some(peers) = best_peers {
-            entry.state = TrackerState::Working;
-            entry.peers = peers;
-            entry.message.clear();
-            entry.detail.clear();
-        } else if let Some(Endpoint::Failed { message, detail }) = self.endpoints.get(&endpoint) {
-            entry.state = TrackerState::NotWorking;
-            entry.message.clone_from(message);
-            entry.detail.clone_from(detail);
-        }
-    }
-}
-
-static TABLE: LazyLock<Mutex<HashMap<Key, Slot>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-static INSTALLED: AtomicBool = AtomicBool::new(false);
-
-fn table() -> &'static Mutex<HashMap<Key, Slot>> {
-    &TABLE
-}
-
-fn with_table<R>(f: impl FnOnce(&mut HashMap<Key, Slot>) -> R) -> R {
-    let mut guard = match table().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    f(&mut guard)
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+/// 系统时间 → unix 秒（早于纪元或超出 `i64` 记 0 = 未知）。
+fn unix_secs(at: SystemTime) -> i64 {
+    at.duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
         .unwrap_or(0)
@@ -147,97 +35,6 @@ fn now_secs() -> i64 {
 #[must_use]
 pub fn normalize_tracker(url: &str) -> String {
     url::Url::parse(url.trim()).map_or_else(|_| url.trim().to_owned(), |parsed| parsed.to_string())
-}
-
-/// 采集层是否已挂到全局 subscriber 上。
-#[must_use]
-pub fn installed() -> bool {
-    INSTALLED.load(Ordering::Relaxed)
-}
-
-/// 某个 info hash（小写十六进制）下各 tracker 的当前状态，键为规范化 URL。
-#[must_use]
-pub fn snapshot(info_hash: &str) -> HashMap<String, TrackerEntry> {
-    with_table(|table| {
-        table
-            .iter()
-            .filter(|((hash, _), _)| hash == info_hash)
-            .map(|((_, tracker), slot)| (tracker.clone(), slot.entry.clone()))
-            .collect()
-    })
-}
-
-/// 挂在 tracker span 上：表键 + 是否 UDP（UDP 事件按端点地址区分）。
-#[derive(Clone)]
-struct SpanKey {
-    key: Key,
-    udp: bool,
-}
-
-#[derive(Default)]
-struct Fields {
-    tracker: Option<String>,
-    info_hash: Option<String>,
-    message: Option<String>,
-    addr: Option<String>,
-    /// UDP 监控循环 `trace!(interval = ?Option<Duration>, "sleeping")` 的休眠时长。
-    interval: Option<String>,
-    peers: Option<u64>,
-}
-
-impl Visit for Fields {
-    fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
-        match field.name() {
-            "tracker" => self.tracker = Some(format!("{value:?}")),
-            "info_hash" => self.info_hash = Some(format!("{value:?}")),
-            "message" => self.message = Some(format!("{value:?}")),
-            "addr" => self.addr = Some(format!("{value:?}")),
-            "interval" => self.interval = Some(format!("{value:?}")),
-            _ => {}
-        }
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        if field.name() == "peers" {
-            self.peers = Some(value);
-        }
-    }
-}
-
-/// `Duration` 的 Debug 文本（`1800s` / `1.5s` / `500ms`）折算成整秒。
-fn parse_duration_secs(token: &str) -> Option<i64> {
-    let (number, scale) = match token.strip_suffix("ms") {
-        Some(value) => (value, 0.001),
-        None => (token.strip_suffix('s')?, 1.0),
-    };
-    let seconds = number.parse::<f64>().ok()? * scale;
-    if seconds.is_finite() && seconds >= 0.0 {
-        #[allow(clippy::cast_possible_truncation)]
-        Some(seconds.round() as i64)
-    } else {
-        None
-    }
-}
-
-/// 下次 announce 前的休眠秒数：HTTP 为 `"sleeping for 1800s after calling tracker"`，
-/// UDP 为 `"sleeping"` + `interval = Some(1800s)`。
-fn parse_sleep_secs(message: &str, interval: Option<&str>) -> Option<i64> {
-    if let Some(rest) = message.strip_prefix("sleeping for ") {
-        return parse_duration_secs(rest.split_whitespace().next()?);
-    }
-    if message != "sleeping" {
-        return None;
-    }
-    parse_duration_secs(interval?.strip_prefix("Some(")?.strip_suffix(')')?)
-}
-
-/// 错误事件文案去掉 `error ...:` 前缀，只留原因。
-fn error_reason(message: &str) -> String {
-    message
-        .split_once(": ")
-        .map_or(message, |(_, reason)| reason)
-        .trim()
-        .to_owned()
 }
 
 /// `"... responded with 522"` / `"... status code 503"` 里的三位 HTTP 状态码。
@@ -323,117 +120,20 @@ fn summarize_error(raw: &str) -> String {
     label.to_owned()
 }
 
-struct TrackerStatusLayer;
-
-impl<S> Layer<S> for TrackerStatusLayer
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_layer(&mut self, _subscriber: &mut S) {
-        INSTALLED.store(true, Ordering::Relaxed);
-    }
-
-    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        if !matches!(attrs.metadata().name(), "http_tracker" | "udp_tracker") {
-            return;
-        }
-        let mut fields = Fields::default();
-        attrs.record(&mut fields);
-        let (Some(tracker), Some(info_hash)) = (fields.tracker, fields.info_hash) else {
-            return;
-        };
-        let key = (info_hash, normalize_tracker(&tracker));
-        let udp = attrs.metadata().name() == "udp_tracker";
-        if let Some(span) = ctx.span(id) {
-            span.extensions_mut().insert(SpanKey {
-                key: key.clone(),
-                udp,
-            });
-        }
-        with_table(|table| {
-            if table.len() >= TABLE_CAP {
-                table.clear();
-            }
-            table.entry(key).or_insert_with(Slot::new);
-        });
-    }
-
-    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        let Some(scope) = ctx.event_scope(event) else {
-            return;
-        };
-        let Some(span_key) = scope
-            .into_iter()
-            .find_map(|span| span.extensions().get::<SpanKey>().cloned())
-        else {
-            return;
-        };
-        let mut fields = Fields::default();
-        event.record(&mut fields);
-        let Some(message) = fields.message else {
-            return;
-        };
-        let now = now_secs();
-        let succeeded = message.contains("tracker announce succeeded");
-        // UDP：成功事件的 `tracker` / 失败事件的 `addr` 是端点地址；HTTP 只有一个端点。
-        let endpoint = if span_key.udp {
-            if succeeded {
-                fields.tracker
-            } else {
-                fields.addr
-            }
-            .unwrap_or_default()
+/// tracker 行的短消息。双栈 UDP tracker 两个地址族都失败时 librqbit 给出
+/// `IPv4: <原因>; IPv6: <原因>`：两边各自归类，归类相同只报一次。
+fn summarize_tracker_error(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix("IPv4: ")
+        && let Some((v4, v6)) = rest.split_once("; IPv6: ")
+    {
+        let (v4, v6) = (summarize_error(v4), summarize_error(v6));
+        return if v4 == v6 {
+            v4
         } else {
-            String::new()
+            format!("IPv4: {v4}; IPv6: {v6}")
         };
-        with_table(|table| {
-            // 同一 tracker 的旧 span 关闭可能晚于新 span 的创建（暂停后立即恢复）而把条目删掉；
-            // 事件到达时按需补建，状态不丢。
-            let slot = table.entry(span_key.key).or_insert_with(Slot::new);
-            if succeeded {
-                slot.entry.last_ok_at = now;
-                slot.record(
-                    endpoint,
-                    Endpoint::Ok {
-                        peers: fields.peers,
-                    },
-                );
-            } else if message.starts_with("error ") {
-                let detail = error_reason(&message);
-                let message = summarize_error(&detail);
-                slot.record(endpoint, Endpoint::Failed { message, detail });
-            } else if let Some(secs) = parse_sleep_secs(&message, fields.interval.as_deref()) {
-                slot.entry.next_announce_at = now.saturating_add(secs);
-            }
-        });
     }
-
-    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
-        let Some(span) = ctx.span(&id) else {
-            return;
-        };
-        let key = span.extensions().get::<SpanKey>().cloned();
-        if let Some(SpanKey { key, .. }) = key {
-            with_table(|table| {
-                table.remove(&key);
-            });
-        }
-    }
-}
-
-/// 采集层：挂到全局 subscriber（`registry().with(layer())`）。只接 `librqbit_tracker_comms` 的 span、
-/// DEBUG 及以上事件，以及带 `interval` 字段的 TRACE 事件（UDP 只在 TRACE 级报休眠时长）。
-/// 过滤按 callsite 缓存，不会放大其余 TRACE 日志。
-pub fn layer<S>() -> impl Layer<S>
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    TrackerStatusLayer.with_filter(filter_fn(|meta| {
-        meta.target().starts_with("librqbit_tracker_comms")
-            && (meta.is_span()
-                || *meta.level() <= Level::DEBUG
-                || meta.fields().field("interval").is_some())
-    }))
+    summarize_error(raw)
 }
 
 // ───────────────────────── 任务状态 ─────────────────────────
@@ -452,8 +152,24 @@ pub enum TrackerSource {
 pub struct TrackerRow {
     pub url: String,
     pub source: TrackerSource,
-    /// `None` = 无采集结果（任务未在跑 / 尚未联系）。
-    pub entry: Option<TrackerEntry>,
+    /// 所在层级（BEP 12，从 0 起）；会话追加的 tracker 排在种子自带的层之后。
+    pub tier: u32,
+    pub state: TrackerState,
+    /// tracker 报告的做种 / 下载人数与完成次数（announce 响应或 scrape）；未知为 `None`。
+    pub seeders: Option<u32>,
+    pub leechers: Option<u32>,
+    pub downloaded: Option<u32>,
+    /// 最近一次成功 announce 返回的 peer 数。
+    pub peers: Option<u64>,
+    /// 最近一次失败的简短归类（对齐 qBittorrent 的消息列，如 `Timed out`），
+    /// 或成功时 tracker 附带的警告；都没有为空。
+    pub message: String,
+    /// 最近一次失败的原始错误文本（供「复制错误」）；成功后为空。
+    pub detail: String,
+    /// 最近一次成功的 unix 秒，0 = 从未成功。
+    pub last_ok_at: i64,
+    /// 预计下次 announce 的 unix 秒，0 = 未知。
+    pub next_announce_at: i64,
 }
 
 /// 展示用 peer 行。
@@ -482,36 +198,90 @@ pub struct PeerCounts {
     pub dead: u32,
 }
 
-/// 合并种子自带 / 会话追加 / 已采集的 tracker，按规范化 URL 去重，顺序 = 种子自带 → 追加 → 其余。
+/// 会话里的种子：把 librqbit 的逐 tracker 实况转成展示行（顺序即 librqbit 给出的层级顺序）。
+/// `own` 是种子 / 磁力链接自带的 tracker，用来区分来源；其余算会话追加。
 #[must_use]
-pub fn merge_trackers(
-    own: &[String],
-    session: &[String],
-    entries: &HashMap<String, TrackerEntry>,
-) -> Vec<TrackerRow> {
+pub fn tracker_rows(stats: Vec<librqbit::TrackerStats>, own: &[String]) -> Vec<TrackerRow> {
+    let own: HashSet<String> = own.iter().map(|url| normalize_tracker(url)).collect();
+    stats
+        .into_iter()
+        .map(|tracker| {
+            let source = if own.contains(&normalize_tracker(&tracker.url)) {
+                TrackerSource::Torrent
+            } else {
+                TrackerSource::Session
+            };
+            let state = match tracker.state {
+                librqbit::TrackerState::NotContacted => TrackerState::NotContacted,
+                librqbit::TrackerState::Updating => TrackerState::Updating,
+                librqbit::TrackerState::Working => TrackerState::Working,
+                librqbit::TrackerState::Error => TrackerState::NotWorking,
+            };
+            let detail = tracker.last_error.unwrap_or_default();
+            let message = if detail.is_empty() {
+                tracker.warning.unwrap_or_default()
+            } else {
+                summarize_tracker_error(&detail)
+            };
+            TrackerRow {
+                url: tracker.url,
+                source,
+                tier: u32::try_from(tracker.tier).unwrap_or(u32::MAX),
+                state,
+                seeders: tracker.seeders,
+                leechers: tracker.leechers,
+                downloaded: tracker.downloaded,
+                peers: tracker.peers_received.map(u64::from),
+                message,
+                detail,
+                last_ok_at: tracker.last_announce.map_or(0, unix_secs),
+                next_announce_at: tracker.next_announce.map_or(0, unix_secs),
+            }
+        })
+        .collect()
+}
+
+/// 不在会话里的任务：列出它启动后会用到的 tracker，状态一律「未联系」。
+///
+/// `own_tiers` 是种子自带的层（磁力链接每个 `tr=` 自成一层）；`session` 是会话追加的
+/// tracker，各自成层排在其后。按规范化 URL 去重，保留首次出现的位置。
+#[must_use]
+pub fn idle_tracker_rows(own_tiers: &[Vec<String>], session: &[String]) -> Vec<TrackerRow> {
     let mut rows: Vec<TrackerRow> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut push = |url: &str, source: TrackerSource| {
-        let key = normalize_tracker(url);
-        if key.is_empty() || !seen.insert(key.clone()) {
-            return;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut tier: u32 = 0;
+    let own = own_tiers
+        .iter()
+        .map(|urls| (urls.as_slice(), TrackerSource::Torrent));
+    let extra = session
+        .iter()
+        .map(|url| (std::slice::from_ref(url), TrackerSource::Session));
+    for (urls, source) in own.chain(extra) {
+        let before = rows.len();
+        for url in urls {
+            let key = normalize_tracker(url);
+            if key.is_empty() || !seen.insert(key) {
+                continue;
+            }
+            rows.push(TrackerRow {
+                url: url.trim().to_owned(),
+                source,
+                tier,
+                state: TrackerState::NotContacted,
+                seeders: None,
+                leechers: None,
+                downloaded: None,
+                peers: None,
+                message: String::new(),
+                detail: String::new(),
+                last_ok_at: 0,
+                next_announce_at: 0,
+            });
         }
-        rows.push(TrackerRow {
-            entry: entries.get(&key).cloned(),
-            url: url.trim().to_owned(),
-            source,
-        });
-    };
-    for url in own {
-        push(url, TrackerSource::Torrent);
-    }
-    for url in session {
-        push(url, TrackerSource::Session);
-    }
-    let mut rest: Vec<&String> = entries.keys().collect();
-    rest.sort();
-    for url in rest {
-        push(url, TrackerSource::Session);
+        // 整层都重复 / 无效时不占层号。
+        if rows.len() > before {
+            tier = tier.saturating_add(1);
+        }
     }
     rows
 }
@@ -523,6 +293,118 @@ pub struct BtStatusView {
     pub counts: PeerCounts,
     pub trackers: Vec<TrackerRow>,
     pub peers: Vec<PeerRow>,
+    /// HTTP 源（BEP 19 webseed）；任务不在会话里时为空。
+    pub web_seeds: Vec<WebSeedRow>,
+    /// info hash（小写十六进制）：v1 / 混合种子为 SHA-1，纯 v2 种子为截断的 SHA-256。
+    pub info_hash: String,
+    /// v2 info hash（SHA-256，小写十六进制）；v1 种子 / 尚不知道为空。
+    pub info_hash_v2: String,
+}
+
+/// 展示用的一个 HTTP 源（webseed）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSeedRow {
+    pub url: String,
+    pub state: WebSeedState,
+    /// 本次运行里从它收到并写进文件的字节。
+    pub downloaded: u64,
+    /// 最近一次错误；没有为空串。
+    pub message: String,
+}
+
+/// HTTP 源的状态。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WebSeedState {
+    /// 没在用：任务暂停 / 已完成，或别的 HTTP 源已占满名额。
+    #[default]
+    Idle,
+    Downloading,
+    /// 暂时失败（超时、连接错误、5xx、429），过一阵再试。
+    BackingOff,
+    /// 本次运行不再用它（数据不对、不支持断点续传，或设置里关掉了 HTTP 源）。
+    Disabled,
+}
+
+/// librqbit 的 HTTP 源实况 → 展示行。
+#[must_use]
+pub fn web_seed_rows(stats: Vec<librqbit::WebSeedStats>) -> Vec<WebSeedRow> {
+    stats
+        .into_iter()
+        .map(|seed| WebSeedRow {
+            url: seed.url,
+            state: match seed.state {
+                librqbit::WebSeedState::Idle => WebSeedState::Idle,
+                librqbit::WebSeedState::Downloading => WebSeedState::Downloading,
+                librqbit::WebSeedState::BackingOff => WebSeedState::BackingOff,
+                librqbit::WebSeedState::Disabled => WebSeedState::Disabled,
+            },
+            downloaded: seed.downloaded_bytes,
+            message: seed.last_error.unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// 端口映射所用的协议。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortMappingMethod {
+    Upnp,
+    NatPmp,
+    Pcp,
+}
+
+/// 一个端口的映射进展。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortMappingState {
+    /// 还在找网关 / 等路由器答复。
+    Pending,
+    Mapped,
+    /// 映射失败，附原因（可直接展示）。
+    Failed(String),
+}
+
+/// 一个 `(协议, 内部端口)` 的映射状态。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortMappingRow {
+    /// `true` = UDP（uTP / DHT），`false` = TCP。
+    pub udp: bool,
+    pub internal_port: u16,
+    /// 路由器上的外部端口（可能与内部端口不同）；未映射成功为 `None`。
+    pub external_port: Option<u16>,
+    pub method: Option<PortMappingMethod>,
+    pub external_ip: Option<std::net::IpAddr>,
+    pub state: PortMappingState,
+}
+
+impl From<librqbit::PortMappingStatus> for PortMappingRow {
+    fn from(status: librqbit::PortMappingStatus) -> Self {
+        Self {
+            udp: status.protocol == librqbit::PortMappingProtocol::Udp,
+            internal_port: status.internal_port,
+            external_port: status.external_port,
+            method: status.method.map(|method| match method {
+                librqbit::PortMappingMethod::Upnp => PortMappingMethod::Upnp,
+                librqbit::PortMappingMethod::NatPmp => PortMappingMethod::NatPmp,
+                librqbit::PortMappingMethod::Pcp => PortMappingMethod::Pcp,
+            }),
+            external_ip: status.external_ip,
+            state: match status.state {
+                librqbit::PortMappingState::Pending => PortMappingState::Pending,
+                librqbit::PortMappingState::Mapped => PortMappingState::Mapped,
+                librqbit::PortMappingState::Failed(reason) => PortMappingState::Failed(reason),
+            },
+        }
+    }
+}
+
+/// [`crate::download_manager::DownloadManager::bt_port_status`] 的结果。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BtPortStatusView {
+    /// BT 会话是否在运行（没有 BT 任务时会话不创建，也就没有监听与映射）。
+    pub running: bool,
+    /// 监听端口；未运行为 0。
+    pub listen_port: u16,
+    /// 端口映射关闭时为空。
+    pub mappings: Vec<PortMappingRow>,
 }
 
 #[derive(Default)]
@@ -581,146 +463,7 @@ pub fn apply_speeds(task_id: &str, rows: &mut [PeerRow]) {
 
 #[cfg(test)]
 mod tests {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     use super::*;
-
-    #[test]
-    fn layer_folds_announce_events_into_tracker_state() {
-        let subscriber = tracing_subscriber::registry().with(layer());
-        tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::debug_span!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                parent: None,
-                "http_tracker",
-                tracker = %"http://t.example:80/announce",
-                info_hash = %"abc123"
-            );
-            let _guard = span.enter();
-            let entry = || {
-                snapshot("abc123")
-                    .get(&normalize_tracker("http://t.example:80/announce"))
-                    .cloned()
-            };
-            assert_eq!(entry().map(|e| e.state), Some(TrackerState::Updating));
-
-            tracing::debug!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                "error calling tracker: connection refused"
-            );
-            let failed = entry().expect("entry");
-            assert_eq!(failed.state, TrackerState::NotWorking);
-            assert_eq!(failed.message, "Connection refused");
-            assert_eq!(failed.detail, "connection refused");
-
-            tracing::info!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                peers = 7usize,
-                "tracker announce succeeded"
-            );
-            tracing::debug!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                "sleeping for 1800s after calling tracker"
-            );
-            let ok = entry().expect("entry");
-            assert_eq!(ok.state, TrackerState::Working);
-            assert_eq!(ok.peers, Some(7));
-            assert!(ok.message.is_empty());
-            assert!(ok.last_ok_at > 0);
-            assert!(ok.next_announce_at >= ok.last_ok_at + 1799);
-            drop(_guard);
-            drop(span);
-            assert!(
-                snapshot("abc123").is_empty(),
-                "closing the span forgets the tracker"
-            );
-        });
-        assert!(installed());
-    }
-
-    #[test]
-    fn dual_stack_udp_tracker_is_working_if_any_endpoint_succeeds() {
-        let subscriber = tracing_subscriber::registry().with(layer());
-        tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::debug_span!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                parent: None,
-                "udp_tracker",
-                tracker = %"udp://u.example:80/announce",
-                info_hash = %"dual"
-            );
-            let _guard = span.enter();
-            let entry = || {
-                snapshot("dual")
-                    .get(&normalize_tracker("udp://u.example:80/announce"))
-                    .cloned()
-                    .expect("entry")
-            };
-            let v4: std::net::SocketAddr = "1.2.3.4:80".parse().expect("v4");
-            let v6: std::net::SocketAddr = "[2001:db8::1]:80".parse().expect("v6");
-
-            // librqbit 并发向 v4 / v6 announce：v4 成功、v6 随后失败。
-            tracing::info!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                tracker = ?v4,
-                peers = 3usize,
-                "tracker announce succeeded"
-            );
-            tracing::debug!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                addr = ?v6,
-                "error reading announce response: remote replied with something we could not parse"
-            );
-            let mixed = entry();
-            assert_eq!(mixed.state, TrackerState::Working);
-            assert_eq!(mixed.peers, Some(3));
-            assert!(mixed.message.is_empty());
-
-            // 下一轮 v4 也失败：全部端点失败才「无法连接」，消息取最近一次失败。
-            tracing::debug!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                addr = ?v4,
-                "error reading announce response: timeout connecting: deadline has elapsed"
-            );
-            let failed = entry();
-            assert_eq!(failed.state, TrackerState::NotWorking);
-            assert_eq!(failed.message, "Timed out");
-            assert_eq!(failed.detail, "timeout connecting: deadline has elapsed");
-            assert!(
-                failed.last_ok_at > 0,
-                "last success survives later failures"
-            );
-
-            // UDP 只在 TRACE 级报休眠时长；采集层须单独放行它。
-            tracing::trace!(
-                target: "librqbit_tracker_comms::tracker_comms",
-                interval = ?Some(std::time::Duration::from_secs(1800)),
-                "sleeping"
-            );
-            let slept = entry();
-            assert!(slept.next_announce_at >= slept.last_ok_at + 1799);
-        });
-    }
-
-    #[test]
-    fn sleep_and_error_text_parse() {
-        assert_eq!(
-            parse_sleep_secs("sleeping for 1800s after calling tracker", None),
-            Some(1800)
-        );
-        assert_eq!(parse_sleep_secs("sleeping for 500ms after", None), Some(1));
-        assert_eq!(parse_sleep_secs("sleeping for 30m after", None), None);
-        assert_eq!(
-            parse_sleep_secs("sleeping", Some("Some(1800s)")),
-            Some(1800)
-        );
-        assert_eq!(parse_sleep_secs("sleeping", Some("None")), None);
-        assert_eq!(parse_sleep_secs("starting monitor", Some("Some(5s)")), None);
-        assert_eq!(
-            error_reason("error reading announce response: timed out"),
-            "timed out"
-        );
-    }
 
     #[test]
     fn summarize_error_matches_qbittorrent_style() {
@@ -764,39 +507,126 @@ mod tests {
         }
     }
 
+    fn stats(url: &str, tier: usize, state: librqbit::TrackerState) -> librqbit::TrackerStats {
+        librqbit::TrackerStats {
+            url: url.to_owned(),
+            tier,
+            state,
+            seeders: None,
+            leechers: None,
+            downloaded: None,
+            peers_received: None,
+            last_announce: None,
+            next_announce: None,
+            last_error: None,
+            warning: None,
+        }
+    }
+
     #[test]
-    fn merge_orders_dedups_and_attaches_entries() {
-        let mut entries = HashMap::new();
-        let working = TrackerEntry {
-            state: TrackerState::Working,
-            peers: Some(3),
-            message: String::new(),
-            detail: String::new(),
-            last_ok_at: 1,
-            next_announce_at: 0,
-        };
-        entries.insert(
-            normalize_tracker("udp://a.example:80/announce"),
-            working.clone(),
+    fn live_rows_carry_tier_counts_and_source() {
+        let at = |secs: u64| UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let mut working = stats(
+            "udp://a.example:80/announce",
+            0,
+            librqbit::TrackerState::Working,
         );
-        entries.insert(
-            normalize_tracker("udp://orphan.example:80/announce"),
-            working,
+        working.seeders = Some(12);
+        working.leechers = Some(3);
+        working.downloaded = Some(40);
+        working.peers_received = Some(7);
+        working.last_announce = Some(at(1_700_000_000));
+        working.next_announce = Some(at(1_700_001_800));
+        working.warning = Some("please update your client".to_owned());
+        let mut failed = stats(
+            "https://b.example/announce",
+            2,
+            librqbit::TrackerState::Error,
         );
-        let rows = merge_trackers(
-            &["udp://a.example:80/announce".into()],
+        failed.last_error = Some("timed out after 30s".to_owned());
+        // 失败时不展示上一次成功留下的警告。
+        failed.warning = Some("stale".to_owned());
+
+        let rows = tracker_rows(
+            vec![working, failed],
+            &["udp://a.example:80/announce".to_owned()],
+        );
+        assert_eq!(rows.len(), 2);
+        let first = &rows[0];
+        assert_eq!(first.source, TrackerSource::Torrent);
+        assert_eq!((first.tier, first.state), (0, TrackerState::Working));
+        assert_eq!(
+            (first.seeders, first.leechers, first.downloaded, first.peers),
+            (Some(12), Some(3), Some(40), Some(7))
+        );
+        assert_eq!(
+            (first.last_ok_at, first.next_announce_at),
+            (1_700_000_000, 1_700_001_800)
+        );
+        assert_eq!(first.message, "please update your client");
+        assert!(first.detail.is_empty());
+
+        let second = &rows[1];
+        assert_eq!(second.source, TrackerSource::Session);
+        assert_eq!((second.tier, second.state), (2, TrackerState::NotWorking));
+        assert_eq!(second.message, "Timed out");
+        assert_eq!(second.detail, "timed out after 30s");
+        assert_eq!((second.last_ok_at, second.next_announce_at), (0, 0));
+    }
+
+    #[test]
+    fn dual_stack_failures_are_summarized_per_family() {
+        assert_eq!(
+            summarize_tracker_error("IPv4: timed out after 30s; IPv6: timed out after 30s"),
+            "Timed out"
+        );
+        assert_eq!(
+            summarize_tracker_error(
+                "IPv4: remote errored: torrent not registered; IPv6: timed out after 30s"
+            ),
+            "IPv4: torrent not registered; IPv6: Timed out"
+        );
+        assert_eq!(
+            summarize_tracker_error("IPv4: only half"),
+            "IPv4: only half"
+        );
+    }
+
+    #[test]
+    fn idle_rows_number_tiers_and_drop_duplicates() {
+        let rows = idle_tracker_rows(
             &[
-                "udp://a.example:80/announce".into(),
-                "https://b.example/announce".into(),
+                vec![
+                    "udp://a.example:80/announce".to_owned(),
+                    "udp://b.example:80/announce".to_owned(),
+                ],
+                // 整层都是重复项：不占层号。
+                vec!["udp://a.example:80/announce".to_owned()],
+                vec![" https://c.example/announce ".to_owned()],
             ],
-            &entries,
+            &[
+                "udp://b.example:80/announce".to_owned(),
+                String::new(),
+                "https://d.example/announce".to_owned(),
+            ],
         );
-        let urls: Vec<&str> = rows.iter().map(|row| row.url.as_str()).collect();
-        assert_eq!(urls.len(), 3);
-        assert_eq!(rows[0].source, TrackerSource::Torrent);
-        assert!(rows[0].entry.is_some());
-        assert!(rows[1].entry.is_none());
-        assert_eq!(rows[2].source, TrackerSource::Session);
+        let view: Vec<(&str, u32, TrackerSource)> = rows
+            .iter()
+            .map(|row| (row.url.as_str(), row.tier, row.source))
+            .collect();
+        assert_eq!(
+            view,
+            vec![
+                ("udp://a.example:80/announce", 0, TrackerSource::Torrent),
+                ("udp://b.example:80/announce", 0, TrackerSource::Torrent),
+                ("https://c.example/announce", 1, TrackerSource::Torrent),
+                ("https://d.example/announce", 2, TrackerSource::Session),
+            ]
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.state == TrackerState::NotContacted)
+        );
     }
 
     #[test]

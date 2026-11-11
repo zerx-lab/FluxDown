@@ -23,7 +23,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::actor::{ActorCallError, ActorError, ActorOperation, ActorResult, DaemonActorHandle};
+use crate::actor::{
+    ActorCallError, ActorError, ActorOperation, ActorResult, DaemonActorHandle, SeedLocalOptions,
+};
 use crate::blob_store::{BlobKind, BlobStore};
 use crate::config::demo_allows;
 use crate::event_hub::DaemonEventHub;
@@ -32,6 +34,43 @@ use crate::selection::DaemonSelection;
 /// `daemon.task.seedLocal` 读取现成 `.torrent` 的大小上限。
 #[cfg(feature = "bt")]
 const SEED_LOCAL_TORRENT_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// `daemon.task.seedLocal` 的生成种子参数 → 引擎选项；不合法的字段在哈希之前就报出来。
+#[cfg(feature = "bt")]
+fn seed_local_build_options(
+    params: &fluxdown_protocol::DaemonSeedLocalParams,
+) -> Result<fluxdown_engine::bt_local_seed::TorrentBuildOptions, RpcErrorObject> {
+    use fluxdown_engine::bt_local_seed::{InvalidBuildOption, TorrentBuildOptions, TorrentFormat};
+    let version = match params.version.trim().to_ascii_lowercase().as_str() {
+        "" | "v1" => TorrentFormat::V1,
+        "v2" => TorrentFormat::V2,
+        "hybrid" => TorrentFormat::Hybrid,
+        _ => {
+            return Err(invalid_argument(
+                "version",
+                "version must be v1, v2 or hybrid",
+            ));
+        }
+    };
+    let options = TorrentBuildOptions {
+        trackers: params.trackers.clone(),
+        version,
+        private: params.private,
+        piece_length: (params.piece_length != 0).then_some(params.piece_length),
+        web_seeds: params.web_seeds.clone(),
+        comment: params.comment.clone(),
+        source: params.source.clone(),
+        created_by: format!("FluxDown {}", fluxdown_protocol::APP_VERSION),
+    };
+    options.validate().map_err(|error| {
+        let field = match error {
+            InvalidBuildOption::PieceLength(_) => "pieceLength",
+            InvalidBuildOption::WebSeed(_) | InvalidBuildOption::TooManyWebSeeds => "webSeeds",
+        };
+        invalid_argument(field, &error.to_string())
+    })?;
+    Ok(options)
+}
 
 /// daemon 运行时共享服务。
 pub struct DaemonService {
@@ -270,6 +309,80 @@ impl DaemonService {
                     Err(error) => Err(actor_error(error)),
                 }
             }
+            method::DAEMON_BT_PORT_STATUS => {
+                match self.actor.execute(ActorOperation::BtPortStatus).await {
+                    Ok(ActorResult::BtPortStatus(status)) => to_value(*status),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_TASK_REANNOUNCE => {
+                let params = parse_params::<fluxdown_protocol::DaemonBtStatusParams>(params)?;
+                self.execute_unit(ActorOperation::ReannounceTask {
+                    task_id: params.task_id,
+                })
+                .await
+            }
+            method::DAEMON_TASK_BT_FILES => {
+                let params = parse_params::<fluxdown_protocol::DaemonBtStatusParams>(params)?;
+                match self
+                    .actor
+                    .execute(ActorOperation::BtTaskFiles {
+                        task_id: params.task_id,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::BtFiles(files)) => to_value(*files),
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
+            method::DAEMON_TASK_SET_FILE_PRIORITIES => {
+                let params =
+                    parse_params::<fluxdown_protocol::SetTaskFilePrioritiesParams>(params)?;
+                self.execute_unit(ActorOperation::SetTaskFilePriorities {
+                    task_id: params.task_id,
+                    priorities: params
+                        .priorities
+                        .into_iter()
+                        .map(|entry| (entry.index, entry.priority))
+                        .collect(),
+                })
+                .await
+            }
+            method::DAEMON_TASK_RENAME_BT_FILE => {
+                let params = parse_params::<fluxdown_protocol::RenameBtFileParams>(params)?;
+                if params.path.trim().is_empty() {
+                    return Err(invalid_argument("path", "the new path must not be empty"));
+                }
+                self.execute_unit(ActorOperation::RenameBtFile {
+                    task_id: params.task_id,
+                    index: params.index,
+                    path: params.path,
+                })
+                .await
+            }
+            method::DAEMON_TASK_RECHECK => {
+                let params = parse_params::<fluxdown_protocol::DaemonBtStatusParams>(params)?;
+                self.execute_unit(ActorOperation::RecheckTask {
+                    task_id: params.task_id,
+                })
+                .await
+            }
+            method::DAEMON_TASK_MOVE_STORAGE => {
+                let params = parse_params::<fluxdown_protocol::MoveTaskStorageParams>(params)?;
+                if params.save_dir.trim().is_empty() {
+                    return Err(invalid_argument(
+                        "saveDir",
+                        "the destination folder must not be empty",
+                    ));
+                }
+                self.execute_unit(ActorOperation::MoveTaskStorage {
+                    task_id: params.task_id,
+                    save_dir: params.save_dir,
+                })
+                .await
+            }
             method::DAEMON_TASK_ED2K_STATUS => {
                 let params = parse_params::<fluxdown_protocol::DaemonEd2kStatusParams>(params)?;
                 match self
@@ -373,6 +486,31 @@ impl DaemonService {
                     task_id: params.task_id,
                     sequential: params.sequential,
                     first_last_pieces_first: params.first_last_pieces_first,
+                })
+                .await
+            }
+            method::DAEMON_TASK_SET_BT_LIMITS => {
+                let params = parse_params::<fluxdown_protocol::SetTaskBtLimitsParams>(params)?;
+                for (field, value) in [
+                    ("downloadLimitBps", params.download_limit_bps),
+                    ("uploadLimitBps", params.upload_limit_bps),
+                ] {
+                    if value.is_some_and(|bps| bps < 0) {
+                        return Err(invalid_argument(field, "speed limits must not be negative"));
+                    }
+                }
+                self.execute_unit(ActorOperation::SetTaskBtLimits {
+                    task_id: params.task_id,
+                    download_limit_bps: params.download_limit_bps,
+                    upload_limit_bps: params.upload_limit_bps,
+                })
+                .await
+            }
+            method::DAEMON_TASK_SET_SUPER_SEEDING => {
+                let params = parse_params::<fluxdown_protocol::SetTaskSuperSeedingParams>(params)?;
+                self.execute_unit(ActorOperation::SetTaskSuperSeeding {
+                    task_id: params.task_id,
+                    enabled: params.enabled,
                 })
                 .await
             }
@@ -1735,18 +1873,41 @@ impl DaemonService {
     }
 
     /// `daemon.task.seedLocal`：现成 `.torrent`（有大小上限）从 daemon 主机读取，否则在 actor 之外
-    /// 为内容路径生成种子（哈希耗时与数据量成正比，故走慢方法通道），再交 actor 登记并开始做种。
+    /// 为内容路径生成种子（哈希耗时与数据量成正比，故走慢方法通道），按需写出 `.torrent`，
+    /// 再交 actor 登记并开始做种（`createOnly` 时只生成、不建任务）。
+    #[cfg(feature = "bt")]
     async fn seed_local(&self, params: Option<Value>) -> Result<Value, RpcErrorObject> {
         let params = parse_params::<fluxdown_protocol::DaemonSeedLocalParams>(params)?;
         if params.path.trim().is_empty() {
             return Err(invalid_argument("path", "path is required"));
         }
-        #[cfg(feature = "bt")]
-        let torrent_bytes = match params
+        let torrent_path = params
             .torrent_path
             .as_deref()
-            .filter(|path| !path.is_empty())
-        {
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        let torrent_output = params.torrent_output.trim();
+        if params.create_only {
+            if torrent_output.is_empty() {
+                return Err(invalid_argument(
+                    "torrentOutput",
+                    "torrentOutput is required with createOnly",
+                ));
+            }
+            if torrent_path.is_some() {
+                return Err(invalid_argument(
+                    "createOnly",
+                    "createOnly generates a torrent; it cannot be combined with torrentPath",
+                ));
+            }
+        }
+        if !torrent_output.is_empty() && !std::path::Path::new(torrent_output).is_absolute() {
+            return Err(invalid_argument(
+                "torrentOutput",
+                "torrentOutput must be an absolute path",
+            ));
+        }
+        let (torrent_bytes, generated) = match torrent_path {
             Some(torrent_path) => {
                 let metadata = tokio::fs::metadata(torrent_path)
                     .await
@@ -1757,40 +1918,78 @@ impl DaemonService {
                         "torrentPath must be a .torrent file no larger than 32 MiB",
                     ));
                 }
-                tokio::fs::read(torrent_path)
+                let bytes = tokio::fs::read(torrent_path)
                     .await
-                    .map_err(|error| invalid_argument("torrentPath", &error.to_string()))?
+                    .map_err(|error| invalid_argument("torrentPath", &error.to_string()))?;
+                (bytes, false)
             }
-            None => fluxdown_engine::bt_local_seed::build_torrent(
-                std::path::Path::new(&params.path),
-                params
-                    .trackers
-                    .iter()
-                    .map(|tracker| tracker.trim().to_owned())
-                    .filter(|tracker| !tracker.is_empty())
-                    .collect(),
-            )
-            .await
-            .map_err(|error| match error {
-                fluxdown_engine::bt_local_seed::LocalSeedError::InvalidArgument(message) => {
-                    invalid_argument("path", &message)
-                }
-                fluxdown_engine::bt_local_seed::LocalSeedError::Operation(message) => {
-                    internal_error(message)
-                }
-                error @ fluxdown_engine::bt_local_seed::LocalSeedError::Duplicate { .. } => {
-                    internal_error(error.to_string())
-                }
-            })?,
+            None => {
+                let options = seed_local_build_options(&params)?;
+                let bytes = fluxdown_engine::bt_local_seed::build_torrent(
+                    std::path::Path::new(&params.path),
+                    &options,
+                )
+                .await
+                .map_err(|error| match error {
+                    fluxdown_engine::bt_local_seed::LocalSeedError::InvalidArgument(message) => {
+                        invalid_argument("path", &message)
+                    }
+                    fluxdown_engine::bt_local_seed::LocalSeedError::Operation(message) => {
+                        internal_error(message)
+                    }
+                    error @ fluxdown_engine::bt_local_seed::LocalSeedError::Duplicate { .. } => {
+                        internal_error(error.to_string())
+                    }
+                })?;
+                (bytes, true)
+            }
         };
-        #[cfg(not(feature = "bt"))]
-        let torrent_bytes = Vec::new();
+        if !torrent_output.is_empty() {
+            tokio::fs::write(torrent_output, &torrent_bytes)
+                .await
+                .map_err(|error| invalid_argument("torrentOutput", &error.to_string()))?;
+        }
+        if params.create_only {
+            return to_value(fluxdown_protocol::SeedLocalResultDto {
+                torrent_path: torrent_output.to_owned(),
+                ..Default::default()
+            });
+        }
+        let torrent_output = torrent_output.to_owned();
         match self
             .actor
             .execute(ActorOperation::SeedLocal {
                 path: params.path,
                 torrent_bytes,
-                unlimited: params.unlimited,
+                options: SeedLocalOptions {
+                    unlimited: params.unlimited,
+                    super_seeding: params.super_seeding,
+                    // 刚为这份数据生成的种子不必再算一遍（qBittorrent「制作 Torrent 后开始做种」同样
+                    // 跳过校验）；现成种子只在用户声明数据可信时跳过。
+                    skip_check: generated || params.skip_check,
+                },
+            })
+            .await
+        {
+            Ok(ActorResult::SeedLocal(mut result)) => {
+                result.torrent_path = torrent_output;
+                to_value(result)
+            }
+            Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+            Err(error) => Err(actor_error(error)),
+        }
+    }
+
+    /// 不带 BT 的构建：`daemon.task.seedLocal` 由 actor 统一回「不支持的协议」。
+    #[cfg(not(feature = "bt"))]
+    async fn seed_local(&self, params: Option<Value>) -> Result<Value, RpcErrorObject> {
+        let params = parse_params::<fluxdown_protocol::DaemonSeedLocalParams>(params)?;
+        match self
+            .actor
+            .execute(ActorOperation::SeedLocal {
+                path: params.path,
+                torrent_bytes: Vec::new(),
+                options: SeedLocalOptions::default(),
             })
             .await
         {

@@ -47,6 +47,12 @@ pub struct TaskDto {
     pub bt_sequential: bool,
     /// BT 选片：先下载首尾文件块（`daemon.task.setPiecePicking` 的 `firstLastPiecesFirst`）。
     pub bt_first_last_pieces_first: bool,
+    /// 任务级 BT 下载限速（字节/秒，0 = 不限；`daemon.task.setBtLimits` 的 `downloadLimitBps`）。
+    pub bt_download_limit_bps: i64,
+    /// 任务级上传限速（字节/秒，0 = 不限；`daemon.task.setBtLimits` 的 `uploadLimitBps`）。
+    pub seed_upload_limit_bps: i64,
+    /// 超级做种（`daemon.task.setSuperSeeding`）。
+    pub bt_super_seeding: bool,
 }
 
 impl From<&proto::TaskDto> for TaskDto {
@@ -77,6 +83,9 @@ impl From<&proto::TaskDto> for TaskDto {
             seeding_time_secs: task.seeding_time_secs,
             bt_sequential: task.bt_sequential,
             bt_first_last_pieces_first: task.bt_first_last_pieces_first,
+            bt_download_limit_bps: task.bt_download_limit_bps,
+            seed_upload_limit_bps: task.seed_upload_limit_bps,
+            bt_super_seeding: task.bt_super_seeding,
         }
     }
 }

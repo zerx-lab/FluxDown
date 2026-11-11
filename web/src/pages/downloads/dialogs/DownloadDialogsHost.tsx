@@ -11,7 +11,7 @@ import { QueueManagerDialog } from './QueueManagerDialog'
 import { SeedLocalDialog } from './SeedLocalDialog'
 import { SelectionHost } from './SelectionDialogs'
 import { capturesShown, openNewDownload, useDialogsState } from './store'
-import { ChangeSegmentsDialog, ChangeUrlDialog, RenameDialog } from './TaskEditDialogs'
+import { ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
 
 const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []
 const EMPTY_CAPTURES: readonly PendingCaptureDto[] = []
@@ -35,6 +35,8 @@ export function DownloadDialogsHost() {
       {state.rename ? <RenameDialog key={state.rename} taskId={state.rename} /> : null}
       {state.changeUrl ? <ChangeUrlDialog key={state.changeUrl} taskId={state.changeUrl} /> : null}
       {state.changeSegments ? <ChangeSegmentsDialog key={state.changeSegments} taskId={state.changeSegments} /> : null}
+      {state.moveStorage ? <MoveStorageDialog key={state.moveStorage} taskId={state.moveStorage} /> : null}
+      {state.taskLimits ? <TaskLimitsDialog key={state.taskLimits} taskId={state.taskLimits} /> : null}
       {state.seedLocal ? <SeedLocalDialog /> : null}
       <SelectionHost requests={selections} />
       <FileConflictDialog />

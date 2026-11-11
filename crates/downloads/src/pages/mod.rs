@@ -8,6 +8,7 @@ pub mod queue_manager;
 pub(crate) mod seed_local;
 pub mod selection;
 pub(crate) mod task_bt_guard_evidence;
+pub(crate) mod task_bt_ops;
 pub(crate) mod task_copy;
 pub mod task_detail;
 pub(crate) mod task_edit;

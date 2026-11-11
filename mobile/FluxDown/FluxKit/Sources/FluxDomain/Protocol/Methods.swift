@@ -36,6 +36,23 @@ public enum HostMethod {
     public static let daemonTaskSetSeedLimits = "daemon.task.setSeedLimits"
     /// 修改 BT 任务选片方式（`SetTaskPiecePickingParams`，缺省字段不变）；不存在或非 BT 返回 `notFound`。
     public static let daemonTaskSetPiecePicking = "daemon.task.setPiecePicking"
+    /// BT 任务文件表（`{taskId}` → `BtFiles`，不含 padding 文件）；供详情「文件」页轮询。非 BT 任务返回 `notFound`。
+    public static let daemonTaskBtFiles = "daemon.task.btFiles"
+    /// 修改 BT 文件优先级（`SetBtFilePrioritiesParams`，部分更新：0 不下载 / 1 普通 / 6 高 / 7 最高）。
+    /// 已完成任务 → `taskStateConflict`；会导致没有文件要下载 → `invalidArgument`。
+    public static let daemonTaskSetFilePriorities = "daemon.task.setFilePriorities"
+    /// 重命名 BT 任务内单个文件（`{taskId, index, path}`；移动端不提供，仅保持方法表一一对应）。
+    public static let daemonTaskRenameBtFile = "daemon.task.renameBtFile"
+    /// 强制重新校验未完成的 BT 任务（`{taskId}`）；已完成任务 → `taskStateConflict`（改用 `daemonTaskVerify`）。
+    public static let daemonTaskRecheck = "daemon.task.recheck"
+    /// 移动 BT 任务数据到新的保存目录（`{taskId, saveDir}`，慢方法；移动端不提供，仅保持方法表一一对应）。
+    public static let daemonTaskMoveStorage = "daemon.task.moveStorage"
+    /// 任务级 BT 限速（`SetBtLimitsParams`，字节/秒，0 = 不限，缺省字段不变）。
+    public static let daemonTaskSetBtLimits = "daemon.task.setBtLimits"
+    /// 超级做种开关（`{taskId, enabled}`）：完成（做种）后才实际生效，可提前设置。
+    public static let daemonTaskSetSuperSeeding = "daemon.task.setSuperSeeding"
+    /// 立即向 tracker 重新汇报（`{taskId}`；移动端没有 Tracker 页，仅保持方法表一一对应）。
+    public static let daemonTaskReannounce = "daemon.task.reannounce"
     public static let daemonTaskVerify = "daemon.task.verify"
     /// 已完成任务落盘文件的哈希（`{taskId, algorithm}` → `{fileHash}`），结果同时记入任务 `fileHash`。
     public static let daemonTaskHash = "daemon.task.hash"
@@ -143,6 +160,8 @@ public enum HostMethod {
     public static let daemonEd2kIdCheck = "daemon.ed2k.idCheck"
     /// eD2K 任务实况（`{taskId}` → `Ed2kStatusDto`；移动端不消费，仅保持方法表一一对应）。
     public static let daemonTaskEd2kStatus = "daemon.task.ed2kStatus"
+    /// BT 监听端口与端口映射实况（无参 → `BtPortStatus`），设置「连接」页签可见时每 5 秒轮询。
+    public static let daemonBtPortStatus = "daemon.bt.portStatus"
     /// BT 防吸血状态总览（`BtGuardState`）。
     public static let daemonBtGuardState = "daemon.bt.guard.state"
     /// 过滤条目分页（`BtGuardEntriesListParams` → `BtGuardEntriesPage`）。

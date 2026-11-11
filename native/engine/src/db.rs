@@ -150,7 +150,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     seed_upload_limit_bps INTEGER NOT NULL DEFAULT 0,
     seed_limits_exempt INTEGER NOT NULL DEFAULT 0,
     bt_sequential INTEGER NOT NULL DEFAULT 0,
-    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0
+    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0,
+    bt_download_limit_bps INTEGER NOT NULL DEFAULT 0,
+    bt_super_seeding INTEGER NOT NULL DEFAULT 0,
+    bt_file_priorities TEXT NOT NULL DEFAULT '',
+    bt_file_renames TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -443,7 +447,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     seed_upload_limit_bps BIGINT NOT NULL DEFAULT 0,
     seed_limits_exempt INTEGER NOT NULL DEFAULT 0,
     bt_sequential INTEGER NOT NULL DEFAULT 0,
-    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0
+    bt_first_last_pieces_first INTEGER NOT NULL DEFAULT 0,
+    bt_download_limit_bps BIGINT NOT NULL DEFAULT 0,
+    bt_super_seeding INTEGER NOT NULL DEFAULT 0,
+    bt_file_priorities TEXT NOT NULL DEFAULT '',
+    bt_file_renames TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -847,6 +855,8 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
             .try_get::<i32, _>("bt_first_last_pieces_first")
             .unwrap_or(0)
             != 0,
+        bt_download_limit_bps: row.try_get("bt_download_limit_bps").unwrap_or(0),
+        bt_super_seeding: row.try_get::<i32, _>("bt_super_seeding").unwrap_or(0) != 0,
         referrer: row.try_get("referrer").unwrap_or_default(),
         group_id: row.try_get("group_id").unwrap_or_default(),
         rss_source_id: row.try_get("rss_source_id").unwrap_or_default(),
@@ -860,7 +870,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
 
 /// 新建任务的完整落库行（[`Db::insert_new_tasks`]）。
 ///
@@ -1670,6 +1680,22 @@ impl Db {
             "INTEGER NOT NULL DEFAULT 0",
         )
         .await?;
+        // 任务级 BT 下载限速（B/s；0 = 不限）与超级做种开关：add 时烘焙，live 句柄热改。
+        self.add_column_if_missing(
+            "tasks",
+            "bt_download_limit_bps",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.add_column_if_missing("tasks", "bt_super_seeding", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        // 逐文件优先级（逗号分隔，下标 = 种子内文件序号；空 = 未单独设置，按 `bt_selected_files`）
+        // 与文件重命名表（JSON 对象：文件序号 → 任务目录内相对路径）。体积随文件数增长，
+        // 不进 `TASK_COLUMNS`，走专用 getter。
+        self.add_column_if_missing("tasks", "bt_file_priorities", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "bt_file_renames", "TEXT NOT NULL DEFAULT ''")
+            .await?;
         // 队列级上传限速（KB/s；0 = 不限）。BT add/re-add 时与任务级
         // 覆盖一起折算成 librqbit 上传上限，见 download_manager。
         self.add_column_if_missing("queues", "upload_limit_kbps", "BIGINT NOT NULL DEFAULT 0")
@@ -2504,6 +2530,87 @@ impl Db {
         .bind(task_id)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// 写入任务级 BT 限速（`None` = 该项不变；负值钳到 0 = 不限）。上传限速与做种限制
+    /// 表单里的「上传限速」是同一列（`seed_upload_limit_bps`）。
+    pub async fn set_task_bt_limits(
+        &self,
+        task_id: &str,
+        download_limit_bps: Option<i64>,
+        upload_limit_bps: Option<i64>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET bt_download_limit_bps = COALESCE($1, bt_download_limit_bps), \
+             seed_upload_limit_bps = COALESCE($2, seed_upload_limit_bps) WHERE id = $3",
+        )
+        .bind(download_limit_bps.map(|bps| bps.max(0)))
+        .bind(upload_limit_bps.map(|bps| bps.max(0)))
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 写入任务的超级做种开关。
+    pub async fn set_task_super_seeding(
+        &self,
+        task_id: &str,
+        enabled: bool,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET bt_super_seeding = $1 WHERE id = $2")
+            .bind(i32::from(enabled))
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 任务落库的逐文件优先级与重命名表（原样返回两列文本，解析见
+    /// `bt_task_files`）；任务不存在返回 `None`。
+    pub async fn get_task_bt_file_state(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<(String, String)>, DbError> {
+        let row =
+            sqlx::query("SELECT bt_file_priorities, bt_file_renames FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|row| {
+            (
+                row.try_get("bt_file_priorities").unwrap_or_default(),
+                row.try_get("bt_file_renames").unwrap_or_default(),
+            )
+        }))
+    }
+
+    /// 写入逐文件优先级（[`Self::get_task_bt_file_state`] 的第一列）。
+    pub async fn set_task_bt_file_priorities(
+        &self,
+        task_id: &str,
+        priorities: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET bt_file_priorities = $1 WHERE id = $2")
+            .bind(priorities)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 写入文件重命名表（[`Self::get_task_bt_file_state`] 的第二列）。
+    pub async fn set_task_bt_file_renames(
+        &self,
+        task_id: &str,
+        renames: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET bt_file_renames = $1 WHERE id = $2")
+            .bind(renames)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -6719,6 +6826,86 @@ mod tests {
             .await
             .expect("clear sequential");
         assert_eq!(load().await, (false, true));
+
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn bt_limits_update_only_the_given_direction() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "t-bt").await;
+        let load = || async {
+            let task = db
+                .load_task_by_id("t-bt")
+                .await
+                .expect("load task")
+                .expect("task exists");
+            (task.bt_download_limit_bps, task.seed_upload_limit_bps)
+        };
+        assert_eq!(load().await, (0, 0), "unlimited by default");
+
+        db.set_task_bt_limits("t-bt", Some(512_000), None)
+            .await
+            .expect("set download limit");
+        assert_eq!(load().await, (512_000, 0));
+        db.set_task_bt_limits("t-bt", None, Some(64_000))
+            .await
+            .expect("set upload limit");
+        assert_eq!(load().await, (512_000, 64_000));
+        // 上传限速与做种限制表单共用一列：经做种限制写入后这里读到同一个值。
+        db.set_task_seed_limits("t-bt", -2, -2, -2, -2, 128_000)
+            .await
+            .expect("seed limits");
+        assert_eq!(load().await, (512_000, 128_000));
+        // 负值 = 不限；超过 4 GiB/s 的值不被截断（PG 列是 BIGINT）。
+        db.set_task_bt_limits("t-bt", Some(-5), Some(6_000_000_000))
+            .await
+            .expect("clamp");
+        assert_eq!(load().await, (0, 6_000_000_000));
+
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn super_seeding_and_file_state_round_trip() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "t-bt").await;
+        let super_seeding = || async {
+            db.load_task_by_id("t-bt")
+                .await
+                .expect("load task")
+                .expect("task exists")
+                .bt_super_seeding
+        };
+        assert!(!super_seeding().await);
+        db.set_task_super_seeding("t-bt", true)
+            .await
+            .expect("enable");
+        assert!(super_seeding().await);
+        db.set_task_super_seeding("t-bt", false)
+            .await
+            .expect("disable");
+        assert!(!super_seeding().await);
+
+        assert_eq!(
+            db.get_task_bt_file_state("t-bt").await.expect("state"),
+            Some((String::new(), String::new())),
+            "nothing set for a new task"
+        );
+        db.set_task_bt_file_priorities("t-bt", "1,0,7")
+            .await
+            .expect("priorities");
+        db.set_task_bt_file_renames("t-bt", r#"{"2":"字幕/第 1 集.srt"}"#)
+            .await
+            .expect("renames");
+        assert_eq!(
+            db.get_task_bt_file_state("t-bt").await.expect("state"),
+            Some(("1,0,7".to_owned(), r#"{"2":"字幕/第 1 集.srt"}"#.to_owned()))
+        );
+        assert_eq!(
+            db.get_task_bt_file_state("missing").await.expect("state"),
+            None
+        );
 
         close_test_db(&db, dir).await;
     }

@@ -9,7 +9,7 @@ use serde_json::json;
 use super::bitset::PieceSet;
 use super::config::{BtGuardConfig, DownloadingMaxAction, RuleMode};
 use super::guard::{BtGuard, ban_duration_secs, mode_of};
-use super::ip::{IpGroup, is_lan};
+use super::ip::{IpGroup, is_exempt};
 use super::layers::Decision;
 use super::model::{
     Entry, EvidenceItem, FilterAction, GuardAction, GuardCtx, GuardEvent, Layer, Rule, Verdict,
@@ -97,7 +97,7 @@ impl BtGuard {
             return Verdict::Allow;
         }
         let cfg = self.config();
-        if !cfg.enabled || (cfg.skip_lan && is_lan(ip)) {
+        if !cfg.enabled || is_exempt(ip, cfg.skip_lan) {
             return Verdict::Allow;
         }
         let mut st = self.lock();

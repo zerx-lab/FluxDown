@@ -44,7 +44,7 @@ pub use guard::{
     BtGuard, CloudApplySummary, CloudStatus, EntryFilter, FilterApplySummary, FilterSourceStatus,
     GuardError, NewEntry, ban_duration_secs,
 };
-pub use ip::{IpGroup, is_lan, normalize_ip};
+pub use ip::{IpGroup, is_exempt, is_i2p_synthetic, is_lan, normalize_ip};
 pub use layers::{DecideInput, Decided, Decision, LayerIndex, Tables, decide};
 pub use model::{
     Entry, EvidenceItem, FilterAction, GuardAction, GuardCtx, GuardEvent, GuardStats, InfoHash,

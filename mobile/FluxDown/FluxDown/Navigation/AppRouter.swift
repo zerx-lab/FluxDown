@@ -61,6 +61,8 @@ nonisolated enum SheetRoute: Identifiable, Hashable {
     case search
     /// D7 / D8：队列管理。
     case queues
+    /// BT 任务级限速（任务菜单「任务限速…」）。
+    case btTaskLimits(taskId: String)
 
     var id: String {
         switch self {
@@ -72,6 +74,7 @@ nonisolated enum SheetRoute: Identifiable, Hashable {
         case .fileConflicts: "fileConflicts"
         case .search: "search"
         case .queues: "queues"
+        case let .btTaskLimits(taskId): "btLimits:\(taskId)"
         }
     }
 }

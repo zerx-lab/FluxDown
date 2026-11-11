@@ -183,6 +183,8 @@ fn sample_task_dto(id: &str) -> TaskDto {
         seed_upload_limit_bps: 0,
         bt_sequential: false,
         bt_first_last_pieces_first: false,
+        bt_download_limit_bps: 0,
+        bt_super_seeding: false,
     }
 }
 

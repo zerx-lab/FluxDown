@@ -116,7 +116,7 @@ import kotlin.math.floor
 /** 页头高度（pageHead：上 6 + 钮 44 + 下 10），列表顶部内边距 = 状态栏 + 此值。 */
 private val PageHeadHeight = 60.dp
 
-private enum class DetailTab { General, Speed, Seeding, Advanced }
+private enum class DetailTab { General, Files, Speed, Seeding, Advanced }
 
 /** 任务最后一次的非空模型：任务被删除后页面在退场动画期间继续显示它，而不是闪成“不存在”。 */
 private class LastModel {
@@ -198,6 +198,7 @@ private fun DetailBody(taskId: String, modelOf: () -> DetailModel?, listState: L
     val tabs = remember(isBt) {
         buildList {
             add(DetailTab.General)
+            if (isBt) add(DetailTab.Files)
             add(DetailTab.Speed)
             if (isBt) add(DetailTab.Seeding)
             add(DetailTab.Advanced)
@@ -207,6 +208,7 @@ private fun DetailBody(taskId: String, modelOf: () -> DetailModel?, listState: L
     if (tab !in tabs) tab = DetailTab.General
     val options = tabs.map { SegOption(it, tabLabel(it)) }
     val gate = rememberFlowInGate()
+    val files = rememberBtFilesState(taskId, visible = isBt && tab == DetailTab.Files)
 
     // 切换分页：列表滚回到标签条（英雄头保持滚出）；新页内容各自重播流入
     LaunchedEffect(tab) {
@@ -260,19 +262,24 @@ private fun DetailBody(taskId: String, modelOf: () -> DetailModel?, listState: L
                 FluxSegmented(options = options, selected = tab, onSelect = { tab = it })
             }
         }
-        item(key = "tab-$tab") {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = margin)
-                    .padding(top = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                when (tab) {
-                    DetailTab.General -> GeneralTab(modelOf)
-                    DetailTab.Speed -> SpeedTab(taskId, modelOf)
-                    DetailTab.Seeding -> SeedingTab(taskId, modelOf)
-                    DetailTab.Advanced -> AdvancedTab(modelOf)
+        if (tab == DetailTab.Files) {
+            btFileItems(files, margin)
+        } else {
+            item(key = "tab-$tab") {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = margin)
+                        .padding(top = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    when (tab) {
+                        DetailTab.General -> GeneralTab(modelOf)
+                        DetailTab.Files -> Unit
+                        DetailTab.Speed -> SpeedTab(taskId, modelOf)
+                        DetailTab.Seeding -> SeedingTab(taskId, modelOf)
+                        DetailTab.Advanced -> AdvancedTab(modelOf)
+                    }
                 }
             }
         }
@@ -282,6 +289,7 @@ private fun DetailBody(taskId: String, modelOf: () -> DetailModel?, listState: L
 @Composable
 private fun tabLabel(tab: DetailTab): String = when (tab) {
     DetailTab.General -> str(R.string.detailTabGeneral)
+    DetailTab.Files -> str(R.string.btTabFiles)
     DetailTab.Speed -> str(R.string.detailTabSpeed)
     DetailTab.Seeding -> str(R.string.tabSeeding)
     DetailTab.Advanced -> str(R.string.detailTabAdvanced)

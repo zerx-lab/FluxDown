@@ -14,12 +14,15 @@ export function FsPickerDialog({
   onOpenChange,
   initialPath,
   onSelect,
+  title,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** 起始目录；空 = 服务端默认保存目录。 */
   initialPath: string
   onSelect: (path: string) => void
+  /** 对话框标题；缺省「选择目录」。 */
+  title?: string
 }) {
   const t = useT()
   const [listing, setListing] = useState<FsListResponse | null>(null)
@@ -58,7 +61,7 @@ export function FsPickerDialog({
       open={open}
       onOpenChange={onOpenChange}
       size="md"
-      title={t('webFsPickTitle')}
+      title={title ?? t('webFsPickTitle')}
       footer={
         <ConfirmFooter
           okLabel={t('confirm')}

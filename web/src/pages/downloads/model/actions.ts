@@ -21,7 +21,7 @@ import { rpcErrorKind, rpcErrorText } from '../../../lib/rpcErrorText'
 import { planTaskCommand } from './batchPlan'
 import { folderAnchorMember } from './groupTree'
 import { PLUGIN_ERROR_PREFIX, shareUrl } from './task'
-import { pieceEndsParams, pieceOrderTargets, pieceSequentialParams } from './taskEdit'
+import { pieceEndsParams, pieceOrderTargets, pieceSequentialParams, superSeedingTargets } from './taskEdit'
 import type { DownloadTaskView } from './task'
 
 async function guarded(work: () => Promise<unknown>): Promise<boolean> {
@@ -138,6 +138,51 @@ export function setPieceOrder(views: readonly DownloadTaskView[], sequential: bo
 /** BT 先下载首尾：每个任务一次调用，只传该字段。失败走统一 toast。 */
 export function setFirstLastPieces(views: readonly DownloadTaskView[], allOn: boolean): Promise<boolean> {
   return guardedAll(views.map((view) => () => rpc.daemon.task.setPiecePicking(pieceEndsParams(view.taskId, allOn))))
+}
+
+/** BT 强制重新校验：每个任务一次调用；daemon 受理即返回，全部受理后提示已开始（多选取第一个任务名，同 GPUI）。 */
+export async function forceRecheckViews(views: readonly DownloadTaskView[]): Promise<boolean> {
+  const ok = await guardedAll(views.map((view) => () => rpc.daemon.task.recheck({ taskId: view.taskId })))
+  const first = views[0]
+  if (ok && first) toast.info(t('btForceRecheckStarted', { name: first.name }))
+  return ok
+}
+
+/** BT 超级做种：只对状态不同的任务下发 `enabled`；已一致则不下发。 */
+export function setSuperSeeding(views: readonly DownloadTaskView[], enabled: boolean): Promise<boolean> {
+  const targets = superSeedingTargets(views, enabled)
+  return guardedAll(targets.map((view) => () => rpc.daemon.task.setSuperSeeding({ taskId: view.taskId, enabled })))
+}
+
+/** 「移动到…」进行中的任务 id（GPUI `bt_moving`）：同一任务在完成前不再发起第二次移动。 */
+const movingStorage = new Set<string>()
+
+/** 该任务是否有一次「移动到…」尚未结束。 */
+export function isMovingStorage(taskId: string): boolean {
+  return movingStorage.has(taskId)
+}
+
+/**
+ * 移动 BT 数据到新的保存目录（慢方法，进行中由调用方显示加载态）：完成后提示新位置；失败走统一错误 toast。
+ * 目标与当前相同时 daemon 直接返回 ok，这里不另作判断。同一任务已有移动在进行时直接返回 false、不下发。
+ */
+export async function moveTaskStorage(taskId: string, saveDir: string): Promise<boolean> {
+  if (movingStorage.has(taskId)) return false
+  movingStorage.add(taskId)
+  try {
+    const ok = await guarded(() => rpc.daemon.task.moveStorage({ taskId, saveDir }))
+    if (ok) toast.success(t('btMoveStorageDone', { path: saveDir }))
+    return ok
+  } finally {
+    movingStorage.delete(taskId)
+  }
+}
+
+/** 立即向 tracker 重新汇报；任务不在运行时 daemon 返回 `taskStateConflict`，走统一错误 toast。 */
+export async function reannounceTask(taskId: string): Promise<boolean> {
+  const ok = await guarded(() => rpc.daemon.task.reannounce({ taskId }))
+  if (ok) toast.success(t('btReannounceDone'))
+  return ok
 }
 
 export function isPluginRetryError(view: DownloadTaskView): boolean {

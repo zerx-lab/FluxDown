@@ -26,6 +26,17 @@ use crate::selection::DaemonSelection;
 /// 生产命令队列容量。
 pub const COMMAND_CAPACITY: usize = 64;
 
+/// 本机做种任务的登记选项（`daemon.task.seedLocal`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeedLocalOptions {
+    /// 任务级做种限制全部「不限制」。
+    pub unlimited: bool,
+    /// 以超级做种模式做种。
+    pub super_seeding: bool,
+    /// 首次挂载不做哈希校验（数据可信或种子刚由这份数据生成）。
+    pub skip_check: bool,
+}
+
 /// actor 领域操作。
 pub enum ActorOperation {
     CreateTask {
@@ -42,6 +53,36 @@ pub enum ActorOperation {
     BtStatus {
         task_id: String,
     },
+    /// BT 监听端口与端口映射实况（`daemon.bt.portStatus`）。
+    BtPortStatus,
+    /// 立即向 tracker 重新汇报（`daemon.task.reannounce`）。
+    ReannounceTask {
+        task_id: String,
+    },
+    /// BT 任务的文件表（`daemon.task.btFiles`）。
+    BtTaskFiles {
+        task_id: String,
+    },
+    /// 修改 BT 任务的文件优先级（`daemon.task.setFilePriorities`）：`(文件下标, 级别)`。
+    SetTaskFilePriorities {
+        task_id: String,
+        priorities: Vec<(u32, u8)>,
+    },
+    /// 重命名 BT 任务里的一个文件（`daemon.task.renameBtFile`）。
+    RenameBtFile {
+        task_id: String,
+        index: u32,
+        path: String,
+    },
+    /// 强制重新校验未完成的 BT 任务（`daemon.task.recheck`）。
+    RecheckTask {
+        task_id: String,
+    },
+    /// 把 BT 任务的数据移动到新的保存目录（`daemon.task.moveStorage`，搬移在 actor 之外）。
+    MoveTaskStorage {
+        task_id: String,
+        save_dir: String,
+    },
     /// eD2K 任务实况（`daemon.task.ed2kStatus`）：源、服务器、Kad 节点与本机网络状态。
     Ed2kStatus {
         task_id: String,
@@ -55,7 +96,7 @@ pub enum ActorOperation {
     SeedLocal {
         path: String,
         torrent_bytes: Vec<u8>,
-        unlimited: bool,
+        options: SeedLocalOptions,
     },
     /// 批量建任务（`daemon.task.createMany`）：保存目录与队列只解析一次，
     /// 整块一个事务落库，按 `batch_id` 幂等。
@@ -89,6 +130,17 @@ pub enum ActorOperation {
         task_id: String,
         sequential: Option<bool>,
         first_last_pieces_first: Option<bool>,
+    },
+    /// `daemon.task.setBtLimits`：`None` = 该方向不变，`0` = 不限。
+    SetTaskBtLimits {
+        task_id: String,
+        download_limit_bps: Option<i64>,
+        upload_limit_bps: Option<i64>,
+    },
+    /// `daemon.task.setSuperSeeding`。
+    SetTaskSuperSeeding {
+        task_id: String,
+        enabled: bool,
     },
     DeleteTask {
         task_id: String,
@@ -312,6 +364,8 @@ pub enum ActorResult {
     SeedLocal(fluxdown_protocol::SeedLocalResultDto),
     TorrentShare(Box<fluxdown_protocol::TorrentShareDto>),
     BtStatus(Box<fluxdown_protocol::BtStatusDto>),
+    BtPortStatus(Box<fluxdown_protocol::BtPortStatusDto>),
+    BtFiles(Box<fluxdown_protocol::BtFilesDto>),
 }
 
 /// actor 领域错误。
@@ -382,7 +436,35 @@ pub enum MaintenanceEvent {
         outcome: fluxdown_engine::file_hash::FileHashOutcome,
         ack: oneshot::Sender<Result<ActorResult, ActorError>>,
     },
+    /// `daemon.task.moveStorage` 在等下载循环退出：稍后再试一次。
+    #[cfg(feature = "bt")]
+    BtMoveRetry(BtMoveRequest),
+    /// `daemon.task.moveStorage` 的搬移结果：落库与恢复任务状态在 actor 内。
+    #[cfg(feature = "bt")]
+    BtMoveDone {
+        outcome: fluxdown_engine::download_manager::BtMoveOutcome,
+        ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+    },
 }
+
+/// 一次 `daemon.task.moveStorage` 请求（等待下载循环退出期间在 actor 与定时重试之间往返）。
+#[cfg(feature = "bt")]
+pub struct BtMoveRequest {
+    task_id: String,
+    save_dir: String,
+    /// 任务是为这次搬移才暂停的：搬完（或放弃）后恢复下载。
+    resume_after: bool,
+    /// 等下载循环退出的截止时间。
+    deadline: tokio::time::Instant,
+    ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+}
+
+/// `daemon.task.moveStorage` 等下载循环退出的上限：暂停后的收尾正常在一秒内结束。
+#[cfg(feature = "bt")]
+const BT_MOVE_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 等下载循环退出时两次检查的间隔。
+#[cfg(feature = "bt")]
+const BT_MOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// 从 `DownloadManager` 一次性取出的全部宿主回流接收端。
 pub struct EngineReceivers {
@@ -552,7 +634,7 @@ async fn run_actor(
                 }
             }
             Some(event) = maintenance_rx.recv() => {
-                commit_maintenance(event, &mut engine, &events).await;
+                commit_maintenance(event, &mut engine, &events, &maintenance_tx).await;
             }
             Some(outcome) = receivers.file_hash.recv() => {
                 let task_id = outcome.task_id().to_owned();
@@ -1007,6 +1089,33 @@ async fn dispatch_operation(
                 }
             });
         }
+        ActorOperation::MoveTaskStorage { task_id, save_dir } => {
+            #[cfg(feature = "bt")]
+            start_bt_move(
+                engine,
+                maintenance_tx,
+                BtMoveRequest {
+                    task_id,
+                    save_dir,
+                    resume_after: false,
+                    deadline: tokio::time::Instant::now() + BT_MOVE_STOP_TIMEOUT,
+                    ack,
+                },
+            )
+            .await;
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, save_dir);
+                if ack
+                    .send(Err(ActorError::InvalidArgument(
+                        UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                    )))
+                    .is_err()
+                {
+                    tracing::debug!("storage move caller disconnected before rejection");
+                }
+            }
+        }
         ActorOperation::WebhookTest { endpoint_json } => {
             let dispatcher = engine.manager.webhook();
             tokio::spawn(async move {
@@ -1115,7 +1224,7 @@ async fn execute_operation(
         ActorOperation::SeedLocal {
             path,
             torrent_bytes,
-            unlimited,
+            options,
         } => {
             #[cfg(feature = "bt")]
             {
@@ -1134,7 +1243,15 @@ async fn execute_operation(
                 let queue_id = resolve_queue_id(&engine.db, String::new()).await?;
                 let created = engine
                     .manager
-                    .create_local_seed(plan, queue_id, unlimited)
+                    .create_local_seed(
+                        plan,
+                        queue_id,
+                        fluxdown_engine::bt_local_seed::LocalSeedOptions {
+                            unlimited: options.unlimited,
+                            super_seeding: options.super_seeding,
+                            skip_check: options.skip_check,
+                        },
+                    )
                     .await;
                 return match created {
                     Ok(task_id) => Ok(ActorResult::SeedLocal(
@@ -1142,6 +1259,7 @@ async fn execute_operation(
                             task_id,
                             duplicate: false,
                             existing_name: String::new(),
+                            torrent_path: String::new(),
                         },
                     )),
                     Err(LocalSeedError::Duplicate { task_id, name }) => Ok(ActorResult::SeedLocal(
@@ -1149,6 +1267,7 @@ async fn execute_operation(
                             task_id,
                             duplicate: true,
                             existing_name: name,
+                            torrent_path: String::new(),
                         },
                     )),
                     Err(error) => Err(local_error(error)),
@@ -1156,7 +1275,7 @@ async fn execute_operation(
             }
             #[cfg(not(feature = "bt"))]
             {
-                let _ = (path, torrent_bytes, unlimited);
+                let _ = (path, torrent_bytes, options);
                 return Err(ActorError::InvalidArgument(
                     UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
                 ));
@@ -1178,6 +1297,130 @@ async fn execute_operation(
                             other => ActorError::Operation(other.to_string()),
                         })?;
                 return Ok(ActorResult::BtStatus(Box::new(bt_status_to_dto(view))));
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = task_id;
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::BtPortStatus => {
+            #[cfg(feature = "bt")]
+            {
+                let view = engine.manager.bt_port_status();
+                return Ok(ActorResult::BtPortStatus(Box::new(bt_port_status_to_dto(
+                    view,
+                ))));
+            }
+            // 没有 BT 后端的构建：会话永不运行。
+            #[cfg(not(feature = "bt"))]
+            {
+                return Ok(ActorResult::BtPortStatus(Box::default()));
+            }
+        }
+        ActorOperation::ReannounceTask { task_id } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .reannounce_task(&task_id)
+                    .await
+                    .map_err(bt_task_op_error)?;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = task_id;
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::BtTaskFiles { task_id } => {
+            #[cfg(feature = "bt")]
+            {
+                let view = engine
+                    .manager
+                    .bt_task_files(&task_id)
+                    .await
+                    .map_err(bt_task_op_error)?;
+                return Ok(ActorResult::BtFiles(Box::new(
+                    fluxdown_protocol::BtFilesDto {
+                        editable: view.editable,
+                        files: view
+                            .files
+                            .into_iter()
+                            .map(|file| fluxdown_protocol::BtTaskFileDto {
+                                index: file.index,
+                                path: file.path,
+                                size: file.size,
+                                downloaded: file.downloaded,
+                                priority: file.priority,
+                            })
+                            .collect(),
+                    },
+                )));
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = task_id;
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::SetTaskFilePriorities {
+            task_id,
+            priorities,
+        } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .set_task_file_priorities(&task_id, &priorities)
+                    .await
+                    .map_err(bt_task_op_error)?;
+                // 选择变了任务大小也变：补一次快照让客户端看到新的总量。
+                engine.manager.send_tasks_snapshot().await;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, priorities);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::RenameBtFile {
+            task_id,
+            index,
+            path,
+        } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .rename_bt_file(&task_id, index, &path)
+                    .await
+                    .map_err(bt_task_op_error)?;
+            }
+            #[cfg(not(feature = "bt"))]
+            {
+                let _ = (task_id, index, path);
+                return Err(ActorError::InvalidArgument(
+                    UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                ));
+            }
+        }
+        ActorOperation::RecheckTask { task_id } => {
+            #[cfg(feature = "bt")]
+            {
+                engine
+                    .manager
+                    .recheck_bt_task(&task_id)
+                    .await
+                    .map_err(bt_task_op_error)?;
             }
             #[cfg(not(feature = "bt"))]
             {
@@ -1239,6 +1482,7 @@ async fn execute_operation(
                         magnet: share.magnet,
                         torrent_b64: torrent
                             .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+                        info_hash_v2: share.info_hash_v2,
                     },
                 )));
             }
@@ -1344,6 +1588,34 @@ async fn execute_operation(
                 return Err(ActorError::NotFound);
             }
             // 引擎只改库与会话、不推事件：补一次快照让客户端看到新的选片方式。
+            engine.manager.send_tasks_snapshot().await;
+        }
+        ActorOperation::SetTaskBtLimits {
+            task_id,
+            download_limit_bps,
+            upload_limit_bps,
+        } => {
+            let updated = engine
+                .manager
+                .set_task_bt_limits(&task_id, download_limit_bps, upload_limit_bps)
+                .await
+                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+            if !updated {
+                return Err(ActorError::NotFound);
+            }
+            // 引擎只改库与会话、不推事件：补一次快照让客户端看到新的限速。
+            engine.manager.send_tasks_snapshot().await;
+        }
+        ActorOperation::SetTaskSuperSeeding { task_id, enabled } => {
+            let updated = engine
+                .manager
+                .set_task_super_seeding(&task_id, enabled)
+                .await
+                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+            if !updated {
+                return Err(ActorError::NotFound);
+            }
+            // 引擎只改库与会话、不推事件：补一次快照让客户端看到新的开关。
             engine.manager.send_tasks_snapshot().await;
         }
         ActorOperation::DeleteTask {
@@ -1616,7 +1888,8 @@ async fn execute_operation(
         | ActorOperation::VerifyTask { .. }
         | ActorOperation::HashTask { .. }
         | ActorOperation::WebhookTest { .. }
-        | ActorOperation::TestProxy { .. } => unreachable!("handled off actor"),
+        | ActorOperation::TestProxy { .. }
+        | ActorOperation::MoveTaskStorage { .. } => unreachable!("handled off actor"),
         ActorOperation::WebhookDeliveries => {
             return Ok(ActorResult::WebhookDeliveries(engine.webhook_deliveries()));
         }
@@ -1755,6 +2028,8 @@ async fn commit_maintenance(
     engine: &mut Engine,
     #[cfg_attr(not(any(feature = "bt", feature = "ed2k")), allow(unused_variables))]
     events: &crate::event_hub::DaemonEventHub,
+    #[cfg_attr(not(feature = "bt"), allow(unused_variables))]
+    maintenance_tx: &mpsc::UnboundedSender<MaintenanceEvent>,
 ) {
     match event {
         #[cfg(feature = "bt")]
@@ -1830,6 +2105,106 @@ async fn commit_maintenance(
             if ack.send(result).is_err() {
                 tracing::debug!("file hash caller disconnected before result");
             }
+        }
+        #[cfg(feature = "bt")]
+        MaintenanceEvent::BtMoveRetry(request) => {
+            start_bt_move(engine, maintenance_tx, request).await;
+        }
+        #[cfg(feature = "bt")]
+        MaintenanceEvent::BtMoveDone { outcome, ack } => {
+            let result = engine
+                .manager
+                .finish_bt_move(outcome)
+                .await
+                .map(|()| ActorResult::Unit)
+                .map_err(bt_task_op_error);
+            if let Err(result) = ack.send(result) {
+                match result {
+                    Err(error) => {
+                        tracing::warn!(%error, "storage move failed after caller disconnected");
+                    }
+                    Ok(_) => tracing::debug!("storage move caller disconnected before result"),
+                }
+            }
+        }
+    }
+}
+
+/// 开始（或在等下载循环退出后再试）一次 BT 数据搬移；结果经维护通道回到 actor。
+#[cfg(feature = "bt")]
+async fn start_bt_move(
+    engine: &mut Engine,
+    maintenance_tx: &mpsc::UnboundedSender<MaintenanceEvent>,
+    request: BtMoveRequest,
+) {
+    use fluxdown_engine::download_manager::BtMoveStart;
+
+    let BtMoveRequest {
+        task_id,
+        save_dir,
+        resume_after,
+        deadline,
+        ack,
+    } = request;
+    let reply = |ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+                 result: Result<ActorResult, ActorError>| {
+        if ack.send(result).is_err() {
+            tracing::debug!("storage move caller disconnected before result");
+        }
+    };
+    match engine
+        .manager
+        .begin_bt_move(&task_id, &save_dir, resume_after)
+        .await
+    {
+        Ok(BtMoveStart::Unchanged) => reply(ack, Ok(ActorResult::Unit)),
+        Ok(BtMoveStart::Wait { resume_after }) => {
+            if tokio::time::Instant::now() >= deadline {
+                // 放弃搬移：为它暂停的下载恢复原状。
+                if resume_after {
+                    engine.manager.resume_task(&task_id).await;
+                }
+                reply(
+                    ack,
+                    Err(ActorError::TaskStateConflict(
+                        "the download did not stop in time; try again".to_owned(),
+                    )),
+                );
+                return;
+            }
+            let tx = maintenance_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(BT_MOVE_RETRY_DELAY).await;
+                let retry = BtMoveRequest {
+                    task_id,
+                    save_dir,
+                    resume_after,
+                    deadline,
+                    ack,
+                };
+                if tx.send(MaintenanceEvent::BtMoveRetry(retry)).is_err() {
+                    tracing::debug!("daemon actor closed while a storage move waited");
+                }
+            });
+        }
+        Ok(BtMoveStart::Started(job)) => {
+            let tx = maintenance_tx.clone();
+            tokio::spawn(async move {
+                let outcome = job.await;
+                if tx
+                    .send(MaintenanceEvent::BtMoveDone { outcome, ack })
+                    .is_err()
+                {
+                    // 搬移日志还在：下次启动时按它把新位置落库。
+                    tracing::debug!("daemon actor closed before a storage move was committed");
+                }
+            });
+        }
+        Err(error) => {
+            if resume_after {
+                engine.manager.resume_task(&task_id).await;
+            }
+            reply(ack, Err(bt_task_op_error(error)));
         }
     }
 }
@@ -2226,14 +2601,13 @@ async fn commit_ed2k_refresh(
     })
 }
 
-/// 引擎完整性校验报告 → wire DTO（引擎不依赖 protocol，转换放在 daemon 边界）。
+/// 引擎 BT 实况 → wire DTO（引擎不依赖 protocol，转换放在 daemon 边界）。
 #[cfg(feature = "bt")]
 fn bt_status_to_dto(
     view: fluxdown_engine::bt_status::BtStatusView,
 ) -> fluxdown_protocol::BtStatusDto {
-    use fluxdown_engine::bt_status::{TrackerSource, TrackerState};
+    use fluxdown_engine::bt_status::{TrackerSource, TrackerState, WebSeedState};
     use fluxdown_protocol::{BtTrackerDto, BtTrackerSource, BtTrackerStatus};
-    let available = fluxdown_engine::bt_status::installed();
     fluxdown_protocol::BtStatusDto {
         dht_enabled: view.dht_enabled,
         peer_counts: fluxdown_protocol::BtPeerCountsDto {
@@ -2246,43 +2620,99 @@ fn bt_status_to_dto(
         trackers: view
             .trackers
             .into_iter()
-            .map(|row| {
-                let source = match row.source {
+            .map(|row| BtTrackerDto {
+                url: row.url,
+                source: match row.source {
                     TrackerSource::Torrent => BtTrackerSource::Torrent,
                     TrackerSource::Session => BtTrackerSource::Session,
-                };
-                let status = match (&row.entry, available) {
-                    (_, false) => BtTrackerStatus::Unknown,
-                    (None, true) => BtTrackerStatus::NotContacted,
-                    (Some(entry), true) => match entry.state {
-                        TrackerState::Updating => BtTrackerStatus::Updating,
-                        TrackerState::Working => BtTrackerStatus::Working,
-                        TrackerState::NotWorking => BtTrackerStatus::NotWorking,
-                    },
-                };
-                let entry = row
-                    .entry
-                    .unwrap_or(fluxdown_engine::bt_status::TrackerEntry {
-                        state: TrackerState::Updating,
-                        peers: None,
-                        message: String::new(),
-                        detail: String::new(),
-                        last_ok_at: 0,
-                        next_announce_at: 0,
-                    });
-                BtTrackerDto {
-                    url: row.url,
-                    source,
-                    status,
-                    peers: entry.peers,
-                    message: entry.message,
-                    detail: entry.detail,
-                    last_ok_at: entry.last_ok_at,
-                    next_announce_at: entry.next_announce_at,
-                }
+                },
+                status: match row.state {
+                    TrackerState::NotContacted => BtTrackerStatus::NotContacted,
+                    TrackerState::Updating => BtTrackerStatus::Updating,
+                    TrackerState::Working => BtTrackerStatus::Working,
+                    TrackerState::NotWorking => BtTrackerStatus::NotWorking,
+                },
+                peers: row.peers,
+                message: row.message,
+                detail: row.detail,
+                last_ok_at: row.last_ok_at,
+                next_announce_at: row.next_announce_at,
+                tier: row.tier,
+                seeders: row.seeders,
+                leechers: row.leechers,
+                downloaded: row.downloaded,
             })
             .collect(),
         peers: view.peers.into_iter().map(peer_row_to_dto).collect(),
+        web_seeds: view
+            .web_seeds
+            .into_iter()
+            .map(|seed| fluxdown_protocol::BtWebSeedDto {
+                url: seed.url,
+                state: match seed.state {
+                    WebSeedState::Idle => "idle",
+                    WebSeedState::Downloading => "downloading",
+                    WebSeedState::BackingOff => "backingOff",
+                    WebSeedState::Disabled => "disabled",
+                }
+                .to_owned(),
+                downloaded: seed.downloaded,
+                message: seed.message,
+            })
+            .collect(),
+        info_hash: view.info_hash,
+        info_hash_v2: view.info_hash_v2,
+    }
+}
+
+/// 引擎端口映射实况 → wire DTO。
+#[cfg(feature = "bt")]
+fn bt_port_status_to_dto(
+    view: fluxdown_engine::bt_status::BtPortStatusView,
+) -> fluxdown_protocol::BtPortStatusDto {
+    use fluxdown_engine::bt_status::{PortMappingMethod, PortMappingState};
+    fluxdown_protocol::BtPortStatusDto {
+        running: view.running,
+        listen_port: u32::from(view.listen_port),
+        mappings: view
+            .mappings
+            .into_iter()
+            .map(|row| {
+                let (state, message) = match row.state {
+                    PortMappingState::Pending => ("pending", String::new()),
+                    PortMappingState::Mapped => ("mapped", String::new()),
+                    PortMappingState::Failed(reason) => ("failed", reason),
+                };
+                fluxdown_protocol::BtPortMappingDto {
+                    protocol: if row.udp { "udp" } else { "tcp" }.to_owned(),
+                    internal_port: u32::from(row.internal_port),
+                    external_port: row.external_port.map_or(0, u32::from),
+                    method: match row.method {
+                        Some(PortMappingMethod::Upnp) => "upnp",
+                        Some(PortMappingMethod::NatPmp) => "natPmp",
+                        Some(PortMappingMethod::Pcp) => "pcp",
+                        None => "",
+                    }
+                    .to_owned(),
+                    external_ip: row.external_ip.map(|ip| ip.to_string()).unwrap_or_default(),
+                    state: state.to_owned(),
+                    message,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// 引擎 BT 任务级操作错误 → actor 领域错误。
+#[cfg(feature = "bt")]
+fn bt_task_op_error(error: fluxdown_engine::bt_task_files::BtTaskOpError) -> ActorError {
+    use fluxdown_engine::bt_task_files::BtTaskOpError;
+    match error {
+        BtTaskOpError::NotFound => ActorError::NotFound,
+        BtTaskOpError::InvalidArgument(message) => ActorError::InvalidArgument(message),
+        BtTaskOpError::StateConflict(message) => ActorError::TaskStateConflict(message),
+        BtTaskOpError::Operation(message) => ActorError::Operation(message),
+        BtTaskOpError::Conflict(message) => ActorError::Conflict(message),
     }
 }
 
@@ -2847,25 +3277,44 @@ async fn apply_live_config<'a>(
             fluxdown_engine::proxy_config::ProxyConfig::from_config_map(all).rules,
         );
     }
-    if keys.iter().any(|key| key.starts_with("bt_")) {
+    // BT 走手动代理时，代理服务器本身变了也要重建会话（会话的拨号出口在建会话时定死）。
+    let bt_proxy_changed = all.get("bt_proxy_enabled").is_some_and(|v| v == "true")
+        && keys
+            .iter()
+            .any(|key| key.starts_with("proxy_") && *key != rules_key);
+    if bt_proxy_changed || keys.iter().any(|key| key.starts_with("bt_")) {
         engine
             .manager
             .set_bt_config(crate::config::bt_config_from_map(all));
-        // 只有会话级设置（监听类与上传槽数）需要重建会话；tracker 列表（自定义 / 订阅开关与地址）
-        // 已由上面的 `set_bt_config` 热生效于新加入的种子。
-        if keys.iter().any(|key| {
-            matches!(
-                *key,
-                "bt_enabled"
-                    | "bt_enable_dht"
-                    | "bt_enable_upnp"
-                    | "bt_enable_utp"
-                    | "bt_port_start"
-                    | "bt_port_end"
-                    | "bt_mse_mode"
-                    | "bt_upload_slots"
-            )
-        }) {
+        // 只有会话级设置（监听、传输、节点与数据来源、代理、I2P、上传槽数）需要重建会话；
+        // tracker 列表（自定义 / 订阅开关与地址）与连接数上限已由上面的 `set_bt_config`
+        // 热生效。
+        if bt_proxy_changed
+            || keys.iter().any(|key| {
+                matches!(
+                    *key,
+                    "bt_enabled"
+                        | "bt_enable_dht"
+                        | "bt_enable_upnp"
+                        | "bt_enable_utp"
+                        | "bt_enable_lsd"
+                        | "bt_enable_webseed"
+                        | "bt_utp_congestion"
+                        | "bt_port_start"
+                        | "bt_port_end"
+                        | "bt_mse_mode"
+                        | "bt_upload_slots"
+                        | "bt_announce_all_tiers"
+                        | "bt_announce_all_trackers"
+                        | "bt_proxy_enabled"
+                        | "bt_proxy_peers"
+                        | "bt_i2p_enabled"
+                        | "bt_i2p_sam_host"
+                        | "bt_i2p_sam_port"
+                        | "bt_i2p_mixed"
+                )
+            })
+        {
             engine.manager.invalidate_bt_session().await;
         }
     }
@@ -3816,6 +4265,7 @@ mod tests {
             },
             &mut engine,
             &events,
+            &tokio::sync::mpsc::unbounded_channel().0,
         )
         .await;
         let Ok(Ok(super::ActorResult::Ed2kNodesRefresh(committed))) = committed.await else {
@@ -4074,6 +4524,108 @@ mod tests {
         }
     }
 
+    /// `daemon.task.setBtLimits`：BT 任务按缺省字段做部分更新并落库（上传限速与做种限制
+    /// 共用一列）；不存在 / 非 BT 任务映射为 `NotFound`，不改库。
+    #[tokio::test]
+    async fn set_task_bt_limits_updates_bt_tasks_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_bt_limits_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create bt limits test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let set = |task_id: &str, download: Option<i64>, upload: Option<i64>| {
+            ActorOperation::SetTaskBtLimits {
+                task_id: task_id.to_owned(),
+                download_limit_bps: download,
+                upload_limit_bps: upload,
+            }
+        };
+        for (id, url) in [
+            (
+                "bt",
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            ),
+            ("http", "https://example.invalid/a.bin"),
+        ] {
+            engine
+                .db
+                .insert_task(id, url, "a.bin", &dir_text, 0, 0, "", "", "", 2)
+                .await
+                .expect("insert task");
+        }
+        let limits = |task: fluxdown_engine::model::TaskInfo| {
+            (task.bt_download_limit_bps, task.seed_upload_limit_bps)
+        };
+
+        execute_operation(set("bt", Some(512_000), None), &mut engine, &events)
+            .await
+            .expect("BT task accepts a download limit");
+        execute_operation(set("bt", None, Some(64_000)), &mut engine, &events)
+            .await
+            .expect("BT task accepts an upload limit");
+        let bt = engine
+            .db
+            .load_task_by_id("bt")
+            .await
+            .expect("load bt")
+            .expect("bt exists");
+        assert_eq!(limits(bt), (512_000, 64_000));
+
+        execute_operation(set("bt", Some(0), None), &mut engine, &events)
+            .await
+            .expect("zero lifts the download limit");
+        let bt = engine
+            .db
+            .load_task_by_id("bt")
+            .await
+            .expect("load bt")
+            .expect("bt exists");
+        assert_eq!(limits(bt), (0, 64_000), "the upload limit is left alone");
+
+        for id in ["missing", "http"] {
+            assert!(matches!(
+                execute_operation(set(id, Some(1024), Some(1024)), &mut engine, &events).await,
+                Err(ActorError::NotFound)
+            ));
+        }
+        let http = engine
+            .db
+            .load_task_by_id("http")
+            .await
+            .expect("load http")
+            .expect("http exists");
+        assert_eq!(limits(http), (0, 0), "non-BT task is untouched");
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor bt limits test directory removal failed: {error}");
+        }
+    }
+
     /// `daemon.task.verify`：已完成的 .torrent 任务按 DB 种子字节校验落盘文件并经回执给出
     /// 结论；改坏数据后报告损坏文件；非 BT / 不存在的任务分别映射为参数错误 / NotFound。
     #[cfg(feature = "bt")]
@@ -4264,7 +4816,7 @@ mod tests {
             .recv()
             .await
             .expect("hash result reflows to actor");
-        super::commit_maintenance(event, &mut engine, &events).await;
+        super::commit_maintenance(event, &mut engine, &events, &maintenance_tx).await;
         let expected =
             "sha256=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned();
         match response.await.expect("hash acknowledged") {
@@ -4325,7 +4877,7 @@ mod tests {
             tokio::select! {
                 result = &mut response => result.expect("rejection acknowledged"),
                 Some(event) = maintenance_rx.recv() => {
-                    super::commit_maintenance(event, &mut engine, &events).await;
+                    super::commit_maintenance(event, &mut engine, &events, &maintenance_tx).await;
                     response.await.expect("rejection acknowledged")
                 }
             }

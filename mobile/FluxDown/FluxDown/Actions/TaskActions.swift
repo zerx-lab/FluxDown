@@ -226,6 +226,61 @@ final class TaskActions {
         }
     }
 
+    #if FULL_FLAVOR
+    /// 每个任务一次 `daemon.task.recheck`（只对未完成的 BT 任务，见 `BtTaskMenu`）；失败统一 Toast 一次。
+    func recheck(_ taskIds: [String]) {
+        guard !taskIds.isEmpty else { return }
+        run { session throws(HostError) in
+            var first: HostError?
+            for id in taskIds {
+                do throws(HostError) {
+                    try await session.callVoid(HostMethod.daemonTaskRecheck, params: TaskIdParams(taskId: id))
+                } catch {
+                    if first == nil { first = error }
+                }
+            }
+            if let first { throw first }
+        }
+    }
+
+    /// 每个任务一次 `daemon.task.setSuperSeeding`（已是目标值的任务由 `BtTaskMenu` 剔除）。
+    func setSuperSeeding(_ params: [SetSuperSeedingParams]) {
+        guard !params.isEmpty else { return }
+        run { session throws(HostError) in
+            var first: HostError?
+            for item in params {
+                do throws(HostError) {
+                    try await session.callVoid(HostMethod.daemonTaskSetSuperSeeding, params: item)
+                } catch {
+                    if first == nil { first = error }
+                }
+            }
+            if let first { throw first }
+        }
+    }
+
+    /// 打开「任务限速」表单。
+    func editBtLimits(_ task: DownloadTask) {
+        guard guardWritable() else { return }
+        container.router.sheet = .btTaskLimits(taskId: task.taskId)
+    }
+
+    /// `daemon.task.setBtLimits`（只带改动的字段）。`completion(true)` = 已保存；失败已给出错误 Toast，`completion(false)`。
+    func submitBtLimits(_ params: SetBtLimitsParams, completion: @escaping @MainActor (Bool) -> Void) {
+        guard guardWritable() else { return completion(false) }
+        let session = container.session
+        Task {
+            do throws(HostError) {
+                try await session.callVoid(HostMethod.daemonTaskSetBtLimits, params: params)
+                completion(true)
+            } catch {
+                toasts.show(text: ErrorText.describe(error), tone: .error, systemImage: "exclamationmark.circle")
+                completion(false)
+            }
+        }
+    }
+    #endif
+
     // MARK: 本地动作（不经主机）
 
     func copyLink(_ task: DownloadTask) {

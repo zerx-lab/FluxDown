@@ -179,6 +179,8 @@ export const BT_SEED_THEN_ACTIONS = ['stop', 'delete', 'delete_files'] as const;
 export const BT_MSE_MODES = ['disabled', 'enabled', 'forced'] as const;
 /** 新建 BT 任务的默认选片方式：最稀有优先 / 按顺序下载。 */
 export const BT_PIECE_ORDERS = ['rarest', 'sequential'] as const;
+/** uTP 拥塞控制：LEDBAT（让路给其他流量）/ CUBIC（只按丢包退让）。 */
+export const BT_UTP_CONGESTIONS = ['ledbat', 'cubic'] as const;
 /** 防吸血规则 / 云名单模式。 */
 export const BT_GUARD_MODES = ['off', 'observe', 'enforce'] as const;
 /** 防吸血：下载中任务的动作上限。 */
@@ -262,6 +264,20 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   int('bt_port_end', '6891', 1, 65_535),
   oneOf('bt_mse_mode', 'enabled', BT_MSE_MODES),
   int('bt_upload_slots', '0', 0, 512),
+  // BT 连接（设备本地：不进云同步）
+  bool('bt_enable_lsd', 'true'),
+  oneOf('bt_utp_congestion', 'ledbat', BT_UTP_CONGESTIONS),
+  int('bt_max_connections', '0', 0, 65_535),
+  int('bt_max_connections_per_torrent', '512', 1, 4096),
+  bool('bt_enable_webseed', 'true'),
+  bool('bt_announce_all_tiers', 'true'),
+  bool('bt_announce_all_trackers', 'true'),
+  bool('bt_proxy_enabled', 'false'),
+  bool('bt_proxy_peers', 'true'),
+  bool('bt_i2p_enabled', 'false'),
+  text('bt_i2p_sam_host', '127.0.0.1'),
+  int('bt_i2p_sam_port', '7656', 1, 65_535),
+  bool('bt_i2p_mixed', 'false'),
   text('bt_custom_trackers'),
   oneOf('bt_piece_order', 'rarest', BT_PIECE_ORDERS),
   bool('bt_first_last_pieces_first', 'false'),

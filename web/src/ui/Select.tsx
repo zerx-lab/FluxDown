@@ -11,7 +11,8 @@ export interface SelectOption<V extends string = string> {
 
 /**
  * 下拉选择 = outline 外观 + 下拉箭头，与输入框等高（GPUI 约定）。
- * Radix 不允许空字符串 value：需要「未选」请用占位 `value=""`（自动映射为 placeholder 状态）。
+ * Radix 不允许空字符串作选项 value：需要「未选」请传 `value=""`，Root 保持受控并显示 placeholder
+ * （Radix 2.x 把 `''` 视为占位态；不能映射成 `undefined`，否则 Root 转为非受控，会记住上次的选择）。
  */
 export function Select<V extends string>({
   value,
@@ -33,7 +34,7 @@ export function Select<V extends string>({
   'aria-label'?: string
 }) {
   return (
-    <RadixSelect.Root value={value === '' ? undefined : value} onValueChange={(next) => onValueChange(next as V)} disabled={disabled}>
+    <RadixSelect.Root value={value} onValueChange={(next) => onValueChange(next as V)} disabled={disabled}>
       <RadixSelect.Trigger
         id={id}
         aria-label={ariaLabel}

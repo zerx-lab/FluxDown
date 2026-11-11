@@ -57,6 +57,29 @@ struct SnapshotMappingTests {
         #expect(category.id == "site")
     }
 
+    /// 任务级 BT 限速与超级做种逐字段落到领域模型（`native/mobile/src/dto.rs::TaskDto`）。
+    @Test func taskMappingCarriesBtLimitsAndSuperSeeding() {
+        let dto = TaskDto(
+            taskId: "t", url: "magnet:?xt=urn:btih:x", originUrl: "", fileName: "f", saveDir: "/d",
+            status: 3, downloadedBytes: 0, totalBytes: 0, errorMessage: "", createdAt: 0, completedAt: 0,
+            queueId: "", groupId: "", rssSourceId: "", fileMissing: false, autoRoute: "",
+            sourceCdn: 0, sourceProxy: 0, sourceNic: 0, uploadedBytes: 0, seedingStatus: 1,
+            seedingMessage: "", seedingTimeSecs: 0, btSequential: true, btFirstLastPiecesFirst: false,
+            btDownloadLimitBps: 3_000_000_000, seedUploadLimitBps: 51_200, btSuperSeeding: true
+        )
+        let task = dto.domain
+        #expect(task.btSequential && !task.btFirstLastPiecesFirst)
+        #expect(task.btDownloadLimitBps == 3_000_000_000)
+        #expect(task.seedUploadLimitBps == 51_200)
+        #expect(task.btSuperSeeding)
+        var unlimited = dto
+        unlimited.btDownloadLimitBps = 0
+        unlimited.seedUploadLimitBps = 0
+        unlimited.btSuperSeeding = false
+        let plain = unlimited.domain
+        #expect(plain.btDownloadLimitBps == 0 && plain.seedUploadLimitBps == 0 && !plain.btSuperSeeding)
+    }
+
     @MainActor
     @Test func loadingFlagReachesTheStoreAndClearsOnTheCompleteSnapshot() {
         let store = HostStore()

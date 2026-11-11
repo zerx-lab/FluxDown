@@ -39,7 +39,8 @@ struct SettingsBtGuardTests {
         for row in BtGuardRow.allCases {
             #expect(BtSettingsRow.tab(forRowID: row.id) == .antiLeech, "\(row)")
         }
-        #expect(BtSettingsRow.tab(forRowID: BtSettingsRow.dht.id) == .general)
+        #expect(BtSettingsRow.tab(forRowID: BtSettingsRow.pieceOrder.id) == .general)
+        #expect(BtSettingsRow.tab(forRowID: BtSettingsRow.dht.id) == .connection)
         #expect(BtSettingsRow.tab(forRowID: BtSettingsRow.seedRatio.id) == .seeding)
         #expect(BtSettingsRow.tab(forRowID: "btGuard.unknown") == nil)
     }
@@ -57,7 +58,7 @@ struct SettingsBtGuardTests {
     @Test func antiLeechTabIsOfferedOnlyWhileBtIsEnabled() {
         #expect(BtSettingsRow.availableTabs(in: form(btOn)).contains(.antiLeech))
         #expect(BtSettingsRow.availableTabs(in: form(["bt_enabled": "false"])) == [.general])
-        #expect(BtSettingsTab.allCases.map(\.rawValue) == ["general", "tracker", "seeding", "antiLeech"])
+        #expect(BtSettingsTab.allCases.map(\.rawValue) == ["general", "connection", "tracker", "seeding", "antiLeech"])
         #expect(BtSettingsTab.antiLeech.titleKey == "btGuardTab")
         // SceneStorage 以 rawValue 持久化页签：旧值仍可解码。
         #expect(BtSettingsTab(rawValue: "seeding") == .seeding)

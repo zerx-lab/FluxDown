@@ -1,4 +1,5 @@
 pub(crate) mod aria2c;
+pub(crate) mod bt_files;
 pub(crate) mod bt_guard;
 pub(crate) mod bt_trackers;
 pub(crate) mod categories;
@@ -370,6 +371,12 @@ pub(crate) struct DownloadTaskView {
     pub(crate) bt_sequential: bool,
     /// BT 选片：先下载首尾文件块（`TaskDto::bt_first_last_pieces_first`）。
     pub(crate) bt_first_last_pieces_first: bool,
+    /// 任务级 BT 下载限速（字节/秒，`TaskDto::bt_download_limit_bps`；0 = 不限）。
+    pub(crate) bt_download_limit_bps: i64,
+    /// 任务级上传限速（字节/秒，`TaskDto::seed_upload_limit_bps`；0 = 不限，负值为跟随全局哨兵）。
+    pub(crate) seed_upload_limit_bps: i64,
+    /// 超级做种（`TaskDto::bt_super_seeding`）。
+    pub(crate) bt_super_seeding: bool,
     /// 远程任务的目标设备 id（`CloudDevice::device_id`；本地任务为空）。
     pub(crate) to_device: String,
     /// 远程任务的云端原始状态（本地任务为 `None`）；`Canceled` / `Unknown` 无法用
@@ -409,6 +416,9 @@ impl DownloadTaskView {
         view.boosted = boosted;
         view.bt_sequential = task.bt_sequential;
         view.bt_first_last_pieces_first = task.bt_first_last_pieces_first;
+        view.bt_download_limit_bps = task.bt_download_limit_bps;
+        view.seed_upload_limit_bps = task.seed_upload_limit_bps;
+        view.bt_super_seeding = task.bt_super_seeding;
         view
     }
 
@@ -513,6 +523,9 @@ impl DownloadTaskView {
             boosted: false,
             bt_sequential: false,
             bt_first_last_pieces_first: false,
+            bt_download_limit_bps: 0,
+            seed_upload_limit_bps: 0,
+            bt_super_seeding: false,
             to_device: String::new(),
             remote_status: None,
         }

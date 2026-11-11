@@ -69,6 +69,12 @@ data class Task(
     val btSequential: Boolean = false,
     /** BT 选片：先下载首尾文件块。缺省 / 旧快照为 false。 */
     val btFirstLastPiecesFirst: Boolean = false,
+    /** 任务级 BT 下载限速（字节/秒，0 = 不限）。缺省 / 旧快照为 0。 */
+    val btDownloadLimitBps: Long = 0,
+    /** 任务级上传限速（字节/秒，0 = 不限；与做种上传限速同一个值）。缺省 / 旧快照为 0。 */
+    val seedUploadLimitBps: Long = 0,
+    /** 超级做种：完成（做种）后才实际生效。缺省 / 旧快照为 false。 */
+    val btSuperSeeding: Boolean = false,
 ) {
     /** 复制链接：读 originUrl，空则回退 url（torrent 任务的 url 是哨兵）。 */
     val shareUrl: String get() = originUrl.ifEmpty { url }

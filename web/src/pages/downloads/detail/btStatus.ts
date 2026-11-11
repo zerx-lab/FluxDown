@@ -1,7 +1,7 @@
 import { GUARD_COLUMNS_MIN_WIDTH, peerGuardView } from '../../../lib/btGuard'
 import type { PeerGuardView } from '../../../lib/btGuard'
 import { normalizeCountry } from '../../../lib/flags/flags'
-import type { BtPeerDto, BtPeerTransport, BtTrackerDto, BtTrackerStatus } from '../../../lib/rpc'
+import type { BtPeerDto, BtPeerTransport, BtStatusDto, BtTrackerDto, BtTrackerStatus } from '../../../lib/rpc'
 import type { TaskState } from '../model/task'
 import type { Translate } from '../table/text'
 
@@ -101,6 +101,51 @@ export interface TrackerRow {
   detail: string
   lastOkAt: number
   nextAnnounceAt: number
+  /** 层级的显示值（BEP 12 层级从 0 起，界面从 1 起；GPUI `tier + 1`）。 */
+  tier: number
+  /** tracker 报告的做种 / 下载中 / 完成次数；未知（旧 daemon 或 tracker 未回）为 null。 */
+  seeders: number | null
+  leechers: number | null
+  downloaded: number | null
+}
+
+const countOrNull = (value: number | undefined): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+
+/** tracker 统计数的显示：未知为 `—`（GPUI `count_text`）。 */
+export function countText(value: number | null): string {
+  return value === null ? '—' : String(value)
+}
+
+/** 窄版式的统计行（层级 / 做种 / 下载中 / 完成），`labels` 按同序传入（GPUI `tracker_stats_items`）。 */
+export function trackerStatsItems(labels: readonly [string, string, string, string], row: Pick<TrackerRow, 'tier' | 'seeders' | 'leechers' | 'downloaded'>): string[] {
+  return [
+    `${labels[0]}: ${row.tier}`,
+    `${labels[1]}: ${countText(row.seeders)}`,
+    `${labels[2]}: ${countText(row.leechers)}`,
+    `${labels[3]}: ${countText(row.downloaded)}`,
+  ]
+}
+
+/** HTTP 源状态 -> i18n 键；未知取值（新 daemon 扩展）返回 null，界面原样显示。 */
+export function webSeedStateKey(state: string): string | null {
+  switch (state) {
+    case 'idle':
+      return 'btWebSeedStateIdle'
+    case 'downloading':
+      return 'btWebSeedStateDownloading'
+    case 'backingOff':
+      return 'btWebSeedStateBackingOff'
+    case 'disabled':
+      return 'btWebSeedStateDisabled'
+    default:
+      return null
+  }
+}
+
+/** 常规页 v2 info hash：非空才显示（v1 种子 / 旧 daemon / 未取得元数据为 null）。 */
+export function infoHashV2(status: Pick<BtStatusDto, 'infoHashV2'> | null | undefined): string | null {
+  const hash = (status?.infoHashV2 ?? '').trim()
+  return hash === '' ? null : hash
 }
 
 export function mapTrackerRows(trackers: readonly BtTrackerDto[]): TrackerRow[] {
@@ -118,6 +163,10 @@ export function mapTrackerRows(trackers: readonly BtTrackerDto[]): TrackerRow[] 
       detail: (tr.detail ?? tr.message ?? '').trim(),
       lastOkAt: tr.lastOkAt ?? 0,
       nextAnnounceAt: tr.nextAnnounceAt ?? 0,
+      tier: (typeof tr.tier === 'number' && Number.isFinite(tr.tier) ? tr.tier : 0) + 1,
+      seeders: countOrNull(tr.seeders),
+      leechers: countOrNull(tr.leechers),
+      downloaded: countOrNull(tr.downloaded),
     }
   })
 }
@@ -193,13 +242,36 @@ export function splitMiddle(url: string, tailLen = 18): { head: string; tail: st
   return { head: url.slice(0, url.length - tailLen), tail: url.slice(url.length - tailLen) }
 }
 
-export type TrackerLayout = 'card' | 'table' | 'wide'
+export type TrackerLayout = 'card' | 'table' | 'wide' | 'wideStats'
 
-/** 容器宽度 → Tracker 版式：<560 卡片式；<900 表格（消息在 URL 下方）；其余消息独立成列。 */
+/** 层级 / 做种 / 下载 / 完成四列并排所需的最小宽度（GPUI `TRACKER_STATS_MIN_WIDTH`）。 */
+export const TRACKER_STATS_MIN_WIDTH = 1100
+
+/**
+ * 容器宽度 → Tracker 版式：<560 卡片式；<900 表格（消息与统计在 URL 下方）；<1100 宽版（消息独立成列，
+ * 统计仍在 URL 下方）；其余统计也各占一列。
+ */
 export function trackerLayout(width: number): TrackerLayout {
   if (width < 560) return 'card'
   if (width < 900) return 'table'
-  return 'wide'
+  if (width < TRACKER_STATS_MIN_WIDTH) return 'wide'
+  return 'wideStats'
+}
+
+/** 消息是否独立成列（两种宽版）。 */
+export const trackerMessageColumn = (layout: TrackerLayout): boolean => layout === 'wide' || layout === 'wideStats'
+
+/**
+ * 任务是否在运行（下载中，或已完成且正在做种 `seedingStatus === 1`），决定「强制汇报」是否可用。
+ * 镜像 GPUI `bt_task_running`：排队等做种名额（`8`）不算运行，daemon 会回 `taskStateConflict`。
+ */
+export function btTaskRunning(view: { state: TaskState; seedingStatus: number }): boolean {
+  return view.state === 'downloading' || (view.state === 'completed' && view.seedingStatus === 1)
+}
+
+/** BT 元数据是否已到手：名称非空且总大小已知（磁力带 `dn=` 时名称先于元数据出现，只看名称不够）。 */
+export function btMetadataReady(view: { metadataPending: boolean; sizeBytes: number }): boolean {
+  return !view.metadataPending && view.sizeBytes > 0
 }
 
 // ── Peers ──
@@ -232,7 +304,7 @@ export function peerColumns(layout: PeerLayout, guard = false): PeerColumn[] {
   }
 }
 
-const TRANSPORT_LABEL: Record<BtPeerTransport, string> = { tcp: 'TCP', utp: 'uTP', socks: 'SOCKS' }
+const TRANSPORT_LABEL: Record<BtPeerTransport, string> = { tcp: 'TCP', utp: 'uTP', socks: 'SOCKS', http: 'HTTP', i2p: 'I2P' }
 
 export const transportLabel = (transport: BtPeerTransport): string => TRANSPORT_LABEL[transport] ?? String(transport).toUpperCase()
 

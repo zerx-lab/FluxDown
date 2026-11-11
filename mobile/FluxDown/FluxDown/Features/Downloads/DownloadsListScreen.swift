@@ -430,10 +430,13 @@ struct DownloadsListScreen: View {
                 Button(L("moveToQueueAction"), systemImage: FluxSymbol.queue) { actions.moveToQueue(caps.moveIds) }
                     .disabled(!caps.canMove)
                 #if FULL_FLAVOR
-                let picking = PiecePickingMenu.facts(tasks: model.selectedTasks())
-                if picking.shown {
+                let selected = model.selectedTasks()
+                let picking = PiecePickingMenu.facts(tasks: selected)
+                let bt = BtTaskMenu.facts(tasks: selected)
+                if picking.shown || !bt.isEmpty {
                     Menu(L("moreActions"), systemImage: FluxSymbol.more) {
-                        PiecePickingMenuItems(facts: picking)
+                        if picking.shown { PiecePickingMenuItems(facts: picking) }
+                        BtTaskMenuItems(facts: bt)
                     }
                 }
                 #endif

@@ -605,9 +605,6 @@ fn init_at(log_dir: PathBuf) -> Result<(), LoggerInitError> {
         .compact()
         .with_filter(filter);
     let subscriber = tracing_subscriber::registry().with(fmt_layer);
-    // tracker 汇报状态旁路采集层（自带每层过滤，不受上面主输出过滤影响）。
-    #[cfg(feature = "bt")]
-    let subscriber = subscriber.with(crate::bt_status::layer());
     if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
         // subscriber 已被上次 runtime 装上。把本次 logger 挂上（或接受
         // 竞态下别人先挂上的），不要当成致命错误掐死 actor。

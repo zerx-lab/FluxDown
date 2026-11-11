@@ -1,4 +1,5 @@
-// 代理（crates/settings/src/sections/proxy.rs）：模式 / 系统代理只读信息 / 手动服务器（任何模式可编辑）/ 连通性测试 / 站点凭据。
+// 代理（crates/settings/src/sections/proxy.rs）：模式 / 系统代理只读信息 / 手动服务器（任何模式可编辑）/ 连通性测试 /
+// BitTorrent / 站点规则 / 站点凭据。
 
 import { useEffect, useState } from 'react'
 import { useT } from '../../../../i18n'
@@ -7,6 +8,7 @@ import type { ProxyTestRequest, SystemProxyDto } from '../../../../lib/rpc'
 import { enabledRuleCount } from '../../../../lib/proxyRules'
 import { Button } from '../../../../ui'
 import {
+  DaemonSwitchRow,
   DaemonTextRow,
   DropdownField,
   SettingsPage,
@@ -14,9 +16,11 @@ import {
   SettingsSection,
   TextField,
   setDaemon,
+  useDaemonBool,
   useDaemonValue,
 } from '../../kit'
 import { InfoLine } from './InfoLine'
+import { btProxyHint } from './btProxy'
 import { ProxyRulesGroup } from './ProxyRulesGroup'
 import { SiteAuthGroup } from './SiteAuthGroup'
 
@@ -171,6 +175,20 @@ function PasswordRow() {
   )
 }
 
+/** BitTorrent 走手动代理：总开关 + 节点连接是否也走代理 + 按手动代理配置给出的一条提示。 */
+function BtProxySection() {
+  const t = useT()
+  const enabled = useDaemonBool('bt_proxy_enabled')
+  const hint = btProxyHint(useDaemonValue('proxy_type'), useDaemonValue('proxy_host'), useDaemonValue('proxy_port'))
+  return (
+    <SettingsSection title={t('proxyBtSection')}>
+      <DaemonSwitchRow configKey="bt_proxy_enabled" titleKey="btProxyEnabled" descKey="btProxyEnabledDesc" />
+      {enabled ? <DaemonSwitchRow configKey="bt_proxy_peers" titleKey="btProxyPeers" descKey="btProxyPeersDesc" /> : null}
+      {enabled && hint !== null ? <InfoLine text={t(hint)} /> : null}
+    </SettingsSection>
+  )
+}
+
 export function ProxySettings() {
   const t = useT()
   const mode = useDaemonValue('proxy_mode')
@@ -202,6 +220,7 @@ export function ProxySettings() {
       ) : null}
       {current === 'system' ? <SystemSection /> : null}
       <ManualSection active={current === 'manual'} />
+      <BtProxySection />
       <ProxyRulesGroup />
       <SiteAuthGroup />
     </SettingsPage>

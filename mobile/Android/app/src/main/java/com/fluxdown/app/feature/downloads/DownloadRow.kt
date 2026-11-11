@@ -230,7 +230,7 @@ internal fun DownloadRow(
                     onLongClick = {
                         val c = coords[0]
                         val pickingMenu = if (nav.selecting && id in nav.selection && nav.selection.size > 1) {
-                            actions.piecePickingMenuItems(nav.selection)
+                            actions.btBatchMenuItems(nav.selection)
                         } else {
                             emptyList()
                         }

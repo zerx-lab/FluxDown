@@ -3,9 +3,10 @@ import FluxUI
 import SwiftUI
 #if FULL_FLAVOR
 
-/// S6 · BitTorrent 设置（常规 · Tracker · 做种）。
-/// 行与 GPUI `sections/bt.rs` 同序同键同范围；全部写入走 `ConfigEditor`（云同步键 ☁︎ 由目录决定）。
+/// S6 · BitTorrent 设置（常规 · 连接 · Tracker · 做种 · 防吸血）。
+/// 行与 GPUI `sections/bt.rs` 同序同键同范围；全部写入走 `ConfigEditor`（云同步键 由目录决定）。
 /// 做种关闭时其余做种行整体隐藏；订阅关闭时订阅地址置灰。断线（只读）时各分组整体置灰。
+/// 「连接 › 监听」的端口映射状态行在页签可见且端口映射开启时每 5 秒查询 `daemon.bt.portStatus`。
 struct BtPage: View {
     @Environment(AppContainer.self) private var container
     @Environment(HostStore.self) private var store
@@ -16,11 +17,18 @@ struct BtPage: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var guardModel = BtGuardStateStore()
     @State private var guardReload = 0
+    @State private var portModel = BtPortStatusStore()
 
     private struct GuardPollKey: Hashable {
         let active: Bool
         let visible: Bool
         let token: Int
+    }
+
+    private struct PortPollKey: Hashable {
+        let active: Bool
+        let visible: Bool
+        let hostID: String
     }
 
     var body: some View {
@@ -37,6 +45,7 @@ struct BtPage: View {
             } else {
                 switch shownTab {
                 case .general: generalSections(form, readOnly: readOnly)
+                case .connection: connectionSections(form, readOnly: readOnly)
                 case .tracker: trackerSections(form, readOnly: readOnly)
                 case .seeding: seedingSections(form, readOnly: readOnly)
                 case .antiLeech: BtGuardTab(model: guardModel, reload: { guardReload += 1 })
@@ -51,6 +60,17 @@ struct BtPage: View {
             await guardModel.poll(container.session)
         }
         .modifier(BtGuardChangeObserver { guardReload += 1 })
+        // 端口映射状态：仅在前台、「连接」页签可见且端口映射开启时轮询；换主机先清掉上一台的读数。
+        .task(id: PortPollKey(
+            active: scenePhase == .active,
+            visible: btOn && shownTab == .connection && BtSettingsRow.showsPortMappingStatus(in: form),
+            hostID: container.host.id
+        )) {
+            guard scenePhase == .active, btOn, shownTab == .connection,
+                  BtSettingsRow.showsPortMappingStatus(in: editor.form) else { return }
+            await portModel.poll(container.session)
+        }
+        .onChange(of: container.host.id) { portModel.reset() }
         // 搜索命中：先切到目标行所在页签（reveal 在 350ms 后才滚动，页签内容此时已渲染）。
         .onChange(of: focus.target, initial: true) { _, target in
             if let target, let owner = BtSettingsRow.tab(forRowID: target) { tab = owner }
@@ -72,39 +92,14 @@ struct BtPage: View {
 
     @ViewBuilder
     private func generalSections(_ form: SettingsConfigForm, readOnly: Bool) -> some View {
-        let start = form.int(BtSettingsRow.portStart.configKey, default: 6881)
-        let end = form.int(BtSettingsRow.portEnd.configKey, default: 6891)
-        Section {
-            if BtSettingsRow.enabled.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.enabled.item) }
-            if BtSettingsRow.dht.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.dht.item) }
-            if BtSettingsRow.upnp.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.upnp.item) }
-            if BtSettingsRow.utp.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.utp.item) }
-            if BtSettingsRow.portStart.isVisible(in: form) {
-                ConfigNumberRow(item: BtSettingsRow.portStart.item, range: BtPortRange.bounds, fallback: 6881)
+        if BtSettingsRow.enabled.isVisible(in: form) {
+            Section {
+                ConfigToggleRow(item: BtSettingsRow.enabled.item)
+            } footer: {
+                if container.isLocalHost { Text(L("btMobileFootnote")) }
             }
-            if BtSettingsRow.portEnd.isVisible(in: form) {
-                ConfigNumberRow(
-                    item: BtSettingsRow.portEnd.item,
-                    range: min(max(start, BtPortRange.bounds.lowerBound), BtPortRange.bounds.upperBound) ... BtPortRange.bounds.upperBound,
-                    fallback: 6891
-                )
-                if !BtPortRange.isValid(start: start, end: end) {
-                    SettingsStatusLine(text: L("btPortRangeInvalid"), tone: .warning)
-                        .transition(.opacity)
-                }
-            }
-            if BtSettingsRow.mseMode.isVisible(in: form) { BtMseModeRow() }
-            if BtSettingsRow.uploadSlots.isVisible(in: form) {
-                ConfigNumberRow(
-                    item: BtSettingsRow.uploadSlots.item, range: 0 ... 512, fallback: 0, specials: [0: L("auto")]
-                )
-            }
-        } header: {
-            Text(L("btSettingsRestartHint")).textCase(nil)
-        } footer: {
-            if container.isLocalHost { Text(L("btMobileFootnote")) }
+            .disabled(readOnly)
         }
-        .disabled(readOnly)
         if BtSettingsRow.pieceOrder.isVisible(in: form) || BtSettingsRow.firstLastPiecesFirst.isVisible(in: form)
             || BtSettingsRow.selectionAutoDefault.isVisible(in: form) {
             Section(L("btNewTasksSection")) {
@@ -114,6 +109,105 @@ struct BtPage: View {
                 }
                 if BtSettingsRow.selectionAutoDefault.isVisible(in: form) {
                     ConfigToggleRow(item: BtSettingsRow.selectionAutoDefault.item)
+                }
+            }
+            .disabled(readOnly)
+        }
+    }
+
+    // MARK: 连接
+
+    @ViewBuilder
+    private func connectionSections(_ form: SettingsConfigForm, readOnly: Bool) -> some View {
+        let start = form.int(BtSettingsRow.portStart.configKey, default: 6881)
+        let end = form.int(BtSettingsRow.portEnd.configKey, default: 6891)
+        if !BtSettingsRow.visible(inSection: .listen, form).isEmpty {
+            Section {
+                if BtSettingsRow.portStart.isVisible(in: form) {
+                    ConfigNumberRow(item: BtSettingsRow.portStart.item, range: BtPortRange.bounds, fallback: 6881)
+                }
+                if BtSettingsRow.portEnd.isVisible(in: form) {
+                    ConfigNumberRow(
+                        item: BtSettingsRow.portEnd.item,
+                        range: min(max(start, BtPortRange.bounds.lowerBound), BtPortRange.bounds.upperBound) ... BtPortRange.bounds.upperBound,
+                        fallback: 6891
+                    )
+                    if !BtPortRange.isValid(start: start, end: end) {
+                        SettingsStatusLine(text: L("btPortRangeInvalid"), tone: .warning)
+                            .transition(.opacity)
+                    }
+                }
+                if BtSettingsRow.upnp.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.upnp.item) }
+                if BtSettingsRow.showsPortMappingStatus(in: form) {
+                    BtPortMappingStatusRow(status: portModel.status)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            } header: {
+                Text(L("btSectionListen"))
+            } footer: {
+                Text(L("btSettingsRestartHint"))
+            }
+            .disabled(readOnly)
+        }
+        if !BtSettingsRow.visible(inSection: .transport, form).isEmpty {
+            Section(L("btSectionTransport")) {
+                if BtSettingsRow.utp.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.utp.item) }
+                if BtSettingsRow.utpCongestion.isVisible(in: form) {
+                    ConfigPickerRow(
+                        item: BtSettingsRow.utpCongestion.item,
+                        options: BtUtpCongestion.allCases.map { .init(id: $0.rawValue, label: L($0.titleKey)) },
+                        fallback: BtUtpCongestion.ledbat.rawValue
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if BtSettingsRow.mseMode.isVisible(in: form) { BtMseModeRow() }
+                if BtSettingsRow.uploadSlots.isVisible(in: form) {
+                    ConfigNumberRow(
+                        item: BtSettingsRow.uploadSlots.item, range: 0 ... 512, fallback: 0, specials: [0: L("auto")]
+                    )
+                }
+            }
+            .disabled(readOnly)
+        }
+        if !BtSettingsRow.visible(inSection: .sources, form).isEmpty {
+            Section(L("btSectionSources")) {
+                ForEach(BtSettingsRow.visible(inSection: .sources, form)) { row in
+                    ConfigToggleRow(item: row.item)
+                }
+            }
+            .disabled(readOnly)
+        }
+        if !BtSettingsRow.visible(inSection: .limits, form).isEmpty {
+            Section(L("btSectionLimits")) {
+                if BtSettingsRow.maxConnections.isVisible(in: form) {
+                    ConfigNumberRow(
+                        item: BtSettingsRow.maxConnections.item, range: 0 ... 65_535, fallback: 0,
+                        specials: [0: L("btSeedMaxActiveUnlimited")]
+                    )
+                }
+                if BtSettingsRow.maxConnectionsPerTorrent.isVisible(in: form) {
+                    ConfigNumberRow(item: BtSettingsRow.maxConnectionsPerTorrent.item, range: 1 ... 4_096, fallback: 512)
+                }
+            }
+            .disabled(readOnly)
+        }
+        if !BtSettingsRow.visible(inSection: .i2p, form).isEmpty {
+            Section(L("btSectionI2p")) {
+                if BtSettingsRow.i2pEnabled.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.i2pEnabled.item) }
+                if BtSettingsRow.i2pSamHost.isVisible(in: form) {
+                    let row = BtSettingsRow.i2pSamHost
+                    ConfigTextRow(
+                        id: row.id, key: row.configKey, title: L(row.titleKey), prompt: "127.0.0.1", keyboard: .URL
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if BtSettingsRow.i2pSamPort.isVisible(in: form) {
+                    ConfigNumberRow(item: BtSettingsRow.i2pSamPort.item, range: 1 ... 65_535, fallback: 7656)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if BtSettingsRow.i2pMixed.isVisible(in: form) {
+                    ConfigToggleRow(item: BtSettingsRow.i2pMixed.item)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .disabled(readOnly)
@@ -130,7 +224,7 @@ struct BtPage: View {
             }
             .disabled(readOnly)
         }
-        if !BtSettingsRow.visible(in: .tracker, form).filter({ $0 != .customTrackers }).isEmpty {
+        if !BtSettingsRow.visible(inSection: .trackerSub, form).isEmpty {
             Section {
                 if BtSettingsRow.trackerSub.isVisible(in: form) { ConfigToggleRow(item: BtSettingsRow.trackerSub.item) }
                 if BtSettingsRow.trackerSubUrls.isVisible(in: form) {
@@ -140,6 +234,14 @@ struct BtPage: View {
                     )
                 }
                 if BtSettingsRow.trackerSubStatus.isVisible(in: form) { SubscriptionStatusRow(kind: .btTrackers) }
+            }
+            .disabled(readOnly)
+        }
+        if !BtSettingsRow.visible(inSection: .announce, form).isEmpty {
+            Section(L("btSectionAnnounce")) {
+                ForEach(BtSettingsRow.visible(inSection: .announce, form)) { row in
+                    ConfigToggleRow(item: row.item)
+                }
             }
             .disabled(readOnly)
         }
@@ -207,6 +309,53 @@ struct BtPage: View {
     private func durationRow(_ row: BtSettingsRow, _ form: SettingsConfigForm) -> some View {
         if row.isVisible(in: form), let unitKey = row.unitKey, let unitTitleKey = row.unitTitleKey {
             BtDurationRow(item: row.renderedItem, unitKey: unitKey, unitTitleKey: unitTitleKey)
+        }
+    }
+}
+
+// MARK: - 端口映射状态
+
+/// 「连接 › 监听」末行：`daemon.bt.portStatus` 的分段读数（同 GPUI `listen_section`）。
+/// 尚无快照（首轮在途 / 旧 daemon 无此方法）时只显示标题。每段一行；失败原因压成单行，长按展开全文。
+private struct BtPortMappingStatusRow: View {
+    let status: BtPortStatus?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("btPortMappingStatus"))
+            if let status {
+                ForEach(Array(BtPortSegment.segments(status).enumerated()), id: \.offset) { _, segment in
+                    BtPortSegmentLine(segment: segment)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .settingsRow(BtSettingsRow.portMappingStatusID)
+        .fluxAnimation(.smooth, value: status)
+    }
+}
+
+private struct BtPortSegmentLine: View {
+    let segment: BtPortSegment
+    @State private var expanded = false
+
+    var body: some View {
+        let full = segment.fullText
+        Text(expanded ? (full ?? segment.text) : segment.text)
+            .font(.footnote)
+            .foregroundStyle(tint)
+            .monospacedDigit()
+            .lineLimit(expanded ? nil : 1)
+            .truncationMode(.middle)
+            .onLongPressGesture { if full != nil { expanded.toggle() } }
+            .accessibilityLabel(full ?? segment.text)
+    }
+
+    private var tint: Color {
+        switch segment {
+        case .mapping(_, .mapped): Color.fdStatusSeedingText
+        case .mapping(_, .failed): Color.fdStatusFailedText
+        default: Color.secondary
         }
     }
 }

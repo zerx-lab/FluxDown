@@ -57,7 +57,8 @@ describe('buildTaskMenu piece picking', () => {
     const keys = entries.map((entry) => entry.key)
     const picking = keys.indexOf('btPiecePicking')
     expect(picking >= 0).toBe(true)
-    expect(keys.indexOf('copy-url')).toBe(picking + 1)
+    // 与 GPUI `context_menu_items` 同序：选片 → 强制重新校验 → 超级做种（多选无「移动到」「任务限速」）→ 复制链接。
+    expect(keys.slice(picking, picking + 4)).toEqual(['btPiecePicking', 'btForceRecheck', 'btSuperSeeding', 'copy-url'])
     const sub = entries[picking]
     expect(sub?.type).toBe('sub')
     if (sub?.type !== 'sub') return
@@ -94,5 +95,41 @@ describe('buildTaskMenu piece picking', () => {
     expect(build([bt('a', { state: 'completed' })]).some((entry) => entry.key === 'btPiecePicking')).toBe(false)
     expect(build([bt('a', { source: 'remote' })]).some((entry) => entry.key === 'btPiecePicking')).toBe(false)
     expect(build([bt('a'), { ...view, state: 'paused' } as unknown as DownloadTaskView]).some((entry) => entry.key === 'btPiecePicking')).toBe(false)
+  })
+})
+
+describe('buildTaskMenu BT operations', () => {
+  const build = (views: DownloadTaskView[]) =>
+    buildTaskMenu({ t, views, queues: [], queueName: (id: string) => id, showDetail: () => undefined })
+  const bt = (taskId: string, patch: Partial<DownloadTaskView> = {}) =>
+    ({ ...view, taskId, key: `l:${taskId}`, state: 'downloading', url: 'magnet:?xt=urn:btih:abc', btSequential: false, btFirstLastPiecesFirst: false, btSuperSeeding: false, ...patch }) as unknown as DownloadTaskView
+  const keys = (views: DownloadTaskView[]) => build(views).map((entry) => entry.key)
+
+  test('single unfinished BT offers recheck, move, limits and super seeding in GPUI order', () => {
+    const all = keys([bt('a')])
+    const at = all.indexOf('btForceRecheck')
+    expect(at > all.indexOf('btPiecePicking')).toBe(true)
+    expect(all.slice(at, at + 4)).toEqual(['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btSuperSeeding'])
+  })
+
+  test('completed BT: no recheck, still move / limits / super seeding', () => {
+    const all = keys([bt('a', { state: 'completed' })])
+    expect(all.includes('btForceRecheck')).toBe(false)
+    for (const key of ['btMoveStorage', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(true)
+  })
+
+  test('super seeding check reflects all-on; mixed shows unchecked', () => {
+    const entry = (views: DownloadTaskView[]) => build(views).find((item) => item.key === 'btSuperSeeding')
+    const on = entry([bt('a', { btSuperSeeding: true }), bt('b', { btSuperSeeding: true })])
+    expect(on?.type === 'check' && on.checked).toBe(true)
+    const mixed = entry([bt('a', { btSuperSeeding: true }), bt('b')])
+    expect(mixed?.type === 'check' && mixed.checked).toBe(false)
+  })
+
+  test('HTTP, remote or mixed selections hide BT operations', () => {
+    for (const views of [[view], [bt('a', { source: 'remote' })], [bt('a'), view]]) {
+      const all = keys(views)
+      for (const key of ['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
+    }
   })
 })

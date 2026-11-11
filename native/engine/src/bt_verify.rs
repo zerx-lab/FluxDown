@@ -173,6 +173,8 @@ fn load_metadata(sources: &MetadataSources) -> Option<Bytes> {
 struct TorrentFile {
     rel: PathBuf,
     display: String,
+    /// 文件首字节在种子分片空间里的偏移（纯 v2 种子每个文件从分片边界开始）。
+    offset: u64,
     len: u64,
     padding: bool,
 }
@@ -195,7 +197,9 @@ fn check_landed(
         }
     };
     let torrent_hash = parsed.info_hash.as_string();
-    let info = match parsed.info.data.validate() {
+    // v2 / 混合种子的逐片哈希在根级 `piece layers` 里；磁力 / 缺层的种子可能还没带全
+    // （层由对端补齐后才写回）：缺的层不算错，只校验能校验的片，其余记为跳过；带了却不对的层仍拒。
+    let info = match parsed.validate_with_known_piece_layers() {
         Ok(info) => info,
         Err(error) => {
             log_warn!("[BT] integrity check: torrent metadata invalid: {}", error);
@@ -203,12 +207,13 @@ fn check_landed(
         }
     };
     let files: Vec<TorrentFile> = info
-        .iter_file_details()
+        .iter_file_details_ext()
         .map(|fd| TorrentFile {
-            rel: fd.filename.to_pathbuf(),
-            display: fd.filename.to_vec().join("/"),
-            len: fd.len,
-            padding: fd.attrs().padding,
+            rel: fd.details.filename.to_pathbuf(),
+            display: fd.details.filename.to_vec().join("/"),
+            offset: fd.offset,
+            len: fd.details.len,
+            padding: fd.details.attrs().padding,
         })
         .collect();
 
@@ -305,18 +310,16 @@ fn check_landed(
             };
             VerifyFileSpec {
                 source,
+                offset: file.offset,
                 len: file.len,
                 selected,
             }
         })
         .collect();
 
-    let outcome = verify_pieces_core(
-        info.lengths().default_piece_length(),
-        &specs,
-        is_cancelled,
-        |piece, digest| info.info().compare_hash(piece, digest),
-    );
+    let outcome = verify_pieces_core(info.lengths(), &specs, is_cancelled, |piece| {
+        info.piece_verifier(piece)
+    });
     if outcome.cancelled {
         return Err(BtIntegrityError::Cancelled);
     }

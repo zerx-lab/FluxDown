@@ -12,9 +12,12 @@ use std::{
 };
 
 use fluxdown_protocol::{
-    BtPeerDto, BtTrackerDto, BtTrackerSource, BtTrackerStatus, DaemonBtStatusParams, RpcErrorData,
+    BtPeerDto, BtTrackerDto, BtTrackerSource, BtTrackerStatus, BtWebSeedDto, DaemonBtStatusParams,
+    RpcErrorData,
 };
-use fluxdown_ui_components::{FluxIcon, tabular_numbers, tooltip_view};
+use fluxdown_ui_components::{
+    ControlExt as _, FluxIcon, IconControlExt as _, tabular_numbers, tooltip_view,
+};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -24,7 +27,9 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Icon, WindowExt as _, h_flex,
+    Disableable as _, Icon, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     menu::{ContextMenuExt as _, PopupMenuItem},
     notification::Notification,
     skeleton::Skeleton,
@@ -69,6 +74,13 @@ const COL_STATUS: f32 = 128.;
 const COL_PEERS: f32 = 56.;
 const COL_MESSAGE: f32 = 190.;
 const COL_TIME: f32 = 100.;
+const COL_TIER: f32 = 44.;
+const COL_COUNT: f32 = 64.;
+const COL_WEB_SEED_STATE: f32 = 120.;
+/// tracker 表并排层级 / 做种 / 下载 / 完成四列所需的最小内容宽度（界面缩放前的 px）。
+const TRACKER_STATS_MIN_WIDTH: f32 = 1_100.;
+/// HTTP 源区最高（px，界面缩放前）；更多源在区内滚动。
+const WEB_SEEDS_MAX_HEIGHT: f32 = 168.;
 const COL_CLIENT: f32 = 140.;
 const COL_TRANSPORT: f32 = 60.;
 const COL_BYTES: f32 = 84.;
@@ -184,6 +196,12 @@ pub(super) struct TrackerRow {
     pub(super) source: BtTrackerSource,
     pub(super) status: BtTrackerStatus,
     pub(super) peers: Option<u64>,
+    /// 层级的显示值（BEP 12 层级从 0 起，界面从 1 起）。
+    pub(super) tier: u64,
+    /// tracker 报告的做种 / 下载中 / 完成次数；未知（旧 daemon 或 tracker 未回）为 `None`。
+    pub(super) seeders: Option<u32>,
+    pub(super) leechers: Option<u32>,
+    pub(super) downloaded: Option<u32>,
     pub(super) message: String,
     /// 原始错误文本（供复制）；服务端未给时回退到 `message`。
     pub(super) detail: String,
@@ -202,6 +220,10 @@ pub(super) fn tracker_row(dto: &BtTrackerDto, now: i64) -> TrackerRow {
         source: dto.source,
         status: dto.status,
         peers: dto.peers,
+        tier: u64::from(dto.tier) + 1,
+        seeders: dto.seeders,
+        leechers: dto.leechers,
+        downloaded: dto.downloaded,
         message: dto.message.trim().to_owned(),
         detail: {
             let detail = dto.detail.trim();
@@ -221,14 +243,65 @@ pub(super) fn tracker_row(dto: &BtTrackerDto, now: i64) -> TrackerRow {
     }
 }
 
-/// 连接类型徽标文案：`tcp` / `utp` / `socks`，未知值原样显示。
+/// 连接类型徽标文案：`tcp` / `utp` / `socks` / `http`（经 HTTP 代理）/ `i2p`，未知值原样显示。
 pub(super) fn transport_label(transport: &str) -> String {
     match transport {
         "tcp" => "TCP".to_owned(),
         "utp" => "uTP".to_owned(),
         "socks" => "SOCKS".to_owned(),
+        "http" => "HTTP".to_owned(),
+        "i2p" => "I2P".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// tracker 统计数的显示：未知为 `—`。
+pub(super) fn count_text(value: Option<u32>) -> String {
+    value.map_or_else(|| DASH.to_owned(), |count| count.to_string())
+}
+
+/// HTTP 源状态的文案键；未知取值返回 `None`（调用方原样显示）。
+pub(super) fn web_seed_state_key(state: &str) -> Option<&'static str> {
+    match state {
+        "idle" => Some("btWebSeedStateIdle"),
+        "downloading" => Some("btWebSeedStateDownloading"),
+        "backingOff" => Some("btWebSeedStateBackingOff"),
+        "disabled" => Some("btWebSeedStateDisabled"),
+        _ => None,
+    }
+}
+
+/// 常规页 v2 info hash：BT 实况里非空才显示（v1 种子 / 旧 daemon / 未取得元数据为 `None`）。
+pub(super) fn info_hash_v2(status: Option<&fluxdown_protocol::BtStatusDto>) -> Option<&str> {
+    status
+        .map(|status| status.info_hash_v2.trim())
+        .filter(|hash| !hash.is_empty())
+}
+
+/// 常规页签是否还要取一次 BT 实况（v2 info hash）：尚无数据且未失败，或已被重新武装。
+pub(super) fn general_fetch_needed(has_status: bool, failed: bool, refetch: bool) -> bool {
+    refetch || (!has_status && !failed)
+}
+
+/// 任务行由「等待元数据」变为已取得（首次观察不算）。
+pub(super) fn metadata_resolved(previous: Option<bool>, now: bool) -> bool {
+    previous == Some(true) && !now
+}
+
+/// tracker 表能否并排放下层级 / 做种 / 下载 / 完成四列（界面缩放前的 px）；放不下时
+/// 这四项作为 URL 下方的一行元信息。
+pub(super) fn tracker_stats_fit(width: f32) -> bool {
+    width >= TRACKER_STATS_MIN_WIDTH
+}
+
+/// 统计四项的「标签: 值」文本（层级 / 做种 / 下载 / 完成），用于元信息行。
+pub(super) fn tracker_stats_items(labels: [&str; 4], row: &TrackerRow) -> [String; 4] {
+    [
+        format!("{}: {}", labels[0], row.tier),
+        format!("{}: {}", labels[1], count_text(row.seeders)),
+        format!("{}: {}", labels[2], count_text(row.leechers)),
+        format!("{}: {}", labels[3], count_text(row.downloaded)),
+    ]
 }
 
 /// 中 / 窄布局下 peer 第二行：`客户端 · ↓ 累计下载 · ↑ 累计上传`（累计均为 0 时省略）。
@@ -455,8 +528,14 @@ pub(super) struct BtLive {
     tracker_view: Vec<usize>,
     /// tracker 行虚拟列表（行高随消息行可变）。
     tracker_list: ListState,
-    /// 上次渲染的布局档；变化时行高需重量。
-    tracker_layout: Cell<Option<BtLayout>>,
+    /// 上次渲染的布局档与统计四列是否并排；变化时行高需重量。
+    tracker_layout: Cell<Option<(BtLayout, bool)>>,
+    /// 「强制汇报」请求在途：按钮禁用，防重复点击。
+    reannounce_pending: bool,
+    /// 常规页签的单次取数要重做（元数据刚取得 / 连接恢复后）；成功或失败后清除。
+    general_refetch: bool,
+    /// 上次看到的「等待元数据」状态；由真变假时重取常规页的 v2 info hash。
+    metadata_pending: Option<bool>,
 }
 
 impl Default for BtLive {
@@ -474,6 +553,9 @@ impl Default for BtLive {
             tracker_view: Vec::new(),
             tracker_list: ListState::new(0, ListAlignment::Top, px(TRACKER_LIST_OVERDRAW)),
             tracker_layout: Cell::new(None),
+            reannounce_pending: false,
+            general_refetch: false,
+            metadata_pending: None,
         }
     }
 }
@@ -493,6 +575,23 @@ impl BtLive {
         self.last_render = None;
         self.tracker_view.clear();
         self.tracker_list.reset(0);
+        self.reannounce_pending = false;
+        self.general_refetch = false;
+        self.metadata_pending = None;
+    }
+
+    /// 让常规页签的单次取数重做一次，并清除失败锁存。
+    pub(super) fn rearm_general(&mut self) {
+        self.general_refetch = true;
+        self.failed = false;
+    }
+
+    /// 记录任务行的「等待元数据」状态；刚取得元数据时重做常规页取数。
+    pub(super) fn observe_metadata_pending(&mut self, pending: bool) {
+        if metadata_resolved(self.metadata_pending, pending) {
+            self.rearm_general();
+        }
+        self.metadata_pending = Some(pending);
     }
 
     /// 数据 / 筛选 / 排序变化后重算可见行；行数不变时只重量行高（保留滚动位置）。
@@ -607,6 +706,8 @@ struct TrackerCells {
     /// 来源说明（徽标 / URL 悬停提示）。
     source_hint: Option<SharedString>,
     peers: Option<SharedString>,
+    /// 层级 / 做种 / 下载 / 完成（已格式化，未知为 `—`）；DHT 伪行为 `None`。
+    stats: Option<TrackerStats>,
     message: SharedString,
     /// 原始错误文本；空 = 无可复制错误。
     detail: SharedString,
@@ -616,12 +717,25 @@ struct TrackerCells {
     meta: TrackerMeta,
 }
 
-/// 窄布局元信息行的列名（Peer 数 / 下次汇报 / 上次成功）。
+/// 窄布局元信息行的列名（Peer 数 / 下次汇报 / 上次成功），以及统计四项的列名。
 #[derive(Clone)]
 struct TrackerMeta {
     peers: SharedString,
     next: SharedString,
     last: SharedString,
+    tier: SharedString,
+    seeders: SharedString,
+    leechers: SharedString,
+    downloaded: SharedString,
+}
+
+/// 一个 tracker 的统计四项：并排列显示的值，以及放不下时元信息行的「标签: 值」。
+struct TrackerStats {
+    tier: SharedString,
+    seeders: SharedString,
+    leechers: SharedString,
+    downloaded: SharedString,
+    items: [String; 4],
 }
 
 /// 虚拟列表逐行渲染共用的取值（每次渲染构造一次，行回调按需借用）。
@@ -630,6 +744,8 @@ struct TrackerItemText {
     copy: TrackerCopyText,
     meta: TrackerMeta,
     layout: BtLayout,
+    /// 宽布局且够宽：统计四项并排成列；否则在 URL 下方成行。
+    stats_columns: bool,
     now: i64,
 }
 
@@ -643,6 +759,16 @@ fn tracker_cells(
 ) -> TrackerCells {
     let t = |key: &str| SharedString::from(translator.text(key).to_owned());
     let row = tracker_row(dto, now);
+    let stats = TrackerStats {
+        tier: SharedString::from(row.tier.to_string()),
+        seeders: SharedString::from(count_text(row.seeders)),
+        leechers: SharedString::from(count_text(row.leechers)),
+        downloaded: SharedString::from(count_text(row.downloaded)),
+        items: tracker_stats_items(
+            [&meta.tier, &meta.seeders, &meta.leechers, &meta.downloaded],
+            &row,
+        ),
+    };
     let (source_label, source_hint) = match row.source {
         BtTrackerSource::Torrent => ("btTrackerSourceTorrent", "btTrackerSourceTorrentHint"),
         BtTrackerSource::Session => ("btTrackerSourceSession", "btTrackerSourceSessionHint"),
@@ -656,6 +782,7 @@ fn tracker_cells(
         source_label: Some(t(source_label)),
         source_hint: Some(t(source_hint)),
         peers: row.peers.map(|count| SharedString::from(count.to_string())),
+        stats: Some(stats),
         message: SharedString::from(row.message),
         detail: SharedString::from(row.detail),
         next: SharedString::from(relative_text(translator, row.next)),
@@ -1004,7 +1131,13 @@ fn sort_cell(
         .into_any_element()
 }
 
-fn tracker_header(look: &Look, layout: BtLayout, text: &TrackerHeaderText) -> Option<Div> {
+fn tracker_header(
+    look: &Look,
+    layout: BtLayout,
+    stats_columns: bool,
+    text: &TrackerHeaderText,
+    meta: &TrackerMeta,
+) -> Option<Div> {
     let status = sort_cell(
         look,
         &text.status,
@@ -1042,10 +1175,19 @@ fn tracker_header(look: &Look, layout: BtLayout, text: &TrackerHeaderText) -> Op
         BtLayout::Wide => {
             let message = header_cell(look, text.message.clone(), Some(COL_MESSAGE), false)
                 .into_any_element();
-            Some(header_row(
-                look,
-                vec![status, url, peers, message, next, last],
-            ))
+            let mut cells = vec![status, url];
+            if stats_columns {
+                cells.push(
+                    header_cell(look, meta.tier.clone(), Some(COL_TIER), true).into_any_element(),
+                );
+                for label in [&meta.seeders, &meta.leechers, &meta.downloaded] {
+                    cells.push(
+                        header_cell(look, label.clone(), Some(COL_COUNT), true).into_any_element(),
+                    );
+                }
+            }
+            cells.extend([peers, message, next, last]);
+            Some(header_row(look, cells))
         }
         BtLayout::Medium => Some(header_row(look, vec![status, url, peers, next, last])),
         BtLayout::Narrow => None,
@@ -1064,12 +1206,24 @@ struct TrackerHeaderText {
     on_sort: SortHandler,
 }
 
+/// 一行可换行的弱化元信息（「标签: 值」逐项排开）。
+fn meta_line(look: &Look, items: impl IntoIterator<Item = String>) -> Div {
+    h_flex()
+        .flex_wrap()
+        .gap_x(look.sm)
+        .text_size(look.xs_size)
+        .line_height(look.xs_line)
+        .text_color(look.muted)
+        .children(items.into_iter().map(|text| div().child(text)))
+}
+
 fn tracker_row_el(
     index: usize,
     cells: &TrackerCells,
     copy: &TrackerCopyText,
     look: &Look,
     layout: BtLayout,
+    stats_columns: bool,
     last: bool,
 ) -> AnyElement {
     let status_cell = h_flex()
@@ -1146,12 +1300,50 @@ fn tracker_row_el(
         .peers
         .clone()
         .unwrap_or_else(|| SharedString::from(DASH));
+    // 统计四项放不下成列时，作为 URL 下方的一行元信息。
+    let stats_line = || {
+        cells
+            .stats
+            .as_ref()
+            .map(|stats| meta_line(look, stats.items.iter().cloned()))
+    };
+    let count_cell = |width: f32, text: &SharedString| {
+        fixed(look, width)
+            .text_right()
+            .truncate()
+            .text_color(if text.as_ref() == DASH {
+                look.tertiary
+            } else {
+                look.muted
+            })
+            .child(text.clone())
+    };
     let base = match layout {
         BtLayout::Wide => h_flex()
             .items_center()
             .gap(look.sm)
             .child(fixed(look, COL_STATUS).child(status_cell))
-            .child(div().flex_1().min_w_0().child(url_line()))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(look.xxs)
+                    .child(url_line())
+                    .when(!stats_columns, |this| this.children(stats_line())),
+            )
+            .when(stats_columns, |this| match &cells.stats {
+                Some(stats) => this
+                    .child(count_cell(COL_TIER, &stats.tier))
+                    .child(count_cell(COL_COUNT, &stats.seeders))
+                    .child(count_cell(COL_COUNT, &stats.leechers))
+                    .child(count_cell(COL_COUNT, &stats.downloaded)),
+                // DHT 伪行没有统计：留空占位保持列对齐。
+                None => this
+                    .child(fixed(look, COL_TIER))
+                    .child(fixed(look, COL_COUNT))
+                    .child(fixed(look, COL_COUNT))
+                    .child(fixed(look, COL_COUNT)),
+            })
             .child(
                 fixed(look, COL_PEERS)
                     .text_right()
@@ -1183,6 +1375,7 @@ fn tracker_row_el(
                     .min_w_0()
                     .gap(look.xxs)
                     .child(url_line())
+                    .children(stats_line())
                     .when(!cells.message.is_empty(), |this| {
                         this.child(message_line(2))
                     }),
@@ -1201,12 +1394,15 @@ fn tracker_row_el(
                     .child(cells.last.clone()),
             ),
         BtLayout::Narrow => {
-            let mut meta: Vec<String> = Vec::with_capacity(3);
+            let mut meta: Vec<String> = Vec::with_capacity(7);
             if let Some(peers) = &cells.peers {
                 meta.push(format!("{}: {peers}", cells.meta.peers));
             }
             meta.push(format!("{}: {}", cells.meta.next, cells.next));
             meta.push(format!("{}: {}", cells.meta.last, cells.last));
+            if let Some(stats) = &cells.stats {
+                meta.extend(stats.items.iter().cloned());
+            }
             h_flex().items_start().child(
                 v_flex()
                     .flex_1()
@@ -1217,17 +1413,7 @@ fn tracker_row_el(
                     .when(!cells.message.is_empty(), |this| {
                         this.child(message_line(3))
                     })
-                    .when(!cells.is_dht, |this| {
-                        this.child(
-                            h_flex()
-                                .flex_wrap()
-                                .gap_x(look.sm)
-                                .text_size(look.xs_size)
-                                .line_height(look.xs_line)
-                                .text_color(look.muted)
-                                .children(meta.into_iter().map(|text| div().child(text))),
-                        )
-                    }),
+                    .when(!cells.is_dht, |this| this.child(meta_line(look, meta))),
             )
         }
     };
@@ -1556,9 +1742,196 @@ fn peer_row_el(
     )
 }
 
+/// HTTP 源区的已本地化文案。
+struct WebSeedText {
+    title: SharedString,
+    url: SharedString,
+    state: SharedString,
+    downloaded: SharedString,
+    message: SharedString,
+    copy_url: SharedString,
+}
+
+/// Tracker 页表格下方的「HTTP 源」区：地址（中间省略，悬停全址）、状态、已下载、错误。
+/// 源数通常很少；区高封顶，更多时区内滚动。
+fn web_seeds_section(
+    seeds: &[BtWebSeedDto],
+    text: &WebSeedText,
+    translator: &Translator,
+    look: &Look,
+    layout: BtLayout,
+) -> Div {
+    let narrow = layout == BtLayout::Narrow;
+    let mut table = table_frame(look);
+    if !narrow {
+        table = table.child(header_row(
+            look,
+            vec![
+                header_cell(look, text.url.clone(), None, false),
+                header_cell(look, text.state.clone(), Some(COL_WEB_SEED_STATE), false),
+                header_cell(look, text.downloaded.clone(), Some(COL_BYTES), true),
+            ],
+        ));
+    }
+    let rows = seeds.iter().enumerate().map(|(index, seed)| {
+        let url = SharedString::from(seed.url.clone());
+        let state = SharedString::from(
+            web_seed_state_key(&seed.state)
+                .map_or_else(|| seed.state.clone(), |key| translator.text(key).to_owned()),
+        );
+        let downloaded = if seed.downloaded == 0 {
+            SharedString::from(DASH)
+        } else {
+            SharedString::from(format_bytes(seed.downloaded))
+        };
+        let message = seed.message.trim();
+        let message_el = (!message.is_empty()).then(|| {
+            // 错误可能多行 / 很长：单行截断，悬停看全文。
+            let full = SharedString::from(format!("{}: {message}", text.message));
+            div()
+                .id(("bt-web-seed-msg", index))
+                .min_w_0()
+                .truncate()
+                .text_size(look.xs_size)
+                .line_height(look.xs_line)
+                .text_color(look.destructive)
+                .tooltip(move |window, cx| tooltip_view(full.clone(), window, cx))
+                .child(SharedString::from(message.replace(['\r', '\n'], " ")))
+        });
+        let url_cell = v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap(look.xxs)
+            .child(ellipsis_cell(
+                ("bt-web-seed-url", index),
+                url.clone(),
+                Some(url.clone()),
+            ))
+            .when(narrow, |this| {
+                this.child(meta_line(
+                    look,
+                    [
+                        format!("{}: {state}", text.state),
+                        format!("{}: {downloaded}", text.downloaded),
+                    ],
+                ))
+            })
+            .children(message_el);
+        let row = h_flex()
+            .id(("bt-web-seed", index))
+            .w_full()
+            .items_start()
+            .gap(look.sm)
+            .px(look.sm)
+            .py(look.xs)
+            .text_size(look.sm_size)
+            .line_height(look.sm_line)
+            .text_color(look.fg)
+            .font_features(tabular_numbers())
+            .when(index + 1 < seeds.len(), |this| {
+                this.border_b(look.thin).border_color(look.hairline)
+            })
+            .child(url_cell)
+            .when(!narrow, |this| {
+                this.child(fixed(look, COL_WEB_SEED_STATE).truncate().child(state))
+                    .child(
+                        fixed(look, COL_BYTES)
+                            .text_right()
+                            .truncate()
+                            .text_color(look.muted)
+                            .child(downloaded),
+                    )
+            });
+        copy_menu(
+            row,
+            vec![CopyItem {
+                label: text.copy_url.clone(),
+                value: url,
+                done: None,
+            }],
+        )
+    });
+    v_flex()
+        .w_full()
+        .flex_none()
+        .gap(look.xs)
+        .child(
+            div()
+                .text_size(look.sm_size)
+                .line_height(look.sm_line)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(look.fg)
+                .child(text.title.clone()),
+        )
+        .child(
+            table.child(
+                v_flex()
+                    .id("bt-web-seeds")
+                    .w_full()
+                    .max_h(look.ext(WEB_SEEDS_MAX_HEIGHT))
+                    .overflow_y_scroll()
+                    .children(rows),
+            ),
+        )
+}
+
 impl TaskDetailView {
+    /// BT 实况要轮询：Tracker / 连接页签；常规页签只取一次（v2 info hash），拿到数据或失败即停。
     pub(super) fn bt_tab_active(&self) -> bool {
-        matches!(self.tab, DetailTab::Trackers | DetailTab::Peers)
+        match self.tab {
+            DetailTab::Trackers | DetailTab::Peers => true,
+            DetailTab::General => general_fetch_needed(
+                self.bt.status.is_some(),
+                self.bt.failed,
+                self.bt.general_refetch,
+            ),
+            _ => false,
+        }
+    }
+
+    /// 常规页签的 v2 info hash 行内容（BT 任务且实况里非空才有）。
+    pub(super) fn bt_info_hash_v2(&self) -> Option<SharedString> {
+        info_hash_v2(self.bt.status.as_ref()).map(|hash| SharedString::from(hash.to_owned()))
+    }
+
+    /// v2 info hash 值位:等宽、中间省略、悬停看全文,右侧复制按钮(复制后弹通知)。
+    pub(super) fn render_info_hash_v2(&self, hash: SharedString, cx: &mut Context<Self>) -> Div {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let tip = hash.clone();
+        let copy_value = hash.clone();
+        let copied = SharedString::from(self.translator.read(cx).text("fileHashCopied").to_owned());
+        h_flex()
+            .w_full()
+            .min_w_0()
+            .items_center()
+            .gap(tokens.spacing.sm)
+            .child(
+                div()
+                    .id("detail-info-hash-v2")
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis_middle()
+                    .font_family(tokens.typography.mono.clone())
+                    .font_features(tabular_numbers())
+                    .tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
+                    .child(hash),
+            )
+            .child(
+                Button::new("detail-info-hash-v2-copy")
+                    .ghost()
+                    .control_icon(cx)
+                    .icon(FluxIcon::Copy)
+                    .tooltip(SharedString::from(
+                        self.translator.read(cx).text("fileHashCopy").to_owned(),
+                    ))
+                    .on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_value.to_string()));
+                        window.push_notification(Notification::success(copied.clone()), cx);
+                    }),
+            )
     }
 
     /// 任务是否在运行（下载中 / 做种中），决定连接页空状态文案。
@@ -1646,9 +2019,13 @@ impl TaskDetailView {
             Ok(DownloadsResult::BtStatus(status)) => {
                 self.bt.status = Some(status);
                 self.bt.failed = false;
+                self.bt.general_refetch = false;
                 self.bt.refresh_tracker_view();
             }
-            Ok(_) | Err(_) => self.bt.failed = true,
+            Ok(_) | Err(_) => {
+                self.bt.failed = true;
+                self.bt.general_refetch = false;
+            }
         }
         cx.notify();
         true
@@ -1738,6 +2115,38 @@ impl TaskDetailView {
         .detach();
     }
 
+    /// 「强制汇报」：向全部 tracker 立即重新汇报；结果走通知（旧 daemon 的未知方法同样报错提示）。
+    fn bt_reannounce(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bt.reannounce_pending {
+            return;
+        }
+        self.bt.reannounce_pending = true;
+        cx.notify();
+        let generation = self.bt.generation;
+        let pending = self.port.execute(DownloadsCommand::Reannounce {
+            task_id: self.task_id.clone(),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = pending.await;
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                if this.bt.generation == generation {
+                    this.bt.reannounce_pending = false;
+                    cx.notify();
+                }
+                let translator = this.translator.read(cx);
+                let notification = match result {
+                    Ok(_) => Notification::success(translator.text("btReannounceDone").to_owned()),
+                    Err(error) => Notification::error(error_text(translator, &error)),
+                };
+                window.push_notification(notification, cx);
+            }) else {
+                // 视图或窗口已释放。
+                return;
+            };
+        })
+        .detach();
+    }
+
     /// 页签外框：量宽 canvas + 失败提示行 + 内容。`fill` = 撑满页签高度（内容自带虚拟滚动）。
     fn bt_frame(
         &self,
@@ -1766,6 +2175,8 @@ impl TaskDetailView {
                                 != BtLayout::for_width(measured / scale)
                                 || guard_columns_fit(previous / scale)
                                     != guard_columns_fit(measured / scale)
+                                || tracker_stats_fit(previous / scale)
+                                    != tracker_stats_fit(measured / scale)
                             {
                                 cx.notify(entity_id);
                             }
@@ -1872,6 +2283,7 @@ impl TaskDetailView {
             &item.copy,
             &item.look,
             item.layout,
+            item.stats_columns,
             position + 1 == self.bt.tracker_view.len(),
         )
     }
@@ -1887,9 +2299,11 @@ impl TaskDetailView {
             };
             return self.bt_frame(content, false, &look, cx);
         };
-        // 布局档变化（宽 / 中 / 窄）改变行高，已量过的行需重量。
-        if self.bt.tracker_layout.get() != Some(layout) {
-            self.bt.tracker_layout.set(Some(layout));
+        // 布局档变化（宽 / 中 / 窄、统计列是否并排）改变行高，已量过的行需重量。
+        let stats_columns =
+            layout == BtLayout::Wide && tracker_stats_fit(self.bt_width(window, &look));
+        if self.bt.tracker_layout.get() != Some((layout, stats_columns)) {
+            self.bt.tracker_layout.set(Some((layout, stats_columns)));
             self.bt.tracker_list.remeasure();
         }
         let translator = self.translator.read(cx);
@@ -1913,6 +2327,10 @@ impl TaskDetailView {
             peers: header.peers.clone(),
             next: header.next.clone(),
             last: header.last.clone(),
+            tier: t("btTrackerTier"),
+            seeders: t("btTrackerSeeders"),
+            leechers: t("btTrackerLeechers"),
+            downloaded: t("btTrackerDownloaded"),
         };
         let item = Rc::new(TrackerItemText {
             look: look.clone(),
@@ -1925,6 +2343,7 @@ impl TaskDetailView {
             },
             meta: meta.clone(),
             layout,
+            stats_columns,
             now,
         });
         let dht_on = status.dht_enabled;
@@ -1941,6 +2360,7 @@ impl TaskDetailView {
             source_label: None,
             source_hint: None,
             peers: None,
+            stats: None,
             message: SharedString::default(),
             detail: SharedString::default(),
             next: SharedString::from(DASH),
@@ -1954,9 +2374,38 @@ impl TaskDetailView {
         let counts = TrackerCounts::of(&status.trackers);
         let filter_bar = (!status.trackers.is_empty())
             .then(|| self.tracker_filter_bar(&look, &counts, translator, cx));
+        let reannounce = Button::new("bt-tracker-reannounce")
+            .outline()
+            .control(cx)
+            .icon(FluxIcon::RotateCw)
+            .label(t("btReannounce"))
+            .disabled(self.bt.reannounce_pending || !self.bt_task_running())
+            .on_click(cx.listener(|this, _, window, cx| this.bt_reannounce(window, cx)));
+        let toolbar = h_flex()
+            .w_full()
+            .items_center()
+            .gap(look.sm)
+            .child(div().flex_1().min_w_0().children(filter_bar))
+            .child(reannounce);
+        let web_seeds = (!status.web_seeds.is_empty()).then(|| {
+            web_seeds_section(
+                &status.web_seeds,
+                &WebSeedText {
+                    title: t("btWebSeedsSection"),
+                    url: t("btWebSeedUrl"),
+                    state: t("btTrackerStatus"),
+                    downloaded: t("btPeerDownloaded"),
+                    message: t("btTrackerMessage"),
+                    copy_url: t("copyUrl"),
+                },
+                translator,
+                &look,
+                layout,
+            )
+        });
 
         let mut table = table_frame(&look).min_h_0();
-        if let Some(head) = tracker_header(&look, layout, &header) {
+        if let Some(head) = tracker_header(&look, layout, stats_columns, &header, &item.meta) {
             table = table.child(head);
         }
         table = table.child(tracker_row_el(
@@ -1965,6 +2414,7 @@ impl TaskDetailView {
             &item.copy,
             &look,
             layout,
+            stats_columns,
             self.bt.tracker_view.is_empty(),
         ));
         let rows = list(
@@ -1982,12 +2432,13 @@ impl TaskDetailView {
             .min_h_0()
             .gap(look.sm)
             .when_some(banner, |this, text| this.child(warning_banner(&look, text)))
-            .when_some(filter_bar, |this, bar| this.child(bar))
+            .child(toolbar)
             .child(table.child(rows))
             .when_some(filtered_out, |this, text| {
                 this.child(empty_state(&look, text))
             })
             .when_some(empty, |this, text| this.child(empty_state(&look, text)))
+            .when_some(web_seeds, |this, section| this.child(section))
             .into_any_element();
         self.bt_frame(content, true, &look, cx)
     }
@@ -2115,8 +2566,9 @@ mod tests {
     use fluxdown_protocol::{BtPeerDto, BtTrackerDto, BtTrackerSource, BtTrackerStatus};
 
     use super::{
-        BtLayout, RelativeTime, Span, SpanUnit, last_success, next_announce, none_working,
-        peer_sub_line, span_of, tracker_row, transport_label,
+        BtLayout, DASH, RelativeTime, Span, SpanUnit, TRACKER_STATS_MIN_WIDTH, info_hash_v2,
+        last_success, next_announce, none_working, peer_sub_line, span_of, tracker_row,
+        tracker_stats_fit, tracker_stats_items, transport_label, web_seed_state_key,
     };
 
     fn tracker(status: BtTrackerStatus) -> BtTrackerDto {
@@ -2258,6 +2710,48 @@ mod tests {
     }
 
     #[test]
+    fn tracker_tier_stats_web_seed_and_v2_hash() {
+        let now = 2_000_000;
+        let mut dto = tracker(BtTrackerStatus::Working);
+        // 旧 daemon:tier 缺省 0、统计全无。
+        let old = tracker_row(&dto, now);
+        assert_eq!(old.tier, 1);
+        let unknown = format!("S: {DASH}");
+        assert_eq!(
+            tracker_stats_items(["T", "S", "L", "D"], &old)[..2],
+            ["T: 1".to_owned(), unknown]
+        );
+        dto.tier = 2;
+        dto.seeders = Some(0);
+        dto.leechers = Some(4_000_000_000);
+        dto.downloaded = Some(7);
+        let row = tracker_row(&dto, now);
+        assert_eq!(row.tier, 3);
+        assert_eq!(
+            tracker_stats_items(["T", "S", "L", "D"], &row),
+            ["T: 3", "S: 0", "L: 4000000000", "D: 7"].map(str::to_owned)
+        );
+        assert!(!tracker_stats_fit(TRACKER_STATS_MIN_WIDTH - 1.));
+        assert!(tracker_stats_fit(TRACKER_STATS_MIN_WIDTH));
+
+        assert_eq!(
+            web_seed_state_key("backingOff"),
+            Some("btWebSeedStateBackingOff")
+        );
+        assert_eq!(web_seed_state_key("idle"), Some("btWebSeedStateIdle"));
+        assert_eq!(web_seed_state_key("somethingNew"), None);
+
+        assert_eq!(info_hash_v2(None), None);
+        let mut status = fluxdown_protocol::BtStatusDto::default();
+        assert_eq!(info_hash_v2(Some(&status)), None);
+        status.info_hash_v2 = "  ".to_owned();
+        assert_eq!(info_hash_v2(Some(&status)), None);
+        let hash = "ab".repeat(32);
+        status.info_hash_v2 = format!(" {hash} ");
+        assert_eq!(info_hash_v2(Some(&status)), Some(hash.as_str()));
+    }
+
+    #[test]
     fn peer_labels_and_sub_lines() {
         assert_eq!(transport_label("tcp"), "TCP");
         assert_eq!(transport_label("utp"), "uTP");
@@ -2283,7 +2777,7 @@ mod tests {
 
 #[cfg(test)]
 mod guard_tests {
-    use super::{BtLive, GUARD_COLUMNS_MIN_WIDTH, guard_columns_fit};
+    use super::{BtLive, GUARD_COLUMNS_MIN_WIDTH, general_fetch_needed, guard_columns_fit};
 
     #[test]
     fn guard_action_is_single_flight_per_group() {
@@ -2301,5 +2795,37 @@ mod guard_tests {
         assert!(!guard_columns_fit(GUARD_COLUMNS_MIN_WIDTH - 1.));
         assert!(guard_columns_fit(GUARD_COLUMNS_MIN_WIDTH));
         assert!(guard_columns_fit(4_000.));
+    }
+
+    #[test]
+    fn general_one_shot_rearms_on_metadata_and_reconnect() {
+        let mut bt = BtLive::default();
+        let needed =
+            |bt: &BtLive| general_fetch_needed(bt.status.is_some(), bt.failed, bt.general_refetch);
+        assert!(needed(&bt));
+        // 磁链元数据未到：取数失败后锁存，不再轮询。
+        bt.observe_metadata_pending(true);
+        bt.failed = true;
+        assert!(!needed(&bt));
+        bt.observe_metadata_pending(true);
+        assert!(!needed(&bt));
+        // 元数据到达：重新武装且清除失败锁存。
+        bt.observe_metadata_pending(false);
+        assert!(needed(&bt));
+        assert!(!bt.failed);
+        // 拿到数据后停（模拟成功结果）。
+        bt.status = Some(fluxdown_protocol::BtStatusDto::default());
+        bt.general_refetch = false;
+        assert!(!needed(&bt));
+        // 首次观察就是已取得元数据：不额外重取。
+        let mut fresh = BtLive::default();
+        fresh.observe_metadata_pending(false);
+        assert!(!fresh.general_refetch);
+        // 连接恢复：重新武装。
+        bt.rearm_general();
+        assert!(needed(&bt));
+        bt.reset();
+        assert!(!bt.general_refetch);
+        assert_eq!(bt.metadata_pending, None);
     }
 }

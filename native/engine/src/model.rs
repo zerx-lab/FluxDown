@@ -135,14 +135,17 @@ pub struct TaskInfo {
     pub seed_time_limit_minutes: i64,
     /// 任务级不活跃做种时长上限（分钟）。哨兵语义同上。
     pub seed_inactive_time_limit_minutes: i64,
-    /// 任务级做种上传限速（B/s）。0 = 无单任务限制，>0 = 自定义。
-    /// 在 torrent 加入 librqbit 会话时烘焙生效（下载开始 / 重启续种 /
-    /// 句柄丢失后重新挂载）；已 live 的句柄不热改。
+    /// 任务级上传限速（B/s）。0 = 无单任务限制，>0 = 自定义。下载与做种期间都生效，
+    /// 加入 librqbit 会话时烘焙，已 live 的句柄经 `set_task_bt_limits` 热改。
     pub seed_upload_limit_bps: i64,
     /// BT 选片：按文件顺序下载（对齐 qBittorrent「按顺序下载」）。默认 false = 最稀有优先。
     pub bt_sequential: bool,
     /// BT 选片：先下载每个选中文件首尾各 1% 的块（对齐 qBittorrent「先下载首尾文件块」）。
     pub bt_first_last_pieces_first: bool,
+    /// 任务级 BT 下载限速（B/s）。0 = 无单任务限制。烘焙与热改同上传限速。
+    pub bt_download_limit_bps: i64,
+    /// 超级做种（BEP 16）：任务完成后以初始做种模式上传。
+    pub bt_super_seeding: bool,
     /// Source page URL captured by the browser extension (empty = none).
     pub referrer: String,
     /// 所属任务组 ID（空 = 不属于任何组）。多文件任务组裂变/建组时写入；

@@ -221,6 +221,9 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
         .get("bt_tracker_sub_enabled")
         .map(|value| value == "true")
         .unwrap_or(true);
+    // 缺失 / 无法解析的值回落到契约默认值（`DAEMON_CONFIG_FIELDS`）。
+    let flag = |key: &str, default: bool| cfg.get(key).map_or(default, |value| value == "true");
+    let defaults = fluxdown_engine::bt_config::BtConfig::default();
     fluxdown_engine::bt_config::BtConfig {
         enabled: cfg
             .get("bt_enabled")
@@ -301,6 +304,36 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
         first_last_pieces_first: cfg
             .get("bt_first_last_pieces_first")
             .is_some_and(|value| value == "true"),
+        enable_lsd: flag("bt_enable_lsd", true),
+        utp_ledbat: cfg
+            .get("bt_utp_congestion")
+            .is_none_or(|value| value != "cubic"),
+        max_connections: cfg
+            .get("bt_max_connections")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(defaults.max_connections),
+        max_connections_per_torrent: cfg
+            .get("bt_max_connections_per_torrent")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|limit| *limit > 0)
+            .unwrap_or(defaults.max_connections_per_torrent),
+        enable_webseed: flag("bt_enable_webseed", true),
+        announce_all_tiers: flag("bt_announce_all_tiers", true),
+        announce_all_trackers: flag("bt_announce_all_trackers", true),
+        proxy_enabled: flag("bt_proxy_enabled", false),
+        proxy_peers: flag("bt_proxy_peers", true),
+        i2p_enabled: flag("bt_i2p_enabled", false),
+        i2p_sam_host: cfg
+            .get("bt_i2p_sam_host")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(defaults.i2p_sam_host),
+        i2p_sam_port: cfg
+            .get("bt_i2p_sam_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+            .unwrap_or(defaults.i2p_sam_port),
+        i2p_mixed: flag("bt_i2p_mixed", false),
     }
 }
 

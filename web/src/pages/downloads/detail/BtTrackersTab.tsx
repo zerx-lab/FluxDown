@@ -1,13 +1,16 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, Radio } from 'lucide-react'
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, Radio, RotateCw } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
-import { ContextMenuArea, EmptyState, RevealCallout } from '../../../ui'
+import { Button, ContextMenuArea, EmptyState, RevealCallout } from '../../../ui'
+import { formatBytes } from '../model/task'
+import { reannounceTask } from '../model/actions'
 import type { Translate } from '../table/text'
-import { copyEntry, PollError, RowCopyButton, SkeletonRows, useMeasuredRoot, useNowSecs } from './btParts'
+import { copyEntry, PollError, RowCopyButton, SkeletonRows, useAncestorScroller, useMeasuredRoot, useNowSecs } from './btParts'
 import {
+  countText,
   lastOkText,
   mapTrackerRows,
   nextAnnounceText,
@@ -19,11 +22,14 @@ import {
   TRACKER_TEXT,
   trackerCounts,
   trackerLayout,
+  trackerMessageColumn,
+  trackerStatsItems,
   trackerStatusKey,
+  webSeedStateKey,
   trackerView,
 } from './btStatus'
 import type { TrackerCounts, TrackerFilter, TrackerLayout, TrackerRow, TrackerSort, TrackerSortKey } from './btStatus'
-import type { BtTrackerStatus } from '../../../lib/rpc'
+import type { BtTrackerStatus, BtWebSeedDto } from '../../../lib/rpc'
 import { useBtStatus } from './useBtStatus'
 
 const DASH = '—'
@@ -31,6 +37,22 @@ const DASH = '—'
 const GRID: Record<Exclude<TrackerLayout, 'card'>, string> = {
   table: 'grid-cols-[minmax(7.5rem,9.5rem)_minmax(0,1fr)_3.25rem_6rem_6.5rem]',
   wide: 'grid-cols-[minmax(7.5rem,9.5rem)_minmax(0,1.4fr)_3.25rem_minmax(0,1fr)_6rem_6.5rem]',
+  wideStats: 'grid-cols-[minmax(7.5rem,9.5rem)_minmax(0,1.4fr)_3.25rem_2.5rem_3.5rem_3.5rem_4rem_minmax(0,1fr)_6rem_6.5rem]',
+}
+
+type StatLabels = readonly [string, string, string, string]
+
+const statLabels = (t: Translate): StatLabels => [t('btTrackerTier'), t('btTrackerSeeders'), t('btTrackerLeechers'), t('btTrackerDownloaded')]
+
+/** 统计不单独成列的版式（卡片 / 表格 / 窄宽版）在 URL 下方放一行统计；`wideStats` 各占一列。 */
+function StatsLine({ row, t }: { row: TrackerRow; t: Translate }) {
+  return (
+    <div className="tabular flex flex-wrap gap-x-3 text-xs text-text-tertiary">
+      {trackerStatsItems(statLabels(t), row).map((item) => (
+        <span key={item}>{item}</span>
+      ))}
+    </div>
+  )
 }
 
 function StatusCell({ status, label }: { status: BtTrackerStatus; label: string }) {
@@ -101,6 +123,9 @@ function Row({ row, layout, t, now }: { row: TrackerRow; layout: TrackerLayout; 
           <UrlText url={row.url} title={urlTitle} />
         </div>
         {messageLine ? <div className="mt-0.5">{messageLine}</div> : null}
+        <div className="mt-1">
+          <StatsLine row={row} t={t} />
+        </div>
         <div className="tabular mt-1 flex flex-wrap gap-x-3 text-xs text-text-tertiary">
           <span>
             {t('btTrackerNextAnnounce')}: {next}
@@ -120,13 +145,22 @@ function Row({ row, layout, t, now }: { row: TrackerRow; layout: TrackerLayout; 
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-1.5">
             <UrlText url={row.url} title={urlTitle} />
-            {layout === 'wide' ? <SourceChip t={t} source={row.source} hint={hint} /> : null}
+            {trackerMessageColumn(layout) ? <SourceChip t={t} source={row.source} hint={hint} /> : null}
             <RowCopyButton label={t('btCopyTrackerUrl')} value={row.url} doneKey="btTrackerUrlCopied" />
           </div>
           {layout === 'table' ? messageLine : null}
+          {layout === 'wideStats' ? null : <StatsLine row={row} t={t} />}
         </div>
         <span className="tabular text-right text-xs text-muted-foreground">{peers}</span>
-        {layout === 'wide' ? <div className="min-w-0">{messageLine}</div> : null}
+        {layout === 'wideStats' ? (
+          <>
+            <span className="tabular text-right text-xs text-muted-foreground">{row.tier}</span>
+            <span className="tabular text-right text-xs text-muted-foreground">{countText(row.seeders)}</span>
+            <span className="tabular text-right text-xs text-muted-foreground">{countText(row.leechers)}</span>
+            <span className="tabular text-right text-xs text-muted-foreground">{countText(row.downloaded)}</span>
+          </>
+        ) : null}
+        {trackerMessageColumn(layout) ? <div className="min-w-0">{messageLine}</div> : null}
         <span className="tabular truncate text-xs text-muted-foreground">{next}</span>
         <span className="tabular truncate text-xs text-muted-foreground">{last}</span>
       </div>
@@ -167,10 +201,55 @@ function Header({ layout, t, sort, onSort }: { layout: Exclude<TrackerLayout, 'c
       <SortButton {...common} sortKey="status" label={t('btTrackerStatus')} />
       <SortButton {...common} sortKey="url" label={t('btTrackerUrl')} />
       <SortButton {...common} sortKey="peers" label={t('btTrackerPeers')} className="justify-end" />
-      {layout === 'wide' ? <span>{t('btTrackerMessage')}</span> : null}
+      {layout === 'wideStats'
+        ? statLabels(t).map((label) => (
+            <span key={label} title={label} className="truncate text-right">
+              {label}
+            </span>
+          ))
+        : null}
+      {trackerMessageColumn(layout) ? <span>{t('btTrackerMessage')}</span> : null}
       <SortButton {...common} sortKey="nextAnnounce" label={t('btTrackerNextAnnounce')} />
       <SortButton {...common} sortKey="lastOk" label={t('btTrackerLastOk')} />
     </div>
+  )
+}
+
+/** HTTP 源（BEP 19 webseed）：数量很少，直接平铺；URL 中间省略，悬停看全文。 */
+function WebSeedsSection({ seeds, t }: { seeds: readonly BtWebSeedDto[]; t: Translate }) {
+  return (
+    <section className="flex flex-col gap-1 pt-2" aria-label={t('btWebSeedsSection')}>
+      <h3 className="text-xs font-medium text-text-tertiary">{t('btWebSeedsSection')}</h3>
+      {seeds.map((seed, index) => {
+        const key = webSeedStateKey(seed.state)
+        const state = key === null ? seed.state : t(key)
+        const message = (seed.message ?? '').trim()
+        return (
+          <ContextMenuArea
+            key={`${seed.url}#${index}`}
+            entries={[copyEntry(t('btCopyTrackerUrl'), seed.url, 'btTrackerUrlCopied', t)]}
+            title={seed.url}
+            className="group/row border-b border-hairline px-1 py-1.5 hover:bg-row-hover"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <span title={t('btTrackerStatus')} className="shrink-0 rounded-sm bg-muted px-1.5 py-px text-caption text-text-tertiary">
+                {state}
+              </span>
+              <UrlText url={seed.url} title={`${t('btWebSeedUrl')}: ${seed.url}`} />
+              <span title={t('btPeerDownloaded')} className="tabular ml-auto shrink-0 text-xs text-muted-foreground">
+                {formatBytes(seed.downloaded ?? 0)}
+              </span>
+              <RowCopyButton label={t('btCopyTrackerUrl')} value={seed.url} doneKey="btTrackerUrlCopied" />
+            </div>
+            {message === '' ? null : (
+              <span title={message} className="mt-0.5 block min-w-0 truncate text-xs text-muted-foreground">
+                {message}
+              </span>
+            )}
+          </ContextMenuArea>
+        )
+      })}
+    </section>
   )
 }
 
@@ -209,39 +288,13 @@ function FilterTabs({
   )
 }
 
-/** 最近的可滚动祖先（overflow-y 为 auto / scroll）。 */
-function findScrollParent(el: HTMLElement): HTMLElement | null {
-  for (let node = el.parentElement; node; node = node.parentElement) {
-    const overflowY = getComputedStyle(node).overflowY
-    if (overflowY === 'auto' || overflowY === 'scroll') return node
-  }
-  return null
-}
-
 const ROW_OVERSCAN = 8
-const ROW_ESTIMATE: Record<TrackerLayout, number> = { card: 96, table: 44, wide: 36 }
+const ROW_ESTIMATE: Record<TrackerLayout, number> = { card: 96, table: 44, wide: 44, wideStats: 36 }
 
 /** 虚拟化行列表：滚动容器是祖先面板，`scrollMargin` = 列表顶部相对滚动内容顶部的偏移。 */
 function VirtualRows({ rows, layout, t, now, rootRef }: { rows: TrackerRow[]; layout: TrackerLayout; t: Translate; now: number; rootRef: RefObject<HTMLDivElement | null> }) {
   const listRef = useRef<HTMLDivElement | null>(null)
-  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null)
-  const [scrollMargin, setScrollMargin] = useState(0)
-
-  useLayoutEffect(() => {
-    const list = listRef.current
-    if (list === null) return
-    const scroller = findScrollParent(list)
-    setScrollEl(scroller)
-    if (scroller === null) return
-    const update = () => {
-      const offset = list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
-      setScrollMargin(Math.round(offset))
-    }
-    update()
-    const observer = new ResizeObserver(update)
-    if (rootRef.current) observer.observe(rootRef.current)
-    return () => observer.disconnect()
-  }, [rootRef])
+  const { scrollEl, scrollMargin } = useAncestorScroller(listRef, rootRef)
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -292,7 +345,8 @@ function DhtRow({ enabled, layout, t }: { enabled: boolean; layout: TrackerLayou
   )
 }
 
-export function BtTrackersTab({ taskId }: { taskId: string }) {
+/** `running`：任务在下载中或做种中（GPUI `bt_task_running`），决定「强制汇报」是否可用。 */
+export function BtTrackersTab({ taskId, running }: { taskId: string; running: boolean }) {
   const t = useT()
   const { data, error } = useBtStatus(taskId)
   const now = useNowSecs()
@@ -305,6 +359,12 @@ export function BtTrackersTab({ taskId }: { taskId: string }) {
   const view = useMemo(() => trackerView(rows, filter, sort).flatMap((index) => rows[index] ?? []), [rows, filter, sort])
   const warn = data !== null && showNoneWorking(data.trackers)
   const onSort = (key: TrackerSortKey) => setSort((current) => nextTrackerSort(current, key))
+  const [reannouncing, setReannouncing] = useState(false)
+  const onReannounce = () => {
+    setReannouncing(true)
+    void reannounceTask(taskId).finally(() => setReannouncing(false))
+  }
+  const webSeeds = data?.webSeeds ?? []
 
   return (
     <div ref={ref} className="flex flex-col gap-2">
@@ -314,7 +374,12 @@ export function BtTrackersTab({ taskId }: { taskId: string }) {
         error === null ? <SkeletonRows /> : null
       ) : (
         <>
-          {rows.length === 0 ? null : <FilterTabs t={t} counts={counts} filter={filter} onFilter={setFilter} />}
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">{rows.length === 0 ? null : <FilterTabs t={t} counts={counts} filter={filter} onFilter={setFilter} />}</div>
+            <Button variant="ghost" icon={RotateCw} loading={reannouncing} disabled={!running || reannouncing} onClick={onReannounce}>
+              {t('btReannounce')}
+            </Button>
+          </div>
           <div className="flex flex-col">
             {layout === 'card' ? null : <Header layout={layout} t={t} sort={sort} onSort={onSort} />}
             <DhtRow enabled={data.dhtEnabled} layout={layout} t={t} />
@@ -326,6 +391,7 @@ export function BtTrackersTab({ taskId }: { taskId: string }) {
               <VirtualRows key={layout} rows={view} layout={layout} t={t} now={now} rootRef={ref} />
             )}
           </div>
+          {webSeeds.length === 0 ? null : <WebSeedsSection seeds={webSeeds} t={t} />}
         </>
       )}
     </div>

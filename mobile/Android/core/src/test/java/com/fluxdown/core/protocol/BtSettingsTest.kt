@@ -83,7 +83,8 @@ class BtSettingsTest {
         assertTrue(BtSettingsRow.entries.none { it.isVisible(unloaded) })
         assertTrue(Ed2kSettingsRow.entries.none { it.isVisible(unloaded) })
         val loaded = form(mapOf("bt_enable_dht" to "true"))
-        assertEquals(11, BtSettingsRow.visible(BtSettingsTab.General, loaded).size)
+        assertEquals(4, BtSettingsRow.visible(BtSettingsTab.General, loaded).size)
+        assertEquals(14, BtSettingsRow.visible(BtSettingsTab.Connection, loaded).size)
         assertEquals(4, Ed2kSettingsRow.visible(Ed2kSettingsTab.General, loaded).size)
         assertEquals(4, Ed2kSettingsRow.visible(Ed2kSettingsTab.Servers, loaded).size)
         assertEquals(
@@ -109,6 +110,126 @@ class BtSettingsTest {
         assertEquals(Ed2kSettingsTab.Servers, Ed2kSettingsRow.tabForRowId("ed2k.serverSubStatus"))
         assertEquals(Ed2kSettingsTab.Kad, Ed2kSettingsRow.tabForRowId("ed2k.nodesSubUrls"))
         assertEquals(Ed2kSettingsTab.General, Ed2kSettingsRow.tabForRowId("ed2k.idCheck"))
+    }
+
+    // ── 连接页签（GPUI `bt.rs` 的五组与条件行） ──
+
+    @Test fun connectionTabMirrorsGpuiOrderAndGroups() {
+        val on = form(mapOf("bt_enabled" to "true", "bt_i2p_enabled" to "true"))
+        assertEquals(
+            listOf(
+                BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.Upnp, BtSettingsRow.PortMappingStatus,
+                BtSettingsRow.Utp, BtSettingsRow.UtpCongestion, BtSettingsRow.MseMode, BtSettingsRow.UploadSlots,
+                BtSettingsRow.Dht, BtSettingsRow.Lsd, BtSettingsRow.Webseed,
+                BtSettingsRow.MaxConnections, BtSettingsRow.MaxConnectionsPerTorrent,
+                BtSettingsRow.I2pEnabled, BtSettingsRow.I2pSamHost, BtSettingsRow.I2pSamPort, BtSettingsRow.I2pMixed,
+            ),
+            BtSettingsRow.visible(BtSettingsTab.Connection, on),
+        )
+        assertEquals(
+            listOf(
+                BtSettingsGroup.Listen, BtSettingsGroup.Transport, BtSettingsGroup.Sources,
+                BtSettingsGroup.Limits, BtSettingsGroup.I2p,
+            ),
+            BtSettingsRow.visible(BtSettingsTab.Connection, on).map { it.group }.distinct(),
+        )
+        assertEquals(
+            listOf(BtSettingsTab.General, BtSettingsTab.Connection, BtSettingsTab.Tracker, BtSettingsTab.Seeding, BtSettingsTab.Guard),
+            BtSettingsRow.visibleTabs(on),
+        )
+    }
+
+    @Test fun connectionConditionalRows() {
+        val off = form(
+            mapOf("bt_enable_upnp" to "false", "bt_enable_utp" to "false", "bt_i2p_enabled" to "false"),
+        )
+        val rows = BtSettingsRow.visible(BtSettingsTab.Connection, off)
+        assertFalse(BtSettingsRow.PortMappingStatus in rows)
+        assertFalse(BtSettingsRow.UtpCongestion in rows)
+        assertFalse(BtSettingsRow.I2pSamHost in rows)
+        assertFalse(BtSettingsRow.I2pSamPort in rows)
+        assertFalse(BtSettingsRow.I2pMixed in rows)
+        assertTrue(BtSettingsRow.I2pEnabled in rows)
+        assertTrue(BtSettingsRow.Upnp in rows && BtSettingsRow.Utp in rows)
+    }
+
+    @Test fun trackerTabHasAnnouncePolicyLast() {
+        val rows = BtSettingsRow.visible(BtSettingsTab.Tracker, form(mapOf("bt_enabled" to "true")))
+        assertEquals(listOf(BtSettingsRow.AnnounceAllTiers, BtSettingsRow.AnnounceAllTrackers), rows.takeLast(2))
+        assertEquals(BtSettingsTab.Connection, BtSettingsRow.tabForRowId("bt.i2pSamPort"))
+        assertEquals(BtSettingsTab.Tracker, BtSettingsRow.tabForRowId("bt.announceAllTiers"))
+    }
+
+    @Test fun newConnectionKeysMirrorDaemonConfigAndStayDeviceLocal() {
+        val expected = mapOf(
+            "bt_enable_lsd" to "true",
+            "bt_utp_congestion" to "ledbat",
+            "bt_max_connections" to "0",
+            "bt_max_connections_per_torrent" to "512",
+            "bt_enable_webseed" to "true",
+            "bt_announce_all_tiers" to "true",
+            "bt_announce_all_trackers" to "true",
+            "bt_proxy_enabled" to "false",
+            "bt_proxy_peers" to "true",
+            "bt_i2p_enabled" to "false",
+            "bt_i2p_sam_host" to "127.0.0.1",
+            "bt_i2p_sam_port" to "7656",
+            "bt_i2p_mixed" to "false",
+        )
+        for ((key, def) in expected) {
+            assertEquals(key, def, SettingsCatalog.defaultWire(key))
+            assertEquals(key, SettingField.Store.Daemon, SettingsCatalog.field(key)?.store)
+            assertFalse(key, SettingsCatalog.isSynced(key))
+        }
+        assertEquals(SettingField.Kind.Integer(0, 65_535), SettingsCatalog.field("bt_max_connections")?.kind)
+        assertEquals(SettingField.Kind.Integer(1, 4096), SettingsCatalog.field("bt_max_connections_per_torrent")?.kind)
+        assertEquals(SettingField.Kind.Integer(1, 65_535), SettingsCatalog.field("bt_i2p_sam_port")?.kind)
+        assertEquals(listOf("ledbat", "cubic"), BtUtpCongestion.all)
+        assertEquals("ledbat", BtUtpCongestion.normalize("bogus"))
+        assertEquals("cubic", BtUtpCongestion.normalize(" cubic "))
+    }
+
+    // ── 端口映射状态（同 GPUI `port_mapping_segments`） ──
+
+    @Test fun portStatusIdleWhenNotRunning() {
+        val status = BtPortStatus.fromJson(Json.parse("""{"running":false}"""))
+        assertEquals(listOf(BtPortSegment.Idle), BtPortMappingView.segments(status))
+    }
+
+    @Test fun portStatusSegmentsPerMappingAndExternalIp() {
+        val status = BtPortStatus.fromJson(
+            Json.parse(
+                """{"running":true,"listenPort":6881,"mappings":[
+                {"protocol":"tcp","internalPort":6881,"externalPort":50123,"method":"natPmp","externalIp":" 203.0.113.7 ","state":"mapped"},
+                {"protocol":"udp","internalPort":6881,"externalPort":6881,"method":"upnp","state":"mapped"},
+                {"protocol":"tcp","internalPort":6882,"state":"pending"},
+                {"protocol":"udp","internalPort":6882,"state":"failed","message":"  router\n  said no  "},
+                {"protocol":"udp","internalPort":6883,"state":"weird"}
+                ]}""",
+            ),
+        )
+        assertEquals(6881L, status.listenPort)
+        assertEquals(
+            listOf(
+                BtPortSegment.Mapping("TCP 6881 → 50123", BtPortSegmentState.Mapped("NAT-PMP")),
+                BtPortSegment.Mapping("UDP 6881", BtPortSegmentState.Mapped("UPnP")),
+                BtPortSegment.Mapping("TCP 6882", BtPortSegmentState.Pending),
+                BtPortSegment.Mapping("UDP 6882", BtPortSegmentState.Failed("router\n  said no")),
+                BtPortSegment.Mapping("UDP 6883", BtPortSegmentState.Other("weird")),
+                BtPortSegment.ExternalIp("203.0.113.7"),
+            ),
+            BtPortMappingView.segments(status),
+        )
+        assertEquals("router said no", BtPortMappingView.singleLine("router\n  said no"))
+        assertEquals("PCP", BtPortMappingView.methodLabel("pcp"))
+        assertEquals("future", BtPortMappingView.methodLabel("future"))
+    }
+
+    @Test fun portStatusRunningWithoutMappingsIsEmpty() {
+        // 旧 daemon / 空字段不下发：缺省即 0 / 空
+        val status = BtPortStatus.fromJson(Json.parse("""{"running":true}"""))
+        assertEquals(0L, status.listenPort)
+        assertTrue(BtPortMappingView.segments(status).isEmpty())
     }
 
     @Test fun portRangeRequiresEndAtLeastStart() {

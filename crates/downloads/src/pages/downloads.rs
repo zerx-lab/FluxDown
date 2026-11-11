@@ -258,6 +258,8 @@ pub struct DownloadView {
     import_suspended: bool,
     /// 下载页所在窗口：删除结束的异步通知经它推送。
     window: AnyWindowHandle,
+    /// 「移动到…」进行中的任务 id：同一任务在完成前不再发起第二次移动。
+    pub(crate) bt_moving: std::collections::HashSet<String>,
 }
 
 impl DownloadView {
@@ -394,6 +396,7 @@ impl DownloadView {
             next_delete_id: 0,
             import_suspended: false,
             window: window.window_handle(),
+            bt_moving: std::collections::HashSet::new(),
         }
     }
 
@@ -2720,6 +2723,10 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_set_rarest_first_selected))
             .on_action(cx.listener(Self::on_set_sequential_selected))
             .on_action(cx.listener(Self::on_toggle_first_last_pieces_selected))
+            .on_action(cx.listener(Self::on_force_recheck_selected))
+            .on_action(cx.listener(Self::on_move_storage_selected))
+            .on_action(cx.listener(Self::on_task_limits_selected))
+            .on_action(cx.listener(Self::on_toggle_super_seeding_selected))
             .on_action(cx.listener(Self::on_toggle_detail_panel))
             .on_drop(cx.listener(Self::on_paths_dropped))
             .drag_over::<ExternalPaths>(|style, _, _, cx| {

@@ -9,29 +9,49 @@ import java.util.Locale
 
 // ───────────────────────────── BitTorrent ─────────────────────────────
 
-/** BT 页签（GPUI `bt.rs` 的 basic / tracker / seeding）。 */
-enum class BtSettingsTab { General, Tracker, Seeding, Guard }
+/** BT 页签（GPUI `bt.rs` 的 basic / connection / tracker / seeding + 防吸血）。 */
+enum class BtSettingsTab { General, Connection, Tracker, Seeding, Guard }
 
 /**
- * BT 页的每一行（GPUI 顺序）。页面渲染与设置搜索共用同一份可见性判定。
+ * BT 页的每一行（GPUI 顺序：页签 → 分组 → 行）。页面渲染与设置搜索共用同一份可见性判定。
  * 做种「时长 + 单位」两个 PC 行在移动端合成一行（各自仍写回两个键）。
+ * [PortMappingStatus] 是只读状态行（`daemon.bt.portStatus`），挂在 `bt_enable_upnp` 上：仅映射开启时显示。
  */
 enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey: String, val unitKey: String? = null) {
+    // 常规：总开关 · 新任务
     Enabled("enabled", BtSettingsTab.General, "bt_enabled"),
-    Dht("dht", BtSettingsTab.General, "bt_enable_dht"),
-    Upnp("upnp", BtSettingsTab.General, "bt_enable_upnp"),
-    Utp("utp", BtSettingsTab.General, "bt_enable_utp"),
-    PortStart("portStart", BtSettingsTab.General, "bt_port_start"),
-    PortEnd("portEnd", BtSettingsTab.General, "bt_port_end"),
-    MseMode("mseMode", BtSettingsTab.General, "bt_mse_mode"),
-    UploadSlots("uploadSlots", BtSettingsTab.General, "bt_upload_slots"),
     PieceOrder("pieceOrder", BtSettingsTab.General, "bt_piece_order"),
     FirstLastPiecesFirst("firstLastPiecesFirst", BtSettingsTab.General, "bt_first_last_pieces_first"),
     SelectionAutoDefault("selectionAutoDefault", BtSettingsTab.General, "bt_selection_auto_default"),
+    // 连接：监听
+    PortStart("portStart", BtSettingsTab.Connection, "bt_port_start"),
+    PortEnd("portEnd", BtSettingsTab.Connection, "bt_port_end"),
+    Upnp("upnp", BtSettingsTab.Connection, "bt_enable_upnp"),
+    PortMappingStatus("portMappingStatus", BtSettingsTab.Connection, "bt_enable_upnp"),
+    // 连接：传输
+    Utp("utp", BtSettingsTab.Connection, "bt_enable_utp"),
+    UtpCongestion("utpCongestion", BtSettingsTab.Connection, "bt_utp_congestion"),
+    MseMode("mseMode", BtSettingsTab.Connection, "bt_mse_mode"),
+    UploadSlots("uploadSlots", BtSettingsTab.Connection, "bt_upload_slots"),
+    // 连接：节点与数据来源
+    Dht("dht", BtSettingsTab.Connection, "bt_enable_dht"),
+    Lsd("lsd", BtSettingsTab.Connection, "bt_enable_lsd"),
+    Webseed("webseed", BtSettingsTab.Connection, "bt_enable_webseed"),
+    // 连接：连接上限
+    MaxConnections("maxConnections", BtSettingsTab.Connection, "bt_max_connections"),
+    MaxConnectionsPerTorrent("maxConnectionsPerTorrent", BtSettingsTab.Connection, "bt_max_connections_per_torrent"),
+    // 连接：I2P
+    I2pEnabled("i2pEnabled", BtSettingsTab.Connection, "bt_i2p_enabled"),
+    I2pSamHost("i2pSamHost", BtSettingsTab.Connection, "bt_i2p_sam_host"),
+    I2pSamPort("i2pSamPort", BtSettingsTab.Connection, "bt_i2p_sam_port"),
+    I2pMixed("i2pMixed", BtSettingsTab.Connection, "bt_i2p_mixed"),
+    // Tracker：列表与订阅 · 汇报策略
     CustomTrackers("customTrackers", BtSettingsTab.Tracker, "bt_custom_trackers"),
     TrackerSub("trackerSub", BtSettingsTab.Tracker, "bt_tracker_sub_enabled"),
     TrackerSubUrls("trackerSubUrls", BtSettingsTab.Tracker, "bt_tracker_sub_urls"),
     TrackerSubStatus("trackerSubStatus", BtSettingsTab.Tracker, "bt_tracker_sub_cache"),
+    AnnounceAllTiers("announceAllTiers", BtSettingsTab.Tracker, "bt_announce_all_tiers"),
+    AnnounceAllTrackers("announceAllTrackers", BtSettingsTab.Tracker, "bt_announce_all_trackers"),
     SeedEnabled("seedEnabled", BtSettingsTab.Seeding, "bt_seed_enabled"),
     SeedMaxActive("seedMaxActive", BtSettingsTab.Seeding, "bt_seed_max_active"),
     AutoReseed("autoReseed", BtSettingsTab.Seeding, "bt_auto_reseed"),
@@ -72,6 +92,12 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
         if (!form.has(configKey)) return false
         if (this != Enabled && !form.bool(Enabled.configKey)) return false
         return when (tab) {
+            BtSettingsTab.Connection -> when (this) {
+                PortMappingStatus -> form.bool(Upnp.configKey)
+                UtpCongestion -> form.bool(Utp.configKey)
+                I2pSamHost, I2pSamPort, I2pMixed -> form.bool(I2pEnabled.configKey)
+                else -> true
+            }
             BtSettingsTab.Seeding -> this == SeedEnabled || form.bool(SeedEnabled.configKey)
             BtSettingsTab.Guard -> when (this) {
                 GuardEnabled -> true
@@ -81,6 +107,25 @@ enum class BtSettingsRow(val slug: String, val tab: BtSettingsTab, val configKey
             else -> true
         }
     }
+
+    /** 页内分组（GPUI 的 section）；页面按组渲染、搜索按组定位。 */
+    val group: BtSettingsGroup
+        get() = when (this) {
+            Enabled -> BtSettingsGroup.Basic
+            PieceOrder, FirstLastPiecesFirst, SelectionAutoDefault -> BtSettingsGroup.NewTasks
+            PortStart, PortEnd, Upnp, PortMappingStatus -> BtSettingsGroup.Listen
+            Utp, UtpCongestion, MseMode, UploadSlots -> BtSettingsGroup.Transport
+            Dht, Lsd, Webseed -> BtSettingsGroup.Sources
+            MaxConnections, MaxConnectionsPerTorrent -> BtSettingsGroup.Limits
+            I2pEnabled, I2pSamHost, I2pSamPort, I2pMixed -> BtSettingsGroup.I2p
+            CustomTrackers -> BtSettingsGroup.TrackerList
+            TrackerSub, TrackerSubUrls, TrackerSubStatus -> BtSettingsGroup.TrackerSub
+            AnnounceAllTiers, AnnounceAllTrackers -> BtSettingsGroup.Announce
+            SeedEnabled, SeedMaxActive, AutoReseed -> BtSettingsGroup.SeedMain
+            SeedRatio, SeedPostRatio, SeedTimeLimit, SeedInactiveTimeLimit, SeedOperator, SeedThenAction ->
+                BtSettingsGroup.SeedLimits
+            else -> BtSettingsGroup.Guard
+        }
 
     companion object {
         /** 总开关关闭时仅常规页签（且仅总开关一行）可用。 */
@@ -115,6 +160,122 @@ object BtPieceOrder {
     const val DEFAULT = "rarest"
     val all: List<String> get() = SettingsCatalog.btPieceOrders
     fun normalize(wire: String?): String = wire?.trim()?.takeIf { it in all } ?: DEFAULT
+}
+
+/** uTP 拥塞控制的 wire 值；未知值按 LEDBAT 处理。 */
+object BtUtpCongestion {
+    const val DEFAULT = "ledbat"
+    val all: List<String> get() = SettingsCatalog.btUtpCongestions
+    fun normalize(wire: String?): String = wire?.trim()?.takeIf { it in all } ?: DEFAULT
+}
+
+/** BT 页内分组（GPUI `bt.rs` 的 section 顺序；页面按组渲染，搜索按组定位）。 */
+enum class BtSettingsGroup {
+    Basic, NewTasks,
+    Listen, Transport, Sources, Limits, I2p,
+    TrackerList, TrackerSub, Announce,
+    SeedMain, SeedLimits,
+    Guard,
+}
+
+// ───────────────────────────── 端口映射状态 ─────────────────────────────
+
+/** `daemon.bt.portStatus` 结果（`BtPortStatusDto`）；旧 daemon 缺省字段取 0 / 空。 */
+data class BtPortStatus(val running: Boolean, val listenPort: Long, val mappings: List<BtPortMapping>) {
+    companion object {
+        fun fromJson(v: JsonValue?): BtPortStatus = BtPortStatus(
+            running = v.bool("running"),
+            listenPort = v.long("listenPort"),
+            mappings = v.list("mappings").map(BtPortMapping::fromJson),
+        )
+    }
+}
+
+/** 一个端口的映射状态（`BtPortMappingDto`）。 */
+data class BtPortMapping(
+    val protocol: String,
+    val internalPort: Long,
+    val externalPort: Long,
+    val method: String,
+    val externalIp: String,
+    val state: String,
+    val message: String,
+) {
+    companion object {
+        fun fromJson(v: JsonValue?): BtPortMapping = BtPortMapping(
+            protocol = v.str("protocol"),
+            internalPort = v.long("internalPort"),
+            externalPort = v.long("externalPort"),
+            method = v.str("method"),
+            externalIp = v.str("externalIp"),
+            state = v.str("state"),
+            message = v.str("message"),
+        )
+    }
+}
+
+/** 端口映射状态行的一段（纯数据，文案由 app 层按语言查表；同 GPUI `PortSegment`）。 */
+sealed interface BtPortSegment {
+    /** BT 会话未运行：尚未请求映射。 */
+    data object Idle : BtPortSegment
+
+    /** [port] 形如 `TCP 6881` / `UDP 6881 → 50123`。 */
+    data class Mapping(val port: String, val state: BtPortSegmentState) : BtPortSegment
+
+    data class ExternalIp(val ip: String) : BtPortSegment
+}
+
+sealed interface BtPortSegmentState {
+    /** 附显示用方法名（`UPnP` / `NAT-PMP` / `PCP`，未知取原值）。 */
+    data class Mapped(val method: String) : BtPortSegmentState
+    data object Pending : BtPortSegmentState
+
+    /** [message] 已去首尾空白；显示时压成单行，长按看全文。 */
+    data class Failed(val message: String) : BtPortSegmentState
+
+    /** 未识别的 wire 状态，原样显示。 */
+    data class Other(val raw: String) : BtPortSegmentState
+}
+
+object BtPortMappingView {
+    /** 未运行一段「空闲」；否则每个映射一段，任一映射带外网地址时末尾追加一段（取第一个非空地址）。 */
+    fun segments(status: BtPortStatus): List<BtPortSegment> {
+        if (!status.running) return listOf(BtPortSegment.Idle)
+        val out = ArrayList<BtPortSegment>(status.mappings.size + 1)
+        for (m in status.mappings) {
+            var port = "${m.protocol.uppercase(Locale.ROOT)} ${m.internalPort}"
+            if (m.state == "mapped" && m.externalPort != 0L && m.externalPort != m.internalPort) {
+                port += " → ${m.externalPort}"
+            }
+            val state = when (m.state) {
+                "mapped" -> BtPortSegmentState.Mapped(methodLabel(m.method))
+                "pending" -> BtPortSegmentState.Pending
+                "failed" -> BtPortSegmentState.Failed(m.message.trim())
+                else -> BtPortSegmentState.Other(m.state)
+            }
+            out += BtPortSegment.Mapping(port, state)
+        }
+        status.mappings.map { it.externalIp.trim() }.firstOrNull { it.isNotEmpty() }?.let {
+            out += BtPortSegment.ExternalIp(it)
+        }
+        return out
+    }
+
+    /** wire 方法名 → 显示名；未知值原样返回。 */
+    fun methodLabel(method: String): String = when (method) {
+        "upnp" -> "UPnP"
+        "natPmp" -> "NAT-PMP"
+        "pcp" -> "PCP"
+        else -> method
+    }
+
+    /** 失败原因压成单行（多行 / 连续空白合成一个空格）。 */
+    fun singleLine(message: String): String = message.split(WHITESPACE).filter { it.isNotEmpty() }.joinToString(" ")
+
+    /** 设置页「连接」页签可见时的轮询间隔。 */
+    const val POLL_INTERVAL_MS = 5_000L
+
+    private val WHITESPACE = Regex("\\s+")
 }
 
 // ───────────────────────────── 做种时长 ─────────────────────────────

@@ -15,6 +15,8 @@ import { openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
 import { routeLabel } from '../../../lib/taskRoute'
 import { CopyButton, SourcePageLink } from './CopyButton'
 import { FileHashRow } from './FileHashRow'
+import { InfoHashV2Row } from './InfoHashV2Row'
+import { btMetadataReady } from './btStatus'
 import { DetailRow } from './DetailRow'
 import { SourcesSection } from './SourcesSection'
 
@@ -93,6 +95,7 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
         <DetailRow label={t('taskQueueLabel')}>{queueLabel}</DetailRow>
         {checksum !== '' ? <DetailRow label={t('taskChecksum')}>{checksum}</DetailRow> : null}
         {view.source === 'local' && completed ? <FileHashRow view={view} /> : null}
+        {view.source === 'local' && view.protocol === 'bt' ? <InfoHashV2Row taskId={view.taskId} hasMetadata={btMetadataReady(view)} /> : null}
         <DetailRow label={t('taskProxy')}>{proxy}</DetailRow>
         {dto && dto.autoRoute !== '' ? <DetailRow label={t('taskRoute')}>{routeLabel(t, dto.autoRoute)}</DetailRow> : null}
         {dto?.ignoreTlsErrors ? <DetailRow label={t('taskIgnoreTlsErrors')}>✓</DetailRow> : null}

@@ -39,14 +39,26 @@ use crate::speed_limiter::SpeedLimiter;
 use crate::transfer_activity::TaskRuntime;
 
 mod boost;
+#[cfg(feature = "bt")]
+mod bt_storage_ops;
 mod group_dirs;
 pub use boost::BoostError;
+#[cfg(feature = "bt")]
+pub use bt_storage_ops::{BtMoveJob, BtMoveOutcome, BtMoveStart};
 #[cfg(test)]
 mod egress_tests;
 #[cfg(test)]
 mod import_tests;
 #[cfg(test)]
 mod scaling_tests;
+
+#[cfg(not(feature = "bt"))]
+impl DownloadManager {
+    /// 不带 BT 时没有数据搬移。
+    fn bt_move_running(&self, _task_id: &str) -> bool {
+        false
+    }
+}
 
 /// 文件已存在时的处理策略（config `file_exists_behavior`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3439,6 +3451,7 @@ impl PendingQueue {
     }
 
     /// 队列里是否含磁力 / .torrent 链接项（仅按 URL 判定）。
+    #[cfg(any(test, feature = "bt"))]
     fn has_bt_url(&self) -> bool {
         self.counts.bt_url_items > 0
     }
@@ -3865,6 +3878,10 @@ pub struct DownloadManager {
     /// BT 防吸血宿主：策略对象在会话创建时注入 librqbit，配置热更新不重建会话。
     #[cfg(feature = "bt")]
     bt_guard: Arc<crate::bt_guard::BtGuardHost>,
+    /// 最近一次为「文件」页解析的种子布局（任务不在会话里时用）：`(task_id, 布局)`。
+    /// 布局不随时间变化，轮询期间不必每次重读、重解析种子字节。
+    #[cfg(feature = "bt")]
+    bt_layout_cache: std::sync::Mutex<Option<(String, Arc<crate::bt_task_files::TorrentLayout>)>>,
     /// Default save directory used to initialise the BT session.
     default_save_dir: String,
     /// Application data directory (exe dir) for BT persistence files.
@@ -3980,6 +3997,9 @@ pub struct DownloadManager {
     /// 已完成 BT 任务的在途完整性校验（删除任务 / 关停时取消）。
     #[cfg(feature = "bt")]
     integrity_checks: crate::task_jobs::TaskJobs,
+    /// 在途的 BT 数据搬移（`daemon.task.moveStorage`）：搬移期间拒绝恢复 / 删除 / 改文件。
+    #[cfg(feature = "bt")]
+    bt_moves: crate::task_jobs::TaskJobs,
     /// 在途文件哈希作业（按需与下载完成后自动；删除任务 / 关停时取消）。
     file_hash_jobs: crate::task_jobs::TaskJobs,
     /// 下载完成后自动计算哈希所用算法（config `hash_after_download` /
@@ -4177,6 +4197,8 @@ impl DownloadManager {
             bt_session: None,
             #[cfg(feature = "bt")]
             bt_guard,
+            #[cfg(feature = "bt")]
+            bt_layout_cache: std::sync::Mutex::new(None),
             default_save_dir,
             app_data_dir,
             data_dir,
@@ -4232,6 +4254,8 @@ impl DownloadManager {
             bt_paused_idle_since: None,
             #[cfg(feature = "bt")]
             integrity_checks: crate::task_jobs::TaskJobs::default(),
+            #[cfg(feature = "bt")]
+            bt_moves: crate::task_jobs::TaskJobs::default(),
             file_hash_jobs: crate::task_jobs::TaskJobs::default(),
             hash_after_download: None,
             file_hash_gate: Arc::new(Semaphore::new(1)),
@@ -6443,6 +6467,12 @@ impl DownloadManager {
                 let save_dir = self.default_save_dir.clone();
                 let data_dir = self.app_data_dir.clone();
                 let config = self.bt_config.clone();
+                // BT 走「代理」页的手动代理服务器（与当前代理模式无关）；没填服务器或类型
+                // 不受支持时保持直连，设置页在开关下方有对应提示。
+                let proxy_url = config
+                    .proxy_enabled
+                    .then(|| self.proxy_config.manual_server_url_for_bt())
+                    .flatten();
                 let policy = self.bt_guard.policy();
                 let session = tokio::task::spawn_blocking(move || {
                     SharedBtSession::new(
@@ -6451,6 +6481,7 @@ impl DownloadManager {
                         speed_limit,
                         upload_limit,
                         &config,
+                        proxy_url.as_deref(),
                         Some(policy),
                     )
                 })
@@ -6479,17 +6510,28 @@ impl DownloadManager {
     }
 
     /// Update BT configuration. Runtime-read settings (seeding limits, the
-    /// active-seeder cap, the extra-tracker list for new torrents) take effect
-    /// immediately; listener-level settings (ports, DHT, UPnP, uTP, MSE) take
-    /// effect when the session is rebuilt by `invalidate_bt_session`.
+    /// active-seeder cap, the extra-tracker list for new torrents, the connection
+    /// limits) take effect immediately; listener-level settings (ports, DHT, UPnP,
+    /// uTP, MSE) take effect when the session is rebuilt by `invalidate_bt_session`.
     pub fn set_bt_config(&mut self, config: BtConfig) {
         // 活动做种数上限热生效：直接写入 SeedingManager，队列在下一次
         // 做种求值 tick 的 reconcile 中被重新平衡。追加 tracker 同样热生效于
         // 此后加入的种子（对齐 qBittorrent「自动添加到新下载」），不重建会话。
         #[cfg(feature = "bt")]
-        if let Some(ref bt) = self.bt_session {
+        if let Some(bt) = &self.bt_session {
             bt.seeding_manager().set_cap(config.seed_max_active);
             bt.set_extra_trackers(&config);
+            // 连接数上限热生效；逐句柄改上限要进 BT runtime 等锁，不阻塞 actor。
+            if config.max_connections != self.bt_config.max_connections
+                || config.max_connections_per_torrent != self.bt_config.max_connections_per_torrent
+            {
+                let session = Arc::clone(bt);
+                let (total, per_torrent) =
+                    (config.max_connections, config.max_connections_per_torrent);
+                bt.runtime_handle().spawn(async move {
+                    session.set_connection_limits(total, per_torrent).await;
+                });
+            }
         }
         self.bt_config = config.effective();
     }
@@ -7034,8 +7076,8 @@ impl DownloadManager {
 
     /// 写入任务级做种限制覆盖（哨兵：-2 跟随全局、-1 不限、>=0 自定义；
     /// 比率为千分比）。比率/时长热生效：下一次做种求值 tick 即按新值判定，
-    /// 无需重建会话或重新注册做种者。`upload_limit_bps`（B/s，0 = 不限）
-    /// 在下一次 torrent add 时烘焙生效（恢复下载 / 重启续种 / 重新挂载）。
+    /// 无需重建会话或重新注册做种者。`upload_limit_bps`（B/s，0 = 不限）落库后
+    /// 立即作用于会话里的句柄（下载 / 做种中当即按新速率上传）。
     pub async fn set_task_seed_limits(
         &self,
         task_id: &str,
@@ -7045,7 +7087,7 @@ impl DownloadManager {
         inactive_time_limit_minutes: i64,
         upload_limit_bps: i64,
     ) {
-        if let Err(e) = self
+        let saved = self
             .db
             .set_task_seed_limits(
                 task_id,
@@ -7055,10 +7097,83 @@ impl DownloadManager {
                 inactive_time_limit_minutes,
                 upload_limit_bps,
             )
-            .await
-        {
+            .await;
+        if let Err(e) = saved {
             log_info!("[manager] set_task_seed_limits {}: {}", task_id, e);
+        } else {
+            #[cfg(feature = "bt")]
+            match self.db.load_task_by_id(task_id).await {
+                Ok(Some(task)) => self.apply_task_bt_limits(&task).await,
+                Ok(None) => {}
+                Err(e) => log_info!("[manager] set_task_seed_limits {}: {}", task_id, e),
+            }
         }
+    }
+
+    /// 修改 BT 任务的任务级限速（B/s；`None` = 该方向不变，`0` 或负值 = 不限）。落库后
+    /// 若 BT 会话在，立即作用于已入册的句柄（下载 / 做种中当即按新速率收发）；否则下次
+    /// 启动时烘焙。上传限速与做种限制里的「上传限速」是同一个值。
+    ///
+    /// 返回 `Ok(false)` 表示任务不存在或不是 BT 任务。
+    pub async fn set_task_bt_limits(
+        &self,
+        task_id: &str,
+        download_limit_bps: Option<i64>,
+        upload_limit_bps: Option<i64>,
+    ) -> Result<bool, DbError> {
+        let Some(task) = self.db.load_task_by_id(task_id).await? else {
+            return Ok(false);
+        };
+        if !is_bt_url(&task.url) {
+            return Ok(false);
+        }
+        self.db
+            .set_task_bt_limits(task_id, download_limit_bps, upload_limit_bps)
+            .await?;
+        #[cfg(feature = "bt")]
+        if let Some(task) = self.db.load_task_by_id(task_id).await? {
+            self.apply_task_bt_limits(&task).await;
+        }
+        Ok(true)
+    }
+
+    /// 把任务落库的限速登记到 BT 会话并热改已入册的句柄（会话不在时无事可做：下次启动
+    /// 按 [`Self::bt_task_options`] 烘焙）。
+    #[cfg(feature = "bt")]
+    async fn apply_task_bt_limits(&self, task: &TaskInfo) {
+        if let Some(bt) = &self.bt_session {
+            let options = self.bt_task_options(task);
+            bt.set_task_limits(
+                &task.task_id,
+                options.download_limit_bps,
+                options.upload_limit_bps,
+            )
+            .await;
+        }
+    }
+
+    /// 修改 BT 任务的超级做种开关（BEP 16）。只在任务完整（做种）时实际生效，下载中
+    /// 可提前设置。落库后若 BT 会话在，登记到会话并作用于已入册的句柄；否则下次启动 /
+    /// 续种时烘焙。
+    ///
+    /// 返回 `Ok(false)` 表示任务不存在或不是 BT 任务。
+    pub async fn set_task_super_seeding(
+        &self,
+        task_id: &str,
+        enabled: bool,
+    ) -> Result<bool, DbError> {
+        let Some(task) = self.db.load_task_by_id(task_id).await? else {
+            return Ok(false);
+        };
+        if !is_bt_url(&task.url) {
+            return Ok(false);
+        }
+        self.db.set_task_super_seeding(task_id, enabled).await?;
+        #[cfg(feature = "bt")]
+        if let Some(bt) = &self.bt_session {
+            bt.set_task_super_seeding(task_id, enabled).await;
+        }
+        Ok(true)
     }
 
     /// 修改 BT 任务的选片方式（`None` = 该项不变），对齐 qBittorrent 右键「按顺序下载」
@@ -7541,19 +7656,67 @@ impl DownloadManager {
         }
     }
 
-    /// 计算 BT 任务 add/re-add 时生效的 torrent 级上传限速（B/s，0 = 不设）。
+    /// 计算 BT 任务生效的 torrent 级上传限速（B/s，0 = 不设）。
     ///
     /// 优先级：任务级 > 队列级 > 全局。任务级 `seed_upload_limit_bps` > 0
     /// 直接生效；否则所属队列的 `upload_limit_kbps` > 0 时折算 ×1024；
     /// 都未设置返回 0（不设 torrent 级限制）。全局 `upload_limit_bytes`
     /// 是 librqbit 会话级的第二层限速，恒作为上限叠加，不在此参与计算。
-    /// 生效时机与任务级一致：仅在 add/re-add 时烘焙，live 句柄不热改。
+    /// 任务级改动热生效；队列级改动在下一次 add/re-add 时生效。
     #[cfg(feature = "bt")]
     fn effective_task_upload_bps(&self, task: &TaskInfo) -> u64 {
         effective_upload_bps(
             task.seed_upload_limit_bps,
             self.queues.get(&task.queue_id).map(|q| q.upload_limit_kbps),
         )
+    }
+
+    /// 任务落库的 BT 选项 → 会话登记值（选片方式、任务级限速）。启动 / 恢复 / 续种前都经
+    /// [`SharedBtSession::register_task_options`] 登记它。
+    #[cfg(feature = "bt")]
+    fn bt_task_options(&self, task: &TaskInfo) -> bt_downloader::BtTaskOptions {
+        bt_downloader::BtTaskOptions {
+            piece_picking: bt_downloader::task_piece_picking(task),
+            download_limit_bps: u64::try_from(task.bt_download_limit_bps).unwrap_or(0),
+            upload_limit_bps: self.effective_task_upload_bps(task),
+            super_seeding: task.bt_super_seeding,
+        }
+    }
+
+    /// 启动 / 恢复 BT 下载前向会话登记任务落库的选项：选片方式、任务级限速与逐文件优先级表
+    /// （选择本身随 `only_files` 走，这里只登记高于「普通」的级别）。返回登记的选项。
+    #[cfg(feature = "bt")]
+    async fn register_bt_download(
+        &self,
+        bt: &SharedBtSession,
+        task: &TaskInfo,
+    ) -> bt_downloader::BtTaskOptions {
+        let options = self.bt_task_options(task);
+        bt.register_task_options(&task.task_id, options).await;
+        match self.db.get_task_bt_file_state(&task.task_id).await {
+            Ok(Some((levels, renames))) => {
+                bt.register_file_levels(
+                    &task.task_id,
+                    crate::bt_task_files::parse_priority_table(&levels),
+                )
+                .await;
+                bt.register_file_renames(
+                    &task.task_id,
+                    bt_storage_ops::session_renames(&crate::bt_task_files::parse_rename_table(
+                        &renames,
+                    )),
+                )
+                .await;
+            }
+            Ok(None) => {}
+            // 读不到只是少了排序偏好，不拦下载。
+            Err(e) => log_info!(
+                "[manager] file priorities of {} unavailable: {}",
+                task.task_id,
+                e
+            ),
+        }
+        options
     }
 
     /// BT 被禁用时把仍停在「排队/下载中/准备中」的任务落回暂停(2)并广播，
@@ -8601,6 +8764,9 @@ impl DownloadManager {
                     return;
                 }
             }
+            // 上次中断的数据搬移先做完：后面的 staging 扫描与续种都按搬好之后的位置进行。
+            #[cfg(feature = "bt")]
+            self.recover_bt_moves().await;
         }
 
         let order_db = self.db.clone();
@@ -10899,19 +11065,10 @@ impl DownloadManager {
                     custom_name,
                     selector: self.selector.clone(),
                     sink: self.sink.clone(),
-                    // 任务级/队列级上传限速只能在 add 时烘焙（librqbit 无
-                    // per-torrent 热更 API）；行刚插入时任务级通常为 0，恢复/
-                    // 续种路径会带上用户后来设置的值。
+                    // 任务级选项按库登记（选片方式、两个方向的限速、文件优先级）；行刚
+                    // 插入时通常都是缺省值，恢复路径会带上用户后来设置的值。
                     upload_limit_bps: match self.db.load_task_by_id(&task_id).await {
-                        Ok(Some(t)) => {
-                            bt_ref
-                                .set_task_piece_picking(
-                                    &task_id,
-                                    bt_downloader::task_piece_picking(&t),
-                                )
-                                .await;
-                            self.effective_task_upload_bps(&t)
-                        }
+                        Ok(Some(t)) => self.register_bt_download(bt_ref, &t).await.upload_limit_bps,
                         _ => 0,
                     },
                 };
@@ -11302,6 +11459,14 @@ impl DownloadManager {
         drain_freed_slot: bool,
         reconnect: bool,
     ) {
+        // 数据搬移期间任务已不在运行，搬完由搬移流程恢复原状态；此时的暂停没有对象。
+        if self.bt_move_running(task_id) {
+            log_info!(
+                "[manager] pause {} ignored: its data is being moved",
+                task_id
+            );
+            return;
+        }
         self.clear_pending_resolve(task_id);
         self.retry_unschedule(task_id);
         // A repeated pause while the previous generation is still flushing is
@@ -11606,6 +11771,13 @@ impl DownloadManager {
     /// BT 任务不走这条路（librqbit 有自己的重校验语义），直接返回；
     /// 任务不存在同样直接返回。
     pub async fn restart_task(&mut self, task_id: &str) {
+        if self.bt_move_running(task_id) {
+            log_info!(
+                "[manager] restart_task {}: its data is being moved",
+                task_id
+            );
+            return;
+        }
         let Ok(Some(task)) = self.db.load_task_by_id(task_id).await else {
             log_info!("[manager] restart_task {}: task not found", task_id);
             return;
@@ -11856,6 +12028,13 @@ impl DownloadManager {
     }
 
     async fn resume_task_inner(&mut self, task_id: &str) {
+        if self.bt_move_running(task_id) {
+            log_info!(
+                "[manager] resume {} ignored: its data is being moved",
+                task_id
+            );
+            return;
+        }
         // 排程中的自动重试已落地（或被手动恢复抢先），解除队列占用标记。
         self.retry_unschedule(task_id);
         if let Some(pending) = self.pending_pauses.get_mut(task_id) {
@@ -12484,10 +12663,10 @@ impl DownloadManager {
                     }
                 };
 
-                let upload_limit_bps = self.effective_task_upload_bps(&task);
-                bt_ref
-                    .set_task_piece_picking(&tid, bt_downloader::task_piece_picking(&task))
-                    .await;
+                let upload_limit_bps = self
+                    .register_bt_download(bt_ref, &task)
+                    .await
+                    .upload_limit_bps;
                 let bt_params = BtDownloadParams {
                     task_id: tid.clone(),
                     torrent_source,
@@ -12960,6 +13139,11 @@ impl DownloadManager {
         task_id: &str,
         delete_files: bool,
     ) -> Result<(), DeleteTaskError> {
+        if self.bt_move_running(task_id) {
+            return Err(DeleteTaskError::Cleanup(downloader::DownloadError::Other(
+                "the task's data is being moved; delete it when the move has finished".to_owned(),
+            )));
+        }
         self.auto_retry_counts.remove(task_id);
         #[cfg(feature = "plugins")]
         self.intercept_retry_counts.remove(task_id);
@@ -13385,8 +13569,27 @@ impl DownloadManager {
         task_ids: &[String],
         delete_files: bool,
     ) -> Result<BatchDeleteOutcome, crate::db::DbError> {
+        // 数据搬移中的任务不删（文件正分散在新旧两处），按删除失败计。
+        let moving = task_ids
+            .iter()
+            .filter(|task_id| self.bt_move_running(task_id))
+            .count();
+        let kept: Vec<String>;
+        let task_ids = if moving > 0 {
+            kept = task_ids
+                .iter()
+                .filter(|task_id| !self.bt_move_running(task_id))
+                .cloned()
+                .collect();
+            kept.as_slice()
+        } else {
+            task_ids
+        };
         if task_ids.is_empty() {
-            return Ok(BatchDeleteOutcome::default());
+            return Ok(BatchDeleteOutcome {
+                failed: moving,
+                ..BatchDeleteOutcome::default()
+            });
         }
         log_info!(
             "[manager] delete_tasks_batch: {} tasks, delete_files={}",
@@ -13452,7 +13655,7 @@ impl DownloadManager {
         }
 
         let mut deleted = Vec::with_capacity(workers.len());
-        let mut failed = 0;
+        let mut failed = moving;
         let mut files_in_use = false;
         for (task_id, worker) in workers {
             let joined = worker.await;
@@ -13712,6 +13915,13 @@ impl DownloadManager {
         if task.status != 3 || !(2..=7).contains(&task.seeding_status) {
             return false;
         }
+        if self.bt_move_running(task_id) {
+            log_info!(
+                "[manager] resume seeding {} ignored: its data is being moved",
+                task_id
+            );
+            return true;
+        }
         let stopped_status = task.seeding_status;
         let stopped_message = task.seeding_message.as_str();
         if [
@@ -13867,34 +14077,50 @@ impl DownloadManager {
             .await
             .map_err(db_error)?
             .filter(|bytes| !bytes.is_empty());
-        let (info_hash, own): (String, Vec<String>) = if let Some(bytes) = &bytes {
+        // 种子自带的 tracker 层（BEP 12；磁力链接每个 `tr=` 自成一层）、私有标记与 v2 info hash。
+        let (info_hash, mut info_hash_v2, own_tiers, private): (
+            String,
+            Option<String>,
+            Vec<Vec<String>>,
+            bool,
+        ) = if let Some(bytes) = &bytes {
             let parsed = librqbit::torrent_from_bytes(bytes).map_err(|error| {
                 LocalSeedError::InvalidArgument(format!("torrent parse error: {error}"))
             })?;
-            let own = parsed
-                .iter_announce()
-                .map(|tracker| String::from_utf8_lossy(tracker.as_ref()).into_owned())
+            let tiers = parsed
+                .announce_tiers()
+                .into_iter()
+                .map(|tier| {
+                    tier.into_iter()
+                        .map(|tracker| String::from_utf8_lossy(tracker.as_ref()).into_owned())
+                        .collect()
+                })
                 .collect();
-            (parsed.info_hash.as_string(), own)
+            (
+                parsed.info_hash.as_string(),
+                parsed.info_hash_v2.map(|hash| hash.as_string()),
+                tiers,
+                parsed.info.data.private,
+            )
         } else if is_magnet(&task.url) {
             let info_hash = TorrentSource::Magnet(task.url.clone())
                 .info_hash_hex()
                 .ok_or_else(|| LocalSeedError::InvalidArgument("invalid magnet link".to_owned()))?;
-            let own = librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&task.url))
-                .map(|magnet| magnet.trackers)
+            let magnet =
+                librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&task.url)).ok();
+            let info_hash_v2 = magnet
+                .as_ref()
+                .and_then(librqbit::Magnet::as_id32)
+                .map(|hash| hash.as_string());
+            let tiers = magnet
+                .map(|magnet| magnet.trackers.into_iter().map(|url| vec![url]).collect())
                 .unwrap_or_default();
-            (info_hash, own)
+            (info_hash, info_hash_v2, tiers, false)
         } else {
             return Err(LocalSeedError::InvalidArgument(
                 "not a BitTorrent task".to_owned(),
             ));
         };
-        let session = crate::bt_downloader::extra_trackers_for(&self.bt_config);
-        let trackers = crate::bt_status::merge_trackers(
-            &own,
-            &session,
-            &crate::bt_status::snapshot(&info_hash),
-        );
 
         let guard_hash: Option<[u8; 20]> = hex::decode(&info_hash)
             .ok()
@@ -13906,7 +14132,29 @@ impl DownloadManager {
             Some(bt) => bt.cached_handle(task_id).await,
             None => None,
         };
+        let trackers = match &handle {
+            Some(handle) => {
+                let own: Vec<String> = own_tiers.iter().flatten().cloned().collect();
+                crate::bt_status::tracker_rows(handle.trackers(), &own)
+            }
+            // 不在会话里：列出启动后会用到的 tracker。私有种子不追加会话 tracker（BEP 27）。
+            None => {
+                let session = if private {
+                    Vec::new()
+                } else {
+                    crate::bt_downloader::extra_trackers_for(&self.bt_config)
+                };
+                crate::bt_status::idle_tracker_rows(&own_tiers, &session)
+            }
+        };
+        let web_seeds = handle
+            .as_ref()
+            .map(|handle| crate::bt_status::web_seed_rows(handle.web_seeds()))
+            .unwrap_or_default();
         if let Some(handle) = handle {
+            // 磁力任务的 v2 哈希在取得元数据后才知道。
+            info_hash_v2 =
+                info_hash_v2.or_else(|| handle.info_hash_v2().map(|hash| hash.as_string()));
             if let Some(live) = handle.live() {
                 // 国旗：库未就绪时后台下载（只在有人查看 peer 列表时触发）。
                 crate::geoip::ensure_background(self.data_dir.clone(), self.proxy_config.clone());
@@ -13963,7 +14211,302 @@ impl DownloadManager {
             counts,
             trackers,
             peers,
+            web_seeds,
+            info_hash,
+            info_hash_v2: info_hash_v2.unwrap_or_default(),
         })
+    }
+
+    /// BT 监听端口与端口映射实况；没有 BT 会话（尚无 BT 任务 / BT 已禁用）时 `running` 为假。
+    #[cfg(feature = "bt")]
+    #[must_use]
+    pub fn bt_port_status(&self) -> crate::bt_status::BtPortStatusView {
+        self.bt_session
+            .as_ref()
+            .map(|bt| bt.port_status())
+            .unwrap_or_default()
+    }
+
+    /// 立即向 BT 任务当前在用的 tracker 重新汇报（对齐 qBittorrent「强制重新汇报」）。
+    ///
+    /// # Errors
+    /// 任务不存在 / 不是 BT 任务（`NotFound`），或当前不在汇报——未运行、暂停、校验中
+    /// （`StateConflict`）。
+    #[cfg(feature = "bt")]
+    pub async fn reannounce_task(
+        &self,
+        task_id: &str,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_task_files::BtTaskOpError;
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .ok_or(BtTaskOpError::NotFound)?;
+        if !is_bt_url(&task.url) {
+            return Err(BtTaskOpError::NotFound);
+        }
+        let Some(bt) = &self.bt_session else {
+            return Err(BtTaskOpError::StateConflict(
+                "the task is not running".to_owned(),
+            ));
+        };
+        bt.reannounce(task_id)
+            .await
+            .map_err(BtTaskOpError::StateConflict)
+    }
+
+    /// BT 任务的文件表（「文件」页）：每个非 padding 文件的路径、大小、已校验字节与优先级。
+    ///
+    /// 任务在会话里时取句柄实况；不在会话里（未启动 / 重启后尚未恢复 / 已完成未做种）时由
+    /// 落库的种子元数据、选择与优先级表拼出，进度按快速恢复位图折算（已完成任务 = 选中的
+    /// 文件全有）。还没有元数据（磁力链接尚未解析完）时为空表。
+    ///
+    /// # Errors
+    /// 任务不存在 / 不是 BT 任务（`NotFound`），或读库失败。
+    #[cfg(feature = "bt")]
+    pub async fn bt_task_files(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::bt_task_files::BtTaskFiles, crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_task_files::{
+            BtTaskFiles, BtTaskOpError, build_rows, file_levels, parse_priority_table,
+        };
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .ok_or(BtTaskOpError::NotFound)?;
+        if !is_bt_url(&task.url) {
+            return Err(BtTaskOpError::NotFound);
+        }
+        let completed = task.status == 3;
+        // 文件选择确认之前（选择对话框还开着）不能改：确认会整体覆盖选择。
+        let selection = self.db.load_bt_selected_files(task_id).await?;
+        let editable = !completed && selection.is_some();
+        if let Some(bt) = &self.bt_session
+            && let Some(live) = bt.live_task_files(task_id).await
+        {
+            return Ok(BtTaskFiles {
+                editable: editable && !live.finishing,
+                files: build_rows(&live.files, &live.levels, &live.progress),
+            });
+        }
+        let Some(layout) = self.stored_bt_layout(&task).await? else {
+            return Ok(BtTaskFiles::default());
+        };
+        let (levels_text, renames_text) = self
+            .db
+            .get_task_bt_file_state(task_id)
+            .await?
+            .unwrap_or_default();
+        // 行里显示当前路径（含重命名）。
+        let current = crate::bt_task_files::with_renames(
+            &layout.files,
+            &crate::bt_task_files::parse_rename_table(&renames_text),
+        );
+        let levels = file_levels(
+            &layout.files,
+            selection.as_deref(),
+            &parse_priority_table(&levels_text),
+        );
+        let progress: Vec<u64> = if completed {
+            layout
+                .files
+                .iter()
+                .zip(&levels)
+                .map(|(file, level)| if *level > 0 { file.size } else { 0 })
+                .collect()
+        } else {
+            self.stored_bt_progress(&layout).await
+        };
+        Ok(BtTaskFiles {
+            editable,
+            files: build_rows(&current, &levels, &progress),
+        })
+    }
+
+    /// 不在会话里的任务每个文件已校验的字节：按 librqbit 留下的快速恢复位图折算。
+    /// 没有位图（从未开始下载）= 全 0；读不出来只影响展示，记日志后同样按 0。
+    #[cfg(feature = "bt")]
+    async fn stored_bt_progress(&self, layout: &crate::bt_task_files::TorrentLayout) -> Vec<u64> {
+        let bitv = crate::bt_partfile::persistence_dir(&self.app_data_dir)
+            .join(format!("{}.bitv", layout.info_hash));
+        let have = match tokio::fs::read(&bitv).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                log_info!(
+                    "[manager] fast-resume bitfield {} unreadable: {}",
+                    bitv.display(),
+                    error
+                );
+                Vec::new()
+            }
+        };
+        crate::bt_task_files::progress_from_bitfield(&layout.files, layout.piece_length, &have)
+    }
+
+    /// 不在会话里的 BT 任务的种子布局：库里的种子字节（.torrent 建的任务），否则会话目录里
+    /// librqbit 缓存的 `{info_hash}.torrent`（磁力任务取得元数据后才有，须与任务的 info hash
+    /// 一致）。都没有返回 `None`。
+    #[cfg(feature = "bt")]
+    async fn stored_bt_layout(
+        &self,
+        task: &TaskInfo,
+    ) -> Result<Option<Arc<crate::bt_task_files::TorrentLayout>>, DbError> {
+        use crate::bt_task_files::layout_from_torrent_bytes;
+        let cached = self
+            .bt_layout_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|(task_id, _)| *task_id == task.task_id)
+            .map(|(_, layout)| Arc::clone(layout));
+        if cached.is_some() {
+            return Ok(cached);
+        }
+        let stored = self
+            .db
+            .load_torrent_file_bytes(&task.task_id)
+            .await?
+            .filter(|bytes| !bytes.is_empty());
+        let layout = if let Some(bytes) = stored {
+            // 解析是纯 CPU，大种子有数 MB：放到阻塞线程。
+            tokio::task::spawn_blocking(move || layout_from_torrent_bytes(&bytes))
+                .await
+                .ok()
+                .flatten()
+        } else if let Some(expected) = TorrentSource::Magnet(task.url.clone())
+            .info_hash_hex()
+            .filter(|_| is_magnet(&task.url))
+        {
+            let path = crate::bt_partfile::persistence_dir(&self.app_data_dir)
+                .join(format!("{expected}.torrent"));
+            tokio::task::spawn_blocking(move || {
+                let bytes = std::fs::read(path).ok()?;
+                layout_from_torrent_bytes(&bytes)
+                    .filter(|layout| layout.info_hash.eq_ignore_ascii_case(&expected))
+            })
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        let layout = layout.map(Arc::new);
+        if let Some(layout) = &layout {
+            *self
+                .bt_layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some((task.task_id.clone(), Arc::clone(layout)));
+        }
+        Ok(layout)
+    }
+
+    /// 修改 BT 任务的文件优先级（`(文件下标, 级别)`：`0` 不下载、`1` 普通、`6` 高、`7` 最高；
+    /// 只改列出的文件）。下载中当即生效；不在会话里的任务只改库，下次启动时带上。选择
+    /// （级别是否为 0）与级别分别落在 `bt_selected_files` 与 `bt_file_priorities`。
+    ///
+    /// # Errors
+    /// 任务不存在 / 不是 BT 任务（`NotFound`）；已完成、正在完成收尾、文件选择尚未确认或
+    /// 还没有元数据（`StateConflict`）；下标 / 级别无效或改完后没有文件要下载
+    /// （`InvalidArgument`，整批不生效）。
+    #[cfg(feature = "bt")]
+    pub async fn set_task_file_priorities(
+        &self,
+        task_id: &str,
+        changes: &[(u32, u8)],
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_task_files::{
+            BtTaskOpError, apply_priority_changes, file_levels, format_priority_table,
+            parse_priority_table, selection_from_levels,
+        };
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .ok_or(BtTaskOpError::NotFound)?;
+        if !is_bt_url(&task.url) {
+            return Err(BtTaskOpError::NotFound);
+        }
+        if self.bt_move_running(task_id) {
+            return Err(BtTaskOpError::StateConflict(
+                "the task's data is being moved".to_owned(),
+            ));
+        }
+        if task.status == 3 {
+            return Err(BtTaskOpError::StateConflict(
+                "the download has already completed".to_owned(),
+            ));
+        }
+        let Some(selection) = self.db.load_bt_selected_files(task_id).await? else {
+            return Err(BtTaskOpError::StateConflict(
+                "the files to download have not been chosen yet".to_owned(),
+            ));
+        };
+        let live = match &self.bt_session {
+            Some(bt) if bt.cached_handle(task_id).await.is_some() => {
+                Some(bt.set_file_priorities(task_id, changes).await?)
+            }
+            _ => None,
+        };
+        // 不在会话里的任务没有下载循环替它刷新进度：连同已下载量一起按新选择重算。
+        let (files, next, stored_progress) = match live {
+            Some((files, next)) => (Arc::new(files), next, None),
+            None => {
+                let layout = self.stored_bt_layout(&task).await?.ok_or_else(|| {
+                    BtTaskOpError::StateConflict("the torrent metadata is not known yet".to_owned())
+                })?;
+                let (levels_text, _renames) = self
+                    .db
+                    .get_task_bt_file_state(task_id)
+                    .await?
+                    .unwrap_or_default();
+                let current = file_levels(
+                    &layout.files,
+                    Some(&selection),
+                    &parse_priority_table(&levels_text),
+                );
+                let next = apply_priority_changes(&layout.files, &current, changes)?;
+                let progress = self.stored_bt_progress(&layout).await;
+                (Arc::new(layout.files.clone()), next, Some(progress))
+            }
+        };
+        let (indices, all) = selection_from_levels(&files, &next);
+        self.db
+            .save_bt_selected_files(task_id, &indices, all)
+            .await?;
+        self.db
+            .set_task_bt_file_priorities(task_id, &format_priority_table(&next))
+            .await?;
+        // 任务大小 = 选中文件之和（与启动下载时的口径一致）。
+        let wanted = |slot: usize| next.get(slot).is_some_and(|level| *level > 0);
+        let selected_total: u64 = files
+            .iter()
+            .enumerate()
+            .filter(|(slot, file)| !file.padding && wanted(*slot))
+            .map(|(_, file)| file.size)
+            .sum();
+        self.db
+            .update_task_total_bytes(task_id, i64::try_from(selected_total).unwrap_or(i64::MAX))
+            .await?;
+        if let Some(progress) = stored_progress {
+            let downloaded: u64 = progress
+                .iter()
+                .enumerate()
+                .filter(|(slot, _)| wanted(*slot))
+                .map(|(_, bytes)| *bytes)
+                .sum();
+            self.db
+                .update_task_progress(
+                    task_id,
+                    i64::try_from(downloaded.min(selected_total)).unwrap_or(i64::MAX),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     /// eD2K 任务实况：源、查询过的服务器、Kad 节点、块进度与本机网络状态
@@ -14023,11 +14566,18 @@ impl DownloadManager {
             let info_hash = TorrentSource::Magnet(task.url.clone())
                 .info_hash_hex()
                 .ok_or_else(|| LocalSeedError::InvalidArgument("invalid magnet link".to_owned()))?;
+            let info_hash_v2 =
+                librqbit::Magnet::parse(&crate::bt_downloader::normalize_magnet(&task.url))
+                    .ok()
+                    .and_then(|magnet| magnet.as_id32())
+                    .map(|hash| hash.as_string())
+                    .unwrap_or_default();
             let name = crate::bt_downloader::magnet_display_name(&task.url).unwrap_or_default();
             let magnet = crate::bt_downloader::magnet_with_trackers(&task.url, &extras);
             return Ok((
                 TorrentShare {
                     info_hash,
+                    info_hash_v2,
                     name,
                     magnet,
                 },
@@ -14042,8 +14592,8 @@ impl DownloadManager {
     /// 把磁盘上已有的内容登记为「已完成 + 做种」的 BT 任务并立即开始做种（本机做种）。
     ///
     /// 数据校验与挂载走续种路径（[`Self::spawn_reseed_from_disk`]，BT runtime 上异步），
-    /// 期间显示为排队做种并附校验说明；校验失败回退「用户停止」并附原因。`unlimited` 为真时
-    /// 任务级分享率 / 时长 / 不活跃限制全部写成「不限制」（永不因限制停止）。
+    /// 期间显示为排队做种并附校验说明；校验失败回退「用户停止」并附原因。选项见
+    /// [`crate::bt_local_seed::LocalSeedOptions`]（不限制做种、超级做种、跳过哈希校验）。
     /// 用户显式发起，不受「任务完成后自动做种」全局开关约束。
     ///
     /// # Errors
@@ -14053,7 +14603,7 @@ impl DownloadManager {
         &mut self,
         plan: crate::bt_local_seed::LocalSeedPlan,
         queue_id: String,
-        unlimited: bool,
+        options: crate::bt_local_seed::LocalSeedOptions,
     ) -> Result<String, crate::bt_local_seed::LocalSeedError> {
         use crate::bt_local_seed::LocalSeedError;
         if !self.bt_config.enabled {
@@ -14118,9 +14668,15 @@ impl DownloadManager {
             .update_task_status(&task_id, 3, "")
             .await
             .map_err(db_error)?;
-        if unlimited {
+        if options.unlimited {
             self.db
                 .set_task_seed_limits(&task_id, -1, -1, -1, -1, 0)
+                .await
+                .map_err(db_error)?;
+        }
+        if options.super_seeding {
+            self.db
+                .set_task_super_seeding(&task_id, true)
                 .await
                 .map_err(db_error)?;
         }
@@ -14137,6 +14693,17 @@ impl DownloadManager {
             .ok_or_else(|| LocalSeedError::Operation("local seed task vanished".to_owned()))?;
         self.sink
             .emit(EngineEvent::TaskChanged(Box::new(task.clone())));
+        if options.skip_check {
+            // 会话是惰性创建的：先拉起，免得「跳过校验」登记落空。
+            if self.bt_session.is_none() {
+                self.ensure_bt_session().await.map_err(|error| {
+                    LocalSeedError::Operation(format!("BT session init failed: {error}"))
+                })?;
+            }
+            if let Some(bt) = &self.bt_session {
+                bt.skip_next_check(&task_id).await;
+            }
+        }
         if !self.try_resume_seeding(&task_id, &task).await {
             return Err(LocalSeedError::Operation(
                 "failed to start seeding".to_owned(),
@@ -14238,7 +14805,9 @@ impl DownloadManager {
         let db = self.db.clone();
         let sink = self.sink.clone();
         let uploaded_at_completion = task.uploaded_at_completion;
-        let upload_limit_bps = self.effective_task_upload_bps(task);
+        let options = self.bt_task_options(task);
+        let upload_limit_bps = options.upload_limit_bps;
+        bt.register_task_options(&task_id, options).await;
         // 在途登记与关停信号：会话重建（改监听类设置 / 禁用 BT）时，本任务不再向
         // 旧会话登记，由 `invalidate_bt_session` 在新会话上统一重新挂载。
         let reseed_guard = bt.begin_reseed(&task_id);
@@ -14377,6 +14946,13 @@ impl DownloadManager {
     /// 返回 `true` = 任务已进入 `pending_queue` 排队。本函数不发任何事件：
     /// 状态持久化与广播由调用方 [`Self::batch_resume`] 在循环后统一完成。
     async fn resume_task_with_row(&mut self, task_id: &str, task_row: TaskInfo) -> bool {
+        if self.bt_move_running(task_id) {
+            log_info!(
+                "[manager] resume {} ignored: its data is being moved",
+                task_id
+            );
+            return false;
+        }
         // 批量手动 resume 与单任务 resume_task 语义对齐：用户手动恢复应重置
         // 自动重试计数，给一个全新的重试配额。否则一个已耗尽配额的任务被批量
         // 恢复后，下次可重试错误会立刻命中"已耗尽"分支、停在 error，与单任务
@@ -15746,6 +16322,9 @@ impl DownloadManager {
         if task.status != 3 || !is_bt_url(&task.url) {
             return Err(BtIntegrityError::NotEligible);
         }
+        if self.bt_move_running(task_id) {
+            return Err(BtIntegrityError::Busy);
+        }
         let guard = self
             .integrity_checks
             .begin(task_id)
@@ -15839,6 +16418,9 @@ impl DownloadManager {
             .ok_or(FileHashError::NotFound)?;
         if task.status != 3 || task.file_missing {
             return Err(FileHashError::NotEligible);
+        }
+        if self.bt_move_running(task_id) {
+            return Err(FileHashError::Busy);
         }
         let path =
             task_target_path(&task.save_dir, &task.file_name).ok_or(FileHashError::NotEligible)?;
@@ -19276,7 +19858,7 @@ mod tests {
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
             .collect();
         std::fs::write(&file, &payload).expect("payload");
-        let bytes = crate::bt_local_seed::build_torrent(&file, Vec::new())
+        let bytes = crate::bt_local_seed::build_torrent(&file, &Default::default())
             .await
             .expect("build torrent");
         let plan = crate::bt_local_seed::plan_local_seed(&file, bytes).expect("plan");
@@ -19290,7 +19872,14 @@ mod tests {
         };
         let mut mgr = bt_test_manager(db, &work, config);
         let task_id = mgr
-            .create_local_seed(plan, "main".to_owned(), true)
+            .create_local_seed(
+                plan,
+                "main".to_owned(),
+                crate::bt_local_seed::LocalSeedOptions {
+                    unlimited: true,
+                    ..Default::default()
+                },
+            )
             .await
             .expect("create local seed");
 
@@ -19328,11 +19917,14 @@ mod tests {
         assert_eq!(load(&mgr).await.seeding_status, SEEDING_STATUS_ACTIVE);
 
         // 同一份数据再做种一次：按 info hash 识别为重复，不创建第二个任务。
-        let again_bytes = crate::bt_local_seed::build_torrent(&file, Vec::new())
+        let again_bytes = crate::bt_local_seed::build_torrent(&file, &Default::default())
             .await
             .expect("rebuild torrent");
         let again = crate::bt_local_seed::plan_local_seed(&file, again_bytes).expect("plan again");
-        match mgr.create_local_seed(again, "main".to_owned(), false).await {
+        match mgr
+            .create_local_seed(again, "main".to_owned(), Default::default())
+            .await
+        {
             Err(crate::bt_local_seed::LocalSeedError::Duplicate {
                 task_id: owner,
                 name,
@@ -19360,18 +19952,112 @@ mod tests {
         }
     }
 
-    /// 端到端：真实 librqbit 会话向本地 HTTP tracker announce，状态采集层把它折叠成「正常」。
-    /// 验证 `bt_status::layer` 确实能从 `tracker_comms` 的真实 span / 事件里读到汇报结果
-    /// （单元测试只用手写事件）。需全局 subscriber，所以单独成测（nextest 每测一进程）。
+    /// 本机做种的「跳过校验」与「超级做种」：数据被改坏一个字节（长度不变）时，跳过校验
+    /// 照常做种、否则初检失败回退停止并附原因；超级做种开关落库、作用于会话句柄，运行中
+    /// 可关掉。
     #[cfg(feature = "bt")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn tracker_status_layer_sees_real_announces() {
+    async fn local_seed_skip_check_trusts_the_data_and_super_seeding_reaches_the_handle() {
+        let (work, port) = bt_test_dir("local_seed_opts");
+        let content = work.join("content");
+        std::fs::create_dir_all(&content).expect("content dir");
+        let mut plans = Vec::new();
+        for name in ["trusted.bin", "checked.bin"] {
+            let file = content.join(name);
+            let payload: Vec<u8> = (0..512 * 1024_u32)
+                .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8 ^ name.len() as u8)
+                .collect();
+            std::fs::write(&file, &payload).expect("payload");
+            let bytes = crate::bt_local_seed::build_torrent(&file, &Default::default())
+                .await
+                .expect("build torrent");
+            // 种子生成后改坏一个字节：长度不变，只有哈希校验发现得了。
+            let mut damaged = payload;
+            damaged[1000] ^= 0xff;
+            std::fs::write(&file, &damaged).expect("damage");
+            plans.push(crate::bt_local_seed::plan_local_seed(&file, bytes).expect("plan"));
+        }
+        let checked_plan = plans.pop().expect("checked plan");
+        let trusted_plan = plans.pop().expect("trusted plan");
+
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut mgr = bt_test_manager(db, &work, bt_test_config(port));
+        let trusted = mgr
+            .create_local_seed(
+                trusted_plan,
+                "main".to_owned(),
+                crate::bt_local_seed::LocalSeedOptions {
+                    skip_check: true,
+                    super_seeding: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("trusted local seed");
+        let checked = mgr
+            .create_local_seed(checked_plan, "main".to_owned(), Default::default())
+            .await
+            .expect("checked local seed");
+
+        let load = |mgr: &DownloadManager, task_id: &str| {
+            let db = mgr.db.clone();
+            let task_id = task_id.to_owned();
+            async move {
+                db.load_task_by_id(&task_id)
+                    .await
+                    .expect("load task")
+                    .expect("task row")
+            }
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let trusted_row = load(&mgr, &trusted).await;
+            let checked_row = load(&mgr, &checked).await;
+            if trusted_row.seeding_status == SEEDING_STATUS_ACTIVE
+                && checked_row.seeding_message.contains("incomplete")
+            {
+                assert_ne!(checked_row.seeding_status, SEEDING_STATUS_ACTIVE);
+                assert!(trusted_row.bt_super_seeding);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "trusted seed must go active and the checked one must fail its check: \
+                 {trusted_row:?} / {checked_row:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let bt = mgr.bt_session.clone().expect("bt session");
+        let handle = bt.cached_handle(&trusted).await.expect("trusted handle");
+        assert!(handle.super_seeding(), "super seeding reaches the session");
+        assert!(
+            mgr.set_task_super_seeding(&trusted, false)
+                .await
+                .expect("switch off")
+        );
+        assert!(!handle.super_seeding());
+        assert!(!load(&mgr, &trusted).await.bt_super_seeding);
+        assert!(
+            !mgr.set_task_super_seeding("no-such-task", true)
+                .await
+                .expect("missing task")
+        );
+
+        mgr.shutdown().await;
+        if let Err(error) = std::fs::remove_dir_all(&work) {
+            tracing::debug!(%error, "BT local seed options test directory cleanup skipped");
+        }
+    }
+
+    /// 端到端：真实 librqbit 会话向本地 HTTP tracker announce，`bt_status` 报出「正常」、
+    /// 所在层级、tracker 给的做种 / 下载人数与上次 / 下次汇报时间。
+    #[cfg(feature = "bt")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bt_status_reports_real_tracker_announces() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        use tracing_subscriber::layer::SubscriberExt as _;
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(crate::bt_status::layer()),
-        )
-        .expect("global subscriber");
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -19390,7 +20076,7 @@ mod tests {
                     if socket.read(&mut buf).await.is_err() {
                         return;
                     }
-                    let body = b"d8:intervali1800e5:peers0:e";
+                    let body = b"d8:completei5e10:incompletei2e8:intervali1800e5:peers0:e";
                     let head = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
@@ -19405,13 +20091,13 @@ mod tests {
             }
         });
 
-        let (work, port) = bt_test_dir("tracker_layer");
+        let (work, port) = bt_test_dir("tracker_status");
         let content = work.join("content");
         std::fs::create_dir_all(&content).expect("content dir");
         let file = content.join("payload.bin");
         std::fs::write(&file, vec![5u8; 256 * 1024]).expect("payload");
         let tracker_url = format!("http://127.0.0.1:{tracker_port}/announce");
-        let bytes = crate::bt_local_seed::build_torrent(&file, Vec::new())
+        let bytes = crate::bt_local_seed::build_torrent(&file, &Default::default())
             .await
             .expect("torrent");
         let plan = crate::bt_local_seed::plan_local_seed(&file, bytes).expect("plan");
@@ -19425,26 +20111,25 @@ mod tests {
         };
         let mut mgr = bt_test_manager(db, &work, config);
         let task_id = mgr
-            .create_local_seed(plan, "main".to_owned(), false)
+            .create_local_seed(plan, "main".to_owned(), Default::default())
             .await
             .expect("local seed");
 
-        assert!(crate::bt_status::installed());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             let status = mgr.bt_status(&task_id).await.expect("bt status");
             let working = status.trackers.iter().find(|row| {
-                row.url == tracker_url
-                    && row
-                        .entry
-                        .as_ref()
-                        .is_some_and(|entry| entry.state == crate::bt_status::TrackerState::Working)
+                row.url == tracker_url && row.state == crate::bt_status::TrackerState::Working
             });
             if let Some(row) = working {
-                let entry = row.entry.clone().expect("entry");
-                assert_eq!(entry.peers, Some(0));
-                assert!(entry.last_ok_at > 0);
-                assert!(entry.next_announce_at > entry.last_ok_at);
+                // 种子本身没有 tracker：设置里追加的这个是第 0 层、来源为会话。
+                assert_eq!(row.source, crate::bt_status::TrackerSource::Session);
+                assert_eq!(row.tier, 0);
+                assert_eq!(row.peers, Some(0));
+                assert_eq!((row.seeders, row.leechers), (Some(5), Some(2)));
+                assert!(row.message.is_empty() && row.detail.is_empty());
+                assert!(row.last_ok_at > 0);
+                assert!(row.next_announce_at > row.last_ok_at);
                 break;
             }
             assert!(
@@ -19462,9 +20147,41 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
+        // 会话在跑：监听端口即配置的端口；端口映射关着，没有映射行。
+        let ports = mgr.bt_port_status();
+        assert!(ports.running);
+        assert_eq!(ports.listen_port, port);
+        assert!(ports.mappings.is_empty());
+
+        // 强制重新汇报：做种中的任务可以，非 BT / 不存在的任务是 NotFound。
+        mgr.reannounce_task(&task_id)
+            .await
+            .expect("a seeding task can reannounce");
+        mgr.db
+            .insert_task(
+                "http-task",
+                "https://example.invalid/a.bin",
+                "a.bin",
+                &work.to_string_lossy(),
+                0,
+                0,
+                "",
+                "",
+                "",
+                2,
+            )
+            .await
+            .expect("insert http task");
+        for id in ["http-task", "missing"] {
+            assert!(matches!(
+                mgr.reannounce_task(id).await,
+                Err(crate::bt_task_files::BtTaskOpError::NotFound)
+            ));
+        }
+
         mgr.shutdown().await;
         if let Err(error) = std::fs::remove_dir_all(&work) {
-            tracing::debug!(%error, "BT tracker layer test directory cleanup skipped");
+            tracing::debug!(%error, "BT tracker status test directory cleanup skipped");
         }
     }
 

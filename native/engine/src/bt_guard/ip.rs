@@ -46,6 +46,21 @@ pub fn is_lan(ip: IpAddr) -> bool {
     }
 }
 
+/// rqbit 给 I2P 对端分配的合成地址（RFC 6666 丢弃前缀 `0100::/64`，见 fork
+/// `librqbit_core::i2p::is_synthetic`）。它们不是真实 IP：全部 I2P 对端落在同一个 /64，
+/// 按 IP 组研判 / 封禁 / 上报会把整个 I2P 网络当成一个对端，所以一律豁免（与开关无关）。
+pub fn is_i2p_synthetic(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(_) => false,
+        IpAddr::V6(v6) => v6.segments().get(..4) == Some(&[0x0100, 0, 0, 0][..]),
+    }
+}
+
+/// 防吸血不研判该地址：I2P 合成地址恒豁免，局域网地址按 `skip_lan`。
+pub fn is_exempt(ip: IpAddr, skip_lan: bool) -> bool {
+    is_i2p_synthetic(ip) || (skip_lan && is_lan(ip))
+}
+
 /// 对端分组：IPv4 为 /32，IPv6 按前缀聚合（已掩码）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IpGroup {
@@ -136,5 +151,31 @@ impl FromStr for IpGroup {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_exempt, is_i2p_synthetic};
+    use std::net::IpAddr;
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse()
+            .unwrap_or_else(|error| panic!("{text}: {error}"))
+    }
+
+    /// I2P 合成地址不论 `skip_lan` 都豁免；只认 `0100::/64`，相邻前缀与真实地址照常研判。
+    #[test]
+    fn i2p_synthetic_addresses_are_always_exempt() {
+        for synthetic in ["100::", "100::1", "100::ffff:ffff:ffff:ffff"] {
+            assert!(is_i2p_synthetic(ip(synthetic)), "{synthetic}");
+            assert!(is_exempt(ip(synthetic), false), "{synthetic}");
+        }
+        for real in ["100:0:0:1::", "2001:db8::1", "1.0.0.1"] {
+            assert!(!is_i2p_synthetic(ip(real)), "{real}");
+            assert!(!is_exempt(ip(real), true), "{real}");
+        }
+        assert!(is_exempt(ip("192.168.1.2"), true));
+        assert!(!is_exempt(ip("192.168.1.2"), false));
     }
 }

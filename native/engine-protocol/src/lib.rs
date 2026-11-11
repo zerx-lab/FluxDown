@@ -263,6 +263,8 @@ pub fn task_info_to_dto(task: TaskInfo) -> TaskDto {
         seed_upload_limit_bps: task.seed_upload_limit_bps,
         bt_sequential: task.bt_sequential,
         bt_first_last_pieces_first: task.bt_first_last_pieces_first,
+        bt_download_limit_bps: task.bt_download_limit_bps,
+        bt_super_seeding: task.bt_super_seeding,
     }
 }
 

@@ -101,6 +101,13 @@ pub fn build_menus(translator: &Translator) -> Vec<Menu> {
                 dl::ToggleFirstLastPiecesSelected,
             ),
         ])),
+        MenuItem::action(t(translator, "btForceRecheck"), dl::ForceRecheckSelected),
+        MenuItem::action(t(translator, "btMoveStorage"), dl::MoveStorageSelected),
+        MenuItem::action(t(translator, "btTaskLimits"), dl::TaskLimitsSelected),
+        MenuItem::action(
+            t(translator, "btSuperSeeding"),
+            dl::ToggleSuperSeedingSelected,
+        ),
         MenuItem::action(t(translator, "redownloadTask"), dl::RedownloadSelected),
         MenuItem::action(t(translator, "boostDownload"), dl::ToggleBoostSelected),
         MenuItem::action(t(translator, "menuOpenInWindow"), dl::OpenSelectedInWindow),
@@ -264,6 +271,10 @@ fn install_download_fallbacks(cx: &mut App) {
     forward_to_downloads::<dl::SetRarestFirstSelected>(cx);
     forward_to_downloads::<dl::SetSequentialSelected>(cx);
     forward_to_downloads::<dl::ToggleFirstLastPiecesSelected>(cx);
+    forward_to_downloads::<dl::ForceRecheckSelected>(cx);
+    forward_to_downloads::<dl::MoveStorageSelected>(cx);
+    forward_to_downloads::<dl::TaskLimitsSelected>(cx);
+    forward_to_downloads::<dl::ToggleSuperSeedingSelected>(cx);
     forward_to_downloads::<dl::RedownloadSelected>(cx);
     forward_to_downloads::<dl::ToggleBoostSelected>(cx);
     forward_to_downloads::<dl::OpenSelectedInWindow>(cx);

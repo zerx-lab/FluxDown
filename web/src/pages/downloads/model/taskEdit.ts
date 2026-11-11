@@ -1,6 +1,7 @@
 // 「重命名 / 更换链接 / 修改线程数」的可用性判定与线程数输入解析（镜像 GPUI `TaskMenuFacts::can_rename` /
 // `can_change_url` / `can_change_segments` 与 `pages/task_edit.rs::parse_task_segments`，改一处须同步另一处）。
 
+import type { SetTaskBtLimitsParams } from '../../../lib/rpc'
 import { MAX_TASK_SEGMENTS } from '../../../lib/threadsRisk'
 import type { DownloadTaskView } from './task'
 
@@ -81,6 +82,72 @@ export function pieceOptionAllOn(views: readonly Pick<DownloadTaskView, 'btFirst
 /** 首尾切换只带该字段，目标为「并非全部已开」。 */
 export function pieceEndsParams(taskId: string, allOn: boolean): { taskId: string; firstLastPiecesFirst: boolean } {
   return { taskId, firstLastPiecesFirst: !allOn }
+}
+
+/** 「强制重新校验」：与选片项同条件（本地、未完成的 BT 任务，可多选）。已完成任务走「完整性校验」。 */
+export function canForceRecheck(views: readonly EditFacts[]): boolean {
+  return canSetPiecePicking(views)
+}
+
+/** 恰好一个本地 BT 任务（任意状态，含已完成 / 做种）。 */
+function singleLocalBt(views: readonly EditFacts[]): boolean {
+  return views.length === 1 && views[0]!.source === 'local' && isBtUrl(views[0]!.url)
+}
+
+/** 「移动到…」：恰好一个本地 BT 任务。 */
+export function canMoveStorage(views: readonly EditFacts[]): boolean {
+  return singleLocalBt(views)
+}
+
+/** 「任务限速…」：恰好一个本地 BT 任务。 */
+export function canSetTaskLimits(views: readonly EditFacts[]): boolean {
+  return singleLocalBt(views)
+}
+
+/** 「超级做种」：选区非空且全部为本地 BT 任务（交集语义，可多选）。 */
+export function canSetSuperSeeding(views: readonly EditFacts[]): boolean {
+  return views.length > 0 && views.every((view) => view.source === 'local' && isBtUrl(view.url))
+}
+
+/** 超级做种勾选态：全部已开才勾上（混合视为未勾）。 */
+export function superSeedingAllOn(views: readonly Pick<DownloadTaskView, 'btSuperSeeding'>[]): boolean {
+  return views.length > 0 && views.every((view) => view.btSuperSeeding)
+}
+
+/** 把超级做种设为 `enabled` 时需要下发的任务（已是目标值的跳过）。 */
+export function superSeedingTargets<T extends Pick<DownloadTaskView, 'btSuperSeeding'>>(views: readonly T[], enabled: boolean): T[] {
+  return views.filter((view) => view.btSuperSeeding !== enabled)
+}
+
+/** 字节/秒 → 限速对话框显示的 KiB/s：正值向上取整；0 与负值（跟随全局等哨兵）显示 `0`。 */
+export function limitKibText(bps: number): string {
+  return bps > 0 ? String(Math.ceil(bps / 1024)) : '0'
+}
+
+/** KiB/s 输入 → 字节/秒：去空白后空串 = 0；只接受非负整数，超出安全整数范围饱和。非法 → null。 */
+export function parseLimitKib(input: string): number | null {
+  const text = input.trim()
+  if (text === '') return 0
+  if (!/^\d+$/.test(text)) return null
+  const bps = Number(text) * 1024
+  return Number.isSafeInteger(bps) ? bps : Number.MAX_SAFE_INTEGER
+}
+
+export type TaskLimitsBuild = { ok: true; params: SetTaskBtLimitsParams | null } | { ok: false }
+
+/**
+ * 限速对话框提交 → `daemon.task.setBtLimits` 参数：只带与初值不同的字段（按 KiB 解析结果比较，
+ * 未改动的输入——包括负值哨兵显示成的 0——不会被写回）；都没改 `params = null`（不下发）；任一输入非法 `ok: false`。
+ */
+export function taskLimitsParams(taskId: string, initial: readonly [string, string], edited: readonly [string, string]): TaskLimitsBuild {
+  const download = parseLimitKib(edited[0])
+  const upload = parseLimitKib(edited[1])
+  if (download === null || upload === null) return { ok: false }
+  const params: SetTaskBtLimitsParams = { taskId }
+  if (parseLimitKib(initial[0]) !== download) params.downloadLimitBps = download
+  if (parseLimitKib(initial[1]) !== upload) params.uploadLimitBps = upload
+  const changed = params.downloadLimitBps !== undefined || params.uploadLimitBps !== undefined
+  return { ok: true, params: changed ? params : null }
 }
 
 /** 线程数输入 → 线程数：`0..=MAX_TASK_SEGMENTS` 的整数（0 = 自动）；空串 / 非数字 / 超限 → null。 */

@@ -333,8 +333,8 @@ private struct SeedLimitFieldSection: View {
     }
 }
 
-/// 自定义值输入行：数值右对齐 + 单位；无法解析时红字 + 图标（不只靠颜色）。
-private struct SeedLimitInputRow: View {
+/// 自定义值输入行：数值右对齐 + 单位；无法解析时红字 + 图标（不只靠颜色）。也用于任务限速表单。
+struct SeedLimitInputRow: View {
     let title: String
     @Binding var text: String
     let isValid: Bool

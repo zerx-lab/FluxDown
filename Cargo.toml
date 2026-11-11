@@ -50,14 +50,17 @@ wildcard_imports = "deny"
 # https tracker 都会 panic 掉磁力解析）+ tracker panic 隔离 + 握手超时下发到 Live 种子的 peer 连接
 # + 初检末尾到达的暂停不再丢失（校验完落 Paused 而非转 Live）+ BT 防吸血 PeerPolicy 钩子
 # （peer_policy.rs：admit / readmit / 事件 / 限速·Choke·断开）+ 始终发冗余 HAVE + 发送前丢弃已 Cancel 的块
-# + 最稀有优先选片 / 按顺序下载 / 先下首尾块（piece_picker.rs，上游 PR ikatson/rqbit#732）
-# + 上传槽 choker：按贡献选对端、乐观解锁、按上传速率伸缩槽数；被对端 choke 时归还在途请求与片；
-# 等槽的静默连接不再被读超时断开（choker.rs，上游 PR ikatson/rqbit#737）。
-librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "088947e13108b3b0847423017ec348dbe3c0341d" }
-# 上游 main 已修、crates.io 0.7.0 未发布：Windows 上 UDP recv_from 因先前 send_to 收到 ICMP
-# 端口不可达而报 WSAECONNRESET(10054) 时，0.7.0 的 uTP 分发循环直接退出，整个会话的 uTP 失效。
-# 上游发布含该修复的版本后删除本条。
-librqbit-utp = { git = "https://github.com/ikatson/librqbit-utp", rev = "06e1c53c8df6edb2830d6aab64a6d4bed8479908" }
+# + 最稀有优先选片 / 按顺序下载 / 先下首尾块（#732）+ 上传槽 choker（#737）
+# + BEP 12/48 tracker 与事件（#738）+ BEP 19 webseed（#739）+ 移动 / 重命名 / 强制校验 / 跳过校验（#740）
+# + 端口映射 UPnP / NAT-PMP / PCP（#741）+ DHT BEP 42/44（#742）+ BEP 6 Fast（#743）+ 文件 / 分片多级优先级（#744）
+# + 运行中改任务限速 / 全局连接上限（#745）+ 校验中恢复不丢 peer 流（#746）+ SOCKS4/5 / HTTP 代理（#747）
+# + BEP 52 v2 / 混合种子与 v2 磁力（#748）+ BEP 16 超级做种（#749）+ v1 / v2 / 混合种子生成（#750）+ I2P（#751）
+# + 会话析构不被在途入站连接拖住（#752）。编号为 ikatson/rqbit 的上游 PR；fork 规则见 .omp/knowledge/engine.md uTP 条。
+librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "30a7800b3ca9730231449a26e49c9df5dd2a7bab" }
+# zerx-lab/librqbit-utp 分支 fluxdown/next = 上游 git main（crates.io 0.7.0 的分发循环遇 Windows UDP
+# WSAECONNRESET(10054) 即退出、整个会话 uTP 失效，上游 main 已修未发版）+ LEDBAT 拥塞控制（上游 PR
+# ikatson/librqbit-utp#5，`bt_utp_congestion`）。上游发版并合入 LEDBAT 后删除本条。
+librqbit-utp = { git = "https://github.com/zerx-lab/librqbit-utp", rev = "f6d50980a637957e0084c6f1a21f86d531c01b76" }
 # 上游 0.7.0 在 iOS 上编译失败（Apple 平台只放行 macOS 的按索引绑定），补丁见源码内 `FluxDown 补丁` 注释；
 # 上游修复发布后删除本条与 third_party/ 副本。
 librqbit-dualstack-sockets = { path = "third_party/librqbit-dualstack-sockets" }

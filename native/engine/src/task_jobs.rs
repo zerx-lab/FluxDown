@@ -1,5 +1,5 @@
-//! 按任务登记的只读后台作业（BT 完整性校验、文件哈希）：同一任务同类作业同时只跑一个，
-//! 删除任务 / 引擎关停时取消。凭据释放即取消并注销。
+//! 按任务登记的后台作业（BT 完整性校验、文件哈希、BT 数据搬移）：同一任务同类作业同时只跑
+//! 一个，删除任务 / 引擎关停时取消。凭据释放即取消并注销。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,6 +26,15 @@ impl TaskJobs {
             task_id: task_id.to_owned(),
             token,
         })
+    }
+
+    /// 该任务是否有本类作业在跑。
+    #[cfg(any(test, feature = "bt"))]
+    pub(crate) fn is_running(&self, task_id: &str) -> bool {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(task_id)
     }
 
     /// 取消该任务的在途作业（没有则无操作）。
@@ -79,11 +88,13 @@ mod tests {
         let jobs = TaskJobs::default();
         let first = jobs.begin("t").expect("first");
         assert!(jobs.begin("t").is_none());
+        assert!(jobs.is_running("t") && !jobs.is_running("u"));
         let other = jobs.begin("u").expect("other");
         jobs.cancel("t");
         assert!(first.token().is_cancelled());
         assert!(!other.token().is_cancelled());
         drop(first);
+        assert!(!jobs.is_running("t"));
         let again = jobs.begin("t").expect("again");
         jobs.cancel_all();
         assert!(again.token().is_cancelled() && other.token().is_cancelled());

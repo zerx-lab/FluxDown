@@ -37,13 +37,26 @@ import com.fluxdown.app.feature.settings.settingChoice
 import com.fluxdown.app.feature.settings.settingNumber
 import com.fluxdown.app.feature.settings.settingStepper
 import com.fluxdown.app.feature.settings.settingSwitch
+import com.fluxdown.app.feature.settings.settingText
 import com.fluxdown.app.i18n.fill
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.LocalNavigator
 import com.fluxdown.app.nav.SettingsPage
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
+import com.fluxdown.core.host.HostException
 import com.fluxdown.core.protocol.AgentSessionDto
+import com.fluxdown.core.protocol.BtPortMappingView
+import com.fluxdown.core.protocol.BtPortSegment
+import com.fluxdown.core.protocol.BtPortSegmentState
+import com.fluxdown.core.protocol.BtPortStatus
+import com.fluxdown.core.protocol.BtSettingsGroup
+import com.fluxdown.core.protocol.BtUtpCongestion
+import com.fluxdown.core.protocol.HostMethod
+import com.fluxdown.core.protocol.callJson
+import com.fluxdown.fluxui.controls.FluxListRow
+import com.fluxdown.fluxui.overlay.LocalFluxOverlays
+import kotlinx.coroutines.CancellationException
 import com.fluxdown.core.protocol.HostNotice
 import com.fluxdown.core.protocol.HostSection
 import com.fluxdown.core.protocol.Json
@@ -71,33 +84,35 @@ import com.fluxdown.fluxui.overlay.FluxBannerKind
 import com.fluxdown.fluxui.theme.FluxText
 import com.fluxdown.fluxui.theme.FluxTheme
 
-// LazyColumn 项 key（搜索定位用，与 [btSearchEntries] 共用）
-private const val K_GENERAL = "general"
-private const val K_NEW_TASKS = "new-tasks"
-private const val K_TRACKER_LIST = "tracker-list"
-private const val K_TRACKER_SUB = "tracker-sub"
-private const val K_SEED_MAIN = "seed-main"
-private const val K_SEED_LIMITS = "seed-limits"
+// LazyColumn 项 key（搜索定位用，与 [btSearchEntries] 共用）：一组一个 key
+private fun groupKey(group: BtSettingsGroup): String = when (group) {
+    BtSettingsGroup.Basic -> "general"
+    BtSettingsGroup.NewTasks -> "new-tasks"
+    BtSettingsGroup.Listen -> "listen"
+    BtSettingsGroup.Transport -> "transport"
+    BtSettingsGroup.Sources -> "sources"
+    BtSettingsGroup.Limits -> "limits"
+    BtSettingsGroup.I2p -> "i2p"
+    BtSettingsGroup.TrackerList -> "tracker-list"
+    BtSettingsGroup.TrackerSub -> "tracker-sub"
+    BtSettingsGroup.Announce -> "announce"
+    BtSettingsGroup.SeedMain -> "seed-main"
+    BtSettingsGroup.SeedLimits -> "seed-limits"
+    BtSettingsGroup.Guard -> "guard"
+}
 
 /** 封禁名单搜索框输入后的防抖，避免逐字请求主机。 */
 private const val SEARCH_DEBOUNCE_MS = 150L
 
 private fun itemKeyOf(row: BtSettingsRow): String = when (row.tab) {
     BtSettingsTab.Guard -> guardItemKeyOf(row)
-    else -> when (row) {
-        BtSettingsRow.Enabled, BtSettingsRow.Dht, BtSettingsRow.Upnp, BtSettingsRow.PortStart, BtSettingsRow.PortEnd, BtSettingsRow.MseMode,
-        BtSettingsRow.UploadSlots -> K_GENERAL
-        BtSettingsRow.PieceOrder, BtSettingsRow.FirstLastPiecesFirst, BtSettingsRow.SelectionAutoDefault -> K_NEW_TASKS
-        BtSettingsRow.CustomTrackers -> K_TRACKER_LIST
-        BtSettingsRow.TrackerSub, BtSettingsRow.TrackerSubUrls, BtSettingsRow.TrackerSubStatus -> K_TRACKER_SUB
-        BtSettingsRow.SeedEnabled, BtSettingsRow.SeedMaxActive, BtSettingsRow.AutoReseed -> K_SEED_MAIN
-        else -> K_SEED_LIMITS
-    }
+    else -> groupKey(row.group)
 }
 
 @StringRes
 private fun tabTitle(tab: BtSettingsTab): Int = when (tab) {
     BtSettingsTab.General -> R.string.settingsTabGeneral
+    BtSettingsTab.Connection -> R.string.settingsTabConnection
     BtSettingsTab.Tracker -> R.string.settingsTabTracker
     BtSettingsTab.Seeding -> R.string.settingsTabSeeding
     BtSettingsTab.Guard -> R.string.btGuardTab
@@ -113,6 +128,18 @@ private fun titleOf(row: BtSettingsRow): Int = when (row) {
     BtSettingsRow.PortEnd -> R.string.btListenPortEnd
     BtSettingsRow.MseMode -> R.string.btMseMode
     BtSettingsRow.UploadSlots -> R.string.btUploadSlots
+    BtSettingsRow.PortMappingStatus -> R.string.btPortMappingStatus
+    BtSettingsRow.UtpCongestion -> R.string.btUtpCongestion
+    BtSettingsRow.Lsd -> R.string.btEnableLsd
+    BtSettingsRow.Webseed -> R.string.btEnableWebseed
+    BtSettingsRow.MaxConnections -> R.string.btMaxConnections
+    BtSettingsRow.MaxConnectionsPerTorrent -> R.string.btMaxConnectionsPerTorrent
+    BtSettingsRow.I2pEnabled -> R.string.btI2pEnabled
+    BtSettingsRow.I2pSamHost -> R.string.btI2pSamHost
+    BtSettingsRow.I2pSamPort -> R.string.btI2pSamPort
+    BtSettingsRow.I2pMixed -> R.string.btI2pMixed
+    BtSettingsRow.AnnounceAllTiers -> R.string.btAnnounceAllTiers
+    BtSettingsRow.AnnounceAllTrackers -> R.string.btAnnounceAllTrackers
     BtSettingsRow.PieceOrder -> R.string.btPieceOrder
     BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefault
     BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefault
@@ -161,6 +188,15 @@ private fun detailOf(row: BtSettingsRow): Int? = when (row) {
     BtSettingsRow.PortStart -> R.string.btListenPortDesc
     BtSettingsRow.MseMode -> R.string.btMseModeDesc
     BtSettingsRow.UploadSlots -> R.string.btUploadSlotsDesc
+    BtSettingsRow.UtpCongestion -> R.string.btUtpCongestionDesc
+    BtSettingsRow.Lsd -> R.string.btEnableLsdDesc
+    BtSettingsRow.Webseed -> R.string.btEnableWebseedDesc
+    BtSettingsRow.MaxConnections -> R.string.btMaxConnectionsDesc
+    BtSettingsRow.MaxConnectionsPerTorrent -> R.string.btMaxConnectionsPerTorrentDesc
+    BtSettingsRow.I2pEnabled -> R.string.btI2pEnabledDesc
+    BtSettingsRow.I2pMixed -> R.string.btI2pMixedDesc
+    BtSettingsRow.AnnounceAllTiers -> R.string.btAnnounceAllTiersDesc
+    BtSettingsRow.AnnounceAllTrackers -> R.string.btAnnounceAllTrackersDesc
     BtSettingsRow.PieceOrder -> R.string.btPieceOrderDesc
     BtSettingsRow.FirstLastPiecesFirst -> R.string.btFirstLastPiecesFirstDefaultDesc
     BtSettingsRow.SelectionAutoDefault -> R.string.btSelectionAutoDefaultDesc
@@ -268,6 +304,28 @@ internal fun BtPage() {
         }
     }
 
+    // 端口映射状态：仅「连接」页签可见、映射开启且页面在前台时每 5 秒轮询（同 GPUI `sync_port_status_poll`）
+    var portStatus by remember { mutableStateOf<BtPortStatus?>(null) }
+    val portStatusVisible = tab == BtSettingsTab.Connection && BtSettingsRow.PortMappingStatus.isVisible(form)
+    LaunchedEffect(container.session, portStatusVisible, lifecycleOwner) {
+        portStatus = null
+        if (!portStatusVisible) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    portStatus = BtPortStatus.fromJson(container.session.callJson(HostMethod.daemonBtPortStatus))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: HostException) {
+                    // 旧 daemon 无此方法 / 断线：行内留空（同 GPUI），本次可见期间不再轮询
+                    portStatus = null
+                    return@repeatOnLifecycle
+                }
+                delay(BtPortMappingView.POLL_INTERVAL_MS)
+            }
+        }
+    }
+
     val tabOptions = visibleTabs.map { SegOption(it, str(tabTitle(it))) }
     val legend = str(R.string.settingsSyncLegend)
 
@@ -291,16 +349,30 @@ internal fun BtPage() {
             } else {
                 when (tab) {
                     BtSettingsTab.General -> {
-                        flowItem(index++, gate, K_GENERAL) { GeneralSection(ctx) }
+                        flowItem(index++, gate, groupKey(BtSettingsGroup.Basic)) { BasicSection(ctx) }
                         if (BtSettingsRow.PieceOrder.isVisible(form) || BtSettingsRow.FirstLastPiecesFirst.isVisible(form) ||
                             BtSettingsRow.SelectionAutoDefault.isVisible(form)
                         ) {
-                            flowItem(index++, gate, K_NEW_TASKS) { NewTasksSection(ctx) }
+                            flowItem(index++, gate, groupKey(BtSettingsGroup.NewTasks)) { NewTasksSection(ctx) }
+                        }
+                    }
+                    BtSettingsTab.Connection -> {
+                        val groups = BtSettingsRow.visible(BtSettingsTab.Connection, form).map { it.group }.distinct()
+                        for (group in groups) {
+                            flowItem(index++, gate, groupKey(group)) {
+                                when (group) {
+                                    BtSettingsGroup.Listen -> ListenSection(ctx, portStatus)
+                                    BtSettingsGroup.Transport -> TransportSection(ctx)
+                                    BtSettingsGroup.Sources -> SourcesSection(ctx)
+                                    BtSettingsGroup.Limits -> LimitsSection(ctx)
+                                    else -> I2pSection(ctx)
+                                }
+                            }
                         }
                     }
                     BtSettingsTab.Tracker -> {
                         if (BtSettingsRow.CustomTrackers.isVisible(form)) {
-                            flowItem(index++, gate, K_TRACKER_LIST) {
+                            flowItem(index++, gate, groupKey(BtSettingsGroup.TrackerList)) {
                                 GlassSection {
                                     linesRow(
                                         ctx, BtSettingsRow.CustomTrackers.id, BtSettingsRow.CustomTrackers.configKey,
@@ -309,20 +381,24 @@ internal fun BtPage() {
                                 }
                             }
                         }
-                        if (BtSettingsRow.visible(BtSettingsTab.Tracker, form).any { it != BtSettingsRow.CustomTrackers }) {
-                            flowItem(index++, gate, K_TRACKER_SUB) { TrackerSubSection(ctx) }
+                        val trackerRows = BtSettingsRow.visible(BtSettingsTab.Tracker, form)
+                        if (trackerRows.any { it.group == BtSettingsGroup.TrackerSub }) {
+                            flowItem(index++, gate, groupKey(BtSettingsGroup.TrackerSub)) { TrackerSubSection(ctx) }
+                        }
+                        if (trackerRows.any { it.group == BtSettingsGroup.Announce }) {
+                            flowItem(index++, gate, groupKey(BtSettingsGroup.Announce)) { AnnounceSection(ctx) }
                         }
                     }
                     BtSettingsTab.Seeding -> {
                         val seeding = BtSettingsRow.visible(BtSettingsTab.Seeding, form)
                         if (seeding.isNotEmpty()) {
-                            flowItem(index++, gate, K_SEED_MAIN) { SeedMainSection(ctx) }
+                            flowItem(index++, gate, groupKey(BtSettingsGroup.SeedMain)) { SeedMainSection(ctx) }
                         }
                         if (seeding.any {
                                 it != BtSettingsRow.SeedEnabled && it != BtSettingsRow.SeedMaxActive && it != BtSettingsRow.AutoReseed
                             }
                         ) {
-                            flowItem(index++, gate, K_SEED_LIMITS) { SeedLimitsSection(ctx) }
+                            flowItem(index++, gate, groupKey(BtSettingsGroup.SeedLimits)) { SeedLimitsSection(ctx) }
                         }
                     }
                     BtSettingsTab.Guard -> {
@@ -343,34 +419,28 @@ internal fun BtPage() {
 }
 
 @Composable
-private fun GeneralSection(ctx: SettingsCtx) {
+private fun BasicSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    GlassSection {
+        if (BtSettingsRow.Enabled.isVisible(form)) {
+            settingSwitch(ctx, BtSettingsRow.Enabled.configKey, R.string.btEnabled, R.string.btEnabledDesc, id = BtSettingsRow.Enabled.id)
+        }
+    }
+}
+
+/** 监听端口与端口映射。本页签除「连接上限」外的改动都会重建 BT 会话，提示挂在第一组（同 GPUI）。 */
+@Composable
+private fun ListenSection(ctx: SettingsCtx, portStatus: BtPortStatus?) {
     val form = ctx.form
     val start = form.int(BtSettingsRow.PortStart.configKey, 6881)
     val end = form.int(BtSettingsRow.PortEnd.configKey, 6891)
     val template = stringResource(R.string.mobileAdjustedTo)
     val invalid = str(R.string.btPortRangeInvalid)
-    val mseLabels = mapOf(
-        "disabled" to (str(R.string.btMseModeDisabled) to str(R.string.btMseModeDisabledDesc)),
-        "enabled" to (str(R.string.btMseModeEnabled) to str(R.string.btMseModeEnabledDesc)),
-        "forced" to (str(R.string.btMseModeForced) to str(R.string.btMseModeForcedDesc)),
-    )
     val footer = buildString {
         append(str(R.string.btSettingsRestartHint))
         if (ctx.isLocalHost) append("\n\n").append(str(R.string.mobileBtAndroidFootnote))
     }
-    GlassSection(footer = footer) {
-        if (BtSettingsRow.Enabled.isVisible(form)) {
-            settingSwitch(ctx, BtSettingsRow.Enabled.configKey, R.string.btEnabled, R.string.btEnabledDesc, id = BtSettingsRow.Enabled.id)
-        }
-        if (BtSettingsRow.Dht.isVisible(form)) {
-            settingSwitch(ctx, BtSettingsRow.Dht.configKey, R.string.btEnableDht, R.string.btEnableDhtDesc, id = BtSettingsRow.Dht.id)
-        }
-        if (BtSettingsRow.Upnp.isVisible(form)) {
-            settingSwitch(ctx, BtSettingsRow.Upnp.configKey, R.string.btEnableUpnp, R.string.btEnableUpnpDesc, id = BtSettingsRow.Upnp.id)
-        }
-        if (BtSettingsRow.Utp.isVisible(form)) {
-            settingSwitch(ctx, BtSettingsRow.Utp.configKey, R.string.btEnableUtp, R.string.btEnableUtpDesc, id = BtSettingsRow.Utp.id)
-        }
+    GlassSection(title = str(R.string.btSectionListen), footer = footer) {
         if (BtSettingsRow.PortStart.isVisible(form)) {
             settingNumber(
                 ctx, BtSettingsRow.PortStart.configKey, R.string.btListenPortStart, R.string.btListenPortDesc,
@@ -399,6 +469,83 @@ private fun GeneralSection(ctx: SettingsCtx) {
                 }
             }
         }
+        if (BtSettingsRow.Upnp.isVisible(form)) {
+            settingSwitch(ctx, BtSettingsRow.Upnp.configKey, R.string.btEnableUpnp, R.string.btEnableUpnpDesc, id = BtSettingsRow.Upnp.id)
+        }
+        if (BtSettingsRow.PortMappingStatus.isVisible(form)) {
+            row { PortMappingStatusRow(ctx, portStatus) }
+        }
+    }
+}
+
+/**
+ * 端口映射状态行（只读）：每段一行；失败原因压成单行并截断，长按以 Toast 显示全文。
+ * 尚无快照（首轮在途 / 旧 daemon 无此方法）时副标题留空（同 GPUI）。
+ */
+@Composable
+private fun PortMappingStatusRow(ctx: SettingsCtx, status: BtPortStatus?) {
+    val overlays = LocalFluxOverlays.current
+    val segments = status?.let(BtPortMappingView::segments).orEmpty()
+    val idle = str(R.string.btPortMappingIdle)
+    val pending = str(R.string.btPortMappingPending)
+    val failed = str(R.string.btPortMappingFailed)
+    val mappedTpl = str(R.string.btPortMappingMapped)
+    val ipTpl = str(R.string.btPortMappingExternalIp)
+    val lines = ArrayList<String>(segments.size)
+    val fulls = ArrayList<String>()
+    for (segment in segments) {
+        lines += when (segment) {
+            BtPortSegment.Idle -> idle
+            is BtPortSegment.ExternalIp -> ipTpl.fill("ip" to segment.ip)
+            is BtPortSegment.Mapping -> {
+                val text = when (val s = segment.state) {
+                    is BtPortSegmentState.Mapped -> mappedTpl.fill("method" to s.method)
+                    BtPortSegmentState.Pending -> pending
+                    is BtPortSegmentState.Failed -> if (s.message.isEmpty()) {
+                        failed
+                    } else {
+                        fulls += "${segment.port} $failed: ${s.message}"
+                        "$failed: ${BtPortMappingView.singleLine(s.message)}"
+                    }
+                    is BtPortSegmentState.Other -> s.raw
+                }
+                "${segment.port} $text"
+            }
+        }
+    }
+    SettingRowBox(ctx, BtSettingsRow.PortMappingStatus.id, null) {
+        FluxListRow(
+            title = str(R.string.btPortMappingStatus),
+            subtitle = lines.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+            onLongClick = if (fulls.isEmpty()) null else ({ overlays.toast(fulls.joinToString("\n"), durationMs = 8000L) }),
+        )
+    }
+}
+
+@Composable
+private fun TransportSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    val mseLabels = mapOf(
+        "disabled" to (str(R.string.btMseModeDisabled) to str(R.string.btMseModeDisabledDesc)),
+        "enabled" to (str(R.string.btMseModeEnabled) to str(R.string.btMseModeEnabledDesc)),
+        "forced" to (str(R.string.btMseModeForced) to str(R.string.btMseModeForcedDesc)),
+    )
+    val utpLabels = mapOf(
+        "ledbat" to str(R.string.btUtpCongestionLedbat),
+        "cubic" to str(R.string.btUtpCongestionCubic),
+    )
+    GlassSection(title = str(R.string.btSectionTransport)) {
+        if (BtSettingsRow.Utp.isVisible(form)) {
+            settingSwitch(ctx, BtSettingsRow.Utp.configKey, R.string.btEnableUtp, R.string.btEnableUtpDesc, id = BtSettingsRow.Utp.id)
+        }
+        if (BtSettingsRow.UtpCongestion.isVisible(form)) {
+            settingChoice(
+                ctx, BtSettingsRow.UtpCongestion.configKey, R.string.btUtpCongestion, R.string.btUtpCongestionDesc,
+                id = BtSettingsRow.UtpCongestion.id,
+            ) {
+                BtUtpCongestion.all.map { wire -> SelectOption(wire, utpLabels[wire] ?: wire) }
+            }
+        }
         if (BtSettingsRow.MseMode.isVisible(form)) {
             settingChoice(ctx, BtSettingsRow.MseMode.configKey, R.string.btMseMode, R.string.btMseModeDesc, id = BtSettingsRow.MseMode.id) {
                 BtMseModeOptions(mseLabels)
@@ -409,6 +556,95 @@ private fun GeneralSection(ctx: SettingsCtx) {
                 ctx, BtSettingsRow.UploadSlots.configKey, R.string.btUploadSlots, R.string.btUploadSlotsDesc,
                 range = 0..512, default = 0, zeroLabel = R.string.auto,
                 id = BtSettingsRow.UploadSlots.id,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourcesSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    GlassSection(title = str(R.string.btSectionSources)) {
+        if (BtSettingsRow.Dht.isVisible(form)) {
+            settingSwitch(ctx, BtSettingsRow.Dht.configKey, R.string.btEnableDht, R.string.btEnableDhtDesc, id = BtSettingsRow.Dht.id)
+        }
+        if (BtSettingsRow.Lsd.isVisible(form)) {
+            settingSwitch(ctx, BtSettingsRow.Lsd.configKey, R.string.btEnableLsd, R.string.btEnableLsdDesc, id = BtSettingsRow.Lsd.id)
+        }
+        if (BtSettingsRow.Webseed.isVisible(form)) {
+            settingSwitch(
+                ctx, BtSettingsRow.Webseed.configKey, R.string.btEnableWebseed, R.string.btEnableWebseedDesc,
+                id = BtSettingsRow.Webseed.id,
+            )
+        }
+    }
+}
+
+/** 连接数上限：热生效，不重建 BT 会话。 */
+@Composable
+private fun LimitsSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    GlassSection(title = str(R.string.btSectionLimits)) {
+        if (BtSettingsRow.MaxConnections.isVisible(form)) {
+            settingNumber(
+                ctx, BtSettingsRow.MaxConnections.configKey, R.string.btMaxConnections, R.string.btMaxConnectionsDesc,
+                range = 0L..65_535L, default = 0L, id = BtSettingsRow.MaxConnections.id,
+            )
+        }
+        if (BtSettingsRow.MaxConnectionsPerTorrent.isVisible(form)) {
+            settingNumber(
+                ctx, BtSettingsRow.MaxConnectionsPerTorrent.configKey, R.string.btMaxConnectionsPerTorrent,
+                R.string.btMaxConnectionsPerTorrentDesc,
+                range = 1L..4096L, default = 512L, id = BtSettingsRow.MaxConnectionsPerTorrent.id,
+            )
+        }
+    }
+}
+
+/** I2P：SAM 桥地址与混合模式只在启用后显示。 */
+@Composable
+private fun I2pSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    GlassSection(title = str(R.string.btSectionI2p)) {
+        if (BtSettingsRow.I2pEnabled.isVisible(form)) {
+            settingSwitch(
+                ctx, BtSettingsRow.I2pEnabled.configKey, R.string.btI2pEnabled, R.string.btI2pEnabledDesc,
+                id = BtSettingsRow.I2pEnabled.id,
+            )
+        }
+        if (BtSettingsRow.I2pSamHost.isVisible(form)) {
+            settingText(ctx, BtSettingsRow.I2pSamHost.configKey, R.string.btI2pSamHost, null, id = BtSettingsRow.I2pSamHost.id)
+        }
+        if (BtSettingsRow.I2pSamPort.isVisible(form)) {
+            settingNumber(
+                ctx, BtSettingsRow.I2pSamPort.configKey, R.string.btI2pSamPort, null,
+                range = 1L..65_535L, default = 7656L, id = BtSettingsRow.I2pSamPort.id,
+            )
+        }
+        if (BtSettingsRow.I2pMixed.isVisible(form)) {
+            settingSwitch(
+                ctx, BtSettingsRow.I2pMixed.configKey, R.string.btI2pMixed, R.string.btI2pMixedDesc,
+                id = BtSettingsRow.I2pMixed.id,
+            )
+        }
+    }
+}
+
+/** tracker 汇报策略（BEP 12 的两个开关）。 */
+@Composable
+private fun AnnounceSection(ctx: SettingsCtx) {
+    val form = ctx.form
+    GlassSection(title = str(R.string.btSectionAnnounce)) {
+        if (BtSettingsRow.AnnounceAllTiers.isVisible(form)) {
+            settingSwitch(
+                ctx, BtSettingsRow.AnnounceAllTiers.configKey, R.string.btAnnounceAllTiers, R.string.btAnnounceAllTiersDesc,
+                id = BtSettingsRow.AnnounceAllTiers.id,
+            )
+        }
+        if (BtSettingsRow.AnnounceAllTrackers.isVisible(form)) {
+            settingSwitch(
+                ctx, BtSettingsRow.AnnounceAllTrackers.configKey, R.string.btAnnounceAllTrackers,
+                R.string.btAnnounceAllTrackersDesc, id = BtSettingsRow.AnnounceAllTrackers.id,
             )
         }
     }

@@ -86,11 +86,16 @@
 - **uTP（`bt_enable_utp`，默认开）**：开启时监听模式为 `TcpAndUtp`，出站并发拨 TCP + uTP；
   #825 实测在上限 512 基础上稳态再翻倍，代价是 UDP 收发的系统态 CPU 明显更高（上游仍标为
   experimental）。改动经 daemon 重建共享会话生效。librqbit 来自 `zerx-lab/rqbit` 分支 `fluxdown/main`（FluxDown 补丁分支：
-  上游 main + MSE + Android HTTPS + 握手超时下发 + 初检末尾暂停不丢失 + 防吸血 `PeerPolicy` 钩子 + 最稀有优先选片 + 上传槽 choker）。升级上游时在该分支
+  上游 main + MSE + Android HTTPS + 握手超时下发 + 初检末尾暂停不丢失 + 防吸血 `PeerPolicy` 钩子 + 最稀有优先选片 + 上传槽 choker
+  + 文件 / 分片多级优先级 + 运行中改任务限速 / 全局连接上限 + BEP 12/48 tracker 与事件 + 端口映射 UPnP / NAT-PMP / PCP + BEP 42/44 DHT
+  + 代理（SOCKS4/5、HTTP CONNECT、SOCKS5 UDP ASSOCIATE 承载 UDP tracker 与 DHT）+ I2P（SAM 3.1）+ BEP 6 Fast + BEP 19 webseed + BEP 52 v2 / 混合种子（含 hash 报文、
+  v2 磁力）+ BEP 16 超级做种 + 种子生成（v1 / v2 / 混合）+ 存储操作（重命名 / 重新校验 / 移动 / 跳过校验）；
+  集成中的特性先合进 `fluxdown/next`，全部评审通过后再快进 `fluxdown/main`）。升级上游时在该分支
   合并 `upstream/main` 并推送（不变基、不强推，FluxDown 历史钉过的 rev 都须仍是它的祖先），再改根 `Cargo.toml` 的 rev；fork 的 `main` 只跟上游同步，不是事实源；
-  `upstream/*` 分支各对应一个给 ikatson/rqbit 的开放 PR，同步上游也用合并。`librqbit-utp` 临时 patch 到上游 git main：
-  crates.io 0.7.0 的分发循环遇 Windows `WSAECONNRESET(10054)` 即退出，整个会话 uTP 失效；
-  上游发版后删 patch。
+  `upstream/*` 分支各对应一个给 ikatson/rqbit 的开放 PR（#720–#752），同步上游也用合并；特性依赖别的未合 PR 时分支叠在其上，PR 正文写明只审哪些提交。
+  `librqbit-utp` 来自 `zerx-lab/librqbit-utp` 分支 `fluxdown/next`（上游 git main + LEDBAT，上游 PR ikatson/librqbit-utp#5）：
+  crates.io 0.7.0 的分发循环遇 Windows `WSAECONNRESET(10054)` 即退出，整个会话 uTP 失效；上游发版并合入 LEDBAT 后删 patch。
+  上游 PR 各自的 libtorrent 互通测试夹具在 `crates/librqbit/src/tests/interop/`（`RQBIT_TEST_LIBTORRENT_PYTHON` 指向装了 `libtorrent` 的 Python，`--ignored` 运行）。
 - **BT 选片（对齐 qBittorrent / libtorrent piece picker）**：fork `crates/librqbit/src/piece_picker.rs`。默认最稀有优先：
   每片可用度 = 连接中 peer 的位图计数（`PeerStates.availability`，位图到达 / HAVE 时计入，peer 离开 Live 时按入账方式扣回；
   位图到达即满的 peer 记一次「种子」而非逐片计数），平局按每次开局随机盐打散；已有 < 4 片时纯随机（libtorrent
@@ -159,21 +164,52 @@
   禁用时跳过，达限停止的不纳入）。重启只续上次退出时仍在做种 / 排队的任务（`bt_auto_reseed`）。
   客户端判定：做种中 = status 3 且 seeding_status ∈ {1, 8}（侧栏「做种中」文件夹，同时计入
   「已完成」）；可恢复做种 = status 3 且 2..=7 且文件未丢失；仅本机任务，远程任务不变。
-- **本机做种**（`daemon.task.seedLocal`，`bt_local_seed.rs` + `DownloadManager::create_local_seed`）：把 daemon 主机上
+- **本机做种 / 制作种子**（`daemon.task.seedLocal`，`bt_local_seed.rs` + `DownloadManager::create_local_seed`，对齐 qBittorrent「制作 Torrent」）：把 daemon 主机上
   已有的文件 / 文件夹登记为「已完成 + 做种」任务（`save_dir` = 路径父目录、`file_name` = 末段，与完成态布局一致，续种沿用
   `spawn_reseed_from_disk` 异步校验，失败回落 UserStopped 并附原因）。无现成种子时在 **actor 之外**（服务层，慢方法通道）
-  `build_torrent` 哈希生成；给 `torrentPath` 时 `plan_local_seed` 校验形态（文件 ↔ 同名单文件种子，文件夹 ↔ 任意多文件种子）。
-  `unlimited` = 任务级四项限制写 -1（永不因限制停止，可在详情「做种」页改回）；不受「完成后自动做种」开关约束。
+  `build_torrent(path, &TorrentBuildOptions)` 哈希生成：格式 v1 / v2 / 混合（`TorrentFormat`）、私有、分片大小（0 = 自动，否则 16 KiB..=128 MiB 的 2 的幂）、
+  HTTP 源、注释、来源标记、`created by` = `FluxDown <版本>`、创建时间 = 当前；tracker 列表里的**空串分隔层级**（BEP 12，客户端表单的空行，同 qBittorrent）。
+  不合法的选项在哈希前由服务层 `seed_local_build_options` → `TorrentBuildOptions::validate` 按字段（`version` / `pieceLength` / `webSeeds`）报出。
+  `torrentOutput`（绝对路径，覆盖写）同时写出 `.torrent`；`createOnly` 只生成种子不建任务（必须给 `torrentOutput`，不能与 `torrentPath` 同给）。
+  给 `torrentPath` 时 `plan_local_seed` 校验形态（文件 ↔ 同名单文件种子，文件夹 ↔ 任意多文件种子）。任务选项 `LocalSeedOptions`：`unlimited` = 任务级四项限制写 -1；
+  `super_seeding` 落 `tasks.bt_super_seeding`；`skip_check` = 首次挂载只核对文件长度（`SharedBtSession::skip_next_check` 一次性登记，`apply_task_options` 取走写
+  `AddTorrentOptions::skip_initial_check`）——刚生成的种子服务层一律跳过（数据刚算过），现成种子只在用户勾选时跳过。不受「完成后自动做种」开关约束。
   路径一律是 daemon 主机路径（Web 手输）。
   创建前按 info hash 对全部 BT 任务（种子字节 + 磁力 URL）查重，重复时 `seedLocal` 返回 `duplicate=true` + 已有任务（不建新任务，客户端弹 `duplicateTorrentToast`）。
+- **超级做种（BEP 16）**（`daemon.task.setSuperSeeding`）：`tasks.bt_super_seeding` → `BtTaskOptions::super_seeding`，经 `register_task_options` / `set_task_super_seeding`
+  作用于已入册句柄（`Session::set_super_seeding`），每次加入会话经 `apply_task_options` 烘焙 `AddTorrentOptions::super_seeding`；只在任务完整时生效，下载中可提前设。
+- **v2 / 混合种子**：任务主键仍是 20 字节 info hash（v1 / 混合 = SHA-1，纯 v2 = 截断 SHA-256）；`BtStatusDto` / `TorrentShareDto` 另带 `infoHashV2`（种子字节 / 磁力 `btmh` / 句柄取得元数据后）。
+  分享磁力的 `xt` 随版本：v1 = `btih`、纯 v2 = `btmh`、混合两个都带。完成复核与 `daemon.task.verify` 共用 `verify_pieces_core`：按 `Lengths`（纯 v2 每个文件从分片边界开始、
+  文件末片较短）与各文件 `offset_in_torrent` 取片，校验器来自 `ValidatedTorrentMetaV1Info::piece_verifier`（v1 SHA-1 / v2 merkle / 混合两者）；哈希未知（v2 层未取得）的片记为跳过，
+  不记坏片。读种子布局的地方一律用种子自己的偏移（`iter_file_details_ext` / `FileInfo::offset_in_torrent`），不能按文件长度累加。
+  纯 v2 磁力（只有 `btmh`）的会话标识 = 截断 SHA-256（`TorrentSource::info_hash_hex`）；缺分片层的种子 / v2 磁力要等 v2 对端补齐层才能下载（HTTP 源单独补不了）。
+- **I2P**（`bt_i2p_enabled` / `bt_i2p_sam_host` / `bt_i2p_sam_port` / `bt_i2p_mixed`，会话级，改动重建会话）：`bt_downloader::i2p_options` 建会话时把 SAM 主机解析成地址
+  （解析失败记日志并关闭 I2P，不影响明网种子）。只有带 `.i2p` tracker 的种子走 I2P；非混合模式下这类种子不碰明网 tracker / DHT / LSD / PEX / HTTP 源。
+  对端在 rqbit 里是 `0100::/64` 合成地址：防吸血 `PeerPolicy` 与连接上限按该地址处理，IP 过滤不作用于它。
 - **BT 分享材料 / 实况**：`daemon.task.torrentShare` 返回磁力链接（种子自带 tracker ∪ `extra_trackers_for` 会话追加 tracker，去重）与可选
   `.torrent` base64（库里无字节的纯磁力任务不返回）；右键「复制磁力链接 / 导出 .torrent」用它。`daemon.task.btStatus` 返回逐 peer
-  （地址 / 客户端 / 传输 / 累计 / 速度）与逐 tracker 状态，详情页「Tracker / 连接」页签每 2 秒轮询。librqbit 不暴露 tracker 汇报状态，
-  所以 `bt_status::layer()` 旁路采集 `tracker_comms` 的 `http_tracker` / `udp_tracker` span 与 announce 事件（成功 / 失败 / 休眠间隔），
-  **必须挂在宿主全局 subscriber 上**（现仅 `engine/logger.rs` 挂；其它宿主自装 subscriber 时 tracker 状态显示「未知」，`bt_status::installed()`
-  判定）。peer 速度 = 相邻两次采样的字节差（`apply_speeds`，同任务多客户端轮询共享采样，间隔 <400ms 沿用上次值）。`BtPeerDto` 另带防吸血研判
-  （`ipGroup` / `groupDeliveredBytes` / `suspicion` / `rules` / `action` / `observeOnly`，来自 `BtGuard::peer_insight`）。与 qBittorrent 的差距：
-  无增删 / 编辑 tracker、无强制重新汇报、无 peer 进度 / flags、tracker 无 seeds / leeches / 完成数（librqbit 不提供）。
+  （地址 / 客户端 / 传输 / 累计 / 速度）、逐 tracker 状态与 HTTP 源（webseed）实况，详情页「Tracker / 连接」页签每 2 秒轮询。tracker 行取 librqbit
+  `ManagedTorrent::trackers()`（BEP 12 层级、做种 / 下载 / 完成数来自 BEP 48 scrape 与 announce 应答）；任务不在会话里时按种子自带层级 + 会话追加 tracker 列出
+  「未联系」行（私有种子不追加，BEP 27）。`daemon.task.reannounce` 立即重新汇报（不在运行为 `taskStateConflict`）。peer 速度 = 相邻两次采样的字节差
+  （`apply_speeds`，同任务多客户端轮询共享采样，间隔 <400ms 沿用上次值）。`BtPeerDto` 另带防吸血研判
+  （`ipGroup` / `groupDeliveredBytes` / `suspicion` / `rules` / `action` / `observeOnly`，来自 `BtGuard::peer_insight`）。
+- **BT 存储操作**（`download_manager/bt_storage_ops.rs` + `bt_move.rs` + `bt_task_files.rs`）：
+  - **重命名文件**（`daemon.task.renameBtFile`，仅未完成且选择已确认的任务）：路径先过 `normalize_rename`（`\` 视作分隔符、不越出任务目录、Windows
+    保留名 / 尾随点空格、与其他文件或其上级目录撞名一律拒，不分大小写）。会话里的任务交 librqbit `Session::rename_file` 当场挪 staging 里的文件；
+    不在会话里的任务由 `rename_staged_file` 直接挪（先停到临时名再落新名，既能只改大小写又绝不覆盖别的文件）。表落 `tasks.bt_file_renames`，改回原名即删表项；
+    每次加入会话经 `SharedBtSession::apply_task_options` 带上 `AddTorrentOptions::renamed_files`。凡读 staging / 完成布局 / 边车的地方都按**当前路径**
+    （`current_relative_path` = `ManagedTorrentShared::file_relative_path`），完成后落到 `<容器>/<新路径>`；webseed URL 仍按种子里发布的路径拼。
+  - **强制重新校验**（`daemon.task.recheck`，已完成任务用只读的 `daemon.task.verify`）：下载中的任务在会话里 `force_recheck`，下载循环照常上报；
+    暂停 / 出错的任务以**暂停态**校验——会话里暂停的句柄当场校验，否则摘掉旧句柄、删 `.bitv` 后 `add_paused_for_check` 重新加入（句柄入册，之后的恢复就是
+    同会话暂停→继续），`watch_offline_check` 等校验结束把进度落库并广播任务行，任务仍是暂停。磁力任务靠会话目录缓存的 `{hash}.torrent`（无则 `taskStateConflict`）。
+  - **移动数据**（`daemon.task.moveStorage`，慢方法）：**不用** librqbit 的 move_storage——完成态任务的文件早已搬离 librqbit 记录的 staging（会话
+    条目与磁盘对不上），所以一律在会话之外搬。目标检查在暂停之前（相对路径 / 落在任务自己的数据里 / 当前目录的别名按规范化路径判，目标不必存在；目标里已有同名条目 → `conflict`）；
+    下载中先静默暂停并等下载循环退出（`BtMoveStart::Wait`，daemon 每 200ms 重试、上限 60s，放弃时恢复下载），做种中先注销做种者；然后 `SharedBtSession::evict`
+    摘出会话（写回 `{hash}.torrent` 与暂停时落盘的 `.bitv`，不删 parts 边车），把保存目录下属于任务的顶层条目（staging、完成落盘名 + `task_artifacts`、
+    收尾中途已落下的 `bt_completion_top_*`）逐个挪到新目录（`bt_move::move_entries`：同卷 rename，跨卷逐文件复制后删源，失败把已挪的挪回），
+    `set_task_location` 后恢复原状态（继续下载 / `spawn_reseed_from_disk` 续种）。动手前把意图写进 config `bt_move_<task_id>`（`MoveJournal`），新位置落库后删；
+    进程中途退出时下次启动 `recover_bt_moves`（在 staging 扫描与续种之前）以续传模式做完并落库；回滚也失败（数据分散两处）时任务标错误、日志保留。
+    搬移期间 `bt_moves` 登记拒绝恢复 / 暂停 / 删除 / 改文件 / 校验 / 哈希（删除按「文件保留」失败返回）。
 - **BT 防吸血**（`bt_guard/`，经 rqbit fork 的 `PeerPolicy` 钩子接入 `SharedBtSession::new`）：规则、处置阶梯、分层封禁、持久化与空闲静默约束见
   `ops.md`「已实现（BT 防吸血）」条；改 rqbit fork 先在 `fluxdown/main` 分支提交再更新根 `Cargo.toml` 的 rev。
 - **peer 国旗**（`geoip.rs`，对齐 qBittorrent）：DB-IP「国家 lite」`.mmdb`（CC BY 4.0，关于页署名）+ 自带最小 MaxMind DB 读取器（零依赖，24/28/32 位记录，

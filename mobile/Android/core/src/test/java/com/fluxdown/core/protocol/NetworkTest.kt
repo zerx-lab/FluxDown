@@ -88,16 +88,44 @@ class NetworkTest {
     @Test
     fun rowVisibilityFollowsConfigLoad() {
         val siteAuth = listOf(NetworkRow.SiteAuth, NetworkRow.SiteAuthAdd, NetworkRow.SiteAuthClear)
-        assertEquals(siteAuth, NetworkRow.visible(false))
+        assertEquals(siteAuth, NetworkRow.visible(form(emptyMap())))
 
         val loaded = listOf(
             NetworkRow.Mode,
             NetworkRow.Type, NetworkRow.Host, NetworkRow.Port,
             NetworkRow.Username, NetworkRow.Password, NetworkRow.NoList, NetworkRow.Test,
+            NetworkRow.BtProxyEnabled,
             NetworkRow.Rules, NetworkRow.RulesAdd, NetworkRow.RulesTest,
         ) + siteAuth
-        assertEquals(loaded, NetworkRow.visible(true))
+        // bt_proxy_enabled 缺省（旧 daemon）按目录默认 false：「节点连接也走代理」隐藏
+        assertEquals(loaded, NetworkRow.visible(form(mapOf("proxy_mode" to "none"))))
         assertTrue(NetworkRow.Host in loaded && NetworkRow.Test in loaded)
+
+        val btProxy = NetworkRow.visible(form(mapOf("proxy_mode" to "none", "bt_proxy_enabled" to "true")))
+        assertEquals(
+            listOf(NetworkRow.BtProxyEnabled, NetworkRow.BtProxyPeers),
+            btProxy.filter { it.group == NetworkRow.Group.BtProxy },
+        )
+        // 分组顺序：BitTorrent 在手动代理之后、站点规则之前
+        assertEquals(btProxy.indexOf(NetworkRow.Test) + 1, btProxy.indexOf(NetworkRow.BtProxyEnabled))
+        assertEquals(btProxy.indexOf(NetworkRow.BtProxyPeers) + 1, btProxy.indexOf(NetworkRow.Rules))
+    }
+
+    @Test
+    fun btProxyHintMirrorsGpui() {
+        assertEquals(BtProxyHint.NoServer, BtProxyHint.of("socks5", "", "1080"))
+        assertEquals(BtProxyHint.NoServer, BtProxyHint.of("https", "proxy.lan", " "))
+        assertEquals(BtProxyHint.UnsupportedType, BtProxyHint.of("https", "proxy.lan", "443"))
+        assertEquals(BtProxyHint.NoUdp, BtProxyHint.of("http", "proxy.lan", "8080"))
+        assertEquals(BtProxyHint.NoUdp, BtProxyHint.of("socks4", "proxy.lan", "1080"))
+        assertNull(BtProxyHint.of("socks5", "proxy.lan", "1080"))
+
+        val server = mapOf("proxy_type" to "socks4", "proxy_host" to "proxy.lan", "proxy_port" to "1080")
+        assertNull(BtProxyHint.of(form(server)))
+        assertNull(BtProxyHint.of(form(server + ("bt_proxy_enabled" to "false"))))
+        assertEquals(BtProxyHint.NoUdp, BtProxyHint.of(form(server + ("bt_proxy_enabled" to "true"))))
+        assertEquals(BtProxyHint.NoServer, BtProxyHint.of(form(mapOf("bt_proxy_enabled" to "true"))))
+        assertEquals(false, SettingsCatalog.isSynced("bt_proxy_peers"))
     }
 
     @Test

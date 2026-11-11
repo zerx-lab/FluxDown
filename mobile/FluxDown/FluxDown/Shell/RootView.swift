@@ -110,6 +110,12 @@ struct RootView: View {
         case .fileConflicts: FileConflictSheet()
         case .search: GlobalSearchScreen()
         case .queues: QueueManagerSheet()
+        case let .btTaskLimits(taskId):
+            #if FULL_FLAVOR
+            BtTaskLimitsSheet(taskId: taskId)
+            #else
+            EmptyView()
+            #endif
         }
     }
 

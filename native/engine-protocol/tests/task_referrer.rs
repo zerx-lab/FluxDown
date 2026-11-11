@@ -36,6 +36,8 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
         seed_upload_limit_bps: 2048,
         bt_sequential: true,
         bt_first_last_pieces_first: false,
+        bt_download_limit_bps: 4096,
+        bt_super_seeding: true,
         referrer: "https://example.com/page".to_owned(),
         group_id: String::new(),
         rss_source_id: String::new(),
@@ -52,6 +54,8 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
     assert!(json.contains(r#""seedUploadLimitBps":2048"#));
     assert!(json.contains(r#""btSequential":true"#));
     assert!(!json.contains("btFirstLastPiecesFirst"));
+    assert!(json.contains(r#""btDownloadLimitBps":4096"#));
+    assert!(json.contains(r#""btSuperSeeding":true"#));
     Ok(())
 }
 
@@ -88,6 +92,8 @@ fn task_dto_json_carries_persisted_source_bytes() -> Result<(), serde_json::Erro
         seed_upload_limit_bps: 0,
         bt_sequential: false,
         bt_first_last_pieces_first: false,
+        bt_download_limit_bps: 0,
+        bt_super_seeding: false,
         referrer: String::new(),
         group_id: String::new(),
         rss_source_id: String::new(),

@@ -58,6 +58,7 @@ object SettingsCatalog {
     val btSeedThenActions = listOf("stop", "delete", "delete_files")
     val btMseModes = listOf("disabled", "enabled", "forced")
     val btPieceOrders = listOf("rarest", "sequential")
+    val btUtpCongestions = listOf("ledbat", "cubic")
     val proxyModes = listOf("none", "system", "manual", "auto")
     val proxyTypes = listOf("http", "https", "socks4", "socks5")
     val themeModes = listOf("system", "light", "dark")
@@ -119,6 +120,20 @@ object SettingsCatalog {
         daemon("bt_tracker_sub_urls", text, ""),
         daemon("bt_tracker_sub_cache", readOnly, ""),
         daemon("bt_tracker_sub_updated_at", readOnly, "0"),
+        // BT 连接 / 汇报策略 / 代理 / I2P（设备本地，不进云同步目录）
+        daemon("bt_enable_lsd", bool, "true"),
+        daemon("bt_utp_congestion", choice(btUtpCongestions), "ledbat"),
+        daemon("bt_max_connections", int(0, 65_535), "0"),
+        daemon("bt_max_connections_per_torrent", int(1, 4096), "512"),
+        daemon("bt_enable_webseed", bool, "true"),
+        daemon("bt_announce_all_tiers", bool, "true"),
+        daemon("bt_announce_all_trackers", bool, "true"),
+        daemon("bt_proxy_enabled", bool, "false"),
+        daemon("bt_proxy_peers", bool, "true"),
+        daemon("bt_i2p_enabled", bool, "false"),
+        daemon("bt_i2p_sam_host", text, "127.0.0.1"),
+        daemon("bt_i2p_sam_port", int(1, 65_535), "7656"),
+        daemon("bt_i2p_mixed", bool, "false"),
         daemon("bt_seed_enabled", bool, "true"),
         daemon("bt_auto_reseed", bool, "true"),
         daemon("bt_seed_max_active", int(0, MAX), "0"),

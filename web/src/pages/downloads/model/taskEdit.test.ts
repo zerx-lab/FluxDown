@@ -1,5 +1,28 @@
 import { describe, expect, test } from 'bun:test'
-import { canChangeSegments, canChangeUrl, canRename, canSetPiecePicking, canVerifyIntegrity, isBtUrl, isReplaceableUrl, parseTaskSegments, pieceEndsParams, pieceOptionAllOn, pieceOrder, pieceOrderTargets, pieceSequentialParams } from './taskEdit'
+import {
+  canChangeSegments,
+  canChangeUrl,
+  canForceRecheck,
+  canMoveStorage,
+  canRename,
+  canSetPiecePicking,
+  canSetSuperSeeding,
+  canSetTaskLimits,
+  canVerifyIntegrity,
+  isBtUrl,
+  isReplaceableUrl,
+  limitKibText,
+  parseLimitKib,
+  parseTaskSegments,
+  pieceEndsParams,
+  pieceOptionAllOn,
+  pieceOrder,
+  pieceOrderTargets,
+  pieceSequentialParams,
+  superSeedingAllOn,
+  superSeedingTargets,
+  taskLimitsParams,
+} from './taskEdit'
 import type { TaskState, TaskSource } from './task'
 
 function facts(state: TaskState, over: { source?: TaskSource; url?: string } = {}) {
@@ -146,5 +169,77 @@ describe('BT 选块开关', () => {
     expect(pieceEndsParams('t2', false)).toEqual({ taskId: 't2', firstLastPiecesFirst: true })
     expect(pieceEndsParams('t2', true)).toEqual({ taskId: 't2', firstLastPiecesFirst: false })
     expect('sequential' in pieceEndsParams('t2', true)).toBe(false)
+  })
+})
+
+describe('BT 运维菜单项', () => {
+  const magnet = 'magnet:?xt=urn:btih:abc'
+  const torrent = 'torrent-file://local'
+  const row = (state: TaskState, over: { source?: TaskSource; url?: string; btSuperSeeding?: boolean; taskId?: string } = {}) => ({
+    ...facts(state, over),
+    taskId: over.taskId ?? 't',
+    btSuperSeeding: over.btSuperSeeding ?? false,
+  })
+
+  test('强制重新校验：全部为本地未完成 BT（已完成走完整性校验）', () => {
+    expect(canForceRecheck([])).toBe(false)
+    expect(canForceRecheck([row('downloading', { url: magnet }), row('failed', { url: torrent })])).toBe(true)
+    expect(canForceRecheck([row('completed', { url: magnet })])).toBe(false)
+    expect(canForceRecheck([row('paused', { url: magnet }), row('paused')])).toBe(false)
+    expect(canForceRecheck([row('paused', { url: magnet, source: 'remote' })])).toBe(false)
+  })
+
+  test('移动到 / 任务限速：恰好一个本地 BT 任务，任意状态', () => {
+    for (const state of ['pending', 'downloading', 'paused', 'completed', 'failed'] as const) {
+      expect(canMoveStorage([row(state, { url: magnet })])).toBe(true)
+      expect(canSetTaskLimits([row(state, { url: torrent })])).toBe(true)
+    }
+    expect(canMoveStorage([])).toBe(false)
+    expect(canMoveStorage([row('paused', { url: magnet }), row('paused', { url: magnet })])).toBe(false)
+    expect(canMoveStorage([row('paused')])).toBe(false)
+    expect(canSetTaskLimits([row('paused', { url: magnet, source: 'remote' })])).toBe(false)
+    expect(canSetTaskLimits([row('paused', { url: 'ed2k://|file|a|1|h|/' })])).toBe(false)
+  })
+
+  test('超级做种：全部为本地 BT 时显示，全开才勾选，只下发需要改的任务', () => {
+    const on = row('completed', { url: magnet, btSuperSeeding: true, taskId: 'on' })
+    const off = row('downloading', { url: torrent, taskId: 'off' })
+    expect(canSetSuperSeeding([on, off])).toBe(true)
+    expect(canSetSuperSeeding([])).toBe(false)
+    expect(canSetSuperSeeding([on, row('completed')])).toBe(false)
+    expect(superSeedingAllOn([on, on])).toBe(true)
+    expect(superSeedingAllOn([on, off])).toBe(false)
+    expect(superSeedingAllOn([])).toBe(false)
+    expect(superSeedingTargets([on, off], true).map((view) => view.taskId)).toEqual(['off'])
+    expect(superSeedingTargets([on, off], false).map((view) => view.taskId)).toEqual(['on'])
+    expect(superSeedingTargets([on], true)).toEqual([])
+  })
+})
+
+describe('任务限速对话框', () => {
+  test('字节/秒显示为 KiB/s：正值向上取整，0 与负值哨兵显示 0', () => {
+    expect(limitKibText(0)).toBe('0')
+    expect(limitKibText(-1)).toBe('0')
+    expect(limitKibText(-2)).toBe('0')
+    expect(limitKibText(1)).toBe('1')
+    expect(limitKibText(512_000)).toBe('500')
+    expect(limitKibText(5 * 1024 ** 3)).toBe(String(5 * 1024 ** 2))
+  })
+
+  test('KiB/s 输入解析：空串 = 0，非负整数，超大饱和', () => {
+    expect(parseLimitKib('')).toBe(0)
+    expect(parseLimitKib('  ')).toBe(0)
+    expect(parseLimitKib(' 500 ')).toBe(512_000)
+    expect(parseLimitKib('99999999999999999999')).toBe(Number.MAX_SAFE_INTEGER)
+    for (const input of ['-1', '1.5', 'abc', '1e3', '５']) expect(parseLimitKib(input)).toBeNull()
+  })
+
+  test('只下发改动的字段；未改不下发；非法输入不提交', () => {
+    expect(taskLimitsParams('t1', ['0', '0'], ['500', '0'])).toEqual({ ok: true, params: { taskId: 't1', downloadLimitBps: 512_000 } })
+    expect(taskLimitsParams('t1', ['500', '0'], ['500', '100'])).toEqual({ ok: true, params: { taskId: 't1', uploadLimitBps: 102_400 } })
+    expect(taskLimitsParams('t1', ['500', '100'], ['0', '']).ok).toBe(true)
+    expect(taskLimitsParams('t1', ['500', '100'], ['0', ''])).toEqual({ ok: true, params: { taskId: 't1', downloadLimitBps: 0, uploadLimitBps: 0 } })
+    expect(taskLimitsParams('t1', ['0', '0'], [' 0', ''])).toEqual({ ok: true, params: null })
+    expect(taskLimitsParams('t1', ['0', '0'], ['x', '0'])).toEqual({ ok: false })
   })
 })

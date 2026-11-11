@@ -37,6 +37,7 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     }
     // 手动服务器在任何模式下都可编辑：「自动」把它当备选路径，站点规则与任务的「手动代理」出口也读它。
     sections.push(manual_section(ctx, mode == "manual"));
+    sections.push(bt_section(ctx, cx));
     sections.push(proxy_rules::group(ctx, cx));
     sections.push(site_auth::group(ctx, cx));
     SettingsPage::new(
@@ -197,6 +198,50 @@ fn manual_section(ctx: &SectionContext, active: bool) -> SettingsSection {
             None,
             test_control(ctx, ProxyTestSource::Manual),
         ))
+}
+
+/// BitTorrent 走手动代理：总开关 + 节点连接是否也走代理 + 按手动代理配置给出的一条提示。
+fn bt_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
+    let section = SettingsSection::new()
+        .title(ctx.t("proxyBtSection"))
+        .row(ctx.item(
+            "btProxyEnabled",
+            Some("btProxyEnabledDesc"),
+            ctx.daemon_switch("bt_proxy_enabled"),
+        ));
+    let store = ctx.store.read(cx);
+    if !store.daemon_bool("bt_proxy_enabled") {
+        return section;
+    }
+    let hint = bt_proxy_hint(
+        &store.daemon_str("proxy_type"),
+        &store.daemon_str("proxy_host"),
+        &store.daemon_str("proxy_port"),
+    );
+    let mut section = section.row(ctx.item(
+        "btProxyPeers",
+        Some("btProxyPeersDesc"),
+        ctx.daemon_switch("bt_proxy_peers"),
+    ));
+    if let Some(key) = hint {
+        let text = ctx.t(key);
+        section = section.row(SettingsRow::custom(move |_, _, _, cx: &mut App| {
+            info_line(text.clone(), cx)
+        }));
+    }
+    section
+}
+
+/// BT 代理提示（i18n 键）：未配置服务器优先，其次是 BT 不支持 / 无法转发 UDP 的类型；SOCKS5 无提示。
+fn bt_proxy_hint(proxy_type: &str, host: &str, port: &str) -> Option<&'static str> {
+    if host.trim().is_empty() || port.trim().is_empty() {
+        return Some("btProxyNoServer");
+    }
+    match proxy_type {
+        "https" => Some("btProxyUnsupportedType"),
+        "http" | "socks4" => Some("btProxyNoUdp"),
+        _ => None,
+    }
 }
 
 struct PortSlot {
@@ -427,4 +472,43 @@ fn test_control(ctx: &SectionContext, source: ProxyTestSource) -> Control {
                 }),
             )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bt_proxy_hint;
+
+    #[test]
+    fn missing_host_or_port_wins() {
+        assert_eq!(bt_proxy_hint("socks5", "", "1080"), Some("btProxyNoServer"));
+        assert_eq!(
+            bt_proxy_hint("https", "proxy.lan", " "),
+            Some("btProxyNoServer")
+        );
+    }
+
+    #[test]
+    fn https_is_unsupported() {
+        assert_eq!(
+            bt_proxy_hint("https", "proxy.lan", "443"),
+            Some("btProxyUnsupportedType")
+        );
+    }
+
+    #[test]
+    fn http_and_socks4_cannot_relay_udp() {
+        assert_eq!(
+            bt_proxy_hint("http", "proxy.lan", "8080"),
+            Some("btProxyNoUdp")
+        );
+        assert_eq!(
+            bt_proxy_hint("socks4", "proxy.lan", "1080"),
+            Some("btProxyNoUdp")
+        );
+    }
+
+    #[test]
+    fn socks5_with_server_has_no_hint() {
+        assert_eq!(bt_proxy_hint("socks5", "proxy.lan", "1080"), None);
+    }
 }

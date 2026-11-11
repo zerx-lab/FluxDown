@@ -99,6 +99,10 @@ export interface TaskDto {
   btSequential: boolean;
   /** BT 先下载首尾分块（缺省 false；非 BT 恒 false）。 */
   btFirstLastPiecesFirst: boolean;
+  /** BT 任务级下载限速（字节/秒，`daemon.task.setBtLimits`）；0 = 不限。上传限速即 `seedUploadLimitBps`。 */
+  btDownloadLimitBps: number;
+  /** 超级做种（`daemon.task.setSuperSeeding`；缺省 false）。 */
+  btSuperSeeding: boolean;
   /** 持久化的加速路径字节。 */
   sourceBytes: TaskSourceBytesDto;
 }
@@ -241,6 +245,8 @@ export interface SeedLocalResult {
   taskId: string;
   duplicate?: boolean;
   existingName?: string;
+  /** 写出的 `.torrent` 路径（请求带了 `torrentOutput` 时）；缺省 = 无。 */
+  torrentPath?: string;
 }
 
 /** `daemon.task.torrentShare` 结果；`torrentB64` 仅在请求带回且库中有 .torrent 字节时出现。 */
@@ -249,6 +255,8 @@ export interface TorrentShareDto {
   name: string;
   magnet: string;
   torrentB64?: string;
+  /** v2 info hash（SHA-256，小写十六进制）；v1 种子 / 旧 daemon 缺省。 */
+  infoHashV2?: string;
 }
 
 export type TaskVerifyStatus = 'intact' | 'damaged' | 'unverifiable';
@@ -359,10 +367,18 @@ export interface BtTrackerDto {
   lastOkAt?: number;
   /** 下次 announce 的 unix 秒；0 / 缺省 = 未知。 */
   nextAnnounceAt?: number;
+  /** 所在层级（BEP 12，从 0 起）；0 / 缺省 = 第一层。 */
+  tier?: number;
+  /** tracker 报告的做种数；未知缺省（0 是事实，与缺省区分）。 */
+  seeders?: number;
+  /** tracker 报告的下载中对端数；未知缺省。 */
+  leechers?: number;
+  /** tracker 统计的完成次数（scrape `downloaded`）；未知缺省。 */
+  downloaded?: number;
 }
 
-/** 连接传输（`BtPeerDto.transport`）。 */
-export type BtPeerTransport = 'tcp' | 'utp' | 'socks';
+/** 连接传输（`BtPeerDto.transport`）：`http` = 经 HTTP 代理，`i2p` = I2P 隧道。 */
+export type BtPeerTransport = 'tcp' | 'utp' | 'socks' | 'http' | 'i2p';
 
 /** `daemon.task.btStatus` 的单个 peer（`BtPeerDto`），已按活跃度排序。 */
 export interface BtPeerDto {
@@ -408,6 +424,75 @@ export interface BtStatusDto {
   peerCounts: BtPeerCountsDto;
   trackers: BtTrackerDto[];
   peers: BtPeerDto[];
+  /** info hash（小写十六进制）：v1 / 混合为 SHA-1，纯 v2 为截断 SHA-256；未知 / 旧 daemon 缺省。 */
+  infoHash?: string;
+  /** v2 info hash（SHA-256）；v1 种子 / 旧 daemon 缺省。 */
+  infoHashV2?: string;
+  /** HTTP 源（BEP 19 webseed）实况；没有则缺省。 */
+  webSeeds?: BtWebSeedDto[];
+}
+
+/** HTTP 源状态（`BtWebSeedDto.state`）。 */
+export type BtWebSeedState = 'idle' | 'downloading' | 'backingOff' | 'disabled';
+
+/** 一个 HTTP 源（`BtWebSeedDto`）。 */
+export interface BtWebSeedDto {
+  url: string;
+  /** {@link BtWebSeedState} 之一；未知取值按原样保留（新 daemon 可能扩展）。 */
+  state: string;
+  /** 从它下载的字节；0 / 缺省。 */
+  downloaded?: number;
+  /** 最近一次错误；无则缺省。 */
+  message?: string;
+}
+
+/** `daemon.task.btFiles` 的一行（`BtTaskFileDto`）。 */
+export interface BtTaskFileDto {
+  /** 种子内文件下标（与 `BtFileDto.index` 同一编号）。 */
+  index: number;
+  /** 任务目录内的相对路径（`/` 分隔），已是重命名后的当前路径。 */
+  path: string;
+  size: number;
+  /** 已下载并校验通过的字节。 */
+  downloaded: number;
+  /** 见 `BT_FILE_PRIORITY_*`。 */
+  priority: number;
+}
+
+/** `daemon.task.btFiles` 结果（`BtFilesDto`，不含 padding 文件）。 */
+export interface BtFilesDto {
+  /** 能否改优先级 / 重命名：任务未完成且已取得元数据。 */
+  editable: boolean;
+  files: BtTaskFileDto[];
+}
+
+/** 端口映射状态（`BtPortMappingDto.state`）。 */
+export type BtPortMappingState = 'pending' | 'mapped' | 'failed';
+
+/** 一个端口的映射状态（`BtPortMappingDto`）；为 0 / 空串的可选字段不上线。 */
+export interface BtPortMappingDto {
+  /** `tcp` / `udp`。 */
+  protocol: string;
+  internalPort: number;
+  /** 路由器上的外部端口；0 / 缺省 = 未知。 */
+  externalPort?: number;
+  /** `upnp` / `natPmp` / `pcp`；尚未成功缺省。 */
+  method?: string;
+  /** 外网地址；未知缺省。 */
+  externalIp?: string;
+  /** {@link BtPortMappingState} 之一；未知取值原样保留。 */
+  state: string;
+  /** 失败原因；非失败缺省。 */
+  message?: string;
+}
+
+/** `daemon.bt.portStatus` 结果（`BtPortStatusDto`）。 */
+export interface BtPortStatusDto {
+  /** BT 会话是否在运行（没有 BT 任务时不创建会话）。 */
+  running: boolean;
+  /** 监听端口；0 / 缺省 = 未运行。 */
+  listenPort?: number;
+  mappings?: BtPortMappingDto[];
 }
 
 // ── eD2K 实况（native/protocol/src/daemon.rs `Ed2kStatusDto`）；标 `?` 的字段取默认值时不上线。──

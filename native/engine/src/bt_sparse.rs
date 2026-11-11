@@ -24,13 +24,13 @@
 #[cfg(feature = "bt")]
 use std::any::TypeId;
 use std::path::Path;
-#[cfg(feature = "bt")]
-use std::path::PathBuf;
 
 #[cfg(feature = "bt")]
 use librqbit::storage::filesystem::{FilesystemStorage, FilesystemStorageFactory};
 #[cfg(feature = "bt")]
-use librqbit::storage::{BoxStorageFactory, StorageFactory, TorrentStorage};
+use librqbit::storage::{
+    BoxStorageFactory, MoveStorageOutcome, MoveStorageRequest, StorageFactory, TorrentStorage,
+};
 #[cfg(feature = "bt")]
 use librqbit::{ManagedTorrentShared, TorrentMetadata};
 
@@ -38,21 +38,17 @@ use librqbit::{ManagedTorrentShared, TorrentMetadata};
 use crate::logger::log_info;
 
 #[cfg(feature = "bt")]
-/// 构造注入 `AddTorrentOptions.storage_factory` 的 sparse 包装工厂。
-///
-/// `output_folder` 与 `AddTorrentOptions.output_folder` 同值（本任务的
-/// staging 目录）：`init` 之后按 torrent 布局拼出各文件路径打 sparse 标记。
-pub fn sparse_fs_factory(output_folder: PathBuf) -> BoxStorageFactory {
+/// 构造注入 `AddTorrentOptions.storage_factory` 的 sparse 包装工厂。`init` 之后按种子
+/// 当前的输出目录与文件路径（含重命名）给各文件打 sparse 标记。
+pub fn sparse_fs_factory() -> BoxStorageFactory {
     Box::new(SparseFsFactory {
         inner: FilesystemStorageFactory::default(),
-        output_folder,
     })
 }
 
 #[cfg(feature = "bt")]
 struct SparseFsFactory {
     inner: FilesystemStorageFactory,
-    output_folder: PathBuf,
 }
 
 #[cfg(feature = "bt")]
@@ -67,7 +63,6 @@ impl StorageFactory for SparseFsFactory {
     ) -> anyhow::Result<Self::Storage> {
         Ok(Box::new(SparseFsStorage {
             inner: self.inner.create(shared, metadata)?,
-            output_folder: self.output_folder.clone(),
         }))
     }
 
@@ -82,18 +77,15 @@ impl StorageFactory for SparseFsFactory {
     }
 
     fn clone_box(&self) -> BoxStorageFactory {
-        Box::new(Self {
-            inner: self.inner,
-            output_folder: self.output_folder.clone(),
-        })
+        Box::new(Self { inner: self.inner })
     }
 }
 
 #[cfg(feature = "bt")]
-/// 委托 `FilesystemStorage` 的存储实现，仅在 `init` 后追加 sparse 标记。
+/// 委托 `FilesystemStorage` 的存储实现，仅在 `init` 后追加 sparse 标记；其余操作（含
+/// 重命名 / 移动 / 重新校验用到的接口）原样转发。
 pub struct SparseFsStorage {
     inner: FilesystemStorage,
-    output_folder: PathBuf,
 }
 
 #[cfg(feature = "bt")]
@@ -107,8 +99,15 @@ impl TorrentStorage for SparseFsStorage {
         // 文件此刻已创建/打开（0 字节或带既有数据），尚未 set_len——
         // 正是打 sparse 标记的窗口。对已有数据的文件重复打标记是幂等
         // 操作，既有分配不受影响。
-        for fi in metadata.file_infos.iter().filter(|f| !f.attrs.padding) {
-            let path = self.output_folder.join(&fi.relative_filename);
+        let folder = shared.output_folder();
+        for (index, fi) in metadata.file_infos.iter().enumerate() {
+            if fi.attrs.padding {
+                continue;
+            }
+            let relative = shared
+                .file_relative_path(metadata, index)
+                .unwrap_or_else(|| fi.relative_filename.clone());
+            let path = folder.join(relative);
             if let Err(e) = mark_sparse(&path) {
                 // 失败仅记日志：非 sparse 只是回到「全量预留 + VDL 零填充」
                 // 的旧行为，不影响数据正确性（FAT32/exFAT 不支持 sparse）。
@@ -143,6 +142,26 @@ impl TorrentStorage for SparseFsStorage {
         // 标记是文件属性、init 期已落盘，之后的存储对象无需再带包装。
         // `on_piece_completed` 不覆写：FilesystemStorage 亦为默认 no-op。
         self.inner.take()
+    }
+
+    fn file_length(&self, file_id: usize) -> anyhow::Result<Option<u64>> {
+        self.inner.file_length(file_id)
+    }
+
+    fn rename_file(&self, file_id: usize, from: &Path, to: &Path) -> anyhow::Result<()> {
+        self.inner.rename_file(file_id, from, to)
+    }
+
+    fn move_storage(&self, request: &MoveStorageRequest<'_>) -> anyhow::Result<MoveStorageOutcome> {
+        self.inner.move_storage(request)
+    }
+
+    fn finish_move_storage(&self, commit: bool) -> anyhow::Result<()> {
+        self.inner.finish_move_storage(commit)
+    }
+
+    fn forget_cached_data(&self) -> anyhow::Result<()> {
+        self.inner.forget_cached_data()
     }
 }
 

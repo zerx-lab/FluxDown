@@ -71,7 +71,10 @@ extension TaskDto {
             seedingMessage: seedingMessage,
             seedingTimeSecs: seedingTimeSecs,
             btSequential: btSequential,
-            btFirstLastPiecesFirst: btFirstLastPiecesFirst
+            btFirstLastPiecesFirst: btFirstLastPiecesFirst,
+            btDownloadLimitBps: btDownloadLimitBps,
+            seedUploadLimitBps: seedUploadLimitBps,
+            btSuperSeeding: btSuperSeeding
         )
     }
 }

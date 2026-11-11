@@ -6,15 +6,17 @@ import Foundation
 
 // MARK: - BitTorrent
 
-/// BT 页签（GPUI `bt.rs` 的 basic / tracker / seeding）。
+/// BT 页签（GPUI `bt.rs` 的 basic / connection / tracker / seeding + 防吸血）。
+/// `rawValue` 由 `@SceneStorage` 持久化：只能追加，不能改名。
 nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
-    case general, tracker, seeding, antiLeech
+    case general, connection, tracker, seeding, antiLeech
 
     var id: String { rawValue }
 
     var titleKey: String {
         switch self {
         case .general: "settingsTabGeneral"
+        case .connection: "settingsTabConnection"
         case .tracker: "settingsTabTracker"
         case .seeding: "settingsTabSeeding"
         case .antiLeech: "btGuardTab"
@@ -22,44 +24,107 @@ nonisolated enum BtSettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// BT 页的分组（GPUI `bt.rs` 的各 `*_section`，同序）。
+nonisolated enum BtSettingsSection: CaseIterable {
+    case basic, newTasks
+    case listen, transport, sources, limits, i2p
+    case trackers, trackerSub, announce
+    case seeding, seedLimits
+
+    var tab: BtSettingsTab {
+        switch self {
+        case .basic, .newTasks: .general
+        case .listen, .transport, .sources, .limits, .i2p: .connection
+        case .trackers, .trackerSub, .announce: .tracker
+        case .seeding, .seedLimits: .seeding
+        }
+    }
+
+    /// 分组标题键（nil = 无标题）。
+    var titleKey: String? {
+        switch self {
+        case .newTasks: "btNewTasksSection"
+        case .listen: "btSectionListen"
+        case .transport: "btSectionTransport"
+        case .sources: "btSectionSources"
+        case .limits: "btSectionLimits"
+        case .i2p: "btSectionI2p"
+        case .announce: "btSectionAnnounce"
+        case .seedLimits: "btSeedLimitsTitle"
+        case .basic, .trackers, .trackerSub, .seeding: nil
+        }
+    }
+
+    var rows: [BtSettingsRow] { BtSettingsRow.allCases.filter { $0.section == self } }
+
+    static func all(in tab: BtSettingsTab) -> [BtSettingsSection] { allCases.filter { $0.tab == tab } }
+}
+
 /// BT 页的每一行（GPUI 顺序）。页面渲染与设置搜索共用同一份可见性判定。
 /// 做种「时长 + 单位」两个 PC 行在移动端合成一行（各自仍写回两个键）。
+/// 端口映射状态行不是配置键，由 ``BtSettingsRow/showsPortMappingStatus(in:)`` 判定。
 nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     case enabled
-    case dht, upnp, utp, portStart, portEnd, mseMode, uploadSlots
     case pieceOrder, firstLastPiecesFirst, selectionAutoDefault
+    case portStart, portEnd, upnp
+    case utp, utpCongestion, mseMode, uploadSlots
+    case dht, lsd, webseed
+    case maxConnections, maxConnectionsPerTorrent
+    case i2pEnabled, i2pSamHost, i2pSamPort, i2pMixed
     case customTrackers, trackerSub, trackerSubUrls, trackerSubStatus
+    case announceAllTiers, announceAllTrackers
     case seedEnabled, seedMaxActive, autoReseed, seedRatio, seedPostRatio
     case seedTimeLimit, seedInactiveTimeLimit, seedOperator, seedThenAction
 
     var id: String { "bt.\(rawValue)" }
 
-    var tab: BtSettingsTab {
+    var section: BtSettingsSection {
         switch self {
-        case .enabled, .dht, .upnp, .utp, .portStart, .portEnd, .mseMode, .uploadSlots, .pieceOrder,
-             .firstLastPiecesFirst, .selectionAutoDefault: .general
-        case .customTrackers, .trackerSub, .trackerSubUrls, .trackerSubStatus: .tracker
-        default: .seeding
+        case .enabled: .basic
+        case .pieceOrder, .firstLastPiecesFirst, .selectionAutoDefault: .newTasks
+        case .portStart, .portEnd, .upnp: .listen
+        case .utp, .utpCongestion, .mseMode, .uploadSlots: .transport
+        case .dht, .lsd, .webseed: .sources
+        case .maxConnections, .maxConnectionsPerTorrent: .limits
+        case .i2pEnabled, .i2pSamHost, .i2pSamPort, .i2pMixed: .i2p
+        case .customTrackers: .trackers
+        case .trackerSub, .trackerSubUrls, .trackerSubStatus: .trackerSub
+        case .announceAllTiers, .announceAllTrackers: .announce
+        case .seedEnabled, .seedMaxActive, .autoReseed: .seeding
+        case .seedRatio, .seedPostRatio, .seedTimeLimit, .seedInactiveTimeLimit, .seedOperator, .seedThenAction: .seedLimits
         }
     }
+
+    var tab: BtSettingsTab { section.tab }
 
     var configKey: String {
         switch self {
         case .enabled: "bt_enabled"
-        case .dht: "bt_enable_dht"
-        case .upnp: "bt_enable_upnp"
-        case .utp: "bt_enable_utp"
-        case .portStart: "bt_port_start"
-        case .portEnd: "bt_port_end"
-        case .mseMode: "bt_mse_mode"
-        case .uploadSlots: "bt_upload_slots"
         case .pieceOrder: "bt_piece_order"
         case .firstLastPiecesFirst: "bt_first_last_pieces_first"
         case .selectionAutoDefault: "bt_selection_auto_default"
+        case .portStart: "bt_port_start"
+        case .portEnd: "bt_port_end"
+        case .upnp: "bt_enable_upnp"
+        case .utp: "bt_enable_utp"
+        case .utpCongestion: "bt_utp_congestion"
+        case .mseMode: "bt_mse_mode"
+        case .uploadSlots: "bt_upload_slots"
+        case .dht: "bt_enable_dht"
+        case .lsd: "bt_enable_lsd"
+        case .webseed: "bt_enable_webseed"
+        case .maxConnections: "bt_max_connections"
+        case .maxConnectionsPerTorrent: "bt_max_connections_per_torrent"
+        case .i2pEnabled: "bt_i2p_enabled"
+        case .i2pSamHost: "bt_i2p_sam_host"
+        case .i2pSamPort: "bt_i2p_sam_port"
+        case .i2pMixed: "bt_i2p_mixed"
         case .customTrackers: "bt_custom_trackers"
         case .trackerSub: "bt_tracker_sub_enabled"
         case .trackerSubUrls: "bt_tracker_sub_urls"
         case .trackerSubStatus: "bt_tracker_sub_cache"
+        case .announceAllTiers: "bt_announce_all_tiers"
+        case .announceAllTrackers: "bt_announce_all_trackers"
         case .seedEnabled: "bt_seed_enabled"
         case .seedMaxActive: "bt_seed_max_active"
         case .autoReseed: "bt_auto_reseed"
@@ -93,20 +158,31 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     var titleKey: String {
         switch self {
         case .enabled: "btEnabled"
-        case .dht: "btEnableDht"
-        case .upnp: "btEnableUpnp"
-        case .utp: "btEnableUtp"
-        case .portStart: "btListenPortStart"
-        case .portEnd: "btListenPortEnd"
-        case .mseMode: "btMseMode"
-        case .uploadSlots: "btUploadSlots"
         case .pieceOrder: "btPieceOrder"
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefault"
         case .selectionAutoDefault: "btSelectionAutoDefault"
+        case .portStart: "btListenPortStart"
+        case .portEnd: "btListenPortEnd"
+        case .upnp: "btEnableUpnp"
+        case .utp: "btEnableUtp"
+        case .utpCongestion: "btUtpCongestion"
+        case .mseMode: "btMseMode"
+        case .uploadSlots: "btUploadSlots"
+        case .dht: "btEnableDht"
+        case .lsd: "btEnableLsd"
+        case .webseed: "btEnableWebseed"
+        case .maxConnections: "btMaxConnections"
+        case .maxConnectionsPerTorrent: "btMaxConnectionsPerTorrent"
+        case .i2pEnabled: "btI2pEnabled"
+        case .i2pSamHost: "btI2pSamHost"
+        case .i2pSamPort: "btI2pSamPort"
+        case .i2pMixed: "btI2pMixed"
         case .customTrackers: "btTrackerList"
         case .trackerSub: "btTrackerSub"
         case .trackerSubUrls: "btTrackerSubUrls"
         case .trackerSubStatus: "btTrackerSubUpdateNow"
+        case .announceAllTiers: "btAnnounceAllTiers"
+        case .announceAllTrackers: "btAnnounceAllTrackers"
         case .seedEnabled: "btSeedEnabled"
         case .seedMaxActive: "btSeedMaxActive"
         case .autoReseed: "btAutoReseed"
@@ -123,23 +199,45 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     var detailKey: String? {
         switch self {
         case .enabled: "btEnabledDesc"
-        case .dht: "btEnableDhtDesc"
-        case .upnp: "btEnableUpnpDesc"
-        case .utp: "btEnableUtpDesc"
-        case .portStart: "btListenPortDesc"
-        case .mseMode: "btMseModeDesc"
-        case .uploadSlots: "btUploadSlotsDesc"
         case .pieceOrder: "btPieceOrderDesc"
         case .firstLastPiecesFirst: "btFirstLastPiecesFirstDefaultDesc"
         case .selectionAutoDefault: "btSelectionAutoDefaultDesc"
+        case .portStart: "btListenPortDesc"
+        case .upnp: "btEnableUpnpDesc"
+        case .utp: "btEnableUtpDesc"
+        case .utpCongestion: "btUtpCongestionDesc"
+        case .mseMode: "btMseModeDesc"
+        case .uploadSlots: "btUploadSlotsDesc"
+        case .dht: "btEnableDhtDesc"
+        case .lsd: "btEnableLsdDesc"
+        case .webseed: "btEnableWebseedDesc"
+        case .maxConnections: "btMaxConnectionsDesc"
+        case .maxConnectionsPerTorrent: "btMaxConnectionsPerTorrentDesc"
+        case .i2pEnabled: "btI2pEnabledDesc"
+        case .i2pMixed: "btI2pMixedDesc"
         case .customTrackers: "btTrackerListDesc"
         case .trackerSub: "btTrackerSubDesc"
         case .trackerSubUrls: "btTrackerSubUrlsDesc"
+        case .announceAllTiers: "btAnnounceAllTiersDesc"
+        case .announceAllTrackers: "btAnnounceAllTrackersDesc"
         case .seedEnabled: "btSeedEnabledDesc"
         case .seedMaxActive: "btSeedMaxActiveDesc"
         case .autoReseed: "btAutoReseedDesc"
         case .seedTimeLimit: "btSeedTimeLimitUnit"
         case .seedInactiveTimeLimit: "btSeedInactiveTimeLimitUnit"
+        default: nil
+        }
+    }
+
+    /// 数值行的范围（与 `daemon_config.rs` / 目录一致；非数值行为 nil）。
+    var range: ClosedRange<Int>? {
+        switch self {
+        case .portStart, .portEnd: BtPortRange.bounds
+        case .uploadSlots: 0 ... 512
+        case .maxConnections: 0 ... 65_535
+        case .maxConnectionsPerTorrent: 1 ... 4_096
+        case .i2pSamPort: 1 ... 65_535
+        case .seedMaxActive: 0 ... 1_000_000
         default: nil
         }
     }
@@ -167,6 +265,15 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         guard form.has(configKey) else { return false }
         if self == .enabled { return true }
         guard BtSettingsRow.isEnabled(in: form) else { return false }
+        switch self {
+        case .utpCongestion:
+            // 拥塞控制只在 uTP 开启时有意义（GPUI `transport_section`）。
+            return form.bool(BtSettingsRow.utp.configKey)
+        case .i2pSamHost, .i2pSamPort, .i2pMixed:
+            return form.bool(BtSettingsRow.i2pEnabled.configKey)
+        default:
+            break
+        }
         switch tab {
         case .seeding where self != .seedEnabled:
             return form.bool(BtSettingsRow.seedEnabled.configKey)
@@ -179,6 +286,15 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
         allCases.filter { $0.tab == tab && $0.isVisible(in: form) }
     }
 
+    static func visible(inSection section: BtSettingsSection, _ form: SettingsConfigForm) -> [BtSettingsRow] {
+        section.rows.filter { $0.isVisible(in: form) }
+    }
+
+    /// 端口映射状态行：BT 与端口映射都开启时显示在「监听」组末尾（GPUI `listen_section`）。
+    static func showsPortMappingStatus(in form: SettingsConfigForm) -> Bool {
+        BtSettingsRow.upnp.isVisible(in: form) && form.bool(BtSettingsRow.upnp.configKey)
+    }
+
     /// 当前可选页签：BT 关闭时只剩常规。
     static func availableTabs(in form: SettingsConfigForm) -> [BtSettingsTab] {
         isEnabled(in: form) ? BtSettingsTab.allCases : [.general]
@@ -187,7 +303,92 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
     /// 搜索定位：行 id 所在页签（防吸血行属于防吸血页签）。
     static func tab(forRowID id: String) -> BtSettingsTab? {
         if BtGuardRow.allCases.contains(where: { $0.id == id }) { return .antiLeech }
+        if id == portMappingStatusID { return .connection }
         return allCases.first { $0.id == id }?.tab
+    }
+
+    /// 端口映射状态行的行 id（只用于搜索定位 / 滚动锚点）。
+    static let portMappingStatusID = "bt.portMappingStatus"
+}
+
+// MARK: - BitTorrent 代理（代理设置页的 BitTorrent 分组）
+
+/// GPUI `sections/proxy.rs::bt_section`：总开关 + 节点连接是否也走代理 + 按手动代理配置给出的一条提示。
+nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
+    case enabled, peers
+
+    var id: String { "network.btProxy.\(rawValue)" }
+
+    var configKey: String {
+        switch self {
+        case .enabled: "bt_proxy_enabled"
+        case .peers: "bt_proxy_peers"
+        }
+    }
+
+    var titleKey: String {
+        switch self {
+        case .enabled: "btProxyEnabled"
+        case .peers: "btProxyPeers"
+        }
+    }
+
+    var detailKey: String {
+        switch self {
+        case .enabled: "btProxyEnabledDesc"
+        case .peers: "btProxyPeersDesc"
+        }
+    }
+
+    var item: SettingsItem {
+        SettingsItem(id: id, key: configKey, titleKey: titleKey, detailKey: detailKey)
+    }
+
+    /// 分组只在主机配置已加载时出现；「节点连接」只在总开关开启时出现。
+    func isVisible(in form: SettingsConfigForm) -> Bool {
+        guard form.has(configKey) else { return false }
+        switch self {
+        case .enabled: return true
+        case .peers: return form.bool(BtProxyRow.enabled.configKey)
+        }
+    }
+
+    static func visible(_ form: SettingsConfigForm) -> [BtProxyRow] {
+        allCases.filter { $0.isVisible(in: form) }
+    }
+
+    /// 提示行（i18n 键）：未配置服务器优先，其次是 BT 不支持 / 无法转发 UDP 的类型；SOCKS5 无提示。
+    static func hint(proxyType: String, host: String, port: String) -> String? {
+        if host.trimmingCharacters(in: .whitespaces).isEmpty || port.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "btProxyNoServer"
+        }
+        switch proxyType {
+        case "https": return "btProxyUnsupportedType"
+        case "http", "socks4": return "btProxyNoUdp"
+        default: return nil
+        }
+    }
+
+    /// 总开关开启时按当前手动代理配置给出的提示；关闭 / 未加载 → nil。
+    static func hint(in form: SettingsConfigForm) -> String? {
+        guard BtProxyRow.peers.isVisible(in: form) else { return nil }
+        return hint(
+            proxyType: form.string("proxy_type"), host: form.string("proxy_host"), port: form.string("proxy_port")
+        )
+    }
+}
+
+/// uTP 拥塞控制（`bt_utp_congestion`）：值 → 标题。
+nonisolated enum BtUtpCongestion: String, CaseIterable, Identifiable {
+    case ledbat, cubic
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .ledbat: "btUtpCongestionLedbat"
+        case .cubic: "btUtpCongestionCubic"
+        }
     }
 }
 
@@ -281,7 +482,7 @@ nonisolated enum BtGuardRow: String, CaseIterable, Identifiable {
 }
 
 /// 监听端口区间。
-enum BtPortRange {
+nonisolated enum BtPortRange {
     static let bounds = 1 ... 65_535
 
     /// 结束端口不得小于起始端口。

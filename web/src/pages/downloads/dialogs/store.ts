@@ -33,6 +33,10 @@ export interface DialogsState {
   rename: string | null
   changeUrl: string | null
   changeSegments: string | null
+  /** 「移动到…」的 BT 任务 id。 */
+  moveStorage: string | null
+  /** 「任务限速…」的 BT 任务 id。 */
+  taskLimits: string | null
   seedLocal: boolean
 }
 
@@ -43,6 +47,8 @@ let state: DialogsState = {
   rename: null,
   changeUrl: null,
   changeSegments: null,
+  moveStorage: null,
+  taskLimits: null,
   seedLocal: false,
 }
 let counter = 0
@@ -135,6 +141,22 @@ export function openChangeSegments(taskId: string): void {
 
 export function closeChangeSegments(): void {
   publish({ changeSegments: null })
+}
+
+export function openMoveStorage(taskId: string): void {
+  publish({ moveStorage: taskId })
+}
+
+export function closeMoveStorage(): void {
+  publish({ moveStorage: null })
+}
+
+export function openTaskLimits(taskId: string): void {
+  publish({ taskLimits: taskId })
+}
+
+export function closeTaskLimits(): void {
+  publish({ taskLimits: null })
 }
 
 export function openSeedLocal(): void {

@@ -124,6 +124,12 @@ pub use daemon::{
     UpdateQueueRequest, WebhookDeliveriesResponse, WebhookDeliveryDto, WebhookPresetDto,
     WebhookSimulateResponse, WebhookTestRequest, WebhookTestResponse, WsClientMsg, WsServerMsg,
 };
+pub use daemon::{
+    BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
+    BT_FILE_PRIORITY_SKIP, BtFilePriorityDto, BtFilesDto, BtPortMappingDto, BtPortStatusDto,
+    BtTaskFileDto, BtWebSeedDto, MoveTaskStorageParams, RenameBtFileParams, SetTaskBtLimitsParams,
+    SetTaskFilePrioritiesParams, SetTaskSuperSeedingParams,
+};
 pub use daemon_config::{
     BT_GUARD_DOWNLOADING_ACTIONS, BT_GUARD_MODES, BT_MSE_MODES, BT_PIECE_ORDERS,
     BT_SEED_LIMIT_OPERATORS, BT_SEED_THEN_ACTIONS, BT_SEED_TIME_UNITS, DAEMON_CONFIG_FIELDS,

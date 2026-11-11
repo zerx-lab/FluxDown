@@ -23,7 +23,30 @@ export interface DaemonSeedLocalParams {
   trackers?: string[];
   /** true = 不因分享率 / 时长 / 不活跃限制而停止做种。 */
   unlimited: boolean;
+  /** 生成的种子格式（缺省 `v1`）；给了 `torrentPath` 时忽略。 */
+  version?: SeedTorrentVersion;
+  /** 生成私有种子。 */
+  private?: boolean;
+  /** 分片大小（字节，2 的幂且 >= 16384）；0 / 缺省 = 自动。 */
+  pieceLength?: number;
+  /** 写入种子的 HTTP 源（BEP 19 `url-list`）。 */
+  webSeeds?: string[];
+  /** 写入种子的注释。 */
+  comment?: string;
+  /** 写入 info 字典的来源标记（会改变 info hash）。 */
+  source?: string;
+  /** 以超级做种模式做种。 */
+  superSeeding?: boolean;
+  /** 只在给了 `torrentPath` 时有意义：信任数据完整，跳过哈希校验。 */
+  skipCheck?: boolean;
+  /** 非空 = 同时把生成的 `.torrent` 写到守护进程主机的这个绝对路径。 */
+  torrentOutput?: string;
+  /** true = 只生成种子文件、不建任务（必须给 `torrentOutput`，结果 `taskId` 为空串）。 */
+  createOnly?: boolean;
 }
+
+/** 本机做种生成的种子格式（`DaemonSeedLocalParams.version`）。 */
+export type SeedTorrentVersion = 'v1' | 'v2' | 'hybrid';
 
 /** `daemon.task.torrentShare`：取 BT 任务的磁力链接，可选同时带回 .torrent 字节。 */
 export interface DaemonTorrentShareParams {
@@ -54,6 +77,50 @@ export interface TaskSetPiecePickingParams {
   taskId: string;
   sequential?: boolean;
   firstLastPiecesFirst?: boolean;
+}
+
+/** BT 文件优先级（`BT_FILE_PRIORITY_*`，对齐 qBittorrent）：0 不下载 / 1 普通 / 6 高 / 7 最高。 */
+export const BT_FILE_PRIORITY_SKIP = 0;
+export const BT_FILE_PRIORITY_NORMAL = 1;
+export const BT_FILE_PRIORITY_HIGH = 6;
+export const BT_FILE_PRIORITY_MAXIMUM = 7;
+
+/** `daemon.task.setFilePriorities` 的一项（`BtFilePriorityDto`）。 */
+export interface BtFilePriorityDto {
+  index: number;
+  priority: number;
+}
+
+/** `daemon.task.setFilePriorities`：只改列出的文件，其余不变。 */
+export interface SetTaskFilePrioritiesParams {
+  taskId: string;
+  priorities: BtFilePriorityDto[];
+}
+
+/** `daemon.task.renameBtFile`：`path` 是任务目录内的新相对路径（`/` 分隔）。 */
+export interface RenameBtFileParams {
+  taskId: string;
+  index: number;
+  path: string;
+}
+
+/** `daemon.task.moveStorage`：`saveDir` 是守护进程主机上的绝对路径。 */
+export interface MoveTaskStorageParams {
+  taskId: string;
+  saveDir: string;
+}
+
+/** `daemon.task.setBtLimits`：字节/秒，0 = 不限；缺省字段保持不变。 */
+export interface SetTaskBtLimitsParams {
+  taskId: string;
+  downloadLimitBps?: number;
+  uploadLimitBps?: number;
+}
+
+/** `daemon.task.setSuperSeeding`。 */
+export interface SetTaskSuperSeedingParams {
+  taskId: string;
+  enabled: boolean;
 }
 
 export interface TaskDeleteParams {

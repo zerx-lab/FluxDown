@@ -286,6 +286,35 @@ impl ProxyConfig {
         }
     }
 
+    /// BT 用的手动代理服务器地址：只看这里填的服务器（类型 / 主机 / 端口 / 凭据），与
+    /// 当前代理模式（不使用 / 系统 / 手动 / 自动）无关——BT 是否走代理由 `bt_proxy_enabled`
+    /// 单独决定。
+    ///
+    /// 没填主机或端口、或类型为 HTTPS（librqbit 不支持 TLS 包裹的代理端点）时返回 `None`，
+    /// 调用方保持直连。SOCKS5 以 `socks5h` 下发：tracker 域名交给代理解析，本机不发 DNS。
+    #[must_use]
+    pub fn manual_server_url_for_bt(&self) -> Option<String> {
+        if self.host.is_empty() || self.port == 0 || self.proxy_type == ProxyType::Https {
+            return None;
+        }
+        let scheme = self.proxy_type.scheme();
+        // IPv6 字面量在 URL 里要带方括号。
+        let host = if self.host.contains(':') && !self.host.starts_with('[') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        if self.username.is_empty() {
+            return Some(format!("{scheme}://{host}:{}", self.port));
+        }
+        Some(format!(
+            "{scheme}://{}:{}@{host}:{}",
+            percent_encode_userinfo(&self.username),
+            percent_encode_userinfo(&self.password),
+            self.port
+        ))
+    }
+
     /// Resolve a `System` proxy config into a concrete `Manual` config by
     /// reading the OS-level proxy settings (Windows registry / env vars).
     ///
@@ -2877,6 +2906,67 @@ mod tests {
         assert!(url.contains("p%40ss%3Aword"));
         assert!(url.starts_with("socks5h://"));
         assert!(url.ends_with("@proxy.com:1080"));
+    }
+
+    /// BT 用的代理地址只看手动服务器，与代理模式无关；librqbit 的解析器必须认得它。
+    #[cfg(feature = "bt")]
+    #[test]
+    fn bt_proxy_url_follows_the_manual_server_whatever_the_mode() {
+        let server = |proxy_type: ProxyType, host: &str, port: u16| ProxyConfig {
+            // 模式是「不使用代理」：HTTP 下载直连，BT 仍可单独走这台服务器。
+            mode: ProxyMode::None,
+            proxy_type,
+            host: host.to_string(),
+            port,
+            username: String::new(),
+            password: String::new(),
+            no_proxy_list: String::new(),
+            rules: None,
+        };
+        let url = |config: &ProxyConfig| config.manual_server_url_for_bt();
+
+        assert_eq!(
+            url(&server(ProxyType::Socks5, "127.0.0.1", 1080)).as_deref(),
+            Some("socks5h://127.0.0.1:1080")
+        );
+        assert_eq!(
+            url(&server(ProxyType::Socks4, "proxy.lan", 1081)).as_deref(),
+            Some("socks4://proxy.lan:1081")
+        );
+        assert_eq!(
+            url(&server(ProxyType::Http, "::1", 8080)).as_deref(),
+            Some("http://[::1]:8080")
+        );
+        // 没法用的服务器：BT 保持直连。
+        assert_eq!(url(&server(ProxyType::Https, "proxy.lan", 443)), None);
+        assert_eq!(url(&server(ProxyType::Socks5, "", 1080)), None);
+        assert_eq!(url(&server(ProxyType::Socks5, "proxy.lan", 0)), None);
+
+        let with_auth = ProxyConfig {
+            username: "user@domain".to_string(),
+            password: "p@ss:word/#".to_string(),
+            ..server(ProxyType::Socks5, "proxy.lan", 1080)
+        };
+        let text = url(&with_auth).expect("usable server");
+        assert_eq!(
+            text,
+            "socks5h://user%40domain:p%40ss%3Aword%2F%23@proxy.lan:1080"
+        );
+        // 交给 librqbit 的就是这个串：它解析得出同一组主机 / 端口 / 凭据。
+        for candidate in [
+            text,
+            url(&server(ProxyType::Http, "::1", 8080)).expect("ipv6 server"),
+            url(&server(ProxyType::Socks4a, "proxy.lan", 1081)).expect("socks4a server"),
+        ] {
+            let parsed = librqbit::ProxyConfig::parse(&candidate)
+                .unwrap_or_else(|error| panic!("{candidate}: {error}"));
+            assert!(parsed.port() > 0, "{candidate}");
+        }
+        let parsed = librqbit::ProxyConfig::parse(&url(&with_auth).expect("usable server"))
+            .expect("librqbit parses the BT proxy URL");
+        assert_eq!(parsed.host(), "proxy.lan");
+        assert_eq!(parsed.username(), Some("user@domain"));
+        assert_eq!(parsed.password(), Some("p@ss:word/#"));
     }
 
     #[test]

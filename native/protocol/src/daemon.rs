@@ -322,6 +322,36 @@ pub struct DaemonSeedLocalParams {
     /// `true` = 该任务永不因分享率 / 时长 / 不活跃限制停止做种（任务级限制全部「不限制」）。
     #[serde(default)]
     pub unlimited: bool,
+    /// 生成的种子格式：`v1`（缺省）/ `v2` / `hybrid`；给了 `torrentPath` 时忽略。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// 生成私有种子（只经种子里的 tracker 找对端）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub private: bool,
+    /// 分片大小（字节，2 的幂且 ≥ 16384）；`0` = 按内容大小自动选择。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub piece_length: u32,
+    /// 写入种子的 HTTP 源（BEP 19 `url-list`）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_seeds: Vec<String>,
+    /// 写入种子的注释。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    /// 写入 info 字典的来源标记（会改变 info hash，私有站点用它区分同内容的种子）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// 任务以超级做种模式做种（同 `daemon.task.setSuperSeeding`）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub super_seeding: bool,
+    /// 只在给了 `torrentPath` 时有意义：信任 `path` 下的数据与种子一致，不做哈希校验直接做种。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skip_check: bool,
+    /// 非空 = 同时把生成的 `.torrent` 写到 daemon 主机的这个绝对路径（已存在则覆盖）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub torrent_output: String,
+    /// `true` = 只生成种子文件、不建任务：此时必须给 `torrentOutput`，结果的 `taskId` 为空。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub create_only: bool,
 }
 
 /// `daemon.task.hash` 参数。
@@ -354,6 +384,9 @@ pub struct SeedLocalResultDto {
     pub duplicate: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub existing_name: String,
+    /// 写出的 `.torrent` 路径（请求带了 `torrentOutput` 时）；没有则为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub torrent_path: String,
 }
 
 /// `daemon.task.btStatus` 参数。
@@ -405,7 +438,8 @@ pub struct BtTrackerDto {
     /// 最近一次成功 announce 返回的 peer 数；未知缺省。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peers: Option<u64>,
-    /// 失败原因的简短归类（qBittorrent 风格，如 `Timed out`）；非失败为空。
+    /// 失败原因的简短归类（qBittorrent 风格，如 `Timed out`），或汇报成功时 tracker 附带的
+    /// 警告；都没有为空。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub message: String,
     /// 失败的原始错误文本（供「复制错误」）；非失败为空。
@@ -417,6 +451,18 @@ pub struct BtTrackerDto {
     /// 预计下次 announce 的 unix 秒；0 = 未知。
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub next_announce_at: i64,
+    /// 所在层级（BEP 12，从 0 起；会话追加的 tracker 排在种子自带的层之后）。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub tier: u32,
+    /// tracker 报告的做种数（announce 或 scrape）；未知缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<u32>,
+    /// tracker 报告的下载中对端数；未知缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leechers: Option<u32>,
+    /// tracker 统计的完成次数（scrape `downloaded`）；未知缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloaded: Option<u32>,
 }
 
 /// 一个已连接 peer。
@@ -892,6 +938,167 @@ pub struct BtStatusDto {
     pub peer_counts: BtPeerCountsDto,
     pub trackers: Vec<BtTrackerDto>,
     pub peers: Vec<BtPeerDto>,
+    /// info hash（小写十六进制）：v1 / 混合种子为 SHA-1，纯 v2 种子为截断的 SHA-256；未知为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub info_hash: String,
+    /// v2 info hash（SHA-256，小写十六进制）；v1 种子为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub info_hash_v2: String,
+    /// HTTP 源（BEP 19 webseed）实况；没有则为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_seeds: Vec<BtWebSeedDto>,
+}
+
+/// 一个 HTTP 源（webseed）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtWebSeedDto {
+    pub url: String,
+    /// `idle` / `downloading` / `backingOff` / `disabled`。
+    pub state: String,
+    /// 从它下载的字节。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub downloaded: u64,
+    /// 最近一次错误；无则为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
+
+/// `daemon.task.btFiles` 结果：BT 任务的文件表（不含 padding 文件）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtFilesDto {
+    /// 能否改优先级 / 重命名：任务未完成且已取得种子元数据。
+    pub editable: bool,
+    pub files: Vec<BtTaskFileDto>,
+}
+
+/// [`BtFilesDto`] 的一行。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtTaskFileDto {
+    /// 种子内的文件下标（与 `btSelectionRequest` 的 `BtFileDto.index` 同一编号）。
+    pub index: u32,
+    /// 任务目录内的相对路径（`/` 分隔）；重命名过的文件为当前路径。
+    pub path: String,
+    pub size: u64,
+    /// 已下载并校验通过的字节。
+    pub downloaded: u64,
+    /// 优先级：见 [`BT_FILE_PRIORITY_SKIP`] 等常量。
+    pub priority: u8,
+}
+
+/// BT 文件优先级：不下载。
+pub const BT_FILE_PRIORITY_SKIP: u8 = 0;
+/// BT 文件优先级：普通（默认）。
+pub const BT_FILE_PRIORITY_NORMAL: u8 = 1;
+/// BT 文件优先级：高。
+pub const BT_FILE_PRIORITY_HIGH: u8 = 6;
+/// BT 文件优先级：最高。
+pub const BT_FILE_PRIORITY_MAXIMUM: u8 = 7;
+
+/// `daemon.task.setFilePriorities` 的一项。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtFilePriorityDto {
+    pub index: u32,
+    /// `0..=7`；界面只用 [`BT_FILE_PRIORITY_SKIP`] / `NORMAL` / `HIGH` / `MAXIMUM` 四档。
+    pub priority: u8,
+}
+
+/// `daemon.task.setFilePriorities` 参数：只改列出的文件，其余不变。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskFilePrioritiesParams {
+    pub task_id: String,
+    pub priorities: Vec<BtFilePriorityDto>,
+}
+
+/// `daemon.task.renameBtFile` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RenameBtFileParams {
+    pub task_id: String,
+    pub index: u32,
+    /// 任务目录内的新相对路径（`/` 分隔，可带子目录）；不得越出任务目录或与其他文件重名。
+    pub path: String,
+}
+
+/// `daemon.task.moveStorage` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct MoveTaskStorageParams {
+    pub task_id: String,
+    /// 新的保存目录（daemon 主机上的绝对路径）。
+    pub save_dir: String,
+}
+
+/// `daemon.task.setBtLimits` 参数：缺省字段保持不变，`0` = 不限。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskBtLimitsParams {
+    pub task_id: String,
+    /// 任务级下载限速（字节/秒），写入 [`TaskDto::bt_download_limit_bps`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_limit_bps: Option<i64>,
+    /// 任务级上传限速（字节/秒），与 [`TaskDto::seed_upload_limit_bps`] 是同一个值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_limit_bps: Option<i64>,
+}
+
+/// `daemon.task.setSuperSeeding` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskSuperSeedingParams {
+    pub task_id: String,
+    pub enabled: bool,
+}
+
+/// `daemon.bt.portStatus` 结果：BT 监听端口与端口映射实况。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtPortStatusDto {
+    /// BT 会话是否在运行（没有 BT 任务时会话不创建，也就没有映射）。
+    pub running: bool,
+    /// 监听端口；未运行为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub listen_port: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mappings: Vec<BtPortMappingDto>,
+}
+
+/// 一个端口的映射状态。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtPortMappingDto {
+    /// `tcp` / `udp`。
+    pub protocol: String,
+    pub internal_port: u32,
+    /// 路由器上的外部端口；未知为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub external_port: u32,
+    /// `upnp` / `natPmp` / `pcp`；尚未成功为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    /// 外网地址；未知为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub external_ip: String,
+    /// `pending` / `mapped` / `failed`。
+    pub state: String,
+    /// 失败原因；非失败为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 /// `daemon.task.ed2kStatus` 参数。
@@ -1335,6 +1542,9 @@ pub struct TorrentShareDto {
     /// `.torrent` 内容（base64）；未请求或库里没有种子字节（纯磁力任务）时缺省。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent_b64: Option<String>,
+    /// v2 info hash（SHA-256，小写十六进制）；v1 种子为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub info_hash_v2: String,
 }
 
 /// `daemon.task.createMany` 单次调用的条目上限；客户端须按块拆分更大的导入。
@@ -1727,6 +1937,12 @@ pub struct TaskDto {
     /// BT 选片：先下载每个选中文件首尾各 1% 的块（qBittorrent「先下载首尾文件块」）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub bt_first_last_pieces_first: bool,
+    /// 任务级 BT 下载限速（字节/秒），0 = 不限（`daemon.task.setBtLimits`）。
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub bt_download_limit_bps: i64,
+    /// 超级做种（`daemon.task.setSuperSeeding`）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bt_super_seeding: bool,
 }
 
 // `TaskDto` 默认值字段不上线：二十万任务的全表传输里它们占了约三分之一字节。反序列化端

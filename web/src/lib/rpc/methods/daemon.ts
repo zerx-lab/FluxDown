@@ -110,6 +110,13 @@ import type {
   TaskSpeedHistoryDto,
   TaskSpeedHistoryQuery,
   BtStatusDto,
+  BtFilesDto,
+  BtPortStatusDto,
+  MoveTaskStorageParams,
+  RenameBtFileParams,
+  SetTaskBtLimitsParams,
+  SetTaskFilePrioritiesParams,
+  SetTaskSuperSeedingParams,
   Ed2kIdCheckParams,
   Ed2kKadBootstrapDto,
   Ed2kKadBootstrapParams,
@@ -138,7 +145,7 @@ import type {
 /** 服务端逐源串行拉取镜像（每源 20s），最坏远超默认 30s。 */
 const SLOW_MIRROR_TIMEOUT_MS = 120_000;
 
-/** 读盘类慢方法（完整性校验、文件哈希、本机做种）耗时与数据量成正比。 */
+/** 读写盘类慢方法（完整性校验、文件哈希、本机做种、移动 BT 数据）耗时与数据量成正比。 */
 const SLOW_DISK_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 // `daemon.task.list` 在任务数超过 5000 时服务端报错（需分页），Web 不再封装：任务表一律来自
@@ -167,6 +174,22 @@ const task = {
   /** BT 选块：只传本次切换的字段，另一项保持不变。 */
   setPiecePicking: (params: TaskSetPiecePickingParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_SET_PIECE_PICKING, params),
+  /** BT 文件表（详情页「文件」页签轮询）。 */
+  btFiles: (params: TaskIdParams) => call<BtFilesDto>(METHOD.DAEMON_TASK_BT_FILES, params),
+  /** BT 文件优先级：只改列出的文件。 */
+  setFilePriorities: (params: SetTaskFilePrioritiesParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_SET_FILE_PRIORITIES, params),
+  renameBtFile: (params: RenameBtFileParams) => call<OkResult>(METHOD.DAEMON_TASK_RENAME_BT_FILE, params),
+  /** 强制重新校验（未完成 BT 任务）：daemon 受理即返回，校验在后台进行。 */
+  recheck: (params: TaskIdParams) => call<OkResult>(METHOD.DAEMON_TASK_RECHECK, params),
+  /** 移动 BT 数据：跨卷时耗时与数据量成正比，使用 6 小时超时。 */
+  moveStorage: (params: MoveTaskStorageParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_MOVE_STORAGE, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
+  /** 任务级限速：只传改动的字段。 */
+  setBtLimits: (params: SetTaskBtLimitsParams) => call<OkResult>(METHOD.DAEMON_TASK_SET_BT_LIMITS, params),
+  setSuperSeeding: (params: SetTaskSuperSeedingParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_SET_SUPER_SEEDING, params),
+  reannounce: (params: TaskIdParams) => call<OkResult>(METHOD.DAEMON_TASK_REANNOUNCE, params),
   delete: (params: TaskDeleteParams) => call<OkResult>(METHOD.DAEMON_TASK_DELETE, params),
   pauseAll: () => call<OkResult>(METHOD.DAEMON_TASK_PAUSE_ALL),
   resumeAll: () => call<OkResult>(METHOD.DAEMON_TASK_RESUME_ALL),
@@ -383,6 +406,8 @@ const bt = {
     refresh: () =>
       call<TrackerSubRefreshResponse>(METHOD.DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
   },
+  /** 监听端口与端口映射实况（设置页「连接」可见时轮询）。 */
+  portStatus: () => call<BtPortStatusDto>(METHOD.DAEMON_BT_PORT_STATUS),
   /** 防吸血。`cloud.apply` / `evidence.drain` 是 agent 内部方法，这里刻意不封装。 */
   guard: {
     state: () => call<BtGuardStateDto>(METHOD.DAEMON_BT_GUARD_STATE),
