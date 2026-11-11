@@ -14,6 +14,10 @@
 #   - 失败立即中止，不会留下半启动状态
 #   - 挂载前缀 SITE_BASE 默认空串 = 根部署（与 docker-compose.yml 的默认值一致）；
 #     子路径部署时设 SITE_BASE=/xxx
+#   - 服务器直连 github.com 常超时：按 DEPLOY_GIT_MIRRORS（空格分隔的 URL 前缀，
+#     拼在仓库地址前）依次拉取，全部失败再直连 origin。镜像是第三方反代，
+#     设 DEPLOY_EXPECT_SHA（调用方在可信网络上查到的 main 提交）时拉到的提交
+#     必须与之相等，否则换下一个来源：git 提交哈希覆盖全部内容，相等即未被篡改
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -24,6 +28,8 @@ REPO_DIR="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 SUBDIR="$(git -C "${SCRIPT_DIR}" rev-parse --show-prefix)"
 SUBDIR="${SUBDIR%/}"
 BRANCH="${DEPLOY_BRANCH:-main}"
+GIT_MIRRORS="${DEPLOY_GIT_MIRRORS-https://gh-proxy.com/ https://ghfast.top/}"
+EXPECT_SHA="${DEPLOY_EXPECT_SHA-}"
 export SITE_BASE="${SITE_BASE-}"
 # 部署戳放在 .git 内：不进构建上下文、不会被 reset 清掉、不会被误提交
 STAMP="$(git -C "${REPO_DIR}" rev-parse --absolute-git-dir)/fluxdown-${SUBDIR}.deployed"
@@ -45,11 +51,34 @@ echo "  时间   : $(date '+%Y-%m-%d %H:%M:%S')"
 echo "------------------------------------------"
 
 # ── 1. 拉取最新代码 ──────────────────────────
-echo "[1/4] 拉取最新代码..."
-git -C "${REPO_DIR}" fetch origin "${BRANCH}"
-git -C "${REPO_DIR}" reset --hard "origin/${BRANCH}"
-# bash 边读边执行：reset 若改写了本脚本，继续跑会执行新旧拼接的内容，重新执行一次新版本
+# bash 边读边执行：reset 若改写了本脚本，继续跑会执行新旧拼接的内容，故 reset 后
+# 重新执行一次新版本；重入的那次（DEPLOY_REEXEC=1）已在最新提交上，跳过拉取。
 if [ -z "${DEPLOY_REEXEC-}" ]; then
+  echo "[1/4] 拉取最新代码..."
+  ORIGIN_URL="$(git -C "${REPO_DIR}" remote get-url origin)"
+  FETCHED=""
+  for SOURCE in ${GIT_MIRRORS} ""; do
+    URL="${SOURCE}${ORIGIN_URL}"
+    echo "      来源 ${URL}"
+    # 20s 内低于 1KB/s 视为卡死，换下一个来源
+    if ! git -C "${REPO_DIR}" -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=20 \
+      fetch --no-tags "${URL}" "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"; then
+      echo "      拉取失败，换下一个来源"
+      continue
+    fi
+    GOT="$(git -C "${REPO_DIR}" rev-parse "refs/remotes/origin/${BRANCH}")"
+    if [ -n "${EXPECT_SHA}" ] && [ "${GOT}" != "${EXPECT_SHA}" ]; then
+      echo "      拉到 ${GOT:0:8}，与期望 ${EXPECT_SHA:0:8} 不符，换下一个来源"
+      continue
+    fi
+    FETCHED=1
+    break
+  done
+  if [ -z "${FETCHED}" ]; then
+    echo "      所有来源均拉取失败" >&2
+    exit 1
+  fi
+  git -C "${REPO_DIR}" reset --hard "origin/${BRANCH}"
   DEPLOY_REEXEC=1 exec bash "${SCRIPT_DIR}/deploy.sh" "$@"
 fi
 HEAD_SHA="$(git -C "${REPO_DIR}" rev-parse HEAD)"
