@@ -3774,5 +3774,7 @@
   "taskReferrerPlaceholder": "p. ej. https://example.com/video/123",
   "btSelectionAutoDefault": "Seleccionar automáticamente los archivos predeterminados tras 60 segundos",
   "btSelectionAutoDefaultDesc": "Si el diálogo “Seleccionar archivos para descargar” no recibe respuesta en 60 segundos, se empiezan a descargar todos los archivos. Desactívalo para dejar el diálogo abierto hasta que elijas; la tarea permanece en Preparando mientras espera. Si no hay ninguna ventana ni página web de FluxDown abierta, todos los archivos se empiezan a descargar de inmediato",
-  "batchDownloadFailed": "{count} descargas fallidas"
+  "batchDownloadFailed": "{count} descargas fallidas",
+  "errReasonTaskFilesInUse": "No se pudo eliminar el archivo porque otro programa lo está usando. La tarea se ha conservado; cierra ese programa e inténtalo de nuevo.",
+  "errReasonTaskFilesNotDeleted": "No se pudieron eliminar los archivos de la tarea (comprueba los permisos y que el disco esté disponible). La tarea se ha conservado; inténtalo más tarde."
 }

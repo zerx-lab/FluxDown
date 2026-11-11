@@ -3774,5 +3774,7 @@
   "taskReferrerPlaceholder": "例如 https://example.com/video/123",
   "btSelectionAutoDefault": "檔案選擇 60 秒後自動選擇預設項",
   "btSelectionAutoDefaultDesc": "「選擇要下載的檔案」對話框 60 秒內無人選擇時，按預設下載全部檔案。關閉後對話框會一直等待你選擇，等待期間任務停在「準備中」；沒有開啟任何 FluxDown 視窗或網頁時，仍會立即下載全部檔案",
-  "batchDownloadFailed": "{count} 個任務下載失敗"
+  "batchDownloadFailed": "{count} 個任務下載失敗",
+  "errReasonTaskFilesInUse": "檔案正被其他程式占用，無法刪除；任務已保留，關閉占用它的程式後重試",
+  "errReasonTaskFilesNotDeleted": "無法刪除任務檔案（請檢查權限及磁碟是否可用）；任務已保留，可稍後重試"
 }
