@@ -89,6 +89,7 @@ enum SettingsIndex {
         "appearance.color": ["searchKeywordsThemeColor"],
         "download.saveDir": ["searchKeywordsSaveDir"],
         "download.silentDownload": ["searchKeywordsSilentDownload"],
+        "download.silentAutoCategory": ["searchKeywordsSilentAutoCategory"],
         "download.silentSkipSelection": ["searchKeywordsSilentSkipSelection"],
         "download.useServerTime": ["searchKeywordsUseServerTime"],
         "download.fileExistsBehavior": ["searchKeywordsFileExists"],

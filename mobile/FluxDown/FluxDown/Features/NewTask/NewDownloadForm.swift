@@ -121,10 +121,17 @@ final class NewDownloadForm {
         queueId = queue
         initialSaveDir = dir
         categoryState = SaveDirCategoryState(initialDir: dir)
+        let options = SaveDirCategoryState.options(
+            CustomCategoryDto.fromPreference(state.preferences[CustomCategoryDto.preferenceKey])
+        )
+        let mode = SaveDirCategoryMode.restored(from: state.preferences[SaveDirCategoryMode.preferenceKey], options: options)
         initialQueueId = queue
         threadMode = segments <= 0 ? .auto : (threadPresets.contains(segments) ? .preset : .custom)
         presetThreads = threadPresets.contains(segments) ? segments : 8
         customThreads = min(max(segments, 1), maxThreads)
+        if let restoredDir = categoryState.select(mode, offered: dir, options: options, predicted: nil) {
+            saveDir = restoredDir
+        }
     }
 
     var entries: [UrlEntry] { parseEntries(urlText).dedupe() }
@@ -167,6 +174,13 @@ final class NewDownloadForm {
         predictedCategoryDir = predicted
         if let dir = categoryState.select(mode, offered: initialSaveDir, options: options, predicted: predicted) {
             saveDir = dir
+        }
+    }
+
+    /// 表单打开后分类被删除、隐藏或清空目录时，实际状态也回退自动，而非只改选择器文案。
+    func reconcileCategory(options: [CustomCategoryDto], session: any HostSession) {
+        if case let .category(id) = categoryState.mode, !options.contains(where: { $0.id == id }) {
+            selectCategory(.auto, options: options, session: session)
         }
     }
     /// 保存目录文本框由用户编辑时调用；显式选择初始目录也必须关闭自动路由。
@@ -261,6 +275,7 @@ final class NewDownloadForm {
         return ManifestBaseOptions(
             saveDir: saveDir.trimmingCharacters(in: .whitespacesAndNewlines),
             offeredSaveDir: categoryState.offeredSaveDir(dir: saveDir, initial: initialSaveDir),
+            categoryMode: categoryState.mode,
             queueId: queue,
             segments: Int32(segments),
             cookies: adv.cookie.trimmingCharacters(in: .whitespacesAndNewlines),

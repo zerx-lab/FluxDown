@@ -150,9 +150,8 @@ object ExternalIntake {
 }
 
 /**
- * 「免打扰下载」（偏好 `download.silent_download`）下外部请求直接建任务的参数，规则同 agent
- * `capture.rs::ExternalPolicy`：保存目录 = 跟随上次保存位置 > 主机默认目录，并把它作为
- * `offeredSaveDir` 交给 Rust 按分类规则路由；队列 / 分段取主机默认；[unattended] = 设备偏好
+ * `capture.rs::ExternalPolicy`：保存目录 = 跟随上次保存位置 > 主机默认目录；仅分类路由开启时
+ * 将其作为 `offeredSaveDir` 交给 Rust 按分类规则路由。队列 / 分段取主机默认；[unattended] = 设备偏好
  * `download.silent_skip_selection`（跳过 BT 文件 / 画质 / 变体二次选择）。
  */
 data class SilentCapture(val request: CreateTaskRequest) {
@@ -161,6 +160,7 @@ data class SilentCapture(val request: CreateTaskRequest) {
     companion object {
         const val SILENT_PREF = "download.silent_download"
         const val SKIP_SELECTION_PREF = "download.silent_skip_selection"
+        const val AUTO_CATEGORY_PREF = "download.silent_auto_category"
         private const val REMEMBER_LAST_SAVE_DIR_PREF = "download.remember_last_save_dir"
         private const val LAST_SAVE_DIR_PREF = "download.last_save_dir"
 
@@ -175,8 +175,7 @@ data class SilentCapture(val request: CreateTaskRequest) {
                 CreateTaskRequest(
                     url = download.url,
                     fileName = download.fileName,
-                    saveDir = saveDir,
-                    offeredSaveDir = saveDir,
+                    offeredSaveDir = saveDir.takeIf { prefs.bool(AUTO_CATEGORY_PREF, true) },
                     unattended = prefs.bool(SKIP_SELECTION_PREF, false),
                     segments = state.config["default_segments"]?.trim()?.toIntOrNull() ?: 0,
                     queueId = state.defaultQueueId(),

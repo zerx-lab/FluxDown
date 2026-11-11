@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -208,9 +208,13 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   // ── 分类下拉：Auto 模式下目录框跟随识别出的文件名（规则见 `lib/categoryRoute.ts`）──
   const categoriesPref = useAgent((snapshot) => snapshot.preferences.values[CUSTOM_CATEGORIES_PREF_KEY], undefined)
   const categories = useMemo(() => categoriesFromPreference(categoriesPref), [categoriesPref])
-  const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
   const categoryOptions = useMemo(() => pickableCategories(categories), [categories])
-  const [categoryMode, setCategoryMode] = useState<CategoryPickMode>({ kind: 'auto' })
+  const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
+  const lastCategoryMode = useAgent((snapshot) => snapshot.preferences.values['download.last_category_mode'], undefined)
+  const [categoryMode, setCategoryMode] = useState<CategoryPickMode>(() =>
+    categoryModeFromPreference(lastCategoryMode, categoriesFromPreference(rpcStore.peek().snapshot?.preferences.values[CUSTOM_CATEGORIES_PREF_KEY])),
+  )
+  const categoryModeInitialized = useRef(false)
   /** 程序最近一次写入目录框的值（自动跟随 / 切换模式 / 捕获预填）；目录框与之不等即视为用户手改。 */
   const lastWrittenDir = useRef<string | null>(null)
   /** 用户直接编辑/浏览选择后明确优先于自动路由，包括目录恰为默认或分类目录。 */
@@ -218,6 +222,20 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const categoryShown = !target
   const predictedName = rename.trim() !== '' ? rename.trim() : (entries[0]?.fileName ?? '')
   const predictedUrl = entries[0]?.url ?? ''
+  useEffect(() => {
+    if (!categoryShown || categoryModeInitialized.current) return
+    categoryModeInitialized.current = true
+    if (categoryMode.kind === 'category' || categoryMode.kind === 'none') {
+      const validMode = categoryMode.kind === 'category' && !categoryOptions.some((category) => category.id === categoryMode.id)
+        ? { kind: 'auto' as const }
+        : categoryMode
+      setCategoryMode(validMode)
+      const next = modeDir(validMode, categoryOptions, context.saveDir, predictedDir)
+      lastWrittenDir.current = next
+      if (validMode.kind === 'category' || validMode.kind === 'none') setSaveDir(next)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restoration only runs once when local picker becomes visible
+  }, [categoryShown])
   const predictedDir = categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
     if (!categoryShown || categoryMode.kind !== 'auto') return
@@ -227,6 +245,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     if (next !== saveDir) setSaveDir(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在预测输入 / 模式变化时跟随，目录框当前值取渲染时快照
   }, [categoryShown, categoryMode.kind, predictedDir])
+  useEffect(() => {
+    if (categoryMode.kind !== 'category' || categoryOptions.some((category) => category.id === categoryMode.id)) return
+    setCategoryMode({ kind: 'auto' })
+    saveDirManuallyChosen.current = false
+    const next = modeDir({ kind: 'auto' }, categoryOptions, context.saveDir, predictedDir)
+    lastWrittenDir.current = next
+    setSaveDir(next)
+  }, [categoryMode, categoryOptions, context.saveDir, predictedDir])
   const pickCategory = (mode: CategoryPickMode) => {
     saveDirManuallyChosen.current = false
     setCategoryMode(mode)
@@ -401,7 +427,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   const rememberSaveDir = (dir: string) => {
     // 尽力而为：失败不影响建任务；无条件记录，「记住上次目录」开关开启后立即生效。
-    const values: Record<string, JsonValue> = { 'download.last_save_dir': dir }
+    const values: Record<string, JsonValue> = {
+      'download.last_save_dir': dir,
+      'download.last_category_mode': categoryModePreference(categoryMode),
+    }
     // 历史（偏好关闭时不记）按提交时的最新快照计算，与 GPUI `record_save_dir_history` 同规则。
     const prefs = rpcStore.peek().snapshot?.preferences.values ?? {}
     if (prefs[SAVE_DIR_HISTORY_ENABLED_PREF] !== false) {

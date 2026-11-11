@@ -510,6 +510,7 @@ fn create_many_resends_same_batch_after_disconnect_without_pausing_the_gate() {
                         .collect(),
                     captures: Vec::new(),
                     category_route: None,
+                    last_category_mode: "auto".to_owned(),
                     offered_save_dir: String::new(),
                 },
                 move |command| submit_port.execute(command),

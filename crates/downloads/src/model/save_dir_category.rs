@@ -35,6 +35,53 @@ pub(crate) enum CategoryMode {
     Category(String),
 }
 
+/// Loads the persisted mode only when its category remains selectable.
+pub(crate) fn restore_category_mode(
+    value: Option<&str>,
+    options: &[NewDownloadCategory],
+) -> CategoryMode {
+    match value {
+        Some("none") => CategoryMode::NoCategory,
+        Some(value) => {
+            let Some(id) = value.strip_prefix("category:") else {
+                return CategoryMode::Auto;
+            };
+            if !id.is_empty() && options.iter().any(|option| option.id == id) {
+                CategoryMode::Category(id.to_owned())
+            } else {
+                CategoryMode::Auto
+            }
+        }
+        _ => CategoryMode::Auto,
+    }
+}
+
+/// Encodes the user's selected mode, never an automatic prediction.
+pub(crate) fn category_mode_preference(mode: &CategoryMode) -> String {
+    match mode {
+        CategoryMode::Auto => "auto".to_owned(),
+        CategoryMode::NoCategory => "none".to_owned(),
+        CategoryMode::Category(id) => format!("category:{id}"),
+    }
+}
+
+/// Directory written when a mode is selected; `None` means the category is no longer selectable.
+pub(crate) fn category_mode_save_dir(
+    mode: &CategoryMode,
+    options: &[NewDownloadCategory],
+    offered: &str,
+    predicted: Option<&str>,
+) -> Option<String> {
+    match mode {
+        CategoryMode::Auto => Some(predicted.unwrap_or(offered).to_owned()),
+        CategoryMode::NoCategory => Some(offered.to_owned()),
+        CategoryMode::Category(id) => options
+            .iter()
+            .find(|option| option.id == *id)
+            .map(|option| option.save_dir.clone()),
+    }
+}
+
 /// 下拉候选：按分类列表顺序（已按 `position` 排序），保留可见、非 `all`、目录非空的项。
 pub(crate) fn category_options(categories: &[CustomCategoryDto]) -> Vec<NewDownloadCategory> {
     categories
@@ -281,9 +328,10 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        CategoryMode, auto_follow_target, category_options, category_route_eligible, dir_untouched,
-        matched_category, predict_save_dir, save_dir_untouched, suggest_rule_name,
-        suggest_url_pattern,
+        CategoryMode, NewDownloadCategory, auto_follow_target, category_mode_preference,
+        category_mode_save_dir, category_options, category_route_eligible, dir_untouched,
+        matched_category, predict_save_dir, restore_category_mode, save_dir_untouched,
+        suggest_rule_name, suggest_url_pattern,
     };
 
     #[test]
@@ -542,5 +590,80 @@ mod tests {
         assert!(!dir_untouched("/videos", "/dl", Some("/programs")));
         assert!(dir_untouched(" /programs ", "/dl", Some("/programs")));
         assert!(dir_untouched("  ", "/dl", Some("/programs")));
+    }
+
+    #[test]
+    fn persisted_category_mode_restores_only_current_selectable_categories() {
+        let options = vec![NewDownloadCategory {
+            id: "video:custom".to_owned(),
+            builtin_type: None,
+            name: "Video".to_owned(),
+            icon: String::new(),
+            save_dir: "/downloads/video".to_owned(),
+        }];
+        assert_eq!(restore_category_mode(None, &options), CategoryMode::Auto);
+        assert_eq!(
+            restore_category_mode(Some("invalid"), &options),
+            CategoryMode::Auto
+        );
+        assert_eq!(
+            restore_category_mode(Some("category:"), &options),
+            CategoryMode::Auto
+        );
+        assert_eq!(
+            restore_category_mode(Some("category:stale"), &options),
+            CategoryMode::Auto
+        );
+        assert_eq!(
+            restore_category_mode(Some("category:video:custom"), &options),
+            CategoryMode::Category("video:custom".to_owned())
+        );
+        assert_eq!(
+            restore_category_mode(Some("none"), &[]),
+            CategoryMode::NoCategory
+        );
+        assert_eq!(category_mode_preference(&CategoryMode::Auto), "auto");
+        assert_eq!(category_mode_preference(&CategoryMode::NoCategory), "none");
+        assert_eq!(
+            category_mode_preference(&CategoryMode::Category("video:custom".to_owned())),
+            "category:video:custom"
+        );
+        assert!(category_route_eligible(&CategoryMode::Auto, true));
+        assert!(!category_route_eligible(&CategoryMode::Auto, false));
+        assert!(!category_route_eligible(&CategoryMode::NoCategory, true));
+        assert!(!category_route_eligible(
+            &CategoryMode::Category("video:custom".to_owned()),
+            true
+        ));
+        assert_eq!(
+            category_mode_save_dir(
+                &CategoryMode::Auto,
+                &options,
+                "/downloads",
+                Some("/downloads/video"),
+            )
+            .as_deref(),
+            Some("/downloads/video")
+        );
+        assert_eq!(
+            category_mode_save_dir(
+                &CategoryMode::NoCategory,
+                &options,
+                "/downloads",
+                Some("/downloads/video"),
+            )
+            .as_deref(),
+            Some("/downloads")
+        );
+        assert_eq!(
+            category_mode_save_dir(
+                &CategoryMode::Category("video:custom".to_owned()),
+                &options,
+                "/downloads",
+                None,
+            )
+            .as_deref(),
+            Some("/downloads/video")
+        );
     }
 }

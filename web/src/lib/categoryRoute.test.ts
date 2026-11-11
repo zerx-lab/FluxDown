@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { CustomCategoryDto } from './rpc'
-import { autoFollowDir, dirUntouched, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeFromPreference, routeSaveDir, wildcardMatches } from './categoryRoute'
+import { autoFollowDir, categoryModeFromPreference, categoryModePreference, dirUntouched, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeFromPreference, routeSaveDir, wildcardMatches } from './categoryRoute'
 import type { CategoryRouteDto } from './rpc'
 
 declare const Bun: { file(path: URL): { json(): Promise<unknown> } }
@@ -157,5 +157,34 @@ describe('auto follow / mode', () => {
     expect(modeDir({ kind: 'category', id: 'v' }, options, '/d', null)).toBe('/v')
     expect(modeDir({ kind: 'none' }, options, '/d', '/v')).toBe('/d')
     expect(modeDir({ kind: 'auto' }, options, '/d', null)).toBe('/d')
+  })
+})
+
+describe('remembered category mode', () => {
+  const categories = [
+    cat('visible', { saveDir: '/visible' }),
+    cat('hidden', { saveDir: '/hidden', visible: false }),
+    cat('empty', { saveDir: ' ' }),
+    cat('all', { saveDir: '/all', builtinType: 'all' }),
+  ]
+
+  test('restores only valid picker choices and falls back to Auto for malformed or stale values', () => {
+    expect(categoryModeFromPreference(undefined, categories)).toEqual({ kind: 'auto' })
+    expect(categoryModeFromPreference('garbage', categories)).toEqual({ kind: 'auto' })
+    expect(categoryModeFromPreference('category:', categories)).toEqual({ kind: 'auto' })
+    for (const id of ['hidden', 'empty', 'all', 'removed']) {
+      expect(categoryModeFromPreference(`category:${id}`, categories)).toEqual({ kind: 'auto' })
+    }
+    expect(categoryModeFromPreference('none', categories)).toEqual({ kind: 'none' })
+    expect(categoryModeFromPreference('category:visible', categories)).toEqual({ kind: 'category', id: 'visible' })
+  })
+
+  test('serializes modes and explicit category directory does not route', () => {
+    const mode = { kind: 'category' as const, id: 'visible' }
+    expect(categoryModePreference({ kind: 'auto' })).toBe('auto')
+    expect(categoryModePreference({ kind: 'none' })).toBe('none')
+    expect(categoryModePreference(mode)).toBe('category:visible')
+    expect(modeDir(mode, categories, '/default', '/predicted')).toBe('/visible')
+    expect(eligibleRoute({ rules: [] }, mode, false, '/visible', '/default')).toBeNull()
   })
 })

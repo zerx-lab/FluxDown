@@ -114,6 +114,7 @@ class SettingsCatalogTest {
                 "bt_seed_ratio_limit" to "1.5",
                 "proxy_mode" to "manual",
                 "download.keep_awake" to "true",
+                "download.silent_auto_category" to "true",
                 "download.silent_skip_selection" to "1",
             ),
         )
@@ -123,9 +124,11 @@ class SettingsCatalogTest {
         assertEquals(JsonValue.of(1.5), plan.syncedPreferences["bt.seed_ratio_limit"])
         assertEquals(JsonValue.True, plan.syncedPreferences["download.keep_awake"])
         assertEquals("max_concurrent_tasks", plan.syncedDaemonKeys["download.max_concurrent_tasks"])
-        // 目录外的偏好只写本机
-        assertEquals(mapOf("download.silent_skip_selection" to JsonValue.True), plan.localPreferences)
-        assertFalse(plan.isEmpty)
+        assertEquals(mapOf(
+            "download.silent_skip_selection" to JsonValue.True,
+            "download.silent_auto_category" to JsonValue.True,
+        ), plan.localPreferences)
+        assertFalse(SettingsCatalog.isSynced("download.silent_auto_category"))
     }
 
     @Test

@@ -22,6 +22,8 @@ use crate::model::{
 
 /// 本机偏好：新建下载对话框上次使用的保存目录（设备本地，不进云同步）。
 pub const LAST_SAVE_DIR_PREF: &str = "download.last_save_dir";
+/// 本机偏好：新建下载分类模式（`auto` / `none` / `category:<id>`；设备本地，不进云同步）。
+pub(crate) const LAST_CATEGORY_MODE_PREF: &str = "download.last_category_mode";
 /// 偏好：新建下载默认沿用上次保存目录。
 pub const REMEMBER_LAST_SAVE_DIR_PREF: &str = "download.remember_last_save_dir";
 /// 本机偏好：新建下载保存目录历史（字符串数组，最新在前；设备本地，不进云同步）。

@@ -6,6 +6,31 @@ public enum SaveDirCategoryMode: Sendable, Hashable {
     /// 不分类（契约里的 None；避开与 `Optional.none` 重名）。
     case noCategory
     case category(String)
+
+    public static let preferenceKey = "download.last_category_mode"
+
+    /// 仅恢复仍可选择的分类；未知值与失效分类回退自动。
+    public static func restored(from value: JSONValue?, options: [CustomCategoryDto]) -> Self {
+        guard let value = value?.stringValue else { return .auto }
+        if value == "none" { return .noCategory }
+        let prefix = "category:"
+        guard value.hasPrefix(prefix) else { return .auto }
+        let id = String(value.dropFirst(prefix.count))
+        guard !id.isEmpty else { return .auto }
+        let available = options.contains {
+            $0.id == id && $0.visible && !$0.isAll
+                && !$0.saveDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return available ? .category(id) : .auto
+    }
+
+    public var preferenceValue: JSONValue {
+        switch self {
+        case .auto: .string("auto")
+        case .noCategory: .string("none")
+        case let .category(id): .string("category:" + id)
+        }
+    }
 }
 
 /// 新建下载表单「分类 → 保存目录」的纯规则（四端同一契约；匹配语义唯一来源是 Rust `route_save_dir`，

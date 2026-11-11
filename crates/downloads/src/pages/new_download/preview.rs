@@ -176,6 +176,9 @@ impl NewDownloadView {
             request: Box::new(request),
             context: Box::new(context),
             transaction_id: transaction_id.clone(),
+            last_category_mode: crate::model::save_dir_category::category_mode_preference(
+                &self.category_mode,
+            ),
         };
         cx.spawn_in(window, async move |this, cx| {
             let report = run_submission(

@@ -25,8 +25,9 @@ use crate::{
     components::threads_risk::threads_risk_callout,
     controller::{
         CATEGORY_SAVE_DIR_HISTORY_PREF, DownloadsCommand, DownloadsPort, DownloadsResult,
-        LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF, REMEMBER_LAST_SAVE_DIR_PREF,
-        REMEMBER_LAST_TARGET_PREF, SAVE_DIR_HISTORY_ENABLED_PREF, SAVE_DIR_HISTORY_PREF,
+        LAST_CATEGORY_MODE_PREF, LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF,
+        REMEMBER_LAST_SAVE_DIR_PREF, REMEMBER_LAST_TARGET_PREF, SAVE_DIR_HISTORY_ENABLED_PREF,
+        SAVE_DIR_HISTORY_PREF,
     },
     model::{
         aria2c::{FieldFill, plan_field_fill},
@@ -40,7 +41,8 @@ use crate::{
             parse_entries, parse_input, ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{
-            CategoryMode, NewDownloadCategory, category_options, save_dir_untouched,
+            CategoryMode, NewDownloadCategory, category_mode_preference, category_options,
+            restore_category_mode, save_dir_untouched,
         },
         save_dir_history::{
             CategorySaveDirHistory, read_category_save_dir_history, read_save_dir_history,
@@ -120,8 +122,9 @@ pub struct NewDownloadContext {
     pub initial_urls: Vec<String>,
     /// 默认目录下的授权路由；空规则仍允许插件归档。`None` 表示明确停用路由。
     pub category_route: Option<fluxdown_protocol::CategoryRouteDto>,
-    /// 保存目录分类下拉的候选（同一偏好投影：可见、非 `all`、配置了目录的分类，按 `position`）。
     pub category_options: Vec<NewDownloadCategory>,
+    /// Raw local mode preference, validated once selectable category options are available.
+    pub(crate) initial_category_mode: Option<String>,
     /// 偏好 `custom_categories` 的原始列表（快捷添加网址规则时在其上追加再整体写回）。
     pub custom_categories: Vec<fluxdown_protocol::CustomCategoryDto>,
     /// 「下载到」候选：账号其他设备 + 已配对设备（本机始终可选，不在其中）；空 = 不显示选择器。
@@ -241,6 +244,7 @@ pub(crate) fn build_new_download_context(
     let categories = fluxdown_protocol::CustomCategoryDto::from_preference(
         preferences.get(fluxdown_protocol::CUSTOM_CATEGORIES_PREF_KEY),
     );
+    let category_options = category_options(&categories);
     NewDownloadContext {
         save_dir: save_dir.to_owned(),
         save_dir_history,
@@ -256,7 +260,11 @@ pub(crate) fn build_new_download_context(
             .collect(),
         manual_proxy_url: manual_proxy_url(config),
         category_route: fluxdown_protocol::CategoryRouteDto::from_categories(&categories),
-        category_options: category_options(&categories),
+        category_options: category_options.clone(),
+        initial_category_mode: preferences
+            .get(LAST_CATEGORY_MODE_PREF)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
         custom_categories: categories,
         initial_urls: Vec::new(),
         targets,
@@ -351,6 +359,8 @@ pub struct NewDownloadView {
     save_dir_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// 保存目录的分类模式（默认自动）。
     category_mode: CategoryMode,
+    /// Whether the user explicitly changed the category mode in this form.
+    category_mode_touched: bool,
     /// 表单上一次写入目录框的值（自动跟随 / 切换分类模式 / 捕获带来的系统目录）：目录框仍
     /// 等于它说明用户没手动改过——自动模式据此继续跟随、提交时才挂分类路由。
     category_written_dir: Option<String>,
@@ -419,6 +429,10 @@ impl NewDownloadView {
         let remote_save_dir =
             cx.new(|cx| InputState::new(window, cx).placeholder(remote_placeholder));
 
+        let category_mode = restore_category_mode(
+            context.initial_category_mode.as_deref(),
+            &context.category_options,
+        );
         let mut this = Self {
             threads: ThreadChoice::from_segments(context.segments),
             rename,
@@ -460,12 +474,17 @@ impl NewDownloadView {
             remote_save_dir,
             save_dir_menu_open: false,
             save_dir_bounds: Rc::default(),
-            category_mode: CategoryMode::Auto,
+            category_mode,
+            category_mode_touched: false,
             category_written_dir: None,
             category_dir_manually_edited: false,
             category_predicted: None,
         };
         this.refresh_entries(window, cx);
+        if this.category_mode != CategoryMode::Auto {
+            this.set_category_mode(this.category_mode.clone(), window, cx);
+            this.category_mode_touched = false;
+        }
         this.subscribe_inputs(&translator, window, cx);
         this
     }
@@ -977,18 +996,18 @@ impl NewDownloadView {
             category_options,
             custom_categories,
             manual_proxy_url,
+            initial_category_mode,
             ..
         } = context;
         let current = self.save_dir.read(cx).value().to_string();
-        if save_dir != self.context.save_dir
-            && current == self.context.save_dir
+        let save_dir_was_untouched = current == self.context.save_dir
             && save_dir_untouched(
                 &current,
                 &self.context.save_dir,
                 self.category_written_dir.as_deref(),
                 self.category_dir_manually_edited,
-            )
-        {
+            );
+        if save_dir != self.context.save_dir && save_dir_was_untouched {
             let value = save_dir.clone();
             self.save_dir
                 .update(cx, |input, cx| input.set_value(value, window, cx));
@@ -1018,7 +1037,15 @@ impl NewDownloadView {
         self.context.category_route = category_route;
         self.context.category_options = category_options;
         self.context.custom_categories = custom_categories;
-        if let CategoryMode::Category(id) = &self.category_mode
+        self.context.initial_category_mode = initial_category_mode;
+        if !self.category_mode_touched && save_dir_was_untouched {
+            let mode = restore_category_mode(
+                self.context.initial_category_mode.as_deref(),
+                &self.context.category_options,
+            );
+            self.set_category_mode(mode, window, cx);
+            self.category_mode_touched = false;
+        } else if let CategoryMode::Category(id) = &self.category_mode
             && !self
                 .context
                 .category_options
@@ -1203,6 +1230,7 @@ impl NewDownloadView {
                     .category_route
                     .clone()
                     .filter(|_| self.routes_by_category(cx)),
+                last_category_mode: category_mode_preference(&self.category_mode),
                 offered_save_dir,
             },
             window,
@@ -1244,7 +1272,11 @@ impl NewDownloadView {
                     start_paused: false,
                 };
                 (this.on_submit)(
-                    NewDownloadSubmission::TorrentFiles { paths, options },
+                    NewDownloadSubmission::TorrentFiles {
+                        paths,
+                        options,
+                        last_category_mode: category_mode_preference(&this.category_mode),
+                    },
                     window,
                     cx,
                 );
