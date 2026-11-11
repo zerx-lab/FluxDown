@@ -31,7 +31,7 @@ export const legal = defineMessages({
           title: "Information We Collect",
           body: "We collect minimal information necessary to provide and improve our services:",
           items: [
-            "<strong>Website analytics:</strong> We use Vercel Web Analytics, a privacy-friendly analytics service that collects anonymous, aggregated page view data. No cookies are used, no personal data is collected, and no individual users are tracked.",
+            "<strong>Website analytics:</strong> This website uses Cloudflare Web Analytics (cookieless, aggregated page views) and Google Analytics 4 (page views, referrers and on-page interactions, using first-party cookies). Details are in Website Analytics below.",
             "<strong>Feedback submissions:</strong> When you voluntarily submit feedback through our website, we collect the feedback type, title, description, and optionally your contact information. This data is stored as GitHub Issues in our repository.",
             "<strong>Email subscriptions:</strong> If you subscribe to platform availability notifications, we store your email address in a GitHub Issue. This is used solely to notify you when the requested platform becomes available.",
             "<strong>Anonymous usage counters (desktop and server):</strong> The desktop application and the headless server send two anonymous events: <code>app_installed</code> once and <code>app_active</code> at most once a day. They contain a random installation ID, the operating system, CPU architecture and app version — never URLs, file names or account data. You can turn them off with the Anonymous Usage Statistics switch in settings. The mobile apps do not send these events.",
@@ -101,7 +101,7 @@ export const legal = defineMessages({
         {
           id: "analytics",
           title: "Website Analytics",
-          body: "This website uses Vercel Web Analytics, which is a privacy-focused analytics service. It does not use cookies, does not collect personal information, does not track individual users across sessions, and is compliant with GDPR, CCPA, and other privacy regulations without requiring a cookie consent banner.",
+          body: `This website uses two analytics services to understand how visitors find and use it. ${ext("https://www.cloudflare.com/web-analytics/", "Cloudflare Web Analytics")} counts aggregated page views without cookies. ${ext("https://policies.google.com/privacy", "Google Analytics 4")} records page views, referrers, approximate location, device and browser type, and on-page interactions such as scrolls and outbound clicks; it sets first-party cookies (<code>_ga</code>, <code>_ga_*</code>) to distinguish visits. Google Analytics 4 does not log or store full IP addresses. Analytics runs only on this website — never in the FluxDown apps or the browser extension — and never sees what you download. You can block it with any content blocker or the ${ext("https://tools.google.com/dlpage/gaoptout", "Google Analytics opt-out add-on")}.`,
           items: [],
         },
         {
@@ -329,7 +329,7 @@ export const legal = defineMessages({
           title: "我们收集的信息",
           body: "我们仅收集提供和改进服务所必需的最少信息：",
           items: [
-            "<strong>网站分析：</strong>我们使用 Vercel Web Analytics，这是一项注重隐私的分析服务，仅收集匿名的、聚合的页面浏览数据。不使用 Cookie，不收集个人数据，不追踪个人用户。",
+            "<strong>网站分析：</strong>本网站使用 Cloudflare Web Analytics（不使用 Cookie，仅聚合页面浏览量）与 Google Analytics 4（页面浏览、来源与页内互动，使用第一方 Cookie），详见下文「网站分析」。",
             "<strong>反馈提交：</strong>当您通过网站自愿提交反馈时，我们收集反馈类型、标题、描述以及可选的联系方式。这些数据以 GitHub Issue 的形式存储在我们的代码仓库中。",
             "<strong>邮件订阅：</strong>如果您订阅了平台可用性通知，我们会将您的邮箱地址存储在 GitHub Issue 中，仅用于在所请求的平台可用时通知您。",
             "<strong>匿名使用计数（桌面端与服务器端）：</strong>桌面应用与无界面服务器会发送两个匿名事件：安装时一次 <code>app_installed</code>，每天至多一次 <code>app_active</code>。其中只包含随机安装 ID、操作系统、CPU 架构和应用版本，绝不包含链接、文件名或账户信息，可在设置中通过「匿名使用统计」开关关闭。移动应用不发送这些事件。",
@@ -399,7 +399,7 @@ export const legal = defineMessages({
         {
           id: "analytics",
           title: "网站分析",
-          body: "本网站使用 Vercel Web Analytics，这是一项注重隐私的分析服务。它不使用 Cookie、不收集个人信息、不跨会话追踪用户，符合 GDPR、CCPA 等隐私法规，无需显示 Cookie 同意横幅。",
+          body: `本网站使用两项分析服务来了解访客如何找到并使用本站。${ext("https://www.cloudflare.com/web-analytics/", "Cloudflare Web Analytics")} 不使用 Cookie，只统计聚合的页面浏览量。${ext("https://policies.google.com/privacy", "Google Analytics 4")} 记录页面浏览、来源、大致地区、设备与浏览器类型以及滚动、外链点击等页内互动，并设置第一方 Cookie（<code>_ga</code>、<code>_ga_*</code>）以区分访问；Google Analytics 4 不记录也不存储完整 IP 地址。分析只在本网站运行，FluxDown 应用与浏览器扩展中都没有，也绝不会知道您下载了什么。您可以用任意内容拦截器或 ${ext("https://tools.google.com/dlpage/gaoptout", "Google Analytics 停用插件")}阻止它。`,
           items: [],
         },
         {

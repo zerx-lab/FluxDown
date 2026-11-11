@@ -80,6 +80,11 @@ const paletteLinks = [
 
 // 仅默认 hreflang 簇的英文页参与自动语言;自带 alternates 的页面(docs / 404 / 工具页)语言由 URL 固定。
 const autoZhHref = lang === "en" && Astro.props.alternates === undefined ? switchLang(normalizedPath, "zh") : null;
+
+// Google Analytics 4(媒体资源「FluxDown Website」,数据流 fluxdown.com):只在生产根部署加载,
+// 本地 dev 与子路径预览部署不计数。
+const GA_MEASUREMENT_ID = "G-B77V9DMYQT";
+const loadAnalytics = import.meta.env.PROD && BASE === "";
 ---
 
 <!doctype html>
@@ -155,6 +160,20 @@ const autoZhHref = lang === "en" && Astro.props.alternates === undefined ? switc
     </script>
 
     <script is:inline type="application/ld+json" set:html={JSON.stringify(buildGraph(jsonLdNodes))} />
+    {
+      loadAnalytics && (
+        <>
+          <script is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`} />
+          <script is:inline define:vars={{ gaId: GA_MEASUREMENT_ID }}>
+            window.dataLayer = window.dataLayer || [];
+            function gtag() { dataLayer.push(arguments); }
+            window.gtag = gtag;
+            gtag("js", new Date());
+            gtag("config", gaId);
+          </script>
+        </>
+      )
+    }
     <slot name="head" />
   </head>
   <body class="page-bg">
