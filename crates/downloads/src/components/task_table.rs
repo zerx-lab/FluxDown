@@ -55,6 +55,9 @@ use crate::{
 mod groups;
 use groups::GroupRow;
 
+#[path = "task_table_directories.rs"]
+mod directories;
+
 /// 固定左侧选择列的最小宽（含表格左侧留白）：平时显示文件类型图标，行悬停 / 已选中 /
 /// 存在任意选中时换成复选框。实际宽度随密度下的图标尺寸放宽，见
 /// [`DownloadTableDelegate::selection_column_width`]。
@@ -903,6 +906,10 @@ pub(crate) struct DownloadTableDelegate {
     focused_group: Option<String>,
     /// 远程任务目标设备显示名：设备 id / 指纹 → 已消歧的名称。
     device_names: HashMap<String, String>,
+    default_save_dir: String,
+    device_roots: HashMap<String, String>,
+    directory_depths: Vec<usize>,
+    directory_paths: HashMap<usize, String>,
     /// 表格容器宽（`render_download_table` 在 prepaint 测得、帧外写入）；0 = 尚未测得。
     viewport_width: f32,
     /// 最近一次交给表格的文件名列宽（`column()` 写入）；与期望值不同才需 refresh。
@@ -973,6 +980,10 @@ impl DownloadTableDelegate {
             collapsed_dirs: HashMap::new(),
             focused_group: None,
             device_names: HashMap::new(),
+            default_save_dir: String::new(),
+            device_roots: HashMap::new(),
+            directory_depths: Vec::new(),
+            directory_paths: HashMap::new(),
             viewport_width: 0.,
             applied_file_width: Cell::new(0.),
             text_scale: Cell::new(1.),
@@ -1608,6 +1619,8 @@ impl DownloadTableDelegate {
         // 沿用上次可见行的缓冲，大表重算不再为它重新分配。
         let mut visible = std::mem::take(&mut self.visible);
         visible.clear();
+        self.directory_depths.clear();
+        self.directory_paths.clear();
         // 即使排序输入不变，也照常应用保持期：过期顺序和动态键的重排时钟必须一致。
         let live_key = self.prefs.sort_key.is_live();
 
@@ -1634,6 +1647,10 @@ impl DownloadTableDelegate {
             for entity in entities {
                 self.push_entity(&mut visible, entity);
             }
+            return visible;
+        }
+        if self.prefs.group_by == ViewGroupBy::Directory {
+            self.push_directories(&mut visible, &entities, &local, &remote);
             return visible;
         }
         let mut buckets = group_by_key(
@@ -1672,7 +1689,7 @@ impl DownloadTableDelegate {
     fn group_bucket(&self, task: &DownloadTaskView) -> GroupBucket {
         let strings = &self.strings;
         match self.prefs.group_by {
-            ViewGroupBy::None => GroupBucket {
+            ViewGroupBy::None | ViewGroupBy::Directory => GroupBucket {
                 key: String::new(),
                 label: SharedString::default(),
                 order: 0,
@@ -2955,6 +2972,7 @@ impl DownloadTableDelegate {
                 h_flex()
                     .h(theme.density().control)
                     .min_w_0()
+                    .pl(tokens.spacing.sm + self.directory_indent(row_ix))
                     .gap(tokens.spacing.xs)
                     .text_size(tokens.typography.xs.size)
                     .line_height(tokens.typography.xs.line_height)
@@ -2969,8 +2987,16 @@ impl DownloadTableDelegate {
                     )
                     .child(
                         div()
+                            .id(("download-directory-path", row_ix))
                             .min_w_0()
-                            .truncate()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_middle()
+                            .when_some(self.directory_paths.get(&row_ix).cloned(), |this, path| {
+                                this.tooltip(move |window, cx| {
+                                    tooltip_view(path.clone(), window, cx)
+                                })
+                            })
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(tokens.colors.foreground)
                             .child(label.clone()),
@@ -3698,9 +3724,20 @@ impl TableDelegate for DownloadTableDelegate {
                 return self.render_group_tr(row_ix, group, cx);
             }
             Some(VisibleRow::GroupDir { .. }) => return self.render_group_dir_tr(row_ix, cx),
-            Some(VisibleRow::GroupHeader { .. }) | None => {
-                return div().id(("download-group-row", row_ix)).h(row_height);
+            Some(VisibleRow::GroupHeader {
+                key,
+                label,
+                count,
+                collapsed,
+            }) => {
+                let header = self.render_group_header(row_ix, key, label, *count, *collapsed, cx);
+                return div()
+                    .id(("download-group-row", row_ix))
+                    .relative()
+                    .h(row_height)
+                    .child(div().absolute().inset_0().child(header));
             }
+            None => return div().id(("download-group-row", row_ix)).h(row_height),
         };
         let Some(key) = self.store.row(id).map(|row| row.key.clone()) else {
             return div().id(("download-task-row", row_ix)).h(row_height);
@@ -3784,19 +3821,7 @@ impl TableDelegate for DownloadTableDelegate {
             Some(VisibleRow::GroupDir { .. }) => {
                 return self.render_group_dir_td(row_ix, col_ix, cx);
             }
-            Some(VisibleRow::GroupHeader {
-                key,
-                label,
-                count,
-                collapsed,
-            }) => {
-                if col_ix == 1 {
-                    let (key, label, count, collapsed) =
-                        (key.clone(), label.clone(), *count, *collapsed);
-                    return self.render_group_header(row_ix, &key, &label, count, collapsed, cx);
-                }
-                return div().into_any_element();
-            }
+            Some(VisibleRow::GroupHeader { .. }) => return div().into_any_element(),
             None => return div().into_any_element(),
         };
         let Some(task) = self.store.row(id) else {
@@ -4633,7 +4658,7 @@ impl DownloadView {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         rc::Rc,
         time::{Duration, Instant},
     };
@@ -5036,6 +5061,83 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn directory_grouping_tracks_task_moves_and_default_root_changes() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[3, 2, 2])?;
+        let mut rows = delegate.store.local().to_vec();
+        rows[0].save_dir = "/dl/视频".into();
+        for row in &mut rows[1..] {
+            row.save_dir = "/dl/视频/课程/Rust/章节".into();
+            row.group_id = "course".into();
+        }
+        delegate.store.replace_local(rows.clone());
+        delegate.set_groups(HashMap::from([(
+            "course".into(),
+            GroupMeta {
+                name: "Rust course".into(),
+                save_dir: "/dl/视频/课程/Rust".into(),
+                ..GroupMeta::default()
+            },
+        )]));
+        delegate.set_directory_context("/dl".into(), HashMap::new());
+        delegate.prefs_mut().group_by = ViewGroupBy::Directory;
+        delegate.refresh_view();
+        let headers = |delegate: &DownloadTableDelegate| {
+            delegate
+                .visible
+                .iter()
+                .filter_map(|row| match row {
+                    VisibleRow::GroupHeader { label, count, .. } => {
+                        Some((label.to_string(), *count))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            headers(&delegate),
+            [
+                ("Default download directory".into(), 3),
+                ("视频".into(), 3),
+                ("课程 / Rust".into(), 2),
+            ]
+        );
+        assert_eq!(
+            delegate
+                .visible
+                .iter()
+                .filter(|row| matches!(row, VisibleRow::Group(_)))
+                .count(),
+            1
+        );
+
+        // Only the saved path changes: cached visible rows must still be rebuilt.
+        rows[0].save_dir = "/dl/其他".into();
+        delegate.store.replace_local(rows);
+        delegate.refresh_view();
+        assert_eq!(
+            headers(&delegate),
+            [
+                ("Default download directory".into(), 3),
+                ("其他".into(), 1),
+                ("视频 / 课程 / Rust".into(), 2),
+            ]
+        );
+
+        // Changing the display root must not require any task mutation.
+        delegate.set_directory_context("/dl/视频".into(), HashMap::new());
+        delegate.refresh_view();
+        let headers = headers(&delegate);
+        assert_eq!(headers[0], ("Default download directory".into(), 2));
+        assert_eq!(headers[1], ("课程 / Rust".into(), 2));
+        assert!(
+            headers
+                .iter()
+                .any(|(label, count)| label == "External directories" && *count == 1)
+        );
         Ok(())
     }
 
@@ -5473,6 +5575,7 @@ mod tests {
             ViewGroupBy::Type,
             ViewGroupBy::Queue,
             ViewGroupBy::Site,
+            ViewGroupBy::Directory,
         ];
         for sort_key in sort_keys {
             for sort_dir in [SortDir::Asc, SortDir::Desc] {

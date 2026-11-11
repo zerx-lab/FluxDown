@@ -9,12 +9,12 @@ export const VIEW_PREFS_KEY = 'desktop.downloads.view'
 export const HIDE_TASK_SOURCE_PREF = 'ui.hide_task_source'
 
 export type ViewDensity = 'comfortable' | 'compact' | 'relaxed'
-export type ViewGroupBy = 'none' | 'status' | 'date' | 'type' | 'queue' | 'site'
+export type ViewGroupBy = 'none' | 'status' | 'date' | 'type' | 'queue' | 'site' | 'directory'
 export type ViewSortKey = 'smart' | 'created' | 'name' | 'size' | 'progress' | 'speed' | 'status'
 export type SortDir = 'asc' | 'desc'
 export type DetailPlacement = 'bottom' | 'right'
 
-export const GROUP_BY_OPTIONS: readonly ViewGroupBy[] = ['none', 'status', 'date', 'type', 'queue', 'site']
+export const GROUP_BY_OPTIONS: readonly ViewGroupBy[] = ['none', 'status', 'date', 'type', 'queue', 'site', 'directory']
 export const SORT_KEY_OPTIONS: readonly ViewSortKey[] = ['smart', 'created', 'name', 'size', 'progress', 'speed', 'status']
 
 export type ColumnKind =

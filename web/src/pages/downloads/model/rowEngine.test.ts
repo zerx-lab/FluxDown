@@ -468,6 +468,14 @@ describe('RowEngine 基本语义', () => {
     expect(progressed.rows[0]).toBe(first.rows[0])
   })
 
+  test('保存目录变化使目录分组投影失效', () => {
+    const a = task('a', { saveDir: '/first' })
+    const engine = new RowEngine()
+    const first = engine.update(base([a]), clock())
+    const changed = engine.update(base([{ ...a, saveDir: '/second' } as TaskDto]), clock({ now: 10_100 }))
+    expect(changed.groupingVersion).toBe(first.groupingVersion + 1)
+  })
+
   test('没有任何输入变化：返回同一份快照', () => {
     const a = task('a')
     const input = base([a])

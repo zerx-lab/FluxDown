@@ -33,6 +33,7 @@ import { CountsLine, GroupGlyph } from './groupText'
 import { TREE_INDENT } from './rowMetrics'
 import { TreeRails } from './rowParts'
 import { stateLabel } from '../state'
+import { DirectoryHeaderView } from './GroupRows'
 
 interface CardProps {
   t: Translate
@@ -335,6 +336,8 @@ export function TaskCards() {
                 />
               ) : row.type === 'dir' ? (
                 <DirCard t={t} row={row} onToggle={ctx.toggleDirCollapsed} />
+              ) : row.type === 'directory' ? (
+                <DirectoryHeaderView t={t} row={row} onToggle={ctx.toggleBucketCollapsed} />
               ) : (
                 renderTask(row)
               )}

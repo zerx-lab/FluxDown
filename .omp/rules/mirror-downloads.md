@@ -3,8 +3,8 @@ description: GPUI 下载页纯模型（新建/菜单/排序/任务组/来源构�
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
-  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
-  - '**/crates/downloads/src/components/{task_table,task_table_groups}.rs'
+  - '**/crates/downloads/src/model/{new_download,aria2c,save_dir_history,speed_limit_recent,dispatch,mod,view_prefs,row_order,group_tree,directory_tree,source_composition,devices,file_rescan,bt_trackers,file_hash}.rs'
+  - '**/crates/downloads/src/components/{task_table,task_table_groups,task_table_directories}.rs'
   - '**/crates/downloads/src/pages/{task_edit,task_verify,task_detail,task_detail_ed2k}.rs'
   - '**/crates/downloads/tests/fixtures/**'
   - '**/web/src/pages/downloads/**'
@@ -68,6 +68,10 @@ interruptMode: never
 ## `crates/downloads/src/model/group_tree.rs`（任务组文件夹行纯模型：成员计数 / 聚合状态、`member_dir`、`flatten` 目录树、`group_sort_view` 排序代理）+ `components/task_table_groups.rs`（归组并入顶层排序、展开、整组选择）
 
 → `web/src/pages/downloads/model/groupTree.ts` + `groupRows.ts`：逐条对齐，纯模型两端测试共用 `crates/downloads/tests/fixtures/group_tree_cases.json`（改规则先改用例）；聚合只覆盖当前筛选 + 搜索范围内的成员，组命令与停靠面板组概览按全组
+
+## `crates/downloads/src/model/directory_tree.rs`（相对默认下载根的嵌套目录分组、单分支压缩、后代计数与稳定折叠键）
+
+→ Web `web/src/pages/downloads/model/directoryTree.ts`，共用 `crates/downloads/tests/fixtures/directory_tree_cases.json`。先筛选再建树，非根目录无直属任务且只有一个子目录才压缩，已折叠节点不跨过；任务组按组根整体纳入，云端按设备隔离，根外 / 未知目录分别展示。GPUI `task_table_directories.rs` / Web `groupRows.ts` 组合目录与任务组缩进；保存目录字段变化须使 `model/store.rs::same_view_fields` / Web `rowEngine.ts` 的视图失效，默认目录配置与 runtime fallback 变化同样重算。移动端尚无该分组入口，不镜像。
 
 ## `crates/downloads/src/components/task_table.rs` 宽松密度列表视图（`relaxed_meta` 副标题；宽松不合并列、状态列同舒适，行高 = max(64, 舒适)）
 

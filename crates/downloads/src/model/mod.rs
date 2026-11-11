@@ -4,6 +4,7 @@ pub(crate) mod bt_trackers;
 pub(crate) mod categories;
 pub(crate) mod counts;
 pub(crate) mod devices;
+pub(crate) mod directory_tree;
 pub(crate) mod dispatch;
 pub(crate) mod file_conflict;
 pub(crate) mod file_hash;
