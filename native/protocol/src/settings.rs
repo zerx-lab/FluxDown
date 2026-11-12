@@ -523,14 +523,14 @@ mod tests {
 
     #[test]
     fn catalog_has_exact_unique_flutter_count_and_namespaced_daemon_mapping() {
-        assert_eq!(SYNC_SETTING_SPECS.len(), 81);
+        assert_eq!(SYNC_SETTING_SPECS.len(), 82);
         assert_eq!(
             SYNC_SETTING_SPECS
                 .iter()
                 .map(|spec| spec.key)
                 .collect::<HashSet<_>>()
                 .len(),
-            81
+            82
         );
         let spec = setting_spec("download.max_concurrent_tasks").expect("download spec");
         assert_eq!(spec.owner, SettingOwner::Daemon);
