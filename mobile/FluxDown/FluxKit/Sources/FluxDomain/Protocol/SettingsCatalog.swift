@@ -220,7 +220,6 @@ public enum SettingsCatalog {
         pref("ui.show_activity_theme", .bool, "true"),
         // 下载 / 通知
         pref("download.remember_last_save_dir", .bool, "false"),
-        pref(SaveDirCategoryMode.preferenceKey, .text, "auto"),
         pref("download.notify_on_complete", .bool, "true"),
         pref("download.silent_download", .bool, "false"),
         pref("download.silent_auto_category", .bool, "true"),

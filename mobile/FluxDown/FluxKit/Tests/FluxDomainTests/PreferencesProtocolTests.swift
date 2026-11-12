@@ -57,17 +57,6 @@ struct PreferencesProtocolTests {
         #expect(!SettingsCatalog.isSynced("download.silent_auto_category"))
     }
 
-    @Test func lastCategoryModeIsALocalStringPreferenceWithAutoDefault() throws {
-        let key = SaveDirCategoryMode.preferenceKey
-        #expect(SettingsCatalog.field(key)?.kind == .text)
-        #expect(SettingsCatalog.field(key)?.store == .preference)
-        #expect(SettingsCatalog.defaultWire(key) == "auto")
-        #expect(!SettingsCatalog.isSynced(key))
-        let plan = try SettingsWritePlan.make([key: "category:custom:full-id"]).get()
-        #expect(plan.localPreferences == [key: .string("category:custom:full-id")])
-        #expect(plan.syncedPreferences.isEmpty && plan.daemon.isEmpty)
-    }
-
     // MARK: - 写入路由
 
     @Test func syncedDaemonKeysRouteThroughPreferencesUnderTheirSyncName() throws {
