@@ -326,8 +326,9 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         NewDownloadContent(
             form, targets, target,
             onOpenAdvanced = { advancedOpen = true },
-            // 本机建了任务：拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
+            // 本机建了任务：记住分类模式、拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
             onTorrentImported = {
+                rememberMode()
                 submitted()
                 if (form.urlText.isBlank()) dismiss()
             },
@@ -456,7 +457,6 @@ private fun NewDownloadContent(
                 importingTorrent = false
             }
             if (created > 0) {
-                rememberMode()
                 haptics.confirm()
                 onTorrentImported()
             } else {
