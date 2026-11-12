@@ -144,21 +144,6 @@ internal class NewDownloadState(
     /** 分类选择模式；默认自动。 */
     var mode by mutableStateOf<SaveDirMode>(SaveDirMode.Auto)
         private set
-    init {
-        mode = restoreMode(rememberedMode, categoryOptions)
-        when (val restored = mode) {
-            SaveDirMode.Auto -> Unit
-            SaveDirMode.None -> {
-                saveDir = offeredSaveDir
-                lastWritten = offeredSaveDir.trim()
-            }
-            is SaveDirMode.Category -> {
-                val dir = categoryOptions.first { it.id == restored.id }.saveDir
-                saveDir = dir
-                lastWritten = dir
-            }
-        }
-    }
     private val initialQueueId = defaultQueueId
 
     val entries: List<UrlEntry> by derivedStateOf { parseEntries(urlText).dedupe() }
@@ -233,6 +218,23 @@ internal class NewDownloadState(
         categories.filter { it.visible && !it.isAll && it.saveDir.trim().isNotEmpty() }
             .map { it.copy(saveDir = it.saveDir.trim()) }
             .sortedBy { it.position }
+
+    // 必须位于 categoryOptions 之后：Kotlin 按声明顺序初始化，提前读会拿到 null。
+    init {
+        mode = restoreMode(rememberedMode, categoryOptions)
+        when (val restored = mode) {
+            SaveDirMode.Auto -> Unit
+            SaveDirMode.None -> {
+                saveDir = offeredSaveDir
+                lastWritten = offeredSaveDir.trim()
+            }
+            is SaveDirMode.Category -> {
+                val dir = categoryOptions.first { it.id == restored.id }.saveDir
+                saveDir = dir
+                lastWritten = dir
+            }
+        }
+    }
 
     /** 预测目录：重命名（仅单条）> 第一条链接已识别的文件名 > 空串（交给 URL 末段回退）。 */
     fun predictedDir(): String? {
