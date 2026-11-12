@@ -316,9 +316,6 @@ pub struct ProgressUpdate {
     /// Per-segment progress info (for IDM-style visualization).
     /// `None` for single-thread downloads; `Some(vec)` for multi-segment.
     pub segment_details: Option<Vec<SegmentProgressInfo>>,
-    /// 实时上传速率（字节/秒）。仅 BT 任务的周期性进度上报携带非零值
-    /// （librqbit 统计），其余协议恒为 0。
-    pub upload_speed_bps: i64,
     /// BT 数据下载完成标记：`stats.finished` 时刻（piece 全部下完，但校验
     /// 与 staging→save_dir 搬移尚未完成、任务未进终态）置 `true` 一次。
     /// `progress_reporter` 据此立即发 `EngineEvent::BtDataFinished`（按

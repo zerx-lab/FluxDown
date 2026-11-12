@@ -117,6 +117,8 @@ pub mod site_auth;
 /// 任务整个下载期的速度曲线与统计（持久化，任务完成后可回看）。
 pub mod speed_history;
 pub mod speed_limiter;
+/// 界面速度的统一口径（固定窗口 + EMA），下载与 BT 上传共用。
+pub(crate) mod speed_meter;
 /// 通用订阅 provider 接口（RSS 与插件订阅共用）。
 pub mod subscription;
 pub mod task_activity;

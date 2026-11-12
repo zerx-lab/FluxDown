@@ -28,6 +28,8 @@ use tokio::sync::Mutex;
 use crate::bt_downloader::BtHandle;
 #[cfg(feature = "bt")]
 use crate::logger::log_info;
+#[cfg(feature = "bt")]
+use crate::speed_meter::CounterRate;
 
 /// Numeric code indicating an active seeder (not a stop reason).
 pub const SEEDING_STATUS_ACTIVE: i32 = 1;
@@ -312,6 +314,8 @@ pub struct SeedingEntry {
     pub last_session_uploaded: i64,
     /// 已采样、尚未落库的上传字节。求值 tick 合并写库后扣减。
     pub unpersisted_upload: i64,
+    /// 界面显示的上传速率，按 librqbit 会话计数器折算（见 [`crate::speed_meter`]）。
+    pub(crate) upload_rate: CounterRate,
     pub stop_reason: SeedingStopReason,
 }
 
@@ -471,6 +475,7 @@ impl SeedingManager {
                     uploaded_at_completion,
                     last_session_uploaded,
                     unpersisted_upload: 0,
+                    upload_rate: CounterRate::default(),
                     stop_reason: SeedingStopReason::None,
                 },
             );
@@ -525,6 +530,7 @@ impl SeedingManager {
                     // counter from zero — so does the delta baseline.
                     last_session_uploaded: 0,
                     unpersisted_upload: 0,
+                    upload_rate: CounterRate::default(),
                     stop_reason: SeedingStopReason::None,
                 },
             );
@@ -572,9 +578,10 @@ impl SeedingManager {
         (activated, demoted)
     }
 
-    /// Apply a fresh live-upload snapshot and return the delta it adds to the
-    /// task's upload total. The delta is also added to the entry's
-    /// [`SeedingEntry::unpersisted_upload`] until [`Self::mark_uploads_persisted`].
+    /// Apply a fresh live-upload snapshot. Returns the delta it adds to the
+    /// task's upload total and the display upload rate (B/s). The delta is also
+    /// added to the entry's [`SeedingEntry::unpersisted_upload`] until
+    /// [`Self::mark_uploads_persisted`].
     ///
     /// Returns `None` when `snapshot_uploaded` is negative (should not happen)
     /// or the seeder is not actively seeding.
@@ -586,11 +593,9 @@ impl SeedingManager {
         &self,
         task_id: &str,
         snapshot_uploaded: i64,
-        upload_speed_bps: i64,
-    ) -> Option<i64> {
-        if snapshot_uploaded < 0 {
-            return None;
-        }
+        now: Instant,
+    ) -> Option<(i64, i64)> {
+        let counter = u64::try_from(snapshot_uploaded).ok()?;
         let mut guard = self.state.lock().await;
         let entry = guard.active.get_mut(task_id)?;
 
@@ -601,15 +606,16 @@ impl SeedingManager {
         let delta = snapshot_uploaded - entry.last_session_uploaded;
         entry.last_session_uploaded = snapshot_uploaded;
         entry.unpersisted_upload = entry.unpersisted_upload.saturating_add(delta);
+        let upload_bps = entry.upload_rate.observe(counter, now);
 
         // `last_uploaded_bytes` 只保存 DB 累计尺度，由 `evaluate_limits`
         // 独占写入；这里的入参是会话计数器（尺度更小），据它检测到的上传
         // 活动只刷新不活跃计时器，或直接依据正的增量。
-        if upload_speed_bps > 0 || delta > 0 {
-            entry.last_upload_instant = Instant::now();
+        if upload_bps > 0 || delta > 0 {
+            entry.last_upload_instant = now;
         }
 
-        Some(delta)
+        Some((delta, upload_bps))
     }
 
     /// 活动做种者已采样、尚未落库的上传字节（只含非零项）。

@@ -36,6 +36,10 @@ use crate::queue_order::{QueueOrderDelta, QueueOrderPublisher};
 use crate::segment_coordinator::is_single_conn_domain;
 use crate::selection::HostSelection;
 use crate::speed_limiter::SpeedLimiter;
+use crate::speed_meter::{
+    CounterRate, EMA_ALPHA, SPEED_DECAY_FACTOR, SPEED_SAMPLE_INTERVAL_MS, SPEED_SEED_INTERVAL_MS,
+    SPEED_ZERO_FLOOR,
+};
 use crate::transfer_activity::TaskRuntime;
 
 mod boost;
@@ -2663,10 +2667,12 @@ struct TaskSpeedState {
     /// this task — it indicates a real problem (segment visualization will
     /// be empty) but repeats on every update, so log it only once.
     logged_missing_segments: bool,
-    /// Latest upload speed (bytes/sec) reported by the downloader.
-    /// Non-zero only for BT tasks (librqbit stats); latched from every
-    /// incoming update so throttled emits carry the freshest value.
-    upload_bps: i64,
+    /// 本次下载态内是否已得出过速度估计。只有第一个估计用种子短窗并直接采用；
+    /// 停顿衰减到 0 后恢复仍走 1s 窗 + EMA，避免限速器空闲后的突发被短窗放大。
+    has_estimate: bool,
+    /// BT 上传显示速率：按 librqbit 会话计数器 `uploaded_bytes` 以与下载相同的口径折算，
+    /// 不透传 librqbit 的 0.5s 窗瞬时值（见 [`crate::speed_meter`]）。
+    upload_rate: CounterRate,
     /// Last raw `uploaded_bytes` snapshot from the downloader (librqbit
     /// session counter). Used to compute deltas for cumulative upload
     /// accounting across pause/resume and session rebuilds.
@@ -6802,13 +6808,14 @@ impl DownloadManager {
     }
 
     /// 读每个活动做种者的 librqbit 上传计数，把增量计入其未落库累计。
-    /// 返回 `(任务 id, 实时上传速率 B/s)`；暂停中（无 live 快照）的做种者跳过。
+    /// 返回 `(任务 id, 显示上传速率 B/s)`；暂停中（无 live 快照）的做种者跳过。
     #[cfg(feature = "bt")]
     async fn sample_seeder_uploads(
         seeding_mgr: &crate::bt_seeding::SeedingManager,
         task_ids: &[String],
     ) -> Vec<(String, i64)> {
         let mut observed = Vec::with_capacity(task_ids.len());
+        let now = std::time::Instant::now();
         for task_id in task_ids {
             let Some(handle) = seeding_mgr.get_handle(task_id).await else {
                 continue;
@@ -6819,13 +6826,11 @@ impl DownloadManager {
                 continue;
             };
             let snapshot_uploaded = live.snapshot.uploaded_bytes as i64;
-            let upload_speed_bps = (live.upload_speed.mbps * 1024.0 * 1024.0) as i64;
-            if seeding_mgr
-                .apply_upload_snapshot(task_id, snapshot_uploaded, upload_speed_bps)
+            if let Some((_, upload_bps)) = seeding_mgr
+                .apply_upload_snapshot(task_id, snapshot_uploaded, now)
                 .await
-                .is_some()
             {
-                observed.push((task_id.clone(), upload_speed_bps));
+                observed.push((task_id.clone(), upload_bps));
             }
         }
         observed
@@ -16800,31 +16805,6 @@ impl DownloadManager {
     }
 }
 
-/// EMA smoothing factor.  α = 0.4 gives a good balance between
-/// responsiveness and smoothness when combined with the 1-second fixed
-/// sampling window below.  With one sample per second the speed converges
-/// to ~90 % of a step change within 3–4 samples.
-const EMA_ALPHA: f64 = 0.4;
-
-/// Fixed speed sampling window (ms).  Instead of computing instant speed on
-/// every incoming `ProgressUpdate` (which can arrive every few ms when
-/// multiple segment workers interleave), we accumulate downloaded bytes and
-/// compute `delta_bytes / delta_time` only once per window.  This eliminates
-/// the noise caused by uneven update spacing in multi-segment downloads.
-const SPEED_SAMPLE_INTERVAL_MS: u128 = 1_000;
-
-/// 种子采样窗（ms）：尚无任何速度估计（任务刚起步/刚恢复，ema==0）时的
-/// 短窗，让第一个速度值在首字节后数百毫秒内出现（IDM/aria2 式即时反馈）；
-/// 得到首个估计后切回 [`SPEED_SAMPLE_INTERVAL_MS`] 稳态窗口。300ms 至少
-/// 覆盖一个 coordinator 上报周期（200ms），种子样本仍是窗口均值而非单点
-/// 瞬时值。
-const SPEED_SEED_INTERVAL_MS: u128 = 300;
-
-/// Decay factor applied to EMA when no new bytes arrive during a full
-/// sampling window.  0.5 per window means speed halves every second during
-/// a stall, reaching <1 KB/s in ~10 windows (~10 s) for a 1 MB/s baseline.
-const SPEED_DECAY_FACTOR: f64 = 0.5;
-
 /// Minimum interval between forwarding progress to the host (per task) to avoid
 /// flooding the signal channel when many segments report simultaneously.
 const MIN_DART_INTERVAL_MS: u128 = 500;
@@ -16925,7 +16905,8 @@ pub async fn progress_reporter(
                 awaiting_first_growth: update.status == 1,
                 sent_nonzero_speed: false,
                 logged_missing_segments: false,
-                upload_bps: 0,
+                has_estimate: false,
+                upload_rate: CounterRate::default(),
                 last_uploaded_snapshot: 0,
                 cumulative_uploaded: 0,
             }
@@ -16985,6 +16966,7 @@ pub async fn progress_reporter(
             state.sample_time = now;
             state.awaiting_first_growth = true;
             state.sent_nonzero_speed = false;
+            state.has_estimate = false;
         }
 
         if update.status == 1 {
@@ -16997,6 +16979,7 @@ pub async fn progress_reporter(
                 state.sample_bytes = speed_counter;
                 state.sample_time = now;
                 state.awaiting_first_growth = true;
+                state.has_estimate = false;
             }
 
             state.latest_speed_bytes = speed_counter;
@@ -17013,12 +16996,13 @@ pub async fn progress_reporter(
             }
 
             // Only compute speed when the sampling window expires.
-            // 尚无速度估计（ema==0）时用种子短窗尽快出第一个值，
-            // 有估计后回到 1s 稳态窗 + EMA 平滑。
-            let window_ms = if state.ema_speed == 0.0 {
-                SPEED_SEED_INTERVAL_MS
-            } else {
+            // 本次下载态尚无估计时用种子短窗尽快出第一个值并直接采用；之后一律
+            // 1s 稳态窗 + EMA 平滑——包括停顿衰减到 0 后的恢复，否则限速器空闲期
+            // 攒下的突发会被短窗直接显示成超限速度。
+            let window_ms = if state.has_estimate {
                 SPEED_SAMPLE_INTERVAL_MS
+            } else {
+                SPEED_SEED_INTERVAL_MS
             };
             let window_elapsed_ms = now.duration_since(state.sample_time).as_millis();
             if window_elapsed_ms >= window_ms {
@@ -17027,18 +17011,19 @@ pub async fn progress_reporter(
 
                 if delta > 0 && dt > 0.01 {
                     let window_speed = delta as f64 / dt;
-                    if state.ema_speed == 0.0 {
-                        // First valid sample — adopt directly for instant feedback.
-                        state.ema_speed = window_speed;
-                    } else {
+                    if state.has_estimate {
                         state.ema_speed =
                             EMA_ALPHA * window_speed + (1.0 - EMA_ALPHA) * state.ema_speed;
+                    } else {
+                        // First valid sample — adopt directly for instant feedback.
+                        state.ema_speed = window_speed;
+                        state.has_estimate = true;
                     }
                 } else {
                     // No new bytes in this window — connection may be stalling.
                     // Decay aggressively so the UI reflects actual throughput.
                     state.ema_speed *= SPEED_DECAY_FACTOR;
-                    if state.ema_speed < 1024.0 {
+                    if state.ema_speed < SPEED_ZERO_FLOOR {
                         state.ema_speed = 0.0;
                     }
                 }
@@ -17053,6 +17038,7 @@ pub async fn progress_reporter(
             state.ema_speed = 0.0;
             state.awaiting_first_growth = false;
             state.sent_nonzero_speed = false;
+            state.has_estimate = false;
             state.sample_bytes = speed_counter;
             state.sample_time = now;
             state.latest_speed_bytes = speed_counter;
@@ -17060,7 +17046,9 @@ pub async fn progress_reporter(
         }
         state.latest_bytes = update.downloaded_bytes;
         state.last_raw_status = update.status;
-        state.upload_bps = update.upload_speed_bps;
+        state
+            .upload_rate
+            .observe(u64::try_from(update.uploaded_bytes).unwrap_or(0), now);
 
         // -----------------------------------------------------------------
         // BT upload cumulative accounting (download + seeding phases).
@@ -17072,14 +17060,12 @@ pub async fn progress_reporter(
         // accumulate against the DB column `tasks.uploaded_bytes`.
         //
         // A task is treated as a BT uploader once it has ever reported a
-        // non-zero upload snapshot or upload speed. On the first such
+        // non-zero upload snapshot. On the first such
         // observation (or after a state reset on resume) we load the DB
         // baseline so we can continue from the previous cumulative value.
         // -----------------------------------------------------------------
         let mut cumulative_uploaded = update.uploaded_bytes;
-        let is_bt_upload = update.uploaded_bytes > 0
-            || update.upload_speed_bps > 0
-            || state.last_uploaded_snapshot > 0;
+        let is_bt_upload = update.uploaded_bytes > 0 || state.last_uploaded_snapshot > 0;
         if is_bt_upload {
             let snapshot = update.uploaded_bytes;
             let delta = if snapshot >= state.last_uploaded_snapshot {
@@ -17193,7 +17179,11 @@ pub async fn progress_reporter(
                     save_dir: String::new(),
                     url: String::new(),
                     error_message: update.error_message.clone(),
-                    upload_speed_bps: if is_terminal { 0 } else { state.upload_bps },
+                    upload_speed_bps: if is_terminal {
+                        0
+                    } else {
+                        state.upload_rate.bps()
+                    },
                     uploaded_bytes: cumulative_uploaded,
                     seeding_status: update.seeding_status,
                     seeding_message: update.seeding_message.clone(),
@@ -24008,70 +23998,6 @@ mod tests {
         drop(in_flight_snapshot);
         emit_seeding_progress(&db, &dyn_sink, "seed", SEEDING_STATUS_ACTIVE, "").await;
         assert_eq!(progress_statuses(&sink), [3]);
-    }
-
-    /// BT 上传速率透传契约:活跃状态原样透传 `upload_speed_bps`(latch 进
-    /// `TaskSpeedState.upload_bps`),到达终态时强制归零,避免 UI 在任务
-    /// 完成/出错后仍显示陈旧的上传速率。
-    #[tokio::test]
-    async fn progress_reporter_forwards_upload_speed_then_zeroes_on_terminal() {
-        let (tx, rx) = mpsc::channel(8);
-        let db = Db::connect("sqlite::memory:")
-            .await
-            .expect("connect mem db");
-        let sink = Arc::new(RecordingSink::new());
-        let handle = tokio::spawn(progress_reporter(rx, db, sink.clone()));
-
-        tx.send(ProgressUpdate {
-            task_id: "bt2".to_string(),
-            status: 1,
-            downloaded_bytes: 10,
-            total_bytes: 1000,
-            upload_speed_bps: 8192,
-            ..Default::default()
-        })
-        .await
-        .expect("send active update");
-
-        tx.send(ProgressUpdate {
-            task_id: "bt2".to_string(),
-            status: 3,
-            downloaded_bytes: 1000,
-            total_bytes: 1000,
-            upload_speed_bps: 8192,
-            ..Default::default()
-        })
-        .await
-        .expect("send terminal update");
-
-        drop(tx);
-        handle
-            .await
-            .expect("reporter task must finish once channel closes");
-
-        let progress_events: Vec<(i32, i64)> = sink
-            .events()
-            .into_iter()
-            .filter_map(|e| match e {
-                EngineEvent::TaskProgress {
-                    status,
-                    upload_speed_bps,
-                    ..
-                } => Some((status, upload_speed_bps)),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(
-            progress_events.first(),
-            Some(&(1, 8192)),
-            "active update must forward upload_speed_bps as-is"
-        );
-        assert_eq!(
-            progress_events.last(),
-            Some(&(3, 0)),
-            "terminal update must zero upload_speed_bps regardless of the raw value"
-        );
     }
 
     #[tokio::test]

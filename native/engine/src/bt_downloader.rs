@@ -6379,14 +6379,9 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                 all_selected
             );
 
-            // Capture live upload stats so the UI can keep showing upload speed
-            // while we verify/move pieces. librqbit is still active and seeding
-            // during this phase.
-            let upload_speed_bps = stats
-                .live
-                .as_ref()
-                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
-                .unwrap_or(0);
+            // Capture the live upload counter so the UI can keep showing upload
+            // speed while we verify/move pieces. librqbit is still active and
+            // seeding during this phase.
             let uploaded_bytes = stats
                 .live
                 .as_ref()
@@ -6404,7 +6399,6 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                     total_bytes: total,
                     status: STATUS_DOWNLOADING,
                     bt_data_finished: true,
-                    upload_speed_bps,
                     uploaded_bytes,
                     ..Default::default()
                 })
@@ -6959,11 +6953,6 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
 
             // Compute the upload stats that accompany the completed signal.
             let uploaded_bytes = db.get_task_uploaded_bytes(&task_id).await?;
-            let completed_upload_speed_bps = stats
-                .live
-                .as_ref()
-                .map(|l| (l.upload_speed.mbps * 1024.0 * 1024.0) as i64)
-                .unwrap_or(0);
             let completed_uploaded_bytes = stats
                 .live
                 .as_ref()
@@ -7079,7 +7068,6 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                         final_total,
                         stats.live.as_ref().map(|l| l.snapshot.peer_stats.live),
                     )),
-                    upload_speed_bps: completed_upload_speed_bps,
                     bt_data_finished: false,
                     uploaded_bytes: completed_uploaded_bytes,
                     seeding_status,
@@ -7251,7 +7239,6 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                         total,
                         stats.live.as_ref().map(|l| l.snapshot.peer_stats.live),
                     )),
-                    upload_speed_bps,
                     uploaded_bytes: cumulative_upload,
                     ..Default::default()
                 })
