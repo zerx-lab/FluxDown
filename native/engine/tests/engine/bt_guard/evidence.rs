@@ -238,8 +238,7 @@ fn fingerprint_and_cloud_hits_follow_the_reporting_rules() {
         op: "prefix".to_owned(),
         value: "-XL".to_owned(),
         action: "choke".to_owned(),
-        seeding_only: false,
-        reason: String::new(),
+        ..Default::default()
     }];
     g.apply_cloud(&doc).expect("apply");
     let ctx = ctx_for("5.5.5.5", true);

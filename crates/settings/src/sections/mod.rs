@@ -12,6 +12,8 @@ pub(crate) mod bt;
 mod bt_guard;
 mod bt_guard_add_dialog;
 mod bt_guard_bans;
+mod bt_guard_client_rule_dialog;
+mod bt_guard_client_rules;
 mod bt_guard_events;
 pub(crate) mod categories;
 pub(crate) mod category_dialog;

@@ -24,19 +24,19 @@ struct BtGuardProtocolTests {
         "enabled", "rule_excessive", "rule_rerequest", "rule_rewind", "rule_lag", "rule_fingerprint", "cloud_mode",
         "excess_ratio_pct", "min_torrent_mib", "rewind_tolerance_pct", "throttle_kib", "ban_base_hours",
         "ban_max_days", "downloading_max_action", "skip_private", "skip_lan", "ipv6_prefix", "filter_urls",
-        "cloud_enabled",
+        "client_rules", "cloud_enabled",
     ]
 
-    @Test func catalogMirrorsTwentyGuardDaemonKeys() {
+    @Test func catalogMirrorsTwentyOneGuardDaemonKeys() {
         let guardKeys = SettingsCatalog.daemonFields.filter { $0.key.hasPrefix("bt_guard_") }
-        // 20 个 daemon 键：19 个同步 + 设备本地上报开关
-        #expect(guardKeys.count == 20)
-        #expect(Set(guardKeys.map(\.key)).count == 20)
+        // 21 个 daemon 键：20 个同步 + 设备本地上报开关
+        #expect(guardKeys.count == 21)
+        #expect(Set(guardKeys.map(\.key)).count == 21)
     }
 
-    @Test func nineteenGuardKeysSyncUnderTheirDottedNames() {
+    @Test func twentyGuardKeysSyncUnderTheirDottedNames() {
         let synced = SettingsCatalog.daemonSyncNames.filter { $0.key.hasPrefix("bt_guard_") }
-        #expect(synced.count == 19)
+        #expect(synced.count == 20)
         for suffix in Self.syncedGuardKeys {
             #expect(synced["bt_guard_" + suffix] == "bt.guard." + suffix, "\(suffix)")
             #expect(SettingsCatalog.syncNameToDaemonKey["bt.guard." + suffix] == "bt_guard_" + suffix)
@@ -55,7 +55,7 @@ struct BtGuardProtocolTests {
 
     @Test func defaultsMatchTheContract() {
         #expect(SettingsCatalog.defaultWire("bt_guard_enabled") == "true")
-        for rule in ["excessive", "rerequest", "rewind", "lag", "fingerprint"] {
+        for rule in ["excessive", "rerequest", "rewind", "lag"] {
             #expect(SettingsCatalog.defaultWire("bt_guard_rule_" + rule) == "observe", "\(rule)")
         }
         #expect(SettingsCatalog.defaultWire("bt_guard_cloud_mode") == "observe")
@@ -70,6 +70,8 @@ struct BtGuardProtocolTests {
         #expect(SettingsCatalog.defaultWire("bt_guard_skip_lan") == "true")
         #expect(SettingsCatalog.defaultWire("bt_guard_ipv6_prefix") == "64")
         #expect(SettingsCatalog.defaultWire("bt_guard_filter_urls").isEmpty)
+        #expect(SettingsCatalog.defaultWire("bt_guard_client_rules").isEmpty)
+        #expect(SettingsCatalog.defaultWire("bt_guard_rule_fingerprint") == "enforce")
         #expect(SettingsCatalog.defaultWire("bt_guard_cloud_enabled") == "true")
         #expect(SettingsCatalog.defaultWire("bt_guard_report_enabled") == "false")
     }

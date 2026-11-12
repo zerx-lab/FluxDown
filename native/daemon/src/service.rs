@@ -1612,6 +1612,7 @@ impl DaemonService {
             | method::DAEMON_BT_GUARD_EVENTS_LIST
             | method::DAEMON_BT_GUARD_EXPORT
             | method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH
+            | method::DAEMON_BT_GUARD_CLOUD_REFRESH
             | method::DAEMON_BT_GUARD_CLOUD_APPLY
             | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN => {
                 self.bt_guard_call(is_local_agent, method_name, params)
@@ -1625,6 +1626,7 @@ impl DaemonService {
             | method::DAEMON_BT_GUARD_EVENTS_LIST
             | method::DAEMON_BT_GUARD_EXPORT
             | method::DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH
+            | method::DAEMON_BT_GUARD_CLOUD_REFRESH
             | method::DAEMON_BT_GUARD_CLOUD_APPLY
             | method::DAEMON_BT_GUARD_EVIDENCE_DRAIN => Err(unsupported_error(
                 "daemon was built without BitTorrent support",

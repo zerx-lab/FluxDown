@@ -34,7 +34,8 @@ mod store;
 pub use bitset::PieceSet;
 pub use cloud::{
     BUILTIN_CANARIES, CLOUD_FORMAT, ClientField, ClientOp, ClientRule, CloudBuild, CloudClientRule,
-    CloudDocument, CloudEntry, CloudReject, build_cloud_layer,
+    CloudDocument, CloudEntry, CloudReject, DEFAULT_NAME_BAN_MINUTES, MAX_LOCAL_CLIENT_RULES,
+    MAX_NAME_BAN_MINUTES, RuleWhen, build_cloud_layer, parse_local_client_rules,
 };
 pub use config::{BtGuardConfig, DownloadingMaxAction, RuleMode};
 pub use filter_file::{

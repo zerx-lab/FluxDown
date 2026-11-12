@@ -1,5 +1,5 @@
 ---
-description: RSS 过滤 / 文件名解析 / Webhook 事件与端点 / 线程数风险档 / 代理直连名单归一化 / 站点代理规则改动须同步 Web、扩展、agent 与各端
+description: RSS 过滤 / 文件名解析 / Webhook 事件与端点 / 线程数风险档 / 代理直连名单归一化 / 站点代理规则 / 防吸血名字规则改动须同步 Web、扩展、agent 与各端
 condition: '[\s\S]'
 scope: "tool:edit, tool:write"
 globs:
@@ -23,6 +23,10 @@ globs:
   - '**/mobile/Android/core/src/main/java/com/fluxdown/core/protocol/ProxyRules.kt'
   - '**/mobile/Android/app/src/main/java/com/fluxdown/app/feature/task/TaskDetailFormat.kt'
   - '**/mobile/FluxDown/FluxKit/Sources/FluxDomain/Protocol/ProxyRules.swift'
+  - '**/native/engine/src/bt_guard/cloud.rs'
+  - '**/crates/settings/src/model/client_rules.rs'
+  - '**/crates/downloads/src/model/bt_guard.rs'
+  - '**/web/src/lib/btGuardClientRules{,.test}.ts'
   - '**/mobile/FluxDown/FluxDown/Features/Task/TaskDetailText.swift'
 interruptMode: never
 ---
@@ -56,3 +60,7 @@ interruptMode: never
 ## `native/engine/src/proxy_rules.rs` 的站点代理规则宽松解析与 wire 码（配置键 `proxy_rules`）
 
 → `native/protocol/src/proxy_rules.rs::parse_proxy_rules`（GPUI）+ Web `web/src/lib/proxyRules.ts` + Android `core/.../protocol/ProxyRules.kt` + iOS `FluxDomain/Protocol/ProxyRules.swift`：空串 / 非法 JSON / 非数组 → 空列表，非对象元素跳过，字段缺失或类型错误回退默认值（`enabled=true`、`match=domain`、`action=direct`、其余空串），编码写全 7 个字段（字段顺序不作要求，测试只比较解析后的值）。匹配只在引擎；客户端经 `daemon.config.proxyRoute` 询问，issue `code` / `reason` 与展示映射四端逐条一致（单条「试一试」草稿强制 `enabled=true`，保存检测用 `upsert(当前列表, draft)`）。路由标签先整串匹配 `rule:direct|system|manual|custom` 再走 `:system`/`:manual` 后缀拆分：GPUI `crates/downloads/src/model/task_route.rs`、Web `web/src/lib/taskRoute.ts`、Android `TaskDetailFormat.kt::routeLabel`、iOS `TaskDetailText.swift::routeLabel`
+
+## `native/engine/src/bt_guard/cloud.rs` 的名字规则宽松解析（`ClientRule::compile` / `parse_local_client_rules`，配置键 `bt_guard_client_rules`）
+
+→ GPUI `crates/settings/src/model/client_rules.rs` + `crates/downloads/src/model/bt_guard.rs::append_ban_client_rule` + Web `web/src/lib/btGuardClientRules.ts` + FluxCloud `server/crates/server/src/bt_guard/config.rs::validate_rules`（云名单侧的同一组字段）：空串 / 非法 JSON → 空列表；`field` / `op` / 动作 / `when` 非法、`id` 或 `value` 为空 → 丢该条；动作取 `verdict ?? action`，`when` 缺省按 `seedingOnly` 推出；`banMinutes` 缺省 4320、钳到 1..=525600；最多 200 条。客户端写回只写 8 个字段（`id` / `field` / `op` / `value` / `action` / `when` / `banMinutes` / `reason`），不写旧字段；匹配只在引擎（忽略 ASCII 大小写）。Android / iOS 只镜像设置目录键，不解析规则

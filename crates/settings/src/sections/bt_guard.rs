@@ -14,7 +14,7 @@ use gpui::{
 use gpui_component::{Disableable as _, WindowExt as _, h_flex, switch::Switch, v_flex};
 
 use super::{
-    SectionContext, bt_guard_bans, bt_guard_events,
+    SectionContext, bt_guard_bans, bt_guard_client_rules, bt_guard_events,
     subscription::{self, ListFormat, format_unix},
 };
 use crate::model::bt_guard::{attribution_url, format_bytes};
@@ -29,11 +29,18 @@ const REPORT_KEY: &str = "bt_guard_report_enabled";
 pub(crate) fn tabs(ctx: &SectionContext, cx: &mut App) -> Vec<SettingsTab> {
     let enabled = ctx.store.read(cx).daemon_bool("bt_guard_enabled");
     let cloud_enabled = ctx.store.read(cx).daemon_bool("bt_guard_cloud_enabled");
+    let fingerprint_on = ctx
+        .store
+        .read(cx)
+        .daemon_str("bt_guard_rule_fingerprint")
+        .trim()
+        != "off";
     vec![
         SettingsTab::new("guard", ctx.t("btGuardTab")).sections([
             general_section(ctx),
             stats_section(ctx),
             rules_section(ctx, enabled),
+            bt_guard_client_rules::section(ctx, enabled && fingerprint_on),
             thresholds_section(ctx, enabled),
             actions_section(ctx, enabled),
             exemptions_section(ctx, enabled),
@@ -147,7 +154,7 @@ fn status_row(ctx: &SectionContext) -> SettingsRow {
                     cx,
                 )
                 .on_click(move |_, _, cx| {
-                    click_store.update(cx, |store, cx| store.load_bt_guard_state(cx));
+                    click_store.update(cx, |store, cx| store.reload_bt_guard(cx));
                 }),
             )
             .into_any_element()

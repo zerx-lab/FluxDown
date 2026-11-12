@@ -110,6 +110,7 @@ export const DAEMON_SYNC_KEYS: Readonly<Record<string, string>> = {
   bt_guard_skip_lan: 'bt.guard.skip_lan',
   bt_guard_ipv6_prefix: 'bt.guard.ipv6_prefix',
   bt_guard_filter_urls: 'bt.guard.filter_urls',
+  bt_guard_client_rules: 'bt.guard.client_rules',
   bt_guard_cloud_enabled: 'bt.guard.cloud_enabled',
   ed2k_enable_kad: 'ed2k.enable_kad',
   ed2k_enable_upnp: 'ed2k.enable_upnp',

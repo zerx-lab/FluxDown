@@ -301,6 +301,11 @@ impl AgentDownloadsPort {
                 DownloadsCommand::BtGuardAddEntry(params) => {
                     (method::DAEMON_BT_GUARD_ENTRIES_ADD, serialize(params)?)
                 }
+                DownloadsCommand::BtGuardBanClient { value } => {
+                    return ban_client(&client, &value)
+                        .await
+                        .map(DownloadsResult::Value);
+                }
                 DownloadsCommand::BtGuardEvidence { ip_group } => {
                     let (entries_params, events_params) = evidence_params(&ip_group);
                     let entries: fluxdown_protocol::BtGuardEntriesListDto = client
@@ -854,5 +859,52 @@ mod tests {
     fn torrent_without_form_options_omits_them() {
         let params = torrent_file_params("/tmp/a.torrent".to_owned(), true, None, None, None);
         assert_eq!(params, json!({ "path": "/tmp/a.torrent", "silent": true }));
+    }
+}
+
+/// 读最新配置 → 追加名字封禁规则 → 带版本写回；版本冲突时重取重放。
+async fn ban_client(
+    client: &AgentClient,
+    value: &str,
+) -> Result<Value, fluxdown_protocol::RpcErrorData> {
+    use fluxdown_protocol::{ApplicationErrorCode, DaemonConfigPatch, DaemonConfigSnapshot};
+    use fluxdown_ui_downloads::{BanClientEdit, CLIENT_RULES_KEY, append_ban_client_rule};
+    const MAX_CONFLICT_RETRIES: usize = 3;
+    let mut conflicts = 0;
+    loop {
+        let snapshot: DaemonConfigSnapshot = client
+            .call(method::DAEMON_CONFIG_GET, Some(json!({})))
+            .await?;
+        let current = snapshot
+            .values
+            .get(CLIENT_RULES_KEY)
+            .map_or("", String::as_str);
+        let next = match append_ban_client_rule(current, value) {
+            BanClientEdit::Added(next) => next,
+            BanClientEdit::Exists => return Ok(Value::Bool(false)),
+            BanClientEdit::Full => {
+                return Err(fluxdown_protocol::RpcErrorData::new(
+                    ApplicationErrorCode::InvalidArgument,
+                    false,
+                ));
+            }
+        };
+        let patch = DaemonConfigPatch {
+            expected_revision: snapshot.revision,
+            values: std::collections::BTreeMap::from([(CLIENT_RULES_KEY.to_owned(), next)]),
+        };
+        match client
+            .call::<_, Value>(method::DAEMON_CONFIG_PATCH, Some(patch))
+            .await
+        {
+            Ok(_) => return Ok(Value::Bool(true)),
+            Err(error)
+                if error.code == ApplicationErrorCode::Conflict
+                    && conflicts < MAX_CONFLICT_RETRIES =>
+            {
+                conflicts += 1;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }

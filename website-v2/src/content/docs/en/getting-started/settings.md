@@ -90,7 +90,9 @@ Some BT changes require restarting the BT engine to take effect (FluxDown shows 
 | Setting | Purpose | Default |
 |---|---|---|
 | Anti-leech protection | Master switch for the whole BT engine; takes effect immediately. | On |
-| Detection rules (excessive upload, re-requesting owned pieces, progress rewind, progress lag, client fingerprint) and Cloud blocklist mode | Off / Observe only / Enforce per rule. | Observe only |
+| Detection rules (excessive upload, re-requesting owned pieces, progress rewind, progress lag) and Cloud blocklist mode | Off / Observe only / Enforce per rule. | Observe only |
+| Client name rule | Off / Observe only / Enforce. Applies your client rules and the ones delivered with the cloud list. | Enforce |
+| Client rules | Your own list of rules that allow, throttle, choke or ban peers by client name or peer ID. | Empty |
 | Excessive upload ratio / Minimum torrent size | Trigger threshold and the smallest torrent the rule applies to. | 200% / 64 MiB |
 | Rewind tolerance | Share of held pieces a reconnecting peer may drop. | 7% |
 | Throttled upload speed | Upload speed shared by all throttled peers. | 32 KiB/s |

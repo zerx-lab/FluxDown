@@ -1,4 +1,4 @@
-// 设置 › BT › 防吸血：总开关与状态、今日统计、检测规则、阈值、处置、豁免、云名单、过滤文件订阅、证据上报。
+// 设置 › BT › 防吸血：总开关与状态、今日统计、检测规则、客户端规则、阈值、处置、豁免、云名单、过滤文件订阅、证据上报。
 
 import { useState } from 'react'
 import { useT } from '../../../../../i18n'
@@ -14,6 +14,7 @@ import { ListEditorRow } from '../../subscription'
 import { formatUnix } from '../../subscription/listFormat'
 import { useGuardState, useLoggedIn } from './useGuard'
 import type { GuardStateResult } from './useGuard'
+import { ClientRulesSection } from './ClientRulesSection'
 
 const RULES = [
   { key: 'bt_guard_rule_excessive', title: 'btGuardRuleExcessive', desc: 'btGuardRuleExcessiveDesc' },
@@ -45,8 +46,19 @@ function GeneralSection({ guard }: { guard: GuardStateResult }) {
   return (
     <SettingsSection title={t('btGuardSectionGeneral')}>
       <DaemonSwitchRow configKey="bt_guard_enabled" titleKey="btGuardEnabled" descKey="btGuardEnabledDesc" />
-      <SettingsCustomRow>
-        <span className="text-xs text-muted-foreground">{status}</span>
+      <SettingsCustomRow className="flex items-center justify-between gap-3">
+        <span className="min-w-0 flex-1 text-xs text-muted-foreground">{status}</span>
+        {data !== null ? (
+          <Button
+            variant="outline"
+            onClick={() => {
+              rpc.daemon.bt.guard.cloudRefresh().catch(toastRpcError)
+              reload()
+            }}
+          >
+            {t('btGuardReload')}
+          </Button>
+        ) : null}
       </SettingsCustomRow>
       {error !== null && data === null ? <LoadFailed message={error} onReload={reload} /> : null}
     </SettingsSection>
@@ -322,6 +334,7 @@ export function GuardSettingsTab() {
       <GeneralSection guard={guard} />
       <StatsSection data={guard.data} />
       <RulesSection disabled={off} />
+      <ClientRulesSection data={guard.data} disabled={off} />
       <ThresholdsSection disabled={off} />
       <ActionsSection disabled={off} />
       <ExemptionsSection disabled={off} />

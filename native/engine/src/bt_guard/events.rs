@@ -28,8 +28,10 @@ struct Hit {
     ratio_milli: u64,
     rewind_permille: u32,
     detail: String,
-    /// 云 clientRule 指定的动作（仅 fingerprint）。
+    /// 名字规则指定的动作（仅 fingerprint）。
     soft_action: Option<FilterAction>,
+    /// 名字规则封禁时长（秒，仅 fingerprint 且动作为 ban）。
+    ban_secs: i64,
     /// lag：对端缺失的分片，供探测往返比对。
     probe_pieces: Option<Vec<u32>>,
 }
@@ -42,6 +44,7 @@ impl Hit {
             rewind_permille: 0,
             detail,
             soft_action: None,
+            ban_secs: 0,
             probe_pieces: None,
         }
     }
@@ -410,15 +413,24 @@ impl BtGuard {
         conn: &Conn,
         now: i64,
     ) -> Option<Hit> {
-        if cfg.rule_fingerprint == RuleMode::Off || !self.decide_input(cfg, now).cloud_active {
+        if cfg.rule_fingerprint == RuleMode::Off {
             return None;
         }
-        let rule = st.cloud.client_rules.iter().find(|r| {
-            (!r.seeding_only || conn.seeding)
-                && r.matches(conn.peer_id.as_ref(), conn.client.as_deref())
+        // 本机规则在前、云名单规则在后，首条命中生效；云名单失效时只剩本机规则。
+        let cloud_rules: &[super::cloud::ClientRule] = if self.decide_input(cfg, now).cloud_active {
+            &st.cloud.client_rules
+        } else {
+            &[]
+        };
+        let rule = cfg.client_rules.iter().chain(cloud_rules).find(|r| {
+            r.when.applies(conn.seeding) && r.matches(conn.peer_id.as_ref(), conn.client.as_deref())
         })?;
+        if rule.action == FilterAction::Allow {
+            return None;
+        }
         let mut hit = Hit::new(Rule::Fingerprint, format!("client rule {}", rule.id));
         hit.soft_action = Some(rule.action);
+        hit.ban_secs = i64::from(rule.ban_minutes).saturating_mul(60);
         Some(hit)
     }
 
@@ -622,6 +634,12 @@ impl BtGuard {
     }
 
     fn soft_action(cfg: &BtGuardConfig, conn: &Conn, hit: &Hit) -> Option<FilterAction> {
+        // 名字规则自带生效场景（做种 / 下载 / 始终），不受下载中动作上限约束。
+        if hit.rule == Rule::Fingerprint
+            && let Some(action) = hit.soft_action
+        {
+            return Some(action);
+        }
         let wanted = if conn.seeding {
             hit.soft_action.unwrap_or(FilterAction::Choke)
         } else {
@@ -753,8 +771,12 @@ impl BtGuard {
                 }
             }
             super::model::Strength::Weak => {
-                let action = Self::soft_action(cfg, conn, &hit);
-                self.apply_soft(st, ctx, conn, &hit, action, now);
+                if hit.soft_action == Some(FilterAction::Ban) {
+                    self.ban_named(st, cfg, ctx, conn, &hit, now);
+                } else {
+                    let action = Self::soft_action(cfg, conn, &hit);
+                    self.apply_soft(st, ctx, conn, &hit, action, now);
+                }
             }
         }
     }
@@ -835,15 +857,7 @@ impl BtGuard {
     ) {
         conn.hits.push((hit.rule, true));
         conn.raise(Verdict::Disconnect);
-        // 该 IP 已被某层封禁：只断开，不再追加 strike / 条目。
-        let already = matches!(
-            self.decide_ip(cfg, conn.ip, now).decision,
-            Decision::Act {
-                action: FilterAction::Ban,
-                ..
-            }
-        );
-        if already {
+        if self.already_banned(cfg, conn, now) {
             return;
         }
         let rec = st.strikes.entry(conn.group).or_insert(StrikeRec {
@@ -861,7 +875,6 @@ impl BtGuard {
         let duration = ban_duration_secs(cfg.ban_base_hours, cfg.ban_max_days, strikes);
         rec.ban_until = now.saturating_add(duration);
         st.pending.dirty_strikes.insert(conn.group);
-        st.pending.urgent = true;
         if hit.rule == Rule::Excessive
             && let Some(ledger) = st
                 .ledgers
@@ -873,7 +886,51 @@ impl BtGuard {
             st.pending.dirty_ledgers.insert((ctx.info_hash, conn.group));
         }
 
-        let detail = self.hit_json(st, ctx, conn, hit, Some(strikes));
+        self.push_auto_ban(st, ctx, conn, hit, duration, Some(strikes), now);
+    }
+
+    /// 名字规则封禁：按规则给定的时长写入 auto 层；名字不是作弊证据，不计 strike、不进阶梯。
+    fn ban_named(
+        &self,
+        st: &mut State,
+        cfg: &BtGuardConfig,
+        ctx: &GuardCtx,
+        conn: &mut Conn,
+        hit: &Hit,
+        now: i64,
+    ) {
+        conn.hits.push((hit.rule, true));
+        conn.raise(Verdict::Disconnect);
+        if self.already_banned(cfg, conn, now) {
+            return;
+        }
+        self.push_auto_ban(st, ctx, conn, hit, hit.ban_secs.max(60), None, now);
+    }
+
+    /// 该 IP 已被某层封禁：只断开，不再追加 strike / 条目。
+    fn already_banned(&self, cfg: &BtGuardConfig, conn: &Conn, now: i64) -> bool {
+        matches!(
+            self.decide_ip(cfg, conn.ip, now).decision,
+            Decision::Act {
+                action: FilterAction::Ban,
+                ..
+            }
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_auto_ban(
+        &self,
+        st: &mut State,
+        ctx: &GuardCtx,
+        conn: &Conn,
+        hit: &Hit,
+        duration: i64,
+        strikes: Option<u32>,
+        now: i64,
+    ) {
+        st.pending.urgent = true;
+        let detail = self.hit_json(st, ctx, conn, hit, strikes);
         let entry = Entry {
             id: self.alloc_id(),
             layer: Layer::Auto,
@@ -907,7 +964,7 @@ impl BtGuard {
             "[BtGuard] banned {} rule={} strikes={} for {}s",
             conn.group,
             hit.rule.as_str(),
-            strikes,
+            strikes.unwrap_or(0),
             duration
         );
         st.push_action(GuardAction::DisconnectBanned);

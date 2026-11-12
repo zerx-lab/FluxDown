@@ -115,6 +115,12 @@ pub enum DownloadsCommand {
     Ed2kIdCheck,
     /// 防吸血：给 IP 组加封禁 / 限速 / 加白条目（`daemon.bt.guard.entries.add`），连接页右键菜单用。
     BtGuardAddEntry(fluxdown_protocol::BtGuardEntriesAddParams),
+    /// 防吸血「封禁此客户端」：基于最新 `bt_guard_client_rules` 追加
+    /// `clientName contains <value> → ban`（见 [`crate::append_ban_client_rule`]），冲突时重取重放。
+    /// 结果为 [`DownloadsResult::Value`]：`true` 新增、`false` 已有同名规则。
+    BtGuardBanClient {
+        value: String,
+    },
     /// 防吸血「查看证据」：读取该 IP 组相关的名单条目与近期事件，结果为
     /// [`DownloadsResult::BtGuardEvidence`]。
     BtGuardEvidence {

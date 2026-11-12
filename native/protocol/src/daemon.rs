@@ -643,6 +643,27 @@ pub struct BtGuardCountsDto {
     pub file: u32,
 }
 
+/// 一条客户端名字规则（云名单下发的只读展示形态；本机规则存 `bt_guard_client_rules`，元素同形）。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtGuardClientRuleDto {
+    pub id: String,
+    /// `peerIdPrefix` | `clientName`。
+    pub field: String,
+    /// `prefix` | `contains`。
+    pub op: String,
+    pub value: String,
+    /// `allow` | `throttle` | `choke` | `ban`。
+    pub action: String,
+    /// `seeding` | `downloading` | `always`。
+    pub when: String,
+    /// 仅 `ban` 使用。
+    pub ban_minutes: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
 /// `daemon.bt.guard.state` 结果。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -656,6 +677,9 @@ pub struct BtGuardStateDto {
     pub cloud: BtGuardCloudStatusDto,
     pub filter_sources: Vec<BtGuardFilterSourceDto>,
     pub counts: BtGuardCountsDto,
+    /// 云名单下发的名字规则（按匹配顺序；云名单失效时仍列出但不生效）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cloud_rules: Vec<BtGuardClientRuleDto>,
 }
 
 /// 一条过滤条目。

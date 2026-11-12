@@ -464,6 +464,10 @@ pub fn bt_guard_config_from_map(cfg: &HashMap<String, String>) -> BtGuardConfig 
         filter_urls: cfg.get("bt_guard_filter_urls").cloned().unwrap_or_default(),
         cloud_enabled: flag("bt_guard_cloud_enabled", defaults.cloud_enabled),
         report_enabled: flag("bt_guard_report_enabled", defaults.report_enabled),
+        client_rules: cfg
+            .get("bt_guard_client_rules")
+            .map(|json| fluxdown_engine::bt_guard::parse_local_client_rules(json))
+            .unwrap_or_default(),
     }
 }
 

@@ -222,6 +222,78 @@ impl GuardMenuAction {
     }
 }
 
+/// 本机客户端名字规则的配置键。
+pub const CLIENT_RULES_KEY: &str = "bt_guard_client_rules";
+/// 「封禁此客户端」写入的封禁时长（分钟，3 天）。
+pub const BAN_CLIENT_MINUTES: u32 = 3 * 24 * 60;
+const CLIENT_RULE_VALUE_CHARS: usize = 64;
+const MAX_CLIENT_RULES: usize = 200;
+
+/// 「封禁此客户端」的匹配内容：客户端原文按字符边界截到 64 个字符；空白名返回 `None`。
+pub fn ban_client_value(client: &str) -> Option<&str> {
+    if client.trim().is_empty() {
+        return None;
+    }
+    Some(match client.char_indices().nth(CLIENT_RULE_VALUE_CHARS) {
+        Some((end, _)) => client.get(..end).unwrap_or(client),
+        None => client,
+    })
+}
+
+/// 向本机规则追加一条封禁规则的结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BanClientEdit {
+    /// 新的配置值。
+    Added(String),
+    /// 已有同 field / op / value（忽略 ASCII 大小写）的规则。
+    Exists,
+    /// 已达条数上限。
+    Full,
+}
+
+/// 基于当前 `bt_guard_client_rules` 原文追加 `clientName contains <value> → ban`。
+/// 原文非 JSON 数组时按空列表处理（与引擎解析一致）；其余已有元素原样保留。
+pub fn append_ban_client_rule(raw: &str, value: &str) -> BanClientEdit {
+    let mut list = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(list)) => list,
+        _ => Vec::new(),
+    };
+    let text = |rule: &Value, key: &str| rule.get(key).and_then(Value::as_str).map(str::to_owned);
+    let exists = list.iter().any(|rule| {
+        text(rule, "field").as_deref() == Some("clientName")
+            && text(rule, "op").as_deref() == Some("contains")
+            && text(rule, "value").is_some_and(|v| v.eq_ignore_ascii_case(value))
+    });
+    if exists {
+        return BanClientEdit::Exists;
+    }
+    if list.len() >= MAX_CLIENT_RULES {
+        return BanClientEdit::Full;
+    }
+    let next = list
+        .iter()
+        .filter_map(|rule| {
+            text(rule, "id")?
+                .strip_prefix("local-")?
+                .parse::<u64>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    list.push(serde_json::json!({
+        "id": format!("local-{next}"),
+        "field": "clientName",
+        "op": "contains",
+        "value": value,
+        "action": "ban",
+        "when": "always",
+        "banMinutes": BAN_CLIENT_MINUTES,
+        "reason": "",
+    }));
+    BanClientEdit::Added(Value::Array(list).to_string())
+}
+
 /// 菜单动作 → `daemon.bt.guard.entries.add` 参数；IP 组为空（防吸血未启用）时无动作可做。
 pub(crate) fn entry_params(
     group: &str,
@@ -417,6 +489,48 @@ mod tests {
             Some(5 * 1024 * 1024 * 1024)
         );
         assert!(any_guard(&[peer(), p]));
+    }
+
+    #[test]
+    fn ban_client_value_truncates_on_char_boundary() {
+        assert_eq!(ban_client_value(""), None);
+        assert_eq!(ban_client_value("   "), None);
+        assert_eq!(
+            ban_client_value(" qBittorrent 5.0 "),
+            Some(" qBittorrent 5.0 ")
+        );
+        let long = "迅雷😀".repeat(40);
+        let value = ban_client_value(&long).unwrap_or_default();
+        assert_eq!(value.chars().count(), 64);
+        assert!(long.starts_with(value));
+    }
+
+    #[test]
+    fn append_ban_client_rule_dedupes_and_numbers() {
+        let BanClientEdit::Added(first) = append_ban_client_rule("", "Xunlei") else {
+            panic!("expected added");
+        };
+        let parsed: Value = serde_json::from_str(&first).unwrap_or_default();
+        assert_eq!(
+            parsed,
+            serde_json::json!([{"id":"local-1","field":"clientName","op":"contains","value":"Xunlei",
+                "action":"ban","when":"always","banMinutes":4320,"reason":""}])
+        );
+        assert_eq!(
+            append_ban_client_rule(&first, "xunlei"),
+            BanClientEdit::Exists
+        );
+        let raw = r#"[{"id":"local-7","field":"peerIdPrefix","op":"prefix","value":"-XL","action":"choke"}]"#;
+        let BanClientEdit::Added(next) = append_ban_client_rule(raw, "-XL") else {
+            panic!("expected added");
+        };
+        assert!(next.contains("local-8") && next.contains("peerIdPrefix"));
+        assert!(matches!(
+            append_ban_client_rule("{bad", "x"),
+            BanClientEdit::Added(_)
+        ));
+        let full = Value::Array(vec![serde_json::json!({"id":"a"}); 200]).to_string();
+        assert_eq!(append_ban_client_rule(&full, "x"), BanClientEdit::Full);
     }
 
     #[test]

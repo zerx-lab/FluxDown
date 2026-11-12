@@ -160,6 +160,7 @@ object HostMethod {
     const val daemonBtGuardEventsList = "daemon.bt.guard.events.list"
     const val daemonBtGuardExport = "daemon.bt.guard.export"
     const val daemonBtGuardFilterSourcesRefresh = "daemon.bt.guard.filterSources.refresh"
+    const val daemonBtGuardCloudRefresh = "daemon.bt.guard.cloud.refresh"
     /** 仅 agent 内部调用（已验签云名单整层替换）；UI 不得使用，原生桥通用通道会拒绝。 */
     const val daemonBtGuardCloudApply = "daemon.bt.guard.cloud.apply"
     /** 仅 agent 内部调用（弹出待上报证据）；UI 不得使用，原生桥通用通道会拒绝。 */

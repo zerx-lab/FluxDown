@@ -150,7 +150,7 @@ cd mobile/FluxDown && xcodebuild build -project FluxDown.xcodeproj -scheme FluxD
 |`rule://mirror-mobile-bridge`|UniFFI DTO / 通用分区 / 方法名 / 设置目录、reducer、内置分类基线 ↔ Android / iOS|
 |`rule://mirror-downloads`|下载页纯模型（新建解析 / aria2c / 菜单事实 / 远程命令 / 做种 / 排序 / 任务组 / 来源构成 / 设备 / 重扫节流 / 历史与限速记忆）↔ Web / 移动端；扩展 → Android App 外部唤起载荷（Intent extra / 协议参数）|
 |`rule://mirror-category-route`|分类目录路由、新建下载分类选择器、一键分类目录名推导（四端）|
-|`rule://mirror-engine-logic`|RSS 过滤、Content-Disposition / 字符集、Webhook 事件与端点、线程数风险档、代理直连名单归一化（engine ↔ agent）、站点代理规则宽松解析与路由标签（engine ↔ 四端）|
+|`rule://mirror-engine-logic`|RSS 过滤、Content-Disposition / 字符集、Webhook 事件与端点、线程数风险档、代理直连名单归一化（engine ↔ agent）、站点代理规则宽松解析与路由标签（engine ↔ 四端）、防吸血名字规则宽松解析（engine ↔ GPUI / Web / FluxCloud）|
 |`rule://mirror-theme-shell`|主题 token 注册表、文件图标包、chrome 布局|
 |`rule://mirror-settings-account`|访问密钥策略（含 LuCI）、开机自启、应用更新 / 更新说明、云端推送、套餐购买|
 |`rule://mirror-plugins`|插件 manifest、视图协议、贡献点授权、市场排序、嗅探规则层、页面脚本、扩展规则（含外部仓）|

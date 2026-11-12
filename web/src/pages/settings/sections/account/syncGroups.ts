@@ -113,6 +113,7 @@ export const SYNC_GROUPS: readonly SyncGroup[] = [
       'bt.guard.skip_lan',
       'bt.guard.ipv6_prefix',
       'bt.guard.filter_urls',
+      'bt.guard.client_rules',
       'bt.guard.cloud_enabled',
     ],
   },

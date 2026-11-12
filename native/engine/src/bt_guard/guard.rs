@@ -866,6 +866,11 @@ impl BtGuard {
         }
     }
 
+    /// 云名单下发的名字规则（按匹配顺序）。文档失效时仍返回，只是不参与匹配。
+    pub fn cloud_client_rules(&self) -> Vec<super::cloud::ClientRule> {
+        self.lock().cloud.client_rules.clone()
+    }
+
     /// 当前已应用文档的 sequence（0 = 无）。
     pub fn cloud_sequence(&self) -> i64 {
         self.lock().cloud.sequence

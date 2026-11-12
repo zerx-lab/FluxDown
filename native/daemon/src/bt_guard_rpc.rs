@@ -7,18 +7,18 @@
 //! agent，daemon 没有公钥，只做 sequence 防回滚与差异防护。
 
 use fluxdown_engine::bt_guard::{
-    BtGuardHost, CloudDocument, CloudStatus, Entry, EntryFilter, EvidenceItem, FilterAction,
-    FilterSourceStatus, GuardError, Layer, NewEntry,
+    BtGuardHost, ClientField, ClientOp, CloudDocument, CloudStatus, Entry, EntryFilter,
+    EvidenceItem, FilterAction, FilterSourceStatus, GuardError, Layer, NewEntry,
 };
 use fluxdown_engine::db::{BtGuardEventQuery, BtGuardEventRow};
 use fluxdown_protocol::{
-    ApplicationErrorCode, BT_GUARD_LIST_MAX_LIMIT, BT_GUARD_REMOVE_MAX_IDS, BtGuardCloudApplyDto,
-    BtGuardCloudApplyParams, BtGuardCloudStatusDto, BtGuardCountsDto, BtGuardEntriesAddParams,
-    BtGuardEntriesListDto, BtGuardEntriesListParams, BtGuardEntriesRemoveDto,
-    BtGuardEntriesRemoveParams, BtGuardEntryDto, BtGuardEventDto, BtGuardEventsListDto,
-    BtGuardEventsListParams, BtGuardEvidenceDrainDto, BtGuardEvidenceItemDto, BtGuardExportDto,
-    BtGuardExportParams, BtGuardFilterSourceDto, BtGuardFilterSourcesRefreshDto, BtGuardStateDto,
-    BtGuardStatsDto, RpcErrorData, RpcErrorObject, method,
+    ApplicationErrorCode, BT_GUARD_LIST_MAX_LIMIT, BT_GUARD_REMOVE_MAX_IDS, BtGuardClientRuleDto,
+    BtGuardCloudApplyDto, BtGuardCloudApplyParams, BtGuardCloudStatusDto, BtGuardCountsDto,
+    BtGuardEntriesAddParams, BtGuardEntriesListDto, BtGuardEntriesListParams,
+    BtGuardEntriesRemoveDto, BtGuardEntriesRemoveParams, BtGuardEntryDto, BtGuardEventDto,
+    BtGuardEventsListDto, BtGuardEventsListParams, BtGuardEvidenceDrainDto, BtGuardEvidenceItemDto,
+    BtGuardExportDto, BtGuardExportParams, BtGuardFilterSourceDto, BtGuardFilterSourcesRefreshDto,
+    BtGuardStateDto, BtGuardStatsDto, RpcErrorData, RpcErrorObject, method,
 };
 use serde_json::Value;
 
@@ -180,6 +180,10 @@ impl DaemonService {
                     sources: sources.into_iter().map(filter_source_dto).collect(),
                 })
             }
+            method::DAEMON_BT_GUARD_CLOUD_REFRESH => {
+                host.request_cloud_refresh();
+                Ok(Value::Object(serde_json::Map::new()))
+            }
             method::DAEMON_BT_GUARD_CLOUD_APPLY => {
                 require_local_agent(is_local_agent)?;
                 cloud_apply(host, params).await
@@ -293,6 +297,28 @@ fn state_dto(host: &BtGuardHost) -> BtGuardStateDto {
             cloud: count(counts.cloud),
             file: count(counts.file),
         },
+        cloud_rules: guard
+            .cloud_client_rules()
+            .into_iter()
+            .map(|rule| BtGuardClientRuleDto {
+                id: rule.id,
+                field: match rule.field {
+                    ClientField::PeerIdPrefix => "peerIdPrefix",
+                    ClientField::ClientName => "clientName",
+                }
+                .to_owned(),
+                op: match rule.op {
+                    ClientOp::Prefix => "prefix",
+                    ClientOp::Contains => "contains",
+                }
+                .to_owned(),
+                value: rule.value,
+                action: rule.action.as_str().to_owned(),
+                when: rule.when.as_str().to_owned(),
+                ban_minutes: rule.ban_minutes,
+                reason: rule.reason,
+            })
+            .collect(),
     }
 }
 
@@ -1215,5 +1241,42 @@ mod tests {
             changed <= 2,
             "a burst of changes is coalesced, got {changed}"
         );
+    }
+
+    fn refresh_requests(
+        events: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+    ) -> usize {
+        let mut count = 0;
+        while let Ok(frame) = events.try_recv() {
+            if matches!(
+                frame.event,
+                ServiceEvent::Daemon(DaemonEvent::BtGuardCloudRefreshWanted { .. })
+            ) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[tokio::test]
+    async fn cloud_refresh_asks_the_agent_without_a_bt_session_unless_the_cloud_list_is_off() {
+        let fx = fixture(BtGuardConfig::default(), true).await;
+        let mut events = fx.events.subscribe();
+        let state = ok(&fx, method::DAEMON_BT_GUARD_STATE, json!({})).await;
+        assert_eq!(state["sessionActive"], json!(false));
+        ok(&fx, method::DAEMON_BT_GUARD_CLOUD_REFRESH, json!({})).await;
+        assert_eq!(refresh_requests(&mut events), 1);
+
+        let off = fixture(
+            BtGuardConfig {
+                cloud_enabled: false,
+                ..BtGuardConfig::default()
+            },
+            true,
+        )
+        .await;
+        let mut events = off.events.subscribe();
+        ok(&off, method::DAEMON_BT_GUARD_CLOUD_REFRESH, json!({})).await;
+        assert_eq!(refresh_requests(&mut events), 0);
     }
 }

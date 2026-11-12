@@ -166,6 +166,7 @@ export const METHOD = {
   DAEMON_BT_GUARD_EVENTS_LIST: 'daemon.bt.guard.events.list',
   DAEMON_BT_GUARD_EXPORT: 'daemon.bt.guard.export',
   DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH: 'daemon.bt.guard.filterSources.refresh',
+  DAEMON_BT_GUARD_CLOUD_REFRESH: 'daemon.bt.guard.cloud.refresh',
   // 以下 agent 内部方法，Web 不得调用。
   DAEMON_BT_GUARD_CLOUD_APPLY: 'daemon.bt.guard.cloud.apply',
   DAEMON_BT_GUARD_EVIDENCE_DRAIN: 'daemon.bt.guard.evidence.drain',

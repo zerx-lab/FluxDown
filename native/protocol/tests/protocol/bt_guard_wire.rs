@@ -3,10 +3,10 @@
 use std::collections::HashSet;
 
 use fluxdown_protocol::method::{
-    ALL_METHODS, DAEMON_BT_GUARD_CLOUD_APPLY, DAEMON_BT_GUARD_ENTRIES_ADD,
-    DAEMON_BT_GUARD_ENTRIES_LIST, DAEMON_BT_GUARD_ENTRIES_REMOVE, DAEMON_BT_GUARD_EVENTS_LIST,
-    DAEMON_BT_GUARD_EVIDENCE_DRAIN, DAEMON_BT_GUARD_EXPORT, DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
-    DAEMON_BT_GUARD_STATE, is_slow_daemon_method,
+    ALL_METHODS, DAEMON_BT_GUARD_CLOUD_APPLY, DAEMON_BT_GUARD_CLOUD_REFRESH,
+    DAEMON_BT_GUARD_ENTRIES_ADD, DAEMON_BT_GUARD_ENTRIES_LIST, DAEMON_BT_GUARD_ENTRIES_REMOVE,
+    DAEMON_BT_GUARD_EVENTS_LIST, DAEMON_BT_GUARD_EVIDENCE_DRAIN, DAEMON_BT_GUARD_EXPORT,
+    DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH, DAEMON_BT_GUARD_STATE, is_slow_daemon_method,
 };
 use fluxdown_protocol::{
     BT_GUARD_LIST_DEFAULT_LIMIT, BtGuardCloudApplyParams, BtGuardCloudStatusDto,
@@ -31,6 +31,10 @@ fn every_guard_method_is_canonical_unique_and_literal() {
         (
             DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
             "daemon.bt.guard.filterSources.refresh",
+        ),
+        (
+            DAEMON_BT_GUARD_CLOUD_REFRESH,
+            "daemon.bt.guard.cloud.refresh",
         ),
         (DAEMON_BT_GUARD_CLOUD_APPLY, "daemon.bt.guard.cloud.apply"),
         (
@@ -71,6 +75,7 @@ fn only_network_or_bulk_guard_methods_are_slow() {
     // 条目增删保持同连接内的请求顺序（添加后立即列表必须看到）。
     for inline in [
         DAEMON_BT_GUARD_STATE,
+        DAEMON_BT_GUARD_CLOUD_REFRESH,
         DAEMON_BT_GUARD_ENTRIES_LIST,
         DAEMON_BT_GUARD_ENTRIES_ADD,
         DAEMON_BT_GUARD_ENTRIES_REMOVE,

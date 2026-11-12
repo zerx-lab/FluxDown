@@ -486,6 +486,11 @@ impl BtGuardHost {
         self.inner.refresh_filters(None, true).await
     }
 
+    /// 手动请求检查云名单更新：BT 会话未运行时同样发出（云名单未启用时不发）。
+    pub fn request_cloud_refresh(&self) {
+        self.inner.request_cloud_refresh();
+    }
+
     /// 停泵并做最终落库。幂等。
     pub async fn shutdown(&self) {
         self.inner.cancel.cancel();

@@ -35,7 +35,7 @@ describe('防吸血镜像与 Rust 对齐', () => {
   test('DAEMON_BT_GUARD_* 方法常量与 method.rs 一致', async () => {
     const source = await read('method.rs')
     const rust = [...source.matchAll(/pub const (DAEMON_BT_GUARD_\w+): &str = "([^"]+)"/g)]
-    expect(rust.length).toBe(9)
+    expect(rust.length).toBe(10)
     for (const [, name, wire] of rust) expect((METHOD as Record<string, string>)[name as string]).toBe(wire as string)
   })
 })

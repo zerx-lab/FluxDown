@@ -227,6 +227,9 @@ pub const DAEMON_BT_GUARD_EVENTS_LIST: &str = "daemon.bt.guard.events.list";
 pub const DAEMON_BT_GUARD_EXPORT: &str = "daemon.bt.guard.export";
 /// 立即刷新过滤文件订阅（无参）。慢方法：会拉取网络。
 pub const DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH: &str = "daemon.bt.guard.filterSources.refresh";
+/// 请求立即检查云名单更新（无参 → `{}`）。daemon 只发出 `BtGuardCloudRefreshWanted`，拉取与验签由
+/// agent 完成，结果经 `BtGuardChanged` 通知；云名单未启用时不发。BT 会话未运行时同样可用。
+pub const DAEMON_BT_GUARD_CLOUD_REFRESH: &str = "daemon.bt.guard.cloud.refresh";
 /// 仅 agent 调用：已验签的云名单整层替换（`BtGuardCloudApplyParams` → `BtGuardCloudApplyDto`）。
 /// 慢方法：差异防护 + 整层重建 + 持久化。
 pub const DAEMON_BT_GUARD_CLOUD_APPLY: &str = "daemon.bt.guard.cloud.apply";
@@ -590,6 +593,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_BT_GUARD_EVENTS_LIST,
     DAEMON_BT_GUARD_EXPORT,
     DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH,
+    DAEMON_BT_GUARD_CLOUD_REFRESH,
     DAEMON_BT_GUARD_CLOUD_APPLY,
     DAEMON_BT_GUARD_EVIDENCE_DRAIN,
     DAEMON_BT_TRACKER_SUBSCRIPTION_REFRESH,

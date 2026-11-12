@@ -720,6 +720,7 @@ fn xl_rule(seeding_only: bool, action: &str) -> CloudClientRule {
         action: action.to_owned(),
         seeding_only,
         reason: "xunlei".to_owned(),
+        ..CloudClientRule::default()
     }
 }
 
@@ -766,13 +767,130 @@ fn fingerprint_seeding_only_rule_skips_downloading_tasks() {
 }
 
 #[test]
-fn fingerprint_downloading_is_throttled_not_choked() {
+fn fingerprint_rule_action_is_not_capped_while_downloading() {
     let (g, _c) = guard_with(enforce_config());
     apply_rules(&g, vec![xl_rule(false, "choke")]);
     let ctx = ctx_for(PEER, false);
+    assert_eq!(g.on_event_at(&ctx, handshake(&XL_ID), T0), Verdict::Choke);
+}
+
+fn named(id: &str, value: &str, verdict: &str, when: &str) -> CloudClientRule {
+    CloudClientRule {
+        id: id.to_owned(),
+        field: "peerIdPrefix".to_owned(),
+        op: "prefix".to_owned(),
+        value: value.to_owned(),
+        action: "choke".to_owned(),
+        seeding_only: true,
+        verdict: Some(verdict.to_owned()),
+        when: Some(when.to_owned()),
+        ban_minutes: Some(240),
+        ..CloudClientRule::default()
+    }
+}
+
+fn local_rules(rules: &[CloudClientRule]) -> Vec<fluxdown_engine::bt_guard::ClientRule> {
+    rules
+        .iter()
+        .map(|r| fluxdown_engine::bt_guard::ClientRule::compile(r).expect("valid rule"))
+        .collect()
+}
+
+#[test]
+fn fingerprint_ban_blocks_the_ip_group_for_the_rule_duration_without_strikes() {
+    let (g, c) = guard_with(enforce_config());
+    apply_rules(&g, vec![named("xl", "-xl", "ban", "always")]);
+    let ctx = ctx_for(PEER, false);
     assert_eq!(
         g.on_event_at(&ctx, handshake(&XL_ID), T0),
-        Verdict::Throttle
+        Verdict::Disconnect
+    );
+    assert_eq!(auto_entries(&g), 1);
+    let group: IpGroup = PEER.parse().expect("group");
+    assert_eq!(g.strikes_of(&group), 0);
+    let ip = PEER.parse().expect("ip");
+    assert!(!g.admit(ip));
+    c.set(T0 + 240 * 60 - 1);
+    assert!(!g.admit(ip));
+    c.set(T0 + 240 * 60);
+    assert!(g.admit(ip), "ban ends after banMinutes");
+}
+
+#[test]
+fn fingerprint_allow_rule_stops_later_rules_in_its_scope() {
+    // 首条命中生效：下载时放行 0019，其余迅雷始终封禁；做种时 0019 也落到封禁规则。
+    let preset = vec![
+        named("xl0019", "-XL0019", "allow", "downloading"),
+        named("xl", "-XL", "ban", "always"),
+    ];
+    let (g, _c) = guard_with(enforce_config());
+    apply_rules(&g, preset);
+    assert_eq!(
+        g.on_event_at(&ctx_for(PEER, false), handshake(&XL_ID), T0),
+        Verdict::Allow
+    );
+    assert_eq!(auto_entries(&g), 0);
+    assert_eq!(
+        g.on_event_at(
+            &ctx_for("5.6.7.8", false),
+            handshake(b"-XL0012-abcdefghijkl"),
+            T0
+        ),
+        Verdict::Disconnect
+    );
+    assert_eq!(
+        g.on_event_at(&ctx_for("6.7.8.9", true), handshake(&XL_ID), T0),
+        Verdict::Disconnect
+    );
+}
+
+#[test]
+fn local_rules_work_without_cloud_and_take_precedence() {
+    // 没有云名单：本机规则照常生效。
+    let mut cfg = enforce_config();
+    cfg.cloud_enabled = false;
+    cfg.client_rules = local_rules(&[named("mine", "-XL", "choke", "always")]);
+    let (g, _c) = guard_with(cfg);
+    let ctx = ctx_for(PEER, true);
+    assert_eq!(g.on_event_at(&ctx, handshake(&XL_ID), T0), Verdict::Choke);
+    // 本机放行规则压过云名单的封禁规则。
+    let mut cfg = enforce_config();
+    cfg.client_rules = local_rules(&[named("mine", "-XL", "allow", "always")]);
+    let (g, _c) = guard_with(cfg);
+    apply_rules(&g, vec![named("xl", "-XL", "ban", "always")]);
+    assert_eq!(g.on_event_at(&ctx, handshake(&XL_ID), T0), Verdict::Allow);
+}
+
+#[test]
+fn fingerprint_observe_mode_records_without_acting() {
+    let mut cfg = enforce_config();
+    cfg.rule_fingerprint = RuleMode::Observe;
+    let (g, _c) = guard_with(cfg);
+    apply_rules(&g, vec![named("xl", "-XL", "ban", "always")]);
+    let ctx = ctx_for(PEER, true);
+    assert_eq!(g.on_event_at(&ctx, handshake(&XL_ID), T0), Verdict::Allow);
+    assert_eq!(auto_entries(&g), 0);
+    assert!(g.admit(PEER.parse().expect("ip")));
+}
+
+#[test]
+fn local_rules_json_is_parsed_leniently() {
+    use fluxdown_engine::bt_guard::{FilterAction, RuleWhen, parse_local_client_rules};
+    assert!(parse_local_client_rules("").is_empty());
+    assert!(parse_local_client_rules("not json").is_empty());
+    let rules = parse_local_client_rules(
+        r#"[{"id":"a","field":"clientName","op":"contains","value":"Xunlei","action":"ban","when":"seeding","banMinutes":0},
+            {"id":"b","field":"nope","op":"contains","value":"x","action":"ban"},
+            {"id":"c","field":"peerIdPrefix","op":"prefix","value":"-SD","action":"choke","seedingOnly":true}]"#,
+    );
+    assert_eq!(rules.len(), 2);
+    assert_eq!(
+        (rules[0].action, rules[0].when, rules[0].ban_minutes),
+        (FilterAction::Ban, RuleWhen::Seeding, 1)
+    );
+    assert_eq!(
+        (rules[1].action, rules[1].when),
+        (FilterAction::Choke, RuleWhen::Seeding)
     );
 }
 

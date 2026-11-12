@@ -1,5 +1,8 @@
 import { Users } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { banClientDraft, parseClientRules } from '../../../lib/btGuardClientRules'
+import { useDaemonValue } from '../../settings/kit'
+import { ClientRuleDialog } from '../../settings/sections/bt/guard/ClientRuleDialog'
 import { useI18n, useT } from '../../../i18n'
 import { FLAG_URLS } from '../../../lib/flags/flagUrls'
 import { flagTitle, resolveFlagUrl } from '../../../lib/flags/flags'
@@ -122,8 +125,22 @@ function PeerFlag({ country }: { country: string }) {
   )
 }
 
-function Row({ row, layout, columns, t, onEvidence }: { row: PeerRow; layout: PeerLayout; columns: readonly PeerColumn[]; t: Translate; onEvidence: (row: PeerRow) => void }) {
-  const menu = [copyEntry(t('btCopyPeerAddr'), row.addr, null, t), ...peerGuardMenu(row, t, onEvidence)]
+function Row({
+  row,
+  layout,
+  columns,
+  t,
+  onEvidence,
+  onBanClient,
+}: {
+  row: PeerRow
+  layout: PeerLayout
+  columns: readonly PeerColumn[]
+  t: Translate
+  onEvidence: (row: PeerRow) => void
+  onBanClient: (row: PeerRow) => void
+}) {
+  const menu = [copyEntry(t('btCopyPeerAddr'), row.addr, null, t), ...peerGuardMenu(row, t, onEvidence, onBanClient)]
   const template = columns.map((c) => COLUMN_WIDTH[c]).join(' ')
 
   if (layout === 'card') {
@@ -206,6 +223,10 @@ export function BtPeersTab({ taskId, state, seeding }: { taskId: string; state: 
   const layout = peerLayout(width, guard)
   const columns = peerColumns(layout, guard)
   const [evidenceRow, setEvidenceRow] = useState<PeerRow | null>(null)
+  const rulesRaw = useDaemonValue('bt_guard_client_rules')
+  const clientRules = useMemo(() => parseClientRules(rulesRaw), [rulesRaw])
+  const [banDraft, setBanDraft] = useState<{ serial: number; client: string } | null>(null)
+  const banRule = banDraft ? banClientDraft(clientRules, banDraft.client) : null
   const counts = data?.peerCounts
 
   return (
@@ -224,11 +245,20 @@ export function BtPeersTab({ taskId, state, seeding }: { taskId: string; state: 
         <div className="flex flex-col">
           {layout === 'card' ? null : <Header columns={columns} t={t} />}
           {rows.map((row) => (
-            <Row key={row.key} row={row} layout={layout} columns={columns} t={t} onEvidence={setEvidenceRow} />
+            <Row
+              key={row.key}
+              row={row}
+              layout={layout}
+              columns={columns}
+              t={t}
+              onEvidence={setEvidenceRow}
+              onBanClient={(target) => setBanDraft((prev) => ({ serial: (prev?.serial ?? 0) + 1, client: target.client }))}
+            />
           ))}
         </div>
       )}
       <PeerEvidenceDialog row={evidenceRow} onClose={() => setEvidenceRow(null)} />
+      {banDraft && banRule ? <ClientRuleDialog key={banDraft.serial} rule={banRule} isNew onClose={() => setBanDraft(null)} /> : null}
     </div>
   )
 }

@@ -1097,6 +1097,17 @@ impl SettingsStore {
             Self::absorb_bt_guard_state,
         );
     }
+    /// 「重新加载」：重读总览，并请求检查云名单更新（拉到新名单后经 `BtGuardChanged` 再次重读）。
+    pub fn reload_bt_guard(&mut self, cx: &mut Context<Self>) {
+        self.load_bt_guard_state(cx);
+        self.call_with(
+            "btGuardCloudRefresh",
+            method::DAEMON_BT_GUARD_CLOUD_REFRESH,
+            json!({}),
+            cx,
+            |_, _, _| {},
+        );
+    }
     fn absorb_bt_guard_state(
         &mut self,
         result: Result<Value, RpcErrorData>,

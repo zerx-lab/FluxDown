@@ -3809,6 +3809,52 @@
           }
         }
       },
+      "BtGuardClientRuleDto": {
+        "type": "object",
+        "description": "一条客户端名字规则（云名单下发的只读展示形态；本机规则存 `bt_guard_client_rules`，元素同形）。",
+        "required": [
+          "id",
+          "field",
+          "op",
+          "value",
+          "action",
+          "when",
+          "banMinutes"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`allow` | `throttle` | `choke` | `ban`。"
+          },
+          "banMinutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "仅 `ban` 使用。",
+            "minimum": 0
+          },
+          "field": {
+            "type": "string",
+            "description": "`peerIdPrefix` | `clientName`。"
+          },
+          "id": {
+            "type": "string"
+          },
+          "op": {
+            "type": "string",
+            "description": "`prefix` | `contains`。"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string",
+            "description": "`seeding` | `downloading` | `always`。"
+          }
+        }
+      },
       "BtGuardCloudStatusDto": {
         "type": "object",
         "description": "云名单状态。",
@@ -4143,6 +4189,13 @@
         "properties": {
           "cloud": {
             "$ref": "#/components/schemas/BtGuardCloudStatusDto"
+          },
+          "cloudRules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BtGuardClientRuleDto"
+            },
+            "description": "云名单下发的名字规则（按匹配顺序；云名单失效时仍列出但不生效）。"
           },
           "counts": {
             "$ref": "#/components/schemas/BtGuardCountsDto"
@@ -6387,6 +6440,11 @@
             "type": "string",
             "description": "Auto 路由或站点规则标签（可追溯性）：Auto 为 `direct` /\n`direct:sampled` / `direct:pinned` / `direct:failover` /\n`proxy:cached` / `proxy:sampled` / `proxy:failover`（代理类标签带\n候选来源后缀 `:system`/`:manual`）；站点规则为 `rule:direct` /\n`rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。"
           },
+          "btDownloadLimitBps": {
+            "type": "integer",
+            "format": "int64",
+            "description": "任务级 BT 下载限速（字节/秒），0 = 不限（`daemon.task.setBtLimits`）。"
+          },
           "btFirstLastPiecesFirst": {
             "type": "boolean",
             "description": "BT 选片：先下载每个选中文件首尾各 1% 的块（qBittorrent「先下载首尾文件块」）。"
@@ -6394,6 +6452,10 @@
           "btSequential": {
             "type": "boolean",
             "description": "BT 选片：按文件顺序下载（qBittorrent「按顺序下载」）。false = 最稀有优先。"
+          },
+          "btSuperSeeding": {
+            "type": "boolean",
+            "description": "超级做种（`daemon.task.setSuperSeeding`）。"
           },
           "checksum": {
             "type": "string",

@@ -56,7 +56,7 @@ pub const MAX_SYNC_VALUE_BYTES: usize = 64 * 1024;
 /// 保留旧客户端云同步键，另含 GPUI 专属的 `ui.show_activity_*`、
 /// `custom_categories`（自定义分类，推送时剥离各设备不同的 `saveDir`）、[`CUSTOM_THEMES_KEY`]
 /// （自定义主题集合）与 [`FILE_ICON_PACK_KEY`]（GPUI / Web 文件图标包），共 59 个；
-/// 另含 19 个 `bt.guard.*`（BT 防吸血；`bt_guard_report_enabled` 设备本地，不进目录）。
+/// 另含 20 个 `bt.guard.*`（BT 防吸血；`bt_guard_report_enabled` 设备本地，不进目录）。
 pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("appearance.theme_mode", Preferences),
     spec!("appearance.dark_theme", Preferences),
@@ -184,6 +184,7 @@ pub const SYNC_SETTING_SPECS: &[SettingSpec] = &[
     spec!("bt.guard.skip_lan", Daemon, "bt_guard_skip_lan"),
     spec!("bt.guard.ipv6_prefix", Daemon, "bt_guard_ipv6_prefix"),
     spec!("bt.guard.filter_urls", Daemon, "bt_guard_filter_urls"),
+    spec!("bt.guard.client_rules", Daemon, "bt_guard_client_rules"),
     spec!("bt.guard.cloud_enabled", Daemon, "bt_guard_cloud_enabled"),
     spec!("ed2k.enable_kad", Daemon, "ed2k_enable_kad"),
     spec!("ed2k.enable_upnp", Daemon, "ed2k_enable_upnp"),
@@ -656,7 +657,7 @@ mod bt_guard_tests {
             .iter()
             .filter(|spec| spec.key.starts_with("bt.guard."))
             .collect();
-        assert_eq!(specs.len(), 19);
+        assert_eq!(specs.len(), 20);
         for spec in specs {
             assert_eq!(spec.owner, SettingOwner::Daemon, "{}", spec.key);
             assert_eq!(
@@ -728,6 +729,8 @@ mod bt_guard_tests {
         }
         assert!(validate_value("bt.guard.filter_urls", &json!("https://a\nhttps://b")).is_ok());
         assert!(validate_value("bt.guard.filter_urls", &json!(1)).is_err());
+        assert!(validate_value("bt.guard.client_rules", &json!("[]")).is_ok());
+        assert!(validate_value("bt.guard.client_rules", &json!([])).is_err());
     }
 
     #[test]

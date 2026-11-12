@@ -101,6 +101,8 @@ pub struct BtGuardConfig {
     pub cloud_enabled: bool,
     /// 证据上报开关（设备本地）：仅决定是否在内存累积待上报证据。
     pub report_enabled: bool,
+    /// 本机名字规则（`bt_guard_client_rules`），先于云名单规则匹配，不依赖云名单是否有效。
+    pub client_rules: Vec<super::cloud::ClientRule>,
 }
 
 impl Default for BtGuardConfig {
@@ -111,7 +113,8 @@ impl Default for BtGuardConfig {
             rule_rerequest: RuleMode::Observe,
             rule_rewind: RuleMode::Observe,
             rule_lag: RuleMode::Observe,
-            rule_fingerprint: RuleMode::Observe,
+            // 名字规则默认直接执行（用户 2026-11-12 决定）；其余规则默认仅观察。
+            rule_fingerprint: RuleMode::Enforce,
             cloud_mode: RuleMode::Observe,
             excess_ratio_pct: 200,
             min_torrent_mib: 64,
@@ -126,6 +129,7 @@ impl Default for BtGuardConfig {
             filter_urls: String::new(),
             cloud_enabled: true,
             report_enabled: false,
+            client_rules: Vec::new(),
         }
     }
 }

@@ -338,10 +338,11 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::Enum(BT_GUARD_MODES),
         "observe",
     ),
+    // 名字规则默认直接执行；其余检测规则默认仅观察。
     field(
         "bt_guard_rule_fingerprint",
         DaemonConfigKind::Enum(BT_GUARD_MODES),
-        "observe",
+        "enforce",
     ),
     field(
         "bt_guard_cloud_mode",
@@ -400,6 +401,8 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         "64",
     ),
     field("bt_guard_filter_urls", DaemonConfigKind::Text, ""),
+    // 本机名字规则：JSON 数组（顺序即优先级），元素形态同云名单 `clientRules`。
+    field("bt_guard_client_rules", DaemonConfigKind::Text, ""),
     field("bt_guard_cloud_enabled", DaemonConfigKind::Bool, "true"),
     // 设备本地（不进云同步）：是否向 FluxCloud 上报命中规则的对端证据。
     field("bt_guard_report_enabled", DaemonConfigKind::Bool, "false"),
@@ -739,7 +742,7 @@ mod tests {
             ("bt_guard_rule_rerequest", "observe"),
             ("bt_guard_rule_rewind", "observe"),
             ("bt_guard_rule_lag", "observe"),
-            ("bt_guard_rule_fingerprint", "observe"),
+            ("bt_guard_rule_fingerprint", "enforce"),
             ("bt_guard_cloud_mode", "observe"),
             ("bt_guard_excess_ratio_pct", "200"),
             ("bt_guard_min_torrent_mib", "64"),
@@ -752,6 +755,7 @@ mod tests {
             ("bt_guard_skip_lan", "true"),
             ("bt_guard_ipv6_prefix", "64"),
             ("bt_guard_filter_urls", ""),
+            ("bt_guard_client_rules", ""),
             ("bt_guard_cloud_enabled", "true"),
             ("bt_guard_report_enabled", "false"),
         ] {

@@ -32,7 +32,7 @@ Each rule has three modes: **Off**, **Observe only** and **Enforce**. A peer is 
 | Re-requesting owned pieces | Strong | The peer asks for pieces it has already announced it owns, for at least two different pieces. | Observe |
 | Progress rewind | Strong | A peer reconnects reporting noticeably fewer pieces than before (more than 7% lost) so it can download the same data again. | Observe |
 | Progress lag (probe) | Medium | Over half of the pieces you sent (after a 120-second grace) never show up in the peer's progress. FluxDown disconnects it once as a probe: if it comes back still missing them it counts as a rewind, if it catches up the suspicion is cleared. At most one probe per group per 24 hours. | Observe |
-| Client fingerprint | Weak | The client name or peer ID matches a known leech client from the cloud list. Never bans on its own. | Observe |
+| Client name | — | The client name or peer ID matches one of your client rules or one delivered with the cloud list. The matching rule decides what happens (see [Client rules](#client-rules)). | Enforce |
 | Cloud list | Per entry | The peer's address is on the signed cloud list; the entry decides ban, choke or throttle. | Observe |
 
 ## Actions
@@ -42,10 +42,21 @@ Actions only happen for rules in **Enforce** mode; in **Observe only** mode the 
 | Signal | Action |
 |---|---|
 | Strong | A strike, then a **ban**: 24 hours for the first strike, ×4 for each repeat (24 h → 4 d → 16 d …), capped at 30 days. Strikes reset after 30 days without a new one. |
-| Medium or weak | Seeding task: **choke** (stop uploading). Downloading task: **throttle** (shared upload cap, 32 KiB/s by default). Never a ban on their own. |
+| Medium | Seeding task: **choke** (stop uploading). Downloading task: **throttle** (shared upload cap, 32 KiB/s by default). Never a ban on its own. |
+| Client rule | The rule's own action: allow, throttle, choke, or **ban** the IP group for the rule's duration. No strike is recorded and the ban does not escalate. |
 | Cloud list entry | The entry's own action: ban until it expires, or choke / throttle. |
 
 A ban refuses new connections from the group and disconnects it on every torrent. The first ban duration, the maximum duration, the throttled speed, the thresholds above and the "action limit while downloading" are all configurable (see [Settings](/docs/en/getting-started/settings/)).
+
+## Client rules
+
+Client rules block peers by the name they announce rather than by what they do. They suit clients that identify themselves honestly but never give back, such as Xunlei (Thunder). A client that lies about its name is caught by the behavior rules and the cloud IP list instead.
+
+Each rule matches the **peer ID** or the **client name** (the name shown in the task's connection list) with "starts with" or "contains", ignoring letter case. A rule has an action (allow, throttle, choke or ban), a scope (always, while seeding, or while downloading) and, for bans, a duration in minutes (3 days by default).
+
+Rules are checked top to bottom and the first match applies. Your own rules come first, then the rules delivered with the cloud list, so you can override a cloud rule by adding an "allow" rule of your own. "Allow" only skips the remaining client rules; the behavior rules still apply to that peer. Client rules are not limited by the "action limit while downloading" setting, because each rule states its own scope.
+
+The cloud list ships a default set: Xunlei is banned while you seed, and while you download only Xunlei 0.0.1.9 is let through because that version uploads; a number of download tools that never upload are banned outright. You can add a rule from **Settings › BitTorrent › Anti-leech › Client rules**, or by right-clicking a peer in a task's connection list and choosing **Ban this client…**. Your rules follow your settings sync preference like the other anti-leech settings.
 
 ## Block list layers
 

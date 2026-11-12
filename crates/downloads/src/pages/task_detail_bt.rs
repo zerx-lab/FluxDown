@@ -41,8 +41,8 @@ use crate::{
     controller::{DownloadsCommand, DownloadsResult, PortFuture},
     flags::flag_slot,
     model::bt_guard::{
-        BanChoice, GuardMenuAction, PeerAction, PeerGuard, Suspicion, action_text, any_guard,
-        entry_params, rules_text, tooltip_text,
+        BAN_CLIENT_MINUTES, BanChoice, GuardMenuAction, PeerAction, PeerGuard, Suspicion,
+        action_text, any_guard, ban_client_value, entry_params, rules_text, tooltip_text,
     },
     model::bt_trackers::{
         TrackerCounts, TrackerFilter, TrackerSort, TrackerSortKey, next_sort, tracker_view,
@@ -334,6 +334,8 @@ enum GuardCommand {
     Entry(GuardMenuAction),
     /// 打开证据对话框。
     Evidence,
+    /// 确认后按客户端名追加本机封禁规则。
+    BanClient,
 }
 
 type GuardHandler = Rc<dyn Fn(BtPeerDto, GuardCommand, &mut Window, &mut App)>;
@@ -343,6 +345,7 @@ struct GuardMenuLabels {
     bans: [SharedString; 4],
     throttle: SharedString,
     allow: SharedString,
+    ban_client: SharedString,
     evidence: SharedString,
 }
 
@@ -1079,7 +1082,18 @@ fn peer_menu(
                 &guard.labels.allow,
                 FluxIcon::CircleCheck,
                 GuardMenuAction::Allow,
-            ))
+            ));
+        let has_client = ban_client_value(&guard.peer.client).is_some();
+        let (peer, handler) = (guard.peer.clone(), Rc::clone(&guard.handler));
+        menu = menu
+            .item(
+                PopupMenuItem::new(guard.labels.ban_client.clone())
+                    .disabled(!has_client)
+                    .icon(FluxIcon::Shield)
+                    .on_click(move |_, window, cx| {
+                        handler(peer.clone(), GuardCommand::BanClient, window, cx);
+                    }),
+            )
             .separator();
         let (peer, handler) = (guard.peer.clone(), Rc::clone(&guard.handler));
         menu.item(
@@ -2077,6 +2091,10 @@ impl TaskDetailView {
                 );
                 return;
             }
+            GuardCommand::BanClient => {
+                self.bt_confirm_ban_client(&peer, window, cx);
+                return;
+            }
             GuardCommand::Entry(action) => action,
         };
         let Some(params) = entry_params(&peer.ip_group, action) else {
@@ -2100,6 +2118,77 @@ impl TaskDetailView {
                     Ok(_) => Notification::success(
                         translator.text_with(action.success_key(), &[("group", &group)]),
                     ),
+                    Err(error) => Notification::error(format!(
+                        "{}: {}",
+                        translator.text("btGuardPeerActionFailed"),
+                        error_text(translator, &error)
+                    )),
+                };
+                window.push_notification(notification, cx);
+            }) else {
+                // 视图或窗口已释放。
+                return;
+            };
+        })
+        .detach();
+    }
+
+    /// 「封禁此客户端…」：确认框显示将写入的客户端名与时长，确认后追加本机名字规则。
+    fn bt_confirm_ban_client(
+        &mut self,
+        peer: &BtPeerDto,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(value) = ban_client_value(&peer.client).map(str::to_owned) else {
+            return;
+        };
+        let translator = self.translator.read(cx);
+        let title = SharedString::from(translator.text("btGuardPeerBanClient").to_owned());
+        let description = SharedString::from(format!(
+            "{} · {}: {}\n{} · {}",
+            translator.text("btGuardClientRuleFieldClientName"),
+            translator.text("btGuardClientRuleOpContains"),
+            value,
+            translator.text("btGuardClientRuleBanMinutes"),
+            BAN_CLIENT_MINUTES,
+        ));
+        let cancel = SharedString::from(translator.text("cancel").to_owned());
+        let ok = SharedString::from(translator.text("btGuardClientRuleActionBan").to_owned());
+        let view = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let view = view.clone();
+            let value = value.clone();
+            dialog
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .description(description.clone())
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel.clone()),
+                    ok.clone(),
+                    fluxdown_ui_components::DialogIntent::Destructive,
+                    cx,
+                ))
+                .on_ok(move |_, window, cx| {
+                    let value = value.clone();
+                    view.update(cx, |this, cx| this.bt_ban_client(value, window, cx))
+                        .is_ok()
+                })
+        });
+    }
+
+    fn bt_ban_client(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
+        let pending = self.port.execute(DownloadsCommand::BtGuardBanClient {
+            value: value.clone(),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = pending.await;
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                let translator = this.translator.read(cx);
+                let notification = match result {
+                    Ok(_) => Notification::success(format!(
+                        "{}: {value}",
+                        translator.text("btGuardClientRules")
+                    )),
                     Err(error) => Notification::error(format!(
                         "{}: {}",
                         translator.text("btGuardPeerActionFailed"),
@@ -2499,6 +2588,7 @@ impl TaskDetailView {
             bans: BanChoice::ALL.map(|choice| t(choice.label_key())),
             throttle: t("btGuardPeerThrottle"),
             allow: t("btGuardPeerAllow"),
+            ban_client: t("btGuardPeerBanClient"),
             evidence: t("btGuardPeerViewEvidence"),
         });
         let view = cx.entity();

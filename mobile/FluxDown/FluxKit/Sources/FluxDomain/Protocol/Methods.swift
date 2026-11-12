@@ -176,6 +176,8 @@ public enum HostMethod {
     public static let daemonBtGuardExport = "daemon.bt.guard.export"
     /// 立即刷新过滤文件订阅（无参 → `BtGuardFilterSourcesRefresh`）。慢方法。
     public static let daemonBtGuardFilterSourcesRefresh = "daemon.bt.guard.filterSources.refresh"
+    /// 请求立即检查云名单更新（无参）；结果经 `btGuardChanged` 通知。
+    public static let daemonBtGuardCloudRefresh = "daemon.bt.guard.cloud.refresh"
     /// 仅 agent 调用：已验签的云名单整层替换。移动端不得调用（`native/mobile` 通用通道会拒绝）。
     public static let daemonBtGuardCloudApply = "daemon.bt.guard.cloud.apply"
     /// 仅 agent 调用：弹出待上报证据。移动端不得调用（`native/mobile` 通用通道会拒绝）。

@@ -195,8 +195,7 @@ fn rejection_does_not_touch_the_previous_layer_or_rules() {
         op: "contains".to_owned(),
         value: "X".to_owned(),
         action: "choke".to_owned(),
-        seeding_only: false,
-        reason: String::new(),
+        ..CloudClientRule::default()
     }];
     g.apply_cloud(&first).expect("apply");
     assert!(g.apply_cloud(&cloud_doc(4, T0 + DAY, vec![])).is_err());
@@ -384,15 +383,14 @@ fn client_rules_are_validated() {
         op: op.to_owned(),
         value: value.to_owned(),
         action: action.to_owned(),
-        seeding_only: false,
-        reason: String::new(),
+        ..CloudClientRule::default()
     };
     let mut doc = cloud_doc(1, T0 + DAY, vec![]);
     doc.client_rules = vec![
         rule("ok", "peerIdPrefix", "prefix", "-XL", "choke"),
         rule("bad-field", "userAgent", "prefix", "x", "choke"),
         rule("bad-op", "clientName", "regex", "x", "choke"),
-        rule("bad-action", "clientName", "prefix", "x", "ban"),
+        rule("bad-action", "clientName", "prefix", "x", "kick"),
         rule("empty-value", "clientName", "prefix", "", "choke"),
         rule("", "clientName", "prefix", "x", "choke"),
     ];
@@ -410,11 +408,10 @@ fn client_rule_matching_semantics() {
         op,
         value: value.to_owned(),
         action: FilterAction::Choke,
-        seeding_only: false,
+        when: fluxdown_engine::bt_guard::RuleWhen::Always,
+        ban_minutes: 60,
         reason: String::new(),
     };
-    // 字段 / 操作符枚举经云文档编译得到；这里借 apply 后的行为在 rules 测试里覆盖，
-    // 此处只直接验证 peer_id 字节级匹配与大小写敏感性。
     let id: [u8; 20] = *b"-XL0019-abcdefghijkl";
     let (f, o) = (
         fluxdown_engine::bt_guard::ClientField::PeerIdPrefix,
@@ -422,8 +419,8 @@ fn client_rule_matching_semantics() {
     );
     assert!(make(f, o, "-XL0019-").matches(Some(&id), None));
     assert!(
-        !make(f, o, "-xl0019-").matches(Some(&id), None),
-        "case-sensitive"
+        make(f, o, "-xl0019-").matches(Some(&id), None),
+        "ASCII case is ignored"
     );
     assert!(
         !make(f, o, "XL0019").matches(Some(&id), None),
@@ -433,17 +430,18 @@ fn client_rule_matching_semantics() {
         !make(f, o, "-XL0019-").matches(None, Some("-XL0019-")),
         "field decides the source"
     );
+    assert!(!make(f, o, "").matches(Some(&id), None), "empty value");
     let contains = fluxdown_engine::bt_guard::ClientOp::Contains;
     assert!(make(f, contains, "XL0019").matches(Some(&id), None));
     assert!(make(f, contains, "abcdefghijkl").matches(Some(&id), None));
     assert!(!make(f, contains, "zzz").matches(Some(&id), None));
+    assert!(!make(f, contains, "").matches(Some(&id), None));
     let name = fluxdown_engine::bt_guard::ClientField::ClientName;
     assert!(make(name, contains, "unlei").matches(None, Some("Xunlei 1")));
-    assert!(
-        !make(name, contains, "Unlei").matches(None, Some("Xunlei 1")),
-        "case-sensitive"
-    );
+    assert!(make(name, contains, "UNLEI").matches(None, Some("Xunlei 1")));
     assert!(!make(name, contains, "unlei").matches(None, None));
+    // 比对象更长的值不匹配，也不越界。
+    assert!(!make(name, o, "Xunlei 1 and more").matches(None, Some("Xunlei 1")));
 }
 
 #[test]

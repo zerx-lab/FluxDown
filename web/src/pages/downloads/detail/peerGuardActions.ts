@@ -1,6 +1,6 @@
 // 防吸血 Peer 处置：文案与右键菜单项（纯数据，组件见 BtPeerGuard.tsx）。
 
-import { Ban, FileSearch, Gauge, ShieldCheck } from 'lucide-react'
+import { Ban, FileSearch, Fingerprint, Gauge, ShieldCheck } from 'lucide-react'
 import { peerCommandParams } from '../../../lib/btGuard'
 import type { PeerGuardCommand, PeerGuardView } from '../../../lib/btGuard'
 import { rpc } from '../../../lib/rpc'
@@ -36,8 +36,8 @@ async function runCommand(t: Translate, group: string, command: PeerGuardCommand
   }
 }
 
-/** 右键菜单的防吸血项：封禁（1 小时 / 1 天 / 7 天 / 永久）、限速、加白、查看证据；没有 IP 组时为空。 */
-export function peerGuardMenu(row: PeerRow, t: Translate, onEvidence: (row: PeerRow) => void): MenuEntry[] {
+/** 右键菜单的防吸血项：封禁（1 小时 / 1 天 / 7 天 / 永久）、限速、加白、封禁此客户端（客户端名为空时禁用）、查看证据；没有 IP 组时为空。 */
+export function peerGuardMenu(row: PeerRow, t: Translate, onEvidence: (row: PeerRow) => void, onBanClient: (row: PeerRow) => void): MenuEntry[] {
   const group = row.guard.ipGroup
   if (group === '') return []
   const ban = (key: string, label: string, duration: 'forever' | '1h' | '1d' | '7d'): MenuEntry => ({
@@ -56,6 +56,7 @@ export function peerGuardMenu(row: PeerRow, t: Translate, onEvidence: (row: Peer
     ban('guard-ban-forever', t('btGuardPeerBanForever'), 'forever'),
     { type: 'item', key: 'guard-throttle', label: t('btGuardPeerThrottle'), icon: Gauge, onSelect: () => void runCommand(t, group, { kind: 'throttle' }) },
     { type: 'item', key: 'guard-allow', label: t('btGuardPeerAllow'), icon: ShieldCheck, onSelect: () => void runCommand(t, group, { kind: 'allow' }) },
+    { type: 'item', key: 'guard-ban-client', label: t('btGuardPeerBanClient'), icon: Fingerprint, destructive: true, disabled: row.client === '', onSelect: () => onBanClient(row) },
     { type: 'item', key: 'guard-evidence', label: t('btGuardPeerViewEvidence'), icon: FileSearch, onSelect: () => onEvidence(row) },
   ]
 }

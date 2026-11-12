@@ -24,6 +24,9 @@ pub use controller::{
     REMEMBER_LAST_SAVE_DIR_PREF, REMEMBER_LAST_TARGET_PREF, SeedLimits, TorrentShare,
 };
 pub use flags::{FlagAssets, flag_asset_path, flag_codes};
+pub use model::bt_guard::{
+    BAN_CLIENT_MINUTES, BanClientEdit, CLIENT_RULES_KEY, append_ban_client_rule,
+};
 pub use model::devices::{DeviceEntry, DeviceKind, DispatchTarget};
 pub use model::progress_window::{
     COMPLETION_WINDOW_PREF, MAX_TRACKED_WINDOW_TASKS, MainWindowState, PROGRESS_WINDOW_PREF,

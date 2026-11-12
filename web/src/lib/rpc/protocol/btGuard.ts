@@ -73,6 +73,20 @@ export interface BtGuardStateDto {
   cloud: BtGuardCloudStatusDto;
   filterSources: BtGuardFilterSourceDto[];
   counts: BtGuardCountsDto;
+  /** 云名单下发的名字规则（只读；空时省略）。 */
+  cloudRules?: BtGuardClientRuleDto[];
+}
+
+/** 名字规则（本机 `bt_guard_client_rules` 元素与云端规则共用形状）。 */
+export interface BtGuardClientRuleDto {
+  id: string;
+  field: 'peerIdPrefix' | 'clientName';
+  op: 'prefix' | 'contains';
+  value: string;
+  action: 'allow' | 'throttle' | 'choke' | 'ban';
+  when: 'seeding' | 'downloading' | 'always';
+  banMinutes: number;
+  reason?: string;
 }
 
 export interface BtGuardEntryDto {

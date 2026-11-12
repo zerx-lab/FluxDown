@@ -423,6 +423,8 @@ const bt = {
     /** 立即抓取全部过滤文件订阅（逐个 HTTP 拉取，可能较慢）。 */
     filterSourcesRefresh: () =>
       call<BtGuardFilterSourcesRefreshDto>(METHOD.DAEMON_BT_GUARD_FILTER_SOURCES_REFRESH, undefined, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
+    /** 请求立即检查云名单更新；结果经 `BtGuardChanged` 通知。 */
+    cloudRefresh: () => call<Record<string, never>>(METHOD.DAEMON_BT_GUARD_CLOUD_REFRESH),
   },
 };
 

@@ -306,7 +306,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   oneOf('bt_guard_rule_rerequest', 'observe', BT_GUARD_MODES),
   oneOf('bt_guard_rule_rewind', 'observe', BT_GUARD_MODES),
   oneOf('bt_guard_rule_lag', 'observe', BT_GUARD_MODES),
-  oneOf('bt_guard_rule_fingerprint', 'observe', BT_GUARD_MODES),
+  oneOf('bt_guard_rule_fingerprint', 'enforce', BT_GUARD_MODES),
   oneOf('bt_guard_cloud_mode', 'observe', BT_GUARD_MODES),
   int('bt_guard_excess_ratio_pct', '200', 110, 2000),
   int('bt_guard_min_torrent_mib', '64', 0, 1_048_576),
@@ -319,6 +319,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   bool('bt_guard_skip_lan', 'true'),
   int('bt_guard_ipv6_prefix', '64', 48, 128),
   text('bt_guard_filter_urls'),
+  text('bt_guard_client_rules'),
   bool('bt_guard_cloud_enabled', 'true'),
   // 设备本地：不进云同步
   bool('bt_guard_report_enabled', 'false'),

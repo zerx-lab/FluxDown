@@ -28,6 +28,10 @@ pub struct CloudEntry {
     pub expires_at: Option<i64>,
 }
 
+/// 客户端名字规则的 wire 形态：云名单 `clientRules` 与本机 `bt_guard_client_rules` 共用。
+///
+/// `action` / `seedingOnly` 是旧客户端读取的字段（旧客户端只认 throttle / choke，遇到别的值
+/// 整条丢弃）；`verdict` / `when` / `banMinutes` 是新增字段，存在时覆盖前两者。
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CloudClientRule {
@@ -37,11 +41,23 @@ pub struct CloudClientRule {
     /// prefix | contains
     pub op: String,
     pub value: String,
-    /// throttle | choke
+    /// allow | throttle | choke | ban
     pub action: String,
     pub seeding_only: bool,
     pub reason: String,
+    /// allow | throttle | choke | ban；存在时覆盖 `action`。
+    pub verdict: Option<String>,
+    /// seeding | downloading | always；存在时覆盖 `seeding_only`。
+    pub when: Option<String>,
+    /// `ban` 的封禁时长（分钟），缺省 [`DEFAULT_NAME_BAN_MINUTES`]。
+    pub ban_minutes: Option<u32>,
 }
+
+/// 名字规则封禁的默认时长（3 天）与上限（1 年）。
+pub const DEFAULT_NAME_BAN_MINUTES: u32 = 3 * 24 * 60;
+pub const MAX_NAME_BAN_MINUTES: u32 = 365 * 24 * 60;
+/// 本机名字规则条数上限。
+pub const MAX_LOCAL_CLIENT_RULES: usize = 200;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -132,31 +148,174 @@ pub enum ClientOp {
     Contains,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// 规则生效的任务状态。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum RuleWhen {
+    /// 本端已拥有全部分片。
+    Seeding,
+    /// 本端仍在下载。
+    Downloading,
+    #[default]
+    Always,
+}
+
+impl RuleWhen {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Seeding => "seeding",
+            Self::Downloading => "downloading",
+            Self::Always => "always",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        [Self::Seeding, Self::Downloading, Self::Always]
+            .into_iter()
+            .find(|w| w.as_str() == text)
+    }
+
+    pub fn applies(self, seeding: bool) -> bool {
+        match self {
+            Self::Seeding => seeding,
+            Self::Downloading => !seeding,
+            Self::Always => true,
+        }
+    }
+}
+
+/// 编译后的名字规则。按列表顺序首条命中生效；`Allow` 表示放行（不再看后面的名字规则）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", from = "StoredClientRule")]
 pub struct ClientRule {
     pub id: String,
     pub field: ClientField,
     pub op: ClientOp,
     pub value: String,
     pub action: FilterAction,
-    pub seeding_only: bool,
+    pub when: RuleWhen,
+    /// 仅 `Ban` 使用。
+    pub ban_minutes: u32,
     pub reason: String,
 }
 
+/// 落库形态：兼容只有 `seedingOnly` 的旧记录。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredClientRule {
+    id: String,
+    field: ClientField,
+    op: ClientOp,
+    value: String,
+    action: FilterAction,
+    #[serde(default)]
+    seeding_only: bool,
+    #[serde(default)]
+    when: Option<RuleWhen>,
+    #[serde(default)]
+    ban_minutes: Option<u32>,
+    #[serde(default)]
+    reason: String,
+}
+
+impl From<StoredClientRule> for ClientRule {
+    fn from(s: StoredClientRule) -> Self {
+        Self {
+            id: s.id,
+            field: s.field,
+            op: s.op,
+            value: s.value,
+            action: s.action,
+            when: s.when.unwrap_or(if s.seeding_only {
+                RuleWhen::Seeding
+            } else {
+                RuleWhen::Always
+            }),
+            ban_minutes: s.ban_minutes.unwrap_or(DEFAULT_NAME_BAN_MINUTES),
+            reason: s.reason,
+        }
+    }
+}
+
+fn starts_with_ignore_case(hay: &[u8], needle: &[u8]) -> bool {
+    hay.get(..needle.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(needle))
+}
+
+fn contains_ignore_case(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 impl ClientRule {
+    /// 忽略 ASCII 大小写匹配。`client` 是扩展握手的 `v` 字段。
     pub fn matches(&self, peer_id: Option<&[u8; 20]>, client: Option<&str>) -> bool {
-        match self.field {
-            ClientField::PeerIdPrefix => peer_id.is_some_and(|id| match self.op {
-                ClientOp::Prefix => id.starts_with(self.value.as_bytes()),
-                ClientOp::Contains => id
-                    .windows(self.value.len())
-                    .any(|w| w == self.value.as_bytes()),
-            }),
-            ClientField::ClientName => client.is_some_and(|name| match self.op {
-                ClientOp::Prefix => name.starts_with(&self.value),
-                ClientOp::Contains => name.contains(&self.value),
-            }),
+        let needle = self.value.as_bytes();
+        if needle.is_empty() {
+            return false;
+        }
+        let hay: Option<&[u8]> = match self.field {
+            ClientField::PeerIdPrefix => peer_id.map(<[u8; 20]>::as_slice),
+            ClientField::ClientName => client.map(str::as_bytes),
+        };
+        hay.is_some_and(|hay| match self.op {
+            ClientOp::Prefix => starts_with_ignore_case(hay, needle),
+            ClientOp::Contains => contains_ignore_case(hay, needle),
+        })
+    }
+
+    /// 校验并编译一条 wire 规则；任何字段不合法返回 `None`。
+    pub fn compile(raw: &CloudClientRule) -> Option<Self> {
+        let field = match raw.field.as_str() {
+            "peerIdPrefix" => ClientField::PeerIdPrefix,
+            "clientName" => ClientField::ClientName,
+            _ => return None,
+        };
+        let op = match raw.op.as_str() {
+            "prefix" => ClientOp::Prefix,
+            "contains" => ClientOp::Contains,
+            _ => return None,
+        };
+        let action = FilterAction::parse(raw.verdict.as_deref().unwrap_or(&raw.action))?;
+        let when = match raw.when.as_deref() {
+            Some(text) => RuleWhen::parse(text)?,
+            None if raw.seeding_only => RuleWhen::Seeding,
+            None => RuleWhen::Always,
+        };
+        if raw.value.is_empty() || raw.id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            id: raw.id.clone(),
+            field,
+            op,
+            value: raw.value.clone(),
+            action,
+            when,
+            ban_minutes: raw
+                .ban_minutes
+                .unwrap_or(DEFAULT_NAME_BAN_MINUTES)
+                .clamp(1, MAX_NAME_BAN_MINUTES),
+            reason: raw.reason.clone(),
+        })
+    }
+}
+
+/// 解析本机名字规则（`bt_guard_client_rules`，JSON 数组）。空串 = 无规则；
+/// 整体不是合法 JSON 时记日志并视为无规则，单条不合法只丢该条；超过上限的部分丢弃。
+pub fn parse_local_client_rules(json: &str) -> Vec<ClientRule> {
+    if json.trim().is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_str::<Vec<CloudClientRule>>(json) {
+        Ok(raw) => raw
+            .iter()
+            .filter_map(ClientRule::compile)
+            .take(MAX_LOCAL_CLIENT_RULES)
+            .collect(),
+        Err(error) => {
+            crate::log_warn!("[BtGuard] ignored malformed local client rules: {error}");
+            Vec::new()
         }
     }
 }
@@ -261,42 +420,10 @@ pub fn build_cloud_layer(
     }
 
     for rule in &doc.client_rules {
-        let field = match rule.field.as_str() {
-            "peerIdPrefix" => ClientField::PeerIdPrefix,
-            "clientName" => ClientField::ClientName,
-            _ => {
-                build.dropped_invalid_rules += 1;
-                continue;
-            }
-        };
-        let op = match rule.op.as_str() {
-            "prefix" => ClientOp::Prefix,
-            "contains" => ClientOp::Contains,
-            _ => {
-                build.dropped_invalid_rules += 1;
-                continue;
-            }
-        };
-        let action = match FilterAction::parse(&rule.action) {
-            Some(a @ (FilterAction::Choke | FilterAction::Throttle)) => a,
-            _ => {
-                build.dropped_invalid_rules += 1;
-                continue;
-            }
-        };
-        if rule.value.is_empty() || rule.id.is_empty() {
-            build.dropped_invalid_rules += 1;
-            continue;
+        match ClientRule::compile(rule) {
+            Some(rule) => build.client_rules.push(rule),
+            None => build.dropped_invalid_rules += 1,
         }
-        build.client_rules.push(ClientRule {
-            id: rule.id.clone(),
-            field,
-            op,
-            value: rule.value.clone(),
-            action,
-            seeding_only: rule.seeding_only,
-            reason: rule.reason.clone(),
-        });
     }
     Ok(build)
 }

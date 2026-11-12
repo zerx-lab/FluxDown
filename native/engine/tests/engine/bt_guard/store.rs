@@ -1129,6 +1129,7 @@ fn xl_rules_doc(seq: i64, expires: i64) -> fluxdown_engine::bt_guard::CloudDocum
         action: "choke".to_owned(),
         seeding_only: true,
         reason: "xunlei".to_owned(),
+        ..Default::default()
     }];
     doc.attribution = vec!["BTN-Collected-Rules by PBH-BTN, CC BY 4.0".to_owned()];
     doc

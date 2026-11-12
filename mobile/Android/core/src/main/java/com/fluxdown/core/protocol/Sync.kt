@@ -131,7 +131,7 @@ object SyncRules {
                 "bt.guard.min_torrent_mib", "bt.guard.rewind_tolerance_pct", "bt.guard.throttle_kib",
                 "bt.guard.ban_base_hours", "bt.guard.ban_max_days", "bt.guard.downloading_max_action",
                 "bt.guard.skip_private", "bt.guard.skip_lan", "bt.guard.ipv6_prefix", "bt.guard.filter_urls",
-                "bt.guard.cloud_enabled",
+                "bt.guard.client_rules", "bt.guard.cloud_enabled",
             ),
         ),
         SyncGroup(
