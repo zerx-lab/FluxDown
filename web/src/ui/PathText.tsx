@@ -4,10 +4,10 @@
 import { splitPathTail } from '../lib/pathDisplay'
 import { cn } from '../lib/cn'
 
-export function PathText({ path, className }: { path: string; className?: string }) {
+export function PathText({ path, title = path, className }: { path: string; title?: string; className?: string }) {
   const { head, tail } = splitPathTail(path)
   return (
-    <span className={cn('flex min-w-0', className)} title={path}>
+    <span className={cn('flex min-w-0', className)} title={title}>
       {head ? (
         <span className="min-w-0 overflow-hidden text-ellipsis" style={{ whiteSpace: 'pre' }}>
           {head}

@@ -976,7 +976,22 @@ impl DownloadView {
     }
 
     pub fn apply_event(&mut self, event: &fluxdown_protocol::ServiceEvent, cx: &mut Context<Self>) {
-        let table_changed = self.controller.apply_event(event);
+        let mut table_changed = self.controller.apply_event(event);
+        if matches!(
+            event,
+            fluxdown_protocol::ServiceEvent::Agent(fluxdown_protocol::AgentEvent::Daemon(
+                fluxdown_protocol::DaemonEvent::ConfigChanged(_)
+                    | fluxdown_protocol::DaemonEvent::RuntimeStatsChanged(_)
+            ))
+        ) {
+            let configured = self.controller.config_str("default_save_dir");
+            let root = if configured.is_empty() {
+                &self.controller.runtime_stats().save_dir
+            } else {
+                configured
+            };
+            table_changed |= self.table_state.read(cx).delegate().directory_root() != root;
+        }
         if let Some(detail) = self.detail.clone() {
             detail.update(cx, |detail, cx| detail.apply_event(event, cx));
         }
@@ -1121,12 +1136,20 @@ impl DownloadView {
             .iter()
             .map(|group| (group.group_id.clone(), GroupMeta::from_dto(group)))
             .collect();
-        let devices: HashMap<String, String> = self
-            .controller
-            .other_devices()
-            .into_iter()
-            .map(|device| (device.id, device.label))
-            .collect();
+        let mut devices = HashMap::new();
+        let mut device_roots = HashMap::new();
+        for device in self.controller.other_devices() {
+            if let Some(root) = device.default_save_dir {
+                device_roots.insert(device.id.clone(), root);
+            }
+            devices.insert(device.id, device.label);
+        }
+        let configured_root = self.controller.config_str("default_save_dir");
+        let default_root = if configured_root.is_empty() {
+            self.controller.runtime_stats().save_dir.clone()
+        } else {
+            configured_root.to_owned()
+        };
         let categories = Rc::clone(self.controller.categories());
         if let Some(detail) = self.detail.clone() {
             detail.update(cx, |detail, cx| detail.set_queue_names(queues.clone(), cx));
@@ -1136,6 +1159,7 @@ impl DownloadView {
             delegate.set_queue_names(queues);
             delegate.set_groups(groups);
             delegate.set_device_names(devices);
+            delegate.set_directory_context(default_root, device_roots);
             delegate.set_categories(categories);
         });
     }

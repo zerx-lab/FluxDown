@@ -6,9 +6,10 @@ import type { MouseEvent } from 'react'
 import { cn } from '../../../lib/cn'
 import { Checkbox, ContextMenuArea, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
+import { PathText } from '../../../ui/PathText'
 import { canOpenGroupFolder, pauseGroup, resumeGroup } from '../model/actions'
 import { groupCheckState } from '../model/groupRows'
-import type { DirRow, GroupFolderRow } from '../model/groupRows'
+import type { DirRow, DirectoryHeaderRow, GroupFolderRow } from '../model/groupRows'
 import { aggregateOf, anyActive, anyResumable, compressPath } from '../model/groupTree'
 import type { GroupAggregate } from '../model/groupTree'
 import type { TaskRow } from '../model/rowEngine'
@@ -371,5 +372,34 @@ export function DirRowView({ t, row, columns, density, onToggle }: DirRowProps) 
       })}
       <div style={{ width: TRAILING_GUTTER }} className="shrink-0" />
     </div>
+  )
+}
+
+export function DirectoryHeaderView({
+  t,
+  row,
+  onToggle,
+}: {
+  t: Translate
+  row: DirectoryHeaderRow
+  onToggle: (key: string) => void
+}) {
+  const label = row.directoryKind === 'default' ? t('viewDirectoryDefault') :
+    row.directoryKind === 'external' ? t('viewDirectoryExternal') :
+      row.directoryKind === 'unknown' ? t('viewDirectoryUnknown') : row.label
+  return (
+    <button
+      type="button"
+      aria-expanded={!row.collapsed}
+      title={row.path}
+      onClick={() => onToggle(row.key)}
+      className="flex min-h-8 w-full items-center gap-2 border-b border-hairline bg-surface-subtle px-3 text-left text-xs text-muted-foreground"
+      style={{ paddingLeft: CELL_PADDING_X + row.depth * TREE_INDENT }}
+    >
+      <Icon icon={row.collapsed ? ChevronRight : ChevronDown} size="sm" />
+      <Icon icon={Folder} size="sm" />
+      <PathText path={label} title={row.path || label} className="flex-1" />
+      <span className="tabular">{row.count}</span>
+    </button>
   )
 }

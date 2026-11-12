@@ -38,7 +38,7 @@ import { TaskLoading } from './TaskLoading'
 import { useRowAccessors } from './rowLayout'
 import type { BucketRow, GroupFolderRow, MemberRow } from '../model/groupRows'
 import type { TaskRow as EngineTaskRow } from '../model/rowEngine'
-import { DirRowView, GroupRowView } from './GroupRows'
+import { DirectoryHeaderView, DirRowView, GroupRowView } from './GroupRows'
 import {
   BUCKET_SLOT_HEIGHT,
   CELL_PADDING_X,
@@ -642,6 +642,8 @@ export function TaskTable() {
                   />
                 ) : row.type === 'dir' ? (
                   <DirRowView t={t} row={row} columns={columns} density={prefs.density} onToggle={ctx.toggleDirCollapsed} />
+                ) : row.type === 'directory' ? (
+                  <DirectoryHeaderView t={t} row={row} onToggle={ctx.toggleBucketCollapsed} />
                 ) : (
                   renderTaskRow(row)
                 )}

@@ -1,0 +1,179 @@
+{
+  "cases": [
+    {
+      "name": "video direct task and compressed course Rust branch",
+      "items": [
+        { "path": "/downloads", "root": "/downloads", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/downloads/视频", "root": "/downloads", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/downloads/视频/课程/Rust", "root": "/downloads", "scope": "", "scope_label": "", "count": 2 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/downloads", "label": "", "path": "/downloads", "depth": 0, "count": 4 },
+        { "kind": "item", "index": 0, "depth": 1 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/downloads/视频", "label": "视频", "path": "/downloads/视频", "depth": 1, "count": 3 },
+        { "kind": "item", "index": 1, "depth": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/downloads/视频/课程/Rust", "label": "课程 / Rust", "path": "/downloads/视频/课程/Rust", "depth": 2, "count": 2 },
+        { "kind": "item", "index": 2, "depth": 3 }
+      ]
+    },
+    {
+      "name": "parent direct item stops compression and ancestor collapse hides descendants",
+      "items": [
+        { "path": "/d/A", "root": "/d", "scope": "", "scope_label": "", "count": 3 },
+        { "path": "/d/A/B", "root": "/d", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/d/A/B/C", "root": "/d", "scope": "", "scope_label": "", "count": 4 }
+      ],
+      "collapsed": ["directory::/d/A"],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/d", "label": "", "path": "/d", "depth": 0, "count": 8 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A", "label": "A", "path": "/d/A", "depth": 1, "count": 8 }
+      ]
+    },
+    {
+      "name": "branched directory remains uncompressed",
+      "items": [
+        { "path": "/d/A/X", "root": "/d", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/d/A/Y", "root": "/d", "scope": "", "scope_label": "", "count": 2 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/d", "label": "", "path": "/d", "depth": 0, "count": 3 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A", "label": "A", "path": "/d/A", "depth": 1, "count": 3 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A/X", "label": "X", "path": "/d/A/X", "depth": 2, "count": 1 },
+        { "kind": "item", "index": 0, "depth": 3 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A/Y", "label": "Y", "path": "/d/A/Y", "depth": 2, "count": 2 },
+        { "kind": "item", "index": 1, "depth": 3 }
+      ]
+    },
+    {
+      "name": "root stays and children sort naturally",
+      "items": [
+        { "path": "/d/a10", "root": "/d", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/d/z", "root": "/d", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/d/a2", "root": "/d", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/d", "root": "/d", "scope": "", "scope_label": "", "count": 1 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/d", "label": "", "path": "/d", "depth": 0, "count": 4 },
+        { "kind": "item", "index": 3, "depth": 1 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/a2", "label": "a2", "path": "/d/a2", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 2, "depth": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/a10", "label": "a10", "path": "/d/a10", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 0, "depth": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/z", "label": "z", "path": "/d/z", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 1, "depth": 2 }
+      ]
+    },
+    {
+      "name": "external, empty-root external, and unknown locations",
+      "items": [
+        { "path": "/downloads-old", "root": "/downloads", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/standalone/leaf", "root": "", "scope": "", "scope_label": "", "count": 2 },
+        { "path": "", "root": "", "scope": "", "scope_label": "", "count": 3 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "external", "key": "category::external", "label": "", "path": "", "depth": 0, "count": 3 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/downloads-old", "label": "downloads-old", "path": "/downloads-old", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 0, "depth": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/standalone/leaf", "label": "standalone / leaf", "path": "/standalone/leaf", "depth": 1, "count": 2 },
+        { "kind": "item", "index": 1, "depth": 2 },
+        { "kind": "header", "directoryKind": "unknown", "key": "category::unknown", "label": "", "path": "", "depth": 0, "count": 3 },
+        { "kind": "item", "index": 2, "depth": 1 }
+      ]
+    },
+    {
+      "name": "Windows drives, UNC, case distinction, and lexical dots",
+      "items": [
+        { "path": "C:\\Data\\A\\..\\Foo", "root": "C:\\Data", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "C:\\Data\\foo", "root": "C:\\Data", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "\\\\server\\share\\d", "root": "\\\\server\\share", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "C:\\Foo", "root": "C:\\", "scope": "", "scope_label": "", "count": 1 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory:://server/share", "label": "", "path": "//server/share", "depth": 0, "count": 1 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory:://server/share/d", "label": "d", "path": "//server/share/d", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 2, "depth": 2 },
+        { "kind": "header", "directoryKind": "default", "key": "directory::C:/", "label": "", "path": "C:/", "depth": 0, "count": 1 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::C:/Foo", "label": "Foo", "path": "C:/Foo", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 3, "depth": 2 },
+        { "kind": "header", "directoryKind": "default", "key": "directory::C:/Data", "label": "", "path": "C:/Data", "depth": 0, "count": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::C:/Data/Foo", "label": "Foo", "path": "C:/Data/Foo", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 0, "depth": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::C:/Data/foo", "label": "foo", "path": "C:/Data/foo", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 1, "depth": 2 }
+      ]
+    },
+    {
+      "name": "POSIX backslash remains a path character",
+      "items": [
+        { "path": "/d/A\\B", "root": "/d", "scope": "", "scope_label": "", "count": 1 },
+        { "path": "/d/A/B", "root": "/d", "scope": "", "scope_label": "", "count": 1 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/d", "label": "", "path": "/d", "depth": 0, "count": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A/B", "label": "A / B", "path": "/d/A/B", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 1, "depth": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A\\B", "label": "A\\B", "path": "/d/A\\B", "depth": 1, "count": 1 },
+        { "kind": "item", "index": 0, "depth": 2 }
+      ]
+    },
+    {
+      "name": "remote scopes keep a single header and separate known, external, unknown paths",
+      "items": [
+        { "path": "/downloads/a", "root": "/downloads", "scope": "device-1", "scope_label": "Desktop", "count": 2 },
+        { "path": "/other/out", "root": "/downloads", "scope": "device-1", "scope_label": "Desktop", "count": 3 },
+        { "path": "/unknown/path", "root": "", "scope": "device-1", "scope_label": "Desktop", "count": 4 },
+        { "path": "/srv/b", "root": "/srv", "scope": "device-2", "scope_label": "Laptop", "count": 1 },
+        { "path": "", "root": "/downloads", "scope": "device-1", "scope_label": "Desktop", "count": 5 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "scope", "key": "scope:device-1", "label": "Desktop", "path": "", "depth": 0, "count": 14 },
+        { "kind": "header", "directoryKind": "default", "key": "directory:device-1:/downloads", "label": "", "path": "/downloads", "depth": 1, "count": 2 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory:device-1:/downloads/a", "label": "a", "path": "/downloads/a", "depth": 2, "count": 2 },
+        { "kind": "item", "index": 0, "depth": 3 },
+        { "kind": "header", "directoryKind": "external", "key": "category:device-1:external", "label": "", "path": "", "depth": 1, "count": 7 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory:device-1:/other/out", "label": "other / out", "path": "/other/out", "depth": 2, "count": 3 },
+        { "kind": "item", "index": 1, "depth": 3 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory:device-1:/unknown/path", "label": "unknown / path", "path": "/unknown/path", "depth": 2, "count": 4 },
+        { "kind": "item", "index": 2, "depth": 3 },
+        { "kind": "header", "directoryKind": "unknown", "key": "category:device-1:unknown", "label": "", "path": "", "depth": 1, "count": 5 },
+        { "kind": "item", "index": 4, "depth": 2 },
+        { "kind": "header", "directoryKind": "scope", "key": "scope:device-2", "label": "Laptop", "path": "", "depth": 0, "count": 1 },
+        { "kind": "header", "directoryKind": "default", "key": "directory:device-2:/srv", "label": "", "path": "/srv", "depth": 1, "count": 1 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory:device-2:/srv/b", "label": "b", "path": "/srv/b", "depth": 2, "count": 1 },
+        { "kind": "item", "index": 3, "depth": 3 }
+      ]
+    },
+    {
+      "name": "collapsed compression boundary stays addressable",
+      "items": [
+        { "path": "/d/A/B/C", "root": "/d", "scope": "", "scope_label": "", "count": 1 }
+      ],
+      "collapsed": ["directory::/d/A"],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/d", "label": "", "path": "/d", "depth": 0, "count": 1 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/A", "label": "A", "path": "/d/A", "depth": 1, "count": 1 }
+      ]
+    },
+    {
+      "name": "filtered inputs and direct item order are preserved",
+      "items": [
+        { "path": "/d/Chosen", "root": "/d", "scope": "", "scope_label": "", "count": 2 },
+        { "path": "/d/Chosen", "root": "/d", "scope": "", "scope_label": "", "count": 3 }
+      ],
+      "collapsed": [],
+      "expect": [
+        { "kind": "header", "directoryKind": "default", "key": "directory::/d", "label": "", "path": "/d", "depth": 0, "count": 5 },
+        { "kind": "header", "directoryKind": "folder", "key": "directory::/d/Chosen", "label": "Chosen", "path": "/d/Chosen", "depth": 1, "count": 5 },
+        { "kind": "item", "index": 0, "depth": 2 },
+        { "kind": "item", "index": 1, "depth": 2 }
+      ]
+    }
+  ]
+}

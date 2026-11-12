@@ -1,3 +1,5 @@
+import { flattenDirectories } from './directoryTree'
+import type { DirectoryItem, DirectoryKind } from './directoryTree'
 // 任务表可见行管线（纯函数）：在行引擎「排序 + 行顺序保持 + 侧栏筛选 + 搜索」之后，把任务组并成「文件夹行」、
 // 按分组方式分桶、展开成员 / 目录行，并给出选择用的可见任务序列。与 GPUI 的同名管线逐条对齐
 // （规格：任务组文件夹行 §1 / §2）。
@@ -48,13 +50,11 @@ export interface MemberRow {
   type: 'member'
   key: RowKey
   row: TaskRow
-  depth: 1 | 2
+  depth: number
 }
 
-/** 展开组内的目录分段行（平铺，显示完整相对路径）。 */
 export interface DirRow {
   type: 'dir'
-  /** `d:<groupId>\0<path>`。 */
   key: string
   groupId: string
   path: string
@@ -63,8 +63,19 @@ export interface DirRow {
   collapsed: boolean
 }
 
-/** 表格可见行：顶层任务行（引擎持有的稳定行对象）、桶标题、组行及其展开内容。 */
-export type VisibleRow = TaskRow | BucketRow | GroupFolderRow | MemberRow | DirRow
+export interface DirectoryHeaderRow {
+  type: 'directory'
+  directoryKind: DirectoryKind
+  key: string
+  label: string
+  path: string
+  depth: number
+  count: number
+  collapsed: boolean
+}
+
+/** 表格可见行：顶层任务行（引擎持有的稳定行对象）、分桶、目录标题、组行及其展开内容。 */
+export type VisibleRow = TaskRow | BucketRow | GroupFolderRow | MemberRow | DirRow | DirectoryHeaderRow
 
 /**
  * 划选覆盖的任务键：闭区间 `[from, to]` 内的任务行 / 成员行，以及落在区间内的组行的全部成员
@@ -341,6 +352,57 @@ export function buildVisibleRows(input: VisibleRowsInput): VisibleRows {
       return keys
     },
   }
+}
+
+/** Reorder top-level entities into the shared directory tree while keeping group rows atomic. */
+export function groupRowsByDirectory(
+  rows: readonly VisibleRow[],
+  items: readonly DirectoryItem[],
+  collapsed: ReadonlySet<string>,
+): VisibleRow[] {
+  const spans: VisibleRow[][] = []
+  for (let cursor = 0; cursor < rows.length;) {
+    const row = rows[cursor]
+    if (!row) {
+      cursor += 1
+      continue
+    }
+    if (row.type === 'bucket') {
+      cursor += 1
+      continue
+    }
+    const span: VisibleRow[] = [row]
+    cursor += 1
+    if (row.type === 'group') {
+      while (cursor < rows.length) {
+        const child = rows[cursor]
+        if (!child || child.type === 'task' || child.type === 'group' || child.type === 'bucket') break
+        span.push(child)
+        cursor += 1
+      }
+    }
+    spans.push(span)
+  }
+  const tree = flattenDirectories(items, (key) => collapsed.has(key))
+  const result: VisibleRow[] = []
+  for (const row of tree) {
+    if (row.kind === 'header') {
+      result.push({
+        type: 'directory',
+        directoryKind: row.directoryKind,
+        key: row.key,
+        label: row.label,
+        path: row.path,
+        depth: row.depth,
+        count: row.count,
+        collapsed: collapsed.has(row.key),
+      })
+    } else {
+      const span = spans[row.index]
+      if (span) result.push(...span)
+    }
+  }
+  return result
 }
 
 /**

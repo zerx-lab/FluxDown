@@ -286,6 +286,7 @@ function groupingDiffer(left: DownloadTaskView, right: DownloadTaskView): boolea
     left.url !== right.url ||
     left.referrer !== right.referrer ||
     left.protocol !== right.protocol ||
+    left.saveDir !== right.saveDir ||
     left.groupId !== right.groupId
   )
 }

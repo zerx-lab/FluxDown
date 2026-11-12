@@ -533,6 +533,7 @@ fn same_view_fields(left: &DownloadTaskView, right: &DownloadTaskView) -> bool {
         && left.protocol == right.protocol
         && left.created_at_secs == right.created_at_secs
         && left.group_id == right.group_id
+        && left.save_dir == right.save_dir
         && left.to_device == right.to_device
         && left.seeding_status == right.seeding_status
         && left.file_missing == right.file_missing

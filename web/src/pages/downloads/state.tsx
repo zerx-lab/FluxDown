@@ -8,6 +8,7 @@ import { useIsMobile } from '../../ui'
 import {
   rpc,
   useAgent,
+  useConfigValue,
   useDaemon,
   usePref,
   useTaskTableStatus,
@@ -33,8 +34,9 @@ import { remoteCan } from './model/batchPlan'
 import { isDownloadable } from './model/actions'
 import type { SidebarCounts } from './model/counts'
 import { useLiveSpeeds } from './model/liveSpeeds'
-import { buildVisibleRows, dirCollapseKey, dominantCategory, groupFullySelected, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
+import { buildVisibleRows, dirCollapseKey, dominantCategory, groupFullySelected, groupRowsByDirectory, groupsMatchingQuery, keysInVisualSpan, rowIndexOfKey, selectGroupOnClick, selectionIsGroup } from './model/groupRows'
 import type { BucketInfo, GroupFolderRow, VisibleRow, VisibleRowsInput } from './model/groupRows'
+import type { DirectoryItem } from './model/directoryTree'
 import { makeAggregate } from './model/groupTree'
 import type { GroupAggregate, GroupCounts } from './model/groupTree'
 import { buildRemoteView, canPause, canResumeSeeding, isLocalKey, sourceSite, STATE_RANK } from './model/task'
@@ -280,6 +282,9 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   const session = useAgent(selectSession, null)
   const cloudDevices = useAgent(selectCloud, EMPTY_CLOUD as CloudDevice[])
   const linkedDevices = useAgent(selectLinked, EMPTY_LINKED as LinkDeviceInfo[])
+  const configuredDefaultRoot = useConfigValue('default_save_dir') ?? ''
+  const runtimeSaveDir = useDaemon((daemon) => daemon.runtimeStats.saveDir, '')
+  const directoryDefaultRoot = configuredDefaultRoot.trim() !== '' ? configuredDefaultRoot : runtimeSaveDir
   const categoriesPref = usePref<unknown>('custom_categories')
   const live = useLiveSpeeds()
   const connected = useDaemonReady()
@@ -397,7 +402,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   // 分组方式的桶归属：任务按自身视图，组行按聚合代理视图（「类型」取通过成员里占多数的分类）。
   const bucketOf = useMemo<VisibleRowsInput['bucketOf']>(() => {
     const groupBy = prefs.group_by
-    if (groupBy === 'none') return null
+    if (groupBy === 'none' || groupBy === 'directory') return null
     const queueIndex = new Map<string, number>()
     if (groupBy === 'queue') {
       queues.forEach((queue, index) => {
@@ -468,8 +473,45 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `snapshot.rows` 随 layoutVersion 换身份，groupingVersion 覆盖分组归属字段
     [snapshot.rows, snapshot.groupingVersion, groups, compare, bucketOf, collapsedBuckets, expandedGroups, dirCollapsed, normalizedQuery],
   )
-  const rows: readonly VisibleRow[] = built.rows
-  const visibleCount = built.visibleCount
+  const directoryItems = useMemo<DirectoryItem[]>(() => {
+    if (prefs.group_by !== 'directory') return []
+    const roots = new Map<string, { root: string; label: string }>()
+    for (const device of cloudDevices) roots.set(device.deviceId, { root: device.defaultSaveDir ?? '', label: device.name || device.deviceId })
+    for (const device of linkedDevices) {
+      const id = device.cloudDeviceId || device.fingerprint
+      const known = roots.get(id)
+      roots.set(id, {
+        root: known?.root || device.defaultSaveDir || '',
+        label: known?.label || device.customName || device.name || id,
+      })
+    }
+    const items: DirectoryItem[] = []
+    for (const row of built.rows) {
+      if (row.type === 'task') {
+        const view = row.view
+        const device = view.source === 'remote' ? roots.get(view.toDevice) : undefined
+        items.push({
+          path: view.saveDir,
+          root: view.source === 'local' ? directoryDefaultRoot : device?.root ?? '',
+          scope: view.source === 'remote' ? view.toDevice || 'remote' : '',
+          scope_label: view.source === 'remote' ? device?.label || view.toDevice || t('remoteTasksGroup') : '',
+          count: 1,
+        })
+      } else if (row.type === 'group') {
+        items.push({ path: row.group.saveDir, root: directoryDefaultRoot, scope: '', scope_label: '', count: row.members.length })
+      }
+    }
+    return items
+  }, [built.rows, prefs.group_by, cloudDevices, linkedDevices, directoryDefaultRoot, t])
+  const directoryCollapsed = useMemo(() => new Set(prefs.collapsed_groups), [prefs.collapsed_groups])
+  const directoryRows = useMemo(
+    () => prefs.group_by === 'directory' ? groupRowsByDirectory(built.rows, directoryItems, directoryCollapsed) : built.rows,
+    [prefs.group_by, built.rows, directoryItems, directoryCollapsed],
+  )
+  const rows: readonly VisibleRow[] = directoryRows
+  const visibleCount = prefs.group_by === 'directory'
+    ? rows.reduce((count, row) => count + (row.type === 'task' || row.type === 'member' ? 1 : row.type === 'group' && !row.expanded ? row.members.length : 0), 0)
+    : built.visibleCount
 
   // 选中集里仍可见的任务数：没有组参与且不分桶时可见集 = 命中集；否则按可见任务序列（折叠桶 / 折叠目录内的不算）。
   const visibleSelected = useMemo(() => {
@@ -478,12 +520,17 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     if (prefs.group_by === 'none' && built.folders.size === 0) {
       for (const key of selected) if (engine.isMatched(key)) count += 1
     } else {
-      const visible = new Set(built.sequence())
+      const visible = prefs.group_by === 'directory'
+        ? new Set(directoryRows.flatMap((row) =>
+            row.type === 'task' || row.type === 'member' ? [row.key] :
+              row.type === 'group' && !row.expanded ? [...row.orderedKeys()] : [],
+          ))
+        : new Set(built.sequence())
       for (const key of selected) if (visible.has(key)) count += 1
     }
     return count
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 命中集随 matchVersion 变化
-  }, [selected, engine, built, snapshot.matchVersion, prefs.group_by])
+  }, [selected, engine, built, directoryRows, snapshot.matchVersion, prefs.group_by])
 
   // 选中集只保留当前筛选 + 搜索下仍在视图内的任务（折叠分组内的仍属于当前视图）。
   // 任务表载入期间本地任务不完整，「不在视图内」不代表任务被删：跳过，载入完成后再收敛。
