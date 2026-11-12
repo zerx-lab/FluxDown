@@ -48,6 +48,7 @@ import com.fluxdown.fluxui.overlay.LocalFluxOverlays
 
 private const val COMPLETE_KEY = "download.notify_on_complete"
 private const val SILENT_KEY = "download.silent_download"
+private const val SILENT_AUTO_CATEGORY_KEY = "download.silent_auto_category"
 private const val SILENT_SKIP_KEY = "download.silent_skip_selection"
 
 /** 通知页的行 id（同 iOS `NotifyPage` 的常量）与所在 `LazyColumn` 项 key。 */
@@ -59,6 +60,7 @@ private object NotifyIds {
     const val SELECTION = "notify.selection"
     const val WEBHOOK = "notify.webhook"
     const val SILENT = "download.silentDownload"
+    const val SILENT_AUTO_CATEGORY = "download.silentAutoCategory"
     const val SILENT_SKIP = "download.silentSkipSelection"
 
     const val ITEM_PERMISSION = "permission"
@@ -173,6 +175,7 @@ internal fun NotifyPage() {
             GlassSection(title = str(R.string.silentDownload)) {
                 settingSwitch(ctx, SILENT_KEY, R.string.silentDownload, R.string.silentDownloadDesc, id = NotifyIds.SILENT)
                 if (ctx.form.bool(SILENT_KEY)) {
+                    settingSwitch(ctx, SILENT_AUTO_CATEGORY_KEY, R.string.silentAutoCategory, R.string.silentAutoCategoryDesc, id = NotifyIds.SILENT_AUTO_CATEGORY)
                     settingSwitch(ctx, SILENT_SKIP_KEY, R.string.silentSkipSelection, R.string.silentSkipSelectionDesc, id = NotifyIds.SILENT_SKIP)
                 }
             }

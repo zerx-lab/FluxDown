@@ -49,6 +49,14 @@ struct PreferencesProtocolTests {
         #expect(SettingsCatalog.isSynced("appearance.custom_themes.nord"))
     }
 
+    @Test func silentDownloadAndAutoCategoryArePreferenceFields() {
+        #expect(SettingsCatalog.field("download.silent_download")?.store == .preference)
+        #expect(SettingsCatalog.defaultWire("download.silent_download") == "false")
+        #expect(SettingsCatalog.field("download.silent_auto_category")?.store == .preference)
+        #expect(SettingsCatalog.defaultWire("download.silent_auto_category") == "true")
+        #expect(!SettingsCatalog.isSynced("download.silent_auto_category"))
+    }
+
     // MARK: - 写入路由
 
     @Test func syncedDaemonKeysRouteThroughPreferencesUnderTheirSyncName() throws {

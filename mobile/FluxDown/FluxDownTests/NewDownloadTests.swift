@@ -187,3 +187,60 @@ struct BtFileTreeTests {
     }
 }
 #endif
+
+@Suite("Remembered download category")
+@MainActor
+struct NewDownloadCategoryMemoryTests {
+    private let category = CustomCategoryDto(
+        id: "custom:完整-id", name: "分类", position: 0, saveDir: #"D:\下载  2024\Programs"#
+    )
+
+    private func state(mode: JSONValue?, categories: [CustomCategoryDto]? = nil) throws -> HostState {
+        var state = HostState()
+        state.config["default_save_dir"] = "/default"
+        var values = [CustomCategoryDto.preferenceKey: CustomCategoryDto.preferenceValue(categories ?? [category])]
+        if let mode { values[SaveDirCategoryMode.preferenceKey] = mode }
+        state.sections[HostSection.agentPreferences] = try ProtocolJSON.encode(
+            AgentPreferencesDto(values: values), what: "category memory test"
+        )
+        return state
+    }
+
+    @Test func formsRestoreExplicitModeAndNeverAuthorizeAutomaticRouting() throws {
+        for mode: SaveDirCategoryMode in [.noCategory, .category(category.id)] {
+            let form = NewDownloadForm(prefill: "https://example.com/movie.mp4", state: try state(mode: mode.preferenceValue))
+            #expect(form.categoryState.mode == mode)
+            #expect(form.saveDir == (mode == .noCategory ? "/default" : category.saveDir))
+            let request = try #require(form.buildRequests(startPaused: false, queue: "", manualProxy: "").first)
+            #expect(request.offeredSaveDir == nil)
+            #expect(request.saveDir == form.saveDir)
+            #if FULL_FLAVOR
+            let base = form.manifestBase(queue: "", manualProxy: "")
+            #expect(base.categoryMode == mode)
+            #expect(base.offeredSaveDir == nil)
+            #expect(base.saveDir == form.saveDir)
+            #endif
+        }
+    }
+
+    @Test func missingInvalidAndUnavailableModesFallBackToAutomaticRouting() throws {
+        for value: JSONValue? in [nil, .bool(true), .string("invalid"), .string("category:deleted")] {
+            let form = NewDownloadForm(prefill: "https://example.com/file.zip", state: try state(mode: value))
+            #expect(form.categoryState.mode == .auto)
+            let request = try #require(form.buildRequests(startPaused: true, queue: "", manualProxy: "").first)
+            #expect(request.offeredSaveDir == "/default")
+        }
+        let none = NewDownloadForm(prefill: "", state: try state(mode: .string("none"), categories: []))
+        #expect(none.categoryState.mode == .noCategory)
+        #expect(none.saveDir == "/default")
+    }
+
+    @Test func separateHostSnapshotsRestoreTheirOwnModes() throws {
+        let first = NewDownloadForm(prefill: "", state: try state(mode: .string("none")))
+        let second = NewDownloadForm(prefill: "", state: try state(mode: .string("category:" + category.id)))
+        let third = NewDownloadForm(prefill: "", state: try state(mode: nil))
+        #expect(first.categoryState.mode == .noCategory)
+        #expect(second.categoryState.mode == .category(category.id))
+        #expect(third.categoryState.mode == .auto)
+    }
+}

@@ -142,6 +142,21 @@ export function routeSaveDir(route: CategoryRouteDto, fileName: string, url: str
 /** 分类下拉的模式：自动 / 不分类 / 指定分类 id。 */
 export type CategoryPickMode = { kind: 'auto' } | { kind: 'none' } | { kind: 'category'; id: string }
 
+/** 设备本地偏好：新建下载分类模式记忆（`auto` / `none` / `category:<id>`，不进云同步）。 */
+export const LAST_CATEGORY_MODE_PREF = 'download.last_category_mode'
+
+/** Device-local remembered picker mode; malformed or stale category ids fall back to Auto. */
+export function categoryModeFromPreference(value: unknown, categories: readonly CustomCategoryDto[]): CategoryPickMode {
+  if (value === 'none') return { kind: 'none' }
+  if (typeof value !== 'string' || !value.startsWith('category:')) return { kind: 'auto' }
+  const id = value.slice('category:'.length)
+  return pickableCategories(categories).some((category) => category.id === id) ? { kind: 'category', id } : { kind: 'auto' }
+}
+
+export function categoryModePreference(mode: CategoryPickMode): string {
+  return mode.kind === 'category' ? `category:${mode.id}` : mode.kind
+}
+
 /** 可选分类：visible、非 all、目录非空，按 position 排序（`categories` 已排序）。 */
 export function pickableCategories(categories: readonly CustomCategoryDto[]): CustomCategoryDto[] {
   return categories.filter((category) => category.visible && category.builtinType !== 'all' && category.saveDir.trim() !== '')

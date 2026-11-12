@@ -63,6 +63,8 @@ import com.fluxdown.core.protocol.DeviceRules
 import com.fluxdown.core.protocol.DispatchTarget
 import com.fluxdown.core.protocol.HostSection
 import com.fluxdown.core.protocol.Json
+import com.fluxdown.core.protocol.JsonValue
+import com.fluxdown.core.protocol.patchPreferences
 import com.fluxdown.core.protocol.PathStyle
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.controls.ButtonSize
@@ -186,6 +188,22 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         )
     }
 
+    fun rememberMode() {
+        if (target == null) {
+            val session = container.session
+            val mode = form.rememberedMode()
+            container.appScope.launch {
+                try {
+                    session.patchPreferences(
+                        mapOf(NewDownloadState.LAST_CATEGORY_MODE_KEY to JsonValue.of(mode)),
+                        sync = false,
+                    )
+                } catch (e: com.fluxdown.core.host.HostException) {
+                    overlays.toast(actions.errorText(e), FluxToastKind.Error)
+                }
+            }
+        }
+    }
     fun submit(startPaused: Boolean, queueId: String) {
         if (form.submitting) return
         val state = container.store.state.value
@@ -218,6 +236,7 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         val batches = groupImportBatches(requests)
         if (requests.size > ImportRules.CHUNK_SIZE) {
             // 多块导入：交给进程级导入中心，进度 / 取消在下载页顶部，关闭本 Sheet 不影响它；汇总提示由 ImportEffects 给出
+            rememberMode()
             container.imports.start(container.session, batches, startPaused, notify = true)
             haptics.confirm()
             submitted()
@@ -231,7 +250,10 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
             form.submitting = false
             val notice = summary.notice()
             val text = importNoticeText(context.resources, notice, summary.succeeded, startPaused) { actions.errorText(it) }
-            if (summary.succeeded > 0) submitted()
+            if (summary.succeeded > 0) {
+                rememberMode()
+                submitted()
+            }
             if (summary.unfinished.isEmpty()) {
                 haptics.confirm()
                 overlays.toast(text, FluxToastKind.Accent, if (startPaused) FluxIcons.Clock else FluxIcons.ArrowDown)
@@ -304,8 +326,9 @@ private fun NewDownloadSheetImpl(visible: Boolean, route: SheetRoute.NewDownload
         NewDownloadContent(
             form, targets, target,
             onOpenAdvanced = { advancedOpen = true },
-            // 本机建了任务：拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
+            // 本机建了任务：记住分类模式、拉起前台服务；表单里没有待提交的链接时关闭（同 iOS `importTorrents`）
             onTorrentImported = {
+                rememberMode()
                 submitted()
                 if (form.urlText.isBlank()) dismiss()
             },

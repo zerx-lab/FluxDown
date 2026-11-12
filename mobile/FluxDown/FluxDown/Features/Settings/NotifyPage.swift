@@ -63,6 +63,10 @@ struct NotifyPage: View {
             if SettingsDownloadRow.silentDownload.isVisible(in: ctx) {
                 Section(L("silentDownload")) {
                     ConfigToggleRow(row: .silentDownload)
+                    if SettingsDownloadRow.silentAutoCategory.isVisible(in: ctx) {
+                        ConfigToggleRow(row: .silentAutoCategory)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
                     if SettingsDownloadRow.silentSkipSelection.isVisible(in: ctx) {
                         ConfigToggleRow(row: .silentSkipSelection)
                             .transition(.opacity.combined(with: .move(edge: .top)))

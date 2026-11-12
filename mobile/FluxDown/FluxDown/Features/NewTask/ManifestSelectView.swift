@@ -14,6 +14,7 @@ nonisolated enum ManifestSource: Hashable {
 nonisolated struct ManifestBaseOptions: Hashable {
     var saveDir = ""
     var offeredSaveDir: String?
+    var categoryMode: SaveDirCategoryMode = .auto
     var queueId = ""
     var segments: Int32 = 0
     var cookies = ""
@@ -153,6 +154,7 @@ final class ManifestSelectModel {
         let count = request.items.count
         do throws(HostError) {
             let _: CreateGroupResponse = try await session.createGroup(request, offeredSaveDir: base.offeredSaveDir)
+            await session.rememberCategoryMode(base.categoryMode)
         } catch {
             FluxHaptic.error.play()
             toasts.show(text: ErrorText.describe(error), tone: .error, systemImage: "exclamationmark.circle")

@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { LAST_CATEGORY_MODE_PREF, autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -208,9 +208,13 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   // ── 分类下拉：Auto 模式下目录框跟随识别出的文件名（规则见 `lib/categoryRoute.ts`）──
   const categoriesPref = useAgent((snapshot) => snapshot.preferences.values[CUSTOM_CATEGORIES_PREF_KEY], undefined)
   const categories = useMemo(() => categoriesFromPreference(categoriesPref), [categoriesPref])
-  const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
   const categoryOptions = useMemo(() => pickableCategories(categories), [categories])
-  const [categoryMode, setCategoryMode] = useState<CategoryPickMode>({ kind: 'auto' })
+  const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
+  const lastCategoryMode = useAgent((snapshot) => snapshot.preferences.values[LAST_CATEGORY_MODE_PREF], undefined)
+  const [categoryMode, setCategoryMode] = useState<CategoryPickMode>(() =>
+    categoryModeFromPreference(lastCategoryMode, categoriesFromPreference(rpcStore.peek().snapshot?.preferences.values[CUSTOM_CATEGORIES_PREF_KEY])),
+  )
+  const categoryModeInitialized = useRef(false)
   /** 程序最近一次写入目录框的值（自动跟随 / 切换模式 / 捕获预填）；目录框与之不等即视为用户手改。 */
   const lastWrittenDir = useRef<string | null>(null)
   /** 用户直接编辑/浏览选择后明确优先于自动路由，包括目录恰为默认或分类目录。 */
@@ -218,6 +222,20 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const categoryShown = !target
   const predictedName = rename.trim() !== '' ? rename.trim() : (entries[0]?.fileName ?? '')
   const predictedUrl = entries[0]?.url ?? ''
+  useEffect(() => {
+    if (!categoryShown || categoryModeInitialized.current) return
+    categoryModeInitialized.current = true
+    if (categoryMode.kind === 'category' || categoryMode.kind === 'none') {
+      const validMode = categoryMode.kind === 'category' && !categoryOptions.some((category) => category.id === categoryMode.id)
+        ? { kind: 'auto' as const }
+        : categoryMode
+      setCategoryMode(validMode)
+      const next = modeDir(validMode, categoryOptions, context.saveDir, predictedDir)
+      lastWrittenDir.current = next
+      if (validMode.kind === 'category' || validMode.kind === 'none') setSaveDir(next)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restoration only runs once when local picker becomes visible
+  }, [categoryShown])
   const predictedDir = categoryRoute ? routeSaveDir(categoryRoute, predictedName, predictedUrl) : null
   useEffect(() => {
     if (!categoryShown || categoryMode.kind !== 'auto') return
@@ -227,6 +245,14 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     if (next !== saveDir) setSaveDir(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在预测输入 / 模式变化时跟随，目录框当前值取渲染时快照
   }, [categoryShown, categoryMode.kind, predictedDir])
+  useEffect(() => {
+    if (categoryMode.kind !== 'category' || categoryOptions.some((category) => category.id === categoryMode.id)) return
+    setCategoryMode({ kind: 'auto' })
+    saveDirManuallyChosen.current = false
+    const next = modeDir({ kind: 'auto' }, categoryOptions, context.saveDir, predictedDir)
+    lastWrittenDir.current = next
+    setSaveDir(next)
+  }, [categoryMode, categoryOptions, context.saveDir, predictedDir])
   const pickCategory = (mode: CategoryPickMode) => {
     saveDirManuallyChosen.current = false
     setCategoryMode(mode)
@@ -416,6 +442,11 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     void rpc.agent.preferences.patch({ values, sync: false }).catch(() => undefined)
   }
 
+  /** 本机提交未被取消后记录分类模式（与 GPUI `run_submission` 同时机）；取消表单 / 下发到其它设备不记。 */
+  const rememberCategoryMode = () => {
+    void rpc.agent.preferences.patch({ values: { [LAST_CATEGORY_MODE_PREF]: categoryModePreference(categoryMode) }, sync: false }).catch(() => undefined)
+  }
+
   /** 逐条下发到云账号设备 / 已配对设备；成功的从文本框移除，失败的保留并逐条显示原因。 */
   const submitRemote = async (remote: RemoteTarget) => {
     setFailures([])
@@ -537,6 +568,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     }
 
     let noticeText: string | null = null
+    let cancelled = false
     if (plain.length > 0) {
       const batch = buildBatch(
         plain.map((index) => entries[index]),
@@ -576,6 +608,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       const total = summary.total.toLocaleString()
       const reason = summary.error ? describeUploadError(new RpcError({ code: -32000, message: '', data: summary.error }), t) : null
       if (summary.kind === 'cancelled') {
+        cancelled = true
         const head = t('importCancelled', { added, total })
         noticeText = reason ? `${head}: ${reason}` : head
         if (retained.length === 0) toast.key('importCancelled', 'success', { added, total })
@@ -586,6 +619,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         noticeText = reason
       }
     }
+    if (!cancelled) rememberCategoryMode()
 
     if (retained.length === 0) {
       closeNewDownload()
@@ -608,7 +642,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     setBusyFiles(true)
     try {
       const created = await submitTorrentFiles(files, { saveDir: saveDir.trim(), queueId: context.queueId })
-      if (created > 0) closeNewDownload()
+      if (created > 0) {
+        rememberCategoryMode()
+        closeNewDownload()
+      }
     } catch (error) {
       toast.error(describeUploadError(error, t))
     } finally {
@@ -1089,6 +1126,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           onCancel={() => setManifest(null)}
           onCreated={() => {
             rememberSaveDir(manifest.base.saveDir)
+            rememberCategoryMode()
             closeNewDownload()
           }}
         />

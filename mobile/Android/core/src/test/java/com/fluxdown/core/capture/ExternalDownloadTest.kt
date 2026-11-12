@@ -146,7 +146,7 @@ class ExternalDownloadTest {
             "download.remember_last_save_dir" to true,
             "download.last_save_dir" to " /last ",
         )
-        // 跟随上次 > 主机默认；分类目录不再在 Kotlin 侧决定，offeredSaveDir 交给 Rust 路由
+        // 目录仍按跟随上次 > 默认优先；分类开关开启（缺省）才交由 Rust 路由。
         val withCategories = SilentCapture.plan(video, state(remembered + ("custom_categories" to categories)))!!.request
         assertEquals("/last", withCategories.saveDir)
         assertEquals("/last", withCategories.offeredSaveDir)
@@ -154,6 +154,12 @@ class ExternalDownloadTest {
         val fallback = SilentCapture.plan(video, state(remembered - "download.remember_last_save_dir"))!!.request
         assertEquals("/dl", fallback.saveDir)
         assertEquals("/dl", fallback.offeredSaveDir)
+        val disabled = SilentCapture.plan(video, state(remembered + (SilentCapture.AUTO_CATEGORY_PREF to false)))!!.request
+        assertEquals("/last", disabled.saveDir)
+        assertNull(disabled.offeredSaveDir)
+        val defaultOnly = SilentCapture.plan(video, state(remembered + (SilentCapture.AUTO_CATEGORY_PREF to false) - "download.remember_last_save_dir"))!!.request
+        assertEquals("/dl", defaultOnly.saveDir)
+        assertNull(defaultOnly.offeredSaveDir)
         // 一个目录都算不出：退回确认弹层
         assertNull(SilentCapture.plan(video, state(mapOf(SilentCapture.SILENT_PREF to true), config = emptyMap())))
     }

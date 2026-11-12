@@ -27,8 +27,9 @@ use gpui_component::{
 
 use super::NewDownloadView;
 use crate::model::save_dir_category::{
-    CategoryMode, auto_follow_target, category_options, category_route_eligible, matched_category,
-    predict_save_dir, save_dir_untouched,
+    CategoryMode, auto_follow_target, category_mode_save_dir, category_options,
+    category_route_eligible, matched_category, predict_save_dir, restore_category_mode,
+    save_dir_untouched,
 };
 
 /// 分类下拉触发器定宽（图标 + 名称 + chevron）。
@@ -77,6 +78,7 @@ impl NewDownloadView {
             fluxdown_protocol::CategoryRouteDto::from_categories(&categories);
         self.context.category_options = category_options(&categories);
         self.category_mode = CategoryMode::Auto;
+        self.category_mode_touched = true;
         self.sync_category(window, cx);
         cx.notify();
     }
@@ -97,7 +99,17 @@ impl NewDownloadView {
             fluxdown_protocol::CategoryRouteDto::from_categories(&categories);
         self.context.category_options = category_options(&categories);
         self.context.custom_categories = categories;
-        if let CategoryMode::Category(id) = &self.category_mode
+        if !self.category_mode_touched
+            && !self.category_dir_manually_edited
+            && self.save_dir_untouched(cx)
+        {
+            let mode = restore_category_mode(
+                self.context.initial_category_mode.as_deref(),
+                &self.context.category_options,
+            );
+            self.set_category_mode(mode, window, cx);
+            self.category_mode_touched = false;
+        } else if let CategoryMode::Category(id) = &self.category_mode
             && !self
                 .context
                 .category_options
@@ -196,37 +208,31 @@ impl NewDownloadView {
 
     /// 下拉选择：`Auto` 立即按当前输入重算并写入；其余模式直接写目录框。写入值都记为
     /// 表单写入值并清除手动标记（任一模式都是显式选择），之后用户再改即视为手改。
-    fn set_category_mode(
+    pub(super) fn set_category_mode(
         &mut self,
         mode: CategoryMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let offered = self.context.save_dir.trim().to_owned();
-        let target = match &mode {
-            CategoryMode::Auto => {
-                let predicted = self.predict_category_dir(cx);
-                let target = predicted.clone().unwrap_or(offered);
-                self.category_predicted = predicted;
-                target
-            }
-            CategoryMode::NoCategory => offered,
-            CategoryMode::Category(id) => {
-                let Some(dir) = self
-                    .context
-                    .category_options
-                    .iter()
-                    .find(|option| option.id == *id)
-                    .map(|option| option.save_dir.clone())
-                else {
-                    return;
-                };
-                dir
-            }
+        let predicted = (mode == CategoryMode::Auto)
+            .then(|| self.predict_category_dir(cx))
+            .flatten();
+        let Some(target) = category_mode_save_dir(
+            &mode,
+            &self.context.category_options,
+            &offered,
+            predicted.as_deref(),
+        ) else {
+            return;
         };
+        if mode == CategoryMode::Auto {
+            self.category_predicted = predicted;
+        }
         self.category_dir_manually_edited = false;
         self.set_save_dir_text(&target, window, cx);
         self.category_written_dir = Some(target);
+        self.category_mode_touched = true;
         self.category_mode = mode;
         cx.notify();
     }

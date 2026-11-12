@@ -139,6 +139,11 @@ private val DlRows: List<DlRow> = listOf(
         R.string.silentDownload, R.string.silentDownloadDesc,
     ),
     DlRow(
+        "download.silentAutoCategory", "download.silent_auto_category", DlSection.Behavior,
+        R.string.silentAutoCategory, R.string.silentAutoCategoryDesc,
+        visible = { f, _ -> f.has("download.silent_auto_category") && f.bool("download.silent_download") },
+    ),
+    DlRow(
         "download.silentSkipSelection", "download.silent_skip_selection", DlSection.Behavior,
         R.string.silentSkipSelection, R.string.silentSkipSelectionDesc,
         visible = { f, _ -> f.has("download.silent_skip_selection") && f.bool("download.silent_download") },
@@ -574,6 +579,12 @@ private fun GlassSectionScope.behaviorRows(
         settingSwitch(
             ctx, "download.silent_download", R.string.silentDownload, R.string.silentDownloadDesc,
             id = "download.silentDownload",
+        )
+    }
+    if ("download.silentAutoCategory" in shown) {
+        settingSwitch(
+            ctx, "download.silent_auto_category", R.string.silentAutoCategory, R.string.silentAutoCategoryDesc,
+            id = "download.silentAutoCategory",
         )
     }
     if ("download.silentSkipSelection" in shown) {

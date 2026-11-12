@@ -179,11 +179,17 @@ fn behavior_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
             ctx.pref_switch("download.silent_download", false),
         ));
     if silent {
-        section = section.row(ctx.item(
-            "silentSkipSelection",
-            Some("silentSkipSelectionDesc"),
-            ctx.pref_switch("download.silent_skip_selection", false),
-        ));
+        section = section
+            .row(ctx.item(
+                "silentAutoCategory",
+                Some("silentAutoCategoryDesc"),
+                ctx.pref_switch("download.silent_auto_category", true),
+            ))
+            .row(ctx.item(
+                "silentSkipSelection",
+                Some("silentSkipSelectionDesc"),
+                ctx.pref_switch("download.silent_skip_selection", false),
+            ));
     }
     section
         .row(ctx.item(

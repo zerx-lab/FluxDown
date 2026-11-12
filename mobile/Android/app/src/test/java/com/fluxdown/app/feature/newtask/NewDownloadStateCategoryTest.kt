@@ -138,4 +138,27 @@ class NewDownloadStateCategoryTest {
         assertEquals(emptyList<CustomCategoryDto>(), form.categoryOptions)
         assertEquals("/dl", requestOffered(form))
     }
+
+    @Test fun rememberedModeRestoresDirectoryAndInvalidCategoryFallsBackToAuto() {
+        val category = form("https://x.test/movie.mp4").let {
+            NewDownloadState(
+                prefill = "https://x.test/movie.mp4", defaultSaveDir = "/dl", offeredSaveDir = "/dl",
+                defaultQueueId = "", defaultSegments = 0, categories = categories,
+                rememberedMode = "category:builtin_video",
+            )
+        }
+        assertEquals(SaveDirMode.Category("builtin_video"), category.mode)
+        assertEquals("/dl/Video", category.saveDir)
+        assertNull(requestOffered(category))
+        assertEquals("category:builtin_video", category.rememberedMode())
+
+        val none = NewDownloadState(
+            prefill = "", defaultSaveDir = "/dl", offeredSaveDir = "/dl",
+            defaultQueueId = "", defaultSegments = 0, categories = categories, rememberedMode = "none",
+        )
+        assertEquals(SaveDirMode.None, none.mode)
+        assertEquals("/dl", none.saveDir)
+        assertEquals(SaveDirMode.Auto, NewDownloadState.restoreMode("category:gone", categories))
+        assertEquals(SaveDirMode.Auto, NewDownloadState.restoreMode("invalid", categories))
+    }
 }

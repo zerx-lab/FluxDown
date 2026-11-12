@@ -134,7 +134,12 @@ function BehaviorSection() {
   return (
     <SettingsSection title={t('settingsGroupBehavior')}>
       <PrefSwitchRow prefKey="download.silent_download" fallback={false} titleKey="silentDownload" descKey="silentDownloadDesc" />
-      {silent ? <PrefSwitchRow prefKey="download.silent_skip_selection" fallback={false} titleKey="silentSkipSelection" descKey="silentSkipSelectionDesc" /> : null}
+      {silent ? (
+        <>
+          <PrefSwitchRow prefKey="download.silent_auto_category" fallback={true} titleKey="silentAutoCategory" descKey="silentAutoCategoryDesc" />
+          <PrefSwitchRow prefKey="download.silent_skip_selection" fallback={false} titleKey="silentSkipSelection" descKey="silentSkipSelectionDesc" />
+        </>
+      ) : null}
       <DaemonSwitchRow configKey="use_server_time" titleKey="useServerTime" descKey="useServerTimeDesc" />
       <DaemonEnumRow configKey="file_exists_behavior" titleKey="fileExistsBehavior" descKey="fileExistsBehaviorDesc" labelPrefix="fileExists" />
       <DaemonEnumRow configKey="file_missing_action" titleKey="fileMissingAction" descKey="fileMissingActionDesc" labelPrefix="fileMissing" />

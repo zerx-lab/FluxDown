@@ -162,6 +162,7 @@ struct SettingsRowVisibilityTests {
         #expect(SettingsDownloadRow.rememberLastSaveDir.isVisible(in: ctx))
         #expect(SettingsDownloadRow.silentDownload.isVisible(in: ctx))
         #expect(!ctx.form.bool("download.silent_download"))
+        #expect(ctx.form.bool("download.silent_auto_category")) // 默认开
         #expect(ctx.form.bool("download.notify_on_complete")) // 默认开
     }
 
@@ -178,8 +179,10 @@ struct SettingsRowVisibilityTests {
 
         // 免打扰子开关读偏好 `download.silent_download`（不是 daemon 配置键）。
         let silent = context(["k": "1"], prefs: ["download.silent_download": .bool(true)])
+        #expect(SettingsDownloadRow.silentAutoCategory.isVisible(in: silent))
         #expect(SettingsDownloadRow.silentSkipSelection.isVisible(in: silent))
         let loud = context(["k": "1"], prefs: ["download.silent_download": .bool(false)])
+        #expect(!SettingsDownloadRow.silentAutoCategory.isVisible(in: loud))
         #expect(!SettingsDownloadRow.silentSkipSelection.isVisible(in: loud))
     }
 
@@ -227,6 +230,7 @@ struct SettingsRowVisibilityTests {
         #expect(SettingsDownloadRow.maxConcurrent.item.isSynced)
         #expect(SettingsDownloadRow.rememberLastSaveDir.item.isSynced)
         #expect(!SettingsDownloadRow.uploadLimit.item.isSynced)
+        #expect(!SettingsDownloadRow.silentAutoCategory.item.isSynced)
         #expect(!SettingsDownloadRow.silentSkipSelection.item.isSynced)
         #expect(!SettingsDownloadRow.saveDir.item.isSynced)
     }
@@ -255,6 +259,7 @@ struct SettingsRowVisibilityTests {
         #expect(ids.contains("download.maxConcurrent"))
         #expect(!ids.contains("download.autoMaxConnections")) // 线程数 ≠ 0
         #expect(!ids.contains("download.idleFileScan")) // 本机隐藏
+        #expect(!ids.contains("download.silentAutoCategory")) // 免打扰关
         #expect(!ids.contains("download.silentSkipSelection")) // 免打扰关
     }
 }

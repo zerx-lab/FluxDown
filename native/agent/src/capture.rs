@@ -27,6 +27,8 @@ const CAPTURE_OUTCOME_CAPACITY: usize = 1024;
 
 /// 「免打扰下载」：外部接管请求不弹确认，直接按默认设置建任务（设置页 `download.rs`）。
 pub(crate) const SILENT_DOWNLOAD_PREF: &str = "download.silent_download";
+/// 免打扰子开关：未显式指定目录的外部捕获按分类路由，缺省开启。设备本地偏好。
+pub(crate) const SILENT_AUTO_CATEGORY_PREF: &str = "download.silent_auto_category";
 /// 免打扰子开关：静默建的任务跳过 BT 文件 / HLS·DASH 画质 / 插件变体二次选择。设备本地偏好。
 pub(crate) const SILENT_SKIP_SELECTION_PREF: &str = "download.silent_skip_selection";
 /// 「跟随上次保存位置」与其记录（官方 UI 新建下载写入）。
@@ -77,6 +79,7 @@ pub struct TorrentCreateOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExternalPolicy {
     silent: bool,
+    auto_category: bool,
     skip_selection: bool,
     /// 「跟随上次保存位置」开启且有记录时的目录；捕获方未指定目录时使用。
     remembered_save_dir: Option<String>,
@@ -98,6 +101,10 @@ impl ExternalPolicy {
             .map(str::to_owned);
         Self {
             silent: flag(SILENT_DOWNLOAD_PREF),
+            auto_category: preferences
+                .get(SILENT_AUTO_CATEGORY_PREF)
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             skip_selection: flag(SILENT_SKIP_SELECTION_PREF),
             remembered_save_dir,
         }
@@ -230,9 +237,9 @@ impl CaptureService {
     /// 按来源分流：开启免打扰的 `SystemOpen` / `External` 直接提交 daemon，其余排入确认队列（外壳
     /// 控制循环据快照在没有 UI 时拉起官方 UI）。批量请求（换行连接的多 URL）先拆成逐条请求。
     ///
-    /// 保存目录优先级：捕获方指定 > 分类目录 > （仅 `External` 静默）跟随上次 > daemon 默认（原生移动端 `SilentCapture` 同序）。
-    /// 捕获方未指定目录时分类目录由 daemon 按初始名与下载完成时的最终文件名确定（[`CategoryPlan`]）；
-    /// 确认路径把按捕获名命中的分类目录写进待确认摘要，官方表单据此预填。
+    /// 保存目录优先级：捕获方指定 > （外部静默且自动分类开启）分类目录 > 跟随上次 > daemon 默认。
+    /// 自动分类关闭时不授权分类路由；开启时由 daemon 按初始名与最终文件名确定分类目录，
+    /// 上次目录仅用作未命中分类时的基准目录。确认路径仍按捕获名预填分类目录，不受子开关影响。
     pub async fn submit(
         &self,
         request: DownloadRequest,
@@ -268,7 +275,12 @@ impl CaptureService {
         if origin == CaptureOrigin::External && policy.silent {
             let save_dir = policy.remembered_save_dir.as_deref();
             return self
-                .create_all(requests, save_dir, policy.skip_selection, route.as_ref())
+                .create_all(
+                    requests,
+                    save_dir,
+                    policy.skip_selection,
+                    route.as_ref().filter(|_| policy.auto_category),
+                )
                 .await;
         }
         self.enqueue(requests, route.as_ref()).await
@@ -1105,6 +1117,79 @@ mod tests {
             .await
             .expect("whole batch fits");
         assert_eq!(capture.list().await.len(), super::CAPTURE_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn silent_category_toggle_keeps_last_directory_as_fallback_not_category() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (capture, mut calls, _events, stop, server) = daemon_service().await;
+            // 上次目录恰好是另一分类的目录：新下载仍按自己的规则分类，
+            // 关闭自动分类后才直接沿用该目录；显式请求目录始终优先。
+            for (enabled, explicit, expected) in [
+                (None, "", "/binary"),
+                (Some(false), "", "/pictures"),
+                (Some(true), "", "/binary"),
+                (Some(true), "/chosen", "/chosen"),
+                (Some(false), "/chosen", "/chosen"),
+            ] {
+                let mut prefs = preferences(json!({
+                    "download.silent_download": true,
+                    "download.remember_last_save_dir": true,
+                    "download.last_save_dir": "/pictures",
+                    "custom_categories": [
+                        { "id": "bin", "name": "Binary", "extensions": ["bin"], "saveDir": "/binary" },
+                        { "id": "img", "name": "Pictures", "extensions": ["jpg"], "saveDir": "/pictures" }
+                    ]
+                }));
+                if let Some(enabled) = enabled {
+                    prefs.insert(super::SILENT_AUTO_CATEGORY_PREF.to_owned(), json!(enabled));
+                }
+                capture.events.publish(AgentEvent::PreferencesChanged(
+                    fluxdown_protocol::AgentPreferencesDto {
+                        revision: 1,
+                        values: prefs,
+                    },
+                ));
+                let mut request = captured();
+                request.save_dir = explicit.to_owned();
+                let submitted = {
+                    let capture = Arc::clone(&capture);
+                    tokio::spawn(
+                        async move { capture.submit(request, CaptureOrigin::External).await },
+                    )
+                };
+                let (request, reply) = calls.recv().await.expect("silent create");
+                let params: fluxdown_protocol::DaemonCreateTaskParams =
+                    serde_json::from_value(request.params.expect("create params"))
+                        .expect("decode create");
+                let effective_dir = params
+                    .category_route
+                    .as_ref()
+                    .and_then(|route| {
+                        crate::category_dir::route_save_dir(
+                            route,
+                            &params.request.file_name,
+                            &params.request.url,
+                        )
+                    })
+                    .unwrap_or(&params.request.save_dir);
+                assert_eq!(
+                    effective_dir, expected,
+                    "enabled={enabled:?}, explicit={explicit}"
+                );
+                reply
+                    .send(Ok(json!({"taskId": "silent"})))
+                    .expect("created");
+                submitted
+                    .await
+                    .expect("submit task")
+                    .expect("silent capture");
+            }
+            stop.send(()).expect("stop daemon");
+            server.await.expect("daemon server");
+        })
+        .await
+        .expect("silent category policy");
     }
 
     #[test]

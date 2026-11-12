@@ -218,6 +218,7 @@ object SettingsCatalog {
         pref("download.remember_last_save_dir", bool, "false"),
         pref("download.notify_on_complete", bool, "true"),
         pref("download.silent_download", bool, "false"),
+        pref("download.silent_auto_category", bool, "true"),
         pref("download.silent_skip_selection", bool, "false"),
         pref("download.keep_awake", bool, "false"),
     )

@@ -33,6 +33,37 @@ struct SaveDirCategoryTests {
         #expect(SaveDirCategoryState.matched(options, predicted: nil) == nil)
     }
 
+    @Test func rememberedModeRoundTripsFullIdsAndRejectsUnavailableCategories() {
+        let id = "custom:下载 📦:complete-id"
+        let categories = list + [category(id, dir: #"D:\下载  2024\Programs"#, position: 6)]
+        for mode: SaveDirCategoryMode in [.auto, .noCategory, .category(id)] {
+            #expect(SaveDirCategoryMode.restored(from: mode.preferenceValue, options: categories) == mode)
+        }
+        let invalid: [JSONValue?] = [nil, .null, .bool(true), .string(""), .string("AUTO"), .string("category:")]
+        for value in invalid {
+            #expect(SaveDirCategoryMode.restored(from: value, options: categories) == .auto)
+        }
+        for id in ["gone", "all", "empty", "hidden"] {
+            #expect(SaveDirCategoryMode.restored(from: .string("category:" + id), options: categories) == .auto)
+        }
+        #expect(SaveDirCategoryMode.restored(from: .string("none"), options: []) == .noCategory)
+    }
+
+    @Test func rememberedModesRestoreDirectoryAndRoutingWithoutRecordingPredictionAsCategory() {
+        let options = SaveDirCategoryState.options(list)
+        for mode: SaveDirCategoryMode in [.noCategory, .category("docs")] {
+            var state = SaveDirCategoryState(initialDir: "/default")
+            let restored = SaveDirCategoryMode.restored(from: mode.preferenceValue, options: options)
+            let dir = state.select(restored, offered: "/default", options: options, predicted: "/Programs")
+            #expect(dir == (mode == .noCategory ? "/default" : "/docs"))
+            #expect(state.offeredSaveDir(dir: dir ?? "", initial: "/default") == nil)
+            #expect(state.follow(dir: dir ?? "", offered: "/default", predicted: "/Programs") == nil)
+        }
+        var state = SaveDirCategoryState(initialDir: "/default")
+        #expect(state.follow(dir: "/default", offered: "/default", predicted: "/Programs") == "/Programs")
+        #expect(state.mode.preferenceValue == .string("auto"))
+    }
+
     @Test func predictionNamePrefersRenameOverRecognizedName() {
         #expect(SaveDirCategoryState.predictionName(rename: " a.exe ", entryFileName: "b.zip") == "a.exe")
         #expect(SaveDirCategoryState.predictionName(rename: "  ", entryFileName: "b.zip") == "b.zip")

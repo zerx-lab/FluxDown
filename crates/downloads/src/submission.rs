@@ -28,8 +28,8 @@ use fluxdown_ui_i18n::Translator;
 
 use crate::{
     controller::{
-        DownloadsCommand, DownloadsResult, LAST_DOWNLOAD_TARGET_PREF, LAST_SAVE_DIR_PREF,
-        PortFuture,
+        DownloadsCommand, DownloadsResult, LAST_CATEGORY_MODE_PREF, LAST_DOWNLOAD_TARGET_PREF,
+        LAST_SAVE_DIR_PREF, PortFuture,
     },
     model::{devices::DispatchTarget, dispatch::DispatchSummary},
     strings::{NewDownloadStrings, error_text},
@@ -96,7 +96,9 @@ pub enum NewDownloadSubmission {
         captures: Vec<CapturedTask>,
         /// 本机授权路由；空规则路由也允许插件归档分类，`None` 表示显式不路由。
         category_route: Option<CategoryRouteDto>,
-        /// 表单初始保存目录（未做任何分类预填），用于判定用户是否改过目录。
+        /// User-selected category mode to remember after a non-cancelled local submission.
+        last_category_mode: String,
+        /// Form's initial directory before category prefill.
         offered_save_dir: String,
     },
     /// 预解析清单确认后只建一个组；捕获事务由 agent 合并并消费。
@@ -104,12 +106,14 @@ pub enum NewDownloadSubmission {
         request: Box<fluxdown_protocol::CreateGroupRequest>,
         context: Box<CreateTaskRequest>,
         transaction_id: Option<String>,
+        last_category_mode: String,
     },
     /// 本机 `.torrent` 文件，交给 agent 读取上传；用户主动打开，走 BT 文件选择，
     /// 并带上表单当前的保存目录 / 队列 / 开始状态。
     TorrentFiles {
         paths: Vec<PathBuf>,
         options: TorrentFileOptions,
+        last_category_mode: String,
     },
     /// 逐条下发到云账号其他设备 / 已配对设备。
     Remote(RemoteSubmission),
@@ -143,6 +147,7 @@ struct SubmissionPlan {
     batch: Option<TaskBatch>,
     commands: Vec<DownloadsCommand>,
     best_effort: Vec<DownloadsCommand>,
+    last_category_mode: Option<String>,
     remote: Option<RemoteInfo>,
 }
 
@@ -237,6 +242,7 @@ impl NewDownloadSubmission {
                 items,
                 captures,
                 category_route,
+                last_category_mode,
                 offered_save_dir,
             } => {
                 let mut common = *common;
@@ -261,6 +267,7 @@ impl NewDownloadSubmission {
                         })
                         .collect(),
                     best_effort,
+                    last_category_mode: Some(last_category_mode),
                     remote: None,
                 }
             }
@@ -268,6 +275,7 @@ impl NewDownloadSubmission {
                 request,
                 context,
                 transaction_id,
+                last_category_mode,
             } => SubmissionPlan {
                 batch: None,
                 commands: vec![DownloadsCommand::CreateGroup {
@@ -276,9 +284,14 @@ impl NewDownloadSubmission {
                     transaction_id,
                 }],
                 best_effort,
+                last_category_mode: Some(last_category_mode),
                 remote: None,
             },
-            Self::TorrentFiles { paths, options } => SubmissionPlan {
+            Self::TorrentFiles {
+                paths,
+                options,
+                last_category_mode,
+            } => SubmissionPlan {
                 batch: None,
                 commands: paths
                     .iter()
@@ -291,6 +304,7 @@ impl NewDownloadSubmission {
                     })
                     .collect(),
                 best_effort,
+                last_category_mode: Some(last_category_mode),
                 remote: None,
             },
             Self::Remote(remote) => {
@@ -338,6 +352,7 @@ impl NewDownloadSubmission {
                     batch: None,
                     commands,
                     best_effort,
+                    last_category_mode: None,
                     remote: Some(RemoteInfo {
                         device: device_label,
                         offline: target_offline,
@@ -897,6 +912,7 @@ where
         batch,
         commands,
         mut best_effort,
+        last_category_mode,
         remote,
     } = submission.plan();
     let mut run = Run::default();
@@ -930,6 +946,15 @@ where
     }
     for command in commands {
         run.skip(&command, &mut best_effort);
+    }
+    if !run.cancelled
+        && !cancel.is_cancelled()
+        && let Some(mode) = last_category_mode
+    {
+        best_effort.push(DownloadsCommand::SetLocalPreference {
+            key: LAST_CATEGORY_MODE_PREF,
+            value: serde_json::Value::String(mode),
+        });
     }
     for command in best_effort {
         if let Err(error) = execute(command).await {
@@ -1010,6 +1035,10 @@ mod tests {
         assert!(plan.best_effort.iter().all(|command| !matches!(
             command,
             DownloadsCommand::SetLocalPreference { key, .. } if *key == LAST_SAVE_DIR_PREF
+        )));
+        assert!(plan.best_effort.iter().all(|command| !matches!(
+            command,
+            DownloadsCommand::SetLocalPreference { key, .. } if *key == LAST_CATEGORY_MODE_PREF
         )));
         assert!(plan.best_effort.iter().any(|command| matches!(
             command,
@@ -1179,6 +1208,7 @@ mod tests {
                 .collect(),
             captures: Vec::new(),
             category_route: None,
+            last_category_mode: "auto".to_owned(),
             offered_save_dir: String::new(),
         }
     }
@@ -1281,6 +1311,7 @@ mod tests {
             items: built.items,
             captures: Vec::new(),
             category_route: None,
+            last_category_mode: "auto".to_owned(),
             offered_save_dir: String::new(),
         };
         let sent = RefCell::new(None);
@@ -1597,9 +1628,11 @@ mod tests {
                 request: blank_request(""),
             }],
             category_route: None,
+            last_category_mode: "none".to_owned(),
             offered_save_dir: String::new(),
         };
         let resolved = RefCell::new(Vec::<(String, bool)>::new());
+        let category_preferences = RefCell::new(Vec::new());
         let report = block_on(run_submission(
             submission,
             |command| {
@@ -1608,6 +1641,11 @@ mod tests {
                         .borrow_mut()
                         .push((params.transaction_id.clone(), params.accepted));
                 }
+                if let DownloadsCommand::SetLocalPreference { key, value } = &command
+                    && *key == LAST_CATEGORY_MODE_PREF
+                {
+                    category_preferences.borrow_mut().push(value.clone());
+                }
                 Box::pin(async { Ok(DownloadsResult::Unit) })
             },
             hooks().with_cancel(cancel),
@@ -1615,6 +1653,37 @@ mod tests {
         assert!(report.cancelled());
         assert_eq!(report.not_submitted(), 1);
         assert_eq!(resolved.into_inner(), [("cap-1".to_owned(), false)]);
+        assert!(category_preferences.into_inner().is_empty());
+    }
+
+    #[test]
+    fn successful_local_submission_remembers_selected_mode() {
+        let submission = NewDownloadSubmission::Tasks {
+            common: Box::new(blank_request("/downloads")),
+            items: vec![CreateTaskItem::default()],
+            captures: Vec::new(),
+            category_route: None,
+            last_category_mode: "category:video".to_owned(),
+            offered_save_dir: "/downloads".to_owned(),
+        };
+        let preferences = RefCell::new(Vec::new());
+        let report = block_on(run_submission(
+            submission,
+            |command| {
+                if let DownloadsCommand::SetLocalPreference { key, value } = &command
+                    && *key == LAST_CATEGORY_MODE_PREF
+                {
+                    preferences.borrow_mut().push(value.clone());
+                }
+                created_all(&command)
+            },
+            hooks(),
+        ));
+        assert!(!report.cancelled());
+        assert_eq!(
+            preferences.into_inner(),
+            [serde_json::Value::String("category:video".to_owned())]
+        );
     }
 
     #[test]
@@ -1639,6 +1708,7 @@ mod tests {
                 queue_id: "q1".to_owned(),
                 start_paused: true,
             },
+            last_category_mode: "category:video".to_owned(),
         }
         .plan();
         assert_eq!(plan.commands.len(), 2);
@@ -1668,6 +1738,7 @@ mod tests {
         let plan = NewDownloadSubmission::TorrentFiles {
             paths: vec![PathBuf::from("/tmp/a.torrent")],
             options: TorrentFileOptions::default(),
+            last_category_mode: "auto".to_owned(),
         }
         .plan();
         let [
@@ -1704,6 +1775,7 @@ mod tests {
             items: vec![CreateTaskItem::default()],
             captures: Vec::new(),
             category_route: route,
+            last_category_mode: "auto".to_owned(),
             offered_save_dir: offered.to_owned(),
         }
         .plan();
@@ -1751,6 +1823,7 @@ mod tests {
                     request: blank_request(save_dir),
                 }],
                 category_route: route,
+                last_category_mode: "auto".to_owned(),
                 offered_save_dir: "/downloads".to_owned(),
             }
             .plan();

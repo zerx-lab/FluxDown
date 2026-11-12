@@ -94,6 +94,13 @@ public extension HostSession {
         return try ProtocolJSON.decode(CreateGroupResponse.self, from: responseData, what: "daemon.group.create result")
     }
 
+    /// 只由当前主机下载提交成功路径调用；与下发到其它设备、取消和自动预测无关。
+    func rememberCategoryMode(_ mode: SaveDirCategoryMode) async {
+        let params = PreferencesPatchParams(values: [SaveDirCategoryMode.preferenceKey: mode.preferenceValue], sync: false)
+        // 偏好写回为 best effort，不将已成功创建的下载误报为失败。
+        let _: PreferencesPatchResult? = try? await call(HostMethod.agentPreferencesPatch, params: params)
+    }
+
 }
 
 private func encodeParams(_ params: (some Encodable)?, method: String) throws(HostError) -> Data? {

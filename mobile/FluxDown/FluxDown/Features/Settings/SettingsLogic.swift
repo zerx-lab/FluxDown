@@ -252,7 +252,7 @@ nonisolated struct SettingsDownloadContext: Equatable {
 /// 页面渲染与设置搜索共用同一份可见性判定。
 nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
     case saveDir, rememberLastSaveDir
-    case silentDownload, silentSkipSelection, useServerTime, fileExistsBehavior
+    case silentDownload, silentAutoCategory, silentSkipSelection, useServerTime, fileExistsBehavior
     case fileMissingAction, completedRecordRetention, idleFileScan, defaultQueue, dedupSameUrl
     case defaultSegments, autoMaxConnections, cdnMulti, cdnMaxNodes, multiNic, maxConcurrent
     case speedLimit, uploadLimit
@@ -264,7 +264,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
     var group: SettingsDownloadSection {
         switch self {
         case .saveDir, .rememberLastSaveDir: .saveLocation
-        case .silentDownload, .silentSkipSelection, .useServerTime, .fileExistsBehavior,
+        case .silentDownload, .silentAutoCategory, .silentSkipSelection, .useServerTime, .fileExistsBehavior,
              .fileMissingAction, .completedRecordRetention, .idleFileScan, .defaultQueue, .dedupSameUrl: .behavior
         case .defaultSegments, .autoMaxConnections, .cdnMulti, .cdnMaxNodes, .multiNic, .maxConcurrent,
              .speedLimit, .uploadLimit: .connection
@@ -279,6 +279,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .saveDir: "default_save_dir"
         case .rememberLastSaveDir: "download.remember_last_save_dir"
         case .silentDownload: "download.silent_download"
+        case .silentAutoCategory: "download.silent_auto_category"
         case .silentSkipSelection: "download.silent_skip_selection"
         case .useServerTime: "use_server_time"
         case .fileExistsBehavior: "file_exists_behavior"
@@ -307,6 +308,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .saveDir: "defaultSaveDir"
         case .rememberLastSaveDir: "rememberLastSaveDir"
         case .silentDownload: "silentDownload"
+        case .silentAutoCategory: "silentAutoCategory"
         case .silentSkipSelection: "silentSkipSelection"
         case .useServerTime: "useServerTime"
         case .fileExistsBehavior: "fileExistsBehavior"
@@ -335,6 +337,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .saveDir: "defaultSaveDirDesc"
         case .rememberLastSaveDir: "rememberLastSaveDirDesc"
         case .silentDownload: "silentDownloadDesc"
+        case .silentAutoCategory: "silentAutoCategoryDesc"
         case .silentSkipSelection: "silentSkipSelectionDesc"
         case .useServerTime: "useServerTimeDesc"
         case .fileExistsBehavior: "fileExistsBehaviorDesc"
@@ -367,7 +370,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
     func isVisible(in ctx: SettingsDownloadContext) -> Bool {
         let f = ctx.form
         switch self {
-        case .silentSkipSelection:
+        case .silentAutoCategory, .silentSkipSelection:
             return f.has(configKey) && f.bool(SettingsDownloadRow.silentDownload.configKey)
         case .idleFileScan:
             // 本机不为刷新 UI 周期轮询（03-settings §6.2）：回前台 10s 节流重扫代替；连接 NAS 时保留。
