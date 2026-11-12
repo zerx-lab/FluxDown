@@ -129,6 +129,9 @@ class SettingsCatalogTest {
             "download.silent_auto_category" to JsonValue.True,
         ), plan.localPreferences)
         assertFalse(SettingsCatalog.isSynced("download.silent_auto_category"))
+        // 免打扰主开关与子开关并存：子开关的可见性与默认值都依赖它在目录里。
+        assertEquals("false", SettingsCatalog.defaultWire("download.silent_download"))
+        assertEquals("true", SettingsCatalog.defaultWire("download.silent_auto_category"))
     }
 
     @Test

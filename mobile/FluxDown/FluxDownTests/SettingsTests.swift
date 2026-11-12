@@ -161,7 +161,7 @@ struct SettingsRowVisibilityTests {
         let ctx = context([:])
         #expect(SettingsDownloadRow.rememberLastSaveDir.isVisible(in: ctx))
         #expect(SettingsDownloadRow.silentDownload.isVisible(in: ctx))
-        #expect(ctx.form.bool("download.silent_download"))
+        #expect(!ctx.form.bool("download.silent_download"))
         #expect(ctx.form.bool("download.silent_auto_category")) // 默认开
         #expect(ctx.form.bool("download.notify_on_complete")) // 默认开
     }
@@ -260,6 +260,7 @@ struct SettingsRowVisibilityTests {
         #expect(!ids.contains("download.autoMaxConnections")) // 线程数 ≠ 0
         #expect(!ids.contains("download.idleFileScan")) // 本机隐藏
         #expect(!ids.contains("download.silentAutoCategory")) // 免打扰关
+        #expect(!ids.contains("download.silentSkipSelection")) // 免打扰关
     }
 }
 
