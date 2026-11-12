@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useT } from '../../../i18n'
 import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcError, call, rpc, rpcStore, useAgent, useConfigValues, useConnection, useDaemon } from '../../../lib/rpc'
-import { autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
+import { LAST_CATEGORY_MODE_PREF, autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
@@ -210,7 +210,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const categories = useMemo(() => categoriesFromPreference(categoriesPref), [categoriesPref])
   const categoryOptions = useMemo(() => pickableCategories(categories), [categories])
   const categoryRoute = useMemo(() => routeFromCategories(categories), [categories])
-  const lastCategoryMode = useAgent((snapshot) => snapshot.preferences.values['download.last_category_mode'], undefined)
+  const lastCategoryMode = useAgent((snapshot) => snapshot.preferences.values[LAST_CATEGORY_MODE_PREF], undefined)
   const [categoryMode, setCategoryMode] = useState<CategoryPickMode>(() =>
     categoryModeFromPreference(lastCategoryMode, categoriesFromPreference(rpcStore.peek().snapshot?.preferences.values[CUSTOM_CATEGORIES_PREF_KEY])),
   )
@@ -427,10 +427,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
 
   const rememberSaveDir = (dir: string) => {
     // 尽力而为：失败不影响建任务；无条件记录，「记住上次目录」开关开启后立即生效。
-    const values: Record<string, JsonValue> = {
-      'download.last_save_dir': dir,
-      'download.last_category_mode': categoryModePreference(categoryMode),
-    }
+    const values: Record<string, JsonValue> = { 'download.last_save_dir': dir }
     // 历史（偏好关闭时不记）按提交时的最新快照计算，与 GPUI `record_save_dir_history` 同规则。
     const prefs = rpcStore.peek().snapshot?.preferences.values ?? {}
     if (prefs[SAVE_DIR_HISTORY_ENABLED_PREF] !== false) {
@@ -443,6 +440,11 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       }
     }
     void rpc.agent.preferences.patch({ values, sync: false }).catch(() => undefined)
+  }
+
+  /** 本机提交未被取消后记录分类模式（与 GPUI `run_submission` 同时机）；取消表单 / 下发到其它设备不记。 */
+  const rememberCategoryMode = () => {
+    void rpc.agent.preferences.patch({ values: { [LAST_CATEGORY_MODE_PREF]: categoryModePreference(categoryMode) }, sync: false }).catch(() => undefined)
   }
 
   /** 逐条下发到云账号设备 / 已配对设备；成功的从文本框移除，失败的保留并逐条显示原因。 */
@@ -566,6 +568,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     }
 
     let noticeText: string | null = null
+    let cancelled = false
     if (plain.length > 0) {
       const batch = buildBatch(
         plain.map((index) => entries[index]),
@@ -605,6 +608,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
       const total = summary.total.toLocaleString()
       const reason = summary.error ? describeUploadError(new RpcError({ code: -32000, message: '', data: summary.error }), t) : null
       if (summary.kind === 'cancelled') {
+        cancelled = true
         const head = t('importCancelled', { added, total })
         noticeText = reason ? `${head}: ${reason}` : head
         if (retained.length === 0) toast.key('importCancelled', 'success', { added, total })
@@ -615,6 +619,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
         noticeText = reason
       }
     }
+    if (!cancelled) rememberCategoryMode()
 
     if (retained.length === 0) {
       closeNewDownload()
@@ -637,7 +642,10 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     setBusyFiles(true)
     try {
       const created = await submitTorrentFiles(files, { saveDir: saveDir.trim(), queueId: context.queueId })
-      if (created > 0) closeNewDownload()
+      if (created > 0) {
+        rememberCategoryMode()
+        closeNewDownload()
+      }
     } catch (error) {
       toast.error(describeUploadError(error, t))
     } finally {
@@ -1118,6 +1126,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           onCancel={() => setManifest(null)}
           onCreated={() => {
             rememberSaveDir(manifest.base.saveDir)
+            rememberCategoryMode()
             closeNewDownload()
           }}
         />
