@@ -2192,16 +2192,13 @@ impl DownloadTableDelegate {
     /// 指针移到 `row_ix`。返回选区是否变化。文件拖放进行时没有划选会话，本方法直接返回。
     /// 没按着左键的移动说明会话的 mouse_up 被别处吞掉（#1123），此时直接收束会话。
     pub(super) fn drag_sweep_to(&mut self, row_ix: usize, event: &MouseMoveEvent) -> bool {
-        if self.row_sweep.is_none() {
+        let Some(sweep) = self.row_sweep.as_mut() else {
             return false;
-        }
+        };
         if event.pressed_button != Some(MouseButton::Left) {
             self.row_sweep = None;
             return false;
         }
-        let Some(sweep) = self.row_sweep.as_mut() else {
-            return false;
-        };
         if !sweep.active {
             let delta = event.position - sweep.origin_pos;
             if !sweep_past_slop(delta) {
@@ -2566,10 +2563,9 @@ impl DownloadTableDelegate {
         if !checkbox_pinned {
             let tooltip = self.strings.select_task_tooltip.clone();
             // 选择列只负责点进多选。拖出文件只在文件名列，避免和图标点击抢手势。
-            // 按下在冒泡阶段由外层截断，行的划选不得由选择格启动：on_click 在 mouse_up
-            // 冒泡阶段会 stop_propagation，行的 finish_row_sweep 收不到，会话就残留了。
-            // 截断放在外层而不是本元素，因为单击由本元素自己的按下登记。
-            let cell = div()
+            // 按下在本元素截断：行的划选不得由选择格启动。on_click 在 mouse_up 冒泡阶段会
+            // stop_propagation，行的 finish_row_sweep 收不到，会话就残留了（#1123）。
+            return div()
                 .id(("download-task-select-cell", row_ix))
                 .group(SELECT_CELL_GROUP)
                 .size_full()
@@ -2597,11 +2593,8 @@ impl DownloadTableDelegate {
                             style.border_color(hover_border)
                         })),
                 )
-                .on_click(toggle);
-            return div()
-                .size_full()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(cell)
+                .on_click(toggle)
                 .into_any_element();
         }
         let checkbox = div()
