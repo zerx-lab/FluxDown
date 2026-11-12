@@ -407,6 +407,9 @@ impl DownloadView {
     }
 
     fn retarget_status_folder(&mut self, status: DownloadStatusFilter, cx: &App) {
+        if status != DownloadStatusFilter::All {
+            return;
+        }
         let next = DownloadStatusFilter::exclusive_toggle(self.expanded_status, status);
         if next == self.expanded_status {
             return;
@@ -531,6 +534,11 @@ impl DownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        if status != DownloadStatusFilter::All {
+            return v_flex()
+                .w_full()
+                .child(self.status_item(status, 0., false, cx));
+        }
         let open_amount = self.folder_open_amount(status, window, cx);
         let category_count = self.visible_category_count();
         v_flex()
@@ -549,7 +557,7 @@ impl DownloadView {
             })
     }
 
-    /// 状态区：全部 / 下载中 / 已完成 / 失败 / 暂停 五个状态项，各自可展开显示分类子项。
+    /// 状态区：仅「全部」可展开分类，其余状态仅用于筛选。
     fn render_status_section(
         &self,
         first: bool,
@@ -558,10 +566,7 @@ impl DownloadView {
     ) -> Div {
         let open_amount = self.section_open_amount(SidebarSection::Status, window, cx);
         let category_count = self.visible_category_count();
-        let folder_open_sum: f32 = DownloadStatusFilter::ALL
-            .iter()
-            .map(|status| self.folder_open_amount(*status, window, cx))
-            .sum();
+        let folder_open_sum = self.folder_open_amount(DownloadStatusFilter::All, window, cx);
         let row_count = DownloadStatusFilter::ALL.len() as f32 + category_count * folder_open_sum;
 
         let mut body = v_flex().w_full();
