@@ -1,5 +1,6 @@
-//! 「BT 使用手动代理」端到端：tracker 与对端连接经代理出站；关掉「节点连接也走代理」后
-//! 只有 tracker 走代理；代理不通时不回退直连。
+//! 「BT 使用代理」端到端：tracker 与对端连接经代理出站；关掉「节点连接也走代理」后
+//! 只有 tracker 走代理；代理不通时不回退直连；运行中改代理设置，重建会话后任务在新出口上
+//! 继续下完（无需重启应用）。
 
 use std::time::{Duration, Instant};
 
@@ -106,5 +107,74 @@ async fn an_unreachable_proxy_is_never_bypassed() {
     let task = leech.task(&id).await;
     assert_ne!(task.status, 3, "nothing can have been downloaded");
     assert_eq!(task.downloaded_bytes, 0);
+    leech.shutdown().await;
+}
+
+/// 运行中把 BT 从直连切到代理：daemon 写设置后走的就是 `set_bt_config` +
+/// `invalidate_bt_session`。在跑的任务被接到新会话上继续，之后的 tracker 与对端连接都经代理。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn switching_to_the_proxy_mid_download_carries_the_running_task_over() {
+    let tracker = Tracker::start().await;
+    // 限速做种：切换落地时任务还在下载。
+    let seeder = Seeder::start(&pack(), &tracker, Some(16 * 1024)).await;
+    let proxy = Socks5::start().await;
+    let proxy_port = proxy.addr.port();
+    let mut base = None;
+    let mut leech = Downloader::start_with(&tracker, |bt, proxy| {
+        proxy.mode = ProxyMode::None;
+        proxy.proxy_type = ProxyType::Socks5;
+        proxy.host = "127.0.0.1".to_owned();
+        proxy.port = proxy_port;
+        base = Some(bt.clone());
+    })
+    .await;
+    let mut switched = base.expect("BT config captured");
+
+    let id = leech.add(&seeder, &[], false).await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let task = leech.task(&id).await;
+        assert_ne!(
+            task.status, 3,
+            "finished before the switch; throttle too loose"
+        );
+        if task.downloaded_bytes > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no direct progress before the switch"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(proxy.tunnels_to(seeder.addr), 0, "direct before the switch");
+
+    switched.proxy_enabled = true;
+    switched.proxy_peers = true;
+    leech.engine.manager.set_bt_config(switched);
+    leech.engine.manager.invalidate_bt_session().await;
+    seeder.unthrottle();
+
+    // 旧会话上被打断的那一轮也会交回一次 TaskDone，等到真正下完为止。
+    let mut task = leech.wait_done(&id).await;
+    for _ in 0..3 {
+        if task.status == 3 {
+            break;
+        }
+        task = leech.wait_done(&id).await;
+    }
+    assert_eq!(task.status, 3, "download failed: {}", task.error_message);
+    assert_eq!(
+        leech.landed(&task, "a.bin").await.as_deref(),
+        Some(seeder.content_of("a.bin"))
+    );
+    assert!(
+        proxy.tunnels_to(seeder.addr) >= 1,
+        "after the switch peer connections go through the proxy"
+    );
+    assert!(
+        proxy.tunnels_to(tracker.addr) >= 1,
+        "the rebuilt session announces through the proxy"
+    );
     leech.shutdown().await;
 }

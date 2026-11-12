@@ -181,6 +181,8 @@ export const BT_MSE_MODES = ['disabled', 'enabled', 'forced'] as const;
 export const BT_PIECE_ORDERS = ['rarest', 'sequential'] as const;
 /** uTP 拥塞控制：LEDBAT（让路给其他流量）/ CUBIC（只按丢包退让）。 */
 export const BT_UTP_CONGESTIONS = ['ledbat', 'cubic'] as const;
+/** BT 代理来源：「代理」页的手动代理服务器 / 系统代理（建 BT 会话时检测）。 */
+export const BT_PROXY_SOURCES = ['manual', 'system'] as const;
 /** 防吸血规则 / 云名单模式。 */
 export const BT_GUARD_MODES = ['off', 'observe', 'enforce'] as const;
 /** 防吸血：下载中任务的动作上限。 */
@@ -273,6 +275,7 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   bool('bt_announce_all_tiers', 'true'),
   bool('bt_announce_all_trackers', 'true'),
   bool('bt_proxy_enabled', 'false'),
+  oneOf('bt_proxy_source', 'manual', BT_PROXY_SOURCES),
   bool('bt_proxy_peers', 'true'),
   bool('bt_i2p_enabled', 'false'),
   text('bt_i2p_sam_host', '127.0.0.1'),

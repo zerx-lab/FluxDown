@@ -49,6 +49,8 @@ pub const BT_MSE_MODES: &[&str] = &["disabled", "enabled", "forced"];
 pub const BT_PIECE_ORDERS: &[&str] = &["rarest", "sequential"];
 /// uTP 拥塞控制：LEDBAT（延迟敏感，主动给其他流量让路，BEP 29 的标准算法）/ CUBIC（只按丢包退让）。
 pub const BT_UTP_CONGESTIONS: &[&str] = &["ledbat", "cubic"];
+/// BT 代理来源：「代理」页的手动代理服务器 / 系统代理（建 BT 会话时检测）。
+pub const BT_PROXY_SOURCES: &[&str] = &["manual", "system"];
 /// BT 防吸血规则 / 云名单的执行模式。
 pub const BT_GUARD_MODES: &[&str] = &["off", "observe", "enforce"];
 /// BT 防吸血：下载中任务的动作上限。
@@ -217,9 +219,15 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
     // tracker 汇报策略（BEP 12，对齐 qBittorrent 的两项高级设置）：都关 = 逐层失败转移。
     field("bt_announce_all_tiers", DaemonConfigKind::Bool, "true"),
     field("bt_announce_all_trackers", DaemonConfigKind::Bool, "true"),
-    // BT 走「代理」页的手动代理服务器（SOCKS5 / HTTP）；默认直连。
+    // BT 经代理出站（SOCKS5 / SOCKS4 / HTTP）；默认直连。`bt_proxy_source` 选代理来源：
+    // 「代理」页的手动代理服务器，或建 BT 会话时检测到的系统代理。
     // `bt_proxy_peers` 关闭时只有 tracker 走代理，对端连接直连。
     field("bt_proxy_enabled", DaemonConfigKind::Bool, "false"),
+    field(
+        "bt_proxy_source",
+        DaemonConfigKind::Enum(BT_PROXY_SOURCES),
+        "manual",
+    ),
     field("bt_proxy_peers", DaemonConfigKind::Bool, "true"),
     // I2P（经本机 I2P 路由的 SAM 桥）。`bt_i2p_mixed` = I2P 种子同时允许明网对端。
     field("bt_i2p_enabled", DaemonConfigKind::Bool, "false"),

@@ -97,7 +97,7 @@ struct SettingsBtEd2kTests {
             "bt_enable_lsd": "true", "bt_utp_congestion": "ledbat", "bt_max_connections": "0",
             "bt_max_connections_per_torrent": "512", "bt_enable_webseed": "true",
             "bt_announce_all_tiers": "true", "bt_announce_all_trackers": "true",
-            "bt_proxy_enabled": "false", "bt_proxy_peers": "true", "bt_i2p_enabled": "false",
+            "bt_proxy_enabled": "false", "bt_proxy_source": "manual", "bt_proxy_peers": "true", "bt_i2p_enabled": "false",
             "bt_i2p_sam_host": "127.0.0.1", "bt_i2p_sam_port": "7656", "bt_i2p_mixed": "false",
         ]
         for (key, value) in defaults {

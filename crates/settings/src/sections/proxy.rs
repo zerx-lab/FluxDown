@@ -11,9 +11,10 @@ use gpui_component::{Icon, h_flex};
 use serde_json::json;
 
 use super::{SectionContext, proxy_rules, site_auth};
-use crate::store::rpc_error_text;
+use crate::store::{PROXY_MANUAL_EXPANDED, rpc_error_text};
 use crate::ui::{
     Control, INPUT_WIDTH, SettingsPage, SettingsRow, SettingsSection, body_text, meta_text,
+    row_button,
 };
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
@@ -36,7 +37,8 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
         _ => {}
     }
     // 手动服务器在任何模式下都可编辑：「自动」把它当备选路径，站点规则与任务的「手动代理」出口也读它。
-    sections.push(manual_section(ctx, mode == "manual"));
+    // 非手动模式下默认收起，只露一行摘要。
+    sections.push(manual_section(ctx, mode == "manual", cx));
     sections.push(bt_section(ctx, cx));
     sections.push(proxy_rules::group(ctx, cx));
     sections.push(site_auth::group(ctx, cx));
@@ -153,54 +155,116 @@ fn system_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
     section
 }
 
-fn manual_section(ctx: &SectionContext, active: bool) -> SettingsSection {
+/// 手动代理服务器。手动模式下始终展开；其余模式默认收起为一行摘要（类型 · 地址:端口 / 未填写）
+/// + 展开按钮，收起的字段仍可被搜索找到。展开状态离开代理页即清除。
+fn manual_section(ctx: &SectionContext, active: bool, cx: &mut App) -> SettingsSection {
     let types = vec![
         (SharedString::from("http"), SharedString::from("HTTP")),
         (SharedString::from("https"), SharedString::from("HTTPS")),
         (SharedString::from("socks4"), SharedString::from("SOCKS4")),
         (SharedString::from("socks5"), SharedString::from("SOCKS5")),
     ];
-    SettingsSection::new()
+    let fields = [
+        ctx.item("proxyType", None, ctx.daemon_dropdown("proxy_type", types)),
+        ctx.item(
+            "proxyHost",
+            Some("proxyHostPlaceholder"),
+            ctx.daemon_input("proxy_host"),
+        ),
+        ctx.item(
+            "proxyPort",
+            Some("proxyPortPlaceholder"),
+            proxy_port_control(ctx),
+        ),
+        ctx.item(
+            "proxyUsername",
+            Some("proxyUsernamePlaceholder"),
+            ctx.daemon_input("proxy_username"),
+        ),
+        ctx.item(
+            "proxyPassword",
+            Some("proxyPasswordPlaceholder"),
+            ctx.daemon_input("proxy_password"),
+        ),
+        ctx.item(
+            "proxyNoList",
+            Some("proxyNoListDesc"),
+            ctx.daemon_input("proxy_no_list"),
+        ),
+        ctx.item(
+            "proxyTestConnection",
+            None,
+            test_control(ctx, ProxyTestSource::Manual),
+        ),
+    ];
+    let section = SettingsSection::new()
         .title(ctx.t("proxyModeManual"))
         .subtitle(ctx.t(if active {
             "proxyModeManualDesc"
         } else {
             "proxyManualKeptDesc"
-        }))
-        .row(ctx.item("proxyType", None, ctx.daemon_dropdown("proxy_type", types)))
-        .row(ctx.item(
-            "proxyHost",
-            Some("proxyHostPlaceholder"),
-            ctx.daemon_input("proxy_host"),
-        ))
-        .row(ctx.item(
-            "proxyPort",
-            Some("proxyPortPlaceholder"),
-            proxy_port_control(ctx),
-        ))
-        .row(ctx.item(
-            "proxyUsername",
-            Some("proxyUsernamePlaceholder"),
-            ctx.daemon_input("proxy_username"),
-        ))
-        .row(ctx.item(
-            "proxyPassword",
-            Some("proxyPasswordPlaceholder"),
-            ctx.daemon_input("proxy_password"),
-        ))
-        .row(ctx.item(
-            "proxyNoList",
-            Some("proxyNoListDesc"),
-            ctx.daemon_input("proxy_no_list"),
-        ))
-        .row(ctx.item(
-            "proxyTestConnection",
-            None,
-            test_control(ctx, ProxyTestSource::Manual),
-        ))
+        }));
+    if active {
+        return fields.into_iter().fold(section, SettingsSection::row);
+    }
+    let store = ctx.store.read(cx);
+    let expanded = store
+        .transient(PROXY_MANUAL_EXPANDED)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let summary = manual_summary(
+        &store.daemon_str("proxy_type"),
+        &store.daemon_str("proxy_host"),
+        &store.daemon_str("proxy_port"),
+    )
+    .map_or_else(|| ctx.t("proxyManualNotSet"), SharedString::from);
+    let toggle_label = ctx.t(if expanded {
+        "proxyManualCollapse"
+    } else {
+        "proxyManualExpand"
+    });
+    let toggle_store = ctx.store();
+    let toggle = Control::custom(move |_disabled, _key, _window, cx: &mut App| {
+        let store = toggle_store.clone();
+        row_button(
+            "proxy-manual-toggle",
+            toggle_label.clone(),
+            ButtonVariant::Secondary,
+            cx,
+        )
+        .on_click(move |_, _, cx| {
+            store.update(cx, |store, cx| {
+                store.set_transient(PROXY_MANUAL_EXPANDED, json!(!expanded), cx);
+            });
+        })
+    });
+    let section =
+        section.row(SettingsRow::new(ctx.t("proxyManualServer"), toggle).description(summary));
+    if expanded {
+        fields.into_iter().fold(section, SettingsSection::row)
+    } else {
+        fields
+            .into_iter()
+            .fold(section, SettingsSection::collapsed_row)
+    }
 }
 
-/// BitTorrent 走手动代理：总开关 + 节点连接是否也走代理 + 按手动代理配置给出的一条提示。
+/// 收起时的摘要：`HTTP · 127.0.0.1:1080`；没填主机时 `None`（显示「未填写」）。
+fn manual_summary(proxy_type: &str, host: &str, port: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let port = port.trim();
+    let endpoint = if port.is_empty() {
+        host.to_owned()
+    } else {
+        format!("{host}:{port}")
+    };
+    Some(format!("{} · {endpoint}", proxy_type.to_uppercase()))
+}
+
+/// BitTorrent 走代理：总开关 + 代理来源 + 节点连接是否也走代理 + 一条提示。
 fn bt_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
     let section = SettingsSection::new()
         .title(ctx.t("proxyBtSection"))
@@ -214,15 +278,22 @@ fn bt_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
         return section;
     }
     let hint = bt_proxy_hint(
+        &store.daemon_str("bt_proxy_source"),
         &store.daemon_str("proxy_type"),
         &store.daemon_str("proxy_host"),
         &store.daemon_str("proxy_port"),
     );
-    let mut section = section.row(ctx.item(
-        "btProxyPeers",
-        Some("btProxyPeersDesc"),
-        ctx.daemon_switch("bt_proxy_peers"),
-    ));
+    let mut section = section
+        .row(ctx.item(
+            "btProxySource",
+            Some("btProxySourceDesc"),
+            ctx.daemon_enum_dropdown("bt_proxy_source", "btProxySource"),
+        ))
+        .row(ctx.item(
+            "btProxyPeers",
+            Some("btProxyPeersDesc"),
+            ctx.daemon_switch("bt_proxy_peers"),
+        ));
     if let Some(key) = hint {
         let text = ctx.t(key);
         section = section.row(SettingsRow::custom(move |_, _, _, cx: &mut App| {
@@ -232,8 +303,12 @@ fn bt_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
     section
 }
 
-/// BT 代理提示（i18n 键）：未配置服务器优先，其次是 BT 不支持 / 无法转发 UDP 的类型；SOCKS5 无提示。
-fn bt_proxy_hint(proxy_type: &str, host: &str, port: &str) -> Option<&'static str> {
+/// BT 代理提示（i18n 键）。系统代理来源：说明检测时机与生效方式。手动代理来源：未配置服务器
+/// 优先，其次是 BT 不支持 / 无法转发 UDP 的类型；SOCKS5 无提示。
+fn bt_proxy_hint(source: &str, proxy_type: &str, host: &str, port: &str) -> Option<&'static str> {
+    if source == "system" {
+        return Some("btProxySystemNote");
+    }
     if host.trim().is_empty() || port.trim().is_empty() {
         return Some("btProxyNoServer");
     }
@@ -478,37 +553,44 @@ fn test_control(ctx: &SectionContext, source: ProxyTestSource) -> Control {
 mod tests {
     use super::bt_proxy_hint;
 
+    fn manual(proxy_type: &str, host: &str, port: &str) -> Option<&'static str> {
+        bt_proxy_hint("manual", proxy_type, host, port)
+    }
+
     #[test]
     fn missing_host_or_port_wins() {
-        assert_eq!(bt_proxy_hint("socks5", "", "1080"), Some("btProxyNoServer"));
-        assert_eq!(
-            bt_proxy_hint("https", "proxy.lan", " "),
-            Some("btProxyNoServer")
-        );
+        assert_eq!(manual("socks5", "", "1080"), Some("btProxyNoServer"));
+        assert_eq!(manual("https", "proxy.lan", " "), Some("btProxyNoServer"));
     }
 
     #[test]
     fn https_is_unsupported() {
         assert_eq!(
-            bt_proxy_hint("https", "proxy.lan", "443"),
+            manual("https", "proxy.lan", "443"),
             Some("btProxyUnsupportedType")
         );
     }
 
     #[test]
     fn http_and_socks4_cannot_relay_udp() {
-        assert_eq!(
-            bt_proxy_hint("http", "proxy.lan", "8080"),
-            Some("btProxyNoUdp")
-        );
-        assert_eq!(
-            bt_proxy_hint("socks4", "proxy.lan", "1080"),
-            Some("btProxyNoUdp")
-        );
+        assert_eq!(manual("http", "proxy.lan", "8080"), Some("btProxyNoUdp"));
+        assert_eq!(manual("socks4", "proxy.lan", "1080"), Some("btProxyNoUdp"));
     }
 
     #[test]
     fn socks5_with_server_has_no_hint() {
-        assert_eq!(bt_proxy_hint("socks5", "proxy.lan", "1080"), None);
+        assert_eq!(manual("socks5", "proxy.lan", "1080"), None);
+    }
+
+    #[test]
+    fn system_source_ignores_the_manual_server() {
+        assert_eq!(
+            bt_proxy_hint("system", "https", "", ""),
+            Some("btProxySystemNote")
+        );
+        assert_eq!(
+            bt_proxy_hint("system", "socks5", "proxy.lan", "1080"),
+            Some("btProxySystemNote")
+        );
     }
 }

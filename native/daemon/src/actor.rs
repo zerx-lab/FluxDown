@@ -3277,44 +3277,14 @@ async fn apply_live_config<'a>(
             fluxdown_engine::proxy_config::ProxyConfig::from_config_map(all).rules,
         );
     }
-    // BT 走手动代理时，代理服务器本身变了也要重建会话（会话的拨号出口在建会话时定死）。
-    let bt_proxy_changed = all.get("bt_proxy_enabled").is_some_and(|v| v == "true")
-        && keys
-            .iter()
-            .any(|key| key.starts_with("proxy_") && *key != rules_key);
-    if bt_proxy_changed || keys.iter().any(|key| key.starts_with("bt_")) {
+    let bt_session_rebuild = crate::config::bt_session_rebuild_needed(&keys, all);
+    if bt_session_rebuild || keys.iter().any(|key| key.starts_with("bt_")) {
         engine
             .manager
             .set_bt_config(crate::config::bt_config_from_map(all));
-        // 只有会话级设置（监听、传输、节点与数据来源、代理、I2P、上传槽数）需要重建会话；
-        // tracker 列表（自定义 / 订阅开关与地址）与连接数上限已由上面的 `set_bt_config`
-        // 热生效。
-        if bt_proxy_changed
-            || keys.iter().any(|key| {
-                matches!(
-                    *key,
-                    "bt_enabled"
-                        | "bt_enable_dht"
-                        | "bt_enable_upnp"
-                        | "bt_enable_utp"
-                        | "bt_enable_lsd"
-                        | "bt_enable_webseed"
-                        | "bt_utp_congestion"
-                        | "bt_port_start"
-                        | "bt_port_end"
-                        | "bt_mse_mode"
-                        | "bt_upload_slots"
-                        | "bt_announce_all_tiers"
-                        | "bt_announce_all_trackers"
-                        | "bt_proxy_enabled"
-                        | "bt_proxy_peers"
-                        | "bt_i2p_enabled"
-                        | "bt_i2p_sam_host"
-                        | "bt_i2p_sam_port"
-                        | "bt_i2p_mixed"
-                )
-            })
-        {
+        // 只有会话级设置需要重建会话；tracker 列表（自定义 / 订阅开关与地址）与连接数上限
+        // 已由上面的 `set_bt_config` 热生效。
+        if bt_session_rebuild {
             engine.manager.invalidate_bt_session().await;
         }
     }

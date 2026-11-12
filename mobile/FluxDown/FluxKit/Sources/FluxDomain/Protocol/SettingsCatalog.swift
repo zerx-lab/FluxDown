@@ -76,6 +76,7 @@ public enum SettingsCatalog {
     public static let btMseModes = ["disabled", "enabled", "forced"]
     public static let btPieceOrders = ["rarest", "sequential"]
     public static let btUtpCongestions = ["ledbat", "cubic"]
+    public static let btProxySources = ["manual", "system"]
     public static let proxyModes = ["none", "system", "manual", "auto"]
     public static let proxyTypes = ["http", "https", "socks4", "socks5"]
     public static let themeModes = ["system", "light", "dark"]
@@ -125,6 +126,7 @@ public enum SettingsCatalog {
         daemon("bt_announce_all_tiers", .bool, "true"),
         daemon("bt_announce_all_trackers", .bool, "true"),
         daemon("bt_proxy_enabled", .bool, "false"),
+        daemon("bt_proxy_source", .choice(btProxySources), "manual"),
         daemon("bt_proxy_peers", .bool, "true"),
         daemon("bt_i2p_enabled", .bool, "false"),
         daemon("bt_i2p_sam_host", .text, "127.0.0.1"),

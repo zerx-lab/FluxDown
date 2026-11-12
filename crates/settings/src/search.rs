@@ -142,7 +142,7 @@ fn flatten(pages: &[SettingsPage]) -> Vec<SettingsSearchEntry> {
                     crumbs.push(heading.as_ref());
                 }
                 let breadcrumb = SharedString::from(crumbs.join(CRUMB_SEPARATOR));
-                for row in section.rows() {
+                for row in section.searchable_rows() {
                     if row.title.is_empty() {
                         continue;
                     }

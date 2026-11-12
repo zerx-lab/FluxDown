@@ -234,14 +234,22 @@ struct NetworkPage: View {
     #if FULL_FLAVOR
     // MARK: BitTorrent
 
-    /// GPUI `proxy.rs::bt_section`：总开关；开启后显示「节点连接也走代理」与按手动代理配置给出的一条提示。
+    /// GPUI `proxy.rs::bt_section`：总开关；开启后显示「代理来源」「节点连接也走代理」与一条提示。
     @ViewBuilder
     private func btProxySection(_ form: SettingsConfigForm, readOnly: Bool) -> some View {
         let rows = BtProxyRow.visible(form)
         if !rows.isEmpty {
             Section(L("proxyBtSection")) {
                 ForEach(rows) { row in
-                    ConfigToggleRow(item: row.item)
+                    if row == .source {
+                        ConfigPickerRow(
+                            item: row.item,
+                            options: BtProxySource.allCases.map { .init(id: $0.rawValue, label: L($0.titleKey)) },
+                            fallback: BtProxySource.manual.rawValue
+                        )
+                    } else {
+                        ConfigToggleRow(item: row.item)
+                    }
                 }
                 if let hint = BtProxyRow.hint(in: form) {
                     SettingsStatusLine(text: L(hint), tone: .warning)

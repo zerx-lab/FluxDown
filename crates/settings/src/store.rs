@@ -37,6 +37,10 @@ const BT_PORT_STATUS_ACTION: &str = "btPortStatus";
 const MAX_CONFLICT_RETRIES: u8 = 3;
 /// Doctor 上一次修复结果（`{key, ok}`，`key` 为 i18n 键）在 `transient` 里的键。
 pub(crate) const DOCTOR_REPAIR_OUTCOME: &str = "doctor_repair_outcome";
+/// 代理页「手动配置」分组是否已展开（`transient` 键，`true` = 展开）；离开代理页即清除。
+pub(crate) const PROXY_MANUAL_EXPANDED: &str = "proxy_manual_expanded";
+/// 只属于某个分类页的视图状态：切换分类时全部清除，下次进入恢复默认。
+const PAGE_VIEW_STATE: &[&str] = &[PROXY_MANUAL_EXPANDED];
 
 /// 设置写回失败的 UI 可展示分类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1018,6 +1022,16 @@ impl SettingsStore {
     /// 清除上一次修复的就地提示（重新运行诊断时）。
     pub fn clear_repair_outcome(&mut self, cx: &mut Context<Self>) {
         if self.transient.remove(DOCTOR_REPAIR_OUTCOME).is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 切换分类时清除页面级视图状态（见 [`PAGE_VIEW_STATE`]）。
+    pub fn clear_page_view_state(&mut self, cx: &mut Context<Self>) {
+        let before = self.transient.len();
+        self.transient
+            .retain(|key, _| !PAGE_VIEW_STATE.contains(key));
+        if self.transient.len() != before {
             cx.notify();
         }
     }

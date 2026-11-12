@@ -72,6 +72,7 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
     NoList("network.noList", Group.Manual, "proxy_no_list"),
     Test("network.test", Group.Manual, null),
     BtProxyEnabled("network.btProxyEnabled", Group.BtProxy, "bt_proxy_enabled"),
+    BtProxySource("network.btProxySource", Group.BtProxy, "bt_proxy_source"),
     BtProxyPeers("network.btProxyPeers", Group.BtProxy, "bt_proxy_peers"),
     Rules("network.rules", Group.Rules, "proxy_rules"),
     RulesAdd("network.rulesAdd", Group.Rules, null),
@@ -86,13 +87,13 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
     /**
      * 站点规则、手动配置与代理模式行只需配置已加载。手动字段在所有模式下都显示
      * （自动模式的备选路径、站点规则与任务级「手动代理」仍读这些字段），与当前模式无关。
-     * BitTorrent 分组同样与代理模式无关（BT 只认手动代理）；「节点连接也走代理」仅在 BT 走代理开启时显示。
+     * BitTorrent 分组同样与代理模式无关（BT 有自己的代理来源）；「代理来源」与「节点连接也走代理」仅在 BT 走代理开启时显示。
      * 站点凭据走 `daemon.siteAuth.*`（`daemon.*` 恒可用），与配置是否已加载无关。
      */
     fun isVisible(form: SettingsForm): Boolean = when (group) {
         Group.Mode -> form.isLoaded
         Group.Manual -> form.isLoaded
-        Group.BtProxy -> form.isLoaded && (this != BtProxyPeers || form.bool(BtProxyEnabled.configKey!!))
+        Group.BtProxy -> form.isLoaded && (this == BtProxyEnabled || form.bool(BtProxyEnabled.configKey!!))
         Group.Rules -> form.isLoaded
         Group.SiteAuth -> true
     }
@@ -104,14 +105,16 @@ enum class NetworkRow(val rowId: String, val group: Group, val configKey: String
 }
 
 /**
- * BitTorrent 走手动代理时的提示（GPUI `proxy.rs::bt_proxy_hint`）：仅 `bt_proxy_enabled` 开启时显示其一。
- * 未配置服务器优先；其次 HTTPS（BT 不支持）、HTTP / SOCKS4（无法转发 UDP）；SOCKS5 无提示。
+ * BitTorrent 走代理时的提示（GPUI `proxy.rs::bt_proxy_hint`）：仅 `bt_proxy_enabled` 开启时显示其一。
+ * 系统代理来源：说明检测时机与生效方式。手动代理来源：未配置服务器优先；其次 HTTPS（BT 不支持）、
+ * HTTP / SOCKS4（无法转发 UDP）；SOCKS5 无提示。
  */
 enum class BtProxyHint {
-    NoServer, UnsupportedType, NoUdp;
+    SystemNote, NoServer, UnsupportedType, NoUdp;
 
     companion object {
-        fun of(proxyType: String, host: String, port: String): BtProxyHint? {
+        fun of(source: String, proxyType: String, host: String, port: String): BtProxyHint? {
+            if (source == "system") return SystemNote
             if (host.isBlank() || port.isBlank()) return NoServer
             return when (proxyType) {
                 "https" -> UnsupportedType
@@ -122,7 +125,12 @@ enum class BtProxyHint {
 
         fun of(form: SettingsForm): BtProxyHint? {
             if (!form.bool(NetworkRow.BtProxyEnabled.configKey!!)) return null
-            return of(form.string("proxy_type", "http"), form.string("proxy_host"), form.string("proxy_port"))
+            return of(
+                form.string(NetworkRow.BtProxySource.configKey!!, "manual"),
+                form.string("proxy_type", "http"),
+                form.string("proxy_host"),
+                form.string("proxy_port"),
+            )
         }
     }
 }

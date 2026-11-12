@@ -170,6 +170,7 @@ class BtSettingsTest {
             "bt_announce_all_tiers" to "true",
             "bt_announce_all_trackers" to "true",
             "bt_proxy_enabled" to "false",
+            "bt_proxy_source" to "manual",
             "bt_proxy_peers" to "true",
             "bt_i2p_enabled" to "false",
             "bt_i2p_sam_host" to "127.0.0.1",

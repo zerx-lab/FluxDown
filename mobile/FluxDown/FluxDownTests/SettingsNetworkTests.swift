@@ -116,7 +116,7 @@ struct SettingsNetworkTests {
     @Test func btProxyRowsFollowTheMasterSwitch() {
         #expect(BtProxyRow.visible(form([:])).isEmpty)
         #expect(BtProxyRow.visible(form(["proxy_mode": "manual"])) == [.enabled])
-        #expect(BtProxyRow.visible(form(["bt_proxy_enabled": "true"])) == [.enabled, .peers])
+        #expect(BtProxyRow.visible(form(["bt_proxy_enabled": "true"])) == [.enabled, .source, .peers])
         for row in BtProxyRow.allCases {
             #expect(SettingsCatalog.field(row.configKey)?.store == .daemon, "\(row)")
             #expect(!SettingsCatalog.isSynced(row.configKey), "\(row)")
@@ -124,17 +124,22 @@ struct SettingsNetworkTests {
     }
 
     @Test func btProxyHintMatchesGpui() {
-        #expect(BtProxyRow.hint(proxyType: "socks5", host: "", port: "1080") == "btProxyNoServer")
-        #expect(BtProxyRow.hint(proxyType: "https", host: "proxy.lan", port: " ") == "btProxyNoServer")
-        #expect(BtProxyRow.hint(proxyType: "https", host: "proxy.lan", port: "443") == "btProxyUnsupportedType")
-        #expect(BtProxyRow.hint(proxyType: "http", host: "proxy.lan", port: "8080") == "btProxyNoUdp")
-        #expect(BtProxyRow.hint(proxyType: "socks4", host: "proxy.lan", port: "1080") == "btProxyNoUdp")
-        #expect(BtProxyRow.hint(proxyType: "socks5", host: "proxy.lan", port: "1080") == nil)
+        func manual(_ type: String, _ host: String, _ port: String) -> String? {
+            BtProxyRow.hint(source: "manual", proxyType: type, host: host, port: port)
+        }
+        #expect(manual("socks5", "", "1080") == "btProxyNoServer")
+        #expect(manual("https", "proxy.lan", " ") == "btProxyNoServer")
+        #expect(manual("https", "proxy.lan", "443") == "btProxyUnsupportedType")
+        #expect(manual("http", "proxy.lan", "8080") == "btProxyNoUdp")
+        #expect(manual("socks4", "proxy.lan", "1080") == "btProxyNoUdp")
+        #expect(manual("socks5", "proxy.lan", "1080") == nil)
+        #expect(BtProxyRow.hint(source: "system", proxyType: "https", host: "", port: "") == "btProxySystemNote")
         // 总开关关闭 / 未加载：不提示。
         #expect(BtProxyRow.hint(in: form(["bt_proxy_enabled": "false"])) == nil)
         #expect(BtProxyRow.hint(in: form([:])) == nil)
-        let on = form(["bt_proxy_enabled": "true", "proxy_type": "http", "proxy_host": "h", "proxy_port": "1"])
-        #expect(BtProxyRow.hint(in: on) == "btProxyNoUdp")
+        let server = ["bt_proxy_enabled": "true", "proxy_type": "http", "proxy_host": "h", "proxy_port": "1"]
+        #expect(BtProxyRow.hint(in: form(server)) == "btProxyNoUdp")
+        #expect(BtProxyRow.hint(in: form(server.merging(["bt_proxy_source": "system"]) { $1 })) == "btProxySystemNote")
     }
 
     @Test func btProxyRowsAreIndexedForSearch() {

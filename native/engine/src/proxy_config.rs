@@ -286,9 +286,9 @@ impl ProxyConfig {
         }
     }
 
-    /// BT 用的手动代理服务器地址：只看这里填的服务器（类型 / 主机 / 端口 / 凭据），与
-    /// 当前代理模式（不使用 / 系统 / 手动 / 自动）无关——BT 是否走代理由 `bt_proxy_enabled`
-    /// 单独决定。
+    /// BT 用的代理服务器地址：只看这里的服务器字段（类型 / 主机 / 端口 / 凭据），与
+    /// 当前代理模式（不使用 / 系统 / 手动 / 自动）无关——BT 是否走代理、走哪个来源由
+    /// [`BtConfig::session_proxy_url`](crate::bt_config::BtConfig::session_proxy_url) 决定。
     ///
     /// 没填主机或端口、或类型为 HTTPS（librqbit 不支持 TLS 包裹的代理端点）时返回 `None`，
     /// 调用方保持直连。SOCKS5 以 `socks5h` 下发：tracker 域名交给代理解析，本机不发 DNS。

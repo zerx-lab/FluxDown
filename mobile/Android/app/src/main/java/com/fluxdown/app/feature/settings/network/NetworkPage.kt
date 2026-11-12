@@ -38,6 +38,7 @@ import com.fluxdown.app.feature.settings.SettingsPageFrame
 import com.fluxdown.app.feature.settings.SettingsSearchContext
 import com.fluxdown.app.feature.settings.flowItem
 import com.fluxdown.app.feature.settings.rememberSettingsCtx
+import com.fluxdown.app.feature.settings.settingChoice
 import com.fluxdown.app.feature.settings.settingSwitch
 import com.fluxdown.app.feature.settings.settingText
 import com.fluxdown.app.i18n.str
@@ -50,6 +51,7 @@ import com.fluxdown.core.protocol.NetworkPortInput
 import com.fluxdown.core.protocol.NetworkProxyMode
 import com.fluxdown.core.protocol.NetworkProxyTest
 import com.fluxdown.core.protocol.NetworkRow
+import com.fluxdown.core.protocol.SettingsCatalog
 import com.fluxdown.core.protocol.ProxyRule
 import com.fluxdown.core.store.Connection
 import com.fluxdown.fluxui.controls.FluxActionRow
@@ -443,7 +445,7 @@ private fun ManualSection(
 
 // ───────────────────────────── BitTorrent ─────────────────────────────
 
-/** BitTorrent 走手动代理（GPUI `proxy.rs::bt_section`）：总开关；开启后「节点连接也走代理」+ 按手动代理配置给出的一条提示。 */
+/** BitTorrent 走代理（GPUI `proxy.rs::bt_section`）：总开关；开启后「代理来源」「节点连接也走代理」+ 一条提示。 */
 @Composable
 private fun BtProxySection(ctx: SettingsCtx) {
     val form = ctx.form
@@ -451,18 +453,31 @@ private fun BtProxySection(ctx: SettingsCtx) {
     val hintText = hint?.let {
         str(
             when (it) {
+                BtProxyHint.SystemNote -> R.string.btProxySystemNote
                 BtProxyHint.NoServer -> R.string.btProxyNoServer
                 BtProxyHint.UnsupportedType -> R.string.btProxyUnsupportedType
                 BtProxyHint.NoUdp -> R.string.btProxyNoUdp
             },
         )
     }
+    val sourceLabels = mapOf(
+        "manual" to str(R.string.btProxySourceManual),
+        "system" to str(R.string.btProxySourceSystem),
+    )
     GlassSection(title = str(R.string.proxyBtSection)) {
         if (NetworkRow.BtProxyEnabled.isVisible(form)) {
             settingSwitch(
                 ctx, "bt_proxy_enabled", R.string.btProxyEnabled, R.string.btProxyEnabledDesc,
                 id = NetworkRow.BtProxyEnabled.rowId,
             )
+        }
+        if (NetworkRow.BtProxySource.isVisible(form)) {
+            settingChoice(
+                ctx, "bt_proxy_source", R.string.btProxySource, R.string.btProxySourceDesc,
+                id = NetworkRow.BtProxySource.rowId,
+            ) {
+                SettingsCatalog.btProxySources.map { wire -> SelectOption(wire, sourceLabels[wire] ?: wire) }
+            }
         }
         if (NetworkRow.BtProxyPeers.isVisible(form)) {
             settingSwitch(
@@ -659,6 +674,7 @@ private fun NetworkRow.titleRes(): Int = when (this) {
     NetworkRow.NoList -> R.string.proxyNoList
     NetworkRow.Test -> R.string.proxyTestConnection
     NetworkRow.BtProxyEnabled -> R.string.btProxyEnabled
+    NetworkRow.BtProxySource -> R.string.btProxySource
     NetworkRow.BtProxyPeers -> R.string.btProxyPeers
     NetworkRow.Rules -> R.string.proxyRulesTitle
     NetworkRow.RulesAdd -> R.string.proxyRulesAdd
@@ -673,6 +689,7 @@ private fun NetworkRow.detailRes(): Int? = when (this) {
     NetworkRow.Mode -> R.string.proxySettingsDesc
     NetworkRow.NoList -> R.string.proxyNoListDesc
     NetworkRow.BtProxyEnabled -> R.string.btProxyEnabledDesc
+    NetworkRow.BtProxySource -> R.string.btProxySourceDesc
     NetworkRow.BtProxyPeers -> R.string.btProxyPeersDesc
     NetworkRow.Rules -> R.string.proxyRulesDesc
     NetworkRow.RulesTest -> R.string.proxyRouteTestDesc

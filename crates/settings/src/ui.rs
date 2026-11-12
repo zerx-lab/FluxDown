@@ -16,6 +16,7 @@
 //! - 列表行内操作（上移 / 下移 / 测试 / 删除…）同高：[`row_button`] / [`row_icon_button`] 只额外禁止被长文本挤压。
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use fluxdown_ui_components::{
@@ -938,9 +939,18 @@ fn with_unit_column(
         .into_any_element()
 }
 
+thread_local! {
+    /// 下拉按钮最近一次 prepaint 的宽度（按按钮 id）；只在打开菜单时读取，不参与 render。
+    static DROPDOWN_TRIGGER_WIDTHS: RefCell<HashMap<SharedString, Pixels>> =
+        RefCell::new(HashMap::new());
+}
+
 /// 下拉选择按钮：当前值显示为 label，菜单项带勾选态；供 [`Control::Dropdown`]
 /// 与需要自定义值映射的分区（如 User-Agent 预设）共用同一视觉。
 /// `min_width`：最小宽度（文案更长时自然撑开）；`None` 占满父容器。
+/// 展开的菜单与按钮等宽、右缘对齐（同原生 select）：按钮宽度在 prepaint 时按 `id` 记入
+/// [`DROPDOWN_TRIGGER_WIDTHS`]，打开菜单时读取。不能用本次 render 新建的 `Rc`：点击后
+/// 菜单在下一帧的 render 阶段构建，那时本帧的 prepaint 还没跑，读到的是空值。
 pub(crate) fn dropdown_button(
     id: impl Into<SharedString>,
     options: &[(SharedString, SharedString)],
@@ -955,7 +965,8 @@ pub(crate) fn dropdown_button(
         .find(|(value, _)| *value == current)
         .map_or_else(|| current.clone(), |(_, label)| label.clone());
     let options = options.to_vec();
-    Button::new(ElementId::from(id.into()))
+    let id: SharedString = id.into();
+    let button = Button::new(ElementId::from(id.clone()))
         .outline()
         .control(cx)
         .label(label)
@@ -965,21 +976,45 @@ pub(crate) fn dropdown_button(
             Some(width) => this.min_w(width),
             None => this.w_full(),
         })
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-            let current = current.clone();
-            let set = set.clone();
-            options.iter().fold(menu, |menu, (value, label)| {
-                let checked = *value == current;
-                let value = value.clone();
+        .dropdown_menu_with_anchor(Anchor::TopRight, {
+            let id = id.clone();
+            move |menu, _, _| {
+                let width = DROPDOWN_TRIGGER_WIDTHS
+                    .with_borrow(|widths| widths.get(&id).copied())
+                    .unwrap_or(px(0.));
+                let menu = if width > px(0.) {
+                    menu.min_w(width).max_w(width)
+                } else {
+                    menu
+                };
+                let current = current.clone();
                 let set = set.clone();
-                menu.item(
-                    PopupMenuItem::new(label.clone())
-                        .checked(checked)
-                        .on_click(move |_, _, cx| set(value.clone(), cx)),
-                )
-            })
-        })
-        .into_any_element()
+                options.iter().fold(menu, |menu, (value, label)| {
+                    let checked = *value == current;
+                    let value = value.clone();
+                    let set = set.clone();
+                    menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(checked)
+                            .on_click(move |_, _, cx| set(value.clone(), cx)),
+                    )
+                })
+            }
+        });
+    // 有最小宽度时 h_flex 不拉伸按钮、保留内容宽度；占满父容器时用块级 div，与原布局一致。
+    match min_width {
+        Some(_) => h_flex(),
+        None => div().w_full(),
+    }
+    .on_children_prepainted(move |bounds, _, _| {
+        if let Some(bounds) = bounds.first() {
+            DROPDOWN_TRIGGER_WIDTHS.with_borrow_mut(|widths| {
+                widths.insert(id.clone(), bounds.size.width);
+            });
+        }
+    })
+    .child(button)
+    .into_any_element()
 }
 
 struct InputSlot {
@@ -1237,6 +1272,8 @@ pub(crate) struct SettingsSection {
     title: Option<SharedString>,
     subtitle: Option<SharedString>,
     rows: Vec<SettingsRow>,
+    /// 收起的行：无搜索词时不渲染，但进搜索索引；有搜索词时与普通行一样参与筛选并显示。
+    collapsed: Vec<SettingsRow>,
 }
 
 impl SettingsSection {
@@ -1245,6 +1282,7 @@ impl SettingsSection {
             title: None,
             subtitle: None,
             rows: Vec::new(),
+            collapsed: Vec::new(),
         }
     }
 
@@ -1266,9 +1304,16 @@ impl SettingsSection {
         self
     }
 
+    /// 收起的行（见 [`Self::collapsed`] 字段）：分组折叠时用，搜索仍能找到并展示它们。
+    #[must_use]
+    pub(crate) fn collapsed_row(mut self, row: SettingsRow) -> Self {
+        self.collapsed.push(row);
+        self
+    }
+
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.rows.is_empty() && self.collapsed.is_empty()
     }
 
     /// 小节标题（搜索索引用作面包屑与补充文本）。
@@ -1276,29 +1321,28 @@ impl SettingsSection {
         self.title.as_ref()
     }
 
-    pub(crate) fn rows(&self) -> &[SettingsRow] {
-        &self.rows
+    /// 参与搜索的全部行（含收起的行）。
+    pub(crate) fn searchable_rows(&self) -> impl Iterator<Item = &SettingsRow> {
+        self.rows.iter().chain(&self.collapsed)
     }
 
     fn filtered(&self, query: &str) -> Option<Self> {
-        let title_hit = !query.is_empty()
-            && (self
-                .title
+        if query.is_empty() {
+            return Some(self.clone());
+        }
+        let title_hit = self
+            .title
+            .as_ref()
+            .is_some_and(|title| title.to_lowercase().contains(query))
+            || self
+                .subtitle
                 .as_ref()
-                .is_some_and(|title| title.to_lowercase().contains(query))
-                || self
-                    .subtitle
-                    .as_ref()
-                    .is_some_and(|text| text.to_lowercase().contains(query)));
-        let rows: Vec<SettingsRow> = if title_hit {
-            self.rows.clone()
-        } else {
-            self.rows
-                .iter()
-                .filter(|row| row.matches(query))
-                .cloned()
-                .collect()
-        };
+                .is_some_and(|text| text.to_lowercase().contains(query));
+        let rows: Vec<SettingsRow> = self
+            .searchable_rows()
+            .filter(|row| title_hit || row.matches(query))
+            .cloned()
+            .collect();
         if rows.is_empty() {
             return None;
         }
@@ -1306,6 +1350,7 @@ impl SettingsSection {
             title: self.title.clone(),
             subtitle: self.subtitle.clone(),
             rows,
+            collapsed: Vec::new(),
         })
     }
 
@@ -1726,6 +1771,28 @@ mod tests {
         let filtered = tab.filtered("type").expect("dropdown row should match");
         assert_eq!(filtered.sections.len(), 1);
         assert_eq!(filtered.field_tier, INPUT_WIDTH);
+    }
+
+    #[test]
+    fn collapsed_rows_only_show_up_in_search() {
+        let section = SettingsSection::new()
+            .row(dropdown("Server"))
+            .collapsed_row(input("Host"))
+            .collapsed_row(input("Port"));
+        let titles = |section: &SettingsSection| -> Vec<String> {
+            section
+                .rows
+                .iter()
+                .map(|row| row.title.to_string())
+                .collect()
+        };
+        let idle = section.filtered("").expect("section stays visible");
+        assert_eq!(titles(&idle), ["Server"]);
+        let hit = section
+            .filtered("host")
+            .expect("collapsed row is searchable");
+        assert_eq!(titles(&hit), ["Host"]);
+        assert_eq!(section.searchable_rows().count(), 3);
     }
 
     #[test]

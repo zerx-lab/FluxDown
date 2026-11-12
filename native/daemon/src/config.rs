@@ -214,7 +214,7 @@ pub fn public_config_values(all: &HashMap<String, String>) -> BTreeMap<String, S
 /// 启动时实时读库，落库即生效。
 #[must_use]
 pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_config::BtConfig {
-    use fluxdown_engine::bt_config::BtMseMode;
+    use fluxdown_engine::bt_config::{BtMseMode, BtProxySource};
     use fluxdown_engine::bt_seeding::SeedingLimitOperator;
 
     let subscription_enabled = cfg
@@ -321,6 +321,11 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
         announce_all_tiers: flag("bt_announce_all_tiers", true),
         announce_all_trackers: flag("bt_announce_all_trackers", true),
         proxy_enabled: flag("bt_proxy_enabled", false),
+        proxy_source: cfg
+            .get("bt_proxy_source")
+            .map(String::as_str)
+            .map(BtProxySource::from)
+            .unwrap_or_default(),
         proxy_peers: flag("bt_proxy_peers", true),
         i2p_enabled: flag("bt_i2p_enabled", false),
         i2p_sam_host: cfg
@@ -335,6 +340,54 @@ pub fn bt_config_from_map(cfg: &HashMap<String, String>) -> fluxdown_engine::bt_
             .unwrap_or(defaults.i2p_sam_port),
         i2p_mixed: flag("bt_i2p_mixed", false),
     }
+}
+
+/// 重建 BT 会话的会话级键（监听、传输、节点与数据来源、代理、I2P、上传槽数）。
+const BT_SESSION_KEYS: &[&str] = &[
+    "bt_enabled",
+    "bt_enable_dht",
+    "bt_enable_upnp",
+    "bt_enable_utp",
+    "bt_enable_lsd",
+    "bt_enable_webseed",
+    "bt_utp_congestion",
+    "bt_port_start",
+    "bt_port_end",
+    "bt_mse_mode",
+    "bt_upload_slots",
+    "bt_announce_all_tiers",
+    "bt_announce_all_trackers",
+    "bt_proxy_enabled",
+    "bt_proxy_source",
+    "bt_proxy_peers",
+    "bt_i2p_enabled",
+    "bt_i2p_sam_host",
+    "bt_i2p_sam_port",
+    "bt_i2p_mixed",
+];
+
+/// 本次写入的 `keys` 是否需要重建 BT 会话（`all` = 写入后的完整配置）。
+///
+/// 会话的代理出口在建会话时定死，所以除会话级 `bt_*` 键外，BT 走手动代理时手动代理
+/// 服务器本身（`proxy_*`，站点规则除外）变了也要重建；走系统代理时它与「代理」页无关。
+/// 重建由引擎接管在跑的任务：下载在新会话上继续，做种重新挂载。
+#[must_use]
+pub fn bt_session_rebuild_needed(keys: &[&str], all: &HashMap<String, String>) -> bool {
+    if keys.iter().any(|key| BT_SESSION_KEYS.contains(key)) {
+        return true;
+    }
+    let manual_bt_proxy = all.get("bt_proxy_enabled").is_some_and(|v| v == "true")
+        && all
+            .get("bt_proxy_source")
+            .map(String::as_str)
+            .map(fluxdown_engine::bt_config::BtProxySource::from)
+            .unwrap_or_default()
+            == fluxdown_engine::bt_config::BtProxySource::Manual;
+    let rules_key = fluxdown_engine::proxy_rules::PROXY_RULES_KEY;
+    manual_bt_proxy
+        && keys
+            .iter()
+            .any(|key| key.starts_with("proxy_") && *key != rules_key)
 }
 
 /// 从持久化配置构建 BT 防吸血配置（`bt_guard_*` 键，值域见 `fluxdown_protocol::DAEMON_CONFIG_FIELDS`）。
@@ -762,6 +815,49 @@ mod tests {
             super::bt_guard_config_from_map(&dirty),
             fluxdown_engine::bt_guard::BtGuardConfig::default()
         );
+    }
+
+    fn stored(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn switching_bt_proxy_source_rebuilds_the_session() {
+        let all = stored(&[("bt_proxy_enabled", "true"), ("bt_proxy_source", "system")]);
+        assert!(super::bt_session_rebuild_needed(&["bt_proxy_source"], &all));
+        assert!(super::bt_session_rebuild_needed(
+            &["bt_proxy_enabled"],
+            &all
+        ));
+    }
+
+    #[test]
+    fn manual_server_edits_rebuild_only_for_the_manual_source() {
+        let manual = stored(&[("bt_proxy_enabled", "true")]);
+        assert!(super::bt_session_rebuild_needed(&["proxy_host"], &manual));
+        // 站点规则不进 BT 会话。
+        assert!(!super::bt_session_rebuild_needed(&["proxy_rules"], &manual));
+
+        let system = stored(&[("bt_proxy_enabled", "true"), ("bt_proxy_source", "system")]);
+        assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &system));
+
+        let off = stored(&[("bt_proxy_enabled", "false")]);
+        assert!(!super::bt_session_rebuild_needed(&["proxy_host"], &off));
+    }
+
+    #[test]
+    fn bt_config_reads_the_proxy_source() {
+        use fluxdown_engine::bt_config::BtProxySource;
+        let read = |pairs: &[(&str, &str)]| super::bt_config_from_map(&stored(pairs)).proxy_source;
+        assert_eq!(read(&[]), BtProxySource::Manual);
+        assert_eq!(
+            read(&[("bt_proxy_source", "system")]),
+            BtProxySource::System
+        );
+        assert_eq!(read(&[("bt_proxy_source", "junk")]), BtProxySource::Manual);
     }
 }
 

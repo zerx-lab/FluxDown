@@ -183,6 +183,11 @@
   文件末片较短）与各文件 `offset_in_torrent` 取片，校验器来自 `ValidatedTorrentMetaV1Info::piece_verifier`（v1 SHA-1 / v2 merkle / 混合两者）；哈希未知（v2 层未取得）的片记为跳过，
   不记坏片。读种子布局的地方一律用种子自己的偏移（`iter_file_details_ext` / `FileInfo::offset_in_torrent`），不能按文件长度累加。
   纯 v2 磁力（只有 `btmh`）的会话标识 = 截断 SHA-256（`TorrentSource::info_hash_hex`）；缺分片层的种子 / v2 磁力要等 v2 对端补齐层才能下载（HTTP 源单独补不了）。
+- **BT 代理**（`bt_proxy_enabled` / `bt_proxy_source` / `bt_proxy_peers`，会话级，与全局代理模式无关）：`BtConfig::session_proxy_url` 在 `ensure_bt_session` 的阻塞线程上
+  定出口——`manual` 取「代理」页手动服务器，`system` 调 `detect_system_proxy`（静态代理，SOCKS 优先，不跑 PAC；移动端恒无）；HTTPS 代理 / 无服务器 → 直连且记日志。
+  不做自动换路（会话只有一个代理）。daemon `config::bt_session_rebuild_needed`：改这三个键，或 `manual` 来源时改 `proxy_*` 服务器字段（站点规则除外）→ `invalidate_bt_session`，
+  在跑的下载与做种接到新会话继续，不需重启应用（e2e `bt_ops::proxy::switching_to_the_proxy_mid_download_carries_the_running_task_over`）。系统代理在 OS 里变化不被监听：
+  会话重建（开关关再开 / 重启应用 / 会话空闲释放后重建）时才重新检测。
 - **I2P**（`bt_i2p_enabled` / `bt_i2p_sam_host` / `bt_i2p_sam_port` / `bt_i2p_mixed`，会话级，改动重建会话）：`bt_downloader::i2p_options` 建会话时把 SAM 主机解析成地址
   （解析失败记日志并关闭 I2P，不影响明网种子）。只有带 `.i2p` tracker 的种子走 I2P；非混合模式下这类种子不碰明网 tracker / DHT / LSD / PEX / HTTP 源。
   对端在 rqbit 里是 `0100::/64` 合成地址：防吸血 `PeerPolicy` 与连接上限按该地址处理，IP 过滤不作用于它。

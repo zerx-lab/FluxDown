@@ -59,6 +59,7 @@ object SettingsCatalog {
     val btMseModes = listOf("disabled", "enabled", "forced")
     val btPieceOrders = listOf("rarest", "sequential")
     val btUtpCongestions = listOf("ledbat", "cubic")
+    val btProxySources = listOf("manual", "system")
     val proxyModes = listOf("none", "system", "manual", "auto")
     val proxyTypes = listOf("http", "https", "socks4", "socks5")
     val themeModes = listOf("system", "light", "dark")
@@ -129,6 +130,7 @@ object SettingsCatalog {
         daemon("bt_announce_all_tiers", bool, "true"),
         daemon("bt_announce_all_trackers", bool, "true"),
         daemon("bt_proxy_enabled", bool, "false"),
+        daemon("bt_proxy_source", choice(btProxySources), "manual"),
         daemon("bt_proxy_peers", bool, "true"),
         daemon("bt_i2p_enabled", bool, "false"),
         daemon("bt_i2p_sam_host", text, "127.0.0.1"),

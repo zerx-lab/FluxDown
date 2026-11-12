@@ -241,7 +241,7 @@ impl SettingsView {
     /// 定位到设置项：切到目标分类与子 Tab；指向具体行时以行标题填入搜索框筛出该行，
     /// 指向分类 / Tab 时清空搜索。
     pub fn reveal(&mut self, target: &SettingsTarget, window: &mut Window, cx: &mut Context<Self>) {
-        self.selected = SharedString::from(target.page);
+        self.select_page(SharedString::from(target.page), cx);
         if !target.tab.is_empty() {
             self.tab_by_page
                 .insert(SharedString::from(target.page), target.tab);
@@ -292,10 +292,19 @@ impl SettingsView {
         )
         .on_click(cx.listener(move |this, _, _, cx| {
             if this.selected != key {
-                this.selected = key.clone();
-                cx.notify();
+                this.select_page(key.clone(), cx);
             }
         }))
+    }
+
+    /// 切换分类：清掉上一分类的页面级视图状态（展开 / 收起等），下次进入恢复默认。
+    fn select_page(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        if self.selected != key {
+            self.store
+                .update(cx, |store, cx| store.clear_page_view_state(cx));
+        }
+        self.selected = key;
+        cx.notify();
     }
 
     fn render_sidebar(&self, pages: &[SettingsPage], cx: &mut Context<Self>) -> impl IntoElement {

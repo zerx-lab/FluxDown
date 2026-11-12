@@ -37,6 +37,33 @@ impl From<&str> for BtMseMode {
     }
 }
 
+/// BT 代理来源（`bt_proxy_source`）：只在 [`BtConfig::proxy_enabled`] 时生效。
+///
+/// ```
+/// use fluxdown_engine::bt_config::BtProxySource;
+///
+/// assert_eq!(BtProxySource::from("system"), BtProxySource::System);
+/// assert_eq!(BtProxySource::from("bogus"), BtProxySource::Manual);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BtProxySource {
+    /// 「代理」页填写的手动代理服务器（与全局代理模式无关）。
+    #[default]
+    Manual,
+    /// 建 BT 会话时检测到的系统代理（静态代理，SOCKS 优先；不跑 PAC）。
+    System,
+}
+
+impl From<&str> for BtProxySource {
+    fn from(value: &str) -> Self {
+        if value.trim().eq_ignore_ascii_case("system") {
+            Self::System
+        } else {
+            Self::Manual
+        }
+    }
+}
+
 /// Returns `true` if the URL looks like a magnet link.
 pub fn is_magnet_url(url: &str) -> bool {
     url.get(..8)
@@ -106,9 +133,11 @@ pub struct BtConfig {
     pub announce_all_tiers: bool,
     /// tracker 汇报策略：向层级内所有 tracker 汇报（`bt_announce_all_trackers`）。会话级。
     pub announce_all_trackers: bool,
-    /// BT 经「代理」页的手动代理服务器出站（`bt_proxy_enabled`）。会话级；实际代理地址由
-    /// 管理器在建会话时从全局代理配置取。
+    /// BT 经代理出站（`bt_proxy_enabled`）。会话级；代理地址由管理器在建会话时按
+    /// [`Self::proxy_source`] 取（见 [`Self::session_proxy_url`]）。
     pub proxy_enabled: bool,
+    /// 代理来源（`bt_proxy_source`）：手动代理服务器 / 系统代理。会话级。
+    pub proxy_source: BtProxySource,
     /// 对端连接（与 DHT）也走代理（`bt_proxy_peers`）；`false` = 只有 tracker 与 HTTP 源走代理。
     pub proxy_peers: bool,
     /// I2P（`bt_i2p_enabled`）：经本机 I2P 路由的 SAM 桥下载 I2P 种子。会话级。
@@ -135,6 +164,47 @@ impl BtConfig {
     pub fn effective(mut self) -> Self {
         self.enabled &= Self::COMPILED;
         self
+    }
+
+    /// 建 BT 会话时的代理地址；`None` = 直连。
+    ///
+    /// 未开启 `proxy_enabled` 时不调用 `detect_system`。手动来源取 `global` 里填写的服务器
+    /// （与全局代理模式无关）；系统来源调用 `detect_system`（可能阻塞，调用方须在阻塞线程上
+    /// 调用），检测不到时直连。两种来源都经
+    /// [`ProxyConfig::manual_server_url_for_bt`](crate::proxy_config::ProxyConfig::manual_server_url_for_bt)
+    /// 过滤 BT 不支持的端点（HTTPS 代理、缺主机 / 端口）。
+    ///
+    /// ```
+    /// use fluxdown_engine::bt_config::{BtConfig, BtProxySource};
+    /// use fluxdown_engine::proxy_config::{ProxyConfig, ProxyType};
+    ///
+    /// let system = ProxyConfig {
+    ///     proxy_type: ProxyType::Socks5,
+    ///     host: "127.0.0.1".into(),
+    ///     port: 7890,
+    ///     ..ProxyConfig::default()
+    /// };
+    /// let config = BtConfig {
+    ///     proxy_enabled: true,
+    ///     proxy_source: BtProxySource::System,
+    ///     ..BtConfig::default()
+    /// };
+    /// let url = config.session_proxy_url(&ProxyConfig::default(), || Some(system));
+    /// assert_eq!(url.as_deref(), Some("socks5h://127.0.0.1:7890"));
+    /// ```
+    #[must_use]
+    pub fn session_proxy_url(
+        &self,
+        global: &crate::proxy_config::ProxyConfig,
+        detect_system: impl FnOnce() -> Option<crate::proxy_config::ProxyConfig>,
+    ) -> Option<String> {
+        if !self.proxy_enabled {
+            return None;
+        }
+        match self.proxy_source {
+            BtProxySource::Manual => global.manual_server_url_for_bt(),
+            BtProxySource::System => detect_system()?.manual_server_url_for_bt(),
+        }
     }
 }
 
@@ -168,11 +238,87 @@ impl Default for BtConfig {
             announce_all_tiers: true,
             announce_all_trackers: true,
             proxy_enabled: false,
+            proxy_source: BtProxySource::Manual,
             proxy_peers: true,
             i2p_enabled: false,
             i2p_sam_host: "127.0.0.1".to_string(),
             i2p_sam_port: 7656,
             i2p_mixed: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BtConfig, BtProxySource};
+    use crate::proxy_config::{ProxyConfig, ProxyMode, ProxyType};
+
+    fn server(proxy_type: ProxyType, host: &str, port: u16) -> ProxyConfig {
+        ProxyConfig {
+            mode: ProxyMode::None,
+            proxy_type,
+            host: host.to_owned(),
+            port,
+            ..ProxyConfig::default()
+        }
+    }
+
+    fn bt(enabled: bool, source: BtProxySource) -> BtConfig {
+        BtConfig {
+            proxy_enabled: enabled,
+            proxy_source: source,
+            ..BtConfig::default()
+        }
+    }
+
+    #[test]
+    fn disabled_proxy_is_direct_and_never_probes_the_system() {
+        let manual = server(ProxyType::Socks5, "10.0.0.1", 1080);
+        for source in [BtProxySource::Manual, BtProxySource::System] {
+            let mut probed = false;
+            let url = bt(false, source).session_proxy_url(&manual, || {
+                probed = true;
+                Some(server(ProxyType::Socks5, "127.0.0.1", 7890))
+            });
+            assert_eq!(url, None);
+            assert!(!probed, "BT 代理关闭时不检测系统代理");
+        }
+    }
+
+    #[test]
+    fn manual_source_uses_the_manual_server_and_ignores_the_system() {
+        let manual = server(ProxyType::Socks5, "10.0.0.1", 1080);
+        let mut probed = false;
+        let url = bt(true, BtProxySource::Manual).session_proxy_url(&manual, || {
+            probed = true;
+            Some(server(ProxyType::Socks5, "127.0.0.1", 7890))
+        });
+        assert_eq!(url.as_deref(), Some("socks5h://10.0.0.1:1080"));
+        assert!(!probed, "手动来源不检测系统代理");
+    }
+
+    #[test]
+    fn system_source_ignores_the_manual_server() {
+        let manual = server(ProxyType::Socks5, "10.0.0.1", 1080);
+        let system = server(ProxyType::Http, "127.0.0.1", 7890);
+        let config = bt(true, BtProxySource::System);
+        assert_eq!(
+            config
+                .session_proxy_url(&manual, || Some(system))
+                .as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        // 检测不到系统代理：直连，绝不回退到手动服务器。
+        assert_eq!(config.session_proxy_url(&manual, || None), None);
+    }
+
+    #[test]
+    fn unsupported_system_proxy_stays_direct() {
+        let config = bt(true, BtProxySource::System);
+        let https = server(ProxyType::Https, "proxy.lan", 443);
+        assert_eq!(
+            config.session_proxy_url(&ProxyConfig::default(), || Some(https)),
+            None
+        );
     }
 }

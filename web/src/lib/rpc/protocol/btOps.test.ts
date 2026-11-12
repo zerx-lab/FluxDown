@@ -42,6 +42,7 @@ const NEW_CONFIG_KEYS = [
   'bt_announce_all_tiers',
   'bt_announce_all_trackers',
   'bt_proxy_enabled',
+  'bt_proxy_source',
   'bt_proxy_peers',
   'bt_i2p_enabled',
   'bt_i2p_sam_host',

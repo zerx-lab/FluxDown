@@ -313,15 +313,16 @@ nonisolated enum BtSettingsRow: String, CaseIterable, Identifiable {
 
 // MARK: - BitTorrent 代理（代理设置页的 BitTorrent 分组）
 
-/// GPUI `sections/proxy.rs::bt_section`：总开关 + 节点连接是否也走代理 + 按手动代理配置给出的一条提示。
+/// GPUI `sections/proxy.rs::bt_section`：总开关 + 代理来源 + 节点连接是否也走代理 + 一条提示。
 nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
-    case enabled, peers
+    case enabled, source, peers
 
     var id: String { "network.btProxy.\(rawValue)" }
 
     var configKey: String {
         switch self {
         case .enabled: "bt_proxy_enabled"
+        case .source: "bt_proxy_source"
         case .peers: "bt_proxy_peers"
         }
     }
@@ -329,6 +330,7 @@ nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
     var titleKey: String {
         switch self {
         case .enabled: "btProxyEnabled"
+        case .source: "btProxySource"
         case .peers: "btProxyPeers"
         }
     }
@@ -336,6 +338,7 @@ nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
     var detailKey: String {
         switch self {
         case .enabled: "btProxyEnabledDesc"
+        case .source: "btProxySourceDesc"
         case .peers: "btProxyPeersDesc"
         }
     }
@@ -344,12 +347,12 @@ nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
         SettingsItem(id: id, key: configKey, titleKey: titleKey, detailKey: detailKey)
     }
 
-    /// 分组只在主机配置已加载时出现；「节点连接」只在总开关开启时出现。
+    /// 分组只在主机配置已加载时出现；「代理来源」「节点连接」只在总开关开启时出现。
     func isVisible(in form: SettingsConfigForm) -> Bool {
         guard form.has(configKey) else { return false }
         switch self {
         case .enabled: return true
-        case .peers: return form.bool(BtProxyRow.enabled.configKey)
+        case .source, .peers: return form.bool(BtProxyRow.enabled.configKey)
         }
     }
 
@@ -357,8 +360,10 @@ nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
         allCases.filter { $0.isVisible(in: form) }
     }
 
-    /// 提示行（i18n 键）：未配置服务器优先，其次是 BT 不支持 / 无法转发 UDP 的类型；SOCKS5 无提示。
-    static func hint(proxyType: String, host: String, port: String) -> String? {
+    /// 提示行（i18n 键）。系统代理来源：说明检测时机与生效方式。手动代理来源：未配置服务器优先，
+    /// 其次是 BT 不支持 / 无法转发 UDP 的类型；SOCKS5 无提示。
+    static func hint(source: String, proxyType: String, host: String, port: String) -> String? {
+        if source == BtProxySource.system.rawValue { return "btProxySystemNote" }
         if host.trimmingCharacters(in: .whitespaces).isEmpty || port.trimmingCharacters(in: .whitespaces).isEmpty {
             return "btProxyNoServer"
         }
@@ -369,12 +374,27 @@ nonisolated enum BtProxyRow: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 总开关开启时按当前手动代理配置给出的提示；关闭 / 未加载 → nil。
+    /// 总开关开启时按代理来源与手动代理配置给出的提示；关闭 / 未加载 → nil。
     static func hint(in form: SettingsConfigForm) -> String? {
-        guard BtProxyRow.peers.isVisible(in: form) else { return nil }
+        guard BtProxyRow.enabled.isVisible(in: form), form.bool(BtProxyRow.enabled.configKey) else { return nil }
         return hint(
+            source: form.string(BtProxyRow.source.configKey),
             proxyType: form.string("proxy_type"), host: form.string("proxy_host"), port: form.string("proxy_port")
         )
+    }
+}
+
+/// BT 代理来源（`bt_proxy_source`）：值 → 标题。
+nonisolated enum BtProxySource: String, CaseIterable, Identifiable {
+    case manual, system
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .manual: "btProxySourceManual"
+        case .system: "btProxySourceSystem"
+        }
     }
 }
 

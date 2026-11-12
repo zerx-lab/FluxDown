@@ -6467,14 +6467,27 @@ impl DownloadManager {
                 let save_dir = self.default_save_dir.clone();
                 let data_dir = self.app_data_dir.clone();
                 let config = self.bt_config.clone();
-                // BT 走「代理」页的手动代理服务器（与当前代理模式无关）；没填服务器或类型
-                // 不受支持时保持直连，设置页在开关下方有对应提示。
-                let proxy_url = config
-                    .proxy_enabled
-                    .then(|| self.proxy_config.manual_server_url_for_bt())
-                    .flatten();
+                let global_proxy = self.proxy_config.clone();
                 let policy = self.bt_guard.policy();
                 let session = tokio::task::spawn_blocking(move || {
+                    // 代理地址在建会话时定死：手动来源取「代理」页的服务器（与当前代理模式
+                    // 无关），系统来源在这里检测系统代理（macOS / Linux 会拉起子进程，所以
+                    // 放在阻塞线程上）。没有可用服务器时直连，设置页有对应提示。
+                    let proxy_url = config.session_proxy_url(&global_proxy, || {
+                        match crate::proxy_config::detect_system_proxy() {
+                            Ok(found) => found,
+                            Err(error) => {
+                                log_info!("[bt] 系统代理检测失败，BT 保持直连: {error:#}");
+                                None
+                            }
+                        }
+                    });
+                    if config.proxy_enabled && proxy_url.is_none() {
+                        log_info!(
+                            "[bt] 已开启 BT 代理（来源 {:?}），但没有可用的代理服务器，BT 保持直连",
+                            config.proxy_source
+                        );
+                    }
                     SharedBtSession::new(
                         &save_dir,
                         &data_dir,
