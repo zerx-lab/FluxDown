@@ -170,6 +170,8 @@ cat >"$HPL" <<EOF
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>FluxDown uses your local network to forward BT and eD2K ports on your router (UPnP / NAT-PMP) and to connect to paired devices and download hosts.</string>
 </dict>
 </plist>
 EOF

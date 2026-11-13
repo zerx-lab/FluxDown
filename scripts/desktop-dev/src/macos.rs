@@ -142,6 +142,10 @@ fn checked(command: &mut Command) -> io::Result<()> {
     }
 }
 
+/// 本地网络隐私（macOS 15+）的授权说明：两个 bundle 都声明，daemon 由 agent 拉起、归属 helper。
+/// 与 `packaging/macos/Info.plist`、`scripts/package_gpui_macos.sh` 的文案一致。
+const LOCAL_NETWORK_USAGE: &str = "FluxDown uses your local network to forward BT and eD2K ports on your router (UPnP / NAT-PMP) and to connect to paired devices and download hosts.";
+
 fn plist(helper: bool) -> String {
     let (id, executable) = if helper {
         ("com.fluxdown.app.agent", "fluxdown-agent")
@@ -171,6 +175,7 @@ fn plist(helper: bool) -> String {
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSLocalNetworkUsageDescription</key><string>{LOCAL_NETWORK_USAGE}</string>
 {background}
 </dict></plist>
 "#
@@ -243,6 +248,9 @@ mod tests {
             assert!(agent.contains(&format!("<key>{key}</key><string>{value}</string>")));
         }
         assert!(agent.contains("<key>LSUIElement</key><true/>"));
+        for contents in [&agent, &plist(false)] {
+            assert!(contents.contains("<key>NSLocalNetworkUsageDescription</key>"));
+        }
         assert!(!plist(false).contains("LSUIElement"));
         for contents in [agent, plist(false)] {
             assert!(!contents.contains("CFBundleURLTypes"));
