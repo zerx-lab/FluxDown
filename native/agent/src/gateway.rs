@@ -46,7 +46,7 @@ use crate::platform::PlatformError;
 use crate::power::PowerService;
 use crate::private_plugin::PrivatePluginService;
 use crate::remote::{RemoteError, RemoteTaskService};
-use crate::server_mode::ServerHandle;
+use crate::server_mode::{AuthThrottle, ServerHandle};
 use crate::shell::ShellState;
 use crate::sync::SyncService;
 use crate::update::{UpdateError, UpdateService};
@@ -1949,6 +1949,8 @@ struct GatewayState {
     cancel: CancellationToken,
     /// server 模式：浏览器鉴权与访问密钥；桌面形态为 `None`。
     server: Option<Arc<ServerHandle>>,
+    /// 桌面形态 `/rpc` 的按来源失败节流（server 模式用 [`ServerHandle`] 自己的那份）。
+    throttle: Arc<AuthThrottle>,
 }
 
 /// 在同一 listener 合并兼容 API 与官方 `/rpc`；server 模式再合并初始化 / 文件面 / SPA。
@@ -1971,6 +1973,7 @@ pub async fn serve(
         bearer: Arc::from(bearer.as_str()),
         cancel: cancel.clone(),
         server: server.clone(),
+        throttle: Arc::new(AuthThrottle::default()),
     };
     let rpc = Router::new()
         .route("/rpc", get(rpc_upgrade))
@@ -2010,10 +2013,16 @@ async fn plugin_image(
             }
         }
         None => {
-            if !authorized(&headers, &state.bearer)
-                && authorize_device(&state.service, &headers).await.is_none()
+            if let Err(status) = authorize_desktop_rpc(
+                &state.service,
+                &state.throttle,
+                &state.bearer,
+                peer.ip(),
+                &headers,
+            )
+            .await
             {
-                return StatusCode::UNAUTHORIZED.into_response();
+                return status.into_response();
             }
         }
     }
@@ -2082,7 +2091,7 @@ async fn rpc_upgrade(
 ) -> Response {
     // 凭据种类与「本机来源」都在建连时一次判定，整条连接沿用：桌面宿主的 `agent.token` 本就在
     // 本机；server 模式见 `ServerHandle::local_platform_permitted`（字面本机来源或显式 env 放行）。
-    // 设备控制凭据（局域网配对的远程设备）两种模式下都不是本机来源。
+    // 设备控制凭据两种模式下都不是本机来源；桌面形态的访问密钥同样不是（远端客户端用它连接）。
     let (upgrade, session) = match state.server.as_deref() {
         Some(server) => {
             let credential = match server
@@ -2101,15 +2110,23 @@ async fn rpc_upgrade(
             )
         }
         None => {
-            let session = if authorized(&headers, &state.bearer) {
-                SessionContext::new(true, RpcCredential::Agent)
-            } else {
-                match authorize_device(&state.service, &headers).await {
-                    Some(credential) => SessionContext::new(false, credential),
-                    None => return StatusCode::UNAUTHORIZED.into_response(),
-                }
+            let credential = match authorize_desktop_rpc(
+                &state.service,
+                &state.throttle,
+                &state.bearer,
+                peer.ip(),
+                &headers,
+            )
+            .await
+            {
+                Ok(credential) => credential,
+                Err(status) => return status.into_response(),
             };
-            (upgrade, session)
+            let allow_local_platform = matches!(credential, RpcCredential::Agent);
+            (
+                upgrade,
+                SessionContext::new(allow_local_platform, credential),
+            )
         }
     };
     upgrade
@@ -2117,10 +2134,46 @@ async fn rpc_upgrade(
         .into_response()
 }
 
-/// 桌面模式：`Authorization: Bearer` 携带设备控制凭据，且互联服务校验通过（名册里该设备被授权
-/// 控制本机、未被撤销、HMAC 一致）才接受。
-async fn authorize_device(service: &GatewayService, headers: &HeaderMap) -> Option<RpcCredential> {
-    let token = crate::server_mode::bearer_token(headers)?;
+/// 桌面形态 `/rpc` 升级鉴权，凭据只认 `Authorization: Bearer`：`agent.token`、访问密钥（开启局域网
+/// 访问后远端客户端——如原生移动端「访问密钥」模式——用它连接），以及互联服务校验通过（名册里该
+/// 设备被授权控制本机、未被撤销、HMAC 一致）的设备控制凭据。浏览器无法给 WebSocket 设
+/// `Authorization`，跨站网页因此出示不了任何凭据。与 server 模式一样按来源节流：同一来源连续失败
+/// 过多后锁定（429），回环来源不计。
+async fn authorize_desktop_rpc(
+    service: &GatewayService,
+    throttle: &AuthThrottle,
+    agent_bearer: &str,
+    peer: std::net::IpAddr,
+    headers: &HeaderMap,
+) -> Result<RpcCredential, StatusCode> {
+    let now = std::time::Instant::now();
+    if throttle.is_locked(peer, now) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    let Some(presented) = crate::server_mode::bearer_token(headers) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let credential = if constant_time_eq(presented.as_bytes(), agent_bearer.as_bytes()) {
+        Some(RpcCredential::Agent)
+    } else if crate::server_mode::key_matches(&service.api_token, presented) {
+        Some(RpcCredential::AccessKey(presented.to_owned()))
+    } else {
+        authorize_device(service, presented).await
+    };
+    match credential {
+        Some(credential) => {
+            throttle.record_success(peer);
+            Ok(credential)
+        }
+        None => {
+            throttle.record_failure(peer, now);
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
+}
+
+/// 设备控制凭据：互联服务存在且按名册校验通过才接受。
+async fn authorize_device(service: &GatewayService, token: &str) -> Option<RpcCredential> {
     let fingerprint = service
         .link
         .as_ref()?
@@ -2664,18 +2717,6 @@ async fn receive_lane_exit(
     }
 }
 
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(value) = headers.get(header::AUTHORIZATION) else {
-        return false;
-    };
-    let Ok(value) = value.to_str() else {
-        return false;
-    };
-    value
-        .strip_prefix("Bearer ")
-        .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
-}
-
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -2709,7 +2750,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     use super::{
-        GatewayService, GatewayShell, Lane, authorized, ensure_exposed_auth_token, lane_for,
+        GatewayService, GatewayShell, Lane, ensure_exposed_auth_token, lane_for,
         load_or_create_bearer,
     };
     #[tokio::test]
@@ -2729,13 +2770,8 @@ mod tests {
             .await
             .expect("reload token");
         assert_eq!(first, second);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {first}")).expect("header"),
-        );
-        assert!(authorized(&headers, &first));
-        assert!(!authorized(&headers, "different"));
+        assert!(!first.is_empty());
+        assert_eq!(first, first.trim());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -3313,44 +3349,43 @@ mod tests {
                     .status(),
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
             );
-            if server_mode {
-                gateway
-                    .patch_gateway(serde_json::json!({ "userToken": "images2026old" }))
-                    .await;
-                assert_eq!(
-                    client
-                        .get(&url)
-                        .bearer_auth("images2026old")
-                        .send()
-                        .await
-                        .unwrap()
-                        .status(),
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                );
-                gateway
-                    .patch_gateway(serde_json::json!({ "userToken": "images2026new" }))
-                    .await;
-                assert_eq!(
-                    client
-                        .get(&url)
-                        .bearer_auth("images2026old")
-                        .send()
-                        .await
-                        .unwrap()
-                        .status(),
-                    axum::http::StatusCode::UNAUTHORIZED,
-                );
-                assert_eq!(
-                    client
-                        .get(&url)
-                        .bearer_auth("images2026new")
-                        .send()
-                        .await
-                        .unwrap()
-                        .status(),
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                );
-            }
+            // 两种形态都认访问密钥；改密钥后旧密钥立即失效。
+            gateway
+                .patch_gateway(serde_json::json!({ "userToken": "images2026old" }))
+                .await;
+            assert_eq!(
+                client
+                    .get(&url)
+                    .bearer_auth("images2026old")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            );
+            gateway
+                .patch_gateway(serde_json::json!({ "userToken": "images2026new" }))
+                .await;
+            assert_eq!(
+                client
+                    .get(&url)
+                    .bearer_auth("images2026old")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+            );
+            assert_eq!(
+                client
+                    .get(&url)
+                    .bearer_auth("images2026new")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            );
             gateway.finish().await;
         }
     }
@@ -5561,6 +5596,112 @@ mod tests {
             .expect_err("revoked");
         assert!(rejected_with(&error, 401), "{error:?}");
         assert_rpc_alive(&mut local, 3).await;
+
+        host.finish().await;
+    }
+
+    #[tokio::test]
+    async fn desktop_host_accepts_the_access_key_as_a_remote_session() {
+        let host = TestGateway::new("access_key_desktop").await;
+        host.patch_gateway(serde_json::json!({ "userToken": "flux2026abc" }))
+            .await;
+        let address = host.address().await;
+
+        // 原生移动端「访问密钥」模式：Bearer 携带访问密钥连开启局域网访问的桌面主机。
+        let mut keyed = connect_rpc(address, "flux2026abc")
+            .await
+            .expect("desktop mode accepts the access key");
+        let capabilities = rpc_hello(&mut keyed, 1).await;
+        assert!(
+            !capabilities.iter().any(|capability| capability
+                == fluxdown_protocol::method::CAPABILITY_AGENT_OPEN_TASK_FILES)
+        );
+        let denied = socket_request(
+            &mut keyed,
+            2,
+            fluxdown_protocol::method::AGENT_PLATFORM_OPEN_TASK,
+            serde_json::json!({}),
+        )
+        .await;
+        let RpcResponse::Failure(denied) = denied else {
+            panic!("platform methods must be denied for access-key sessions");
+        };
+        assert_eq!(
+            denied.error.data.map(|data| data.code),
+            Some(ApplicationErrorCode::Unsupported)
+        );
+        for wrong in ["flux2026abd", ""] {
+            let error = connect_rpc(address, wrong).await.expect_err("wrong key");
+            assert!(rejected_with(&error, 401), "{wrong:?}: {error:?}");
+        }
+
+        // 改密钥：旧密钥会话断开、旧密钥不能重连，新密钥可连。
+        host.patch_gateway(serde_json::json!({ "userToken": "rotated2026key" }))
+            .await;
+        expect_revoked_close(&mut keyed).await;
+        let error = connect_rpc(address, "flux2026abc")
+            .await
+            .expect_err("old key");
+        assert!(rejected_with(&error, 401), "{error:?}");
+        let mut rotated = connect_rpc(address, "rotated2026key")
+            .await
+            .expect("new key");
+        rpc_hello(&mut rotated, 1).await;
+
+        host.finish().await;
+    }
+
+    #[tokio::test]
+    async fn desktop_rpc_locks_a_remote_source_after_repeated_failures() {
+        use axum::http::StatusCode;
+
+        let host = TestGateway::new("access_key_desktop_throttle").await;
+        host.patch_gateway(serde_json::json!({ "userToken": "flux2026abc" }))
+            .await;
+        let throttle = crate::server_mode::AuthThrottle::default();
+        let bearer = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {value}")).expect("bearer header"),
+            );
+            headers
+        };
+        let authorize = |peer: &str, value: &str| {
+            let peer: std::net::IpAddr = peer.parse().expect("peer address");
+            let headers = bearer(value);
+            let service = host.service.clone();
+            let throttle = &throttle;
+            async move {
+                super::authorize_desktop_rpc(
+                    &service,
+                    throttle,
+                    "test-official-bearer",
+                    peer,
+                    &headers,
+                )
+                .await
+            }
+        };
+        for _ in 0..crate::server_mode::THROTTLE_MAX_FAILURES {
+            assert_eq!(
+                authorize("203.0.113.9", "guess2026key").await,
+                Err(StatusCode::UNAUTHORIZED)
+            );
+        }
+        // 锁定期内连正确的访问密钥也不受理；其它来源与本机回环不受影响。
+        assert_eq!(
+            authorize("203.0.113.9", "flux2026abc").await,
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        );
+        assert_eq!(
+            authorize("203.0.113.10", "flux2026abc").await,
+            Ok(super::RpcCredential::AccessKey("flux2026abc".to_owned()))
+        );
+        assert_eq!(
+            authorize("127.0.0.1", "test-official-bearer").await,
+            Ok(super::RpcCredential::Agent)
+        );
 
         host.finish().await;
     }
