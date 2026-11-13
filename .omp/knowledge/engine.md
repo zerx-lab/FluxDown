@@ -140,6 +140,8 @@
   先建新目录 → 删本任务 librqbit 条目与旧 staging → `set_task_location` + 保存选择并发布位置 →
   `run_bt_download` 以新目录、Path A/S 重跑一轮（不再弹窗）。建目录失败 / 新目录落在旧 staging 内
   均报错、库内位置不变，重试会重新询问。
+- **桌面 BT 文件选择窗的「取消」= 删除任务**：GPUI 发 `daemon.task.delete`（含已暂存数据）而不答复 `Cancelled`；删除取消 worker，
+  daemon 撤回待选项，窗口随之关闭（`crates/downloads/src/pages/selection.rs::cancel_command`）。其它客户端答复 `Cancelled` 仍按 `[-1]` 暂停。
 - **BT 文件选择的自动默认（#885）**：引擎以 `timeout: None` 询问，等待上限由 daemon `selection.rs::bt_selection_timeout`
   决定：daemon 配置 `bt_selection_auto_default`（默认开）= 60s 后按默认（全部文件）开始；关闭 = 请求
   `deadline_unix_ms = SELECTION_NO_DEADLINE`（i64::MAX），只等用户答复，**从不替用户采用默认值**：最后一个订阅者离开

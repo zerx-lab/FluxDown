@@ -263,21 +263,25 @@ impl SelectionView {
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.resolve(SelectionOutcome::Cancelled, window, cx);
+        let command = cancel_command(&self.state, &self.request);
+        self.submit(command, window, cx);
     }
 
     fn resolve(&mut self, outcome: SelectionOutcome, window: &mut Window, cx: &mut Context<Self>) {
+        let command = DownloadsCommand::ResolveSelection(SelectionResolutionDto {
+            request_id: self.request.request_id.clone(),
+            outcome,
+        });
+        self.submit(command, window, cx);
+    }
+
+    fn submit(&mut self, command: DownloadsCommand, window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting {
             return;
         }
         self.submitting = true;
         cx.notify();
-        let future =
-            self.port
-                .execute(DownloadsCommand::ResolveSelection(SelectionResolutionDto {
-                    request_id: self.request.request_id.clone(),
-                    outcome,
-                }));
+        let future = self.port.execute(command);
         cx.spawn_in(window, async move |this, cx| {
             let result = future.await;
 
@@ -861,6 +865,21 @@ fn now_unix_ms() -> i64 {
         })
 }
 
+/// 「取消」按钮发出的命令。BT 的取消即放弃这个任务：连同已暂存的数据一起删除，不留暂停项；
+/// 删除会撤回本次选择请求，窗口随之关闭。其它选择种类照旧把取消答复给 daemon。
+fn cancel_command(state: &SelectionState, request: &SelectionRequestDto) -> DownloadsCommand {
+    match state {
+        SelectionState::Bt { .. } => DownloadsCommand::Delete {
+            task_id: request.task_id.clone(),
+            delete_files: true,
+        },
+        _ => DownloadsCommand::ResolveSelection(SelectionResolutionDto {
+            request_id: request.request_id.clone(),
+            outcome: SelectionOutcome::Cancelled,
+        }),
+    }
+}
+
 /// 保存目录输入是否允许确认。
 ///
 /// 请求带了当前目录时，去空白后必须非空（清空不能确认，避免空路径开下）。
@@ -887,7 +906,58 @@ fn bt_save_dir_outcome(initial: &str, input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bt_save_dir_confirmable, bt_save_dir_outcome};
+    use std::collections::HashSet;
+
+    use fluxdown_protocol::{
+        SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
+    };
+
+    use super::{SelectionState, bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command};
+    use crate::controller::DownloadsCommand;
+
+    fn request(kind: SelectionKind) -> SelectionRequestDto {
+        SelectionRequestDto {
+            request_id: "req-1".to_owned(),
+            task_id: "task-1".to_owned(),
+            kind,
+            default_choice: SelectionOutcome::Cancelled,
+            deadline_unix_ms: SELECTION_NO_DEADLINE,
+        }
+    }
+
+    #[test]
+    fn bt_cancel_deletes_the_task_with_its_data() {
+        let state = SelectionState::Bt {
+            files: Vec::new(),
+            selected: HashSet::new(),
+            save_dir: String::new(),
+        };
+        let request = request(SelectionKind::Bt {
+            files: Vec::new(),
+            save_dir: String::new(),
+        });
+        assert!(matches!(
+            cancel_command(&state, &request),
+            DownloadsCommand::Delete { task_id, delete_files: true } if task_id == "task-1"
+        ));
+    }
+
+    #[test]
+    fn other_cancels_still_answer_the_selection() {
+        let state = SelectionState::Variant {
+            options: Vec::new(),
+            selected: 0,
+        };
+        let request = request(SelectionKind::Variant {
+            options: Vec::new(),
+        });
+        assert!(matches!(
+            cancel_command(&state, &request),
+            DownloadsCommand::ResolveSelection(resolution)
+                if resolution.request_id == "req-1"
+                    && resolution.outcome == SelectionOutcome::Cancelled
+        ));
+    }
 
     #[test]
     fn unchanged_dir_keeps_current() {
