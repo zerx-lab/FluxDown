@@ -30,6 +30,9 @@ use serde_json::{Value, json};
 use super::{PortableSessions, render};
 use crate::{PluginUiPort, PortFuture, ViewContainer};
 
+/// 图片失败后的最大自动重试次数（首次请求之外）。
+const MAX_IMAGE_RETRIES: u8 = 3;
+const IMAGE_RETRY_BASE: Duration = Duration::from_secs(2);
 /// 输入框 `change` 事件的去抖间隔（与 schema `debounceMs` 一致）。
 pub(super) const INPUT_DEBOUNCE: Duration = Duration::from_millis(300);
 /// 一次帧后仍保留「已发送但未被插件确认」的输入回显的最大帧数。
@@ -71,8 +74,10 @@ pub struct PluginViewHost {
     revision: u64,
     error: Option<String>,
     images: HashMap<String, Arc<Image>>,
-    image_loads: HashSet<(String, String)>,
-    image_failures: HashSet<String>,
+    image_loads: HashMap<(String, String), (u64, u8)>,
+    /// 已尝试的重试次数与定时器代数；次数超过上限表示终止失败。
+    image_retries: HashMap<String, (u8, u64)>,
+    image_generation: u64,
     pending_inputs: HashMap<String, PendingInput>,
     input_generation: u64,
     resyncing: bool,
@@ -105,8 +110,9 @@ impl PluginViewHost {
             revision: 0,
             error: None,
             images: HashMap::new(),
-            image_loads: HashSet::new(),
-            image_failures: HashSet::new(),
+            image_loads: HashMap::new(),
+            image_retries: HashMap::new(),
+            image_generation: 0,
             pending_inputs: HashMap::new(),
             input_generation: 0,
             resyncing: false,
@@ -121,28 +127,49 @@ impl PluginViewHost {
         &self.view
     }
     fn load_image(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.images.contains_key(&id) {
+        self.load_image_attempt(id, 0, cx);
+    }
+
+    fn load_image_attempt(&mut self, id: String, prior_attempts: u8, cx: &mut Context<Self>) {
+        if self.images.contains_key(&id)
+            || (prior_attempts == 0
+                && self
+                    .image_retries
+                    .get(&id)
+                    .is_some_and(|(attempts, _)| *attempts > 0))
+            || self
+                .image_retries
+                .get(&id)
+                .is_some_and(|(attempts, _)| *attempts > MAX_IMAGE_RETRIES)
+        {
             return;
         }
         let Some(session) = self.session.clone() else {
             return;
         };
         let key = (session.clone(), id.clone());
-        if self.images.len() + self.image_loads.len() >= 128
-            || self.image_loads.contains(&key)
-            || self.image_failures.contains(&id)
+        if self.images.len() + self.image_loads.len() >= 128 || self.image_loads.contains_key(&key)
         {
             return;
         }
-        self.image_loads.insert(key.clone());
-        let request_key = key;
+        self.image_generation = self.image_generation.wrapping_add(1);
+        let request_generation = self.image_generation;
+        self.image_loads
+            .insert(key.clone(), (request_generation, prior_attempts));
         let request_id = id.clone();
         let future = self.port.image(session.clone(), id);
         cx.spawn(async move |this, cx| {
             let result = future.await;
             if this
                 .update(cx, |host, cx| {
-                    host.image_loads.remove(&request_key);
+                    let Some((generation, prior_attempts)) = host.image_loads.get(&key).copied()
+                    else {
+                        return;
+                    };
+                    if generation != request_generation {
+                        return;
+                    }
+                    host.image_loads.remove(&key);
                     if host.session.as_deref() != Some(session.as_str())
                         || !host
                             .tree
@@ -157,19 +184,67 @@ impl PluginViewHost {
                                 && bytes.len() <= 4 * 1024 * 1024 =>
                         {
                             host.images.insert(
-                                request_id,
+                                request_id.clone(),
                                 Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
                             );
+                            host.image_retries.remove(&request_id);
                         }
-                        _ => {
-                            host.image_failures.insert(request_id);
+                        Ok(_) => {
+                            host.image_retries
+                                .insert(request_id, (MAX_IMAGE_RETRIES + 1, request_generation));
                         }
+                        // The image port collapses transport and response failures into
+                        // RpcErrorData; retry all of them, but with a strict exponential cap.
+                        Err(_) => host.schedule_image_retry(
+                            request_id.clone(),
+                            session.clone(),
+                            prior_attempts,
+                            cx,
+                        ),
                     }
                     cx.notify();
                 })
                 .is_err()
             {
                 log::trace!("plugin image host released before fetched resource was applied");
+            }
+        })
+        .detach();
+    }
+    fn schedule_image_retry(
+        &mut self,
+        id: String,
+        session: String,
+        prior_attempts: u8,
+        cx: &mut Context<Self>,
+    ) {
+        let attempts = prior_attempts.saturating_add(1);
+        self.image_generation = self.image_generation.wrapping_add(1);
+        let retry_generation = self.image_generation;
+        self.image_retries
+            .insert(id.clone(), (attempts, retry_generation));
+        if attempts > MAX_IMAGE_RETRIES {
+            return;
+        }
+        let delay = IMAGE_RETRY_BASE.saturating_mul(1 << (attempts - 1));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            if this
+                .update(cx, |host, cx| {
+                    let retry_is_current =
+                        host.image_retries.get(&id) == Some(&(attempts, retry_generation));
+                    let still_in_tree = host.session.as_deref() == Some(session.as_str())
+                        && host
+                            .tree
+                            .as_ref()
+                            .is_some_and(|tree| tree_has_image(tree, &id));
+                    if retry_is_current && still_in_tree {
+                        host.load_image_attempt(id, attempts, cx);
+                    }
+                })
+                .is_err()
+            {
+                log::trace!("plugin image retry host released before timer fired");
             }
         })
         .detach();
@@ -185,6 +260,10 @@ impl PluginViewHost {
 
     pub fn tree(&self) -> Option<&ViewNode> {
         self.tree.as_ref()
+    }
+    #[cfg(test)]
+    pub(super) fn has_loaded_image(&self, id: &str) -> bool {
+        self.images.contains_key(id)
     }
 
     pub fn is_closed(&self) -> bool {
@@ -382,7 +461,7 @@ impl PluginViewHost {
         }
         self.images.clear();
         self.image_loads.clear();
-        self.image_failures.clear();
+        self.image_retries.clear();
         self.pending_inputs.clear();
         self.resyncing = false;
     }
@@ -415,8 +494,8 @@ impl PluginViewHost {
         collect_values(tree, &mut values);
         collect_images(tree, &mut image_ids);
         self.images.retain(|id, _| image_ids.contains(id));
-        self.image_failures.retain(|id| image_ids.contains(id));
-        self.image_loads.retain(|(_, id)| image_ids.contains(id));
+        self.image_retries.retain(|id, _| image_ids.contains(id));
+        self.image_loads.retain(|(_, id), _| image_ids.contains(id));
         self.pending_inputs.retain(|node, pending| {
             if pending.sent {
                 pending.frames_since_sent = pending.frames_since_sent.saturating_add(1);
