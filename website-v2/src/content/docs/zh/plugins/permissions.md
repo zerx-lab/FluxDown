@@ -3,7 +3,7 @@ title: 权限、授权与审计
 description: 各插件权限授予什么、风险等级与授权如何运作（界面与无界面两种方式）、市场如何校验插件包、哪些操作会被审计，以及「完全信任」的含义。
 section: plugins
 order: 14
-sourceHash: "339219aca8b5"
+sourceHash: "770bfb63ac01"
 ---
 
 插件并非被沙箱限制到毫无用处：它可以申请很强的能力。FluxDown 的规则是：每项能力都必须在 manifest 里**声明**，在生效之前**展示给你并由你批准**，并**记入**审计日志。
@@ -44,7 +44,7 @@ sourceHash: "339219aca8b5"
 
 插件只会以你已批准的能力运行。批准结果按插件保存，内容是你看到的那一组权限与网络主机的精确集合，以及对应的版本。
 
-- **安装或更新。** 安装插件（市场、`.fxplug`、目录或开发模式安装）或更新插件时，如果它的权限或 `desktop.networkHosts` 没有被你之前的批准覆盖，插件会装上但保持**停用**，原因显示为*需要授权*，直到你批准。桌面端会弹出授权对话框，列出风险徽标、每项权限的含义和网络主机列表，插件所在行也会出现**授权**按钮。
+- **安装或更新。** 安装插件（市场、`.fxplug`、目录或开发模式安装）或更新插件时，如果它的权限或所请求的网络主机未被你之前的批准覆盖，插件会装上但保持**停用**，原因显示为*需要授权*，直到你批准。桌面端会弹出授权对话框，列出风险徽标、每项权限的含义和网络主机列表，插件所在行也会出现**授权**按钮。
 - **完全信任。** 对**完全**等级的插件，对话框会额外给出明确警告，只有勾选*我已了解*之后确认按钮才可用。
 - **市场安装。** 市场安装前的确认就是同一个对话框；在那里确认即授予同一组能力，不会再问第二次。对话框会记录它展示的版本；如果此时市场上的最新版本已经变化，安装会被拒绝，让你先查看新版本的权限。
 - **更新只为新增项再次询问。** 新版本增加了权限或网络主机时需要你批准；没有增加则什么都不变。
@@ -65,7 +65,7 @@ sourceHash: "339219aca8b5"
 }
 ```
 
-- `permissions` 是插件完整的 `permissions` 数组；`networkHosts` 是所有视图 `desktop.networkHosts` 的并集。顺序和重复项无关；主机按字面精确比较（区分大小写）。
+- `permissions` 是插件完整的 `permissions` 数组；`networkHosts` 是 `main.imageHosts`、所有视图 `desktop.networkHosts` 以及已声明的 `archiveRules.updateUrl` 主机名的并集。顺序和重复项无关；主机按字面精确比较（区分大小写）。
 - 任一列表与 manifest 当前请求不一致，调用都会失败，错误为 `consent does not match requested capabilities`。可以先从 `daemon.plugin.list` 读出插件当前的待授权内容（`consentPending`、`consentPendingHosts`）。
 - 授权没有完成之前，启用该插件（`daemon.plugin.setEnabled` 传 `true`，或 `PUT /api/v1/plugins/{identity}/enabled`）会失败，错误为 `consent required`。
 

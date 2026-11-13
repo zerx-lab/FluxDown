@@ -343,7 +343,13 @@ impl Walker {
                     )),
                 }
             }
-            ViewPropFormat::ImageDataUri => {
+            ViewPropFormat::ImageSource => {
+                if let Some(id) = s.strip_prefix("flux-image:") {
+                    if image_resource_id(id) {
+                        return Ok(());
+                    }
+                    return Err(FieldError::new("invalid image resource reference"));
+                }
                 let limit = self.schema.limits.max_image_src_bytes;
                 if s.len() > limit {
                     return Err(FieldError::new(format!(
@@ -367,6 +373,18 @@ impl Walker {
             }
         }
     }
+}
+
+/// Resource IDs are canonical lowercase UUIDs, never URLs or path segments.
+fn image_resource_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || matches!(b, b'a'..=b'f')
+            }
+        })
 }
 
 /// 子节点 id 的最后一段：`p.key`（非空字符串或整数）或下标。
@@ -731,6 +749,15 @@ mod tests {
         ok(image("data:image/png;base64,iVBORw0KGgo="));
         ok(image("data:image/jpeg;base64,/9j/4AAQ"));
         ok(image("data:image/webp;base64,UklGRg=="));
+        ok(image("flux-image:12345678-abcd-4000-8000-123456789abc"));
+        for src in [
+            "flux-image:../secret",
+            "flux-image:12345678-ABCD-4000-8000-123456789abc",
+            "flux-image:https://example.com/a.png",
+            "flux-image:12345678-abcd-4000-8000-123456789abc?token=x",
+        ] {
+            assert!(rejected(image(src)).contains("invalid image resource"));
+        }
         assert!(
             rejected(image("data:image/svg+xml;base64,PHN2Zz4="))
                 .contains("data:image/(png|jpeg|webp)")

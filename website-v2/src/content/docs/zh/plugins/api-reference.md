@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "426a6413a002"
+sourceHash: "018730cc4f22"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -301,8 +301,42 @@ flux.timers.setInterval(() => flux.logger.info("tick"), 60000);
 | `flux.ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** |
 | `flux.ui`、`commands`、`rpc`、`events`、`timers`、`settings.update` | — | — | — | — | — | 有 | **`undefined`** |
 | `flux.tasks` | — | — | — | — | — | 权限 `tasks` | **`undefined`** |
+| `ctx.images` / `flux.images` | — | — | — | — | — | 仅 `flux.images` | **`undefined`** |
 
 `flux.auth.*` 和 `flux.fetch` 的 `authRef` 选项都需要在 `permissions` 里声明 `auth`；没有该权限却显式传入 `authRef`，`flux.fetch` 会 reject（见[错误](#你会遇到的错误)）。
+
+### 图片加载（仅视图会话）
+
+可移植视图回调中可用 `ctx.images.load(opts)`，请求会绑定到该视图会话。常驻 `main` 脚本也可调用 `flux.images.load({ session: ctx.session, ...opts })`，其中 `session` 使用视图上下文里的会话 ID。两者都返回 `Promise<string>`，内容为小写的 `flux-image:<uuid>` 资源引用。把它作为图片节点的 `src` 使用即可，和现有 PNG/JPEG/WebP data URI 一样；视图协议传递的仍只是短字符串，不会承载图片字节。原有 data URI 图片行为保持不变。
+
+```jsx
+flux.ui.view("profile", {
+  async init(ctx) {
+    const src = await ctx.images.load({
+      url: "https://images.example.com/avatar.jpg",
+      maxWidth: 256,
+      maxHeight: 256,
+    });
+    return { src };
+  },
+  render: ({ src }) => <image src={src} alt="Profile" />,
+});
+```
+
+图片请求遵循 FluxDown 出站代理/TUN 路由与 SSRF 防护（包括现有的开发模式私有网络例外）；显式配置为可信的代理也与 `flux.fetch` 一样使用。重定向必须仍在获准主机范围内，且不允许从 HTTPS 降级。不会自动推断凭据：只有声明 `auth` 权限时才能传 `authRef`。提供请求头或 `authRef` 时，重定向仅允许同源。声明 `auth` 的插件不缓存图片请求，避免凭据轮换后继续使用旧的认证响应。
+
+`opts` 字段：
+
+| 字段 | 默认值 | 规则 |
+|---|---|---|
+| `url` | — | 必填 HTTP(S) URL，使用 `GET`。主机必须获准；禁止 userinfo 和 HTTPS 降级重定向。 |
+| `headers` | 无 | 可选的字符串请求头。 |
+| `authRef` | 无 | 可选的已保存凭据引用；需要 `auth` 权限。 |
+| `maxWidth`、`maxHeight` | 各 `512` | 1–2048 的整数。宿主保持宽高比且不会放大图片。 |
+| `cache` | `true` | `false` 跳过来源结果复用；图片永不落盘。无论该选项为何值，HTTP 响应始终为 `no-store`，已返回的引用在会话关闭前有效。 |
+
+输入格式根据内容识别，只接受 PNG、JPEG、WebP，不信任声明的 Content-Type。输入每边最多 8192 像素、总计最多 1600 万像素，解码内存最多 64 MiB；网络响应体最多 8 MiB，请求最多 10 秒。宿主输出净化后的静态 PNG 缩略图，最多 4 MiB，并以 `image/png` 提供。每个会话最多 128 个资源 / 16 MiB；全局图片资源最多 64 MiB。超过配额会明确报错，不会驱逐仍可能显示的引用。缓存的来源/选项结果保留五分钟，但返回资源引用在会话结束前有效。视图会话关闭或插件卸载时，其图片资源会释放。以上限制由宿主强制执行。
+所有插件合计最多同时进行四次未命中缓存的图片加载，超出会明确报过载；解码/缩略图处理最多并发两次，等待解码的源图也受加载并发限制。全局资源数量上限为 4096。
 
 ## `flux` 对象
 

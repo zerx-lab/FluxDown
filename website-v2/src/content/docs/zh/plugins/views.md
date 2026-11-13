@@ -3,7 +3,7 @@ title: 视图、命令与 UI API
 description: 可移植插件视图、命令与常驻 main 脚本的参考：节点、属性、事件、限制、生命周期与各客户端支持矩阵。
 section: plugins
 order: 12
-sourceHash: "d9ffd59b929e"
+sourceHash: "deb3d0678bed"
 ---
 
 本页是插件界面的参考资料：常驻的 **`main` 脚本**、`flux.ui` / `flux.commands` / `flux.rpc` / `flux.events` / `flux.timers` 这组 API、每种节点的属性、事件与限制，以及各客户端分别能显示什么。分步骤的教程见[用可移植视图构建界面](/docs/zh/plugins/ui-guide/)和[原生桌面界面](/docs/zh/plugins/desktop-ui-guide/)。
@@ -185,11 +185,28 @@ flux.ui.view(id: string, def: {
 | `props` | 目前恒为 `{}`：桌面端和 Web 端都不会传 props。 |
 | `taskId` | `taskDetail` 视图所属的任务；其他位置为 `null`。 |
 | `locale` | 会话打开时客户端的界面语言（如 `zh-CN`、`en`）；客户端未提供时为空字符串。用户之后切换语言不会更新它。 |
+| `images.load(opts)` | 由宿主加载获准的远程图片，并返回此会话的 `flux-image:<uuid>` 资源引用。URL 主机必须在 `main.imageHosts` 声明并获准；客户端不会自行请求 URL。会话关闭或插件卸载时释放资源。详见[API 参考](/docs/zh/plugins/api-reference/)。 |
 | `refresh()` | 请求重新渲染该会话。把 `ctx` 保存起来（例如放进 `state`），就能在定时器、命令或事件处理函数里触发刷新。 |
 | `close()` | 关闭承载该视图的容器并结束会话：登录对话框（`auth`）、设置对话框（`settings`）或独立窗口。嵌入页面的视图（活动栏页、任务详情标签页）没有容器，改为显示「视图会话已结束」和**重新打开**按钮。重复调用不做任何事。可以在 `init` 里调用（例如用户已经登录）：客户端显示视图后立即关闭。 |
 | `navigate(target)` | 返回 Promise。让主窗口到前台并切换到某个页面。`target` 为 `"downloads"`、`"rss"`、`"webhooks"`，或用 `{ view: "<id>" }` 指向本插件的某个 `activity` 视图。未知目标会以 `navigate: unknown target …` reject；`{ view }` 不是本插件的 `activity` 视图时以 `navigate: view '<id>' is not an activity view of this plugin` reject；在 `close()` 之后调用会以 `navigate: the view has been closed; call navigate() before close()` reject。可以在 `init` 里调用。目标页面在该客户端不可用（例如 Web 端无法显示仅桌面实现的视图）时，客户端忽略该请求并记录警告日志。只影响打开该会话的那个客户端。 |
 
 `ViewContext`、`ViewEvent`、`ViewDefinition` 这些 TypeScript 类型由 `fluxdown-plugin-sdk` 导出（见 [SDK 参考](/docs/zh/plugins/sdk/)）。
+
+```jsx
+flux.ui.view("profile", {
+  async init(ctx) {
+    const avatar = await ctx.images.load({
+      url: "https://images.example.com/avatar.jpg",
+      maxWidth: 256,
+      maxHeight: 256,
+    });
+    return { avatar };
+  },
+  render: ({ avatar }) => <image src={avatar} alt="Profile" />,
+});
+```
+
+`flux-image:<uuid>` 是宿主持有的会话资源；现有 data URI 来源仍受支持。它不是远程 URL，视图会话关闭后不可复用。
 
 示例：一个活动栏页面添加下载后跳到下载列表：
 
@@ -313,7 +330,7 @@ tone 跟随当前主题：`neutral` → `colors.foreground`，`accent` → `colo
 | `markdown` | `text` **必填** | 只支持段落和代码块。 |
 | `code` | `text` **必填** | 等宽代码块。 |
 | `link` | `text` **必填**、`href` **必填** | `href` 必须是格式正确、不含空白的 `http://` 或 `https://` 地址。 |
-| `image` | `src` **必填**、`alt`（""）、`width` ≥ 0、`height` ≥ 0 | `src` 为 `data:image/png;base64,…`、`data:image/jpeg;base64,…` 或 `data:image/webp;base64,…`，base64 内容非空，整体不超过 1 MiB。不接受远程 URL。 |
+| `image` | `src` **必填**、`alt`（""）、`width` ≥ 0、`height` ≥ 0 | `src` 可以是 PNG/JPEG/WebP base64 data URI（内容非空，整体不超过 1 MiB），也可以是 `ctx.images.load` 返回的 `flux-image:<uuid>` 会话资源。不接受任意远程 URL。 |
 | `badge` | `text` **必填**、`tone`（neutral） | |
 | `progress` | `value` 为 0–1 的数字或 `null`（`null`）、`label` | `null` 显示不确定进度条。 |
 | `spinner` | `label` | |

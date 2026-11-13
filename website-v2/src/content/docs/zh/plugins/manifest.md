@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "e9272ccb553c"
+sourceHash: "9839428e1592"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -206,7 +206,10 @@ hooks 在下载生命周期事件发生时运行你的代码。
 |---|---|---|
 | `entry` | 是 | classic 脚本（不是 ES module），包内安全相对路径，扩展名 `.js`，文件必须存在。 |
 | `events` | 否 | 投递给脚本的事件，每项须是 `onStart`、`onError`、`onDone`、`onMetaProbed`、`onCancel` 之一。 |
+| `imageHosts` | 否 | 默认 `[]`。`main` 可通过 `ctx.images` / `flux.images` 加载的远程图片主机，须为小写 DNS 主机名或 IP 字面量；最多 64 项且不得重复，主机格式同 `desktop.networkHosts`。会纳入网络授权。 |
 | `background` | 否 | 布尔值。`true` 表示脚本随 daemon 常驻，需要 `background` 权限。 |
+
+远程图片由宿主代为请求，界面本身不会直接访问网络。请在 `main.imageHosts` 中声明所有图片来源主机；未声明主机的请求会被拒绝。旧 manifest 可省略此字段（等同于 `[]`）。详见[API 参考](/docs/zh/plugins/api-reference/)。
 
 `main` 是插件的常驻部分：可移植视图、命令与后台逻辑都在 daemon 内的这个脚本里运行。见[可移植界面指南](/docs/zh/plugins/ui-guide/)。
 

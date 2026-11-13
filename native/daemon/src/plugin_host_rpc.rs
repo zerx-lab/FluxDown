@@ -205,6 +205,17 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
         ) -> Result<BridgeHttpResponse, PluginError> {
             Err(PluginError::Runtime("no network in test".to_owned()))
         }
+        async fn image_request(
+            &self,
+            _plugin_id: &str,
+            _req: BridgeHttpRequest,
+            _hosts: Vec<String>,
+        ) -> Result<Vec<u8>, PluginError> {
+            use base64::Engine as _;
+            Ok(base64::engine::general_purpose::STANDARD.decode(
+                "iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAHUlEQVR4nGMQaThAU8QwasGoBaMWjFowasFQsAAAZsSoH59Hy/YAAAAASUVORK5CYII="
+            ).unwrap())
+        }
         async fn storage_get(&self, _plugin_id: &str, _key: &str) -> Option<String> {
             None
         }
@@ -221,7 +232,7 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
     }
 
     struct Fixture {
-        service: DaemonService,
+        service: Arc<DaemonService>,
         frames: broadcast::Receiver<fluxdown_protocol::EventFrame>,
         base: std::path::PathBuf,
     }
@@ -271,7 +282,13 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
         let frames = events.subscribe();
         let manager = Arc::new(PluginManager::new(
             Arc::new(QuickJsScriptRuntime::new(1).unwrap()),
-            Arc::new(NullBridge),
+            Arc::new(fluxdown_engine::plugin::audit::AuditingBridge::new(
+                Arc::new(NullBridge),
+                fluxdown_engine::plugin::audit::AuditLog::new(
+                    db.clone(),
+                    &tokio::runtime::Handle::current(),
+                ),
+            )),
             db.clone(),
             root,
             "1.0.0".to_owned(),
@@ -297,7 +314,7 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
             Some(manager),
         );
         Fixture {
-            service,
+            service: Arc::new(service),
             frames,
             base,
         }
@@ -347,6 +364,104 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn image_resources_cross_js_and_authenticated_http_and_expire_on_close() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let f = fixture_with(
+            json!({
+                "identity": ID, "name": "Images", "version": "1.0.0",
+                "main": { "entry": "main.js", "imageHosts": ["covers.example"] },
+                "contributes": {
+                    "views": [{ "id": "counter", "title": "Cover", "location": "activity" }]
+                },
+            }),
+            r#"
+flux.ui.view("counter", {
+  init: async (ctx) => ({
+    src: await ctx.images.load({ url: "https://covers.example/a.png", maxWidth: 16, maxHeight: 16 })
+  }),
+  render: (st) => flux.ui.h("image", { src: st.src, alt: "cover" }),
+});
+"#,
+            &[],
+        )
+        .await;
+        let request = json!({ "identity": ID, "view": "counter" });
+        assert!(
+            call(&f, "daemon.plugin.view.open", request.clone())
+                .await
+                .is_err()
+        );
+        f.service
+            .plugin_manager()
+            .unwrap()
+            .grant_consent(ID, &[], &["covers.example".to_owned()])
+            .await
+            .unwrap();
+        let opened = call(&f, "daemon.plugin.view.open", request.clone())
+            .await
+            .unwrap();
+        let session = opened["session"].as_str().unwrap();
+        let src = opened["tree"]["p"]["src"].as_str().unwrap();
+        let id = src.strip_prefix("flux-image:").unwrap();
+        let bytes = f.service.plugin_image(session, id).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let width = u32::from_be_bytes(bytes.get(16..20).unwrap().try_into().unwrap());
+        let height = u32::from_be_bytes(bytes.get(20..24).unwrap().try_into().unwrap());
+        assert_eq!((width, height), (16, 8));
+        let other = call(&f, "daemon.plugin.view.open", request).await.unwrap();
+        assert!(
+            f.service
+                .plugin_image(other["session"].as_str().unwrap(), id)
+                .is_none()
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let server = tokio::spawn(crate::http::serve(
+            listener,
+            f.service.clone(),
+            "image-test-token".to_owned(),
+            cancel.clone(),
+        ));
+        async fn get(address: std::net::SocketAddr, path: &str, token: &str) -> Vec<u8> {
+            let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+            socket.write_all(format!(
+                "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+            ).as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), socket.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            response
+        }
+        let path = format!("/plugin-images/{session}/{id}");
+        let response = get(address, &path, "wrong").await;
+        assert!(response.starts_with(b"HTTP/1.1 401"));
+        let response = get(address, &path, "image-test-token").await;
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        let header_end = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+        let headers = String::from_utf8_lossy(&response[..header_end]);
+        assert!(headers.contains("content-type: image/png"));
+        assert!(headers.contains("cache-control: no-store"));
+        assert!(headers.contains("x-content-type-options: nosniff"));
+        assert_eq!(&response[header_end..], bytes.as_ref());
+        call(
+            &f,
+            "daemon.plugin.view.close",
+            json!({ "session": session }),
+        )
+        .await
+        .unwrap();
+        let response = get(address, &path, "image-test-token").await;
+        assert!(response.starts_with(b"HTTP/1.1 404"));
+        cancel.cancel();
+        server.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

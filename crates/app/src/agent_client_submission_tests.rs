@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use fluxdown_protocol::method;
 use futures_util::{SinkExt, StreamExt};
@@ -6,8 +6,8 @@ use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use super::{
-    AgentClient, Bootstrap, ClientCommand, PreferenceWrites, ServiceBootstrap, Socket,
-    SubmissionTransport, run_connected,
+    AgentClient, AgentClientConfig, Bootstrap, ClientCommand, PreferenceWrites, ServiceBootstrap,
+    Socket, SubmissionTransport, run_connected,
 };
 use crate::downloads_port::AgentDownloadsPort;
 use fluxdown_ui_downloads::{
@@ -77,6 +77,10 @@ fn rpc_import_pause_failure_disconnect_and_resume_preserve_unsent_order() {
                 commands,
                 runtime: runtime.clone(),
                 bootstrap: Arc::new(ServiceBootstrap::new()),
+                config: AgentClientConfig {
+                    rpc_url: None,
+                    bearer_path: PathBuf::new(),
+                },
                 submissions: Arc::new(crate::downloads_port::SubmissionGate::default()),
             });
             let port = Arc::new(AgentDownloadsPort::new(client.clone()));
@@ -201,6 +205,10 @@ fn test_client(
             commands,
             runtime: runtime.clone(),
             bootstrap: Arc::new(ServiceBootstrap::new()),
+            config: AgentClientConfig {
+                rpc_url: None,
+                bearer_path: PathBuf::new(),
+            },
             submissions: Arc::new(crate::downloads_port::SubmissionGate::default()),
         }),
         receiver,

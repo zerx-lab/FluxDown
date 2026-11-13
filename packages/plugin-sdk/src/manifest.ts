@@ -245,7 +245,7 @@ function checkMain(errors: string[], manifest: Obj, files: Files, permissions: u
   const main = manifest.main;
   if (main === undefined || main === null) return;
   if (!isObject(main)) return void errors.push("main 须为对象");
-  unknownKeys(errors, "main", main, ["entry", "events", "background"]);
+  unknownKeys(errors, "main", main, ["entry", "events", "background", "imageHosts"]);
   if (!isSafeRelativePath(main.entry)) {
     errors.push(`main entry 路径 '${String(main.entry)}' 非法`);
   } else {
@@ -265,6 +265,17 @@ function checkMain(errors: string[], manifest: Obj, files: Files, permissions: u
     errors.push("main.background 须为布尔");
   } else if (main.background === true && !hasPermission(permissions, "background")) {
     errors.push("main.background 为 true 时 permissions 必须包含 background");
+  }
+  const imageHosts = main.imageHosts ?? [];
+  if (!Array.isArray(imageHosts)) errors.push("main.imageHosts 须为数组");
+  else {
+    if (imageHosts.length > NETWORK_HOSTS_MAX) errors.push(`main.imageHosts 至多 ${NETWORK_HOSTS_MAX} 项`);
+    const seen = new Set<string>();
+    for (const host of imageHosts) {
+      if (!isValidNetworkHost(host)) errors.push(`main.imageHosts '${String(host)}' 非法`);
+      else if (seen.has(host)) errors.push(`main.imageHosts '${host}' 重复`);
+      else seen.add(host);
+    }
   }
 }
 
@@ -834,14 +845,16 @@ export function riskOf(manifest: { permissions?: readonly string[] | null }): Pl
   return permissions.some((p) => elevated.includes(p)) ? "elevated" : "standard";
 }
 
-/** Sorted, de-duplicated union of desktop hosts and archive rule update URL hosts. */
+/** Sorted, de-duplicated union of main image, desktop and archive rule update URL hosts. */
 export function networkHostsOf(manifest: {
+  main?: { imageHosts?: readonly string[] | null } | null;
   contributes?: {
     views?: readonly { desktop?: { networkHosts?: readonly string[] | null } | null }[] | null;
     archiveRules?: { updateUrl?: string | null } | null;
   } | null;
 }): string[] {
   const hosts = new Set<string>();
+  for (const host of manifest.main?.imageHosts ?? []) hosts.add(host);
   for (const view of manifest.contributes?.views ?? []) {
     for (const host of view.desktop?.networkHosts ?? []) hosts.add(host);
   }

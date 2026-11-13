@@ -230,6 +230,9 @@ pub struct MainDecl {
     /// 是否随 daemon 启动常驻（需 `background` 权限）。
     #[serde(default)]
     pub background: bool,
+    /// `flux.images.load` 可请求的来源主机；并入用户授权的网络主机集合。
+    #[serde(default)]
+    pub image_hosts: Vec<String>,
 }
 
 /// 视图放置位置。
@@ -792,14 +795,19 @@ impl PluginManifest {
         }
     }
 
-    /// 所有 view `desktop.networkHosts` 的排序去重并集。
+    /// `main.imageHosts`、view `desktop.networkHosts` 与 archive update 主机的排序去重并集。
     pub fn network_hosts(&self) -> Vec<String> {
         let mut hosts: Vec<String> = self
-            .contributes
+            .main
             .iter()
-            .flat_map(|c| c.views.iter())
-            .filter_map(|v| v.desktop.as_ref())
-            .flat_map(|d| d.network_hosts.iter().cloned())
+            .flat_map(|main| main.image_hosts.iter().cloned())
+            .chain(
+                self.contributes
+                    .iter()
+                    .flat_map(|c| c.views.iter())
+                    .filter_map(|v| v.desktop.as_ref())
+                    .flat_map(|d| d.network_hosts.iter().cloned()),
+            )
             .chain(
                 self.contributes
                     .iter()
@@ -905,7 +913,19 @@ fn validate_main(m: &PluginManifest) -> Result<(), PluginError> {
         }
     }
     if main.background && !m.has_permission(PERMISSION_BACKGROUND) {
-        return manifest_err("main.background 为 true 时 permissions 必须包含 background".into());
+        return manifest_err("main.background requires the background permission".to_owned());
+    }
+    if main.image_hosts.len() > NETWORK_HOSTS_MAX {
+        return manifest_err(format!("main.imageHosts 至多 {NETWORK_HOSTS_MAX} 项"));
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    for host in &main.image_hosts {
+        if !is_valid_network_host(host) {
+            return manifest_err(format!("main.imageHosts '{host}' 非法"));
+        }
+        if !seen.insert(host.as_str()) {
+            return manifest_err(format!("main.imageHosts '{host}' 重复"));
+        }
     }
     Ok(())
 }

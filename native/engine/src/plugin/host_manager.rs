@@ -43,6 +43,9 @@ const RENDER_MIN_INTERVAL: Duration = Duration::from_millis(100);
 const CREATE_WINDOW: Duration = Duration::from_secs(60);
 const CREATE_LIMIT: usize = 20;
 
+// Bound downloaded source buffers waiting for the decoder, across all plugin hosts.
+static IMAGE_LOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -126,6 +129,7 @@ impl CreateLimiter {
 /// manager 持有的全部宿主状态。
 pub(super) struct HostState {
     hosts: Mutex<HashMap<String, HostEntry>>,
+    images: super::super::images::ImageResources,
     sessions: Mutex<HashMap<String, SessionEntry>>,
     timers: Mutex<HashMap<(String, u32), AbortHandle>>,
     limiters: Mutex<HashMap<String, Arc<CreateLimiter>>>,
@@ -143,6 +147,7 @@ impl HostState {
         Self {
             hosts: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            images: super::super::images::ImageResources::default(),
             timers: Mutex::new(HashMap::new()),
             limiters: Mutex::new(HashMap::new()),
             activation: Mutex::new(HashMap::new()),
@@ -243,6 +248,19 @@ impl HostEvents for HostEventsImpl {
             return Err(PluginError::Runtime("plugin manager stopped".to_string()));
         };
         manager.host_view_navigate(identity, session, target).await
+    }
+
+    async fn image_load(
+        &self,
+        identity: &str,
+        session: &str,
+        options: super::super::images::ImageLoadOptions,
+    ) -> Result<String, PluginError> {
+        let manager = self
+            .manager
+            .upgrade()
+            .ok_or_else(|| PluginError::Runtime("plugin manager stopped".to_string()))?;
+        manager.host_image_load(identity, session, options).await
     }
 }
 
@@ -516,20 +534,24 @@ impl PluginManager {
         self.ensure_host(identity).await?;
 
         let session = uuid::Uuid::new_v4().to_string();
-        lock(&self.host.sessions).insert(
-            session.clone(),
-            SessionEntry {
-                identity: identity.to_string(),
-                last_keepalive: Instant::now(),
-                opened: false,
-                last_render: None,
-                pending: None,
-                flush_scheduled: false,
-                refresh_pending: false,
-                next_ticket: 0,
-                last_ticket: 0,
-            },
-        );
+        {
+            let mut sessions = lock(&self.host.sessions);
+            sessions.insert(
+                session.clone(),
+                SessionEntry {
+                    identity: identity.to_string(),
+                    last_keepalive: Instant::now(),
+                    opened: false,
+                    last_render: None,
+                    pending: None,
+                    flush_scheduled: false,
+                    refresh_pending: false,
+                    next_ticket: 0,
+                    last_ticket: 0,
+                },
+            );
+            self.host.images.open_session(identity, &session);
+        }
         let call = HostCall::ViewOpen {
             session: session.clone(),
             view: view.to_string(),
@@ -548,12 +570,14 @@ impl PluginManager {
             }
             Ok(_) => {
                 lock(&self.host.sessions).remove(&session);
+                self.host.images.close_session(&session);
                 Err(PluginError::InvalidOutput(
                     "view open returned no tree".to_string(),
                 ))
             }
             Err(e) => {
                 lock(&self.host.sessions).remove(&session);
+                self.host.images.close_session(&session);
                 Err(e)
             }
         }
@@ -592,6 +616,7 @@ impl PluginManager {
         let Some(entry) = removed else {
             return;
         };
+        self.host.images.close_session(session);
         self.sink.emit(EngineEvent::PluginViewClosed {
             session: session.to_string(),
             reason: reason.to_string(),
@@ -746,6 +771,7 @@ impl PluginManager {
             keep
         });
         self.close_sessions_of(identity, "pluginUnloaded");
+        self.host.images.close_plugin(identity);
     }
 
     /// 结束某插件的全部会话并广播 `PluginViewClosed`。
@@ -1107,6 +1133,68 @@ impl PluginManager {
         lock(&self.host.sessions).contains_key(session)
     }
 
+    /// Read a sanitized PNG resource only within its owning live view session.
+    #[must_use]
+    pub fn view_image(&self, session: &str, id: &str) -> Option<Arc<[u8]>> {
+        let sessions = lock(&self.host.sessions);
+        sessions.get(session)?;
+        self.host.images.read(session, id)
+    }
+
+    async fn host_image_load(
+        &self,
+        identity: &str,
+        session: &str,
+        mut options: super::super::images::ImageLoadOptions,
+    ) -> Result<String, PluginError> {
+        self.check_view_session(identity, session)?;
+        options.validate()?;
+        let snapshot = self.plugins.read().await.clone();
+        let plugin = snapshot
+            .iter()
+            .find(|plugin| plugin.enabled && plugin.manifest.identity == identity)
+            .ok_or_else(|| PluginError::Runtime("plugin is not enabled".to_string()))?;
+        let hosts = plugin
+            .manifest
+            .main
+            .as_ref()
+            .map(|main| main.image_hosts.clone())
+            .unwrap_or_default();
+        let auth_allowed = plugin.manifest.has_permission(PERMISSION_AUTH);
+        // Authentication may rotate without changing authRef; never reuse a previous fetch.
+        if auth_allowed {
+            options.cache = false;
+        }
+        let url = url::Url::parse(&options.url)
+            .map_err(|error| PluginError::InvalidOutput(format!("invalid image URL: {error}")))?;
+        if !url.host_str().is_some_and(|host| {
+            let host = host.trim_matches(['[', ']']);
+            hosts.iter().any(|allowed| allowed == host)
+        }) {
+            return Err(PluginError::Runtime(
+                "image host is not declared in main.imageHosts".to_string(),
+            ));
+        }
+        if let Some(src) = self.host.images.cached(identity, session, &options)? {
+            return Ok(src);
+        }
+        let _permit = IMAGE_LOADS
+            .try_acquire()
+            .map_err(|_| PluginError::Overloaded)?;
+        let request = super::super::runtime::BridgeHttpRequest {
+            url: options.url.clone(),
+            headers: options.headers.clone(),
+            auth_ref: options.auth_ref.clone(),
+            auth_allowed,
+            private_network_allowed: plugin.dev,
+            ..Default::default()
+        };
+        let bytes = self.bridge.image_request(identity, request, hosts).await?;
+        let bytes = super::super::images::thumbnail(bytes, &options).await?;
+        self.check_view_session(identity, session)?;
+        self.host.images.insert(identity, session, &options, bytes)
+    }
+
     /// `ctx.close()`：原因固定为 `requested`（对应 `fluxdown_protocol::VIEW_CLOSE_REASON_REQUESTED`；
     /// 引擎不依赖 protocol crate，故在此保持同值）。
     fn host_view_close(self: &Arc<Self>, identity: &str, session: &str) -> Result<(), PluginError> {
@@ -1262,6 +1350,7 @@ impl PluginManager {
                 .collect()
         };
         for (session, identity) in expired {
+            self.host.images.close_session(&session);
             self.sink.emit(EngineEvent::PluginViewClosed {
                 session: session.clone(),
                 reason: "expired".to_string(),

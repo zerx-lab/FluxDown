@@ -300,8 +300,44 @@ The injected `flux` object is the same for all entries except where this table s
 | `flux.ytdlp` | perm `ytdlp` | perm `ytdlp` | perm `ytdlp` | **`undefined`** | perm `ytdlp` | perm `ytdlp` | **`undefined`** |
 | `flux.ui`, `commands`, `rpc`, `events`, `timers`, `settings.update` | — | — | — | — | — | yes | **`undefined`** |
 | `flux.tasks` | — | — | — | — | — | perm `tasks` | **`undefined`** |
+| `ctx.images` / `flux.images` | — | — | — | — | — | `flux.images` only | **`undefined`** |
 
 `flux.auth.*` and the `authRef` option of `flux.fetch` need `auth` in `permissions`; passing an explicit `authRef` without it makes `flux.fetch` reject (see [Errors](#errors-you-will-see)).
+
+### Image loading (view sessions only)
+
+`ctx.images.load(opts)` is available in a portable view callback and binds the request to that view's session. The resident main script can instead call `flux.images.load({ session: ctx.session, ...opts })`; pass the session ID from the view context. Both return a `Promise<string>` containing a lowercase `flux-image:<uuid>` resource reference. Use that reference as an image node's `src`, just like an existing PNG/JPEG/WebP data URI; the view protocol still carries only a small string, never image bytes. Existing data-URI images continue to work unchanged.
+
+```js
+flux.ui.view("profile", {
+  async init(ctx) {
+    const src = await ctx.images.load({
+      url: "https://images.example.com/avatar.jpg",
+      maxWidth: 256,
+      maxHeight: 256,
+    });
+    return { src };
+  },
+  render(state) {
+    return flux.ui.h("image", { src: state.src, alt: "Profile" });
+  },
+});
+```
+
+The host applies FluxDown's outbound proxy/TUN routing and SSRF protections (including the existing development-mode private-network allowance); configured trusted proxies are used the same way as for `flux.fetch`. Redirects must remain on an approved host and cannot downgrade HTTPS. Credentials are not inferred: pass `authRef` only when the plugin has `auth` permission. Supplying request headers or `authRef` restricts redirects to the same origin. Plugins with `auth` permission do not memoize image fetches, avoiding stale authenticated responses after credential rotation.
+
+`opts` accepts:
+
+| Field | Default | Rules |
+|---|---|---|
+| `url` | — | Required HTTP(S) URL fetched with `GET`. Host must be approved; userinfo and HTTPS-to-HTTP redirects are forbidden. |
+| `headers` | none | Optional string headers. |
+| `authRef` | none | Optional saved credential reference; requires `auth` permission. |
+| `maxWidth`, `maxHeight` | `512` each | Integers from 1 to 2048. The host preserves aspect ratio and does not upscale. |
+| `cache` | `true` | `false` skips memoization and disk (images are never written to disk); the HTTP response is `no-store` regardless of this option. Successful references live until their session closes. |
+
+Input is accepted only when sniffed as PNG, JPEG or WebP; declared content type alone is not trusted. Input dimensions are capped at 8192 per side and 16 megapixels, decoding at 64 MiB, network body at 8 MiB, and fetch time at 10 seconds. The host emits a sanitized static PNG thumbnail of at most 4 MiB and serves it as `image/png`. Per-session quotas are 128 resources / 16 MiB; the global image-resource byte quota is 64 MiB. Quota exhaustion is an explicit error; visible references are never evicted. Cached source/options results live for five minutes, but their returned resource remains valid for the session lifetime. Closing the view session or unloading the plugin frees its image resources. These limits are host-enforced.
+At most four uncached image loads run at once across all plugins (additional loads fail as overloaded), with at most two decode/thumbnail workers. This also bounds source images waiting for decoding. The global resource-count cap is 4096.
 
 ## The `flux` object
 

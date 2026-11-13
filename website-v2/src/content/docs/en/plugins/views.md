@@ -184,11 +184,28 @@ flux.ui.view(id: string, def: {
 | `props` | Always `{}` today: neither the desktop app nor the Web UI passes props. |
 | `taskId` | The task a `taskDetail` view is attached to; `null` for every other location. |
 | `locale` | The client's UI language when the session was opened (for example `zh-CN`, `en`); an empty string if the client did not report one. It is not updated when the user switches language. |
+| `images.load(opts)` | Loads an approved remote image through the host and returns a `flux-image:<uuid>` resource reference for this session. The URL host must be declared in `main.imageHosts` and approved; clients never fetch the URL themselves. Session close or plugin unload releases the resource. See [Image loading](/docs/en/plugins/api-reference/#image-loading-view-sessions-only). |
 | `refresh()` | Requests a re-render of this session. Keep `ctx` (for example inside `state`) to refresh from timers, commands or event handlers. |
 | `close()` | Closes the container that hosts this view and ends the session: the login dialog (`auth`), the settings dialog (`settings`) or a stand-alone window. A view embedded in a page (activity page, task-detail tab) has no container, so it shows "The view session has ended" with a **Reopen** button instead. Calling it again is a no-op. It may be called inside `init` (for example when the user is already logged in): the client shows the view and closes it right away. |
 | `navigate(target)` | Returns a promise. Brings the main window to the front and switches to a page. `target` is `"downloads"`, `"rss"`, `"webhooks"`, or `{ view: "<id>" }` for one of this plugin's `activity` views. An unknown target rejects with `navigate: unknown target …`; a `{ view }` that is not an `activity` view of this plugin rejects with `navigate: view '<id>' is not an activity view of this plugin`; calling it after `close()` rejects with `navigate: the view has been closed; call navigate() before close()`. It may be called inside `init`. If the page is not available on the client (for example the Web UI cannot show a desktop-only view) the client ignores the request and logs a warning. Only the client that opened this session is affected. |
 
 TypeScript types `ViewContext`, `ViewEvent` and `ViewDefinition` are exported by `fluxdown-plugin-sdk` (see [SDK reference](/docs/en/plugins/sdk/)).
+
+```jsx
+flux.ui.view("profile", {
+  async init(ctx) {
+    const avatar = await ctx.images.load({
+      url: "https://images.example.com/avatar.jpg",
+      maxWidth: 256,
+      maxHeight: 256,
+    });
+    return { avatar };
+  },
+  render: ({ avatar }) => <image src={avatar} alt="Profile" />,
+});
+```
+
+The `flux-image:<uuid>` source is a host-owned session resource; existing data URI sources remain supported. It is not a remotely fetched URL and cannot be reused after its session closes.
 
 Example: an activity page that adds a download and then jumps to the download list:
 
@@ -312,7 +329,7 @@ Tones follow the active theme: `neutral` → `colors.foreground`, `accent` → `
 | `markdown` | `text` **required** | Paragraphs and code blocks only. |
 | `code` | `text` **required** | Monospace block. |
 | `link` | `text` **required**, `href` **required** | `href` must be a well-formed `http://` or `https://` URL without whitespace. |
-| `image` | `src` **required**, `alt` (""), `width` ≥ 0, `height` ≥ 0 | `src` is `data:image/png;base64,…`, `data:image/jpeg;base64,…` or `data:image/webp;base64,…` with a non-empty base64 payload, at most 1 MiB in total. Remote URLs are not accepted. |
+| `image` | `src` **required**, `alt` (""), `width` ≥ 0, `height` ≥ 0 | `src` may be a PNG/JPEG/WebP base64 data URI (non-empty payload, at most 1 MiB) or a `flux-image:<uuid>` session resource returned by `ctx.images.load`. Arbitrary remote URLs are not accepted. |
 | `badge` | `text` **required**, `tone` (neutral) | |
 | `progress` | `value` number 0–1 or `null` (`null`), `label` | `null` shows an indeterminate bar. |
 | `spinner` | `label` | |

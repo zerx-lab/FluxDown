@@ -11,6 +11,32 @@ import type { ViewChild, ViewNode } from "./view";
 // flux.fetch / auth / storage / fs / task
 // ---------------------------------------------------------------------------
 
+/** Options for loading a sanitized, host-fetched image into a view session. */
+export interface ImageLoadOptions {
+  url: string;
+  headers?: Record<string, string>;
+  authRef?: string;
+  /** Maximum output width, 1–2048; defaults to 512. */
+  maxWidth?: number;
+  /** Maximum output height, 1–2048; defaults to 512. */
+  maxHeight?: number;
+  /** Cache by source/options for five minutes; defaults to true. */
+  cache?: boolean;
+}
+
+/** A per-session image resource reference (`flux-image:<uuid>`). */
+export interface FluxImages {
+  load(options: ImageLoadOptions): Promise<string>;
+}
+
+export interface MainImageLoadOptions extends ImageLoadOptions {
+  session: string;
+}
+
+export interface MainFluxImages {
+  load(options: MainImageLoadOptions): Promise<string>;
+}
+
 export interface FluxFetchOptions {
   /** Default `GET`. */
   method?: string;
@@ -155,6 +181,8 @@ export interface ViewContext {
   /** Task the view is attached to (taskDetail views); `null` otherwise. */
   taskId: string | null;
   locale: string;
+  /** Host-side image loader, scoped to this view session. */
+  images: FluxImages;
   /** Requests a re-render (throttled to one render per 100 ms per session). */
   refresh(): void;
   /**
@@ -364,6 +392,8 @@ export interface Flux {
 export interface MainFlux extends Omit<Flux, "settings"> {
   /** Values as in `Flux.settings`, plus the non-enumerable `update` method. */
   settings: FluxSettingsValues & FluxSettingsHost;
+  /** Session-bound image loading, available only in the resident `main` script. */
+  images: MainFluxImages;
   ui: FluxUi;
   commands: FluxCommands;
   rpc: FluxRpc;

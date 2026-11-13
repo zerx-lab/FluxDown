@@ -206,6 +206,9 @@ Validation runs after `auth`, in this order: `entry` path → `stages` non-empty
 | `entry` | yes | Classic script (not an ES module); safe relative path inside the package, extension `.js`, file must exist. |
 | `events` | no | Events delivered to the script; each must be one of `onStart`, `onError`, `onDone`, `onMetaProbed`, `onCancel`. |
 | `background` | no | Boolean. `true` keeps the script running with the daemon. Requires the `background` permission. |
+| `imageHosts` | no | Defaults to `[]`. Lowercase DNS hostnames or IP literals whose remote images `main` may load through `ctx.images` / `flux.images`. At most 64 unique entries; same host syntax as `desktop.networkHosts`. Included in network consent. |
+
+Remote image loading is performed by the host, never directly by the UI. Declare every image source host in `main.imageHosts`; requests to other hosts are rejected. Existing manifests may omit this field (equivalent to `[]`). See the [API reference](/docs/en/plugins/api-reference/).
 
 `main` is the always-on part of a plugin: portable views, commands and background logic run here, inside the daemon. See the [UI guide](/docs/en/plugins/ui-guide/).
 

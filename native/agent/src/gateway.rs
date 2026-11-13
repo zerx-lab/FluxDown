@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -1974,6 +1974,7 @@ pub async fn serve(
     };
     let rpc = Router::new()
         .route("/rpc", get(rpc_upgrade))
+        .route("/api/web/plugin-images/{session}/{id}", get(plugin_image))
         .with_state(state);
     let app = fluxdown_api::server::api_router(api_host, api_config).merge(rpc);
     // SPA fallback 只在 server 模式挂载，且 API / `/rpc` 路由优先。
@@ -1985,6 +1986,55 @@ pub async fn serve(
         .listener_control
         .run(listener, app, bearer, cancel, endpoint_dir)
         .await
+}
+
+async fn plugin_image(
+    State(state): State<GatewayState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    AxumPath((session, id)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    // Binary resources use headers only: never place access keys in an image URL.
+    if crate::server_mode::bearer_token(&headers).is_none()
+        || !crate::server_mode::origin_allowed(&headers)
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.server.as_deref() {
+        Some(server) => {
+            if let Err(status) = server
+                .authorize_rpc_from(peer.ip(), &headers, &state.bearer)
+                .await
+            {
+                return status.into_response();
+            }
+        }
+        None => {
+            if !authorized(&headers, &state.bearer)
+                && authorize_device(&state.service, &headers).await.is_none()
+            {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+    }
+    match state.service.blobs.plugin_image(&session, &id).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(BlobError::Status(status)) => StatusCode::from_u16(status)
+            .unwrap_or(StatusCode::BAD_GATEWAY)
+            .into_response(),
+        Err(error) => {
+            tracing::warn!(error = %error, "plugin image proxy failed");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
 }
 
 pub async fn load_or_create_bearer(
@@ -3220,6 +3270,88 @@ mod tests {
             assert_eq!(self.user_token().await, "original-token");
             assert_eq!(&*self.api_token.get(), "original-token");
             assert_eq!(self.service.events.snapshot().sequence, sequence);
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_images_require_header_auth_and_recheck_rotated_access_keys() {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        for server_mode in [false, true] {
+            let gateway = TestGateway::new_mode("plugin-image-auth", server_mode).await;
+            let address = gateway.address().await;
+            let url = format!("http://{address}/api/web/plugin-images/session/id");
+            for request in [
+                client.get(&url),
+                client.get(format!("{url}?token=test-official-bearer")),
+                client.get(&url).header(
+                    "Sec-WebSocket-Protocol",
+                    "fluxdown.rpc.v1, fluxdown.token.test-official-bearer",
+                ),
+                client.get(&url).bearer_auth("wrong"),
+                client
+                    .get(&url)
+                    .bearer_auth("test-official-bearer")
+                    .header("Origin", "https://untrusted.example"),
+            ] {
+                assert_eq!(
+                    request.send().await.unwrap().status(),
+                    axum::http::StatusCode::UNAUTHORIZED
+                );
+            }
+            // Valid auth reaches the unavailable daemon; it is not rejected by the gateway.
+            assert_eq!(
+                client
+                    .get(&url)
+                    .bearer_auth("test-official-bearer")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            );
+            if server_mode {
+                gateway
+                    .patch_gateway(serde_json::json!({ "userToken": "images2026old" }))
+                    .await;
+                assert_eq!(
+                    client
+                        .get(&url)
+                        .bearer_auth("images2026old")
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                );
+                gateway
+                    .patch_gateway(serde_json::json!({ "userToken": "images2026new" }))
+                    .await;
+                assert_eq!(
+                    client
+                        .get(&url)
+                        .bearer_auth("images2026old")
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                );
+                assert_eq!(
+                    client
+                        .get(&url)
+                        .bearer_auth("images2026new")
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                );
+            }
+            gateway.finish().await;
         }
     }
 
