@@ -26,9 +26,10 @@ flate2 = "1"
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
-igd-next = { version = "0.17.1", features = ["aio_tokio"], optional = true }
 m3u8-rs = "6"
 md-5 = "0.10"
+# eD2K 端口映射：rqbit fork 的 PortMapper（版本由根 [patch.crates-io] 钉到与 librqbit 同一 rev）。
+librqbit-upnp = { version = "9", default-features = false, optional = true }
 md4 = { version = "0.10", optional = true }
 rand = "0.9"
 # 与 feed-rs 同版本：feed 扩展命名空间（Mikan `<torrent><pubDate>`）的二次扫描。
@@ -93,8 +94,8 @@ components = ["dep:zip"]
 default = ["bt", "ed2k"]
 # BitTorrent：librqbit 会话、做种、tracker 订阅、种子元数据探测。
 bt = ["dep:librqbit"]
-# eD2K / Kad：协议栈、服务器订阅、UPnP 端口映射。
-ed2k = ["dep:igd-next", "dep:md4"]
+# eD2K / Kad：协议栈、服务器订阅、端口映射（UPnP / NAT-PMP / PCP，与 BT 共用 rqbit fork 的 PortMapper）。
+ed2k = ["dep:librqbit-upnp", "dep:md4"]
 
 # 仅依赖 P2P 模块的探针 / 端到端示例：对应 feature 关闭时不参与构建。
 [[example]]
