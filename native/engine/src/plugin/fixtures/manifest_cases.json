@@ -12,6 +12,71 @@
   "networkHosts": []
  },
  {
+  "name": "main imageHosts consent union",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "main": { "entry": "main.js", "imageHosts": ["img.example.com", "cdn.example.com"] }
+  },
+  "files": ["main.js"],
+  "ok": true,
+  "risk": "standard",
+  "networkHosts": ["cdn.example.com", "img.example.com"]
+ },
+ {
+  "name": "imageHosts union desktop hosts",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "permissions": ["desktop"],
+   "main": { "entry": "main.js", "imageHosts": ["img.example.com", "same.example.com"] },
+   "contributes": {
+    "views": [
+     { "id": "window", "title": "T", "location": "window", "desktop": { "entry": "window.js", "networkHosts": ["same.example.com", "ui.example.com"] } }
+    ]
+   }
+  },
+  "files": ["main.js", "window.js"],
+  "ok": true,
+  "risk": "full",
+  "networkHosts": ["img.example.com", "same.example.com", "ui.example.com"]
+ },
+ {
+  "name": "main imageHosts invalid uppercase",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "main": { "entry": "main.js", "imageHosts": ["Img.example.com"] }
+  },
+  "files": ["main.js"],
+  "ok": false
+ },
+ {
+  "name": "main imageHosts duplicate",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "main": { "entry": "main.js", "imageHosts": ["img.example.com", "img.example.com"] }
+  },
+  "files": ["main.js"],
+  "ok": false
+ },
+ {
+  "name": "main imageHosts too many",
+  "manifest": {
+   "identity": "a@b",
+   "name": "N",
+   "version": "1.0.0",
+   "main": { "entry": "main.js", "imageHosts": ["h0.example.com", "h1.example.com", "h2.example.com", "h3.example.com", "h4.example.com", "h5.example.com", "h6.example.com", "h7.example.com", "h8.example.com", "h9.example.com", "h10.example.com", "h11.example.com", "h12.example.com", "h13.example.com", "h14.example.com", "h15.example.com", "h16.example.com", "h17.example.com", "h18.example.com", "h19.example.com", "h20.example.com", "h21.example.com", "h22.example.com", "h23.example.com", "h24.example.com", "h25.example.com", "h26.example.com", "h27.example.com", "h28.example.com", "h29.example.com", "h30.example.com", "h31.example.com", "h32.example.com", "h33.example.com", "h34.example.com", "h35.example.com", "h36.example.com", "h37.example.com", "h38.example.com", "h39.example.com", "h40.example.com", "h41.example.com", "h42.example.com", "h43.example.com", "h44.example.com", "h45.example.com", "h46.example.com", "h47.example.com", "h48.example.com", "h49.example.com", "h50.example.com", "h51.example.com", "h52.example.com", "h53.example.com", "h54.example.com", "h55.example.com", "h56.example.com", "h57.example.com", "h58.example.com", "h59.example.com", "h60.example.com", "h61.example.com", "h62.example.com", "h63.example.com", "h64.example.com"] }
+  },
+  "files": ["main.js"],
+  "ok": false
+ },
+ {
   "name": "bad identity",
   "manifest": {
    "identity": "Bad.id@x",

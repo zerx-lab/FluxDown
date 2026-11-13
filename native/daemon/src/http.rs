@@ -76,6 +76,7 @@ pub async fn serve(
             post(upload_plugin).layer(axum::extract::DefaultBodyLimit::max(PLUGIN_BLOB_LIMIT)),
         )
         .route("/exports/{export_id}", get(download_export))
+        .route("/plugin-images/{session}/{id}", get(download_plugin_image))
         .layer(axum::extract::DefaultBodyLimit::max(REQUEST_BODY_LIMIT))
         .with_state(state);
     axum::serve(listener, app)
@@ -234,6 +235,31 @@ async fn download_task_file(
         Ok(response) => response,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+async fn download_plugin_image(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    AxumPath((session, id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &state.auth) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(bytes) = state.service.plugin_image(&session, &id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    // Keep the registry's Arc alive while streaming, without copying the image.
+    let length = bytes.len();
+    (
+        [
+            (header::CONTENT_TYPE, "image/png".to_owned()),
+            (header::CONTENT_LENGTH, length.to_string()),
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        Body::from(axum::body::Bytes::from_owner(bytes)),
+    )
+        .into_response()
 }
 
 /// `attachment` 头：ASCII 回退 `filename` + RFC 5987 `filename*`（UTF-8 百分号编码），

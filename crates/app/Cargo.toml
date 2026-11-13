@@ -38,6 +38,7 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "process", "time", "net", "macros", "fs"] }
 tokio-tungstenite = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 fluxdown_ui_components = { version = "0.1.0", path = "../components" }
 mimalloc = "0.1.52"

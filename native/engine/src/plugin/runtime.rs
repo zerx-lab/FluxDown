@@ -734,6 +734,18 @@ pub trait HostEvents: Send + Sync {
             "archive rule management is unsupported".to_string(),
         ))
     }
+
+    /// Load a bounded image resource owned by an active view session.
+    async fn image_load(
+        &self,
+        _identity: &str,
+        _session: &str,
+        _options: super::images::ImageLoadOptions,
+    ) -> Result<String, PluginError> {
+        Err(PluginError::Runtime(
+            "plugin images are unsupported".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +876,18 @@ pub trait PluginBridge: Send + Sync {
         plugin_id: &str,
         req: BridgeHttpRequest,
     ) -> Result<BridgeHttpResponse, PluginError>;
+
+    /// Fetch bounded binary image bytes through the plugin's guarded network egress.
+    async fn image_request(
+        &self,
+        _plugin_id: &str,
+        _req: BridgeHttpRequest,
+        _hosts: Vec<String>,
+    ) -> Result<Vec<u8>, PluginError> {
+        Err(PluginError::Runtime(
+            "plugin image fetch is unsupported".to_string(),
+        ))
+    }
 
     /// 读取插件自己的认证档案。默认 bridge 不提供认证能力。
     async fn auth_get(

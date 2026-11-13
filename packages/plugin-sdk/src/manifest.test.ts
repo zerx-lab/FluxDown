@@ -217,11 +217,13 @@ describe("reviewOf", () => {
   test("collects every URL scope a reviewer approves, sorted and de-duplicated", () => {
     const review = reviewOf({
       permissions: ["intercept", "pageScripts", "archive"],
+      main: { imageHosts: ["img.example.com", "same.example.com"] },
       resolvers: [{ match: { urls: ["*://b.example/*"] } }],
       hooks: { match: { urls: ["*://a.example/*", "*://b.example/*"] } },
       interceptors: { match: { urls: ["*://c.example/*"] } },
       contributes: {
         pageScripts: [{ matches: ["https://z.example/*"] }, { matches: ["https://y.example/*"] }],
+        views: [{ desktop: { networkHosts: ["same.example.com", "ui.example.com"] } }],
         archive: "handlers/archive.js",
       },
     });
@@ -229,7 +231,7 @@ describe("reviewOf", () => {
       permissions: ["intercept", "pageScripts", "archive"],
       risk: "full",
       archiveEntry: "handlers/archive.js",
-      networkHosts: [],
+      networkHosts: ["img.example.com", "same.example.com", "ui.example.com"],
       downloadUrls: ["*://a.example/*", "*://b.example/*", "*://c.example/*"],
       pageScriptMatches: ["https://y.example/*", "https://z.example/*"],
     });

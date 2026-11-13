@@ -59,8 +59,15 @@ pub type PortFuture<T> = Pin<Box<dyn Future<Output = Result<T, RpcErrorData>> + 
 /// 插件界面访问 agent 的端口（由 app 注入统一 agent client）。
 pub trait PluginUiPort: Send + Sync {
     fn call(&self, method: String, params: serde_json::Value) -> PortFuture<serde_json::Value>;
+    fn image(&self, _session: String, _id: String) -> PortFuture<Vec<u8>> {
+        Box::pin(async {
+            Err(RpcErrorData::new(
+                fluxdown_protocol::ApplicationErrorCode::Unsupported,
+                false,
+            ))
+        })
+    }
 }
-
 #[derive(Debug, thiserror::Error)]
 pub enum PluginUiError {
     #[error("plugin UI component catalog failed: {0}")]

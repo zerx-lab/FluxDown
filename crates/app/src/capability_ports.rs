@@ -61,4 +61,7 @@ impl fluxdown_ui_plugin_ui::PluginUiPort for AgentPluginUiPort {
     ) -> fluxdown_ui_plugin_ui::PortFuture<serde_json::Value> {
         self.client.call(&method, Some(params))
     }
+    fn image(&self, session: String, id: String) -> fluxdown_ui_plugin_ui::PortFuture<Vec<u8>> {
+        self.client.plugin_image(session, id)
+    }
 }

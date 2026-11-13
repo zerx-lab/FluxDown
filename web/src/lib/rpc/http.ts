@@ -97,3 +97,68 @@ export async function exportLogs(): Promise<void> {
   triggerDownload(logsExportUrl())
 }
 
+/** Fetch a session-scoped plugin image using the current bearer (never a URL token). */
+const PLUGIN_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+
+/** Fetch one authenticated, bounded PNG resource for a live plugin view session. */
+export async function fetchPluginImage(session: string, id: string, signal: AbortSignal): Promise<Blob> {
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal.reason)
+  if (signal.aborted) abort()
+  else signal.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+  let reader: ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined
+  try {
+    const response = await fetch(
+      `/api/web/plugin-images/${encodeURIComponent(session)}/${encodeURIComponent(id)}`,
+      {
+        headers: { Authorization: `Bearer ${getToken()}`, 'Cache-Control': 'no-store' },
+        cache: 'no-store',
+        redirect: 'error',
+        signal: controller.signal,
+      },
+    )
+    if (
+      !response.ok
+      || response.headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'image/png'
+    ) {
+      controller.abort()
+      throw new Error('plugin image unavailable')
+    }
+    const length = response.headers.get('Content-Length')
+    if (length !== null && (!/^\d+$/.test(length) || Number(length) > PLUGIN_IMAGE_MAX_BYTES)) {
+      controller.abort()
+      throw new Error('plugin image exceeds size limit')
+    }
+    if (!response.body) throw new Error('plugin image body unavailable')
+    reader = response.body.getReader()
+    const chunks: Uint8Array<ArrayBuffer>[] = []
+    const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    let signatureBytes = 0
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > PLUGIN_IMAGE_MAX_BYTES) {
+        await reader.cancel()
+        throw new Error('plugin image exceeds size limit')
+      }
+      for (const byte of value) {
+        if (signatureBytes === signature.length) break
+        if (byte !== signature[signatureBytes]) {
+          await reader.cancel()
+          throw new Error('plugin image is not PNG')
+        }
+        signatureBytes += 1
+      }
+      chunks.push(value)
+    }
+    if (signatureBytes !== signature.length) throw new Error('plugin image is not PNG')
+    return new Blob(chunks, { type: 'image/png' })
+  } finally {
+    clearTimeout(timeout)
+    signal.removeEventListener('abort', abort)
+    if (reader) reader.releaseLock()
+  }
+}

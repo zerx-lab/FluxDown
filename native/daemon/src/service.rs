@@ -195,6 +195,20 @@ impl DaemonService {
             .inspect(|snapshot| snapshot.task(task_id).cloned())
     }
 
+    /// Read a plugin PNG resource scoped to a live view session.
+    #[must_use]
+    pub fn plugin_image(&self, session: &str, id: &str) -> Option<Arc<[u8]>> {
+        #[cfg(feature = "plugins")]
+        {
+            self.plugin_manager.as_ref()?.view_image(session, id)
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = (session, id);
+            None
+        }
+    }
+
     /// 分发 hello 后的连接级 RPC 调用。
     pub async fn call(
         &self,
