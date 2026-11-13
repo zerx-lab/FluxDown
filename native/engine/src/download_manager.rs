@@ -784,6 +784,12 @@ pub const UNSUPPORTED_PROTOCOL_MESSAGE: &str =
 /// 下载链接的 fragment 极少携带语义（网页锚点惯例），刻意不处理 query——
 /// 部分 CDN 签名 URL 用不同 query token 分发同一份内容，一并折叠会把两个
 /// 真正不同的签名链接误判为重复。
+/// 这条建任务请求是否带有可比较的 URL：种子上传没有；预览确认后的磁力任务同时带
+/// 种子字节与磁力链，仍按磁力链去重。
+fn dedup_comparable(spec: &NewTaskSpec) -> bool {
+    !spec.url.is_empty() && (spec.torrent_file_bytes.is_empty() || is_magnet(&spec.url))
+}
+
 fn normalize_url_for_dedup(url: &str) -> String {
     url.split('#').next().unwrap_or(url).trim().to_string()
 }
@@ -2829,6 +2835,11 @@ pub struct NewTaskSpec {
     pub hint_file_size: i64,
     /// `.torrent` 文件内容（非空 = 种子任务）。
     pub torrent_file_bytes: Vec<u8>,
+    /// 显式 BT 落盘名（种子 / 磁力确认框里用户改过的名字）：非空 = 最终容器目录
+    /// （多文件）或文件（单文件）按此名落盘，优先于 `file_name` 的推断与磁力 `dn`
+    /// 回显豁免；随初始任务行落库（`tasks.bt_custom_name`），排队 / 暂停 / 重启后不丢。
+    /// 非 BT 任务忽略。调用方负责校验（见 `fluxdown_protocol::torrent_preview::validate_custom_name`）。
+    pub bt_custom_name: String,
     /// 单任务代理（空 = 全局）。
     pub proxy_url: String,
     /// 单任务 User-Agent（空 = 队列/全局）。
@@ -2841,7 +2852,8 @@ pub struct NewTaskSpec {
     pub ignore_tls_errors: bool,
     /// 额外请求头。
     pub extra_headers: std::collections::HashMap<String, String>,
-    /// BT 文件预选（空 = 全部文件）。
+    /// BT 文件预选；非空时随初始任务行持久化，优先于无人值守的全选。
+    /// 空列表保持原有选择流程（无人值守时全选）。
     pub selected_file_indices: Vec<i32>,
     /// 无人值守创建：跳过一切需要用户介入的二次选择——BT 任务直接按
     /// 「全部文件」落库（**不弹文件选择框**），HLS/DASH 画质与插件 resolve
@@ -2978,6 +2990,9 @@ struct PreparedTask {
     origin_url: String,
     save_dir: String,
     file_name: String,
+    /// 显式 BT 落盘名（确认框里用户改过的名字；非 BT 恒空）。独立于 `file_name`：
+    /// 落库到 `tasks.bt_custom_name`，BT 的 Phase 1/3 只回写 `file_name`，不会覆盖它。
+    bt_custom_name: String,
     /// hint 稍后下载任务的 URL 推断占位名及其「推断」标记；随创建行一并落库。
     provisional_name: Option<(String, bool)>,
     segments: i32,
@@ -2992,6 +3007,7 @@ struct PreparedTask {
     referrer: String,
     extra_headers: HashMap<String, String>,
     extra_headers_json: String,
+    bt_selected_files: String,
     selected_file_indices: Vec<i32>,
     method: Option<String>,
     body: Option<downloader::CapturedRequestBody>,
@@ -3046,6 +3062,7 @@ impl PreparedTask {
             url: &self.db_url,
             file_name,
             name_inferred,
+            bt_custom_name: &self.bt_custom_name,
             save_dir: &self.save_dir,
             segments: self.segments,
             status,
@@ -3068,12 +3085,8 @@ impl PreparedTask {
             group_id: &self.group_id,
             resolver_item: &self.resolver_item,
             unattended: self.unattended_selection,
-            // 无人值守的 BT 任务按「全部文件」落库（三态语义见 `save_bt_selected_files`）。
-            bt_selected_files: if self.unattended_selection && self.is_bt {
-                "all"
-            } else {
-                ""
-            },
+            // 显式文件选择随初始任务行落库，暂停 / 排队的任务也一样。
+            bt_selected_files: &self.bt_selected_files,
             category_route: &self.category_route,
             request_method: &self.request_method,
             torrent_file_bytes: &self.torrent_file_bytes,
@@ -9555,9 +9568,7 @@ impl DownloadManager {
         &self,
         specs: &[NewTaskSpec],
     ) -> Result<CreateBatchContext, DbError> {
-        let comparable = specs
-            .iter()
-            .any(|spec| spec.torrent_file_bytes.is_empty() && !spec.url.is_empty());
+        let comparable = specs.iter().any(dedup_comparable);
         let dedup = if comparable
             && self.db.get_config("dedup_same_url").await?.as_deref() == Some("true")
         {
@@ -9596,6 +9607,7 @@ impl DownloadManager {
             referrer,
             hint_file_size,
             torrent_file_bytes,
+            bt_custom_name,
             proxy_url,
             user_agent,
             queue_id,
@@ -9652,8 +9664,9 @@ impl DownloadManager {
             );
             return PrepareOutcome::Rejected(CreateRejection::UnsupportedProtocol);
         }
-        // URL 去重（config `dedup_same_url`，默认关闭）：种子上传没有真实 URL 可比较。
-        if torrent_file_bytes.is_empty()
+        // URL 去重（config `dedup_same_url`，默认关闭）：种子上传没有真实 URL 可比较；
+        // 预览确认带来的「种子字节 + 磁力链」仍按磁力链比较。
+        if (torrent_file_bytes.is_empty() || is_magnet(&url))
             && !url.is_empty()
             && let Some(active) = &context.dedup
             && let Some(existing_id) = active.get(&normalize_url_for_dedup(&url))
@@ -9727,6 +9740,17 @@ impl DownloadManager {
         // 下载器只把 file_name 当单个组件清洗（防穿越），子目录必须在落库前并入
         // save_dir，否则会被压平成 `子目录_文件名`（#716）。BT 的名字另有语义，不拆。
         let is_bt = is_magnet(&url) || !torrent_file_bytes.is_empty();
+        // 显式改名只对 BT 有意义，且必须是单路径组件（调用方已按
+        // `validate_custom_name` 拒绝非法输入；这里再兜一层清洗，避免绕过 RPC 的
+        // 内嵌调用把 `../` 之类带进完成期的落盘路径）。`sanitize_filename` 自带
+        // 首尾 '.'/' ' 修剪与 200 字节预算，不在调用点重复实现——完成期
+        // `compute_completion_layout` 用的是同一个函数。
+        let trimmed_bt_custom_name = bt_custom_name.trim();
+        let bt_custom_name = if is_bt && !trimmed_bt_custom_name.is_empty() {
+            crate::naming::sanitize_filename(trimmed_bt_custom_name)
+        } else {
+            String::new()
+        };
         let (save_dir, file_name, has_subdir) = if is_bt {
             (save_dir, file_name, false)
         } else {
@@ -9751,10 +9775,14 @@ impl DownloadManager {
         } else {
             url.clone()
         };
-        // 展示用原始来源：thunder 原链接优先；其次是被哨兵替换掉的 http(s) 来源。
+        // 展示用原始来源：thunder 原链接优先；其次是被哨兵替换掉的真实来源
+        // （http(s) 直链，或确认框带来的磁力链——确认后任务以种子字节落库，
+        // 但「复制链接 / origin_url」必须仍显示用户点进来的那个磁力链）。
         let origin_url = if let Some(origin) = thunder_origin_url {
             origin
-        } else if db_url != url && (url.starts_with("http://") || url.starts_with("https://")) {
+        } else if db_url != url
+            && (url.starts_with("http://") || url.starts_with("https://") || is_magnet(&url))
+        {
             url.clone()
         } else {
             String::new()
@@ -9843,6 +9871,7 @@ impl DownloadManager {
             origin_url,
             save_dir,
             file_name,
+            bt_custom_name,
             provisional_name,
             segments,
             hint_file_size,
@@ -9856,6 +9885,17 @@ impl DownloadManager {
             referrer,
             extra_headers,
             extra_headers_json,
+            bt_selected_files: if is_bt && !selected_file_indices.is_empty() {
+                selected_file_indices
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            } else if is_bt && unattended_selection {
+                "all".to_owned()
+            } else {
+                String::new()
+            },
             selected_file_indices,
             method,
             body,
@@ -11022,16 +11062,49 @@ impl DownloadManager {
                 // file_name is non-empty, safe, and differs from the magnet `dn`.
                 // Torrent-file tasks always discover their real name from
                 // metadata and never rename.
+                // 确认框里的显式改名优先：它随初始任务行落库（`tasks.bt_custom_name`），
+                // 这里只在取不到时才走下面的 `file_name` 推断——排队 / 稍后下载 /
+                // 重启后再启动同样读得到，不会被 `file_name` 的启发式覆盖。
+                //
+                // 存量防护沿用同一豁免：落库值等于磁力 `dn` 时仍按「非重命名」处理
+                // （修复前创建的任务可能把 `dn` 回显误存成 custom_name，那会丢掉真实
+                // 扩展名）。
                 let dn_echo = torrent_source.display_name().unwrap_or_default();
-                let custom_name = if is_torrent_file_task {
-                    // Task created from a .torrent file — ignore file_name.
-                    String::new()
-                } else if is_safe_file_name(&file_name) && file_name != dn_echo {
-                    // Magnet task with a user-supplied name.
-                    file_name.clone()
-                } else {
-                    String::new()
+                let explicit_custom_name = match self.db.load_bt_custom_name(&task_id).await {
+                    Ok(name) => name,
+                    Err(error) => {
+                        // 读不到改名目标 = 这次启动会静默按种子内名称落盘，而用户
+                        // 刚刚在确认框里改过名。宁可让任务以失败落库并可重试，也不
+                        // 悄悄丢掉用户的输入。
+                        crate::logger::report_error(
+                            "download-manager",
+                            "load BT custom name",
+                            &error,
+                        );
+                        persist_task_failure(
+                            &task_id,
+                            format!("load BT custom name: {error}"),
+                            &self.db,
+                            &self.progress_tx,
+                        )
+                        .await;
+                        self.active_tasks.remove(&task_id);
+                        return;
+                    }
                 };
+                let custom_name =
+                    if !explicit_custom_name.is_empty() && explicit_custom_name != dn_echo {
+                        // 用户在确认框里改过名字（种子文件与磁力链都适用）。
+                        explicit_custom_name
+                    } else if is_torrent_file_task {
+                        // Task created from a .torrent file — ignore file_name.
+                        String::new()
+                    } else if is_safe_file_name(&file_name) && file_name != dn_echo {
+                        // Magnet task with a user-supplied name.
+                        file_name.clone()
+                    } else {
+                        String::new()
+                    };
                 if !custom_name.is_empty()
                     && let Err(error) = self.db.save_bt_custom_name(&task_id, &custom_name).await
                 {
@@ -12668,11 +12741,30 @@ impl DownloadManager {
                 // custom_name(见 do_start_task 的 dn_echo 规则)——恢复时同样按
                 // 「等于 dn 即非重命名」豁免,避免完成落盘丢真实扩展名。
                 let custom_name = {
-                    let loaded = self
-                        .db
-                        .load_bt_custom_name(task_id)
-                        .await
-                        .unwrap_or_default();
+                    let loaded = match self.db.load_bt_custom_name(task_id).await {
+                        Ok(name) => name,
+                        Err(error) => {
+                            // 同首启：读不到改名目标就让这次恢复失败，而不是按种子内
+                            // 名称悄悄落盘。任务行保留，用户可重试。
+                            crate::logger::report_error(
+                                "download-manager",
+                                "load BT custom name",
+                                &error,
+                            );
+                            let message = format!("load BT custom name: {error}");
+                            if let Err(error) =
+                                self.db.update_task_status(task_id, 4, &message).await
+                            {
+                                crate::logger::report_error(
+                                    "download-manager",
+                                    "persist task state",
+                                    &error,
+                                );
+                            }
+                            self.active_tasks.remove(task_id);
+                            return;
+                        }
+                    };
                     let dn_echo = torrent_source.display_name().unwrap_or_default();
                     if !loaded.is_empty() && loaded == dn_echo {
                         String::new()
@@ -22577,6 +22669,266 @@ mod tests {
     }
 
     /// 新任务第一条事实携带完整持久化字段，队列筛选不再等待全表补帧。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn torrent_confirmation_persists_selection_before_start_or_restart() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        let sink = Arc::new(RecordingSink::new());
+        let mut manager = sched_manager_with_sink(&db, 1, sink);
+        manager.set_bt_config(BtConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let directory =
+            std::env::temp_dir().join(format!("fluxdown-selection-{}", uuid::Uuid::new_v4()));
+        let mut expected = Vec::new();
+        for (indices, unattended, stored) in [
+            (vec![2], false, Some(vec![2])),
+            (vec![0, 2], false, Some(vec![0, 2])),
+            (vec![2], true, Some(vec![2])),
+            (vec![], true, Some(vec![])),
+            (vec![], false, None),
+        ] {
+            let id = manager.create_task(NewTaskSpec {
+                // 暂停的任务不会初始化 BT 会话，也不写入内容数据。
+                torrent_file_bytes: b"d4:infod5:filesld6:lengthi4e4:pathl5:a.txteed4:attr1:p6:lengthi1e4:pathl4:.padeed6:lengthi4e4:pathl5:b.txteee4:name6:bundle12:piece lengthi16384e6:pieces20:00000000000000000000ee".to_vec(),
+                save_dir: directory.to_string_lossy().into_owned(),
+                selected_file_indices: indices,
+                unattended_selection: unattended,
+                start_paused: true,
+                ..Default::default()
+            }).await.expect("create paused torrent");
+            assert_eq!(
+                db.load_bt_selected_files(&id)
+                    .await
+                    .expect("persisted selection"),
+                stored
+            );
+            expected.push((id, stored));
+        }
+        assert!(manager.active_tasks.is_empty());
+        assert!(
+            !directory.exists(),
+            "paused task must not create content directories"
+        );
+        drop(manager);
+        let restored = sched_manager_with_sink(&db, 1, Arc::new(RecordingSink::new()));
+        for (id, stored) in expected {
+            assert_eq!(
+                restored
+                    .db
+                    .load_bt_selected_files(&id)
+                    .await
+                    .expect("reload selection"),
+                stored
+            );
+        }
+    }
+
+    /// 确认框里的改名目标随初始任务行落库：建任务（尚未启动）即可读到，重启后仍在；
+    /// 非 BT 任务不落该列，非法值被清洗成单路径组件。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn torrent_rename_target_persists_before_start_and_reload() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        let sink = Arc::new(RecordingSink::new());
+        let mut manager = sched_manager_with_sink(&db, 1, sink);
+        manager.set_bt_config(BtConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let directory =
+            std::env::temp_dir().join(format!("fluxdown-rename-{}", uuid::Uuid::new_v4()));
+        let save_dir = directory.to_string_lossy().into_owned();
+        let torrent = || {
+            b"d4:infod6:lengthi4e4:name8:test.bin12:piece lengthi16384e6:pieces20:00000000000000000000ee".to_vec()
+        };
+        let renamed = manager
+            .create_task(NewTaskSpec {
+                torrent_file_bytes: torrent(),
+                save_dir: save_dir.clone(),
+                bt_custom_name: "改名后的名字".to_owned(),
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create renamed torrent");
+        let untouched = manager
+            .create_task(NewTaskSpec {
+                torrent_file_bytes: torrent(),
+                save_dir: save_dir.clone(),
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create untouched torrent");
+        let escaped = manager
+            .create_task(NewTaskSpec {
+                torrent_file_bytes: torrent(),
+                save_dir: save_dir.clone(),
+                bt_custom_name: "../escape".to_owned(),
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create unsafe-name torrent");
+        let plain = manager
+            .create_task(NewTaskSpec {
+                url: "http://example.com/file.bin".to_owned(),
+                save_dir: save_dir.clone(),
+                bt_custom_name: "not-bt".to_owned(),
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create http task");
+        // 确认框带来的磁力链：任务以种子字节落库（url = 哨兵），但展示来源要留住，
+        // 否则「复制链接」只剩 torrent-file://local。
+        let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=x";
+        let sourced = manager
+            .create_task(NewTaskSpec {
+                url: magnet.to_owned(),
+                torrent_file_bytes: torrent(),
+                save_dir: save_dir.clone(),
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create sourced torrent");
+        let sourced_task = manager
+            .db
+            .load_task_by_id(&sourced)
+            .await
+            .expect("load sourced")
+            .expect("sourced task");
+        assert_eq!(sourced_task.url, "torrent-file://local");
+        assert_eq!(
+            sourced_task.origin_url, magnet,
+            "the magnet the user confirmed must survive as the display origin"
+        );
+        assert_eq!(
+            manager
+                .db
+                .load_bt_custom_name(&renamed)
+                .await
+                .expect("renamed"),
+            "改名后的名字"
+        );
+        assert_eq!(
+            manager
+                .db
+                .load_bt_custom_name(&untouched)
+                .await
+                .expect("untouched"),
+            "",
+            "a task without a rename keeps the column empty"
+        );
+        let sanitized = manager
+            .db
+            .load_bt_custom_name(&escaped)
+            .await
+            .expect("sanitized");
+        assert!(
+            !sanitized.contains(['/', '\\']) && !sanitized.starts_with(".."),
+            "rename target must stay a single path component, got {sanitized:?}"
+        );
+        assert_eq!(
+            manager
+                .db
+                .load_bt_custom_name(&plain)
+                .await
+                .expect("http task"),
+            "",
+            "non-BT tasks never persist a BT rename target"
+        );
+        drop(manager);
+        let restored = sched_manager_with_sink(&db, 1, Arc::new(RecordingSink::new()));
+        assert_eq!(
+            restored
+                .db
+                .load_bt_custom_name(&renamed)
+                .await
+                .expect("reload rename"),
+            "改名后的名字",
+            "the rename survives a restart before the task ever starts"
+        );
+        assert!(!directory.exists(), "paused tasks must not touch the disk");
+    }
+
+    /// 预览确认后的磁力任务（种子字节 + 磁力链）仍参与 URL 去重：再次确认、或之后走
+    /// 普通建任务，都返回既有任务；纯种子上传没有可比较的 URL，不去重。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn confirmed_magnet_participates_in_url_dedup() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        db.set_config("dedup_same_url", "true")
+            .await
+            .expect("set config");
+        let mut manager = sched_manager_with_sink(&db, 1, Arc::new(RecordingSink::new()));
+        manager.set_bt_config(BtConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let directory =
+            std::env::temp_dir().join(format!("fluxdown-dedup-{}", uuid::Uuid::new_v4()));
+        let save_dir = directory.to_string_lossy().into_owned();
+        let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=x";
+        let torrent = || {
+            b"d4:infod6:lengthi4e4:name8:test.bin12:piece lengthi16384e6:pieces20:00000000000000000000ee".to_vec()
+        };
+        let confirmed_spec = || NewTaskSpec {
+            url: magnet.to_owned(),
+            torrent_file_bytes: torrent(),
+            save_dir: save_dir.clone(),
+            start_paused: true,
+            ..Default::default()
+        };
+        let confirmed = manager
+            .create_task(confirmed_spec())
+            .await
+            .expect("create confirmed magnet");
+        let again = manager
+            .create_task(confirmed_spec())
+            .await
+            .expect("confirm the same magnet again");
+        assert_eq!(again, confirmed, "a second confirmation reuses the task");
+        let plain = manager
+            .create_task(NewTaskSpec {
+                url: magnet.to_owned(),
+                save_dir: save_dir.clone(),
+                start_paused: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create the same magnet without a preview");
+        assert_eq!(plain, confirmed, "a plain create finds the confirmed task");
+        let upload_spec = || NewTaskSpec {
+            torrent_file_bytes: torrent(),
+            save_dir: save_dir.clone(),
+            start_paused: true,
+            ..Default::default()
+        };
+        let first_upload = manager
+            .create_task(upload_spec())
+            .await
+            .expect("create torrent upload");
+        let second_upload = manager
+            .create_task(upload_spec())
+            .await
+            .expect("create torrent upload again");
+        assert_ne!(
+            first_upload, second_upload,
+            "torrent uploads have no comparable URL"
+        );
+        assert!(!directory.exists(), "paused tasks must not touch the disk");
+    }
+
     #[tokio::test]
     async fn create_task_emits_complete_fact_before_progress() {
         let db = Db::connect("sqlite::memory:")

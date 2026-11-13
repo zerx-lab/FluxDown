@@ -5,6 +5,8 @@
 //! 端口），捕获条目经 `agent.capture.resolve` 确认；表单释放时未确认的捕获一并忽略。
 //! 成功后关窗并在主窗口 toast。
 
+pub(crate) mod torrent_confirmation;
+
 use std::{collections::HashSet, rc::Rc, sync::Arc};
 
 use fluxdown_protocol::{
@@ -404,6 +406,7 @@ fn sync_captures(cx: &mut App, pending: &[PendingCaptureDto]) {
 
 fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCaptureDto>) {
     let initial_urls = context.initial_urls.clone();
+    let external_open = context.external_open;
     let desktop = Desktop::global(cx);
     let translator = desktop.translator.clone();
     let client = desktop.client.clone();
@@ -433,6 +436,10 @@ fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCap
                     submit(submission, &submit_port, cx);
                 },
             );
+            let confirm_port = Arc::clone(&port);
+            let on_confirm = Rc::new(move |params, external, done, cx: &mut App| {
+                torrent_confirmation::start(params, external, done, &confirm_port, cx);
+            });
             let form_port: Arc<dyn DownloadsPort> = port.clone();
             let form = cx.new(|cx| {
                 NewDownloadView::new(
@@ -440,6 +447,7 @@ fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCap
                     context,
                     form_port,
                     on_submit,
+                    on_confirm,
                     window,
                     cx,
                 )
@@ -485,7 +493,9 @@ fn open_with(cx: &mut App, context: NewDownloadContext, captures: Vec<PendingCap
             if let Some(form) = form
                 && !initial_urls.is_empty()
             {
-                form.update(cx, |form, cx| form.append_urls(initial_urls, window, cx));
+                form.update(cx, |form, cx| {
+                    form.append_urls(initial_urls, external_open, window, cx)
+                });
             }
             crate::windows::bring_to_front(window, cx)
         }) {
@@ -564,45 +574,49 @@ fn submit(submission: NewDownloadSubmission, port: &Arc<AgentDownloadsPort>, cx:
         }
     };
     let task = cx.spawn(async move |cx| {
-        let SubmitNotice { ok, message } = notice.await;
-        // 全部新建成功不提示：任务已在列表中，toast 只会遮挡列表顶部（#884）。
-        if ok && message.is_empty() {
-            return;
-        }
-        cx.update(|cx| {
-            let main = match WindowRegistry::handle(cx, &WindowKey::Main) {
-                Some(main) => main,
-                // 成功时静默结束；失败则打开主窗口承载错误提示，否则用户无从得知。
-                None if ok => return,
-                None => {
-                    crate::windows::main::reveal(cx);
-                    let Some(main) = WindowRegistry::handle(cx, &WindowKey::Main) else {
-                        return;
-                    };
-                    main
-                }
-            };
-            let message = if message.is_empty() {
-                translator
-                    .read(cx)
-                    .text("localServiceActionFailed")
-                    .to_owned()
-            } else {
-                message
-            };
-            let notification = if ok {
-                Notification::from(message)
-            } else {
-                Notification::error(message)
-            };
-            if let Err(error) = main.update(cx, |_, window, cx| {
-                window.push_notification(notification, cx)
-            }) {
-                log::debug!("view or window released before lifecycle update: {error:#}");
-            }
-        });
+        let notice = notice.await;
+        cx.update(|cx| show_notice(notice, cx));
     });
     lifecycle::keep_alive(cx, task).detach();
+}
+
+fn show_notice(notice: SubmitNotice, cx: &mut App) {
+    let translator = Desktop::global(cx).translator.clone();
+    let SubmitNotice { ok, message } = notice;
+    // 全部新建成功不提示：任务已在列表中，toast 只会遮挡列表顶部（#884）。
+    if ok && message.is_empty() {
+        return;
+    }
+    let main = match WindowRegistry::handle(cx, &WindowKey::Main) {
+        Some(main) => main,
+        // 成功时静默结束；失败则打开主窗口承载错误提示，否则用户无从得知。
+        None if ok => return,
+        None => {
+            crate::windows::main::reveal(cx);
+            let Some(main) = WindowRegistry::handle(cx, &WindowKey::Main) else {
+                return;
+            };
+            main
+        }
+    };
+    let message = if message.is_empty() {
+        translator
+            .read(cx)
+            .text("localServiceActionFailed")
+            .to_owned()
+    } else {
+        message
+    };
+    let notification = if ok {
+        Notification::from(message)
+    } else {
+        Notification::error(message)
+    };
+    if let Err(error) = main.update(cx, |_, window, cx| {
+        window.push_notification(notification, cx)
+    }) {
+        log::debug!("view or window released before lifecycle update: {error:#}");
+    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,14 @@ import Foundation
 /// wire 方法名（`HostSession.call(_:params:)` 只放行 `daemon.*` / `agent.*`；`system.*` 属会话层，
 /// 握手 / 快照 / 退出由 FluxBridge 内部处理，这里列出仅为与 Rust 常量表一一对应）。
 public enum HostMethod {
+    public static let daemonTorrentConfirm = "daemon.torrent.confirm"
+    public static let daemonTorrentPreview = "daemon.torrent.preview"
+    public static let daemonTorrentDiscardPreview = "daemon.torrent.discardPreview"
+    public static let daemonTorrentPrepareMagnet = "daemon.torrent.prepareMagnet"
+    public static let daemonTorrentResolveMagnet = "daemon.torrent.resolveMagnet"
+    public static let daemonTorrentCancelMagnet = "daemon.torrent.cancelMagnet"
+    public static let agentCapturePreviewTorrentFile = "agent.capture.previewTorrentFile"
+    public static let agentCaptureOpenPolicy = "agent.capture.openPolicy"
     public static let systemHello = "system.hello"
     public static let systemPing = "system.ping"
     public static let systemSnapshot = "system.snapshot"

@@ -602,6 +602,19 @@ export interface CaptureSubmitParams {
   association?: OpenAssociation;
 }
 
+/** `agent.capture.openPolicy` 参数：系统交来的输入所属关联，缺省 = 不属于可关闭的关联。 */
+export interface CaptureOpenPolicyParams {
+  association?: OpenAssociation;
+}
+
+/** `agent.capture.openPolicy` 结果：只读，不建任务、不产生待确认捕获。 */
+export interface CaptureOpenPolicyDto {
+  /** 该关联已被用户关闭：调用方不得建任务，也不显示确认。 */
+  ignored: boolean;
+  /** 「免打扰下载」当前值：true = 直接建任务，不显示确认。 */
+  silentDownload: boolean;
+}
+
 /**
  * `agent.capture.submit` 结果三选一：
  * `{ taskIds }` 直接建成（批量中途失败则整个调用报错，已建成的任务仍保留）、

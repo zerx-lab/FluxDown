@@ -633,6 +633,16 @@ impl GatewayService {
                 self.capture_submit_torrent_file(params_or_empty(request.params))
                     .await
             }
+            method::AGENT_CAPTURE_PREVIEW_TORRENT_FILE => {
+                if !session.allow_local_platform {
+                    return Err(RpcErrorData::new(ApplicationErrorCode::Unauthorized, false));
+                }
+                self.capture_preview_torrent_file(params_or_empty(request.params))
+                    .await
+            }
+            method::AGENT_CAPTURE_OPEN_POLICY => {
+                self.capture_open_policy(&params_or_empty(request.params))
+            }
             method::AGENT_CAPTURE_LIST => serde_json::to_value(self.capture.list().await)
                 .map_err(|error| internal_error("capture list", error)),
             method::AGENT_CAPTURE_RESOLVE => {
@@ -1356,6 +1366,62 @@ impl GatewayService {
             start_paused: params.start_paused.unwrap_or(false),
         };
         capture_value(self.capture.create_torrent(request, blob_id, options).await)
+    }
+
+    async fn capture_preview_torrent_file(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcErrorData> {
+        required_string(&params, "path")?;
+        let params = parse_params::<fluxdown_protocol::torrent_preview::TorrentFilePreviewParams>(
+            Some(params),
+        )?;
+        let bytes = read_upload_file(Path::new(&params.path)).await?;
+        let blob_id = blob_value(self.blobs.upload(BlobKind::Torrent, bytes).await)?;
+        let params = fluxdown_protocol::torrent_preview::TorrentPreviewParams {
+            torrent_blob_id: blob_id,
+        };
+        let result = self
+            .daemon
+            .call::<_, serde_json::Value>(method::DAEMON_TORRENT_PREVIEW, Some(&params))
+            .await;
+        if result.is_err() {
+            // 失败时调用方拿不到 blob ID，上传只能在这里释放。
+            if let Err(error) = self
+                .daemon
+                .call::<_, serde_json::Value>(method::DAEMON_TORRENT_DISCARD_PREVIEW, Some(&params))
+                .await
+            {
+                tracing::warn!(
+                    ?error,
+                    "failed to discard torrent preview upload; blob expiry will clean it up"
+                );
+            }
+        }
+        result
+    }
+
+    /// `agent.capture.openPolicy`：系统交来 `.torrent` / `magnet:` 时桌面先问的策略。
+    /// 只读本机偏好：不触达 daemon，不建任务，不产生待确认捕获；关联已关闭时与
+    /// `agent.capture.submit` 一样发一条系统通知。
+    fn capture_open_policy(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, RpcErrorData> {
+        let ignored = self.open_associations.intercept(params)?;
+        let silent_download = self.events.inspect(|snapshot| {
+            snapshot
+                .preferences
+                .values
+                .get(crate::capture::SILENT_DOWNLOAD_PREF)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        });
+        serde_json::to_value(fluxdown_protocol::agent::CaptureOpenPolicyDto {
+            ignored,
+            silent_download,
+        })
+        .map_err(|error| internal_error("capture open policy", error))
     }
 
     /// 读取本机插件包，上传 daemon blob 后转 `daemon.plugin.install`。
@@ -2427,7 +2493,9 @@ fn lane_for(method_name: &str) -> Lane {
     // 不占用串行的 Cloud 通道（登录 / 设备 / 同步等不能被它堵住）。目录 `list` 仍走 Cloud。
     if matches!(
         method_name,
-        method::AGENT_CAPTURE_PREVIEW | method::AGENT_PRIVATE_PLUGIN_INSTALL
+        method::AGENT_CAPTURE_PREVIEW
+            | method::AGENT_CAPTURE_PREVIEW_TORRENT_FILE
+            | method::AGENT_PRIVATE_PLUGIN_INSTALL
     ) {
         return Lane::DaemonSlow;
     }
@@ -4205,6 +4273,7 @@ mod tests {
         for method_name in [
             fluxdown_protocol::method::AGENT_PLUGIN_INSTALL_FILE,
             fluxdown_protocol::method::AGENT_CAPTURE_SUBMIT_TORRENT_FILE,
+            fluxdown_protocol::method::AGENT_CAPTURE_PREVIEW_TORRENT_FILE,
         ] {
             for path in [
                 harness.dir.join("missing.bin").display().to_string(),
@@ -4219,6 +4288,81 @@ mod tests {
                 let data = failure.error.data.expect("error data");
                 assert_eq!(data.code, ApplicationErrorCode::InvalidArgument);
                 assert_eq!(data.field.as_deref(), Some("path"));
+            }
+        }
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn torrent_preview_rejects_remote_local_file_reads() {
+        let harness = TestGateway::new("torrent_preview_remote").await;
+        let result = harness
+            .service
+            .dispatch_with(
+                RpcRequest::new(
+                    RequestId::Integer(1),
+                    fluxdown_protocol::method::AGENT_CAPTURE_PREVIEW_TORRENT_FILE,
+                    Some(serde_json::json!({ "path": "not-read.torrent" })),
+                ),
+                &super::SessionContext::local(false),
+            )
+            .await;
+        assert_eq!(
+            result.expect_err("remote file preview rejected").code,
+            ApplicationErrorCode::Unauthorized
+        );
+        assert!(matches!(
+            super::lane_for(fluxdown_protocol::method::AGENT_CAPTURE_PREVIEW_TORRENT_FILE),
+            super::Lane::DaemonSlow
+        ));
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn open_policy_reports_association_and_silent_preference_without_side_effects() {
+        use fluxdown_protocol::{AgentEvent, AgentPreferencesDto, capture_link::OpenAssociation};
+        let harness = TestGateway::new("open_policy").await;
+        let mut revision = 0;
+        for association in [
+            Some(OpenAssociation::Torrent),
+            Some(OpenAssociation::Magnet),
+            None,
+        ] {
+            for disabled in [false, true] {
+                for silent in [false, true] {
+                    revision += 1;
+                    let mut values = std::collections::BTreeMap::from([(
+                        crate::capture::SILENT_DOWNLOAD_PREF.to_owned(),
+                        serde_json::json!(silent),
+                    )]);
+                    if let Some(association) = association {
+                        values.insert(
+                            association.opt_out_pref_key().to_owned(),
+                            serde_json::json!(disabled),
+                        );
+                    }
+                    harness
+                        .service
+                        .events
+                        .publish(AgentEvent::PreferencesChanged(AgentPreferencesDto {
+                            revision,
+                            values,
+                        }));
+                    let response = harness
+                        .call(
+                            fluxdown_protocol::method::AGENT_CAPTURE_OPEN_POLICY,
+                            serde_json::json!({ "association": association }),
+                        )
+                        .await;
+                    let RpcResponse::Success(success) = response else {
+                        panic!("the policy is local and must not require a connected daemon");
+                    };
+                    let policy: fluxdown_protocol::agent::CaptureOpenPolicyDto =
+                        serde_json::from_value(success.result).expect("typed policy");
+                    assert_eq!(policy.ignored, association.is_some() && disabled);
+                    assert_eq!(policy.silent_download, silent);
+                    assert!(harness.service.capture.list().await.is_empty());
+                }
             }
         }
         harness.finish().await;
@@ -4688,6 +4832,11 @@ mod tests {
 
     #[test]
     fn slow_daemon_methods_leave_the_ordered_daemon_lane() {
+        // 丢弃可能排在正在进行的确认后面等 blob 锁。
+        assert!(matches!(
+            lane_for(fluxdown_protocol::method::DAEMON_TORRENT_DISCARD_PREVIEW),
+            Lane::DaemonSlow
+        ));
         for name in fluxdown_protocol::method::SLOW_DAEMON_METHODS {
             assert!(matches!(lane_for(name), Lane::DaemonSlow), "{name}");
         }

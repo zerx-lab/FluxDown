@@ -282,10 +282,54 @@ fn upload_slots(configured: u32) -> UploadSlots {
     NonZeroU32::new(configured).map_or(UploadSlots::RateBased, UploadSlots::Fixed)
 }
 
+/// DHT 引导节点，正式会话与元数据预览共用。
+pub(crate) fn dht_bootstrap_addrs() -> Vec<String> {
+    [
+        "router.bittorrent.com:6881",
+        "router.utorrent.com:6881",
+        "dht.transmissionbt.com:6881",
+        "dht.libtorrent.org:25401",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+// 正式下载与不建任务的元数据预览共用。
+pub(crate) fn tracker_announce_options(config: &BtConfig) -> librqbit::TrackerAnnounceOptions {
+    librqbit::TrackerAnnounceOptions {
+        announce_to_all_tiers: config.announce_all_tiers,
+        announce_to_all_trackers: config.announce_all_trackers,
+    }
+}
+
+pub(crate) fn connection_options(config: &BtConfig, proxy_url: Option<&str>) -> ConnectionOptions {
+    ConnectionOptions {
+        enable_tcp: true,
+        proxy_url: proxy_url.map(str::to_owned),
+        proxy_peer_connections: config.proxy_peers,
+        // Optimised peer connection parameters.
+        peer_opts: Some(PeerConnectionOptions {
+            // Slightly shorter connect timeout — drop unresponsive
+            // peers faster so we can try others sooner.
+            connect_timeout: Some(Duration::from_secs(10)),
+            // Generous read/write timeout to avoid dropping slow
+            // but otherwise healthy peers.
+            read_write_timeout: Some(Duration::from_secs(20)),
+            // 独立握手超时（BT 握手 + MSE 交换）：静默/无响应 peer 10s
+            // 内出局，不占用连接槽位，swarm 启动爬升更快。
+            handshake_timeout: Some(Duration::from_secs(10)),
+            // 出站连接平滑：每秒最多 30 个尝试，避免对劣质 peer 池
+            // 发起连接风暴（78% 无效连接淹没有效连接）。
+            connect_rate: Some(30),
+            ..Default::default()
+        }),
+    }
+}
+
 /// `bt_i2p_*` → librqbit 的 I2P 选项；未启用为 `None`。SAM 地址可以是主机名（如 Docker 里的
 /// I2P 路由容器名），建会话时解析一次；解析不出时记日志并关闭 I2P（`.i2p` tracker 会报
 /// 「未启用 I2P」），不影响明网种子。
-fn i2p_options(config: &BtConfig) -> Option<librqbit::I2pOptions> {
+pub(crate) fn i2p_options(config: &BtConfig) -> Option<librqbit::I2pOptions> {
     use std::net::ToSocketAddrs;
     if !config.i2p_enabled {
         return None;
@@ -951,12 +995,7 @@ impl SharedBtSession {
                 // （URL 无 tracker）能可靠引导并发现 seed。
                 // 注：router.bitcomet.net 已废弃（bitcomet.net 域名整体指向
                 // 127.0.0.1，官方迁移至 bitcomet.com，且无对应 DHT 子域），已移除。
-                bootstrap_addrs: Some(vec![
-                    "router.bittorrent.com:6881".to_string(),
-                    "router.utorrent.com:6881".to_string(),
-                    "dht.transmissionbt.com:6881".to_string(),
-                    "dht.libtorrent.org:25401".to_string(),
-                ]),
+                bootstrap_addrs: Some(dht_bootstrap_addrs()),
                 persistence: Some(librqbit::dht::DhtPersistenceConfig {
                     config_filename: Some(dht_config_path.clone()),
                     dump_interval: Some(DHT_PERSIST_DUMP_INTERVAL),
@@ -997,27 +1036,7 @@ impl SharedBtSession {
                 ..Default::default()
             }),
             ipv4_only,
-            connect: Some(ConnectionOptions {
-                enable_tcp: true,
-                proxy_url: proxy_url.map(str::to_owned),
-                proxy_peer_connections: bt_config.proxy_peers,
-                // Optimised peer connection parameters.
-                peer_opts: Some(PeerConnectionOptions {
-                    // Slightly shorter connect timeout — drop unresponsive
-                    // peers faster so we can try others sooner.
-                    connect_timeout: Some(Duration::from_secs(10)),
-                    // Generous read/write timeout to avoid dropping slow
-                    // but otherwise healthy peers.
-                    read_write_timeout: Some(Duration::from_secs(20)),
-                    // 独立握手超时（BT 握手 + MSE 交换）：静默/无响应 peer 10s
-                    // 内出局，不占用连接槽位，swarm 启动爬升更快。
-                    handshake_timeout: Some(Duration::from_secs(10)),
-                    // 出站连接平滑：每秒最多 30 个尝试，避免对劣质 peer 池
-                    // 发起连接风暴（78% 无效连接淹没有效连接）。
-                    connect_rate: Some(30),
-                    ..Default::default()
-                }),
-            }),
+            connect: Some(connection_options(bt_config, proxy_url)),
             ratelimits: librqbit::limits::LimitsConfig {
                 download_bps,
                 upload_bps,
@@ -1052,10 +1071,7 @@ impl SharedBtSession {
             disable_web_seeds: !bt_config.enable_webseed,
             // BEP 12 汇报策略：两项都开 = 向所有 tracker 汇报（一直以来的行为，也是
             // qBittorrent 的默认）；都关 = 逐层失败转移。
-            tracker_announce: librqbit::TrackerAnnounceOptions {
-                announce_to_all_tiers: bt_config.announce_all_tiers,
-                announce_to_all_trackers: bt_config.announce_all_trackers,
-            },
+            tracker_announce: tracker_announce_options(bt_config),
             upload_slots: upload_slots(bt_config.upload_slots),
             peer_policy: peer_policy.clone(),
             // I2P（`bt_i2p_*`）：经本机 I2P 路由的 SAM 桥；只有带 `.i2p` tracker 的种子用它。
@@ -3113,6 +3129,16 @@ fn dedup_name_in_dir(
     avoid: &HashSet<String>,
     allow_overwrite: bool,
 ) -> std::io::Result<String> {
+    // Windows 上普通文件的「子路径」也可能报 NotFound。先确认目标本身是目录（或不存在），
+    // 再把探测不到的候选名当作可用。
+    let directory_or_missing = match std::fs::metadata(dir) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    if !directory_or_missing {
+        return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+    }
     crate::downloader::dedup_name_by_probe(
         dir,
         name,
@@ -3261,6 +3287,15 @@ fn compute_completion_layout(
     }
 
     let torrent_root = crate::naming::sanitize_filename(torrent_root_name);
+    // 自定义名同样是单路径组件：确认链路已在 daemon 校验，内嵌调用方（如 aria2
+    // `fileName`）可能绕过，这里按同一套清洗规则再兜一层——`../` 会被压成普通名字，
+    // 确保 `save_dir.join(name)` 绝不越出保存目录。
+    let sanitized_custom_name = if custom_name.is_empty() {
+        String::new()
+    } else {
+        crate::naming::sanitize_filename(custom_name)
+    };
+    let custom_name = sanitized_custom_name.as_str();
     let desired_container = if custom_name.is_empty() {
         torrent_root.as_str()
     } else {
@@ -3279,12 +3314,20 @@ fn compute_completion_layout(
     // otherwise the flat per-basename branch below silently drops that
     // sub-directory structure. A partial selection whose files are all
     // top-level keeps the flat-move behavior (no container to build).
+    //
+    // 用户改名（`custom_name`）同样要建容器：多文件种子改一个平坦文件的
+    // 名字，改的是这批文件的共同落点，只有 `<custom>/a.mkv` 这种形态讲得通。
+    // 多文件种子即使只选一个顶层文件，改名也始终作用于容器，保留文件扩展名。
+    // 原先「全选平坦种子 + custom_name
+    // 只改第一个文件」的分支不可达（全选的多文件种子在上一段就返回了），
+    // 顺带删除。
     let has_selected_subdir = selected_files.iter().any(|file| {
         file.relative_path
             .parent()
             .is_some_and(|p| !p.as_os_str().is_empty())
     });
-    if is_multi_file_torrent && (all_selected || has_selected_subdir) {
+    let rename_needs_container = !custom_name.is_empty();
+    if is_multi_file_torrent && (all_selected || has_selected_subdir || rename_needs_container) {
         let final_top = match reuse_top {
             Some(n) if !save_dir.join(n).exists() || save_dir.join(n).is_dir() => n.to_string(),
             _ => dedup_name_in_dir(save_dir, desired_container, claimed, allow_overwrite)?,
@@ -3340,9 +3383,11 @@ fn compute_completion_layout(
         }));
     }
 
-    // Per-file flat move: covers an all-top-level flat torrent (all
-    // selected or partial) — no selected file has a sub-directory, so
-    // there is nothing for the container branch above to preserve.
+    // Per-file flat move: covers an all-top-level flat torrent whose selection
+    // is partial and unrenamed — no selected file has a sub-directory and the
+    // user did not ask for a container, so there is nothing for the container
+    // branch above to preserve. 改名（`custom_name`）不会走到这里：它在上面的
+    // 容器分支就带着 `rename_needs_container` 返回了。
     // Dedup each basename against save_dir AND against names already chosen
     // in this batch so two staged files cannot collide on the same dst.
     // `taken` 存小写折叠名:批内两个仅大小写不同的 basename(种子内合法)
@@ -3350,20 +3395,14 @@ fn compute_completion_layout(
     let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut moves: Vec<CompletionMove> = Vec::with_capacity(selected_files.len());
     let mut top_level: Option<String> = None;
-    for (idx, file) in selected_files.iter().enumerate() {
+    for file in selected_files {
         let rel = &file.relative_path;
         let basename = rel
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("download")
             .to_string();
-        // For all-selected flat torrent + custom_name, rename the FIRST file
-        // only (preserves prior behavior for the single-rename UX).
-        let candidate_seed = if idx == 0 && all_selected && !custom_name.is_empty() {
-            custom_name
-        } else {
-            basename.as_str()
-        };
+        let candidate_seed = basename.as_str();
         // First dedup against the on-disk contents of save_dir.
         let mut candidate = dedup_name_in_dir(save_dir, candidate_seed, claimed, allow_overwrite)?;
         // Then dedup against names already chosen in *this* batch.  Use a plain
@@ -7356,6 +7395,15 @@ mod tests {
             .collect()
     }
 
+    /// 删除测试夹具目录；失败只记一条警告，不让清理噪声盖住断言结果。
+    fn cleanup_fixture(dir: &std::path::Path) {
+        if let Err(error) = std::fs::remove_dir_all(dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::log_warn!("[BT tests] fixture cleanup failed: {}", error);
+        }
+    }
+
     fn completion_files_with_len(paths: &[(&str, u64)]) -> Vec<super::CompletionFileSpec> {
         paths
             .iter()
@@ -9027,6 +9075,180 @@ mod tests {
         {
             crate::log_warn!("[BT tests] fixture cleanup failed: {}", error);
         }
+    }
+
+    /// 确认框里的改名必须真的决定落盘名：单文件改文件、多文件改容器；未改名时不建容器。
+    #[test]
+    fn completion_layout_applies_custom_name_for_single_file_and_multi_file() {
+        // (i) 单文件种子：改的是文件本身。
+        let save = unique_test_dir("custom_single_file");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage).expect("create fixture");
+        let selected = completion_files(&["movie.mkv"]);
+        let claims = HashSet::new();
+        let layout = super::compute_completion_layout(super::CompletionLayoutInput {
+            save_dir: &save,
+            stage_dir: &stage,
+            selected_files: &selected,
+            all_selected: true,
+            is_multi_file_torrent: false,
+            custom_name: "改名后的电影.mkv",
+            torrent_root_name: "movie.mkv",
+            reuse_top: None,
+            allow_overwrite: false,
+            claimed: &claims,
+        })
+        .expect("read completion destination")
+        .expect("layout");
+        assert_eq!(layout.top_level_name, "改名后的电影.mkv");
+        assert_eq!(layout.moves[0].dst, save.join("改名后的电影.mkv"));
+
+        // (ii) 多文件种子全选：改的是外层容器目录，内部相对路径不变。
+        let save = unique_test_dir("custom_multi_all");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage).expect("create fixture");
+        let selected = completion_files(&["movie.mkv", "subs/en.srt"]);
+        let layout = super::compute_completion_layout(super::CompletionLayoutInput {
+            save_dir: &save,
+            stage_dir: &stage,
+            selected_files: &selected,
+            all_selected: true,
+            is_multi_file_torrent: true,
+            custom_name: "我的剧集",
+            torrent_root_name: "Movie Pack",
+            reuse_top: None,
+            allow_overwrite: false,
+            claimed: &claims,
+        })
+        .expect("read completion destination")
+        .expect("layout");
+        assert_eq!(layout.top_level_name, "我的剧集");
+        assert_eq!(layout.moves[0].dst, save.join("我的剧集").join("movie.mkv"));
+        assert_eq!(
+            layout.moves[1].dst,
+            save.join("我的剧集").join("subs").join("en.srt")
+        );
+        cleanup_fixture(&save);
+    }
+
+    /// 平坦多文件种子只勾一部分 + 改名：以前会静默丢掉改名（落到逐文件平铺分支），
+    /// 现在按「这批文件的共同落点」建 `<custom>/` 容器；未改名时仍是历史平铺行为。
+    #[test]
+    fn completion_layout_partial_flat_selection_honours_or_keeps_custom_name() {
+        let save = unique_test_dir("custom_partial_flat");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage).expect("create fixture");
+        let selected = completion_files(&["e01.mkv", "e02.mkv"]);
+        let claims = HashSet::new();
+
+        let renamed = super::compute_completion_layout(super::CompletionLayoutInput {
+            save_dir: &save,
+            stage_dir: &stage,
+            selected_files: &selected,
+            all_selected: false,
+            is_multi_file_torrent: true,
+            custom_name: "第一季",
+            torrent_root_name: "Season Pack",
+            reuse_top: None,
+            allow_overwrite: false,
+            claimed: &claims,
+        })
+        .expect("read completion destination")
+        .expect("layout");
+        assert_eq!(renamed.top_level_name, "第一季");
+        assert_eq!(
+            renamed
+                .moves
+                .iter()
+                .map(|m| m.dst.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                save.join("第一季").join("e01.mkv"),
+                save.join("第一季").join("e02.mkv")
+            ],
+            "a renamed partial flat selection must land under one container"
+        );
+
+        // 未改名：保持历史的逐文件平铺（不凭空造一个以种子名命名的目录）。
+        let untouched = super::compute_completion_layout(super::CompletionLayoutInput {
+            save_dir: &save,
+            stage_dir: &stage,
+            selected_files: &selected,
+            all_selected: false,
+            is_multi_file_torrent: true,
+            custom_name: "",
+            torrent_root_name: "Season Pack",
+            reuse_top: None,
+            allow_overwrite: false,
+            claimed: &claims,
+        })
+        .expect("read completion destination")
+        .expect("layout");
+        assert_eq!(
+            untouched
+                .moves
+                .iter()
+                .map(|m| m.dst.clone())
+                .collect::<Vec<_>>(),
+            vec![save.join("e01.mkv"), save.join("e02.mkv")]
+        );
+        cleanup_fixture(&save);
+    }
+
+    #[test]
+    fn completion_layout_renamed_multi_file_single_selection_keeps_extension() {
+        let save = unique_test_dir("renamed_multi_single_selection");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage).expect("fixture");
+        let selected = completion_files(&["episode.mkv"]);
+        let layout = super::compute_completion_layout(super::CompletionLayoutInput {
+            save_dir: &save,
+            stage_dir: &stage,
+            selected_files: &selected,
+            all_selected: false,
+            is_multi_file_torrent: true,
+            custom_name: "Season One",
+            torrent_root_name: "Original",
+            reuse_top: None,
+            allow_overwrite: false,
+            claimed: &HashSet::new(),
+        })
+        .expect("layout result")
+        .expect("layout");
+        assert!(layout.task_owned_container);
+        assert_eq!(layout.moves[0].dst, save.join("Season One/episode.mkv"));
+        cleanup_fixture(&save);
+    }
+
+    /// 改出来的名字已被别人占用：编号让位，绝不覆盖既有文件。
+    #[test]
+    fn completion_layout_custom_name_never_overwrites_an_existing_target() {
+        let save = unique_test_dir("custom_name_occupied");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage).expect("create fixture");
+        std::fs::create_dir_all(save.join("我的剧集")).expect("create blocking dir");
+        let selected = completion_files(&["movie.mkv", "subs/en.srt"]);
+        let claims = HashSet::new();
+        let layout = super::compute_completion_layout(super::CompletionLayoutInput {
+            save_dir: &save,
+            stage_dir: &stage,
+            selected_files: &selected,
+            all_selected: true,
+            is_multi_file_torrent: true,
+            custom_name: "我的剧集",
+            torrent_root_name: "Movie Pack",
+            reuse_top: None,
+            allow_overwrite: false,
+            claimed: &claims,
+        })
+        .expect("read completion destination")
+        .expect("layout");
+        assert_eq!(layout.top_level_name, "我的剧集 (1)");
+        assert_eq!(
+            layout.moves[0].dst,
+            save.join("我的剧集 (1)").join("movie.mkv")
+        );
+        cleanup_fixture(&save);
     }
 
     #[test]

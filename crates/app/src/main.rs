@@ -16,6 +16,7 @@ mod chrome_layout;
 mod command_palette;
 mod completion_windows;
 mod downloads_port;
+mod external_open;
 mod instance_ipc;
 mod launch;
 mod legacy_themes;

@@ -1067,6 +1067,28 @@ pub struct CaptureSubmitTorrentFileParams {
     pub start_paused: Option<bool>,
 }
 
+/// `agent.capture.openPolicy` 参数。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureOpenPolicyParams {
+    /// 系统交来的输入所属关联；缺省 = 不属于可关闭的关联（如 `fluxdown:` 深链解码出的
+    /// 磁力链）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub association: Option<crate::capture_link::OpenAssociation>,
+}
+
+/// `agent.capture.openPolicy` 结果：桌面据此决定忽略、静默建任务还是显示确认。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureOpenPolicyDto {
+    /// 该关联已被用户关闭：agent 已发系统通知，调用方不得建任务，也不显示确认。
+    #[serde(default)]
+    pub ignored: bool,
+    /// 「免打扰下载」当前值：`true` = 按宿主默认选项直接建任务，不显示确认。
+    #[serde(default)]
+    pub silent_download: bool,
+}
+
 /// 桌面系统集成状态（开机自启、`.torrent` 关联、URL scheme 注册）。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

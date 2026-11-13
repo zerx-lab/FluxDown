@@ -183,6 +183,9 @@ impl NewDownloadView {
 
     /// 预测输入变化后更新预测结果；自动模式仅在目录未被用户手动指定时跟随。
     pub(super) fn sync_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.torrent.is_some() {
+            return;
+        }
         let predicted = self.predict_category_dir(cx);
         if self.category_predicted != predicted {
             self.category_predicted.clone_from(&predicted);

@@ -178,3 +178,50 @@ async fn switching_to_the_proxy_mid_download_carries_the_running_task_over() {
     );
     leech.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn magnet_preview_v2_and_hybrid_obey_proxy_policy() {
+    use fluxdown_engine::{bt_config::BtConfig, proxy_config::ProxyConfig};
+    use librqbit::TorrentVersion;
+    for (version, peers_too) in [(TorrentVersion::V2, true), (TorrentVersion::Hybrid, false)] {
+        let tracker = Tracker::start().await;
+        let seeder = Seeder::start_versioned(&pack(), &tracker, None, version).await;
+        let proxy = Socks5::start().await;
+        let config = BtConfig {
+            enable_dht: false,
+            proxy_enabled: true,
+            proxy_peers: peers_too,
+            ..BtConfig::default()
+        };
+        let global = ProxyConfig {
+            mode: ProxyMode::None,
+            proxy_type: ProxyType::Socks5,
+            host: "127.0.0.1".into(),
+            port: proxy.addr.port(),
+            ..ProxyConfig::default()
+        };
+        let share = fluxdown_engine::bt_local_seed::torrent_share(
+            &seeder.torrent_bytes,
+            std::slice::from_ref(&tracker.url),
+        )
+        .expect("magnet");
+        let metadata = tokio::time::timeout(
+            Duration::from_secs(20),
+            fluxdown_engine::bt_preview::resolve_magnet(
+                &share.magnet,
+                &config,
+                &global,
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            ),
+        )
+        .await
+        .expect("preview deadline")
+        .expect("metadata resolved");
+        let preview_share = fluxdown_engine::bt_local_seed::torrent_share(&metadata, &[])
+            .expect("preview metadata");
+        assert_eq!(preview_share.info_hash_v2, share.info_hash_v2);
+        assert_every_announce_was_tunnelled(&tracker, &proxy).await;
+        assert_eq!(proxy.tunnels_to(seeder.addr) > 0, peers_too);
+    }
+}

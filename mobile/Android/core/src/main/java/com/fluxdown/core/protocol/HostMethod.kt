@@ -8,6 +8,14 @@ package com.fluxdown.core.protocol
 
 /** wire 方法名。 */
 object HostMethod {
+    const val daemonTorrentConfirm = "daemon.torrent.confirm"
+    const val daemonTorrentPreview = "daemon.torrent.preview"
+    const val daemonTorrentDiscardPreview = "daemon.torrent.discardPreview"
+    const val daemonTorrentPrepareMagnet = "daemon.torrent.prepareMagnet"
+    const val daemonTorrentResolveMagnet = "daemon.torrent.resolveMagnet"
+    const val daemonTorrentCancelMagnet = "daemon.torrent.cancelMagnet"
+    const val agentCapturePreviewTorrentFile = "agent.capture.previewTorrentFile"
+    const val agentCaptureOpenPolicy = "agent.capture.openPolicy"
     const val systemHello = "system.hello"
     const val systemPing = "system.ping"
     const val systemSnapshot = "system.snapshot"

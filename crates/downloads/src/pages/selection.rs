@@ -16,8 +16,8 @@ use fluxdown_protocol::{
     SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
 };
 use fluxdown_ui_components::{
-    BusyExt as _, CheckState, ControlExt as _, FluxIcon, check_mark, check_row, field_hint,
-    form_field, input_with_action, tabular_numbers,
+    BusyExt as _, CheckState, ControlExt as _, FluxIcon, check_mark, field_hint, form_field,
+    input_with_action, tabular_numbers,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -32,11 +32,11 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     notification::Notification,
-    scroll::ScrollableElement as _,
     v_flex,
 };
 
 use crate::{
+    components::bt_file_picker::{BtFilePickerLabels, bt_file_picker},
     controller::{DownloadsCommand, DownloadsPort},
     model::format_bytes,
 };
@@ -45,6 +45,7 @@ mod plugin_choice;
 
 pub struct SelectionView {
     strings: SelectionStrings,
+    bt_picker_labels: BtFilePickerLabels,
     request: SelectionRequestDto,
     task_name: String,
     port: Arc<dyn DownloadsPort>,
@@ -154,6 +155,7 @@ impl SelectionView {
         cx: &mut Context<Self>,
     ) -> Self {
         let strings = SelectionStrings::from_translator(translator.read(cx));
+        let bt_picker_labels = BtFilePickerLabels::from_translator(translator.read(cx));
         let state = plan.state;
         let save_dir_input = match &state {
             SelectionState::Bt { save_dir, .. } => {
@@ -177,6 +179,7 @@ impl SelectionView {
         };
         cx.observe_in(&translator, window, |this, translator, window, cx| {
             this.strings = SelectionStrings::from_translator(translator.read(cx));
+            this.bt_picker_labels = BtFilePickerLabels::from_translator(translator.read(cx));
             if let Some(input) = &this.save_dir_input {
                 let placeholder = this.strings.save_dir_placeholder.clone();
                 input.update(cx, |input, cx| {
@@ -200,6 +203,7 @@ impl SelectionView {
         }
         Self {
             strings,
+            bt_picker_labels,
             request,
             task_name,
             port,
@@ -576,115 +580,6 @@ impl SelectionView {
         cx: &mut Context<Self>,
     ) -> Div {
         let tokens = active_theme(cx).tokens().clone();
-        let selected_size: i64 = files
-            .iter()
-            .filter(|file| selected.contains(&file.index))
-            .map(|file| file.size)
-            .sum();
-        let toolbar = h_flex()
-            .items_center()
-            .gap(tokens.spacing.sm)
-            .child(
-                Button::new("bt-select-all")
-                    .outline()
-                    .control(cx)
-                    .label(self.strings.select_all.clone())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt {
-                            files, selected, ..
-                        } = &mut this.state
-                        {
-                            *selected = files.iter().map(|file| file.index).collect();
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("bt-deselect-all")
-                    .outline()
-                    .control(cx)
-                    .label(self.strings.deselect_all.clone())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt { selected, .. } = &mut this.state {
-                            selected.clear();
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .text_right()
-                    .text_size(tokens.typography.xs.size)
-                    .line_height(tokens.typography.xs.line_height)
-                    .font_features(tabular_numbers())
-                    .text_color(tokens.colors.muted_foreground)
-                    .child(SharedString::from(format!(
-                        "{} · {}",
-                        self.strings
-                            .selected_count
-                            .replace("{n}", &selected.len().to_string()),
-                        format_bytes(selected_size.max(0) as u64)
-                    ))),
-            );
-        let list = v_flex()
-            .flex_1()
-            .min_h_0()
-            .children(files.iter().map(|file| {
-                let checked = selected.contains(&file.index);
-                let index = file.index;
-                let depth = file.path.matches('/').count().min(4) as f32;
-                let name = file
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&file.path)
-                    .to_owned();
-                let this = cx.weak_entity();
-                check_row(
-                    ("bt-file", index as usize),
-                    checked,
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(tokens.spacing.sm)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(name)),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(tokens.typography.xs.size)
-                                .font_features(tabular_numbers())
-                                .text_color(tokens.colors.muted_foreground)
-                                .child(SharedString::from(format_bytes(file.size.max(0) as u64))),
-                        ),
-                    move |check, _, cx| {
-                        let Ok(()) = this.update(cx, |this, cx| {
-                            if let SelectionState::Bt { selected, .. } = &mut this.state {
-                                if check {
-                                    selected.insert(index);
-                                } else {
-                                    selected.remove(&index);
-                                }
-                            }
-                            cx.notify();
-                        }) else {
-                            // 视图已释放，结束回调而不再更新状态。
-                            return;
-                        };
-                    },
-                    cx,
-                )
-                .pl(tokens.spacing.xs + tokens.spacing.lg * depth)
-                .pr(tokens.spacing.sm)
-                .when(checked, |row| row.bg(tokens.colors.accent))
-            }))
-            .overflow_y_scrollbar();
         // 保存目录在全选工具栏之上，不进文件列表的滚动区。
         v_flex()
             .size_full()
@@ -692,8 +587,23 @@ impl SelectionView {
             .px(tokens.spacing.md)
             .pb(tokens.spacing.md)
             .children(self.render_save_dir(cx))
-            .child(toolbar)
-            .child(div().flex_1().min_h_0().child(list))
+            .child(bt_file_picker(
+                files,
+                selected,
+                &self.bt_picker_labels,
+                Self::bt_picker_state,
+                cx,
+            ))
+    }
+
+    /// BT 文件表与勾选集；其它选择种类没有。
+    fn bt_picker_state(&mut self) -> Option<(&[BtFileDto], &mut HashSet<i32>)> {
+        match &mut self.state {
+            SelectionState::Bt {
+                files, selected, ..
+            } => Some((files.as_slice(), selected)),
+            _ => None,
+        }
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> Div {
@@ -804,9 +714,6 @@ struct SelectionStrings {
     plugin_remember: String,
     plugin_remember_hint: SharedString,
     plugin_confirm: SharedString,
-    select_all: SharedString,
-    deselect_all: SharedString,
-    selected_count: SharedString,
     save_dir: SharedString,
     save_dir_placeholder: SharedString,
     browse: SharedString,
@@ -834,9 +741,6 @@ impl SelectionStrings {
             plugin_remember: translator.text("pluginChoiceRemember").to_owned(),
             plugin_remember_hint: shared(translator.text("pluginChoiceRememberHint")),
             plugin_confirm: shared(translator.text("pluginChoiceConfirm")),
-            select_all: shared(translator.text("btFileSelectAll")),
-            deselect_all: shared(translator.text("deselectAll")),
-            selected_count: shared(translator.text("selectedCount")),
             save_dir: shared(translator.text("saveDir")),
             save_dir_placeholder: shared(translator.text("selectSaveDir")),
             browse: shared(translator.text("browse")),

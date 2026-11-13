@@ -253,6 +253,7 @@ pub(crate) fn routed_create_params(
         unattended,
         hint_file_size: None,
         name_hint: None,
+        bt_custom_name: String::new(),
         category_route,
     }
 }

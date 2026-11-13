@@ -13,11 +13,11 @@ use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, CREATE_TASKS_BATCH_ID_MAX_LEN, CREATE_TASKS_MAX_ITEMS,
     CdnConfigApplyParams, CdnReportAckParams, CreateGroupRequest, CreateQueueRequest,
-    DaemonConfigPatch, DaemonCreateTaskParams, DaemonCreateTasksParams, DaemonCreateTasksResult,
-    DaemonDeleteTasksParams, DaemonTaskIdsParams, MigrationAckParams, RpcErrorData, RpcErrorObject,
-    RpcRequest, RpcResponse, SelectionResolutionDto, ServiceHello, SiteAuthCredentialDto,
-    SiteAuthDeleteParams, SiteAuthMatchParams, SnapshotBody, TaskActivityQuery,
-    TaskSpeedHistoryQuery,
+    CreateTaskRequest, DaemonConfigPatch, DaemonCreateTaskParams, DaemonCreateTasksParams,
+    DaemonCreateTasksResult, DaemonDeleteTasksParams, DaemonTaskIdsParams, MigrationAckParams,
+    RpcErrorData, RpcErrorObject, RpcRequest, RpcResponse, SelectionResolutionDto, ServiceHello,
+    SiteAuthCredentialDto, SiteAuthDeleteParams, SiteAuthMatchParams, SnapshotBody,
+    TaskActivityQuery, TaskSpeedHistoryQuery,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -85,6 +85,9 @@ pub struct DaemonService {
     /// 宿主自身外网请求的统一出口（组件下载、agent 自更新等的代理与插件改写）。
     egress: fluxdown_engine::egress::Egress,
     blobs: Arc<BlobStore>,
+    magnet_previews: crate::magnet_preview::MagnetPreviews,
+    // 带 blob 的建任务与丢弃在这把锁上串行，两次确认不会各建一个任务。
+    torrent_submissions: Arc<tokio::sync::Mutex<crate::torrent_submission::History>>,
     #[cfg(feature = "components")]
     ffmpeg_installing: AtomicBool,
     #[cfg(feature = "components")]
@@ -125,6 +128,8 @@ impl DaemonService {
             events,
             selections,
             blobs,
+            magnet_previews: Default::default(),
+            torrent_submissions: Default::default(),
             db,
             data_dir,
             #[cfg(feature = "plugins")]
@@ -241,6 +246,68 @@ impl DaemonService {
                     self.events
                         .inspect(|snapshot| list_tasks(snapshot, &params))?,
                 )
+            }
+            method::DAEMON_TORRENT_CONFIRM => self.confirm_torrent(params).await,
+            method::DAEMON_TORRENT_PREVIEW => {
+                let params = parse_params::<
+                    fluxdown_protocol::torrent_preview::TorrentPreviewParams,
+                >(params)?;
+                self.demo_forbid("torrent preview")?;
+                to_value(
+                    crate::torrent_preview::preview(&self.blobs, params.torrent_blob_id).await?,
+                )
+            }
+            method::DAEMON_TORRENT_PREPARE_MAGNET => {
+                let params = parse_params::<fluxdown_protocol::torrent_preview::MagnetPreviewParams>(
+                    params,
+                )?;
+                self.demo_forbid("magnet preview")?;
+                to_value(self.magnet_previews.prepare(params.url)?)
+            }
+            method::DAEMON_TORRENT_RESOLVE_MAGNET => {
+                let params = parse_params::<fluxdown_protocol::torrent_preview::MagnetPreviewTicket>(
+                    params,
+                )?;
+                self.demo_forbid("magnet preview")?;
+                let (config, proxy) = self.events.inspect(|snapshot| {
+                    let values = snapshot
+                        .config
+                        .values
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect();
+                    (
+                        crate::config::bt_config_from_map(&values),
+                        fluxdown_engine::proxy_config::ProxyConfig::from_config_map(&values),
+                    )
+                });
+                to_value(
+                    self.magnet_previews
+                        .resolve(
+                            &self.blobs,
+                            &params.preview_id,
+                            config,
+                            proxy,
+                            #[cfg(feature = "bt")]
+                            self.bt_guard.clone(),
+                        )
+                        .await?,
+                )
+            }
+            method::DAEMON_TORRENT_CANCEL_MAGNET => {
+                let params = parse_params::<fluxdown_protocol::torrent_preview::MagnetPreviewTicket>(
+                    params,
+                )?;
+                self.magnet_previews.cancel(&params.preview_id);
+                Ok(Value::Null)
+            }
+            method::DAEMON_TORRENT_DISCARD_PREVIEW => {
+                let params = parse_params::<
+                    fluxdown_protocol::torrent_preview::TorrentPreviewParams,
+                >(params)?;
+                let _submission = self.torrent_submissions.lock().await;
+                crate::torrent_preview::discard(&self.blobs, &params.torrent_blob_id).await?;
+                Ok(Value::Null)
             }
             method::DAEMON_TASK_GET => {
                 let params = parse_params::<IdParams>(params)?;
@@ -1821,6 +1888,78 @@ impl DaemonService {
 
     async fn create_task(&self, params: Option<Value>) -> Result<Value, RpcErrorObject> {
         let params = parse_params::<DaemonCreateTaskParams>(params)?;
+        let _submission = if params.torrent_blob_id.is_some() {
+            Some(self.torrent_submissions.clone().lock_owned().await)
+        } else {
+            None
+        };
+        if let (Some(history), Some(blob_id)) = (&_submission, &params.torrent_blob_id)
+            && let Some(result) = history.get(blob_id)
+        {
+            return Ok(result);
+        }
+        self.create_task_with_selection(params, Vec::new(), None, _submission)
+            .await
+    }
+
+    async fn confirm_torrent(&self, params: Option<Value>) -> Result<Value, RpcErrorObject> {
+        let params =
+            parse_params::<fluxdown_protocol::torrent_preview::TorrentConfirmParams>(params)?;
+        self.demo_forbid("torrent confirmation")?;
+        let submission = self.torrent_submissions.clone().lock_owned().await;
+        if let Some(result) = submission.get(&params.torrent_blob_id) {
+            return Ok(result);
+        }
+        let (preview, torrent_bytes) =
+            crate::torrent_preview::preview_with_bytes(&self.blobs, params.torrent_blob_id.clone())
+                .await?;
+        crate::torrent_preview::validate_confirmation(&params, &preview)?;
+        // 直接构造参数，而不是 `json!` + 反向反序列化：字段改名要在编译期暴露，
+        // 而不是等用户点确认时变成 InvalidArgument。
+        let custom_name = params.custom_name.trim().to_owned();
+        // 任务行在下载开始前就要能显示名字（「稍后下载」的确认任务否则是空行）：
+        // 改过名就用新名，否则用种子内名称。BT 的 Phase 1/3 起跑后会再按元数据
+        // 精修一次，完成期按 `bt_custom_name` 落到最终名字。
+        let display_name = if custom_name.is_empty() {
+            preview.name.clone()
+        } else {
+            custom_name.clone()
+        };
+        self.create_task_with_selection(
+            DaemonCreateTaskParams {
+                request: CreateTaskRequest {
+                    // 任务以种子字节落库，但保留用户点进来的磁力链作为展示来源
+                    // （`origin_url` /「复制链接」/ URL 去重才与确认前一致）。
+                    url: params.source_url.trim().to_owned(),
+                    file_name: display_name,
+                    save_dir: params.save_dir.trim().to_owned(),
+                    queue_id: params.queue_id,
+                    start_paused: params.start_paused,
+                    ..params.options.unwrap_or_default()
+                },
+                torrent_blob_id: Some(params.torrent_blob_id),
+                unattended: false,
+                hint_file_size: None,
+                name_hint: None,
+                bt_custom_name: custom_name,
+                category_route: None,
+            },
+            params.selected_file_indices,
+            Some(torrent_bytes),
+            Some(submission),
+        )
+        .await
+    }
+
+    /// `torrent_bytes`：调用方已读入的 blob 内容（确认链路校验时读过一次）；`None` 时
+    /// 按 `torrent_blob_id` 读取。
+    async fn create_task_with_selection(
+        &self,
+        params: DaemonCreateTaskParams,
+        selected_file_indices: Vec<i32>,
+        torrent_bytes: Option<Vec<u8>>,
+        submission: Option<tokio::sync::OwnedMutexGuard<crate::torrent_submission::History>>,
+    ) -> Result<Value, RpcErrorObject> {
         self.demo_guard(&params.request.url)?;
         if params.torrent_blob_id.is_some()
             || params.request.torrent_b64.is_some()
@@ -1834,8 +1973,24 @@ impl DaemonService {
                 "torrentBlobId and torrentB64 are mutually exclusive",
             ));
         }
-        let bytes = match params.torrent_blob_id.as_deref() {
-            Some(blob_id) => {
+        // 单个路径组件校验统一放在这里：确认链路与 `daemon.task.create` 都经过它，
+        // 插件 / 远程客户端也就不能靠这个字段绕过校验、让引擎静默清洗后落盘。
+        let bt_custom_name = params.bt_custom_name.trim().to_owned();
+        if !bt_custom_name.is_empty()
+            && let Err(issue) =
+                fluxdown_protocol::torrent_preview::validate_custom_name(&bt_custom_name)
+        {
+            return Err(invalid_argument("btCustomName", &issue.message()));
+        }
+        if params.request.save_dir.chars().any(char::is_control) {
+            return Err(invalid_argument(
+                "saveDir",
+                "save directory contains control characters",
+            ));
+        }
+        let bytes = match (torrent_bytes, params.torrent_blob_id.as_deref()) {
+            (Some(bytes), _) => bytes,
+            (None, Some(blob_id)) => {
                 self.blobs
                     .read(blob_id, BlobKind::Torrent)
                     .await
@@ -1846,32 +2001,26 @@ impl DaemonService {
                         )
                     })?
             }
-            None => Vec::new(),
+            (None, None) => Vec::new(),
         };
-        let result = self
-            .actor
-            .execute(ActorOperation::CreateTask {
-                request: Box::new(params.request),
-                torrent_file_bytes: bytes,
-                hint_file_size: params.hint_file_size.filter(|size| *size > 0).unwrap_or(0),
-                name_hint: params.name_hint.unwrap_or_default(),
-                unattended: params.unattended,
-                category_route: params.category_route,
-            })
-            .await;
-        match result {
-            Ok(ActorResult::Created(task_id)) => {
-                if let Some(blob_id) = params.torrent_blob_id {
-                    self.blobs
-                        .consume(&blob_id, BlobKind::Torrent)
-                        .await
-                        .map_err(|error| internal_error(format!("{error:#}")))?;
-                }
-                to_value(json!({ "taskId": task_id }))
-            }
-            Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
-            Err(error) => Err(actor_error(error)),
-        }
+        let operation = ActorOperation::CreateTask {
+            request: Box::new(params.request),
+            torrent_file_bytes: bytes,
+            selected_file_indices,
+            hint_file_size: params.hint_file_size.filter(|size| *size > 0).unwrap_or(0),
+            name_hint: params.name_hint.unwrap_or_default(),
+            bt_custom_name,
+            unattended: params.unattended,
+            category_route: params.category_route,
+        };
+        crate::torrent_submission::submit(
+            self.actor.clone(),
+            self.blobs.clone(),
+            params.torrent_blob_id,
+            operation,
+            submission,
+        )
+        .await
     }
 
     /// `daemon.task.seedLocal`：现成 `.torrent`（有大小上限）从 daemon 主机读取，否则在 actor 之外
@@ -2820,7 +2969,7 @@ fn validate_create_tasks(params: &DaemonCreateTasksParams) -> Result<(), RpcErro
     Ok(())
 }
 
-fn actor_error(error: ActorCallError) -> RpcErrorObject {
+pub(crate) fn actor_error(error: ActorCallError) -> RpcErrorObject {
     match error {
         ActorCallError::Unavailable => RpcErrorObject::application(
             error.to_string(),
@@ -3388,6 +3537,8 @@ mod tests {
     }
 
     fn optional_feature_method(method_name: &str) -> bool {
+        // 种子预览不需要例外：分发表先 `parse_params`，缺 `torrentBlobId` 的 `{}`
+        // 在到达 `Unsupported` 之前就以 InvalidArgument 失败，`not(bt)` 分支不可达。
         method_name == fluxdown_protocol::method::DAEMON_GROUP_RESOLVE_PREVIEW
             || method_name.starts_with("daemon.plugin.")
             || method_name.starts_with("daemon.component.")

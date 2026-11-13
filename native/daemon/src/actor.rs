@@ -42,9 +42,12 @@ pub enum ActorOperation {
     CreateTask {
         request: Box<CreateTaskRequest>,
         torrent_file_bytes: Vec<u8>,
+        selected_file_indices: Vec<i32>,
         hint_file_size: i64,
         /// 参照文件名（浏览器捕获的原始名），见 `DaemonCreateTaskParams::name_hint`。
         name_hint: String,
+        /// BT 落盘名（确认框里用户改过的名字），见 `DaemonCreateTaskParams::bt_custom_name`。
+        bt_custom_name: String,
         unattended: bool,
         /// 分类目录路由，见 `DaemonCreateTaskParams::category_route`。
         category_route: Option<fluxdown_protocol::CategoryRouteDto>,
@@ -1161,8 +1164,10 @@ async fn execute_operation(
         ActorOperation::CreateTask {
             request,
             mut torrent_file_bytes,
+            selected_file_indices,
             hint_file_size,
             name_hint,
+            bt_custom_name,
             unattended,
             category_route,
         } => {
@@ -1196,7 +1201,9 @@ async fn execute_operation(
                     referrer: request.referrer,
                     hint_file_size,
                     name_hint,
+                    bt_custom_name,
                     torrent_file_bytes,
+                    selected_file_indices,
                     proxy_url: request.proxy_url,
                     user_agent: request.user_agent,
                     queue_id,
@@ -3776,8 +3783,10 @@ mod tests {
                 serde_json::from_value(serde_json::json!({ "url": url })).expect("create request"),
             ),
             torrent_file_bytes: torrent,
+            selected_file_indices: Vec::new(),
             hint_file_size: 0,
             name_hint: String::new(),
+            bt_custom_name: String::new(),
             unattended: false,
             category_route: None,
         };

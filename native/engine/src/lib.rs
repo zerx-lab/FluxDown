@@ -27,6 +27,9 @@ pub mod bt_move;
 /// BT 部分选择做种的 parts 边车（选中文件路径映射 + 跨文件边界字节）。
 #[cfg(feature = "bt")]
 pub mod bt_partfile;
+/// 不建任务的临时磁力元数据预览。
+#[cfg(feature = "bt")]
+pub mod bt_preview;
 pub mod bt_seeding;
 /// Windows 的 NTFS sparse 标记（HTTP 多段预分配与 BT staging 共用）；BT staging
 /// 存储包装仅 `bt` feature 下编译。

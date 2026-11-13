@@ -12,6 +12,7 @@ pub mod event_hub;
 mod event_pump;
 pub mod http;
 pub mod log_redact;
+mod magnet_preview;
 #[cfg(feature = "plugins")]
 pub mod plugin_port;
 pub mod plugin_views;
@@ -20,6 +21,8 @@ pub mod rpc;
 pub mod runtime;
 pub mod selection;
 pub mod service;
+mod torrent_preview;
+mod torrent_submission;
 
 use fluxdown_protocol::{ServiceHello, ServiceRole};
 

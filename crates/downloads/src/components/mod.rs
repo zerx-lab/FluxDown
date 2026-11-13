@@ -1,3 +1,4 @@
+pub(crate) mod bt_file_picker;
 pub(crate) mod conflict_badge;
 pub(crate) mod file_icon;
 pub(crate) mod group_visuals;

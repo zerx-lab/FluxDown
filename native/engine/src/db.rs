@@ -882,6 +882,8 @@ pub struct NewTaskRow<'a> {
     pub file_name: &'a str,
     /// 文件名来源（见 `name_inferred` 迁移注释）。
     pub name_inferred: bool,
+    /// 显式 BT 落盘名（确认框里用户改过的名字）；空串 = 用种子内名称。
+    pub bt_custom_name: &'a str,
     pub save_dir: &'a str,
     pub segments: i32,
     /// 初始状态：0 pending / 2 paused / 4 error（创建即失败）。
@@ -1894,9 +1896,9 @@ impl Db {
                  created_at, proxy_url, queue_id, checksum, ignore_tls_errors, queue_order, cookies, referrer, \
                  extra_headers, origin_url, audio_url, resolver_plugin_id, group_id, resolver_item, unattended, \
                  bt_selected_files, resolver_choice_pending, category_route, request_method, \
-                 bt_sequential, bt_first_last_pieces_first) \
+                 bt_sequential, bt_first_last_pieces_first, bt_custom_name) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, \
-                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)",
+                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)",
             )
             .bind(row.id)
             .bind(row.url)
@@ -1927,6 +1929,7 @@ impl Db {
             .bind(row.request_method)
             .bind(i32::from(row.bt_sequential))
             .bind(i32::from(row.bt_first_last_pieces_first))
+            .bind(row.bt_custom_name)
             .execute(&mut *tx)
             .await?;
             if !row.torrent_file_bytes.is_empty() {
@@ -2912,13 +2915,24 @@ impl Db {
     /// 值（可能带 fragment），去重比较前需要先按 fragment 归一化，交给调用方
     /// 用同一套归一化规则处理。任务量通常是几十到几百条，一次性取回后在
     /// 内存比较比逐条查询更省 round-trip。
+    ///
+    /// 预览确认后建的磁力任务以种子字节落库，`url` 是 `torrent-file://` 哨兵，用户
+    /// 的磁力链在 `origin_url`；这类行额外按 `origin_url` 给出一条候选，否则同一条
+    /// 磁力链确认两次、或确认后再走普通建任务，都比不出重复。
     pub async fn active_task_urls(&self) -> Result<Vec<(String, String)>, DbError> {
-        let rows = sqlx::query("SELECT id, url FROM tasks WHERE status IN (0, 1, 2, 5)")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT id, url, origin_url FROM tasks WHERE status IN (0, 1, 2, 5)")
+                .fetch_all(&self.pool)
+                .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
-            out.push((row.try_get("id")?, row.try_get("url")?));
+            let id: String = row.try_get("id")?;
+            let url: String = row.try_get("url")?;
+            let origin_url: String = row.try_get("origin_url")?;
+            if url != origin_url && crate::bt_config::is_magnet_url(&origin_url) {
+                out.push((id.clone(), origin_url));
+            }
+            out.push((id, url));
         }
         Ok(out)
     }
@@ -9811,6 +9825,7 @@ mod tests {
             url: "http://example.test/a.bin",
             file_name: "a.bin",
             name_inferred: false,
+            bt_custom_name: "",
             save_dir: "/tmp",
             segments: 0,
             status: 2,

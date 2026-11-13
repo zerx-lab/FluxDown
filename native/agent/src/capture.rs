@@ -614,6 +614,7 @@ impl CaptureService {
                     unattended,
                     hint_file_size: spec.hint_file_size,
                     name_hint: spec.name_hint,
+                    bt_custom_name: String::new(),
                     category_route: spec.category_route,
                 }),
             )

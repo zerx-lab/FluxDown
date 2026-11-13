@@ -31,6 +31,22 @@ pub fn is_capture_url(value: &str) -> bool {
         .any(|scheme| lower.starts_with(scheme))
 }
 
+/// 判定 `value` 是否为磁力链（`magnet:?…`，大小写不敏感），与引擎的磁力判定同一口径：
+/// 判成磁力却会被引擎拒绝的输入（如缺 `?` 的 `magnet:xt=…`）不进入元数据预览。
+///
+/// ```
+/// use fluxdown_protocol::capture_link::is_magnet_link;
+/// assert!(is_magnet_link("MAGNET:?xt=urn:btih:abc"));
+/// assert!(!is_magnet_link("magnet:xt=urn:btih:abc"));
+/// assert!(!is_magnet_link("https://example.com/a.torrent"));
+/// ```
+#[must_use]
+pub fn is_magnet_link(value: &str) -> bool {
+    value
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("magnet:?"))
+}
+
 /// `fluxdown:` 深链 → 实际下载链接：`fluxdown://download?url=<encoded>`（Firefox 等
 /// 会规整成 `fluxdown://download/?url=`）或 `fluxdown:<url>`；其他 scheme 原样返回。
 ///

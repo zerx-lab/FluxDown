@@ -49,6 +49,21 @@ pub const DAEMON_TASK_SEED_LOCAL: &str = "daemon.task.seedLocal";
 /// BT 任务分享材料（`DaemonTorrentShareParams` → `TorrentShareDto`）：磁力链接与可选 `.torrent`
 /// 内容。非 BT 任务 / 任务不存在返回 `invalidArgument` / `notFound`。
 pub const DAEMON_TASK_TORRENT_SHARE: &str = "daemon.task.torrentShare";
+/// 确认种子预览并建任务（`TorrentConfirmParams` → `{ taskId }`）：先校验显式文件选择、
+/// 保存目录与改名，通过后才建任务；空选择被拒绝。
+pub const DAEMON_TORRENT_CONFIRM: &str = "daemon.torrent.confirm";
+/// 读已上传种子的元数据（`TorrentPreviewParams` → `TorrentPreviewDto`），不建任务。
+pub const DAEMON_TORRENT_PREVIEW: &str = "daemon.torrent.preview";
+/// 丢弃未确认的种子上传（`TorrentPreviewParams` → `null`），重复调用无害。
+pub const DAEMON_TORRENT_DISCARD_PREVIEW: &str = "daemon.torrent.discardPreview";
+/// 预约一次可取消的磁力元数据预览（`MagnetPreviewParams` → `MagnetPreviewTicket`），
+/// 本步不发起任何网络请求。
+pub const DAEMON_TORRENT_PREPARE_MAGNET: &str = "daemon.torrent.prepareMagnet";
+/// 执行预约、只取元数据（`MagnetPreviewTicket` → `TorrentPreviewDto`），不建下载任务。
+pub const DAEMON_TORRENT_RESOLVE_MAGNET: &str = "daemon.torrent.resolveMagnet";
+/// 取消尚未开始或进行中的预约（`MagnetPreviewTicket` → `null`）；已解析成功的结果
+/// 改用 `daemon.torrent.discardPreview` 释放。
+pub const DAEMON_TORRENT_CANCEL_MAGNET: &str = "daemon.torrent.cancelMagnet";
 /// BT 任务实况（`DaemonBtStatusParams` → `BtStatusDto`）：peer 列表与逐 tracker 汇报状态，
 /// 供详情页轮询（对齐 qBittorrent 的 Peers / Trackers 页签）。非 BT 任务返回 `invalidArgument`。
 pub const DAEMON_TASK_BT_STATUS: &str = "daemon.task.btStatus";
@@ -403,6 +418,13 @@ pub const AGENT_SOUND_PREVIEW: &str = "agent.sound.preview";
 pub const AGENT_CAPTURE_SUBMIT: &str = "agent.capture.submit";
 /// 从本机 `.torrent` 文件建任务：agent 读文件、上传 daemon blob 后调用 `daemon.task.create`。
 pub const AGENT_CAPTURE_SUBMIT_TORRENT_FILE: &str = "agent.capture.submitTorrentFile";
+/// 读本机 `.torrent` 并预览（`TorrentFilePreviewParams` → `TorrentPreviewDto`）：agent 读文件、
+/// 上传 daemon blob 后调用 `daemon.torrent.preview`，不建下载任务。
+pub const AGENT_CAPTURE_PREVIEW_TORRENT_FILE: &str = "agent.capture.previewTorrentFile";
+/// 系统交来 `.torrent` / `magnet:` 时的处理策略（`CaptureOpenPolicyParams` →
+/// `CaptureOpenPolicyDto`）：来源关联是否已被用户关闭、「免打扰下载」是否开启。
+/// 只读，不建任务、不产生待确认捕获。
+pub const AGENT_CAPTURE_OPEN_POLICY: &str = "agent.capture.openPolicy";
 pub const AGENT_CAPTURE_LIST: &str = "agent.capture.list";
 pub const AGENT_CAPTURE_RESOLVE: &str = "agent.capture.resolve";
 /// 捕获上下文只读清单预解析，返回 `ResolvePreviewResponse`，不消费事务。
@@ -487,6 +509,12 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_TORRENT_SHARE,
+    DAEMON_TORRENT_CONFIRM,
+    DAEMON_TORRENT_PREVIEW,
+    DAEMON_TORRENT_DISCARD_PREVIEW,
+    DAEMON_TORRENT_PREPARE_MAGNET,
+    DAEMON_TORRENT_RESOLVE_MAGNET,
+    DAEMON_TORRENT_CANCEL_MAGNET,
     DAEMON_TASK_BT_STATUS,
     DAEMON_TASK_BT_FILES,
     DAEMON_TASK_SET_FILE_PRIORITIES,
@@ -705,6 +733,8 @@ pub const ALL_METHODS: &[&str] = &[
     AGENT_SOUND_PREVIEW,
     AGENT_CAPTURE_SUBMIT,
     AGENT_CAPTURE_SUBMIT_TORRENT_FILE,
+    AGENT_CAPTURE_PREVIEW_TORRENT_FILE,
+    AGENT_CAPTURE_OPEN_POLICY,
     AGENT_CAPTURE_LIST,
     AGENT_CAPTURE_RESOLVE,
     AGENT_CAPTURE_PREVIEW,
@@ -726,6 +756,10 @@ pub const ALL_METHODS: &[&str] = &[
 /// 会等待网络、下载或外部 IO 的 daemon 方法。daemon 对这些方法按请求并发处理，
 /// agent 网关也把它们放到独立于普通 daemon 命令的通道，避免长耗时调用堵住暂停/恢复/设置写入。
 pub const SLOW_DAEMON_METHODS: &[&str] = &[
+    DAEMON_TORRENT_DISCARD_PREVIEW,
+    DAEMON_TORRENT_RESOLVE_MAGNET,
+    DAEMON_TORRENT_CONFIRM,
+    DAEMON_TORRENT_PREVIEW,
     DAEMON_COMPONENT_LIST_VERSIONS,
     DAEMON_COMPONENT_INSTALL,
     DAEMON_PLUGIN_AUTH,

@@ -8,6 +8,7 @@ mod category;
 mod hints;
 mod preview;
 mod probe;
+mod torrent;
 mod url_rule;
 
 use hints::HintAutofill;
@@ -50,9 +51,7 @@ use crate::{
         },
     },
     strings::NewDownloadStrings,
-    submission::{
-        CapturedTask, NewDownloadSubmission, RemoteItem, RemoteSubmission, TorrentFileOptions,
-    },
+    submission::{CapturedTask, NewDownloadSubmission, RemoteItem, RemoteSubmission},
 };
 use fluxdown_protocol::{
     AgentSnapshot, CloudDevice, LinkDeviceInfo, PendingCaptureDto, QueueDto, SiteAuthCredentialDto,
@@ -118,8 +117,10 @@ pub struct NewDownloadContext {
     pub queues: Vec<NewDownloadQueue>,
     /// 全局手动代理 URL；空 = 未配置（对应下拉项置灰）。
     pub manual_proxy_url: String,
-    /// 预填链接（拖放）。
+    /// 主动打开的输入：链接或本机种子路径（系统打开 / 菜单 / 拖放）。
     pub initial_urls: Vec<String>,
+    /// 系统打开交来的输入：按外部捕获的口径决定是否弹下载进度窗口。
+    pub external_open: bool,
     /// 默认目录下的授权路由；空规则仍允许插件归档。`None` 表示明确停用路由。
     pub category_route: Option<fluxdown_protocol::CategoryRouteDto>,
     pub category_options: Vec<NewDownloadCategory>,
@@ -267,6 +268,7 @@ pub(crate) fn build_new_download_context(
             .map(str::to_owned),
         custom_categories: categories,
         initial_urls: Vec::new(),
+        external_open: false,
         targets,
         target,
     }
@@ -283,6 +285,19 @@ fn custom_threads_text(segments: i32) -> String {
 
 /// 新建下载对话框的提交回调。
 pub type NewDownloadSubmit = Rc<dyn Fn(NewDownloadSubmission, &mut Window, &mut App)>;
+
+/// 确认结果回调：返回表单是否还在并已展示结果（`false` 时由宿主负责反馈）。
+pub type TorrentConfirmationDone =
+    Box<dyn FnOnce(Result<String, fluxdown_protocol::RpcErrorData>, &mut App) -> bool>;
+/// 宿主在返回前就发起并持有确认请求，表单随后关闭也不影响请求完成。
+pub type NewDownloadConfirm = Rc<
+    dyn Fn(
+        Box<fluxdown_protocol::torrent_preview::TorrentConfirmParams>,
+        bool,
+        TorrentConfirmationDone,
+        &mut App,
+    ),
+>;
 
 struct HeaderRow {
     id: usize,
@@ -310,12 +325,18 @@ struct AuthAutofill {
 pub struct NewDownloadView {
     strings: NewDownloadStrings,
     translator: Entity<Translator>,
+    torrent: Option<torrent::TorrentForm>,
+    torrent_generation: u64,
+    /// 种子确认框的「文件名」（改名目标）。每次预览成功都按该种子的原始名称重置，
+    /// 空 = 不改名（提交空串，引擎沿用原来的命名逻辑）。
+    torrent_name: Entity<InputState>,
     preview_gate: crate::model::preview::PreviewGate,
     preview_request: Option<(fluxdown_protocol::CreateTaskRequest, Option<String>)>,
     manifest: Option<Entity<crate::pages::manifest::ManifestView>>,
     context: NewDownloadContext,
     port: Arc<dyn DownloadsPort>,
     on_submit: NewDownloadSubmit,
+    on_confirm: NewDownloadConfirm,
     urls: Entity<TextareaState>,
     entries: Vec<UrlEntry>,
     /// 尚未确认 / 忽略的外部捕获；按 URL 与链接行对应。
@@ -377,14 +398,22 @@ impl NewDownloadView {
         context: NewDownloadContext,
         port: Arc<dyn DownloadsPort>,
         on_submit: NewDownloadSubmit,
+        on_confirm: NewDownloadConfirm,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let strings = NewDownloadStrings::from_translator(translator.read(cx));
+        let (torrent_inputs, initial_urls) = torrent::split_inputs(
+            context.initial_urls.clone(),
+            !context.targets.iter().any(|entry| {
+                entry.target() == context.target && context.target != DispatchTarget::Local
+            }),
+        );
+        let external_open = context.external_open;
         let urls = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, URLS_MAX_ROWS)
-                .default_value(context.initial_urls.join("\n"))
+                .default_value(initial_urls.join("\n"))
                 .placeholder(strings.url_placeholder.clone())
         });
         let save_dir = cx.new(|cx| {
@@ -408,6 +437,12 @@ impl NewDownloadView {
         });
         let rename = cx
             .new(|cx| InputState::new(window, cx).placeholder(strings.rename_placeholder.clone()));
+        let torrent_name_placeholder = translator
+            .read(cx)
+            .text("torrentConfirmNamePlaceholder")
+            .to_owned();
+        let torrent_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder(torrent_name_placeholder.clone()));
         urls.update(cx, |input, cx| input.focus(window, cx));
         let target = if context
             .targets
@@ -446,12 +481,16 @@ impl NewDownloadView {
             probe: LinkProbe::new(strings.rename_placeholder.clone()),
             strings,
             translator: translator.clone(),
+            torrent: None,
+            torrent_generation: 0,
+            torrent_name,
             preview_gate: crate::model::preview::PreviewGate::default(),
             preview_request: None,
             manifest: None,
             context,
             port,
             on_submit,
+            on_confirm,
             urls,
             entries: Vec::new(),
             captures: Vec::new(),
@@ -480,12 +519,22 @@ impl NewDownloadView {
             category_dir_manually_edited: false,
             category_predicted: None,
         };
+        cx.on_release(|this: &mut Self, cx| this.release_torrent(cx))
+            .detach();
         this.refresh_entries(window, cx);
         if this.category_mode != CategoryMode::Auto {
             this.set_category_mode(this.category_mode.clone(), window, cx);
             this.category_mode_touched = false;
         }
         this.subscribe_inputs(&translator, window, cx);
+        this.open_torrents(
+            torrent_inputs,
+            torrent::TorrentOrigin::Host {
+                external: external_open,
+            },
+            window,
+            cx,
+        );
         this
     }
 
@@ -548,7 +597,11 @@ impl NewDownloadView {
             &self.save_dir,
             window,
             |this, _, event: &InputEvent, _, _| {
-                if let InputEvent::Change = event {
+                if let InputEvent::Change = event
+                    && this.torrent.is_none()
+                {
+                    // 种子确认复用同一个目录框，但它没有分类路由：别让确认期间
+                    // 改目录把「目录被用户改过」永久记在通用表单上。
                     this.category_dir_manually_edited = true;
                 }
             },
@@ -561,6 +614,18 @@ impl NewDownloadView {
             |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::Change = event {
                     this.sync_category(window, cx);
+                }
+            },
+        )
+        .detach();
+        // 种子确认框的「文件名」：只随输入重算按钮可用性与格式提示。Enter 不提交——
+        // 确认只能由对话框里的按钮触发（与其他种子确认交互一致）。
+        cx.subscribe_in(
+            &self.torrent_name,
+            window,
+            |_, _, event: &InputEvent, _, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
                 }
             },
         )
@@ -616,6 +681,15 @@ impl NewDownloadView {
                 input.set_placeholder(placeholder.clone(), window, cx)
             });
         }
+        // 种子确认框的「文件名」占位同样跟随语言（它在构造时只取过一次文案）。
+        let torrent_name_placeholder = self
+            .translator
+            .read(cx)
+            .text("torrentConfirmNamePlaceholder")
+            .to_owned();
+        self.torrent_name.update(cx, |input, cx| {
+            input.set_placeholder(torrent_name_placeholder, window, cx)
+        });
         for (textarea, placeholder) in [
             (&self.urls, &strings.url_placeholder),
             (&self.cookie, &strings.cookie_placeholder),
@@ -658,7 +732,8 @@ impl NewDownloadView {
             return;
         }
         let current = self.urls.read(cx).value().to_string();
-        if current.trim().is_empty()
+        if self.torrent.is_none()
+            && current.trim().is_empty()
             && let Some(save_dir) = fresh
                 .iter()
                 .map(|capture| capture.save_dir.trim())
@@ -690,8 +765,27 @@ impl NewDownloadView {
         self.refresh_entries(window, cx);
     }
 
-    /// 宿主在窗口已打开时追加链接（如拖入链接文件）：原文逐字保留，已存在的 URL 跳过。
-    pub fn append_urls(&mut self, urls: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    /// 宿主在窗口已打开时追加输入：种子 / magnet 进入确认队列，普通链接保留原文并去重。
+    pub fn append_urls(
+        &mut self,
+        urls: Vec<String>,
+        external: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let remote = self
+            .torrent
+            .as_ref()
+            .map_or(self.target != DispatchTarget::Local, |form| {
+                form.restores_remote()
+            });
+        let (torrents, urls) = torrent::split_inputs(urls, external || !remote);
+        self.open_torrents(
+            torrents,
+            torrent::TorrentOrigin::Host { external },
+            window,
+            cx,
+        );
         let current = self.urls.read(cx).value().to_string();
         let text = append_entries(
             &current,
@@ -1056,6 +1150,7 @@ impl NewDownloadView {
         }
         self.context.manual_proxy_url = manual_proxy_url;
         self.sync_category(window, cx);
+        self.refresh_torrent(window, cx);
         cx.notify();
     }
 
@@ -1173,6 +1268,11 @@ impl NewDownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 种子确认只能由它自己的操作按钮提交；在共用的目录输入框里按回车
+        // 不能意外开始任务。
+        if self.torrent.is_some() {
+            return;
+        }
         if !self.can_submit(cx) {
             return;
         }
@@ -1181,6 +1281,27 @@ impl NewDownloadView {
             if !later && queue_override.is_none() {
                 self.submit_remote(&entry, window, cx);
             }
+            return;
+        }
+        let magnets = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                self.capture_for(&entry.url).is_none()
+                    && fluxdown_protocol::capture_link::is_magnet_link(&entry.url)
+            })
+            .map(|entry| torrent::TorrentInput::Magnet(entry.url.clone()))
+            .collect::<Vec<_>>();
+        if !magnets.is_empty() {
+            self.open_torrents(
+                magnets,
+                torrent::TorrentOrigin::Submit {
+                    later,
+                    queue: queue_override,
+                },
+                window,
+                cx,
+            );
             return;
         }
         let options = self.draft_options(later, queue_override, cx);
@@ -1266,24 +1387,12 @@ impl NewDownloadView {
                 if paths.is_empty() {
                     return;
                 }
-                let options = TorrentFileOptions {
-                    save_dir: this.save_dir.read(cx).value().trim().to_owned(),
-                    queue_id: this.context.queue_id.clone(),
-                    start_paused: false,
-                };
-                (this.on_submit)(
-                    NewDownloadSubmission::TorrentFiles {
-                        paths,
-                        options,
-                        last_category_mode: category_mode_preference(&this.category_mode),
-                    },
+                this.open_torrents(
+                    paths.into_iter().map(torrent::TorrentInput::File).collect(),
+                    torrent::TorrentOrigin::Picker,
                     window,
                     cx,
                 );
-                // 只提交了种子：表单里尚未提交的链接留给用户继续处理，没有待处理链接才关窗。
-                if this.entries.is_empty() {
-                    window.remove_window();
-                }
             }) else {
                 // 表单或窗口已释放，不再回写异步结果。
                 return;
@@ -1832,6 +1941,11 @@ impl NewDownloadView {
             .zip(self.context.category_save_dir_history.as_ref())
             .and_then(|(category, memory)| memory.get(category))
             .map_or(&[][..], Vec::as_slice);
+        let category = if self.torrent.is_some() {
+            &[][..]
+        } else {
+            category
+        };
         save_dir_choices(category, history, &self.save_dir.read(cx).value())
             .into_iter()
             .map(|dir| SharedString::from(dir.to_owned()))
@@ -2387,6 +2501,9 @@ impl NewDownloadView {
 impl Render for NewDownloadView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = active_theme(cx).tokens().clone();
+        if self.torrent.is_some() {
+            return self.render_torrent(cx).into_any_element();
+        }
         if let Some(manifest) = &self.manifest {
             return div().size_full().child(manifest.clone()).into_any_element();
         }

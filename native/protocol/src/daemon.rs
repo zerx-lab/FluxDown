@@ -298,6 +298,13 @@ pub struct DaemonCreateTaskParams {
     /// 主名不变；缺省 / 空串 = 无参照。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_hint: Option<String>,
+    /// BT 落盘名（种子 / 磁力确认框里用户改过的名字）。非空 = 最终容器目录（多文件）
+    /// 或文件（单文件）按此名落盘，优先于 `file_name` 的推断与磁力 `dn` 回显豁免，
+    /// 随初始任务行持久化（`tasks.bt_custom_name`），排队 / 暂停 / 重启后不丢。
+    /// 必须是单个路径组件（[`crate::torrent_preview::validate_custom_name`]）。
+    /// 非 BT 任务忽略。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bt_custom_name: String,
     /// 分类目录路由：调用方未替用户选定保存目录时（外部捕获）携带，引擎据此按初始名与
     /// 下载完成时的最终文件名把产物放进命中分类的目录；`request.saveDir` 为路由未命中时
     /// 的基准目录（空 = daemon 默认）。缺省 = 保存目录即最终目录。
@@ -2039,7 +2046,7 @@ pub struct QueueDto {
 ///
 /// # Examples
 ///
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskRequest {

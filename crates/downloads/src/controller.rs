@@ -316,17 +316,28 @@ pub enum DownloadsCommand {
     /// 重扫已完成任务的产物是否仍在下载目录（`daemon.task.rescan`，结果经
     /// `fileMissingChanged` 事件回流）。
     RescanFiles,
-    /// 本机 `.torrent` 文件：agent 读取、上传 blob 后按捕获路径建任务。
-    /// `silent = false`（用户主动打开）走 BT 文件选择；`true` 仅用于扩展 / 文件关联
-    /// 这类无人值守入口（全选文件）。保存目录 / 队列 / 开始暂停由表单入口携带，
-    /// 缺省（`None`）沿用 agent 的默认行为。
-    SubmitTorrentFile {
+    /// 读本机种子的元数据（`agent.capture.previewTorrentFile`），不建任务。
+    PreviewTorrentFile {
         path: String,
-        silent: bool,
-        save_dir: Option<String>,
-        queue_id: Option<String>,
-        start_paused: Option<bool>,
     },
+    /// 预约一次可取消的磁力元数据读取（`daemon.torrent.prepareMagnet`），本步不连 peer。
+    PrepareMagnetPreview {
+        url: String,
+    },
+    /// 只取元数据（`daemon.torrent.resolveMagnet`），blob 保留到显式确认。
+    ResolveMagnetPreview {
+        preview_id: String,
+    },
+    /// 取消已预约或进行中的元数据读取（`daemon.torrent.cancelMagnet`）。
+    CancelMagnetPreview {
+        preview_id: String,
+    },
+    /// 释放没用上的预览上传（`daemon.torrent.discardPreview`）。
+    DiscardTorrentPreview {
+        torrent_blob_id: String,
+    },
+    /// 提交用户确认过的文件选择与保存位置（`daemon.torrent.confirm`）。
+    ConfirmTorrent(Box<fluxdown_protocol::torrent_preview::TorrentConfirmParams>),
     /// 本机做种（`daemon.task.seedLocal`，慢方法：无现成种子时 daemon 要为数据做哈希）：
     /// 把 daemon 主机上已有的文件 / 文件夹登记为已完成 BT 任务并开始做种。结果为
     /// [`fluxdown_protocol::SeedLocalResultDto`]（`DownloadsResult::Value`；`duplicate` 为真时未新建任务，
@@ -347,21 +358,9 @@ pub enum DownloadsCommand {
     },
 }
 
-impl DownloadsCommand {
-    /// 用户主动打开的 `.torrent`（菜单 / 拖入）：走 BT 文件选择，其余沿用 agent 默认。
-    #[must_use]
-    pub(crate) fn open_torrent_file(path: &std::path::Path) -> Self {
-        Self::SubmitTorrentFile {
-            path: path.display().to_string(),
-            silent: false,
-            save_dir: None,
-            queue_id: None,
-            start_paused: None,
-        }
-    }
-}
-
 pub enum DownloadsResult {
+    TorrentPreview(Box<fluxdown_protocol::torrent_preview::TorrentPreviewDto>),
+    MagnetPreviewTicket(fluxdown_protocol::torrent_preview::MagnetPreviewTicket),
     Unit,
     Value(serde_json::Value),
     TaskActivity(TaskActivityPage),

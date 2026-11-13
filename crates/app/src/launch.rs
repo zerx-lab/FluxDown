@@ -1,8 +1,8 @@
 //! 桌面进程启动参数、单实例锁与外部链接接入。
 //!
 //! 开机自启以 `--minimized` 拉起；系统把 `magnet:` / `ed2k:` / `fluxdown:` 链接或
-//! 直链交给本进程时，统一经 `agent.capture.submit` 交由 agent 建任务：
-//! 主实例自己提交，后续实例经本机激活通道交给主实例后退出。
+//! 直链交给本进程时，主实例统一处理，后续实例经本机激活通道转交后退出。
+//! 种子 / 磁力链先经 agent 检查来源关联，再进入新建下载确认；其他链接沿用捕获路径。
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};

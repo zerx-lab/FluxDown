@@ -106,13 +106,15 @@ public struct DaemonCreateTaskParams: Codable, Sendable, Hashable {
     public var hintFileSize: Int64?
     /// 参照文件名（浏览器捕获的原始名）：显式名缺扩展名时借它的扩展名补全。
     public var nameHint: String?
+    public var btCustomName: String?
 
-    public init(request: TaskCreateWire, torrentBlobId: String? = nil, unattended: Bool = false, hintFileSize: Int64? = nil, nameHint: String? = nil) {
+    public init(request: TaskCreateWire, torrentBlobId: String? = nil, unattended: Bool = false, hintFileSize: Int64? = nil, nameHint: String? = nil, btCustomName: String? = nil) {
         self.request = request
         self.torrentBlobId = torrentBlobId
         self.unattended = unattended
         self.hintFileSize = hintFileSize
         self.nameHint = nameHint
+        self.btCustomName = btCustomName
     }
 }
 

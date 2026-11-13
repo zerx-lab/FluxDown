@@ -27,6 +27,7 @@
 | `ops.md` | 日志系统、发布与 CI、设计文档实现状态 |
 | `extension-points.md` | 「要加 X 改哪里」全表 |
 | `pitfalls.md` | 踩坑清单：按领域分节的已验证约束（现象 + 代码坐标 / 回归测试）；改某领域前先读对应小节 |
+| [torrent-preview.md](torrent-preview.md) | 种子 / 磁力链打开确认的当前行为、入口覆盖、实现边界与回归测试 |
 
 ---
 

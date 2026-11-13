@@ -1930,7 +1930,7 @@ impl DownloadView {
         }
     }
 
-    /// 拖放导入：`.torrent` 按用户主动打开处理（走 BT 文件选择后建任务）；
+    /// 拖放导入：`.torrent` 进入新建下载确认表单，确认文件和目录后才建任务；
     /// `.txt`/`.url`/`.list`（≤1MB）按行提取
     /// 受支持的链接后打开新建下载窗口预填（窗口已开则追加进表单）；其他文件类型提示不支持。
     fn on_paths_dropped(
@@ -1939,7 +1939,6 @@ impl DownloadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut torrent_commands = Vec::new();
         let mut urls = Vec::new();
         let mut unsupported = false;
         for path in paths.paths() {
@@ -1948,16 +1947,13 @@ impl DownloadView {
                 .and_then(|ext| ext.to_str())
                 .map(str::to_ascii_lowercase);
             match ext.as_deref() {
-                Some("torrent") => torrent_commands.push(DownloadsCommand::open_torrent_file(path)),
+                Some("torrent") => urls.push(path.to_string_lossy().into_owned()),
                 Some("txt" | "url" | "list") => match read_drop_text_file(path) {
                     Some(text) => urls.extend(parse_drop_urls(&text)),
                     None => unsupported = true,
                 },
                 _ => unsupported = true,
             }
-        }
-        if !torrent_commands.is_empty() {
-            self.execute_commands(torrent_commands, cx);
         }
         if !urls.is_empty() {
             self.open_new_download_with(urls, window, cx);
@@ -2351,28 +2347,32 @@ impl DownloadView {
         self.run_page_command(PageCommand::SeedLocal, window, cx);
     }
 
-    fn open_torrent_file(&mut self, cx: &mut Context<Self>) {
+    fn open_torrent_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: true,
             prompt: None,
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
                 return;
             };
-            let commands: Vec<DownloadsCommand> = paths
+            let inputs: Vec<String> = paths
                 .into_iter()
                 .filter(|path| {
                     path.extension()
                         .and_then(|ext| ext.to_str())
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("torrent"))
                 })
-                .map(|path| DownloadsCommand::open_torrent_file(&path))
+                .map(|path| path.to_string_lossy().into_owned())
                 .collect();
 
-            let Ok(()) = this.update(cx, |this, cx| this.execute_commands(commands, cx)) else {
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                if !inputs.is_empty() {
+                    this.open_new_download_with(inputs, window, cx);
+                }
+            }) else {
                 // 下载页已释放，结束回调，不再提交请求或刷新状态。
                 return;
             };
@@ -2409,7 +2409,7 @@ impl DownloadView {
         cx: &mut Context<Self>,
     ) {
         match command {
-            PageCommand::OpenTorrentFile => self.open_torrent_file(cx),
+            PageCommand::OpenTorrentFile => self.open_torrent_file(window, cx),
             PageCommand::SeedLocal => open_seed_local_dialog(
                 Arc::clone(&self.port),
                 self.strings.clone(),

@@ -110,6 +110,7 @@ impl ClientCommand {
     fn is_submission(&self) -> bool {
         match self.method.as_str() {
             method::DAEMON_TASK_CREATE
+            | method::DAEMON_TORRENT_CONFIRM
             | method::DAEMON_TASK_CREATE_MANY
             | method::DAEMON_TASK_SEED_LOCAL
             | method::DAEMON_GROUP_CREATE

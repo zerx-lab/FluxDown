@@ -149,6 +149,7 @@ impl ApiHost for AgentApiHost {
                     unattended: false,
                     hint_file_size: None,
                     name_hint: None,
+                    bt_custom_name: String::new(),
                     category_route: None,
                 },
             )

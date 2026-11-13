@@ -24,6 +24,7 @@ pub mod shortcuts;
 pub mod sound;
 pub mod table_sync;
 pub mod task_activity;
+pub mod torrent_preview;
 pub mod update_prompt;
 pub use task_activity::{
     TaskActivityDto, TaskActivityPage, TaskActivityQuery, TaskRuntimeDto, TaskSegmentDto,

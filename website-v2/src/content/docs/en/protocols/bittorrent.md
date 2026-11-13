@@ -10,13 +10,17 @@ FluxDown has a BitTorrent engine built in (powered by librqbit) — you don't ne
 ## Adding a torrent
 
 - **Magnet links** — paste a `magnet:` link into the New Download dialog exactly like an HTTP URL.
-- **.torrent files** — open one from the New Download dialog's file picker, or associate `.torrent` files with FluxDown in *Settings → General → Associate .torrent Files*. Once associated, double-clicking a `.torrent` file anywhere on your system opens FluxDown and starts the download directly. (Windows only; this writes a per-user registry association and doesn't require administrator rights.)
+- **.torrent files** — open one from the New Download dialog's file picker, or associate `.torrent` files with FluxDown in *Settings → General → Associate .torrent Files*. Once associated, double-clicking a `.torrent` file anywhere on your system opens it in FluxDown. (Windows only; this writes a per-user registry association and doesn't require administrator rights.)
 
 <!-- TODO(screenshot): Settings → General, "Associate .torrent Files" toggle -->
+
+In the desktop app, a torrent or magnet link opens a confirmation step before any task exists: FluxDown reads the file list, and you choose the files, the save directory and the name. **Start** creates the task; **Cancel** leaves nothing behind. With *Silent Download* turned on, torrents and magnet links opened from outside the app (a double-clicked `.torrent`, a `magnet:` link clicked in a browser) skip this step and start right away with every file selected.
 
 ## Selecting files
 
 Multi-file torrents show a checklist of every file inside, with size, before the download starts — uncheck anything you don't want and FluxDown only fetches the files you selected.
+
+In the desktop app the checklist is part of the confirmation step above. A magnet link has to fetch its file list from the swarm first; if that takes too long, **Add Without Preview** creates the task immediately and shows the checklist once the list arrives. The web UI and mobile apps, and tasks added without a preview, show the same checklist after the task has its file list.
 
 <!-- TODO(screenshot): New Download dialog file-selection list for a multi-file torrent -->
 
@@ -55,7 +59,7 @@ FluxDown watches peers for leech behavior — re-downloading the same data, faki
 
 ## Limitations & FAQ
 
-**A magnet link is stuck on "preparing".** Magnet links carry no file list or size up front — FluxDown has to resolve that metadata from DHT and/or peers first, which shows as "preparing" in the task list. If no peer or DHT node responds within 5 minutes, the task fails with an error telling you to check the trackers or your network (DHT is commonly blocked by restrictive firewalls or some ISPs).
+**A magnet link is stuck on "preparing".** Magnet links carry no file list or size up front — FluxDown has to resolve that metadata from DHT and/or peers first, which shows as "preparing" in the task list. If no peer or DHT node responds within 5 minutes, the task fails with an error telling you to check the trackers or your network (DHT is commonly blocked by restrictive firewalls or some ISPs). In the desktop app the same lookup runs in the confirmation step first; if it doesn't finish there, **Add Without Preview** creates the task and lets it keep looking.
 
 **Can I add more trackers without losing the built-in ones?** Yes for community subscriptions — those merge with whatever list you're using. A hand-edited custom Tracker List, however, replaces the built-in 25 rather than adding to them; include the ones you want to keep.
 

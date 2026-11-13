@@ -215,8 +215,107 @@ fn create_command(name: &str) -> DownloadsCommand {
         unattended: false,
         hint_file_size: None,
         name_hint: None,
+        bt_custom_name: String::new(),
         category_route: None,
     }))
+}
+
+#[test]
+fn external_torrents_follow_live_silent_policy_without_opening_an_extra_form() {
+    // 策略查询与投递放在同一条连接上：分开测各阶段，就测不出「误建任务的同时
+    // 又弹出第二个确认表单」这种组合。
+    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("runtime"));
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (client, mut commands) = test_client(&runtime);
+            let (events, _event_rx) = mpsc::channel(1024);
+            let (socket, mut peer) = connected_pair().await;
+            client.submissions.set_ready(true);
+            let mut transport = SubmissionTransport::new(client.submissions.clone());
+            let connection = tokio::spawn(async move {
+                run_connected(
+                    socket,
+                    &mut commands,
+                    &events,
+                    Bootstrap::at("external-torrent", 0),
+                    PreferenceWrites::new(0),
+                    &mut transport,
+                )
+                .await
+            });
+            for silent in [false, true] {
+                for file in [false, true] {
+                    let input = if file {
+                        "C:\\下载\\100%20  资料😀.torrent"
+                    } else {
+                        "magnet:?xt=urn:btih:abc"
+                    };
+                    let (sender, mut receiver) = mpsc::channel(2);
+                    let done = crate::app::submit_captures_detached(
+                        &client,
+                        if file { Vec::new() } else { vec![input.into()] },
+                        if file {
+                            vec![std::path::PathBuf::from(input)]
+                        } else {
+                            Vec::new()
+                        },
+                        sender,
+                    );
+                    let probe = request(&mut peer, method::AGENT_CAPTURE_OPEN_POLICY).await;
+                    assert_eq!(
+                        probe["params"]["association"],
+                        if file { "torrent" } else { "magnet" }
+                    );
+                    reply(
+                        &mut peer,
+                        &probe,
+                        json!({"ignored": false, "silentDownload": silent}),
+                    )
+                    .await;
+                    if silent {
+                        let create = request(
+                            &mut peer,
+                            if file {
+                                method::AGENT_CAPTURE_SUBMIT_TORRENT_FILE
+                            } else {
+                                method::AGENT_CAPTURE_SUBMIT
+                            },
+                        )
+                        .await;
+                        assert_eq!(create["params"]["silent"], true);
+                        if file {
+                            assert_eq!(create["params"]["path"], input);
+                            assert!(create["params"].get("saveDir").is_none());
+                        } else {
+                            assert_eq!(create["params"]["request"]["url"], input);
+                        }
+                        reply(
+                            &mut peer,
+                            &create,
+                            json!({"taskId": "silent", "taskIds": ["silent"]}),
+                        )
+                        .await;
+                        done.await.expect("silent source handled");
+                        assert!(
+                            receiver.try_recv().is_err(),
+                            "silent open must not show the form"
+                        );
+                    } else {
+                        assert_eq!(receiver.recv().await.expect("show form"), [input]);
+                        done.await.expect("interactive source handled");
+                    }
+                    assert_no_request(&mut peer).await;
+                }
+            }
+            connection.abort();
+            match connection.await {
+                Err(error) => assert!(error.is_cancelled()),
+                Ok(_) => panic!("connection should be cancelled"),
+            }
+        })
+        .await
+        .expect("external open deadline");
+    });
 }
 
 async fn reject(peer: &mut Peer, request: &Value) {
@@ -230,6 +329,100 @@ async fn reject(peer: &mut Peer, request: &Value) {
     ))
     .await
     .expect("failure reply");
+}
+
+#[test]
+fn torrent_confirmation_waits_for_resume_while_preview_cancellation_remains_available() {
+    // 要在同一个 socket 上才能验证顺序：排队中的确认、不受暂停门约束的策略请求、
+    // 取消预览与恢复。
+    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("runtime"));
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (client, mut commands) = test_client(&runtime);
+            let port = AgentDownloadsPort::new(client.clone());
+            let (events, _event_rx) = mpsc::channel(1024);
+            let (socket, mut peer) = connected_pair().await;
+            client.submissions.set_ready(true);
+            let mut transport = SubmissionTransport::new(client.submissions.clone());
+            let connection = tokio::spawn(async move {
+                run_connected(
+                    socket,
+                    &mut commands,
+                    &events,
+                    Bootstrap::at("torrent", 0),
+                    PreferenceWrites::new(0),
+                    &mut transport,
+                )
+                .await
+            });
+            let pause = tokio::spawn(port.execute(DownloadsCommand::PauseAll));
+            let paused = request(&mut peer, method::DAEMON_TASK_PAUSE_ALL).await;
+            reply(&mut peer, &paused, json!({"ok": true})).await;
+            pause.await.expect("pause join").expect("paused");
+
+            let confirmation_request = port.execute(DownloadsCommand::ConfirmTorrent(Box::new(
+                fluxdown_protocol::torrent_preview::TorrentConfirmParams {
+                    torrent_blob_id: "torrent:preview".into(),
+                    save_dir: "C:\\Downloads".into(),
+                    selected_file_indices: vec![2],
+                    queue_id: String::new(),
+                    start_paused: false,
+                    custom_name: String::new(),
+                    source_url: "magnet:?xt=urn:btih:abc".to_owned(),
+                    options: None,
+                },
+            )));
+            let confirm = tokio::spawn(async move {
+                let mut host_result = None;
+                crate::windows::new_download::torrent_confirmation::run(
+                    confirmation_request,
+                    |result| host_result = Some(result),
+                )
+                .await;
+                host_result.expect("host completion always runs")
+            });
+            assert_no_request(&mut peer).await;
+            let cancel = tokio::spawn(port.execute(DownloadsCommand::CancelMagnetPreview {
+                preview_id: "ticket".into(),
+            }));
+            let cancelling = request(&mut peer, method::DAEMON_TORRENT_CANCEL_MAGNET).await;
+            reply(&mut peer, &cancelling, Value::Null).await;
+            cancel.await.expect("cancel join").expect("cancelled");
+            assert_no_request(&mut peer).await;
+
+            let probe = tokio::spawn(client.call::<Value, Value>(
+                method::AGENT_CAPTURE_OPEN_POLICY,
+                Some(json!({"association": "magnet"})),
+            ));
+            let probing = request(&mut peer, method::AGENT_CAPTURE_OPEN_POLICY).await;
+            assert_eq!(probing["params"]["association"], "magnet");
+            reply(
+                &mut peer,
+                &probing,
+                json!({"ignored": false, "silentDownload": true}),
+            )
+            .await;
+            probe.await.expect("probe join").expect("policy");
+            assert_no_request(&mut peer).await;
+
+            let resume = tokio::spawn(port.execute(DownloadsCommand::ResumeAll));
+            let resumed = request(&mut peer, method::DAEMON_TASK_RESUME_ALL).await;
+            reply(&mut peer, &resumed, json!({"ok": true})).await;
+            resume.await.expect("resume join").expect("resumed");
+            let confirming = request(&mut peer, method::DAEMON_TORRENT_CONFIRM).await;
+            assert_eq!(confirming["params"]["selectedFileIndices"], json!([2]));
+            reply(&mut peer, &confirming, json!({"taskId": "confirmed"})).await;
+            confirm.await.expect("confirm join").expect("confirmed");
+            assert_no_request(&mut peer).await;
+            connection.abort();
+            match connection.await {
+                Err(error) => assert!(error.is_cancelled()),
+                Ok(_) => panic!("connection should be cancelled"),
+            }
+        })
+        .await
+        .expect("torrent gate deadline");
+    });
 }
 
 #[test]

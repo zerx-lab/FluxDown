@@ -192,12 +192,15 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
     #[cfg(windows)]
     start_windows_listener(&agent_client, endpoint, activate_tx)
         .map_err(AppError::ActivationListener)?;
+    let (confirmation_tx, mut confirmation_rx) = tokio::sync::mpsc::channel::<Vec<String>>(64);
     let launch_submissions = submit_captures_detached(
         &agent_client,
         launch.urls.clone(),
         launch.torrent_files.clone(),
+        confirmation_tx.clone(),
     );
     let open_urls_client = agent_client.clone();
+    let open_urls_confirmations = confirmation_tx.clone();
 
     // GPUI 在非 macOS 默认关掉最后一个窗口即退出；必须让 lifecycle 等待在途提交。
     let application = desktop_application()
@@ -212,7 +215,12 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
             .into_iter()
             .filter(|url| fluxdown_protocol::capture_link::is_capture_url(url))
             .collect();
-        drop(submit_captures_detached(&open_urls_client, urls, files));
+        drop(submit_captures_detached(
+            &open_urls_client,
+            urls,
+            files,
+            open_urls_confirmations.clone(),
+        ));
     });
     application.on_reopen(|cx| {
         if cx.has_global::<Desktop>() {
@@ -360,8 +368,12 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
                 let (message, acknowledgement) = request.into_parts();
                 cx.update(|cx| {
                     if !message.urls.is_empty() || !message.files.is_empty() {
-                        let submitted =
-                            submit_captures_detached(&activate_client, message.urls, message.files);
+                        let submitted = submit_captures_detached(
+                            &activate_client,
+                            message.urls,
+                            message.files,
+                            confirmation_tx.clone(),
+                        );
                         let task = cx.spawn(async move |_| {
                             if submitted.await.is_err() {
                                 log::debug!("activation submission owner released");
@@ -440,6 +452,25 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
         // 主窗口的首帧 / 快照订阅先注册，捕获确认后开，避免主窗口覆盖待确认窗口。
         // --capture 仍不创建主窗口；其空窗退出检查在异步回调里执行。
         crate::windows::new_download::install_captures(cx);
+        cx.spawn(async move |cx| {
+            while let Some(inputs) = confirmation_rx.recv().await {
+                cx.update(|cx| {
+                    after_session_settled(cx, move |cx| {
+                        let mut context = Desktop::global(cx)
+                            .session
+                            .read(cx)
+                            .agent_snapshot()
+                            .map(fluxdown_ui_downloads::new_download_context_from_snapshot)
+                            .unwrap_or_default();
+                        context.initial_urls = inputs;
+                        context.external_open = true;
+                        context.target = fluxdown_ui_downloads::DispatchTarget::Local;
+                        crate::windows::new_download::open(cx, context);
+                    });
+                });
+            }
+        })
+        .detach();
     });
 
     Ok(RunOutcome::Completed)
@@ -728,42 +759,51 @@ fn capture_calls(
     client: &Arc<AgentClient>,
     urls: Vec<String>,
     files: Vec<std::path::PathBuf>,
+    confirmations: tokio::sync::mpsc::Sender<Vec<String>>,
 ) -> Vec<(
     &'static str,
     crate::agent_client::AgentFuture<serde_json::Value>,
 )> {
-    use fluxdown_protocol::capture_link::{
-        OpenAssociation, deep_link_file_name, normalize_capture_url,
-    };
-    let mut calls = Vec::with_capacity(urls.len() + files.len());
-    for url in urls {
-        // 关联按原始 scheme 判定：`fluxdown:` 深链解码出的 `magnet:` 不受 magnet 开关约束。
-        let association = OpenAssociation::of_url(&url);
-        let filename = deep_link_file_name(&url).unwrap_or_default();
-        let url = normalize_capture_url(&url);
-        let future = client.call::<serde_json::Value, serde_json::Value>(
-            fluxdown_protocol::method::AGENT_CAPTURE_SUBMIT,
-            Some(serde_json::json!({
-                "request": { "url": url, "filename": filename },
-                "silent": true,
-                "association": association,
-            })),
-        );
-        calls.push(("link", future));
-    }
-    for file in files {
-        let path = file.display().to_string();
-        let future = client.call::<serde_json::Value, serde_json::Value>(
-            fluxdown_protocol::method::AGENT_CAPTURE_SUBMIT_TORRENT_FILE,
-            Some(serde_json::json!({
-                "path": path,
-                "silent": true,
-                "association": OpenAssociation::Torrent,
-            })),
-        );
-        calls.push(("torrent file", future));
-    }
-    calls
+    crate::external_open::classify(urls, files)
+        .into_iter()
+        .map(|open| {
+            let kind = open.kind();
+            let client = client.clone();
+            let confirmations = confirmations.clone();
+            let future: crate::agent_client::AgentFuture<serde_json::Value> =
+                Box::pin(async move {
+                    if let Some(params) = open.policy_params() {
+                        let policy = client
+                            .call::<_, fluxdown_protocol::agent::CaptureOpenPolicyDto>(
+                                fluxdown_protocol::method::AGENT_CAPTURE_OPEN_POLICY,
+                                Some(params),
+                            )
+                            .await;
+                        match open.decide(policy)? {
+                            crate::external_open::Decision::Ignore => {
+                                return Ok(serde_json::json!({ "ignored": true }));
+                            }
+                            crate::external_open::Decision::Confirm(input) => {
+                                confirmations.send(vec![input]).await.map_err(|error| {
+                                    log::warn!("torrent confirmation receiver closed: {error}");
+                                    fluxdown_protocol::RpcErrorData::new(
+                                        fluxdown_protocol::ApplicationErrorCode::Unavailable,
+                                        false,
+                                    )
+                                })?;
+                                return Ok(serde_json::json!({ "taskIds": [] }));
+                            }
+                            crate::external_open::Decision::Submit => {}
+                        }
+                    }
+                    let (method_name, params) = open.submit_call();
+                    client
+                        .call::<serde_json::Value, serde_json::Value>(method_name, Some(params))
+                        .await
+                });
+            (kind, future)
+        })
+        .collect()
 }
 
 /// 主实例：不阻塞 UI 线程，在后台把链接交给 agent；返回的接收端在全部提交结束后完成。
@@ -771,6 +811,7 @@ pub(crate) fn submit_captures_detached(
     client: &Arc<AgentClient>,
     urls: Vec<String>,
     files: Vec<std::path::PathBuf>,
+    confirmations: tokio::sync::mpsc::Sender<Vec<String>>,
 ) -> tokio::sync::oneshot::Receiver<()> {
     let (done, finished) = tokio::sync::oneshot::channel();
     if urls.is_empty() && files.is_empty() {
@@ -779,7 +820,7 @@ pub(crate) fn submit_captures_detached(
         }
         return finished;
     }
-    let calls = capture_calls(client, urls, files);
+    let calls = capture_calls(client, urls, files, confirmations);
     let failures = client.clone();
     client.spawn_background(async move {
         for (kind, future) in calls {
