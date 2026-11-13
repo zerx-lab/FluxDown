@@ -65,7 +65,7 @@ export function CategoryPicker({
       checked: mode.kind === 'none',
       onSelect: () => onChange({ kind: 'none' }),
     },
-    { type: 'separator', key: 'sep' },
+    ...(options.length > 0 ? [{ type: 'separator' as const, key: 'sep' }] : []),
     ...options.map(
       (category): MenuEntry => ({
         type: 'item',

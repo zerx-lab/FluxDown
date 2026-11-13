@@ -928,7 +928,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
               <InputWithAction
                 input={
                   <div className="flex flex-wrap items-center gap-2">
-                    {categoryOptions.length > 0 ? <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} /> : null}
+                    <CategoryPicker mode={categoryMode} options={categoryOptions} predicted={predictedDir} onChange={pickCategory} />
                     <div className="min-w-[14rem] flex-1">
                       <SaveDirCombo
                         id="new-download-save-dir"
