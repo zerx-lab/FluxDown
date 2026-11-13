@@ -1513,10 +1513,7 @@ pub fn is_safe_relative_path(p: &str) -> bool {
         }
     }
     // 禁控制字符。
-    if p.chars().any(|c| c.is_control()) {
-        return false;
-    }
-    true
+    !p.chars().any(char::is_control)
 }
 
 /// URL glob 匹配：`*` 是唯一通配符，按 `*` 分段顺序子串匹配（首段前缀锚定、尾段后缀
