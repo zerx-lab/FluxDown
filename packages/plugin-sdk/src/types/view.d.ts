@@ -139,9 +139,10 @@ export interface LinkProps extends CommonProps {
 }
 
 /**
- * 内联 PNG/JPEG/WebP 图片或当前会话的 flux-image: 资源引用。
+ * 内联图片，只接受 data:image/(png|jpeg|webp);base64,。
  */
 export interface ImageProps extends CommonProps {
+  /** data:image/(png|jpeg|webp);base64, only */
   src: string;
   /** default "" */
   alt?: string;

@@ -85,9 +85,9 @@
       }
     },
     "image": {
-      "doc": "内联 PNG/JPEG/WebP 图片或当前会话的 flux-image: 资源引用。",
+      "doc": "内联图片，只接受 data:image/(png|jpeg|webp);base64,。",
       "props": {
-        "src": { "type": "string", "required": true, "format": "imageSource" },
+        "src": { "type": "string", "required": true, "format": "imageDataUri" },
         "alt": { "type": "string", "default": "" },
         "width": { "type": "number", "min": 0 },
         "height": { "type": "number", "min": 0 }
