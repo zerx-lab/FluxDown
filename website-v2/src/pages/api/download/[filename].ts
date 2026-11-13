@@ -3,18 +3,33 @@
  * 下载源优先级：123 云盘直链（仅应用内更新）→ dl-cn 镜像（中国大陆访客）→ GitHub。
  * 两个镜像都不能回退 GitHub，302 前必须确认镜像有该资产且大小与 GitHub 资产一致。
  * 镜像只发给像正常客户端的请求（24 小时内读过发布清单、非脚本 User-Agent，见 download-gate.ts）；
- * 浏览器等非更新器请求还须带验证码通行证 Cookie（ESA AI 验证码换取，见 download-pass.ts / pass.ts）。
- * 大陆按边缘（阿里云 ESA）判定的访客国家（X-Client-Country = CN，见 client-ip.ts）判定。
+ * 浏览器等非更新器请求还须带验证码通行证 Cookie（ESA AI 验证码换取，见 download-pass.ts / pass.ts），
+ * 更新器类请求只能经镜像拿当前更新清单里的资产（mirrorAssetAllowed）。
+ * 大陆按边缘（阿里云 ESA）判定的访客国家（X-Client-Country = CN，见 client-ip.ts）判定，且须为 IPv4：
+ * 镜像链接绑定访客 /24 网段（mirrorNetworkId），出了签发网段边缘即 403。
+ * 镜像另受成本闸（checkMirrorQuota：每 IP 配额 + 全站每日预算 CN_CDN_DAILY_BUDGET_GB），超额回落 GitHub
+ * 并带 `X-Download-Limit`。
  * 123 另外要求（不分地区）：≥ 0.6.0 更新器 User-Agent（isPan123Updater）、资产在当前更新清单里
  * （isUpdateAsset）、该 IP 未超签发配额（hasPan123Quota）；官网浏览器下载不走 123。
- * source=github：仅 GitHub；source=oss：大陆准入访客在镜像都不可用时返回 503，其余同 auto。
+ * source=github：仅 GitHub；source=oss：大陆准入访客在镜像都不可用时返回 503（成本闸挡回的仍走 GitHub），其余同 auto。
  */
 import type { APIRoute } from "astro";
-import { DOWNLOAD_PASS_SECRET, GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
+import { CN_CDN_DAILY_BUDGET_GB, DOWNLOAD_PASS_SECRET, GITHUB_TOKEN, GITHUB_REPO } from "astro:env/server";
 import { getCached, setCached } from "@/lib/api-cache";
 import { getClientCountry, getClientIp } from "@/lib/client-ip";
 import { readDownloadPass, verifyDownloadPass } from "@/lib/download-pass";
-import { hasPan123Quota, isPan123Updater, isUpdateAsset, mayUseMirror, recordPan123Link } from "@/lib/download-gate";
+import {
+  checkMirrorQuota,
+  hasPan123Quota,
+  isPan123Updater,
+  isUpdateAsset,
+  mayUseMirror,
+  mirrorAssetAllowed,
+  mirrorNetworkId,
+  needsDownloadPass,
+  recordMirrorLink,
+  recordPan123Link,
+} from "@/lib/download-gate";
 import { cdnConfigured, cdnDownloadUrl, ossConfigured, presignOssHeadUrl, releaseObjectKey } from "@/lib/oss";
 import { DownloadLookupCache } from "@/lib/download-cache";
 import { createOssProbe } from "@/lib/download-probe";
@@ -28,6 +43,7 @@ import {
   ossUnavailable,
   transientGitHubStatus,
   type DownloadRelease,
+  type MirrorLimit,
 } from "@/lib/download-policy";
 
 export const prerender = false;
@@ -114,8 +130,10 @@ export const GET: APIRoute = async ({ params, url, request, clientAddress }) => 
   const userAgent = request.headers.get("user-agent");
   const hasPass = !DOWNLOAD_PASS_SECRET || verifyDownloadPass(DOWNLOAD_PASS_SECRET, readDownloadPass(request), ip);
   const admitted = source !== "github" && mayUseMirror(ip, userAgent, hasPass);
-  const wantsMirror = admitted && getClientCountry(request) === "CN";
+  const network = mirrorNetworkId(ip);
+  const wantsMirror = admitted && network !== null && getClientCountry(request) === "CN";
   const wantsPan123 = admitted && isPan123Updater(userAgent);
+  let limit: MirrorLimit | null = null;
 
   try {
     const { value: releases, stale } = await releaseCache().lookup(
@@ -144,12 +162,20 @@ export const GET: APIRoute = async ({ params, url, request, clientAddress }) => 
           return downloadRedirect(link, "pan123");
         }
       }
-      if (wantsMirror && cdnConfigured && ossConfigured && await ossHasAsset(key, asset.size)) {
-        return downloadRedirect(cdnDownloadUrl(key), "cdn");
+      if (wantsMirror && network !== null && cdnConfigured && ossConfigured) {
+        const quota = mirrorAssetAllowed(userAgent, release.tag_name, asset.name)
+          ? checkMirrorQuota(ip, key, asset.size, !needsDownloadPass(userAgent), CN_CDN_DAILY_BUDGET_GB * 1e9)
+          : "asset";
+        if (quota !== "ok") {
+          limit = quota;
+        } else if (await ossHasAsset(key, asset.size)) {
+          recordMirrorLink(ip, key, asset.size);
+          return downloadRedirect(cdnDownloadUrl(key, network), "cdn");
+        }
       }
     }
-    if (source === "oss" && wantsMirror) return ossUnavailable();
-    return downloadRedirect(asset.browser_download_url, "github", stale);
+    if (source === "oss" && wantsMirror && !limit) return ossUnavailable();
+    return downloadRedirect(asset.browser_download_url, "github", stale, limit);
   } catch (error) {
     if (source === "oss" && wantsMirror) return ossUnavailable();
     if (error instanceof DownloadLookupError && error.transient) {

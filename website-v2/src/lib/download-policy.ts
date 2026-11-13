@@ -60,10 +60,14 @@ export function transientGitHubStatus(status: number, headers: Headers): boolean
       headers.has("retry-after")));
 }
 
+/** 本可走镜像却被成本闸挡回 GitHub 的原因（回 `X-Download-Limit`，便于在访问日志里统计）。 */
+export type MirrorLimit = "ip-quota" | "budget" | "asset";
+
 export function downloadRedirect(
   location: string,
   source: "github" | "cdn" | "pan123",
   stale = false,
+  limit: MirrorLimit | null = null,
 ): Response {
   return new Response(null, {
     status: 302,
@@ -72,6 +76,7 @@ export function downloadRedirect(
       "Cache-Control": "private, no-cache",
       "X-Download-Source": source,
       ...(stale ? { "X-Download-Metadata": "stale", "Cache-Control": "private, no-store" } : {}),
+      ...(limit ? { "X-Download-Limit": limit } : {}),
     },
   });
 }

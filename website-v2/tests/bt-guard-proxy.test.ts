@@ -6,6 +6,7 @@ import {
 let base = "http://cloud.test";
 const configure = () => mock.module("astro:env/server", () => ({
   GITHUB_TOKEN: "", GITHUB_REPO: "owner/repo", FLUXCLOUD_API_BASE: base, DOWNLOAD_PASS_SECRET: undefined,
+  CN_CDN_DAILY_BUDGET_GB: 0,
 }));
 configure();
 // 动态 import：路由模块须在 astro:env/server 被 mock 之后才加载。

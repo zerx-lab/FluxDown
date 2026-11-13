@@ -197,6 +197,7 @@
 
 ## Windows 专属
 
+- **ESA 边缘函数里取访客 IP 只认 `ali-cdn-real-ip`，不能用 `ali-real-client-ip` / `X-Forwarded-For` 首值**：2026-11-13 临时探针函数实测，访客自带 `Ali-Real-Client-Ip: 1.2.3.4` 在函数收到的请求里原样保留（托管转换只在回源时覆盖），`x-forwarded-for` 首值同样可控；`ali-cdn-real-ip` 被 ESA 覆盖为真实地址。国家同理不要信函数请求里的 `ali-ip-country`。官网经反代拿到的 `Ali-Real-Client-Ip` / `Ali-Ip-Country` 已被覆盖，同日实测伪造无效 → `website-v2/cdn/esa-dl-cn.js::verifyAuthKey`（dl-cn 链接按此绑定 /24）、`website-v2/tests/download-mirror.test.ts`。
 另见 AGENTS.md §4：每个 console 子进程 spawn 必须包 `proc::no_console_window`、本机端口 WSAEACCES 回退、BT `dht.json` 撞端口排除区间。其余按领域散落在上面各节（`sync_all` 写句柄、`ERROR_LOCK_VIOLATION`、WSAECONNRESET、BT 目录 rename、最大化判定），此处只收仅在 Windows 触发且不属于上述领域的条目。
 
 - **Windows toast 线程不得逐条 `RoInitialize` / `RoUninitialize`**：headless `--server` 无其它 apartment，拆掉最后一个会卸载 WinRT 服务端，进程级缓存的激活工厂悬空，下一条通知 `0xC0000005` 崩溃。用从未初始化过 COM 的短命线程，让 windows-core 经 `CoIncrementMTAUsage` 常驻进程 MTA → `native/agent/src/notification/windows.rs`（`runtime::show` 调用处注释）、`native/agent/src/sound/backend.rs`（同模式）。
