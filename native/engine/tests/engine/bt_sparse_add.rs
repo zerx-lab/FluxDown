@@ -116,6 +116,7 @@ async fn fresh_add_creates_sparse_files_without_physical_reservation() {
             name: Some("sparse-fresh"),
             trackers: Vec::new(),
             piece_length: Some(16 * 1024),
+            ..Default::default()
         },
         &librqbit::spawn_utils::BlockingSpawner::new(1),
     )
@@ -200,6 +201,7 @@ async fn readd_with_complete_data_marks_existing_files_and_finishes() {
             name: Some("sparse-readd"),
             trackers: Vec::new(),
             piece_length: Some(16 * 1024),
+            ..Default::default()
         },
         &librqbit::spawn_utils::BlockingSpawner::new(1),
     )

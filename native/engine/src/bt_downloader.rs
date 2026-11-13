@@ -3113,6 +3113,16 @@ fn dedup_name_in_dir(
     avoid: &HashSet<String>,
     allow_overwrite: bool,
 ) -> std::io::Result<String> {
+    // Windows 上普通文件的「子路径」也可能报 NotFound。先确认目标本身是目录（或不存在），
+    // 再把探测不到的候选名当作可用。
+    let directory_or_missing = match std::fs::metadata(dir) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    if !directory_or_missing {
+        return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+    }
     crate::downloader::dedup_name_by_probe(
         dir,
         name,
