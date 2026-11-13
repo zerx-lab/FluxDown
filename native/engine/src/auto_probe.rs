@@ -513,25 +513,40 @@ mod tests {
         let probed = race_probe(&mut params, ProbeKind::Held).await?;
         let elapsed = started.elapsed();
 
-        assert!(
-            elapsed < STAGGER_COLD,
-            "传输失败须立即放出备选: {elapsed:?}"
-        );
+        // Windows 的回环端口拒绝可能晚于 1 秒错峰；此时备选会先按错峰起跑。
+        // Unix 保留更严格的「收到拒绝后立即换路」时限。
+        let max_elapsed = if cfg!(windows) {
+            STAGGER_COLD * 3
+        } else {
+            STAGGER_COLD
+        };
+        assert!(elapsed < max_elapsed, "备选须及时起跑: {elapsed:?}");
         assert_eq!(probed.info.total_bytes, 5);
         assert!(probed.held.is_some(), "胜出路径的响应保留为首条数据连接");
         assert_eq!(proxy_hits.load(Ordering::SeqCst), 1);
         assert_eq!(params.proxy_config.port, proxy_port, "任务出口改走代理");
         let ctx = params.auto_proxy.as_ref().ok_or("ctx")?;
         assert_eq!(ctx.start_route, SYSTEM);
-        assert_eq!(ctx.start_label, route::PROXY_FAILOVER_SYSTEM);
-        assert!(ctx.alternates.is_empty(), "断在传输层的直连不再留作备选");
+        let start_failed = ctx.start_label == route::PROXY_FAILOVER_SYSTEM;
+        if cfg!(windows) && !start_failed {
+            assert_eq!(ctx.start_label, route::PROXY_SAMPLED_SYSTEM);
+            let alternates: Vec<_> = ctx.alternates.iter().map(|path| path.route).collect();
+            assert_eq!(
+                alternates,
+                vec![RoutePath::Direct],
+                "尚未报错的直连仍可作备选"
+            );
+        } else {
+            assert!(start_failed, "起飞路径须记为传输失败");
+            assert!(ctx.alternates.is_empty(), "断在传输层的直连不再留作备选");
+        }
         let row = params
             .db
             .load_task_by_id("t-refresh")
             .await?
             .ok_or("task row")?;
-        assert_eq!(row.auto_route, route::PROXY_FAILOVER_SYSTEM);
-        if crate::route_health::network_reachable() {
+        assert_eq!(row.auto_route, ctx.start_label);
+        if start_failed && crate::route_health::network_reachable() {
             assert!(
                 crate::route_health::path_blocked(&host, RoutePath::Direct),
                 "直连失败须记入路径失败权重，下个任务不再以它起飞"
