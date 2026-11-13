@@ -4,7 +4,6 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-fluxdown_ui_components = { version = "0.1.0", path = "../components" }
 fluxdown_ui_i18n = { version = "0.1.0", path = "../i18n" }
 fluxdown_ui_theme = { version = "0.1.0", path = "../theme" }
 gpui.workspace = true

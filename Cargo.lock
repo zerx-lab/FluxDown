@@ -3791,7 +3791,6 @@ dependencies = [
 name = "fluxdown_ui_command_palette"
 version = "0.1.0"
 dependencies = [
- "fluxdown_ui_components",
  "fluxdown_ui_i18n",
  "fluxdown_ui_theme",
  "gpui-base",
