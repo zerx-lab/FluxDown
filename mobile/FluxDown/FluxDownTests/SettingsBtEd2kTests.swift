@@ -190,6 +190,14 @@ struct SettingsBtEd2kTests {
         #expect(hint == L("ed2kIdLowHint"))
     }
 
+    @Test func idCheckFailedUpnpShowsTheReason() {
+        let dto = Ed2kNetworkDto(id: .high, server: "s:1", listenPort: 1, upnp: .failed, upnpError: " UPnP: no gateway ")
+        let expected = L("ed2kIdCheckResult", [
+            "id": L("ed2kIdHigh"), "server": "s:1", "port": "1", "upnp": "\(L("ed2kUpnpFailed")): UPnP: no gateway",
+        ])
+        #expect(Ed2kIdCheckDisplay.make(dto) == .ok(summary: expected, lowHint: nil))
+    }
+
     @Test func idCheckNoneOrFailureShowsFailedWithDetail() {
         #expect(Ed2kIdCheckDisplay.make(Ed2kNetworkDto(id: .none, error: " all servers timed out ")) ==
             .failed("\(L("ed2kIdCheckFailed")): all servers timed out"))
@@ -200,6 +208,7 @@ struct SettingsBtEd2kTests {
     @Test func idCheckDecodesWithOmittedFields() throws {
         let dto = try JSONDecoder().decode(Ed2kNetworkDto.self, from: Data(#"{"id":"high","upnp":"weird","upnpEnabled":true}"#.utf8))
         #expect(dto.id == .high && dto.upnp == .disabled && dto.listenPort == 0 && dto.server.isEmpty && dto.upnpEnabled)
+        #expect(dto.upnpError.isEmpty)
         let expected = L("ed2kIdCheckResult", [
             "id": L("ed2kIdHigh"), "server": "—", "port": "—", "upnp": L("ed2kUpnpDisabled"),
         ])

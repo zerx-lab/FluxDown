@@ -53,15 +53,16 @@ pub struct UpnpMapping {
 }
 
 impl UpnpMapping {
-    /// 为 TCP 监听端口（`udp_port > 0` 时连同 Kad UDP 端口）启动映射。`after` 为上一个
-    /// 已停止映射的后台任务：等它删完旧映射再开始，防止旧映射器的删除覆盖新建的同号映射。
+    /// 为 TCP 监听端口启动映射。`after` 为上一个已停止映射的后台任务：等它删完旧映射再
+    /// 开始，防止旧映射器的删除覆盖新建的同号映射。
+    ///
+    /// Kad 只以 leech 身份用临时 UDP 套接字主动查询（应答经 NAT 原路返回），不接受入站
+    /// 请求，所以不映射 UDP。
     ///
     /// 须在 tokio 运行时内调用。
-    pub fn start(tcp_port: u16, udp_port: u16, after: Option<JoinHandle<()>>) -> Self {
-        let ports = std::iter::once((PortMappingProtocol::Tcp, tcp_port))
-            .chain((udp_port != 0).then_some((PortMappingProtocol::Udp, udp_port)));
+    pub fn start(tcp_port: u16, after: Option<JoinHandle<()>>) -> Self {
         let mapper = PortMapper::new(
-            ports,
+            [(PortMappingProtocol::Tcp, tcp_port)],
             PortMappingMethods {
                 upnp: true,
                 natpmp: true,

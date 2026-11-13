@@ -30,6 +30,7 @@ function normalizeNetwork(n: Partial<Ed2kNetworkDto> | undefined): Ed2kNetworkDt
     server: str(n?.server),
     listenPort: num(n?.listenPort),
     upnp: n?.upnp ?? 'disabled',
+    upnpError: str(n?.upnpError),
     externalIp: str(n?.externalIp),
     upnpEnabled: n?.upnpEnabled === true,
     kadEnabled: n?.kadEnabled === true,

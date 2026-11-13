@@ -117,8 +117,6 @@ pub struct SourceQuery {
 pub struct ClientConfig {
     /// TCP 监听端口（0 = 让 OS 选，登录时报实际绑定端口争取 HighID）。
     pub listen_port: u16,
-    /// UDP 端口（Kad 用，本模块占位；0 = 让 OS 选）。
-    pub udp_port: u16,
     /// 服务器地址列表（`host:port`，手填+订阅合并后，手填在前）。
     pub servers: Vec<String>,
     /// `servers` 开头有多少项来自手填列表（其余来自订阅）。
@@ -256,8 +254,8 @@ impl Ed2kClient {
     /// （仅用户主动检测时）。
     fn sync_upnp(self: &Arc<Self>, retry_failed: bool) {
         let port = u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0);
-        let (enabled, udp_port) = match self.config.lock() {
-            Ok(config) => (config.enable_upnp, config.udp_port),
+        let enabled = match self.config.lock() {
+            Ok(config) => config.enable_upnp,
             Err(error) => {
                 log_error!("[ed2k-client] UPnP config lock poisoned: {}", error);
                 return;
@@ -288,7 +286,7 @@ impl Ed2kClient {
                 Some(previous) => previous.retire(),
                 None => slot.retired.take(),
             };
-            slot.mapping = Some(UpnpMapping::start(port, udp_port, after));
+            slot.mapping = Some(UpnpMapping::start(port, after));
             slot.generation += 1;
             slot.generation
         };
@@ -361,17 +359,18 @@ impl Ed2kClient {
             .ok()
             .and_then(|server| server.clone())
             .unwrap_or_default();
-        let (upnp, external_ip) = match self.upnp.lock() {
+        let (upnp, external_ip, upnp_error) = match self.upnp.lock() {
             Ok(slot) => match slot.outcome() {
-                None => (UpnpState::Disabled, String::new()),
-                Some(MappingOutcome::Pending) => (UpnpState::Pending, String::new()),
-                Some(MappingOutcome::Failed(_)) => (UpnpState::Failed, String::new()),
+                None => (UpnpState::Disabled, String::new(), String::new()),
+                Some(MappingOutcome::Pending) => (UpnpState::Pending, String::new(), String::new()),
+                Some(MappingOutcome::Failed(reason)) => (UpnpState::Failed, String::new(), reason),
                 Some(MappingOutcome::Mapped { external_ip }) => (
                     UpnpState::Mapped,
                     external_ip.map(|ip| ip.to_string()).unwrap_or_default(),
+                    String::new(),
                 ),
             },
-            Err(_) => (UpnpState::Disabled, String::new()),
+            Err(_) => (UpnpState::Disabled, String::new(), String::new()),
         };
         ClientNetwork {
             id: IdKind::from_client_id(client_id),
@@ -380,6 +379,7 @@ impl Ed2kClient {
             listen_port: u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0),
             upnp,
             external_ip,
+            upnp_error,
         }
     }
 

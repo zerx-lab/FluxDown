@@ -142,6 +142,15 @@ fn upnp_key(status: Ed2kUpnpStatus) -> &'static str {
     }
 }
 
+/// 映射失败的原因（仅 `failed` 时取，去首尾空白）；其余为空。
+fn upnp_failure(network: &Ed2kNetworkDto) -> String {
+    if network.upnp == Ed2kUpnpStatus::Failed {
+        network.upnp_error.trim().to_owned()
+    } else {
+        String::new()
+    }
+}
+
 /// ID 检测结果的展示意图（文案在渲染时按语言拼装）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum IdCheckView {
@@ -151,6 +160,8 @@ pub(crate) enum IdCheckView {
         server: String,
         port: u16,
         upnp_key: &'static str,
+        /// 映射失败原因；空 = 无。
+        upnp_error: String,
         low: bool,
     },
     /// 「当前已登录的服务器」而此刻没有会话。
@@ -195,6 +206,7 @@ pub(crate) fn id_check_view(stored: &Value) -> IdCheckView {
     };
     IdCheckView::Logged {
         id_key,
+        upnp_error: upnp_failure(&network),
         server: network.server,
         port: network.listen_port,
         upnp_key: upnp_key(network.upnp),
@@ -213,6 +225,7 @@ pub(crate) fn id_check_lines(
             server,
             port,
             upnp_key,
+            upnp_error,
             low,
         } => {
             let server = if server.trim().is_empty() {
@@ -225,13 +238,19 @@ pub(crate) fn id_check_lines(
             } else {
                 port.to_string()
             };
+            let upnp = translator.text(upnp_key);
+            let upnp = if upnp_error.is_empty() {
+                upnp.to_owned()
+            } else {
+                format!("{upnp}: {upnp_error}")
+            };
             let line = translator.text_with(
                 "ed2kIdCheckResult",
                 &[
                     ("id", translator.text(id_key)),
                     ("server", server),
                     ("port", &port),
-                    ("upnp", translator.text(upnp_key)),
+                    ("upnp", &upnp),
                 ],
             );
             let hint = low.then(|| translator.text("ed2kIdLowHint").to_owned());
@@ -998,12 +1017,32 @@ mod tests {
                 server: "1.2.3.4:4661".into(),
                 port: 4662,
                 upnp_key: "ed2kUpnpMapped",
+                upnp_error: String::new(),
                 low: false,
             }
         );
         assert!(matches!(
             id_check_view(&json!({ "target": "server", "result": network("low", "") })),
             IdCheckView::Logged { low: true, .. }
+        ));
+    }
+
+    #[test]
+    fn ed2k_id_check_keeps_the_mapping_failure_reason() {
+        let mut failed = network("low", "");
+        failed["upnp"] = json!("failed");
+        failed["upnpError"] = json!(" UPnP: no internet gateway device found ");
+        assert!(matches!(
+            id_check_view(&json!({ "target": "list", "result": failed })),
+            IdCheckView::Logged { upnp_key: "ed2kUpnpFailed", ref upnp_error, .. }
+                if upnp_error == "UPnP: no internet gateway device found"
+        ));
+        // 原因只随失败出现：映射成功时即使带了文本也不展示。
+        let mut mapped = network("high", "");
+        mapped["upnpError"] = json!("stale");
+        assert!(matches!(
+            id_check_view(&json!({ "target": "list", "result": mapped })),
+            IdCheckView::Logged { ref upnp_error, .. } if upnp_error.is_empty()
         ));
     }
 

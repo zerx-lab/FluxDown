@@ -93,7 +93,7 @@ describe('normalizeEd2kStatus', () => {
     expect(dto.servers).toEqual([])
     expect(dto.kad).toMatchObject({ phase: 'idle', nodes: [], bootstrapNodes: 0 })
     expect(dto.peerCounts.total).toBe(0)
-    expect(dto.network).toMatchObject({ kadEnabled: false, kadNodes: 0, serverCount: 0, listenPort: 0, server: '' })
+    expect(dto.network).toMatchObject({ kadEnabled: false, kadNodes: 0, serverCount: 0, listenPort: 0, server: '', upnpError: '' })
     expect(dto.segments).toBe(0)
     expect(dto.fileHash).toBe('')
   })

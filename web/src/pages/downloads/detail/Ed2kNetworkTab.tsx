@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { Ed2kKadNodeTable } from '../../../lib/Ed2kKadNodeTable'
-import { ed2kIdCheckFailedText, ed2kIdHintKey, ed2kIdKey, ed2kUpnpKey } from '../../../lib/ed2kNetwork'
+import { ed2kIdCheckFailedText, ed2kIdHintKey, ed2kIdKey, ed2kUpnpFailureReason, ed2kUpnpKey } from '../../../lib/ed2kNetwork'
 import { rpc } from '../../../lib/rpc'
 import type { Ed2kNetworkDto, Ed2kStatusDto } from '../../../lib/rpc'
 import { rpcErrorText } from '../../../lib/rpcErrorText'
@@ -67,6 +67,7 @@ function NetworkStatus({ network, refresh, onChecked }: { network: Ed2kNetworkDt
   const [failure, setFailure] = useState<string | null>(null)
   const settingsError = useSettingsError()
   const hint = ed2kIdHintKey(network.id)
+  const upnpReason = ed2kUpnpFailureReason(network)
 
   const runCheck = async () => {
     setChecking(true)
@@ -120,6 +121,11 @@ function NetworkStatus({ network, refresh, onChecked }: { network: Ed2kNetworkDt
         <GlobalSwitch configKey="ed2k_enable_upnp" label={t('ed2kNetUpnp')} refresh={refresh}>
           <span className="truncate text-xs text-muted-foreground">{t(ed2kUpnpKey(network.upnp))}</span>
         </GlobalSwitch>
+        {upnpReason === null ? null : (
+          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground/80" title={upnpReason}>
+            {upnpReason}
+          </span>
+        )}
       </DetailRow>
       <DetailRow label={t('ed2kNetKad')}>
         <GlobalSwitch configKey="ed2k_enable_kad" label={t('ed2kNetKad')} refresh={refresh} />

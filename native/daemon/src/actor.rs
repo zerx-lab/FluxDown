@@ -2357,6 +2357,7 @@ fn ed2k_network_to_dto(
             UpnpState::Failed => Ed2kUpnpStatus::Failed,
         },
         external_ip: view.client.external_ip,
+        upnp_error: view.client.upnp_error,
         upnp_enabled: view.upnp_enabled,
         kad_enabled: view.kad_enabled,
         kad_nodes: view.kad_nodes,

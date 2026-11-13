@@ -518,6 +518,8 @@ export interface Ed2kNetworkDto {
   /** 0 / 缺省 = 监听器未启动。 */
   listenPort?: number;
   upnp: Ed2kUpnpStatus;
+  /** `upnp == failed` 时映射器给出的原因（英文原文）；其余缺省。 */
+  upnpError?: string;
   externalIp?: string;
   /** 全局设置 `ed2k_enable_upnp`。 */
   upnpEnabled: boolean;

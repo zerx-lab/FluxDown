@@ -1180,6 +1180,9 @@ pub struct Ed2kNetworkDto {
     /// UPnP 网关报告的公网 IP；未知为空。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub external_ip: String,
+    /// `upnp` 为 `failed` 时各方式 / 网关给出的原因（映射器原文，英文）；其余为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub upnp_error: String,
     pub upnp_enabled: bool,
     pub kad_enabled: bool,
     /// Kad 引导节点数（nodes.dat 订阅缓存）。
