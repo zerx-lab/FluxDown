@@ -37,6 +37,7 @@
 - **Windows 回环端口拒绝可能晚于 Auto 换路的错峰计时**：本机实测关闭的端口约 2 秒后才给 `ConnectionRefused`，1 秒错峰先放出备选，此时胜出标签为 `proxy:sampled:system`、尚未报错的直连仍是备选；「拒绝后立即接管」的回归在 Windows 上跳过，错峰接管由 `silent_direct_yields_to_proxy_after_stagger_and_stays_alternate` 覆盖 → `native/engine/src/auto_probe.rs::refused_direct_is_taken_over_by_proxy_without_waiting`。
 - **SQLite 测试 URL 不得把 Windows 盘符放在 `sqlite://` 的主机位**：`sqlite://C:\...` 经 SQLx Any 的 URL 解析会把 `C` 当主机、丢掉盘符冒号，打开错误的相对路径（SQLite 14）；文件型测试库一律用 `db::sqlite_url` 生成 URL → 各下载器测试的文件库夹具。
 - **Windows 上测试删目录前，先关掉所有持有文件的对象**：只 `drop` 不够——BT 会话要 `shutdown`、SQLx 池要 `close`，在途 runtime 与常驻连接都可能还占着文件（`Os { code: 32 }`）；不需要跨重启持久化的测试直接用内存库 → `bt_downloader.rs` 的选择夹具、`tests/engine/bt_guard/e2e.rs::a_failed_startup_load_is_retried_when_the_next_bt_session_starts`、`tests/engine/hls_live_recording.rs::setup`。
+- **BT 文件选择期间暂停会与句柄摘除竞争**：取消选择询问会删掉会话句柄；管理器已取消 worker 后再调用 `session.pause`，句柄可能恰好消失并报错。此时仍须写入暂停态、保留匹配 `TaskDone` 的收尾屏障，否则数据库停在准备态 5 且永远没有暂停帧。测试须核对暂停前后落库状态与目标帧 → `native/engine/src/download_manager.rs::{pause_task_inner,pause_during_unanswered_bt_file_selection_finishes_task}`。
 
 ## BT / eD2K
 
