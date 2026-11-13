@@ -55,6 +55,8 @@ pub struct BtFileChoice {
     pub indices: Vec<i32>,
     /// 用户改选的保存目录（已 trim、非空）。`None` = 沿用当前目录。
     pub save_dir: Option<String>,
+    /// 用户改的落盘名（未清洗）。`None` = 种子内名称。
+    pub custom_name: Option<String>,
 }
 
 /// 需要宿主介入的选择点:HLS 画质选择、BT 文件选择。

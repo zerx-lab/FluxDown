@@ -27,6 +27,7 @@ fn bt_selection_save_dir_is_optional_both_ways() {
         SelectionOutcome::Bt {
             indices: vec![1],
             save_dir: None,
+            custom_name: None,
         }
     );
     assert_eq!(
@@ -36,9 +37,25 @@ fn bt_selection_save_dir_is_optional_both_ways() {
     let moved = SelectionOutcome::Bt {
         indices: vec![0, 2],
         save_dir: Some("D:\\Movies".to_owned()),
+        custom_name: None,
     };
     assert_eq!(
         serde_json::to_value(&moved).expect("serialize moved"),
         json!({ "kind": "bt", "indices": [0, 2], "saveDir": "D:\\Movies" })
+    );
+    // 改名只在用户改过时发送。
+    let renamed = SelectionOutcome::Bt {
+        indices: vec![1],
+        save_dir: None,
+        custom_name: Some("新名字".to_owned()),
+    };
+    let wire = json!({ "kind": "bt", "indices": [1], "customName": "新名字" });
+    assert_eq!(
+        serde_json::to_value(&renamed).expect("serialize renamed"),
+        wire
+    );
+    assert_eq!(
+        serde_json::from_value::<SelectionOutcome>(wire).expect("renamed outcome"),
+        renamed
     );
 }

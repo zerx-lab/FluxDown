@@ -438,7 +438,10 @@ impl From<&proto::SelectionOutcome> for SelectionOutcomeDto {
     fn from(outcome: &proto::SelectionOutcome) -> Self {
         match outcome {
             proto::SelectionOutcome::Hls { index } => Self::Hls { index: *index },
-            proto::SelectionOutcome::Bt { indices, save_dir } => Self::Bt {
+            // 移动端选择窗不改名：落盘名不进 UniFFI DTO。
+            proto::SelectionOutcome::Bt {
+                indices, save_dir, ..
+            } => Self::Bt {
                 indices: indices.clone(),
                 save_dir: save_dir.clone(),
             },
@@ -459,7 +462,11 @@ impl From<SelectionOutcomeDto> for proto::SelectionOutcome {
     fn from(outcome: SelectionOutcomeDto) -> Self {
         match outcome {
             SelectionOutcomeDto::Hls { index } => Self::Hls { index },
-            SelectionOutcomeDto::Bt { indices, save_dir } => Self::Bt { indices, save_dir },
+            SelectionOutcomeDto::Bt { indices, save_dir } => Self::Bt {
+                indices,
+                save_dir,
+                custom_name: None,
+            },
             SelectionOutcomeDto::Variant { index } => Self::Variant { index },
             SelectionOutcomeDto::FileExists { action } => Self::FileExists {
                 action: action.into(),
@@ -1067,6 +1074,7 @@ mod tests {
             fluxdown_protocol::SelectionOutcome::Bt {
                 indices: vec![0, 2],
                 save_dir: Some("/new".to_owned()),
+                custom_name: None,
             }
         );
         assert_eq!(

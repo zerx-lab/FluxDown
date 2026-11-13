@@ -2513,7 +2513,7 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
     let session = params.session;
     let bt_runtime = params.bt_runtime;
     let shared_bt = params.shared_bt;
-    let custom_name = params.custom_name;
+    let mut custom_name = params.custom_name;
     let selector = params.selector;
     let upload_limit_bps = params.upload_limit_bps;
 
@@ -2576,6 +2576,11 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
                 }
                 relocated = true;
                 torrent_source = Some(source);
+                // 选择窗可能同时改了名字（已落库）；重跑沿用它。
+                let chosen_name = db.load_bt_custom_name(&task_id).await?;
+                if !chosen_name.is_empty() {
+                    custom_name = chosen_name;
+                }
                 // 下一趟的失败清理用 restart.save_dir（新目录），不再碰旧 staging。
                 let restart = relocate_restart(new_dir, indices);
                 save_dir = restart.save_dir;
@@ -3181,12 +3186,15 @@ struct CompletionLayout {
 ///   inside it.  (#543: a flat per-basename move previously dropped every
 ///   sub-directory whenever the selection was partial.)
 /// - **Single file selected from a single-file torrent (or a multi-file
-///   torrent whose one selected file sits at the top level)** → single-file
-///   flat move (basename only, no container, optional `custom_name` rename).
+///   torrent without `custom_name` whose one selected file sits at the top
+///   level)** → single-file flat move (basename only, no container; a
+///   single-file torrent's `custom_name` renames the file, borrowing the
+///   original extension when the new name has none).
 /// - **Partial selection of multiple files that are all top-level (no
 ///   sub-directory among them)** → per-file flat move; basenames are deduped
-///   against save_dir AND against in-batch siblings.  `custom_name` does not
-///   apply (no obvious "container" to rename).
+///   against save_dir AND against in-batch siblings.
+/// - **Multi-file torrent with a `custom_name`** → always the container branch:
+///   the name the user typed is the torrent's folder name, whatever was selected.
 ///
 /// The reason completion is driven by selected metadata paths (and never by reading
 /// staging dir contents) is that BT pieces span file boundaries, so librqbit
@@ -3284,7 +3292,7 @@ fn compute_completion_layout(
             .parent()
             .is_some_and(|p| !p.as_os_str().is_empty())
     });
-    if is_multi_file_torrent && (all_selected || has_selected_subdir) {
+    if is_multi_file_torrent && (all_selected || has_selected_subdir || !custom_name.is_empty()) {
         let final_top = match reuse_top {
             Some(n) if !save_dir.join(n).exists() || save_dir.join(n).is_dir() => n.to_string(),
             _ => dedup_name_in_dir(save_dir, desired_container, claimed, allow_overwrite)?,
@@ -3307,7 +3315,8 @@ fn compute_completion_layout(
 
     // Single-file flat move: reached only when the container branch above
     // did not fire — i.e. a genuinely single-file torrent, or a multi-file
-    // torrent whose one selected file sits at the top level (no sub-dir).
+    // torrent without a custom name whose one selected file sits at the top
+    // level (no sub-dir).
     if selected_files.len() == 1 {
         let file = &selected_files[0];
         let rel = &file.relative_path;
@@ -3316,11 +3325,12 @@ fn compute_completion_layout(
             .and_then(|n| n.to_str())
             .unwrap_or("download")
             .to_string();
-        let desired = if custom_name.is_empty() {
-            basename.as_str()
-        } else {
-            custom_name
-        };
+        // 改名没写扩展名时借原文件名补上，与 HTTP 显式名同一规则。
+        let renamed = (!custom_name.is_empty()).then(|| {
+            crate::naming::complete_extension_from_name(custom_name, &basename)
+                .unwrap_or_else(|| custom_name.to_owned())
+        });
+        let desired = renamed.as_deref().unwrap_or(basename.as_str());
         let final_name = match reuse_top {
             // 仅当哨兵名未被占用才复用;dst 已存在(无论类型)⟹ 非本任务
             // 合法重试的残留,fresh dedup 换名,绝不 REPLACE 覆盖(见函数 doc)。
@@ -4615,6 +4625,12 @@ async fn apply_only_files_after_init(
     false
 }
 
+/// 选择窗传来的落盘名：去首尾空白后为空 = 不改名；否则按文件名规则清洗成单段名字。
+fn accepted_custom_name(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    (!trimmed.is_empty()).then(|| crate::naming::sanitize_filename(trimmed))
+}
+
 /// A failed selection save must not leave a handle eligible for Path R resume.
 /// Preserve the DB error at the caller; teardown failures are secondary diagnostics.
 async fn discard_failed_bt_selection(shared_bt: &SharedBtSession, task_id: &str) {
@@ -5115,7 +5131,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
         existing_handle,
         pre_selected_indices,
         skip_file_selection,
-        custom_name,
+        mut custom_name,
         selector,
         upload_limit_bps,
     } = p;
@@ -5853,6 +5869,18 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<BtInnerExit, DownloadErro
                     choice.save_dir
                 );
             }
+        }
+        // 用户在选择窗改了名字：先落库（恢复、迁目录重跑都从库里读），再用于本次完成落盘。
+        if let SelectionOutcome::UserChose(choice) = &outcome
+            && choice.indices.first().copied() != Some(-1)
+            && let Some(name) = accepted_custom_name(choice.custom_name.as_deref())
+        {
+            if let Err(error) = db.save_bt_custom_name(&task_id, &name).await {
+                dialog_pause_state.store(DIALOG_PAUSE_DONE_KEEP, Ordering::SeqCst);
+                discard_failed_bt_selection(&shared_bt, &task_id).await;
+                return Err(error.into());
+            }
+            custom_name = name;
         }
         if cancelled.load(Ordering::SeqCst) {
             // 暂停期间用户已作答：选择必须落库，且丢弃尚未应用 only_files 的
@@ -7728,6 +7756,8 @@ mod tests {
             indices: Vec<i32>,
             /// `Some` = 选择窗改了保存目录（可带首尾空白 / 尾部分隔符）。
             save_dir: Option<String>,
+            /// `Some` = 选择窗改了名字。
+            custom_name: Option<String>,
             seen_save_dir: Mutex<String>,
             observed_handle: Mutex<Option<BtHandle>>,
             /// 模拟用户浏览文件列表的时长：给对话框的后台暂停留出尝试窗口。
@@ -7769,6 +7799,7 @@ mod tests {
                 SelectionOutcome::UserChose(BtFileChoice {
                     indices: self.indices.clone(),
                     save_dir: self.save_dir.clone(),
+                    custom_name: self.custom_name.clone(),
                 })
             }
 
@@ -8017,6 +8048,7 @@ mod tests {
                         vec![0]
                     },
                     save_dir: None,
+                    custom_name: None,
                     seen_save_dir: Mutex::new(String::new()),
                     answer_delay: Duration::ZERO,
                     observed_handle: Mutex::new(None),
@@ -8165,6 +8197,7 @@ mod tests {
                     pause_on_choice: false,
                     indices: vec![-1],
                     save_dir: None,
+                    custom_name: None,
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
@@ -8247,6 +8280,7 @@ mod tests {
                     pause_on_choice: false,
                     indices: vec![0],
                     save_dir: None,
+                    custom_name: None,
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::from_millis(300),
@@ -8379,6 +8413,7 @@ mod tests {
                     pause_on_choice: paused,
                     indices: vec![0],
                     save_dir: Some(requested),
+                    custom_name: Some("  我的/剧集  ".to_owned()),
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
@@ -8419,6 +8454,13 @@ mod tests {
                         .await
                         .expect("load selection"),
                     Some(vec![0])
+                );
+                // 选择窗里改的名字清洗后落库，迁目录重跑与恢复都从库里读。
+                assert_eq!(
+                    db.load_bt_custom_name("selection-task")
+                        .await
+                        .expect("load custom name"),
+                    "我的_剧集"
                 );
                 assert!(!stage.exists(), "old staging dir must be removed");
                 assert!(
@@ -8473,6 +8515,7 @@ mod tests {
                     pause_on_choice: false,
                     indices: vec![0],
                     save_dir: Some(format!("{current}/")),
+                    custom_name: None,
                     seen_save_dir: Mutex::new(String::new()),
                     observed_handle: Mutex::new(None),
                     answer_delay: Duration::ZERO,
@@ -8981,6 +9024,102 @@ mod tests {
         {
             crate::log_warn!("[BT tests] fixture cleanup failed: {}", error);
         }
+    }
+
+    /// 多文件种子改了名：只勾了顶层文件（一个或几个）也建以新名字命名的外层目录，
+    /// 名字不会被丢掉，单个文件也不会被改成没有扩展名的名字。
+    #[test]
+    fn completion_layout_renamed_multi_file_always_uses_the_new_container() {
+        let save = unique_test_dir("renamed_multi_file_container");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage)
+            .unwrap_or_else(|error| panic!("test filesystem operation failed: {error}"));
+        let claims = HashSet::new();
+        for picked in [&["a.mkv", "b.mkv"][..], &["a.mkv"][..]] {
+            let selected = completion_files(picked);
+            let layout = super::compute_completion_layout(super::CompletionLayoutInput {
+                save_dir: &save,
+                stage_dir: &stage,
+                selected_files: &selected,
+                all_selected: false,
+                is_multi_file_torrent: true,
+                custom_name: "我的剧集",
+                torrent_root_name: "Pack",
+                reuse_top: None,
+                allow_overwrite: false,
+                claimed: &claims,
+            })
+            .expect("read completion destination");
+            let Some(layout) = layout else {
+                panic!("layout should be Some");
+            };
+            assert_eq!(layout.top_level_name, "我的剧集");
+            assert!(layout.task_owned_container);
+            let destinations: Vec<_> = layout.moves.iter().map(|m| m.dst.clone()).collect();
+            let expected: Vec<_> = picked
+                .iter()
+                .map(|name| save.join("我的剧集").join(name))
+                .collect();
+            assert_eq!(destinations, expected);
+        }
+
+        if let Err(error) = std::fs::remove_dir_all(&save)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::log_warn!("[BT tests] fixture cleanup failed: {}", error);
+        }
+    }
+
+    #[test]
+    fn completion_layout_single_file_rename_keeps_the_extension() {
+        let save = unique_test_dir("single_file_rename_extension");
+        let stage = save.join(".stage");
+        std::fs::create_dir_all(&stage)
+            .unwrap_or_else(|error| panic!("test filesystem operation failed: {error}"));
+        let claims = HashSet::new();
+        let selected = completion_files(&["movie.mkv"]);
+        for (typed, expected) in [
+            ("My Movie", "My Movie.mkv"),
+            ("My Movie.mp4", "My Movie.mp4"),
+        ] {
+            let layout = super::compute_completion_layout(super::CompletionLayoutInput {
+                save_dir: &save,
+                stage_dir: &stage,
+                selected_files: &selected,
+                all_selected: true,
+                is_multi_file_torrent: false,
+                custom_name: typed,
+                torrent_root_name: "movie.mkv",
+                reuse_top: None,
+                allow_overwrite: false,
+                claimed: &claims,
+            })
+            .expect("read completion destination");
+            let Some(layout) = layout else {
+                panic!("layout should be Some");
+            };
+            assert_eq!(layout.top_level_name, expected, "{typed:?}");
+        }
+
+        if let Err(error) = std::fs::remove_dir_all(&save)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::log_warn!("[BT tests] fixture cleanup failed: {}", error);
+        }
+    }
+
+    #[test]
+    fn accepted_custom_name_trims_sanitizes_and_ignores_blank() {
+        assert_eq!(super::accepted_custom_name(None), None);
+        assert_eq!(super::accepted_custom_name(Some("   ")), None);
+        assert_eq!(
+            super::accepted_custom_name(Some("  我的剧集  ")),
+            Some("我的剧集".to_owned())
+        );
+        assert_eq!(
+            super::accepted_custom_name(Some("a/b:c")),
+            Some("a_b_c".to_owned())
+        );
     }
 
     #[test]

@@ -71,7 +71,14 @@ export type SelectionKind =
  */
 export type SelectionOutcome =
   | { kind: 'hls'; index: number }
-  | { kind: 'bt'; indices: number[]; /** 非空且不同于预填目录时改目录后重开；缺省 = 沿用。 */ saveDir?: string }
+  | {
+      kind: 'bt';
+      indices: number[];
+      /** 非空且不同于预填目录时改目录后重开；缺省 = 沿用。 */
+      saveDir?: string;
+      /** 落盘名（单文件种子 = 文件名，多文件种子 = 外层目录名）；缺省 = 种子内名称。 */
+      customName?: string;
+    }
   | { kind: 'variant'; index: number }
   | { kind: 'fileExists'; action: FileExistsAction }
   | { kind: 'plugin'; identity: string; remember: boolean }
