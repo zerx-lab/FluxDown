@@ -140,6 +140,7 @@
 - **拖出把手不得在冒泡阶段截断左键按下**：gpui 的单击由冒泡阶段的 `MouseDown` 登记（`pending_mouse_down`），子元素 `stop_propagation` 后祖先的 `on_click` 永不触发——文件名列曾因此点不中任务、双击也打不开。把手只在捕获阶段置 `press_on_file_handle`，由 `begin_row_sweep` 据此不开划选会话；没移动就松开走行单击，拖起后的那次松开由 `note_file_drag_started` 抑制 → `crates/downloads/src/components/task_table.rs::arm_file_drag`、回归同上（真实窗口内模拟按下 / 移动 / 松开）。
 - **行悬停操作浮层不得直接用半透明 `row_hover` / `accent` 作底**：默认最右列是「创建时间」，浮层从右侧留白列向左盖住末列；半透明底会让时间与图标叠成「双层字」。底色须 `surface.blend(选中/悬停)` 不透明，并加左侧渐隐；Web 同行用 surface + accent/row-hover 分层 + mask → `crates/downloads/src/components/task_table.rs::wrap_row_action_strip`、`web/src/pages/downloads/table/rowParts.tsx::RowActionsBar`。
 - **有「浏览」系统选择器的窗口不能用 `WindowKind::Floating`**：gpui-fast macOS 把 Floating 设为 `NSFloatingWindowLevel`，`prompt_for_paths` 的系统面板在普通层级，会被压在窗口下面（Windows 的 Floating 是普通窗口，不受影响）；需要选目录 / 文件的窗口用 `Normal`，只读确认类小窗才置顶。改成 `Normal` 后窗口不会再自己浮到其他应用之上，引擎主动弹出的窗口（用户可能已切走）要在开窗后 `bring_to_front`，应用原本不在前台再 `request_attention` 兜底 → `crates/app/src/windows/selection.rs::open`（BT 文件选择窗，#994）。
+- **空分类列表不能隐藏自动分类开关**：没有配置分类目录时，空规则路由仍可授权插件归档；新建下载须继续提供「自动 / 不分类」，否则用户无法显式关闭路由。四端入口：GPUI `pages/new_download/category.rs`、Web `NewDownloadDialog.tsx`、Android / iOS `NewDownloadSheet`。
 
 ## Web SPA
 
