@@ -373,6 +373,7 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
         let f = fixture_with(
             json!({
                 "identity": ID, "name": "Images", "version": "1.0.0",
+                "permissions": ["auth"],
                 "main": { "entry": "main.js", "imageHosts": ["covers.example"] },
                 "contributes": {
                     "views": [{ "id": "counter", "title": "Cover", "location": "activity" }]
@@ -380,10 +381,27 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
             }),
             r#"
 flux.ui.view("counter", {
-  init: async (ctx) => ({
-    src: await ctx.images.load({ url: "https://covers.example/a.png", maxWidth: 16, maxHeight: 16 })
-  }),
-  render: (st) => flux.ui.h("image", { src: st.src, alt: "cover" }),
+  init: async (ctx) => {
+    const opts = { url: "https://covers.example/a.png", maxWidth: 16, maxHeight: 16 };
+    const src = await ctx.images.load(opts);
+    for (let i = 0; i < 200; i++) {
+      if (await ctx.images.load(opts) !== src) throw new Error("identical images must share a reference");
+    }
+    const batch = await Promise.all(Array.from({ length: 20 }, () => ctx.images.load(opts)));
+    if (batch.some(value => value !== src)) throw new Error("concurrent images must share a reference");
+    return { src };
+  },
+  render: (st) => st.src
+    ? flux.ui.h("image", { src: st.src, alt: "cover" })
+    : flux.ui.h("text", { text: "released" }),
+  event: async (st, ev, ctx) => {
+    if (ev.type === "release") {
+      const src = st.src;
+      st.src = null;
+      await ctx.images.release(src);
+      await flux.images.release({ session: ctx.session, src });
+    }
+  },
 });
 "#,
             &[],
@@ -398,7 +416,7 @@ flux.ui.view("counter", {
         f.service
             .plugin_manager()
             .unwrap()
-            .grant_consent(ID, &[], &["covers.example".to_owned()])
+            .grant_consent(ID, &["auth".to_owned()], &["covers.example".to_owned()])
             .await
             .unwrap();
         let opened = call(&f, "daemon.plugin.view.open", request.clone())
@@ -451,6 +469,16 @@ flux.ui.view("counter", {
         assert!(headers.contains("cache-control: no-store"));
         assert!(headers.contains("x-content-type-options: nosniff"));
         assert_eq!(&response[header_end..], bytes.as_ref());
+        press(&f, session, "release").await;
+        let response = get(address, &path, "image-test-token").await;
+        assert!(response.starts_with(b"HTTP/1.1 404"));
+        let other_session = other["session"].as_str().unwrap();
+        let other_id = other["tree"]["p"]["src"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("flux-image:")
+            .unwrap();
+        assert!(f.service.plugin_image(other_session, other_id).is_some());
         call(
             &f,
             "daemon.plugin.view.close",

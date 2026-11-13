@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "018730cc4f22"
+sourceHash: "60c0a19d9c29"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -309,6 +309,12 @@ flux.timers.setInterval(() => flux.logger.info("tick"), 60000);
 
 可移植视图回调中可用 `ctx.images.load(opts)`，请求会绑定到该视图会话。常驻 `main` 脚本也可调用 `flux.images.load({ session: ctx.session, ...opts })`，其中 `session` 使用视图上下文里的会话 ID。两者都返回 `Promise<string>`，内容为小写的 `flux-image:<uuid>` 资源引用。把它作为图片节点的 `src` 使用即可，和现有 PNG/JPEG/WebP data URI 一样；视图协议传递的仍只是短字符串，不会承载图片字节。原有 data URI 图片行为保持不变。
 
+宿主按净化后 PNG 的内容在同一会话内去重：即使 `cache: false` 或来源缓存过期，相同内容也复用同一个引用。禁用缓存仍会重新校验认证并请求源站；不同会话不共享引用。
+
+长时间打开的图集应在图片不再使用后调用 `await ctx.images.release(src)`，或 `await flux.images.release({ session: ctx.session, src })`。必须先移除**所有**用途，包括预加载状态和重复图片节点：相同内容共享同一引用，释放会令该会话中此引用的所有用途失效。重复释放已移除的引用无副作用，不能释放其他会话的资源。宿主不会根据可见性或最近 HTTP 读取时间自动淘汰图片。
+
+`flux-image:` 是 `image.src` 字符串取值的增量扩展，不是新的 RPC 事件或消息结构。旧渲染器不能显示此引用；面向旧客户端时继续使用 data URI。
+
 ```jsx
 flux.ui.view("profile", {
   async init(ctx) {
@@ -333,10 +339,10 @@ flux.ui.view("profile", {
 | `headers` | 无 | 可选的字符串请求头。 |
 | `authRef` | 无 | 可选的已保存凭据引用；需要 `auth` 权限。 |
 | `maxWidth`、`maxHeight` | 各 `512` | 1–2048 的整数。宿主保持宽高比且不会放大图片。 |
-| `cache` | `true` | `false` 跳过来源结果复用；图片永不落盘。无论该选项为何值，HTTP 响应始终为 `no-store`，已返回的引用在会话关闭前有效。 |
+| `cache` | `true` | `false` 跳过来源/选项结果复用；图片永不落盘，HTTP 响应始终为 `no-store`。相同输出仍共享引用，直到显式释放或会话关闭。 |
 
-输入格式根据内容识别，只接受 PNG、JPEG、WebP，不信任声明的 Content-Type。输入每边最多 8192 像素、总计最多 1600 万像素，解码内存最多 64 MiB；网络响应体最多 8 MiB，请求最多 10 秒。宿主输出净化后的静态 PNG 缩略图，最多 4 MiB，并以 `image/png` 提供。每个会话最多 128 个资源 / 16 MiB；全局图片资源最多 64 MiB。超过配额会明确报错，不会驱逐仍可能显示的引用。缓存的来源/选项结果保留五分钟，但返回资源引用在会话结束前有效。视图会话关闭或插件卸载时，其图片资源会释放。以上限制由宿主强制执行。
-所有插件合计最多同时进行四次未命中缓存的图片加载，超出会明确报过载；解码/缩略图处理最多并发两次，等待解码的源图也受加载并发限制。全局资源数量上限为 4096。
+输入格式根据内容识别，只接受 PNG、JPEG、WebP，不信任声明的 Content-Type。输入每边最多 8192 像素、总计最多 1600 万像素，解码内存最多 64 MiB；网络响应体最多 8 MiB，请求最多 10 秒。宿主输出净化后的静态 PNG 缩略图，最多 4 MiB，并以 `image/png` 提供。每个会话最多 128 个资源 / 16 MiB；全局图片资源最多 64 MiB。超过配额会明确报错，不会隐式驱逐引用。缓存的来源/选项结果保留五分钟，但返回引用直到显式释放或会话关闭前有效。视图会话关闭或插件卸载时，其图片资源会释放。以上限制由宿主强制执行。
+所有插件合计最多同时进行四次未命中缓存的图片加载，超出时排队等待，最多三秒后报过载；解码/缩略图处理最多并发两次，等待解码的源图也受加载并发限制。全局资源数量上限为 4096。
 
 ## `flux` 对象
 
