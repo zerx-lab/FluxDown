@@ -724,7 +724,7 @@ pub fn option_group(rows: impl IntoIterator<Item = AnyElement>, cx: &App) -> Div
     let theme = active_theme(cx);
     let hairline = theme.extended().colors.hairline;
     let stroke = theme.extended().stroke.thin;
-    let mut group = crate::card(cx).flex().flex_col().w_full().overflow_hidden();
+    let mut group = crate::card(cx).flex().flex_col().w_full();
     for (index, row) in rows.into_iter().enumerate() {
         group = group.child(
             div()

@@ -1389,7 +1389,7 @@ impl SettingsSection {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
         let extended = theme.extended().colors;
-        let mut card = card(cx).flex().flex_col().w_full().overflow_hidden();
+        let mut card = card(cx).flex().flex_col().w_full();
         // 行 key 必须在行增减/搜索过滤后保持稳定：用小节标题 + 行标题（重名按出现序号区分），
         // 否则输入槽会按位置下标被别的设置项复用。
         let section_title: &str = self.title.as_deref().unwrap_or("");
