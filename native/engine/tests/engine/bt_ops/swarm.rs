@@ -451,8 +451,19 @@ impl Downloader {
         }
     }
 
-    /// 用种子字节建任务。`selected` 为空 = 全部文件（无人值守，不问选择）。
     pub async fn add(&mut self, seeder: &Seeder, selected: &[u32], start_paused: bool) -> String {
+        self.add_with_route(seeder, selected, start_paused, None)
+            .await
+    }
+
+    /// 用种子字节建任务，并可指定分类目录路由。
+    pub async fn add_with_route(
+        &mut self,
+        seeder: &Seeder,
+        selected: &[u32],
+        start_paused: bool,
+        category_route: Option<fluxdown_engine::category_route::CategoryRoute>,
+    ) -> String {
         self.engine
             .manager
             .create_task(NewTaskSpec {
@@ -464,10 +475,68 @@ impl Downloader {
                     .collect(),
                 unattended_selection: selected.is_empty(),
                 start_paused,
+                category_route,
                 ..Default::default()
             })
             .await
             .expect("create BT task")
+    }
+
+    #[cfg(feature = "plugins")]
+    pub async fn install_archive_plugin(&self, script: &str) {
+        let dir = self.work.join("archive_plugin");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create archive plugin directory");
+        tokio::fs::write(
+            dir.join("manifest.json"),
+            r#"{"identity":"test@bt-archive","name":"BT archive test","version":"1.0.0","permissions":["archive"],"contributes":{"archive":"archive.js"}}"#,
+        )
+        .await
+        .expect("write archive manifest");
+        tokio::fs::write(dir.join("archive.js"), script)
+            .await
+            .expect("write archive script");
+        let plugins = self
+            .engine
+            .manager
+            .plugin_manager()
+            .expect("plugin manager");
+        let id = plugins
+            .install_dev(&dir)
+            .await
+            .expect("install archive plugin");
+        plugins
+            .grant_consent(&id, &["archive".to_owned()], &[])
+            .await
+            .expect("grant archive permission");
+        plugins
+            .set_enabled(&id, true)
+            .await
+            .expect("enable archive plugin");
+    }
+
+    #[cfg(feature = "plugins")]
+    /// After the ordinary completion has been acknowledged, drain manager work until the
+    /// task's save directory reaches the requested archive destination.
+    pub async fn drain_done_until_save_dir(&mut self, task_id: &str, save_dir: &Path) -> TaskInfo {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let task = self.task(task_id).await;
+            if Path::new(&task.save_dir) == save_dir {
+                return task;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for BT archive destination"
+            );
+            let done = timeout(remaining, self.done_rx.recv())
+                .await
+                .expect("BT archive work did not finish in time")
+                .expect("done channel open");
+            self.engine.manager.on_task_done(&done).await;
+        }
     }
 
     /// 用磁力链接建任务（全部文件，无人值守）：元数据经 BEP 9 从做种端取。

@@ -426,7 +426,7 @@ export interface ResolveContext {
   resolverItem: string;
 }
 
-/** Root-level, source-provided archive hints; never credentials, URLs, or paths. */
+/** Root-level source hints; these are not facts read from the file itself. */
 export interface ArchiveMetadata {
   platform?: string;
   mediaKind?: string;
@@ -438,19 +438,41 @@ export interface ArchiveMetadata {
   collectionTitle?: string;
 }
 
-/** `archive(ctx)` argument: the final file name (HLS/DASH: the predicted `<stem>.mp4`). */
+/** Content kinds reported by the host's bounded file-format recognizer. */
+export type ArchiveDetectedKind =
+  | "archive" | "audio" | "compressed" | "database" | "diagram" | "disk"
+  | "document" | "ebook" | "executable" | "font" | "formula" | "geospatial"
+  | "image" | "metadata" | "model" | "other" | "package" | "playlist"
+  | "presentation" | "rom" | "spreadsheet" | "subtitle" | "video";
+
+/** `archive(ctx)` argument; source metadata and host-observed content facts are distinct. */
 export interface ArchiveContext {
+  /** Actual final file name; BT single-file selection uses the selected torrent file's name. */
   fileName: string;
+  /** Optional root-level source-provided labels; never credentials, URLs, or paths. */
   metadata?: ArchiveMetadata;
+  /** True for a group root. Groups are routed only at start and are not content-read. */
   isGroup?: boolean;
+  /** `start` before downloading, or `complete` for the processed final artifact. */
+  phase: "start" | "complete";
+  /** Fixed UTC task/group creation date (`YYYY-MM-DD`); empty for invalid legacy dates. */
+  createdDate: string;
+  /** Host-observed content facts only; omitted when unknown or recognition is unavailable. */
+  detectedType?: {
+    kind: ArchiveDetectedKind;
+    mime: string;
+    extension: string;
+  };
+  /** Host capability; absent on older hosts that do not support category routing. */
+  categoryRouting?: boolean;
 }
-/** Archive destination: safe components relative to the task's authorized default directory. */
-export interface ArchiveResult {
-  /** At most 8 safe components; joined relative path is at most 180 UTF-8 bytes. */
-  directories?: string[];
-  /** Legacy single-category child result retained for existing plugins. */
-  folderName?: string;
-}
+/** Stable built-in category identifiers supported by category routing. */
+export type ArchiveCategory =
+  | "video" | "audio" | "document" | "image" | "program" | "archive" | "other";
+/** Archive destination; category routing is valid only for completed, non-group artifacts. */
+export type ArchiveResult =
+  | { category: ArchiveCategory; directories?: never; folderName?: never }
+  | { category?: never; directories?: string[]; folderName?: string };
 
 export interface ResolveVariant {
   label: string;

@@ -1762,6 +1762,7 @@ mod tests {
                 ..Default::default()
             }],
             other_dir: "/data/other".to_owned(),
+            ..Default::default()
         }
     }
 

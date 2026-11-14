@@ -20,7 +20,14 @@ export function routeFromCategories(categories: readonly CustomCategoryDto[]): C
       if (dir !== '') rule.saveDir = dir
       return rule
     })
-  return otherDir !== '' ? { rules, otherDir } : { rules }
+  const archiveCategories = Object.fromEntries(visible
+    .filter((category) => category.builtinType && category.builtinType !== 'all' && category.saveDir.trim() !== '')
+    .map((category) => [category.builtinType!, category.saveDir.trim()]))
+  return {
+    rules,
+    ...(otherDir !== '' ? { otherDir } : {}),
+    ...(Object.keys(archiveCategories).length ? { archiveCategories } : {}),
+  }
 }
 
 /** 由 `custom_categories` 偏好值构建路由。 */

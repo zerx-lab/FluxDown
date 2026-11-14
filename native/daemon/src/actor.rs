@@ -5041,6 +5041,7 @@ mod tests {
                     save_dir: images_text.clone(),
                 }],
                 other_dir: String::new(),
+                ..Default::default()
             }),
         };
         let results = match execute_operation(operation, &mut engine, &events).await {

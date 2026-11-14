@@ -86,6 +86,8 @@ pub struct ArchiveResult {
     pub directories: Vec<String>,
     /// Legacy single-component output from existing plugins.
     pub folder_name: String,
+    /// Stable builtin category identifier; mutually exclusive with directory outputs.
+    pub category: String,
 }
 
 /// 一次平台登录动作。`action` 为 `begin`、`poll`、`cancel`、`logout` 或 `status`。
