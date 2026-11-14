@@ -102,3 +102,67 @@ async fn download_client_hello_carries_status_request_and_http11_alpn() {
         "下载 client 的 ALPN 必须只报 http/1.1"
     );
 }
+
+const EXT_KEY_SHARE: u16 = 51;
+
+/// ClientHello 的密码套件列表（原始字节）。
+fn cipher_suites(handshake: &[u8]) -> Vec<u8> {
+    let mut at = 4 + 2 + 32;
+    at += 1 + usize::from(handshake[at]);
+    let len = usize::from(u16::from_be_bytes([handshake[at], handshake[at + 1]]));
+    handshake[at + 2..at + 2 + len].to_vec()
+}
+
+/// 下载 client 走进程共享的 rustls 配置（根证书库全进程一份），它发出的 ClientHello 必须与
+/// reqwest 自行装配 rustls 时一致：密码套件、扩展集合与内容（key_share 每次随机，除外；rustls
+/// 每次握手打乱扩展顺序，按类型排序后比较）。严格校验与「忽略证书错误」两档都要一致（后者的
+/// `signature_algorithms` 来自放行校验器）。
+#[tokio::test]
+async fn shared_tls_config_sends_the_same_client_hello_as_reqwest() {
+    for ignore_tls_errors in [false, true] {
+        let shared = fluxdown_engine::downloader::build_client_with_tls_policy(
+            &ProxyConfig::default(),
+            "",
+            ignore_tls_errors,
+        )
+        .unwrap();
+        let own = reqwest::Client::builder()
+            .use_rustls_tls()
+            .http1_only()
+            .danger_accept_invalid_certs(ignore_tls_errors)
+            .no_proxy()
+            .build()
+            .unwrap();
+        let (shared, own) = (
+            capture_client_hello(shared).await,
+            capture_client_hello(own).await,
+        );
+        assert_eq!(
+            cipher_suites(&shared),
+            cipher_suites(&own),
+            "cipher suites (ignore_tls_errors={ignore_tls_errors})"
+        );
+        let stable = |hello: &[u8]| {
+            let mut exts = extensions(hello)
+                .into_iter()
+                .map(|(kind, data)| {
+                    (
+                        kind,
+                        if kind == EXT_KEY_SHARE {
+                            Vec::new()
+                        } else {
+                            data
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            exts.sort();
+            exts
+        };
+        assert_eq!(
+            stable(&shared),
+            stable(&own),
+            "extensions (ignore_tls_errors={ignore_tls_errors})"
+        );
+    }
+}

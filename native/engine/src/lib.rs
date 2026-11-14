@@ -127,6 +127,8 @@ pub(crate) mod task_jobs;
 mod temp_file_guard;
 /// `thunder://` 链接解析（迅雷专有 base64 封装：`AA<真实地址>ZZ`）。
 pub mod thunder;
+/// 进程共享的 rustls 客户端配置（根证书库全进程一份）。
+pub(crate) mod tls;
 /// BT tracker 列表订阅。仅 `bt` feature 下编译。
 #[cfg(feature = "bt")]
 pub mod tracker_subscription;
