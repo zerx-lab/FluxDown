@@ -279,7 +279,7 @@ internal fun FileExistsAction.toDto(): FileExistsActionDto = when (this) {
 
 internal fun SelectionOutcomeDto.toCore(): SelectionOutcome = when (this) {
     is SelectionOutcomeDto.Hls -> SelectionOutcome.Hls(index)
-    is SelectionOutcomeDto.Bt -> SelectionOutcome.Bt(indices, saveDir)
+    is SelectionOutcomeDto.Bt -> SelectionOutcome.Bt(indices, saveDir, customName)
     is SelectionOutcomeDto.Variant -> SelectionOutcome.Variant(index)
     is SelectionOutcomeDto.FileExists -> SelectionOutcome.FileExists(action.toCore())
     is SelectionOutcomeDto.Cancelled -> SelectionOutcome.Cancelled
@@ -288,7 +288,7 @@ internal fun SelectionOutcomeDto.toCore(): SelectionOutcome = when (this) {
 
 internal fun SelectionOutcome.toDto(): SelectionOutcomeDto = when (this) {
     is SelectionOutcome.Hls -> SelectionOutcomeDto.Hls(index)
-    is SelectionOutcome.Bt -> SelectionOutcomeDto.Bt(indices, saveDir)
+    is SelectionOutcome.Bt -> SelectionOutcomeDto.Bt(indices, saveDir, customName)
     is SelectionOutcome.Variant -> SelectionOutcomeDto.Variant(index)
     is SelectionOutcome.FileExists -> SelectionOutcomeDto.FileExists(action.toDto())
     is SelectionOutcome.Plugin -> SelectionOutcomeDto.Plugin(identity, remember)

@@ -460,11 +460,26 @@ public struct VariantOption: Sendable, Hashable {
 
 public enum SelectionOutcome: Sendable, Hashable {
     case hls(index: Int32)
-    case bt(indices: [Int32], saveDir: String?)
+    /// `customName`：用户改过的任务名（单文件 = 文件名，多文件 = 外层目录名）；nil = 沿用原名。
+    case bt(indices: [Int32], saveDir: String?, customName: String?)
     case variant(index: Int32)
     case fileExists(action: FileExistsAction)
     case plugin(identity: String, remember: Bool)
     case cancelled
+}
+
+/// BT 选择框「名称」输入的提交值（同 GPUI `bt_name_outcome`）：去首尾空白后为空或与预填名相同 → nil（不改名）。
+public func btNameOutcome(initial: String, input: String) -> String? {
+    let name = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty, name != initial.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+    return name
+}
+
+public extension SelectionKind {
+    /// 「取消」是否删除任务（连同文件）：BT 取消 = 删除任务（同 GPUI），其它选择取消 = 答复 `.cancelled`（任务保持暂停）。
+    var cancelDeletesTask: Bool {
+        if case .bt = self { true } else { false }
+    }
 }
 
 /// `ServiceHello` 的 UI 相关子集。能力名见 README §2.1（`daemon.rss`、`agent.sync` …）。

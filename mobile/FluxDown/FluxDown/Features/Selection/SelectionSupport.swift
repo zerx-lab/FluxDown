@@ -103,9 +103,34 @@ final class SelectionResolver {
         }
     }
 
-    /// 取消：任务保持暂停。
+    /// 取消：BT 删除任务连同文件（`cancelDeletesTask`，同 GPUI；引擎随之撤回待选请求，Sheet 随请求消失关闭）；
+    /// 其它选择答复 `.cancelled`，任务保持暂停。
     func cancel(_ request: SelectionRequest, onSuccess: @escaping SelectionClose) {
-        resolve(request, .cancelled, successToast: L("mobileSelectionCancelled"), userInitiated: true, onSuccess: onSuccess)
+        guard request.kind.cancelDeletesTask else {
+            resolve(request, .cancelled, successToast: L("mobileSelectionCancelled"), userInitiated: true, onSuccess: onSuccess)
+            return
+        }
+        let toasts = container.toasts
+        if blockedByReadOnly() { return }
+        let id = request.requestId
+        guard inFlight.insert(id).inserted else { return }
+        ours.insert(id) // 请求消失（被撤回）的事件可能先于本任务恢复到达，不提示「已在别处处理」
+        let session = container.session
+        Task {
+            defer { inFlight.remove(id) }
+            do throws(HostError) {
+                try await session.delete(request.taskId, deleteFiles: true)
+                FluxHaptic.success.play()
+                toasts.show(text: L("mobileTaskFileDeleted"), tone: .success, systemImage: "checkmark.circle")
+                onSuccess()
+            } catch {
+                ours.remove(id)
+                if !Self.isStale(error), container.store.state.selections.contains(where: { $0.requestId == id }) {
+                    FluxHaptic.error.play()
+                    toasts.show(text: ErrorText.describe(error), tone: .error)
+                }
+            }
+        }
     }
 
     /// 倒计时到期：按默认项答复。

@@ -204,7 +204,7 @@ extension SelectionOutcomeDto {
     var domain: SelectionOutcome {
         switch self {
         case let .hls(index): .hls(index: index)
-        case let .bt(indices, saveDir): .bt(indices: indices, saveDir: saveDir)
+        case let .bt(indices, saveDir, customName): .bt(indices: indices, saveDir: saveDir, customName: customName)
         case let .variant(index): .variant(index: index)
         case let .fileExists(action): .fileExists(action: action.domain)
         case let .plugin(identity, remember): .plugin(identity: identity, remember: remember)
@@ -217,7 +217,7 @@ extension SelectionOutcome {
     var dto: SelectionOutcomeDto {
         switch self {
         case let .hls(index): .hls(index: index)
-        case let .bt(indices, saveDir): .bt(indices: indices, saveDir: saveDir)
+        case let .bt(indices, saveDir, customName): .bt(indices: indices, saveDir: saveDir, customName: customName)
         case let .variant(index): .variant(index: index)
         case let .fileExists(action): .fileExists(action: action.dto)
         case let .plugin(identity, remember): .plugin(identity: identity, remember: remember)

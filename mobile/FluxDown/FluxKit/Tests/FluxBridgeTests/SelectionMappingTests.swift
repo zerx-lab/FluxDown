@@ -76,15 +76,24 @@ struct SelectionMappingTests {
             requestId: "r3",
             taskId: "t3",
             kind: .bt(files: [BtFileDto(index: 0, path: "a.bin", size: 12)], saveDir: "/data"),
-            defaultChoice: .bt(indices: [0], saveDir: nil),
+            defaultChoice: .bt(indices: [0], saveDir: nil, customName: nil),
             deadlineUnixMs: 9
         )
         let request = dto.domain
         #expect(request.kind == .bt([BtFile(index: 0, path: "a.bin", size: 12)], saveDir: "/data"))
-        #expect(request.defaultChoice == .bt(indices: [0], saveDir: nil))
-        let relocate = SelectionOutcome.bt(indices: [0, 2], saveDir: "/new")
+        #expect(request.defaultChoice == .bt(indices: [0], saveDir: nil, customName: nil))
+        let relocate = SelectionOutcome.bt(indices: [0, 2], saveDir: "/new", customName: nil)
         #expect(relocate.dto.domain == relocate)
-        let keep = SelectionOutcome.bt(indices: [1], saveDir: nil)
+        let keep = SelectionOutcome.bt(indices: [1], saveDir: nil, customName: nil)
         #expect(keep.dto.domain == keep)
+    }
+
+    @Test func btCustomNameMapsBothWays() {
+        let renamed = SelectionOutcome.bt(indices: [0], saveDir: nil, customName: "My Show")
+        guard case let .bt(_, _, name) = renamed.dto else { Issue.record("expected .bt"); return }
+        #expect(name == "My Show")
+        #expect(renamed.dto.domain == renamed)
+        let dto = SelectionOutcomeDto.bt(indices: [3], saveDir: "/d", customName: nil)
+        #expect(dto.domain == .bt(indices: [3], saveDir: "/d", customName: nil))
     }
 }

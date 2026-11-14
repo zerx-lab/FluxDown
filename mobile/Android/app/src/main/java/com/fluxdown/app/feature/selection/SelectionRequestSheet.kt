@@ -39,6 +39,7 @@ import com.fluxdown.core.model.SelectionKind
 import com.fluxdown.core.model.SelectionOutcome
 import com.fluxdown.core.model.SelectionRequest
 import com.fluxdown.core.model.Task
+import com.fluxdown.core.model.cancelDeletesTask
 import com.fluxdown.core.model.TaskProtocol
 import com.fluxdown.core.store.HostStore
 import com.fluxdown.fluxui.controls.ButtonVariant
@@ -231,6 +232,34 @@ internal class SelectionResolver(
     /** 划走 / 取消：任务保持暂停。 */
     fun cancel(request: SelectionRequest) {
         resolve(request, SelectionOutcome.Cancelled, context.str(R.string.mobileSelectionCancelled), userInitiated = true)
+    }
+
+    /**
+     * 「取消」按钮：BT（[SelectionKind.cancelDeletesTask]）删除任务及文件，主机随之撤回待选请求、Sheet 自行关闭；
+     * 其余类型同 [cancel]。划走不走这里（划走 = 任务保持暂停）。
+     */
+    fun cancelButton(request: SelectionRequest) {
+        if (!request.kind.cancelDeletesTask) return cancel(request)
+        if (store.state.value.isReadOnly) {
+            haptics.reject()
+            overlays.toast(context.str(R.string.localServiceDisconnected), FluxToastKind.Error, FluxIcons.WifiOff)
+            return
+        }
+        if (!inFlight.add(request.requestId)) return
+        ours += request.requestId // 先登记：SelectionResolved 可能先于本协程恢复到达
+        scope.launch {
+            try {
+                session().delete(request.taskId, deleteFiles = true)
+                haptics.confirm()
+                overlays.toast(context.str(R.string.mobileTaskFileDeleted), FluxToastKind.Success, FluxIcons.CircleCheck)
+            } catch (e: HostException) {
+                ours -= request.requestId
+                haptics.reject()
+                overlays.toast(errorText(e), FluxToastKind.Error)
+            } finally {
+                inFlight.remove(request.requestId)
+            }
+        }
     }
 
     /** 已改动选择后划走：先确认。 */

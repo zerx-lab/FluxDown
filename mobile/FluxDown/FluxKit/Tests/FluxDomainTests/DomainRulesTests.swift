@@ -162,4 +162,21 @@ struct DomainRulesTests {
         #expect(hls.shareUrl == hls.url)
         #expect(hls.progress == nil)
     }
+
+    @Test func btNameOutcomeOnlyReportsTrimmedChanges() {
+        #expect(btNameOutcome(initial: "Show", input: "Show") == nil)
+        #expect(btNameOutcome(initial: "Show", input: "  Show ") == nil)
+        #expect(btNameOutcome(initial: " Show ", input: "Show") == nil)
+        #expect(btNameOutcome(initial: "Show", input: "   ") == nil)
+        #expect(btNameOutcome(initial: "Show", input: "") == nil)
+        #expect(btNameOutcome(initial: "Show", input: "  New Name ") == "New Name")
+        #expect(btNameOutcome(initial: "", input: "x.mkv") == "x.mkv")
+    }
+
+    @Test func onlyBtCancelDeletesTask() {
+        #expect(SelectionKind.bt([], saveDir: "/d").cancelDeletesTask)
+        #expect(!SelectionKind.hls([]).cancelDeletesTask)
+        #expect(!SelectionKind.variant([]).cancelDeletesTask)
+        #expect(!SelectionKind.plugin(site: "s", url: "u", candidates: []).cancelDeletesTask)
+    }
 }

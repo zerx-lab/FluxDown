@@ -146,6 +146,7 @@ class MappingTest {
             SelectionOutcome.Hls(2),
             SelectionOutcome.Bt(listOf(0, 3), saveDir = "/new"),
             SelectionOutcome.Bt(listOf(1), saveDir = null),
+            SelectionOutcome.Bt(listOf(2), saveDir = "/d", customName = "Renamed"),
             SelectionOutcome.Variant(1),
             SelectionOutcome.Plugin("com.x.a", remember = true),
             SelectionOutcome.Plugin("com.x.b", remember = false),
