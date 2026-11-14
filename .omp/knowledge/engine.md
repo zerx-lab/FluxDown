@@ -220,7 +220,7 @@
 - **peer 国旗**（`geoip.rs`，对齐 qBittorrent）：DB-IP「国家 lite」`.mmdb`（CC BY 4.0，关于页署名）+ 自带最小 MaxMind DB 读取器（零依赖，24/28/32 位记录，
   真实库 IPv4/IPv6 回归见 `FLUXDOWN_TEST_MMDB`）。有人查看 peer 列表（`bt_status`）才触发 `ensure_background`：当月文件 `<data_dir>/geoip/dbip-country-lite-YYYY-MM.mmdb`
   不在就经统一出口（`egress::RoutedClients`）下载 `https://download.db-ip.com/free/<name>.gz`（当月未发布回退上月），解压校验后原子落盘并清旧文件，失败 1 小时内不重试；
-  不新增周期任务（空闲静默）。`BtPeerDto.country` 为大写 ISO 码，库未就绪 / 内网缺省；旗帜 SVG 在 `assets/flags/`（qBittorrent 同源 flag-icons，MIT），GPUI 内嵌、Web 经 `@flags` 别名按需加载。
+  不新增周期任务（空闲静默）。已加载的库（约 8MB 整读进内存）自最后一次查询起空闲 5 分钟即释放（`IdleSlot`：释放任务只在库已加载时存在，释放后退出），下次看 peer 列表再从磁盘加载、不重新下载。`BtPeerDto.country` 为大写 ISO 码，库未就绪 / 内网缺省；旗帜 SVG 在 `assets/flags/`（qBittorrent 同源 flag-icons，MIT），GPUI 内嵌、Web 经 `@flags` 别名按需加载。
 - **做种上传帧节奏**（#939）：限速本身在 librqbit 会话 / torrent 级 `ratelimits`，实测准确且热生效。
   宿主总上传速率（状态栏 ↑）由 daemon `event_hub` 用相邻进度帧的累计上传增量折算，要求每任务帧间隔
   ≤ ~500ms（单帧最多摊 1 秒、窗口滞后 700ms）。所以做种上传由 `tick_seeding_upload` 每
