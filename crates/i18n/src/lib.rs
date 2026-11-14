@@ -3,8 +3,15 @@
 //! `assets/i18n/*.json` 仍是唯一资源目录；构建脚本自动发现并嵌入语言文件。
 //! 查找语义：locale 精确匹配、主语言匹配、英文
 //! 键级回退、空值回退以及 `{name}` 占位插值。
+//!
+//! 常驻内存：进程内只有一份共享目录（[`I18nCatalog::load_embedded`]），每个语言表在首次查表时
+//! 才解析，未用到的语言只占嵌入的静态源文本。
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, LazyLock, OnceLock},
+};
 
 use thiserror::Error;
 
@@ -69,45 +76,112 @@ pub mod keys {
 }
 
 /// 嵌入翻译资源无法构造成有效目录时的错误。
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum I18nError {
     #[error("duplicate embedded locale: {locale}")]
     DuplicateLocale { locale: String },
     #[error("embedded fallback locale '{locale}' is missing")]
     MissingFallback { locale: &'static str },
-    #[error("failed to parse embedded locale '{locale}'")]
-    InvalidLocale {
-        locale: String,
-        #[source]
-        source: serde_json::Error,
-    },
 }
 
-/// 已解析的不可变翻译目录；可由多个窗口和 view 共享。
+type Table = BTreeMap<String, String>;
+
+/// 一个语言的静态 JSON 源；表与自称都在首次使用时解析。
+struct LocaleSource {
+    source: &'static str,
+    table: OnceLock<Table>,
+    native_name: OnceLock<Option<Box<str>>>,
+}
+
+impl LocaleSource {
+    fn new(source: &'static str) -> Self {
+        Self {
+            source,
+            table: OnceLock::new(),
+            native_name: OnceLock::new(),
+        }
+    }
+
+    /// 首次访问时解析；资源损坏时报告一次并按空表处理（逐键回退英文 / 键名）。
+    fn table(&self, locale: &str) -> &Table {
+        self.table.get_or_init(|| match parse_table(self.source) {
+            Ok(table) => table,
+            Err(error) => invalid_table(locale, &error),
+        })
+    }
+
+    /// 语言选择器会列出全部语言的自称：未解析的语言只临时解析取名，不常驻整张表。
+    fn native_name(&self, locale: &str) -> Option<&str> {
+        self.native_name
+            .get_or_init(|| {
+                if let Some(table) = self.table.get() {
+                    return native_name_in(table);
+                }
+                match parse_table(self.source) {
+                    Ok(table) => native_name_in(&table),
+                    Err(error) => {
+                        native_name_in(self.table.get_or_init(|| invalid_table(locale, &error)))
+                    }
+                }
+            })
+            .as_deref()
+    }
+}
+
+impl fmt::Debug for LocaleSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocaleSource")
+            .field("parsed", &self.table.get().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+fn parse_table(source: &str) -> Result<Table, serde_json::Error> {
+    serde_json::from_str(source)
+}
+
+/// 嵌入资源损坏（发布构建不应出现）：crate 无日志依赖，经 stderr 诊断后返回空表。
+fn invalid_table(locale: &str, error: &serde_json::Error) -> Table {
+    eprintln!(
+        "fluxdown_ui_i18n: failed to parse embedded locale '{locale}', falling back per key: {error:#}"
+    );
+    Table::new()
+}
+
+fn native_name_in(table: &Table) -> Option<Box<str>> {
+    table
+        .get("languageNativeName")
+        .filter(|value| !value.is_empty())
+        .map(|value| Box::from(value.as_str()))
+}
+
+static EMBEDDED_CATALOG: LazyLock<Result<Arc<I18nCatalog>, I18nError>> =
+    LazyLock::new(|| I18nCatalog::from_sources(embedded::EMBEDDED_LOCALES).map(Arc::new));
+
+/// 不可变翻译目录；可由多个窗口、view 与线程共享，语言表按需懒解析。
 #[derive(Debug)]
 pub struct I18nCatalog {
-    tables: BTreeMap<String, BTreeMap<String, String>>,
+    tables: BTreeMap<String, LocaleSource>,
     available: Vec<String>,
 }
 
 impl I18nCatalog {
-    /// 从嵌入的公共翻译资源构造目录。
-    pub fn load_embedded() -> Result<Self, I18nError> {
-        Self::from_sources(embedded::EMBEDDED_LOCALES)
+    /// 返回进程内共享的嵌入翻译目录：首次调用登记全部嵌入语言（不解析），之后每次返回同一个
+    /// `Arc`。错误只来自语言登记（重复 locale、缺英文回退），同样被缓存。
+    pub fn load_embedded() -> Result<Arc<Self>, I18nError> {
+        EMBEDDED_CATALOG.clone()
     }
 
-    fn from_sources(sources: &[(&str, &str)]) -> Result<Self, I18nError> {
+    /// 登记语言源并校验重复 locale / 英文回退；不解析任何语言表。
+    fn from_sources(sources: &[(&'static str, &'static str)]) -> Result<Self, I18nError> {
         let mut tables = BTreeMap::new();
         for (locale, source) in sources {
             let locale = normalize_locale(locale);
-            let table =
-                serde_json::from_str::<BTreeMap<String, String>>(source).map_err(|source| {
-                    I18nError::InvalidLocale {
-                        locale: locale.clone(),
-                        source,
-                    }
-                })?;
-            if tables.insert(locale.clone(), table).is_some() {
+            if tables
+                .insert(locale.clone(), LocaleSource::new(source))
+                .is_some()
+            {
                 return Err(I18nError::DuplicateLocale { locale });
             }
         }
@@ -128,12 +202,12 @@ impl I18nCatalog {
         Ok(Self { tables, available })
     }
 
-    /// 可用 locale 顺序：`en`、`zh`，随后按代码排序。
+    /// 可用 locale 顺序：`en`、`zh`，随后按代码排序。不解析语言表。
     pub fn available_locales(&self) -> &[String] {
         &self.available
     }
 
-    /// 把系统或用户 locale 解析为实际可用代码。
+    /// 把系统或用户 locale 解析为实际可用代码。只比对 locale 代码，不解析语言表。
     pub fn resolve_locale<'catalog>(&'catalog self, locale: &str) -> &'catalog str {
         let normalized = normalize_locale(locale);
         if let Some((code, _)) = self.tables.get_key_value(&normalized) {
@@ -167,13 +241,12 @@ impl I18nCatalog {
         FALLBACK_LOCALE
     }
 
-    /// 返回语言文件声明的自称；缺失时返回 locale 代码。
+    /// 返回语言文件声明的自称；缺失时返回 locale 代码。未解析的语言只临时解析取名。
     pub fn native_name<'catalog>(&'catalog self, locale: &'catalog str) -> &'catalog str {
         self.tables
             .get(locale)
-            .and_then(|table| table.get("languageNativeName"))
-            .filter(|value| !value.is_empty())
-            .map_or(locale, String::as_str)
+            .and_then(|source| source.native_name(locale))
+            .unwrap_or(locale)
     }
 
     /// 创建持有本目录的翻译器，避免每次渲染重复解析 locale。
@@ -184,18 +257,23 @@ impl I18nCatalog {
         }
     }
 
+    /// 已登记 locale 的语言表；首次访问时解析。
+    fn table(&self, locale: &str) -> Option<&Table> {
+        self.tables
+            .get_key_value(locale)
+            .map(|(code, source)| source.table(code))
+    }
+
     fn lookup_resolved<'catalog>(
         &'catalog self,
         locale: &str,
         key: &'catalog str,
     ) -> &'catalog str {
-        self.tables
-            .get(locale)
+        self.table(locale)
             .and_then(|table| table.get(key))
             .filter(|value| !value.is_empty())
             .or_else(|| {
-                self.tables
-                    .get(FALLBACK_LOCALE)
+                self.table(FALLBACK_LOCALE)
                     .and_then(|table| table.get(key))
                     .filter(|value| !value.is_empty())
             })
@@ -307,7 +385,7 @@ fn locale_rank(locale: &str) -> u8 {
 mod tests {
     use std::{collections::BTreeSet, sync::Arc};
 
-    use super::{I18nCatalog, I18nError, resolve_system_locale};
+    use super::{I18nCatalog, I18nError, embedded, parse_table, resolve_system_locale};
 
     fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -415,15 +493,61 @@ mod tests {
     fn baseline_locales_have_matching_keys() -> Result<(), I18nError> {
         let catalog = I18nCatalog::load_embedded()?;
         let english = catalog
-            .tables
-            .get("en")
+            .table("en")
             .map(|table| table.keys().map(String::as_str).collect::<BTreeSet<_>>());
         let chinese = catalog
-            .tables
-            .get("zh")
+            .table("zh")
             .map(|table| table.keys().map(String::as_str).collect::<BTreeSet<_>>());
 
         assert_eq!(english, chinese);
+        Ok(())
+    }
+
+    /// 语言表懒解析，损坏的嵌入资源要到运行时才暴露；这里逐个解析，测试期即发现。
+    #[test]
+    fn every_embedded_locale_parses() {
+        let failures = embedded::EMBEDDED_LOCALES
+            .iter()
+            .filter_map(|(locale, source)| {
+                parse_table(source)
+                    .err()
+                    .map(|error| format!("{locale}: {error:#}"))
+            })
+            .collect::<Vec<_>>();
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn only_queried_locales_are_parsed() -> Result<(), I18nError> {
+        let catalog = Arc::new(I18nCatalog::from_sources(&[
+            ("en", r#"{"languageNativeName":"English","hello":"Hello"}"#),
+            ("zh", r#"{"languageNativeName":"中文","hello":"你好"}"#),
+            (
+                "ja",
+                r#"{"languageNativeName":"日本語","hello":"こんにちは"}"#,
+            ),
+        ])?);
+        let parsed = |locale: &str| {
+            catalog
+                .tables
+                .get(locale)
+                .is_some_and(|source| source.table.get().is_some())
+        };
+
+        assert_eq!(catalog.available_locales(), ["en", "zh", "ja"]);
+        assert_eq!(catalog.resolve_locale("ja-JP"), "ja");
+        assert_eq!(catalog.native_name("ja"), "日本語");
+        let translator = catalog.translator("zh-CN");
+        assert!(!parsed("en") && !parsed("zh") && !parsed("ja"));
+
+        assert_eq!(translator.text("hello"), "你好");
+        assert!(parsed("zh"));
+        assert!(!parsed("ja"), "non-active locale must stay unparsed");
+        assert!(!parsed("en"), "fallback is parsed only on a missing key");
+
+        assert_eq!(translator.text("missing"), "missing");
+        assert!(parsed("en"));
+        assert!(!parsed("ja"));
         Ok(())
     }
 
@@ -456,7 +580,7 @@ mod tests {
     #[test]
     fn translated_locales_keep_baseline_placeholders() -> Result<(), I18nError> {
         let catalog = I18nCatalog::load_embedded()?;
-        let (english, chinese) = (catalog.tables.get("en"), catalog.tables.get("zh"));
+        let (english, chinese) = (catalog.table("en"), catalog.table("zh"));
         assert!(
             english.is_some() && chinese.is_some(),
             "baseline locales must be bundled"
@@ -465,7 +589,8 @@ mod tests {
             return Ok(());
         };
         let mut violations = Vec::new();
-        for (locale, table) in &catalog.tables {
+        for (locale, source) in &catalog.tables {
+            let table = source.table(locale);
             if locale == "en" || locale == "zh" {
                 continue;
             }

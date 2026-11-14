@@ -196,7 +196,7 @@ fn unopened_with_port(
 ) -> (TestApp, Arc<MockPort>, Entity<PluginViewHost>) {
     let mut app = TestApp::new();
     let host = app.update(|cx| {
-        let catalog = Arc::new(I18nCatalog::load_embedded().expect("embedded translations"));
+        let catalog = I18nCatalog::load_embedded().expect("embedded translations");
         let translator = cx.new(|_| catalog.translator("en"));
         install(cx, port.clone(), translator.clone());
         let port: Arc<dyn PluginUiPort> = port.clone();

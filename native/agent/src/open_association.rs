@@ -31,7 +31,7 @@ impl OpenAssociationGuard {
         Self {
             events,
             notifier,
-            text: NoticeText::default(),
+            text: NoticeText,
         }
     }
 

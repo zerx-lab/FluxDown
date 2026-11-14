@@ -1248,7 +1248,7 @@ mod tests {
     #[test]
     fn post_only_errors_are_localized_and_others_pass_through()
     -> Result<(), fluxdown_ui_i18n::I18nError> {
-        let catalog = std::sync::Arc::new(fluxdown_ui_i18n::I18nCatalog::load_embedded()?);
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let strings = DownloadStrings::from_translator(&translator);
         assert_eq!(
@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn preparing_status_is_labelled_consistently_across_surfaces()
     -> Result<(), fluxdown_ui_i18n::I18nError> {
-        let catalog = std::sync::Arc::new(fluxdown_ui_i18n::I18nCatalog::load_embedded()?);
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let strings = DownloadStrings::from_translator(&translator);
         let task = |status: i32, queue_key: Option<i64>| {

@@ -1426,7 +1426,7 @@ mod tests {
             let ids: Vec<String> = completed.iter().map(|id| (*id).to_owned()).collect();
             let record = Rc::clone(&seen);
             let view = app.update(|cx| {
-                let catalog = Arc::new(I18nCatalog::load_embedded().expect("catalog"));
+                let catalog = I18nCatalog::load_embedded().expect("catalog");
                 let translator = cx.new(|_| catalog.translator("en"));
                 let view = cx
                     .new(|cx| ProgressWindowView::new(translator, "a".to_owned(), port, true, cx));

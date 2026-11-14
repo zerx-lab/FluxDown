@@ -4791,7 +4791,7 @@ mod tests {
         statuses: &[i32],
         missing: &[usize],
     ) -> Result<DownloadTableDelegate, I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let strings = DownloadStrings::from_translator(&catalog.translator("en"));
         let store = Rc::new(TaskStore::default());
         let rows = statuses
