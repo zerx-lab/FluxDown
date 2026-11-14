@@ -502,6 +502,7 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
             default_choice: SelectionOutcome::Bt {
                 indices: Vec::new(),
                 save_dir: None,
+                custom_name: None,
             },
             deadline_unix_ms: effective_timeout
                 .map_or(fluxdown_protocol::SELECTION_NO_DEADLINE, deadline_unix_ms),
@@ -523,19 +524,23 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
                     None => Some(receiver.await),
                 };
                 match answer {
-                    Some(Ok(SelectionOutcome::Bt { indices, save_dir })) => {
-                        fluxdown_engine::selection::SelectionOutcome::UserChose(
-                            fluxdown_engine::selection::BtFileChoice {
-                                indices,
-                                save_dir: nonempty_save_dir(save_dir),
-                            },
-                        )
-                    }
+                    Some(Ok(SelectionOutcome::Bt {
+                        indices,
+                        save_dir,
+                        custom_name,
+                    })) => fluxdown_engine::selection::SelectionOutcome::UserChose(
+                        fluxdown_engine::selection::BtFileChoice {
+                            indices,
+                            save_dir: nonempty_save_dir(save_dir),
+                            custom_name,
+                        },
+                    ),
                     Some(Ok(SelectionOutcome::Cancelled)) => {
                         fluxdown_engine::selection::SelectionOutcome::UserChose(
                             fluxdown_engine::selection::BtFileChoice {
                                 indices: vec![-1],
                                 save_dir: None,
+                                custom_name: None,
                             },
                         )
                     }
@@ -614,6 +619,7 @@ impl fluxdown_engine::selection::HostSelection for DaemonSelection {
             SelectionOutcome::Bt {
                 indices: selected_indices,
                 save_dir: None,
+                custom_name: None,
             },
         ) {
             Ok(()) => {}
@@ -1303,7 +1309,7 @@ mod tests {
         ));
         assert!(matches!(
             request.default_choice,
-            SelectionOutcome::Bt { ref indices, save_dir: None } if indices.is_empty()
+            SelectionOutcome::Bt { ref indices, save_dir: None, .. } if indices.is_empty()
         ));
         manager
             .resolve(SelectionResolutionDto {
@@ -1311,6 +1317,7 @@ mod tests {
                 outcome: SelectionOutcome::Bt {
                     indices: vec![0, 2],
                     save_dir: Some("  /movies  ".to_owned()),
+                    custom_name: Some("我的剧集".to_owned()),
                 },
             })
             .expect("resolve moved dir");
@@ -1319,6 +1326,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![0, 2],
                 save_dir: Some("/movies".to_owned()),
+                custom_name: Some("我的剧集".to_owned()),
             })
         );
 
@@ -1350,6 +1358,7 @@ mod tests {
                 outcome: SelectionOutcome::Bt {
                     indices: vec![1],
                     save_dir: Some("   ".to_owned()),
+                    custom_name: None,
                 },
             })
             .expect("resolve blank dir");
@@ -1358,6 +1367,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![1],
                 save_dir: None,
+                custom_name: None,
             })
         );
 
@@ -1394,6 +1404,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![-1],
                 save_dir: None,
+                custom_name: None,
             })
         );
 
@@ -1419,6 +1430,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![3],
                 save_dir: None,
+                custom_name: None,
             })
         );
 
@@ -1496,6 +1508,7 @@ mod tests {
                 outcome: SelectionOutcome::Bt {
                     indices: vec![0],
                     save_dir: None,
+                    custom_name: None,
                 },
             })
             .expect("resolve");
@@ -1504,6 +1517,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![0],
                 save_dir: None,
+                custom_name: None,
             })
         );
 
@@ -1576,6 +1590,7 @@ mod tests {
                 outcome: SelectionOutcome::Bt {
                     indices: vec![1],
                     save_dir: None,
+                    custom_name: None,
                 },
             })
             .expect("answer after reconnect");
@@ -1584,6 +1599,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![1],
                 save_dir: None,
+                custom_name: None,
             })
         );
     }
@@ -1615,6 +1631,7 @@ mod tests {
             Engine::UserChose(BtFileChoice {
                 indices: vec![-1],
                 save_dir: None,
+                custom_name: None,
             })
         );
         assert_eq!(variant.await.expect("join"), Engine::UserChose(0));

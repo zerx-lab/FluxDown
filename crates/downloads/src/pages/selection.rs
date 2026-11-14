@@ -51,6 +51,8 @@ pub struct SelectionView {
     state: SelectionState,
     /// BT 保存目录输入；其它选择种类没有。
     save_dir_input: Option<Entity<InputState>>,
+    /// BT 名称输入，预填任务当前名称；其它选择种类没有。
+    name_input: Option<Entity<InputState>>,
     /// 系统目录选择器打开中，避免重入。
     picking_save_dir: bool,
     submitting: bool,
@@ -175,6 +177,10 @@ impl SelectionView {
             }
             _ => None,
         };
+        let name_input = matches!(state, SelectionState::Bt { .. }).then(|| {
+            let initial = task_name.clone();
+            cx.new(|cx| InputState::new(window, cx).default_value(initial))
+        });
         cx.observe_in(&translator, window, |this, translator, window, cx| {
             this.strings = SelectionStrings::from_translator(translator.read(cx));
             if let Some(input) = &this.save_dir_input {
@@ -205,6 +211,7 @@ impl SelectionView {
             port,
             state,
             save_dir_input,
+            name_input,
             picking_save_dir: false,
             submitting: false,
         }
@@ -248,6 +255,7 @@ impl SelectionView {
             } => SelectionOutcome::Bt {
                 indices: selected.iter().copied().collect(),
                 save_dir: bt_save_dir_outcome(save_dir, &self.save_dir_input_value(cx)),
+                custom_name: bt_name_outcome(&self.task_name, &self.name_input_value(cx)),
             },
             SelectionState::Variant { selected, .. } => {
                 SelectionOutcome::Variant { index: *selected }
@@ -263,21 +271,25 @@ impl SelectionView {
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.resolve(SelectionOutcome::Cancelled, window, cx);
+        let command = cancel_command(&self.state, &self.request);
+        self.submit(command, window, cx);
     }
 
     fn resolve(&mut self, outcome: SelectionOutcome, window: &mut Window, cx: &mut Context<Self>) {
+        let command = DownloadsCommand::ResolveSelection(SelectionResolutionDto {
+            request_id: self.request.request_id.clone(),
+            outcome,
+        });
+        self.submit(command, window, cx);
+    }
+
+    fn submit(&mut self, command: DownloadsCommand, window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting {
             return;
         }
         self.submitting = true;
         cx.notify();
-        let future =
-            self.port
-                .execute(DownloadsCommand::ResolveSelection(SelectionResolutionDto {
-                    request_id: self.request.request_id.clone(),
-                    outcome,
-                }));
+        let future = self.port.execute(command);
         cx.spawn_in(window, async move |this, cx| {
             let result = future.await;
 
@@ -296,6 +308,13 @@ impl SelectionView {
             };
         })
         .detach();
+    }
+
+    fn name_input_value(&self, cx: &App) -> SharedString {
+        self.name_input
+            .as_ref()
+            .map(|input| input.read(cx).value())
+            .unwrap_or_default()
     }
 
     fn save_dir_input_value(&self, cx: &App) -> SharedString {
@@ -349,6 +368,20 @@ impl SelectionView {
             };
         })
         .detach();
+    }
+
+    /// 名称：单文件种子是文件名，多文件种子是外层目录名。
+    fn render_name(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let input = self.name_input.as_ref()?;
+        Some(
+            form_field(
+                self.strings.name.clone(),
+                Input::new(input).control(cx).w_full(),
+                None,
+                cx,
+            )
+            .flex_none(),
+        )
     }
 
     /// 保存目录在全选工具栏之上：标签 + 输入框 + 浏览。长路径留在输入框里滚动，不撑开窗口。
@@ -691,6 +724,7 @@ impl SelectionView {
             .gap(tokens.spacing.sm)
             .px(tokens.spacing.md)
             .pb(tokens.spacing.md)
+            .children(self.render_name(cx))
             .children(self.render_save_dir(cx))
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(list))
@@ -807,6 +841,7 @@ struct SelectionStrings {
     select_all: SharedString,
     deselect_all: SharedString,
     selected_count: SharedString,
+    name: SharedString,
     save_dir: SharedString,
     save_dir_placeholder: SharedString,
     browse: SharedString,
@@ -837,6 +872,7 @@ impl SelectionStrings {
             select_all: shared(translator.text("btFileSelectAll")),
             deselect_all: shared(translator.text("deselectAll")),
             selected_count: shared(translator.text("selectedCount")),
+            name: shared(translator.text("btFileColumnName")),
             save_dir: shared(translator.text("saveDir")),
             save_dir_placeholder: shared(translator.text("selectSaveDir")),
             browse: shared(translator.text("browse")),
@@ -859,6 +895,29 @@ fn now_unix_ms() -> i64 {
         .map_or(0, |duration| {
             i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
         })
+}
+
+/// 「取消」按钮发出的命令。BT 的取消即放弃这个任务：连同已暂存的数据一起删除，不留暂停项；
+/// 删除会撤回本次选择请求，窗口随之关闭。其它选择种类照旧把取消答复给 daemon。
+fn cancel_command(state: &SelectionState, request: &SelectionRequestDto) -> DownloadsCommand {
+    match state {
+        SelectionState::Bt { .. } => DownloadsCommand::Delete {
+            task_id: request.task_id.clone(),
+            delete_files: true,
+        },
+        _ => DownloadsCommand::ResolveSelection(SelectionResolutionDto {
+            request_id: request.request_id.clone(),
+            outcome: SelectionOutcome::Cancelled,
+        }),
+    }
+}
+
+/// 把名称输入收成 [`SelectionOutcome::Bt`] 的 `custom_name`：去首尾空白后非空且与预填名不同
+/// 才下发；未改或清空都是 `None`（沿用种子内名称）。清洗由引擎按文件名规则做。
+#[must_use]
+fn bt_name_outcome(initial: &str, input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    (!trimmed.is_empty() && trimmed != initial.trim()).then(|| trimmed.to_owned())
 }
 
 /// 保存目录输入是否允许确认。
@@ -887,7 +946,73 @@ fn bt_save_dir_outcome(initial: &str, input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bt_save_dir_confirmable, bt_save_dir_outcome};
+    use std::collections::HashSet;
+
+    use fluxdown_protocol::{
+        SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
+    };
+
+    use super::{
+        SelectionState, bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome,
+        cancel_command,
+    };
+    use crate::controller::DownloadsCommand;
+
+    fn request(kind: SelectionKind) -> SelectionRequestDto {
+        SelectionRequestDto {
+            request_id: "req-1".to_owned(),
+            task_id: "task-1".to_owned(),
+            kind,
+            default_choice: SelectionOutcome::Cancelled,
+            deadline_unix_ms: SELECTION_NO_DEADLINE,
+        }
+    }
+
+    #[test]
+    fn bt_cancel_deletes_the_task_with_its_data() {
+        let state = SelectionState::Bt {
+            files: Vec::new(),
+            selected: HashSet::new(),
+            save_dir: String::new(),
+        };
+        let request = request(SelectionKind::Bt {
+            files: Vec::new(),
+            save_dir: String::new(),
+        });
+        assert!(matches!(
+            cancel_command(&state, &request),
+            DownloadsCommand::Delete { task_id, delete_files: true } if task_id == "task-1"
+        ));
+    }
+
+    #[test]
+    fn other_cancels_still_answer_the_selection() {
+        let state = SelectionState::Variant {
+            options: Vec::new(),
+            selected: 0,
+        };
+        let request = request(SelectionKind::Variant {
+            options: Vec::new(),
+        });
+        assert!(matches!(
+            cancel_command(&state, &request),
+            DownloadsCommand::ResolveSelection(resolution)
+                if resolution.request_id == "req-1"
+                    && resolution.outcome == SelectionOutcome::Cancelled
+        ));
+    }
+
+    #[test]
+    fn name_is_sent_only_when_changed() {
+        assert_eq!(bt_name_outcome("Pack", "Pack"), None);
+        assert_eq!(bt_name_outcome("Pack", "  Pack "), None);
+        assert_eq!(bt_name_outcome("Pack", "   "), None);
+        assert_eq!(
+            bt_name_outcome("Pack", " 我的剧集 "),
+            Some("我的剧集".to_owned())
+        );
+        assert_eq!(bt_name_outcome("", "Pack"), Some("Pack".to_owned()));
+    }
 
     #[test]
     fn unchanged_dir_keeps_current() {
