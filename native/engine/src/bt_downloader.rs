@@ -7650,6 +7650,7 @@ mod tests {
             true
         ));
         // 非 Windows 上 `:` 是合法文件名字符，不得误杀。
+        #[cfg(not(windows))]
         assert!(super::torrent_relative_path_is_safe(
             Path::new("a:b"),
             false

@@ -503,6 +503,10 @@ mod tests {
     /// 原始缺陷的端到端回归：直连被拒时不再等 3 轮退避重试（黑洞时约 63s）
     /// 后整任务失败，而是立即经系统代理拿到响应，并就地接管任务出口。
     #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows 的回环拒绝约 2 秒后才到，晚于错峰；错峰接管由 silent_direct_yields_to_proxy_after_stagger_and_stays_alternate 覆盖"
+    )]
     async fn refused_direct_is_taken_over_by_proxy_without_waiting() -> TestResult {
         let (proxy_port, proxy_hits) = fake_server(Some(OK_RESPONSE)).await?;
         let url = format!("http://127.0.0.1:{}/f.bin", closed_port()?);

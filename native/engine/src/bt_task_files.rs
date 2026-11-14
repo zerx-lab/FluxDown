@@ -754,9 +754,12 @@ mod tests {
                 "{name:?}"
             );
         }
-        for name in ["CON", "trailing.", "a:b"] {
+        for name in ["CON", "trailing."] {
             assert!(normalize_rename(&files, 0, name, false).is_ok(), "{name:?}");
         }
+        // Windows 的 Path 解析会把冒号视作盘符前缀，与 windows_rules 无关。
+        #[cfg(not(windows))]
+        assert!(normalize_rename(&files, 0, "a:b", false).is_ok());
     }
 
     #[test]
