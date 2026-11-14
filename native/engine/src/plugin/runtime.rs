@@ -748,6 +748,18 @@ pub trait HostEvents: Send + Sync {
             "plugin images are unsupported".to_string(),
         ))
     }
+
+    /// Release a session-owned image after removing every use of its reference.
+    async fn image_release(
+        &self,
+        _identity: &str,
+        _session: &str,
+        _src: &str,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::Runtime(
+            "plugin images are unsupported".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,8 @@ export interface ImageLoadOptions {
 /** A per-session image resource reference (`flux-image:<uuid>`). */
 export interface FluxImages {
   load(options: ImageLoadOptions): Promise<string>;
+  /** Invalidate a reference after removing ALL uses, including prefetched state; identical images share it. */
+  release(src: string): Promise<void>;
 }
 
 export interface MainImageLoadOptions extends ImageLoadOptions {
@@ -35,6 +37,8 @@ export interface MainImageLoadOptions extends ImageLoadOptions {
 
 export interface MainFluxImages {
   load(options: MainImageLoadOptions): Promise<string>;
+  /** Invalidate a reference owned by this session after removing every use. */
+  release(options: { session: string; src: string }): Promise<void>;
 }
 
 export interface FluxFetchOptions {

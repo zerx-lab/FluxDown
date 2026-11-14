@@ -45,6 +45,16 @@ const CREATE_LIMIT: usize = 20;
 
 // Bound downloaded source buffers waiting for the decoder, across all plugin hosts.
 static IMAGE_LOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+const IMAGE_QUEUE_TIMEOUT: Duration = Duration::from_secs(3);
+
+async fn acquire_image_load(
+    semaphore: &tokio::sync::Semaphore,
+) -> Result<tokio::sync::SemaphorePermit<'_>, PluginError> {
+    tokio::time::timeout(IMAGE_QUEUE_TIMEOUT, semaphore.acquire())
+        .await
+        .map_err(|_| PluginError::Overloaded)?
+        .map_err(|_| PluginError::Overloaded)
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -261,6 +271,23 @@ impl HostEvents for HostEventsImpl {
             .upgrade()
             .ok_or_else(|| PluginError::Runtime("plugin manager stopped".to_string()))?;
         manager.host_image_load(identity, session, options).await
+    }
+
+    async fn image_release(
+        &self,
+        identity: &str,
+        session: &str,
+        src: &str,
+    ) -> Result<(), PluginError> {
+        let manager = self
+            .manager
+            .upgrade()
+            .ok_or_else(|| PluginError::Runtime("plugin manager stopped".to_string()))?;
+        let sessions = lock(&manager.host.sessions);
+        if sessions.get(session).map(|entry| entry.identity.as_str()) != Some(identity) {
+            return Err(PluginError::Runtime("unknown view session".to_string()));
+        }
+        manager.host.images.release(identity, session, src)
     }
 }
 
@@ -1178,9 +1205,11 @@ impl PluginManager {
         if let Some(src) = self.host.images.cached(identity, session, &options)? {
             return Ok(src);
         }
-        let _permit = IMAGE_LOADS
-            .try_acquire()
-            .map_err(|_| PluginError::Overloaded)?;
+        let _permit = acquire_image_load(&IMAGE_LOADS).await?;
+        self.check_view_session(identity, session)?;
+        if let Some(src) = self.host.images.cached(identity, session, &options)? {
+            return Ok(src);
+        }
         let request = super::super::runtime::BridgeHttpRequest {
             url: options.url.clone(),
             headers: options.headers.clone(),
@@ -1399,6 +1428,37 @@ impl PluginManager {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn image_load_waits_for_capacity_instead_of_rejecting() {
+        let semaphore = tokio::sync::Semaphore::new(1);
+        let held = semaphore.acquire().await.unwrap();
+        let waiting = acquire_image_load(&semaphore);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        drop(held);
+        let permit = waiting.await.unwrap();
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(permit);
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn image_load_queue_timeout_reports_overload_without_leaking_capacity() {
+        let semaphore = tokio::sync::Semaphore::new(1);
+        let held = semaphore.acquire().await.unwrap();
+        assert!(matches!(
+            acquire_image_load(&semaphore).await,
+            Err(PluginError::Overloaded)
+        ));
+        drop(held);
+        assert_eq!(semaphore.available_permits(), 1);
+        assert!(acquire_image_load(&semaphore).await.is_ok());
+    }
 
     #[test]
     fn create_limiter_allows_twenty_per_window() {

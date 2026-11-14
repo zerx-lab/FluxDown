@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     rc::Rc,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use fluxdown_protocol::{PluginViewFrameDto, VIEW_CLOSE_REASON_REQUESTED, ViewEffect, ViewOp};
@@ -20,6 +21,16 @@ fn tree(text: &str) -> Value {
         ]
     })
 }
+const PNG_1X1: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0bIDATx\x9cc\x60\x00\x02\x00\x00\x05\x00\x01\xa5\xf6\x45\x40\x00\x00\x00\x00IEND\xaeB\x60\x82";
+const IMAGE_ID: &str = "12345678-1234-1234-1234-123456789abc";
+
+fn image_tree() -> Value {
+    json!({
+        "id": "root", "k": "image",
+        "p": {"src": format!("flux-image:{IMAGE_ID}"), "alt": "preview"},
+        "c": []
+    })
+}
 
 /// 记录全部调用；`view.open` 返回会话 `s1`，`view.snapshot` 返回 seq 4 的树。
 #[derive(Default)]
@@ -28,6 +39,10 @@ struct MockPort {
     session_exists: Mutex<bool>,
     /// `view.open` 的应答晚一拍（先让出一次执行权），用来模拟事件先于应答到达。
     slow_open: Mutex<bool>,
+    image_calls: Mutex<usize>,
+    image_failures_before_success: Mutex<usize>,
+    image_tree: Mutex<bool>,
+    image_ids: Mutex<Vec<String>>,
 }
 
 /// 第一次 poll 让出（并立即请求重新调度），第二次就绪。
@@ -60,6 +75,19 @@ impl MockPort {
     fn count(&self, method: &str) -> usize {
         self.methods().iter().filter(|m| *m == method).count()
     }
+
+    fn image_count(&self) -> usize {
+        self.image_calls
+            .lock()
+            .map(|calls| *calls)
+            .unwrap_or_default()
+    }
+    fn image_ids(&self) -> Vec<String> {
+        self.image_ids
+            .lock()
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl PluginUiPort for MockPort {
@@ -71,7 +99,15 @@ impl PluginUiPort for MockPort {
         let slow = method == "daemon.plugin.view.open"
             && self.slow_open.lock().map(|slow| *slow).unwrap_or(false);
         let reply = match method.as_str() {
-            "daemon.plugin.view.open" => Ok(json!({"session": "s1", "seq": 0, "tree": tree("0")})),
+            "daemon.plugin.view.open" => Ok(json!({
+                "session": "s1",
+                "seq": 0,
+                "tree": if self.image_tree.lock().map(|has_image| *has_image).unwrap_or(false) {
+                    image_tree()
+                } else {
+                    tree("0")
+                }
+            })),
             "daemon.plugin.view.snapshot" if exists => Ok(json!({"seq": 4, "tree": tree("4")})),
             "daemon.plugin.view.snapshot" => Err(fluxdown_protocol::RpcErrorData::new(
                 fluxdown_protocol::ApplicationErrorCode::InvalidArgument,
@@ -86,8 +122,30 @@ impl PluginUiPort for MockPort {
             reply
         })
     }
+    fn image(&self, _session: String, id: String) -> PortFuture<Vec<u8>> {
+        if let Ok(mut ids) = self.image_ids.lock() {
+            ids.push(id);
+        }
+        let mut failures = self
+            .image_failures_before_success
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(mut calls) = self.image_calls.lock() {
+            *calls += 1;
+        }
+        if *failures > 0 {
+            *failures -= 1;
+            Box::pin(async {
+                Err(fluxdown_protocol::RpcErrorData::new(
+                    fluxdown_protocol::ApplicationErrorCode::Unavailable,
+                    true,
+                ))
+            })
+        } else {
+            Box::pin(async { Ok(PNG_1X1.to_vec()) })
+        }
+    }
 }
-
 fn frame(seq: u64, text: &str) -> PluginViewFrameDto {
     let mut set = serde_json::Map::new();
     set.insert("text".to_owned(), json!(text));
@@ -129,6 +187,13 @@ fn unopened(container: ViewContainer) -> (TestApp, Arc<MockPort>, Entity<PluginV
         session_exists: Mutex::new(true),
         ..MockPort::default()
     });
+    unopened_with_port(container, port)
+}
+
+fn unopened_with_port(
+    container: ViewContainer,
+    port: Arc<MockPort>,
+) -> (TestApp, Arc<MockPort>, Entity<PluginViewHost>) {
     let mut app = TestApp::new();
     let host = app.update(|cx| {
         let catalog = Arc::new(I18nCatalog::load_embedded().expect("embedded translations"));
@@ -148,6 +213,88 @@ fn unopened(container: ViewContainer) -> (TestApp, Arc<MockPort>, Entity<PluginV
         })
     });
     (app, port, host)
+}
+
+#[test]
+fn transient_image_failure_retries_the_same_reference_until_it_loads() {
+    let port = Arc::new(MockPort {
+        session_exists: Mutex::new(true),
+        image_failures_before_success: Mutex::new(1),
+        image_tree: Mutex::new(true),
+        ..MockPort::default()
+    });
+    let (mut app, port, host) = unopened_with_port(ViewContainer::default(), port);
+    app.update(|cx| host.update(cx, |host, cx| host.activate(cx)));
+    app.run_until_parked();
+    assert_eq!(port.image_count(), 1);
+    app.update(|cx| assert!(!host.read(cx).has_loaded_image(IMAGE_ID)));
+
+    app.advance_clock(Duration::from_secs(2));
+    app.run_until_parked();
+    assert_eq!(port.image_count(), 2);
+    assert_eq!(
+        port.image_ids(),
+        vec![IMAGE_ID.to_owned(), IMAGE_ID.to_owned()]
+    );
+    app.update(|cx| assert!(host.read(cx).has_loaded_image(IMAGE_ID)));
+}
+
+#[test]
+fn removing_an_image_cancels_its_pending_retry() {
+    let port = Arc::new(MockPort {
+        session_exists: Mutex::new(true),
+        image_failures_before_success: Mutex::new(usize::MAX),
+        image_tree: Mutex::new(true),
+        ..MockPort::default()
+    });
+    let (mut app, port, host) = unopened_with_port(ViewContainer::default(), port);
+    app.update(|cx| host.update(cx, |host, cx| host.activate(cx)));
+    app.run_until_parked();
+    assert_eq!(port.image_count(), 1);
+
+    let mut set = serde_json::Map::new();
+    set.insert("src".to_owned(), json!("data:image/png;base64,AA=="));
+    app.update(|cx| {
+        dispatch_frame(
+            PluginViewFrameDto {
+                session: "s1".to_owned(),
+                seq: 1,
+                ops: vec![ViewOp::Props {
+                    id: "root".to_owned(),
+                    set,
+                    unset: Vec::new(),
+                }],
+                effects: Vec::new(),
+            },
+            cx,
+        )
+    });
+    app.advance_clock(Duration::from_secs(2));
+    app.run_until_parked();
+    assert_eq!(port.image_count(), 1);
+    app.update(|cx| assert!(!host.read(cx).has_loaded_image(IMAGE_ID)));
+}
+
+#[test]
+fn image_retries_stop_after_three_attempts() {
+    let port = Arc::new(MockPort {
+        session_exists: Mutex::new(true),
+        image_failures_before_success: Mutex::new(usize::MAX),
+        image_tree: Mutex::new(true),
+        ..MockPort::default()
+    });
+    let (mut app, port, host) = unopened_with_port(ViewContainer::default(), port);
+    app.update(|cx| host.update(cx, |host, cx| host.activate(cx)));
+    app.run_until_parked();
+    for delay in [2, 4, 8] {
+        app.advance_clock(Duration::from_secs(delay));
+        app.run_until_parked();
+    }
+    assert_eq!(port.image_count(), 4);
+    app.advance_clock(Duration::from_secs(30));
+    app.run_until_parked();
+    assert_eq!(port.image_count(), 4);
+    app.update(|cx| assert!(!host.read(cx).has_loaded_image(IMAGE_ID)));
 }
 
 #[test]

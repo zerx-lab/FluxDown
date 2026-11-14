@@ -311,6 +311,12 @@ The injected `flux` object is the same for all entries except where this table s
 
 `ctx.images.load(opts)` is available in a portable view callback and binds the request to that view's session. The resident main script can instead call `flux.images.load({ session: ctx.session, ...opts })`; pass the session ID from the view context. Both return a `Promise<string>` containing a lowercase `flux-image:<uuid>` resource reference. Use that reference as an image node's `src`, just like an existing PNG/JPEG/WebP data URI; the view protocol still carries only a small string, never image bytes. Existing data-URI images continue to work unchanged.
 
+The host deduplicates identical sanitized PNG content within a session, even with `cache: false` or after source-cache expiry. Authentication is still checked and the source is fetched again when caching is disabled. Different sessions never share references.
+
+For long-lived galleries, call `await ctx.images.release(src)` (or `await flux.images.release({ session: ctx.session, src })`) once the image is no longer used. Remove **every** use first, including prefetched state and duplicate nodes: identical content shares one reference, and release invalidates that reference for the whole session. Releasing an already removed reference is harmless; references from another session cannot be released. The host does not automatically evict images based on visibility or recent HTTP reads.
+
+`flux-image:` is an additive `image.src` string value, not a new RPC event or envelope. Older renderers cannot display it; keep using data URIs when targeting those clients.
+
 ```js
 flux.ui.view("profile", {
   async init(ctx) {
@@ -337,10 +343,10 @@ The host applies FluxDown's outbound proxy/TUN routing and SSRF protections (inc
 | `headers` | none | Optional string headers. |
 | `authRef` | none | Optional saved credential reference; requires `auth` permission. |
 | `maxWidth`, `maxHeight` | `512` each | Integers from 1 to 2048. The host preserves aspect ratio and does not upscale. |
-| `cache` | `true` | `false` skips memoization and disk (images are never written to disk); the HTTP response is `no-store` regardless of this option. Successful references live until their session closes. |
+| `cache` | `true` | `false` skips source/options memoization; images are never written to disk. HTTP responses remain `no-store`. Identical output still shares one reference, valid until explicit release or session close. |
 
-Input is accepted only when sniffed as PNG, JPEG or WebP; declared content type alone is not trusted. Input dimensions are capped at 8192 per side and 16 megapixels, decoding at 64 MiB, network body at 8 MiB, and fetch time at 10 seconds. The host emits a sanitized static PNG thumbnail of at most 4 MiB and serves it as `image/png`. Per-session quotas are 128 resources / 16 MiB; the global image-resource byte quota is 64 MiB. Quota exhaustion is an explicit error; visible references are never evicted. Cached source/options results live for five minutes, but their returned resource remains valid for the session lifetime. Closing the view session or unloading the plugin frees its image resources. These limits are host-enforced.
-At most four uncached image loads run at once across all plugins (additional loads fail as overloaded), with at most two decode/thumbnail workers. This also bounds source images waiting for decoding. The global resource-count cap is 4096.
+Input is accepted only when sniffed as PNG, JPEG or WebP; declared content type alone is not trusted. Input dimensions are capped at 8192 per side and 16 megapixels, decoding at 64 MiB, network body at 8 MiB, and fetch time at 10 seconds. The host emits a sanitized static PNG thumbnail of at most 4 MiB and serves it as `image/png`. Per-session quotas are 128 resources / 16 MiB; the global image-resource byte quota is 64 MiB. Quota exhaustion is an explicit error; references are never implicitly evicted. Cached source/options results live for five minutes, but their returned resource remains valid until explicit release or session close. Closing the view session or unloading the plugin frees its image resources. These limits are host-enforced.
+At most four uncached image loads run at once across all plugins; additional requests wait for up to three seconds for capacity before failing as overloaded. At most two decode/thumbnail workers run simultaneously. This also bounds source images waiting for decoding. The global resource-count cap is 4096.
 
 ## The `flux` object
 

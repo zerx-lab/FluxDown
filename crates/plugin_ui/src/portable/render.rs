@@ -638,6 +638,7 @@ fn image_node(
             .max_w_full()
             .child(
                 img(image)
+                    .max_w_full()
                     .when_some(num_prop(node, "width"), |this, w| this.w(px(w as f32)))
                     .when_some(num_prop(node, "height"), |this, h| this.h(px(h as f32))),
             )

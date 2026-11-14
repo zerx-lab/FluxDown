@@ -429,6 +429,29 @@ fn inject_host_bridge(
         .with_name("__flux_image_load")?;
         globals.set("__flux_image_load", f)?;
     }
+    {
+        let ev = events.clone();
+        let pid = identity.to_string();
+        let dl = interrupt_ns.clone();
+        let f = Function::new(
+            ctx.clone(),
+            Async(move |session: String, src: String| {
+                let ev = ev.clone();
+                let pid = pid.clone();
+                let dl = dl.clone();
+                async move {
+                    let result = credited(&dl, ev.image_release(&pid, &session, &src)).await;
+                    let payload = match result {
+                        Ok(()) => serde_json::json!({ "value": null }),
+                        Err(error) => serde_json::json!({ "__fluxError": plain_error(&error) }),
+                    };
+                    Ok::<String, rquickjs::Error>(payload.to_string())
+                }
+            }),
+        )?
+        .with_name("__flux_image_release")?;
+        globals.set("__flux_image_release", f)?;
+    }
     // __flux_view_refresh(session) -> ()
     {
         let ev = events.clone();
@@ -736,6 +759,16 @@ const HOST_PRELUDE: &str = r#"
         return r.value;
       });
     },
+    release(options) {
+      const { session, src } = options || {};
+      if (typeof session !== 'string' || !sessions.has(session) || typeof src !== 'string') {
+        return Promise.reject(new Error('images.release requires an active view session and resource reference'));
+      }
+      return __flux_image_release(session, src).then((raw) => {
+        const r = JSON.parse(raw);
+        if (r.__fluxError) throw new Error(r.__fluxError);
+      });
+    },
   });
   flux.commands = {
     register(id, fn) {
@@ -817,6 +850,7 @@ const HOST_PRELUDE: &str = r#"
     locale: locale || '',
     images: Object.freeze({
       load: (options) => flux.images.load(Object.assign({}, options, { session })),
+      release: (src) => flux.images.release({ session, src }),
     }),
     refresh() { __flux_view_refresh(session); },
     close() {

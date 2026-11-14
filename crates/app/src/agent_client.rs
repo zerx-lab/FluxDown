@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use fluxdown_protocol::method;
@@ -278,12 +278,16 @@ async fn fetch_plugin_image(
     if token.is_empty() || token.bytes().any(|byte| byte.is_ascii_control()) {
         return Err(unavailable_error());
     }
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|_| unavailable_error())?;
+    static CLIENT: LazyLock<Result<reqwest::Client, ()>> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(10))
+            .tls_built_in_root_certs(false)
+            .build()
+            .map_err(|_| ())
+    });
+    let client = CLIENT.as_ref().map_err(|_| unavailable_error())?;
     let response = client
         .get(image_url)
         .bearer_auth(token)

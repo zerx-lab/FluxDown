@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use sha2::Digest;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MAX_WIDTH: u32 = 2048;
@@ -95,7 +96,11 @@ impl ImageLoadOptions {
 struct ImageEntry {
     session: String,
     bytes: Arc<[u8]>,
+    digest: [u8; 32],
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ImageDigest([u8; 32]);
 
 struct CachedRef {
     id: String,
@@ -107,6 +112,7 @@ struct Registry {
     sessions: HashMap<String, String>,
     entries: HashMap<String, ImageEntry>,
     cache: HashMap<(String, String, [u8; 32]), CachedRef>,
+    content: HashMap<(String, ImageDigest), String>,
     total_bytes: usize,
 }
 
@@ -196,6 +202,42 @@ impl ImageResources {
         Ok(Some(format!("flux-image:{}", cached.id)))
     }
 
+    /// Remove a reference owned by this session; missing references are harmless.
+    pub fn release(
+        &self,
+        identity: &str,
+        session: &str,
+        src: &str,
+    ) -> Result<(), crate::plugin::runtime::PluginError> {
+        let Some(id) = src.strip_prefix("flux-image:") else {
+            return Err(image_error("图片资源引用格式非法"));
+        };
+        let parsed = uuid::Uuid::parse_str(id).map_err(|_| image_error("图片资源引用格式非法"))?;
+        if parsed.to_string() != id {
+            return Err(image_error("图片资源引用格式非法"));
+        }
+        let mut state = self.lock();
+        if state.sessions.get(session).map(String::as_str) != Some(identity) {
+            return Err(session_error());
+        }
+        if state
+            .entries
+            .get(id)
+            .is_some_and(|entry| entry.session == session)
+        {
+            if let Some(entry) = state.entries.remove(id) {
+                state.total_bytes = state.total_bytes.saturating_sub(entry.bytes.len());
+                state
+                    .content
+                    .remove(&(session.to_string(), ImageDigest(entry.digest)));
+            }
+            state.cache.retain(|(_, cached_session, _), cached| {
+                cached_session != session || cached.id != id
+            });
+        }
+        Ok(())
+    }
+
     /// Store sanitized image bytes and return a `flux-image:<uuid>` reference. Visible references are never evicted.
     pub fn insert(
         &self,
@@ -209,9 +251,26 @@ impl ImageResources {
         }
         let key = opts.cache.then(|| options_key(opts)).transpose()?;
         let size = bytes.len();
+        let digest = ImageDigest(sha2::Sha256::digest(&bytes).into());
         let mut state = self.lock();
         if state.sessions.get(session).map(String::as_str) != Some(identity) {
             return Err(session_error());
+        }
+        let content_key = (session.to_string(), digest);
+        if let Some(id) = state.content.get(&content_key)
+            && state.entries.contains_key(id)
+        {
+            let id = id.clone();
+            if let Some(key) = key {
+                state.cache.insert(
+                    (identity.to_string(), session.to_string(), key),
+                    CachedRef {
+                        id: id.clone(),
+                        expires: Instant::now() + CACHE_TTL,
+                    },
+                );
+            }
+            return Ok(format!("flux-image:{id}"));
         }
         if let Some(key) = key {
             let cache_id = (identity.to_string(), session.to_string(), key);
@@ -250,8 +309,10 @@ impl ImageResources {
             ImageEntry {
                 session: session.to_string(),
                 bytes: Arc::from(bytes),
+                digest: digest.0,
             },
         );
+        state.content.insert(content_key, id.clone());
         if let Some(key) = key {
             state.cache.insert(
                 (identity.to_string(), session.to_string(), key),
@@ -290,6 +351,9 @@ fn remove_where(state: &mut Registry, mut predicate: impl FnMut(&ImageEntry) -> 
     for id in ids {
         if let Some(entry) = state.entries.remove(&id) {
             state.total_bytes = state.total_bytes.saturating_sub(entry.bytes.len());
+            state
+                .content
+                .remove(&(entry.session, ImageDigest(entry.digest)));
         }
     }
     let live: HashSet<&str> = state.entries.keys().map(String::as_str).collect();
@@ -452,6 +516,116 @@ mod tests {
         output.into_inner()
     }
 
+    #[test]
+    fn expired_source_cache_reuses_content_without_reusing_changed_images() {
+        let registry = ImageResources::new();
+        registry.open_session("plugin-a", "session-a");
+        let mut opts = options(true);
+        let first = registry
+            .insert("plugin-a", "session-a", &opts, png(1, 1))
+            .unwrap();
+        for cached in registry.lock().cache.values_mut() {
+            cached.expires = Instant::now();
+        }
+        assert!(
+            registry
+                .cached("plugin-a", "session-a", &opts)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .insert("plugin-a", "session-a", &opts, png(1, 1))
+                .unwrap(),
+            first
+        );
+        opts.cache = false;
+        let changed = registry
+            .insert("plugin-a", "session-a", &opts, png(2, 1))
+            .unwrap();
+        assert_ne!(first, changed);
+        assert!(registry.read("session-a", raw_id(&first)).is_some());
+        assert!(registry.read("session-a", raw_id(&changed)).is_some());
+    }
+
+    #[test]
+    fn identical_uncached_content_deduplicates_and_release_reclaims_quota() {
+        let registry = ImageResources::new();
+        registry.open_session("plugin-a", "session-a");
+        registry.open_session("plugin-b", "session-b");
+        let opts = options(false);
+        let first = registry
+            .insert("plugin-a", "session-a", &opts, vec![7; MAX_OUTPUT_BYTES])
+            .unwrap();
+        for _ in 0..199 {
+            assert_eq!(
+                registry
+                    .insert("plugin-a", "session-a", &opts, vec![7; MAX_OUTPUT_BYTES])
+                    .unwrap(),
+                first
+            );
+        }
+        let other = registry
+            .insert("plugin-b", "session-b", &opts, vec![7; MAX_OUTPUT_BYTES])
+            .unwrap();
+        assert_ne!(other, first);
+        for value in [8, 9, 10] {
+            let mut distinct = options(false);
+            distinct.url.push_str(&value.to_string());
+            registry
+                .insert(
+                    "plugin-a",
+                    "session-a",
+                    &distinct,
+                    vec![value; MAX_OUTPUT_BYTES],
+                )
+                .unwrap();
+        }
+        assert!(
+            registry
+                .insert(
+                    "plugin-a",
+                    "session-a",
+                    &options(false),
+                    vec![11; MAX_OUTPUT_BYTES]
+                )
+                .is_err()
+        );
+        let cached_opts = options(true);
+        assert_eq!(
+            registry
+                .insert(
+                    "plugin-a",
+                    "session-a",
+                    &cached_opts,
+                    vec![7; MAX_OUTPUT_BYTES]
+                )
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            registry
+                .cached("plugin-a", "session-a", &cached_opts)
+                .unwrap(),
+            Some(first.clone())
+        );
+        registry.release("plugin-b", "session-b", &first).unwrap();
+        assert!(registry.read("session-a", raw_id(&first)).is_some());
+        registry.release("plugin-a", "session-a", &first).unwrap();
+        assert!(registry.read("session-a", raw_id(&first)).is_none());
+        assert!(
+            registry
+                .cached("plugin-a", "session-a", &cached_opts)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            registry
+                .insert("plugin-a", "session-a", &opts, vec![11; MAX_OUTPUT_BYTES])
+                .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn decodes_and_bounds_thumbnail_output() {
         let opts = options(false);
@@ -533,7 +707,12 @@ mod tests {
             let mut distinct = cached_opts.clone();
             distinct.url.push_str(&n.to_string());
             registry
-                .insert("plugin-a", "session-a", &distinct, vec![n as u8])
+                .insert(
+                    "plugin-a",
+                    "session-a",
+                    &distinct,
+                    u16::try_from(n).unwrap().to_le_bytes().to_vec(),
+                )
                 .unwrap();
         }
         let last_visible = registry
