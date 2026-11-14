@@ -304,9 +304,7 @@ pub fn run_blocking(host: crate::shell::ShellHost) -> AgentResult {
         eprintln!("server tracing subscriber was not installed: {error}");
     }
     let config = ServerConfig::from_env()?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = crate::runtime::build_runtime()?;
     runtime.block_on(async move {
         let cancel = CancellationToken::new();
         let quit = CancellationToken::new();
