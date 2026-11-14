@@ -44,6 +44,7 @@ fn task_dto_json_carries_referrer() -> Result<(), serde_json::Error> {
         origin_url: String::new(),
         auto_route: String::new(),
         source_bytes: SourceBytes::default(),
+        properties: Default::default(),
     };
     let dto = fluxdown_engine_protocol::task_info_to_dto(info);
     assert_eq!(dto.referrer, "https://example.com/page");
@@ -104,6 +105,7 @@ fn task_dto_json_carries_persisted_source_bytes() -> Result<(), serde_json::Erro
             proxy: 200,
             nic: 30,
         },
+        properties: Default::default(),
     };
     let dto = fluxdown_engine_protocol::task_info_to_dto(info);
     assert_eq!(

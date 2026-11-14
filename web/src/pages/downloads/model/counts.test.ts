@@ -84,6 +84,15 @@ describe('SidebarCounts', () => {
     }
   })
 
+  test('explicit category override replaces rule classification in filters and counts', () => {
+    const overridden = { ...view(999, 'movie.zip', 'paused', 'local', '', ''), dto: { properties: { category: 'builtin_video' } } } as unknown as DownloadTaskView
+    expect(filterMatches({ status: 'all', category: 'builtin_video' }, overridden, categories)).toBe(true)
+    expect(filterMatches({ status: 'all', category: 'builtin_archive' }, overridden, categories)).toBe(false)
+    const counts = new SidebarCounts([overridden], categories)
+    expect(counts.filter({ status: 'all', category: 'builtin_video' })).toBe(1)
+    expect(counts.filter({ status: 'all', category: 'builtin_archive' })).toBe(0)
+  })
+
   test('forEachMatch 与逐 id matches 等价：other 仅在没有具体分类命中时命中', () => {
     for (const name of ['a.zip', 'readme', 'log-1.txt', 'x.mp4', 'noext.']) {
       const item = view(1, name, 'completed', 'local', 'main', '')

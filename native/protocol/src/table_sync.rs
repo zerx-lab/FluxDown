@@ -348,6 +348,7 @@ mod tests {
 
     fn task(id: &str, status: i32) -> TaskDto {
         TaskDto {
+            properties: Default::default(),
             task_id: id.to_owned(),
             url: format!("https://example.com/{id}.bin"),
             file_name: format!("{id}.bin"),

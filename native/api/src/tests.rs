@@ -490,6 +490,7 @@ impl ApiHost for MockHost {
 
 fn sample_task(id: &str, status: i32) -> TaskDto {
     TaskDto {
+        properties: Default::default(),
         task_id: id.to_string(),
         url: format!("https://example.com/{id}.zip"),
         file_name: format!("{id}.zip"),

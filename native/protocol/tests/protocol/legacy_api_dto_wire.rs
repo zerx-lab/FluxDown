@@ -121,6 +121,7 @@ fn create_task_request_deserializes_browser_transaction_fields() {
 #[test]
 fn task_dto_serializes_camel_case_with_correct_values() {
     let dto = TaskDto {
+        properties: Default::default(),
         task_id: "t1".to_string(),
         url: "https://example.com/f.zip".to_string(),
         file_name: "f.zip".to_string(),

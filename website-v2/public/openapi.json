@@ -4259,6 +4259,16 @@
         "type": "object",
         "description": "分类保存目录路由：外部捕获未指定保存目录时，agent 把 `custom_categories` 中与落点\n有关的规则随 `daemon.task.create` 交给 daemon；引擎建任务时按初始名定初始目录，\n下载完成、最终文件名确定后（插件改名、按响应推断的名字、HLS 转封装后的 `.mp4`）\n再按同一规则复核并把产物移入命中分类的目录。任务组成员与 BT / eD2K 任务不参与。\n\n匹配语义（唯一事实源为 agent `category_dir.rs` 与引擎 `category_route.rs`，两端共用\n夹具 `native/engine/src/fixtures/category_route_cases.json`）：网址规则固定优先于\n扩展名 / 正则分类（不看列表位置），网址规则之间按列表顺序取首个配置了目录且命中的；\n未被网址规则认领的任务再按文件名规则取首个配置了目录且命中的普通分类；都不命中时\n取「其他」的目录。",
         "properties": {
+          "archiveCategories": {
+            "type": "object",
+            "description": "Visible builtin category identifiers mapped to configured save directories at submission.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "otherDir": {
             "type": "string",
             "description": "「其他」分类的目录；空 = 不兜底。"
@@ -6499,6 +6509,10 @@
             "type": "string",
             "description": "展示用原始来源链接（空 = 用 `url`）。`.torrent` 任务的 `url` 是\n`torrent-file://local` 哨兵，客户端「复制链接」应优先取本字段。"
           },
+          "properties": {
+            "$ref": "#/components/schemas/TaskPropertiesDto",
+            "description": "Non-secret task overrides from the unified property editor."
+          },
           "proxyUrl": {
             "type": "string",
             "description": "单任务代理 URL（空 = 使用全局代理）。"
@@ -6590,6 +6604,42 @@
           },
           "url": {
             "type": "string"
+          }
+        }
+      },
+      "TaskPropertiesDto": {
+        "type": "object",
+        "description": "Non-secret task overrides, persisted and projected with the task.",
+        "properties": {
+          "authRef": {
+            "type": "string",
+            "default": ""
+          },
+          "category": {
+            "type": "string",
+            "default": ""
+          },
+          "downloadLimitBps": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0
+          },
+          "scheduledAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "One-shot start time in Unix seconds; zero disables scheduling.",
+            "default": 0
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "userAgent": {
+            "type": "string",
+            "default": ""
           }
         }
       },

@@ -27,6 +27,10 @@ pub const DAEMON_TASK_CHANGE_URL: &str = "daemon.task.changeUrl";
 pub const DAEMON_TASK_SET_SEGMENTS: &str = "daemon.task.setSegments";
 /// 修改任务代理并立即重建活跃连接（`SetTaskProxyParams`），不重启宿主。
 pub const DAEMON_TASK_SET_PROXY: &str = "daemon.task.setProxy";
+/// Redacted editable task settings (`{taskId}` → `TaskEditSnapshot`).
+pub const DAEMON_TASK_EDIT_INFO: &str = "daemon.task.editInfo";
+/// Validate and atomically apply a unified task property update.
+pub const DAEMON_TASK_EDIT: &str = "daemon.task.edit";
 pub const DAEMON_TASK_DELETE: &str = "daemon.task.delete";
 pub const DAEMON_TASK_PAUSE_ALL: &str = "daemon.task.pauseAll";
 pub const DAEMON_TASK_RESUME_ALL: &str = "daemon.task.resumeAll";
@@ -480,6 +484,8 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_CHANGE_URL,
     DAEMON_TASK_SET_SEGMENTS,
     DAEMON_TASK_SET_PROXY,
+    DAEMON_TASK_EDIT_INFO,
+    DAEMON_TASK_EDIT,
     DAEMON_TASK_DELETE,
     DAEMON_TASK_PAUSE_ALL,
     DAEMON_TASK_RESUME_ALL,
@@ -763,6 +769,7 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_TASK_HASH,
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_MOVE_STORAGE,
+    DAEMON_TASK_EDIT,
     DAEMON_EGRESS_PLAN,
 ];
 

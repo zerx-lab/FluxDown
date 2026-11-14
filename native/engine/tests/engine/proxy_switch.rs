@@ -32,6 +32,7 @@ struct Logged {
     method: String,
     /// `Range: bytes=<start>-` 的起点；无 Range 头为 `None`。
     range_start: Option<usize>,
+    headers: std::collections::HashMap<String, String>,
 }
 
 /// 限速假代理：记录收到的请求；`ranged = false` 时模拟不支持 Range 的源站
@@ -136,7 +137,11 @@ async fn conn(
         .unwrap_or_default()
         .to_string();
     let mut range: Option<(usize, Option<usize>)> = None;
+    let mut headers = std::collections::HashMap::new();
     for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+        }
         if let Some((name, value)) = line.split_once(':')
             && name.trim().eq_ignore_ascii_case("range")
             && let Some(v) = value.trim().strip_prefix("bytes=")
@@ -150,6 +155,7 @@ async fn conn(
         log.lock().expect("log lock").push(Logged {
             method: method.clone(),
             range_start: range.map(|(start, _)| start),
+            headers,
         });
     }
     let range = if ranged { range } else { None };
@@ -882,5 +888,365 @@ async fn task_proxy_edit_retries_failed_task_without_manual_resume() {
     .await;
     h.wait_downloading(&id).await;
     assert_resumed_from_offsets(&new);
+    h.finish(&[&id]).await;
+}
+
+impl Harness {
+    async fn apply_edit(
+        &mut self,
+        patch: fluxdown_engine::task_edit::EditTask,
+    ) -> Result<(), String> {
+        use fluxdown_engine::download_manager::TaskEditStep;
+        let id = patch.task_id.clone();
+        let mut step = self.engine.manager.begin_task_edit(patch).await?;
+        loop {
+            step = match step {
+                TaskEditStep::Applied => return Ok(()),
+                TaskEditStep::Waiting(session) => {
+                    self.pump_done(&id).await;
+                    self.engine.manager.continue_task_edit(session).await?
+                }
+                TaskEditStep::Started(job) => {
+                    return self.engine.manager.finish_task_edit(job.await).await;
+                }
+            };
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unified_edit_relocates_and_reconnects_with_protected_credentials() {
+    use fluxdown_engine::task_edit::{EditTask, snapshot};
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("unified_edit", old.config()).await;
+    let id = h.create("original.bin", String::new()).await;
+    h.wait_segment_progress(&id).await;
+    let before = snapshot(&h.engine.db, &id).await.unwrap();
+    let site = fluxdown_engine::auth::site_key(&format!("http://{ORIGIN_HOST}/")).unwrap();
+    let reference = format!("editorref::{site}");
+    fluxdown_engine::auth::save(
+        &h.engine.db,
+        &fluxdown_engine::auth::AuthProfile {
+            auth_ref: reference.clone(),
+            plugin_id: "editorref".into(),
+            site,
+            kind: "headers".into(),
+            headers: std::collections::HashMap::from([(
+                "X-Api-Key".into(),
+                "referenced-key".into(),
+            )]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let destination = h.work.join("目录 with spaces");
+    h.apply_edit(EditTask {
+        task_id: id.clone(),
+        expected_revision: before.revision,
+        save_dir: Some(destination.to_string_lossy().into_owned()),
+        file_name: Some("renamed 文档.bin".into()),
+        proxy_url: Some(format!("http://127.0.0.1:{}", new.port)),
+        user_agent: Some("TaskEditor/1".into()),
+        auth_ref: Some(reference),
+        cookies: Some("session=private-value".into()),
+        headers: Some(std::collections::HashMap::from([
+            ("Authorization".into(), "Bearer private-token".into()),
+            ("X-Task".into(), "edited".into()),
+        ])),
+        category: Some("archive".into()),
+        tags: Some(vec!["work".into(), "任务".into()]),
+        download_limit_bps: Some(512 * 1024),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    wait_until("new requests with new credentials", || {
+        new.requests().iter().any(|r| {
+            r.method == "GET"
+                && r.headers
+                    .get("x-api-key")
+                    .is_some_and(|v| v == "referenced-key")
+                && r.headers
+                    .get("user-agent")
+                    .is_some_and(|v| v == "TaskEditor/1")
+                && r.headers
+                    .get("cookie")
+                    .is_some_and(|v| v == "session=private-value")
+                && r.headers
+                    .get("authorization")
+                    .is_some_and(|v| v == "Bearer private-token")
+                && r.headers.get("x-task").is_some_and(|v| v == "edited")
+        })
+    })
+    .await;
+    assert_resumed_from_offsets(&new);
+    let after = snapshot(&h.engine.db, &id).await.unwrap();
+    assert!(after.cookies_configured);
+    assert_eq!(
+        after.headers.get("authorization").map(String::as_str),
+        Some("********")
+    );
+    assert_eq!(
+        (after.file_name.as_str(), after.properties.category.as_str()),
+        ("renamed 文档.bin", "archive")
+    );
+    assert_eq!(after.properties.tags, ["work", "任务"]);
+    assert_eq!(after.properties.download_limit_bps, 512 * 1024);
+    let wire = serde_json::to_string(&after).unwrap();
+    assert!(!wire.contains("private-value") && !wire.contains("private-token"));
+    assert!(
+        !h.work
+            .join(format!(
+                "original.bin{}",
+                fluxdown_engine::downloader::TEMP_EXT
+            ))
+            .exists()
+    );
+    assert!(
+        destination
+            .join(format!(
+                "renamed 文档.bin{}",
+                fluxdown_engine::downloader::TEMP_EXT
+            ))
+            .exists()
+    );
+    // An unrelated edit must not erase write-only credentials represented by masks.
+    h.apply_edit(EditTask {
+        task_id: id.clone(),
+        expected_revision: after.revision,
+        headers: Some(after.headers),
+        tags: Some(vec!["retained".into()]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    h.assert_not_interrupted(Duration::from_millis(100)).await;
+    assert!(
+        snapshot(&h.engine.db, &id)
+            .await
+            .unwrap()
+            .cookies_configured
+    );
+    h.finish(&[&id]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unified_edit_validation_and_stale_revision_leave_running_task_unchanged() {
+    use fluxdown_engine::task_edit::{EditTask, snapshot};
+    let proxy = FakeProxy::start().await;
+    let mut h = Harness::new("unified_invalid", proxy.config()).await;
+    let id = h.create("keep.bin", String::new()).await;
+    h.wait_segment_progress(&id).await;
+    let before = snapshot(&h.engine.db, &id).await.unwrap();
+    let destination = h.work.join("must-not-be-created");
+    let rejected = h
+        .apply_edit(EditTask {
+            task_id: id.clone(),
+            expected_revision: before.revision.clone(),
+            save_dir: Some(destination.to_string_lossy().into_owned()),
+            category: Some("changed".into()),
+            headers: Some(std::collections::HashMap::from([(
+                "X-Header".into(),
+                "bad\r\ninjection".into(),
+            )])),
+            ..Default::default()
+        })
+        .await;
+    assert!(rejected.is_err());
+    assert!(!destination.exists());
+    let unchanged = snapshot(&h.engine.db, &id).await.unwrap();
+    assert_eq!(unchanged.revision, before.revision);
+    h.assert_not_interrupted(Duration::from_millis(100)).await;
+    h.apply_edit(EditTask {
+        task_id: id.clone(),
+        expected_revision: before.revision.clone(),
+        tags: Some(vec!["first".into()]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let stale = h
+        .apply_edit(EditTask {
+            task_id: id.clone(),
+            expected_revision: before.revision,
+            file_name: Some("stale.bin".into()),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(stale, Err("edit-conflict".into()));
+    assert_eq!(
+        snapshot(&h.engine.db, &id).await.unwrap().file_name,
+        "keep.bin"
+    );
+    h.assert_not_interrupted(Duration::from_millis(100)).await;
+    h.finish(&[&id]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unified_edit_future_start_pauses_and_due_tick_resumes_once() {
+    use fluxdown_engine::task_edit::{EditTask, snapshot};
+    let proxy = FakeProxy::start().await;
+    let mut h = Harness::new("unified_schedule", proxy.config()).await;
+    let id = h.create("scheduled.bin", String::new()).await;
+    h.wait_segment_progress(&id).await;
+    let before = snapshot(&h.engine.db, &id).await.unwrap();
+    h.apply_edit(EditTask {
+        task_id: id.clone(),
+        expected_revision: before.revision,
+        scheduled_at: Some(chrono::Utc::now().timestamp() + 3600),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(h.status(&id).await, 2);
+    let paused = snapshot(&h.engine.db, &id).await.unwrap();
+    assert!(paused.properties.scheduled_at > chrono::Utc::now().timestamp());
+    h.apply_edit(EditTask {
+        task_id: id.clone(),
+        expected_revision: paused.revision,
+        scheduled_at: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        h.status(&id).await,
+        2,
+        "removing a schedule is not a resume command"
+    );
+    let cleared = snapshot(&h.engine.db, &id).await.unwrap();
+    h.apply_edit(EditTask {
+        task_id: id.clone(),
+        expected_revision: cleared.revision,
+        scheduled_at: Some(chrono::Utc::now().timestamp() - 1),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(h.status(&id).await, 2);
+    h.engine.manager.tick_task_schedules().await;
+    h.wait_downloading(&id).await;
+    assert_eq!(
+        snapshot(&h.engine.db, &id)
+            .await
+            .unwrap()
+            .properties
+            .scheduled_at,
+        0
+    );
+    h.engine.manager.tick_task_schedules().await;
+    h.assert_not_interrupted(Duration::from_millis(100)).await;
+    h.finish(&[&id]).await;
+}
+
+#[cfg(feature = "bt")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unified_edit_bt_tree_is_atomic_on_conflict_database_failure_and_cancel() {
+    use fluxdown_engine::{
+        download_manager::TaskEditStep,
+        task_edit::{EditTask, snapshot},
+    };
+    let mut h = Harness::new("unified_bt_tree", ProxyConfig::default()).await;
+    let id = h
+        .engine
+        .manager
+        .create_task(NewTaskSpec {
+            url: "magnet:?xt=urn:btih:0123456789012345678901234567890123456789".into(),
+            file_name: "种子文件夹".into(),
+            save_dir: h.work.to_string_lossy().into_owned(),
+            start_paused: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    h.engine.db.update_task_status(&id, 3, "").await.unwrap();
+    let source = h.work.join("种子文件夹");
+    tokio::fs::create_dir_all(source.join("sub")).await.unwrap();
+    tokio::fs::write(source.join("sub/资料.txt"), b"owned payload")
+        .await
+        .unwrap();
+    let before = snapshot(&h.engine.db, &id).await.unwrap();
+    let destination = h.work.join("new location");
+    tokio::fs::create_dir_all(destination.join("种子文件夹"))
+        .await
+        .unwrap();
+    tokio::fs::write(destination.join("种子文件夹/keep.txt"), b"unrelated")
+        .await
+        .unwrap();
+    let patch = || EditTask {
+        task_id: id.clone(),
+        expected_revision: before.revision.clone(),
+        save_dir: Some(destination.to_string_lossy().into_owned()),
+        tags: Some(vec!["moved".into()]),
+        download_limit_bps: Some(48_000),
+        ..Default::default()
+    };
+    assert_eq!(h.apply_edit(patch()).await, Err("target-exists".into()));
+    assert_eq!(
+        tokio::fs::read(destination.join("种子文件夹/keep.txt"))
+            .await
+            .unwrap(),
+        b"unrelated"
+    );
+    assert_eq!(
+        snapshot(&h.engine.db, &id).await.unwrap().revision,
+        before.revision
+    );
+    tokio::fs::remove_dir_all(&destination).await.unwrap();
+    let pool = sqlx::AnyPool::connect(&format!(
+        "sqlite://{}",
+        h.work.join("flux_down.db").display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query("CREATE TRIGGER reject_task_edit BEFORE UPDATE OF edit_properties ON tasks BEGIN SELECT RAISE(ABORT, 'injected edit failure'); END")
+        .execute(&pool).await.unwrap();
+    assert!(
+        h.apply_edit(patch())
+            .await
+            .unwrap_err()
+            .contains("injected edit failure")
+    );
+    assert_eq!(
+        tokio::fs::read(source.join("sub/资料.txt")).await.unwrap(),
+        b"owned payload"
+    );
+    assert!(!destination.join("种子文件夹").exists());
+    assert_eq!(
+        snapshot(&h.engine.db, &id).await.unwrap().revision,
+        before.revision
+    );
+    sqlx::query("DROP TRIGGER reject_task_edit")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let TaskEditStep::Started(job) = h.engine.manager.begin_task_edit(patch()).await.unwrap()
+    else {
+        panic!("paused BT directory save must produce off-actor file work");
+    };
+    h.engine.manager.pause_task(&id).await;
+    assert!(h.engine.manager.finish_task_edit(job.await).await.is_err());
+    assert_eq!(
+        tokio::fs::read(source.join("sub/资料.txt")).await.unwrap(),
+        b"owned payload"
+    );
+    assert_eq!(
+        snapshot(&h.engine.db, &id).await.unwrap().revision,
+        before.revision
+    );
+    h.apply_edit(patch()).await.unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        tokio::fs::read(destination.join("种子文件夹/sub/资料.txt"))
+            .await
+            .unwrap(),
+        b"owned payload"
+    );
+    let task = h.engine.db.load_task_by_id(&id).await.unwrap().unwrap();
+    assert_eq!(task.bt_download_limit_bps, 48_000);
+    assert_eq!(task.properties.tags, ["moved"]);
     h.finish(&[&id]).await;
 }

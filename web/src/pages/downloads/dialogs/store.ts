@@ -32,7 +32,7 @@ export interface DialogsState {
   groupDetail: string | null
   rename: string | null
   changeUrl: string | null
-  changeProxy: string | null
+  taskEdit: string | null
   changeSegments: string | null
   /** 「移动到…」的 BT 任务 id。 */
   moveStorage: string | null
@@ -46,8 +46,8 @@ let state: DialogsState = {
   queueManager: null,
   groupDetail: null,
   rename: null,
+  taskEdit: null,
   changeUrl: null,
-  changeProxy: null,
   changeSegments: null,
   moveStorage: null,
   taskLimits: null,
@@ -136,14 +136,9 @@ export function openChangeUrl(taskId: string): void {
 export function closeChangeUrl(): void {
   publish({ changeUrl: null })
 }
+export function openTaskEdit(taskId: string): void { publish({ taskEdit: taskId }) }
+export function closeTaskEdit(): void { publish({ taskEdit: null }) }
 
-export function openChangeProxy(taskId: string): void {
-  publish({ changeProxy: taskId })
-}
-
-export function closeChangeProxy(): void {
-  publish({ changeProxy: null })
-}
 
 export function openChangeSegments(taskId: string): void {
   publish({ changeSegments: taskId })

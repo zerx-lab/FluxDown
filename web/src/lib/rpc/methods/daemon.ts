@@ -141,6 +141,8 @@ import type {
   WebhookEndpointDraft,
   WebhookSimulateResponse,
   WebhookTestResponse,
+  EditTaskParams,
+  TaskEditSnapshot,
 } from '../protocol';
 
 /** 服务端逐源串行拉取镜像（每源 20s），最坏远超默认 30s。 */
@@ -154,6 +156,10 @@ const SLOW_DISK_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const task = {
   get: async (params: TaskIdParams) =>
     normalizeTask(await call<TaskDtoWire>(METHOD.DAEMON_TASK_GET, params)),
+  editInfo: (params: TaskIdParams) => call<TaskEditSnapshot>(METHOD.DAEMON_TASK_EDIT_INFO, params),
+  /** Unified edit can move data across volumes; match moveStorage's disk-operation timeout. */
+  edit: (params: EditTaskParams) =>
+    call<OkResult>(METHOD.DAEMON_TASK_EDIT, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
   activity: (params: TaskActivityQuery) =>
     call<TaskActivityPage>(METHOD.DAEMON_TASK_ACTIVITY, params),
   speedHistory: (params: TaskSpeedHistoryQuery) =>

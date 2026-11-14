@@ -53,6 +53,7 @@ const TASK_DEFAULTS: Omit<TaskDto, TaskDtoRequiredKey> = Object.freeze({
   btFirstLastPiecesFirst: false,
   btDownloadLimitBps: 0,
   btSuperSeeding: false,
+  properties: { downloadLimitBps: 0, userAgent: '', authRef: '', category: '', tags: [], scheduledAt: 0 },
   sourceBytes: ZERO_SOURCE_BYTES,
 })
 

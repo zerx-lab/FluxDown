@@ -44,11 +44,15 @@ Click either button's small arrow to pick an explicit target queue instead — c
 - **Multiple tasks at once**: press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> or click the manage-mode toggle next to the file name column to check tasks individually, then use the batch action bar to delete the selection (with or without the underlying files). Press <kbd>Esc</kbd> to leave manage mode.
 - **Pause/Resume everything**: use the Pause All / Resume All buttons in the top bar, or right-click empty space below the list for Start All / Pause All.
 
-### Change a task's proxy
+### Edit task properties
 
-For an unfinished HTTP/HTTPS/FTP task, choose **Edit proxy** from its right-click menu or General details. Enter an HTTP, HTTPS or SOCKS proxy URL with an explicit port, or clear it to follow global proxy settings and site rules.
+Choose **Edit task** from a task's right-click menu or **General** details. The unified editor covers save directory, file name, proxy, task download limit, connections, User-Agent, headers, cookies, credential reference, category, tags, and an optional one-shot start time. The URL is read-only; use the existing **Change link** action when replacing a source.
 
-Saving reconnects active transfers immediately; no application or NAS service restart is needed. Failed tasks retry, while paused and queued tasks retain their state. Sources without resume support may restart from zero, and live streams may have recording gaps. BT and eD2K do not use this task-level editor.
+Saving validates all changed fields before applying them. Relocation preserves existing files and progress, rejects destination conflicts, and rolls back on failure. Active transfers reconnect when their request settings or location change; changing a speed limit or tags does not restart them. No application or NAS service restart is needed. Sources without resume support may restart from zero, and live recordings may have gaps.
+
+Cookies are write-only; secret headers are redacted and retained unless explicitly changed or removed. Credential references must be valid for the task's origin. A positive task speed limit overrides the queue/global limit; zero follows it again. A future start time pauses the task until it is due; a stopped queue must still be started.
+
+Unsupported fields are disabled for the task's protocol or state. BT storage relocation and download limits use the existing BT core; BT file-tree renaming remains in its dedicated per-file actions. Task-level proxy and HTTP request fields do not apply to BT/eD2K. Manual categories override automatic classification; tags are searchable.
 
 
 ## Queues and Speed Limits

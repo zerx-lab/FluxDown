@@ -420,6 +420,6 @@ export const stateGroupKey = (state: TaskState): string => state
 export function matchesQuery(view: DownloadTaskView, query: string): boolean {
   if (query === '') return true
   // 三个字段以换行拼接（搜索框是单行输入，查询词里不会有换行，不会跨字段误命中）。
-  if (view.searchFold === '') view.searchFold = `${view.nameFold}\n${view.url.toLowerCase()}\n${view.site.toLowerCase()}`
+  if (view.searchFold === '') view.searchFold = `${view.nameFold}\n${view.url.toLowerCase()}\n${view.site.toLowerCase()}\n${(view.dto?.properties?.tags ?? []).join('\n').toLowerCase()}`
   return view.searchFold.includes(query)
 }

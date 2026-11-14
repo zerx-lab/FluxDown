@@ -502,10 +502,6 @@ impl TaskMenuFacts {
     pub(crate) fn can_change_segments(&self) -> bool {
         self.is_local && !self.is_bt && self.state != TaskState::Completed
     }
-    /// 「编辑代理」可用：未完成的本地 HTTP/FTP 任务；BT/eD2K 不支持任务代理编辑。
-    pub(crate) fn can_edit_proxy(&self) -> bool {
-        self.is_local && !self.is_bt && self.state != TaskState::Completed && self.url_replaceable
-    }
 
     /// 「完整性校验」可用：本地已完成、产物仍在的 BT 任务（按种子 piece 表重哈希）。
     pub(crate) fn can_verify_integrity(&self) -> bool {
@@ -563,9 +559,8 @@ pub(crate) enum MenuEntry {
     /// 更换下载链接（单选；条件见 [`TaskMenuFacts::can_change_url`]）。
     ChangeUrl,
     /// 修改线程数（单选；条件见 [`TaskMenuFacts::can_change_segments`]）。
-    ChangeSegments,
-    /// 编辑任务代理（单选；条件见 [`TaskMenuFacts::can_edit_proxy`]）。
-    EditProxy,
+    /// Edit all supported properties of a single local task.
+    EditTask,
     /// 完整性校验（单选；条件见 [`TaskMenuFacts::can_verify_integrity`]）。
     VerifyIntegrity,
     /// 最稀有优先（本地未完成 BT；可多选。选中态见 [`piece_picking_order`]）。
@@ -660,11 +655,8 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         if only.can_change_url() {
             items.push(MenuEntry::ChangeUrl);
         }
-        if only.can_change_segments() {
-            items.push(MenuEntry::ChangeSegments);
-        }
-        if only.can_edit_proxy() {
-            items.push(MenuEntry::EditProxy);
+        if only.is_local {
+            items.push(MenuEntry::EditTask);
         }
         if only.can_verify_integrity() {
             items.push(MenuEntry::VerifyIntegrity);
@@ -1662,6 +1654,8 @@ impl DownloadTableDelegate {
         task.name_fold.contains(&self.query)
             || task.url_fold.contains(&self.query)
             || task.site_fold.contains(&self.query)
+            || task.category_fold.contains(&self.query)
+            || task.tags_fold.contains(&self.query)
             || self.group_name_matches(task)
     }
 
@@ -3206,15 +3200,10 @@ impl DownloadTableDelegate {
                 FluxIcon::Globe,
                 Box::new(crate::actions::ChangeSelectedUrl),
             ),
-            MenuEntry::ChangeSegments => menu.menu_with_icon(
-                self.strings.edit_threads.clone(),
-                FluxIcon::Layers,
-                Box::new(crate::actions::ChangeSelectedSegments),
-            ),
-            MenuEntry::EditProxy => menu.menu_with_icon(
-                self.strings.task_edit_proxy.clone(),
-                FluxIcon::Globe,
-                Box::new(crate::actions::EditSelectedProxy),
+            MenuEntry::EditTask => menu.menu_with_icon(
+                self.strings.task_edit_title.clone(),
+                FluxIcon::Pen,
+                Box::new(crate::actions::EditSelectedTask),
             ),
             MenuEntry::VerifyIntegrity => menu.menu_with_icon(
                 self.strings.verify_integrity.clone(),
@@ -6860,32 +6849,27 @@ mod context_menu_tests {
     }
 
     #[test]
-    fn change_segments_needs_single_local_unfinished_non_bt_task() {
-        // 下载中也允许：引擎静默暂停 → 改 → 恢复。
+    fn task_editor_needs_single_local_task_including_completed_and_bt() {
         for state in [
             TaskState::Downloading,
             TaskState::Paused,
             TaskState::Failed,
             TaskState::Pending,
+            TaskState::Completed,
         ] {
             assert!(
-                context_menu_items(&[task(true, state)]).contains(&MenuEntry::ChangeSegments),
+                context_menu_items(&[task(true, state)]).contains(&MenuEntry::EditTask),
                 "{state:?}"
             );
         }
-        assert!(
-            !context_menu_items(&[task(true, TaskState::Completed)])
-                .contains(&MenuEntry::ChangeSegments)
-        );
         let mut bt = task(true, TaskState::Paused);
         bt.is_bt = true;
-        assert!(!context_menu_items(&[bt]).contains(&MenuEntry::ChangeSegments));
+        assert!(context_menu_items(&[bt]).contains(&MenuEntry::EditTask));
         assert!(
-            !context_menu_items(&[task(false, TaskState::Paused)])
-                .contains(&MenuEntry::ChangeSegments)
+            !context_menu_items(&[task(false, TaskState::Paused)]).contains(&MenuEntry::EditTask)
         );
         let pair = [task(true, TaskState::Paused), task(true, TaskState::Failed)];
-        assert!(!context_menu_items(&pair).contains(&MenuEntry::ChangeSegments));
+        assert!(!context_menu_items(&pair).contains(&MenuEntry::EditTask));
     }
 
     #[test]
@@ -7181,30 +7165,6 @@ mod context_menu_tests {
         let items = context_menu_items(&[bt, bt]);
         assert!(!items.contains(&MenuEntry::CopyMagnet));
         assert!(!items.contains(&MenuEntry::ExportTorrent));
-    }
-
-    #[test]
-    fn failed_local_task_menu_places_edit_entries_between_rename_and_redownload() {
-        assert_eq!(
-            context_menu_items(&[task(true, TaskState::Failed)]),
-            vec![
-                MenuEntry::Resume,
-                MenuEntry::Pause,
-                MenuEntry::Boost,
-                MenuEntry::OpenFolder,
-                MenuEntry::Rename,
-                MenuEntry::ChangeUrl,
-                MenuEntry::ChangeSegments,
-                MenuEntry::EditProxy,
-                MenuEntry::Redownload,
-                MenuEntry::CopyUrl,
-                MenuEntry::MoveToQueue,
-                MenuEntry::Separator,
-                MenuEntry::Delete,
-                MenuEntry::DeleteWithFiles,
-                MenuEntry::ShowDetail,
-            ]
-        );
     }
 
     #[test]

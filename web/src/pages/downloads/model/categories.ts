@@ -145,17 +145,20 @@ export class CategoryIndex {
     }
   }
 
-  /** 任务是否属于分类 `id`；未知 id 视为不匹配。 */
   matches(id: string, view: DownloadTaskView): boolean {
+    const override = view.dto?.properties?.category ?? ''
+    if (override !== '') return id === BUILTIN_ALL_ID || id === override
     const index = this.firstIndexById.get(id)
     if (index === undefined) return false
     const rule = this.rules[index] as CategoryRule
+    if (rule.matcher.type === 'all') return true
     if (rule.matcher.type === 'other') return !this.specific.some((other) => CategoryIndex.ruleMatches(other, view))
     return CategoryIndex.ruleMatches(rule, view)
   }
 
-  /** 任务命中的首个（非 all/other）分类 id；无 → `builtin_other`。网址规则固定优先。 */
   categoryOf(view: DownloadTaskView): string {
+    const override = view.dto?.properties?.category ?? ''
+    if (override !== '') return override
     const isUrl = (rule: CategoryRule): boolean => rule.matcher.type === 'url'
     const hit =
       this.specific.find((rule) => isUrl(rule) && CategoryIndex.ruleMatches(rule, view)) ??
@@ -169,6 +172,12 @@ export class CategoryIndex {
    * 供一次扫描得出全部分类计数（对应 Rust `CategoryIndex::for_each_match`）。
    */
   forEachMatch(view: DownloadTaskView, emit: (id: string) => void): void {
+    const override = view.dto?.properties?.category ?? ''
+    if (override !== '') {
+      emit(BUILTIN_ALL_ID)
+      if (this.firstIndexById.has(override)) emit(override)
+      return
+    }
     let specificHit = false
     let otherIds: string[] | null = null
     const ext = extensionOf(view.name)

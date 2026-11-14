@@ -12,5 +12,6 @@ pub(crate) mod task_bt_ops;
 pub(crate) mod task_copy;
 pub mod task_detail;
 pub(crate) mod task_edit;
+pub(crate) mod task_properties;
 pub(crate) mod task_torrent_share;
 pub(crate) mod task_verify;
