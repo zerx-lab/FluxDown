@@ -27,12 +27,14 @@ interface WebOrder {
   referralDiscountMinor: number;
   currency: string;
   codeUrl: string | null;
-  payMethod: "wxpay" | "usdt";
+  payMethod: "wxpay" | "usdt" | "waffo";
   payAmountMicros: number | null;
   payReceivedMicros: number | null;
   payAddress: string | null;
   payNetworks: { key: string; name: string; chainId: number }[];
   expiresAt: string;
+  /** Waffo hosted checkout URL (waffo orders only). */
+  checkoutUrl: string | null;
 }
 /** `POST /api/cloud/order-referral` result; `code` is the normalized input it was checked for. */
 interface ReferralCheck {
@@ -63,6 +65,8 @@ const ERROR_KEYS: Record<string, keyof Errors> = {
   referral_plan_excluded: "referralPlanExcluded",
   usdt_disabled: "usdtDisabled",
   usdt_not_available: "usdtUnavailable",
+  waffo_disabled: "waffoDisabled",
+  waffo_not_available: "waffoUnavailable",
 };
 
 /** Referral validate `reason` (valid=false) → message key. */
@@ -90,6 +94,15 @@ async function errorCode(res: Response): Promise<string> {
 
 const STEP_INDEX: Record<Step, number> = { account: 0, confirm: 1, pay: 2, success: 3 };
 
+type PayMethod = WebOrder["payMethod"];
+
+/** USD cents → `US$12.99`. */
+const formatUsd = (cents: number) => `US$${(cents / 100).toFixed(2)}`;
+
+function openCheckout(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lang }) {
   const t = pricing[lang].webbuy;
   const [open, setOpen] = useState(false);
@@ -103,7 +116,7 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
   const [order, setOrder] = useState<WebOrder | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [payMethod, setPayMethod] = useState<"wxpay" | "usdt">("wxpay");
+  const [payMethod, setPayMethod] = useState<PayMethod>("wxpay");
 
   const reset = useCallback(() => {
     setStep("account");
@@ -187,14 +200,17 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
           account: account.trim(),
           planCode: plan.code,
           referralCode: normalizeCode(referralCode) || undefined,
-          payMethod,
+          payMethod: method,
         }),
       });
       if (!res.ok) {
         setError(t.err[ERROR_KEYS[await errorCode(res)] ?? "network"]);
         return;
       }
-      setOrder((await res.json()) as WebOrder);
+      const created = (await res.json()) as WebOrder;
+      setOrder(created);
+      // Try once to open the hosted checkout; if the popup is blocked, the pay-step button is the fallback.
+      if (created.payMethod === "waffo" && created.checkoutUrl) openCheckout(created.checkoutUrl);
       setStep("pay");
     } catch {
       setError(t.err.network);
@@ -205,6 +221,7 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
 
   // Poll every 3 s: paid → success; failed → back to confirm. WeChat `expired` → back to confirm;
   // USDT `expired` stays on the pay step (late deposits within grace may still be credited) and keeps polling for 30 min.
+  // Waffo `expired` / `refunded` stay on the pay step (late payments are still honoured, so expired keeps polling).
   useEffect(() => {
     if (step !== "pay" || !order) return;
     const query = withBase(`/api/cloud/order?orderNo=${encodeURIComponent(order.orderNo)}&account=${encodeURIComponent(account.trim())}`);
@@ -221,9 +238,12 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
         if (fresh.status === "paid") {
           setOrder(fresh);
           setStep("success");
-        } else if (fresh.status === "expired" && fresh.payMethod === "usdt") {
+        } else if (fresh.status === "expired" && (fresh.payMethod === "usdt" || fresh.payMethod === "waffo")) {
           expiredSince ??= Date.now();
           setOrder((prev) => (prev && prev.status === "expired" && prev.payReceivedMicros === fresh.payReceivedMicros ? prev : fresh));
+        } else if (fresh.status === "refunded") {
+          setOrder(fresh);
+          window.clearInterval(timer);
         } else if (fresh.status === "expired" || fresh.status === "failed") {
           setError(fresh.status === "expired" ? t.err.expired : t.err.failed);
           setOrder(null);
@@ -241,6 +261,21 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
   const money = (minor: number, currency = plan.currency) => formatMinor(minor, currency, lang);
   const estimate = Math.max(0, plan.priceMinor - (identity?.purchaseCreditMinor ?? 0));
   const referralDiscount = referralCheck ? Math.min(referralCheck.discountMinor, estimate) : 0;
+  // Waffo charges the fixed USD list price: campaign prices, upgrade credit and referral codes are rejected server-side.
+  const waffoBlocked =
+    plan.priceMinor !== plan.basePriceMinor
+      ? t.waffoNoCampaign
+      : (identity?.purchaseCreditMinor ?? 0) > 0
+        ? t.waffoNoUpgrade
+        : normalizeCode(referralCode)
+          ? t.waffoNoReferral
+          : null;
+  const methods: PayMethod[] = ["wxpay"];
+  if (plan.priceUsdtMicros != null) methods.push("usdt");
+  if (plan.waffoPriceMinor != null) methods.push("waffo");
+  // Typing a referral code after selecting Waffo falls back to WeChat so the order stays valid.
+  const method: PayMethod = payMethod === "waffo" && waffoBlocked ? "wxpay" : payMethod;
+  const methodLabel = (m: PayMethod) => (m === "wxpay" ? t.payWechat : m === "usdt" ? t.payUsdt : t.payWaffo);
 
   return (
     <>
@@ -366,23 +401,35 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
                     : t.referralHelp)}
               </p>
             </form>
-            {plan.priceUsdtMicros != null && (
+            {methods.length > 1 && (
               <div className="mt-4">
                 <p className="text-[13px] font-medium">{t.payMethod}</p>
-                <div role="radiogroup" aria-label={t.payMethod} className="mt-2 grid grid-cols-2 gap-2">
-                  {(["wxpay", "usdt"] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      role="radio"
-                      aria-checked={payMethod === m}
-                      onClick={() => setPayMethod(m)}
-                      className={`btn ${payMethod === m ? "btn-primary" : "btn-secondary"}`}
-                    >
-                      {m === "wxpay" ? t.payWechat : t.payUsdt}
-                    </button>
-                  ))}
+                <div
+                  role="radiogroup"
+                  aria-label={t.payMethod}
+                  className={`mt-2 grid gap-2 ${methods.length === 3 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}
+                >
+                  {methods.map((m) => {
+                    const disabled = m === "waffo" && waffoBlocked != null;
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        role="radio"
+                        aria-checked={method === m}
+                        disabled={disabled}
+                        title={disabled ? (waffoBlocked ?? undefined) : undefined}
+                        onClick={() => setPayMethod(m)}
+                        className={`btn ${method === m ? "btn-primary" : "btn-secondary"} disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        {methodLabel(m)}
+                      </button>
+                    );
+                  })}
                 </div>
+                {plan.waffoPriceMinor != null && waffoBlocked && (
+                  <p className="mt-2 text-[12.5px] leading-relaxed text-muted">{waffoBlocked}</p>
+                )}
               </div>
             )}
             {/* Estimate: plan price − current-plan credit − checked referral discount; the order amount is authoritative. */}
@@ -391,9 +438,14 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
               {identity.purchaseCreditMinor > 0 && (
                 <Row label={t.priceCredit} value={`− ${money(Math.min(identity.purchaseCreditMinor, plan.priceMinor))}`} mono />
               )}
-              {referralDiscount > 0 && <Row label={t.priceReferral} value={`− ${money(referralDiscount)}`} mono />}
-              <Row label={t.pricePayable} value={money(estimate - referralDiscount)} mono strong={payMethod !== "usdt"} />
-              {payMethod === "usdt" && plan.priceUsdtMicros != null && (
+              {referralDiscount > 0 && method !== "waffo" && <Row label={t.priceReferral} value={`− ${money(referralDiscount)}`} mono />}
+              {method !== "waffo" && (
+                <Row label={t.pricePayable} value={money(estimate - referralDiscount)} mono strong={method === "wxpay"} />
+              )}
+              {method === "waffo" && plan.waffoPriceMinor != null && (
+                <Row label={t.waffoPayable} value={formatUsd(plan.waffoPriceMinor)} mono strong />
+              )}
+              {method === "usdt" && plan.priceUsdtMicros != null && (
                 <Row
                   label={t.usdtEstimate}
                   value={`≈ ${formatUsdt(estimateUsdtMicros(estimate - referralDiscount, plan.basePriceMinor, plan.priceUsdtMicros))}`}
@@ -430,7 +482,62 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
 
         {step === "pay" && order && order.payMethod === "usdt" && order.status !== "expired" && <UsdtPayPanel order={order} t={t} />}
 
-        {step === "pay" && order && order.payMethod !== "usdt" && (
+        {step === "pay" && order && order.payMethod === "waffo" && (
+          <div className="flex flex-col items-center text-center" role="status">
+            {order.status === "refunded" ? (
+              <>
+                <h3 className="text-base font-semibold">{t.waffoRefundedTitle}</h3>
+                <p className="mt-2 text-[13px] leading-relaxed text-muted">{t.waffoRefundedDesc}</p>
+              </>
+            ) : order.status === "expired" ? (
+              <>
+                <h3 className="text-base font-semibold">{t.usdtExpiredTitle}</h3>
+                <p className="mt-2 text-[13px] leading-relaxed text-muted">{t.waffoExpiredDesc}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-[13px] leading-relaxed text-muted">{t.waffoDesc}</p>
+                {order.payAmountMicros != null && (
+                  <div className="num mt-5 text-3xl font-semibold tracking-tight">{formatUsd(order.payAmountMicros / 10_000)}</div>
+                )}
+                {order.checkoutUrl ? (
+                  <button type="button" onClick={() => openCheckout(order.checkoutUrl!)} className="btn btn-primary mt-5 w-full">
+                    {t.waffoGo}
+                  </button>
+                ) : (
+                  <ErrorLine text={t.err.gateway} />
+                )}
+                <p className="mt-4 inline-flex items-center gap-2 text-xs text-muted">
+                  <LoaderCircle size={13} className="animate-spin text-accent" aria-hidden />
+                  {t.waiting}
+                </p>
+              </>
+            )}
+            <p className="num mt-4 font-mono text-[11px] text-subtle">
+              {t.orderNo} · {order.orderNo}
+            </p>
+            {(order.status === "expired" || order.status === "refunded") && (
+              <div className="mt-5 grid w-full grid-cols-2 gap-3">
+                <button type="button" onClick={close} className="btn btn-secondary">
+                  {t.close}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrder(null);
+                    setError(null);
+                    setStep("confirm");
+                  }}
+                  className="btn btn-primary"
+                >
+                  {t.reorder}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === "pay" && order && order.payMethod === "wxpay" && (
           <div className="flex flex-col items-center text-center">
             <WechatBadge label={t.wechatBadge} />
             <p className="mt-3 text-[13px] text-muted">{t.scanTitle}</p>

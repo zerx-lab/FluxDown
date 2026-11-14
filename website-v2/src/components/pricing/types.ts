@@ -30,6 +30,8 @@ export interface CloudPlan {
   campaign: CloudCampaign | null;
   /** Membership card period in days; missing / null = permanent plan. */
   billingPeriodDays?: number | null;
+  /** Waffo price (USD cents); null/missing = Waffo not offered for this plan. */
+  waffoPriceMinor?: number | null;
 }
 
 /** What the web purchase dialog needs from a plan card. */
@@ -43,4 +45,6 @@ export interface PlanBrief {
   basePriceMinor: number;
   /** USDT price at the list price (micros); null = USDT not offered. */
   priceUsdtMicros: number | null;
+  /** Waffo price (USD cents); null = Waffo not offered. */
+  waffoPriceMinor: number | null;
 }

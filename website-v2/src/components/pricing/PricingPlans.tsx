@@ -189,7 +189,7 @@ function CloudPlanCell({ plan, lang }: { plan: CloudPlan; lang: Lang }) {
         (plan.purchasable !== false ? (
           <>
             {/* USDT checkout hidden on the mainland-filed site (crypto payments are not allowed in mainland China); FluxCloud still supports it. */}
-            <WebPurchase plan={{ code: plan.code, name: plan.name, priceMinor, currency: plan.currency, basePriceMinor: plan.priceMinor, priceUsdtMicros: null }} lang={lang} />
+            <WebPurchase plan={{ code: plan.code, name: plan.name, priceMinor, currency: plan.currency, basePriceMinor: plan.priceMinor, priceUsdtMicros: null, waffoPriceMinor: plan.waffoPriceMinor ?? null }} lang={lang} />
             <p className="mt-2.5 text-center text-xs text-subtle">{t.buyInApp}</p>
           </>
         ) : (
