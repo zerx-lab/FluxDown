@@ -2199,10 +2199,15 @@ impl DownloadTableDelegate {
     }
 
     /// 指针移到 `row_ix`。返回选区是否变化。文件拖放进行时没有划选会话，本方法直接返回。
+    /// 没按着左键的移动说明会话的 mouse_up 被别处吞掉（#1123），此时直接收束会话。
     pub(super) fn drag_sweep_to(&mut self, row_ix: usize, event: &MouseMoveEvent) -> bool {
         let Some(sweep) = self.row_sweep.as_mut() else {
             return false;
         };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.row_sweep = None;
+            return false;
+        }
         if !sweep.active {
             let delta = event.position - sweep.origin_pos;
             if !sweep_past_slop(delta) {
@@ -2567,6 +2572,8 @@ impl DownloadTableDelegate {
         if !checkbox_pinned {
             let tooltip = self.strings.select_task_tooltip.clone();
             // 选择列只负责点进多选。拖出文件只在文件名列，避免和图标点击抢手势。
+            // 按下在本元素截断：行的划选不得由选择格启动。on_click 在 mouse_up 冒泡阶段会
+            // stop_propagation，行的 finish_row_sweep 收不到，会话就残留了（#1123）。
             return div()
                 .id(("download-task-select-cell", row_ix))
                 .group(SELECT_CELL_GROUP)
@@ -2595,6 +2602,7 @@ impl DownloadTableDelegate {
                             style.border_color(hover_border)
                         })),
                 )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(toggle)
                 .into_any_element();
         }
@@ -5553,6 +5561,122 @@ mod tests {
         assert!(!app.read(|cx| cx.has_active_drag()));
         win.simulate_mouse_up(at(other_x, 2), MouseButton::Left);
         assert_eq!(selected(&win).len(), 3);
+        Ok(())
+    }
+
+    /// 回归 #1123：初次点选择格（非多选状态）不得留下划选会话，否则之后不按键移动也会改选区。
+    #[test]
+    fn selection_cell_click_enters_multi_select_without_leaving_a_sweep() -> Result<(), I18nError> {
+        use gpui::{
+            AppContext as _, Context, Entity, IntoElement, Modifiers, MouseMoveEvent,
+            ParentElement as _, Pixels, Point, Render, Styled as _, TestApp, Window, div, point,
+            px,
+        };
+        use gpui_component::table::TableState;
+
+        struct Host {
+            table: Entity<TableState<DownloadTableDelegate>>,
+        }
+
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().child(render_download_table(
+                    "select-cell-test-table",
+                    &self.table,
+                    cx,
+                ))
+            }
+        }
+
+        let delegate = delegate(&[3, 3, 3, 3])?;
+        let keys = delegate.visible_task_keys();
+        let mut app = TestApp::new();
+        app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+        });
+        let mut win = app.open_window(move |window, cx| Host {
+            table: cx.new(|cx| {
+                TableState::new(delegate, window, cx)
+                    .row_selectable(false)
+                    .col_selectable(false)
+            }),
+        });
+        for _ in 0..3 {
+            win.draw();
+            app.run_until_parked();
+        }
+
+        let (header, row, cell_x) = win.read(|host, cx| {
+            let delegate = host.table.read(cx).delegate();
+            (
+                f32::from(table_header_height(cx)),
+                f32::from(
+                    delegate
+                        .prefs
+                        .density
+                        .row_height(fluxdown_ui_theme::active_theme(cx).density()),
+                ),
+                delegate.selection_column_width() / 2.,
+            )
+        });
+        let at = |x: f32, row_ix: usize| -> Point<Pixels> {
+            point(px(x), px(header + row * (row_ix as f32 + 0.5)))
+        };
+
+        win.simulate_mouse_move(at(cell_x, 0));
+        win.simulate_click(at(cell_x, 0), gpui::MouseButton::Left);
+        win.read(|host, cx| {
+            let delegate = host.table.read(cx).delegate();
+            assert!(delegate.in_multi_select());
+            assert_eq!(delegate.selected_keys(), [keys[0].clone()]);
+            assert!(delegate.row_sweep.is_none());
+        });
+
+        // 没按键的移动不改选区。
+        for row_ix in [1, 3, 2] {
+            win.simulate_event(MouseMoveEvent {
+                position: at(cell_x + 200., row_ix),
+                modifiers: Modifiers::default(),
+                pressed_button: None,
+            });
+        }
+        win.read(|host, cx| {
+            let delegate = host.table.read(cx).delegate();
+            assert_eq!(delegate.selected_keys(), [keys[0].clone()]);
+            assert!(delegate.row_sweep.is_none());
+        });
+        Ok(())
+    }
+
+    /// 回归 #1123 的纵深防御：划选会话残留（漏掉 mouse_up）时，无按键移动立即收束会话。
+    #[test]
+    fn drag_sweep_ends_when_no_button_is_pressed() -> Result<(), I18nError> {
+        use gpui::{Modifiers, MouseButton, MouseMoveEvent, point, px};
+
+        let mut delegate = delegate(&[1, 1, 1, 1])?;
+        let stale = || super::RowSweep {
+            origin_ix: 0,
+            origin_pos: point(px(0.), px(0.)),
+            additive: false,
+            base: HashSet::new(),
+            active: false,
+        };
+        let moved = |pressed_button| MouseMoveEvent {
+            position: point(px(100.), px(100.)),
+            modifiers: Modifiers::default(),
+            pressed_button,
+        };
+
+        delegate.row_sweep = Some(stale());
+        assert!(!delegate.drag_sweep_to(2, &moved(None)));
+        assert!(delegate.row_sweep.is_none());
+        assert!(delegate.selected_tasks.is_empty());
+
+        // 按住左键时照常划选。
+        delegate.row_sweep = Some(stale());
+        assert!(delegate.drag_sweep_to(2, &moved(Some(MouseButton::Left))));
+        assert_eq!(delegate.selected_tasks.len(), 3);
         Ok(())
     }
 
