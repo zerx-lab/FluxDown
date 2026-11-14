@@ -115,10 +115,8 @@ private struct BtSelectionView: View {
     @State private var timing: SelectionTiming
     @State private var tree: BtFolderNode
     @State private var sizes: [Int32: Int64]
-    @State private var initial: Set<Int32>
     @State private var selected: Set<Int32>
     @State private var collapsed: Set<String>
-    @State private var showDiscard = false
     /// 「名称」预填值（任务当前显示名）与输入；确认时经 `btNameOutcome` 只在改过时提交 `customName`。
     @State private var initialName: String
     @State private var name: String
@@ -136,7 +134,6 @@ private struct BtSelectionView: View {
         _timing = State(initialValue: SelectionTiming(request))
         _tree = State(initialValue: root)
         _sizes = State(initialValue: Dictionary(files.map { ($0.index, $0.size) }, uniquingKeysWith: { first, _ in first }))
-        _initial = State(initialValue: start)
         _selected = State(initialValue: start)
         _collapsed = State(initialValue: defaultCollapsedFolders(root, fileCount: files.count))
         let displayName = task?.fileName ?? ""
@@ -145,7 +142,6 @@ private struct BtSelectionView: View {
     }
 
     private var selectedBytes: Int64 { selected.reduce(0) { $0 + (sizes[$1] ?? 0) } }
-    private var dirty: Bool { selected != initial || btNameOutcome(initial: initialName, input: name) != nil }
     /// 只有清单里有目录时文件行才需要让出折叠箭头的位置（箭头 32 + 间距 8）；纯文件清单左对齐。
     private var chevronGutter: CGFloat {
         tree.children.contains { if case .folder = $0 { true } else { false } } ? 40 : 0
@@ -184,15 +180,8 @@ private struct BtSelectionView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(L("cancel"), systemImage: FluxSymbol.close) {
-                        if dirty { showDiscard = true } else { resolver.cancel(request, onSuccess: close) }
-                    }
-                    .alert(L("mobileSelectionDiscardTitle"), isPresented: $showDiscard) {
-                        Button(L("mobileDiscard"), role: .destructive) { resolver.cancel(request, onSuccess: close) }
-                        Button(L("mobileKeepEditing"), role: .cancel) {}
-                    } message: {
-                        Text(L("mobileSelectionDiscardMessage"))
-                    }
+                    // BT 取消 = 删除任务（同 GPUI / Web / Android，不弹「放弃选择」：那句文案承诺任务保持暂停）
+                    Button(L("cancel"), systemImage: FluxSymbol.close) { resolver.cancel(request, onSuccess: close) }
                 }
             }
             .toolbar {
