@@ -538,8 +538,9 @@ fn loopback_authority(value: &str) -> bool {
 
 /// 按来源地址的访问密钥失败节流：窗口内失败达到上限即锁定到窗口结束。
 /// 回环来源不受限（本机反代会让所有外部请求都呈现为回环，限速只会变成全站锁定）。
+/// server 模式由 [`ServerHandle`] 持有；桌面形态的 `/rpc` 由网关自己持有一份。
 #[derive(Default)]
-struct AuthThrottle {
+pub(crate) struct AuthThrottle {
     entries: std::sync::Mutex<HashMap<IpAddr, ThrottleEntry>>,
 }
 
@@ -548,7 +549,7 @@ struct ThrottleEntry {
     window_start: std::time::Instant,
 }
 
-const THROTTLE_MAX_FAILURES: u32 = 10;
+pub(crate) const THROTTLE_MAX_FAILURES: u32 = 10;
 const THROTTLE_WINDOW: Duration = Duration::from_secs(60);
 const THROTTLE_MAX_TRACKED: usize = 4096;
 
@@ -571,7 +572,7 @@ impl AuthThrottle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn is_locked(&self, peer: IpAddr, now: std::time::Instant) -> bool {
+    pub(crate) fn is_locked(&self, peer: IpAddr, now: std::time::Instant) -> bool {
         if peer.is_loopback() {
             return false;
         }
@@ -587,7 +588,7 @@ impl AuthThrottle {
         }
     }
 
-    fn record_failure(&self, peer: IpAddr, now: std::time::Instant) {
+    pub(crate) fn record_failure(&self, peer: IpAddr, now: std::time::Instant) {
         if peer.is_loopback() {
             return;
         }
@@ -609,7 +610,7 @@ impl AuthThrottle {
         entry.failures = entry.failures.saturating_add(1);
     }
 
-    fn record_success(&self, peer: IpAddr) {
+    pub(crate) fn record_success(&self, peer: IpAddr) {
         self.entries().remove(&Self::bucket(peer));
     }
 }
