@@ -238,7 +238,7 @@ impl DiagnosticsService {
     pub fn with_desktop_checks(mut self, notifier: Arc<crate::notification::Notifier>) -> Self {
         self.desktop = Some(DesktopProbe {
             notifier,
-            text: crate::notification::NoticeText::default(),
+            text: crate::notification::NoticeText,
         });
         self
     }

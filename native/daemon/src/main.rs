@@ -8,8 +8,23 @@ use tokio_util::sync::CancellationToken;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// 主 runtime 的 worker 上限。下载数据面是 IO 等待为主（TLS 解密、分段写盘在 worker / 阻塞池
+/// 之间流转），4 个 worker 已远超千兆 / 万兆链路需要；默认按核数开时每个 worker 的分配器线程
+/// 堆在空闲时也常驻（10 核机实测 20 → 13 线程省约 3MB）。BT 与插件各有专用 runtime，不受此限。
+const MAX_WORKER_THREADS: usize = 4;
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let workers = std::thread::available_parallelism()
+        .map_or(2, std::num::NonZeroUsize::get)
+        .clamp(2, MAX_WORKER_THREADS);
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cancel = CancellationToken::new();
     let signal_cancel = cancel.clone();
     tokio::spawn(async move {

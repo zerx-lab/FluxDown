@@ -222,7 +222,7 @@ impl TaskEventHub {
     async fn pump(
         self,
         hub: AgentEventHub,
-        mut frames: broadcast::Receiver<EventFrame>,
+        mut frames: broadcast::Receiver<Arc<EventFrame>>,
         baseline: u64,
     ) {
         loop {
@@ -231,7 +231,7 @@ impl TaskEventHub {
                     if frame.sequence <= baseline {
                         continue;
                     }
-                    let events = match frame.event {
+                    let events = match &frame.event {
                         // 整表替换在广播里只带头 / 重载宣告，任务表不在帧内：按 hub 当前
                         // 完整投影对账（只在对账那一刻持 hub 锁，回放无关）。
                         ServiceEvent::Agent(
@@ -247,7 +247,7 @@ impl TaskEventHub {
                             lock_or_recover(&self.tracker).reconcile(&snapshot.daemon.tasks)
                         }),
                         ServiceEvent::Agent(AgentEvent::Daemon(event)) => {
-                            lock_or_recover(&self.tracker).apply(&event)
+                            lock_or_recover(&self.tracker).apply(event)
                         }
                         _ => continue,
                     };

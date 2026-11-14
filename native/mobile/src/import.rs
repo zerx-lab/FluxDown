@@ -1058,6 +1058,7 @@ mod tests {
         let route = CategoryRouteDto {
             rules: Vec::new(),
             other_dir: "/other".to_owned(),
+            ..Default::default()
         };
         let dto = |offered: Option<&str>, save_dir: &str| {
             let mut common = request(save_dir);

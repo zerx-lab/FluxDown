@@ -92,7 +92,7 @@ impl EventPump {
     }
 
     /// 开始转发；已经在转发时忽略（一条连接只订阅一次）。
-    pub(crate) fn attach(&mut self, receiver: broadcast::Receiver<EventFrame>, limit: usize) {
+    pub(crate) fn attach(&mut self, receiver: broadcast::Receiver<Arc<EventFrame>>, limit: usize) {
         if self.task.is_none() {
             self.task = Some(tokio::spawn(pump(
                 Arc::clone(&self.shared),
@@ -129,7 +129,11 @@ impl EventReader {
     }
 }
 
-async fn pump(shared: Arc<Shared>, mut receiver: broadcast::Receiver<EventFrame>, limit: usize) {
+async fn pump(
+    shared: Arc<Shared>,
+    mut receiver: broadcast::Receiver<Arc<EventFrame>>,
+    limit: usize,
+) {
     use broadcast::error::{RecvError, TryRecvError};
     loop {
         let first = receiver.recv().await;
@@ -140,7 +144,8 @@ async fn pump(shared: Arc<Shared>, mut receiver: broadcast::Receiver<EventFrame>
             let end = loop {
                 match incoming {
                     Ok(frame) => {
-                        state.queue.push(frame);
+                        // 合并会就地改写帧：广播环仍持有同一 Arc，这里取得自己的副本。
+                        state.queue.push(Arc::unwrap_or_clone(frame));
                         if state.queue.len() > limit {
                             break Some(PumpEnd::Overflow {
                                 pending: state.queue.len(),
@@ -270,16 +275,16 @@ mod tests {
 
     use super::*;
 
-    fn frame(sequence: u64, event: DaemonEvent) -> EventFrame {
-        EventFrame {
+    fn frame(sequence: u64, event: DaemonEvent) -> Arc<EventFrame> {
+        Arc::new(EventFrame {
             epoch: "epoch".to_owned(),
             sequence,
             previous: None,
             event: ServiceEvent::Daemon(event),
-        }
+        })
     }
 
-    fn progress(sequence: u64, task: &str, downloaded: i64) -> EventFrame {
+    fn progress(sequence: u64, task: &str, downloaded: i64) -> Arc<EventFrame> {
         frame(
             sequence,
             DaemonEvent::Engine(WsServerMsg::TaskProgress {

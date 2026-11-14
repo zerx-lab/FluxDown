@@ -1291,7 +1291,9 @@ mod tests {
         };
         let request = loop {
             let frame = frames.recv().await.expect("selection event");
-            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) =
+                frame.event.clone()
+            {
                 break request;
             }
         };
@@ -1336,7 +1338,9 @@ mod tests {
         };
         let request_id = loop {
             let frame = frames.recv().await.expect("blank selection event");
-            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) =
+                frame.event.clone()
+            {
                 break request.request_id;
             }
         };
@@ -1373,7 +1377,9 @@ mod tests {
         };
         let request_id = loop {
             let frame = frames.recv().await.expect("cancel selection event");
-            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) =
+                frame.event.clone()
+            {
                 break request.request_id;
             }
         };
@@ -1431,12 +1437,16 @@ mod tests {
     }
 
     async fn next_pending(
-        frames: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        frames: &mut tokio::sync::broadcast::Receiver<
+            std::sync::Arc<fluxdown_protocol::EventFrame>,
+        >,
     ) -> SelectionRequestDto {
         use fluxdown_protocol::{DaemonEvent, ServiceEvent};
         loop {
             let frame = frames.recv().await.expect("selection event");
-            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) = frame.event {
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionPending(request)) =
+                frame.event.clone()
+            {
                 break request;
             }
         }
@@ -1633,7 +1643,8 @@ mod tests {
         assert_eq!(lock_pending_len(&manager), 0);
         let resolved = loop {
             let frame = frames.recv().await.expect("selection event");
-            if let ServiceEvent::Daemon(DaemonEvent::SelectionResolved { request_id }) = frame.event
+            if let ServiceEvent::Daemon(DaemonEvent::SelectionResolved { request_id }) =
+                frame.event.clone()
             {
                 break request_id;
             }

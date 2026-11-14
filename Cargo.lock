@@ -3380,6 +3380,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-format"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55d9ccda37e95b4f0978a3074b4a9939979103a7256459cfb449c9c84d1adf23"
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3519,6 +3525,8 @@ dependencies = [
  "objc2-user-notifications",
  "regex",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3533,6 +3541,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "uuid",
+ "webpki-roots 1.0.11",
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
@@ -3616,6 +3625,7 @@ dependencies = [
  "ed25519-dalek",
  "encoding_rs",
  "feed-rs",
+ "file-format",
  "flate2",
  "fluxdown_logfile",
  "fs2",
@@ -3637,6 +3647,8 @@ dependencies = [
  "rand 0.9.5",
  "regex",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha1 0.10.7",
@@ -3651,6 +3663,7 @@ dependencies = [
  "ts2mp4",
  "url",
  "uuid",
+ "webpki-roots 1.0.11",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
  "zip",

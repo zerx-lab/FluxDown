@@ -1810,8 +1810,8 @@ mod tests {
                 .expect("single caller")
                 .expect("single capture");
             assert!(matches!(
-                events.try_recv().expect("single notification").event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if ids == ["single"]
+                &events.try_recv().expect("single notification").event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if *ids == ["single"]
             ));
 
             for fail_second in [false, true] {
@@ -1863,9 +1863,9 @@ mod tests {
                         .expect("second created");
                     batch.await.expect("batch caller").expect("batch capture");
                     assert!(matches!(
-                        events.try_recv().expect("batch notification").event,
+                        &events.try_recv().expect("batch notification").event,
                         ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids))
-                            if ids == ["first", "second"]
+                            if *ids == ["first", "second"]
                     ));
                 }
             }
@@ -1888,13 +1888,13 @@ mod tests {
 
             capture.announce_page_started(&ids(&["new"]), &[]);
             assert!(matches!(
-                events.try_recv().expect("created notification").event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if ids == ["new"]
+                &events.try_recv().expect("created notification").event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if *ids == ["new"]
             ));
             capture.announce_page_started(&[], &ids(&["old"]));
             assert!(matches!(
-                events.try_recv().expect("resumed notification").event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksResumed(ids)) if ids == ["old"]
+                &events.try_recv().expect("resumed notification").event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksResumed(ids)) if *ids == ["old"]
             ));
             capture.announce_page_started(&ids(&["a"]), &ids(&["b"]));
             capture.announce_page_started(&ids(&["a", "b"]), &[]);
@@ -1995,7 +1995,7 @@ mod tests {
             reply.send(Ok(json!({ "groupId": "created-group" }))).expect("create group");
             let event = events.recv().await.expect("consumption published");
             assert!(matches!(
-                event.event,
+                &event.event,
                 ServiceEvent::Agent(AgentEvent::PendingCapturesChanged(pending)) if pending.is_empty()
             ));
             assert!(capture.list().await.is_empty());

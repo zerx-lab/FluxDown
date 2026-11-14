@@ -101,7 +101,7 @@ impl CloudClient {
     ) -> Result<Self, CloudError> {
         validate_base_url(&base_url)?;
         let http = LazyHttpClient::new(|| {
-            reqwest::Client::builder()
+            crate::tls::client_builder(crate::tls::HttpVersion::Any)
                 .user_agent(format!("FluxDown/{}", fluxdown_protocol::APP_VERSION))
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(15))
@@ -111,19 +111,18 @@ impl CloudClient {
         // SSE 长连接：TCP keepalive 让内核尽早发现半开连接（合盖唤醒 / NAT 静默断流），
         // 与应用层空闲看门狗互为补充。
         let stream_http = LazyHttpClient::new(|| {
-            reqwest::Client::builder()
+            crate::tls::client_builder(crate::tls::HttpVersion::Any)
                 .user_agent(format!("FluxDown/{}", fluxdown_protocol::APP_VERSION))
                 .connect_timeout(Duration::from_secs(10))
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_keepalive(Some(TCP_KEEPALIVE))
         });
         let ws_http = LazyHttpClient::new(|| {
-            reqwest::Client::builder()
+            crate::tls::client_builder(crate::tls::HttpVersion::Http1)
                 .user_agent(format!("FluxDown/{}", fluxdown_protocol::APP_VERSION))
                 .connect_timeout(Duration::from_secs(10))
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_keepalive(Some(TCP_KEEPALIVE))
-                .http1_only()
                 // 3xx 说明中间层没有透传 Upgrade：不跟随，交给握手分类归为「不支持」。
                 .redirect(reqwest::redirect::Policy::none())
         });
@@ -2253,7 +2252,9 @@ mod tests {
     }
 
     fn recorded_session_events(
-        receiver: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        receiver: &mut tokio::sync::broadcast::Receiver<
+            std::sync::Arc<fluxdown_protocol::EventFrame>,
+        >,
     ) -> Vec<String> {
         let mut seen = Vec::new();
         loop {
@@ -2268,7 +2269,7 @@ mod tests {
                     panic!("session event assertion missed {skipped} events");
                 }
             };
-            if let fluxdown_protocol::ServiceEvent::Agent(event) = frame.event {
+            if let fluxdown_protocol::ServiceEvent::Agent(event) = frame.event.clone() {
                 match event {
                     fluxdown_protocol::AgentEvent::SessionRevoked(reason) => {
                         seen.push(format!("revoked:{reason:?}"));

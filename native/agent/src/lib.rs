@@ -56,6 +56,7 @@ pub mod supervisor;
 pub mod sync;
 mod system_proxy;
 mod task_events;
+mod tls;
 pub mod update;
 mod web_assets;
 

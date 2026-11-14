@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import en from "./locales/en";
+import ru from "./locales/ru";
 import zhCN from "./locales/zh-CN";
 import zhTW from "./locales/zh-TW";
 import type { MessageKey } from "./locales/zh-CN";
@@ -65,13 +66,14 @@ const localeCases = [
   ["zh", "zh-CN"], ["zh-CN", "zh-CN"], ["zh-SG", "zh-CN"],
   ["zh-Hantfoo", "zh-CN"], ["zh-u-rg-twzzzz", "zh-CN"],
   ["en-GB", "en"], ["EN_us", "en"],
+  ["ru", "ru"], ["ru-RU", "ru"], ["RU_ru", "ru"],
 ] as const;
 
 for (const [input, expected] of localeCases) {
   test(`resolves ${input} consistently for manual, saved and browser languages`, async () => {
     setLocale(input);
     expect(getLocale()).toBe(expected);
-    const messages = expected === "zh-TW" ? zhTW : expected === "zh-CN" ? zhCN : en;
+    const messages = expected === "zh-TW" ? zhTW : expected === "zh-CN" ? zhCN : expected === "ru" ? ru : en;
     expect(t("options.general.languageTitle")).toBe(messages["options.general.languageTitle"]);
 
     // Old saved aliases must match one of the canonical options values.
@@ -127,7 +129,7 @@ describe("language preference and fallback", () => {
   });
 
   test("popup cycle preserves distinct simplified and traditional selections", async () => {
-    for (const expected of ["zh-CN", "zh-TW", "en", "zh-CN"] as const) {
+    for (const expected of ["zh-CN", "zh-TW", "ru", "en"] as const) {
       const next = getNextLocale();
       expect(next).toBe(expected);
       await saveLocale(next);
@@ -147,5 +149,15 @@ test("Taiwan translations cover the baseline keys and preserve every placeholder
     const placeholders = zhCN[key].match(/\{[A-Za-z][A-Za-z0-9_]*\}/g) ?? [];
     expect((zhTW[key].match(/\{[A-Za-z][A-Za-z0-9_]*\}/g) ?? []).sort()).toEqual(placeholders.sort());
     expect((en[key].match(/\{[A-Za-z][A-Za-z0-9_]*\}/g) ?? []).sort()).toEqual(placeholders.sort());
+  }
+});
+
+test("Russian translations cover the baseline keys and preserve every placeholder", () => {
+  const keys = Object.keys(zhCN).sort() as MessageKey[];
+  expect(Object.keys(ru).sort()).toEqual(keys);
+  for (const key of keys) {
+    expect(ru[key].trim().length).toBeGreaterThan(0);
+    const placeholders = zhCN[key].match(/\{[A-Za-z][A-Za-z0-9_]*\}/g) ?? [];
+    expect((ru[key].match(/\{[A-Za-z][A-Za-z0-9_]*\}/g) ?? []).sort()).toEqual(placeholders.sort());
   }
 });

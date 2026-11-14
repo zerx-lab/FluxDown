@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn proxy_rules_issue_and_route_text_follow_shared_mapping() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let t = catalog.translator("en");
         let issue = |code: &str, detail: &str| ProxyRuleIssueDto {
             index: 0,

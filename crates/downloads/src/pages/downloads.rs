@@ -2743,6 +2743,7 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_rename_selected))
             .on_action(cx.listener(Self::on_change_selected_url))
             .on_action(cx.listener(Self::on_change_selected_segments))
+            .on_action(cx.listener(Self::on_edit_selected_proxy))
             .on_action(cx.listener(Self::on_verify_selected))
             .on_action(cx.listener(Self::on_set_rarest_first_selected))
             .on_action(cx.listener(Self::on_set_sequential_selected))

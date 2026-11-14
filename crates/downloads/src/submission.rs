@@ -1069,7 +1069,7 @@ mod tests {
     #[test]
     fn dispatch_summary_reports_partial_failure_and_never_yields_local_task_ids()
     -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let calls = RefCell::new(Vec::new());
         let report = block_on(run_submission(
@@ -1116,7 +1116,7 @@ mod tests {
 
     #[test]
     fn all_dispatched_offline_target_mentions_it_will_run_later() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let mut submission = remote(
             DispatchTarget::Cloud("dev-b".to_owned()),
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn direct_dispatch_toast_says_progress_is_on_the_target_device() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let report = block_on(run_submission(
             NewDownloadSubmission::Remote(remote(
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn local_failure_shows_reason_text_and_success_collects_created_ids() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let submission = tasks(1);
         let report = block_on(run_submission(
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn per_item_outcomes_feed_counts_and_created_ids() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         // 回复缺条目：按失败计，不能静默丢掉。
         let report = block_on(run_submission(
@@ -1477,7 +1477,7 @@ mod tests {
     #[test]
     fn cancel_before_start_sends_nothing_and_reports_everything_unsubmitted()
     -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let cancel = CancelToken::default();
         cancel.cancel();
@@ -1762,6 +1762,7 @@ mod tests {
                 ..Default::default()
             }],
             other_dir: "/data/other".to_owned(),
+            ..Default::default()
         }
     }
 

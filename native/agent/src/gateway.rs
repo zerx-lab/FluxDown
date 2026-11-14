@@ -2383,7 +2383,7 @@ impl GatewayService {
         self: &Arc<Self>,
         session: &SessionContext,
     ) -> (
-        tokio::sync::broadcast::Receiver<EventFrame>,
+        tokio::sync::broadcast::Receiver<Arc<EventFrame>>,
         RequestLanes,
         tokio::sync::mpsc::Receiver<RpcResponse>,
     ) {

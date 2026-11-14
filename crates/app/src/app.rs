@@ -180,7 +180,7 @@ pub(crate) fn run() -> Result<RunOutcome, AppError> {
         bearer_path: token_path,
     };
 
-    let catalog = Arc::new(I18nCatalog::load_embedded()?);
+    let catalog = I18nCatalog::load_embedded()?;
     let translator = catalog.translator(&system_locale());
     let locale = component_locale(translator.locale()).to_owned();
 

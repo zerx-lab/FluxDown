@@ -78,7 +78,10 @@ use crate::{
     },
     pages::{
         downloads::{DownloadHostActions, PluginTaskTab},
-        task_edit::{TaskEditTarget, open_change_segments_dialog, open_change_url_dialog},
+        task_edit::{
+            TaskEditTarget, open_change_segments_dialog, open_change_url_dialog,
+            open_edit_proxy_dialog,
+        },
     },
     strings::DownloadStrings,
 };
@@ -1570,6 +1573,7 @@ impl TaskDetailView {
         let facts = task_menu_facts_for(&self.store, &RowKey::Local(self.task_id.clone()));
         let can_change_url = facts.is_some_and(|facts| facts.can_change_url());
         let can_change_segments = facts.is_some_and(|facts| facts.can_change_segments());
+        let can_edit_proxy = facts.is_some_and(|facts| facts.can_edit_proxy());
         let list = list.child(
             h_flex()
                 .flex_wrap()
@@ -1592,6 +1596,18 @@ impl TaskDetailView {
                             .label(self.strings.change_url.clone())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 open_change_url_dialog(this.edit_target(), window, cx);
+                            })),
+                    )
+                })
+                .when(can_edit_proxy, |this| {
+                    this.child(
+                        Button::new("detail-edit-proxy")
+                            .outline()
+                            .control(cx)
+                            .icon(FluxIcon::Globe)
+                            .label(self.strings.task_edit_proxy.clone())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                open_edit_proxy_dialog(this.edit_target(), window, cx);
                             })),
                     )
                 })

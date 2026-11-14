@@ -362,7 +362,7 @@ impl SyncService {
     async fn wait_retry(
         &self,
         cancel: &CancellationToken,
-        session_events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        session_events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>,
         delay: Duration,
         limited: bool,
     ) -> bool {
@@ -377,7 +377,7 @@ impl SyncService {
     /// 等到本机任务通道变为 `connected`；接收端 lag 时以当前快照为准。
     async fn wait_remote_connected(
         &self,
-        events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>,
     ) {
         loop {
             match events.recv().await {
@@ -471,7 +471,7 @@ impl SyncService {
         &self,
         response: reqwest::Response,
         cancel: &CancellationToken,
-        session_events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        session_events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>,
         epoch: crate::cloud::RequestEpoch,
     ) -> Result<SseEnd, SyncError> {
         let stream_uid = self.cloud.current_user_id().await;
@@ -1279,7 +1279,7 @@ fn daemon_revision(events: &AgentEventHub) -> u64 {
 }
 
 /// 等到下一条 `SessionChanged(Some)`；接收端 lag 时也返回，由调用方重新检查登录态。
-async fn wait_for_session(events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>) {
+async fn wait_for_session(events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>) {
     loop {
         match events.recv().await {
             Ok(frame) => {
@@ -2667,7 +2667,7 @@ mod tests {
             let frame = events.recv().await.expect("event");
             if let fluxdown_protocol::ServiceEvent::Agent(
                 fluxdown_protocol::AgentEvent::PreferencesChanged(prefs),
-            ) = frame.event
+            ) = frame.event.clone()
             {
                 return prefs;
             }

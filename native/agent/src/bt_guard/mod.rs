@@ -59,7 +59,7 @@ pub struct BtGuardWorker {
     cloud: CloudApi,
     events: AgentEventHub,
     /// 构造时即订阅，不会漏掉 `run` 被调度之前发出的事件。
-    frames: broadcast::Receiver<EventFrame>,
+    frames: broadcast::Receiver<Arc<EventFrame>>,
     sync: CloudListSync,
     uploader: EvidenceUploader,
     signals: Arc<Signals>,
@@ -166,7 +166,7 @@ impl Signals {
 }
 
 async fn dispatch(
-    mut frames: broadcast::Receiver<EventFrame>,
+    mut frames: broadcast::Receiver<Arc<EventFrame>>,
     signals: &Signals,
     cancel: &CancellationToken,
 ) {

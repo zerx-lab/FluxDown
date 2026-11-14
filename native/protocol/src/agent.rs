@@ -1551,6 +1551,9 @@ pub struct CategoryRouteDto {
     /// 「其他」分类的目录；空 = 不兜底。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub other_dir: String,
+    /// Visible builtin category identifiers mapped to configured save directories at submission.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub archive_categories: std::collections::BTreeMap<String, String>,
 }
 
 /// [`CategoryRouteDto`] 的单条普通分类规则。
@@ -1596,7 +1599,18 @@ impl CategoryRouteDto {
                 save_dir: category.save_dir.trim().to_owned(),
             })
             .collect::<Vec<_>>();
-        Some(Self { rules, other_dir })
+        let archive_categories = visible()
+            .filter_map(|category| {
+                let kind = category.builtin_type.as_deref()?;
+                let dir = category.save_dir.trim();
+                (kind != "all" && !dir.is_empty()).then(|| (kind.to_owned(), dir.to_owned()))
+            })
+            .collect();
+        Some(Self {
+            rules,
+            other_dir,
+            archive_categories,
+        })
     }
 
     /// 由 `custom_categories` 偏好值构建路由；缺失或无法解析时也返回空规则路由，
@@ -1659,6 +1673,7 @@ mod category_route_helper_tests {
                 save_dir: "/pictures".to_owned(),
             }],
             other_dir: "/other".to_owned(),
+            ..Default::default()
         }
     }
 
@@ -1705,6 +1720,44 @@ mod category_route_helper_tests {
         assert_eq!(
             CategoryRouteDto::from_preference(Some(&as_text)),
             Some(route)
+        );
+    }
+    #[test]
+    fn archive_category_routes_follow_stable_type_not_display_name() {
+        let mut categories = CustomCategoryDto::builtin_defaults();
+        let image = categories
+            .iter_mut()
+            .find(|category| category.builtin_type.as_deref() == Some("image"))
+            .expect("image baseline");
+        image.name = "摄影收藏".to_owned();
+        image.save_dir = " /photos ".to_owned();
+        let route = CategoryRouteDto::from_categories(&categories).expect("route");
+        assert_eq!(
+            route.archive_categories.get("image").map(String::as_str),
+            Some("/photos")
+        );
+        let image = categories
+            .iter_mut()
+            .find(|category| category.builtin_type.as_deref() == Some("image"))
+            .expect("image baseline");
+        image.save_dir = "/new-photos".to_owned();
+        let updated = CategoryRouteDto::from_categories(&categories).expect("updated route");
+        assert_eq!(
+            updated.archive_categories.get("image").map(String::as_str),
+            Some("/new-photos")
+        );
+        assert_eq!(
+            route.archive_categories.get("image").map(String::as_str),
+            Some("/photos")
+        );
+        categories
+            .iter_mut()
+            .for_each(|category| category.visible = false);
+        assert!(
+            CategoryRouteDto::from_categories(&categories)
+                .expect("hidden route")
+                .archive_categories
+                .is_empty()
         );
     }
 }

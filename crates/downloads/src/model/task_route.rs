@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn rule_labels_match_exactly_before_suffix_split() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let t = catalog.translator("en");
         assert_eq!(route_label("rule:direct", &t), "Site rule · direct");
         assert_eq!(route_label("rule:system", &t), "Site rule · system proxy");
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn auto_labels_and_suffixes() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let t = catalog.translator("en");
         assert_eq!(route_label("direct", &t), "Direct");
         assert_eq!(
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn unknown_labels_pass_through() -> Result<(), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let t = catalog.translator("en");
         assert_eq!(route_label("weird", &t), "weird");
         assert_eq!(

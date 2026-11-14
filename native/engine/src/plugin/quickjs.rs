@@ -1862,6 +1862,7 @@ mod tests {
                      console.log('name', ctx.fileName); flux.logger.warn({ n: 1 }); \
                      const absent = ['fetch', 'storage', 'info', 'task', 'fs', 'ffmpeg', \
                      'ytdlp', 'auth', 'rpc', 'ui'].filter(k => flux[k] !== undefined); \
+                     if (ctx.headerHex !== undefined) throw new Error('raw file bytes exposed'); \
                      return { folderName: absent.length + ':' + typeof __flux_fetch + ':' \
                      + flux.settings.label + ':' + ctx.fileName }; };"
                 .to_string(),
@@ -1877,7 +1878,8 @@ mod tests {
                     file_name: "episode.mkv".to_string(),
                     metadata: None,
                     is_group: false,
-                    header_hex: None,
+                    header_hex: Some("0123456789abcdef".to_string()),
+                    ..Default::default()
                 },
                 "{\"label\":\"Anime\"}".to_string(),
                 bridge.clone(),

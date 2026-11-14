@@ -1075,12 +1075,12 @@ async fn lagged_event_stream_wakes_the_uploader_but_not_the_cloud_loop() {
     let (frames, receiver) = tokio::sync::broadcast::channel(2);
     for sequence in 1..=5 {
         frames
-            .send(EventFrame {
+            .send(Arc::new(EventFrame {
                 epoch: "e".to_owned(),
                 sequence,
                 previous: None,
                 event: ServiceEvent::Agent(AgentEvent::DaemonConnectionChanged(false)),
-            })
+            }))
             .expect("receiver is alive");
     }
     let signals = Arc::new(Signals::default());

@@ -574,7 +574,7 @@ mod tests {
     }
 
     fn strings() -> Result<(DownloadStrings, Translator), I18nError> {
-        let catalog = std::sync::Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         Ok((DownloadStrings::from_translator(&translator), translator))
     }

@@ -24,11 +24,22 @@ use crate::supervisor::DaemonSupervisor;
 
 pub type AgentResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+/// agent tokio runtime 的 worker 数。agent 只做网关转发、云同步与系统外壳这类 IO 等待型工作，
+/// 下载数据面在 daemon；默认按 CPU 核数开 worker 时，每个 worker 各自的分配器线程堆在空闲时
+/// 也常驻（10 核机实测 12 → 4 线程省约 2MB），2 个足够且在单核机上不超订。
+const AGENT_WORKER_THREADS: usize = 2;
+
+/// agent 进程的多线程 runtime（桌面托盘与 `--server` 共用同一配置）。
+pub(crate) fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(AGENT_WORKER_THREADS)
+        .enable_all()
+        .build()
+}
+
 /// 在当前线程构建 tokio runtime 并运行 agent 直到退出；SIGTERM / Ctrl-C 只退出 agent。
 pub fn run_blocking(host: ShellHost) -> AgentResult {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = build_runtime()?;
     runtime.block_on(async move {
         let cancel = CancellationToken::new();
         let signal_cancel = cancel.clone();

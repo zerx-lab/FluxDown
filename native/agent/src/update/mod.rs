@@ -274,14 +274,14 @@ impl UpdateService {
         let user_agent = format!("{product}/{current_version}");
         let api_agent = user_agent.clone();
         let api_http = EgressClient::new(move || {
-            reqwest::Client::builder()
+            crate::tls::client_builder(crate::tls::HttpVersion::Any)
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(REQUEST_TIMEOUT)
                 .user_agent(api_agent.clone())
         });
         // 更新包体积大：不设整体超时，只限制连接与读停顿。
         let download_http = EgressClient::new(move || {
-            reqwest::Client::builder()
+            crate::tls::client_builder(crate::tls::HttpVersion::Any)
                 .connect_timeout(Duration::from_secs(10))
                 .read_timeout(Duration::from_secs(30))
                 .user_agent(user_agent.clone())

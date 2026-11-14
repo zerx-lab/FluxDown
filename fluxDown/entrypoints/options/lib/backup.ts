@@ -33,7 +33,7 @@ export const BACKUP_VERSION = 1;
 const DOT_POS_KEY = "fluxdown_dot_pos";
 const THEME_KEY = "theme";
 const LOCALE_KEY = "fluxdown_locale";
-const LOCALES = ["zh-CN", "zh-TW", "en"] as const;
+const LOCALES = ["zh-CN", "zh-TW", "en", "ru"] as const;
 
 export interface ExtensionBackup {
   format: typeof BACKUP_FORMAT;

@@ -218,9 +218,7 @@ impl HotkeyController {
         let translator = port
             .as_ref()
             .and_then(|_| match I18nCatalog::load_embedded() {
-                Ok(catalog) => {
-                    Some(Arc::new(catalog).translator(&fluxdown_ui_i18n::system_locale()))
-                }
+                Ok(catalog) => Some(catalog.translator(&fluxdown_ui_i18n::system_locale())),
                 Err(error) => {
                     tracing::warn!(error = %error, "hotkey translations unavailable");
                     None

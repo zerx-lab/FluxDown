@@ -12,14 +12,14 @@ import { clearLocale, saveLocale } from "@/utils/i18n";
 import { settings, updateSettings, useLocalValue } from "../lib/store";
 import { PanelShell, SettingGroup, SettingRow, ToggleRow } from "../parts";
 
-type LocaleChoice = "auto" | "zh-CN" | "zh-TW" | "en";
+type LocaleChoice = "auto" | "zh-CN" | "zh-TW" | "en" | "ru";
 type ThemeChoice = "system" | "light" | "dark";
 
 export function GeneralPanel(): JSX.Element | null {
   const t = useT();
   const s = settings.value;
   const [locale] = useLocalValue<LocaleChoice>("fluxdown_locale", (raw) =>
-    raw === "zh-CN" || raw === "zh-TW" || raw === "en" ? raw : "auto",
+    raw === "zh-CN" || raw === "zh-TW" || raw === "en" || raw === "ru" ? raw : "auto",
   );
   const [theme] = useLocalValue<ThemeChoice>("theme", (raw) => (raw === "light" || raw === "dark" ? raw : "system"));
   const [exporting, setExporting] = useState(false);
@@ -61,6 +61,7 @@ export function GeneralPanel(): JSX.Element | null {
               { value: "zh-CN", label: "简体中文" },
               { value: "zh-TW", label: "繁體中文（台灣）" },
               { value: "en", label: "English" },
+              { value: "ru", label: "Русский" },
             ]}
           />
         </SettingRow>

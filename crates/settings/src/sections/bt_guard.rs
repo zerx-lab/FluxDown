@@ -805,12 +805,11 @@ pub(crate) fn action_chip(action: &str, label: SharedString, cx: &App) -> Div {
 mod tests {
     use fluxdown_protocol::{BtGuardCloudStatusDto, BtGuardFilterSourceDto};
     use fluxdown_ui_i18n::I18nCatalog;
-    use std::sync::Arc;
 
     use super::{CloudLine, cloud_lines, filter_source_status};
 
     fn translator() -> fluxdown_ui_i18n::Translator {
-        let catalog = Arc::new(I18nCatalog::load_embedded().unwrap_or_else(|e| panic!("{e}")));
+        let catalog = I18nCatalog::load_embedded().unwrap_or_else(|e| panic!("{e}"));
         catalog.translator("en")
     }
 

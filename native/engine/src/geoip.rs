@@ -6,14 +6,16 @@
 //!   （全局代理 / 站点规则同样生效），解压后校验可读再原子落盘到 `<data_dir>/geoip/`；当月文件不存在就试
 //!   当月，当月未发布时回退上月。失败保留旧库，且 1 小时内不重试。
 //! - 触发：只在有人查看 BT peer 列表时（[`ensure_background`]），不新增任何周期任务（空闲静默）。
+//! - 释放：已加载的库自最后一次查询起空闲满 [`IDLE_RELEASE`] 即丢弃整份字节；释放定时器只在库已加载时
+//!   存在（安装时按需起，释放后退出），下次有人看 peer 列表再从磁盘加载，不会因此重新下载。
 //!
 //! 数据来源 DB-IP.com（CC BY 4.0），署名见关于页 / 开源许可。
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, LazyLock, RwLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant};
 
 /// MaxMind DB 元数据起始标记。
 const METADATA_MARKER: &[u8] = b"\xAB\xCD\xEFMaxMind.com";
@@ -28,6 +30,8 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// 压缩包与解压后大小上限（防异常响应）。
 const MAX_GZ_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DB_BYTES: u64 = 256 * 1024 * 1024;
+/// 已加载库自最后一次查询起空闲多久后释放（整份 `.mmdb` 约 8 MB，只在有人看 peer 列表时才需要）。
+const IDLE_RELEASE: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, PartialEq)]
 enum Value {
@@ -277,9 +281,164 @@ fn decode(data: &[u8], base: usize, offset: usize, depth: u8) -> Option<(Value, 
 
 // ───────────────────────── 全局库与下载 ─────────────────────────
 
-static CURRENT: LazyLock<RwLock<Option<Arc<GeoDb>>>> = LazyLock::new(|| RwLock::new(None));
+static CURRENT: LazyLock<Arc<IdleSlot<GeoDb>>> =
+    LazyLock::new(|| Arc::new(IdleSlot::new(IDLE_RELEASE)));
 static LAST_ATTEMPT: AtomicI64 = AtomicI64::new(0);
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 空闲自动释放的单值槽：查询时用原子量记最近使用时刻（热路径只多一次读锁内的 `fetch_max`）；
+/// 装入值时若有 tokio 运行时且尚无释放任务，就起一个按截止时刻睡眠的释放任务，同一时刻至多一个。
+struct IdleSlot<T> {
+    value: RwLock<Option<Arc<T>>>,
+    /// 单调时钟基准；`last_used_ms` 是相对它的毫秒数。
+    epoch: Instant,
+    last_used_ms: AtomicU64,
+    /// 释放任务是否存活。只在持有 `value` 写锁时改写，与装入互斥，避免「任务刚退出、新值无人看管」。
+    reaper: AtomicBool,
+    idle: Duration,
+}
+
+/// 释放任务一次复核的结果。
+#[derive(Debug, PartialEq, Eq)]
+enum Reap {
+    /// 空闲已满时长，值已丢弃。
+    Released,
+    /// 仍在使用，再睡这么久复核。
+    Busy(Duration),
+    /// 槽已空。
+    Empty,
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+impl<T: Send + Sync + 'static> IdleSlot<T> {
+    fn new(idle: Duration) -> Self {
+        Self {
+            value: RwLock::new(None),
+            epoch: Instant::now(),
+            last_used_ms: AtomicU64::new(0),
+            reaper: AtomicBool::new(false),
+            idle,
+        }
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, Option<Arc<T>>> {
+        match self.value.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Option<Arc<T>>> {
+        match self.value.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn now(&self) -> Duration {
+        self.epoch.elapsed()
+    }
+
+    fn touch_at(&self, now: Duration) {
+        self.last_used_ms.fetch_max(millis(now), Ordering::Relaxed);
+    }
+
+    /// 取值并记为一次使用。在读锁内记时刻，释放任务的写锁复核必然看到它。
+    fn get(&self) -> Option<Arc<T>> {
+        let guard = self.read();
+        let value = guard.clone();
+        if value.is_some() {
+            self.touch_at(self.now());
+        }
+        value
+    }
+
+    /// 是否已加载（不算一次使用）。
+    fn is_loaded(&self) -> bool {
+        self.read().is_some()
+    }
+
+    /// 装入新值并记为一次使用；有运行时且无释放任务时起一个。
+    fn install(self: &Arc<Self>, value: T) {
+        let mut guard = self.write();
+        let previous = guard.replace(Arc::new(value));
+        self.touch_at(self.now());
+        // 存活标记在写锁内置位（与释放任务的写锁复核互斥）；spawn 放到锁外：运行时已关闭时 tokio 会
+        // 当场丢弃 future，守卫析构要拿同一把写锁。
+        let reaper = match tokio::runtime::Handle::try_current() {
+            Ok(handle) if !self.reaper.swap(true, Ordering::SeqCst) => Some(handle),
+            // 无运行时（同步测试）就不看管，值常驻到进程结束；已有释放任务则交给它。
+            _ => None,
+        };
+        drop(guard);
+        drop(previous);
+        if let Some(handle) = reaper {
+            handle.spawn(reap(ReaperGuard {
+                slot: Arc::clone(self),
+                armed: true,
+            }));
+        }
+    }
+
+    /// 在 `now` 时刻复核：空闲满时长则丢弃值并标记释放任务退出。
+    fn try_release(&self, now: Duration) -> Reap {
+        let mut guard = self.write();
+        if guard.is_none() {
+            self.reaper.store(false, Ordering::SeqCst);
+            return Reap::Empty;
+        }
+        let last_used = Duration::from_millis(self.last_used_ms.load(Ordering::Relaxed));
+        let idle_for = now.saturating_sub(last_used);
+        if idle_for < self.idle {
+            return Reap::Busy(self.idle - idle_for);
+        }
+        let released = guard.take();
+        self.reaper.store(false, Ordering::SeqCst);
+        drop(guard);
+        drop(released);
+        Reap::Released
+    }
+}
+
+/// 释放任务被中途丢弃（运行时关闭，含从未被调度）时清掉存活标记，让下次装入能重新起任务。
+struct ReaperGuard<T: Send + Sync + 'static> {
+    slot: Arc<IdleSlot<T>>,
+    armed: bool,
+}
+
+impl<T: Send + Sync + 'static> Drop for ReaperGuard<T> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _lock = self.slot.write();
+            self.slot.reaper.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// 释放任务：睡到截止时刻复核，仍在用就睡到新截止，释放或槽空后退出。不读写任何文件。
+/// 守卫作为参数随 future 一起持有，任务未被轮询就被丢弃时也会复位存活标记。
+async fn reap<T: Send + Sync + 'static>(mut guard: ReaperGuard<T>) {
+    let mut wait = guard.slot.idle;
+    loop {
+        tokio::time::sleep(wait).await;
+        match guard.slot.try_release(guard.slot.now()) {
+            Reap::Busy(remaining) => wait = remaining,
+            Reap::Released => {
+                crate::log_info!(
+                    "[geoip] released country database after {}s idle",
+                    guard.slot.idle.as_secs()
+                );
+                break;
+            }
+            Reap::Empty => break,
+        }
+    }
+    // `try_release` 已在写锁内清掉存活标记。
+    guard.armed = false;
+}
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -289,13 +448,10 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// 当前加载的库（未下载 / 未加载为 `None`）。
+/// 当前加载的库（未下载 / 未加载 / 已空闲释放为 `None`），并记为一次使用。
 #[must_use]
 pub fn current() -> Option<Arc<GeoDb>> {
-    match CURRENT.read() {
-        Ok(guard) => guard.clone(),
-        Err(poisoned) => poisoned.into_inner().clone(),
-    }
+    CURRENT.get()
 }
 
 /// 查询 peer 地址（`ip:port`，IPv6 带方括号）的国家码。
@@ -306,14 +462,6 @@ pub fn lookup_addr(addr: &str) -> Option<String> {
         .map(|socket| socket.ip())
         .ok()?;
     current()?.country(ip)
-}
-
-fn install(db: GeoDb) {
-    let value = Some(Arc::new(db));
-    match CURRENT.write() {
-        Ok(mut guard) => *guard = value,
-        Err(poisoned) => *poisoned.into_inner() = value,
-    }
 }
 
 fn dir(data_dir: &Path) -> PathBuf {
@@ -338,11 +486,11 @@ fn recent_months() -> [(i32, u32); 2] {
 }
 
 /// 确保国家库可用：已有当月文件则加载；否则后台下载（最多 1 小时一次）。立即返回，不阻塞调用方。
-/// 已有较旧的库时先加载它（国旗立即可用），再尝试更新。
+/// 已有较旧的库时先加载它（国旗立即可用），再尝试更新。空闲释放后再调用会重新从磁盘加载。
 pub fn ensure_background(data_dir: PathBuf, proxy: crate::proxy_config::ProxyConfig) {
     let months = recent_months();
     let current_file = dir(&data_dir).join(file_name(months[0].0, months[0].1));
-    if current().is_some() && current_file.exists() {
+    if CURRENT.is_loaded() && current_file.exists() {
         return;
     }
     if RUNNING.swap(true, Ordering::SeqCst) {
@@ -363,23 +511,26 @@ async fn ensure(
     months: [(i32, u32); 2],
 ) -> Result<(), String> {
     let folder = dir(data_dir);
-    // 先加载磁盘上最新的一份（当月 → 上月 → 目录里任何 dbip 文件）。
-    if current().is_none() {
+    // 先加载磁盘上最新的一份（当月 → 上月 → 目录里任何 dbip 文件）；空闲释放后也走这里重新加载。
+    if !CURRENT.is_loaded() {
         let candidates = months.map(|(year, month)| folder.join(file_name(year, month)));
         let mut loaded = false;
         for path in candidates {
+            // 当月 / 上月文件不存在是常态，失败就试下一个。
             if load_file(&path).await.is_ok() {
                 loaded = true;
                 break;
             }
         }
-        if !loaded && let Some(path) = newest_in(&folder).await {
-            loaded = load_file(&path).await.is_ok();
+        if !loaded
+            && let Some(path) = newest_in(&folder).await
+            && let Err(error) = load_file(&path).await
+        {
+            crate::log_warn!("[geoip] load {}: {error}", path.display());
         }
-        let _ = loaded;
     }
     let current_file = folder.join(file_name(months[0].0, months[0].1));
-    if current_file.exists() && current().is_some() {
+    if current_file.exists() && CURRENT.is_loaded() {
         return Ok(());
     }
     let now = now_secs();
@@ -410,7 +561,7 @@ async fn ensure(
                 tokio::fs::rename(&temp, &target)
                     .await
                     .map_err(|error| format!("rename {}: {error}", target.display()))?;
-                install(db);
+                CURRENT.install(db);
                 prune_old(&folder, &name).await;
                 crate::log_info!("[geoip] installed {name}");
                 return Ok(());
@@ -428,7 +579,8 @@ async fn load_file(path: &Path) -> Result<(), String> {
     let db = tokio::task::spawn_blocking(move || GeoDb::from_bytes(bytes))
         .await
         .map_err(|error| error.to_string())??;
-    install(db);
+    CURRENT.install(db);
+    crate::log_info!("[geoip] loaded {}", path.display());
     Ok(())
 }
 
@@ -626,5 +778,83 @@ mod tests {
             "exactly one db file kept"
         );
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// 等到释放任务释放值并退出（上限 5 秒，只防挂死，不卡时间上界）。
+    async fn wait_released(slot: &IdleSlot<u32>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while slot.is_loaded() || slot.reaper.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("reaper releases and exits");
+    }
+
+    /// 释放判定（显式时刻，确定性）：持续使用不释放，停用满时长才释放，释放后槽空。
+    #[test]
+    fn idle_slot_releases_only_after_idle_window() {
+        let slot = Arc::new(IdleSlot::new(Duration::from_secs(10)));
+        slot.install(7u32);
+        assert!(!slot.reaper.load(Ordering::SeqCst), "无运行时不起释放任务");
+        slot.touch_at(Duration::from_secs(5));
+        assert_eq!(
+            slot.try_release(Duration::from_secs(12)),
+            Reap::Busy(Duration::from_secs(3))
+        );
+        slot.touch_at(Duration::from_secs(14));
+        assert_eq!(
+            slot.try_release(Duration::from_secs(20)),
+            Reap::Busy(Duration::from_secs(4))
+        );
+        // 乱序的旧时刻不会把最近使用往回拨。
+        slot.touch_at(Duration::from_secs(1));
+        assert_eq!(
+            slot.try_release(Duration::from_secs(23)),
+            Reap::Busy(Duration::from_secs(1))
+        );
+        assert_eq!(slot.get().as_deref(), Some(&7));
+        assert_eq!(slot.try_release(Duration::from_secs(24)), Reap::Released);
+        assert!(slot.get().is_none());
+        assert_eq!(slot.try_release(Duration::from_secs(99)), Reap::Empty);
+    }
+
+    /// 释放任务：截止前被使用就睡到新截止，到点释放后退出；再装入会起新任务。
+    #[tokio::test]
+    async fn idle_slot_reaper_resleeps_releases_and_exits() {
+        let idle = Duration::from_millis(40);
+        let extend = Duration::from_millis(80);
+        let slot = Arc::new(IdleSlot::new(idle));
+        let before = Instant::now();
+        slot.install(1u32);
+        assert!(slot.reaper.load(Ordering::SeqCst));
+        // 记一次「未来」的使用：首个截止（装入 + idle）时必然判定仍在用，只能睡到新截止。
+        slot.touch_at(slot.now() + extend);
+        wait_released(&slot).await;
+        assert!(
+            before.elapsed() + Duration::from_millis(1) >= extend + idle,
+            "released before the extended deadline: {:?}",
+            before.elapsed()
+        );
+
+        slot.install(2u32);
+        assert!(slot.reaper.load(Ordering::SeqCst), "释放后再装入重新起任务");
+        assert_eq!(slot.get().as_deref(), Some(&2));
+        wait_released(&slot).await;
+    }
+
+    /// 运行时关闭时（释放任务尚未被调度）存活标记复位，不会让后续装入失去看管。
+    #[test]
+    fn idle_slot_reaper_flag_resets_when_runtime_drops() {
+        let slot = Arc::new(IdleSlot::new(Duration::from_secs(300)));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async { slot.install(3u32) });
+        assert!(slot.reaper.load(Ordering::SeqCst));
+        drop(runtime);
+        assert!(!slot.reaper.load(Ordering::SeqCst));
+        assert_eq!(slot.get().as_deref(), Some(&3), "值本身不受影响");
     }
 }

@@ -437,7 +437,7 @@ async fn resolve_global(global: &ProxyConfig) -> Result<ProxyConfig, PluginError
         .map_err(|e| PluginError::Runtime(format!("检测系统代理失败: {e}")))
 }
 
-type GuardedClientKey = (String, bool, bool);
+type GuardedClientKey = (String, bool, bool, Option<Vec<String>>);
 
 /// 引擎侧 `PluginBridge` 实现。
 pub struct EngineBridge {
@@ -654,7 +654,6 @@ fn append_image_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), PluginErr
     bytes.extend_from_slice(chunk);
     Ok(())
 }
-
 fn client_key(
     proxy: &ProxyConfig,
     same_origin_redirects_only: bool,
@@ -664,6 +663,67 @@ fn client_key(
         crate::client_cache::proxy_fingerprint(proxy),
         same_origin_redirects_only,
         dev,
+        None,
+    )
+}
+
+#[test]
+fn image_client_cache_key_separates_host_allowlists_and_normalizes_order() {
+    let proxy = ProxyConfig::default();
+    let first: std::collections::HashSet<String> =
+        ["images.example".to_string(), "cdn.example".to_string()]
+            .into_iter()
+            .collect();
+    let reordered: std::collections::HashSet<String> =
+        ["CDN.EXAMPLE".to_string(), "IMAGES.EXAMPLE".to_string()]
+            .into_iter()
+            .collect();
+    let narrower: std::collections::HashSet<String> =
+        ["images.example".to_string()].into_iter().collect();
+    assert_eq!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&proxy, false, false, &reordered)
+    );
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&proxy, false, false, &narrower)
+    );
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        client_key(&proxy, false, false)
+    );
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&proxy, false, true, &first)
+    );
+    let mut other_proxy = proxy.clone();
+    other_proxy.mode = crate::proxy_config::ProxyMode::Manual;
+    other_proxy.proxy_type = crate::proxy_config::ProxyType::Http;
+    other_proxy.host = "127.0.0.1".to_string();
+    other_proxy.port = 1080;
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&other_proxy, false, false, &first)
+    );
+}
+
+fn image_client_key(
+    proxy: &ProxyConfig,
+    same_origin_redirects_only: bool,
+    dev: bool,
+    hosts: &std::collections::HashSet<String>,
+) -> GuardedClientKey {
+    let mut hosts: Vec<String> = hosts
+        .iter()
+        .map(|host| normalized_host(host).to_ascii_lowercase())
+        .collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    (
+        crate::client_cache::proxy_fingerprint(proxy),
+        same_origin_redirects_only,
+        dev,
+        Some(hosts),
     )
 }
 
@@ -682,7 +742,7 @@ fn build_client(
         (true, false) => "开发模式",
         (true, true) => "开发模式认证",
     };
-    let mut builder = crate::downloader::client_builder()
+    let mut builder = crate::downloader::client_builder(crate::tls::HttpVersion::Any, false)
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {
@@ -904,7 +964,10 @@ impl PluginBridge for EngineBridge {
             .host_str()
             .ok_or_else(|| PluginError::InvalidOutput("图片 URL 缺少主机名".to_string()))?;
         let host = normalized_host(host);
-        let allowed: std::collections::HashSet<String> = hosts.into_iter().collect();
+        let allowed: std::collections::HashSet<String> = hosts
+            .into_iter()
+            .map(|host| normalized_host(&host).to_ascii_lowercase())
+            .collect();
         if !allowed.contains(&host.to_ascii_lowercase()) {
             return Err(PluginError::InvalidOutput(
                 "图片主机不在插件授权列表中".to_string(),
@@ -932,13 +995,21 @@ impl PluginBridge for EngineBridge {
         let dev = req.private_network_allowed;
         let route = net.route(req.egress.as_deref(), &parsed, dev).await?;
         let same_origin = auth_applied || !req.headers.is_empty();
-        let proxy = crate::egress::proxy_endpoint(&route.proxy);
         let image_hosts = Arc::new(allowed);
-        let client = tokio::task::spawn_blocking(move || {
-            build_client(proxy.as_ref(), same_origin, dev, Some(image_hosts))
-        })
-        .await
-        .map_err(|e| PluginError::Runtime(format!("构建图片 fetch Client 任务失败: {e}")))??;
+        let client_key = image_client_key(&route.proxy, same_origin, dev, &image_hosts);
+        let client = if let Some(client) = self.cached_client(&client_key) {
+            client
+        } else {
+            let proxy = crate::egress::proxy_endpoint(&route.proxy);
+            let hosts = Arc::clone(&image_hosts);
+            let client = tokio::task::spawn_blocking(move || {
+                build_client(proxy.as_ref(), same_origin, dev, Some(hosts))
+            })
+            .await
+            .map_err(|e| PluginError::Runtime(format!("构建图片 fetch Client 任务失败: {e}")))??;
+            self.cache_client(client_key, &client);
+            client
+        };
         let mut rb = client.get(parsed);
         for (key, value) in &req.headers {
             let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
@@ -974,6 +1045,17 @@ impl PluginBridge for EngineBridge {
                 "图片服务器返回 HTTP {}",
                 response.status().as_u16()
             )));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_BODY_BYTES as u64)
+        {
+            if let Some(op) = op {
+                op.finish(false);
+            }
+            return Err(PluginError::InvalidOutput(
+                "图片响应超过 8 MiB 上限".to_string(),
+            ));
         }
         let mut bytes = Vec::new();
         loop {
@@ -2432,6 +2514,49 @@ mod tests {
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, "ok");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn image_rejects_oversized_content_length_without_waiting_for_body() {
+        use super::PluginBridge;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let bridge = test_bridge().await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8388609\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            // Deliberately withhold the body until the client has returned.
+            released.await.unwrap();
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            bridge.image_request(
+                "acme@dev",
+                crate::plugin::runtime::BridgeHttpRequest {
+                    url: format!("http://{address}/image.png"),
+                    private_network_allowed: true,
+                    ..Default::default()
+                },
+                vec!["127.0.0.1".to_owned()],
+            ),
+        )
+        .await;
+        release.send(()).unwrap();
+        server.await.unwrap();
+        assert!(matches!(
+            result.unwrap(),
+            Err(crate::plugin::runtime::PluginError::InvalidOutput(_))
+        ));
     }
 
     /// 回归（Auto 换路绕开 SSRF 守卫）：主机名只解析到内网地址被守卫拦下，不能记成断网——
