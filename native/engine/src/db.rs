@@ -766,7 +766,7 @@ impl Drop for EngineWriteGuard {
     }
 }
 
-fn sqlite_url(path: &Path) -> String {
+pub(crate) fn sqlite_url(path: &Path) -> String {
     format!(
         "sqlite:{}?mode=rwc",
         path.to_string_lossy().replace('\\', "/")

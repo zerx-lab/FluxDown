@@ -8101,6 +8101,7 @@ mod tests {
                     .expect("cleanup companion");
                 sqlite.close().await.expect("close trigger connection");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
@@ -8211,6 +8212,7 @@ mod tests {
                     None
                 );
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
@@ -8310,6 +8312,7 @@ mod tests {
                     .await
                     .expect("cleanup task");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
@@ -8449,6 +8452,7 @@ mod tests {
                     Some(expected.as_str())
                 );
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT relocate fixture");
         }
@@ -8541,6 +8545,7 @@ mod tests {
                     .await
                     .expect("cleanup task");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove same-dir fixture");
         }
@@ -8689,6 +8694,7 @@ mod tests {
                     .await
                     .expect("cleanup");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove inside-stage fixture");
         }
@@ -8716,6 +8722,7 @@ mod tests {
                     .await
                     .expect("cleanup");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove bad-dir fixture");
         }

@@ -20464,7 +20464,7 @@ mod tests {
     async fn sqlite_fault_fixture(tag: &str) -> (PathBuf, Db, sqlx::SqlitePool) {
         let dir = unique_filetrack_test_dir(tag);
         std::fs::create_dir_all(&dir).expect("create fault test directory");
-        let url = format!("sqlite://{}?mode=rwc", dir.join("tasks.db").display());
+        let url = crate::db::sqlite_url(&dir.join("tasks.db"));
         let db = Db::connect(&url).await.expect("connect fault database");
         let injector = sqlx::SqlitePool::connect(&url)
             .await
