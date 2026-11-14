@@ -782,6 +782,7 @@ mod tests {
 
     fn task(task_id: &str, status: i32) -> TaskDto {
         TaskDto {
+            properties: Default::default(),
             task_id: task_id.to_string(),
             url: "https://example.com/f.zip".to_string(),
             file_name: "f.zip".to_string(),

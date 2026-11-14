@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_changed INTEGER NOT NULL DEFAULT 0,
     category_route TEXT NOT NULL DEFAULT '',
     request_method TEXT NOT NULL DEFAULT '',
+    edit_properties TEXT NOT NULL DEFAULT '{}',
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
@@ -433,6 +434,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_changed INTEGER NOT NULL DEFAULT 0,
     category_route TEXT NOT NULL DEFAULT '',
     request_method TEXT NOT NULL DEFAULT '',
+    edit_properties TEXT NOT NULL DEFAULT '{}',
     queue_order INTEGER NOT NULL DEFAULT 0,
     uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     uploaded_at_completion BIGINT NOT NULL DEFAULT 0,
@@ -867,10 +869,12 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
             proxy: row.try_get("src_proxy_bytes").unwrap_or_default(),
             nic: row.try_get("src_nic_bytes").unwrap_or_default(),
         },
+        properties: serde_json::from_str(row.try_get::<&str, _>("edit_properties")?)
+            .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, ignore_tls_errors, file_missing, completed_at, file_hash, segments, queue_order, uploaded_bytes, uploaded_at_completion, seeding_status, seeding_message, seeding_time_secs, seed_ratio_limit_milli, seed_post_ratio_limit_milli, seed_time_limit_minutes, seed_inactive_time_limit_minutes, seed_upload_limit_bps, bt_sequential, bt_first_last_pieces_first, bt_download_limit_bps, bt_super_seeding, referrer, group_id, rss_source_id, origin_url, auto_route, src_cdn_bytes, src_proxy_bytes, src_nic_bytes, edit_properties";
 
 /// 新建任务的完整落库行（[`Db::insert_new_tasks`]）。
 ///
@@ -1764,6 +1768,8 @@ impl Db {
         // 浏览器 POST 接管任务的请求方法（空 = GET）。请求体（常含一次性令牌）不落库，
         // 恢复 / 重试时据此明确拒绝，而不是改发 GET。
         self.add_column_if_missing("tasks", "request_method", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "edit_properties", "TEXT NOT NULL DEFAULT '{}'")
             .await?;
         Ok(())
     }

@@ -259,6 +259,18 @@ impl AgentDownloadsPort {
         let client = self.client.clone();
         Box::pin(async move {
             let (method, params) = match command {
+                DownloadsCommand::TaskEditInfo { task_id } => {
+                    let snapshot: fluxdown_protocol::TaskEditSnapshot = client
+                        .call(
+                            method::DAEMON_TASK_EDIT_INFO,
+                            Some(json!({ "taskId": task_id })),
+                        )
+                        .await?;
+                    return Ok(DownloadsResult::TaskEditInfo(Box::new(snapshot)));
+                }
+                DownloadsCommand::EditTask(params) => {
+                    (method::DAEMON_TASK_EDIT, serialize(params)?)
+                }
                 DownloadsCommand::TaskActivity(query) => {
                     let page = client
                         .call(method::DAEMON_TASK_ACTIVITY, Some(query))

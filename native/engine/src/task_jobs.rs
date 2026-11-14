@@ -29,7 +29,6 @@ impl TaskJobs {
     }
 
     /// 该任务是否有本类作业在跑。
-    #[cfg(any(test, feature = "bt"))]
     pub(crate) fn is_running(&self, task_id: &str) -> bool {
         self.running
             .lock()

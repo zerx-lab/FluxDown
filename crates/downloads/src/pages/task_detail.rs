@@ -78,10 +78,8 @@ use crate::{
     },
     pages::{
         downloads::{DownloadHostActions, PluginTaskTab},
-        task_edit::{
-            TaskEditTarget, open_change_segments_dialog, open_change_url_dialog,
-            open_edit_proxy_dialog,
-        },
+        task_edit::{TaskEditTarget, open_change_url_dialog},
+        task_properties::open_task_properties,
     },
     strings::DownloadStrings,
 };
@@ -182,6 +180,7 @@ pub struct TaskDetailView {
     /// 完整 DTO（校验和 / 代理 / 做种详情等 `DownloadTaskView` 未覆盖的字段）。
     /// 停靠模式由宿主经 [`Self::sync`] 提供；窗口模式来自私有 controller。
     dto: Option<TaskDto>,
+    category_options: Vec<fluxdown_protocol::CustomCategoryDto>,
     queue_names: Vec<(String, String)>,
     /// 停靠面板：宿主同步的「隐藏任务来源」偏好；窗口模式读私有 controller 的偏好，见
     /// [`Self::source_hidden`]。
@@ -343,6 +342,7 @@ impl TaskDetailView {
             plugin_tabs: Vec::new(),
             plugin_views: HashMap::new(),
             dto: None,
+            category_options: Vec::new(),
             queue_names: Vec::new(),
             hide_source: false,
             speed_history: VecDeque::new(),
@@ -462,8 +462,14 @@ impl TaskDetailView {
     }
 
     /// 停靠面板：宿主在事件后传入最新 DTO（校验和 / 代理等字段来源）刷新视图。
-    pub fn sync(&mut self, dto: Option<TaskDto>, cx: &mut Context<Self>) {
+    pub fn sync(
+        &mut self,
+        dto: Option<TaskDto>,
+        categories: Vec<fluxdown_protocol::CustomCategoryDto>,
+        cx: &mut Context<Self>,
+    ) {
         self.dto = dto;
+        self.category_options = categories;
         self.refresh_from_store(cx);
         self.fetch_activity(cx);
     }
@@ -923,6 +929,18 @@ impl TaskDetailView {
             port: Arc::clone(&self.port),
             strings: self.strings.clone(),
             translator: self.translator.clone(),
+            categories: self
+                .controller
+                .as_ref()
+                .map(|controller| {
+                    controller
+                        .categories()
+                        .visible()
+                        .filter(|rule| rule.dto.builtin_type.as_deref() != Some("all"))
+                        .map(|rule| rule.dto.clone())
+                        .collect()
+                })
+                .unwrap_or_else(|| self.category_options.clone()),
         }
     }
 
@@ -1572,8 +1590,6 @@ impl TaskDetailView {
         }
         let facts = task_menu_facts_for(&self.store, &RowKey::Local(self.task_id.clone()));
         let can_change_url = facts.is_some_and(|facts| facts.can_change_url());
-        let can_change_segments = facts.is_some_and(|facts| facts.can_change_segments());
-        let can_edit_proxy = facts.is_some_and(|facts| facts.can_edit_proxy());
         let list = list.child(
             h_flex()
                 .flex_wrap()
@@ -1599,27 +1615,15 @@ impl TaskDetailView {
                             })),
                     )
                 })
-                .when(can_edit_proxy, |this| {
+                .when(facts.is_some_and(|facts| facts.is_local), |this| {
                     this.child(
-                        Button::new("detail-edit-proxy")
+                        Button::new("detail-edit-task")
                             .outline()
                             .control(cx)
-                            .icon(FluxIcon::Globe)
-                            .label(self.strings.task_edit_proxy.clone())
+                            .icon(FluxIcon::Pen)
+                            .label(self.strings.task_edit_title.clone())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                open_edit_proxy_dialog(this.edit_target(), window, cx);
-                            })),
-                    )
-                })
-                .when(can_change_segments, |this| {
-                    this.child(
-                        Button::new("detail-change-segments")
-                            .outline()
-                            .control(cx)
-                            .icon(FluxIcon::Layers)
-                            .label(self.strings.edit_threads.clone())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                open_change_segments_dialog(this.edit_target(), window, cx);
+                                open_task_properties(this.edit_target(), window, cx);
                             })),
                     )
                 }),

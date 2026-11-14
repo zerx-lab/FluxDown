@@ -357,9 +357,11 @@ pub(crate) struct DownloadTaskView {
     pub(crate) url_fold: String,
     pub(crate) site_fold: String,
     pub(crate) referrer: String,
-    pub(crate) proxy_url: String,
     pub(crate) save_dir: String,
+    pub(crate) category_override: String,
+    pub(crate) tags_fold: String,
     pub(crate) group_id: String,
+    pub(crate) category_fold: String,
     pub(crate) error_message: String,
     /// 该任务有待确认的「文件已存在」请求（任务表「待确认」角标）。
     pub(crate) conflict_pending: bool,
@@ -408,9 +410,15 @@ impl DownloadTaskView {
         view.queue_order = task.queue_order;
         view.origin_url.clone_from(&task.origin_url);
         view.referrer.clone_from(&task.referrer);
-        view.proxy_url.clone_from(&task.proxy_url);
-        view.save_dir.clone_from(&task.save_dir);
-        view.group_id.clone_from(&task.group_id);
+        view.category_override.clone_from(&task.properties.category);
+        view.category_fold = task.properties.category.to_lowercase();
+        view.tags_fold = task
+            .properties
+            .tags
+            .iter()
+            .map(|tag| tag.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
         view.error_message.clone_from(&task.error_message);
         view.file_missing = task.file_missing;
         view.file_hash.clone_from(&task.file_hash);
@@ -517,7 +525,9 @@ impl DownloadTaskView {
             referrer: String::new(),
             save_dir: String::new(),
             group_id: String::new(),
-            proxy_url: String::new(),
+            category_override: String::new(),
+            category_fold: String::new(),
+            tags_fold: String::new(),
             error_message: String::new(),
             conflict_pending: false,
             file_missing: false,

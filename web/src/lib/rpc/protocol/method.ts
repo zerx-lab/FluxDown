@@ -12,6 +12,8 @@ export const METHOD = {
 
   DAEMON_TASK_LIST: 'daemon.task.list',
   DAEMON_TASK_GET: 'daemon.task.get',
+  DAEMON_TASK_EDIT_INFO: 'daemon.task.editInfo',
+  DAEMON_TASK_EDIT: 'daemon.task.edit',
   DAEMON_TASK_ACTIVITY: 'daemon.task.activity',
   DAEMON_TASK_SPEED_HISTORY: 'daemon.task.speedHistory',
   /** BT 任务实况（`TaskIdParams` → `BtStatusDto`）：详情页 Tracker / 连接标签轮询；非 BT 任务 `invalidArgument`。 */

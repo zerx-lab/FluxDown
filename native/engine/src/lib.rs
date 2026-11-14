@@ -122,6 +122,8 @@ pub(crate) mod speed_meter;
 /// 通用订阅 provider 接口（RSS 与插件订阅共用）。
 pub mod subscription;
 pub mod task_activity;
+/// Unified task editing and write-only credential references.
+pub mod task_edit;
 /// 按任务登记的只读后台作业（同一任务同类作业唯一、可取消）。
 pub(crate) mod task_jobs;
 mod temp_file_guard;

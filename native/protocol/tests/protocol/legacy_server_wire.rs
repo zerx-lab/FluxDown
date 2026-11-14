@@ -148,6 +148,7 @@ fn ws_client_msg_bt_selection_empty_array_means_download_all() {
 
 fn sample_task_dto(id: &str) -> TaskDto {
     TaskDto {
+        properties: Default::default(),
         task_id: id.to_string(),
         url: "http://example.com/file".into(),
         file_name: "video.mp4".into(),

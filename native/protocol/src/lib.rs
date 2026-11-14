@@ -24,6 +24,8 @@ pub mod shortcuts;
 pub mod sound;
 pub mod table_sync;
 pub mod task_activity;
+pub mod task_edit;
+pub use task_edit::{EditTaskParams, TaskEditCapabilities, TaskEditSnapshot, TaskPropertiesDto};
 pub mod update_prompt;
 pub use task_activity::{
     TaskActivityDto, TaskActivityPage, TaskActivityQuery, TaskRuntimeDto, TaskSegmentDto,

@@ -121,11 +121,16 @@ pub enum DownloadsCommand {
     BtGuardBanClient {
         value: String,
     },
-    /// 防吸血「查看证据」：读取该 IP 组相关的名单条目与近期事件，结果为
-    /// [`DownloadsResult::BtGuardEvidence`]。
+    /// 防吸血「查看证据」：读取该 IP 组相关的名单条目与近期事件。
     BtGuardEvidence {
         ip_group: String,
     },
+    /// Unified task properties editor snapshot.
+    TaskEditInfo {
+        task_id: String,
+    },
+    /// Save changed properties in one optimistic transaction.
+    EditTask(Box<fluxdown_protocol::EditTaskParams>),
     Create(Box<fluxdown_protocol::DaemonCreateTaskParams>),
     /// 批量建任务（`daemon.task.createMany`）：整块一个事务、按 `batch_id` 幂等，
     /// 结果不确定时可原样重发。
@@ -369,6 +374,7 @@ impl DownloadsCommand {
 pub enum DownloadsResult {
     Unit,
     Value(serde_json::Value),
+    TaskEditInfo(Box<fluxdown_protocol::TaskEditSnapshot>),
     TaskActivity(TaskActivityPage),
     /// 无记录（从未下载或已重新下载重置）时为 `None`。
     TaskSpeedHistory(Option<fluxdown_protocol::TaskSpeedHistoryDto>),

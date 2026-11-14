@@ -136,6 +136,9 @@ impl CategoryIndex {
         let Some(rule) = self.rules.iter().find(|rule| rule.dto.id == id) else {
             return false;
         };
+        if !task.category_override.is_empty() {
+            return task.category_override == id || matches!(rule.matcher, Matcher::All);
+        }
         match rule.matcher {
             Matcher::Other => !self
                 .rules
@@ -149,7 +152,10 @@ impl CategoryIndex {
     /// 任务命中的首个（非 all/other）分类 id；无 → `builtin_other`。
     /// 网址规则固定优先：先在网址规则里找首条命中，再退回文件名规则（列表顺序），
     /// 与引擎落点路由 `save_dir_for` 的优先级一致。
-    pub(crate) fn category_of(&self, task: &DownloadTaskView) -> &str {
+    pub(crate) fn category_of<'a>(&'a self, task: &'a DownloadTaskView) -> &'a str {
+        if !task.category_override.is_empty() {
+            return &task.category_override;
+        }
         let specific = || {
             self.rules
                 .iter()
@@ -173,12 +179,16 @@ impl CategoryIndex {
         task: &DownloadTaskView,
         mut emit: impl FnMut(&'a str),
     ) {
-        let mut specific_hit = false;
+        let mut specific_hit = !task.category_override.is_empty();
         let mut other_ids: Vec<&'a str> = Vec::new();
         for (rule, first_with_id) in self.rules.iter().zip(&self.first_with_id) {
             let is_other = matches!(rule.matcher, Matcher::Other);
-            let hit = !is_other && Self::rule_matches(rule, task);
-            specific_hit |= hit && !matches!(rule.matcher, Matcher::All);
+            let hit = if task.category_override.is_empty() {
+                !is_other && Self::rule_matches(rule, task)
+            } else {
+                rule.dto.id == task.category_override || matches!(rule.matcher, Matcher::All)
+            };
+            specific_hit |= hit && (!is_other || !task.category_override.is_empty());
             if !first_with_id {
                 continue;
             }

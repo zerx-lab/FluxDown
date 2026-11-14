@@ -537,6 +537,9 @@ fn same_view_fields(left: &DownloadTaskView, right: &DownloadTaskView) -> bool {
         && left.to_device == right.to_device
         && left.seeding_status == right.seeding_status
         && left.file_missing == right.file_missing
+        && left.category_override == right.category_override
+        && left.category_fold == right.category_fold
+        && left.tags_fold == right.tags_fold
 }
 
 #[cfg(test)]

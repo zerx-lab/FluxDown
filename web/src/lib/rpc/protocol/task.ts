@@ -1,6 +1,59 @@
 // 任务相关 DTO（daemon.rs TaskDto / CreateTaskRequest、task_activity.rs）。
 import type { CategoryRouteDto } from './agent';
 import type { RpcErrorData } from './error';
+/** Persistent editor properties projected on TaskDto; omitted by legacy hosts. */
+export interface TaskPropertiesDto {
+  downloadLimitBps: number;
+  userAgent: string;
+  authRef: string;
+  category: string;
+  tags: string[];
+  scheduledAt: number;
+}
+
+export interface TaskEditCapabilities {
+  request: boolean;
+  proxy: boolean;
+  storage: boolean;
+  rename: boolean;
+  segments: boolean;
+  schedule: boolean;
+}
+
+/** Edit snapshot never returns cookie values; secret headers are represented by ********. */
+export interface TaskEditSnapshot {
+  taskId: string;
+  url: string;
+  revision: string;
+  saveDir: string;
+  fileName: string;
+  proxyUrl: string;
+  segments: number;
+  properties: TaskPropertiesDto;
+  headers: Record<string, string>;
+  cookiesConfigured: boolean;
+  capabilities: TaskEditCapabilities;
+}
+
+export interface EditTaskParams {
+  taskId: string;
+  expectedRevision: string;
+  saveDir?: string;
+  fileName?: string;
+  proxyUrl?: string;
+  segments?: number;
+  downloadLimitBps?: number;
+  userAgent?: string;
+  cookies?: string;
+  headers?: Record<string, string>;
+  authRef?: string;
+  category?: string;
+  tags?: string[];
+  scheduledAt?: number;
+}
+
+export const SECRET_HEADER_PLACEHOLDER = '********';
+
 
 /** `TaskDto.status` 取值。 */
 export const TASK_STATUS = {
@@ -51,6 +104,8 @@ export interface TaskDto {
   errorMessage: string;
   /** Unix 秒级时间戳（字符串）。 */
   createdAt: string;
+  /** Optional on old daemon versions. */
+  properties?: TaskPropertiesDto;
   /** 单任务代理 URL（空 = 使用全局代理）。 */
   proxyUrl: string;
   /** 命名队列 ID（空 = 默认队列）。 */

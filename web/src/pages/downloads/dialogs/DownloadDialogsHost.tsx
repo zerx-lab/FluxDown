@@ -11,7 +11,8 @@ import { QueueManagerDialog } from './QueueManagerDialog'
 import { SeedLocalDialog } from './SeedLocalDialog'
 import { SelectionHost } from './SelectionDialogs'
 import { capturesShown, openNewDownload, useDialogsState } from './store'
-import { ChangeProxyDialog, ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
+import { ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
+import { TaskPropertiesDialog } from './TaskPropertiesDialog'
 
 const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []
 const EMPTY_CAPTURES: readonly PendingCaptureDto[] = []
@@ -33,8 +34,8 @@ export function DownloadDialogsHost() {
       {state.queueManager ? <QueueManagerDialog key={state.queueManager.nonce} initialQueueId={state.queueManager.queueId} /> : null}
       {state.groupDetail ? <GroupDetailDialog key={state.groupDetail} groupId={state.groupDetail} /> : null}
       {state.rename ? <RenameDialog key={state.rename} taskId={state.rename} /> : null}
-      {state.changeProxy ? <ChangeProxyDialog key={state.changeProxy} taskId={state.changeProxy} /> : null}
       {state.changeUrl ? <ChangeUrlDialog key={state.changeUrl} taskId={state.changeUrl} /> : null}
+      {state.taskEdit ? <TaskPropertiesDialog key={state.taskEdit} taskId={state.taskEdit} /> : null}
       {state.changeSegments ? <ChangeSegmentsDialog key={state.changeSegments} taskId={state.changeSegments} /> : null}
       {state.moveStorage ? <MoveStorageDialog key={state.moveStorage} taskId={state.moveStorage} /> : null}
       {state.taskLimits ? <TaskLimitsDialog key={state.taskLimits} taskId={state.taskLimits} /> : null}

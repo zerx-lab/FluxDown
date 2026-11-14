@@ -87,7 +87,7 @@ pub(crate) fn same_origin(a: &Url, b: &Url) -> bool {
 
 /// 名为 `name` 的凭据类请求头（只受同源约束，不随 Cookie 作用域放宽）。
 pub(crate) fn is_authorization_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("proxy-authorization")
+    !name.eq_ignore_ascii_case("cookie") && crate::task_edit::secret_header(name)
 }
 
 fn cookie_name(pair: &str) -> &str {

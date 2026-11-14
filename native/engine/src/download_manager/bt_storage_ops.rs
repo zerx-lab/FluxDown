@@ -53,7 +53,7 @@ pub struct BtMoveOutcome {
 impl DownloadManager {
     /// 任务的数据是否正在搬移（搬移期间拒绝恢复 / 删除 / 改文件等操作）。
     pub(super) fn bt_move_running(&self, task_id: &str) -> bool {
-        self.bt_moves.is_running(task_id)
+        self.bt_moves.is_running(task_id) || self.edit_jobs.is_running(task_id)
     }
 
     /// 读出可做存储操作的 BT 任务：不存在 / 不是 BT 任务为 `NotFound`，数据搬移中为
@@ -533,7 +533,10 @@ impl DownloadManager {
 
     /// 保存目录下属于任务、需要随任务搬走的顶层条目：未完成任务的 staging 目录与完成收尾
     /// 中途已落下的顶层名，已完成任务的落盘名与登记的其余产物（以及残留的 staging）。
-    async fn bt_move_names(&self, task: &TaskInfo) -> Result<Vec<String>, BtTaskOpError> {
+    pub(super) async fn bt_move_names(
+        &self,
+        task: &TaskInfo,
+    ) -> Result<Vec<String>, BtTaskOpError> {
         let stage_name = format!("{}{}", bt_downloader::BT_STAGE_PREFIX, task.task_id);
         let mut names = vec![stage_name];
         if task.status == 3 {
@@ -659,7 +662,12 @@ impl DownloadManager {
     }
 
     /// 搬移结束后回到原状态：做种中的重新挂载做种，下载中的继续下载。
-    async fn restore_after_move(&mut self, task_id: &str, reseed: bool, resume_after: bool) {
+    pub(super) async fn restore_after_move(
+        &mut self,
+        task_id: &str,
+        reseed: bool,
+        resume_after: bool,
+    ) {
         if reseed {
             let mut task = match self.db.load_task_by_id(task_id).await {
                 Ok(Some(task)) => task,

@@ -1908,6 +1908,9 @@ pub struct TaskDto {
     /// `rule:system` / `rule:manual` / `rule:custom`；空串 = 非 Auto 且未命中规则。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auto_route: String,
+    /// Non-secret task overrides from the unified property editor.
+    #[serde(default, skip_serializing_if = "crate::TaskPropertiesDto::is_empty")]
+    pub properties: crate::TaskPropertiesDto,
     /// 加速来源累计字节（多 CDN / 智能代理 / 多网卡）；源站 = 已下载 − 三者之和。
     #[serde(default, skip_serializing_if = "is_default_source_bytes")]
     pub source_bytes: crate::TaskSourceBytesDto,

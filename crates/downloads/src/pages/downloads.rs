@@ -1175,8 +1175,15 @@ impl DownloadView {
         let task_id = detail.read(cx).task_id().to_owned();
         let dto = self.controller.task_dto(&task_id).cloned();
         let runtime = self.controller.task_runtime(&task_id).cloned();
+        let categories = self
+            .controller
+            .categories()
+            .visible()
+            .filter(|rule| rule.dto.builtin_type.as_deref() != Some("all"))
+            .map(|rule| rule.dto.clone())
+            .collect();
         detail.update(cx, |detail, cx| {
-            detail.sync(dto, cx);
+            detail.sync(dto, categories, cx);
             detail.sync_runtime(runtime, cx);
         });
     }
@@ -2743,7 +2750,7 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_rename_selected))
             .on_action(cx.listener(Self::on_change_selected_url))
             .on_action(cx.listener(Self::on_change_selected_segments))
-            .on_action(cx.listener(Self::on_edit_selected_proxy))
+            .on_action(cx.listener(Self::on_edit_selected_task))
             .on_action(cx.listener(Self::on_verify_selected))
             .on_action(cx.listener(Self::on_set_rarest_first_selected))
             .on_action(cx.listener(Self::on_set_sequential_selected))

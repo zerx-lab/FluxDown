@@ -38,8 +38,8 @@ actions!(
         ChangeSelectedUrl,
         /// 修改选中任务的线程数（右键「修改线程数」）。
         ChangeSelectedSegments,
-        /// 编辑选中任务的代理（右键「编辑代理」）。
-        EditSelectedProxy,
+        /// Edit all supported properties of the selected task.
+        EditSelectedTask,
         /// 校验选中的已完成 BT 任务（右键「完整性校验」）。
         VerifySelected,
         /// 把选中 BT 任务的下载顺序设为最稀有优先（`sequential: false`）。

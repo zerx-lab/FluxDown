@@ -479,6 +479,23 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_EDIT_INFO => {
+                let params = parse_params::<IdParams>(params)?;
+                let snapshot = fluxdown_engine::task_edit::snapshot(&self.db, &params.id)
+                    .await
+                    .map_err(internal_error)?;
+                serde_json::to_value(fluxdown_engine_protocol::task_edit_snapshot_to_dto(
+                    snapshot,
+                ))
+                .map_err(|error| internal_error(format!("{error:#}")))
+            }
+            method::DAEMON_TASK_EDIT => {
+                let params = parse_params::<fluxdown_protocol::EditTaskParams>(params)?;
+                self.execute_unit(ActorOperation::EditTask(Box::new(
+                    fluxdown_engine_protocol::task_edit_to_engine(params),
+                )))
+                .await
+            }
             method::DAEMON_TASK_DELETE => {
                 let params = parse_params::<DeleteParams>(params)?;
                 self.execute_unit(ActorOperation::DeleteTask {

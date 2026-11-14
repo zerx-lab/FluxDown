@@ -1401,6 +1401,7 @@ mod tests {
             origin_url: String::new(),
             auto_route: String::new(),
             source_bytes: Default::default(),
+            properties: Default::default(),
         }
     }
 

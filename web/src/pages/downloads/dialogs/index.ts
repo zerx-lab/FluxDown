@@ -1,6 +1,5 @@
 export { DownloadDialogsHost } from './DownloadDialogsHost'
 export {
-  openChangeProxy,
   openChangeSegments,
   openChangeUrl,
   openGroupDetail,
@@ -10,3 +9,4 @@ export {
   openRename,
   openTaskLimits,
 } from './store'
+export { openTaskEdit, closeTaskEdit } from './store'

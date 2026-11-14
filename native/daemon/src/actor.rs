@@ -40,6 +40,8 @@ pub struct SeedLocalOptions {
     pub skip_check: bool,
 }
 
+mod task_edit;
+
 /// actor 领域操作。
 pub enum ActorOperation {
     CreateTask {
@@ -133,6 +135,7 @@ pub enum ActorOperation {
         task_id: String,
         proxy_url: String,
     },
+    EditTask(Box<fluxdown_engine::task_edit::EditTask>),
     SetTaskPiecePicking {
         task_id: String,
         sequential: Option<bool>,
@@ -452,6 +455,11 @@ pub enum MaintenanceEvent {
         outcome: fluxdown_engine::download_manager::BtMoveOutcome,
         ack: oneshot::Sender<Result<ActorResult, ActorError>>,
     },
+    TaskEditWait(Box<task_edit::PendingEdit>),
+    TaskEditDone {
+        outcome: Box<fluxdown_engine::download_manager::TaskEditOutcome>,
+        ack: oneshot::Sender<Result<ActorResult, ActorError>>,
+    },
 }
 
 /// 一次 `daemon.task.moveStorage` 请求（等待下载循环退出期间在 actor 与定时重试之间往返）。
@@ -678,7 +686,10 @@ async fn run_actor(
                     engine.manager.spawn_file_scan();
                 }
             }
-            _ = queue_schedule.tick() => engine.manager.tick_queue_schedules().await,
+            _ = queue_schedule.tick() => {
+                engine.manager.tick_queue_schedules().await;
+                engine.manager.tick_task_schedules().await;
+            },
             _ = queue_positions.tick() => engine.manager.flush_queue_positions(),
             _ = rss_poll.tick() => engine.manager.tick_rss_sources(),
             event = receive_rss_event(&mut rss_events), if rss_events.is_some() => {
@@ -771,6 +782,11 @@ async fn dispatch_operation(
     maintenance_tx: &mpsc::UnboundedSender<MaintenanceEvent>,
 ) {
     match operation {
+        ActorOperation::EditTask(params) => {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+            let result = engine.manager.begin_task_edit(*params).await;
+            task_edit::step(result, ack, deadline, engine, maintenance_tx).await;
+        }
         #[cfg(feature = "plugins")]
         ActorOperation::ResolvePreview {
             url,
@@ -1947,6 +1963,11 @@ async fn execute_operation(
         | ActorOperation::WebhookTest { .. }
         | ActorOperation::TestProxy { .. }
         | ActorOperation::MoveTaskStorage { .. } => unreachable!("handled off actor"),
+        ActorOperation::EditTask(_) => {
+            return Err(ActorError::Operation(
+                "task property saves require deferred dispatch".to_owned(),
+            ));
+        }
         ActorOperation::WebhookDeliveries => {
             return Ok(ActorResult::WebhookDeliveries(engine.webhook_deliveries()));
         }
@@ -2183,6 +2204,24 @@ async fn commit_maintenance(
                     Ok(_) => tracing::debug!("storage move caller disconnected before result"),
                 }
             }
+        }
+        MaintenanceEvent::TaskEditWait(pending) => {
+            let task_edit::PendingEdit {
+                session,
+                deadline,
+                ack,
+            } = *pending;
+            let result = engine.manager.continue_task_edit(session).await;
+            task_edit::step(result, ack, deadline, engine, maintenance_tx).await;
+        }
+        MaintenanceEvent::TaskEditDone { outcome, ack } => {
+            let result = engine
+                .manager
+                .finish_task_edit(*outcome)
+                .await
+                .map(|()| ActorResult::Unit)
+                .map_err(task_edit::edit_error);
+            task_edit::reply(ack, result);
         }
     }
 }

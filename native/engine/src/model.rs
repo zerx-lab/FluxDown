@@ -212,6 +212,8 @@ pub struct TaskInfo {
     /// 加速来源累计字节（跨运行累加，进度复位时随之清零）。源站字节 =
     /// `downloaded_bytes` − 三者之和。
     pub source_bytes: SourceBytes,
+    /// Non-secret task-level overrides; request credentials live in the credential store.
+    pub properties: crate::task_edit::TaskProperties,
 }
 
 /// 按加速来源累计的已写入字节。
