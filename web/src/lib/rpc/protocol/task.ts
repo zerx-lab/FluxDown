@@ -234,6 +234,12 @@ export interface DaemonCreateTaskParams {
   /** 分类目录路由：`request.saveDir` 为未命中时的基准目录，引擎按初始名与完成时的最终文件名定落点。 */
   categoryRoute?: CategoryRouteDto | null;
 }
+/** `daemon.task.setProxy` 参数；空 `proxyUrl` = 跟随全局代理与站点规则。 */
+export interface SetTaskProxyParams {
+  taskId: string;
+  proxyUrl: string;
+}
+
 
 /** `daemon.task.create` 结果。 */
 export interface CreatedTask {

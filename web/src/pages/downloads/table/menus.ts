@@ -82,6 +82,7 @@ import {
   canSetSuperSeeding,
   canSetTaskLimits,
   canVerifyIntegrity,
+  canEditTaskProxy,
   pieceOptionAllOn,
   pieceOrder,
   superSeedingAllOn,
@@ -90,7 +91,7 @@ import { canPause, canResumeSeeding } from '../model/task'
 import type { DownloadTaskView } from '../model/task'
 import { anyActive, anyResumable } from '../model/groupTree'
 import type { GroupCounts } from '../model/groupTree'
-import { openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskLimits } from '../dialogs'
+import { openChangeProxy, openChangeSegments, openChangeUrl, openGroupDetail, openMoveStorage, openRename, openTaskLimits } from '../dialogs'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -207,6 +208,9 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
   }
   if (only && canChangeUrl(only)) {
     entries.push({ type: 'item', key: 'change-url', label: t('webChangeUrl'), icon: Link2, onSelect: () => openChangeUrl(only.taskId) })
+  }
+  if (only && canEditTaskProxy(only)) {
+    entries.push({ type: 'item', key: 'change-proxy', label: t('taskEditProxy'), icon: Link2, onSelect: () => openChangeProxy(only.taskId) })
   }
   if (only && canChangeSegments(only)) {
     entries.push({

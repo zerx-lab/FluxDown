@@ -9,9 +9,9 @@ import { copyUrls, downloadViewsFiles, isDownloadable } from '../model/actions'
 import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourcePageUrl, sourceSite } from '../model/task'
 import { localizeTaskError } from '../model/taskError'
 import type { DownloadTaskView, TaskState } from '../model/task'
-import { canChangeSegments, canChangeUrl } from '../model/taskEdit'
+import { canChangeSegments, canChangeUrl, canEditTaskProxy } from '../model/taskEdit'
 import { HIDE_TASK_SOURCE_PREF } from '../model/viewPrefs'
-import { openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
+import { openChangeProxy, openChangeSegments, openChangeUrl, openGroupDetail } from '../dialogs'
 import { routeLabel } from '../../../lib/taskRoute'
 import { CopyButton, SourcePageLink } from './CopyButton'
 import { FileHashRow } from './FileHashRow'
@@ -123,6 +123,11 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
           <Button icon={Copy} onClick={() => copyUrls([view])}>
             {t('copyUrl')}
           </Button>
+          {canEditTaskProxy(view) ? (
+            <Button icon={Link2} onClick={() => openChangeProxy(view.taskId)}>
+              {t('taskEditProxy')}
+            </Button>
+          ) : null}
           {canChangeUrl(view) ? (
             <Button icon={Link2} onClick={() => openChangeUrl(view.taskId)}>
               {t('webChangeUrl')}

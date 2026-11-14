@@ -6262,6 +6262,92 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Change a task's proxy and reconnect active transfers without restarting the host.
+    ///
+    /// Paused / queued tasks retain their state; failed tasks retry immediately.
+    /// Existing writer generations finish before replacement connections start.
+    /// Non-resumable transfers may restart from zero and live streams may have gaps.
+    /// Empty follows global routing; BT / eD2K and completed tasks are rejected.
+    pub async fn set_task_proxy(&mut self, task_id: &str, proxy_url: &str) -> Result<(), String> {
+        let proxy_url = proxy_url.trim();
+        let proxy_url = if matches!(
+            proxy_url,
+            ProxyConfig::DIRECT_SENTINEL | ProxyConfig::SYSTEM_SENTINEL
+        ) {
+            proxy_url
+        } else {
+            proxy_url.strip_suffix('/').unwrap_or(proxy_url)
+        };
+        if !proxy_url.is_empty()
+            && proxy_url != ProxyConfig::DIRECT_SENTINEL
+            && proxy_url != ProxyConfig::SYSTEM_SENTINEL
+        {
+            let parsed = url::Url::parse(proxy_url).map_err(|_| "invalid-proxy".to_owned())?;
+            if crate::proxy_config::ProxyType::parse_str(parsed.scheme()).is_none()
+                || parsed.host_str().is_none()
+                || proxy_url
+                    .rsplit(':')
+                    .next()
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .is_none_or(|port| port == 0)
+                || !proxy_url.starts_with(parsed.scheme())
+                || !matches!(parsed.path(), "" | "/")
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err("invalid-proxy".to_owned());
+            }
+            reqwest::Proxy::all(proxy_url).map_err(|_| "invalid-proxy".to_owned())?;
+        }
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await
+            .map_err(|error| format!("db: {error:#}"))?
+            .ok_or_else(|| "not-found".to_owned())?;
+        if task.status == 3 {
+            return Err("task-completed".to_owned());
+        }
+        if task_url_protocol(&task.url).is_none() {
+            return Err("protocol-unsupported".to_owned());
+        }
+        if task.proxy_url == proxy_url {
+            if task.status == 4 {
+                self.resume_task(task_id).await;
+            }
+            return Ok(());
+        }
+        // Persist first: a failed write must not disturb an otherwise healthy transfer.
+        self.db
+            .update_task_proxy(task_id, proxy_url)
+            .await
+            .map_err(|error| format!("db: {error:#}"))?;
+        if let Some(queued) = self
+            .pending_queue
+            .items
+            .iter_mut()
+            .find(|q| q.task_id == task_id)
+        {
+            proxy_url.clone_into(&mut queued.proxy_url);
+        }
+        self.auto_failover_pending.remove(task_id);
+        self.auto_failover_attempts.remove(task_id);
+        let active = self.active_tasks.contains_key(task_id)
+            || self
+                .pending_pauses
+                .get(task_id)
+                .is_some_and(|pending| pending.resume_requested)
+            || matches!(task.status, 1 | 5);
+        if active {
+            // Cancels off-actor resolve as well: signed URLs must be resolved on the new exit.
+            self.pause_task_for_reconnect(task_id).await;
+        }
+        if active || task.status == 4 {
+            self.resume_task(task_id).await;
+        }
+        Ok(())
+    }
+
     /// Get a reference to the current proxy configuration.
     pub fn proxy_config(&self) -> &ProxyConfig {
         &self.proxy_config
