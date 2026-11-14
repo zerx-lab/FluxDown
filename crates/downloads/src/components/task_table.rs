@@ -502,6 +502,10 @@ impl TaskMenuFacts {
     pub(crate) fn can_change_segments(&self) -> bool {
         self.is_local && !self.is_bt && self.state != TaskState::Completed
     }
+    /// 「编辑代理」可用：未完成的本地 HTTP/FTP 任务；BT/eD2K 不支持任务代理编辑。
+    pub(crate) fn can_edit_proxy(&self) -> bool {
+        self.is_local && !self.is_bt && self.state != TaskState::Completed && self.url_replaceable
+    }
 
     /// 「完整性校验」可用：本地已完成、产物仍在的 BT 任务（按种子 piece 表重哈希）。
     pub(crate) fn can_verify_integrity(&self) -> bool {
@@ -560,6 +564,8 @@ pub(crate) enum MenuEntry {
     ChangeUrl,
     /// 修改线程数（单选；条件见 [`TaskMenuFacts::can_change_segments`]）。
     ChangeSegments,
+    /// 编辑任务代理（单选；条件见 [`TaskMenuFacts::can_edit_proxy`]）。
+    EditProxy,
     /// 完整性校验（单选；条件见 [`TaskMenuFacts::can_verify_integrity`]）。
     VerifyIntegrity,
     /// 最稀有优先（本地未完成 BT；可多选。选中态见 [`piece_picking_order`]）。
@@ -656,6 +662,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
         }
         if only.can_change_segments() {
             items.push(MenuEntry::ChangeSegments);
+        }
+        if only.can_edit_proxy() {
+            items.push(MenuEntry::EditProxy);
         }
         if only.can_verify_integrity() {
             items.push(MenuEntry::VerifyIntegrity);
@@ -3193,6 +3202,11 @@ impl DownloadTableDelegate {
                 self.strings.edit_threads.clone(),
                 FluxIcon::Layers,
                 Box::new(crate::actions::ChangeSelectedSegments),
+            ),
+            MenuEntry::EditProxy => menu.menu_with_icon(
+                self.strings.task_edit_proxy.clone(),
+                FluxIcon::Globe,
+                Box::new(crate::actions::EditSelectedProxy),
             ),
             MenuEntry::VerifyIntegrity => menu.menu_with_icon(
                 self.strings.verify_integrity.clone(),
@@ -7057,6 +7071,7 @@ mod context_menu_tests {
                 MenuEntry::Rename,
                 MenuEntry::ChangeUrl,
                 MenuEntry::ChangeSegments,
+                MenuEntry::EditProxy,
                 MenuEntry::Redownload,
                 MenuEntry::CopyUrl,
                 MenuEntry::MoveToQueue,

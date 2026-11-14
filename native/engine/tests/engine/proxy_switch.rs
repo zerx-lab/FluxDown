@@ -727,3 +727,160 @@ async fn rule_pinned_task_ignores_global_switch() {
     assert_eq!(h.status(&task_id).await, 1, "task keeps downloading");
     h.finish(&[&task_id]).await;
 }
+
+/// A task override must replace live connections now, not only after a host restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn task_proxy_edit_reconnects_immediately_and_clear_returns_to_global() {
+    let global = FakeProxy::start().await;
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("task_edit", global.config()).await;
+    let id = h
+        .create("edit.bin", format!("http://127.0.0.1:{}", old.port))
+        .await;
+    h.wait_segment_progress(&id).await;
+    let proxy = format!("http://127.0.0.1:{}", new.port);
+    h.engine
+        .manager
+        .set_task_proxy(&id, &proxy)
+        .await
+        .expect("edit proxy");
+    h.pump_done(&id).await;
+    wait_until("task edit reaches new proxy", || new.origin_requests() > 0).await;
+    h.wait_downloading(&id).await;
+    assert_resumed_from_offsets(&new);
+    assert_eq!(
+        h.engine
+            .db
+            .load_task_by_id(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .proxy_url,
+        proxy
+    );
+    h.engine
+        .manager
+        .set_task_proxy(&id, &proxy)
+        .await
+        .expect("same proxy");
+    h.assert_not_interrupted(Duration::from_millis(250)).await;
+    h.engine
+        .manager
+        .set_task_proxy(&id, "")
+        .await
+        .expect("follow global");
+    h.pump_done(&id).await;
+    wait_until("clear override reaches global proxy", || {
+        global.origin_requests() > 0
+    })
+    .await;
+    assert_resumed_from_offsets(&global);
+    h.finish(&[&id]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn task_proxy_edit_reconnects_non_resumable_transfer_too() {
+    let old = FakeProxy::start_without_range().await;
+    let new = FakeProxy::start_without_range().await;
+    let mut h = Harness::new("task_edit_single", old.config()).await;
+    let id = h.create("single.bin", String::new()).await;
+    wait_until("old transfer started", || {
+        old.requests().iter().any(|r| r.method == "GET")
+    })
+    .await;
+    h.engine
+        .manager
+        .set_task_proxy(&id, &format!("http://127.0.0.1:{}", new.port))
+        .await
+        .expect("switch non-resumable proxy");
+    h.pump_done(&id).await;
+    wait_until("single-stream task uses new proxy", || {
+        new.requests().iter().any(|r| r.method == "GET")
+    })
+    .await;
+    h.finish(&[&id]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn task_proxy_edit_preserves_paused_and_queued_states() {
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("task_edit_states", old.config()).await;
+    let queue = h.create_queue("limited", 1).await;
+    let first = h.create_in("first.bin", String::new(), queue.clone()).await;
+    h.wait_segment_progress(&first).await;
+    let queued = h.create_in("queued.bin", String::new(), queue).await;
+    let proxy = format!("http://127.0.0.1:{}", new.port);
+    assert_eq!(h.status(&queued).await, 0);
+    h.engine
+        .manager
+        .set_task_proxy(&queued, &proxy)
+        .await
+        .expect("queued proxy");
+    assert_eq!(h.status(&queued).await, 0);
+    assert_eq!(new.origin_requests(), 0);
+    h.engine.manager.pause_task(&first).await;
+    h.pump_done(&first).await;
+    wait_until("queued task starts on edited proxy", || {
+        new.origin_requests() > 0
+    })
+    .await;
+    h.engine
+        .manager
+        .set_task_proxy(&first, &proxy)
+        .await
+        .expect("paused proxy");
+    assert_eq!(h.status(&first).await, 2);
+    for bad in [
+        "http://host:bad",
+        "http://host:0",
+        "socks5://host",
+        "http://host:8080/path",
+        "file://host:8080",
+    ] {
+        assert_eq!(
+            h.engine.manager.set_task_proxy(&first, bad).await,
+            Err("invalid-proxy".into())
+        );
+    }
+    assert_eq!(
+        h.engine
+            .db
+            .load_task_by_id(&first)
+            .await
+            .unwrap()
+            .unwrap()
+            .proxy_url,
+        proxy
+    );
+    h.finish(&[&first, &queued]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn task_proxy_edit_retries_failed_task_without_manual_resume() {
+    let old = FakeProxy::start().await;
+    let new = FakeProxy::start().await;
+    let mut h = Harness::new("task_edit_failed", old.config()).await;
+    let id = h.create("failed.bin", String::new()).await;
+    h.wait_segment_progress(&id).await;
+    h.engine.manager.pause_task(&id).await;
+    h.pump_done(&id).await;
+    h.engine
+        .db
+        .update_task_status(&id, 4, "old proxy unavailable")
+        .await
+        .unwrap();
+    h.engine
+        .manager
+        .set_task_proxy(&id, &format!("http://127.0.0.1:{}", new.port))
+        .await
+        .expect("retry using new proxy");
+    wait_until("failed task immediately retries on new proxy", || {
+        new.origin_requests() > 0
+    })
+    .await;
+    h.wait_downloading(&id).await;
+    assert_resumed_from_offsets(&new);
+    h.finish(&[&id]).await;
+}

@@ -353,6 +353,10 @@ impl AgentDownloadsPort {
                     method::DAEMON_TASK_CHANGE_URL,
                     serialize(fluxdown_protocol::ChangeTaskUrlParams { task_id, url })?,
                 ),
+                DownloadsCommand::SetProxy { task_id, proxy_url } => (
+                    method::DAEMON_TASK_SET_PROXY,
+                    serialize(fluxdown_protocol::SetTaskProxyParams { task_id, proxy_url })?,
+                ),
                 DownloadsCommand::SetSegments { task_id, segments } => (
                     method::DAEMON_TASK_SET_SEGMENTS,
                     serialize(fluxdown_protocol::SetTaskSegmentsParams { task_id, segments })?,

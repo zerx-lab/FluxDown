@@ -2515,6 +2515,18 @@ pub struct SetTaskSegmentsParams {
     pub segments: i32,
 }
 
+/// `daemon.task.setProxy` 参数：修改未完成 HTTP / FTP 任务的出口。
+///
+/// 活跃任务立即重建连接，失败任务立即重试；暂停 / 排队任务保留原状态。
+/// 不支持续传的源站可能从头下载，直播可能出现缺口；无需重启宿主。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskProxyParams {
+    pub task_id: String,
+    /// 空 = 跟随全局与站点规则；也接受 `direct://` / `system://`。
+    pub proxy_url: String,
+}
+
 /// `daemon.task.setPiecePicking` 参数：修改 BT 任务的选片方式（对齐 qBittorrent 右键
 /// 「按顺序下载」「先下载首尾文件块」）。缺省字段保持不变；两项都关 = 最稀有优先。
 /// 下载中的任务从下一个请求的块起生效，其余状态下次开始时生效。

@@ -471,6 +471,14 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_SET_PROXY => {
+                let params = parse_params::<fluxdown_protocol::SetTaskProxyParams>(params)?;
+                self.execute_unit(ActorOperation::SetTaskProxy {
+                    task_id: params.task_id,
+                    proxy_url: params.proxy_url,
+                })
+                .await
+            }
             method::DAEMON_TASK_DELETE => {
                 let params = parse_params::<DeleteParams>(params)?;
                 self.execute_unit(ActorOperation::DeleteTask {

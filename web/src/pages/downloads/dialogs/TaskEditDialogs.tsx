@@ -10,9 +10,9 @@ import { ThreadsRiskCallout } from '../../../lib/ThreadsRiskCallout'
 import { ConfirmFooter, Dialog, FieldError, FieldHint, Form, FormField, Input, Spinner, toast } from '../../../ui'
 import { PathText } from '../../../ui/PathText'
 import { moveTaskStorage, resumeIfFailed } from '../model/actions'
-import { limitKibText, parseTaskSegments, taskLimitsParams } from '../model/taskEdit'
+import { isValidTaskProxyUrl, limitKibText, parseTaskSegments, taskLimitsParams } from '../model/taskEdit'
 import { FsPickerDialog } from './FsPickerDialog'
-import { closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
+import { closeChangeProxy, closeChangeSegments, closeChangeUrl, closeMoveStorage, closeRename, closeTaskLimits } from './store'
 import { mapEngineError } from './utils'
 
 /** 引擎稳定错误码 → 文案键（native/engine `rename_task` 契约，错误消息即错误码）。 */
@@ -168,6 +168,79 @@ function ChangeUrlBody({ taskId, url, failed }: { taskId: string; url: string; f
     />
   )
 }
+export function ChangeProxyDialog({ taskId }: { taskId: string }) {
+  return (
+    <TaskScoped
+      taskId={taskId}
+      onClose={closeChangeProxy}
+      render={(task) => <ChangeProxyBody taskId={taskId} initial={task.proxyUrl} failed={task.status === TASK_STATUS.error} />}
+    />
+  )
+}
+
+/** 后端对活动任务立即重连，并对失败任务在保存时自动重试。 */
+function ChangeProxyBody({ taskId, initial, failed }: { taskId: string; initial: string; failed: boolean }) {
+  const t = useT()
+  const [value, setValue] = useState(initial)
+  const [error, setError] = useState('')
+  const [pending, setPending] = useState(false)
+
+  const confirm = async () => {
+    if (pending) return
+    const proxyUrl = value.trim()
+    if (!isValidTaskProxyUrl(proxyUrl)) {
+      setError(t('taskEditProxyInvalid'))
+      return
+    }
+    if (proxyUrl === initial && !failed) {
+      closeChangeProxy()
+      return
+    }
+    setPending(true)
+    setError('')
+    try {
+      await rpc.daemon.task.setProxy({ taskId, proxyUrl })
+      toast.key('taskEditProxyApplied', 'success')
+      closeChangeProxy()
+    } catch (err) {
+      setError(rpcErrorText(err, t))
+      setPending(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => !open && closeChangeProxy()}
+      size="md"
+      title={t('taskEditProxy')}
+      footer={<ConfirmFooter okLabel={t('confirm')} okDisabled={pending} loading={pending} onCancel={closeChangeProxy} onOk={() => void confirm()} />}
+    >
+      <Form onSubmit={() => void confirm()}>
+        <FormField label={t('taskProxy')} htmlFor="task-proxy-url">
+          <Input
+            id="task-proxy-url"
+            value={value}
+            placeholder={t('taskProxyChoiceFollow')}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            autoFocus
+            onChange={(event) => {
+              setValue(event.target.value)
+              setError('')
+            }}
+          />
+        </FormField>
+        <FieldHint>{t('taskEditProxyHint')}</FieldHint>
+        {error !== '' ? <FieldError className="break-all">{error}</FieldError> : null}
+        <button type="submit" className="hidden" tabIndex={-1} aria-hidden />
+      </Form>
+    </Dialog>
+  )
+}
+
 
 export function ChangeSegmentsDialog({ taskId }: { taskId: string }) {
   return (

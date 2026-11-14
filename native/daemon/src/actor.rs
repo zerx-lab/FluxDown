@@ -126,6 +126,10 @@ pub enum ActorOperation {
         task_id: String,
         segments: i32,
     },
+    SetTaskProxy {
+        task_id: String,
+        proxy_url: String,
+    },
     SetTaskPiecePicking {
         task_id: String,
         sequential: Option<bool>,
@@ -1572,6 +1576,19 @@ async fn execute_operation(
                 return Err(ActorError::NotFound);
             }
             // 非活跃任务引擎只改库不推事件：补一次快照让客户端看到新线程数。
+            engine.manager.send_tasks_snapshot().await;
+        }
+        ActorOperation::SetTaskProxy { task_id, proxy_url } => {
+            engine
+                .manager
+                .set_task_proxy(&task_id, &proxy_url)
+                .await
+                .map_err(|error| match error.as_str() {
+                    "not-found" => ActorError::NotFound,
+                    "task-completed" => ActorError::TaskStateConflict(error),
+                    "invalid-proxy" | "protocol-unsupported" => ActorError::InvalidArgument(error),
+                    _ => ActorError::Operation(error),
+                })?;
             engine.manager.send_tasks_snapshot().await;
         }
         ActorOperation::SetTaskPiecePicking {

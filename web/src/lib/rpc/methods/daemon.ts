@@ -128,6 +128,7 @@ import type {
   TaskChangeUrlParams,
   TaskSetSegmentsParams,
   TaskSetPiecePickingParams,
+  SetTaskProxyParams,
   TaskDtoWire,
   DaemonSeedLocalParams,
   DaemonTaskHashParams,
@@ -168,7 +169,8 @@ const task = {
   rename: (params: TaskRenameParams) => call<OkResult>(METHOD.DAEMON_TASK_RENAME, params),
   changeUrl: (params: TaskChangeUrlParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_CHANGE_URL, params),
-  /** 修改线程数：已下进度保留；下载中任务由引擎静默暂停 → 改配置 → 恢复。 */
+  /** 修改任务代理；后端对活动任务重连、对失败任务自动重试。 */
+  setProxy: (params: SetTaskProxyParams) => call<OkResult>(METHOD.DAEMON_TASK_SET_PROXY, params),
   setSegments: (params: TaskSetSegmentsParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_SET_SEGMENTS, params),
   /** BT 选块：只传本次切换的字段，另一项保持不变。 */

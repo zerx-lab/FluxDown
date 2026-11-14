@@ -4236,6 +4236,16 @@ impl Db {
         Ok(())
     }
 
+    /// Persist a task's proxy override; an empty value follows global routing.
+    pub async fn update_task_proxy(&self, id: &str, proxy_url: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET proxy_url = $1 WHERE id = $2")
+            .bind(proxy_url)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Insert or replace a single segment row (used by dynamic segment coordinator).
     ///
     /// This is the upsert counterpart to `insert_segments` — it handles a single

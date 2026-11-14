@@ -44,6 +44,7 @@
 
 **建任务管线**：`create_task` 与 `create_tasks_batch` 共用「内存准备（thunder 解码 / BT 禁用 / 去重 / checksum / 站点凭据 / UA 并入请求头 / 队列默认 / ED2K / 相对文件名）→ 单事务落库（每队列一次 `MAX(queue_order)` 后内存递增、每行一条全列 INSERT、一次 `IN` 回读）→ 发布」三段，单条与批量语义不能分叉。批量一块只读一次 `dedup_same_url` / 活跃 URL / 站点凭据库，块内重复链接解析为块内首个任务；发布顺序 = 先一条 `EngineEvent::TasksChanged`（wire `DaemonEvent::TasksChanged`），再逐条 webhook `task.created`、解析插件缺失报错、稍后下载探测 / 入队。逐条拒绝（`CreateRejection`：BT 禁用 / thunder 解码失败 / checksum 非法 / 请求头非法）不影响同块其他条目；整块事务失败则整块回滚且不留幂等记录。
 **任务 HTTP client**：需要专属 client 的任务（单任务代理 / UA、队列默认 UA、忽略 TLS、Auto 走代理、站点规则出口）经进程级 `client_cache.rs` 按（代理指纹, 生效 UA, ignore_tls）缓存复用（超过 64 个整体清空，指纹不含 `rules`）；构建一次约 70ms，禁止每任务 / 每请求重建。同键任务共享连接池与 cookie jar，与全局 client 语义一致。
+- **任务代理编辑**（#1112）：`DownloadManager::set_task_proxy` → `daemon.task.setProxy`；先持久化 `proxy_url` 并更新排队副本，再对活跃 HTTP / FTP（含 HLS / DASH / 插件解析）走 `pause_task_for_reconnect` / `resume_task`，等待旧 writer 的 `TaskDone` 后立即用新出口重建连接，不重启宿主；失败任务立即重试，暂停 / 排队保持状态。空值恢复全局 + 站点规则；BT / eD2K 与完成态拒绝。UI 保存前说明非续传源站可能从头下载、直播可能留缺口。回归 `native/engine/tests/engine/proxy_switch.rs::task_proxy_edit_*`。
 
 ---
 
