@@ -11698,9 +11698,9 @@ impl DownloadManager {
                 && let Err(error) = bt.pause_task(task_id).await
             {
                 crate::logger::report_error("download-manager", "pause seeding task", &error);
-                // 旧 writer 仍可能 flush；匹配 TaskDone 前必须保留世代屏障。
-                self.drain_queue().await;
-                return;
+                // 已取消的 worker 可能恰在 session.pause 途中摘掉句柄（典型是撤回未答复的
+                // 文件选择）。最终暂停帧仍由匹配世代的 TaskDone 收尾；这里照常落库用户的暂停，
+                // 不因句柄已消失而放弃。
             }
 
             if let Err(error) = self.db.update_task_status(task_id, 2, "").await {
@@ -19700,6 +19700,20 @@ mod tests {
         .expect("file selection must be requested");
 
         mgr.pause_task(&task_id).await;
+        let status_after_pause = mgr
+            .db
+            .load_task_by_id(&task_id)
+            .await
+            .expect("load task after pause")
+            .expect("task row after pause")
+            .status;
+        assert_eq!(
+            status_after_pause,
+            2,
+            "pause did not persist: active={}, pending={}",
+            mgr.active_tasks.contains_key(&task_id),
+            mgr.pending_pauses.contains_key(&task_id)
+        );
         let done = loop {
             let done = tokio::time::timeout(std::time::Duration::from_secs(10), done_rx.recv())
                 .await
@@ -19714,6 +19728,18 @@ mod tests {
             "the unanswered request must be dropped so the host withdraws it"
         );
         mgr.on_task_done(&done).await;
+
+        let task_after_done = mgr
+            .db
+            .load_task_by_id(&task_id)
+            .await
+            .expect("load task after done")
+            .expect("task row after done");
+        assert_eq!(
+            task_after_done.status, 2,
+            "pause must remain persisted after worker completion: {:?}",
+            task_after_done.error_message
+        );
 
         let mut paused_frames = 0;
         while let Ok(update) = progress_rx.try_recv() {
@@ -20590,7 +20616,7 @@ mod tests {
     async fn sqlite_fault_fixture(tag: &str) -> (PathBuf, Db, sqlx::SqlitePool) {
         let dir = unique_filetrack_test_dir(tag);
         std::fs::create_dir_all(&dir).expect("create fault test directory");
-        let url = format!("sqlite://{}?mode=rwc", dir.join("tasks.db").display());
+        let url = crate::db::sqlite_url(&dir.join("tasks.db"));
         let db = Db::connect(&url).await.expect("connect fault database");
         let injector = sqlx::SqlitePool::connect(&url)
             .await

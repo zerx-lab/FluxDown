@@ -6,7 +6,7 @@
 //! 两者耗时都与距离成正比——整文件预分配或从 `k·N/n` 起写的均匀分段，在
 //! ~15 MB/s 的 SD 卡上让 1 GB 任务在首字节前卡近一分钟（#974，Android exFAT SD 卡）。
 //!
-//! 这类目标改走 [`FileLayout::GrowOnWrite`]：不预分配，全新任务只规划一个段，
+//! Unix 上这类目标改走 `FileLayout::GrowOnWrite`：不预分配，全新任务只规划一个段，
 //! 拆分时持有者最多保留 [`FRONTIER_WINDOW_BYTES`]、帮手紧接其后起写——所有写入
 //! 落在 EOF 附近的窗口内，零填充只覆盖窗口里尚未到达的字节，且很快被真实数据
 //! 覆盖（多在回写前，仍停留在页缓存里）。
@@ -15,7 +15,7 @@ use std::path::Path;
 
 use crate::downloader::DownloadError;
 
-/// [`FileLayout::GrowOnWrite`] 下拆分时持有者最多保留的字节数。
+/// Unix `FileLayout::GrowOnWrite` 下拆分时持有者最多保留的字节数。
 ///
 /// 每个窗口 = 一次新 Range 请求；窗口越大请求越少，但并发 worker 领先 EOF 的
 /// 零填充上界（约 worker 数 × 窗口）越大。8 MiB 在 1~2 MB/s 单连接下约 4~8s 一次
@@ -32,6 +32,7 @@ pub(super) enum FileLayout {
     /// 均匀分段与按速率均衡拆分照常。
     Preallocated,
     /// 延伸文件需物理写零：不预分配，写入贴着 EOF 推进。
+    #[cfg(unix)]
     GrowOnWrite,
 }
 
@@ -45,6 +46,7 @@ impl FileLayout {
     pub(super) fn split_window(self) -> Option<i64> {
         match self {
             Self::Preallocated => None,
+            #[cfg(unix)]
             Self::GrowOnWrite => Some(FRONTIER_WINDOW_BYTES),
         }
     }
@@ -54,6 +56,7 @@ impl FileLayout {
     pub(super) fn fresh_plan_count(self, planned: i32) -> i32 {
         match self {
             Self::Preallocated => planned,
+            #[cfg(unix)]
             Self::GrowOnWrite => 1,
         }
     }

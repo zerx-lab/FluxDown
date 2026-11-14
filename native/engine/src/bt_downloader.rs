@@ -3118,6 +3118,16 @@ fn dedup_name_in_dir(
     avoid: &HashSet<String>,
     allow_overwrite: bool,
 ) -> std::io::Result<String> {
+    // Windows 上普通文件的「子路径」也可能报 NotFound。先确认目标本身是目录（或不存在），
+    // 再把探测不到的候选名当作可用。
+    let directory_or_missing = match std::fs::metadata(dir) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    if !directory_or_missing {
+        return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+    }
     crate::downloader::dedup_name_by_probe(
         dir,
         name,
@@ -7668,6 +7678,7 @@ mod tests {
             true
         ));
         // 非 Windows 上 `:` 是合法文件名字符，不得误杀。
+        #[cfg(not(windows))]
         assert!(super::torrent_relative_path_is_safe(
             Path::new("a:b"),
             false
@@ -8122,6 +8133,7 @@ mod tests {
                     .expect("cleanup companion");
                 sqlite.close().await.expect("close trigger connection");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
@@ -8233,6 +8245,7 @@ mod tests {
                     None
                 );
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
@@ -8333,6 +8346,7 @@ mod tests {
                     .await
                     .expect("cleanup task");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT selection fixture");
         }
@@ -8480,6 +8494,7 @@ mod tests {
                     Some(expected.as_str())
                 );
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove BT relocate fixture");
         }
@@ -8573,6 +8588,7 @@ mod tests {
                     .await
                     .expect("cleanup task");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove same-dir fixture");
         }
@@ -8721,6 +8737,7 @@ mod tests {
                     .await
                     .expect("cleanup");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove inside-stage fixture");
         }
@@ -8748,6 +8765,7 @@ mod tests {
                     .await
                     .expect("cleanup");
             });
+            shared_bt.shutdown();
             drop(shared_bt);
             std::fs::remove_dir_all(root).expect("remove bad-dir fixture");
         }

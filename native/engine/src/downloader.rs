@@ -9628,7 +9628,7 @@ mod single_resume_tests {
             uuid::Uuid::new_v4()
         ));
         tokio::fs::create_dir_all(&dir).await?;
-        let db_url = format!("sqlite://{}?mode=rwc", dir.join("completion.db").display());
+        let db_url = crate::db::sqlite_url(&dir.join("completion.db"));
         let port = spawn_http(|_| response("200 OK", "", b"completed-file")).await;
         let mut engine = crate::Engine::new(
             crate::EngineConfig {
@@ -9938,10 +9938,7 @@ mod single_resume_tests {
                 proxy_config: crate::proxy_config::ProxyConfig::default(),
                 user_agent: String::new(),
                 data_dir_override: Some(dir.to_path_buf()),
-                database_url: Some(format!(
-                    "sqlite://{}?mode=rwc",
-                    dir.join("held.db").display()
-                )),
+                database_url: Some(crate::db::sqlite_url(&dir.join("held.db"))),
             },
             Arc::new(NoopSink),
             Arc::new(crate::NoopSelection),

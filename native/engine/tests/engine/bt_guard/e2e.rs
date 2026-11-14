@@ -564,11 +564,27 @@ async fn a_failed_startup_load_is_retried_when_the_next_bt_session_starts() {
         .execute(&raw)
         .await
         .expect("repair");
-    let _seed = Seeder::start(&fx.host).await;
+    let seed = Seeder::start(&fx.host).await;
     wait_for("retried load", || !fx.host.guard().load_failed(), WITHIN).await;
     assert!(
         fx.host.guard().is_banned(LOOPBACK),
         "the stored ban is loaded by the retry"
     );
-    std::fs::remove_dir_all(&dir).expect("cleanup");
+    fx.host.shutdown().await;
+    drop(seed);
+    drop(fx);
+    raw.close().await;
+    drop(db);
+    let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) if std::time::Instant::now() < cleanup_deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                tracing::debug!(%error, "waiting for SQLite handles to close");
+            }
+            Err(error) => panic!("cleanup: {error}"),
+        }
+    }
 }

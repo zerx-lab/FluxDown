@@ -162,12 +162,10 @@ fn make_params(
 }
 
 async fn setup(tag: &str, url: &str) -> (std::path::PathBuf, Db) {
-    let work_dir = std::env::temp_dir().join(format!("fluxdown-hls-live-{tag}"));
-    if let Err(error) = tokio::fs::remove_dir_all(&work_dir).await {
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
-    }
+    let work_dir =
+        std::env::temp_dir().join(format!("fluxdown-hls-live-{tag}-{}", uuid::Uuid::new_v4()));
     tokio::fs::create_dir_all(&work_dir).await.unwrap();
-    let db = Db::open(&work_dir).await.expect("db");
+    let db = Db::connect("sqlite::memory:").await.expect("db");
     db.insert_task(
         "tlive",
         url,

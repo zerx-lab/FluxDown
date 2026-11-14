@@ -6557,7 +6557,7 @@ v360.m3u8\n\
         let (address, _) = static_server(audio_routes()).await?;
         let dir = scratch_dir("audio_checkpoint_failure");
         let temp = dir.join("clip.audio.m4a.fdownloading");
-        let url = format!("sqlite://{}?mode=rwc", dir.join("checkpoint.db").display());
+        let url = crate::db::sqlite_url(&dir.join("checkpoint.db"));
         let db = crate::db::Db::connect(&url).await?;
         let pool = sqlx::AnyPool::connect(&url).await?;
         sqlx::query("CREATE TRIGGER fail_checkpoint BEFORE INSERT ON config WHEN NEW.key = 'hls_audio_resume_t-audio' AND NEW.value NOT LIKE '0:0:%' BEGIN SELECT RAISE(ABORT, 'checkpoint write failed'); END")
