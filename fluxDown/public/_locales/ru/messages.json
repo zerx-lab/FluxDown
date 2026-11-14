@@ -1,0 +1,22 @@
+{
+  "extensionName": {
+    "message": "FluxDown",
+    "description": "The name of the extension"
+  },
+  "extensionDescription": {
+    "message": "Перехватывает загрузки браузера и передаёт их в приложение FluxDown для высокоскоростного скачивания",
+    "description": "The description of the extension"
+  },
+  "commandToggleIntercept": {
+    "message": "Переключить перехват загрузок",
+    "description": "Keyboard shortcut: toggle download interception"
+  },
+  "commandDownloadPlayingMedia": {
+    "message": "Скачать воспроизводимое видео или аудио",
+    "description": "Keyboard shortcut: download the playing media"
+  },
+  "commandOpenSidePanel": {
+    "message": "Открыть боковую панель",
+    "description": "Keyboard shortcut: open the FluxDown side panel"
+  }
+}
