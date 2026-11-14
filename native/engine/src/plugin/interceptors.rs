@@ -280,6 +280,7 @@ impl PluginManager {
             return Ok(Some(crate::model::ArchiveDirectories {
                 components: vec![folder],
                 legacy: true,
+                category: String::new(),
             }));
         }
         if problems.is_empty() {
@@ -346,6 +347,24 @@ impl PluginManager {
         .await;
         match result {
             Ok(Some(value)) => {
+                if !value.category.is_empty() {
+                    if !matches!(
+                        value.category.as_str(),
+                        "video" | "audio" | "document" | "image" | "program" | "archive" | "other"
+                    ) || !value.directories.is_empty()
+                        || !value.folder_name.is_empty()
+                        || context.is_group
+                        || context.phase != crate::model::ArchivePhase::Complete
+                    {
+                        audit("error", "invalid category output");
+                        return Err("归档分类标识不合法或与目录输出冲突".to_owned());
+                    }
+                    audit("ok", "");
+                    return Ok(Some(crate::model::ArchiveDirectories {
+                        category: value.category,
+                        ..Default::default()
+                    }));
+                }
                 match crate::category_route::normalize_archive_directories(
                     &value.directories,
                     &value.folder_name,
@@ -355,6 +374,7 @@ impl PluginManager {
                         Ok(Some(crate::model::ArchiveDirectories {
                             legacy: value.directories.is_empty(),
                             components,
+                            category: String::new(),
                         }))
                     }
                     None => {

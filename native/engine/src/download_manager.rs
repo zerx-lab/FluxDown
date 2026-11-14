@@ -43,6 +43,8 @@ use crate::speed_meter::{
 use crate::transfer_activity::TaskRuntime;
 
 mod boost;
+#[cfg(all(feature = "bt", feature = "plugins"))]
+mod bt_archive;
 #[cfg(feature = "bt")]
 mod bt_storage_ops;
 mod group_dirs;
@@ -2251,6 +2253,9 @@ pub enum TaskDonePhase {
     /// 答复已到（Cancel 表示取消下载 → 任务暂停）：manager 持久化决定并把任务
     /// 重新排到队首作为全新起跑。
     DecisionReady(crate::selection::FileExistsChoice),
+    /// Off-actor BT archive recognition or storage move has produced a result.
+    #[cfg(all(feature = "bt", feature = "plugins"))]
+    BtArchiveWorkReady,
 }
 
 /// Notification sent from a spawned download task when it finishes (or parks).
@@ -4006,6 +4011,8 @@ pub struct DownloadManager {
     /// 在途的 BT 数据搬移（`daemon.task.moveStorage`）：搬移期间拒绝恢复 / 删除 / 改文件。
     #[cfg(feature = "bt")]
     bt_moves: crate::task_jobs::TaskJobs,
+    #[cfg(all(feature = "bt", feature = "plugins"))]
+    bt_archive_results: Arc<tokio::sync::Mutex<HashMap<String, bt_archive::WorkResult>>>,
     /// 在途文件哈希作业（按需与下载完成后自动；删除任务 / 关停时取消）。
     file_hash_jobs: crate::task_jobs::TaskJobs,
     /// 下载完成后自动计算哈希所用算法（config `hash_after_download` /
@@ -4262,6 +4269,8 @@ impl DownloadManager {
             integrity_checks: crate::task_jobs::TaskJobs::default(),
             #[cfg(feature = "bt")]
             bt_moves: crate::task_jobs::TaskJobs::default(),
+            #[cfg(all(feature = "bt", feature = "plugins"))]
+            bt_archive_results: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             file_hash_jobs: crate::task_jobs::TaskJobs::default(),
             hash_after_download: None,
             file_hash_gate: Arc::new(Semaphore::new(1)),
@@ -7967,6 +7976,12 @@ impl DownloadManager {
         let task_id = done.task_id.as_str();
         let generation = done.generation;
         match done.phase {
+            #[cfg(all(feature = "bt", feature = "plugins"))]
+            TaskDonePhase::BtArchiveWorkReady => {
+                self.commit_bt_archive_work(task_id).await;
+                self.maybe_release_bt_session().await;
+                return;
+            }
             TaskDonePhase::Finished => {
                 if self.awaiting_decision.get(task_id) == Some(&generation) {
                     self.awaiting_decision.remove(task_id);
@@ -8247,6 +8262,13 @@ impl DownloadManager {
             // （webhook task.completed 照常）。
             let adopted = task.status == 3 && self.skip_adopted(task_id).await;
             if task.status == 3 {
+                #[cfg(all(feature = "bt", feature = "plugins"))]
+                if is_bt_url(&task.url)
+                    && !adopted
+                    && let Err(error) = self.schedule_bt_archive(&task).await
+                {
+                    crate::logger::report_warning("BT", "schedule content archive", error.as_ref());
+                }
                 self.retry_unschedule(task_id);
                 // 成功完成：结束本轮通用重试与一次性备用链路状态。
                 self.auto_retry_counts.remove(task_id);
@@ -8373,11 +8395,15 @@ impl DownloadManager {
             // 文件哈希：校验和校验通过时下载器已把哈希写进库，但完成只经进度帧发布（不含
             // 该字段），在此补发完整任务行；没有记录且开启「下载完成后计算哈希」时排队计算。
             // 放在插件 onDone 通知之后：onDone 可能移动 / 改写文件。
+            #[cfg(all(feature = "bt", feature = "plugins"))]
+            let archive_pending = self.bt_archive_results.lock().await.contains_key(task_id);
+            #[cfg(not(all(feature = "bt", feature = "plugins")))]
+            let archive_pending = false;
             if task.status == 3 {
                 if !task.file_hash.is_empty() {
                     self.sink
                         .emit(EngineEvent::TaskChanged(Box::new(task.clone())));
-                } else if let Some(algorithm) = self.hash_after_download {
+                } else if !archive_pending && let Some(algorithm) = self.hash_after_download {
                     self.spawn_auto_file_hash(task_id, algorithm).await;
                 }
             }
@@ -8457,6 +8483,10 @@ impl DownloadManager {
             active_download: self.active_tasks.values().any(|e| e.is_bt),
             ..BtSessionHolds::default()
         };
+        #[cfg(feature = "plugins")]
+        if !self.bt_archive_results.lock().await.is_empty() {
+            holds.active_download = true;
+        }
         let Some(bt) = &self.bt_session else {
             return holds;
         };
@@ -9796,10 +9826,10 @@ impl DownloadManager {
             None
         };
         // 分类目录路由：按初始名选初始目录（常见情形直接写进分类目录，完成时零移动），
-        // 开始写盘前与完成前再按更确定的名字复核（`category_route`）。BT / eD2K 要原地
-        // 做种 / 共享，组成员与 `out=子目录/名字` 的相对结构由来源决定，均不路由。解析
-        // 插件任务的链接是页面地址，只看显式名；HLS / DASH 按成品 `.mp4` 预判。
-        let routable = !is_bt && !is_ed2k_url(&url) && group_id.is_empty() && !has_subdir;
+        // 开始写盘前与完成前再按更确定的名字复核。BT 仅保留授权，首次完成后
+        // 恰好一个选中文件时经 BT 存储迁移归档；eD2K、组成员与 out 子路径不路由。
+        // 解析插件只看显式名；HLS / DASH 按成品 `.mp4` 预判。
+        let routable = !is_ed2k_url(&url) && group_id.is_empty() && !has_subdir;
         let (save_dir, category_route) = match category_route.filter(|_| routable) {
             None => (save_dir, String::new()),
             Some(mut route) => {
@@ -9813,13 +9843,17 @@ impl DownloadManager {
                     _ => file_name.as_str(),
                 };
                 let output = crate::category_route::output_name(known, link);
-                let initial = route
-                    .save_dir_for(
-                        output.as_deref().unwrap_or(known),
-                        link,
-                        crate::category_route::source_address(&origin_url, &db_url),
-                    )
-                    .map(str::to_owned);
+                let initial = (!is_bt)
+                    .then(|| {
+                        route
+                            .save_dir_for(
+                                output.as_deref().unwrap_or(known),
+                                link,
+                                crate::category_route::source_address(&origin_url, &db_url),
+                            )
+                            .map(str::to_owned)
+                    })
+                    .flatten();
                 route.base_dir = save_dir;
                 let column = match route.to_column() {
                     Ok(column) => column,

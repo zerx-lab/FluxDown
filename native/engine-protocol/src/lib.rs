@@ -55,6 +55,7 @@ pub fn category_route_to_engine(
         other_dir: route.other_dir,
         archive: None,
         archive_metadata: None,
+        archive_categories: route.archive_categories,
     }
 }
 

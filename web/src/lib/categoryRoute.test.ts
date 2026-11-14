@@ -49,7 +49,7 @@ describe('routeFromCategories', () => {
       cat('hidden', { saveDir: '/h', visible: false }),
       cat('other', { builtinType: 'other', saveDir: '/o' }),
     ])
-    expect(route).toEqual({ rules: [{ matchMode: 'regex', regexPattern: '^x' }], otherDir: '/o' })
+    expect(route).toEqual({ rules: [{ matchMode: 'regex', regexPattern: '^x' }], otherDir: '/o', archiveCategories: { other: '/o' } })
   })
 
   test('偏好值解析（数组 / JSON 字符串）', () => {
@@ -57,6 +57,16 @@ describe('routeFromCategories', () => {
     const expected = { rules: [{ matchMode: 'extension', extensions: ['mp4'], saveDir: '/v' }] }
     expect(routeFromPreference(list)).toEqual(expected)
     expect(routeFromPreference(JSON.stringify(list))).toEqual(expected)
+  })
+  test('归档按稳定内置类型跟随改名和目录变化，不猜自定义分类', () => {
+    const image = cat('builtin_image', { builtinType: 'image', name: '摄影收藏', saveDir: ' /photos ' })
+    const first = routeFromCategories([image, cat('custom', { name: '音频', saveDir: '/custom' })])
+    expect(first.archiveCategories).toEqual({ image: '/photos' })
+    image.saveDir = '/new-photos'
+    expect(routeFromCategories([image]).archiveCategories).toEqual({ image: '/new-photos' })
+    expect(first.archiveCategories).toEqual({ image: '/photos' })
+    expect(routeFromCategories([{ ...image, visible: false }]).archiveCategories).toBeUndefined()
+    expect(routeFromCategories([{ ...image, saveDir: '' }]).archiveCategories).toBeUndefined()
   })
 })
 

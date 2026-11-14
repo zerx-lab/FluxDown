@@ -521,6 +521,8 @@ export interface CategoryRouteDto {
   rules: CategoryRuleDto[];
   /** 「其他」分类的目录；缺省 = 不兜底。 */
   otherDir?: string;
+  /** Configured visible builtin category directories, keyed by stable builtinType. */
+  archiveCategories?: Record<string, string>;
 }
 
 /** `CategoryRouteDto.rules` 的单条普通分类。 */

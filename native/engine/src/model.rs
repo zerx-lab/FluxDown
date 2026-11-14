@@ -55,6 +55,39 @@ pub struct ArchiveMetadata {
     pub collection_title: String,
 }
 
+/// Lifecycle stage of an archive decision.
+///
+/// ```
+/// use fluxdown_engine::model::ArchivePhase;
+/// assert_eq!(serde_json::to_string(&ArchivePhase::Complete).unwrap(), "\"complete\"");
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ArchivePhase {
+    /// Before writing a single file, or when choosing a task group's root.
+    #[default]
+    Start,
+    /// After final processing of a complete single-file artifact.
+    Complete,
+}
+
+/// Content-observed format facts, independent of the name and HTTP response MIME.
+///
+/// ```
+/// use fluxdown_engine::model::ArchiveDetectedType;
+/// let detected = ArchiveDetectedType { kind: "image", mime: "image/png".into(), extension: "png".into() };
+/// assert_eq!(detected.mime, "image/png");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ArchiveDetectedType {
+    /// The recognizer's broad format kind, not a user-defined classification.
+    pub kind: &'static str,
+    /// Content-observed media type.
+    pub mime: String,
+    /// Canonical format extension without the dot; never a rename instruction.
+    pub extension: String,
+}
+
 /// Context passed to archive-folder plugins.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +96,15 @@ pub struct ArchiveContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ArchiveMetadata>,
     pub is_group: bool,
+    /// Start prediction or completed-artifact decision.
+    pub phase: ArchivePhase,
+    /// UTC creation date (`YYYY-MM-DD`); empty for invalid legacy timestamps.
+    pub created_date: String,
+    /// Bounded local content recognition; absent before completion or when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_type: Option<ArchiveDetectedType>,
+    /// Whether this host supports resolving archive category identifiers.
+    pub category_routing: bool,
     /// Bounded hexadecimal file prefix for host-side signed rule matching.
     /// Never serialized to arbitrary plugin scripts.
     #[serde(skip)]
@@ -74,6 +116,8 @@ pub struct ArchiveContext {
 pub struct ArchiveDirectories {
     pub components: Vec<String>,
     pub legacy: bool,
+    /// Stable builtin category identifier, mutually exclusive with directory components.
+    pub category: String,
 }
 
 /// 持久化任务信息。

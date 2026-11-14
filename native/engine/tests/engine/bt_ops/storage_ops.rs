@@ -470,3 +470,117 @@ async fn an_interrupted_move_is_finished_on_the_next_start() {
     }
     leech.shutdown().await;
 }
+
+#[cfg(feature = "plugins")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bt_archive_moves_only_the_single_selected_file_and_preserves_torrent_layout() {
+    use fluxdown_engine::category_route::CategoryRoute;
+
+    const ARCHIVE: &str = r#"globalThis.archive = ctx => ctx.phase === "complete" && ctx.detectedType?.mime === "image/png" ? {category:"image"} : null;"#;
+    let tracker = Tracker::start().await;
+    let png = [
+        b"\x89PNG\r\n\x1a\n".as_slice(),
+        &patterned(PIECE_LEN as usize * 2 + 37, 7),
+    ]
+    .concat();
+    let files = vec![
+        ("sub/photo.txt", png.clone()),
+        ("sub/neighbor.bin", patterned(PIECE_LEN as usize * 3, 8)),
+        ("outside.bin", patterned(PIECE_LEN as usize + 19, 9)),
+    ];
+    let seeder = Seeder::start(&files, &tracker, None).await;
+    let mut downloader = Downloader::start(&tracker).await;
+    downloader.install_archive_plugin(ARCHIVE).await;
+    let route = CategoryRoute {
+        base_dir: downloader.work.to_string_lossy().into_owned(),
+        archive_categories: [(
+            "image".to_owned(),
+            downloader
+                .work
+                .join("Configured Photos")
+                .to_string_lossy()
+                .into_owned(),
+        )]
+        .into(),
+        ..Default::default()
+    };
+
+    let selected = seeder.index_of("sub/photo.txt");
+    let task_id = downloader
+        .add_with_route(&seeder, &[selected], false, Some(route.clone()))
+        .await;
+    let done = downloader.wait_done(&task_id).await;
+    assert_eq!(done.status, 3, "download failed: {}", done.error_message);
+    let destination = downloader.work.join("Configured Photos");
+    let archived = downloader
+        .drain_done_until_save_dir(&task_id, &destination)
+        .await;
+    assert_eq!(archived.file_name, TORRENT_NAME);
+    let archived_file = destination.join(TORRENT_NAME).join("sub/photo.txt");
+    assert_eq!(
+        tokio::fs::read(&archived_file)
+            .await
+            .expect("archived file"),
+        png
+    );
+    assert!(
+        !destination
+            .join(TORRENT_NAME)
+            .join("sub/neighbor.bin")
+            .exists(),
+        "unselected neighbor must not be installed despite shared boundary pieces"
+    );
+    assert!(
+        !downloader.work.join(TORRENT_NAME).exists(),
+        "original torrent root should have moved"
+    );
+
+    let mut downloader = downloader.restart(&tracker).await;
+    downloader.engine.manager.load_and_send_all_tasks().await;
+    let restored = downloader.task(&task_id).await;
+    assert_eq!(restored.save_dir, destination.to_string_lossy());
+    assert_eq!(
+        tokio::fs::read(&archived_file)
+            .await
+            .expect("reseeded file"),
+        seeder.content_of("sub/photo.txt"),
+        "restart must retain valid BT sidecar/storage mapping"
+    );
+    wait_until("the archived task to reseed", || async {
+        downloader.task(&task_id).await.seeding_status == SEEDING_STATUS_ACTIVE
+    })
+    .await;
+    assert_eq!(
+        downloaded(&downloader.files(&task_id).await, selected),
+        u64::try_from(png.len()).expect("PNG size")
+    );
+    downloader.shutdown().await;
+
+    let mut downloader = Downloader::start(&tracker).await;
+    downloader.install_archive_plugin(ARCHIVE).await;
+    let all_selected = downloader
+        .add_with_route(
+            &seeder,
+            &[],
+            false,
+            Some(CategoryRoute {
+                base_dir: downloader.work.to_string_lossy().into_owned(),
+                ..Default::default()
+            }),
+        )
+        .await;
+    let done = downloader.wait_done(&all_selected).await;
+    assert_eq!(done.status, 3, "download failed: {}", done.error_message);
+    assert_eq!(Path::new(&done.save_dir), downloader.work);
+    downloader.shutdown().await;
+
+    let mut downloader = Downloader::start(&tracker).await;
+    downloader.install_archive_plugin(ARCHIVE).await;
+    let explicit_dir = downloader
+        .add_with_route(&seeder, &[selected], false, None)
+        .await;
+    let done = downloader.wait_done(&explicit_dir).await;
+    assert_eq!(done.status, 3, "download failed: {}", done.error_message);
+    assert_eq!(Path::new(&done.save_dir), downloader.work);
+    downloader.shutdown().await;
+}
