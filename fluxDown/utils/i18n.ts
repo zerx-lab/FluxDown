@@ -2,7 +2,7 @@
  * FluxDown i18n 国际化模块
  *
  * - 默认跟随浏览器语言
- * - 支持简体中文、繁体中文（台湾）和英文
+ * - 支持简体中文、繁体中文（台湾）、俄语和英文
  * - 不支持的语言回退到英文
  */
 
@@ -10,16 +10,18 @@ import { browser } from 'wxt/browser';
 import zhCN from './locales/zh-CN';
 import zhTW from './locales/zh-TW';
 import en from './locales/en';
+import ru from './locales/ru';
 import type { MessageKey } from './locales/zh-CN';
 
 type LocaleMessages = Record<MessageKey, string>;
 
-type Locale = 'zh-CN' | 'zh-TW' | 'en';
+type Locale = 'zh-CN' | 'zh-TW' | 'en' | 'ru';
 
 const locales: Record<Locale, LocaleMessages> = {
   'zh-CN': zhCN,
   'zh-TW': zhTW,
   'en': en,
+  'ru': ru,
 };
 
 const FALLBACK_LOCALE = 'en';
@@ -32,6 +34,7 @@ function resolveLocale(locale: unknown): Locale | null {
   if (typeof locale !== 'string') return null;
   const [language, scriptOrRegion] = locale.trim().toLowerCase().replaceAll('_', '-').split('-');
   if (language === 'en') return 'en';
+  if (language === 'ru') return 'ru';
   if (language !== 'zh') return null;
   if (scriptOrRegion === 'hant') return 'zh-TW';
   if (scriptOrRegion === 'hans') return 'zh-CN';
@@ -123,10 +126,10 @@ export function getLocale(): Locale {
 }
 
 /**
- * 弹出窗口依次切换简体中文、繁体中文和英文。
+ * 弹出窗口依次切换简体中文、繁体中文、英文和俄语。
  */
 export function getNextLocale(): Locale {
-  return currentLocale === 'en' ? 'zh-CN' : currentLocale === 'zh-CN' ? 'zh-TW' : 'en';
+  return currentLocale === 'en' ? 'zh-CN' : currentLocale === 'zh-CN' ? 'zh-TW' : currentLocale === 'zh-TW' ? 'ru' : 'en';
 }
 
 /**
