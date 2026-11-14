@@ -141,9 +141,12 @@
   先建新目录 → 删本任务 librqbit 条目与旧 staging → `set_task_location` + 保存选择并发布位置 →
   `run_bt_download` 以新目录、Path A/S 重跑一轮（不再弹窗）。建目录失败 / 新目录落在旧 staging 内
   均报错、库内位置不变，重试会重新询问。
-- **桌面 BT 文件选择窗的「取消」= 删除任务**：GPUI 发 `daemon.task.delete`（含已暂存数据）而不答复 `Cancelled`；删除取消 worker，
-  daemon 撤回待选项，窗口随之关闭（`crates/downloads/src/pages/selection.rs::cancel_command`）。其它客户端答复 `Cancelled` 仍按 `[-1]` 暂停。
-- **BT 文件选择窗可改名**：`SelectionOutcome::Bt.custom_name` 仅在与预填任务名不同时下发（GPUI；移动端不改名）。引擎按
+- **BT 文件选择窗的「取消」按钮 = 删除任务**（GPUI / Web / Android / iOS 四端同语义）：客户端发 `daemon.task.delete`（`deleteFiles: true`，
+  只删已暂存数据）而不答复 `Cancelled`；删除取消 worker，daemon 撤回待选项，窗口随之关闭（GPUI `crates/downloads/src/pages/selection.rs::cancel_command`、
+  Web `SelectionDialogs.tsx` 的 `cancel`、Android `SelectionResolver.cancelButton`、iOS `SelectionResolver.cancel`；移动端判定 `SelectionKind.cancelDeletesTask`）。
+  关闭 / 划走不是取消：Web 关闭对话框与 Android 划走仍答复 `Cancelled`（`[-1]` 暂停），iOS 下拉关闭保持请求待处理。
+- **BT 文件选择窗可改名**（四端）：`SelectionOutcome::Bt.custom_name`（UniFFI `SelectionOutcomeDto::Bt.custom_name`）仅在去空白后非空且与预填任务名不同时下发
+  （GPUI `bt_name_outcome` ↔ Web `btSelection.ts::btSelectionName` ↔ Android / iOS `btNameOutcome`）。引擎按
   `naming::sanitize_filename` 清洗后先写 `bt_custom_name` 再用于完成落盘（迁目录重跑与恢复都从库里读）；单文件种子改文件名（缺扩展名时沿用原扩展名），
   多文件种子改外层目录名，不论勾了哪些文件（`compute_completion_layout` 有改名即走容器分支）。
 - **BT 文件选择的自动默认（#885）**：引擎以 `timeout: None` 询问，等待上限由 daemon `selection.rs::bt_selection_timeout`

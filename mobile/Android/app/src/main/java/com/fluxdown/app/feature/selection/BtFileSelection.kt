@@ -20,8 +20,10 @@ import androidx.compose.foundation.selection.triStateToggleable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,11 +43,13 @@ import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.CategoryIndex
 import com.fluxdown.core.model.SelectionKind
 import com.fluxdown.core.model.SelectionOutcome
+import com.fluxdown.core.model.btNameOutcome
 import com.fluxdown.fluxui.controls.ButtonSize
 import com.fluxdown.fluxui.controls.ButtonVariant
 import com.fluxdown.fluxui.controls.FluxButton
 import com.fluxdown.fluxui.controls.FluxCheckbox
 import com.fluxdown.fluxui.controls.FluxDivider
+import com.fluxdown.fluxui.controls.FluxField
 import com.fluxdown.fluxui.data.fileTileIcon
 import com.fluxdown.fluxui.icons.FluxIcon
 import com.fluxdown.fluxui.icons.FluxIcons
@@ -149,7 +153,13 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
         derivedStateOf { ArrayList<BtNode>().also { flatten(tree, collapsed, it) } }
     }
     val selectedBytes by remember(request.requestId) { derivedStateOf { selected.sumOf { sizes[it] ?: 0L } } }
-    val dirty by remember(request.requestId) { derivedStateOf { selected.toSet() != initial } }
+    // 「名称」预填任务当前显示名；只有改过（去空白后非空且不同）才随确认下发 customName
+    val task = ui.taskOf()
+    val initialName = remember(request.requestId) { task?.fileName.orEmpty() }
+    var name by remember(request.requestId) { mutableStateOf(initialName) }
+    val dirty by remember(request.requestId) {
+        derivedStateOf { selected.toSet() != initial || btNameOutcome(initialName, name) != null }
+    }
 
     val host = hostState()
     val categories by remember { derivedStateOf { host.value.categories } }
@@ -178,24 +188,32 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
         },
         footer = {
             SelectionFooter(ui.countdown) {
+                FluxButton(str(R.string.cancel), { ui.resolver.cancelButton(request) }, modifier = Modifier.weight(1f))
                 FluxButton(
                     str(R.string.btFileSelectConfirm, "count" to count, "size" to sizeText),
                     {
                         ui.resolver.resolve(
                             request,
-                            SelectionOutcome.Bt(selected.toList().sorted(), saveDir = null),
+                            SelectionOutcome.Bt(selected.toList().sorted(), saveDir = null, customName = btNameOutcome(initialName, name)),
                             startedText,
                             userInitiated = true,
                         )
                     },
+                    modifier = Modifier.weight(2f),
                     variant = ButtonVariant.Primary,
-                    fullWidth = true,
                     enabled = count > 0,
                 )
             }
         },
     ) {
-        SelectionTaskRow(ui.taskOf())
+        SelectionTaskRow(task)
+
+        FluxField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.padding(top = 8.dp),
+            label = str(R.string.btFileColumnName),
+        )
 
         // 工具条
         Row(

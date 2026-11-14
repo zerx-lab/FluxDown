@@ -243,12 +243,24 @@ data class VariantOption(
 
 sealed interface SelectionOutcome {
     data class Hls(val index: Int) : SelectionOutcome
-    data class Bt(val indices: List<Int>, val saveDir: String? = null) : SelectionOutcome
+    /** [customName]：改名（单文件 = 文件名，多文件 = 外层目录名）；null = 不改，由引擎清洗。 */
+    data class Bt(val indices: List<Int>, val saveDir: String? = null, val customName: String? = null) : SelectionOutcome
     data class Variant(val index: Int) : SelectionOutcome
     data class Plugin(val identity: String, val remember: Boolean) : SelectionOutcome
     data class FileExists(val action: FileExistsAction) : SelectionOutcome
     data object Cancelled : SelectionOutcome
 }
+
+/**
+ * BT 选择「名称」输入的答复值（对齐 GPUI `bt_name_outcome`）：去空白后为空或与预填名相同 → null（不改名），否则为去空白后的新名。
+ */
+fun btNameOutcome(initial: String, input: String): String? {
+    val name = input.trim()
+    return name.takeIf { it.isNotEmpty() && it != initial.trim() }
+}
+
+/** 选择 Sheet 的「取消」是否删除任务（含文件）：BT 取消 = 不要这个种子；其余类型答复 Cancelled（任务保持暂停）。 */
+val SelectionKind.cancelDeletesTask: Boolean get() = this is SelectionKind.Bt
 
 /** `ServiceHello` 的 UI 相关子集。 */
 data class HostInfo(

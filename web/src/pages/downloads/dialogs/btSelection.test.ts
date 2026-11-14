@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { btSelectionCanConfirm, btSelectionSaveDir } from './btSelection'
+import { btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
 
 describe('btSelectionSaveDir', () => {
   test('未改、空白、与预填相同都不下发', () => {
@@ -13,6 +13,19 @@ describe('btSelectionSaveDir', () => {
   test('修剪后非空且不同于预填才下发', () => {
     expect(btSelectionSaveDir('/data', ' /new ')).toBe('/new')
     expect(btSelectionSaveDir('', '/new')).toBe('/new')
+  })
+})
+
+describe('btSelectionName', () => {
+  test('未改、空白都不下发（沿用种子内名称）', () => {
+    expect(btSelectionName('Pack', 'Pack')).toBeUndefined()
+    expect(btSelectionName('Pack', '  Pack ')).toBeUndefined()
+    expect(btSelectionName('Pack', '   ')).toBeUndefined()
+  })
+
+  test('改过才下发修剪后的名字', () => {
+    expect(btSelectionName('Pack', ' 我的剧集 ')).toBe('我的剧集')
+    expect(btSelectionName('', 'Pack')).toBe('Pack')
   })
 })
 

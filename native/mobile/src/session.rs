@@ -834,6 +834,7 @@ mod tests {
                 SelectionOutcomeDto::Bt {
                     indices: vec![0, 2],
                     save_dir: None,
+                    custom_name: None,
                 },
             )
             .await
@@ -844,6 +845,7 @@ mod tests {
                 SelectionOutcomeDto::Bt {
                     indices: vec![1],
                     save_dir: Some("/new".to_owned()),
+                    custom_name: Some("新名字".to_owned()),
                 },
             )
             .await
@@ -868,7 +870,7 @@ mod tests {
         );
         assert_eq!(
             calls[1].1,
-            json!({ "requestId": "r1b", "outcome": { "kind": "bt", "indices": [1], "saveDir": "/new" } })
+            json!({ "requestId": "r1b", "outcome": { "kind": "bt", "indices": [1], "saveDir": "/new", "customName": "新名字" } })
         );
         assert_eq!(
             calls[2].1,

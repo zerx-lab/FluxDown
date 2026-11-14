@@ -7,7 +7,8 @@ import SwiftUI
 /// - 请求从 `state.selections` 消失即关闭（含其它设备已答复）。
 /// - 倒计时按 `deadlineUnixMs` 与当前时间重算（`CountdownRing`），到 0 以 `defaultChoice` 答复；
 ///   无截止（`hasDeadline == false`）时不显示倒计时、不自动答复。
-/// - X1 / X3 可取消（`.cancelled`，任务保持暂停）；X2 不可取消、不可划走。
+/// - X1 取消 = 删除任务连同文件（同 GPUI，引擎撤回请求后 Sheet 关闭）；X3 取消答复 `.cancelled`，任务保持暂停；
+///   X2 不可取消、不可划走。
 /// - 下拉关闭 ≠ 取消：请求仍待处理，由根视图记入 `dismissedSelections`，下载页横幅可重新打开。
 struct SelectionRequestSheet: View {
     let requestId: String
@@ -114,10 +115,11 @@ private struct BtSelectionView: View {
     @State private var timing: SelectionTiming
     @State private var tree: BtFolderNode
     @State private var sizes: [Int32: Int64]
-    @State private var initial: Set<Int32>
     @State private var selected: Set<Int32>
     @State private var collapsed: Set<String>
-    @State private var showDiscard = false
+    /// 「名称」预填值（任务当前显示名）与输入；确认时经 `btNameOutcome` 只在改过时提交 `customName`。
+    @State private var initialName: String
+    @State private var name: String
 
     init(request: SelectionRequest, files: [BtFile], task: DownloadTask?, resolver: SelectionResolver, close: @escaping SelectionClose) {
         self.request = request
@@ -127,18 +129,19 @@ private struct BtSelectionView: View {
         self.close = close
         let root = buildBtTree(files)
         var defaults: [Int32] = []
-        if case let .bt(indices, _) = request.defaultChoice { defaults = indices }
+        if case let .bt(indices, _, _) = request.defaultChoice { defaults = indices }
         let start = initialBtSelection(files: files, defaultIndices: defaults)
         _timing = State(initialValue: SelectionTiming(request))
         _tree = State(initialValue: root)
         _sizes = State(initialValue: Dictionary(files.map { ($0.index, $0.size) }, uniquingKeysWith: { first, _ in first }))
-        _initial = State(initialValue: start)
         _selected = State(initialValue: start)
         _collapsed = State(initialValue: defaultCollapsedFolders(root, fileCount: files.count))
+        let displayName = task?.fileName ?? ""
+        _initialName = State(initialValue: displayName)
+        _name = State(initialValue: displayName)
     }
 
     private var selectedBytes: Int64 { selected.reduce(0) { $0 + (sizes[$1] ?? 0) } }
-    private var dirty: Bool { selected != initial }
     /// 只有清单里有目录时文件行才需要让出折叠箭头的位置（箭头 32 + 间距 8）；纯文件清单左对齐。
     private var chevronGutter: CGFloat {
         tree.children.contains { if case .folder = $0 { true } else { false } } ? 40 : 0
@@ -156,6 +159,15 @@ private struct BtSelectionView: View {
                         .textCase(nil)
                 }
                 Section {
+                    TextField(L("btFileColumnName"), text: $name)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                } header: {
+                    Text(L("btFileColumnName"))
+                        .textCase(nil)
+                }
+                Section {
                     ForEach(rows, id: \.id) { node in
                         row(node)
                     }
@@ -168,15 +180,8 @@ private struct BtSelectionView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(L("cancel"), systemImage: FluxSymbol.close) {
-                        if dirty { showDiscard = true } else { resolver.cancel(request, onSuccess: close) }
-                    }
-                    .alert(L("mobileSelectionDiscardTitle"), isPresented: $showDiscard) {
-                        Button(L("mobileDiscard"), role: .destructive) { resolver.cancel(request, onSuccess: close) }
-                        Button(L("mobileKeepEditing"), role: .cancel) {}
-                    } message: {
-                        Text(L("mobileSelectionDiscardMessage"))
-                    }
+                    // BT 取消 = 删除任务（同 GPUI / Web / Android，不弹「放弃选择」：那句文案承诺任务保持暂停）
+                    Button(L("cancel"), systemImage: FluxSymbol.close) { resolver.cancel(request, onSuccess: close) }
                 }
             }
             .toolbar {
@@ -184,7 +189,7 @@ private struct BtSelectionView: View {
                     Button {
                         resolver.resolve(
                             request,
-                            .bt(indices: selected.sorted(), saveDir: nil),
+                            .bt(indices: selected.sorted(), saveDir: nil, customName: btNameOutcome(initial: initialName, input: name)),
                             successToast: L("mobileDownloadStarted"),
                             userInitiated: true,
                             onSuccess: close

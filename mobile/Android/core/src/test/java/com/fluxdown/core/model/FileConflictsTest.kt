@@ -57,4 +57,23 @@ class FileConflictsTest {
         assertEquals(30L, FileConflicts.nearestDeadline(sel))
         assertNull(FileConflicts.nearestDeadline(emptyList()))
     }
+
+    @Test
+    fun btNameOutcomeOnlyWhenChanged() {
+        assertNull(btNameOutcome("Movie", "Movie"))
+        assertNull(btNameOutcome("Movie", "  Movie  "))
+        assertNull(btNameOutcome(" Movie ", "Movie"))
+        assertNull(btNameOutcome("Movie", "   "))
+        assertNull(btNameOutcome("Movie", ""))
+        assertEquals("New", btNameOutcome("Movie", "  New "))
+    }
+
+    @Test
+    fun onlyBtCancelDeletesTask() {
+        assertTrue(SelectionKind.Bt(emptyList()).cancelDeletesTask)
+        assertFalse(SelectionKind.Hls(emptyList()).cancelDeletesTask)
+        assertFalse(SelectionKind.Variant(emptyList()).cancelDeletesTask)
+        assertFalse(SelectionKind.Plugin("s", "u", emptyList()).cancelDeletesTask)
+        assertFalse(SelectionKind.FileExists("a", "/d", null, null, null, "a (1)", all).cancelDeletesTask)
+    }
 }

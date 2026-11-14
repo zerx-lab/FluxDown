@@ -16,7 +16,7 @@ FluxDown has a BitTorrent engine built in (powered by librqbit) — you don't ne
 
 ## Selecting files
 
-Multi-file torrents show a checklist of every file inside, with size, before the download starts — uncheck anything you don't want and FluxDown only fetches the files you selected. In the desktop app the same window also lets you change the save location and the name: the file name for a single-file torrent (the original extension is kept if you leave it out), the folder name for a multi-file one. Clicking **Cancel** in that window deletes the task instead of leaving it paused.
+Multi-file torrents show a checklist of every file inside, with size, before the download starts — uncheck anything you don't want and FluxDown only fetches the files you selected. The same window also lets you change the name: the file name for a single-file torrent (the original extension is kept if you leave it out), the folder name for a multi-file one; the desktop app and the web UI also let you change the save location there. Clicking **Cancel** in that window deletes the task instead of leaving it paused.
 
 <!-- TODO(screenshot): New Download dialog file-selection list for a multi-file torrent -->
 

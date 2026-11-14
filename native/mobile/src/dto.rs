@@ -343,6 +343,8 @@ pub enum SelectionOutcomeDto {
         indices: Vec<i32>,
         /// 非空且不同于当前目录时引擎改目录后重开；`None` = 沿用。
         save_dir: Option<String>,
+        /// 用户改的落盘名（单文件种子 = 文件名，多文件种子 = 外层目录名）；`None` = 种子内名称。
+        custom_name: Option<String>,
     },
     Variant {
         index: i32,
@@ -438,12 +440,14 @@ impl From<&proto::SelectionOutcome> for SelectionOutcomeDto {
     fn from(outcome: &proto::SelectionOutcome) -> Self {
         match outcome {
             proto::SelectionOutcome::Hls { index } => Self::Hls { index: *index },
-            // 移动端选择窗不改名：落盘名不进 UniFFI DTO。
             proto::SelectionOutcome::Bt {
-                indices, save_dir, ..
+                indices,
+                save_dir,
+                custom_name,
             } => Self::Bt {
                 indices: indices.clone(),
                 save_dir: save_dir.clone(),
+                custom_name: custom_name.clone(),
             },
             proto::SelectionOutcome::Variant { index } => Self::Variant { index: *index },
             proto::SelectionOutcome::FileExists { action } => Self::FileExists {
@@ -462,10 +466,14 @@ impl From<SelectionOutcomeDto> for proto::SelectionOutcome {
     fn from(outcome: SelectionOutcomeDto) -> Self {
         match outcome {
             SelectionOutcomeDto::Hls { index } => Self::Hls { index },
-            SelectionOutcomeDto::Bt { indices, save_dir } => Self::Bt {
+            SelectionOutcomeDto::Bt {
                 indices,
                 save_dir,
-                custom_name: None,
+                custom_name,
+            } => Self::Bt {
+                indices,
+                save_dir,
+                custom_name,
             },
             SelectionOutcomeDto::Variant { index } => Self::Variant { index },
             SelectionOutcomeDto::FileExists { action } => Self::FileExists {
@@ -1067,22 +1075,17 @@ mod tests {
         let outcome = SelectionOutcomeDto::Bt {
             indices: vec![0, 2],
             save_dir: Some("/new".to_owned()),
+            custom_name: Some("我的剧集".to_owned()),
         };
-        let wire = fluxdown_protocol::SelectionOutcome::from(outcome);
+        let wire = fluxdown_protocol::SelectionOutcome::from(outcome.clone());
         assert_eq!(
             wire,
             fluxdown_protocol::SelectionOutcome::Bt {
                 indices: vec![0, 2],
                 save_dir: Some("/new".to_owned()),
-                custom_name: None,
+                custom_name: Some("我的剧集".to_owned()),
             }
         );
-        assert_eq!(
-            SelectionOutcomeDto::from(&wire),
-            SelectionOutcomeDto::Bt {
-                indices: vec![0, 2],
-                save_dir: Some("/new".to_owned()),
-            }
-        );
+        assert_eq!(SelectionOutcomeDto::from(&wire), outcome);
     }
 }
