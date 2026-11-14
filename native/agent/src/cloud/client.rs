@@ -2253,7 +2253,9 @@ mod tests {
     }
 
     fn recorded_session_events(
-        receiver: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        receiver: &mut tokio::sync::broadcast::Receiver<
+            std::sync::Arc<fluxdown_protocol::EventFrame>,
+        >,
     ) -> Vec<String> {
         let mut seen = Vec::new();
         loop {
@@ -2268,7 +2270,7 @@ mod tests {
                     panic!("session event assertion missed {skipped} events");
                 }
             };
-            if let fluxdown_protocol::ServiceEvent::Agent(event) = frame.event {
+            if let fluxdown_protocol::ServiceEvent::Agent(event) = frame.event.clone() {
                 match event {
                     fluxdown_protocol::AgentEvent::SessionRevoked(reason) => {
                         seen.push(format!("revoked:{reason:?}"));

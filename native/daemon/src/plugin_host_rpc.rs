@@ -233,7 +233,7 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
 
     struct Fixture {
         service: Arc<DaemonService>,
-        frames: broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        frames: broadcast::Receiver<std::sync::Arc<fluxdown_protocol::EventFrame>>,
         base: std::path::PathBuf,
     }
 
@@ -337,7 +337,7 @@ flux.rpc.handle("sum", async (a) => a.x + a.y);
                 .await
                 .expect("a plugin view frame arrives")
                 .expect("event channel open");
-            if let ServiceEvent::Daemon(DaemonEvent::PluginViewFrame(frame)) = frame.event {
+            if let ServiceEvent::Daemon(DaemonEvent::PluginViewFrame(frame)) = frame.event.clone() {
                 return frame;
             }
         }
@@ -825,7 +825,7 @@ flux.ui.view("gate", {
                 .await
                 .expect("plugin view events arrive")
                 .expect("event channel open");
-            match frame.event {
+            match frame.event.clone() {
                 ServiceEvent::Daemon(DaemonEvent::PluginViewFrame(frame))
                     if frame.session == session =>
                 {

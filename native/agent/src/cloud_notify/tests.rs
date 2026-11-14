@@ -658,7 +658,7 @@ async fn plugin_view_events_are_forwarded_verbatim_to_ui_subscribers() {
         let frame = ui
             .try_recv()
             .expect("plugin view event reaches the UI stream");
-        let ServiceEvent::Agent(AgentEvent::Daemon(forwarded)) = frame.event else {
+        let ServiceEvent::Agent(AgentEvent::Daemon(forwarded)) = frame.event.clone() else {
             panic!("plugin view events travel as forwarded daemon events");
         };
         assert_eq!(
@@ -781,7 +781,7 @@ async fn catalog_changes_are_published_as_cloud_notify_changed() {
     while let Ok(frame) = receiver.try_recv() {
         if let fluxdown_protocol::ServiceEvent::Agent(
             fluxdown_protocol::AgentEvent::CloudNotifyChanged(state),
-        ) = frame.event
+        ) = frame.event.clone()
         {
             saw_catalog |= state
                 .catalog

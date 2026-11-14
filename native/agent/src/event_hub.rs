@@ -9,7 +9,9 @@ use fluxdown_protocol::{
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// 广播队列容量（每个订阅者独立滞后判定）。
+/// 广播队列容量（每个订阅者独立滞后判定）。环形缓冲在建通道时按容量整块分配：槽里放
+/// `Arc<EventFrame>`（约 40B / 槽）而不是内联帧（约 600B / 槽），8192 槽常驻约 0.3MB；
+/// 每个订阅者 `recv` 也只是引用计数加一，不再深拷贝整帧。
 const EVENT_CAPACITY: usize = 8192;
 
 struct AgentEventState {
@@ -22,7 +24,7 @@ struct AgentEventState {
 #[derive(Clone)]
 pub struct AgentEventHub {
     state: Arc<Mutex<AgentEventState>>,
-    events: broadcast::Sender<EventFrame>,
+    events: broadcast::Sender<Arc<EventFrame>>,
 }
 
 impl AgentEventHub {
@@ -89,14 +91,14 @@ impl AgentEventHub {
     }
 
     #[must_use]
-    pub fn subscribe_and_snapshot(&self) -> (broadcast::Receiver<EventFrame>, Snapshot) {
+    pub fn subscribe_and_snapshot(&self) -> (broadcast::Receiver<Arc<EventFrame>>, Snapshot) {
         let receiver = self.events.subscribe();
         (receiver, self.snapshot())
     }
 
     /// 只订阅增量广播（不克隆快照）；订阅早于调用方随后拉取的快照即可。
     #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<EventFrame> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<EventFrame>> {
         self.events.subscribe()
     }
 
@@ -108,30 +110,30 @@ impl AgentEventHub {
     }
 
     /// daemon 增量先更新缓存，再发布 agent sequence。
-    pub fn apply_daemon_event(&self, event: DaemonEvent) -> EventFrame {
+    pub fn apply_daemon_event(&self, event: DaemonEvent) -> Arc<EventFrame> {
         self.publish(AgentEvent::Daemon(event))
     }
 
     /// daemon 重连快照原子替换并发布替换事件。
-    pub fn replace_daemon_snapshot(&self, snapshot: DaemonSnapshot) -> EventFrame {
+    pub fn replace_daemon_snapshot(&self, snapshot: DaemonSnapshot) -> Arc<EventFrame> {
         self.publish(AgentEvent::DaemonSnapshotReplaced(snapshot))
     }
 
     /// 先更新完整投影，再递增 sequence 并广播。广播 / 线上形态里的整表替换换成头或重载宣告
     /// （[`AgentEvent::into_wire`]），任何一帧都不随任务数增长；订阅者经 `system.taskPage`
     /// 分页取表，进程内消费者读 [`Self::inspect`] 的完整投影。
-    pub fn publish(&self, event: AgentEvent) -> EventFrame {
+    pub fn publish(&self, event: AgentEvent) -> Arc<EventFrame> {
         let mut state = lock_or_recover(&self.state);
         apply_agent_event(&mut state.snapshot, &event);
         state.sequence = state.sequence.saturating_add(1);
-        let frame = EventFrame {
+        let frame = Arc::new(EventFrame {
             epoch: state.epoch.clone(),
             sequence: state.sequence,
             previous: None,
             event: ServiceEvent::Agent(event.into_wire()),
-        };
-        // 无订阅者时快照仍需更新，但无需克隆整帧，也不逐事件刷生命周期日志。
-        if self.events.receiver_count() > 0 && self.events.send(frame.clone()).is_err() {
+        });
+        // 无订阅者时快照仍需更新，但无需入队，也不逐事件刷生命周期日志。
+        if self.events.receiver_count() > 0 && self.events.send(Arc::clone(&frame)).is_err() {
             tracing::trace!(
                 sequence = frame.sequence,
                 "last agent event subscriber disconnected"
