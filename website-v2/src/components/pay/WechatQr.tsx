@@ -12,6 +12,11 @@ const WECHAT_PAY_LOGO =
       "</g></svg>",
   );
 
+/** WeChat Pay brand tile (32px), e.g. as the leading mark of a payment option. */
+export function WechatPayMark() {
+  return <img src={WECHAT_PAY_LOGO} alt="" aria-hidden className="size-8 shrink-0 rounded-lg" />;
+}
+
 /** WeChat Pay pill label. */
 export function WechatBadge({ label }: { label: string }) {
   return (

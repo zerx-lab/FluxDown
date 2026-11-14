@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { CircleCheck, LoaderCircle } from "lucide-react";
+import { CircleCheck, Coins, CreditCard, LoaderCircle } from "lucide-react";
 import type { Lang } from "@/i18n/config";
 import { pricing } from "@/i18n/messages/pricing";
 import Dialog from "@/components/pay/Dialog";
-import { QrTile, WechatBadge } from "@/components/pay/WechatQr";
+import { QrTile, WechatBadge, WechatPayMark } from "@/components/pay/WechatQr";
 import { estimateUsdtMicros, formatMinor, formatUsdt } from "@/components/pay/money";
 import type { PlanBrief } from "./types";
 import { withBase } from "@/lib/base";
@@ -275,7 +275,23 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
   if (plan.waffoPriceMinor != null) methods.push("waffo");
   // Typing a referral code after selecting Waffo falls back to WeChat so the order stays valid.
   const method: PayMethod = payMethod === "waffo" && waffoBlocked ? "wxpay" : payMethod;
-  const methodLabel = (m: PayMethod) => (m === "wxpay" ? t.payWechat : m === "usdt" ? t.payUsdt : t.payWaffo);
+  // Option card copy + per-channel price (CNY / ≈USDT / fixed USD list price).
+  const methodInfo: Record<PayMethod, { title: string; desc: string; price: string }> = {
+    wxpay: { title: t.payWechat, desc: t.payWechatDesc, price: money(estimate - referralDiscount) },
+    usdt: {
+      title: t.payUsdt,
+      desc: t.payUsdtDesc,
+      price:
+        plan.priceUsdtMicros != null
+          ? `≈ ${formatUsdt(estimateUsdtMicros(estimate - referralDiscount, plan.basePriceMinor, plan.priceUsdtMicros))}`
+          : "",
+    },
+    waffo: {
+      title: t.payWaffoTitle,
+      desc: t.payWaffo,
+      price: plan.waffoPriceMinor != null ? formatUsd(plan.waffoPriceMinor) : "",
+    },
+  };
 
   return (
     <>
@@ -404,32 +420,40 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
             {methods.length > 1 && (
               <div className="mt-4">
                 <p className="text-[13px] font-medium">{t.payMethod}</p>
-                <div
-                  role="radiogroup"
-                  aria-label={t.payMethod}
-                  className={`mt-2 grid gap-2 ${methods.length === 3 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}
-                >
+                <div role="radiogroup" aria-label={t.payMethod} className="mt-2 flex flex-col gap-2">
                   {methods.map((m) => {
                     const disabled = m === "waffo" && waffoBlocked != null;
+                    const selected = method === m;
                     return (
                       <button
                         key={m}
                         type="button"
                         role="radio"
-                        aria-checked={method === m}
+                        aria-checked={selected}
                         disabled={disabled}
-                        title={disabled ? (waffoBlocked ?? undefined) : undefined}
                         onClick={() => setPayMethod(m)}
-                        className={`btn ${method === m ? "btn-primary" : "btn-secondary"} disabled:cursor-not-allowed disabled:opacity-50`}
+                        className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors ${
+                          selected ? "border-accent bg-accent-soft" : "border-line hover:border-accent/40"
+                        } disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:border-line`}
                       >
-                        {methodLabel(m)}
+                        <PayMethodIcon method={m} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[14px] font-medium leading-tight">{methodInfo[m].title}</span>
+                          <span className="mt-1 block text-[12px] leading-snug text-muted">
+                            {disabled ? waffoBlocked : methodInfo[m].desc}
+                          </span>
+                        </span>
+                        <span className="num shrink-0 text-[13px] font-semibold">{methodInfo[m].price}</span>
+                        <span
+                          aria-hidden
+                          className={`grid size-4 shrink-0 place-items-center rounded-full border ${selected ? "border-accent" : "border-line"}`}
+                        >
+                          {selected && <span className="size-2 rounded-full bg-accent" />}
+                        </span>
                       </button>
                     );
                   })}
                 </div>
-                {plan.waffoPriceMinor != null && waffoBlocked && (
-                  <p className="mt-2 text-[12.5px] leading-relaxed text-muted">{waffoBlocked}</p>
-                )}
               </div>
             )}
             {/* Estimate: plan price − current-plan credit − checked referral discount; the order amount is authoritative. */}
@@ -579,6 +603,20 @@ export default function WebPurchase({ plan, lang }: { plan: PlanBrief; lang: Lan
         )}
       </Dialog>
     </>
+  );
+}
+
+/** Leading mark of a payment option card: brand tile for WeChat, neutral tiles for USDT / card. */
+function PayMethodIcon({ method }: { method: PayMethod }) {
+  if (method === "wxpay") return <WechatPayMark />;
+  const Icon = method === "usdt" ? Coins : CreditCard;
+  return (
+    <span
+      aria-hidden
+      className={`grid size-8 shrink-0 place-items-center rounded-lg text-white ${method === "usdt" ? "bg-[#26A17B]" : "bg-[#635BFF]"}`}
+    >
+      <Icon size={17} strokeWidth={2} />
+    </span>
   );
 }
 
