@@ -64,7 +64,7 @@ function fullscreenElementOf(): Element | null {
  * YouTube mini-player. Keep non-mini-player positioning unchanged.
  */
 function youtubeMiniplayerCloseBottom(el: HTMLMediaElement): number | null {
-  if (!/(^|\\.)youtube(?:-nocookie)?\\.com$/.test(location.hostname)) return null;
+  if (!/(^|\.)youtube(?:-nocookie)?\.com$/.test(location.hostname)) return null;
   const player = el.closest<HTMLElement>(".html5-video-player");
   const miniplayer = player?.classList.contains("ytp-player-minimized")
     || player?.classList.contains("ytp-miniplayer-active")
