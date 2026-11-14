@@ -8613,7 +8613,13 @@ impl DownloadManager {
     /// 定时器这一条被动触发路径；启动预热、窗口聚焦、手动重扫 API 都
     /// 直接调用 [`Self::spawn_file_scan`]，不经此判定。
     pub fn should_run_idle_scan(&self) -> bool {
-        self.idle_file_scan || !self.active_tasks.is_empty() || !self.pending_queue.is_empty()
+        self.idle_file_scan || self.has_pending_downloads()
+    }
+
+    /// 是否有正在下载或排队等待的任务。「只在完全空闲时做」的宿主维护（如 daemon 的
+    /// 数据库连接池空闲收缩）据此判定。
+    pub fn has_pending_downloads(&self) -> bool {
+        !self.active_tasks.is_empty() || !self.pending_queue.is_empty()
     }
 
     /// 清理超过保留期的「已完成」任务**记录**（`completed_record_retention_days`）：
