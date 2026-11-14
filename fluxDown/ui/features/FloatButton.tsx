@@ -21,6 +21,7 @@ import { useT } from "@/ui/i18n";
 import { useThemeAttr } from "@/ui/theme";
 import { initI18n } from "@/utils/i18n";
 import { clamp, placePopover, type PopRect } from "@/utils/popover-position";
+import { youtubeMiniplayerSafeTop } from "@/utils/miniplayer-position";
 import { sendAction } from "@/utils/messaging";
 import { QualityPicker } from "./QualityPicker";
 import { variantLabel } from "./labels";
@@ -55,6 +56,24 @@ const POP_MARGIN = 8;
 function fullscreenElementOf(): Element | null {
   const doc = document as Document & { webkitFullscreenElement?: Element | null };
   return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
+/**
+ * YouTube places its mini-player Close button in the top-right corner.
+ * Return its bottom edge (0 if hidden/unmeasurable), or null outside a
+ * YouTube mini-player. Keep non-mini-player positioning unchanged.
+ */
+function youtubeMiniplayerCloseBottom(el: HTMLMediaElement): number | null {
+  if (!/(^|\\.)youtube(?:-nocookie)?\\.com$/.test(location.hostname)) return null;
+  const player = el.closest<HTMLElement>(".html5-video-player");
+  const miniplayer = player?.classList.contains("ytp-player-minimized")
+    || player?.classList.contains("ytp-miniplayer-active")
+    || el.closest("ytd-miniplayer[active]") !== null;
+  if (!miniplayer) return null;
+  const close = player?.querySelector<HTMLElement>(".ytp-miniplayer-close-button")
+    ?? el.closest("ytd-miniplayer")?.querySelector<HTMLElement>('yt-icon-button[aria-label="Close player"]');
+  const rect = close?.getBoundingClientRect();
+  return rect && rect.height > 0 ? rect.bottom : 0;
 }
 
 function httpSrcOf(el: HTMLMediaElement): string {
@@ -319,16 +338,24 @@ function FloatRoot(props: FloatRootProps): JSX.Element {
           const atRight = position === "top-right" || position === "bottom-right";
           const atTop = position === "top-right" || position === "top-left";
           const x0 = atRight ? r.right - bw - BTN_MARGIN : r.left + BTN_MARGIN;
+          // YouTube mini-player Close/Expand controls use the top corners.
+          // Reserve that row instead of covering the Close button with 480P.
+          const closeBottom = atTop && target?.tag === "video" ? youtubeMiniplayerCloseBottom(el) : null;
+          const safeMiniTop = closeBottom !== null
+            ? youtubeMiniplayerSafeTop(r.top, r.bottom, bh, closeBottom, BTN_MARGIN)
+            : undefined;
           // 音频控件条很矮：按钮放到控件条上方，不遮挡播放控件
-          const y0 = target?.tag === "audio"
+          const y0 = safeMiniTop ?? (target?.tag === "audio"
             ? r.top - bh - 4
-            : atTop ? r.top + BTN_MARGIN : r.bottom - bh - BTN_MARGIN;
+            : atTop ? r.top + BTN_MARGIN : r.bottom - bh - BTN_MARGIN);
           const left = clamp(x0, 4, vw - bw - 4);
           const top = clamp(y0, 4, vh - bh - 4);
           wrap.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
-          wrap.style.visibility = "visible";
+          // A very small mini-player has no safe second row: hide the badge
+          // rather than block the native close control.
+          wrap.style.visibility = safeMiniTop === null ? "hidden" : "visible";
           // 弹层：与按钮对齐，空间不够时翻转 / 夹进视口（打开瞬间由 layout effect 同步一次）
-          if (popRef.current) {
+          if (safeMiniTop !== null && popRef.current) {
             positionPop(popRef.current, { left: Math.round(left), top: Math.round(top), width: bw, height: bh }, atRight ? "end" : "start", coarse);
           }
         }
