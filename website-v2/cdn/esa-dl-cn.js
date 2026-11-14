@@ -2,9 +2,12 @@
  * dl-cn.fluxdown.com：阿里云 ESA 边缘函数（站点 fluxdown.com，中国内地加速）——大陆下载镜像入口。
  *
  * 官网 /api/download 只把准入的中国大陆访客 302 到这里（见 src/pages/api/download/[filename].ts），
- * 链接鉴权沿用阿里云「URL 鉴权 A 方式」（src/lib/oss.ts::cdnDownloadUrl 签发）：
- * - `auth_key=<签发时间>-<rand>-<uid>-<md5>`，md5 串为 `<请求路径>-<签发时间>-<rand>-<uid>-<CN_CDN_AUTH_KEY>`；
+ * 链接鉴权沿用阿里云「URL 鉴权 A 方式」格式（src/lib/oss.ts::cdnDownloadUrl 签发），uid 段放访客 IPv4 /24 网段标识：
+ * - `auth_key=<签发时间>-<rand>-<网段>-<md5>`，md5 串为 `<请求路径>-<签发时间>-<rand>-<网段>-<CN_CDN_AUTH_KEY>`；
  *   签发时间 + DOWNLOAD_URL_TTL_SEC 之后 403。缺失、格式错误或签名不符一律 403。
+ * - 网段须等于访客真实 IP（`ali-cdn-real-ip`，ESA 覆盖访客自带值；`ali-real-client-ip` 在函数里是访客可控的，
+ *   2026-11-13 探针实测）算出的 networkId：链接只能在签发它的网段里用，转发、贴到论坛或解析站一律 403。
+ *   官网只给中国大陆访客签发，所以镜像实际只服务大陆。站点未开 IPv6，这里只认 IPv4。
  * - 校验通过后以不带查询串的同域地址 fetch：ESA 按站点记录回源私有 OSS（STS 授权），
  *   缓存规则 `dl-cn-download-cache` 忽略查询串、边缘缓存 30 天，签名不影响命中率。
  * - `.apk` / `.ipa` 在桶内存为 `<name>.bin`（OSS 默认域名禁止分发这两类），回源时换成存储键并覆盖
@@ -59,7 +62,7 @@ export default {
     ) {
       return new Response("Not Found", { status: 404 });
     }
-    if (!verifyAuthKey(env, url.pathname, url.searchParams.get("auth_key"))) {
+    if (!verifyAuthKey(env, url.pathname, url.searchParams.get("auth_key"), request.headers.get("ali-cdn-real-ip"))) {
       return new Response("Forbidden", { status: 403, headers: { "cache-control": "no-store" } });
     }
 
@@ -119,18 +122,31 @@ function blockedExtension(key) {
   return Object.keys(BLOCKED_TYPES).find((ext) => lower.endsWith(ext)) ?? null;
 }
 
-/** 阿里云 URL 鉴权 A 方式校验；`path` 为请求里的原始（已编码）路径，与官网签名输入一致。 */
-function verifyAuthKey(env, path, authKey) {
+/**
+ * 访客 IPv4 /24 网段标识（前三段各两位十六进制，`114.114.114.x` → `727272`）；不是 IPv4 返回 null。
+ * 与 src/lib/download-gate.ts::mirrorNetworkId 一致，改一处须同步。
+ */
+function networkId(ip) {
+  const match = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/i.exec((ip ?? "").trim());
+  if (!match) return null;
+  const octets = match.slice(1).map(Number);
+  if (octets.some((n) => n > 255)) return null;
+  return octets.slice(0, 3).map((n) => n.toString(16).padStart(2, "0")).join("");
+}
+
+/** URL 鉴权 A 方式校验 + 网段比对；`path` 为请求里的原始（已编码）路径，与官网签名输入一致。 */
+function verifyAuthKey(env, path, authKey, clientIp) {
   const secret = env.CN_CDN_AUTH_KEY;
   const ttl = Number(env.DOWNLOAD_URL_TTL_SEC);
   if (!secret || !Number.isSafeInteger(ttl) || ttl <= 0 || !authKey) return false;
-  const match = /^(\d{1,12})-([0-9A-Za-z]{1,64})-([0-9A-Za-z]{1,32})-([0-9a-f]{32})$/.exec(authKey);
+  const match = /^(\d{1,12})-([0-9A-Za-z]{1,64})-([0-9a-f]{6})-([0-9a-f]{32})$/.exec(authKey);
   if (!match) return false;
-  const [, ts, rand, uid, hash] = match;
+  const [, ts, rand, network, hash] = match;
+  if (network !== networkId(clientIp)) return false;
   const issued = Number(ts);
   const now = Math.floor(Date.now() / 1000);
   if (issued > now + CLOCK_SKEW_SEC || now > issued + ttl) return false;
-  const expected = createHash("md5").update(`${path}-${ts}-${rand}-${uid}-${secret}`).digest("hex");
+  const expected = createHash("md5").update(`${path}-${ts}-${rand}-${network}-${secret}`).digest("hex");
   let diff = 0;
   for (let i = 0; i < 32; i++) diff |= expected.charCodeAt(i) ^ hash.charCodeAt(i);
   return diff === 0;

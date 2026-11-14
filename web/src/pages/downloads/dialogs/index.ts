@@ -1,5 +1,6 @@
 export { DownloadDialogsHost } from './DownloadDialogsHost'
 export {
+  openChangeProxy,
   openChangeSegments,
   openChangeUrl,
   openGroupDetail,

@@ -86,6 +86,8 @@ pub struct ArchiveResult {
     pub directories: Vec<String>,
     /// Legacy single-component output from existing plugins.
     pub folder_name: String,
+    /// Stable builtin category identifier; mutually exclusive with directory outputs.
+    pub category: String,
 }
 
 /// 一次平台登录动作。`action` 为 `begin`、`poll`、`cancel`、`logout` 或 `status`。
@@ -734,6 +736,30 @@ pub trait HostEvents: Send + Sync {
             "archive rule management is unsupported".to_string(),
         ))
     }
+
+    /// Load a bounded image resource owned by an active view session.
+    async fn image_load(
+        &self,
+        _identity: &str,
+        _session: &str,
+        _options: super::images::ImageLoadOptions,
+    ) -> Result<String, PluginError> {
+        Err(PluginError::Runtime(
+            "plugin images are unsupported".to_string(),
+        ))
+    }
+
+    /// Release a session-owned image after removing every use of its reference.
+    async fn image_release(
+        &self,
+        _identity: &str,
+        _session: &str,
+        _src: &str,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::Runtime(
+            "plugin images are unsupported".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +890,18 @@ pub trait PluginBridge: Send + Sync {
         plugin_id: &str,
         req: BridgeHttpRequest,
     ) -> Result<BridgeHttpResponse, PluginError>;
+
+    /// Fetch bounded binary image bytes through the plugin's guarded network egress.
+    async fn image_request(
+        &self,
+        _plugin_id: &str,
+        _req: BridgeHttpRequest,
+        _hosts: Vec<String>,
+    ) -> Result<Vec<u8>, PluginError> {
+        Err(PluginError::Runtime(
+            "plugin image fetch is unsupported".to_string(),
+        ))
+    }
 
     /// 读取插件自己的认证档案。默认 bridge 不提供认证能力。
     async fn auth_get(

@@ -39,7 +39,8 @@ impl AnalyticsWorker {
             state,
             store,
             client: LazyHttpClient::new(|| {
-                reqwest::Client::builder().timeout(Duration::from_secs(15))
+                crate::tls::client_builder(crate::tls::HttpVersion::Any)
+                    .timeout(Duration::from_secs(15))
             }),
             endpoint,
             app_key,

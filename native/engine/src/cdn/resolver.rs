@@ -202,11 +202,10 @@ static LIGHT_CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
 pub(crate) fn light_client() -> Option<&'static reqwest::Client> {
     LIGHT_CLIENT
         .get_or_init(|| {
-            crate::downloader::client_builder()
+            crate::downloader::client_builder(crate::tls::HttpVersion::Http1, false)
                 .no_proxy()
                 .timeout(PER_SOURCE_TIMEOUT)
                 .connect_timeout(Duration::from_millis(1200))
-                .http1_only()
                 .build()
                 .ok()
         })

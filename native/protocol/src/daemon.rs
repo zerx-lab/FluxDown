@@ -1180,6 +1180,9 @@ pub struct Ed2kNetworkDto {
     /// UPnP 网关报告的公网 IP；未知为空。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub external_ip: String,
+    /// `upnp` 为 `failed` 时各方式 / 网关给出的原因（映射器原文，英文）；其余为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub upnp_error: String,
     pub upnp_enabled: bool,
     pub kad_enabled: bool,
     /// Kad 引导节点数（nodes.dat 订阅缓存）。
@@ -2510,6 +2513,18 @@ pub struct ChangeTaskUrlParams {
 pub struct SetTaskSegmentsParams {
     pub task_id: String,
     pub segments: i32,
+}
+
+/// `daemon.task.setProxy` 参数：修改未完成 HTTP / FTP 任务的出口。
+///
+/// 活跃任务立即重建连接，失败任务立即重试；暂停 / 排队任务保留原状态。
+/// 不支持续传的源站可能从头下载，直播可能出现缺口；无需重启宿主。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskProxyParams {
+    pub task_id: String,
+    /// 空 = 跟随全局与站点规则；也接受 `direct://` / `system://`。
+    pub proxy_url: String,
 }
 
 /// `daemon.task.setPiecePicking` 参数：修改 BT 任务的选片方式（对齐 qBittorrent 右键

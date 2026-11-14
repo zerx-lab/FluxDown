@@ -781,18 +781,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "attohttpc"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9"
-dependencies = [
- "base64 0.22.1",
- "http",
- "log",
- "url",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3392,6 +3380,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-format"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55d9ccda37e95b4f0978a3074b4a9939979103a7256459cfb449c9c84d1adf23"
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3531,6 +3525,8 @@ dependencies = [
  "objc2-user-notifications",
  "regex",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3545,6 +3541,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "uuid",
+ "webpki-roots 1.0.11",
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
@@ -3628,6 +3625,7 @@ dependencies = [
  "ed25519-dalek",
  "encoding_rs",
  "feed-rs",
+ "file-format",
  "flate2",
  "fluxdown_logfile",
  "fs2",
@@ -3636,9 +3634,10 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "if-addrs",
- "igd-next",
+ "image",
  "libc",
  "librqbit",
+ "librqbit-upnp",
  "m3u8-rs",
  "md-5 0.10.6",
  "md4",
@@ -3648,6 +3647,8 @@ dependencies = [
  "rand 0.9.5",
  "regex",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha1 0.10.7",
@@ -3662,6 +3663,7 @@ dependencies = [
  "ts2mp4",
  "url",
  "uuid",
+ "webpki-roots 1.0.11",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
  "zip",
@@ -3791,6 +3793,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3803,7 +3806,6 @@ dependencies = [
 name = "fluxdown_ui_command_palette"
 version = "0.1.0"
 dependencies = [
- "fluxdown_ui_components",
  "fluxdown_ui_i18n",
  "fluxdown_ui_theme",
  "gpui-base",
@@ -6381,26 +6383,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "igd-next"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de7238d487a9aff61f81b5ab41c0a841532a115a398b5fa92a2fadd0885e2581"
-dependencies = [
- "attohttpc",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "log",
- "rand 0.10.3",
- "tokio",
- "url",
- "xmltree",
-]
-
-[[package]]
 name = "ignore"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7132,7 +7114,7 @@ dependencies = [
 [[package]]
 name = "librqbit"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7196,7 +7178,7 @@ dependencies = [
 [[package]]
 name = "librqbit-bencode"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "arrayvec",
@@ -7212,7 +7194,7 @@ dependencies = [
 [[package]]
 name = "librqbit-buffers"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "bytes",
  "librqbit-clone-to-owned",
@@ -7223,7 +7205,7 @@ dependencies = [
 [[package]]
 name = "librqbit-clone-to-owned"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "bytes",
 ]
@@ -7231,7 +7213,7 @@ dependencies = [
 [[package]]
 name = "librqbit-core"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7261,7 +7243,7 @@ dependencies = [
 [[package]]
 name = "librqbit-dht"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "backon",
@@ -7308,7 +7290,7 @@ dependencies = [
 [[package]]
 name = "librqbit-lsd"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "atoi 3.1.1",
@@ -7327,7 +7309,7 @@ dependencies = [
 [[package]]
 name = "librqbit-peer-protocol"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "bitvec",
@@ -7347,7 +7329,7 @@ dependencies = [
 [[package]]
 name = "librqbit-sha1-wrapper"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "assert_cfg",
  "aws-lc-rs",
@@ -7357,7 +7339,7 @@ dependencies = [
 [[package]]
 name = "librqbit-tracker-comms"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -7386,7 +7368,7 @@ dependencies = [
 [[package]]
 name = "librqbit-upnp"
 version = "9.1.0"
-source = "git+https://github.com/zerx-lab/rqbit?rev=30a7800b3ca9730231449a26e49c9df5dd2a7bab#30a7800b3ca9730231449a26e49c9df5dd2a7bab"
+source = "git+https://github.com/zerx-lab/rqbit?rev=abcae61832c22e089a8ad5037843215f6422ae72#abcae61832c22e089a8ad5037843215f6422ae72"
 dependencies = [
  "anyhow",
  "bstr",
@@ -14983,15 +14965,6 @@ dependencies = [
  "log",
  "mac",
  "markup5ever 0.12.1",
-]
-
-[[package]]
-name = "xmltree"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
-dependencies = [
- "xml-rs",
 ]
 
 [[package]]

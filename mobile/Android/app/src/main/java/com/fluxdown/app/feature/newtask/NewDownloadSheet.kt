@@ -588,9 +588,7 @@ private fun NewDownloadContent(
             return@Column
         }
 
-        if (form.categoryOptions.isNotEmpty()) {
-            CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
-        }
+        CategorySelect(form, enabled = !busy, remoteHost = remoteHost)
 
         // 保存目录
         val saveDirShown = remember(form.saveDir, remoteHost) {
@@ -820,7 +818,7 @@ private fun CategorySelect(form: NewDownloadState, enabled: Boolean, remoteHost:
                 checked = mode == SaveDirMode.None,
             ),
         )
-        add(FluxMenuItem.Divider)
+        if (form.categoryOptions.isNotEmpty()) add(FluxMenuItem.Divider)
         form.categoryOptions.forEach { option ->
             add(
                 FluxMenuItem.Action(

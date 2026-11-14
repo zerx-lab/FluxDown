@@ -14,13 +14,14 @@
 //!
 //! HLS / DASH 的成品是 MP4，前两步按 `<stem>.mp4` 预判（[`output_name`]）。
 //!
-//! 归档插件（`contributes.archive`）：第 2、3 步选中分类目录（命中的分类或「其他」兜底）时，
-//! 按同一个成品名询问插件，合法的单层子目录名叠加在分类目录之下并写回任务路由
-//! （[`CategoryRoute::archive`]）；之后续传、重启与完成收尾都沿用，插件不再参与。只改目录、
-//! 不改文件名；插件失败只记任务活动，文件留在分类目录（`archive_target`）。
+//! 归档插件（`contributes.archive`）在起跑前给出预测目录，完成后按最终产物重新决策。
+//! 内容识别只提供有界本地事实，分类与布局仍由插件决定；完成回调无结果或失败时保留
+//! 已保存的选择。合法目录写回 [`CategoryRoute::archive`]，续传沿用已保存的目录。
+//! 只改目录、不改文件名；插件失败只记任务活动（`archive_target`）。
 //!
-//! 不参与路由：BT / eD2K（做种与共享要求文件原地不动）、任务组成员（组以基准目录为根，成员
-//! 保持组内结构）、带子路径的单条目清单与 `out=子目录/名字`（相对结构由来源决定）。
+//! 普通移动不接管 BT / eD2K、任务组成员、清单子路径与 `out=子目录/名字`。
+//! BT 仅在首次完成、恰好一个选中文件时经 `bt_archive_target` 识别，由 BT 存储迁移
+//! 整体归档；不会拆分种子目录或直接移动成员文件。
 //!
 //! 匹配语义与 agent `category_dir.rs`（确认表单预填）逐条对齐，两端共用夹具
 //! `fixtures/category_route_cases.json`。`url` 模式按通配符（`*` 任意串、`?` 单字符、
@@ -28,6 +29,9 @@
 //! 分类（不看列表位置），网址规则之间与文件名规则之间各自按列表顺序取首条命中。
 //!
 //! Signed rule packs can additionally match a bounded local file header at completion.
+
+#[cfg(feature = "plugins")]
+mod content;
 
 use std::path::Path;
 
@@ -49,13 +53,16 @@ pub struct CategoryRoute {
     pub rules: Vec<CategoryRule>,
     /// 「其他」分类的目录；空 = 不兜底。
     pub other_dir: String,
-    /// 归档插件选定的子目录；选定后续传、重启与完成收尾都沿用，不再询问插件。
+    /// 已选归档目录：续传沿用，完成回调可按最终产物替换，无结果或失败则保留。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<ArchiveRoute>,
     /// Source metadata is persisted alongside the authorized route so resume does not
     /// need to rerun the resolver or infer a title from a member filename.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_metadata: Option<crate::model::ArchiveMetadata>,
+    /// Configured visible builtin category directories from the submitting host.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub archive_categories: std::collections::BTreeMap<String, String>,
 }
 
 /// Persisted archive destination chosen for a task.
@@ -227,6 +234,10 @@ pub(crate) async fn archive_group_root(
                 file_name: group_name.to_owned(),
                 metadata: metadata.cloned(),
                 is_group: true,
+                phase: crate::model::ArchivePhase::Start,
+                created_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                detected_type: None,
+                category_routing: true,
                 header_hex: None,
             })
             .await
@@ -434,31 +445,16 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
         }
         target = archive_target(&archive);
         route.archive = Some(archive);
-    } else if p.interceptor.has_archivers() {
-        match p
-            .interceptor
-            .archive_directories(crate::model::ArchiveContext {
-                file_name: row.file_name.clone(),
-                metadata: route.archive_metadata.clone(),
-                is_group: false,
-                header_hex: match read_archive_header_hex(
-                    &Path::new(&row.save_dir).join(&row.file_name),
-                )
-                .await
-                {
-                    Ok(header) => header,
-                    Err(error) => {
-                        crate::logger::report_warning(
-                            "category-route",
-                            "read archive classification header",
-                            &error,
-                        );
-                        None
-                    }
-                },
-            })
-            .await
-        {
+    }
+    if p.interceptor.has_archivers() {
+        let context = completed_archive_context(p, &row, route.archive_metadata.clone()).await;
+        match p.interceptor.archive_directories(context).await {
+            Ok(Some(result)) if !result.category.is_empty() => {
+                let directory = route.archive_categories.get(&result.category)?;
+                target.clone_from(directory);
+                route.archive = None;
+                route_changed = true;
+            }
             Ok(Some(result))
                 if valid_archive_directories(&result.components)
                     && (!result.legacy || category_dir.is_some()) =>
@@ -663,6 +659,10 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
                 file_name: name.to_owned(),
                 metadata: route.archive_metadata.clone(),
                 is_group: !row.group_id.is_empty(),
+                phase: crate::model::ArchivePhase::Start,
+                created_date: creation_date(&row.created_at),
+                detected_type: None,
+                category_routing: true,
                 header_hex: None,
             })
             .await
@@ -953,7 +953,114 @@ async fn remove_staging(staging: &Path) {
     }
 }
 
+fn creation_date(timestamp: &str) -> String {
+    timestamp
+        .parse::<i64>()
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .filter(|date| date.len() == 10)
+        .unwrap_or_default()
+}
+
+/// Decide a single selected BT file's destination; moving remains owned by the BT engine.
+#[cfg(all(feature = "bt", feature = "plugins"))]
+pub(crate) async fn bt_archive_target(
+    row: &crate::model::TaskInfo,
+    route: &CategoryRoute,
+    path: std::path::PathBuf,
+    interceptor: &dyn crate::intercept::TaskInterceptor,
+    cancel: CancellationToken,
+) -> Result<Option<String>, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "BT archive file has no UTF-8 filename".to_owned())?;
+    let category = route.save_dir_for(name, &row.url, source_address(&row.origin_url, &row.url));
+    let mut context = crate::model::ArchiveContext {
+        file_name: name.to_owned(),
+        metadata: route.archive_metadata.clone(),
+        phase: crate::model::ArchivePhase::Complete,
+        created_date: creation_date(&row.created_at),
+        category_routing: true,
+        ..Default::default()
+    };
+    let facts = content::inspect(path, cancel)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    context.header_hex = facts.header_hex;
+    context.detected_type = facts.detected_type;
+    let Some(result) = interceptor.archive_directories(context).await? else {
+        return Ok(None);
+    };
+    if !result.category.is_empty() {
+        return Ok(route.archive_categories.get(&result.category).cloned());
+    }
+    if !valid_archive_directories(&result.components) || (result.legacy && category.is_none()) {
+        return Err("unsafe or inapplicable BT archive destination".to_owned());
+    }
+    let archive = ArchiveRoute {
+        category_dir: category.unwrap_or(&route.base_dir).to_owned(),
+        folder_name: if result.legacy {
+            result.components[0].clone()
+        } else {
+            String::new()
+        },
+        directories: if result.legacy {
+            Vec::new()
+        } else {
+            result.components
+        },
+        base_dir: route.base_dir.clone(),
+    };
+    ensure_archive_target(&archive)
+        .await
+        .map(Some)
+        .map_err(|error| format!("{error:#}"))
+}
+
+async fn completed_archive_context(
+    p: &DownloadParams,
+    row: &crate::model::TaskInfo,
+    metadata: Option<crate::model::ArchiveMetadata>,
+) -> crate::model::ArchiveContext {
+    let path = Path::new(&row.save_dir).join(&row.file_name);
+    let mut context = crate::model::ArchiveContext {
+        file_name: row.file_name.clone(),
+        metadata,
+        phase: crate::model::ArchivePhase::Complete,
+        created_date: creation_date(&row.created_at),
+        category_routing: true,
+        ..Default::default()
+    };
+    #[cfg(feature = "plugins")]
+    match content::inspect(path, p.cancel_token.clone()).await {
+        Ok(facts) => {
+            context.header_hex = facts.header_hex;
+            context.detected_type = facts.detected_type;
+        }
+        Err(error) => {
+            crate::logger::report_warning("category-route", "recognize archive content", &error);
+            crate::intercept::ActivityNotes::of(p)
+                .add(format!("未能识别文件内容，归档规则使用其余线索（{error}）"))
+                .await;
+        }
+    }
+    #[cfg(not(feature = "plugins"))]
+    match read_archive_header_hex(&path).await {
+        Ok(header) => context.header_hex = header,
+        Err(error) => {
+            crate::logger::report_warning("category-route", "read archive header", &error);
+            crate::intercept::ActivityNotes::of(p)
+                .add(format!("未能读取归档文件头（{error}）"))
+                .await;
+        }
+    }
+    context
+}
+
 /// Read at most 4 KiB from the finished file for signed rule matching.
+#[cfg(not(feature = "plugins"))]
 async fn read_archive_header_hex(path: &Path) -> Result<Option<String>, std::io::Error> {
     use tokio::io::AsyncReadExt;
 
@@ -979,6 +1086,15 @@ mod tests {
         ArchiveRoute, CategoryRoute, normalize_archive_directories, valid_archive_directories,
         valid_archive_folder,
     };
+
+    #[test]
+    fn archive_creation_date_is_utc_and_independent_of_completion_time() {
+        assert_eq!(super::creation_date("1582934400"), "2020-02-29");
+        assert_eq!(super::creation_date("1583020799"), "2020-02-29");
+        assert_eq!(super::creation_date("1583020800"), "2020-03-01");
+        assert_eq!(super::creation_date("invalid legacy value"), "");
+        assert_eq!(super::creation_date("9223372036854775807"), "");
+    }
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -1327,6 +1443,14 @@ mod tests {
         tokio::fs::write(&path, vec![0xab; 4096 + 128])
             .await
             .expect("write header fixture");
+        #[cfg(feature = "plugins")]
+        let header =
+            super::content::inspect(path.clone(), tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("read bounded archive content")
+                .header_hex
+                .expect("nonempty file header");
+        #[cfg(not(feature = "plugins"))]
         let header = super::read_archive_header_hex(&path)
             .await
             .expect("read bounded archive header")

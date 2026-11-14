@@ -865,7 +865,7 @@ nonisolated enum Ed2kIdCheckDisplay: Equatable {
             "id": L(idKey),
             "server": server.isEmpty ? "—" : server,
             "port": network.listenPort == 0 ? "—" : String(network.listenPort),
-            "upnp": L(upnpKey(network.upnp)),
+            "upnp": upnpText(network),
         ])
         return .ok(summary: summary, lowHint: network.id == .low ? L("ed2kIdLowHint") : nil)
     }
@@ -874,6 +874,13 @@ nonisolated enum Ed2kIdCheckDisplay: Equatable {
     static func failure(_ detail: String) -> Ed2kIdCheckDisplay {
         let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         return .failed(detail.isEmpty ? L("ed2kIdCheckFailed") : "\(L("ed2kIdCheckFailed")): \(detail)")
+    }
+
+    /// UPnP 状态文本：失败且有原因时为「失败: 原因」（与 BT 端口映射段拼法一致），否则为状态文案。
+    static func upnpText(_ network: Ed2kNetworkDto) -> String {
+        let reason = network.upnpError.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard network.upnp == .failed, !reason.isEmpty else { return L(upnpKey(network.upnp)) }
+        return "\(L("ed2kUpnpFailed")): \(reason)"
     }
 
     static func upnpKey(_ state: Ed2kNetworkDto.UpnpState) -> String {

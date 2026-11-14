@@ -234,6 +234,12 @@ export interface DaemonCreateTaskParams {
   /** 分类目录路由：`request.saveDir` 为未命中时的基准目录，引擎按初始名与完成时的最终文件名定落点。 */
   categoryRoute?: CategoryRouteDto | null;
 }
+/** `daemon.task.setProxy` 参数；空 `proxyUrl` = 跟随全局代理与站点规则。 */
+export interface SetTaskProxyParams {
+  taskId: string;
+  proxyUrl: string;
+}
+
 
 /** `daemon.task.create` 结果。 */
 export interface CreatedTask {
@@ -518,6 +524,8 @@ export interface Ed2kNetworkDto {
   /** 0 / 缺省 = 监听器未启动。 */
   listenPort?: number;
   upnp: Ed2kUpnpStatus;
+  /** `upnp == failed` 时映射器给出的原因（英文原文）；其余缺省。 */
+  upnpError?: string;
   externalIp?: string;
   /** 全局设置 `ed2k_enable_upnp`。 */
   upnpEnabled: boolean;

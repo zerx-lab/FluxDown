@@ -1417,6 +1417,51 @@ impl Db {
         })
     }
 
+    /// 空闲时归还 SQLite 连接池占着的内存，返回关闭的连接数（PostgreSQL 不处理，恒为 0）。
+    ///
+    /// 并发查询会把连接池撑到上限（5 条），之后这些连接一直常驻：每条各有一个 sqlx 工作线程、
+    /// 预编译语句缓存和按需增长到 `cache_size` 的页缓存。这里关闭除一条之外的全部**空闲**连接，
+    /// 再对留下的那条执行 `PRAGMA shrink_memory` 释放页缓存；正在使用的连接不受影响，下次并发
+    /// 查询按需重建。全程不读写磁盘：WAL 模式下只有最后一条连接关闭才会 checkpoint 并删除
+    /// `-wal` / `-shm`，因此始终留一条（与 `min_connections(1)` 的空闲静默约定一致）。
+    ///
+    /// # Errors
+    ///
+    /// 关闭连接或执行 `PRAGMA shrink_memory` 失败。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
+    /// use fluxdown_engine::db::Db;
+    /// let db = Db::connect("sqlite::memory:").await?;
+    /// let closed = db.release_idle_memory().await?;
+    /// assert_eq!(closed, 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn release_idle_memory(&self) -> Result<usize, DbError> {
+        if self.backend != Backend::Sqlite {
+            return Ok(0);
+        }
+        // 先把空闲连接全部拿在手里（`try_acquire` 只取空闲连接、从不新建），再决定去留。
+        let mut idle = Vec::new();
+        while let Some(connection) = self.pool.try_acquire() {
+            idle.push(connection);
+        }
+        let Some(mut kept) = idle.pop() else {
+            return Ok(0);
+        };
+        let closed = idle.len();
+        for connection in idle {
+            connection.close().await?;
+        }
+        sqlx::raw_sql("PRAGMA shrink_memory;")
+            .execute(&mut *kept)
+            .await?;
+        Ok(closed)
+    }
+
     /// 供同 crate 的子系统模块（如 [`crate::speed_history`]）执行自有表的查询。
     pub(crate) fn pool(&self) -> &sqlx::AnyPool {
         &self.pool
@@ -4236,6 +4281,16 @@ impl Db {
         Ok(())
     }
 
+    /// Persist a task's proxy override; an empty value follows global routing.
+    pub async fn update_task_proxy(&self, id: &str, proxy_url: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET proxy_url = $1 WHERE id = $2")
+            .bind(proxy_url)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Insert or replace a single segment row (used by dynamic segment coordinator).
     ///
     /// This is the upsert counterpart to `insert_segments` — it handles a single
@@ -6095,6 +6150,44 @@ mod tests {
         )
         .await
         .expect("insert task");
+    }
+
+    /// 空闲收缩只关多余的空闲连接：留下的那条继续可用，WAL 不被 checkpoint 删除
+    /// （否则下次查询重建 `-wal` / `-shm`，空闲时唤醒 NAS 硬盘）。
+    #[tokio::test]
+    async fn release_idle_memory_keeps_one_connection_and_the_wal() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "before").await;
+        let held = futures_util::future::join_all((0..3).map(|_| db.pool.acquire()))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("three concurrent connections");
+        drop(held);
+        let size = db.pool.size();
+        assert!(size >= 3, "pool grew to {size}");
+        // 归还连接池是 drop 后异步完成的。
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while db.pool.num_idle() < size as usize {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("connections return to the pool");
+
+        let closed = db.release_idle_memory().await.expect("release");
+        assert!(closed >= 2, "closed {closed}");
+        assert_eq!(db.pool.size(), 1);
+        assert!(
+            dir.join("flux_down.db-wal").exists(),
+            "the last connection stays open, so the WAL is not checkpointed away"
+        );
+        assert_eq!(db.release_idle_memory().await.expect("second release"), 0);
+
+        insert_task(&db, "after").await;
+        assert!(db.load_task_by_id("before").await.expect("read").is_some());
+        assert!(db.load_task_by_id("after").await.expect("read").is_some());
+        close_test_db(&db, dir).await;
     }
 
     /// 换源结算：仅换源后首次生效；大小（零容差）不一致即清空进度并改用新大小，

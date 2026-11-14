@@ -22,6 +22,47 @@ export function isReplaceableUrl(url: string): boolean {
   return hasPrefix(url, ['http://', 'https://', 'ftp://'])
 }
 
+const PROXY_DIRECT_SENTINEL = 'direct://'
+const PROXY_SYSTEM_SENTINEL = 'system://'
+const TASK_PROXY_SCHEMES: Record<string, true> = {
+  'http:': true,
+  'https:': true,
+  'socks4:': true,
+  'socks4a:': true,
+  'socks5:': true,
+  'socks5h:': true,
+}
+
+/** 本地未完成 HTTP/FTP 下载；插件 / HLS / DASH HTTP 源依 URL 判定，排除 BT 与 eD2K。 */
+export function canEditTaskProxy(view: Pick<DownloadTaskView, 'source' | 'state' | 'url' | 'protocol'>): boolean {
+  return view.source === 'local'
+    && view.state !== 'completed'
+    && view.protocol !== 'bt'
+    && view.protocol !== 'ed2k'
+    && isReplaceableUrl(view.url)
+}
+
+/** 允许继承全局、直连 / 系统哨兵，或支持的代理 URL；限制 URL 成分与 daemon 解析保持一致。 */
+export function isValidTaskProxyUrl(value: string): boolean {
+  const input = value.trim()
+  if (input === '' || input === PROXY_DIRECT_SENTINEL || input === PROXY_SYSTEM_SENTINEL) return true
+  const match = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]+)(\/?)$/.exec(input)
+  if (!match || !TASK_PROXY_SCHEMES[`${match[1]}:`]) return false
+  try {
+    const url = new URL(input)
+    if (url.hostname === '') return false
+    const authority = match[2]!.slice(match[2]!.lastIndexOf('@') + 1)
+    const portText = authority.startsWith('[')
+      ? authority.slice(authority.indexOf(']') + 2)
+      : authority.slice(authority.lastIndexOf(':') + 1)
+    if (!/^\d+$/.test(portText)) return false
+    const port = Number(portText)
+    return port > 0 && port <= 65535 && (url.pathname === '' || url.pathname === '/') && url.search === '' && url.hash === ''
+  } catch {
+    return false
+  }
+}
+
 /**
  * 「重命名」：本地非 BT、不在下载 / 准备中的任务（对齐引擎 `rename_task`：活跃任务 `task-active`，
  * BT 落盘名由完成布局决定、做种期间持有句柄，`bt-unsupported`）。eD2K 与 HTTP 同以 `<名>.fdownloading` 续传，可改名。

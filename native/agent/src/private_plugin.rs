@@ -138,7 +138,7 @@ impl PrivatePluginService {
             host,
             egress,
             http: EgressClient::new(|| {
-                reqwest::Client::builder()
+                crate::tls::client_builder(crate::tls::HttpVersion::Any)
                     .connect_timeout(Duration::from_secs(10))
                     .timeout(PACKAGE_TIMEOUT)
                     .read_timeout(READ_IDLE_TIMEOUT)

@@ -2,8 +2,8 @@
 //! - A：`prepare` 改写的请求身份与并发在探测自适应、失败后重试中持续生效，且不落库；
 //!   `failed` 阶段请求重试。
 //! - B：HLS `segments` 按标签过滤分片（被丢弃分片从不请求）；`finalize` 的 `fail` 让任务失败。
-//! - 归档插件：分类目录（含「其他」兜底）下叠加子目录、失败回退并记任务活动、已保存的
-//!   选择优先于插件当前答案。
+//! - 归档插件：分类目录下叠加子目录、失败回退并记任务活动，完成期按最终内容重评，
+//!   无结果时保留已保存的目录选择。
 //!
 //! 仅 `plugins` feature 下编译运行。
 
@@ -1049,8 +1049,17 @@ async fn run_routed_task(
     file_name: &str,
     route: fluxdown_engine::category_route::CategoryRoute,
 ) -> (Engine, fluxdown_engine::model::TaskInfo, Arc<Vec<u8>>) {
+    run_routed_payload(work, script, file_name, route, Arc::new(vec![0x5a; 4096])).await
+}
+
+async fn run_routed_payload(
+    work: &Path,
+    script: &str,
+    file_name: &str,
+    route: fluxdown_engine::category_route::CategoryRoute,
+    body: Arc<Vec<u8>>,
+) -> (Engine, fluxdown_engine::model::TaskInfo, Arc<Vec<u8>>) {
     tokio::fs::create_dir_all(work).await.expect("mkdir work");
-    let body = Arc::new(vec![0x5a; 4096]);
     let armed = Arc::new(AtomicBool::new(false));
     let (port, _server) = spawn_range_server(body.clone(), armed);
     let mut engine = make_engine(work).await;
@@ -1172,9 +1181,9 @@ async fn archive_applies_under_other_fallback_dir() {
     cleanup(&work).await;
 }
 
-/// 已保存的归档选择优先于插件当前答案（插件更新不拆散任务），并随分类目录变化迁移。
+/// 完成回调无结果时保留已保存的选择，并随分类目录变化迁移。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn saved_archive_choice_is_reused_and_follows_category_dir() {
+async fn saved_archive_choice_is_retained_when_completion_declines() {
     let work = std::env::temp_dir().join(format!("fluxdown-archive-saved-{}", uniq()));
     let category_dir = work.join("Videos");
     let route = fluxdown_engine::category_route::CategoryRoute {
@@ -1186,7 +1195,8 @@ async fn saved_archive_choice_is_reused_and_follows_category_dir() {
         }),
         ..mkv_route(&category_dir)
     };
-    let (engine, task, _) = run_routed_task(&work, ARCHIVE_ANIME, "Show 01.mkv", route).await;
+    let script = r#"globalThis.archive = ctx => ctx.phase === "complete" ? null : {folderName:"Anime Title"};"#;
+    let (engine, task, _) = run_routed_task(&work, script, "Show 01.mkv", route).await;
     assert_eq!(
         Path::new(&task.save_dir),
         category_dir.join("Saved Title").as_path()
@@ -1213,6 +1223,189 @@ async fn saved_archive_choice_is_reused_and_follows_category_dir() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_content_facts_override_cached_prediction_without_renaming() {
+    use fluxdown_engine::category_route::CategoryRoute;
+
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-content-{}", uniq()));
+    let script = r#"globalThis.archive = ctx => {
+        if (ctx.phase === "start") {
+            if (ctx.detectedType) throw new Error("unobserved start type");
+            return {directories:["predicted"]};
+        }
+        const type = ctx.detectedType;
+        if (ctx.phase !== "complete" || ctx.headerHex !== undefined ||
+            !type || type.kind !== "image" || type.mime !== "image/png" ||
+            type.extension !== "png" || !/^\d{4}-\d{2}-\d{2}$/.test(ctx.createdDate))
+            throw new Error("missing or unsafe final content facts");
+        return {directories:[ctx.createdDate, type.kind]};
+    };"#;
+    let body = Arc::new(b"\x89PNG\r\n\x1a\n\0\0\0\0".to_vec());
+    let (engine, task, body) =
+        run_routed_payload(&work, script, "photo.txt", CategoryRoute::default(), body).await;
+    let created = chrono::DateTime::from_timestamp(task.created_at.parse().unwrap(), 0)
+        .unwrap()
+        .format("%Y-%m-%d")
+        .to_string();
+    let expected = work.join(created).join("image");
+    assert_eq!(Path::new(&task.save_dir), expected.as_path());
+    assert_eq!(
+        tokio::fs::read(expected.join("photo.txt")).await.unwrap(),
+        *body
+    );
+    assert!(!work.join("predicted/photo.txt").exists());
+    let stored = engine
+        .db
+        .load_task_category_route(&task.task_id)
+        .await
+        .unwrap();
+    let stored: CategoryRoute = serde_json::from_str(&stored).unwrap();
+    assert_eq!(
+        stored
+            .archive
+            .unwrap()
+            .directories
+            .last()
+            .map(String::as_str),
+        Some("image")
+    );
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_completion_error_keeps_prediction_and_successful_download() {
+    let work = std::env::temp_dir().join(format!("fluxdown-archive-final-error-{}", uniq()));
+    let script = r#"globalThis.archive = ctx => {
+        if (ctx.phase === "complete") throw new Error("final classification failed");
+        return {directories:["prediction"]};
+    };"#;
+    let (engine, task, body) = run_routed_task(
+        &work,
+        script,
+        "report.txt",
+        fluxdown_engine::category_route::CategoryRoute::default(),
+    )
+    .await;
+    assert_eq!(Path::new(&task.save_dir), work.join("prediction").as_path());
+    assert_eq!(
+        tokio::fs::read(work.join("prediction/report.txt"))
+            .await
+            .unwrap(),
+        *body
+    );
+    assert!(
+        plugin_notes(&engine, &task.task_id)
+            .await
+            .iter()
+            .any(|note| note.contains("final classification failed"))
+    );
+    cleanup(&work).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_plugin_classifies_final_content_despite_misleading_extensions() {
+    let script = std::env::var_os("FLUXDOWN_TEST_ARCHIVE_SCRIPT")
+        .map(std::fs::read_to_string)
+        .transpose()
+        .expect("read optional compiled classifier")
+        .unwrap_or_else(|| r#"globalThis.archive = ctx => {
+            if (ctx.phase !== "complete") return null;
+            const folder = {image:"图片", document:"文档", archive:"压缩包"}[ctx.detectedType?.kind];
+            return folder ? {directories:[folder]} : null;
+        };"#.to_owned());
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("data.bin", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"ordinary archive contents").unwrap();
+    let zip = zip.finish().unwrap().into_inner();
+    for (name, bytes, folder) in [
+        ("photo.txt", b"\x89PNG\r\n\x1a\n\0\0\0\0".to_vec(), "图片"),
+        ("report.bin", b"%PDF-1.7\n%content\n".to_vec(), "文档"),
+        ("book.epub", zip, "压缩包"),
+    ] {
+        let work = std::env::temp_dir().join(format!("fluxdown-archive-types-{}", uniq()));
+        let (_, task, body) = run_routed_payload(
+            &work,
+            &script,
+            name,
+            fluxdown_engine::category_route::CategoryRoute {
+                archive_categories: [
+                    (
+                        "image".to_owned(),
+                        work.join("图片").to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "document".to_owned(),
+                        work.join("文档").to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "archive".to_owned(),
+                        work.join("压缩包").to_string_lossy().into_owned(),
+                    ),
+                ]
+                .into(),
+                ..Default::default()
+            },
+            Arc::new(bytes),
+        )
+        .await;
+        assert_eq!(
+            Path::new(&task.save_dir),
+            work.join(folder).as_path(),
+            "{name}"
+        );
+        assert_eq!(
+            tokio::fs::read(work.join(folder).join(name)).await.unwrap(),
+            *body
+        );
+        cleanup(&work).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_category_uses_host_directory_and_declines_unconfigured_or_conflicting_outputs() {
+    let script =
+        r#"globalThis.archive = ctx => ctx.phase === "complete" ? {category:"image"} : null;"#;
+    for (configured, output) in [
+        (Some("Renamed Photos"), script),
+        (Some("Changed Destination"), script),
+        (None, script),
+        (
+            Some("Rejected"),
+            r#"globalThis.archive = ctx => ctx.phase === "complete" ? {category:"image",directories:["escape"]} : null;"#,
+        ),
+        (
+            Some("Rejected"),
+            r#"globalThis.archive = ctx => ctx.phase === "complete" ? {category:"../outside"} : null;"#,
+        ),
+    ] {
+        let work = std::env::temp_dir().join(format!("fluxdown-archive-category-{}", uniq()));
+        let target = configured.map(|name| work.join(name));
+        let route = fluxdown_engine::category_route::CategoryRoute {
+            archive_categories: target
+                .as_ref()
+                .map(|path| [("image".to_owned(), path.to_string_lossy().into_owned())].into())
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        let (_, task, body) = run_routed_task(&work, output, "misleading.txt", route).await;
+        let expected = if output == script {
+            target.unwrap_or_else(|| work.clone())
+        } else {
+            work.clone()
+        };
+        assert_eq!(Path::new(&task.save_dir), expected);
+        assert_eq!(
+            tokio::fs::read(expected.join("misleading.txt"))
+                .await
+                .expect("downloaded file"),
+            *body
+        );
+        assert!(!work.join("escape").exists());
+        cleanup(&work).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn archive_plugin_routes_nested_directories_from_authorized_base() {
     nested_archive_download(false).await;
 }
@@ -1227,19 +1420,14 @@ async fn nested_archive_download(collision: bool) {
 
     let work = std::env::temp_dir().join(format!("fluxdown-archive-nested-{}", uniq()));
     tokio::fs::create_dir_all(&work).await.expect("mkdir work");
-    let body = Arc::new(vec![0x6b; 4096]);
+    // Minimal ISO BMFF with a video handler: actual content, not extension-only fake video bytes.
+    let body =
+        Arc::new(b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom\0\0\0\x14hdlr\0\0\0\0\0\0\0\0vide".to_vec());
     let armed = Arc::new(AtomicBool::new(false));
     let (port, _server) = spawn_range_server(body.clone(), armed);
     let mut engine = make_engine(&work).await;
-    let archive_js = std::env::var_os("FLUXDOWN_TEST_ARCHIVE_SCRIPT")
-        .map(std::fs::read_to_string)
-        .transpose()
-        .expect("read optional compiled archive script")
-        .unwrap_or_else(|| {
-            r#"globalThis.archive = async () => ({directories:["视频","哔哩哔哩","小猪仔步履不停","小猪仔评财报"]});"#
-                .to_owned()
-        });
-    install_archive_plugin(&engine, &work.join("archive_plugin"), &archive_js).await;
+    let archive_js = r#"globalThis.archive = async () => ({directories:["视频","哔哩哔哩","小猪仔步履不停","小猪仔评财报"]});"#;
+    install_archive_plugin(&engine, &work.join("archive_plugin"), archive_js).await;
     let mut done_rx = engine.manager.take_done_rx().expect("done channel");
     let name = "clip.mp4";
     let expected = work.join("视频/哔哩哔哩/小猪仔步履不停/小猪仔评财报");
@@ -1408,10 +1596,8 @@ async fn archive_plugin_group_preserves_member_tree_under_authorized_base() {
     let body = Arc::new(vec![0x6c; 4096]);
     let (port, _server) = spawn_range_server(body.clone(), Arc::new(AtomicBool::new(false)));
     let mut engine = make_engine(&work).await;
-    let script = std::env::var_os("FLUXDOWN_TEST_ARCHIVE_SCRIPT")
-        .map(std::fs::read_to_string).transpose().expect("read real plugin")
-        .unwrap_or_else(|| r#"globalThis.archive = ctx => ({directories:["视频","哔哩哔哩",ctx.metadata.creatorName,ctx.metadata.collectionTitle]});"#.to_owned());
-    install_archive_plugin(&engine, &work.join("archive_plugin"), &script).await;
+    let script = r#"globalThis.archive = ctx => ({directories:["视频","哔哩哔哩",ctx.metadata.creatorName,ctx.metadata.collectionTitle]});"#;
+    install_archive_plugin(&engine, &work.join("archive_plugin"), script).await;
     let mut done_rx = engine.manager.take_done_rx().expect("done channel");
     let group_id = engine
         .manager

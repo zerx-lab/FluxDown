@@ -1445,8 +1445,15 @@ impl TaskDetailView {
                 mono_text(trimmed_or_dash(&network.external_ip), "ed2k-net-ip"),
             ));
         }
+        net = net.child(kv_row(&look, layout, t("ed2kNetUpnp"), upnp_value));
+        if network.upnp == Ed2kUpnpStatus::Failed && !network.upnp_error.trim().is_empty() {
+            net = net.child(note(
+                &look,
+                network.upnp_error.trim().to_owned().into(),
+                look.muted,
+            ));
+        }
         net = net
-            .child(kv_row(&look, layout, t("ed2kNetUpnp"), upnp_value))
             .child(kv_row(&look, layout, t("ed2kNetKad"), kad_value))
             .child(note(&look, t("ed2kNetGlobalHint"), look.tertiary));
 

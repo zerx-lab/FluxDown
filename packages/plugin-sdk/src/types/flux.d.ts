@@ -11,6 +11,36 @@ import type { ViewChild, ViewNode } from "./view";
 // flux.fetch / auth / storage / fs / task
 // ---------------------------------------------------------------------------
 
+/** Options for loading a sanitized, host-fetched image into a view session. */
+export interface ImageLoadOptions {
+  url: string;
+  headers?: Record<string, string>;
+  authRef?: string;
+  /** Maximum output width, 1–2048; defaults to 512. */
+  maxWidth?: number;
+  /** Maximum output height, 1–2048; defaults to 512. */
+  maxHeight?: number;
+  /** Cache by source/options for five minutes; defaults to true. */
+  cache?: boolean;
+}
+
+/** A per-session image resource reference (`flux-image:<uuid>`). */
+export interface FluxImages {
+  load(options: ImageLoadOptions): Promise<string>;
+  /** Invalidate a reference after removing ALL uses, including prefetched state; identical images share it. */
+  release(src: string): Promise<void>;
+}
+
+export interface MainImageLoadOptions extends ImageLoadOptions {
+  session: string;
+}
+
+export interface MainFluxImages {
+  load(options: MainImageLoadOptions): Promise<string>;
+  /** Invalidate a reference owned by this session after removing every use. */
+  release(options: { session: string; src: string }): Promise<void>;
+}
+
 export interface FluxFetchOptions {
   /** Default `GET`. */
   method?: string;
@@ -155,6 +185,8 @@ export interface ViewContext {
   /** Task the view is attached to (taskDetail views); `null` otherwise. */
   taskId: string | null;
   locale: string;
+  /** Host-side image loader, scoped to this view session. */
+  images: FluxImages;
   /** Requests a re-render (throttled to one render per 100 ms per session). */
   refresh(): void;
   /**
@@ -364,6 +396,8 @@ export interface Flux {
 export interface MainFlux extends Omit<Flux, "settings"> {
   /** Values as in `Flux.settings`, plus the non-enumerable `update` method. */
   settings: FluxSettingsValues & FluxSettingsHost;
+  /** Session-bound image loading, available only in the resident `main` script. */
+  images: MainFluxImages;
   ui: FluxUi;
   commands: FluxCommands;
   rpc: FluxRpc;
@@ -392,7 +426,7 @@ export interface ResolveContext {
   resolverItem: string;
 }
 
-/** Root-level, source-provided archive hints; never credentials, URLs, or paths. */
+/** Root-level source hints; these are not facts read from the file itself. */
 export interface ArchiveMetadata {
   platform?: string;
   mediaKind?: string;
@@ -404,19 +438,41 @@ export interface ArchiveMetadata {
   collectionTitle?: string;
 }
 
-/** `archive(ctx)` argument: the final file name (HLS/DASH: the predicted `<stem>.mp4`). */
+/** Content kinds reported by the host's bounded file-format recognizer. */
+export type ArchiveDetectedKind =
+  | "archive" | "audio" | "compressed" | "database" | "diagram" | "disk"
+  | "document" | "ebook" | "executable" | "font" | "formula" | "geospatial"
+  | "image" | "metadata" | "model" | "other" | "package" | "playlist"
+  | "presentation" | "rom" | "spreadsheet" | "subtitle" | "video";
+
+/** `archive(ctx)` argument; source metadata and host-observed content facts are distinct. */
 export interface ArchiveContext {
+  /** Actual final file name; BT single-file selection uses the selected torrent file's name. */
   fileName: string;
+  /** Optional root-level source-provided labels; never credentials, URLs, or paths. */
   metadata?: ArchiveMetadata;
+  /** True for a group root. Groups are routed only at start and are not content-read. */
   isGroup?: boolean;
+  /** `start` before downloading, or `complete` for the processed final artifact. */
+  phase: "start" | "complete";
+  /** Fixed UTC task/group creation date (`YYYY-MM-DD`); empty for invalid legacy dates. */
+  createdDate: string;
+  /** Host-observed content facts only; omitted when unknown or recognition is unavailable. */
+  detectedType?: {
+    kind: ArchiveDetectedKind;
+    mime: string;
+    extension: string;
+  };
+  /** Host capability; absent on older hosts that do not support category routing. */
+  categoryRouting?: boolean;
 }
-/** Archive destination: safe components relative to the task's authorized default directory. */
-export interface ArchiveResult {
-  /** At most 8 safe components; joined relative path is at most 180 UTF-8 bytes. */
-  directories?: string[];
-  /** Legacy single-category child result retained for existing plugins. */
-  folderName?: string;
-}
+/** Stable built-in category identifiers supported by category routing. */
+export type ArchiveCategory =
+  | "video" | "audio" | "document" | "image" | "program" | "archive" | "other";
+/** Archive destination; category routing is valid only for completed, non-group artifacts. */
+export type ArchiveResult =
+  | { category: ArchiveCategory; directories?: never; folderName?: never }
+  | { category?: never; directories?: string[]; folderName?: string };
 
 export interface ResolveVariant {
   label: string;

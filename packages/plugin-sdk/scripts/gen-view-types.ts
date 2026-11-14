@@ -43,33 +43,42 @@ const union = (values: string[]) => values.map((v) => JSON.stringify(v)).join(" 
 
 function tsType(spec: PropSpec, indent: string): string {
   let base: string;
-  switch (spec.type) {
-    case "string":
-      base = "string";
-      break;
-    case "bool":
-      base = "boolean";
-      break;
-    case "number":
-    case "int":
-      base = "number";
-      break;
-    case "enum":
-      if (!spec.enum) throw new Error("enum prop without enum name");
-      base = enumName(spec.enum);
-      break;
-    case "array": {
-      const item = spec.item;
-      if (!item) throw new Error("array prop without item");
-      const fields = Object.entries(item.fields)
-        .map(([k, f]) => `${indent}  ${k}${f.required ? "" : "?"}: ${tsType(f, `${indent}  `)};`)
-        .join("\n");
-      const extra = item.additional ? `${indent}  [column: string]: unknown;\n` : "";
-      base = `Array<{\n${fields}\n${extra}${indent}}>`;
-      break;
+  if (spec.format === "imageSource") {
+    base = [
+      "`data:image/png;base64,${string}`",
+      "`data:image/jpeg;base64,${string}`",
+      "`data:image/webp;base64,${string}`",
+      "`flux-image:${string}`",
+    ].join(" | ");
+  } else {
+    switch (spec.type) {
+      case "string":
+        base = "string";
+        break;
+      case "bool":
+        base = "boolean";
+        break;
+      case "number":
+      case "int":
+        base = "number";
+        break;
+      case "enum":
+        if (!spec.enum) throw new Error("enum prop without enum name");
+        base = enumName(spec.enum);
+        break;
+      case "array": {
+        const item = spec.item;
+        if (!item) throw new Error("array prop without item");
+        const fields = Object.entries(item.fields)
+          .map(([k, f]) => `${indent}  ${k}${f.required ? "" : "?"}: ${tsType(f, `${indent}  `)};`)
+          .join("\n");
+        const extra = item.additional ? `${indent}  [column: string]: unknown;\n` : "";
+        base = `Array<{\n${fields}\n${extra}${indent}}>`;
+        break;
+      }
+      default:
+        throw new Error(`unsupported prop type ${spec.type}`);
     }
-    default:
-      throw new Error(`unsupported prop type ${spec.type}`);
   }
   return spec.nullable ? `${base} | null` : base;
 }
@@ -83,6 +92,7 @@ function propDoc(spec: PropSpec): string {
   if (spec.maxItems !== undefined) bits.push(`at most ${spec.maxItems} items`);
   if (spec.format === "httpUrl") bits.push("http(s) URLs only");
   if (spec.format === "imageDataUri") bits.push("data:image/(png|jpeg|webp);base64, only");
+  if (spec.format === "imageSource") bits.push("data:image/(png|jpeg|webp);base64, or flux-image:<uuid>");
   return bits.length ? `  /** ${bits.join("; ")} */\n` : "";
 }
 

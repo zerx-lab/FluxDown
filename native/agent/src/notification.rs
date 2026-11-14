@@ -474,29 +474,21 @@ pub fn english_text(key: &str, count: Option<usize>) -> String {
     )
 }
 
-/// 按界面语言取通知文案：desktop 构建首次使用时加载 en / zh 基线目录；headless 构建或
-/// 目录加载失败时回退 [`english_text`]。
-#[derive(Default)]
-pub struct NoticeText {
-    #[cfg(feature = "desktop")]
-    catalog: std::sync::OnceLock<Option<std::sync::Arc<fluxdown_ui_i18n::I18nCatalog>>>,
-}
+/// 按界面语言取通知文案：desktop 构建使用进程共享的翻译目录（只解析用到的语言）；headless
+/// 构建或目录加载失败时回退 [`english_text`]。
+pub struct NoticeText;
 
 impl NoticeText {
     /// `locale`：界面语言偏好（`None` = 跟随系统）。
     #[cfg(feature = "desktop")]
     #[must_use]
     pub fn text(&self, key: &str, locale: Option<&str>) -> String {
-        let catalog = self.catalog.get_or_init(|| {
-            fluxdown_ui_i18n::I18nCatalog::load_embedded()
-                .map(std::sync::Arc::new)
-                .map_err(|error| {
-                    tracing::warn!(error = %error, "notification translations unavailable");
-                })
-                .ok()
-        });
-        let Some(catalog) = catalog else {
-            return english_text(key, None);
+        let catalog = match fluxdown_ui_i18n::I18nCatalog::load_embedded() {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                tracing::warn!(error = %error, "notification translations unavailable");
+                return english_text(key, None);
+            }
         };
         let locale = locale.map_or_else(fluxdown_ui_i18n::system_locale, str::to_owned);
         catalog.translator(&locale).text(key).to_owned()

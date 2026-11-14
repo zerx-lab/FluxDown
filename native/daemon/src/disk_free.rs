@@ -166,7 +166,7 @@ mod tests {
         hub.set_disk_free(Some(&dir), dir.clone(), Some(41));
         let frame = receiver.try_recv().unwrap();
         assert!(matches!(
-            frame.event,
+            &frame.event,
             ServiceEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats))
                 if stats.disk_free_bytes == Some(41)
         ));

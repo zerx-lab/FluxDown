@@ -25,6 +25,8 @@ pub const DAEMON_TASK_RENAME: &str = "daemon.task.rename";
 pub const DAEMON_TASK_CHANGE_URL: &str = "daemon.task.changeUrl";
 /// 修改任务线程数（`SetTaskSegmentsParams`），已下进度保留；完成或不存在的任务返回 `not-found`。
 pub const DAEMON_TASK_SET_SEGMENTS: &str = "daemon.task.setSegments";
+/// 修改任务代理并立即重建活跃连接（`SetTaskProxyParams`），不重启宿主。
+pub const DAEMON_TASK_SET_PROXY: &str = "daemon.task.setProxy";
 pub const DAEMON_TASK_DELETE: &str = "daemon.task.delete";
 pub const DAEMON_TASK_PAUSE_ALL: &str = "daemon.task.pauseAll";
 pub const DAEMON_TASK_RESUME_ALL: &str = "daemon.task.resumeAll";
@@ -477,6 +479,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_RENAME,
     DAEMON_TASK_CHANGE_URL,
     DAEMON_TASK_SET_SEGMENTS,
+    DAEMON_TASK_SET_PROXY,
     DAEMON_TASK_DELETE,
     DAEMON_TASK_PAUSE_ALL,
     DAEMON_TASK_RESUME_ALL,

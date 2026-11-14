@@ -1,8 +1,7 @@
-//! 任务编辑：「更换链接」与「修改线程数」对话框及其提交流程。
+//! 任务编辑：「更换链接」「修改线程数」与「编辑代理」对话框及其提交流程。
 //!
-//! 入口：下载页右键 / 应用菜单，以及任务详情「常规」页（停靠面板与独立窗口）。
-//! 命令成功后，失败态任务自动补发 `Resume`（改完立即重试）；暂停 / 等待保持原状态。
-//! `Resume` 只在编辑命令成功之后串行发出；失败与成功提示推送到打开对话框的窗口。
+//! 入口：下载页右键 / 应用菜单，以及任务详情「常规」页（停靠面板与独立详情窗口共用）。
+//! 失败与成功提示推送到打开对话框的窗口；代理变更的失败任务由 daemon 直接重试。
 
 use std::{rc::Rc, sync::Arc};
 
@@ -23,7 +22,7 @@ use gpui_component::{
 };
 
 use crate::{
-    actions::{ChangeSelectedSegments, ChangeSelectedUrl},
+    actions::{ChangeSelectedSegments, ChangeSelectedUrl, EditSelectedProxy},
     components::{
         task_table::{TaskMenuFacts, task_menu_facts_for, url_has_prefix},
         threads_risk::{parse_segments_input, threads_risk_callout},
@@ -254,6 +253,90 @@ impl Render for UrlForm {
             })
     }
 }
+/// 代理编辑表单：空值表示跟随全局与站点规则；输入其他支持的 URL 或直连 / 系统哨兵。
+struct ProxyForm {
+    input: Entity<InputState>,
+    error: Option<SharedString>,
+    label: SharedString,
+    hint: SharedString,
+    invalid: SharedString,
+    _watch: Subscription,
+}
+
+impl ProxyForm {
+    fn new(
+        current: String,
+        translator: &Entity<Translator>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(current));
+        let watch = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.error = None;
+                cx.notify();
+            }
+        });
+        Self {
+            input,
+            error: None,
+            label: SharedString::from(translator.read(cx).text("taskProxy")),
+            hint: SharedString::from(translator.read(cx).text("taskEditProxyHint")),
+            invalid: SharedString::from(translator.read(cx).text("taskEditProxyInvalid")),
+            _watch: watch,
+        }
+    }
+
+    fn check(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let value = self.input.read(cx).value().trim().to_owned();
+        if valid_proxy_url(&value) {
+            Some(value)
+        } else {
+            self.error = Some(self.invalid.clone());
+            cx.notify();
+            None
+        }
+    }
+}
+
+fn valid_proxy_url(value: &str) -> bool {
+    if value.is_empty() || matches!(value, "direct://" | "system://") {
+        return true;
+    }
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return false;
+    };
+    if !["http", "https", "socks4", "socks4a", "socks5", "socks5h"].contains(&scheme) {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    !host_port.is_empty()
+        && !host_port.ends_with(':')
+        && host_port.rsplit_once(':').is_some_and(|(host, port)| {
+            !host.is_empty() && port.parse::<u16>().is_ok_and(|port| port != 0)
+        })
+        && !rest.contains(['?', '#'])
+        && rest
+            .split_once('/')
+            .is_none_or(|(_, path)| path.is_empty() || path == "/")
+}
+
+impl Render for ProxyForm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        form(cx)
+            .child(form_field(
+                self.label.clone(),
+                Input::new(&self.input).control(cx).w_full(),
+                None,
+                cx,
+            ))
+            .child(field_hint(self.hint.clone(), cx))
+            .when_some(self.error.clone(), |this, error| {
+                this.child(field_error(error, cx))
+            })
+    }
+}
 
 /// 打开编辑对话框所需的上下文：下载页（右键 / 应用菜单）、停靠详情面板与独立详情窗口共用。
 /// 结果（失败 / 成功提示）推送到打开对话框的窗口。
@@ -269,6 +352,65 @@ impl TaskEditTarget {
     fn allows(&self, allow: fn(&TaskMenuFacts) -> bool) -> bool {
         task_menu_facts_for(&self.store, &self.key).is_some_and(|facts| allow(&facts))
     }
+}
+
+/// 「编辑代理」：预填当前任务代理，确认后下发 `SetProxy`。
+pub(crate) fn open_edit_proxy_dialog(target: TaskEditTarget, window: &mut Window, cx: &mut App) {
+    if !target.allows(TaskMenuFacts::can_edit_proxy) {
+        return;
+    }
+    let Some(current) = target
+        .store
+        .get(&target.key)
+        .map(|row| row.proxy_url.clone())
+    else {
+        return;
+    };
+    let title = target.strings.task_edit_proxy.clone();
+    let ok_label = target.strings.confirm.clone();
+    let cancel_label = target.strings.cancel.clone();
+    let translator = target.translator.clone();
+    let form_entity = cx.new(|cx| ProxyForm::new(current, &translator, window, cx));
+    let dialog_form = form_entity.clone();
+    let target = Rc::new(target);
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let content_form = dialog_form.clone();
+        let ok_form = dialog_form.clone();
+        let target = Rc::clone(&target);
+        dialog
+            .title(dialog_title(title.clone(), cx))
+            .w(px(520.))
+            .content(move |content, _, _| content.child(content_form.clone()))
+            .footer(dialog_footer(
+                Some(cancel_label.clone()),
+                ok_label.clone(),
+                DialogIntent::Confirm,
+                cx,
+            ))
+            .on_ok(move |_, window, cx| {
+                let Some(proxy_url) = ok_form.update(cx, |form, cx| form.check(cx)) else {
+                    return false;
+                };
+                if target
+                    .store
+                    .get(&target.key)
+                    .is_some_and(|row| row.proxy_url == proxy_url && row.state != TaskState::Failed)
+                {
+                    return true;
+                }
+                let task_id = target.key.task_id().to_owned();
+                submit_task_edit(
+                    &target,
+                    DownloadsCommand::SetProxy { task_id, proxy_url },
+                    EditKind::SetProxy,
+                    window,
+                    cx,
+                );
+                true
+            })
+    });
+    let input = form_entity.read(cx).input.clone();
+    input.update(cx, |state, cx| state.focus(window, cx));
 }
 
 /// 「更换链接」：URL 输入框预填当前地址，确认后下发 `ChangeUrl`。任务不满足条件时无操作。
@@ -377,6 +519,7 @@ pub(crate) fn open_change_segments_dialog(
 enum EditKind {
     ChangeUrl,
     SetSegments,
+    SetProxy,
 }
 
 /// 编辑命令本身失败，或编辑成功后补发的 `Resume` 失败。
@@ -394,15 +537,21 @@ fn submit_task_edit(
     cx: &mut App,
 ) {
     // 提交时刻的状态决定是否补发 Resume（对话框打开期间状态可能已变）。
-    let was_failed = target
-        .store
-        .get(&target.key)
-        .is_some_and(|row| row.state == TaskState::Failed);
+    let was_failed = kind != EditKind::SetProxy
+        && target
+            .store
+            .get(&target.key)
+            .is_some_and(|row| row.state == TaskState::Failed);
     let task_id = target.key.task_id().to_owned();
     let port = Arc::clone(&target.port);
     let translator = target.translator.clone();
-    let success_notice =
-        (kind == EditKind::SetSegments).then(|| target.strings.threads_changed.clone());
+    let success_notice = match kind {
+        EditKind::SetSegments => Some(target.strings.threads_changed.clone()),
+        EditKind::SetProxy => Some(SharedString::from(
+            target.translator.read(cx).text("taskEditProxyApplied"),
+        )),
+        EditKind::ChangeUrl => None,
+    };
     let handle = window.window_handle();
     let edit = port.execute(command);
     cx.spawn(async move |cx| {
@@ -425,6 +574,7 @@ fn submit_task_edit(
                     (EditFailure::Edit(error), EditKind::SetSegments) => {
                         set_segments_error_text(translator, error)
                     }
+                    (EditFailure::Edit(error), EditKind::SetProxy) => error_text(translator, error),
                     (EditFailure::Resume(error), _) => error_text(translator, error),
                 });
                 Some(Notification::error(text))
@@ -478,6 +628,17 @@ impl DownloadView {
     ) {
         if let Some(target) = self.single_edit_target(cx) {
             open_change_segments_dialog(target, window, cx);
+        }
+    }
+    /// 右键 / 应用菜单「编辑代理」。
+    pub(crate) fn on_edit_selected_proxy(
+        &mut self,
+        _: &EditSelectedProxy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(target) = self.single_edit_target(cx) {
+            open_edit_proxy_dialog(target, window, cx);
         }
     }
 }
@@ -545,5 +706,33 @@ mod tests {
             validate_new_url("magnet:?xt=urn:btih:a", "http://b/f"),
             Err(UrlError::Unsupported)
         );
+    }
+
+    #[test]
+    fn task_proxy_validation_matches_supported_wire_values() {
+        for value in [
+            "",
+            "direct://",
+            "system://",
+            "http://localhost:8080",
+            "https://proxy.example:443/",
+            "socks4://127.0.0.1:1080",
+            "socks4a://proxy:1080",
+            "socks5://user:pass@proxy:1080",
+            "socks5h://proxy:1080",
+        ] {
+            assert!(super::valid_proxy_url(value), "{value:?}");
+        }
+        for value in [
+            "HTTP://proxy:80",
+            "ftp://proxy:21",
+            "http://proxy",
+            "http://proxy:0",
+            "http://:8080",
+            "http://proxy:8080/path",
+            "http://proxy:8080?secret=value",
+        ] {
+            assert!(!super::valid_proxy_url(value), "{value:?}");
+        }
     }
 }

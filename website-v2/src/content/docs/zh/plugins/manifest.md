@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "e9272ccb553c"
+sourceHash: "23b875a039ab"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -206,7 +206,10 @@ hooks 在下载生命周期事件发生时运行你的代码。
 |---|---|---|
 | `entry` | 是 | classic 脚本（不是 ES module），包内安全相对路径，扩展名 `.js`，文件必须存在。 |
 | `events` | 否 | 投递给脚本的事件，每项须是 `onStart`、`onError`、`onDone`、`onMetaProbed`、`onCancel` 之一。 |
+| `imageHosts` | 否 | 默认 `[]`。`main` 可通过 `ctx.images` / `flux.images` 加载的远程图片主机，须为小写 DNS 主机名或 IP 字面量；最多 64 项且不得重复，主机格式同 `desktop.networkHosts`。会纳入网络授权。 |
 | `background` | 否 | 布尔值。`true` 表示脚本随 daemon 常驻，需要 `background` 权限。 |
+
+远程图片由宿主代为请求，界面本身不会直接访问网络。请在 `main.imageHosts` 中声明所有图片来源主机；未声明主机的请求会被拒绝。旧 manifest 可省略此字段（等同于 `[]`）。详见[API 参考](/docs/zh/plugins/api-reference/)。
 
 `main` 是插件的常驻部分：可移植视图、命令与后台逻辑都在 daemon 内的这个脚本里运行。见[可移植界面指南](/docs/zh/plugins/ui-guide/)。
 
@@ -226,13 +229,20 @@ hooks 在下载生命周期事件发生时运行你的代码。
 }
 ```
 
-`views` / `commands` 为空数组等同于不声明。`archive` 会依据已知文件名及可选来源元数据，为跟随分类路由的任务选择子目录；它不改文件名，也不接管保存根目录。
+`views` / `commands` 为空数组等同于不声明。`archive` 提供本地目录路由，不改文件名，也不接管保存根目录。
 
 ### `archive`
 
-`contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。任务获准跟随默认保存目录时，宿主调用 `globalThis.archive({ fileName, metadata?, isGroup })`，不要求既有分类命中；用户明确选择其他保存目录时不调用。`metadata` 可包含 `platform`、`mediaKind`、`creatorId`、`creatorName`、`seriesId`、`seriesTitle`、`collectionId` 与 `collectionTitle`。每个值是最多 180 UTF-8 字节且不含控制字符的标签。这些是来源元数据，不进行文件内容识别；URL、本地路径与凭据不会暴露。`flux.settings` 可读，网络、文件系统、任务与进程接口不可用。
+`contributes.archive` 指向包内 `.js` 文件，且必须声明 `permissions: ["archive"]`。使用新阶段/内容上下文时，`minAppVersion` 应设为 `0.6.5`（匹配开发宿主；不代表该版本已发布）。
 
-任务组只在组根调用一次，并带 `isGroup: true`；成员相对路径与文件名保持不变。返回 `null` / `undefined`，或 `{ directories: ["视频", "哔哩哔哩", "创作者", "合集"] }`，在已授权的下载基础目录下创建相对多级目录。最多 8 个安全分量，拼接后的相对目录不超过 180 UTF-8 字节。旧 `{ folderName: "The Expanse" }` 仍追加在命中的分类目录下；整组旧分类路由仍要求所有成员属于同一分类。空值或非法输出会被忽略（fail-open），不会让下载失败；首个按插件 identity 排序的有效结果生效。恢复及完成期复用已保存的目录决定，原文件名不变。多级输出需要实现此扩展的宿主，不应假定旧正式版已支持。
+任务跟随获准的默认目录路由时，宿主调用 `globalThis.archive(ctx)`。`ctx` 包含 `fileName`、可选来源 `metadata`、`isGroup`、`phase: "start" | "complete"`、固定 UTC `createdDate`（`YYYY-MM-DD`，无效旧时间戳为 `""`）、可选的宿主观察内容 `detectedType: { kind, mime, extension }`，以及可选的 `categoryRouting`。`categoryRouting: true` 表示支持按分类路由；旧宿主会省略它，插件必须在缺失时明确拒绝分类路由。`kind` 使用小写 snake_case 文件格式词汇：`archive`、`audio`、`compressed`、`database`、`diagram`、`disk`、`document`、`ebook`、`executable`、`font`、`formula`、`geospatial`、`image`、`metadata`、`model`、`other`、`package`、`playlist`、`presentation`、`rom`、`spreadsheet`、`subtitle`、`video`。`metadata` 是来源提供的信息，不是内容识别。回调不会收到文件字节、路径、URL、请求头或凭据；服务器提供的 MIME 不作内容证据。
+
+符合条件的文件在开始时评估，并在完成时针对最终处理产物重新评估，即使开始时已选择目录。成功的完成结果可替换缓存的开始目录；`null`、非法结果或错误保留此前有效选择。插件可在普通文件的开始阶段返回 `null`，到完成阶段根据 `detectedType` 决定。任务组只在开始时对根路由（`isGroup: true`），不读取内容且没有 `detectedType`。
+
+分类结果仅接受于已完成的非组文件。宿主会拒绝开始阶段和任务组的 `{ category }`；组路由仍支持 `{ directories }` 和旧格式 `{ folderName }`。
+
+返回 `null` / `undefined`、`{ category: "audio" }` 或 `{ directories: ["视频", "哔哩哔哩"] }`（在获准的默认目录下使用安全目录分量，最多 8 层，拼接路径最多 180 UTF-8 字节）。`category` 是稳定的内置标识符之一：`video`、`audio`、`document`、`image`、`program`、`archive`、`other`；它与 `directories`、`folderName` 互斥。宿主根据提交时的分类配置快照，将其解析为可见分类配置的保存目录。分类改名不改变其稳定标识符（`builtinType`）；分类缺失、隐藏或没有保存目录时宿主会拒绝移动，不会猜测自定义分类。旧格式 `{ folderName: "The Expanse" }` 仍保留原分类子目录语义。显式目录会绕过自动分类解析。用户明确指定保存目录时绕过回调。eD2K 不移动。BT 任务仅在首次完成且恰有一个实际选中的非 padding 文件时归档，包括多文件种子里的单文件选择；回调沿用原有契约，收到实际文件名和内容事实。宿主经 BT 存储迁移移动整个任务根目录并恢复做种；多选、错误、冲突及显式目录均不移动。不预测初始归档位置，之后改选或重启不会重试。异步搬移可能短暂保留原位置，后续位置变更事件更新；不新增侧栏分类。非法输出不会导致下载失败。完整行为见[API 参考](/docs/zh/plugins/api-reference/#archivectx)。
+
 ### `archiveRules`
 
 `contributes.archiveRules` 声明有界 JSON 分类规则包，并使用发布者固定的 Ed25519 公钥验证。`entry` 是安全的包内相对 `.json` 路径；安装时会校验签名种子文件。`publicKey` 为 64 位十六进制字符串。可选 `updateUrl` 必须是无凭据、无片段的公网 HTTPS URL，其主机名会加入授权网络主机列表。启用自动更新后每日检查，也可显式或手动触发更新。获取或验证失败时保留最后一份已验证规则。规则只用于分类未来符合条件的文件，不会重新分类历史文件。

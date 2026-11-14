@@ -23,9 +23,11 @@ This page covers the user-facing model and the rules a plugin author needs to kn
 | `intercept` | Interceptors: read and change the URL, request headers, cookies and body of matching tasks, control their connection count, skip the probe, swap credentials mid-download, rewrite or filter streaming segments, choose the quality or DASH Period, process the file before completion, and ask for a retry after a task fails. See the [Interceptors guide](/docs/en/plugins/interceptors-guide/). |
 | `desktop` | Run native desktop scripts with **full trust** (see below). |
 | `pageScripts` | Run the plugin's scripts on the websites it lists in `contributes.pageScripts`, through the FluxDown browser extension, with **Full** risk (see [Page scripts](#page-scripts-in-the-browser)). |
-| `archive` | Let `contributes.archive` choose safe directories from the known filename and optional source metadata. New `directories` are relative to the authorized default directory; legacy `folderName` remains a category child. `contributes.archiveRules` supplies publisher-signed data, not executable code; no URLs, paths or credentials are exposed. An `archiveRules.updateUrl` hostname is included in network consent. The callback can read settings and write plugin logs, but cannot access files, network, tasks or processes. Risk: **Elevated**. |
+| `archive` | Let `contributes.archive` choose safe directories using filename, source metadata, fixed task creation date, and optional host-observed content facts at completion. Its phase/content context requires host 0.6.5 or matching development host (not a claim of publication). `categoryRouting: true` advertises support for stable built-in category results; older hosts omit it, and plugins must explicitly reject category routing if absent. The host resolves `video`, `audio`, `document`, `image`, `program`, `archive`, or `other` against the submission's category configuration snapshot to the configured visible category's save directory; renamed categories retain `builtinType`, while missing, hidden, or directory-less categories are declined. Custom category names are not guessed. Category results cannot be combined with `directories` or `folderName`; those existing results remain supported. Explicit directories bypass category resolution. The callback gets no file bytes, paths, URLs, headers, or credentials. Completion re-evaluates even a cached start choice; `null` or errors preserve it. Groups are routed at start without content reading. BT is eligible only at first completion with exactly one actually selected non-padding file and an authorized default directory. Multiple selections, explicit directories, eD2K, and failed detection/moves do not relocate the task. No file, network, task or process APIs are granted. Risk: **Elevated**. |
 
 Subscription providers, hooks, resolvers and portable views need no permission of their own.
+
+Category results are accepted only for completed, non-group files. The host rejects `{ category }` at start and for groups; group routing continues to support `{ directories }` and legacy `{ folderName }`.
 
 ## Risk levels
 
@@ -43,7 +45,7 @@ The badge appears on installed plugins and on market listings.
 
 A plugin runs only with the capabilities you have approved. The approval is stored per plugin as the exact set of permissions and network hosts you saw, together with the version.
 
-- **Install or update.** When a plugin is installed (market, `.fxplug`, directory or dev install) or updated, and its permissions or its `desktop.networkHosts` are not covered by what you approved before, it is installed but stays **disabled** with the reason *consent required* until you approve. In the desktop app a consent dialog shows the risk badge, each permission with what it allows, and the list of network hosts, and the plugin's row gets a **Grant** button.
+- **Install or update.** When a plugin is installed (market, `.fxplug`, directory or dev install) or updated, and its permissions or its requested network hosts are not covered by what you approved before, it is installed but stays **disabled** with the reason *consent required* until you approve. In the desktop app a consent dialog shows the risk badge, each permission with what it allows, and the list of network hosts, and the plugin's row gets a **Grant** button.
 - **Full trust.** For a **Full** plugin the dialog adds an explicit warning, and the confirm button is enabled only after you tick *I understand*.
 - **Market installs.** The confirmation shown before a market install is the same dialog; confirming it there grants the same set, so you are not asked twice. The dialog records the version it showed; if the market's latest version has changed in the meantime, the install is refused so you can review the new version's permissions first.
 - **Updates ask again only for what is new.** A new version that adds a permission or a network host needs your approval; one that does not changes nothing.
@@ -64,7 +66,7 @@ On a headless server, or in any setup without the desktop dialog, approve throug
 }
 ```
 
-- `permissions` is the plugin's whole `permissions` array; `networkHosts` is the union of every view's `desktop.networkHosts`. Order and duplicates do not matter; hosts are compared exactly (case-sensitive).
+- `permissions` is the plugin's whole `permissions` array; `networkHosts` is the union of `main.imageHosts`, every view's `desktop.networkHosts`, and any declared `archiveRules.updateUrl` hostname. Order and duplicates do not matter; hosts are compared exactly (case-sensitive).
 - If either list differs from what the manifest requests, the call fails with `consent does not match requested capabilities`. Read the plugin's current request from `daemon.plugin.list` (`consentPending`, `consentPendingHosts`) first.
 - Until consent is complete, enabling the plugin (`daemon.plugin.setEnabled` with `true`, or `PUT /api/v1/plugins/{identity}/enabled`) fails with `consent required`.
 

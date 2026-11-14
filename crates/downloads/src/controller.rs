@@ -146,6 +146,11 @@ pub enum DownloadsCommand {
         task_id: String,
         url: String,
     },
+    /// 修改任务代理（`daemon.task.setProxy`）；活跃任务由引擎静默重连。
+    SetProxy {
+        task_id: String,
+        proxy_url: String,
+    },
     /// 修改线程数（`daemon.task.setSegments`）：`<= 0` = 自动，已下进度保留；
     /// 下载中任务由引擎静默暂停 → 改配置 → 恢复（eD2K 任务不暂停，直接热生效）。
     SetSegments {

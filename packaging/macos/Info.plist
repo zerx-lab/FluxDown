@@ -26,6 +26,8 @@
 	<string>Copyright © 2026 FluxDown</string>
 	<key>NSUserNotificationUsageDescription</key>
 	<string>FluxDown uses notifications to alert you when downloads complete.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>FluxDown uses your local network to forward BT and eD2K ports on your router (UPnP / NAT-PMP) and to connect to paired devices and download hosts.</string>
 	<key>CFBundleDisplayName</key>
 	<string>FluxDown</string>
 	<key>NSPrincipalClass</key>

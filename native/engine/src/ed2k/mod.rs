@@ -309,7 +309,6 @@ pub async fn load_client_config(db: &crate::db::Db) -> Result<ClientConfig, crat
             .await?
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(0),
-        udp_port: 0,
         servers,
         manual_servers,
         enable_upnp: flag(db.get_config("ed2k_enable_upnp").await?),

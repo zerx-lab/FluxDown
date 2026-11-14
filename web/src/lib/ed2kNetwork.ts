@@ -27,6 +27,18 @@ const UPNP_KEY: Record<Ed2kUpnpStatus, string> = {
 export const ed2kIdKey = (id: Ed2kIdKind): string => ID_KEY[id] ?? ID_KEY.none
 export const ed2kUpnpKey = (status: Ed2kUpnpStatus): string => UPNP_KEY[status] ?? UPNP_KEY.disabled
 
+/** 失败且有原因时（trim 后非空）返回原因，否则 null。 */
+export function ed2kUpnpFailureReason(network: Pick<Ed2kNetworkDto, 'upnp' | 'upnpError'>): string | null {
+  const reason = (network.upnpError ?? '').trim()
+  return network.upnp === 'failed' && reason !== '' ? reason : null
+}
+
+/** UPnP 状态文本：失败且有原因 →「失败: 原因」（与 BT 端口映射一致），否则状态名。 */
+export function ed2kUpnpStatusText(t: Translate, network: Pick<Ed2kNetworkDto, 'upnp' | 'upnpError'>): string {
+  const reason = ed2kUpnpFailureReason(network)
+  return reason === null ? t(ed2kUpnpKey(network.upnp)) : `${t('ed2kUpnpFailed')}: ${reason}`
+}
+
 /** ID 下方的说明：HighID / LowID 各一句，未登录无。 */
 export function ed2kIdHintKey(id: Ed2kIdKind): string | null {
   if (id === 'high') return 'ed2kIdHighHint'
@@ -79,7 +91,7 @@ export function ed2kIdCheckOutcome(t: Translate, network: Ed2kNetworkDto, target
     id: t(ed2kIdKey(network.id)),
     server: network.server || '—',
     port: network.listenPort ? String(network.listenPort) : '—',
-    upnp: t(ed2kUpnpKey(network.upnp)),
+    upnp: ed2kUpnpStatusText(t, network),
   })
   return { ok: true, summary, hint: network.id === 'low' ? t('ed2kIdLowHint') : null }
 }

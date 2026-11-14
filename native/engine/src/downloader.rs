@@ -19,6 +19,7 @@ use crate::naming::{extract_filename, name_from_url, sanitize_filename};
 use crate::output;
 use crate::speed_limiter::SpeedLimiter;
 use crate::temp_file_guard::TempFileGuard;
+use crate::tls::HttpVersion;
 use crate::transfer_activity::{TaskRuntime, TaskSegment, TransferTracker};
 
 // ---------------------------------------------------------------------------
@@ -1278,14 +1279,32 @@ fn build_client_inner(
     Ok(builder.build()?)
 }
 
-/// 引擎对外 HTTPS client 的起点：显式选 rustls 后端。
+/// 引擎对外 HTTPS client 的起点：显式选 rustls 后端，挂上进程共享的 TLS 配置
+/// （[`crate::tls`]：根证书库全进程一份，不再每建一个 client 读一次系统钥匙串）。
 ///
 /// 不能依赖 reqwest 的默认后端：Windows 桌面包把 agent（reqwest 默认 features 含
 /// native-tls）与 daemon 同一次编译，feature 合并后默认后端是 schannel，ClientHello
 /// 不带 `status_request` 与 ALPN，部分 Cloudflare WAF 直接 403（#1072）。rustls 恒带
-/// `status_request`，ALPN 按 HTTP 版本设置（`http1_only` 时为 `http/1.1`）。
-pub(crate) fn client_builder() -> reqwest::ClientBuilder {
-    Client::builder().use_rustls_tls()
+/// `status_request`，ALPN 按 `http` 设置（[`HttpVersion::Http1`] 时为 `http/1.1`）。
+///
+/// `http` 同时决定 hyper 协议与 ALPN，调用方不得再自行 `http1_only()`；共享配置里已含证书
+/// 校验档位，`danger_accept_invalid_certs` 对它无效——`ignore_tls_errors` 只能来自用户对
+/// 单个任务的显式选择。
+pub(crate) fn client_builder(http: HttpVersion, ignore_tls_errors: bool) -> reqwest::ClientBuilder {
+    let builder = match http {
+        HttpVersion::Http1 => Client::builder().http1_only(),
+        HttpVersion::Any => Client::builder(),
+    };
+    match crate::tls::client_config(http, ignore_tls_errors) {
+        Ok(config) => builder.use_preconfigured_tls(config),
+        Err(reason) => {
+            // 系统根证书库损坏：交回 reqwest 自行装配，同样的错误在 `build()` 时如实返回。
+            log_warn!("[tls] shared client config unavailable: {reason}");
+            builder
+                .use_rustls_tls()
+                .danger_accept_invalid_certs(ignore_tls_errors)
+        }
+    }
 }
 
 /// 共享 HTTP 客户端装配；调用方可追加自己的超时与重定向守卫后再构建。
@@ -1301,20 +1320,19 @@ pub(crate) fn build_client_builder(
     } else {
         user_agent
     };
-    let mut builder = client_builder()
+    // TLS defaults to strict verification. Only a task whose confirmation dialog explicitly
+    // enabled the insecure option reaches `true` here. This accepts expired/self-signed/
+    // hostname-mismatched certificates and also permits undetectable HTTPS interception by
+    // a MITM proxy.
+    //
+    // HTTP version — force HTTP/1.1 for download manager use cases:
+    //  1. Range requests are reliable and well-tested on HTTP/1.1.
+    //  2. Multi-segment downloads use separate TCP connections; HTTP/2
+    //     multiplexing would force all segments onto one connection.
+    //  3. Some servers advertise h2 via ALPN but have buggy HTTP/2
+    //     implementations that close connections mid-response.
+    let mut builder = client_builder(HttpVersion::Http1, ignore_tls_errors)
         .user_agent(ua)
-        // TLS defaults to strict verification. Only a task whose confirmation
-        // dialog explicitly enabled the insecure option reaches `true` here.
-        // This accepts expired/self-signed/hostname-mismatched certificates and
-        // also permits undetectable HTTPS interception by a MITM proxy.
-        .danger_accept_invalid_certs(ignore_tls_errors)
-        // HTTP version — force HTTP/1.1 for download manager use cases:
-        //  1. Range requests are reliable and well-tested on HTTP/1.1.
-        //  2. Multi-segment downloads use separate TCP connections; HTTP/2
-        //     multiplexing would force all segments onto one connection.
-        //  3. Some servers advertise h2 via ALPN but have buggy HTTP/2
-        //     implementations that close connections mid-response.
-        .http1_only()
         // TCP tuning — disable Nagle's algorithm to eliminate up to 200 ms
         // latency on small writes (Range request headers, TLS handshake
         // messages).  All high-performance download managers (IDM, aria2)

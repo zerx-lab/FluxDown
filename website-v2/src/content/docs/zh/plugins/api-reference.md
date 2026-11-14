@@ -3,7 +3,7 @@ title: 插件 API 参考
 description: 全部入口函数、flux.* 接口、JavaScript 运行环境、运行时限制，以及插件会遇到的错误信息。
 section: plugins
 order: 11
-sourceHash: "426a6413a002"
+sourceHash: "e868448f5533"
 ---
 
 本页列出插件脚本能看到的一切：FluxDown 会调用的入口函数、注入的 `flux` 对象、JavaScript 运行环境、运行时限制，以及开发中会遇到的错误信息。这是一份参考手册；分步教程请看[你的第一个插件](/docs/zh/plugins/your-first-plugin/)、[TypeScript 项目](/docs/zh/plugins/typescript-project/)、[事件钩子指南](/docs/zh/plugins/hooks-guide/)、[账号登录指南](/docs/zh/plugins/auth-guide/)、[订阅源指南](/docs/zh/plugins/subscription-guide/)、[可移植界面指南](/docs/zh/plugins/ui-guide/)和[桌面原生界面指南](/docs/zh/plugins/desktop-ui-guide/)。
@@ -28,16 +28,19 @@ sourceHash: "426a6413a002"
 | [`authenticate(ctx)`](#authenticatectx) | 宿主驱动一次登录动作（`begin` / `poll` / `cancel` / `logout` / `status`）。 | `auth.entry` + 权限 `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) 对象 |
 | [`subscribe(ctx)`](#subscribectx) | 属于你的 provider 的订阅源被刷新。 | `subscriptions[0]` | `subscriptions[0].entry` | 规范化的订阅内容对象 |
 | [`main`](#main-常驻脚本) | daemon（或某个视图）激活你的常驻脚本。 | `main` | `main.entry` | —（用于注册处理器） |
-| [`archive(ctx)`](#archivectx) | 授权默认保存目录的任务进入路由时调用，不要求命中分类规则。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ directories }`、旧格式 `{ folderName }` 或 `null` |
+| [`archive(ctx)`](#archivectx) | 授权默认保存目录的任务进入路由时调用，不要求命中分类规则。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ category }`、`{ directories }`、旧格式 `{ folderName }` 或 `null` |
 
-### `archive(ctx)`
+这是一个纯本地回调，可依据已知文件名、可选来源元数据，以及完成时由宿主有界识别的内容事实分类；不解析 URL，也不访问文件或网络。宿主会对使用授权默认保存目录的任务调用它，不依赖普通分类规则是否命中。用户明确指定保存目录时跳过；eD2K 任务不会移动。BT 任务仅在首次完成时恰有一个实际选中的非 padding 文件才可归档，包括多文件种子中只选了一个文件。完成前不预测目标目录。回调沿用原有上下文契约，使用实际选中文件名、`isGroup: false` 和从该最终文件识别的内容。每次调用使用新的 QuickJS 运行时，可读取 `flux.settings`，但没有 `flux.fetch`、文件系统、任务或进程接口。此上下文要求宿主 0.6.5 或匹配的开发宿主，不代表版本已发布。
 
-这是一个纯本地分类回调，可使用已知文件名与可选来源元数据；不解析 URL，也不访问文件或网络。宿主会对使用授权默认保存目录的任务调用它，不依赖普通分类规则是否命中。用户明确指定保存目录时跳过；BitTorrent 与 eD2K 任务不会移动。每次调用使用新的 QuickJS 运行时，可读取 `flux.settings`，但没有 `flux.fetch`、文件系统、任务或进程接口。
+`ctx` 形如 `{ fileName, metadata?, isGroup?, phase, createdDate, detectedType?, categoryRouting? }`。`categoryRouting: true` 表示支持按分类路由；旧宿主会省略它。使用分类结果的插件必须显式检查此能力，并在缺失时拒绝（例如返回 `null`）。`fileName` 是已知的最终文件名；`metadata` 是可选来源元数据（`platform`、`mediaKind`（`""`、`"series"` 或 `"post"`）、`creatorId`、`creatorName`、`seriesId`、`seriesTitle`、`collectionId`、`collectionTitle`）。每个标签最多 180 UTF-8 字节，且不得含控制字符。来源元数据与内容事实不同。回调不会收到文件字节、本地路径、URL、请求头或凭据。
 
-`ctx` 形如 `{ fileName, metadata?, isGroup }`。`fileName` 是当前已知文件名；`metadata` 可选，字段为 `platform`、`mediaKind`（`""`、`"series"` 或 `"post"`）、`creatorId`、`creatorName`、`seriesId`、`seriesTitle`、`collectionId`、`collectionTitle`。每个标签最多 180 UTF-8 字节，且不得含控制字符。这些是来源元数据，不代表读取文件语义内容；宿主不会通过此元数据暴露 URL、本地路径或凭据。
+`phase` 为下载前的 `"start"` 或后处理完成后的 `"complete"`。`createdDate` 是任务固定的 UTC 创建日期（`YYYY-MM-DD`）；无效的旧时间戳为空字符串，绝不会改用今天。存在 `detectedType` 时，内容事实仅为宿主观察到的 `{ kind, mime, extension }`。`kind` 为 `archive`、`audio`、`compressed`、`database`、`diagram`、`disk`、`document`、`ebook`、`executable`、`font`、`formula`、`geospatial`、`image`、`metadata`、`model`、`other`、`package`、`playlist`、`presentation`、`rom`、`spreadsheet`、`subtitle`、`video` 之一。未知类型或识别不可用时省略该字段；不把服务器提供的 MIME 当作证据。
 
-对于任务组，`isGroup` 为 true，宿主只在组根路由一次，成员路径与文件名保持不变。返回 `null` / `undefined` 表示不改变目录；也可返回 `{ directories: ["视频", "哔哩哔哩", "创作者", "合集"] }`，每项是一个安全路径分量，最多 8 层，且相对任务获准使用的默认保存目录，而非分类目录。已有插件仍可返回 `{ folderName: "The Expanse" }`，其原有的分类子目录语义保持不变。空值或不安全输出会被忽略（fail-open），不会使任务失败。多个插件按 identity 排序，首个有效结果生效；目录决定会持久化供恢复和完成期复用，原文件名不变。
-拼接后的相对目录最长 180 UTF-8 字节；绝对路径、路径穿越、不安全分量及逃出根目录的链接均会被拒绝。
+符合条件的文件在开始时调用，并在完成时重新调用，即使开始阶段已有目录选择。完成阶段检查最终处理后的产物，成功结果可替换缓存的开始目录；返回 `null`、非法结果或错误会保留之前有效的选择。插件可以在普通文件的开始阶段返回 `null`，等完成阶段依据内容作决定。任务组只在开始时对组根路由（`isGroup: true`），没有 `detectedType`，也不会读取内容。
+
+任务组在组根路由一次，成员路径与文件名保持不变。返回 `null` / `undefined` 表示不改变目录；也可返回 `{ category: "audio" }`，路由到已配置的内置分类保存目录。稳定标识符为 `video`、`audio`、`document`、`image`、`program`、`archive`、`other`。宿主依据提交时的分类配置快照，解析到可见分类配置的保存目录；分类改名不改变其稳定标识符（`builtinType`）。分类缺失、隐藏或没有保存目录时宿主会拒绝移动；不会推断自定义分类。分类结果与 `directories`、`folderName` 互斥；也可返回 `{ directories: ["视频", "哔哩哔哩", "创作者", "合集"] }`，每项是一个安全路径分量，最多 8 层，且相对任务获准使用的默认保存目录，而非分类目录。旧 `{ folderName: "The Expanse" }` 保持原有分类子目录语义。显式目录绕过自动分类解析。空值或不安全输出会被忽略（fail-open），不会使任务失败。每阶段多个插件按 identity 排序，首个有效结果生效。符合条件的 BT 单文件选择会经 BT 存储迁移移动整个任务根目录并恢复做种，保留种子相对路径、文件名与边界块。多选、显式目录、识别不可用、回调错误或移动冲突均留在当前目录；首次完成时消费选择，之后改选、做种或重启都不再路由。完成后的异步移动可能使文件短暂位于原位置，随后由位置变更事件更新；不新增侧栏分类。显式目录绕过归档。
+
+分类结果仅接受于已完成的非组文件。宿主会拒绝开始阶段和任务组的 `{ category }`；组路由仍支持 `{ directories }` 和旧格式 `{ folderName }`。
 
 常驻 `main` 脚本可调用 `flux.archiveRules.status()` 查询当前已验证规则包状态，或调用 `flux.archiveRules.update()` 显式请求更新；两者均要求 `archive` 权限及 `contributes.archiveRules` 声明。规则是由固定发布者公钥验证的有界签名 JSON。启用自动更新后每日检查；获取或验证失败会保留最后一份已验证规则，新规则不会重新分类历史文件。
 
@@ -301,8 +304,48 @@ flux.timers.setInterval(() => flux.logger.info("tick"), 60000);
 | `flux.ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** | 权限 `ytdlp` | 权限 `ytdlp` | **`undefined`** |
 | `flux.ui`、`commands`、`rpc`、`events`、`timers`、`settings.update` | — | — | — | — | — | 有 | **`undefined`** |
 | `flux.tasks` | — | — | — | — | — | 权限 `tasks` | **`undefined`** |
+| `ctx.images` / `flux.images` | — | — | — | — | — | 仅 `flux.images` | **`undefined`** |
 
 `flux.auth.*` 和 `flux.fetch` 的 `authRef` 选项都需要在 `permissions` 里声明 `auth`；没有该权限却显式传入 `authRef`，`flux.fetch` 会 reject（见[错误](#你会遇到的错误)）。
+
+### 图片加载（仅视图会话）
+
+可移植视图回调中可用 `ctx.images.load(opts)`，请求会绑定到该视图会话。常驻 `main` 脚本也可调用 `flux.images.load({ session: ctx.session, ...opts })`，其中 `session` 使用视图上下文里的会话 ID。两者都返回 `Promise<string>`，内容为小写的 `flux-image:<uuid>` 资源引用。把它作为图片节点的 `src` 使用即可，和现有 PNG/JPEG/WebP data URI 一样；视图协议传递的仍只是短字符串，不会承载图片字节。原有 data URI 图片行为保持不变。
+
+宿主按净化后 PNG 的内容在同一会话内去重：即使 `cache: false` 或来源缓存过期，相同内容也复用同一个引用。禁用缓存仍会重新校验认证并请求源站；不同会话不共享引用。
+
+长时间打开的图集应在图片不再使用后调用 `await ctx.images.release(src)`，或 `await flux.images.release({ session: ctx.session, src })`。必须先移除**所有**用途，包括预加载状态和重复图片节点：相同内容共享同一引用，释放会令该会话中此引用的所有用途失效。重复释放已移除的引用无副作用，不能释放其他会话的资源。宿主不会根据可见性或最近 HTTP 读取时间自动淘汰图片。
+
+`flux-image:` 是 `image.src` 字符串取值的增量扩展，不是新的 RPC 事件或消息结构。旧渲染器不能显示此引用；面向旧客户端时继续使用 data URI。
+
+```jsx
+flux.ui.view("profile", {
+  async init(ctx) {
+    const src = await ctx.images.load({
+      url: "https://images.example.com/avatar.jpg",
+      maxWidth: 256,
+      maxHeight: 256,
+    });
+    return { src };
+  },
+  render: ({ src }) => <image src={src} alt="Profile" />,
+});
+```
+
+图片请求遵循 FluxDown 出站代理/TUN 路由与 SSRF 防护（包括现有的开发模式私有网络例外）；显式配置为可信的代理也与 `flux.fetch` 一样使用。重定向必须仍在获准主机范围内，且不允许从 HTTPS 降级。不会自动推断凭据：只有声明 `auth` 权限时才能传 `authRef`。提供请求头或 `authRef` 时，重定向仅允许同源。声明 `auth` 的插件不缓存图片请求，避免凭据轮换后继续使用旧的认证响应。
+
+`opts` 字段：
+
+| 字段 | 默认值 | 规则 |
+|---|---|---|
+| `url` | — | 必填 HTTP(S) URL，使用 `GET`。主机必须获准；禁止 userinfo 和 HTTPS 降级重定向。 |
+| `headers` | 无 | 可选的字符串请求头。 |
+| `authRef` | 无 | 可选的已保存凭据引用；需要 `auth` 权限。 |
+| `maxWidth`、`maxHeight` | 各 `512` | 1–2048 的整数。宿主保持宽高比且不会放大图片。 |
+| `cache` | `true` | `false` 跳过来源/选项结果复用；图片永不落盘，HTTP 响应始终为 `no-store`。相同输出仍共享引用，直到显式释放或会话关闭。 |
+
+输入格式根据内容识别，只接受 PNG、JPEG、WebP，不信任声明的 Content-Type。输入每边最多 8192 像素、总计最多 1600 万像素，解码内存最多 64 MiB；网络响应体最多 8 MiB，请求最多 10 秒。宿主输出净化后的静态 PNG 缩略图，最多 4 MiB，并以 `image/png` 提供。每个会话最多 128 个资源 / 16 MiB；全局图片资源最多 64 MiB。超过配额会明确报错，不会隐式驱逐引用。缓存的来源/选项结果保留五分钟，但返回引用直到显式释放或会话关闭前有效。视图会话关闭或插件卸载时，其图片资源会释放。以上限制由宿主强制执行。
+所有插件合计最多同时进行四次未命中缓存的图片加载，超出时排队等待，最多三秒后报过载；解码/缩略图处理最多并发两次，等待解码的源图也受加载并发限制。全局资源数量上限为 4096。
 
 ## `flux` 对象
 

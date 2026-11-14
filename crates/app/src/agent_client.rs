@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use fluxdown_protocol::method;
@@ -151,6 +151,7 @@ pub struct AgentClient {
     commands: mpsc::Sender<ClientCommand>,
     runtime: Arc<tokio::runtime::Runtime>,
     bootstrap: Arc<ServiceBootstrap>,
+    config: AgentClientConfig,
     pub(crate) submissions: Arc<crate::downloads_port::SubmissionGate>,
 }
 
@@ -172,6 +173,7 @@ impl AgentClient {
         let (commands, command_rx) = mpsc::channel(64);
         let (events, event_rx) = mpsc::channel(1024);
         let submissions = Arc::new(crate::downloads_port::SubmissionGate::default());
+        let image_config = config.clone();
         runtime.spawn(run_client(
             config,
             bootstrap.clone(),
@@ -184,6 +186,7 @@ impl AgentClient {
                 commands,
                 runtime,
                 bootstrap,
+                config: image_config,
                 submissions,
             }),
             event_rx,
@@ -228,6 +231,114 @@ impl AgentClient {
     {
         self.runtime.spawn(future);
     }
+    pub fn plugin_image(&self, session: String, id: String) -> AgentFuture<Vec<u8>> {
+        let config = self.config.clone();
+        let (send, receive) = oneshot::channel();
+        self.runtime.spawn(async move {
+            let result = fetch_plugin_image(&config, &session, &id).await;
+            if send.send(result).is_err() {
+                log::trace!("plugin image result receiver was dropped");
+            }
+        });
+        Box::pin(async move { receive.await.map_err(|_| unavailable_error())? })
+    }
+}
+
+async fn fetch_plugin_image(
+    config: &AgentClientConfig,
+    session: &str,
+    id: &str,
+) -> Result<Vec<u8>, RpcErrorData> {
+    if session.is_empty()
+        || !id_is_canonical_uuid(id)
+        || session
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && byte != b'-')
+    {
+        return Err(internal_error());
+    }
+    let rpc_url =
+        crate::agent_endpoint::discover_rpc_url(config.rpc_url.as_deref(), &config.bearer_path)
+            .await
+            .map_err(|_| unavailable_error())?;
+    let uri = rpc_url
+        .parse::<tokio_tungstenite::tungstenite::http::Uri>()
+        .map_err(|_| unavailable_error())?;
+    let scheme = match uri.scheme_str() {
+        Some("ws") => "http",
+        Some("wss") => "https",
+        _ => return Err(unavailable_error()),
+    };
+    let authority = uri.authority().ok_or_else(unavailable_error)?;
+    let image_url = format!("{scheme}://{authority}/api/web/plugin-images/{session}/{id}");
+    let token = tokio::fs::read_to_string(&config.bearer_path)
+        .await
+        .map_err(|_| unavailable_error())?;
+    let token = token.trim();
+    if token.is_empty() || token.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(unavailable_error());
+    }
+    static CLIENT: LazyLock<Result<reqwest::Client, ()>> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(10))
+            .tls_built_in_root_certs(false)
+            .build()
+            .map_err(|_| ())
+    });
+    let client = CLIENT.as_ref().map_err(|_| unavailable_error())?;
+    let response = client
+        .get(image_url)
+        .bearer_auth(token)
+        .header(reqwest::header::ACCEPT, "image/png")
+        .header(reqwest::header::CACHE_CONTROL, "no-store")
+        .send()
+        .await
+        .map_err(|_| unavailable_error())?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .ok_or_else(protocol_error)?
+        .to_str()
+        .map_err(|_| protocol_error())?;
+    if !response.status().is_success()
+        || !content_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case("image/png")
+        || response
+            .content_length()
+            .is_some_and(|length| length > 4 * 1024 * 1024)
+    {
+        return Err(protocol_error());
+    }
+    let mut body = Vec::with_capacity(response.content_length().unwrap_or(16 * 1024) as usize);
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|_| unavailable_error())?;
+        if body.len().saturating_add(chunk.len()) > 4 * 1024 * 1024 {
+            return Err(protocol_error());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if !body.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(protocol_error());
+    }
+    Ok(body)
+}
+
+fn id_is_canonical_uuid(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|&index| bytes[index] == b'-')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            [8, 13, 18, 23].contains(&index)
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'a'..=b'f')
+        })
 }
 
 async fn run_client(
@@ -1263,6 +1374,9 @@ mod submission_tests;
 #[path = "agent_client_connect_tests.rs"]
 mod connect_tests;
 
+#[cfg(test)]
+#[path = "agent_client_plugin_image_tests.rs"]
+mod plugin_image_tests;
 #[cfg(test)]
 #[path = "agent_client_table_tests.rs"]
 mod table_tests;

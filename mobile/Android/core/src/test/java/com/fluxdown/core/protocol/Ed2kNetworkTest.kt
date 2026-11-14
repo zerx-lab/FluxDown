@@ -41,4 +41,15 @@ class Ed2kNetworkTest {
         assertEquals("FAILED", format("{}"))
         assertEquals("HIGH|—|—|upnp-disabled", format("""{"id":"high","upnp":"mysteryState","listenPort":0,"server":""}"""))
     }
+
+    @Test fun failedUpnpWithReasonAppendsIt() {
+        assertEquals(
+            "HIGH|s:1|4662|upnp-failed: UPnP: no internet gateway device found",
+            format("""{"id":"high","server":"s:1","listenPort":4662,"upnp":"failed","upnpError":"  UPnP: no internet gateway device found "}"""),
+        )
+    }
+
+    @Test fun omittedUpnpErrorDecodesEmpty() {
+        assertEquals("", Ed2kNetworkDto.fromJson(Json.parse("""{"id":"high","upnp":"failed"}""")).upnpError)
+    }
 }

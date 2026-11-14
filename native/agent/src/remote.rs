@@ -463,7 +463,7 @@ impl RemoteTaskService {
 
     async fn session_ended(
         &self,
-        events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>,
         uid: Option<&str>,
         epoch: crate::cloud::RequestEpoch,
     ) {
@@ -497,7 +497,7 @@ impl RemoteTaskService {
         &self,
         response: reqwest::Response,
         cancel: &CancellationToken,
-        agent_events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        agent_events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>,
     ) -> Result<SseEnd, RemoteError> {
         self.consume_events_epoch(
             EventChannel::Stream(response),
@@ -512,7 +512,7 @@ impl RemoteTaskService {
         &self,
         channel: EventChannel,
         cancel: &CancellationToken,
-        agent_events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        agent_events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>,
         epoch: crate::cloud::RequestEpoch,
     ) -> Result<SseEnd, RemoteError> {
         let (sender, receiver) = mpsc::channel(SSE_QUEUE_CAPACITY);
@@ -2496,7 +2496,7 @@ fn socket_error_end(event: &Value) -> Result<SseEnd, RemoteError> {
 }
 
 /// 等到下一条 `SessionChanged(Some)`；接收端 lag 时也返回，由调用方重新检查登录态。
-async fn wait_for_session(events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>) {
+async fn wait_for_session(events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>) {
     loop {
         match events.recv().await {
             Ok(frame) => {
@@ -4570,11 +4570,13 @@ mod tests {
 
     /// 依次取出已发布的 agent 事件（只保留会话相关的，便于断言顺序）。
     fn session_events(
-        receiver: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        receiver: &mut tokio::sync::broadcast::Receiver<
+            std::sync::Arc<fluxdown_protocol::EventFrame>,
+        >,
     ) -> Vec<String> {
         let mut seen = Vec::new();
         while let Ok(frame) = receiver.try_recv() {
-            if let fluxdown_protocol::ServiceEvent::Agent(event) = frame.event {
+            if let fluxdown_protocol::ServiceEvent::Agent(event) = frame.event.clone() {
                 match event {
                     fluxdown_protocol::AgentEvent::SessionRevoked(reason) => {
                         seen.push(format!("revoked:{reason:?}"));

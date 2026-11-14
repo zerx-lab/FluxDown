@@ -3,7 +3,7 @@ title: 权限、授权与审计
 description: 各插件权限授予什么、风险等级与授权如何运作（界面与无界面两种方式）、市场如何校验插件包、哪些操作会被审计，以及「完全信任」的含义。
 section: plugins
 order: 14
-sourceHash: "339219aca8b5"
+sourceHash: "f5b78585cbbc"
 ---
 
 插件并非被沙箱限制到毫无用处：它可以申请很强的能力。FluxDown 的规则是：每项能力都必须在 manifest 里**声明**，在生效之前**展示给你并由你批准**，并**记入**审计日志。
@@ -24,9 +24,11 @@ sourceHash: "339219aca8b5"
 | `intercept` | 拦截器：读取并修改匹配任务的链接、请求头、Cookie 与请求体，控制连接数，跳过探测，在下载中途换发凭据，改写或过滤流媒体分片，选择画质或 DASH Period，在完成前处理下载文件，并在任务失败后请求重试。见[拦截器指南](/docs/zh/plugins/interceptors-guide/)。 |
 | `desktop` | 以**完全信任**运行桌面原生脚本（见下文）。 |
 | `pageScripts` | 通过 FluxDown 浏览器扩展，在 `contributes.pageScripts` 列出的网站中运行插件脚本，风险**完全**（见[浏览器中的页面脚本](#浏览器中的页面脚本)）。 |
-| `archive` | 允许 `contributes.archive` 使用已知文件名与可选来源元数据选择安全子目录；`contributes.archiveRules` 提供发布者签名分类规则。不会暴露 URL、路径或凭据；规则是数据而非可执行代码。`archiveRules.updateUrl` 主机名会纳入网络授权。 |
+| `archive` | 允许 `contributes.archive` 依据文件名、来源元数据、固定任务创建日期，以及完成时可选的宿主观察内容事实选择安全目录。新阶段/内容上下文要求宿主 0.6.5 或匹配的开发宿主（不代表版本已发布）。`categoryRouting: true` 表示支持稳定内置分类结果；旧宿主会省略它，插件必须在缺失时明确拒绝分类路由。宿主根据提交时的分类配置快照，将 `video`、`audio`、`document`、`image`、`program`、`archive` 或 `other` 解析为可见分类配置的保存目录；分类改名后 `builtinType` 保持不变，分类缺失、隐藏或没有保存目录时则拒绝移动。不会猜测自定义分类名称。分类结果不能与 `directories` 或 `folderName` 同时使用；原有这两种结果继续支持。显式目录会绕过自动分类解析。回调不会收到文件字节、路径、URL、请求头或凭据；完成时会重新评估，即使开始时已有选择，`null` 或错误仍保留原选择。任务组只在开始时路由且不读内容。BT 仅在授权默认目录下首次完成且恰有一个实际选中的非 padding 文件时适用。多选、显式目录、eD2K、识别或移动失败不移动任务。不授予文件、网络、任务或进程接口。 |
 
 订阅 provider、hooks、resolver 与可移植视图本身不需要额外权限。
+
+分类结果仅接受于已完成的非组文件。宿主会拒绝开始阶段和任务组的 `{ category }`；组路由仍支持 `{ directories }` 和旧格式 `{ folderName }`。
 
 ## 风险等级
 
@@ -44,7 +46,7 @@ sourceHash: "339219aca8b5"
 
 插件只会以你已批准的能力运行。批准结果按插件保存，内容是你看到的那一组权限与网络主机的精确集合，以及对应的版本。
 
-- **安装或更新。** 安装插件（市场、`.fxplug`、目录或开发模式安装）或更新插件时，如果它的权限或 `desktop.networkHosts` 没有被你之前的批准覆盖，插件会装上但保持**停用**，原因显示为*需要授权*，直到你批准。桌面端会弹出授权对话框，列出风险徽标、每项权限的含义和网络主机列表，插件所在行也会出现**授权**按钮。
+- **安装或更新。** 安装插件（市场、`.fxplug`、目录或开发模式安装）或更新插件时，如果它的权限或所请求的网络主机未被你之前的批准覆盖，插件会装上但保持**停用**，原因显示为*需要授权*，直到你批准。桌面端会弹出授权对话框，列出风险徽标、每项权限的含义和网络主机列表，插件所在行也会出现**授权**按钮。
 - **完全信任。** 对**完全**等级的插件，对话框会额外给出明确警告，只有勾选*我已了解*之后确认按钮才可用。
 - **市场安装。** 市场安装前的确认就是同一个对话框；在那里确认即授予同一组能力，不会再问第二次。对话框会记录它展示的版本；如果此时市场上的最新版本已经变化，安装会被拒绝，让你先查看新版本的权限。
 - **更新只为新增项再次询问。** 新版本增加了权限或网络主机时需要你批准；没有增加则什么都不变。
@@ -65,7 +67,7 @@ sourceHash: "339219aca8b5"
 }
 ```
 
-- `permissions` 是插件完整的 `permissions` 数组；`networkHosts` 是所有视图 `desktop.networkHosts` 的并集。顺序和重复项无关；主机按字面精确比较（区分大小写）。
+- `permissions` 是插件完整的 `permissions` 数组；`networkHosts` 是 `main.imageHosts`、所有视图 `desktop.networkHosts` 以及已声明的 `archiveRules.updateUrl` 主机名的并集。顺序和重复项无关；主机按字面精确比较（区分大小写）。
 - 任一列表与 manifest 当前请求不一致，调用都会失败，错误为 `consent does not match requested capabilities`。可以先从 `daemon.plugin.list` 读出插件当前的待授权内容（`consentPending`、`consentPendingHosts`）。
 - 授权没有完成之前，启用该插件（`daemon.plugin.setEnabled` 传 `true`，或 `PUT /api/v1/plugins/{identity}/enabled`）会失败，错误为 `consent required`。
 

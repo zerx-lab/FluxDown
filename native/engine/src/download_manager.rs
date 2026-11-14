@@ -43,6 +43,8 @@ use crate::speed_meter::{
 use crate::transfer_activity::TaskRuntime;
 
 mod boost;
+#[cfg(all(feature = "bt", feature = "plugins"))]
+mod bt_archive;
 #[cfg(feature = "bt")]
 mod bt_storage_ops;
 mod group_dirs;
@@ -2251,6 +2253,9 @@ pub enum TaskDonePhase {
     /// 答复已到（Cancel 表示取消下载 → 任务暂停）：manager 持久化决定并把任务
     /// 重新排到队首作为全新起跑。
     DecisionReady(crate::selection::FileExistsChoice),
+    /// Off-actor BT archive recognition or storage move has produced a result.
+    #[cfg(all(feature = "bt", feature = "plugins"))]
+    BtArchiveWorkReady,
 }
 
 /// Notification sent from a spawned download task when it finishes (or parks).
@@ -4006,6 +4011,8 @@ pub struct DownloadManager {
     /// 在途的 BT 数据搬移（`daemon.task.moveStorage`）：搬移期间拒绝恢复 / 删除 / 改文件。
     #[cfg(feature = "bt")]
     bt_moves: crate::task_jobs::TaskJobs,
+    #[cfg(all(feature = "bt", feature = "plugins"))]
+    bt_archive_results: Arc<tokio::sync::Mutex<HashMap<String, bt_archive::WorkResult>>>,
     /// 在途文件哈希作业（按需与下载完成后自动；删除任务 / 关停时取消）。
     file_hash_jobs: crate::task_jobs::TaskJobs,
     /// 下载完成后自动计算哈希所用算法（config `hash_after_download` /
@@ -4262,6 +4269,8 @@ impl DownloadManager {
             integrity_checks: crate::task_jobs::TaskJobs::default(),
             #[cfg(feature = "bt")]
             bt_moves: crate::task_jobs::TaskJobs::default(),
+            #[cfg(all(feature = "bt", feature = "plugins"))]
+            bt_archive_results: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             file_hash_jobs: crate::task_jobs::TaskJobs::default(),
             hash_after_download: None,
             file_hash_gate: Arc::new(Semaphore::new(1)),
@@ -6253,6 +6262,92 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Change a task's proxy and reconnect active transfers without restarting the host.
+    ///
+    /// Paused / queued tasks retain their state; failed tasks retry immediately.
+    /// Existing writer generations finish before replacement connections start.
+    /// Non-resumable transfers may restart from zero and live streams may have gaps.
+    /// Empty follows global routing; BT / eD2K and completed tasks are rejected.
+    pub async fn set_task_proxy(&mut self, task_id: &str, proxy_url: &str) -> Result<(), String> {
+        let proxy_url = proxy_url.trim();
+        let proxy_url = if matches!(
+            proxy_url,
+            ProxyConfig::DIRECT_SENTINEL | ProxyConfig::SYSTEM_SENTINEL
+        ) {
+            proxy_url
+        } else {
+            proxy_url.strip_suffix('/').unwrap_or(proxy_url)
+        };
+        if !proxy_url.is_empty()
+            && proxy_url != ProxyConfig::DIRECT_SENTINEL
+            && proxy_url != ProxyConfig::SYSTEM_SENTINEL
+        {
+            let parsed = url::Url::parse(proxy_url).map_err(|_| "invalid-proxy".to_owned())?;
+            if crate::proxy_config::ProxyType::parse_str(parsed.scheme()).is_none()
+                || parsed.host_str().is_none()
+                || proxy_url
+                    .rsplit(':')
+                    .next()
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .is_none_or(|port| port == 0)
+                || !proxy_url.starts_with(parsed.scheme())
+                || !matches!(parsed.path(), "" | "/")
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err("invalid-proxy".to_owned());
+            }
+            reqwest::Proxy::all(proxy_url).map_err(|_| "invalid-proxy".to_owned())?;
+        }
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await
+            .map_err(|error| format!("db: {error:#}"))?
+            .ok_or_else(|| "not-found".to_owned())?;
+        if task.status == 3 {
+            return Err("task-completed".to_owned());
+        }
+        if task_url_protocol(&task.url).is_none() {
+            return Err("protocol-unsupported".to_owned());
+        }
+        if task.proxy_url == proxy_url {
+            if task.status == 4 {
+                self.resume_task(task_id).await;
+            }
+            return Ok(());
+        }
+        // Persist first: a failed write must not disturb an otherwise healthy transfer.
+        self.db
+            .update_task_proxy(task_id, proxy_url)
+            .await
+            .map_err(|error| format!("db: {error:#}"))?;
+        if let Some(queued) = self
+            .pending_queue
+            .items
+            .iter_mut()
+            .find(|q| q.task_id == task_id)
+        {
+            proxy_url.clone_into(&mut queued.proxy_url);
+        }
+        self.auto_failover_pending.remove(task_id);
+        self.auto_failover_attempts.remove(task_id);
+        let active = self.active_tasks.contains_key(task_id)
+            || self
+                .pending_pauses
+                .get(task_id)
+                .is_some_and(|pending| pending.resume_requested)
+            || matches!(task.status, 1 | 5);
+        if active {
+            // Cancels off-actor resolve as well: signed URLs must be resolved on the new exit.
+            self.pause_task_for_reconnect(task_id).await;
+        }
+        if active || task.status == 4 {
+            self.resume_task(task_id).await;
+        }
+        Ok(())
+    }
+
     /// Get a reference to the current proxy configuration.
     pub fn proxy_config(&self) -> &ProxyConfig {
         &self.proxy_config
@@ -7967,6 +8062,12 @@ impl DownloadManager {
         let task_id = done.task_id.as_str();
         let generation = done.generation;
         match done.phase {
+            #[cfg(all(feature = "bt", feature = "plugins"))]
+            TaskDonePhase::BtArchiveWorkReady => {
+                self.commit_bt_archive_work(task_id).await;
+                self.maybe_release_bt_session().await;
+                return;
+            }
             TaskDonePhase::Finished => {
                 if self.awaiting_decision.get(task_id) == Some(&generation) {
                     self.awaiting_decision.remove(task_id);
@@ -8247,6 +8348,13 @@ impl DownloadManager {
             // （webhook task.completed 照常）。
             let adopted = task.status == 3 && self.skip_adopted(task_id).await;
             if task.status == 3 {
+                #[cfg(all(feature = "bt", feature = "plugins"))]
+                if is_bt_url(&task.url)
+                    && !adopted
+                    && let Err(error) = self.schedule_bt_archive(&task).await
+                {
+                    crate::logger::report_warning("BT", "schedule content archive", error.as_ref());
+                }
                 self.retry_unschedule(task_id);
                 // 成功完成：结束本轮通用重试与一次性备用链路状态。
                 self.auto_retry_counts.remove(task_id);
@@ -8373,11 +8481,15 @@ impl DownloadManager {
             // 文件哈希：校验和校验通过时下载器已把哈希写进库，但完成只经进度帧发布（不含
             // 该字段），在此补发完整任务行；没有记录且开启「下载完成后计算哈希」时排队计算。
             // 放在插件 onDone 通知之后：onDone 可能移动 / 改写文件。
+            #[cfg(all(feature = "bt", feature = "plugins"))]
+            let archive_pending = self.bt_archive_results.lock().await.contains_key(task_id);
+            #[cfg(not(all(feature = "bt", feature = "plugins")))]
+            let archive_pending = false;
             if task.status == 3 {
                 if !task.file_hash.is_empty() {
                     self.sink
                         .emit(EngineEvent::TaskChanged(Box::new(task.clone())));
-                } else if let Some(algorithm) = self.hash_after_download {
+                } else if !archive_pending && let Some(algorithm) = self.hash_after_download {
                     self.spawn_auto_file_hash(task_id, algorithm).await;
                 }
             }
@@ -8457,6 +8569,10 @@ impl DownloadManager {
             active_download: self.active_tasks.values().any(|e| e.is_bt),
             ..BtSessionHolds::default()
         };
+        #[cfg(feature = "plugins")]
+        if !self.bt_archive_results.lock().await.is_empty() {
+            holds.active_download = true;
+        }
         let Some(bt) = &self.bt_session else {
             return holds;
         };
@@ -8583,7 +8699,13 @@ impl DownloadManager {
     /// 定时器这一条被动触发路径；启动预热、窗口聚焦、手动重扫 API 都
     /// 直接调用 [`Self::spawn_file_scan`]，不经此判定。
     pub fn should_run_idle_scan(&self) -> bool {
-        self.idle_file_scan || !self.active_tasks.is_empty() || !self.pending_queue.is_empty()
+        self.idle_file_scan || self.has_pending_downloads()
+    }
+
+    /// 是否有正在下载或排队等待的任务。「只在完全空闲时做」的宿主维护（如 daemon 的
+    /// 数据库连接池空闲收缩）据此判定。
+    pub fn has_pending_downloads(&self) -> bool {
+        !self.active_tasks.is_empty() || !self.pending_queue.is_empty()
     }
 
     /// 清理超过保留期的「已完成」任务**记录**（`completed_record_retention_days`）：
@@ -9796,10 +9918,10 @@ impl DownloadManager {
             None
         };
         // 分类目录路由：按初始名选初始目录（常见情形直接写进分类目录，完成时零移动），
-        // 开始写盘前与完成前再按更确定的名字复核（`category_route`）。BT / eD2K 要原地
-        // 做种 / 共享，组成员与 `out=子目录/名字` 的相对结构由来源决定，均不路由。解析
-        // 插件任务的链接是页面地址，只看显式名；HLS / DASH 按成品 `.mp4` 预判。
-        let routable = !is_bt && !is_ed2k_url(&url) && group_id.is_empty() && !has_subdir;
+        // 开始写盘前与完成前再按更确定的名字复核。BT 仅保留授权，首次完成后
+        // 恰好一个选中文件时经 BT 存储迁移归档；eD2K、组成员与 out 子路径不路由。
+        // 解析插件只看显式名；HLS / DASH 按成品 `.mp4` 预判。
+        let routable = !is_ed2k_url(&url) && group_id.is_empty() && !has_subdir;
         let (save_dir, category_route) = match category_route.filter(|_| routable) {
             None => (save_dir, String::new()),
             Some(mut route) => {
@@ -9813,13 +9935,17 @@ impl DownloadManager {
                     _ => file_name.as_str(),
                 };
                 let output = crate::category_route::output_name(known, link);
-                let initial = route
-                    .save_dir_for(
-                        output.as_deref().unwrap_or(known),
-                        link,
-                        crate::category_route::source_address(&origin_url, &db_url),
-                    )
-                    .map(str::to_owned);
+                let initial = (!is_bt)
+                    .then(|| {
+                        route
+                            .save_dir_for(
+                                output.as_deref().unwrap_or(known),
+                                link,
+                                crate::category_route::source_address(&origin_url, &db_url),
+                            )
+                            .map(str::to_owned)
+                    })
+                    .flatten();
                 route.base_dir = save_dir;
                 let column = match route.to_column() {
                     Ok(column) => column,

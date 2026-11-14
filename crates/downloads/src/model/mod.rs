@@ -357,6 +357,7 @@ pub(crate) struct DownloadTaskView {
     pub(crate) url_fold: String,
     pub(crate) site_fold: String,
     pub(crate) referrer: String,
+    pub(crate) proxy_url: String,
     pub(crate) save_dir: String,
     pub(crate) group_id: String,
     pub(crate) error_message: String,
@@ -407,6 +408,7 @@ impl DownloadTaskView {
         view.queue_order = task.queue_order;
         view.origin_url.clone_from(&task.origin_url);
         view.referrer.clone_from(&task.referrer);
+        view.proxy_url.clone_from(&task.proxy_url);
         view.save_dir.clone_from(&task.save_dir);
         view.group_id.clone_from(&task.group_id);
         view.error_message.clone_from(&task.error_message);
@@ -515,6 +517,7 @@ impl DownloadTaskView {
             referrer: String::new(),
             save_dir: String::new(),
             group_id: String::new(),
+            proxy_url: String::new(),
             error_message: String::new(),
             conflict_pending: false,
             file_missing: false,

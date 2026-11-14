@@ -59,6 +59,7 @@ pub(super) struct RenderEnv<'a> {
     pub session: &'a str,
     pub revision: u64,
     pub pending: &'a HashMap<String, PendingInput>,
+    pub images: &'a HashMap<String, Arc<Image>>,
 }
 
 /// 当前主题里渲染要用的值（一次渲染取一次）。
@@ -624,11 +625,23 @@ fn image_node(
             slot.image = image;
         });
     }
+    let mut image = slot.read(cx).image.clone();
+    if let Some(id) = src
+        .strip_prefix("flux-image:")
+        .filter(|id| canonical_uuid(id))
+    {
+        image = env.images.get(id).cloned();
+    }
     let alt = str_prop(node, "alt").to_owned();
-    match slot.read(cx).image.clone() {
-        Some(image) => img(image)
-            .when_some(num_prop(node, "width"), |this, w| this.w(px(w as f32)))
-            .when_some(num_prop(node, "height"), |this, h| this.h(px(h as f32)))
+    match image {
+        Some(image) => div()
+            .max_w_full()
+            .child(
+                img(image)
+                    .max_w_full()
+                    .when_some(num_prop(node, "width"), |this, w| this.w(px(w as f32)))
+                    .when_some(num_prop(node, "height"), |this, h| this.h(px(h as f32))),
+            )
             .into_any_element(),
         None => div()
             .text_size(look.text_xs)
@@ -636,6 +649,17 @@ fn image_node(
             .child(alt)
             .into_any_element(),
     }
+}
+
+pub(super) fn canonical_uuid(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|&index| bytes[index] == b'-')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            [8, 13, 18, 23].contains(&index)
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'a'..=b'f')
+        })
 }
 
 fn decode_image(src: &str) -> Option<Arc<Image>> {
@@ -1590,5 +1614,12 @@ mod format_tests {
         assert!(decode_image("data:image/png;base64,aGk=").is_some());
         assert!(decode_image("data:image/svg+xml;base64,aGk=").is_none());
         assert!(decode_image("https://x/y.png").is_none());
+    }
+
+    #[test]
+    fn plugin_image_ids_require_canonical_lowercase_uuid() {
+        assert!(canonical_uuid("123e4567-e89b-42d3-a456-426614174000"));
+        assert!(!canonical_uuid("123E4567-e89b-42d3-a456-426614174000"));
+        assert!(!canonical_uuid("https://example.test/image.png"));
     }
 }

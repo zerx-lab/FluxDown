@@ -44,6 +44,13 @@ Click either button's small arrow to pick an explicit target queue instead — c
 - **Multiple tasks at once**: press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> or click the manage-mode toggle next to the file name column to check tasks individually, then use the batch action bar to delete the selection (with or without the underlying files). Press <kbd>Esc</kbd> to leave manage mode.
 - **Pause/Resume everything**: use the Pause All / Resume All buttons in the top bar, or right-click empty space below the list for Start All / Pause All.
 
+### Change a task's proxy
+
+For an unfinished HTTP/HTTPS/FTP task, choose **Edit proxy** from its right-click menu or General details. Enter an HTTP, HTTPS or SOCKS proxy URL with an explicit port, or clear it to follow global proxy settings and site rules.
+
+Saving reconnects active transfers immediately; no application or NAS service restart is needed. Failed tasks retry, while paused and queued tasks retain their state. Sources without resume support may restart from zero, and live streams may have recording gaps. BT and eD2K do not use this task-level editor.
+
+
 ## Queues and Speed Limits
 
 A global speed limit lives in the **status bar** at the bottom of the window — click the limit indicator to open a popover with presets (128 KB/s, 512 KB/s, 1 MB/s, 2 MB/s, 5 MB/s) or type a custom KB/s value. It's off (unlimited) by default.

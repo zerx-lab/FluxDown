@@ -35,7 +35,8 @@ function Notice({ text, action }: { text: string; action?: { label: string; run:
 function SessionBody({ session }: { session: ViewSession }) {
   const { t } = useI18n()
   const state = useViewSession(session)
-  const ctx = useMemo(() => ({ send: session.send.bind(session) }), [session])
+  const sessionId = session.sessionId
+  const ctx = useMemo(() => ({ sessionId, send: session.send.bind(session) }), [session, sessionId])
   const reopen = { label: t('pluginViewReopen'), run: () => void session.open() }
 
   if (state.phase === 'failed') return <Notice text={t('pluginViewError', { message: state.error ?? '' })} action={reopen} />

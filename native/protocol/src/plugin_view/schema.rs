@@ -61,7 +61,7 @@ pub enum ViewPropType {
 #[serde(rename_all = "camelCase")]
 pub enum ViewPropFormat {
     HttpUrl,
-    ImageDataUri,
+    ImageSource,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -1,4 +1,8 @@
 [
+{"name":"image_resource_reference_replaced_without_binary_payload",
+ "oldTree":{"id":"root","k":"image","p":{"src":"flux-image:12345678-abcd-4000-8000-123456789abc","alt":"cover"},"c":[]},
+ "newTree":{"id":"root","k":"image","p":{"src":"flux-image:87654321-abcd-4000-8000-123456789abc","alt":"cover"},"c":[]},
+ "ops":[{"op":"props","id":"root","set":{"src":"flux-image:87654321-abcd-4000-8000-123456789abc"},"unset":[]}]},
 {"name":"identical_trees_no_ops",
  "oldTree":{"id":"root","k":"scroll","p":{},"c":[{"id":"root/a","k":"heading","p":{"text":"A","level":2},"c":[]}]},
  "newTree":{"id":"root","k":"scroll","p":{},"c":[{"id":"root/a","k":"heading","p":{"text":"A","level":2},"c":[]}]},

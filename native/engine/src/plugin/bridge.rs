@@ -437,7 +437,7 @@ async fn resolve_global(global: &ProxyConfig) -> Result<ProxyConfig, PluginError
         .map_err(|e| PluginError::Runtime(format!("检测系统代理失败: {e}")))
 }
 
-type GuardedClientKey = (String, bool, bool);
+type GuardedClientKey = (String, bool, bool, Option<Vec<String>>);
 
 /// 引擎侧 `PluginBridge` 实现。
 pub struct EngineBridge {
@@ -542,6 +542,7 @@ impl EngineBridge {
             crate::egress::proxy_endpoint(proxy).as_ref(),
             same_origin_redirects_only,
             dev,
+            None,
         )?;
         self.cache_client(key, &client);
         Ok(client)
@@ -561,15 +562,98 @@ impl EngineBridge {
         }
         let endpoint = crate::egress::proxy_endpoint(proxy);
         let client = tokio::task::spawn_blocking(move || {
-            build_client(endpoint.as_ref(), same_origin_redirects_only, dev)
+            build_client(endpoint.as_ref(), same_origin_redirects_only, dev, None)
         })
         .await
         .map_err(|e| PluginError::Runtime(format!("构建 fetch Client 任务失败: {e}")))??;
         self.cache_client(key, &client);
         Ok(client)
     }
+    /// Apply the same plugin-owned auth profile semantics to text and image fetches.
+    async fn apply_request_auth(
+        &self,
+        plugin_id: &str,
+        req: &mut BridgeHttpRequest,
+    ) -> Result<bool, PluginError> {
+        // Empty authRef means absent, preserving the legacy fetch behavior.
+        req.auth_ref = normalize_explicit_auth_ref(req.auth_ref.take());
+        let explicit_auth_ref = req.auth_ref.is_some();
+        let auth_ref = req
+            .auth_ref
+            .clone()
+            .or_else(|| crate::auth::default_auth_ref(plugin_id, &req.url));
+        if explicit_auth_ref && !req.auth_allowed {
+            return Err(PluginError::Runtime(
+                "插件未声明 auth 权限，不能使用认证凭据".to_string(),
+            ));
+        }
+        let Some(auth_ref) = auth_ref.filter(|_| req.auth_allowed) else {
+            return Ok(false);
+        };
+        let Some(profile) = crate::auth::load(&self.db, &auth_ref)
+            .await
+            .map_err(|e| PluginError::Runtime(format!("读取认证凭据失败: {e:#}")))?
+        else {
+            if explicit_auth_ref {
+                return Err(PluginError::Runtime(format!(
+                    "authentication_required: 未找到认证凭据 {auth_ref}"
+                )));
+            }
+            return Ok(false);
+        };
+        if profile.plugin_id != plugin_id {
+            return Err(PluginError::Runtime("认证凭据不属于当前插件".to_string()));
+        }
+        if crate::auth::site_key(&req.url).as_deref() != Some(profile.site.as_str()) {
+            return Err(PluginError::Runtime(
+                "认证凭据不属于当前请求站点".to_string(),
+            ));
+        }
+        if !profile.is_valid_at(crate::auth::now_unix()) {
+            if explicit_auth_ref {
+                return Err(PluginError::Runtime(format!(
+                    "authentication_required: 认证凭据已过期 {auth_ref}"
+                )));
+            }
+            return Ok(false);
+        }
+        profile.apply_to_headers(&mut req.headers);
+        Ok(true)
+    }
+}
+fn normalized_host(host: &str) -> &str {
+    host.trim_matches(|character| character == '[' || character == ']')
 }
 
+fn image_redirect_allowed(
+    previous: &[url::Url],
+    target: &url::Url,
+    hosts: &std::collections::HashSet<String>,
+) -> bool {
+    let Some(host) = target.host_str() else {
+        return false;
+    };
+    if !hosts.contains(&normalized_host(host).to_ascii_lowercase())
+        || !matches!(target.scheme(), "http" | "https")
+        || !target.username().is_empty()
+        || target.password().is_some()
+    {
+        return false;
+    }
+    !previous
+        .last()
+        .is_some_and(|last| last.scheme() == "https" && target.scheme() != "https")
+}
+
+fn append_image_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), PluginError> {
+    if bytes.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
+        return Err(PluginError::InvalidOutput(
+            "图片响应超过 8 MiB 上限".to_string(),
+        ));
+    }
+    bytes.extend_from_slice(chunk);
+    Ok(())
+}
 fn client_key(
     proxy: &ProxyConfig,
     same_origin_redirects_only: bool,
@@ -579,6 +663,67 @@ fn client_key(
         crate::client_cache::proxy_fingerprint(proxy),
         same_origin_redirects_only,
         dev,
+        None,
+    )
+}
+
+#[test]
+fn image_client_cache_key_separates_host_allowlists_and_normalizes_order() {
+    let proxy = ProxyConfig::default();
+    let first: std::collections::HashSet<String> =
+        ["images.example".to_string(), "cdn.example".to_string()]
+            .into_iter()
+            .collect();
+    let reordered: std::collections::HashSet<String> =
+        ["CDN.EXAMPLE".to_string(), "IMAGES.EXAMPLE".to_string()]
+            .into_iter()
+            .collect();
+    let narrower: std::collections::HashSet<String> =
+        ["images.example".to_string()].into_iter().collect();
+    assert_eq!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&proxy, false, false, &reordered)
+    );
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&proxy, false, false, &narrower)
+    );
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        client_key(&proxy, false, false)
+    );
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&proxy, false, true, &first)
+    );
+    let mut other_proxy = proxy.clone();
+    other_proxy.mode = crate::proxy_config::ProxyMode::Manual;
+    other_proxy.proxy_type = crate::proxy_config::ProxyType::Http;
+    other_proxy.host = "127.0.0.1".to_string();
+    other_proxy.port = 1080;
+    assert_ne!(
+        image_client_key(&proxy, false, false, &first),
+        image_client_key(&other_proxy, false, false, &first)
+    );
+}
+
+fn image_client_key(
+    proxy: &ProxyConfig,
+    same_origin_redirects_only: bool,
+    dev: bool,
+    hosts: &std::collections::HashSet<String>,
+) -> GuardedClientKey {
+    let mut hosts: Vec<String> = hosts
+        .iter()
+        .map(|host| normalized_host(host).to_ascii_lowercase())
+        .collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    (
+        crate::client_cache::proxy_fingerprint(proxy),
+        same_origin_redirects_only,
+        dev,
+        Some(hosts),
     )
 }
 
@@ -589,6 +734,7 @@ fn build_client(
     proxy: Option<&crate::egress::ProxyEndpoint>,
     same_origin_redirects_only: bool,
     allow_private: bool,
+    image_hosts: Option<Arc<std::collections::HashSet<String>>>,
 ) -> Result<reqwest::Client, PluginError> {
     let label = match (allow_private, same_origin_redirects_only) {
         (false, false) => "守卫",
@@ -596,22 +742,28 @@ fn build_client(
         (true, false) => "开发模式",
         (true, true) => "开发模式认证",
     };
-    let mut builder = crate::downloader::client_builder()
+    let mut builder = crate::downloader::client_builder(crate::tls::HttpVersion::Any, false)
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {
                 return attempt.error(GuardError::TooManyRedirects);
             }
+            let url = attempt.url();
+            if let Some(hosts) = &image_hosts
+                && !image_redirect_allowed(attempt.previous(), url, hosts)
+            {
+                return attempt.error(GuardError::BlockedRedirect);
+            }
             if same_origin_redirects_only
                 && let Some(previous) = attempt.previous().first()
-                && (previous.scheme() != attempt.url().scheme()
-                    || previous.host_str() != attempt.url().host_str()
-                    || previous.port_or_known_default() != attempt.url().port_or_known_default())
+                && (previous.scheme() != url.scheme()
+                    || previous.host_str() != url.host_str()
+                    || previous.port_or_known_default() != url.port_or_known_default())
             {
                 return attempt.stop();
             }
-            if !allow_private && let Some(host) = attempt.url().host_str() {
-                let trimmed = host.trim_matches(|c| c == '[' || c == ']');
+            if !allow_private && let Some(host) = url.host_str() {
+                let trimmed = normalized_host(host);
                 if let Ok(ip) = trimmed.parse::<IpAddr>()
                     && !is_globally_routable_unicast(ip)
                 {
@@ -698,59 +850,7 @@ impl PluginBridge for EngineBridge {
             }
         }
 
-        // 空串视同未提供（M-5）：`{"authRef":""}` 反序列化为 `Some("")`，不是
-        // `None`；`ctx.authRef` 本就可能是空串（PluginManager::resolve 对
-        // magnet/ed2k/ftp 等 URL 拿不到站点键时不填充，authenticate() 未传
-        // site 时也是空串），插件把它原样透传给 flux.fetch 不该被当成「显式
-        // 声明了一个空引用」进而 fail-closed。
-        req.auth_ref = normalize_explicit_auth_ref(req.auth_ref);
-        let explicit_auth_ref = req.auth_ref.is_some();
-        let mut auth_applied = false;
-        let auth_ref = req
-            .auth_ref
-            .clone()
-            .or_else(|| crate::auth::default_auth_ref(plugin_id, &req.url));
-        if explicit_auth_ref && !req.auth_allowed {
-            return Err(PluginError::Runtime(
-                "插件未声明 auth 权限，不能使用认证凭据".to_string(),
-            ));
-        }
-        if req.auth_allowed
-            && let Some(auth_ref) = auth_ref
-        {
-            match crate::auth::load(&self.db, &auth_ref)
-                .await
-                .map_err(|e| PluginError::Runtime(format!("读取认证凭据失败: {e:#}")))?
-            {
-                Some(profile) => {
-                    if profile.plugin_id != plugin_id {
-                        return Err(PluginError::Runtime("认证凭据不属于当前插件".to_string()));
-                    }
-                    if crate::auth::site_key(&req.url).as_deref() != Some(profile.site.as_str()) {
-                        return Err(PluginError::Runtime(
-                            "认证凭据不属于当前请求站点".to_string(),
-                        ));
-                    }
-                    let profile_valid = profile.is_valid_at(crate::auth::now_unix());
-                    if !profile_valid && explicit_auth_ref {
-                        return Err(PluginError::Runtime(format!(
-                            "authentication_required: 认证凭据已过期 {auth_ref}"
-                        )));
-                    }
-                    if profile_valid {
-                        profile.apply_to_headers(&mut req.headers);
-                        auth_applied = true;
-                    }
-                }
-                None if explicit_auth_ref => {
-                    return Err(PluginError::Runtime(format!(
-                        "authentication_required: 未找到认证凭据 {auth_ref}"
-                    )));
-                }
-                None => {}
-            }
-        }
-
+        let auth_applied = self.apply_request_auth(plugin_id, &mut req).await?;
         let permit = self
             .fetch_sema
             .clone()
@@ -842,6 +942,171 @@ impl PluginBridge for EngineBridge {
             body: String::from_utf8_lossy(&body).to_string(),
             truncated,
         })
+    }
+
+    async fn image_request(
+        &self,
+        plugin_id: &str,
+        mut req: BridgeHttpRequest,
+        hosts: Vec<String>,
+    ) -> Result<Vec<u8>, PluginError> {
+        let parsed = url::Url::parse(&req.url)
+            .map_err(|e| PluginError::InvalidOutput(format!("图片 URL 非法: {e}")))?;
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(PluginError::InvalidOutput(
+                "图片 URL 仅支持无凭据的 http/https".to_string(),
+            ));
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| PluginError::InvalidOutput("图片 URL 缺少主机名".to_string()))?;
+        let host = normalized_host(host);
+        let allowed: std::collections::HashSet<String> = hosts
+            .into_iter()
+            .map(|host| normalized_host(&host).to_ascii_lowercase())
+            .collect();
+        if !allowed.contains(&host.to_ascii_lowercase()) {
+            return Err(PluginError::InvalidOutput(
+                "图片主机不在插件授权列表中".to_string(),
+            ));
+        }
+        if !req.private_network_allowed
+            && let Ok(ip) = host.parse::<IpAddr>()
+            && !is_globally_routable_unicast(ip)
+        {
+            return Err(PluginError::InvalidOutput(
+                "blocked: non-routable IP".to_string(),
+            ));
+        }
+        req.method = "GET".to_string();
+        req.body = None;
+        let auth_applied = self.apply_request_auth(plugin_id, &mut req).await?;
+        let permit = self
+            .fetch_sema
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| PluginError::Runtime("fetch semaphore closed".to_string()))?;
+        let _permit = permit;
+        let net = self.net();
+        let dev = req.private_network_allowed;
+        let route = net.route(req.egress.as_deref(), &parsed, dev).await?;
+        let same_origin = auth_applied || !req.headers.is_empty();
+        let image_hosts = Arc::new(allowed);
+        let client_key = image_client_key(&route.proxy, same_origin, dev, &image_hosts);
+        let client = if let Some(client) = self.cached_client(&client_key) {
+            client
+        } else {
+            let proxy = crate::egress::proxy_endpoint(&route.proxy);
+            let hosts = Arc::clone(&image_hosts);
+            let client = tokio::task::spawn_blocking(move || {
+                build_client(proxy.as_ref(), same_origin, dev, Some(hosts))
+            })
+            .await
+            .map_err(|e| PluginError::Runtime(format!("构建图片 fetch Client 任务失败: {e}")))??;
+            self.cache_client(client_key, &client);
+            client
+        };
+        let mut rb = client.get(parsed);
+        for (key, value) in &req.headers {
+            let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                .map_err(|e| PluginError::InvalidOutput(format!("图片请求头名称非法: {e}")))?;
+            let value = reqwest::header::HeaderValue::from_str(value)
+                .map_err(|e| PluginError::InvalidOutput(format!("图片请求头值非法: {e}")))?;
+            rb = rb.header(name, value);
+        }
+        let op = req
+            .egress
+            .as_ref()
+            .map(|egress| NetObserver::begin(egress, route.via_fallback));
+        let mut response = match rb.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = (!is_guard_error(&error))
+                    .then(|| crate::net_failure::classify(&error))
+                    .flatten();
+                if let Some(op) = op {
+                    op.finish(failure.is_some());
+                }
+                return Err(PluginError::Runtime(crate::net_failure::append_tag(
+                    format!("图片 fetch 失败: {}", reqwest_error_detail(&error)),
+                    failure,
+                )));
+            }
+        };
+        if !response.status().is_success() {
+            if let Some(op) = op {
+                op.finish(false);
+            }
+            return Err(PluginError::Runtime(format!(
+                "图片服务器返回 HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_BODY_BYTES as u64)
+        {
+            if let Some(op) = op {
+                op.finish(false);
+            }
+            return Err(PluginError::InvalidOutput(
+                "图片响应超过 8 MiB 上限".to_string(),
+            ));
+        }
+        let mut bytes = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Err(error) = append_image_chunk(&mut bytes, &chunk) {
+                        if let Some(op) = op {
+                            op.finish(false);
+                        }
+                        return Err(error);
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let failure = crate::net_failure::classify(&error);
+                    if let Some(op) = op {
+                        op.finish(failure.is_some());
+                    }
+                    return Err(PluginError::Runtime(crate::net_failure::append_tag(
+                        format!("读取图片响应失败: {error:#}"),
+                        failure,
+                    )));
+                }
+            }
+        }
+        let format = match image::guess_format(&bytes) {
+            Ok(format) => format,
+            Err(_) => {
+                if let Some(op) = op {
+                    op.finish(false);
+                }
+                return Err(PluginError::InvalidOutput(
+                    "不支持或无法识别的图片格式".to_string(),
+                ));
+            }
+        };
+        if !matches!(
+            format,
+            image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
+        ) {
+            if let Some(op) = op {
+                op.finish(false);
+            }
+            return Err(PluginError::InvalidOutput(
+                "仅支持 PNG、JPEG、WebP 图片".to_string(),
+            ));
+        }
+        if let Some(op) = op {
+            op.finish(false);
+        }
+        Ok(bytes)
     }
 
     async fn auth_get(
@@ -2091,10 +2356,11 @@ fn has_percent_env_var(v: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuardError, YTDLP_STDOUT_CAP_MAX, YTDLP_STDOUT_CAP_MIN, arg_reject_reason, clamp_cap,
-        collect_response_headers, guard_filter, is_globally_routable_unicast,
-        normalize_explicit_auth_ref, parse_cap, plugin_workspace, truncate_utf8,
-        validate_ffmpeg_args, validate_ytdlp_args, ytdlp_args_reject_reason, ytdlp_stdout_cap,
+        GuardError, YTDLP_STDOUT_CAP_MAX, YTDLP_STDOUT_CAP_MIN, append_image_chunk,
+        arg_reject_reason, clamp_cap, collect_response_headers, guard_filter,
+        image_redirect_allowed, is_globally_routable_unicast, normalize_explicit_auth_ref,
+        normalized_host, parse_cap, plugin_workspace, truncate_utf8, validate_ffmpeg_args,
+        validate_ytdlp_args, ytdlp_args_reject_reason, ytdlp_stdout_cap,
     };
     use std::net::{IpAddr, SocketAddr};
 
@@ -2248,6 +2514,49 @@ mod tests {
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, "ok");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn image_rejects_oversized_content_length_without_waiting_for_body() {
+        use super::PluginBridge;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let bridge = test_bridge().await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8388609\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            // Deliberately withhold the body until the client has returned.
+            released.await.unwrap();
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            bridge.image_request(
+                "acme@dev",
+                crate::plugin::runtime::BridgeHttpRequest {
+                    url: format!("http://{address}/image.png"),
+                    private_network_allowed: true,
+                    ..Default::default()
+                },
+                vec!["127.0.0.1".to_owned()],
+            ),
+        )
+        .await;
+        release.send(()).unwrap();
+        server.await.unwrap();
+        assert!(matches!(
+            result.unwrap(),
+            Err(crate::plugin::runtime::PluginError::InvalidOutput(_))
+        ));
     }
 
     /// 回归（Auto 换路绕开 SSRF 守卫）：主机名只解析到内网地址被守卫拦下，不能记成断网——
@@ -2658,6 +2967,51 @@ mod tests {
         for s in ["8.8.8.8", "1.1.1.1", "93.184.216.34"] {
             assert!(is_globally_routable_unicast(ip(s)), "{s} should be allowed");
         }
+    }
+
+    #[test]
+    fn bracketed_ipv6_host_matches_manifest_host() {
+        assert_eq!(normalized_host("[::1]"), "::1");
+    }
+
+    #[test]
+    fn image_redirects_enforce_host_and_no_downgrade() {
+        let hosts =
+            std::collections::HashSet::from(["images.example".to_string(), "::1".to_string()]);
+        let previous = [url::Url::parse("https://images.example/start").unwrap()];
+        assert!(image_redirect_allowed(
+            &previous,
+            &url::Url::parse("https://images.example/next").unwrap(),
+            &hosts
+        ));
+        assert!(image_redirect_allowed(
+            &[],
+            &url::Url::parse("https://[::1]/image").unwrap(),
+            &hosts
+        ));
+        assert!(!image_redirect_allowed(
+            &previous,
+            &url::Url::parse("https://outside.example/image").unwrap(),
+            &hosts
+        ));
+        assert!(!image_redirect_allowed(
+            &previous,
+            &url::Url::parse("http://images.example/image").unwrap(),
+            &hosts
+        ));
+        assert!(!image_redirect_allowed(
+            &[],
+            &url::Url::parse("https://user@images.example/image").unwrap(),
+            &hosts
+        ));
+    }
+
+    #[test]
+    fn image_chunks_preserve_arbitrary_binary_bytes() {
+        let expected = [0xff, 0x00, 0x80, b'P', b'N', b'G'];
+        let mut actual = Vec::new();
+        append_image_chunk(&mut actual, &expected).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]

@@ -7,6 +7,7 @@ let secret: string | undefined = SECRET;
 // 与 download-route.test.ts / bt-guard-proxy.test.ts 共用同一进程的模块表：导出名集合须与它们一致。
 const configure = () => mock.module("astro:env/server", () => ({
   GITHUB_TOKEN: "", GITHUB_REPO: "owner/repo", FLUXCLOUD_API_BASE: "", DOWNLOAD_PASS_SECRET: secret,
+  CN_CDN_DAILY_BUDGET_GB: 0,
 }));
 configure();
 // 动态 import：路由模块须在 astro:env/server 被 mock 之后才加载（静态 import 会先于 mock 求值）。

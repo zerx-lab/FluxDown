@@ -603,6 +603,7 @@ mod tests {
                 save_dir: "/pictures".to_owned(),
             }],
             other_dir: String::new(),
+            ..Default::default()
         }
     }
 

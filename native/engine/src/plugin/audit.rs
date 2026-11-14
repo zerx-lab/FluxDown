@@ -246,6 +246,22 @@ impl PluginBridge for AuditingBridge {
         result
     }
 
+    async fn image_request(
+        &self,
+        plugin_id: &str,
+        req: BridgeHttpRequest,
+        hosts: Vec<String>,
+    ) -> Result<Vec<u8>, PluginError> {
+        let target = fetch_target("GET", &req.url);
+        let result = self.inner.image_request(plugin_id, req, hosts).await;
+        let detail = result
+            .as_ref()
+            .map(|bytes| format!("image {} bytes", bytes.len()))
+            .unwrap_or_default();
+        self.note(plugin_id, "fetch", target, &result, detail);
+        result
+    }
+
     async fn auth_get(
         &self,
         plugin_id: &str,

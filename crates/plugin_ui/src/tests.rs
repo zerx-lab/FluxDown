@@ -85,7 +85,7 @@ fn app(port: Arc<RecordingPort>, data_root: PathBuf) -> (TestApp, Entity<Transla
     let mut app = TestApp::new();
     let translator = app.update(|cx| {
         super::init(cx, port, data_root).expect("plugin UI init");
-        let catalog = Arc::new(I18nCatalog::load_embedded().expect("embedded translations"));
+        let catalog = I18nCatalog::load_embedded().expect("embedded translations");
         cx.new(|_| catalog.translator("en"))
     });
     (app, translator)

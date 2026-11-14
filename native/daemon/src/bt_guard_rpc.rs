@@ -1244,12 +1244,14 @@ mod tests {
     }
 
     fn refresh_requests(
-        events: &mut tokio::sync::broadcast::Receiver<fluxdown_protocol::EventFrame>,
+        events: &mut tokio::sync::broadcast::Receiver<
+            std::sync::Arc<fluxdown_protocol::EventFrame>,
+        >,
     ) -> usize {
         let mut count = 0;
         while let Ok(frame) = events.try_recv() {
             if matches!(
-                frame.event,
+                &frame.event,
                 ServiceEvent::Daemon(DaemonEvent::BtGuardCloudRefreshWanted { .. })
             ) {
                 count += 1;

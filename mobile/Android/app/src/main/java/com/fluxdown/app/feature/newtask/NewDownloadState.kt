@@ -213,7 +213,7 @@ internal class NewDownloadState(
     private val external = HashMap<String, ExternalDownload>()
     private var primaryUrl: String? = null
 
-    /** 分类选择器可选项：可见、非「全部」、已配置目录的分类（按 position）；空 = 不显示选择器。 */
+    /** 分类选择器可选项：可见、非「全部」、已配置目录的分类（按 position）；空列表仍提供自动 / 不分类。 */
     val categoryOptions: List<CustomCategoryDto> =
         categories.filter { it.visible && !it.isAll && it.saveDir.trim().isNotEmpty() }
             .map { it.copy(saveDir = it.saveDir.trim()) }

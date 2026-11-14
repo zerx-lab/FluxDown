@@ -27,6 +27,8 @@ export const METHOD = {
   DAEMON_TASK_CHANGE_URL: 'daemon.task.changeUrl',
   /** 修改任务线程数（`{taskId, segments}`，≤0 = 自动），已下进度保留；完成或不存在的任务返回 not-found。 */
   DAEMON_TASK_SET_SEGMENTS: 'daemon.task.setSegments',
+  /** 更新未完成 HTTP/FTP 任务的代理（`{taskId, proxyUrl}`）。 */
+  DAEMON_TASK_SET_PROXY: 'daemon.task.setProxy',
   /** BT 选块策略（`{taskId, sequential?, firstLastPiecesFirst?}`）；省略的字段保持不变。非 BT 或不存在返回 not-found。 */
   DAEMON_TASK_SET_PIECE_PICKING: 'daemon.task.setPiecePicking',
   /** BT 文件表（`TaskIdParams` → `BtFilesDto`）：详情页「文件」页签轮询；非 BT 任务 `notFound`。 */

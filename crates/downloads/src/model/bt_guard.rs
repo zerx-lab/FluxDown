@@ -612,15 +612,13 @@ mod tests {
 
 #[cfg(test)]
 mod text_tests {
-    use std::sync::Arc;
-
     use fluxdown_protocol::BtPeerDto;
     use fluxdown_ui_i18n::{I18nCatalog, Translator};
 
     use super::{PeerGuard, action_text, label_or_raw, rules_text, tooltip_text};
 
     fn translator(locale: &str) -> Result<Translator, Box<dyn std::error::Error>> {
-        let catalog = Arc::new(I18nCatalog::load_embedded()?);
+        let catalog = I18nCatalog::load_embedded()?;
         Ok(catalog.translator(locale))
     }
 

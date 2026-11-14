@@ -927,8 +927,6 @@ fn protocol_error() -> RpcErrorData {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use fluxdown_protocol::{ComponentKind, PathStyle};
     use fluxdown_ui_i18n::I18nCatalog;
 
@@ -946,7 +944,7 @@ mod tests {
 
     #[test]
     fn manual_path_hints_use_the_target_platform_path_style() {
-        let catalog = Arc::new(I18nCatalog::load_embedded().expect("embedded translations"));
+        let catalog = I18nCatalog::load_embedded().expect("embedded translations");
         for locale in ["en", "zh"] {
             let translator = catalog.translator(locale);
             for (platform, style) in [

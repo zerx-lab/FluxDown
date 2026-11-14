@@ -42,7 +42,7 @@ use crate::ed2k::server::{
     read_until_id_change,
 };
 use crate::ed2k::status::{ClientNetwork, IdKind, UpnpState};
-use crate::ed2k::upnp::UpnpMapping;
+use crate::ed2k::upnp::{MappingOutcome, UpnpMapping};
 use crate::logger::{log_error, log_info};
 
 /// 单次服务器登录超时。
@@ -64,9 +64,11 @@ const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// "多个 ED2K server 并发找源"）。
 const MAX_QUERY_SERVERS: usize = 12;
 
-/// HighID / LowID 检测等待 UPnP 映射结果的上限（IGD 查找自身约 10s 超时）。
-const UPNP_SETTLE_TIMEOUT: Duration = Duration::from_secs(12);
+/// HighID / LowID 检测等待映射结果的上限（SSDP 一轮搜索约 10s，之后才取设备描述并映射）。
+const UPNP_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 const UPNP_SETTLE_POLL: Duration = Duration::from_millis(200);
+/// 映射迟迟不成功时观察结果的间隔（映射器自身每 60s 重新发现、重试）。
+const UPNP_WATCH_POLL: Duration = Duration::from_secs(30);
 
 /// 一个已发现的源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,8 +117,6 @@ pub struct SourceQuery {
 pub struct ClientConfig {
     /// TCP 监听端口（0 = 让 OS 选，登录时报实际绑定端口争取 HighID）。
     pub listen_port: u16,
-    /// UDP 端口（Kad 用，本模块占位；0 = 让 OS 选）。
-    pub udp_port: u16,
     /// 服务器地址列表（`host:port`，手填+订阅合并后，手填在前）。
     pub servers: Vec<String>,
     /// `servers` 开头有多少项来自手填列表（其余来自订阅）。
@@ -127,14 +127,21 @@ pub struct ClientConfig {
     pub enable_kad: bool,
 }
 
-/// UPnP 映射的状态与句柄。
+/// 端口映射的句柄与启停代号。
 #[derive(Default)]
 struct UpnpSlot {
-    state: UpnpState,
-    /// 映射句柄（drop 时停止续租）。
+    /// 运行中的映射；`None` = 未启用或监听器尚未就绪。
     mapping: Option<UpnpMapping>,
-    /// 每次启停递增；迟到的映射结果据此丢弃。
+    /// 关闭设置时停下的映射器的后台任务：下次启动等它删完旧映射。
+    retired: Option<tokio::task::JoinHandle<()>>,
+    /// 每次启停递增；上一代的观察任务据此退出。
     generation: u64,
+}
+
+impl UpnpSlot {
+    fn outcome(&self) -> Option<MappingOutcome> {
+        self.mapping.as_ref().map(UpnpMapping::outcome)
+    }
 }
 
 /// 队列顺序与服务器写入顺序一致；失败包不携带 client_id。
@@ -242,13 +249,13 @@ impl Ed2kClient {
         self.session_changed.notify_one();
     }
 
-    /// 让 UPnP 映射与设置一致：启用且监听器已就绪 → 建立映射；关闭 → 停止续租
-    /// （已有映射在租约到期后失效）。`retry_failed` 为真时对上次失败的映射再试一次
-    /// （仅用户主动检测时；每轮找源都重试会反复广播 SSDP）。
+    /// 让端口映射与设置一致：启用且监听器已就绪 → 启动映射器（之后由它自己周期重试、续租）；
+    /// 关闭 → 停止并删除映射。`retry_failed` 为真时把已失败的映射器换成新的，立即重新发现
+    /// （仅用户主动检测时）。
     fn sync_upnp(self: &Arc<Self>, retry_failed: bool) {
         let port = u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0);
-        let (enabled, udp_port) = match self.config.lock() {
-            Ok(config) => (config.enable_upnp, config.udp_port),
+        let enabled = match self.config.lock() {
+            Ok(config) => config.enable_upnp,
             Err(error) => {
                 log_error!("[ed2k-client] UPnP config lock poisoned: {}", error);
                 return;
@@ -260,58 +267,71 @@ impl Ed2kClient {
                 return;
             };
             if !enabled {
-                if slot.state != UpnpState::Disabled {
-                    slot.state = UpnpState::Disabled;
-                    slot.mapping = None;
+                if let Some(mapping) = slot.mapping.take() {
+                    slot.retired = mapping.retire();
                     slot.generation += 1;
                     log_info!("[ed2k-client] UPnP mapping disabled");
                 }
                 return;
             }
-            let start = match slot.state {
-                UpnpState::Disabled => true,
-                UpnpState::Failed => retry_failed,
-                UpnpState::Pending | UpnpState::Mapped => false,
+            let restart = match slot.outcome() {
+                None => true,
+                Some(MappingOutcome::Failed(_)) => retry_failed,
+                Some(MappingOutcome::Pending | MappingOutcome::Mapped { .. }) => false,
             };
-            if port == 0 || !start {
+            if port == 0 || !restart {
                 return;
             }
-            slot.state = UpnpState::Pending;
+            let after = match slot.mapping.take() {
+                Some(previous) => previous.retire(),
+                None => slot.retired.take(),
+            };
+            slot.mapping = Some(UpnpMapping::start(port, after));
             slot.generation += 1;
             slot.generation
         };
         let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let mapping = crate::ed2k::upnp::spawn_upnp(port, udp_port).await;
-            let mapped = {
-                let Ok(mut slot) = this.upnp.lock() else {
+        tokio::spawn(async move { this.watch_upnp(generation).await });
+    }
+
+    /// 观察一代映射直到成功：记录失败原因，映射建好后让 LowID 会话重新登录。
+    async fn watch_upnp(&self, generation: u64) {
+        let started = tokio::time::Instant::now();
+        let mut reported = String::new();
+        loop {
+            let outcome = {
+                let Ok(slot) = self.upnp.lock() else {
                     log_error!("[ed2k-client] UPnP state lock poisoned");
                     return;
                 };
                 if slot.generation != generation {
-                    // 映射期间设置被关闭或重启：丢弃这次结果（句柄 drop 即停止续租）。
                     return;
                 }
-                match mapping {
-                    Some(mapping) => {
-                        log_info!(
-                            "[ed2k-client] UPnP mapping active (external ip: {:?})",
-                            mapping.external_ip()
-                        );
-                        slot.state = UpnpState::Mapped;
-                        slot.mapping = Some(mapping);
-                        true
-                    }
-                    None => {
-                        slot.state = UpnpState::Failed;
-                        false
-                    }
-                }
+                slot.outcome()
             };
-            if mapped {
-                this.relogin_for_high_id().await;
+            match outcome {
+                None => return,
+                Some(MappingOutcome::Mapped { external_ip }) => {
+                    log_info!(
+                        "[ed2k-client] UPnP mapping active (external ip: {:?})",
+                        external_ip
+                    );
+                    self.relogin_for_high_id().await;
+                    return;
+                }
+                Some(MappingOutcome::Failed(reason)) if reason != reported => {
+                    log_info!("[ed2k-client] port mapping failed, will retry: {}", reason);
+                    reported = reason;
+                }
+                Some(MappingOutcome::Failed(_) | MappingOutcome::Pending) => {}
             }
-        });
+            let poll = if started.elapsed() < UPNP_SETTLE_TIMEOUT {
+                UPNP_SETTLE_POLL
+            } else {
+                UPNP_WATCH_POLL
+            };
+            tokio::time::sleep(poll).await;
+        }
     }
 
     /// UPnP 映射建好时会话若仍是 LowID（登录早于映射完成），断开会话让重连器用同一监听
@@ -339,16 +359,18 @@ impl Ed2kClient {
             .ok()
             .and_then(|server| server.clone())
             .unwrap_or_default();
-        let (upnp, external_ip) = match self.upnp.lock() {
-            Ok(slot) => (
-                slot.state,
-                slot.mapping
-                    .as_ref()
-                    .and_then(UpnpMapping::external_ip)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_default(),
-            ),
-            Err(_) => (UpnpState::Disabled, String::new()),
+        let (upnp, external_ip, upnp_error) = match self.upnp.lock() {
+            Ok(slot) => match slot.outcome() {
+                None => (UpnpState::Disabled, String::new(), String::new()),
+                Some(MappingOutcome::Pending) => (UpnpState::Pending, String::new(), String::new()),
+                Some(MappingOutcome::Failed(reason)) => (UpnpState::Failed, String::new(), reason),
+                Some(MappingOutcome::Mapped { external_ip }) => (
+                    UpnpState::Mapped,
+                    external_ip.map(|ip| ip.to_string()).unwrap_or_default(),
+                    String::new(),
+                ),
+            },
+            Err(_) => (UpnpState::Disabled, String::new(), String::new()),
         };
         ClientNetwork {
             id: IdKind::from_client_id(client_id),
@@ -357,6 +379,7 @@ impl Ed2kClient {
             listen_port: u16::try_from(self.listen_port.load(Ordering::Relaxed)).unwrap_or(0),
             upnp,
             external_ip,
+            upnp_error,
         }
     }
 
@@ -388,7 +411,7 @@ impl Ed2kClient {
             let pending = self
                 .upnp
                 .lock()
-                .is_ok_and(|slot| slot.state == UpnpState::Pending);
+                .is_ok_and(|slot| slot.outcome() == Some(MappingOutcome::Pending));
             if !pending {
                 return;
             }

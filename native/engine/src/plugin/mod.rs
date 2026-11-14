@@ -36,6 +36,7 @@ pub mod consent;
 #[cfg(test)]
 mod consent_tests;
 pub mod dependencies;
+pub mod images;
 pub mod install;
 pub mod manager;
 pub mod manifest;

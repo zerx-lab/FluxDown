@@ -135,7 +135,7 @@ fn os_download_dir() -> Option<String> {
 }
 
 /// 等到下一个可能改变上报内容的事件；接收端 lag 时也返回（重新计算即可）。
-async fn wait_relevant_event(events: &mut broadcast::Receiver<fluxdown_protocol::EventFrame>) {
+async fn wait_relevant_event(events: &mut broadcast::Receiver<Arc<fluxdown_protocol::EventFrame>>) {
     loop {
         match events.recv().await {
             Ok(frame) => {

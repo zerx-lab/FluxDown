@@ -29,6 +29,8 @@ data class Ed2kNetworkDto(
     /** 0 = 监听器未启动。 */
     val listenPort: Long = 0,
     val upnp: Ed2kUpnpState = Ed2kUpnpState.Disabled,
+    /** 仅 `upnp == failed` 时非空：映射器给出的原因（英文原文）。 */
+    val upnpError: String = "",
     /** 仅 idCheck 未能登录任何服务器时非空。 */
     val error: String = "",
 ) {
@@ -38,6 +40,7 @@ data class Ed2kNetworkDto(
             server = v.str("server"),
             listenPort = v.long("listenPort"),
             upnp = Ed2kUpnpState.fromWire(v.str("upnp")),
+            upnpError = v.str("upnpError"),
             error = v.str("error"),
         )
     }
@@ -68,9 +71,16 @@ object Ed2kIdCheckFormat {
             t.idLabel(net.id),
             net.server.ifBlank { EMPTY },
             if (net.listenPort > 0) net.listenPort.toString() else EMPTY,
-            t.upnpLabel(net.upnp),
+            upnpText(net, t),
         )
         return if (net.id == Ed2kIdKind.Low) "$line\n${t.lowHint}" else line
+    }
+
+    /** UPnP 状态文本：失败且有原因 → `失败: 原因`（与 BT 端口映射「状态: 原因」一致），否则仅状态。 */
+    fun upnpText(net: Ed2kNetworkDto, t: Ed2kIdCheckTexts): String {
+        val label = t.upnpLabel(net.upnp)
+        val reason = net.upnpError.trim()
+        return if (net.upnp == Ed2kUpnpState.Failed && reason.isNotEmpty()) "$label: $reason" else label
     }
 
     /** 调用失败或未登录：失败文案 + 可选原因。 */

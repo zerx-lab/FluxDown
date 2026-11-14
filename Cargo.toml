@@ -55,8 +55,11 @@ wildcard_imports = "deny"
 # + 端口映射 UPnP / NAT-PMP / PCP（#741）+ DHT BEP 42/44（#742）+ BEP 6 Fast（#743）+ 文件 / 分片多级优先级（#744）
 # + 运行中改任务限速 / 全局连接上限（#745）+ 校验中恢复不丢 peer 流（#746）+ SOCKS4/5 / HTTP 代理（#747）
 # + BEP 52 v2 / 混合种子与 v2 磁力（#748）+ BEP 16 超级做种（#749）+ v1 / v2 / 混合种子生成（#750）+ I2P（#751）
-# + 会话析构不被在途入站连接拖住（#752）。编号为 ikatson/rqbit 的上游 PR；fork 规则见 .omp/knowledge/engine.md uTP 条。
-librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "30a7800b3ca9730231449a26e49c9df5dd2a7bab" }
+# + 会话析构不被在途入站连接拖住（#752）+ SSDP 从每张本机网卡各搜一次（VPN / TUN 占默认组播路由时仍能找到
+# 局域网路由器）。编号为 ikatson/rqbit 的上游 PR；fork 规则见 .omp/knowledge/engine.md uTP 条。
+librqbit = { git = "https://github.com/zerx-lab/rqbit", rev = "abcae61832c22e089a8ad5037843215f6422ae72" }
+# eD2K 端口映射直接复用同一 fork 的 PortMapper（UPnP IGD / NAT-PMP / PCP），rev 必须与上一行 librqbit 一致。
+librqbit-upnp = { git = "https://github.com/zerx-lab/rqbit", rev = "abcae61832c22e089a8ad5037843215f6422ae72" }
 # zerx-lab/librqbit-utp 分支 fluxdown/next = 上游 git main（crates.io 0.7.0 的分发循环遇 Windows UDP
 # WSAECONNRESET(10054) 即退出、整个会话 uTP 失效，上游 main 已修未发版）+ LEDBAT 拥塞控制（上游 PR
 # ikatson/librqbit-utp#5，`bt_utp_congestion`）。上游发版并合入 LEDBAT 后删除本条。

@@ -64,14 +64,12 @@ impl BackgroundEffects {
         Self {
             events,
             notifier,
-            action_text: NoticeText::default(),
+            action_text: NoticeText,
             completion_sound_owned: false,
             failures: None,
             #[cfg(feature = "desktop")]
             translator: match fluxdown_ui_i18n::I18nCatalog::load_embedded() {
-                Ok(catalog) => {
-                    Some(Arc::new(catalog).translator(&fluxdown_ui_i18n::system_locale()))
-                }
+                Ok(catalog) => Some(catalog.translator(&fluxdown_ui_i18n::system_locale())),
                 Err(error) => {
                     tracing::warn!(error = %error, "notification translations unavailable");
                     None

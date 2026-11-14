@@ -987,6 +987,46 @@ impl DaemonBlobClient {
             .map(str::to_owned)
             .ok_or(BlobError::Decode)
     }
+
+    /// Read a sanitized PNG through the currently authenticated daemon HTTP session.
+    pub async fn plugin_image(&self, session: &str, id: &str) -> Result<Vec<u8>, BlobError> {
+        let Some(access) = self.session.access() else {
+            return Err(BlobError::Status(503));
+        };
+        let mut url = access.base_url;
+        url.path_segments_mut()
+            .map_err(|()| BlobError::Url("daemon base URL cannot hold path segments".to_owned()))?
+            .clear()
+            .extend(["plugin-images", session, id]);
+        let mut response = self
+            .http
+            .get(url)
+            .bearer_auth(access.credential)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(BlobError::Status(response.status().as_u16()));
+        }
+        let limit = 4 * 1024 * 1024;
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit as u64)
+        {
+            return Err(BlobError::Status(502));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > limit - bytes.len() {
+                return Err(BlobError::Status(502));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err(BlobError::Status(502));
+        }
+        Ok(bytes)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1770,8 +1810,8 @@ mod tests {
                 .expect("single caller")
                 .expect("single capture");
             assert!(matches!(
-                events.try_recv().expect("single notification").event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if ids == ["single"]
+                &events.try_recv().expect("single notification").event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if *ids == ["single"]
             ));
 
             for fail_second in [false, true] {
@@ -1823,9 +1863,9 @@ mod tests {
                         .expect("second created");
                     batch.await.expect("batch caller").expect("batch capture");
                     assert!(matches!(
-                        events.try_recv().expect("batch notification").event,
+                        &events.try_recv().expect("batch notification").event,
                         ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids))
-                            if ids == ["first", "second"]
+                            if *ids == ["first", "second"]
                     ));
                 }
             }
@@ -1848,13 +1888,13 @@ mod tests {
 
             capture.announce_page_started(&ids(&["new"]), &[]);
             assert!(matches!(
-                events.try_recv().expect("created notification").event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if ids == ["new"]
+                &events.try_recv().expect("created notification").event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if *ids == ["new"]
             ));
             capture.announce_page_started(&[], &ids(&["old"]));
             assert!(matches!(
-                events.try_recv().expect("resumed notification").event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksResumed(ids)) if ids == ["old"]
+                &events.try_recv().expect("resumed notification").event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksResumed(ids)) if *ids == ["old"]
             ));
             capture.announce_page_started(&ids(&["a"]), &ids(&["b"]));
             capture.announce_page_started(&ids(&["a", "b"]), &[]);
@@ -1955,7 +1995,7 @@ mod tests {
             reply.send(Ok(json!({ "groupId": "created-group" }))).expect("create group");
             let event = events.recv().await.expect("consumption published");
             assert!(matches!(
-                event.event,
+                &event.event,
                 ServiceEvent::Agent(AgentEvent::PendingCapturesChanged(pending)) if pending.is_empty()
             ));
             assert!(capture.list().await.is_empty());

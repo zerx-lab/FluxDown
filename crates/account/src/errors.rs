@@ -215,8 +215,6 @@ fn generic_key(code: ApplicationErrorCode) -> &'static str {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::sync::Arc;
-
     use fluxdown_ui_i18n::I18nCatalog;
 
     use super::*;
@@ -406,7 +404,7 @@ mod tests {
 
     #[test]
     fn every_mapped_key_exists_in_both_locales() {
-        let catalog = Arc::new(I18nCatalog::load_embedded().expect("embedded catalog"));
+        let catalog = I18nCatalog::load_embedded().expect("embedded catalog");
         let reasons = [
             ErrorReason::InvalidCredentials,
             ErrorReason::InvalidVerificationCode,

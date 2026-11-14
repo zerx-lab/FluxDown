@@ -122,6 +122,7 @@ pub(crate) struct DownloadStrings {
     pub(crate) edit_threads_zero_hint: SharedString,
     pub(crate) edit_threads_invalid: SharedString,
     pub(crate) threads_changed: SharedString,
+    pub(crate) task_edit_proxy: SharedString,
     /// 「本机做种」对话框与入口。
     pub(crate) seed_local_title: SharedString,
     pub(crate) seed_local_desc: SharedString,
@@ -334,6 +335,7 @@ impl DownloadStrings {
             edit_threads_zero_hint: shared(translator.text("queueDefaultSegmentsHint")),
             edit_threads_invalid: shared(translator.text("editThreadsInvalid")),
             threads_changed: shared(translator.text("threadsChanged")),
+            task_edit_proxy: shared(translator.text("taskEditProxy")),
             seed_local_title: shared(translator.text("seedLocalTitle")),
             seed_local_desc: shared(translator.text("seedLocalDesc")),
             seed_local_path: shared(translator.text("seedLocalPath")),
@@ -1248,7 +1250,7 @@ mod tests {
     #[test]
     fn post_only_errors_are_localized_and_others_pass_through()
     -> Result<(), fluxdown_ui_i18n::I18nError> {
-        let catalog = std::sync::Arc::new(fluxdown_ui_i18n::I18nCatalog::load_embedded()?);
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let strings = DownloadStrings::from_translator(&translator);
         assert_eq!(
@@ -1268,7 +1270,7 @@ mod tests {
     #[test]
     fn preparing_status_is_labelled_consistently_across_surfaces()
     -> Result<(), fluxdown_ui_i18n::I18nError> {
-        let catalog = std::sync::Arc::new(fluxdown_ui_i18n::I18nCatalog::load_embedded()?);
+        let catalog = fluxdown_ui_i18n::I18nCatalog::load_embedded()?;
         let translator = catalog.translator("en");
         let strings = DownloadStrings::from_translator(&translator);
         let task = |status: i32, queue_key: Option<i64>| {

@@ -50,6 +50,10 @@ describe('ed2kIdCheckOutcome 按目标', () => {
     expect(ed2kIdCheckOutcome(t, net({ error: 'boom' }), 'session')).toEqual({ ok: false, message: 'ed2kIdCheckFailed: boom' })
     expect(ed2kIdCheckOutcome(t, net({}), 'list')).toEqual({ ok: false, message: 'ed2kIdCheckFailed' })
   })
+  test('failed + upnpError → 结果行含原因', () => {
+    const out = ed2kIdCheckOutcome(t, net({ id: 'high', upnp: 'failed', upnpError: ' no gateway ' }))
+    expect(out.ok && out.summary.includes('"upnp":"ed2kUpnpFailed: no gateway"')).toBe(true)
+  })
   test('HighID 无提示', () => {
     expect(ed2kIdCheckOutcome(t, net({ id: 'high', server: 's:1', listenPort: 4662 }), 'server')).toMatchObject({ ok: true, hint: null })
   })

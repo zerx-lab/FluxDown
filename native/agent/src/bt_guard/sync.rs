@@ -96,7 +96,7 @@ impl CloudListSync {
             keys,
             egress,
             http: EgressClient::new(|| {
-                reqwest::Client::builder()
+                crate::tls::client_builder(crate::tls::HttpVersion::Any)
                     .timeout(REQUEST_TIMEOUT)
                     .user_agent(concat!("fluxdown-agent/", env!("CARGO_PKG_VERSION")))
             }),

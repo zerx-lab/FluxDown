@@ -889,8 +889,8 @@ mod tests {
             let frame = receiver.try_recv().expect("replayed task intent");
             assert_eq!(frame.sequence, baseline.sequence + offset as u64 + 1);
             assert!(matches!(
-                frame.event,
-                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if ids == [task_id]
+                &frame.event,
+                ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if *ids == [task_id]
             ));
         }
         state.launch_for_task_windows("already-ready");
@@ -901,8 +901,8 @@ mod tests {
         state.ui_snapshot_ready();
         let frame = receiver.try_recv().expect("new reconnect intent");
         assert!(matches!(
-            frame.event,
-            ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if ids == ["during-reconnect"]
+            &frame.event,
+            ServiceEvent::Agent(AgentEvent::CaptureTasksStarted(ids)) if *ids == ["during-reconnect"]
         ));
         assert!(matches!(
             receiver.try_recv(),

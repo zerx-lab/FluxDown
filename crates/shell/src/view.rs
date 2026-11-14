@@ -718,7 +718,7 @@ impl Render for ShellView {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, sync::Arc};
+    use std::{cell::Cell, rc::Rc};
 
     use fluxdown_ui_components::FluxIcon;
     use fluxdown_ui_i18n::I18nCatalog;
@@ -760,7 +760,7 @@ mod tests {
 
     fn open(app: &mut TestApp) -> gpui::TestAppWindow<Host> {
         app.open_window(|window, cx| {
-            let catalog = Arc::new(I18nCatalog::load_embedded().expect("embedded translations"));
+            let catalog = I18nCatalog::load_embedded().expect("embedded translations");
             let translator = cx.new(|_| catalog.translator("en"));
             let downloads = ShellRoute::new(
                 RouteId::new("downloads"),

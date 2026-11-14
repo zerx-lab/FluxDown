@@ -174,11 +174,13 @@ public struct Ed2kNetworkDto: Sendable, Hashable, Decodable {
     public var serverCount: UInt32
     /// 仅 idCheck 未能登录任何服务器时非空。
     public var error: String
+    /// 仅 `upnp == .failed` 时非空：映射器给出的失败原因（英文原文）。
+    public var upnpError: String
 
     public init(
         id: IdKind = .none, clientId: UInt32 = 0, server: String = "", listenPort: UInt16 = 0,
         upnp: UpnpState = .disabled, externalIp: String = "", upnpEnabled: Bool = false, kadEnabled: Bool = false,
-        kadNodes: UInt32 = 0, serverCount: UInt32 = 0, error: String = ""
+        kadNodes: UInt32 = 0, serverCount: UInt32 = 0, error: String = "", upnpError: String = ""
     ) {
         self.id = id
         self.clientId = clientId
@@ -191,10 +193,12 @@ public struct Ed2kNetworkDto: Sendable, Hashable, Decodable {
         self.kadNodes = kadNodes
         self.serverCount = serverCount
         self.error = error
+        self.upnpError = upnpError
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, clientId, server, listenPort, upnp, externalIp, upnpEnabled, kadEnabled, kadNodes, serverCount, error
+        case id, clientId, server, listenPort, upnp, externalIp, upnpEnabled, kadEnabled, kadNodes, serverCount, error,
+            upnpError
     }
 
     public init(from decoder: any Decoder) throws {
@@ -210,6 +214,7 @@ public struct Ed2kNetworkDto: Sendable, Hashable, Decodable {
         kadNodes = try c.decodeIfPresent(UInt32.self, forKey: .kadNodes) ?? 0
         serverCount = try c.decodeIfPresent(UInt32.self, forKey: .serverCount) ?? 0
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+        upnpError = try c.decodeIfPresent(String.self, forKey: .upnpError) ?? ""
     }
 }
 

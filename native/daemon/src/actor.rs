@@ -26,6 +26,9 @@ use crate::selection::DaemonSelection;
 /// 生产命令队列容量。
 pub const COMMAND_CAPACITY: usize = 64;
 
+/// 最后一次领域活动后静默多久收缩数据库连接池内存（见 `Db::release_idle_memory`）。
+const DB_MEMORY_TRIM_DELAY: Duration = Duration::from_secs(60);
+
 /// 本机做种任务的登记选项（`daemon.task.seedLocal`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SeedLocalOptions {
@@ -125,6 +128,10 @@ pub enum ActorOperation {
     SetTaskSegments {
         task_id: String,
         segments: i32,
+    },
+    SetTaskProxy {
+        task_id: String,
+        proxy_url: String,
     },
     SetTaskPiecePicking {
         task_id: String,
@@ -591,11 +598,18 @@ async fn run_actor(
     seeding_upload.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut queue_positions = tokio::time::interval(Duration::from_millis(250));
     queue_positions.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // 连接池空闲收缩：活动（命令 / 任务结束 / 维护提交等）后静默满 `DB_MEMORY_TRIM_DELAY`
+    // 才执行一次，之后停表直到下一次活动——空闲期没有额外唤醒，也不读写磁盘。启动装载
+    // 本身就是一次活动，所以初始即上弦。
+    let db_memory_trim = tokio::time::sleep(DB_MEMORY_TRIM_DELAY);
+    tokio::pin!(db_memory_trim);
+    let mut db_memory_trim_armed = true;
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             Some(command) = commands.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 match command {
                     DaemonCommand::Execute { operation, ack } => {
                         dispatch_operation(
@@ -617,13 +631,18 @@ async fn run_actor(
                     }
                 }
             }
-            Some(done) = receivers.done.recv() => engine.manager.on_task_done(&done).await,
+            Some(done) = receivers.done.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
+                engine.manager.on_task_done(&done).await;
+            }
             Some(task_id) = receivers.retry.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 if engine.manager.is_task_in_error(&task_id).await {
                     engine.manager.resume_task_auto(&task_id).await;
                 }
             }
             Some(event) = receivers.plugin.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 match event {
                     #[cfg(feature = "plugins")]
                     PluginEvent::Resolve(outcome) => engine.manager.on_resolve_ready(*outcome).await,
@@ -634,15 +653,18 @@ async fn run_actor(
                 }
             }
             Some(event) = maintenance_rx.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 commit_maintenance(event, &mut engine, &events, &maintenance_tx).await;
             }
             Some(outcome) = receivers.file_hash.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 let task_id = outcome.task_id().to_owned();
                 if let Err(error) = engine.manager.commit_file_hash(outcome).await {
                     log_auto_file_hash_error(&task_id, &error);
                 }
             }
             Some(ids) = receivers.missing_cleanup.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 // 删除事实由 delete_tasks_batch 自己发布（TasksDeleted），无需再推全量快照。
                 if let Err(error) = batch_delete_result(
                     engine.manager.delete_tasks_batch(&ids, false).await,
@@ -660,10 +682,18 @@ async fn run_actor(
             _ = queue_positions.tick() => engine.manager.flush_queue_positions(),
             _ = rss_poll.tick() => engine.manager.tick_rss_sources(),
             event = receive_rss_event(&mut rss_events), if rss_events.is_some() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
                 if let Some(event) = event { engine.manager.on_rss_event(event).await; }
             }
             _ = seeding.tick() => engine.manager.tick_seeding_evaluation().await,
             _ = seeding_upload.tick() => engine.manager.tick_seeding_upload().await,
+            () = &mut db_memory_trim, if db_memory_trim_armed => {
+                db_memory_trim_armed = false;
+                // 下载 / 排队期间连接一直在用，收缩只会来回重建；最后一个任务结束会重新上弦。
+                if !engine.manager.has_pending_downloads() {
+                    release_idle_db_memory(&engine.db).await;
+                }
+            }
         }
     }
 
@@ -698,6 +728,20 @@ async fn run_actor(
                 }
             }
         }
+    }
+}
+
+/// 领域活动后把连接池空闲收缩推迟到 `DB_MEMORY_TRIM_DELAY` 之后。
+fn arm_db_memory_trim(timer: std::pin::Pin<&mut tokio::time::Sleep>, armed: &mut bool) {
+    timer.reset(tokio::time::Instant::now() + DB_MEMORY_TRIM_DELAY);
+    *armed = true;
+}
+
+async fn release_idle_db_memory(db: &fluxdown_engine::db::Db) {
+    match db.release_idle_memory().await {
+        Ok(0) => {}
+        Ok(closed) => tracing::debug!(closed, "released idle database connections"),
+        Err(error) => tracing::warn!(%error, "releasing idle database memory failed"),
     }
 }
 
@@ -1574,6 +1618,19 @@ async fn execute_operation(
             // 非活跃任务引擎只改库不推事件：补一次快照让客户端看到新线程数。
             engine.manager.send_tasks_snapshot().await;
         }
+        ActorOperation::SetTaskProxy { task_id, proxy_url } => {
+            engine
+                .manager
+                .set_task_proxy(&task_id, &proxy_url)
+                .await
+                .map_err(|error| match error.as_str() {
+                    "not-found" => ActorError::NotFound,
+                    "task-completed" => ActorError::TaskStateConflict(error),
+                    "invalid-proxy" | "protocol-unsupported" => ActorError::InvalidArgument(error),
+                    _ => ActorError::Operation(error),
+                })?;
+            engine.manager.send_tasks_snapshot().await;
+        }
         ActorOperation::SetTaskPiecePicking {
             task_id,
             sequential,
@@ -2357,6 +2414,7 @@ fn ed2k_network_to_dto(
             UpnpState::Failed => Ed2kUpnpStatus::Failed,
         },
         external_ip: view.client.external_ip,
+        upnp_error: view.client.upnp_error,
         upnp_enabled: view.upnp_enabled,
         kad_enabled: view.kad_enabled,
         kad_nodes: view.kad_nodes,
@@ -5040,6 +5098,7 @@ mod tests {
                     save_dir: images_text.clone(),
                 }],
                 other_dir: String::new(),
+                ..Default::default()
             }),
         };
         let results = match execute_operation(operation, &mut engine, &events).await {

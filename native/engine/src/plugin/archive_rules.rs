@@ -369,6 +369,7 @@ mod tests {
             }),
             is_group: false,
             header_hex: Some("1A2B00".into()),
+            ..Default::default()
         };
         let matcher = Matcher {
             file_name: Some("episode-*.mkv".into()),

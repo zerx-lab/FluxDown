@@ -88,6 +88,8 @@ pub struct ClientNetwork {
     pub upnp: UpnpState,
     /// UPnP 网关报告的公网 IP；未知为空。
     pub external_ip: String,
+    /// 映射失败（[`UpnpState::Failed`]）时各方式 / 网关给出的原因；其余为空。
+    pub upnp_error: String,
 }
 
 /// 本机 eD2K 网络状态：运行期状态 + 相关设置。
