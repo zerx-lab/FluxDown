@@ -44,6 +44,8 @@
 
 另见 AGENTS.md §4：BT 判定只认 `magnet:` 与 `torrent-file://`、「复制链接」读 `origin_url`、`dht.json` 撞端口排除区间。
 
+- **随机默认监听端口只能在配置缺失时生成，并原子保存 BT 两个边界**：每次启动重随机会破坏手动 NAT / 防火墙规则；无差别迁移旧值会覆盖用户自选范围与 eD2K 的显式 `0`。只缺一个 BT 边界时沿用另一个，不能拼接随机值 → `native/engine/src/db.rs::init_default_config`、回归 `default_listen_ports_*`（#872）。
+
 - **Windows 子路径 NotFound 不保证父路径是目录**：BT 完成命名先检查目标目录本身，普通文件返回 NotADirectory，避免把其下的候选名误判为空闲 → `native/engine/src/bt_downloader.rs::dedup_name_in_dir`；回归 `completion_layout_propagates_destination_scan_error`。
 - **路径安全测试的 `Path` 解析跟随宿主平台**：Windows 上 `Path::new("a:b")` 会成为盘符前缀，即使传给校验函数的 `windows_rules` 为 false 也不是 `Normal` 组件；「非 Windows 可使用冒号」断言只在非 Windows 执行 → `native/engine/src/bt_downloader.rs::torrent_path_guard_windows_rules_reject_drive_and_reserved`、`native/engine/src/bt_task_files.rs::rename_applies_windows_rules_only_when_asked`。
 - **种子内相对路径必须过 `torrent_relative_path_is_safe`，且 Windows 规则只对 Windows 强加**：Windows 下组件内的 `:`（盘符前缀 / ADS）、控制字符、设备保留名会改写基路径或落到设备；这些在其他平台是合法文件名，不得误杀 → `native/engine/src/bt_downloader.rs::torrent_relative_path_is_safe`（含 `a:b` 非 Windows 放行断言）。
