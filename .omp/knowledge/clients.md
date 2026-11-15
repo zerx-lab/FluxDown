@@ -13,6 +13,8 @@ GPUI 关于页与新版本提醒窗口的更新说明（`crates/settings/src/sec
 
 GPUI 下载设置的 User-Agent 在 `sections/user_agent.rs` 自渲染整行：标题/说明与预设下拉优先同行，按卡片实际可用宽度 flex-wrap，空间不足时下拉移到下一行；仅自定义模式在下方显示占满卡片宽度的输入框。复用设置页字号、间距和控件宽度档位，保留标题/说明搜索元数据；不按窗口单双列写死断点，也不把长输入塞进右侧控件列。
 
+GPUI 与 Web 的 UA 预设库由 agent 本地偏好 `download.user_agent_presets` 保存（`[{name,value}]`，不进云同步目录）；共享 Rust 读取规则在 `native/protocol/src/user_agent_presets.rs`。设置 → 下载 → 高级的 User-Agent 提供「管理预设」，自定义项可增删改，内置浏览器项只读；全局、新建下载、任务属性共用列表，新建与属性支持将手填值就地「保存为预设」。仅显式收藏，不自动记录输入；任务与全局配置保存实际 UA 字符串，预设编辑或删除不反向修改它们。
+
 GPUI 与 Web 的下载设置「线程数量 / 最大 CDN 节点数」采用「自动 / 自定义」下拉，仅自定义显示正整数输入；底层仍以 0 表示自动，不新增配置键。切回自动再选自定义时恢复当前会话记住的数量，首次自定义为线程 16 / CDN 节点 2，范围取协议目录；线程自动模式下单独显示自动模式线程上限，手动高线程数仍显示风险提示。两项不是乘法关系：CDN 数量约束节点 IP，线程数量约束单任务并发。
 
 依赖方向固定为 `i18n` / `theme` / `icon_pack` → `components` → `shell` / capability crates → `app`。`app` 只做窗口与单一 agent 会话装配；capability 之间不互相依赖。

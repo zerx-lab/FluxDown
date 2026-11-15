@@ -941,6 +941,14 @@ impl TaskDetailView {
                         .collect()
                 })
                 .unwrap_or_else(|| self.category_options.clone()),
+            user_agent_presets: self
+                .controller
+                .as_ref()
+                .map_or_else(Vec::new, |controller| {
+                    fluxdown_protocol::user_agent_presets::from_preference(
+                        controller.preference(fluxdown_protocol::user_agent_presets::PREF_KEY),
+                    )
+                }),
         }
     }
 

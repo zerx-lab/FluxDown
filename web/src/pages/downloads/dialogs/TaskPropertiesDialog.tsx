@@ -9,6 +9,7 @@ import { hasTaskEditChanges, taskEditPatch, taskEditValues, type TaskEditValues 
 import { categoriesFromPreference } from '../model/categories'
 import { categoryLabel } from '../state'
 import { parseTaskSegments } from '../model/taskEdit'
+import { UserAgentPresetControl } from '../../userAgent/UserAgentPresetControl'
 import { FsPickerDialog } from './FsPickerDialog'
 
 const localDateTime = (unix: number) => unix > 0 ? (() => { const date = new Date(unix * 1000); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:${String(date.getSeconds()).padStart(2,'0')}` })() : ''
@@ -50,7 +51,7 @@ export function TaskPropertiesDialog({ taskId }: { taskId: string }) {
       {field('edit-proxy', t('taskProxy'), values.proxyUrl, (proxyUrl) => update({ proxyUrl }), !snapshot.capabilities.proxy)}
       {field('edit-limit', t('taskEditDownloadLimit'), String(values.downloadLimitKib), (value) => { const amount = Number(value); if (/^\d*$/.test(value) && Number.isSafeInteger(amount) && amount <= Math.floor(Number.MAX_SAFE_INTEGER / 1024)) update({ downloadLimitKib: amount }) })}
       {field('edit-segments', t('configuredThreads'), String(values.segments), (value) => { const amount = parseTaskSegments(value); if (amount !== null) update({ segments: amount }) }, !snapshot.capabilities.segments)}
-      {field('edit-agent', t('taskEditUserAgent'), values.userAgent, (userAgent) => update({ userAgent }), !snapshot.capabilities.request)}
+      <FormField label={t('taskEditUserAgent')}><UserAgentPresetControl value={values.userAgent} onChange={(userAgent) => update({ userAgent })} forceDisabled={!snapshot.capabilities.request || pending} /></FormField>
       <FormField label={t('taskEditHeaders')} htmlFor="edit-headers"><Textarea id="edit-headers" disabled={!snapshot.capabilities.request || pending} value={headersText} onChange={(event) => { const text = event.target.value; setHeadersText(text); try { const parsed: unknown = JSON.parse(text); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.values(parsed).every((value) => typeof value === 'string')) { update({ headers: parsed as Record<string, string> }); setHeadersInvalid(false) } else setHeadersInvalid(true) } catch { setHeadersInvalid(true) } }} /></FormField>
       <FormField label={t('taskEditCookies')} htmlFor="edit-cookies"><div className="flex gap-2"><Input id="edit-cookies" disabled={!snapshot.capabilities.request || pending} type="password" value={values.cookies} autoComplete="new-password" onChange={(event) => update({ cookies: event.target.value, cookiesEdited: true })} placeholder={snapshot.cookiesConfigured && !values.cookiesEdited ? '••••••••' : ''} />{snapshot.cookiesConfigured && snapshot.capabilities.request ? <Button type="button" disabled={pending || (values.cookiesEdited && !values.cookies)} onClick={() => update({ cookies: '', cookiesEdited: true })}>{t('taskEditClearCookies')}</Button> : null}</div></FormField>
       {field('edit-auth', t('taskEditAuthRef'), values.authRef, (authRef) => update({ authRef }), !snapshot.capabilities.request)}

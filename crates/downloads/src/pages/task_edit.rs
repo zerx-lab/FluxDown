@@ -263,6 +263,7 @@ pub(crate) struct TaskEditTarget {
     pub(crate) strings: DownloadStrings,
     pub(crate) translator: Entity<Translator>,
     pub(crate) categories: Vec<fluxdown_protocol::CustomCategoryDto>,
+    pub(crate) user_agent_presets: Vec<fluxdown_protocol::user_agent_presets::UserAgentPreset>,
 }
 
 impl TaskEditTarget {
@@ -463,6 +464,10 @@ impl DownloadView {
                 .filter(|rule| rule.dto.builtin_type.as_deref() != Some("all"))
                 .map(|rule| rule.dto.clone())
                 .collect(),
+            user_agent_presets: fluxdown_protocol::user_agent_presets::from_preference(
+                self.controller
+                    .preference(fluxdown_protocol::user_agent_presets::PREF_KEY),
+            ),
         })
     }
 

@@ -4095,5 +4095,12 @@
   "taskEditAutoCategory": "Automatic",
   "taskEditCookiesConfigured": "Cookies are configured, but secret values are never shown.",
   "taskEditClearCookies": "Clear cookies",
-  "taskEditScheduledHint": "Enter Unix seconds; 0 disables the one-shot schedule."
+  "taskEditScheduledHint": "Enter Unix seconds; 0 disables the one-shot schedule.",
+  "userAgentManagePresets": "Manage presets",
+  "userAgentAddPreset": "Add preset",
+  "userAgentSavePreset": "Save as preset",
+  "userAgentPresetName": "Preset name",
+  "userAgentPresetValue": "User-Agent value",
+  "userAgentPresetExists": "This User-Agent is already saved.",
+  "userAgentPresetInvalid": "Enter a name and a valid User-Agent without control characters."
 }

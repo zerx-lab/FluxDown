@@ -28,6 +28,7 @@ pub mod task_activity;
 pub mod task_edit;
 pub use task_edit::{EditTaskParams, TaskEditCapabilities, TaskEditSnapshot, TaskPropertiesDto};
 pub mod update_prompt;
+pub mod user_agent_presets;
 pub use task_activity::{
     TaskActivityDto, TaskActivityPage, TaskActivityQuery, TaskRuntimeDto, TaskSegmentDto,
     TaskSourceBytesDto, TaskSpeedHistoryDto, TaskSpeedHistoryQuery,

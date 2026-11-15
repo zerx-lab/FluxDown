@@ -9,6 +9,9 @@ use gpui::{
     Subscription, Window, div,
 };
 use gpui_component::{
+    Disableable as _,
+    button::Button,
+    h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
 };
@@ -74,6 +77,8 @@ pub(crate) fn row(ctx: &SectionContext) -> SettingsRow {
         (SharedString::from("safari"), ctx.t("userAgentPresetSafari")),
         (SharedString::from("custom"), ctx.t("userAgentPresetCustom")),
     ];
+    let manage_label = ctx.t("userAgentManagePresets");
+    let translator = ctx.translator.clone();
     let placeholder = ctx.t("userAgentPlaceholder");
     let title = ctx.t("userAgent");
     let description = ctx.t("userAgentDesc");
@@ -84,6 +89,17 @@ pub(crate) fn row(ctx: &SectionContext) -> SettingsRow {
         move |disabled, key, width, window: &mut Window, cx: &mut App| {
             let tokens = active_theme(cx).tokens();
             let current = store.read(cx).daemon_str(UA_KEY);
+            let saved = fluxdown_protocol::user_agent_presets::from_preference(
+                store
+                    .read(cx)
+                    .pref(fluxdown_protocol::user_agent_presets::PREF_KEY),
+            );
+            let custom_values: Vec<String> =
+                saved.iter().map(|preset| preset.value.clone()).collect();
+            let mut items = options.clone();
+            items.extend(saved.iter().enumerate().map(|(index, preset)| {
+                (format!("saved:{index}").into(), preset.name.clone().into())
+            }));
             let preset = detect_preset(&current);
             let custom_active = store
                 .read(cx)
@@ -91,16 +107,21 @@ pub(crate) fn row(ctx: &SectionContext) -> SettingsRow {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
                 || preset == "custom";
-
-            let selected_key: SharedString = if custom_active {
-                SharedString::from("custom")
+            let selected_key = if custom_active {
+                custom_values
+                    .iter()
+                    .position(|value| value == &current)
+                    .map_or_else(
+                        || SharedString::from("custom"),
+                        |index| format!("saved:{index}").into(),
+                    )
             } else {
                 SharedString::from(preset)
             };
             let select_store = store.clone();
             let dropdown = dropdown_button(
                 format!("{key}-preset-dropdown"),
-                &options,
+                &items,
                 selected_key,
                 disabled,
                 None,
@@ -118,14 +139,32 @@ pub(crate) fn row(ctx: &SectionContext) -> SettingsRow {
                             if let Some((_, ua)) = UA_PRESETS.iter().find(|(k, _)| *k == preset_key)
                             {
                                 store.set_daemon(UA_KEY, *ua, cx);
+                            } else if let Some(index) = preset_key
+                                .strip_prefix("saved:")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                && let Some(value) = custom_values.get(index)
+                            {
+                                store.set_daemon(UA_KEY, value.clone(), cx);
                             }
                         }
                     });
                 }),
                 cx,
             );
-
-            // 以卡片实际可用宽度换行，而非按窗口单双列猜测控件空间。
+            let store_for_manage = store.clone();
+            let translator_for_manage = translator.clone();
+            let manage = Button::new(format!("{key}-manage-user-agent-presets"))
+                .control(cx)
+                .label(manage_label.clone())
+                .disabled(disabled)
+                .on_click(move |_, window, cx| {
+                    super::user_agent_presets_dialog::open(
+                        store_for_manage.clone(),
+                        translator_for_manage.clone(),
+                        window,
+                        cx,
+                    );
+                });
             let header = div()
                 .flex()
                 .flex_wrap()
@@ -143,13 +182,20 @@ pub(crate) fn row(ctx: &SectionContext) -> SettingsRow {
                         .child(meta_text(cx).child(render_description.clone())),
                 )
                 .child(
-                    div()
-                        .w(width
-                            .unwrap_or_else(|| active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH)))
-                        .max_w_full()
+                    h_flex()
+                        .gap(tokens.spacing.xs)
                         .min_w_0()
                         .flex_shrink_0()
-                        .child(dropdown),
+                        .child(
+                            div()
+                                .w(width.unwrap_or_else(|| {
+                                    active_theme(cx).text_extent(DROPDOWN_MIN_WIDTH)
+                                }))
+                                .max_w_full()
+                                .min_w_0()
+                                .child(dropdown),
+                        )
+                        .child(manage),
                 );
             let mut column = v_flex()
                 .w_full()
