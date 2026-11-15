@@ -460,6 +460,12 @@ export interface ShellStatusDto {
 /** 定时电源操作：关机或睡眠。 */
 export type PowerAction = 'shutdown' | 'sleep';
 
+/** One-shot low-speed condition: 1..=1 GiB/s, continuously for 60..=86400 seconds. */
+export interface PowerLowSpeedCondition {
+  thresholdBps: number;
+  durationSecs: number;
+}
+
 /** 定时关机 / 睡眠状态。 */
 export interface PowerStatusDto {
   /** 已排定的延迟（秒）；null = 未启用。 */
@@ -468,6 +474,9 @@ export interface PowerStatusDto {
   countdownRemainingSecs: number | null;
   /** 已排定的操作；未启用时为默认值（旧 agent 缺省 = shutdown）。 */
   action?: PowerAction;
+  lowSpeed?: PowerLowSpeedCondition | null;
+  /** null = not currently qualifying (paused / local work / disconnected / speed recovered). */
+  lowSpeedElapsedSecs?: number | null;
 }
 
 export interface SyncStatusDto {

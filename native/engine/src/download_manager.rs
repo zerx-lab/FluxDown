@@ -16545,7 +16545,8 @@ impl DownloadManager {
             .filter(|list| !list.is_empty() && list.iter().all(|&index| index >= 0))
             .map(|list| list.into_iter().map(|index| index as usize).collect());
 
-        Ok(crate::bt_verify::run(
+        let local_work = crate::transfer_activity::LocalWorkGuard::new(self.sink.clone());
+        let check = crate::bt_verify::run(
             LandedCheck {
                 task_id: task_id.to_owned(),
                 save_dir: PathBuf::from(&task.save_dir),
@@ -16559,7 +16560,9 @@ impl DownloadManager {
                 },
             },
             guard,
-        ))
+            local_work,
+        );
+        Ok(check)
     }
 
     /// 已完成任务落盘文件的哈希（`daemon.task.hash` 与下载完成后自动计算共用）：资格校验与
@@ -16597,6 +16600,7 @@ impl DownloadManager {
             .begin(task_id)
             .ok_or(FileHashError::Busy)?;
         let gate = self.file_hash_gate.clone();
+        let local_work = crate::transfer_activity::LocalWorkGuard::new(self.sink.clone());
         let completed_at = task.completed_at;
         let task_id = task.task_id;
         Ok(async move {
@@ -16628,6 +16632,7 @@ impl DownloadManager {
             );
             let worker_token = token.clone();
             let joined = tokio::task::spawn_blocking(move || {
+                let _local_work = local_work;
                 hash_file(&path, algorithm, || worker_token.is_cancelled())
             })
             .await;

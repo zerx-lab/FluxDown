@@ -1,6 +1,7 @@
 pub(crate) mod conflict_badge;
 pub(crate) mod file_icon;
 pub(crate) mod group_visuals;
+mod power_prompt;
 pub(crate) mod segment_progress;
 pub(crate) mod selection_bar;
 pub(crate) mod sidebar;

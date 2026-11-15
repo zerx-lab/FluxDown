@@ -171,6 +171,7 @@ mod tests {
                 armed_delay_secs: Some(60),
                 countdown_remaining_secs: Some(65),
                 action: PowerAction::Shutdown,
+                ..PowerStatusDto::default()
             },
             icon: AppIconChoice::Default,
         };
@@ -210,6 +211,7 @@ mod tests {
                     armed_delay_secs: Some(0),
                     countdown_remaining_secs: Some(1),
                     action,
+                    ..PowerStatusDto::default()
                 },
                 icon: AppIconChoice::Default,
             };

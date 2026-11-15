@@ -277,10 +277,14 @@ impl GatewayService {
             }
             method::AGENT_POWER_ARM => {
                 let params = parse_params::<fluxdown_protocol::PowerArmParams>(request.params)?;
-                let armed = self.local.power.arm(
-                    std::time::Duration::from_secs(params.delay_secs),
-                    params.action,
-                );
+                let armed = if let Some(condition) = params.low_speed {
+                    self.local.power.arm_low_speed(condition, params.action)
+                } else {
+                    self.local.power.arm(
+                        std::time::Duration::from_secs(params.delay_secs),
+                        params.action,
+                    )
+                };
                 Ok(serde_json::json!({ "armed": armed }))
             }
             method::AGENT_POWER_DISARM => {

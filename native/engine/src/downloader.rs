@@ -4826,6 +4826,7 @@ async fn run_download_inner(
             }
         }
     }
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
 
     // Determine the actual downloaded size.  When the server didn't report
     // Content-Length (total_bytes == 0), read the real file size from disk so

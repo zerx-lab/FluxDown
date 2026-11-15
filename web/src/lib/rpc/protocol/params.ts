@@ -1,7 +1,7 @@
 // 各方法的 params / 非 DTO 结果类型（按 wire 名归类）。
 // daemon 端的 id 参数在服务端带别名（`id` / `taskId` / `queueId` / `groupId` 等价），这里统一用语义名。
 
-import type { PowerAction, RemoteTaskDto } from './agent';
+import type { PowerAction, PowerLowSpeedCondition, RemoteTaskDto } from './agent';
 import type { JsonValue } from './common';
 import type { ComponentKind, ComponentStatusDto } from './plugin';
 import type { ServiceHello } from './rpc';
@@ -461,6 +461,8 @@ export interface PowerArmParams {
   delaySecs: number;
   /** 缺省 = shutdown。 */
   action?: PowerAction;
+  /** Replaces completion mode; delaySecs becomes a fixed 30-second cancellable warning. */
+  lowSpeed?: PowerLowSpeedCondition | null;
 }
 
 export interface PowerArmResult {

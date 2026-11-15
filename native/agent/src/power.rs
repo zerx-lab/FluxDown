@@ -1,6 +1,6 @@
 //! 定时关机 / 睡眠：排定时有任务（活跃 / 排队 / 待重试）就等全部完成后再倒计时，没有任务则
 //! 立即倒计时；倒计时中若又出现任务则取消倒计时回到 armed（不完全解除），任务再次清空后重新
-//! 计时。到点执行平台关机或睡眠命令。
+//! 计时。低速条件独立计时：速度恢复、工作清空、断连或本地收尾会重置，达标后另留 30 秒取消。
 //!
 //! 状态机归 agent：关闭全部 UI（托盘驻留）后仍需按时执行。UI 只经 `agent.power.*`
 //! 发请求、经 `AgentEvent::PowerChanged` 渲染。
@@ -10,7 +10,11 @@ use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use fluxdown_protocol::{AgentEvent, DaemonRuntimeStatsDto, PowerAction, PowerStatusDto};
+use fluxdown_protocol::{
+    AgentEvent, AgentSnapshot, DaemonEvent, DaemonRuntimeStatsDto, POWER_LOW_SPEED_WARNING_SECS,
+    PowerAction, PowerLowSpeedCondition, PowerStatusDto, ServiceEvent,
+};
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
 use crate::event_hub::AgentEventHub;
@@ -51,6 +55,16 @@ impl PowerService {
         accepted
     }
 
+    /// Arm a one-shot low-speed action only with known daemon statistics and download work.
+    pub fn arm_low_speed(&self, condition: PowerLowSpeedCondition, action: PowerAction) -> bool {
+        let observation = self.events.inspect(PowerObservation::from_snapshot);
+        let accepted = self
+            .lock()
+            .arm_low_speed(condition, action, observation, Instant::now());
+        self.publish();
+        accepted
+    }
+
     /// 取消已排定的操作（无论是等待任务完成还是正在倒计时）。
     pub fn disarm(&self) {
         self.lock().disarm();
@@ -59,16 +73,38 @@ impl PowerService {
 
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(TICK);
+        let mut events = self.events.subscribe();
         // 同时记墙钟与 Instant：进程 / 定时器被停顿或延后（macOS App Nap 等）时两者同步前进，
         // 只有系统挂起才让墙钟领先 Instant，据此区分「睡过」与「被延后」。
         let mut last_wall = SystemTime::now();
         let mut last_mono = Instant::now();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
+            let (tick, stats) = tokio::select! {
                 _ = cancel.cancelled() => return,
-                _ = interval.tick() => {}
-            }
+                event = events.recv() => match event {
+                    Ok(frame) => match &frame.event {
+                        ServiceEvent::Agent(AgentEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats))) => {
+                            let mut observation = PowerObservation::default();
+                            observation.update_stats(stats);
+                            (false, Some(observation))
+                        }
+                        ServiceEvent::Agent(AgentEvent::DaemonConnectionChanged(_)
+                            | AgentEvent::DaemonSnapshotReplaced(_)) => {
+                            self.lock().reset_low_speed();
+                            (false, None)
+                        }
+                        _ => continue,
+                    },
+                    Err(RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "power monitor lost observations; resetting low-speed timer");
+                        self.lock().reset_low_speed();
+                        (false, None)
+                    }
+                    Err(RecvError::Closed) => return,
+                },
+                _ = interval.tick() => (true, None),
+            };
             // 必须先于 advance：唤醒后第一个 tick 若恰好无任务，会直接到点执行。
             let wall_now = SystemTime::now();
             let mono_now = Instant::now();
@@ -86,10 +122,27 @@ impl PowerService {
                 );
                 self.publish();
             }
-            let (active, pending) = self
-                .events
-                .inspect(|snapshot| work_counts(&snapshot.daemon.runtime_stats));
-            let fired = self.lock().advance(active, pending, Instant::now());
+            let observation = self.events.inspect(PowerObservation::from_snapshot);
+            let fired = {
+                let mut state = self.lock();
+                if state.low_speed.is_some() {
+                    if let Some(mut previous) = stats {
+                        previous.connected = observation.connected;
+                        if state
+                            .low_speed
+                            .is_some_and(|condition| !previous.qualifies(condition))
+                        {
+                            state.reset_low_speed();
+                        }
+                    }
+                    state.advance_low_speed(observation, mono_now)
+                } else if tick {
+                    // Preserve completion-mode cadence; terminal frames may precede retry scheduling.
+                    state.advance(observation.active, observation.waiting, mono_now)
+                } else {
+                    None
+                }
+            };
             self.publish();
             if let Some(action) = fired {
                 tokio::task::spawn_blocking(move || execute(action));
@@ -117,10 +170,53 @@ struct Armed {
     action: PowerAction,
 }
 
+/// Constant-size facts; never scan or clone the task table on a timer.
+#[derive(Clone, Copy, Default)]
+struct PowerObservation {
+    connected: bool,
+    active: u32,
+    waiting: u32,
+    retry_waiting: u32,
+    download_bps: i64,
+    local_work_count: Option<u32>,
+}
+
+impl PowerObservation {
+    fn from_snapshot(snapshot: &AgentSnapshot) -> Self {
+        let mut observation = Self {
+            connected: snapshot.daemon_connected,
+            ..Self::default()
+        };
+        observation.update_stats(&snapshot.daemon.runtime_stats);
+        observation
+    }
+
+    fn update_stats(&mut self, stats: &DaemonRuntimeStatsDto) {
+        (self.active, self.waiting) = work_counts(stats);
+        self.retry_waiting = stats.retry_pending_tasks;
+        self.download_bps = stats.total_download_bps;
+        self.local_work_count = stats.local_work_count;
+    }
+
+    fn has_work(self) -> bool {
+        // A queued task alone may belong to a manually paused queue, not a running session.
+        self.active > 0 || self.retry_waiting > 0
+    }
+
+    fn qualifies(self, condition: PowerLowSpeedCondition) -> bool {
+        self.connected
+            && self.has_work()
+            && self.local_work_count == Some(0)
+            && u64::try_from(self.download_bps).is_ok_and(|speed| speed < condition.threshold_bps)
+    }
+}
+
 /// 定时关机 / 睡眠的纯状态机：`Instant` 由调用方传入，便于单测构造固定时钟。
 struct PowerState {
     armed: Option<Armed>,
     countdown_until: Option<Instant>,
+    low_speed: Option<PowerLowSpeedCondition>,
+    low_since: Option<Instant>,
 }
 
 impl PowerState {
@@ -128,6 +224,8 @@ impl PowerState {
         Self {
             armed: None,
             countdown_until: None,
+            low_speed: None,
+            low_since: None,
         }
     }
 
@@ -136,14 +234,76 @@ impl PowerState {
         if delay.is_zero() && !has_work {
             return false;
         }
+        self.low_speed = None;
+        self.low_since = None;
         self.armed = Some(Armed { delay, action });
         self.countdown_until = (!has_work).then(|| now + delay);
         true
     }
 
+    fn arm_low_speed(
+        &mut self,
+        condition: PowerLowSpeedCondition,
+        action: PowerAction,
+        observation: PowerObservation,
+        now: Instant,
+    ) -> bool {
+        if !(1..=1024 * 1024 * 1024).contains(&condition.threshold_bps)
+            || !(60..=86400).contains(&condition.duration_secs)
+            || !observation.connected
+            || observation.local_work_count.is_none()
+            || !observation.has_work()
+        {
+            return false;
+        }
+        self.arm(
+            Duration::from_secs(POWER_LOW_SPEED_WARNING_SECS),
+            action,
+            true,
+            now,
+        );
+        self.low_speed = Some(condition);
+        // The first qualifying observation starts the interval; prior low-speed time never counts.
+        self.low_since = observation.qualifies(condition).then_some(now);
+        true
+    }
+
+    fn reset_low_speed(&mut self) {
+        if self.low_speed.is_some() {
+            self.low_since = None;
+            self.countdown_until = None;
+        }
+    }
+
+    fn advance_low_speed(
+        &mut self,
+        observation: PowerObservation,
+        now: Instant,
+    ) -> Option<PowerAction> {
+        let condition = self.low_speed?;
+        if !observation.qualifies(condition) {
+            self.reset_low_speed();
+            return None;
+        }
+        let since = *self.low_since.get_or_insert(now);
+        if now.saturating_duration_since(since).as_secs() < condition.duration_secs {
+            return None;
+        }
+        // Start a fresh visible warning, even if the monitor was stalled past the threshold.
+        let armed = self.armed?;
+        let until = *self.countdown_until.get_or_insert(now + armed.delay);
+        if now < until {
+            return None;
+        }
+        self.disarm();
+        Some(armed.action)
+    }
+
     fn disarm(&mut self) {
         self.armed = None;
         self.countdown_until = None;
+        self.low_speed = None;
+        self.low_since = None;
     }
 
     /// 按当前任务计数与时钟推进一次；到点时返回要执行的操作（armed 状态已复位）。
@@ -189,6 +349,10 @@ impl PowerState {
                 .countdown_until
                 .map(|until| until.saturating_duration_since(now).as_secs()),
             action: self.armed.map(|armed| armed.action).unwrap_or_default(),
+            low_speed: self.low_speed,
+            low_speed_elapsed_secs: self
+                .low_since
+                .map(|since| now.saturating_duration_since(since).as_secs()),
         }
     }
 }
@@ -311,6 +475,10 @@ fn execute(action: PowerAction) {
         "scheduled power actions are not supported on this platform"
     );
 }
+
+#[cfg(test)]
+#[path = "power/low_speed_tests.rs"]
+mod low_speed_tests;
 
 #[cfg(test)]
 mod tests {
