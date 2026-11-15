@@ -79,7 +79,7 @@ pub struct FluxThemeState {
     mode: ThemeMode,
     theme: ResolvedTheme,
     diagnostics: Arc<[Diagnostic]>,
-    /// 所选正文字号相对主题正文字号的倍率（未设置时为 1）。
+    /// 文字倍率 = 所选正文字号相对主题正文字号的倍率 × 系统「文本大小」倍率（都未设置时为 1）。
     font_scale: f32,
     /// 窗口根节点的缺字回退链（汉字黑体，见 `cjk` 模块）；`None` 时沿用平台系统回退。
     font_fallbacks: Option<gpui::FontFallbacks>,
@@ -118,8 +118,9 @@ impl FluxThemeState {
         self.appearance.ui_scale_percent
     }
 
-    /// 随文字宽度伸缩的固定尺寸（标签列宽、按字符数估算的列宽等），按界面缩放 × 字体大小换算
-    /// `base`（默认字号下的 px）。高度不要用它：行高另含字体度量抬升，应由排版 / 密度 token 推导。
+    /// 随文字宽度伸缩的固定尺寸（标签列宽、按字符数估算的列宽等），按界面缩放 × 文字倍率（字体大小
+    /// 与系统文本大小）换算 `base`（默认字号下的 px）。高度不要用它：行高另含字体度量抬升，应由排版 /
+    /// 密度 token 推导。
     pub fn text_extent(&self, base: f32) -> gpui::Pixels {
         gpui::px(base * self.appearance.ui_scale() * self.font_scale)
     }
@@ -315,6 +316,42 @@ pub fn reinstall_current(cx: &mut App) {
     install(state.documents.clone(), state.appearance.clone(), None, cx);
 }
 
+/// 系统辅助功能「文本大小」倍率（Windows `UISettings.TextScaleFactor`）；由宿主读取后经
+/// [`set_system_text_scale`] 写入，未写入时为 1。与显示缩放（DPI）无关：后者由 GPUI 按显示器处理。
+#[derive(Clone, Copy)]
+struct SystemTextScale(f32);
+
+impl Global for SystemTextScale {}
+
+/// 系统文本大小倍率的允许范围（Windows 辅助功能「文本大小」为 100% ~ 225%）。
+const SYSTEM_TEXT_SCALE_RANGE: std::ops::RangeInclusive<f32> = 1.0..=2.25;
+
+fn system_text_scale(cx: &App) -> f32 {
+    cx.try_global::<SystemTextScale>()
+        .map_or(1., |scale| scale.0)
+}
+
+/// 记录系统「文本大小」倍率，变化时按当前主题与偏好重装：与字体大小偏好相乘，只放大文字与承载
+/// 文字的行 / 控件高度（同字体大小，见 `fonts::fit_text`），图标、间距不变。非有限值按 1，超出
+/// 100% ~ 225% 的值截到边界；与当前值相同时不做任何事，可在每次窗口激活时调用。
+pub fn set_system_text_scale(scale: f64, cx: &mut App) {
+    let scale = if scale.is_finite() {
+        (scale as f32).clamp(
+            *SYSTEM_TEXT_SCALE_RANGE.start(),
+            *SYSTEM_TEXT_SCALE_RANGE.end(),
+        )
+    } else {
+        1.
+    };
+    if (system_text_scale(cx) - scale).abs() < f32::EPSILON {
+        return;
+    }
+    cx.set_global(SystemTextScale(scale));
+    if cx.has_global::<FluxThemeState>() {
+        reinstall_current(cx);
+    }
+}
+
 /// 当前主题完整已解析 token：注册表路径 → wire 值（颜色为 `#rrggbbaa`，长度 / 圆角 / 字重 / 比例
 /// 为数值，字体为字符串，阴影为层数组）。
 #[must_use]
@@ -360,7 +397,7 @@ fn install(
     let line_ratio = crate::fonts::natural_line_ratio(&typography.sans, cx)
         .max(crate::fonts::natural_line_ratio(&typography.mono, cx));
     let theme_body_size = theme.base.typography.sm.size.as_f32() / appearance.ui_scale();
-    let font_scale = appearance.font_scale(theme_body_size);
+    let font_scale = appearance.font_scale(theme_body_size) * system_text_scale(cx);
     crate::fonts::fit_text(&mut theme, font_scale, line_ratio);
     let tokens = &theme.base;
     let extended = &theme.extended;
@@ -576,5 +613,39 @@ mod tests {
                 active_theme(cx).tokens().colors.primary
             );
         });
+    }
+
+    #[test]
+    fn system_text_scale_enlarges_text_and_survives_preference_changes() {
+        let mut app = app();
+        let body = app.read(|cx| active_theme(cx).tokens().typography.sm.size.as_f32());
+        app.update(|cx| set_system_text_scale(1.5, cx));
+        app.read(|cx| {
+            let theme = active_theme(cx);
+            assert!((theme.tokens().typography.sm.size.as_f32() - body * 1.5).abs() < 0.01);
+            // 间距不随文字放大。
+            assert!((theme.text_extent(10.).as_f32() - 15.).abs() < 0.01);
+        });
+        // 偏好快照回流（改界面缩放）会重装主题，系统文本大小必须仍然生效。
+        let values = BTreeMap::from([(crate::UI_SCALE_KEY.to_owned(), Value::from(1.2))]);
+        app.update(|cx| apply_appearance_preferences(&values, cx));
+        app.read(|cx| {
+            let size = active_theme(cx).tokens().typography.sm.size.as_f32();
+            assert!((size - body * 1.2 * 1.5).abs() < 0.01, "{size}");
+        });
+    }
+
+    #[test]
+    fn system_text_scale_is_clamped_and_rejects_non_finite_values() {
+        let mut app = app();
+        let body = app.read(|cx| active_theme(cx).tokens().typography.sm.size.as_f32());
+        let size_after = |app: &mut TestApp, scale: f64| {
+            app.update(|cx| set_system_text_scale(scale, cx));
+            app.read(|cx| active_theme(cx).tokens().typography.sm.size.as_f32())
+        };
+        assert!((size_after(&mut app, 9.) - body * 2.25).abs() < 0.01);
+        assert!((size_after(&mut app, 0.5) - body).abs() < 0.01);
+        assert!((size_after(&mut app, 2.) - body * 2.).abs() < 0.01);
+        assert!((size_after(&mut app, f64::NAN) - body).abs() < 0.01);
     }
 }

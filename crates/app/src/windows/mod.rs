@@ -160,7 +160,10 @@ impl WindowRegistry {
             window
                 .observe_window_appearance(fluxdown_ui_theme::sync_system_theme)
                 .detach();
-            build(window, cx)
+            let view = build(window, cx);
+            #[cfg(windows)]
+            crate::text_scale::follow_on_activation(&view, window, cx);
+            view
         });
         match result {
             Ok(handle) => {

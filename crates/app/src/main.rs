@@ -35,6 +35,8 @@ mod settings_port;
 #[cfg(windows)]
 mod shell_open;
 mod shortcuts;
+#[cfg(windows)]
+mod text_scale;
 mod update_notices;
 mod windows;
 
