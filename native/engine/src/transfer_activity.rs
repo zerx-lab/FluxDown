@@ -114,11 +114,77 @@ impl Drop for TransferGuard {
         }
     }
 }
+/// Marks host-local CPU/disk finalization so it cannot be mistaken for idle transfer time.
+pub(crate) struct LocalWorkGuard {
+    sink: Arc<dyn crate::events::EventSink>,
+}
+
+impl LocalWorkGuard {
+    pub(crate) fn new(sink: Arc<dyn crate::events::EventSink>) -> Self {
+        sink.emit(crate::events::EngineEvent::LocalWorkChanged { active: true });
+        Self { sink }
+    }
+}
+
+impl Drop for LocalWorkGuard {
+    fn drop(&mut self) {
+        self.sink
+            .emit(crate::events::EngineEvent::LocalWorkChanged { active: false });
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::TransferTracker;
+    use super::{LocalWorkGuard, TransferTracker};
+    use crate::events::{EngineEvent, EventSink};
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingSink(Mutex<Vec<bool>>);
+
+    impl EventSink for RecordingSink {
+        fn emit(&self, event: EngineEvent) {
+            if let EngineEvent::LocalWorkChanged { active } = event {
+                self.0.lock().unwrap().push(active);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_work_guard_balances_normal_error_cancel_and_nested_scopes() {
+        let sink = Arc::new(RecordingSink(Mutex::new(Vec::new())));
+        let erased: Arc<dyn EventSink> = sink.clone();
+        {
+            let _normal = LocalWorkGuard::new(erased.clone());
+        }
+        {
+            let _outer = LocalWorkGuard::new(erased.clone());
+            let _inner = LocalWorkGuard::new(erased.clone());
+        }
+        fn fails(sink: Arc<dyn EventSink>) -> Result<(), ()> {
+            let _error = LocalWorkGuard::new(sink);
+            Err(())
+        }
+        assert!(fails(erased.clone()).is_err());
+
+        let worker_sink = erased;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _cancel = LocalWorkGuard::new(worker_sink);
+            started.send(()).expect("test awaits guard creation");
+            std::future::pending::<()>().await;
+        });
+        ready.await.expect("guard created before cancellation");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            [
+                true, false, true, true, false, false, true, false, true, false
+            ]
+        );
+    }
 
     #[test]
     fn overlapping_reads_same_range_and_retry_do_not_lose_each_other() {

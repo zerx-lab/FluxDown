@@ -1578,8 +1578,12 @@ impl PluginManager {
             let dev = p.dev;
             let hooks_entry = p.hooks_entry.clone();
             let hooks_cache = p.hooks_cache.clone();
+            let local_work = activity_task_id
+                .as_ref()
+                .map(|_| crate::transfer_activity::LocalWorkGuard::new(sink.clone()));
 
             handle.spawn(async move {
+                let _local_work = local_work;
                 if let Some(tid) = &activity_task_id {
                     sink.emit(EngineEvent::PluginHookActivity {
                         task_id: tid.clone(),

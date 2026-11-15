@@ -858,6 +858,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
     } else {
         0
     };
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
 
     // --- Audio+Video muxing ---
     // DASH streams typically have separate audio and video tracks.
@@ -888,6 +889,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
         {
             tracing::debug!("download progress receiver closed");
         }
+
         match mux_audio_video(
             &dest_path,
             &audio_path,
@@ -1542,6 +1544,7 @@ async fn run_track_pair_inner(
     {
         tracing::debug!("download progress receiver closed");
     }
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
 
     // 合并两轨；ffmpeg 缺失/失败时保留双文件（与 manifest 路径一致的优雅降级）。
     let mut mux_succeeded = true;
@@ -1567,6 +1570,7 @@ async fn run_track_pair_inner(
         {
             tracing::debug!("download progress receiver closed");
         }
+
         match mux_audio_video(
             &dest_path,
             &audio_path,

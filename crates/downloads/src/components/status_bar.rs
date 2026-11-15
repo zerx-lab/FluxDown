@@ -12,7 +12,8 @@ use std::{collections::BTreeMap, rc::Rc, time::Duration};
 /// 数字输入弹窗的确认回调。
 type NumberConfirm = Rc<dyn Fn(i64, &mut App)>;
 
-use fluxdown_protocol::{ApplicationErrorCode, PowerAction};
+use super::power_prompt;
+use fluxdown_protocol::{ApplicationErrorCode, PowerAction, PowerLowSpeedCondition};
 use fluxdown_ui_components::{
     ControlExt as _, DialogIntent, FluxIcon, dialog_footer, dialog_title, field_hint, form,
     form_field, tabular_numbers, toolbar_action_button, tooltip_view,
@@ -37,8 +38,8 @@ use crate::{
     model::{
         format_bytes,
         shutdown::{
-            POWER_ACTION_PREF, ShutdownRequest, ShutdownStatus, power_action_pref_value,
-            read_power_action,
+            POWER_ACTION_PREF, POWER_LOW_SPEED_KBPS_PREF, POWER_LOW_SPEED_MINUTES_PREF,
+            ShutdownRequest, ShutdownStatus, power_action_pref_value, read_power_action,
         },
         speed_limit_recent::{push_recent, read_speed_limit_recent},
     },
@@ -285,6 +286,32 @@ fn armed_text(
     status: &ShutdownStatus,
     keys: &PowerActionKeys,
 ) -> String {
+    if status.countdown_remaining.is_none()
+        && let Some(condition) = status.low_speed
+    {
+        let elapsed = status.low_speed_elapsed_secs.map_or_else(
+            || translator.text("powerLowSpeedWaiting").to_owned(),
+            |seconds| {
+                translator.text_with(
+                    "powerLowSpeedElapsed",
+                    &[("time", &format_countdown(Duration::from_secs(seconds)))],
+                )
+            },
+        );
+        let action = translator.text(match status.action {
+            PowerAction::Shutdown => "powerActionShutdown",
+            PowerAction::Sleep => "powerActionSleep",
+        });
+        return translator.text_with(
+            "powerLowSpeedArmed",
+            &[
+                ("threshold", &(condition.threshold_bps / 1024).to_string()),
+                ("duration", &(condition.duration_secs / 60).to_string()),
+                ("elapsed", &elapsed),
+                ("action", action),
+            ],
+        );
+    }
     match (status.countdown_remaining, status.armed_delay) {
         (Some(remaining), _) => {
             translator.text_with(keys.countdown, &[("time", &format_countdown(remaining))])
@@ -656,9 +683,8 @@ impl DownloadView {
             .into_any_element()
     }
 
-    /// 定时关机 / 睡眠控件：未启用时只显示电源图标（悬浮提示 + 菜单：操作单选 + 延迟预设）；
-    /// 已启用 / 倒计时中显示 warning 色倒计时文字，点击取消（紧凑摆放只留 warning 色图标）。
-    /// 没有任务时选延迟即立即倒计时，「完成后立即」只在有任务时出现。
+    /// 定时 / 低速关机与睡眠控件，低速条件独立于完成条件。
+    /// 倒计时中显示 warning 色文字并可点击取消。
     /// 宿主未注入关机端口时为 `None`。
     fn render_shutdown_control(
         &self,
@@ -729,10 +755,55 @@ impl DownloadView {
                 (minutes, SharedString::from(label))
             })
             .collect();
+        let initial_condition = PowerLowSpeedCondition {
+            threshold_bps: self
+                .controller
+                .preference(POWER_LOW_SPEED_KBPS_PREF)
+                .and_then(serde_json::Value::as_u64)
+                .filter(|n| (1..=1_048_576).contains(n))
+                .unwrap_or(5)
+                * 1024,
+            duration_secs: self
+                .controller
+                .preference(POWER_LOW_SPEED_MINUTES_PREF)
+                .and_then(serde_json::Value::as_u64)
+                .filter(|n| (1..=1_440).contains(n))
+                .unwrap_or(5)
+                * 60,
+        };
+        let low_label = SharedString::from(translator.text("powerLowSpeedEntry").to_owned());
+        let low_translator = translator.clone();
+        let low_available = (stats.active_tasks > 0 || stats.retry_pending_tasks > 0)
+            && stats.local_work_count.is_some();
         let arm = move |minutes: i64| ShutdownRequest::Arm {
             delay: minutes_to_duration(minutes),
             action,
         };
+        let low_view = view.clone();
+        let low_shutdown = shutdown.clone();
+        let low_arm: power_prompt::LowSpeedConfirm = Rc::new(move |condition, cx| {
+            if low_view
+                .update(cx, |this, cx| {
+                    for (key, value) in [
+                        (POWER_LOW_SPEED_KBPS_PREF, condition.threshold_bps / 1024),
+                        (POWER_LOW_SPEED_MINUTES_PREF, condition.duration_secs / 60),
+                    ] {
+                        this.execute_status_config_command(
+                            DownloadsCommand::SetLocalPreference {
+                                key,
+                                value: serde_json::Value::from(value),
+                            },
+                            cx,
+                        );
+                    }
+                })
+                .is_err()
+            {
+                // The window was released; do not arm a plan from a stale dialog.
+                return;
+            }
+            low_shutdown(ShutdownRequest::ArmLowSpeed { condition, action }, cx);
+        });
 
         let trigger = status_button("shutdown-trigger", cx)
             .min_w(active_theme(cx).density().status_control)
@@ -759,23 +830,40 @@ impl DownloadView {
                         move |_, _, cx| shutdown(arm(minutes), cx)
                     }));
                 }
-                menu.separator()
-                    .item(PopupMenuItem::new(custom_label.clone()).on_click({
+                menu = menu.separator();
+                menu = menu.item(
+                    PopupMenuItem::new(low_label.clone())
+                        .disabled(!low_available)
+                        .on_click({
+                            let low_arm = low_arm.clone();
+                            let translator = low_translator.clone();
+                            move |_, window, cx| {
+                                power_prompt::open(
+                                    window,
+                                    cx,
+                                    translator.clone(),
+                                    initial_condition,
+                                    low_arm.clone(),
+                                );
+                            }
+                        }),
+                );
+                menu.item(PopupMenuItem::new(custom_label.clone()).on_click({
+                    let shutdown = shutdown.clone();
+                    let prompt = prompt.clone();
+                    move |_, window, cx| {
                         let shutdown = shutdown.clone();
-                        let prompt = prompt.clone();
-                        move |_, window, cx| {
-                            let shutdown = shutdown.clone();
-                            open_number_prompt(
-                                window,
-                                cx,
-                                prompt.clone(),
-                                // 0 分钟等同「完成后立即」（独立菜单项，仅有任务时可用）；自定义必须 ≥ 1。
-                                1,
-                                None,
-                                Rc::new(move |minutes, cx| shutdown(arm(minutes), cx)),
-                            );
-                        }
-                    }))
+                        open_number_prompt(
+                            window,
+                            cx,
+                            prompt.clone(),
+                            // 0 分钟等同「完成后立即」（独立菜单项，仅有任务时可用）；自定义必须 ≥ 1。
+                            1,
+                            None,
+                            Rc::new(move |minutes, cx| shutdown(arm(minutes), cx)),
+                        );
+                    }
+                }))
             });
         Some(trigger.into_any_element())
     }

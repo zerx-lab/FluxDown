@@ -44,12 +44,28 @@ pub fn install(cx: &mut App) {
                 Some(PowerArmParams {
                     delay_secs: delay.as_secs(),
                     action,
+                    low_speed: None,
                 }),
             ),
+            ShutdownRequest::ArmLowSpeed { condition, action } => client
+                .call::<PowerArmParams, Value>(
+                    method::AGENT_POWER_ARM,
+                    Some(PowerArmParams {
+                        delay_secs: fluxdown_protocol::POWER_LOW_SPEED_WARNING_SECS,
+                        action,
+                        low_speed: Some(condition),
+                    }),
+                ),
         };
         cx.spawn(async move |cx| {
-            if let Err(error) = call.await {
-                log::warn!("scheduled power action request failed: {:?}", error.code);
+            let refused = match call.await {
+                Ok(value) => value.get("armed").and_then(Value::as_bool) == Some(false),
+                Err(error) => {
+                    log::warn!("scheduled power action request failed: {:?}", error.code);
+                    true
+                }
+            };
+            if refused {
                 cx.update(|cx| {
                     let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
                         return;
@@ -73,7 +89,6 @@ pub fn install(cx: &mut App) {
         status: status.clone(),
         port,
     });
-
     let session = Desktop::global(cx).session.clone();
     if let Some(power) = session.read(cx).agent_snapshot().map(|body| body.power) {
         apply(&status, power, cx);
@@ -132,6 +147,8 @@ fn shutdown_status(power: PowerStatusDto) -> ShutdownStatus {
     ShutdownStatus {
         armed_delay: power.armed_delay_secs.map(Duration::from_secs),
         countdown_remaining: power.countdown_remaining_secs.map(Duration::from_secs),
+        low_speed: power.low_speed,
+        low_speed_elapsed_secs: power.low_speed_elapsed_secs,
         action: power.action,
     }
 }
