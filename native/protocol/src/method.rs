@@ -186,6 +186,8 @@ pub const DAEMON_PLUGIN_VIEW_EVENT: &str = "daemon.plugin.view.event";
 pub const DAEMON_PLUGIN_VIEW_CLOSE: &str = "daemon.plugin.view.close";
 /// 取会话当前 `{seq, tree}`（序号断档 / 重连后重新同步）。
 pub const DAEMON_PLUGIN_VIEW_SNAPSHOT: &str = "daemon.plugin.view.snapshot";
+/// Update one view session's client locale and re-render without resetting its state.
+pub const DAEMON_PLUGIN_VIEW_SET_LOCALE: &str = "daemon.plugin.view.setLocale";
 /// 会话续期（`{sessions: [...]}`）；90 s 无续期的会话会被关闭。
 pub const DAEMON_PLUGIN_VIEW_KEEPALIVE: &str = "daemon.plugin.view.keepalive";
 /// 执行插件命令（`{identity, command, taskIds}`）。慢方法：可能激活宿主。
@@ -576,6 +578,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_PLUGIN_VIEW_EVENT,
     DAEMON_PLUGIN_VIEW_CLOSE,
     DAEMON_PLUGIN_VIEW_SNAPSHOT,
+    DAEMON_PLUGIN_VIEW_SET_LOCALE,
     DAEMON_PLUGIN_VIEW_KEEPALIVE,
     DAEMON_PLUGIN_COMMAND,
     DAEMON_PLUGIN_INVOKE,

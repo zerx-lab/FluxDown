@@ -138,6 +138,7 @@ export const METHOD = {
   DAEMON_PLUGIN_VIEW_CLOSE: 'daemon.plugin.view.close',
   DAEMON_PLUGIN_VIEW_SNAPSHOT: 'daemon.plugin.view.snapshot',
   DAEMON_PLUGIN_VIEW_KEEPALIVE: 'daemon.plugin.view.keepalive',
+  DAEMON_PLUGIN_VIEW_SET_LOCALE: 'daemon.plugin.view.setLocale',
   DAEMON_PLUGIN_COMMAND: 'daemon.plugin.command',
   DAEMON_PLUGIN_INVOKE: 'daemon.plugin.invoke',
   DAEMON_PLUGIN_PAGE_INVOKE: 'daemon.plugin.pageInvoke',

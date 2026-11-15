@@ -92,6 +92,8 @@ export class ViewSession {
   /** 每次 open / reopen 递增，用来丢弃过期的异步结果。 */
   private epoch = 0
   private resyncing = false
+  private appliedLocale: string | null = null
+  private localeSync: Promise<void> | null = null
   private readonly listeners = new Set<() => void>()
 
   /** 容器关闭处理（登录 / 设置弹窗等）；未设置则 requested 关闭显示「已结束」。 */
@@ -129,10 +131,40 @@ export class ViewSession {
     stopIfIdle()
   }
 
+  /** Update the existing daemon session without reopening or re-running plugin initialization. */
+  setLocale(locale: string): void {
+    if (this.target.locale === locale) return
+    this.target.locale = locale
+    this.syncLocale()
+  }
+
+  private syncLocale(): void {
+    const id = this.id
+    if (id === null || this.localeSync !== null || this.disposed) return
+    const epoch = this.epoch
+    this.localeSync = (async () => {
+      while (this.id === id && this.epoch === epoch && this.appliedLocale !== this.target.locale) {
+        const locale = this.target.locale
+        try {
+          await rpc.daemon.plugin.viewSetLocale({ session: id, locale })
+          this.appliedLocale = locale
+        } catch (error) {
+          toast.error(error)
+          if (this.target.locale === locale) return
+        }
+      }
+    })().finally(() => {
+      this.localeSync = null
+      if (this.id !== id || this.epoch !== epoch) this.syncLocale()
+    })
+  }
+
   /** 打开（或重新打开）会话。 */
   async open(): Promise<void> {
     mount(this)
     const epoch = ++this.epoch
+    const openedLocale = this.target.locale
+    this.appliedLocale = null
     this.unregister()
     this.set({ phase: 'loading', error: null, reason: null })
     // open 进行中就订阅事件并缓存未知会话的动作：插件 init 里发出的动作可能先于应答到达。
@@ -143,7 +175,7 @@ export class ViewSession {
         identity: this.target.identity,
         view: this.target.view,
         taskId: this.target.taskId,
-        locale: this.target.locale,
+        locale: openedLocale,
       })
       if (this.disposed || epoch !== this.epoch) {
         early.delete(opened.session)
@@ -152,7 +184,9 @@ export class ViewSession {
       }
       this.seq = opened.seq
       this.register(opened.session)
+      this.appliedLocale = openedLocale
       this.set({ phase: 'ready', tree: opened.tree })
+      this.syncLocale()
       const pending = early.get(opened.session)
       if (pending !== undefined) {
         early.delete(opened.session)

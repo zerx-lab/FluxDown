@@ -646,6 +646,10 @@ pub enum HostCall {
     ViewRefresh {
         session: String,
     },
+    ViewLocale {
+        session: String,
+        locale: String,
+    },
     ViewClose {
         session: String,
     },

@@ -2,7 +2,11 @@
 //! required / number / min-max / select 前置校验，全部通过才发起
 //! `daemon.plugin.updateSettings`（`pattern` 由 daemon 侧 JS RegExp 校验）。
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use fluxdown_protocol::{PluginDto, RpcErrorData, SettingFieldDto};
 use fluxdown_ui_components::{
@@ -132,10 +136,23 @@ pub struct PluginSettingsForm {
     port: Arc<dyn ExtensionsPort>,
     identity: String,
     fields: Vec<SettingFieldDto>,
+    display_fields: BTreeMap<usize, SettingFieldDto>,
+    locale: String,
     controls: Vec<FieldControl>,
     errors: HashMap<String, FieldError>,
     server_error: Option<SharedString>,
     saving: bool,
+}
+
+fn localized_fields(fields: &[SettingFieldDto], locale: &str) -> BTreeMap<usize, SettingFieldDto> {
+    fields
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| match field.localized(locale) {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(field) => Some((index, field)),
+        })
+        .collect()
 }
 
 impl PluginSettingsForm {
@@ -146,6 +163,17 @@ impl PluginSettingsForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let locale = translator.read(cx).locale().to_owned();
+        let display_fields = localized_fields(&plugin.settings, &locale);
+        cx.observe(&translator, |this, _, cx| {
+            let locale = this.translator.read(cx).locale();
+            if locale != this.locale {
+                this.display_fields = localized_fields(&this.fields, locale);
+                this.locale = locale.to_owned();
+            }
+            cx.notify();
+        })
+        .detach();
         let controls = plugin
             .settings
             .iter()
@@ -179,6 +207,8 @@ impl PluginSettingsForm {
             port,
             identity: plugin.identity.clone(),
             fields: plugin.settings.clone(),
+            display_fields,
+            locale,
             controls,
             errors: HashMap::new(),
             server_error: None,
@@ -452,7 +482,10 @@ impl Render for PluginSettingsForm {
         });
         let mut toggles: Vec<AnyElement> = Vec::new();
         for index in 0..self.fields.len() {
-            let field = &self.fields[index];
+            let field = self
+                .display_fields
+                .get(&index)
+                .unwrap_or(&self.fields[index]);
             let title = SharedString::from(if field.title.is_empty() {
                 field.key.clone()
             } else {
@@ -626,6 +659,7 @@ impl Render for PluginSettingsTabs {
 #[cfg(test)]
 mod tests {
     use fluxdown_protocol::{SettingFieldDto, SettingOptionDto};
+    use std::collections::BTreeMap;
 
     use super::{FieldError, submit_value, trim_number, validate_field};
 
@@ -644,6 +678,7 @@ mod tests {
             pattern: None,
             helper_script: None,
             helper_label: None,
+            localizations: BTreeMap::new(),
         }
     }
 

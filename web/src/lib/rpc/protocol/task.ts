@@ -479,9 +479,22 @@ export interface BtPeerCountsDto {
   dead: number;
 }
 
+/** 任务视角的 DHT 状态（`BtDhtState`）；未知取值（新 daemon 扩展）按设置开关显示。 */
+export type BtDhtState = 'disabled' | 'private' | 'idle' | 'unavailable' | 'running' | 'unknown';
+
+/** `BtStatusDto.dht`：DHT 实况；节点数为会话级（所有 BT 任务共享），非 `running` 为 0。 */
+export interface BtDhtDto {
+  state: BtDhtState;
+  nodesV4: number;
+  nodesV6: number;
+}
+
 /** `daemon.task.btStatus` 结果（`BtStatusDto`）；非 BT 任务返回 `invalidArgument`。 */
 export interface BtStatusDto {
+  /** 设置里的 DHT 开关（旧客户端只认它）。 */
   dhtEnabled: boolean;
+  /** DHT 实况；旧 daemon 缺省（退回只看 `dhtEnabled`）。 */
+  dht?: BtDhtDto;
   peerCounts: BtPeerCountsDto;
   trackers: BtTrackerDto[];
   peers: BtPeerDto[];

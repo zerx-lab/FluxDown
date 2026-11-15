@@ -632,6 +632,29 @@ impl PluginManager {
         Ok(())
     }
 
+    /// Update only this session's locale and render with its existing plugin state.
+    ///
+    /// Completion is published through the same tree-event pipeline as input events.
+    pub fn set_view_locale(
+        self: &Arc<Self>,
+        session: &str,
+        locale: String,
+    ) -> Result<(), PluginError> {
+        let (identity, ticket, enqueued) = self.enqueue_session_call(
+            session,
+            HostCall::ViewLocale {
+                session: session.to_owned(),
+                locale,
+            },
+        )?;
+        let me = self.clone();
+        let session = session.to_owned();
+        self.runtime.spawn_handle().spawn(async move {
+            me.finish_tree(identity, session, ticket, enqueued).await;
+        });
+        Ok(())
+    }
+
     /// 关闭会话（客户端主动）。未知会话静默忽略。
     pub fn close_view(self: &Arc<Self>, session: &str) {
         self.close_view_with_reason(session, "closed");

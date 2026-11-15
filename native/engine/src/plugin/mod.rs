@@ -49,6 +49,7 @@ pub mod quickjs;
 pub mod quickjs_host;
 pub mod runtime;
 pub mod semver;
+mod setting_localization;
 pub mod sniff_pack;
 mod tool_path;
 pub use manager::routing;

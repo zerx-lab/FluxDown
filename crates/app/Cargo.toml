@@ -53,6 +53,9 @@ gpui = { workspace = true, features = ["test-support"] }
 [target.'cfg(windows)'.build-dependencies]
 winresource.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["UI_ViewManagement"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSImage", "NSResponder"] }

@@ -264,6 +264,10 @@ fn encode(call: &HostCall) -> Result<(&'static str, String), PluginError> {
         HostCall::ViewRefresh { session } => {
             ("viewRefresh", serde_json::json!({ "session": session }))
         }
+        HostCall::ViewLocale { session, locale } => (
+            "viewLocale",
+            serde_json::json!({ "session": session, "locale": locale }),
+        ),
         HostCall::ViewClose { session } => ("viewClose", serde_json::json!({ "session": session })),
         HostCall::Command { id, task_ids } => (
             "command",
@@ -294,7 +298,7 @@ fn encode(call: &HostCall) -> Result<(&'static str, String), PluginError> {
 /// 按调用种类把 JS 返回值映射为 [`HostReply`]。
 fn decode(kind: &str, value: serde_json::Value, started: StartedTasks) -> HostReply {
     match kind {
-        "viewOpen" | "viewEvent" | "viewRefresh" => HostReply::Tree(value),
+        "viewOpen" | "viewEvent" | "viewRefresh" | "viewLocale" => HostReply::Tree(value),
         "invoke" => HostReply::Value { value, started },
         _ => HostReply::None,
     }
@@ -906,6 +910,11 @@ const HOST_PRELUDE: &str = r#"
     },
     async viewRefresh(a) {
       return await renderSession(sessionOf(a.session));
+    },
+    async viewLocale(a) {
+      const s = sessionOf(a.session);
+      s.ctx.locale = a.locale;
+      return await renderSession(s);
     },
     async viewClose(a) {
       const s = sessions.get(a.session);

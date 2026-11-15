@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { rpc } from '../../../lib/rpc'
-import type { EventFrame, PluginViewOpenedDto, ViewNode } from '../../../lib/rpc'
+import type { EventFrame, PluginViewOpenedDto, PluginViewOpenParams, PluginViewSetLocaleParams, ViewNode } from '../../../lib/rpc'
 import { ViewSession, onPluginViewEventForTest, reopenOnRevisionChange, setPluginNavigator } from './viewStore'
 
 const root = (text: string): ViewNode => ({ id: 'root', k: 'text', p: { text }, c: [] })
@@ -147,6 +147,65 @@ describe('plugin view actions before the open reply', () => {
     expect(closed).toBe(0)
     expect(session.getState().phase).toBe('ready')
     session.dispose()
+  })
+})
+
+describe('plugin view locale updates', () => {
+  const plugin = rpc.daemon.plugin
+  const original = { viewOpen: plugin.viewOpen, viewSetLocale: plugin.viewSetLocale, viewClose: plugin.viewClose }
+  afterEach(() => {
+    Object.assign(plugin, original)
+  })
+
+  test('applies the latest locale after an in-flight open without reopening', async () => {
+    let release: () => void = () => undefined
+    const reply = new Promise<PluginViewOpenedDto>((resolve) => {
+      release = () => resolve({ session: 'locale-session', seq: 0, tree: root('initial') })
+    })
+    let openCount = 0
+    const openedLocales: string[] = []
+    const requests: PluginViewSetLocaleParams[] = []
+    Object.assign(plugin, {
+      viewOpen: (params: PluginViewOpenParams) => {
+        openCount += 1
+        openedLocales.push(params.locale ?? '')
+        return reply
+      },
+      viewSetLocale: (params: PluginViewSetLocaleParams) => {
+        requests.push(params)
+        return Promise.resolve({})
+      },
+      viewClose: () => Promise.resolve({}),
+    })
+    const session = new ViewSession({ identity: 'a@x', view: 'v', locale: 'en' })
+    const opening = session.open()
+    session.setLocale('fr-CA')
+    release()
+    await opening
+    expect(openedLocales).toEqual(['en'])
+    expect(requests).toEqual([{ session: 'locale-session', locale: 'fr-CA' }])
+    expect(openCount).toBe(1)
+    expect(session.getState().phase).toBe('ready')
+    session.dispose()
+  })
+
+  test('updates only the targeted existing session', () => {
+    const requests: PluginViewSetLocaleParams[] = []
+    Object.assign(plugin, {
+      viewSetLocale: (params: PluginViewSetLocaleParams) => {
+        requests.push(params)
+        return Promise.resolve({})
+      },
+      viewClose: () => Promise.resolve({}),
+    })
+    const first = readySession('locale-first')
+    const second = readySession('locale-second')
+    first.setLocale('fr')
+    expect(requests).toEqual([{ session: 'locale-first', locale: 'fr' }])
+    expect(first.getState().phase).toBe('ready')
+    expect(second.getState().phase).toBe('ready')
+    first.dispose()
+    second.dispose()
   })
 })
 

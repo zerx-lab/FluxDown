@@ -9,6 +9,7 @@ import {
   filterPrivate,
   formatBytes,
   liveDialogPlugins,
+  localizedSettingField,
   pageOf,
   privateSearchVisible,
   safeHttpUrl,
@@ -78,6 +79,55 @@ describe('validateField', () => {
     const select = field('string', 'select', { options: [{ value: 'a', label: 'A' }] })
     expect(validateField(select, 'b')).toEqual({ kind: 'select' })
     expect(validateField(select, 'a')).toBeNull()
+  })
+})
+
+describe('localizedSettingField', () => {
+  const source = field('string', 'select', {
+    key: 'quality',
+    title: 'Quality',
+    description: 'Select quality',
+    default: 'high',
+    helperScript: 'copy-me',
+    helperLabel: 'Copy setting',
+    options: [{ value: 'high', label: 'High' }, { value: 'low', label: 'Low' }],
+    localizations: {
+      en: { title: 'English title', options: { high: 'English high' } },
+      fr: { description: 'Choisir', options: { low: 'Bas' } },
+      'fr-CA': { title: ' ', helperLabel: 'Aide exact' },
+      zh: { description: '简体回退' },
+      'ZH-HANT': { title: '品質', description: '選擇品質', options: { high: '高' } },
+      'zh-Hans': { title: '简体质量', helperLabel: '简体辅助' },
+      'zh-CN': { helperLabel: '大陆辅助' },
+    },
+  })
+
+  test('uses per-text exact, truncated and English fallback without changing technical values', () => {
+    const localized = localizedSettingField(source, 'fr-CA')
+    expect(localized.title).toBe('English title')
+    expect(localized.description).toBe('Choisir')
+    expect(localized.options.map(({ value, label }) => [value, label])).toEqual([['high', 'English high'], ['low', 'Bas']])
+    expect(localized.key).toBe('quality')
+    expect(localized.default).toBe('high')
+    expect(localized.helperScript).toBe('copy-me')
+    expect(localized.options.map(({ value }) => value)).toEqual(['high', 'low'])
+    expect(localizedSettingField(source, 'fr-CA').helperLabel).toBe('Aide exact')
+  })
+
+  test('supports Chinese script aliases and switching languages without mutating source text', () => {
+    expect(localizedSettingField(source, 'zh_TW').options[0]?.label).toBe('高')
+    expect(localizedSettingField(source, 'zh-Hant-HK').title).toBe('品質')
+    expect(localizedSettingField(source, 'zh-Hans-TW').title).toBe('简体质量')
+    expect(localizedSettingField(source, 'zh').title).toBe('简体质量')
+    expect(localizedSettingField(source, 'zh').description).toBe('简体回退')
+    expect(localizedSettingField(source, 'zh').helperLabel).toBe('简体辅助')
+    expect(localizedSettingField(source, 'zh-CN').title).toBe('简体质量')
+    expect(localizedSettingField(source, 'zh-CN').helperLabel).toBe('大陆辅助')
+    expect(localizedSettingField(source, 'de').title).toBe('English title')
+    expect(localizedSettingField(source, 'de').description).toBe('Select quality')
+    expect(localizedSettingField(source, 'de').options[0]?.label).toBe('English high')
+    expect(source.title).toBe('Quality')
+    expect(source.options[0]?.label).toBe('High')
   })
 })
 

@@ -6317,6 +6317,16 @@
           "key": {
             "type": "string"
           },
+          "localizations": {
+            "type": "object",
+            "description": "Per-client display text keyed by locale; technical values remain unchanged.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingLocalizationDto"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "max": {
             "type": [
               "number",
@@ -6356,6 +6366,40 @@
           "widget": {
             "type": "string",
             "description": "`text`/`password`/`textarea`/`select`/`toggle`/`number`/`folder`。"
+          }
+        }
+      },
+      "SettingLocalizationDto": {
+        "type": "object",
+        "description": "Optional translated labels for one setting and one locale.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "helperLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "type": "object",
+            "description": "Existing option value → translated label.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

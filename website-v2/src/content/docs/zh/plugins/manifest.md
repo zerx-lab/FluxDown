@@ -3,7 +3,7 @@ title: Manifest 参考
 description: manifest.json 全部字段及校验规则、设置项 widget 矩阵、URL pattern 规则，以及安装与加载时的检查方式。
 section: plugins
 order: 10
-sourceHash: "23b875a039ab"
+sourceHash: "d28b2970cb47"
 ---
 
 `manifest.json` 位于插件包根部，声明插件是什么、带有哪些入口脚本、向界面贡献什么，以及需要哪些能力。所有键名使用 camelCase。**未知键会被拒绝**——写错字段名会让整份 manifest 校验失败，而不是被静默忽略。
@@ -429,7 +429,7 @@ hooks 在下载生命周期事件发生时运行你的代码。
 | `key` | 是 | 插件内唯一，不能为空。脚本里用 `flux.settings.<key>` 读回。 |
 | `title` | 是 | 表单标签。 |
 | `description` | 否 | 字段下方的说明文字。 |
-| `type` | 是 | `string`、`number` 或 `boolean`。 |
+| `localizations` | 否 | 按客户端 UI 语言选择的显示文案翻译，见[设置文案本地化](#设置文案本地化)。 |
 | `widget` | 否 | 缺省按 type 推导：string→`text`，number→`number`，boolean→`toggle`。 |
 | `options` | 仅 select | 非空的 `{ "value", "label" }` 列表。 |
 | `default` | 否 | **一律写成字符串**，number 也是（`"3"`），boolean 只能是 `"true"` / `"false"`。select 的 default 必须是某个 option 的 value；number 的 default 必须能解析为有限数且落在 `min` / `max` 区间内。 |
@@ -438,6 +438,24 @@ hooks 在下载生命周期事件发生时运行你的代码。
 | `pattern` | 仅 string | **JavaScript RegExp** 语法（不是 Rust regex），保存时对值做校验。安装时会编译一次，不合法的 pattern 会导致安装被拒绝。 |
 | `helperScript` | 仅 string | 一段脚本，宿主会在该字段旁渲染一个**复制**按钮。宿主只把脚本文本复制到剪贴板，**绝不执行**。用户把它粘贴到目标站点的浏览器开发者工具 Console 中运行（典型用途：读取 `document.cookie` 并把登录 Cookie 复制回该字段）。须非空、不超过 4 KB。 |
 | `helperLabel` | 与 `helperScript` 同时出现 | 按钮文案，不超过 60 个字符。只能与 `helperScript` 一起使用；省略时用通用文案「复制获取脚本」。 |
+
+#### 设置文案本地化
+
+设置项可选添加 `localizations` 对象。语言键使用连字符分隔；每个语言值可翻译 `title`、`description`、`helperLabel`，以及以现有选项 **value** 为键的选项标签。翻译不会改变设置 key、选项 value、默认值或校验规则。
+
+```json
+"localizations": {
+  "en": { "title": "Preferred quality", "options": { "hd": "High definition" } },
+  "zh-Hans": { "title": "偏好画质", "options": { "hd": "高清" } }
+}
+```
+
+客户端使用自己的 UI 语言，与 daemon 语言无关。每段文案依次尝试最具体语言、逐级截短的语言标签、`en`，最后回退到 manifest 原文；空白翻译会跳过。没有本地化的旧 manifest 仍有效，并显示原文。自定义视图继续使用 `ctx.locale`；语言切换时该值会热更新，应在 `render` 内重新读取，而不要在 `init` 中缓存本地化文案。桌面脚本可使用实时 getter `fluxdown.locale()`。客户端语言变化时应更新自定义视图。
+
+语言键忽略大小写：首段为 2–8 个英文字母，其后可用 `-` 连接 1–8 位字母或数字的子标签；忽略大小写后重复的语言键会被拒绝。每项最多 64 种语言，每段译文最多 4096 个 Unicode 字符。未知字段、未知选项 value，以及未声明 `helperScript` 的 `helperLabel` 翻译都会被拒绝。
+
+支持中文语言别名：`zh` 可匹配 `zh-Hans` / `zh-CN`，`zh-HK` / `zh-MO` 可匹配 `zh-Hant` / `zh-TW`；显式 `Hans` / `Hant` 优先于冲突的地区。若原文不是英文，也应给原文语言提供翻译，避免英文回退优先于原文。切换语言只更新标签，不清空未保存的设置值。可移植视图只更新该会话的 `ctx.locale` 并以原有状态重新渲染，不会重跑 `init` 或触发输入事件。
+
 
 ### widget × type 合法矩阵
 

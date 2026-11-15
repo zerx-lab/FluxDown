@@ -3,7 +3,7 @@ title: 打包与插件市场
 description: 构建 .fxplug、本地自检、安装/更新/卸载语义、发布到插件索引的完整流程，以及通过 REST/RPC 管理插件。
 section: plugins
 order: 15
-sourceHash: "19475c72b279"
+sourceHash: "e362e9be2b99"
 ---
 
 本页带着一个写好的插件，从源码文件夹走到用户可安装的插件包，再走到官方插件市场。想先学怎么写插件，请从[写第一个插件](/docs/zh/plugins/your-first-plugin/)或 [TypeScript 项目](/docs/zh/plugins/typescript-project/)开始；manifest 的全部规则见 [Manifest 参考](/docs/zh/plugins/manifest/)。
@@ -156,9 +156,13 @@ PR 检查与每小时一次的 Stage 任务使用同一套规则：
 | 字节 | ≤ 10 MiB；GitHub 提供附件 digest 时，sha256 必须一致 |
 | zip | ≤ 200 个条目、解压 ≤ 50 MiB；禁止 `..`、绝对路径与反斜杠路径，禁止符号链接、加密条目、ZIP64、重复条目；只支持 *stored* 或 *deflate* 压缩；校验 CRC；`manifest.json` 在根目录或唯一的包裹目录内 |
 | manifest | 与客户端同一套 schema；此外每个 `entry` 与 `icon` 文件都必须存在于包内 |
+| 设置国际化（仅市场） | 新上架及更新时，每项设置的标题、全部选项标签和自定义说明／辅助按钮文案，均须有完整、非空的 `localizations.en` 与 `localizations.zh` |
 | 身份 | manifest 的 `identity` 等于登记的 `id` |
 | 版本 | 严格的 `MAJOR.MINOR.PATCH`，严格高于全部已发布版本；字节完全相同时，只把该 Release 追加为这个版本的镜像 |
 | 不可变 | 已被收录的 Release 附件如果 digest 发生变化，会被上报；已发布版本保持原有字节 |
+
+这是发布准入策略，**不是客户端安装或加载要求**。市场已有版本、原包字节相同的补镜像不追溯要求翻译。历史豁免以可信发布基线中的 identity/version/hash 为准，作者不能自行声明“旧插件”来绕过。自动 Stage 与镜像 CI 中的新增分片检查都会执行，历史复核不执行。没有 manifest 设置项的插件无需翻译设置标签；自定义脚本视图仍需自行实现按语言渲染。
+
 
 ### 4. 发布更新
 

@@ -194,6 +194,15 @@ pub struct PluginViewSessionParams {
     pub session: String,
 }
 
+/// Change the language of an existing view session without reopening it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PluginViewLocaleParams {
+    pub session: String,
+    pub locale: String,
+}
+
 /// `daemon.plugin.view.snapshot` 返回：会话当前的序号与整棵树。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

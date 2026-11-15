@@ -594,6 +594,21 @@ pub fn setting_field_to_dto(
         helper_script: field.helper_script,
         helper_label: field.helper_label,
         pattern: field.pattern,
+        localizations: field
+            .localizations
+            .into_iter()
+            .map(|(locale, text)| {
+                (
+                    locale,
+                    fluxdown_protocol::plugin_i18n::SettingLocalizationDto {
+                        title: text.title,
+                        description: text.description,
+                        helper_label: text.helper_label,
+                        options: text.options,
+                    },
+                )
+            })
+            .collect(),
     }
 }
 

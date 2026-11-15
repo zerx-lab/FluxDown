@@ -1476,6 +1476,7 @@ impl DaemonService {
             | method::DAEMON_PLUGIN_VIEW_EVENT
             | method::DAEMON_PLUGIN_VIEW_CLOSE
             | method::DAEMON_PLUGIN_VIEW_SNAPSHOT
+            | method::DAEMON_PLUGIN_VIEW_SET_LOCALE
             | method::DAEMON_PLUGIN_VIEW_KEEPALIVE
             | method::DAEMON_PLUGIN_COMMAND
             | method::DAEMON_PLUGIN_INVOKE
@@ -1485,6 +1486,7 @@ impl DaemonService {
             | method::DAEMON_PLUGIN_VIEW_EVENT
             | method::DAEMON_PLUGIN_VIEW_CLOSE
             | method::DAEMON_PLUGIN_VIEW_SNAPSHOT
+            | method::DAEMON_PLUGIN_VIEW_SET_LOCALE
             | method::DAEMON_PLUGIN_VIEW_KEEPALIVE
             | method::DAEMON_PLUGIN_COMMAND
             | method::DAEMON_PLUGIN_INVOKE

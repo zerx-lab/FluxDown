@@ -428,7 +428,7 @@ Each entry describes one field; the app generates the form on desktop and Web. K
 | `key` | yes | Unique within the plugin, not empty. Read back as `flux.settings.<key>`. |
 | `title` | yes | Form label. |
 | `description` | no | Help text below the field. |
-| `type` | yes | `string`, `number`, or `boolean`. |
+| `localizations` | no | Per-client display translations; see [Localizing setting text](#localizing-setting-text). |
 | `widget` | no | Defaults by type: string→`text`, number→`number`, boolean→`toggle`. |
 | `options` | select only | Non-empty list of `{ "value", "label" }`. |
 | `default` | no | **Always a string**, even for numbers (`"3"`) and booleans (`"true"` / `"false"`). For select, must be one of the option values; for number, must parse as a finite number and fall inside `min` / `max`. |
@@ -437,6 +437,24 @@ Each entry describes one field; the app generates the form on desktop and Web. K
 | `pattern` | string only | A **JavaScript RegExp** (not a Rust regex) validated against the value on save. It is compiled at install time; an invalid pattern rejects the install. |
 | `helperScript` | string only | A snippet the host shows a **Copy** button for, next to the field. The host only copies the text to the clipboard — it never runs it. The user pastes it into the target site's browser DevTools console (typical use: read `document.cookie` and copy a login cookie back into the field). Non-empty, at most 4 KB. |
 | `helperLabel` | with `helperScript` | Button label, at most 60 characters. Only valid together with `helperScript`; a generic "Copy helper script" label is used when omitted. |
+
+#### Localizing setting text
+
+Add an optional `localizations` object to a setting. Locale keys use BCP-47-like hyphenated tags; each value may translate `title`, `description`, `helperLabel`, and option labels keyed by the existing option **value**. These translations never alter setting keys, option values, defaults, or validation.
+
+```json
+"localizations": {
+  "en": { "title": "Preferred quality", "options": { "hd": "High definition" } },
+  "zh-Hans": { "title": "偏好画质", "options": { "hd": "高清" } }
+}
+```
+
+The client uses its own UI language, independently of the daemon language. For each text it tries the most-specific locale, progressively shorter tags, then `en`, then the original manifest text; blank translations are skipped. Existing manifests without localizations remain valid and display their original text. Custom views continue to receive `ctx.locale`; it is hot-updated and should be re-read inside `render` after language changes rather than caching localized strings in `init`. Desktop scripts can use the live `fluxdown.locale()` getter. Update custom views when the client language changes.
+
+Locale keys are case-insensitive: use a 2–8 letter language followed by optional 1–8 character alphanumeric subtags separated by `-`; duplicates after case folding are rejected. A setting supports at most 64 locales, and each translated string at most 4096 Unicode characters. Unknown members, unknown option values, and `helperLabel` without `helperScript` are rejected.
+
+Chinese UI aliases are supported: `zh` can use `zh-Hans` / `zh-CN`, and `zh-HK` / `zh-MO` can use `zh-Hant` / `zh-TW`; an explicit `Hans` / `Hant` script overrides a conflicting region. Include a translation for the original language too when the original text is not English, otherwise the English fallback can take precedence. Changing language updates labels without clearing unsaved setting values. For portable views, the host updates only that session's `ctx.locale` and re-renders with its existing state; it does not rerun `init` or invoke an input event.
+
 
 ### Widget × type matrix
 

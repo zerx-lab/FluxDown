@@ -59,6 +59,12 @@ export interface PluginViewOpenedDto {
   tree: ViewNode;
 }
 
+/** `daemon.plugin.view.setLocale` parameters; changes presentation in the existing session. */
+export interface PluginViewSetLocaleParams {
+  session: string;
+  locale: string;
+}
+
 /** 视图事件；字段对应 schema `events.*.payload`。 */
 export interface ViewEventDto {
   type: string;

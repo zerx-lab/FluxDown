@@ -198,6 +198,47 @@ pub struct PeerCounts {
     pub dead: u32,
 }
 
+/// DHT 路由表规模：IPv4 / IPv6 两张表各自的节点数（会话级，所有 BT 任务共享）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DhtNodes {
+    pub ipv4: u32,
+    pub ipv6: u32,
+}
+
+/// 任务视角的 DHT 状态。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DhtStatus {
+    /// 设置里关闭了 DHT。
+    #[default]
+    Disabled,
+    /// 私有种子（BEP 27）不走 DHT。
+    Private,
+    /// 已启用，但 BT 会话未运行（没有在跑的 BT 任务），不在 DHT 网络里。
+    Idle,
+    /// 会话在运行，DHT 却没能启动（会话已退回只靠 tracker / PeX）。
+    Unavailable,
+    /// 运行中。
+    Running(DhtNodes),
+}
+
+impl DhtStatus {
+    /// `session`：BT 会话未运行为 `None`；运行中为会话里 DHT 的节点数（DHT 没能启动为 `None`）。
+    #[must_use]
+    pub fn resolve(enabled: bool, private: bool, session: Option<Option<DhtNodes>>) -> Self {
+        if !enabled {
+            return Self::Disabled;
+        }
+        if private {
+            return Self::Private;
+        }
+        match session {
+            None => Self::Idle,
+            Some(None) => Self::Unavailable,
+            Some(Some(nodes)) => Self::Running(nodes),
+        }
+    }
+}
+
 /// 会话里的种子：把 librqbit 的逐 tracker 实况转成展示行（顺序即 librqbit 给出的层级顺序）。
 /// `own` 是种子 / 磁力链接自带的 tracker，用来区分来源；其余算会话追加。
 #[must_use]
@@ -289,7 +330,10 @@ pub fn idle_tracker_rows(own_tiers: &[Vec<String>], session: &[String]) -> Vec<T
 /// [`crate::download_manager::DownloadManager::bt_status`] 的结果。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BtStatusView {
+    /// 设置里的 DHT 开关（旧客户端只认它）。
     pub dht_enabled: bool,
+    /// 任务视角的 DHT 实况。
+    pub dht: DhtStatus,
     pub counts: PeerCounts,
     pub trackers: Vec<TrackerRow>,
     pub peers: Vec<PeerRow>,
@@ -464,6 +508,34 @@ pub fn apply_speeds(task_id: &str, rows: &mut [PeerRow]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dht_status_reports_why_dht_does_not_serve_a_task() {
+        let nodes = DhtNodes {
+            ipv4: 312,
+            ipv6: 40,
+        };
+        // 关闭优先于一切：私有种子 / 会话在跑都不改变「已关闭」。
+        assert_eq!(
+            DhtStatus::resolve(false, true, Some(Some(nodes))),
+            DhtStatus::Disabled
+        );
+        // 私有种子即使会话里 DHT 在跑也不用它。
+        assert_eq!(
+            DhtStatus::resolve(true, true, Some(Some(nodes))),
+            DhtStatus::Private
+        );
+        assert_eq!(DhtStatus::resolve(true, false, None), DhtStatus::Idle);
+        // 会话在跑但 DHT 启动失败（已退回仅 tracker / PeX）。
+        assert_eq!(
+            DhtStatus::resolve(true, false, Some(None)),
+            DhtStatus::Unavailable
+        );
+        assert_eq!(
+            DhtStatus::resolve(true, false, Some(Some(nodes))),
+            DhtStatus::Running(nodes)
+        );
+    }
 
     #[test]
     fn summarize_error_matches_qbittorrent_style() {

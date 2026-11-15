@@ -89,6 +89,50 @@ export function showNoneWorking(trackers: readonly Pick<BtTrackerDto, 'status'>[
   return trackers.length > 0 && !any('unknown') && !any('working') && any('notWorking')
 }
 
+// ── DHT 伪行 ──
+// 与 crates/downloads/src/model/bt_trackers.rs::{dht_row, dht_nodes_text} 对齐，共用夹具 crates/downloads/tests/fixtures/bt_dht_row_cases.json。
+
+/** DHT 伪行的展示意图：文案键 + 沿用 tracker 状态配色的语气；`nodes` = [IPv4, IPv6] 路由表节点数（只在运行且已有节点时）。 */
+export interface DhtRowView {
+  label: string
+  tone: BtTrackerStatus
+  hint: string | null
+  nodes: readonly [number, number] | null
+}
+
+const dhtView = (label: string, tone: BtTrackerStatus, hint: string | null = null): DhtRowView => ({ label, tone, hint, nodes: null })
+
+/** 旧 daemon（无 `dht`）或未知状态退回只看设置开关。 */
+export function dhtRow(status: Pick<BtStatusDto, 'dhtEnabled' | 'dht'>): DhtRowView {
+  const bySetting = () => (status.dhtEnabled ? dhtView('btTrackerDhtOn', 'working') : dhtView('btTrackerDhtOff', 'notContacted'))
+  const dht = status.dht
+  if (dht === undefined) return bySetting()
+  switch (dht.state) {
+    case 'disabled':
+      return dhtView('btTrackerDhtOff', 'notContacted')
+    case 'private':
+      return dhtView('btTrackerDhtPrivate', 'notContacted', 'btTrackerDhtPrivateHint')
+    case 'idle':
+      return dhtView('btTrackerDhtOn', 'working')
+    case 'unavailable':
+      return dhtView('btTrackerDhtUnavailable', 'notWorking', 'btTrackerDhtUnavailableHint')
+    case 'running':
+      // 路由表空：刚启动正在引导，长时间如此通常是 UDP 被拦截。
+      if (dht.nodesV4 === 0 && dht.nodesV6 === 0) return dhtView('btTrackerDhtConnecting', 'updating', 'btTrackerDhtConnectingHint')
+      return { ...dhtView('btTrackerDhtOn', 'working', 'btTrackerDhtNodesHint'), nodes: [dht.nodesV4, dht.nodesV6] }
+    default:
+      return bySetting()
+  }
+}
+
+/** 节点数文案键与参数（`{n}` 总数、`{v4}` / `{v6}` 分项）：没有 IPv6 节点时只报总数。 */
+export function dhtNodesText([v4, v6]: readonly [number, number]): { key: string; args: { n: string; v4: string; v6: string } } {
+  return {
+    key: v6 === 0 ? 'btTrackerDhtNodes' : 'btTrackerDhtNodesSplit',
+    args: { n: String(v4 + v6), v4: String(v4), v6: String(v6) },
+  }
+}
+
 /** 渲染行：保持服务端顺序，仅归一化可选字段。 */
 export interface TrackerRow {
   key: string

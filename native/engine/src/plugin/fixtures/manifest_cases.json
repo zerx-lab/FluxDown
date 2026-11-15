@@ -1,5 +1,96 @@
 [
  {
+  "name": "localized settings reject null map",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "localizations": null}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized settings allow null optional text",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string",
+    "localizations": {"en": {"title": null, "description": null, "helperLabel": null}}}]
+  },
+  "files": [], "ok": true, "risk": "standard", "networkHosts": []
+ },
+ {
+  "name": "localized settings preserve option values",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{
+    "key": "quality", "title": "清晰度", "type": "string", "widget": "select",
+    "options": [{"value": "best", "label": "最高画质"}], "default": "best",
+    "localizations": {
+     "en": {"title": "Quality", "description": "Choose quality", "options": {"best": "Best"}},
+     "zh-Hant": {"title": "清晰度"}
+    }
+   }]
+  },
+  "files": [], "ok": true, "risk": "standard", "networkHosts": []
+ },
+ {
+  "name": "localized settings reject invalid locale",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "localizations": {"en_US": {"title": "Q"}}}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized settings reject duplicate normalized locale",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "localizations": {"en-US": {"title": "Q"}, "EN-us": {"title": "Q"}}}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized settings reject unknown option value",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "widget": "select",
+    "options": [{"value": "best", "label": "Best"}],
+    "localizations": {"en": {"options": {"renamed": "Best"}}}}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized settings reject technical fields",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "localizations": {"en": {"default": "changed"}}}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized settings reject nonstring text",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "localizations": {"en": {"title": 42}}}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized helper label requires helper script",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "localizations": {"en": {"helperLabel": "Copy"}}}]
+  },
+  "files": [], "ok": false
+ },
+ {
+  "name": "localized helper label and empty partial text",
+  "manifest": {
+   "identity": "a@b", "name": "N", "version": "1.0.0",
+   "settings": [{"key": "q", "title": "Q", "type": "string", "helperScript": "copy(document.cookie)",
+    "localizations": {"en": {"helperLabel": "Copy cookie script", "description": " "}}}]
+  },
+  "files": [], "ok": true, "risk": "standard", "networkHosts": []
+ },
+ {
   "name": "minimal ok",
   "manifest": {
    "identity": "a@b",

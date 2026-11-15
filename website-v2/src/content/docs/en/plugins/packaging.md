@@ -155,9 +155,13 @@ The PR check and the hourly Stage job apply the same rules:
 | Bytes | ≤ 10 MiB; sha256 equals GitHub's asset digest when GitHub provides one |
 | Zip | ≤ 200 entries, ≤ 50 MiB unpacked; no `..`, absolute or backslash paths, no symlinks, no encrypted entries, no ZIP64, no duplicate entries; only *stored* or *deflate* compression; CRC verified; `manifest.json` at the root or inside one wrapper folder |
 | Manifest | The same schema as the client; additionally every `entry` and `icon` file must exist in the package |
+| Setting localization (market only) | New publications and updates require complete, non-blank `localizations.en` and `localizations.zh` for every setting title and option label, plus any custom description/helper label |
 | Identity | Manifest `identity` equals the registered `id` |
 | Version | Strict `MAJOR.MINOR.PATCH`, strictly greater than every published version; byte-identical bytes only add the release as another mirror of that version |
 | Immutability | If a release asset that was already ingested changes its digest, it is reported; the published version keeps its original bytes |
+
+This is a publication policy, **not a client installation or loading requirement**. Existing market versions and byte-identical mirror additions keep working without translations. The market recognizes historical packages by the trusted published identity/version/hash, not an author-supplied legacy flag. The rule is enforced both during automatic Stage and against new shards in mirror CI; historical re-admission does not apply it. Plugins with no manifest settings have no setting labels to translate; custom script views still need to implement their own language-aware rendering.
+
 
 ### 4. Publish updates
 

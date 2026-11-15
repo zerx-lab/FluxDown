@@ -53,6 +53,57 @@ export function rangeHint(field: SettingFieldDto): string | null {
   return null
 }
 
+/** Locale candidates for a client-local manifest setting presentation. */
+function settingLocaleCandidates(locale: string): string[] {
+  const normalized = locale.trim().replaceAll('_', '-').toLowerCase()
+  const parts = normalized.split('-')
+  const candidates: string[] = []
+  const add = (candidate: string) => {
+    if (!candidates.includes(candidate)) candidates.push(candidate)
+  }
+  const chinese = parts[0] === 'zh'
+  for (let end = parts.length; end > 0; end -= 1) {
+    const parent = parts.slice(0, end).join('-')
+    if (parent && (!chinese || parent !== 'zh')) add(parent)
+  }
+  if (chinese) {
+    const script = parts.slice(1).find((part) => part === 'hans' || part === 'hant')
+    const region = parts[1]
+    const aliases = script === 'hant' || (!script && ['tw', 'hk', 'mo'].includes(region ?? ''))
+      ? ['zh-hant', 'zh-tw', 'zh']
+      : script === 'hans' || (!script && ['cn', 'sg'].includes(region ?? ''))
+        ? ['zh-hans', 'zh-cn', 'zh']
+        : parts.length === 1 ? ['zh', 'zh-hans', 'zh-cn'] : ['zh']
+    aliases.forEach(add)
+  }
+  add('en')
+  return candidates
+}
+
+/** Derive presentation-only field text; setting keys, defaults and option values stay untouched. */
+export function localizedSettingField(field: SettingFieldDto, locale: string): SettingFieldDto {
+  const localizations = field.localizations ?? {}
+  const candidates = settingLocaleCandidates(locale)
+  const translations = candidates.map((candidate) => Object.entries(localizations).find(([key]) => key.toLowerCase() === candidate)?.[1])
+  const text = (select: (value: NonNullable<SettingFieldDto['localizations']>[string]) => string | undefined, original: string) => {
+    for (const localization of translations) {
+      const value = localization && select(localization)
+      if (value?.trim()) return value
+    }
+    return original
+  }
+  return {
+    ...field,
+    title: text((value) => value.title, field.title),
+    description: text((value) => value.description, field.description),
+    helperLabel: text((value) => value.helperLabel, field.helperLabel ?? ''),
+    options: field.options.map((option) => ({
+      ...option,
+      label: text((value) => value.options?.[option.value], option.label),
+    })),
+  }
+}
+
 // ── 市场 ────────────────────────────────────────────────────
 
 /** 市场列表每次展开的条数。 */

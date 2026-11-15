@@ -5,6 +5,15 @@ export interface SettingOptionDto {
   label: string;
 }
 
+/** Per-locale presentation text for one manifest setting. */
+export interface SettingLocalizationDto {
+  title?: string;
+  description?: string;
+  helperLabel?: string;
+  /** Existing technical option value → translated display label. */
+  options?: Record<string, string>;
+}
+
 /** 声明式设置项。 */
 export interface SettingFieldDto {
   key: string;
@@ -23,6 +32,8 @@ export interface SettingFieldDto {
   /** 非空时 UI 在字段旁渲染复制按钮（仅复制文本，绝不执行）。 */
   helperScript: string | null;
   helperLabel: string | null;
+  /** Optional client-localized manifest presentation text; never changes setting values. */
+  localizations?: Record<string, SettingLocalizationDto>;
 }
 
 export type PluginRisk = "standard" | "elevated" | "full";

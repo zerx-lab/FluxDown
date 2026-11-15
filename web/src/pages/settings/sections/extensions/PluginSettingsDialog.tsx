@@ -6,7 +6,7 @@
 import { Copy, Eye, EyeOff } from 'lucide-react'
 import { useId, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useT } from '../../../../i18n'
+import { useI18n, useT } from '../../../../i18n'
 import type { TFunction } from '../../../../i18n'
 import { copyText } from '../../../../lib/copy'
 import { RpcError, rpc } from '../../../../lib/rpc'
@@ -15,7 +15,7 @@ import { Button, Dialog, DialogFooter, FieldError, FormField, Icon, Input, Optio
 import { activeSettingsViewOf } from '../../../plugins/contributions'
 import { PluginViewHost } from '../../../plugins/view/PluginViewHost'
 import { extensionErrorText } from './errors'
-import { initialFieldValue, rangeHint, validateField } from './logic'
+import { initialFieldValue, localizedSettingField, rangeHint, validateField } from './logic'
 import type { FieldError as FieldErrorInfo } from './logic'
 
 function fieldErrorText(t: TFunction, error: FieldErrorInfo): string {
@@ -126,6 +126,7 @@ function FieldControl({ id, field, value, invalid, disabled, onChange }: Control
 }
 
 function SettingsBody({ plugin, onClose }: { plugin: PluginDto; onClose: () => void }) {
+  const { locale } = useI18n()
   const t = useT()
   const baseId = useId()
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -188,15 +189,16 @@ function SettingsBody({ plugin, onClose }: { plugin: PluginDto; onClose: () => v
     toggles = []
   }
   for (const field of plugin.settings) {
+    const display = localizedSettingField(field, locale)
     const id = `${baseId}-${field.key}`
-    const title = field.title === '' ? field.key : field.title
+    const title = display.title === '' ? field.key : display.title
     const value = values[field.key] ?? ''
     const error = errors[field.key]
     const errorNode = error ? <FieldError>{fieldErrorText(t, error)}</FieldError> : null
     const helper = field.helperScript ? (
       <div>
         <Button variant="outline" icon={Copy} onClick={() => copyHelper(field.helperScript ?? '')}>
-          {field.helperLabel ? field.helperLabel : t('pluginCopyHelperScript')}
+          {display.helperLabel ? display.helperLabel : t('pluginCopyHelperScript')}
         </Button>
       </div>
     ) : null
@@ -205,7 +207,7 @@ function SettingsBody({ plugin, onClose }: { plugin: PluginDto; onClose: () => v
         <OptionRow
           key={field.key}
           title={title}
-          description={field.description || undefined}
+          description={display.description || undefined}
           control={<Switch checked={value === 'true'} disabled={saving} aria-label={title} onCheckedChange={(checked) => setValue(field.key, checked ? 'true' : 'false')} />}
         />,
       )
@@ -223,9 +225,9 @@ function SettingsBody({ plugin, onClose }: { plugin: PluginDto; onClose: () => v
     flushToggles()
     blocks.push(
       <div key={field.key} className="flex w-full flex-col gap-1.5">
-        <FormField label={title} htmlFor={id} hint={field.description || undefined}>
+        <FormField label={title} htmlFor={id} hint={display.description || undefined}>
           <div className="flex w-full min-w-0 flex-col gap-1.5">
-            <FieldControl id={id} field={field} value={value} invalid={error !== undefined} disabled={saving} onChange={(next) => setValue(field.key, next)} />
+            <FieldControl id={id} field={display} value={value} invalid={error !== undefined} disabled={saving} onChange={(next) => setValue(field.key, next)} />
             {helper}
           </div>
         </FormField>

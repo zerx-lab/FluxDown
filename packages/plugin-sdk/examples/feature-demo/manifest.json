@@ -56,7 +56,7 @@
     ]
   },
   "settings": [
-    { "key": "greeting", "title": "问候语", "type": "string", "default": "你好" },
+    { "key": "greeting", "title": "问候语", "type": "string", "default": "你好", "localizations": { "zh": { "title": "问候语" }, "en": { "title": "Greeting" } } },
     {
       "key": "mode",
       "title": "模式",
@@ -66,10 +66,11 @@
         { "value": "calm", "label": "安静" },
         { "value": "loud", "label": "热闹" }
       ],
-      "default": "calm"
+      "default": "calm",
+      "localizations": { "zh": { "title": "模式", "options": { "calm": "安静", "loud": "热闹" } }, "en": { "title": "Mode", "options": { "calm": "Calm", "loud": "Loud" } } }
     },
-    { "key": "toastOnDone", "title": "任务完成时弹通知", "type": "boolean", "default": "true" },
-    { "key": "tickSeconds", "title": "面板计时间隔（秒）", "type": "number", "min": 1, "max": 60, "default": "2" }
+    { "key": "toastOnDone", "title": "任务完成时弹通知", "type": "boolean", "default": "true", "localizations": { "zh": { "title": "任务完成时弹通知" }, "en": { "title": "Notify when a task completes" } } },
+    { "key": "tickSeconds", "title": "面板计时间隔（秒）", "type": "number", "min": 1, "max": 60, "default": "2", "localizations": { "zh": { "title": "面板计时间隔（秒）" }, "en": { "title": "Panel timer interval (seconds)" } } }
   ],
   "permissions": ["tasks", "browserRules", "desktop", "background", "pageScripts", "archive"]
 }

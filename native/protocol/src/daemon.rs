@@ -955,13 +955,51 @@ pub struct BtPeerCountsDto {
     pub dead: u32,
 }
 
+/// 任务视角的 DHT 状态（[`BtDhtDto::state`]）。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum BtDhtState {
+    /// 设置里关闭了 DHT。
+    Disabled,
+    /// 私有种子（BEP 27）不走 DHT。
+    Private,
+    /// 已启用，但 BT 会话未运行（没有在跑的 BT 任务）。
+    Idle,
+    /// 会话在运行，DHT 却没能启动（只靠 tracker / PeX）。
+    Unavailable,
+    /// 运行中，节点数见 [`BtDhtDto`]。
+    Running,
+    /// 对端发送了本端不认识的状态。
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// `daemon.task.btStatus` 的 DHT 实况。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BtDhtDto {
+    pub state: BtDhtState,
+    /// IPv4 路由表节点数（会话级，所有 BT 任务共享）；非 `running` 为 0。
+    #[serde(default)]
+    pub nodes_v4: u32,
+    /// IPv6 路由表节点数；非 `running` 或只走 IPv4 时为 0。
+    #[serde(default)]
+    pub nodes_v6: u32,
+}
+
 /// `daemon.task.btStatus` 结果：任务的 peer 与 tracker 实况。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BtStatusDto {
-    /// DHT 是否启用（影响无 tracker 时的发现能力）。
+    /// 设置里的 DHT 开关（旧客户端只认它）。
     pub dht_enabled: bool,
+    /// 任务视角的 DHT 实况；旧 daemon 缺省（客户端退回只看 `dht_enabled`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dht: Option<BtDhtDto>,
     pub peer_counts: BtPeerCountsDto,
     pub trackers: Vec<BtTrackerDto>,
     pub peers: Vec<BtPeerDto>,
@@ -2196,6 +2234,10 @@ pub struct SettingFieldDto {
     /// 辅助脚本按钮文案（空则用默认文案）。
     #[serde(default)]
     pub helper_label: Option<String>,
+    /// Per-client display text keyed by locale; technical values remain unchanged.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub localizations:
+        std::collections::BTreeMap<String, crate::plugin_i18n::SettingLocalizationDto>,
 }
 
 /// plugin 层嗅探规则包（`daemon.plugin.sniffRules`）：`pack` 为 `null` 表示从未有过插件规则

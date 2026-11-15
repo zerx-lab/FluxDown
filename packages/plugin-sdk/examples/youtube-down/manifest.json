@@ -54,7 +54,25 @@
         { "value": "360", "label": "≤ 360p" },
         { "value": "audio", "label": "仅音频" }
       ],
-      "default": "ask"
+      "default": "ask",
+      "localizations": {
+        "zh": {
+          "title": "清晰度",
+          "description": "「每次询问」在下载时弹框列出可用清晰度（60 秒未选按最高画质）；其余选项直接下载不超过该高度的最佳档。播放列表条目从不弹框，「每次询问」按最高画质处理。",
+          "options": {
+            "ask": "每次询问", "best": "最高画质", "2160": "≤ 2160p（4K）", "1440": "≤ 1440p",
+            "1080": "≤ 1080p", "720": "≤ 720p", "480": "≤ 480p", "360": "≤ 360p", "audio": "仅音频"
+          }
+        },
+        "en": {
+          "title": "Quality",
+          "description": "“Ask every time” shows available qualities during download (defaults to the highest after 60 seconds); other choices download the best stream up to the selected height. Playlist entries never prompt; “Ask every time” uses the highest quality.",
+          "options": {
+            "ask": "Ask every time", "best": "Best quality", "2160": "≤ 2160p (4K)", "1440": "≤ 1440p",
+            "1080": "≤ 1080p", "720": "≤ 720p", "480": "≤ 480p", "360": "≤ 360p", "audio": "Audio only"
+          }
+        }
+      }
     },
     {
       "key": "codec",
@@ -66,14 +84,30 @@
         { "value": "compat", "label": "兼容优先（H.264 / MP4）" },
         { "value": "quality", "label": "画质优先（AV1 / VP9）" }
       ],
-      "default": "compat"
+      "default": "compat",
+      "localizations": {
+        "zh": {
+          "title": "编码偏好",
+          "description": "兼容优先：同一清晰度先选 H.264 视频 + AAC 音频（MP4），老设备与剪辑软件都能直接用；1440p 以上通常只有 VP9 / AV1。画质优先：同一清晰度选码率最高的 AV1 / VP9。",
+          "options": { "compat": "兼容优先（H.264 / MP4）", "quality": "画质优先（AV1 / VP9）" }
+        },
+        "en": {
+          "title": "Codec preference",
+          "description": "Compatibility first: at the same resolution, prefer H.264 video + AAC audio (MP4), which works on older devices and in editing software; above 1440p, only VP9 / AV1 is usually available. Quality first: choose the highest-bitrate AV1 / VP9 at the same resolution.",
+          "options": { "compat": "Compatibility first (H.264 / MP4)", "quality": "Quality first (AV1 / VP9)" }
+        }
+      }
     },
     {
       "key": "useTaskCookies",
       "title": "使用浏览器传来的 Cookie",
       "description": "从浏览器扩展发起的下载会携带 youtube.com 的登录 Cookie，可通过「确认你不是机器人」校验并下载会员 / 年龄限制视频。关闭后只使用下方的备用 Cookie。",
       "type": "boolean",
-      "default": "true"
+      "default": "true",
+      "localizations": {
+        "zh": { "title": "使用浏览器传来的 Cookie", "description": "从浏览器扩展发起的下载会携带 youtube.com 的登录 Cookie，可通过「确认你不是机器人」校验并下载会员 / 年龄限制视频。关闭后只使用下方的备用 Cookie。" },
+        "en": { "title": "Use cookies from browser downloads", "description": "Downloads started by the browser extension include youtube.com login cookies. These can pass the “Confirm you’re not a bot” check and access member-only or age-restricted videos. When disabled, only the fallback cookies below are used." }
+      }
     },
     {
       "key": "cookies",
@@ -81,7 +115,11 @@
       "description": "任务没有携带 Cookie（如在 App 里粘贴链接）时使用。支持浏览器 Cookie 头（k=v; k2=v2）或 Netscape cookies.txt 全文。登录会话 Cookie 多为 HttpOnly，请从开发者工具网络面板复制请求头，或用 cookies.txt 导出扩展。",
       "type": "string",
       "widget": "textarea",
-      "default": ""
+      "default": "",
+      "localizations": {
+        "zh": { "title": "备用 Cookie", "description": "任务没有携带 Cookie（如在 App 里粘贴链接）时使用。支持浏览器 Cookie 头（k=v; k2=v2）或 Netscape cookies.txt 全文。登录会话 Cookie 多为 HttpOnly，请从开发者工具网络面板复制请求头，或用 cookies.txt 导出扩展。" },
+        "en": { "title": "Fallback cookies", "description": "Used when a task has no cookies (for example, when a link is pasted in the app). Accepts a browser Cookie header (k=v; k2=v2) or a complete Netscape cookies.txt file. Login session cookies are usually HttpOnly; copy the request header from the developer tools network panel or export cookies.txt with an extension." }
+      }
     },
     {
       "key": "playlistLimit",
@@ -90,7 +128,11 @@
       "type": "number",
       "min": 1,
       "max": 1000,
-      "default": "200"
+      "default": "200",
+      "localizations": {
+        "zh": { "title": "播放列表最多条目", "description": "解析播放列表时最多列出的视频数。" },
+        "en": { "title": "Maximum playlist entries", "description": "Maximum number of videos listed when parsing a playlist." }
+      }
     },
     {
       "key": "playerClients",
@@ -98,7 +140,11 @@
       "description": "依次请求的 InnerTube 客户端，逗号分隔；可选 tv_samsung、tv、tv_downgraded、visionos、web_embedded。留空自动：未登录 tv_samsung,visionos，带登录 Cookie 时 web_embedded,tv_samsung。",
       "type": "string",
       "pattern": "^[a-z_,]*$",
-      "default": ""
+      "default": "",
+      "localizations": {
+        "zh": { "title": "播放器客户端（高级）", "description": "依次请求的 InnerTube 客户端，逗号分隔；可选 tv_samsung、tv、tv_downgraded、visionos、web_embedded。留空自动：未登录 tv_samsung,visionos，带登录 Cookie 时 web_embedded,tv_samsung。" },
+        "en": { "title": "Player clients (advanced)", "description": "Comma-separated InnerTube clients to try in order. Options: tv_samsung, tv, tv_downgraded, visionos, web_embedded. Empty selects automatically: tv_samsung,visionos without login cookies, web_embedded,tv_samsung with login cookies." }
+      }
     }
   ],
   "permissions": ["browserRules"]

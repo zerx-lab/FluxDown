@@ -184,8 +184,8 @@ export interface ViewContext {
   props: Record<string, unknown>;
   /** Task the view is attached to (taskDetail views); `null` otherwise. */
   taskId: string | null;
+  /** Current client UI locale; re-read in render because it hot-updates on language changes. Do not cache localized UI strings in init. */
   locale: string;
-  /** Host-side image loader, scoped to this view session. */
   images: FluxImages;
   /** Requests a re-render (throttled to one render per 100 ms per session). */
   refresh(): void;

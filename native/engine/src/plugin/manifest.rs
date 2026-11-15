@@ -14,7 +14,7 @@
 //! （`packages/plugin-sdk/src/manifest.ts::validatePackage`）做准入，市场收录的包必须能在客户端
 //! 安装：改字段、权限、事件、设置矩阵或安装限制时同步 SDK 并发版，索引仓自动同步。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,21 @@ pub struct SettingOption {
     pub label: String,
 }
 
+/// Optional display-text overrides for one client locale; setting values never change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SettingLocalization {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub helper_label: Option<String>,
+    /// Existing option value → translated label.
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+}
+
 /// 声明式设置项。engine 侧唯一校验语义源。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,6 +126,9 @@ pub struct SettingField {
     /// 辅助脚本按钮文案（空则宿主用默认文案「复制获取脚本」）。
     #[serde(default)]
     pub helper_label: Option<String>,
+    /// Client-local display text; absent translations fall back to the original text.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub localizations: BTreeMap<String, SettingLocalization>,
 }
 
 impl SettingField {
@@ -1447,6 +1465,7 @@ pub fn validate_setting_field(f: &SettingField) -> Result<(), PluginError> {
             f.key
         ));
     }
+    super::setting_localization::validate(f)?;
 
     // number default 必须能解析为数字，且落在 min/max 闭区间。
     if t == SettingType::Number

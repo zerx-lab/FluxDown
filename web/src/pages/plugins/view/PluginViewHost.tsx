@@ -65,7 +65,7 @@ function SessionBody({ session }: { session: ViewSession }) {
 export function PluginViewHost({ identity, view, taskId, className, onClose }: PluginViewHostProps) {
   const { locale } = useI18n()
   const [session, setSession] = useState<ViewSession | null>(null)
-  // 语言切换不重开会话（locale 只在打开时传给插件）。
+  // The open request captures the initial locale; later changes update that session in place.
   const localeRef = useRef(locale)
   localeRef.current = locale
   const onCloseRef = useRef(onClose)
@@ -79,6 +79,9 @@ export function PluginViewHost({ identity, view, taskId, className, onClose }: P
     void next.open()
     return () => next.dispose()
   }, [identity, view, taskId, closable])
+  useEffect(() => {
+    session?.setLocale(locale)
+  }, [locale, session])
 
   return <div className={cn('flex min-h-0 min-w-0 flex-col', className)}>{session ? <SessionBody session={session} /> : null}</div>
 }

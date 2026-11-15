@@ -1,0 +1,59 @@
+{
+  "rows": [
+    {
+      "name": "old daemon, DHT on",
+      "status": { "dhtEnabled": true },
+      "expect": { "label": "btTrackerDhtOn", "tone": "working", "hint": null, "nodes": null }
+    },
+    {
+      "name": "old daemon, DHT off",
+      "status": { "dhtEnabled": false },
+      "expect": { "label": "btTrackerDhtOff", "tone": "notContacted", "hint": null, "nodes": null }
+    },
+    {
+      "name": "disabled in settings",
+      "status": { "dhtEnabled": false, "dht": { "state": "disabled", "nodesV4": 0, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtOff", "tone": "notContacted", "hint": null, "nodes": null }
+    },
+    {
+      "name": "private torrent",
+      "status": { "dhtEnabled": true, "dht": { "state": "private", "nodesV4": 0, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtPrivate", "tone": "notContacted", "hint": "btTrackerDhtPrivateHint", "nodes": null }
+    },
+    {
+      "name": "session idle",
+      "status": { "dhtEnabled": true, "dht": { "state": "idle", "nodesV4": 0, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtOn", "tone": "working", "hint": null, "nodes": null }
+    },
+    {
+      "name": "failed to start",
+      "status": { "dhtEnabled": true, "dht": { "state": "unavailable", "nodesV4": 0, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtUnavailable", "tone": "notWorking", "hint": "btTrackerDhtUnavailableHint", "nodes": null }
+    },
+    {
+      "name": "running with an empty routing table",
+      "status": { "dhtEnabled": true, "dht": { "state": "running", "nodesV4": 0, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtConnecting", "tone": "updating", "hint": "btTrackerDhtConnectingHint", "nodes": null }
+    },
+    {
+      "name": "running, IPv4 only",
+      "status": { "dhtEnabled": true, "dht": { "state": "running", "nodesV4": 312, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtOn", "tone": "working", "hint": "btTrackerDhtNodesHint", "nodes": [312, 0] }
+    },
+    {
+      "name": "running, IPv6 only",
+      "status": { "dhtEnabled": true, "dht": { "state": "running", "nodesV4": 0, "nodesV6": 27 } },
+      "expect": { "label": "btTrackerDhtOn", "tone": "working", "hint": "btTrackerDhtNodesHint", "nodes": [0, 27] }
+    },
+    {
+      "name": "state from a newer daemon falls back to the setting",
+      "status": { "dhtEnabled": false, "dht": { "state": "rebooting", "nodesV4": 9, "nodesV6": 0 } },
+      "expect": { "label": "btTrackerDhtOff", "tone": "notContacted", "hint": null, "nodes": null }
+    }
+  ],
+  "nodesText": [
+    { "nodes": [312, 0], "key": "btTrackerDhtNodes", "args": ["312", "312", "0"] },
+    { "nodes": [280, 32], "key": "btTrackerDhtNodesSplit", "args": ["312", "280", "32"] },
+    { "nodes": [0, 27], "key": "btTrackerDhtNodesSplit", "args": ["27", "0", "27"] }
+  ]
+}

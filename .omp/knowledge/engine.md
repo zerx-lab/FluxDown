@@ -208,6 +208,10 @@
   「未联系」行（私有种子不追加，BEP 27）。`daemon.task.reannounce` 立即重新汇报（不在运行为 `taskStateConflict`）。peer 速度 = 相邻两次采样的字节差
   （`apply_speeds`，同任务多客户端轮询共享采样，间隔 <400ms 沿用上次值）。`BtPeerDto` 另带防吸血研判
   （`ipGroup` / `groupDeliveredBytes` / `suspicion` / `rules` / `action` / `observeOnly`，来自 `BtGuard::peer_insight`）。
+  `BtStatusDto.dht`（`bt_status::DhtStatus::resolve`）给任务视角的 DHT 实况：`disabled`（设置关）> `private`（私有种子，磁力取元数据后经句柄得知）>
+  `idle`（会话未建）/ `unavailable`（会话在跑但 DHT 启动失败已退回，见 `ensure_bt_session` 三级兜底）/ `running` + IPv4 / IPv6 路由表节点数
+  （`BtSession::dht_nodes` = librqbit `DhtStats.routing_table_size{,_v6}`，会话级共享）；`dhtEnabled` 仍是设置开关，供旧客户端。按任务的 DHT 来源 peer 数
+  librqbit 不区分来源（DHT / tracker / LSD 合并成一条 peer 流），要显示须改 fork。
 - **BT 存储操作**（`download_manager/bt_storage_ops.rs` + `bt_move.rs` + `bt_task_files.rs`）：
   - **重命名文件**（`daemon.task.renameBtFile`，仅未完成且选择已确认的任务）：路径先过 `normalize_rename`（`\` 视作分隔符、不越出任务目录、Windows
     保留名 / 尾随点空格、与其他文件或其上级目录撞名一律拒，不分大小写）。会话里的任务交 librqbit `Session::rename_file` 当场挪 staging 里的文件；

@@ -60,6 +60,7 @@ import type {
   PluginViewOpenParams,
   PluginViewOpenedDto,
   PluginViewSessionParams,
+  PluginViewSetLocaleParams,
   PluginViewSnapshotDto,
   PluginIdentityParams,
   PluginInstallDevParams,
@@ -366,6 +367,9 @@ const plugin = {
   /** 打开可移植视图会话（可能激活常驻宿主，按慢方法超时）。 */
   viewOpen: (params: PluginViewOpenParams) =>
     call<PluginViewOpenedDto>(METHOD.DAEMON_PLUGIN_VIEW_OPEN, params, { timeoutMs: SLOW_MIRROR_TIMEOUT_MS }),
+  /** 更新现有可移植视图会话的界面语言，不重新运行插件初始化。 */
+  viewSetLocale: (params: PluginViewSetLocaleParams) =>
+    call<OkResult>(METHOD.DAEMON_PLUGIN_VIEW_SET_LOCALE, params),
   /** 投递视图事件；入队即返回，结果经 `pluginViewFrame` 事件送出。 */
   viewEvent: (params: PluginViewEventParams) =>
     call<OkResult>(METHOD.DAEMON_PLUGIN_VIEW_EVENT, params),

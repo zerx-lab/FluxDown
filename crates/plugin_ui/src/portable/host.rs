@@ -66,6 +66,7 @@ pub struct PluginViewHost {
     container: ViewContainer,
     port: Arc<dyn PluginUiPort>,
     translator: Entity<Translator>,
+    locale: String,
     phase: Phase,
     session: Option<String>,
     seq: u64,
@@ -96,6 +97,8 @@ impl PluginViewHost {
     ) -> Self {
         cx.on_release(|host: &mut Self, cx: &mut App| host.release(cx))
             .detach();
+        cx.observe(&translator, |this, _, cx| this.sync_locale(cx))
+            .detach();
         Self {
             container,
             identity,
@@ -103,6 +106,7 @@ impl PluginViewHost {
             task_id,
             port,
             translator,
+            locale: String::new(),
             phase: Phase::Idle,
             session: None,
             seq: 0,
@@ -281,6 +285,7 @@ impl PluginViewHost {
         self.tree = None;
         self.seq = 0;
         let locale = self.translator.read(cx).locale().to_owned();
+        self.locale.clone_from(&locale);
         let params = PluginViewOpenParams {
             identity: self.identity.clone(),
             view: self.view.clone(),
@@ -317,6 +322,7 @@ impl PluginViewHost {
                 if let Some(early) = early {
                     self.apply_early(early, cx);
                 }
+                self.sync_locale(cx);
             }
             Err(message) => {
                 self.phase = Phase::Closed;
@@ -324,6 +330,36 @@ impl PluginViewHost {
             }
         }
         cx.notify();
+    }
+
+    fn sync_locale(&mut self, cx: &mut Context<Self>) {
+        let locale = self.translator.read(cx).locale();
+        if locale == self.locale || self.phase != Phase::Open {
+            return;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        self.locale = locale.to_owned();
+        let call = self.call(
+            "daemon.plugin.view.setLocale",
+            Ok(serde_json::json!({ "session": session, "locale": self.locale })),
+        );
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = call.await
+                && this
+                    .update(cx, |host, cx| {
+                        if host.session.as_deref() == Some(session.as_str()) {
+                            host.error = Some(error_text(&error));
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+            {
+                log::debug!("plugin view host released before locale update finished");
+            }
+        })
+        .detach();
     }
 
     /// 执行 open 应答前已到达的动作：先动作、后关闭（与 daemon 发出的先后一致）。
