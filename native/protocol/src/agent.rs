@@ -715,6 +715,19 @@ pub enum PowerAction {
     Sleep,
 }
 
+/// Low-speed power actions always allow this many seconds to cancel before execution.
+pub const POWER_LOW_SPEED_WARNING_SECS: u64 = 30;
+
+/// Aggregate download speed must stay strictly below `threshold_bps` for `duration_secs`.
+/// Accepted ranges: 1..=1 GiB/s and 60..=86400 seconds.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PowerLowSpeedCondition {
+    pub threshold_bps: u64,
+    pub duration_secs: u64,
+}
+
 /// 定时关机 / 睡眠的调度状态（agent 拥有状态机与执行）。
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -727,6 +740,12 @@ pub struct PowerStatusDto {
     /// 已排定的操作；未启用时为默认值（旧 agent 缺省 = 关机）。
     #[serde(default)]
     pub action: PowerAction,
+    /// `None` retains the completion-based trigger.
+    #[serde(default)]
+    pub low_speed: Option<PowerLowSpeedCondition>,
+    /// Continuous qualifying seconds; `None` while blocked, disconnected, or above the threshold.
+    #[serde(default)]
+    pub low_speed_elapsed_secs: Option<u64>,
 }
 
 /// `agent.power.arm` 参数：没有任务时立即开始倒计时，否则全部任务完成后再等待 `delay_secs`
@@ -739,6 +758,9 @@ pub struct PowerArmParams {
     /// 缺省 = 关机（旧客户端）。
     #[serde(default)]
     pub action: PowerAction,
+    /// When present, `delay_secs` is replaced by the fixed cancellable warning interval.
+    #[serde(default)]
+    pub low_speed: Option<PowerLowSpeedCondition>,
 }
 
 /// agent 配置同步状态投影。

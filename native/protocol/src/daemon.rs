@@ -244,6 +244,10 @@ pub struct DaemonRuntimeStatsDto {
     /// 「完成后关机」「空闲退出」等联动必须把它们算作仍有工作。
     #[serde(default)]
     pub retry_pending_tasks: u32,
+    /// In-flight local verification / finalization jobs. Missing on older daemons:
+    /// consumers must not infer that it is safe to execute a low-speed power action.
+    #[serde(default)]
+    pub local_work_count: Option<u32>,
 }
 
 /// daemon 托管组件标识。

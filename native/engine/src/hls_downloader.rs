@@ -2649,6 +2649,8 @@ async fn finalize_recording(
         audio_bytes,
     } = input;
 
+    let _local_work = crate::transfer_activity::LocalWorkGuard::new(p.sink.clone());
+
     // Save final progress
     let total_written = downloaded_bytes + audio_bytes;
     p.db.update_task_progress(&p.task_id, total_written).await?;

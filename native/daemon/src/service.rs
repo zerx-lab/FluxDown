@@ -2531,6 +2531,7 @@ impl DaemonService {
             pending_tasks: u32::try_from(pending_tasks).unwrap_or(u32::MAX),
             total_download_bps: stats.total_download_bps,
             retry_pending_tasks: stats.retry_pending_tasks,
+            local_work_count: stats.local_work_count,
             total_upload_bps: stats.total_upload_bps,
             disk_free_bytes: fluxdown_engine::disk_space::available_space_checked(
                 std::path::PathBuf::from(&save_dir),

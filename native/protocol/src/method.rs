@@ -435,6 +435,8 @@ pub const AGENT_UPDATE_INSTALL: &str = "agent.update.install";
 pub const AGENT_UPDATE_CANCEL: &str = "agent.update.cancel";
 /// 定时关机 / 睡眠：`{delaySecs, action}` → `{armed}`；没有任务时立即开始倒计时，
 /// `delaySecs = 0` 只在有任务（活跃 / 排队 / 待重试）时接受，否则 `armed = false`。
+/// 可选 `lowSpeed {thresholdBps, durationSecs}` 改为持续低速触发；必须有下载工作，
+/// 达标后固定 30 秒可取消倒计时，不使用 `delaySecs`。
 pub const AGENT_POWER_ARM: &str = "agent.power.arm";
 pub const AGENT_POWER_DISARM: &str = "agent.power.disarm";
 

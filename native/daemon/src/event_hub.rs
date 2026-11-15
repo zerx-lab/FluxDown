@@ -45,6 +45,7 @@ impl DaemonEventHub {
             expiry_running: false,
         };
         update_runtime_stats(&mut state, Instant::now());
+        state.snapshot.runtime_stats.local_work_count = Some(0);
         Self {
             state: Arc::new(Mutex::new(state)),
             events,
@@ -725,6 +726,22 @@ impl fluxdown_engine::events::EventSink for DaemonEngineEventSink {
     fn emit(&self, event: fluxdown_engine::events::EngineEvent) {
         use fluxdown_engine::events::EngineEvent;
         match event {
+            EngineEvent::LocalWorkChanged { active } => {
+                let mut state = lock_or_recover(&self.0.state);
+                let mut stats = state.snapshot.runtime_stats.clone();
+                let count = stats.local_work_count.unwrap_or(0);
+                stats.local_work_count = Some(if active {
+                    count.saturating_add(1)
+                } else {
+                    count.checked_sub(1).unwrap_or_else(|| {
+                        tracing::error!("unbalanced engine local-work guard");
+                        0
+                    })
+                });
+                self.0
+                    .publish_locked(&mut state, DaemonEvent::RuntimeStatsChanged(stats));
+                return;
+            }
             EngineEvent::TaskTransferred { task_id, bytes } => {
                 // Host-local like the baseline: the progress frame that follows
                 // publishes the updated runtime stats.
@@ -1119,6 +1136,28 @@ mod tests {
     };
 
     use super::{DaemonEngineEventSink, DaemonEventHub};
+
+    #[test]
+    fn local_work_blocks_power_until_every_guard_finishes_and_reaches_subscribers() {
+        let hub = DaemonEventHub::new(DaemonSnapshot::default(), 8);
+        let mut subscriber = hub.subscribe();
+        let sink = DaemonEngineEventSink(hub.clone());
+        assert_eq!(hub.inspect(|s| s.runtime_stats.local_work_count), Some(0));
+        for (active, expected) in [(true, 1), (true, 2), (false, 1), (false, 0)] {
+            sink.emit(EngineEvent::LocalWorkChanged { active });
+            let frame = subscriber
+                .try_recv()
+                .expect("local work immediately publishes stats");
+            let ServiceEvent::Daemon(DaemonEvent::RuntimeStatsChanged(stats)) = &frame.event else {
+                panic!("local work must publish runtime stats");
+            };
+            assert_eq!(stats.local_work_count, Some(expected));
+            assert_eq!(
+                hub.inspect(|s| s.runtime_stats.local_work_count),
+                Some(expected)
+            );
+        }
+    }
 
     /// 引擎的队列顺序增量经 hub 以 `QueueOrderChanged` 发出，并由共享 reducer 更新快照里的
     /// `queue_positions`（名次 = 按 `order` 升序的下标 + 1）。

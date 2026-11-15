@@ -5,12 +5,14 @@
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-use fluxdown_protocol::PowerAction;
+use fluxdown_protocol::{PowerAction, PowerLowSpeedCondition};
 use serde::Deserialize as _;
 use serde_json::Value;
 
-/// 本机偏好：状态栏上次选中的电源操作（`shutdown` / `sleep`；设备本地，不进云同步）。
+/// 本机偏好：状态栏上次选中的电源操作。
 pub(crate) const POWER_ACTION_PREF: &str = "download.power_action";
+pub(crate) const POWER_LOW_SPEED_KBPS_PREF: &str = "download.power_low_speed_kbps";
+pub(crate) const POWER_LOW_SPEED_MINUTES_PREF: &str = "download.power_low_speed_minutes";
 
 /// 解析偏好值；缺省或无法识别时为关机。
 pub(crate) fn read_power_action(value: Option<&Value>) -> PowerAction {
@@ -33,10 +35,14 @@ pub(crate) fn power_action_pref_value(action: PowerAction) -> Value {
 pub enum ShutdownRequest {
     /// 取消已排定的操作（无论是等待任务完成还是正在倒计时）。
     Disarm,
-    /// 排定 `action`：有任务时全部完成后再等 `delay`，没有任务时立即开始 `delay` 倒计时；
-    /// `Duration::ZERO` = 完成后立即（只在有任务时可用）。
+    /// 排定 `action`：有任务时全部完成后再等 `delay`，没有任务时立即开始 `delay` 倒计时。
     Arm {
         delay: Duration,
+        action: PowerAction,
+    },
+    /// 按持续低速条件触发，并在条件成立后进入可取消倒计时。
+    ArmLowSpeed {
+        condition: PowerLowSpeedCondition,
         action: PowerAction,
     },
 }
@@ -48,10 +54,11 @@ pub struct ShutdownStatus {
     pub armed_delay: Option<Duration>,
     /// 真正开始倒计时后的剩余时间；等待任务完成阶段为 `None`。
     pub countdown_remaining: Option<Duration>,
+    pub low_speed: Option<PowerLowSpeedCondition>,
+    pub low_speed_elapsed_secs: Option<u64>,
     /// 已排定的操作（未启用时无意义）。
     pub action: PowerAction,
 }
-
 /// 跨窗口共享的状态（app 从 agent 快照投影写入，任意窗口只读渲染）。
 pub type SharedShutdownStatus = Rc<Cell<ShutdownStatus>>;
 

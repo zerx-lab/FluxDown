@@ -39,6 +39,8 @@ export interface DaemonRuntimeStatsDto {
   saveDir: string;
   /** 「等待自动重试」的任务数（自动重试 / 备用链路 / 插件重试已排程、尚未重新派发）；旧 daemon 不返回。 */
   retryPendingTasks?: number;
+  /** Local verification/finalization jobs; missing or null is unknown, not safe zero. */
+  localWorkCount?: number | null;
 }
 
 export interface ProxyTestRequest {

@@ -10,7 +10,7 @@ import { Button, toast } from '../../../../ui'
 import { rpcErrorText } from '../../../../lib/rpcErrorText'
 import { localizedReleaseBody, releaseDate, releaseNoteBlocks, stripVersionHeading } from '../../../../lib/releaseNotes'
 import { canCancel, canInstall, manualLine, manualUrl, statusLine, updateLineText, useUpdateStatus } from '../../../../lib/update'
-import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsCustomRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefString } from '../../kit'
+import { DaemonNumberRow, PrefDropdownRow, PrefSwitchRow, SettingsCustomRow, SettingsPage, SettingsRow, SettingsSection, useSettingsReadOnly, usePrefBoolean, usePrefString } from '../../kit'
 
 const CHROME_STORE = 'https://chromewebstore.google.com/search/FluxDown'
 const FIREFOX_STORE = 'https://addons.mozilla.org/firefox/addon/fluxdown/'
@@ -182,6 +182,15 @@ function ExportRow() {
 export function AboutSettings() {
   const t = useT()
   const version = useRpcSelector((state) => state.hello?.serviceVersion ?? '')
+  const update = useUpdateStatus()
+  const autoCheck = usePrefBoolean('general.auto_check_update', true)
+  const silentSupported = update != null && (
+    update.installKind === 'windowsSetup'
+    || update.installKind === 'windowsPortable'
+    || update.installKind === 'macosApp'
+    || update.installKind === 'linuxAppImage'
+    || update.installKind === 'linuxPortable'
+  )
 
   return (
     <SettingsPage title={t('settingsCatAbout')} description={t('settingsCatAboutDesc')}>
@@ -202,6 +211,15 @@ export function AboutSettings() {
           ]}
         />
         <PrefSwitchRow prefKey="general.auto_check_update" fallback titleKey="autoCheckUpdate" descKey="autoCheckUpdateBackgroundDesc" />
+        {silentSupported ? (
+          <PrefSwitchRow
+            prefKey="general.silent_auto_update"
+            fallback={false}
+            titleKey="silentAutoUpdate"
+            descKey="silentAutoUpdateDesc"
+            disabled={!autoCheck}
+          />
+        ) : null}
         <UpdateRow />
         <SettingsRow title={t('webServerReleases')}>
           <LinkButtons links={[{ label: 'GitHub', url: SERVER_RELEASES }]} />
