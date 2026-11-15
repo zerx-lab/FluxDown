@@ -3800,6 +3800,34 @@ impl Db {
         let default_sub_urls = crate::tracker_subscription::default_subscription_urls();
         #[cfg(feature = "ed2k")]
         let default_ed2k_met_urls = crate::ed2k::server_subscription::default_server_met_urls();
+        // 每个安装只在端口键缺失时随机生成；已有配置（包括 eD2K 的 0）原样保留。
+        // BT 只缺一个边界时沿用另一个，避免把手动端口拼成无效范围。
+        #[cfg(feature = "bt")]
+        let default_bt_port = match self.get_config("bt_port_start").await? {
+            Some(port) => port,
+            None => self
+                .get_config("bt_port_end")
+                .await?
+                .unwrap_or_else(|| rand::random_range(49152u16..=65535).to_string()),
+        };
+        #[cfg(feature = "ed2k")]
+        let default_ed2k_port = self
+            .get_config("ed2k_listen_port")
+            .await?
+            .unwrap_or_else(|| {
+                #[cfg(feature = "bt")]
+                let bt_port = default_bt_port.parse::<u16>().ok();
+                #[cfg(feature = "bt")]
+                let port = loop {
+                    let port = rand::random_range(49152u16..=65535);
+                    if Some(port) != bt_port {
+                        break port;
+                    }
+                };
+                #[cfg(not(feature = "bt"))]
+                let port = rand::random_range(49152u16..=65535);
+                port.to_string()
+            });
         #[cfg_attr(
             not(any(feature = "bt", feature = "ed2k")),
             allow(unused_mut, clippy::useless_vec)
@@ -3874,8 +3902,8 @@ impl Db {
             ("bt_enable_dht", "true"),
             ("bt_enable_upnp", "true"),
             ("bt_enable_utp", "true"),
-            ("bt_port_start", "6881"),
-            ("bt_port_end", "6891"),
+            ("bt_port_start", &default_bt_port),
+            ("bt_port_end", &default_bt_port),
             // MSE 三态逃生开关（disabled/enabled/forced），无 UI，经 config API/CLI 可设。
             ("bt_mse_mode", "enabled"),
             ("bt_custom_trackers", ""),
@@ -3906,9 +3934,9 @@ impl Db {
             ("ed2k_server_sub_urls", &default_ed2k_met_urls),
             ("ed2k_server_sub_cache", ""),
             ("ed2k_server_sub_updated_at", "0"),
-            // eD2K 客户端：监听端口（0=OS 选）、UPnP 端口映射争取 HighID、
-            // Kad DHT 去中心化找源。UPnP/Kad 默认启用（best-effort，失败回退）。
-            ("ed2k_listen_port", "0"),
+            // eD2K 客户端：TCP 监听端口（首次随机固定，0=OS 每次选）、
+            // UPnP 争取 HighID、Kad DHT 去中心化找源。
+            ("ed2k_listen_port", &default_ed2k_port),
             ("ed2k_enable_upnp", "true"),
             ("ed2k_enable_kad", "true"),
             // Kad bootstrap：nodes.dat 订阅地址（每行一个，社区维护）+ 合并后的缓存
@@ -3921,6 +3949,8 @@ impl Db {
             ("ed2k_nodes_dat_count", "0"),
             ("ed2k_nodes_dat_updated_at", "0"),
         ]);
+        // 同一事务写入，避免首次启动中断后只留下 BT 范围的一个边界。
+        let mut transaction = self.pool.begin().await?;
         for (key, value) in &defaults {
             sqlx::query(
                 "INSERT INTO config (key, value) VALUES ($1, $2)
@@ -3928,9 +3958,10 @@ impl Db {
             )
             .bind(*key)
             .bind(*value)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         }
+        transaction.commit().await?;
         self.migrate_idle_file_scan_default_off().await?;
         self.migrate_completed_at_backfill().await?;
         #[cfg(feature = "ed2k")]
@@ -10091,6 +10122,112 @@ mod tests {
         );
         assert!(db.ack_cdn_report_lease("b1").await.expect("ack"));
         assert_eq!(db.peek_cdn_report_lease().await.expect("peek"), None);
+        close_test_db(&db, dir).await;
+    }
+
+    #[tokio::test]
+    async fn default_listen_ports_survive_database_reopen() {
+        let (db, dir) = open_test_db().await;
+        db.init_default_config("/tmp").await.expect("init");
+        let config = db.get_all_config().await.expect("config");
+        #[cfg(feature = "bt")]
+        {
+            let port = config["bt_port_start"].parse::<u16>().expect("BT port");
+            assert!(port >= 1024, "default port must not require privileges");
+            assert_eq!(config["bt_port_start"], config["bt_port_end"]);
+        }
+        #[cfg(not(feature = "bt"))]
+        {
+            assert!(!config.contains_key("bt_port_start"));
+            assert!(!config.contains_key("bt_port_end"));
+        }
+        #[cfg(feature = "ed2k")]
+        {
+            let port = config["ed2k_listen_port"]
+                .parse::<u16>()
+                .expect("eD2K port");
+            assert!(port >= 1024, "default port must be fixed and unprivileged");
+            #[cfg(feature = "bt")]
+            assert_ne!(config["ed2k_listen_port"], config["bt_port_start"]);
+        }
+        #[cfg(not(feature = "ed2k"))]
+        assert!(!config.contains_key("ed2k_listen_port"));
+        db.pool.close().await;
+        let reopened = Db::open(&dir).await.expect("reopen");
+        reopened.init_default_config("/tmp").await.expect("restart");
+        let after = reopened.get_all_config().await.expect("config");
+        for key in ["bt_port_start", "bt_port_end", "ed2k_listen_port"] {
+            assert_eq!(config.get(key), after.get(key), "{key} changed on restart");
+        }
+        close_test_db(&reopened, dir).await;
+    }
+
+    #[tokio::test]
+    async fn default_listen_ports_preserve_existing_configuration() {
+        let (db, dir) = open_test_db().await;
+        for (start, end, ed2k) in [
+            ("6881", "6891", "0"),
+            ("16881", "56891", "0"),
+            ("52000", "52000", "53000"),
+        ] {
+            for (key, value) in [
+                ("bt_port_start", start),
+                ("bt_port_end", end),
+                ("ed2k_listen_port", ed2k),
+            ] {
+                db.set_config(key, value).await.expect("existing setting");
+            }
+            db.init_default_config("/tmp").await.expect("init");
+            let config = db.get_all_config().await.expect("config");
+            assert_eq!(config["bt_port_start"], start);
+            assert_eq!(config["bt_port_end"], end);
+            assert_eq!(config["ed2k_listen_port"], ed2k);
+        }
+        close_test_db(&db, dir).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn default_listen_ports_complete_partial_bt_range() {
+        let (db, dir) = open_test_db().await;
+        for (present, missing) in [
+            ("bt_port_start", "bt_port_end"),
+            ("bt_port_end", "bt_port_start"),
+        ] {
+            db.delete_config(missing).await.expect("missing boundary");
+            db.set_config(present, "52000")
+                .await
+                .expect("existing port");
+            db.init_default_config("/tmp").await.expect("init");
+            assert_eq!(
+                db.get_config(missing).await.expect("read"),
+                Some("52000".to_owned())
+            );
+        }
+        close_test_db(&db, dir).await;
+    }
+
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn default_listen_ports_roll_back_incomplete_bt_range() {
+        let (db, dir) = open_test_db().await;
+        sqlx::query(
+            "CREATE TRIGGER reject_bt_port BEFORE INSERT ON config
+             WHEN NEW.key = 'bt_port_end' BEGIN SELECT RAISE(FAIL, 'reject port'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("trigger");
+        assert!(db.init_default_config("/tmp").await.is_err());
+        assert_eq!(db.get_config("bt_port_start").await.expect("read"), None);
+        assert_eq!(db.get_config("bt_port_end").await.expect("read"), None);
+        sqlx::query("DROP TRIGGER reject_bt_port")
+            .execute(&db.pool)
+            .await
+            .expect("drop trigger");
+        db.init_default_config("/tmp").await.expect("retry init");
+        let config = db.get_all_config().await.expect("config");
+        assert_eq!(config["bt_port_start"], config["bt_port_end"]);
         close_test_db(&db, dir).await;
     }
 
