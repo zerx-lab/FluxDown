@@ -28,6 +28,8 @@ import type {
   SeedLocalResult,
   DaemonConfigPatch,
   DaemonConfigSnapshot,
+  Aria2OptionsRequest,
+  Aria2OptionsResponse,
   DaemonCreateTasksParams,
   DaemonCreateTasksResult,
   DaemonCreateTaskParams,
@@ -265,6 +267,8 @@ const config = {
   /** 乐观并发：`expectedRevision` 落后时 conflict，`error.data.revision` 为当前版本。 */
   patch: (params: DaemonConfigPatch) =>
     call<DaemonConfigSnapshot>(METHOD.DAEMON_CONFIG_PATCH, params),
+  aria2Options: (params?: Aria2OptionsRequest) =>
+    call<Aria2OptionsResponse>(METHOD.DAEMON_CONFIG_ARIA2_OPTIONS, params ?? {}),
   proxyTest: (params: ProxyTestRequest) =>
     call<ProxyTestResponse>(METHOD.DAEMON_CONFIG_PROXY_TEST, params),
   proxyRoute: (params: ProxyRouteRequest) =>

@@ -4101,6 +4101,21 @@
   "userAgentSavePreset": "Save as preset",
   "userAgentPresetName": "Preset name",
   "userAgentPresetValue": "User-Agent value",
-  "userAgentPresetExists": "This User-Agent is already saved.",
-  "userAgentPresetInvalid": "Enter a name and a valid User-Agent without control characters."
+  "userAgentPresetInvalid": "Enter a name and a valid User-Agent without control characters.",
+  "aria2AdvancedTitle": "Aria2 advanced options",
+  "aria2AdvancedDescription": "Edit the supported aria2-style options. Size suffixes K/M/G use 1024-based units; split=0 means automatic. Large split values can trigger server rate limits or IP bans. Omitted keys remain unchanged. Reset defaults only changes this draft until you Apply.",
+  "aria2AdvancedOpen": "Open editor",
+  "aria2AdvancedClose": "Close editor",
+  "aria2AdvancedApply": "Apply",
+  "aria2AdvancedDefaults": "Reset draft to defaults",
+  "aria2AdvancedExport": "Export current draft to clipboard",
+  "aria2AdvancedReload": "Reload from current settings",
+  "aria2AdvancedSaved": "Advanced options saved.",
+  "aria2AdvancedLoading": "Loading advanced options…",
+  "aria2AdvancedPriority": "These are shared daemon defaults. The last successfully saved settings edit wins; explicit task options override defaults.",
+  "aria2AdvancedRestart": "Some BT connection settings may require restarting the daemon session.",
+  "aria2AdvancedInvalid": "Invalid option",
+  "aria2AdvancedExported": "Current draft exported to the clipboard.",
+  "aria2AdvancedOpenHint": "All supported options are shown. Edit the draft and Apply to save, or export the current draft.",
+  "aria2AdvancedBusy": "An advanced options request is already in progress."
 }

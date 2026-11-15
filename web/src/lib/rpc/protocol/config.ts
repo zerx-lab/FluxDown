@@ -15,6 +15,20 @@ export interface DaemonConfigPatch {
   values: Record<string, string>;
 }
 
+/** aria2-style supported-options editor preview / export contract. */
+export interface Aria2OptionsRequest {
+  text?: string;
+}
+
+export interface Aria2OptionsResponse {
+  text: string;
+  defaults: string;
+  values: Record<string, string>;
+  revision: number;
+  /** Validation diagnostics remain result data so gateways preserve line/key details. */
+  error?: string;
+}
+
 /** daemon 运行状态投影。 */
 export interface DaemonRuntimeStatsDto {
   activeTasks: number;

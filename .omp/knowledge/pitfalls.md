@@ -110,6 +110,7 @@
 
 另见 AGENTS.md §4：本机端口默认宽松显式严格（WSAEACCES 回退）、远程控制凭据与会话撤销、空闲静默、遥测只有两条匿名事件。
 
+- **需要行号／键名的配置草稿诊断须放在预览结果中，不能只依赖 RPC 错误 message**：现有 agent 网关会用 `agent RPC failed` 包装失败，Web 实测只剩通用文案，丢掉 daemon 原始逐行原因。Aria2 编辑器用 `Aria2OptionsResponse.error` 携带诊断，有错时 `values` 为空、两端禁止提交 patch → `native/protocol/src/aria2_options.rs`、`native/daemon/src/service.rs::aria2_options_preview_is_read_only_and_preserves_omitted_settings`、`native/agent/src/gateway.rs`。
 - **归档能力扩展不能顺带改变云端 / LAN 被动接收任务的分类策略**：这两类任务沿用既有 `category_route: None`，不得因接收端存在分类偏好而自动附加路由；默认目录跟随授权只在原本支持该交互的建任务入口传递 → `native/agent/src/remote.rs::create_local_task`、`native/agent/src/link/service.rs`（`DaemonTaskCreator`）。
 - **捕获确认必须显式传递用户禁用自动分类的意图**：仅比较目录值无法区分自动预填与用户手动选回同一目录，确认请求用 `disableCategoryRoute` 阻止 agent 在完成阶段重新启用分类 → `native/agent/src/capture.rs::resolve`、`crates/downloads/src/submission.rs`，回归 `manual_category_directory_disables_capture_route`。
 - **进程测试要区分强杀回收与优雅关停**：Windows `Child::kill` 不是正常退出，不能复用要求成功退出码的断言；`system.shutdown` 与 Unix SIGTERM 仍必须成功退出 → `native/daemon/tests/daemon/process_contract.rs::ProcessGuard::{terminate,wait_for_success,wait_for_exit}`。

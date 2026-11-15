@@ -17,6 +17,8 @@ GPUI 与 Web 的 UA 预设库由 agent 本地偏好 `download.user_agent_presets
 
 GPUI 与 Web 的下载设置「线程数量 / 最大 CDN 节点数」采用「自动 / 自定义」下拉，仅自定义显示正整数输入；底层仍以 0 表示自动，不新增配置键。切回自动再选自定义时恢复当前会话记住的数量，首次自定义为线程 16 / CDN 节点 2，范围取协议目录；线程自动模式下单独显示自动模式线程上限，手动高线程数仍显示风险提示。两项不是乘法关系：CDN 数量约束节点 IP，线程数量约束单任务并发。
 
+GPUI 与 Web 的设置 → 下载 → 高级提供 Aria2 风格参数编辑器（#914）。它不是独立 aria2 进程或覆盖层：`native/protocol/src/aria2_options.rs` 维护可兑现的参数映射、严格逐行解析和导出，`daemon.config.aria2Options` 只预览，保存走原有 `daemon.config.patch` 并使用载入草稿时的 revision；冲突保留草稿，须重新载入后编辑，不自动覆盖。只接受导出列表中的参数，未知／危险／重复键整体拒绝；省略键不改变现有值，恢复默认只填草稿，应用才写入。文本与图形设置共享同一份配置，任务显式值优先于默认值；导出为复制配置文本，不导出凭据。
+
 依赖方向固定为 `i18n` / `theme` / `icon_pack` → `components` → `shell` / capability crates → `app`。`app` 只做窗口与单一 agent 会话装配；capability 之间不互相依赖。
 
 - `i18n`：`build.rs` 自动嵌入共享 `assets/i18n/*.json`；locale 规范化、英文键级回退、空值回退和插值契约跨端一致。繁体中文（台湾）资源为 `zh-TW.json`：GPUI/Web 内部代码 `zh-tw`，iOS 保留文件名大小写，扩展代码 `zh-TW`。中文显式 `Hans`/`Hant` 优先地区，无显式文字时 TW/HK/MO 使用繁中；GPUI 基础组件经 `settings::component_locale` 映射为 `zh-TW`（其余语言的组件内置文案用 en）。非基线语言由 ZerxLabBot 翻译自动化维护（滚动 PR `bot/i18n-sync`，术语表 `i18n/glossary/<locale>.md`，来源哈希 `i18n/source-lock.json`，见 `rule://i18n-baseline-zh-en`）；GPUI / Web / Android / iOS 均自动发现新语言文件，只有 iOS 系统语言声明（`Info.plist` / `knownRegions`）需手动补。
