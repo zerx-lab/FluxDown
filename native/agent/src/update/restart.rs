@@ -23,6 +23,9 @@ pub(crate) const AFTER_UPDATE_ARG: &str = "--after-update";
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(crate) const RELAUNCH_ARG: &str = "--relaunch";
 
+/// Agent-only relaunch after an opted-in idle update; never opens a desktop window.
+pub const BACKGROUND_UPDATE_ARG: &str = "--background-update";
+
 /// macOS：经 LaunchServices 拉起整个 bundle（签名与权限归属正确，与更新重启一致）。
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 const OPEN: &str = "/usr/bin/open";
@@ -53,7 +56,11 @@ enum Action {
     },
     /// 静默运行 Inno Setup 安装器（Windows 安装版）。
     #[cfg(windows)]
-    Installer { installer: PathBuf, log: PathBuf },
+    Installer {
+        installer: PathBuf,
+        log: PathBuf,
+        background: bool,
+    },
 }
 
 impl RestartPlan {
@@ -82,8 +89,30 @@ impl RestartPlan {
     #[cfg(windows)]
     pub(crate) fn installer(installer: PathBuf, log: PathBuf) -> Self {
         Self {
-            action: Action::Installer { installer, log },
+            action: Action::Installer {
+                installer,
+                log,
+                background: false,
+            },
             server: false,
+        }
+    }
+
+    pub(super) fn in_background(self, background_agent: Self) -> Self {
+        match self.action {
+            #[cfg(windows)]
+            Action::Installer { installer, log, .. } => Self {
+                action: Action::Installer {
+                    installer,
+                    log,
+                    background: true,
+                },
+                server: false,
+            },
+            #[cfg(any(not(unix), target_os = "linux", target_os = "macos"))]
+            Action::Spawn { .. } => background_agent,
+            #[cfg(unix)]
+            Action::Exec { .. } => background_agent,
         }
     }
 
@@ -103,9 +132,56 @@ impl RestartPlan {
                 Err(std::process::Command::new(&program).args(&args).exec())
             }
             #[cfg(windows)]
-            Action::Installer { installer, log } => run_installer(&installer, &log),
+            Action::Installer {
+                installer,
+                log,
+                background,
+            } => run_installer(&installer, &log, background),
         }
     }
+}
+
+/// Resolve a UI-free restart before the running files are renamed by installation.
+pub(super) fn background_agent() -> std::io::Result<RestartPlan> {
+    let agent = std::env::current_exe()?;
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|path| !path.is_empty()) {
+        return Ok(RestartPlan::desktop(
+            PathBuf::from(appimage),
+            vec![
+                crate::platform::AUTOSTART_ARG.into(),
+                BACKGROUND_UPDATE_ARG.into(),
+            ],
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(helper) = agent
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+    {
+        return Ok(RestartPlan::desktop(
+            OPEN.into(),
+            vec![
+                "-g".into(),
+                "-n".into(),
+                helper.as_os_str().to_owned(),
+                "--args".into(),
+                BACKGROUND_UPDATE_ARG.into(),
+            ],
+        ));
+    }
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    return Ok(RestartPlan::desktop(
+        agent,
+        vec![BACKGROUND_UPDATE_ARG.into()],
+    ));
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    Ok(RestartPlan::server(
+        agent,
+        vec![BACKGROUND_UPDATE_ARG.into()],
+    ))
 }
 
 /// 登记重启计划；agent 运行期完全结束后由 [`run_pending`] 执行。后登记的覆盖先登记的。
@@ -262,7 +338,11 @@ const ERROR_ELEVATION_REQUIRED: i32 = 740;
 /// 静默运行安装器。安装器清单要求提权（os error 740）时用 `__COMPAT_LAYER=RunAsInvoker`
 /// 重试：安装器是每用户安装，不需要管理员权限。
 #[cfg(windows)]
-fn run_installer(installer: &std::path::Path, log: &std::path::Path) -> std::io::Result<()> {
+fn run_installer(
+    installer: &std::path::Path,
+    log: &std::path::Path,
+    background: bool,
+) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
 
     let launch = |run_as_invoker: bool| {
@@ -275,6 +355,13 @@ fn run_installer(installer: &std::path::Path, log: &std::path::Path) -> std::io:
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        if background {
+            command.args([
+                "/BACKGROUNDUPDATE=1",
+                "/NOCLOSEAPPLICATIONS",
+                "/NORESTARTAPPLICATIONS",
+            ]);
+        }
         if run_as_invoker {
             command.env("__COMPAT_LAYER", "RunAsInvoker");
         }

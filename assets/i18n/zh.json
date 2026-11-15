@@ -1689,6 +1689,8 @@
   "updateFallbackToTask": "改用下载任务下载",
   "updateFallbackTaskCreated": "已将更新加入下载列表",
   "autoCheckUpdateBackgroundDesc": "在后台检查并自动下载新版本，更新时只需重启一次",
+  "silentAutoUpdate": "静默自动更新",
+  "silentAutoUpdateDesc": "仅在所有桌面窗口关闭、没有下载或做种任务时自动安装更新，不弹出管理员权限提示；只重启后台服务，不打开桌面窗口。需要开启自动检查更新。",
   "updateRestartNow": "更新并重启",
   "updateReadyToast": "FluxDown v{v} 已准备就绪，重启即可完成更新。",
   "updateDownloadingProgress": "正在下载 v{v}… {percent}%",

@@ -268,7 +268,7 @@ export function PrefSwitchRow({ prefKey, fallback, titleKey, descKey, disabled, 
   const checked = usePrefBoolean(prefKey, fallback)
   return (
     <SettingsRow title={title} description={description} compact disabled={disabled}>
-      <Switch checked={checked} onCheckedChange={(next) => setPref(prefKey, next, { immediate: immediate === true })} aria-label={title} />
+      <Switch checked={checked} disabled={disabled} onCheckedChange={(next) => setPref(prefKey, next, { immediate: immediate === true })} aria-label={title} />
     </SettingsRow>
   )
 }

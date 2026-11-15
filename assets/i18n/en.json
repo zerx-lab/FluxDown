@@ -1689,6 +1689,8 @@
   "updateFallbackToTask": "Download via Task",
   "updateFallbackTaskCreated": "Added the update to the download list",
   "autoCheckUpdateBackgroundDesc": "Check for updates in the background and download them automatically, so updating only takes a restart",
+  "silentAutoUpdate": "Silent Automatic Updates",
+  "silentAutoUpdateDesc": "Install updates only when all desktop windows are closed and no downloads or seeding are active, without administrator prompts. Restart background services only, without opening the desktop. Requires automatic update checking.",
   "updateRestartNow": "Update & Restart",
   "updateReadyToast": "FluxDown v{v} is ready. Restart to finish updating.",
   "updateDownloadingProgress": "Downloading v{v}… {percent}%",

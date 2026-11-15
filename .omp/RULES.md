@@ -14,4 +14,5 @@
 - BT 防吸血名字规则（用户 2026-11-12 决定）：按客户端名 / Peer ID 的规则是「默认仅观察」的唯一例外，默认直接执行，可封禁；迅雷做种时一律封、下载时只放行 0.0.1.9；本机规则随设置同步。伪造名字的交给云端 IP 名单，不做设备指纹。细则见 `ops.md` 防吸血条。
 - 站点代理规则（用户 2026-10-28 决定）：四种代理模式下都生效、首条命中；只有代理「跟随全局」的任务 / 订阅看规则；规则只存设备本地。插件请求（含开发模式插件、插件订阅、登录）同样遵循规则与 Auto 换路，解析与下载同出口（用户 2026-10-29 决定）。细则见 engine.md `proxy_rules.rs` 与 `plugin/call_egress.rs` 条。
 - 插件国际化（用户 2026-11-15 决定）：客户端安装／加载不强制要求国际化；插件市场首次发布与版本更新必须满足国际化准入，已有版本不追溯。历史豁免按可信发布基线的 identity/version/contentHash 判定，不接受作者自报旧版本。
+- 静默自动更新（用户 2026-11-15 决定，#326）：默认关、设备本地显式开启；仅全部桌面窗口关闭、无下载 / 做种活动且无需提权时自动安装并重启后台服务，不主动开窗。Android 仍须系统确认，系统包授权不绕过。
 - Rust 默认安全：`unsafe`（块 / fn / impl / extern / 属性）仅限经审查、std 与现有直接依赖无**语义等价**安全替代的平台边界；必须 cfg + SAFETY + 最小范围 + 健全的安全接口 + RAII/线程归属，禁止 unsafe Send/Sync。不得为去 unsafe 破坏预分配、并发写、大卷空间或错误语义；`native/{api,protocol,daemon,server,nmh,mobile}` 与 `crates/*`、`scripts/desktop-dev` 的项目源码保持零 unsafe（宏展开/依赖另审：UniFFI 生成胶水为独立审计边界；唯一例外 `crates/app/src/app_icon.rs` 的 macOS `setApplicationIconImage(Some)` 单个调用，用户 2026-10-30 决定）。细则见 `rule://no-unsafe-in-rust`。
