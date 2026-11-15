@@ -250,6 +250,21 @@ impl SettingsStore {
         cx.notify();
     }
 
+    /// Ingest the authoritative result of a direct revision-checked config patch.
+    pub(crate) fn absorb_daemon_snapshot(
+        &mut self,
+        snapshot: DaemonConfigSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if snapshot.revision < self.daemon.revision {
+            return;
+        }
+        self.daemon = snapshot;
+        self.refresh_daemon_baselines();
+        self.overlay_local_edits();
+        cx.notify();
+    }
+
     /// 连上 / 重连拿到全量快照：退出断线只读，并重新放行渲染期按需加载（系统集成状态、
     /// 网关 token 等）。首次连接失败、断线期间失败过的读取都靠这里在恢复后重发。
     fn reopen_load_gates(&mut self) {

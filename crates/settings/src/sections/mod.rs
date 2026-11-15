@@ -7,6 +7,7 @@ pub(crate) mod about;
 pub(crate) mod api;
 mod app_icon;
 pub(crate) mod appearance;
+mod aria2_options;
 mod auto_quantity;
 pub(crate) mod bt;
 mod bt_guard;

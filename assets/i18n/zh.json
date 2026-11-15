@@ -4112,6 +4112,21 @@
   "userAgentSavePreset": "保存为预设",
   "userAgentPresetName": "预设名称",
   "userAgentPresetValue": "User-Agent 值",
-  "userAgentPresetExists": "此 User-Agent 已保存。",
-  "userAgentPresetInvalid": "请输入名称与有效的 User-Agent，不得包含控制字符。"
+  "userAgentPresetInvalid": "请输入名称与有效的 User-Agent，不得包含控制字符。",
+  "aria2AdvancedTitle": "Aria2 高级选项",
+  "aria2AdvancedDescription": "编辑支持的 aria2 风格选项。K/M/G 后缀按 1024 进位；split=0 表示自动。split 值过大可能触发服务器限速或 IP 封禁。未填写的键保持不变。「恢复默认值」仅修改草稿，点击「应用」后才会保存。",
+  "aria2AdvancedOpen": "打开编辑器",
+  "aria2AdvancedClose": "关闭编辑器",
+  "aria2AdvancedApply": "应用",
+  "aria2AdvancedDefaults": "将草稿恢复为默认值",
+  "aria2AdvancedExport": "导出当前草稿到剪贴板",
+  "aria2AdvancedReload": "从当前设置重新加载",
+  "aria2AdvancedSaved": "高级选项已保存。",
+  "aria2AdvancedLoading": "正在加载高级选项…",
+  "aria2AdvancedPriority": "这些是共享的 daemon 默认值；最后成功保存的设置编辑生效，任务显式设置的选项优先于默认值。",
+  "aria2AdvancedRestart": "部分 BT 连接设置可能需要重启 daemon 会话才能生效。",
+  "aria2AdvancedInvalid": "选项无效",
+  "aria2AdvancedExported": "已将当前草稿导出到剪贴板。",
+  "aria2AdvancedOpenHint": "已显示全部支持的选项。编辑草稿后点击「应用」保存，或导出当前草稿。",
+  "aria2AdvancedBusy": "高级选项请求正在处理中。"
 }

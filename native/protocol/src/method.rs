@@ -111,6 +111,8 @@ pub const DAEMON_GROUP_DELETE: &str = "daemon.group.delete";
 
 pub const DAEMON_CONFIG_GET: &str = "daemon.config.get";
 pub const DAEMON_CONFIG_PATCH: &str = "daemon.config.patch";
+/// Preview/import text or export supported aria2-style native defaults (read-only).
+pub const DAEMON_CONFIG_ARIA2_OPTIONS: &str = "daemon.config.aria2Options";
 pub const DAEMON_CONFIG_PROXY_TEST: &str = "daemon.config.proxyTest";
 /// 站点代理规则草稿校验 + 「测试网址」解释（可能起 `scutil` 子进程，慢方法）。
 pub const DAEMON_CONFIG_PROXY_ROUTE: &str = "daemon.config.proxyRoute";
@@ -531,6 +533,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_GROUP_DELETE,
     DAEMON_CONFIG_GET,
     DAEMON_CONFIG_PATCH,
+    DAEMON_CONFIG_ARIA2_OPTIONS,
     DAEMON_CONFIG_PROXY_TEST,
     DAEMON_CONFIG_PROXY_ROUTE,
     DAEMON_CONFIG_CONN_POLICY,
