@@ -17,6 +17,7 @@
 //! 下载 / 安装中不再重新检查；就绪时照常检查，但只有查到比就绪包更新的版本才取代它，
 //! 失败或同版本保留就绪状态——常驻不重启的机器也能跟上后续发布。
 
+mod automatic;
 mod download;
 pub(crate) mod install;
 mod release;
@@ -852,10 +853,14 @@ impl UpdateService {
     }
 
     fn spawn_install(self: &Arc<Self>, candidate: Candidate) {
-        tokio::spawn(Arc::clone(self).install_task(candidate));
+        tokio::spawn(Arc::clone(self).install_task(candidate, None));
     }
 
-    async fn install_task(self: Arc<Self>, candidate: Candidate) {
+    async fn install_task(
+        self: Arc<Self>,
+        candidate: Candidate,
+        automatic: Option<automatic::AutomaticInstall>,
+    ) {
         let dir = self.version_dir(&candidate.version);
         let package = dir.join(&candidate.asset_name);
         match &self.host {
@@ -867,8 +872,24 @@ impl UpdateService {
                     self.fail(UpdateFailure::Storage, format!("{error:#}"));
                     return;
                 }
+                if let Some(automatic) = &automatic
+                    && (automatic.cancel.is_cancelled()
+                        || !self.silent_update_allowed(&automatic.shell))
+                {
+                    self.remove_pending().await;
+                    self.mutate(|core| core.status.phase = UpdatePhase::Ready);
+                    return;
+                }
                 match install::apply(&self.target, &package, &work_dir).await {
                     Ok(plan) => {
+                        let plan = if let Some(automatic) = automatic {
+                            if !automatic.wait_for_idle(&self).await {
+                                return;
+                            }
+                            plan.in_background(automatic.restart)
+                        } else {
+                            plan
+                        };
                         restart::schedule(plan);
                         request_restart();
                     }

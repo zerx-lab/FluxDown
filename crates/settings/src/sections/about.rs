@@ -1,6 +1,6 @@
 //! 关于：版本、软件更新、日志导出、浏览器扩展与捐赠链接。
 
-use fluxdown_protocol::{ReleaseNoteDto, UpdatePhase, method};
+use fluxdown_protocol::{ReleaseNoteDto, UpdateInstallKind, UpdatePhase, method};
 use fluxdown_ui_components::{ButtonVariant, FluxIcon, button, loading_button};
 use fluxdown_ui_theme::active_theme;
 use gpui::{
@@ -26,7 +26,7 @@ const FLAG_ICONS: &str = "https://github.com/lipis/flag-icons";
 /// 更新说明正文的行高（字号倍数）：多行列表项与中文长句比控件文字需要更宽松的行距。
 const RELEASE_NOTES_LINE_HEIGHT: f32 = 1.6;
 
-pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
+pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     SettingsPage::new(
         "about",
         ctx.t("settingsCatAbout"),
@@ -35,7 +35,7 @@ pub(crate) fn page(ctx: &SectionContext, _cx: &mut App) -> SettingsPage {
     )
     .sections([
         version_section(ctx),
-        update_section(ctx),
+        update_section(ctx, cx),
         logs_section(ctx),
         links_section(ctx),
         open_source_section(ctx),
@@ -59,7 +59,7 @@ fn version_section(ctx: &SectionContext) -> SettingsSection {
         ))
 }
 
-fn update_section(ctx: &SectionContext) -> SettingsSection {
+fn update_section(ctx: &SectionContext, cx: &App) -> SettingsSection {
     let channels = vec![
         (SharedString::from("stable"), ctx.t("updateChannelStable")),
         (
@@ -67,7 +67,17 @@ fn update_section(ctx: &SectionContext) -> SettingsSection {
             ctx.t("updateChannelFrontier"),
         ),
     ];
-    SettingsSection::new()
+    let store = ctx.store.read(cx);
+    let silent_supported = matches!(
+        store.update_status().install_kind,
+        UpdateInstallKind::WindowsSetup
+            | UpdateInstallKind::WindowsPortable
+            | UpdateInstallKind::MacosApp
+            | UpdateInstallKind::LinuxAppImage
+            | UpdateInstallKind::LinuxPortable
+    );
+    let auto_check = store.pref_bool("general.auto_check_update", true);
+    let mut section = SettingsSection::new()
         .title(ctx.t("softwareUpdate"))
         .row(ctx.item(
             "updateChannel",
@@ -78,7 +88,18 @@ fn update_section(ctx: &SectionContext) -> SettingsSection {
             "autoCheckUpdate",
             Some("autoCheckUpdateBackgroundDesc"),
             ctx.pref_switch("general.auto_check_update", true),
-        ))
+        ));
+    if silent_supported {
+        section = section.row(
+            ctx.item(
+                "silentAutoUpdate",
+                Some("silentAutoUpdateDesc"),
+                ctx.pref_switch("general.silent_auto_update", false),
+            )
+            .disabled(!auto_check),
+        );
+    }
+    section
         .row(ctx.item(
             "checkUpdate",
             Some("checkUpdateDesc"),

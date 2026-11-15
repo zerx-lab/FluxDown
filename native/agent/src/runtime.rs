@@ -466,6 +466,9 @@ async fn run_agent(
         },
     ));
     update.start(cancel.clone(), true);
+    if server.is_none() {
+        update.start_silent_updates(shell.clone(), cancel.clone());
+    }
     let cloud = Arc::new(cloud_api);
     let gateway = GatewayService::new(
         daemon.clone(),
