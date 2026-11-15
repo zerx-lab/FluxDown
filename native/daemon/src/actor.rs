@@ -2703,10 +2703,26 @@ async fn commit_ed2k_refresh(
 fn bt_status_to_dto(
     view: fluxdown_engine::bt_status::BtStatusView,
 ) -> fluxdown_protocol::BtStatusDto {
-    use fluxdown_engine::bt_status::{TrackerSource, TrackerState, WebSeedState};
-    use fluxdown_protocol::{BtTrackerDto, BtTrackerSource, BtTrackerStatus};
+    use fluxdown_engine::bt_status::{DhtStatus, TrackerSource, TrackerState, WebSeedState};
+    use fluxdown_protocol::{BtDhtDto, BtDhtState, BtTrackerDto, BtTrackerSource, BtTrackerStatus};
+    let state = |state: BtDhtState| BtDhtDto {
+        state,
+        ..BtDhtDto::default()
+    };
+    let dht = match view.dht {
+        DhtStatus::Disabled => state(BtDhtState::Disabled),
+        DhtStatus::Private => state(BtDhtState::Private),
+        DhtStatus::Idle => state(BtDhtState::Idle),
+        DhtStatus::Unavailable => state(BtDhtState::Unavailable),
+        DhtStatus::Running(nodes) => BtDhtDto {
+            state: BtDhtState::Running,
+            nodes_v4: nodes.ipv4,
+            nodes_v6: nodes.ipv6,
+        },
+    };
     fluxdown_protocol::BtStatusDto {
         dht_enabled: view.dht_enabled,
+        dht: Some(dht),
         peer_counts: fluxdown_protocol::BtPeerCountsDto {
             live: view.counts.live,
             connecting: view.counts.connecting,

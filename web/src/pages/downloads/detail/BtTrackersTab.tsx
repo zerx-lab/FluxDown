@@ -11,6 +11,8 @@ import type { Translate } from '../table/text'
 import { copyEntry, PollError, RowCopyButton, SkeletonRows, useAncestorScroller, useMeasuredRoot, useNowSecs } from './btParts'
 import {
   countText,
+  dhtNodesText,
+  dhtRow,
   lastOkText,
   mapTrackerRows,
   nextAnnounceText,
@@ -29,7 +31,7 @@ import {
   trackerView,
 } from './btStatus'
 import type { TrackerCounts, TrackerFilter, TrackerLayout, TrackerRow, TrackerSort, TrackerSortKey } from './btStatus'
-import type { BtTrackerStatus, BtWebSeedDto } from '../../../lib/rpc'
+import type { BtStatusDto, BtTrackerStatus, BtWebSeedDto } from '../../../lib/rpc'
 import { useBtStatus } from './useBtStatus'
 
 const DASH = '—'
@@ -326,21 +328,33 @@ function VirtualRows({ rows, layout, t, now, rootRef }: { rows: TrackerRow[]; la
   )
 }
 
-function DhtRow({ enabled, layout, t }: { enabled: boolean; layout: TrackerLayout; t: Translate }) {
-  const status: BtTrackerStatus = enabled ? 'working' : 'notContacted'
-  const label = t(enabled ? 'btTrackerDhtOn' : 'btTrackerDhtOff')
+function DhtRow({ status, layout, t }: { status: BtStatusDto; layout: TrackerLayout; t: Translate }) {
+  const view = dhtRow(status)
+  const label = t(view.label)
+  const hint = view.hint === null ? undefined : t(view.hint)
+  let nodes: string | null = null
+  if (view.nodes !== null) {
+    const { key, args } = dhtNodesText(view.nodes)
+    nodes = t(key, args)
+  }
+  const name = (
+    <span title={hint} className={cn('flex min-w-0 flex-col', layout === 'card' && 'ml-auto items-end', hint !== undefined && 'cursor-help')}>
+      <span className="font-mono text-xs text-muted-foreground">{t('btTrackerDht')}</span>
+      {nodes === null ? null : <span className="tabular truncate text-xs text-text-tertiary">{nodes}</span>}
+    </span>
+  )
   if (layout === 'card') {
     return (
       <div className="flex items-center gap-2 border-b border-hairline px-1 py-2">
-        <StatusCell status={status} label={label} />
-        <span className="ml-auto font-mono text-xs text-muted-foreground">{t('btTrackerDht')}</span>
+        <StatusCell status={view.tone} label={label} />
+        {name}
       </div>
     )
   }
   return (
     <div className={cn('grid items-center gap-x-3 border-b border-hairline px-1 py-1.5', GRID[layout])}>
-      <StatusCell status={status} label={label} />
-      <span className="font-mono text-xs text-muted-foreground">{t('btTrackerDht')}</span>
+      <StatusCell status={view.tone} label={label} />
+      {name}
     </div>
   )
 }
@@ -382,7 +396,7 @@ export function BtTrackersTab({ taskId, running }: { taskId: string; running: bo
           </div>
           <div className="flex flex-col">
             {layout === 'card' ? null : <Header layout={layout} t={t} sort={sort} onSort={onSort} />}
-            <DhtRow enabled={data.dhtEnabled} layout={layout} t={t} />
+            <DhtRow status={data} layout={layout} t={t} />
             {rows.length === 0 ? (
               <EmptyState icon={Radio} title={t('btTrackersEmpty')} className="py-6" />
             ) : view.length === 0 ? (

@@ -1863,6 +1863,17 @@ impl SharedBtSession {
         }
     }
 
+    /// 会话里 DHT 路由表的节点数；DHT 没有启动（设置关闭或启动失败已退回）为 `None`。
+    pub fn dht_nodes(&self) -> Option<crate::bt_status::DhtNodes> {
+        self.session.get_dht().map(|dht| {
+            let stats = dht.stats();
+            crate::bt_status::DhtNodes {
+                ipv4: u32::try_from(stats.routing_table_size).unwrap_or(u32::MAX),
+                ipv6: u32::try_from(stats.routing_table_size_v6).unwrap_or(u32::MAX),
+            }
+        })
+    }
+
     /// 立即向任务当前在用的 tracker 重新汇报（librqbit 对同一 tracker 至少间隔 10 秒）。
     ///
     /// # Errors

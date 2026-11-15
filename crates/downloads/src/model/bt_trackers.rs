@@ -1,11 +1,105 @@
-//! 任务详情「Tracker」页的筛选 / 排序纯模型（对齐 qBittorrent：表头排序 + 状态筛选）。
+//! 任务详情「Tracker」页的筛选 / 排序纯模型（对齐 qBittorrent：表头排序 + 状态筛选），以及表首
+//! DHT 伪行的展示意图。
 //!
-//! 与 Web `web/src/pages/downloads/detail/btStatus.ts::trackerView` 逐条对齐，两端共用
-//! `crates/downloads/tests/fixtures/bt_tracker_view_cases.json`。
+//! 与 Web `web/src/pages/downloads/detail/btStatus.ts::{trackerView, dhtRow}` 逐条对齐；筛选 /
+//! 排序两端共用 `crates/downloads/tests/fixtures/bt_tracker_view_cases.json`。
 
 use std::cmp::Ordering;
 
-use fluxdown_protocol::{BtTrackerDto, BtTrackerStatus};
+use fluxdown_protocol::{BtDhtState, BtStatusDto, BtTrackerDto, BtTrackerStatus};
+
+/// DHT 伪行的展示意图：文案键 + 沿用 tracker 状态配色的语气。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DhtRow {
+    /// 状态文案键。
+    pub(crate) label: &'static str,
+    /// 状态点 / 文字配色，与同语义的 tracker 状态一致。
+    pub(crate) tone: BtTrackerStatus,
+    /// 悬停说明的文案键。
+    pub(crate) hint: Option<&'static str>,
+    /// IPv4 / IPv6 路由表节点数；只在 DHT 运行且已有节点时给出。
+    pub(crate) nodes: Option<(u32, u32)>,
+}
+
+impl DhtRow {
+    const fn plain(label: &'static str, tone: BtTrackerStatus) -> Self {
+        Self {
+            label,
+            tone,
+            hint: None,
+            nodes: None,
+        }
+    }
+
+    const fn hinted(label: &'static str, tone: BtTrackerStatus, hint: &'static str) -> Self {
+        Self {
+            label,
+            tone,
+            hint: Some(hint),
+            nodes: None,
+        }
+    }
+}
+
+/// DHT 伪行：旧 daemon（无 `dht`）或未知状态退回只看设置开关。
+pub(crate) fn dht_row(status: &BtStatusDto) -> DhtRow {
+    let by_setting = || {
+        if status.dht_enabled {
+            DhtRow::plain("btTrackerDhtOn", BtTrackerStatus::Working)
+        } else {
+            DhtRow::plain("btTrackerDhtOff", BtTrackerStatus::NotContacted)
+        }
+    };
+    let Some(dht) = status.dht else {
+        return by_setting();
+    };
+    match dht.state {
+        BtDhtState::Disabled => DhtRow::plain("btTrackerDhtOff", BtTrackerStatus::NotContacted),
+        BtDhtState::Private => DhtRow::hinted(
+            "btTrackerDhtPrivate",
+            BtTrackerStatus::NotContacted,
+            "btTrackerDhtPrivateHint",
+        ),
+        BtDhtState::Idle => DhtRow::plain("btTrackerDhtOn", BtTrackerStatus::Working),
+        BtDhtState::Unavailable => DhtRow::hinted(
+            "btTrackerDhtUnavailable",
+            BtTrackerStatus::NotWorking,
+            "btTrackerDhtUnavailableHint",
+        ),
+        // 路由表空：刚启动正在引导，长时间如此通常是 UDP 被拦截。
+        BtDhtState::Running if dht.nodes_v4 == 0 && dht.nodes_v6 == 0 => DhtRow::hinted(
+            "btTrackerDhtConnecting",
+            BtTrackerStatus::Updating,
+            "btTrackerDhtConnectingHint",
+        ),
+        BtDhtState::Running => DhtRow {
+            nodes: Some((dht.nodes_v4, dht.nodes_v6)),
+            ..DhtRow::hinted(
+                "btTrackerDhtOn",
+                BtTrackerStatus::Working,
+                "btTrackerDhtNodesHint",
+            )
+        },
+        BtDhtState::Unknown => by_setting(),
+    }
+}
+
+/// 节点数文案键与参数（`{n}` 总数、`{v4}` / `{v6}` 分项）：没有 IPv6 节点时只报总数。
+pub(crate) fn dht_nodes_text((v4, v6): (u32, u32)) -> (&'static str, [String; 3]) {
+    let key = if v6 == 0 {
+        "btTrackerDhtNodes"
+    } else {
+        "btTrackerDhtNodesSplit"
+    };
+    (
+        key,
+        [
+            v4.saturating_add(v6).to_string(),
+            v4.to_string(),
+            v6.to_string(),
+        ],
+    )
+}
 
 /// 状态筛选；`All` 含宿主不采集时的 `Unknown`。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -176,11 +270,12 @@ pub(crate) fn tracker_view(
 
 #[cfg(test)]
 mod tests {
-    use fluxdown_protocol::BtTrackerDto;
+    use fluxdown_protocol::{BtStatusDto, BtTrackerDto, BtTrackerStatus};
     use serde::Deserialize;
 
     use super::{
-        TrackerCounts, TrackerFilter, TrackerSort, TrackerSortKey, next_sort, tracker_view,
+        DhtRow, TrackerCounts, TrackerFilter, TrackerSort, TrackerSortKey, dht_nodes_text, dht_row,
+        next_sort, tracker_view,
     };
 
     #[derive(Deserialize)]
@@ -293,5 +388,71 @@ mod tests {
                 desc: false
             })
         );
+    }
+
+    #[derive(Deserialize)]
+    struct DhtExpect {
+        label: String,
+        tone: BtTrackerStatus,
+        hint: Option<String>,
+        nodes: Option<(u32, u32)>,
+    }
+
+    #[derive(Deserialize)]
+    struct DhtCase {
+        name: String,
+        status: serde_json::Value,
+        expect: DhtExpect,
+    }
+
+    #[derive(Deserialize)]
+    struct NodesCase {
+        nodes: (u32, u32),
+        key: String,
+        args: [String; 3],
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DhtFixture {
+        rows: Vec<DhtCase>,
+        nodes_text: Vec<NodesCase>,
+    }
+
+    #[test]
+    fn shared_fixture_dht_row() {
+        let fixture: DhtFixture =
+            serde_json::from_str(include_str!("../../tests/fixtures/bt_dht_row_cases.json"))
+                .expect("dht row fixture");
+        for case in fixture.rows {
+            // 夹具只写 DHT 相关字段，其余按旧 daemon 缺省补齐。
+            let mut status = serde_json::json!({
+                "peerCounts": {"live": 0, "connecting": 0, "queued": 0, "seen": 0, "dead": 0},
+                "trackers": [],
+                "peers": [],
+            });
+            if let (Some(base), Some(extra)) = (status.as_object_mut(), case.status.as_object()) {
+                base.extend(extra.clone());
+            }
+            let status: BtStatusDto = serde_json::from_value(status).expect(&case.name);
+            let DhtRow {
+                label,
+                tone,
+                hint,
+                nodes,
+            } = dht_row(&status);
+            assert_eq!(label, case.expect.label, "{}", case.name);
+            assert_eq!(tone, case.expect.tone, "{}", case.name);
+            assert_eq!(hint, case.expect.hint.as_deref(), "{}", case.name);
+            assert_eq!(nodes, case.expect.nodes, "{}", case.name);
+        }
+        for case in fixture.nodes_text {
+            assert_eq!(
+                dht_nodes_text(case.nodes),
+                (case.key.as_str(), case.args),
+                "{:?}",
+                case.nodes
+            );
+        }
     }
 }

@@ -45,7 +45,8 @@ use crate::{
         action_text, any_guard, ban_client_value, entry_params, rules_text, tooltip_text,
     },
     model::bt_trackers::{
-        TrackerCounts, TrackerFilter, TrackerSort, TrackerSortKey, next_sort, tracker_view,
+        TrackerCounts, TrackerFilter, TrackerSort, TrackerSortKey, dht_nodes_text, dht_row,
+        next_sort, tracker_view,
     },
     model::{RowKey, TaskState, format_bytes},
     strings::error_text,
@@ -706,11 +707,13 @@ struct TrackerCells {
     url: SharedString,
     is_dht: bool,
     source_label: Option<SharedString>,
-    /// 来源说明（徽标 / URL 悬停提示）。
+    /// 来源说明（徽标 / URL 悬停提示）；DHT 伪行为状态说明。
     source_hint: Option<SharedString>,
     peers: Option<SharedString>,
     /// 层级 / 做种 / 下载 / 完成（已格式化，未知为 `—`）；DHT 伪行为 `None`。
     stats: Option<TrackerStats>,
+    /// URL 下方的附注行（DHT 伪行的节点数）。
+    note: Option<String>,
     message: SharedString,
     /// 原始错误文本；空 = 无可复制错误。
     detail: SharedString,
@@ -786,6 +789,7 @@ fn tracker_cells(
         source_hint: Some(t(source_hint)),
         peers: row.peers.map(|count| SharedString::from(count.to_string())),
         stats: Some(stats),
+        note: None,
         message: SharedString::from(row.message),
         detail: SharedString::from(row.detail),
         next: SharedString::from(relative_text(translator, row.next)),
@@ -1253,10 +1257,14 @@ fn tracker_row_el(
                 .child(cells.status_label.clone()),
         );
     // 悬停 URL：完整地址 + 来源说明（中布局不放来源徽标，说明只在这里）。
-    let url_tip = (!cells.is_dht).then(|| match &cells.source_hint {
-        Some(hint) => SharedString::from(format!("{}\n{hint}", cells.url)),
-        None => cells.url.clone(),
-    });
+    let url_tip = if cells.is_dht {
+        cells.source_hint.clone()
+    } else {
+        Some(match &cells.source_hint {
+            Some(hint) => SharedString::from(format!("{}\n{hint}", cells.url)),
+            None => cells.url.clone(),
+        })
+    };
     let show_chip = layout != BtLayout::Medium;
     let url_line = || {
         h_flex()
@@ -1321,6 +1329,12 @@ fn tracker_row_el(
             .as_ref()
             .map(|stats| meta_line(look, stats.items.iter().cloned()))
     };
+    let note_line = || {
+        cells
+            .note
+            .as_ref()
+            .map(|note| meta_line(look, [note.clone()]))
+    };
     let count_cell = |width: f32, text: &SharedString| {
         fixed(look, width)
             .text_right()
@@ -1343,6 +1357,7 @@ fn tracker_row_el(
                     .min_w_0()
                     .gap(look.xxs)
                     .child(url_line())
+                    .children(note_line())
                     .when(!stats_columns, |this| this.children(stats_line())),
             )
             .when(stats_columns, |this| match &cells.stats {
@@ -1389,6 +1404,7 @@ fn tracker_row_el(
                     .min_w_0()
                     .gap(look.xxs)
                     .child(url_line())
+                    .children(note_line())
                     .children(stats_line())
                     .when(!cells.message.is_empty(), |this| {
                         this.child(message_line(2))
@@ -1424,6 +1440,7 @@ fn tracker_row_el(
                     .gap(look.xxs)
                     .child(status_cell)
                     .child(url_line())
+                    .children(note_line())
                     .when(!cells.message.is_empty(), |this| {
                         this.child(message_line(3))
                     })
@@ -2435,21 +2452,21 @@ impl TaskDetailView {
             stats_columns,
             now,
         });
-        let dht_on = status.dht_enabled;
+        let dht_view = dht_row(status);
         let dht = TrackerCells {
-            dot: if dht_on { look.success } else { look.tertiary },
-            label_color: if dht_on { look.fg } else { look.muted },
-            status_label: t(if dht_on {
-                "btTrackerDhtOn"
-            } else {
-                "btTrackerDhtOff"
-            }),
+            dot: look.status_color(dht_view.tone),
+            label_color: look.status_text_color(dht_view.tone),
+            status_label: t(dht_view.label),
             url: t("btTrackerDht"),
             is_dht: true,
             source_label: None,
-            source_hint: None,
+            source_hint: dht_view.hint.map(t),
             peers: None,
             stats: None,
+            note: dht_view.nodes.map(|nodes| {
+                let (key, [total, v4, v6]) = dht_nodes_text(nodes);
+                translator.text_with(key, &[("n", &total), ("v4", &v4), ("v6", &v6)])
+            }),
             message: SharedString::default(),
             detail: SharedString::default(),
             next: SharedString::from(DASH),

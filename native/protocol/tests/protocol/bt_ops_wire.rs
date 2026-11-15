@@ -9,8 +9,8 @@ use fluxdown_protocol::method::{
 };
 use fluxdown_protocol::{
     BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
-    BT_FILE_PRIORITY_SKIP, BtFilePriorityDto, BtFilesDto, BtPortMappingDto, BtPortStatusDto,
-    BtStatusDto, BtTaskFileDto, BtTrackerDto, BtWebSeedDto, DaemonSeedLocalParams,
+    BT_FILE_PRIORITY_SKIP, BtDhtDto, BtDhtState, BtFilePriorityDto, BtFilesDto, BtPortMappingDto,
+    BtPortStatusDto, BtStatusDto, BtTaskFileDto, BtTrackerDto, BtWebSeedDto, DaemonSeedLocalParams,
     MoveTaskStorageParams, RenameBtFileParams, SeedLocalResultDto, SetTaskBtLimitsParams,
     SetTaskFilePrioritiesParams, SetTaskSuperSeedingParams, TaskDto, TorrentShareDto,
 };
@@ -195,6 +195,8 @@ fn replies_from_an_older_daemon_still_parse() {
     .unwrap();
     assert!(status.info_hash.is_empty() && status.info_hash_v2.is_empty());
     assert!(status.web_seeds.is_empty());
+    // 旧 daemon 不报 DHT 实况：客户端退回只看 `dhtEnabled`。
+    assert_eq!(status.dht, None);
 
     let share: TorrentShareDto =
         serde_json::from_value(json!({"infoHash": "aa", "name": "n", "magnet": "magnet:?"}))
@@ -234,6 +236,26 @@ fn tracker_scrape_numbers_and_web_seeds_are_carried() {
     assert_eq!(value["state"], "backingOff");
     assert!(value.get("downloaded").is_none());
     assert_eq!(serde_json::from_value::<BtWebSeedDto>(value).unwrap(), seed);
+}
+
+#[test]
+fn dht_nodes_and_unknown_states_round_trip() {
+    let dht = BtDhtDto {
+        state: BtDhtState::Running,
+        nodes_v4: 312,
+        nodes_v6: 40,
+    };
+    let value = serde_json::to_value(dht).unwrap();
+    assert_eq!(
+        value,
+        json!({"state": "running", "nodesV4": 312, "nodesV6": 40})
+    );
+    assert_eq!(serde_json::from_value::<BtDhtDto>(value).unwrap(), dht);
+
+    // 新 daemon 扩展的状态不能让旧客户端整份 btStatus 解析失败。
+    let future: BtDhtDto = serde_json::from_value(json!({"state": "rebooting"})).unwrap();
+    assert_eq!(future.state, BtDhtState::Unknown);
+    assert_eq!((future.nodes_v4, future.nodes_v6), (0, 0));
 }
 
 #[test]

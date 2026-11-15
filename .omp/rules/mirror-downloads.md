@@ -93,9 +93,9 @@ interruptMode: never
 
 → `web/src/lib/fileHash.ts::{hashAlgorithmLabel, fileHashMatchesChecksum}` 逐条对齐（算法名去 `-` 小写归一、校验和只剥同算法 `<algo>:` 前缀、hex 忽略大小写；任一侧空 / 不可解析 / 算法不同 = 不比较），两端测试覆盖同一组用例；设置页算法下拉的四个技术名（`crates/settings/src/sections/download.rs` 本地映射）同此
 
-## `crates/downloads/src/model/bt_trackers.rs`（详情 Tracker 页：状态筛选标签 + 计数、表头三态排序，DHT 伪行固定不参与；稳定排序、缺省值垫底）
+## `crates/downloads/src/model/bt_trackers.rs`（详情 Tracker 页：状态筛选标签 + 计数、表头三态排序，DHT 伪行固定不参与；稳定排序、缺省值垫底。DHT 伪行 `dht_row` / `dht_nodes_text`：`BtStatusDto.dht` 状态 → 文案键 / 配色 / 悬停说明，运行且路由表非空才显示节点数，旧 daemon 或未知状态退回 `dhtEnabled`）
 
-→ `web/src/pages/downloads/detail/btStatus.ts::{trackerCounts, trackerView, nextTrackerSort}`：逐条对齐，两端测试共用 `crates/downloads/tests/fixtures/bt_tracker_view_cases.json`（改规则先改用例）；两端列表都虚拟化（GPUI `ListState` 可变行高、Web `useVirtualizer` + `measureElement`）
+→ `web/src/pages/downloads/detail/btStatus.ts::{trackerCounts, trackerView, nextTrackerSort, dhtRow, dhtNodesText}`：逐条对齐，两端测试共用 `crates/downloads/tests/fixtures/bt_tracker_view_cases.json` 与 `bt_dht_row_cases.json`（改规则先改用例）；两端列表都虚拟化（GPUI `ListState` 可变行高、Web `useVirtualizer` + `measureElement`）
 
 ## `crates/downloads/src/pages/task_detail_ed2k.rs`（详情「来源 / 网络」页签的纯函数：源状态 → 文案、冷却 / 下次找源是否在未来、「同时连接来源数」选项与当前值归一、LowID 源地址展示）
 

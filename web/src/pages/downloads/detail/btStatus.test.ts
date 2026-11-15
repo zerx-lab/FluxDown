@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import type { BtPeerDto, BtTrackerDto } from '../../../lib/rpc'
+import type { BtPeerDto, BtStatusDto, BtTrackerDto } from '../../../lib/rpc'
 import { GUARD_COLUMNS_MIN_WIDTH } from '../../../lib/btGuard'
 import {
   btMetadataReady,
   btTaskRunning,
   countText,
+  dhtNodesText,
+  dhtRow,
   hasGuardData,
   infoHashV2,
   mapPeerRows,
@@ -20,7 +22,7 @@ import {
   trackerView,
   webSeedStateKey,
 } from './btStatus'
-import type { TrackerFilter, TrackerSort } from './btStatus'
+import type { DhtRowView, TrackerFilter, TrackerSort } from './btStatus'
 
 interface Fixture {
   trackers: BtTrackerDto[]
@@ -41,6 +43,27 @@ describe('tracker view (shared fixtures)', () => {
       expect(trackerView(rows, item.filter, item.sort)).toEqual(item.expect)
     })
   }
+})
+
+interface DhtFixture {
+  rows: { name: string; status: Pick<BtStatusDto, 'dhtEnabled' | 'dht'>; expect: DhtRowView }[]
+  nodesText: { nodes: [number, number]; key: string; args: [string, string, string] }[]
+}
+
+const dhtFixture = (await Bun.file(new URL('../../../../../crates/downloads/tests/fixtures/bt_dht_row_cases.json', import.meta.url)).json()) as DhtFixture
+
+describe('DHT 伪行（shared fixtures）', () => {
+  for (const item of dhtFixture.rows) {
+    test(item.name, () => {
+      expect(dhtRow(item.status)).toEqual(item.expect)
+    })
+  }
+  test('节点数文案', () => {
+    for (const item of dhtFixture.nodesText) {
+      const [n, v4, v6] = item.args
+      expect(dhtNodesText(item.nodes)).toEqual({ key: item.key, args: { n, v4, v6 } })
+    }
+  })
 })
 
 // 镜像 GPUI `task_detail_bt::tracker_tier_stats_web_seed_and_v2_hash`。
