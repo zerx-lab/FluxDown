@@ -747,6 +747,11 @@ impl SettingsStore {
     pub fn pref_f64(&self, key: &str, default: f64) -> f64 {
         self.pref(key).and_then(Value::as_f64).unwrap_or(default)
     }
+    /// Whether a preference mutation is still queued or awaiting its agent acknowledgement.
+    #[must_use]
+    pub fn preference_pending(&self, key: &str) -> bool {
+        self.pending_prefs.contains_key(key) || self.inflight_prefs.contains_key(key)
+    }
 
     /// 写入偏好。云同步目录内的键自动进入同步；其余键为设备本地。
     /// `Value::Null` 是墓碑：agent 移除该偏好（同步键把删除同步给云端），不做值校验。

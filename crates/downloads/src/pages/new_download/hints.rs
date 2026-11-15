@@ -74,14 +74,14 @@ impl NewDownloadView {
             FieldFill::Forget => self.hint_fill.user_agent = None,
             FieldFill::Set(value) => {
                 // `set_value` 不发 Change：预设下拉要手动对齐。
-                self.ua_preset = detect_ua_preset(&value);
+                self.ua_preset = detect_ua_preset(&value).to_owned();
                 self.user_agent
                     .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
                 self.hint_fill.user_agent = Some(value);
                 touched = true;
             }
             FieldFill::Clear => {
-                self.ua_preset = UA_PRESET_DEFAULT;
+                self.ua_preset = UA_PRESET_DEFAULT.to_owned();
                 self.user_agent
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.hint_fill.user_agent = None;

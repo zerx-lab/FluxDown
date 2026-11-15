@@ -36,7 +36,7 @@ use crate::{
         new_download::{
             BuiltRequests, DEFAULT_HASH_ALGORITHM, DraftOptions, HASH_ALGORITHMS, MAX_THREADS,
             ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
-            UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
+            UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
             checksum_spec, compose_request, custom_segments, detect_ua_preset, manual_proxy_url,
             parse_entries, parse_input, ua_preset_keys, ua_preset_value,
         },
@@ -123,8 +123,10 @@ pub struct NewDownloadContext {
     /// 默认目录下的授权路由；空规则仍允许插件归档。`None` 表示明确停用路由。
     pub category_route: Option<fluxdown_protocol::CategoryRouteDto>,
     pub category_options: Vec<NewDownloadCategory>,
-    /// Raw local mode preference, validated once selectable category options are available.
-    pub(crate) initial_category_mode: Option<String>,
+    /// Device-local reusable User-Agent values shared across download forms.
+    pub user_agent_presets: Vec<fluxdown_protocol::user_agent_presets::UserAgentPreset>,
+    /// Last explicitly chosen category mode, restored when opening the form.
+    pub initial_category_mode: Option<String>,
     /// 偏好 `custom_categories` 的原始列表（快捷添加网址规则时在其上追加再整体写回）。
     pub custom_categories: Vec<fluxdown_protocol::CustomCategoryDto>,
     /// 「下载到」候选：账号其他设备 + 已配对设备（本机始终可选，不在其中）；空 = 不显示选择器。
@@ -261,6 +263,9 @@ pub(crate) fn build_new_download_context(
         manual_proxy_url: manual_proxy_url(config),
         category_route: fluxdown_protocol::CategoryRouteDto::from_categories(&categories),
         category_options: category_options.clone(),
+        user_agent_presets: fluxdown_protocol::user_agent_presets::from_preference(
+            preferences.get(fluxdown_protocol::user_agent_presets::PREF_KEY),
+        ),
         initial_category_mode: preferences
             .get(LAST_CATEGORY_MODE_PREF)
             .and_then(serde_json::Value::as_str)
@@ -335,7 +340,7 @@ pub struct NewDownloadView {
     proxy_choice: ProxyChoice,
     custom_proxy: Entity<InputState>,
     ignore_tls_errors: bool,
-    ua_preset: &'static str,
+    ua_preset: String,
     user_agent: Entity<InputState>,
     cookie: Entity<TextareaState>,
     referrer: Entity<InputState>,
@@ -464,7 +469,7 @@ impl NewDownloadView {
             hint_fill: HintAutofill::default(),
             proxy_choice: ProxyChoice::FollowGlobal,
             ignore_tls_errors: false,
-            ua_preset: UA_PRESET_DEFAULT,
+            ua_preset: UA_PRESET_DEFAULT.to_owned(),
             cookie,
             hash_algorithm: DEFAULT_HASH_ALGORITHM,
             headers: Vec::new(),
@@ -567,11 +572,18 @@ impl NewDownloadView {
         .detach();
         cx.subscribe(&self.user_agent, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
-                let detected = detect_ua_preset(&input.read(cx).value());
-                if detected != this.ua_preset {
-                    this.ua_preset = detected;
-                    cx.notify();
-                }
+                let value = input.read(cx).value();
+                let detected = this
+                    .context
+                    .user_agent_presets
+                    .iter()
+                    .position(|preset| preset.value == value.as_ref())
+                    .map_or_else(
+                        || detect_ua_preset(&value).to_owned(),
+                        |index| format!("saved:{index}"),
+                    );
+                this.ua_preset = detected;
+                cx.notify();
             }
         })
         .detach();
@@ -994,6 +1006,7 @@ impl NewDownloadView {
             queues,
             category_route,
             category_options,
+            user_agent_presets,
             custom_categories,
             manual_proxy_url,
             initial_category_mode,
@@ -1036,6 +1049,19 @@ impl NewDownloadView {
         self.context.queues = queues;
         self.context.category_route = category_route;
         self.context.category_options = category_options;
+        self.context.user_agent_presets = user_agent_presets;
+        if self.ua_preset != UA_PRESET_CUSTOM {
+            let value = self.user_agent.read(cx).value();
+            self.ua_preset = self
+                .context
+                .user_agent_presets
+                .iter()
+                .position(|preset| preset.value == value.as_ref())
+                .map_or_else(
+                    || detect_ua_preset(&value).to_owned(),
+                    |index| format!("saved:{index}"),
+                );
+        }
         self.context.custom_categories = custom_categories;
         self.context.initial_category_mode = initial_category_mode;
         if !self.category_mode_touched && save_dir_was_untouched {
@@ -1471,10 +1497,22 @@ impl NewDownloadView {
         cx.notify();
     }
 
-    fn set_ua_preset(&mut self, key: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        self.ua_preset = key;
-        if key != UA_PRESET_CUSTOM {
-            let value = ua_preset_value(key);
+    fn set_ua_preset(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.ua_preset.clone_from(&key);
+        let value = if key == UA_PRESET_CUSTOM {
+            None
+        } else if let Some(index) = key
+            .strip_prefix("saved:")
+            .and_then(|part| part.parse::<usize>().ok())
+        {
+            self.context
+                .user_agent_presets
+                .get(index)
+                .map(|preset| preset.value.clone())
+        } else {
+            Some(ua_preset_value(&key).to_owned())
+        };
+        if let Some(value) = value {
             self.user_agent
                 .update(cx, |input, cx| input.set_value(value, window, cx));
         }
@@ -1503,6 +1541,15 @@ impl NewDownloadView {
     }
 
     fn ua_label(&self, key: &str) -> SharedString {
+        if let Some(index) = key
+            .strip_prefix("saved:")
+            .and_then(|part| part.parse::<usize>().ok())
+        {
+            return self.context.user_agent_presets.get(index).map_or_else(
+                || self.strings.ua_custom.clone(),
+                |preset| preset.name.clone().into(),
+            );
+        }
         match key {
             "chrome" => self.strings.ua_chrome.clone(),
             "firefox" => self.strings.ua_firefox.clone(),
@@ -2095,20 +2142,68 @@ impl NewDownloadView {
     }
 
     fn render_user_agent(&self, cx: &mut Context<Self>) -> Div {
-        let options = ua_preset_keys()
-            .map(|key| (key, self.ua_label(key), false))
+        let mut options: Vec<(String, SharedString, bool)> = ua_preset_keys()
+            .map(|key| (key.to_owned(), self.ua_label(key), false))
             .collect();
+        options.extend(
+            self.context
+                .user_agent_presets
+                .iter()
+                .enumerate()
+                .map(|(index, preset)| {
+                    (format!("saved:{index}"), preset.name.clone().into(), false)
+                }),
+        );
         let preset = self.dropdown(
             "new-download-ua-preset",
             Some(active_theme(cx).text_extent(PRESET_DROPDOWN_WIDTH)),
-            self.ua_preset,
+            self.ua_preset.clone(),
             options,
             |this, key, window, cx| this.set_ua_preset(key, window, cx),
             cx,
         );
+        let value = self.user_agent.read(cx).value().trim().to_owned();
+        let known = UA_PRESETS.iter().any(|(_, builtin)| *builtin == value)
+            || self
+                .context
+                .user_agent_presets
+                .iter()
+                .any(|preset| preset.value == value);
+        let control = h_flex().w_full().gap(active_theme(cx).tokens().spacing.sm)
+            .child(preset)
+            .child(div().flex_1().min_w_0().child(Input::new(&self.user_agent).control(cx).w_full()))
+            .when(!value.is_empty() && !known, |row| {
+                let presets = self.context.user_agent_presets.clone();
+                let translator = self.translator.read(cx).clone();
+                let port = self.port.clone();
+                let this = cx.weak_entity();
+                let user_agent = self.user_agent.clone();
+                row.child(Button::new("new-download-save-ua-preset").label(translator.text("userAgentSavePreset")).control(cx)
+                    .on_click(move |_, window, cx| {
+                        let weak = this.clone();
+                        let input = user_agent.clone();
+                        let on_saved = Rc::new(move |preset: fluxdown_protocol::user_agent_presets::UserAgentPreset, window: &mut Window, cx: &mut App| {
+                            let value = preset.value.clone();
+                            let Ok(()) = weak.update(cx, |this, cx| {
+                                let index = this.context.user_agent_presets.iter()
+                                    .position(|saved| saved.value == preset.value)
+                                    .unwrap_or_else(|| {
+                                        this.context.user_agent_presets.push(preset);
+                                        this.context.user_agent_presets.len() - 1
+                                    });
+                                this.ua_preset = format!("saved:{index}");
+                                cx.notify();
+                            }) else { return; };
+                            input.update(cx, |input, cx| input.set_value(value, window, cx));
+                        });
+                        crate::pages::user_agent_presets::open_save_dialog(
+                            value.clone(), presets.clone(), translator.clone(), port.clone(), on_saved, window, cx,
+                        );
+                    }))
+            });
         form_field(
             self.strings.user_agent.clone(),
-            Self::preset_with_input(preset, &self.user_agent, cx),
+            control,
             Some(self.strings.user_agent_desc.clone()),
             cx,
         )

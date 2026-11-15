@@ -4086,5 +4086,12 @@
   "taskEditAutoCategory": "自动分类",
   "taskEditCookiesConfigured": "已配置 Cookie，但不会显示机密内容。",
   "taskEditClearCookies": "清除 Cookie",
-  "taskEditScheduledHint": "输入 Unix 秒数；0 表示停用一次性计划。"
+  "taskEditScheduledHint": "输入 Unix 秒数；0 表示停用一次性计划。",
+  "userAgentManagePresets": "管理预设",
+  "userAgentAddPreset": "新增预设",
+  "userAgentSavePreset": "保存为预设",
+  "userAgentPresetName": "预设名称",
+  "userAgentPresetValue": "User-Agent 值",
+  "userAgentPresetExists": "此 User-Agent 已保存。",
+  "userAgentPresetInvalid": "请输入名称与有效的 User-Agent，不得包含控制字符。"
 }

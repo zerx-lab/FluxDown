@@ -18,14 +18,15 @@ import { cloudPresenceKnown } from '../../../lib/cloud-presence'
 import { describeUploadError } from '../../../lib/rpcErrorText'
 import { ThreadsRiskCallout } from '../../../lib/ThreadsRiskCallout'
 import type { AgentSnapshot, CloudDevice, JsonValue, LinkDeviceInfo, PendingCaptureDto, QueueDto, ResolvePreviewResponse } from '../../../lib/rpc'
+import { UserAgentPresetControl } from '../../userAgent/UserAgentPresetControl'
 import { Button, Dialog, DialogFooter, FieldError, FieldHint, FieldLabel, Form, FormField, FormRow, Icon, Input, InputWithAction, OptionGroup, OptionRow, Select, Spinner, Switch, Textarea, toast } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
 import { FsPickerDialog } from './FsPickerDialog'
 import { ManifestSelectDialog } from './ManifestSelectDialog'
 import type { ManifestBaseOptions } from './ManifestSelectDialog'
-import { DEFAULT_HASH_ALGORITHM, HASH_ALGORITHMS, MAX_THREADS, PROXY_CHOICES, THREAD_PRESETS, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT, UA_PRESET_KEYS } from './model'
+import { DEFAULT_HASH_ALGORITHM, HASH_ALGORITHMS, MAX_THREADS, PROXY_CHOICES, THREAD_PRESETS } from './model'
 import type { DraftOptions, ProxyChoice, ThreadChoice, UrlEntry } from './model'
-import { appendEntries, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, detectUaPreset, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments, uaPresetValue } from './model'
+import { appendEntries, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments } from './model'
 import { applyHints, emptyHints, emptyTracking, hintsEqual, planFieldFill } from './aria2c'
 import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
@@ -129,7 +130,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
   const [proxyChoice, setProxyChoice] = useState<ProxyChoice>('follow')
   const [customProxy, setCustomProxy] = useState('')
   const [ignoreTls, setIgnoreTls] = useState(false)
-  const [uaPreset, setUaPreset] = useState(UA_PRESET_DEFAULT)
+  
   const [userAgent, setUserAgent] = useState('')
   const [cookie, setCookie] = useState('')
   const [referrer, setReferrer] = useState('')
@@ -167,10 +168,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     })
     fillTracking.current = result.tracking
     if (result.cookie !== cookie) setCookie(result.cookie)
-    if (result.userAgent !== userAgent) {
-      setUserAgent(result.userAgent)
-      setUaPreset(detectUaPreset(result.userAgent))
-    }
+    if (result.userAgent !== userAgent) setUserAgent(result.userAgent)
     if (result.rows.length !== headers.length || result.rows.some((row, index) => row !== headers[index])) setHeaders(result.rows)
     if (result.filled) setAdvancedOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在命令头部信息变化时回填，表单当前值取渲染时快照
@@ -375,15 +373,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     setThreads(next)
   }
 
-  const changeUaPreset = (key: string) => {
-    setUaPreset(key)
-    if (key !== UA_PRESET_CUSTOM) setUserAgent(uaPresetValue(key))
-  }
-
-  const editUserAgent = (value: string) => {
-    setUserAgent(value)
-    setUaPreset(detectUaPreset(value))
-  }
+  const editUserAgent = (value: string) => setUserAgent(value)
 
   const segments = threads === 'auto' ? 0 : threads === 'custom' ? customSegments(customThreads) : Math.min(Number(threads), MAX_THREADS)
 
@@ -707,22 +697,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
     { value: 'custom' as ThreadChoice, label: t('customThreads') },
   ]
 
-  const uaLabel = (key: string): string => {
-    switch (key) {
-      case 'chrome':
-        return t('userAgentPresetChrome')
-      case 'firefox':
-        return t('userAgentPresetFirefox')
-      case 'edge':
-        return t('userAgentPresetEdge')
-      case 'safari':
-        return t('userAgentPresetSafari')
-      case UA_PRESET_CUSTOM:
-        return t('userAgentPresetCustom')
-      default:
-        return t('queueUaInheritGlobal')
-    }
-  }
+
 
   const showAuth = !batch && !allMagnet
   const startLabel = count > 1 ? t('startBatchDownload', { count }) : t('startDownload')
@@ -1039,12 +1014,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
                 </FormField>
 
                 <FormField label={t('userAgent')} hint={t('userAgentTaskPlaceholder')}>
-                  <div className="flex flex-col gap-2 min-[560px]:flex-row">
-                    <div className="min-[560px]:w-[140px] min-[560px]:shrink-0">
-                      <Select value={uaPreset} options={UA_PRESET_KEYS.map((key) => ({ value: key, label: uaLabel(key) }))} aria-label={t('userAgent')} onValueChange={changeUaPreset} />
-                    </div>
-                    <Input value={userAgent} placeholder={t('userAgentTaskPlaceholder')} spellCheck={false} aria-label={t('userAgent')} onChange={(event) => editUserAgent(event.target.value)} />
-                  </div>
+                  <UserAgentPresetControl value={userAgent} onChange={editUserAgent} />
                 </FormField>
 
                 <FormField label={t('taskCookie')} htmlFor="new-download-cookie" hint={t('taskCookieDesc')}>

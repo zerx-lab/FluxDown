@@ -44,6 +44,7 @@ enum Field {
 struct PropertiesForm {
     target: Rc<TaskEditTarget>,
     snapshot: Option<TaskEditSnapshot>,
+    user_agent_presets: Vec<fluxdown_protocol::user_agent_presets::UserAgentPreset>,
     fields: Vec<(Field, Entity<InputState>)>,
     cookies_touched: bool,
     _watches: Vec<Subscription>,
@@ -65,9 +66,11 @@ struct PropertiesForm {
 impl PropertiesForm {
     fn new(target: Rc<TaskEditTarget>, cx: &mut Context<Self>) -> Self {
         let translator = target.translator.read(cx);
+        let user_agent_presets = target.user_agent_presets.clone();
         Self {
             target,
             snapshot: None,
+            user_agent_presets,
             fields: Vec::new(),
             cookies_touched: false,
             _watches: Vec::new(),
@@ -163,6 +166,14 @@ impl PropertiesForm {
         {
             self._watches
                 .push(cx.observe(category, |_, _, cx| cx.notify()));
+        }
+        if let Some((_, user_agent)) = self
+            .fields
+            .iter()
+            .find(|(field, _)| *field == Field::UserAgent)
+        {
+            self._watches
+                .push(cx.observe(user_agent, |_, _, cx| cx.notify()));
         }
         self.snapshot = Some(snapshot);
         self.loading = false;
@@ -412,6 +423,127 @@ impl PropertiesForm {
         };
         self.target.translator.read(cx).text(key).into()
     }
+
+    fn user_agent_control(
+        &self,
+        input: Entity<InputState>,
+        supported: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let translator = self.target.translator.read(cx).clone();
+        let current = input.read(cx).value().to_string();
+        let mut options: Vec<(String, SharedString)> = vec![(
+            String::new(),
+            translator.text("queueUaInheritGlobal").into(),
+        )];
+        options.extend(
+            crate::model::new_download::UA_PRESETS
+                .iter()
+                .map(|(key, value)| {
+                    let label_key = match *key {
+                        "chrome" => "userAgentPresetChrome",
+                        "firefox" => "userAgentPresetFirefox",
+                        "edge" => "userAgentPresetEdge",
+                        _ => "userAgentPresetSafari",
+                    };
+                    ((*value).to_owned(), translator.text(label_key).into())
+                }),
+        );
+        options.extend(
+            self.user_agent_presets
+                .iter()
+                .map(|preset| (preset.value.clone(), preset.name.clone().into())),
+        );
+        let label = options
+            .iter()
+            .find(|(value, _)| value == &current)
+            .map_or_else(
+                || translator.text("userAgentPresetCustom").into(),
+                |(_, label)| label.clone(),
+            );
+        let menu_current = current.clone();
+        let menu_options = options.clone();
+        let menu_input = input.clone();
+        let picker = Button::new("task-properties-ua-presets")
+            .outline()
+            .control(cx)
+            .label(label)
+            .dropdown_caret(true)
+            .disabled(!supported || self.saving)
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                menu_options.iter().fold(menu, |menu, (value, label)| {
+                    let value = value.clone();
+                    let input = menu_input.clone();
+                    menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(value == menu_current)
+                            .on_click(move |_, window, cx| {
+                                input.update(cx, |input, cx| {
+                                    input.set_value(value.clone(), window, cx)
+                                });
+                            }),
+                    )
+                })
+            });
+        let value = current.trim().to_owned();
+        let known = value.is_empty()
+            || self
+                .user_agent_presets
+                .iter()
+                .any(|preset| preset.value == value)
+            || crate::model::new_download::UA_PRESETS
+                .iter()
+                .any(|(_, builtin)| *builtin == value);
+        let mut control = gpui::div()
+            .flex()
+            .w_full()
+            .gap(fluxdown_ui_theme::active_theme(cx).tokens().spacing.sm)
+            .child(picker)
+            .child(
+                gpui::div().flex_1().min_w_0().child(
+                    Input::new(&input)
+                        .control(cx)
+                        .disabled(!supported || self.saving)
+                        .w_full(),
+                ),
+            );
+        if !known {
+            let port = self.target.port.clone();
+            let presets = self.user_agent_presets.clone();
+            let translator_for_dialog = translator.clone();
+            let input_for_save = input.clone();
+            let weak = cx.weak_entity();
+            control = control.child(
+                Button::new("task-properties-save-ua-preset")
+                    .label(translator.text("userAgentSavePreset"))
+                    .control(cx)
+                    .disabled(!supported || self.saving)
+                    .on_click(move |_, window, cx| {
+                        let input = input_for_save.clone();
+                        let weak = weak.clone();
+                        crate::pages::user_agent_presets::open_save_dialog(
+                            value.clone(),
+                            presets.clone(),
+                            translator_for_dialog.clone(),
+                            port.clone(),
+                            Rc::new(move |preset, window, cx| {
+                                let value = preset.value.clone();
+                                let Ok(()) = weak.update(cx, |this, cx| {
+                                    this.user_agent_presets.push(preset);
+                                    cx.notify();
+                                }) else {
+                                    return;
+                                };
+                                input.update(cx, |input, cx| input.set_value(value, window, cx));
+                            }),
+                            window,
+                            cx,
+                        );
+                    }),
+            );
+        }
+        control
+    }
 }
 
 impl Render for PropertiesForm {
@@ -484,6 +616,13 @@ impl Render for PropertiesForm {
                         cx,
                     ),
                     None,
+                    cx,
+                ));
+            } else if *field == Field::UserAgent {
+                body = body.child(form_field(
+                    self.label(*field, cx),
+                    self.user_agent_control(input.clone(), supported, cx),
+                    (!supported).then_some(self.unsupported.clone()),
                     cx,
                 ));
             } else {

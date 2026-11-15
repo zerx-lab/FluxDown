@@ -15,3 +15,4 @@ pub(crate) mod task_edit;
 pub(crate) mod task_properties;
 pub(crate) mod task_torrent_share;
 pub(crate) mod task_verify;
+pub(crate) mod user_agent_presets;
