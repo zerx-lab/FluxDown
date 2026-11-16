@@ -5,7 +5,7 @@
 //! 正交的信任模型，本模块不与插件系统的脚本执行交互——但已安装的组件会被
 //! 授权插件经 `flux.ffmpeg` / `flux.ytdlp` 门面调用（见 [`crate::plugin`]）。
 //!
-//! - [`ffmpeg`]：音视频处理，服务 DASH/轨对任务的 mux（BtbN 归档，解压取单文件）。
+//! - [`ffmpeg`]：音视频处理，服务 DASH/轨对任务的 mux（FFmpeg-Builds 归档，解压取单文件）。
 //! - [`ytdlp`]：站点媒体提取器，服务插件 resolve 平面的直链提取（单文件二进制）。
 //!
 //! 两者共用同一套路径来源模型（[`ComponentSource`]，manual→managed→system）、
@@ -540,10 +540,11 @@ mod tests {
     // 配置后改写 github.com 前缀（资产直链下载）；末尾 `/` 与首尾空白容错。
     #[test]
     fn apply_component_mirror_rewrites_asset_download_host() {
-        let url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg.zip";
+        let url =
+            "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg.zip";
         assert_eq!(
             apply_component_mirror(url, "  https://ghproxy.example.com/gh/  "),
-            "https://ghproxy.example.com/gh/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg.zip"
+            "https://ghproxy.example.com/gh/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg.zip"
         );
     }
 

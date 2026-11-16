@@ -6,10 +6,11 @@
 //! 3. 系统 PATH（默认探测；多数 Linux 发行版经包管理器安装）
 //!
 //! 托管安装（`install_ffmpeg`，`components` feature 门控）从
-//! BtbN/FFmpeg-Builds 的 GitHub `latest` Release 下载静态构建：该 Release
+//! FFmpeg-Builds/FFmpeg-Builds（原 BtbN/FFmpeg-Builds，已整仓迁移）的 GitHub
+//! `latest` Release 下载静态构建：该 Release
 //! 同时携带多个 `n<major.minor>` 版本资产，一次请求即可列出全部可选版本
 //! （[`list_versions`]），用户可钉住特定版本或更新到最新稳定版。
-//! macOS 无 BtbN 构建，仅支持系统探测 + 手动指定。
+//! macOS 无 FFmpeg-Builds 构建，仅支持系统探测 + 手动指定。
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +36,7 @@ pub struct FfmpegStatus {
     pub managed_version: String,
     /// 系统 PATH 中探测到的 ffmpeg 路径（无论是否生效，供 UI 展示；空 = 无）。
     pub system_path: String,
-    /// 当前平台是否提供托管安装（BtbN 构建）。`false` = macOS 等无官方静态
+    /// 当前平台是否提供托管安装（FFmpeg-Builds 构建）。`false` = macOS 等无官方静态
     /// 构建的平台——UI 应隐藏托管安装入口，只引导系统 PATH / 手动指定，
     /// 避免反复弹「不支持安装」。仅按 OS+架构判定（不含 musl 运行时差异，
     /// 后者在安装探测阶段兜底）。
@@ -68,9 +69,9 @@ fn ffprobe_binary_name() -> &'static str {
     }
 }
 
-/// 当前平台是否提供 ffmpeg 托管安装（BtbN/FFmpeg-Builds 官方静态构建）。
+/// 当前平台是否提供 ffmpeg 托管安装（FFmpeg-Builds/FFmpeg-Builds 官方静态构建）。
 ///
-/// BtbN 仅发布 win64/winarm64/linux64/linuxarm64 构建，无 macOS 构建。仅按
+/// FFmpeg-Builds 仅发布 win64/winarm64/linux64/linuxarm64 构建，无 macOS 构建。仅按
 /// 编译期 OS + 架构判定，供状态探测在**不触网**的前提下让 UI 决定是否展示
 /// 托管安装入口——避免在 macOS 等平台上每次打开组件页都发起注定失败的版本
 /// 拉取并弹错。
@@ -226,12 +227,14 @@ mod install {
     use super::{CONFIG_FFMPEG_MANAGED_VERSION, ComponentError, FfmpegStatus, managed_ffmpeg_path};
     use crate::db::Db;
 
-    /// BtbN/FFmpeg-Builds latest Release 的 GitHub API 端点。
-    const RELEASE_API: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+    /// FFmpeg-Builds/FFmpeg-Builds latest Release 的 GitHub API 端点。仓库原名
+    /// BtbN/FFmpeg-Builds，迁移后 GitHub API 返回的 `browser_download_url` 只用新路径（#1152）。
+    const RELEASE_API: &str =
+        "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest";
     /// 资产与校验文件必须位于此上游 release 下载前缀内。
     const UPSTREAM_DOWNLOAD_PREFIX: &str =
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/";
-    /// BtbN 每个 release 附带的 sha256sum 格式校验文件。
+        "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/";
+    /// FFmpeg-Builds 每个 release 附带的 sha256sum 格式校验文件。
     const CHECKSUM_ASSET: &str = "checksums.sha256";
 
     /// 可安装版本列表（解析自 latest Release 的资产名）。
@@ -243,7 +246,7 @@ mod install {
         pub latest_stable: String,
     }
 
-    /// 当前平台在 BtbN 资产名中的标识。`None` = 平台无托管构建。
+    /// 当前平台在 FFmpeg-Builds 资产名中的标识。`None` = 平台无托管构建。
     fn platform_tag() -> Option<&'static str> {
         if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
             Some("win64")

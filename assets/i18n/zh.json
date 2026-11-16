@@ -2208,7 +2208,7 @@
   "componentsManualPathSave": "保存",
   "componentsManualPathClear": "清除",
   "componentsInstallSectionTitle": "托管安装",
-  "componentsInstallSectionDescFfmpeg": "按需从官方 BtbN/FFmpeg-Builds 发行版下载静态构建，不随安装包分发",
+  "componentsInstallSectionDescFfmpeg": "按需从官方 FFmpeg-Builds/FFmpeg-Builds 发行版下载静态构建，不随安装包分发",
   "componentsInstallSectionDescYtdlp": "按需从官方 yt-dlp/yt-dlp GitHub 发行版下载对应平台二进制，不随安装包分发",
   "componentsFetchVersionsButton": "刷新版本列表",
   "componentsVersionsLoading": "加载版本列表…",

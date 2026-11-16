@@ -4327,7 +4327,7 @@ pub struct ComponentFfmpegStatus {
     pub managed_version: String,
     /// 系统 PATH 中探测到的 ffmpeg 路径（无论是否生效；空 = 无）。
     pub system_path: String,
-    /// 当前平台是否提供托管安装（BtbN 构建）。`false` = macOS 等——Web UI 隐藏
+    /// 当前平台是否提供托管安装（FFmpeg-Builds 构建）。`false` = macOS 等——Web UI 隐藏
     /// 托管安装区块，只引导系统 PATH / 手动指定，避免反复弹「不支持安装」。
     pub managed_supported: bool,
 }

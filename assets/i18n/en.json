@@ -2208,7 +2208,7 @@
   "componentsManualPathSave": "Save",
   "componentsManualPathClear": "Clear",
   "componentsInstallSectionTitle": "Managed install",
-  "componentsInstallSectionDescFfmpeg": "Downloads a static FFmpeg build from the official BtbN/FFmpeg-Builds release on demand — not bundled with the installer.",
+  "componentsInstallSectionDescFfmpeg": "Downloads a static FFmpeg build from the official FFmpeg-Builds/FFmpeg-Builds release on demand — not bundled with the installer.",
   "componentsInstallSectionDescYtdlp": "Downloads the official platform binary from the yt-dlp/yt-dlp GitHub release on demand — not bundled with the installer.",
   "componentsFetchVersionsButton": "Refresh version list",
   "componentsVersionsLoading": "Loading versions…",
