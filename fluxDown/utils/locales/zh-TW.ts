@@ -858,6 +858,7 @@ const zhTW = {
   "rules.validate.mirror_out_of_scope": "鏡像網域 {param} 不在規則限定的站點內",
   "rules.validate.page_scope_required": "頁面規則必須限定 host 或 pageHost",
   "rules.validate.player_float_invalid": "player.float 不合法",
+  "rules.validate.player_top_invalid": "player.top 須為 1–200 的整數",
   "rules.validate.preempt_forbidden": "preempt 僅允許內建與官方規則",
   "rules.validate.requires_invalid": "requires 不合法",
   "rules.validate.resource_type_invalid": "資源類型 {param} 不合法",

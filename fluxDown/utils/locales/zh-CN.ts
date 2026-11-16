@@ -856,6 +856,7 @@ const zhCN = {
   "rules.validate.mirror_out_of_scope": "镜像域名 {param} 不在规则限定的站点内",
   "rules.validate.page_scope_required": "页面规则必须限定 host 或 pageHost",
   "rules.validate.player_float_invalid": "player.float 不合法",
+  "rules.validate.player_top_invalid": "player.top 须为 1–200 的整数",
   "rules.validate.preempt_forbidden": "preempt 仅允许内置与官方规则",
   "rules.validate.requires_invalid": "requires 不合法",
   "rules.validate.resource_type_invalid": "资源类型 {param} 不合法",
