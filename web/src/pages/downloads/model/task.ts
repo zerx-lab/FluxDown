@@ -322,6 +322,15 @@ export function shareUrl(view: DownloadTaskView): string {
   return view.originUrl === '' ? view.url : view.originUrl
 }
 
+/**
+ * 「复制下载地址」能给出的真实链接：本地导入的 `.torrent` 无来源时只有 `torrent-file://` 哨兵，
+ * 返回空串（与 GPUI `copyable_share_url` 一致）。
+ */
+export function copyableShareUrl(view: DownloadTaskView): string {
+  const url = shareUrl(view)
+  return url.startsWith('torrent-file://') ? '' : url
+}
+
 /** 来源站点：referrer host 为主，空则 url host。 */
 export function sourceSite(view: DownloadTaskView): string {
   const host = urlHost(view.referrer)

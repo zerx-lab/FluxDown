@@ -6,7 +6,7 @@ import { copyText } from '../../../lib/copy'
 import { useDownloads } from '../state'
 import { taskStateLabel } from '../table/text'
 import { copyUrls, downloadViewsFiles, isDownloadable } from '../model/actions'
-import { MAX_ETA_SECS, PROTOCOL_LABEL, formatBytes, formatDateTime, sourcePageUrl, sourceSite } from '../model/task'
+import { MAX_ETA_SECS, PROTOCOL_LABEL, copyableShareUrl, formatBytes, formatDateTime, sourcePageUrl, sourceSite } from '../model/task'
 import { localizeTaskError } from '../model/taskError'
 import type { DownloadTaskView, TaskState } from '../model/task'
 import { canChangeSegments, canChangeUrl } from '../model/taskEdit'
@@ -120,9 +120,12 @@ export function GeneralTab({ view }: { view: DownloadTaskView }) {
               {t('webDownloadFile')}
             </Button>
           ) : null}
-          <Button icon={Copy} onClick={() => copyUrls([view])}>
-            {t('copyUrl')}
-          </Button>
+          {/* 详情页没有「复制磁力链接」，磁力原文仍走这里；只藏无链接的哨兵任务（GPUI 同）。 */}
+          {copyableShareUrl(view) !== '' ? (
+            <Button icon={Copy} onClick={() => copyUrls([view])}>
+              {t('copyUrl')}
+            </Button>
+          ) : null}
           <Button icon={Pen} onClick={() => openTaskEdit(view.taskId)}>
             {t('taskEditTitle')}
           </Button>

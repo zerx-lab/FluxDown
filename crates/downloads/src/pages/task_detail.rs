@@ -62,7 +62,8 @@ use crate::{
     components::{
         segment_progress::render_segment_progress,
         task_table::{
-            progress_bar_color, progress_track_color, task_menu_facts_for, task_status_color,
+            ShareLink, progress_bar_color, progress_track_color, task_menu_facts_for,
+            task_status_color,
         },
     },
     controller::{
@@ -915,7 +916,9 @@ impl TaskDetailView {
         let Some(row) = self.store.get(&RowKey::Local(self.task_id.clone())) else {
             return;
         };
-        let url = row.share_url().to_owned();
+        let Some(url) = row.copyable_share_url().map(str::to_owned) else {
+            return;
+        };
         drop(row);
         cx.write_to_clipboard(ClipboardItem::new_string(url));
         window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
@@ -1603,13 +1606,21 @@ impl TaskDetailView {
                 .flex_wrap()
                 .gap(tokens.spacing.sm)
                 .pt(tokens.spacing.md)
-                .child(
-                    Button::new("detail-copy-link")
-                        .outline()
-                        .control(cx)
-                        .icon(FluxIcon::Copy)
-                        .label(self.strings.copy_url.clone())
-                        .on_click(cx.listener(|this, _, window, cx| this.copy_link(window, cx))),
+                // 详情页没有「复制磁力链接」，磁力原文仍走这里；只藏无链接的哨兵任务。
+                .when(
+                    facts.is_some_and(|facts| facts.share_link != ShareLink::None),
+                    |this| {
+                        this.child(
+                            Button::new("detail-copy-link")
+                                .outline()
+                                .control(cx)
+                                .icon(FluxIcon::Copy)
+                                .label(self.strings.copy_url.clone())
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.copy_link(window, cx)),
+                                ),
+                        )
+                    },
                 )
                 .when(can_change_url, |this| {
                     this.child(

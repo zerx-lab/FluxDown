@@ -455,6 +455,29 @@ pub(crate) struct TaskMenuFacts {
     pub(crate) is_seeding: bool,
     /// 已完成且做种已停止 / 达标（seeding_status 2..=7）、产物仍在：可继续（恢复做种）。
     pub(crate) can_resume_seeding: bool,
+    /// 「复制下载地址」能复制的链接种类（`DownloadTaskView::copyable_share_url`）。
+    pub(crate) share_link: ShareLink,
+}
+
+/// 任务「下载地址」的种类：决定「复制下载地址」是否有意义、是否与「复制磁力链接」重复。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShareLink {
+    /// 可复制的普通链接（http(s) / ftp / ed2k / RSS 的 `.torrent` 直链等）。
+    Url,
+    /// 用户添加时的 `magnet:` 原文。
+    Magnet,
+    /// 无可复制链接：本地导入的 `.torrent` 只有 `torrent-file://` 哨兵。
+    None,
+}
+
+impl ShareLink {
+    fn of(url: Option<&str>) -> Self {
+        match url {
+            None => Self::None,
+            Some(url) if url_has_prefix(url, &["magnet:"]) => Self::Magnet,
+            Some(_) => Self::Url,
+        }
+    }
 }
 
 /// 可「忽略插件重试」的插件失败错误消息前缀（引擎 `handle_resolve_ready`；二段解析任务
@@ -517,6 +540,27 @@ impl TaskMenuFacts {
     pub(crate) fn has_product_on_disk(&self) -> bool {
         self.is_local && self.state == TaskState::Completed && !self.file_missing
     }
+
+    /// 「复制下载地址」对单个任务有意义：有真实链接，且不与「复制磁力链接」重复
+    /// （本机 BT 任务的磁力原文由「复制磁力链接」给出，后者还带会话追加的 tracker）。
+    pub(crate) fn can_copy_url(&self) -> bool {
+        match self.share_link {
+            ShareLink::Url => true,
+            ShareLink::Magnet => !self.can_share_torrent(),
+            ShareLink::None => false,
+        }
+    }
+}
+
+/// 「复制下载地址」可见：单选按 [`TaskMenuFacts::can_copy_url`]；多选时「复制磁力链接」
+/// 不出现，磁力原文仍是批量复制的唯一途径，只要有一项能给出链接即显示（哨兵行复制时跳过）。
+fn copy_url_visible(selection: &[TaskMenuFacts]) -> bool {
+    match selection {
+        [only] => only.can_copy_url(),
+        _ => selection
+            .iter()
+            .any(|task| task.share_link != ShareLink::None),
+    }
 }
 
 /// 由任务行计算菜单事实：右键菜单、应用菜单与详情面板按钮共用同一事实源。
@@ -540,6 +584,7 @@ pub(crate) fn task_menu_facts_for(store: &TaskStore, key: &RowKey) -> Option<Tas
         bt_sequential: row.bt_sequential,
         bt_first_last_pieces_first: row.bt_first_last_pieces_first,
         bt_super_seeding: row.bt_super_seeding,
+        share_link: ShareLink::of(row.copyable_share_url()),
     })
 }
 
@@ -686,7 +731,9 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     }) {
         items.push(MenuEntry::Redownload);
     }
-    items.push(MenuEntry::CopyUrl);
+    if copy_url_visible(selection) {
+        items.push(MenuEntry::CopyUrl);
+    }
     if let [only] = selection
         && only.can_share_torrent()
     {
@@ -6574,11 +6621,12 @@ mod tests {
 #[cfg(test)]
 mod context_menu_tests {
     use super::{
-        MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, TaskMenuFacts, context_menu_items,
-        force_recheck_visible, is_bt_url, is_replaceable_url, move_storage_visible,
-        piece_picking_checked, piece_picking_order, piece_picking_order_targets,
-        piece_picking_toggle_target, super_seeding_checked, super_seeding_targets,
-        super_seeding_toggle_target, super_seeding_visible, task_limits_visible, task_menu_entries,
+        MenuEntry, PLUGIN_ERROR_PREFIX, PiecePickingOrder, ShareLink, TaskMenuFacts,
+        context_menu_items, force_recheck_visible, is_bt_url, is_replaceable_url,
+        move_storage_visible, piece_picking_checked, piece_picking_order,
+        piece_picking_order_targets, piece_picking_toggle_target, super_seeding_checked,
+        super_seeding_targets, super_seeding_toggle_target, super_seeding_visible,
+        task_limits_visible, task_menu_entries,
     };
     use crate::model::TaskState;
 
@@ -6599,6 +6647,7 @@ mod context_menu_tests {
             file_missing: false,
             is_seeding: false,
             can_resume_seeding: false,
+            share_link: ShareLink::Url,
         }
     }
 
@@ -7112,6 +7161,7 @@ mod context_menu_tests {
     fn torrent_share_entries_need_single_local_bt_task_in_any_state() {
         let mut bt = task(true, TaskState::Completed);
         bt.is_bt = true;
+        bt.share_link = ShareLink::Magnet;
         for state in [
             TaskState::Downloading,
             TaskState::Paused,
@@ -7123,11 +7173,10 @@ mod context_menu_tests {
             let items = context_menu_items(&[facts]);
             let at = items
                 .iter()
-                .position(|entry| *entry == MenuEntry::CopyUrl)
-                .expect("copy URL is always offered");
-            assert_eq!(items.get(at + 1), Some(&MenuEntry::CopyMagnet), "{state:?}");
+                .position(|entry| *entry == MenuEntry::CopyMagnet)
+                .expect("local BT offers copy magnet");
             assert_eq!(
-                items.get(at + 2),
+                items.get(at + 1),
                 Some(&MenuEntry::ExportTorrent),
                 "{state:?}"
             );
@@ -7143,6 +7192,36 @@ mod context_menu_tests {
         let items = context_menu_items(&[bt, bt]);
         assert!(!items.contains(&MenuEntry::CopyMagnet));
         assert!(!items.contains(&MenuEntry::ExportTorrent));
+    }
+
+    #[test]
+    fn copy_url_hides_where_it_duplicates_copy_magnet_or_has_no_link() {
+        let mut magnet = task(true, TaskState::Paused);
+        magnet.is_bt = true;
+        magnet.share_link = ShareLink::Magnet;
+        let mut imported = magnet;
+        imported.share_link = ShareLink::None;
+        let mut rss_torrent = magnet;
+        rss_torrent.share_link = ShareLink::Url;
+        let mut remote_magnet = magnet;
+        remote_magnet.is_local = false;
+
+        // 单选本机磁力任务：「复制磁力链接」已覆盖；导入的种子文件只有哨兵。
+        for facts in [magnet, imported] {
+            let items = context_menu_items(&[facts]);
+            assert!(!items.contains(&MenuEntry::CopyUrl), "{facts:?}");
+            assert!(items.contains(&MenuEntry::CopyMagnet), "{facts:?}");
+        }
+        // RSS / 网页来源的 .torrent 直链与磁力不同；远程任务没有「复制磁力链接」。
+        for facts in [rss_torrent, remote_magnet] {
+            assert!(
+                context_menu_items(&[facts]).contains(&MenuEntry::CopyUrl),
+                "{facts:?}"
+            );
+        }
+        // 多选没有「复制磁力链接」：磁力原文经「复制下载地址」批量复制，全是哨兵才隐藏。
+        assert!(context_menu_items(&[magnet, imported]).contains(&MenuEntry::CopyUrl));
+        assert!(!context_menu_items(&[imported, imported]).contains(&MenuEntry::CopyUrl));
     }
 
     #[test]

@@ -43,6 +43,7 @@ import {
   confirmDeleteWithFiles,
   confirmIgnorePluginRetry,
   copySourceLink,
+  canCopyUrls,
   copyUrls,
   copyMagnet,
   exportTorrent,
@@ -293,7 +294,9 @@ export function buildTaskMenu({ t, views, queues, queueName, showDetail, selecti
       onSelect: () => void redownloadViews(views),
     })
   }
-  entries.push({ type: 'item', key: 'copy-url', label: t('copyUrl'), icon: Copy, onSelect: () => copyUrls(views) })
+  if (canCopyUrls(views)) {
+    entries.push({ type: 'item', key: 'copy-url', label: t('copyUrl'), icon: Copy, onSelect: () => copyUrls(views) })
+  }
   if (only && canShareTorrent(views)) {
     entries.push({ type: 'item', key: 'copy-magnet', label: t('btCopyMagnet'), icon: Magnet, onSelect: () => void copyMagnet(only) })
     entries.push({ type: 'item', key: 'export-torrent', label: t('btExportTorrent'), icon: FileDown, onSelect: () => void exportTorrent(only) })

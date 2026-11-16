@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import type { DownloadTaskView } from '../model/task'
 import { buildTaskMenu } from './menus'
 
-const view = { key: 'l:t1', source: 'local', taskId: 't1', state: 'completed', protocol: 'http', fileMissing: false, kind: 'other', url: 'https://e.com/a.zip' } as unknown as DownloadTaskView
+const view = { key: 'l:t1', source: 'local', taskId: 't1', state: 'completed', protocol: 'http', fileMissing: false, kind: 'other', url: 'https://e.com/a.zip', originUrl: '' } as unknown as DownloadTaskView
 const t = (key: string) => key
 
 describe('buildTaskMenu plugin commands', () => {

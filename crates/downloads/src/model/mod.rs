@@ -601,6 +601,13 @@ impl DownloadTaskView {
         }
     }
 
+    /// 「复制下载地址」能给出的真实链接：本地导入的 `.torrent` 没有来源时 `share_url`
+    /// 是 `torrent-file://` 哨兵，对用户无意义，返回 `None`（空串同理）。
+    pub(crate) fn copyable_share_url(&self) -> Option<&str> {
+        let url = self.share_url();
+        (!url.is_empty() && !url.starts_with("torrent-file://")).then_some(url)
+    }
+
     /// 来源站点：`referrer` host 为主，空则 url host。
     pub(crate) fn source_site(&self) -> &str {
         let host = url_host(&self.referrer);

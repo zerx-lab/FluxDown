@@ -2156,7 +2156,11 @@ impl DownloadView {
         let store = self.controller.store();
         let urls: Vec<String> = selected
             .iter()
-            .filter_map(|key| store.get(key).map(|row| row.share_url().to_owned()))
+            .filter_map(|key| {
+                store
+                    .get(key)
+                    .and_then(|row| row.copyable_share_url().map(str::to_owned))
+            })
             .collect();
         if !urls.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(urls.join("\n")));

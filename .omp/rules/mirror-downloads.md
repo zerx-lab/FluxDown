@@ -53,6 +53,10 @@ interruptMode: never
 
 → Web `web/src/pages/downloads/model/taskEdit.ts::{canSetPiecePicking, pieceOrder, pieceOrderTargets, pieceSequentialParams, pieceOptionAllOn, pieceEndsParams}` + `table/menus.ts` + `model/actions.ts::{setPieceOrder, setFirstLastPieces}`；Android `actions/TaskActions.kt::piecePickingMenu`（单任务菜单 + 多选长按菜单）；iOS `FluxDomain/Protocol/Tasks.swift::PiecePickingMenu` + `Actions/TaskMenu.swift` / `Features/Downloads/DownloadsListScreen.swift`（只在 `FULL_FLAVOR` 编入）。GPUI `is_local` 排除的是云端远程任务行；移动端没有该行类型，**不用** `isLocalHost`（那只表示文件在这台手机上，会错藏正在控制的远端 PC）。移动端按 URL 小写判断 `magnet:` / `torrent-file://`，未完成才显示；批量切换逐任务捕获错误、全部尝试后再 toast 一次。各端测试覆盖同一组显示 / 顺序 / 勾选用例
 
+## `crates/downloads/src/components/task_table.rs::{ShareLink, TaskMenuFacts::can_copy_url, copy_url_visible}` + `model/mod.rs::DownloadTaskView::copyable_share_url`（「复制下载地址」：`torrent-file://` 哨兵无链接不显示、复制时跳过；单选本机 BT 的磁力原文交给「复制磁力链接」不重复显示；多选有一项可复制即显示；详情常规页按钮只藏哨兵）
+
+→ Web `web/src/pages/downloads/model/task.ts::copyableShareUrl` + `model/actions.ts::{canCopyUrls, copyUrls}` + `table/menus.ts` / `detail/GeneralTab.tsx`（`torrentShare.test.ts` 覆盖同组用例）；移动端没有「复制磁力链接」，不镜像
+
 ## `crates/downloads/src/model/dispatch.rs::remote_action_applies`（远程命令适用状态）
 
 → `web/src/pages/downloads/model/batchPlan.ts::remoteCan`；未知状态一律不可控制
