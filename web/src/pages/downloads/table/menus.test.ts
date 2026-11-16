@@ -129,7 +129,16 @@ describe('buildTaskMenu BT operations', () => {
   test('HTTP, remote or mixed selections hide BT operations', () => {
     for (const views of [[view], [bt('a', { source: 'remote' })], [bt('a'), view]]) {
       const all = keys(views)
-      for (const key of ['btForceRecheck', 'btMoveStorage', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
+      for (const key of ['btForceRecheck', 'btTaskLimits', 'btSuperSeeding']) expect(all.includes(key)).toBe(false)
+    }
+  })
+
+  test('move is offered for any single local task, never for remote or multi-select', () => {
+    for (const views of [[view], [{ ...view, state: 'completed', url: 'ed2k://|file|a.iso|1|h|/' } as DownloadTaskView]]) {
+      expect(keys(views).includes('btMoveStorage')).toBe(true)
+    }
+    for (const views of [[bt('a', { source: 'remote' })], [bt('a'), view]]) {
+      expect(keys(views).includes('btMoveStorage')).toBe(false)
     }
   })
 })

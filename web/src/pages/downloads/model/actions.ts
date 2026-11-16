@@ -163,8 +163,9 @@ export function isMovingStorage(taskId: string): boolean {
 }
 
 /**
- * 移动 BT 数据到新的保存目录（慢方法，进行中由调用方显示加载态）：完成后提示新位置；失败走统一错误 toast。
- * 目标与当前相同时 daemon 直接返回 ok，这里不另作判断。同一任务已有移动在进行时直接返回 false、不下发。
+ * 移动任务数据到新的保存目录（慢方法，进行中由调用方显示加载态）：BT 走 BT 会话搬移，其余协议由 daemon 转统一编辑的搬移。
+ * 完成后提示新位置；失败走统一错误 toast。目标与当前相同时 daemon 直接返回 ok，这里不另作判断。
+ * 同一任务已有移动在进行时直接返回 false、不下发。
  */
 export async function moveTaskStorage(taskId: string, saveDir: string): Promise<boolean> {
   if (movingStorage.has(taskId)) return false

@@ -135,9 +135,9 @@ function singleLocalBt(views: readonly EditFacts[]): boolean {
   return views.length === 1 && views[0]!.source === 'local' && isBtUrl(views[0]!.url)
 }
 
-/** 「移动到…」：恰好一个本地 BT 任务。 */
+/** 「移动到…」：恰好一个本地任务（任意协议、任意状态）。BT 走 BT 会话搬移，其余协议由 daemon 转统一编辑的搬移。 */
 export function canMoveStorage(views: readonly EditFacts[]): boolean {
-  return singleLocalBt(views)
+  return views.length === 1 && views[0]!.source === 'local'
 }
 
 /** 「任务限速…」：恰好一个本地 BT 任务。 */

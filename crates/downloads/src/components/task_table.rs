@@ -866,9 +866,10 @@ fn single_local_bt(selection: &[TaskMenuFacts]) -> bool {
     matches!(selection, [only] if only.is_local && only.is_bt)
 }
 
-/// 「移动到…」：恰好一个本机 BT 任务（任意状态，含已完成 / 做种）。
+/// 「移动到…」：恰好一个本机任务（任意协议、任意状态，含已完成 / 做种）。BT 走 BT 会话搬移，
+/// 其余协议由 daemon 转统一编辑的搬移（`daemon.task.moveStorage`）。
 pub(crate) fn move_storage_visible(selection: &[TaskMenuFacts]) -> bool {
-    single_local_bt(selection)
+    matches!(selection, [only] if only.is_local)
 }
 
 /// 「任务限速…」：恰好一个本机 BT 任务。
@@ -7109,17 +7110,17 @@ mod context_menu_tests {
             );
         }
 
-        // 移动到… / 任务限速…：恰好一个本机 BT（含已完成 / 做种）。
+        // 移动到…：恰好一个本机任务（任意协议、任意状态）；任务限速…：恰好一个本机 BT。
+        let completed_http = task(true, TaskState::Completed);
+        for single in [unfinished, completed, http, completed_http] {
+            assert!(move_storage_visible(&[single]), "{single:?}");
+            assert!(context_menu_items(&[single]).contains(&MenuEntry::MoveStorage));
+        }
         for single in [unfinished, completed] {
-            assert!(move_storage_visible(&[single]));
             assert!(task_limits_visible(&[single]));
         }
-        for selection in [
-            &[remote][..],
-            &[http][..],
-            &[unfinished, completed][..],
-            &[][..],
-        ] {
+        assert!(!task_limits_visible(&[http]));
+        for selection in [&[remote][..], &[unfinished, completed][..], &[][..]] {
             assert!(!move_storage_visible(selection), "{selection:?}");
             assert!(!task_limits_visible(selection), "{selection:?}");
             let items = context_menu_items(selection);
