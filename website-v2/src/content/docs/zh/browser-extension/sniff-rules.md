@@ -345,9 +345,14 @@ JSON 响应里包含 DASH 结构（带 `baseUrl` 的 `video[]` 与 `audio[]`）�
 }
 ```
 
-### `player`：隐藏悬浮按钮（`page` 阶段）
+### `player`：悬浮按钮的显示方式（`page` 阶段）
 
-匹配 `selector`（或位于匹配元素内部）的媒体元素不会显示悬浮下载按钮——适合背景视频、广告和预览视频。`float` 必须是 `"hide"`。
+作用于匹配 `selector`（或位于匹配元素内部）的媒体元素，`float` 取下面两种值之一：
+
+| `float` | 效果 |
+| --- | --- |
+| `"hide"` | 不显示悬浮下载按钮——适合背景视频、广告和预览视频。 |
+| `"inset"` | 贴在顶部的悬浮按钮离媒体元素顶部至少 `top` 像素（`top` 为 1–200 的整数），避开播放器自带的顶部控件条（例如迷你播放器的展开 / 关闭按钮）；元素剩余高度放不下按钮时隐藏按钮。按钮设在底部时不受影响。较早版本的扩展不认识 `inset`，会跳过这条规则。 |
 
 ```json
 {
@@ -357,6 +362,17 @@ JSON 响应里包含 DASH 结构（带 `baseUrl` 的 `video[]` 与 `audio[]`）�
   "stage": "page",
   "match": { "pageHost": ["example.com"] },
   "action": { "kind": "player", "selector": ".hero-bg video, .ad-slot video", "float": "hide" }
+}
+```
+
+```json
+{
+  "id": "community.example.mini-player",
+  "version": 1,
+  "tier": "community",
+  "stage": "page",
+  "match": { "pageHost": ["example.com"] },
+  "action": { "kind": "player", "selector": ".mini-player", "float": "inset", "top": 52 }
 }
 ```
 
