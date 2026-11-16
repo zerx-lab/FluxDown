@@ -2977,41 +2977,77 @@ async fn remux_ts_to_mp4(
             }
         }
     }
+    if !is_fmp4 && ffmpeg.is_none() {
+        log_info!(
+            "[hls] task {} ffmpeg unavailable, using streaming remux",
+            task_id
+        );
+    }
     let cancel_inner = cancel.clone();
-    match tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
-        // fMP4:待改名的源就是 .ts 本身;否则转换产物先落 tmp。
-        let src = if is_fmp4 {
-            ts_owned.clone()
-        } else if ffmpeg_done {
-            mp4_tmp_inner.clone()
-        } else {
-            crate::ts_remux::remux_file(&ts_owned, &mp4_tmp_inner, &cancel_inner)?;
-            mp4_tmp_inner.clone()
-        };
-        // 原子占名(同 `downloader::claim_rename` 协议,此处在阻塞线程内走
-        // 同步 API):create_new 独占创建占位——dedup 与落盘之间若有并发
-        // 写者(同名 HTTP/BT 任务完成)抢得该名,后到者得 AlreadyExists,
-        // 决不覆盖;rename 覆盖的是自己的占位。失败清理占位与 tmp。
-        if let Err(e) = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&mp4_owned)
-            .map(drop)
-        {
-            // overwrite 模式:dedup 对已存在的普通 mp4 保留了原名,占名必然
-            // AlreadyExists——删除旧文件后重试占名一次(覆盖旧文件)。目标是
-            // 目录、删除失败或二次抢占时维持既有失败路径(保留 .ts)。
-            let overwrote = allow_overwrite
-                && e.kind() == std::io::ErrorKind::AlreadyExists
-                && mp4_owned.is_file()
-                && std::fs::remove_file(&mp4_owned).is_ok()
-                && std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&mp4_owned)
-                    .map(drop)
-                    .is_ok();
-            if !overwrote {
+    match tokio::task::spawn_blocking(
+        move || -> Result<Option<crate::ts_remux::Mp4Summary>, std::io::Error> {
+            // fMP4:待改名的源就是 .ts 本身;否则转换产物先落 tmp。
+            let mut summary = None;
+            let src = if is_fmp4 {
+                ts_owned.clone()
+            } else if ffmpeg_done {
+                mp4_tmp_inner.clone()
+            } else {
+                summary = Some(crate::ts_remux::remux_file(
+                    &ts_owned,
+                    &mp4_tmp_inner,
+                    &cancel_inner,
+                )?);
+                mp4_tmp_inner.clone()
+            };
+            // 原子占名(同 `downloader::claim_rename` 协议,此处在阻塞线程内走
+            // 同步 API):create_new 独占创建占位——dedup 与落盘之间若有并发
+            // 写者(同名 HTTP/BT 任务完成)抢得该名,后到者得 AlreadyExists,
+            // 决不覆盖;rename 覆盖的是自己的占位。失败清理占位与 tmp。
+            if let Err(e) = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&mp4_owned)
+                .map(drop)
+            {
+                // overwrite 模式:dedup 对已存在的普通 mp4 保留了原名,占名必然
+                // AlreadyExists——删除旧文件后重试占名一次(覆盖旧文件)。目标是
+                // 目录、删除失败或二次抢占时维持既有失败路径(保留 .ts)。
+                let overwrote = allow_overwrite
+                    && e.kind() == std::io::ErrorKind::AlreadyExists
+                    && mp4_owned.is_file()
+                    && std::fs::remove_file(&mp4_owned).is_ok()
+                    && std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&mp4_owned)
+                        .map(drop)
+                        .is_ok();
+                if !overwrote {
+                    if !is_fmp4
+                        && let Err(error) = std::fs::remove_file(&mp4_tmp_inner)
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        crate::logger::report_warning(
+                            "hls-download",
+                            "remove_temporary_file",
+                            &error,
+                        );
+                    }
+                    return Err(e);
+                }
+                log_info!(
+                    "[hls] overwrote existing '{}' (file_exists_behavior=overwrite)",
+                    mp4_owned.display()
+                );
+            }
+            if let Err(e) = std::fs::rename(&src, &mp4_owned) {
+                // 只清自己的占位与 tmp,fMP4 的源 .ts 是下载数据本身,绝不删。
+                if let Err(error) = std::fs::remove_file(&mp4_owned)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    crate::logger::report_warning("hls-download", "remove_temporary_file", &error);
+                }
                 if !is_fmp4
                     && let Err(error) = std::fs::remove_file(&mp4_tmp_inner)
                     && error.kind() != std::io::ErrorKind::NotFound
@@ -3020,36 +3056,18 @@ async fn remux_ts_to_mp4(
                 }
                 return Err(e);
             }
-            log_info!(
-                "[hls] overwrote existing '{}' (file_exists_behavior=overwrite)",
-                mp4_owned.display()
-            );
-        }
-        if let Err(e) = std::fs::rename(&src, &mp4_owned) {
-            // 只清自己的占位与 tmp,fMP4 的源 .ts 是下载数据本身,绝不删。
-            if let Err(error) = std::fs::remove_file(&mp4_owned)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                crate::logger::report_warning("hls-download", "remove_temporary_file", &error);
-            }
-            if !is_fmp4
-                && let Err(error) = std::fs::remove_file(&mp4_tmp_inner)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                crate::logger::report_warning("hls-download", "remove_temporary_file", &error);
-            }
-            return Err(e);
-        }
-        Ok(())
-    })
+            Ok(summary)
+        },
+    )
     .await
     {
-        Ok(Ok(())) => {
+        Ok(Ok(summary)) => {
             if is_fmp4 {
                 log_info!("[hls] task {} fMP4 output renamed .ts -> .mp4", task_id);
+            } else if let Some(summary) = summary {
+                log_streaming_remux(task_id, &summary);
             } else {
-                let mode = if ffmpeg_done { "ffmpeg" } else { "streaming" };
-                log_info!("[hls] task {} remuxed TS -> MP4 ({})", task_id, mode);
+                log_info!("[hls] task {} remuxed TS -> MP4 (ffmpeg)", task_id);
             }
             Some(mp4_path)
         }
@@ -3083,6 +3101,36 @@ async fn remux_ts_to_mp4(
             }
             None
         }
+    }
+}
+
+/// 流式重封装后两条轨结束时刻允许的偏差;超过即记警告(音画不同步的早期信号)。
+const REMUX_TRACK_SKEW_WARN_MS: u64 = 100;
+
+fn log_streaming_remux(task_id: &str, summary: &crate::ts_remux::Mp4Summary) {
+    let Some(audio) = summary.audio else {
+        log_info!(
+            "[hls] task {} remuxed TS -> MP4 (streaming): video {} ms, no audio",
+            task_id,
+            summary.video_ms
+        );
+        return;
+    };
+    log_info!(
+        "[hls] task {} remuxed TS -> MP4 (streaming): video {} ms, audio {} ms AAC {} Hz {} ch",
+        task_id,
+        summary.video_ms,
+        audio.end_ms,
+        audio.sample_rate,
+        audio.channels
+    );
+    if summary.video_ms.abs_diff(audio.end_ms) > REMUX_TRACK_SKEW_WARN_MS {
+        log_warn!(
+            "[hls] task {} streaming remux track durations differ: video {} ms vs audio {} ms",
+            task_id,
+            summary.video_ms,
+            audio.end_ms
+        );
     }
 }
 

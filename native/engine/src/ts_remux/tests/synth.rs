@@ -1,17 +1,13 @@
-//! 流式重封装与 `ts2mp4::convert_ts_to_mp4` 的差分测试：随机合成的 TS 流（失步垃圾、
-//! 自适应字段、跨 PES 的帧、缺 AUD、ADTS 残片、B 帧时间戳……）在多种读窗口大小下
-//! 必须产出逐字节相同的 MP4，或与之同样失败。
+//! 测试用 MPEG-TS 合成：随机流（失步垃圾、自适应字段、跨 PES 的帧、缺 AUD、ADTS
+//! 残片、B 帧时间戳……）与时间戳完全受控的干净流。
 
-use std::io::{Cursor, ErrorKind};
-use std::path::{Path, PathBuf};
+pub(super) const PMT_PID: u16 = 0x1000;
+pub(super) const VIDEO_PID: u16 = 0x100;
+pub(super) const AUDIO_PID: u16 = 0x101;
 
-use tokio_util::sync::CancellationToken;
-
-use super::{READ_CHUNK, remux_with};
-
-const PMT_PID: u16 = 0x1000;
-const VIDEO_PID: u16 = 0x100;
-const AUDIO_PID: u16 = 0x101;
+/// ADTS `sampling_frequency_index`：48kHz / 44.1kHz。
+pub(super) const SF_48000: u8 = 3;
+pub(super) const SF_44100: u8 = 4;
 
 /// x264 实际产出的 SPS / PPS（含裁剪、High / High 4:2:2 / Main / Baseline）。
 const PARAMETER_SETS: [(&str, &str); 4] = [
@@ -33,7 +29,7 @@ const PARAMETER_SETS: [(&str, &str); 4] = [
     ),
 ];
 
-struct Rng(u64);
+pub(super) struct Rng(pub u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -106,15 +102,20 @@ fn pes(stream_id: u8, pts: Option<u64>, dts: Option<u64>, extra: usize, data: &[
     out
 }
 
-fn adts(rng: &mut Rng, payload_len: usize) -> Vec<u8> {
-    let protection_absent = rng.chance(80);
+/// 一个 AAC-LC ADTS 帧（单个 raw data block）。
+pub(super) fn adts_frame(
+    frequency_index: u8,
+    channels: u8,
+    protection_absent: bool,
+    payload: &[u8],
+) -> Vec<u8> {
     let header = if protection_absent { 7 } else { 9 };
-    let len = header + payload_len;
+    let len = header + payload.len();
     let mut out = vec![
         0xFF,
         0xF0 | u8::from(protection_absent),
-        (1 << 6) | (3 << 2),
-        (2 << 6) | ((len >> 11) & 0x03) as u8,
+        (1 << 6) | (frequency_index << 2) | (channels >> 2),
+        ((channels & 0x03) << 6) | ((len >> 11) & 0x03) as u8,
         (len >> 3) as u8,
         (((len & 7) << 5) as u8) | 0x1F,
         0xFC,
@@ -122,25 +123,41 @@ fn adts(rng: &mut Rng, payload_len: usize) -> Vec<u8> {
     if !protection_absent {
         out.extend_from_slice(&[0x12, 0x34]);
     }
-    out.extend(rng.bytes(payload_len));
+    out.extend_from_slice(payload);
     out
 }
 
-struct TsBuilder {
-    out: Vec<u8>,
+fn random_adts(rng: &mut Rng, payload_len: usize) -> Vec<u8> {
+    let protection_absent = rng.chance(80);
+    let payload = rng.bytes(payload_len);
+    adts_frame(SF_48000, 2, protection_absent, &payload)
+}
+
+pub(super) struct TsBuilder {
+    pub out: Vec<u8>,
     counters: [u8; 0x2000],
+    /// 随机插入失步垃圾、纯自适应字段包与随机长度的自适应字段。
+    noisy: bool,
 }
 
 impl TsBuilder {
+    pub fn new(noisy: bool) -> Self {
+        Self {
+            out: Vec::new(),
+            counters: [0; 0x2000],
+            noisy,
+        }
+    }
+
     fn packetize(&mut self, rng: &mut Rng, pid: u16, data: &[u8]) {
         let mut pos = 0;
         let mut first = true;
         while pos < data.len() || first {
-            if rng.chance(2) {
+            if self.noisy && rng.chance(2) {
                 let garbage = rng.below(40) as usize + 1;
                 self.out.extend(rng.bytes(garbage));
             }
-            if rng.chance(3) {
+            if self.noisy && rng.chance(3) {
                 // 仅自适应字段、无负载的包。
                 self.header(pid, false, 0x20);
                 self.out.push(183);
@@ -148,7 +165,7 @@ impl TsBuilder {
                 self.out.extend(std::iter::repeat_n(0xFF, 182));
             }
             let remaining = data.len() - pos;
-            let random_af = if remaining > 184 && rng.chance(10) {
+            let random_af = if self.noisy && remaining > 184 && rng.chance(10) {
                 Some(rng.below(30) as usize)
             } else {
                 None
@@ -183,64 +200,72 @@ impl TsBuilder {
         ]);
         *counter = counter.wrapping_add(1);
     }
-}
 
-fn psi(rng: &mut Rng, ts: &mut TsBuilder, with_audio: bool) {
-    let pat = [
-        0x00,
-        0x00,
-        0xB0,
-        0x0D,
-        0x00,
-        0x01,
-        0xC1,
-        0x00,
-        0x00,
-        0x00,
-        0x01,
-        0xE0 | (PMT_PID >> 8) as u8,
-        PMT_PID as u8,
-        0x11,
-        0x22,
-        0x33,
-        0x44,
-    ];
-    ts.packetize(rng, 0, &pat);
-    let mut streams = vec![
-        0x1B,
-        0xE0 | (VIDEO_PID >> 8) as u8,
-        VIDEO_PID as u8,
-        0xF0,
-        0x00,
-    ];
-    if with_audio {
-        streams.extend_from_slice(&[
-            0x0F,
-            0xE0 | (AUDIO_PID >> 8) as u8,
-            AUDIO_PID as u8,
+    pub fn psi(&mut self, rng: &mut Rng, with_audio: bool) {
+        let pat = [
+            0x00,
+            0x00,
+            0xB0,
+            0x0D,
+            0x00,
+            0x01,
+            0xC1,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0xE0 | (PMT_PID >> 8) as u8,
+            PMT_PID as u8,
+            0x11,
+            0x22,
+            0x33,
+            0x44,
+        ];
+        self.packetize(rng, 0, &pat);
+        let mut streams = vec![
+            0x1B,
+            0xE0 | (VIDEO_PID >> 8) as u8,
+            VIDEO_PID as u8,
             0xF0,
             0x00,
-        ]);
+        ];
+        if with_audio {
+            streams.extend_from_slice(&[
+                0x0F,
+                0xE0 | (AUDIO_PID >> 8) as u8,
+                AUDIO_PID as u8,
+                0xF0,
+                0x00,
+            ]);
+        }
+        let section_length = 9 + streams.len() + 4;
+        let mut pmt = vec![
+            0x00,
+            0x02,
+            0xB0,
+            section_length as u8,
+            0x00,
+            0x01,
+            0xC1,
+            0x00,
+            0x00,
+            0xE1,
+            0x00,
+            0xF0,
+            0x00,
+        ];
+        pmt.extend_from_slice(&streams);
+        pmt.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]);
+        self.packetize(rng, PMT_PID, &pmt);
     }
-    let section_length = 9 + streams.len() + 4;
-    let mut pmt = vec![
-        0x00,
-        0x02,
-        0xB0,
-        section_length as u8,
-        0x00,
-        0x01,
-        0xC1,
-        0x00,
-        0x00,
-        0xE1,
-        0x00,
-        0xF0,
-        0x00,
-    ];
-    pmt.extend_from_slice(&streams);
-    pmt.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]);
-    ts.packetize(rng, PMT_PID, &pmt);
+
+    pub fn video_pes(&mut self, rng: &mut Rng, pts: Option<u64>, dts: Option<u64>, es: &[u8]) {
+        self.packetize(rng, VIDEO_PID, &pes(0xE0, pts, dts, 0, es));
+    }
+
+    pub fn audio_pes(&mut self, rng: &mut Rng, pts: Option<u64>, es: &[u8]) {
+        self.packetize(rng, AUDIO_PID, &pes(0xC0, pts, None, 0, es));
+    }
 }
 
 fn video_frame(rng: &mut Rng, keyframe: bool, sps: &[u8], pps: &[u8], big: bool) -> Vec<u8> {
@@ -271,19 +296,31 @@ fn video_frame(rng: &mut Rng, keyframe: bool, sps: &[u8], pps: &[u8], big: bool)
     frame
 }
 
-/// 随机合成一条 TS 流。
-fn synth(seed: u64, big: bool) -> Vec<u8> {
+/// 一个以 AUD 开头的干净视频帧（关键帧带 SPS / PPS），负载不含起始码样式的字节。
+pub(super) fn clean_video_frame(keyframe: bool) -> Vec<u8> {
+    let (sps, pps) = PARAMETER_SETS[0];
+    let mut frame = vec![0, 0, 0, 1, 0x09, 0xF0];
+    if keyframe {
+        frame.extend_from_slice(&[0, 0, 0, 1]);
+        frame.extend(hex(sps));
+        frame.extend_from_slice(&[0, 0, 0, 1]);
+        frame.extend(hex(pps));
+    }
+    frame.extend_from_slice(&[0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }]);
+    frame.extend(std::iter::repeat_n(0x5A, 64));
+    frame
+}
+
+/// 随机合成一条 TS 流（48kHz 立体声 ADTS）。
+pub(super) fn synth(seed: u64, big: bool) -> Vec<u8> {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-    let mut ts = TsBuilder {
-        out: Vec::new(),
-        counters: [0; 0x2000],
-    };
+    let mut ts = TsBuilder::new(true);
     if rng.chance(20) {
         let garbage = rng.below(500) as usize;
         ts.out.extend(rng.bytes(garbage));
     }
     let with_audio = !rng.chance(3);
-    psi(&mut rng, &mut ts, with_audio);
+    ts.psi(&mut rng, with_audio);
 
     let (sps, pps) = PARAMETER_SETS[rng.below(PARAMETER_SETS.len() as u64) as usize];
     let (sps, pps) = (hex(sps), hex(pps));
@@ -314,8 +351,8 @@ fn synth(seed: u64, big: bool) -> Vec<u8> {
         let dts = if with_dts { pts.map(|_| dts) } else { None };
         if rng.chance(10) && es.len() > 2 {
             let cut = rng.below(es.len() as u64 - 1) as usize + 1;
-            ts.packetize(&mut rng, VIDEO_PID, &pes(0xE0, pts, dts, 0, &es[..cut]));
-            ts.packetize(&mut rng, VIDEO_PID, &pes(0xE0, None, None, 0, &es[cut..]));
+            ts.video_pes(&mut rng, pts, dts, &es[..cut]);
+            ts.video_pes(&mut rng, None, None, &es[cut..]);
         } else {
             let extra = if rng.chance(10) {
                 rng.below(8) as usize
@@ -337,7 +374,7 @@ fn synth(seed: u64, big: bool) -> Vec<u8> {
                 } else {
                     rng.below(400) as usize
                 };
-                audio_pending.extend(adts(&mut rng, payload));
+                audio_pending.extend(random_adts(&mut rng, payload));
             }
             if !audio_pending.is_empty() && rng.chance(70) {
                 // 有时把最后一帧切开，残片留给下一个 PES。
@@ -348,12 +385,12 @@ fn synth(seed: u64, big: bool) -> Vec<u8> {
                 };
                 let chunk: Vec<u8> = audio_pending.drain(..cut).collect();
                 let pts = (!rng.chance(5)).then_some(audio_pts);
-                ts.packetize(&mut rng, AUDIO_PID, &pes(0xC0, pts, None, 0, &chunk));
+                ts.audio_pes(&mut rng, pts, &chunk);
                 audio_pts += 1920;
             }
         }
         if rng.chance(5) {
-            psi(&mut rng, &mut ts, with_audio);
+            ts.psi(&mut rng, with_audio);
         }
     }
     if rng.chance(30) {
@@ -363,101 +400,37 @@ fn synth(seed: u64, big: bool) -> Vec<u8> {
     ts.out
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("fluxdown-ts-remux-{}-{name}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+/// 干净流的一个音频 PES：`frames` 个 ADTS 帧共用一个 PTS。
+pub(super) struct AudioPes {
+    pub pts: u64,
+    pub frames: usize,
 }
 
-/// 以多种读窗口大小运行流式实现，输出必须与 `ts2mp4::convert_ts_to_mp4` 逐字节相同。
-fn assert_matches_ts2mp4(ts: &[u8], dir: &Path, label: &str) {
-    let expected = ts2mp4::convert_ts_to_mp4(ts).ok();
-    let out = dir.join("out.mp4");
-    let cancel = CancellationToken::new();
-    for chunk in [376, 377, 4099, READ_CHUNK] {
-        let actual = remux_with(|| Ok(Cursor::new(ts)), &out, chunk, &cancel)
-            .ok()
-            .map(|()| std::fs::read(&out).expect("read output"));
-        assert!(
-            actual == expected,
-            "{label} chunk={chunk}: streaming={:?} ts2mp4={:?} bytes",
-            actual.as_ref().map(Vec::len),
-            expected.as_ref().map(Vec::len),
-        );
-    }
-}
-
-#[test]
-fn random_streams_match_ts2mp4_byte_for_byte() {
-    let dir = scratch("random");
-    let mut converted = 0;
-    for seed in 0..400 {
-        let ts = synth(seed, false);
-        if ts2mp4::convert_ts_to_mp4(&ts).is_ok() {
-            converted += 1;
+/// 干净流：每个视频 PES 一帧（`(PTS, DTS)`），音频 PES 按给定 PTS / 帧数，
+/// 全部 ADTS 帧使用同一组参数。
+pub(super) fn clean_stream(
+    video: &[(u64, Option<u64>)],
+    audio: &[AudioPes],
+    frequency_index: u8,
+    channels: u8,
+) -> Vec<u8> {
+    let mut rng = Rng(1);
+    let mut ts = TsBuilder::new(false);
+    ts.psi(&mut rng, !audio.is_empty());
+    let frame = adts_frame(frequency_index, channels, true, &[0x21; 40]);
+    for index in 0..video.len().max(audio.len()) {
+        if let Some(&(pts, dts)) = video.get(index) {
+            ts.video_pes(
+                &mut rng,
+                Some(pts),
+                dts,
+                &clean_video_frame(index % 25 == 0),
+            );
         }
-        assert_matches_ts2mp4(&ts, &dir, &format!("seed {seed}"));
+        if let Some(pes) = audio.get(index) {
+            let es: Vec<u8> = frame.repeat(pes.frames);
+            ts.audio_pes(&mut rng, Some(pes.pts), &es);
+        }
     }
-    // 生成器绝大多数用例应是可转换的，否则差分没有覆盖到写出路径。
-    assert!(converted > 300, "only {converted} convertible cases");
-    std::fs::remove_dir_all(&dir).expect("remove scratch dir");
-}
-
-#[test]
-fn large_frames_spanning_many_windows_match_ts2mp4() {
-    let dir = scratch("large");
-    for seed in 1000..1006 {
-        assert_matches_ts2mp4(&synth(seed, true), &dir, &format!("seed {seed}"));
-    }
-    std::fs::remove_dir_all(&dir).expect("remove scratch dir");
-}
-
-#[test]
-fn cancelled_remux_stops_with_interrupted() {
-    let dir = scratch("cancel");
-    let ts = synth(1000, true);
-    let cancel = CancellationToken::new();
-    cancel.cancel();
-    let result = remux_with(|| Ok(Cursor::new(&ts)), &dir.join("out.mp4"), 4096, &cancel);
-    assert_eq!(result.map_err(|e| e.kind()), Err(ErrorKind::Interrupted));
-    std::fs::remove_dir_all(&dir).expect("remove scratch dir");
-}
-
-/// 真实编码器产出的 H.264 + AAC TS（需 `FLUXDOWN_TEST_FFMPEG` 指向带 libx264 的 ffmpeg）。
-#[test]
-fn ffmpeg_encoded_stream_matches_ts2mp4() {
-    let Some(ffmpeg) = std::env::var_os("FLUXDOWN_TEST_FFMPEG") else {
-        eprintln!("[skip] 未设置 FLUXDOWN_TEST_FFMPEG");
-        return;
-    };
-    let dir = scratch("ffmpeg");
-    let ts_path = dir.join("clip.ts");
-    let status = std::process::Command::new(ffmpeg)
-        .args(["-y", "-loglevel", "error"])
-        .args([
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=320x240:rate=30:duration=4",
-        ])
-        .args([
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=48000:duration=4",
-        ])
-        .args([
-            "-c:v", "libx264", "-bf", "2", "-g", "30", "-c:a", "aac", "-f", "mpegts",
-        ])
-        .arg(&ts_path)
-        .status();
-    if !status.is_ok_and(|s| s.success()) {
-        eprintln!("[skip] ffmpeg 无法编码 H.264 测试素材");
-        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
-        return;
-    }
-    let ts = std::fs::read(&ts_path).expect("read fixture");
-    assert!(ts2mp4::convert_ts_to_mp4(&ts).is_ok());
-    assert_matches_ts2mp4(&ts, &dir, "ffmpeg fixture");
-    std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    ts.out
 }

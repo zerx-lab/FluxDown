@@ -85,7 +85,6 @@ if-addrs = "0.15"
 
 [dev-dependencies]
 http = "1.4.0"
-ts2mp4 = "0.3"
 
 [features]
 # 默认关闭；desktop/server 构建显式开启，mobile（Android/iOS）保持关闭以免背 JS 引擎债。
