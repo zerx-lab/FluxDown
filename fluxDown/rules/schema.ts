@@ -142,8 +142,13 @@ export type RuleAction =
   | { kind: "mirror"; hosts: string[] }
   /** 播放元素的标题来源：取离该元素最近的匹配节点（`attr` 缺省取文本）。用于候选名与下载文件名。 */
   | { kind: "title"; selector: string; attr?: string }
-  /** 匹配 `selector`（或位于其中）的媒体元素不显示浮钮（背景 / 广告 / 预览视频）。 */
+  /**
+   * 匹配 `selector`（或位于其中）的媒体元素的浮钮策略：`hide` 不显示浮钮（背景 / 广告 / 预览视频）；
+   * `inset` 让贴顶部的浮钮离元素顶部至少 `top` px（整数 1–200），避开播放器自带的顶部控件条
+   * （如迷你播放器的展开 / 关闭按钮），元素剩余高度放不下浮钮时隐藏。
+   */
   | { kind: "player"; selector: string; float: "hide" }
+  | { kind: "player"; selector: string; float: "inset"; top: number }
   /**
    * 下载这些 URL 时补充的请求头。名字只允许 {@link ALLOWED_RULE_HEADERS}；规则必须用 `match.host`
    * 限定目标（只写 pageHost 会把头注入该页面发出的所有第三方请求）。plugin 层不可用。

@@ -3,7 +3,7 @@ title: 嗅探规则参考
 description: 嗅探规则是什么、五个规则层级，以及规则每个字段的含义——匹配条件、阶段、动作、限制与吊销。
 section: browser-extension
 order: 3
-sourceHash: "25b9eeddebf9"
+sourceHash: "e11c20ca7fe6"
 ---
 
 嗅探规则是一小段 JSON，告诉扩展：**哪些网络请求算可下载资源**、哪些地址其实是同一个文件、怎样区分视频轨和音轨、API 响应里的直链藏在哪、下载时需要带哪些请求头。绝大多数网站靠内置规则就能正常工作；只有当某个网站识别不对、你想自己修好它——或者把修复分享给所有人——时，才需要看这一页。分享流程见[贡献嗅探规则](/docs/zh/contributing/sniff-rules/)。

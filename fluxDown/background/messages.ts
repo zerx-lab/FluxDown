@@ -217,6 +217,7 @@ const handlers: { [A in MessageAction]: Handler<A> } = {
       floatPosition: settings.floatButtonPosition,
       titles: hints.flatMap((h) => h.titles),
       floatExclude: hints.flatMap((h) => h.players.map((p) => p.selector)),
+      floatInsets: hints.flatMap((h) => h.insets),
       pageDot: settings.showPageDot && profile.pageDot,
       frameIsTop: frameId === 0,
       interceptMagnet: settings.enabled && settings.interceptMagnet && profile.intercept !== "never",

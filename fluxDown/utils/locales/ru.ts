@@ -872,6 +872,7 @@ const ru: Record<MessageKey, string> = {
   "rules.validate.mirror_out_of_scope": "Зеркальный хост {param} вне области действия правила",
   "rules.validate.page_scope_required": "Правилам страницы нужно ограничение host или pageHost",
   "rules.validate.player_float_invalid": "Неверный player.float",
+  "rules.validate.player_top_invalid": "player.top должен быть целым числом от 1 до 200",
   "rules.validate.preempt_forbidden": "preempt разрешён только встроенным и официальным правилам",
   "rules.validate.requires_invalid": "Неверный requires",
   "rules.validate.resource_type_invalid": "Неверный тип ресурса {param}",

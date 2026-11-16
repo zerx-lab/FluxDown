@@ -872,6 +872,7 @@ const en: Record<MessageKey, string> = {
   "rules.validate.mirror_out_of_scope": "Mirror host {param} is outside the rule's scope",
   "rules.validate.page_scope_required": "Page rules must be scoped with host or pageHost",
   "rules.validate.player_float_invalid": "Invalid player.float",
+  "rules.validate.player_top_invalid": "player.top must be an integer from 1 to 200",
   "rules.validate.preempt_forbidden": "preempt is only allowed for built-in and official rules",
   "rules.validate.requires_invalid": "Invalid requires",
   "rules.validate.resource_type_invalid": "Invalid resource type {param}",

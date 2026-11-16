@@ -72,6 +72,8 @@ export interface PageConfig {
   titles: { selector: string; attr?: string }[];
   /** page 规则：这些容器内的媒体元素不显示浮钮。 */
   floatExclude: string[];
+  /** page 规则：这些容器内的媒体元素，贴顶部的浮钮离元素顶部至少 `top` px（避开播放器自带的顶部控件条）。 */
+  floatInsets: { selector: string; top: number }[];
   pageDot: boolean;
   frameIsTop: boolean;
   /** 是否接管本页 magnet 链接点击：settings.enabled && settings.interceptMagnet && 站点 intercept !== "never"。 */
