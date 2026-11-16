@@ -127,7 +127,7 @@ export interface TaskDto {
   rssSourceId: string;
   /** 展示用原始来源链接（空 = 用 `url`）；`.torrent` 任务的 `url` 是 `torrent-file://local` 哨兵。 */
   originUrl: string;
-  /** Auto 路由或站点规则标签：`direct` / `proxy:cached` / `rule:custom` 等（空 = 非 Auto 且未命中规则）。 */
+  /** 任务出口链路标签：Auto `direct` / `proxy:cached:manual`、规则 `rule:custom`、全局 `global:manual`、任务级 `task:proxy`、BT `bt:all:system` 等（空 = 尚未启动过）。 */
   autoRoute: string;
   /** 队列内启动顺序（0 = 未显式排序）。 */
   queueOrder: number;

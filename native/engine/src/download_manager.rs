@@ -3888,6 +3888,10 @@ pub struct DownloadManager {
     /// Wrapped in `Arc` so spawned download tasks can cache handles.
     #[cfg(feature = "bt")]
     bt_session: Option<Arc<SharedBtSession>>,
+    /// 当前 BT 会话的出口标签（`bt:*`，见 [`crate::auto_proxy::route`]）与脱敏端点：
+    /// 代理在建会话时定死，BT 任务起跑 / 恢复 / 续种时按它落「链路」标签。
+    #[cfg(feature = "bt")]
+    bt_session_route: (&'static str, String),
     /// BT 防吸血宿主：策略对象在会话创建时注入 librqbit，配置热更新不重建会话。
     #[cfg(feature = "bt")]
     bt_guard: Arc<crate::bt_guard::BtGuardHost>,
@@ -4213,6 +4217,8 @@ impl DownloadManager {
             upload_limit_bps,
             #[cfg(feature = "bt")]
             bt_session: None,
+            #[cfg(feature = "bt")]
+            bt_session_route: (crate::auto_proxy::route::BT_DIRECT, "direct".to_owned()),
             #[cfg(feature = "bt")]
             bt_guard,
             #[cfg(feature = "bt")]
@@ -6575,6 +6581,17 @@ impl DownloadManager {
                             config.proxy_source
                         );
                     }
+                    let route = config.session_route(proxy_url.as_deref());
+                    log_info!(
+                        "[bt] 会话出口 route={} endpoint={}（对端与 DHT {}）",
+                        route.0,
+                        route.1,
+                        if proxy_url.is_some() && config.proxy_peers {
+                            "走代理"
+                        } else {
+                            "直连"
+                        }
+                    );
                     SharedBtSession::new(
                         &save_dir,
                         &data_dir,
@@ -6584,6 +6601,7 @@ impl DownloadManager {
                         proxy_url.as_deref(),
                         Some(policy),
                     )
+                    .map(|session| (session, route))
                 })
                 .await
                 .map_err(|e| {
@@ -6591,6 +6609,8 @@ impl DownloadManager {
                         "BT session init thread panicked: {e}"
                     ))
                 })??;
+                let (session, route) = session;
+                self.bt_session_route = route;
                 let session = Arc::new(session);
                 // 新会话的 SeedingManager 以当前配置的活动做种上限起步。
                 session
@@ -10522,6 +10542,28 @@ impl DownloadManager {
         }
     }
 
+    /// 起跑出口落库 + 广播 + 日志。`route` 为空（出口 client 构建失败退回全局直连）
+    /// 时写空串清除旧标签、不广播。`endpoint` 是 [`ProxyConfig::log_endpoint`] /
+    /// BT 会话出口的脱敏端点（永不含凭据），只进日志：用户据此核对
+    /// 「任务到底走了哪个代理」，例如本机代理软件回的 502 与源站 502 的区分。
+    async fn publish_task_route(&self, task_id: &str, route: &str, endpoint: &str) {
+        log_info!(
+            "[route] task {} egress route={} endpoint={}",
+            task_id,
+            if route.is_empty() { "-" } else { route },
+            endpoint
+        );
+        if let Err(e) = self.db.set_task_auto_route(task_id, route).await {
+            log_info!("[manager] task {} auto_route 落库失败: {e:#}", task_id);
+        }
+        if !route.is_empty() {
+            self.sink.emit(EngineEvent::TaskRouteChanged {
+                task_id: task_id.to_owned(),
+                route: route.to_owned(),
+            });
+        }
+    }
+
     /// 为当前任务解析代理/UA/TLS 策略并构建一致的 HTTP 上下文。
     ///
     /// 站点代理规则只对「跟随全局」（`proxy_url` 为空）的任务生效：链接命中规则时任务
@@ -10618,8 +10660,23 @@ impl DownloadManager {
             || !queue_ua.is_empty()
             || ignore_tls_errors
             || auto_needs_proxy_client;
+        // 非 Auto、未命中站点规则：按实际出口给静态标签（全局直连 / 手动 / 系统 /
+        // 直连名单 / 任务级代理），任务详情「链路」行与日志都据此说明走的是哪条路。
+        let static_route = |proxy: &ProxyConfig| {
+            if route.is_empty() {
+                crate::auto_proxy::static_route_label(
+                    &self.proxy_config.mode,
+                    proxy_url,
+                    proxy,
+                    url,
+                )
+            } else {
+                route
+            }
+        };
         if !needs_dedicated_client {
             let proxy = auto_override.unwrap_or_else(|| self.proxy_config.resolve());
+            let route = static_route(&proxy);
             return TaskEgress {
                 client: self.global_client(&proxy),
                 proxy,
@@ -10639,6 +10696,7 @@ impl DownloadManager {
         } else {
             self.proxy_config.resolve()
         };
+        let route = static_route(&proxy);
         match crate::client_cache::get(&proxy, resolved_ua, ignore_tls_errors) {
             Ok(client) => TaskEgress {
                 client,
@@ -11114,6 +11172,13 @@ impl DownloadManager {
             }
             #[cfg(feature = "bt")]
             {
+                // BT 出口由会话级代理决定：落「链路」标签并记日志。
+                self.publish_task_route(
+                    &task_id,
+                    self.bt_session_route.0,
+                    &self.bt_session_route.1,
+                )
+                .await;
                 // bt_session is guaranteed to be Some after ensure_bt_session().
                 let Some(bt_ref) = self.bt_session.as_ref() else {
                     crate::log_error!(
@@ -11301,17 +11366,8 @@ impl DownloadManager {
                 ignore_tls_errors,
                 forced_route,
             );
-            // ProxyMode::Auto / 站点规则 可追溯性：启动基线路由落库（非 Auto 写空串清除
-            // 旧标签），非空时广播给客户端原位刷新详情面板「链路」行。
-            if let Err(e) = self.db.set_task_auto_route(&task_id, auto_route).await {
-                log_info!("[manager] task {} auto_route 落库失败: {}", task_id, e);
-            }
-            if !auto_route.is_empty() {
-                self.sink.emit(EngineEvent::TaskRouteChanged {
-                    task_id: task_id.clone(),
-                    route: auto_route.to_string(),
-                });
-            }
+            self.publish_task_route(&task_id, auto_route, &task_proxy.log_endpoint())
+                .await;
             // ---------------------------------------------------------------
             // 文件名最终决策在 spawned task 序幕执行（finalize_start_file_name）：
             // probe（网络 IO）→ HLS/DASH 归一 → dedup → 预订 → 落库全程
@@ -12656,6 +12712,8 @@ impl DownloadManager {
             }
             #[cfg(feature = "bt")]
             {
+                self.publish_task_route(task_id, self.bt_session_route.0, &self.bt_session_route.1)
+                    .await;
                 // bt_session is guaranteed to be Some after ensure_bt_session().
                 let Some(bt_ref) = self.bt_session.as_ref() else {
                     crate::log_error!(
@@ -12916,15 +12974,8 @@ impl DownloadManager {
             let resume_user_agent = self
                 .resolved_task_ua(&persisted_ua, &task.queue_id)
                 .to_string();
-            if let Err(e) = self.db.set_task_auto_route(&tid, auto_route).await {
-                log_info!("[manager] task {} auto_route 落库失败: {}", tid, e);
-            }
-            if !auto_route.is_empty() {
-                self.sink.emit(EngineEvent::TaskRouteChanged {
-                    task_id: tid.clone(),
-                    route: auto_route.to_string(),
-                });
-            }
+            self.publish_task_route(&tid, auto_route, &task_proxy.log_endpoint())
+                .await;
             let range_verified = self.db.get_task_range_verified(&tid).await.unwrap_or(true);
             #[cfg(feature = "plugins")]
             let range_verified = range_verified || plugin_range_supported;
@@ -14878,6 +14929,9 @@ impl DownloadManager {
         let stopped_status = task.seeding_status;
         let stopped_message = task.seeding_message.clone();
         let task_id = task.task_id.clone();
+        // 做种同样经会话出口：续种挂回新会话时按它更新「链路」标签。
+        self.publish_task_route(&task_id, self.bt_session_route.0, &self.bt_session_route.1)
+            .await;
 
         // 数据源重建：.torrent 任务从 DB 取回种子字节，其余按 magnet 处理。
         let source = if is_magnet(&task.url) {

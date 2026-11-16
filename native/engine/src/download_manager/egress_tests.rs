@@ -94,7 +94,7 @@ async fn task_level_proxy_ignores_rules_entirely() {
         None,
     );
     assert!(egress.router.is_none());
-    assert_eq!(egress.route, "");
+    assert_eq!(egress.route, crate::auto_proxy::route::TASK_DIRECT);
 }
 
 async fn failover_pending_after_transport_error(auto_route: &str) -> bool {

@@ -1398,7 +1398,8 @@ pub(crate) fn build_client_builder(
                 Ok(Some(sys_proxy)) => {
                     if let Some(url) = sys_proxy.to_proxy_url() {
                         log_info!(
-                            "[build_client] system proxy detected (url redacted for security)"
+                            "[build_client] system proxy detected: {}",
+                            sys_proxy.log_endpoint()
                         );
                         let mut proxy = reqwest::Proxy::all(&url)?;
                         if !sys_proxy.username.is_empty() {
@@ -1422,7 +1423,10 @@ pub(crate) fn build_client_builder(
         }
         ProxyMode::Manual => {
             if let Some(url) = proxy_config.to_proxy_url() {
-                log_info!("[build_client] manual proxy configured");
+                log_info!(
+                    "[build_client] manual proxy configured: {}",
+                    proxy_config.log_endpoint()
+                );
                 let mut proxy = reqwest::Proxy::all(&url)?;
                 if !proxy_config.username.is_empty() {
                     proxy = proxy.basic_auth(&proxy_config.username, &proxy_config.password);

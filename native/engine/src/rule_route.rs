@@ -157,10 +157,11 @@ pub(crate) async fn apply(params: &mut DownloadParams) -> bool {
         route: label.to_string(),
     });
     log_info!(
-        "[proxy-rules] task {} 最终链接命中规则 #{}，出口 {}",
+        "[proxy-rules] task {} 最终链接命中规则 #{}，出口 {} endpoint={}",
         params.task_id,
         index + 1,
-        label
+        label,
+        params.proxy_config.log_endpoint()
     );
     true
 }
