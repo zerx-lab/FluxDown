@@ -93,13 +93,15 @@ export const pricing = defineMessages({
         },
         {
           title: "Permanent plans",
-          desc: "A permanent plan is bought once and covers account, sync, task dispatch and similar core cloud. Purchased benefits stay on the account.",
+          desc: "A permanent plan is bought once in a single payment — no recurring fee, no renewal — and covers account, sync, task dispatch and similar core cloud. Purchased benefits stay on the account.",
         },
         {
           title: "Add-ons sold separately",
           desc: "Storage and other features whose cost scales with usage may be billed separately and will be announced beforehand.",
         },
       ],
+      refund: "Every order (permanent plan or membership card) can be fully refunded within 7 days of payment; nothing ever auto-renews.",
+      refundLink: "Billing & refund terms",
     },
     voteCta: {
       eyebrow: "Community",
@@ -287,13 +289,15 @@ export const pricing = defineMessages({
         },
         {
           title: "永久套餐",
-          desc: "永久套餐一次付费，覆盖账号、同步、任务下发等基础云端；已购权益留在账户上。",
+          desc: "永久套餐一次付清、单笔扣款，无周期费用、无需续费，覆盖账号、同步、任务下发等基础云端；已购权益留在账户上。",
         },
         {
           title: "附加另购",
           desc: "像网盘扩容这类跟着用量涨成本的功能，可能会单独收费，并会提前说明。",
         },
       ],
+      refund: "所有订单（永久套餐与会员卡）付款后 7 天内可申请全额退款；任何套餐都不会自动续费。",
+      refundLink: "计费与退款条款",
     },
     voteCta: {
       eyebrow: "社区",
