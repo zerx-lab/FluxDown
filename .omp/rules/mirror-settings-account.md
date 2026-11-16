@@ -7,8 +7,8 @@ globs:
   - '**/web/src/lib/token-policy.ts'
   - '**/packaging/openwrt/luci/**/fluxdown.js'
   - '**/native/agent/src/platform/autostart.rs'
-  - '**/crates/settings/src/update_view.rs'
-  - '**/web/src/lib/{update,releaseNotes}.ts'
+  - '**/crates/settings/src/{update_view,version_button}.rs'
+  - '**/web/src/lib/{update,releaseNotes,diagnosticInfo}.ts'
   - '**/mobile/Android/core/src/main/java/com/fluxdown/core/update/**'
   - '**/crates/settings/src/sections/about.rs'
   - '**/crates/settings/src/model/cloud_notify.rs'
@@ -31,6 +31,10 @@ interruptMode: never
 ## 应用内更新界面判定（`crates/settings/src/update_view.rs`：阶段 → 文案键、手动原因 / 失败键、`can_install` / `can_cancel` / 手动下载地址）
 
 → `web/src/lib/update.ts` + 原生 Android `mobile/Android/core/.../update/UpdateView.kt`：逐条对齐（`update.test.ts` / `UpdateViewTest` 覆盖同一组；Android 仅 Ready / Installing / 用户取消 / 商店安装换用 `mobileUpdate*` 文案键）；状态与流程只归 agent `native/agent/src/update/`（Android 经 `native/mobile` 的 `AppUpdater` 复用同一 `UpdateService`，Kotlin 只做安装 / 调度 / 界面），发布资产 / 校验和哨兵 / 双域名依赖见 `.omp/knowledge/hosts-and-api.md`「应用内更新」
+
+## 状态栏版本条目（`crates/settings/src/version_button.rs`：`update_badge` 更新形态、`diagnostic_text` 诊断信息格式）
+
+→ `web/src/lib/update.ts::versionBadge` + `web/src/lib/diagnosticInfo.ts`：逐条对齐（`update.test.ts` / `diagnosticInfo.test.ts` 与 Rust 测试为同一组用例）；诊断信息只含版本 / 渠道 / 协议 / 平台或安装形态 / 客户端 / 语言，不含路径、账户、设备名、地址。Android / iOS 无此条目
 
 ## 更新说明展示规则（`crates/settings/src/sections/about.rs`：`localized_release_body` 按界面语言切段、`strip_version_heading` 去掉正文开头与标题重复的版本标题、`release_date` 取发布日期；标题统一为「v版本 + 发布日期」，关于页与新版本提醒窗口共用）
 

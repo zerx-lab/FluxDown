@@ -1,6 +1,6 @@
 //! 应用内更新提示：菜单「检查更新…」的结果与「已更新」的一次性通知。
 //!
-//! 新版本由 agent 在后台下载，只经主窗口顶栏的更新按钮（`fluxdown_ui_settings::UpdateTitleButton`）
+//! 新版本由 agent 在后台下载，只经主窗口状态栏的版本条目（`fluxdown_ui_settings::VersionButton`）
 //! 呈现，界面从不为新版本自动弹窗或抢焦点；更新窗口只在用户主动时打开。
 
 use fluxdown_protocol::{UpdatePhase, UpdateStatusDto, method};

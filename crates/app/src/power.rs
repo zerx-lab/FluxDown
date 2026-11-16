@@ -125,8 +125,9 @@ pub fn shutdown_port(cx: &App) -> Option<ShutdownPort> {
 }
 
 fn apply(status: &SharedShutdownStatus, power: PowerStatusDto, cx: &mut App) {
+    let previous = status.get();
     let next = shutdown_status(power);
-    if status.get() == next {
+    if previous == next {
         return;
     }
     status.set(next);
@@ -137,8 +138,12 @@ fn apply(status: &SharedShutdownStatus, power: PowerStatusDto, cx: &mut App) {
     {
         downloads.update(cx, |_, cx| cx.notify());
     }
+    // 倒计时每秒推送一次剩余时间：实时数字只在状态栏刷新，通知只在倒计时开始（或动作变化）时
+    // 弹一次——重复 push 同 id 通知会每秒重放入场动画。
+    let started = previous.countdown_remaining.is_none() || previous.action != next.action;
     match next.countdown_remaining {
-        Some(remaining) => show_countdown(cx, remaining, next.action),
+        Some(_) if started => show_countdown(cx, next.action),
+        Some(_) => {}
         None => clear_countdown(cx),
     }
 }
@@ -155,16 +160,16 @@ fn shutdown_status(power: PowerStatusDto) -> ShutdownStatus {
 
 struct ShutdownNote;
 
-fn show_countdown(cx: &mut App, remaining: Duration, action: PowerAction) {
+fn show_countdown(cx: &mut App, action: PowerAction) {
     let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
         return;
     };
-    let (countdown_key, cancel_key) = match action {
-        PowerAction::Shutdown => ("shutdownCountdown", "shutdownCancelButton"),
-        PowerAction::Sleep => ("sleepCountdown", "sleepCancelButton"),
+    let (notice_key, cancel_key) = match action {
+        PowerAction::Shutdown => ("shutdownCountdownNotice", "shutdownCancelButton"),
+        PowerAction::Sleep => ("sleepCountdownNotice", "sleepCancelButton"),
     };
     let translator = Desktop::global(cx).translator.read(cx).clone();
-    let message = translator.text_with(countdown_key, &[("time", &format_remaining(remaining))]);
+    let message = translator.text(notice_key).to_owned();
     let cancel_label = translator.text(cancel_key).to_owned();
     if let Err(error) = handle.update(cx, |_, window, cx| {
         let note = Notification::warning(message)
@@ -193,23 +198,5 @@ fn clear_countdown(cx: &mut App) {
         })
     {
         log::debug!("view or window released before lifecycle update: {error:#}");
-    }
-}
-
-/// `mm:ss`，与 agent 托盘 tooltip 一致。
-fn format_remaining(remaining: Duration) -> String {
-    let total = remaining.as_secs();
-    format!("{:02}:{:02}", total / 60, total % 60)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_remaining_pads_minutes_and_seconds() {
-        assert_eq!(format_remaining(Duration::from_secs(65)), "01:05");
-        assert_eq!(format_remaining(Duration::from_secs(5)), "00:05");
-        assert_eq!(format_remaining(Duration::from_secs(600)), "10:00");
     }
 }

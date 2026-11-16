@@ -45,12 +45,38 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
 fn version_section(ctx: &SectionContext) -> SettingsSection {
     let version = SharedString::from(format!("v{APP_VERSION}"));
     let protocol = SharedString::from(fluxdown_protocol::PROTOCOL_VERSION.to_string());
+    let store = ctx.store();
+    let translator = ctx.translator.clone();
+    let copy = ctx.t("copyDiagnosticInfo");
     SettingsSection::new()
         .title(SharedString::from("FluxDown"))
         .row(ctx.item(
             "currentVersion",
             None,
-            Control::custom(move |_, _, _, cx: &mut App| body_text(cx).child(version.clone())),
+            Control::custom(move |_, _, _, cx: &mut App| {
+                let store = store.clone();
+                let translator = translator.clone();
+                h_flex()
+                    .gap(active_theme(cx).tokens().spacing.sm)
+                    .items_center()
+                    .child(body_text(cx).child(version.clone()))
+                    .child(
+                        button(
+                            "about-copy-diagnostics",
+                            copy.clone(),
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .on_click(move |_, window, cx| {
+                            crate::version_button::copy_diagnostics(
+                                &store,
+                                &translator,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
+            }),
         ))
         .row(ctx.item(
             "protocolVersionLabel",

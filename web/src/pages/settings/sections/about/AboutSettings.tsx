@@ -4,6 +4,8 @@
 
 import { useState } from 'react'
 import { useI18n, useT } from '../../../../i18n'
+import { copyText } from '../../../../lib/copy'
+import { diagnosticText } from '../../../../lib/diagnosticInfo'
 import { exportLogs, rpc, useRpcSelector } from '../../../../lib/rpc'
 import type { ReleaseNoteDto } from '../../../../lib/rpc'
 import { Button, toast } from '../../../../ui'
@@ -181,7 +183,9 @@ function ExportRow() {
 
 export function AboutSettings() {
   const t = useT()
-  const version = useRpcSelector((state) => state.hello?.serviceVersion ?? '')
+  const { locale } = useI18n()
+  const hello = useRpcSelector((state) => state.hello)
+  const version = hello?.serviceVersion ?? ''
   const update = useUpdateStatus()
   const autoCheck = usePrefBoolean('general.auto_check_update', true)
   const silentSupported = update != null && (
@@ -196,7 +200,17 @@ export function AboutSettings() {
     <SettingsPage title={t('settingsCatAbout')} description={t('settingsCatAboutDesc')}>
       <SettingsSection title="FluxDown">
         <SettingsRow title={t('currentVersion')}>
-          <span className="text-sm tabular text-foreground">{version ? `v${version}` : '—'}</span>
+          <div className="flex flex-wrap items-center gap-2 desktop:justify-end">
+            <span className="text-sm tabular text-foreground">{version ? `v${version}` : '—'}</span>
+            <Button
+              onClick={() => {
+                copyText(diagnosticText({ serviceVersion: version, protocolVersion: hello?.protocolVersion ?? null, status: update, locale, userAgent: navigator.userAgent }))
+                toast.success(t('diagnosticInfoCopied'))
+              }}
+            >
+              {t('copyDiagnosticInfo')}
+            </Button>
+          </div>
         </SettingsRow>
       </SettingsSection>
       <SettingsSection title={t('softwareUpdate')}>
