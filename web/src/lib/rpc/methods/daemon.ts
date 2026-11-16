@@ -193,7 +193,7 @@ const task = {
   renameBtFile: (params: RenameBtFileParams) => call<OkResult>(METHOD.DAEMON_TASK_RENAME_BT_FILE, params),
   /** 强制重新校验（未完成 BT 任务）：daemon 受理即返回，校验在后台进行。 */
   recheck: (params: TaskIdParams) => call<OkResult>(METHOD.DAEMON_TASK_RECHECK, params),
-  /** 移动 BT 数据：跨卷时耗时与数据量成正比，使用 6 小时超时。 */
+  /** 移动任务数据（BT 与非 BT 都可）：跨卷时耗时与数据量成正比，使用 6 小时超时。 */
   moveStorage: (params: MoveTaskStorageParams) =>
     call<OkResult>(METHOD.DAEMON_TASK_MOVE_STORAGE, params, { timeoutMs: SLOW_DISK_TIMEOUT_MS }),
   /** 任务级限速：只传改动的字段。 */

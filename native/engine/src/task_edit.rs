@@ -172,6 +172,37 @@ pub(crate) fn revision(
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+/// BT tasks: `magnet:` links or `torrent-file://` sentinels.
+fn is_bt(url: &str) -> bool {
+    url.starts_with("magnet:") || url.starts_with("torrent-file://")
+}
+
+/// Storage-only save for `daemon.task.moveStorage` on a non-BT task, guarded by the
+/// current revision. `Ok(None)` for BT tasks, which move through the BT session journal.
+pub async fn storage_move(
+    db: &Db,
+    task_id: &str,
+    save_dir: &str,
+) -> Result<Option<EditTask>, String> {
+    let task = db
+        .load_task_by_id(task_id)
+        .await
+        .map_err(|e| format!("db: {e:#}"))?
+        .ok_or("not-found")?;
+    if is_bt(&task.url) {
+        return Ok(None);
+    }
+    let context = stored_context(db, &task)
+        .await
+        .map_err(|e| format!("credentials: {e:#}"))?;
+    Ok(Some(EditTask {
+        expected_revision: revision(&task, &context).map_err(|e| format!("db: {e:#}"))?,
+        task_id: task.task_id,
+        save_dir: Some(save_dir.to_owned()),
+        ..Default::default()
+    }))
+}
+
 /// Fetch only non-secret editable values. URL is read-only in this editor.
 pub async fn snapshot(db: &Db, task_id: &str) -> Result<EditSnapshot, String> {
     let task = db
@@ -301,7 +332,7 @@ pub(crate) async fn prepare(db: &Db, patch: EditTask) -> Result<PreparedEdit, St
             return Err("invalid-speed-limit".into());
         }
         updated.properties.download_limit_bps = value;
-        if original.url.starts_with("magnet:") || original.url.starts_with("torrent-file://") {
+        if is_bt(&original.url) {
             updated.bt_download_limit_bps = value;
         }
     }
@@ -503,7 +534,7 @@ pub(crate) async fn load_properties(db: &Db, id: &str) -> Result<TaskProperties,
 fn capabilities(task: &TaskInfo) -> EditCapabilities {
     let request = task.url.starts_with("http://") || task.url.starts_with("https://");
     let proxy = request || task.url.starts_with("ftp://");
-    let bt = task.url.starts_with("magnet:") || task.url.starts_with("torrent-file://");
+    let bt = is_bt(&task.url);
     let completed = task.status == 3;
     EditCapabilities {
         request: request && !completed,

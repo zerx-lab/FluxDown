@@ -83,7 +83,8 @@ pub enum ActorOperation {
     RecheckTask {
         task_id: String,
     },
-    /// 把 BT 任务的数据移动到新的保存目录（`daemon.task.moveStorage`，搬移在 actor 之外）。
+    /// 把任务数据移动到新的保存目录（`daemon.task.moveStorage`，搬移在 actor 之外）：
+    /// BT 任务走 BT 会话搬移，其余协议走统一编辑的搬移。
     MoveTaskStorage {
         task_id: String,
         save_dir: String,
@@ -1150,30 +1151,37 @@ async fn dispatch_operation(
             });
         }
         ActorOperation::MoveTaskStorage { task_id, save_dir } => {
-            #[cfg(feature = "bt")]
-            start_bt_move(
-                engine,
-                maintenance_tx,
-                BtMoveRequest {
-                    task_id,
-                    save_dir,
-                    resume_after: false,
-                    deadline: tokio::time::Instant::now() + BT_MOVE_STOP_TIMEOUT,
-                    ack,
-                },
-            )
-            .await;
-            #[cfg(not(feature = "bt"))]
-            {
-                let _ = (task_id, save_dir);
-                if ack
-                    .send(Err(ActorError::InvalidArgument(
-                        UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
-                    )))
-                    .is_err()
-                {
-                    tracing::debug!("storage move caller disconnected before rejection");
+            // 非 BT 任务（HTTP / FTP / eD2K / HLS…）走统一编辑的搬移：同一套
+            // 「停写入 → 复制发布 → 落库 → 删源」与中断恢复日志。
+            match fluxdown_engine::task_edit::storage_move(&engine.db, &task_id, &save_dir).await {
+                Ok(Some(patch)) => {
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                    let result = engine.manager.begin_task_edit(patch).await;
+                    task_edit::step(result, ack, deadline, engine, maintenance_tx).await;
                 }
+                Ok(None) => {
+                    #[cfg(feature = "bt")]
+                    start_bt_move(
+                        engine,
+                        maintenance_tx,
+                        BtMoveRequest {
+                            task_id,
+                            save_dir,
+                            resume_after: false,
+                            deadline: tokio::time::Instant::now() + BT_MOVE_STOP_TIMEOUT,
+                            ack,
+                        },
+                    )
+                    .await;
+                    #[cfg(not(feature = "bt"))]
+                    task_edit::reply(
+                        ack,
+                        Err(ActorError::InvalidArgument(
+                            UNSUPPORTED_PROTOCOL_MESSAGE.to_owned(),
+                        )),
+                    );
+                }
+                Err(error) => task_edit::reply(ack, Err(task_edit::edit_error(error))),
             }
         }
         ActorOperation::WebhookTest { endpoint_json } => {
@@ -4812,6 +4820,132 @@ mod tests {
         drop(engine);
         if let Err(error) = tokio::fs::remove_dir_all(dir).await {
             eprintln!("actor verify test directory removal failed: {error}");
+        }
+    }
+
+    /// `daemon.task.moveStorage` 对非 BT 任务（这里是已完成的 eD2K ISO）走统一编辑的搬移：
+    /// 文件挪到新目录、任务位置落库；目标已有同名文件返回 `Conflict` 且原文件不动。
+    #[tokio::test]
+    async fn move_storage_relocates_completed_non_bt_task() {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdown_daemon_move_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create move test dir");
+        let dir_text = dir.to_string_lossy().into_owned();
+        let mut engine = fluxdown_engine::Engine::new(
+            fluxdown_engine::EngineConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: dir_text.clone(),
+                app_data_dir: dir_text.clone(),
+                bt_config: fluxdown_engine::bt_config::BtConfig::default(),
+                proxy_config: fluxdown_engine::proxy_config::ProxyConfig::default(),
+                user_agent: String::new(),
+                data_dir_override: Some(dir.clone()),
+                database_url: None,
+            },
+            std::sync::Arc::new(fluxdown_engine::NoopSink),
+            std::sync::Arc::new(fluxdown_engine::NoopSelection),
+        )
+        .await
+        .expect("construct engine");
+        let events =
+            crate::event_hub::DaemonEventHub::new(fluxdown_protocol::DaemonSnapshot::default(), 32);
+        let (maintenance_tx, mut maintenance_rx) = tokio::sync::mpsc::unbounded_channel();
+        engine
+            .db
+            .insert_task(
+                "ed2k",
+                "ed2k://|file|disc.iso|7|0123456789abcdef0123456789abcdef|/",
+                "disc.iso",
+                &dir_text,
+                1,
+                0,
+                "",
+                "",
+                "",
+                3,
+            )
+            .await
+            .expect("insert task");
+        tokio::fs::write(dir.join("disc.iso"), b"payload")
+            .await
+            .expect("write landed file");
+
+        let mut move_to = async |target: &std::path::Path| {
+            let (ack, mut response) = tokio::sync::oneshot::channel();
+            super::dispatch_operation(
+                ActorOperation::MoveTaskStorage {
+                    task_id: "ed2k".to_owned(),
+                    save_dir: target.to_string_lossy().into_owned(),
+                },
+                ack,
+                &mut engine,
+                &events,
+                &maintenance_tx,
+            )
+            .await;
+            loop {
+                tokio::select! {
+                    result = &mut response => break result.expect("move acknowledged"),
+                    Some(event) = maintenance_rx.recv() => {
+                        super::commit_maintenance(event, &mut engine, &events, &maintenance_tx)
+                            .await;
+                    }
+                }
+            }
+        };
+
+        let occupied = dir.join("occupied");
+        tokio::fs::create_dir_all(&occupied)
+            .await
+            .expect("create occupied dir");
+        tokio::fs::write(occupied.join("disc.iso"), b"other")
+            .await
+            .expect("write conflicting file");
+        assert!(matches!(
+            move_to(&occupied).await,
+            Err(ActorError::Conflict(_))
+        ));
+        assert_eq!(
+            tokio::fs::read(dir.join("disc.iso"))
+                .await
+                .expect("source kept"),
+            b"payload"
+        );
+
+        let target = dir.join("移动 硬盘");
+        assert!(matches!(
+            move_to(&target).await,
+            Ok(super::ActorResult::Unit)
+        ));
+        assert_eq!(
+            tokio::fs::read(target.join("disc.iso"))
+                .await
+                .expect("moved file"),
+            b"payload"
+        );
+        assert!(
+            !dir.join("disc.iso").exists(),
+            "source removed after commit"
+        );
+        let task = engine
+            .db
+            .load_task_by_id("ed2k")
+            .await
+            .expect("load task")
+            .expect("task exists");
+        assert_eq!(task.save_dir, target.to_string_lossy());
+        assert_eq!(task.status, 3, "completed task stays completed");
+
+        drop(engine);
+        if let Err(error) = tokio::fs::remove_dir_all(dir).await {
+            eprintln!("actor move test directory removal failed: {error}");
         }
     }
 

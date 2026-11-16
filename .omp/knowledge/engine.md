@@ -231,6 +231,9 @@
     `set_task_location` 后恢复原状态（继续下载 / `spawn_reseed_from_disk` 续种）。动手前把意图写进 config `bt_move_<task_id>`（`MoveJournal`），新位置落库后删；
     进程中途退出时下次启动 `recover_bt_moves`（在 staging 扫描与续种之前）以续传模式做完并落库；回滚也失败（数据分散两处）时任务标错误、日志保留。
     搬移期间 `bt_moves` 登记拒绝恢复 / 暂停 / 删除 / 改文件 / 校验 / 哈希（删除按「文件保留」失败返回）。
+    **非 BT 任务**（HTTP / FTP / eD2K / HLS…，用户 2026-11-16 要求右键「移动到…」对所有本机单任务可用）：daemon `MoveTaskStorage` 先调
+    `task_edit::storage_move` 生成只改 `save_dir` 的统一编辑（按当前 revision），交给 `begin_task_edit` 的搬移（目标文件 + `.fdownloading` + 音轨边车 + `task_artifacts`，
+    `task_edit_move_<id>` 日志，旧文件在落库前一直权威）；BT 才走上面的会话搬移。GPUI `move_storage_visible` / Web `canMoveStorage` = 恰好一个本机任务。
 - **BT 防吸血**（`bt_guard/`，经 rqbit fork 的 `PeerPolicy` 钩子接入 `SharedBtSession::new`）：规则、处置阶梯、分层封禁、持久化与空闲静默约束见
   `ops.md`「已实现（BT 防吸血）」条；改 rqbit fork 先在 `fluxdown/main` 分支提交再更新根 `Cargo.toml` 的 rev。
 - **peer 国旗**（`geoip.rs`，对齐 qBittorrent）：DB-IP「国家 lite」`.mmdb`（CC BY 4.0，关于页署名）+ 自带最小 MaxMind DB 读取器（零依赖，24/28/32 位记录，
