@@ -144,6 +144,8 @@
 - **调试构建与正式版共用 `agent-state.json`（同一设备 id 与云凭据），dev 默认 FluxCloud 地址是 `http://127.0.0.1:8720`**：没设地址覆盖的 dev 构建会把生产令牌发到本地服务，401 后清掉共用的登录态，装回正式版时表现为「升级后登出」。`CloudCredentials.issuer` 记签发地址，调试构建下当前地址 ≠ 签发地址时被拒不清会话 → `native/agent/src/cloud/client.rs::{reject_refresh_token,issued_elsewhere}`，回归 `a_foreign_endpoint_rejection_keeps_credentials_in_debug_builds`。
 ## GPUI（gpui-fast 保留模式）
 
+- **BT 选择窗点 X 必须走取消流程**：直接关窗不会撤回 daemon 的文件选择请求，任务会残留准备中。原生关闭与 Linux 自绘 X 经 `AuxiliaryWindowView::on_close_requested` 调同一个 `SelectionView::cancel`，等待删除事件关窗；确认 / 超时后的程序主动 `remove_window` 不触发取消 → `crates/app/src/windows/selection.rs`、`crates/shell/src/view.rs`、`crates/downloads/src/pages/selection.rs`。
+
 另见 AGENTS.md §4：render 读的状态必须在 entity / global / `ListState` / `ScrollHandle` 内，父 view notify 不再重建子 view，渲染期不得无条件写 entity / global。
 - **扩展任务行投影不能丢掉已有任务事实**：统一编辑增加分类／标签时曾漏映射 `group_id`、`save_dir`，导致组成员误显示「忽略插件重试」且目录上下文丢失。`DownloadTaskView::local` 必须保留二者；不要用改菜单断言来掩盖事实缺失 → `crates/downloads/src/model/mod.rs::DownloadTaskView::local`、回归 `components::task_table::context_menu_tests::plugin_retry_fact_excludes_task_group_members`。
 - **「全部」命中不能抑制「其他」计数，手动分类须单独求值**：`CategoryIndex::for_each_match` 曾把 `Matcher::All` 也计作具体命中，导致未分类任务的侧栏计数为零；手动归入 `other` 也不能进入自动兜底分支。Rust／Web 均须满足一次扫描计数与逐项过滤等价，重复规则只计一次 → `crates/downloads/src/model/categories.rs`、`model/counts.rs::category_override_counts_match_filters_including_other`、Web `model/counts.test.ts`。
