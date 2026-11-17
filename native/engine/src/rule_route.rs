@@ -14,6 +14,7 @@ use crate::downloader::{DownloadError, DownloadParams};
 use crate::events::EngineEvent;
 use crate::logger::log_info;
 use crate::proxy_rules::ProxyRuleSet;
+use crate::tls::HttpVersion;
 
 /// 逐请求规则路由器。
 pub struct EgressRouter {
@@ -22,6 +23,8 @@ pub struct EgressRouter {
     base_rule: Option<usize>,
     user_agent: String,
     ignore_tls_errors: bool,
+    /// 规则 client 的 HTTP 版本，与发送方 client 一致（HLS 为 `Any`，见 [`Self::with_http`]）。
+    http: HttpVersion,
 }
 
 impl std::fmt::Debug for EgressRouter {
@@ -45,6 +48,7 @@ impl EgressRouter {
             base_rule,
             user_agent: user_agent.to_owned(),
             ignore_tls_errors,
+            http: HttpVersion::Http1,
         }
     }
 
@@ -62,6 +66,18 @@ impl EgressRouter {
             base_rule: Some(index),
             user_agent: self.user_agent.clone(),
             ignore_tls_errors: self.ignore_tls_errors,
+            http: self.http,
+        }
+    }
+
+    /// 同一路由，但规则 client 改用 `http` 版本（换了任务 client 的 HTTP 版本时同步使用）。
+    pub(crate) fn with_http(&self, http: HttpVersion) -> Self {
+        Self {
+            rules: Arc::clone(&self.rules),
+            base_rule: self.base_rule,
+            user_agent: self.user_agent.clone(),
+            ignore_tls_errors: self.ignore_tls_errors,
+            http,
         }
     }
 
@@ -77,19 +93,23 @@ impl EgressRouter {
         }
         let egress = rule.egress().clone();
         if !egress.needs_detection()
-            && let Some(client) =
-                client_cache::lookup(&egress.resolve(), &self.user_agent, self.ignore_tls_errors)
+            && let Some(client) = client_cache::lookup(
+                &egress.resolve(),
+                &self.user_agent,
+                self.ignore_tls_errors,
+                self.http,
+            )
         {
             return Ok(Some(client));
         }
         let ua = self.user_agent.clone();
         let tls = self.ignore_tls_errors;
-        let client =
-            tokio::task::spawn_blocking(move || client_cache::get(&egress.resolve(), &ua, tls))
-                .await
-                .map_err(|e| {
-                    DownloadError::Other(format!("proxy rule client task failed: {e}"))
-                })??;
+        let http = self.http;
+        let client = tokio::task::spawn_blocking(move || {
+            client_cache::get(&egress.resolve(), &ua, tls, http)
+        })
+        .await
+        .map_err(|e| DownloadError::Other(format!("proxy rule client task failed: {e}")))??;
         Ok(Some(client))
     }
 }
@@ -112,7 +132,7 @@ pub(crate) async fn apply(params: &mut DownloadParams) -> bool {
     let tls = params.run_meta.ignore_tls_errors;
     let built = tokio::task::spawn_blocking(move || {
         let proxy = egress.resolve();
-        client_cache::get(&proxy, &ua, tls).map(|client| (proxy, client))
+        client_cache::get(&proxy, &ua, tls, HttpVersion::Http1).map(|client| (proxy, client))
     })
     .await;
     let (proxy, client) = match built {

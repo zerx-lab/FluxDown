@@ -12,6 +12,7 @@
 
 另见 AGENTS.md §4：anyhow 错误一律 `{e:#}`、pg 字节列必须 `BIGINT`、一个 data_dir 只有一个引擎写入者、RSS 无人值守链路、宿主下载走统一出口。
 
+- **HLS 根播放列表被 403 时要用协商 HTTP/2 的 client 重试，但默认不能换掉 HTTP/1.1**：带浏览器 UA（扩展转发）却只说 HTTP/1.1 的请求会被 Cloudflare 判为机器人，播放列表直接 403（surrit.com 实测：同一组 UA + Referer，HTTP/1.1 → 403，协商 HTTP/2 → 200）。默认下载 client 仍强制 HTTP/1.1（每分片一条连接、代理兼容更稳）；仅根列表 403 且尚未写盘时换 `HttpVersion::Any` 整任务重跑，分片 / 子列表 403 不触发。`client_cache` 键含 HTTP 版本，规则路由 `with_http` 同步 → `hls_downloader::{run_hls_download,root_playlist_forbidden,use_http2_transport}`、`downloader::build_http2_client`、`client_cache`、`rule_route::EgressRouter::with_http`；回归 `hls_downloader::tests::http2_fallback_triggers_only_on_root_playlist_403`。
 - **换链接后的续传必须对新链接真实探测，并零容差比对新旧文件大小**：沿用库存大小当 hint 会跳过探测——任务被换成更小文件时分段越界、持续 416；新版本仅大几百 KB 时被当作 CDN 误差拼成坏文件。大小一致（如签名过期换新链接）才续传，否则清空分段与旧临时文件重下 → `native/engine/src/db.rs::task_source_changed`、`native/engine/src/download_manager.rs`（`source_changed` 分支）、回归 `native/engine/tests/engine/change_url_resume.rs::switching_to_a_different_file_restarts_from_zero` / `switching_to_a_resigned_link_of_the_same_file_keeps_progress`。
 - **纯 Range 续传也必须校验服务器版本标识**：不发 If-Range 时若不验 validator，会把旧任务进度与新文件分段静默拼接 → 回归 `native/engine/tests/engine/realtest.rs::validated_plain_range_rejects_changed_version`（`#[ignore]`，需 `--ignored`）。
 - **多段下载取消退出前要把已落库的分段进度单调回写任务级进度**：多段运行期只周期写任务级 `downloaded_bytes`，开头几秒内暂停会显示 0% 或旧值。回写受 `segments_epoch` 守卫，防止与「重新下载」删段归零交错复活旧进度 → `native/engine/src/db.rs::sync_task_progress_from_segments`、回归 `db.rs::task_progress_syncs_from_segments_monotonically`。

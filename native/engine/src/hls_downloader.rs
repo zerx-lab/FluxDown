@@ -1188,9 +1188,31 @@ fn decrypt_segment(
 ///   临时文件、写入任何字节，未消费的 `params`（含 `.ts` 归一化后的文件名）
 ///   原样交还——不落终态失败，由调用方把它交给普通 HTTP 下载器，并在此之前
 ///   把文件名恢复为 URL 派生的原始扩展名，逐字节保存该文件本身。
-pub async fn run_hls_download(params: DownloadParams) -> Option<DownloadParams> {
+pub async fn run_hls_download(mut params: DownloadParams) -> Option<DownloadParams> {
     let task_id_log = params.task_id.clone();
     let result = match run_hls_download_inner(&params).await {
+        Err(error) if root_playlist_forbidden(&error, &params.url) => {
+            // 只拒绝 HTTP/1.1 的 WAF(Cloudflare 等):换协商 HTTP/2 的同出口 client 重跑。
+            // 根播放列表就被拒说明尚未建临时文件、未写任何字节,重跑等同首次运行。
+            log_info!(
+                "[hls-download] task {} root playlist 403 over HTTP/1.1, retrying with HTTP/2",
+                task_id_log
+            );
+            match use_http2_transport(&mut params).await {
+                Ok(()) => run_hls_download_inner(&params).await,
+                Err(build_error) => {
+                    crate::logger::report_error(
+                        "hls-download",
+                        "build HTTP/2 client",
+                        &build_error,
+                    );
+                    Err(error)
+                }
+            }
+        }
+        outcome => outcome,
+    };
+    let result = match result {
         // 完成前先跑插件后处理(未声明 finalize 阶段时零调用)与分类目录复核;成功后才写
         // 状态 3。转封装已在 inner 内完成,复核看到的是最终的 `.mp4` / `.ts`。
         Ok(total) => match crate::downloader::finalize_output(&params, ProtocolKind::Hls).await {
@@ -1294,6 +1316,37 @@ pub async fn run_hls_download(params: DownloadParams) -> Option<DownloadParams> 
             None
         }
     }
+}
+
+/// 根播放列表(用户提交的 URL)被 403 拒绝:HTTP/2 回退的唯一触发条件。分片 / 子列表的
+/// 403 不触发(那时可能已写盘,且同一主机的 WAF 会先拦根列表)。
+fn root_playlist_forbidden(error: &DownloadError, root_url: &str) -> bool {
+    matches!(error, DownloadError::Request(e)
+        if e.status() == Some(reqwest::StatusCode::FORBIDDEN)
+            && e.url().is_some_and(|url| url.as_str() == root_url))
+}
+
+/// 换用协商 HTTP/2 的同出口 client(代理 / UA / TLS 策略与任务 client 相同),站点代理
+/// 规则的逐请求 client 一并换版本。
+///
+/// 带浏览器 UA 却只说 HTTP/1.1 的客户端会被 Cloudflare 等反爬判为机器人,播放列表直接
+/// 403。默认仍用 HTTP/1.1(每个分片一条连接,不受按连接限速的 CDN 拖慢),只在根播放列表
+/// 被 403 时换用;服务端只支持 HTTP/1.1 时 ALPN 照常回落。
+async fn use_http2_transport(params: &mut DownloadParams) -> Result<(), DownloadError> {
+    let proxy = params.proxy_config.clone();
+    let ua = params.run_meta.user_agent.clone();
+    let tls = params.run_meta.ignore_tls_errors;
+    params.client = tokio::task::spawn_blocking(move || {
+        crate::client_cache::get(&proxy, &ua, tls, crate::tls::HttpVersion::Any)
+    })
+    .await
+    .map_err(|e| DownloadError::Other(format!("HLS client build task failed: {e}")))??;
+    params.spec.egress = params
+        .spec
+        .egress
+        .as_ref()
+        .map(|router| Arc::new(router.with_http(crate::tls::HttpVersion::Any)));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5631,6 +5684,47 @@ mod tests {
     use cbc::cipher::{BlockEncryptMut, KeyIvInit};
 
     type Aes128CbcEnc = cbc::Encryptor<Aes128>;
+
+    /// 只有根播放列表本身的 403 才触发 HTTP/2 回退:其它 URL 的 403、其它状态码都不触发。
+    #[tokio::test]
+    async fn http2_fallback_triggers_only_on_root_playlist_403()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for status in ["403 Forbidden", "403 Forbidden", "404 Not Found"] {
+                let (mut socket, _) = listener.accept().await?;
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await?;
+                let head =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                socket.write_all(head.as_bytes()).await?;
+            }
+            Ok::<(), std::io::Error>(())
+        });
+        let client = reqwest::Client::new();
+        let root = format!("http://{address}/v/playlist.m3u8");
+        let child = format!("http://{address}/v/1080p/video.m3u8");
+        let mut errors = Vec::new();
+        for url in [&root, &child, &root] {
+            let response = client.get(url.as_str()).send().await?;
+            let error = response
+                .error_for_status()
+                .err()
+                .ok_or("expected HTTP error")?;
+            errors.push(DownloadError::Request(error));
+        }
+        server.await??;
+        assert!(super::root_playlist_forbidden(&errors[0], &root));
+        assert!(!super::root_playlist_forbidden(&errors[1], &root));
+        assert!(!super::root_playlist_forbidden(&errors[2], &root));
+        assert!(!super::root_playlist_forbidden(
+            &DownloadError::Cancelled,
+            &root
+        ));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn body_activity_excludes_response_setup_and_ends_at_eof()

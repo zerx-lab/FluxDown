@@ -10597,7 +10597,12 @@ impl DownloadManager {
             let proxy = rule.egress().resolve();
             let route = rule.route_label(&proxy);
             let index = rule.index();
-            match crate::client_cache::get(&proxy, resolved_ua, ignore_tls_errors) {
+            match crate::client_cache::get(
+                &proxy,
+                resolved_ua,
+                ignore_tls_errors,
+                crate::tls::HttpVersion::Http1,
+            ) {
                 Ok(client) => {
                     return TaskEgress {
                         client,
@@ -10697,7 +10702,12 @@ impl DownloadManager {
             self.proxy_config.resolve()
         };
         let route = static_route(&proxy);
-        match crate::client_cache::get(&proxy, resolved_ua, ignore_tls_errors) {
+        match crate::client_cache::get(
+            &proxy,
+            resolved_ua,
+            ignore_tls_errors,
+            crate::tls::HttpVersion::Http1,
+        ) {
             Ok(client) => TaskEgress {
                 client,
                 proxy,

@@ -1202,6 +1202,7 @@ pub fn build_pinned_client(
         user_agent,
         ignore_tls_errors,
         ClientRoute::Pinned { host, ip },
+        HttpVersion::Http1,
     )
 }
 
@@ -1219,6 +1220,7 @@ pub fn build_link_client(
         user_agent,
         ignore_tls_errors,
         ClientRoute::Link(link),
+        HttpVersion::Http1,
     )
 }
 
@@ -1236,6 +1238,24 @@ pub fn build_client_with_tls_policy(
         user_agent,
         ignore_tls_errors,
         ClientRoute::Default,
+        HttpVersion::Http1,
+    )
+}
+
+/// 与 [`build_client_with_tls_policy`] 同参装配，但 ALPN 同时提供 `h2` 与 `http/1.1`、
+/// 由服务端选择。供 HLS 这类「浏览器经 HTTP/2 拉取大量小分片」的下载使用：带浏览器 UA
+/// 却只说 HTTP/1.1 的客户端会被 Cloudflare 等反爬判为机器人直接 403。
+pub(crate) fn build_http2_client(
+    proxy_config: &crate::proxy_config::ProxyConfig,
+    user_agent: &str,
+    ignore_tls_errors: bool,
+) -> Result<Client, DownloadError> {
+    build_client_inner(
+        proxy_config,
+        user_agent,
+        ignore_tls_errors,
+        ClientRoute::Default,
+        HttpVersion::Any,
     )
 }
 
@@ -1249,19 +1269,21 @@ enum ClientRoute<'a> {
     Link(&'a crate::multi_nic::LinkBinding),
 }
 
-/// 共享装配核心：[`build_client_with_tls_policy`]、[`build_pinned_client`] 与
-/// [`build_link_client`] 的唯一实现体。`route` 只追加 DNS 钉定或出口绑定，
-/// 其余配置三者逐字节相同（代理/UA/TLS/池参数绝不允许分叉）。
+/// 共享装配核心：[`build_client_with_tls_policy`]、[`build_http2_client`]、
+/// [`build_pinned_client`] 与 [`build_link_client`] 的唯一实现体。`route` 只追加 DNS
+/// 钉定或出口绑定、`http` 只决定 ALPN 与 hyper 协议，其余配置逐字节相同
+/// （代理/UA/TLS/池参数绝不允许分叉）。
 fn build_client_inner(
     proxy_config: &crate::proxy_config::ProxyConfig,
     user_agent: &str,
     ignore_tls_errors: bool,
     route: ClientRoute<'_>,
+    http: HttpVersion,
 ) -> Result<Client, DownloadError> {
     // 下载 client 关闭 reqwest 自动跟随、挂共享 cookie jar：重定向由
     // `http_request::HttpRequest::send` 逐跳按凭据作用域重建请求头。
     let mut builder = crate::http_request::configure_download_client(
-        build_client_builder(proxy_config, user_agent, ignore_tls_errors)?,
+        client_builder_for(proxy_config, user_agent, ignore_tls_errors, http)?,
         ignore_tls_errors,
     );
 
@@ -1313,6 +1335,20 @@ pub(crate) fn build_client_builder(
     user_agent: &str,
     ignore_tls_errors: bool,
 ) -> Result<reqwest::ClientBuilder, DownloadError> {
+    client_builder_for(
+        proxy_config,
+        user_agent,
+        ignore_tls_errors,
+        HttpVersion::Http1,
+    )
+}
+
+fn client_builder_for(
+    proxy_config: &crate::proxy_config::ProxyConfig,
+    user_agent: &str,
+    ignore_tls_errors: bool,
+    http: HttpVersion,
+) -> Result<reqwest::ClientBuilder, DownloadError> {
     use crate::proxy_config::{ProxyMode, detect_system_proxy};
 
     let ua = if user_agent.is_empty() {
@@ -1325,13 +1361,14 @@ pub(crate) fn build_client_builder(
     // hostname-mismatched certificates and also permits undetectable HTTPS interception by
     // a MITM proxy.
     //
-    // HTTP version — force HTTP/1.1 for download manager use cases:
+    // HTTP version — download clients default to HTTP/1.1:
     //  1. Range requests are reliable and well-tested on HTTP/1.1.
     //  2. Multi-segment downloads use separate TCP connections; HTTP/2
     //     multiplexing would force all segments onto one connection.
     //  3. Some servers advertise h2 via ALPN but have buggy HTTP/2
     //     implementations that close connections mid-response.
-    let mut builder = client_builder(HttpVersion::Http1, ignore_tls_errors)
+    // HLS opts into `HttpVersion::Any` (see `build_http2_client`).
+    let mut builder = client_builder(http, ignore_tls_errors)
         .user_agent(ua)
         // TCP tuning — disable Nagle's algorithm to eliminate up to 200 ms
         // latency on small writes (Range request headers, TLS handshake
