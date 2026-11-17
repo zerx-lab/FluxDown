@@ -56,6 +56,27 @@ export function propagate(src: unknown, dst: unknown): void {
   for (const url of from) tag(dst, url);
 }
 
+/** ISO BMFF 片段 / 文件开头可能出现的顶层 box。 */
+const BMFF_HEAD_BOXES: ReadonlySet<string> = new Set(["ftyp", "styp", "moof", "sidx", "moov"]);
+const TS_PACKET = 188;
+
+/**
+ * 按魔数识别响应正文是否其实是音视频分片：站点常把分片伪装成图片（`video0.jpeg` + `image/jpeg`），
+ * 只看 URL / CT 会把它当图片丢掉，MSE 归因随之没有任何证据。TS 要求连续两个包的同步字节，
+ * 避免把以 `G` 开头的 GIF 误判；ISO BMFF 看第一个 box 的类型。
+ */
+export function mediaMagicMime(data: ArrayBuffer | ArrayBufferView): "video/mp2t" | "video/mp4" | null {
+  const bytes = ArrayBuffer.isView(data)
+    ? new Uint8Array(data.buffer, data.byteOffset, Math.min(data.byteLength, TS_PACKET + 1))
+    : new Uint8Array(data, 0, Math.min(data.byteLength, TS_PACKET + 1));
+  if (bytes.length > TS_PACKET && bytes[0] === 0x47 && bytes[TS_PACKET] === 0x47) return "video/mp2t";
+  if (bytes.length >= 8) {
+    const box = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+    if (BMFF_HEAD_BOXES.has(box)) return "video/mp4";
+  }
+  return null;
+}
+
 export interface RecentResponse {
   url: string;
   byteLength: number;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { RecentResponses, propagate, tag, tagsOf } from "./provenance";
+import { RecentResponses, mediaMagicMime, propagate, tag, tagsOf } from "./provenance";
 
 describe("provenance 标记传递", () => {
   test("ArrayBuffer.slice 与 Uint8Array.set 之后标记仍可传递", () => {
@@ -52,3 +52,30 @@ describe("RecentResponses", () => {
     expect(recent.withinWindow(3, 10).map((r) => r.url)).toEqual(["b", "c"]);
   });
 });
+
+describe("mediaMagicMime", () => {
+  test("伪装成图片的 TS / fMP4 分片按魔数识别", () => {
+    const ts = new Uint8Array(TS_LEN);
+    ts[0] = 0x47;
+    ts[188] = 0x47;
+    expect(mediaMagicMime(ts.buffer)).toBe("video/mp2t");
+    const moof = new Uint8Array([0, 0, 0, 24, 0x6d, 0x6f, 0x6f, 0x66]);
+    expect(mediaMagicMime(moof)).toBe("video/mp4");
+    // 视图从 buffer 中段开始时按视图偏移读
+    const padded = new Uint8Array(16);
+    padded.set([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70], 8);
+    expect(mediaMagicMime(padded.subarray(8))).toBe("video/mp4");
+  });
+
+  test("真图片与过短数据不判为媒体", () => {
+    const gif = new Uint8Array(TS_LEN);
+    gif.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+    expect(mediaMagicMime(gif)).toBeNull();
+    const jpeg = new Uint8Array(TS_LEN);
+    jpeg.set([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46]);
+    expect(mediaMagicMime(jpeg)).toBeNull();
+    expect(mediaMagicMime(new Uint8Array([0x47]))).toBeNull();
+  });
+});
+
+const TS_LEN = 376;
