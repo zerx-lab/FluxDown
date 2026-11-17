@@ -3024,6 +3024,7 @@ mod tests {
                     refresh_token: "refresh".to_owned(),
                     expires_at_unix: i64::MAX,
                     session: None,
+                    issuer: String::new(),
                 }),
                 ..Default::default()
             };

@@ -23,6 +23,10 @@ pub struct CloudCredentials {
     pub refresh_token: String,
     pub expires_at_unix: i64,
     pub session: Option<AgentSessionDto>,
+    /// 签发这组凭据的 FluxCloud 地址（规范化、无尾斜杠）；旧状态文件缺省为空 = 未知。
+    /// 仅调试构建据此判断「当前地址的拒绝是否代表会话失效」（见 `CloudClient::reject_refresh_token`）。
+    #[serde(default)]
+    pub issuer: String,
 }
 
 /// 单个配置同步键的私有持久化状态。

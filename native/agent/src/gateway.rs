@@ -4142,6 +4142,7 @@ mod tests {
             refresh_token: "refresh".to_owned(),
             expires_at_unix: i64::MAX,
             session: None,
+            issuer: String::new(),
         });
         let response = tokio::time::timeout(
             Duration::from_secs(1),
@@ -4798,6 +4799,7 @@ mod tests {
             refresh_token: "refresh".to_owned(),
             expires_at_unix: i64::MAX,
             session: None,
+            issuer: String::new(),
         });
         let service = Arc::new(harness.service);
         let (responses, mut receiver) = tokio::sync::mpsc::channel(4);

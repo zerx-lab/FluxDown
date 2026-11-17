@@ -1001,6 +1001,7 @@ pub(crate) async fn finalize_device_identity(
             || credentials.refresh_token.is_empty()
             || credentials.session.is_none()
     }) {
+        tracing::warn!("FluxCloud session cleared: stored credentials are incomplete");
         state.credentials = None;
         // 凭证被判定无效：账号维度状态（同步水位 / 脏键 / 远程任务）随之隔离。
         state.bind_account(None);

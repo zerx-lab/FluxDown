@@ -364,6 +364,7 @@ async fn seed_agent_state(dirs: &Dirs, cloud: SocketAddr) {
                 }))
                 .expect("session fixture"),
             ),
+            issuer: String::new(),
         }),
         cloud_base_url_override: Some(format!("http://{cloud}")),
         cloud_notify: CloudNotifyPrefs {
