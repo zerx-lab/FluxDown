@@ -3054,8 +3054,9 @@ impl DownloadTableDelegate {
         Some(wrap_row_action_strip(selected, buttons, cx))
     }
 
-    /// 分组头：xs 中等字重正文色标签 + 三级色计数，28 高内容贴底，行槽位多出的
-    /// 高度作上方留白；不加底色块。
+    /// 分组头：xs 中等字重正文色标签 + 三级色计数，在行槽位内垂直居中（表格行等高，
+    /// 首行不再留出空白条）；自带底色层盖住 DataTable 的满宽悬浮色，悬浮时与任务行
+    /// 同样内缩圆角高亮。
     fn render_group_header(
         &self,
         row_ix: usize,
@@ -3091,13 +3092,26 @@ impl DownloadTableDelegate {
         let tertiary = extended.colors.text_tertiary;
         let row = div()
             .id(("download-group-header", row_ix))
+            .group(ROW_GROUP)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
-            .justify_end()
+            .justify_center()
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(on_click)
+            .child(div().absolute().inset_0().bg(tokens.colors.surface))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(SELECTED_INSET_X))
+                    .right(px(SELECTED_INSET_X))
+                    .rounded(theme.components().task_row_radius)
+                    .group_hover(ROW_GROUP, |style| style.bg(extended.colors.row_hover)),
+            )
             .child(
                 h_flex()
                     .h(theme.density().control)

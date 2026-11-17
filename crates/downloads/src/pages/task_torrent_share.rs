@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use fluxdown_protocol::{ApplicationErrorCode, RpcErrorData};
+use fluxdown_ui_components::toast;
 use gpui::{AppContext as _, ClipboardItem, Context, Window};
 use gpui_component::{WindowExt as _, notification::Notification};
 
@@ -39,8 +40,8 @@ impl DownloadView {
         cx.spawn(async move |_, cx| {
             let result = share.await;
             let notification = translator.read_with(cx, |translator, _| match &result {
-                Ok(_) => Notification::success(translator.text("btMagnetCopied").to_owned()),
-                Err(error) => Notification::error(error_text(translator, error)),
+                Ok(_) => toast::success(translator.text("btMagnetCopied").to_owned()),
+                Err(error) => toast::error(error_text(translator, error)),
             });
             let magnet = result.ok().map(|share| share.magnet);
             if let Err(error) = handle.update(cx, |_, window, cx| {
@@ -80,7 +81,7 @@ impl DownloadView {
                 Ok(share) => share,
                 Err(error) => {
                     let notification = translator.read_with(cx, |translator, _| {
-                        Notification::error(error_text(translator, &error))
+                        toast::error(error_text(translator, &error))
                     });
                     notify(notification, cx);
                     return;
@@ -89,7 +90,7 @@ impl DownloadView {
             let TorrentShare { name, torrent, .. } = share;
             let Some(bytes) = torrent else {
                 let notification = translator.read_with(cx, |translator, _| {
-                    Notification::error(translator.text("btNoTorrentFile").to_owned())
+                    toast::error(translator.text("btNoTorrentFile").to_owned())
                 });
                 notify(notification, cx);
                 return;
@@ -110,7 +111,7 @@ impl DownloadView {
                 // 用户取消：不提示。
                 Ok(Ok(None)) => return,
                 Ok(Err(error)) => {
-                    let notification = Notification::error(format!("{error:#}"));
+                    let notification = toast::error(format!("{error:#}"));
                     notify(notification, cx);
                     return;
                 }
@@ -123,8 +124,8 @@ impl DownloadView {
                 .background_spawn(async move { std::fs::write(&path, bytes) })
                 .await;
             let notification = translator.read_with(cx, |translator, _| match written {
-                Ok(()) => Notification::success(translator.text("btTorrentExported").to_owned()),
-                Err(error) => Notification::error(format!("{error}")),
+                Ok(()) => toast::success(translator.text("btTorrentExported").to_owned()),
+                Err(error) => toast::error(format!("{error}")),
             });
             notify(notification, cx);
         })

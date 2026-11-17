@@ -15,6 +15,7 @@ use fluxdown_protocol::{
     BtPeerDto, BtTrackerDto, BtTrackerSource, BtTrackerStatus, BtWebSeedDto, DaemonBtStatusParams,
     RpcErrorData,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, IconControlExt as _, tabular_numbers, tooltip_view,
 };
@@ -31,7 +32,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenuItem},
-    notification::Notification,
     skeleton::Skeleton,
     v_flex,
 };
@@ -1012,7 +1012,7 @@ pub(super) fn copy_to_clipboard(
 ) {
     cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
     if let Some(done) = done {
-        window.push_notification(Notification::success(done.clone()), cx);
+        window.push_notification(toast::success(done.clone()), cx);
     }
 }
 
@@ -1960,7 +1960,7 @@ impl TaskDetailView {
                     ))
                     .on_click(move |_, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy_value.to_string()));
-                        window.push_notification(Notification::success(copied.clone()), cx);
+                        window.push_notification(toast::success(copied.clone()), cx);
                     }),
             )
     }
@@ -2132,10 +2132,10 @@ impl TaskDetailView {
                 cx.notify();
                 let translator = this.translator.read(cx);
                 let notification = match result {
-                    Ok(_) => Notification::success(
+                    Ok(_) => toast::success(
                         translator.text_with(action.success_key(), &[("group", &group)]),
                     ),
-                    Err(error) => Notification::error(format!(
+                    Err(error) => toast::error(format!(
                         "{}: {}",
                         translator.text("btGuardPeerActionFailed"),
                         error_text(translator, &error)
@@ -2202,11 +2202,11 @@ impl TaskDetailView {
             let Ok(()) = this.update_in(cx, |this, window, cx| {
                 let translator = this.translator.read(cx);
                 let notification = match result {
-                    Ok(_) => Notification::success(format!(
+                    Ok(_) => toast::success(format!(
                         "{}: {value}",
                         translator.text("btGuardClientRules")
                     )),
-                    Err(error) => Notification::error(format!(
+                    Err(error) => toast::error(format!(
                         "{}: {}",
                         translator.text("btGuardPeerActionFailed"),
                         error_text(translator, &error)
@@ -2241,8 +2241,8 @@ impl TaskDetailView {
                 }
                 let translator = this.translator.read(cx);
                 let notification = match result {
-                    Ok(_) => Notification::success(translator.text("btReannounceDone").to_owned()),
-                    Err(error) => Notification::error(error_text(translator, &error)),
+                    Ok(_) => toast::success(translator.text("btReannounceDone").to_owned()),
+                    Err(error) => toast::error(error_text(translator, &error)),
                 };
                 window.push_notification(notification, cx);
             }) else {

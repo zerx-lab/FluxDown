@@ -8,6 +8,7 @@ use std::{rc::Rc, sync::Arc};
 use fluxdown_protocol::{
     MoveTaskStorageParams, RpcErrorData, SetTaskBtLimitsParams, SetTaskSuperSeedingParams,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, DialogIntent, dialog_footer, dialog_title, field_hint, form, form_field,
 };
@@ -19,7 +20,6 @@ use gpui::{
 use gpui_component::{
     WindowExt as _, h_flex,
     input::{Input, InputState},
-    notification::Notification,
 };
 
 use crate::{
@@ -255,14 +255,14 @@ impl DownloadView {
                 }
             }
             let notification = translator.read_with(cx, |translator, _| match &first_error {
-                None => Notification::info(translator.text_with(
+                None => toast::info(translator.text_with(
                     "btForceRecheckStarted",
                     &[(
                         "name",
                         notice_text(&first_name, NOTICE_TEXT_MAX_CHARS).as_str(),
                     )],
                 )),
-                Some(error) => Notification::error(error_text(translator, error)),
+                Some(error) => toast::error(error_text(translator, error)),
             });
             if let Err(error) = handle.update(cx, |_, window, cx| {
                 window.push_notification(notification, cx);
@@ -326,7 +326,7 @@ impl DownloadView {
                     .read(cx)
                     .text_with("btMoveStorageWorking", &[("name", name.as_str())]);
                 window.push_notification(
-                    Notification::info(working)
+                    toast::info(working)
                         .autohide(false)
                         .id1::<MoveStorageNotice>(ElementId::Name(SharedString::from(
                             task_id.clone(),
@@ -351,14 +351,14 @@ impl DownloadView {
                 );
                 let translator = this.translator.read(cx);
                 let notification = match &result {
-                    Ok(_) => Notification::success(translator.text_with(
+                    Ok(_) => toast::success(translator.text_with(
                         "btMoveStorageDone",
                         &[(
                             "path",
                             notice_text(&save_dir, NOTICE_TEXT_MAX_CHARS).as_str(),
                         )],
                     )),
-                    Err(error) => Notification::error(error_text(translator, error)),
+                    Err(error) => toast::error(error_text(translator, error)),
                 };
                 window.push_notification(notification, cx);
             }) {
@@ -428,7 +428,7 @@ impl DownloadView {
                             return;
                         };
                         let notification = translator.read_with(cx, |translator, _| {
-                            Notification::error(error_text(translator, &error))
+                            toast::error(error_text(translator, &error))
                         });
                         if let Err(error) = handle.update(cx, |_, window, cx| {
                             window.push_notification(notification, cx);

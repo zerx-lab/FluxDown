@@ -1,4 +1,5 @@
 use fluxdown_protocol::{AuthVerificationDto, method};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, dialog_title, field_error, field_hint, form, form_field,
 };
@@ -12,7 +13,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 
@@ -315,7 +315,7 @@ impl EmailDialog {
                         let key = this.old_code_key();
                         this.host.update(cx, |host, _| host.sent_codes.forget(&key));
                         window.push_notification(
-                            Notification::success(this.text("accountEmailChangeSuccess", cx)),
+                            toast::success(this.text("accountEmailChangeSuccess", cx)),
                             cx,
                         );
                         this.closed = true;

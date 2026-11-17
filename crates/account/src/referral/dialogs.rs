@@ -1,6 +1,7 @@
 //! 推荐码对话框：创建（自定义 / 随机）与删除确认。
 
 use fluxdown_protocol::method;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, DialogIntent, button, dialog_footer, dialog_title, field_error,
     field_hint, loading_button,
@@ -13,7 +14,6 @@ use gpui::{
 use gpui_component::{
     WindowExt as _,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 
@@ -273,7 +273,7 @@ pub(super) fn confirm_delete(
                                     error,
                                     ErrorContext::General,
                                 );
-                                window.push_notification(Notification::error(message), cx);
+                                window.push_notification(toast::error(message), cx);
                             }
                             if let Err(error) = view.update(cx, |view, cx| {
                                 view.set_deleting(None, cx);

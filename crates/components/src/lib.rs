@@ -10,6 +10,7 @@ mod kit;
 mod motion;
 mod qr;
 mod sidebar;
+pub mod toast;
 mod tooltip;
 
 pub use busy::{BusyHold, MIN_BUSY_VISIBLE};

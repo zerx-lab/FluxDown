@@ -9,6 +9,7 @@ use std::{collections::BTreeSet, ops::Range, rc::Rc, time::Instant};
 use fluxdown_protocol::{
     BtFilePriorityDto, BtFilesDto, RenameBtFileParams, RpcErrorData, SetTaskFilePrioritiesParams,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, DialogIntent, dialog_footer, dialog_title, form, form_field, tabular_numbers,
     tooltip_view,
@@ -24,7 +25,6 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     v_flex,
 };
 
@@ -275,7 +275,7 @@ impl TaskDetailView {
 
     fn bt_files_push_error(&self, error: &RpcErrorData, window: &mut Window, cx: &mut App) {
         let text = error_text(self.translator.read(cx), error);
-        window.push_notification(Notification::error(text), cx);
+        window.push_notification(toast::error(text), cx);
     }
 
     /// 把 `targets` 设为 `level`：只发有变化的条目；会导致没有文件可下载时拦下并提示。
@@ -298,7 +298,7 @@ impl TaskDetailView {
         }
         if leaves_nothing_to_download(&data.files, &changes) {
             let text = self.t(cx, "btFilesKeepOne");
-            window.push_notification(Notification::warning(text), cx);
+            window.push_notification(toast::warning(text), cx);
             return;
         }
         apply_changes(&mut data.files, &changes);

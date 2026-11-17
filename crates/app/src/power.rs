@@ -10,10 +10,10 @@ use std::time::Duration;
 use fluxdown_protocol::{
     AgentEvent, PowerAction, PowerArmParams, PowerStatusDto, ServiceEvent, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_downloads::{SharedShutdownStatus, ShutdownPort, ShutdownRequest, ShutdownStatus};
 use gpui::{App, Global};
 use gpui_component::WindowExt as _;
-use gpui_component::notification::Notification;
 use serde_json::Value;
 
 use crate::app::Desktop;
@@ -76,7 +76,7 @@ pub fn install(cx: &mut App) {
                         .text("localServiceActionFailed")
                         .to_owned();
                     if let Err(error) = handle.update(cx, |_, window, cx| {
-                        window.push_notification(Notification::error(message), cx);
+                        window.push_notification(toast::error(message), cx);
                     }) {
                         log::debug!("power failure notification window released: {error:#}");
                     }
@@ -172,7 +172,7 @@ fn show_countdown(cx: &mut App, action: PowerAction) {
     let message = translator.text(notice_key).to_owned();
     let cancel_label = translator.text(cancel_key).to_owned();
     if let Err(error) = handle.update(cx, |_, window, cx| {
-        let note = Notification::warning(message)
+        let note = toast::warning(message)
             .id::<ShutdownNote>()
             .autohide(false)
             .action(move |_, _, _| {

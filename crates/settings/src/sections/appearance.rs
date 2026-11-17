@@ -4,6 +4,7 @@
 //! 视图（含未回执的本地编辑），经 `fluxdown_ui_theme::apply_appearance_preferences` 与语言切换
 //! 统一投影。直接改内存状态会在存储只读（未连接）时与偏好脱节，并被下一次快照回弹。
 
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::{
     AccentScheme, AppearancePreferences, BuiltinThemeId, COLOR_SCHEME_KEY, CUSTOM_COLOR_KEY,
@@ -279,7 +280,7 @@ fn delete_custom_theme(
 ) {
     if !store.update(cx, |store, cx| delete_theme(id, store, cx)) {
         window.push_notification(
-            Notification::error(translator.text("themeDeleteError").to_owned()),
+            toast::error(translator.text("themeDeleteError").to_owned()),
             cx,
         );
         return;
@@ -607,21 +608,21 @@ fn import_report(
 
     let mut notifications = Vec::new();
     if imported > 0 {
-        notifications.push(Notification::success(format!(
+        notifications.push(toast::success(format!(
             "{} ({imported})",
             translator.text("themeImportSuccess")
         )));
     }
     if !adjusted.is_empty() {
         notifications.push(
-            Notification::warning(adjusted.join("\n"))
+            toast::warning(adjusted.join("\n"))
                 .title(translator.text("themeImportDiagnosticsTitle").to_owned())
                 .autohide(false),
         );
     }
     if !failed.is_empty() {
         notifications.push(
-            Notification::error(failed.join("\n"))
+            toast::error(failed.join("\n"))
                 .title(translator.text("themeImportError").to_owned())
                 .autohide(false),
         );
@@ -648,9 +649,9 @@ fn export_theme(mode: ExportMode, translator: Translator, window: &mut Window, c
 
         let Ok(()) = window_handle.update(cx, move |_, window, cx| {
             let notification = match result {
-                Ok(()) => Notification::success(translator.text("themeExportSuccess").to_owned()),
+                Ok(()) => toast::success(translator.text("themeExportSuccess").to_owned()),
                 Err(error) => {
-                    Notification::error(format!("{}: {error}", translator.text("themeExportError")))
+                    toast::error(format!("{}: {error}", translator.text("themeExportError")))
                 }
             };
             window.push_notification(notification, cx);

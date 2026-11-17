@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use fluxdown_protocol::PowerLowSpeedCondition;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, DialogIntent, dialog_footer, dialog_title, field_hint, form, form_field,
 };
@@ -12,7 +13,6 @@ use gpui::{App, AppContext as _, ParentElement as _, Styled as _, Window};
 use gpui_component::{
     WindowExt as _,
     input::{Input, InputState},
-    notification::Notification,
 };
 
 pub(super) type LowSpeedConfirm = Rc<dyn Fn(PowerLowSpeedCondition, &mut App)>;
@@ -106,7 +106,7 @@ pub(super) fn open(
                     ok_kbps.read(cx).value().as_ref(),
                     ok_minutes.read(cx).value().as_ref(),
                 ) else {
-                    window.push_notification(Notification::error(invalid.clone()), cx);
+                    window.push_notification(toast::error(invalid.clone()), cx);
                     return false;
                 };
                 confirm(condition, cx);

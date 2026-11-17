@@ -14,6 +14,7 @@ use std::rc::Rc;
 use fluxdown_protocol::{
     APP_VERSION, PROTOCOL_VERSION, UpdateFailure, UpdatePhase, UpdateStatusDto, update_prompt,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{FluxIcon, tabular_numbers};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -27,7 +28,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    notification::Notification,
     spinner::Spinner,
     v_flex,
 };
@@ -451,7 +451,7 @@ pub(crate) fn copy_diagnostics(
     let text = diagnostic_text(store.read(cx).update_status(), translator.locale());
     cx.write_to_clipboard(ClipboardItem::new_string(text));
     let copied = translator.text("diagnosticInfoCopied").to_owned();
-    window.push_notification(Notification::success(copied), cx);
+    window.push_notification(toast::success(copied), cx);
 }
 
 impl Render for VersionButton {

@@ -47,6 +47,7 @@ use crate::{
         run_submission,
     },
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{ControlExt as _, FluxIcon, SidebarChange, SidebarState};
 use fluxdown_ui_i18n::Translator;
 use gpui::{
@@ -865,9 +866,9 @@ impl DownloadView {
         // 单任务删除沿用既有的静默路径；多任务才弹成功 / 取消提示。
         (task_ids.len() > 1).then(|| {
             if report.cancelled() {
-                Notification::info(notice.message)
+                toast::info(notice.message)
             } else {
-                Notification::success(notice.message)
+                toast::success(notice.message)
             }
         })
     }
@@ -1866,7 +1867,7 @@ impl DownloadView {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(url));
-        window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
+        window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
     }
 
     pub(crate) fn group_delete(&mut self, group_id: String, cx: &mut Context<Self>) {
@@ -1970,7 +1971,7 @@ impl DownloadView {
             self.open_new_download_with(urls, window, cx);
         }
         if unsupported {
-            window.push_notification(self.strings.unsupported_drop_hint.clone(), cx);
+            window.push_notification(toast::info(self.strings.unsupported_drop_hint.clone()), cx);
         }
     }
 
@@ -2139,7 +2140,7 @@ impl DownloadView {
             .filter(RowKey::is_local)
             .collect();
         if selected.len() > MAX_TASK_WINDOWS_PER_ACTION {
-            window.push_notification(self.strings.too_many_windows_hint.clone(), cx);
+            window.push_notification(toast::info(self.strings.too_many_windows_hint.clone()), cx);
         }
         for key in selected.into_iter().take(MAX_TASK_WINDOWS_PER_ACTION) {
             opener(key.task_id().to_owned(), window, cx);
@@ -2164,7 +2165,7 @@ impl DownloadView {
             .collect();
         if !urls.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(urls.join("\n")));
-            window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
+            window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
         }
     }
 
@@ -2244,7 +2245,7 @@ impl DownloadView {
             _ => None,
         };
         if let Some(notice) = ended_notice {
-            window.push_notification(Notification::warning(notice), cx);
+            window.push_notification(toast::warning(notice), cx);
             return;
         }
         self.execute_commands(

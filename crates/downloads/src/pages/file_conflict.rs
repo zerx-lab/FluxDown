@@ -21,6 +21,7 @@ use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, ApplicationErrorCode, DaemonEvent, FileExistsAction,
     SelectionOutcome, SelectionResolutionDto, ServiceEvent,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{BusyExt as _, ControlExt as _, field_hint, tabular_numbers};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
@@ -32,9 +33,7 @@ use gpui::{
 use gpui_component::{
     Disableable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
-    notification::Notification,
-    v_flex,
+    h_flex, v_flex,
 };
 
 use crate::{
@@ -293,7 +292,7 @@ impl FileConflictView {
             }
         }
         if failed {
-            window.push_notification(Notification::error(self.strings.action_failed.clone()), cx);
+            window.push_notification(toast::error(self.strings.action_failed.clone()), cx);
         }
         self.after_change(cx);
     }

@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, nav_icon_color, segmented_tabs, sidebar_navigation_button,
 };
@@ -18,7 +19,6 @@ use gpui::{
 use gpui_component::{
     Icon, WindowExt as _,
     input::{Input, InputState},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -139,12 +139,12 @@ impl SettingsView {
                             | SettingsErrorKind::GatewayRestartFailed
                     ) =>
                 {
-                    Some(Notification::error(
+                    Some(toast::error(
                         translator.text(error.kind.i18n_key()).to_owned(),
                     ))
                 }
                 None if snapshot.last_notice() == Some("apiServiceRestarted") => {
-                    Some(Notification::success(translator.text_with(
+                    Some(toast::success(translator.text_with(
                         "apiServiceRestarted",
                         &[("port", &snapshot.gateway().port.to_string())],
                     )))

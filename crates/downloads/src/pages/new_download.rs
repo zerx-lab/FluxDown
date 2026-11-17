@@ -10,6 +10,7 @@ mod preview;
 mod probe;
 mod url_rule;
 
+use fluxdown_ui_components::toast;
 use hints::HintAutofill;
 use probe::LinkProbe;
 
@@ -75,7 +76,6 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    notification::Notification,
     scroll::ScrollableElement as _,
     switch::Switch,
     v_flex,
@@ -1359,7 +1359,7 @@ impl NewDownloadView {
                 }
                 if imported.is_empty() {
                     window.push_notification(
-                        Notification::warning(this.strings.import_txt_none.clone()),
+                        toast::warning(this.strings.import_txt_none.clone()),
                         cx,
                     );
                     return;
@@ -1369,10 +1369,8 @@ impl NewDownloadView {
                 this.urls
                     .update(cx, |input, cx| input.set_value(merged, window, cx));
                 this.refresh_entries(window, cx);
-                window.push_notification(
-                    Notification::success(this.strings.format_import_found(count)),
-                    cx,
-                );
+                window
+                    .push_notification(toast::success(this.strings.format_import_found(count)), cx);
             }) else {
                 // 表单或窗口已释放，不再回写异步结果。
                 return;

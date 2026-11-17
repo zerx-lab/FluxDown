@@ -29,6 +29,7 @@ use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, DaemonEvent, ServiceEvent, TaskDto, TaskRuntimeDto,
     TaskSpeedHistoryDto, TaskSpeedHistoryQuery, WsServerMsg,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ControlExt as _, FluxIcon, IconControlExt as _, form, form_field, segmented_tabs,
     tabular_numbers,
@@ -48,7 +49,6 @@ use gpui_component::{
     h_flex,
     input::{InputState, NumberInput},
     menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
     v_flex,
 };
 
@@ -921,7 +921,7 @@ impl TaskDetailView {
         };
         drop(row);
         cx.write_to_clipboard(ClipboardItem::new_string(url));
-        window.push_notification(Notification::success(self.strings.url_copied.clone()), cx);
+        window.push_notification(toast::success(self.strings.url_copied.clone()), cx);
     }
 
     /// 详情「常规」页「更换链接 / 修改线程数」按钮的编辑上下文（与右键菜单同一对话框）。

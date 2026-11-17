@@ -7,8 +7,9 @@
 
 use fluxdown_protocol::ApplicationErrorCode;
 use fluxdown_protocol::local_service::AgentStartupFailureKind;
+use fluxdown_ui_components::toast;
 use gpui::{AnyWindowHandle, App, Global};
-use gpui_component::{WindowExt as _, notification::Notification};
+use gpui_component::WindowExt as _;
 
 use crate::{
     app::Desktop, service_failure::ServiceFailure, session::SessionSignal, windows::WindowRegistry,
@@ -138,7 +139,7 @@ fn show(notice: Notice, cx: &mut App) {
         .update(cx, move |_, window, cx| {
             window.remove_notification::<ServiceNoticeKind>(cx);
             window.push_notification(
-                Notification::error(message)
+                toast::error(message)
                     .title(title)
                     .autohide(false)
                     .id1::<ServiceNoticeKind>(serial),

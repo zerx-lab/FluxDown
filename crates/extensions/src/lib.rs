@@ -12,13 +12,14 @@ use fluxdown_protocol::{
     AgentEvent, AgentSnapshot, ApplicationErrorCode, ErrorReason, RpcErrorData, ServiceEvent,
 };
 use fluxdown_ui_components::segmented_tabs;
+use fluxdown_ui_components::toast;
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement,
     Render, SharedString, Styled, Window, div, prelude::FluentBuilder as _,
 };
-use gpui_component::{WindowExt as _, h_flex, notification::Notification, v_flex};
+use gpui_component::{WindowExt as _, h_flex, v_flex};
 
 use components::plugin_live::LivePlugins;
 use controller::{COMPONENT_KINDS, component_slot};
@@ -219,11 +220,11 @@ impl ExtensionsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.push_notification(Notification::success(message), cx);
+        window.push_notification(toast::success(message), cx);
     }
 
     pub(crate) fn toast_error(&self, message: String, window: &mut Window, cx: &mut Context<Self>) {
-        window.push_notification(Notification::error(message).autohide(false), cx);
+        window.push_notification(toast::error(message).autohide(false), cx);
     }
 }
 

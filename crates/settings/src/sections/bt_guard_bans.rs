@@ -11,6 +11,7 @@ use fluxdown_protocol::{
     BT_GUARD_LAYERS, BtGuardEntriesAddParams, BtGuardEntriesListDto, BtGuardEntriesRemoveDto,
     BtGuardEntryDto, BtGuardExportDto, RpcErrorData, method,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, CheckState, ControlExt as _, FluxIcon, card, check_mark, loading_button,
     tabular_numbers, tooltip_view,
@@ -368,7 +369,7 @@ impl BansPanel {
                             .map_or(0, |dto| dto.removed);
                         this.selected.clear();
                         this.notify(
-                            Notification::success(
+                            toast::success(
                                 translator
                                     .text_with("btGuardReleased", &[("n", &removed.to_string())]),
                             ),
@@ -380,7 +381,7 @@ impl BansPanel {
                     }
                     Err(error) => {
                         this.notify(
-                            Notification::error(format!(
+                            toast::error(format!(
                                 "{}: {}",
                                 translator.text("btGuardReleaseFailed"),
                                 rpc_error_text(&translator, &error)
@@ -414,7 +415,7 @@ impl BansPanel {
             Err(_) => {
                 let translator = self.translator.clone();
                 self.notify(
-                    Notification::error(translator.text("btGuardAddFailed").to_owned()),
+                    toast::error(translator.text("btGuardAddFailed").to_owned()),
                     window,
                     cx,
                 );
@@ -435,7 +436,7 @@ impl BansPanel {
                 match result {
                     Ok(_) => {
                         this.notify(
-                            Notification::success(
+                            toast::success(
                                 translator.text_with("btGuardAllowed", &[("cidr", &cidr)]),
                             ),
                             window,
@@ -446,7 +447,7 @@ impl BansPanel {
                     }
                     Err(error) => {
                         this.notify(
-                            Notification::error(format!(
+                            toast::error(format!(
                                 "{}: {}",
                                 translator.text("btGuardAddFailed"),
                                 rpc_error_text(&translator, &error)
@@ -505,10 +506,10 @@ impl BansPanel {
                 this.exporting = false;
                 let translator = this.translator.clone();
                 let notification = match written {
-                    Some(lines) => Notification::success(
+                    Some(lines) => toast::success(
                         translator.text_with("btGuardExportDone", &[("n", &lines.to_string())]),
                     ),
-                    None => Notification::error(translator.text("btGuardExportFailed").to_owned()),
+                    None => toast::error(translator.text("btGuardExportFailed").to_owned()),
                 };
                 this.notify(notification, window, cx);
                 cx.notify();

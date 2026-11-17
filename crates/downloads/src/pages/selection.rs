@@ -15,6 +15,7 @@ use fluxdown_protocol::{
     BtFileDto, HlsQualityOptionDto, PluginCandidateDto, ResolveVariantOptionDto, SelectionKind,
     SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
 };
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     BusyExt as _, CheckState, ControlExt as _, FluxIcon, check_mark, check_row, field_hint,
     form_field, input_with_action, tabular_numbers,
@@ -31,7 +32,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -296,10 +296,7 @@ impl SelectionView {
             let Ok(()) = this.update_in(cx, |this, window, cx| {
                 this.submitting = false;
                 if result.is_err() {
-                    window.push_notification(
-                        Notification::error(this.strings.action_failed.clone()),
-                        cx,
-                    );
+                    window.push_notification(toast::error(this.strings.action_failed.clone()), cx);
                 }
                 cx.notify();
             }) else {
@@ -356,7 +353,7 @@ impl SelectionView {
                 }
                 if failed {
                     window.push_notification(
-                        Notification::error(this.strings.file_picker_error.clone()),
+                        toast::error(this.strings.file_picker_error.clone()),
                         cx,
                     );
                 }

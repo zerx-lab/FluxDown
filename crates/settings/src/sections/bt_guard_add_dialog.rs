@@ -4,6 +4,7 @@
 //! 其错误原样回显在表单底部。
 
 use fluxdown_protocol::{BtGuardEntriesAddParams, RpcErrorData, method};
+use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
     ButtonVariant, ControlExt as _, choice_chip, dialog_scroll_body, dialog_title, field_error,
     form, form_field, loading_button,
@@ -19,7 +20,6 @@ use gpui_component::{
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
 };
 use serde_json::Value;
 
@@ -142,7 +142,7 @@ impl AddEntryDialog {
                             .update(cx, |store, cx| store.bump_bt_guard_revision(cx));
                         window.close_dialog(cx);
                         window.push_notification(
-                            Notification::success(
+                            toast::success(
                                 this.translator
                                     .text_with("btGuardAdded", &[("cidr", &cidr)]),
                             ),
