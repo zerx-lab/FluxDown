@@ -116,14 +116,42 @@ function pagePathKey(url: string | undefined): string {
   }
 }
 
-function isFragmentUrl(url: string): boolean {
+/**
+ * 伪装分片的 URL 扩展名：图片 / 前端静态资源。防盗链站点常把 HLS 分片命名为 `video0.jpeg`、
+ * `seg-1.png`、`1.js` 等，响应却是音视频（`video/mp2t`）。动态脚本扩展名（php / asp…）不在内：
+ * 它们常是整段视频的下载接口。
+ */
+const DISGUISED_FRAGMENT_EXTS: ReadonlySet<string> = new Set([
+  "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "avif", "svg",
+  "js", "css", "html", "htm", "txt", "woff", "woff2", "ttf", "otf",
+]);
+
+/** 只用于媒体分片的 MIME（整段 .ts 文件另由 `isCompleteFragmentResource` 按大小 / 文件名放行）。 */
+const FRAGMENT_MIMES: ReadonlySet<string> = new Set(["video/mp2t", "video/iso.segment", "audio/iso.segment"]);
+
+/**
+ * 是否为流媒体分片：`.m4s` / `.ts`、分片专用 MIME，或扩展名伪装成图片 / 静态资源而响应是
+ * 音视频（清单 MIME 除外）。分片不是独立视频，归属清单或汇总为不可下载项。
+ */
+export function isMediaFragment(url: string, mimeType?: string): boolean {
   const ext = extractExtension(url);
-  return ext === "m4s" || ext === "ts";
+  if (ext === "m4s" || ext === "ts") return true;
+  const mime = mimeType?.toLowerCase().split(";", 1)[0].trim() ?? "";
+  if (FRAGMENT_MIMES.has(mime)) return true;
+  return (
+    (mime.startsWith("video/") || mime.startsWith("audio/")) &&
+    !mime.endsWith("mpegurl") &&
+    DISGUISED_FRAGMENT_EXTS.has(ext)
+  );
+}
+
+function isFragmentResource(resource: DetectedResource): boolean {
+  return isMediaFragment(resource.url, resource.mimeType);
 }
 
 /** URL / MIME 是否为播放清单（HLS / DASH）；分片不算。 */
 export function isManifestUrl(url: string, mimeType?: string): boolean {
-  if (isStreamingUrl(url) && !isFragmentUrl(url)) return true;
+  if (isStreamingUrl(url) && !isMediaFragment(url, mimeType)) return true;
   const mime = mimeType?.toLowerCase().split(";", 1)[0].trim() ?? "";
   // HLS 的 MIME 写法很多（application/vnd.apple.mpegurl、audio/mpegurl、audio/x-mpegurl…）
   return mime.endsWith("mpegurl") ||
@@ -132,7 +160,7 @@ export function isManifestUrl(url: string, mimeType?: string): boolean {
 }
 
 function isCompleteFragmentResource(resource: DetectedResource): boolean {
-  if (!isFragmentUrl(resource.url)) return false;
+  if (!isFragmentResource(resource)) return false;
   // tab-state 入库时会用 URL 基名补全 filename，所以 filename 非空并不代表服务器
   // 给了 Content-Disposition 文件名；只有与 URL 基名不同的名字才算显式信号。
   // 无显式名字的媒体，超大响应也不是普通 MSE 分片。
@@ -145,7 +173,7 @@ function isCompleteFragmentResource(resource: DetectedResource): boolean {
 }
 
 function isCompleteVideoResource(resource: DetectedResource): boolean {
-  if (isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource)) return false;
+  if (isFragmentResource(resource) && !isCompleteFragmentResource(resource)) return false;
   if (isManifestUrl(resource.url, resource.mimeType)) return false;
   if (resource.type === "audio") return false;
   if (resource.type === "video") return true;
@@ -561,7 +589,7 @@ function relatedManifestResources(
         const target = originAndPath(resource.url);
         if (target && segmentPatterns.some((pattern) => pattern.test(target))) return true;
       }
-      if (!isFragmentUrl(resource.url) || isCompleteFragmentResource(resource)) return false;
+      if (!isFragmentResource(resource) || isCompleteFragmentResource(resource)) return false;
 
       const resourceUrls = [resource.url, resource.finalUrl].filter(
         (url): url is string => !!url,
@@ -727,7 +755,7 @@ export function buildMediaCandidates(
           ? Array.from(new Set(related.map((resource) => resource.id)))
           : [],
         fragmentCount: isFirstSurvivingPeriod
-          ? related.filter((resource) => isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource)).length
+          ? related.filter((resource) => isFragmentResource(resource) && !isCompleteFragmentResource(resource)).length
           : 0,
         downloadable: true,
         ...(members.every((member) => member.carried) ? { provisional: true } : {}),
@@ -776,7 +804,7 @@ export function buildMediaCandidates(
       variants: [],
       rawResourceIds: Array.from(new Set(related.map((resource) => resource.id))),
       fragmentCount: related.filter((resource) =>
-        isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource),
+        isFragmentResource(resource) && !isCompleteFragmentResource(resource),
       ).length,
       downloadable: false,
     });
@@ -892,7 +920,7 @@ export function buildMediaCandidates(
   // audio/m4s/ts requests do not reappear as ordinary resource rows.
   const orphanGroups = new Map<string, DetectedResource[]>();
   for (const resource of mediaResources) {
-    if (usedResourceIds.has(resource.id) || !isFragmentUrl(resource.url) || isCompleteFragmentResource(resource)) continue;
+    if (usedResourceIds.has(resource.id) || !isFragmentResource(resource) || isCompleteFragmentResource(resource)) continue;
     const key = fragmentFamilyKey(resource.url);
     const group = orphanGroups.get(key) || [];
     group.push(resource);
