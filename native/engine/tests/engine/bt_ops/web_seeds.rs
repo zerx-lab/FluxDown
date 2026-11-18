@@ -107,10 +107,18 @@ async fn adding_a_direct_link_supplies_a_running_torrent_without_peers() {
     ));
     let (base, server) = serve_ranges(&[("/download?id=7", BODY)]).await;
     let url = format!("{base}/download?id=7");
-    leech.engine.manager.add_bt_web_seed(&id, &url).await.unwrap();
+    leech
+        .engine
+        .manager
+        .add_bt_web_seed(&id, &url)
+        .await
+        .unwrap();
     let task = leech.wait_done(&id).await;
     assert_eq!(task.status, 3, "{:?}", task.error_message);
-    assert_eq!(leech.landed(&task, "payload.bin").await.as_deref(), Some(BODY));
+    assert_eq!(
+        leech.landed(&task, "payload.bin").await.as_deref(),
+        Some(BODY)
+    );
     server.abort();
     leech.shutdown().await;
 }
@@ -124,7 +132,9 @@ async fn a_paused_torrents_mirror_survives_restart_and_uses_the_published_paths(
     let input = leech.work.join("fixture/Pack");
     tokio::fs::create_dir_all(input.join("sub")).await.unwrap();
     tokio::fs::write(input.join("a.bin"), FIRST).await.unwrap();
-    tokio::fs::write(input.join("sub/b.bin"), SECOND).await.unwrap();
+    tokio::fs::write(input.join("sub/b.bin"), SECOND)
+        .await
+        .unwrap();
     let id = add_torrent(&mut leech, &input, true).await;
     let (base, server) =
         serve_ranges(&[("/pub/Pack/a.bin", FIRST), ("/pub/Pack/sub/b.bin", SECOND)]).await;
@@ -146,7 +156,10 @@ async fn a_paused_torrents_mirror_survives_restart_and_uses_the_published_paths(
     let task = leech.wait_done(&id).await;
     assert_eq!(task.status, 3, "{:?}", task.error_message);
     assert_eq!(leech.landed(&task, "a.bin").await.as_deref(), Some(FIRST));
-    assert_eq!(leech.landed(&task, "sub/b.bin").await.as_deref(), Some(SECOND));
+    assert_eq!(
+        leech.landed(&task, "sub/b.bin").await.as_deref(),
+        Some(SECOND)
+    );
     server.abort();
     leech.shutdown().await;
 }

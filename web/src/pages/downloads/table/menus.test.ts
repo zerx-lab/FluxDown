@@ -134,7 +134,7 @@ describe('buildTaskMenu BT operations', () => {
   })
 
   test('multi-select of local torrents hides the single-task web seed action', () => {
-    expect(keys([bt('a'), bt('b')])).not.toContain('btAddWebSeed')
+    expect(keys([bt('a'), bt('b')]).includes('btAddWebSeed')).toBe(false)
   })
 
   test('move is offered for any single local task, never for remote or multi-select', () => {
