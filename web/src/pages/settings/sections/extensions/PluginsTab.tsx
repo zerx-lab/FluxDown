@@ -245,6 +245,9 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
       : zipPhase?.kind === 'installing'
         ? t('marketInstallingButton')
         : t('pluginInstallZipButton')
+  const conflicts = plugins.flatMap((plugin) =>
+    (plugin.resolverUrlConflicts ?? []).map((conflict) => ({ identity: plugin.identity, ...conflict })),
+  )
 
   return (
     <div className="flex w-full flex-col gap-4">
@@ -305,6 +308,21 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
               }
             />
           </FormField>
+        </Card>
+      ) : null}
+
+      {conflicts.length > 0 ? (
+        <Card className="flex flex-col gap-2 p-3">
+          <div><Badge tone="warning">{t('pluginResolverUrlConflictsTitle')}</Badge></div>
+          <p className="text-sm" role="status">{t('pluginResolverUrlConflictsHint')}</p>
+          <ul className="flex flex-col gap-2 text-sm [overflow-wrap:anywhere]">
+            {conflicts.map(({ identity, pattern, otherIdentity, otherPattern }) => (
+              <li key={JSON.stringify([identity, pattern, otherIdentity, otherPattern])}>
+                <div>{identity}: <code>{pattern}</code></div>
+                <div>{otherIdentity}: <code>{otherPattern}</code></div>
+              </li>
+            ))}
+          </ul>
         </Card>
       ) : null}
 

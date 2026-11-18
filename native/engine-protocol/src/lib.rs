@@ -612,10 +612,20 @@ pub fn setting_field_to_dto(
     }
 }
 
-/// 将已安装插件投影转换为 wire DTO。
+/// 将同一份插件快照转换为列表，并标出同站点 URL 模式重叠。
 #[cfg(feature = "plugins")]
 #[must_use]
-pub fn plugin_info_to_dto(
+pub fn plugin_list_to_dtos(
+    plugins: Vec<fluxdown_engine::plugin::PluginInfo>,
+) -> Vec<fluxdown_protocol::daemon::PluginDto> {
+    plugin_conflicts::annotate(plugins.into_iter().map(plugin_info_to_dto).collect())
+}
+
+#[cfg(feature = "plugins")]
+mod plugin_conflicts;
+
+#[cfg(feature = "plugins")]
+fn plugin_info_to_dto(
     plugin: fluxdown_engine::plugin::PluginInfo,
 ) -> fluxdown_protocol::daemon::PluginDto {
     fluxdown_protocol::daemon::PluginDto {
@@ -637,6 +647,7 @@ pub fn plugin_info_to_dto(
         auth_supported: plugin.auth_supported,
         subscription_provider_ids: plugin.subscription_provider_ids,
         resolver_urls: plugin.resolver_urls,
+        resolver_url_conflicts: Vec::new(),
         load_status: plugin.load_status,
         load_error: plugin.load_error,
         contributions: plugin_contributions_to_dto(&plugin.contributions, plugin.view_icons),

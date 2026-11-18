@@ -190,6 +190,7 @@ export interface PluginDto {
   subscriptionProviderIds: string[];
   /** manifest resolvers[0].match.urls（glob，供扩展判断页面是否可由插件解析）。 */
   resolverUrls: string[];
+  resolverUrlConflicts?: { pattern: string; otherIdentity: string; otherPattern: string }[];
   /** `Loaded` / `Failed`；与 `enabled` 独立。 */
   loadStatus: string;
   /** 加载失败原因；成功为空。 */

@@ -2284,13 +2284,9 @@ impl DaemonService {
     }
 
     async fn list_plugins(&self) -> Result<Vec<fluxdown_protocol::PluginDto>, RpcErrorObject> {
-        Ok(self
-            .plugin_manager()?
-            .list()
-            .await
-            .into_iter()
-            .map(fluxdown_engine_protocol::plugin_info_to_dto)
-            .collect())
+        Ok(fluxdown_engine_protocol::plugin_list_to_dtos(
+            self.plugin_manager()?.list().await,
+        ))
     }
 
     async fn publish_plugins(&self) -> Result<(), RpcErrorObject> {

@@ -177,6 +177,25 @@ private fun ExtensionsContent() {
                     )
                 }
             }
+            if (tab == ExtensionsModel.Tab.Plugins && hasPlugins && plugins.any { it.resolverUrlConflicts.isNotEmpty() }) {
+                flowItem(index++, gate, "resolverUrlConflicts") {
+                    GlassSection(title = str(R.string.pluginResolverUrlConflictsTitle)) {
+                        row {
+                            FluxBanner(str(R.string.pluginResolverUrlConflictsHint), kind = FluxBannerKind.Warn)
+                        }
+                        for (plugin in plugins) {
+                            for (conflict in plugin.resolverUrlConflicts) {
+                                row {
+                                    Column {
+                                        FluxText("${plugin.identity}: ${conflict.pattern}")
+                                        FluxText("${conflict.otherIdentity}: ${conflict.otherPattern}")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if (tab == ExtensionsModel.Tab.Plugins && hasPlugins) {
                 flowItem(index++, gate, "plugins") {
                     SettingRowBox(ctx, "extensions.plugins", null) {

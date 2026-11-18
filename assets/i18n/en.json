@@ -1977,6 +1977,8 @@
   "settingsCatPlugins": "Plugins",
   "pluginsSectionTitle": "Installed Plugins",
   "pluginsEmpty": "No plugins installed yet",
+  "pluginResolverUrlConflictsTitle": "Resolver URL pattern conflicts",
+  "pluginResolverUrlConflictsHint": "These patterns overlap on the same site or are duplicates. If two plugins overlap, keep only the one you want enabled. Not all runtime overlaps can be detected here.",
   "pluginCommonLoading": "Loading…",
   "pluginInstallZipButton": "Install .fxplug / .zip plugin",
   "pluginInstallZipFailed": "Plugin installation failed: {error}",

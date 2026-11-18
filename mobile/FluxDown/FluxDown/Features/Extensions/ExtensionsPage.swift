@@ -118,6 +118,22 @@ private struct ExtensionsContent: View {
 
     @ViewBuilder
     private func pluginSections(_ list: [PluginDto], readOnly: Bool) -> some View {
+        if list.contains(where: { !$0.resolverUrlConflicts.isEmpty }) {
+            Section {
+                Text(L("pluginResolverUrlConflictsHint"))
+                    .foregroundStyle(.secondary)
+                ForEach(list) { plugin in
+                    ForEach(plugin.resolverUrlConflicts, id: \.self) { conflict in
+                        VStack(alignment: .leading) {
+                            Text(verbatim: "\(plugin.identity): \(conflict.pattern)")
+                            Text(verbatim: "\(conflict.otherIdentity): \(conflict.otherPattern)")
+                        }
+                    }
+                }
+            } header: {
+                Label(L("pluginResolverUrlConflictsTitle"), systemImage: "exclamationmark.triangle")
+            }
+        }
         Section {
             if list.isEmpty {
                 Label(L("pluginsEmpty"), systemImage: "puzzlepiece.extension")

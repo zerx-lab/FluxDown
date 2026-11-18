@@ -252,6 +252,42 @@ impl ExtensionsView {
                     ),
             )
             .children(self.render_install_area(frame, cx))
+            .when(
+                plugins
+                    .iter()
+                    .any(|plugin| !plugin.resolver_url_conflicts.is_empty()),
+                |page| {
+                    page.child(
+                        card(cx)
+                            .w_full()
+                            .child(
+                                v_flex()
+                                    .gap(tokens.spacing.sm)
+                                    .child(ui::tone_pill(
+                                        translator.text("pluginResolverUrlConflictsTitle").to_owned(),
+                                        frame.extended.colors.warning,
+                                        frame,
+                                    ))
+                                    .child(
+                                        translator.text("pluginResolverUrlConflictsHint").to_owned(),
+                                    )
+                                    .children(plugins.iter().flat_map(|plugin| {
+                                        plugin.resolver_url_conflicts.iter().map(move |conflict| {
+                                            v_flex()
+                                                .child(format!(
+                                                    "{}: {}",
+                                                    plugin.identity, conflict.pattern
+                                                ))
+                                                .child(format!(
+                                                    "{}: {}",
+                                                    conflict.other_identity, conflict.other_pattern
+                                                ))
+                                        })
+                                    })),
+                            ),
+                    )
+                },
+            )
             .child(if installed.is_empty() {
                 ui::empty_state(
                     FluxIcon::Package,
