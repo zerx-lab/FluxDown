@@ -18,22 +18,21 @@ export function DownloadsTitleBar() {
   const { sidebarSelection, setSidebarOpen } = useDownloads()
   // 「视图」弹层当前分页（关闭再打开保持，与 GPUI 相同）。
   const [page, setPage] = useState<ViewMenuPage>('columns')
-  const newDownloadButton = (
-    <Tooltip content={t('newDownload')}>
-      <Button
-        variant={mobile ? 'ghost' : 'primary'}
-        iconOnly={mobile}
-        icon={Plus}
-        aria-label={t(mobile ? 'newDownload' : 'downloadTask')}
-        onClick={() =>
-          // GPUI `build_new_download_context` 优先取侧栏选中的队列。
-          openNewDownload(sidebarSelection.kind === 'queue' ? { queueId: sidebarSelection.queueId } : undefined)
-        }
-      >
-        {mobile ? null : t('downloadTask')}
-      </Button>
-    </Tooltip>
+  const button = (
+    <Button
+      variant={mobile ? 'ghost' : 'primary'}
+      iconOnly={mobile}
+      icon={Plus}
+      aria-label={t('newTask')}
+      onClick={() =>
+        // GPUI `build_new_download_context` 优先取侧栏选中的队列。
+        openNewDownload(sidebarSelection.kind === 'queue' ? { queueId: sidebarSelection.queueId } : undefined)
+      }
+    >
+      {mobile ? null : t('newTask')}
+    </Button>
   )
+  const newDownloadButton = mobile ? <Tooltip content={t('newTask')}>{button}</Tooltip> : button
 
   return (
     <>

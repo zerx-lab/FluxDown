@@ -1,4 +1,4 @@
-//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「下载任务」主按钮，外观可在布局编辑模式下切换），
+//! 下载页的顶栏内容：页面插槽 [`DownloadTitleBar`]（「新建任务」主按钮，外观可在布局编辑模式下切换），
 //! 以及作为 chrome 布局条目摆放的搜索框 [`DownloadSearchBox`] 与「视图」选项菜单
 //! [`DownloadViewMenu`]（可在顶栏内移动、可隐藏，见 [`DownloadPageWidget`]）。
 //!
@@ -167,7 +167,7 @@ impl DownloadPageWidget {
     }
 }
 
-/// 下载页的顶栏插槽：「下载任务」主按钮，外观见 [`NewTaskButtonStyle`]。
+/// 下载页的顶栏插槽：「新建任务」主按钮，外观见 [`NewTaskButtonStyle`]。
 /// 布局编辑模式下点击按钮弹出外观菜单，而不是打开新建下载。
 pub struct DownloadTitleBar {
     view: WeakEntity<DownloadView>,
@@ -272,7 +272,7 @@ impl Render for DownloadTitleBar {
         // 顶栏主按钮比统一控件矮一档：主色填充时整块底色可见，与 40px 顶栏留出上下呼吸。
         let height = theme.density().control - tokens.spacing.xs;
         let radius = tokens.radius.md;
-        let label = self.text("downloadTask", cx);
+        let label = self.text("newTask", cx);
         let icon = Icon::new(FluxIcon::Plus).size(theme.extended().icon.md);
         let button = Button::new("download-create")
             .icon(icon)

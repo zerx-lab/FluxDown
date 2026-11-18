@@ -230,7 +230,7 @@ pub struct DownloadView {
     prefs_loaded: bool,
     /// 最近一次应用 / 写出的视图偏好持久化值：未变化的偏好回流不重载。
     applied_view_prefs: Option<serde_json::Value>,
-    /// 顶栏「下载任务」主按钮插槽（宿主取走后由它持有）。
+    /// 顶栏「新建任务」主按钮插槽（宿主取走后由它持有）。
     pub(crate) title_bar: Option<WeakEntity<DownloadTitleBar>>,
     /// 最近一次应用 / 写出的主按钮外观偏好持久化值：未变化的偏好回流不覆盖本地切换。
     pub(crate) applied_new_task_button: Option<serde_json::Value>,
@@ -529,7 +529,7 @@ impl DownloadView {
         ))
     }
 
-    /// 创建挂到 shell 统一顶栏的下载页插槽（「下载任务」主按钮）。
+    /// 创建挂到 shell 统一顶栏的下载页插槽（「新建任务」主按钮）。
     pub fn new_title_bar(&mut self, cx: &mut Context<Self>) -> Entity<DownloadTitleBar> {
         let view = cx.weak_entity();
         let translator = self.translator.clone();
