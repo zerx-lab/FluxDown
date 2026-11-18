@@ -5836,8 +5836,17 @@ async fn do_segment(
             }
         }
         let resp = match sent {
-            Ok(r) => r?,
+            Ok(Ok(r)) => r,
+            Ok(Err(error)) => {
+                if pending_provisional {
+                    spec.abandon_provisional_ua(&used, db, task_id).await;
+                }
+                return Err(error);
+            }
             Err(_) => {
+                if pending_provisional {
+                    spec.abandon_provisional_ua(&used, db, task_id).await;
+                }
                 return Err(DownloadError::Other(format!(
                     "segment {seg_idx} stalled: no response headers received within {}s",
                     header_timeout.as_secs()
@@ -5846,14 +5855,25 @@ async fn do_segment(
         };
         request_path.record_setup(sent_at.elapsed());
         if pending_provisional {
-            // 恢复不是凭据刷新。结算后再决定 refresh，并且用恢复后的 current，
-            // 不能拿已放弃的中性 Arc 去走「别的请求已经刷新过」短路。
-            let adopt_current = spec
-                .settle_provisional_ua(&used, resp.status(), db, task_id)
-                .await;
-            pending_provisional = false;
-            if adopt_current {
-                used = spec.current();
+            // 恢复不是凭据刷新。重发带回质询头时先提升再重发一次；否则结算后再
+            // 决定 refresh，并且用恢复后的 current，不能拿已放弃的中性 Arc 去走
+            // 「别的请求已经刷新过」短路。
+            match spec
+                .follow_provisional_retry(&used, &resp, db, task_id)
+                .await
+            {
+                crate::downloader::ProvisionalRetry::Promote(promoted) => {
+                    drop(resp);
+                    used = promoted;
+                    pending_provisional = false;
+                    continue;
+                }
+                crate::downloader::ProvisionalRetry::Settled(adopt_current) => {
+                    pending_provisional = false;
+                    if adopt_current {
+                        used = spec.current();
+                    }
+                }
             }
         }
         match spec.escape_bot_challenge(&used, &resp, db, task_id).await {
