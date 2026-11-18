@@ -2625,10 +2625,11 @@ impl Db {
     /// User-added BEP 19 sources, separate from the original torrent or magnet.
     #[cfg(feature = "bt")]
     pub(crate) async fn task_web_seeds(&self, task_id: &str) -> Result<Vec<String>, DbError> {
-        let json: Option<String> = sqlx::query_scalar("SELECT bt_web_seeds FROM tasks WHERE id = $1")
-            .bind(task_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let json: Option<String> =
+            sqlx::query_scalar("SELECT bt_web_seeds FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await?;
         json.map_or_else(
             || Ok(Vec::new()),
             |json| {
