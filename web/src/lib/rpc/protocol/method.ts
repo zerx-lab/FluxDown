@@ -47,6 +47,7 @@ export const METHOD = {
   DAEMON_TASK_SET_BT_LIMITS: 'daemon.task.setBtLimits',
   /** 超级做种开关（`SetTaskSuperSeedingParams`）。 */
   DAEMON_TASK_SET_SUPER_SEEDING: 'daemon.task.setSuperSeeding',
+  DAEMON_TASK_ADD_WEB_SEED: 'daemon.task.addWebSeed',
   /** 立即向 tracker 重新汇报（`TaskIdParams`）；任务未运行 → `taskStateConflict`。 */
   DAEMON_TASK_REANNOUNCE: 'daemon.task.reannounce',
   DAEMON_TASK_DELETE: 'daemon.task.delete',

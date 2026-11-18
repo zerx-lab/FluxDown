@@ -403,6 +403,9 @@ impl AgentDownloadsPort {
                 DownloadsCommand::SetSuperSeeding(params) => {
                     (method::DAEMON_TASK_SET_SUPER_SEEDING, serialize(params)?)
                 }
+                DownloadsCommand::AddWebSeed(params) => {
+                    (method::DAEMON_TASK_ADD_WEB_SEED, serialize(params)?)
+                }
                 DownloadsCommand::Reannounce { task_id } => {
                     (method::DAEMON_TASK_REANNOUNCE, json!({ "taskId": task_id }))
                 }

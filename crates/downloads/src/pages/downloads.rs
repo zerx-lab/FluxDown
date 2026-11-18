@@ -2763,6 +2763,7 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_force_recheck_selected))
             .on_action(cx.listener(Self::on_move_storage_selected))
             .on_action(cx.listener(Self::on_task_limits_selected))
+            .on_action(cx.listener(Self::on_add_web_seed_selected))
             .on_action(cx.listener(Self::on_toggle_super_seeding_selected))
             .on_action(cx.listener(Self::on_toggle_detail_panel))
             .on_drop(cx.listener(Self::on_paths_dropped))

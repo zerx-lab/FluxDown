@@ -123,6 +123,12 @@ export interface SetTaskSuperSeedingParams {
   enabled: boolean;
 }
 
+/** `daemon.task.addWebSeed` (BEP 19). */
+export interface AddTaskWebSeedParams {
+  taskId: string;
+  url: string;
+}
+
 export interface TaskDeleteParams {
   taskId: string;
   /** 同时删除磁盘文件，缺省 false。 */

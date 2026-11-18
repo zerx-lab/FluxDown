@@ -51,6 +51,7 @@
 | **Rust-Powered Engine** | Shared Rust + Tokio engine, independent of UI and FFI, used by desktop, mobile, server and standalone CLI hosts |
 | **Smart Segmentation** | Segments split dynamically at runtime; idle workers take over slow segments |
 | **Multi-Protocol** | Dedicated engines for HTTP/HTTPS, FTP, BitTorrent (DHT/UPnP/magnet), eD2K (server + Kad DHT source finding, MD4 verification), HLS (AES-decrypt) and DASH |
+| **BitTorrent Web Seeds** | On desktop and Web, right-click a torrent to add a BEP 19 source: a direct HTTP(S) file URL for a single-file torrent, or the root of a mirror that preserves the original torrent folder and file paths for a multi-file torrent. The address is saved with the task. |
 | **Queues & Speed Control** | Named queues, scheduling and token-bucket global rate limiting |
 | **Persistence & Resume** | SQLite with WAL by default; server deployments can use PostgreSQL; recover downloads from persisted state |
 | **Browser Integration** | Download interception, streaming media sniffing, Alt+Click bypass, right-click send and connection diagnostics |

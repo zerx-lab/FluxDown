@@ -337,7 +337,7 @@ pub struct BtStatusView {
     pub counts: PeerCounts,
     pub trackers: Vec<TrackerRow>,
     pub peers: Vec<PeerRow>,
-    /// HTTP 源（BEP 19 webseed）；任务不在会话里时为空。
+    /// HTTP 源（BEP 19 webseed）；任务不在会话里时仍显示手动添加的来源。
     pub web_seeds: Vec<WebSeedRow>,
     /// info hash（小写十六进制）：v1 / 混合种子为 SHA-1，纯 v2 种子为截断的 SHA-256。
     pub info_hash: String,

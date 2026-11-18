@@ -1132,6 +1132,15 @@ pub struct SetTaskSuperSeedingParams {
     pub enabled: bool,
 }
 
+/// `daemon.task.addWebSeed` parameters.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTaskWebSeedParams {
+    pub task_id: String,
+    /// Absolute HTTP or HTTPS resource or mirror root (BEP 19).
+    pub url: String,
+}
+
 /// `daemon.bt.portStatus` 结果：BT 监听端口与端口映射实况。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

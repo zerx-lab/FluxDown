@@ -132,7 +132,7 @@ pub use daemon::{
     WebhookSimulateResponse, WebhookTestRequest, WebhookTestResponse, WsClientMsg, WsServerMsg,
 };
 pub use daemon::{
-    BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
+    AddTaskWebSeedParams, BT_FILE_PRIORITY_HIGH, BT_FILE_PRIORITY_MAXIMUM, BT_FILE_PRIORITY_NORMAL,
     BT_FILE_PRIORITY_SKIP, BtFilePriorityDto, BtFilesDto, BtPortMappingDto, BtPortStatusDto,
     BtTaskFileDto, BtWebSeedDto, MoveTaskStorageParams, RenameBtFileParams, SetTaskBtLimitsParams,
     SetTaskFilePrioritiesParams, SetTaskSuperSeedingParams,

@@ -11,7 +11,7 @@ import { QueueManagerDialog } from './QueueManagerDialog'
 import { SeedLocalDialog } from './SeedLocalDialog'
 import { SelectionHost } from './SelectionDialogs'
 import { capturesShown, openNewDownload, useDialogsState } from './store'
-import { ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
+import { AddWebSeedDialog, ChangeSegmentsDialog, ChangeUrlDialog, MoveStorageDialog, RenameDialog, TaskLimitsDialog } from './TaskEditDialogs'
 import { TaskPropertiesDialog } from './TaskPropertiesDialog'
 
 const EMPTY_SELECTIONS: readonly SelectionRequestDto[] = []
@@ -39,6 +39,7 @@ export function DownloadDialogsHost() {
       {state.changeSegments ? <ChangeSegmentsDialog key={state.changeSegments} taskId={state.changeSegments} /> : null}
       {state.moveStorage ? <MoveStorageDialog key={state.moveStorage} taskId={state.moveStorage} /> : null}
       {state.taskLimits ? <TaskLimitsDialog key={state.taskLimits} taskId={state.taskLimits} /> : null}
+      {state.addWebSeed ? <AddWebSeedDialog key={state.addWebSeed} taskId={state.addWebSeed} /> : null}
       {state.seedLocal ? <SeedLocalDialog /> : null}
       <SelectionHost requests={selections} />
       <FileConflictDialog />

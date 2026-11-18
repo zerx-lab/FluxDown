@@ -825,6 +825,8 @@ pub struct SharedBtSession {
     /// 宿主在启动 / 续种前登记，每次向会话加入该任务都经 [`Self::apply_task_options`] 带上，
     /// librqbit 按新路径读写；会话里的任务改名走 [`Self::rename_file`]，同时更新这里。
     file_renames: Mutex<HashMap<String, BTreeMap<usize, PathBuf>>>,
+    /// User-added BEP 19 sources loaded from the task DB, not from the session cache.
+    web_seeds: Mutex<HashMap<String, Vec<String>>>,
     /// 下一次加入会话跳过初检的任务（本机做种时用户声明数据可信，或种子刚由这份数据
     /// 生成）：librqbit 只核对文件长度。由 [`Self::apply_task_options`] 取走，只生效一次。
     skip_check_once: Mutex<HashSet<String>>,
@@ -1238,6 +1240,7 @@ impl SharedBtSession {
             peer_limit: AtomicUsize::new(peer_limit),
             file_levels: Mutex::new(HashMap::new()),
             file_renames: Mutex::new(HashMap::new()),
+            web_seeds: Mutex::new(HashMap::new()),
             skip_check_once: Mutex::new(HashSet::new()),
             file_ops_lock: Mutex::new(()),
             finishing: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -1429,6 +1432,12 @@ impl SharedBtSession {
         if let Some(levels) = levels {
             self.apply_file_levels(task_id, &handle, &levels).await;
         }
+        // An add can be in flight (e.g. resolving a magnet) when the user adds a source.
+        // Publish the handle first so either this path or registration sees both values.
+        let seeds = self.web_seeds.lock().await;
+        if let Some(seeds) = seeds.get(task_id) {
+            self.apply_web_seeds(task_id, &handle, seeds).await;
+        }
     }
 
     /// 登记任务的全部选项（manager 在启动 / 续种前按 DB 调用），并作用于已入册的句柄。
@@ -1526,6 +1535,9 @@ impl SharedBtSession {
         if let Some(renames) = self.file_renames.lock().await.get(task_id) {
             opts.renamed_files = renames.clone();
         }
+        if let Some(seeds) = self.web_seeds.lock().await.get(task_id) {
+            opts.web_seeds = Some(seeds.clone());
+        }
         if self.skip_check_once.lock().await.remove(task_id) {
             opts.skip_initial_check = true;
         }
@@ -1543,6 +1555,29 @@ impl SharedBtSession {
             map.remove(task_id);
         } else {
             map.insert(task_id.to_owned(), renames);
+        }
+    }
+
+    pub(crate) async fn register_web_seeds(&self, task_id: &str, seeds: Vec<String>) {
+        let mut registered = self.web_seeds.lock().await;
+        if seeds.is_empty() {
+            registered.remove(task_id);
+            return;
+        }
+        if let Some(handle) = self.cached_handle(task_id).await {
+            self.apply_web_seeds(task_id, &handle, &seeds).await;
+        }
+        registered.insert(task_id.to_owned(), seeds);
+    }
+
+    async fn apply_web_seeds(&self, task_id: &str, handle: &BtHandle, seeds: &[String]) {
+        for seed in seeds {
+            if let Err(error) = self.session.add_web_seed(handle, seed).await {
+                log_warn!(
+                    "[BT] task={} could not apply a stored web seed: {error:#}",
+                    short_id(task_id)
+                );
+            }
         }
     }
 
@@ -2289,6 +2324,7 @@ impl SharedBtSession {
         self.pause_epochs.lock().await.remove(task_id);
         self.pending_pauses.lock().await.remove(task_id);
         self.fastresume_tainted.lock().await.remove(task_id);
+        self.web_seeds.lock().await.remove(task_id);
         // 选片登记保留（见 `piece_picking` 字段注释）。
         crate::bt_partfile::remove_sidecar(&self.parts_sidecar_path(task_id));
         Ok(handle.is_some())
@@ -7912,6 +7948,7 @@ mod tests {
                 peer_limit: AtomicUsize::new(crate::bt_config::DEFAULT_BT_PEER_LIMIT as usize),
                 file_levels: Mutex::new(HashMap::new()),
                 file_renames: Mutex::new(HashMap::new()),
+                web_seeds: Mutex::new(HashMap::new()),
                 skip_check_once: Mutex::new(HashSet::new()),
                 file_ops_lock: Mutex::new(()),
                 finishing: Arc::new(std::sync::Mutex::new(HashSet::new())),

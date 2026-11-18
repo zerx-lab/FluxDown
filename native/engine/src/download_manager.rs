@@ -7295,6 +7295,79 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Appends a BEP 19 source without changing the torrent or its info hash.
+    /// The source is applied to the current handle and carried across session rebuilds.
+    ///
+    /// # Errors
+    /// The task is not a torrent, the URL is invalid, the list is full, or storage failed.
+    #[cfg(feature = "bt")]
+    pub async fn add_bt_web_seed(
+        &mut self,
+        task_id: &str,
+        url: &str,
+    ) -> Result<(), crate::bt_task_files::BtTaskOpError> {
+        use crate::bt_local_seed::{MAX_WEB_SEEDS, is_web_seed_url};
+        use crate::bt_task_files::BtTaskOpError;
+
+        let url = url.trim();
+        if !is_web_seed_url(url) {
+            return Err(BtTaskOpError::InvalidArgument(
+                "expected an absolute HTTP or HTTPS URL of at most 4096 bytes".to_owned(),
+            ));
+        }
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .filter(|task| is_bt_url(&task.url))
+            .ok_or(BtTaskOpError::NotFound)?;
+        let mut seeds = self.db.task_web_seeds(task_id).await?;
+        if seeds.iter().any(|seed| seed == url) {
+            return Ok(());
+        }
+        let declared = if let Some(bytes) = self.db.load_torrent_file_bytes(task_id).await?
+            && !bytes.is_empty()
+        {
+            librqbit::torrent_from_bytes(&bytes)
+                .map_err(|error| {
+                    BtTaskOpError::Operation(format!("torrent parse error: {error:#}"))
+                })?
+                .url_list
+        } else if is_magnet(&task.url) {
+            librqbit::Magnet::parse(&bt_downloader::normalize_magnet(&task.url))
+                .map_err(|error| {
+                    BtTaskOpError::Operation(format!("magnet parse error: {error:#}"))
+                })?
+                .web_seeds
+        } else {
+            Vec::new()
+        };
+        let active = match &self.bt_session {
+            Some(bt) => bt
+                .cached_handle(task_id)
+                .await
+                .map(|handle| handle.web_seeds()),
+            None => None,
+        };
+        let urls: HashSet<_> = declared
+            .iter()
+            .chain(&seeds)
+            .map(String::as_str)
+            .chain(active.iter().flatten().map(|seed| seed.url.as_str()))
+            .collect();
+        if !urls.contains(url) && urls.len() >= MAX_WEB_SEEDS {
+            return Err(BtTaskOpError::InvalidArgument(format!(
+                "a torrent can have at most {MAX_WEB_SEEDS} web seeds"
+            )));
+        }
+        seeds.push(url.to_owned());
+        self.db.set_task_web_seeds(task_id, &seeds).await?;
+        if let Some(bt) = &self.bt_session {
+            bt.register_web_seeds(task_id, seeds).await;
+        }
+        Ok(())
+    }
+
     /// 修改 BT 任务的选片方式（`None` = 该项不变），对齐 qBittorrent 右键「按顺序下载」
     /// 「先下载首尾文件块」；两项都关 = 最稀有优先。落库后若 BT 会话在，登记到会话并
     /// 热改已入册的句柄（下载中从下一个请求的块起生效）；否则下次启动时烘焙。
@@ -7833,6 +7906,13 @@ impl DownloadManager {
                 "[manager] file priorities of {} unavailable: {}",
                 task.task_id,
                 e
+            ),
+        }
+        match self.db.task_web_seeds(&task.task_id).await {
+            Ok(seeds) => bt.register_web_seeds(&task.task_id, seeds).await,
+            Err(error) => log_info!(
+                "[manager] web seeds of {} unavailable: {error:#}",
+                task.task_id,
             ),
         }
         options
@@ -14353,10 +14433,28 @@ impl DownloadManager {
                 crate::bt_status::idle_tracker_rows(&own_tiers, &session)
             }
         };
-        let web_seeds = handle
-            .as_ref()
-            .map(|handle| crate::bt_status::web_seed_rows(handle.web_seeds()))
-            .unwrap_or_default();
+        let web_seeds = match &handle {
+            Some(handle) => crate::bt_status::web_seed_rows(handle.web_seeds()),
+            None => {
+                use crate::bt_status::{WebSeedRow, WebSeedState};
+                let state = if self.bt_config.enable_webseed {
+                    WebSeedState::Idle
+                } else {
+                    WebSeedState::Disabled
+                };
+                self.db
+                    .task_web_seeds(task_id)
+                    .await
+                    .map_err(db_error)?
+                    .into_iter()
+                    .map(|url| WebSeedRow {
+                        url,
+                        state,
+                        ..Default::default()
+                    })
+                    .collect()
+            }
+        };
         if let Some(handle) = handle {
             // 磁力任务的 v2 哈希与私有标记在取得元数据后才知道。
             info_hash_v2 =

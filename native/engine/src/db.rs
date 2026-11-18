@@ -155,7 +155,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_download_limit_bps INTEGER NOT NULL DEFAULT 0,
     bt_super_seeding INTEGER NOT NULL DEFAULT 0,
     bt_file_priorities TEXT NOT NULL DEFAULT '',
-    bt_file_renames TEXT NOT NULL DEFAULT ''
+    bt_file_renames TEXT NOT NULL DEFAULT '',
+    bt_web_seeds TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -453,7 +454,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_download_limit_bps BIGINT NOT NULL DEFAULT 0,
     bt_super_seeding INTEGER NOT NULL DEFAULT 0,
     bt_file_priorities TEXT NOT NULL DEFAULT '',
-    bt_file_renames TEXT NOT NULL DEFAULT ''
+    bt_file_renames TEXT NOT NULL DEFAULT '',
+    bt_web_seeds TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -1745,6 +1747,8 @@ impl Db {
             .await?;
         self.add_column_if_missing("tasks", "bt_file_renames", "TEXT NOT NULL DEFAULT ''")
             .await?;
+        self.add_column_if_missing("tasks", "bt_web_seeds", "TEXT NOT NULL DEFAULT '[]'")
+            .await?;
         // 队列级上传限速（KB/s；0 = 不限）。BT add/re-add 时与任务级
         // 覆盖一起折算成 librqbit 上传上限，见 download_manager。
         self.add_column_if_missing("queues", "upload_limit_kbps", "BIGINT NOT NULL DEFAULT 0")
@@ -2612,6 +2616,39 @@ impl Db {
     ) -> Result<(), DbError> {
         sqlx::query("UPDATE tasks SET bt_super_seeding = $1 WHERE id = $2")
             .bind(i32::from(enabled))
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// User-added BEP 19 sources, separate from the original torrent or magnet.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn task_web_seeds(&self, task_id: &str) -> Result<Vec<String>, DbError> {
+        let json: Option<String> = sqlx::query_scalar("SELECT bt_web_seeds FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        json.map_or_else(
+            || Ok(Vec::new()),
+            |json| {
+                serde_json::from_str(&json)
+                    .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))
+            },
+        )
+    }
+
+    /// Persists the task's user-added sources without rewriting torrent metadata.
+    #[cfg(feature = "bt")]
+    pub(crate) async fn set_task_web_seeds(
+        &self,
+        task_id: &str,
+        seeds: &[String],
+    ) -> Result<(), DbError> {
+        let json = serde_json::to_string(seeds)
+            .map_err(|error| DbError::InvalidConfig(format!("BT web seeds: {error}")))?;
+        sqlx::query("UPDATE tasks SET bt_web_seeds = $1 WHERE id = $2")
+            .bind(json)
             .bind(task_id)
             .execute(&self.pool)
             .await?;

@@ -38,6 +38,7 @@ export interface DialogsState {
   moveStorage: string | null
   /** 「任务限速…」的 BT 任务 id。 */
   taskLimits: string | null
+  addWebSeed: string | null
   seedLocal: boolean
 }
 
@@ -51,6 +52,7 @@ let state: DialogsState = {
   changeSegments: null,
   moveStorage: null,
   taskLimits: null,
+  addWebSeed: null,
   seedLocal: false,
 }
 let counter = 0
@@ -162,6 +164,14 @@ export function openTaskLimits(taskId: string): void {
 
 export function closeTaskLimits(): void {
   publish({ taskLimits: null })
+}
+
+export function openAddWebSeed(taskId: string): void {
+  publish({ addWebSeed: taskId })
+}
+
+export function closeAddWebSeed(): void {
+  publish({ addWebSeed: null })
 }
 
 export function openSeedLocal(): void {

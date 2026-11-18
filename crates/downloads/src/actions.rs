@@ -54,6 +54,7 @@ actions!(
         MoveStorageSelected,
         /// 打开选中 BT 任务的任务级限速对话框（右键「任务限速…」）。
         TaskLimitsSelected,
+        AddWebSeedSelected,
         /// 切换选中 BT 任务的超级做种（右键勾选）。
         ToggleSuperSeedingSelected,
         RedownloadSelected,
