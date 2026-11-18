@@ -488,6 +488,8 @@ pub struct EngineReceivers {
     pub retry: mpsc::Receiver<String>,
     pub plugin: mpsc::UnboundedReceiver<PluginEvent>,
     pub missing_cleanup: mpsc::Receiver<Vec<String>>,
+    /// 做种落入停止原因后，再清一次已完成记录。
+    pub retention_purge: mpsc::Receiver<()>,
     /// 「下载完成后计算哈希」的结果回流。
     pub file_hash: mpsc::UnboundedReceiver<fluxdown_engine::file_hash::FileHashOutcome>,
 }
@@ -680,6 +682,10 @@ async fn run_actor(
                 ) {
                     tracing::warn!(%error, "removing tasks whose files vanished failed");
                 }
+            }
+            Some(()) = receivers.retention_purge.recv() => {
+                arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
+                engine.manager.purge_after_seeding_stopped().await;
             }
             _ = file_scan.tick() => {
                 // 完全空闲且 idle_file_scan 关闭时跳过，避免周期性唤醒 NAS 硬盘。
@@ -3366,9 +3372,10 @@ async fn apply_live_config<'a>(
     }
     if keys.contains(&"completed_record_retention_days") {
         engine.manager.set_completed_record_retention_days(
-            all.get("completed_record_retention_days")
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(0),
+            crate::runtime::completed_record_retention_days(
+                all.get("completed_record_retention_days")
+                    .map(String::as_str),
+            ),
         );
         // 设置变更立即生效（跳过去抖）；清理只删记录，失败只记日志。
         engine.manager.purge_expired_completed_records(true).await;
