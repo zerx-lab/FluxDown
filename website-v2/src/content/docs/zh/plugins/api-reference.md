@@ -28,7 +28,7 @@ sourceHash: "e868448f5533"
 | [`authenticate(ctx)`](#authenticatectx) | 宿主驱动一次登录动作（`begin` / `poll` / `cancel` / `logout` / `status`）。 | `auth.entry` + 权限 `auth` | `auth.entry` | [`AuthResult`](#authenticatectx) 对象 |
 | [`subscribe(ctx)`](#subscribectx) | 属于你的 provider 的订阅源被刷新。 | `subscriptions[0]` | `subscriptions[0].entry` | 规范化的订阅内容对象 |
 | [`main`](#main-常驻脚本) | daemon（或某个视图）激活你的常驻脚本。 | `main` | `main.entry` | —（用于注册处理器） |
-| [`archive(ctx)`](#archivectx) | 授权默认保存目录的任务进入路由时调用，不要求命中分类规则。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ category }`、`{ directories }`、旧格式 `{ folderName }` 或 `null` |
+| [`archive(ctx)`](#archivectx) | 授权默认保存目录的任务进入路由时调用，不要求命中分类规则。 | `contributes.archive` + 权限 `archive` | `contributes.archive` 指定的 `.js` 文件 | `{ category }`、`{ dateBucket, category? }`、`{ directories }`、旧格式 `{ folderName }` 或 `null` |
 
 这是一个纯本地回调，可依据已知文件名、可选来源元数据，以及完成时由宿主有界识别的内容事实分类；不解析 URL，也不访问文件或网络。宿主会对使用授权默认保存目录的任务调用它，不依赖普通分类规则是否命中。用户明确指定保存目录时跳过；eD2K 任务不会移动。BT 任务仅在首次完成时恰有一个实际选中的非 padding 文件才可归档，包括多文件种子中只选了一个文件。完成前不预测目标目录。回调沿用原有上下文契约，使用实际选中文件名、`isGroup: false` 和从该最终文件识别的内容。每次调用使用新的 QuickJS 运行时，可读取 `flux.settings`，但没有 `flux.fetch`、文件系统、任务或进程接口。此上下文要求宿主 0.6.5 或匹配的开发宿主，不代表版本已发布。
 
@@ -41,6 +41,8 @@ sourceHash: "e868448f5533"
 任务组在组根路由一次，成员路径与文件名保持不变。返回 `null` / `undefined` 表示不改变目录；也可返回 `{ category: "audio" }`，路由到已配置的内置分类保存目录。稳定标识符为 `video`、`audio`、`document`、`image`、`program`、`archive`、`other`。宿主依据提交时的分类配置快照，解析到可见分类配置的保存目录；分类改名不改变其稳定标识符（`builtinType`）。分类缺失、隐藏或没有保存目录时宿主会拒绝移动；不会推断自定义分类。分类结果与 `directories`、`folderName` 互斥；也可返回 `{ directories: ["视频", "哔哩哔哩", "创作者", "合集"] }`，每项是一个安全路径分量，最多 8 层，且相对任务获准使用的默认保存目录，而非分类目录。旧 `{ folderName: "The Expanse" }` 保持原有分类子目录语义。显式目录绕过自动分类解析。空值或不安全输出会被忽略（fail-open），不会使任务失败。每阶段多个插件按 identity 排序，首个有效结果生效。符合条件的 BT 单文件选择会经 BT 存储迁移移动整个任务根目录并恢复做种，保留种子相对路径、文件名与边界块。多选、显式目录、识别不可用、回调错误或移动冲突均留在当前目录；首次完成时消费选择，之后改选、做种或重启都不再路由。完成后的异步移动可能使文件短暂位于原位置，随后由位置变更事件更新；不新增侧栏分类。显式目录绕过归档。
 
 分类结果仅接受于已完成的非组文件。宿主会拒绝开始阶段和任务组的 `{ category }`；组路由仍支持 `{ directories }` 和旧格式 `{ folderName }`。
+
+存在 `ctx.completedDate` 时，普通已完成下载可以返回 `{ dateBucket: "day" }` 或 `{ dateBucket: "month", category: "image" }`。宿主使用后处理完成时的本地日期生成 `YYYYMMDD` 或 `YYYYMM` 目录。基准目录为任务获准使用的默认目录；如请求的内置分类配置了目录，则使用该分类目录。插件不能指定日期路径，`dateBucket` 也不能与 `directories` 或 `folderName` 混用。旧宿主、开始阶段、BT 和任务组不提供 `completedDate`。
 
 常驻 `main` 脚本可调用 `flux.archiveRules.status()` 查询当前已验证规则包状态，或调用 `flux.archiveRules.update()` 显式请求更新；两者均要求 `archive` 权限及 `contributes.archiveRules` 声明。规则是由固定发布者公钥验证的有界签名 JSON。启用自动更新后每日检查；获取或验证失败会保留最后一份已验证规则，新规则不会重新分类历史文件。
 

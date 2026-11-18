@@ -465,14 +465,17 @@ export interface ArchiveContext {
   };
   /** Host capability; absent on older hosts that do not support category routing. */
   categoryRouting?: boolean;
+  /** Host-local completion date (`YYYY-MM-DD`); present only when date bucketing is supported for this task. */
+  completedDate?: string;
 }
 /** Stable built-in category identifiers supported by category routing. */
 export type ArchiveCategory =
   | "video" | "audio" | "document" | "image" | "program" | "archive" | "other";
 /** Archive destination; category routing is valid only for completed, non-group artifacts. */
 export type ArchiveResult =
-  | { category: ArchiveCategory; directories?: never; folderName?: never }
-  | { category?: never; directories?: string[]; folderName?: string };
+  | { category: ArchiveCategory; dateBucket?: never; directories?: never; folderName?: never }
+  | { category?: ArchiveCategory; dateBucket: "day" | "month"; directories?: never; folderName?: never }
+  | { category?: never; dateBucket?: never; directories?: string[]; folderName?: string };
 
 export interface ResolveVariant {
   label: string;

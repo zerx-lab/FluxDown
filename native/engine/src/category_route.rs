@@ -167,7 +167,11 @@ impl CategoryRoute {
                         !valid_archive_folder(&archive.folder_name)
                     } else {
                         !valid_archive_directories(&archive.directories)
-                            || archive.base_dir != route.base_dir
+                            || (archive.base_dir != route.base_dir
+                                && !route
+                                    .archive_categories
+                                    .values()
+                                    .any(|dir| dir == &archive.base_dir))
                     }
                 }) {
                     log_warn!(
@@ -238,6 +242,7 @@ pub(crate) async fn archive_group_root(
                 created_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
                 detected_type: None,
                 category_routing: true,
+                completed_date: None,
                 header_hex: None,
             })
             .await
@@ -449,7 +454,7 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
     if p.interceptor.has_archivers() {
         let context = completed_archive_context(p, &row, route.archive_metadata.clone()).await;
         match p.interceptor.archive_directories(context).await {
-            Ok(Some(result)) if !result.category.is_empty() => {
+            Ok(Some(result)) if !result.category.is_empty() && result.components.is_empty() => {
                 let directory = route.archive_categories.get(&result.category)?;
                 target.clone_from(directory);
                 route.archive = None;
@@ -474,7 +479,13 @@ pub(crate) async fn relocate_completed(p: &DownloadParams) -> Option<(String, i6
                     } else {
                         Vec::new()
                     },
-                    base_dir: if modern {
+                    base_dir: if modern && !result.category.is_empty() {
+                        route
+                            .archive_categories
+                            .get(&result.category)
+                            .unwrap_or(&route.base_dir)
+                            .clone()
+                    } else if modern {
                         route.base_dir.clone()
                     } else {
                         String::new()
@@ -663,6 +674,7 @@ pub(crate) async fn route_before_start(p: &mut DownloadParams) -> Result<(), cra
                 created_date: creation_date(&row.created_at),
                 detected_type: None,
                 category_routing: true,
+                completed_date: None,
                 header_hex: None,
             })
             .await
@@ -1031,6 +1043,7 @@ async fn completed_archive_context(
         phase: crate::model::ArchivePhase::Complete,
         created_date: creation_date(&row.created_at),
         category_routing: true,
+        completed_date: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
         ..Default::default()
     };
     #[cfg(feature = "plugins")]

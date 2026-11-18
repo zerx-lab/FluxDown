@@ -105,6 +105,9 @@ pub struct ArchiveContext {
     pub detected_type: Option<ArchiveDetectedType>,
     /// Whether this host supports resolving archive category identifiers.
     pub category_routing: bool,
+    /// Host-local completion date (`YYYY-MM-DD`); presence advertises date bucketing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_date: Option<String>,
     /// Bounded hexadecimal file prefix for host-side signed rule matching.
     /// Never serialized to arbitrary plugin scripts.
     #[serde(skip)]
@@ -116,7 +119,7 @@ pub struct ArchiveContext {
 pub struct ArchiveDirectories {
     pub components: Vec<String>,
     pub legacy: bool,
-    /// Stable builtin category identifier, mutually exclusive with directory components.
+    /// Stable builtin category identifier; with components, use it as the date bucket's base.
     pub category: String,
 }
 

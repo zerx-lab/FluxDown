@@ -1406,6 +1406,54 @@ async fn archive_category_uses_host_directory_and_declines_unconfigured_or_confl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_date_bucket_moves_completed_files_under_the_authorized_base() {
+    use fluxdown_engine::category_route::CategoryRoute;
+
+    for (category, configured, bucket, expected_base) in [
+        ("", true, "day", ""),
+        ("image", true, "month", "Renamed Photos"),
+        ("image", false, "day", ""),
+        ("../outside", true, "day", ""),
+    ] {
+        let work = std::env::temp_dir().join(format!("fluxdown-archive-date-{}", uniq()));
+        let script = format!(
+            r#"globalThis.archive = ctx => {{
+                if (ctx.phase === "start" && !ctx.completedDate) return null;
+                if (!/^\d{{4}}-\d{{2}}-\d{{2}}$/.test(ctx.completedDate)) throw Error("no completion date");
+                return {{category: "{category}", dateBucket: "{bucket}"}};
+            }};"#
+        );
+        let route = CategoryRoute {
+            archive_categories: configured
+                .then(|| {
+                    [(
+                        "image".to_owned(),
+                        work.join("Renamed Photos").to_string_lossy().into_owned(),
+                    )]
+                    .into()
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        let format = if bucket == "day" { "%Y%m%d" } else { "%Y%m" };
+        let before = chrono::Local::now().format(format).to_string();
+        let name = "report.txt";
+        let (_, task, body) = run_routed_task(&work, &script, name, route).await;
+        let after = chrono::Local::now().format(format).to_string();
+        let target = Path::new(&task.save_dir);
+        if category == "../outside" {
+            assert_eq!(target, work);
+        } else {
+            let base = work.join(expected_base);
+            assert!(target == base.join(before) || target == base.join(after));
+            assert!(!work.join(name).exists());
+        }
+        assert_eq!(tokio::fs::read(target.join(name)).await.unwrap(), *body);
+        cleanup(&work).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn archive_plugin_routes_nested_directories_from_authorized_base() {
     nested_archive_download(false).await;
 }

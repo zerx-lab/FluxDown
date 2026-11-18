@@ -17,7 +17,7 @@ use crate::plugin::manifest::{
 };
 use crate::plugin::quickjs::HARD_TIMEOUT_CEILING;
 use crate::plugin::runtime::{
-    ExecutionBudget, HostContext, PluginEntryKind, PluginError, PluginScript,
+    ArchiveDateBucket, ExecutionBudget, HostContext, PluginEntryKind, PluginError, PluginScript,
 };
 
 /// 未声明 `timeoutMs` 时的单次调用超时。
@@ -347,11 +347,37 @@ impl PluginManager {
         .await;
         match result {
             Ok(Some(value)) => {
+                if let Some(bucket) = value.date_bucket {
+                    if !value.directories.is_empty() || !value.folder_name.is_empty() {
+                        audit("error", "date bucket conflicts with directory output");
+                        return Err("日期归档与目录输出冲突".to_owned());
+                    }
+                    let Some(date) = context
+                        .completed_date
+                        .as_deref()
+                        .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                    else {
+                        audit("error", "date bucketing unavailable");
+                        return Err("此任务不支持日期归档".to_owned());
+                    };
+                    let format = match bucket {
+                        ArchiveDateBucket::Day => "%Y%m%d",
+                        ArchiveDateBucket::Month => "%Y%m",
+                    };
+                    if value.category.is_empty() || valid_archive_category(&value.category) {
+                        audit("ok", "");
+                        return Ok(Some(crate::model::ArchiveDirectories {
+                            category: value.category,
+                            components: vec![date.format(format).to_string()],
+                            legacy: false,
+                        }));
+                    }
+                    audit("error", "invalid date bucket category");
+                    return Err("归档分类标识不合法".to_owned());
+                }
                 if !value.category.is_empty() {
-                    if !matches!(
-                        value.category.as_str(),
-                        "video" | "audio" | "document" | "image" | "program" | "archive" | "other"
-                    ) || !value.directories.is_empty()
+                    if !valid_archive_category(&value.category)
+                        || !value.directories.is_empty()
                         || !value.folder_name.is_empty()
                         || context.is_group
                         || context.phase != crate::model::ArchivePhase::Complete
@@ -394,6 +420,13 @@ impl PluginManager {
             }
         }
     }
+}
+
+fn valid_archive_category(category: &str) -> bool {
+    matches!(
+        category,
+        "video" | "audio" | "document" | "image" | "program" | "archive" | "other"
+    )
 }
 
 /// `Drop` 时中止底层任务：调用方丢弃 future 即终止 JS 与外部子进程。

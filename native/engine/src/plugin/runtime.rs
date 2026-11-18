@@ -86,8 +86,16 @@ pub struct ArchiveResult {
     pub directories: Vec<String>,
     /// Legacy single-component output from existing plugins.
     pub folder_name: String,
-    /// Stable builtin category identifier; mutually exclusive with directory outputs.
+    /// Stable builtin category identifier; may be combined with a date bucket.
     pub category: String,
+    pub date_bucket: Option<ArchiveDateBucket>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveDateBucket {
+    Day,
+    Month,
 }
 
 /// 一次平台登录动作。`action` 为 `begin`、`poll`、`cancel`、`logout` 或 `status`。
