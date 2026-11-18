@@ -7902,9 +7902,9 @@ v360.m3u8\n\
         let blocked_sample = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let hit = samples.lock().ok().and_then(|seen| {
-                    seen.iter()
-                        .copied()
-                        .find(|(_, received, _)| received.is_some_and(|r| r >= received_behind_head))
+                    seen.iter().copied().find(|(_, received, _)| {
+                        received.is_some_and(|r| r >= received_behind_head)
+                    })
                 });
                 if let Some(sample) = hit {
                     return sample;

@@ -140,10 +140,12 @@ impl From<&proto::TaskRuntimeDto> for TaskRuntimeDto {
             connected_peers: runtime.connected_peers,
             total_bytes: runtime.total_bytes,
             segments: runtime.segments.iter().map(SegmentDto::from).collect(),
-            hls_fragments: runtime.hls_fragments.map(|progress| HlsFragmentProgressDto {
-                written: progress.written,
-                total: progress.total,
-            }),
+            hls_fragments: runtime
+                .hls_fragments
+                .map(|progress| HlsFragmentProgressDto {
+                    written: progress.written,
+                    total: progress.total,
+                }),
         }
     }
 }

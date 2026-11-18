@@ -29,9 +29,10 @@ mod testkit;
 
 pub use dto::{
     BtFileDto, CategoryDto, CloudDeviceDto, CreateTaskRequestDto, FileExistsActionDto, GroupDto,
-    HlsFragmentProgressDto, HlsOptionDto, HostEventDto, HostInfoDto, HostSignalDto, HostSnapshotDto,
-    LinkDeviceDto, QueueDto, RssSourceDto, RuntimeStatsDto, SegmentDto, SelectionKindDto,
-    SelectionOutcomeDto, SelectionRequestDto, TaskDto, TaskRuntimeDto, VariantOptionDto,
+    HlsFragmentProgressDto, HlsOptionDto, HostEventDto, HostInfoDto, HostSignalDto,
+    HostSnapshotDto, LinkDeviceDto, QueueDto, RssSourceDto, RuntimeStatsDto, SegmentDto,
+    SelectionKindDto, SelectionOutcomeDto, SelectionRequestDto, TaskDto, TaskRuntimeDto,
+    VariantOptionDto,
 };
 pub use error::{ErrorCodeDto, FluxError, HostErrorDto};
 pub use flux_core::FluxCore;
