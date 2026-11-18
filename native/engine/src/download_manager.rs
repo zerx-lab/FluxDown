@@ -23896,8 +23896,11 @@ mod tests {
         )
         .expect("construct manager");
 
-        let ok = mgr.clear_task_file("t-active").await;
-        assert!(!ok, "non-completed task must be refused");
+        let result = mgr.clear_task_file("t-active").await;
+        assert!(
+            matches!(result, Err(downloader::DownloadError::Other(_))),
+            "non-completed task must be refused: {result:?}"
+        );
         assert!(
             file_path.exists(),
             "must not touch the file of a non-completed task"
