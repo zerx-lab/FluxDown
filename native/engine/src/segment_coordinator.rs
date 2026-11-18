@@ -5783,10 +5783,11 @@ async fn do_segment(
     } else {
         None
     };
-    // hint 模式跳过了探测：质询，或 403/429 且请求头带非中性 UA，只能在真实请求上
-    // 首次暴露。换中性 UA 重发同一请求（`escape_bot_challenge` 保证每个请求最多重发一次）。
+    // hint 跳过探测时，质询或满足门控的 UA 拒绝只能在真实请求上首次暴露。
+    // 换中性 UA 重发同一请求（每个请求最多一次）。临时切换由 settle 决定落库或恢复。
     let mut used = spec.current();
     let mut refreshed = false;
+    let mut pending_provisional = false;
     let resp = loop {
         // 单 GET 探测保留的首响应（一次性 URL 的唯一一次请求）：首连接直接消费它，不再发请求。
         // 只有零进度的 plain 首连接会取；重试 / 其余分段照常发 Range 请求。
@@ -5844,10 +5845,16 @@ async fn do_segment(
             }
         };
         request_path.record_setup(sent_at.elapsed());
+        if pending_provisional {
+            spec.settle_provisional_ua(&used, resp.status(), db, task_id)
+                .await;
+            pending_provisional = false;
+        }
         match spec.escape_bot_challenge(&used, &resp, db, task_id).await {
-            Some(neutral) => {
+            Some(escape) => {
                 drop(resp);
-                used = neutral;
+                used = escape.spec;
+                pending_provisional = escape.provisional;
             }
             None => {
                 // 被拒（401 / 403 / 410）且有插件声明 refresh：换发凭据后重发同一请求，
