@@ -162,6 +162,7 @@ pub enum ActorOperation {
     },
     RestartMissingFile {
         task_id: String,
+        recreate_if_present: bool,
     },
     PauseAll,
     ResumeAll,
@@ -1725,7 +1726,25 @@ async fn execute_operation(
                 .await
                 .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
         }
-        ActorOperation::RestartMissingFile { task_id } => {
+        ActorOperation::RestartMissingFile {
+            task_id,
+            recreate_if_present,
+        } => {
+            if recreate_if_present {
+                let restarted = engine
+                    .manager
+                    .try_restart_missing_task_file(&task_id)
+                    .await
+                    .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+                if restarted {
+                    return Ok(ActorResult::Boolean(false));
+                }
+                // Only the actor may authorize recreation, after checking persisted state.
+                let result = engine.manager.delete_task(&task_id, true).await;
+                engine.manager.send_tasks_snapshot().await;
+                result.map_err(delete_task_error)?;
+                return Ok(ActorResult::Boolean(true));
+            }
             engine
                 .manager
                 .restart_missing_task_file(&task_id)

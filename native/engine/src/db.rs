@@ -11,7 +11,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::{AssertSqlSafe, Row};
 use thiserror::Error;
 
-use crate::model::{GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
+use crate::model::{FileClearState, GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
 
 mod bt_guard;
@@ -821,6 +821,7 @@ pub struct Db {
 /// `unwrap_or_default`/`unwrap_or`，与既有字段风格一致；运行路径下这些列已由
 /// `add_column_if_missing` 补齐。
 fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
+    let file_state = row.try_get::<i32, _>("file_missing").unwrap_or_default();
     Ok(TaskInfo {
         task_id: row.try_get("id")?,
         url: row.try_get("url")?,
@@ -835,7 +836,12 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         queue_id: row.try_get("queue_id").unwrap_or_default(),
         checksum: row.try_get("checksum").unwrap_or_default(),
         ignore_tls_errors: row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0) != 0,
-        file_missing: matches!(row.try_get::<i32, _>("file_missing"), Ok(1 | 2)),
+        file_missing: matches!(file_state, 1 | 2),
+        file_clear_state: match file_state {
+            2 => FileClearState::Cleared,
+            3 => FileClearState::Pending,
+            _ => FileClearState::None,
+        },
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         file_hash: row.try_get("file_hash").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),

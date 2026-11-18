@@ -28,7 +28,8 @@ use crate::ftp_downloader;
 use crate::hls_downloader;
 use crate::logger::{log_info, log_warn};
 use crate::model::{
-    MAIN_QUEUE_ID, QueueInfo, SegmentDetail, TaskInfo, is_always_running_queue, is_builtin_queue,
+    FileClearState, MAIN_QUEUE_ID, QueueInfo, SegmentDetail, TaskInfo, is_always_running_queue,
+    is_builtin_queue,
 };
 use crate::naming;
 use crate::proxy_config::{ProxyConfig, ProxyMode};
@@ -911,31 +912,33 @@ async fn probe_missing(path: &Path) -> Option<bool> {
 // unlinks a file that may have been replaced while the engine was stopped.
 pub(crate) async fn recover_pending_file_clears(db: &Db) -> Result<(), DbError> {
     for (id, save_dir, file_name) in db.pending_task_file_clears().await? {
-        if !is_safe_file_name(&file_name) {
-            continue;
-        }
-        let path = Path::new(&save_dir).join(file_name);
-        let probe = async {
-            match tokio::fs::symlink_metadata(&path).await {
-                Ok(_) => Some(false),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    // A detached volume or unreachable parent is not evidence of unlink.
-                    let parent = path.parent()?;
-                    tokio::fs::metadata(parent).await.ok()?.is_dir().then_some(true)
-                }
-                Err(_) => None,
-            }
-        };
-        if let Ok(Some(removed)) = tokio::time::timeout(
-            std::time::Duration::from_secs(FILE_SCAN_STAT_TIMEOUT_SECS),
-            probe,
-        )
-        .await
-        {
+        if let Some(removed) = probe_pending_file_clear(&save_dir, &file_name).await {
             db.finish_task_file_clear(&id, removed).await?;
         }
     }
     Ok(())
+}
+
+async fn probe_pending_file_clear(save_dir: &str, file_name: &str) -> Option<bool> {
+    let path = task_target_path(save_dir, file_name)?;
+    let probe = async {
+        match tokio::fs::symlink_metadata(&path).await {
+            Ok(_) => Some(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A detached volume or unreachable parent is not evidence of unlink.
+                let parent = path.parent()?;
+                tokio::fs::metadata(parent).await.ok()?.is_dir().then_some(true)
+            }
+            Err(_) => None,
+        }
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(FILE_SCAN_STAT_TIMEOUT_SECS),
+        probe,
+    )
+    .await
+    .ok()
+    .flatten()
 }
 
 /// 文件跟踪：并发探测所有 completed 任务的目标文件是否仍在磁盘上，把变化
@@ -12173,6 +12176,21 @@ impl DownloadManager {
         &mut self,
         task_id: &str,
     ) -> Result<(), downloader::DownloadError> {
+        if self.try_restart_missing_task_file(task_id).await? {
+            Ok(())
+        } else {
+            Err(downloader::DownloadError::Other(
+                "Task cannot be redownloaded now".into(),
+            ))
+        }
+    }
+
+    /// Returns `false` only when the task does not need a missing-file restart.
+    /// The caller may use the legacy recreate path only in that case.
+    pub async fn try_restart_missing_task_file(
+        &mut self,
+        task_id: &str,
+    ) -> Result<bool, downloader::DownloadError> {
         let unavailable =
             || downloader::DownloadError::Other("Task cannot be redownloaded now".into());
         let task = self
@@ -12180,13 +12198,28 @@ impl DownloadManager {
             .load_task_by_id(task_id)
             .await?
             .ok_or_else(unavailable)?;
-        if task.status != 3
-            || !task.file_missing
-            || is_bt_url(&task.url)
-            || self.active_tasks.contains_key(task_id)
-            || self.edit_jobs.is_running(task_id)
-        {
+        if !matches!(task.status, 3 | 4) {
             return Err(unavailable());
+        }
+        let pending = task.file_clear_state == FileClearState::Pending;
+        if !pending && (task.status != 3 || !task.file_missing || is_bt_url(&task.url)) {
+            return Ok(false);
+        }
+        if self.active_tasks.contains_key(task_id) || self.edit_jobs.is_running(task_id) {
+            return Err(unavailable());
+        }
+        if pending {
+            let removed = probe_pending_file_clear(&task.save_dir, &task.file_name)
+                .await
+                .ok_or_else(unavailable)?;
+            self.db.finish_task_file_clear(task_id, removed).await?;
+            if !removed {
+                return Err(unavailable());
+            }
+            self.sink.emit(EngineEvent::FileMissingChanged(vec![(
+                task_id.to_owned(),
+                true,
+            )]));
         }
 
         let method = self.db.load_task_request_method(task_id).await?;
@@ -12210,7 +12243,7 @@ impl DownloadManager {
             crate::logger::report_error("download-manager", "reset speed history", &error);
         }
         self.resume_restarted_task(task_id).await;
-        Ok(())
+        Ok(true)
     }
 
     async fn resume_restarted_task(&mut self, task_id: &str) {
@@ -13472,6 +13505,7 @@ impl DownloadManager {
             }
         };
         if let Some(t) = task {
+            let delete_files = delete_files && t.file_clear_state == FileClearState::None;
             // 最终产物认领判定（详见 task_owns_final_file）：未完成任务的
             // save_dir/file_name 可能是未 dedup 的原始名，指向早前同名任务
             // 留下的成品，删除文件时必须跳过。
@@ -13717,6 +13751,7 @@ impl DownloadManager {
         // 删除前读取登记表。
         if delete_files
             && let Ok(Some(t)) = self.db.load_task_by_id(task_id).await
+            && t.file_clear_state == FileClearState::None
             && let Err(error) =
                 delete_task_artifact_files(&self.db, task_id, &t.save_dir, &[task_id.to_string()])
                     .await
@@ -14039,6 +14074,7 @@ impl DownloadManager {
         };
         let mut plans = HashMap::with_capacity(tasks.len());
         for task in tasks {
+            let delete_files = delete_files && task.file_clear_state == FileClearState::None;
             // 采纳了既有文件（逐任务决定为跳过）的任务不拥有该文件。
             let adopted = facts
                 .exists_decisions
@@ -24005,6 +24041,88 @@ mod tests {
             // Windows 上 DB 句柄可能仍持有目录；清理不改变行为断言结果。
             crate::logger::report_warning("download-manager-test", "remove test directory", &error);
         }
+    }
+
+    #[tokio::test]
+    async fn pending_file_clear_restarts_same_task_after_save_dir_returns() {
+        let dir = unique_filetrack_test_dir("pending_clear");
+        let save_dir = dir.join("mounted");
+        let detached = dir.join("detached");
+        std::fs::create_dir_all(&save_dir).expect("create save directory");
+        let path = save_dir.join("done.bin");
+        std::fs::write(&path, b"completed").expect("seed output");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let id = "pending-clear";
+        insert_task_at_status(&db, id, &save_dir.to_string_lossy(), "done.bin", 3).await;
+        db.update_task_progress(id, 9).await.expect("seed progress");
+        assert!(db.begin_task_file_clear(id).await.expect("commit intent"));
+        std::fs::remove_file(&path).expect("unlink before interrupted DB commit");
+        std::fs::rename(&save_dir, &detached).expect("simulate detached save directory");
+        recover_pending_file_clears(&db)
+            .await
+            .expect("startup recovery");
+
+        let mut manager = sched_manager(&db, 1);
+        occupy_slot(&mut manager, "running", 1, "", false);
+        assert!(manager.try_restart_missing_task_file(id).await.is_err());
+        let retained = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert_eq!(retained.status, 3);
+        assert_eq!(retained.downloaded_bytes, 9);
+        assert_eq!(retained.file_clear_state, FileClearState::Pending);
+
+        std::fs::rename(&detached, &save_dir).expect("restore save directory");
+        assert!(
+            manager
+                .try_restart_missing_task_file(id)
+                .await
+                .expect("redownload")
+        );
+        let restarted = db.load_task_by_id(id).await.unwrap().unwrap();
+        assert_eq!(restarted.status, 0);
+        assert_eq!(restarted.downloaded_bytes, 0);
+        assert!(!restarted.file_missing);
+        assert!(manager.pending_queue.iter().any(|task| task.task_id == id));
+        assert!(manager.try_restart_missing_task_file(id).await.is_err());
+        cancel_all_active(&manager);
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn deleting_cleared_tasks_preserves_replacement_files() {
+        let dir = unique_filetrack_test_dir("delete_cleared");
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut manager = sched_manager(&db, 1);
+        for id in ["single", "batch-a", "batch-b"] {
+            let name = format!("{id}.bin");
+            let path = dir.join(&name);
+            std::fs::write(&path, b"completed").expect("seed output");
+            insert_task_at_status(&db, id, &dir.to_string_lossy(), &name, 3).await;
+            manager.clear_task_file(id).await.expect("clear output");
+            std::fs::write(&path, b"replacement").expect("write unrelated file");
+        }
+
+        manager
+            .delete_task("single", true)
+            .await
+            .expect("delete single task");
+        let batch = manager
+            .delete_tasks_batch(&["batch-a".to_owned(), "batch-b".to_owned()], true)
+            .await
+            .expect("delete batch");
+        assert_eq!(batch.deleted, 2);
+        for id in ["single", "batch-a", "batch-b"] {
+            assert!(db.load_task_by_id(id).await.unwrap().is_none());
+            assert_eq!(
+                std::fs::read(dir.join(format!("{id}.bin"))).expect("read replacement"),
+                b"replacement"
+            );
+        }
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
     }
 
     #[tokio::test]

@@ -510,9 +510,20 @@ impl DaemonService {
                     .await
             }
             method::DAEMON_TASK_RESTART_FILE => {
-                let params = parse_params::<IdParams>(params)?;
-                self.execute_unit(ActorOperation::RestartMissingFile { task_id: params.id })
-                    .await
+                let params = parse_params::<RestartFileParams>(params)?;
+                let operation = ActorOperation::RestartMissingFile {
+                    task_id: params.id,
+                    recreate_if_present: params.recreate_if_present,
+                };
+                if params.recreate_if_present {
+                    match self.actor.execute(operation).await {
+                        Ok(ActorResult::Boolean(recreate)) => Ok(json!(recreate)),
+                        Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                        Err(error) => Err(actor_error(error)),
+                    }
+                } else {
+                    self.execute_unit(operation).await
+                }
             }
             method::DAEMON_TASK_PAUSE_ALL => self.execute_unit(ActorOperation::PauseAll).await,
             method::DAEMON_TASK_RESUME_ALL => self.execute_unit(ActorOperation::ResumeAll).await,
@@ -2694,6 +2705,15 @@ struct TaskIdParams {
 struct IdParams {
     #[serde(alias = "taskId", alias = "queueId", alias = "groupId")]
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestartFileParams {
+    #[serde(alias = "taskId", alias = "queueId", alias = "groupId")]
+    id: String,
+    #[serde(default)]
+    recreate_if_present: bool,
 }
 
 #[derive(Deserialize)]

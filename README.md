@@ -59,7 +59,7 @@
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
 
-In the desktop app, right-click a completed local non-BT download and choose **Delete File Only** to free disk space without removing the completed task. Use **Redownload** when you need the file again.
+In the desktop app, right-click a completed local non-BT download and choose **Delete File Only** to free disk space without removing the completed task. Use **Redownload** when you need the file again. If cleanup was interrupted and the save drive is unavailable, reconnect the drive and choose **Redownload** again.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 
