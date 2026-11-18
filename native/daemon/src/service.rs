@@ -504,6 +504,11 @@ impl DaemonService {
                 })
                 .await
             }
+            method::DAEMON_TASK_CLEAR_FILE => {
+                let params = parse_params::<IdParams>(params)?;
+                self.execute_unit(ActorOperation::ClearTaskFile { task_id: params.id })
+                    .await
+            }
             method::DAEMON_TASK_PAUSE_ALL => self.execute_unit(ActorOperation::PauseAll).await,
             method::DAEMON_TASK_RESUME_ALL => self.execute_unit(ActorOperation::ResumeAll).await,
             method::DAEMON_TASK_RESCAN => self.execute_unit(ActorOperation::RescanFiles).await,

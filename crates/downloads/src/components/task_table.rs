@@ -541,6 +541,10 @@ impl TaskMenuFacts {
         self.is_local && self.state == TaskState::Completed && !self.file_missing
     }
 
+    pub(crate) fn can_clear_task_file(&self) -> bool {
+        self.has_product_on_disk() && !self.is_bt && !self.is_torrent_sentinel
+    }
+
     /// 「复制下载地址」对单个任务有意义：有真实链接，且不与「复制磁力链接」重复
     /// （本机 BT 任务的磁力原文由「复制磁力链接」给出，后者还带会话追加的 tracker）。
     pub(crate) fn can_copy_url(&self) -> bool {
@@ -635,6 +639,7 @@ pub(crate) enum MenuEntry {
     Separator,
     Delete,
     DeleteWithFiles,
+    ClearTaskFile,
     /// 在主窗口停靠详情面板中查看（独立窗口经面板头部「在独立窗口打开」）。
     ShowDetail,
     /// 插件贡献的命令（下标对应 [`DownloadView`] 上的插件命令列表）。
@@ -747,6 +752,11 @@ pub(crate) fn context_menu_items(selection: &[TaskMenuFacts]) -> Vec<MenuEntry> 
     if selection.iter().any(|task| task.controllable) {
         items.push(MenuEntry::Delete);
         items.push(MenuEntry::DeleteWithFiles);
+    }
+    if let [only] = selection
+        && only.can_clear_task_file()
+    {
+        items.push(MenuEntry::ClearTaskFile);
     }
     if selection.iter().any(|task| task.is_local) {
         items.push(MenuEntry::ShowDetail);
@@ -3340,6 +3350,12 @@ impl DownloadTableDelegate {
                 destructive,
                 self.strings.delete_task_and_file.clone(),
                 Box::new(crate::actions::DeleteSelectedWithFiles),
+            ),
+            MenuEntry::ClearTaskFile => destructive_menu_item(
+                menu,
+                destructive,
+                self.strings.clear_task_file.clone(),
+                Box::new(crate::actions::ClearSelectedTaskFile),
             ),
             MenuEntry::ShowDetail => menu.menu_with_icon(
                 self.strings.detail.clone(),
@@ -6830,6 +6846,26 @@ mod context_menu_tests {
             let items = context_menu_items(&[stale]);
             assert!(items.contains(&MenuEntry::Boost));
             assert!(!items.contains(&MenuEntry::CancelBoost));
+        }
+    }
+
+    #[test]
+    fn clear_task_file_requires_one_local_completed_non_bt_product() {
+        assert!(
+            context_menu_items(&[task(true, TaskState::Completed)])
+                .contains(&MenuEntry::ClearTaskFile)
+        );
+        let mut bt = task(true, TaskState::Completed);
+        bt.is_bt = true;
+        let mut missing = task(true, TaskState::Completed);
+        missing.file_missing = true;
+        for ineligible in [
+            bt,
+            missing,
+            task(false, TaskState::Completed),
+            task(true, TaskState::Paused),
+        ] {
+            assert!(!context_menu_items(&[ineligible]).contains(&MenuEntry::ClearTaskFile));
         }
     }
 

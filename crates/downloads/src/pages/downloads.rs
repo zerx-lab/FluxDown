@@ -2047,6 +2047,53 @@ impl DownloadView {
         self.execute_toolbar(ToolbarCommand::Delete, cx);
     }
 
+    fn on_clear_selected_task_file(
+        &mut self,
+        _: &crate::actions::ClearSelectedTaskFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let [key] = selected.as_slice() else {
+            return;
+        };
+        if !task_menu_facts_for(self.controller.store(), key)
+            .is_some_and(|facts| facts.can_clear_task_file())
+        {
+            return;
+        }
+        let task_id = key.task_id().to_owned();
+        let title = self.strings.clear_task_file.clone();
+        let description = self.strings.clear_task_file_confirmation.clone();
+        let ok_label = self.strings.delete.clone();
+        let cancel_label = self.strings.cancel.clone();
+        let this = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let this = this.clone();
+            let task_id = task_id.clone();
+            dialog
+                .title(fluxdown_ui_components::dialog_title(title.clone(), cx))
+                .description(description.clone())
+                .footer(fluxdown_ui_components::dialog_footer(
+                    Some(cancel_label.clone()),
+                    ok_label.clone(),
+                    fluxdown_ui_components::DialogIntent::Destructive,
+                    cx,
+                ))
+                .on_ok(move |_, _, cx| {
+                    this.update(cx, |this, cx| {
+                        this.execute_commands(
+                            vec![DownloadsCommand::ClearTaskFile {
+                                task_id: task_id.clone(),
+                            }],
+                            cx,
+                        );
+                    })
+                    .is_ok()
+                })
+        });
+    }
+
     fn on_delete_selected_with_files(
         &mut self,
         _: &DeleteSelectedWithFiles,
@@ -2742,6 +2789,7 @@ impl Render for DownloadView {
             .on_action(cx.listener(Self::on_copy_magnet_selected))
             .on_action(cx.listener(Self::on_export_torrent_selected))
             .on_action(cx.listener(Self::on_redownload_selected))
+            .on_action(cx.listener(Self::on_clear_selected_task_file))
             .on_action(cx.listener(Self::on_toggle_boost_selected))
             .on_action(cx.listener(Self::on_cycle_density))
             .on_action(cx.listener(Self::on_cycle_group_by))

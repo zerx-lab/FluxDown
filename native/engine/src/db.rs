@@ -2371,8 +2371,19 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    /// 批量落库文件跟踪标志：语义与 [`Self::update_task_file_missing`] 完全
-    /// 一致（逐行 `WHERE id AND status = 3`），但整批在**同一个事务**里提交。
+    // 0 = present, 1 = unexpectedly missing, 2 = explicitly cleared.
+    // Persist intent before unlinking so a concurrent scan cannot enqueue cleanup.
+    pub(crate) async fn mark_task_file_cleared(&self, id: &str) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET file_missing = 2 WHERE id = $1 AND status = 3 AND file_missing = 0",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 批量落库文件跟踪标志。跳过非完成任务与显式清理的记录。
     /// SQLite 在 WAL + `synchronous=NORMAL` 下提交不再逐次 fsync，但每条独立
     /// UPDATE 仍是一次隐式事务（一次 WAL 写入与写锁往返）；
     /// 外置盘掉线这类「上万条同时翻转」的场景下那是显著阻塞，还会和下载
@@ -2391,12 +2402,13 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         let mut applied = Vec::with_capacity(updates.len());
         for (id, missing) in updates {
-            let result =
-                sqlx::query("UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3")
-                    .bind(*missing as i32)
-                    .bind(id.as_str())
-                    .execute(&mut *tx)
-                    .await?;
+            let result = sqlx::query(
+                "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing <> 2",
+            )
+            .bind(*missing as i32)
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
             if result.rows_affected() > 0 {
                 applied.push((id.clone(), *missing));
             }
@@ -2929,7 +2941,7 @@ impl Db {
     pub async fn load_file_tracking_rows(&self) -> Result<Vec<FileTrackingRow>, DbError> {
         let rows = sqlx::query(
             "SELECT id, save_dir, file_name, file_missing, status FROM tasks \
-             WHERE status IN (0, 1, 3, 5)",
+             WHERE status IN (0, 1, 3, 5) AND file_missing <> 2",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -2997,6 +3009,29 @@ impl Db {
             for row in &rows {
                 results.push(task_from_row(row)?);
             }
+        }
+        Ok(results)
+    }
+
+    /// Recheck detached scan results before the actor removes task records.
+    pub async fn unexpectedly_missing_task_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut results = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("${i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id FROM tasks WHERE status = 3 AND file_missing = 1 AND id IN ({placeholders})"
+            );
+            let mut query = sqlx::query_scalar::<Any, String>(AssertSqlSafe(sql));
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            results.extend(query.fetch_all(&self.pool).await?);
         }
         Ok(results)
     }

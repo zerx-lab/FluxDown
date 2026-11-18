@@ -12168,96 +12168,64 @@ impl DownloadManager {
         self.send_tasks_snapshot().await;
     }
 
-    /// 仅删除已完成任务的磁盘产物，保留任务记录——与
-    /// [`Self::delete_task`]`(delete_files=true)` 相反（那个连任务本身一起删）。
-    /// 删除后把 `file_missing` 落库为 `true` 并广播
-    /// [`crate::events::EngineEvent::FileMissingChanged`]，复用文件跟踪已有的
-    /// 「文件已丢失」展示；用户之后可用 [`Self::restart_task`] 在同一条任务
-    /// 记录上重新下载，无需重新粘贴 URL/重设保存目录等参数。
-    ///
-    /// 只对 `status == 3`（completed）生效：未完成任务没有已落地的最终产物，
-    /// 「只删文件」在语义上就是 [`Self::restart_task`]。BT 任务的产物由
-    /// librqbit session 管理且常是多文件目录，这条路径不支持。
-    ///
-    /// 返回 `true` 表示文件已被清除（或原本就不存在）且 DB 已同步；`false`
-    /// 表示任务不存在、不是已完成的非 BT 任务、或文件名不安全无法定位磁盘
-    /// 路径。
-    pub async fn clear_task_file(&mut self, task_id: &str) -> bool {
-        let Ok(Some(t)) = self.db.load_task_by_id(task_id).await else {
-            log_info!("[manager] clear_task_file {}: task not found", task_id);
-            return false;
+    /// Remove the outputs of a completed non-BT task without resetting its history.
+    pub async fn clear_task_file(&mut self, task_id: &str) -> Result<(), downloader::DownloadError> {
+        let unavailable = || {
+            downloader::DownloadError::Other("Task output is not eligible for cleanup".into())
         };
-        if t.status != 3 {
-            log_info!(
-                "[manager] clear_task_file {}: not completed (status={})",
-                task_id,
-                t.status
-            );
-            return false;
-        }
-        if is_bt_url(&t.url) {
-            log_info!(
-                "[manager] clear_task_file {}: BT task — not supported",
-                task_id
-            );
-            return false;
-        }
-        if !is_safe_file_name(&t.file_name) {
-            log_info!(
-                "[manager] clear_task_file {}: unsafe file name, refusing",
-                task_id
-            );
-            return false;
-        }
-        let path = PathBuf::from(&t.save_dir).join(&t.file_name);
-        if let Err(e) = tokio::fs::remove_file(&path).await
-            && e.kind() != std::io::ErrorKind::NotFound
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .ok_or_else(unavailable)?;
+        if task.status != 3
+            || task.file_missing
+            || is_bt_url(&task.url)
+            || !is_safe_file_name(&task.file_name)
         {
-            log_info!(
-                "[manager] clear_task_file {}: remove {} failed: {}",
-                task_id,
-                path.display(),
-                e
-            );
-            return false;
+            return Err(unavailable());
         }
-        // DASH 音轨 sidecar（视频轨对任务 URL 非 .mpd，需查库确认）随主文件
-        // 一并清理，避免残留孤儿音轨文件。
-        let has_audio_sidecar = dash_downloader::is_dash_url(&t.url)
-            || hls_downloader::is_hls_url(&t.url)
-            || self
-                .db
-                .load_audio_url(task_id)
-                .await
-                .unwrap_or_default()
-                .is_some();
-        if has_audio_sidecar {
-            let audio_path = dash_downloader::build_audio_path(&path);
-            if let Err(error) = tokio::fs::remove_file(&audio_path).await
+
+        let ids = [task.task_id];
+        let mut plans = self.plan_batch_deletion(&ids, true).await?;
+        let mut files = plans.remove(task_id).ok_or_else(unavailable)?;
+        if !files.owns_final {
+            return Err(unavailable());
+        }
+        let path = PathBuf::from(&files.save_dir).join(&files.file_name);
+        if files.has_audio_sidecar {
+            let audio = dash_downloader::build_audio_path(&path);
+            if let Some(name) = audio.file_name().and_then(|name| name.to_str())
+                && !file_name_claimed_by_others(&self.db, &files.save_dir, name, &ids).await
+            {
+                files.artifacts.push(audio);
+            }
+        }
+        self.file_hash_jobs.cancel(task_id);
+        // Remove the primary output last; a sidecar failure leaves the action retryable.
+        files.artifacts.retain(|artifact| artifact != &path);
+        for artifact in files.artifacts {
+            if let Err(error) = tokio::fs::remove_file(artifact).await
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                crate::logger::report_warning("download-manager", "clear audio file", &error);
-                return false;
+                return Err(error.into());
             }
         }
-        match self.db.update_task_file_missing(task_id, true).await {
-            Ok(true) => {
-                self.sink.emit(EngineEvent::FileMissingChanged(vec![(
-                    task_id.to_string(),
-                    true,
-                )]));
-                true
-            }
-            Ok(false) => false,
-            Err(e) => {
-                log_info!(
-                    "[manager] clear_task_file {}: DB update error: {}",
-                    task_id,
-                    e
-                );
-                false
-            }
+        if !self.db.mark_task_file_cleared(task_id).await? {
+            return Err(unavailable());
         }
+        if let Err(error) = tokio::fs::remove_file(path).await
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            self.db.update_task_file_missing(task_id, false).await?;
+            return Err(error.into());
+        }
+
+        self.sink.emit(EngineEvent::FileMissingChanged(vec![(
+            task_id.to_owned(),
+            true,
+        )]));
+        Ok(())
     }
 
     async fn resume_task_inner(&mut self, task_id: &str) {
@@ -23818,8 +23786,16 @@ mod tests {
         )
         .expect("construct manager");
 
-        let ok = mgr.clear_task_file("t-clear").await;
-        assert!(ok, "clear_task_file must succeed for a completed task");
+        insert_task_at_status(&db, "t-shared", &save_dir, "done.bin", 2).await;
+        assert!(mgr.clear_task_file("t-clear").await.is_err());
+        assert!(file_path.exists(), "a shared output must not be removed");
+        db.delete_task("t-shared")
+            .await
+            .expect("remove shared claim");
+
+        mgr.clear_task_file("t-clear")
+            .await
+            .expect("clear completed output");
         assert!(!file_path.exists(), "磁盘文件必须被删除");
 
         let task = db
@@ -23829,6 +23805,34 @@ mod tests {
             .expect("task record must still exist");
         assert_eq!(task.status, 3, "任务记录（含 status）必须原样保留");
         assert!(task.file_missing, "file_missing 必须落库为 true");
+        assert_eq!(task.downloaded_bytes, 4096);
+        let stale_scan = [("t-clear".to_owned(), true)];
+        assert!(
+            db.update_tasks_file_missing(&stale_scan)
+                .await
+                .expect("scan update")
+                .is_empty()
+        );
+        assert!(
+            db.unexpectedly_missing_task_ids(&["t-clear".to_owned()])
+                .await
+                .expect("recheck queued cleanup")
+                .is_empty()
+        );
+
+        let (cleanup_tx, mut cleanup_rx) = mpsc::channel(1);
+        scan_missing_files(
+            db.clone(),
+            sink.clone(),
+            Arc::new(AtomicBool::new(false)),
+            true,
+            cleanup_tx,
+        )
+        .await;
+        assert!(
+            cleanup_rx.try_recv().is_err(),
+            "explicit cleanup must retain history"
+        );
 
         assert!(
             sink.events().iter().any(|e| matches!(
