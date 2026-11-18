@@ -5239,6 +5239,46 @@ mod tests {
     }
 
     #[test]
+    fn directory_grouping_in_video_category_uses_only_matching_task_paths() -> Result<(), I18nError> {
+        let mut delegate = delegate(&[2, 2, 2])?;
+        let mut rows = delegate.store.local().to_vec();
+        rows[0].name = "one.mp4".into();
+        rows[0].file_extension = "mp4".into();
+        rows[0].save_dir = "/dl/Shows".into();
+        rows[1].name = "two.mp4".into();
+        rows[1].file_extension = "mp4".into();
+        rows[1].save_dir = "/dl/Movies".into();
+        rows[2].name = "notes.txt".into();
+        rows[2].file_extension = "txt".into();
+        rows[2].save_dir = "/dl/Documents".into();
+        delegate.store.replace_local(rows);
+        delegate.set_categories(Rc::new(CategoryIndex::from_dtos(
+            fluxdown_protocol::CustomCategoryDto::builtin_defaults(),
+        )));
+        delegate.set_directory_context("/dl".into(), HashMap::new());
+        delegate.set_filter(TableFilter::Download(DownloadFilter::with_category(
+            DownloadStatusFilter::All,
+            "builtin_video",
+        )));
+        delegate.prefs_mut().group_by = ViewGroupBy::Directory;
+        delegate.refresh_view();
+
+        let folders = delegate
+            .visible
+            .iter()
+            .filter_map(|row| match row {
+                VisibleRow::GroupHeader { label, count, .. } => Some((label.as_ref(), *count)),
+                _ => None,
+            })
+            .collect::<Vec<(&str, usize)>>();
+        assert_eq!(folders[0], ("Default download directory", 2));
+        assert_eq!(folders.len(), 3);
+        assert!(folders.contains(&("Movies", 1)));
+        assert!(folders.contains(&("Shows", 1)));
+        Ok(())
+    }
+
+    #[test]
     fn directory_grouping_tracks_task_moves_and_default_root_changes() -> Result<(), I18nError> {
         let mut delegate = delegate(&[3, 2, 2])?;
         let mut rows = delegate.store.local().to_vec();

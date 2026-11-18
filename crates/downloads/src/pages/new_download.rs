@@ -39,7 +39,7 @@ use crate::{
             ProxyChoice, THREAD_PRESETS, ThreadChoice, UA_PRESET_CUSTOM, UA_PRESET_DEFAULT,
             UA_PRESETS, UrlEntry, append_entries, build_requests, capture_entry, captured_referrer,
             checksum_spec, compose_request, custom_segments, detect_ua_preset, manual_proxy_url,
-            parse_entries, parse_input, ua_preset_keys, ua_preset_value,
+            parse_entries, parse_input, suggested_subfolder, ua_preset_keys, ua_preset_value,
         },
         save_dir_category::{
             CategoryMode, NewDownloadCategory, category_mode_preference, category_options,
@@ -106,6 +106,8 @@ pub struct NewDownloadQueue {
 pub struct NewDownloadContext {
     /// 保存目录初值（沿用上次 / 全局默认）。
     pub save_dir: String,
+    /// 全局默认目录，不受上次选择和分类路由影响。
+    pub default_save_dir: String,
     /// 保存目录历史（最新在前）；`None` = 偏好关闭，不列出也不记录。
     pub save_dir_history: Option<Vec<String>>,
     /// 按分类记住的手动保存目录（与历史同一开关）；`None` = 偏好关闭，不列出也不记录。
@@ -190,13 +192,14 @@ pub(crate) fn build_new_download_context(
         .get(LAST_SAVE_DIR_PREF)
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
+    let default_save_dir = match config_str("default_save_dir") {
+        "" => runtime_save_dir,
+        configured => configured,
+    };
     let save_dir = if remember && !last_save_dir.is_empty() {
         last_save_dir
     } else {
-        match config_str("default_save_dir") {
-            "" => runtime_save_dir,
-            configured => configured,
-        }
+        default_save_dir
     };
     let queue_id = selected_queue.unwrap_or_else(|| match config_str("default_queue_id") {
         "" => fluxdown_protocol::MAIN_QUEUE_ID,
@@ -249,6 +252,7 @@ pub(crate) fn build_new_download_context(
     let category_options = category_options(&categories);
     NewDownloadContext {
         save_dir: save_dir.to_owned(),
+        default_save_dir: default_save_dir.to_owned(),
         save_dir_history,
         category_save_dir_history,
         queue_id: queue_id.to_owned(),
@@ -552,9 +556,10 @@ impl NewDownloadView {
         cx.subscribe_in(
             &self.save_dir,
             window,
-            |this, _, event: &InputEvent, _, _| {
+            |this, _, event: &InputEvent, _, cx| {
                 if let InputEvent::Change = event {
                     this.category_dir_manually_edited = true;
+                    cx.notify();
                 }
             },
         )
@@ -999,6 +1004,7 @@ impl NewDownloadView {
     ) {
         let NewDownloadContext {
             save_dir,
+            default_save_dir,
             save_dir_history,
             category_save_dir_history,
             queue_id,
@@ -1042,6 +1048,7 @@ impl NewDownloadView {
             self.proxy_choice = ProxyChoice::FollowGlobal;
         }
         self.context.save_dir = save_dir;
+        self.context.default_save_dir = default_save_dir;
         self.context.save_dir_history = save_dir_history;
         self.context.category_save_dir_history = category_save_dir_history;
         self.context.queue_id = queue_id;
@@ -1847,6 +1854,11 @@ impl NewDownloadView {
                 ))
             });
         }
+        let suggestion = if self.save_dir_untouched(cx) {
+            suggested_subfolder(&self.context.default_save_dir, &self.entries)
+        } else {
+            None
+        };
         form_field(
             self.strings.save_dir.clone(),
             input_with_action(
@@ -1862,9 +1874,36 @@ impl NewDownloadView {
                     })),
                 cx,
             ),
-            None,
+            suggestion.as_deref().map(SharedString::from),
             cx,
         )
+        .when_some(suggestion, |field, dir| {
+            field.child(
+                Button::new("new-download-use-suggested-subfolder")
+                    .outline()
+                    .label(SharedString::from(
+                        self.translator
+                            .read(cx)
+                            .text("useSuggestedSubfolder")
+                            .to_owned(),
+                    ))
+                    .control(cx)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        if this.save_dir_untouched(cx)
+                            && suggested_subfolder(&this.context.default_save_dir, &this.entries)
+                                .as_deref()
+                                == Some(dir.as_str())
+                        {
+                            this.category_dir_manually_edited = true;
+                            this.save_dir_menu_open = false;
+                            this.save_dir.update(cx, |input, cx| {
+                                input.set_value(dir.clone(), window, cx);
+                            });
+                            cx.notify();
+                        }
+                    })),
+            )
+        })
     }
 
     /// 下拉候选（偏好关闭时为空）：先列当前分类记住的目录，再列全局历史，排除当前输入。

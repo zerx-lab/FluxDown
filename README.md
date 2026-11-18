@@ -44,6 +44,8 @@
 - **Automation & remote management** — RSS subscriptions, scheduled queues, webhooks, plugins and optional FluxCloud device collaboration
 - **Local-first** — free and open source, no ads, no account required for local downloads; resumable state stored locally by default
 
+On desktop, select a download category and group by **Directory** in the view menu to browse existing save folders without moving files. When adding a single local download, you can preview and apply a suggested subfolder or enter your own path. RSS still collects history without downloading it on the first fetch; use **Select all downloadable items** and **Download selected** in a subscription to catch up.
+
 ## Features
 
 | Feature | Description |

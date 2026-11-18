@@ -1313,7 +1313,7 @@ impl Render for RssView {
                             ),
                     ),
             );
-            if !visible.is_empty() || selected_count > 0 {
+            if !self.controller.items.is_empty() || selected_count > 0 {
                 let select_state = if all_visible {
                     CheckState::Checked
                 } else if any_visible {
@@ -1356,6 +1356,29 @@ impl Render for RssView {
                                         .text_color(extended.colors.text_tertiary)
                                         .child(self.t("rssSelectVisible", cx)),
                                 ),
+                        )
+                        .child(
+                            Button::new("rss-select-all-downloadable")
+                                .ghost()
+                                .label(self.t("rssSelectAllDownloadable", cx))
+                                .control(cx)
+                                .disabled(
+                                    stale
+                                        || self.controller.loading
+                                        || self
+                                            .controller
+                                            .bulk_download_candidates()
+                                            .next()
+                                            .is_none(),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.controller.selected = this
+                                        .controller
+                                        .bulk_download_candidates()
+                                        .map(str::to_owned)
+                                        .collect();
+                                    cx.notify();
+                                })),
                         )
                         .when(selected_count > 0, |bar| {
                             bar.child(

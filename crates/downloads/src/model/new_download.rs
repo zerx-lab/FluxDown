@@ -88,6 +88,58 @@ pub(crate) fn url_file_segment(url: &str) -> Option<&str> {
         .filter(|segment| !segment.is_empty())
 }
 
+/// 建议一个目录组件，不把来自链接的分隔符、设备名或特殊路径解释为文件系统路径。
+pub(crate) fn suggested_subfolder(base: &str, entries: &[UrlEntry]) -> Option<String> {
+    let base = base.trim();
+    let [entry] = entries else {
+        return None;
+    };
+    if base.is_empty() {
+        return None;
+    }
+    let decoded;
+    let name = if entry.file_name.trim().is_empty() {
+        decoded = percent_decode_utf8(url_file_segment(&entry.url)?)?;
+        decoded.as_str()
+    } else {
+        entry.file_name.trim()
+    };
+    if name.ends_with([' ', '.'])
+        || name
+            .chars()
+            .any(|ch| ch.is_control() || "/\\:<>\"|?*".contains(ch))
+    {
+        return None;
+    }
+    let stem = std::path::Path::new(name).file_stem()?.to_str()?.trim_end();
+    let device = stem.split('.').next()?.trim_end().to_ascii_uppercase();
+    if stem.is_empty()
+        || stem.starts_with('.')
+        || stem.ends_with('.')
+        || stem.len() > 255
+        || matches!(
+            device.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        )
+        || device
+            .strip_prefix("COM")
+            .or_else(|| device.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+    {
+        return None;
+    }
+    std::path::Path::new(base)
+        .join(stem)
+        .into_os_string()
+        .into_string()
+        .ok()
+}
+
 /// 解析多行文本为下载条目。
 ///
 /// - 原始行以空格 / Tab 开头且不以链接开头 = 选项行，附着到上一条（`out=` / `checksum=`）；
@@ -610,6 +662,25 @@ mod tests {
         capture_entry, captured_referrer, checksum_spec, custom_segments, detect_ua_preset,
         manual_proxy_url, parse_entries, parse_input,
     };
+
+    #[test]
+    fn suggested_subfolder_uses_one_decoded_link_name_without_interpreting_paths() {
+        let root = "downloads";
+        let base = std::path::Path::new(root);
+        let entry = UrlEntry::with_url("https://example.org/%E8%A7%86%E9%A2%91.mkv?token=secret");
+        assert_eq!(
+            super::suggested_subfolder(root, std::slice::from_ref(&entry)),
+            base.join("视频").into_os_string().into_string().ok()
+        );
+        assert_eq!(
+            super::suggested_subfolder(root, &[entry.clone(), entry]),
+            None
+        );
+        for name in ["..", "a%2Fb.mkv", "a%5Cb.mkv", "NUL.mkv", "COM%C2%B9.mkv", ""] {
+            let entry = UrlEntry::with_url(&format!("https://example.org/{name}"));
+            assert_eq!(super::suggested_subfolder(root, &[entry]), None, "{name}");
+        }
+    }
 
     fn capture(url: &str, referrer: &str) -> PendingCaptureDto {
         PendingCaptureDto {

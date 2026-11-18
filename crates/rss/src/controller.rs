@@ -393,6 +393,20 @@ impl RssController {
         }
     }
 
+    /// 批量下载不等同于逐条「重新下载」：只纳入尚未处置的新条目和首次收录的历史。
+    pub(crate) fn bulk_download_candidates(&self) -> impl Iterator<Item = &str> {
+        self.items
+            .iter()
+            .filter(|item| {
+                self.selected_source.as_deref() == Some(item.source_id.as_str())
+                    && matches!(item.status, 0 | 5)
+                    && (!item.link.trim().is_empty() || !item.enclosure_url.trim().is_empty())
+                    && (self.busy.is_empty()
+                        || !self.busy.contains(&format!("{}\0{}", item.source_id, item.guid)))
+            })
+            .map(|item| item.guid.as_str())
+    }
+
     pub(crate) fn task_status(&self, item: &RssItemDto) -> Option<(i32, bool)> {
         (item.status == 1 && !item.task_id.is_empty())
             .then(|| self.tasks.get(&item.task_id).copied())
@@ -499,6 +513,41 @@ mod tests {
             episode_key: String::new(),
             reason: String::new(),
         }
+    }
+
+    #[test]
+    fn bulk_download_includes_initial_history_but_not_duplicates_or_other_sources() {
+        let mut controller = RssController::new(Arc::new(Port));
+        controller.stale = false;
+        controller.selected_source = Some("a".into());
+        controller.items = [
+            ("a", "new", 0),
+            ("a", "history", 5),
+            ("a", "downloaded", 1),
+            ("a", "ignored", 2),
+            ("a", "filtered", 3),
+            ("a", "duplicate", 4),
+            ("a", "no-link", 5),
+            ("b", "other", 5),
+        ]
+        .into_iter()
+        .map(|(source, guid, status)| {
+            let mut row = item(source, guid, guid, 0, status, "");
+            if guid != "no-link" {
+                row.enclosure_url = format!("https://example.org/{guid}");
+            }
+            row
+        })
+        .collect();
+        assert_eq!(
+            controller.bulk_download_candidates().collect::<Vec<_>>(),
+            ["new", "history"]
+        );
+        assert!(controller.begin_action("a", "new"));
+        assert_eq!(
+            controller.bulk_download_candidates().collect::<Vec<_>>(),
+            ["history"]
+        );
     }
 
     fn snapshot() -> Result<AgentSnapshot, serde_json::Error> {
