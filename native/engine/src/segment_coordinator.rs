@@ -5783,8 +5783,8 @@ async fn do_segment(
     } else {
         None
     };
-    // hint 模式跳过了探测，反机器人质询只能在真实请求上首次暴露：换中性 UA 重发
-    // 同一请求（`escape_bot_challenge` 保证每个请求最多重发一次，循环必然收敛）。
+    // hint 模式跳过了探测：质询，或 403/429 且请求头带非中性 UA，只能在真实请求上
+    // 首次暴露。换中性 UA 重发同一请求（`escape_bot_challenge` 保证每个请求最多重发一次）。
     let mut used = spec.current();
     let mut refreshed = false;
     let resp = loop {
