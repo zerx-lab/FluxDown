@@ -65,7 +65,11 @@ pub(super) fn annotate(mut plugins: Vec<PluginDto>) -> Vec<PluginDto> {
     plugins
 }
 
-fn conflict(pattern: &str, other_identity: &str, other_pattern: &str) -> PluginResolverUrlConflictDto {
+fn conflict(
+    pattern: &str,
+    other_identity: &str,
+    other_pattern: &str,
+) -> PluginResolverUrlConflictDto {
     PluginResolverUrlConflictDto {
         pattern: pattern.to_owned(),
         other_identity: other_identity.to_owned(),
