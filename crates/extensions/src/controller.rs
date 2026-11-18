@@ -475,7 +475,11 @@ impl ExtensionsController {
         self.set_component_config(manual_path_key(kind), path.trim())
     }
 
-    pub(crate) fn set_component_config(&self, key: &str, value: &str) -> PortFuture<serde_json::Value> {
+    pub(crate) fn set_component_config(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> PortFuture<serde_json::Value> {
         self.call(
             method::DAEMON_CONFIG_PATCH,
             serde_json::json!({

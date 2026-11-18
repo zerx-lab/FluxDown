@@ -171,7 +171,9 @@ impl ExtensionsView {
         if let Some(input) = &ui.input {
             if ui.synced != value && !input.read(cx).focus_handle(cx).is_focused(window) {
                 ui.synced = value.to_owned();
-                input.update(cx, |input, cx| input.set_value(value.to_owned(), window, cx));
+                input.update(cx, |input, cx| {
+                    input.set_value(value.to_owned(), window, cx)
+                });
             }
             return;
         }
@@ -244,7 +246,9 @@ impl ExtensionsView {
         if value.trim() == self.controller.component_mirror() {
             return;
         }
-        let future = self.controller.set_component_config(COMPONENT_MIRROR_KEY, value.trim());
+        let future = self
+            .controller
+            .set_component_config(COMPONENT_MIRROR_KEY, value.trim());
         ui.saving = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {

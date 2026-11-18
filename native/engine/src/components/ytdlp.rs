@@ -267,20 +267,19 @@ mod install {
             Some(tag) => format!("{RELEASE_TAG_API}{tag}"),
             None => RELEASE_LATEST_API.to_string(),
         };
-        let release = match super::super::fetch_github_json_with_mirror(&clients, &url, &mirror_base)
-            .await
-        {
-            Ok(release) => release,
-            Err(error) => {
-                // 官网缓存的是列表，不代理单个 tag。只使用与安装请求匹配的条目。
-                let Ok(releases) = super::super::fetch_official_versions_json(&clients, "ytdlp")
-                    .await
-                else {
-                    return Err(error);
-                };
-                select_stable_release(releases, version).ok_or(error)?
-            }
-        };
+        let release =
+            match super::super::fetch_github_json_with_mirror(&clients, &url, &mirror_base).await {
+                Ok(release) => release,
+                Err(error) => {
+                    // 官网缓存的是列表，不代理单个 tag。只使用与安装请求匹配的条目。
+                    let Ok(releases) =
+                        super::super::fetch_official_versions_json(&clients, "ytdlp").await
+                    else {
+                        return Err(error);
+                    };
+                    select_stable_release(releases, version).ok_or(error)?
+                }
+            };
         let chosen_ver = release["tag_name"]
             .as_str()
             .filter(|s| !s.is_empty())
