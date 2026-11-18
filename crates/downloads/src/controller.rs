@@ -242,6 +242,9 @@ pub enum DownloadsCommand {
     },
     /// 删除（含文件）后按原参数重建。
     Redownload(Box<fluxdown_protocol::CreateTaskRequest>, String),
+    RestartMissingFile {
+        task_id: String,
+    },
     MoveToQueue {
         task_id: String,
         queue_id: String,

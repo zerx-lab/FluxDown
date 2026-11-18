@@ -907,6 +907,37 @@ async fn probe_missing(path: &Path) -> Option<bool> {
     }
 }
 
+// Run before the first task snapshot. Recovery only observes the path; it never
+// unlinks a file that may have been replaced while the engine was stopped.
+pub(crate) async fn recover_pending_file_clears(db: &Db) -> Result<(), DbError> {
+    for (id, save_dir, file_name) in db.pending_task_file_clears().await? {
+        if !is_safe_file_name(&file_name) {
+            continue;
+        }
+        let path = Path::new(&save_dir).join(file_name);
+        let probe = async {
+            match tokio::fs::symlink_metadata(&path).await {
+                Ok(_) => Some(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // A detached volume or unreachable parent is not evidence of unlink.
+                    let parent = path.parent()?;
+                    tokio::fs::metadata(parent).await.ok()?.is_dir().then_some(true)
+                }
+                Err(_) => None,
+            }
+        };
+        if let Ok(Some(removed)) = tokio::time::timeout(
+            std::time::Duration::from_secs(FILE_SCAN_STAT_TIMEOUT_SECS),
+            probe,
+        )
+        .await
+        {
+            db.finish_task_file_clear(&id, removed).await?;
+        }
+    }
+    Ok(())
+}
+
 /// 文件跟踪：并发探测所有 completed 任务的目标文件是否仍在磁盘上，把变化
 /// 落库并通过 [`EngineEvent::FileMissingChanged`] 上报。仅由
 /// [`DownloadManager::spawn_file_scan`] 在 detached task 中调用；`scanning`
@@ -3992,8 +4023,8 @@ pub struct DownloadManager {
     /// key = task_id，value = 已自动重试次数。
     /// 超过 `max_auto_retries` 后不再重试，保持 error 状态等用户手动恢复。
     auto_retry_counts: HashMap<String, u32>,
-    /// 浏览器接管的非 GET 任务的请求事务，供同一进程内重试 / 恢复重放（见
-    /// [`ReplayableRequest`]）。完成、删除、换源时移除。
+    /// Browser non-GET requests for replay, including redownload after completion.
+    /// Bodies remain process-local and are removed when deleting the task or replacing its URL.
     replayable_requests: HashMap<String, ReplayableRequest>,
     /// 拦截器 failed 阶段插件重试的独立额度账本（与 `auto_retry_counts` 互不影响）。
     #[cfg(feature = "plugins")]
@@ -8369,8 +8400,6 @@ impl DownloadManager {
                 self.intercept_retry_counts.remove(task_id);
                 self.auto_failover_pending.remove(task_id);
                 self.auto_failover_attempts.remove(task_id);
-                // 已完成的非 GET 事务不再重放：请求体常带凭据，不在内存多留。
-                self.replayable_requests.remove(task_id);
                 // 来源标记：插件 onDone 可能移动/改写文件，须在通知前打上。后台执行，
                 // 不阻塞 actor；BT 多文件产物是目录，由模块递归展开。
                 // 开启「使用服务器文件时间」时标记不得刷掉服务器时间（Windows NTFS
@@ -12135,6 +12164,56 @@ impl DownloadManager {
             );
         }
 
+        self.resume_restarted_task(task_id).await;
+    }
+
+    /// Restart a completed non-BT task with missing output, using its stored request.
+    /// A rejected restart leaves the completed record unchanged.
+    pub async fn restart_missing_task_file(
+        &mut self,
+        task_id: &str,
+    ) -> Result<(), downloader::DownloadError> {
+        let unavailable =
+            || downloader::DownloadError::Other("Task cannot be redownloaded now".into());
+        let task = self
+            .db
+            .load_task_by_id(task_id)
+            .await?
+            .ok_or_else(unavailable)?;
+        if task.status != 3
+            || !task.file_missing
+            || is_bt_url(&task.url)
+            || self.active_tasks.contains_key(task_id)
+            || self.edit_jobs.is_running(task_id)
+        {
+            return Err(unavailable());
+        }
+
+        let method = self.db.load_task_request_method(task_id).await?;
+        if !method.is_empty()
+            && !self
+                .replayable_requests
+                .get(task_id)
+                .is_some_and(|request| request.method == method)
+        {
+            return Err(downloader::DownloadError::Other(
+                downloader::POST_ONLY_RESUME_MESSAGE.into(),
+            ));
+        }
+
+        // Do not unlink anything here: the cleared name may now belong to another task.
+        if !self.db.reset_missing_task_for_restart(task_id).await? {
+            return Err(unavailable());
+        }
+        self.file_hash_jobs.cancel(task_id);
+        if let Err(error) = self.db.reset_task_speed_history(task_id).await {
+            crate::logger::report_error("download-manager", "reset speed history", &error);
+        }
+        self.resume_restarted_task(task_id).await;
+        Ok(())
+    }
+
+    async fn resume_restarted_task(&mut self, task_id: &str) {
         // 4. 内存态复位：重试配额/failover 标记/退避占用全部作废。
         self.auto_retry_counts.remove(task_id);
         #[cfg(feature = "plugins")]
@@ -12169,10 +12248,12 @@ impl DownloadManager {
     }
 
     /// Remove the outputs of a completed non-BT task without resetting its history.
-    pub async fn clear_task_file(&mut self, task_id: &str) -> Result<(), downloader::DownloadError> {
-        let unavailable = || {
-            downloader::DownloadError::Other("Task output is not eligible for cleanup".into())
-        };
+    pub async fn clear_task_file(
+        &mut self,
+        task_id: &str,
+    ) -> Result<(), downloader::DownloadError> {
+        let unavailable =
+            || downloader::DownloadError::Other("Task output is not eligible for cleanup".into());
         let task = self
             .db
             .load_task_by_id(task_id)
@@ -12211,15 +12292,16 @@ impl DownloadManager {
                 return Err(error.into());
             }
         }
-        if !self.db.mark_task_file_cleared(task_id).await? {
+        if !self.db.begin_task_file_clear(task_id).await? {
             return Err(unavailable());
         }
         if let Err(error) = tokio::fs::remove_file(path).await
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            self.db.update_task_file_missing(task_id, false).await?;
+            self.db.finish_task_file_clear(task_id, false).await?;
             return Err(error.into());
         }
+        self.db.finish_task_file_clear(task_id, true).await?;
 
         self.sink.emit(EngineEvent::FileMissingChanged(vec![(
             task_id.to_owned(),
@@ -23793,6 +23875,60 @@ mod tests {
             .await
             .expect("remove shared claim");
 
+        // Simulate a stop after committing the unlink intent but before touching disk.
+        assert!(
+            db.begin_task_file_clear("t-clear")
+                .await
+                .expect("mark pending")
+        );
+        let stale_scan = [("t-clear".to_owned(), true)];
+        assert!(
+            db.update_tasks_file_missing(&stale_scan)
+                .await
+                .expect("stale scan")
+                .is_empty()
+        );
+        recover_pending_file_clears(&db).await.expect("recover");
+        let recovered = db
+            .load_task_by_id("t-clear")
+            .await
+            .expect("load recovered task")
+            .expect("task still exists");
+        assert!(!recovered.file_missing);
+        assert_eq!(
+            std::fs::read(&file_path).expect("read output").as_slice(),
+            b"finished payload"
+        );
+
+        // A directory at the output path makes unlink fail on each desktop OS.
+        std::fs::remove_file(&file_path).expect("replace output");
+        std::fs::create_dir(&file_path).expect("create directory at output path");
+        assert!(mgr.clear_task_file("t-clear").await.is_err());
+        assert!(
+            db.pending_task_file_clears()
+                .await
+                .expect("check pending intents")
+                .is_empty()
+        );
+        std::fs::remove_dir(&file_path).expect("remove blocking directory");
+        std::fs::write(&file_path, b"finished payload").expect("restore output");
+
+        // Simulate a stop after unlink but before the final DB write on another task.
+        insert_task_at_status(&db, "t-unlinked", &save_dir, "gone.bin", 3).await;
+        assert!(
+            db.begin_task_file_clear("t-unlinked")
+                .await
+                .expect("mark pending")
+        );
+        recover_pending_file_clears(&db).await.expect("recover");
+        assert!(
+            db.load_task_by_id("t-unlinked")
+                .await
+                .expect("load recovered task")
+                .expect("task still exists")
+                .file_missing
+        );
+
         mgr.clear_task_file("t-clear")
             .await
             .expect("clear completed output");
@@ -23806,7 +23942,6 @@ mod tests {
         assert_eq!(task.status, 3, "任务记录（含 status）必须原样保留");
         assert!(task.file_missing, "file_missing 必须落库为 true");
         assert_eq!(task.downloaded_bytes, 4096);
-        let stale_scan = [("t-clear".to_owned(), true)];
         assert!(
             db.update_tasks_file_missing(&stale_scan)
                 .await
@@ -23814,7 +23949,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            db.unexpectedly_missing_task_ids(&["t-clear".to_owned()])
+            db.unexpectedly_missing_task_ids(&["t-clear".to_owned(), "t-unlinked".to_owned()])
                 .await
                 .expect("recheck queued cleanup")
                 .is_empty()
@@ -23842,6 +23977,27 @@ mod tests {
             )),
             "must broadcast FileMissingChanged(true) for the cleared task"
         );
+
+        db.insert_segments("t-clear", &[(0, 0, 4095)])
+            .await
+            .expect("seed a segment");
+        sqlx::query(
+            "CREATE TRIGGER reject_restart BEFORE DELETE ON task_segments \
+             BEGIN SELECT RAISE(ABORT, 'restart rejected'); END",
+        )
+        .execute(db.pool())
+        .await
+        .expect("install failure trigger");
+        assert!(mgr.restart_missing_task_file("t-clear").await.is_err());
+        let retained = db
+            .load_task_by_id("t-clear")
+            .await
+            .expect("load task after rejected restart")
+            .expect("restart failure must retain history");
+        assert_eq!(retained.status, 3);
+        assert!(retained.file_missing);
+        assert_eq!(retained.downloaded_bytes, 4096);
+        assert_eq!(retained.completed_at, task.completed_at);
 
         if let Err(error) = std::fs::remove_dir_all(&dir)
             && error.kind() != std::io::ErrorKind::NotFound

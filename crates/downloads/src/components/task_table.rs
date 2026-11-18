@@ -493,7 +493,7 @@ pub(crate) fn url_has_prefix(url: &str, prefixes: &[&str]) -> bool {
 }
 
 /// BT 任务源：`magnet:` 链接或 `torrent-file://` 本地种子哨兵。
-fn is_bt_url(url: &str) -> bool {
+pub(crate) fn is_bt_url(url: &str) -> bool {
     url_has_prefix(url, &["magnet:", "torrent-file://"])
 }
 
@@ -4735,6 +4735,7 @@ impl DownloadView {
         }
         let interactive_start = match commands.as_slice() {
             [DownloadsCommand::Resume { task_id }] => Some((task_id.clone(), false)),
+            [DownloadsCommand::RestartMissingFile { task_id }] => Some((task_id.clone(), false)),
             [DownloadsCommand::Redownload(request, task_id)] if !request.start_paused => {
                 Some((task_id.clone(), true))
             }

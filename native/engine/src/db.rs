@@ -835,7 +835,7 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         queue_id: row.try_get("queue_id").unwrap_or_default(),
         checksum: row.try_get("checksum").unwrap_or_default(),
         ignore_tls_errors: row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0) != 0,
-        file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
+        file_missing: matches!(row.try_get::<i32, _>("file_missing"), Ok(1 | 2)),
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         file_hash: row.try_get("file_hash").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
@@ -2371,16 +2371,64 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    // 0 = present, 1 = unexpectedly missing, 2 = explicitly cleared.
-    // Persist intent before unlinking so a concurrent scan cannot enqueue cleanup.
-    pub(crate) async fn mark_task_file_cleared(&self, id: &str) -> Result<bool, DbError> {
+    // 0 = present, 1 = unexpectedly missing, 2 = explicitly cleared,
+    // 3 = explicit unlink pending. The scanner may only write states 0 and 1.
+    pub(crate) async fn begin_task_file_clear(&self, id: &str) -> Result<bool, DbError> {
         let result = sqlx::query(
-            "UPDATE tasks SET file_missing = 2 WHERE id = $1 AND status = 3 AND file_missing = 0",
+            "UPDATE tasks SET file_missing = 3 WHERE id = $1 AND status = 3 AND file_missing IN (0, 3)",
         )
         .bind(id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub(crate) async fn finish_task_file_clear(&self, id: &str, removed: bool) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing = 3",
+        )
+        .bind(if removed { 2 } else { 0 })
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn pending_task_file_clears(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id, save_dir, file_name FROM tasks WHERE status = 3 AND file_missing = 3",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| Ok((row.try_get(0)?, row.try_get(1)?, row.try_get(2)?)))
+            .collect()
+    }
+
+    pub(crate) async fn reset_missing_task_for_restart(&self, id: &str) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE tasks SET status = 0, file_missing = 0, downloaded_bytes = 0, total_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
+                 error_message = '', completed_at = '', file_hash = '', exists_decision = ''
+             WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// 批量落库文件跟踪标志。跳过非完成任务与显式清理的记录。
@@ -2403,7 +2451,7 @@ impl Db {
         let mut applied = Vec::with_capacity(updates.len());
         for (id, missing) in updates {
             let result = sqlx::query(
-                "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing <> 2",
+                "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing IN (0, 1)",
             )
             .bind(*missing as i32)
             .bind(id.as_str())
@@ -2941,7 +2989,7 @@ impl Db {
     pub async fn load_file_tracking_rows(&self) -> Result<Vec<FileTrackingRow>, DbError> {
         let rows = sqlx::query(
             "SELECT id, save_dir, file_name, file_missing, status FROM tasks \
-             WHERE status IN (0, 1, 3, 5) AND file_missing <> 2",
+             WHERE status IN (0, 1, 3, 5) AND file_missing IN (0, 1)",
         )
         .fetch_all(&self.pool)
         .await?;

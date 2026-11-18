@@ -2240,6 +2240,11 @@ impl DownloadView {
                 {
                     return None;
                 }
+                if row.is_file_missing() && !crate::components::task_table::is_bt_url(&row.url) {
+                    return Some(DownloadsCommand::RestartMissingFile {
+                        task_id: task_id.to_owned(),
+                    });
+                }
                 let dto = self.controller.task_dto(task_id)?;
                 let request = fluxdown_protocol::CreateTaskRequest {
                     url: if dto.origin_url.is_empty() {

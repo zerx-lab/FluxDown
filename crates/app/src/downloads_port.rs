@@ -460,8 +460,11 @@ impl AgentDownloadsPort {
                     method::DAEMON_TASK_DELETE,
                     json!({ "taskId": task_id, "deleteFiles": delete_files }),
                 ),
-                DownloadsCommand::ClearTaskFile { task_id } => (
-                    method::DAEMON_TASK_CLEAR_FILE,
+                DownloadsCommand::ClearTaskFile { task_id } => {
+                    (method::DAEMON_TASK_CLEAR_FILE, json!({ "taskId": task_id }))
+                }
+                DownloadsCommand::RestartMissingFile { task_id } => (
+                    method::DAEMON_TASK_RESTART_FILE,
                     json!({ "taskId": task_id }),
                 ),
                 DownloadsCommand::PauseMany { task_ids } => (

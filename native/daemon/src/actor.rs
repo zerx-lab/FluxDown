@@ -160,6 +160,9 @@ pub enum ActorOperation {
     ClearTaskFile {
         task_id: String,
     },
+    RestartMissingFile {
+        task_id: String,
+    },
     PauseAll,
     ResumeAll,
     RescanFiles,
@@ -1719,6 +1722,13 @@ async fn execute_operation(
             engine
                 .manager
                 .clear_task_file(&task_id)
+                .await
+                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+        }
+        ActorOperation::RestartMissingFile { task_id } => {
+            engine
+                .manager
+                .restart_missing_task_file(&task_id)
                 .await
                 .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
         }

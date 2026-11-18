@@ -281,6 +281,53 @@ async fn captured_post_downloads_with_a_single_submission() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "binds a local port; run with --ignored"]
+async fn redownloading_a_cleared_post_task_replays_the_body_or_keeps_history() {
+    let mut h = Harness::new("redownload_cleared").await;
+    let spec = h.spec(Some("POST"), false);
+    let task_id = h.engine.manager.create_task(spec).await.expect("create");
+    let completed = h.finish(&task_id).await;
+    assert_eq!(completed.status, 3, "error={}", completed.error_message);
+    h.engine.manager.clear_task_file(&task_id).await.unwrap();
+    assert!(!h.work_dir.join(&completed.file_name).exists());
+
+    h.clear_requests();
+    h.engine
+        .manager
+        .restart_missing_task_file(&task_id)
+        .await
+        .expect("redownload the original task");
+    let completed = h.finish(&task_id).await;
+    assert_eq!(completed.status, 3, "error={}", completed.error_message);
+    assert_eq!(h.output(&completed).await, ZIP_BODY);
+    assert_eq!(h.requests(), [format!("POST {ZIP_PATH}")]);
+
+    h.engine.manager.clear_task_file(&task_id).await.unwrap();
+    let mut h = h.restart_engine().await;
+    h.clear_requests();
+    let error = h
+        .engine
+        .manager
+        .restart_missing_task_file(&task_id)
+        .await
+        .expect_err("the captured body must not survive an engine restart");
+    assert_eq!(error.to_string(), POST_ONLY_RESUME_MESSAGE);
+    let retained = h
+        .engine
+        .db
+        .load_task_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.status, 3);
+    assert!(retained.file_missing);
+    assert_eq!(retained.downloaded_bytes, completed.downloaded_bytes);
+    assert_eq!(retained.completed_at, completed.completed_at);
+    assert!(h.requests().is_empty());
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
 async fn retrying_a_post_task_replays_the_request_from_scratch() {
     let mut h = Harness::new("retry").await;
     h.server.truncate_next_zip.store(true, Ordering::SeqCst);

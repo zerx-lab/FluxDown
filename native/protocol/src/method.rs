@@ -33,6 +33,8 @@ pub const DAEMON_TASK_EDIT_INFO: &str = "daemon.task.editInfo";
 pub const DAEMON_TASK_EDIT: &str = "daemon.task.edit";
 pub const DAEMON_TASK_DELETE: &str = "daemon.task.delete";
 pub const DAEMON_TASK_CLEAR_FILE: &str = "daemon.task.clearFile";
+/// Redownload a completed non-BT task with missing output (`{taskId}`).
+pub const DAEMON_TASK_RESTART_FILE: &str = "daemon.task.restartFile";
 pub const DAEMON_TASK_PAUSE_ALL: &str = "daemon.task.pauseAll";
 pub const DAEMON_TASK_RESUME_ALL: &str = "daemon.task.resumeAll";
 pub const DAEMON_TASK_RESCAN: &str = "daemon.task.rescan";
@@ -496,6 +498,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_EDIT,
     DAEMON_TASK_DELETE,
     DAEMON_TASK_CLEAR_FILE,
+    DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_PAUSE_ALL,
     DAEMON_TASK_RESUME_ALL,
     DAEMON_TASK_RESCAN,
@@ -781,6 +784,7 @@ pub const SLOW_DAEMON_METHODS: &[&str] = &[
     DAEMON_TASK_SEED_LOCAL,
     DAEMON_TASK_MOVE_STORAGE,
     DAEMON_TASK_CLEAR_FILE,
+    DAEMON_TASK_RESTART_FILE,
     DAEMON_TASK_EDIT,
     DAEMON_EGRESS_PLAN,
 ];
