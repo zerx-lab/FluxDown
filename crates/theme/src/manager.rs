@@ -283,8 +283,8 @@ fn set_appearance(appearance: AppearancePreferences, window: Option<&mut Window>
 
 /// 偏好快照 → 外观。读取 `appearance.theme_mode` / `appearance.dark_theme` /
 /// `appearance.light_theme` / `appearance.color_scheme` / `appearance.custom_color` /
-/// `ui_scale` / `desktop.font_family` / `desktop.font_size`；与当前状态一致时不做任何事，
-/// 可在每次快照/偏好事件上幂等调用。
+/// `ui_scale` / `desktop.font_family` / `desktop.font_size` / `desktop.font_weight`；
+/// 与当前状态一致时不做任何事，可在每次快照/偏好事件上幂等调用。
 pub fn apply_appearance_preferences(values: &BTreeMap<String, Value>, cx: &mut App) {
     let appearance = AppearancePreferences::from_values(values);
     if cx
@@ -392,10 +392,19 @@ fn install(
     if let Some(primary) = han_fonts.primary {
         theme.base.typography.sans = primary;
     }
-    // 行高下限取界面字体与等宽字体中较高的自然行高：两者都会出现在同一套行高 token 下。
+    crate::fonts::apply_font_weight(&mut theme, appearance.font_weight);
+    // 取常规无衬线、实际正文和等宽字体中最高的自然行高，避免显式常规文字被较矮字重裁切。
     let typography = &theme.base.typography;
-    let line_ratio = crate::fonts::natural_line_ratio(&typography.sans, cx)
-        .max(crate::fonts::natural_line_ratio(&typography.mono, cx));
+    let regular = gpui::FontWeight::NORMAL;
+    let mut line_ratio = crate::fonts::natural_line_ratio(&typography.sans, regular, cx)
+        .max(crate::fonts::natural_line_ratio(&typography.mono, regular, cx));
+    if appearance.font_weight.is_some() && typography.sm.weight != regular {
+        line_ratio = line_ratio.max(crate::fonts::natural_line_ratio(
+            &typography.sans,
+            typography.sm.weight,
+            cx,
+        ));
+    }
     let theme_body_size = theme.base.typography.sm.size.as_f32() / appearance.ui_scale();
     let font_scale = appearance.font_scale(theme_body_size) * system_text_scale(cx);
     crate::fonts::fit_text(&mut theme, font_scale, line_ratio);

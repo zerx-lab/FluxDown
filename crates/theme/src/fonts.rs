@@ -1,4 +1,4 @@
-use gpui::{App, Pixels, SharedString, px};
+use gpui::{App, FontWeight, Pixels, SharedString, px};
 
 use crate::ResolvedTheme;
 
@@ -8,6 +8,9 @@ pub const FONT_FAMILY_KEY: &str = "desktop.font_family";
 /// 设备本地偏好：正文字号（整数 px，界面缩放前，如 `14`）；缺失时沿用主题正文字号。
 /// 不进入主题文档或云同步目录。
 pub const FONT_SIZE_KEY: &str = "desktop.font_size";
+
+/// 设备本地的正文字重，不进入主题文档或云同步目录。
+pub const FONT_WEIGHT_KEY: &str = "desktop.font_weight";
 
 /// 可接受的正文字号范围（px）。
 pub const FONT_SIZE_RANGE: std::ops::RangeInclusive<u16> = 10..=24;
@@ -38,13 +41,21 @@ pub(crate) fn apply_font_family(
     }
 }
 
+pub(crate) fn apply_font_weight(theme: &mut ResolvedTheme, weight: Option<u16>) {
+    if let Some(weight) = weight {
+        theme.base.typography.sm.weight = FontWeight(f32::from(weight));
+    }
+}
+
 /// 字体的自然行高（ascent + |descent|）与字号之比，取平台实际解析到的字体（缺失时为回退字体）。
 ///
 /// GPUI 按行盒居中基线：行高小于该值时字形会伸出行盒，被 `truncate` 等 `overflow_hidden`
 /// 容器裁掉上伸 / 下伸笔画。
-pub(crate) fn natural_line_ratio(family: &SharedString, cx: &App) -> f32 {
+pub(crate) fn natural_line_ratio(family: &SharedString, weight: FontWeight, cx: &App) -> f32 {
     let text_system = cx.text_system();
-    let font_id = text_system.resolve_font(&gpui::font(family.clone()));
+    let mut font = gpui::font(family.clone());
+    font.weight = weight;
+    let font_id = text_system.resolve_font(&font);
     let size = px(100.);
     let ascent = text_system.ascent(font_id, size).as_f32();
     let descent = text_system.descent(font_id, size).as_f32().abs();
@@ -100,7 +111,10 @@ pub(crate) fn fit_text(theme: &mut ResolvedTheme, scale: f32, line_ratio: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{FONT_FAMILY_KEY, FONT_SIZE_KEY, apply_font_family, fit_text, normalize_names};
+    use super::{
+        FONT_FAMILY_KEY, FONT_SIZE_KEY, FONT_WEIGHT_KEY, apply_font_family, apply_font_weight,
+        fit_text, normalize_names,
+    };
     use crate::{AppearancePreferences, BuiltinThemeId, ThemeDocument, ThemeMode, resolve};
     use gpui::px;
     use serde_json::json;
@@ -159,6 +173,26 @@ mod tests {
             ThemeMode::Light,
         );
         values.to_theme(scale)
+    }
+
+    #[test]
+    fn font_weight_changes_only_body_weight_and_invalid_values_leave_theme_intact() {
+        let apply = |value| {
+            let prefs =
+                AppearancePreferences::from_values(&[(FONT_WEIGHT_KEY.into(), value)].into());
+            let mut theme = default_theme(1.);
+            apply_font_weight(&mut theme, prefs.font_weight);
+            theme
+        };
+        let original = default_theme(1.);
+        let mut expected = original.clone();
+        expected.base.typography.sm.weight = gpui::FontWeight(600.);
+        assert_ne!(expected, original);
+        assert_eq!(apply(json!(600)), expected);
+        assert_eq!(apply(json!("600")), expected);
+        for invalid in [json!(null), json!(99), json!(650), json!(1000), json!(600.5)] {
+            assert_eq!(apply(invalid), original);
+        }
     }
 
     #[test]

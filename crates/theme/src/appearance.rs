@@ -279,6 +279,8 @@ pub struct AppearancePreferences {
     /// 本机正文字号（px，界面缩放前）；`None` 沿用主题。其余文字角色与承载文字的行高按
     /// 「所选字号 / 主题正文字号」同比缩放，再与界面缩放相乘。
     pub font_size: Option<u16>,
+    /// 本机正文字重；`None` 不覆盖主题。
+    pub font_weight: Option<u16>,
 }
 
 impl Default for AppearancePreferences {
@@ -292,6 +294,7 @@ impl Default for AppearancePreferences {
             custom_color: DEFAULT_CUSTOM_COLOR,
             ui_scale_percent: 100,
             font_size: None,
+            font_weight: None,
         }
     }
 }
@@ -327,6 +330,7 @@ impl AppearancePreferences {
                 .and_then(parse_scale_percent)
                 .unwrap_or(defaults.ui_scale_percent),
             font_size: values.get(crate::FONT_SIZE_KEY).and_then(parse_font_size),
+            font_weight: values.get(crate::FONT_WEIGHT_KEY).and_then(parse_font_weight),
         }
     }
 
@@ -443,6 +447,15 @@ pub fn parse_hex_argb(text: &str) -> Option<u32> {
 #[must_use]
 pub fn rgb_hex(argb: u32) -> String {
     format!("{:06X}", argb & 0x00FF_FFFF)
+}
+
+fn parse_font_weight(value: &Value) -> Option<u16> {
+    let weight = match value {
+        Value::Number(number) => u16::try_from(number.as_u64()?).ok()?,
+        Value::String(text) => text.trim().parse().ok()?,
+        _ => return None,
+    };
+    ((100..=900).contains(&weight) && weight.is_multiple_of(100)).then_some(weight)
 }
 
 /// 接受整数 px（或其字符串形式），超出 [`FONT_SIZE_RANGE`](crate::FONT_SIZE_RANGE) 视为未设置。
