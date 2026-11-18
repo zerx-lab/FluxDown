@@ -1773,9 +1773,12 @@ fn has_unlocked_non_neutral_ua(spec: &RequestSpec) -> bool {
 ///
 /// 运行中的切换对本次运行内其后的全部请求立即生效：
 /// - 质询（`cf-mitigated: challenge`）：[`Self::escape_bot_challenge`] 切到中性 UA 并立即落库。
-/// - hint 跳过探测后的 UA 拒绝：GET/HEAD、本次运行还没有 2xx、且没有 refresh 会处理
-///   该状态时，403/429 且请求头带未锁定的非中性 UA，先只在内存里切到中性 UA。
-///   重发得到 2xx 才落库；重发仍非 2xx 则恢复切换前的身份。已探测过的任务不走这条。
+///   若当时已有未确认的临时切换，提升为已落库的质询切换，随后的失败结算不得再恢复。
+/// - hint 跳过探测后的 UA 拒绝：GET/HEAD、本次运行还没有 2xx、还没有尝试过这次切换、
+///   且没有 refresh 会处理该状态时，403/429 且请求头带未锁定的非中性 UA，先只在内存里
+///   切到中性 UA。重发得到 2xx，或另一条请求已经用该身份取得 2xx，才落库；重发仍非 2xx
+///   则恢复切换前的身份，但记住这次切换，本轮不再因无质询头的 403/429 重试。恢复不另起
+///   代际，也不是凭据刷新。已探测过的任务不走这条。
 /// - 凭据刷新：请求被拒（401 / 403 / 410）且有插件声明 `refresh` 阶段时，经
 ///   [`Self::refresh_after_rejection`] 单飞换发凭据（并发失败的请求合并为一次插件调用），
 ///   新凭据只活在本次运行内、不落库。
@@ -1808,14 +1811,25 @@ pub struct DownloadSpec {
 #[derive(Debug)]
 struct SpecState {
     current: std::sync::Arc<RequestSpec>,
-    /// 每次替换 `current` 递增。
+    /// 每次凭据刷新或首次切到中性 UA 时递增。UA 恢复写回切换前的值，不另起代际。
     generation: u64,
-    /// 已切换为中性 UA（每次运行至多一次）。
+    /// 当前身份是中性 UA。失败恢复会清掉。
     neutral: bool,
+    /// 无质询头的 UA 切换已经尝试过（无论成败）。恢复时不清；质询不看它。
+    ua_switch_attempted: bool,
+    /// 本次切换后的中性身份。恢复 `current` 时保留到本轮结束，后到的 2xx 仍能提交它。
+    switched_ua: Option<std::sync::Arc<RequestSpec>>,
     /// UA 拒绝的临时切换：尚未被 2xx 确认时保存切换前的身份。质询切换不走这里。
     provisional_ua: Option<std::sync::Arc<RequestSpec>>,
-    /// 临时切换已被一次 2xx 确认。失败恢复不得把它盖回去。
+    /// [`Self::provisional_ua`] 写入时的 [`Self::generation`]。
+    provisional_generation: u64,
+    /// 临时切换已被 2xx 或质询提升确认。失败恢复不得把它盖回去。
     ua_switch_committed: bool,
+    /// 已确认的切换已经写入任务请求头。
+    ua_persisted: bool,
+    /// 最近一次凭据刷新写入的身份。只有 `current` 仍是它时，`used` 与 `current`
+    /// 不是同一个 Arc 才表示别的请求已经换过凭据。UA 切换与恢复不写入。
+    credential: Option<std::sync::Arc<RequestSpec>>,
     /// 凭据刷新改写后的任务 URL（只替换发往 [`crate::intercept::Refresher::origin_url`] 的请求）。
     url: Option<String>,
 }
@@ -1830,9 +1844,21 @@ pub(crate) struct BotEscape {
 }
 
 enum UaSettle {
+    /// 本响应确认了切换，落库调用方传入的身份。
     Commit,
+    /// 失败，但切换已被提交且尚未落库。
+    PersistOwed(std::sync::Arc<RequestSpec>),
     Restored,
     AlreadyCommitted,
+}
+
+/// 把记住的切换身份提交为当前身份。返回是否仍需落库。
+fn commit_remembered_switch(state: &mut SpecState, switched: std::sync::Arc<RequestSpec>) -> bool {
+    state.current = switched;
+    state.neutral = true;
+    state.provisional_ua = None;
+    state.ua_switch_committed = true;
+    !state.ua_persisted
 }
 
 #[derive(Debug, Default)]
@@ -1854,8 +1880,13 @@ impl DownloadSpec {
                 current: std::sync::Arc::new(base),
                 generation: 0,
                 neutral: false,
+                ua_switch_attempted: false,
+                switched_ua: None,
                 provisional_ua: None,
+                provisional_generation: 0,
                 ua_switch_committed: false,
+                ua_persisted: false,
+                credential: None,
                 url: None,
             }),
             connection_cap: None,
@@ -1950,13 +1981,16 @@ impl DownloadSpec {
     ///
     /// 两种触发，都要求 `used` 未锁定 UA、且还不是中性 UA：
     /// - 反机器人质询（`cf-mitigated: challenge`，状态码不限）：立即切换并落库。
+    ///   已处于未确认的临时切换时，提升为已落库的质询切换（`provisional = false`）。
     /// - 403 / 429，且同时满足：本次下载跳过了探测、`used` 是 GET/HEAD、本次运行还没有
-    ///   2xx 数据响应、没有会处理该状态的 refresh、请求头里有未锁定的非中性 User-Agent。
-    ///   只在内存里切换。调用方重发后必须 [`Self::settle_provisional_ua`]：2xx 才落库，
-    ///   非 2xx 恢复切换前的身份。
+    ///   2xx 数据响应、还没有尝试过这次切换、没有会处理该状态的 refresh、请求头里有
+    ///   未锁定的非中性 User-Agent。只在内存里切换。调用方重发后必须
+    ///   [`Self::settle_provisional_ua`]：2xx 才落库，非 2xx 恢复切换前的身份。
+    ///   另一条请求若已用切换后的身份取得 2xx（本函数的成功分支或 [`Self::confirm`]），
+    ///   与重发 2xx 一样提交并落库，失败结算不得恢复。
     ///
     /// 边缘拒绝时源站没收到原请求，重发不额外消耗一次性 URL。`used` 已是中性 UA
-    /// 或锁定了 UA 时不再重发，每个请求最多多发一次。
+    /// 或锁定了 UA 时不再重发，每个请求最多多发一次。无质询头的切换每轮只尝试一次。
     pub(crate) async fn escape_bot_challenge(
         &self,
         used: &RequestSpec,
@@ -1966,9 +2000,30 @@ impl DownloadSpec {
     ) -> Option<BotEscape> {
         if resp.status().is_success() {
             // 与并发的 403 共用写锁，使「已见 2xx」闩先于后续切换被观察到。
-            let _state = self.write_state();
-            self.saw_success
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let persist = {
+                let mut state = self.write_state();
+                self.saw_success
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let switched = state
+                    .switched_ua
+                    .clone()
+                    .filter(|switched| std::ptr::eq(switched.as_ref(), used));
+                match switched {
+                    Some(switched) if commit_remembered_switch(&mut state, switched.clone()) => {
+                        state.ua_persisted = true;
+                        Some(switched)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(switched) = persist {
+                log_info!(
+                    "[download] task {} neutral UA succeeded (status={}); persisting adapted User-Agent",
+                    task_id,
+                    resp.status().as_u16()
+                );
+                persist_adapted_spec(db, task_id, &switched).await;
+            }
             return None;
         }
         if used.pins.user_agent || has_neutral_ua(used) {
@@ -1985,32 +2040,59 @@ impl DownloadSpec {
         if !challenge && !ua_rejected {
             return None;
         }
-        let (neutral, first, provisional) = {
+        // (身份, 本请求是否首次切换, provisional, 是否把临时切换提升为已落库质询)
+        let (neutral, first, provisional, promote) = {
             let mut state = self.write_state();
-            if !challenge && self.saw_success.load(std::sync::atomic::Ordering::Relaxed) {
+            if !challenge
+                && (self.saw_success.load(std::sync::atomic::Ordering::Relaxed)
+                    || state.ua_switch_attempted)
+            {
                 return None;
             }
             if state.neutral {
-                (
-                    state.current.clone(),
-                    false,
-                    state.provisional_ua.is_some() && !challenge,
-                )
+                if challenge && state.provisional_ua.is_some() && !state.ua_switch_committed {
+                    state.provisional_ua = None;
+                    state.ua_switch_committed = true;
+                    state.ua_persisted = true;
+                    (state.current.clone(), false, false, true)
+                } else {
+                    (
+                        state.current.clone(),
+                        false,
+                        state.provisional_ua.is_some() && !challenge,
+                        false,
+                    )
+                }
             } else if challenge {
-                state.current = std::sync::Arc::new(spec_with_neutral_ua(&state.current));
+                let switched = std::sync::Arc::new(spec_with_neutral_ua(&state.current));
+                state.current = switched.clone();
                 state.generation += 1;
                 state.neutral = true;
-                (state.current.clone(), true, false)
+                state.switched_ua = Some(switched.clone());
+                state.ua_switch_committed = true;
+                state.ua_persisted = true;
+                (switched, true, false, false)
             } else {
                 let previous = state.current.clone();
-                state.current = std::sync::Arc::new(spec_with_neutral_ua(&state.current));
+                let switched = std::sync::Arc::new(spec_with_neutral_ua(&previous));
+                state.provisional_generation = state.generation;
+                state.current = switched.clone();
                 state.generation += 1;
                 state.neutral = true;
+                state.ua_switch_attempted = true;
                 state.provisional_ua = Some(previous);
-                (state.current.clone(), true, true)
+                state.switched_ua = Some(switched.clone());
+                (switched, true, true, false)
             }
         };
-        if first {
+        if promote {
+            log_info!(
+                "[download] task {} bot challenge during provisional UA switch (status={}); persisting neutral User-Agent",
+                task_id,
+                resp.status().as_u16()
+            );
+            persist_adapted_spec(db, task_id, &neutral).await;
+        } else if first {
             let reason = if challenge {
                 "bot challenge"
             } else {
@@ -2034,42 +2116,54 @@ impl DownloadSpec {
 
     /// 结算 [`Self::escape_bot_challenge`] 返回的临时 UA 切换。
     ///
-    /// 2xx：把这次切换确认为当前身份并落库。非 2xx：恢复切换前的身份，除非另一条
-    /// 重发已经用 2xx 确认了同一次切换（失败恢复不得覆盖它）。
+    /// 2xx：把这次切换确认为当前身份并落库。非 2xx：恢复切换前的身份，除非这次切换
+    /// 已被 2xx 或质询提升确认（[`Self::confirm`]、成功分支，或另一条重发）。恢复
+    /// 不递增 generation，也不清掉「已尝试过」闩。
+    ///
+    /// 返回 `true` 表示调用方在 [`Self::refresh_after_rejection`] 之前必须改用
+    /// [`Self::current`]：UA 恢复不是凭据刷新，不能拿已放弃的中性身份去撞刷新短路。
     pub(crate) async fn settle_provisional_ua(
         &self,
         used: &std::sync::Arc<RequestSpec>,
         status: reqwest::StatusCode,
         db: &Db,
         task_id: &str,
-    ) {
+    ) -> bool {
         let outcome = {
             let mut state = self.write_state();
             if status.is_success() {
                 self.saw_success
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                let first_commit = !state.ua_switch_committed;
                 state.current = used.clone();
                 state.neutral = true;
                 state.provisional_ua = None;
                 state.ua_switch_committed = true;
-                if first_commit {
-                    UaSettle::Commit
-                } else {
+                if state.switched_ua.is_none() {
+                    state.switched_ua = Some(used.clone());
+                }
+                if state.ua_persisted {
                     UaSettle::AlreadyCommitted
+                } else {
+                    state.ua_persisted = true;
+                    UaSettle::Commit
                 }
             } else if state.ua_switch_committed {
-                UaSettle::AlreadyCommitted
+                if state.ua_persisted {
+                    UaSettle::AlreadyCommitted
+                } else {
+                    state.ua_persisted = true;
+                    UaSettle::PersistOwed(state.current.clone())
+                }
             } else if let Some(previous) = state.provisional_ua.take() {
                 state.current = previous;
                 state.neutral = false;
-                state.generation = state.generation.saturating_add(1);
+                state.generation = state.provisional_generation;
                 UaSettle::Restored
             } else {
                 UaSettle::AlreadyCommitted
             }
         };
-        match outcome {
+        match &outcome {
             UaSettle::Commit => {
                 log_info!(
                     "[download] task {} neutral UA retry succeeded (status={}); persisting adapted User-Agent",
@@ -2077,6 +2171,14 @@ impl DownloadSpec {
                     status.as_u16()
                 );
                 persist_adapted_spec(db, task_id, used).await;
+            }
+            UaSettle::PersistOwed(spec) => {
+                log_info!(
+                    "[download] task {} keeping neutral User-Agent already confirmed by another request (status={})",
+                    task_id,
+                    status.as_u16()
+                );
+                persist_adapted_spec(db, task_id, spec).await;
             }
             UaSettle::Restored => {
                 log_info!(
@@ -2087,16 +2189,26 @@ impl DownloadSpec {
             }
             UaSettle::AlreadyCommitted => {}
         }
+        !status.is_success()
     }
 
     /// 记录用 `used` 发出的请求取得了成功响应。此后无质询头的 UA 切换不再触发；
-    /// 若有刷新器，该身份再被拒属于「凭据被正常消耗」（如每请求一个令牌），不计入
-    /// 连续无效刷新上限。
+    /// 若 `used` 就是本次切换后的身份，与 [`Self::settle_provisional_ua`] 的成功路径
+    /// 一样提交它（失败结算不得恢复）。落库由持有 `db` 的成功分支或随后的结算完成：
+    /// 本函数没有数据库句柄。若有刷新器，该身份再被拒属于「凭据被正常消耗」
+    /// （如每请求一个令牌），不计入连续无效刷新上限。
     pub(crate) fn confirm(&self, used: &std::sync::Arc<RequestSpec>) {
         {
-            let _state = self.write_state();
+            let mut state = self.write_state();
             self.saw_success
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(switched) = state
+                .switched_ua
+                .clone()
+                .filter(|switched| std::sync::Arc::ptr_eq(switched, used))
+            {
+                let _owed = commit_remembered_switch(&mut state, switched);
+            }
         }
         if self.refresher.is_none() {
             return;
@@ -2110,7 +2222,8 @@ impl DownloadSpec {
 
     /// 用 `used` 发出的请求得到 `status`。可刷新（401 / 403 / 410 且有插件声明
     /// `refresh`）时返回应重发所用的新请求身份：
-    /// - `used` 已不是当前身份（别的请求刚刷新过 / 已质询脱困）→ 直接返回当前身份，不调用插件；
+    /// - 当前身份来自另一次凭据刷新，且 `used` 已不是那份身份 → 直接返回当前身份，不调用插件；
+    ///   UA 切换或恢复不是凭据刷新，不得因此跳过插件；
     /// - 否则单飞调用插件，成功换发则返回新身份；
     /// - 插件不换发、连续换发后都没换来成功响应（达
     ///   [`crate::intercept::refresh::MAX_UNCONFIRMED_REFRESHES`] 次）或不可刷新 → `None`，
@@ -2132,7 +2245,10 @@ impl DownloadSpec {
         let mut ledger = self.refresh_gate.lock().await;
         let (generation, mut url, mut spec) = {
             let state = self.read_state();
-            if !std::sync::Arc::ptr_eq(&state.current, used) {
+            if state.credential.as_ref().is_some_and(|cred| {
+                std::sync::Arc::ptr_eq(cred, &state.current)
+                    && !std::sync::Arc::ptr_eq(&state.current, used)
+            }) {
                 return Ok(Some(state.current.clone()));
             }
             (
@@ -2170,6 +2286,7 @@ impl DownloadSpec {
         let mut state = self.write_state();
         state.current = fresh.clone();
         state.generation += 1;
+        state.credential = Some(fresh.clone());
         state.url = (url != refresher.origin_url()).then_some(url);
         Ok(Some(fresh))
     }
@@ -5868,13 +5985,18 @@ async fn download_single_once(
     };
     // hint 跳过探测时，质询在这里首次暴露并立即换中性 UA。无质询头的 403/429
     // 只在 GET、尚未见到 2xx、且没有 refresh 接手时临时切换；重发得到 2xx 才落库。
+    // 恢复不是凭据刷新：结算后再 refresh，并且用恢复后的 current，不用已放弃的中性 Arc。
     if let Some(escape) = spec.escape_bot_challenge(&used, &resp, db, task_id).await {
         drop(resp);
         used = escape.spec;
         resp = send_cancellable(build(&used), cancel_token).await?;
         if escape.provisional {
-            spec.settle_provisional_ua(&used, resp.status(), db, task_id)
+            let adopt_current = spec
+                .settle_provisional_ua(&used, resp.status(), db, task_id)
                 .await;
+            if adopt_current {
+                used = spec.current();
+            }
         }
     }
     // 被拒（401 / 403 / 410）且有插件声明 refresh：用换发后的凭据重发同一请求一次。
@@ -7739,6 +7861,412 @@ mod tests {
                 super::DEFAULT_UA,
                 "{task_id}"
             );
+        }
+    }
+
+    /// 后启动的请求用切换后的身份取得 2xx 后，失败结算不得把 UA 改回去。
+    /// confirm 与 escape 的成功分支都要提交并落库。临时切换期间出现质询必须已经落库。
+    #[tokio::test]
+    async fn sibling_success_and_challenge_commit_provisional_ua() {
+        const BROWSER: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0.0.0";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    if stream.read(&mut buf).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let text = String::from_utf8_lossy(&buf);
+                    let path = text
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let extra = if path.starts_with("/challenge") {
+                        "cf-mitigated: challenge\r\n"
+                    } else {
+                        ""
+                    };
+                    let status = if path.starts_with("/ok") {
+                        "200 OK"
+                    } else {
+                        "403 Forbidden"
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    if let Err(error) = stream.write_all(resp.as_bytes()).await {
+                        tracing::debug!(%error, "test client closed");
+                    }
+                    if let Err(error) = stream.shutdown().await {
+                        tracing::debug!(%error, "test client closed");
+                    }
+                });
+            }
+        });
+        let client = super::build_client(&crate::proxy_config::ProxyConfig::default(), "").unwrap();
+        let db = crate::db::Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let url = |path: &str| format!("http://127.0.0.1:{port}{path}");
+
+        async fn seed(db: &crate::db::Db, task_id: &str, ua: &str) {
+            db.insert_task(
+                task_id,
+                "http://127.0.0.1/f",
+                "f.bin",
+                "",
+                1,
+                0,
+                "",
+                "",
+                "",
+                1,
+            )
+            .await
+            .expect("insert task");
+            db.set_task_request_context(task_id, "", "", &format!(r#"{{"User-Agent":"{ua}"}}"#))
+                .await
+                .expect("seed context");
+        }
+        async fn loaded_ua(db: &crate::db::Db, task_id: &str) -> String {
+            let (_, _, json) = db
+                .load_task_request_context(task_id)
+                .await
+                .expect("load")
+                .expect("exists");
+            let headers: std::collections::HashMap<String, String> =
+                serde_json::from_str(&json).expect("parse json");
+            headers
+                .into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, v)| v)
+                .unwrap_or_default()
+        }
+        fn ua_of(spec: &super::RequestSpec) -> Option<&str> {
+            spec.extra_headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, v)| v.as_str())
+        }
+        let mut browser = super::RequestSpec::empty_get();
+        browser
+            .extra_headers
+            .insert("User-Agent".to_string(), BROWSER.to_string());
+        let forbidden = client.get(url("/deny")).send().await.unwrap();
+        assert!(forbidden.headers().get("cf-mitigated").is_none());
+
+        seed(&db, "sib", BROWSER).await;
+        let spec = super::DownloadSpec::new(browser.clone()).with_probe_skipped(true);
+        let escape = spec
+            .escape_bot_challenge(&browser, &forbidden, &db, "sib")
+            .await
+            .expect("switch");
+        let switched = escape.spec;
+        spec.confirm(&switched);
+        spec.settle_provisional_ua(&switched, reqwest::StatusCode::FORBIDDEN, &db, "sib")
+            .await;
+        assert_eq!(
+            ua_of(&spec.current()),
+            Some(super::DEFAULT_UA),
+            "confirm must commit the switched identity before a failing settle"
+        );
+        assert_eq!(loaded_ua(&db, "sib").await, super::DEFAULT_UA);
+
+        seed(&db, "esc", BROWSER).await;
+        let spec = super::DownloadSpec::new(browser.clone()).with_probe_skipped(true);
+        let escape = spec
+            .escape_bot_challenge(&browser, &forbidden, &db, "esc")
+            .await
+            .expect("switch");
+        let switched = escape.spec;
+        let ok = client.get(url("/ok")).send().await.unwrap();
+        assert!(
+            spec.escape_bot_challenge(switched.as_ref(), &ok, &db, "esc")
+                .await
+                .is_none()
+        );
+        spec.settle_provisional_ua(&switched, reqwest::StatusCode::FORBIDDEN, &db, "esc")
+            .await;
+        assert_eq!(ua_of(&spec.current()), Some(super::DEFAULT_UA));
+        assert_eq!(loaded_ua(&db, "esc").await, super::DEFAULT_UA);
+
+        seed(&db, "chal", BROWSER).await;
+        let spec = super::DownloadSpec::new(browser).with_probe_skipped(true);
+        let started = spec.current();
+        let escape = spec
+            .escape_bot_challenge(&started, &forbidden, &db, "chal")
+            .await
+            .expect("switch");
+        assert!(escape.provisional);
+        assert_eq!(loaded_ua(&db, "chal").await, BROWSER);
+        let challenge = client.get(url("/challenge")).send().await.unwrap();
+        let promoted = spec
+            .escape_bot_challenge(&started, &challenge, &db, "chal")
+            .await
+            .expect("challenge during provisional switch must still escape");
+        assert!(
+            !promoted.provisional,
+            "a challenge during a provisional switch must already be persisted"
+        );
+        assert_eq!(loaded_ua(&db, "chal").await, super::DEFAULT_UA);
+        spec.settle_provisional_ua(&escape.spec, reqwest::StatusCode::FORBIDDEN, &db, "chal")
+            .await;
+        assert_eq!(ua_of(&spec.current()), Some(super::DEFAULT_UA));
+        assert_eq!(loaded_ua(&db, "chal").await, super::DEFAULT_UA);
+    }
+
+    /// 失败结算后，同一 DownloadSpec 上再来的无质询头 403 不得再次切换。
+    #[tokio::test]
+    async fn failed_plain_ua_switch_is_not_armed_again() {
+        const BROWSER: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0.0.0";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 256];
+                    if stream.read(&mut buf).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let resp =
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    if let Err(error) = stream.write_all(resp.as_bytes()).await {
+                        tracing::debug!(%error, "test client closed");
+                    }
+                    if let Err(error) = stream.shutdown().await {
+                        tracing::debug!(%error, "test client closed");
+                    }
+                });
+            }
+        });
+        let client = super::build_client(&crate::proxy_config::ProxyConfig::default(), "").unwrap();
+        let db = crate::db::Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut browser = super::RequestSpec::empty_get();
+        browser
+            .extra_headers
+            .insert("User-Agent".to_string(), BROWSER.to_string());
+        let forbidden = client
+            .get(format!("http://127.0.0.1:{port}/deny"))
+            .send()
+            .await
+            .unwrap();
+        let spec = super::DownloadSpec::new(browser.clone()).with_probe_skipped(true);
+        let escape = spec
+            .escape_bot_challenge(&browser, &forbidden, &db, "t")
+            .await
+            .expect("first 403 may switch");
+        spec.settle_provisional_ua(&escape.spec, reqwest::StatusCode::FORBIDDEN, &db, "t")
+            .await;
+        let restored = spec.current();
+        assert_eq!(
+            restored.extra_headers.get("User-Agent").map(String::as_str),
+            Some(BROWSER)
+        );
+        assert!(
+            spec.escape_bot_challenge(&browser, &forbidden, &db, "t")
+                .await
+                .is_none(),
+            "a failed provisional attempt must not arm another switch"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&restored, &spec.current()),
+            "the second 403 must not replace the restored identity"
+        );
+    }
+
+    /// 429 触发的临时切换若重发得到 403，必须进入插件 refresh，不能把恢复后的
+    /// 浏览器 UA 当作已经刷新过的身份再提交一次。恢复也不另起代际。
+    #[tokio::test]
+    async fn ua_restore_refreshes_credentials_instead_of_resubmitting_browser_ua() {
+        use super::test_support::RefreshScript;
+        use std::sync::atomic::Ordering;
+
+        const BROWSER: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0.0.0";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String, String)>::new()));
+        {
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let seen = seen.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut tmp = [0u8; 2048];
+                        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            let n = stream.read(&mut tmp).await.unwrap_or(0);
+                            if n == 0 {
+                                return;
+                            }
+                            buf.extend_from_slice(&tmp[..n]);
+                        }
+                        let text = String::from_utf8_lossy(&buf);
+                        let path = text
+                            .lines()
+                            .next()
+                            .and_then(|line| line.split_whitespace().nth(1))
+                            .unwrap_or("/")
+                            .to_string();
+                        let header = |name: &str| {
+                            text.lines()
+                                .find(|line| line.to_ascii_lowercase().starts_with(name))
+                                .map(|line| line[name.len()..].trim().to_string())
+                                .unwrap_or_default()
+                        };
+                        let ua = header("user-agent:");
+                        let token = header("x-token:");
+                        seen.lock()
+                            .unwrap()
+                            .push((path.clone(), ua.clone(), token.clone()));
+                        let (status, body) = if path.starts_with("/file") && !token.is_empty() {
+                            ("200 OK", "ok")
+                        } else if path.starts_with("/limited")
+                            || (path.starts_with("/file") && ua != super::DEFAULT_UA)
+                        {
+                            ("429 Too Many Requests", "")
+                        } else {
+                            ("403 Forbidden", "")
+                        };
+                        let resp = format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        if let Err(error) = stream.write_all(resp.as_bytes()).await {
+                            tracing::debug!(%error, "test client closed");
+                        }
+                        if let Err(error) = stream.shutdown().await {
+                            tracing::debug!(%error, "test client closed");
+                        }
+                    });
+                }
+            });
+        }
+        let client = super::build_client(&crate::proxy_config::ProxyConfig::default(), "").unwrap();
+        let db = crate::db::Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let url = |path: &str| format!("http://127.0.0.1:{port}{path}");
+        let mut browser = super::RequestSpec::empty_get();
+        browser
+            .extra_headers
+            .insert("User-Agent".to_string(), BROWSER.to_string());
+
+        async fn refreshed(
+            script: std::sync::Arc<RefreshScript>,
+            base: super::RequestSpec,
+        ) -> super::DownloadSpec {
+            let params = super::test_support::params_with_interceptor(
+                "http://127.0.0.1:1/f.bin",
+                script as std::sync::Arc<dyn crate::intercept::TaskInterceptor>,
+            )
+            .await
+            .unwrap();
+            super::DownloadSpec::new(base)
+                .with_probe_skipped(true)
+                .with_refresher(crate::intercept::Refresher::for_params(
+                    &params,
+                    crate::intercept::ProtocolKind::Http,
+                ))
+        }
+
+        let script = std::sync::Arc::new(RefreshScript::new(std::time::Duration::ZERO, |_| {
+            Some(r#"{"setHeaders":{"X-Token":"tok"}}"#.to_string())
+        }));
+        let spec = refreshed(script.clone(), browser.clone()).await;
+        let limited = client.get(url("/limited")).send().await.unwrap();
+        let escape = spec
+            .escape_bot_challenge(&browser, &limited, &db, "skip")
+            .await
+            .expect("429 switches even when a refresher exists");
+        spec.settle_provisional_ua(&escape.spec, reqwest::StatusCode::FORBIDDEN, &db, "skip")
+            .await;
+        let fresh = spec
+            .refresh_after_rejection(&escape.spec, reqwest::StatusCode::FORBIDDEN)
+            .await
+            .unwrap();
+        assert_eq!(
+            script.calls.load(Ordering::SeqCst),
+            1,
+            "UA restore must not skip plugin refresh"
+        );
+        assert_eq!(
+            fresh
+                .expect("plugin refresh")
+                .extra_headers
+                .get("X-Token")
+                .map(String::as_str),
+            Some("tok")
+        );
+
+        db.insert_task(
+            "wire",
+            "http://127.0.0.1/f",
+            "f.bin",
+            "",
+            1,
+            2,
+            "",
+            "",
+            "",
+            1,
+        )
+        .await
+        .expect("insert task");
+        let script = std::sync::Arc::new(RefreshScript::new(std::time::Duration::ZERO, |_| {
+            Some(r#"{"setHeaders":{"X-Token":"tok"}}"#.to_string())
+        }));
+        let spec = refreshed(script.clone(), browser).await;
+        let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(8);
+        let _keep_progress = progress_rx;
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_ua_refresh_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.expect("tmpdir");
+        let saved = super::download_single_once(
+            "wire",
+            &url("/file"),
+            &dir.join("wire.bin"),
+            2,
+            false,
+            &client,
+            &db,
+            &progress_tx,
+            &tokio_util::sync::CancellationToken::new(),
+            &crate::speed_limiter::SpeedLimiter::new(0),
+            &spec,
+            "wire.bin",
+            "",
+            "",
+            false,
+            false,
+        )
+        .await;
+        let recorded = seen.lock().unwrap().clone();
+        if let Err(error) = &saved {
+            panic!("download failed: {error}; requests: {recorded:?}");
+        }
+        assert_eq!(script.calls.load(Ordering::SeqCst), 1);
+        let file: Vec<_> = recorded
+            .iter()
+            .filter(|(path, _, _)| path == "/file")
+            .collect();
+        assert_eq!(
+            file.iter()
+                .map(|(_, ua, token)| (ua.as_str(), token.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(BROWSER, ""), (super::DEFAULT_UA, ""), (BROWSER, "tok"),],
+            "429 switch then 403 must refresh the restored browser UA, not resubmit it: {recorded:?}"
+        );
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::warn!(%error, "test directory cleanup failed");
         }
     }
 

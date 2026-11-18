@@ -5846,9 +5846,15 @@ async fn do_segment(
         };
         request_path.record_setup(sent_at.elapsed());
         if pending_provisional {
-            spec.settle_provisional_ua(&used, resp.status(), db, task_id)
+            // 恢复不是凭据刷新。结算后再决定 refresh，并且用恢复后的 current，
+            // 不能拿已放弃的中性 Arc 去走「别的请求已经刷新过」短路。
+            let adopt_current = spec
+                .settle_provisional_ua(&used, resp.status(), db, task_id)
                 .await;
             pending_provisional = false;
+            if adopt_current {
+                used = spec.current();
+            }
         }
         match spec.escape_bot_challenge(&used, &resp, db, task_id).await {
             Some(escape) => {
