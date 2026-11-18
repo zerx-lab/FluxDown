@@ -402,7 +402,7 @@ impl Downloader {
         tracker: &Tracker,
         configure: impl FnOnce(&mut BtConfig, &mut ProxyConfig),
     ) -> Self {
-        let port = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        let port = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
             .expect("ephemeral port")
             .local_addr()
             .expect("local addr")
@@ -414,7 +414,9 @@ impl Downloader {
             enable_utp: false,
             enable_lsd: false,
             port_start: port,
-            port_end: port,
+            // The probe releases the port before the lazy BT session binds it.
+            // Let the session try neighboring ports if another socket took it.
+            port_end: port.saturating_add(8),
             custom_trackers: tracker.url.clone(),
             ..Default::default()
         };
