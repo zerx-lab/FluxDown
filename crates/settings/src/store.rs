@@ -644,6 +644,12 @@ impl SettingsStore {
             .cloned()
             .unwrap_or_else(|| fluxdown_protocol::daemon_config_default(key).to_owned())
     }
+
+    /// 本地 daemon 键的乐观写入是否仍在排队或等待回执。
+    pub(crate) fn daemon_pending(&self, key: &str) -> bool {
+        self.pending_daemon.contains_key(key) || self.inflight_daemon.contains_key(key)
+    }
+
     #[must_use]
     pub fn daemon_bool(&self, key: &str) -> bool {
         matches!(self.daemon_str(key).as_str(), "true" | "1")

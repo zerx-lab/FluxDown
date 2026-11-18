@@ -471,6 +471,15 @@ export function useDaemonValue(key: string): string {
   return resolveDaemonOverlay(overlay, baseline, snapshot) ?? snapshot ?? daemonConfigField(key)?.default ?? ''
 }
 
+/** Local daemon key has an optimistic write waiting to be sent or acknowledged. */
+export function useDaemonPending(key: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => pendingDaemon.has(key) || (inflight && overlayDaemon.has(key)),
+    () => false,
+  )
+}
+
 export function useDaemonBool(key: string): boolean {
   const raw = useDaemonValue(key)
   return raw === 'true' || raw === '1'

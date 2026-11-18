@@ -254,7 +254,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
     case saveDir, rememberLastSaveDir
     case silentDownload, silentAutoCategory, silentSkipSelection, useServerTime, fileExistsBehavior
     case fileMissingAction, completedRecordRetention, idleFileScan, defaultQueue, dedupSameUrl
-    case defaultSegments, autoMaxConnections, cdnMulti, cdnMaxNodes, multiNic, maxConcurrent
+    case defaultSegments, autoMaxConnections, cdnMulti, cdnMaxNodes, multiNic, maxConcurrent, connectionRules
     case speedLimit, uploadLimit
     case autoRetryCount, autoRetryDelay, autoResumeOnStart
     case userAgent
@@ -266,7 +266,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .saveDir, .rememberLastSaveDir: .saveLocation
         case .silentDownload, .silentAutoCategory, .silentSkipSelection, .useServerTime, .fileExistsBehavior,
              .fileMissingAction, .completedRecordRetention, .idleFileScan, .defaultQueue, .dedupSameUrl: .behavior
-        case .defaultSegments, .autoMaxConnections, .cdnMulti, .cdnMaxNodes, .multiNic, .maxConcurrent,
+        case .defaultSegments, .autoMaxConnections, .cdnMulti, .cdnMaxNodes, .multiNic, .maxConcurrent, .connectionRules,
              .speedLimit, .uploadLimit: .connection
         case .autoRetryCount, .autoRetryDelay, .autoResumeOnStart: .retry
         case .userAgent: .advanced
@@ -290,6 +290,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .dedupSameUrl: "dedup_same_url"
         case .defaultSegments: "default_segments"
         case .autoMaxConnections: "auto_max_connections"
+        case .connectionRules: "connection_rules"
         case .cdnMulti: "cdn_multi_enabled"
         case .cdnMaxNodes: "cdn_max_nodes"
         case .multiNic: "multi_nic_enabled"
@@ -323,6 +324,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .cdnMaxNodes: "cdnMaxNodes"
         case .multiNic: "multiNicEnabled"
         case .maxConcurrent: "maxConcurrent"
+        case .connectionRules: "connectionRules"
         case .speedLimit: "speedLimit"
         case .uploadLimit: "uploadLimit"
         case .autoRetryCount: "autoRetryCount"
@@ -352,6 +354,7 @@ nonisolated enum SettingsDownloadRow: String, CaseIterable, Identifiable {
         case .cdnMaxNodes: "cdnMaxNodesDesc"
         case .multiNic: "multiNicEnabledDesc"
         case .maxConcurrent: BuildFlavor.key(full: "maxConcurrentDesc", store: "maxConcurrentDescGeneric")
+        case .connectionRules: "connectionRulesDesc"
         case .speedLimit: "speedLimitDesc"
         case .uploadLimit: "uploadLimitDesc"
         case .autoRetryCount: "autoRetryCountDesc"

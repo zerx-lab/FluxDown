@@ -6,7 +6,7 @@ const REDACTED: &str = "<redacted>";
 
 /// 原地脱敏 daemon 快照（调用方持有的是克隆，不影响运行中的投影）。
 pub fn redact_snapshot(snapshot: &mut DaemonSnapshot) {
-    for key in ["proxy_username", "proxy_password"] {
+    for key in ["proxy_username", "proxy_password", "connection_rules"] {
         if let Some(value) = snapshot.config.values.get_mut(key)
             && !value.is_empty()
         {

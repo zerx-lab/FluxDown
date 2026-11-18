@@ -24,6 +24,7 @@ export {
   setPref,
   useDaemonBool,
   useDaemonNumber,
+  useDaemonPending,
   useDaemonValue,
   usePrefBoolean,
   usePrefNumber,

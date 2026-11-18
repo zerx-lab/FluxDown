@@ -433,6 +433,69 @@ fn assert_resumed_from_offsets(proxy: &FakeProxy) {
         );
     }
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_rules_limit_resume_without_discarding_segments() {
+    let proxy = FakeProxy::start().await;
+    let mut h = Harness::new("connection-rule-resume", proxy.config()).await;
+    let id = h.create("rule-resume.bin", String::new()).await;
+    h.wait_segment_progress(&id).await;
+    h.engine.manager.pause_task(&id).await;
+    h.pump_done(&id).await;
+    let before = h.engine.db.load_segments(&id).await.unwrap();
+    assert!(before.len() > 1, "fixture must have a multi-segment layout");
+    let downloaded: i64 = before.iter().map(|segment| segment.downloaded_bytes).sum();
+    let rule = format!("{ORIGIN_HOST}=1");
+    h.engine
+        .db
+        .set_config("connection_rules", &rule)
+        .await
+        .unwrap();
+    h.engine.manager.clear_domain_conn_caps();
+    assert_eq!(
+        h.engine
+            .db
+            .get_config("connection_rules")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(rule.as_str()),
+        "clearing learned policies must not remove explicit rules"
+    );
+    let request_start = proxy.origin_requests();
+    h.engine.manager.resume_task(&id).await;
+    h.wait_downloading(&id).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let rows = h.engine.db.load_segments(&id).await.unwrap();
+        if rows.iter().map(|row| row.downloaded_bytes).sum::<i64>() > downloaded + 2 * 1024 * 1024 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "resume made no progress"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let requests = proxy.requests();
+    let resumed: Vec<_> = requests
+        .iter()
+        .skip(request_start)
+        .filter(|request| {
+            request.method == "GET" && request.range_start.is_some_and(|start| start > 0)
+        })
+        .collect();
+    assert_eq!(resumed.len(), 1, "rule must allow only one data worker");
+    let after = h.engine.db.load_segments(&id).await.unwrap();
+    for segment in &before {
+        let retained = after
+            .iter()
+            .find(|row| row.start_byte == segment.start_byte)
+            .expect("existing segment retained");
+        assert_eq!(retained.end_byte, segment.end_byte);
+        assert!(retained.downloaded_bytes >= segment.downloaded_bytes);
+    }
+    h.finish(&[&id]).await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn running_task_following_global_proxy_reconnects_through_new_proxy() {

@@ -9,7 +9,9 @@ use fluxdown_ui_theme::active_theme;
 use gpui::{App, ParentElement, SharedString, Styled, Window};
 use gpui_component::h_flex;
 
-use super::{SectionContext, auto_quantity, categories, rate_limit, retention, user_agent};
+use super::{
+    SectionContext, auto_quantity, categories, connection_rules, rate_limit, retention, user_agent,
+};
 use crate::ui::{Control, Explain, SettingsPage, SettingsSection, body_text, meta_text};
 
 pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
@@ -357,6 +359,7 @@ fn connection_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
         }),
     );
     section
+        .row(connection_rules::item(ctx))
         .row(ctx.item(
             "connPolicyCache",
             Some("connPolicyCacheDesc"),

@@ -2485,6 +2485,11 @@ async fn run_http_family_task(run: HttpFamilyRun) {
         }
     };
     crate::intercept::sync_egress(&params);
+    if let Err(error) = crate::connection_rules::apply(&mut params).await {
+        persist_task_failure(&task_id, error.to_string(), &panic_db, &panic_progress_tx).await;
+        send_task_done(&done_tx, TaskDone::finished(task_id, spawn_gen, None)).await;
+        return;
+    }
     if let Some(ctx) = prelude.as_mut() {
         ctx.support = ask_support(
             &params.url,

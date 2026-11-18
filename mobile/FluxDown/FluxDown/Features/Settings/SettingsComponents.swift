@@ -658,13 +658,14 @@ struct ConfigTextRow: View {
 struct ConfigLinesRow: View {
     let item: SettingsItem
     var placeholder: String
-    var isEnabled = true
+    var commitOnDisappear = true
     var toEditor: (String) -> String = { $0 }
     var fromEditor: (String) -> String = { $0 }
 
     @Environment(ConfigEditor.self) private var editor
     @State private var draft = ""
-    @State private var showFullScreen = false
+    @State private var lastSubmitted = ""
+    @State private var initialized = false
     @FocusState private var focused: Bool
 
     private var stored: String { toEditor(editor.form.value(item.key) ?? "") }
@@ -709,7 +710,7 @@ struct ConfigLinesRow: View {
                     let pasted = strings.joined(separator: "\n")
                     guard !pasted.isEmpty else { return }
                     draft = draft.isEmpty || draft.hasSuffix("\n") ? draft + pasted : draft + "\n" + pasted
-                    commit()
+                    if commitOnDisappear { commit() }
                 }
                 .labelStyle(.titleAndIcon)
                 .buttonBorderShape(.capsule)
@@ -722,16 +723,35 @@ struct ConfigLinesRow: View {
                 }
                 .buttonStyle(.borderless)
                 Spacer(minLength: 0)
+                if !commitOnDisappear {
+                    Button(L("proxyRuleSave")) { commit() }
+                        .disabled(draft == stored)
+                }
             }
         }
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.5)
         .settingsRow(item.id, failureKey: item.key)
-        .onAppear { draft = stored }
-        .onChange(of: stored) { _, new in if !focused, !showFullScreen { draft = new } }
-        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
-        .onDisappear { commit() }
-        .sheet(isPresented: $showFullScreen, onDismiss: commit) {
+        .onAppear {
+            if commitOnDisappear {
+                if draft.isEmpty { draft = stored }
+            } else if !initialized {
+                draft = stored
+                lastSubmitted = stored
+                initialized = true
+            }
+        }
+        .onChange(of: stored) { _, new in
+            if commitOnDisappear {
+                if !focused, !showFullScreen { draft = new }
+            } else if !focused, !showFullScreen, draft == lastSubmitted, editor.failures[item.key] == nil {
+                draft = new
+                lastSubmitted = new
+            }
+        }
+        .onChange(of: focused) { _, isFocused in if !isFocused && commitOnDisappear { commit() } }
+        .onDisappear { if commitOnDisappear { commit() } }
+        .sheet(isPresented: $showFullScreen, onDismiss: { if commitOnDisappear { commit() } }) {
             NavigationStack {
                 TextEditor(text: $draft)
                     .font(.fluxMono)
@@ -755,6 +775,7 @@ struct ConfigLinesRow: View {
         let cleaned = lines.filter { !$0.isEmpty }.joined(separator: "\n")
         let next = fromEditor(cleaned)
         guard next != (editor.form.value(item.key) ?? "") else { return }
+        lastSubmitted = next
         editor.set(item.key, next)
     }
 }

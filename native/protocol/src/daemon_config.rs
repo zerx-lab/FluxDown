@@ -85,6 +85,7 @@ pub const DAEMON_CONFIG_FIELDS: &[DaemonConfigField] = &[
         DaemonConfigKind::Integer { min: 0, max: 128 },
         "16",
     ),
+    field("connection_rules", DaemonConfigKind::Text, ""),
     field("cdn_multi_enabled", DaemonConfigKind::Bool, "false"),
     field(
         "cdn_max_nodes",

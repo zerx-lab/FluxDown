@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -171,7 +172,7 @@ private val DlRows: List<DlRow> = listOf(
         R.string.defaultQueueSetting, R.string.defaultQueueSettingDesc,
     ),
     DlRow("download.dedupSameUrl", "dedup_same_url", DlSection.Behavior, R.string.mobileDedupSameUrl, R.string.mobileDedupSameUrlDesc),
-    DlRow("download.defaultSegments", "default_segments", DlSection.Connection, R.string.defaultThreads, R.string.defaultThreadsDesc),
+    DlRow("download.connectionRules", "connection_rules", DlSection.Connection, R.string.connectionRules, R.string.connectionRulesDesc),
     DlRow(
         "download.autoMaxConnections", "auto_max_connections", DlSection.Connection,
         R.string.autoMaxConnections, R.string.autoMaxConnectionsDesc,
@@ -785,6 +786,46 @@ private fun GlassSectionScope.connectionRows(
     }
     if ("download.uploadLimit" in shown) {
         settingSpeed(ctx, "upload_limit_bytes", R.string.uploadLimit, R.string.uploadLimitDesc, id = "download.uploadLimit")
+    }
+    if ("download.connectionRules" in shown && ctx.form.has("connection_rules")) {
+        row {
+            SettingRowBox(ctx, "download.connectionRules", "connection_rules") {
+                ConnectionRulesEditor(ctx)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionRulesEditor(ctx: SettingsCtx) {
+    val container = LocalAppContainer.current
+    val hostRef by container.host.collectAsStateWithLifecycle()
+    val stored = ctx.form.value("connection_rules") ?: ""
+    var draft by rememberSaveable(hostRef.id) { mutableStateOf(stored) }
+    var base by rememberSaveable(hostRef.id) { mutableStateOf(stored) }
+    LaunchedEffect(hostRef.id, stored) {
+        if (draft == base && ctx.editor.failures["connection_rules"] == null) {
+            draft = stored
+            base = stored
+        }
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        FluxText(str(R.string.connectionRules), style = FluxTheme.type.body)
+        FluxText(str(R.string.connectionRulesDesc), style = FluxTheme.type.sm, color = FluxTheme.colors.inkMuted)
+        FluxField(
+            value = draft,
+            onValueChange = { draft = it },
+            placeholder = str(R.string.connectionRulesPlaceholder),
+            enabled = !ctx.readOnly,
+            singleLine = false,
+            rows = 4,
+            mono = true,
+        )
+        FluxButton(
+            text = str(R.string.proxyRuleSave),
+            enabled = !ctx.readOnly && draft != stored,
+            onClick = { ctx.editor.set("connection_rules", draft); base = draft },
+        )
     }
 }
 
