@@ -5303,6 +5303,7 @@ fn single_runtime(task_id: &str, downloaded: i64, total: i64, active: bool) -> T
             Vec::new()
         },
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 

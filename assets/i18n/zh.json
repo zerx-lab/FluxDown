@@ -1831,6 +1831,7 @@
   "feedbackDescCount": "{n}/5000",
   "hlsQualityTitle": "选择画质",
   "hlsQualityDesc": "检测到多个画质版本，请选择要下载的画质",
+  "hlsFragmentProgress": "分片：{done}/{total}",
   "resolveVariantTitle": "选择规格",
   "resolveVariantDesc": "检测到多个可下载规格，请选择要下载的版本",
   "selectionAutoDefaultIn": "{seconds} 秒后自动选择默认项",

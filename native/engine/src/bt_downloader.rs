@@ -3804,6 +3804,7 @@ fn bt_runtime(
         total_bytes,
         segments: Vec::new(),
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 

@@ -72,7 +72,12 @@ mod size_estimate;
 
 use size_estimate::{TaskProgress, TrackProgress, VariantBitrate};
 
-fn hls_runtime(task_id: &str, tracker: &TransferTracker, limit: u32) -> TaskRuntime {
+fn hls_runtime(
+    task_id: &str,
+    tracker: &TransferTracker,
+    limit: u32,
+    fragments: Option<(u64, u64)>,
+) -> TaskRuntime {
     TaskRuntime {
         task_id: task_id.to_owned(),
         sampled_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -82,6 +87,7 @@ fn hls_runtime(task_id: &str, tracker: &TransferTracker, limit: u32) -> TaskRunt
         parallelism_limit: Some(limit),
         total_bytes: 0,
         segments: Vec::new(),
+        hls_fragments: fragments,
         source_bytes: None,
     }
 }
@@ -142,6 +148,7 @@ fn hls_progress(
     written: i64,
     total: i64,
     limit: u32,
+    fragments: Option<(u64, u64)>,
 ) -> ProgressUpdate {
     ProgressUpdate {
         task_id: task_id.to_owned(),
@@ -149,7 +156,7 @@ fn hls_progress(
         transfer_bytes: Some(meter.received()),
         total_bytes: total,
         status: 1,
-        runtime: Some(hls_runtime(task_id, &meter.tracker, limit)),
+        runtime: Some(hls_runtime(task_id, &meter.tracker, limit, fragments)),
         ..Default::default()
     }
 }
@@ -2476,6 +2483,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                         written,
                         total,
                         concurrency as u32,
+                        Some(progress.fragments()),
                     ))
                     .await
                     .is_err()
@@ -2637,6 +2645,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                 total_written,
                 total_written,
                 concurrency as u32,
+                Some(progress.fragments()),
             )
         })
         .await
@@ -4754,6 +4763,13 @@ impl ProgressSource {
             ),
         }
     }
+
+    fn fragments(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::Vod(progress) => Some(progress.fragments()),
+            Self::Live { .. } => None,
+        }
+    }
 }
 
 /// 视频(及可选独立音轨)进度采样器:每 200ms 上报一次两轨已落盘字节(进度)、总大小
@@ -4771,7 +4787,14 @@ fn spawn_progress_sampler(
             ticker.tick().await;
             let (written, total) = source.sample();
             if tx
-                .send(hls_progress(&task_id, &meter, written, total, limit))
+                .send(hls_progress(
+                    &task_id,
+                    &meter,
+                    written,
+                    total,
+                    limit,
+                    source.fragments(),
+                ))
                 .await
                 .is_err()
             {
@@ -7835,7 +7858,7 @@ v360.m3u8\n\
             });
         }
 
-        let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(i64, Option<i64>)>::new()));
+        let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
         {
             let samples = std::sync::Arc::clone(&samples);
@@ -7845,7 +7868,8 @@ v360.m3u8\n\
                     if update.status == 1
                         && let Ok(mut seen) = samples.lock()
                     {
-                        seen.push((update.downloaded_bytes, update.transfer_bytes));
+                        let fragments = update.runtime.and_then(|rt| rt.hls_fragments);
+                        seen.push((update.downloaded_bytes, update.transfer_bytes, fragments));
                     }
                 }
             });
@@ -7880,7 +7904,7 @@ v360.m3u8\n\
                 let hit = samples.lock().ok().and_then(|seen| {
                     seen.iter()
                         .copied()
-                        .find(|(_, received)| received.is_some_and(|r| r >= received_behind_head))
+                        .find(|(_, received, _)| received.is_some_and(|r| r >= received_behind_head))
                 });
                 if let Some(sample) = hit {
                     return sample;
@@ -7897,9 +7921,11 @@ v360.m3u8\n\
             all_later_requested,
             "segments behind a stalled head must keep downloading: {requested:?}"
         );
-        let (written, received) = blocked_sample.ok_or("speed never saw the received bytes")?;
+        let (written, received, fragments) =
+            blocked_sample.ok_or("speed never saw the received bytes")?;
         assert_eq!(written, 0, "nothing can be written before the head segment");
         assert!(received.is_some_and(|r| r >= received_behind_head));
+        assert_eq!(fragments, Some((0, SEGMENTS as u64)));
         let expected = bodies.concat();
         assert_eq!(total, expected.len() as i64);
         let task = db

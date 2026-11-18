@@ -338,7 +338,7 @@ private fun DetailHero(modelOf: () -> DetailModel?, gate: FlowInGate) {
             segments = model.flowSegments,
             state = model.flowState,
             height = FlowStripHeight.Lg,
-            semanticsLabel = task.progress?.let { Format.percent(it) },
+            semanticsLabel = model.progress?.let { Format.percent(it) },
         )
         Spacer(Modifier.height(16.dp))
         ReadoutRow(model)
@@ -455,7 +455,7 @@ private fun ReadoutRow(model: DetailModel) {
     val type = FluxTheme.type
     val task = model.task
     val done = model.visual == TaskVisualState.Completed || model.visual == TaskVisualState.Seeding || model.visual == TaskVisualState.Missing
-    val progress = task.progress
+    val progress = model.progress
     val pct = when {
         done -> "100.0"
         progress == null -> "—"
@@ -472,6 +472,16 @@ private fun ReadoutRow(model: DetailModel) {
         Spacer(Modifier.weight(1f))
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             val totalText = if (task.totalBytes > 0) Format.bytes(task.totalBytes).toString() else str(R.string.unknownSize)
+            model.runtime?.hlsFragments?.let { fragments ->
+                if (fragments.fraction != null) {
+                    FluxText(
+                        str(R.string.hlsFragmentProgress, "done" to fragments.written, "total" to fragments.total),
+                        style = type.monoS,
+                        color = c.inkMuted,
+                        maxLines = 1,
+                    )
+                }
+            }
             val sizeLine = remember(task.downloadedBytes, totalText, c) {
                 buildAnnotatedString {
                     withStyle(SpanStyle(color = c.ink, fontWeight = FontWeight.SemiBold)) { append(Format.bytes(task.downloadedBytes).toString()) }

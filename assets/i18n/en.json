@@ -1831,6 +1831,7 @@
   "feedbackDescCount": "{n}/5000",
   "hlsQualityTitle": "Select Quality",
   "hlsQualityDesc": "Multiple quality options detected. Choose the one to download",
+  "hlsFragmentProgress": "Segments: {done}/{total}",
   "resolveVariantTitle": "Select Format",
   "resolveVariantDesc": "Multiple download formats detected. Choose the one to download",
   "selectionAutoDefaultIn": "Auto-selecting default in {seconds}s",

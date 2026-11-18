@@ -111,7 +111,7 @@ internal fun GeneralTab(modelOf: () -> DetailModel?) {
         row { FluxKeyValue(str(R.string.infoStatus), statusWord(model.visual, model.queuePosition)) }
         if (task.totalBytes > 0) row { FluxKeyValue(str(R.string.infoSize), Format.bytes(task.totalBytes).toString()) }
         if (unfinished) row {
-            val pct = task.progress?.let { " · " + Format.percent(it) }.orEmpty()
+            val pct = model.progress?.let { " · " + Format.percent(it) }.orEmpty()
             FluxKeyValue(str(R.string.infoDownloaded), Format.bytes(task.downloadedBytes).toString() + pct)
         }
         if (model.isTransferring) {

@@ -146,8 +146,7 @@ internal fun buildRowMeta(
     val showSpeed = CardField.Speed in fields
     val showEta = CardField.Eta in fields
     val total = task.totalBytes
-    val progress = task.progress
-    val pct = progress?.let(Format::percent).orEmpty()
+    val pct = item.progress?.let(Format::percent).orEmpty()
     val doneOfTotal = if (total > 0) "${Format.bytes(task.downloadedBytes)}/${Format.bytes(total)}" else Format.bytes(task.downloadedBytes).toString()
     val totalSize = if (total > 0) Format.bytes(total).toString() else ""
     val upText = if (item.speedUp > 0) "↑ ${Format.speed(item.speedUp)}" else ""

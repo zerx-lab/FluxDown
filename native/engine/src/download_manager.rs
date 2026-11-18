@@ -24275,6 +24275,7 @@ mod tests {
                 total_bytes: 100,
                 segments: vec![segment],
                 source_bytes: None,
+                hls_fragments: None,
             }),
             ..Default::default()
         })

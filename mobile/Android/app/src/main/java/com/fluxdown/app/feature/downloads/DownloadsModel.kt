@@ -103,6 +103,7 @@ data class TaskItem(
     val visual: TaskVisualState,
     val flow: List<FlowSegmentUi>?,
     val flowState: FlowStripState,
+    val progress: Float?,
     val eta: Long?,
 ) : DownloadItem {
     override val id: String get() = task.taskId
@@ -121,7 +122,7 @@ data class TaskItem(
     override val createdSec: Long get() = task.createdAt
     override val sortName: String get() = task.fileName
     override val sizeBytes: Long get() = task.totalBytes
-    override val sortProgress: Float? get() = task.progress
+    override val sortProgress: Float? get() = progress
     override val sortSpeed: Long get() = speedDown
     override val inflight: Boolean
         get() = task.status == TaskStatus.Pending || task.status == TaskStatus.Downloading || task.status == TaskStatus.Preparing

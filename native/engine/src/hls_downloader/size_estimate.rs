@@ -449,6 +449,19 @@ impl TaskProgress {
         }
     }
 
+    /// 已按序写入与计划写入的媒体分片数；init 段不单独计数。
+    pub(super) fn fragments(&self) -> (u64, u64) {
+        let counts = |track: &TrackProgress| {
+            (
+                track.done.load(Ordering::Acquire) as u64,
+                track.shape.len() as u64,
+            )
+        };
+        let (video_done, video_total) = counts(&self.video);
+        let (audio_done, audio_total) = self.audio.as_deref().map_or((0, 0), counts);
+        (video_done + audio_done, video_total + audio_total)
+    }
+
     /// `(已落盘字节, 总字节)`;总字节 0 = 未知。
     pub(super) fn snapshot(&self) -> (i64, i64) {
         let video = self.video.sample();
@@ -677,6 +690,28 @@ mod tests {
         let (_, total) = progress.snapshot();
         let audio_total = 200_000 + 9 * 200_000;
         assert_eq!(total, 12_500_000 + audio_total);
+    }
+
+    #[test]
+    fn fragment_progress_counts_resumed_and_written_media_on_both_tracks() {
+        let video = Arc::new(TrackProgress::new(&segments(&[5.0; 3])));
+        let audio = Arc::new(TrackProgress::new(&segments(&[5.0; 2])));
+        video.resume(1_000, 1);
+        audio.resume(100, 1);
+        let progress = TaskProgress::new(
+            Arc::clone(&video),
+            Some(Arc::clone(&audio)),
+            VariantBitrate::default(),
+        );
+        assert_eq!(progress.fragments(), (2, 5));
+
+        video.downloaded(2, 10_000);
+        assert_eq!(progress.fragments(), (2, 5));
+        video.wrote(1, 500, 1_500);
+        video.wrote(2, 10_000, 11_500);
+        assert_eq!(progress.fragments(), (4, 5));
+        audio.wrote(1, 50, 150);
+        assert_eq!(progress.fragments(), (5, 5));
     }
 
     #[test]

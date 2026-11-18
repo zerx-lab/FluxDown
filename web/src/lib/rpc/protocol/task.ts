@@ -199,6 +199,8 @@ export interface TaskRuntimeDto {
   parallelismLimit: number | null;
   totalBytes: number;
   segments: TaskSegmentDto[];
+  /** HLS 点播媒体分片计数；直播与旧主机不提供。 */
+  hlsFragments?: { written: number; total: number } | null;
   /** 实时累计（含在途）；null = 该协议/路径无归因。 */
   sourceBytes?: TaskSourceBytesDto | null;
 }
