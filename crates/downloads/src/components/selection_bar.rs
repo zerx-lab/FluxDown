@@ -419,7 +419,9 @@ mod tests {
         let selected = keys(&["known", "removed", "unknown"]);
         assert_eq!(
             task_info_text(selected.iter().filter_map(|key| store.get(key))).as_deref(),
-            Some("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
+            Some(
+                "Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
+            )
         );
     }
 
