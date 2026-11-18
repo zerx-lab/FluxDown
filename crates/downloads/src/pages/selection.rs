@@ -698,7 +698,10 @@ impl SelectionView {
     }
 
     fn set_bt_visible(&mut self, checked: bool) {
-        let SelectionState::Bt { files, selected, .. } = &mut self.state else {
+        let SelectionState::Bt {
+            files, selected, ..
+        } = &mut self.state
+        else {
             return;
         };
         let filter = self.bt_filter.as_ref().filter(|filter| filter.active());
@@ -750,27 +753,32 @@ impl SelectionView {
             .flex_wrap()
             .gap(spacing)
             .child(self.strings.bt_filter_min_size.clone())
-            .children(BT_MIN_SIZES.iter().enumerate().map(|(index, &(size, label))| {
-                let button = Button::new(("bt-min-size", index));
-                let button = if filter.min_size == size {
-                    button.primary()
-                } else {
-                    button.outline()
-                };
-                button
-                    .control(cx)
-                    .label(if size == 0 {
-                        self.strings.bt_filter_any_size.clone()
-                    } else {
-                        SharedString::from(label)
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if let Some(filter) = &mut this.bt_filter {
-                            filter.min_size = size;
-                        }
-                        cx.notify();
-                    }))
-            }));
+            .children(
+                BT_MIN_SIZES
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(size, label))| {
+                        let button = Button::new(("bt-min-size", index));
+                        let button = if filter.min_size == size {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        };
+                        button
+                            .control(cx)
+                            .label(if size == 0 {
+                                self.strings.bt_filter_any_size.clone()
+                            } else {
+                                SharedString::from(label)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if let Some(filter) = &mut this.bt_filter {
+                                    filter.min_size = size;
+                                }
+                                cx.notify();
+                            }))
+                    }),
+            );
         v_flex()
             .gap(spacing)
             .child(Input::new(&filter.input).control(cx).w_full())
