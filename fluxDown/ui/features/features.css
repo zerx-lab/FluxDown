@@ -193,6 +193,7 @@
 
 /* ===== TaskList ===== */
 .fd-tasks { display: flex; flex-direction: column; gap: 6px; }
+.fd-task-download-link { color: var(--fd-text-secondary); font-size: 12px; }
 .fd-quick { display: flex; gap: 6px; }
 .fd-task { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: var(--fd-radius-sm); }
 .fd-task:hover { background: var(--fd-hover); }
