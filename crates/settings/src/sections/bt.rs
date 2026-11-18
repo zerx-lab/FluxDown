@@ -96,9 +96,7 @@ fn listen_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
             ctx.item(
                 "btListenerStatus",
                 Some("btReachabilityUnverified"),
-                Control::custom(move |_, _, _, cx: &mut App| {
-                    meta_text(cx).child(listener.clone())
-                }),
+                Control::custom(move |_, _, _, cx: &mut App| meta_text(cx).child(listener.clone())),
             )
             .vertical(),
         )

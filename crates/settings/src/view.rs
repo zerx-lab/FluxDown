@@ -539,8 +539,8 @@ impl Render for SettingsView {
             .iter()
             .find(|page| self.selected == page.key)
             .or_else(|| pages.first());
-        let port_status_visible = active
-            .is_some_and(|page| page.key == "bt" && self.active_tab_id(page) == "connection");
+        let port_status_visible =
+            active.is_some_and(|page| page.key == "bt" && self.active_tab_id(page) == "connection");
         self.sync_port_status_poll(port_status_visible, cx);
 
         v_flex()
