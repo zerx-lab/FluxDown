@@ -66,6 +66,7 @@ enum SelectionState {
     Bt {
         files: Vec<BtFileDto>,
         selected: HashSet<i32>,
+        order: BtFileOrder,
         /// 请求预填的当前保存目录。空串 = 旧 daemon 未带目录。
         save_dir: String,
     },
@@ -82,6 +83,55 @@ enum SelectionState {
         selected: String,
         remember: bool,
     },
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum BtFileSort {
+    #[default]
+    Original,
+    Type,
+    Size,
+}
+
+#[derive(Default)]
+struct BtFileOrder {
+    sort: BtFileSort,
+    // Positions in the original payload, not torrent file IDs.
+    positions: Vec<usize>,
+}
+
+impl BtFileOrder {
+    fn set_sort(&mut self, sort: BtFileSort, files: &[BtFileDto]) {
+        self.sort = sort;
+        self.positions.clear();
+        if sort == BtFileSort::Original {
+            return;
+        }
+        self.positions.extend(0..files.len());
+        self.positions.sort_unstable_by(|&a, &b| {
+            let left = &files[a];
+            let right = &files[b];
+            let comparison = match sort {
+                BtFileSort::Original => std::cmp::Ordering::Equal,
+                BtFileSort::Type => extension_bytes(&left.path).cmp(extension_bytes(&right.path)),
+                BtFileSort::Size => right.size.cmp(&left.size),
+            };
+            comparison.then_with(|| a.cmp(&b))
+        });
+    }
+
+    fn iter<'a>(&'a self, files: &'a [BtFileDto]) -> impl Iterator<Item = &'a BtFileDto> {
+        (0..files.len()).map(|i| &files[self.positions.get(i).copied().unwrap_or(i)])
+    }
+}
+
+fn extension_bytes(path: &str) -> impl Iterator<Item = u8> + '_ {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let extension = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => extension,
+        _ => "",
+    };
+    extension.bytes().map(|byte| byte.to_ascii_lowercase())
 }
 
 /// 单请求选择窗口（HLS 画质 / BT 文件 / 插件变体）能承载的请求及其默认选择。
@@ -111,6 +161,7 @@ impl SelectionPlan {
                 SelectionState::Bt {
                     files,
                     selected,
+                    order: BtFileOrder::default(),
                     save_dir,
                 }
             }
@@ -473,8 +524,11 @@ impl SelectionView {
                 .child(self.render_hls(options, *selected, cx))
                 .into_any_element(),
             SelectionState::Bt {
-                files, selected, ..
-            } => self.render_bt(files, selected, cx).into_any_element(),
+                files,
+                selected,
+                order,
+                ..
+            } => self.render_bt(files, selected, order, cx).into_any_element(),
             SelectionState::Variant { options, selected } => div()
                 .id("selection-variant-scroll")
                 .size_full()
@@ -599,10 +653,46 @@ impl SelectionView {
             }))
     }
 
+    fn render_bt_sort(&self, order: &BtFileOrder, cx: &mut Context<Self>) -> Div {
+        let spacing = active_theme(cx).tokens().spacing.xs;
+        let options = [
+            (
+                BtFileSort::Original,
+                "bt-sort-original",
+                &self.strings.sort_original,
+            ),
+            (BtFileSort::Type, "bt-sort-type", &self.strings.sort_type),
+            (BtFileSort::Size, "bt-sort-size", &self.strings.sort_size),
+        ];
+        h_flex()
+            .flex_wrap()
+            .gap(spacing)
+            .children(options.into_iter().map(|(sort, id, label)| {
+                let button = Button::new(id);
+                let button = if order.sort == sort {
+                    button.primary()
+                } else {
+                    button.outline()
+                };
+                button
+                    .control(cx)
+                    .label(label.clone())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let SelectionState::Bt { files, order, .. } = &mut this.state
+                            && order.sort != sort
+                        {
+                            order.set_sort(sort, files);
+                            cx.notify();
+                        }
+                    }))
+            }))
+    }
+
     fn render_bt(
         &self,
         files: &[BtFileDto],
         selected: &HashSet<i32>,
+        order: &BtFileOrder,
         cx: &mut Context<Self>,
     ) -> Div {
         let tokens = active_theme(cx).tokens().clone();
@@ -660,7 +750,7 @@ impl SelectionView {
         let list = v_flex()
             .flex_1()
             .min_h_0()
-            .children(files.iter().map(|file| {
+            .children(order.iter(files).map(|file| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
                 let depth = file.path.matches('/').count().min(4) as f32;
@@ -724,6 +814,7 @@ impl SelectionView {
             .children(self.render_name(cx))
             .children(self.render_save_dir(cx))
             .child(toolbar)
+            .when(files.len() > 1, |body| body.child(self.render_bt_sort(order, cx)))
             .child(div().flex_1().min_h_0().child(list))
     }
 
@@ -837,6 +928,9 @@ struct SelectionStrings {
     plugin_confirm: SharedString,
     select_all: SharedString,
     deselect_all: SharedString,
+    sort_original: SharedString,
+    sort_type: SharedString,
+    sort_size: SharedString,
     selected_count: SharedString,
     name: SharedString,
     save_dir: SharedString,
@@ -868,6 +962,9 @@ impl SelectionStrings {
             plugin_confirm: shared(translator.text("pluginChoiceConfirm")),
             select_all: shared(translator.text("btFileSelectAll")),
             deselect_all: shared(translator.text("deselectAll")),
+            sort_original: shared(translator.text("btFileSortOriginal")),
+            sort_type: shared(translator.text("btFileSortType")),
+            sort_size: shared(translator.text("btFileSortSize")),
             selected_count: shared(translator.text("selectedCount")),
             name: shared(translator.text("btFileColumnName")),
             save_dir: shared(translator.text("saveDir")),
@@ -946,12 +1043,12 @@ mod tests {
     use std::collections::HashSet;
 
     use fluxdown_protocol::{
-        SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
+        BtFileDto, SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
     };
 
     use super::{
-        SelectionState, bt_name_outcome, bt_save_dir_confirmable, bt_save_dir_outcome,
-        cancel_command,
+        BtFileOrder, BtFileSort, SelectionState, bt_name_outcome, bt_save_dir_confirmable,
+        bt_save_dir_outcome, cancel_command,
     };
     use crate::controller::DownloadsCommand;
 
@@ -970,6 +1067,7 @@ mod tests {
         let state = SelectionState::Bt {
             files: Vec::new(),
             selected: HashSet::new(),
+            order: BtFileOrder::default(),
             save_dir: String::new(),
         };
         let request = request(SelectionKind::Bt {
@@ -997,6 +1095,31 @@ mod tests {
                 if resolution.request_id == "req-1"
                     && resolution.outcome == SelectionOutcome::Cancelled
         ));
+    }
+
+    #[test]
+    fn bt_file_sort_keeps_torrent_ids_and_original_tie_order() {
+        let files = [
+            (9, "dir.mp4/README", 5),
+            (3, "one.MKV", 10),
+            (7, "two.mkv", 20),
+            (0, ".txt", 20),
+            (4, "notes.txt", 1),
+        ]
+        .map(|(index, path, size)| BtFileDto {
+            index,
+            path: path.to_owned(),
+            size,
+        });
+        let mut order = BtFileOrder::default();
+        let ids = |order: &BtFileOrder| order.iter(&files).map(|file| file.index).collect::<Vec<_>>();
+        assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
+        order.set_sort(BtFileSort::Type, &files);
+        assert_eq!(ids(&order), [9, 0, 3, 7, 4]);
+        order.set_sort(BtFileSort::Size, &files);
+        assert_eq!(ids(&order), [7, 0, 3, 9, 4]);
+        order.set_sort(BtFileSort::Original, &files);
+        assert_eq!(ids(&order), [9, 3, 7, 0, 4]);
     }
 
     #[test]

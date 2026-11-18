@@ -38,6 +38,7 @@
 
 - **动态下载加速** —— Rust + Tokio 引擎，自适应分段与慢速分段接管
 - **多协议支持** —— HTTP/HTTPS、FTP、BitTorrent、eD2K、HLS 与 DASH 流媒体
+- **桌面端种子文件选择** —— 可按原始顺序、文件扩展名或大小（从大到小）排列，切换顺序不改变已勾选的文件。
 - **一套引擎，多种客户端** —— 原生 GPUI 桌面、Kotlin Android 与 SwiftUI iOS 应用、React Web 管理界面与 CLI
 - **浏览器集成** —— Chrome / Edge / Firefox 扩展，三层下载拦截引擎，另有用户脚本
 - **AI 智能体就绪** —— 内置 MCP（Model Context Protocol）服务器，Claude、Cursor 等 AI 客户端可直接管理下载
