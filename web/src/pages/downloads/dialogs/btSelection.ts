@@ -1,3 +1,20 @@
+import { builtinDefaults } from '../model/categories'
+
+const categoryByExtension = new Map(builtinDefaults().flatMap((category) =>
+  category.extensions.map((extension) => [extension, category.builtinType ?? 'other'] as const),
+))
+
+export function btFileCategory(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1)
+  const dot = name.lastIndexOf('.')
+  return (dot > 0 ? categoryByExtension.get(name.slice(dot + 1).toLowerCase()) : undefined) ?? 'other'
+}
+
+export function btFileMatches(name: string, size: number, category: string, query: string, minSize: number, categories: ReadonlySet<string>): boolean {
+  return (!minSize || size >= minSize) && (!categories.size || categories.has(category)) &&
+    (!query || name.slice(name.lastIndexOf('/') + 1).toLowerCase().includes(query))
+}
+
 // BT 文件选择窗的输入规则（与 GPUI `pages/selection.rs` 对齐）。
 // 保存目录：预填是任务当前目录；只有修剪后非空且不同于预填才下发，引擎据此改目录后重开。
 // 空输入在预填非空时禁止确认（不能把已有目录清成空）。

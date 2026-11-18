@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
+import { btFileCategory, btFileMatches, btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
 
 describe('btSelectionSaveDir', () => {
   test('未改、空白、与预填相同都不下发', () => {
@@ -39,4 +39,23 @@ describe('btSelectionCanConfirm', () => {
   test('没有勾选文件时禁用', () => {
     expect(btSelectionCanConfirm('/data', '/data', 0)).toBe(false)
   })
+})
+
+test('BT filters intersect filename and minimum size with any selected category', () => {
+  const files = [
+    { index: 8, path: 'Season/Trailer.MKV', size: 10_000_000 },
+    { index: 23, path: 'Extras/Trailer.MP3', size: 10_000_001 },
+    { index: 35, path: 'Extras/Trailer.mp4', size: 9_999_999 },
+    { index: 37, path: 'Trailer/episode.mkv', size: 15_000_000 },
+    { index: 42, path: 'Season/Trailer.srt', size: 10_000_000 },
+  ]
+  const categories = new Set(['video', 'audio'])
+  expect(files.filter(({ path, size }) =>
+    btFileMatches(path, size, btFileCategory(path), 'trailer', 10_000_000, categories),
+  ).map(({ index }) => index)).toEqual([8, 23])
+})
+
+test('dots in directories and leading dots do not determine the file category', () => {
+  expect(btFileCategory('Season.mkv/README')).toBe('other')
+  expect(btFileCategory('Extras/.mkv')).toBe('other')
 })

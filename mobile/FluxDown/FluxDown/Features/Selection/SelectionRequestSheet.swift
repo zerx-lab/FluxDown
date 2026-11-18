@@ -104,12 +104,31 @@ private func hlsLabel(height: Int64, bandwidth: Int64) -> String {
 #if FULL_FLAVOR
 // MARK: - X1 · BT 文件
 
+private let btMinimumSizes: [Int64] = [0, 10_000_000, 100_000_000, 1_000_000_000]
+
+private func btCategory(_ path: String) -> String {
+    let name = path.split(separator: "/", omittingEmptySubsequences: false).last ?? ""
+    guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return "other" }
+    let ext = name[name.index(after: dot)...].lowercased()
+    return TaskCategory.builtin.first { $0.extensions.contains(ext) }?.builtinType ?? "other"
+}
+
+private func btMinimumSizeLabel(_ size: Int64) -> String {
+    switch size {
+    case 0: L("btFilterAnySize")
+    case 1_000_000_000: "1 GB"
+    default: "\(size / 1_000_000) MB"
+    }
+}
+
 private struct BtSelectionView: View {
     let request: SelectionRequest
     let files: [BtFile]
     let task: DownloadTask?
     let resolver: SelectionResolver
     let close: SelectionClose
+    private let categoryByIndex: [Int32: String]
+    private let categoryCounts: [String: Int]
 
     @Environment(AppContainer.self) private var container
     @State private var timing: SelectionTiming
@@ -117,6 +136,10 @@ private struct BtSelectionView: View {
     @State private var sizes: [Int32: Int64]
     @State private var selected: Set<Int32>
     @State private var collapsed: Set<String>
+    @State private var filtersExpanded = false
+    @State private var filterQuery = ""
+    @State private var filterCategories: Set<String> = []
+    @State private var minimumSize: Int64 = 0
     /// 「名称」预填值（任务当前显示名）与输入；确认时经 `btNameOutcome` 只在改过时提交 `customName`。
     @State private var initialName: String
     @State private var name: String
@@ -127,6 +150,9 @@ private struct BtSelectionView: View {
         self.task = task
         self.resolver = resolver
         self.close = close
+        let categories = files.count > 1 ? files.map { ($0.index, btCategory($0.path)) } : []
+        categoryByIndex = Dictionary(categories, uniquingKeysWith: { first, _ in first })
+        categoryCounts = categories.reduce(into: [:]) { $0[$1.1, default: 0] += 1 }
         let root = buildBtTree(files)
         var defaults: [Int32] = []
         if case let .bt(indices, _, _) = request.defaultChoice { defaults = indices }
@@ -148,7 +174,14 @@ private struct BtSelectionView: View {
     }
 
     var body: some View {
-        let rows = flattenBtTree(tree, collapsed: collapsed)
+        let query = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtering = filtersExpanded && (!query.isEmpty || !filterCategories.isEmpty || minimumSize > 0)
+        let visibleFiles = filtering ? files.filter { file in
+            (minimumSize == 0 || file.size >= minimumSize)
+                && (filterCategories.isEmpty || filterCategories.contains(categoryByIndex[file.index] ?? "other"))
+                && (query.isEmpty || (file.path.split(separator: "/", omittingEmptySubsequences: false).last ?? "").lowercased().contains(query))
+        } : files
+        let rows = flattenBtTree(filtering ? buildBtTree(visibleFiles) : tree, collapsed: filtering ? [] : collapsed)
         let sizeText = Format.bytes(selectedBytes).description
         NavigationStack {
             List {
@@ -167,12 +200,24 @@ private struct BtSelectionView: View {
                     Text(L("btFileColumnName"))
                         .textCase(nil)
                 }
+                if files.count > 1 {
+                    Section {
+                        DisclosureGroup(isExpanded: $filtersExpanded) {
+                            filterControls
+                        } label: {
+                            Text(L(filtersExpanded ? "btFilterHide" : "btFilterShow"))
+                        }
+                    }
+                }
                 Section {
+                    if filtering && rows.isEmpty {
+                        Text(L("btFilterNoMatches")).foregroundStyle(.secondary)
+                    }
                     ForEach(rows, id: \.id) { node in
-                        row(node)
+                        row(node, filtering: filtering)
                     }
                 } header: {
-                    toolbarRow(sizeText)
+                    toolbarRow(sizeText, visibleFiles: visibleFiles, filtering: filtering)
                 }
             }
             .listStyle(.insetGrouped)
@@ -208,16 +253,52 @@ private struct BtSelectionView: View {
         .presentationDragIndicator(.visible)
     }
 
-    private func toolbarRow(_ sizeText: String) -> some View {
+    private var filterControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(L("webSelectionFilterPlaceholder"), text: $filterQuery)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            ScrollView(.horizontal) {
+                HStack {
+                    ForEach(TaskCategory.builtin, id: \.id) { category in
+                        if let kind = category.builtinType, let count = categoryCounts[kind] {
+                            let active = filterCategories.contains(kind)
+                            Button {
+                                if active { filterCategories.remove(kind) } else { filterCategories.insert(kind) }
+                            } label: {
+                                Text("\(category.displayName) \(count)")
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .foregroundStyle(active ? Color.accentColor : Color.primary)
+                                    .background(active ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(active ? [.isSelected] : [])
+                        }
+                    }
+                }
+            }
+            Picker(L("btFilterMinSize"), selection: $minimumSize) {
+                ForEach(btMinimumSizes, id: \.self) { size in
+                    Text(btMinimumSizeLabel(size)).tag(size)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private func toolbarRow(_ sizeText: String, visibleFiles: [BtFile], filtering: Bool) -> some View {
         HStack {
-            Button(L("btFileSelectAll")) {
-                selected = Set(files.map(\.index))
+            Button(L(filtering ? "btFilterSelectVisible" : "btFileSelectAll")) {
+                selected.formUnion(visibleFiles.lazy.map(\.index))
                 FluxHaptic.selection.play()
             }
-            Button(L("deselectAll")) {
-                selected = []
+            .disabled(visibleFiles.isEmpty)
+            Button(L(filtering ? "btFilterClearVisible" : "deselectAll")) {
+                if filtering { selected.subtract(visibleFiles.lazy.map(\.index)) } else { selected.removeAll() }
                 FluxHaptic.selection.play()
             }
+            .disabled(visibleFiles.isEmpty)
             Spacer()
             Text(L("selectedCount", ["n": selected.count]) + " · " + sizeText)
                 .font(.footnote.monospacedDigit())
@@ -230,12 +311,12 @@ private struct BtSelectionView: View {
     }
 
     @ViewBuilder
-    private func row(_ node: BtNode) -> some View {
+    private func row(_ node: BtNode, filtering: Bool) -> some View {
         let indent = CGFloat(min(max(node.depth, 0), 4)) * 18
         switch node {
         case let .folder(folder):
             let state = btFolderState(folder, selected: selected)
-            let isCollapsed = collapsed.contains(folder.path)
+            let isCollapsed = !filtering && collapsed.contains(folder.path)
             HStack(spacing: 8) {
                 Button(isCollapsed ? L("mobileExpand") : L("mobileCollapse"), systemImage: "chevron.down") {
                     if isCollapsed { collapsed.remove(folder.path) } else { collapsed.insert(folder.path) }
@@ -247,6 +328,7 @@ private struct BtSelectionView: View {
                 .fluxAnimation(.snappy, value: isCollapsed)
                 .buttonStyle(.borderless)
                 .frame(minWidth: 32, minHeight: 44)
+                .disabled(filtering)
                 Button {
                     if state == .on { selected.subtract(folder.indices) } else { selected.formUnion(folder.indices) }
                     FluxHaptic.selection.play()

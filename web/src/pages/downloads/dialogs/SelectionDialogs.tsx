@@ -17,7 +17,7 @@ import { cn } from '../../../lib/cn'
 import { formatBytes, useNow } from './utils'
 import { PluginChoiceDialog } from './PluginChoiceDialog'
 import { SaveDirCombo } from './SaveDirCombo'
-import { btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
+import { btFileCategory, btFileMatches, btSelectionCanConfirm, btSelectionName, btSelectionSaveDir } from './btSelection'
 
 type ChoiceKind = Exclude<SelectionKind, { type: 'fileExists' | 'plugin' }>
 
@@ -298,16 +298,31 @@ function BtFiles({
 }) {
   const t = useT()
   const [filter, setFilter] = useState('')
+  const [expanded, setExpanded] = useState(false)
+  const [minSize, setMinSize] = useState(0)
+  const [categories, setCategories] = useState<ReadonlySet<string>>(new Set())
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
 
   const tree = useMemo(() => buildTree(files), [files])
+  const { categoryByIndex, counts } = useMemo(() => {
+    const categoryByIndex = new Map<number, string>()
+    const counts = new Map<string, number>()
+    if (files.length > 1) for (const file of files) {
+      const category = btFileCategory(file.path)
+      categoryByIndex.set(file.index, category)
+      counts.set(category, (counts.get(category) ?? 0) + 1)
+    }
+    return { categoryByIndex, counts }
+  }, [files])
   const needle = filter.trim().toLowerCase()
+  const filtering = expanded && (needle !== '' || minSize > 0 || categories.size > 0)
   const rows = useMemo(() => {
     const out: TreeRow[] = []
-    const matches = (file: BtFileDto) => needle === '' || file.path.toLowerCase().includes(needle)
-    flatten(tree, 0, matches, collapsed, needle !== '', out)
+    const matches = (file: BtFileDto) => !filtering ||
+      btFileMatches(file.path, file.size, categoryByIndex.get(file.index) ?? 'other', needle, minSize, categories)
+    flatten(tree, 0, matches, collapsed, filtering, out)
     return out
-  }, [tree, needle, collapsed])
+  }, [tree, needle, collapsed, filtering, minSize, categories, categoryByIndex])
 
   const selectedSize = files.filter((file) => selected.has(file.index)).reduce((sum, file) => sum + Math.max(0, file.size), 0)
 
@@ -319,25 +334,58 @@ function BtFiles({
     }
     onSelectedChange(next)
   }
-  const visibleIndices = rows.flatMap((row) => (row.type === 'file' ? [row.file.index] : []))
+  const visibleIndices = filtering ? rows.flatMap((row) => (row.type === 'file' ? [row.file.index] : [])) : []
+  const categoryLabels = {
+    video: t('categoryVideo'), audio: t('categoryAudio'), document: t('categoryDocument'),
+    image: t('categoryImage'), program: t('categoryProgram'), archive: t('categoryArchive'), other: t('categoryOther'),
+  }
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" onClick={() => onSelectedChange(new Set(files.map((file) => file.index)))}>
-          {t('btFileSelectAll')}
+        <Button variant="outline" disabled={filtering && !visibleIndices.length} onClick={() => filtering ? setMany(visibleIndices, true) : onSelectedChange(new Set(files.map((file) => file.index)))}>
+          {t(filtering ? 'btFilterSelectVisible' : 'btFileSelectAll')}
         </Button>
-        <Button variant="outline" onClick={() => onSelectedChange(new Set())}>
-          {t('deselectAll')}
+        <Button variant="outline" disabled={filtering && !visibleIndices.length} onClick={() => filtering ? setMany(visibleIndices, false) : onSelectedChange(new Set())}>
+          {t(filtering ? 'btFilterClearVisible' : 'deselectAll')}
         </Button>
+        {files.length > 1 && (
+          <Button variant="outline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+            {t(expanded ? 'btFilterHide' : 'btFilterShow')}
+          </Button>
+        )}
         <span className="tabular ml-auto text-xs text-muted-foreground">
           {t('selectedCount', { n: selected.size })} · {formatBytes(selectedSize)}
         </span>
       </div>
-      {files.length > 8 ? (
-        <Input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('webSelectionFilterPlaceholder')} spellCheck={false} />
-      ) : null}
+      {expanded && (
+        <div className="flex flex-col gap-2">
+          <Input aria-label={t('webSelectionFilterPlaceholder')} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('webSelectionFilterPlaceholder')} spellCheck={false} />
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(categoryLabels).map(([category, label]) => {
+              const count = counts.get(category)
+              if (!count) return null
+              const pressed = categories.has(category)
+              return <Button key={category} variant={pressed ? 'primary' : 'outline'} aria-pressed={pressed} onClick={() => {
+                const next = new Set(categories)
+                if (!next.delete(category)) next.add(category)
+                setCategories(next)
+              }}>{label} {count}</Button>
+            })}
+          </div>
+          <label className="flex flex-wrap items-center gap-2 text-sm">
+            {t('btFilterMinSize')}
+            <select className="rounded-md border border-hairline bg-background p-1" value={minSize} onChange={(event) => setMinSize(Number(event.target.value))}>
+              <option value={0}>{t('btFilterAnySize')}</option>
+              <option value={10_000_000}>10 MB</option>
+              <option value={100_000_000}>100 MB</option>
+              <option value={1_000_000_000}>1 GB</option>
+            </select>
+          </label>
+        </div>
+      )}
       <div className="max-h-[52dvh] overflow-y-auto rounded-md border border-hairline p-1 mobile:max-h-none">
+        {rows.length === 0 && filtering && <FieldHint>{t('btFilterNoMatches')}</FieldHint>}
         {rows.map((row) => {
           const indent = { paddingLeft: `${4 + Math.min(row.depth, 6) * 16}px` }
           if (row.type === 'dir') {
@@ -349,6 +397,7 @@ function BtFiles({
                   type="button"
                   className="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground coarse:size-touch"
                   aria-label={row.name}
+                  disabled={filtering}
                   onClick={() =>
                     setCollapsed((prev) => {
                       const next = new Set(prev)
@@ -383,16 +432,6 @@ function BtFiles({
           )
         })}
       </div>
-      {needle !== '' && visibleIndices.length > 0 ? (
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setMany(visibleIndices, true)}>
-            {t('manifestSelectAll')}
-          </Button>
-          <Button variant="ghost" onClick={() => setMany(visibleIndices, false)}>
-            {t('manifestClearSelection')}
-          </Button>
-        </div>
-      ) : null}
     </div>
   )
 }

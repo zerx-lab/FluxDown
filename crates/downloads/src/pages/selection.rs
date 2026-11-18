@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fluxdown_protocol::{
-    BtFileDto, HlsQualityOptionDto, PluginCandidateDto, ResolveVariantOptionDto, SelectionKind,
-    SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
+    BtFileDto, CustomCategoryDto, HlsQualityOptionDto, PluginCandidateDto, ResolveVariantOptionDto,
+    SelectionKind, SelectionOutcome, SelectionRequestDto, SelectionResolutionDto,
 };
 use fluxdown_ui_components::toast;
 use fluxdown_ui_components::{
@@ -43,6 +43,48 @@ use crate::{
 
 mod plugin_choice;
 
+const BT_CATEGORY_KEYS: [(&str, &str); 7] = [
+    ("video", "categoryVideo"),
+    ("audio", "categoryAudio"),
+    ("document", "categoryDocument"),
+    ("image", "categoryImage"),
+    ("program", "categoryProgram"),
+    ("archive", "categoryArchive"),
+    ("other", "categoryOther"),
+];
+const BT_MIN_SIZES: [(i64, &str); 4] = [
+    (0, ""),
+    (10_000_000, "10 MB"),
+    (100_000_000, "100 MB"),
+    (1_000_000_000, "1 GB"),
+];
+
+struct BtFilter {
+    input: Entity<InputState>,
+    expanded: bool,
+    query: String,
+    min_size: i64,
+    categories: HashSet<usize>,
+    counts: [usize; BT_CATEGORY_KEYS.len()],
+    file_categories: Vec<usize>,
+}
+
+impl BtFilter {
+    fn active(&self) -> bool {
+        self.expanded && (!self.query.is_empty() || self.min_size > 0 || !self.categories.is_empty())
+    }
+
+    fn matches(&self, position: usize, file: &BtFileDto) -> bool {
+        (self.min_size == 0 || file.size >= self.min_size)
+            && (self.categories.is_empty() || self.categories.contains(&self.file_categories[position]))
+            && (self.query.is_empty() || bt_basename(&file.path).to_lowercase().contains(&self.query))
+    }
+}
+
+fn bt_basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 pub struct SelectionView {
     strings: SelectionStrings,
     request: SelectionRequestDto,
@@ -53,6 +95,7 @@ pub struct SelectionView {
     save_dir_input: Option<Entity<InputState>>,
     /// BT 名称输入，预填任务当前名称；其它选择种类没有。
     name_input: Option<Entity<InputState>>,
+    bt_filter: Option<BtFilter>,
     /// 系统目录选择器打开中，避免重入。
     picking_save_dir: bool,
     submitting: bool,
@@ -181,11 +224,65 @@ impl SelectionView {
             let initial = task_name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(initial))
         });
+        let bt_filter = match &state {
+            SelectionState::Bt { files, .. } if files.len() > 1 => {
+                let placeholder = strings.bt_filter_search.clone();
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+                cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change)
+                        && let Some(filter) = &mut this.bt_filter
+                    {
+                        filter.query = input.read(cx).value().trim().to_lowercase();
+                        cx.notify();
+                    }
+                })
+                .detach();
+                let defaults = CustomCategoryDto::builtin_defaults();
+                let mut counts = [0; BT_CATEGORY_KEYS.len()];
+                let file_categories = files
+                    .iter()
+                    .map(|file| {
+                        let category = bt_basename(&file.path)
+                            .rsplit_once('.')
+                            .filter(|(stem, _)| !stem.is_empty())
+                            .and_then(|(_, ext)| {
+                                defaults.iter().find(|category| {
+                                    category
+                                        .extensions
+                                        .iter()
+                                        .any(|value| value.eq_ignore_ascii_case(ext))
+                                })
+                            })
+                            .and_then(|category| category.builtin_type.as_deref())
+                            .and_then(|kind| BT_CATEGORY_KEYS.iter().position(|(id, _)| *id == kind))
+                            .unwrap_or(BT_CATEGORY_KEYS.len() - 1);
+                        counts[category] += 1;
+                        category
+                    })
+                    .collect();
+                Some(BtFilter {
+                    input,
+                    expanded: false,
+                    query: String::new(),
+                    min_size: 0,
+                    categories: HashSet::new(),
+                    counts,
+                    file_categories,
+                })
+            }
+            _ => None,
+        };
         cx.observe_in(&translator, window, |this, translator, window, cx| {
             this.strings = SelectionStrings::from_translator(translator.read(cx));
             if let Some(input) = &this.save_dir_input {
                 let placeholder = this.strings.save_dir_placeholder.clone();
                 input.update(cx, |input, cx| {
+                    input.set_placeholder(placeholder, window, cx)
+                });
+            }
+            if let Some(filter) = &this.bt_filter {
+                let placeholder = this.strings.bt_filter_search.clone();
+                filter.input.update(cx, |input, cx| {
                     input.set_placeholder(placeholder, window, cx)
                 });
             }
@@ -212,6 +309,7 @@ impl SelectionView {
             state,
             save_dir_input,
             name_input,
+            bt_filter,
             picking_save_dir: false,
             submitting: false,
         }
@@ -599,6 +697,87 @@ impl SelectionView {
             }))
     }
 
+    fn set_bt_visible(&mut self, checked: bool) {
+        let SelectionState::Bt { files, selected, .. } = &mut self.state else {
+            return;
+        };
+        let filter = self.bt_filter.as_ref().filter(|filter| filter.active());
+        if !checked && filter.is_none() {
+            selected.clear();
+            return;
+        }
+        for (position, file) in files.iter().enumerate() {
+            if filter.is_none_or(|filter| filter.matches(position, file)) {
+                if checked {
+                    selected.insert(file.index);
+                } else {
+                    selected.remove(&file.index);
+                }
+            }
+        }
+    }
+
+    fn render_bt_filters(&self, filter: &BtFilter, cx: &mut Context<Self>) -> Div {
+        let spacing = active_theme(cx).tokens().spacing.sm;
+        let categories = h_flex().flex_wrap().gap(spacing).children(
+            filter
+                .counts
+                .iter()
+                .enumerate()
+                .filter(|(_, count)| **count > 0)
+                .map(|(category, count)| {
+                    let button = Button::new(("bt-category", category));
+                    let button = if filter.categories.contains(&category) {
+                        button.primary()
+                    } else {
+                        button.outline()
+                    };
+                    button
+                        .control(cx)
+                        .label(format!("{} {count}", self.strings.bt_categories[category]))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if let Some(filter) = &mut this.bt_filter
+                                && !filter.categories.remove(&category)
+                            {
+                                filter.categories.insert(category);
+                            }
+                            cx.notify();
+                        }))
+                }),
+        );
+        let sizes = h_flex()
+            .items_center()
+            .flex_wrap()
+            .gap(spacing)
+            .child(self.strings.bt_filter_min_size.clone())
+            .children(BT_MIN_SIZES.iter().enumerate().map(|(index, &(size, label))| {
+                let button = Button::new(("bt-min-size", index));
+                let button = if filter.min_size == size {
+                    button.primary()
+                } else {
+                    button.outline()
+                };
+                button
+                    .control(cx)
+                    .label(if size == 0 {
+                        self.strings.bt_filter_any_size.clone()
+                    } else {
+                        SharedString::from(label)
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let Some(filter) = &mut this.bt_filter {
+                            filter.min_size = size;
+                        }
+                        cx.notify();
+                    }))
+            }));
+        v_flex()
+            .gap(spacing)
+            .child(Input::new(&filter.input).control(cx).w_full())
+            .child(categories)
+            .child(sizes)
+    }
+
     fn render_bt(
         &self,
         files: &[BtFileDto],
@@ -606,6 +785,13 @@ impl SelectionView {
         cx: &mut Context<Self>,
     ) -> Div {
         let tokens = active_theme(cx).tokens().clone();
+        let filter = self.bt_filter.as_ref().filter(|filter| filter.active());
+        let mut visible = files
+            .iter()
+            .enumerate()
+            .filter(|(position, file)| filter.is_none_or(|filter| filter.matches(*position, file)))
+            .peekable();
+        let no_matches = filter.is_some() && visible.peek().is_none();
         let selected_size: i64 = files
             .iter()
             .filter(|file| selected.contains(&file.index))
@@ -613,19 +799,20 @@ impl SelectionView {
             .sum();
         let toolbar = h_flex()
             .items_center()
+            .flex_wrap()
             .gap(tokens.spacing.sm)
             .child(
                 Button::new("bt-select-all")
                     .outline()
                     .control(cx)
-                    .label(self.strings.select_all.clone())
+                    .disabled(no_matches)
+                    .label(if filter.is_some() {
+                        self.strings.bt_select_visible.clone()
+                    } else {
+                        self.strings.select_all.clone()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt {
-                            files, selected, ..
-                        } = &mut this.state
-                        {
-                            *selected = files.iter().map(|file| file.index).collect();
-                        }
+                        this.set_bt_visible(true);
                         cx.notify();
                     })),
             )
@@ -633,14 +820,33 @@ impl SelectionView {
                 Button::new("bt-deselect-all")
                     .outline()
                     .control(cx)
-                    .label(self.strings.deselect_all.clone())
+                    .disabled(no_matches)
+                    .label(if filter.is_some() {
+                        self.strings.bt_clear_visible.clone()
+                    } else {
+                        self.strings.deselect_all.clone()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if let SelectionState::Bt { selected, .. } = &mut this.state {
-                            selected.clear();
-                        }
+                        this.set_bt_visible(false);
                         cx.notify();
                     })),
             )
+            .children(self.bt_filter.as_ref().map(|filter| {
+                Button::new("bt-toggle-filters")
+                    .outline()
+                    .control(cx)
+                    .label(if filter.expanded {
+                        self.strings.bt_filter_hide.clone()
+                    } else {
+                        self.strings.bt_filter_show.clone()
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(filter) = &mut this.bt_filter {
+                            filter.expanded = !filter.expanded;
+                        }
+                        cx.notify();
+                    }))
+            }))
             .child(
                 div()
                     .flex_1()
@@ -660,16 +866,11 @@ impl SelectionView {
         let list = v_flex()
             .flex_1()
             .min_h_0()
-            .children(files.iter().map(|file| {
+            .children(visible.map(|(_, file)| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
                 let depth = file.path.matches('/').count().min(4) as f32;
-                let name = file
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&file.path)
-                    .to_owned();
+                let name = bt_basename(&file.path).to_owned();
                 let this = cx.weak_entity();
                 check_row(
                     ("bt-file", index as usize),
@@ -724,6 +925,15 @@ impl SelectionView {
             .children(self.render_name(cx))
             .children(self.render_save_dir(cx))
             .child(toolbar)
+            .children(
+                self.bt_filter
+                    .as_ref()
+                    .filter(|filter| filter.expanded)
+                    .map(|filter| self.render_bt_filters(filter, cx)),
+            )
+            .when(no_matches, |view| {
+                view.child(self.strings.bt_filter_no_matches.clone())
+            })
             .child(div().flex_1().min_h_0().child(list))
     }
 
@@ -837,6 +1047,15 @@ struct SelectionStrings {
     plugin_confirm: SharedString,
     select_all: SharedString,
     deselect_all: SharedString,
+    bt_filter_show: SharedString,
+    bt_filter_hide: SharedString,
+    bt_filter_search: SharedString,
+    bt_filter_min_size: SharedString,
+    bt_filter_any_size: SharedString,
+    bt_select_visible: SharedString,
+    bt_clear_visible: SharedString,
+    bt_filter_no_matches: SharedString,
+    bt_categories: [SharedString; BT_CATEGORY_KEYS.len()],
     selected_count: SharedString,
     name: SharedString,
     save_dir: SharedString,
@@ -868,6 +1087,15 @@ impl SelectionStrings {
             plugin_confirm: shared(translator.text("pluginChoiceConfirm")),
             select_all: shared(translator.text("btFileSelectAll")),
             deselect_all: shared(translator.text("deselectAll")),
+            bt_filter_show: shared(translator.text("btFilterShow")),
+            bt_filter_hide: shared(translator.text("btFilterHide")),
+            bt_filter_search: shared(translator.text("webSelectionFilterPlaceholder")),
+            bt_filter_min_size: shared(translator.text("btFilterMinSize")),
+            bt_filter_any_size: shared(translator.text("btFilterAnySize")),
+            bt_select_visible: shared(translator.text("btFilterSelectVisible")),
+            bt_clear_visible: shared(translator.text("btFilterClearVisible")),
+            bt_filter_no_matches: shared(translator.text("btFilterNoMatches")),
+            bt_categories: BT_CATEGORY_KEYS.map(|(_, key)| shared(translator.text(key))),
             selected_count: shared(translator.text("selectedCount")),
             name: shared(translator.text("btFileColumnName")),
             save_dir: shared(translator.text("saveDir")),

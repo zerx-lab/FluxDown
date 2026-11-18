@@ -6,6 +6,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,8 +40,10 @@ import com.fluxdown.app.R
 import com.fluxdown.app.i18n.str
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.fileCategory
+import com.fluxdown.app.ui.label
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.BtFile
+import com.fluxdown.core.model.Category
 import com.fluxdown.core.model.CategoryIndex
 import com.fluxdown.core.model.SelectionKind
 import com.fluxdown.core.model.SelectionOutcome
@@ -119,6 +123,48 @@ private fun flatten(folder: BtFolderNode, collapsed: Set<String>, out: MutableLi
 
 // ── X1 ───────────────────────────────────────────────────────────────────
 
+private val btSizeChoices = listOf(0L to "", 10_000_000L to "10 MB", 100_000_000L to "100 MB", 1_000_000_000L to "1 GB")
+
+private fun btCategory(path: String): String {
+    val name = path.substringAfterLast('/')
+    val dot = name.lastIndexOf('.')
+    val extension = if (dot > 0) name.substring(dot + 1).lowercase() else ""
+    return Category.BUILTIN.firstOrNull { extension in it.extensions }?.builtinType ?: "other"
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BtFilters(
+    query: String,
+    onQuery: (String) -> Unit,
+    counts: Map<String, Int>,
+    categories: Set<String>,
+    toggleCategory: (String) -> Unit,
+    minSize: Long,
+    onSize: (Long) -> Unit,
+) {
+    FluxField(value = query, onValueChange = onQuery, label = str(R.string.webSelectionFilterPlaceholder))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (category in Category.BUILTIN) {
+            val id = category.builtinType ?: continue
+            val count = counts[id] ?: continue
+            FluxButton(
+                "${category.label()} $count", { toggleCategory(id) },
+                variant = if (id in categories) ButtonVariant.Primary else ButtonVariant.Ghost, size = ButtonSize.Xs,
+            )
+        }
+    }
+    FluxText(str(R.string.btFilterMinSize), style = FluxTheme.type.sm, color = FluxTheme.colors.inkMuted)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        for ((size, label) in btSizeChoices) {
+            FluxButton(
+                if (size == 0L) str(R.string.btFilterAnySize) else label, { onSize(size) },
+                variant = if (size == minSize) ButtonVariant.Primary else ButtonVariant.Ghost, size = ButtonSize.Xs,
+            )
+        }
+    }
+}
+
 /** X1：BT 文件选择（Full，可划走 = 取消；已改动选择后划走先确认）。 */
 @Composable
 internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
@@ -135,6 +181,25 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
         if (d.isEmpty()) allIndices.toSet() else d.toSet()
     }
     val selected = remember(request.requestId) { mutableStateSetOf<Int>().also { it.addAll(initial) } }
+    var expanded by remember(request.requestId) { mutableStateOf(false) }
+    var query by remember(request.requestId) { mutableStateOf("") }
+    var minSize by remember(request.requestId) { mutableStateOf(0L) }
+    var filterCategories by remember(request.requestId) { mutableStateOf(emptySet<String>()) }
+    val categoryByIndex = remember(kind) {
+        if (kind.files.size > 1) kind.files.associate { it.index to btCategory(it.path) } else emptyMap()
+    }
+    val counts = remember(categoryByIndex) { categoryByIndex.values.groupingBy { it }.eachCount() }
+    val needle = query.trim().lowercase()
+    val filtering = expanded && (needle.isNotEmpty() || minSize > 0L || filterCategories.isNotEmpty())
+    val visibleFiles = remember(kind, filtering, needle, minSize, filterCategories, categoryByIndex) {
+        if (!filtering) kind.files else kind.files.filter {
+            (minSize == 0L || it.size >= minSize) &&
+                (filterCategories.isEmpty() || (categoryByIndex[it.index] ?: "other") in filterCategories) &&
+                (needle.isEmpty() || it.path.substringAfterLast('/').lowercase().contains(needle))
+        }
+    }
+    val visibleTree = remember(tree, visibleFiles, filtering) { if (filtering) buildBtTree(visibleFiles) else tree }
+    val visibleIndices = remember(allIndices, visibleFiles, filtering) { if (filtering) visibleFiles.map { it.index } else allIndices }
     // 清单超过 60 项：默认只展开第 1 层（深度 ≥ 1 的目录折叠）
     val collapsed = remember(request.requestId) {
         mutableStateSetOf<String>().also { set ->
@@ -149,8 +214,10 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
             }
         }
     }
-    val rows by remember(tree) {
-        derivedStateOf { ArrayList<BtNode>().also { flatten(tree, collapsed, it) } }
+    val rows by remember(visibleTree, filtering, collapsed) {
+        derivedStateOf {
+            ArrayList<BtNode>().also { flatten(visibleTree, if (filtering) emptySet() else collapsed, it) }
+        }
     }
     val selectedBytes by remember(request.requestId) { derivedStateOf { selected.sumOf { sizes[it] ?: 0L } } }
     // 「名称」预填任务当前显示名；只有改过（去空白后非空且不同）才随确认下发 customName
@@ -215,14 +282,33 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
             label = str(R.string.btFileColumnName),
         )
 
+        if (kind.files.size > 1) {
+            FluxButton(
+                str(if (expanded) R.string.btFilterHide else R.string.btFilterShow),
+                { expanded = !expanded }, variant = ButtonVariant.Ghost, size = ButtonSize.Xs,
+            )
+        }
+        if (expanded) {
+            BtFilters(query, { query = it }, counts, filterCategories, { id ->
+                filterCategories = if (id in filterCategories) filterCategories - id else filterCategories + id
+            }, minSize, { minSize = it })
+        }
         // 工具条
         Row(
             Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            FluxButton(str(R.string.btFileSelectAll), { selected.addAll(allIndices) }, variant = ButtonVariant.Ghost, size = ButtonSize.Xs)
-            FluxButton(str(R.string.deselectAll), { selected.clear() }, variant = ButtonVariant.Ghost, size = ButtonSize.Xs)
+            FluxButton(
+                str(if (filtering) R.string.btFilterSelectVisible else R.string.btFileSelectAll),
+                { selected.addAll(visibleIndices) }, variant = ButtonVariant.Ghost, size = ButtonSize.Xs,
+                enabled = visibleIndices.isNotEmpty(),
+            )
+            FluxButton(
+                str(if (filtering) R.string.btFilterClearVisible else R.string.deselectAll),
+                { if (filtering) selected.removeAll(visibleIndices.toSet()) else selected.clear() },
+                variant = ButtonVariant.Ghost, size = ButtonSize.Xs, enabled = visibleIndices.isNotEmpty(),
+            )
             Spacer(Modifier.weight(1f))
             FluxText(
                 str(R.string.selectedCount, "n" to count) + " · " + sizeText,
@@ -232,6 +318,9 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
             )
         }
 
+        if (filtering && visibleFiles.isEmpty()) {
+            FluxText(str(R.string.btFilterNoMatches), style = type.sm, color = c.inkMuted)
+        }
         LazyColumn(
             Modifier
                 .fillMaxWidth()
@@ -244,11 +333,13 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
                     is BtFolderNode -> FolderRow(
                         node = node,
                         state = folderState(node, selected),
-                        collapsed = node.path in collapsed,
+                        collapsed = !filtering && node.path in collapsed,
                         onToggleSelect = {
                             if (folderState(node, selected) == ToggleableState.On) selected.removeAll(node.indices.toSet()) else selected.addAll(node.indices)
                         },
-                        onToggleCollapse = { if (!collapsed.add(node.path)) collapsed.remove(node.path) },
+                        onToggleCollapse = if (filtering) null else {
+                            { if (!collapsed.add(node.path)) collapsed.remove(node.path) }
+                        },
                         isLast = node === rows.lastOrNull(),
                     )
                     is BtFileNode -> FileRow(
@@ -286,7 +377,7 @@ private fun FolderRow(
     state: ToggleableState,
     collapsed: Boolean,
     onToggleSelect: () -> Unit,
-    onToggleCollapse: () -> Unit,
+    onToggleCollapse: (() -> Unit)?,
     isLast: Boolean,
 ) {
     val c = FluxTheme.colors
@@ -310,7 +401,9 @@ private fun FolderRow(
             Box(
                 Modifier
                     .size(width = 48.dp, height = 50.dp)
-                    .clickable(role = Role.Button, onClickLabel = expandLabel, onClick = onToggleCollapse),
+                    .then(if (onToggleCollapse == null) Modifier else Modifier.clickable(
+                        role = Role.Button, onClickLabel = expandLabel, onClick = onToggleCollapse,
+                    )),
                 contentAlignment = Alignment.Center,
             ) {
                 FluxIcon(
