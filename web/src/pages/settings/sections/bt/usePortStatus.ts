@@ -4,9 +4,8 @@ import type { BtPortStatusDto } from '../../../../lib/rpc'
 import { PORT_STATUS_POLL_MS } from './portStatus'
 
 /**
- * `daemon.bt.portStatus` 轮询：挂载（「连接」页签可见且 UPnP 开）即请求，之后在上一次请求结束 5 s
- * 后再请求；卸载即停。浏览器页面在后台时跳过本轮。失败（含旧 daemon 无此方法）保留上次快照，
- * 首轮之前 / 一直失败时为 null（行内留空，对齐 GPUI）。
+ * `daemon.bt.portStatus` 轮询：挂载（「连接」页签可见）即请求，之后在上一次请求结束 5 s
+ * 后再请求；卸载即停。浏览器页面在后台时跳过本轮。首轮在途或请求失败时没有可用快照。
  */
 export function usePortStatus(): BtPortStatusDto | null {
   const [status, setStatus] = useState<BtPortStatusDto | null>(null)
@@ -27,7 +26,7 @@ export function usePortStatus(): BtPortStatusDto | null {
           if (alive) setStatus(data)
         })
         .catch(() => {
-          // 保留上次快照；旧 daemon 无此方法时行内一直留空。
+          if (alive) setStatus(null)
         })
         .finally(schedule)
     }

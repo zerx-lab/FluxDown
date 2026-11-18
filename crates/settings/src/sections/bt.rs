@@ -72,6 +72,17 @@ fn basic_section(ctx: &SectionContext) -> SettingsSection {
 
 /// 监听端口与端口映射。本页除「连接上限」外的改动都会重建 BT 会话，提示挂在第一组。
 fn listen_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
+    let store = ctx.store.read(cx);
+    let status = store.bt_port_status();
+    let listener = match status {
+        None => ctx.t("btListenerUnavailable"),
+        Some(status) if !status.running => ctx.t("btListenerIdle"),
+        Some(status) if status.listen_port == 0 => ctx.t("btListenerNoPort"),
+        Some(status) => SharedString::from(ctx.translator.text_with(
+            "btListenerActive",
+            &[("port", &status.listen_port.to_string())],
+        )),
+    };
     let section = SettingsSection::new()
         .title(ctx.t("btSectionListen"))
         .subtitle(ctx.t("btSettingsRestartHint"))
@@ -81,22 +92,27 @@ fn listen_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
             ctx.daemon_number("bt_port_start"),
         ))
         .row(ctx.item("btListenPortEnd", None, ctx.daemon_number("bt_port_end")))
+        .row(
+            ctx.item(
+                "btListenerStatus",
+                Some("btReachabilityUnverified"),
+                Control::custom(move |_, _, _, cx: &mut App| {
+                    meta_text(cx).child(listener.clone())
+                }),
+            )
+            .vertical(),
+        )
         .row(ctx.item(
             "btEnableUpnp",
             Some("btEnableUpnpDesc"),
             ctx.daemon_switch("bt_enable_upnp"),
         ));
-    if !ctx.store.read(cx).daemon_bool("bt_enable_upnp") {
+    if !store.daemon_bool("bt_enable_upnp") {
         return section;
     }
     // 快照由设置视图在本页签可见时轮询（`SettingsView::sync_port_status_poll`）；视图观察 store，
     // 新快照到达即重建本行。尚无快照（首轮在途 / 旧 daemon 无此方法）时行内留空。
-    let segments = ctx
-        .store
-        .read(cx)
-        .bt_port_status()
-        .map(port_mapping_segments)
-        .unwrap_or_default();
+    let segments = status.map(port_mapping_segments).unwrap_or_default();
     let chips: Vec<(SharedString, Option<SharedString>)> = segments
         .iter()
         .map(|segment| port_segment_text(ctx, segment))

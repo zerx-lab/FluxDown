@@ -304,9 +304,9 @@ internal fun BtPage() {
         }
     }
 
-    // 端口映射状态：仅「连接」页签可见、映射开启且页面在前台时每 5 秒轮询（同 GPUI `sync_port_status_poll`）
+    // 监听与映射共用一个快照：仅「连接」页签可见且页面在前台时轮询。
     var portStatus by remember { mutableStateOf<BtPortStatus?>(null) }
-    val portStatusVisible = tab == BtSettingsTab.Connection && BtSettingsRow.PortMappingStatus.isVisible(form)
+    val portStatusVisible = tab == BtSettingsTab.Connection
     LaunchedEffect(container.session, portStatusVisible, lifecycleOwner) {
         portStatus = null
         if (!portStatusVisible) return@LaunchedEffect
@@ -317,7 +317,7 @@ internal fun BtPage() {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: HostException) {
-                    // 旧 daemon 无此方法 / 断线：行内留空（同 GPUI），本次可见期间不再轮询
+                    // 旧 daemon 无此方法 / 断线：清空快照，本次可见期间不再轮询。
                     portStatus = null
                     return@repeatOnLifecycle
                 }
@@ -469,6 +469,7 @@ private fun ListenSection(ctx: SettingsCtx, portStatus: BtPortStatus?) {
                 }
             }
         }
+        row { ListenerStatusRow(portStatus) }
         if (BtSettingsRow.Upnp.isVisible(form)) {
             settingSwitch(ctx, BtSettingsRow.Upnp.configKey, R.string.btEnableUpnp, R.string.btEnableUpnpDesc, id = BtSettingsRow.Upnp.id)
         }
@@ -476,6 +477,20 @@ private fun ListenSection(ctx: SettingsCtx, portStatus: BtPortStatus?) {
             row { PortMappingStatusRow(ctx, portStatus) }
         }
     }
+}
+
+@Composable
+private fun ListenerStatusRow(status: BtPortStatus?) {
+    val listener = when {
+        status == null -> str(R.string.btListenerUnavailable)
+        !status.running -> str(R.string.btListenerIdle)
+        status.listenPort == 0L -> str(R.string.btListenerNoPort)
+        else -> str(R.string.btListenerActive).fill("port" to status.listenPort)
+    }
+    FluxListRow(
+        title = str(R.string.btListenerStatus),
+        subtitle = "$listener\n${str(R.string.btReachabilityUnverified)}",
+    )
 }
 
 /**
