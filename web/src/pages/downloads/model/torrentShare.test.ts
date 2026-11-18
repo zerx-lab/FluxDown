@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { canCopyUrls, canShareTorrent, torrentFileName } from './actions'
+import { canCopyUrls, canShareTorrent, taskInfoText, torrentFileName } from './actions'
 import type { DownloadTaskView } from './task'
 
 const view = (source: string, protocol: string) => ({ source, protocol }) as unknown as DownloadTaskView
@@ -39,4 +39,11 @@ describe('canCopyUrls', () => {
     expect(canCopyUrls([magnet, imported])).toBe(true)
     expect(canCopyUrls([imported, imported])).toBe(false)
   })
+})
+
+test('task info keeps rows without links and escapes cell boundaries', () => {
+  expect(taskInfoText([
+    { name: '=报告\tpart\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 1 },
+    { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
+  ])).toBe("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
 })

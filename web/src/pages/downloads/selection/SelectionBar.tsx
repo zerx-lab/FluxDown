@@ -1,10 +1,10 @@
-import { Download, Pause, Play, Trash2, X } from 'lucide-react'
+import { Copy, Download, Pause, Play, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { ActionMenu, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
-import { confirmDeleteWithFiles, deleteViews, downloadViewsFiles, pauseViews, resumeViews } from '../model/actions'
+import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, pauseViews, resumeViews } from '../model/actions'
 import { useDownloads } from '../state'
 
 const BTN =
@@ -69,6 +69,9 @@ function SelectionActions({ inline }: { inline?: boolean }) {
           <Icon icon={Download} size="md" />
         </Action>
       )}
+      <Action label={t('copyTaskInfo')} className={btn} onClick={() => void copyTaskInfo(selectedViews)}>
+        <Icon icon={Copy} size="md" />
+      </Action>
       <ActionMenu
         title={t('delete')}
         align="start"

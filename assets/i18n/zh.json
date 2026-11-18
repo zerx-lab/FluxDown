@@ -270,6 +270,8 @@
   "openFolder": "打开所在文件夹",
   "moreActions": "更多操作",
   "copyUrl": "复制下载地址",
+  "copyTaskInfo": "复制任务信息",
+  "taskInfoCopied": "已复制任务信息到剪贴板",
   "urlCopied": "已复制下载地址",
   "copyFileAction": "复制文件",
   "copyFolderAction": "复制文件夹",

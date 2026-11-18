@@ -22,13 +22,15 @@ function execCommandCopy(value: string): boolean {
   return ok
 }
 
-/** 将文本写入剪贴板，失败静默（调用方的「已复制」反馈按乐观路径展示即可）。 */
-export function copyText(value: string): void {
+/** 将文本写入剪贴板，返回 Clipboard API 或兼容写入是否成功。 */
+export async function copyText(value: string): Promise<boolean> {
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(value).catch(() => {
-      execCommandCopy(value)
-    })
-    return
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      return execCommandCopy(value)
+    }
   }
-  execCommandCopy(value)
+  return execCommandCopy(value)
 }

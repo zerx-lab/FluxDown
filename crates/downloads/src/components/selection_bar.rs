@@ -2,12 +2,13 @@
 //! 不遮挡任何任务行，紧挨刚点过的复选框，鼠标移动距离最短。
 
 use fluxdown_ui_components::{
-    FluxIcon, IconControlExt as _, tabular_numbers, toolbar_action_button, tooltip_view,
+    FluxIcon, IconControlExt as _, tabular_numbers, toast, toolbar_action_button, tooltip_view,
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    Anchor, AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, div, px,
+    Anchor, AnyElement, AppContext as _, ClipboardItem, Context, InteractiveElement as _,
+    IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div,
+    px,
 };
 use gpui_component::{
     Icon, WindowExt as _,
@@ -18,9 +19,44 @@ use gpui_component::{
 
 use crate::{
     components::task_table::{ToolbarCommand, table_header_height},
-    model::{RowKey, TaskState, TaskStore},
+    model::{DownloadTaskView, RowKey, TaskState, TaskStore},
     pages::downloads::DownloadView,
 };
+
+fn push_task_info_cell(text: &mut String, value: &str) {
+    // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
+    if value.trim_start().starts_with(['=', '+', '-', '@', '"']) {
+        text.push('\'');
+    }
+    for ch in value.chars() {
+        match ch {
+            '\\' => text.push_str("\\\\"),
+            '\t' => text.push_str("\\t"),
+            '\n' => text.push_str("\\n"),
+            '\r' => text.push_str("\\r"),
+            _ => text.push(ch),
+        }
+    }
+}
+
+fn task_info_text<'a>(
+    rows: impl IntoIterator<Item = std::cell::Ref<'a, DownloadTaskView>>,
+) -> Option<String> {
+    let mut rows = rows.into_iter().peekable();
+    rows.peek()?;
+    let mut text = String::from("Name\tURL\tSize (bytes)");
+    for row in rows {
+        text.push('\n');
+        push_task_info_cell(&mut text, &row.name);
+        text.push('\t');
+        push_task_info_cell(&mut text, row.copyable_share_url().unwrap_or_default());
+        text.push('\t');
+        if row.size_bytes > 0 {
+            text.push_str(&row.size_bytes.to_string());
+        }
+    }
+    Some(text)
+}
 
 fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
     keys.retain(|key| {
@@ -35,6 +71,16 @@ fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
 }
 
 impl DownloadView {
+    fn copy_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.table_state.read(cx).delegate().selected_keys();
+        let store = self.controller.store();
+        if let Some(text) = task_info_text(selected.iter().filter_map(|key| store.get(key))) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let label = self.translator.read(cx).text("taskInfoCopied").to_owned();
+            window.push_notification(toast::success(label), cx);
+        }
+    }
+
     fn selected_stale_keys(&self, cx: &gpui::App) -> Vec<RowKey> {
         let mut keys = self.table_state.read(cx).delegate().selected_keys();
         retain_stale_tasks(self.controller.store(), &mut keys);
@@ -287,6 +333,16 @@ impl DownloadView {
                 cx,
             ));
         }
+        let copy_label =
+            SharedString::from(self.translator.read(cx).text("copyTaskInfo").to_owned());
+        actions.push(self.icon_action(
+            "download-selection-copy-info",
+            copy_label,
+            Icon::new(FluxIcon::Copy).size(icon_size),
+            false,
+            Self::copy_selected_task_info,
+            cx,
+        ));
         actions.push(self.selection_delete_menu(cx));
         let clear = self.icon_action(
             "download-selection-clear",
@@ -332,7 +388,7 @@ impl DownloadView {
 
 #[cfg(test)]
 mod tests {
-    use super::retain_stale_tasks;
+    use super::{retain_stale_tasks, task_info_text};
     use crate::model::{DownloadTaskView, RowKey, TaskStore};
 
     fn local(id: &str, status: i32, missing: bool) -> DownloadTaskView {
@@ -348,6 +404,23 @@ mod tests {
 
     fn keys(ids: &[&str]) -> Vec<RowKey> {
         ids.iter().map(|id| RowKey::Local((*id).into())).collect()
+    }
+
+    #[test]
+    fn task_info_preserves_selected_rows_and_escapes_cell_boundaries() {
+        let store = TaskStore::default();
+        let mut known = local("known", 3, false);
+        known.name = "=报告\tpart\n2".to_owned();
+        known.origin_url = "https://example.com/original".to_owned();
+        let mut unknown = local("unknown", 0, false);
+        unknown.url = "torrent-file://local".to_owned();
+        unknown.size_bytes = 0;
+        store.replace_local(vec![known, unknown, local("unselected", 3, false)]);
+        let selected = keys(&["known", "removed", "unknown"]);
+        assert_eq!(
+            task_info_text(selected.iter().filter_map(|key| store.get(key))).as_deref(),
+            Some("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
+        );
     }
 
     #[test]

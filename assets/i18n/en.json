@@ -270,6 +270,8 @@
   "openFolder": "Open Folder",
   "moreActions": "More Actions",
   "copyUrl": "Copy URL",
+  "copyTaskInfo": "Copy task information",
+  "taskInfoCopied": "Task information copied to clipboard",
   "urlCopied": "URL Copied",
   "copyFileAction": "Copy File",
   "copyFolderAction": "Copy Folder",

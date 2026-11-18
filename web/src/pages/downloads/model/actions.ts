@@ -245,6 +245,30 @@ export function copyUrls(views: readonly DownloadTaskView[]): void {
   toast.key('urlCopied', 'success')
 }
 
+function taskInfoCell(value: string): string {
+  // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
+  const prefix = /^[=+\-@"]/.test(value.trimStart()) ? "'" : ''
+  return prefix + value.replaceAll('\\', '\\\\').replaceAll('\t', '\\t').replaceAll('\n', '\\n').replaceAll('\r', '\\r')
+}
+
+export function taskInfoText(views: readonly Pick<DownloadTaskView, 'name' | 'url' | 'originUrl' | 'sizeBytes'>[]): string {
+  return [
+    'Name\tURL\tSize (bytes)',
+    ...views.map((view) =>
+      `${taskInfoCell(view.name)}\t${taskInfoCell(copyableShareUrl(view))}\t${view.sizeBytes > 0 ? view.sizeBytes : ''}`,
+    ),
+  ].join('\n')
+}
+
+export async function copyTaskInfo(views: readonly DownloadTaskView[]): Promise<void> {
+  if (views.length === 0) return
+  if (await copyText(taskInfoText(views))) {
+    toast.key('taskInfoCopied', 'success')
+  } else {
+    toast.key('copyFileFailed', 'error')
+  }
+}
+
 /**
  * 「复制下载地址」可见（GPUI `copy_url_visible`）：单选要求有真实链接，且本机 BT 的磁力原文
  * 交给「复制磁力链接」不重复显示；多选没有「复制磁力链接」，有一项可复制即显示。
