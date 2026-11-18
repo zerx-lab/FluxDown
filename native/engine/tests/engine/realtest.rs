@@ -105,10 +105,8 @@ struct ServerState {
     /// fnOS multiple-download 式配额端点：任何带 Range 的请求（含 HEAD）一律
     /// 400 拒绝，仅裸 GET（无 Range 头）可用。
     reject_range_with_400: bool,
-    /// 只拒「分段」Range 请求（区间长度 > 1，含开放式 bytes=X-），probe 的
-    /// `bytes=0-0` 照常 206——用于复现"probe 判定支持 Range,分段连接却全被
-    /// 400 拒"的端点(守护 coordinator 全员被拒→RangeNotSupported 转换出口)。
-    reject_segment_range_with_400: bool,
+    /// 只拒分段 Range（区间长度 > 1），小范围探测照常返回 206。
+    segment_range_rejection: Option<u16>,
     /// 一次性签名 CDN：任何携带 If-Range 的请求返回 403，并永久作废该 URL；
     /// 此后纯 Range 也返回 403。用于证明“403 后再降级”已经太晚。
     reject_if_range_with_403: bool,
@@ -125,6 +123,10 @@ struct ServerState {
     /// 该值后，新的分段请求直接 429。
     max_concurrent_segment_gets: Option<usize>,
     segment_in_flight: AtomicUsize,
+    segment_peak_in_flight: AtomicUsize,
+    /// 指定偏移的分段先等其它连接收尾，再仅拒绝一次。
+    isolated_429_offset: Option<i64>,
+    isolated_429_sent: std::sync::atomic::AtomicBool,
     /// 拒绝小范围探测以外的 GET：先放行 N 次，再限流指定毫秒数并返回指定状态码。
     segment_rejection_window: Option<(usize, u64, u16)>,
     segment_accepted: AtomicUsize,
@@ -172,7 +174,7 @@ impl ServerState {
             slow_range_get: None,
             per_conn_bps: 0,
             reject_range_with_400: false,
-            reject_segment_range_with_400: false,
+            segment_range_rejection: None,
             reject_if_range_with_403: false,
             signature_invalid: std::sync::atomic::AtomicBool::new(false),
             throttle_full_ms: 0,
@@ -180,6 +182,9 @@ impl ServerState {
             range_start_alignment: None,
             max_concurrent_segment_gets: None,
             segment_in_flight: AtomicUsize::new(0),
+            segment_peak_in_flight: AtomicUsize::new(0),
+            isolated_429_offset: None,
+            isolated_429_sent: std::sync::atomic::AtomicBool::new(false),
             segment_rejection_window: None,
             segment_accepted: AtomicUsize::new(0),
             segment_rejection_until: Mutex::new(None),
@@ -531,15 +536,33 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             return Ok(());
         }
     }
+    if is_segment_range_get
+        && let Some(offset) = st.isolated_429_offset
+        && req.range.is_some_and(|(start, _)| start == offset)
+        && !st.isolated_429_sent.swap(true, Ordering::SeqCst)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert_eq!(st.segment_in_flight.load(Ordering::SeqCst), 0);
+        st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
+        write_all(
+            &mut stream,
+            b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+        return Ok(());
+    }
     let _segment_slot = match st.max_concurrent_segment_gets {
         Some(limit) if is_segment_range_get => {
-            if st.segment_in_flight.fetch_add(1, Ordering::SeqCst) >= limit {
+            let previous = st.segment_in_flight.fetch_add(1, Ordering::SeqCst);
+            if previous >= limit {
                 st.segment_in_flight.fetch_sub(1, Ordering::SeqCst);
                 st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
                 let resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 write_all(&mut stream, resp.as_bytes()).await?;
                 return Ok(());
             }
+            st.segment_peak_in_flight
+                .fetch_max(previous + 1, Ordering::SeqCst);
             Some(InFlightSlot(&st.segment_in_flight))
         }
         _ => None,
@@ -593,9 +616,12 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         return Ok(());
     }
     // 只拒「分段」Range(probe 0-0 放行):全员被拒→单流回退的转换出口守护。
-    if st.reject_segment_range_with_400 && is_segment_range_get {
+    if let Some(status) = st.segment_range_rejection
+        && is_segment_range_get
+    {
         st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
-        let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let resp =
+            format!("HTTP/1.1 {status} Limited\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         write_all(&mut stream, resp.as_bytes()).await?;
 
         if let Err(error) = stream.shutdown().await
@@ -901,7 +927,11 @@ fn test_client() -> reqwest::Client {
 }
 
 fn unique_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("fluxdown_realtest_{}_{}", tag, std::process::id()));
+    let d = std::env::temp_dir().join(format!(
+        "fluxdown_realtest_{}_{}",
+        tag,
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&d).expect("create work dir");
     d
 }
@@ -1567,20 +1597,41 @@ async fn all_connections_429_with_progress_revives_single_connection() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn automatic_connection_recovery_resumes_after_parallel_403() {
-    assert_connection_recovery(403, 2, 1).await;
+    assert_connection_recovery(403, 2, 1, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn automatic_connection_recovery_retries_first_segment_429_without_learning() {
-    assert_connection_recovery(429, 0, 0).await;
+    assert_connection_recovery(429, 0, 0, false).await;
 }
 
-async fn assert_connection_recovery(status: u16, after: usize, expected_cap: i32) {
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_keeps_learned_cap_after_isolated_429() {
+    assert_connection_recovery(429, 3, 2, true).await;
+}
+
+async fn assert_connection_recovery(
+    status: u16,
+    after: usize,
+    expected_cap: i32,
+    isolated_tail: bool,
+) {
     let work_dir = unique_dir(&format!("conn-recovery-{status}"));
-    let body = Arc::new(gen_body(16 * 1024 * 1024, 31));
+    // 让最后一段小于尾部拆分门槛；等待它的 429 时不会再产生新分段。
+    let size = if isolated_tail {
+        512 * 1024
+    } else {
+        16 * 1024 * 1024
+    };
+    let body = Arc::new(gen_body(size, 31));
     let mut st = ServerState::new(body.clone(), "etag-conn-recovery");
-    st.segment_rejection_window = Some((after, 2500, status));
-    st.throttle_range_ms = if after > 0 { 300 } else { 0 };
+    let window_ms = if isolated_tail { 0 } else { 2500 };
+    st.segment_rejection_window = Some((after, window_ms, status));
+    st.throttle_range_ms = 300;
+    st.max_concurrent_segment_gets = Some(usize::MAX);
+    if isolated_tail {
+        st.isolated_429_offset = Some((body.len() * 15 / 16) as i64);
+    }
     // 拒绝第三个请求时，第二个请求的响应仍活着；它在限流窗口结束前完成，
     // 最后只剩被拒绝的段，必须等退避后续传。
     if status == 403 {
@@ -1605,6 +1656,14 @@ async fn assert_connection_recovery(status: u16, after: usize, expected_cap: i32
     result.expect("recover without discarding the segment layout");
     assert_eq!(tokio::fs::read(dest).await.unwrap(), *body);
     assert!(st.rejected_range_count.load(Ordering::SeqCst) > 0);
+    if isolated_tail {
+        assert_eq!(st.rejected_range_count.load(Ordering::SeqCst), 2);
+    } else if after == 0 {
+        assert!(
+            st.segment_peak_in_flight.load(Ordering::SeqCst) > 1,
+            "an isolated 429 must not disable ramp-up"
+        );
+    }
     assert_eq!(st.full_get_count.load(Ordering::SeqCst), 0);
 
     let db = Db::open(&work_dir).await.unwrap();
@@ -3870,7 +3929,7 @@ async fn probed_all_segments_rejected_falls_back_to_plain_get() {
     let expected = sha256_bytes(&body);
 
     let mut s = ServerState::new(body.clone(), "etag-segreject");
-    s.reject_segment_range_with_400 = true; // probe 0-0 放行，分段全拒
+    s.segment_range_rejection = Some(400); // probe 0-0 放行，分段全拒
     let st = Arc::new(s);
     let server = start_server(st.clone()).await;
     let url = server.url("/file");
@@ -3902,6 +3961,55 @@ async fn probed_all_segments_rejected_falls_back_to_plain_get() {
         "❌ 单流回退的裸 GET 应恰好发生一次"
     );
     drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_falls_back_when_only_ranges_are_rate_limited()
+-> anyhow::Result<()> {
+    let work_dir = unique_dir("range-only-429");
+    let body = Arc::new(gen_body(4 * 1024 * 1024, 422));
+    let mut st = ServerState::new(body.clone(), "etag-range-429");
+    st.segment_range_rejection = Some(429);
+    let st = Arc::new(st);
+    let server = start_server(st.clone()).await;
+    let url = server.url("/file");
+    let db = Db::open(&work_dir).await?;
+    insert_simple_task(
+        &db,
+        &work_dir,
+        "range-429",
+        &url,
+        "out.bin",
+        8,
+        body.len() as i64,
+    )
+    .await;
+    let (status, dest) = tokio::time::timeout(
+        std::time::Duration::from_secs(50),
+        run_full(
+            &work_dir,
+            &db,
+            "range-429",
+            &url,
+            "out.bin",
+            8,
+            0,
+            true,
+            "",
+            &CancellationToken::new(),
+        ),
+    )
+    .await?;
+    assert_eq!(status, 3);
+    assert_eq!(tokio::fs::read(dest).await?, *body);
+    assert_eq!(st.rejected_range_count.load(Ordering::SeqCst), 4);
+    assert_eq!(st.full_get_count.load(Ordering::SeqCst), 1);
+    drop(db);
+    drop(server);
+    if let Err(error) = tokio::fs::remove_dir_all(work_dir).await {
+        eprintln!("best-effort test directory cleanup: {error}");
+    }
+    Ok(())
 }
 
 /// hint 任务在【正常支持 Range 的服务器】上的保守启动不牺牲多段吞吐：
