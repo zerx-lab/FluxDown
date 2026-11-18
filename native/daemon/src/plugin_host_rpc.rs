@@ -471,7 +471,7 @@ flux.ui.view("counter", {
     async fn image_resources_cross_js_and_authenticated_http_and_expire_on_close() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let f = fixture_with(
+        let mut f = fixture_with(
             json!({
                 "identity": ID, "name": "Images", "version": "1.0.0",
                 "permissions": ["auth"],
@@ -549,9 +549,15 @@ flux.ui.view("counter", {
         ));
         async fn get(address: std::net::SocketAddr, path: &str, token: &str) -> Vec<u8> {
             let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
-            socket.write_all(format!(
-                "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
-            ).as_bytes()).await.unwrap();
+            socket
+                .write_all(
+                    format!(
+                        "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
             let mut response = Vec::new();
             tokio::time::timeout(Duration::from_secs(5), socket.read_to_end(&mut response))
                 .await
@@ -571,6 +577,9 @@ flux.ui.view("counter", {
         assert!(headers.contains("x-content-type-options: nosniff"));
         assert_eq!(&response[header_end..], bytes.as_ref());
         press(&f, session, "release").await;
+        // The RPC acknowledges enqueueing; the frame follows the awaited JS release.
+        let released = next_frame(&mut f).await;
+        assert_eq!((released.session.as_str(), released.seq), (session, 1));
         let response = get(address, &path, "image-test-token").await;
         assert!(response.starts_with(b"HTTP/1.1 404"));
         let other_session = other["session"].as_str().unwrap();
@@ -583,11 +592,12 @@ flux.ui.view("counter", {
         call(
             &f,
             "daemon.plugin.view.close",
-            json!({ "session": session }),
+            json!({ "session": other_session }),
         )
         .await
         .unwrap();
-        let response = get(address, &path, "image-test-token").await;
+        let other_path = format!("/plugin-images/{other_session}/{other_id}");
+        let response = get(address, &other_path, "image-test-token").await;
         assert!(response.starts_with(b"HTTP/1.1 404"));
         cancel.cancel();
         server.await.unwrap().unwrap();
