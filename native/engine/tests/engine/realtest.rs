@@ -99,6 +99,7 @@ struct ServerState {
     /// 每个 range GET 响应体写出前 sleep 的毫秒数（0 = 不限速）。用于让下载
     /// 持续多个 ramp 评估窗口，以断言渐进启动的初始并发行为。
     throttle_range_ms: u64,
+    slow_range_get: Option<(usize, u64)>,
     /// 每条连接的 range 响应体限速（字节/秒，0 = 不限）：按连接限速的 CDN。
     per_conn_bps: u64,
     /// fnOS multiple-download 式配额端点：任何带 Range 的请求（含 HEAD）一律
@@ -124,11 +125,10 @@ struct ServerState {
     /// 该值后，新的分段请求直接 429。
     max_concurrent_segment_gets: Option<usize>,
     segment_in_flight: AtomicUsize,
-    /// 按 IP 限流窗口式服务器（USTC 镜像式）：前 N 个「分段」range GET 照常服务，
-    /// 之后的分段请求在窗口毫秒内一律 429，窗口过后恢复。
-    segment_429_window: Option<(usize, u64)>,
+    /// 拒绝小范围探测以外的 GET：先放行 N 次，再限流指定毫秒数并返回指定状态码。
+    segment_rejection_window: Option<(usize, u64, u16)>,
     segment_accepted: AtomicUsize,
-    segment_429_until: Mutex<Option<std::time::Instant>>,
+    segment_rejection_until: Mutex<Option<std::time::Instant>>,
     /// `/redirect` 签发的终点签名（`/file?sig=N`）；签名小于该值的终点请求 403，
     /// 模拟签名过期的 CDN 终点。
     valid_sig: AtomicUsize,
@@ -169,6 +169,7 @@ impl ServerState {
             force_full_range_get_once: std::sync::atomic::AtomicBool::new(false),
             range_total_sequence: std::sync::Mutex::new(Vec::new()),
             throttle_range_ms: 0,
+            slow_range_get: None,
             per_conn_bps: 0,
             reject_range_with_400: false,
             reject_segment_range_with_400: false,
@@ -179,9 +180,9 @@ impl ServerState {
             range_start_alignment: None,
             max_concurrent_segment_gets: None,
             segment_in_flight: AtomicUsize::new(0),
-            segment_429_window: None,
+            segment_rejection_window: None,
             segment_accepted: AtomicUsize::new(0),
-            segment_429_until: Mutex::new(None),
+            segment_rejection_until: Mutex::new(None),
             valid_sig: AtomicUsize::new(0),
             redirect_hits: AtomicUsize::new(0),
             drop_first_conns: AtomicUsize::new(0),
@@ -506,12 +507,12 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             .range
             .map(|(s, e)| e.unwrap_or(total - 1).min(total - 1) - s + 1 > 1)
             .unwrap_or(false);
-    if let Some((after, window_ms)) = st.segment_429_window
-        && is_segment_range_get
+    if let Some((after, window_ms, status)) = st.segment_rejection_window
+        && (is_segment_range_get || req.range.is_none())
     {
         let now = std::time::Instant::now();
         let reject = {
-            let mut until = st.segment_429_until.lock().await;
+            let mut until = st.segment_rejection_until.lock().await;
             match *until {
                 Some(deadline) => now < deadline,
                 None if st.segment_accepted.fetch_add(1, Ordering::SeqCst) >= after => {
@@ -523,8 +524,9 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         };
         if reject {
             st.rejected_range_count.fetch_add(1, Ordering::SeqCst);
-            let resp =
-                "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let resp = format!(
+                "HTTP/1.1 {status} Limited\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
             write_all(&mut stream, resp.as_bytes()).await?;
             return Ok(());
         }
@@ -752,8 +754,12 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
     write_all(&mut stream, h.as_bytes()).await?;
 
     // 节流注入：拉长每个分段响应的时长（渐进启动行为测试用）。
-    if st.throttle_range_ms > 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(st.throttle_range_ms)).await;
+    let delay_ms = st
+        .slow_range_get
+        .filter(|&(index, _)| index == n)
+        .map_or(st.throttle_range_ms, |(_, delay)| delay);
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
     // 断流注入：第 N 个 range GET 只写前 K 字节然后关闭
@@ -1521,7 +1527,7 @@ async fn all_connections_429_with_progress_revives_single_connection() {
     let expected = sha256_bytes(&body);
     let mut st = ServerState::new(body.clone(), "etag-all429");
     st.throttle_range_ms = 300;
-    st.segment_429_window = Some((4, 2500));
+    st.segment_rejection_window = Some((4, 2500, 429));
     let st = Arc::new(st);
     let server = start_server(st.clone()).await;
     let url = server.url("/file");
@@ -1557,6 +1563,154 @@ async fn all_connections_429_with_progress_revives_single_connection() {
     {
         eprintln!("best-effort test directory cleanup: {error}");
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_resumes_after_parallel_403() {
+    assert_connection_recovery(403, 2, 1).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_retries_first_segment_429_without_learning() {
+    assert_connection_recovery(429, 0, 0).await;
+}
+
+async fn assert_connection_recovery(status: u16, after: usize, expected_cap: i32) {
+    let work_dir = unique_dir(&format!("conn-recovery-{status}"));
+    let body = Arc::new(gen_body(16 * 1024 * 1024, 31));
+    let mut st = ServerState::new(body.clone(), "etag-conn-recovery");
+    st.segment_rejection_window = Some((after, 2500, status));
+    st.throttle_range_ms = if after > 0 { 300 } else { 0 };
+    // 拒绝第三个请求时，第二个请求的响应仍活着；它在限流窗口结束前完成，
+    // 最后只剩被拒绝的段，必须等退避后续传。
+    if status == 403 {
+        st.slow_range_get = Some((2, 1200));
+    }
+    let st = Arc::new(st);
+    let server = start_server(st.clone()).await;
+    let (result, dest) = tokio::time::timeout(
+        std::time::Duration::from_secs(25),
+        run_coord(
+            &work_dir,
+            "connection-recovery",
+            &server.url("/file"),
+            body.len() as i64,
+            16,
+            "\"etag-conn-recovery\"",
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("serialized recovery must finish within its retry window");
+    result.expect("recover without discarding the segment layout");
+    assert_eq!(tokio::fs::read(dest).await.unwrap(), *body);
+    assert!(st.rejected_range_count.load(Ordering::SeqCst) > 0);
+    assert_eq!(st.full_get_count.load(Ordering::SeqCst), 0);
+
+    let db = Db::open(&work_dir).await.unwrap();
+    let host_key = server.addr.to_string();
+    let read_cap = || async {
+        let raw = db
+            .get_config("domain_conn_caps")
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        raw.lines()
+            .find_map(|line| {
+                let (host, rest) = line.split_once('\t')?;
+                if host != host_key {
+                    return None;
+                }
+                rest.split('\t').next()?.parse::<i32>().ok()
+            })
+            .unwrap_or(0)
+    };
+    if expected_cap != 0 {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while read_cap().await == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("confirmed pressure should persist a host cap");
+    }
+    assert_eq!(read_cap().await, expected_cap);
+    drop(db);
+    drop(server);
+    if let Err(error) = tokio::fs::remove_dir_all(work_dir).await {
+        eprintln!("best-effort test directory cleanup: {error}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_retries_unverified_hint_as_plain_get() -> anyhow::Result<()>
+{
+    let work_dir = unique_dir("hint-first-429");
+    let body = Arc::new(gen_body(4 * 1024 * 1024, 33));
+    let mut st = ServerState::new(body.clone(), "etag-hint-429");
+    st.segment_rejection_window = Some((0, 2500, 429));
+    st.reject_range_with_400 = true;
+    st.advertise_accept_ranges = false;
+    let st = Arc::new(st);
+    let server = start_server(st.clone()).await;
+    let url = server.url("/file");
+    let db = Db::open(&work_dir).await?;
+    let size = body.len() as i64;
+    insert_simple_task(&db, &work_dir, "hint-429", &url, "out.bin", 16, size).await;
+    let (status, dest) = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        run_full(
+            &work_dir,
+            &db,
+            "hint-429",
+            &url,
+            "out.bin",
+            16,
+            size,
+            false,
+            "",
+            &CancellationToken::new(),
+        ),
+    )
+    .await?;
+    assert_eq!(status, 3);
+    assert_eq!(tokio::fs::read(dest).await?, *body);
+    assert_eq!(st.rejected_range_count.load(Ordering::SeqCst), 1);
+    assert_eq!(st.full_get_count.load(Ordering::SeqCst), 1);
+    drop(db);
+    drop(server);
+    if let Err(error) = tokio::fs::remove_dir_all(work_dir).await {
+        eprintln!("best-effort test directory cleanup: {error}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_connection_recovery_does_not_retry_unproven_forbidden() {
+    let work_dir = unique_dir("forbidden-without-pressure");
+    let body = Arc::new(gen_body(2 * 1024 * 1024, 32));
+    let mut st = ServerState::new(body.clone(), "etag-forbidden");
+    st.max_range_len = Some(1);
+    let st = Arc::new(st);
+    let server = start_server(st.clone()).await;
+    let (result, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        run_coord(
+            &work_dir,
+            "forbidden",
+            &server.url("/file"),
+            body.len() as i64,
+            16,
+            "\"etag-forbidden\"",
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("unproven 403 must not enter the cooldown");
+    assert!(result.is_err());
+    assert_eq!(st.rejected_range_count.load(Ordering::SeqCst), 1);
+    drop(server);
+    tokio::fs::remove_dir_all(work_dir).await.unwrap();
 }
 
 /// 按连接限速 + 每 IP 并发上限的 CDN：4→8 连接近线性增益触发任务内解封（8→16），
@@ -3724,10 +3878,11 @@ async fn probed_all_segments_rejected_falls_back_to_plain_get() {
     let db = Db::open(&work_dir).await.expect("db");
     insert_simple_task(&db, &work_dir, "sr400", &url, "out.bin", 8, size as i64).await;
 
-    // hint=0：走真实 probe 路径（probe 判定 range=true 后多段启动）。
+    // 已验证任务恢复时走 HEAD + Range 探测；新任务会复用裸 GET 探测响应，
+    // 直接下完就无法覆盖下面的分段拒绝回退。
     let cancel = CancellationToken::new();
     let (status, dest) = run_full(
-        &work_dir, &db, "sr400", &url, "out.bin", 8, 0, false, "", &cancel,
+        &work_dir, &db, "sr400", &url, "out.bin", 8, 0, true, "", &cancel,
     )
     .await;
 

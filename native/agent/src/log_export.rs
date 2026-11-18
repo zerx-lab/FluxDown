@@ -418,11 +418,7 @@ fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     matches!(
         key.as_str(),
-        "proxy_username"
-            | "proxy_password"
-            | "proxy_rules"
-            | "connection_rules"
-            | "webhook.endpoints"
+        "proxy_username" | "proxy_password" | "proxy_rules" | "webhook.endpoints"
     ) || ["password", "secret", "token", "authorization", "cookie"]
         .iter()
         .any(|needle| key.contains(needle))

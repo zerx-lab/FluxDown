@@ -183,14 +183,6 @@ pub fn validate_config_patch(
             ConfigError::InvalidValue { field, message }
         }
     })?;
-    if let Some(raw) = normalized.get("connection_rules") {
-        fluxdown_engine::connection_rules::validate(raw).map_err(|message| {
-            ConfigError::InvalidValue {
-                field: "connection_rules".to_owned(),
-                message,
-            }
-        })?;
-    }
     for key in ENGINE_NUMERIC_BOOL_KEYS {
         if let Some(value) = normalized.get_mut(*key) {
             *value = if value == "true" { "1" } else { "0" }.to_owned();
@@ -632,19 +624,6 @@ mod tests {
             normalized["component_mirror_base"],
             "https://gh-proxy.example.com"
         );
-    }
-    #[test]
-    fn connection_rules_patch_rejects_invalid_limits_with_line_number() {
-        let patch = |raw: &str| BTreeMap::from([("connection_rules".to_owned(), raw.to_owned())]);
-        assert_eq!(
-            validate_config_patch(&patch("drivers.amd.com=1\n*.example.com=4")).unwrap()["connection_rules"],
-            "drivers.amd.com=1\n*.example.com=4"
-        );
-        assert!(matches!(
-            validate_config_patch(&patch("drivers.amd.com=1\nexample.com=513")),
-            Err(ConfigError::InvalidValue { field, message })
-                if field == "connection_rules" && message.starts_with("line 2:")
-        ));
     }
 
     #[test]

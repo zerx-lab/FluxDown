@@ -46,8 +46,6 @@ pub mod category_route;
 pub mod cdn;
 pub(crate) mod client_cache;
 pub mod components;
-/// Persistent hostname / IP connection ceilings for file downloads.
-pub mod connection_rules;
 /// 请求凭据（Cookie / Authorization / Referer）对锚点 URL 的作用域判定（公共后缀表）。
 pub(crate) mod credential_scope;
 pub mod dash_downloader;

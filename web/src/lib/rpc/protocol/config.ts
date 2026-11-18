@@ -239,8 +239,6 @@ export const DAEMON_CONFIG_FIELDS: readonly DaemonConfigField[] = [
   int('auto_max_connections', '16', 0, 128),
   bool('cdn_multi_enabled', 'false'),
   int('cdn_max_nodes', '0', 0, 8),
-  // Device-local hostname/IP connection limits; not synchronized to the cloud.
-  text('connection_rules'),
   bool('multi_nic_enabled', 'false'),
   int('max_concurrent_tasks', '5', 1, 1024),
   int('speed_limit_bytes', '0', 0),

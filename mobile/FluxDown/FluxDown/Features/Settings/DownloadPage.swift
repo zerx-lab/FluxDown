@@ -257,9 +257,7 @@ struct DownloadPage: View {
             ConfigNumberRow(row: .maxConcurrent, range: 1 ... 1024, fallback: 5)
         }
         if SettingsDownloadRow.speedLimit.isVisible(in: ctx) { SettingsRateLimitRow(row: .speedLimit) }
-        if SettingsDownloadRow.connectionRules.isVisible(in: ctx) {
-            ConfigLinesRow(item: SettingsDownloadRow.connectionRules.item, placeholder: L("connectionRulesPlaceholder"), commitOnDisappear: false)
-        }
+        if SettingsDownloadRow.uploadLimit.isVisible(in: ctx) { SettingsRateLimitRow(row: .uploadLimit) }
     }
 
     /// 多 CDN：开启时若代理启用，先确认「关闭代理并开启」（代理下该功能不生效）。

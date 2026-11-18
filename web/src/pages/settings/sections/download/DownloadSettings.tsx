@@ -7,7 +7,7 @@ import { LATER_QUEUE_ID, MAIN_QUEUE_ID, rpc, useDaemon } from '../../../../lib/r
 import type { QueueDto } from '../../../../lib/rpc'
 import { rpcErrorText } from '../../../../lib/rpcErrorText'
 import { ThreadsRiskCallout } from '../../../../lib/ThreadsRiskCallout'
-import { Button, Switch, Textarea, toast } from '../../../../ui'
+import { Button, Switch, toast } from '../../../../ui'
 import {
   DaemonEnumRow,
   DaemonNumberRow,
@@ -22,7 +22,6 @@ import {
   setDaemon,
   setDaemonBool,
   useDaemonNumber,
-  useDaemonPending,
   useDaemonValue,
   useDaemonBool,
   usePrefBoolean,
@@ -194,51 +193,6 @@ function ConnPolicyRow() {
   )
 }
 
-function ConnectionRulesRow() {
-  const t = useT()
-  const value = useDaemonValue('connection_rules')
-  const pending = useDaemonPending('connection_rules')
-  const readOnly = useSettingsReadOnly()
-  const [draft, setDraft] = useState<string | null>(null)
-  const [submitted, setSubmitted] = useState<string | null>(null)
-  useEffect(() => {
-    if (submitted === null || pending || readOnly) return
-    if (value === submitted) setDraft(null)
-    setSubmitted(null)
-  }, [pending, readOnly, submitted, value])
-  const disabled = readOnly || pending
-  const save = () => {
-    if (draft === null || disabled) return
-    setSubmitted(draft.trim())
-    setDaemon('connection_rules', draft)
-  }
-  return (
-    <SettingsRow title={t('connectionRules')} description={t('connectionRulesDesc')} vertical>
-      <div className="flex w-full min-w-0 flex-col gap-2">
-        <Textarea
-          aria-label={t('connectionRules')}
-          value={draft ?? value}
-          placeholder={t('connectionRulesPlaceholder')}
-          rows={5}
-          spellCheck={false}
-          autoComplete="off"
-          disabled={disabled}
-          className="w-full font-mono"
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" disabled={disabled || draft === null} onClick={() => setDraft(null)}>
-            {t('cancel')}
-          </Button>
-          <Button loading={pending} disabled={disabled || draft === null || draft.trim() === value} onClick={save}>
-            {t('proxyRuleSave')}
-          </Button>
-        </div>
-      </div>
-    </SettingsRow>
-  )
-}
-
 function ConnectionSection() {
   const t = useT()
   const autoSegments = useDaemonNumber('default_segments') === 0
@@ -256,7 +210,6 @@ function ConnectionSection() {
       <DaemonSwitchRow configKey="cdn_multi_enabled" titleKey="cdnMultiEnabled" descKey="cdnMultiEnabledDesc" />
       {cdnMulti ? <AutoCountRow configKey="cdn_max_nodes" customDefault={2} titleKey="cdnMaxNodes" descKey="cdnMaxNodesDesc" /> : null}
       <MultiNicRow />
-      <ConnectionRulesRow />
       <ConnPolicyRow />
       <DaemonNumberRow configKey="max_concurrent_tasks" titleKey="maxConcurrent" descKey="maxConcurrentDesc" />
       <RateLimitRow configKey="speed_limit_bytes" title={t('speedLimit')} description={optionalText(t, 'speedLimitDesc')} />

@@ -1049,8 +1049,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         )
         .await?;
         requested_segments = decision.segments.unwrap_or(requested_segments);
-        connection_cap =
-            crate::connection_rules::min_cap(connection_cap, decision.max_connections.unwrap_or(0));
+        connection_cap = decision.max_connections.unwrap_or(connection_cap);
     }
 
     // p.file_name 来自外部（aria2 out、云端下发、接管请求等），与 HTTP/HLS 一致地清洗，
@@ -1134,15 +1133,15 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
     let dest_path = save_dir.join(&actual_name);
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
 
-    let existing = if p.is_resume {
-        p.db.load_segments(&p.task_id).await?
-    } else {
-        Vec::new()
-    };
     // Dynamic segment calculation
     let segments = if requested_segments <= 0 {
-        if !existing.is_empty() {
-            existing.len() as i32
+        if p.is_resume {
+            let existing = p.db.load_segments(&p.task_id).await?;
+            if !existing.is_empty() {
+                existing.len() as i32
+            } else {
+                compute_ftp_segments(p, &info).await
+            }
         } else {
             compute_ftp_segments(p, &info).await
         }
@@ -1155,11 +1154,7 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         segments
     };
 
-    // A lower connection ceiling must schedule existing ranges sequentially,
-    // never treat a preallocated, partly-filled file as a complete single stream.
-    let mut use_segments = info.supports_range
-        && info.total_bytes > 1_048_576
-        && (segments > 1 || !existing.is_empty());
+    let mut use_segments = info.supports_range && info.total_bytes > 1_048_576 && segments > 1;
 
     // F022 防护：多段下载把每段数据写到各自的文件偏移，完全依赖服务器正确执行
     // REST 偏移。若服务器对 REST 返回 350 却仍从字节 0 发送，多段会产生“字节数

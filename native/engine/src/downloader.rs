@@ -4155,10 +4155,7 @@ async fn run_download_inner(
     // 本次运行内所有下载请求共享：hint 模式下首个真实请求撞上反机器人质询时，
     // 切换到中性 UA 对其余分段 worker 与单流回退同时生效。
     let requested_segments = probed_decision.segments.unwrap_or(p.segment_count);
-    let connection_cap = crate::connection_rules::min_cap(
-        p.connection_cap,
-        probed_decision.max_connections.unwrap_or(0),
-    );
+    let connection_cap = probed_decision.max_connections.unwrap_or(p.connection_cap);
     // 单请求探测的响应终点（跟随重定向后），供下方 HTML 安全网点出被带去的页面。
     let probe_final_url = held_response.as_ref().map(|resp| resp.url().clone());
     let spec_ref = std::sync::Arc::new(

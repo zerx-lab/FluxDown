@@ -20,7 +20,6 @@ pub(crate) mod category_dialog;
 pub(crate) mod cloud_channel_dialog;
 pub(crate) mod cloud_dialogs;
 pub(crate) mod cloud_push;
-mod connection_rules;
 pub(crate) mod doctor;
 pub(crate) mod download;
 pub(crate) mod ed2k;

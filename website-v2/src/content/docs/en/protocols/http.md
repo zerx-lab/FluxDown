@@ -22,22 +22,6 @@ You don't have to rely on the automatic choice — the **Threads** selector in t
 
 <!-- TODO(screenshot): New Download dialog with the Threads selector open, showing Auto / 4 / 8 / 16 / 32 / 64 / Custom -->
 
-### Persistent connection rules
-
-In **Settings → Download → Hostname / IP Connection Limits**, save one `host=connections` rule per line:
-
-```text
-drivers.amd.com=1
-*.example.com=4
-192.0.2.1=2
-[2001:db8::1]=2
-```
-
-The first matching rule sets a hard per-task ceiling from 1–512 connections for HTTP(S) and FTP(S) file downloads. Exact domain names ignore case; `*.example.com` matches subdomains only, not `example.com`. IP rules match IP literals in the download URL, not DNS-resolved addresses. Ports do not affect matching.
-
-Rules are stored on this device without expiry, are not cloud-synced, and survive clearing learned server policies or changing proxies. They apply on the next start or resume, including existing segmented downloads without discarding their progress. Automatic expansion and plugins cannot raise this ceiling; a lower task or learned server limit still applies. These are not host-wide quotas across multiple tasks, and do not control BT, eD2K, HLS or DASH streams.
-
-
 ### Splitting while the download runs
 
 FluxDown doesn't just fix the segment count at the start. While segments are downloading, any worker that finishes early looks for the largest segment still in progress and takes half of its remaining bytes — an "in-half division" that keeps every connection busy instead of idling once its own segment is done. This also runs proactively on a timer so a new chunk of work is usually ready the instant a worker becomes free. Near the very end of a download, segments as small as 64 KB can still be split this way, which avoids the classic "stuck at 99%" symptom where one slow segment blocks completion while everything else has already finished. You can watch this happen live in a task's detail panel, under the **Segments** tab, which visualizes each segment and animates every split.
@@ -88,7 +72,7 @@ Supported types: `http`, `https`, `socks4`, `socks5`. Leave the field empty to u
 
 - **Probing** the file's name/size/Range support is retried up to 3 times with exponential backoff (1s, then 2s). The final retry drops any browser-captured User-Agent to work around Cloudflare's bot detection.
 - **In-flight segments**: if a segment receives no data for 5 seconds it's treated as stalled — FluxDown drops that connection and resumes it from the last confirmed byte via `Range`, up to 5 attempts with increasing backoff (2s, 4s, 8s, 16s), roughly 80 seconds of total tolerance for one segment.
-- **Server rejections**: if a server actively refuses extra parallel connections (HTTP 403/429), FluxDown remembers that domain and downloads from it single-threaded for the next 24 hours before trying multi-thread again.
+- **Server rejections**: when a server refuses parallel HTTP downloads, FluxDown lowers concurrency and keeps downloading through connections that still work. If every connection is refused, HTTP 429 (or HTTP 403 observed alongside a working connection) triggers up to three progressively longer waits before retrying with one connection from the existing segment offsets. Caps learned from parallel refusals are remembered for 24 hours; a lone 429 does not set a cap.
 - **Whole-task auto-retry**: if a task ultimately fails from a transient error, FluxDown can automatically resume it later — configurable in *Settings → Download → Auto-retry Attempts* (off, a fixed count up to 10, or unlimited) and *Retry Interval* (the wait before each attempt, increasing per attempt).
 
 ## Related settings
