@@ -6,9 +6,8 @@ use fluxdown_ui_components::{
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    Anchor, AnyElement, AppContext as _, ClipboardItem, Context, InteractiveElement as _,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div,
-    px,
+    Anchor, AnyElement, ClipboardItem, Context, InteractiveElement as _, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, div, px,
 };
 use gpui_component::{
     Icon, WindowExt as _,
