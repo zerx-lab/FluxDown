@@ -7538,7 +7538,7 @@ impl DownloadManager {
             Ok(false) => log_info!("[manager] rebuild BT session: old session drop panicked"),
             Err(error) => {
                 crate::logger::report_error("download-manager", "shut down BT session", &error);
-                self.purge_after_seeding_stopped().await;
+                // 旧会话没关干净，不能确认不会再挂载；「会话释放」只是回退态，不清记录。
                 return;
             }
         }
@@ -7553,28 +7553,50 @@ impl DownloadManager {
                 self.emit_progress_from_db(tid, 3, released.as_i32(), released.message(), 0)
                     .await;
             }
-            self.purge_after_seeding_stopped().await;
+            // 新会话没建成，候选还停在回退停止态，不当作「不续」清掉。
             return;
         }
         let Some(bt) = self.bt_session.clone() else {
-            self.purge_after_seeding_stopped().await;
+            // ensure 成功后不应为空；没拿到会话就不能挂载，同样不清。
             return;
         };
+        let mut reseed_undecided = Vec::new();
         match self.db.load_tasks_by_ids(&seeders).await {
             Ok(tasks) => {
+                let mut written_queued = HashSet::new();
                 for task in tasks.iter().filter(|task| task.status == 3) {
-                    self.spawn_reseed_from_disk(bt.clone(), task).await;
+                    if self.spawn_reseed_from_disk(bt.clone(), task).await {
+                        written_queued.insert(task.task_id.clone());
+                    } else {
+                        reseed_undecided.push(task.task_id.clone());
+                    }
+                }
+                for id in &seeders {
+                    if !written_queued.contains(id)
+                        && !reseed_undecided.iter().any(|kept| kept == id)
+                    {
+                        // 没读到，或还没写成排队做种：这一轮没有挂载结果，留下。
+                        reseed_undecided.push(id.clone());
+                    }
                 }
             }
-            Err(error) => crate::logger::report_error(
-                "download-manager",
-                "load released seeders for reseed",
-                &error,
-            ),
+            Err(error) => {
+                crate::logger::report_error(
+                    "download-manager",
+                    "load released seeders for reseed",
+                    &error,
+                );
+                self.batch_resume(&paused_downloads).await;
+                return;
+            }
         }
         self.batch_resume(&paused_downloads).await;
-        // 重新挂载已把会续种的任务写成排队做种；没挂上的停在「会话释放」，这里清掉。
-        self.purge_after_seeding_stopped().await;
+        // 已写成排队做种的被查询排除；没写成的留在 reseed_undecided，不在这一轮删。
+        self.purge_expired_completed_records_except(
+            self.completed_record_retention_days < 0,
+            &reseed_undecided,
+        )
+        .await;
     }
 
     /// 无 BT 后端：没有会话可释放；仅把排队中的 BT 项落回暂停（沿用禁用路径）。
@@ -8775,12 +8797,27 @@ impl DownloadManager {
     /// 清理超过保留期的「已完成」任务**记录**（`completed_record_retention_days`）：
     /// 只删记录、永不删文件，做种中 / 排队做种的任务跳过。保留期为 0 时什么都不做；
     /// `-1` 的截止点取现在之后，因此全部已完成且非做种的记录都入选。
+    /// 仍在 `active_tasks` 的任务一律跳过：下载器可能已经把 status 写成完成，
+    /// 但完成通知和插件 onDone 还没跑；本任务自己的 `on_task_done` 在
+    /// `handle_task_done` 里摘掉条目后，随后的清理仍会删它。
     ///
     /// 无独立定时器：由进程启动、任务完成、`daemon.task.rescan`、设置变更，以及做种
     /// 落入停止原因后调用。`force = false` 时受 [`RETENTION_PURGE_DEBOUNCE`] 去抖；
     /// 设置变更、启动与立即模式的完成路径传 `true`。返回本次删除的记录数。
     /// 删除失败的记录留在库里，本轮不再重选。
     pub async fn purge_expired_completed_records(&mut self, force: bool) -> usize {
+        self.purge_expired_completed_records_except(force, &[])
+            .await
+    }
+
+    /// 同 [`Self::purge_expired_completed_records`]，但 `protect` 里的 id 本轮不删。
+    /// 启动续种尚未决定（配置读失败、会话建不起来、还没写成排队做种）时用它
+    /// 保住那批记录，其它已完成记录仍按保留期清理。
+    async fn purge_expired_completed_records_except(
+        &mut self,
+        force: bool,
+        protect: &[String],
+    ) -> usize {
         let days = self.completed_record_retention_days;
         if days == 0 {
             return 0;
@@ -8797,14 +8834,19 @@ impl DownloadManager {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
         let cutoff = retention_cutoff_secs(days, now);
+        let protected: HashSet<&str> = protect.iter().map(String::as_str).collect();
+        let mut after_completed_at = String::new();
+        let mut after_id = String::new();
+        let mut paged = false;
         let mut purged = 0;
         loop {
-            let ids = match self
+            let after = paged.then_some((after_completed_at.as_str(), after_id.as_str()));
+            let rows = match self
                 .db
-                .list_expired_completed_task_ids(cutoff, RETENTION_PURGE_CHUNK)
+                .list_expired_completed_task_ids_after(cutoff, RETENTION_PURGE_CHUNK, after)
                 .await
             {
-                Ok(ids) => ids,
+                Ok(rows) => rows,
                 Err(error) => {
                     crate::logger::report_error(
                         "download-manager",
@@ -8814,8 +8856,21 @@ impl DownloadManager {
                     break;
                 }
             };
-            if ids.is_empty() {
+            let Some((last_id, last_completed_at)) = rows.last() else {
                 break;
+            };
+            after_id.clone_from(last_id);
+            after_completed_at.clone_from(last_completed_at);
+            paged = true;
+            let ids: Vec<String> = rows
+                .into_iter()
+                .map(|(id, _)| id)
+                .filter(|id| {
+                    !self.active_tasks.contains_key(id) && !protected.contains(id.as_str())
+                })
+                .collect();
+            if ids.is_empty() {
+                continue;
             }
             match self.delete_tasks_batch(&ids, false).await {
                 Ok(outcome) => {
@@ -8935,8 +8990,14 @@ impl DownloadManager {
     /// librqbit 继续做种。挂载失败由 [`Self::spawn_reseed_from_disk`] 的
     /// 现有回退兜底（保持 UserStopped + 失败原因）；无可续任务时不创建
     /// BT 会话，会话创建失败时全部保持停止态。
+    ///
+    /// 返回第二次立即清理必须跳过的 id。空表示可以删这批已归一化的记录：
+    /// 明确关闭了自动续种，或每个候选都已写成排队做种。配置读取失败、
+    /// 会话创建失败、候选还没写成排队做种时返回这些 id。
     #[cfg(feature = "bt")]
-    async fn auto_reseed_on_start(&mut self, stale: Vec<TaskInfo>) {
+    async fn auto_reseed_on_start(&mut self, stale: Vec<TaskInfo>) -> Vec<String> {
+        let candidates: Vec<TaskInfo> = stale.into_iter().filter(|t| t.status == 3).collect();
+        let protect_all: Vec<String> = candidates.iter().map(|t| t.task_id.clone()).collect();
         let enabled = match self.db.get_config("bt_auto_reseed").await {
             Ok(value) => value.is_none_or(|v| v != "0" && v != "false"),
             Err(error) => {
@@ -8945,32 +9006,31 @@ impl DownloadManager {
                     "read automatic reseeding setting",
                     &error,
                 );
-                return;
+                return protect_all;
             }
         };
-        if !enabled {
-            return;
-        }
-        let candidates: Vec<TaskInfo> = stale.into_iter().filter(|t| t.status == 3).collect();
-        if candidates.is_empty() {
-            return;
+        if !enabled || candidates.is_empty() {
+            return Vec::new();
         }
         if let Err(e) = self.ensure_bt_session().await {
             log_info!("[manager] auto reseed: BT session init failed: {}", e);
-            return;
+            return protect_all;
         }
         let Some(bt) = self.bt_session.clone() else {
-            return;
+            return protect_all;
         };
         let stopped = crate::bt_seeding::SeedingStopReason::UserStopped;
+        let mut protect = Vec::new();
         for t in candidates {
-            // 行已被 reset_stale_seeding 归一化为 UserStopped；副本同步该
-            // 状态，挂载失败回退时才不会把过期的 active/queued 写回去。
+            let id = t.task_id.clone();
             let mut task = t;
             task.seeding_status = stopped.as_i32();
             task.seeding_message = stopped.message().to_string();
-            self.spawn_reseed_from_disk(bt.clone(), &task).await;
+            if !self.spawn_reseed_from_disk(bt.clone(), &task).await {
+                protect.push(id);
+            }
         }
+        protect
     }
 
     pub async fn load_and_send_all_tasks(&mut self) {
@@ -9353,13 +9413,17 @@ impl DownloadManager {
             // `bt_auto_reseed` 决定是否自动重新挂载做种。立即模式不能在这两步
             // 之间清理：归一化后、续种前的任务看起来像普通已完成记录，会被删掉。
             #[cfg(feature = "bt")]
-            {
+            let reseed_undecided = {
                 let stale = self.reset_stale_seeding().await;
-                self.auto_reseed_on_start(stale).await;
-            }
-            // 续种决定之后再清一次。会重新做种的任务已写成排队做种，本轮跳过；
-            // 不再做种的已完成记录（含刚被归一化的）在这里删掉。
-            self.purge_expired_completed_records(true).await;
+                self.auto_reseed_on_start(stale).await
+            };
+            #[cfg(not(feature = "bt"))]
+            let reseed_undecided: Vec<String> = Vec::new();
+            // 明确关闭自动续种，或候选已写成排队做种时，集合为空，不再做种的
+            // 记录在这里删掉。配置读取失败、会话创建失败、还没写成排队做种的
+            // id 留在集合里，这一轮跳过。
+            self.purge_expired_completed_records_except(true, &reseed_undecided)
+                .await;
             // 启动恢复只是把上次的占用状态接回来，不是「队列开始」，静默登记占用。
             self.restoring_on_start = true;
             self.resume_on_start(reset_ids).await;
@@ -11986,7 +12050,13 @@ impl DownloadManager {
                         0,
                     )
                     .await;
+                    // 立即模式会删掉记录；task.paused 必须在删除前发出。
+                    if notify {
+                        self.emit_paused_webhook(task_id).await;
+                    }
                     self.purge_after_seeding_stopped().await;
+                    self.sync_queue_occupancy();
+                    return;
                 }
                 s if s == SeedingStopReason::UserStopped.as_i32() => {
                     // Already paused by the user — idempotent no-op.
@@ -15020,7 +15090,7 @@ impl DownloadManager {
     /// 期间任务显示为排队做种（附校验说明），失败回退停止态并附原因。
     /// 中途崩溃残留的排队态由下次启动的 `reset_stale_seeding` 兜底。
     #[cfg(feature = "bt")]
-    async fn spawn_reseed_from_disk(&self, bt: Arc<SharedBtSession>, task: &TaskInfo) {
+    async fn spawn_reseed_from_disk(&self, bt: Arc<SharedBtSession>, task: &TaskInfo) -> bool {
         let stopped_status = task.seeding_status;
         let stopped_message = task.seeding_message.clone();
         let task_id = task.task_id.clone();
@@ -15045,7 +15115,7 @@ impl DownloadManager {
                 );
                 self.emit_progress_from_db(&task_id, 3, stopped_status, &stopped_message, 0)
                     .await;
-                return;
+                return false;
             }
             TorrentSource::TorrentFileBytes(bytes)
         };
@@ -15095,7 +15165,7 @@ impl DownloadManager {
         // 校验中提示：复用排队做种态（附说明），结束后被真实状态覆盖。
         if let Err(error) = self.db.set_task_seeding_queued(&task_id).await {
             crate::logger::report_error("download-manager", "persist task state", &error);
-            return;
+            return false;
         }
         self.emit_progress_from_db(
             &task_id,
@@ -15248,6 +15318,7 @@ impl DownloadManager {
                 }
             }
         });
+        true
     }
 
     /// Resume a task using a pre-loaded TaskInfo row (avoids redundant DB query).
@@ -19350,6 +19421,131 @@ mod tests {
         mgr.shutdown().await;
         if let Err(error) = std::fs::remove_dir_all(&work) {
             tracing::debug!(%error, "retention reseed test directory cleanup skipped");
+        }
+    }
+
+    /// 下载器已把 status 写成完成、TaskDone 还在队列里时，立即清理不能摘掉
+    /// active 条目，否则完成通知和插件 onDone 被跳过。摘掉条目后的下一轮才删。
+    #[tokio::test]
+    async fn immediate_purge_keeps_task_still_in_active_tasks() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let save_dir = std::env::temp_dir().to_string_lossy().to_string();
+        insert_task_at_status(&db, "live", &save_dir, "live.bin", 3).await;
+        insert_task_at_status(&db, "idle", &save_dir, "idle.bin", 3).await;
+        let mut mgr = retention_test_manager(db.clone(), &save_dir);
+        mgr.set_completed_record_retention_days(-1);
+        mgr.active_tasks.insert(
+            "live".to_string(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: 1,
+                handle: None,
+                is_bt: false,
+                queue_id: String::new(),
+            },
+        );
+
+        assert_eq!(
+            mgr.purge_expired_completed_records(true).await,
+            1,
+            "仍在 active_tasks 的完成任务不能在收尾前被清掉"
+        );
+        assert!(db.load_task_by_id("live").await.expect("load").is_some());
+        assert!(
+            db.load_task_by_id("idle").await.expect("load").is_none(),
+            "不在 active_tasks 的已完成记录仍应清掉"
+        );
+
+        mgr.active_tasks.remove("live");
+        assert_eq!(mgr.purge_expired_completed_records(true).await, 1);
+        assert!(db.load_task_by_id("live").await.expect("load").is_none());
+    }
+
+    /// 停止做种的 task.paused 必须在立即清理删掉记录之前发出。
+    #[tokio::test]
+    async fn stopping_seeding_emits_paused_notice_before_immediate_purge() {
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let save_dir = std::env::temp_dir().to_string_lossy().to_string();
+        insert_task_at_status(&db, "seed", &save_dir, "seed.bin", 3).await;
+        db.update_task_seeding_status("seed", SEEDING_STATUS_ACTIVE, "")
+            .await
+            .expect("mark seeding");
+        let sink = Arc::new(RecordingSink::new());
+        let mut mgr = DownloadManager::new(
+            db.clone(),
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir,
+                app_data_dir: String::new(),
+                data_dir: std::env::temp_dir(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            sink.clone(),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+        mgr.set_completed_record_retention_days(-1);
+
+        mgr.pause_task("seed").await;
+
+        assert!(db.load_task_by_id("seed").await.expect("load").is_none());
+        assert!(
+            collected_notices(&sink).iter().any(|notice| {
+                notice.event == "task.paused"
+                    && notice.task.as_ref().is_some_and(|task| task.id == "seed")
+            }),
+            "停止做种的 task.paused 必须在记录被清掉之前发出"
+        );
+    }
+
+    /// 唯一监听端口被占用、自动续种开着时，会话建不起来不是「不续」。
+    /// 做种记录必须留下；非做种的已完成记录仍清掉。
+    #[cfg(feature = "bt")]
+    #[tokio::test]
+    async fn immediate_startup_keeps_seeders_when_session_init_fails() {
+        let (work, port) = bt_test_dir("retention_reseed_fail");
+        let _hold =
+            std::net::TcpListener::bind(("0.0.0.0", port)).expect("hold the only listen port");
+        let save = work.join("save");
+        std::fs::create_dir_all(&save).expect("save dir");
+        let save_dir = save.to_string_lossy().to_string();
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        db.set_config("bt_auto_reseed", "true")
+            .await
+            .expect("enable reseed");
+        insert_task_at_status(&db, "seed", &save_dir, "seed.bin", 3).await;
+        insert_task_at_status(&db, "done", &save_dir, "done.bin", 3).await;
+        db.update_task_seeding_status("seed", SEEDING_STATUS_ACTIVE, "")
+            .await
+            .expect("mark seeding");
+        let mut mgr = bt_test_manager(db.clone(), &work, bt_test_config(port));
+        mgr.set_completed_record_retention_days(-1);
+
+        mgr.load_and_send_all_tasks().await;
+
+        assert!(
+            db.load_task_by_id("seed").await.expect("load").is_some(),
+            "会话建不起来不是「不续」，做种记录必须留下"
+        );
+        assert!(
+            db.load_task_by_id("done").await.expect("load").is_none(),
+            "非做种的已完成记录仍应清掉"
+        );
+
+        mgr.shutdown().await;
+        drop(_hold);
+        if let Err(error) = std::fs::remove_dir_all(&work) {
+            tracing::debug!(%error, "retention reseed-fail test directory cleanup skipped");
         }
     }
 
