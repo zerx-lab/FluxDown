@@ -1250,7 +1250,7 @@ async fn delete_task_artifact_files(
         if is_safe_file_name(&name)
             && !file_name_claimed_by_others(db, save_dir, &name, exclude).await
             && let Err(error) = tokio::fs::remove_file(PathBuf::from(save_dir).join(&name)).await
-            && error.kind() != std::io::ErrorKind::NotFound
+            && !path_is_absent(&error)
         {
             crate::logger::report_warning("download-manager", "remove task artifacts", &error);
             if first_error.is_none() {
@@ -1462,10 +1462,21 @@ async fn remove_from_bt_session(
     Ok(())
 }
 
-/// 记录首个非 NotFound 的清理错误（其余只记日志），清理继续进行。
+/// 这次删除碰到的路径不可能指向已有文件：缺失，或名字本身非法 / 组件超长
+/// （`InvalidFilename`）。失败任务从未写出文件，但 `remove_file` 对这类路径
+/// 不返回 `NotFound`；当成清理失败会留下任务记录。权限、占用、目录冲突仍是
+/// 真实清理失败。
+fn path_is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
+    )
+}
+
+/// 记录首个「路径并非不存在」的清理错误（其余只记日志），清理继续进行。
 fn keep_first_cleanup_error(first: &mut Option<std::io::Error>, result: std::io::Result<()>) {
     if let Err(error) = result
-        && error.kind() != std::io::ErrorKind::NotFound
+        && !path_is_absent(&error)
     {
         crate::logger::report_warning("download-manager", "remove task files", &error);
         if first.is_none() {
@@ -13529,7 +13540,7 @@ impl DownloadManager {
                 if delete_files && owns_final && is_safe_file_name(&t.file_name) {
                     if path.is_dir() {
                         if let Err(error) = tokio::fs::remove_dir_all(&path).await
-                            && error.kind() != std::io::ErrorKind::NotFound
+                            && !path_is_absent(&error)
                         {
                             crate::logger::report_warning(
                                 "download-manager",
@@ -13542,7 +13553,7 @@ impl DownloadManager {
                         }
                     } else {
                         if let Err(error) = tokio::fs::remove_file(&path).await
-                            && error.kind() != std::io::ErrorKind::NotFound
+                            && !path_is_absent(&error)
                         {
                             crate::logger::report_warning(
                                 "download-manager",
@@ -13571,7 +13582,7 @@ impl DownloadManager {
                             stage_dir.display()
                         );
                         if let Err(error) = tokio::fs::remove_dir_all(&stage_dir).await
-                            && error.kind() != std::io::ErrorKind::NotFound
+                            && !path_is_absent(&error)
                         {
                             crate::logger::report_warning(
                                 "download-manager",
@@ -13589,7 +13600,7 @@ impl DownloadManager {
                 let temp_path =
                     PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
                 if let Err(e) = tokio::fs::remove_file(&temp_path).await
-                    && e.kind() != std::io::ErrorKind::NotFound
+                    && !path_is_absent(&e)
                 {
                     log_info!(
                         "[manager] delete_task {}: remove temp {} failed: {}",
@@ -13617,7 +13628,7 @@ impl DownloadManager {
                     let audio_temp =
                         PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
                     if let Err(error) = tokio::fs::remove_file(&audio_temp).await
-                        && error.kind() != std::io::ErrorKind::NotFound
+                        && !path_is_absent(&error)
                     {
                         crate::logger::report_warning(
                             "download-manager",
@@ -13631,7 +13642,7 @@ impl DownloadManager {
                     if delete_files
                         && has_started
                         && let Err(error) = tokio::fs::remove_file(&audio_path).await
-                        && error.kind() != std::io::ErrorKind::NotFound
+                        && !path_is_absent(&error)
                     {
                         crate::logger::report_warning(
                             "download-manager",
@@ -13648,7 +13659,7 @@ impl DownloadManager {
                     && owns_final
                     && is_safe_file_name(&t.file_name)
                     && let Err(e) = tokio::fs::remove_file(&path).await
-                    && e.kind() != std::io::ErrorKind::NotFound
+                    && !path_is_absent(&e)
                 {
                     log_info!(
                         "[manager] delete_task {}: remove file {} failed: {}",
@@ -21454,6 +21465,124 @@ mod tests {
             crate::logger::report_warning(
                 "download-manager-test",
                 "remove deletion failure fixture",
+                &error,
+            );
+        }
+    }
+
+    /// 失败任务的文件名在本机不可能存在（组件超长，`remove_file` 返回
+    /// `InvalidFilename` 而非 `NotFound`）时，只删记录与连文件一起删都必须
+    /// 删掉任务行。临时路径被非空目录占住仍是真实清理失败，任务保留。
+    #[tokio::test]
+    async fn delete_failed_task_with_impossible_name_removes_record() {
+        let dir = unique_filetrack_test_dir("impossible_name");
+        std::fs::create_dir_all(&dir).expect("create deletion fixture");
+        let probe = dir.join(format!("{}.fdownloading", "a".repeat(300)));
+        let probe_error = std::fs::remove_file(&probe)
+            .expect_err("impossible name must not resolve to an existing file");
+        assert_eq!(
+            probe_error.kind(),
+            std::io::ErrorKind::InvalidFilename,
+            "fixture must reproduce InvalidFilename, got {probe_error}"
+        );
+
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect database");
+        let mut manager = sched_manager(&db, 1);
+        let save_dir = dir.to_string_lossy();
+        let impossible = "a".repeat(300);
+
+        insert_task_at_status(&db, "record-only", &save_dir, &impossible, 4).await;
+        manager
+            .delete_task("record-only", false)
+            .await
+            .expect("impossible name must not block deleting the record");
+        assert!(
+            db.load_task_by_id("record-only")
+                .await
+                .expect("load")
+                .is_none()
+        );
+
+        insert_task_at_status(&db, "with-files", &save_dir, &impossible, 4).await;
+        db.add_task_artifact("with-files", &impossible)
+            .await
+            .expect("register artifact");
+        manager
+            .delete_task("with-files", true)
+            .await
+            .expect("impossible name must not block deleting task and files");
+        assert!(
+            db.load_task_by_id("with-files")
+                .await
+                .expect("load")
+                .is_none()
+        );
+
+        for (id, delete_files) in [("batch-record", false), ("batch-files", true)] {
+            insert_task_at_status(&db, id, &save_dir, &impossible, 4).await;
+            if delete_files {
+                db.add_task_artifact(id, &impossible)
+                    .await
+                    .expect("register artifact");
+            }
+            let outcome = manager
+                .delete_tasks_batch(&[id.to_owned()], delete_files)
+                .await
+                .expect("batch delete");
+            assert_eq!(
+                outcome,
+                BatchDeleteOutcome {
+                    deleted: 1,
+                    failed: 0,
+                    files_in_use: false,
+                },
+                "{id} delete_files={delete_files}"
+            );
+            assert!(
+                db.load_task_by_id(id).await.expect("load").is_none(),
+                "{id} row must be gone"
+            );
+        }
+
+        // 临时路径被非空目录占住：两条删除都是真实清理失败，任务与目录内容都保留。
+        let blocked = "blocked.bin";
+        let temp_path = std::path::PathBuf::from(format!(
+            "{}{}",
+            std::path::PathBuf::from(&*save_dir).join(blocked).display(),
+            downloader::TEMP_EXT
+        ));
+        std::fs::create_dir_all(&temp_path).expect("create undeletable temp");
+        std::fs::write(temp_path.join("payload"), b"keep").expect("write payload");
+        insert_task_at_status(&db, "blocked", &save_dir, blocked, 4).await;
+        for delete_files in [false, true] {
+            let error = manager
+                .delete_task("blocked", delete_files)
+                .await
+                .expect_err("directory occupying the temp path must keep the task");
+            assert!(
+                matches!(error, DeleteTaskError::Cleanup(_)),
+                "delete_files={delete_files}: {error}"
+            );
+            assert!(
+                db.load_task_by_id("blocked").await.expect("load").is_some(),
+                "delete_files={delete_files} must retain the task"
+            );
+        }
+        assert_eq!(
+            std::fs::read(temp_path.join("payload")).expect("payload preserved"),
+            b"keep"
+        );
+
+        drop(manager);
+        drop(db);
+        if let Err(error) = std::fs::remove_dir_all(&dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::logger::report_warning(
+                "download-manager-test",
+                "remove impossible-name fixture",
                 &error,
             );
         }
