@@ -489,6 +489,9 @@ mod tests {
         let mut params =
             crate::downloader::test_support::params_with_interceptor(url, crate::intercept::noop())
                 .await?;
+        // 生产的起飞 client 在竞速前就已构建。用同一装配路径初始化共享根证书库，
+        // 不把 nextest 独立进程首次读取系统证书的时间算进错峰断言。
+        params.client = crate::downloader::build_client(&params.proxy_config, "")?;
         params.auto_proxy = Some(Arc::new(AutoProxyCtx {
             host: host.to_string(),
             user_agent: String::new(),
