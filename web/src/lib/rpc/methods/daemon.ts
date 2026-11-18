@@ -173,6 +173,7 @@ const task = {
   /** 批量建任务：一块（≤512 条）共享同一份选项，整块一个事务，按 `batchId` 幂等。 */
   createMany: (params: DaemonCreateTasksParams) =>
     call<DaemonCreateTasksResult>(METHOD.DAEMON_TASK_CREATE_MANY, params),
+  saveHtml: (params: TaskIdParams) => call<CreatedTask>(METHOD.DAEMON_TASK_SAVE_HTML, params),
   pause: (params: TaskIdParams) => call<OkResult>(METHOD.DAEMON_TASK_PAUSE, params),
   resume: (params: TaskIdParams) => call<OkResult>(METHOD.DAEMON_TASK_RESUME, params),
   rename: (params: TaskRenameParams) => call<OkResult>(METHOD.DAEMON_TASK_RENAME, params),

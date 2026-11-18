@@ -1787,6 +1787,7 @@ pub struct DownloadSpec {
     /// 单 GET 探测保留的首响应（一次性 URL 的唯一一次请求）；取一次即空，
     /// 随 spec 一并释放（取消 / 跳过 / 失败时连接随之关闭）。
     held_response: std::sync::Mutex<Option<reqwest::Response>>,
+    html_only: bool,
 }
 
 #[derive(Debug)]
@@ -1826,6 +1827,7 @@ impl DownloadSpec {
             refresh_gate: tokio::sync::Mutex::new(RefreshLedger::default()),
             confirmed_generation: std::sync::atomic::AtomicU64::new(0),
             held_response: std::sync::Mutex::new(None),
+            html_only: false,
         }
     }
 
@@ -3035,6 +3037,17 @@ pub(crate) fn filename_looks_like_html(name: &str) -> bool {
     lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
 }
 
+pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Content-Type: ";
+pub(crate) const HTML_RESPONSE_CHANGED_MESSAGE: &str =
+    "the server did not return a complete HTML page; nothing was saved";
+
+fn html_mime(content_type: &str) -> Option<&'static str> {
+    let mime = content_type.split(';').next()?.trim();
+    ["text/html", "application/xhtml+xml"]
+        .into_iter()
+        .find(|candidate| mime.eq_ignore_ascii_case(candidate))
+}
+
 /// HTML 安全网文案的成因提示（接在「server returned HTML page …」之后）。
 ///
 /// 响应终点与请求地址不同时点出终点（只含 scheme / host / path：query 常带令牌），
@@ -3656,12 +3669,21 @@ pub(crate) async fn finalize_output(
     })
 }
 
-pub async fn run_download(mut params: DownloadParams) {
+pub async fn run_download(params: DownloadParams) {
+    run_download_mode(params, false).await;
+}
+
+pub(crate) async fn run_download_mode(mut params: DownloadParams, html_only: bool) {
     let task_id_log = params.task_id.clone();
     let preprobed = params.preprobed.take();
-    let result = match run_download_inner(&mut params, preprobed).await {
+    let result = match run_download_inner(&mut params, preprobed, html_only).await {
         Ok((total, renamed)) => {
-            match finalize_output(&params, crate::intercept::ProtocolKind::Http).await {
+            let replaced = if html_only {
+                Ok(None)
+            } else {
+                finalize_output(&params, crate::intercept::ProtocolKind::Http).await
+            };
+            match replaced {
                 Ok(replaced) => {
                     let (total, renamed) = match replaced {
                         Some((name, size)) => (size, Some(name)),
@@ -3949,6 +3971,7 @@ async fn discard_segment_data(db: &Db, task_id: &str, path: &Path) -> Result<(),
 async fn run_download_inner(
     p: &mut DownloadParams,
     preprobed: Option<Result<PreprobedInfo, DownloadError>>,
+    html_only: bool,
 ) -> Result<(i64, Option<String>), DownloadError> {
     log_info!(
         "[download] task {} starting, url={}",
@@ -4199,15 +4222,15 @@ async fn run_download_inner(
     let connection_cap = probed_decision.max_connections.unwrap_or(p.connection_cap);
     // 单请求探测的响应终点（跟随重定向后），供下方 HTML 安全网点出被带去的页面。
     let probe_final_url = held_response.as_ref().map(|resp| resp.url().clone());
-    let spec_ref = std::sync::Arc::new(
-        DownloadSpec::new(applied_spec.unwrap_or_else(|| p.spec.clone()))
-            .with_connection_cap(connection_cap)
-            .with_held_response(held_response)
-            .with_refresher(crate::intercept::Refresher::for_params(
-                p,
-                crate::intercept::ProtocolKind::Http,
-            )),
-    );
+    let mut spec = DownloadSpec::new(applied_spec.unwrap_or_else(|| p.spec.clone()))
+        .with_connection_cap(connection_cap)
+        .with_held_response(held_response)
+        .with_refresher(crate::intercept::Refresher::for_params(
+            p,
+            crate::intercept::ProtocolKind::Http,
+        ));
+    spec.html_only = html_only;
+    let spec_ref = std::sync::Arc::new(spec);
 
     // Safety net (probe 阶段)：服务器在 probe 阶段返回 HTML 但用户期望二进制
     // 文件——典型场景：Lanzou 等 CDN transit page、form-POST 端点用 GET 访问。
@@ -4215,21 +4238,17 @@ async fn run_download_inner(
     //
     // 第二道防线在 download_single 的 req.send() 后做实际响应的 Content-Type 检查
     // （通过 build_request 发起，见 :2335 附近），覆盖 hint_file_size 旁路场景。
-    if !info.content_type.is_empty() {
-        let ct_lower = info.content_type.to_ascii_lowercase();
-        let mime = ct_lower.split(';').next().unwrap_or("").trim();
-        if mime == "text/html" || mime == "application/xhtml+xml" {
-            let expected = if p.file_name.is_empty() {
-                &info.file_name
-            } else {
-                &p.file_name
-            };
-            if !filename_looks_like_html(expected) {
-                return Err(DownloadError::Other(format!(
-                    "server returned HTML page (Content-Type: {mime}) instead of the expected file — {}",
-                    html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
-                )));
-            }
+    if let Some(mime) = html_mime(&info.content_type) {
+        let expected = if p.file_name.is_empty() {
+            &info.file_name
+        } else {
+            &p.file_name
+        };
+        if !filename_looks_like_html(expected) {
+            return Err(DownloadError::Other(format!(
+                "{UNEXPECTED_HTML_PREFIX}{mime}) instead of the expected file — {}",
+                html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
+            )));
         }
     }
 
@@ -4993,7 +5012,11 @@ async fn run_download_inner(
     // 完成期定名：引擎推断的名字（HEAD 被拒 / 无 Content-Disposition 时的 URL 占位、
     // 无扩展名、脚本端点名）按实际响应证据与文件头魔数精修；显式名只在缺类型扩展名
     // 时补扩展名，主名不改。精修名没有启动期预订，同样经下方原子占名环避让冲突。
-    let target_name = refine_completed_name(p, &temp_path, &actual_name).await;
+    let target_name = if html_only {
+        actual_name.clone()
+    } else {
+        refine_completed_name(p, &temp_path, &actual_name).await
+    };
     let mut chosen = target_name.clone();
     let mut avoid: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut avoid_loaded = false;
@@ -5876,17 +5899,25 @@ async fn download_single_once(
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let mime = ct_raw
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        if (mime == "text/html" || mime == "application/xhtml+xml")
+        let mime = html_mime(ct_raw);
+        if spec.html_only {
+            let status = resp.status();
+            if mime.is_none()
+                || !status.is_success()
+                || matches!(
+                    status,
+                    reqwest::StatusCode::PARTIAL_CONTENT
+                        | reqwest::StatusCode::NO_CONTENT
+                        | reqwest::StatusCode::RESET_CONTENT
+                )
+            {
+                return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
+            }
+        } else if let Some(mime) = mime
             && !filename_looks_like_html(expected_filename)
         {
             return Err(DownloadError::Other(format!(
-                "server returned HTML page (Content-Type: {mime}) for a non-HTML download — \
+                "{UNEXPECTED_HTML_PREFIX}{mime}) for a non-HTML download — \
                  aborting to avoid corrupting saved file; {}",
                 html_response_hint(
                     spec.route_url(url).as_deref().unwrap_or(url),

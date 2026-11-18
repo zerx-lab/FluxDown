@@ -427,6 +427,23 @@ impl DaemonService {
                 }
             }
             method::DAEMON_TASK_CREATE_MANY => self.create_tasks(params).await,
+            method::DAEMON_TASK_SAVE_HTML => {
+                let params = parse_params::<TaskIdParams>(params)?;
+                self.demo_forbid("saving HTML responses")?;
+                match self
+                    .actor
+                    .execute(ActorOperation::SaveHtmlResponse {
+                        task_id: params.task_id,
+                    })
+                    .await
+                {
+                    Ok(ActorResult::Created(task_id)) => {
+                        to_value(fluxdown_protocol::CreatedTask { task_id })
+                    }
+                    Ok(_) => Err(internal_error("unexpected actor result".to_owned())),
+                    Err(error) => Err(actor_error(error)),
+                }
+            }
             method::DAEMON_TASK_PAUSE => {
                 let params = parse_params::<IdParams>(params)?;
                 self.execute_unit(ActorOperation::PauseTask { task_id: params.id })

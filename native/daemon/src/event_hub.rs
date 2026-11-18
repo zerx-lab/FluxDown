@@ -1441,6 +1441,7 @@ mod tests {
             auto_route: String::new(),
             source_bytes: Default::default(),
             properties: Default::default(),
+            html_only: false,
         }
     }
 

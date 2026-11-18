@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fluxdown_engine::bt_config::BtConfig;
-use fluxdown_engine::download_manager::NewTaskSpec;
+use fluxdown_engine::download_manager::{FileExistsBehavior, NewTaskSpec};
 use fluxdown_engine::downloader::{
     CapturedRequestBody, POST_ONLY_ENDPOINT_MESSAGE, POST_ONLY_RESUME_MESSAGE,
 };
@@ -33,9 +33,12 @@ const PLAIN_PATH: &str = "/plain/OneDrive.zip";
 /// 表单端点：POST + 表单 → 303 到 [`SIGNED_PATH`]（服务端按表单签出直链的形态）。
 const FORM_PATH: &str = "/form/download";
 const SIGNED_PATH: &str = "/signed/OneDrive.zip";
+const HTML_PATH: &str = "/share";
+const HTML_BODY: &[u8] = b"<!doctype html><p>Shared file</p>";
+const CHECKSUM: &str = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
-/// 读完整请求（头 + Content-Length 指定的 body），返回 (method, path, body)。
-async fn read_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
+/// Read the request line, complete body, and headers.
+async fn read_request(stream: &mut TcpStream) -> Option<(String, String, String, String)> {
     let mut buf = Vec::with_capacity(1024);
     let mut tmp = [0u8; 1024];
     let header_end = loop {
@@ -66,7 +69,7 @@ async fn read_request(stream: &mut TcpStream) -> Option<(String, String, String)
         buf.extend_from_slice(&tmp[..n]);
     }
     let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
-    Some((method, path, body))
+    Some((method, path, body, head))
 }
 
 fn zip_response(body: &[u8]) -> Vec<u8> {
@@ -85,7 +88,7 @@ fn zip_response(body: &[u8]) -> Vec<u8> {
 /// [`FORM_PATH`] 的 POST + 表单 → 303 到 [`SIGNED_PATH`]（GET → 200 zip）；[`PLAIN_PATH`]
 /// 的 GET → 200 zip。`truncate_next_zip` 置位时下一个 zip 响应只发一半就断开。
 async fn serve(mut stream: TcpStream, server: Arc<Server>) {
-    let Some((method, path, body)) = read_request(&mut stream).await else {
+    let Some((method, path, body, head)) = read_request(&mut stream).await else {
         return;
     };
     server.log.lock().unwrap().push(format!("{method} {path}"));
@@ -96,7 +99,30 @@ async fn serve(mut stream: TcpStream, server: Arc<Server>) {
             zip_response(ZIP_BODY)
         }
     };
-    let response = if path == PLAIN_PATH && method == "GET" {
+    let response = if path == HTML_PATH
+        && (matches!(method.as_str(), "HEAD" | "GET") || (method == "POST" && body == FORM))
+        && head
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("cookie: session=fixture"))
+        && head
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("authorization: Bearer fixture"))
+    {
+        if server.return_binary_for_share.load(Ordering::SeqCst) {
+            zip_response(ZIP_BODY)
+        } else {
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: Text/HTML; charset=utf-8\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                HTML_BODY.len()
+            )
+            .into_bytes();
+            if method != "HEAD" {
+                response.extend_from_slice(HTML_BODY);
+            }
+            response
+        }
+    } else if path == PLAIN_PATH && method == "GET" {
         zip_response(ZIP_BODY)
     } else if (path == ZIP_PATH && method == "POST" && body == FORM)
         || (path == SIGNED_PATH && method == "GET")
@@ -119,6 +145,7 @@ async fn serve(mut stream: TcpStream, server: Arc<Server>) {
 struct Server {
     log: Mutex<Vec<String>>,
     truncate_next_zip: AtomicBool,
+    return_binary_for_share: AtomicBool,
 }
 
 struct Harness {
@@ -225,6 +252,16 @@ impl Harness {
             start_paused,
             ..Default::default()
         }
+    }
+
+    fn share_spec(&self, method: Option<&str>) -> NewTaskSpec {
+        let mut spec = self.spec(method, false);
+        spec.url = format!("http://{}{HTML_PATH}", self.addr);
+        spec.cookies = "session=fixture".into();
+        spec.extra_headers
+            .insert("Authorization".into(), "Bearer fixture".into());
+        spec.checksum = CHECKSUM.into();
+        spec
     }
 
     async fn finish(&mut self, task_id: &str) -> fluxdown_engine::model::TaskInfo {
@@ -416,5 +453,80 @@ async fn get_task_on_post_only_endpoint_reports_readable_error() {
         requests.len() <= 3 && requests.iter().all(|r| !r.starts_with("POST")),
         "expected a single probe round: {requests:?}"
     );
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response() {
+    let mut h = Harness::new("save_html_get").await;
+    let spec = h.share_spec(None);
+    let original = h.engine.manager.create_task(spec).await.unwrap();
+    let failed = h.finish(&original).await;
+    assert_eq!(failed.status, 4);
+    assert!(failed.error_message.contains("instead of the expected file"));
+    assert!(!h.work_dir.join("OneDrive.zip").exists());
+    let existing_page = h.work_dir.join("OneDrive.html");
+    tokio::fs::write(&existing_page, b"keep").await.unwrap();
+    h.engine
+        .manager
+        .set_file_exists_behavior(FileExistsBehavior::Overwrite);
+    h.clear_requests();
+    let saved = h.engine.manager.save_html_response(&original).await.unwrap();
+    let page = h.finish(&saved).await;
+    assert_ne!(saved, original);
+    assert_eq!(page.status, 3, "{}", page.error_message);
+    assert!(page.file_name.ends_with(".html"));
+    assert!(page.checksum.is_empty());
+    assert_eq!(h.output(&page).await, HTML_BODY);
+    assert_eq!(
+        tokio::fs::read(&existing_page).await.unwrap().as_slice(),
+        b"keep"
+    );
+    assert_eq!(h.requests(), [format!("GET {HTML_PATH}")]);
+    assert_eq!(
+        h.engine.db.load_task_by_id(&original).await.unwrap(),
+        Some(failed)
+    );
+
+    assert!(h.engine.manager.save_html_response(&saved).await.is_err());
+    h.server.return_binary_for_share.store(true, Ordering::SeqCst);
+    let changed = h.engine.manager.save_html_response(&original).await.unwrap();
+    let changed = h.finish(&changed).await;
+    assert_eq!(changed.status, 4);
+    assert!(
+        changed
+            .error_message
+            .contains("did not return a complete HTML page")
+    );
+    assert!(!h.work_dir.join(changed.file_name).exists());
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn save_html_replays_post_and_refuses_to_guess_after_restart() {
+    let mut h = Harness::new("save_html_post").await;
+    let mut spec = h.share_spec(Some("POST"));
+    spec.hint_file_size = -1;
+    let original = h.engine.manager.create_task(spec).await.unwrap();
+    let failed = h.finish(&original).await;
+    assert_eq!(failed.status, 4);
+    assert!(failed.error_message.contains("for a non-HTML download"));
+    assert_eq!(h.requests(), [format!("POST {HTML_PATH}")]);
+
+    h.clear_requests();
+    let saved = h.engine.manager.save_html_response(&original).await.unwrap();
+    let page = h.finish(&saved).await;
+    assert_eq!(page.status, 3, "{}", page.error_message);
+    assert_eq!(h.output(&page).await, HTML_BODY);
+    assert_eq!(h.requests(), [format!("POST {HTML_PATH}")]);
+
+    let mut h = h.restart_engine().await;
+    h.clear_requests();
+    assert_eq!(
+        h.engine.manager.save_html_response(&original).await.unwrap_err(),
+        "browser-request-unavailable"
+    );
+    assert!(h.requests().is_empty());
+    assert_eq!(h.engine.db.load_all_tasks().await.unwrap().len(), 2);
     h.cleanup().await;
 }

@@ -18,6 +18,8 @@ pub const DAEMON_TASK_ACTIVITY: &str = "daemon.task.activity";
 /// 单任务速度历史（`TaskSpeedHistoryQuery` → `Option<TaskSpeedHistoryDto>`）。
 pub const DAEMON_TASK_SPEED_HISTORY: &str = "daemon.task.speedHistory";
 pub const DAEMON_TASK_CREATE: &str = "daemon.task.create";
+/// Replay a failed HTML response as a new task (`{taskId}` → `CreatedTask`).
+pub const DAEMON_TASK_SAVE_HTML: &str = "daemon.task.saveHtml";
 pub const DAEMON_TASK_PAUSE: &str = "daemon.task.pause";
 pub const DAEMON_TASK_RESUME: &str = "daemon.task.resume";
 pub const DAEMON_TASK_RENAME: &str = "daemon.task.rename";
@@ -485,6 +487,7 @@ pub const ALL_METHODS: &[&str] = &[
     DAEMON_TASK_SPEED_HISTORY,
     DAEMON_TASK_CREATE,
     DAEMON_TASK_CREATE_MANY,
+    DAEMON_TASK_SAVE_HTML,
     DAEMON_TASK_PAUSE,
     DAEMON_TASK_RESUME,
     DAEMON_TASK_RENAME,
