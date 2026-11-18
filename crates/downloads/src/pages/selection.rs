@@ -71,13 +71,16 @@ struct BtFilter {
 
 impl BtFilter {
     fn active(&self) -> bool {
-        self.expanded && (!self.query.is_empty() || self.min_size > 0 || !self.categories.is_empty())
+        self.expanded
+            && (!self.query.is_empty() || self.min_size > 0 || !self.categories.is_empty())
     }
 
     fn matches(&self, position: usize, file: &BtFileDto) -> bool {
         (self.min_size == 0 || file.size >= self.min_size)
-            && (self.categories.is_empty() || self.categories.contains(&self.file_categories[position]))
-            && (self.query.is_empty() || bt_basename(&file.path).to_lowercase().contains(&self.query))
+            && (self.categories.is_empty()
+                || self.categories.contains(&self.file_categories[position]))
+            && (self.query.is_empty()
+                || bt_basename(&file.path).to_lowercase().contains(&self.query))
     }
 }
 
@@ -254,7 +257,9 @@ impl SelectionView {
                                 })
                             })
                             .and_then(|category| category.builtin_type.as_deref())
-                            .and_then(|kind| BT_CATEGORY_KEYS.iter().position(|(id, _)| *id == kind))
+                            .and_then(|kind| {
+                                BT_CATEGORY_KEYS.iter().position(|(id, _)| *id == kind)
+                            })
                             .unwrap_or(BT_CATEGORY_KEYS.len() - 1);
                         counts[category] += 1;
                         category
