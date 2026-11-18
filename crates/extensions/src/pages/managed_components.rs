@@ -28,7 +28,9 @@ use gpui_component::{
 use super::Frame;
 use crate::{
     ExtensionsView,
-    controller::{COMPONENT_KINDS, ComponentSummary, component_slot, component_summary},
+    controller::{
+        COMPONENT_KINDS, COMPONENT_MIRROR_KEY, ComponentSummary, component_slot, component_summary,
+    },
     error_text, ui,
 };
 
@@ -44,6 +46,13 @@ fn desc_key(kind: ComponentKind) -> &'static str {
     match kind {
         ComponentKind::Ffmpeg => "componentsFfmpegDesc",
         ComponentKind::Ytdlp => "componentsYtdlpDesc",
+    }
+}
+
+fn release_url(kind: ComponentKind) -> &'static str {
+    match kind {
+        ComponentKind::Ffmpeg => "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases",
+        ComponentKind::Ytdlp => "https://github.com/yt-dlp/yt-dlp/releases",
     }
 }
 
@@ -117,12 +126,20 @@ pub(crate) struct ComponentUi {
     pub path_synced: String,
 }
 
+#[derive(Default)]
+pub(crate) struct ComponentMirrorUi {
+    input: Option<Entity<InputState>>,
+    synced: String,
+    saving: bool,
+}
+
 impl ExtensionsView {
     pub(crate) fn render_components(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.prepare_component_mirror(window, cx);
         for kind in COMPONENT_KINDS {
             self.prepare_component(kind, window, cx);
         }
@@ -144,7 +161,120 @@ impl ExtensionsView {
         v_flex()
             .w_full()
             .gap(frame.tokens.spacing.lg)
+            .child(self.render_component_mirror(frame, cx))
             .children(cards)
+    }
+
+    fn prepare_component_mirror(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.controller.component_mirror();
+        let ui = &mut self.component_mirror;
+        if let Some(input) = &ui.input {
+            if ui.synced != value && !input.read(cx).focus_handle(cx).is_focused(window) {
+                ui.synced = value.to_owned();
+                input.update(cx, |input, cx| input.set_value(value.to_owned(), window, cx));
+            }
+            return;
+        }
+        let placeholder = self
+            .translator
+            .read(cx)
+            .text("mobileComponentMirrorBasePlaceholder")
+            .to_owned();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(value.to_owned())
+                .placeholder(placeholder)
+        });
+        cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.save_component_mirror(window, cx);
+            }
+        })
+        .detach();
+        ui.synced = value.to_owned();
+        ui.input = Some(input);
+    }
+
+    fn render_component_mirror(&self, frame: Frame<'_>, cx: &Context<Self>) -> impl IntoElement {
+        let translator = frame.translator;
+        let ui = &self.component_mirror;
+        let busy = frame.stale || ui.saving;
+        card(cx)
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(frame.tokens.spacing.sm)
+            .p(frame.tokens.spacing.lg)
+            .child(ui::title_text(
+                translator.text("mobileComponentMirrorBase").to_owned(),
+                frame,
+            ))
+            .child(ui::meta_text(
+                translator.text("mobileComponentMirrorBaseDesc").to_owned(),
+                frame,
+            ))
+            .child(input_with_action(
+                div().w_full().children(
+                    ui.input
+                        .as_ref()
+                        .map(|input| Input::new(input).control(cx).w_full().disabled(busy)),
+                ),
+                Button::new("component-mirror-save")
+                    .outline()
+                    .control(cx)
+                    .label(translator.text("componentsManualPathSave").to_owned())
+                    .busy(ui.saving)
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_component_mirror(window, cx);
+                    })),
+                cx,
+            ))
+    }
+
+    fn save_component_mirror(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ui = &mut self.component_mirror;
+        if self.controller.is_stale() || ui.saving {
+            return;
+        }
+        let Some(input) = &ui.input else {
+            return;
+        };
+        let value = input.read(cx).value();
+        if value.trim() == self.controller.component_mirror() {
+            return;
+        }
+        let future = self.controller.set_component_config(COMPONENT_MIRROR_KEY, value.trim());
+        ui.saving = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = future.await.and_then(|value| {
+                serde_json::from_value::<DaemonConfigSnapshot>(value).map_err(|_| protocol_error())
+            });
+            let Ok(()) = this.update_in(cx, |this, window, cx| {
+                let ui = &mut this.component_mirror;
+                ui.saving = false;
+                match result {
+                    Ok(config) => {
+                        this.controller.apply_config(&config);
+                        ui.synced = this.controller.component_mirror().to_owned();
+                        if let Some(input) = &ui.input {
+                            input.update(cx, |input, cx| {
+                                input.set_value(ui.synced.clone(), window, cx);
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        let message = error_text(this.translator.read(cx), &error);
+                        this.toast_error(message, window, cx);
+                    }
+                }
+                cx.notify();
+            }) else {
+                return;
+            };
+        })
+        .detach();
     }
 
     /// 渲染前的可变准备：创建路径输入框、同步配置值、懒拉版本列表。
@@ -370,6 +500,13 @@ impl ExtensionsView {
                         translator.text_with("componentsManualPathDesc", &[("name", title)]),
                         frame,
                     )),
+            )
+            .child(
+                Button::new(("component-release", slot))
+                    .outline()
+                    .control(cx)
+                    .label(translator.text("componentsOfficialReleases").to_owned())
+                    .on_click(move |_, _, cx| cx.open_url(release_url(kind))),
             )
             .child(input_with_action(
                 div().w_full().children(

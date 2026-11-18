@@ -267,8 +267,20 @@ mod install {
             Some(tag) => format!("{RELEASE_TAG_API}{tag}"),
             None => RELEASE_LATEST_API.to_string(),
         };
-        let release =
-            super::super::fetch_github_json_with_mirror(&clients, &url, &mirror_base).await?;
+        let release = match super::super::fetch_github_json_with_mirror(&clients, &url, &mirror_base)
+            .await
+        {
+            Ok(release) => release,
+            Err(error) => {
+                // 官网缓存的是列表，不代理单个 tag。只使用与安装请求匹配的条目。
+                let Ok(releases) = super::super::fetch_official_versions_json(&clients, "ytdlp")
+                    .await
+                else {
+                    return Err(error);
+                };
+                select_stable_release(releases, version).ok_or(error)?
+            }
+        };
         let chosen_ver = release["tag_name"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -363,6 +375,43 @@ mod install {
             target.display()
         );
         Ok(super::ytdlp_status(db, data_dir).await)
+    }
+
+    fn select_stable_release(
+        releases: serde_json::Value,
+        version: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        let serde_json::Value::Array(releases) = releases else {
+            return None;
+        };
+        releases.into_iter().find(|release| {
+            release["draft"].as_bool() == Some(false)
+                && release["prerelease"].as_bool() == Some(false)
+                && release["tag_name"]
+                    .as_str()
+                    .is_some_and(|tag| !tag.is_empty() && version.is_none_or(|v| v == tag))
+        })
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn install_fallback_uses_requested_tag_or_first_stable_release() {
+        let releases = serde_json::json!([
+            {"tag_name": "nightly", "draft": false, "prerelease": true},
+            {"tag_name": "draft", "draft": true, "prerelease": false},
+            {"tag_name": "new", "draft": false, "prerelease": false},
+            {"tag_name": "old", "draft": false, "prerelease": false}
+        ]);
+        assert_eq!(
+            select_stable_release(releases.clone(), None).unwrap()["tag_name"],
+            "new"
+        );
+        assert_eq!(
+            select_stable_release(releases.clone(), Some("old")).unwrap()["tag_name"],
+            "old"
+        );
+        assert!(select_stable_release(releases.clone(), Some("nightly")).is_none());
+        assert!(select_stable_release(releases, Some("missing")).is_none());
     }
 }
 

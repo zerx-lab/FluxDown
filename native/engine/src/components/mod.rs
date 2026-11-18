@@ -360,6 +360,14 @@ async fn fetch_text(
 #[cfg(feature = "components")]
 const MIRROR_BASE: &str = "https://fluxdown.com/api/components";
 
+#[cfg(feature = "components")]
+pub(crate) async fn fetch_official_versions_json(
+    clients: &crate::egress::RoutedClients,
+    component: &str,
+) -> Result<serde_json::Value, ComponentError> {
+    fetch_github_json(clients, &format!("{MIRROR_BASE}/{component}")).await
+}
+
 /// 版本列表专用：优先经官网镜像 `MIRROR_BASE/<component>` 拉取（返回原样
 /// GitHub JSON）；失败则经 [`fetch_github_json_with_mirror`] 依次尝试用户
 /// 配置的镜像与直连 `github_url`。二进制下载不走此路径。
@@ -370,8 +378,7 @@ pub(crate) async fn fetch_versions_json(
     github_url: &str,
     mirror_base: &str,
 ) -> Result<serde_json::Value, ComponentError> {
-    let official_mirror = format!("{MIRROR_BASE}/{component}");
-    if let Ok(v) = fetch_github_json(clients, &official_mirror).await {
+    if let Ok(v) = fetch_official_versions_json(clients, component).await {
         return Ok(v);
     }
     fetch_github_json_with_mirror(clients, github_url, mirror_base).await

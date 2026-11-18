@@ -148,6 +148,12 @@ The desktop HTTP service defaults to `127.0.0.1:17800`. GPUI can enable LAN acce
 
 See the [API documentation](/api-docs) for the full endpoint reference.
 
+## Extensions → Components
+
+If the GitHub Release API returns 403 or is unreachable, set **Download mirror** to a trusted HTTPS GitHub mirror base URL (not a full API endpoint). The mirror must support GitHub-compatible Release API paths (`/repos/…`) and release download paths. This setting also applies to the plugin marketplace on supported hosts. Clear it and save to remove the override.
+
+If managed installation still fails, open **Official GitHub releases** on the FFmpeg or yt-dlp card, download the build for the host's OS and architecture, extract it if needed, and point **Manual path** at the executable on that host.
+
 ## About
 
 | Item | Purpose | Default |
