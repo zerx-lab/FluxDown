@@ -154,6 +154,7 @@ internal fun DownloadRow(
     val coords = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
     val localHost = view.localHost
+    val opensFile = actions.hasLocalFile(item.task)
     val startActions = remember(item.visual, item.boosted, text, actions, localHost) {
         buildList {
             add(
@@ -223,6 +224,8 @@ internal fun DownloadRow(
                         if (nav.selecting) {
                             nav.toggleSelected(id)
                             haptics.tick()
+                        } else if (actions.hasLocalFile(latest.task)) {
+                            actions.open(latest.task)
                         } else {
                             nav.push(Route.TaskDetail(id))
                         }
@@ -259,7 +262,7 @@ internal fun DownloadRow(
                     selection = selection,
                     strikethrough = item.visual == TaskVisualState.Missing,
                     horizontalPadding = hPad,
-                    onClickLabel = text.openDetails,
+                    onClickLabel = if (!selecting && opensFile) text.ringOpen else text.openDetails,
                     customActions = customActions,
                     badge = if (conflict) text.conflictPending else null,
                     onBadgeClick = if (conflict) openConflicts else null,

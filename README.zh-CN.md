@@ -265,6 +265,8 @@ cargo run -p fluxdown_cli -- ping
 
 Android 工程在 `mobile/Android`，iOS 工程在 `mobile/FluxDown`；共同使用 `native/mobile` 的 Rust 核心与 `assets/i18n` 共享翻译。
 
+Android 首次新建本机下载时会提供系统 Download 目录选项。授予存储权限并确认可写目录后才会更改默认位置；也可以不授权，继续使用应用目录。之后可在下载设置中更改。单击文件仍在的本机已完成任务可用系统应用打开文件；长按可选择「打开文件」或「任务详情」。
+
 ```shell
 # Android：JAVA_HOME 指向 Android Studio 自带 JBR
 (cd mobile/Android && ./gradlew :core:testDebugUnitTest :bridge:testDebugUnitTest :app:assembleDebug)

@@ -161,4 +161,24 @@ class NewDownloadStateCategoryTest {
         assertEquals(SaveDirMode.Auto, NewDownloadState.restoreMode("category:gone", categories))
         assertEquals(SaveDirMode.Auto, NewDownloadState.restoreMode("invalid", categories))
     }
+
+    @Test fun adoptingPublicDefaultUpdatesCurrentRequestWithoutDisablingRouting() {
+        val state = form("https://example.com/movie.mp4")
+        state.adoptDefaultSaveDir("/public/Download")
+
+        assertEquals("/dl/Video", state.saveDir)
+        assertEquals("/public/Download", requestOffered(state))
+        state.rename = "unclassified.txt"
+        state.syncAuto()
+        assertEquals("/public/Download", state.saveDir)
+    }
+
+    @Test fun adoptingPublicDefaultPreservesExplicitTaskFolder() {
+        val state = form("https://example.com/file.txt")
+        state.setSaveDirManually("/other")
+        state.adoptDefaultSaveDir("/public/Download")
+
+        assertEquals("/other", state.saveDir)
+        assertNull(requestOffered(state))
+    }
 }

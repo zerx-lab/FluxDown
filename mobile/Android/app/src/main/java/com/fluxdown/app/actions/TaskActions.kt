@@ -319,7 +319,14 @@ class TaskActions(
      */
     fun menuItems(task: Task, boosted: Boolean, onSelect: (() -> Unit)? = null): List<FluxMenuItem> = buildList {
         val st = task.status
-        if (hasLocalFile(task)) add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
+        if (hasLocalFile(task)) {
+            add(FluxMenuItem.Action(s(R.string.openFile), { open(task) }, FluxIcons.ExternalLink))
+            if (onSelect != null) {
+                add(FluxMenuItem.Action(s(R.string.mobileTaskDetail), {
+                    nav.push(com.fluxdown.app.nav.Route.TaskDetail(task.taskId))
+                }, FluxIcons.Info))
+            }
+        }
         if (task.canResume) add(FluxMenuItem.Action(s(R.string.resume), { resume(listOf(task.taskId)) }, FluxIcons.Play))
         if (task.canPause) add(FluxMenuItem.Action(s(R.string.pause), { pause(listOf(task.taskId)) }, FluxIcons.Pause))
         // 只有未结束的任务能优先下载（主机对已完成 / 失败任务拒绝 Boost）。
