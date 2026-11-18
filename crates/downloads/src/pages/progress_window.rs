@@ -7,7 +7,10 @@
 //! 开窗与关窗策略由宿主决定（见 [`crate::ProgressWindowTracker`]）。自动完成提示也复用本视图，
 //! 多项通过上一项 / 下一项浏览；删除或打开一项仅移除该项，最后一项处理完再请求关窗。
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 mod completions;
 
@@ -19,13 +22,14 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::{
     BusyExt as _, ControlExt as _, FluxIcon, IconControlExt as _, card, check_row, tabular_numbers,
+    tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Task,
-    Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, ExternalDragPayload,
+    FileDragPaths, FontWeight, InteractiveElement as _, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Disableable as _, Icon, WindowExt as _,
@@ -37,6 +41,7 @@ use crate::{
     components::{
         file_icon::task_file_icon,
         segment_progress::render_segment_progress,
+        task_drag::TaskDragPreview,
         task_table::{progress_bar_color, progress_track_color, task_status_color},
     },
     controller::{DownloadsCommand, DownloadsController, DownloadsPort},
@@ -553,6 +558,32 @@ impl ProgressWindowView {
             .items_center()
             .justify_center()
             .child(task_file_icon(row, px(FILE_ICON), window, cx))
+            .into_any_element()
+    }
+
+    fn render_completed_icon(
+        &self,
+        row: &DownloadTaskView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let icon = Self::render_icon_tile(row, window, cx);
+        if !completion_drag_supported(std::env::consts::OS, cx.compositor_name()) {
+            return icon;
+        }
+        let Some(path) = completion_drag_path(row) else {
+            return icon;
+        };
+        let tip = self.t(cx, "progressWindowDragFile");
+        let preview = TaskDragPreview::single(row);
+        div()
+            .id("progress-drag-file")
+            .child(icon)
+            .tooltip(move |window, cx| tooltip_view(tip.clone(), window, cx))
+            .on_drag(path, move |_, offset, _, cx| {
+                cx.new(|_| preview.at_offset(offset))
+            })
+            .external_drag_payload(|path: &PathBuf, _, _| completion_drag_payload(path))
             .into_any_element()
     }
 
@@ -1292,6 +1323,26 @@ impl ProgressWindowView {
     }
 }
 
+fn completion_drag_supported(os: &str, compositor: &str) -> bool {
+    os == "macos" || (os == "linux" && compositor == "Wayland")
+}
+
+fn completion_drag_path(row: &DownloadTaskView) -> Option<PathBuf> {
+    if !row.has_local_file() {
+        return None;
+    }
+    row.local_file_path().filter(|path| path.exists())
+}
+
+fn completion_drag_payload(path: &Path) -> Option<ExternalDragPayload> {
+    // The file can disappear after the icon is rendered but before GPUI hands off the drag.
+    let is_dir = std::fs::metadata(path).ok()?.is_dir();
+    Some(ExternalDragPayload::Files(FileDragPaths::new([(
+        path.to_path_buf(),
+        is_dir,
+    )])))
+}
+
 /// 耗时：`m:ss`，超过一小时 `h:mm:ss`。
 fn format_elapsed(seconds: u64) -> String {
     let (hours, minutes, secs) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -1308,7 +1359,7 @@ impl gpui::Render for ProgressWindowView {
         let (content, footer) = match self.row() {
             Some(row) if row.state == TaskState::Completed => {
                 let row = row.clone();
-                let icon = Self::render_icon_tile(&row, window, cx);
+                let icon = self.render_completed_icon(&row, window, cx);
                 (
                     self.render_completed(&row, icon, cx),
                     self.render_completed_footer(row.file_missing, cx),
@@ -1516,5 +1567,72 @@ mod tests {
                 assert_eq!(view.task_id(), "b");
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_drag_tests {
+    use super::{
+        DownloadTaskView, ExternalDragPayload, TaskState, completion_drag_path,
+        completion_drag_payload, completion_drag_supported,
+    };
+
+    #[test]
+    fn completion_drag_is_offered_only_on_macos_and_linux_wayland() {
+        assert!(completion_drag_supported("macos", ""));
+        assert!(completion_drag_supported("linux", "Wayland"));
+        assert!(!completion_drag_supported("linux", "X11"));
+        assert!(!completion_drag_supported("linux", "headless"));
+        assert!(!completion_drag_supported("windows", ""));
+    }
+
+    #[test]
+    fn completion_drag_offers_current_local_file_or_torrent_directory() -> std::io::Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown-completion-drag-{}", std::process::id()));
+        std::fs::create_dir(&dir)?;
+        let file = dir.join("测试 file.bin");
+        let folder = dir.join("Torrent #1");
+        std::fs::write(&file, b"x")?;
+        std::fs::create_dir(&folder)?;
+
+        let dto = serde_json::from_value::<fluxdown_protocol::TaskDto>(serde_json::json!({
+            "taskId": "completion-drag",
+            "url": "https://example.test/file.bin",
+            "fileName": "测试 file.bin",
+            "saveDir": dir,
+            "status": 0,
+            "downloadedBytes": 1,
+            "totalBytes": 1,
+            "errorMessage": "",
+            "createdAt": "1",
+            "proxyUrl": "",
+            "queueId": "main",
+            "checksum": ""
+        }))
+        .expect("local task");
+        let mut row = DownloadTaskView::local(&dto, None, false);
+        row.state = TaskState::Downloading;
+        assert!(completion_drag_path(&row).is_none());
+        row.state = TaskState::Completed;
+        row.file_missing = true;
+        assert!(completion_drag_path(&row).is_none());
+        row.file_missing = false;
+        let path = completion_drag_path(&row).expect("completed file is draggable");
+        let ExternalDragPayload::Files(paths) =
+            completion_drag_payload(&path).expect("file payload");
+        assert_eq!(paths.entries(), &[(file.clone(), false)]);
+
+        std::fs::remove_file(&file)?;
+        assert!(completion_drag_path(&row).is_none());
+        assert!(completion_drag_payload(&path).is_none());
+
+        row.name = "Torrent #1".into();
+        let path = completion_drag_path(&row).expect("torrent directory is draggable");
+        let ExternalDragPayload::Files(paths) =
+            completion_drag_payload(&path).expect("directory payload");
+        assert_eq!(paths.entries(), &[(folder, true)]);
+
+        std::fs::remove_dir_all(dir)
     }
 }

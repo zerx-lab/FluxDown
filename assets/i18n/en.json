@@ -866,6 +866,7 @@
   "progressWindowTitle": "Download progress",
   "progressWindowStop": "Stop",
   "progressWindowOpenMain": "Open main window",
+  "progressWindowDragFile": "Drag the icon to drop the file into a folder or another app",
   "progressWindowSegments": "{n} segments",
   "progressWindowPartsShow": "Show segments",
   "progressWindowPartsHide": "Hide segments",
