@@ -12,6 +12,7 @@ import { hostOf } from "@/rules/url";
 import { installConnectionDiagnostics } from "@/utils/connection-diagnostics-background";
 import { ERROR_LOG_TYPES, handleErrorLogMessage } from "@/utils/error-log-background";
 import { checkRemoteAvailable, effectiveRemoteMode, warmupNativeHost } from "@/utils/download-dispatch";
+import { remoteListTasks, remoteRemoveTask } from "@/utils/remote-server";
 import {
   nmhOpenFile,
   nmhRevealFile,
@@ -36,7 +37,7 @@ import { getCapabilities } from "./host";
 import { isInterceptActive, markPreempted } from "./intercept";
 import { rememberServiceWorkerScope } from "./sw-scopes";
 import { isReplayableUrl, scopeBelongsTo } from "@/utils/download-source";
-import { isLikelyDownloadClick } from "@/utils/settings";
+import { ensureRemoteSettingsVerified, isLikelyDownloadClick } from "@/utils/settings";
 import type { PageConfig } from "@/page/bridge";
 import type {
   HostStatus,
@@ -595,14 +596,51 @@ interface TypedMessage {
   [key: string]: unknown;
 }
 
+async function taskPanelSettings() {
+  const { remoteMode, remoteUrl, remoteToken, remoteVerified } =
+    await ensureRemoteSettingsVerified(await getCachedSettings());
+  return {
+    mode: remoteVerified && remoteUrl ? remoteMode : "off",
+    config: { remoteUrl, remoteToken },
+  };
+}
+
+async function localTaskSnapshot() {
+  const result = await nmhListTasks();
+  if (!result.success) return { ok: false, connected: false, tasks: [] };
+  await processTasksPollResult(result.tasks);
+  return { ok: true, connected: true, tasks: result.tasks };
+}
+
 /** 任务面板（popup ↔ background）：`type` 族消息。返回 undefined 表示不属于本族。 */
-async function handleTypeMessage(message: TypedMessage): Promise<unknown> {
+async function handleTypeMessage(message: TypedMessage, sender: Sender): Promise<unknown> {
   switch (message.type) {
-    case "nmh-tasks": {
-      const result = await nmhListTasks();
-      if (!result.success) return { ok: false, connected: false, tasks: [] };
-      await processTasksPollResult(result.tasks);
-      return { ok: true, connected: true, tasks: result.tasks };
+    case "nmh-tasks":
+      return localTaskSnapshot();
+    case "task-panel-list": {
+      if (!isExtensionPage(sender)) return undefined;
+      const { mode, config } = await taskPanelSettings();
+      const switchable = mode === "fallback";
+      if (mode !== "always" && !(switchable && message.source === "remote")) {
+        return { ...await localTaskSnapshot(), switchable };
+      }
+      try {
+        const tasks = await remoteListTasks(config);
+        return { connected: true, tasks, remoteUrl: config.remoteUrl, switchable };
+      } catch {
+        return { connected: false, tasks: [], remoteUrl: config.remoteUrl, switchable };
+      }
+    }
+    case "task-panel-remove-remote": {
+      if (!isExtensionPage(sender) || typeof message.taskId !== "string") return { ok: false };
+      const { mode, config } = await taskPanelSettings();
+      // A row from a previous server must never be applied to the new server or NMH.
+      if (mode === "off" || config.remoteUrl !== message.remoteUrl) return { ok: false };
+      try {
+        return { ok: await remoteRemoveTask(config, message.taskId) };
+      } catch {
+        return { ok: false };
+      }
     }
     case "nmh-task-op": {
       const { op, taskId } = message;
@@ -643,7 +681,7 @@ export function installMessages(): void {
     if (typeof message.type === "string" && ERROR_LOG_TYPES.includes(message.type)) {
       return handleErrorLogMessage(message, sender);
     }
-    const typed = await handleTypeMessage(message);
+    const typed = await handleTypeMessage(message, sender);
     if (typed !== undefined) return typed;
 
     if (isMessageAction(message.action)) {

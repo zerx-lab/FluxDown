@@ -109,7 +109,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 Open `http://<server>:17800/` and set an access key in the first-run wizard. The key must contain 8–128 visible ASCII characters, including both a letter and a digit. Set it up on a trusted network before exposing the service; use an HTTPS reverse proxy for remote access.
 
-**Manage remote downloads:** The browser extension can send downloads to the server, but it cannot show server-side progress or remove server tasks. Use the server's Web UI, or in FluxDown for iOS go to Devices → Add Host and enter the same server address and access key. After switching to that host, use Downloads to add tasks, check progress, or remove tasks, including downloads sent there by the browser extension.
+**Manage remote downloads:** Open Tasks in the browser extension to check server-side progress and remove tasks without deleting their downloaded files. Remote Only shows the server automatically; in Desktop First, select Remote server in the task panel. In FluxDown for iOS, go to Devices → Add Host and enter the same server address and access key. Switch to that host, then use Downloads to add tasks, check progress, or remove tasks.
 
 - Server mode listens on `[::]:17800` (IPv4 + IPv6, falling back to `0.0.0.0` without IPv6) by default; override it with `FLUXDOWN_BIND`.
 - For unattended setup, supply `FLUXDOWN_TOKEN` through your deployment environment or secret manager, not a committed file. It initializes the key only if one has not already been set.

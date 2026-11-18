@@ -144,6 +144,34 @@ export async function remoteSendBatchDownloadRequest(
   );
 }
 
+type RemoteTask = Omit<import("./native-messaging").TaskBrief, "speed">;
+
+async function taskRequest(cfg: RemoteServerConfig, method: "GET" | "DELETE", suffix = "") {
+  const response = await fetch(`${cfg.remoteUrl}/api/v1/tasks${suffix}`, {
+    method,
+    headers: buildHeaders(cfg),
+    redirect: "error",
+    credentials: "omit",
+    signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function remoteListTasks(cfg: RemoteServerConfig): Promise<RemoteTask[]> {
+  const data: unknown = await taskRequest(cfg, "GET");
+  if (!Array.isArray(data)) throw new Error("Invalid task list");
+  return data.map(({ taskId, fileName, status, downloadedBytes, totalBytes, errorMessage, createdAt, fileMissing }: RemoteTask) => ({
+    taskId, fileName, status, downloadedBytes, totalBytes, errorMessage, createdAt, fileMissing,
+  }));
+}
+
+export async function remoteRemoveTask(cfg: RemoteServerConfig, taskId: string): Promise<boolean> {
+  if (!taskId || taskId === "." || taskId === "..") return false;
+  const data = await taskRequest(cfg, "DELETE", `/${encodeURIComponent(taskId)}?deleteFiles=false`);
+  return data?.success === true;
+}
+
 /**
  * 探活：GET {remoteUrl}/ping（无鉴权，200 即在线）。
  * 用于 fallback 模式的可用性判定与 popup「测试连接」按钮。
