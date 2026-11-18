@@ -330,7 +330,9 @@ impl AppearancePreferences {
                 .and_then(parse_scale_percent)
                 .unwrap_or(defaults.ui_scale_percent),
             font_size: values.get(crate::FONT_SIZE_KEY).and_then(parse_font_size),
-            font_weight: values.get(crate::FONT_WEIGHT_KEY).and_then(parse_font_weight),
+            font_weight: values
+                .get(crate::FONT_WEIGHT_KEY)
+                .and_then(parse_font_weight),
         }
     }
 

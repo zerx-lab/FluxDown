@@ -190,7 +190,13 @@ mod tests {
         assert_ne!(expected, original);
         assert_eq!(apply(json!(600)), expected);
         assert_eq!(apply(json!("600")), expected);
-        for invalid in [json!(null), json!(99), json!(650), json!(1000), json!(600.5)] {
+        for invalid in [
+            json!(null),
+            json!(99),
+            json!(650),
+            json!(1000),
+            json!(600.5),
+        ] {
             assert_eq!(apply(invalid), original);
         }
     }

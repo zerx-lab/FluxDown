@@ -396,8 +396,9 @@ fn install(
     // 取常规无衬线、实际正文和等宽字体中最高的自然行高，避免显式常规文字被较矮字重裁切。
     let typography = &theme.base.typography;
     let regular = gpui::FontWeight::NORMAL;
-    let mut line_ratio = crate::fonts::natural_line_ratio(&typography.sans, regular, cx)
-        .max(crate::fonts::natural_line_ratio(&typography.mono, regular, cx));
+    let mut line_ratio = crate::fonts::natural_line_ratio(&typography.sans, regular, cx).max(
+        crate::fonts::natural_line_ratio(&typography.mono, regular, cx),
+    );
     if appearance.font_weight.is_some() && typography.sm.weight != regular {
         line_ratio = line_ratio.max(crate::fonts::natural_line_ratio(
             &typography.sans,
