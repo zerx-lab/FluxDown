@@ -3144,7 +3144,7 @@ fn has_html_signature(prefix: &[u8]) -> bool {
 }
 
 impl DownloadSpec {
-    pub(crate) fn check_html_response(
+    fn check_html_response(
         &self,
         resp: &reqwest::Response,
         url: &str,
@@ -3167,7 +3167,7 @@ impl DownloadSpec {
         Ok(())
     }
 
-    pub(crate) fn unexpected_html_evidence(
+    fn unexpected_html_evidence(
         &self,
         resp: &reqwest::Response,
         url: &str,
@@ -6239,8 +6239,11 @@ async fn download_single_once(
     // 协调断裂导致并发下载冲突（参见 PR #296 自我冲突回归 bug）。
 
     // A filename can trigger the safety net, but cannot establish the replay's format.
-    let mut html_prefix = (spec.html_only && html_mime(response_content_type(&resp)).is_none())
-        .then(|| ([0u8; 512], 0usize));
+    let mut html_prefix = if spec.html_only && html_mime(response_content_type(&resp)).is_none() {
+        Some(([0u8; 512], 0usize))
+    } else {
+        None
+    };
     // The stream yields Result<Bytes, io::Error> with or without decompression.
     let raw_stream = resp.bytes_stream();
     let mut stream = maybe_decompress_stream(raw_stream, encoding);

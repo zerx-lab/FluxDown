@@ -680,26 +680,6 @@ async fn html_response_name_is_evidence_not_download_intent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn segmented_html_rejection_does_not_retry() {
-    let mut h = Harness::new("segmented_html").await;
-    let mut spec = h.share_spec(None);
-    // A large browser hint with four requested segments takes the coordinator
-    // path, whose unverified first worker starts with one plain GET.
-    spec.hint_file_size = 2 * 1024 * 1024;
-    let original = h.engine.manager.create_task(spec).await.unwrap();
-    let failed = h.finish(&original).await;
-    assert_eq!(failed.status, 4);
-    assert!(
-        failed
-            .error_message
-            .starts_with("server returned HTML page (Content-Type: text/html)")
-    );
-    assert_eq!(h.requests(), [format!("GET {HTML_PATH}")]);
-    assert!(!h.work_dir.join(failed.file_name).exists());
-    h.cleanup().await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn html_login_status_is_reported_but_cannot_be_saved() {
     const HTML_HEADERS: &str = "Content-Type: text/html\r\n";
     const CHALLENGE_HEADERS: &str = "Content-Type: text/html\r\ncf-mitigated: challenge\r\n";

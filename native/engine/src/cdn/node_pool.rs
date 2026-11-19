@@ -170,8 +170,6 @@ pub struct LiveConn {
 
 struct PoolInner {
     slots: Vec<NodeSlot>,
-    /// Prefer another route for bounded ranges after SYS exhausts its HTML retries.
-    sys_html_fallback: bool,
     /// 聚合熔断只记一次。
     no_aggregate_recorded: bool,
     /// 上次 `kind="leases"` 快照的发射时刻（节流窗口）。
@@ -337,7 +335,6 @@ impl NodePool {
             sys_fallback_budget: AtomicU32::new(SYS_FALLBACK_BUDGET),
             inner: StdMutex::new(PoolInner {
                 slots,
-                sys_html_fallback: false,
                 no_aggregate_recorded: false,
                 last_leases_emit: None,
                 last_leases_sig: Vec::new(),
@@ -498,25 +495,12 @@ impl NodePool {
     /// 按原语义上抛（进而触发 manager 的 failover/通用重试）。授予改道的同时
     /// 登记 SYS 路径的传输失败（同一路径整个任务只登记一次）。
     pub fn try_sys_transport_fallback(&self) -> bool {
-        self.try_sys_fallback(true)
-    }
-
-    /// Route new bounded-range leases away from SYS without recording a transport failure.
-    pub(crate) fn try_sys_html_fallback(&self) -> bool {
-        self.try_sys_fallback(false)
-    }
-
-    fn try_sys_fallback(&self, record_transport_failure: bool) -> bool {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
         let start = inner.slots.first().map_or(RoutePath::Direct, |s| s.route);
         if !Self::alternate_alive(&inner, start) {
             return false;
-        }
-        // Other SYS leases already in flight can requeue under the same route change.
-        if !record_transport_failure && inner.sys_html_fallback {
-            return true;
         }
         if self
             .sys_fallback_budget
@@ -525,11 +509,7 @@ impl NodePool {
         {
             return false;
         }
-        if record_transport_failure {
-            inner.note_path_failure(start);
-        } else {
-            inner.sys_html_fallback = true;
-        }
+        inner.note_path_failure(start);
         true
     }
 
@@ -589,12 +569,7 @@ impl NodePool {
                 Err(poisoned) => poisoned.into_inner(),
             };
             let (node_id, client) = loop {
-                let chosen = if req.allow_alternates && inner.sys_html_fallback {
-                    Self::pick_html_alternate(&inner.slots)
-                } else {
-                    None
-                }
-                .unwrap_or_else(|| Self::pick(&inner.slots, req.allow_alternates, explore));
+                let chosen = Self::pick(&inner.slots, req.allow_alternates, explore);
                 let slot = &mut inner.slots[chosen];
                 // 懒建 pinned client（SYS 与备选路径的 client 恒存在）。
                 if slot.client.is_none() {
@@ -832,21 +807,6 @@ impl NodePool {
             &links,
             explore,
         )
-    }
-
-    fn pick_html_alternate(slots: &[NodeSlot]) -> Option<usize> {
-        let start_route = slots.first()?.route;
-        slots
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| !slot.kicked && slot.route != start_route)
-            .max_by(|(_, a), (_, b)| {
-                use crate::path_scheduler::link_marginal;
-                link_marginal(a.capacity(), a.outstanding)
-                    .total_cmp(&link_marginal(b.capacity(), b.outstanding))
-                    .then_with(|| b.outstanding.cmp(&a.outstanding))
-            })
-            .map(|(i, _)| i)
     }
 
     /// 主链路内选择：
@@ -1713,40 +1673,6 @@ mod tests {
             super::SYS_FALLBACK_BUDGET as usize,
             "配额耗尽后失败按原语义上抛"
         );
-    }
-
-    #[test]
-    fn sys_html_fallback_bypasses_faster_sys_only_while_alternate_is_alive() {
-        let pool = NodePool::single(reqwest::Client::new());
-        assert!(!pool.try_sys_html_fallback());
-        pool.add_paths(
-            RoutePath::Direct,
-            Some(2e6),
-            vec![(MANUAL, reqwest::Client::new(), Some(5e5))],
-        );
-        assert_eq!(pool.lease().route(), RoutePath::Direct);
-
-        assert!(pool.try_sys_html_fallback());
-        assert!(pool.try_sys_html_fallback());
-        let alternate = pool.lease();
-        assert_eq!(alternate.route(), MANUAL);
-        assert_eq!(
-            pool.lease_for(LeaseRequest {
-                seg_index: 0,
-                start_downloaded: 0,
-                bytes: i64::MAX,
-                allow_alternates: false,
-                cancel: CancellationToken::new(),
-            })
-            .route(),
-            RoutePath::Direct
-        );
-
-        let mismatch = DownloadError::Other("segment 2: validator mismatch — probe etag".into());
-        pool.report(&alternate, 0, Duration::from_secs(1), Err(&mismatch));
-        assert!(pool.take_path_failures().is_empty());
-        assert!(!pool.try_sys_html_fallback());
-        assert_eq!(pool.lease().route(), RoutePath::Direct);
     }
 
     fn stall_err() -> DownloadError {
