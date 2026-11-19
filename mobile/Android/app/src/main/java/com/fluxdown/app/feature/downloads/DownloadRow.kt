@@ -273,7 +273,7 @@ private fun ringProgressOf(item: TaskItem): Float? = when (item.visual) {
     TaskVisualState.Completed, TaskVisualState.Missing, TaskVisualState.Seeding,
     TaskVisualState.Preparing, TaskVisualState.Verifying,
     -> null
-    else -> item.task.progress
+    else -> item.progress
 }
 
 /** 详情栏当前任务底色（draw 阶段读取，不触发重组）+ 行间发丝线（历史区首行另画顶线）。 */

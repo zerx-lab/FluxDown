@@ -3,6 +3,7 @@ package com.fluxdown.app.feature.downloads
 import androidx.compose.runtime.Immutable
 import com.fluxdown.app.ui.TaskVisualState
 import com.fluxdown.core.model.Category
+import com.fluxdown.core.model.HlsFragmentProgress
 import com.fluxdown.core.model.Queue
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
@@ -103,6 +104,8 @@ data class TaskItem(
     val visual: TaskVisualState,
     val flow: List<FlowSegmentUi>?,
     val flowState: FlowStripState,
+    val progress: Float?,
+    val hlsFragments: HlsFragmentProgress?,
     val eta: Long?,
 ) : DownloadItem {
     override val id: String get() = task.taskId
@@ -121,7 +124,7 @@ data class TaskItem(
     override val createdSec: Long get() = task.createdAt
     override val sortName: String get() = task.fileName
     override val sizeBytes: Long get() = task.totalBytes
-    override val sortProgress: Float? get() = task.progress
+    override val sortProgress: Float? get() = progress
     override val sortSpeed: Long get() = speedDown
     override val inflight: Boolean
         get() = task.status == TaskStatus.Pending || task.status == TaskStatus.Downloading || task.status == TaskStatus.Preparing

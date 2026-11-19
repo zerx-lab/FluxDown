@@ -264,7 +264,8 @@ private fun itemFor(t: Task, s: HostState, cache: DeriveCache, queuesById: Map<S
     }
 
     val visual = t.visualState(qo != null)
-    val (flow, flowState) = flowFor(t, visual, rt)
+    val fragmentProgress = rt?.hlsFragments?.fraction
+    val (flow, flowState) = flowFor(t, visual, rt, fragmentProgress)
     val item = TaskItem(
         task = t,
         speedDown = sd,
@@ -277,7 +278,11 @@ private fun itemFor(t: Task, s: HostState, cache: DeriveCache, queuesById: Map<S
         visual = visual,
         flow = flow,
         flowState = flowState,
-        eta = if (visual == TaskVisualState.Downloading) Format.etaSeconds(t.downloadedBytes, t.totalBytes, sd) else null,
+        progress = fragmentProgress ?: t.progress,
+        hlsFragments = rt?.hlsFragments?.takeIf { fragmentProgress != null },
+        eta = if (visual == TaskVisualState.Downloading && fragmentProgress == null) {
+            Format.etaSeconds(t.downloadedBytes, t.totalBytes, sd)
+        } else null,
     )
     cache.items[t.taskId] = DeriveCache.Entry(item, rt)
     return item
@@ -301,8 +306,13 @@ private fun matchesQuery(it: TaskItem, q: String): Boolean {
         it.site.lowercase().contains(q)
 }
 
-/** 流带：按真实字节区间等比；无分段退化为单段总进度（§3.7）。返回 (null, _) = 不显示流带。 */
-private fun flowFor(t: Task, visual: TaskVisualState, rt: TaskRuntime?): Pair<List<FlowSegmentUi>?, FlowStripState> {
+/** 流带：HLS 点播按已写入分片数；其他协议按真实字节区间或总字节进度。 */
+private fun flowFor(
+    t: Task,
+    visual: TaskVisualState,
+    rt: TaskRuntime?,
+    fragmentProgress: Float?,
+): Pair<List<FlowSegmentUi>?, FlowStripState> {
     val state = when (visual) {
         TaskVisualState.Downloading -> FlowStripState.Downloading
         TaskVisualState.Queued -> FlowStripState.Queued
@@ -317,10 +327,11 @@ private fun flowFor(t: Task, visual: TaskVisualState, rt: TaskRuntime?): Pair<Li
     val show = when (visual) {
         TaskVisualState.Completed, TaskVisualState.Missing -> false
         TaskVisualState.Preparing, TaskVisualState.Verifying, TaskVisualState.Downloading, TaskVisualState.Seeding -> true
-        else -> t.totalBytes > 0 || t.downloadedBytes > 0
+        else -> fragmentProgress != null || t.totalBytes > 0 || t.downloadedBytes > 0
     }
     if (!show) return null to state
     if (visual == TaskVisualState.Seeding) return listOf(FlowSegmentUi(1f, 1f)) to state
+    if (fragmentProgress != null) return listOf(FlowSegmentUi(1f, fragmentProgress)) to state
     val segs = rt?.segments
     if (!segs.isNullOrEmpty() && t.totalBytes > 0 &&
         (visual == TaskVisualState.Downloading || visual == TaskVisualState.Paused || visual == TaskVisualState.Failed)

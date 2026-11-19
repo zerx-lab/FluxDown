@@ -1,9 +1,11 @@
 //! agent 官方 UI Gateway：单一 RPC 会话、agent 快照与 daemon 透明转发。
 
+mod ipc;
 mod local;
 mod restart;
 mod session_auth;
 
+pub use ipc::IpcListener;
 pub use local::{LocalConnection, LocalEventError};
 pub(crate) use session_auth::RpcCredential;
 use session_auth::{
@@ -1943,6 +1945,7 @@ struct GatewayState {
 )]
 pub async fn serve(
     listener: TcpListener,
+    ipc: Option<IpcListener>,
     service: Arc<GatewayService>,
     api_host: Arc<AgentApiHost>,
     api_config: fluxdown_api::server::ApiServerConfig,
@@ -1970,7 +1973,7 @@ pub async fn serve(
     };
     service
         .listener_control
-        .run(listener, app, bearer, cancel, endpoint_dir)
+        .run(listener, ipc, app, bearer, cancel, endpoint_dir)
         .await
 }
 
@@ -3172,6 +3175,7 @@ mod tests {
             };
             let server_task = tokio::spawn(super::serve(
                 listener,
+                None,
                 service.clone(),
                 api_host,
                 api_config,

@@ -1461,6 +1461,7 @@ fn spawn_progress_reporter(context: ProgressReporterContext) -> tokio::task::Joi
                     })
                     .collect(),
                 source_bytes: None,
+                hls_fragments: None,
             };
             if progress_tx
                 .send(ProgressUpdate {

@@ -17383,6 +17383,13 @@ pub async fn progress_reporter(
             }
         });
 
+        // HLS writers enqueue their final checkpoint before TaskDone (pause) or
+        // the failure update. Keep the FIFO order without re-emitting status 1.
+        if update.cache_runtime_only {
+            state.cached_runtime = update.runtime;
+            continue;
+        }
+
         // BT upload accounting: a newly created state has no baseline. Seed it
         // from the persisted DB value so pause/resume cycles (or reporter
         // restarts) don't briefly flash zero in the UI before the next delta.
@@ -17400,8 +17407,8 @@ pub async fn progress_reporter(
         if update.segment_details.is_some() {
             state.cached_segments = update.segment_details.clone();
         }
-        if let Some(runtime) = &update.runtime {
-            state.cached_runtime = Some(runtime.clone());
+        if let Some(runtime) = update.runtime {
+            state.cached_runtime = Some(runtime);
         }
 
         // 接收字节在同一次运行内单调；比上次小 = 新一轮运行的计数器（从 0 起）。
@@ -25162,6 +25169,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hls_terminal_progress_publishes_unsampled_checkpoint_before_resume() {
+        for terminal in [2, 4] {
+            let db = Db::connect("sqlite::memory:")
+                .await
+                .expect("connect mem db");
+            let sink = Arc::new(RecordingSink::new());
+            let (tx, rx) = mpsc::channel(8);
+            let runtime = |written| TaskRuntime {
+                task_id: "vod".into(),
+                sampled_at_ms: 1,
+                sample_sequence: crate::transfer_activity::next_sample_sequence(),
+                active_transfers: Some(0),
+                connected_peers: None,
+                parallelism_limit: Some(1),
+                total_bytes: 0,
+                segments: Vec::new(),
+                hls_fragments: Some((written, 4)),
+                source_bytes: None,
+            };
+            for update in [
+                ProgressUpdate {
+                    status: 1,
+                    runtime: Some(runtime(1)),
+                    ..Default::default()
+                },
+                ProgressUpdate {
+                    runtime: Some(runtime(2)),
+                    cache_runtime_only: true,
+                    ..Default::default()
+                },
+                ProgressUpdate {
+                    status: terminal,
+                    ..Default::default()
+                },
+                ProgressUpdate {
+                    status: 1,
+                    runtime: Some(runtime(2)),
+                    ..Default::default()
+                },
+            ] {
+                tx.send(ProgressUpdate {
+                    task_id: "vod".into(),
+                    ..update
+                })
+                .await
+                .expect("enqueue progress");
+            }
+            drop(tx);
+            progress_reporter(rx, db, sink.clone()).await;
+
+            let mut status = 0;
+            let frames: Vec<_> = sink
+                .events()
+                .into_iter()
+                .filter_map(|event| match event {
+                    EngineEvent::TaskProgress { status: next, .. } => {
+                        status = next;
+                        None
+                    }
+                    EngineEvent::TaskRuntimeChanged(runtime) => {
+                        Some((status, runtime.hls_fragments))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(progress_statuses(&sink), [1, terminal, 1]);
+            assert_eq!(
+                frames,
+                [
+                    (1, Some((1, 4))),
+                    (terminal, Some((2, 4))),
+                    (1, Some((2, 4)))
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn transfer_baselines_bypass_throttling_and_precede_matching_progress() {
         let (tx, rx) = mpsc::channel(8);
         let db = Db::connect("sqlite::memory:")
@@ -25477,6 +25562,7 @@ mod tests {
                 total_bytes: 100,
                 segments: vec![segment],
                 source_bytes: None,
+                hls_fragments: None,
             }),
             ..Default::default()
         })

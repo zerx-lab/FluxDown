@@ -33,6 +33,15 @@ pub struct TaskSourceBytesDto {
     pub nic_bytes: i64,
 }
 
+/// HLS 点播媒体分片计数（视频与独立音轨合计）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct HlsFragmentProgress {
+    pub written: u64,
+    pub total: u64,
+}
+
 /// 任务最新采样；活跃传输不是物理 socket、配置上限或分段数。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -48,6 +57,9 @@ pub struct TaskRuntimeDto {
     pub parallelism_limit: Option<u32>,
     pub total_bytes: i64,
     pub segments: Vec<TaskSegmentDto>,
+    /// 与字节区间分段无关；直播与旧主机不提供。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hls_fragments: Option<HlsFragmentProgress>,
     /// 本次采样时的加速来源累计（含在途连接）；`None` = 该协议 / 路径不做来源归因。
     #[serde(default)]
     pub source_bytes: Option<TaskSourceBytesDto>,

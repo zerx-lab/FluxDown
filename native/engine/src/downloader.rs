@@ -303,6 +303,8 @@ pub struct ProgressUpdate {
     pub task_id: String,
     /// Observed active reads and byte-range geometry; absent when not sampled.
     pub runtime: Option<crate::transfer_activity::TaskRuntime>,
+    /// Cache `runtime` for the next terminal frame without publishing a status.
+    pub cache_runtime_only: bool,
     pub downloaded_bytes: i64,
     /// Restored/truncated counter before body reads. Unlike an ordinary lower
     /// progress sample, this explicitly resets host traffic measurement.
@@ -5348,6 +5350,7 @@ fn single_runtime(task_id: &str, downloaded: i64, total: i64, active: bool) -> T
             Vec::new()
         },
         source_bytes: None,
+        hls_fragments: None,
     }
 }
 

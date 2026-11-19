@@ -23,6 +23,11 @@ const MANUAL_PATH_KEYS: Record<ComponentKind, string> = {
 
 const TITLE_KEYS: Record<ComponentKind, string> = { ffmpeg: 'componentsFfmpegTitle', ytdlp: 'componentsYtdlpTitle' }
 const DESC_KEYS: Record<ComponentKind, string> = { ffmpeg: 'componentsFfmpegDesc', ytdlp: 'componentsYtdlpDesc' }
+const RELEASE_URLS: Record<ComponentKind, string> = {
+  ffmpeg: 'https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases',
+  ytdlp: 'https://github.com/yt-dlp/yt-dlp/releases',
+}
+const MIRROR_KEY = 'component_mirror_base'
 const PATH_HINT_KEYS: Record<ComponentKind, string> = {
   ffmpeg: 'componentsManualPathHintFfmpeg',
   ytdlp: 'componentsManualPathHintYtdlp',
@@ -284,6 +289,14 @@ function ComponentCard({ kind, stale }: { kind: ComponentKind; stale: boolean })
           <div className="text-sm font-medium text-foreground">{t('componentsManualPathLabel')}</div>
           <div className="text-xs text-muted-foreground">{t('componentsManualPathDesc', { name: title })}</div>
         </div>
+        <a
+          className="self-start text-sm text-primary underline"
+          href={RELEASE_URLS[kind]}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {t('componentsOfficialReleases')}
+        </a>
         <InputWithAction
           input={
             <Input
@@ -393,9 +406,66 @@ function ComponentCard({ kind, stale }: { kind: ComponentKind; stale: boolean })
   )
 }
 
+function ComponentMirrorCard({ stale }: { stale: boolean }) {
+  const t = useT()
+  const configured = useConfigValue(MIRROR_KEY) ?? ''
+  const [draft, setDraft] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const value = draft ?? configured
+  const busy = stale || saving
+
+  const save = async () => {
+    if (busy || value.trim() === configured) return
+    setSaving(true)
+    try {
+      await patchConfigValue(MIRROR_KEY, value.trim())
+      setDraft(null)
+    } catch (error) {
+      toast.error(extensionErrorText(t, error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card className="flex w-full flex-col gap-2 p-4">
+      <label className="text-sm font-medium text-foreground" htmlFor="component-mirror">
+        {t('mobileComponentMirrorBase')}
+      </label>
+      <p id="component-mirror-help" className="text-xs text-muted-foreground">
+        {t('mobileComponentMirrorBaseDesc')}
+      </p>
+      <InputWithAction
+        input={
+          <Input
+            id="component-mirror"
+            aria-describedby="component-mirror-help"
+            value={value}
+            disabled={busy}
+            placeholder={t('mobileComponentMirrorBasePlaceholder')}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void save()
+            }}
+          />
+        }
+        action={
+          <Button variant="outline" loading={saving} disabled={busy} onClick={() => void save()}>
+            {t('componentsManualPathSave')}
+          </Button>
+        }
+      />
+    </Card>
+  )
+}
+
 export function ComponentsTab({ stale }: { stale: boolean }) {
   return (
     <div className="flex w-full flex-col gap-4">
+      <ComponentMirrorCard stale={stale} />
       {COMPONENT_KINDS.map((kind) => (
         <ComponentCard key={kind} kind={kind} stale={stale} />
       ))}
