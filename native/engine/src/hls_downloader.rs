@@ -184,6 +184,36 @@ async fn save_checkpoint(
     Ok(())
 }
 
+// Preserve the original transfer error unless a pause could not flush the file.
+// The caller advances its published prefix only if this final save succeeds.
+async fn finish_checkpoint(
+    file: &mut File,
+    db: &crate::db::Db,
+    key: &str,
+    checkpoint: Option<&str>,
+    fatal: &mut Option<DownloadError>,
+) -> bool {
+    if let Err(error) = file.flush().await {
+        match fatal {
+            None => *fatal = Some(error.into()),
+            Some(DownloadError::Cancelled) => *fatal = Some(write_failure(error)),
+            Some(_) => crate::logger::report_warning("hls-download", "flush final prefix", &error),
+        }
+        return false;
+    }
+    if let Some(value) = checkpoint
+        && let Err(error) = db.set_config(key, value).await
+    {
+        if fatal.is_none() {
+            *fatal = Some(error.into());
+        } else {
+            crate::logger::report_warning("hls-download", "persist final checkpoint", &error);
+        }
+        return false;
+    }
+    true
+}
+
 /// 小请求(playlist / 密钥 / MPD)的整体超时:响应体只有几 KB~几 MB,30s 足够;
 /// 段 body 不能用整体超时(单段可达 256MB),见 `SEGMENT_IDLE_TIMEOUT`。
 pub(crate) const SMALL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2220,35 +2250,38 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
 
     // 独立音轨与视频并行下载。音轨出现真实错误时取消整个任务(视频 writer 随之
     // 以取消退出,收尾处用音轨的错误替换);用户取消/暂停时两边都以取消结束。
-    let audio_handle: Option<tokio::task::JoinHandle<Result<i64, DownloadError>>> =
-        audio_track.zip(audio_progress).map(|(track, written)| {
-            let run = AudioRun {
-                track,
-                client: p.client.clone(),
-                spec: Arc::clone(&spec),
-                header_origin_url: p.url.clone(),
-                cancel: p.cancel_token.child_token(),
-                task_id: p.task_id.clone(),
-                db: p.db.clone(),
-                sink: p.sink.clone(),
-                key_cache: key_cache.clone(),
-                meter: meter.clone(),
-                written,
-                segment_limit: p.segment_count,
-                connection_cap: p.connection_cap,
-                is_resume: p.is_resume,
-            };
-            let parent = p.cancel_token.clone();
-            tokio::spawn(async move {
-                let result = run_audio_track(run).await;
-                if let Err(e) = &result
-                    && !matches!(e, DownloadError::Cancelled)
-                {
-                    parent.cancel();
-                }
-                result
-            })
-        });
+    let audio_handle = if let Some((track, written)) = audio_track.zip(audio_progress) {
+        let run = AudioRun {
+            track,
+            client: p.client.clone(),
+            spec: Arc::clone(&spec),
+            header_origin_url: p.url.clone(),
+            cancel: p.cancel_token.child_token(),
+            task_id: p.task_id.clone(),
+            db: p.db.clone(),
+            sink: p.sink.clone(),
+            key_cache: key_cache.clone(),
+            meter: meter.clone(),
+            written,
+            segment_limit: p.segment_count,
+            connection_cap: p.connection_cap,
+            is_resume: p.is_resume,
+        };
+        // Validate both resume prefixes before either writer can advance.
+        let (file, first_idx, bytes) = prepare_audio_track(&run).await?;
+        let parent = p.cancel_token.clone();
+        Some(tokio::spawn(async move {
+            let result = run_audio_track(run, file, first_idx, bytes).await;
+            if let Err(e) = &result
+                && !matches!(e, DownloadError::Cancelled)
+            {
+                parent.cancel();
+            }
+            result
+        }))
+    } else {
+        None
+    };
 
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let window = Arc::new(ReorderWindow::new(first_idx, concurrency));
@@ -2593,42 +2626,45 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         media_sequence,
         variant_tag.as_deref(),
     );
+    if finish_checkpoint(
+        &mut file,
+        &p.db,
+        &resume_seg_key,
+        (next_to_write > checkpointed).then_some(checkpoint.as_str()),
+        &mut fatal_error,
+    )
+    .await
+    {
+        checkpointed = next_to_write;
+    }
+    video_progress.mark_checkpoint(checkpointed);
     if let Some(err) = fatal_error {
-        // Persist whatever fully-written prefix we have so a later resume can
-        // continue from there (matches the sequential cancel path). 检查点只在
-        // flush 成功后补写:文件里必须已有检查点声明的全部字节。
-        match file.flush().await {
-            Err(error) => {
-                if matches!(err, DownloadError::Cancelled) {
-                    return Err(write_failure(error));
-                }
-                crate::logger::report_warning("hls-download", "flush_failed_download", &error);
-            }
-            Ok(()) => {
-                if next_to_write > checkpointed
-                    && let Err(error) = p.db.set_config(&resume_seg_key, &checkpoint).await
-                {
-                    crate::logger::report_warning(
-                        "hls-download",
-                        "persist_resume_checkpoint",
-                        &error,
-                    );
-                }
-            }
-        }
         let (written, total) = progress.snapshot();
         if let Err(error) = p.db.update_task_progress(&p.task_id, written).await {
             crate::logger::report_warning("hls-download", "persist_failed_progress", &error);
         }
         persist_display_total(&p.db, &p.task_id, total).await;
+        if let Some(fragments) = progress.checkpointed_fragments()
+            && p.progress_tx
+                .send(ProgressUpdate {
+                    task_id: p.task_id.clone(),
+                    runtime: Some(hls_runtime(
+                        &p.task_id,
+                        &meter.tracker,
+                        concurrency as u32,
+                        Some(fragments),
+                    )),
+                    cache_runtime_only: true,
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+        {
+            tracing::debug!("download progress receiver closed");
+        }
         return Err(err);
     }
 
-    file.flush().await?;
-    // 收尾(改名 / remux)失败时以完整检查点续传,不必重下尾部分段。
-    if next_to_write > checkpointed {
-        p.db.set_config(&resume_seg_key, &checkpoint).await?;
-    }
     drop(file);
 
     // 全部分段已落盘:总量从估值收敛为实际字节(进度 = 100%),先落库再上报。manager
@@ -3525,30 +3561,10 @@ struct AudioRun {
     is_resume: bool,
 }
 
-/// 下载并落盘一条独立音轨,返回音轨总字节数。
-///
-/// 与视频共用段下载 / 解密 / 重试 / 限速 / 乱序窗口路径;单一有序 writer 保证落盘顺序,
-/// 检查点按已完整落盘的连续前缀推进,因此暂停 / 重启后可从同一字节边界续传。
-async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
-    let AudioRun {
-        track,
-        client,
-        spec,
-        header_origin_url,
-        cancel,
-        task_id,
-        db,
-        sink,
-        key_cache,
-        meter,
-        written,
-        segment_limit,
-        connection_cap,
-        is_resume,
-    } = run;
-    let segment_count = track.segments.len();
-
-    let saved = if is_resume {
+async fn prepare_audio_track(run: &AudioRun) -> Result<(File, usize, i64), DownloadError> {
+    let track = &run.track;
+    let db = &run.db;
+    let saved = if run.is_resume {
         db.get_config(&track.resume_key).await?
     } else {
         db.delete_config(&track.resume_key).await?;
@@ -3577,11 +3593,11 @@ async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
         .await
         .map(|m| m.len() as i64)
         .unwrap_or(0);
-    let (mut file, first_idx, mut written_bytes) = if resume_is_usable(
+    let (file, first_idx, written_bytes) = if resume_is_usable(
         saved_idx,
         saved_bytes,
         file_size,
-        segment_count,
+        track.segments.len(),
         media_seq_changed,
         !same_rendition || track.filter_changed,
     ) {
@@ -3595,7 +3611,7 @@ async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
         }
         log_info!(
             "[hls-download] task {} resuming audio track from segment {} ({} bytes)",
-            task_id,
+            run.task_id,
             saved_idx,
             safe_size
         );
@@ -3608,7 +3624,6 @@ async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
     } else {
         (File::create(&track.temp_path).await?, 0usize, 0i64)
     };
-    written.resume(written_bytes, first_idx);
     if first_idx == 0 {
         db.set_config(
             &track.resume_key,
@@ -3616,6 +3631,37 @@ async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
         )
         .await?;
     }
+    run.written.resume(written_bytes, first_idx);
+    Ok((file, first_idx, written_bytes))
+}
+
+/// 下载并落盘一条独立音轨,返回音轨总字节数。
+///
+/// 与视频共用段下载 / 解密 / 重试 / 限速 / 乱序窗口路径;单一有序 writer 保证落盘顺序,
+/// 检查点按已完整落盘的连续前缀推进,因此暂停 / 重启后可从同一字节边界续传。
+async fn run_audio_track(
+    run: AudioRun,
+    mut file: File,
+    first_idx: usize,
+    mut written_bytes: i64,
+) -> Result<i64, DownloadError> {
+    let AudioRun {
+        track,
+        client,
+        spec,
+        header_origin_url,
+        cancel,
+        task_id,
+        db,
+        sink,
+        key_cache,
+        meter,
+        written,
+        segment_limit,
+        connection_cap,
+        ..
+    } = run;
+    let segment_count = track.segments.len();
 
     let remaining = segment_count.saturating_sub(first_idx);
     if remaining == 0 {
@@ -3806,6 +3852,7 @@ async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
                     break 'writer;
                 }
                 checkpointed = next_to_write;
+                written.mark_checkpoint(checkpointed);
                 last_checkpoint = std::time::Instant::now();
             }
         }
@@ -3844,37 +3891,20 @@ async fn run_audio_track(run: AudioRun) -> Result<i64, DownloadError> {
         track.media_sequence,
         Some(&track.tag),
     );
+    if finish_checkpoint(
+        &mut file,
+        &db,
+        &track.resume_key,
+        (next_to_write > checkpointed).then_some(checkpoint.as_str()),
+        &mut fatal,
+    )
+    .await
+    {
+        written.mark_checkpoint(next_to_write);
+    }
     match fatal {
-        Some(e) => {
-            // 与视频相同:flush 成功才补写最新前缀的检查点。
-            match file.flush().await {
-                Err(error) => {
-                    if matches!(e, DownloadError::Cancelled) {
-                        return Err(write_failure(error));
-                    }
-                    crate::logger::report_warning("hls-download", "flush_failed_audio", &error);
-                }
-                Ok(()) => {
-                    if next_to_write > checkpointed
-                        && let Err(error) = db.set_config(&track.resume_key, &checkpoint).await
-                    {
-                        crate::logger::report_warning(
-                            "hls-download",
-                            "persist_audio_checkpoint",
-                            &error,
-                        );
-                    }
-                }
-            }
-            Err(e)
-        }
-        None => {
-            file.flush().await?;
-            if next_to_write > checkpointed {
-                db.set_config(&track.resume_key, &checkpoint).await?;
-            }
-            Ok(written_bytes)
-        }
+        Some(error) => Err(error),
+        None => Ok(written_bytes),
     }
 }
 
@@ -4785,6 +4815,13 @@ fn spawn_progress_sampler(
         let mut ticker = tokio::time::interval(Duration::from_millis(200));
         loop {
             ticker.tick().await;
+            // Don't replace the previous run's combined count with a video-only
+            // prefix while the audio writer is still validating its checkpoint.
+            if let ProgressSource::Vod(progress) = &source
+                && !progress.fragments_ready()
+            {
+                continue;
+            }
             let (written, total) = source.sample();
             if tx
                 .send(hls_progress(
@@ -6713,7 +6750,8 @@ v360.m3u8\n\
             connection_cap: 0,
             is_resume,
         };
-        let total = super::run_audio_track(run).await?;
+        let (file, first_idx, bytes) = super::prepare_audio_track(&run).await?;
+        let total = super::run_audio_track(run, file, first_idx, bytes).await?;
         Ok((total, written.written()))
     }
 
@@ -7697,6 +7735,52 @@ v360.m3u8\n\
             ffmpeg_path: None,
             cdn: crate::cdn::CdnTaskInput::default(),
         })
+    }
+
+    #[tokio::test]
+    async fn failed_vod_queues_the_saved_prefix_before_its_failure_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n\
+                        #EXTINF:4,\ns0.ts\n#EXTINF:4,\nmissing.ts\n#EXT-X-ENDLIST\n";
+        let (address, _) = static_server(vec![
+            ("/v.m3u8", playlist.as_bytes().to_vec()),
+            ("/s0.ts", b"written".to_vec()),
+        ])
+        .await?;
+        let dir = scratch_dir("vod_failure_prefix");
+        let db = crate::db::Db::connect("sqlite::memory:").await?;
+        let url = format!("http://{address}/v.m3u8");
+        let task_id = "t-vod-failure";
+        let dir_text = dir.to_string_lossy();
+        db.insert_task(task_id, &url, "v.ts", &dir_text, 0, 0, "", "", "", 0)
+            .await?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let mut params = vod_params(task_id, &url, &dir, &db, crate::intercept::noop())?;
+        params.segment_count = 1;
+        params.progress_tx = tx;
+        let download = super::run_hls_download(params);
+        let drain = async {
+            let mut terminal = Vec::new();
+            while let Some(update) = rx.recv().await {
+                if update.cache_runtime_only || update.status == 4 {
+                    terminal.push((update.status, update.runtime.and_then(|r| r.hls_fragments)));
+                }
+            }
+            terminal
+        };
+        let (fallback, terminal) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            async { tokio::join!(download, drain) },
+        )
+        .await?;
+        assert!(fallback.is_none());
+        assert_eq!(terminal, [(0, Some((1, 2))), (4, None)]);
+        assert_eq!(
+            db.get_config("hls_resume_t-vod-failure").await?.as_deref(),
+            Some("1:7:0")
+        );
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 
     #[tokio::test]
