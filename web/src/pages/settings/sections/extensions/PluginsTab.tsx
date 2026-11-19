@@ -314,10 +314,13 @@ export function PluginsTab({ stale, active, onGoToComponents }: { stale: boolean
       {conflicts.length > 0 ? (
         <Card className="flex flex-col gap-2 p-3">
           <div><Badge tone="warning">{t('pluginResolverUrlConflictsTitle')}</Badge></div>
-          <p className="text-sm" role="status">{t('pluginResolverUrlConflictsHint')}</p>
+          {conflicts.some(({ identity, otherIdentity }) => identity !== otherIdentity) ? (
+            <p className="text-sm" role="status">{t('pluginResolverUrlConflictsHint')}</p>
+          ) : null}
           <ul className="flex flex-col gap-2 text-sm [overflow-wrap:anywhere]">
             {conflicts.map(({ identity, pattern, otherIdentity, otherPattern }) => (
               <li key={JSON.stringify([identity, pattern, otherIdentity, otherPattern])}>
+                {identity === otherIdentity ? <div>{t('pluginResolverUrlDuplicateHint')}</div> : null}
                 <div>{identity}: <code>{pattern}</code></div>
                 <div>{otherIdentity}: <code>{otherPattern}</code></div>
               </li>

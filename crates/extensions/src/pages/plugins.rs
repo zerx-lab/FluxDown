@@ -268,10 +268,33 @@ impl ExtensionsView {
                                     frame.extended.colors.warning,
                                     frame,
                                 ))
-                                .child(translator.text("pluginResolverUrlConflictsHint").to_owned())
+                                .when(
+                                    plugins.iter().any(|plugin| {
+                                        plugin.resolver_url_conflicts.iter().any(|conflict| {
+                                            conflict.other_identity != plugin.identity
+                                        })
+                                    }),
+                                    |body| {
+                                        body.child(
+                                            translator
+                                                .text("pluginResolverUrlConflictsHint")
+                                                .to_owned(),
+                                        )
+                                    },
+                                )
                                 .children(plugins.iter().flat_map(|plugin| {
                                     plugin.resolver_url_conflicts.iter().map(move |conflict| {
                                         v_flex()
+                                            .when(
+                                                plugin.identity == conflict.other_identity,
+                                                |pair| {
+                                                    pair.child(
+                                                        translator
+                                                            .text("pluginResolverUrlDuplicateHint")
+                                                            .to_owned(),
+                                                    )
+                                                },
+                                            )
                                             .child(format!(
                                                 "{}: {}",
                                                 plugin.identity, conflict.pattern

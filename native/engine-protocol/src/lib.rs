@@ -612,7 +612,7 @@ pub fn setting_field_to_dto(
     }
 }
 
-/// 将同一份插件快照转换为列表，并标出同站点 URL 模式重叠。
+/// 将同一份插件快照转换为列表，并标出按完整 URL 匹配时重叠或重复的模式。
 #[cfg(feature = "plugins")]
 #[must_use]
 pub fn plugin_list_to_dtos(

@@ -118,22 +118,7 @@ private struct ExtensionsContent: View {
 
     @ViewBuilder
     private func pluginSections(_ list: [PluginDto], readOnly: Bool) -> some View {
-        if list.contains(where: { !$0.resolverUrlConflicts.isEmpty }) {
-            Section {
-                Text(L("pluginResolverUrlConflictsHint"))
-                    .foregroundStyle(.secondary)
-                ForEach(list) { plugin in
-                    ForEach(plugin.resolverUrlConflicts, id: \.self) { conflict in
-                        VStack(alignment: .leading) {
-                            Text(verbatim: "\(plugin.identity): \(conflict.pattern)")
-                            Text(verbatim: "\(conflict.otherIdentity): \(conflict.otherPattern)")
-                        }
-                    }
-                }
-            } header: {
-                Label(L("pluginResolverUrlConflictsTitle"), systemImage: "exclamationmark.triangle")
-            }
-        }
+        ResolverUrlConflictSection(plugins: list)
         Section {
             if list.isEmpty {
                 Label(L("pluginsEmpty"), systemImage: "puzzlepiece.extension")
@@ -499,6 +484,50 @@ struct PermissionRow: View {
                 .foregroundStyle(keys == nil ? Color.fdStatusWarningText : .secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct ResolverUrlConflictSection: View {
+    let plugins: [PluginDto]
+    var identities: Set<String>? = nil
+
+    private func matches(_ identity: String, _ otherIdentity: String) -> Bool {
+        guard let identities else { return true }
+        return identities.contains(identity) || identities.contains(otherIdentity)
+    }
+
+    var body: some View {
+        let owners = plugins.filter { plugin in
+            plugin.resolverUrlConflicts.contains { matches(plugin.identity, $0.otherIdentity) }
+        }
+        if !owners.isEmpty {
+            Section {
+                if owners.contains(where: { plugin in
+                    plugin.resolverUrlConflicts.contains {
+                        plugin.identity != $0.otherIdentity && matches(plugin.identity, $0.otherIdentity)
+                    }
+                }) {
+                    Text(L("pluginResolverUrlConflictsHint"))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(owners) { plugin in
+                    ForEach(plugin.resolverUrlConflicts.filter {
+                        matches(plugin.identity, $0.otherIdentity)
+                    }, id: \.self) { conflict in
+                        VStack(alignment: .leading) {
+                            if plugin.identity == conflict.otherIdentity {
+                                Text(L("pluginResolverUrlDuplicateHint"))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(verbatim: "\(plugin.identity): \(conflict.pattern)")
+                            Text(verbatim: "\(conflict.otherIdentity): \(conflict.otherPattern)")
+                        }
+                    }
+                }
+            } header: {
+                Label(L("pluginResolverUrlConflictsTitle"), systemImage: "exclamationmark.triangle")
+            }
+        }
     }
 }
 #endif

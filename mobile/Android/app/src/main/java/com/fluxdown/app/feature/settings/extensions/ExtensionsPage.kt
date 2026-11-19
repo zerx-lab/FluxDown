@@ -46,6 +46,7 @@ import com.fluxdown.core.model.HostRef
 import com.fluxdown.core.protocol.HostCapability
 import com.fluxdown.core.protocol.MarketEntry
 import com.fluxdown.core.protocol.PluginDto
+import com.fluxdown.core.protocol.PluginResolverUrlConflict
 import com.fluxdown.core.protocol.has
 import com.fluxdown.fluxui.controls.ButtonVariant
 import com.fluxdown.fluxui.controls.ButtonSize
@@ -81,6 +82,43 @@ import com.fluxdown.fluxui.theme.fluxPressable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
+@Composable
+internal fun rememberResolverUrlConflicts(plugins: List<PluginDto>, identities: Set<String>? = null) =
+    remember(plugins, identities) {
+        plugins.flatMap { plugin ->
+            plugin.resolverUrlConflicts.mapNotNull { conflict ->
+                if (identities == null || plugin.identity in identities || conflict.otherIdentity in identities) {
+                    plugin.identity to conflict
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
+@Composable
+internal fun ResolverUrlConflictSection(conflicts: List<Pair<String, PluginResolverUrlConflict>>) {
+    if (conflicts.isEmpty()) return
+    GlassSection(title = str(R.string.pluginResolverUrlConflictsTitle)) {
+        if (conflicts.any { (identity, conflict) -> identity != conflict.otherIdentity }) {
+            row {
+                FluxBanner(str(R.string.pluginResolverUrlConflictsHint), kind = FluxBannerKind.Warn)
+            }
+        }
+        for ((identity, conflict) in conflicts) {
+            row {
+                Column {
+                    if (identity == conflict.otherIdentity) {
+                        FluxText(str(R.string.pluginResolverUrlDuplicateHint))
+                    }
+                    FluxText("$identity: ${conflict.pattern}")
+                    FluxText("${conflict.otherIdentity}: ${conflict.otherPattern}")
+                }
+            }
+        }
+    }
+}
 
 /**
  * S11 · 扩展：插件（已安装 / 市场 / 文件安装）与组件，**仅远端 `--server` 主机**。
@@ -119,6 +157,7 @@ private fun ExtensionsContent() {
     val hasPlugins by remember { derivedStateOf { hostState.value.has(HostCapability.daemonPlugins) } }
     val hasComponents by remember { derivedStateOf { hostState.value.has(HostCapability.daemonComponents) } }
     val plugins by rememberPlugins()
+    val conflicts = rememberResolverUrlConflicts(plugins)
     var picker by remember { mutableStateOf<PickerSpec?>(null) }
     val ctx = rememberSettingsCtx { picker = it }
     val gate = rememberFlowInGate()
@@ -177,24 +216,8 @@ private fun ExtensionsContent() {
                     )
                 }
             }
-            if (tab == ExtensionsModel.Tab.Plugins && hasPlugins && plugins.any { it.resolverUrlConflicts.isNotEmpty() }) {
-                flowItem(index++, gate, "resolverUrlConflicts") {
-                    GlassSection(title = str(R.string.pluginResolverUrlConflictsTitle)) {
-                        row {
-                            FluxBanner(str(R.string.pluginResolverUrlConflictsHint), kind = FluxBannerKind.Warn)
-                        }
-                        for (plugin in plugins) {
-                            for (conflict in plugin.resolverUrlConflicts) {
-                                row {
-                                    Column {
-                                        FluxText("${plugin.identity}: ${conflict.pattern}")
-                                        FluxText("${conflict.otherIdentity}: ${conflict.otherPattern}")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if (tab == ExtensionsModel.Tab.Plugins && hasPlugins && conflicts.isNotEmpty()) {
+                flowItem(index++, gate, "resolverUrlConflicts") { ResolverUrlConflictSection(conflicts) }
             }
             if (tab == ExtensionsModel.Tab.Plugins && hasPlugins) {
                 flowItem(index++, gate, "plugins") {

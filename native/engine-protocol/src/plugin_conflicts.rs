@@ -161,29 +161,70 @@ mod tests {
 
     #[test]
     fn overlap_follows_whole_url_glob_semantics() {
-        let witness = "https://x.test/a/download";
-        for pattern in ["https://*/download", "https://x.test/*/download"] {
-            assert!(url_glob_match(pattern, witness));
-        }
-        for (left, right, expected) in [
-            ("https://*/download", "https://x.test/*/download", true),
-            ("https://*/download", "https://x.test/*/upload", false),
-            ("https://*/download", "HTTPS://x.test/a/download", true),
-            ("https://*/download", "https://x.test/a/upload", false),
-            ("*://x.test/*", "https://X.test/watch*", true),
-            ("https://x.test*", "https://x.test/path", true),
-            ("https://*.test/a*end", "*://x.test/*b*end", true),
-            ("https://x.test/a*b", "https://x.test/a*bc", false),
-            ("https://x.test/watch*", "https://x.test/shorts/*", false),
-            ("https://x.test/*", "https://y.test/*", false),
-            ("https://x.test/*", "http://x.test/*", false),
-            ("https://x.test/*", "https://x.test:8443/*", false),
-            ("*", "https://x.test/path", true),
-            ("MAGNET:**", "magnet:*", true),
+        for (left, right, witness) in [
+            (
+                "https://*/download",
+                "https://x.test/*/download",
+                "https://x.test/a/download",
+            ),
+            (
+                "https://*/download",
+                "HTTPS://x.test/a/download",
+                "https://x.test/a/download",
+            ),
+            (
+                "*://x.test/*",
+                "https://X.test/watch*",
+                "https://x.test/watch/42",
+            ),
+            (
+                "https://x.test*",
+                "https://x.test/path",
+                "https://x.test/path",
+            ),
+            (
+                "https://*.test/a*end",
+                "*://x.test/*b*end",
+                "https://x.test/abend",
+            ),
+            ("*", "https://x.test/path", "https://x.test/path"),
+            ("MAGNET:**", "magnet:*", "magnet:?xt=urn:btih:aa"),
+            (
+                "magnet:*",
+                "magnet:?xt=urn:btih:*",
+                "magnet:?xt=urn:btih:aa",
+            ),
+            (
+                "https://example.com*foo",
+                "https://example.com/foo",
+                "https://example.com/foo",
+            ),
         ] {
-            assert_eq!(
+            assert!(url_glob_match(left, witness), "{left} vs {witness}");
+            assert!(url_glob_match(right, witness), "{right} vs {witness}");
+            assert!(
                 overlaps(&normalize(left), &normalize(right)),
-                expected,
+                "{left} vs {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_anchors_preclude_a_shared_url() {
+        // No string can end with both literal suffixes, or start with both
+        // literal prefixes. A single non-matching URL would not prove that.
+        for (left, right) in [
+            ("https://*/download", "https://x.test/*/upload"),
+            ("https://*/download", "https://x.test/a/upload"),
+            ("https://x.test/a*b", "https://x.test/a*bc"),
+            ("https://x.test/watch*", "https://x.test/shorts/*"),
+            ("https://x.test/*", "https://y.test/*"),
+            ("https://x.test/*", "http://x.test/*"),
+            ("https://x.test/*", "https://x.test:8443/*"),
+            ("magnet:?xt=urn:btih:*", "magnet:?xt=urn:btmh:*"),
+        ] {
+            assert!(
+                !overlaps(&normalize(left), &normalize(right)),
                 "{left} vs {right}"
             );
         }
