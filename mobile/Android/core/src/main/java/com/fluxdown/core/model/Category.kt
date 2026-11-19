@@ -103,7 +103,11 @@ class CategoryIndex(categories: List<Category>) {
     /** 任务命中的首个具体分类：网址规则优先，其后扩展名 / 正则；都不命中 → other（无 other 时 null）。 */
     fun categoryOf(fileName: String, url: String = ""): Category? =
         urlRules.firstOrNull { it.test(fileName, url) }?.category
-            ?: nameRules.firstOrNull { it.test(fileName, url) }?.category
+            ?: categoryOfFileName(fileName)
+
+    /** 仅按文件名匹配扩展名 / 正则，用于没有独立来源地址的文件（例如种子成员）。 */
+    fun categoryOfFileName(fileName: String): Category? =
+        nameRules.firstOrNull { it.test(fileName, "") }?.category
             ?: other
 
     /** 任务是否属于分类（all 恒真；other = 未命中任何具体分类）。 */

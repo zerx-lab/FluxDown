@@ -32,6 +32,17 @@ class CategoryIndexTest {
         assertEquals("rx", index.categoryOf("ubuntu.iso", "https://other.test/ubuntu.iso")?.id)
     }
 
+    @Test fun fileNameOnlyClassificationUsesRegexBeforeExtensionAndIgnoresUrlRules() {
+        val episodes = custom("episodes", 1, regex = """^S\d+E\d+""")
+        val video = custom("video", 2, extensions = listOf(".mkv"))
+        val anyUrl = custom("site", 0, url = "*")
+        val index = CategoryIndex(listOf(video, episodes, anyUrl, other))
+
+        assertEquals(episodes, index.categoryOfFileName("s01e02.MKV"))
+        assertEquals(video, index.categoryOfFileName("trailer.MKV"))
+        assertEquals(other, index.categoryOfFileName("notes.txt"))
+    }
+
     @Test fun wildcardIsAnchoredCaseInsensitiveWithQuestionMark() {
         val site = custom("site", 1, url = "HTTPS://Example.com/file?.zip")
         val index = CategoryIndex(listOf(site, other))

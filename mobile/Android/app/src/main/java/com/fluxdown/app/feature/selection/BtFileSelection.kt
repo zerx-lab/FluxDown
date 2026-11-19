@@ -44,6 +44,7 @@ import com.fluxdown.app.ui.tileIcon
 import com.fluxdown.core.format.Format
 import com.fluxdown.core.model.BtFile
 import com.fluxdown.core.model.Category
+import com.fluxdown.core.model.CategoryIndex
 import com.fluxdown.core.model.SelectionKind
 import com.fluxdown.core.model.SelectionOutcome
 import com.fluxdown.core.model.btNameOutcome
@@ -125,17 +126,6 @@ private val btSizeChoices = listOf(0L to "", 10L shl 20 to "10 MB", 100L shl 20 
 
 private val btOtherCategory = Category.BUILTIN.last { it.isOther }
 
-private fun btCategory(path: String, rules: List<Category>, other: Category): Category {
-    val name = path.substringAfterLast('/')
-    val dot = name.lastIndexOf('.')
-    if (dot <= 0 || dot == name.lastIndex) return other
-    val extension = name.substring(dot + 1)
-    return rules.firstOrNull { rule ->
-        !rule.isAll && !rule.isOther && rule.regexPattern.isEmpty() && rule.urlPattern.isEmpty() &&
-            rule.extensions.any { it.trimStart('.').equals(extension, ignoreCase = true) }
-    } ?: other
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BtFilters(
@@ -192,13 +182,17 @@ internal fun BtSelectionSheet(ui: SelectionUi, kind: SelectionKind.Bt) {
     var filterCategories by remember(request.requestId) { mutableStateOf(emptySet<String>()) }
     val host = hostState()
     val categories by remember(host) { derivedStateOf { host.value.categories } }
-    val rules = remember(categories) {
-        val ordered = categories.ifEmpty { Category.BUILTIN }.sortedBy { it.position }
+    val categoryIndex = remember(categories) { CategoryIndex(categories.ifEmpty { Category.BUILTIN }) }
+    val rules = remember(categoryIndex) {
+        val ordered = categoryIndex.ordered
         if (ordered.any { it.isOther }) ordered else ordered + btOtherCategory
     }
     val other = rules.first { it.isOther }
-    val categoryByIndex = remember(kind, rules) {
-        kind.files.associate { it.index to btCategory(it.path, rules, other) }
+    val categoryByIndex = remember(kind, categoryIndex, other) {
+        kind.files.associate { file ->
+            val name = file.path.trimEnd('/').substringAfterLast('/').ifEmpty { file.path }
+            file.index to (categoryIndex.categoryOfFileName(name) ?: other)
+        }
     }
     val counts = remember(categoryByIndex) { categoryByIndex.values.groupingBy { it.id }.eachCount() }
     val needle = query.trim().lowercase()
