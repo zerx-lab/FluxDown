@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { batchEntryName, parseEntries } from '../dialogs/model'
+import { batchExportRow, parseEntries } from '../dialogs/model'
 import { canCopyUrls, canShareTorrent, exportTaskInfo, taskInfoText, torrentFileName } from './actions'
 import type { DownloadTaskView } from './task'
 
@@ -74,15 +74,13 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       '  out=报告.zip',
       'https://example.com/',
       'MAGNET:?xt=urn:btih:a&dn=My+Show%21',
-      'ed2k://|file|f%20x.iso|100|h|/',
+      'ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/',
       'magnet:?xt=urn:btih:b',
       'ed2k://|file||100|h|/',
-      'magnet:?xt=urn:btih:c&dn=ignored',
+      'ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/',
       '  out=keep%20name',
     ].join('\n'), false)
-    exportTaskInfo(entries.map((entry) => ({
-      name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: 0,
-    })))
+    exportTaskInfo(entries.map(batchExportRow))
     expect(downloaded).toEqual(['fluxdown-tasks.txt', 'fluxdown-tasks.txt'])
     expect(blobs[0]?.type).toBe('text/plain;charset=utf-8')
     const readRows = async (blob: Blob | undefined) => (await blob?.text())?.split('\n').slice(1).map((line) =>
@@ -99,10 +97,10 @@ test('downloaded TXT preserves task fields and the complete parsed batch', async
       ['报告.zip', 'ftp://example.com/f', ''],
       ['', 'https://example.com/', ''],
       ['My+Show!', 'MAGNET:?xt=urn:btih:a&dn=My+Show%21', ''],
-      ['f x.iso', 'ed2k://|file|f%20x.iso|100|h|/', ''],
+      ['f x.iso', 'ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/', '5044211712'],
       ['', 'magnet:?xt=urn:btih:b', ''],
       ['', 'ed2k://|file||100|h|/', ''],
-      ['keep%20name', 'magnet:?xt=urn:btih:c&dn=ignored', ''],
+      ['keep%20name', 'ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/', '100'],
     ])
   } finally {
     URL.createObjectURL = originalCreateUrl

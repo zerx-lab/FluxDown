@@ -567,7 +567,7 @@ private fun NewDownloadContent(
             if (form.entries.size > 1) {
                 FluxButton(
                     str(R.string.exportTaskInfoTxt),
-                    { exportTaskInfo(form.entries.map { TaskInfoRow(it.batchExportName(), it.url) }) },
+                    { exportTaskInfo(form.entries.map { TaskInfoRow(it.batchExportName(), it.url, it.batchExportSize()) }) },
                     size = ButtonSize.Sm,
                     icon = FluxIcons.FileText,
                     enabled = !busy,

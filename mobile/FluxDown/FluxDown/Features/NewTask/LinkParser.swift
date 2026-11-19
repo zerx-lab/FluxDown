@@ -133,6 +133,20 @@ private nonisolated func decode(_ s: String) -> String {
     s.replacingOccurrences(of: "+", with: "%2B").removingPercentEncoding ?? s
 }
 
+nonisolated func batchExportSize(_ url: String) -> Int64 {
+    guard url.range(of: "ed2k://|file|", options: [.anchored, .caseInsensitive]) != nil else { return 0 }
+    let fields = url.split(separator: "|", maxSplits: 5, omittingEmptySubsequences: false)
+    guard fields.count >= 5, !fields[2].isEmpty else { return 0 }
+    let hash = fields[4].utf8
+    let size = fields[3]
+    let digits = size.first == "+" ? size.dropFirst() : size
+    guard hash.count == 32,
+          hash.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }),
+          digits.utf8.allSatisfy({ (48...57).contains($0) }),
+          let bytes = Int64(digits), bytes <= 0x40_0000_0000 else { return 0 }
+    return bytes
+}
+
 nonisolated func batchExportName(_ entry: UrlEntry) -> String {
     if !entry.fileName.isEmpty { return entry.fileName }
     if entry.url.range(of: "magnet:?", options: [.anchored, .caseInsensitive]) != nil {

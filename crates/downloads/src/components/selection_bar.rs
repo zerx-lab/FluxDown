@@ -60,9 +60,36 @@ pub(crate) fn batch_link_info_text<'a>(
     let mut text = TASK_INFO_HEADER.to_owned();
     for entry in entries {
         let name = batch_entry_name(entry);
-        push_task_info_row(&mut text, &name, &entry.url, 0, false);
+        let size = batch_entry_size(&entry.url);
+        push_task_info_row(&mut text, &name, &entry.url, size, false);
     }
     text
+}
+
+fn batch_entry_size(url: &str) -> u64 {
+    // Match the wire fields and size ceiling of the engine's eD2k link parser.
+    let mut fields = url.split('|');
+    let (Some(scheme), Some(kind), Some(name), Some(size), Some(hash)) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return 0;
+    };
+    if !scheme.eq_ignore_ascii_case("ed2k://")
+        || !kind.eq_ignore_ascii_case("file")
+        || name.is_empty()
+        || hash.len() != 32
+        || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return 0;
+    }
+    size.parse::<u64>()
+        .ok()
+        .filter(|&bytes| bytes <= 0x40_0000_0000)
+        .unwrap_or_default()
 }
 
 fn batch_entry_name(entry: &crate::model::new_download::UrlEntry) -> std::borrow::Cow<'_, str> {
@@ -577,12 +604,12 @@ mod tests {
     }
 
     #[test]
-    fn parsed_batch_exports_known_names_without_guessing_sizes() {
+    fn parsed_batch_exports_known_metadata_without_guessing_sizes() {
         let magnet = "MAGNET:?xt=urn:btih:a&dn=My+Show%21";
-        let ed2k = "ed2k://|file|f%20x.iso|100|h|/";
+        let ed2k = "ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/";
         let unnamed_magnet = "magnet:?xt=urn:btih:b";
         let unnamed_ed2k = "ed2k://|file||100|h|/";
-        let renamed = "magnet:?xt=urn:btih:c&dn=ignored";
+        let renamed = "ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/";
         let p2p = crate::model::new_download::parse_entries(
             &format!(
                 "{magnet}\n{ed2k}\n{unnamed_magnet}\n{unnamed_ed2k}\n{renamed}\n  out=keep%20name"
@@ -592,7 +619,7 @@ mod tests {
         assert_eq!(
             batch_link_info_text(&p2p),
             format!(
-                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t"
+                "Name\tURL\tSize (bytes)\nMy+Show!\t{magnet}\t\nf x.iso\t{ed2k}\t5044211712\n\t{unnamed_magnet}\t\n\t{unnamed_ed2k}\t\nkeep%20name\t{renamed}\t100"
             )
         );
 

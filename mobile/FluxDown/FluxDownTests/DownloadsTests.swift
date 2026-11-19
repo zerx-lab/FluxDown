@@ -13,27 +13,29 @@ import Testing
         "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296\nfile.bin\t\t")
 }
 
-@Test func batchTaskInfoDocumentExportsKnownNamesOnly() {
+@Test func batchTaskInfoDocumentExportsKnownNamesAndSizes() {
     let entries = parseEntries("""
         https://example.com/a%20b.zip?key=v
         https://example.com/
         MAGNET:?xt=urn:btih:a&dn=My+Show%21
-        ed2k://|file|f%20x.iso|100|h|/
+        ED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/
         magnet:?xt=urn:btih:b
         ed2k://|file||100|h|/
-        magnet:?xt=urn:btih:c&dn=ignored
+        ed2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/
           out=keep%20name
         """)
-    let document = TaskInfoDocument(entries.map { TaskInfoRow(name: batchExportName($0), url: $0.url) })
+    let document = TaskInfoDocument(entries.map {
+        TaskInfoRow(name: batchExportName($0), url: $0.url, size: batchExportSize($0.url))
+    })
     #expect(String(decoding: document.data, as: UTF8.self) == [
         "Name\tURL\tSize (bytes)",
         "a b.zip\thttps://example.com/a%20b.zip?key=v\t",
         "\thttps://example.com/\t",
         "My+Show!\tMAGNET:?xt=urn:btih:a&dn=My+Show%21\t",
-        "f x.iso\ted2k://|file|f%20x.iso|100|h|/\t",
+        "f x.iso\tED2K://|FILE|f%20x.iso|5044211712|1555B7DCA052B5958EE68DB58A42408D|/\t5044211712",
         "\tmagnet:?xt=urn:btih:b\t",
         "\ted2k://|file||100|h|/\t",
-        "keep%20name\tmagnet:?xt=urn:btih:c&dn=ignored\t",
+        "keep%20name\ted2k://|file|ignored|100|1555B7DCA052B5958EE68DB58A42408D|/\t100",
     ].joined(separator: "\n"))
 }
 

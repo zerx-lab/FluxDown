@@ -50,7 +50,14 @@ function urlFileSegment(url: string): string | null {
   return segment === '' ? null : segment
 }
 
-export function batchEntryName({ fileName, url }: UrlEntry): string {
+export function batchExportRow(entry: UrlEntry) {
+  const fields = /^ed2k:\/\/\|file\|[^|]+\|(\+?[0-9]+)\|[0-9a-f]{32}(?:\||$)/i.exec(entry.url)
+  const size = Number(fields?.[1] ?? 0)
+  // The engine's eD2k ceiling is below Number.MAX_SAFE_INTEGER.
+  return { name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: size <= 0x40_0000_0000 ? size : 0 }
+}
+
+function batchEntryName({ fileName, url }: UrlEntry): string {
   if (fileName !== '') return fileName
   if (/^magnet:\?/i.test(url)) {
     const raw = url.slice(8).split('#', 1)[0]?.split('&').find((part) => part.startsWith('dn='))?.slice(3)

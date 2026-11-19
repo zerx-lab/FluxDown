@@ -27,7 +27,7 @@ import { ManifestSelectDialog } from './ManifestSelectDialog'
 import type { ManifestBaseOptions } from './ManifestSelectDialog'
 import { DEFAULT_HASH_ALGORITHM, HASH_ALGORITHMS, MAX_THREADS, PROXY_CHOICES, THREAD_PRESETS } from './model'
 import type { DraftOptions, ProxyChoice, ThreadChoice, UrlEntry } from './model'
-import { appendEntries, batchEntryName, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments } from './model'
+import { appendEntries, batchExportRow, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments } from './model'
 import { applyHints, emptyHints, emptyTracking, hintsEqual, planFieldFill } from './aria2c'
 import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
@@ -762,9 +762,7 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
           ) : (
             <DialogFooter className="flex-wrap">
               {batch ? (
-                <Button variant="outline" disabled={busy} onClick={() => exportTaskInfo(entries.map((entry) => ({
-                  name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: 0,
-                })))}>
+                <Button variant="outline" disabled={busy} onClick={() => exportTaskInfo(entries.map(batchExportRow))}>
                   {t('exportTaskInfoTxt')}
                 </Button>
               ) : null}
