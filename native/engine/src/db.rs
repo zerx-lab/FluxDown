@@ -2420,13 +2420,14 @@ impl Db {
 
     // file_missing = 4 is an internal pre-start state, not a completed missing file.
     // Keep it through queueing, resolving and startup recovery until naming is settled.
+    // The restart probes like a fresh hint-less start, so Range starts verified as it does there.
     pub(crate) async fn reset_missing_task_for_restart(&self, id: &str) -> Result<bool, DbError> {
         let mut tx = self.pool.begin().await?;
         let updated = sqlx::query(
             "UPDATE tasks SET status = 0, file_missing = 4, downloaded_bytes = 0, total_bytes = 0,
                  src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
                  error_message = '', completed_at = '', file_hash = '', exists_decision = '',
-                 orig_etag = '', orig_last_modified = '', range_verified = 0
+                 orig_etag = '', orig_last_modified = '', range_verified = 1
              WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
         )
         .bind(id)
@@ -3945,17 +3946,21 @@ impl Db {
     /// 把 `save_dir` 下 `file_name` 登记为自己产物名的全部任务 id。
     ///
     /// 删除任务文件前用来确认该名字没有同时属于别的任务：两条任务的 `file_name`
-    /// 指向同一磁盘名时，删除其一不得带走对方的产物。
+    /// 指向同一磁盘名时，删除其一不得带走对方的产物。已清理（2）与待从零重下（4）的
+    /// 记录只保留历史名，不算认领，与 `load_deletion_facts` 同口径。
     pub async fn list_task_ids_by_file(
         &self,
         save_dir: &str,
         file_name: &str,
     ) -> Result<Vec<String>, DbError> {
-        let rows = sqlx::query("SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2")
-            .bind(save_dir)
-            .bind(file_name)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2
+             AND file_missing NOT IN (2, 4)",
+        )
+        .bind(save_dir)
+        .bind(file_name)
+        .fetch_all(&self.pool)
+        .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             out.push(row.try_get("id")?);

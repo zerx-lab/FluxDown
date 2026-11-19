@@ -24881,6 +24881,9 @@ mod tests {
                 .unwrap()
                 .expect("same task record");
             assert_eq!(task.status, 3, "{}", task.error_message);
+            // A from-zero restart probes like a fresh start: Range evidence must not be
+            // downgraded, or later resumes lose CDN aggregation and single-stream gap resume.
+            assert!(db.get_task_range_verified(id).await.unwrap());
             let expected_name = if pair { "done (2).mp4" } else { "done (1).mp4" };
             assert_eq!(task.file_name, expected_name);
             assert_eq!(
@@ -25009,6 +25012,37 @@ mod tests {
             assert_eq!(task.file_name, name);
             assert_eq!(task.file_clear_state, FileClearState::Cleared);
         }
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn deleting_new_owner_of_a_cleared_name_removes_its_file() {
+        let dir = unique_filetrack_test_dir("delete_reused_name");
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let save_dir = dir.to_string_lossy();
+        let name = "done.bin";
+        let path = dir.join(name);
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let mut manager = sched_manager(&db, 1);
+
+        std::fs::write(&path, b"first output").expect("seed first output");
+        insert_task_at_status(&db, "first", &save_dir, name, 3).await;
+        manager.clear_task_file("first").await.expect("clear first");
+
+        // A cleared record keeps only a historical name: the new owner's delete-with-files
+        // must remove its own output instead of treating the history row as a claim.
+        std::fs::write(&path, b"second output").expect("seed replacement output");
+        insert_task_at_status(&db, "second", &save_dir, name, 3).await;
+        manager
+            .delete_task("second", true)
+            .await
+            .expect("delete second with files");
+        assert!(!path.exists());
+        assert!(db.load_task_by_id("second").await.unwrap().is_none());
+        let first = db.load_task_by_id("first").await.unwrap().unwrap();
+        assert_eq!(first.file_clear_state, FileClearState::Cleared);
         std::fs::remove_dir_all(&dir).expect("remove test directory");
     }
 
