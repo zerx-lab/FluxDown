@@ -109,7 +109,11 @@ internal fun protocolOf(url: String): TaskProtocol = when {
 
 private fun decode(s: String): String {
     if ('%' !in s) return s
-    val bytes = s.encodeToByteArray()
+    val bytes = try {
+        s.encodeToByteArray(throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        return s // Do not rewrite unpaired UTF-16 surrogates before decoding escapes.
+    }
     var read = 0
     var written = 0
     while (read < bytes.size) {

@@ -94,4 +94,12 @@ class TaskInfoExportTest {
             taskInfoText(batch.map { TaskInfoRow(it.batchExportName(), it.url) }),
         )
     }
+
+    @Test
+    fun batchNameLeavesIllFormedUtf16Untouched() {
+        val malformed = "a\uD800-\uDC00%20b.zip"
+        val entry = parseEntries("https://example.com/$malformed").single()
+        assertEquals(malformed, entry.batchExportName())
+        assertEquals("📦 b.zip", UrlEntry("https://example.com/📦%20b.zip").batchExportName())
+    }
 }
