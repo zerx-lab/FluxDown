@@ -129,6 +129,13 @@ pub enum FileClearState {
     RestartPending,
 }
 
+impl FileClearState {
+    /// The stored path is a download preference, not an owned output.
+    pub(crate) fn retains_path_only(self) -> bool {
+        matches!(self, Self::Cleared | Self::RestartPending)
+    }
+}
+
 /// 持久化任务信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskInfo {

@@ -16168,7 +16168,8 @@ impl DownloadManager {
     /// - 磁盘上同时迁移：最终文件、`.fdownloading` 临时文件（暂停任务续传
     ///   路径按 `save_dir/file_name + TEMP_EXT` 重建，改名后无缝续传）、
     ///   DASH 音轨 sidecar 及其临时文件。均不存在时仅改 DB（未开始/文件丢失）。
-    /// - 目标名已被磁盘占用即拒绝，绝不覆盖既有文件。
+    /// - 清理后保留的路径只改任务记录，不探测或移动磁盘文件。
+    /// - 迁移文件时，目标名已被磁盘占用即拒绝，绝不覆盖既有文件。
     /// - 新名必须是 [`naming::sanitize_filename`] 的不动点：各下载器（HTTP / FTP /
     ///   HLS / DASH / eD2K）续传时都按清洗后的名字重建 `.fdownloading` 路径，
     ///   清洗会改写的名字（Windows 非法字符、保留设备名、首尾点 / 空格、超长）
@@ -16204,6 +16205,30 @@ impl DownloadManager {
         if naming::sanitize_filename(new_name) != new_name {
             return Err("invalid-name".to_string());
         }
+        if t.file_clear_state.retains_path_only() {
+            self.db
+                .rename_task_output(task_id, new_name, None)
+                .await
+                .map_err(|error| format!("db: {error}"))?;
+        } else {
+            self.rename_task_files(&t, new_name).await?;
+        }
+        // 名字由用户改定：此前的逐任务「文件已存在」决定绑定的是旧名，作废。
+        if let Err(error) = self.db.set_exists_decision(task_id, "").await {
+            crate::logger::report_error("download-manager", "clear file-exists decision", &error);
+        }
+        log_info!(
+            "[manager] rename_task {}: '{}' -> '{}'",
+            task_id,
+            t.file_name,
+            new_name
+        );
+        self.send_tasks_snapshot().await;
+        Ok(())
+    }
+
+    async fn rename_task_files(&self, t: &TaskInfo, new_name: &str) -> Result<(), String> {
+        let task_id = &t.task_id;
         async fn rollback_rename(
             paths: &[Option<(&Path, &Path)>; 4],
             moved: &[bool; 4],
@@ -16309,17 +16334,6 @@ impl DownloadManager {
         {
             return Err(rollback_rename(&paths, &moved, format!("db: {error}")).await);
         }
-        // 名字由用户改定：此前的逐任务「文件已存在」决定绑定的是旧名，作废。
-        if let Err(error) = self.db.set_exists_decision(task_id, "").await {
-            crate::logger::report_error("download-manager", "clear file-exists decision", &error);
-        }
-        log_info!(
-            "[manager] rename_task {}: '{}' -> '{}'",
-            task_id,
-            t.file_name,
-            new_name
-        );
-        self.send_tasks_snapshot().await;
         Ok(())
     }
 
@@ -25040,6 +25054,73 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&dir).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn editing_cleared_history_preserves_reused_outputs() {
+        use crate::task_edit;
+
+        let dir = unique_filetrack_test_dir("edit_cleared_reused_outputs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save_dir = dir.to_string_lossy();
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let mut manager = sched_manager(&db, 1);
+
+        for (history, replacement, status) in [("rename", "completed", 3), ("move", "paused", 2)] {
+            let name = format!("{history}.mp4");
+            let source = dir.join(&name);
+            let audio = dash_downloader::build_audio_path(&source);
+            let artifact_name = format!("{history}.derived");
+            let artifact = dir.join(&artifact_name);
+            std::fs::write(&source, b"old video").unwrap();
+            insert_task_at_status(&db, history, &save_dir, &name, 3).await;
+            db.save_audio_url(history, "http://example.com/audio.m4a")
+                .await
+                .unwrap();
+            db.add_task_artifact(history, &artifact_name).await.unwrap();
+            manager.clear_task_file(history).await.unwrap();
+
+            insert_task_at_status(&db, replacement, &save_dir, &name, status).await;
+            let partial =
+                |path: &Path| PathBuf::from(format!("{}{}", path.display(), downloader::TEMP_EXT));
+            let (video, audio) = if status == 3 {
+                (source, audio)
+            } else {
+                (partial(&source), partial(&audio))
+            };
+            std::fs::write(&video, b"replacement video").unwrap();
+            std::fs::write(&audio, b"replacement audio").unwrap();
+            std::fs::write(&artifact, b"replacement artifact").unwrap();
+
+            let (expected_name, expected_dir) = if status == 3 {
+                manager.rename_task(history, "renamed.mp4").await.unwrap();
+                assert!(!dir.join("renamed.mp4").exists());
+                assert!(!dir.join("renamed.audio.m4a").exists());
+                ("renamed.mp4", dir.clone())
+            } else {
+                let destination = dir.join("relocated");
+                let patch = task_edit::storage_move(&db, history, &destination.to_string_lossy())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(
+                    manager.begin_task_edit(patch).await.unwrap(),
+                    super::task_properties::TaskEditStep::Applied
+                ));
+                assert!(!destination.exists());
+                (name.as_str(), destination)
+            };
+
+            let task = db.load_task_by_id(history).await.unwrap().unwrap();
+            assert_eq!(task.file_name, expected_name);
+            assert_eq!(Path::new(&task.save_dir), expected_dir.as_path());
+            assert_eq!(task.status, 3);
+            assert_eq!(task.file_clear_state, FileClearState::Cleared);
+            assert_eq!(std::fs::read(video).unwrap(), b"replacement video");
+            assert_eq!(std::fs::read(audio).unwrap(), b"replacement audio");
+            assert_eq!(std::fs::read(artifact).unwrap(), b"replacement artifact");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
