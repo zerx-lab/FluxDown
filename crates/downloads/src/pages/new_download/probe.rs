@@ -429,6 +429,22 @@ mod tests {
                 ..Default::default()
             });
             view.entries = vec![entry(URL)];
+            view.set_auto_name(false, window, cx);
+            view.rename
+                .update(cx, |input, cx| input.set_value("Report.pdf", window, cx));
+            apply_probe(view, "Report.pdf", window, cx);
+            assert_name(view, cx, "Report.pdf", "Report.pdf");
+
+            view.entries = vec![entry("https://example.com/other.zip")];
+            view.probe.cache.insert(
+                "https://example.com/other.zip".to_owned(),
+                ProbeStatus::Unavailable,
+            );
+            view.sync_probe(window, cx);
+            assert_name(view, cx, "Report.pdf", "Report.pdf");
+
+            view.set_auto_name(true, window, cx);
+            view.entries = vec![entry(URL)];
             apply_probe(view, "Detected.zip", window, cx);
             assert_name(view, cx, "Detected.zip", "");
 
