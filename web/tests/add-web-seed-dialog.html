@@ -11,7 +11,7 @@
   import '../src/index.css'
   import { I18nContext } from '../src/i18n/runtime'
   import { translate } from '../src/i18n/catalog'
-  import { rpc, rpcStore } from '../src/lib/rpc'
+  import { RpcError, rpc, rpcStore } from '../src/lib/rpc'
   import { DownloadDialogsHost } from '../src/pages/downloads/dialogs/DownloadDialogsHost'
   import { openAddWebSeed } from '../src/pages/downloads/dialogs/store'
   import { buildTaskMenu } from '../src/pages/downloads/table/menus'
@@ -110,15 +110,27 @@
       check(input()?.value === newUrl, `A stale success closed or reset the dialog for ${nextTask}`)
 
       const current = await submit(nextTask, newUrl)
-      await act(() => { current.reject(new Error('fixture failure')) })
-      check(dialog()?.querySelector('[role="alert"]')?.textContent === t('localServiceActionFailed'),
-        'The current RPC failure must be shown in the dialog')
+      const capacityMessage = 'a torrent can have at most 64 web seeds'
+      const failure = nextTask === 'a'
+        ? new RpcError({
+          code: -32000,
+          message: capacityMessage,
+          data: { code: 'invalidArgument', retryable: false, field: 'params' },
+        })
+        : new Error('fixture failure')
+      await act(() => { current.reject(failure) })
+      const expected = nextTask === 'a'
+        ? `${t('localServiceInvalidArgument')}: ${capacityMessage}`
+        : t('localServiceActionFailed')
+      const alert = dialog()?.querySelector('[role="alert"]')
+      check(alert?.getClientRects().length > 0 && alert.textContent === expected,
+        'The dialog must show the capacity limit for a full torrent and generic text for unknown failures')
       check(input()?.value === newUrl, 'The current RPC failure must preserve the URL for retry')
       const retry = await submit(nextTask, newUrl)
       await act(() => { retry.resolve({ ok: true }) })
       check(!dialog(), 'The current RPC success must close the dialog')
     }
-    result.textContent = 'PASS: torrent context menu, different-task and same-task reopen, failure, retry, and success'
+    result.textContent = 'PASS: torrent context menu, reopen, generic and capacity errors, retry, and success'
   } catch (error) {
     result.textContent = `FAIL: ${error.message}`
     throw error

@@ -20049,7 +20049,7 @@ mod tests {
                 Some([url]) if url == pending
             ));
         }
-        let opts = librqbit::AddTorrentOptions {
+        let mut opts = librqbit::AddTorrentOptions {
             paused: true,
             output_folder: Some(work.join("download").to_string_lossy().into_owned()),
             web_seeds: enable_webseed.then(|| {
@@ -20059,6 +20059,10 @@ mod tests {
             }),
             ..Default::default()
         };
+        if !enable_webseed {
+            mgr.register_bt_web_seeds(&bt, id).await;
+            bt.apply_task_options(id, &mut opts).await;
+        }
         let response = bt
             .session()
             .add_torrent(librqbit::AddTorrent::from_bytes(torrent), Some(opts))
@@ -20068,11 +20072,15 @@ mod tests {
             panic!("expected a fresh torrent");
         };
 
-        bt.store_handle(id, handle).await;
         if !enable_webseed {
-            let handle = bt.cached_handle(id).await.expect("published handle");
-            assert!(!handle.web_seeds().iter().any(|seed| seed.url == pending));
+            // rqbit retains the URL but disables its worker. Check the actual
+            // handle before publication can replay the saved URL.
+            assert!(matches!(
+                handle.web_seeds().as_slice(),
+                [seed] if seed.url == pending && seed.state == librqbit::WebSeedState::Disabled
+            ));
         }
+        bt.store_handle(id, handle).await;
         if enable_webseed {
             let error = mgr
                 .add_bt_web_seed(id, rejected)
@@ -20080,7 +20088,8 @@ mod tests {
                 .expect_err("full handle must reject a new source");
             assert!(matches!(
                 error,
-                crate::bt_task_files::BtTaskOpError::Operation(_)
+                crate::bt_task_files::BtTaskOpError::InvalidArgument(message)
+                    if message == format!("a torrent can have at most {MAX_WEB_SEEDS} web seeds")
             ));
             assert_eq!(
                 mgr.db.task_web_seeds(id).await.expect("stored sources"),

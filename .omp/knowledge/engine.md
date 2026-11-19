@@ -192,6 +192,7 @@
   作用于已入册句柄（`Session::set_super_seeding`），每次加入会话经 `apply_task_options` 烘焙 `AddTorrentOptions::super_seeding`；只在任务完整时生效，下载中可提前设。
 - **添加 HTTP 源（BEP 19）**（`daemon.task.addWebSeed`）：接受 `taskId` / `url`，按任务去重后存入 `tasks.bt_web_seeds`，不改种子文件或磁力链接。
   已入册时即时添加，须经会话接受才保存；未入册时成功仅表示已保存。普通恢复和磁盘续种在挂载前重新登记；同一轮改保存目录摘挂保留登记，永久删除任务才清理。
+  已保存与种子声明的来源预检、以及实时句柄的容量拒绝，均以不可重试的 `InvalidArgument` 返回每个种子的来源上限；其他句柄错误仍为操作失败。
   `daemon.task.btStatus` 的 `webSeeds` 合并 librqbit 实况和已保存来源。对句柄中不存在的已保存来源，先判断有效开关（有句柄时取会话开关，无句柄时取当前配置）：
   关闭时为 `disabled`，开启时有句柄为 `rejected`、无句柄为 `pending`。
 - **v2 / 混合种子**：任务主键仍是 20 字节 info hash（v1 / 混合 = SHA-1，纯 v2 = 截断 SHA-256）；`BtStatusDto` / `TorrentShareDto` 另带 `infoHashV2`（种子字节 / 磁力 `btmh` / 句柄取得元数据后）。

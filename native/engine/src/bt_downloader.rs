@@ -1597,7 +1597,20 @@ impl SharedBtSession {
             self.session
                 .add_web_seed(handle, url)
                 .await
-                .map_err(|error| BtTaskOpError::Operation(format!("{error:#}")))?;
+                .map_err(|error| {
+                    // The pinned rqbit API returns an untyped anyhow error for capacity.
+                    let message = format!("{error:#}");
+                    if message
+                        == format!(
+                            "a torrent can have at most {} web seeds",
+                            crate::bt_local_seed::MAX_WEB_SEEDS
+                        )
+                    {
+                        BtTaskOpError::InvalidArgument(message)
+                    } else {
+                        BtTaskOpError::Operation(message)
+                    }
+                })?;
             added = true;
         }
         if seeds.iter().any(|seed| seed == url) {
