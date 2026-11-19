@@ -3758,7 +3758,9 @@ mod plugin_consent_audit_tests {
                     break serde_json::to_value(plugins).unwrap();
                 }
             };
-            let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({})).await.unwrap();
+            let list = call(&f, method::DAEMON_PLUGIN_LIST, json!({}))
+                .await
+                .unwrap();
             assert_eq!(event_plugins, list);
             assert_eq!(list[0]["identity"], BROAD);
             assert_eq!(list[0]["enabled"], true);
