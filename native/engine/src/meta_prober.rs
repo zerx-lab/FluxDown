@@ -30,20 +30,22 @@ pub struct ProbedMeta {
 impl ProbedMeta {
     /// 由下载器完整探测（HEAD ∥ Range GET，见 `downloader::resolve_file_info_with_ua_fallback`）
     /// 的结果派生启动序幕的名称 / 大小，规则与 [`probe_http_meta`] 一致：
-    /// - HTML 响应（按 MIME 或文件名识别）不提供目标文件名或大小；
-    ///   下载器随后决定是否接受该页面。
-    /// - 名字只有 Content-Disposition（含 URL 查询里的 CD）才算权威，其余（URL 段 /
-    ///   Content-Type 推断 / `download` 兜底）标记 `name_inferred`，完成期可精修。
+    /// - HTML 页面不提供目标文件名或大小；明确的 HTML 附件保留探测元数据，
+    ///   但其名称仍视为推断，不能授权后续响应保存任意网页。
+    /// - 其它名字只有 Content-Disposition（含 URL 查询里的 CD）才算权威。
     pub(crate) fn from_file_info(info: &crate::downloader::FileInfo) -> Self {
-        if crate::downloader::html_evidence(&info.content_type, &info.file_name).is_some() {
+        if !info.html_attachment
+            && crate::downloader::html_evidence(&info.content_type, &info.file_name).is_some()
+        {
             return Self::default();
         }
         Self {
             file_name: info.file_name.clone(),
-            name_inferred: !matches!(
-                info.name_source,
-                NameSource::Disposition | NameSource::QueryDisposition
-            ),
+            name_inferred: info.html_attachment
+                || !matches!(
+                    info.name_source,
+                    NameSource::Disposition | NameSource::QueryDisposition
+                ),
             total_bytes: info.total_bytes.max(0),
         }
     }
@@ -248,18 +250,21 @@ async fn probe_http_meta(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if crate::downloader::html_evidence(content_type, "").is_some() {
+    let resolved = extract_filename(response.headers(), url, response.url().as_str());
+    let html_attachment =
+        crate::downloader::is_html_attachment(response.headers(), &resolved.name, resolved.source);
+    if (!html_attachment
+        || (!file_name.is_empty() && !crate::downloader::filename_looks_like_html(file_name)))
+        && crate::downloader::html_evidence(content_type, &resolved.name).is_some()
+    {
         return ProbedMeta::default();
     }
     let (file_name, name_inferred) = if file_name.is_empty() {
-        let resolved = extract_filename(response.headers(), url, response.url().as_str());
-        if crate::downloader::filename_looks_like_html(&resolved.name) {
-            return ProbedMeta::default();
-        }
-        let inferred = !matches!(
-            resolved.source,
-            NameSource::Disposition | NameSource::QueryDisposition
-        );
+        let inferred = html_attachment
+            || !matches!(
+                resolved.source,
+                NameSource::Disposition | NameSource::QueryDisposition
+            );
         (resolved.name, inferred)
     } else {
         (String::new(), false)
@@ -576,6 +581,7 @@ mod tests {
         crate::downloader::FileInfo {
             file_name: name.to_string(),
             name_source: source,
+            html_attachment: false,
             total_bytes: total,
             supports_range: true,
             content_type: content_type.to_string(),

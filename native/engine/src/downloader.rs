@@ -123,6 +123,8 @@ pub enum DownloadError {
     #[error("{0}")]
     PluginAbort(String),
     #[error("{0}")]
+    UnexpectedHtml(String),
+    #[error("{0}")]
     Other(String),
 }
 
@@ -283,6 +285,7 @@ pub struct FileInfo {
     /// `file_name` 的来源：只有 Content-Disposition（含 URL 查询里的 CD）才是权威名，
     /// 作为响应命名证据落库供完成期精修引擎推断的名字。
     pub name_source: crate::naming::NameSource,
+    pub(crate) html_attachment: bool,
     pub total_bytes: i64,
     pub supports_range: bool,
     /// MIME content type from the server (e.g. "text/html", "application/octet-stream").
@@ -1812,6 +1815,7 @@ pub struct DownloadSpec {
     held_response: std::sync::Mutex<Option<reqwest::Response>>,
     html_only: bool,
     expects_html: bool,
+    accepts_html_attachment: bool,
 }
 
 #[derive(Debug)]
@@ -1853,6 +1857,7 @@ impl DownloadSpec {
             held_response: std::sync::Mutex::new(None),
             html_only: false,
             expects_html: false,
+            accepts_html_attachment: false,
         }
     }
 
@@ -2722,6 +2727,7 @@ async fn resolve_file_info_once(
     }
 
     Ok(FileInfo {
+        html_attachment: is_html_attachment(&headers, &file_name, name_source),
         file_name,
         name_source,
         total_bytes,
@@ -2872,6 +2878,7 @@ async fn resolve_file_info_plain_get_fallback(
     );
 
     Ok(FileInfo {
+        html_attachment: is_html_attachment(&headers, &file_name, name_source),
         file_name,
         name_source,
         total_bytes,
@@ -2980,6 +2987,7 @@ async fn resolve_file_info_held_once(
             header_text(reqwest::header::CONTENT_TYPE)
         );
         FileInfo {
+            html_attachment: is_html_attachment(headers, &resolved.name, resolved.source),
             file_name: resolved.name,
             name_source: resolved.source,
             total_bytes,
@@ -3067,6 +3075,31 @@ pub(crate) const UNEXPECTED_HTML_PREFIX: &str = "server returned HTML page (Cont
 pub(crate) const HTML_RESPONSE_CHANGED_MESSAGE: &str =
     "the server did not return a complete HTML page; nothing was saved";
 
+// Keep the diagnostic prefix for localization, but only successful-response
+// rejections (not 401/403 login pages) qualify for saving.
+pub(crate) fn can_save_html_failure(message: &str) -> bool {
+    message
+        .strip_prefix(UNEXPECTED_HTML_PREFIX)
+        .and_then(|details| details.split_once(") "))
+        .is_some_and(|(_, reason)| {
+            reason.starts_with("instead of the expected file")
+                || reason.starts_with("for a non-HTML download")
+        })
+}
+
+pub(crate) fn is_html_attachment(
+    headers: &reqwest::header::HeaderMap,
+    name: &str,
+    source: crate::naming::NameSource,
+) -> bool {
+    source == crate::naming::NameSource::Disposition
+        && filename_looks_like_html(name)
+        && headers
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.as_bytes().split(|&byte| byte == b';').next())
+            .is_some_and(|kind| kind.trim_ascii().eq_ignore_ascii_case(b"attachment"))
+}
+
 fn html_mime(content_type: &str) -> Option<&'static str> {
     let mime = content_type.split(';').next()?.trim();
     ["text/html", "application/xhtml+xml"]
@@ -3144,17 +3177,25 @@ impl DownloadSpec {
             return Ok(());
         }
         let ct = response_content_type(resp);
-        let evidence = html_mime(ct).or_else(|| {
+        let mime = html_mime(ct);
+        let evidence = if mime.is_none() || self.accepts_html_attachment {
             let name = extract_filename(resp.headers(), url, resp.url().as_str());
-            html_evidence("", &name.name)
-        });
+            if self.accepts_html_attachment
+                && is_html_attachment(resp.headers(), &name.name, name.source)
+            {
+                return Ok(());
+            }
+            html_evidence(ct, &name.name)
+        } else {
+            mime
+        };
         if self.html_only {
             let status = resp.status();
             if evidence.is_none() || !status.is_success() || matches!(status.as_u16(), 204..=206) {
                 return Err(DownloadError::Other(HTML_RESPONSE_CHANGED_MESSAGE.into()));
             }
         } else if let Some(evidence) = evidence {
-            return Err(DownloadError::Other(format!(
+            return Err(DownloadError::UnexpectedHtml(format!(
                 "{UNEXPECTED_HTML_PREFIX}{evidence}) for a non-HTML download — \
                  aborting to avoid corrupting saved file; {}",
                 html_response_hint(url, Some(resp.url()), method)
@@ -4215,6 +4256,7 @@ async fn run_download_inner(
             p.hint_file_size
         );
         FileInfo {
+            html_attachment: false,
             file_name: name,
             name_source: crate::naming::NameSource::Fallback,
             total_bytes: effective_size,
@@ -4346,18 +4388,25 @@ async fn run_download_inner(
             crate::intercept::ProtocolKind::Http,
         ));
     spec.html_only = html_only;
-    // The prelude may have filled in the output name from URL or response metadata.
-    spec.expects_html = !html_only
-        && filename_looks_like_html(&p.file_name)
-        && !p.db.get_task_naming_state(&p.task_id).await?.0;
+    if !html_only {
+        let inferred = p.file_name.is_empty() || p.db.get_task_naming_state(&p.task_id).await?.0;
+        spec.accepts_html_attachment = inferred;
+        spec.expects_html = if inferred {
+            // Only the requested URL, never a redirect or MIME-derived name,
+            // can establish HTML intent for an inferred target.
+            name_from_url(&p.url).is_some_and(|name| filename_looks_like_html(&name.name))
+        } else {
+            filename_looks_like_html(&p.file_name)
+        };
+    }
     let spec_ref = std::sync::Arc::new(spec);
 
     // A hinted filename is not response evidence; hinted downloads are checked when data arrives.
-    if !spec_ref.expects_html
+    if !(spec_ref.expects_html || spec_ref.accepts_html_attachment && info.html_attachment)
         && p.hint_file_size == 0
         && let Some(evidence) = html_evidence(&info.content_type, &info.file_name)
     {
-        return Err(DownloadError::Other(format!(
+        return Err(DownloadError::UnexpectedHtml(format!(
             "{UNEXPECTED_HTML_PREFIX}{evidence}) instead of the expected file — {}",
             html_response_hint(&p.url, probe_final_url.as_ref(), &p.spec.method)
         )));

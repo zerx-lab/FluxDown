@@ -2044,8 +2044,7 @@ async fn finalize_start_file_name(
         // 同名任务（常见于同一 URL 重复添加）会在下载器内得到同一个名字而共享
         // 同一个 .fdownloading。用 URL 末段兜底，使其同样纳入 dedup + 预订；
         // 路径段只是占位（标记为推断名），完成期按实际 GET 响应精修。
-        let inferred = url_name.source != naming::NameSource::QueryDisposition
-            || downloader::filename_looks_like_html(&url_name.name);
+        let inferred = url_name.source != naming::NameSource::QueryDisposition;
         params.file_name = url_name.name;
         if let Err(error) =
             persist_start_name(&params.db, &params.task_id, &params.file_name, inferred).await
@@ -9646,9 +9645,7 @@ impl DownloadManager {
             .ok_or("not-found")?;
         if source.status != 4
             || source.html_only
-            || !source
-                .error_message
-                .starts_with(downloader::UNEXPECTED_HTML_PREFIX)
+            || !downloader::can_save_html_failure(&source.error_message)
             || crate::auth::site_key(&source.url).is_none()
         {
             return Err("not-an-html-failure".into());
@@ -10079,8 +10076,7 @@ impl DownloadManager {
             && (db_url.starts_with("http://") || db_url.starts_with("https://"))
         {
             naming::name_from_url(&db_url).map(|resolved| {
-                let inferred = resolved.source != naming::NameSource::QueryDisposition
-                    || downloader::filename_looks_like_html(&resolved.name);
+                let inferred = resolved.source != naming::NameSource::QueryDisposition;
                 (resolved.name, inferred)
             })
         } else {

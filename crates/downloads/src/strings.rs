@@ -1215,6 +1215,17 @@ pub(crate) fn is_unexpected_html(error: &str) -> bool {
     error.starts_with(UNEXPECTED_HTML_PREFIX)
 }
 
+// Mirrors downloader::can_save_html_failure; login-page diagnostics are display only.
+pub(crate) fn can_save_html_failure(error: &str) -> bool {
+    error
+        .strip_prefix(UNEXPECTED_HTML_PREFIX)
+        .and_then(|details| details.split_once(") "))
+        .is_some_and(|(_, reason)| {
+            reason.starts_with("instead of the expected file")
+                || reason.starts_with("for a non-HTML download")
+        })
+}
+
 fn shared(value: &str) -> SharedString {
     SharedString::from(value.to_owned())
 }

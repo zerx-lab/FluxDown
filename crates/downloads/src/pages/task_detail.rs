@@ -82,7 +82,7 @@ use crate::{
         task_edit::{TaskEditTarget, open_change_url_dialog},
         task_properties::open_task_properties,
     },
-    strings::{DownloadStrings, error_text, is_unexpected_html},
+    strings::{DownloadStrings, can_save_html_failure, error_text, is_unexpected_html},
 };
 
 /// 做种页实时上传曲线保留的采样点数（每秒一次）。
@@ -1640,7 +1640,7 @@ impl TaskDetailView {
                             ))
                             .when(
                                 row.state == TaskState::Failed
-                                    && is_unexpected_html(&row.error_message),
+                                    && can_save_html_failure(&row.error_message),
                                 |this| {
                                     this.child(
                                         Button::new("detail-save-html")

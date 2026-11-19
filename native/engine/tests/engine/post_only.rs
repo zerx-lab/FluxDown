@@ -34,6 +34,7 @@ const PLAIN_PATH: &str = "/plain/OneDrive.zip";
 const FORM_PATH: &str = "/form/download";
 const SIGNED_PATH: &str = "/signed/OneDrive.zip";
 const HTML_PATH: &str = "/share";
+const DIRECT_HTML_PATH: &str = "/page.html";
 const HTML_BODY: &[u8] = b"<!doctype html><p>Shared file</p>";
 const CHECKSUM: &str = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -99,7 +100,7 @@ async fn serve(mut stream: TcpStream, server: Arc<Server>) {
             zip_response(ZIP_BODY)
         }
     };
-    let response = if path == HTML_PATH
+    let response = if matches!(path.as_str(), HTML_PATH | DIRECT_HTML_PATH)
         && (matches!(method.as_str(), "HEAD" | "GET") || (method == "POST" && body == FORM))
         && head
             .lines()
@@ -526,6 +527,46 @@ async fn save_html_keeps_original_and_existing_file_and_rejects_changed_response
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn unnamed_direct_html_and_html_attachments_download_normally() {
+    let mut h = Harness::new("normal_html").await;
+    for (path, headers, expected_name, hint) in [
+        (
+            DIRECT_HTML_PATH,
+            "Content-Type: text/html\r\n",
+            "page.html",
+            0,
+        ),
+        (
+            HTML_PATH,
+            "Content-Type: application/octet-stream\r\n\
+             Content-Disposition: attachment; filename=report.html\r\n",
+            "report.html",
+            0,
+        ),
+        (
+            HTML_PATH,
+            "Content-Type: text/html\r\n\
+             Content-Disposition: Attachment; filename=hinted.html\r\n",
+            "hinted.html",
+            -1,
+        ),
+    ] {
+        *h.server.share_response.lock().unwrap() = Some(("200 OK", headers, HTML_BODY));
+        let mut spec = h.share_spec(None);
+        spec.url = format!("http://{}{path}", h.addr);
+        spec.file_name.clear();
+        spec.checksum.clear();
+        spec.hint_file_size = hint;
+        let task = h.engine.manager.create_task(spec).await.unwrap();
+        let page = h.finish(&task).await;
+        assert_eq!(page.status, 3, "{}", page.error_message);
+        assert_eq!(page.file_name, expected_name);
+        assert_eq!(h.output(&page).await, HTML_BODY);
+    }
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn html_response_name_is_evidence_not_download_intent() {
     let mut h = Harness::new("html_response_filename").await;
     for (headers, hint, filename) in [
@@ -541,7 +582,7 @@ async fn html_response_name_is_evidence_not_download_intent() {
             "archive.zip",
         ),
         (
-            "Content-Disposition: attachment; filename=login.html\r\n",
+            "Content-Disposition: inline; filename=login.html\r\n",
             0,
             "",
         ),
@@ -580,7 +621,27 @@ async fn html_response_name_is_evidence_not_download_intent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn html_login_status_is_reported_and_invalid_html_replays_are_not_published() {
+async fn segmented_html_rejection_does_not_retry() {
+    let mut h = Harness::new("segmented_html").await;
+    let mut spec = h.share_spec(None);
+    // A large browser hint with four requested segments takes the coordinator
+    // path, whose unverified first worker starts with one plain GET.
+    spec.hint_file_size = 2 * 1024 * 1024;
+    let original = h.engine.manager.create_task(spec).await.unwrap();
+    let failed = h.finish(&original).await;
+    assert_eq!(failed.status, 4);
+    assert!(
+        failed
+            .error_message
+            .starts_with("server returned HTML page (Content-Type: text/html)")
+    );
+    assert_eq!(h.requests(), [format!("GET {HTML_PATH}")]);
+    assert!(!h.work_dir.join(failed.file_name).exists());
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn html_login_status_is_reported_but_cannot_be_saved() {
     const HTML_HEADERS: &str = "Content-Type: text/html\r\n";
     let mut h = Harness::new("html_login_status").await;
     for (status, method, hint) in [
@@ -602,34 +663,51 @@ async fn html_login_status_is_reported_and_invalid_html_replays_are_not_publishe
         let (code, _) = status.split_once(' ').unwrap();
         assert!(failed.error_message.contains(code));
         assert!(!h.work_dir.join(failed.file_name).exists());
+        h.clear_requests();
+        assert_eq!(
+            h.engine.manager.save_html_response(&original).await,
+            Err("not-an-html-failure".into())
+        );
+        assert!(h.requests().is_empty());
+    }
+    h.cleanup().await;
+}
 
-        for (replay_status, headers, body) in [
-            (status, HTML_HEADERS, HTML_BODY),
-            ("200 OK", HTML_HEADERS, b"".as_slice()),
-            (
-                "206 Partial Content",
-                "Content-Type: text/html\r\nContent-Range: bytes 0-3/100\r\n",
-                b"<htm".as_slice(),
-            ),
-        ] {
-            *h.server.share_response.lock().unwrap() = Some((replay_status, headers, body));
-            let saved = h
-                .engine
-                .manager
-                .save_html_response(&original)
-                .await
-                .unwrap();
-            let replay = h.finish(&saved).await;
-            assert_eq!(replay.status, 4);
-            if replay_status != status {
-                assert!(
-                    replay
-                        .error_message
-                        .contains("did not return a complete HTML page")
-                );
-            }
-            assert!(!h.work_dir.join(replay.file_name).exists());
+#[tokio::test(flavor = "current_thread")]
+async fn unsuccessful_or_incomplete_html_replays_are_not_published() {
+    const HTML_HEADERS: &str = "Content-Type: text/html\r\n";
+    let mut h = Harness::new("incomplete_html").await;
+    let spec = h.share_spec(None);
+    let original = h.engine.manager.create_task(spec).await.unwrap();
+    assert_eq!(h.finish(&original).await.status, 4);
+    for (status, headers, body) in [
+        ("403 Forbidden", HTML_HEADERS, HTML_BODY),
+        ("200 OK", HTML_HEADERS, b"".as_slice()),
+        (
+            "206 Partial Content",
+            "Content-Type: text/html\r\nContent-Range: bytes 0-3/100\r\n",
+            b"<htm".as_slice(),
+        ),
+    ] {
+        *h.server.share_response.lock().unwrap() = Some((status, headers, body));
+        let saved = h
+            .engine
+            .manager
+            .save_html_response(&original)
+            .await
+            .unwrap();
+        let replay = h.finish(&saved).await;
+        assert_eq!(replay.status, 4);
+        if status == "403 Forbidden" {
+            assert!(replay.error_message.contains("403"));
+        } else {
+            assert!(
+                replay
+                    .error_message
+                    .contains("did not return a complete HTML page")
+            );
         }
+        assert!(!h.work_dir.join(replay.file_name).exists());
     }
     h.cleanup().await;
 }

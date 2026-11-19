@@ -2562,6 +2562,14 @@ pub async fn run_coordinated_download(
                         if open_ended_streaming == Some(seg_index) {
                             open_ended_streaming = None;
                         }
+                        if matches!(error, DownloadError::UnexpectedHtml(_)) {
+                            worker_cancel.cancel();
+                            for tx in &mut worker_assign_txs {
+                                *tx = None;
+                            }
+                            final_error = Some(error);
+                            break;
+                        }
                         // --- 就地扩容：服务器自报真实大小 > 当前规划 ----------
                         // （BUG-HTTP-HINT-UNDERSIZED）hint 偏小/文件在下载中增长。
                         // 处理方式是【就地扩容】而非清空重下：延长预分配 → 追加
@@ -5553,6 +5561,9 @@ async fn do_segment_with_retry(
                 attempts = 0;
             }
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
+            Err(e @ (DownloadError::UnexpectedHtml(_) | DownloadError::HtmlHttp { .. })) => {
+                return Err(e);
+            }
             // 文件版本变化：重试必然拿到同样的 200（validator 永不再匹配），且旧数据
             // 已作废。立即返回，让 coordinator 走 Path B → run_download_inner 清空临时
             // 文件 + 重下新版本；绝不当瞬时错误退避重试（那会空烧退避并误入串行降级
