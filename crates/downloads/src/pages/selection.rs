@@ -66,7 +66,7 @@ enum SelectionState {
         selected: i32,
     },
     Bt {
-        files: Vec<BtFileDto>,
+        files: Vec<BtFile>,
         selected: HashSet<i32>,
         order: BtFileOrder,
         /// 请求预填的当前保存目录。空串 = 旧 daemon 未带目录。
@@ -95,6 +95,42 @@ enum BtFileSort {
     Size,
 }
 
+struct BtFile {
+    index: i32,
+    size: i64,
+    path: SharedString,
+    leaf: SharedString,
+    depth: f32,
+}
+
+impl From<&BtFileDto> for BtFile {
+    fn from(file: &BtFileDto) -> Self {
+        let path = SharedString::from(file.path.as_str());
+        let depth = file.path.matches('/').count().min(4) as f32;
+        let leaf = match file.path.rsplit_once('/') {
+            Some((_, leaf)) => SharedString::from(leaf),
+            None => path.clone(),
+        };
+        Self {
+            index: file.index,
+            size: file.size,
+            path,
+            leaf,
+            depth,
+        }
+    }
+}
+
+impl BtFile {
+    fn label(&self, sort: BtFileSort) -> (f32, &SharedString) {
+        if sort == BtFileSort::Original {
+            (self.depth, &self.leaf)
+        } else {
+            (0.0, &self.path)
+        }
+    }
+}
+
 #[derive(Default)]
 struct BtFileOrder {
     sort: BtFileSort,
@@ -103,7 +139,7 @@ struct BtFileOrder {
 }
 
 impl BtFileOrder {
-    fn set_sort(&mut self, sort: BtFileSort, files: &[BtFileDto]) {
+    fn set_sort(&mut self, sort: BtFileSort, files: &[BtFile]) {
         self.sort = sort;
         self.positions.clear();
         if sort == BtFileSort::Original {
@@ -115,32 +151,21 @@ impl BtFileOrder {
             let right = &files[b];
             let comparison = match sort {
                 BtFileSort::Original => std::cmp::Ordering::Equal,
-                BtFileSort::Type => extension_bytes(&left.path).cmp(extension_bytes(&right.path)),
+                BtFileSort::Type => {
+                    extension_bytes(left.leaf.as_str()).cmp(extension_bytes(right.leaf.as_str()))
+                }
                 BtFileSort::Size => right.size.cmp(&left.size),
             };
             comparison.then_with(|| a.cmp(&b))
         });
     }
 
-    fn iter<'a>(&'a self, files: &'a [BtFileDto]) -> impl Iterator<Item = &'a BtFileDto> {
+    fn iter<'a>(&'a self, files: &'a [BtFile]) -> impl Iterator<Item = &'a BtFile> {
         (0..files.len()).map(|i| &files[self.positions.get(i).copied().unwrap_or(i)])
     }
 }
 
-fn bt_row_label(path: &str, sort: BtFileSort) -> (f32, &str) {
-    if sort == BtFileSort::Original {
-        (
-            path.matches('/').count().min(4) as f32,
-            path.rsplit('/').next().unwrap_or(path),
-        )
-    } else {
-        // 排序打散目录分组，显示不带缩进的完整相对路径。
-        (0.0, path)
-    }
-}
-
-fn extension_bytes(path: &str) -> impl Iterator<Item = u8> + '_ {
-    let name = path.rsplit('/').next().unwrap_or(path);
+fn extension_bytes(name: &str) -> impl Iterator<Item = u8> + '_ {
     let extension = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => extension,
         _ => "",
@@ -157,13 +182,16 @@ pub struct SelectionPlan {
 impl SelectionPlan {
     #[must_use]
     pub fn for_request(request: &SelectionRequestDto) -> Option<Self> {
-        let state = match request.kind.clone() {
+        let state = match &request.kind {
             SelectionKind::Hls { options } => {
                 let selected = match request.default_choice {
                     SelectionOutcome::Hls { index } => index,
                     _ => options.first().map_or(0, |option| option.index),
                 };
-                SelectionState::Hls { options, selected }
+                SelectionState::Hls {
+                    options: options.clone(),
+                    selected,
+                }
             }
             SelectionKind::Bt { files, save_dir } => {
                 let selected = match &request.default_choice {
@@ -173,10 +201,10 @@ impl SelectionPlan {
                     _ => files.iter().map(|file| file.index).collect(),
                 };
                 SelectionState::Bt {
-                    files,
+                    files: files.iter().map(BtFile::from).collect(),
                     selected,
                     order: BtFileOrder::default(),
-                    save_dir,
+                    save_dir: save_dir.clone(),
                 }
             }
             SelectionKind::Variant { options } => {
@@ -184,7 +212,10 @@ impl SelectionPlan {
                     SelectionOutcome::Variant { index } => index,
                     _ => options.first().map_or(0, |option| option.index),
                 };
-                SelectionState::Variant { options, selected }
+                SelectionState::Variant {
+                    options: options.clone(),
+                    selected,
+                }
             }
             SelectionKind::Plugin {
                 site,
@@ -192,14 +223,14 @@ impl SelectionPlan {
                 candidates,
             } => {
                 let selected =
-                    plugin_choice::initial_selection(&candidates, &request.default_choice);
+                    plugin_choice::initial_selection(candidates, &request.default_choice);
                 SelectionState::Plugin {
-                    site,
-                    url,
+                    site: site.clone(),
+                    url: url.clone(),
                     default_identity: selected.clone(),
                     selected,
                     remember: false,
-                    candidates,
+                    candidates: candidates.clone(),
                 }
             }
             SelectionKind::FileExists { .. } => return None,
@@ -735,7 +766,7 @@ impl SelectionView {
 
     fn render_bt(
         &self,
-        files: &[BtFileDto],
+        files: &[BtFile],
         selected: &HashSet<i32>,
         order: &BtFileOrder,
         cx: &mut Context<Self>,
@@ -798,13 +829,8 @@ impl SelectionView {
             .children(order.iter(files).map(|file| {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
-                let (depth, label) = bt_row_label(&file.path, order.sort);
-                let full_path = SharedString::from(file.path.as_str());
-                let label = if label == full_path.as_str() {
-                    full_path.clone()
-                } else {
-                    SharedString::from(label)
-                };
+                let (depth, label) = file.label(order.sort);
+                let full_path = file.path.clone();
                 let this = cx.weak_entity();
                 check_row(
                     ("bt-file", index as usize),
@@ -820,7 +846,7 @@ impl SelectionView {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis_middle()
-                                .child(label),
+                                .child(label.clone()),
                         )
                         .child(
                             div()
@@ -1094,7 +1120,7 @@ mod tests {
     use gpui::{AppContext as _, TestApp};
 
     use super::{
-        BtFileOrder, BtFileSort, SelectionPlan, SelectionState, SelectionView, bt_row_label,
+        BtFile, BtFileOrder, BtFileSort, SelectionPlan, SelectionState, SelectionView,
         bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
     use crate::controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture};
@@ -1153,10 +1179,12 @@ mod tests {
             (0, ".txt", 20),
             (4, "notes.txt", 1),
         ]
-        .map(|(index, path, size)| BtFileDto {
-            index,
-            path: path.to_owned(),
-            size,
+        .map(|(index, path, size)| {
+            BtFile::from(&BtFileDto {
+                index,
+                path: path.to_owned(),
+                size,
+            })
         });
         let mut order = BtFileOrder::default();
         let ids = |order: &BtFileOrder| {
@@ -1184,16 +1212,21 @@ mod tests {
             (2, "notes.txt", 20),
             (39, beta.as_str(), 10),
         ]
-        .map(|(index, path, size)| BtFileDto {
-            index,
-            path: path.to_owned(),
-            size,
+        .map(|(index, path, size)| {
+            BtFile::from(&BtFileDto {
+                index,
+                path: path.to_owned(),
+                size,
+            })
         });
         let mut order = BtFileOrder::default();
-        fn rows<'a>(order: &'a BtFileOrder, files: &'a [BtFileDto]) -> Vec<(i32, (f32, &'a str))> {
+        fn rows<'a>(order: &'a BtFileOrder, files: &'a [BtFile]) -> Vec<(i32, (f32, &'a str))> {
             order
                 .iter(files)
-                .map(|file| (file.index, bt_row_label(&file.path, order.sort)))
+                .map(|file| {
+                    let (depth, label) = file.label(order.sort);
+                    (file.index, (depth, label.as_str()))
+                })
                 .collect()
         }
         assert_eq!(

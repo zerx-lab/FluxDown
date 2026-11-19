@@ -327,7 +327,8 @@ mod tests {
     use std::{rc::Rc, sync::Arc};
 
     use fluxdown_protocol::{
-        ApplicationErrorCode, LinkProbeResult, LinkProbeVerdict, PendingCaptureDto, RpcErrorData,
+        ApplicationErrorCode, CategoryRouteDto, CategoryRuleDto, LinkProbeResult, LinkProbeVerdict,
+        PendingCaptureDto, RpcErrorData,
     };
     use fluxdown_ui_i18n::I18nCatalog;
     use gpui::{App, AppContext as _, Context, TestApp, Window};
@@ -360,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn switching_auto_name_restores_detected_name_and_keeps_the_manual_draft() {
-        const URL: &str = "https://example.com/download";
+    fn probe_refills_a_blank_manual_name_and_preserves_a_custom_draft() {
+        const URL: &str = "https://example.com/download.zip";
         const DRAFT: &str = " My file.zip ";
 
         struct Offline;
@@ -417,6 +418,16 @@ mod tests {
             )
         });
         win.update(|view, window, cx| {
+            view.context.category_route = Some(CategoryRouteDto {
+                rules: vec![CategoryRuleDto {
+                    match_mode: "extension".to_owned(),
+                    extensions: vec!["pdf".to_owned()],
+                    save_dir: "/downloads/documents".to_owned(),
+                    ..Default::default()
+                }],
+                other_dir: "/downloads/other".to_owned(),
+                ..Default::default()
+            });
             view.entries = vec![entry(URL)];
             apply_probe(view, "Detected.zip", window, cx);
             assert_name(view, cx, "Detected.zip", "");
@@ -434,6 +445,17 @@ mod tests {
 
             view.set_auto_name(false, window, cx);
             assert_name(view, cx, DRAFT, "My file.zip");
+            apply_probe(view, "New.pdf", window, cx);
+            assert_name(view, cx, DRAFT, "My file.zip");
+            assert_eq!(&*view.save_dir.read(cx).value(), "/downloads/other");
+
+            for blank in ["", " \t "] {
+                view.rename
+                    .update(cx, |input, cx| input.set_value(blank, window, cx));
+                apply_probe(view, "Updated.pdf", window, cx);
+                assert_name(view, cx, "Updated.pdf", "");
+                assert_eq!(&*view.save_dir.read(cx).value(), "/downloads/documents");
+            }
         });
     }
 

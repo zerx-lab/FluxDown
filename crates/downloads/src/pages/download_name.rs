@@ -68,12 +68,16 @@ impl DownloadName {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if detected == self.detected.as_str() {
-            return;
+        let text = input.read(cx).text();
+        let changed = detected != self.detected.as_str();
+        let write = text != detected
+            && (self.is_auto()
+                || text == self.detected.as_str()
+                || (!detected.is_empty() && Cow::<'_, str>::from(text).trim().is_empty()));
+        if changed {
+            self.detected = SharedString::from(detected);
         }
-        let follow = self.is_auto() || input.read(cx).text() == self.detected.as_str();
-        self.detected = SharedString::from(detected);
-        if follow && input.read(cx).text() != detected {
+        if write {
             set_text(input, self.detected.clone(), window, cx);
         }
     }
