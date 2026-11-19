@@ -867,6 +867,8 @@
   "progressWindowTitle": "下载进度",
   "progressWindowStop": "停止",
   "progressWindowOpenMain": "打开主界面",
+  "progressWindowDragFile": "拖动图标，把文件拖到文件夹或其他应用",
+  "progressWindowDragFolder": "拖动图标，把下载的文件夹拖到其他文件夹或应用",
   "progressWindowSegments": "{n} 个分段",
   "progressWindowPartsShow": "显示分段详情",
   "progressWindowPartsHide": "收起分段详情",
