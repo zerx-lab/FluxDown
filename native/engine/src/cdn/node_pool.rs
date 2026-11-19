@@ -495,6 +495,15 @@ impl NodePool {
     /// 按原语义上抛（进而触发 manager 的 failover/通用重试）。授予改道的同时
     /// 登记 SYS 路径的传输失败（同一路径整个任务只登记一次）。
     pub fn try_sys_transport_fallback(&self) -> bool {
+        self.try_sys_fallback(true)
+    }
+
+    /// Requeue an HTML response without recording a transport failure for the route.
+    pub(crate) fn try_sys_html_fallback(&self) -> bool {
+        self.try_sys_fallback(false)
+    }
+
+    fn try_sys_fallback(&self, record_transport_failure: bool) -> bool {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
@@ -509,7 +518,9 @@ impl NodePool {
         {
             return false;
         }
-        inner.note_path_failure(start);
+        if record_transport_failure {
+            inner.note_path_failure(start);
+        }
         true
     }
 

@@ -5363,22 +5363,30 @@ fn spawn_worker(
                     // 钉定节点与备选路径同样把 Range 失效/错位归因到节点/路径本身：
                     // 一个坏边缘节点或改写响应的代理不能被学成源站不支持 Range，
                     // 更不能触发清盘回退。
+                    let mid_transfer_html = matches!(e, DownloadError::UnexpectedHtml(_))
+                        && total_downloaded.load(Ordering::Relaxed) > 0;
                     let attributable = crate::cdn::is_node_attributable(&e)
                         || (lease_attributable
                             && matches!(
                                 e,
                                 DownloadError::RangeNotSupported(_)
                                     | DownloadError::RangeMisaligned(_)
-                            ));
+                            ))
+                        || mid_transfer_html;
                     // Auto 多路径：SYS 路径的传输层失败（连接重置/超时/停滞）在
                     // 仍有其它路径存活时同样回收重派——直连被中途阻断时由代理
                     // 接手，而不是整个任务失败。HTTP 状态/校验类错误保持原语义
                     // （源站拒绝学习、清盘回退）。判据是类型化传输失败分类
                     // （Io/Db 永不归类），与 OS 本地化文本无关。
-                    let sys_transport_fallback = !lease_attributable
-                        && crate::net_failure::classify_download_error(&e).is_some()
-                        && nodes.try_sys_transport_fallback();
-                    let e = if (lease_attributable && attributable) || sys_transport_fallback {
+                    // 有进度后的 HTML 也可以走同一有界改道，不当作 Range 失效。
+                    let sys_fallback = !lease_attributable
+                        && if mid_transfer_html {
+                            nodes.try_sys_html_fallback()
+                        } else {
+                            crate::net_failure::classify_download_error(&e).is_some()
+                                && nodes.try_sys_transport_fallback()
+                        };
+                    let e = if (lease_attributable && attributable) || sys_fallback {
                         log_info!(
                             "[worker {}] task {} seg {} 节点 {} 可归因失败，翻译为 CdnNodeFailed: {}",
                             worker_id,
@@ -5561,7 +5569,12 @@ async fn do_segment_with_retry(
                 attempts = 0;
             }
             Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-            Err(e @ (DownloadError::UnexpectedHtml(_) | DownloadError::HtmlHttp { .. })) => {
+            Err(e @ DownloadError::HtmlHttp { .. }) => return Err(e),
+            // 首响应是网页时直接诊断；已有进度时，拒绝该响应体但保留断点，
+            // 按瞬时错误重试，预算耗尽后仍可由节点池重派。
+            Err(e @ DownloadError::UnexpectedHtml(_))
+                if total_downloaded.load(Ordering::Relaxed) == 0 =>
+            {
                 return Err(e);
             }
             // 文件版本变化：重试必然拿到同样的 200（validator 永不再匹配），且旧数据
