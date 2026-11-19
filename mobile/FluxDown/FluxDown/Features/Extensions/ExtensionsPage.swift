@@ -91,8 +91,14 @@ private struct ExtensionsContent: View {
             PermissionConfirmSheet(request: request)
                 .environment(model)
         }
+        .sheet(isPresented: Binding(
+            get: { model.conflictNotice != nil && model.permissionRequest == nil },
+            set: { _ in }
+        )) {
+            ResolverUrlConflictNotice(model: model)
+        }
         .alert(L("pluginDepsMissingTitle"), isPresented: Binding(
-            get: { model.missingComponents != nil },
+            get: { model.missingComponents != nil && model.conflictNotice == nil },
             set: { if !$0 { model.missingComponents = nil } }
         )) {
             Button(L("pluginDepsLater"), role: .cancel) {}
@@ -487,9 +493,32 @@ struct PermissionRow: View {
     }
 }
 
+private struct ResolverUrlConflictNotice: View {
+    let model: ExtensionsModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let notice = model.conflictNotice {
+                    ResolverUrlConflictSection(plugins: notice.plugins, identities: [notice.identity], showTitle: false)
+                }
+            }
+            .navigationTitle(L("pluginResolverUrlConflictsTitle"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("close")) { model.dismissConflictNotice() }
+                }
+            }
+        }
+        .interactiveDismissDisabled()
+    }
+}
+
 struct ResolverUrlConflictSection: View {
     let plugins: [PluginDto]
     var identities: Set<String>? = nil
+    var showTitle = true
 
     private func matches(_ identity: String, _ otherIdentity: String) -> Bool {
         guard let identities else { return true }
@@ -530,7 +559,9 @@ struct ResolverUrlConflictSection: View {
                     }
                 }
             } header: {
-                Label(L("pluginResolverUrlConflictsTitle"), systemImage: "exclamationmark.triangle")
+                if showTitle {
+                    Label(L("pluginResolverUrlConflictsTitle"), systemImage: "exclamationmark.triangle")
+                }
             }
         }
     }

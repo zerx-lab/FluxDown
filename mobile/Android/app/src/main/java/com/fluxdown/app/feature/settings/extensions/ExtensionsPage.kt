@@ -91,27 +91,28 @@ internal data class ResolverUrlOverlap(
 
 @Composable
 internal fun rememberResolverUrlConflicts(plugins: List<PluginDto>, identities: Set<String>? = null) =
-    remember(plugins, identities) {
-        val enabled = plugins.filter { it.enabled }.mapTo(HashSet()) { it.identity }
-        plugins.flatMap { plugin ->
-            plugin.resolverUrlConflicts.mapNotNull { conflict ->
-                if (identities == null || plugin.identity in identities || conflict.otherIdentity in identities) {
-                    ResolverUrlOverlap(
-                        plugin.identity,
-                        conflict,
-                        !plugin.enabled || conflict.otherIdentity !in enabled,
-                    )
-                } else {
-                    null
-                }
+    remember(plugins, identities) { resolverUrlConflicts(plugins, identities) }
+
+internal fun resolverUrlConflicts(plugins: List<PluginDto>, identities: Set<String>?): List<ResolverUrlOverlap> {
+    val enabled = plugins.filter { it.enabled }.mapTo(HashSet()) { it.identity }
+    return plugins.flatMap { plugin ->
+        plugin.resolverUrlConflicts.mapNotNull { conflict ->
+            if (identities == null || plugin.identity in identities || conflict.otherIdentity in identities) {
+                ResolverUrlOverlap(plugin.identity, conflict, !plugin.enabled || conflict.otherIdentity !in enabled)
+            } else {
+                null
             }
         }
     }
+}
 
 @Composable
-internal fun ResolverUrlConflictSection(conflicts: List<ResolverUrlOverlap>) {
+internal fun ResolverUrlConflictSection(
+    conflicts: List<ResolverUrlOverlap>,
+    showTitle: Boolean = true,
+) {
     if (conflicts.isEmpty()) return
-    GlassSection(title = str(R.string.pluginResolverUrlConflictsTitle)) {
+    GlassSection(title = if (showTitle) str(R.string.pluginResolverUrlConflictsTitle) else null) {
         if (conflicts.any { (identity, patterns, pending) -> identity != patterns.otherIdentity && !pending }) {
             row {
                 FluxBanner(str(R.string.pluginResolverUrlConflictsHint), kind = FluxBannerKind.Warn)
@@ -518,7 +519,7 @@ internal fun confirmUninstall(
 // ───────────────────────────── 共用浮层：权限确认 / 缺组件提醒 ─────────────────────────────
 
 /**
- * 市场安装的权限确认 Sheet 与「缺少基础组件」提醒：扩展页 / 市场页 / 详情页共用
+ * 市场权限、操作后的 URL 冲突与缺少基础组件提醒：扩展页 / 市场页 / 详情页共用
  * （同一时刻只有栈顶页面在组合中，由它呈现）。
  */
 @Composable
@@ -526,7 +527,8 @@ internal fun ExtensionsOverlays(model: ExtensionsModel, env: ExtensionsEnv) {
     val nav = LocalNavigator.current
     val overlays = LocalFluxOverlays.current
     PermissionConfirmSheet(model, env)
-    val missing = model.missingComponents
+    ResolverUrlConflictNotice(model)
+    val missing = model.missingComponents.takeIf { model.conflictNotice == null }
     LaunchedEffect(missing) {
         if (missing == null) return@LaunchedEffect
         model.missingComponents = null
@@ -544,6 +546,26 @@ internal fun ExtensionsOverlays(model: ExtensionsModel, env: ExtensionsEnv) {
                 ),
             ),
         )
+    }
+}
+
+@Composable
+private fun ResolverUrlConflictNotice(model: ExtensionsModel) {
+    val notice = model.conflictNotice.takeIf { model.permissionRequest == null }
+    val shown = rememberLastNonNull(notice)
+    val dismiss = model::dismissConflictNotice
+    FluxPortal {
+        FluxSheet(
+            visible = notice != null,
+            onDismissRequest = dismiss,
+            detent = FluxSheetDetent.Full,
+            title = str(R.string.pluginResolverUrlConflictsTitle),
+            header = {
+                FluxSheetHeader(title = str(R.string.pluginResolverUrlConflictsTitle), onClose = dismiss)
+            },
+        ) {
+            if (shown != null) ResolverUrlConflictSection(shown, showTitle = false)
+        }
     }
 }
 
