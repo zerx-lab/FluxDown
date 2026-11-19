@@ -573,6 +573,14 @@ flux.ui.view("counter", {
         press(&f, session, "release").await;
         let released = next_frame(&mut f).await;
         assert_eq!((released.session.as_str(), released.seq), (session, 1));
+        assert!(
+            !released
+                .ops
+                .iter()
+                .any(|op| matches!(op, ViewOp::Error { .. })),
+            "release handler failed: {:?}",
+            released.ops
+        );
         let response = get(address, &path, "image-test-token").await;
         assert!(response.starts_with(b"HTTP/1.1 404"));
         let other_session = other["session"].as_str().unwrap();
@@ -581,7 +589,9 @@ flux.ui.view("counter", {
             .unwrap()
             .strip_prefix("flux-image:")
             .unwrap();
-        assert!(f.service.plugin_image(other_session, other_id).is_some());
+        let other_path = format!("/plugin-images/{other_session}/{other_id}");
+        let response = get(address, &other_path, "image-test-token").await;
+        assert!(response.starts_with(b"HTTP/1.1 200"));
         call(
             &f,
             "daemon.plugin.view.close",
@@ -589,7 +599,6 @@ flux.ui.view("counter", {
         )
         .await
         .unwrap();
-        let other_path = format!("/plugin-images/{other_session}/{other_id}");
         let response = get(address, &other_path, "image-test-token").await;
         assert!(response.starts_with(b"HTTP/1.1 404"));
         cancel.cancel();
