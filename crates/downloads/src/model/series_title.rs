@@ -11,7 +11,9 @@ static EPISODE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     .ok()
 });
 static SUBTITLE_LANGUAGE_SUFFIX: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"\.[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$").ok());
+    LazyLock::new(|| Regex::new(r"\.[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$").ok());
+static SUBTITLE_FLAGS: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?i-u)(?:\.(?:forced|default|sdh|cc|hi))+$").ok());
 
 pub(crate) fn series_title(name: &str) -> Option<&str> {
     let mut name = name.rsplit(['/', '\\']).next()?.trim_start_matches(' ');
@@ -25,11 +27,7 @@ pub(crate) fn series_title(name: &str) -> Option<&str> {
             .iter()
             .any(|suffix| extension.eq_ignore_ascii_case(suffix))
         {
-            name = SUBTITLE_LANGUAGE_SUFFIX
-                .as_ref()
-                .and_then(|regex| regex.find(stem))
-                .and_then(|tag| stem.get(..tag.start()))
-                .unwrap_or(stem);
+            name = subtitle_stem(stem);
         } else if extension.eq_ignore_ascii_case("nfo")
             || FileKind::of_name(name) == FileKind::Video
         {
@@ -42,6 +40,33 @@ pub(crate) fn series_title(name: &str) -> Option<&str> {
         .get(..marker.start())?
         .trim_matches([' ', '.', '_', '-']);
     (!title.is_empty()).then_some(title)
+}
+
+fn subtitle_stem(stem: &str) -> &str {
+    let strip_suffix = |regex: &LazyLock<Option<Regex>>, name: &str| {
+        regex.as_ref()?.find(name).map(|suffix| suffix.start())
+    };
+    let stem = strip_suffix(&SUBTITLE_FLAGS, stem)
+        .and_then(|index| stem.get(..index))
+        .unwrap_or(stem);
+    // A subtitle can retain the video's extension (e.g. Show - 05.mkv.en.srt).
+    let video = |name| FileKind::of_name(name) == FileKind::Video;
+    let candidate = if video(stem) {
+        stem
+    } else {
+        let Some(base) =
+            strip_suffix(&SUBTITLE_LANGUAGE_SUFFIX, stem).and_then(|index| stem.get(..index))
+        else {
+            return stem;
+        };
+        if !video(base) {
+            return base;
+        }
+        base
+    };
+    candidate
+        .rsplit_once('.')
+        .map_or(candidate, |(base, _)| base)
 }
 
 #[cfg(test)]

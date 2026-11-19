@@ -21,7 +21,15 @@ export interface BucketInfo {
 // Keep in sync with desktop series_title; both run series_title_cases.json.
 const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])| - [0-9]{2,3}(?:[Vv][0-9]{1,2})?(?: +[Ee][Nn][Dd])?(?: *(?:\[[^\]]*\]|\([^)]*\)))*$/
 const subtitleExtension = /\.(?:ass|ssa|srt|vtt)$/i
-const subtitleLanguageSuffix = /\.[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/
+const subtitleLanguageSuffix = /\.[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/
+const subtitleFlags = /(?:\.(?:forced|default|sdh|cc|hi))+$/i
+
+function subtitleStem(stem: string): string {
+  const unflagged = stem.replace(subtitleFlags, '')
+  if (fileKindOf(unflagged) === 'video') return unflagged.slice(0, unflagged.lastIndexOf('.'))
+  const base = unflagged.replace(subtitleLanguageSuffix, '')
+  return base !== unflagged && fileKindOf(base) === 'video' ? base.slice(0, base.lastIndexOf('.')) : base
+}
 
 export function contentBucket(view: DownloadTaskView): BucketInfo | null {
   const name = view.name.slice(Math.max(view.name.lastIndexOf('/'), view.name.lastIndexOf('\\')) + 1)
@@ -29,7 +37,7 @@ export function contentBucket(view: DownloadTaskView): BucketInfo | null {
   let stem = name
   if (name.includes(' - ')) {
     if (subtitleExtension.test(name)) {
-      stem = name.slice(0, name.lastIndexOf('.')).replace(subtitleLanguageSuffix, '')
+      stem = subtitleStem(name.slice(0, name.lastIndexOf('.')))
     } else if (/\.nfo$/i.test(name) || fileKindOf(name) === 'video') {
       stem = name.slice(0, name.lastIndexOf('.'))
     }

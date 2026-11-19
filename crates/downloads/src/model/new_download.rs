@@ -746,7 +746,7 @@ mod tests {
             ("magnet:?dn=Show.S01E100.1080p", "Show"),
             ("magnet:?dn=%5BGroup%5D+Show+-+05+%5B1080p%5D", "Show"),
             (
-                "https://example.org/Show%20-%2005%20%5B1080p%5D.zh-CN.ass",
+                "https://example.org/Show%20-%2005.mkv.pt_BR.forced.srt",
                 "Show",
             ),
             (
