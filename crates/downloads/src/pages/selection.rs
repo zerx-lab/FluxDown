@@ -36,6 +36,7 @@ use gpui_component::{
     v_flex,
 };
 
+use super::download_name::DownloadName;
 use crate::{
     controller::{DownloadsCommand, DownloadsPort},
     model::format_bytes,
@@ -46,14 +47,14 @@ mod plugin_choice;
 pub struct SelectionView {
     strings: SelectionStrings,
     request: SelectionRequestDto,
-    task_name: String,
+    task_name: SharedString,
     port: Arc<dyn DownloadsPort>,
     state: SelectionState,
     /// BT 保存目录输入；其它选择种类没有。
     save_dir_input: Option<Entity<InputState>>,
     /// BT 名称输入，预填任务当前名称；其它选择种类没有。
     name_input: Option<Entity<InputState>>,
-    auto_name: bool,
+    download_name: DownloadName,
     /// 系统目录选择器打开中，避免重入。
     picking_save_dir: bool,
     submitting: bool,
@@ -241,6 +242,8 @@ impl SelectionView {
             }
             _ => None,
         };
+        let task_name = SharedString::from(task_name);
+        let download_name = DownloadName::new(task_name.clone());
         let name_input = matches!(state, SelectionState::Bt { .. }).then(|| {
             let initial = task_name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(initial))
@@ -276,7 +279,7 @@ impl SelectionView {
             state,
             save_dir_input,
             name_input,
-            auto_name: true,
+            download_name,
             picking_save_dir: false,
             submitting: false,
         }
@@ -374,7 +377,7 @@ impl SelectionView {
 
     fn name_override(&self, cx: &App) -> Option<String> {
         let input = self.name_input.as_ref()?;
-        bt_name_outcome(self.auto_name, &self.task_name, &input.read(cx).value())
+        self.download_name.override_name(input.read(cx))
     }
 
     fn save_dir_input_value(&self, cx: &App) -> SharedString {
@@ -436,15 +439,12 @@ impl SelectionView {
         let this = cx.weak_entity();
         let auto = check_row(
             "bt-auto-name",
-            self.auto_name,
+            self.download_name.is_auto(),
             self.strings.auto_name.clone(),
             move |checked, window, cx| {
                 let Ok(()) = this.update(cx, |this, cx| {
-                    this.auto_name = checked;
-                    if checked && let Some(input) = &this.name_input {
-                        input.update(cx, |input, cx| {
-                            input.set_value(this.task_name.clone(), window, cx);
-                        });
+                    if let Some(input) = &this.name_input {
+                        this.download_name.set_auto(checked, input, window, cx);
                     }
                     cx.notify();
                 }) else {
@@ -465,7 +465,7 @@ impl SelectionView {
                             .control(cx)
                             .flex_1()
                             .min_w_0()
-                            .disabled(self.auto_name),
+                            .disabled(self.download_name.is_auto()),
                     )
                     .child(auto),
                 None,
@@ -799,7 +799,12 @@ impl SelectionView {
                 let checked = selected.contains(&file.index);
                 let index = file.index;
                 let (depth, label) = bt_row_label(&file.path, order.sort);
-                let label = SharedString::from(label.to_owned());
+                let full_path = SharedString::from(file.path.as_str());
+                let label = if label == full_path.as_str() {
+                    full_path.clone()
+                } else {
+                    SharedString::from(label)
+                };
                 let this = cx.weak_entity();
                 check_row(
                     ("bt-file", index as usize),
@@ -808,7 +813,15 @@ impl SelectionView {
                         .flex_1()
                         .min_w_0()
                         .gap(tokens.spacing.sm)
-                        .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_middle()
+                                .child(label),
+                        )
                         .child(
                             div()
                                 .flex_none()
@@ -837,9 +850,7 @@ impl SelectionView {
                 .pl(tokens.spacing.xs + tokens.spacing.lg * depth)
                 .pr(tokens.spacing.sm)
                 .when(checked, |row| row.bg(tokens.colors.accent))
-                .when(order.sort != BtFileSort::Original, |row| {
-                    row.tooltip(move |window, cx| tooltip_view(label.clone(), window, cx))
-                })
+                .tooltip(move |window, cx| tooltip_view(full_path.clone(), window, cx))
             }))
             .overflow_y_scrollbar();
         // 保存目录在全选工具栏之上，不进文件列表的滚动区。
@@ -1047,13 +1058,6 @@ fn cancel_command(state: &SelectionState, request: &SelectionRequestDto) -> Down
     }
 }
 
-/// 自动模式不发送覆盖名；手动模式只发送非空且与预填名不同的名称。清洗由引擎完成。
-#[must_use]
-fn bt_name_outcome(auto: bool, initial: &str, input: &str) -> Option<String> {
-    let trimmed = input.trim();
-    (!auto && !trimmed.is_empty() && trimmed != initial.trim()).then(|| trimmed.to_owned())
-}
-
 /// 保存目录输入是否允许确认。
 ///
 /// 请求带了当前目录时，去空白后必须非空（清空不能确认，避免空路径开下）。
@@ -1080,17 +1084,20 @@ fn bt_save_dir_outcome(initial: &str, input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, sync::Arc};
 
     use fluxdown_protocol::{
-        BtFileDto, SELECTION_NO_DEADLINE, SelectionKind, SelectionOutcome, SelectionRequestDto,
+        ApplicationErrorCode, BtFileDto, RpcErrorData, SELECTION_NO_DEADLINE, SelectionKind,
+        SelectionOutcome, SelectionRequestDto,
     };
+    use fluxdown_ui_i18n::I18nCatalog;
+    use gpui::{AppContext as _, TestApp};
 
     use super::{
-        BtFileOrder, BtFileSort, SelectionState, bt_name_outcome, bt_row_label,
+        BtFileOrder, BtFileSort, SelectionPlan, SelectionState, SelectionView, bt_row_label,
         bt_save_dir_confirmable, bt_save_dir_outcome, cancel_command,
     };
-    use crate::controller::DownloadsCommand;
+    use crate::controller::{DownloadsCommand, DownloadsPort, DownloadsResult, PortFuture};
 
     fn request(kind: SelectionKind) -> SelectionRequestDto {
         SelectionRequestDto {
@@ -1218,18 +1225,59 @@ mod tests {
     }
 
     #[test]
-    fn switching_back_to_auto_discards_bt_name_overrides() {
-        for (initial, custom) in [("movie.mkv", "My Movie"), ("Pack", "My Series")] {
-            let edited = format!("  {custom}  ");
-            assert_eq!(bt_name_outcome(true, initial, initial), None);
-            assert_eq!(
-                bt_name_outcome(false, initial, &edited),
-                Some(custom.to_owned())
-            );
-            assert_eq!(bt_name_outcome(true, initial, &edited), None);
+    fn automatic_bt_name_is_displayed_without_losing_a_manual_draft() {
+        struct Offline;
+
+        impl DownloadsPort for Offline {
+            fn execute(&self, _: DownloadsCommand) -> PortFuture<DownloadsResult> {
+                Box::pin(async { Err(RpcErrorData::new(ApplicationErrorCode::Internal, false)) })
+            }
         }
-        assert_eq!(bt_name_outcome(false, "Pack", "  Pack "), None);
-        assert_eq!(bt_name_outcome(false, "Pack", "   "), None);
+
+        let mut app = TestApp::new();
+        let translator = app.update(|cx| {
+            gpui_component::init(cx);
+            fluxdown_ui_theme::init(cx);
+            let catalog = I18nCatalog::load_embedded().expect("catalog");
+            cx.new(|_| catalog.translator("en"))
+        });
+        let mut win = app.open_window(|window, cx| {
+            let request = request(SelectionKind::Bt {
+                files: vec![BtFileDto {
+                    index: 0,
+                    path: "movie.mkv".to_owned(),
+                    size: 10,
+                }],
+                save_dir: String::new(),
+            });
+            let plan = SelectionPlan::for_request(&request).expect("BT selection plan");
+            SelectionView::new(
+                translator,
+                request,
+                plan,
+                "movie.mkv".to_owned(),
+                Arc::new(Offline),
+                window,
+                cx,
+            )
+        });
+        win.update(|view, window, cx| {
+            let input = view.name_input.as_ref().expect("BT name input");
+            assert_eq!(view.name_override(cx), None);
+            view.download_name.set_auto(false, input, window, cx);
+            for unchanged in ["  movie.mkv ", "   "] {
+                input.update(cx, |input, cx| input.set_value(unchanged, window, cx));
+                assert_eq!(view.name_override(cx), None);
+            }
+            input.update(cx, |input, cx| input.set_value("  My Movie  ", window, cx));
+            assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
+            view.download_name.set_auto(true, input, window, cx);
+            assert_eq!(&*input.read(cx).value(), "movie.mkv");
+            assert_eq!(view.name_override(cx), None);
+            view.download_name.set_auto(false, input, window, cx);
+            assert_eq!(&*input.read(cx).value(), "  My Movie  ");
+            assert_eq!(view.name_override(cx).as_deref(), Some("My Movie"));
+        });
     }
 
     #[test]

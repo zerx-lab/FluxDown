@@ -22,6 +22,7 @@ use std::{
     time::Duration,
 };
 
+use super::download_name::DownloadName;
 use crate::{
     components::threads_risk::threads_risk_callout,
     controller::{
@@ -329,7 +330,7 @@ pub struct NewDownloadView {
     threads: ThreadChoice,
     custom_threads: Entity<InputState>,
     rename: Entity<InputState>,
-    auto_name: bool,
+    download_name: DownloadName,
     advanced_open: bool,
     http_user: Entity<InputState>,
     http_password: Entity<InputState>,
@@ -442,7 +443,7 @@ impl NewDownloadView {
         let mut this = Self {
             threads: ThreadChoice::from_segments(context.segments),
             rename,
-            auto_name: true,
+            download_name: DownloadName::default(),
             http_user: Self::input(strings.http_auth_user.clone(), window, cx),
             referrer: Self::input(strings.referrer_placeholder.clone(), window, cx),
             referrer_filled: None,
@@ -2036,17 +2037,11 @@ impl NewDownloadView {
         let this = cx.weak_entity();
         let auto = check_row(
             "new-download-auto-name",
-            self.auto_name,
+            self.download_name.is_auto(),
             self.strings.name_auto.clone(),
             move |checked, window, cx| {
                 let Ok(()) = this.update(cx, |this, cx| {
-                    this.auto_name = checked;
-                    if checked {
-                        this.rename
-                            .update(cx, |input, cx| input.set_value("", window, cx));
-                        this.sync_rename(window, cx);
-                    }
-                    cx.notify();
+                    this.set_auto_name(checked, window, cx);
                 }) else {
                     return;
                 };
@@ -2064,7 +2059,7 @@ impl NewDownloadView {
                         .control(cx)
                         .flex_1()
                         .min_w_0()
-                        .disabled(self.auto_name),
+                        .disabled(self.download_name.is_auto()),
                 )
                 .child(auto),
             None,
