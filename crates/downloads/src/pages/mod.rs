@@ -1,3 +1,4 @@
+mod download_name;
 pub mod downloads;
 pub mod file_conflict;
 pub mod group_detail;
