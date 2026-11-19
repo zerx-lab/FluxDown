@@ -1007,10 +1007,7 @@ impl fluxdown_engine::events::EventSink for DaemonEngineEventSink {
             #[cfg(feature = "plugins")]
             EngineEvent::PluginsChanged(plugins) => {
                 self.0.publish(DaemonEvent::PluginsChanged(
-                    plugins
-                        .into_iter()
-                        .map(fluxdown_engine_protocol::plugin_info_to_dto)
-                        .collect(),
+                    fluxdown_engine_protocol::plugin_list_to_dtos(plugins),
                 ));
                 return;
             }

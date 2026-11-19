@@ -309,6 +309,10 @@ impl ExtensionsController {
         self.port.call(method, params)
     }
 
+    pub(crate) fn list_plugins(&self) -> PortFuture<serde_json::Value> {
+        self.call(method::DAEMON_PLUGIN_LIST, serde_json::json!({}))
+    }
+
     pub fn set_plugin_enabled(
         &self,
         identity: String,
