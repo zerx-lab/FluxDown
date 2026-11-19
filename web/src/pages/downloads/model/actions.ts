@@ -245,19 +245,43 @@ export function copyUrls(views: readonly DownloadTaskView[]): void {
   toast.key('urlCopied', 'success')
 }
 
-function taskInfoCell(value: string): string {
+function taskInfoCell(value: string, clipboard: boolean): string {
   // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
-  const prefix = /^[=+\-@"]/.test(value.trimStart()) ? "'" : ''
+  const prefix = clipboard && /^[=+\-@"]/.test(value.trimStart()) ? "'" : ''
   return prefix + value.replaceAll('\\', '\\\\').replaceAll('\t', '\\t').replaceAll('\n', '\\n').replaceAll('\r', '\\r')
 }
 
-export function taskInfoText(views: readonly Pick<DownloadTaskView, 'name' | 'url' | 'originUrl' | 'sizeBytes'>[]): string {
+export function taskInfoText(
+  views: readonly Pick<DownloadTaskView, 'name' | 'url' | 'originUrl' | 'sizeBytes'>[],
+  clipboard = true,
+): string {
   return [
     'Name\tURL\tSize (bytes)',
     ...views.map((view) =>
-      `${taskInfoCell(view.name)}\t${taskInfoCell(copyableShareUrl(view))}\t${view.sizeBytes > 0 ? view.sizeBytes : ''}`,
+      `${taskInfoCell(view.name, clipboard)}\t${taskInfoCell(copyableShareUrl(view), clipboard)}\t${view.sizeBytes > 0 ? view.sizeBytes : ''}`,
     ),
   ].join('\n')
+}
+
+export function exportTaskInfo(views: Parameters<typeof taskInfoText>[0]): void {
+  if (views.length === 0) return
+  try {
+    const url = URL.createObjectURL(new Blob([taskInfoText(views, false)], { type: 'text/plain;charset=utf-8' }))
+    let anchor: HTMLAnchorElement | undefined
+    try {
+      anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'fluxdown-tasks.txt'
+      anchor.setAttribute('data-fluxdown-skip', '1')
+      document.body.append(anchor)
+      anchor.click()
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      anchor?.remove()
+    }
+  } catch {
+    toast.key('taskInfoExportFailed', 'error')
+  }
 }
 
 export async function copyTaskInfo(views: readonly DownloadTaskView[]): Promise<void> {

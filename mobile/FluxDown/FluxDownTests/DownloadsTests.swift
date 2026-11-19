@@ -4,6 +4,15 @@ import Foundation
 import Testing
 @testable import FluxDown
 
+@Test func taskInfoDocumentWritesReversibleUTF8() {
+    let document = TaskInfoDocument([
+        TaskInfoRow(name: "=报告\\x\tpart\r\n2", url: "https://example.com/original", size: 4294967296),
+        TaskInfoRow(name: "file.bin", url: "torrent-file://local"),
+    ])
+    #expect(String(decoding: document.data, as: UTF8.self) ==
+        "Name\tURL\tSize (bytes)\n=报告\\\\x\\tpart\\r\\n2\thttps://example.com/original\t4294967296\nfile.bin\t\t")
+}
+
 // 下载列表派生逻辑（筛选计数 / 智能排序 / 分组 / 分段投影 / 重排节流 / 行文案）。
 
 // MARK: - 夹具

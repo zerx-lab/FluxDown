@@ -16,7 +16,10 @@ use gpui_component::{
 };
 
 use super::ManifestView;
-use crate::model::manifest::ManifestSort;
+use crate::{
+    components::selection_bar::{export_task_info_text, save_task_info},
+    model::manifest::ManifestSort,
+};
 
 impl ManifestView {
     pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> Div {
@@ -263,6 +266,21 @@ impl ManifestView {
             .flex_wrap()
             .justify_end()
             .gap(tokens.spacing.sm)
+            .child(
+                Button::new("manifest-export-info")
+                    .outline()
+                    .control(cx)
+                    .label(self.t("exportTaskInfoTxt", cx))
+                    .disabled(self.submitting)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        // The resolver returns item IDs, not direct download URLs.
+                        let rows = this.selection.items().iter().map(|item| {
+                            (item.name.as_str(), "", u64::try_from(item.size).unwrap_or_default())
+                        });
+                        let failed = this.t("taskInfoExportFailed", cx).to_string();
+                        save_task_info(export_task_info_text(rows), failed, window, cx);
+                    })),
+            )
             .child(
                 Button::new("manifest-back")
                     .outline()

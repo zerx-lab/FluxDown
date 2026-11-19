@@ -109,6 +109,16 @@ internal fun protocolOf(url: String): TaskProtocol = when {
 
 private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
 
+internal fun UrlEntry.batchExportName(): String {
+    if (fileName.isNotEmpty()) return fileName
+    val uri = runCatching { URI(url) }.getOrNull() ?: return ""
+    when (uri.scheme?.lowercase()) {
+        "http", "https", "ftp" -> Unit
+        else -> return ""
+    }
+    return uri.rawPath.orEmpty().substringAfterLast('/').let(::decode)
+}
+
 /** 预览用的推断文件名：`out=` 优先；磁力取 `dn=`，eD2K 取 `|file|名称|`，其余取路径末段（取不到用主机名）。 */
 internal fun inferName(entry: UrlEntry): String {
     if (entry.fileName.isNotBlank()) return entry.fileName

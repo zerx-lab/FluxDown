@@ -133,6 +133,15 @@ private nonisolated func decode(_ s: String) -> String {
     s.replacingOccurrences(of: "+", with: "%2B").removingPercentEncoding ?? s
 }
 
+nonisolated func batchExportName(_ entry: UrlEntry) -> String {
+    if !entry.fileName.isEmpty { return entry.fileName }
+    guard let scheme = entry.url.range(of: "://"),
+          ["http", "https", "ftp"].contains(entry.url[..<scheme.lowerBound].lowercased()) else { return "" }
+    let path = splitUrl(entry.url).path
+    guard !path.hasSuffix("/"), let segment = path.split(separator: "/").last else { return "" }
+    return decode(String(segment))
+}
+
 /// 预览用的推断文件名：`out=` 优先；磁力取 `dn=`，eD2K 取 `|file|名称|`，其余取路径末段（取不到用主机名）。
 nonisolated func inferName(_ entry: UrlEntry) -> String {
     if !entry.fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return entry.fileName }

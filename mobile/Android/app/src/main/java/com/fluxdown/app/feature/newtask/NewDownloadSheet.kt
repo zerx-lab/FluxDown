@@ -47,9 +47,11 @@ import com.fluxdown.app.i18n.str
 import com.fluxdown.app.nav.SheetRoute
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
+import com.fluxdown.app.ui.TaskInfoRow
 import com.fluxdown.app.ui.fileCategory
 import com.fluxdown.app.ui.label
 import com.fluxdown.app.ui.launchDocumentPicker
+import com.fluxdown.app.ui.rememberTaskInfoExport
 import com.fluxdown.core.host.ImportRules
 import com.fluxdown.core.host.groupImportBatches
 import com.fluxdown.core.host.isError
@@ -412,6 +414,7 @@ private fun NewDownloadContent(
     val noEntries = form.entries.isEmpty()
     val hasText = form.urlText.isNotBlank()
     val busy = form.submitting
+    val exportTaskInfo = rememberTaskInfoExport()
     // 重命名 / 首条链接变化 → 自动模式下按预测目录跟随（用户手改过目录则不覆盖）
     val predictedDir = form.predictedDir()
     LaunchedEffect(predictedDir) { form.syncAuto() }
@@ -560,6 +563,15 @@ private fun NewDownloadContent(
                         )
                     }
                 }
+            }
+            if (form.entries.size > 1) {
+                FluxButton(
+                    str(R.string.exportTaskInfoTxt),
+                    { exportTaskInfo(form.entries.map { TaskInfoRow(it.batchExportName(), it.url) }) },
+                    size = ButtonSize.Sm,
+                    icon = FluxIcons.FileText,
+                    enabled = !busy,
+                )
             }
             if (form.entries.size > 3) {
                 FluxText(

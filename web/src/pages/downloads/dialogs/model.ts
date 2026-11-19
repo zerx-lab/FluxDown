@@ -50,6 +50,12 @@ function urlFileSegment(url: string): string | null {
   return segment === '' ? null : segment
 }
 
+export function batchEntryName({ fileName, url }: UrlEntry): string {
+  if (fileName !== '') return fileName
+  const segment = /^(https?|ftp):\/\//i.test(url) ? urlFileSegment(url) : null
+  return segment === null ? '' : safeDecode(segment) ?? segment
+}
+
 const LEADING_URL = /^(?:https?|ftp):\/\/\S+/i
 const INLINE_URL = /(?:https?|ftp):\/\/\S+/i
 

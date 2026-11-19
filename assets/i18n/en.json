@@ -272,6 +272,8 @@
   "copyUrl": "Copy URL",
   "copyTaskInfo": "Copy task information",
   "taskInfoCopied": "Task information copied to clipboard",
+  "exportTaskInfoTxt": "Export task information (.txt)",
+  "taskInfoExportFailed": "Could not export task information",
   "urlCopied": "URL Copied",
   "copyFileAction": "Copy File",
   "copyFolderAction": "Copy Folder",

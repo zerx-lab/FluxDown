@@ -14,6 +14,7 @@ import { toastRpcError } from '../../../lib/rpcToast'
 import type { MenuEntry } from '../../../ui'
 import { routeBaseDir, routeFollows } from '../../../lib/categoryRoute'
 import { cn } from '../../../lib/cn'
+import { exportTaskInfo } from '../model/actions'
 import { FsPickerDialog } from './FsPickerDialog'
 import {
   buildManifestBreadcrumb,
@@ -171,6 +172,11 @@ export function ManifestSelectDialog({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <FieldHint className="tabular min-w-0 truncate">{summary}</FieldHint>
             <DialogFooter className="ml-auto flex-wrap">
+              <Button variant="outline" disabled={submitting} onClick={() => exportTaskInfo(items.map(({ name, size }) => ({
+                name, url: '', originUrl: '', sizeBytes: size,
+              })))}>
+                {t('exportTaskInfoTxt')}
+              </Button>
               <Button variant="outline" className="mobile:hidden" disabled={submitting} onClick={onCancel}>
                 {t('cancel')}
               </Button>

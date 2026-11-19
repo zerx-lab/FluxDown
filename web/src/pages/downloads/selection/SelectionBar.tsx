@@ -1,10 +1,10 @@
-import { Copy, Download, Pause, Play, Trash2, X } from 'lucide-react'
+import { Copy, Download, FileDown, Pause, Play, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useT } from '../../../i18n'
 import { cn } from '../../../lib/cn'
 import { ActionMenu, Icon, Tooltip } from '../../../ui'
 import type { MenuEntry } from '../../../ui'
-import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, pauseViews, resumeViews } from '../model/actions'
+import { confirmDeleteWithFiles, copyTaskInfo, deleteViews, downloadViewsFiles, exportTaskInfo, pauseViews, resumeViews } from '../model/actions'
 import { useDownloads } from '../state'
 
 const BTN =
@@ -42,7 +42,7 @@ const Sep = () => <span className="mx-1 h-4 w-px shrink-0 bg-hairline" />
 /** 批量操作内容（已选 N 项 | 操作 | ×），浮动条与表头覆盖条共用；`inline` 时按钮收紧到表头行高。 */
 function SelectionActions({ inline }: { inline?: boolean }) {
   const t = useT()
-  const { summary, selectedViews, clearSelection } = useDownloads()
+  const { summary, selectedViews, selectedViewsInOrder, clearSelection } = useDownloads()
   const btn = inline ? BTN_INLINE : undefined
 
   const deleteEntries: MenuEntry[] = [
@@ -69,8 +69,11 @@ function SelectionActions({ inline }: { inline?: boolean }) {
           <Icon icon={Download} size="md" />
         </Action>
       )}
-      <Action label={t('copyTaskInfo')} className={btn} onClick={() => void copyTaskInfo(selectedViews)}>
+      <Action label={t('copyTaskInfo')} className={btn} onClick={() => void copyTaskInfo(selectedViewsInOrder())}>
         <Icon icon={Copy} size="md" />
+      </Action>
+      <Action label={t('exportTaskInfoTxt')} className={btn} onClick={() => exportTaskInfo(selectedViewsInOrder())}>
+        <Icon icon={FileDown} size="md" />
       </Action>
       <ActionMenu
         title={t('delete')}

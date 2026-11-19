@@ -14,6 +14,7 @@ import { CUSTOM_CATEGORIES_PREF_KEY, LATER_QUEUE_ID, MAIN_QUEUE_ID, METHOD, RpcE
 import { LAST_CATEGORY_MODE_PREF, autoFollowDir, categoryModeFromPreference, categoryModePreference, eligibleRoute, matchedCategory, modeDir, pickableCategories, routeBaseDir, routeFollows, routeFromCategories, routeSaveDir } from '../../../lib/categoryRoute'
 import type { CategoryPickMode } from '../../../lib/categoryRoute'
 import { categoriesFromPreference } from '../model/categories'
+import { exportTaskInfo } from '../model/actions'
 import { cloudPresenceKnown } from '../../../lib/cloud-presence'
 import { describeUploadError } from '../../../lib/rpcErrorText'
 import { ThreadsRiskCallout } from '../../../lib/ThreadsRiskCallout'
@@ -26,7 +27,7 @@ import { ManifestSelectDialog } from './ManifestSelectDialog'
 import type { ManifestBaseOptions } from './ManifestSelectDialog'
 import { DEFAULT_HASH_ALGORITHM, HASH_ALGORITHMS, MAX_THREADS, PROXY_CHOICES, THREAD_PRESETS } from './model'
 import type { DraftOptions, ProxyChoice, ThreadChoice, UrlEntry } from './model'
-import { appendEntries, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments } from './model'
+import { appendEntries, batchEntryName, buildBatch, buildRequests, captureEntry, capturedReferrer, checksumSpec, customSegments, entryToText, isHttpUrl, isMagnetUrl, manualProxyUrl, parseEntries, parseInput, proxyWire, threadChoiceFromSegments } from './model'
 import { applyHints, emptyHints, emptyTracking, hintsEqual, planFieldFill } from './aria2c'
 import type { FillTracking, RequestHints } from './aria2c'
 import { IMPORT_CHUNK_SIZE, importNotice, runImport } from './importRunner'
@@ -760,6 +761,13 @@ export function NewDownloadDialog({ session }: { session: NewDownloadSession }) 
             </div>
           ) : (
             <DialogFooter className="flex-wrap">
+              {batch ? (
+                <Button variant="outline" disabled={busy} onClick={() => exportTaskInfo(entries.map((entry) => ({
+                  name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: 0,
+                })))}>
+                  {t('exportTaskInfoTxt')}
+                </Button>
+              ) : null}
               <Button variant="outline" className="mobile:hidden" disabled={phase === 'submitting'} onClick={closeNewDownload}>
                 {t('cancel')}
               </Button>

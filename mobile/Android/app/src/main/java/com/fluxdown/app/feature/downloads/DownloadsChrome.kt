@@ -20,6 +20,8 @@ import com.fluxdown.app.nav.Route
 import com.fluxdown.app.shell.LocalAppContainer
 import com.fluxdown.app.shell.hostState
 import com.fluxdown.app.ui.label
+import com.fluxdown.app.ui.TaskInfoRow
+import com.fluxdown.app.ui.rememberTaskInfoExport
 import com.fluxdown.core.model.Task
 import com.fluxdown.core.model.TaskStatus
 import com.fluxdown.fluxui.chrome.FluxRailHeader
@@ -158,6 +160,7 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
     val actions = LocalTaskActions.current
     val haptics = FluxTheme.haptics
     val host = hostState()
+    val exportTaskInfo = rememberTaskInfoExport()
 
     val selecting = nav.selecting
     val count = nav.selection.size
@@ -207,8 +210,9 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
     val moveLabel = stringResource(R.string.mobileDockMove)
     val deleteLabel = stringResource(R.string.delete)
     val selectedFmt = stringResource(R.string.selectedCount)
+    val exportLabel = stringResource(R.string.exportTaskInfoTxt)
 
-    val dockActions = remember(caps, actions, resumeLabel, pauseLabel, moveLabel, deleteLabel) {
+    val dockActions = remember(caps, actions, resumeLabel, pauseLabel, moveLabel, deleteLabel, exportLabel, exportTaskInfo) {
         buildList {
             if (caps.canResume) {
                 add(SelectionDockAction("resume", resumeLabel, FluxIcons.Play, { actions.resume(selectedTasks().map { it.taskId }) }))
@@ -217,6 +221,11 @@ private fun SelectionDockContent(modifier: Modifier, reservedEnd: Dp) {
                 add(SelectionDockAction("pause", pauseLabel, FluxIcons.Pause, { actions.pause(selectedTasks().map { it.taskId }) }))
             }
             add(SelectionDockAction("move", moveLabel, FluxIcons.Rows3, { actions.moveToQueue(selectedTasks().map { it.taskId }) }))
+            add(SelectionDockAction("export-info", exportLabel, FluxIcons.FileText, {
+                val tasks = selectedTasks().associateByTo(LinkedHashMap()) { it.taskId }
+                val ordered = view.list.visibleIds.mapNotNull(tasks::remove) + tasks.values
+                exportTaskInfo(ordered.map { TaskInfoRow(it.fileName, it.shareUrl, it.totalBytes) })
+            }))
             add(
                 SelectionDockAction(
                     "delete", deleteLabel, FluxIcons.Trash2,

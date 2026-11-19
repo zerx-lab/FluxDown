@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'bun:test'
-import { canCopyUrls, canShareTorrent, taskInfoText, torrentFileName } from './actions'
+import { describe, expect, spyOn, test } from 'bun:test'
+import { batchEntryName, parseEntries } from '../dialogs/model'
+import { canCopyUrls, canShareTorrent, exportTaskInfo, taskInfoText, torrentFileName } from './actions'
 import type { DownloadTaskView } from './task'
 
 const view = (source: string, protocol: string) => ({ source, protocol }) as unknown as DownloadTaskView
@@ -46,4 +47,49 @@ test('task info keeps rows without links and escapes cell boundaries', () => {
     { name: '=报告\tpart\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 1 },
     { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
   ])).toBe("Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t")
+})
+
+test('downloaded TXT preserves task fields and the complete parsed batch', async () => {
+  const blobs: Blob[] = []
+  const createUrl = spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+    if (blob instanceof Blob) blobs.push(blob)
+    return `blob:task-export-${blobs.length}`
+  })
+  const downloaded: string[] = []
+  const anchor = { download: '', setAttribute() {}, click() { downloaded.push(this.download) }, remove() {} }
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { createElement: () => anchor, body: { append() {} } },
+  })
+  try {
+    exportTaskInfo([
+      { name: '=报告\\x\tpart\r\n2', url: 'https://example.com/resolved', originUrl: 'https://example.com/original', sizeBytes: 4294967296 },
+      { name: 'file.bin', url: 'torrent-file://local', originUrl: '', sizeBytes: 0 },
+    ])
+    const entries = parseEntries('https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/')
+    exportTaskInfo(entries.map((entry) => ({
+      name: batchEntryName(entry), url: entry.url, originUrl: '', sizeBytes: 0,
+    })))
+    expect(downloaded).toEqual(['fluxdown-tasks.txt', 'fluxdown-tasks.txt'])
+    expect(blobs[0]?.type).toBe('text/plain;charset=utf-8')
+    const readRows = async (blob: Blob | undefined) => (await blob?.text())?.split('\n').slice(1).map((line) =>
+      line.split('\t').map((cell) => cell.replace(/\\([\\tnr])/g, (_, ch: string) =>
+        ch === 't' ? '\t' : ch === 'n' ? '\n' : ch === 'r' ? '\r' : '\\',
+      )),
+    )
+    expect(await readRows(blobs[0])).toEqual([
+      ['=报告\\x\tpart\r\n2', 'https://example.com/original', '4294967296'],
+      ['file.bin', '', ''],
+    ])
+    expect(await readRows(blobs[1])).toEqual([
+      ['a b.zip', 'https://example.com/a%20b.zip?key=v', ''],
+      ['报告.zip', 'ftp://example.com/f', ''],
+      ['', 'https://example.com/', ''],
+    ])
+  } finally {
+    createUrl.mockRestore()
+    if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor)
+    else Reflect.deleteProperty(globalThis, 'document')
+  }
 })

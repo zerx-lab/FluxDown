@@ -55,10 +55,12 @@
 | **Persistence & Resume** | SQLite with WAL by default; server deployments can use PostgreSQL; recover downloads from persisted state |
 | **Browser Integration** | Download interception, streaming media sniffing, Alt+Click bypass, right-click send and connection diagnostics |
 | **Desktop & Web UI** | GPUI desktop and React Web management, light/dark themes, custom themes, task details and segment visualization; desktop tray keeps the service available after the UI closes |
-| **Batch Copy** | Select or select all tasks in the desktop or Web download list, then choose **Copy task information** to copy names, links, and sizes in bytes as tab-separated text. |
+| **Batch TXT Export** | Select tasks or select all in the download list, or use **Export task information (.txt)** from the new-download batch or resolved file list. Available in desktop, Web, Android, and iOS; resolved plugin lists are available in desktop, Web, and full iOS. |
 | **RSS & Automation** | Feed filters, unattended downloads, JavaScript plugins, managed FFmpeg/yt-dlp components and task-event webhooks |
 | **Remote Devices** | Optional FluxCloud account, settings sync and remote task management, plus LAN device pairing and direct connections |
 | **APIs & CLI** | REST/OpenAPI, aria2-compatible JSON-RPC, MCP with 12 tools, and a CLI for scripts or standalone downloads |
+
+Task exports are UTF-8 text with `Name`, `URL`, and `Size (bytes)` columns separated by tabs. Decode `\\`, `\t`, `\r`, and `\n` as a backslash, tab, carriage return, and line feed respectively, in a single pass after splitting fields. Unknown values are blank; resolved plugin lists do not expose direct per-file URLs. The desktop and Web clipboard action additionally prefixes text starting with spreadsheet formula markers or a quote (after leading whitespace) with an apostrophe; TXT files do not add that prefix.
 
 **Privacy:** local downloads do not require a FluxCloud account. Cloud features are optional. Anonymous installation and daily-active statistics are controlled by `analytics_enabled` and can be disabled; they do not collect download/task information. This is not a zero-telemetry application.
 

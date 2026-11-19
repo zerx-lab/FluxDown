@@ -6,8 +6,8 @@ use fluxdown_ui_components::{
 };
 use fluxdown_ui_theme::active_theme;
 use gpui::{
-    Anchor, AnyElement, ClipboardItem, Context, InteractiveElement as _, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement as _, Styled, Window, div, px,
+    Anchor, AnyElement, ClipboardItem, Context, InteractiveElement as _, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, div, px,
 };
 use gpui_component::{
     Icon, WindowExt as _,
@@ -22,9 +22,9 @@ use crate::{
     pages::downloads::DownloadView,
 };
 
-fn push_task_info_cell(text: &mut String, value: &str) {
+fn push_task_info_cell(text: &mut String, value: &str, clipboard: bool) {
     // Keep spreadsheet pastes from interpreting untrusted text as formulas or quoted cells.
-    if value.trim_start().starts_with(['=', '+', '-', '@', '"']) {
+    if clipboard && value.trim_start().starts_with(['=', '+', '-', '@', '"']) {
         text.push('\'');
     }
     for ch in value.chars() {
@@ -38,23 +38,111 @@ fn push_task_info_cell(text: &mut String, value: &str) {
     }
 }
 
+const TASK_INFO_HEADER: &str = "Name\tURL\tSize (bytes)";
+
+fn push_task_info_row(text: &mut String, name: &str, url: &str, size: u64, clipboard: bool) {
+    text.push('\n');
+    push_task_info_cell(text, name, clipboard);
+    text.push('\t');
+    push_task_info_cell(text, url, clipboard);
+    text.push('\t');
+    if size > 0 {
+        use std::fmt::Write as _;
+        if let Err(error) = write!(text, "{size}") {
+            eprintln!("could not format task size: {error}");
+        }
+    }
+}
+
+pub(crate) fn batch_link_info_text<'a>(
+    entries: impl IntoIterator<Item = &'a crate::model::new_download::UrlEntry>,
+) -> String {
+    use crate::model::new_download::{percent_decode_utf8, url_file_segment};
+
+    let mut text = TASK_INFO_HEADER.to_owned();
+    for entry in entries {
+        let scheme = entry.url.split_once("://").map_or("", |(scheme, _)| scheme);
+        let name = if entry.file_name.is_empty()
+            && ["http", "https", "ftp"]
+                .into_iter()
+                .any(|protocol| scheme.eq_ignore_ascii_case(protocol))
+        {
+            url_file_segment(&entry.url).unwrap_or_default()
+        } else {
+            &entry.file_name
+        };
+        let decoded = (entry.file_name.is_empty() && name.contains('%'))
+            .then(|| percent_decode_utf8(name))
+            .flatten();
+        push_task_info_row(
+            &mut text,
+            decoded.as_deref().unwrap_or(name),
+            &entry.url,
+            0,
+            false,
+        );
+    }
+    text
+}
+
+pub(crate) fn export_task_info_text<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
+) -> String {
+    let mut text = TASK_INFO_HEADER.to_owned();
+    for (name, url, size) in rows {
+        push_task_info_row(&mut text, name, url, size, false);
+    }
+    text
+}
+
 fn task_info_text<'a>(
     rows: impl IntoIterator<Item = std::cell::Ref<'a, DownloadTaskView>>,
+    clipboard: bool,
 ) -> Option<String> {
     let mut rows = rows.into_iter().peekable();
     rows.peek()?;
-    let mut text = String::from("Name\tURL\tSize (bytes)");
+    let mut text = TASK_INFO_HEADER.to_owned();
     for row in rows {
-        text.push('\n');
-        push_task_info_cell(&mut text, &row.name);
-        text.push('\t');
-        push_task_info_cell(&mut text, row.copyable_share_url().unwrap_or_default());
-        text.push('\t');
-        if row.size_bytes > 0 {
-            text.push_str(&row.size_bytes.to_string());
-        }
+        push_task_info_row(
+            &mut text,
+            &row.name,
+            row.copyable_share_url().unwrap_or_default(),
+            row.size_bytes,
+            clipboard,
+        );
     }
     Some(text)
+}
+
+pub(crate) fn save_task_info<T: 'static>(
+    text: String,
+    failed: String,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    let directory = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+    let receiver = cx.prompt_for_new_path(&directory, Some("fluxdown-tasks.txt"));
+    cx.spawn_in(window, async move |this, cx| {
+        let error = match receiver.await {
+            Ok(Ok(Some(path))) => cx
+                .background_executor()
+                .spawn(async move { std::fs::write(path, text) })
+                .await
+                .err()
+                .map(|error| error.to_string()),
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(error) = error
+            && let Err(error) = this.update_in(cx, |_, window, cx| {
+                window.push_notification(toast::error(format!("{failed}: {error}")), cx);
+            })
+        {
+            eprintln!("window closed before reporting task export failure: {error:#}");
+        }
+    })
+    .detach();
 }
 
 fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
@@ -71,12 +159,19 @@ fn retain_stale_tasks(store: &TaskStore, keys: &mut Vec<RowKey>) {
 
 impl DownloadView {
     fn copy_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let selected = self.table_state.read(cx).delegate().selected_keys();
-        let store = self.controller.store();
-        if let Some(text) = task_info_text(selected.iter().filter_map(|key| store.get(key))) {
+        let rows = self.table_state.read(cx).delegate().selected_rows_in_order();
+        if let Some(text) = task_info_text(rows, true) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             let label = self.translator.read(cx).text("taskInfoCopied").to_owned();
             window.push_notification(toast::success(label), cx);
+        }
+    }
+
+    fn export_selected_task_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.table_state.read(cx).delegate().selected_rows_in_order();
+        if let Some(text) = task_info_text(rows, false) {
+            let failed = self.translator.read(cx).text("taskInfoExportFailed").to_owned();
+            save_task_info(text, failed, window, cx);
         }
     }
 
@@ -342,6 +437,16 @@ impl DownloadView {
             Self::copy_selected_task_info,
             cx,
         ));
+        let export_label =
+            SharedString::from(self.translator.read(cx).text("exportTaskInfoTxt").to_owned());
+        actions.push(self.icon_action(
+            "download-selection-export-info",
+            export_label,
+            Icon::new(FluxIcon::Download).size(icon_size),
+            false,
+            Self::export_selected_task_info,
+            cx,
+        ));
         actions.push(self.selection_delete_menu(cx));
         let clear = self.icon_action(
             "download-selection-clear",
@@ -387,7 +492,7 @@ impl DownloadView {
 
 #[cfg(test)]
 mod tests {
-    use super::{retain_stale_tasks, task_info_text};
+    use super::{batch_link_info_text, retain_stale_tasks, task_info_text};
     use crate::model::{DownloadTaskView, RowKey, TaskStore};
 
     fn local(id: &str, status: i32, missing: bool) -> DownloadTaskView {
@@ -417,10 +522,28 @@ mod tests {
         store.replace_local(vec![known, unknown, local("unselected", 3, false)]);
         let selected = keys(&["known", "removed", "unknown"]);
         assert_eq!(
-            task_info_text(selected.iter().filter_map(|key| store.get(key))).as_deref(),
+            task_info_text(selected.iter().filter_map(|key| store.get(key)), true).as_deref(),
             Some(
                 "Name\tURL\tSize (bytes)\n'=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
             )
+        );
+        assert_eq!(
+            task_info_text(selected.iter().filter_map(|key| store.get(key)), false).as_deref(),
+            Some(
+                "Name\tURL\tSize (bytes)\n=报告\\tpart\\n2\thttps://example.com/original\t1\nfile.bin\t\t"
+            )
+        );
+    }
+
+    #[test]
+    fn parsed_batch_exports_explicit_and_url_names_without_guessing_sizes() {
+        let entries = crate::model::new_download::parse_entries(
+            "https://example.com/a%20b.zip?key=v\nftp://example.com/f\n  out=报告.zip\nhttps://example.com/",
+            false,
+        );
+        assert_eq!(
+            batch_link_info_text(&entries),
+            "Name\tURL\tSize (bytes)\na b.zip\thttps://example.com/a%20b.zip?key=v\t\n报告.zip\tftp://example.com/f\t\n\thttps://example.com/\t"
         );
     }
 
