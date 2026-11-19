@@ -323,7 +323,7 @@ mod install {
         let clients = super::super::egress_clients(egress).await?;
         let mirror_base = super::super::component_mirror_base(db).await;
         // latest release 端点与 list_versions 相同，复用同一条镜像优先链路
-        // （官网镜像 → 用户配置镜像 → 直连 GitHub），675#1 无需额外维护第二套回退。
+        // （用户配置镜像 → 官网镜像 → 直连 GitHub）。
         let release =
             super::super::fetch_versions_json(&clients, "ffmpeg", RELEASE_API, &mirror_base)
                 .await?;

@@ -354,9 +354,7 @@ async fn fetch_text(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// 官网组件版本镜像的基地址。版本列表拉取优先经此转发（服务端持 token +
-/// 24h 缓存，规避 GitHub 匿名 API 每 IP 60/h 限流与直连 api.github.com 的
-/// 网络问题），失败依次回退用户配置的镜像（若有）与直连 GitHub。
+/// 官网组件版本镜像：服务端持 token，并缓存响应以缓解 GitHub 匿名 API 限流。
 #[cfg(feature = "components")]
 const MIRROR_BASE: &str = "https://fluxdown.com/api/components";
 
@@ -368,9 +366,8 @@ pub(crate) async fn fetch_official_versions_json(
     fetch_github_json(clients, &format!("{MIRROR_BASE}/{component}")).await
 }
 
-/// 版本列表专用：优先经官网镜像 `MIRROR_BASE/<component>` 拉取（返回原样
-/// GitHub JSON）；失败则经 [`fetch_github_json_with_mirror`] 依次尝试用户
-/// 配置的镜像与直连 `github_url`。二进制下载不走此路径。
+/// 版本列表与 FFmpeg 安装元数据：先尝试显式配置的 HTTPS 镜像，再回退官网缓存
+/// 和直连 GitHub。二进制下载不走此路径。
 #[cfg(feature = "components")]
 pub(crate) async fn fetch_versions_json(
     clients: &crate::egress::RoutedClients,
@@ -378,10 +375,28 @@ pub(crate) async fn fetch_versions_json(
     github_url: &str,
     mirror_base: &str,
 ) -> Result<serde_json::Value, ComponentError> {
-    if let Ok(v) = fetch_official_versions_json(clients, component).await {
-        return Ok(v);
+    fetch_versions_from_sources(component, github_url, mirror_base, async |url| {
+        fetch_github_json(clients, url).await
+    })
+    .await
+}
+
+#[cfg(feature = "components")]
+async fn fetch_versions_from_sources(
+    component: &str,
+    github_url: &str,
+    mirror_base: &str,
+    mut fetch: impl std::ops::AsyncFnMut(&str) -> Result<serde_json::Value, ComponentError>,
+) -> Result<serde_json::Value, ComponentError> {
+    if let Some(mirrored) = https_mirror_url(github_url, mirror_base)
+        && let Ok(release) = fetch(&mirrored).await
+    {
+        return Ok(release);
     }
-    fetch_github_json_with_mirror(clients, github_url, mirror_base).await
+    if let Ok(release) = fetch(&format!("{MIRROR_BASE}/{component}")).await {
+        return Ok(release);
+    }
+    fetch(github_url).await
 }
 
 /// 下载载荷到 `dest` 并校验 SHA-256（`expected_sha256`，小写 hex），
@@ -569,6 +584,74 @@ mod tests {
             https_mirror_url("https://example.org/x", "https://proxy.example.com/gh"),
             None
         );
+    }
+
+    #[cfg(feature = "components")]
+    #[tokio::test]
+    async fn configured_mirror_supplies_ffmpeg_build_missing_from_official_cache() {
+        const API: &str = "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest";
+        const MIRROR: &str = "https://mirror.example";
+        const TARGET: &str = "ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
+        const DOWNLOAD: &str =
+            "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
+
+        for mirror_base in ["", MIRROR] {
+            let release = super::fetch_versions_from_sources(
+                "ffmpeg",
+                API,
+                mirror_base,
+                async |url| match url {
+                    "https://mirror.example/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest" => {
+                        Ok(serde_json::json!({
+                            "assets": [{"name": TARGET, "browser_download_url": DOWNLOAD}]
+                        }))
+                    }
+                    "https://fluxdown.com/api/components/ffmpeg" => Ok(serde_json::json!({
+                        "assets": [{"name": "ffmpeg-n7.1-latest-win64-gpl-7.1.zip"}]
+                    })),
+                    _ => Err(super::ComponentError::Http(
+                        "GitHub API returned 403 Forbidden".into(),
+                    )),
+                },
+            )
+            .await
+            .unwrap();
+            let download = release["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|asset| asset["name"] == TARGET)
+                .and_then(|asset| asset["browser_download_url"].as_str());
+            assert_eq!(
+                download,
+                if mirror_base.is_empty() {
+                    None
+                } else {
+                    Some(DOWNLOAD)
+                }
+            );
+        }
+    }
+
+    #[cfg(feature = "components")]
+    #[tokio::test]
+    async fn mirror_failure_preserves_official_version_list() {
+        let releases = super::fetch_versions_from_sources(
+            "ytdlp",
+            "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30",
+            "https://mirror.example",
+            async |url| match url {
+                "https://fluxdown.com/api/components/ytdlp" => {
+                    Ok(serde_json::json!([{"tag_name": "2026.07.04"}]))
+                }
+                _ => Err(super::ComponentError::Http(
+                    "GitHub API returned 403 Forbidden".into(),
+                )),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(releases[0]["tag_name"], "2026.07.04");
     }
 
     #[test]
