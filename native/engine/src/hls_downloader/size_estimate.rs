@@ -475,12 +475,6 @@ impl TaskProgress {
         (video_done + audio_done, video_total + audio_total)
     }
 
-    pub(super) fn fragments_ready(&self) -> bool {
-        self.audio
-            .as_ref()
-            .is_none_or(|track| track.checkpointed().is_some())
-    }
-
     pub(super) fn checkpointed_fragments(&self) -> Option<(u64, u64)> {
         let video = self.video.checkpointed()?;
         let (audio, audio_total) = match &self.audio {
@@ -730,9 +724,8 @@ mod tests {
             Some(Arc::clone(&audio)),
             VariantBitrate::default(),
         );
-        assert!(!progress.fragments_ready());
+        assert_eq!(progress.checkpointed_fragments(), None);
         audio.resume(100, 1);
-        assert!(progress.fragments_ready());
         assert_eq!(progress.checkpointed_fragments(), Some((2, 5)));
         assert_eq!(progress.fragments(), (2, 5));
 

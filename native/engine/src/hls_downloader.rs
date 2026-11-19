@@ -1538,6 +1538,18 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         tracing::debug!("download progress receiver closed");
     }
 
+    // 独立音轨需要 ffmpeg 合并；TS→MP4 也优先用它流复制。
+    let candidate = effective_ffmpeg(p);
+    let ffmpeg = ffmpeg_usable(candidate)
+        .await
+        .then(|| candidate.to_path_buf());
+    run_hls_download_with_ffmpeg(p, ffmpeg).await
+}
+
+async fn run_hls_download_with_ffmpeg(
+    p: &DownloadParams,
+    ffmpeg: Option<PathBuf>,
+) -> Result<i64, DownloadError> {
     // 续传检查点先于解析读取:(1) 据此沿用上次所选变体、不再重复弹窗并保证
     // 续传前后是同一画质;(2) 已有检查点说明此 URL 早已确认是 HLS,之后解析
     // 失败必须按真实错误上报,不能退回普通 HTTP 下载把清单文本当文件存下。
@@ -1555,15 +1567,6 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
         .as_deref()
         .and_then(parse_checkpoint_variant);
     let confirmed_hls = saved_checkpoint.is_some();
-    // ffmpeg 可用性决定两件事:有独立音轨时是否下载并 mux,以及收尾 TS→MP4 是否走
-    // 流复制(不可用才退回内存转换)。
-    let ffmpeg: Option<PathBuf> = {
-        let candidate = effective_ffmpeg(p);
-        ffmpeg_usable(candidate)
-            .await
-            .then(|| candidate.to_path_buf())
-    };
-
     let task_ctx = crate::intercept::ctx::task_ctx(p, ProtocolKind::Hls);
     let notes = ActivityNotes::of(p);
     // 本次运行所有请求(播放列表 / 分片 / 密钥 / init 段 / 独立音轨)共享同一个请求身份,
@@ -2199,8 +2202,7 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
     // Range 请求路径),`seg_idx` 传 `usize::MAX` 仅用于失败时的日志诊断,
     // 不代表真实段序号。
     let meter = SegmentMeter::new(p.speed_limiter.clone());
-    // Segments can stay in the body for longer than a completed writer chunk.
-    // Sample independently, including while no byte geometry is available.
+    // Sample independently of media writes, including during init prefetch.
     // 视频与独立音轨的分段大小证据(在途响应头 / 已下载待写盘 / 已写盘 / 续传前缀)汇总为
     // 任务进度,并据此估算总大小。
     let video_progress = Arc::new(TrackProgress::new(&segments));
@@ -2208,9 +2210,32 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
     let audio_progress: Option<Arc<TrackProgress>> = audio_track
         .as_ref()
         .map(|track| Arc::new(TrackProgress::new(&track.segments)));
+    // Validate both resume prefixes before the sampler or either writer starts.
+    let prepared_audio = if let Some((track, written)) = audio_track.zip(audio_progress.clone()) {
+        let run = AudioRun {
+            track,
+            client: p.client.clone(),
+            spec: Arc::clone(&spec),
+            header_origin_url: p.url.clone(),
+            cancel: p.cancel_token.child_token(),
+            task_id: p.task_id.clone(),
+            db: p.db.clone(),
+            sink: p.sink.clone(),
+            key_cache: key_cache.clone(),
+            meter: meter.clone(),
+            written,
+            segment_limit: p.segment_count,
+            connection_cap: p.connection_cap,
+            is_resume: p.is_resume,
+        };
+        let (file, first_idx, bytes) = prepare_audio_track(&run).await?;
+        Some((run, file, first_idx, bytes))
+    } else {
+        None
+    };
     let progress = Arc::new(TaskProgress::new(
         Arc::clone(&video_progress),
-        audio_progress.clone(),
+        audio_progress,
         variant_bitrate,
     ));
     let mut sampler = spawn_progress_sampler(
@@ -2250,27 +2275,9 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
 
     // 独立音轨与视频并行下载。音轨出现真实错误时取消整个任务(视频 writer 随之
     // 以取消退出,收尾处用音轨的错误替换);用户取消/暂停时两边都以取消结束。
-    let audio_handle = if let Some((track, written)) = audio_track.zip(audio_progress) {
-        let run = AudioRun {
-            track,
-            client: p.client.clone(),
-            spec: Arc::clone(&spec),
-            header_origin_url: p.url.clone(),
-            cancel: p.cancel_token.child_token(),
-            task_id: p.task_id.clone(),
-            db: p.db.clone(),
-            sink: p.sink.clone(),
-            key_cache: key_cache.clone(),
-            meter: meter.clone(),
-            written,
-            segment_limit: p.segment_count,
-            connection_cap: p.connection_cap,
-            is_resume: p.is_resume,
-        };
-        // Validate both resume prefixes before either writer can advance.
-        let (file, first_idx, bytes) = prepare_audio_track(&run).await?;
+    let audio_handle = prepared_audio.map(|(run, file, first_idx, bytes)| {
         let parent = p.cancel_token.clone();
-        Some(tokio::spawn(async move {
+        tokio::spawn(async move {
             let result = run_audio_track(run, file, first_idx, bytes).await;
             if let Err(e) = &result
                 && !matches!(e, DownloadError::Cancelled)
@@ -2278,10 +2285,8 @@ async fn run_hls_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
                 parent.cancel();
             }
             result
-        }))
-    } else {
-        None
-    };
+        })
+    });
 
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let window = Arc::new(ReorderWindow::new(first_idx, concurrency));
@@ -4815,13 +4820,6 @@ fn spawn_progress_sampler(
         let mut ticker = tokio::time::interval(Duration::from_millis(200));
         loop {
             ticker.tick().await;
-            // Don't replace the previous run's combined count with a video-only
-            // prefix while the audio writer is still validating its checkpoint.
-            if let ProgressSource::Vod(progress) = &source
-                && !progress.fragments_ready()
-            {
-                continue;
-            }
             let (written, total) = source.sample();
             if tx
                 .send(hls_progress(
@@ -7735,6 +7733,91 @@ v360.m3u8\n\
             ffmpeg_path: None,
             cdn: crate::cdn::CdnTaskInput::default(),
         })
+    }
+
+    #[tokio::test]
+    async fn slow_vod_init_reports_transfer_and_both_resumed_prefixes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (init, release_init) = stalling_server(true).await?;
+        let init_url = format!("http://{init}/video-init.mp4");
+        let master = "#EXTM3U\n\
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"main\",DEFAULT=YES,URI=\"a.m3u8\"\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=100000,AUDIO=\"audio\"\nv.m3u8\n";
+        let video = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MAP:URI=\"{init_url}\"\n\
+             #EXTINF:4,\nv0.m4s\n#EXTINF:4,\nv1.m4s\n#EXT-X-ENDLIST\n"
+        );
+        let audio = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MAP:URI=\"audio-init.mp4\"\n\
+            #EXTINF:4,\na0.m4s\n#EXTINF:4,\na1.m4s\n#EXTINF:4,\na2.m4s\n#EXT-X-ENDLIST\n";
+        let (address, hits) = static_server(vec![
+            ("/master.m3u8", master.as_bytes().to_vec()),
+            ("/v.m3u8", video.into_bytes()),
+            ("/a.m3u8", audio.as_bytes().to_vec()),
+        ])
+        .await?;
+
+        let dir = scratch_dir("slow_vod_init");
+        let db = crate::db::Db::connect("sqlite::memory:").await?;
+        let url = format!("http://{address}/master.m3u8");
+        let task_id = "t-slow-init";
+        let dir_text = dir.to_string_lossy();
+        db.insert_task(task_id, &url, "v.ts", &dir_text, 0, 0, "", "", "", 0)
+            .await?;
+        std::fs::write(dir.join(format!("v.ts{}", super::TEMP_EXT)), b"video")?;
+        std::fs::write(
+            dir.join(format!("v.audio.m4a{}", super::TEMP_EXT)),
+            b"audio!",
+        )?;
+        db.set_config("hls_resume_t-slow-init", "1:5:0").await?;
+        let audio_tag = super::audio_track_tag(&format!("http://{address}/a.m3u8"));
+        db.set_config(
+            &super::audio_resume_key(task_id),
+            &super::format_resume_checkpoint(2, 6, 0, Some(&audio_tag)),
+        )
+        .await?;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let mut params = vod_params(task_id, &url, &dir, &db, crate::intercept::noop())?;
+        params.is_resume = true;
+        params.progress_tx = tx;
+        let observe = async {
+            let mut first_fragments = None;
+            while let Some(update) = rx.recv().await {
+                let Some(runtime) = update.runtime else {
+                    continue;
+                };
+                first_fragments = first_fragments.or(runtime.hls_fragments);
+                if update.transfer_bytes == Some(5) && runtime.active_transfers == Some(1) {
+                    params.cancel_token.cancel();
+                    return Some((
+                        first_fragments,
+                        runtime.hls_fragments,
+                        update.downloaded_bytes,
+                    ));
+                }
+            }
+            None
+        };
+        // Exercise the two-track path after capability detection; cancellation
+        // during prefetch means no mux process is needed by this test.
+        let download = super::run_hls_download_with_ffmpeg(&params, Some("ffmpeg".into()));
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(download, observe)
+        })
+        .await;
+        let released = release_init.send(());
+        std::fs::remove_dir_all(&dir)?;
+        let (downloaded, sample) = outcome?;
+        released.map_err(|()| "stalled init fixture stopped early")?;
+        assert!(matches!(downloaded, Err(DownloadError::Cancelled)));
+        assert_eq!(sample, Some((Some((3, 5)), Some((3, 5)), 11)));
+        assert!(
+            hits.lock()
+                .expect("request log")
+                .iter()
+                .all(|path| path.ends_with(".m3u8"))
+        );
+        Ok(())
     }
 
     #[tokio::test]
