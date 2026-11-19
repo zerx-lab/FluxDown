@@ -527,6 +527,7 @@
   "shutdownTitle": "定时电源操作",
   "shutdownDelayLabel": "倒计时",
   "shutdownDelayHint": "有任务运行时，全部任务完成后才开始倒计时；倒计时中有新任务开始会暂停，任务完成后重新计时。",
+  "powerArmRejected": "未能排定电源操作。请检查下载服务连接和任务状态后重试。",
   "shutdownMinutesUnit": "分钟",
   "shutdownDelayMinutes": "{m} 分钟",
   "shutdownImmediate": "完成后立即",

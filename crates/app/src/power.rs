@@ -58,30 +58,31 @@ pub fn install(cx: &mut App) {
                 ),
         };
         cx.spawn(async move |cx| {
-            let refused = match call.await {
-                Ok(value) => value.get("armed").and_then(Value::as_bool) == Some(false),
+            let message_key = match call.await {
+                Ok(value) if value.get("armed").and_then(Value::as_bool) == Some(false) => {
+                    "powerArmRejected"
+                }
+                Ok(_) => return,
                 Err(error) => {
                     log::warn!("scheduled power action request failed: {:?}", error.code);
-                    true
+                    "localServiceActionFailed"
                 }
             };
-            if refused {
-                cx.update(|cx| {
-                    let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
-                        return;
-                    };
-                    let message = Desktop::global(cx)
-                        .translator
-                        .read(cx)
-                        .text("localServiceActionFailed")
-                        .to_owned();
-                    if let Err(error) = handle.update(cx, |_, window, cx| {
-                        window.push_notification(toast::error(message), cx);
-                    }) {
-                        log::debug!("power failure notification window released: {error:#}");
-                    }
-                });
-            }
+            cx.update(|cx| {
+                let Some(handle) = WindowRegistry::handle(cx, &WindowKey::Main) else {
+                    return;
+                };
+                let message = Desktop::global(cx)
+                    .translator
+                    .read(cx)
+                    .text(message_key)
+                    .to_owned();
+                if let Err(error) = handle.update(cx, |_, window, cx| {
+                    window.push_notification(toast::error(message), cx);
+                }) {
+                    log::debug!("power failure notification window released: {error:#}");
+                }
+            });
         })
         .detach();
     });

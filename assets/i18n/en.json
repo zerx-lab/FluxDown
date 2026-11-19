@@ -527,6 +527,7 @@
   "shutdownTitle": "Scheduled Power Actions",
   "shutdownDelayLabel": "Countdown",
   "shutdownDelayHint": "While tasks are running, the countdown starts after all of them finish; a new task pauses it until tasks finish again.",
+  "powerArmRejected": "The power action could not be scheduled. Check the download service and task status, then try again.",
   "shutdownMinutesUnit": "min",
   "shutdownDelayMinutes": "{m} min",
   "shutdownImmediate": "Immediately when done",

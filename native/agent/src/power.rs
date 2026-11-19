@@ -1,4 +1,4 @@
-//! 定时关机 / 睡眠 / 退出：有活跃、排队或待重试任务时等待清空后再倒计时。
+//! 定时关机 / 睡眠 / 退出：等待活跃、排队、待重试及本地收尾工作清空后再倒计时。
 //! 没有任务则立即倒计时；若出现新任务则回到 armed，任务再次清空后重新计时。
 //! daemon 断连时重置倒计时，恢复连接并确认没有待完成的任务后才重新计时。
 //! 关机 / 睡眠也支持低速条件：速度恢复、工作清空、断连或本地收尾会重置计时，达标后留 30 秒取消。
@@ -61,7 +61,7 @@ impl PowerService {
             return false;
         }
         let observation = self.events.inspect(PowerObservation::from_snapshot);
-        let has_work = observation.active > 0 || observation.waiting > 0;
+        let has_work = observation.has_unfinished_work();
         if delay.is_zero() && !observation.connected {
             return false;
         }
@@ -256,6 +256,10 @@ impl PowerObservation {
         self.active > 0 || self.retry_waiting > 0
     }
 
+    fn has_unfinished_work(self) -> bool {
+        self.active > 0 || self.waiting > 0 || self.local_work_count.is_some_and(|n| n > 0)
+    }
+
     fn qualifies(self, condition: PowerLowSpeedCondition) -> bool {
         self.connected
             && self.has_work()
@@ -366,7 +370,7 @@ impl PowerState {
     /// 到点前须确认 daemon 在线且没有待完成任务；否则回到 armed，保留排定操作。
     fn advance(&mut self, observation: PowerObservation, now: Instant) -> Option<PowerAction> {
         let armed = self.armed?;
-        if !observation.connected || observation.active > 0 || observation.waiting > 0 {
+        if !observation.connected || observation.has_unfinished_work() {
             self.countdown_until = None;
             return None;
         }
@@ -617,6 +621,46 @@ mod tests {
             assert_eq!(state.status(now).countdown_remaining_secs, None);
             assert_eq!(state.advance(connected(0, 0), now), Some(action));
         }
+    }
+
+    #[test]
+    fn local_finalization_prevents_quit_and_resets_countdown() {
+        let mut state = PowerState::new();
+        let now = Instant::now();
+        let delay = Duration::from_secs(5);
+        let finalizing = PowerObservation {
+            local_work_count: Some(1),
+            ..connected(0, 0)
+        };
+        assert!(state.arm(delay, PowerAction::Quit, false, now));
+        assert_eq!(state.advance(finalizing, now + delay), None);
+        assert_eq!(state.status(now + delay).countdown_remaining_secs, None);
+        assert_eq!(state.advance(finalizing, now + delay * 2), None);
+
+        let finalized = PowerObservation {
+            local_work_count: Some(0),
+            ..connected(0, 0)
+        };
+        assert_eq!(state.advance(finalized, now + delay * 2), None);
+        assert_eq!(
+            state.advance(finalized, now + delay * 3),
+            Some(PowerAction::Quit)
+        );
+    }
+
+    #[test]
+    fn local_work_alone_allows_immediate_completion_mode_to_arm() {
+        let mut snapshot = AgentSnapshot {
+            daemon_connected: true,
+            ..AgentSnapshot::default()
+        };
+        snapshot.daemon.runtime_stats.local_work_count = Some(1);
+        let events = AgentEventHub::new(snapshot);
+        let service = PowerService::new(events.clone());
+        assert!(service.arm(Duration::ZERO, PowerAction::Sleep));
+        let power = events.inspect(|snapshot| snapshot.power);
+        assert_eq!(power.armed_delay_secs, Some(0));
+        assert_eq!(power.countdown_remaining_secs, None);
     }
 
     #[test]

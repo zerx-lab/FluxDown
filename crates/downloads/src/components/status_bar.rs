@@ -733,8 +733,10 @@ impl DownloadView {
         }
 
         let stats = self.controller.runtime_stats();
-        let has_work =
-            stats.active_tasks > 0 || stats.pending_tasks > 0 || stats.retry_pending_tasks > 0;
+        let has_work = stats.active_tasks > 0
+            || stats.pending_tasks > 0
+            || stats.retry_pending_tasks > 0
+            || stats.local_work_count.is_some_and(|n| n > 0);
         let action = read_power_action(self.controller.preference(POWER_ACTION_PREF));
         let title = SharedString::from(translator.text("shutdownTitle").to_owned());
         let action_items = [

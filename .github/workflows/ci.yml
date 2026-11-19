@@ -228,6 +228,13 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --locked --no-tests=pass ${{ matrix.packages }}
 
+      - name: Scheduled quit stops agent and daemon
+        if: matrix.name == 'agent'
+        run: |
+          cargo build --locked -p fluxdown_daemon --bin fluxdownd
+          FLUXDOWN_TEST_DAEMON_BIN="$PWD/target/debug/fluxdownd" \
+            cargo nextest run --locked -p fluxdown_agent --test local_stack_recovery --run-ignored=only -E 'test(=scheduled_quit_stops_daemon_then_agent_and_tells_clients_not_to_reconnect)'
+
   web:
     name: Web SPA (lint + test + build)
     needs: changes
