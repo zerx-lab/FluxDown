@@ -406,6 +406,21 @@ impl RssController {
             .map(|item| item.guid.as_str())
     }
 
+    pub(crate) fn confirmed_bulk_download(
+        &self,
+        source_id: &str,
+        query: &str,
+        oldest_first: bool,
+        confirmed: &HashSet<String>,
+    ) -> Option<Vec<String>> {
+        if self.stale || self.loading || self.selected_source.as_deref() != Some(source_id) {
+            return None;
+        }
+        let current: Vec<_> = self.bulk_download_candidates(query, oldest_first).collect();
+        (current.len() == confirmed.len() && current.iter().all(|guid| confirmed.contains(*guid)))
+            .then(|| current.into_iter().map(str::to_owned).collect())
+    }
+
     pub(crate) fn is_bulk_download_candidate(&self, item: &RssItemDto) -> bool {
         self.selected_source.as_deref() == Some(item.source_id.as_str())
             && matches!(item.status, 0 | 5)
@@ -478,7 +493,7 @@ fn unavailable() -> PortFuture<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     use fluxdown_protocol::{
         AgentEvent, AgentSnapshot, DaemonEvent, RssItemDto, RssSourceDto, ServiceEvent, TaskDto,
@@ -584,18 +599,21 @@ mod tests {
             row
         })
         .collect();
+        let confirmed: HashSet<_> = ["match-new".to_owned(), "match-history".to_owned()].into();
         assert_eq!(
-            controller
-                .bulk_download_candidates("match", false)
-                .collect::<Vec<_>>(),
-            ["match-new", "match-history"]
+            controller.confirmed_bulk_download("a", "match", true, &confirmed),
+            Some(vec!["match-new".to_owned(), "match-history".to_owned()])
         );
         assert!(controller.begin_action("a", "match-new"));
         assert_eq!(
-            controller
-                .bulk_download_candidates("match", false)
-                .collect::<Vec<_>>(),
-            ["match-history"]
+            controller.confirmed_bulk_download("a", "match", false, &confirmed),
+            None
+        );
+        // A refresh might replace a candidate without changing the count.
+        controller.items[2].title = "Match replacement".to_owned();
+        assert_eq!(
+            controller.confirmed_bulk_download("a", "match", false, &confirmed),
+            None
         );
         assert!(controller.is_bulk_download_candidate(&controller.items[1]));
         controller.items[1].status = 4;

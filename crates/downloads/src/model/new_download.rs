@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use fluxdown_protocol::{CreateTaskItem, CreateTaskRequest, MAX_TASK_SEGMENTS, PendingCaptureDto};
 
 use super::aria2c::{RequestHints, join_continuations, parse_command};
+use super::series_title::series_title;
 
 /// 一条解析出的下载条目（aria2 风格：URL + 可选 `out=` / `checksum=` 选项行）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -126,11 +127,13 @@ pub(crate) fn suggested_subfolder(base: &str, url: &str, file_name: &str) -> Opt
         return None;
     }
     let name = name.trim_start();
-    let stem = if magnet {
-        name
-    } else {
-        subfolder_file_stem(name)
-    };
+    let stem = series_title(name).unwrap_or_else(|| {
+        if magnet {
+            name
+        } else {
+            subfolder_file_stem(name)
+        }
+    });
     let device = stem.split('.').next()?.trim_end();
     if stem.is_empty()
         || stem.starts_with('.')
@@ -175,7 +178,7 @@ fn subfolder_file_stem(name: &str) -> &str {
 }
 
 pub(crate) fn check_subfolder(path: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::symlink_metadata(path) {
+    match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
         // The download engine creates missing directories when it opens the output.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -723,6 +726,9 @@ mod tests {
                 "Show.Name.2024",
             ),
             ("magnet:?dn=Show+A%2BB#fragment", "Show A+B"),
+            ("https://example.org/Show.S01E02.mkv", "Show"),
+            ("magnet:?dn=Show.S01E100.1080p", "Show"),
+            ("magnet:?dn=%5BGroup%5D+Show+-+05+%5B1080p%5D", "Show"),
         ] {
             assert_eq!(
                 super::suggested_subfolder(root, url, "").as_deref(),
@@ -740,6 +746,7 @@ mod tests {
             "https://example.org/a%5Cb.mkv",
             "https://example.org/NUL.mkv",
             "https://example.org/COM%C2%B9.mkv",
+            "https://example.org/CON.S01E02.mp4",
             "https://example.org/",
             "magnet:?xt=urn:btih:abc",
             "magnet:?dn=%2E%2E%2Fescape",
@@ -772,6 +779,21 @@ mod tests {
                     .kind(),
                 io::ErrorKind::AlreadyExists
             );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                let linked_dir = root.join("linked-dir");
+                symlink(&child, &linked_dir)?;
+                super::check_subfolder(&linked_dir)?;
+                let linked_file = root.join("linked-file");
+                symlink(&file, &linked_file)?;
+                assert_eq!(
+                    super::check_subfolder(&linked_file)
+                        .expect_err("link to a file")
+                        .kind(),
+                    io::ErrorKind::AlreadyExists
+                );
+            }
             Ok(())
         })();
         let cleanup = fs::remove_dir_all(&root);

@@ -1232,7 +1232,7 @@ impl NewDownloadView {
 
     fn submit_requests(
         &mut self,
-        mut built: BuiltRequests,
+        built: BuiltRequests,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1254,27 +1254,66 @@ impl NewDownloadView {
                 .spawn(async move { check_subfolder(&path) })
                 .await;
             let Ok(()) = this.update_in(cx, |this, window, cx| {
-                this.checking_subfolder = false;
-                cx.notify();
-                if !this.use_subfolder || this.subfolder_target(cx).as_deref() != Some(&target) {
-                    return;
-                }
-                if let Err(error) = result {
-                    let message = this.translator.read(cx).text_with(
-                        "downloadSubfolderUnavailable",
-                        &[("error", &error.to_string())],
-                    );
-                    window.push_notification(toast::error(SharedString::from(message)), cx);
-                    return;
-                }
-                let base = std::mem::replace(&mut built.common.save_dir, target);
-                this.dispatch_requests(built, Some(base), window, cx);
+                this.finish_subfolder_check(built, target, result, window, cx);
             }) else {
                 // The window was closed during the filesystem check.
                 return;
             };
         })
         .detach();
+    }
+
+    fn finish_subfolder_check(
+        &mut self,
+        mut built: BuiltRequests,
+        target: String,
+        result: std::io::Result<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.checking_subfolder = false;
+        cx.notify();
+        let same_item =
+            self.entries
+                .first()
+                .zip(built.items.first())
+                .is_some_and(|(entry, item)| {
+                    let rename = self.rename_value(cx);
+                    let name = if rename.is_empty() {
+                        entry.file_name.as_str()
+                    } else {
+                        rename.as_str()
+                    };
+                    entry.url == item.url && item.file_name == name
+                });
+        if !self.can_submit(cx)
+            || !same_item
+            || !self.use_subfolder
+            || self.save_dir.read(cx).value().trim() != built.common.save_dir
+            || self.subfolder_target(cx).as_deref() != Some(&target)
+        {
+            let message = self
+                .translator
+                .read(cx)
+                .text("downloadSubfolderFormChanged");
+            window.push_notification(toast::warning(message.to_owned()), cx);
+            return;
+        }
+        if let Err(error) = result {
+            let translator = self.translator.read(cx);
+            let message = if error.kind() == std::io::ErrorKind::AlreadyExists {
+                translator.text("downloadSubfolderOccupied").to_owned()
+            } else {
+                translator.text_with(
+                    "downloadSubfolderUnavailable",
+                    &[("error", &error.to_string())],
+                )
+            };
+            window.push_notification(toast::error(SharedString::from(message)), cx);
+            return;
+        }
+        let base = std::mem::replace(&mut built.common.save_dir, target);
+        self.dispatch_requests(built, Some(base), window, cx);
     }
 
     fn dispatch_requests(

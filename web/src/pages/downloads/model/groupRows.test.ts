@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import seriesTitleCases from '../../../../../crates/downloads/tests/fixtures/series_title_cases.json'
 import type { GroupDto, TaskDto } from '../../../lib/rpc'
 import { CategoryIndex, builtinDefaults } from './categories'
 import { SELECTION_ALL } from './filters'
@@ -88,10 +89,17 @@ const describeRow = (item: VisibleRow): string => {
 
 const keys = (rows: readonly VisibleRow[]) => rows.map(describeRow)
 
+test('content grouping recognises the same series titles as desktop', () => {
+  for (const [fileName, title] of seriesTitleCases) {
+    if (fileName === null) throw new Error('missing fixture filename')
+    expect(contentBucket(row(fileName, { fileName }).view)?.label ?? null).toBe(title)
+  }
+})
+
 test('content grouping collapses recognized episodes independently of save directories', () => {
   const rows = [
     row('one', { fileName: '节目.S01E01.mp4' }),
-    row('two', { fileName: '节目 S02E03.mp4', saveDir: '/elsewhere' }),
+    row('two', { fileName: '[字幕组] 节目 S02E103.mp4', saveDir: '/elsewhere' }),
     row('movie', { fileName: 'Movie.mp4' }),
     row('other', { fileName: 'Other.S01E02.mp4' }),
     row('lookalike', { fileName: 'Document AAS01E02.mp4' }),

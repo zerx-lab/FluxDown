@@ -44,7 +44,11 @@
 - **Automation & remote management** — RSS subscriptions, scheduled queues, webhooks, plugins and optional FluxCloud device collaboration
 - **Local-first** — free and open source, no ads, no account required for local downloads; resumable state stored locally by default
 
-In Desktop or Web, select a category and group by **Series title** in the view menu to fold recognizable episode names such as `Show.S01E02` together without moving files. In Desktop, use **Use a named subfolder** for a single local download to reuse or create a folder under the displayed save location. An explicitly entered or picked directory takes precedence. Desktop RSS still only collects history on the first fetch; **Download all eligible** queues new and initially collected items matching the current search after confirmation.
+In Desktop or Web, group a download category by **Series title** to fold individual episodes together without moving files. The view recognises names like `Show.S01E02`, `Show.S01E100`, `[Fansub] Show - 05` and `剧名第05话`; existing task groups and torrent bundles keep their own structure.
+
+For a single local download in Desktop, **Use a named subfolder** reuses or creates a folder under the displayed save location. Recognised episodes use the series title; other downloads use the file or magnet name. A manually entered or picked directory takes precedence.
+
+Desktop RSS only collects history on the first fetch. **Download all eligible** queues new and initially collected items matching the current search after confirmation. If the eligible items change, review the new results and confirm again.
 
 ## Features
 

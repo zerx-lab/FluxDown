@@ -42,6 +42,7 @@ use crate::{
         format_bytes,
         group_tree::GroupMeta,
         row_order::{InteractionHold, RowOrder},
+        series_title::series_title,
         view_prefs::{
             DateBucket, HeaderAlign, SortDir, ViewDensity, ViewGroupBy, ViewPrefs, ViewSortKey,
             state_group_key,
@@ -340,31 +341,8 @@ struct GroupBucket {
     order: i64,
 }
 
-/// Recognize explicit season/episode tokens; title is the filename stem before the token.
 fn content_group_bucket(task: &DownloadTaskView) -> Option<GroupBucket> {
-    let name = task.name.rsplit(['/', '\\']).next()?;
-    let bytes = name.as_bytes();
-    let separator = |byte: u8| b" ._-[]()".contains(&byte);
-    let (index, _) = bytes.windows(6).enumerate().find(|(index, part)| {
-        let [season, s1, s2, episode, e1, e2] = *part else {
-            return false;
-        };
-        season.eq_ignore_ascii_case(&b's')
-            && episode.eq_ignore_ascii_case(&b'e')
-            && [s1, s2, e1, e2].into_iter().all(u8::is_ascii_digit)
-            && index
-                .checked_sub(1)
-                .and_then(|i| bytes.get(i))
-                .copied()
-                .is_some_and(separator)
-            && bytes.get(index + part.len()).copied().is_none_or(separator)
-    })?;
-    let title = name
-        .get(..index)?
-        .trim_matches(|ch: char| ch.is_ascii() && separator(ch as u8));
-    if title.is_empty() {
-        return None;
-    }
+    let title = series_title(&task.name)?;
     let folded = title.to_lowercase();
     let key = if task.source == TaskSource::Remote {
         format!("content:remote:{}\0{folded}", task.to_device)

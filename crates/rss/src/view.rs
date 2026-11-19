@@ -7,7 +7,7 @@ use fluxdown_protocol::{
 };
 use fluxdown_ui_components::{
     BusyExt as _, BusyHold, CheckState, ControlExt as _, FluxIcon, SidebarPanel, SidebarState,
-    caption_number, check_mark, nav_icon_color, tabular_numbers, toolbar_action_button,
+    caption_number, check_mark, nav_icon_color, tabular_numbers, toast, toolbar_action_button,
     tooltip_view,
 };
 use fluxdown_ui_i18n::Translator;
@@ -460,7 +460,7 @@ impl RssView {
         let Some(source_id) = self.controller.selected_source.clone() else {
             return;
         };
-        let guids: Vec<_> = self
+        let guids: HashSet<_> = self
             .controller
             .bulk_download_candidates(&query, self.oldest_first)
             .map(str::to_owned)
@@ -491,30 +491,30 @@ impl RssView {
                     fluxdown_ui_components::DialogIntent::Confirm,
                     cx,
                 ))
-                .on_ok(move |_, _, cx| {
+                .on_ok(move |_, window, cx| {
                     view.update(cx, |this, cx| {
                         let current_query = this.search.read(cx).value().trim().to_lowercase();
-                        if this.controller.stale
-                            || this.controller.loading
-                            || this.controller.selected_source.as_deref() != Some(&source_id)
-                            || current_query != query
-                        {
-                            return false;
+                        let eligible = (current_query == query)
+                            .then(|| {
+                                this.controller.confirmed_bulk_download(
+                                    &source_id,
+                                    &query,
+                                    this.oldest_first,
+                                    &guids,
+                                )
+                            })
+                            .flatten();
+                        if let Some(eligible) = eligible {
+                            this.act(eligible, "download", cx);
+                        } else {
+                            window.push_notification(
+                                toast::warning(this.t("rssDownloadAllEligibleChanged", cx)),
+                                cx,
+                            );
                         }
-                        let confirmed: HashSet<_> = guids.iter().map(String::as_str).collect();
-                        let eligible: Vec<_> = this
-                            .controller
-                            .bulk_download_candidates(&query, this.oldest_first)
-                            .filter(|guid| confirmed.contains(guid))
-                            .map(str::to_owned)
-                            .collect();
-                        if eligible.is_empty() {
-                            return false;
-                        }
-                        this.act(eligible, "download", cx);
                         true
                     })
-                    .unwrap_or(false)
+                    .unwrap_or(true)
                 })
         });
     }

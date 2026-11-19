@@ -17,11 +17,15 @@ export interface BucketInfo {
   order: number
 }
 
+// Keep in sync with desktop series_title; both run series_title_cases.json.
+const episodeMarker = /(?:[ ._[\]()-][Ss][0-9]{2}[Ee][0-9]{2,3}| - [0-9]{2,3}|第[0-9]{1,3}[话話集])(?:$|[ ._[\]()-])/
+
 export function contentBucket(view: DownloadTaskView): BucketInfo | null {
   const name = view.name.slice(Math.max(view.name.lastIndexOf('/'), view.name.lastIndexOf('\\')) + 1)
-  const match = /[ ._\-[\]()]s[0-9]{2}e[0-9]{2}(?=$|[ ._\-[\]()])/i.exec(name)
+    .replace(/^ *(?:\[[^\]]*\] *)*/, '')
+  const match = episodeMarker.exec(name)
   if (match === null) return null
-  const label = name.slice(0, match.index).replace(/^[ ._\-[\]()]+|[ ._\-[\]()]+$/g, '')
+  const label = name.slice(0, match.index).replace(/^[ ._-]+|[ ._-]+$/g, '')
   if (label === '') return null
   const folded = label.toLowerCase()
   const key = view.source === 'remote' ? `content:remote:${view.toDevice}\u0000${folded}` : `content:local:${folded}`
