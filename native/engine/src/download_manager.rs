@@ -24518,7 +24518,7 @@ mod tests {
                 url: format!("{base}/video.m3u8"),
                 file_name: "video.m3u8".into(),
                 save_dir: dir.to_string_lossy().into_owned(),
-                unattended: true,
+                unattended_selection: true,
                 ..Default::default()
             })
             .await
