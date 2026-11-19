@@ -5,11 +5,12 @@
 import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { browser } from "wxt/browser";
-import { sendAction } from "@/utils/messaging";
+import type { TaskBrief } from "@/utils/native-messaging";
 import { Button } from "@/ui/components/Button";
 import { EmptyState } from "@/ui/components/EmptyState";
 import { Icon } from "@/ui/components/Icon";
 import { IconButton } from "@/ui/components/IconButton";
+import { Select } from "@/ui/components/Select";
 import { showToast } from "@/ui/components/Toast";
 import { QuickDownload } from "./QuickDownload";
 import { formatBytes, formatSpeed, progressPercent } from "@/ui/format";
@@ -17,23 +18,14 @@ import { useT } from "@/ui/i18n";
 import "./features.css";
 import { isCompletedFileMissing } from "./task-state";
 
-/** popup ↔ background 的任务对象（与 background/tasks.ts 一致）。 */
-interface TaskBrief {
-  taskId: string;
-  fileName: string;
-  status: number;
-  downloadedBytes: number;
-  totalBytes: number;
-  speed: number;
-  errorMessage?: string;
-  createdAt: string;
-  fileMissing?: boolean;
-}
+type TaskSource = "local" | "remote";
 
-interface NmhTasksResponse {
-  ok: boolean;
+interface TaskPanelResponse {
   connected: boolean;
-  tasks: TaskBrief[];
+  tasks: (Omit<TaskBrief, "speed"> & { speed?: number })[];
+  remoteUrl?: string;
+  switchable: boolean;
+  managementUnavailable?: boolean;
 }
 
 interface NmhOpResponse {
@@ -44,12 +36,12 @@ interface NmhOpResponse {
 const STATUS = { PENDING: 0, DOWNLOADING: 1, PAUSED: 2, COMPLETED: 3, ERROR: 4, PREPARING: 5 } as const;
 const POLL_MS = 1000;
 
-async function nmhTasks(): Promise<NmhTasksResponse> {
+async function taskPanelList(source: TaskSource): Promise<TaskPanelResponse> {
   try {
-    const res = (await browser.runtime.sendMessage({ type: "nmh-tasks" })) as NmhTasksResponse | undefined;
-    return res ?? { ok: false, connected: false, tasks: [] };
+    const res = (await browser.runtime.sendMessage({ type: "task-panel-list", source })) as TaskPanelResponse | undefined;
+    return res ?? { connected: false, tasks: [], switchable: false };
   } catch {
-    return { ok: false, connected: false, tasks: [] };
+    return { connected: false, tasks: [], switchable: false };
   }
 }
 
@@ -71,7 +63,9 @@ interface Props {
 
 export function TaskList(props: Props): JSX.Element {
   const t = useT();
-  const [state, setState] = useState<NmhTasksResponse | null>(null);
+  const [state, setState] = useState<TaskPanelResponse | null>(null);
+  const [source, setSource] = useState<TaskSource>("local");
+  const selectedSource = useRef<TaskSource>("local");
   const [starting, setStarting] = useState(false);
   const inFlight = useRef(false);
   const startTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -79,8 +73,10 @@ export function TaskList(props: Props): JSX.Element {
   const poll = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
+    const requestedSource = selectedSource.current;
     try {
-      const res = await nmhTasks();
+      const res = await taskPanelList(requestedSource);
+      if (requestedSource !== selectedSource.current) return;
       setState(res);
       if (res.connected) {
         setStarting(false);
@@ -118,8 +114,12 @@ export function TaskList(props: Props): JSX.Element {
     onActiveCountChange?.(activeCount);
   }, [activeCount, onActiveCountChange]);
 
+  const remoteUrl = state?.remoteUrl;
   const op = async (kind: "pause" | "resume" | "remove", taskId: string) => {
-    const res = await nmhMessage({ type: "nmh-task-op", op: kind, taskId });
+    if (remoteUrl && kind !== "remove") return;
+    const res = await nmhMessage(remoteUrl
+      ? { type: "task-panel-remove-remote", taskId, remoteUrl }
+      : { type: "nmh-task-op", op: kind, taskId });
     if (!res.ok) showToast(res.message || t("popup.task.opFailed"), "error");
     else void poll();
   };
@@ -139,23 +139,61 @@ export function TaskList(props: Props): JSX.Element {
 
   if (!state) return <div class="fd-empty">{t("header.checking")}</div>;
 
-  const quick = props.quickDownload && state.connected ? <QuickDownload onSent={() => void poll()} /> : null;
+  const sourcePicker = state.switchable ? (
+    <Select<TaskSource>
+      value={source}
+      label={t("remote.title")}
+      options={[
+        { value: "local", label: t("popup.tasks.localSource") },
+        { value: "remote", label: t("popup.tasks.remoteSource") },
+      ]}
+      onChange={(value) => {
+        selectedSource.current = value;
+        setSource(value);
+        void poll();
+      }}
+    />
+  ) : null;
+
+  if (state.switchable && (source === "remote") !== Boolean(remoteUrl)) {
+    return <div class="fd-tasks">{sourcePicker}<div class="fd-empty">{t("header.checking")}</div></div>;
+  }
+
+  const quick = props.quickDownload && state.connected
+    ? <QuickDownload channel={remoteUrl ? "remote" : undefined} onSent={() => void poll()} />
+    : null;
 
   if (!state.connected) {
     return (
-      <EmptyState icon="alert" title={t("popup.tasks.appNotRunning")}>
-        <Button size="sm" variant="primary" disabled={starting} onClick={startApp}>
-          {starting ? t("popup.tasks.starting") : t("popup.tasks.startApp")}
-        </Button>
-      </EmptyState>
+      <div class="fd-tasks">
+        {sourcePicker}
+        {remoteUrl ? (
+          <EmptyState
+            icon="alert"
+            title={t("popup.tasks.remoteUnavailable")}
+            hint={state.managementUnavailable ? t("remote.managementUnavailableHint") : undefined}
+          />
+        ) : (
+          <EmptyState icon="alert" title={t("popup.tasks.appNotRunning")}>
+            <Button size="sm" variant="primary" disabled={starting} onClick={startApp}>
+              {starting ? t("popup.tasks.starting") : t("popup.tasks.startApp")}
+            </Button>
+            <a class="fd-task-download-link" href="https://fluxdown.com/download/" target="_blank" rel="noreferrer noopener">
+              {t("popup.tasks.downloadApp")}
+            </a>
+          </EmptyState>
+        )}
+      </div>
     );
   }
 
   const active = state.tasks.filter((x) => x.status !== STATUS.COMPLETED);
-  const completed = state.tasks.filter((x) => x.status === STATUS.COMPLETED).slice(0, props.density === "compact" ? 3 : 20);
+  const finished = state.tasks.filter((x) => x.status === STATUS.COMPLETED);
+  const completed = finished.slice(0, props.density === "compact" ? 3 : 20);
 
   return (
     <div class="fd-tasks">
+      {sourcePicker}
       {quick}
       {active.length === 0 && completed.length === 0 ? <EmptyState icon="download" title={t("popup.tasks.empty")} /> : null}
       {active.length > 0 ? (
@@ -171,7 +209,7 @@ export function TaskList(props: Props): JSX.Element {
             else if (paused) right = t("popup.task.paused");
             else if (task.status === STATUS.PENDING) right = t("popup.task.pending");
             else if (task.status === STATUS.PREPARING) right = t("popup.task.preparing");
-            else right = `${formatSpeed(task.speed)} · ${pct.toFixed(0)}%`;
+            else right = `${task.speed === undefined ? "" : `${formatSpeed(task.speed)} · `}${pct.toFixed(0)}%`;
             return (
               <div class={`fd-task${paused ? " fd-paused" : ""}${error ? " fd-error" : ""}`} key={task.taskId}>
                 <Icon fileName={task.fileName} size={18} />
@@ -194,13 +232,15 @@ export function TaskList(props: Props): JSX.Element {
                     </div>
                   ) : null}
                 </div>
-                <IconButton
-                  icon={paused ? "play" : "pause"}
-                  label={paused ? t("popup.task.resume") : t("popup.task.pause")}
-                  size={13}
-                  disabled={error}
-                  onClick={() => void op(paused ? "resume" : "pause", task.taskId)}
-                />
+                {!remoteUrl && (
+                  <IconButton
+                    icon={paused ? "play" : "pause"}
+                    label={paused ? t("popup.task.resume") : t("popup.task.pause")}
+                    size={13}
+                    disabled={error}
+                    onClick={() => void op(paused ? "resume" : "pause", task.taskId)}
+                  />
+                )}
                 <IconButton icon="trash" label={t("popup.task.remove")} size={13} onClick={() => void op("remove", task.taskId)} />
               </div>
             );
@@ -209,7 +249,7 @@ export function TaskList(props: Props): JSX.Element {
       ) : null}
       {completed.length > 0 ? (
         <section class="fd-group">
-          <h4 class="fd-group-title">{t("popup.tasks.completed")}</h4>
+          <h4 class="fd-group-title">{t(remoteUrl ? "popup.tasks.remoteCompleted" : "popup.tasks.completed")}</h4>
           {completed.map((task) => {
             const missing = isCompletedFileMissing(task);
             return (
@@ -224,12 +264,16 @@ export function TaskList(props: Props): JSX.Element {
                   </div>
                   {missing ? <div class="fd-task-error">{t("popup.task.fileMissing")}</div> : null}
                 </div>
-                <Button size="sm" variant="ghost" disabled={missing} onClick={() => void fileOp("open", task.taskId)}>
-                  {t("popup.task.open")}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => void fileOp("reveal", task.taskId)}>
-                  {t("popup.task.reveal")}
-                </Button>
+                {remoteUrl ? (
+                  <IconButton icon="trash" label={t("popup.task.remove")} size={13} onClick={() => void op("remove", task.taskId)} />
+                ) : <>
+                  <Button size="sm" variant="ghost" disabled={missing} onClick={() => void fileOp("open", task.taskId)}>
+                    {t("popup.task.open")}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void fileOp("reveal", task.taskId)}>
+                    {t("popup.task.reveal")}
+                  </Button>
+                </>}
               </div>
             );
           })}

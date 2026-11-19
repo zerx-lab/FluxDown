@@ -45,6 +45,7 @@
 - **SQLite 测试 URL 不得把 Windows 盘符放在 `sqlite://` 的主机位**：`sqlite://C:\...` 经 SQLx Any 的 URL 解析会把 `C` 当主机、丢掉盘符冒号，打开错误的相对路径（SQLite 14）；文件型测试库一律用 `db::sqlite_url` 生成 URL → 各下载器测试的文件库夹具。
 - **Windows 上测试删目录前，先关掉所有持有文件的对象**：只 `drop` 不够——BT 会话要 `shutdown`、SQLx 池要 `close`，在途 runtime 与常驻连接都可能还占着文件（`Os { code: 32 }`）；不需要跨重启持久化的测试直接用内存库 → `bt_downloader.rs` 的选择夹具、`tests/engine/bt_guard/e2e.rs::a_failed_startup_load_is_retried_when_the_next_bt_session_starts`、`tests/engine/hls_live_recording.rs::setup`。
 - **BT 文件选择期间暂停会与句柄摘除竞争**：取消选择询问会删掉会话句柄；管理器已取消 worker 后再调用 `session.pause`，句柄可能恰好消失并报错。此时仍须写入暂停态、保留匹配 `TaskDone` 的收尾屏障，否则数据库停在准备态 5 且永远没有暂停帧。测试须核对暂停前后落库状态与目标帧 → `native/engine/src/download_manager.rs::{pause_task_inner,pause_during_unanswered_bt_file_selection_finishes_task}`。
+- **删除任务时 `InvalidFilename` 与 `NotFound` 一样算路径不存在**：失败任务的保存路径含 Windows 非法字符（#1191，`os error 123`）或组件超长时，`remove_file` 返回 `InvalidFilename`（Windows `ERROR_INVALID_NAME` / `ERROR_FILENAME_EXCED_RANGE`，Unix `ENAMETOOLONG`）而不是 `NotFound`。只忽略 `NotFound` 会把「文件不可能存在」当成清理失败，任务记录永久留下，只删记录也同样失败。权限、占用、目录冲突仍须保留任务 → `native/engine/src/download_manager.rs::path_is_absent`（`delete_task` / `keep_first_cleanup_error` / `delete_task_artifact_files`）、回归 `delete_failed_task_with_impossible_name_removes_record`。
 
 ## BT / eD2K
 
@@ -148,6 +149,8 @@
 - **调试构建与正式版共用 `agent-state.json`（同一设备 id 与云凭据），dev 默认 FluxCloud 地址是 `http://127.0.0.1:8720`**：没设地址覆盖的 dev 构建会把生产令牌发到本地服务，401 后清掉共用的登录态，装回正式版时表现为「升级后登出」。`CloudCredentials.issuer` 记签发地址，调试构建下当前地址 ≠ 签发地址时被拒不清会话 → `native/agent/src/cloud/client.rs::{reject_refresh_token,issued_elsewhere}`，回归 `a_foreign_endpoint_rejection_keeps_credentials_in_debug_builds`。
 ## GPUI（gpui-fast 保留模式）
 
+- **BT 选择窗点 X 必须走取消流程**：直接关窗不会撤回 daemon 的文件选择请求，任务会残留准备中。原生关闭与 Linux 自绘 X 经 `AuxiliaryWindowView::on_close_requested` 调同一个 `SelectionView::cancel`，等待删除事件关窗；确认 / 超时后的程序主动 `remove_window` 不触发取消 → `crates/app/src/windows/selection.rs`、`crates/shell/src/view.rs`、`crates/downloads/src/pages/selection.rs`。
+
 另见 AGENTS.md §4：render 读的状态必须在 entity / global / `ListState` / `ScrollHandle` 内，父 view notify 不再重建子 view，渲染期不得无条件写 entity / global。
 - **扩展任务行投影不能丢掉已有任务事实**：统一编辑增加分类／标签时曾漏映射 `group_id`、`save_dir`，导致组成员误显示「忽略插件重试」且目录上下文丢失。`DownloadTaskView::local` 必须保留二者；不要用改菜单断言来掩盖事实缺失 → `crates/downloads/src/model/mod.rs::DownloadTaskView::local`、回归 `components::task_table::context_menu_tests::plugin_retry_fact_excludes_task_group_members`。
 - **「全部」命中不能抑制「其他」计数，手动分类须单独求值**：`CategoryIndex::for_each_match` 曾把 `Matcher::All` 也计作具体命中，导致未分类任务的侧栏计数为零；手动归入 `other` 也不能进入自动兜底分支。Rust／Web 均须满足一次扫描计数与逐项过滤等价，重复规则只计一次 → `crates/downloads/src/model/categories.rs`、`model/counts.rs::category_override_counts_match_filters_including_other`、Web `model/counts.test.ts`。
@@ -185,6 +188,8 @@
 
 另见 AGENTS.md §4：插件页面脚本只经浏览器 `userScripts` API 执行。
 
+- **远程下载接管与管理 API 独立门控**：迁移部署可保留接管而关闭管理 API；`/api/v1/info` 返回 404 仅表示无法验证管理 API 和密钥，不能据此禁用接管，也不能报告完整验证成功。列表端点返回 404 时提示宿主开关和反代路由；单个任务的 DELETE 返回 404 也可能只是任务已不存在 → `fluxDown/utils/remote-server.ts`、`fluxDown/background/messages.ts`。
+
 - **表单 POST 的 method / body 不得经重定向回退到下载 URL**：表单 POST 经 301 / 302 / 303 跳到直链后浏览器改发 GET，旧逻辑按 `originalUrl` 回查请求事务，把跳转前的 POST 体安到直链上；`file.xiecdn.com` 这类 CDN 对 POST 直接断连（`connection closed before message completed`），而 POST 任务恢复被引擎拒绝，任务必失败（0.6.0 靠改发 GET 的自动重试掩盖）。只认下载 URL 自身的记录，307 / 308 由 `onBeforeRedirect` 把事务带到目标 URL → `fluxDown/background/request-record.ts::carryAcrossRedirect`。
 - **共享 NMH 端口是一问一答串行的，队首卡死必须断开换新端口，但「排在合法慢请求后面而超时」不得回收**：中继与 agent 连接串行，队首卡住后排队请求全部超时，原先超时不换端口会让任务面板与能力探测一直「未连接」直到 SW 重启；旧端口迟到的断开事件也不得波及新端口 → `fluxDown/utils/nmh-shared.ts::createSharedChannel`、回归 `fluxDown/utils/nmh-shared.test.ts`（三条用例：队首卡死回收 / 慢请求之后不回收 / 迟到断开不波及新端口）。
 - **扩展必须跳过自己配置的远端 FluxDown 服务发起的「下载到本地」请求**：否则扩展拦截该下载、再回投同一远端，形成持续创建任务的死循环；判定依据含 referrer / URL 的 origin 与 server 文件导出端点路径（覆盖反代 / 不同主机名访问 Web UI） → `fluxDown/utils/settings.ts::isFluxDownServerDownload`、测试 `fluxDown/utils/settings.test.ts`。
@@ -206,6 +211,7 @@
 ## Android
 
 - **HLS 分片进度不是字节进度**：Android 列表、详情、前台通知有点播分片计数时用同一分片比例；字节 ETA 只留在详情「常规」的字节统计中，不与分片百分比同组显示。多任务通知只汇总同口径的进度，混合口径时用不确定态。直播、旧主机或尚未收到分片运行时状态时沿用字节口径 → `DownloadsDerive.kt::itemFor`、`TaskDetailModel.kt`、`TransferSummary.kt`。
+- **`repeatOnLifecycle` 的轮询块正常返回后不会在同一次 `STARTED` 内重启**：BT 监听状态遇到一次 RPC 超时不能退出轮询；保留旧快照，按原间隔重试，仅 `Unsupported` 停止，连接失效或换主机则清掉旧快照 → `mobile/Android/app/src/main/java/com/fluxdown/app/feature/settings/bt/BtPage.kt::BtPage`。
 - **前台服务停止必须用 `stopSelfResult(lastStartId)`，并在每次启动请求重新计时空闲宽限**：用 `stopSelf()` 会拆掉在途、尚未来得及 `startForeground` 的启动请求，系统以 `ForegroundServiceDidNotStartInTimeException` 杀整个进程；外部唤起建任务后也不能被旧计时停掉 → `mobile/Android/app/src/main/java/com/fluxdown/app/service/DownloadService.kt::stopIfIdle`。
 - **FileProvider 要声明 `root-path` 覆盖 `/storage/`**：可移动存储卡上的文件（`/storage/6BF9-89B3/...`）否则生成不了 content URI，打开已下载文件会崩；文件不在声明根内时提示失败而不是抛异常 → `mobile/Android/app/src/main/res/xml/file_paths.xml`（`storage_volumes`）。
 - **叠层返回键的优先级：菜单 / 对话框在 Sheet 之上**：后注册的 Sheet 返回处理器会抢先，菜单打开时返回键应交给 `FluxOverlayHost` → `mobile/Android/fluxui/src/main/java/com/fluxdown/fluxui/overlay/FluxSheet.kt`（`canGoBack` 条件）。

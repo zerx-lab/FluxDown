@@ -54,11 +54,28 @@ function BasicTab({ btEnabled }: { btEnabled: boolean }) {
   )
 }
 
-/** 端口映射状态行：快照由本行挂载期间（「连接」页签可见且 UPnP 开）轮询；尚无快照时行内留空。 */
-function PortMappingRow() {
+/** Both readouts share one snapshot poll while the Connection tab is mounted. */
+function PortStatusRows({ upnp }: { upnp: boolean }) {
   const t = useT()
   const status = usePortStatus()
-  const segments = status ? portMappingSegments(status) : []
+  let listener: string
+  if (!status) listener = t('btListenerUnavailable')
+  else if (!status.running) listener = t('btListenerIdle')
+  else if (!status.listenPort) listener = t('btListenerNoPort')
+  else listener = t('btListenerActive', { port: status.listenPort })
+  return (
+    <>
+      <SettingsRow title={t('btListenerStatus')} description={t('btReachabilityUnverified')} vertical>
+        <span className="text-xs text-muted-foreground">{listener}</span>
+      </SettingsRow>
+      <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
+      {upnp ? <PortMappingRow segments={status ? portMappingSegments(status) : []} /> : null}
+    </>
+  )
+}
+
+function PortMappingRow({ segments }: { segments: ReturnType<typeof portMappingSegments> }) {
+  const t = useT()
   return (
     <SettingsRow title={t('btPortMappingStatus')} vertical>
       <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-0.5">
@@ -89,8 +106,7 @@ function ConnectionTab() {
       <SettingsSection title={t('btSectionListen')} subtitle={t('btSettingsRestartHint')}>
         <DaemonNumberRow configKey="bt_port_start" titleKey="btListenPortStart" descKey="btListenPortDesc" />
         <DaemonNumberRow configKey="bt_port_end" titleKey="btListenPortEnd" />
-        <DaemonSwitchRow configKey="bt_enable_upnp" titleKey="btEnableUpnp" descKey="btEnableUpnpDesc" />
-        {upnp ? <PortMappingRow /> : null}
+        <PortStatusRows upnp={upnp} />
       </SettingsSection>
       <SettingsSection title={t('btSectionTransport')}>
         <DaemonSwitchRow configKey="bt_enable_utp" titleKey="btEnableUtp" descKey="btEnableUtpDesc" />

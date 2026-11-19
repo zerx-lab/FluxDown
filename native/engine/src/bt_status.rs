@@ -445,7 +445,7 @@ impl From<librqbit::PortMappingStatus> for PortMappingRow {
 pub struct BtPortStatusView {
     /// BT 会话是否在运行（没有 BT 任务时会话不创建，也就没有监听与映射）。
     pub running: bool,
-    /// 监听端口；未运行为 0。
+    /// 实际监听端口；0 表示未报告监听端口。
     pub listen_port: u16,
     /// 端口映射关闭时为空。
     pub mappings: Vec<PortMappingRow>,

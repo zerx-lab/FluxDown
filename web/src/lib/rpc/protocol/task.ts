@@ -566,7 +566,7 @@ export interface BtPortMappingDto {
 export interface BtPortStatusDto {
   /** BT 会话是否在运行（没有 BT 任务时不创建会话）。 */
   running: boolean;
-  /** 监听端口；0 / 缺省 = 未运行。 */
+  /** 实际监听端口；0 / 缺省 = 未报告监听端口。 */
   listenPort?: number;
   mappings?: BtPortMappingDto[];
 }
