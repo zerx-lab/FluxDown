@@ -78,4 +78,20 @@ class TaskInfoExportTest {
         val entry = UrlEntry("https://example.com/dir/a b.zip?x=1")
         assertEquals("a b.zip", entry.batchExportName())
     }
+
+    @Test
+    fun batchExportPreservesInvalidUtf8AndDecodesValidNames() {
+        val batch = parseEntries(
+            "https://example.com/caf%E9%20final.zip\n" +
+                "magnet:?xt=urn:btih:a&dn=报告+%E2%82%AC\n" +
+                "https://example.com/%EF%BF%BD.zip",
+        )
+        assertEquals(
+            "Name\tURL\tSize (bytes)\n" +
+                "caf%E9%20final.zip\thttps://example.com/caf%E9%20final.zip\t\n" +
+                "报告+€\tmagnet:?xt=urn:btih:a&dn=报告+%E2%82%AC\t\n" +
+                "\uFFFD.zip\thttps://example.com/%EF%BF%BD.zip\t",
+            taskInfoText(batch.map { TaskInfoRow(it.batchExportName(), it.url) }),
+        )
+    }
 }

@@ -4,7 +4,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import com.fluxdown.core.model.TaskProtocol
 import java.net.URI
-import java.net.URLDecoder
+import java.nio.charset.CharacterCodingException
 
 /**
  * 「新建下载」的纯模型：链接解析与预设。规则与桌面端 `crates/downloads/src/model/new_download.rs`
@@ -107,7 +107,29 @@ internal fun protocolOf(url: String): TaskProtocol = when {
     else -> TaskProtocol.Http
 }
 
-private fun decode(s: String): String = runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
+private fun decode(s: String): String {
+    if ('%' !in s) return s
+    val bytes = s.encodeToByteArray()
+    var read = 0
+    var written = 0
+    while (read < bytes.size) {
+        val byte = bytes[read++]
+        bytes[written++] = if (byte == '%'.code.toByte()) {
+            if (bytes.size - read < 2) return s
+            val high = bytes[read++].toInt().toChar().digitToIntOrNull(16) ?: return s
+            val low = bytes[read++].toInt().toChar().digitToIntOrNull(16) ?: return s
+            (high * 16 + low).toByte()
+        } else {
+            byte
+        }
+    }
+    return try {
+        bytes.decodeToString(endIndex = written, throwOnInvalidSequence = true)
+    } catch (_: CharacterCodingException) {
+        // Preserve the link's spelling rather than exporting replacement characters.
+        s
+    }
+}
 
 internal fun UrlEntry.batchExportSize(): Long? {
     if (!url.startsWith("ed2k://|file|", ignoreCase = true)) return null
