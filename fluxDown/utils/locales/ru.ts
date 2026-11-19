@@ -58,6 +58,8 @@ const ru: Record<MessageKey, string> = {
   "remote.testing": "Проверяем...",
   "remote.testSuccess": "Подключено ({app} v{version})",
   "remote.testAuthFailed": "Аутентификация не прошла, проверьте токен доступа",
+  "remote.testManagementUnavailable": "Сервер доступен, но не удалось проверить API управления и ключ доступа.",
+  "remote.managementUnavailableHint": "В веб-интерфейсе сервера включите API управления в разделе «Настройки → Служба API». Если используется обратный прокси, убедитесь, что он перенаправляет запросы к /api/v1/.",
   "remote.testUnreachable":
     "Сервер недоступен, проверьте адрес и сеть",
   "remote.testNotConfigured": "Сначала введите адрес сервера",
@@ -70,7 +72,7 @@ const ru: Record<MessageKey, string> = {
   "options.title": "Настройки FluxDown",
   "options.remoteDesc":
     "Настройте адрес fluxdown_server и токен доступа. Удалённые режимы откроются после успешной проверки подключения.",
-  "options.verifiedState": "Статус: подключение проверено",
+  "options.verifiedState": "Статус: удалённые режимы доступны",
   "options.unverifiedState": "Статус: не проверено (удалённые режимы недоступны)",
   "options.navSettings": "Настройки",
   "options.nav.general": "Общие",
@@ -277,6 +279,10 @@ const ru: Record<MessageKey, string> = {
   "popup.tasks.completed": "Недавно завершённые",
   "popup.tasks.empty": "Задач загрузки нет",
   "popup.tasks.appNotRunning": "FluxDown не запущен",
+  "popup.tasks.localSource": "Этот компьютер",
+  "popup.tasks.remoteSource": "Удалённый сервер",
+  "popup.tasks.remoteUnavailable": "Удалённые задачи недоступны",
+  "popup.tasks.remoteCompleted": "Завершённые",
   "popup.tasks.startApp": "Запустить FluxDown",
   "popup.tasks.downloadApp": "Не установлен? Скачать FluxDown",
   "popup.tasks.starting": "Запуск…",
