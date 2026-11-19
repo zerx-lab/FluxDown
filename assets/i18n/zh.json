@@ -1882,6 +1882,7 @@
   "trayExit": "退出",
   "trayCancelShutdown": "取消定时关机",
   "trayCancelSleep": "取消定时睡眠",
+  "trayCancelQuit": "取消定时退出",
   "menuFile": "文件",
   "menuTasks": "任务",
   "menuTools": "工具",

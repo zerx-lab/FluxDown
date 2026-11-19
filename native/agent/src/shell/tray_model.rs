@@ -119,7 +119,7 @@ fn build(translator: &Translator, inputs: &Inputs, countdown_in_menu: bool) -> T
     let (countdown_key, cancel_key) = match inputs.power.action {
         PowerAction::Shutdown => ("shutdownCountdown", "trayCancelShutdown"),
         PowerAction::Sleep => ("sleepCountdown", "trayCancelSleep"),
-        PowerAction::Quit => ("quitCountdown", "quitCancelButton"),
+        PowerAction::Quit => ("quitCountdown", "trayCancelQuit"),
     };
     let remaining = inputs.power.countdown_remaining_secs.map(format_remaining);
     let tooltip = remaining.as_ref().map_or_else(
@@ -204,7 +204,7 @@ mod tests {
                 "trayCancelShutdown",
             ),
             (PowerAction::Sleep, "sleepCountdown", "trayCancelSleep"),
-            (PowerAction::Quit, "quitCountdown", "quitCancelButton"),
+            (PowerAction::Quit, "quitCountdown", "trayCancelQuit"),
         ] {
             let inputs = Inputs {
                 visible: true,

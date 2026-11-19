@@ -470,7 +470,7 @@ export interface PowerLowSpeedCondition {
 export interface PowerStatusDto {
   /** 已排定的延迟（秒）；null = 未启用。 */
   armedDelaySecs: number | null;
-  /** 全部任务结束（或排定时本就没有任务）、开始倒计时后的剩余秒数；等待任务完成阶段为 null。 */
+  /** 倒计时剩余秒数；等待触发条件（含 daemon 断连）或未启用时为 null。 */
   countdownRemainingSecs: number | null;
   /** 已排定的操作；未启用时为默认值（旧 agent 缺省 = shutdown）。 */
   action?: PowerAction;

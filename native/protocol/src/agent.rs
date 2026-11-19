@@ -775,7 +775,7 @@ pub struct PowerLowSpeedCondition {
 pub struct PowerStatusDto {
     /// 已排定的延迟（秒）；`None` = 未启用。
     pub armed_delay_secs: Option<u64>,
-    /// 全部任务结束（或排定时本就没有任务）、真正开始倒计时后的剩余秒数；等待任务完成阶段为 `None`。
+    /// 倒计时剩余秒数；等待触发条件（含 daemon 断连）或未启用时为 `None`。
     pub countdown_remaining_secs: Option<u64>,
     /// 已排定的操作；未启用时为默认值（旧 agent 缺省 = 关机）。
     #[serde(default)]
@@ -788,8 +788,8 @@ pub struct PowerStatusDto {
     pub low_speed_elapsed_secs: Option<u64>,
 }
 
-/// `agent.power.arm` 参数：没有任务时立即开始倒计时，否则全部任务完成后再等待 `delay_secs`
-/// 秒执行 `action`。`delay_secs = 0`（完成后立即）只在有任务时接受。
+/// `agent.power.arm` 参数：完成模式在 daemon 在线且没有待完成任务时开始 `delay_secs` 倒计时。
+/// `delay_secs = 0`（完成后立即）只在 daemon 在线且有待完成任务时接受。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -798,7 +798,7 @@ pub struct PowerArmParams {
     /// 缺省 = 关机（旧客户端）。
     #[serde(default)]
     pub action: PowerAction,
-    /// When present, `delay_secs` is replaced by the fixed cancellable warning interval.
+    /// When present, `delay_secs` is replaced by the fixed cancellable warning interval; `quit` is not supported.
     #[serde(default)]
     pub low_speed: Option<PowerLowSpeedCondition>,
 }
