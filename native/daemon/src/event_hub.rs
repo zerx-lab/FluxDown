@@ -1413,6 +1413,7 @@ mod tests {
             checksum: String::new(),
             ignore_tls_errors: false,
             file_missing: false,
+            file_clear_state: fluxdown_engine::model::FileClearState::None,
             completed_at: String::new(),
             file_hash: String::new(),
             segments: 0,

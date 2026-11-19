@@ -11,7 +11,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::{AssertSqlSafe, Row};
 use thiserror::Error;
 
-use crate::model::{GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
+use crate::model::{FileClearState, GroupInfo, MAIN_QUEUE_ID, QueueInfo, SourceBytes, TaskInfo};
 use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
 
 mod bt_guard;
@@ -821,6 +821,7 @@ pub struct Db {
 /// `unwrap_or_default`/`unwrap_or`，与既有字段风格一致；运行路径下这些列已由
 /// `add_column_if_missing` 补齐。
 fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
+    let file_state = row.try_get::<i32, _>("file_missing").unwrap_or_default();
     Ok(TaskInfo {
         task_id: row.try_get("id")?,
         url: row.try_get("url")?,
@@ -835,7 +836,13 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         queue_id: row.try_get("queue_id").unwrap_or_default(),
         checksum: row.try_get("checksum").unwrap_or_default(),
         ignore_tls_errors: row.try_get::<i32, _>("ignore_tls_errors").unwrap_or(0) != 0,
-        file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
+        file_missing: matches!(file_state, 1 | 2),
+        file_clear_state: match file_state {
+            2 => FileClearState::Cleared,
+            3 => FileClearState::Pending,
+            4 => FileClearState::RestartPending,
+            _ => FileClearState::None,
+        },
         completed_at: row.try_get("completed_at").unwrap_or_default(),
         file_hash: row.try_get("file_hash").unwrap_or_default(),
         segments: row.try_get("segments").unwrap_or(0),
@@ -2371,8 +2378,108 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    /// 批量落库文件跟踪标志：语义与 [`Self::update_task_file_missing`] 完全
-    /// 一致（逐行 `WHERE id AND status = 3`），但整批在**同一个事务**里提交。
+    // 0 = present, 1 = unexpectedly missing, 2 = explicitly cleared,
+    // 3 = explicit unlink pending. The scanner may only write states 0 and 1.
+    pub(crate) async fn begin_task_file_clear(&self, id: &str) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET file_missing = 3 WHERE id = $1 AND status = 3 AND file_missing IN (0, 3)",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub(crate) async fn finish_task_file_clear(
+        &self,
+        id: &str,
+        removed: bool,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing = 3",
+        )
+        .bind(if removed { 2 } else { 0 })
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn pending_task_file_clears(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id, save_dir, file_name FROM tasks WHERE status = 3 AND file_missing = 3",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| Ok((row.try_get(0)?, row.try_get(1)?, row.try_get(2)?)))
+            .collect()
+    }
+
+    // file_missing = 4 is an internal pre-start state, not a completed missing file.
+    // Keep it through queueing, resolving and startup recovery until naming is settled.
+    // The restart probes like a fresh hint-less start, so Range starts verified as it does there.
+    pub(crate) async fn reset_missing_task_for_restart(&self, id: &str) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE tasks SET status = 0, file_missing = 4, downloaded_bytes = 0, total_bytes = 0,
+                 src_cdn_bytes = 0, src_proxy_bytes = 0, src_nic_bytes = 0,
+                 error_message = '', completed_at = '', file_hash = '', exists_decision = '',
+                 orig_etag = '', orig_last_modified = '', range_verified = 1
+             WHERE id = $1 AND status = 3 AND file_missing IN (1, 2)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM task_segments WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM ed2k_blocks WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        // The new download must not inherit ownership of any old output, including
+        // artifacts left behind by best-effort cleanup.
+        sqlx::query("DELETE FROM task_artifacts WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM config WHERE key IN ($1, $2, $3, $4)")
+            .bind(format!("hls_resume_{id}"))
+            .bind(format!("hls_audio_resume_{id}"))
+            .bind(format!("hls_filter_{id}"))
+            .bind(format!("hls_audio_filter_{id}"))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    // Publish the reserved name before the downloader can create any resumable state.
+    pub(crate) async fn bind_missing_task_restart(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE tasks SET file_name = $1, file_missing = 0 WHERE id = $2 AND file_missing = 4",
+        )
+        .bind(name)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() != 0)
+    }
+
+    /// 批量落库文件跟踪标志。跳过非完成任务与显式清理的记录。
     /// SQLite 在 WAL + `synchronous=NORMAL` 下提交不再逐次 fsync，但每条独立
     /// UPDATE 仍是一次隐式事务（一次 WAL 写入与写锁往返）；
     /// 外置盘掉线这类「上万条同时翻转」的场景下那是显著阻塞，还会和下载
@@ -2391,12 +2498,13 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         let mut applied = Vec::with_capacity(updates.len());
         for (id, missing) in updates {
-            let result =
-                sqlx::query("UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3")
-                    .bind(*missing as i32)
-                    .bind(id.as_str())
-                    .execute(&mut *tx)
-                    .await?;
+            let result = sqlx::query(
+                "UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3 AND file_missing IN (0, 1)",
+            )
+            .bind(*missing as i32)
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
             if result.rows_affected() > 0 {
                 applied.push((id.clone(), *missing));
             }
@@ -2867,6 +2975,51 @@ impl Db {
         Ok(())
     }
 
+    pub(crate) async fn rename_task_output(
+        &self,
+        task_id: &str,
+        file_name: &str,
+        companion: Option<(&Path, &Path)>,
+    ) -> Result<(), DbError> {
+        let Some((old, new)) = companion else {
+            return self
+                .set_task_file_name_with_source(task_id, file_name, false)
+                .await;
+        };
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE tasks SET file_name = $1, name_inferred = 0 WHERE id = $2")
+            .bind(file_name)
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+        Self::rename_registered_artifact(&mut tx, task_id, old, new).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn rename_registered_artifact(
+        tx: &mut sqlx::Transaction<'_, Any>,
+        task_id: &str,
+        old: &Path,
+        new: &Path,
+    ) -> Result<(), DbError> {
+        if let (Some(old), Some(new)) = (
+            old.file_name().and_then(|name| name.to_str()),
+            new.file_name().and_then(|name| name.to_str()),
+        ) && old != new
+        {
+            sqlx::query(
+                "UPDATE task_artifacts SET file_name = $1 WHERE task_id = $2 AND file_name = $3",
+            )
+            .bind(new)
+            .bind(task_id)
+            .bind(old)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
     /// 无条件改写任务文件名，保留 `name_inferred`（引擎侧改名：启动序幕的 dedup、
     /// HLS/DASH 扩展名归一化）。来源随名字一起变时用 [`Self::set_task_file_name_with_source`]。
     pub async fn set_task_file_name(&self, task_id: &str, file_name: &str) -> Result<(), DbError> {
@@ -2929,7 +3082,7 @@ impl Db {
     pub async fn load_file_tracking_rows(&self) -> Result<Vec<FileTrackingRow>, DbError> {
         let rows = sqlx::query(
             "SELECT id, save_dir, file_name, file_missing, status FROM tasks \
-             WHERE status IN (0, 1, 3, 5)",
+             WHERE status IN (0, 1, 3, 5) AND file_missing IN (0, 1)",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -2997,6 +3150,29 @@ impl Db {
             for row in &rows {
                 results.push(task_from_row(row)?);
             }
+        }
+        Ok(results)
+    }
+
+    /// Recheck detached scan results before the actor removes task records.
+    pub async fn unexpectedly_missing_task_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut results = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("${i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id FROM tasks WHERE status = 3 AND file_missing = 1 AND id IN ({placeholders})"
+            );
+            let mut query = sqlx::query_scalar::<Any, String>(AssertSqlSafe(sql));
+            for id in chunk {
+                query = query.bind(id.as_str());
+            }
+            results.extend(query.fetch_all(&self.pool).await?);
         }
         Ok(results)
     }
@@ -3216,8 +3392,14 @@ impl Db {
         }
         for chunk in save_dirs.chunks(CHUNK) {
             let placeholders = numbered_placeholders(chunk.len());
+            // Cleared and restart-pending rows retain historical names, not file claims.
             let sql = format!(
-                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})"
+                "SELECT id, save_dir, file_name FROM tasks WHERE save_dir IN ({placeholders})
+                 AND file_missing NOT IN (2, 4)
+                 UNION ALL
+                 SELECT tasks.id, tasks.save_dir, task_artifacts.file_name FROM task_artifacts
+                 JOIN tasks ON tasks.id = task_artifacts.task_id
+                 WHERE tasks.save_dir IN ({placeholders}) AND tasks.file_missing NOT IN (2, 4)"
             );
             let mut query = sqlx::query(AssertSqlSafe(sql));
             for dir in chunk {
@@ -3764,17 +3946,21 @@ impl Db {
     /// 把 `save_dir` 下 `file_name` 登记为自己产物名的全部任务 id。
     ///
     /// 删除任务文件前用来确认该名字没有同时属于别的任务：两条任务的 `file_name`
-    /// 指向同一磁盘名时，删除其一不得带走对方的产物。
+    /// 指向同一磁盘名时，删除其一不得带走对方的产物。已清理（2）与待从零重下（4）的
+    /// 记录只保留历史名，不算认领，与 `load_deletion_facts` 同口径。
     pub async fn list_task_ids_by_file(
         &self,
         save_dir: &str,
         file_name: &str,
     ) -> Result<Vec<String>, DbError> {
-        let rows = sqlx::query("SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2")
-            .bind(save_dir)
-            .bind(file_name)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT id FROM tasks WHERE save_dir = $1 AND file_name = $2
+             AND file_missing NOT IN (2, 4)",
+        )
+        .bind(save_dir)
+        .bind(file_name)
+        .fetch_all(&self.pool)
+        .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             out.push(row.try_get("id")?);

@@ -460,6 +460,13 @@ impl AgentDownloadsPort {
                     method::DAEMON_TASK_DELETE,
                     json!({ "taskId": task_id, "deleteFiles": delete_files }),
                 ),
+                DownloadsCommand::ClearTaskFile { task_id } => {
+                    (method::DAEMON_TASK_CLEAR_FILE, json!({ "taskId": task_id }))
+                }
+                DownloadsCommand::RestartMissingFile { task_id } => (
+                    method::DAEMON_TASK_RESTART_FILE,
+                    json!({ "taskId": task_id }),
+                ),
                 DownloadsCommand::PauseMany { task_ids } => (
                     method::DAEMON_TASK_PAUSE_MANY,
                     json!({ "taskIds": task_ids }),
@@ -485,12 +492,15 @@ impl AgentDownloadsPort {
                     (method::DAEMON_QUEUE_BOOST, json!({ "id": task_id }))
                 }
                 DownloadsCommand::Redownload(request, task_id) => {
-                    client
-                        .call::<Value, Value>(
-                            method::DAEMON_TASK_DELETE,
-                            Some(json!({ "taskId": task_id, "deleteFiles": true })),
+                    let recreate: bool = client
+                        .call(
+                            method::DAEMON_TASK_RESTART_FILE,
+                            Some(json!({ "taskId": task_id, "recreateIfPresent": true })),
                         )
                         .await?;
+                    if !recreate {
+                        return Ok(DownloadsResult::Unit);
+                    }
                     (
                         method::DAEMON_TASK_CREATE,
                         serialize(fluxdown_protocol::DaemonCreateTaskParams {

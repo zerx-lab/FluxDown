@@ -40,6 +40,8 @@ pub(crate) struct DownloadStrings {
     pub(crate) delete: SharedString,
     pub(crate) delete_task: SharedString,
     pub(crate) delete_task_and_file: SharedString,
+    pub(crate) clear_task_file: SharedString,
+    pub(crate) clear_task_file_confirmation: SharedString,
     pub(crate) clean_stale_tasks: SharedString,
     pub(crate) clean_stale_tasks_description: SharedString,
     delete_confirm_with_file: SharedString,
@@ -272,6 +274,8 @@ impl DownloadStrings {
             delete: shared(translator.text(keys::DELETE)),
             delete_task: shared(translator.text("deleteTask")),
             delete_task_and_file: shared(translator.text("deleteTaskAndFile")),
+            clear_task_file: shared(translator.text("clearTaskFile")),
+            clear_task_file_confirmation: shared(translator.text("clearTaskFileConfirmation")),
             clean_stale_tasks: shared(translator.text("cleanStaleTasks")),
             clean_stale_tasks_description: shared(translator.text("cleanStaleTasksDesc")),
             delete_confirm_with_file: shared(translator.text("deleteConfirmDescWithFile")),
@@ -1118,6 +1122,7 @@ pub(crate) fn error_text(
         ErrorReason::SaveDirUnavailable => Some("errReasonSaveDirUnavailable"),
         ErrorReason::TaskFilesInUse => Some("errReasonTaskFilesInUse"),
         ErrorReason::TaskFilesNotDeleted => Some("errReasonTaskFilesNotDeleted"),
+        ErrorReason::BrowserRequestRequired => Some("taskErrorPostOnlyResume"),
         ErrorReason::CloudUnreachable => Some("accountErrorNetwork"),
         ErrorReason::SessionExpired => Some("errReasonSessionExpired"),
         ErrorReason::DeviceUntrusted => Some("accountSessionRevokedUntrusted"),
@@ -1260,6 +1265,15 @@ mod tests {
         );
         assert_eq!(
             strings.task_error_text(&format!("{}\n", super::POST_ONLY_RESUME_MESSAGE)),
+            translator.text("taskErrorPostOnlyResume")
+        );
+        let error = fluxdown_protocol::RpcErrorData::new(
+            fluxdown_protocol::ApplicationErrorCode::Conflict,
+            false,
+        )
+        .with_reason(fluxdown_protocol::ErrorReason::BrowserRequestRequired);
+        assert_eq!(
+            super::error_text(&translator, &error),
             translator.text("taskErrorPostOnlyResume")
         );
         assert_eq!(strings.task_error_text("disk full"), "disk full");

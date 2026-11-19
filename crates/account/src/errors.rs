@@ -117,6 +117,7 @@ pub(crate) fn reason_key(reason: ErrorReason, context: ErrorContext) -> Option<&
         ErrorReason::SaveDirUnavailable => "errReasonSaveDirUnavailable",
         ErrorReason::TaskFilesInUse => "errReasonTaskFilesInUse",
         ErrorReason::TaskFilesNotDeleted => "errReasonTaskFilesNotDeleted",
+        ErrorReason::BrowserRequestRequired => "taskErrorPostOnlyResume",
         ErrorReason::PaymentDisabled
         | ErrorReason::PaymentGatewayFailed
         | ErrorReason::PlanNotPurchasable

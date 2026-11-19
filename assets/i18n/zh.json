@@ -176,6 +176,8 @@
   "selectedCount": "已选 {n} 项",
   "deleteTask": "删除任务",
   "deleteTaskAndFile": "删除任务和文件",
+  "clearTaskFile": "仅删除文件",
+  "clearTaskFileConfirmation": "确定要从磁盘删除任务「{fileName}」已下载的文件吗？任务记录会保留，之后可以重新下载。文件删除后无法恢复。",
   "cleanStaleTasks": "清理无效任务",
   "cleanStaleTasksTitle": "清理无效任务",
   "cleanStaleTasksDesc": "确定清理选中任务中下载失败、或已完成但文件已移动或删除的 {count} 个任务吗？仅移除任务记录，保留已下载的文件和残片。",

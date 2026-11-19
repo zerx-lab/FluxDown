@@ -39,6 +39,7 @@ export function rpcErrorText(error: unknown, t: TFunction): string {
     case 'gatewayRestartFailed': return t('apiServiceRestartFailed')
     case 'taskFilesInUse': return t('errReasonTaskFilesInUse')
     case 'taskFilesNotDeleted': return t('errReasonTaskFilesNotDeleted')
+    case 'browserRequestRequired': return t('taskErrorPostOnlyResume')
     case 'remoteTaskGone': return t('errReasonRemoteTaskGone')
     case 'targetDeviceOffline': return t('errReasonTargetDeviceOffline')
   }

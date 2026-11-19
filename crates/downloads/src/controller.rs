@@ -214,6 +214,9 @@ pub enum DownloadsCommand {
         task_id: String,
         delete_files: bool,
     },
+    ClearTaskFile {
+        task_id: String,
+    },
     /// 批量暂停（`daemon.task.pauseMany`）：整批一次 RPC、一次任务快照。
     PauseMany {
         task_ids: Vec<String>,
@@ -239,6 +242,9 @@ pub enum DownloadsCommand {
     },
     /// 删除（含文件）后按原参数重建。
     Redownload(Box<fluxdown_protocol::CreateTaskRequest>, String),
+    RestartMissingFile {
+        task_id: String,
+    },
     MoveToQueue {
         task_id: String,
         queue_id: String,

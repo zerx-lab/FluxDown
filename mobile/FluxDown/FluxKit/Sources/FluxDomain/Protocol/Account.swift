@@ -615,6 +615,7 @@ public enum AccountRules {
         case "taskDeviceMismatch": "errReasonTaskDeviceMismatch"
         case "remoteTaskGone": "errReasonRemoteTaskGone"
         case "saveDirUnavailable": "errReasonSaveDirUnavailable"
+        case "browserRequestRequired": "taskErrorPostOnlyResume"
         default: nil
         }
     }

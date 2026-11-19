@@ -157,6 +157,13 @@ pub enum ActorOperation {
         task_id: String,
         delete_files: bool,
     },
+    ClearTaskFile {
+        task_id: String,
+    },
+    RestartMissingFile {
+        task_id: String,
+        recreate_if_present: bool,
+    },
     PauseAll,
     ResumeAll,
     RescanFiles,
@@ -399,6 +406,8 @@ pub enum ActorError {
     /// 删除被拒：任务文件删不掉，任务记录已保留（`in_use` = 文件正被其他程序占用）。
     #[error("{message}")]
     TaskFilesKept { in_use: bool, message: String },
+    #[error("{}", fluxdown_engine::downloader::POST_ONLY_RESUME_MESSAGE)]
+    BrowserRequestRequired,
 }
 
 /// daemon actor 命令。
@@ -674,11 +683,15 @@ async fn run_actor(
             }
             Some(ids) = receivers.missing_cleanup.recv() => {
                 arm_db_memory_trim(db_memory_trim.as_mut(), &mut db_memory_trim_armed);
-                // 删除事实由 delete_tasks_batch 自己发布（TasksDeleted），无需再推全量快照。
-                if let Err(error) = batch_delete_result(
-                    engine.manager.delete_tasks_batch(&ids, false).await,
-                ) {
-                    tracing::warn!(%error, "removing tasks whose files vanished failed");
+                match engine.db.unexpectedly_missing_task_ids(&ids).await {
+                    Ok(ids) => {
+                        if let Err(error) = batch_delete_result(
+                            engine.manager.delete_tasks_batch(&ids, false).await,
+                        ) {
+                            tracing::warn!(%error, "removing tasks whose files vanished failed");
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "rechecking missing task files failed"),
                 }
             }
             _ = file_scan.tick() => {
@@ -1707,6 +1720,38 @@ async fn execute_operation(
             // 失败时任务也已被取消 / 移出排队，同样推送快照。
             engine.manager.send_tasks_snapshot().await;
             result.map_err(delete_task_error)?;
+        }
+        ActorOperation::ClearTaskFile { task_id } => {
+            engine
+                .manager
+                .clear_task_file(&task_id)
+                .await
+                .map_err(|error| ActorError::Operation(format!("{error:#}")))?;
+        }
+        ActorOperation::RestartMissingFile {
+            task_id,
+            recreate_if_present,
+        } => {
+            if recreate_if_present {
+                let restarted = engine
+                    .manager
+                    .try_restart_missing_task_file(&task_id)
+                    .await
+                    .map_err(restart_file_error)?;
+                if restarted {
+                    return Ok(ActorResult::Boolean(false));
+                }
+                // Only the actor may authorize recreation, after checking persisted state.
+                let result = engine.manager.delete_task(&task_id, true).await;
+                engine.manager.send_tasks_snapshot().await;
+                result.map_err(delete_task_error)?;
+                return Ok(ActorResult::Boolean(true));
+            }
+            engine
+                .manager
+                .restart_missing_task_file(&task_id)
+                .await
+                .map_err(restart_file_error)?;
         }
         ActorOperation::PauseAll => {
             let mut ids = pause_all_task_ids(&engine.db).await?;
@@ -3504,6 +3549,15 @@ fn delete_task_error(error: fluxdown_engine::download_manager::DeleteTaskError) 
             message: format!("task kept: {error}"),
         },
         DeleteTaskError::Record(_) => ActorError::Operation(error.to_string()),
+    }
+}
+
+fn restart_file_error(error: fluxdown_engine::downloader::DownloadError) -> ActorError {
+    match error {
+        fluxdown_engine::downloader::DownloadError::BrowserRequestRequired => {
+            ActorError::BrowserRequestRequired
+        }
+        _ => ActorError::Operation(format!("{error:#}")),
     }
 }
 

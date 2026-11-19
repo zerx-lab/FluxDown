@@ -204,7 +204,8 @@ impl DownloadManager {
             reseed,
         } = session;
         let id = edit.updated.task_id.clone();
-        if let Err(error) = self.db.commit_task_edit(&edit).await {
+        let moved = plan.as_ref().map_or(&[][..], |plan| plan.pairs.as_slice());
+        if let Err(error) = self.db.commit_task_edit(&edit, moved).await {
             let mut error = format!("db: {error:#}");
             if let Some(plan) = &plan
                 && let Err(rollback) = plan.rollback(&self.db).await
@@ -330,7 +331,7 @@ impl DownloadManager {
                 return Err("invalid-artifact-name".into());
             }
             let pair = (old_dir.join(&name), new_dir.join(&name));
-            if !candidates.contains(&pair) {
+            if !candidates.iter().any(|(source, _)| source == &pair.0) {
                 candidates.push(pair);
             }
         }
